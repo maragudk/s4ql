@@ -14,3 +14,4 @@ The distilled ideas are in [../inspiration.md](../inspiration.md). Agreed decisi
 - [litestream-vfs.md](litestream-vfs.md): notes on Litestream, LTX, and the Litestream VFS.
 - [tigris-probe-results.md](tigris-probe-results.md): measured behaviour of a real Tigris bucket.
 - [sqlite-cache-and-oracle.md](sqlite-cache-and-oracle.md): design space for SQLite as local cache and as test oracle, change-capture mechanisms, Go bindings, and prior art.
+- [sqlite-best-practices.md](sqlite-best-practices.md): best practice for SQLite in server-side apps, the legacy behaviours to reject or match, the costs of STRICT plus WITHOUT ROWID, and migration practice.
