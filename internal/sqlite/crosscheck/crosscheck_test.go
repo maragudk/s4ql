@@ -90,6 +90,10 @@ func TestCompileOptions(t *testing.T) {
 			is.EqualSlice(t, test.mattn, mattnOutcome(t, m, test.statement))
 		})
 	}
+
+	t.Run("should compare pragmas with and without results, where the builds do not differ", func(t *testing.T) {
+		compareScript(t, []string{"pragma user_version = 7", "pragma user_version"})
+	})
 }
 
 func TestVersion(t *testing.T) {
@@ -324,7 +328,12 @@ func mattnOutcome(t *testing.T, m *sql.Conn, statement string) []string {
 	}
 	columns, err := rows.Columns()
 	is.NotError(t, err)
-	return append([]string{strings.Join(columns, ",")}, mattnRows(t, rows)...)
+	r := mattnRows(t, rows)
+	if len(columns) == 0 {
+		// Some pragmas, such as one that sets a value, have no results, as for Exec.
+		return r
+	}
+	return append([]string{strings.Join(columns, ",")}, r...)
 }
 
 // bindingOutcome of a statement: for a statement with results, the column names followed by the
@@ -391,14 +400,16 @@ func bindingAt(t *testing.T, path string) *sqlite.Conn {
 	return c
 }
 
-// mattn connection to a new in-memory database, closed when the test ends.
+// mattn connection to a new in-memory database, closed when the test ends. It is a single
+// connection, because each connection to ":memory:" has its own database.
 func mattn(t *testing.T) *sql.Conn {
 	t.Helper()
 	return mattnAt(t, ":memory:")
 }
 
 // mattnAt opens a mattn/go-sqlite3 connection to the database at path, closed when the test ends. It
-// is a single connection, because each connection to ":memory:" has its own database.
+// is a single connection, so that every statement of a test runs on the same connection, as in
+// [bindingAt].
 func mattnAt(t *testing.T, path string) *sql.Conn {
 	t.Helper()
 	db, err := sql.Open("sqlite3", path)
