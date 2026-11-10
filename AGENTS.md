@@ -6,6 +6,13 @@ Guidance for AI agents working in this repository. What the project is and what 
 
 Do not use your harness's internal or automatic memory for this project. Anything worth remembering between sessions goes in this section, so that it is versioned, visible to Markus, and shared by every agent. Add, update, and remove entries here as things change.
 
+### The project is named s4ql
+
+The project is named s4ql, short for "simple storage service structured query language". It was first named sql4s3.
+
+- **Why:** Markus renamed it on 2026-11-10: "I updated the project name from sql4s3 to just s4ql". The module path is `maragu.dev/s4ql` and the repository is `maragudk/s4ql`.
+- **How to apply:** write s4ql in everything new. The notes in `docs/research/` and the kickoff transcript in `docs/conversations/` still say sql4s3, and they mean this project.
+
 ### Be ambitious; do not argue from human effort
 
 Do not use human-team effort or duration ("years of work", comparisons with how long a company took) as a reason to shrink the project's scope or to prefer a less ambitious design.

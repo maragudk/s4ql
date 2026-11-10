@@ -1,3 +1,3 @@
-module maragu.dev/sql4s3
+module maragu.dev/s4ql
 
 go 1.27.3
