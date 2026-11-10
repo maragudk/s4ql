@@ -4,19 +4,6 @@ A working list of things that are agreed but not built, and of design questions 
 
 Each item is marked agreed or open. An agreed item carries the details that a builder needs who was not in the conversation. When an item is built, it is deleted from this list, and its reasoning moves next to the code as tests and doc comments. The code is then the source of truth for how it was done.
 
-## SQLite binding
-
-Status: agreed, being built now.
-
-The spec says the cache and the oracle use the official SQLite C code through a small cgo binding of our own. Agreed with Markus on 2026-11-10, and to be followed when the binding is built:
-
-- **Why our own:** the oracle is then the real C code and not a translation of it, we choose the SQLite version and compile options and update on our own terms, and no third-party code sits between the engine and SQLite. `modernc.org/sqlite` was considered first and dropped for these reasons.
-- **Built minimal, and grown by slice.** Markus decided on 2026-11-10 that the binding covers only what [slice 1](roadmap.md#slice-1-one-integer-column) of the roadmap needs, which is integers. It grows as later slices need more.
-- **Keep it small and behind a small internal interface.** The engine needs to open a database, prepare, bind, step, read columns, and run transactions. The interface can fit the engine, for example by returning several rows per call into C.
-- **The binding is memory-unsafe code** that Go's race detector and memory safety do not cover. Run its tests under the C address sanitizer and fuzz it.
-- **Cross-check it against two references that run the same C code,** so that any difference is a bug in the glue and not in SQLite: the official `sqlite3` shell built from the same vendored source with the same options, and `github.com/mattn/go-sqlite3` pinned to the same SQLite version for what the shell cannot exercise (parameter binding, typed column access, statement reuse).
-- **Not yet verified:** two copies of SQLite's C code normally cannot be linked into one binary because their symbols clash. Either compile our copy with file-local symbols or run the reference in a separate process.
-
 ## Local I/O failure handling
 
 Status: agreed with Markus on 2026-11-10, not built.
@@ -41,6 +28,7 @@ The spec holds the rules: a commit is acknowledged once S3 has it, a local I/O f
 
   The invariant checked is that no read that starts after an acknowledged commit returns a state without that commit. The simulation also checks that reopening shows the transaction, and that the lease was released or timed out.
 - **No fault-injecting layer under SQLite, for now.** SQLite tests its own I/O error handling, and using the official C code is how we inherit that.
+- **Open: the wal-index is memory-mapped.** The build sets `SQLITE_MAX_MMAP_SIZE=0`, so SQLite never memory-maps the database file, and an I/O error there arrives as an error code. In WAL mode SQLite still memory-maps its shared index, the `-shm` file: "The wal-index is implemented using an ordinary file that is mmapped" (https://sqlite.org/wal.html). An I/O failure on a memory-mapped file arrives as a signal that kills the process, not as an error that SQLite can handle (https://sqlite.org/mmap.html). How to handle this is not designed.
 
 What comparable systems tell the client, and what the node does, in the motivating failure is in [research/commit-acknowledgement.md](research/commit-acknowledgement.md).
 
@@ -68,3 +56,9 @@ Relevant notes: [research/foundationdb.md](research/foundationdb.md), [research/
 Status: open, not designed.
 
 The manifest swap can end without telling the instance whether it succeeded, for example when the request times out. What `Commit` returns and what the instance does then is not designed yet.
+
+## Vendoring s4ql
+
+Status: open, not fixed.
+
+A module that vendors s4ql with `go mod vendor` cannot build, because Go vendors only directories that hold Go packages and so drops `internal/sqlite/c/`, which holds the SQLite C code. It is not fixed, because nothing depends on s4ql yet.
