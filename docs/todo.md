@@ -32,22 +32,35 @@ The spec holds the rules: a commit is acknowledged once S3 has it, a local I/O f
 
 What comparable systems tell the client, and what the node does, in the motivating failure is in [research/commit-acknowledgement.md](research/commit-acknowledgement.md).
 
-## How the drivers run the state machine
+## Concurrency and the simulation harness
 
-Status: open.
+Status: partly agreed, partly open. A spike is testing the simulation design. To be settled before anyone is briefed on engine work.
 
-The concurrency model is agreed and in the spec under "Concurrency": one write transaction at a time per database, reads in parallel bounded by the connection pool, and all state changes on a single path written as a state machine that does no I/O itself.
+The concurrency model is agreed and in the spec under "Concurrency": one write transaction at a time per database, and reads in parallel bounded by the connection pool.
 
-Still undesigned, and to be worked out before anyone is briefed on engine work:
+Agreed with Markus on 2026-11-10:
 
-- how the production driver runs the state machine: goroutines, channels, and how blocking S3 calls and cgo SQLite calls report back as events
-- how the simulation driver schedules events and parallel readers from a seed, given that Go cannot fix the order in which goroutines run
-- what `testing/synctest` contributes
-- how read connections check that the lease is valid without going through the write path
+- **No state machine.** The library is plain blocking Go. Each caller's goroutine does its own work from top to bottom, a lock lets one write transaction through at a time, and one background goroutine renews the lease. That goroutine is the only concurrency the library creates; the rest comes from the callers. The spec used to ask for a state machine that does no I/O, and that sentence was deleted. The reasons: a state machine does not solve the hard part, which is the order goroutines run in; it fits interactive transactions poorly; and FoundationDB, whose testing this project follows, runs plain coroutine code on a deterministic scheduler and has no such state machine.
+- **Locks are taken in Go before calling into SQLite,** so that SQLite never waits on a lock itself. SQLite's busy timeout stays off, so it returns "busy" at once and never sleeps. If the Go locks are right, that error never appears, and seeing it means a bug of ours.
+- **The stop is synchronised with the readers.** After a local I/O failure (see [Local I/O failure handling](#local-io-failure-handling)), no read can start between the failure and `Commit` returning. The simulation tests this with readers racing the stop.
 
-One requirement on the design is already agreed:
+Being tested by a spike, and adopted only if it passes:
 
-- **The stop is synchronised with the readers.** After a local I/O failure (see [Local I/O failure handling](#local-io-failure-handling)), no read can start between the failure and `Commit` returning. The simulation tests this with readers racing the stop, and the race detector tests it too.
+- The real library runs unchanged inside a `testing/synctest` test. S3 is a simulated object store, time is fake, and randomness comes from the seed. The test starts goroutines that play application callers.
+- Wherever a goroutine meets the outside world, it parks: at an S3 call, at a wait on time, and at marked points in a read. A scheduler waits until every goroutine is parked, picks one by the seed, lets it run to its next parking point, and repeats. So one goroutine runs at a time, and the seed decides the order. This is FoundationDB's model rebuilt in Go.
+- Every seed is run twice and the two runs are compared, so nondeterminism that leaks in fails the test.
+- A second mode runs the same tests with the scheduler off under the race detector. It finds data races, but a failure there cannot be replayed from the seed.
+- Known costs: all waiting on time goes through our clock interface, a lock held across a parking point cannot be a `sync.Mutex` (waiting on one does not count as blocked for `testing/synctest`), and parking points need stable names. The design cannot replay two SQLite calls that run at the same instant.
+
+If the spike fails, the choice comes back between a state machine for the core logic and giving up exact replay of ordering.
+
+Still open:
+
+- How read connections check that the lease is valid without going through the write path, and which clocks that relies on.
+- What a read does when the lease deadline has passed but the instance has not stopped.
+- What the instance does after it loses the lease: stop, or try to take it back and catch up.
+- Whether a write transaction has a maximum duration.
+- The stop requirement above cannot be met exactly as worded, because a read can start between a failure inside SQLite and the moment the library sees it. The wording needs tightening to what the spec promises: a read that starts after a commit is acknowledged always sees it.
 
 Relevant notes: [research/foundationdb.md](research/foundationdb.md), [research/slatedb.md](research/slatedb.md), [research/testing-strategies.md](research/testing-strategies.md).
 
