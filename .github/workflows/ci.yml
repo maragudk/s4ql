@@ -75,21 +75,3 @@ jobs:
       - name: Show the inputs that made a fuzz test fail
         if: failure()
         run: find . -path '*/testdata/fuzz/*' -type f -print -exec cat {} \;
-
-  # The vendored SQLite source must match the archive on sqlite.org and the checksums on its
-  # download page.
-  sqlite-verify:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          check-latest: true
-
-      - name: Verify the vendored SQLite source
-        run: make sqlite-verify

@@ -1,0 +1,46 @@
+name: SQLite source
+
+# The vendored SQLite source must match the archive on sqlite.org and the checksums on its download
+# page. The check downloads from sqlite.org, so it runs only when the vendored source, its manifest,
+# or the update tool changes, and not on every change, which would fail whenever sqlite.org is down.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - internal/sqlite/c/**
+      - internal/sqlite/source.h
+      - internal/sqlite/update/**
+      - .github/workflows/sqlite-verify.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - internal/sqlite/c/**
+      - internal/sqlite/source.h
+      - internal/sqlite/update/**
+      - .github/workflows/sqlite-verify.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: ${{ github.ref_name != 'main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  sqlite-verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Verify the vendored SQLite source
+        run: make sqlite-verify
