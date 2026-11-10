@@ -34,9 +34,16 @@ Do not spend effort scrubbing Markus's email address from documents, transcripts
 - **Why:** Markus said on 2026-11-10: "Stop putting decisions into AGENTS.md, we need a better spot for it. We want to keep that file lean, not a dumping ground."
 - **How to apply:** agreed rules go in `docs/spec.md`, with Markus's explicit agreement on the wording. Things that are agreed but not built, and open design questions, go in `docs/todo.md`, and are deleted from it when built. How things were done is read from the code, its tests, and its comments. Research goes in `docs/research/`.
 
-### Commit agreed work without asking
+### Work without waiting for Markus, except on design
 
-When work matches what Markus agreed to, commit it without asking him to look first.
+Commit agreed work and merge pull requests when you judge them ready, without asking Markus first. Involve him in high-level design, architecture, and goals.
 
-- **Why:** Markus said on 2026-11-10: "If it's what we agreed you can just commit. Less friction, I don't want to be the bottleneck in this project".
-- **How to apply:** check the work yourself against what was agreed. If it matches, commit it. Go back to Markus only when something deviates from what was agreed or needs a decision that is his. Wording in `docs/spec.md` still needs his explicit agreement before it is written.
+- **Why:** Markus said on 2026-11-10: "If it's what we agreed you can just commit. Less friction, I don't want to be the bottleneck in this project", and later the same day: "merge whenever you like. We can always revert. But I'd like to stay involved in high-level design, architecture, goals, etc."
+- **How to apply:** check the work yourself against what was agreed, and commit and merge it if it matches and CI passes. Decide implementation details yourself and tell him what you chose. Bring him questions of design, architecture, scope, and goals, and anything that deviates from what was agreed. Wording in `docs/spec.md` still needs his explicit agreement before it is written.
+
+### Second opinions are allowed without asking
+
+The second-opinion skill may be used whenever an independent view helps.
+
+- **Why:** Markus said on 2026-11-10: "Feel free to use second opinion skill whenever you want, but take results judiciously."
+- **How to apply:** use it for design decisions, stubborn bugs, and reviews. Treat the result as one input: check its claims before acting on them, and do not let it override what was agreed with Markus.

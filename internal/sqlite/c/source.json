@@ -1,0 +1,13 @@
+{
+	"version": "3.54.1",
+	"url": "https://sqlite.org/2026/sqlite-amalgamation-3540100.zip",
+	"size": 2990966,
+	"sha3_256": "92281c86e2957f9b9305890f9ac04204caa7b677cc868dc326d942689df28e30",
+	"sha256": "0a9c8e34352dad46006aa82836d5383bff9dc6bc9ce5a60553c05aa30e6ad1f9",
+	"files_sha256": {
+		"shell.c": "00c5cba13701f8c02771f147190aca4faacdf6f6b0def48246fc6c2af656e9ee",
+		"sqlite3.c": "0c657666d819f261cc4007526ad57e1669de9949df7a8ea847aa284a2bf0ee52",
+		"sqlite3.h": "d6c84557261893439b341d2e6c35187ae3ea24fbfd843ad94616f72d89242b8c",
+		"sqlite3ext.h": "48963abfefb41ac329ef9d706acb5eadba952a99a748285c9ded6b5e0942721b"
+	}
+}

@@ -1,0 +1,4 @@
+github.com/mattn/go-sqlite3 v1.14.53 h1:mnTM0owzUMrKuLo+0w51NUiB0ir2Fo7kFXlPt/l3BGs=
+github.com/mattn/go-sqlite3 v1.14.53/go.mod h1:6JTjA44L93a0QCyJef5YvlPoKXntQPjzWv5gtm9sB6w=
+maragu.dev/is v0.3.1 h1:1sj4Ewc9Ecqtvp1Aro+kRCpnuu4D5CB8w//GOfM7jFs=
+maragu.dev/is v0.3.1/go.mod h1:bviaM5S0fBshCw7wuumFGTju/izopZ/Yvq4g7Klc7y8=

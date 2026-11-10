@@ -21,3 +21,57 @@ jobs:
 
   test:
     uses: maragudk/workflows/.github/workflows/test.yml@main
+
+  # The cross-checks against github.com/mattn/go-sqlite3 are a separate module, which the reusable
+  # workflows above do not see.
+  crosscheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: internal/sqlite/crosscheck
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Paths in uses steps are relative to the repository root, not to the working directory above.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: internal/sqlite/crosscheck/go.mod
+          cache-dependency-path: internal/sqlite/crosscheck/go.sum
+          check-latest: true
+
+      - name: Check that go.mod and go.sum are tidy
+        run: go mod tidy && git diff --exit-code go.mod go.sum
+
+      - name: Test
+        run: go test -race -shuffle on ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          working-directory: internal/sqlite/crosscheck
+
+  # The SQLite binding is memory-unsafe code, so its tests and a short fuzz run also go under the C
+  # address sanitizer.
+  asan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Test and fuzz under the address sanitizer
+        run: make test-asan FUZZTIME=30s
+
+      - name: Show the inputs that made a fuzz test fail
+        if: failure()
+        run: find . -path '*/testdata/fuzz/*' -type f -print -exec cat {} \;
