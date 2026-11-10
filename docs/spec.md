@@ -12,6 +12,7 @@ This document holds only what Markus and maragubot have explicitly agreed to wri
 
 - **Deterministic simulation.** The production code runs unchanged in a simulation where object storage, time, and randomness sit behind interfaces driven by one seed. The same seed always replays the same run, including its failures.
 - **Buggify.** The production code contains marked points where, in simulation only, it does something legal but unusual, such as returning an error, adding a delay, or taking a rare branch. Each run switches on a random subset of these points, so every run stresses a different part of the code.
+- **Simulation and real Tigris have separate jobs.** The simulation, with a simulated object store, hunts for bugs. Real Tigris checks that the simulated store behaves like the real one, and runs the integration tests.
 
 ## Constraints
 
