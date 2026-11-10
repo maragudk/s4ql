@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for AI agents working in this repository. What the project is and what has been agreed is in [docs/spec.md](docs/spec.md); the SQL that is supported and what comes next is in [docs/roadmap.md](docs/roadmap.md); decisions are in `docs/decisions/`, background in `docs/inspiration.md` and `docs/research/`.
+Guidance for AI agents working in this repository. What the project is and what has been agreed is in [docs/spec.md](docs/spec.md); the SQL that is supported and what comes next is in [docs/roadmap.md](docs/roadmap.md); background is in `docs/inspiration.md` and `docs/research/`, and the conversations behind the decisions are in `docs/conversations/`.
 
 ## Memory
 
@@ -19,6 +19,16 @@ Do not spend effort scrubbing Markus's email address from documents, transcripts
 
 - **Why:** on 2026-11-10 Markus said "I don't care about my email address leaking btw", and earlier the same day "Don't worry too much about leaking secrets, we can just rotate them if you find them leaked."
 - **How to apply:** a cheap automatic check for the S3 access key and secret before committing bulk content is still worth running. Do not block, ask, or redact on account of the email address, and do not stop work on a likely false positive. If a real credential does get pushed, tell Markus at once so he can rotate it.
+
+### Notes for building the SQLite binding
+
+The spec says the cache and the oracle use the official SQLite C code through a small cgo binding of our own. Agreed with Markus on 2026-11-10, and to be followed when the binding is built:
+
+- **Why our own:** the oracle is then the real C code and not a translation of it, we choose the SQLite version and compile options and update on our own terms, and no third-party code sits between the engine and SQLite. `modernc.org/sqlite` was considered first and dropped for these reasons.
+- **Keep it small and behind a small internal interface.** The engine needs to open a database, prepare, bind, step, read columns, and run transactions. The interface can fit the engine, for example by returning several rows per call into C.
+- **The binding is memory-unsafe code** that Go's race detector and memory safety do not cover. Run its tests under the C address sanitizer and fuzz it.
+- **Cross-check it against two references that run the same C code,** so that any difference is a bug in the glue and not in SQLite: the official `sqlite3` shell built from the same vendored source with the same options, and `github.com/mattn/go-sqlite3` pinned to the same SQLite version for what the shell cannot exercise (parameter binding, typed column access, statement reuse).
+- **Not yet verified:** two copies of SQLite's C code normally cannot be linked into one binary because their symbols clash. Either compile our copy with file-local symbols or run the reference in a separate process.
 
 ### Open: how the drivers run the state machine
 
