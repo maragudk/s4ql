@@ -1,6 +1,6 @@
 # Inspiration
 
-This document lists good ideas from four projects and explains how each idea works in its project. It does not say which of them this project uses. Keep it concise, preferably bullet points only.
+This document lists good ideas from other projects and explains how each idea works in its project. It does not say which of them this project uses. Keep it concise, preferably bullet points only.
 
 ## Terms
 
@@ -16,6 +16,8 @@ This document lists good ideas from four projects and explains how each idea wor
 - **ULID:** universally unique lexicographically sortable identifier. A random id that sorts by creation time.
 - **NVMe:** non-volatile memory express. Fast local solid-state storage.
 - **FIFO:** first in, first out.
+- **VFS:** SQLite's virtual file system interface, the layer through which SQLite does all its file reads, writes, and locking. A plugin can replace it.
+- **LTX:** Litestream's file format for a set of changed SQLite pages: a header with the range of transaction ids, the pages sorted by page number, a page index, and a checksum trailer.
 
 ## Graft
 
@@ -102,3 +104,20 @@ Turbopuffer is a search service for vectors and full text, built on object stora
 - **Backpressure.** The write API returns HTTP 429 once a namespace's unindexed data exceeds 2 GB or 1 million rows, which holds writers back while indexing is behind.
 - **Bounded round trips for cold queries.** A round trip to object storage takes about 100 ms, so the query planner counts sequential round trips as the main cost and fetches more bytes per trip when that saves a trip. The design target is at most three round trips for a cold query, which keeps it under one second.
 - **Consistency over availability.** When object storage is unreachable, Turbopuffer gives up availability, not consistency.
+
+## Litestream
+
+Litestream is a tool in Go that replicates a SQLite database to object storage from its WAL. The Litestream VFS is a SQLite plugin that queries such a replica directly in object storage.
+
+**Storage:** compacted like an LSM tree. Each sync turns the newly committed WAL pages into an immutable LTX file for the next transaction id. Background compaction merges these files level by level, by default every 30 seconds, 5 minutes, and 1 hour, and a daily full snapshot sits above the levels.
+
+- **Capture by owning the checkpoint.** Litestream keeps a read transaction open so that no other connection can checkpoint and restart the WAL. Every second it copies the newly committed WAL frames into one LTX file numbered with the next transaction id, and it checkpoints only after copying, so no frame is lost to a checkpoint, the ids have no gaps, and every file ends at a commit.
+- **Page index at the end of the file.** An LTX file stores its pages sorted by page number and compressed one by one, followed by an index of each page's offset and size and, just before the trailer, the index's 8-byte length. A reader fetches the last 32 KiB with one range GET, reads the length, and so has the whole index, with a second GET only when the index is larger.
+- **Open by reading indexes only.** To open a database the VFS makes a restore plan, the newest snapshot followed by, from any level, each next file that extends the gap-free range of transaction ids furthest, and fetches only the page index and header of each file, about 1% of its size. Merged with the newest transaction id winning, these form an in-memory map from page number to file, offset, and size, and no page data is downloaded until SQLite reads a page.
+- **One range GET per page, then a cache.** The VFS turns the offset of each SQLite read into a page number, looks it up in the map, and fetches exactly that compressed page with one range GET. Pages go into a least-recently-used cache sized in bytes, 10 MB by default, which keeps hot pages such as inner B-tree pages local.
+- **Compaction on a clock grid.** Level 0 holds one file per sync, levels 1, 2, and 3 merge the files of the level below at fixed clock boundaries (by default every 30 seconds, 5 minutes, and 1 hour) and keep only the newest version of each page, and level 9 holds full snapshots. A level 0 file is deleted only after it is merged into level 1 and is at least 5 minutes old, which gives polling readers time to find the level 1 file that replaces it.
+- **Polling for new files.** Every second the VFS lists levels 0 and 1 for files past its last transaction id, fetches only their page indexes and headers, merges them into its map, and evicts the changed pages from its cache. A gap at level 0 is filled from level 1, and a file whose database page count is smaller than before, as after a `VACUUM`, replaces the map instead of being merged into it.
+- **A pending index keeps read transactions stable.** While a connection holds SQLite's shared lock, index entries from new files go into a separate pending map. When the lock is released, the pending map is merged into the main one and the changed pages are evicted, so a read transaction sees the database as it was when the transaction started.
+- **Time travel by swapping the index.** `PRAGMA litestream_time = '5 minutes ago'`, or a timestamp, computes a restore plan from the files created before that time, builds a fresh map from it, and swaps it in for that connection while polling pauses. `'latest'` swaps back, and the reachable points are the boundaries of the files that retention still keeps.
+- **Background hydration.** The VFS can stream every file of the restore plan through LTX compaction into a full local database file while it keeps serving reads remotely, then switch reads to that file and write newly polled pages into it. A companion `.meta` file records the transaction id the file is at, so a restart resumes from there unless the remote id is now lower, in which case the VFS starts over.
+- **Write mode with batched uploads.** In write mode, SQLite's page writes go to a local buffer file and a map of dirty pages, and every second, when no write transaction is open, all dirty pages are uploaded as one level 0 file with the next transaction id. Before the upload the VFS lists level 0 and returns a conflict error if the remote id has moved past the one it expects, and in one process only one connection at a time may hold the write lock.

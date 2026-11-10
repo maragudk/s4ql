@@ -11,4 +11,5 @@ The distilled ideas are in [../inspiration.md](../inspiration.md). Agreed decisi
 - [slatedb.md](slatedb.md): notes on SlateDB.
 - [graft.md](graft.md): notes on Graft.
 - [foundationdb.md](foundationdb.md): notes on FoundationDB.
+- [litestream-vfs.md](litestream-vfs.md): notes on Litestream, LTX, and the Litestream VFS.
 - [tigris-probe-results.md](tigris-probe-results.md): measured behaviour of a real Tigris bucket.
