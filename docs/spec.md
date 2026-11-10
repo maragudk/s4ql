@@ -2,6 +2,13 @@
 
 This document holds only what Markus and maragubot have explicitly agreed to write here. Nothing is added or changed without that agreement. Keep it concise.
 
+## Terms
+
+- **S3:** any S3-compatible object store that provides all three of the following.
+  - **Strong consistency:** a read or listing always reflects every write and delete that has completed.
+  - **Compare-and-swap:** a write can be made to succeed only if the object is unchanged since it was read.
+  - **Create-if-absent:** a write can be made to succeed only if no object exists at that key.
+
 ## SQL
 
 - **SQLite is the result oracle.** Results are judged against SQLite's.
@@ -12,7 +19,7 @@ This document holds only what Markus and maragubot have explicitly agreed to wri
 
 - **Deterministic simulation.** The production code runs unchanged in a simulation where object storage, time, and randomness sit behind interfaces driven by one seed. The same seed always replays the same run, including its failures.
 - **Buggify.** The production code contains marked points where, in simulation only, it does something legal but unusual, such as returning an error, adding a delay, or taking a rare branch. Each run switches on a random subset of these points, so every run stresses a different part of the code.
-- **Simulation and real Tigris have separate jobs.** The simulation, with a simulated object store, hunts for bugs. Real Tigris checks that the simulated store behaves like the real one, and runs the integration tests.
+- **Simulation and real S3 have separate jobs.** The simulation, with a simulated object store, hunts for bugs. Real S3 checks that the simulated store behaves like the real one, and runs the integration tests.
 
 ## Constraints
 
