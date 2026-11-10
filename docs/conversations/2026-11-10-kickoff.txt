@@ -6377,3 +6377,379 @@ work · 18m 4s
   address and anything else private, then commit it under docs/conversations/.
 
 ✻ Cooked for 2s · done 2:09 PM
+
+❯ /export                                                                       
+  ⎿  Conversation exported to: /Users/maragubot/Developer/sql4s3/.claude/worktre
+     es/foundation-docs/2026-11-10-140940.txt
+
+› Message from general-purpose
+  The inventory is written to `docs/research/sqlite-docs-inventory.md` (about
+  2,600 lines) and I added one line for it to `docs/research/README.md`. Both
+  are uncommitted; I ran no git commands and did not touch
+  `sqlite-best-practices.md`.
+
+  **Coverage:** 82 pages describing SQLite 3.54.1 (2026-10-16): `lang.html`,
+  every `lang_*` page, and all the other pages you listed, plus `rowvalue`,
+  `nulinstr`, `printf`, and the C API pages behind SQL-visible behaviour. [V] I
+  read the type-system pages myself. Four agents read the rest in full and wrote
+  the per-area extracts, and I spot-checked their key quotes. A few behaviours
+  were measured on the local 3.54.1 build and are tagged [V-measured].
+
+  **Slice ladder, first ten** [I]:
+  1. `SELECT <integer>`: column name is the expression text, plus the error
+  path.
+  2. Comments.
+  3. Several columns, `AS`, double-quoted aliases.
+  4. `NULL`, `'text'`, `X'..'`.
+  5. REAL and hex literals, `_` separators.
+  6. Unary `- + ~`, including the `-9223372036854775808` literal.
+  7. Arithmetic: overflow to REAL, division by zero gives NULL.
+  8. Comparisons and logic: class ordering, `1='1'` is 0, three-valued logic.
+  9. `CASE`, `BETWEEN`, `IN` lists.
+  10. First functions: `typeof`, `coalesce`, `iif`, `abs`.
+
+  Number-to-text conversion is deliberately late (slice 12). STRICT, WITHOUT
+  ROWID tables arrive at slice 14.
+
+  **Legacy behaviours rejection cannot avoid** [V], all in ordinary syntax:
+  - affinity in comparisons, including STRICT columns;
+  - no hex in runtime conversions;
+  - integer overflow rules;
+  - non-numeric text becomes 0;
+  - NUMERIC truthiness, and a NULL CHECK passes;
+  - NULL ordering, and NULLs distinct in UNIQUE but equal in DISTINCT;
+  - ASCII-only case folding;
+  - LIKE on BLOBs;
+  - NUL inside text;
+  - sum versus total;
+  - result column names without AS ("unspecified");
+  - 17-digit float-to-text output.
+
+  **What the oracle can share:**
+  - **Double quotes:** `SQLITE_DQS=0` is compiled into the local build. It still
+  accepts `DEFAULT "abc"`, a bare `DEFAULT abc`, and single-quoted identifiers.
+  [V-measured]
+  - **Foreign keys:** off by default; enable them per connection with `PRAGMA
+  foreign_keys=ON` or `SQLITE_DBCONFIG_ENABLE_FKEY`. [V]
+  - **UTF-8:** set by the open API. [V]
+  - **PRAGMA rejection:** only possible with an authorizer that denies action
+  19. [V]
+  - **No switch at all:** STRICT, WITHOUT ROWID, no ANY, no bracket or backtick
+  identifiers. sql4s3 must enforce these alone. [V]
+
+  **Conflicts with the decisions:**
+  - STRICT plus WITHOUT ROWID means no key is ever generated: no rowid, no
+  INTEGER PRIMARY KEY alias, AUTOINCREMENT is an error. Applications must supply
+  every key, and `last_insert_rowid()` is always 0. [V/I]
+  - The update hook does not fire for WITHOUT ROWID tables, and the pre-update
+  hook is documented only for rowid tables. This matters for the cache design.
+  [V]
+  - The docs advise against WITHOUT ROWID for single INTEGER keys and for large
+  rows. [V]
+  - `CREATE TABLE AS SELECT` cannot produce such tables. [V/I]
+  - The internal schema tables and the JSON table-valued functions are not
+  STRICT or WITHOUT ROWID. [V]
+
+  **Not found in the docs:**
+  - stability of error message text (the docs promise none), and most of the
+  actual messages;
+  - the full STRICT coercion matrix;
+  - naming of result columns that have no AS;
+  - details of float formatting;
+  - round() ties, substr() with start 0, ceil()/floor() return types;
+  - whether `changes()` counts an UPSERT DO UPDATE;
+  - which keywords may be used unquoted as identifiers.
+
+  The docs also disagree with themselves: they date `FP_DIGITS` both 3.52.0 (a
+  withdrawn release) and 3.53.0. §7 of the file lists all of these as oracle
+  probes.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Inventory official SQLite docs" finished · 27m 55s
+
+  Ran 10 shell commands (ctrl+o to expand)
+  ⎿  1 action blocked by auto mode
+     │ Auto mode: No reason provided
+
+⏺ The export is scanned and committed, and the docs inventory is back and
+  committed. One push was blocked, so main on GitHub doesn't have these two
+  commits yet.
+
+  The export
+
+  - Clean: no email address, no access key and no secret. It is readable text,
+    332 KB and 6,378 lines.
+  - It contains local paths in about 30 places, which I left as they are.
+  - Committed as docs/conversations/2026-11-10-kickoff.txt. It covers the
+    conversation up to 14:09; a later export can be added the same way.
+
+  The blocked push. Both commits are pushed to the worktree-foundation-docs
+  branch on GitHub. The step that fast-forwards main to that branch was denied
+  by the permission system this time, without a stated reason, although the same
+  command had been allowed all session. I haven't tried to get around it. You
+  can run it yourself from the worktree, or add a permission rule for it:
+
+  git push origin worktree-foundation-docs:main
+
+  The docs inventory is in docs/research/sqlite-docs-inventory.md: about 2,600
+  lines covering 82 pages of the SQLite 3.54.1 documentation.
+
+  - What the oracle can be configured to share: rejecting double-quoted strings
+    (mostly), enforcing foreign keys, UTF-8, and rejecting PRAGMAs. Strict,
+    without-rowid, no ANY and no bracket or backtick names have no switch, so we
+    enforce those alone.
+  - Relevant to slice 1: SQLite's docs promise no stability for error message
+    text. I'd compare error codes with the oracle, not message wording.
+  - It proposes a slice ladder that starts with literals and expressions and
+    reaches tables only at slice 14. That is the opposite order to yours, and
+    it's there as input for when we take up slice 2.
+  - It repeats the without-rowid cautions from the other research: no generated
+    keys, and the docs advise against it for single integer keys and large rows.
+
+✻ Cogitated for 11m 23s · done 2:11 PM
+
+❯ I don't care about my email address leaking btw                               
+
+  Wrote 2 memories (ctrl+o to expand)
+
+⏺ Noted, and saved to memory so I stop checking for it. I'll keep only the cheap
+  automatic check for the S3 key and secret before committing bulk content.
+
+  The push to main is still blocked on my side. The two new commits, the
+  conversation export and the docs inventory, are on the
+  worktree-foundation-docs branch until you run git push origin 
+  worktree-foundation-docs:main or allow it.
+
+✻ Cooked for 13s · done 2:11 PM
+
+❯ I'm guessing it was blocked because we committed the whole transcript. I'll   
+  explicitly allow that. Push it to main.                                       
+
+  Pushed to main (ctrl+o to expand)
+
+⏺ Pushed. main on GitHub now includes both commits: the conversation export in
+  docs/conversations/2026-11-10-kickoff.txt and the docs inventory in
+  docs/research/sqlite-docs-inventory.md.
+
+  Everything from this session is now recorded on main: the spec, the roadmap,
+  one decision record, the inspiration doc, eleven research notes and the
+  transcript.
+
+  Two decisions remain before the engine for slice 1, whenever you want them:
+  the story for a local commit failing after the manifest swap, and what "done"
+  means for slice 1.
+
+✻ Brewed for 14s · done 2:12 PM
+
+❯ Could you move your internal project memory into a "Memory" subheading in     
+  AGENTS.md? And then add a rule in AGENTS.md that you should not use the       
+  internal memory on this project. Also note that as the only thing in your     
+  internal memory.                                                              
+
+⏺ Write(AGENTS.md)
+  ⎿  Wrote 42 lines to AGENTS.md
+      1 # AGENTS.md
+      2 
+      3 Guidance for AI agents working in this repository. What the proje
+        ct is and what has been agreed is in [docs/spec.md](docs/spec.md)
+        ; the SQL that is supported and what comes next is in [docs/roadm
+        ap.md](docs/roadmap.md); decisions are in `docs/decisions/`, back
+        ground in `docs/inspiration.md` and `docs/research/`.
+      4 
+      5 ## Memory
+      6 
+     … +36 lines (ctrl+o to expand)
+
+  Pushed to main, ran 4 shell commands, wrote 2 memories (ctrl+o to expand)
+⏺ Done, and pushed to main.
+
+  - AGENTS.md now exists at the repo root with a "Memory" section. It opens with
+    the rule: don't use the harness's internal memory for this project;
+    anything worth remembering goes in that section.
+  - The four notes moved there: be ambitious and don't argue from human effort;
+    low ceremony on your email and secrets; the open design of the drivers that
+    run the state machine; and the open story for a local commit failing after
+    the manifest swap. The last one also records my crash-style proposal as
+    "proposed, not yet agreed".
+  - Internal memory now holds one note only, saying that this project's memory
+    lives in AGENTS.md and nothing else is to be stored there.
+
+  One thing to know: I haven't verified that Claude Code loads AGENTS.md
+  automatically the way it loads CLAUDE.md. The internal note tells me to read
+  it at the start of each session, which covers me. If you want it loaded for
+  every agent without relying on that, a one-line CLAUDE.md that imports
+  AGENTS.md would do it.
+
+✻ Sautéed for 44s · done 2:15 PM
+
+❯ Make CLAUDE.md a symbolic link to AGENTS.md                                   
+
+  Pushed to main, ran 3 shell commands (ctrl+o to expand)
+
+⏺ Done and pushed to main: CLAUDE.md is now a symbolic link to AGENTS.md,
+  committed as a link, so Claude Code loads the same file every other agent
+  reads.
+
+✻ Cooked for 12s · done 2:16 PM
+
+❯ I don't like that we have a decisions/ folder.                                
+
+⏺ Fair. It holds a single file, the SQLite binding decision, and the spec
+  already serves as the record of what we've agreed.
+
+  I'd fold that decision into the spec as one entry and delete the folder:
+
+  - Our own SQLite binding. The cache and the oracle use a small cgo binding of
+    our own to the official SQLite C code, vendored at a version we pin. It is
+    cross-checked against the official sqlite3 shell and mattn/go-sqlite3.
+
+  The longer reasoning stays available in the conversation transcript and the
+  research notes. I'd also remove the mention of docs/decisions/ from AGENTS.md.
+
+  From then on, anything we agree goes in the spec, and anything I decide on my
+  own that's worth remembering goes in the Memory section of AGENTS.md.
+
+  Shall I do that?
+
+✻ Churned for 7s · done 2:16 PM
+
+❯ Not necessarily in the spec, but into the right place.                        
+
+⏺ Update(docs/spec.md)
+  ⎿  Added 1 line
+      47  - **The manifest maps branch names to log pointers.** The map i
+          s named `branches` and has one entry, `main`. Other branches ar
+          e not designed yet, but can be added later as further entries.
+      48  - **The manifest has a format version.** A `version` field says
+           which version of the manifest format it uses.
+      49  - **The manifest swap is the commit.** A commit uploads the tra
+          nsaction's changes as a new file, then replaces `manifest.json`
+           with a compare-and-swap so that it lists that file. The transa
+          ction is committed when the swap succeeds, and not before.
+      50 +- **Our own SQLite binding.** The cache and the oracle use the 
+         +official SQLite C code, at a version we pin, through a small cg
+         +o binding of our own. The module therefore needs cgo.          
+      51  - **The cache is never ahead of S3.** A commit swaps the manife
+          st first and commits to the cache second. The cache records the
+           name of the last change file it has applied, in the same local
+           transaction as the rows. An instance whose cache is behind the
+           manifest applies the missing change files before it serves any
+          thing. A cache whose recorded position is not in the log is ref
+          used loudly, not rebuilt silently.
+      52  - **A commit is acknowledged after the cache has it.** The appl
+          ication is told that a transaction is committed only once the m
+          anifest swap and the commit to the local cache have both succee
+          ded.
+      53  - **One commit at a time.** Commits to a database happen strict
+          ly one after another, and the storage enforces this, not the le
+          ase or a clock. Only the lease holder writes, and any instance 
+          can become the holder.
+
+⏺ Update(AGENTS.md)
+  ⎿  Added 1 line, removed 1 line
+      1  # AGENTS.md
+      2  
+      3 -Guidance for AI agents working in this repository. What the proj
+        -ect is and what has been agreed is in [docs/spec.md](docs/spec.m
+        -d); the SQL that is supported and what comes next is in [docs/ro
+        -admap.md](docs/roadmap.md); decisions are in `docs/decisions/`, 
+        -background in `docs/inspiration.md` and `docs/research/`.       
+      3 +Guidance for AI agents working in this repository. What the proj
+        +ect is and what has been agreed is in [docs/spec.md](docs/spec.m
+        +d); the SQL that is supported and what comes next is in [docs/ro
+        +admap.md](docs/roadmap.md); background is in `docs/inspiration.m
+        +d` and `docs/research/`, and the conversations behind the decisi
+        +ons are in `docs/conversations/`.                               
+      4  
+      5  ## Memory
+      6  
+
+⏺ Update(AGENTS.md)
+  ⎿  Added 10 lines
+      20  - **Why:** on 2026-11-10 Markus said "I don't care about my ema
+          il address leaking btw", and earlier the same day "Don't worry 
+          too much about leaking secrets, we can just rotate them if you 
+          find them leaked."
+      21  - **How to apply:** a cheap automatic check for the S3 access k
+          ey and secret before committing bulk content is still worth run
+          ning. Do not block, ask, or redact on account of the email addr
+          ess, and do not stop work on a likely false positive. If a real
+           credential does get pushed, tell Markus at once so he can rota
+          te it.
+      22  
+      23 +### Notes for building the SQLite binding                      
+      24 +                                                               
+      25 +The spec says the cache and the oracle use the official SQLite 
+         +C code through a small cgo binding of our own. Agreed with Mark
+         +us on 2026-11-10, and to be followed when the binding is built:
+      26 +                                                               
+      27 +- **Why our own:** the oracle is then the real C code and not a
+         + translation of it, we choose the SQLite version and compile op
+         +tions and update on our own terms, and no third-party code sits
+         + between the engine and SQLite. `modernc.org/sqlite` was consid
+         +ered first and dropped for these reasons.                      
+      28 +- **Keep it small and behind a small internal interface.** The 
+         +engine needs to open a database, prepare, bind, step, read colu
+         +mns, and run transactions. The interface can fit the engine, fo
+         +r example by returning several rows per call into C.           
+      29 +- **The binding is memory-unsafe code** that Go's race detector
+         + and memory safety do not cover. Run its tests under the C addr
+         +ess sanitizer and fuzz it.                                     
+      30 +- **Cross-check it against two references that run the same C c
+         +ode,** so that any difference is a bug in the glue and not in S
+         +QLite: the official `sqlite3` shell built from the same vendore
+         +d source with the same options, and `github.com/mattn/go-sqlite
+         +3` pinned to the same SQLite version for what the shell cannot 
+         +exercise (parameter binding, typed column access, statement reu
+         +se).                                                           
+      31 +- **Not yet verified:** two copies of SQLite's C code normally 
+         +cannot be linked into one binary because their symbols clash. E
+         +ither compile our copy with file-local symbols or run the refer
+         +ence in a separate process.                                    
+      32 +                                                               
+      33  ### Open: how the drivers run the state machine
+      34  
+      35  The concurrency model is settled and in the spec under "Concurr
+          ency": one write transaction at a time per database, reads in p
+          arallel bounded by the connection pool, and all state changes o
+          n a single path written as a state machine that does no I/O its
+          elf.
+
+  Pushed to main, ran 5 shell commands (ctrl+o to expand)
+
+⏺ Done and pushed to main. The docs/decisions/ folder is gone, and its one
+  record is split between the two places it belongs:
+
+  - The decision itself is in the spec, under "Constraints", because it's agreed
+    and it affects anyone using the module: "Our own SQLite binding. The cache
+    and the oracle use the official SQLite C code, at a version we pin, through
+    a small cgo binding of our own. The module therefore needs cgo."
+  - The build notes are in AGENTS.md, under "Memory": why we chose our own
+    binding, keeping it small, testing it under the address sanitizer and with
+    fuzzing, the cross-checks against the official shell and mattn/go-sqlite3,
+    and the unverified symbol-clash caveat.
+
+  AGENTS.md no longer mentions a decisions folder and points to
+  docs/conversations/ for the reasoning behind decisions.
+
+  docs/ now holds spec.md, roadmap.md, inspiration.md, research/ and
+  conversations/.
+
+✻ Cogitated for 34s · done 2:18 PM
+
+❯ I think that's it for today. Good work, bottie. I'll do a final export and    
+  you can commit and push it after.                                             
+
+⏺ Thanks, Markus. It was a good day's work for a database that can so far almost
+  run four statements.
+
+  Run the export and I'll commit and push it next to the first one in
+  docs/conversations/.
+
+  After that I'll tidy up unless you'd rather I didn't: pull main in the project
+  directory, which is still at this morning's state, and remove the
+  foundation-docs worktree and its branch, since everything on it is already on
+  main.
+
+✻ Cooked for 6s · done 2:19 PM
