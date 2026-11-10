@@ -17,3 +17,4 @@ The distilled ideas are in [../inspiration.md](../inspiration.md). Agreed decisi
 - [sqlite-best-practices.md](sqlite-best-practices.md): best practice for SQLite in server-side apps, the legacy behaviours to reject or match, the costs of STRICT plus WITHOUT ROWID, and migration practice.
 - [sqlite-docs-inventory.md](sqlite-docs-inventory.md): inventory of the SQLite 3.54.1 SQL documentation (features, legacy flags, STRICT and WITHOUT ROWID rules, oracle configuration, a proposed slice ladder, and hard semantic areas).
 - [commit-acknowledgement.md](commit-acknowledgement.md): what comparable systems tell the client, and what the node does, when a commit is durable in the authoritative place and the local apply then fails.
+- [sqlite-compile-options.md](sqlite-compile-options.md): every SQLite 3.54.1 compile-time option on compile.html, classified for the build in `internal/sqlite`, with the ten options agreed.

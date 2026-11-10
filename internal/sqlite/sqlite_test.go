@@ -463,7 +463,7 @@ func TestCompileOptions(t *testing.T) {
 		b, err := os.ReadFile("options.h")
 		is.NotError(t, err)
 		defines := regexp.MustCompile(`(?m)^#define SQLITE_(\w+) (\S+)$`).FindAllSubmatch(b, -1)
-		is.True(t, len(defines) >= 7, "options.h has too few options; is the pattern above still right?")
+		is.True(t, len(defines) >= 10, "options.h has too few options; is the pattern above still right?")
 
 		options := sqlite.CompileOptions()
 		for _, d := range defines {
@@ -511,6 +511,31 @@ func TestCompileOptions(t *testing.T) {
 		_, err := c.Prepare("select load_extension('x')")
 		is.Equal(t, codeError, code(t, err))
 		is.Equal(t, "no such function: load_extension", message(t, err))
+	})
+
+	t.Run("should not memory-map a database file, even when asked to", func(t *testing.T) {
+		c := open(t, filepath.Join(t.TempDir(), "test.db"))
+		is.NotError(t, c.Exec("create table t1 (v1 int primary key) strict, without rowid"))
+
+		// The pragma returns the size it set, which SQLite caps at the compile-time maximum.
+		is.EqualSlice(t, []string{"integer:0"}, query(t, c, "pragma mmap_size = 268435456"))
+		is.EqualSlice(t, []string{"integer:0"}, query(t, c, "pragma mmap_size"))
+	})
+
+	t.Run("should have the math functions", func(t *testing.T) {
+		c := memory(t)
+
+		is.EqualSlice(t, []string{"integer:1,integer:1,integer:1"}, query(t, c, "select sqrt(16) = 4, pow(2, 10) = 1024, trunc(pi()) = 3"))
+	})
+
+	t.Run("should fail an application-defined function that sets a subtype without declaring that it does", func(t *testing.T) {
+		path, err := buildSubtype()
+		if err != nil {
+			t.Fatal("building the subtype program:", err)
+		}
+		out, err := exec.Command(path).CombinedOutput()
+		is.NotError(t, err, string(out))
+		is.Equal(t, "declared: ok\nundeclared: error 1: misuse of sqlite3_result_subtype() by undeclared()\n", string(out))
 	})
 }
 
@@ -632,6 +657,10 @@ func TestShell(t *testing.T) {
 		{
 			name:  "foreign keys on a new connection",
 			query: "select * from pragma_foreign_keys",
+		},
+		{
+			name:  "the math functions",
+			query: "select sqrt(16) = 4, pow(2, 10) = 1024",
 		},
 	}
 
@@ -894,38 +923,72 @@ func readManifest(t *testing.T) manifest {
 	return m
 }
 
-// shellDir holds the sqlite3 shell built by [buildShell], if any.
-var shellDir string
+// buildDir holds the C programs built by [buildShell] and [buildSubtype], if any.
+var buildDir string
 
-// TestMain removes the sqlite3 shell built by [buildShell], if any.
+// TestMain removes the C programs built by [buildShell] and [buildSubtype], if any.
 func TestMain(m *testing.M) {
 	code := m.Run()
-	if shellDir != "" {
-		_ = os.RemoveAll(shellDir)
+	if buildDir != "" {
+		_ = os.RemoveAll(buildDir)
 	}
 	os.Exit(code)
 }
 
-// buildShell builds the official sqlite3 shell from the vendored source, with the compile options in
-// options.h and the C compiler that cgo uses, once per test binary, and returns its path.
-var buildShell = sync.OnceValues(func() (string, error) {
+// buildSQLite compiles the vendored c/sqlite3.c with the compile options in options.h and the C
+// compiler that cgo uses, once per test binary, and returns the compiler command and the path of the
+// object file.
+var buildSQLite = sync.OnceValues(func() ([]string, error) {
 	var err error
-	shellDir, err = os.MkdirTemp("", "s4ql-sqlite3-")
+	buildDir, err = os.MkdirTemp("", "s4ql-sqlite3-")
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	path := filepath.Join(shellDir, "sqlite3")
+	out, err := exec.Command("go", "env", "CC").Output()
+	if err != nil {
+		return nil, err
+	}
+	cc := strings.Fields(string(out))
+	object := filepath.Join(buildDir, "sqlite3.o")
+	if err := compile(cc, "-c", "-o", object, "c/sqlite3.c"); err != nil {
+		return nil, err
+	}
+	return cc, nil
+})
 
-	cc, err := exec.Command("go", "env", "CC").Output()
+// buildProgram from the C file at source, linked with the object file from [buildSQLite], and return
+// the path of the program.
+func buildProgram(name, source string) (string, error) {
+	cc, err := buildSQLite()
 	if err != nil {
 		return "", err
 	}
-	args := strings.Fields(string(cc))
-	args = append(args, "-O2", "-include", "options.h", "-Ic", "-o", path, "c/shell.c", "c/sqlite3.c", "-lm", "-lpthread")
-	if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
-		return "", fmt.Errorf("%v: %w\n%s", strings.Join(args, " "), err, out)
+	path := filepath.Join(buildDir, name)
+	if err := compile(cc, "-o", path, source, filepath.Join(buildDir, "sqlite3.o"), "-lm", "-lpthread"); err != nil {
+		return "", err
 	}
 	return path, nil
+}
+
+// compile with the C compiler command cc and the given arguments, after the options shared by every
+// compilation: optimisation, the compile options in options.h, and the vendored headers.
+func compile(cc []string, args ...string) error {
+	args = slices.Concat(cc[1:], []string{"-O2", "-include", "options.h", "-Ic"}, args)
+	if out, err := exec.Command(cc[0], args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("%v %v: %w\n%s", cc[0], strings.Join(args, " "), err, out)
+	}
+	return nil
+}
+
+// buildShell builds the official sqlite3 shell from the vendored source, once per test binary, and
+// returns its path.
+var buildShell = sync.OnceValues(func() (string, error) {
+	return buildProgram("sqlite3", "c/shell.c")
+})
+
+// buildSubtype builds testdata/subtype.c, once per test binary, and returns its path.
+var buildSubtype = sync.OnceValues(func() (string, error) {
+	return buildProgram("subtype", "testdata/subtype.c")
 })
 
 // shellExec runs the sqlite3 shell on an in-memory database with the given script on stdin, without

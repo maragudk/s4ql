@@ -44,6 +44,54 @@ func TestLink(t *testing.T) {
 	})
 }
 
+func TestCompileOptions(t *testing.T) {
+	// SQL can see these differences between the two builds, so the comparisons in this package avoid
+	// them. A change to mattn's build that removes or adds one shows up here.
+	tests := []struct {
+		name      string
+		statement string
+		binding   []string
+		mattn     []string
+	}{
+		{
+			name:      "foreign keys, which the binding enforces on a new connection",
+			statement: "pragma foreign_keys",
+			binding:   []string{"foreign_keys", "integer:1"},
+			mattn:     []string{"foreign_keys", "integer:0"},
+		},
+		{
+			name:      "double-quoted strings, which are identifiers only in the binding",
+			statement: `select "abc" = 'abc'`,
+			binding:   []string{`error 1: no such column: "abc" - should this be a string literal in single-quotes?`},
+			mattn:     []string{`"abc" = 'abc'`, "integer:1"},
+		},
+		{
+			name:      "the math functions, which mattn has only with the sqlite_math_functions build tag",
+			statement: "select sqrt(16) = 4",
+			binding:   []string{"sqrt(16) = 4", "integer:1"},
+			mattn:     []string{"error 1: no such function: sqrt"},
+		},
+		{
+			name:      "memory-mapped I/O, which the binding cannot switch on",
+			statement: "pragma mmap_size = 268435456",
+			binding:   []string{"mmap_size", "integer:0"},
+			mattn:     []string{"mmap_size", "integer:268435456"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run("should differ from mattn/go-sqlite3 in "+test.name, func(t *testing.T) {
+			// Database files, because SQLite does not memory-map an in-memory database. Two copies of
+			// SQLite must not open the same file, so each binding gets its own.
+			dir := t.TempDir()
+			c := bindingAt(t, filepath.Join(dir, "binding.db"))
+			is.EqualSlice(t, test.binding, bindingOutcome(t, c, test.statement))
+			m := mattnAt(t, filepath.Join(dir, "mattn.db"))
+			is.EqualSlice(t, test.mattn, mattnOutcome(t, m, test.statement))
+		})
+	}
+}
+
 func TestVersion(t *testing.T) {
 	t.Run("should be the same SQLite version and source ID in the binding and mattn/go-sqlite3", func(t *testing.T) {
 		version, _, sourceID := sqlite3.Version()
@@ -255,27 +303,28 @@ func compareScript(t *testing.T, script []string) {
 	m := mattn(t)
 
 	for _, statement := range script {
-		expected := bindingOutcome(t, c, statement)
-
-		var actual []string
-		if strings.HasPrefix(statement, "select") {
-			rows, err := m.QueryContext(t.Context(), statement)
-			if err != nil {
-				actual = mattnError(t, err)
-			} else {
-				columns, err := rows.Columns()
-				is.NotError(t, err)
-				actual = append([]string{strings.Join(columns, ",")}, mattnRows(t, rows)...)
-			}
-		} else {
-			_, err := m.ExecContext(t.Context(), statement)
-			if err != nil {
-				actual = mattnError(t, err)
-			}
-		}
-
-		is.EqualSlice(t, expected, actual, statement)
+		is.EqualSlice(t, bindingOutcome(t, c, statement), mattnOutcome(t, m, statement), statement)
 	}
+}
+
+// mattnOutcome of a statement, encoded as by [bindingOutcome]. Statements that start with select or
+// pragma are run as queries, and all others with Exec.
+func mattnOutcome(t *testing.T, m *sql.Conn, statement string) []string {
+	t.Helper()
+	if !strings.HasPrefix(statement, "select") && !strings.HasPrefix(statement, "pragma") {
+		if _, err := m.ExecContext(t.Context(), statement); err != nil {
+			return mattnError(t, err)
+		}
+		return nil
+	}
+
+	rows, err := m.QueryContext(t.Context(), statement)
+	if err != nil {
+		return mattnError(t, err)
+	}
+	columns, err := rows.Columns()
+	is.NotError(t, err)
+	return append([]string{strings.Join(columns, ",")}, mattnRows(t, rows)...)
 }
 
 // bindingOutcome of a statement: for a statement with results, the column names followed by the
@@ -330,17 +379,29 @@ func mattnError(t *testing.T, err error) []string {
 // binding connection to a new in-memory database, closed when the test ends.
 func binding(t *testing.T) *sqlite.Conn {
 	t.Helper()
-	c, err := sqlite.Open(":memory:")
+	return bindingAt(t, ":memory:")
+}
+
+// bindingAt opens a binding connection to the database at path, closed when the test ends.
+func bindingAt(t *testing.T, path string) *sqlite.Conn {
+	t.Helper()
+	c, err := sqlite.Open(path)
 	is.NotError(t, err)
 	t.Cleanup(func() { is.NotError(t, c.Close()) })
 	return c
 }
 
-// mattn connection to a new in-memory database, closed when the test ends. It is a single
-// connection, because each connection to ":memory:" has its own database.
+// mattn connection to a new in-memory database, closed when the test ends.
 func mattn(t *testing.T) *sql.Conn {
 	t.Helper()
-	db, err := sql.Open("sqlite3", ":memory:")
+	return mattnAt(t, ":memory:")
+}
+
+// mattnAt opens a mattn/go-sqlite3 connection to the database at path, closed when the test ends. It
+// is a single connection, because each connection to ":memory:" has its own database.
+func mattnAt(t *testing.T, path string) *sql.Conn {
+	t.Helper()
+	db, err := sql.Open("sqlite3", path)
 	is.NotError(t, err)
 	t.Cleanup(func() { is.NotError(t, db.Close()) })
 	c, err := db.Conn(t.Context())

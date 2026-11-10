@@ -2,8 +2,9 @@
 ** Compile-time options for SQLite, shared by the binding in this directory and by the sqlite3 shell
 ** that the tests build from the same vendored source.
 **
-** The rule for adding an option: it implements a restriction in docs/roadmap.md, it makes misuse of
-** SQLite or of an obsolete feature impossible or detectable, or the build needs it. Options that only
+** The rule for adding an option: it implements a rule in docs/spec.md or a restriction in
+** docs/roadmap.md, it makes misuse of SQLite or of an obsolete feature impossible or detectable, it
+** makes this build match what a normal build of SQLite has, or the build needs it. Options that only
 ** tune performance are left out, because every option is a way in which this build differs from a
 ** stock build of SQLite. The tests check that SQLite reports every option defined here.
 */
@@ -58,5 +59,43 @@
 ** loader (-ldl on Linux).
 */
 #define SQLITE_OMIT_LOAD_EXTENSION 1
+
+/*
+** Memory-mapped I/O on the database file can never be switched on: PRAGMA mmap_size cannot raise the
+** limit above 0. With it on, an I/O error on the file arrives as a signal that kills the process
+** instead of as an error code (https://sqlite.org/mmap.html), and local I/O failures must surface as
+** errors. It does not cover the wal-index (-shm) file, which SQLite always memory-maps in WAL mode.
+*/
+#define SQLITE_MAX_MMAP_SIZE 0
+
+/*
+** The math functions, such as sqrt() and pow(). SQLite built with its configure script on unix has
+** them, but the amalgamation does not, so without this the oracle would differ from a normal build of
+** SQLite.
+*/
+#define SQLITE_ENABLE_MATH_FUNCTIONS 1
+
+/*
+** An application-defined function that sets a result subtype without declaring SQLITE_RESULT_SUBTYPE
+** fails with an error, instead of sometimes losing the subtype. It is on SQLite's recommended and
+** always-tested list (https://sqlite.org/compile.html#rcmd), and it affects application-defined
+** functions only, so it costs nothing while there are none.
+*/
+#define SQLITE_STRICT_SUBTYPE 1
+
+/*
+** Considered and left out:
+**
+** - SQLITE_OMIT_DEPRECATED, although it is on the recommended list: the binding calls no deprecated
+**   function, and on the amalgamation it does not remove all the deprecated pragmas the docs say it
+**   removes (count_changes, full_column_names and short_column_names still take effect).
+** - SQLITE_OMIT_UTF16: it is outside SQLite's tested set, and an existing UTF-16 database file then
+**   fails as a malformed schema, a corruption error, instead of being rejected clearly.
+** - SQLITE_DEBUG: its assertions check SQLite's own invariants, which SQLite's developers already
+**   test, and the project has no test-only build variant.
+**
+** Research on every option on https://sqlite.org/compile.html is in
+** docs/research/sqlite-compile-options.md.
+*/
 
 #endif
