@@ -6,6 +6,7 @@ This document lists good ideas from four projects and explains how each idea wor
 
 - **WAL:** write-ahead log. Changes are appended to it before they are applied anywhere else.
 - **LSN:** log sequence number. The position of a commit in a log, counted 1, 2, 3 and so on.
+- **LSM tree:** log-structured merge-tree. Writes are collected in memory and flushed as immutable sorted files, which background compaction merges into larger ones.
 - **SST:** sorted string table. An immutable file of key-value pairs sorted by key.
 - **DDL:** data definition language. The SQL statements that change the schema, such as `CREATE TABLE`.
 - **ETag:** an identifier that object storage returns for a version of an object. It changes when the content changes.
