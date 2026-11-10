@@ -20,6 +20,8 @@ This document lists good ideas from four projects and explains how each idea wor
 
 Graft is a storage engine in Rust that replicates a SQLite database, as 4 KiB pages, directly to object storage with no server in between.
 
+**Storage:** not an LSM tree. An append-only log of commits, each adding one immutable segment of changed pages; a page is read from the newest commit that wrote it, and nothing is compacted. Local state lives in Fjall, an embedded LSM key-value store.
+
 ### Design
 
 - **One conditional write commits.** A commit creates the object `logs/{log}/commits/{LSN}` with `If-None-Match: *`, where the LSN is the last known LSN plus one and LSNs have no gaps. Once the object exists the commit is durable and visible to every client; a writer that loses the race gets a 412, and the bucket holds no manifest, pointer, or lock object.
@@ -39,6 +41,8 @@ Graft is a storage engine in Rust that replicates a SQLite database, as 4 KiB pa
 ## FoundationDB
 
 FoundationDB is a distributed, transactional, ordered key-value store; the SQL Layer and the Record Layer are relational layers built on top of it.
+
+**Storage:** a replicated transaction log, separate from storage servers that apply it to a pluggable local engine. The classic `ssd` engine is a B-tree derived from SQLite; Redwood (a versioned B+tree) and RocksDB (an LSM tree) are alternatives. Storage servers also keep the last 5 seconds of versions in memory.
 
 ### Design
 
@@ -62,6 +66,8 @@ FoundationDB is a distributed, transactional, ordered key-value store; the SQL L
 
 SlateDB is an embedded key-value store in Rust, a log-structured merge-tree that keeps all its files in object storage.
 
+**Storage:** an LSM tree. Writes go to WAL objects and an in-memory table, are flushed as level-0 SSTs, and are merged by compaction into sorted runs; a manifest lists the SSTs that make up the current state.
+
 ### Design
 
 - **Durable when the WAL object exists.** Writes collect in memory and go out together as one WAL object, `wal/<N>.sst`, created with `If-None-Match: *` at the next number; that creation is the commit point, and the manifest is not touched per write. Each write returns a handle whose `await_durable()` resolves when the PUT succeeds.
@@ -82,6 +88,8 @@ SlateDB is an embedded key-value store in Rust, a log-structured merge-tree that
 ## Turbopuffer
 
 Turbopuffer is a search service for vectors and full text, built on object storage.
+
+**Storage:** an LSM tree on object storage. A WAL takes the writes, and background indexing turns them into SSTables and index files, merged by a simple tiered compaction.
 
 - **Object storage is the only source of truth.** Each namespace is a prefix in object storage that holds its WAL and its index files. Query nodes put a memory cache and an NVMe cache (a FIFO ring buffer) in front of it, both read-through and write-through, so any node can serve any namespace, and requests for one namespace are routed to the same node to keep its cache warm.
 - **A manifest compare-and-swap commits a write.** The node writes the new WAL file to object storage and then commits it into a manifest with compare-and-swap: it fetches the manifest with its ETag and writes the manifest back only if the ETag still matches.
