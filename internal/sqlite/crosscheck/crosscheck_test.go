@@ -86,6 +86,25 @@ func TestBindInt64(t *testing.T) {
 			compareBindInt64(t, v)
 		})
 	}
+
+	t.Run("should bind several numbered and named parameters by index as mattn/go-sqlite3 does", func(t *testing.T) {
+		query := "select ?2, :a, ?1, ?2 + ?1"
+
+		c := binding(t)
+		s, err := c.Prepare(query)
+		is.NotError(t, err)
+		t.Cleanup(func() { is.NotError(t, s.Finalize()) })
+		for i, v := range []int64{10, 20, 30} {
+			is.NotError(t, s.BindInt64(i+1, v))
+		}
+		expected := bindingRows(t, s)
+
+		m := mattn(t)
+		rows, err := m.QueryContext(t.Context(), query, int64(10), int64(20), int64(30))
+		is.NotError(t, err)
+		is.EqualSlice(t, expected, mattnRows(t, rows))
+		is.EqualSlice(t, []string{"integer:20,integer:30,integer:10,integer:30"}, expected)
+	})
 }
 
 func FuzzBindInt64(f *testing.F) {
@@ -117,44 +136,44 @@ func compareBindInt64(t *testing.T, v int64) {
 	is.EqualSlice(t, []string{fmt.Sprintf("integer:%v,integer:1,integer:1", v)}, expected)
 }
 
-// slice1Scripts are sequences of the statements in slice 1 of docs/roadmap.md, including the errors
-// they can produce, run on a fresh database in each binding.
-var slice1Scripts = map[string][]string{
-	"the slice 1 example": {
-		"create table t1 (v1 int primary key) strict, without rowid",
-		"select * from t1",
-		"insert into t1 (v1) values (1)",
-		"select * from t1",
-	},
-	"several rows in primary-key order": {
-		"create table t1 (v1 int primary key) strict, without rowid",
-		"insert into t1 (v1) values (3)",
-		"insert into t1 (v1) values (-9223372036854775808)",
-		"insert into t1 (v1) values (9223372036854775807)",
-		"insert into t1 (v1) values (0)",
-		"select * from t1",
-	},
-	"several tables with other names": {
-		"create table a (b int primary key) strict, without rowid",
-		"create table t2 (v2 int primary key) strict, without rowid",
-		"insert into a (b) values (1)",
-		"insert into t2 (v2) values (2)",
-		"select * from a",
-		"select * from t2",
-	},
-	"errors": {
-		"select * from t1",
-		"insert into t1 (v1) values (1)",
-		"create table t1 (v1 int primary key) strict, without rowid",
-		"create table t1 (v1 int primary key) strict, without rowid",
-		"insert into t1 (v1) values (1)",
-		"insert into t1 (v1) values (1)",
-		"insert into t1 (v1) values (9223372036854775808)",
-		"select * from t1",
-	},
-}
-
 func TestSlice1(t *testing.T) {
+	// slice1Scripts are sequences of the statements in slice 1 of docs/roadmap.md, including the errors
+	// they can produce, run on a fresh database in each binding.
+	slice1Scripts := map[string][]string{
+		"the slice 1 example": {
+			"create table t1 (v1 int primary key) strict, without rowid",
+			"select * from t1",
+			"insert into t1 (v1) values (1)",
+			"select * from t1",
+		},
+		"several rows in primary-key order": {
+			"create table t1 (v1 int primary key) strict, without rowid",
+			"insert into t1 (v1) values (3)",
+			"insert into t1 (v1) values (-9223372036854775808)",
+			"insert into t1 (v1) values (9223372036854775807)",
+			"insert into t1 (v1) values (0)",
+			"select * from t1",
+		},
+		"several tables with other names": {
+			"create table a (b int primary key) strict, without rowid",
+			"create table t2 (v2 int primary key) strict, without rowid",
+			"insert into a (b) values (1)",
+			"insert into t2 (v2) values (2)",
+			"select * from a",
+			"select * from t2",
+		},
+		"errors": {
+			"select * from t1",
+			"insert into t1 (v1) values (1)",
+			"create table t1 (v1 int primary key) strict, without rowid",
+			"create table t1 (v1 int primary key) strict, without rowid",
+			"insert into t1 (v1) values (1)",
+			"insert into t1 (v1) values (1)",
+			"insert into t1 (v1) values (9223372036854775808)",
+			"select * from t1",
+		},
+	}
+
 	for name, script := range slice1Scripts {
 		t.Run("should give the same results and errors as mattn/go-sqlite3 for "+name, func(t *testing.T) {
 			compareScript(t, script)
@@ -181,12 +200,19 @@ func TestSlice1(t *testing.T) {
 }
 
 func FuzzSlice1(f *testing.F) {
-	f.Add([]byte{0, 0, 1, 0, 2, 0})
-	f.Add([]byte{1, 0, 0, 0, 0, 1, 2, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 0, 0})
+	// The slice 1 example: create t0, select, insert 1, select.
+	f.Add([]byte{0, 0, 2, 0, 1, 0, 1, 2, 0})
+	// The error script: select and insert on a missing table, create twice, a duplicate key, a value
+	// too large for an int column, and a select.
+	f.Add([]byte{2, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 1, 0, 6, 2, 0})
+	// Several tables, with the largest and smallest values and a random one.
+	f.Add([]byte{0, 0, 0, 1, 1, 0, 4, 1, 1, 5, 1, 0, 7, 1, 2, 3, 2, 0, 2, 1, 2, 2})
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		// Each statement is one byte for its kind, one for its table, and for an insert eight for its
-		// value. The few table names make errors for existing and missing tables and duplicate keys likely.
+		// Each statement is one byte for its kind and one for its table, and for an insert, one byte
+		// that picks its value from a small set and, for a random value, eight bytes more. The small
+		// sets make errors for existing and missing tables and duplicate keys likely.
+		values := []string{"0", "1", "-1", "2", fmt.Sprint(math.MaxInt64), fmt.Sprint(math.MinInt64), "9223372036854775808"}
 		var script []string
 		for len(data) >= 2 && len(script) < 50 {
 			kind, table := data[0]%3, data[1]%3
@@ -195,12 +221,23 @@ func FuzzSlice1(f *testing.F) {
 			case 0:
 				script = append(script, fmt.Sprintf("create table t%v (v%v int primary key) strict, without rowid", table, table))
 			case 1:
-				if len(data) < 8 {
+				if len(data) < 1 {
 					data = nil
 					continue
 				}
-				v := int64(binary.LittleEndian.Uint64(data))
-				data = data[8:]
+				i := int(data[0]) % (len(values) + 1)
+				data = data[1:]
+				var v string
+				if i < len(values) {
+					v = values[i]
+				} else {
+					if len(data) < 8 {
+						data = nil
+						continue
+					}
+					v = fmt.Sprint(int64(binary.LittleEndian.Uint64(data)))
+					data = data[8:]
+				}
 				script = append(script, fmt.Sprintf("insert into t%v (v%v) values (%v)", table, table, v))
 			case 2:
 				script = append(script, fmt.Sprintf("select * from t%v", table))

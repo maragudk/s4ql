@@ -24,33 +24,25 @@ import (
 	"maragu.dev/s4ql/internal/sqlite"
 )
 
-// Result codes from https://sqlite.org/rescode.html, used in the tests below.
+// Result codes from https://sqlite.org/rescode.html that several tests use.
 const (
-	codeError              = 1
-	codeBusy               = 5
-	codeCantOpen           = 14
-	codeConstraint         = 19
-	codeMisuse             = 21
-	codeRange              = 25
-	codeConstraintForeign  = 787
-	codeConstraintPrimary  = 1555
-	codeConstraintDataType = 3091
+	codeError             = 1
+	codeMisuse            = 21
+	codeRange             = 25
+	codeConstraintPrimary = 1555
 )
-
-// expectedOptions are the options set in options.h, as SQLite reports them.
-var expectedOptions = []string{
-	"DEFAULT_FOREIGN_KEYS",
-	"DQS=0",
-	"ENABLE_API_ARMOR",
-	"OMIT_LOAD_EXTENSION",
-	"OMIT_SHARED_CACHE",
-	"THREADSAFE=1",
-}
 
 func TestOpen(t *testing.T) {
 	t.Run("should open and close an in-memory database", func(t *testing.T) {
 		c, err := sqlite.Open(":memory:")
 		is.NotError(t, err)
+		is.NotError(t, c.Close())
+	})
+
+	t.Run("should open and close a temporary database", func(t *testing.T) {
+		c, err := sqlite.Open("")
+		is.NotError(t, err)
+		is.NotError(t, c.Exec("create table t1 (v1 int primary key) strict, without rowid"))
 		is.NotError(t, c.Close())
 	})
 
@@ -69,8 +61,17 @@ func TestOpen(t *testing.T) {
 
 	t.Run("should fail with SQLITE_CANTOPEN when the file cannot be created", func(t *testing.T) {
 		_, err := sqlite.Open(filepath.Join(t.TempDir(), "missing", "test.db"))
-		is.Equal(t, codeCantOpen, code(t, err))
+		is.Equal(t, 14, code(t, err))
 		is.Equal(t, "unable to open database file", message(t, err))
+	})
+
+	t.Run("should refuse a path with a NUL byte instead of opening the part before it", func(t *testing.T) {
+		dir := t.TempDir()
+		_, err := sqlite.Open(filepath.Join(dir, "test.db") + "\x00.other")
+		is.Equal(t, "sqlite: path contains a NUL byte", errorString(t, err))
+
+		_, err = os.Stat(filepath.Join(dir, "test.db"))
+		is.True(t, errors.Is(err, os.ErrNotExist))
 	})
 }
 
@@ -82,7 +83,8 @@ func TestConn_Close(t *testing.T) {
 		s := prepare(t, c, "select 1")
 
 		err = c.Close()
-		is.Equal(t, codeBusy, code(t, err))
+		is.Equal(t, 5, code(t, err))
+		is.Equal(t, "unable to close due to unfinalized statements or unfinished backups", message(t, err))
 
 		is.NotError(t, s.Finalize())
 		is.NotError(t, c.Close())
@@ -108,13 +110,13 @@ func TestConn_Prepare(t *testing.T) {
 		_, err := c.Prepare("selec 1")
 		is.Equal(t, codeError, code(t, err))
 		is.Equal(t, `near "selec": syntax error`, message(t, err))
-		is.Equal(t, `sqlite: near "selec": syntax error (code 1)`, err.Error())
+		is.Equal(t, `sqlite: near "selec": syntax error (code 1)`, errorString(t, err))
 	})
 
 	t.Run("should allow trailing whitespace and a semicolon", func(t *testing.T) {
 		c := memory(t)
 
-		s, err := c.Prepare("select 1; \t\n")
+		s, err := c.Prepare("select 1; \t\n\f\r")
 		is.NotError(t, err)
 		is.NotError(t, s.Finalize())
 	})
@@ -124,7 +126,7 @@ func TestConn_Prepare(t *testing.T) {
 		is.NotError(t, c.Exec("create table t1 (v1 int primary key) strict, without rowid"))
 
 		_, err := c.Prepare("select 1; drop table t1")
-		is.Equal(t, `sqlite: SQL continues after the first statement: " drop table t1"`, err.Error())
+		is.Equal(t, `sqlite: SQL continues after the first statement: " drop table t1"`, errorString(t, err))
 
 		is.EqualSlice(t, []string{"integer:1"}, query(t, c, "select count(*) from sqlite_schema"))
 	})
@@ -133,7 +135,14 @@ func TestConn_Prepare(t *testing.T) {
 		c := memory(t)
 
 		_, err := c.Prepare("select 1\x00; drop table t1")
-		is.Equal(t, `sqlite: SQL continues after the first statement: "\x00; drop table t1"`, err.Error())
+		is.Equal(t, `sqlite: SQL continues after the first statement: "\x00; drop table t1"`, errorString(t, err))
+	})
+
+	t.Run("should shorten long refused SQL in the error", func(t *testing.T) {
+		c := memory(t)
+
+		_, err := c.Prepare("select 1;" + strings.Repeat("x", 200))
+		is.Equal(t, `sqlite: SQL continues after the first statement: "`+strings.Repeat("x", 100)+`..."`, errorString(t, err))
 	})
 
 	t.Run("should refuse SQL without a statement", func(t *testing.T) {
@@ -141,7 +150,7 @@ func TestConn_Prepare(t *testing.T) {
 
 		for _, sql := range []string{"", " ", "-- comment", ";"} {
 			_, err := c.Prepare(sql)
-			is.Equal(t, "sqlite: no statement in SQL", fmt.Sprint(err), sql)
+			is.Equal(t, "sqlite: no statement in SQL", errorString(t, err), sql)
 		}
 	})
 }
@@ -172,7 +181,7 @@ func TestConn_Exec(t *testing.T) {
 
 		var sqliteErr *sqlite.Error
 		is.True(t, errors.As(err, &sqliteErr))
-		is.Equal(t, sqlite.ResultCode(codeConstraint), sqliteErr.Code.Primary())
+		is.Equal(t, sqlite.ResultCode(19), sqliteErr.Code.Primary()) // SQLITE_CONSTRAINT
 	})
 
 	t.Run("should run each statement in its own transaction, so a failed statement changes nothing", func(t *testing.T) {
@@ -216,14 +225,16 @@ func TestStmt_BindInt64(t *testing.T) {
 		is.EqualSlice(t, []string{"null:"}, rows(t, s))
 	})
 
-	t.Run("should fail with SQLITE_RANGE for a parameter index out of range", func(t *testing.T) {
+	t.Run("should fail with SQLITE_RANGE for a parameter index out of range, also beyond 32 bits", func(t *testing.T) {
 		c := memory(t)
 		s := prepare(t, c, "select ?")
 
-		is.Equal(t, codeRange, code(t, s.BindInt64(0, 1)))
-		err := s.BindInt64(2, 1)
-		is.Equal(t, codeRange, code(t, err))
-		is.Equal(t, "column index out of range", message(t, err))
+		for _, i := range []int{0, -1, 2, 1<<32 + 1, math.MinInt} {
+			err := s.BindInt64(i, 1)
+			is.Equal(t, codeRange, code(t, err), fmt.Sprint(i))
+			is.Equal(t, "column index out of range", message(t, err))
+		}
+		is.EqualSlice(t, []string{"null:"}, rows(t, s))
 	})
 
 	t.Run("should insert a bound value into a table", func(t *testing.T) {
@@ -237,27 +248,48 @@ func TestStmt_BindInt64(t *testing.T) {
 	})
 }
 
-func TestStmt_Column(t *testing.T) {
-	t.Run("should report the column count and names", func(t *testing.T) {
+func TestStmt_ColumnCount(t *testing.T) {
+	t.Run("should report the number of result columns", func(t *testing.T) {
 		c := memory(t)
-		is.NotError(t, c.Exec("create table t1 (v1 int primary key) strict, without rowid"))
-		s := prepare(t, c, `select v1, v1 as "my name", 1 + 1 from t1`)
+		s := prepare(t, c, "select 1, 2, 3")
 
 		is.Equal(t, 3, s.ColumnCount())
-		is.Equal(t, "v1", s.ColumnName(0))
-		is.Equal(t, "my name", s.ColumnName(1))
-		is.Equal(t, "1 + 1", s.ColumnName(2))
-		is.Equal(t, "", s.ColumnName(3))
-		is.Equal(t, "", s.ColumnName(-1))
 	})
 
-	t.Run("should report a zero column count for a statement without results", func(t *testing.T) {
+	t.Run("should report zero for a statement without results", func(t *testing.T) {
 		c := memory(t)
 		s := prepare(t, c, "create table t1 (v1 int primary key) strict, without rowid")
 
 		is.Equal(t, 0, s.ColumnCount())
 	})
+}
 
+func TestStmt_ColumnName(t *testing.T) {
+	t.Run("should report the column names, before and after stepping", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.Exec("create table t1 (v1 int primary key) strict, without rowid"))
+		s := prepare(t, c, `select v1, v1 as "my name", 1 + 1 from t1`)
+
+		is.Equal(t, "v1", s.ColumnName(0))
+		is.Equal(t, "my name", s.ColumnName(1))
+		is.Equal(t, "1 + 1", s.ColumnName(2))
+
+		ok, err := s.Step()
+		is.NotError(t, err)
+		is.True(t, !ok)
+		is.Equal(t, "v1", s.ColumnName(0))
+	})
+
+	t.Run("should panic for an index out of range", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select 1")
+
+		is.Equal(t, "sqlite: column index 1 out of range for 1 columns", panicMessage(t, func() { s.ColumnName(1) }))
+		is.Equal(t, "sqlite: column index -1 out of range for 1 columns", panicMessage(t, func() { s.ColumnName(-1) }))
+	})
+}
+
+func TestStmt_ColumnType(t *testing.T) {
 	t.Run("should report the type of each value, which can differ between rows of a column", func(t *testing.T) {
 		c := memory(t)
 		s := prepare(t, c, "select 1 union all select 1.5 union all select 'a' union all select x'00' union all select null")
@@ -276,6 +308,34 @@ func TestStmt_Column(t *testing.T) {
 		is.Equal(t, "Type(0)", fmt.Sprint(sqlite.Type(0)))
 	})
 
+	t.Run("should panic without a current row: before the first step, and after the last", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select 1")
+
+		is.Equal(t, "sqlite: no current row", panicMessage(t, func() { s.ColumnType(0) }))
+		ok, err := s.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+		is.Equal(t, sqlite.TypeInteger, s.ColumnType(0))
+		ok, err = s.Step()
+		is.NotError(t, err)
+		is.True(t, !ok)
+		is.Equal(t, "sqlite: no current row", panicMessage(t, func() { s.ColumnType(0) }))
+	})
+
+	t.Run("should panic for an index out of range", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select 1")
+		ok, err := s.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+
+		is.Equal(t, "sqlite: column index 1 out of range for 1 columns", panicMessage(t, func() { s.ColumnType(1) }))
+		is.Equal(t, "sqlite: column index 4294967296 out of range for 1 columns", panicMessage(t, func() { s.ColumnType(1 << 32) }))
+	})
+}
+
+func TestStmt_ColumnInt64(t *testing.T) {
 	t.Run("should convert a value of another type as SQLite does, which is why ColumnType comes first", func(t *testing.T) {
 		c := memory(t)
 		s := prepare(t, c, "select '12abc', 2.9, null")
@@ -289,15 +349,15 @@ func TestStmt_Column(t *testing.T) {
 		is.Equal(t, int64(0), s.ColumnInt64(2))
 	})
 
-	t.Run("should read NULL for a column index out of range", func(t *testing.T) {
+	t.Run("should panic without a current row and for an index out of range", func(t *testing.T) {
 		c := memory(t)
 		s := prepare(t, c, "select 1")
 
+		is.Equal(t, "sqlite: no current row", panicMessage(t, func() { s.ColumnInt64(0) }))
 		ok, err := s.Step()
 		is.NotError(t, err)
 		is.True(t, ok)
-		is.Equal(t, sqlite.TypeNull, s.ColumnType(1))
-		is.Equal(t, int64(0), s.ColumnInt64(1))
+		is.Equal(t, "sqlite: column index 1 out of range for 1 columns", panicMessage(t, func() { s.ColumnInt64(1) }))
 	})
 }
 
@@ -315,6 +375,38 @@ func TestStmt_Step(t *testing.T) {
 
 		err = s.Finalize()
 		is.Equal(t, codeConstraintPrimary, code(t, err))
+		is.Equal(t, "UNIQUE constraint failed: t1.v1", message(t, err))
+	})
+
+	t.Run("should fail with SQLITE_MISUSE instead of running a finished statement again", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.Exec("create table t1 (v1 int primary key) strict, without rowid"))
+		s := prepare(t, c, "insert into t1 (v1) values (1)")
+
+		ok, err := s.Step()
+		is.NotError(t, err)
+		is.True(t, !ok)
+
+		_, err = s.Step()
+		is.Equal(t, codeMisuse, code(t, err))
+		is.Equal(t, "bad parameter or other API misuse", message(t, err))
+		is.EqualSlice(t, []string{"integer:1"}, query(t, c, "select count(*) from t1"))
+	})
+
+	t.Run("should fail with SQLITE_MISUSE instead of running a failed statement again", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.Exec("create table t1 (v1 int primary key) strict, without rowid"))
+		is.NotError(t, c.Exec("insert into t1 (v1) values (1)"))
+		s, err := c.Prepare("insert into t1 (v1) values (1)")
+		is.NotError(t, err)
+		t.Cleanup(func() { _ = s.Finalize() })
+
+		_, err = s.Step()
+		is.Equal(t, codeConstraintPrimary, code(t, err))
+
+		_, err = s.Step()
+		is.Equal(t, codeMisuse, code(t, err))
+		is.Equal(t, "bad parameter or other API misuse", message(t, err))
 	})
 
 	t.Run("should fail with SQLITE_CONSTRAINT_DATATYPE for an integer literal too large for an int column", func(t *testing.T) {
@@ -322,13 +414,13 @@ func TestStmt_Step(t *testing.T) {
 		is.NotError(t, c.Exec("create table t1 (v1 int primary key) strict, without rowid"))
 
 		err := c.Exec("insert into t1 (v1) values (9223372036854775808)")
-		is.Equal(t, codeConstraintDataType, code(t, err))
+		is.Equal(t, 3091, code(t, err))
 		is.Equal(t, "cannot store REAL value in INT column t1.v1", message(t, err))
 	})
 }
 
 func TestStmt_Finalize(t *testing.T) {
-	t.Run("should be safe to call twice, and make other calls return SQLITE_MISUSE or nothing", func(t *testing.T) {
+	t.Run("should be safe to call twice, and make other calls fail with SQLITE_MISUSE or panic", func(t *testing.T) {
 		c := memory(t)
 		s, err := c.Prepare("select ?")
 		is.NotError(t, err)
@@ -341,11 +433,12 @@ func TestStmt_Finalize(t *testing.T) {
 		is.Equal(t, "bad parameter or other API misuse", message(t, err))
 		_, err = s.Step()
 		is.Equal(t, codeMisuse, code(t, err))
+		is.Equal(t, "bad parameter or other API misuse", message(t, err))
 
-		is.Equal(t, 0, s.ColumnCount())
-		is.Equal(t, "", s.ColumnName(0))
-		is.Equal(t, sqlite.TypeNull, s.ColumnType(0))
-		is.Equal(t, int64(0), s.ColumnInt64(0))
+		is.Equal(t, "sqlite: statement is finalized", panicMessage(t, func() { s.ColumnCount() }))
+		is.Equal(t, "sqlite: statement is finalized", panicMessage(t, func() { s.ColumnName(0) }))
+		is.Equal(t, "sqlite: statement is finalized", panicMessage(t, func() { s.ColumnType(0) }))
+		is.Equal(t, "sqlite: statement is finalized", panicMessage(t, func() { s.ColumnInt64(0) }))
 	})
 }
 
@@ -366,10 +459,18 @@ func TestSourceID(t *testing.T) {
 }
 
 func TestCompileOptions(t *testing.T) {
-	t.Run("should include every option set in options.h", func(t *testing.T) {
+	t.Run("should report every option set in options.h", func(t *testing.T) {
+		b, err := os.ReadFile("options.h")
+		is.NotError(t, err)
+		defines := regexp.MustCompile(`(?m)^#define SQLITE_(\w+) (\S+)$`).FindAllSubmatch(b, -1)
+		is.True(t, len(defines) >= 7, "options.h has too few options; is the pattern above still right?")
+
 		options := sqlite.CompileOptions()
-		for _, o := range expectedOptions {
-			is.True(t, slices.Contains(options, o), "missing "+o)
+		for _, d := range defines {
+			name, value := string(d[1]), string(d[2])
+			// SQLite reports some options with their value, and some on/off options by name only.
+			ok := slices.Contains(options, name+"="+value) || (value == "1" && slices.Contains(options, name))
+			is.True(t, ok, fmt.Sprintf("SQLITE_%v %v not reported", name, value))
 		}
 	})
 
@@ -385,7 +486,7 @@ func TestCompileOptions(t *testing.T) {
 		is.Equal(t, `no such column: "abc" - should this be a string literal in single-quotes?`, message(t, err))
 	})
 
-	t.Run("should still read a double-quoted DEFAULT as a string, which the grammar does for any identifier there", func(t *testing.T) {
+	t.Run("should still accept a double-quoted DEFAULT, as SQLite does for any identifier after DEFAULT", func(t *testing.T) {
 		c := memory(t)
 
 		is.NotError(t, c.Exec(`create table t1 (v1 int primary key, v2 text default "abc") strict, without rowid`))
@@ -400,7 +501,7 @@ func TestCompileOptions(t *testing.T) {
 		is.NotError(t, c.Exec("create table p (id int primary key) strict, without rowid"))
 		is.NotError(t, c.Exec("create table c (id int primary key, p int references p (id)) strict, without rowid"))
 		err := c.Exec("insert into c values (1, 2)")
-		is.Equal(t, codeConstraintForeign, code(t, err))
+		is.Equal(t, 787, code(t, err)) // SQLITE_CONSTRAINT_FOREIGNKEY
 		is.Equal(t, "FOREIGN KEY constraint failed", message(t, err))
 	})
 
@@ -414,15 +515,22 @@ func TestCompileOptions(t *testing.T) {
 }
 
 func TestVendored(t *testing.T) {
-	t.Run("should have vendored files with the checksums recorded in source.json", func(t *testing.T) {
+	t.Run("should have vendored files with the checksums recorded in source.json and source.h", func(t *testing.T) {
 		m := readManifest(t)
 		is.Equal(t, 4, len(m.Files))
+
+		header, err := os.ReadFile("source.h")
+		is.NotError(t, err)
+		is.True(t, bytes.Contains(header, fmt.Appendf(nil, "#define S4QL_SQLITE_VERSION %q\n", m.Version)), "version in source.h")
 
 		for name, sum := range m.Files {
 			b, err := os.ReadFile(filepath.Join("c", name))
 			is.NotError(t, err)
 			got := sha256.Sum256(b)
 			is.Equal(t, sum, hex.EncodeToString(got[:]), name)
+
+			define := fmt.Sprintf("#define S4QL_SHA256_%v %q\n", strings.ToUpper(strings.ReplaceAll(name, ".", "_")), sum)
+			is.True(t, bytes.Contains(header, []byte(define)), "checksum of "+name+" in source.h")
 		}
 	})
 }
@@ -472,55 +580,6 @@ func TestSymbols(t *testing.T) {
 	})
 }
 
-// shellCases are run by both the binding and the sqlite3 shell, and must give the same results. They
-// follow slice 1 of docs/roadmap.md, plus queries for the version and the compile options.
-var shellCases = []struct {
-	name  string
-	setup []string
-	query string
-}{
-	{
-		name:  "an empty table",
-		setup: []string{"create table t1 (v1 int primary key) strict, without rowid"},
-		query: "select * from t1",
-	},
-	{
-		name: "rows in primary-key order",
-		setup: []string{
-			"create table t1 (v1 int primary key) strict, without rowid",
-			"insert into t1 (v1) values (3)",
-			"insert into t1 (v1) values (-1)",
-			"insert into t1 (v1) values (9223372036854775807)",
-			"insert into t1 (v1) values (-9223372036854775808)",
-			"insert into t1 (v1) values (0)",
-		},
-		query: "select * from t1",
-	},
-	{
-		name: "several tables",
-		setup: []string{
-			"create table t1 (v1 int primary key) strict, without rowid",
-			"create table t2 (v2 int primary key) strict, without rowid",
-			"insert into t1 (v1) values (1)",
-			"insert into t2 (v2) values (2)",
-			"insert into t2 (v2) values (1)",
-		},
-		query: "select * from t2",
-	},
-	{
-		name:  "the version",
-		query: "select sqlite_version() = '" + sqlite.Version() + "', sqlite_source_id() = '" + sqlite.SourceID() + "'",
-	},
-	{
-		name:  "the number of compile options",
-		query: "select count(*) from pragma_compile_options",
-	},
-	{
-		name:  "foreign keys on a new connection",
-		query: "pragma foreign_keys",
-	},
-}
-
 func TestShell(t *testing.T) {
 	t.Run("should report the same version and source ID as the binding", func(t *testing.T) {
 		out := shellRun(t, "select sqlite_version(); select sqlite_source_id();")
@@ -532,7 +591,51 @@ func TestShell(t *testing.T) {
 		is.EqualSlice(t, sqlite.CompileOptions(), out)
 	})
 
-	for _, test := range shellCases {
+	// Statements of the shapes the binding is used for, plus a few queries about the build.
+	tests := []struct {
+		name  string
+		setup []string
+		query string
+	}{
+		{
+			name:  "an empty table",
+			setup: []string{"create table t1 (v1 int primary key) strict, without rowid"},
+			query: "select * from t1",
+		},
+		{
+			name: "rows in primary-key order",
+			setup: []string{
+				"create table t1 (v1 int primary key) strict, without rowid",
+				"insert into t1 (v1) values (3)",
+				"insert into t1 (v1) values (-1)",
+				"insert into t1 (v1) values (9223372036854775807)",
+				"insert into t1 (v1) values (-9223372036854775808)",
+				"insert into t1 (v1) values (0)",
+			},
+			query: "select * from t1",
+		},
+		{
+			name: "several tables",
+			setup: []string{
+				"create table t1 (v1 int primary key) strict, without rowid",
+				"create table t2 (v2 int primary key) strict, without rowid",
+				"insert into t1 (v1) values (1)",
+				"insert into t2 (v2) values (2)",
+				"insert into t2 (v2) values (1)",
+			},
+			query: "select * from t2",
+		},
+		{
+			name:  "the number of compile options",
+			query: "select count(*) from pragma_compile_options",
+		},
+		{
+			name:  "foreign keys on a new connection",
+			query: "select * from pragma_foreign_keys",
+		},
+	}
+
+	for _, test := range tests {
 		t.Run("should give the same results as the binding for "+test.name, func(t *testing.T) {
 			c := memory(t)
 			for _, sql := range test.setup {
@@ -541,21 +644,18 @@ func TestShell(t *testing.T) {
 			s := prepare(t, c, test.query)
 			expected := rows(t, s)
 
-			// The shell prints each value in the encoding of the rows helper, computed in SQL, so that
-			// the comparison does not depend on how the shell formats values.
+			// The shell runs the query inside a common table expression that encodes each value as the
+			// rows helper does, in SQL, so that the comparison does not depend on how the shell formats
+			// values. The values pass through the common table expression unchanged.
 			var columns, encoded []string
 			for i := range s.ColumnCount() {
 				col := fmt.Sprintf("c%v", i)
 				columns = append(columns, col)
-				encoded = append(encoded, fmt.Sprintf("typeof(%[1]v) || ':' || case typeof(%[1]v) when 'integer' then %[1]v else hex(%[1]v) end", col))
-			}
-			query := test.query
-			if strings.HasPrefix(query, "pragma ") {
-				query = "select * from pragma_" + strings.TrimPrefix(query, "pragma ")
+				encoded = append(encoded, fmt.Sprintf("typeof(%[1]v) || ':' || case typeof(%[1]v) when 'integer' then %[1]v when 'null' then '' else 'unexpected' end", col))
 			}
 			script := strings.Join(test.setup, ";\n")
 			script += fmt.Sprintf(";\nwith q (%v) as (%v) select %v from q;\n",
-				strings.Join(columns, ", "), query, strings.Join(encoded, " || ',' || "))
+				strings.Join(columns, ", "), test.query, strings.Join(encoded, " || ',' || "))
 
 			out := shellRun(t, script)
 			if len(expected) == 0 {
@@ -566,7 +666,7 @@ func TestShell(t *testing.T) {
 		})
 	}
 
-	t.Run("should fail with the same messages as the binding for the errors of slice 1", func(t *testing.T) {
+	t.Run("should fail with the same messages as the binding for the errors of these statements", func(t *testing.T) {
 		tests := []struct {
 			setup []string
 			sql   string
@@ -579,17 +679,23 @@ func TestShell(t *testing.T) {
 			{sql: `select "abc"`},
 		}
 
+		// The shell prints errors as "Error near line 3: message" or "Parse error near line 1: message",
+		// without the result code, so only the message is compared.
+		pattern := regexp.MustCompile(`(?m)near line \d+: (.*)$`)
 		for _, test := range tests {
 			c := memory(t)
 			for _, sql := range test.setup {
 				is.NotError(t, c.Exec(sql))
 			}
 			msg := message(t, c.Exec(test.sql))
+			is.True(t, msg != "", "empty message for "+test.sql)
 
 			script := strings.Join(append(test.setup, test.sql), ";\n") + ";\n"
 			_, stderr, err := shellExec(t, script)
 			is.True(t, err != nil, "shell exit status for "+test.sql)
-			is.True(t, strings.Contains(stderr, msg), fmt.Sprintf("shell error %q does not contain %q", stderr, msg))
+			match := pattern.FindStringSubmatch(stderr)
+			is.True(t, match != nil, "no error in shell output: "+stderr)
+			is.Equal(t, msg, match[1])
 		}
 	})
 }
@@ -600,31 +706,20 @@ func FuzzStmt_BindInt64(f *testing.F) {
 	f.Add(int64(math.MinInt64))
 	f.Add(int64(-1))
 
-	c, err := sqlite.Open(":memory:")
-	if err != nil {
-		f.Fatal(err)
-	}
-	f.Cleanup(func() { _ = c.Close() })
-	if err := c.Exec("create table t1 (v1 int primary key) strict, without rowid"); err != nil {
-		f.Fatal(err)
-	}
-
 	f.Fuzz(func(t *testing.T, v int64) {
+		c := memory(t)
+		is.NotError(t, c.Exec("create table t1 (v1 int primary key) strict, without rowid"))
+
 		// Store the value and read it back, so it is not only passed through.
 		insert := prepare(t, c, "insert into t1 (v1) values (?)")
 		is.NotError(t, insert.BindInt64(1, v))
-		// A value seen before fails as a duplicate key, and then finalizing reports the same error.
-		_, err := insert.Step()
-		if err != nil {
-			is.Equal(t, codeConstraintPrimary, code(t, err))
-			is.Equal(t, codeConstraintPrimary, code(t, insert.Finalize()))
-		} else {
-			is.NotError(t, insert.Finalize())
-		}
+		ok, err := insert.Step()
+		is.NotError(t, err)
+		is.True(t, !ok)
 
 		sel := prepare(t, c, "select v1, typeof(v1) = 'integer' from t1 where v1 = ?")
 		is.NotError(t, sel.BindInt64(1, v))
-		ok, err := sel.Step()
+		ok, err = sel.Step()
 		is.NotError(t, err)
 		is.True(t, ok)
 		is.Equal(t, sqlite.TypeInteger, sel.ColumnType(0))
@@ -644,22 +739,23 @@ func FuzzConn_Prepare(f *testing.F) {
 	f.Add("select \x00 1")
 	f.Add("create table t2 (v2 int primary key) strict, without rowid")
 	f.Add("insert into t1 (v1) values (1)")
+	f.Add("select * from t1")
 	f.Add("/* unterminated")
 	f.Add("select 'unterminated")
 	f.Add("")
 
-	c, err := sqlite.Open(":memory:")
-	if err != nil {
-		f.Fatal(err)
-	}
-	f.Cleanup(func() { _ = c.Close() })
-	if err := c.Exec("create table t1 (v1 int primary key) strict, without rowid"); err != nil {
-		f.Fatal(err)
-	}
-
 	f.Fuzz(func(t *testing.T, sql string) {
-		// Statements are prepared and inspected, not stepped, so that fuzzed SQL cannot run for long
-		// or change the schema.
+		// Statements are prepared and inspected, not stepped, so that fuzzed SQL cannot run for long.
+		// Some PRAGMAs act when prepared, so each input gets a new connection, and the PRAGMAs that
+		// change settings for the whole process are skipped.
+		lower := strings.ToLower(sql)
+		if strings.Contains(lower, "heap_limit") || strings.Contains(lower, "directory") {
+			t.Skip()
+		}
+
+		c := memory(t)
+		is.NotError(t, c.Exec("create table t1 (v1 int primary key) strict, without rowid"))
+
 		s, err := c.Prepare(sql)
 		if err != nil {
 			is.True(t, s == nil)
@@ -671,7 +767,7 @@ func FuzzConn_Prepare(f *testing.F) {
 			return
 		}
 
-		for i := -1; i <= s.ColumnCount(); i++ {
+		for i := range s.ColumnCount() {
 			_ = s.ColumnName(i)
 		}
 		for i := range 3 {
@@ -701,7 +797,7 @@ func prepare(t *testing.T, c *sqlite.Conn, sql string) *sqlite.Stmt {
 	t.Helper()
 	s, err := c.Prepare(sql)
 	is.NotError(t, err)
-	t.Cleanup(func() { is.NotError(t, s.Finalize()) })
+	t.Cleanup(func() { _ = s.Finalize() })
 	return s
 }
 
@@ -709,12 +805,14 @@ func prepare(t *testing.T, c *sqlite.Conn, sql string) *sqlite.Stmt {
 func query(t *testing.T, c *sqlite.Conn, sql string) []string {
 	t.Helper()
 	s := prepare(t, c, sql)
-	return rows(t, s)
+	r := rows(t, s)
+	is.NotError(t, s.Finalize())
+	return r
 }
 
 // rows of a statement, stepped to the end, each encoded as its values joined by commas, and each value
-// as its type and, for an integer, its decimal value. A value that is not an integer or NULL is
-// encoded by type alone, because the binding reads only integers.
+// as its type and, for an integer, its decimal value. A value of any other type than integer or NULL
+// fails the test, because the binding reads only integers.
 func rows(t *testing.T, s *sqlite.Stmt) []string {
 	t.Helper()
 	var rows []string
@@ -759,6 +857,29 @@ func message(t *testing.T, err error) string {
 	return sqliteErr.Message
 }
 
+// errorString of an error, failing the test if there is none.
+func errorString(t *testing.T, err error) string {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	return err.Error()
+}
+
+// panicMessage of f, failing the test if f does not panic.
+func panicMessage(t *testing.T, f func()) (msg string) {
+	t.Helper()
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected a panic")
+		}
+		msg = fmt.Sprint(r)
+	}()
+	f()
+	return ""
+}
+
 type manifest struct {
 	Version string            `json:"version"`
 	Files   map[string]string `json:"files_sha256"`
@@ -773,14 +894,10 @@ func readManifest(t *testing.T) manifest {
 	return m
 }
 
-var (
-	shellOnce sync.Once
-	shellDir  string
-	shellPath string
-	shellErr  error
-)
+// shellDir holds the sqlite3 shell built by [buildShell], if any.
+var shellDir string
 
-// TestMain removes the sqlite3 shell built by [shell], if any.
+// TestMain removes the sqlite3 shell built by [buildShell], if any.
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if shellDir != "" {
@@ -789,43 +906,41 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// shell builds the official sqlite3 shell from the vendored source, with the compile options in
+// buildShell builds the official sqlite3 shell from the vendored source, with the compile options in
 // options.h and the C compiler that cgo uses, once per test binary, and returns its path.
-func shell(t *testing.T) string {
-	t.Helper()
-	shellOnce.Do(func() {
-		shellDir, shellErr = os.MkdirTemp("", "s4ql-sqlite3-")
-		if shellErr != nil {
-			return
-		}
-		shellPath = filepath.Join(shellDir, "sqlite3")
-
-		cc, err := exec.Command("go", "env", "CC").Output()
-		if err != nil {
-			shellErr = err
-			return
-		}
-		args := strings.Fields(string(cc))
-		args = append(args, "-O2", "-include", "options.h", "-Ic", "-o", shellPath, "c/shell.c", "c/sqlite3.c", "-lm", "-lpthread")
-		out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
-		if err != nil {
-			shellErr = fmt.Errorf("%v: %w\n%s", strings.Join(args, " "), err, out)
-		}
-	})
-	if shellErr != nil {
-		t.Fatal("building the sqlite3 shell:", shellErr)
+var buildShell = sync.OnceValues(func() (string, error) {
+	var err error
+	shellDir, err = os.MkdirTemp("", "s4ql-sqlite3-")
+	if err != nil {
+		return "", err
 	}
-	return shellPath
-}
+	path := filepath.Join(shellDir, "sqlite3")
 
-// shellExec runs the sqlite3 shell on an in-memory database with the given script on stdin.
+	cc, err := exec.Command("go", "env", "CC").Output()
+	if err != nil {
+		return "", err
+	}
+	args := strings.Fields(string(cc))
+	args = append(args, "-O2", "-include", "options.h", "-Ic", "-o", path, "c/shell.c", "c/sqlite3.c", "-lm", "-lpthread")
+	if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("%v: %w\n%s", strings.Join(args, " "), err, out)
+	}
+	return path, nil
+})
+
+// shellExec runs the sqlite3 shell on an in-memory database with the given script on stdin, without
+// reading any sqliterc file.
 func shellExec(t *testing.T, script string) (string, string, error) {
 	t.Helper()
-	cmd := exec.Command(shell(t), "-batch", "-bail", "-noheader", "-list", ":memory:")
+	path, err := buildShell()
+	if err != nil {
+		t.Fatal("building the sqlite3 shell:", err)
+	}
+	cmd := exec.Command(path, "-batch", "-bail", "-noinit", "-noheader", "-list", ":memory:")
 	cmd.Stdin = strings.NewReader(script)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	return stdout.String(), stderr.String(), err
 }
 
