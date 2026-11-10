@@ -26,7 +26,7 @@ This document holds only what Markus and maragubot have explicitly agreed to wri
 
 - **Many databases per bucket.** Each database is a key prefix, so one S3 bucket can hold many databases. This enables one database per user, and it suits write-heavy workloads by spreading them across databases. The common case is still one database, meaning one prefix.
 - **ACID is per database.** Transactions are ACID within one database, and no transaction spans databases.
-- **Always a lease.** An instance must hold the database's lease to read or write, and there is no mode without it. The lease is recorded in the database's manifest, the object `manifest.json` under its prefix, and has a timeout. Every write renews it, and so does a periodic renewal.
+- **Always a lease.** An instance must hold the database's lease to read or write, and there is no mode without it. The lease is recorded in the database's manifest, the object `manifest.json` under its prefix, and has a timeout. Every write renews it, and so does a periodic renewal. By default the lease lasts 30 seconds and is renewed 20 seconds after the last renewal.
 - **The lease belongs to a running process.** The holder is identified by a random ID that the process holds in memory. A clean shutdown releases the lease; otherwise it times out.
 - **The holder keeps the lease.** While the holder keeps renewing the lease, no other instance can take it. Another instance gets the lease only after the holder has released it or it has timed out, and it waits or fails until then.
 - **Reads come from the local cache.** While an instance holds the lease, it reads from its local cache without contacting S3. Writes go to S3.
