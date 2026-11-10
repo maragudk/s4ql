@@ -10,7 +10,7 @@ Do not use your harness's internal or automatic memory for this project. Anythin
 
 The project is named s4ql, short for "simple storage service structured query language". It was first named sql4s3.
 
-- **Why:** Markus renamed it on 2026-11-10: "I updated the project name from sql4s3 to just s4ql". The module path is `maragu.dev/s4ql` and the repository is `maragudk/s4ql`.
+- **Why:** Markus renamed it on 2026-11-10: "I updated the project name from sql4s3 to just s4ql". The module path is `maragu.dev/s4ql` and the repository is `maragudk/s4ql`. Markus also bought the domain s4ql.com that day, and for now it only redirects to the repository on GitHub.
 - **How to apply:** write s4ql in everything new. The notes in `docs/research/` and the kickoff transcript in `docs/conversations/` still say sql4s3, and they mean this project.
 
 ### Be ambitious; do not argue from human effort
