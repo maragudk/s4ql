@@ -14,7 +14,6 @@ package sim
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -203,7 +202,7 @@ func (s *Scheduler) next() (next *task, done bool) {
 	t.parked = false
 	s.current = t
 	s.steps++
-	s.trace = append(s.trace, fmt.Sprintf("%v %v run %v", s.now, t.name, t.site))
+	s.trace = append(s.trace, fmt.Sprintf("%v %v resumes from %v", s.now, t.name, t.site))
 	return t, false
 }
 
@@ -383,20 +382,22 @@ func (s *Scheduler) Steps() int {
 
 // NewSemaphore with n permits. The name appears in the trace.
 func (s *Scheduler) NewSemaphore(name string, n int) Semaphore {
-	return &semaphore{s: s, name: name, free: n}
+	return &semaphore{s: s, name: name, n: n, free: n}
 }
 
 // semaphore of a [Scheduler].
 type semaphore struct {
 	s    *Scheduler
 	name string
+	// n is the number of permits.
+	n int
 	// free permits, guarded by the scheduler's mutex.
 	free int
 }
 
 func (m *semaphore) Acquire(ctx context.Context) error {
 	// The task parks even when a permit is free, so that the seed decides who gets it.
-	m.s.park(ctx, "acquire "+m.name, never, func() bool { return m.free > 0 || ctx.Err() != nil })
+	m.s.park(ctx, "acquire of "+m.name, never, func() bool { return m.free > 0 || ctx.Err() != nil })
 
 	m.s.mu.Lock()
 	defer m.s.mu.Unlock()
@@ -409,11 +410,15 @@ func (m *semaphore) Acquire(ctx context.Context) error {
 
 func (m *semaphore) Release(ctx context.Context) {
 	m.s.mu.Lock()
+	if m.free == m.n {
+		m.s.mu.Unlock()
+		panic("sim: release of a semaphore that is not held")
+	}
 	m.free++
 	at := m.s.now + m.s.jitter()
 	m.s.mu.Unlock()
 	// The task parks so that a task that waits for the permit can run before this one continues.
-	m.s.park(ctx, "release "+m.name, at, nil)
+	m.s.park(ctx, "release of "+m.name, at, nil)
 }
 
 // Free is a runtime that maps each method to the plain Go operation, with real goroutines that run
@@ -522,6 +527,6 @@ func (m freeSemaphore) Release(context.Context) {
 	select {
 	case <-m:
 	default:
-		panic(errors.New("sim: release of a semaphore that is not held"))
+		panic("sim: release of a semaphore that is not held")
 	}
 }

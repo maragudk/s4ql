@@ -294,3 +294,148 @@ Failing a run cleanly. The scheduler has to end every goroutine in the bubble or
 ### Future work
 
 A real harness needs more primitives than the spike has: a broadcast ("stopped") that waiters observe, and a pool. Both are conditions polled by the loop, like the semaphore.
+
+## Step 4: The toy library, run twice, run free, and with planted bugs
+
+**Author:** spike-builder
+
+### Prompt Context
+
+**Verbatim prompt:** The brief quoted in Step 2, questions 3 to 6.
+**Interpretation:** Build a small library with s4ql's moving parts on top of the runtime from Step 3, run it under the scheduler twice per seed and compare, run the same code with the scheduler off under the race detector, and plant a bug that only an interleaving finds.
+**Inferred intent:** See whether replay survives contact with code that has real locks, a background task, faults, and SQLite, and learn what each of the two modes can and cannot find.
+
+### What I did
+
+`/internal/sim/toy_test.go` holds the toy library and the simulated store. `/internal/sim/simulation_test.go` holds the workload, its invariant checks, and the tests.
+
+The toy library (`toyDB`) is plain blocking Go that knows the world only through an `env` interface, which both `*sim.Scheduler` and `*sim.Free` satisfy:
+
+- `Begin` takes the writer lock and runs `begin immediate` on the one write connection. `Set` writes a row. `Commit` uploads a change file named by its SHA-256, swaps the manifest under a second lock (the swap lock), and then commits the SQLite transaction. The writer lock is held for the whole interactive transaction, the swap lock only around the upload and swap, so that the renewal can run while a transaction is open.
+- `renewLoop` is a task that sleeps until 20 seconds after the last successful swap, then swaps the manifest under the swap lock. The lease lasts 30 seconds, measured from when the swap was sent.
+- `Read` takes a permit and a connection from a pool, begins, yields, reads the commit number (which fixes the snapshot), checks the lease deadline, yields, and reads the value.
+- A swap whose result is an error other than "precondition failed" is resolved by reading the manifest back.
+
+The simulated store (`memStore`) waits a random 1 to 50 ms before applying an operation and again before answering, and injects three faults: an error without applying (3% of operations), applying but reporting an error (3%), and a delay of 40 to 70 seconds (1%), which is longer than the lease.
+
+The workload is four callers with twelve transactions each, 35% writes, and up to 15 simulated seconds of thinking between transactions. It checks: a read that starts after a commit is acknowledged sees it; a read never sees a commit that the manifest does not have; the instance never loses its lease (there is no other instance); and at the end the manifest and the cache have exactly the acknowledged commits. A second workload, eight callers that never pause, is there to make tasks overlap.
+
+Three planted bugs sit behind flags in `toyDB`: `renewOutsideLock` (the renewal reads the ETag under the swap lock, releases the lock, then swaps), `cacheFirst` (the commit reaches the cache before the manifest), and `unlockedCounter` (a plain data race in `Read`).
+
+### Why
+
+The toy has to contain the things that make s4ql hard to replay: two locks held across I/O, a timer-driven background task that contends with callers, cancellation, real SQLite on several connections, and failures whose outcome is unknown. The planted bugs are the kinds the brief names: one is a pure ordering bug with no data race, so only an interleaving can find it.
+
+### What worked
+
+Run twice (`TestSimulation`), with `S4QL_SIM_SEEDS=10000`:
+
+```
+10000 seeds, each run twice: 0 pairs differed, 10000 distinct traces
+20000 runs in 54.155s, 369 runs per second, 134852 steps per second
+```
+
+No run violated an invariant. With the default 200 seeds the test also prints one hash over all traces, and that hash was identical in every setting I tried: plain on macOS, under `-race` on macOS, and under `-asan` on Linux arm64 in a container (`390db6fb36cda6a174adf9da9eb47106d58fa1db6c0ead6ee04bbdd0b3fa4fc2`, and `d2b6425918f00b85a9741bdc80824e79e69c023dea159217f7ab81e331d9939f` for the workload that never pauses). So the same seed gives the same run across processes, with and without race instrumentation, and across two operating systems.
+
+The runs are not trivial. In 200 seeds: 2781 commits, 255 failed commits, 326 rollbacks, 6188 reads of which 34 were overtaken by a commit while they ran, and 50 reads refused for an expired lease. In the workload that never pauses, 2719 of 10320 reads were overtaken.
+
+Planted bugs, over 10000 seeds:
+
+```
+1241 of 10000 seeds found the bug; the first are [2 19 22 28 34 39 51 54 57 60]     (renewOutsideLock)
+8383 of 10000 seeds found the bug; the first are [0 2 4 5 6 7 8 9 10 11]          (cacheFirst)
+```
+
+Each of the first seeds that found a bug was rerun five times and gave the same trace hash and the same violations every time. The trace of seed 2 shows the renewal bug as it happens:
+
+```
+1m55.179893193s renewer store swap manifest.json from v19: v21 <nil>
+1m55.194807999s caller-3 store swap manifest.json from v19:  precondition failed
+...
+1m55.238048994s caller-3 VIOLATION: commit of transaction 10: stopped: lease lost
+```
+
+Free-running mode (`TestFreeRunning`): the toy library runs with `sim.Free` without any change to its code, inside a bubble for the fake clock, and passes under `-race` with no violations.
+
+The race detector in the two modes (`TestPlantedDataRace`, `unlockedCounter`):
+
+- `S4QL_SIM_PLANT_RACE=scheduler go test -race ./internal/sim/ -run TestPlantedDataRace`: 50 seeds, `PASS`. The race is not reported, because every handover between tasks goes through the scheduler's channels and mutex, which the detector sees as synchronisation.
+- `S4QL_SIM_PLANT_RACE=free go test -race ...`: `WARNING: DATA RACE` at `toy_test.go:513` in the first run.
+
+Speed (`TestSimulationSpeed`, this machine, 10 cores, Apple silicon):
+
+```
+scheduler alone:                    320180 steps in 263ms, 1217657 steps per second
+toy library:                        300 runs in 824ms, 364 runs per second, 133251 steps per second, 366 steps per run
+toy library, synchronous = off:     300 runs in 654ms, 459 runs per second
+```
+
+Under `-race`: 134 runs per second, and the scheduler alone 139129 steps per second. Under `-asan` on Linux in the container: 71 runs per second. A CPU profile of 3000 runs (8.26 s of samples): 52% in `runtime.cgocall` (SQLite: opening and setting up the cache 21%, commits 17%, closing 7%, reads 6%), 35% in `pthread_cond_signal` and `pthread_cond_wait` (handing over between goroutines), 9% in system calls for the temporary directory. So SQLite and its files dominate, and the scheduler's own handover is the second cost.
+
+### What didn't work
+
+My first assertion for the `cacheFirst` bug was too narrow. It expected the stale-cache symptom, and some seeds showed the other symptom of the same bug:
+
+```
+simulation_test.go:336: seed 4 found something else: [12 commits were acknowledged, the manifest has 13, and the cache has 13]
+```
+
+The test now lists both symptoms.
+
+I expected the free-running mode to be unable to repeat a failure, and named a test "gives no seed that finds it again". The measurement said otherwise:
+
+```
+46 of 300 free runs found the bug; run again with the same seeds, 45 of those 46 found it
+```
+
+Inside a bubble, the fake clock orders most of a free run. With callers that pause, 4 to 7 of 200 seeds gave two different traces when run twice. With callers that never pause, 50 of 50 did. So free running on the fake clock usually repeats itself for a workload spread out in time, and never for one that is not. I renamed the test.
+
+I wanted the toy to show the `SQLITE_BUSY` finding from Step 2 with the scheduler off, and wrote a comment that explained why the fake clock would hide it and the real clock would show it. The measurement did not support the explanation, so I removed it:
+
+```
+with no busy timeout, in 2000 runs each: SQLITE_BUSY 0 times under the scheduler, 0 times with the scheduler off on the fake clock, and 0 times in 0 runs with the scheduler off on the real clock
+```
+
+The toy workload does not get `SQLITE_BUSY` in any mode. Only the tight loop in `TestSynctestWithCgo` does.
+
+A test of mine that the run-twice check catches map iteration order asserted that more than 40 of 50 seeds differ, and got exactly 41. A small Go map has few iteration orders, so about one pair in eight agrees by chance. The test now asserts that at least one pair differs.
+
+A `sync.Mutex` held while its holder waits hangs the run, and nothing reports it but the test timeout. `S4QL_SIM_HANG=1 go test ./internal/sim/ -run TestScheduler_mutexHeldAcrossWait -timeout 5s`:
+
+```
+panic: test timed out after 5s
+	running tests:
+		TestScheduler_mutexHeldAcrossWait (5s)
+...
+goroutine 7 [synctest.Wait (durable), synctest bubble 1]:
+internal/synctest.Wait()
+...
+goroutine 10 [sync.Mutex.Lock, synctest bubble 1]:
+internal/sync.runtime_SemacquireMutex(0x330e9dfc8960?, 0x8?, 0x330e9dec1ea8?)
+```
+
+That confirms what the design brief had only inferred.
+
+### What I learned
+
+- No pair of runs differed at any point while I built the toy, so I have no leak of nondeterminism to report from the scheduled mode. The choices that kept it out were made before the first run: the scheduler owns the clock and the locks, picks from names in sorted order, and hands out the only randomness. To see that the run-twice check works at all, I gave it a task that ranges over a map, and it failed as it should.
+- The scheduled mode hides data races from the race detector completely. The free mode is needed for that, and it found the planted one at once.
+- The free mode is weaker than I assumed at producing real overlap. On the fake clock, time moves only when every goroutine is blocked, so a goroutine that wakes from a wait often runs alone. It did not reproduce the one parallel-only effect I know of (`SQLITE_BUSY` on the write connection), on either clock. A tight stress test did.
+- The order in which the scheduler logs steps reads oddly at a release: the waiter can resume from its acquire before the releaser resumes from its release, because a release adds the permit and then waits. I changed the wording of trace lines to "resumes from" to make that clear.
+
+### What was tricky
+
+Deciding where the lock for manifest swaps sits. An interactive write transaction holds the writer lock across the caller's own steps, and the renewal must still run, so the swap needs its own lock. That is also where the realistic bug is.
+
+Writing invariants that hold in both modes. "A read that starts after an acknowledged commit sees it" is checked with a high-water mark that the committer stores after `Commit` returns and the reader loads before `Read` starts, which is valid with real parallelism too.
+
+### What warrants review
+
+- `/internal/sim/toy_test.go`, `toyDB.renew` and `toyTx.publish`: whether `renewOutsideLock` is a fair example of a realistic bug.
+- `/internal/sim/simulation_test.go`, `workload.run`: the invariants, and whether a check could pass for the wrong reason.
+- The speed numbers are from one machine and include `-shuffle` and coverage only where stated. Rerun with `go test ./internal/sim/ -run TestSimulationSpeed -v -count=1`.
+- To repeat the large runs: `S4QL_SIM_SEEDS=10000 go test ./internal/sim/ -run 'TestSimulation/' -count=1 -timeout 900s -v`.
+
+### Future work
+
+The free-running mode needs a workload built to overlap, on the real clock, if it is to find parallel-only problems. The spike's does not.

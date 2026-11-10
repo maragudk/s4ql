@@ -3,7 +3,9 @@ package sim_test
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -63,6 +65,29 @@ func TestScheduler_Run(t *testing.T) {
 		is.True(t, len(traces) > 150)
 	})
 
+	// The scheduler cannot make a task deterministic that is not. Running a seed twice is what
+	// catches it.
+	t.Run("should give different traces for the same seed when a task depends on the order of a map", func(t *testing.T) {
+		byMapOrder := func(ctx context.Context, s *sim.Scheduler) {
+			for name := range map[string]bool{"a": true, "b": true, "c": true, "d": true, "e": true, "f": true} {
+				s.Trace(ctx, "at %v", name)
+				s.Yield(ctx, "between")
+			}
+		}
+		var differing int
+		for seed := range uint64(50) {
+			first, err := schedule(t, seed, sim.Options{}, byMapOrder)
+			is.NotError(t, err)
+			second, err := schedule(t, seed, sim.Options{}, byMapOrder)
+			is.NotError(t, err)
+			if strings.Join(first.Lines(), "\n") != strings.Join(second.Lines(), "\n") {
+				differing++
+			}
+		}
+		t.Logf("%v of 50 seeds gave two different traces", differing)
+		is.True(t, differing > 0)
+	})
+
 	t.Run("should run exactly one task at a time", func(t *testing.T) {
 		for seed := range uint64(50) {
 			var running, most atomic.Int64
@@ -102,7 +127,7 @@ func TestScheduler_Run(t *testing.T) {
 				})
 			}
 		})
-		is.Equal(t, "deadlock: every task waits on a condition that is false: worker-0 at acquire b, worker-1 at acquire a", errorString(err))
+		is.Equal(t, "deadlock: every task waits on a condition that is false: worker-0 at acquire of b, worker-1 at acquire of a", errorString(err))
 	})
 
 	t.Run("should fail when a task blocks on something the scheduler does not know", func(t *testing.T) {
@@ -335,6 +360,27 @@ func TestScheduler_window(t *testing.T) {
 		}
 		t.Logf("%v of 1000 free runs found the race", found)
 	})
+}
+
+// TestScheduler_mutexHeldAcrossWait shows the one broken rule that the scheduler cannot report: a
+// sync.Mutex held while its holder waits. The task that wants the mutex is blocked, but not durably,
+// so synctest.Wait never returns and the test hangs until go test's timeout. It only runs when the
+// environment variable S4QL_SIM_HANG is set, with a short -timeout.
+func TestScheduler_mutexHeldAcrossWait(t *testing.T) {
+	if os.Getenv("S4QL_SIM_HANG") == "" {
+		t.Skip("S4QL_SIM_HANG is not set")
+	}
+	_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+		var mu sync.Mutex
+		for i := range 2 {
+			s.Go(ctx, fmt.Sprint("worker-", i), func(ctx context.Context) {
+				mu.Lock()
+				defer mu.Unlock()
+				is.NotError(t, s.Sleep(ctx, time.Hour))
+			})
+		}
+	})
+	is.NotError(t, err)
 }
 
 func TestFree(t *testing.T) {
