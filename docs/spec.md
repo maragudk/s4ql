@@ -28,7 +28,6 @@ Which SQL is supported today, and what comes next, is in the working document [r
 
 - **One write transaction at a time.** Per database, a second writer waits until the first has committed or rolled back.
 - **Reads run in parallel.** Each read transaction sees one consistent state of the cache, even while a write is in progress. The number of connections in the database pool sets how many reads run at once.
-- **State changes run on a single path.** Write transactions, the commit steps, lease renewal, and cache catch-up run on one path, written as a state machine that does no I/O itself: it receives events and answers with the next action. This is what lets the simulation replay a run exactly.
 
 ## Constraints
 
