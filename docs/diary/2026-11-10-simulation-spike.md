@@ -439,3 +439,110 @@ Writing invariants that hold in both modes. "A read that starts after an acknowl
 ### Future work
 
 The free-running mode needs a workload built to overlap, on the real clock, if it is to find parallel-only problems. The spike's does not.
+
+## Step 5: Self-review, and what it overturned
+
+**Author:** spike-builder
+
+### Prompt Context
+
+**Verbatim prompt:** From the builder's standing instructions: "Once the implementation is done, self-review before handing back to the lead. Work in two phases: first, review the code you wrote -- read the diff, check logic, look for missing edge cases and test coverage gaps; second, run automated checks (tests and linters). Be honest about real issues; if everything looks good, say so rather than inventing problems. Use the code-review skill for the first phase -- invoke it rather than reviewing inline; it dispatches competing reviewers over your diff. Address what you find, then report a summary of your review and any follow-up work back to the lead."
+**Interpretation:** Run the code-review skill over the branch, fix what the reviewers agree on and what is serious, and record what changed in the evidence.
+**Inferred intent:** A spike is only worth its evidence, so the evidence has to survive someone trying to knock it down.
+
+### What I did
+
+I ran the code-review skill. It sent two reviewers over `git diff main...HEAD`, each told that the other was competing. Both ran experiments through `go test -overlay` without touching the repository. They agreed on most findings, and several were serious. I then changed all six files in `/internal/sim`.
+
+Findings both reviewers made, and what I did:
+
+- **Context deadlines do not work under the scheduler.** The bubble's clock never moves, so `context.WithTimeout` never fires. An `Acquire` with a one-second timeout on a held semaphore was reported as a deadlock. Fixed as a run-time check: a wait with a context that has a deadline fails the run (`task main waits at sleep with a context that has a deadline, which simulated time does not reach`). The package comment now lists this and every other rule.
+- **The `go` statement check had a hole.** A goroutine started with `go` that carries its task's context could wait as that task while the task itself was blocked on a raw channel, and `Run` returned nil. Both reviewers reproduced it (100 of 100 and 300 of 300 runs). Fixed: each task records the ID of its goroutine, read from the first line of `runtime.Stack`, and a wait from any other goroutine fails the run. A failed wait now ends its goroutine with `runtime.Goexit` instead of a panic, so it also ends a goroutine that is not a task, and library code cannot recover from it.
+- **The toy had a real bug that I had not planted, and 20000 clean runs had not shown it.** `Close` cancels the renewal task. If the renewal's swap had already been applied in the store, the cancellation left the instance with a stale ETag, the release of the lease in `Close` failed with "precondition failed", and `Close` threw the error away. The workload checked for a lost lease only before `Close`. Both reviewers found it by reading traces (9 of 3000 and 14 of 6000 seeds).
+- **`TestSimulation` would crash on a nil outcome** if the scheduler failed, and a run that cannot finish while a periodic task keeps waking is not reported as a deadlock. The outcome is now allocated before the run. The error after `MaxSteps` now names the waiting tasks: `no end after 1000 steps; waiting: main at sleep, worker-0 at acquire of b, worker-1 at acquire of a`.
+- **The count for the planted renewal bug was inflated.** The buggy branch also skipped the code that resolves a swap whose outcome is unknown, so a lost acknowledgement alone produced "lease lost" with no race. About a fifth of the hits came that way. The buggy branch now differs from the correct one only in the lock.
+- **Weak or misnamed tests.** The `select` case of the timer test measured `select`, not timers, and is gone. The `SQLITE_BUSY` test in the toy compared three zeros. Subtests that only log are now named "should log ...". Subtest names in `cgo_test.go` and `timers_test.go` now start with "should".
+- **Smaller things:** `Sleep` overflowed for very long durations, `MaxSteps` was off by one, `sqliteCode` compared an extended result code with a primary one, `slow` and `openToy` leaked on error paths, the deadlock test leaked a directory and two connections on every run and accepted any panic, constants used once (`renewAfter`, `errLeaseHeld`, `slowSQL`, `codeBusy`) are inlined, and comments that named SQLite internals or repeated the identifier are reworded.
+
+Findings only one reviewer made that I acted on, because they bear on the evidence:
+
+- **The invariants compared counters and never data.** A reviewer changed `Set` to write the wrong key and uploaded empty change files, and every test still passed. The workload now keeps its own record of the writes of each acknowledged commit, follows the log from the manifest's head, checks every change file against its name and against that record, and compares the cache with what the log says.
+- **The `cacheFirst` bug was found mostly without any interleaving**, after a failed commit left the cache ahead for good. Its test now runs without faults, so only a read during a commit finds it.
+- The `S4QL_SIM_SEED` variable runs one seed and prints its trace (`TestSimulationSeed`).
+
+### Why
+
+The first three findings each mean that a claim I had written down in Step 3 or Step 4 was wrong or too strong: "the scheduler checks the `go` rule", "no run violated an invariant", and the count of seeds that find the renewal bug.
+
+### What worked
+
+Adding the missing invariant first, before fixing the toy, made the simulation find the cancellation bug on its own:
+
+```
+simulation_test.go:423: seed 480: close: stopped: lease lost
+```
+
+and `S4QL_SIM_SEED=480 go test ./internal/sim/ -run TestSimulationSeed -v` showed it step by step:
+
+```
+2m28.924902736s renewer of 2690e1c1a4f20fc3 store swap manifest.json from v33: applied with v34 context canceled, the request was abandoned: context canceled
+...
+2m28.959902736s main store swap manifest.json from v33:  precondition failed
+2m28.990272416s main VIOLATION: close: stopped: lease lost
+```
+
+The fix is one line in `toyDB.trySwap`: a swap that has been sent is seen through with `context.WithoutCancel`. After it, with `S4QL_SIM_SEEDS=10000`:
+
+```
+10000 seeds, each run twice: 0 pairs differed; 10000 distinct traces, and 10000 distinct orders of tasks
+in the first run of each seed: 3670687 steps, 137837 commits, 13305 failed commits, 16838 rollbacks, 309377 reads of which 2105 were overtaken by a commit, 2643 failed reads of which 2643 for an expired lease
+2500 seeds, each run twice: 0 pairs differed; 2500 distinct traces, and 2500 distinct orders of tasks      (callers that never pause)
+1051 of 10000 seeds found the bug; the first are [28 57 75 85 86 113 121 126 131 140]     (renewOutsideLock)
+1688 of 10000 seeds found the bug; the first are [5 6 8 18 25 26 29 34 35 37]             (cacheFirst, no faults)
+```
+
+These replace the numbers in Step 4. The hashes over the default 200 and 50 seeds are again the same in a plain run on macOS, under `-race` on macOS, and under `-asan` on Linux arm64: `1b4d378967de760c4405074d232efe7de4bb7d62f7cb6a02e5dd93f955c01011` and `072ad0ec935f44cd7b49858622ed3c806a1cf7c0d9b8c3c7f2cd7f5221648779`.
+
+The `SQLITE_BUSY` claim now has a control. `TestSchedulerWithSQLiteLocks` runs one writer and eight readers in loops without pauses and without a busy timeout. Under the scheduler, the writer got `SQLITE_BUSY` 0 times in 10 seeds of 1000 transactions, which the test asserts. With the scheduler off, the same code got it 70 times in 10000 transactions in a plain run and 16 times under `-race`. Under `-asan` on Linux it got 0, so the control does not fire everywhere.
+
+The goroutine check costs speed. Before it: 364 runs per second, and 1217657 steps per second for the scheduler alone. With it: 227 runs per second, and 253130 steps per second. That is about 3 microseconds per wait for `runtime.Stack`.
+
+At the end: `make test` and `make lint` pass, `go test -race -shuffle on ./internal/sim/` passes in 42 s, and `go test -asan ./internal/sim/` passes in the Linux container in 98 s.
+
+### What didn't work
+
+After the fix, a seed of the planted renewal bug showed a symptom my test did not expect:
+
+```
+simulation_test.go:487: seed 270 found something else: [the lease is still held by c970e475171c0163 after the close]
+```
+
+The renewal task is still running while the workload checks the end state, so the instance can stop after the check for "stopped" and before `Close`. The workload now looks at why the instance stopped after `Close`, not before.
+
+My first version of the trace line for an abandoned store operation printed the wrong error twice (`applied with v34 context canceled`), because the error of the wait shadowed the error of the operation. Fixed.
+
+Findings I did not act on, with the reason:
+
+- `is.*` assertions are called inside tasks, which are not the test's goroutine, and they call `t.FailNow`. Both reviewers flagged it. `maragu.dev/is` has no assertion that does not stop, and a failed one ends only its task, which the scheduler then counts as returned. I left it.
+- Four test files have no source file of the same name (`cgo_test.go`, `timers_test.go`, `toy_test.go`, `simulation_test.go`), against the project's rule. The brief asked for the toy library as test code, and one file for all of it would be 1800 lines. I left it.
+- `Run` takes no context, and the two runtimes differ in what `Acquire` does when a permit is free and the context is already done. One reviewer each. Left.
+
+### What I learned
+
+- The simulation finds what its invariants look at and nothing else. The scheduler produced the interleaving of the cancellation bug in a few seeds in every thousand, so it happened dozens of times in the 20000 runs that I had called clean, but no check looked after `Close`. The checker needs as much scrutiny as the code under test, and planted bugs are how to give it that: each one is a test of the checker.
+- A rule that the scheduler "checks" has to be attacked before it is believed. My test for the `go` rule covered the one shape my implementation caught.
+- Counting how many seeds find a planted bug says little unless the bug has exactly one cause.
+
+### What was tricky
+
+Ending a goroutine that is not a task. A panic would crash the test binary unless every stray goroutine recovered, and library code that recovers panics would swallow it. `runtime.Goexit` does neither, and runs deferred calls, so semaphores are released on the way out.
+
+### What warrants review
+
+- `/internal/sim/sim.go`, `Scheduler.park`: the three checks and their order, and `goroutineID`, which depends on the format of the first line of a stack trace.
+- `/internal/sim/simulation_test.go`, `outcome.verify`: whether the model check could still pass for a wrong log or cache.
+- The numbers in Step 4 for the planted bugs and for speed are superseded by the ones here.
+
+### Future work
+
+A lint or a test over the syntax tree that forbids `go` statements, the `time` package's clock and timers, `context.WithTimeout` and `context.WithDeadline`, `sync.Cond`, and `sync.WaitGroup` in library packages would cover the rules that the scheduler sees only when the offending code runs, and the two it never sees. With it, the goroutine check could be switched off and its cost saved.

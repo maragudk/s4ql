@@ -3,7 +3,9 @@ package sim_test
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -102,6 +104,8 @@ func TestScheduler_Run(t *testing.T) {
 									break
 								}
 							}
+							// Give any other goroutine that is running the time to be counted too.
+							runtime.Gosched()
 							running.Add(-1)
 							s.Yield(ctx, "between")
 						}
@@ -158,31 +162,72 @@ func TestScheduler_Run(t *testing.T) {
 		})
 	})
 
-	t.Run("should fail when a task starts a goroutine with a go statement that then waits", func(t *testing.T) {
+	t.Run("should fail when a goroutine started with a go statement waits while its task waits too", func(t *testing.T) {
 		for range 100 {
-			synctest.Test(t, func(t *testing.T) {
-				s := sim.New(1, sim.Options{})
-				err := s.Run(func(ctx context.Context) {
-					go func() {
-						// The goroutine is not a task of its own, so the failure reaches it as a panic.
-						defer func() { _ = recover() }()
-						s.Yield(ctx, "in the goroutine")
-					}()
-					s.Yield(ctx, "after go")
-				})
-				is.True(t, strings.HasPrefix(errorString(err), "task main reached "), errorString(err))
-				is.True(t, strings.HasSuffix(errorString(err), " without the scheduler having run it"), errorString(err))
+			_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+				go s.Yield(ctx, "in the goroutine")
+				s.Yield(ctx, "after go")
 			})
+			is.Equal(t, "task main waits at in the goroutine in a goroutine that is not its own", errorString(err))
 		}
 	})
 
-	t.Run("should fail after the maximum number of steps", func(t *testing.T) {
+	t.Run("should fail when a goroutine started with a go statement waits while its task waits for it on a channel", func(t *testing.T) {
+		for range 100 {
+			_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					s.Yield(ctx, "in the goroutine")
+				}()
+				<-done
+				s.Yield(ctx, "after the goroutine")
+			})
+			is.Equal(t, "task main waits at in the goroutine in a goroutine that is not its own", errorString(err))
+		}
+	})
+
+	t.Run("should fail when a task waits with a context that has a deadline", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			ctx, cancel := context.WithTimeout(ctx, time.Second)
+			defer cancel()
+			_ = s.Sleep(ctx, time.Hour)
+		})
+		is.Equal(t, "task main waits at sleep with a context that has a deadline, which simulated time does not reach", errorString(err))
+	})
+
+	t.Run("should fail after the maximum number of steps, with the tasks that wait", func(t *testing.T) {
 		_, err := schedule(t, 1, sim.Options{MaxSteps: 100}, func(ctx context.Context, s *sim.Scheduler) {
 			for {
 				s.Yield(ctx, "forever")
 			}
 		})
-		is.Equal(t, "no end after 100 steps", errorString(err))
+		is.Equal(t, "no end after 100 steps; waiting: main at forever", errorString(err))
+	})
+
+	t.Run("should not fail when the run ends with the last allowed step", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{MaxSteps: 1}, func(context.Context, *sim.Scheduler) {})
+		is.NotError(t, err)
+	})
+
+	// A task that wakes on time for ever keeps the run from being a deadlock of every task, so two
+	// tasks that block each other are only found by the limit on steps.
+	t.Run("should name tasks that deadlock while another task keeps waking, after the maximum number of steps", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{MaxSteps: 1000}, func(ctx context.Context, s *sim.Scheduler) {
+			a, b := s.NewSemaphore("a", 1), s.NewSemaphore("b", 1)
+			for i, order := range [][]sim.Semaphore{{a, b}, {b, a}} {
+				s.Go(ctx, fmt.Sprint("worker-", i), func(ctx context.Context) {
+					_ = order[0].Acquire(ctx)
+					defer order[0].Release(ctx)
+					_ = s.Sleep(ctx, time.Second)
+					_ = order[1].Acquire(ctx)
+				})
+			}
+			for {
+				_ = s.Sleep(ctx, time.Minute)
+			}
+		})
+		is.Equal(t, "no end after 1000 steps; waiting: main at sleep, worker-0 at acquire of b, worker-1 at acquire of a", errorString(err))
 	})
 }
 
@@ -193,7 +238,7 @@ func TestScheduler_Sleep(t *testing.T) {
 			for _, hours := range []int{3, 1, 2} {
 				s.Go(ctx, fmt.Sprint("sleeper-", hours), func(ctx context.Context) {
 					is.NotError(t, s.Sleep(ctx, time.Duration(hours)*time.Hour))
-					s.Trace(ctx, "woke at %v", s.Now().Sub(sim.Epoch))
+					s.Trace(ctx, "woke at %v", s.Now().Sub(sim.Epoch()))
 				})
 			}
 		})
@@ -237,11 +282,60 @@ func TestScheduler_Sleep(t *testing.T) {
 			ctx, cancel := context.WithCancel(ctx)
 			sleeper := s.Go(ctx, "sleeper", func(ctx context.Context) {
 				is.Error(t, context.Canceled, s.Sleep(ctx, time.Hour))
-				is.Equal(t, time.Second, s.Now().Sub(sim.Epoch))
+				is.Equal(t, time.Second, s.Now().Sub(sim.Epoch()))
 			})
 			is.NotError(t, s.Sleep(ctx, time.Second))
 			cancel()
 			is.NotError(t, sleeper.Wait(context.WithoutCancel(ctx)))
+		})
+		is.NotError(t, err)
+	})
+
+	t.Run("should sleep until the context is done when the duration is longer than simulated time can hold", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			is.NotError(t, s.Sleep(ctx, time.Second))
+
+			sleepCtx, cancel := context.WithCancel(ctx)
+			sleeper := s.Go(sleepCtx, "sleeper", func(ctx context.Context) {
+				is.Error(t, context.Canceled, s.Sleep(ctx, math.MaxInt64))
+				is.Equal(t, time.Hour+time.Second, s.Now().Sub(sim.Epoch()))
+			})
+			is.NotError(t, s.Sleep(ctx, time.Hour))
+			cancel()
+			is.NotError(t, sleeper.Wait(ctx))
+		})
+		is.NotError(t, err)
+	})
+}
+
+func TestScheduler_Go(t *testing.T) {
+	t.Run("should return a task whose wait fails with the context's error when the context is done first", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			sleeper := s.Go(ctx, "sleeper", func(ctx context.Context) {
+				is.NotError(t, s.Sleep(ctx, time.Hour))
+			})
+
+			waitCtx, cancel := context.WithCancel(ctx)
+			canceller := s.Go(ctx, "canceller", func(ctx context.Context) {
+				is.NotError(t, s.Sleep(ctx, time.Second))
+				cancel()
+			})
+			is.Error(t, context.Canceled, sleeper.Wait(waitCtx))
+			is.Equal(t, time.Second, s.Now().Sub(sim.Epoch()))
+
+			is.NotError(t, canceller.Wait(ctx))
+			is.NotError(t, sleeper.Wait(ctx))
+			is.Equal(t, time.Hour, s.Now().Sub(sim.Epoch()))
+		})
+		is.NotError(t, err)
+	})
+
+	t.Run("should panic when a running task has the name already", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			defer func() {
+				is.Equal(t, "sim: a task named main is already running", fmt.Sprint(recover()))
+			}()
+			s.Go(ctx, "main", func(context.Context) {})
 		})
 		is.NotError(t, err)
 	})
@@ -346,7 +440,9 @@ func TestScheduler_window(t *testing.T) {
 		is.True(t, found > 0)
 	})
 
-	t.Run("can find the race without a yield when tasks run in parallel, but not on demand", func(t *testing.T) {
+	// With the scheduler off the race can happen, but rarely and not on demand, so this only logs how
+	// often it did.
+	t.Run("should log how often tasks that run in parallel find the race without a yield", func(t *testing.T) {
 		var found int
 		for seed := range uint64(1000) {
 			synctest.Test(t, func(t *testing.T) {
@@ -362,10 +458,10 @@ func TestScheduler_window(t *testing.T) {
 	})
 }
 
-// TestScheduler_mutexHeldAcrossWait shows the one broken rule that the scheduler cannot report: a
-// sync.Mutex held while its holder waits. The task that wants the mutex is blocked, but not durably,
-// so synctest.Wait never returns and the test hangs until go test's timeout. It only runs when the
-// environment variable S4QL_SIM_HANG is set, with a short -timeout.
+// TestScheduler_mutexHeldAcrossWait shows a broken rule that hangs the run: a sync.Mutex held while
+// its holder waits. The task that wants the mutex is blocked, but not durably, so synctest.Wait
+// never returns and the test hangs until go test's timeout. It only runs when the environment
+// variable S4QL_SIM_HANG is set, with a short -timeout.
 func TestScheduler_mutexHeldAcrossWait(t *testing.T) {
 	if os.Getenv("S4QL_SIM_HANG") == "" {
 		t.Skip("S4QL_SIM_HANG is not set")
@@ -396,8 +492,35 @@ func TestFree(t *testing.T) {
 				sleeper := r.Go(ctx, "sleeper", func(ctx context.Context) {
 					is.Error(t, context.Canceled, r.Sleep(ctx, time.Hour))
 				})
+				// The sleeper is asleep before the context is cancelled.
+				synctest.Wait()
 				cancel()
 				is.NotError(t, sleeper.Wait(context.WithoutCancel(ctx)))
+				is.Equal(t, time.Hour, r.Now().Sub(start))
+			}))
+		})
+	})
+
+	t.Run("should return the context's error from a wait for a task or a permit when the context is done first", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			r := sim.NewFree(1)
+			is.NotError(t, r.Run(func(ctx context.Context) {
+				m := r.NewSemaphore("m", 1)
+				is.NotError(t, m.Acquire(ctx))
+				sleeper := r.Go(ctx, "sleeper", func(ctx context.Context) {
+					is.NotError(t, r.Sleep(ctx, time.Hour))
+				})
+
+				waitCtx, cancel := context.WithCancel(ctx)
+				waiter := r.Go(ctx, "waiter", func(ctx context.Context) {
+					is.Error(t, context.Canceled, m.Acquire(waitCtx))
+					is.Error(t, context.Canceled, sleeper.Wait(waitCtx))
+				})
+				// The waiter waits for the permit before the context is cancelled.
+				synctest.Wait()
+				cancel()
+				is.NotError(t, waiter.Wait(ctx))
+				m.Release(ctx)
 			}))
 		})
 	})

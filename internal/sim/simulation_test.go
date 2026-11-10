@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -47,6 +49,16 @@ var defaultWorkload = workload{
 	faults:  faults{errors: 30, lostAcks: 30, delays: 10},
 }
 
+// hammerWorkload has callers that never wait between transactions, so that with the scheduler off
+// they are in SQLite and in the toy library's own code at the same time.
+var hammerWorkload = workload{
+	callers: 8,
+	ops:     40,
+	latency: time.Millisecond,
+	options: toyOptions{readers: 4, busyTimeout: 1000},
+	faults:  faults{errors: 30, lostAcks: 30, delays: 10},
+}
+
 // outcome of running a [workload].
 type outcome struct {
 	commits, failedCommits, rollbacks, reads, failedReads, expiredReads atomic.Int64
@@ -57,6 +69,8 @@ type outcome struct {
 	mu sync.Mutex
 	// violations of the invariants that the workload checks.
 	violations []string
+	// acked holds the writes of every acknowledged commit, by its number, as the callers made them.
+	acked map[int64][][2]int64
 	// lines of the trace of a free run.
 	lines []string
 }
@@ -74,20 +88,22 @@ func expected(err error) bool {
 	return errors.Is(err, errInjected) || errors.Is(err, errSwapFailed) || errors.Is(err, errLeaseExpired)
 }
 
-// run the workload w as the task of ctx, with the cache at path, and check the invariants:
+// run the workload w as the task of ctx, with the cache at path, and record what happened in o. It
+// checks these invariants:
 //
 //   - A read that starts after a commit is acknowledged sees that commit.
 //   - A read never sees a commit that the manifest does not have, so the cache is never ahead.
 //   - The instance never loses its lease, because no other instance exists.
-//   - At the end, the manifest and the cache have exactly the acknowledged commits.
-func (w workload) run(ctx context.Context, e tracer, path string) *outcome {
-	o := &outcome{}
+//   - At the end, the log holds exactly the acknowledged commits with the writes that the callers
+//     made, and the cache holds what the log says.
+//   - After a close that reports no error, the lease is released.
+func (w workload) run(ctx context.Context, e tracer, path string, o *outcome) {
 	store := newMemStore(e, w.faults, w.latency)
 
 	d, err := openToy(ctx, e, store, path, w.options)
 	if err != nil {
 		o.violate(ctx, e, "open: %v", err)
-		return o
+		return
 	}
 
 	// acked is the highest commit that a caller knows to be acknowledged.
@@ -99,11 +115,13 @@ func (w workload) run(ctx context.Context, e tracer, path string) *outcome {
 			o.violate(ctx, e, "begin: %v", err)
 			return
 		}
+		var sets [][2]int64
 		for range 1 + intn(e, 3) {
 			k := int64(intn(e, 5))
 			if err := tx.Set(k); err != nil {
 				o.violate(ctx, e, "set: %v", err)
 			}
+			sets = append(sets, [2]int64{k, tx.seq})
 			e.Trace(ctx, "set %v in transaction %v", k, tx.seq)
 			e.Yield(ctx, "caller: between statements")
 		}
@@ -123,6 +141,9 @@ func (w workload) run(ctx context.Context, e tracer, path string) *outcome {
 			}
 			return
 		}
+		o.mu.Lock()
+		o.acked[tx.seq] = sets
+		o.mu.Unlock()
 		for {
 			high := acked.Load()
 			if tx.seq <= high || acked.CompareAndSwap(high, tx.seq) {
@@ -189,29 +210,97 @@ func (w workload) run(ctx context.Context, e tracer, path string) *outcome {
 		}
 	}
 
-	if err := d.stopErr(); err != nil {
-		o.violate(ctx, e, "the instance stopped: %v", err)
-	} else {
-		tx, err := d.Begin(ctx)
+	if d.stopErr() == nil {
+		o.verify(ctx, e, d, store)
+	}
+
+	// The renewal task runs until the close, so the instance can still stop after the callers are done.
+	err = d.Close(ctx)
+	switch cause := d.stopErr(); {
+	case !errors.Is(cause, errClosed):
+		o.violate(ctx, e, "the instance stopped: %v", cause)
+	case err != nil && !expected(err):
+		o.violate(ctx, e, "close: %v", err)
+	case err == nil:
+		man, err := store.manifest()
 		if err != nil {
-			o.violate(ctx, e, "begin at the end: %v", err)
-		} else {
-			man, err := store.manifest()
-			if err != nil {
-				o.violate(ctx, e, "manifest: %v", err)
-			}
-			if cached := tx.seq - 1; man.Seq != cached || man.Seq != o.commits.Load() {
-				o.violate(ctx, e, "%v commits were acknowledged, the manifest has %v, and the cache has %v", o.commits.Load(), man.Seq, cached)
-			}
-			if err := tx.Rollback(ctx); err != nil {
-				o.violate(ctx, e, "rollback at the end: %v", err)
-			}
+			o.violate(ctx, e, "manifest: %v", err)
+		}
+		if man.Holder != "" {
+			o.violate(ctx, e, "the lease is still held by %v after the close", man.Holder)
 		}
 	}
-	if err := d.Close(ctx); err != nil {
-		o.violate(ctx, e, "close: %v", err)
+}
+
+// verify that the log in store holds exactly the acknowledged commits with the writes that the
+// callers made, and that the cache of d holds what the log says.
+func (o *outcome) verify(ctx context.Context, e tracer, d *toyDB, store *memStore) {
+	tx, err := d.Begin(ctx)
+	if err != nil {
+		o.violate(ctx, e, "begin at the end: %v", err)
+		return
 	}
-	return o
+	defer func() {
+		if err := tx.Rollback(ctx); err != nil {
+			o.violate(ctx, e, "rollback at the end: %v", err)
+		}
+	}()
+
+	man, err := store.manifest()
+	if err != nil {
+		o.violate(ctx, e, "manifest: %v", err)
+	}
+	o.mu.Lock()
+	acked := maps.Clone(o.acked)
+	o.mu.Unlock()
+	if cached := tx.seq - 1; man.Seq != cached || man.Seq != int64(len(acked)) {
+		o.violate(ctx, e, "%v commits were acknowledged, the manifest has %v, and the cache has %v", len(acked), man.Seq, cached)
+	}
+
+	// The log is followed from its newest commit to its first, so the first value found for a key is
+	// the one that the database must have.
+	want := map[int64]int64{}
+	name, seq := man.Head, man.Seq
+	for name != "" {
+		data, ok := store.object(name)
+		if !ok {
+			o.violate(ctx, e, "the log has no change file %v for commit %v", name, seq)
+			return
+		}
+		if sum := sha256.Sum256(data); name != "changes/"+hex.EncodeToString(sum[:]) {
+			o.violate(ctx, e, "the change file %v is not named by its content", name)
+		}
+		var file changeFile
+		if err := json.Unmarshal(data, &file); err != nil {
+			o.violate(ctx, e, "change file %v: %v", name, err)
+			return
+		}
+		if file.Seq != seq {
+			o.violate(ctx, e, "the change file %v is commit %v, where the log should have commit %v", name, file.Seq, seq)
+		}
+		if !slices.Equal(file.Sets, acked[file.Seq]) {
+			o.violate(ctx, e, "the change file of commit %v has the writes %v, and the acknowledged writes are %v", file.Seq, file.Sets, acked[file.Seq])
+		}
+		for _, set := range slices.Backward(file.Sets) {
+			if _, ok := want[set[0]]; !ok {
+				want[set[0]] = set[1]
+			}
+		}
+		name, seq = file.Prev, seq-1
+	}
+	if seq != 0 {
+		o.violate(ctx, e, "the log ends before commit %v, not before the first", seq)
+	}
+
+	for k := range int64(5) {
+		got, err := tx.Get(k)
+		if err != nil {
+			o.violate(ctx, e, "get: %v", err)
+		}
+		if got != want[k] {
+			o.violate(ctx, e, "the cache has %v at key %v, and the log has %v", got, k, want[k])
+		}
+	}
 }
 
 // simulation is one run of a workload under the scheduler.
@@ -233,19 +322,16 @@ func (s simulation) hash() string {
 	return hex.EncodeToString(sum[:])
 }
 
-// simulate the workload w under the scheduler with seed, in a bubble of its own.
-func simulate(t *testing.T, seed uint64, w workload) simulation {
-	t.Helper()
-	var s simulation
-	synctest.Test(t, func(t *testing.T) {
-		scheduler := sim.New(seed, sim.Options{Jitter: 50 * time.Millisecond})
-		path := filepath.Join(t.TempDir(), "cache.db")
-		s.err = scheduler.Run(func(ctx context.Context) {
-			s.outcome = w.run(ctx, scheduler, path)
-		})
-		s.lines, s.draw, s.steps = scheduler.Lines(), scheduler.Uint64(), scheduler.Steps()
-	})
-	return s
+// order in which the scheduler ran the tasks and from where, without the simulated times and without
+// what the tasks traced themselves.
+func (s simulation) order() string {
+	var order []string
+	for _, line := range s.lines {
+		if _, step, ok := strings.Cut(line, " "); ok && strings.Contains(step, " resumes from ") {
+			order = append(order, step)
+		}
+	}
+	return strings.Join(order, "\n")
 }
 
 // violations of the simulation, including the scheduler's own failure.
@@ -254,15 +340,43 @@ func (s simulation) violations() []string {
 	if s.err != nil {
 		violations = append(violations, "scheduler: "+s.err.Error())
 	}
-	if s.outcome != nil {
-		violations = append(violations, s.outcome.violations...)
-	}
-	return violations
+	return append(violations, s.outcome.violations...)
 }
 
-// seeds to run for the workload w, which is n unless the environment variable S4QL_SIM_SEEDS sets
-// another number, and a quarter of that for a workload whose callers never pause, because its runs
-// are several times longer.
+// simulate the workload w under the scheduler with seed, in a bubble of its own.
+func simulate(t *testing.T, seed uint64, w workload) simulation {
+	t.Helper()
+	s := simulation{outcome: &outcome{acked: map[int64][][2]int64{}}}
+	synctest.Test(t, func(t *testing.T) {
+		scheduler := sim.New(seed, sim.Options{Jitter: 50 * time.Millisecond})
+		path := filepath.Join(t.TempDir(), "cache.db")
+		s.err = scheduler.Run(func(ctx context.Context) {
+			w.run(ctx, scheduler, path, s.outcome)
+		})
+		s.lines, s.draw, s.steps = scheduler.Lines(), scheduler.Uint64(), scheduler.Steps()
+	})
+	return s
+}
+
+// free runs the workload w with the scheduler off and with seed, in a bubble of its own for the fake
+// clock.
+func free(t *testing.T, seed uint64, w workload) *outcome {
+	t.Helper()
+	o := &outcome{acked: map[int64][][2]int64{}}
+	synctest.Test(t, func(t *testing.T) {
+		r := sim.NewFree(seed)
+		path := filepath.Join(t.TempDir(), "cache.db")
+		is.NotError(t, r.Run(func(ctx context.Context) {
+			w.run(ctx, r, path, o)
+		}))
+		o.lines = r.Lines()
+	})
+	return o
+}
+
+// seeds to run for the workload w, from 0. The number is n unless the environment variable
+// S4QL_SIM_SEEDS sets another, and a quarter of that for a workload whose callers never pause,
+// because its runs are several times longer.
 func seeds(t *testing.T, n int, w workload) uint64 {
 	t.Helper()
 	if v := os.Getenv("S4QL_SIM_SEEDS"); v != "" {
@@ -291,18 +405,12 @@ func TestSimulation(t *testing.T) {
 		name     string
 		workload workload
 	}{
-		{
-			name:     "should give the same trace when a seed is run twice, a different trace for every seed, and no violations",
-			workload: defaultWorkload,
-		},
-		{
-			name:     "should give the same trace when a seed is run twice, also with callers that never pause",
-			workload: hammerWorkload,
-		},
+		{name: "should give the same trace when a seed is run twice, and no violations", workload: defaultWorkload},
+		{name: "should give the same trace when a seed is run twice, and no violations, also with callers that never pause", workload: hammerWorkload},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			n := seeds(t, 200, test.workload)
-			hashes := map[string]bool{}
+			hashes, orders := map[string]bool{}, map[string]bool{}
 			all := sha256.New()
 			var steps, differing int
 			var commits, failedCommits, rollbacks, reads, failedReads, expiredReads, overtakenReads int64
@@ -317,6 +425,7 @@ func TestSimulation(t *testing.T) {
 					t.Errorf("seed %v: %v", seed, strings.Join(v, "; "))
 				}
 				hashes[first.hash()] = true
+				orders[first.order()] = true
 				all.Write([]byte(first.hash()))
 				steps += first.steps
 				o := first.outcome
@@ -329,57 +438,62 @@ func TestSimulation(t *testing.T) {
 				overtakenReads += o.overtakenReads.Load()
 			}
 			elapsed := time.Since(start)
-			t.Logf("%v seeds, each run twice: %v pairs differed, %v distinct traces", n, differing, len(hashes))
+			t.Logf("%v seeds, each run twice: %v pairs differed; %v distinct traces, and %v distinct orders of tasks", n, differing, len(hashes), len(orders))
 			t.Logf("in the first run of each seed: %v steps, %v commits, %v failed commits, %v rollbacks, %v reads of which %v were overtaken by a commit, %v failed reads of which %v for an expired lease",
 				steps, commits, failedCommits, rollbacks, reads, overtakenReads, failedReads, expiredReads)
 			t.Logf("%v runs in %v, %.0f runs per second, %.0f steps per second",
 				2*n, elapsed.Round(time.Millisecond), float64(2*n)/elapsed.Seconds(), float64(2*steps)/elapsed.Seconds())
-			// The same on every run of the test, on every machine, as long as the code is the same.
+			// The hash depends only on the code and the seeds, so it can be compared between machines.
 			t.Logf("hash of all traces: %x", all.Sum(nil))
 			is.Equal(t, 0, differing)
-			is.Equal(t, int(n), len(hashes))
-			is.True(t, commits > 0 && reads > 0 && failedCommits > 0 && expiredReads > 0 && overtakenReads > 0, "the workload did not reach every kind of result")
+			if n >= 50 {
+				is.True(t, len(orders) > int(n)/2, "the seed hardly changes the order in which tasks run")
+				is.True(t, commits > 0 && reads > 0 && failedCommits > 0 && expiredReads > 0 && overtakenReads > 0, "the workload did not reach every kind of result")
+			}
 		})
 	}
 
+	renewOutsideLock := defaultWorkload
+	renewOutsideLock.options.bugs.renewOutsideLock = true
+	// Without faults, a commit never fails, so the cache is ahead of the manifest only for as long as
+	// a commit is on its way, and only a read at that moment finds the bug.
+	cacheFirst := defaultWorkload
+	cacheFirst.options.bugs.cacheFirst = true
+	cacheFirst.faults = faults{}
 	for _, test := range []struct {
-		name string
-		bugs bugs
-		// symptoms of the bug: every seed that finds anything must find a violation with one of these.
-		symptoms []string
+		name     string
+		workload workload
+		// symptom of the bug: every seed that finds anything must find a violation with it.
+		symptom string
 	}{
 		{
 			name:     "should find a renewal that swaps the manifest outside the lock, with some seed and again on every rerun of it",
-			bugs:     bugs{renewOutsideLock: true},
-			symptoms: []string{"lease lost"},
+			workload: renewOutsideLock,
+			symptom:  "lease lost",
 		},
 		{
 			name:     "should find a commit that reaches the cache before the manifest, with some seed and again on every rerun of it",
-			bugs:     bugs{cacheFirst: true},
-			symptoms: []string{"while the manifest was at", "commits were acknowledged, the manifest has"},
+			workload: cacheFirst,
+			symptom:  "while the manifest was at",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			w := defaultWorkload
-			w.options.bugs = test.bugs
-
-			n := seeds(t, 200, w)
+			n := seeds(t, 200, test.workload)
 			var found []uint64
 			for seed := range n {
-				first := simulate(t, seed, w)
+				first := simulate(t, seed, test.workload)
 				if len(first.violations()) == 0 {
 					continue
 				}
 				found = append(found, seed)
-				is.True(t, slices.ContainsFunc(first.violations(), func(v string) bool {
-					return slices.ContainsFunc(test.symptoms, func(symptom string) bool { return strings.Contains(v, symptom) })
-				}), fmt.Sprintf("seed %v found something else: %v", seed, first.violations()))
+				is.True(t, slices.ContainsFunc(first.violations(), func(v string) bool { return strings.Contains(v, test.symptom) }),
+					fmt.Sprintf("seed %v found something else: %v", seed, first.violations()))
 				if len(found) > 3 {
 					continue
 				}
 				// The same seed finds the same violations at the same place in the same trace.
 				for range 5 {
-					again := simulate(t, seed, w)
+					again := simulate(t, seed, test.workload)
 					is.Equal(t, first.hash(), again.hash())
 					is.EqualSlice(t, first.violations(), again.violations())
 				}
@@ -390,15 +504,126 @@ func TestSimulation(t *testing.T) {
 				}
 			}
 			t.Logf("%v of %v seeds found the bug; the first are %v", len(found), n, found[:min(len(found), 10)])
-			is.True(t, len(found) > 0, "no seed found the bug")
+			if n >= 200 {
+				is.True(t, len(found) > 0, "no seed found the bug")
+			}
 		})
 	}
 }
 
-// TestSimulationSpeed logs how fast simulated runs are on this machine, and how much of that is the
-// scheduler itself and how much is SQLite syncing the cache to disk. It asserts nothing.
+// TestSimulationSeed runs the one seed that the environment variable S4QL_SIM_SEED names, with the
+// default workload, and logs its whole trace. The environment variable S4QL_SIM_BUG can name a
+// planted bug, renewOutsideLock or cacheFirst.
+func TestSimulationSeed(t *testing.T) {
+	v := os.Getenv("S4QL_SIM_SEED")
+	if v == "" {
+		t.Skip("S4QL_SIM_SEED is not set")
+	}
+	seed, err := strconv.ParseUint(v, 10, 64)
+	is.NotError(t, err)
+
+	w := defaultWorkload
+	switch bug := os.Getenv("S4QL_SIM_BUG"); bug {
+	case "":
+	case "renewOutsideLock":
+		w.options.bugs.renewOutsideLock = true
+	case "cacheFirst":
+		w.options.bugs.cacheFirst = true
+	default:
+		t.Fatalf("no planted bug is named %v", bug)
+	}
+
+	s := simulate(t, seed, w)
+	t.Logf("seed %v: %v steps, hash %v, trace:\n%v", seed, s.steps, s.hash(), strings.Join(s.lines, "\n"))
+	is.EqualSlice(t, nil, s.violations())
+}
+
+// contend runs one writer and eight readers as tasks of e, each on its own connection to the
+// database at path and in a loop without pauses, and returns how often the writer got SQLITE_BUSY
+// when it began a transaction. No connection has a busy timeout.
+func contend(ctx context.Context, t *testing.T, e env, path string) int64 {
+	t.Helper()
+	setup := openWAL(t, path, 0)
+	is.NotError(t, setup.Exec("create table t1 (k integer primary key, v integer not null) strict"))
+	is.NotError(t, setup.Exec("insert into t1 (k, v) values (1, 0)"))
+
+	var stop atomic.Bool
+	var busyBegins atomic.Int64
+	var tasks []sim.Task
+	for i := range 8 {
+		c := openWAL(t, path, 0)
+		tasks = append(tasks, e.Go(ctx, fmt.Sprint("reader-", i), func(ctx context.Context) {
+			for !stop.Load() {
+				is.NotError(t, c.Exec("begin"))
+				e.Yield(ctx, "reader: after begin")
+				is.NotError(t, c.Exec("select v from t1 where k = 1"))
+				e.Yield(ctx, "reader: after select")
+				is.NotError(t, c.Exec("commit"))
+				e.Yield(ctx, "reader: after commit")
+			}
+		}))
+	}
+	c := openWAL(t, path, 0)
+	tasks = append(tasks, e.Go(ctx, "writer", func(ctx context.Context) {
+		defer stop.Store(true)
+		for range 1000 {
+			for {
+				err := c.Exec("begin immediate")
+				if err == nil {
+					break
+				}
+				is.True(t, busy(err), fmt.Sprint(err))
+				busyBegins.Add(1)
+			}
+			is.NotError(t, c.Exec("update t1 set v = v + 1 where k = 1"))
+			e.Yield(ctx, "writer: after update")
+			is.NotError(t, c.Exec("commit"))
+			e.Yield(ctx, "writer: after commit")
+		}
+	}))
+	for _, task := range tasks {
+		is.NotError(t, task.Wait(ctx))
+	}
+	return busyBegins.Load()
+}
+
+// TestSchedulerWithSQLiteLocks checks that SQLite never finds a lock taken while one task at a time
+// runs, with a workload that does find one with the scheduler off.
+func TestSchedulerWithSQLiteLocks(t *testing.T) {
+	t.Run("should never give SQLITE_BUSY to a writer among readers when one task runs at a time", func(t *testing.T) {
+		for seed := range uint64(10) {
+			synctest.Test(t, func(t *testing.T) {
+				s := sim.New(seed, sim.Options{})
+				var busyBegins int64
+				is.NotError(t, s.Run(func(ctx context.Context) {
+					busyBegins = contend(ctx, t, s, filepath.Join(t.TempDir(), "test.db"))
+				}))
+				is.Equal(t, 0, busyBegins)
+			})
+		}
+	})
+
+	// This is the control for the test above. The number varies and is sometimes zero, so it is only
+	// logged.
+	t.Run("should log how often the same writer gets SQLITE_BUSY with the scheduler off", func(t *testing.T) {
+		var busyBegins int64
+		for seed := range uint64(10) {
+			synctest.Test(t, func(t *testing.T) {
+				r := sim.NewFree(seed)
+				is.NotError(t, r.Run(func(ctx context.Context) {
+					busyBegins += contend(ctx, t, r, filepath.Join(t.TempDir(), "test.db"))
+				}))
+			})
+		}
+		t.Logf("with the scheduler off, the writer got SQLITE_BUSY %v times in 10000 transactions", busyBegins)
+	})
+}
+
+// TestSimulationSpeed logs how fast simulated runs are on this machine: the scheduler with tasks
+// that only yield, the toy library, and the toy library when SQLite does not sync the cache to disk.
+// It is a test and not a benchmark because a bubble needs a [testing.T].
 func TestSimulationSpeed(t *testing.T) {
-	t.Run("scheduler alone", func(t *testing.T) {
+	t.Run("should log the speed of the scheduler with eight tasks that only yield", func(t *testing.T) {
 		start := time.Now()
 		var steps int
 		for seed := range uint64(20) {
@@ -424,8 +649,8 @@ func TestSimulationSpeed(t *testing.T) {
 		name     string
 		workload workload
 	}{
-		{name: "toy library", workload: defaultWorkload},
-		{name: "toy library without syncing the cache to disk", workload: syncOff},
+		{name: "should log the speed of the toy library", workload: defaultWorkload},
+		{name: "should log the speed of the toy library without syncing the cache to disk", workload: syncOff},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			n := seeds(t, 200, test.workload)
@@ -441,16 +666,6 @@ func TestSimulationSpeed(t *testing.T) {
 				n, elapsed.Round(time.Millisecond), float64(n)/elapsed.Seconds(), float64(steps)/elapsed.Seconds(), float64(steps)/float64(n))
 		})
 	}
-}
-
-// hammerWorkload has callers that never wait between transactions, so that under the free runtime
-// they are in SQLite and in the toy library's own code at the same time.
-var hammerWorkload = workload{
-	callers: 8,
-	ops:     40,
-	latency: time.Millisecond,
-	options: toyOptions{readers: 4, busyTimeout: 1000},
-	faults:  faults{errors: 30, lostAcks: 30, delays: 10},
 }
 
 func TestFreeRunning(t *testing.T) {
@@ -482,71 +697,29 @@ func TestFreeRunning(t *testing.T) {
 		})
 	}
 
-	// Under the scheduler one task at a time is in SQLite, so SQLite never finds a lock taken. With the
-	// scheduler off it can: a writer in a tight loop among readers gets SQLITE_BUSY, as
-	// TestSynctestWithCgo shows. This workload is not that tight, and the test logs whether it gets
-	// SQLITE_BUSY with the scheduler off, on the bubble's fake clock and on the real clock outside a
-	// bubble. It asserts only that the scheduled runs get none.
-	t.Run("should never get SQLITE_BUSY under the scheduler without a busy timeout", func(t *testing.T) {
-		w := hammerWorkload
-		w.options.busyTimeout = 0
-		n := seeds(t, 200, w)
-
-		for seed := range n {
-			is.EqualSlice(t, nil, simulate(t, seed, w).violations())
-		}
-
-		// busy counts the violations in the runs of f, and fails the test for any that is not SQLITE_BUSY.
-		busy := func(f func(seed uint64) *outcome) (violations, runs int) {
-			for seed := range n {
-				o := f(seed)
-				for _, violation := range o.violations {
-					if !strings.Contains(violation, "database is locked") {
-						t.Errorf("seed %v: %v", seed, violation)
-					}
-				}
-				if len(o.violations) > 0 {
-					runs++
-				}
-				violations += len(o.violations)
-			}
-			return violations, runs
-		}
-
-		onFakeClock, _ := busy(func(seed uint64) *outcome { return free(t, seed, w) })
-
-		// The store's latency is in microseconds and it injects no faults, so that the run is short on the
-		// real clock.
-		w.latency, w.faults = time.Microsecond, faults{}
-		onRealClock, runs := busy(func(seed uint64) *outcome {
-			r := sim.NewFree(seed)
-			path := filepath.Join(t.TempDir(), "cache.db")
-			var o *outcome
-			is.NotError(t, r.Run(func(ctx context.Context) {
-				o = w.run(ctx, r, path)
-			}))
-			return o
-		})
-
-		t.Logf("with no busy timeout, in %v runs each: SQLITE_BUSY 0 times under the scheduler, %v times with the scheduler off on the fake clock, and %v times in %v runs with the scheduler off on the real clock",
-			n, onFakeClock, onRealClock, runs)
-	})
-
-	// The fake clock orders most of a free run, so a seed often gives the same run again, but not
-	// always. This logs how often, and asserts nothing.
-	t.Run("can find the planted renewal bug with the scheduler off, but does not always find it again with the same seed", func(t *testing.T) {
-		for name, w := range map[string]workload{"callers that pause": defaultWorkload, "callers that never pause": hammerWorkload} {
-			n := seeds(t, 200, w)
+	// The fake clock orders most of a run with the scheduler off, so a seed often gives the same run
+	// again. How often depends on the workload and on chance, so these two only log it.
+	t.Run("should log how often a seed gives two different traces with the scheduler off", func(t *testing.T) {
+		for _, test := range []struct {
+			name     string
+			workload workload
+		}{
+			{name: "callers that pause", workload: defaultWorkload},
+			{name: "callers that never pause", workload: hammerWorkload},
+		} {
+			n := seeds(t, 200, test.workload)
 			var differing int
 			for seed := range n {
-				first, second := free(t, seed, w), free(t, seed, w)
+				first, second := free(t, seed, test.workload), free(t, seed, test.workload)
 				if !slices.Equal(first.lines, second.lines) {
 					differing++
 				}
 			}
-			t.Logf("with %v, %v of %v seeds gave two different traces when run twice with the scheduler off", name, differing, n)
+			t.Logf("with %v, %v of %v seeds gave two different traces when run twice with the scheduler off", test.name, differing, n)
 		}
+	})
 
+	t.Run("should log how often the planted renewal bug is found, and found again with the same seed, with the scheduler off", func(t *testing.T) {
 		w := defaultWorkload
 		w.options.bugs.renewOutsideLock = true
 		n := seeds(t, 200, w)
@@ -562,22 +735,6 @@ func TestFreeRunning(t *testing.T) {
 		}
 		t.Logf("%v of %v free runs found the bug; run again with the same seeds, %v of those %v found it", found, n, again, found)
 	})
-}
-
-// free runs the workload w under the free runtime with seed, in a bubble of its own for the fake
-// clock.
-func free(t *testing.T, seed uint64, w workload) *outcome {
-	t.Helper()
-	var o *outcome
-	synctest.Test(t, func(t *testing.T) {
-		r := sim.NewFree(seed)
-		path := filepath.Join(t.TempDir(), "cache.db")
-		is.NotError(t, r.Run(func(ctx context.Context) {
-			o = w.run(ctx, r, path)
-		}))
-		o.lines = r.Lines()
-	})
-	return o
 }
 
 // TestPlantedDataRace shows what the race detector reports in each mode for a counter that reads

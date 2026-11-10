@@ -10,6 +10,19 @@
 //
 // A context carries the identity of the task that runs. A task must pass the context it was started
 // with, or one derived from it, to every method of the runtime.
+//
+// The rules for code that runs under [Scheduler], and what happens when it breaks them:
+//
+//   - It waits only through the runtime: no channel operations that block, no sync.Cond or
+//     sync.WaitGroup, no time.Sleep. The run fails with the task and the place it last waited at.
+//   - It starts goroutines only with Go, never with a go statement. The run fails when such a
+//     goroutine reaches the runtime. One that never does is not noticed.
+//   - It passes no context with a deadline to the runtime, because a deadline is a timer of the
+//     bubble's clock, which stands still. The run fails.
+//   - It does not read the time package's clock, which stands still at [Epoch]. Nothing notices.
+//   - It holds no sync.Mutex while it waits. The run hangs until the test times out.
+//   - It does nothing that differs between two runs with the same seed, such as ranging over a map
+//     to decide an order. Only running a seed twice and comparing the traces notices.
 package sim
 
 import (
@@ -19,6 +32,7 @@ import (
 	"math/rand/v2"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing/synctest"
@@ -27,7 +41,9 @@ import (
 
 // Epoch is the time at which a [Scheduler] starts, which is also where the fake clock of a
 // testing/synctest bubble starts.
-var Epoch = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+func Epoch() time.Time {
+	return time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+}
 
 // Task is a goroutine started by a runtime.
 type Task interface {
@@ -49,20 +65,16 @@ const never = time.Duration(math.MaxInt64)
 
 type taskKey struct{}
 
-// aborted is the panic value that unwinds a task after the run has failed, with the failure.
-type aborted struct {
-	failure error
-}
-
-// task of a [Scheduler]. All fields but name and wake are guarded by the scheduler's mutex.
+// task of a [Scheduler]. The fields from goroutine on are guarded by the scheduler's mutex.
 type task struct {
 	s    *Scheduler
 	name string
 	// wake is received from by the task's goroutine while it is parked, and sent to by the scheduler.
-	// It is closed when the task has returned.
 	wake chan struct{}
 
-	parked bool
+	// goroutine is the ID of the task's goroutine.
+	goroutine uint64
+	parked    bool
 	// site names where the task is parked.
 	site string
 	// at is the simulated time from which the task may run again, or never.
@@ -108,26 +120,45 @@ func New(seed uint64, options Options) *Scheduler {
 	}
 	return &Scheduler{
 		options: options,
-		rng:     rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)),
+		rng:     newRand(seed),
 		tasks:   map[string]*task{},
 	}
 }
 
+// newRand is a generator for seed.
+func newRand(seed uint64) *rand.Rand {
+	return rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
+}
+
+// goroutineID of the calling goroutine, read from the first line of its stack trace, which is
+// "goroutine 123 [running]:". Go has no other way to tell goroutines apart.
+func goroutineID() uint64 {
+	var buf [64]byte
+	fields := strings.Fields(string(buf[:runtime.Stack(buf[:], false)]))
+	if len(fields) < 2 {
+		panic("sim: no goroutine ID in the stack trace")
+	}
+	id, err := strconv.ParseUint(fields[1], 10, 64)
+	if err != nil {
+		panic("sim: no goroutine ID in the stack trace: " + err.Error())
+	}
+	return id
+}
+
 // Run f as the first task, named main, and schedule tasks until all of them have returned. It fails
-// if the tasks deadlock, if a task breaks a rule that the scheduler can see, or after
-// [Options.MaxSteps]. The rules: a task waits only through the scheduler, and nothing but the
-// scheduler makes a waiting task run.
+// if every task waits on a condition that is false, if a task breaks a rule that the scheduler can
+// see, or after [Options.MaxSteps].
 func (s *Scheduler) Run(f func(ctx context.Context)) error {
 	s.Go(context.Background(), "main", f)
 
 	for {
-		// Every goroutine in the bubble is durably blocked when Wait returns. A task in a cgo call is
-		// not durably blocked, so Wait also waits for C code to return.
+		// Every goroutine in the bubble is durably blocked when Wait returns. A goroutine in a call
+		// into C is not durably blocked, so Wait also waits for C code to return.
 		synctest.Wait()
 
-		next, done := s.next()
+		next, done, err := s.next()
 		if done {
-			return s.failure
+			return err
 		}
 		if next != nil {
 			next.wake <- struct{}{}
@@ -136,9 +167,9 @@ func (s *Scheduler) Run(f func(ctx context.Context)) error {
 }
 
 // next task to run, taken out of the parked state. It returns done when the run has ended, which is
-// when all tasks have returned, or when the run has failed and no task is left to unwind. It
-// returns neither when only simulated time moved.
-func (s *Scheduler) next() (next *task, done bool) {
+// when all tasks have returned, or when the run has failed and no task is left to unwind, and then
+// err is the failure. It returns neither a task nor done when only simulated time moved.
+func (s *Scheduler) next() (next *task, done bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -148,9 +179,6 @@ func (s *Scheduler) next() (next *task, done bool) {
 		s.fail(fmt.Errorf("task %v is blocked outside the scheduler, after %v", s.current.name, s.current.site))
 		s.current = nil
 	}
-	if s.steps >= s.options.MaxSteps {
-		s.fail(fmt.Errorf("no end after %v steps", s.steps))
-	}
 
 	names := make([]string, 0, len(s.tasks))
 	for name, t := range s.tasks {
@@ -159,20 +187,31 @@ func (s *Scheduler) next() (next *task, done bool) {
 		}
 	}
 	slices.Sort(names)
+	waits := func() string {
+		var waits []string
+		for _, name := range names {
+			waits = append(waits, name+" at "+s.tasks[name].site)
+		}
+		return strings.Join(waits, ", ")
+	}
+
+	if s.failure == nil && len(s.tasks) == 0 {
+		return nil, true, nil
+	}
+	if s.steps >= s.options.MaxSteps {
+		s.fail(fmt.Errorf("no end after %v steps; waiting: %v", s.steps, waits()))
+	}
 
 	if s.failure != nil {
-		// Unwind the parked tasks one at a time: each panics out of its wait and returns.
+		// Unwind the parked tasks one at a time: each ends its goroutine from inside its wait, which
+		// runs its deferred calls.
 		if len(names) == 0 {
-			return nil, true
+			return nil, true, s.failure
 		}
 		t := s.tasks[names[0]]
 		t.parked = false
 		s.current = t
-		return t, false
-	}
-
-	if len(s.tasks) == 0 {
-		return nil, true
+		return t, false, nil
 	}
 
 	var eligible []*task
@@ -187,15 +226,11 @@ func (s *Scheduler) next() (next *task, done bool) {
 
 	if len(eligible) == 0 {
 		if earliest == never {
-			var waits []string
-			for _, name := range names {
-				waits = append(waits, name+" at "+s.tasks[name].site)
-			}
-			s.fail(fmt.Errorf("deadlock: every task waits on a condition that is false: %v", strings.Join(waits, ", ")))
-			return nil, false
+			s.fail(fmt.Errorf("deadlock: every task waits on a condition that is false: %v", waits()))
+			return nil, false, nil
 		}
 		s.now = earliest
-		return nil, false
+		return nil, false, nil
 	}
 
 	t := eligible[s.rng.IntN(len(eligible))]
@@ -203,10 +238,10 @@ func (s *Scheduler) next() (next *task, done bool) {
 	s.current = t
 	s.steps++
 	s.trace = append(s.trace, fmt.Sprintf("%v %v resumes from %v", s.now, t.name, t.site))
-	return t, false
+	return t, false, nil
 }
 
-// fail the run with err unless it has failed already. The caller holds the mutex.
+// fail the run with err unless it has failed already. It requires the mutex.
 func (s *Scheduler) fail(err error) {
 	if s.failure == nil {
 		s.failure = err
@@ -225,19 +260,30 @@ func (s *Scheduler) taskOf(ctx context.Context) *task {
 // park the task of ctx at site until the scheduler runs it again, which it does no earlier than at
 // the simulated time at, unless cond is not nil and returns true before. The scheduler calls cond
 // with its mutex held while no task runs.
+//
+// If the run has failed, or fails because this wait breaks a rule, park does not return: it ends the
+// calling goroutine with [runtime.Goexit], which runs the goroutine's deferred calls and cannot be
+// recovered from.
 func (s *Scheduler) park(ctx context.Context, site string, at time.Duration, cond func() bool) {
 	t := s.taskOf(ctx)
+	goroutine := goroutineID()
 
 	s.mu.Lock()
-	if s.failure == nil && s.current != t {
-		// Two goroutines run under the name of one task, or something other than the scheduler made
-		// this task run. A go statement in a task does the first.
-		s.fail(fmt.Errorf("task %v reached %v without the scheduler having run it", t.name, site))
+	if s.failure == nil {
+		_, deadline := ctx.Deadline()
+		switch {
+		case goroutine != t.goroutine:
+			// A go statement in the task started this goroutine, and it carries the task's context.
+			s.fail(fmt.Errorf("task %v waits at %v in a goroutine that is not its own", t.name, site))
+		case s.current != t:
+			s.fail(fmt.Errorf("task %v waits at %v without the scheduler having run it", t.name, site))
+		case deadline:
+			s.fail(fmt.Errorf("task %v waits at %v with a context that has a deadline, which simulated time does not reach", t.name, site))
+		}
 	}
 	if s.failure != nil {
-		failure := s.failure
 		s.mu.Unlock()
-		panic(aborted{failure})
+		runtime.Goexit()
 	}
 	s.current = nil
 	t.parked, t.site, t.at, t.cond = true, site, at, cond
@@ -246,14 +292,14 @@ func (s *Scheduler) park(ctx context.Context, site string, at time.Duration, con
 	<-t.wake
 
 	s.mu.Lock()
-	failure := s.failure
+	failed := s.failure != nil
 	s.mu.Unlock()
-	if failure != nil {
-		panic(aborted{failure})
+	if failed {
+		runtime.Goexit()
 	}
 }
 
-// jitter is a simulated delay for a point where a task lets others run. The caller holds the mutex.
+// jitter is a simulated delay for a point where a task lets others run. It requires the mutex.
 func (s *Scheduler) jitter() time.Duration {
 	if s.options.Jitter == 0 || s.rng.IntN(2) == 0 {
 		return 0
@@ -276,22 +322,21 @@ func (s *Scheduler) Go(ctx context.Context, name string, f func(ctx context.Cont
 	s.mu.Unlock()
 
 	go func() {
+		s.mu.Lock()
+		t.goroutine = goroutineID()
+		s.mu.Unlock()
+
 		<-t.wake
+		// The deferred call also runs when a wait ends the goroutine because the run has failed.
 		defer func() {
-			r := recover()
 			s.mu.Lock()
+			defer s.mu.Unlock()
 			t.done = true
 			delete(s.tasks, name)
 			if s.current == t {
 				s.current = nil
 			} else {
 				s.fail(fmt.Errorf("task %v returned without the scheduler having run it", name))
-			}
-			s.mu.Unlock()
-			// A goroutine that still waits under the name of this task gets the failure.
-			close(t.wake)
-			if _, ok := r.(aborted); r != nil && !ok {
-				panic(r)
 			}
 		}()
 
@@ -329,7 +374,10 @@ func (s *Scheduler) Yield(ctx context.Context, site string) {
 // Sleep for d of simulated time. It fails only if ctx is done first.
 func (s *Scheduler) Sleep(ctx context.Context, d time.Duration) error {
 	s.mu.Lock()
-	at := s.now + d
+	at := never
+	if d < never-s.now {
+		at = s.now + d
+	}
 	s.mu.Unlock()
 	s.park(ctx, "sleep", at, func() bool { return ctx.Err() != nil })
 
@@ -345,7 +393,7 @@ func (s *Scheduler) Sleep(ctx context.Context, d time.Duration) error {
 func (s *Scheduler) Now() time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return Epoch.Add(s.now)
+	return Epoch().Add(s.now)
 }
 
 // Uint64 is the next number from the seed. The scheduler draws from the same sequence to choose
@@ -425,6 +473,9 @@ func (m *semaphore) Release(ctx context.Context) {
 // in parallel. Inside a testing/synctest bubble its clock is the bubble's fake clock. Nothing in a
 // run with it is replayable.
 type Free struct {
+	// tasks that have not returned.
+	tasks sync.WaitGroup
+
 	mu    sync.Mutex
 	rng   *rand.Rand
 	trace []string
@@ -432,12 +483,14 @@ type Free struct {
 
 // NewFree runtime. The seed sets the sequence of random numbers, but not who draws which.
 func NewFree(seed uint64) *Free {
-	return &Free{rng: rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))}
+	return &Free{rng: newRand(seed)}
 }
 
-// Run f and wait for it to return.
+// Run f and wait until it and every task started from it have returned. It never fails.
 func (r *Free) Run(f func(ctx context.Context)) error {
-	return r.Go(context.Background(), "main", f).Wait(context.Background())
+	r.Go(context.Background(), "main", f)
+	r.tasks.Wait()
+	return nil
 }
 
 // freeTask of a [Free] runtime, whose channel is closed when the task has returned.
@@ -455,10 +508,10 @@ func (t freeTask) Wait(ctx context.Context) error {
 // Go starts f in a new goroutine. The name is not used.
 func (r *Free) Go(ctx context.Context, _ string, f func(ctx context.Context)) Task {
 	t := make(freeTask)
-	go func() {
+	r.tasks.Go(func() {
 		defer close(t)
 		f(ctx)
-	}()
+	})
 	return t
 }
 

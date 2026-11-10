@@ -24,7 +24,6 @@ import (
 const (
 	manifestKey   = "manifest.json"
 	leaseDuration = 30 * time.Second
-	renewAfter    = 20 * time.Second
 )
 
 var (
@@ -33,13 +32,13 @@ var (
 	errPrecondition = errors.New("precondition failed")
 	errInjected     = errors.New("injected fault")
 	errSwapFailed   = errors.New("manifest swap failed")
-	errLeaseHeld    = errors.New("lease held by another instance")
 	errLeaseLost    = errors.New("lease lost")
 	errLeaseExpired = errors.New("lease expired")
 	errStopped      = errors.New("stopped")
+	errClosed       = errors.New("closed")
 )
 
-// env is what the toy library needs from the world. Both [*sim.Scheduler] and [*sim.Free] have it.
+// env is what the toy library needs from the world: tasks, time, locks, and randomness.
 type env interface {
 	Go(ctx context.Context, name string, f func(ctx context.Context)) sim.Task
 	Yield(ctx context.Context, site string)
@@ -69,6 +68,15 @@ type manifest struct {
 	// Holder of the lease, or empty.
 	Holder  string    `json:"holder"`
 	Expires time.Time `json:"expires"`
+}
+
+// changeFile is one commit in the log.
+type changeFile struct {
+	Seq int64 `json:"seq"`
+	// Prev is the name of the change file before this one, or empty for the first.
+	Prev string `json:"prev"`
+	// Sets are the keys and values that the commit wrote, in the order it wrote them.
+	Sets [][2]int64 `json:"sets"`
 }
 
 // bugs that can be planted in the toy library.
@@ -127,8 +135,8 @@ type toyDB struct {
 	renewer sim.Task
 }
 
-// openToy opens the cache at path, takes the lease, and starts the renewal task.
-func openToy(ctx context.Context, e env, store objectStore, path string, options toyOptions) (*toyDB, error) {
+// openToy database with a new cache at path. It takes the lease and starts the renewal task.
+func openToy(ctx context.Context, e env, store objectStore, path string, options toyOptions) (_ *toyDB, err error) {
 	d := &toyDB{
 		env:     e,
 		store:   store,
@@ -157,7 +165,16 @@ func openToy(ctx context.Context, e env, store objectStore, path string, options
 		return c, nil
 	}
 
-	var err error
+	defer func() {
+		if err != nil {
+			for _, c := range append(d.idle, d.wconn) {
+				if c != nil {
+					_ = c.Close()
+				}
+			}
+		}
+	}()
+
 	if d.wconn, err = open(); err != nil {
 		return nil, err
 	}
@@ -183,13 +200,18 @@ func openToy(ctx context.Context, e env, store objectStore, path string, options
 	}
 
 	ctx, d.cancel = context.WithCancel(ctx)
-	d.renewer = e.Go(ctx, "renewer", d.renewLoop)
+	d.renewer = e.Go(ctx, "renewer of "+d.id, d.renewLoop)
 	return d, nil
 }
 
 // takeLease in the manifest, creating the manifest if there is none. It tries again after an injected
 // fault.
 func (d *toyDB) takeLease(ctx context.Context) error {
+	if err := d.swap.Acquire(ctx); err != nil {
+		return err
+	}
+	defer d.swap.Release(ctx)
+
 	for {
 		var man manifest
 		data, etag, err := d.store.Get(ctx, manifestKey)
@@ -208,7 +230,7 @@ func (d *toyDB) takeLease(ctx context.Context) error {
 			return err
 		}
 		if man.Holder != "" && man.Holder != d.id && d.env.Now().Before(man.Expires) {
-			return errLeaseHeld
+			return errors.New("lease held by another instance")
 		}
 		if man.Seq != 0 {
 			return errors.New("the toy cannot catch its cache up")
@@ -224,47 +246,63 @@ func (d *toyDB) takeLease(ctx context.Context) error {
 	}
 }
 
-// swapManifest for next, and take over its ETag and the new lease deadline. The caller holds the swap
-// lock. It fails with errSwapFailed if the manifest is known to be unchanged, and with errLeaseLost
-// if something else changed the manifest.
+// swapManifest for next, and take over its ETag and the new lease deadline. It requires the swap
+// lock. It fails with errSwapFailed if the manifest is known to be unchanged, and stops the instance
+// with errLeaseLost if something else changed the manifest.
 func (d *toyDB) swapManifest(ctx context.Context, next manifest) error {
-	sentAt := d.env.Now()
-	next.Expires = sentAt.Add(leaseDuration)
-	data, err := json.Marshal(next)
+	swapped, etag, err := d.trySwap(ctx, next, d.etag)
 	if err != nil {
 		return err
 	}
-
-	etag, err := d.store.Swap(ctx, manifestKey, data, d.etag)
-	if err != nil && !errors.Is(err, errPrecondition) {
-		// The swap may have happened all the same, so read the manifest to find out.
-		etag, err = d.resolveSwap(ctx, data)
-	}
-	if errors.Is(err, errPrecondition) {
-		return d.stop(errLeaseLost)
-	}
-	if err != nil {
-		return err
-	}
-	d.etag, d.man = etag, next
-	d.deadline.Store(sentAt.Add(leaseDuration).UnixNano())
+	d.etag, d.man = etag, swapped
+	d.deadline.Store(swapped.Expires.UnixNano())
 	return nil
 }
 
-// resolveSwap whose outcome is unknown by reading the manifest. It returns the manifest's ETag if
-// the manifest is now data.
-func (d *toyDB) resolveSwap(ctx context.Context, data []byte) (string, error) {
+// trySwap the manifest for next, with a lease that lasts from now, if the manifest's ETag is still
+// etag. It returns the manifest as swapped in and its new ETag. A swap that fails without saying
+// whether it happened is resolved by reading the manifest. It fails with errSwapFailed if the
+// manifest is known to be unchanged, and stops the instance with errLeaseLost if something else
+// changed the manifest.
+func (d *toyDB) trySwap(ctx context.Context, next manifest, etag string) (manifest, string, error) {
+	// A swap that has been sent is seen through to a known outcome, also when ctx is done meanwhile.
+	// Abandoned halfway, it would leave the instance with an ETag that may be out of date.
+	ctx = context.WithoutCancel(ctx)
+
+	// The lease counts from when the swap is sent, because it cannot have reached the store earlier.
+	next.Expires = d.env.Now().Add(leaseDuration)
+	data, err := json.Marshal(next)
+	if err != nil {
+		return manifest{}, "", err
+	}
+
+	newETag, err := d.store.Swap(ctx, manifestKey, data, etag)
+	if err != nil && !errors.Is(err, errPrecondition) {
+		newETag, err = d.resolveSwap(ctx, data, etag)
+	}
+	if errors.Is(err, errPrecondition) {
+		return manifest{}, "", d.stop(errLeaseLost)
+	}
+	if err != nil {
+		return manifest{}, "", err
+	}
+	return next, newETag, nil
+}
+
+// resolveSwap of the manifest from etag to data, whose outcome is unknown, by reading the manifest.
+// It returns the manifest's ETag if the manifest is now data.
+func (d *toyDB) resolveSwap(ctx context.Context, data []byte, etag string) (string, error) {
 	for range 10 {
-		got, etag, err := d.store.Get(ctx, manifestKey)
+		got, gotETag, err := d.store.Get(ctx, manifestKey)
 		switch {
 		case err != nil && !errors.Is(err, errNotFound):
 			if err := d.env.Sleep(ctx, 100*time.Millisecond); err != nil {
 				return "", err
 			}
-		case etag == d.etag:
+		case gotETag == etag:
 			return "", errSwapFailed
 		case bytes.Equal(got, data):
-			return etag, nil
+			return gotETag, nil
 		default:
 			return "", errPrecondition
 		}
@@ -288,7 +326,7 @@ func (d *toyDB) stopErr() error {
 	return d.stopped
 }
 
-// renewLoop renews the lease renewAfter after the last successful swap, until ctx is done or the
+// renewLoop is the renewal task: it renews the lease when a renewal is due, until ctx is done or the
 // instance has stopped.
 func (d *toyDB) renewLoop(ctx context.Context) {
 	for d.stopErr() == nil {
@@ -308,8 +346,10 @@ func (d *toyDB) renewLoop(ctx context.Context) {
 	}
 }
 
+// renewalDue is the time of the next renewal, which is 20 seconds after the last successful swap was
+// sent.
 func (d *toyDB) renewalDue() time.Time {
-	return time.Unix(0, d.deadline.Load()).Add(renewAfter - leaseDuration)
+	return time.Unix(0, d.deadline.Load()).Add(20*time.Second - leaseDuration)
 }
 
 // renew the lease with a manifest swap, unless a commit has renewed it in the meantime.
@@ -328,20 +368,12 @@ func (d *toyDB) renew(ctx context.Context) error {
 		return err
 	}
 
-	// The planted bug: the swap happens without the lock, with the ETag that was read under it.
+	// The planted bug: the swap happens without the lock, with the ETag that was read under it. It
+	// differs from the code above in nothing else.
 	next, etag := d.man, d.etag
 	d.swap.Release(ctx)
 
-	sentAt := d.env.Now()
-	next.Expires = sentAt.Add(leaseDuration)
-	data, err := json.Marshal(next)
-	if err != nil {
-		return err
-	}
-	etag, err = d.store.Swap(ctx, manifestKey, data, etag)
-	if errors.Is(err, errPrecondition) {
-		return d.stop(errLeaseLost)
-	}
+	swapped, etag, err := d.trySwap(ctx, next, etag)
 	if err != nil {
 		return err
 	}
@@ -350,13 +382,14 @@ func (d *toyDB) renew(ctx context.Context) error {
 		return err
 	}
 	d.etag = etag
-	d.man.Expires = next.Expires
-	d.deadline.Store(sentAt.Add(leaseDuration).UnixNano())
+	d.man.Expires = swapped.Expires
+	d.deadline.Store(swapped.Expires.UnixNano())
 	d.swap.Release(ctx)
 	return nil
 }
 
-// Close the database: stop the renewal, release the lease, and close the cache.
+// Close the database: stop the renewal, release the lease, and close the cache. If it fails with an
+// error from the object store, the lease is not released and times out.
 func (d *toyDB) Close(ctx context.Context) error {
 	d.cancel()
 	if err := d.renewer.Wait(ctx); err != nil {
@@ -371,19 +404,18 @@ func (d *toyDB) Close(ctx context.Context) error {
 	}
 	defer d.swap.Release(ctx)
 
+	var errs []error
 	if d.stopErr() == nil {
-		// The lease times out if this fails.
 		next := d.man
 		next.Holder = ""
-		_ = d.swapManifest(ctx, next)
+		errs = append(errs, d.swapManifest(ctx, next))
 	}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.stopped == nil {
-		d.stopped = fmt.Errorf("%w: closed", errStopped)
+		d.stopped = fmt.Errorf("%w: %w", errStopped, errClosed)
 	}
-	var errs []error
 	for _, c := range append(d.idle, d.wconn) {
 		errs = append(errs, c.Close())
 	}
@@ -427,6 +459,11 @@ func (tx *toyTx) Set(k int64) error {
 	return exec(tx.d.wconn, "insert into kv (k, v) values (?, ?) on conflict (k) do update set v = excluded.v", k, tx.seq)
 }
 
+// Get the value at key k as the transaction sees it, or 0 if there is none.
+func (tx *toyTx) Get(k int64) (int64, error) {
+	return queryInt(tx.d.wconn, "select coalesce((select v from kv where k = ?), 0)", k)
+}
+
 // Rollback the transaction.
 func (tx *toyTx) Rollback(ctx context.Context) error {
 	defer tx.d.writer.Release(ctx)
@@ -434,7 +471,8 @@ func (tx *toyTx) Rollback(ctx context.Context) error {
 }
 
 // Commit the transaction: upload its change file, swap the manifest, and commit to the cache. It
-// returns nil if and only if the manifest swap happened.
+// returns nil only if the manifest swap happened and the cache has the transaction. If the swap
+// happened and the cache then fails, it stops the instance.
 func (tx *toyTx) Commit(ctx context.Context) error {
 	d := tx.d
 	defer d.writer.Release(ctx)
@@ -475,7 +513,10 @@ func (tx *toyTx) publish(ctx context.Context) error {
 		return err
 	}
 
-	file := fmt.Appendf(nil, "seq %v after %v sets %v", tx.seq, d.man.Head, tx.writes)
+	file, err := json.Marshal(changeFile{Seq: tx.seq, Prev: d.man.Head, Sets: tx.writes})
+	if err != nil {
+		return err
+	}
 	sum := sha256.Sum256(file)
 	name := "changes/" + hex.EncodeToString(sum[:])
 	// A file with this name can only be this file, left by an upload that reported a failure.
@@ -571,7 +612,7 @@ func queryInt(c *sqlite.Conn, sql string, args ...int64) (int64, error) {
 	return v, s.Finalize()
 }
 
-// tracer is an env that also records a trace, for the simulated store and the workload.
+// tracer is an env that also records a trace.
 type tracer interface {
 	env
 	Trace(ctx context.Context, format string, args ...any)
@@ -631,6 +672,7 @@ func (s *memStore) do(ctx context.Context, what string, apply func() (string, er
 	}
 
 	if err := s.env.Sleep(ctx, latency); err != nil {
+		s.env.Trace(ctx, "store %v: not applied, the request was abandoned: %v", what, err)
 		return err
 	}
 	if fault == "error" {
@@ -642,8 +684,9 @@ func (s *memStore) do(ctx context.Context, what string, apply func() (string, er
 	result, err := apply()
 	s.mu.Unlock()
 
-	if err := s.env.Sleep(ctx, time.Duration(1+intn(s.env, 50))*s.unit); err != nil {
-		return err
+	if sleepErr := s.env.Sleep(ctx, time.Duration(1+intn(s.env, 50))*s.unit); sleepErr != nil {
+		s.env.Trace(ctx, "store %v: applied with %v %v, the request was abandoned: %v", what, result, err, sleepErr)
+		return sleepErr
 	}
 	if fault == "lost ack" {
 		s.env.Trace(ctx, "store %v: applied with %v %v, reported as an injected error", what, result, err)
@@ -695,14 +738,21 @@ func (s *memStore) Swap(ctx context.Context, key string, data []byte, etag strin
 	return newETag, nil
 }
 
-// manifest as it is in the store now, read without latency or faults, for checks.
-func (s *memStore) manifest() (manifest, error) {
+// object at key as it is in the store now, read without latency or faults.
+func (s *memStore) object(key string) (data []byte, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	o, ok := s.objects[key]
+	return o.data, ok
+}
+
+// manifest as it is in the store now, read without latency or faults, or the zero manifest if there
+// is none.
+func (s *memStore) manifest() (manifest, error) {
 	var man manifest
-	o, ok := s.objects[manifestKey]
+	data, ok := s.object(manifestKey)
 	if !ok {
 		return man, nil
 	}
-	return man, json.Unmarshal(o.data, &man)
+	return man, json.Unmarshal(data, &man)
 }

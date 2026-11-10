@@ -15,13 +15,7 @@ import (
 	"maragu.dev/s4ql/internal/sqlite"
 )
 
-// codeBusy is SQLITE_BUSY from https://sqlite.org/rescode.html.
-const codeBusy = 5
-
-// slowSQL counts to its parameter with a recursive query, which keeps one sqlite3_step call busy in C.
-const slowSQL = "with recursive c (x) as (select 1 union all select x + 1 from c where x < ?) select count(*) from c"
-
-// openWAL opens a connection to the database file at path in WAL mode with the given busy timeout in
+// openWAL connection to the database file at path, in WAL mode and with the given busy timeout in
 // milliseconds, closed when the test ends.
 func openWAL(t *testing.T, path string, busyTimeout int) *sqlite.Conn {
 	t.Helper()
@@ -33,13 +27,15 @@ func openWAL(t *testing.T, path string, busyTimeout int) *sqlite.Conn {
 	return c
 }
 
-// slow runs slowSQL up to n on c and returns the count.
+// slow counts to n on c with a recursive query, which keeps one step of the statement busy in C, and
+// returns the count.
 func slow(c *sqlite.Conn, n int64) (int64, error) {
-	s, err := c.Prepare(slowSQL)
+	s, err := c.Prepare("with recursive c (x) as (select 1 union all select x + 1 from c where x < ?) select count(*) from c")
 	if err != nil {
 		return 0, err
 	}
 	if err := s.BindInt64(1, n); err != nil {
+		_ = s.Finalize()
 		return 0, err
 	}
 	if _, err := s.Step(); err != nil {
@@ -50,17 +46,15 @@ func slow(c *sqlite.Conn, n int64) (int64, error) {
 	return count, s.Finalize()
 }
 
-// sqliteCode of err, or -1 if err is not a [*sqlite.Error].
-func sqliteCode(err error) int {
+// busy reports whether err is SQLITE_BUSY from SQLite, also with an extended result code.
+func busy(err error) bool {
 	var sqliteErr *sqlite.Error
-	if !errors.As(err, &sqliteErr) {
-		return -1
-	}
-	return int(sqliteErr.Code)
+	// 5 is SQLITE_BUSY on https://sqlite.org/rescode.html.
+	return errors.As(err, &sqliteErr) && sqliteErr.Code.Primary() == 5
 }
 
 func TestSynctestWithCgo(t *testing.T) {
-	t.Run("Wait should not return while a SQLite call is running in another goroutine", func(t *testing.T) {
+	t.Run("should not return from Wait while a SQLite call is running in another goroutine", func(t *testing.T) {
 		for i := range 5 {
 			realStart := time.Now()
 			synctest.Test(t, func(t *testing.T) {
@@ -87,7 +81,7 @@ func TestSynctestWithCgo(t *testing.T) {
 		}
 	})
 
-	t.Run("fake time should not advance while a SQLite call is running", func(t *testing.T) {
+	t.Run("should not advance fake time while a SQLite call is running", func(t *testing.T) {
 		realStart := time.Now()
 		synctest.Test(t, func(t *testing.T) {
 			c := openWAL(t, filepath.Join(t.TempDir(), "test.db"), 0)
@@ -113,7 +107,7 @@ func TestSynctestWithCgo(t *testing.T) {
 		t.Logf("an hour of fake time passed only after the call returned; the bubble took %v of real time", time.Since(realStart).Round(time.Millisecond))
 	})
 
-	t.Run("a SQLite call that waits for the write lock with a busy timeout should sleep in real time and then fail, without a deadlock report", func(t *testing.T) {
+	t.Run("should let a SQLite call that waits for the write lock with a busy timeout sleep in real time and then fail, without a deadlock report", func(t *testing.T) {
 		realStart := time.Now()
 		synctest.Test(t, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "test.db")
@@ -128,8 +122,7 @@ func TestSynctestWithCgo(t *testing.T) {
 			go func() {
 				result <- waiter.Exec("begin immediate")
 			}()
-			err := <-result
-			is.Equal(t, codeBusy, sqliteCode(err))
+			is.True(t, busy(<-result))
 			is.Equal(t, 0, time.Since(fakeStart))
 			is.NotError(t, holder.Exec("commit"))
 		})
@@ -138,7 +131,7 @@ func TestSynctestWithCgo(t *testing.T) {
 		t.Logf("the waiter got SQLITE_BUSY after %v of real time and no fake time", real.Round(time.Millisecond))
 	})
 
-	t.Run("a SQLite call that waits for a lock held by a goroutine sleeping on fake time should never get it", func(t *testing.T) {
+	t.Run("should never give the lock to a SQLite call that waits for it while its holder sleeps on fake time", func(t *testing.T) {
 		realStart := time.Now()
 		synctest.Test(t, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "test.db")
@@ -166,17 +159,17 @@ func TestSynctestWithCgo(t *testing.T) {
 			})
 			wg.Go(func() {
 				err := waiter.Exec("begin immediate")
-				log("waiter returns code %v at fake %v", sqliteCode(err), time.Since(fakeStart))
+				log("waiter returns busy %v at fake %v", busy(err), time.Since(fakeStart))
 			})
 			wg.Wait()
-			is.EqualSlice(t, []string{"waiter returns code 5 at fake 0s", "holder commits at fake 1ms"}, events)
+			is.EqualSlice(t, []string{"waiter returns busy true at fake 0s", "holder commits at fake 1ms"}, events)
 		})
 		real := time.Since(realStart)
 		is.True(t, real >= 1500*time.Millisecond)
 		t.Logf("the waiter gave up after %v of real time; fake time could not advance to wake the holder", real.Round(time.Millisecond))
 	})
 
-	t.Run("a SQLite call that wants a held write lock with no busy timeout should fail at once", func(t *testing.T) {
+	t.Run("should fail a SQLite call at once that wants a held write lock with no busy timeout", func(t *testing.T) {
 		realStart := time.Now()
 		synctest.Test(t, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "test.db")
@@ -188,13 +181,13 @@ func TestSynctestWithCgo(t *testing.T) {
 			go func() {
 				result <- waiter.Exec("begin immediate")
 			}()
-			is.Equal(t, codeBusy, sqliteCode(<-result))
+			is.True(t, busy(<-result))
 			is.NotError(t, holder.Exec("commit"))
 		})
 		t.Logf("the waiter got SQLITE_BUSY at once; the bubble took %v of real time", time.Since(realStart).Round(time.Millisecond))
 	})
 
-	t.Run("a SQLite call that waits for a lock held by a running goroutine should get it, as outside a bubble", func(t *testing.T) {
+	t.Run("should give the lock to a SQLite call that waits for it while its holder is running, as outside a bubble", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "test.db")
 			holder := openWAL(t, path, 0)
@@ -220,39 +213,39 @@ func TestSynctestWithCgo(t *testing.T) {
 		})
 	})
 
-	t.Run("a bubble should still report a deadlock when goroutines block for good after SQLite calls", func(t *testing.T) {
+	t.Run("should still report a deadlock when goroutines block for good after SQLite calls", func(t *testing.T) {
+		// A bubble that deadlocks never ends its test, so nothing in it is cleaned up. The file and the
+		// connections therefore belong to this test, and the bubble's two goroutines stay blocked for
+		// as long as the process runs.
+		path := filepath.Join(t.TempDir(), "test.db")
+		holder := openWAL(t, path, 0)
+		waiter := openWAL(t, path, 0)
+
 		var panicked any
 		func() {
 			defer func() { panicked = recover() }()
-			synctest.Test(t, func(t *testing.T) {
-				path := filepath.Join(t.TempDir(), "test.db")
-				holder := openWAL(t, path, 0)
-				waiter := openWAL(t, path, 0)
-
+			synctest.Test(t, func(*testing.T) {
 				is.NotError(t, holder.Exec("begin immediate"))
 				never := make(chan struct{})
-				t.Cleanup(func() { close(never) })
 				go func() {
-					is.Equal(t, codeBusy, sqliteCode(waiter.Exec("begin immediate")))
+					is.True(t, busy(waiter.Exec("begin immediate")))
 					<-never
 				}()
 				<-never
 			})
 		}()
-		t.Logf("synctest.Test panicked with: %v", panicked)
-		is.True(t, panicked != nil, "no deadlock was reported")
+		is.Equal(t, "deadlock: all goroutines in bubble are blocked", fmt.Sprint(panicked))
 	})
 
-	// A reader that finds the wal-index header changing under it takes the WAL write lock for a moment
-	// to read the header again (walIndexReadHdr in sqlite3.c). A writer that begins at that moment gets
-	// SQLITE_BUSY, although no other connection writes. So a lock in Go around the write connection
-	// does not keep SQLite from wanting a lock that is taken, once readers run in parallel.
+	// In WAL mode, a writer can get SQLITE_BUSY when it begins although no other connection writes,
+	// once readers run in parallel with it. So a lock in Go around the write connection does not keep
+	// SQLite from wanting a lock that is taken.
 	for _, test := range []struct {
 		name        string
 		busyTimeout int
 	}{
-		{name: "one writer among parallel readers can get SQLITE_BUSY when it begins with no busy timeout", busyTimeout: 0},
-		{name: "one writer among parallel readers should not get SQLITE_BUSY with a busy timeout", busyTimeout: 1000},
+		{name: "should log how often one writer among parallel readers gets SQLITE_BUSY when it begins with no busy timeout", busyTimeout: 0},
+		{name: "should not give SQLITE_BUSY to one writer among parallel readers with a busy timeout", busyTimeout: 1000},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var busyOpen, busyRead, busyBegin, busyCommit, reads, writes atomic.Int64
@@ -264,7 +257,7 @@ func TestSynctestWithCgo(t *testing.T) {
 				is.NotError(t, setup.Exec("insert into t1 (k, v) values (1, 0)"))
 
 				count := func(n *atomic.Int64, err error) bool {
-					if sqliteCode(err) == codeBusy {
+					if busy(err) {
 						n.Add(1)
 						return true
 					}
