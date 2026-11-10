@@ -5,7 +5,7 @@ This document holds only what Markus and maragubot have explicitly agreed to wri
 ## SQL
 
 - **SQLite is the result oracle.** Results are judged against SQLite's.
-- **SQLite's SQL dialect.** Because SQLite is the oracle, the dialect is SQLite's.
+- **A strict subset of SQLite's SQL.** Because SQLite is the oracle, the dialect is SQLite's, and everything supported is also valid SQLite.
 - **Strict tables only.** Only `STRICT` tables are supported. Other restrictions may be added as they are found.
 
 ## Constraints
