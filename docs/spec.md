@@ -16,6 +16,8 @@ This document holds only what Markus and maragubot have explicitly agreed to wri
 - **A strict subset of SQLite's SQL.** Because SQLite is the oracle, the dialect is SQLite's, and everything supported is also valid SQLite.
 - **Strict tables only.** Only `STRICT` tables are supported. Other restrictions may be added as they are found.
 
+Which SQL is supported today, and what comes next, is in the working document [roadmap.md](roadmap.md).
+
 ## Testing
 
 - **Deterministic simulation.** The production code runs unchanged in a simulation where object storage, time, and randomness sit behind interfaces driven by one seed. The same seed always replays the same run, including its failures.
