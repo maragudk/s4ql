@@ -19,7 +19,9 @@ This replaces an earlier decision, made the same day, to start with `modernc.org
 ## Costs and risks
 
 - **Users of the module need cgo:** a C compiler at build time, and cross-compiling becomes harder. Markus accepts cgo, with pure Go preferred where it costs nothing.
-- **The binding is memory-unsafe code** that Go's race detector and memory safety do not cover. Keep it small, run its tests under the C address sanitizer, fuzz it, and cross-check it in tests against `modernc.org/sqlite` at the same SQLite version: two independent routes to SQLite must give the same answers.
+- **The binding is memory-unsafe code** that Go's race detector and memory safety do not cover. Keep it small, run its tests under the C address sanitizer, fuzz it, and cross-check it in tests against two references that run the same C code, so that any difference is a bug in the glue and not in SQLite:
+  - **The official `sqlite3` shell,** built from the same vendored source with the same options. It involves no third-party code at all.
+  - **`github.com/mattn/go-sqlite3`,** pinned to the same SQLite version, for what the shell cannot exercise: parameter binding, typed column access, and statement reuse. Two copies of SQLite's C code cannot normally be linked into one binary, so either our copy is compiled with file-local symbols or the reference runs in a separate process.
 
 ## Alternatives considered
 
