@@ -333,3 +333,64 @@ The sanitizer had to get stricter without changing the compile options, which th
 - A decision on what happens when mattn lags behind a SQLite release.
 - A permanent ASan canary would need a C entry point in `/internal/sqlite/sqlite.go`, which is production code, so this diary records the check instead.
 - `SQLITE_DEFAULT_PCACHE_INITSZ` makes the page cache allocate in bulk, which ASan cannot see either. The glue does not touch pages, so I left it.
+
+## Step 6: Three more compile options, path-filtered source check, and the to-do list
+
+**Author:** options-builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "The compile-time options for SQLite are now agreed as a default that can change later. They are the seven already in `options.h` plus three: `SQLITE_MAX_MMAP_SIZE=0` [...] `SQLITE_ENABLE_MATH_FUNCTIONS` [...] `SQLITE_STRICT_SUBTYPE=1` [...]" Followed by: make `sqlite-verify` run only when the vendored source, its manifest, or the update tool change; delete the built "SQLite binding" item from `docs/todo.md` after moving what is still worth knowing next to the code, and add two open points; add the compile-option classification as a research note. Two additions arrived mid-run: record the SQLite upgrade policy in the binding's README, and update the Memory section of `AGENTS.md` (merge and second opinions without asking), committed separately.
+**Interpretation:** A follow-up round on the binding: three options with tests of their effects, a CI change, documentation moves, and two small policy texts.
+**Inferred intent:** Settle the build's compile options with the reasons next to them, and stop CI from depending on sqlite.org being up.
+
+### What I did
+
+Red first: three subtests in `TestCompileOptions` in `/internal/sqlite/sqlite_test.go` failed as expected. `pragma mmap_size = 268435456` on a database file returned 268435456, `sqrt` failed with "no such function: sqrt (code 1)", and the subtype program printed "undeclared: ok". Then `/internal/sqlite/options.h` got the three options, each with its reason, and a closing comment with the three options considered and left out (`SQLITE_OMIT_DEPRECATED`, `SQLITE_OMIT_UTF16`, `SQLITE_DEBUG`). Its header rule now also allows an option that implements a rule in the spec or makes the build match what a normal build of SQLite has, since the mmap and math options fit neither of the old three reasons.
+
+`SQLITE_STRICT_SUBTYPE` affects only application-defined functions, which the binding cannot register, so SQL cannot see it. `/internal/sqlite/testdata/subtype.c` registers one function twice, with and without `SQLITE_RESULT_SUBTYPE`, and the test asserts "misuse of sqlite3_result_subtype() by undeclared()". To avoid compiling the amalgamation twice, the test helpers now compile `c/sqlite3.c` once to an object (`buildSQLite`) and link both the shell and this program against it (`buildProgram`).
+
+mattn's build, checked by running SQL against it in a throwaway test, not by reading its source: it reports `MAX_MMAP_SIZE=0x7fff0000` and `pragma mmap_size=1000000` sticks on a file database; it has no math functions ("no such function: sqrt") unless built with `-tags sqlite_math_functions`, which I tried and which adds `ENABLE_MATH_FUNCTIONS`; it already sets `OMIT_DEPRECATED`. The existing mattn comparisons touch none of these, so nothing broke. I added `TestCompileOptions` to `/internal/sqlite/crosscheck/crosscheck_test.go`, which pins the four SQL-visible differences (foreign keys, double-quoted strings, `sqrt`, `mmap_size`) on database files, and pulled `mattnOutcome` out of `compareScript` to share it.
+
+`/internal/sqlite/README.md` got short sections on why the binding is our own and on the compile options, the reason for the two cross-check references and what mattn covers that the shell cannot, the memory-unsafety sentence, the mattn differences, the `-shm` caveat, and the upgrade policy. With those, every point of the "SQLite binding" to-do item that is still worth knowing is next to the code, and I deleted the item. `/docs/todo.md` got the wal-index point under "Local I/O failure handling" and a new open "Vendoring s4ql" item.
+
+The `sqlite-verify` job moved from `/.github/workflows/ci.yml` into its own workflow, `/.github/workflows/sqlite-verify.yml`, with `paths` filters on `internal/sqlite/c/**`, `internal/sqlite/source.h`, `internal/sqlite/update/**`, and the workflow file itself, for pull requests and pushes to `main`. A job-level path filter does not exist in GitHub Actions without a third-party action, so a separate workflow is the simplest way.
+
+The research note is `/docs/research/sqlite-compile-options.md`: the classification with a new opening (question, date, outcome, pointer to `options.h`), one scratchpad path replaced by "builds not published", and every marker unchanged. A `diff` against the source shows that the only change below the opening is that one line.
+
+Self-review with the code-review skill (medium) over `7328f93..HEAD` returned seven findings. I fixed two that my change introduced: `mattnOutcome` now runs every `pragma` as a query, and a pragma without results gave `[""]` against the binding's `nil` (fixed, and covered by a new `pragma user_version` comparison); and the "each connection to :memory:" reason had moved to `mattnAt`, where it no longer fits. I left the rest as they are. Step-time errors make `mattnRows` fail the test instead of being compared, and statements are routed by a lowercase prefix. Both were in `compareScript` before I moved the code, and no current script triggers them. The reviewer also wanted `Makefile`, `go.mod` and `go.sum` in the workflow's path filter, which goes beyond the paths the lead named. A path-filtered job could block merges only if it were a required check, and there is no branch protection. The foreign-keys case repeats `TestLink`, but `TestLink` uses it to prove that two copies are linked, a different purpose.
+
+`make test` and `make lint` passed after the fixes ("0 issues." in both modules). `make test-asan` (Docker, `FUZZTIME=30s`) passed in all three packages, and so did each of the four fuzz targets. It ran just before the last fix, which changes only the crosscheck test file.
+
+### Why
+
+Each option is a difference from stock SQLite, so its reason and its effect belong next to it, tested. The source check is the only job that needs sqlite.org, and it only has something to check when the vendored files change.
+
+### What worked
+
+Asking mattn's build through SQL answered the question of what it has without reading its source, and the build tag test showed how close it could come.
+
+### What didn't work
+
+`pragma mmap_size = 268435456` on mattn's `:memory:` database returned no row at all, so the first version of the crosscheck test failed with "Expected slice of length 2, but got 1". The test now uses a database file per binding.
+
+The worktree isolation refused two compound shell commands ("this command is too complex to verify that it stays inside the worktree"): a `go list -m` piped into `grep`, and a here-doc that wrote and ran a probe test. Splitting them into plain commands and writing the file with the editor worked.
+
+### What I learned
+
+In mattn's build, setting `pragma mmap_size` on an in-memory database returns no row, so the option's effect is visible only on a database file. A path-filtered workflow still runs on pull request #2, because the filter compares against the base branch and the pull request adds `internal/sqlite/c/`.
+
+### What was tricky
+
+Writing a test for an option whose only effect is in the C API, without adding C to the binding's production file. A test program in `testdata/` built with the same object as the shell keeps it out of the package.
+
+### What warrants review
+
+- The new header rule in `/internal/sqlite/options.h`, which widens what may justify an option.
+- `buildSQLite`, `buildProgram` and `compile` in `/internal/sqlite/sqlite_test.go`.
+- The path list in `/.github/workflows/sqlite-verify.yml`. There is no branch protection on `main` (the API returns 404 and no rulesets), so the workflow cannot leave a required check pending.
+
+### Future work
+
+- `mattnOutcome` in `/internal/sqlite/crosscheck/crosscheck_test.go` should report an error raised while stepping as an outcome, as `bindingOutcome` does, before a script or fuzz input produces one (for example an integer overflow in a `select`).
+- Whether `Makefile`, `go.mod` and `go.sum` belong in the `sqlite-verify` path filter.
