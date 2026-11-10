@@ -11,6 +11,7 @@ This document holds only what Markus and maragubot have explicitly agreed to wri
 
 ## SQL
 
+- **We write the SQL engine.** The engine parses, plans, and executes SQL itself. SQLite does not run the application's SQL.
 - **SQLite is the result oracle.** Results are judged against SQLite's.
 - **A strict subset of SQLite's SQL.** Because SQLite is the oracle, the dialect is SQLite's, and everything supported is also valid SQLite.
 - **Strict tables only.** Only `STRICT` tables are supported. Other restrictions may be added as they are found.
@@ -25,4 +26,5 @@ This document holds only what Markus and maragubot have explicitly agreed to wri
 
 - **Always a lease.** An instance must hold the database's lease to read or write, and there is no mode without it. The lease is recorded in S3 and has a timeout. Every write renews it, and so does a periodic renewal.
 - **Reads come from the local cache.** While an instance holds the lease, it reads from its local cache without contacting S3. Writes go to S3.
+- **The local cache is a SQLite database.** It holds the same tables and rows as the database, and the engine uses it as its local row store. S3 holds the truth in our own format, and the cache can be rebuilt from it at any time.
 - **One commit at a time.** Commits to a database happen strictly one after another, and the storage enforces this, not the lease or a clock. Only the lease holder writes, and any instance can become the holder.
