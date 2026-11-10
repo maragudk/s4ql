@@ -22,6 +22,12 @@ This document holds only what Markus and maragubot have explicitly agreed to wri
 - **Buggify.** The production code contains marked points where, in simulation only, it does something legal but unusual, such as returning an error, adding a delay, or taking a rare branch. Each run switches on a random subset of these points, so every run stresses a different part of the code.
 - **Simulation and real S3 have separate jobs.** The simulation, with a simulated object store, hunts for bugs. Real S3 checks that the simulated store behaves like the real one, and runs the integration tests.
 
+## Concurrency
+
+- **One write transaction at a time.** Per database, a second writer waits until the first has committed or rolled back.
+- **Reads run in parallel.** Each read transaction sees one consistent state of the cache, even while a write is in progress. The number of connections in the database pool sets how many reads run at once.
+- **State changes run on a single path.** Write transactions, the commit steps, lease renewal, and cache catch-up run on one path, written as a state machine that does no I/O itself: it receives events and answers with the next action. This is what lets the simulation replay a run exactly.
+
 ## Constraints
 
 - **Many databases per bucket.** Each database is a key prefix, so one S3 bucket can hold many databases. This enables one database per user, and it suits write-heavy workloads by spreading them across databases. The common case is still one database, meaning one prefix.
