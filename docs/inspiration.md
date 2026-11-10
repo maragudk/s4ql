@@ -2,6 +2,20 @@
 
 This document lists good ideas from four projects and explains how each idea works in its project. It does not say which of them this project uses. Keep it concise, preferably bullet points only.
 
+## Terms
+
+- **WAL:** write-ahead log. Changes are appended to it before they are applied anywhere else.
+- **LSN:** log sequence number. The position of a commit in a log, counted 1, 2, 3 and so on.
+- **SST:** sorted string table. An immutable file of key-value pairs sorted by key.
+- **DDL:** data definition language. The SQL statements that change the schema, such as `CREATE TABLE`.
+- **ETag:** an identifier that object storage returns for a version of an object. It changes when the content changes.
+- **`If-None-Match: *`:** a condition on a PUT that makes it succeed only if no object exists at that key (create-if-absent).
+- **`If-Match`:** a condition on a PUT that makes it succeed only if the object's ETag still equals the given one (compare-and-swap).
+- **412:** the HTTP status "precondition failed", returned when one of those conditions does not hold.
+- **ULID:** universally unique lexicographically sortable identifier. A random id that sorts by creation time.
+- **NVMe:** non-volatile memory express. Fast local solid-state storage.
+- **FIFO:** first in, first out.
+
 ## Graft
 
 Graft is a storage engine in Rust that replicates a SQLite database, as 4 KiB pages, directly to object storage with no server in between.
