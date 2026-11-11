@@ -164,6 +164,17 @@ What a change file holds. Agreed so far; Markus and maragubot are still iteratin
 - **An unknown kind of change is refused, never skipped.** An instance that meets a kind it does not know stops replay with an error that says a newer version of s4ql is needed. Skipping an unknown field is safe only for evidence. Skipping a `drop table` would silently leave the cache different from the log.
 - **The statements, as evidence:** each statement's SQL text, its parameters, and its non-deterministic inputs. The parameters make the evidence complete, so a tool can run a commit's statements through the engine again and compare the outcome with the recorded changes. The cost is that the data of an insert is stored roughly twice. Leaving them out can become a setting later.
 - **The statements and the changes are not linked.** The file does not say which statement caused which change.
+- **Rows are grouped under a heading.** The heading holds the table name, the column names in order, each column's type, and which columns form the primary key. The rows that follow hold their values in that order, and each value carries its own type tag. A put holds all columns, and a delete holds the primary-key columns. Replay compares the heading with the table in the cache and refuses the file on any difference. Markus chose the heading over names and types in every row on 2026-11-11: it is smaller, and a change file is always read whole from the front, so a row never travels alone.
+- **Why names and types, and not the table name only:** every surveyed system that gives its reader less than the column names has a documented way to go wrong silently, among them MySQL with minimal row images and SQLite's changesets. See [research/change-file-contents.md](research/change-file-contents.md).
+
+Details chosen by maragubot, from that research:
+
+- **Each change file stands alone.** No heading or other state carries over from an earlier file. A heading is repeated after a schema change to its table in the same file.
+- **An update of a primary key is a delete of the old key and a put of the new row.**
+- **Evidence and changes are separate kinds of record,** so that "may be skipped" and "must be refused" are two different places in the format. An unknown kind of evidence is skipped. An unknown kind of change, and an unknown kind of record, are refused.
+- **The decoder must make the refusal true.** With Protocol Buffers, a `oneof` that holds a kind the reader does not know reads as not set. Replay treats a change with no known kind as an error.
+- **There are no before-images and no count of changes, for now.** Both can be added later as new fields.
+- **For later slices:** replay applies results only, so it must not run triggers or cascades, and foreign keys cannot be checked row by row, because a file holds the net effect and not the order of the statements. Adding a column with a default, and dropping a table, are one change each, with no rows repeated.
 
 ## A manifest swap whose outcome is unknown
 
