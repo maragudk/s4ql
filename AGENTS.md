@@ -47,3 +47,10 @@ The second-opinion skill may be used whenever an independent view helps.
 
 - **Why:** Markus said on 2026-11-10: "Feel free to use second opinion skill whenever you want, but take results judiciously."
 - **How to apply:** use it for design decisions, stubborn bugs, and reviews. Treat the result as one input: check its claims before acting on them, and do not let it override what was agreed with Markus.
+
+### Exported conversations go in `docs/conversations/`
+
+When Markus exports a conversation, move the export into `docs/conversations/` and commit it, without asking.
+
+- **Why:** Markus said on 2026-11-11: "every time I export a conversation, just move it (potentially overwriting another one if it's an update to a conversation) and commit."
+- **How to apply:** name the file by the date the conversation started and a short topic, like `2026-11-10-kickoff.txt`. If the export is a newer version of a conversation that is already there, overwrite that file. Run the cheap check for the S3 access key and secret first.
