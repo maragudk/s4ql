@@ -137,7 +137,8 @@ The manifest, `manifest.json`:
 ```
 
 - `version` is the version of the manifest format.
-- `branches.main.head` is the name of the newest change file, which is the SHA-256 checksum of its content. A new database has no `head`. A branch entry is an object so that it can gain fields later.
+- `branches.main.head` is the name of the newest change file, which is the SHA-256 checksum of its content. A branch entry is an object so that it can gain fields later.
+- **An empty log has the name of 32 zero bytes.** The `head` of a new database is that name, written as 64 zeros, and so is the `previous` field of the first change file. Both fields are required. A forgotten `previous` is then an error, and not a file that looks like the first one and silently cuts off the log before it. The first commit is also no special case: every commit sets `previous` to the `head` it read. Markus proposed the required pointer with a magic name on 2026-11-11.
 - `lease.holder` is the random ID of the process that holds the lease, and `lease.expires` is the wall-clock time at which it expires. A released lease has no `lease` entry.
 - An instance keeps the fields it does not know when it rewrites the manifest. Without this rule, an older version would delete the fields of a newer one at every renewal.
 - There is no count of commits. Markus: "Drop the "commits", let's keep the essentials."
