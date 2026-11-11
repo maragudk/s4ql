@@ -153,6 +153,18 @@ The change files:
 - **A file is a sequence of small messages,** not one large message, so that a commit of millions of rows is written and read as a stream.
 - **A change file is checked against its SHA-256 name before it is decoded.**
 
+What a change file holds. Agreed so far; Markus and maragubot are still iterating on it:
+
+- **A header:** the format version, the required `previous` name, and the wall-clock time of the commit. The time is evidence only and comes from the holder's clock. It is included because a later feature such as restoring to a point in time needs it, and it cannot be added to old files.
+- **A list of changes, applied in order.** A file holds the net effect of its commit, so a primary key appears at most once per table. The kinds for the first slice are:
+  - create a table, with its name and columns as data and not as SQL text, so that replay needs no SQL parser
+  - put a row, with the full row, which replaces any row with the same primary key
+  - delete a row, by its primary key
+- **The kinds of change follow the roadmap.** A kind is defined when the slice that needs it is built: `drop table`, `alter table`, and indexes each become a new kind. Every `insert`, `update`, and `delete` ends up as put and delete, so row changes need nothing new.
+- **An unknown kind of change is refused, never skipped.** An instance that meets a kind it does not know stops replay with an error that says a newer version of s4ql is needed. Skipping an unknown field is safe only for evidence. Skipping a `drop table` would silently leave the cache different from the log.
+- **The statements, as evidence:** each statement's SQL text, its parameters, and its non-deterministic inputs. The parameters make the evidence complete, so a tool can run a commit's statements through the engine again and compare the outcome with the recorded changes. The cost is that the data of an insert is stored roughly twice. Leaving them out can become a setting later.
+- **The statements and the changes are not linked.** The file does not say which statement caused which change.
+
 ## A manifest swap whose outcome is unknown
 
 Status: agreed with Markus on 2026-11-11, not built. The spec holds the rule; this item holds the reasoning and the detail.
