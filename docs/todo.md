@@ -115,6 +115,33 @@ Details chosen by maragubot:
 - The lease duration counts from when the renewal was sent, not from when S3 answered.
 - Another instance waits a small margin past the expiry before it takes the lease. The value is chosen when it is built.
 
+## Storage formats
+
+Status: the manifest is agreed with Markus on 2026-11-11 and not built. The change file format is open.
+
+The manifest, `manifest.json`:
+
+```json
+{
+  "version": 1,
+  "branches": {
+    "main": {
+      "head": "9f2c…e41a"
+    }
+  },
+  "lease": {
+    "holder": "5b0e…77c3",
+    "expires": "2026-11-11T12:00:30.123Z"
+  }
+}
+```
+
+- `version` is the version of the manifest format.
+- `branches.main.head` is the name of the newest change file, which is the SHA-256 checksum of its content. A new database has no `head`. A branch entry is an object so that it can gain fields later.
+- `lease.holder` is the random ID of the process that holds the lease, and `lease.expires` is the wall-clock time at which it expires. A released lease has no `lease` entry.
+- An instance keeps the fields it does not know when it rewrites the manifest. Without this rule, an older version would delete the fields of a newer one at every renewal.
+- There is no count of commits. Markus: "Drop the "commits", let's keep the essentials."
+
 ## A manifest swap whose outcome is unknown
 
 Status: agreed with Markus on 2026-11-11, not built. The spec holds the rule; this item holds the reasoning and the detail.
