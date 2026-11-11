@@ -168,50 +168,81 @@ What a commit object holds. Agreed so far; Markus and maragubot are still iterat
 - **Rows are grouped under a heading.** The heading holds the table name, the column names in order, each column's type, and which columns form the primary key. The rows that follow hold their values in that order, and each value carries its own type tag. A put holds all columns, and a delete holds the primary-key columns. Replay compares the heading with the table in the cache and refuses the file on any difference. Markus chose the heading over names and types in every row on 2026-11-11: it is smaller, and a commit object is always read whole from the front, so a row never travels alone.
 - **Why names and types, and not the table name only:** every surveyed system that gives its reader less than the column names has a documented way to go wrong silently, among them MySQL with minimal row images and SQLite's changesets. See [research/change-file-contents.md](research/change-file-contents.md).
 
-The schema as shown to Markus on 2026-11-11. Names and numbers can still change until the first file is written:
+The schema as shown to Markus on 2026-11-11, revised after a review against the official Protocol Buffers guidance ([research/protobuf-practices.md](research/protobuf-practices.md)). It passes `buf lint`. Names can change at any time, because they are not stored in the bytes. Numbers and types can change only until the first commit object is written:
 
 ```proto
-syntax = "proto3";
+// The format of an s4ql commit object.
+//
+// Commit objects are kept forever, and every version of s4ql must read
+// every one ever written. Field numbers and field types never change, and
+// a number that is no longer used is reserved. Names can change.
+edition = "2024";
 
-package s4ql;
+package s4ql.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "maragu.dev/s4ql/internal/s4qlpb";
 
 // A commit object: everything one commit did.
-// It is written and read as a stream, one record at a time.
+//
+// It is written and read as a stream, one record at a time: each record is
+// the byte 0x0a, the length of the record as a varint, and the record.
 message Commit {
+  // The records, in the order they were written.
   repeated Record records = 1;
 }
 
 // One record of a commit object.
-// A reader refuses a record whose kind it does not know.
+//
+// A Record holds no field outside `kind`, now or later. A reader that finds
+// no known kind refuses the commit object: if the record holds an unknown
+// field, a newer version of s4ql wrote it; if it holds nothing, it is
+// malformed.
 message Record {
+  // What the record is.
   oneof kind {
-    Header   header       = 1; // exactly once, and first
-    Table    create_table = 2; // a change: creates this table
-    Table    heading      = 3; // the puts and deletes that follow belong to this table
-    Row      put          = 4; // a change: one full row, in the heading's column order
-    Row      delete       = 5; // a change: the primary-key values of the row to remove
-    Evidence evidence     = 6; // not needed for replay
+    // Exactly once, and first.
+    Header header = 1;
+    // A change: creates this table.
+    Table create_table = 2;
+    // The puts and deletes that follow belong to this table.
+    Table heading = 3;
+    // A change: one full row, in the heading's column order.
+    Row put = 4;
+    // A change: the primary-key values of the row to remove.
+    Row delete = 5;
+    // Not needed for replay. A reader may skip it.
+    Evidence evidence = 6;
   }
 }
 
+// The first record of every commit object.
 message Header {
   // The version of this format. A reader refuses a version it does not know.
   // It is raised when something is added that a reader must not ignore.
   uint32 version = 1;
-  // The name of the commit object before this one: 32 bytes, all zero in the first one.
+  // The name of the commit object before this one: 32 bytes, all zero in
+  // the first one.
   bytes parent = 2;
-  // The wall-clock time of the commit, in nanoseconds since 1970 UTC. Evidence only.
-  int64 time = 3;
+  // The wall-clock time of the commit, from the clock of the lease holder.
+  // Evidence only.
+  google.protobuf.Timestamp time = 3;
 }
 
 // A table: what "create table" creates, and what a heading names.
 message Table {
+  // The name of the table. s4ql refuses an identifier that is not valid UTF-8.
   string name = 1;
+  // The columns, in their declared order.
   repeated Column columns = 2;
 }
 
+// One column of a table.
 message Column {
+  // The name of the column. s4ql refuses an identifier that is not valid UTF-8.
   string name = 1;
+  // The declared type of the column.
   Type type = 2;
   // The column's position in the primary key, starting at 1,
   // or 0 if it is not part of the key.
@@ -219,37 +250,57 @@ message Column {
 }
 
 // The declared type of a column. More are added as the roadmap grows.
+// A reader refuses a value it does not know.
 enum Type {
-  TYPE_UNKNOWN = 0;
+  // Never written. A reader refuses it.
+  TYPE_UNSPECIFIED = 0;
+  // The STRICT type INT.
   TYPE_INT = 1;
 }
 
+// A row: its values in the heading's column order.
 message Row {
+  // The values.
   repeated Value values = 1;
 }
 
 // One SQLite value.
+//
+// A Value holds no field outside `kind`, now or later. A reader refuses a
+// value with no known kind, as it does a record.
 message Value {
+  // The storage class of the value, and the value.
   oneof kind {
+    // A 64-bit signed integer.
     sint64 integer = 1;
-    double real    = 2;
-    bytes  text    = 3; // bytes, because SQLite text need not be valid UTF-8
-    bytes  blob    = 4;
-    Null   null    = 5;
+    // A 64-bit IEEE 754 floating-point number.
+    double real = 2;
+    // Text, as bytes, because SQLite text need not be valid UTF-8.
+    bytes text = 3;
+    // A blob.
+    bytes blob = 4;
+    // NULL.
+    Null null = 5;
   }
 }
 
+// The SQL NULL. It has no fields.
 message Null {}
 
 // Evidence of what ran. A reader skips a kind of evidence it does not know.
 message Evidence {
+  // What the evidence is.
   oneof kind {
+    // One statement, as it ran.
     Statement statement = 1;
   }
 }
 
+// One statement, as it ran.
 message Statement {
-  string sql = 1;
+  // The SQL text, as bytes, because it can hold text that is not valid UTF-8.
+  bytes sql = 1;
+  // The parameters, by position, starting with parameter 1.
   repeated Value parameters = 2;
   // Non-deterministic inputs, such as the time, become fields here
   // when a slice of the roadmap first needs them.
@@ -263,6 +314,18 @@ Details chosen by maragubot, from that research:
 - **Evidence and changes are separate kinds of record,** so that "may be skipped" and "must be refused" are two different places in the format. An unknown kind of evidence is skipped. An unknown kind of change, and an unknown kind of record, are refused.
 - **The decoder must make the refusal true.** With Protocol Buffers, a `oneof` that holds a kind the reader does not know reads as not set. Replay treats a change with no known kind as an error.
 - **There are no before-images and no count of changes, for now.** Both can be added later as new fields.
+- **New kinds can be added to a `oneof` later,** as a new member with a new number. Old commit objects stay valid, and `buf breaking` accepts the addition. Moving an existing field into a `oneof` is unsafe.
+- **`Record` and `Value` never get a field outside their `oneof`.** Any unknown field in them then means a kind from a newer version, and the reader finds it with `ProtoReflect().GetUnknown()`. A record with no kind and no unknown field is malformed.
+- **What the reader must do,** from [research/protobuf-practices.md](research/protobuf-practices.md):
+  - check that there is exactly one header and that it is first, because two commit objects joined end to end decode as one valid message
+  - refuse a `Type` value it does not know, which Go keeps as a plain number without an error
+  - never set `DiscardUnknown`
+  - raise the size limit of `protodelim`, whose default of 4 MiB is below SQLite's limit of 1 GB for one value
+- **Writing as a stream** is the byte `0x0a` and then `protodelim.MarshalTo` for each record. A test gave exactly the bytes of `proto.Marshal` on the whole message.
+- **The schema uses `edition = "2024"`,** not `proto3`. Every field then records whether it was set, and the generated Go code is the kind the documentation recommends. The bytes are the same, so this can be changed.
+- **The SQL text of a statement is stored as bytes.** A `string` field refuses text that is not valid UTF-8, and a commit must never fail on its evidence after its statements ran.
+- **The commit time is Google's standard timestamp type,** as the official guidance advises.
+- **CI checks the schema** with `buf lint` and with `buf breaking` under its `WIRE` rules, checks that the committed generated code matches the schema, and reads sample commit objects from every format version.
 - **For later slices:** replay applies results only, so it must not run triggers or cascades, and foreign keys cannot be checked row by row, because a file holds the net effect and not the order of the statements. Adding a column with a default, and dropping a table, are one change each, with no rows repeated.
 
 ## A manifest swap whose outcome is unknown
