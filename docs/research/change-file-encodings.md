@@ -47,7 +47,7 @@ What SQLite itself does with edge values, measured with the `sqlite3` 3.54.1 she
 | Own TLV | ours | ours | ours | ours; 0 modules | ours | only with our tool | ours | ours |
 | SQLite changeset | **none**: no version, no extension point | yes: 8-byte big-endian integers and doubles, an "undefined" type distinct from NULL | via the `_strm` API | C code in SQLite; session extension not in our build | described only in source comments | partly: table name, column count, PK flags | SQLite's code | no |
 | FlatBuffers | vtables; append fields or set `id` | yes | **no**: one in-memory buffer, 32-bit offsets | v25.12.19 (2026-02-06); 1 module; needs `flatc`; **no verifier in Go** | stable, Google project | no | no Go verifier | no |
-| Cap'n Proto | ordinal fields, data and pointer sections | yes | segments, whole message | `capnproto.org/go/capnp/v3` v3.1.0-alpha.2 (2025-10-25), "beta software"; 3 modules | spec "not finalized" per the Go README | no | traversal and depth limits | a canonical form exists |
+| Cap'n Proto | ordinal fields, data and pointer sections | yes | segments, whole message | v2 stable, last release v2.18.0 (2019-12-15); `capnproto.org/go/capnp/v3` only alphas, latest v3.1.0-alpha.2 (2025-10-25), "beta software"; 3 modules | spec "not finalized" per the Go README | no | traversal and depth limits | a canonical form exists |
 | Apache Avro | schema resolution, needs the writer's schema | yes | object container files with blocks | `hamba/avro` archived and unmaintained; `linkedin/goavro` v2.15.0 (2026-01-21) | Apache 1.12.x | container embeds the schema | `hamba/avro`: 4 advisories | Parsing Canonical Form for schemas only |
 | MessagePack | maps with string keys, or arrays by position | yes | concatenated objects | `tinylib/msgp` v1.6.5 (2026-09-30) codegen; `vmihailenco/msgpack` last release 2023-10-26 | spec unchanged since 2021, one breaking split of "raw" in 2013 | yes | no advisories | no |
 | Amazon Ion | struct fields by symbol | yes, typed nulls | value streams | `ion-go` v1.5.0 (2024-06-06), no commits since | Ion 1.0 | yes | unknown | no |
@@ -224,7 +224,10 @@ Sources: https://www.rfc-editor.org/rfc/rfc8949.html, https://www.rfc-editor.org
   - The support table lists no buffer verifier for Go, and the `go/` directory has none. A hostile or corrupted file can therefore make reads go out of range. [I]
 - **Cap'n Proto** [V, https://capnproto.org/encoding.html, go-capnp README and tags]:
   - Evolution works like FlatBuffers', with ordinals and default values stored XOR-ed.
-  - The Go library's latest tag is v3.1.0-alpha.2 (2025-10-25), and its README calls it "beta software" until "the official Cap'n Proto spec is finalized".
+  - The Go library has two lines [V, GitHub releases, tags, and branches of `capnproto/go-capnp`, checked 2026-11-11]:
+    - v2 is stable. Its last release is v2.18.0 (2019-12-15), and the last commit on the `v2` branch is from 2021-05-13.
+    - v3 is the line under development. Every v3 release so far is an alpha, the latest being v3.1.0-alpha.2 (2025-10-25), and the last commit on `main` is from 2026-07-27.
+  - Its README, which describes v3, calls the repository "beta software" until "the official Cap'n Proto spec is finalized".
   - A consumer gets 3 modules. Schemas need the C++ `capnp` compiler. [I]
 - **Apache Avro** [V, https://avro.apache.org/docs/1.12.0/specification/, latest release 1.12.2 on 2026-08-23]:
   - The binary encoding "does not include field names", and "readers are wholly reliant on the schema used when the data was encoded". Every file must therefore carry or name its writer schema, and every reader must implement Avro's schema resolution.
