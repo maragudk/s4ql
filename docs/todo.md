@@ -150,7 +150,7 @@ The change files:
 - **Why the tooling and not a hand-written codec,** which maragubot recommended first: less code of ours, a decoder that is fuzzed continuously, the `.proto` file as the real schema, and a check in CI that a schema change does not break old files. Both ways write the same bytes, so the choice can be changed later without touching a stored file.
 - **Text is stored as bytes.** SQLite accepts text that is not valid UTF-8, even in a strict table, and the Go library rejects such text in a `string` field.
 - **A field that can be absent is declared so,** with `optional` or a `oneof`, so that an empty value and a missing value stay distinct.
-- **A file is a sequence of small messages,** not one large message, so that a commit of millions of rows is written and read as a stream.
+- **A file is one `ChangeFile` message that holds a list of records,** and it is written and read as a stream, one record at a time. In the bytes, a list is its items one after another, each with the field number and its length in front, so a reader never has to build the whole message in memory. The schema then describes the whole file, and a standard tool can print one. Markus noticed on 2026-11-11 that nothing in the first sketch held the records.
 - **A change file is checked against its SHA-256 name before it is decoded.**
 
 What a change file holds. Agreed so far; Markus and maragubot are still iterating on it:
@@ -166,6 +166,94 @@ What a change file holds. Agreed so far; Markus and maragubot are still iteratin
 - **The statements and the changes are not linked.** The file does not say which statement caused which change.
 - **Rows are grouped under a heading.** The heading holds the table name, the column names in order, each column's type, and which columns form the primary key. The rows that follow hold their values in that order, and each value carries its own type tag. A put holds all columns, and a delete holds the primary-key columns. Replay compares the heading with the table in the cache and refuses the file on any difference. Markus chose the heading over names and types in every row on 2026-11-11: it is smaller, and a change file is always read whole from the front, so a row never travels alone.
 - **Why names and types, and not the table name only:** every surveyed system that gives its reader less than the column names has a documented way to go wrong silently, among them MySQL with minimal row images and SQLite's changesets. See [research/change-file-contents.md](research/change-file-contents.md).
+
+The schema as shown to Markus on 2026-11-11. Names and numbers can still change until the first file is written:
+
+```proto
+syntax = "proto3";
+
+package s4ql;
+
+// A change file: everything one commit did.
+// It is written and read as a stream, one record at a time.
+message ChangeFile {
+  repeated Record records = 1;
+}
+
+// One record of a change file.
+// A reader refuses a record whose kind it does not know.
+message Record {
+  oneof kind {
+    Header   header       = 1; // exactly once, and first
+    Table    create_table = 2; // a change: creates this table
+    Table    heading      = 3; // the puts and deletes that follow belong to this table
+    Row      put          = 4; // a change: one full row, in the heading's column order
+    Row      delete       = 5; // a change: the primary-key values of the row to remove
+    Evidence evidence     = 6; // not needed for replay
+  }
+}
+
+message Header {
+  // The version of this format. A reader refuses a version it does not know.
+  // It is raised when something is added that a reader must not ignore.
+  uint32 version = 1;
+  // The name of the change file before this one: 32 bytes, all zero in the first file.
+  bytes previous = 2;
+  // The wall-clock time of the commit, in nanoseconds since 1970 UTC. Evidence only.
+  int64 time = 3;
+}
+
+// A table: what "create table" creates, and what a heading names.
+message Table {
+  string name = 1;
+  repeated Column columns = 2;
+}
+
+message Column {
+  string name = 1;
+  Type type = 2;
+  // The column's position in the primary key, starting at 1,
+  // or 0 if it is not part of the key.
+  uint32 primary_key = 3;
+}
+
+// The declared type of a column. More are added as the roadmap grows.
+enum Type {
+  TYPE_UNKNOWN = 0;
+  TYPE_INT = 1;
+}
+
+message Row {
+  repeated Value values = 1;
+}
+
+// One SQLite value.
+message Value {
+  oneof kind {
+    sint64 integer = 1;
+    double real    = 2;
+    bytes  text    = 3; // bytes, because SQLite text need not be valid UTF-8
+    bytes  blob    = 4;
+    Null   null    = 5;
+  }
+}
+
+message Null {}
+
+// Evidence of what ran. A reader skips a kind of evidence it does not know.
+message Evidence {
+  oneof kind {
+    Statement statement = 1;
+  }
+}
+
+message Statement {
+  string sql = 1;
+  repeated Value parameters = 2;
+  // Non-deterministic inputs, such as the time, become fields here
+  // when a slice of the roadmap first needs them.
+}
+```
 
 Details chosen by maragubot, from that research:
 
