@@ -19,12 +19,12 @@ The spec holds the rules: a commit is acknowledged once S3 has it, a local I/O f
 - **Running reads are aborted.** Reads already running when the instance stops fail. This is a lean, not a hard rule. Markus: "Sounds theoretical. Don't overfocus on it. Leaning towards abort." Letting them finish would break no rule, since they hold a snapshot from before the commit.
 - **The instance stops, then releases the lease.** It stops serving first, then tries once to release the lease. If the release fails, the lease times out as after a crash.
 - **The library does not reopen itself, for now.** The application closes the database and reopens it, so recovery from a stop is the same path as recovery from an application crash.
-- **Recovery follows the cache's recorded position.** If the failed local commit did not land, startup applies the missing change file. If it landed despite the error, there is nothing to apply. An I/O error from SQLite's `COMMIT` does not say whether the commit happened, so recovery never assumes either state. If the failure persists, `Open` fails. Nothing deletes or rebuilds the cache automatically: a person or the application chooses a rebuild, for example by pointing at an empty cache.
+- **Recovery follows the cache's recorded position.** If the failed local commit did not land, startup applies the missing commit object. If it landed despite the error, there is nothing to apply. An I/O error from SQLite's `COMMIT` does not say whether the commit happened, so recovery never assumes either state. If the failure persists, `Open` fails. Nothing deletes or rebuilds the cache automatically: a person or the application chooses a rebuild, for example by pointing at an empty cache.
 - **The simulation injects the failure.** A buggify point sits between the manifest swap and the local commit, with two variants:
   - The local commit is rolled back and reports an error.
   - The local commit goes through and still reports an error.
 
-  The second variant is not distrust of SQLite. SQLite can legitimately return an I/O error from `COMMIT` after the transaction became durable. The variant catches a bug of ours: recovery that assumes an error means the cache did not get the transaction, and so applies the change file twice.
+  The second variant is not distrust of SQLite. SQLite can legitimately return an I/O error from `COMMIT` after the transaction became durable. The variant catches a bug of ours: recovery that assumes an error means the cache did not get the transaction, and so applies the commit object twice.
 
   The invariant checked is that no read that starts after an acknowledged commit returns a state without that commit. The simulation also checks that reopening shows the transaction, and that the lease was released or timed out.
 - **No fault-injecting layer under SQLite, for now.** SQLite tests its own I/O error handling, and using the official C code is how we inherit that.
@@ -101,7 +101,7 @@ Markus on the frame for all of it: s4ql is "designed mostly for always-on server
 - **Clocks affect only reads.** Writes are correct whatever the clocks do, because S3 checks the manifest swap. The danger is a holder that has lost the lease without knowing it and answers a read from its cache, which lacks the new holder's commits.
 - **A read checks the lease against both clocks.** It passes only if the wall clock is before the expiry and the monotonic clock shows less than the lease duration since the renewal was sent. A wall clock that is set backward is caught by the monotonic clock, and a monotonic clock that stood still is caught by the wall clock. If both fail, reads can be stale, and Markus accepts that: "if the server is in such bad a state that both clocks fail, stale reads are probably okay too."
 - **One check when the read starts is enough.** Its order relative to the SQLite snapshot does not matter. The cache never holds another instance's commits, so a snapshot taken after a pause shows a state that was correct at the moment of the check.
-- **An instance without a valid lease refuses and keeps trying.** Reads and writes fail at once with a distinct temporary error, and a write transaction that is open then is not committed. The instance keeps trying to get the lease. When it gets it, it applies the change files it is missing, with the same code as at startup, and serves again. This one rule covers three cases:
+- **An instance without a valid lease refuses and keeps trying.** Reads and writes fail at once with a distinct temporary error, and a write transaction that is open then is not committed. The instance keeps trying to get the lease. When it gets it, it applies the commit objects it is missing, with the same code as at startup, and serves again. This one rule covers three cases:
   - The instance cannot reach S3 and its lease runs out. If a later renewal succeeds, the manifest was unchanged and there is nothing to catch up. Markus: "this is where we'd return a HTTP 502 and let the clients retry."
   - Another instance has taken the lease.
   - The instance has just started.
@@ -117,7 +117,7 @@ Details chosen by maragubot:
 
 ## Storage formats
 
-Status: the manifest and the encoding of the change files are agreed with Markus on 2026-11-11 and not built. What a change file holds is open.
+Status: the manifest and the encoding of the commit objects are agreed with Markus on 2026-11-11 and not built. What a commit object holds is open.
 
 The manifest, `manifest.json`:
 
@@ -137,25 +137,26 @@ The manifest, `manifest.json`:
 ```
 
 - `version` is the version of the manifest format.
-- `branches.main.head` is the name of the newest change file, which is the SHA-256 checksum of its content. A branch entry is an object so that it can gain fields later.
-- **An empty log has the name of 32 zero bytes.** The `head` of a new database is that name, written as 64 zeros, and so is the `previous` field of the first change file. Both fields are required. A forgotten `previous` is then an error, and not a file that looks like the first one and silently cuts off the log before it. The first commit is also no special case: every commit sets `previous` to the `head` it read. Markus proposed the required pointer with a magic name on 2026-11-11.
+- `branches.main.head` is the name of the newest commit object, which is the SHA-256 checksum of its content. A branch entry is an object so that it can gain fields later.
+- **An empty log has the name of 32 zero bytes.** The `head` of a new database is that name, written as 64 zeros, and so is the `parent` field of the first commit object. Both fields are required. A forgotten `parent` is then an error, and not a file that looks like the first one and silently cuts off the log before it. The first commit is also no special case: every commit sets `parent` to the `head` it read. Markus proposed the required pointer with a magic name on 2026-11-11.
 - `lease.holder` is the random ID of the process that holds the lease, and `lease.expires` is the wall-clock time at which it expires. A released lease has no `lease` entry.
 - An instance keeps the fields it does not know when it rewrites the manifest. Without this rule, an older version would delete the fields of a newer one at every renewal.
 - There is no count of commits. Markus: "Drop the "commits", let's keep the essentials."
 
-The change files:
+The commit objects:
 
+- **The term is "commit object", and the pointer is `parent`.** Agreed with Markus on 2026-11-11. "Commit" is the action, and "commit object" is the immutable object in S3 that the action stores, as in git. The term replaces "change file", which was our own invention. The spec and the research notes still say "change file", and the spec says so until its new wording is agreed.
 - **The encoding is Protocol Buffers, with the standard tooling:** a `.proto` file as the schema, generated Go code, and `google.golang.org/protobuf`. Markus asked for "a binary format that is forwards and backwards compatible". The comparison with CBOR, Cap'n Proto, and others is in [research/change-file-encodings.md](research/change-file-encodings.md).
 - **Why not Cap'n Proto,** which Markus leaned towards first: its strengths are reading single fields without decoding and RPC, and a log that is read once from front to back uses neither. Its byte format is a memory layout with pointers and segments, which is more to trust in a file that must stay readable forever.
 - **Why the tooling and not a hand-written codec,** which maragubot recommended first: less code of ours, a decoder that is fuzzed continuously, the `.proto` file as the real schema, and a check in CI that a schema change does not break old files. Both ways write the same bytes, so the choice can be changed later without touching a stored file.
 - **Text is stored as bytes.** SQLite accepts text that is not valid UTF-8, even in a strict table, and the Go library rejects such text in a `string` field.
 - **A field that can be absent is declared so,** with `optional` or a `oneof`, so that an empty value and a missing value stay distinct.
-- **A file is one `ChangeFile` message that holds a list of records,** and it is written and read as a stream, one record at a time. In the bytes, a list is its items one after another, each with the field number and its length in front, so a reader never has to build the whole message in memory. The schema then describes the whole file, and a standard tool can print one. Markus noticed on 2026-11-11 that nothing in the first sketch held the records.
-- **A change file is checked against its SHA-256 name before it is decoded.**
+- **A file is one `Commit` message that holds a list of records,** and it is written and read as a stream, one record at a time. In the bytes, a list is its items one after another, each with the field number and its length in front, so a reader never has to build the whole message in memory. The schema then describes the whole file, and a standard tool can print one. Markus noticed on 2026-11-11 that nothing in the first sketch held the records.
+- **A commit object is checked against its SHA-256 name before it is decoded.**
 
-What a change file holds. Agreed so far; Markus and maragubot are still iterating on it:
+What a commit object holds. Agreed so far; Markus and maragubot are still iterating on it:
 
-- **A header:** the format version, the required `previous` name, and the wall-clock time of the commit. The time is evidence only and comes from the holder's clock. It is included because a later feature such as restoring to a point in time needs it, and it cannot be added to old files.
+- **A header:** the format version, the required `parent` name, and the wall-clock time of the commit. The time is evidence only and comes from the holder's clock. It is included because a later feature such as restoring to a point in time needs it, and it cannot be added to old files.
 - **A list of changes, applied in order.** A file holds the net effect of its commit, so a primary key appears at most once per table. The kinds for the first slice are:
   - create a table, with its name and columns as data and not as SQL text, so that replay needs no SQL parser
   - put a row, with the full row, which replaces any row with the same primary key
@@ -164,7 +165,7 @@ What a change file holds. Agreed so far; Markus and maragubot are still iteratin
 - **An unknown kind of change is refused, never skipped.** An instance that meets a kind it does not know stops replay with an error that says a newer version of s4ql is needed. Skipping an unknown field is safe only for evidence. Skipping a `drop table` would silently leave the cache different from the log.
 - **The statements, as evidence:** each statement's SQL text, its parameters, and its non-deterministic inputs. The parameters make the evidence complete, so a tool can run a commit's statements through the engine again and compare the outcome with the recorded changes. The cost is that the data of an insert is stored roughly twice. Leaving them out can become a setting later.
 - **The statements and the changes are not linked.** The file does not say which statement caused which change.
-- **Rows are grouped under a heading.** The heading holds the table name, the column names in order, each column's type, and which columns form the primary key. The rows that follow hold their values in that order, and each value carries its own type tag. A put holds all columns, and a delete holds the primary-key columns. Replay compares the heading with the table in the cache and refuses the file on any difference. Markus chose the heading over names and types in every row on 2026-11-11: it is smaller, and a change file is always read whole from the front, so a row never travels alone.
+- **Rows are grouped under a heading.** The heading holds the table name, the column names in order, each column's type, and which columns form the primary key. The rows that follow hold their values in that order, and each value carries its own type tag. A put holds all columns, and a delete holds the primary-key columns. Replay compares the heading with the table in the cache and refuses the file on any difference. Markus chose the heading over names and types in every row on 2026-11-11: it is smaller, and a commit object is always read whole from the front, so a row never travels alone.
 - **Why names and types, and not the table name only:** every surveyed system that gives its reader less than the column names has a documented way to go wrong silently, among them MySQL with minimal row images and SQLite's changesets. See [research/change-file-contents.md](research/change-file-contents.md).
 
 The schema as shown to Markus on 2026-11-11. Names and numbers can still change until the first file is written:
@@ -174,13 +175,13 @@ syntax = "proto3";
 
 package s4ql;
 
-// A change file: everything one commit did.
+// A commit object: everything one commit did.
 // It is written and read as a stream, one record at a time.
-message ChangeFile {
+message Commit {
   repeated Record records = 1;
 }
 
-// One record of a change file.
+// One record of a commit object.
 // A reader refuses a record whose kind it does not know.
 message Record {
   oneof kind {
@@ -197,8 +198,8 @@ message Header {
   // The version of this format. A reader refuses a version it does not know.
   // It is raised when something is added that a reader must not ignore.
   uint32 version = 1;
-  // The name of the change file before this one: 32 bytes, all zero in the first file.
-  bytes previous = 2;
+  // The name of the commit object before this one: 32 bytes, all zero in the first one.
+  bytes parent = 2;
   // The wall-clock time of the commit, in nanoseconds since 1970 UTC. Evidence only.
   int64 time = 3;
 }
@@ -257,7 +258,7 @@ message Statement {
 
 Details chosen by maragubot, from that research:
 
-- **Each change file stands alone.** No heading or other state carries over from an earlier file. A heading is repeated after a schema change to its table in the same file.
+- **Each commit object stands alone.** No heading or other state carries over from an earlier file. A heading is repeated after a schema change to its table in the same file.
 - **An update of a primary key is a delete of the old key and a put of the new row.**
 - **Evidence and changes are separate kinds of record,** so that "may be skipped" and "must be refused" are two different places in the format. An unknown kind of evidence is skipped. An unknown kind of change, and an unknown kind of record, are refused.
 - **The decoder must make the refusal true.** With Protocol Buffers, a `oneof` that holds a kind the reader does not know reads as not set. Replay treats a change with no known kind as an error.
@@ -273,7 +274,7 @@ Markus on the state after "outcome unknown": "it's kind of the same as when the 
 The manifest swap can end without telling the instance whether it succeeded, for example when the connection drops before the answer arrives. The transaction is then either committed or not, and the instance cannot tell which.
 
 - **The instance asks S3 again.** It retries the same swap. If the first attempt never arrived, the retry succeeds and the transaction is committed. If the first attempt did arrive, S3 rejects the retry, because the manifest has changed.
-- **After a rejection, the instance reads the manifest.** The transaction is committed if and only if its change file is in the log that the manifest points to. Another instance may have taken the lease and committed on top in the meantime, so the check walks the log back from the newest change file and does not look at that file alone.
+- **After a rejection, the instance reads the manifest.** The transaction is committed if and only if its commit object is in the log that the manifest points to. Another instance may have taken the lease and committed on top in the meantime, so the check walks the log back from the newest commit object and does not look at that file alone.
 - **A request stuck in the network cannot commit later.** Once the manifest has changed, S3 rejects the old request.
 - **`Commit` returns only when the instance knows,** with nil if the transaction is committed and an error if it is not.
 - **If S3 stays unreachable, `Commit` waits until the caller's context ends,** and then returns a distinct "outcome unknown" error. An application must check its own data then, or make its transactions safe to repeat. FoundationDB does the same with `commit_unknown_result` ([research/foundationdb.md](research/foundationdb.md)). This is the one case where `Commit` returns an error for a transaction that may be committed.
@@ -281,10 +282,10 @@ The manifest swap can end without telling the instance whether it succeeded, for
 Details chosen by maragubot:
 
 - **After "outcome unknown", the instance serves nothing until it knows.** It refuses reads and writes with the temporary error, as an instance without a valid lease does. Otherwise the application could check its data on a cache that lacks the transaction, conclude that it was not committed, and repeat it, while the stuck request commits the first one.
-- **In the background the instance no longer pushes the commit.** It reads the manifest. If the change file is in the log, it catches up the cache, which applies the transaction. If the manifest is unchanged, it renews the lease without the commit. When that renewal succeeds, the stuck request can no longer be applied, and the transaction is not committed. When the renewal is rejected, the instance reads the manifest again.
+- **In the background the instance no longer pushes the commit.** It reads the manifest. If the commit object is in the log, it catches up the cache, which applies the transaction. If the manifest is unchanged, it renews the lease without the commit. When that renewal succeeds, the stuck request can no longer be applied, and the transaction is not committed. When the renewal is rejected, the instance reads the manifest again.
 - **While `Commit` is still waiting, reads go on** for as long as the lease is valid by the clocks. They see the state before the transaction, which is allowed, because the commit is not acknowledged.
 - **A renewal with an unknown outcome is resolved the same way,** with no caller involved.
-- **An upload of a change file with an unknown outcome is harmless.** The file is named by its content and created only if absent, so the instance retries, and "already exists" means success.
+- **An upload of a commit object with an unknown outcome is harmless.** The file is named by its content and created only if absent, so the instance retries, and "already exists" means success.
 
 ## Vendoring s4ql
 
