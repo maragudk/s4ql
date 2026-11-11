@@ -117,9 +117,23 @@ Details chosen by maragubot:
 
 ## A manifest swap whose outcome is unknown
 
-Status: open, not designed.
+Status: agreed with Markus on 2026-11-11, not built. The spec does not hold the rule yet.
 
-The manifest swap can end without telling the instance whether it succeeded, for example when the request times out. What `Commit` returns and what the instance does then is not designed yet.
+The manifest swap can end without telling the instance whether it succeeded, for example when the connection drops before the answer arrives. The transaction is then either committed or not, and the instance cannot tell which.
+
+- **The instance asks S3 again.** It retries the same swap. If the first attempt never arrived, the retry succeeds and the transaction is committed. If the first attempt did arrive, S3 rejects the retry, because the manifest has changed.
+- **After a rejection, the instance reads the manifest.** The transaction is committed if and only if its change file is in the log that the manifest points to. Another instance may have taken the lease and committed on top in the meantime, so the check walks the log back from the newest change file and does not look at that file alone.
+- **A request stuck in the network cannot commit later.** Once the manifest has changed, S3 rejects the old request.
+- **`Commit` returns only when the instance knows,** with nil if the transaction is committed and an error if it is not.
+- **If S3 stays unreachable, `Commit` waits until the caller's context ends,** and then returns a distinct "outcome unknown" error. An application must check its own data then, or make its transactions safe to repeat. FoundationDB does the same with `commit_unknown_result` ([research/foundationdb.md](research/foundationdb.md)). This is the one case where `Commit` returns an error for a transaction that may be committed.
+
+Details chosen by maragubot:
+
+- **After "outcome unknown", the instance serves nothing until it knows.** It refuses reads and writes with the temporary error, as an instance without a valid lease does. Otherwise the application could check its data on a cache that lacks the transaction, conclude that it was not committed, and repeat it, while the stuck request commits the first one.
+- **In the background the instance no longer pushes the commit.** It reads the manifest. If the change file is in the log, it catches up the cache, which applies the transaction. If the manifest is unchanged, it renews the lease without the commit. When that renewal succeeds, the stuck request can no longer be applied, and the transaction is not committed. When the renewal is rejected, the instance reads the manifest again.
+- **While `Commit` is still waiting, reads go on** for as long as the lease is valid by the clocks. They see the state before the transaction, which is allowed, because the commit is not acknowledged.
+- **A renewal with an unknown outcome is resolved the same way,** with no caller involved.
+- **An upload of a change file with an unknown outcome is harmless.** The file is named by its content and created only if absent, so the instance retries, and "already exists" means success.
 
 ## Vendoring s4ql
 
