@@ -117,7 +117,7 @@ Details chosen by maragubot:
 
 ## Storage formats
 
-Status: the manifest is agreed with Markus on 2026-11-11 and not built. The change file format is open.
+Status: the manifest and the encoding of the change files are agreed with Markus on 2026-11-11 and not built. What a change file holds is open.
 
 The manifest, `manifest.json`:
 
@@ -141,6 +141,16 @@ The manifest, `manifest.json`:
 - `lease.holder` is the random ID of the process that holds the lease, and `lease.expires` is the wall-clock time at which it expires. A released lease has no `lease` entry.
 - An instance keeps the fields it does not know when it rewrites the manifest. Without this rule, an older version would delete the fields of a newer one at every renewal.
 - There is no count of commits. Markus: "Drop the "commits", let's keep the essentials."
+
+The change files:
+
+- **The encoding is Protocol Buffers, with the standard tooling:** a `.proto` file as the schema, generated Go code, and `google.golang.org/protobuf`. Markus asked for "a binary format that is forwards and backwards compatible". The comparison with CBOR, Cap'n Proto, and others is in [research/change-file-encodings.md](research/change-file-encodings.md).
+- **Why not Cap'n Proto,** which Markus leaned towards first: its strengths are reading single fields without decoding and RPC, and a log that is read once from front to back uses neither. Its byte format is a memory layout with pointers and segments, which is more to trust in a file that must stay readable forever.
+- **Why the tooling and not a hand-written codec,** which maragubot recommended first: less code of ours, a decoder that is fuzzed continuously, the `.proto` file as the real schema, and a check in CI that a schema change does not break old files. Both ways write the same bytes, so the choice can be changed later without touching a stored file.
+- **Text is stored as bytes.** SQLite accepts text that is not valid UTF-8, even in a strict table, and the Go library rejects such text in a `string` field.
+- **A field that can be absent is declared so,** with `optional` or a `oneof`, so that an empty value and a missing value stay distinct.
+- **A file is a sequence of small messages,** not one large message, so that a commit of millions of rows is written and read as a stream.
+- **A change file is checked against its SHA-256 name before it is decoded.**
 
 ## A manifest swap whose outcome is unknown
 
