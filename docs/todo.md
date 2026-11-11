@@ -117,7 +117,9 @@ Details chosen by maragubot:
 
 ## A manifest swap whose outcome is unknown
 
-Status: agreed with Markus on 2026-11-11, not built. The spec does not hold the rule yet.
+Status: agreed with Markus on 2026-11-11, not built. The spec holds the rule; this item holds the reasoning and the detail.
+
+Markus on the state after "outcome unknown": "it's kind of the same as when the lease expired? We return a temporary error to readers and writers." It is the same state: the instance does not know whether its cache is current, so it refuses and keeps trying.
 
 The manifest swap can end without telling the instance whether it succeeded, for example when the connection drops before the answer arrives. The transaction is then either committed or not, and the instance cannot tell which.
 
