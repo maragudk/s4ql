@@ -87,13 +87,33 @@ To revisit later. Markus on 2026-11-11, on whether the free-running mode can go:
 
 Still open:
 
-- How read connections check that the lease is valid without going through the write path, and which clocks that relies on.
-- What a read does when the lease deadline has passed but the instance has not stopped.
-- What the instance does after it loses the lease: stop, or try to take it back and catch up.
-- Whether a write transaction has a maximum duration.
 - The stop requirement above cannot be met exactly as worded, because a read can start between a failure inside SQLite and the moment the library sees it. The wording needs tightening to what the spec promises: a read that starts after a commit is acknowledged always sees it.
 
 Relevant notes: [research/foundationdb.md](research/foundationdb.md), [research/slatedb.md](research/slatedb.md), [research/testing-strategies.md](research/testing-strategies.md).
+
+## The lease and its clocks
+
+Status: agreed with Markus on 2026-11-11, not built. The spec does not hold these rules yet.
+
+Markus on the frame for all of it: s4ql is "designed mostly for always-on server-side usage", and "I don't want to design around theoretical failures."
+
+- **The manifest records an absolute expiry time.** Another instance takes the lease when its own wall clock has passed that time. This is only safe if the wall clocks of the machines agree. The alternative was a duration and a counter, which another instance watches stand still for a full lease period on its own monotonic clock, and which needs no wall clock. Markus chose the expiry time: "A is fine for now."
+- **Clocks affect only reads.** Writes are correct whatever the clocks do, because S3 checks the manifest swap. The danger is a holder that has lost the lease without knowing it and answers a read from its cache, which lacks the new holder's commits.
+- **A read checks the lease against both clocks.** It passes only if the wall clock is before the expiry and the monotonic clock shows less than the lease duration since the renewal was sent. A wall clock that is set backward is caught by the monotonic clock, and a monotonic clock that stood still is caught by the wall clock. If both fail, reads can be stale, and Markus accepts that: "if the server is in such bad a state that both clocks fail, stale reads are probably okay too."
+- **One check when the read starts is enough.** Its order relative to the SQLite snapshot does not matter. The cache never holds another instance's commits, so a snapshot taken after a pause shows a state that was correct at the moment of the check.
+- **An instance without a valid lease refuses and keeps trying.** Reads and writes fail at once with a distinct temporary error, and a write transaction that is open then is not committed. The instance keeps trying to get the lease. When it gets it, it applies the change files it is missing, with the same code as at startup, and serves again. This one rule covers three cases:
+  - The instance cannot reach S3 and its lease runs out. If a later renewal succeeds, the manifest was unchanged and there is nothing to catch up. Markus: "this is where we'd return a HTTP 502 and let the clients retry."
+  - Another instance has taken the lease.
+  - The instance has just started.
+- **A spare instance is a normal state.** Markus: "we can have a spare instance running, and it'll never serve anything until it gets the lease."
+- **Opening does not wait for the lease.** It fails only on local problems, such as a cache that cannot be opened. A separate call waits, with a context, until the instance serves, as `Ping` does next to `Open` in `database/sql`. Wrong S3 settings therefore do not fail the open call; they show in the waiting call and in the error of every query.
+- **A permanent stop is for local I/O failures only.**
+- **A write transaction has no maximum duration, for now.** A waiting writer gives up when its own context expires.
+
+Details chosen by maragubot:
+
+- The lease duration counts from when the renewal was sent, not from when S3 answered.
+- Another instance waits a small margin past the expiry before it takes the lease. The value is chosen when it is built.
 
 ## A manifest swap whose outcome is unknown
 
