@@ -93,7 +93,7 @@ Relevant notes: [research/foundationdb.md](research/foundationdb.md), [research/
 
 ## The lease and its clocks
 
-Status: agreed with Markus on 2026-11-11, not built. The spec does not hold these rules yet.
+Status: agreed with Markus on 2026-11-11, not built. The spec holds the rules under "Constraints"; this item holds the reasoning and the detail.
 
 Markus on the frame for all of it: s4ql is "designed mostly for always-on server-side usage", and "I don't want to design around theoretical failures."
 
