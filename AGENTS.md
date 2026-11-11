@@ -8,7 +8,7 @@ Do not use your harness's internal or automatic memory for this project. Anythin
 
 ### The project is named s4ql
 
-The project is named s4ql, short for "simple storage service structured query language". It was first named sql4s3.
+The project is named s4ql, short for "simple storage service + structured query language". It was first named sql4s3.
 
 - **Why:** Markus renamed it on 2026-11-10: "I updated the project name from sql4s3 to just s4ql". The module path is `maragu.dev/s4ql` and the repository is `maragudk/s4ql`. Markus also bought the domain s4ql.com that day, and for now it only redirects to the repository on GitHub.
 - **How to apply:** write s4ql in everything new. The notes in `docs/research/` and the kickoff transcript in `docs/conversations/` still say sql4s3, and they mean this project.
@@ -33,6 +33,13 @@ Do not spend effort scrubbing Markus's email address from documents, transcripts
 
 - **Why:** Markus said on 2026-11-10: "Stop putting decisions into AGENTS.md, we need a better spot for it. We want to keep that file lean, not a dumping ground."
 - **How to apply:** agreed rules go in `docs/spec.md`, with Markus's explicit agreement on the wording. Things that are agreed but not built, and open design questions, go in `docs/todo.md`, and are deleted from it when built. How things were done is read from the code, its tests, and its comments. Research goes in `docs/research/`.
+
+### Keep the README lean too
+
+`README.md` is not a dumping ground for all kinds of information. Things are added to it judiciously.
+
+- **Why:** Markus said on 2026-11-11 that "the readme isn't a dumping ground for all kinds of info, we'll add things there judiciously", when he had the paragraph on cgo and the C compiler removed from it.
+- **How to apply:** do not add to `README.md` as a side effect of other work. Details on building, internals, and design go next to the code they describe or in `docs/`. If something seems to belong in the README, propose it to Markus instead of writing it.
 
 ### Work without waiting for Markus, except on design
 
