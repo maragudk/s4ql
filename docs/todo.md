@@ -28,31 +28,62 @@ The spec holds the rules: a commit is acknowledged once S3 has it, a local I/O f
 
   The invariant checked is that no read that starts after an acknowledged commit returns a state without that commit. The simulation also checks that reopening shows the transaction, and that the lease was released or timed out.
 - **No fault-injecting layer under SQLite, for now.** SQLite tests its own I/O error handling, and using the official C code is how we inherit that.
+- **Which SQLite errors count as a local I/O failure.** Chosen by maragubot on 2026-11-11 and told to Markus: I/O error, disk full, cannot open, corrupt, not a database, no large-file support, permission denied, and read-only on a cache that was opened for writing. Out of memory and SQLite's protocol error also stop the instance, for simplicity. "Busy" does not: see the next item. The full classification is in [research/sqlite-busy.md](research/sqlite-busy.md).
 - **Open: the wal-index is memory-mapped.** The build sets `SQLITE_MAX_MMAP_SIZE=0`, so SQLite never memory-maps the database file, and an I/O error there arrives as an error code. In WAL mode SQLite still memory-maps its shared index, the `-shm` file: "The wal-index is implemented using an ordinary file that is mmapped" (https://sqlite.org/wal.html). An I/O failure on a memory-mapped file arrives as a signal that kills the process, not as an error that SQLite can handle (https://sqlite.org/mmap.html). How to handle this is not designed.
+- **A possible answer, parked: SQLite's `unix-excl` VFS.** Markus on 2026-11-11: "park it in TODO.md for now as a potential thing". It keeps the wal-index in ordinary memory and creates no `-shm` file, which would close the gap above. It also locks every other process out of the cache file while our process has it open, including the `sqlite3` shell, so a live cache cannot be inspected from outside. Several connections in one process still work. It does not change the file format, so it can be switched on or off at any time, and `sqlite.Open` would need a VFS name. To find out before deciding: what happens after a crash (whether the operating system releases the lock, and that the next start recovers from the WAL), and a test that no signal arrives on a disk error. It exists on macOS and Linux only. Details are in [research/sqlite-busy.md](research/sqlite-busy.md).
 
 What comparable systems tell the client, and what the node does, in the motivating failure is in [research/commit-acknowledgement.md](research/commit-acknowledgement.md).
 
 ## Concurrency and the simulation harness
 
-Status: partly agreed, partly open. A spike is testing the simulation design. To be settled before anyone is briefed on engine work.
+Status: the design is adopted as the working approach and is to be judged by building on it. Markus on 2026-11-11: "I think we should just try it out." Parts are still open, listed at the end.
 
 The concurrency model is agreed and in the spec under "Concurrency": one write transaction at a time per database, and reads in parallel bounded by the connection pool.
 
-Agreed with Markus on 2026-11-10:
+Agreed with Markus on 2026-11-10 and 2026-11-11:
 
-- **No state machine.** The library is plain blocking Go. Each caller's goroutine does its own work from top to bottom, a lock lets one write transaction through at a time, and one background goroutine renews the lease. That goroutine is the only concurrency the library creates; the rest comes from the callers. The spec used to ask for a state machine that does no I/O, and that sentence was deleted. The reasons: a state machine does not solve the hard part, which is the order goroutines run in; it fits interactive transactions poorly; and FoundationDB, whose testing this project follows, runs plain coroutine code on a deterministic scheduler and has no such state machine.
-- **Locks are taken in Go before calling into SQLite,** so that SQLite never waits on a lock itself. SQLite's busy timeout stays off, so it returns "busy" at once and never sleeps. If the Go locks are right, that error never appears, and seeing it means a bug of ours.
+- **No state machine.** The library is plain blocking Go. Each caller's goroutine does its own work from top to bottom, and one background goroutine renews the lease. That goroutine is the only concurrency the library creates; the rest comes from the callers. The spec used to ask for a state machine that does no I/O, and that sentence was deleted. The reasons: a state machine does not solve the hard part, which is the order goroutines run in; it fits interactive transactions poorly; and FoundationDB, whose testing this project follows, runs plain coroutine code on a deterministic scheduler and has no such state machine.
+- **Two locks.** A writer lock is held for a whole write transaction, so one runs at a time. A separate manifest lock is held only around each swap, so lease renewal can run while a write transaction sits open.
+- **One small runtime interface for everything that waits:** starting a goroutine, locks, sleeping and timers, the clock, timeouts, and yielding. In production it maps onto ordinary Go. In simulation the scheduler implements it.
 - **The stop is synchronised with the readers.** After a local I/O failure (see [Local I/O failure handling](#local-io-failure-handling)), no read can start between the failure and `Commit` returning. The simulation tests this with readers racing the stop.
 
-Being tested by a spike, and adopted only if it passes:
+The simulation, as shown to work by a spike on 2026-11-10 (in `internal/sim` once merged; the diary is `docs/diary/2026-11-10-simulation-spike.md`):
 
-- The real library runs unchanged inside a `testing/synctest` test. S3 is a simulated object store, time is fake, and randomness comes from the seed. The test starts goroutines that play application callers.
-- Wherever a goroutine meets the outside world, it parks: at an S3 call, at a wait on time, and at marked points in a read. A scheduler waits until every goroutine is parked, picks one by the seed, lets it run to its next parking point, and repeats. So one goroutine runs at a time, and the seed decides the order. This is FoundationDB's model rebuilt in Go.
-- Every seed is run twice and the two runs are compared, so nondeterminism that leaks in fails the test.
-- A second mode runs the same tests with the scheduler off under the race detector. It finds data races, but a failure there cannot be replayed from the seed.
-- Known costs: all waiting on time goes through our clock interface, a lock held across a parking point cannot be a `sync.Mutex` (waiting on one does not count as blocked for `testing/synctest`), and parking points need stable names. The design cannot replay two SQLite calls that run at the same instant.
+- **Scheduled mode.** The real library runs unchanged inside a `testing/synctest` test, with test goroutines playing application callers. One goroutine runs at a time. It runs until it waits (at an S3 call, a sleep, taking or releasing a lock, or an explicit yield), and the seed then picks which goroutine goes next. This is FoundationDB's model rebuilt in Go.
+- **The scheduler owns the clock, the locks, and the randomness.** It cannot leave them to Go: timers due at the same instant fire in random order under `testing/synctest`, and a channel-based lock wakes the next holder directly, so two goroutines would run at once. Half of all yields get a random simulated delay, or timer-driven work such as renewal never gets in between.
+- **Every seed is run twice and the traces are compared,** so nondeterminism that leaks in fails the test. The spike ran 10000 seeds twice with no differing pair, and each seed gave a different interleaving.
+- **Free-running mode.** The same code runs with the scheduler off under the race detector, with real parallelism and no replay. A separate stress test on the real clock covers what only true parallelism reaches.
+- **`testing/synctest` works with cgo.** A goroutine inside a SQLite call counts as running, so the scheduler waits for the call to return, and fake time does not move meanwhile. This is not documented, so the spike's tests of it stay as canaries for Go upgrades.
 
-If the spike fails, the choice comes back between a state machine for the core logic and giving up exact replay of ordering.
+Conditions for keeping the design, from the spike:
+
+- A lint forbids, in library packages, `go` statements, the real clock and timers, `context.WithTimeout` and `context.WithDeadline`, `sync.Cond`, and `sync.WaitGroup`. An ordinary mutex must not be held across a wait; the scheduler cannot detect that, and the test hangs.
+- Every seed is run twice in CI, permanently.
+- The free-running mode runs under the race detector in CI.
+- The checks compare data against a model, and planted bugs stay as tests of the checks. The spike's toy library had a real bug that 20000 clean runs produced and no check looked for.
+- Every lock acquire and release is a scheduling point, and yields are placed wherever shared state is touched between waits.
+
+What the scheduled mode cannot do:
+
+- It switches goroutines only at waits. In the spike, a race with no wait in the window was found by 0 of 1000 seeds, and by 659 once a yield was added.
+- It hides data races from the race detector, and it never has two goroutines inside SQLite.
+- It finds only what the checks look for.
+- It runs only under `go test`, and a seed is tied to the exact code.
+- Not yet shown: crash and restart, two instances competing for the lease, and a real S3 client under simulation.
+
+SQLite's "busy", chosen by maragubot on 2026-11-11 after an investigation and told to Markus ([research/sqlite-busy.md](research/sqlite-busy.md)):
+
+- **A lock in Go does not keep SQLite from reporting "busy".** A reader that starts while the writer commits can take the WAL write lock for a moment, and the writer's next `begin immediate` then fails at once. It happens with a single reader. It never happens in scheduled mode, only with real parallelism.
+- **Every connection gets a busy timeout of about one second.** SQLite then waits out the window itself. In the investigation a timeout of one millisecond already removed every failure, and the wait was about 1.5 ms on fewer than 1% of begins.
+- **The write connection opens first, runs one statement, and stays open for the instance's lifetime.** Recovery of the WAL after a crash and the cleanup when the last connection closes also report "busy", and this keeps both away from the reader pool.
+- **"Busy" after the timeout is returned to the caller as an error and logged loudly.** It is not a local I/O failure and does not stop the instance. In this design it then means another process has the cache open, or a bug of ours.
+
+To revisit later. Markus on 2026-11-11, on whether the free-running mode can go: "I'd rather keep the free-running mode for now, and we can revisit later." The ideas:
+
+- Pass the baton between goroutines through something the race detector cannot see, such as a call into C, so that the detector finds data races in scheduled mode. Untested.
+- For code without data races, only synchronisation operations are places where a switch can change the outcome. If every lock and atomic operation is a scheduling point, the scheduled mode then covers what production can do.
+- Inject SQLite's contention effects, such as "busy", from the seed at the binding, and keep one small test with real parallelism whose only job is to check our assumptions about SQLite, as real S3 does for the simulated store.
+- The alternative is FoundationDB's own way: one global lock, so that production also runs one goroutine at a time. It would make the SQL engine run one query at a time and weaken "reads run in parallel".
 
 Still open:
 
