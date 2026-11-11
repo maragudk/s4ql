@@ -18,3 +18,4 @@ The distilled ideas are in [../inspiration.md](../inspiration.md). Agreed decisi
 - [sqlite-docs-inventory.md](sqlite-docs-inventory.md): inventory of the SQLite 3.54.1 SQL documentation (features, legacy flags, STRICT and WITHOUT ROWID rules, oracle configuration, a proposed slice ladder, and hard semantic areas).
 - [commit-acknowledgement.md](commit-acknowledgement.md): what comparable systems tell the client, and what the node does, when a commit is durable in the authoritative place and the local apply then fails.
 - [sqlite-compile-options.md](sqlite-compile-options.md): every SQLite 3.54.1 compile-time option on compile.html, classified for the build in `internal/sqlite`, with the ten options agreed.
+- [sqlite-busy.md](sqlite-busy.md): why a single writer gets `SQLITE_BUSY` among readers in WAL mode, the other ways a lock wait reaches us, the options including the `unix-excl` VFS, and a classification of SQLite's result codes.
