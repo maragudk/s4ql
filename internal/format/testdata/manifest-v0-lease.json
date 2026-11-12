@@ -1,0 +1,12 @@
+{
+  "version": 0,
+  "branches": {
+    "main": {
+      "head": "af2bdbe1aa9b6ec1e2ade1d694f41fc71a831d0268e9891562113d8a62add1bf"
+    }
+  },
+  "lease": {
+    "holder": "5b0e3a4f9c1d77c3",
+    "expires": "2026-11-11T12:00:30.123Z"
+  }
+}

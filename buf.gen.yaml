@@ -1,0 +1,7 @@
+# Generates the Go code for the schema in proto/ with the protoc-gen-go that go.mod pins as a tool.
+# Run it with make generate.
+version: v2
+plugins:
+  - local: ["go", "tool", "protoc-gen-go"]
+    out: .
+    opt: module=maragu.dev/s4ql

@@ -1,0 +1,193 @@
+// The format of an s4ql commit object.
+//
+// The format is a draft while s4ql is in development. Anything in it can
+// change, including field numbers and types, and a commit object written
+// in it carries version 0.
+//
+// From version 1 on, commit objects are kept forever, and every version of
+// s4ql must read every one ever written. Field numbers and field types then
+// never change, and a number that is no longer used is reserved. Names can
+// change.
+edition = "2024";
+
+package s4ql.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "maragu.dev/s4ql/internal/s4qlpb";
+
+// A commit object: everything one commit did.
+//
+// It is written and read as a stream: the header first, then the changes
+// and the annotations, one at a time.
+//
+// A reader refuses a commit object that holds a field it does not know,
+// anywhere outside the annotations: a newer version of s4ql wrote it, and
+// the field may change what replay must do. Inside an annotation, a reader
+// skips a field it does not know.
+message CommitObject {
+  // Exactly once, and first. A reader refuses a commit object without it.
+  Header header = 1;
+  // What the commit changed, in the order in which replay applies it.
+  // A reader refuses the commit object if it does not know a change.
+  repeated Change changes = 2;
+  // What else is known about the commit. Replay does not use them, and a
+  // reader may skip them.
+  repeated Annotation annotations = 3;
+}
+
+// What the commit object is: its format, what came before it, and when it
+// was made.
+message Header {
+  // The version of this format: 0 while the format is a draft. A reader
+  // refuses a version it does not know. From version 1 on, the version is
+  // raised when the meaning of the format changes without a new field.
+  uint32 version = 1;
+  // The name of the commit object before this one: 32 bytes, all zero in
+  // the first one.
+  bytes parent = 2;
+  // The wall-clock time of the commit, from the clock of the lease holder.
+  // Replay does not use it.
+  google.protobuf.Timestamp commit_time = 3;
+}
+
+// One change to the database.
+//
+// A Change holds no field outside `kind`, now or later. A reader that finds
+// no known kind refuses the commit object: if the change holds an unknown
+// field, a newer version of s4ql wrote it; if it holds nothing, it is
+// malformed.
+message Change {
+  // What the change is.
+  oneof kind {
+    // Creates a table.
+    CreateTable create_table = 1;
+    // Drops a table and all its rows.
+    DropTable drop_table = 2;
+    // Inserts rows into a table, or changes rows that are there.
+    UpsertRows upsert_rows = 3;
+    // Deletes rows from a table.
+    DeleteRows delete_rows = 4;
+  }
+}
+
+// Creates a table.
+message CreateTable {
+  // The name of the table.
+  string table = 1;
+  // The columns, in their declared order.
+  repeated Column columns = 2;
+  // The primary-key columns, in key order, as positions in `columns`,
+  // starting at 0.
+  repeated uint32 primary_key = 3;
+}
+
+// One column of a table.
+message Column {
+  // The name of the column.
+  string name = 1;
+  // The declared type of the column.
+  Type type = 2;
+}
+
+// The declared type of a column. More are added as the roadmap grows.
+// A reader refuses a value it does not know.
+enum Type {
+  // Never written. A reader refuses it.
+  TYPE_UNSPECIFIED = 0;
+  // The STRICT type INT.
+  TYPE_INT = 1;
+}
+
+// Drops a table and all its rows.
+message DropTable {
+  // The name of the table.
+  string table = 1;
+}
+
+// Inserts rows into a table, or changes rows that are there.
+//
+// If `columns` lists every column of the table, each row is inserted, or
+// replaces the row with the same primary key. If it lists only some, each
+// row is there already, and only the listed columns change.
+//
+// An UpsertRows is a batch that is small enough to hold in memory. A commit
+// that upserts many rows into one table writes several batches, and rows
+// with different columns go into different batches.
+message UpsertRows {
+  // The name of the table.
+  string table = 1;
+  // The columns that each row holds a value for, as positions in the
+  // table's columns, starting at 0. They always include the primary-key
+  // columns.
+  repeated uint32 columns = 2;
+  // The rows.
+  repeated Row rows = 3;
+}
+
+// Deletes rows from a table.
+//
+// A DeleteRows is a batch, like an UpsertRows.
+message DeleteRows {
+  // The name of the table.
+  string table = 1;
+  // The primary keys of the rows to delete.
+  repeated PrimaryKey primary_keys = 2;
+}
+
+// One row: a value for each column that its UpsertRows lists, in that
+// order.
+message Row {
+  // The values.
+  repeated Value values = 1;
+}
+
+// One primary key: a value for every primary-key column, in key order.
+message PrimaryKey {
+  // The values.
+  repeated Value values = 1;
+}
+
+// One SQLite value, in one of SQLite's five storage classes.
+//
+// A Value holds no field outside `kind`, now or later. A reader refuses a
+// value with no known kind, as it does a change.
+message Value {
+  // The storage class of the value, and the value.
+  oneof kind {
+    // A 64-bit signed integer.
+    sint64 integer = 1;
+    // A 64-bit IEEE 754 floating-point number.
+    double real = 2;
+    // Text. It is always valid UTF-8.
+    string text = 3;
+    // A blob.
+    bytes blob = 4;
+    // NULL.
+    Null null = 5;
+  }
+}
+
+// The SQL NULL. It has no fields.
+message Null {}
+
+// One thing that is known about a commit beyond its changes.
+//
+// A reader skips a kind of annotation it does not know.
+message Annotation {
+  // What the annotation is.
+  oneof kind {
+    // One statement, as it ran.
+    Statement statement = 1;
+  }
+}
+
+// One statement, as it ran.
+message Statement {
+  // The SQL text. It is always valid UTF-8.
+  string sql = 1;
+  // The parameters, by position, starting with parameter 1.
+  repeated Value parameters = 2;
+  // Non-deterministic inputs, such as the time the statement read, become
+  // fields here when a slice of the roadmap first needs them.
+}
