@@ -364,6 +364,205 @@ func TestCommitWriter(t *testing.T) {
 	}
 }
 
+// FuzzCommitWriter writes a commit object of changes and annotations that the input chooses, and
+// checks that the reader reads back the same, in the same order, and that the bytes are those of one
+// commit object message.
+func FuzzCommitWriter(f *testing.F) {
+	f.Add([]byte{0, 1, 2, 3, 4, 5})
+	f.Add([]byte{2, 0, 0, 1, 2, 0, 0, 2, 3, 1, 0, 3, 1, 1, 4, 0})
+	f.Add(bytes.Repeat([]byte{2, 0, 0, 6, 1, 2, 3}, 40))
+
+	f.Fuzz(func(t *testing.T, input []byte) {
+		in := &fuzzInput{b: input}
+		var b bytes.Buffer
+		parent := format.Name(sha256.Sum256(input))
+		commitTime := time.Unix(int64(in.uint64()%253402300799), int64(in.uint64()%1_000_000_000))
+		w, err := format.NewCommitWriter(&b, parent, commitTime)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// want is every change and annotation as the caller handed it: a row or key is an
+		// UpsertRows or DeleteRows of one.
+		var want []item
+		annotating := false
+		for i := 0; in.more() && i < 200; i++ {
+			table := []string{"a", "b", "c"}[in.byte()%3]
+			var err error
+			var c *s4qlpb.Change
+			switch op := in.byte() % 6; op {
+			case 0:
+				c = createTable(table, []string{"x", "y", "z"}[:1+in.byte()%3], []uint32{0})
+				err = w.CreateTable(c.GetCreateTable())
+			case 1:
+				c = dropTable(table)
+				err = w.DropTable(table)
+			case 2, 3:
+				columns := [][]uint32{{0}, {0, 1}, {2, 0, 1}}[in.byte()%3]
+				values := make([]*s4qlpb.Value, len(columns))
+				for i := range values {
+					values[i] = in.value()
+				}
+				c = upsertRows(table, columns, values)
+				err = w.UpsertRow(table, columns, values)
+			case 4:
+				// Every key of a table has the same number of values.
+				key := make([]*s4qlpb.Value, 1+len(table)%2+int(table[0]-'a'))
+				for i := range key {
+					key[i] = in.value()
+				}
+				c = deleteRows(table, key)
+				err = w.DeleteRow(table, key)
+			case 5:
+				var parameters []*s4qlpb.Value
+				for range in.byte() % 3 {
+					parameters = append(parameters, in.value())
+				}
+				a := statement(strings.ToValidUTF8(in.string(), "?"), parameters...)
+				if err := w.Annotate(a); err != nil {
+					t.Fatal(err)
+				}
+				annotating = true
+				want = append(want, item{annotation: a})
+				continue
+			}
+
+			if annotating {
+				if err == nil {
+					t.Fatal("a change after an annotation is not refused")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			want = append(want, item{change: c})
+		}
+		name, err := w.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, items, err := readAll(b.Bytes(), name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []item
+		for _, item := range items {
+			got = append(got, unbatch(t, item)...)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("read %v changes and annotations, and wrote %v", len(got), len(want))
+		}
+		for i := range want {
+			if !proto.Equal(want[i].change, got[i].change) || !proto.Equal(want[i].annotation, got[i].annotation) {
+				t.Fatalf("item %v differs:\n%v %v\n%v %v", i, want[i].change, want[i].annotation, got[i].change, got[i].annotation)
+			}
+		}
+
+		var whole s4qlpb.CommitObject
+		if err := proto.Unmarshal(b.Bytes(), &whole); err != nil {
+			t.Fatal(err)
+		}
+		again, err := proto.MarshalOptions{Deterministic: true}.Marshal(&whole)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(b.Bytes(), again) {
+			t.Fatal("the whole message marshals to other bytes")
+		}
+	})
+}
+
+// unbatch an UpsertRows or DeleteRows into one change for each row or key, and check that the batch
+// is no larger than about one MiB, unless it holds one row or key.
+func unbatch(t *testing.T, it item) []item {
+	t.Helper()
+	switch {
+	case it.change.GetUpsertRows() != nil:
+		ur := it.change.GetUpsertRows()
+		if len(ur.GetRows()) > 1 && proto.Size(ur) > 1<<20+100 {
+			t.Fatalf("batch of %v rows is %v bytes", len(ur.GetRows()), proto.Size(ur))
+		}
+		var items []item
+		for _, row := range ur.GetRows() {
+			items = append(items, item{change: upsertRows(ur.GetTable(), ur.GetColumns(), row.GetValues())})
+		}
+		return items
+	case it.change.GetDeleteRows() != nil:
+		dr := it.change.GetDeleteRows()
+		if len(dr.GetPrimaryKeys()) > 1 && proto.Size(dr) > 1<<20+100 {
+			t.Fatalf("batch of %v keys is %v bytes", len(dr.GetPrimaryKeys()), proto.Size(dr))
+		}
+		var items []item
+		for _, key := range dr.GetPrimaryKeys() {
+			items = append(items, item{change: deleteRows(dr.GetTable(), key.GetValues())})
+		}
+		return items
+	default:
+		return []item{it}
+	}
+}
+
+// fuzzInput hands out the bytes of a fuzz input as choices, and zeros when it runs out.
+type fuzzInput struct {
+	b []byte
+}
+
+func (in *fuzzInput) more() bool {
+	return len(in.b) > 0
+}
+
+func (in *fuzzInput) byte() byte {
+	if len(in.b) == 0 {
+		return 0
+	}
+	c := in.b[0]
+	in.b = in.b[1:]
+	return c
+}
+
+func (in *fuzzInput) uint64() uint64 {
+	var v uint64
+	for range 8 {
+		v = v<<8 | uint64(in.byte())
+	}
+	return v
+}
+
+// string of up to 15 bytes, or a large one of 300 KiB, so that batches fill up.
+func (in *fuzzInput) string() string {
+	n := int(in.byte())
+	if n == 255 {
+		return strings.Repeat("x", 300<<10)
+	}
+	n %= 16
+	n = min(n, len(in.b))
+	s := string(in.b[:n])
+	in.b = in.b[n:]
+	return s
+}
+
+// value of any kind, with a real that is NaN made null, which the writer refuses.
+func (in *fuzzInput) value() *s4qlpb.Value {
+	switch in.byte() % 5 {
+	case 0:
+		return integer(int64(in.uint64()))
+	case 1:
+		f := math.Float64frombits(in.uint64())
+		if math.IsNaN(f) {
+			return null()
+		}
+		return realValue(f)
+	case 2:
+		return text(strings.ToValidUTF8(in.string(), "?"))
+	case 3:
+		return blob([]byte(in.string()))
+	default:
+		return null()
+	}
+}
+
 // writeExample commit object to w, with every kind of change and two annotations, and return its
 // name.
 func writeExample(t *testing.T, w interface{ Write([]byte) (int, error) }) format.Name {

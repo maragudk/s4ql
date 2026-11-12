@@ -6,12 +6,15 @@ import (
 	"errors"
 	"io"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"maragu.dev/is"
 
@@ -399,6 +402,58 @@ func readAll2(r io.Reader, name format.Name) (*s4qlpb.Header, []item, error) {
 	}
 }
 
+func FuzzCommitReader(f *testing.F) {
+	for _, sample := range commitSamples() {
+		b, err := os.ReadFile(filepath.Join("testdata", sample.file))
+		if err != nil {
+			f.Fatal(err)
+		}
+		f.Add(b)
+	}
+	f.Add([]byte{})
+	f.Add(changeRecord(withUnknown(&s4qlpb.Change{}, 5, protowire.BytesType)))
+	f.Add(join(record(1, testHeader()), record(3, withUnknown(&s4qlpb.Annotation{}, 2, protowire.BytesType))))
+	f.Add(changeRecord(upsertRows("t", []uint32{0, 1}, []*s4qlpb.Value{integer(1)})))
+
+	other := format.Name(sha256.Sum256([]byte("other")))
+
+	f.Fuzz(func(t *testing.T, input []byte) {
+		// With its own name, the commit object is read, or refused as newer or malformed.
+		_, items, err := readAll(input, nameOf(input))
+		switch {
+		case err == nil:
+			// What the reader accepts is one commit object message for any reader of Protocol
+			// Buffers.
+			var whole s4qlpb.CommitObject
+			if err := proto.Unmarshal(input, &whole); err != nil {
+				t.Fatalf("the reader accepts what proto.Unmarshal refuses: %v", err)
+			}
+			var changes int
+			for _, item := range items {
+				if item.change != nil {
+					changes++
+				}
+			}
+			if changes != len(whole.GetChanges()) {
+				t.Fatalf("the reader read %v changes, and proto.Unmarshal %v", changes, len(whole.GetChanges()))
+			}
+		case errors.Is(err, format.ErrNameMismatch):
+			t.Fatalf("mismatch with the right name: %v", err)
+		case !errors.Is(err, format.ErrMalformed) && !errors.Is(err, format.ErrNewerVersion):
+			t.Fatalf("error is neither malformed nor newer version: %v", err)
+		}
+
+		// With another name, it is always a mismatch, whatever else is wrong with it.
+		_, _, err = readAll(input, other)
+		if !errors.Is(err, format.ErrNameMismatch) {
+			t.Fatalf("error with the wrong name is not a mismatch: %v", err)
+		}
+		if errors.Is(err, format.ErrMalformed) || errors.Is(err, format.ErrNewerVersion) {
+			t.Fatalf("mismatch is also another case: %v", err)
+		}
+	})
+}
+
 func nameOf(b []byte) format.Name {
 	return format.Name(sha256.Sum256(b))
 }
@@ -514,4 +569,141 @@ type errorReader struct {
 
 func (r errorReader) Read([]byte) (int, error) {
 	return 0, r.err
+}
+
+// commitSample is a commit object of version 0 that is committed as a file in testdata.
+type commitSample struct {
+	file       string
+	parent     format.Name
+	commitTime time.Time
+	// write the changes and annotations of the sample.
+	write func(w *format.CommitWriter) error
+	// want is what the reader reads from the sample, after its header.
+	want []item
+}
+
+func commitSamples() []commitSample {
+	return []commitSample{
+		{
+			file:       "commit-v0-first.bin",
+			parent:     format.EmptyLog,
+			commitTime: time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC),
+			write: func(w *format.CommitWriter) error {
+				return errors.Join(
+					w.CreateTable(createTable("users", []string{"id", "age"}, []uint32{0}).GetCreateTable()),
+					w.UpsertRow("users", []uint32{0, 1}, []*s4qlpb.Value{integer(1), integer(42)}),
+					w.UpsertRow("users", []uint32{0, 1}, []*s4qlpb.Value{integer(2), null()}),
+					w.Annotate(statement("create table users (id int primary key, age int) strict")),
+					w.Annotate(statement("insert into users values (?, ?), (?, ?)", integer(1), integer(42), integer(2), null())),
+				)
+			},
+			want: []item{
+				{change: createTable("users", []string{"id", "age"}, []uint32{0})},
+				{change: upsertRows("users", []uint32{0, 1}, []*s4qlpb.Value{integer(1), integer(42)}, []*s4qlpb.Value{integer(2), null()})},
+				{annotation: statement("create table users (id int primary key, age int) strict")},
+				{annotation: statement("insert into users values (?, ?), (?, ?)", integer(1), integer(42), integer(2), null())},
+			},
+		},
+		{
+			file:       "commit-v0-all.bin",
+			parent:     format.Name(sha256.Sum256([]byte("commit-v0-first.bin"))),
+			commitTime: time.Date(2026, 11, 12, 9, 31, 2, 123_456_789, time.UTC),
+			write: func(w *format.CommitWriter) error {
+				return errors.Join(
+					w.CreateTable(createTable("kv", []string{"a", "b", "c"}, []uint32{1, 0}).GetCreateTable()),
+					w.UpsertRow("kv", []uint32{0, 1, 2}, []*s4qlpb.Value{integer(-7), text("ü"), realValue(2.5)}),
+					w.UpsertRow("kv", []uint32{0, 1, 2}, []*s4qlpb.Value{integer(8), text(""), blob([]byte{0, 0xff})}),
+					w.UpsertRow("kv", []uint32{1, 0, 2}, []*s4qlpb.Value{text("x"), integer(9), null()}),
+					w.UpsertRow("kv", []uint32{0, 1}, []*s4qlpb.Value{integer(-7), text("ü")}),
+					w.DeleteRow("kv", []*s4qlpb.Value{text("x"), integer(9)}),
+					w.DeleteRow("kv", []*s4qlpb.Value{text(""), integer(8)}),
+					w.DropTable("users"),
+					w.Annotate(statement("update kv set c = ? where a = ?", null(), integer(-7))),
+					w.Annotate(statement("select ?, ?, ?, ?, ?", integer(math.MaxInt64), realValue(-0.5), text("t"), blob([]byte("b")), null())),
+				)
+			},
+			want: []item{
+				{change: createTable("kv", []string{"a", "b", "c"}, []uint32{1, 0})},
+				{change: upsertRows("kv", []uint32{0, 1, 2},
+					[]*s4qlpb.Value{integer(-7), text("ü"), realValue(2.5)},
+					[]*s4qlpb.Value{integer(8), text(""), blob([]byte{0, 0xff})})},
+				{change: upsertRows("kv", []uint32{1, 0, 2}, []*s4qlpb.Value{text("x"), integer(9), null()})},
+				{change: upsertRows("kv", []uint32{0, 1}, []*s4qlpb.Value{integer(-7), text("ü")})},
+				{change: deleteRows("kv", []*s4qlpb.Value{text("x"), integer(9)}, []*s4qlpb.Value{text(""), integer(8)})},
+				{change: dropTable("users")},
+				{annotation: statement("update kv set c = ? where a = ?", null(), integer(-7))},
+				{annotation: statement("select ?, ?, ?, ?, ?", integer(math.MaxInt64), realValue(-0.5), text("t"), blob([]byte("b")), null())},
+			},
+		},
+	}
+}
+
+// TestCommitSamples reads the sample commit objects in testdata, and checks that they are what the
+// current code writes, since the format is a draft. Run it with -update to write them again.
+func TestCommitSamples(t *testing.T) {
+	for _, sample := range commitSamples() {
+		t.Run("should read "+sample.file+" as written, and write it the same", func(t *testing.T) {
+			var b bytes.Buffer
+			w, err := format.NewCommitWriter(&b, sample.parent, sample.commitTime)
+			is.NotError(t, err)
+			is.NotError(t, sample.write(w))
+			_, err = w.Close()
+			is.NotError(t, err)
+
+			path := filepath.Join("testdata", sample.file)
+			if *update {
+				is.NotError(t, os.WriteFile(path, b.Bytes(), 0o644))
+			}
+			stored, err := os.ReadFile(path)
+			is.NotError(t, err)
+			is.True(t, bytes.Equal(b.Bytes(), stored), "the writer writes other bytes than the sample file")
+
+			h, items, err := readAll(stored, nameOf(stored))
+			is.NotError(t, err)
+			is.True(t, proto.Equal(header(0, sample.parent[:], sample.commitTime), h), "header differs")
+			is.Equal(t, len(sample.want), len(items))
+			for i := range sample.want {
+				is.True(t, proto.Equal(sample.want[i].change, items[i].change), "change differs")
+				is.True(t, proto.Equal(sample.want[i].annotation, items[i].annotation), "annotation differs")
+			}
+		})
+	}
+
+	t.Run("should cover every field of every message in the schema", func(t *testing.T) {
+		seen := map[protoreflect.FullName]bool{}
+		for _, sample := range commitSamples() {
+			stored, err := os.ReadFile(filepath.Join("testdata", sample.file))
+			is.NotError(t, err)
+			var whole s4qlpb.CommitObject
+			is.NotError(t, proto.Unmarshal(stored, &whole))
+			markSet(whole.ProtoReflect(), seen)
+		}
+
+		messages := s4qlpb.File_s4ql_v1_commit_proto.Messages()
+		for i := range messages.Len() {
+			fields := messages.Get(i).Fields()
+			for j := range fields.Len() {
+				name := fields.Get(j).FullName()
+				is.True(t, seen[name], "no sample holds "+string(name))
+			}
+		}
+	})
+}
+
+// markSet in seen the full name of every field that is set in m, at any depth.
+func markSet(m protoreflect.Message, seen map[protoreflect.FullName]bool) {
+	m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+		seen[fd.FullName()] = true
+		if fd.Message() == nil {
+			return true
+		}
+		if fd.IsList() {
+			for i := range v.List().Len() {
+				markSet(v.List().Get(i).Message(), seen)
+			}
+			return true
+		}
+		markSet(v.Message(), seen)
+		return true
+	})
 }
