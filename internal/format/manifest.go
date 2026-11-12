@@ -91,14 +91,18 @@ type leaseJSON struct {
 //   - a lease without a holder, or without an expiry in RFC 3339 format whose year in UTC is between
 //     0 and 9999
 //
-// Keys are matched exactly, so "Version" is a field it does not know, and "version" is then missing.
-// A leap second cannot be read, and an expiry is read to the nanosecond, with more digits dropped.
+// The first two points are checked before the version, at every level, so bytes that fail them are
+// malformed whatever their version. Keys are matched exactly, so
+// "Version" is a field it does not know, and "version" is then missing. A leap second cannot be
+// read, and an expiry is read to the nanosecond, with more digits dropped.
 func ParseManifest(b []byte) (Manifest, error) {
-	// [json.Unmarshal] refuses the syntax, the UTF-8, the surrogates, and the keys given twice, and
-	// values of the wrong kind. The rest is checked here.
+	// Each [json.Unmarshal] refuses invalid syntax, invalid UTF-8, lone surrogates, and keys given
+	// twice, at every level. The second also refuses values of the wrong kind. The rest is checked
+	// here.
 	//
-	// The version comes first, because a newer version can change anything else. The lease is read as
-	// JSON here too, because [manifestJSON] reads a null lease as no lease.
+	// The version is checked before the rest is read, because a newer version can change anything
+	// else. The lease is kept as JSON in the first pass, because [manifestJSON] reads a null lease as
+	// no lease.
 	var first struct {
 		Version jsontext.Value `json:"version"`
 		Lease   jsontext.Value `json:"lease"`
@@ -163,6 +167,9 @@ func parseLease(j leaseJSON) (Lease, error) {
 	if j.Holder == "" {
 		return Lease{}, fmt.Errorf("%w: manifest lease has no holder", ErrMalformed)
 	}
+	if j.Expires == "" {
+		return Lease{}, fmt.Errorf("%w: manifest lease has no expiry", ErrMalformed)
+	}
 
 	// RFC 3339 allows a lowercase T and Z, and Go's parser does not. No other letter can appear.
 	expires := strings.ToUpper(j.Expires)
@@ -198,9 +205,10 @@ func checkExpiry(t time.Time) error {
 // does not know after the known ones, in the order of their keys. It refuses, with an error that
 // wraps [ErrMalformed], what [ParseManifest] refuses.
 //
-// Strings are written without escapes for HTML, and U+2028 and U+2029 are escaped in every string.
-// Apart from that and whitespace, the fields it does not know are written as they were read, with
-// the escapes in their strings and the spelling of their numbers.
+// U+2028 and U+2029 are escaped in every string, and "<", ">", and "&" are not. The values of the
+// fields it does not know are written as they were read, apart from whitespace and those two
+// characters, so their strings keep their escapes and their numbers their spelling. The names of
+// those fields are written in the shortest form, like the strings of the known fields.
 func (m Manifest) Marshal() ([]byte, error) {
 	j := manifestJSON{
 		Version: jsontext.Value(fmt.Sprint(manifestVersion)),

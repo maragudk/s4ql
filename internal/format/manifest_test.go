@@ -120,8 +120,34 @@ func TestParseManifest(t *testing.T) {
       -0`)), string(b))
 	})
 
+	t.Run("should write the fields it does not know in the order of their keys at every level", func(t *testing.T) {
+		unknown := `"é":0,"b":0,"_":0,"B":0,"a":0`
+		m, err := format.ParseManifest([]byte(`{"version":0,` + unknown + `,` +
+			`"branches":{"b":0,"main":{"head":"` + testHead + `",` + unknown + `},"é":0,"_":0,"B":0,"a":0},` +
+			`"lease":{"holder":"h",` + unknown + `,"expires":"2026-11-11T12:00:30Z"}}`))
+		is.NotError(t, err)
+
+		b, err := m.Marshal()
+		is.NotError(t, err)
+		v := jsontext.Value(b)
+		is.NotError(t, v.Compact())
+		sorted := `"B":0,"_":0,"a":0,"b":0,"é":0`
+		is.Equal(t, `{"version":0,"branches":{"main":{"head":"`+testHead+`",`+sorted+`},`+sorted+`},`+
+			`"lease":{"holder":"h","expires":"2026-11-11T12:00:30.000Z",`+sorted+`},`+sorted+`}`, string(v))
+	})
+
+	t.Run("should escape U+2028 and U+2029 in the fields it does not know, and keep the rest of their strings", func(t *testing.T) {
+		m, err := format.ParseManifest(manifestWithLease(`{"holder":"h","expires":"2026-11-11T12:00:30Z","x":"a` + "\u2028" + `b` + "\u2029" + `c\/"}`))
+		is.NotError(t, err)
+
+		b, err := m.Marshal()
+		is.NotError(t, err)
+		is.True(t, bytes.Contains(b, []byte(`"x": "a\u2028b\u2029c\/"`)), string(b))
+	})
+
 	t.Run("should not change when the bytes it was read from change", func(t *testing.T) {
-		input := manifestWithLease(`{"holder":"h","expires":"2026-11-11T12:00:30Z","x":"abc"}`)
+		input := []byte(`{"version":0,"x":"abc","branches":{"main":{"head":"` + testHead + `","x":"abc"},"x":"abc"},` +
+			`"lease":{"holder":"h","expires":"2026-11-11T12:00:30Z","x":"abc"}}`)
 		m, err := format.ParseManifest(input)
 		is.NotError(t, err)
 		want, err := m.Marshal()
@@ -155,6 +181,8 @@ func TestParseManifest(t *testing.T) {
 		{name: "should refuse version 1 as newer", input: `{"version":1,"branches":{"main":{"head":"` + strings.Repeat("0", 64) + `"}}}`},
 		{name: "should refuse version 1 as newer even when the rest is not understood", input: `{"version":1,"branches":[]}`},
 		{name: "should refuse a large version as newer", input: `{"version":123456789012345678901234567890}`},
+		{name: "should refuse version 1 as newer even when the lease is null", input: `{"version":1,"lease":null}`},
+		{name: "should refuse version 1 as newer even when the lease is not an object", input: `{"version":1,"lease":5}`},
 	}
 	for _, test := range newer {
 		t.Run(test.name, func(t *testing.T) {
@@ -215,6 +243,7 @@ func TestParseManifest(t *testing.T) {
 		{name: "should refuse a lease given twice", input: `{"version":0,"branches":{"main":{"head":"` + zeros + `"}},"lease":{"holder":"h","expires":"2026-11-11T12:00:30Z"},"lease":{"holder":"h","expires":"2026-11-11T12:00:30Z"}}`},
 		{name: "should refuse an unknown key given twice", input: `{"version":0,"branches":{"main":{"head":"` + zeros + `"}},"x":1,"x":2}`},
 		{name: "should refuse a key given twice in an object it does not know", input: `{"version":0,"branches":{"main":{"head":"` + zeros + `"}},"x":{"a":1,"a":2}}`},
+		{name: "should refuse a key given twice in an object it does not know, also in a newer version", input: `{"version":1,"x":{"a":1,"a":2}}`},
 		{name: "should refuse a key given twice in another spelling", input: `{"version":0,"branches":{"main":{"head":"` + zeros + `"}},"x":1,"\u0078":2}`},
 		{name: "should refuse bytes that are not valid UTF-8", input: `{"version":0,"branches":{"main":{"head":"` + zeros + `"}},"x":"` + "\xff" + `"}`},
 		{name: "should refuse an escaped lone surrogate", input: `{"version":0,"branches":{"main":{"head":"` + zeros + `"}},"x":"\ud800"}`},
@@ -365,6 +394,7 @@ func FuzzParseManifest(f *testing.F) {
 	}
 	f.Add([]byte(`{"version":1}`))
 	f.Add(manifestWithLease(`{"holder":"😀","expires":"2026-11-11t13:00:30.5+01:00","x":{"y":[null,true]}}`))
+	f.Add(manifestWithLease(`{"holder":"\ud83d\ude00","expires":"2026-11-11t13:00:30.5+01:00","x":{"y":[null,true]}}`))
 
 	f.Fuzz(func(t *testing.T, input []byte) {
 		m, err := format.ParseManifest(input)
@@ -416,12 +446,11 @@ func manifestWithLease(lease string) []byte {
 	return []byte(`{"version":0,"branches":{"main":{"head":"` + strings.Repeat("0", 64) + `"}},"lease":` + lease + `}`)
 }
 
-// jsonNumber is the text of a JSON number, so that numbers are compared exactly, and not as float64.
-type jsonNumber string
-
-// decodeJSON into maps, slices, and values, with each number as a [jsonNumber].
+// decodeJSON into maps, slices, and values, with each number as its text, so that numbers are
+// compared exactly, and not as float64.
 func decodeJSON(t *testing.T, b []byte) map[string]any {
 	t.Helper()
+	type jsonNumber string
 	numbers := json.UnmarshalFromFunc(func(d *jsontext.Decoder, v *any) error {
 		if d.PeekKind() != jsontext.KindNumber {
 			return errors.ErrUnsupported
