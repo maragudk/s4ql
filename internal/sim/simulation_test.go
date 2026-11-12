@@ -26,26 +26,38 @@ import (
 	"maragu.dev/s4ql/internal/sqlite"
 )
 
-// clockFaults that a workload does to the clocks of its instances, as a set of bits. Each instance
-// gets at most one of them in its life, so that at most one of its two clocks is wrong at a time.
+// clockFaults that a workload does to the clocks of its instances, as a set of bits.
 //
-// The faults are those that the lease's design survives. A wall clock set backward on a holder that
-// can still reach the store is not one of them: the holder renews with an expiry that is already past
-// on the other instances' clocks, another takes the lease, and both of the holder's own checks still
-// pass. So wallBackward cuts the instance off from the store for as long as its clock is wrong.
+// The lease compares no clock of one machine with another's: a holder compares each of its clocks
+// only with itself, and an instance that waits to take the lease waits on its own monotonic clock.
+// So the faults move any one clock of an instance in either direction, by small and large amounts,
+// while the instance can reach the store. Two faults are left out, because the design does not
+// survive them, and accepts that:
+//
+//   - Both clocks of one instance wrong in the same direction, so that both show less time since a
+//     renewal than has passed: a wall clock set backward or standing still, and a monotonic clock
+//     that stands still. A holder that can no longer renew then serves after its lease is over by
+//     both of its checks, while another instance takes the lease. So an instance whose monotonic
+//     clock stands still has its wall clock moved only forward. Markus accepted stale reads when both
+//     clocks fail.
+//   - A monotonic clock that runs fast or jumps forward on an instance that waits to take the lease.
+//     The wait is then shorter than the holder's lease, and the instance can take over from a holder
+//     that is cut off but still serves. The margin covers a rate that is wrong by up to the margin
+//     divided by the duration, which is far more than the drift of a real monotonic clock. The
+//     harness can hold a monotonic clock still but cannot make one run fast, so this fault is out of
+//     reach anyway. A monotonic clock that runs slow is the same fault as one that stands still.
 type clockFaults int
 
 const (
 	// stopMonotonic holds an instance's monotonic clock still for a while.
 	stopMonotonic clockFaults = 1 << iota
-	// wallBackward sets an instance's wall clock backward for a while, and cuts it off from the store
-	// for as long, so that it writes no expiry from the wrong clock.
-	wallBackward
-	// wallForward sets an instance's wall clock forward by less than the takeover margin, for good.
+	// wallForward sets an instance's wall clock forward, by a small or a large amount, for good.
 	wallForward
-	// partition cuts an instance off from the store for a while, and moves no clock. It is not a fault
-	// of a clock, and is there to show what wallBackward does without the shift.
-	partition
+	// wallBackward sets an instance's wall clock backward, by a small or a large amount, for good.
+	wallBackward
+	// stopWall holds an instance's wall clock still for a while, and it goes on from where it stood.
+	// A holder whose wall clock stands still writes the same wall-clock time at every renewal.
+	stopWall
 )
 
 // workload that callers run against [toyDB] instances.
@@ -56,14 +68,26 @@ type workload struct {
 	callers int
 	// ops is the number of transactions that each caller runs.
 	ops int
+	// writes is the share of the transactions, in percent, that write. The others read.
+	writes int
 	// think is the longest simulated time that a caller waits before each transaction.
 	think time.Duration
 	// latency is the unit of the simulated store's latency.
 	latency time.Duration
 	options toyOptions
-	faults  faults
+	// durations of the lease, of which each instance draws one.
+	durations []time.Duration
+	faults    faults
+	// partitions cut an instance off from the store for a while, under the scheduler only.
+	partitions bool
+	// faulty is the share of the instances, in percent, whose clocks move, and, drawn apart, that a
+	// partition cuts off.
+	faulty int
 	// clocks that the workload moves, under the scheduler only.
 	clocks clockFaults
+	// unmoved draws the clock faults as clocks does, at the same times, and moves no clock. It is the
+	// control for a bug that needs a clock to move.
+	unmoved bool
 	// crashes of a random instance, each followed by a restart on what it left on disk, under the
 	// scheduler only.
 	crashes int
@@ -76,31 +100,45 @@ func (w workload) leaseLossExpected() bool {
 	return w.instances > 1
 }
 
+// liveness is how long after the end of the workload some instance must serve: two waits for the
+// longest lease and the margin, because an instance that ends a wait may find a new version and wait
+// again, and one operation that the store delays, which takes at most 70 thousand units of latency.
+func (w workload) liveness() time.Duration {
+	return 2*(slices.Max(w.durations)+takeoverMargin) + 70_000*w.latency
+}
+
 // singleWorkload has one instance, and enough callers, simulated time, and faults for commits,
 // renewals, reads, and lease timeouts to overlap.
 var singleWorkload = workload{
 	instances: 1,
 	callers:   4,
 	ops:       12,
+	writes:    35,
 	think:     15 * time.Second,
 	latency:   time.Millisecond,
 	options:   toyOptions{readers: 2, busyTimeout: 1000},
+	durations: []time.Duration{30 * time.Second},
 	faults:    faults{errors: 30, lostAcks: 30, delays: 10},
 }
 
-// fullWorkload has everything the harness can do: two instances that compete for the lease, clocks
-// that move, a crash and a restart, buggify, and faults of the store.
+// fullWorkload has everything the harness can do: two instances that compete for the lease, with
+// leases of different durations, clocks that move, partitions, a crash and a restart, buggify, and
+// faults of the store.
 var fullWorkload = workload{
-	instances: 2,
-	callers:   3,
-	ops:       12,
-	think:     15 * time.Second,
-	latency:   time.Millisecond,
-	options:   toyOptions{readers: 2, busyTimeout: 1000},
-	faults:    faults{errors: 30, lostAcks: 30, delays: 10},
-	clocks:    stopMonotonic | wallBackward | wallForward,
-	crashes:   1,
-	buggify:   true,
+	instances:  2,
+	callers:    3,
+	ops:        12,
+	writes:     35,
+	think:      15 * time.Second,
+	latency:    time.Millisecond,
+	options:    toyOptions{readers: 2, busyTimeout: 1000},
+	durations:  []time.Duration{20 * time.Second, 30 * time.Second, 45 * time.Second},
+	faults:     faults{errors: 30, lostAcks: 30, delays: 10, delayAnswers: true},
+	partitions: true,
+	clocks:     stopMonotonic | wallForward | wallBackward | stopWall,
+	faulty:     50,
+	crashes:    1,
+	buggify:    true,
 }
 
 // hammerWorkload has callers that never wait between transactions, so that with the scheduler off
@@ -109,8 +147,10 @@ var hammerWorkload = workload{
 	instances: 1,
 	callers:   8,
 	ops:       40,
+	writes:    35,
 	latency:   time.Millisecond,
 	options:   toyOptions{readers: 4, busyTimeout: 1000},
+	durations: []time.Duration{30 * time.Second},
 	faults:    faults{errors: 30, lostAcks: 30, delays: 10},
 }
 
@@ -146,6 +186,8 @@ type outcome struct {
 	stops, restarts atomic.Int64
 	// acked is the highest commit that a caller knows to be acknowledged.
 	acked atomic.Int64
+	// serveAfter is how long after the end of the workload an instance served, by the simulated time.
+	serveAfter time.Duration
 
 	mu sync.Mutex
 	// violations of the invariants that the workload checks.
@@ -206,6 +248,8 @@ type node struct {
 	host   tracer
 	client *storeClient
 	path   string
+	// options that the node opens its database with.
+	options toyOptions
 	// callers that have not returned.
 	callers atomic.Int64
 
@@ -231,7 +275,8 @@ func (n *node) do(ctx context.Context, name string, f func(ctx context.Context))
 //   - A read that starts after a commit is acknowledged, by any instance, sees that commit.
 //   - A read never sees a commit that the manifest does not have, so the cache is never ahead.
 //   - An instance stops only for a reason that the faults explain.
-//   - Some instance serves again within two minutes of the end of the workload, also after a crash.
+//   - Some instance serves again soon after the end of the workload, also after a crash: see
+//     [workload.liveness].
 //   - At the end, the log holds every acknowledged commit with the writes that its caller made, and
 //     no commit that is known to have failed, and every cache holds what the log says up to its
 //     commit.
@@ -366,7 +411,7 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 				o.violate(ctx, c.world, "close: %v", err)
 			}
 		}
-		next, err := openToy(ctx, n.host, n.client, n.path, w.options)
+		next, err := openToy(ctx, n.host, n.client, n.path, n.options)
 		if err != nil {
 			o.violate(ctx, c.world, "open again: %v", err)
 			return
@@ -379,8 +424,9 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 	// start a node with its callers and the task that opens its database again when it stops, and
 	// return the tasks.
 	start := func(ctx context.Context, name, path string) (*node, []host.Task) {
-		n := &node{name: name, host: c.instance(name), client: store.client(), path: path}
-		d, err := openToy(ctx, n.host, n.client, path, w.options)
+		n := &node{name: name, host: c.instance(name), client: store.client(), path: path, options: w.options}
+		n.options.leaseDuration = w.durations[intn(c.world, len(w.durations))]
+		d, err := openToy(ctx, n.host, n.client, path, n.options)
 		if err != nil {
 			o.violate(ctx, c.world, "open: %v", err)
 			return n, nil
@@ -402,7 +448,7 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 					d := n.current()
 					// Every call has a timeout, as a request of an application has.
 					ctx, cancel := n.host.WithTimeout(ctx, 30*time.Second)
-					if intn(n.host, 100) < 35 {
+					if intn(n.host, 100) < w.writes {
 						write(ctx, n, d)
 					} else {
 						read(ctx, n, d)
@@ -429,7 +475,12 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 		tasks = append(tasks, nodeTasks...)
 		if inst, ok := n.host.(*sim.Instance); ok && w.clocks != 0 {
 			tasks = append(tasks, c.world.Go(ctx, "clocks of "+name, func(ctx context.Context) {
-				w.moveClocks(ctx, c.world, inst, n)
+				w.moveClocks(ctx, c.world, inst)
+			}))
+		}
+		if _, ok := n.host.(*sim.Instance); ok && w.partitions {
+			tasks = append(tasks, c.world.Go(ctx, "network of "+name, func(ctx context.Context) {
+				w.partition(ctx, c.world, n)
 			}))
 		}
 	}
@@ -498,10 +549,11 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 		}
 	}
 
-	// The clocks are right again and nothing crashes any more, so an instance must serve soon: an
-	// expired lease is taken over within its margin, and catching up takes seconds.
+	// No monotonic clock stands still any more, nothing is cut off, and nothing crashes, so an
+	// instance must serve soon.
 	served := false
-	for range 120 {
+	ended, bound := c.world.Monotonic(), w.liveness()
+	for !served && c.world.Monotonic()-ended < bound {
 		for _, n := range live {
 			n.do(ctx, "end", func(ctx context.Context) {
 				if d := n.current(); d.stopErr() != nil {
@@ -512,13 +564,13 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 				}
 			})
 		}
-		if served {
-			break
+		if !served {
+			_ = c.world.Sleep(ctx, time.Second)
 		}
-		_ = c.world.Sleep(ctx, time.Second)
 	}
+	o.serveAfter = c.world.Monotonic() - ended
 	if !served && len(live) > 0 {
-		o.violate(ctx, c.world, "no instance serves two minutes after the end of the workload")
+		o.violate(ctx, c.world, "no instance serves %v after the end of the workload", bound)
 	}
 
 	for _, n := range live {
@@ -537,45 +589,89 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 	o.verify(ctx, c.world, store, live, holders)
 }
 
-// moveClocks of the instance of n by one fault that the seed picks from those of w, at a time that
-// the seed picks, or by none.
-func (w workload) moveClocks(ctx context.Context, h tracer, inst *sim.Instance, n *node) {
-	var kinds []clockFaults
-	for _, kind := range []clockFaults{stopMonotonic, wallBackward, wallForward, partition} {
-		if w.clocks&kind != 0 {
-			kinds = append(kinds, kind)
+// moveClocks of inst by a few faults that the seed picks from those of w, at times that the seed
+// picks, or by none. An instance either has its monotonic clock stopped, and its wall clock moved only
+// forward, or has its wall clock moved in any direction: see [clockFaults].
+func (w workload) moveClocks(ctx context.Context, h tracer, inst *sim.Instance) {
+	var monotonicKinds, wallKinds []clockFaults
+	if w.clocks&stopMonotonic != 0 {
+		monotonicKinds = append(monotonicKinds, stopMonotonic)
+		if w.clocks&wallForward != 0 {
+			monotonicKinds = append(monotonicKinds, wallForward)
 		}
 	}
-	// As often as not, the clocks of an instance are right.
-	kind := intn(h, 2*len(kinds))
-	if kind >= len(kinds) {
+	for _, kind := range []clockFaults{wallForward, wallBackward, stopWall} {
+		if w.clocks&kind != 0 {
+			wallKinds = append(wallKinds, kind)
+		}
+	}
+	if intn(h, 100) >= w.faulty {
+		return
+	}
+	kinds := wallKinds
+	if len(monotonicKinds) > 0 && (len(wallKinds) == 0 || intn(h, 2) == 0) {
+		kinds = monotonicKinds
+	}
+	if len(kinds) == 0 {
+		return
+	}
+
+	for range 1 + intn(h, 4) {
+		if err := h.Sleep(ctx, time.Duration(intn(h, 60_000))*time.Millisecond); err != nil {
+			return
+		}
+		// A small move is less than the margin, and a large one up to two hours.
+		by := time.Duration(intn(h, int(takeoverMargin/time.Millisecond))) * time.Millisecond
+		if intn(h, 2) == 0 {
+			by = time.Duration(intn(h, 7200)) * time.Second
+		}
+		// A monotonic clock stands still for 20 to 80 seconds, and a wall clock for up to five minutes.
+		span := time.Duration(20_000+intn(h, 60_000)) * time.Millisecond
+		wallSpan := time.Duration(20_000+intn(h, 280_000)) * time.Millisecond
+		drawn := kinds[intn(h, len(kinds))]
+		kind := drawn
+		if w.unmoved {
+			kind = 0
+		}
+		switch kind {
+		case stopMonotonic:
+			inst.StopMonotonic()
+			_ = h.Sleep(ctx, span)
+			inst.StartMonotonic()
+		case wallForward:
+			inst.ShiftWall(by)
+		case wallBackward:
+			inst.ShiftWall(-by)
+		case stopWall:
+			inst.StopWall()
+			_ = h.Sleep(ctx, wallSpan)
+			inst.StartWall()
+		default:
+			// The control sleeps as the faults that stop a clock do, so that a seed draws the same
+			// numbers at the same times.
+			switch drawn {
+			case stopMonotonic:
+				_ = h.Sleep(ctx, span)
+			case stopWall:
+				_ = h.Sleep(ctx, wallSpan)
+			}
+		}
+	}
+}
+
+// partition cuts n off from the store for a while, at a time that the seed picks, or not at all.
+func (w workload) partition(ctx context.Context, h tracer, n *node) {
+	if intn(h, 100) >= w.faulty {
 		return
 	}
 	if err := h.Sleep(ctx, time.Duration(intn(h, 100_000))*time.Millisecond); err != nil {
 		return
 	}
-	span := time.Duration(20_000+intn(h, 60_000)) * time.Millisecond
-	switch kinds[kind] {
-	case stopMonotonic:
-		inst.StopMonotonic()
-		_ = h.Sleep(ctx, span)
-		inst.StartMonotonic()
-	case wallBackward, partition:
-		// Both draw the same numbers, so that a seed gives the same partition with and without the shift.
-		n.client.partitioned.Store(true)
-		h.Trace(ctx, "%v is cut off from the store", n.name)
-		by := time.Duration(20_000+intn(h, 60_000)) * time.Millisecond
-		if kinds[kind] == partition {
-			by = 0
-		}
-		inst.ShiftWall(-by)
-		_ = h.Sleep(ctx, span)
-		inst.ShiftWall(by)
-		n.client.partitioned.Store(false)
-		h.Trace(ctx, "%v reaches the store again", n.name)
-	case wallForward:
-		inst.ShiftWall(time.Duration(intn(h, int(takeoverMargin/time.Millisecond)/2)) * time.Millisecond)
-	}
+	n.client.partitioned.Store(true)
+	h.Trace(ctx, "%v is cut off from the store", n.name)
+	_ = h.Sleep(ctx, time.Duration(20_000+intn(h, 60_000))*time.Millisecond)
+	n.client.partitioned.Store(false)
+	h.Trace(ctx, "%v reaches the store again", n.name)
 }
 
 // cache is what a cache holds: its commit, and the values at its keys.
@@ -661,8 +757,8 @@ func (o *outcome) verify(ctx context.Context, h tracer, store *memStore, live []
 		o.violate(ctx, h, "manifest: %v", err)
 		return
 	}
-	if man.Holder != "" && !holders[man.Holder] {
-		o.violate(ctx, h, "the lease is still held by %v after every instance was closed", man.Holder)
+	if man.Lease != nil && !holders[man.Lease.Holder] {
+		o.violate(ctx, h, "the lease is still held by %v after every instance was closed", man.Lease.Holder)
 	}
 
 	// The log is followed from its newest commit to its first.
@@ -896,6 +992,10 @@ func TestSimulation(t *testing.T) {
 			hashes, orders := map[string]bool{}, map[string]bool{}
 			all := sha256.New()
 			var steps, differing, buggifies, clockMoves, crashes, timeouts int
+			// serveAfter is how long after the end of the workload an instance served, at most and in the
+			// seed where it took longest.
+			var serveAfter time.Duration
+			var slowest uint64
 			var commits, failedCommits, unknownCommits, cutCommits, rollbacks, reads, failedReads, expiredReads, overtakenReads, stops, restarts int64
 			start := time.Now()
 			for seed := range n {
@@ -912,7 +1012,7 @@ func TestSimulation(t *testing.T) {
 				all.Write([]byte(first.hash()))
 				steps += first.steps
 				buggifies += first.count(" fires")
-				clockMoves += first.count(" monotonic clock") + first.count(" shifts its wall clock")
+				clockMoves += first.count(" monotonic clock") + first.count(" wall clock")
 				crashes += first.count(" crashes")
 				timeouts += first.count(" expires")
 				o := first.outcome
@@ -927,12 +1027,16 @@ func TestSimulation(t *testing.T) {
 				overtakenReads += o.overtakenReads.Load()
 				stops += o.stops.Load()
 				restarts += o.restarts.Load()
+				if o.serveAfter > serveAfter {
+					serveAfter, slowest = o.serveAfter, seed
+				}
 			}
 			elapsed := time.Since(start)
 			t.Logf("%v seeds, each run twice: %v pairs differed; %v distinct traces, and %v distinct orders of tasks", n, differing, len(hashes), len(orders))
 			t.Logf("in the first run of each seed: %v steps, %v commits, %v failed commits, %v of unknown outcome, %v cut off by a crash, %v rollbacks, %v reads of which %v were overtaken by a commit, %v failed reads of which %v for an expired lease",
 				steps, commits, failedCommits, unknownCommits, cutCommits, rollbacks, reads, overtakenReads, failedReads, expiredReads)
 			t.Logf("and %v buggify points that fired, %v moves of a clock, %v crashes and %v restarts, %v stops of an instance, %v timeouts that expired", buggifies, clockMoves, crashes, restarts, stops, timeouts)
+			t.Logf("an instance served at most %v after the end of the workload, in seed %v, where %v is the bound", serveAfter, slowest, test.workload.liveness())
 			t.Logf("%v runs in %v, %.0f runs per second, %.0f steps per second",
 				2*n, elapsed.Round(time.Millisecond), float64(2*n)/elapsed.Seconds(), float64(2*steps)/elapsed.Seconds())
 			// The hash depends only on the code and the seeds, so it can be compared between machines.
@@ -957,6 +1061,18 @@ func TestSimulation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// competing is the full workload without clock faults, crashes, or buggify, changed by change: two
+// instances that compete for the lease, with partitions and faults of the store. Its callers run 30
+// transactions each, and every instance gets the faults of a clock that change asks for, and a
+// partition, because a lease is only lost to another instance a few times in a run.
+func competing(change func(w *workload)) workload {
+	w := fullWorkload
+	w.ops, w.faulty = 30, 100
+	w.clocks, w.crashes, w.buggify = 0, 0, false
+	change(&w)
+	return w
 }
 
 // plantedBugs that the checks must find. Each holds the workload that finds the bug. A bug that needs
@@ -992,35 +1108,88 @@ var plantedBugs = []struct {
 	},
 	{
 		name: "a read that checks the lease against the wall clock only",
-		workload: func() workload {
-			w := fullWorkload
+		workload: competing(func(w *workload) {
 			w.options.bugs.wallOnly = true
-			w.clocks, w.crashes, w.buggify = wallBackward, 0, false
-			return w
-		}(),
-		control: func() *workload {
-			w := fullWorkload
-			// The same partitions, without the shift of the wall clock.
+			w.clocks = wallBackward | stopWall
+		}),
+		control: new(competing(func(w *workload) {
 			w.options.bugs.wallOnly = true
-			w.clocks, w.crashes, w.buggify = partition, 0, false
-			return &w
-		}(),
+			w.clocks, w.unmoved = wallBackward|stopWall, true
+		})),
 		symptoms: []string{"after commit"},
 	},
 	{
 		name: "a read that checks the lease against the monotonic clock only",
-		workload: func() workload {
-			w := fullWorkload
+		workload: competing(func(w *workload) {
 			w.options.bugs.monotonicOnly = true
-			w.clocks, w.crashes, w.buggify = stopMonotonic, 0, false
-			return w
-		}(),
-		control: func() *workload {
-			w := fullWorkload
+			w.clocks = stopMonotonic
+		}),
+		control: new(competing(func(w *workload) {
 			w.options.bugs.monotonicOnly = true
-			w.clocks, w.crashes, w.buggify = 0, 0, false
-			return &w
-		}(),
+			w.clocks, w.unmoved = stopMonotonic, true
+		})),
+		symptoms: []string{"after commit"},
+	},
+	{
+		// A renewal without a new salt writes the bytes of the manifest it replaces only if the holder's
+		// wall clock shows the same time as at that write, so the bug needs a wall clock that stands
+		// still. A commit in between writes other bytes, so few transactions write.
+		name: "a renewal that writes no new salt",
+		workload: competing(func(w *workload) {
+			w.options.bugs.keepSalt = true
+			w.clocks, w.writes = stopWall, 10
+		}),
+		control: new(competing(func(w *workload) {
+			w.options.bugs.keepSalt = true
+			w.clocks, w.writes, w.unmoved = stopWall, 10, true
+		})),
+		symptoms: []string{"after commit"},
+	},
+	{
+		// The wait of the bug succeeds against a live holder only if it ends before the holder's next
+		// write, so the instance with the shorter lease, which waits 12 seconds, watches a holder that
+		// renews every 60 seconds.
+		name: "an instance that waits for its own lease duration, and not for the holder's",
+		workload: competing(func(w *workload) {
+			w.options.bugs.ownDuration = true
+			w.durations = []time.Duration{10 * time.Second, 90 * time.Second}
+		}),
+		control: new(competing(func(w *workload) {
+			w.options.bugs.ownDuration = true
+			w.durations = []time.Duration{30 * time.Second, 30 * time.Second}
+		})),
+		symptoms: []string{"after commit"},
+	},
+	{
+		// With one instance, the only instance that ever waits for the lease is the one that restarts
+		// after a crash, whose holder is dead and writes nothing.
+		name: "an instance that swaps against the version it reads at the end of its wait",
+		workload: competing(func(w *workload) {
+			w.options.bugs.lateVersion = true
+			w.crashes = 1
+		}),
+		control: new(competing(func(w *workload) {
+			w.options.bugs.lateVersion = true
+			w.instances, w.crashes = 1, 1
+		})),
+		symptoms: []string{"after commit"},
+	},
+	{
+		// Only an answer that comes late after the store applied the swap makes the lease of the bug
+		// outlast the wait of another instance, which starts when it reads the swap. The answer comes 40
+		// to 70 seconds late, so the leases are short enough for the wait to end before it, also when
+		// the instance that waits first waited on an older version.
+		name: "a holder that counts its lease from the answer to a swap",
+		workload: competing(func(w *workload) {
+			w.options.bugs.leaseFromAnswer = true
+			w.faults.delays = 50
+			w.durations = []time.Duration{10 * time.Second}
+		}),
+		control: new(competing(func(w *workload) {
+			w.options.bugs.leaseFromAnswer = true
+			w.faults.delays, w.faults.delayAnswers = 50, false
+			w.durations = []time.Duration{10 * time.Second}
+		})),
 		symptoms: []string{"after commit"},
 	},
 	{
