@@ -407,3 +407,57 @@ The probabilities. The runs are deterministic, so whether the default seeds find
 
 - Check the time of the default run in CI once the branch is pushed. It should be about two minutes for `internal/sim` under `-race` on four cores.
 - System time as large as user time may be worth a look in `TestSimulationSpeed` if the runs ever become too slow again.
+
+## Step 5: A canary test that depended on the speed of the machine
+
+**Author:** canary-builder
+
+### Prompt Context
+
+**Verbatim prompt:** The CI job `asan` runs `make test-asan` (all tests under the C address sanitizer, on a 4-core runner, with all packages' tests running at the same time). It failed with: `--- FAIL: TestSynctestWithCgo (49.37s)`, `--- FAIL: TestSynctestWithCgo/should_give_the_lock_to_a_SQLite_call_that_waits_for_it_while_its_holder_is_running,_as_outside_a_bubble (6.90s)`, `cgo_test.go:209: Expected nil error, but got "sqlite: database is locked (code 5)" (type *sqlite.Error)`. Make this subtest independent of the machine's speed, without changing what it shows. [...] Read the rest of `internal/sim/cgo_test.go`, `timers_test.go`, and the other tests of `internal/sim` that run on the real clock [...] and look for the same kind of fragility. Change test code only.
+**Interpretation:** Fix the one subtest, then audit the tests that run on the real clock for assertions that hold only if real work finishes within a fixed real time.
+**Inferred intent:** CI must not fail because the runner is slow under the sanitizer.
+
+### What I did
+
+In `/internal/sim/cgo_test.go`, the subtest "should give the lock to a SQLite call that waits for it while its holder is running, as outside a bubble" had a waiter with a busy timeout of 5000 ms, and a holder that counted to 3,000,000 in C. The busy timeout runs in real time in C, so the test held only if the holder's work took under 5 s. Locally the work takes 0.4 s; under the sanitizer on the loaded runner it took more than 5 s. I changed the waiter's busy timeout to 60,000 ms and the holder's work to 1,000,000, with a comment on the timeout.
+
+I audited the other real-clock assertions and changed three more:
+
+- `/internal/sim/cgo_test.go`, the parallel readers test: the busy timeout of 1000 ms for the one writer, with the assertion of no `SQLITE_BUSY` on `begin immediate`, is now 60,000 ms.
+- `/internal/sim/simulation_test.go`: `busyTimeout: 1000` in `singleWorkload`, `fullWorkload`, and `hammerWorkload` is now 60,000. Under the scheduler a task never waits for a lock, so this changes nothing there; with the scheduler off, in `TestFreeRunning`, a caller that waits for a lock is a few microseconds from getting it, unless the machine is very slow.
+- `/internal/sim/sim_test.go`, `TestScheduler_Sleep`: `time.Since(realStart) < time.Minute` is now `< time.Hour`. The test shows that 6 hours of simulated sleeping take no real time, and the first sleeper alone sleeps 1 hour, so the bound still tells them apart.
+
+Left as they are, because they do not depend on speed: the other subtests of `TestSynctestWithCgo` (their SQLite waits end because of the lock's holder, which is blocked or at rest, not because of how long work takes; the two with a 1500 ms busy timeout assert only a lower bound of real time, and a slow machine only makes it longer), `TestSynctestTimerOrder` in `/internal/sim/timers_test.go` (fake time only), `/internal/sim/free_test.go` (fake time only), all tests of the scheduler on simulated time, and the `elapsed` measures in `TestSimulation`, `TestSimulationSpeed`, `TestFreeRunning`, and the SQLite lock test in `/internal/sim/simulation_test.go`, which only log. In `/internal/host/host_test.go`, `time.Since(now) < time.Minute` checks a wall clock reading that was taken a moment before; I left it.
+
+### Why
+
+The test's point is that the waiter gets the lock when the holder ends. How fast the machine counts to 3,000,000 must not decide that.
+
+### What worked
+
+The control. With the waiter's busy timeout set to 0, the subtest failed in 8 of 8 runs with `database is locked`, so the holder is still working in C when the waiter asks, and the test is not empty. I put the 60,000 back after that.
+
+### What didn't work
+
+A shell command that copied the file and ran `sed -i ''` and a loop in one line was refused by the sandbox with "this command is too complex to verify that it stays inside the worktree". I made the edits with the edit tool.
+
+### What I learned
+
+The failure shows how much slower the sanitizer on a loaded runner is for C work: more than 12 times what this machine needs without it.
+
+### What was tricky
+
+Raising a busy timeout makes a test that does fail (a waiter that never gets the lock) take up to 60 s instead of 5 s to fail. That is the right trade for a test that must not fail by chance.
+
+### What warrants review
+
+The four changed values listed above. Whether 60 s is wide enough: it is 150 times the 0.4 s that the original 3,000,000 took here, and 450 times what the reduced work takes.
+
+### Future work
+
+None.
+
+### Verification
+
+`go test -count=1 ./internal/sim/` and `go test -race -count=1 ./internal/sim/ ./internal/host/` pass. `make test-asan FUZZTIME=5s`, run in the golang:1.27.3 container with `--cpus 2` (in a copy of the Makefile's `docker run` line), passes; `internal/sim` took 257 s there.

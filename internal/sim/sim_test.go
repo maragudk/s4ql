@@ -299,7 +299,7 @@ func TestScheduler_Sleep(t *testing.T) {
 			}
 		})
 		is.NotError(t, err)
-		is.True(t, time.Since(realStart) < time.Minute)
+		is.True(t, time.Since(realStart) < time.Hour)
 		is.EqualSlice(t, []string{"sleeper-1 woke at 1h0m0s", "sleeper-2 woke at 2h0m0s", "sleeper-3 woke at 3h0m0s"}, matching(s, "woke"))
 	})
 

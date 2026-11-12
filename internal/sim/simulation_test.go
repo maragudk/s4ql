@@ -117,7 +117,7 @@ var singleWorkload = workload{
 	writes:    35,
 	think:     15 * time.Second,
 	latency:   time.Millisecond,
-	options:   toyOptions{readers: 2, busyTimeout: 1000},
+	options:   toyOptions{readers: 2, busyTimeout: 60_000},
 	durations: []time.Duration{30 * time.Second},
 	faults:    faults{errors: 30, lostAcks: 30, delays: 10},
 }
@@ -132,7 +132,7 @@ var fullWorkload = workload{
 	writes:     35,
 	think:      15 * time.Second,
 	latency:    time.Millisecond,
-	options:    toyOptions{readers: 2, busyTimeout: 1000},
+	options:    toyOptions{readers: 2, busyTimeout: 60_000},
 	durations:  []time.Duration{20 * time.Second, 30 * time.Second, 45 * time.Second},
 	faults:     faults{errors: 30, lostAcks: 30, delays: 10, delayAnswers: true},
 	partitions: true,
@@ -150,7 +150,7 @@ var hammerWorkload = workload{
 	ops:       40,
 	writes:    35,
 	latency:   time.Millisecond,
-	options:   toyOptions{readers: 4, busyTimeout: 1000},
+	options:   toyOptions{readers: 4, busyTimeout: 60_000},
 	durations: []time.Duration{30 * time.Second},
 	faults:    faults{errors: 30, lostAcks: 30, delays: 10},
 }

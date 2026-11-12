@@ -191,7 +191,9 @@ func TestSynctestWithCgo(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "test.db")
 			holder := openWAL(t, path, 0)
-			waiter := openWAL(t, path, 5000)
+			// The busy timeout runs in real time. It is far above the time that the holder's work can
+			// take on any machine, so that the speed of the machine does not decide the test.
+			waiter := openWAL(t, path, 60_000)
 
 			is.NotError(t, holder.Exec("begin immediate"))
 
@@ -200,7 +202,7 @@ func TestSynctestWithCgo(t *testing.T) {
 			wg.Go(func() {
 				close(started)
 				// The holder is never durably blocked: it works in C and then commits.
-				_, err := slow(holder, 3_000_000)
+				_, err := slow(holder, 1_000_000)
 				is.NotError(t, err)
 				is.NotError(t, holder.Exec("commit"))
 			})
@@ -245,7 +247,7 @@ func TestSynctestWithCgo(t *testing.T) {
 		busyTimeout int
 	}{
 		{name: "should log how often one writer among parallel readers gets SQLITE_BUSY when it begins with no busy timeout", busyTimeout: 0},
-		{name: "should not give SQLITE_BUSY to one writer among parallel readers with a busy timeout", busyTimeout: 1000},
+		{name: "should not give SQLITE_BUSY to one writer among parallel readers with a busy timeout", busyTimeout: 60_000},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var busyOpen, busyRead, busyBegin, busyCommit, reads, writes atomic.Int64
