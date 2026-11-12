@@ -113,7 +113,7 @@ The spike set five conditions. Each is met as follows:
 - **A lint forbids in library packages what the scheduler cannot run.** `internal/simlint` does, in `make lint` and in the CI job `simulation`. It forbids more than the spike's list, such as channel operations that block and `context.Background`. One rule has no check: an ordinary mutex must not be held across a wait. Neither the lint nor the scheduler detects that, and the test hangs, as `TestScheduler_mutexHeldAcrossWait` shows.
 - **Every seed is run twice, permanently.** `TestSimulation` runs 200 seeds of each workload twice and compares the traces, in `make test` and in CI. The workload whose callers never pause runs 50.
 - **The free-running mode runs under the race detector in CI.** The CI job `simulation` runs `TestFreeRunning` and `TestFree` with `-race` itself, whatever the reusable test workflow does.
-- **The checks compare data against a model, and planted bugs stay as tests of the checks.** `TestSimulation_plantedBugs` holds the six bugs above. A bug that needs one ability of the harness also has a control, the same workload without that ability, which must never find it. The reason for the condition is that a check can pass for the wrong reason. The spike's toy had a real bug that 20000 clean runs produced and no check looked for. In the review of the build, three checks still passed with the mechanism they guard removed.
+- **The checks compare data against a model, and planted bugs stay as tests of the checks.** `TestSimulation_plantedBugs` holds the ten bugs above. A bug that needs one ability of the harness also has a control, the same workload without that ability, which must never find it. The reason for the condition is that a check can pass for the wrong reason. The spike's toy had a real bug that 20000 clean runs produced and no check looked for. In the review of the build, three checks still passed with the mechanism they guard removed.
 - **Every lock acquire and release is a scheduling point, and yields are placed wherever shared state is touched between waits.** The semaphore of the scheduler meets the first half. The second half is a rule for library code, and nothing checks it.
 
 ## What the scheduled mode cannot do
@@ -137,6 +137,14 @@ Markus on 2026-11-11, on whether the free-running mode can go: "I'd rather keep 
 
 ## Tests
 
-`make test` runs the simulation with 200 seeds for each workload. The environment variable `S4QL_SIM_SEEDS` sets another number. The large runs above set it to 10000 for `TestSimulation` and `TestSimulation_plantedBugs`, with a `-timeout` long enough for them.
+`make test` runs `TestSimulation` with 200 seeds of each workload, each seed twice, and 50 for the workload whose callers never pause. `TestSimulation_plantedBugs` runs from 30 to 100 seeds of each bug's workloads, as the field `seeds` of `plantedBugs` sets for each bug: enough that a change which shuffles the seeds that find a bug leaves it unfound with a chance under one in a thousand. The test fails if a bug is not found. The default run then takes about a minute under the race detector, against the ten minutes that `go test` allows a package. The tests of the workloads run in parallel. A run shares nothing with another that reaches its trace, and the traces of `TestSimulation` hash the same in parallel as one test after another.
+
+The environment variable `S4QL_SIM_SEEDS` sets one number of seeds for every workload. The large runs above set it to 10000:
+
+```sh
+S4QL_SIM_SEEDS=10000 go test -timeout 4h -run '^TestSimulation(_plantedBugs)?$' ./internal/sim/
+```
+
+The time grows with the number of seeds. With 1000 seeds, these two tests took 8 minutes 20 seconds on a Mac with 10 cores and a load of 14 to 16, so 10000 seeds take about an hour and a half on it. The `-timeout` leaves room for a slower machine.
 
 `TestSimulationSeed` runs one seed and logs its whole trace. Its doc comment names the environment variables that choose the seed, the workload, and a planted bug.

@@ -913,7 +913,10 @@ func (s simulation) count(substring string) int {
 	return n
 }
 
-// simulate the workload w under the scheduler with seed, in a bubble of its own.
+// simulate the workload w under the scheduler with seed, in a bubble of its own. A run has its own
+// scheduler, store, and directory, and its SQLite connections are to files of its own, so it shares
+// nothing with another run that reaches its trace, and runs in parallel tests give the same traces
+// as runs one after another.
 func simulate(t *testing.T, seed uint64, w workload) simulation {
 	t.Helper()
 	s := simulation{outcome: newOutcome()}
@@ -982,6 +985,7 @@ func firstDifference(a, b []string) string {
 }
 
 func TestSimulation(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		workload workload
@@ -991,6 +995,7 @@ func TestSimulation(t *testing.T) {
 		{name: "should give the same trace when a seed is run twice, and no violations, with callers that never pause", workload: hammerWorkload},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			n := seeds(t, 200, test.workload)
 			hashes, orders := map[string]bool{}, map[string]bool{}
 			all := sha256.New()
@@ -1082,14 +1087,23 @@ func competing(change func(w *workload)) workload {
 // one ability of the harness also holds a control: the same workload without that ability, with
 // which no seed may find it.
 var plantedBugs = []struct {
-	name     string
+	name string
+	// seeds that a run without S4QL_SIM_SEEDS gives each of the bug's workloads, the one with the bug,
+	// its control, and the one without it. A run of at least this many must find the bug. The number is
+	// the smallest multiple of ten with which a change that shuffles which seeds find the bug, at the
+	// share of 10000 seeds that found it, leaves it unfound with a chance of less than one in a
+	// thousand, n ≥ ln(1000) / -ln(1 - share), and at least 30, so that the control and the workload
+	// without the bug are not run for only a few seeds. The runs themselves are deterministic, so
+	// whether these seeds find the bug today is not left to chance: the test fails if they do not.
+	seeds    int
 	workload workload
 	control  *workload
 	// symptoms of the bug: every seed that finds anything must find a violation with one of them.
 	symptoms []string
 }{
 	{
-		name: "a renewal that swaps the manifest outside the lock",
+		name:  "a renewal that swaps the manifest outside the lock",
+		seeds: 50,
 		workload: func() workload {
 			w := singleWorkload
 			w.options.bugs.renewOutsideLock = true
@@ -1098,7 +1112,8 @@ var plantedBugs = []struct {
 		symptoms: []string{"lease lost"},
 	},
 	{
-		name: "a commit that reaches the cache before the manifest",
+		name:  "a commit that reaches the cache before the manifest",
+		seeds: 40,
 		workload: func() workload {
 			// Without faults, a commit never fails, so the cache is ahead of the manifest only while a
 			// commit is on its way, and only a read at that moment finds the bug.
@@ -1110,7 +1125,8 @@ var plantedBugs = []struct {
 		symptoms: []string{"while the manifest was at"},
 	},
 	{
-		name: "a read that checks the lease against the wall clock only",
+		name:  "a read that checks the lease against the wall clock only",
+		seeds: 30,
 		workload: competing(func(w *workload) {
 			w.options.bugs.wallOnly = true
 			w.clocks = wallBackward | stopWall
@@ -1122,7 +1138,8 @@ var plantedBugs = []struct {
 		symptoms: []string{"after commit"},
 	},
 	{
-		name: "a read that checks the lease against the monotonic clock only",
+		name:  "a read that checks the lease against the monotonic clock only",
+		seeds: 30,
 		workload: competing(func(w *workload) {
 			w.options.bugs.monotonicOnly = true
 			w.clocks = stopMonotonic
@@ -1137,7 +1154,8 @@ var plantedBugs = []struct {
 		// A renewal without a new salt writes the bytes of the manifest it replaces only if the holder's
 		// wall clock shows the same time as at that write, so the bug needs a wall clock that stands
 		// still. A commit in between writes other bytes, so few transactions write.
-		name: "a renewal that writes no new salt",
+		name:  "a renewal that writes no new salt",
+		seeds: 90,
 		workload: competing(func(w *workload) {
 			w.options.bugs.keepSalt = true
 			w.clocks, w.writes = stopWall, 10
@@ -1153,7 +1171,8 @@ var plantedBugs = []struct {
 		// write, so the instance with the shorter lease, which waits 12 seconds, watches a holder that
 		// renews every 60 seconds. With leases of one duration, the bug waits as long as the design does,
 		// so its control shows only that the workload finds nothing else.
-		name: "an instance that waits for its own lease duration, and not for the holder's",
+		name:  "an instance that waits for its own lease duration, and not for the holder's",
+		seeds: 50,
 		workload: competing(func(w *workload) {
 			w.options.bugs.ownDuration = true
 			w.durations = []time.Duration{10 * time.Second, 90 * time.Second}
@@ -1168,7 +1187,8 @@ var plantedBugs = []struct {
 		// With one instance, an instance that waits for the lease waits for a holder that crashed or
 		// stopped, and writes nothing. No bug that takes the lease too early can show with one
 		// instance, so the control shows only that the workload finds nothing else.
-		name: "an instance that swaps against the version it reads at the end of its wait",
+		name:  "an instance that swaps against the version it reads at the end of its wait",
+		seeds: 30,
 		workload: competing(func(w *workload) {
 			w.options.bugs.lateVersion = true
 			w.crashes = 1
@@ -1184,7 +1204,8 @@ var plantedBugs = []struct {
 		// outlast the wait of another instance, which starts when it reads the swap. The answer comes 40
 		// to 70 seconds late, so the leases are short enough for the wait to end before it, also when
 		// the instance that waits first waited on an older version.
-		name: "a holder that counts its lease from the answer to a swap",
+		name:  "a holder that counts its lease from the answer to a swap",
+		seeds: 100,
 		workload: competing(func(w *workload) {
 			w.options.bugs.leaseFromAnswer = true
 			w.faults.delays = 50
@@ -1200,7 +1221,8 @@ var plantedBugs = []struct {
 	{
 		// A lease that is not released is left only by a holder that crashed, or one that could not
 		// release it, which the faults of one instance never cause.
-		name: "an instance that takes over a lease only after a release",
+		name:  "an instance that takes over a lease only after a release",
+		seeds: 30,
 		workload: func() workload {
 			w := singleWorkload
 			w.options.bugs.takeoverAfterRelease = true
@@ -1215,7 +1237,8 @@ var plantedBugs = []struct {
 		symptoms: []string{"no instance serves"},
 	},
 	{
-		name: "a commit that ignores a failure of the cache after the manifest swap",
+		name:  "a commit that ignores a failure of the cache after the manifest swap",
+		seeds: 40,
 		workload: func() workload {
 			w := singleWorkload
 			w.options.bugs.ignoreCacheError = true
@@ -1232,6 +1255,7 @@ var plantedBugs = []struct {
 }
 
 func TestSimulation_plantedBugs(t *testing.T) {
+	t.Parallel()
 	for _, bug := range plantedBugs {
 		name := "should find " + bug.name + " with some seed and again on every rerun of it"
 		if bug.control != nil {
@@ -1239,7 +1263,8 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		}
 		name += ", and nothing without the bug"
 		t.Run(name, func(t *testing.T) {
-			n := seeds(t, 200, bug.workload)
+			t.Parallel()
+			n := seeds(t, bug.seeds, bug.workload)
 			var found []uint64
 			for seed := range n {
 				first := simulate(t, seed, bug.workload)
@@ -1288,7 +1313,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 				}
 			}
 			t.Logf("%v of %v seeds found something without the bug", cleanFound, n)
-			if n >= 200 {
+			if n >= uint64(bug.seeds) {
 				is.True(t, len(found) > 0, "no seed found the bug")
 			}
 		})
