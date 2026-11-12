@@ -93,13 +93,36 @@ Relevant notes: [research/foundationdb.md](research/foundationdb.md), [research/
 
 ## The lease and its clocks
 
-Status: agreed with Markus on 2026-11-11, not built. The spec holds the rules under "Constraints"; this item holds the reasoning and the detail.
+Status: agreed with Markus on 2026-11-11, changed on 2026-11-12, not built. The spec holds the rules under "Constraints"; this item holds the reasoning and the detail.
 
 Markus on the frame for all of it: s4ql is "designed mostly for always-on server-side usage", and "I don't want to design around theoretical failures."
 
-- **The manifest records an absolute expiry time.** Another instance takes the lease when its own wall clock has passed that time. This is only safe if the wall clocks of the machines agree. The alternative was a duration and a counter, which another instance watches stand still for a full lease period on its own monotonic clock, and which needs no wall clock. Markus chose the expiry time: "A is fine for now."
+The design:
+
+- **Another instance takes the lease after it has watched the manifest stand still.** An instance that wants the lease reads the manifest. If the manifest has no `lease` entry, the instance takes the lease at once. Otherwise it waits for the lease's duration plus a margin, on its own monotonic clock, and then takes the lease with a compare-and-swap against the version it read. If the manifest has changed, the holder is alive, and the wait starts again from the new version.
+- **The compare-and-swap makes the wait safe.** If it succeeds, nothing has replaced the version that the instance read. The holder therefore sent its last renewal before that read, and its own time for reads ran out before the wait ended.
+- **No instance compares its clock with another's.** Each machine only has to measure a duration correctly. The store needs nothing beyond the compare-and-swap that the spec already requires.
+- **The cost is a wait after a crash.** An instance that starts after a crash waits the full time, about 35 to 40 seconds with the defaults, before it serves, even if the crash was long ago. A clean shutdown releases the lease, so a normal restart does not wait. Markus asked: "we agree that regular shutdowns still don't have to wait, right?" A spare that is already running takes over about as fast as before, because it has watched the manifest since the holder's last renewal.
+- **Every renewal must change the manifest's bytes.** S3's ETag comes from the content. A renewal that wrote the same bytes would be invisible to the instance that watches, and that instance's compare-and-swap would succeed against a live holder. The manifest therefore gets a value that exists to change.
+- **That value is a random salt, next to the time of the renewal.** maragubot recommended a counter. Markus proposed to keep writing the wall-clock time without using it, and then: "Or the clock + a random salt". On the counter: "But then we have to handle counter overflows and all that stuff. And I like that there's no state to keep track of." The time alone was not enough. Safety would then rest on the wall clock never repeating a value, and the simulation sets clocks backward on purpose.
+- **The manifest's lease entry holds four fields,** and `expires` is gone:
+
+  ```json
+  "lease": {
+    "holder": "5b0e…77c3",
+    "duration": "30s",
+    "renewed": "2026-11-12T12:00:30.123456789Z",
+    "salt": "c41d07a9e2b35f68"
+  }
+  ```
+
+  - `holder` is the ID of the process that holds the lease.
+  - `duration` is how long the lease lasts, in Go's duration format, such as `30s` or `1m30s`. Only the spelling that Go itself writes is read, so that one duration has one spelling. maragubot proposed milliseconds as a number. Markus: "\"duration\" is fine, and make it seconds", and then: "Maybe even use the Go time.Duration format?"
+  - `renewed` is the holder's wall-clock time at the renewal. Nothing reads it for a decision.
+  - `salt` is 64 random bits as 16 hexadecimal digits, new at every write of the manifest by the holder.
+- **The duration is in the manifest** because an instance that watches must use the holder's duration and not its own setting. With a shorter setting of its own, it would take the lease too early.
 - **Clocks affect only reads.** Writes are correct whatever the clocks do, because S3 checks the manifest swap. The danger is a holder that has lost the lease without knowing it and answers a read from its cache, which lacks the new holder's commits.
-- **A read checks the lease against both clocks.** It passes only if the wall clock is before the expiry and the monotonic clock shows less than the lease duration since the renewal was sent. A wall clock that is set backward is caught by the monotonic clock, and a monotonic clock that stood still is caught by the wall clock. If both fail, reads can be stale, and Markus accepts that: "if the server is in such bad a state that both clocks fail, stale reads are probably okay too."
+- **A read checks the lease against both of the holder's clocks.** It passes only if less than the lease's duration has passed since the holder sent its last renewal, by the wall clock and by the monotonic clock. Each clock is compared only with itself. Both stay because Go's monotonic clock on Linux stands still while a machine is suspended, and the wall clock catches that. A wall clock that is set backward is caught by the monotonic clock. If both fail, reads can be stale, and Markus accepts that: "if the server is in such bad a state that both clocks fail, stale reads are probably okay too."
 - **One check when the read starts is enough.** Its order relative to the SQLite snapshot does not matter. The cache never holds another instance's commits, so a snapshot taken after a pause shows a state that was correct at the moment of the check.
 - **An instance without a valid lease refuses and keeps trying.** Reads and writes fail at once with a distinct temporary error, and a write transaction that is open then is not committed. The instance keeps trying to get the lease. When it gets it, it applies the commit objects it is missing, with the same code as at startup, and serves again. This one rule covers three cases:
   - The instance cannot reach S3 and its lease runs out. If a later renewal succeeds, the manifest was unchanged and there is nothing to catch up. Markus: "this is where we'd return a HTTP 502 and let the clients retry."
@@ -110,15 +133,28 @@ Markus on the frame for all of it: s4ql is "designed mostly for always-on server
 - **A permanent stop is for local I/O failures only.**
 - **A write transaction has no maximum duration, for now.** A waiting writer gives up when its own context expires.
 
+How the design came about, on 2026-11-12 unless a date is given:
+
+- **On 2026-11-11 the manifest was to record an absolute expiry time.** Another instance was to take the lease when its own wall clock had passed that time, which is only safe if the wall clocks of the machines agree. The alternative was a duration and a value that another instance watches stand still, and it was passed over. Markus: "A is fine for now."
+- **The simulation harness showed that one wrong wall clock is enough for stale reads.** The holder's wall clock is behind. The holder renews, and writes an expiry that is already past for every other instance. A spare takes the lease, correctly by its own clock, and commits. The holder's two checks both pass, so it serves reads from its cache until its next renewal fails. A spare whose clock is ahead does the same. This item used to say "A wall clock that is set backward is caught by the monotonic clock", which held only while the holder wrote no expiry from the wrong clock.
+- **maragubot proposed to take the time from S3:** compare the manifest's `Last-Modified` with the `Date` of S3's response. Markus: "Ooh, of course. S3 should be our clock, I can't believe I didn't think of that."
+- **The research found S3's clock better than the wall clocks, but not safe enough to rest the lease on.** On Tigris a client can set `Last-Modified` with a request header, and MinIO has the same hole through a header of its own. The two timestamps usually come from different machines. The only store that documents a bound on the skew between its own clocks is MinIO, and its bound is 15 minutes. No system was found that compares the two timestamps. The idea swaps "our machines' clocks agree" for "the store's clocks agree", which cannot be checked either. The note is [research/s3-clock.md](research/s3-clock.md).
+- **The research pointed to the rule that Kubernetes and the DynamoDB Lock Client use, which compares no clocks.** It is the alternative of 2026-11-11. Markus: "didn't we discard this design already? But I think it sounds good."
+
 Details chosen by maragubot:
 
-- The lease duration counts from when the renewal was sent, not from when S3 answered.
-- Another instance waits a small margin past the expiry before it takes the lease. The value is chosen when it is built.
+- The duration counts from when the first attempt of a renewal was sent, not from a retry and not from the answer. Section 6 of the research note says why.
+- The margin's value is chosen when it is built.
+
+A possible later addition:
+
+- **S3's timestamps could shorten the wait after a crash.** They would be switched on only for a store that has been checked. They help how fast an instance serves, not safety.
 
 ## Storage formats
 
 Status: the manifest and the commit object are built in `internal/format`, with the schema in `proto/s4ql/v1/commit.proto`. Replay into the cache and one check in CI are not built, and two questions are open. The reasons behind the formats are in [internal/format/README.md](../internal/format/README.md).
 
+- **The manifest's lease entry changes** to the one that [The lease and its clocks](#the-lease-and-its-clocks) describes: `expires` goes, and `duration`, `renewed`, and `salt` come. This is being built.
 - **`buf breaking` under its `WIRE` rules is set up when version 1 is settled.** While the formats are drafts, a change to the schema may break old commit objects.
 - **Nothing produces an `UpsertRows` with only some columns yet.** The format writes and reads it, and the samples cover it. It is first produced when a slice of the roadmap brings `update`.
 - **Replay of commit objects into the cache is not built.** It applies the changes of one commit object inside one SQLite transaction, and commits that transaction only after `CommitReader` has reported the end with `io.EOF`. It refuses what the format cannot check because it needs the table: a column position outside the table's columns, and a row with the wrong number of values for the table. For later slices, replay applies results only, so it must not run triggers or cascades, and foreign keys cannot be checked row by row, because a commit object holds the net effect and not the order of the statements.
