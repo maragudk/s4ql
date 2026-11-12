@@ -1088,7 +1088,7 @@ func TestTx_Commit_stopped(t *testing.T) {
 			is.Error(t, core.ErrOutcomeUnknown, err)
 			is.True(t, !errors.Is(err, core.ErrStopped) && !errors.Is(err, core.ErrClosed), fmt.Sprint(err))
 			is.Equal(t, time.Minute, time.Since(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)))
-			<-closed
+			is.True(t, <-closed != nil, "the close reports that it released a lease that it could not release")
 			is.Equal(t, 2, len(w.commits(t)))
 		})
 	})
