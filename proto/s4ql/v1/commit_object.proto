@@ -59,8 +59,8 @@ message Change {
     CreateTable create_table = 1;
     // Drops a table and all its rows.
     DropTable drop_table = 2;
-    // Puts rows into a table.
-    PutRows put_rows = 3;
+    // Inserts rows into a table, or replaces the rows with the same keys.
+    UpsertRows upsert_rows = 3;
     // Deletes rows from a table.
     DeleteRows delete_rows = 4;
   }
@@ -100,11 +100,12 @@ message DropTable {
   string table = 1;
 }
 
-// Puts rows into a table. A row replaces any row with the same primary key.
+// Inserts rows into a table. A row replaces any row with the same primary
+// key.
 //
-// A PutRows is a batch that is small enough to hold in memory. A commit that
-// puts many rows into one table writes several batches.
-message PutRows {
+// An UpsertRows is a batch that is small enough to hold in memory. A commit
+// that upserts many rows into one table writes several batches.
+message UpsertRows {
   // The name of the table.
   string table = 1;
   // The rows. Each holds a value for every column, in the table's column
@@ -114,7 +115,7 @@ message PutRows {
 
 // Deletes rows from a table.
 //
-// A DeleteRows is a batch, like a PutRows.
+// A DeleteRows is a batch, like an UpsertRows.
 message DeleteRows {
   // The name of the table.
   string table = 1;
