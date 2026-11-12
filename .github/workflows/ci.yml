@@ -19,8 +19,27 @@ jobs:
   lint:
     uses: maragudk/workflows/.github/workflows/lint.yml@main
 
+  # The reusable workflow runs the tests under the race detector, which is what the simulation's
+  # free-running mode needs.
   test:
     uses: maragudk/workflows/.github/workflows/test.yml@main
+
+  # Library code must follow the rules of the simulation, which golangci-lint does not know.
+  simlint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Lint for the simulation
+        run: go run ./internal/simlint/cmd/simlint ./...
 
   # The cross-checks against github.com/mattn/go-sqlite3 are a separate module, which the reusable
   # workflows above do not see.

@@ -23,10 +23,12 @@ fuzz:
 		done; \
 	done
 
+# lint also runs the lint for code that runs under the simulation, from internal/simlint.
 .PHONY: lint
 lint:
 	golangci-lint run
 	cd $(CROSSCHECK) && golangci-lint run
+	go run ./internal/simlint/cmd/simlint ./...
 
 # sqlite-update vendors the SQLite amalgamation of VERSION, such as make sqlite-update VERSION=3.54.1.
 .PHONY: sqlite-update
