@@ -598,6 +598,7 @@ func TestLease_waiting(t *testing.T) {
 			l := newHandLog(t, w)
 			l.publish()
 			time.Sleep(15 * time.Second)
+			is.Equal(t, 1, len(waiter))
 			is.Error(t, core.ErrNoLease, <-waiter)
 			is.Error(t, core.ErrNoLease, tx.Commit(t.Context()))
 		})

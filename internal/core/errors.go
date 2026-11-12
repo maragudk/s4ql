@@ -76,21 +76,6 @@ var (
 // errLeaseLost is the reason for [ErrNoLease] when another instance has taken the lease.
 var errLeaseLost = fmt.Errorf("%w: not_holder", ErrNoLease)
 
-// SQLite's primary result codes that the core tells apart, from https://sqlite.org/rescode.html.
-const (
-	sqlitePerm     = 3
-	sqliteBusy     = 5
-	sqliteNoMem    = 7
-	sqliteReadOnly = 8
-	sqliteIOErr    = 10
-	sqliteCorrupt  = 11
-	sqliteFull     = 13
-	sqliteCantOpen = 14
-	sqliteProtocol = 15
-	sqliteNoLFS    = 22
-	sqliteNotADB   = 26
-)
-
 // errorKind of an error from the cache.
 type errorKind int
 
@@ -113,10 +98,20 @@ func classify(err error) errorKind {
 	if !errors.As(err, &sqliteErr) {
 		return kindOther
 	}
+	// The primary result codes are those of https://sqlite.org/rescode.html.
 	switch sqliteErr.Code.Primary() {
-	case sqliteBusy:
+	case 5: // SQLITE_BUSY
 		return kindBusy
-	case sqliteIOErr, sqliteFull, sqliteCantOpen, sqliteCorrupt, sqliteNotADB, sqliteNoLFS, sqlitePerm, sqliteReadOnly, sqliteNoMem, sqliteProtocol:
+	case 10, // SQLITE_IOERR
+		13, // SQLITE_FULL
+		14, // SQLITE_CANTOPEN
+		11, // SQLITE_CORRUPT
+		26, // SQLITE_NOTADB
+		22, // SQLITE_NOLFS
+		3,  // SQLITE_PERM
+		8,  // SQLITE_READONLY
+		7,  // SQLITE_NOMEM
+		15: // SQLITE_PROTOCOL
 		return kindLocal
 	}
 	return kindOther

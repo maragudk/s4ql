@@ -1243,3 +1243,76 @@ func TestTx_CreateTable(t *testing.T) {
 		is.NotError(t, tx.Commit(t.Context()))
 	})
 }
+
+func TestTx_Commit_checksum(t *testing.T) {
+	t.Run("should upload again when the store says once that the content does not have its checksum, and stop when it says so twice", func(t *testing.T) {
+		for _, test := range []struct {
+			times int
+			stops bool
+		}{{times: 1}, {times: 2, stops: true}} {
+			bubble(t, func(t *testing.T, w *world) {
+				s, d, tx := committing(t, w, core.Options{})
+				s.on("create", "commits/", mismatch, test.times)
+				err := tx.Commit(t.Context())
+				if !test.stops {
+					is.NotError(t, err)
+					is.Equal(t, 2, len(w.commits(t)))
+					return
+				}
+				// Twice, it is the spool file that does not hold what was written to it.
+				is.Error(t, core.ErrStopped, err)
+				is.Error(t, core.ErrLocal, err)
+				is.True(t, isDone(d))
+				is.Equal(t, 1, len(w.commits(t)))
+			})
+		}
+	})
+}
+
+func TestTx_CreateTable_names(t *testing.T) {
+	t.Run("should keep apart names that differ in the case of letters outside ASCII, as SQLite does", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("été", 1, "k"), create("ÉTÉ", 1, "k"), upsert("été", 1), upsert("ÉTÉ", 2))
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		// The ASCII letter folds, and the others do not.
+		got, err := tx.Get(t.Context(), "éTé", row(1))
+		is.NotError(t, err)
+		is.Equal(t, "1", text(got))
+		_, err = tx.Get(t.Context(), "Été", row(1))
+		is.Error(t, core.ErrNoTable, err)
+		is.NotError(t, tx.Rollback(t.Context()))
+	})
+
+	t.Run("should refuse a primary key of more columns than a row can be found by, and take the widest that it allows", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		is.Error(t, core.ErrInvalid, tx.CreateTable(t.Context(), tableOf("wide", 251, manyColumns(251)...)))
+
+		is.NotError(t, tx.CreateTable(t.Context(), tableOf("t1", 250, manyColumns(251)...)))
+		values := make([]any, 251)
+		for i := range values {
+			values[i] = i
+		}
+		is.NotError(t, tx.Upsert(t.Context(), "t1", row(values...)))
+		is.NotError(t, tx.Commit(t.Context()))
+
+		// The row is found by its key in a table that was there before the transaction, which is
+		// where the transaction keeps track of the keys that it changes.
+		tx, err = d.Begin(t.Context())
+		is.NotError(t, err)
+		got, err := tx.Get(t.Context(), "t1", row(values[:250]...))
+		is.NotError(t, err)
+		is.Equal(t, text(row(values...)), text(got))
+		values[250] = 7
+		is.NotError(t, tx.Upsert(t.Context(), "t1", row(values...)))
+		found, err := tx.Delete(t.Context(), "t1", row(values[:250]...))
+		is.NotError(t, err)
+		is.True(t, found)
+		is.NotError(t, tx.Commit(t.Context()))
+		is.Equal(t, "", strings.TrimPrefix(read(t, d), describe(tableOf("t1", 250, manyColumns(251)...))+": "))
+	})
+}

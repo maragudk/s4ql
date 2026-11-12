@@ -180,8 +180,9 @@ type outcome struct {
 	refusedWrites, abandonedWrites, statements                                                                         atomic.Int64
 	// cutCommits are commits whose caller's instance crashed before Commit returned.
 	cutCommits atomic.Int64
-	// stops of an instance, and restarts after a crash.
-	stops, restarts atomic.Int64
+	// stops of an instance, restarts after a crash, and instances that were closed and opened again
+	// while their callers ran.
+	stops, restarts, reopens atomic.Int64
 	// acked is the highest commit that a caller knows to be acknowledged.
 	acked atomic.Int64
 	// count of the starts of reads and the returns of commits, which orders them.
@@ -273,12 +274,23 @@ type damagingStore struct {
 	h tracer
 	// share of the downloads, in a thousand.
 	share int
+	// damaged counts, for each key, the downloads in a row that were damaged, and twice is set when
+	// two in a row were: only then may an instance stop for bytes that do not match their name.
+	damaged map[string]int
+	twice   *atomic.Bool
 }
 
 func (d damagingStore) Get(ctx context.Context, key string) (io.ReadCloser, store.Version, error) {
 	body, version, err := d.Store.Get(ctx, key)
-	if err != nil || !strings.Contains(key, "/commits/") || intn(d.h, 1000) >= d.share {
+	if err != nil || !strings.Contains(key, "/commits/") {
 		return body, version, err
+	}
+	if intn(d.h, 1000) >= d.share {
+		d.damaged[key] = 0
+		return body, version, err
+	}
+	if d.damaged[key]++; d.damaged[key] >= 2 {
+		d.twice.Store(true)
 	}
 	data, err := io.ReadAll(body)
 	_ = body.Close()
@@ -311,6 +323,8 @@ type node struct {
 	options core.Options
 	// callers that have not returned.
 	callers atomic.Int64
+	// damagedTwice is set when two downloads in a row of one commit object were damaged for the node.
+	damagedTwice atomic.Bool
 	// restarting is set while the node's database is closed and opened again on purpose.
 	restarting atomic.Bool
 
@@ -659,7 +673,7 @@ func (r *run) read(ctx context.Context, n *node, d *core.DB) bool {
 		o.violate(ctx, world, "a read saw at commit %v the state %q, and the log has %q", commit, got, want.text())
 	}
 	if int64(commit) < before {
-		o.violate(ctx, world, "a read saw commit %v after commit %v was acknowledged", commit, before)
+		o.violate(ctx, world, "a read missed commit %v, which was acknowledged before it started: it saw commit %v", before, commit)
 	}
 	o.mu.Lock()
 	o.seen = append(o.seen, seen{started: started, commit: commit})
@@ -707,8 +721,9 @@ func (r *run) stopped(ctx context.Context, n *node, d *core.DB) {
 	r.o.stops.Add(1)
 	r.c.world.Trace(ctx, "%v: %v", n.name, cause)
 	// Under buggify, the cache fails to commit after a manifest swap, and says that it was made to.
+	// It stops for bytes that do not match their name only after a second download.
 	explained := (errors.Is(cause, core.ErrLocal) && r.w.buggify && strings.Contains(cause.Error(), "injected")) ||
-		(errors.Is(cause, format.ErrNameMismatch) && r.w.damaged > 0)
+		(errors.Is(cause, format.ErrNameMismatch) && n.damagedTwice.Load())
 	if !explained {
 		r.o.violate(ctx, r.c.world, "the instance stopped: %v", cause)
 	}
@@ -740,7 +755,7 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 	n := &node{name: name, host: h, path: path, options: w.options}
 	n.client = r.store.Client(name, sender)
 	if w.damaged > 0 {
-		n.client = damagingStore{Store: n.client, h: c.world, share: w.damaged}
+		n.client = damagingStore{Store: n.client, h: c.world, share: w.damaged, damaged: map[string]int{}, twice: &n.damagedTwice}
 	}
 	n.options.Lease = w.durations[intn(c.world, len(w.durations))]
 	if _, err := r.open(ctx, n); err != nil {
@@ -798,7 +813,7 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 				r.close(cctx, n, d)
 				cancel()
 				if isClosed(d) {
-					r.o.restarts.Add(1)
+					r.o.reopens.Add(1)
 					if _, err := r.open(ctx, n); err != nil {
 						r.o.violate(ctx, c.world, "open again: %v", err)
 					}
@@ -834,8 +849,9 @@ func isClosed(d *core.DB) bool {
 //     position that it records.
 //   - A new instance with an empty cache replays the whole log to the same tables and rows.
 //   - The history of the store agrees: see [run.verifyHistory].
-//   - After every instance is closed, the lease is released, or held by one that could not release
-//     it.
+//   - After every instance is closed, the lease is released, or held by one that crashed or could
+//     not release it, or by one whose request for the lease arrived after it was closed: see
+//     [run.verifyLease].
 func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 	st := simstore.New(c.world, simstore.Options{Latency: w.latency, Faults: w.faults})
 	r := &run{w: w, c: c, o: o, store: st, model: newModel(st, prefix), nodeOf: map[string]string{}, holders: map[string]bool{}, closedAt: map[string]time.Duration{}}
@@ -1105,7 +1121,7 @@ func (r *run) verify(ctx context.Context, live, crashed []*node) {
 		// without the commit once the caller had its answer.
 		for _, read := range reads {
 			if read.started > a.returned && read.commit < commit {
-				o.violate(ctx, h, "a read saw commit %v after the commit of transaction %v returned with an unknown outcome, which the log has as commit %v", read.commit, a.id, commit)
+				o.violate(ctx, h, "a read missed commit %v of transaction %v, whose commit had returned with an unknown outcome before it started: it saw commit %v", commit, a.id, read.commit)
 				break
 			}
 		}

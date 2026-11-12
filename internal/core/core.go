@@ -142,8 +142,9 @@ func margin(duration time.Duration) time.Duration {
 //
 // An instance stops for good when its cache fails, when it meets something in the store that it
 // cannot read, and when it is closed. Every call then fails with an error that wraps [ErrStopped]
-// and the cause, [DB.Done] is closed, and [DB.Err] is that error. A stopped instance tries once to
-// release the lease. Nothing brings it back: the application closes it and opens the database
+// and the cause, [DB.Done] is closed, and [DB.Err] is that error. The one call that goes on is a
+// [Tx.Commit] whose manifest swap was sent and may be applied, which goes on finding out whether
+// it is. A stopped instance tries once to release the lease. Nothing brings it back: the application closes it and opens the database
 // again, which catches the cache up from its recorded position.
 type DB struct {
 	host    host.Host
@@ -569,10 +570,21 @@ func (d *DB) pause(ctx context.Context, duration time.Duration, changes uint64) 
 	return nil
 }
 
-// leftLocked is how long the lease of an instance that serves is still valid by the monotonic
-// clock. It requires mu.
+// leftLocked is how long the lease of an instance that serves is still valid by the clocks that
+// [DB.refusalLocked] looks at, and a moment at the least, so that a wait for it always waits. It
+// requires mu.
 func (d *DB) leftLocked() time.Duration {
-	return max(0, d.options.Lease-(d.host.Monotonic()-d.sent.monotonic))
+	now := d.now()
+	monotonic := d.options.Lease - (now.monotonic - d.sent.monotonic)
+	wall := d.options.Lease - now.wall.Sub(d.sent.wall)
+	left := min(monotonic, wall)
+	switch {
+	case d.bugs.wallOnly:
+		left = wall
+	case d.bugs.monotonicOnly:
+		left = monotonic
+	}
+	return max(left, retrySoon)
 }
 
 // acquireServing acquires a permit of the semaphore for a caller that needs the instance to serve.
@@ -638,7 +650,9 @@ func (d *DB) Wait(ctx context.Context) error {
 
 // Close the instance: stop it for good, release the lease, so that the manifest then has no lease
 // entry and the next instance does not wait, wait for the transactions that are open to end, and
-// close the cache. If ctx is done first, it returns the error of the wait, and the cache stays
+// close the cache. A request to take the lease that this instance sent earlier, and that got no
+// answer, can still be applied after Close has returned, while the log has not grown: the manifest
+// then names this instance, and the next instance waits for that lease to time out. If ctx is done first, it returns the error of the wait, and the cache stays
 // open. It returns an error if it could not release the lease, which then times out. Closing a
 // closed instance does nothing.
 func (d *DB) Close(ctx context.Context) error {

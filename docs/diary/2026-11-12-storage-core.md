@@ -100,7 +100,7 @@ The steps that follow, in the order the brief suggests: the cache, tables, repla
 The package is `/internal/core`. Its files:
 
 - `/internal/core/core.go`: `core.Options`, `core.DB`, `core.Open`, `core.DB.Wait`, `core.DB.Close`, `core.DB.Done`, `core.DB.Err`, the stop, and the two locks.
-- `/internal/core/lease.go`: the one goroutine, `DB.leaseLoop`, with `DB.acquire`, `DB.recoverLocked`, `DB.renewLocked`, `DB.observe`, and the release.
+- `/internal/core/lease.go`: the one goroutine, `DB.leaseLoop`, with `DB.acquire`, `DB.resumeLocked`, `DB.renewLocked`, `DB.observe`, and the release.
 - `/internal/core/catchup.go` and `/internal/core/replay.go`: the walk back through the log, the download with its second try, and replay.
 - `/internal/core/tx.go` and `/internal/core/read.go`: `core.Tx` with `CreateTable`, `DropTable`, `Upsert`, `Delete`, `Annotate`, `Table`, `Tables`, `Get`, `Scan`, `Commit`, and `Rollback`, and `core.ReadTx`.
 - `/internal/core/cache.go`, `/internal/core/spool.go`, `/internal/core/errors.go`, `/internal/core/telemetry.go`, and `/internal/core/bugs.go`.

@@ -759,3 +759,28 @@ func TestOpen_cache(t *testing.T) {
 		is.EqualSlice(t, []string{"", "one/", "one/two/", "smørrebrød/🥪/"}, commits)
 	})
 }
+
+func TestDB_pause(t *testing.T) {
+	t.Run("should not pause when the state has changed since it was read, and pause otherwise", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			d := w.serve(t, "a", core.Options{})
+			start := time.Now()
+			is.NotError(t, d.PauseUnlessChanged(t.Context(), time.Hour, true))
+			is.Equal(t, 0, time.Since(start))
+			is.NotError(t, d.PauseUnlessChanged(t.Context(), time.Second, false))
+			is.Equal(t, time.Second, time.Since(start))
+		})
+	})
+}
+
+func TestOpen_manifest(t *testing.T) {
+	t.Run("should stop for a manifest of more than a mebibyte, without reading all of it", func(t *testing.T) {
+		w := newWorld(t)
+		l := newHandLog(t, w)
+		l.publishBytes([]byte(`{"version": 0, "branches": {"main": {"head": "0000000000000000000000000000000000000000000000000000000000000000"}}, "more": "` + strings.Repeat("x", 1<<20) + `"}`))
+		d := w.open(t, "a", core.Options{})
+		err := d.Wait(t.Context())
+		is.Error(t, core.ErrStopped, err)
+		is.Error(t, format.ErrMalformed, err)
+	})
+}

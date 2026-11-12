@@ -21,8 +21,10 @@ import (
 // not in the log, with [ErrCacheNotInLog]; a commit object that needs a newer version of s4ql, is
 // malformed, or whose bytes do not match its name after a second download, with the error of the
 // reader; and a commit object that is not in the store or does not fit the cache, with
-// [ErrLogBroken]. It never skips a commit object and never rebuilds the cache. Any other error,
-// such as one of the store, is returned for another try.
+// [ErrLogBroken]. It never skips a commit object and never rebuilds the cache. A download that
+// fails for another reason, such as one of the store, is tried again where it failed, so that a
+// long log is caught up also when not every download of it succeeds in a row. It fails only when
+// the instance stops, loses the lease, or ctx is done.
 func (d *DB) catchUp(ctx context.Context) (err error) {
 	clock := d.stopwatch()
 	from, err := d.w.position()
@@ -56,11 +58,14 @@ func (d *DB) catchUp(ctx context.Context) (err error) {
 			return err
 		}
 		var parent format.Name
-		if err := d.fetch(ctx, name, func(body io.Reader) error {
+		if err := d.fetchAgain(ctx, name, func(body io.Reader) error {
 			var err error
 			parent, err = parentOf(name, body)
 			return err
-		}); err != nil {
+		}); errors.Is(err, format.ErrNameMismatch) && d.bugs.skipUnreadable {
+			// Under the planted bug, a commit object is skipped only when it is applied.
+			continue
+		} else if err != nil {
 			return err
 		}
 		missing = append(missing, name)
@@ -69,7 +74,7 @@ func (d *DB) catchUp(ctx context.Context) (err error) {
 
 	for i := len(missing) - 1; i >= 0; i-- {
 		name := missing[i]
-		err := d.fetch(ctx, name, func(body io.Reader) error {
+		err := d.fetchAgain(ctx, name, func(body io.Reader) error {
 			done, err := replay(d.w, name, body, func() error { return d.keepLease(ctx) }, d.bugs)
 			bytes += done.bytes
 			return err
@@ -102,6 +107,26 @@ func parentOf(name format.Name, body io.Reader) (format.Name, error) {
 		}
 	}
 	return format.NameFromBytes(header.GetParent())
+}
+
+// fetchAgain fetches the commit object with the given name as [DB.fetch] does, and again for as
+// long as it fails for a reason that another try can cure, with a longer wait after each failure
+// and a renewal of the lease when one is due. It requires the manifest lock.
+func (d *DB) fetchAgain(ctx context.Context, name format.Name, use func(body io.Reader) error) error {
+	wait := retrySoon
+	for {
+		err := d.fetch(ctx, name, use)
+		if err == nil || errors.Is(err, ErrStopped) || errors.Is(err, ErrNoLease) || (errors.Is(err, format.ErrNameMismatch) && d.bugs.skipUnreadable) {
+			return err
+		}
+		if sleepErr := d.host.Sleep(ctx, wait); sleepErr != nil {
+			return after(sleepErr, err)
+		}
+		wait = min(2*wait, max(retryAfter, d.options.Watch))
+		if err := d.keepLease(ctx); err != nil {
+			return err
+		}
+	}
 }
 
 // fetch the commit object with the given name from the store and hand its content to use, as

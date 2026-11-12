@@ -23,8 +23,7 @@
 // request and its outcome are in the trace of the host.
 //
 // The store can be looked at directly, without faults and without waiting, with [Store.Object],
-// [Store.Keys], and [Store.History]. [Store.Calm] ends the faults, so that a test can tell what
-// must happen once they are over.
+// [Store.Keys], and [Store.History]. [Store.Calm] ends the faults.
 package simstore
 
 import (

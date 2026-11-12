@@ -7,7 +7,7 @@ What the package does in each case is in the code:
 - the package comment and the doc comments of `Options` and `DB` in `core.go`
 - the doc comments of `Tx.Commit` and of `Tx.spoolCommit`, with the net effect of a transaction, in `tx.go`
 - the doc comment of `DB.Read` in `read.go`, with the check of the lease before a read
-- the doc comments of `DB.acquire`, `DB.recoverLocked`, `DB.renewLocked`, `DB.observe`, and `flight` in `lease.go`, and of `margin` in `core.go`, for the lease and for a swap whose outcome is unknown
+- the doc comments of `DB.acquire`, `DB.resumeLocked`, `DB.renewLocked`, `DB.observe`, and `flight` in `lease.go`, and of `margin` in `core.go`, for the lease and for a swap whose outcome is unknown
 - the doc comments of `DB.catchUp` and `DB.fetch` in `catchup.go`, and of `replay` in `replay.go`
 - the errors and the doc comment of `classify` in `errors.go`
 - the names of the events and of their attributes in `telemetry.go`

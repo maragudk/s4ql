@@ -28,11 +28,14 @@ type ReadTx struct {
 // [ErrStopped], with the error of the wait if ctx is done first, and with one that wraps [ErrBusy]
 // if the cache is locked.
 //
-// Before the transaction is handed out, the lease is checked against both clocks of the host: less
-// than the duration of the lease has passed since the instance sent its last renewal, by its wall
-// clock and by its monotonic clock, and both must show it. One check is enough, whether it comes
-// before or after the state of the cache is fixed: the cache never holds the commits of another
-// instance, so its state was the newest of the database at the moment of the check.
+// Before the state that the transaction sees is fixed, the lease is checked against both clocks of
+// the host: less than the duration of the lease has passed since the instance sent its last
+// renewal, by its wall clock and by its monotonic clock, and both must show it. At the moment of
+// that check no other instance holds the lease, so the cache holds the newest state of the
+// database, and the state that is fixed later is that state or a newer one. A check after the
+// state is fixed would not do alone: an instance that fixed the state while it did not hold the
+// lease can take the lease and catch up before the check. The lease is checked once more then, so
+// that a read on an instance that has stopped serving meanwhile is refused and not served late.
 func (d *DB) Read(ctx context.Context) (_ *ReadTx, err error) {
 	const operation = "read"
 	if err := d.acquireServing(ctx, d.readerPool); err != nil {

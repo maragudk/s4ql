@@ -50,6 +50,8 @@ const (
 	breakOff
 	// missing: a get finds no object.
 	missing
+	// mismatch: a write is not applied, and refused because its content does not have its checksum.
+	mismatch
 )
 
 // rule of a [scriptStore]: what to do to the next times requests of the operation op ("get",
@@ -179,6 +181,8 @@ func (s *scriptStore) write(ctx context.Context, r rule, apply func(ctx context.
 		return "", errScripted
 	case conflict:
 		return "", fmt.Errorf("scripted conflict: %w", store.ErrChanged)
+	case mismatch:
+		return "", fmt.Errorf("scripted mismatch: %w", store.ErrChecksum)
 	case hang:
 		<-ctx.Done()
 		return "", fmt.Errorf("%w: %w", errScripted, ctx.Err())

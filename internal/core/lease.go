@@ -276,7 +276,7 @@ func (d *DB) leaseLoop(ctx context.Context) {
 		case !holder:
 			wait = d.acquire(work)
 		case !serving:
-			wait = d.recover(work)
+			wait = d.resume(work)
 		default:
 			wait = d.renew(work)
 		}
@@ -388,12 +388,12 @@ func (d *DB) acquire(ctx context.Context) time.Duration {
 	d.event(ctx, slog.LevelInfo, eventLease, slog.String(attrTransition, "taken"), slog.String(attrOutcome, "taken"),
 		slog.String(attrLeaseHolder, d.id), slog.String(attrLeasePrevious, previous), slog.Duration(attrLeaseDuration, d.options.Lease),
 		slog.String(attrCommit, next.Head.String()), clock.total())
-	return d.recoverLocked(ctx)
+	return d.resumeLocked(ctx)
 }
 
-// recover is what an instance does that holds the lease and does not serve: see
-// [DB.recoverLocked]. It returns how long to wait before the next try.
-func (d *DB) recover(ctx context.Context) time.Duration {
+// resume is what an instance does that holds the lease and does not serve: see
+// [DB.resumeLocked]. It returns how long to wait before the next try.
+func (d *DB) resume(ctx context.Context) time.Duration {
 	held := locks{d: d}
 	defer held.release(ctx)
 	if held.acquireWriter(ctx) != nil || held.acquireManifest(ctx) != nil {
@@ -405,10 +405,10 @@ func (d *DB) recover(ctx context.Context) time.Duration {
 	if !ok {
 		return 0
 	}
-	return d.recoverLocked(ctx)
+	return d.resumeLocked(ctx)
 }
 
-// recoverLocked settles the swaps whose outcome is unknown, catches the cache up with the log,
+// resumeLocked settles the swaps whose outcome is unknown, catches the cache up with the log,
 // and then serves. It returns how long to wait before the next try, if it did not get that far. It
 // requires the writer lock and the manifest lock, and that the instance holds the lease.
 //
@@ -419,7 +419,7 @@ func (d *DB) recover(ctx context.Context) time.Duration {
 // is refused whenever it arrives, and the transaction is not committed. If another instance has
 // taken the lease, this one takes it again in time, and catching up then applies whatever the log
 // holds.
-func (d *DB) recoverLocked(ctx context.Context) time.Duration {
+func (d *DB) resumeLocked(ctx context.Context) time.Duration {
 	if len(d.flights) > 0 {
 		settled := d.settling()
 		o, landed, _, _ := d.observe(ctx)

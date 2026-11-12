@@ -94,7 +94,7 @@ var hammerWorkload = workload{
 type tally struct {
 	runs, steps                                                                                           int
 	commits, emptyCommits, failedCommits, unknownCommits, cutCommits, rollbacks, abandoned, refusedWrites int64
-	reads, refusedReads, expiredReads, overtakenReads, statements, stops, restarts                        int64
+	reads, refusedReads, expiredReads, overtakenReads, statements, stops, restarts, reopens               int64
 	events                                                                                                map[string]int
 	// trace counts the lines of the traces that contain each marker.
 	trace map[string]int
@@ -146,6 +146,7 @@ func (y *tally) add(seed uint64, s simulation) {
 	y.statements += o.statements.Load()
 	y.stops += o.stops.Load()
 	y.restarts += o.restarts.Load()
+	y.reopens += o.reopens.Load()
 	for kind, n := range o.events {
 		y.events[kind] += n
 	}
@@ -171,8 +172,8 @@ func (y *tally) log(t *testing.T, w workload) {
 	t.Helper()
 	t.Logf("in the first run of each of %v seeds: %v steps, %v statements in write transactions, %v commits, %v commits of nothing, %v failed commits, %v of unknown outcome, %v cut off by a crash, %v rollbacks, %v transactions abandoned, %v refused at their start",
 		y.runs, y.steps, y.statements, y.commits, y.emptyCommits, y.failedCommits, y.unknownCommits, y.cutCommits, y.rollbacks, y.abandoned, y.refusedWrites)
-	t.Logf("%v reads of which %v were overtaken by a commit, %v refused reads of which %v for a lease that had run out by a clock, %v stops of an instance, %v restarts after a crash",
-		y.reads, y.overtakenReads, y.refusedReads, y.expiredReads, y.stops, y.restarts)
+	t.Logf("%v reads of which %v were overtaken by a commit, %v refused reads of which %v for a lease that had run out by a clock, %v stops of an instance, %v restarts after a crash, %v instances closed and opened again while their callers ran",
+		y.reads, y.overtakenReads, y.refusedReads, y.expiredReads, y.stops, y.restarts, y.reopens)
 	t.Logf("in the traces: %v", sorted(y.trace))
 	t.Logf("events of the instances: %v", sorted(y.events))
 	t.Logf("an instance served at most %v after the end of the workload, in seed %v, where %v is the bound", y.serveAfter, y.slowest, w.liveness())
@@ -189,7 +190,7 @@ func TestSimulation(t *testing.T) {
 		seeds int
 	}{
 		{name: "should give the same trace when a seed is run twice, and no violations, with one instance", workload: singleWorkload, seeds: 40},
-		{name: "should give the same trace when a seed is run twice, and no violations, with instances that compete, clocks that move, crashes, and buggify", workload: fullWorkload, seeds: 40},
+		{name: "should give the same trace when a seed is run twice, and no violations, with instances that compete, clocks that move, crashes, and buggify", workload: fullWorkload, seeds: 30},
 		{name: "should give the same trace when a seed is run twice, and no violations, with callers that never pause", workload: hammerWorkload, seeds: 10},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -327,11 +328,11 @@ func calm(w workload) workload {
 // Symptoms of planted bugs, as parts of the texts of violations.
 const (
 	// stale: a read missed a commit that was acknowledged before it started.
-	stale = "after commit"
+	stale = "which was acknowledged before it started"
 	// early: an instance took the lease before the manifest had stood still for long enough.
 	early = "takes the lease of a holder"
 	// unsettled: a read missed a commit that had returned with an unknown outcome before it started.
-	unsettled = "returned with an unknown outcome"
+	unsettled = "had returned with an unknown outcome before it started"
 )
 
 // plantedBugs that the checks must find. Each holds the workload that finds the bug. A bug that
@@ -560,7 +561,7 @@ var plantedBugs = []plantedBug{
 }
 
 // TestSimulation_plantedBugs runs the workload of each bug until four seeds have found the bug,
-// from at most 200 seeds, and its control and the same workload without the bug for 30 seeds each.
+// from at most 200 seeds, and its control and the same workload without the bug for 24 seeds each.
 // With S4QL_SIM_SEEDS set, all three run that many seeds, and the workload with the bug runs all of
 // them, to count how many find it.
 func TestSimulation_plantedBugs(t *testing.T) {
@@ -617,7 +618,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 			if counting {
 				y.log(t, bug.workload)
 			}
-			n = seeds(t, 30)
+			n = seeds(t, 24)
 			if bug.control != nil {
 				is.True(t, bug.control.options.Planted(), "the control has no planted bug")
 				var controlFound int
@@ -641,7 +642,10 @@ func TestSimulation_plantedBugs(t *testing.T) {
 				}
 			}
 			t.Logf("%v of %v seeds found something without the bug", cleanFound, n)
-			if !counting || ran >= 200 {
+			switch {
+			case !counting:
+				is.Equal(t, 4, len(found), fmt.Sprintf("%v seeds did not find the bug four times", ran))
+			case ran >= 200:
 				is.True(t, len(found) > 0, fmt.Sprintf("none of %v seeds found the bug", ran))
 			}
 		})

@@ -162,6 +162,12 @@ func checkCreateTable(ct *s4qlpb.CreateTable, commitTime time.Time) error {
 	if len(ct.GetColumns()) > 2000 {
 		return invalidf("a table of %v columns, where the limit is 2000", len(ct.GetColumns()))
 	}
+	// A row is found by a condition with a term for each column of its primary key, and SQLite
+	// refuses a condition that is nested deeper than a thousand levels, which a few hundred terms
+	// are.
+	if len(ct.GetPrimaryKey()) > 250 {
+		return invalidf("a primary key of %v columns, where the limit is 250", len(ct.GetPrimaryKey()))
+	}
 	for _, c := range ct.GetColumns() {
 		if _, err := typeSQL(c.GetType()); err != nil {
 			return err
@@ -663,7 +669,7 @@ func (tx *Tx) dropTemps() error {
 // meanwhile. It returns an error that wraps [ErrOutcomeUnknown], and no other error, only if ctx
 // is done before it knows, or if it has to look for the commit object in a log that holds a commit
 // object that can never be read. The instance then serves nothing until it has found out, and
-// finds out without the caller: see [DB.recoverLocked]. Every other error means that the
+// finds out without the caller: see [DB.resumeLocked]. Every other error means that the
 // transaction is not committed: it wraps [ErrNoLease] if the instance did not hold the lease any
 // more, and [ErrStopped] if the instance has stopped.
 func (tx *Tx) Commit(ctx context.Context) (err error) {
@@ -996,15 +1002,17 @@ func after(err, before error) error {
 // error from a commit that is durable.
 func (tx *Tx) commitCache(ctx context.Context) error {
 	d := tx.d
+	// SQLITE_IOERR.
+	const ioError = 10
 	if d.host.Buggify(ctx, "core: the cache fails to commit after the manifest swap") {
 		if d.host.Uint64()%2 == 0 {
 			_ = tx.c.c.Exec("rollback")
-			return &sqlite.Error{Code: sqliteIOErr, Message: "injected: the commit was rolled back"}
+			return &sqlite.Error{Code: ioError, Message: "injected: the commit was rolled back"}
 		}
 		if err := tx.c.c.Exec("commit"); err != nil {
 			return err
 		}
-		return &sqlite.Error{Code: sqliteIOErr, Message: "injected: the commit went through and reported an error"}
+		return &sqlite.Error{Code: ioError, Message: "injected: the commit went through and reported an error"}
 	}
 	return tx.c.c.Exec("commit")
 }
