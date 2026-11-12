@@ -11,8 +11,9 @@
 //     started with host.Host.Go;
 //   - a channel receive, a send, a range over a channel, and a select without a default, because
 //     they can wait outside the host;
-//   - the time package's clock, sleeps, timers, and tickers, because the time is host.Host.Wall and
-//     host.Host.Monotonic, and waiting is host.Host.Sleep;
+//   - the time package's clock, sleeps, timers, and tickers, and timestamppb.Now of Protocol
+//     Buffers, because the time is host.Host.Wall and host.Host.Monotonic, and waiting is
+//     host.Host.Sleep;
 //   - context.WithTimeout, context.WithDeadline, and their Cause variants, because a timeout is
 //     host.Host.WithTimeout, context.AfterFunc, because it starts a goroutine, and
 //     context.Background and context.TODO, because code passes on the context it was given;
@@ -87,6 +88,9 @@ var forbidden = map[string]map[string]string{
 	"runtime": {
 		"SetFinalizer": "runs a function in a goroutine outside the host",
 		"AddCleanup":   "runs a function in a goroutine outside the host",
+	},
+	"google.golang.org/protobuf/types/known/timestamppb": {
+		"Now": "reads the real clock; use timestamppb.New with host.Host.Wall",
 	},
 }
 

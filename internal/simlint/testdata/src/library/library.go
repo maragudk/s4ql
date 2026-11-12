@@ -14,6 +14,7 @@ import (
 	. "time"
 
 	"golang.org/x/sync/errgroup" // want `golang.org/x/sync/errgroup starts goroutines outside the host`
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var _ errgroup.Group
@@ -36,10 +37,12 @@ func clock() {
 	var _ *time.Ticker           // want `time.Ticker waits on the real clock`
 	now := time.Now              // want `time.Now reads the real clock`
 	_ = now
-	_ = Now() // want `time.Now reads the real clock`
+	_ = Now()             // want `time.Now reads the real clock`
+	_ = timestamppb.Now() // want `timestamppb.Now reads the real clock`
 
-	// Times and durations are fine.
+	// Times and durations are fine, and so is a timestamp of a time that the code was given.
 	_ = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Second).Sub(time.Unix(0, 0))
+	_ = timestamppb.New(time.Unix(0, 0))
 }
 
 func contexts(ctx context.Context) {

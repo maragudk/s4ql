@@ -31,9 +31,9 @@ fuzz:
 generate:
 	$(BUF) generate
 
-# lint also runs the lint for code that runs under the simulation, from internal/simlint. It is a
-# module of its own, so that its dependencies stay out of the library's, and is built there and run
-# here.
+# lint also runs lint-proto, and the lint for code that runs under the simulation, from
+# internal/simlint. That lint is a module of its own, so that its dependencies stay out of the
+# library's, and is built there and run here.
 .PHONY: lint
 lint:
 	golangci-lint run

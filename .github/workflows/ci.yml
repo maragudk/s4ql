@@ -37,7 +37,10 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: internal/simlint/go.mod
-          cache-dependency-path: internal/simlint/go.sum
+          # The lint runs over the library, and the free-running mode is the library's test.
+          cache-dependency-path: |
+            go.sum
+            internal/simlint/go.sum
           check-latest: true
 
       - name: Check that the lint's go.mod and go.sum are tidy
