@@ -175,6 +175,14 @@ What a commit object holds:
 - **Where something sits says whether it may be skipped.** Everything in `changes` must be understood, or the commit object is refused. Everything in `annotations` may be skipped, including a kind of annotation that the reader does not know. Markus chose the name "annotation" over "evidence".
 - **The statements and the changes are not linked.** The commit object does not say which statement caused which change.
 
+Open, for the slice that brings `update`: whether an updated row is stored in full or only with the columns that changed. Markus asked on 2026-11-12: "Wouldn't we rather want only the columns that need changing?"
+
+- **Today an updated row is a full row in `UpsertRows`.** Nothing in slice 1 changes part of a row.
+- **The case for changed columns is size.** If a row holds a large text or blob and a commit changes a small value in it, a full row stores the large value again in every such commit, and with no snapshots the log keeps all of them.
+- **It would be a new kind of change next to `UpsertRows`,** because an inserted row is always full. It is safe to apply, because the cache is correct up to the parent.
+- **Markus leans towards this shape:** "the column position first, then the values after". The change names the changed columns by their positions in the table, and then holds their values.
+- **How others do it** ([research/change-file-contents.md](research/change-file-contents.md)): PostgreSQL, MySQL by default, Debezium, and CockroachDB send the full row. SQLite's changesets and Spanner send only the changed columns, and both need a marker for "unchanged" that is separate from NULL. Naming the columns by position avoids that marker.
+
 Open: what a reader does with a field it does not know outside the annotations, for example a later "not null" on a column. Either the reader refuses the commit object, or we raise the header's version for every such field. maragubot recommends the first.
 
 The schema, as revised in pull request #4. It passes `buf lint` with the `STANDARD` and `COMMENTS` rules. The file's place in the repository is not decided:
