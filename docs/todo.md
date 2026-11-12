@@ -155,8 +155,8 @@ The commit objects. Markus reviewed the schema line by line in pull request #4 o
 
 What a commit object holds:
 
-- **A header, a list of changes, the commit time, and a list of annotations,** as four fields of `CommitObject`. It is written and read as a stream: the header first, then the changes and the annotations one at a time, so that a commit of millions of rows is never in memory at once.
-- **The header holds only what replay needs:** the format version and the required `parent` name. It is a field of `CommitObject` and not a kind of record, because it appears exactly once. Protocol Buffers has no way to mark a field as required, and it does not reject bytes where the header is missing, late, or doubled. The reader checks that the header is there and comes first.
+- **A header, a list of changes, and a list of annotations,** as three fields of `CommitObject`. It is written and read as a stream: the header first, then the changes and the annotations one at a time, so that a commit of millions of rows is never in memory at once.
+- **The header says what the commit object is:** the format version, the required `parent` name, and the commit time. It is a field of `CommitObject` and not a kind of record, because it appears exactly once. Protocol Buffers has no way to mark a field as required, and it does not reject bytes where the header is missing, late, or doubled. The reader checks that the header is there and comes first.
 - **The changes are applied in order,** and a commit object holds the net effect of its commit, so a primary key appears at most once per table. The kinds for the first slice are:
   - create a table, with its name, columns, and primary key as data and not as SQL text, so that replay needs no SQL parser
   - drop a table, by its name; the rows are not listed as deletes
@@ -164,12 +164,13 @@ What a commit object holds:
   - delete rows, each by its primary-key values
 - **The kinds of change follow the roadmap.** A kind is defined when the slice that needs it is built: `alter table` and indexes each become a new kind. Every `insert`, `update`, and `delete` ends up as put and delete, so row changes need nothing new.
 - **An unknown kind of change is refused, never skipped.** An instance that meets a kind it does not know stops replay with an error that says a newer version of s4ql is needed. Skipping a `drop table` would silently leave the cache different from the log.
-- **Rows come in batches that hold their table.** A `Rows` message holds the table, with its name, its columns with their types, and its primary key, and then the rows. A row can therefore not exist without its table, and the reader keeps no state from one record to the next. Markus asked for this: "Can we express that the heading must always comes before the rows?" A batch must be complete in memory before it is written, so it is limited to about a megabyte, and a large table gets several batches that each hold the table again.
-- **Replay compares the table in a batch with the table in the cache,** and refuses the commit object on any difference. Every surveyed system that gives its reader less than the column names has a documented way to go wrong silently, among them MySQL with minimal row images and SQLite's changesets. See [research/change-file-contents.md](research/change-file-contents.md).
-- **The primary key is a list of column positions** on the table, in key order, starting at 0. A position cannot disagree with a column name the way a second copy of the name could.
+- **Every kind of change has a message named after it, and each holds only what it needs.** `CreateTable` holds the table name, the columns with their types, and the primary key. `DropTable` holds the table name. `PutRows` and `DeleteRows` hold the table name and the rows. Markus asked for this in the review: "DropTable doesn't need columns nor primary key. That's my point." The field for the table name is `table` in all four.
+- **Row changes carry no column names or types,** and replay does not compare them with the cache. Markus: "The precondition is that the cache is correct up to the parent, and with a deterministic change, the commit is safe and the postcondition is the same." Replay already checks that precondition through the cache's recorded position, so a column check could never fail. The silent failures that the research found ([research/change-file-contents.md](research/change-file-contents.md)) come from systems where the reader's tables are managed apart from the writer's, which is not our case. This reverses the "heading" with names and types that was agreed on 2026-11-11. Two checks remain without extra data: a row with the wrong number of values is refused, and the cache's strict tables reject a value of the wrong type.
+- **Rows come in batches.** A `PutRows` or `DeleteRows` must be complete in memory before it is written, so it is limited to about a megabyte, and a commit that changes many rows of one table writes several.
+- **The primary key is a list of column positions** in `CreateTable`, in key order, starting at 0. A position cannot disagree with a column name the way a second copy of the name could.
 - **A value is in one of SQLite's five storage classes,** under SQLite's names: integer, real, text, blob, and null. Null is stored explicitly, because SQLite treats it as a storage class, and because a value with no kind set must stay distinct from it: that is either a kind from a newer version or a malformed value, and both are refused.
 - **All text is valid UTF-8:** table names, column names, text values, and SQL text. They are `string` fields, which Protocol Buffers refuses to write or read otherwise. s4ql rejects a statement, a parameter, or an expression that would produce other text; see the restrictions in [roadmap.md](roadmap.md). Markus: "I have a hunch that's going to make life easier down the line."
-- **The commit time is a field of `CommitObject`,** not of the header, because replay does not use it. It comes from the holder's wall clock. It is included because a later feature such as restoring to a point in time needs it, and it cannot be added to old commit objects. The time that a statement read is a different thing: SQLite fixes the time per statement, not per transaction, so it will be a field of `Statement` when a slice needs it.
+- **The commit time is in the header.** Replay does not use it, and it comes from the holder's wall clock. It is included because a later feature such as restoring to a point in time needs it, and it cannot be added to old commit objects. The time that a statement read is a different thing: SQLite fixes the time per statement, not per transaction, so it will be a field of `Statement` when a slice needs it.
 - **Annotations are what replay may skip.** An annotation is today always one statement: its SQL text and its parameters. Its non-deterministic inputs become fields when a slice first needs them. The parameters make it complete, so a tool can run a commit's statements through the engine again and compare the outcome with the recorded changes. The cost is that the data of an insert is stored roughly twice. Leaving them out can become a setting later.
 - **Where something sits says whether it may be skipped.** Everything in `changes` must be understood, or the commit object is refused. Everything in `annotations` may be skipped, including a kind of annotation that the reader does not know. Markus chose the name "annotation" over "evidence".
 - **The statements and the changes are not linked.** The commit object does not say which statement caused which change.
@@ -207,15 +208,13 @@ message CommitObject {
   // What the commit changed, in the order in which replay applies it.
   // A reader refuses the commit object if it does not know a change.
   repeated Change changes = 2;
-  // The wall-clock time of the commit, from the clock of the lease holder.
-  // Replay does not use it.
-  google.protobuf.Timestamp commit_time = 3;
   // What else is known about the commit. Replay does not use them, and a
   // reader may skip them.
-  repeated Annotation annotations = 4;
+  repeated Annotation annotations = 3;
 }
 
-// What a reader needs before it reads anything else.
+// What the commit object is: its format, what came before it, and when it
+// was made.
 message Header {
   // The version of this format: 0 while the format is a draft. A reader
   // refuses a version it does not know. From version 1 on, the version is
@@ -224,6 +223,9 @@ message Header {
   // The name of the commit object before this one: 32 bytes, all zero in
   // the first one.
   bytes parent = 2;
+  // The wall-clock time of the commit, from the clock of the lease holder.
+  // Replay does not use it.
+  google.protobuf.Timestamp commit_time = 3;
 }
 
 // One change to the database.
@@ -235,23 +237,21 @@ message Header {
 message Change {
   // What the change is.
   oneof kind {
-    // Creates this table.
-    Table create_table = 1;
-    // Drops this table and all its rows.
+    // Creates a table.
+    CreateTable create_table = 1;
+    // Drops a table and all its rows.
     DropTable drop_table = 2;
-    // Puts rows. Each row holds a value for every column, in the table's
-    // column order, and replaces any row with the same primary key.
-    Rows put_rows = 3;
-    // Deletes rows. Each row holds only its primary-key values, in key
-    // order.
-    Rows delete_rows = 4;
+    // Puts rows into a table.
+    PutRows put_rows = 3;
+    // Deletes rows from a table.
+    DeleteRows delete_rows = 4;
   }
 }
 
-// A table.
-message Table {
+// Creates a table.
+message CreateTable {
   // The name of the table.
-  string name = 1;
+  string table = 1;
   // The columns, in their declared order.
   repeated Column columns = 2;
   // The primary-key columns, in key order, as positions in `columns`,
@@ -276,22 +276,31 @@ enum Type {
   TYPE_INT = 1;
 }
 
-// The table to drop.
+// Drops a table and all its rows.
 message DropTable {
   // The name of the table.
-  string name = 1;
+  string table = 1;
 }
 
-// Rows of one table, together with the table they belong to.
+// Puts rows into a table. A row replaces any row with the same primary key.
 //
-// A Rows is a batch that is small enough to hold in memory. A commit that
-// changes many rows of one table writes several batches, and each one holds
-// the table again, so a batch is read without the ones before it.
-message Rows {
-  // The table. A reader refuses the commit object if this differs from the
-  // table it has.
-  Table table = 1;
-  // The rows.
+// A PutRows is a batch that is small enough to hold in memory. A commit that
+// puts many rows into one table writes several batches.
+message PutRows {
+  // The name of the table.
+  string table = 1;
+  // The rows. Each holds a value for every column, in the table's column
+  // order.
+  repeated Row rows = 2;
+}
+
+// Deletes rows from a table.
+//
+// A DeleteRows is a batch, like a PutRows.
+message DeleteRows {
+  // The name of the table.
+  string table = 1;
+  // The rows. Each holds only its primary-key values, in key order.
   repeated Row rows = 2;
 }
 
