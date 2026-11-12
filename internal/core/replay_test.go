@@ -593,6 +593,25 @@ func TestReplay(t *testing.T) {
 		})
 	})
 
+	t.Run("should give a download a timeout, and try it again", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			l := newHandLog(t, w)
+			l.base()
+			l.publish()
+			// Without a timeout the instance would wait for ever, and the bubble would report a
+			// deadlock.
+			s := newScriptStore(w.client())
+			s.on("get", "commits/", hang, 1)
+			s.on("get", "commits/", pass, 2)
+			s.on("get", "commits/", hang, 1)
+			d := w.openOn(t, "a", s, core.Options{ObjectTimeout: 30 * time.Second})
+			start := time.Now()
+			is.NotError(t, d.Wait(t.Context()))
+			is.True(t, time.Since(start) >= time.Minute && time.Since(start) < 2*time.Minute, fmt.Sprint(time.Since(start)))
+			is.Equal(t, baseState, read(t, d))
+		})
+	})
+
 	t.Run("should catch up from the position of its cache, and not from the start", func(t *testing.T) {
 		bubble(t, func(t *testing.T, w *world) {
 			a := w.serve(t, "a", core.Options{})

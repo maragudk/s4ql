@@ -25,6 +25,7 @@ The future SQL engine is the only user of the package, and the interface is made
 - **A table is an `s4qlpb.CreateTable`, and a value is an `s4qlpb.Value`.** They are the messages of the commit object, so nothing is converted between the engine and the log.
 - **A scan is an `iter.Seq2`.** It runs on the goroutine of the caller, so a scan starts no goroutine.
 - **The names of tables are compared as SQLite compares them:** ASCII letters without regard to case, and every other character exactly (`fold`). The cache is SQLite, and the oracle is SQLite. A table keeps the spelling of its create.
+- **A primary key has at most 250 columns.** A row is found by a condition with a term for each column of its key, and SQLite refuses a condition that is nested deeper than a thousand levels, which about 500 terms are. SQLite itself allows a key of 2000 columns, so this is a restriction of the build.
 - **The core checks the storage class of every value itself,** in a write and in replay (`table.checkValue`). A `STRICT` table does not refuse every wrong value: for an `INT` column, SQLite converts the text `'1'` and the real `1.0` to an integer without an error.
 
 ## The cache
@@ -40,6 +41,7 @@ The future SQL engine is the only user of the package, and the interface is made
 - **A table that the transaction created needs no temporary table,** because all its rows are new.
 - **The commit object and the annotations go through spool files.** The files are next to the cache. Each is unlinked as soon as it is open, so a crash leaves none behind. A failure of a spool file is a local I/O failure, and it stops the instance.
 - **A transaction that changed nothing writes no commit object,** also when it has annotations, which are then stored nowhere. It commits if the lease is valid by the clocks, as a read does. A commit object without changes would only lengthen the log, and without a manifest swap nothing but the clocks can judge the commit. This is a choice of the build, not an agreed rule.
+- **An error of the cache in a call of a transaction leaves the transaction fit only for a rollback.** One way to get there is to drop a table while a scan of the transaction is running, which SQLite refuses.
 - **`DB.Begin` looks at the clocks, and `Tx.Commit` does not.** `DB.Begin` refuses at once when the lease has run out by a clock, as the spec says. In `Tx.Commit` the manifest swap decides, and a swap that is applied also renews the lease. This is a choice of the build too.
 
 ## The commit
@@ -57,6 +59,9 @@ The future SQL engine is the only user of the package, and the interface is made
 - **The margin is the larger of two seconds and a tenth of the holder's duration.** It is for a monotonic clock that runs fast on the instance that waits. The doc comment of `margin` gives the numbers.
 - **A new holder writes a new lease entry.** The fields of the old holder's entry that this version does not know are not kept. One holder keeps them from renewal to renewal. The todo lists this as an open question under [Storage formats](../../docs/todo.md#storage-formats), and this is what the build chose.
 - **The retries of the lease task back off,** from one second to `Options.Watch`, while the store gives no answer.
+- **The lease is checked before the state of a read is fixed, and that check is the one that counts.** At its moment no other instance holds the lease, so the cache holds the newest state, and the state that the read fixes later is that state or a newer one. The todo says that the order does not matter, "The cache never holds another instance's commits". That is not so: catch-up puts the commits of other instances into the cache, so an instance that fixed the state of a read while it was a spare could take the lease and catch up before a check that came only afterwards. The review of the build found this. `DB.Read` checks a second time after the state is fixed, which only keeps a read from being served late.
+- **A call that waits for its lock waits no longer than the lease has left** (`DB.acquireServing`). Nothing wakes a caller when the lease runs out by a clock, so the wait ends then and looks again. `DB.Wait` returns only when the lease is valid by the clocks too, and is woken when a renewal makes it valid again.
+- **A lease lasts a year at the most,** so that no sum of a time and a lease leaves the range of a duration. The duration of another holder comes from the manifest and can be any, so the wait for it is computed without such a sum.
 
 ## A swap whose outcome is unknown
 
@@ -73,12 +78,15 @@ What follows from the mechanism:
 - **After the lease is lost, a commit with an unknown attempt is looked for in the log** (`Tx.inLog`). The walk goes back from the new head to the parent of the transaction.
 - **While `Tx.Commit` still waits, it pushes the commit:** it sends the same swap again.
 - **After the caller gave up, the lease task does not push the commit.** It reads the manifest. If the manifest is unchanged, the lease task renews the lease without the commit, and that renewal is the swap that rules the stuck request out.
+- **`Tx.Commit` goes on finding out when the instance stops meanwhile.** The caller is owed an answer for as long as it waits, and the answer comes from the store. The error for an unknown outcome wraps nothing but `ErrOutcomeUnknown`, so that a caller that tests for `ErrStopped` first is not told "not committed" for a commit that may be in the log.
+- **One more case gives "outcome unknown" without the caller giving up:** the lease is lost, the commit must be looked for in the log, and the log holds a commit object that can never be read. Nothing can tell then. The spec says "only if the caller gives up first", so this is a departure that the build owns up to.
 - **The transaction of the cache is rolled back when `Tx.Commit` returns "outcome unknown".** If the commit object turns out to be in the log, catch-up applies it from the store. There is then one path, and it is the path of every start.
 
 ## Catching up and replay
 
 - **Catch-up downloads every missing commit object twice.** It walks the log back from the head to the cache's position, and it reads each commit object on the way to its end, so that it trusts a parent only when the bytes match the name. It then applies the commit objects, oldest first, and downloads each again. A spool of the walk could remove the second download later.
 - **The holder renews its lease during a long catch-up** (`DB.keepLease`): between commit objects, and between the changes of one.
+- **A download that fails is tried again where it failed** (`DB.fetchAgain`). The first build started the walk from the head again after any failure, so a cache that was N commit objects behind needed N downloads in a row to succeed, and with a store that fails one download in twenty, a log of 30 commit objects was never caught up. The review of the build found this.
 - **Replay is strict.** A commit object that the reader accepts and that does not fit the cache stops the instance with `ErrLogBroken`. Examples are a table that is there already, a row to delete that is not there, and a value of the wrong storage class. The cache is right up to the parent, so the commit object is wrong.
 - **Before replay refuses a commit object, it reads the commit object to its end** (`authentic`). Bytes that were damaged on their way must give "does not match its name" and a second download, not a stop.
 - **A commit object that the store does not have is `ErrLogBroken` too.**
@@ -116,6 +124,7 @@ The reason for planted bugs is in [Conditions for keeping the design](../sim/REA
 - **No test shows that the margin is enough.** The tests check that an instance waits for the holder's duration and the margin (`run.verifyHistory`). The harness cannot make a clock run fast, so the fault that the margin is for stays out of the workloads; see the comment of `clockFaults` in `simulation_test.go`.
 - **The version of a manifest without a lease entry can come back.** Such a manifest has the same bytes whenever the head is the same. A swap that takes a free lease and is stuck in the network can therefore be applied after a later release. It adds no commit. The cost is that the manifest names a holder that does not know it, and the next instance waits for that lease to time out.
 - **The simulation does not reach SQLite's "busy".** The write connection opens first, and every connection has a busy timeout, as the todo says. Both guard against "busy" under real parallelism, which the scheduler never produces; see [What the scheduled mode cannot do](../sim/README.md#what-the-scheduled-mode-cannot-do).
+- **The manifest has no guard against bytes that are damaged on their way.** A commit object is checked against its name and downloaded a second time. A manifest that is damaged and no longer parses stops the instance at the first download. One that is damaged and still parses would be believed, and the swap that takes the lease would write it back, because the swap is from the version that the store gave, not from the bytes. The store's contract promises content that is not changed, and the design has no checksum for the manifest.
 - **There are no snapshots and no garbage collection.** Nothing deletes a commit object of the log, or one that was uploaded and never committed.
 - **There is no branch other than `main`.**
 
@@ -129,9 +138,9 @@ The reason for planted bugs is in [Conditions for keeping the design](../sim/REA
 
 `free_test.go` runs the workloads on real goroutines, for the race detector. `TestFreeRunning_plantedDataRace` runs the test binary again, and requires the race detector to report a planted data race with the scheduler off.
 
-`script_test.go` holds a store that does to chosen requests what a test spells out. The scenario tests in `lease_test.go`, `tx_test.go`, `replay_test.go`, and `core_test.go` use it, and they run on the fake clock of `testing/synctest`.
+`script_test.go` holds a store that does to chosen requests what a test spells out. The scenario tests in `lease_test.go`, `tx_test.go`, `replay_test.go`, and `core_test.go` use it, and they run on the fake clock of `testing/synctest`. The tests of each clock of the lease check (`TestLease_clocks`) and of the cache that fails after the manifest swap (`TestDB_stop`) run one instance under the scheduler, because only it can move one clock and fire one buggify point.
 
-By default, `TestSimulation` runs 40 seeds of the workload with one instance, 40 of the workload with everything, and 10 of the workload whose callers never pause. Every seed runs twice, and the traces are compared. The events of the instances are part of the trace. `TestSimulation_plantedBugs` runs the workload of each bug until four seeds have found the bug, from at most 200 seeds. It runs the control and the same workload without the bug for 30 seeds each.
+By default, `TestSimulation` runs 40 seeds of the workload with one instance, 30 of the workload with everything, and 10 of the workload whose callers never pause. Every seed runs twice, and the traces are compared. The events of the instances are part of the trace. `TestSimulation_plantedBugs` runs the workload of each bug until four seeds have found the bug, from at most 200 seeds. It runs the control and the same workload without the bug for 24 seeds each.
 
 The environment variables:
 

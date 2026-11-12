@@ -518,6 +518,17 @@ func TestLease_unsure(t *testing.T) {
 			is.NotError(t, d.Wait(t.Context()))
 			is.True(t, time.Since(start) < 5*time.Second, fmt.Sprint(time.Since(start)))
 			is.Equal(t, d.ID(), w.manifest(t).Lease.Holder)
+
+			// Each of the two writes that took the lease carries a salt of its own.
+			s.mu.Lock()
+			swaps := slices.Clone(s.swaps)
+			s.mu.Unlock()
+			is.Equal(t, 2, len(swaps))
+			lost, err := format.ParseManifest([]byte(swaps[0]))
+			is.NotError(t, err)
+			answered, err := format.ParseManifest([]byte(swaps[1]))
+			is.NotError(t, err)
+			is.True(t, lost.Lease.Salt != answered.Lease.Salt, "two writes of the manifest carry the same salt")
 		})
 	})
 
