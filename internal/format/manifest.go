@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -70,7 +71,7 @@ type Lease struct {
 //     0 and 9999
 //
 // Keys are matched exactly, so "Version" is a field it does not know, and "version" is then missing.
-// A leap second cannot be read.
+// A leap second cannot be read, and an expiry is read to the nanosecond, with more digits dropped.
 func ParseManifest(b []byte) (Manifest, error) {
 	if !utf8.Valid(b) {
 		return Manifest{}, fmt.Errorf("%w: manifest is not valid UTF-8", ErrMalformed)
@@ -184,7 +185,13 @@ func parseLease(raw json.RawMessage) (Lease, error) {
 		return Lease{}, fmt.Errorf("%w: manifest lease expiry: %v", ErrMalformed, err)
 	}
 	// RFC 3339 allows a lowercase T and Z, and Go's parser does not. No other letter can appear.
-	lease.Expires, err = time.Parse(time.RFC3339Nano, strings.ToUpper(expires))
+	expires = strings.ToUpper(expires)
+	// Go's parser also reads a comma before the fraction, and offsets of 24 hours or 60 minutes,
+	// which RFC 3339 does not allow, so the syntax is checked first.
+	if !rfc3339.MatchString(expires) {
+		return Lease{}, fmt.Errorf("%w: manifest lease expiry %q is not an RFC 3339 time", ErrMalformed, expires)
+	}
+	lease.Expires, err = time.Parse(time.RFC3339Nano, expires)
 	if err != nil {
 		return Lease{}, fmt.Errorf("%w: manifest lease expiry %q is not an RFC 3339 time", ErrMalformed, expires)
 	}
@@ -195,6 +202,10 @@ func parseLease(raw json.RawMessage) (Lease, error) {
 	lease.unknown = fields
 	return lease, nil
 }
+
+// rfc3339 is the syntax of date-time in RFC 3339, section 5.6, with uppercase letters. The parser
+// checks the ranges of the date and the time.
+var rfc3339 = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$`)
 
 // checkExpiry can be written in RFC 3339 format in UTC, whose years have four digits.
 func checkExpiry(t time.Time) error {

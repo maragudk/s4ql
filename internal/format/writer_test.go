@@ -178,12 +178,15 @@ func TestCommitWriter(t *testing.T) {
 		is.NotError(t, w.UpsertRow("t", columns, []*s4qlpb.Value{v}))
 		v.SetInteger(2)
 		columns[0] = 1
+		is.NotError(t, w.UpsertRow("t", columns, []*s4qlpb.Value{integer(3)}))
 		name, err := w.Close()
 		is.NotError(t, err)
 
 		_, items, err := readAll(b.Bytes(), name)
 		is.NotError(t, err)
-		is.True(t, proto.Equal(upsertRows("t", []uint32{0}, []*s4qlpb.Value{integer(1)}), items[0].change), "the change differs")
+		is.Equal(t, 2, len(items))
+		is.True(t, proto.Equal(upsertRows("t", []uint32{0}, []*s4qlpb.Value{integer(1)}), items[0].change), "the first change differs")
+		is.True(t, proto.Equal(upsertRows("t", []uint32{1}, []*s4qlpb.Value{integer(3)}), items[1].change), "the second change differs")
 	})
 
 	t.Run("should make one call of Write for the header and for each change and annotation", func(t *testing.T) {

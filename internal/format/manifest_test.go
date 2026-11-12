@@ -58,6 +58,12 @@ func TestParseManifest(t *testing.T) {
 		}
 	})
 
+	t.Run("should read an expiry with more than nine digits of fraction to the nanosecond", func(t *testing.T) {
+		m, err := format.ParseManifest(manifestWithLease(`{"holder":"h","expires":"2026-11-11T12:00:30.1234567899Z"}`))
+		is.NotError(t, err)
+		is.True(t, time.Date(2026, 11, 11, 12, 0, 30, 123_456_789, time.UTC).Equal(m.Lease.Expires))
+	})
+
 	t.Run("should keep the fields it does not know at every level", func(t *testing.T) {
 		input := `{
 			"version": 0,
@@ -166,6 +172,14 @@ func TestParseManifest(t *testing.T) {
 		{name: "should refuse a lease whose expiry is not a string", input: string(manifestWithLease(`{"holder":"h","expires":1}`))},
 		{name: "should refuse an expiry without a time zone", input: string(manifestWithLease(`{"holder":"h","expires":"2026-11-11T12:00:30"}`))},
 		{name: "should refuse an expiry that is only a date", input: string(manifestWithLease(`{"holder":"h","expires":"2026-11-11"}`))},
+		{name: "should refuse an expiry with a comma before the fraction", input: string(manifestWithLease(`{"holder":"h","expires":"2026-11-11T12:00:30,123Z"}`))},
+		{name: "should refuse an expiry with a dot and no fraction", input: string(manifestWithLease(`{"holder":"h","expires":"2026-11-11T12:00:30.Z"}`))},
+		{name: "should refuse an expiry with an offset of 24 hours", input: string(manifestWithLease(`{"holder":"h","expires":"2026-11-11T12:00:30+24:00"}`))},
+		{name: "should refuse an expiry with an offset of 60 minutes", input: string(manifestWithLease(`{"holder":"h","expires":"2026-11-11T12:00:30+23:60"}`))},
+		{name: "should refuse an expiry with an offset without a colon", input: string(manifestWithLease(`{"holder":"h","expires":"2026-11-11T12:00:30+0100"}`))},
+		{name: "should refuse an expiry with a month of one digit", input: string(manifestWithLease(`{"holder":"h","expires":"2026-1-11T12:00:30Z"}`))},
+		{name: "should refuse an expiry at hour 24", input: string(manifestWithLease(`{"holder":"h","expires":"2026-11-11T24:00:00Z"}`))},
+		{name: "should refuse an expiry with a leap second", input: string(manifestWithLease(`{"holder":"h","expires":"2026-12-31T23:59:60Z"}`))},
 		{name: "should refuse an expiry with a space for the T", input: string(manifestWithLease(`{"holder":"h","expires":"2026-11-11 12:00:30Z"}`))},
 		{name: "should refuse an expiry on a day that does not exist", input: string(manifestWithLease(`{"holder":"h","expires":"2026-02-30T12:00:30Z"}`))},
 		{name: "should refuse an expiry before year 0 in UTC", input: string(manifestWithLease(`{"holder":"h","expires":"0000-01-01T00:00:00+01:00"}`))},

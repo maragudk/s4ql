@@ -166,6 +166,16 @@ func TestCommitReader(t *testing.T) {
 		is.True(t, !errors.Is(err, format.ErrNameMismatch) && !errors.Is(err, format.ErrMalformed) && !errors.Is(err, format.ErrNewerVersion), "error is one of the three")
 	})
 
+	t.Run("should say where a refusal is", func(t *testing.T) {
+		b := changeRecord(upsertRows("t", []uint32{0, 1, 0}, []*s4qlpb.Value{integer(1), integer(2), integer(3)}))
+		_, _, err := readAll(b, nameOf(b))
+		is.True(t, strings.HasSuffix(errorString(err), "malformed: record 2.upsert_rows.columns[2] lists column 0 twice"), errorString(err))
+
+		b = changeRecord(upsertRows("t", []uint32{0}, []*s4qlpb.Value{integer(1)}, []*s4qlpb.Value{withUnknown(integer(1), 7, protowire.VarintType)}))
+		_, _, err = readAll(b, nameOf(b))
+		is.True(t, strings.HasSuffix(errorString(err), "needs a newer version of s4ql: record 2.upsert_rows.rows[1].values[0] holds field 7, which this version of s4ql does not know"), errorString(err))
+	})
+
 	t.Run("should skip an annotation of a kind it does not know", func(t *testing.T) {
 		b := join(
 			record(1, testHeader()),

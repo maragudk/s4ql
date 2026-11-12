@@ -2,6 +2,7 @@ package format
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash"
@@ -20,13 +21,10 @@ import (
 // batch is larger only if it holds a single row or key that is larger.
 const batchSize = 1 << 20
 
-// Field numbers of [s4qlpb.Change], [s4qlpb.UpsertRows], and [s4qlpb.DeleteRows].
-const (
-	upsertRowsField protowire.Number = 3
-	deleteRowsField protowire.Number = 4
-	rowsField       protowire.Number = 3
-	primaryKeyField protowire.Number = 2
-)
+// headroom is the room that a batch keeps before its bytes for the tag and length of its record and
+// of its change, which are known only when it is written: two tags of at most five bytes, and two
+// lengths of at most ten.
+const headroom = 2 * (5 + binary.MaxVarintLen64)
 
 // marshalOptions for everything that [CommitWriter] writes, so that the same commit object is always
 // the same bytes with the same version of the Protocol Buffers library.
@@ -73,8 +71,33 @@ type batch struct {
 	columns []uint32
 	// keySize is the number of values in each key of a batch of keys.
 	keySize int
-	// encoded rows or keys, each with its tag and length, in the order they came.
-	encoded []byte
+	// prefix is the length of the marshalled [s4qlpb.UpsertRows] or [s4qlpb.DeleteRows] without its
+	// rows or keys.
+	prefix int
+	// buf is the headroom, then the marshalled message without its rows or keys, then the encoded
+	// rows or keys, each with its tag and length, in the order they came. The rows or keys are the
+	// last field in number, so this is the same bytes as marshalling the whole message, because
+	// marshalling writes the fields in the order of their numbers.
+	buf []byte
+}
+
+// newBatch of the given field of [s4qlpb.Change], for m, the message without its rows or keys.
+func newBatch(field protowire.Number, m proto.Message) (batch, error) {
+	buf, err := marshalOptions.MarshalAppend(make([]byte, headroom, headroom+256), m)
+	if err != nil {
+		return batch{}, err
+	}
+	return batch{field: field, prefix: len(buf) - headroom, buf: buf}, nil
+}
+
+// rowsSize of the encoded rows or keys in the batch.
+func (b batch) rowsSize() int {
+	return len(b.buf) - headroom - b.prefix
+}
+
+// changeSize of the batch as a [s4qlpb.Change], with extra bytes of rows or keys added.
+func (b batch) changeSize(extra int) int {
+	return protowire.SizeTag(b.field) + protowire.SizeBytes(len(b.buf)-headroom+extra)
 }
 
 // NewCommitWriter that writes a commit object to w, and writes its header first: version 0, the name
@@ -90,11 +113,7 @@ func NewCommitWriter(w io.Writer, parent Name, commitTime time.Time) (*CommitWri
 	if err := checkHeader(h); err != nil {
 		return nil, err
 	}
-	b, err := marshalOptions.Marshal(h)
-	if err != nil {
-		return nil, err
-	}
-	if err := cw.writeRecord(headerField, b); err != nil {
+	if err := cw.writeRecord(headerField, h); err != nil {
 		return nil, err
 	}
 	return cw, nil
@@ -115,17 +134,13 @@ func (w *CommitWriter) change(c *s4qlpb.Change) error {
 	if err := w.startChange(); err != nil {
 		return err
 	}
-	if err := checkChange(c, "change"); err != nil {
-		return w.fail(err)
+	if err := checkChange(c); err != nil {
+		return w.fail(in(err, "change"))
 	}
 	if err := w.flush(); err != nil {
 		return err
 	}
-	b, err := marshalOptions.Marshal(c)
-	if err != nil {
-		return w.fail(err)
-	}
-	return w.writeRecord(changesField, b)
+	return w.writeRecord(changesField, c)
 }
 
 // UpsertRow into the table as the next change: the values of the given columns, as positions in the
@@ -134,24 +149,25 @@ func (w *CommitWriter) UpsertRow(table string, columns []uint32, values []*s4qlp
 	if err := w.startChange(); err != nil {
 		return err
 	}
-	path := "upsert row"
-	if err := checkIdentifier(table, path+" table"); err != nil {
-		return w.fail(err)
+	if err := checkIdentifier(table); err != nil {
+		return w.fail(in(err, "upsert row table"))
 	}
-	if err := checkColumnPositions(columns, path+" columns"); err != nil {
-		return w.fail(err)
+	if err := checkColumnPositions(columns); err != nil {
+		return w.fail(in(err, "upsert row"))
 	}
 	row := s4qlpb.Row_builder{Values: values}.Build()
-	if err := checkKnown(row.ProtoReflect(), path); err != nil {
-		return w.fail(err)
+	if err := checkKnown(row.ProtoReflect()); err != nil {
+		return w.fail(in(err, "upsert row"))
 	}
-	if err := checkRow(len(columns), values, path); err != nil {
-		return w.fail(err)
+	if err := checkRow(len(columns), values); err != nil {
+		return w.fail(in(err, "upsert row"))
 	}
 
 	same := w.batch.field == upsertRowsField && w.batch.table == table && slices.Equal(w.batch.columns, columns)
-	return w.add(same, rowsField, row, func() batch {
-		return batch{field: upsertRowsField, table: table, columns: slices.Clone(columns)}
+	return w.add(same, rowsField, row, func() (batch, error) {
+		b, err := newBatch(upsertRowsField, s4qlpb.UpsertRows_builder{Table: &table, Columns: columns}.Build())
+		b.table, b.columns = table, slices.Clone(columns)
+		return b, err
 	})
 }
 
@@ -161,13 +177,12 @@ func (w *CommitWriter) DeleteRow(table string, primaryKey []*s4qlpb.Value) error
 	if err := w.startChange(); err != nil {
 		return err
 	}
-	path := "delete row"
-	if err := checkIdentifier(table, path+" table"); err != nil {
-		return w.fail(err)
+	if err := checkIdentifier(table); err != nil {
+		return w.fail(in(err, "delete row table"))
 	}
 	key := s4qlpb.PrimaryKey_builder{Values: primaryKey}.Build()
-	if err := checkKnown(key.ProtoReflect(), path); err != nil {
-		return w.fail(err)
+	if err := checkKnown(key.ProtoReflect()); err != nil {
+		return w.fail(in(err, "delete row"))
 	}
 
 	same := w.batch.field == deleteRowsField && w.batch.table == table
@@ -175,32 +190,50 @@ func (w *CommitWriter) DeleteRow(table string, primaryKey []*s4qlpb.Value) error
 	if same {
 		want = w.batch.keySize
 	}
-	if err := checkPrimaryKey(want, primaryKey, path); err != nil {
-		return w.fail(err)
+	if err := checkPrimaryKey(want, primaryKey); err != nil {
+		return w.fail(in(err, "delete row"))
 	}
 
-	return w.add(same, primaryKeyField, key, func() batch {
-		return batch{field: deleteRowsField, table: table, keySize: len(primaryKey)}
+	return w.add(same, primaryKeysField, key, func() (batch, error) {
+		b, err := newBatch(deleteRowsField, s4qlpb.DeleteRows_builder{Table: &table}.Build())
+		b.table, b.keySize = table, len(primaryKey)
+		return b, err
 	})
 }
 
 // add the row or key m, which is the given field of its batch, to the current batch if it belongs
-// to it and fits, or else write the batch and start a new one with m.
-func (w *CommitWriter) add(same bool, field protowire.Number, m proto.Message, newBatch func() batch) error {
-	b, err := marshalOptions.Marshal(m)
-	if err != nil {
-		return w.fail(err)
-	}
+// to it and fits, or else write the batch and start a new one with m. It refuses m if a batch of m
+// alone is a record above the limit.
+func (w *CommitWriter) add(same bool, field protowire.Number, m proto.Message, makeBatch func() (batch, error)) error {
+	size := marshalOptions.Size(m)
+	encodedSize := protowire.SizeTag(field) + protowire.SizeBytes(size)
 
-	size := protowire.SizeTag(field) + protowire.SizeBytes(len(b))
-	if !same || len(w.batch.encoded)+size > batchSize {
+	if !same || w.batch.rowsSize()+encodedSize > batchSize || w.batch.changeSize(encodedSize) > w.maxRecordSize {
+		b, err := makeBatch()
+		if err != nil {
+			return w.fail(err)
+		}
+		if changeSize := b.changeSize(encodedSize); changeSize > w.maxRecordSize {
+			return w.fail(fmt.Errorf("%w: a change of this row or key alone is %v bytes, above the limit of %v", ErrMalformed, changeSize, w.maxRecordSize))
+		}
 		if err := w.flush(); err != nil {
 			return err
 		}
-		w.batch = newBatch()
+		w.batch = b
 	}
-	w.batch.encoded = protowire.AppendTag(w.batch.encoded, field, protowire.BytesType)
-	w.batch.encoded = protowire.AppendBytes(w.batch.encoded, b)
+
+	buf := slices.Grow(w.batch.buf, encodedSize)
+	buf = protowire.AppendTag(buf, field, protowire.BytesType)
+	buf = protowire.AppendVarint(buf, uint64(size))
+	start := len(buf)
+	buf, err := marshalOptions.MarshalAppend(buf, m)
+	if err != nil {
+		return w.fail(err)
+	}
+	if len(buf)-start != size {
+		return w.fail(fmt.Errorf("marshalled %v bytes, and the size was %v", len(buf)-start, size))
+	}
+	w.batch.buf = buf
 	return nil
 }
 
@@ -210,18 +243,14 @@ func (w *CommitWriter) Annotate(a *s4qlpb.Annotation) error {
 	if w.err != nil {
 		return w.err
 	}
-	if err := checkAnnotation(a, "annotation"); err != nil {
-		return w.fail(err)
+	if err := checkAnnotation(a); err != nil {
+		return w.fail(in(err, "annotation"))
 	}
 	if err := w.flush(); err != nil {
 		return err
 	}
 	w.annotating = true
-	b, err := marshalOptions.Marshal(a)
-	if err != nil {
-		return w.fail(err)
-	}
-	return w.writeRecord(annotationField, b)
+	return w.writeRecord(annotationField, a)
 }
 
 // Close the commit object: write the batch that is not written yet, and return the name of the
@@ -248,40 +277,46 @@ func (w *CommitWriter) startChange() error {
 	return nil
 }
 
-// flush the batch, if there is one, as a change. The batch is the marshalled message without its
-// rows or keys, followed by the encoded rows or keys, which are the next field in number. It is
-// the same bytes as marshalling the whole message, because marshalling writes the fields in the
-// order of their numbers.
+// flush the batch, if there is one, as a change: the tags and lengths of the record and the change
+// go into the headroom before the batch's bytes, which are then written as they are.
 func (w *CommitWriter) flush() error {
 	if w.batch.field == 0 {
 		return nil
 	}
-	var m proto.Message
-	switch w.batch.field {
-	case upsertRowsField:
-		m = s4qlpb.UpsertRows_builder{Table: &w.batch.table, Columns: w.batch.columns}.Build()
-	case deleteRowsField:
-		m = s4qlpb.DeleteRows_builder{Table: &w.batch.table}.Build()
+	bodySize := len(w.batch.buf) - headroom
+	var head []byte
+	head = protowire.AppendTag(head, changesField, protowire.BytesType)
+	head = protowire.AppendVarint(head, uint64(w.batch.changeSize(0)))
+	head = protowire.AppendTag(head, w.batch.field, protowire.BytesType)
+	head = protowire.AppendVarint(head, uint64(bodySize))
+	start := headroom - len(head)
+	copy(w.batch.buf[start:], head)
+	record := w.batch.buf[start:]
+	w.batch = batch{}
+	return w.write(record)
+}
+
+// writeRecord of [s4qlpb.CommitObject]: its tag, its length, and the message m.
+func (w *CommitWriter) writeRecord(field protowire.Number, m proto.Message) error {
+	size := marshalOptions.Size(m)
+	if size > w.maxRecordSize {
+		return w.fail(fmt.Errorf("%w: record is %v bytes, above the limit of %v", ErrMalformed, size, w.maxRecordSize))
 	}
-	b, err := marshalOptions.Marshal(m)
+	record := protowire.AppendTag(make([]byte, 0, size+headroom), field, protowire.BytesType)
+	record = protowire.AppendVarint(record, uint64(size))
+	start := len(record)
+	record, err := marshalOptions.MarshalAppend(record, m)
 	if err != nil {
 		return w.fail(err)
 	}
-	b = append(b, w.batch.encoded...)
-
-	change := protowire.AppendTag(nil, w.batch.field, protowire.BytesType)
-	change = protowire.AppendBytes(change, b)
-	w.batch = batch{}
-	return w.writeRecord(changesField, change)
+	if len(record)-start != size {
+		return w.fail(fmt.Errorf("marshalled %v bytes, and the size was %v", len(record)-start, size))
+	}
+	return w.write(record)
 }
 
-// writeRecord of [s4qlpb.CommitObject]: its tag, its length, and its bytes, in one call of Write.
-func (w *CommitWriter) writeRecord(field protowire.Number, b []byte) error {
-	if len(b) > w.maxRecordSize {
-		return w.fail(fmt.Errorf("%w: record is %v bytes, above the limit of %v", ErrMalformed, len(b), w.maxRecordSize))
-	}
-	record := protowire.AppendTag(make([]byte, 0, len(b)+16), field, protowire.BytesType)
-	record = protowire.AppendBytes(record, b)
+// write one record in one call of Write, and add it to the checksum.
+func (w *CommitWriter) write(record []byte) error {
 	if _, err := w.w.Write(record); err != nil {
 		return w.fail(err)
 	}

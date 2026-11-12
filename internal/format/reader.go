@@ -12,6 +12,7 @@ import (
 
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"maragu.dev/s4ql/internal/s4qlpb"
 )
@@ -23,15 +24,25 @@ import (
 // to a row, so that any row SQLite can hold fits in one change.
 //
 // A reader holds one record in memory at a time, and allocates memory as the bytes of a record
-// arrive, not by the length that the record claims.
+// arrive, not by the length that the record claims. A writer refuses a row or key whose change alone
+// would be larger, in the call that hands it in.
 const MaxRecordSize = 1<<31 - 1
 
-// Field numbers of [s4qlpb.CommitObject].
-const (
-	headerField     protowire.Number = 1
-	changesField    protowire.Number = 2
-	annotationField protowire.Number = 3
+// Field numbers of the schema, which the reader and the writer use below the generated code.
+var (
+	headerField      = fieldNumber(&s4qlpb.CommitObject{}, "header")
+	changesField     = fieldNumber(&s4qlpb.CommitObject{}, "changes")
+	annotationField  = fieldNumber(&s4qlpb.CommitObject{}, "annotations")
+	upsertRowsField  = fieldNumber(&s4qlpb.Change{}, "upsert_rows")
+	deleteRowsField  = fieldNumber(&s4qlpb.Change{}, "delete_rows")
+	rowsField        = fieldNumber(&s4qlpb.UpsertRows{}, "rows")
+	primaryKeysField = fieldNumber(&s4qlpb.DeleteRows{}, "primary_keys")
 )
+
+// fieldNumber of the field with the given name in m. It panics if m has no such field.
+func fieldNumber(m proto.Message, name protoreflect.Name) protowire.Number {
+	return m.ProtoReflect().Descriptor().Fields().ByName(name).Number()
+}
 
 // unmarshalOptions for the records of a commit object. Unknown fields are kept, because they are
 // how a reader finds what a newer version wrote. The schema is at most six messages deep, so a
@@ -164,8 +175,8 @@ func (r *CommitReader) Next() (*s4qlpb.Change, *s4qlpb.Annotation, error) {
 			if err := unmarshalOptions.Unmarshal(b, c); err != nil {
 				return nil, nil, r.fail(fmt.Errorf("%w: %v: %v", ErrMalformed, path, err))
 			}
-			if err := checkChange(c, path); err != nil {
-				return nil, nil, r.fail(err)
+			if err := checkChange(c); err != nil {
+				return nil, nil, r.fail(in(err, path))
 			}
 			return c, nil, nil
 
@@ -183,8 +194,9 @@ func (r *CommitReader) Next() (*s4qlpb.Change, *s4qlpb.Annotation, error) {
 	}
 }
 
-// readRecord of [s4qlpb.CommitObject] from the stream: its field number and its bytes. It returns [io.EOF] at the end of the stream, before a record. A field
-// number that is not one of the three fields is from a newer version, and is not read.
+// readRecord of [s4qlpb.CommitObject] from the stream: its field number and its bytes. It returns
+// [io.EOF] at the end of the stream, before a record. A field number that is not one of the three
+// fields is from a newer version, and is not read.
 func (r *CommitReader) readRecord() (protowire.Number, []byte, error) {
 	tag, err := binary.ReadUvarint(r.r)
 	if err != nil {
