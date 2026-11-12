@@ -142,7 +142,16 @@ func TestCommitReader(t *testing.T) {
 	t.Run("should return an error of the source as it is, and not as one of the three cases", func(t *testing.T) {
 		b := join(record(1, testHeader()), record(2, dropTable("t")))
 		failure := errors.New("connection reset")
-		src := io.MultiReader(bytes.NewReader(b[:len(b)-2]), errorReader{err: failure})
+		src := io.MultiReader(bytes.NewReader(b[:len(b)-2]), &errorReader{err: failure})
+		_, _, err := readAll2(src, nameOf(b))
+		is.True(t, errors.Is(err, failure), "error is not the source's: "+errorString(err))
+		is.True(t, !errors.Is(err, format.ErrNameMismatch) && !errors.Is(err, format.ErrMalformed) && !errors.Is(err, format.ErrNewerVersion), "error is one of the three")
+	})
+
+	t.Run("should return an error of the source that fails once and then ends", func(t *testing.T) {
+		b := join(record(1, testHeader()), record(2, dropTable("t")))
+		failure := errors.New("connection reset")
+		src := io.MultiReader(bytes.NewReader(b[:len(b)-2]), &errorReader{err: failure, once: true})
 		_, _, err := readAll2(src, nameOf(b))
 		is.True(t, errors.Is(err, failure), "error is not the source's: "+errorString(err))
 		is.True(t, !errors.Is(err, format.ErrNameMismatch) && !errors.Is(err, format.ErrMalformed) && !errors.Is(err, format.ErrNewerVersion), "error is one of the three")
@@ -151,7 +160,7 @@ func TestCommitReader(t *testing.T) {
 	t.Run("should return an error of the source while it reads the rest after a refusal", func(t *testing.T) {
 		b := join(record(2, dropTable("t")), record(1, testHeader()))
 		failure := errors.New("connection reset")
-		src := io.MultiReader(bytes.NewReader(b), errorReader{err: failure})
+		src := io.MultiReader(bytes.NewReader(b), &errorReader{err: failure})
 		_, _, err := readAll2(src, nameOf(b))
 		is.True(t, errors.Is(err, failure), "error is not the source's: "+errorString(err))
 		is.True(t, !errors.Is(err, format.ErrNameMismatch) && !errors.Is(err, format.ErrMalformed) && !errors.Is(err, format.ErrNewerVersion), "error is one of the three")
@@ -296,6 +305,11 @@ func TestCommitReader(t *testing.T) {
 			return h
 		}()))},
 		{name: "should refuse a header that is not Protocol Buffers", b: join(protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), []byte{0xff}))},
+		{name: "should refuse a change record with the wire type of a fixed 32-bit number", b: func() []byte {
+			b := record(2, dropTable("t"))
+			b[0] = byte(protowire.EncodeTag(2, protowire.Fixed32Type))
+			return join(record(1, testHeader()), b)
+		}()},
 		{name: "should refuse a record that is not a message", b: join(record(1, testHeader()), protowire.AppendVarint(protowire.AppendTag(nil, 2, protowire.VarintType), 1))},
 		{name: "should refuse a tag with an invalid wire type", b: join(record(1, testHeader()), []byte{0x17})},
 		{name: "should refuse a tag with field number 0", b: join(record(1, testHeader()), []byte{0x02, 0x00})},
@@ -562,12 +576,18 @@ func null() *s4qlpb.Value {
 	return s4qlpb.Value_builder{Null: &s4qlpb.Null{}}.Build()
 }
 
-// errorReader fails every read with err.
+// errorReader fails every read with err, or only the first if once is set, and then ends.
 type errorReader struct {
-	err error
+	err    error
+	once   bool
+	failed bool
 }
 
-func (r errorReader) Read([]byte) (int, error) {
+func (r *errorReader) Read([]byte) (int, error) {
+	if r.once && r.failed {
+		return 0, io.EOF
+	}
+	r.failed = true
 	return 0, r.err
 }
 

@@ -419,16 +419,12 @@ func checkSurrogates(b []byte) error {
 		}
 
 		isHigh, isLow := r >= 0xd800 && r <= 0xdbff, r >= 0xdc00 && r <= 0xdfff
-		switch {
-		case expectLow && !isLow:
-			return errors.New("escaped UTF-16 surrogate that is not part of a pair")
-		case !expectLow && isLow:
+		if expectLow != isLow {
 			return errors.New("escaped UTF-16 surrogate that is not part of a pair")
 		}
 		expectLow = isHigh
 	}
-	if expectLow {
-		return errors.New("escaped UTF-16 surrogate that is not part of a pair")
-	}
+	// A high surrogate at the very end is inside a string that is not closed, which the JSON decoder
+	// refuses.
 	return nil
 }

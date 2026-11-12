@@ -55,6 +55,9 @@ type CommitWriter struct {
 	hash hash.Hash
 	err  error
 
+	// maxRecordSize is [MaxRecordSize], and smaller in tests.
+	maxRecordSize int
+
 	// annotating is true after the first annotation, after which no change can follow.
 	annotating bool
 
@@ -77,7 +80,7 @@ type batch struct {
 // NewCommitWriter that writes a commit object to w, and writes its header first: version 0, the name
 // of the parent, and the commit time.
 func NewCommitWriter(w io.Writer, parent Name, commitTime time.Time) (*CommitWriter, error) {
-	cw := &CommitWriter{w: w, hash: sha256.New()}
+	cw := &CommitWriter{w: w, hash: sha256.New(), maxRecordSize: MaxRecordSize}
 
 	h := s4qlpb.Header_builder{
 		Version:    new(uint32(commitVersion)),
@@ -274,8 +277,8 @@ func (w *CommitWriter) flush() error {
 
 // writeRecord of [s4qlpb.CommitObject]: its tag, its length, and its bytes, in one call of Write.
 func (w *CommitWriter) writeRecord(field protowire.Number, b []byte) error {
-	if len(b) > MaxRecordSize {
-		return w.fail(fmt.Errorf("%w: record is %v bytes, above the limit of %v", ErrMalformed, len(b), MaxRecordSize))
+	if len(b) > w.maxRecordSize {
+		return w.fail(fmt.Errorf("%w: record is %v bytes, above the limit of %v", ErrMalformed, len(b), w.maxRecordSize))
 	}
 	record := protowire.AppendTag(make([]byte, 0, len(b)+16), field, protowire.BytesType)
 	record = protowire.AppendBytes(record, b)

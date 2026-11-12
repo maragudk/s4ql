@@ -175,6 +175,7 @@ func TestParseManifest(t *testing.T) {
 		{name: "should refuse a key given twice in another spelling", input: `{"version":0,"branches":{"main":{"head":"` + zeros + `"}},"x":1,"x":2}`},
 		{name: "should refuse bytes that are not valid UTF-8", input: `{"version":0,"branches":{"main":{"head":"` + zeros + `"}},"x":"` + "\xff" + `"}`},
 		{name: "should refuse an escaped lone surrogate", input: `{"version":0,"branches":{"main":{"head":"` + zeros + `"}},"x":"\ud800"}`},
+		{name: "should refuse an escaped lone low surrogate", input: `{"version":0,"branches":{"main":{"head":"` + zeros + `"}},"x":"\udc00"}`},
 		{name: "should refuse an escaped low surrogate first", input: `{"version":0,"branches":{"main":{"head":"` + zeros + `"}},"x":"\udc00\ud800"}`},
 	}
 	for _, test := range malformed {

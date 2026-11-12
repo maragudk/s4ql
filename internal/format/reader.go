@@ -79,6 +79,9 @@ type CommitReader struct {
 	hash   hash.Hash
 	name   Name
 
+	// maxRecordSize is [MaxRecordSize], and smaller in tests.
+	maxRecordSize uint64
+
 	header  *s4qlpb.Header
 	records int
 	err     error
@@ -94,6 +97,8 @@ func NewCommitReader(r io.Reader, name Name) *CommitReader {
 		source: source,
 		hash:   h,
 		name:   name,
+
+		maxRecordSize: MaxRecordSize,
 	}
 }
 
@@ -205,8 +210,8 @@ func (r *CommitReader) readRecord() (protowire.Number, []byte, error) {
 	if err != nil {
 		return 0, nil, r.readError(err, path+" length")
 	}
-	if size > MaxRecordSize {
-		return 0, nil, fmt.Errorf("%w: %v is %v bytes, above the limit of %v", ErrMalformed, path, size, MaxRecordSize)
+	if size > r.maxRecordSize {
+		return 0, nil, fmt.Errorf("%w: %v is %v bytes, above the limit of %v", ErrMalformed, path, size, r.maxRecordSize)
 	}
 
 	// Grow the buffer as the bytes arrive, so that a corrupt length that is larger than what follows
