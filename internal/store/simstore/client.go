@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -13,7 +14,7 @@ import (
 	"maragu.dev/s4ql/internal/store"
 )
 
-// Client of a [Store], through which one sender reaches it, and which a test can cut off from it.
+// Client of a [Store], through which one sender reaches it, and which can be cut off from it.
 type Client struct {
 	s      *Store
 	name   string
@@ -32,7 +33,7 @@ func (c *Client) CutOff(ctx context.Context, d time.Duration) {
 	s.mu.Lock()
 	c.cutUntil = max(c.cutUntil, s.host.Monotonic()+d)
 	s.mu.Unlock()
-	s.host.Trace(ctx, "store: client %v cut off for %v", c.name, d)
+	s.host.Trace(ctx, "%v: client %v cut off for %v", s.name, c.name, d)
 }
 
 // kind of a request.
@@ -58,6 +59,11 @@ type request struct {
 
 	// gaveUp is set when the caller stops waiting for the response.
 	gaveUp bool
+	// settled is set when the store has applied the request, refused it, or it is known never to
+	// arrive. Until then, a write counts as in flight to its key.
+	settled bool
+	// hang is set when the caller gets no answer, and waits until its context ends.
+	hang bool
 	// version, and for a get its content and breakAt, are the result, unless err is not nil.
 	version store.Version
 	// breakAt is where the content of a get breaks off, or -1.
@@ -84,14 +90,15 @@ func (r *request) checksumText() string {
 	return " and a checksum"
 }
 
-// Get as [store.Store] describes.
+// Get as [store.Store] describes. If the client is cut off from the store while the caller reads the
+// content, the content breaks off.
 func (c *Client) Get(ctx context.Context, key string) (io.ReadCloser, store.Version, error) {
 	checkKey(key)
 	r := &request{kind: get, key: key}
 	if err := c.send(ctx, r); err != nil {
 		return nil, "", err
 	}
-	return &body{ctx: ctx, content: r.content, breakAt: r.breakAt, request: r.id}, r.version, nil
+	return &body{ctx: ctx, c: c, content: r.content, breakAt: r.breakAt, request: r.id}, r.version, nil
 }
 
 // Create as [store.Store] describes.
@@ -108,7 +115,8 @@ func (c *Client) Create(ctx context.Context, key string, content io.ReadSeeker, 
 	return r.version, nil
 }
 
-// Swap as [store.Store] describes. It panics for an empty version, which no read or write returns.
+// Swap as [store.Store] describes. It panics for an empty version, which no read or write returns,
+// and which an S3 client could send as no condition at all.
 func (c *Client) Swap(ctx context.Context, key string, from store.Version, content io.ReadSeeker, checksum *store.Checksum) (store.Version, error) {
 	checkKey(key)
 	if from == "" {
@@ -139,8 +147,8 @@ func checkKey(key string) {
 	}
 }
 
-// readContent of a write from its current offset to its end. It finds the size by seeking first,
-// as a client for S3 must, which needs the size before it sends the content.
+// readContent of a write from its current offset to its end. It finds the size by seeking first, as
+// a store may that needs the size before it sends the content.
 func readContent(content io.ReadSeeker) ([]byte, error) {
 	start, err := content.Seek(0, io.SeekCurrent)
 	if err != nil {
@@ -172,14 +180,22 @@ func (c *Client) send(ctx context.Context, r *request) error {
 	if err := context.Cause(ctx); err != nil {
 		return err
 	}
+	// A sender that has crashed sends nothing, also from code that runs on after the crash until it
+	// next waits.
+	if c.sender != nil && c.sender.Crashed() {
+		return errorf("client %v sends nothing, because its sender has crashed", c.name)
+	}
 
 	s.mu.Lock()
 	s.requests++
 	r.id = s.requests
+	if r.kind != get {
+		s.inFlight[r.key]++
+	}
 	s.mu.Unlock()
-	s.host.Trace(ctx, "store: %v from %v: sent", r, c.name)
+	s.host.Trace(ctx, "%v: %v from %v: sent", s.name, r, c.name)
 
-	carrier := s.host.Go(context.WithoutCancel(ctx), fmt.Sprint("store request ", r.id), func(ctx context.Context) {
+	carrier := s.host.Go(context.WithoutCancel(ctx), fmt.Sprint(s.name, " request ", r.id), func(ctx context.Context) {
 		s.carry(ctx, c, r)
 	})
 	s.mu.Lock()
@@ -190,13 +206,20 @@ func (c *Client) send(ctx context.Context, r *request) error {
 		s.mu.Lock()
 		r.gaveUp = true
 		s.mu.Unlock()
-		s.host.Trace(ctx, "store: request %v: the caller gives up: %v", r.id, err)
+		s.host.Trace(ctx, "%v: request %v: the caller gives up: %v", s.name, r.id, err)
 		return fmt.Errorf("simstore: request %v: %w", r.id, err)
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return r.err
+	err, hang := r.err, r.hang
+	s.mu.Unlock()
+	if hang {
+		s.host.Trace(ctx, "%v: request %v: no answer comes, and the caller waits until it gives up", s.name, r.id)
+		err := s.host.Sleep(ctx, math.MaxInt64)
+		s.host.Trace(ctx, "%v: request %v: the caller gives up: %v", s.name, r.id, err)
+		return fmt.Errorf("simstore: request %v: %w", r.id, err)
+	}
+	return err
 }
 
 // carry the request r of c to the store, apply it, and carry the response back, with the faults
@@ -204,13 +227,7 @@ func (c *Client) send(ctx context.Context, r *request) error {
 func (s *Store) carry(ctx context.Context, c *Client, r *request) {
 	f := s.options.Faults
 	trace := func(format string, args ...any) {
-		s.host.Trace(ctx, "store: request %v: "+format, append([]any{r.id}, args...)...)
-	}
-	fail := func(err error) {
-		s.mu.Lock()
-		r.err = err
-		s.mu.Unlock()
-		trace("%v", err)
+		s.host.Trace(ctx, "%v: request %v: "+format, append([]any{s.name, r.id}, args...)...)
 	}
 
 	if s.chance(f.CutOff) {
@@ -233,6 +250,10 @@ func (s *Store) carry(ctx context.Context, c *Client, r *request) {
 			why, p = "the sender crashed", f.AfterCrash
 		}
 		if r.kind == get || !s.chance(p) {
+			s.mu.Lock()
+			r.err = errorf("request %v of %v was never applied, because %v", r.id, c.name, why)
+			s.settle(r)
+			s.mu.Unlock()
 			trace("arrives after %v, and is never applied", why)
 			return
 		}
@@ -242,11 +263,11 @@ func (s *Store) carry(ctx context.Context, c *Client, r *request) {
 	}
 
 	if s.unreachable(c) {
-		fail(errorf("request %v of %v did not reach the store, which was unreachable", r.id, c.name))
+		s.lose(ctx, c, r, trace, errorf("request %v of %v did not reach the store, which was unreachable", r.id, c.name))
 		return
 	}
 	if s.chance(f.LostRequest) {
-		fail(errorf("request %v of %v was lost on its way to the store", r.id, c.name))
+		s.lose(ctx, c, r, trace, errorf("request %v of %v was lost on its way to the store", r.id, c.name))
 		return
 	}
 	s.apply(ctx, c, r)
@@ -257,15 +278,86 @@ func (s *Store) carry(ctx context.Context, c *Client, r *request) {
 	s.mu.Lock()
 	gaveUp = r.gaveUp
 	s.mu.Unlock()
+	var lost error
 	switch {
 	case gaveUp || (c.sender != nil && c.sender.Crashed()):
 		trace("the response finds no caller")
+		return
 	case s.unreachable(c):
-		fail(errorf("the response to request %v of %v was lost, because the store was unreachable", r.id, c.name))
+		lost = errorf("the response to request %v of %v was lost, because the store was unreachable", r.id, c.name)
 	case s.chance(f.LostResponse):
-		fail(errorf("the response to request %v of %v was lost on its way back", r.id, c.name))
+		lost = errorf("the response to request %v of %v was lost on its way back", r.id, c.name)
 	default:
 		trace("the response arrives")
+		return
+	}
+	hang := s.chance(f.Hang)
+	s.mu.Lock()
+	r.err, r.hang = lost, hang
+	s.mu.Unlock()
+	trace("%v%v", lost, hangText(hang))
+}
+
+// lose the request r of c on its way to the store: its caller gets err, or no answer at all by
+// [Faults.Hang], and a write is stuck in the network by [Faults.Late], to arrive later, or is never
+// applied.
+func (s *Store) lose(ctx context.Context, c *Client, r *request, trace func(format string, args ...any), err error) {
+	f := s.options.Faults
+	hang := s.chance(f.Hang)
+	stuck := r.kind != get && s.chance(f.Late)
+	s.mu.Lock()
+	gaveUp := r.gaveUp
+	r.err, r.hang = err, hang
+	s.mu.Unlock()
+	if !stuck || gaveUp || (c.sender != nil && c.sender.Crashed()) {
+		s.mu.Lock()
+		s.settle(r)
+		s.mu.Unlock()
+		trace("%v%v, and is never applied", err, hangText(hang))
+		return
+	}
+
+	// The write that arrives later is a copy, so that what it gets back is not mixed up with what
+	// the caller got. It takes over the place of r among the writes in flight.
+	stuckR := &request{id: r.id, kind: r.kind, key: r.key, from: r.from, content: r.content, checksum: r.checksum, breakAt: -1}
+	late := s.upTo(f.LateBy)
+	s.mu.Lock()
+	r.settled = true
+	s.mu.Unlock()
+	trace("%v%v, and is stuck in the network, to arrive %v later", err, hangText(hang), late)
+	task := s.host.Go(ctx, fmt.Sprint(s.name, " request ", r.id, ", stuck"), func(ctx context.Context) {
+		_ = s.host.Sleep(ctx, late)
+		if s.unreachable(c) {
+			s.mu.Lock()
+			s.settle(stuckR)
+			s.mu.Unlock()
+			s.host.Trace(ctx, "%v: request %v: arrives after it was stuck, while the store is unreachable, and is never applied", s.name, r.id)
+			return
+		}
+		s.host.Trace(ctx, "%v: request %v: arrives after it was stuck", s.name, r.id)
+		s.apply(ctx, c, stuckR)
+	})
+	s.mu.Lock()
+	s.carriers = append(s.carriers, task)
+	s.mu.Unlock()
+}
+
+// hangText for the trace of a request whose caller gets no answer.
+func hangText(hang bool) string {
+	if hang {
+		return ", and no answer reaches the caller"
+	}
+	return ""
+}
+
+// settle the request r: it no longer counts as in flight. It requires the mutex.
+func (s *Store) settle(r *request) {
+	if r.settled {
+		return
+	}
+	r.settled = true
+	if r.kind != get {
+		s.inFlight[r.key]--
 	}
 }
 
@@ -290,11 +382,15 @@ func (s *Store) unreachable(c *Client) bool {
 
 // apply the request r of c at one instant, and record its result in r.
 func (s *Store) apply(ctx context.Context, c *Client, r *request) {
+	// The fault is drawn before the store's mutex is taken, and counts only if another write to the
+	// key is in flight.
+	conflict := r.kind == swap && s.chance(s.options.Faults.Conflict)
 	breakAt := -1
 	var result string
 	func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		s.settle(r)
 
 		o, ok := s.objects[r.key]
 		if r.kind == get {
@@ -308,20 +404,28 @@ func (s *Store) apply(ctx context.Context, c *Client, r *request) {
 			return
 		}
 
-		// S3 checks a checksum as the content arrives. Whether it checks the checksum or the condition
-		// first is not documented, and either way the write is not applied.
+		// S3 checks a checksum as the content arrives, and documents no order between that and the
+		// condition. Either way the write is not applied.
+		var why string
+		var refusal error
 		switch {
 		case r.checksum != nil && sha256.Sum256(r.content) != *r.checksum:
-			r.err = fmt.Errorf("simstore: %v: %w", r, store.ErrChecksum)
+			why, refusal = "the checksum does not match", store.ErrChecksum
 		case r.kind == create && ok:
-			r.err = fmt.Errorf("simstore: %v: %w", r, store.ErrExists)
+			why, refusal = "an object exists", store.ErrExists
 		case r.kind == swap && !ok:
-			r.err = fmt.Errorf("simstore: %v: %w", r, store.ErrNotFound)
+			why, refusal = "no object exists", store.ErrNotFound
 		case r.kind == swap && o.version != r.from:
-			r.err = fmt.Errorf("simstore: %v: the version is %v: %w", r, short(o.version), store.ErrChanged)
+			why, refusal = "the version is "+short(o.version), store.ErrChanged
+		case conflict && s.inFlight[r.key] > 0:
+			// S3 documents a 409 ConditionalRequestConflict for a conditional write "in the case of
+			// concurrent requests", which is not applied
+			// (https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html).
+			why, refusal = "a conflict with another write in flight", store.ErrChanged
 		}
-		if r.err != nil {
-			result = "not applied: " + errors.Unwrap(r.err).Error()
+		if refusal != nil {
+			r.err = fmt.Errorf("simstore: %v: %v: %w", r, why, refusal)
+			result = "not applied: " + why
 			return
 		}
 
@@ -347,12 +451,13 @@ func (s *Store) apply(ctx context.Context, c *Client, r *request) {
 	s.mu.Lock()
 	r.breakAt = breakAt
 	s.mu.Unlock()
-	s.host.Trace(ctx, "store: request %v of %v: %v", r.id, c.name, result)
+	s.host.Trace(ctx, "%v: request %v of %v: %v", s.name, r.id, c.name, result)
 }
 
 // body is the content of a get.
 type body struct {
 	ctx     context.Context
+	c       *Client
 	content []byte
 	// breakAt is where the content breaks off, or -1.
 	breakAt int
@@ -367,6 +472,9 @@ func (b *body) Read(p []byte) (int, error) {
 	}
 	if err := context.Cause(b.ctx); err != nil {
 		return 0, fmt.Errorf("simstore: read of the content of request %v: %w", b.request, err)
+	}
+	if b.c.s.unreachable(b.c) {
+		return 0, errorf("the content of request %v broke off after %v bytes, because the store became unreachable", b.request, b.off)
 	}
 	end := len(b.content)
 	if b.breakAt >= 0 {

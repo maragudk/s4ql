@@ -1,8 +1,7 @@
-// Package simstore is a simulated object store: a [store.Store] in memory that runs under the
-// simulation harness, and that does on purpose what S3 and a network do, each from the seed.
+// Package simstore is a simulated object store: a [store.Store] in memory that waits only through a
+// [host.Host], draws every random number from it, and does on purpose what S3 and a network do.
 //
-// It is the store that the correctness of s4ql is judged against, so where it departs from S3 it is
-// less forgiving than S3, never more:
+// Where it departs from S3, it is less forgiving than S3, never more:
 //
 //   - It is strongly consistent: every request is applied at one instant, at which a read sees every
 //     write applied before it, and a write is applied completely or not at all. It loses no write
@@ -12,17 +11,18 @@
 //     leaves the version as it was. The version is a keyed hash, with a key from the seed, so that
 //     nothing outside the store can compute it from the content.
 //   - A conditional write is checked when it arrives, not when it is sent. Of two that race, the one
-//     that arrives first wins, as on S3, where "the first write operation to finish succeeds"
+//     that arrives first wins, as on S3, where for a create "the first write operation to finish
+//     succeeds", and a swap can also fail "in the case of concurrent requests"
 //     (https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html).
-//   - A request travels to the store and back in simulated time. A request whose caller has given up,
-//     or whose sender has crashed, is carried on by a task of the store, so that it can still be
-//     applied afterwards.
+//   - A request travels to the store and back in the time of the host. A request whose caller has
+//     given up or got an error, or whose sender has crashed, can still be on its way, so a task of the
+//     host carries it, and it can be applied after the call has returned.
 //
 // The faults, in [Faults], each have their own probability, and a probability of zero switches the
-// fault off. With every fault off, and no client cut off by the test, no request fails. Every
+// fault off. With every fault off, and no client cut off by hand, no request fails. Every
 // request and its outcome are in the trace of the host.
 //
-// A test can look at the store directly, without faults and without waiting, with [Store.Object],
+// The store can be looked at directly, without faults and without waiting, with [Store.Object],
 // [Store.Keys], and [Store.History].
 package simstore
 
@@ -47,9 +47,9 @@ import (
 // its outcome is unknown.
 var ErrFault = errors.New("simulated fault")
 
-// Host is what the store runs on: a host that also keeps a trace. Under the simulation it is the
-// host of the test itself, whose clock is the simulated time and whose tasks no crash ends, and not
-// the host of an instance.
+// Host is what the store runs on: a host that also keeps a trace. Its clock is the time of the
+// network, so no sender may be able to stop it or shift it, and its tasks carry requests, so no crash
+// of a sender may end them.
 type Host interface {
 	host.Host
 	Trace(ctx context.Context, format string, args ...any)
@@ -57,6 +57,9 @@ type Host interface {
 
 // Options of a [Store].
 type Options struct {
+	// Name of the store in the trace, and in the names of its tasks. Two stores on one host need
+	// different names. Empty means "store".
+	Name string
 	// Latency is the longest time that a request takes on its way to the store, and again on its way
 	// back. Each way takes a time from zero to Latency, from the seed.
 	Latency time.Duration
@@ -66,18 +69,21 @@ type Options struct {
 // Faults that the store makes happen, each with the probability that it happens to one request.
 // A probability of zero switches the fault off.
 type Faults struct {
-	// LostRequest is the probability that a request is lost on its way to the store. It is not
-	// applied, and the caller gets an error.
+	// LostRequest is the probability that a request is lost on its way to the store, and the caller
+	// gets an error. A write that is lost can still be stuck in the network, by Late.
 	LostRequest float64
 	// LostResponse is the probability that the response to a request is lost on its way back. A
 	// write was applied, or failed with one of the errors of [store.Store], and the caller gets
 	// another error.
 	LostResponse float64
+	// Hang is the probability that the caller of a request that a fault made fail gets no answer at
+	// all, so that the call returns only when its context ends.
+	Hang float64
 	// Slow is the probability that one way of a request takes up to SlowBy longer.
 	Slow   float64
 	SlowBy time.Duration
-	// BrokenRead is the probability that the content of a read fails at a point in the middle, or at
-	// its start.
+	// BrokenRead is the probability that the content of a read fails at its start, at a point in the
+	// middle, or after its last byte, before the end is reported.
 	BrokenRead float64
 	// CutOff is the probability that a request cuts its client off from the store, for up to
 	// CutOffFor. While a client is cut off, no request of it arrives, and no response reaches it.
@@ -87,8 +93,13 @@ type Faults struct {
 	// to OutageFor.
 	Outage    float64
 	OutageFor time.Duration
-	// Late is the probability that a write whose caller gave up before the write arrived is still
-	// applied, up to LateBy after it arrived. Otherwise it is never applied.
+	// Conflict is the probability that a swap from the right version is refused with
+	// [store.ErrChanged] while another write to its key is in flight, as S3 may refuse it.
+	Conflict float64
+	// Late is the probability that a write whose caller no longer waits for it is still applied, up to
+	// LateBy after it arrived: a write whose caller gave up before it arrived, and a write that was
+	// lost or did not reach the store, which is then stuck in the network. Otherwise it is never
+	// applied.
 	Late float64
 	// AfterCrash is the probability that a write whose sender crashed before the write arrived is
 	// still applied, up to LateBy after it arrived. Otherwise it is never applied.
@@ -96,12 +107,14 @@ type Faults struct {
 	LateBy     time.Duration
 }
 
-// AllFaults on, each often enough to happen in most runs of a few hundred requests, with durations
-// that are long against a lease of 30 seconds.
+// AllFaults on, each often enough to happen in most runs of a few hundred requests, with durations of
+// up to a minute.
 func AllFaults() Faults {
 	return Faults{
 		LostRequest:  0.02,
 		LostResponse: 0.02,
+		Hang:         0.2,
+		Conflict:     0.1,
 		Slow:         0.02,
 		SlowBy:       45 * time.Second,
 		BrokenRead:   0.02,
@@ -118,6 +131,7 @@ func AllFaults() Faults {
 // Store is the simulated store. Its clients, from [Store.Client], implement [store.Store].
 type Store struct {
 	host    Host
+	name    string
 	options Options
 	// key of the hash that gives a version.
 	key []byte
@@ -129,9 +143,11 @@ type Store struct {
 	requests int
 	// carriers are the tasks that carry requests, in the order in which they started.
 	carriers []host.Task
-	// outageUntil is the simulated time until which no client reaches the store.
+	// outageUntil is the time until which no client reaches the store.
 	outageUntil time.Duration
 	clients     map[string]bool
+	// inFlight counts the writes to each key that are not settled.
+	inFlight map[string]int
 }
 
 // object at a key.
@@ -160,8 +176,19 @@ type Write struct {
 
 // New store on h, which is empty. Its random numbers are drawn from h.
 func New(h Host, options Options) *Store {
+	if options.Name == "" {
+		options.Name = "store"
+	}
 	key := binary.LittleEndian.AppendUint64(nil, h.Uint64())
-	return &Store{host: h, options: options, key: key, objects: map[string]object{}, clients: map[string]bool{}}
+	return &Store{
+		host:     h,
+		name:     options.Name,
+		options:  options,
+		key:      key,
+		objects:  map[string]object{},
+		clients:  map[string]bool{},
+		inFlight: map[string]int{},
+	}
 }
 
 // version of content.
@@ -224,10 +251,10 @@ func (s *Store) Outage(ctx context.Context, d time.Duration) {
 	s.mu.Lock()
 	s.outageUntil = max(s.outageUntil, s.host.Monotonic()+d)
 	s.mu.Unlock()
-	s.host.Trace(ctx, "store: unreachable for %v", d)
+	s.host.Trace(ctx, "%v: unreachable for %v", s.name, d)
 }
 
-// Sender of requests, as the instance of the simulation that a client belongs to.
+// Sender of requests: the process that a client belongs to.
 type Sender interface {
 	// Crashed reports whether the sender has crashed.
 	Crashed() bool

@@ -1,14 +1,12 @@
 // Package storetest is the conformance suite of [store.Store]: tests of what every store must do,
-// written once and run against each implementation, so that a simulated store and the client for
-// real S3 are held to the same rules.
+// written once, so that every implementation is held to the same rules.
 //
 // The suite assumes a calm store: one that, in the time of a test, loses no request and is always
 // reachable. It checks only what S3 promises, so a store that does more, such as one that gives the
 // same content the same version every time, passes it, and so does one that does not.
 //
 // A test of the suite runs in a task of a [host.Host], and starts other tasks through it to race
-// writes against each other, so the suite runs the same way on a simulated host and on the host for
-// production.
+// writes against each other, so the suite runs on any host.
 package storetest
 
 import (
@@ -83,7 +81,7 @@ func Cases() []Case {
 		{Name: "should keep keys apart, also keys that share a prefix or are not ASCII", Run: keys},
 		{Name: "should give each read its own content, unchanged by a later write", Run: snapshot},
 		{Name: "should let exactly one of many racing creates of one key succeed", Run: raceCreate},
-		{Name: "should let exactly one of many racing swaps from one version succeed", Run: raceSwap},
+		{Name: "should let at most one of many racing swaps from one version succeed", Run: raceSwap},
 		{Name: "should lose no increment of a counter that racing clients swap", Run: raceCounter},
 	}
 }
@@ -367,7 +365,9 @@ func sizes(t T, ctx context.Context, env Env) {
 
 func keys(t T, ctx context.Context, env Env) {
 	c := env.Client("a")
-	ks := []string{"a", "a/", "a/b", "ab", "A", "æøå/ü", "a b"}
+	// No key is a prefix of another that continues with a slash, because some stores that call
+	// themselves compatible with S3 keep objects as files, and cannot hold both.
+	ks := []string{"a/b", "a/c", "ab", "A", "æøå/ü", "a b"}
 	versions := map[string]store.Version{}
 	for _, k := range ks {
 		v, ok := create(t, ctx, c, k, "content of "+k)
@@ -454,6 +454,9 @@ func raceCreate(t T, ctx context.Context, env Env) {
 	}
 }
 
+// raceSwap lets swaps race from one version. S3 may refuse a swap from the right version "in the case
+// of concurrent requests" (https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html),
+// so none may succeed, and then the object is unchanged.
 func raceSwap(t T, ctx context.Context, env Env) {
 	from, ok := create(t, ctx, env.Client("creator"), "k", "start")
 	if !ok {
@@ -472,12 +475,15 @@ func raceSwap(t T, ctx context.Context, env Env) {
 			t.Errorf("racer %v: swap: got %v, want success or ErrChanged", i, err)
 		}
 	})
-	if len(winners) != 1 {
-		t.Errorf("%v of %v racing swaps succeeded, want 1", len(winners), racers)
-		return
-	}
-	for i, v := range winners {
-		expect(t, ctx, env.Client("reader"), "k", fmt.Sprint("racer ", i), v)
+	switch len(winners) {
+	case 0:
+		expect(t, ctx, env.Client("reader"), "k", "start", from)
+	case 1:
+		for i, v := range winners {
+			expect(t, ctx, env.Client("reader"), "k", fmt.Sprint("racer ", i), v)
+		}
+	default:
+		t.Errorf("%v of %v racing swaps succeeded, want at most 1", len(winners), racers)
 	}
 }
 
@@ -488,11 +494,11 @@ func raceCounter(t T, ctx context.Context, env Env) {
 	}
 	const increments = 4
 	race(t, ctx, env, "counter", func(ctx context.Context, i int, c store.Store) {
-		// Every failed swap means that another succeeded, so a racer that fails more often than all
-		// racers together can succeed never sees the swaps of the others.
+		// A failed swap almost always means that another succeeded, so a racer that fails many times
+		// more often than all racers together can succeed does not see the swaps of the others.
 		attempts := 0
 		for n := 0; n < increments; attempts++ {
-			if attempts > 2*racers*increments {
+			if attempts > 10*racers*increments {
 				t.Errorf("racer %v: %v swaps failed with ErrChanged, of %v that can succeed in all", i, attempts-n, racers*increments)
 				return
 			}

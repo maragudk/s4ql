@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"slices"
 	"strconv"
@@ -58,6 +59,20 @@ func TestStore_Object(t *testing.T) {
 			})
 			is.NotError(t, p.err)
 			is.True(t, checked > 1)
+		}
+	})
+
+	t.Run("should record in the history the client and the request of each write, as the trace has them", func(t *testing.T) {
+		for seed := range uint64(10) {
+			p := probe(t, seed, probeOptions{store: simstore.Options{Latency: latency, Faults: faultsOn()}, crash: true, impatient: true}, nil)
+			is.NotError(t, p.err)
+			is.True(t, len(p.history) > 1)
+			for i, w := range p.history {
+				applied := fmt.Sprintf("store: request %v of %v: applied as write %v,", w.Request, w.Client, i+1)
+				is.True(t, p.trace(applied), fmt.Sprintf("seed %v: no line %q", seed, applied))
+				// The client of a write is the one whose op wrote its content.
+				is.True(t, strings.HasPrefix(string(w.Content), w.Client+"-"), fmt.Sprintf("seed %v: %v wrote %q", seed, w.Client, w.Content))
+			}
 		}
 	})
 
@@ -150,6 +165,67 @@ func TestStore_Wait(t *testing.T) {
 				is.True(t, s.Monotonic() >= history[0].Time)
 				_, _, ok := st.Object("k")
 				is.True(t, ok)
+			}))
+		})
+	})
+
+	t.Run("should wait for a request that is sent while it waits", func(t *testing.T) {
+		// Each write lands up to an hour after its caller gave up, so with some seeds the second lands
+		// after the first.
+		for seed := range uint64(10) {
+			synctest.Test(t, func(t *testing.T) {
+				s := sim.New(seed, sim.Options{})
+				is.NotError(t, s.Run(func(ctx context.Context) {
+					st := simstore.New(s, simstore.Options{Latency: latency, Faults: simstore.Faults{Late: 1, LateBy: time.Hour}})
+					c := st.Client("a", nil)
+					write := func(ctx context.Context, key string) {
+						short, cancel := s.WithTimeout(ctx, time.Nanosecond)
+						defer cancel()
+						_, _ = c.Create(short, key, strings.NewReader(key), nil)
+					}
+					write(ctx, "first")
+					// The task first runs once the store waits for the first write, so the second is sent
+					// while it waits.
+					_ = s.Go(ctx, "second", func(ctx context.Context) {
+						write(ctx, "second")
+					})
+					is.NotError(t, st.Wait(ctx))
+					is.EqualSlice(t, []string{"first", "second"}, st.Keys(), fmt.Sprint("seed ", seed))
+				}))
+			})
+		}
+	})
+}
+
+func TestStore_Client(t *testing.T) {
+	t.Run("should panic for a second client with the name of another", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			s := sim.New(0, sim.Options{})
+			is.NotError(t, s.Run(func(ctx context.Context) {
+				st := simstore.New(s, simstore.Options{})
+				_ = st.Client("a", nil)
+				is.True(t, panics(func() { st.Client("a", nil) }))
+				is.True(t, !panics(func() { st.Client("b", nil) }))
+			}))
+		})
+	})
+
+	t.Run("should let two stores with different names share a host", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			s := sim.New(0, sim.Options{})
+			is.NotError(t, s.Run(func(ctx context.Context) {
+				// Both requests are in flight at once.
+				var tasks []host.Task
+				for _, name := range []string{"one", "two"} {
+					c := simstore.New(s, simstore.Options{Name: name, Latency: latency}).Client("a", nil)
+					tasks = append(tasks, s.Go(ctx, name, func(ctx context.Context) {
+						_, err := c.Create(ctx, "k", strings.NewReader(name), nil)
+						is.NotError(t, err)
+					}))
+				}
+				for _, task := range tasks {
+					is.NotError(t, task.Wait(ctx))
+				}
 			}))
 		})
 	})
@@ -264,8 +340,9 @@ func (w *world) returned(a *attempt, v store.Version, err error) {
 	a.version, a.err, a.done, a.end = v, err, true, w.s.Monotonic()
 }
 
-// caller runs ops operations with the client c of the instance inst, whose name is name.
-func (w *world) caller(ctx context.Context, inst *sim.Instance, c *simstore.Client, name string, ops int) {
+// caller runs ops operations with the client c of the instance inst, whose name is name, as its
+// caller number caller.
+func (w *world) caller(ctx context.Context, inst *sim.Instance, c *simstore.Client, name string, caller, ops int) {
 	for i := range ops {
 		_ = inst.Sleep(ctx, time.Duration(intn(inst, 3000))*time.Millisecond)
 		timeout := 5 * time.Minute
@@ -273,7 +350,7 @@ func (w *world) caller(ctx context.Context, inst *sim.Instance, c *simstore.Clie
 			timeout = time.Duration(intn(inst, 2000)) * time.Millisecond
 		}
 		ctx, cancel := inst.WithTimeout(ctx, timeout)
-		id := fmt.Sprint(name, "-", i)
+		id := fmt.Sprint(name, "-", caller, "-", i)
 		switch n := intn(inst, 10); {
 		case n < 4:
 			w.swapCounter(ctx, c, name, id)
@@ -315,8 +392,8 @@ func (w *world) swapCounter(ctx context.Context, c *simstore.Client, name, id st
 	w.returned(a, next, err)
 }
 
-// createObject named by its content, which it creates again while the outcome is unknown, as the
-// upload of a commit object does. One in ten is sent with a checksum of other content, once.
+// createObject named by its content, which it creates again while the outcome is unknown. One in
+// ten is sent with a checksum of other content, once.
 func (w *world) createObject(ctx context.Context, inst *sim.Instance, c *simstore.Client, name, id string) {
 	content := "object " + id + " " + strings.Repeat("x", intn(inst, 2000))
 	sum := sha256.Sum256([]byte(content))
@@ -377,7 +454,7 @@ func (w *world) run(ctx context.Context) {
 		c := w.st.Client(name, inst)
 		for i := range 2 {
 			tasks = append(tasks, inst.Go(ctx, fmt.Sprint("caller-", i), func(ctx context.Context) {
-				w.caller(ctx, inst, c, name, ops)
+				w.caller(ctx, inst, c, name, i, ops)
 			}))
 		}
 	}
@@ -441,8 +518,8 @@ func (w *world) check(ctx context.Context) {
 	written := map[string][]simstore.Write{}
 	for i, wr := range history {
 		as := byContent[string(wr.Content)]
-		if len(as) == 0 || as[0].key != wr.Key || as[0].create != wr.Create {
-			w.violate(ctx, "write %v of %v to %v was not attempted", i, string(wr.Content), wr.Key)
+		if len(as) == 0 || as[0].key != wr.Key || as[0].create != wr.Create || as[0].client != wr.Client {
+			w.violate(ctx, "write %v of %v to %v by %v was not attempted", i, string(wr.Content), wr.Key, wr.Client)
 		}
 		written[string(wr.Content)] = append(written[string(wr.Content)], wr)
 
@@ -475,8 +552,10 @@ func (w *world) check(ctx context.Context) {
 			}
 		}
 	}
+	// Maps are ranged over in order, so that a violation is traced the same way on every run of a seed.
 	distinct := map[store.Version]string{}
-	for content, v := range versions {
+	for _, content := range slices.Sorted(maps.Keys(versions)) {
+		v := versions[content]
 		if other, ok := distinct[v]; ok {
 			w.violate(ctx, "the contents %q and %q have the same version %v", other, content, v)
 		}
@@ -484,9 +563,9 @@ func (w *world) check(ctx context.Context) {
 	}
 
 	// Each write of a content belongs to an attempt that may have applied it, and an attempt that was
-	// acknowledged was applied exactly once, with the version it returned.
-	for content, as := range byContent {
-		ws := written[content]
+	// acknowledged was applied exactly once, before it returned, with the version it returned.
+	for _, content := range slices.Sorted(maps.Keys(byContent)) {
+		as, ws := byContent[content], written[content]
 		var possible, acked int
 		for _, a := range as {
 			if !a.definite() {
@@ -494,15 +573,15 @@ func (w *world) check(ctx context.Context) {
 			}
 			if a.done && a.err == nil {
 				acked++
-				if len(ws) != 1 || ws[0].Version != a.version || ws[0].From != a.from {
-					w.violate(ctx, "the acknowledged write of %v to %v is written %v times", content, a.key, len(ws))
+				if len(ws) != 1 || ws[0].Version != a.version || ws[0].From != a.from || ws[0].Time > a.end {
+					w.violate(ctx, "the acknowledged write of %v to %v is written %v times, or not as acknowledged", content, a.key, len(ws))
 				}
 			}
 			if errors.Is(a.err, store.ErrExists) && !a.create {
 				w.violate(ctx, "a swap returned ErrExists")
 			}
-			// Only the caller of an object creates it, so an object exists only if an earlier attempt
-			// of the caller wrote it.
+			// Only one caller creates an object, so an object exists only if an earlier attempt of the
+			// caller wrote it.
 			if errors.Is(a.err, store.ErrExists) && a.key != "counter" && (len(ws) == 0 || ws[0].Time > a.end) {
 				w.violate(ctx, "a create of %v returned ErrExists, and no earlier attempt wrote it", a.key)
 			}
@@ -516,15 +595,14 @@ func (w *world) check(ctx context.Context) {
 	}
 
 	// The store holds what the model holds.
-	var keys []string
-	for k, want := range model {
-		keys = append(keys, k)
+	keys := slices.Sorted(maps.Keys(model))
+	for _, k := range keys {
+		want := model[k]
 		content, v, ok := w.st.Object(k)
 		if !ok || !bytes.Equal(content, want.content) || v != want.version {
 			w.violate(ctx, "the store holds %v at %v, and the history leads to %v", v, k, want.version)
 		}
 	}
-	slices.Sort(keys)
 	if !slices.Equal(keys, w.st.Keys()) {
 		w.violate(ctx, "the store has the keys %v, and the history %v", w.st.Keys(), keys)
 	}
@@ -575,6 +653,8 @@ type workloadRun struct {
 	attempts   []*attempt
 	reads      []*read
 	history    []simstore.Write
+	// crashed is the time at which an instance crashed.
+	crashed time.Duration
 }
 
 // hash of the trace and the next random number.
@@ -606,7 +686,7 @@ func runWorkload(t *testing.T, seed uint64, f simstore.Faults) workloadRun {
 			w.run(ctx)
 		})
 		r.lines, r.draw = s.Lines(), s.Uint64()
-		r.violations, r.attempts, r.reads, r.history = w.violations, w.attempts, w.reads, w.st.History()
+		r.violations, r.attempts, r.reads, r.history, r.crashed = w.violations, w.attempts, w.reads, w.st.History(), w.crashed
 	})
 	return r
 }
@@ -627,7 +707,21 @@ func TestStore_workload(t *testing.T) {
 		n := seeds(t, 200)
 		var differing int
 		hashes := map[string]bool{}
-		var acked, definite, unknown, cut, writes, reads, brokenReads, late, afterCrash, gaveUp int
+		var acked, definite, unknown, cut, writes, reads, brokenReads, late, afterCrash int
+		// faults that happened, by what the trace says when each does, for every fault of AllFaults.
+		faults := map[string]int{
+			"was lost on its way to the store":        0,
+			"was lost on its way back":                0,
+			"no answer reaches the caller":            0,
+			"a conflict with another write in flight": 0,
+			"is slow on its way":                      0,
+			"whose content breaks off":                0,
+			"cut off for":                             0,
+			"store: unreachable for":                  0,
+			"is stuck in the network":                 0,
+			"the caller gave up, and is applied":      0,
+			"the sender crashed, and is applied":      0,
+		}
 		start := time.Now()
 		for seed := range n {
 			first, second := runWorkload(t, seed, simstore.AllFaults()), runWorkload(t, seed, simstore.AllFaults())
@@ -642,7 +736,9 @@ func TestStore_workload(t *testing.T) {
 				t.Errorf("seed %v: %v", seed, strings.Join(first.violations, "; "))
 			}
 			hashes[first.hash()] = true
+			byContent := map[string][]*attempt{}
 			for _, a := range first.attempts {
+				byContent[a.content] = append(byContent[a.content], a)
 				switch {
 				case !a.done:
 					cut++
@@ -654,6 +750,18 @@ func TestStore_workload(t *testing.T) {
 					unknown++
 				}
 			}
+			// A write is late if every attempt of its content had returned before it was applied, and
+			// after a crash if an attempt of its content never returned and it was applied after the
+			// crash.
+			for _, wr := range first.history {
+				as := byContent[string(wr.Content)]
+				if !slices.ContainsFunc(as, func(a *attempt) bool { return !a.done || a.end >= wr.Time }) {
+					late++
+				}
+				if wr.Time > first.crashed && slices.ContainsFunc(as, func(a *attempt) bool { return !a.done }) {
+					afterCrash++
+				}
+			}
 			for _, r := range first.reads {
 				reads++
 				if r.readErr != nil {
@@ -661,20 +769,25 @@ func TestStore_workload(t *testing.T) {
 				}
 			}
 			writes += len(first.history)
-			late += first.count("the caller gave up, and is applied")
-			afterCrash += first.count("the sender crashed, and is applied")
-			gaveUp += first.count("the caller gives up")
+			for marker := range faults {
+				faults[marker] += first.count(marker)
+			}
 		}
 		t.Logf("%v seeds, each run twice: %v pairs differed; %v distinct traces", n, differing, len(hashes))
-		t.Logf("in the first run of each seed: %v writes attempted: %v acknowledged, %v failed for sure, %v of unknown outcome, %v cut off by the crash; %v writes applied",
-			acked+definite+unknown+cut, acked, definite, unknown, cut, writes)
-		t.Logf("%v reads, of which %v broke off; %v calls given up, %v writes applied after their caller gave up, %v after their sender crashed",
-			reads, brokenReads, gaveUp, late, afterCrash)
+		t.Logf("in the first run of each seed: %v writes attempted: %v acknowledged, %v failed for sure, %v of unknown outcome, %v cut off by the crash; %v writes applied, of which %v after every attempt of them had returned, and %v after the crash that cut their attempt off",
+			acked+definite+unknown+cut, acked, definite, unknown, cut, writes, late, afterCrash)
+		t.Logf("%v reads, of which %v broke off", reads, brokenReads)
+		for _, marker := range slices.Sorted(maps.Keys(faults)) {
+			t.Logf("%v times %q", faults[marker], marker)
+		}
 		t.Logf("%v runs in %v", 2*n, time.Since(start).Round(time.Millisecond))
 		is.Equal(t, 0, differing)
 		if n >= 100 {
 			is.True(t, len(hashes) == int(n), "two seeds gave the same trace")
 			is.True(t, acked > 0 && definite > 0 && unknown > 0 && cut > 0 && brokenReads > 0 && late > 0 && afterCrash > 0, "the workload did not reach every kind of outcome")
+			for marker, count := range faults {
+				is.True(t, count > 0, fmt.Sprintf("no run traced %q", marker))
+			}
 		}
 	})
 }

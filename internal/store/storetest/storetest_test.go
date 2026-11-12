@@ -42,32 +42,50 @@ type wrongStore struct {
 	finds string
 }
 
-var wrongStores = []wrongStore{
-	{
-		name:  "a swap that ignores the version it is from",
-		wrap:  func(c store.Store) store.Store { return &ignoreVersion{Store: c} },
-		finds: "should fail a swap from an older version with ErrChanged, and keep the object",
-	},
-	{
-		name:  "a create that overwrites an object that is there",
-		wrap:  func(c store.Store) store.Store { return &overwrite{Store: c} },
-		finds: "should fail a create where an object is with ErrExists, and keep the object",
-	},
-	{
-		name:  "a read that serves what it read first",
-		wrap:  func(c store.Store) store.Store { return &stale{Store: c, seen: map[string]seen{}} },
-		finds: "should reflect in a read of any client every write that returned before it",
-	},
-	{
-		name:  "a write that drops its checksum",
-		wrap:  func(c store.Store) store.Store { return &dropChecksum{Store: c} },
-		finds: "should refuse a create and a swap whose content does not match its checksum with ErrChecksum",
-	},
-	{
-		name:  "a swap that creates where no object is",
-		wrap:  func(c store.Store) store.Store { return &swapCreates{Store: c} },
-		finds: "should fail a swap where no object is with ErrNotFound, and create nothing",
-	},
+func TestCases(t *testing.T) {
+	t.Run("should pass every case against a correct store", func(t *testing.T) {
+		found := failures(t, 5, func(c store.Store) store.Store { return c })
+		is.Equal(t, 0, len(found), fmt.Sprint(found))
+	})
+
+	for _, wrong := range []wrongStore{
+		{
+			name:  "a swap that ignores the version it is from",
+			wrap:  func(c store.Store) store.Store { return &ignoreVersion{Store: c} },
+			finds: "should fail a swap from an older version with ErrChanged, and keep the object",
+		},
+		{
+			name:  "a create that overwrites an object that is there",
+			wrap:  func(c store.Store) store.Store { return &overwrite{Store: c} },
+			finds: "should fail a create where an object is with ErrExists, and keep the object",
+		},
+		{
+			name:  "a read that serves what it read first",
+			wrap:  func(c store.Store) store.Store { return &stale{Store: c, seen: map[string]seen{}} },
+			finds: "should reflect in a read of any client every write that returned before it",
+		},
+		{
+			name:  "a write that drops its checksum",
+			wrap:  func(c store.Store) store.Store { return &dropChecksum{Store: c} },
+			finds: "should refuse a create and a swap whose content does not match its checksum with ErrChecksum",
+		},
+		{
+			name:  "a swap that creates where no object is",
+			wrap:  func(c store.Store) store.Store { return &swapCreates{Store: c} },
+			finds: "should fail a swap where no object is with ErrNotFound, and create nothing",
+		},
+	} {
+		t.Run("should fail for "+wrong.name, func(t *testing.T) {
+			found := failures(t, 5, wrong.wrap)
+			var names []string
+			for name, failures := range found {
+				names = append(names, name)
+				t.Logf("%v: %v", name, failures[0])
+			}
+			slices.Sort(names)
+			is.True(t, slices.Contains(names, wrong.finds), fmt.Sprint("the cases that failed: ", names))
+		})
+	}
 }
 
 // ignoreVersion swaps from whatever version is there.
@@ -201,24 +219,4 @@ func failures(t *testing.T, seeds int, wrap func(store.Store) store.Store) map[s
 		}
 	}
 	return found
-}
-
-func TestCases(t *testing.T) {
-	t.Run("should pass every case against a correct store", func(t *testing.T) {
-		found := failures(t, 5, func(c store.Store) store.Store { return c })
-		is.Equal(t, 0, len(found), fmt.Sprint(found))
-	})
-
-	for _, wrong := range wrongStores {
-		t.Run("should fail for "+wrong.name, func(t *testing.T) {
-			found := failures(t, 5, wrong.wrap)
-			var names []string
-			for name, failures := range found {
-				names = append(names, name)
-				t.Logf("%v: %v", name, failures[0])
-			}
-			slices.Sort(names)
-			is.True(t, slices.Contains(names, wrong.finds), fmt.Sprint("the cases that failed: ", names))
-		})
-	}
 }
