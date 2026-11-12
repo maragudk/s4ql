@@ -80,18 +80,18 @@ message CreateTable {
 // One column of a table.
 message Column {
   // The name of the column.
-  string name = 1;
+  string column_name = 1;
   // The declared type of the column.
-  Type type = 2;
+  TypeName type_name = 2;
 }
 
 // The declared type of a column. More are added as the roadmap grows.
 // A reader refuses a value it does not know.
-enum Type {
+enum TypeName {
   // Never written. A reader refuses it.
-  TYPE_UNSPECIFIED = 0;
+  TYPE_NAME_UNSPECIFIED = 0;
   // The STRICT type INT.
-  TYPE_INT = 1;
+  TYPE_NAME_INT = 1;
 }
 
 // Drops a table and all its rows.
