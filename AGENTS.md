@@ -61,3 +61,10 @@ When Markus exports a conversation, move the export into `docs/conversations/` a
 
 - **Why:** Markus said on 2026-11-11: "every time I export a conversation, just move it (potentially overwriting another one if it's an update to a conversation) and commit."
 - **How to apply:** name the file by the date the conversation started and a short topic, like `2026-11-10-kickoff.txt`. If the export is a newer version of a conversation that is already there, overwrite that file. Run the cheap check for the S3 access key and secret first.
+
+### JSON is handled with `encoding/json/v2`
+
+Use `encoding/json/v2` and `encoding/json/jsontext` from the standard library for all JSON. Do not import `encoding/json`.
+
+- **Why:** Markus said on 2026-11-12: "Make sure to use the new json/v2 from Go stdlib". It rejects duplicate names and invalid UTF-8 and matches names exactly by default, which the storage formats need.
+- **How to apply:** this holds for code and tests. Read `go doc encoding/json/v2` for its behaviour instead of assuming that of version 1.
