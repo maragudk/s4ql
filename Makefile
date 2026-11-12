@@ -1,5 +1,6 @@
 BUF := go run github.com/bufbuild/buf/cmd/buf@v1.75.0
 CROSSCHECK := internal/sqlite/crosscheck
+SIMLINT := internal/simlint
 FUZZTIME ?= 30s
 
 .PHONY: benchmark
@@ -30,10 +31,16 @@ fuzz:
 generate:
 	$(BUF) generate
 
+# lint also runs lint-proto, and the lint for code that runs under the simulation, from
+# internal/simlint. That lint is a module of its own, so that its dependencies stay out of the
+# library's, and is built there and run here.
 .PHONY: lint
 lint:
 	golangci-lint run
 	cd $(CROSSCHECK) && golangci-lint run
+	cd $(SIMLINT) && golangci-lint run
+	dir=$$(mktemp -d) && (cd $(SIMLINT) && go build -o $$dir/simlint ./cmd/simlint) && $$dir/simlint ./...; \
+		status=$$?; rm -rf $$dir; exit $$status
 	$(MAKE) lint-proto
 
 # lint-proto checks the schema in proto/ with Buf's lint rules and its formatter.
@@ -56,6 +63,7 @@ sqlite-verify:
 test:
 	go test -coverprofile cover.out -shuffle on ./...
 	cd $(CROSSCHECK) && go test -shuffle on ./...
+	cd $(SIMLINT) && go test -shuffle on ./...
 
 # test-asan runs all tests, and then each fuzz test for FUZZTIME, under the C address sanitizer. Go
 # supports -asan on Linux only, so elsewhere it runs in a Linux container with Docker, with Docker

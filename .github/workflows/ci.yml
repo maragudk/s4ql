@@ -22,6 +22,47 @@ jobs:
   test:
     uses: maragudk/workflows/.github/workflows/test.yml@main
 
+  # Library code must follow the rules of the simulation, which golangci-lint does not know. The lint
+  # is a separate module, which the reusable workflows above do not see. The free-running mode of the
+  # simulation exists for the race detector, so this job runs it under the race detector, whatever
+  # the reusable test workflow does.
+  simulation:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: internal/simlint/go.mod
+          # The lint runs over the library, and the free-running mode is the library's test.
+          cache-dependency-path: |
+            go.sum
+            internal/simlint/go.sum
+          check-latest: true
+
+      - name: Check that the lint's go.mod and go.sum are tidy
+        working-directory: internal/simlint
+        run: go mod tidy && git diff --exit-code go.mod go.sum
+
+      - name: Test the lint
+        working-directory: internal/simlint
+        run: go test -shuffle on ./...
+
+      - name: Lint for the simulation
+        run: (cd internal/simlint && go build -o "$RUNNER_TEMP/simlint" ./cmd/simlint) && "$RUNNER_TEMP/simlint" ./...
+
+      - name: Lint the lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          working-directory: internal/simlint
+
+      - name: Run the free-running mode under the race detector
+        run: go test -race -shuffle on -run 'TestFreeRunning|TestFree$' ./internal/sim/
+
   # The schema of the commit object: Buf's lint, and a check that the committed generated code is what
   # the schema generates.
   proto:
