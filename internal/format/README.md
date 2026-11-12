@@ -42,6 +42,7 @@ The reader and the writer handle the top level of the stream themselves with `pr
 - **An empty log has a name: 32 zero bytes,** `EmptyLog`. The `head` of a new database is that name, and so is the `parent` of the first commit object. Markus proposed this on 2026-11-11. Both fields are then required, so a forgotten `parent` is an error, and not a commit object that looks like the first one and silently cuts off the log before it. The first commit is also no special case: every commit sets `parent` to the `head` it read.
 - **The manifest keeps the fields it does not know** when an instance rewrites it, as the doc comment of `Manifest` says. The lease is renewed often, so without this rule an older version would delete the fields of a newer one at every renewal.
 - **There is no count of commits.** Markus: "Drop the "commits", let's keep the essentials."
+- **The JSON is handled with `encoding/json/v2`.** Markus, on 2026-11-12: "Make sure to use the new json/v2 from Go stdlib". By default it matches keys exactly and refuses a key given twice, invalid UTF-8, and lone surrogates, and an embedded fallback keeps the fields that the manifest does not know, so none of that is code of our own. The rule in `.golangci.yml` makes `make lint` refuse an import of `encoding/json` anywhere in the repository, apart from generated code.
 
 ## The commit object
 

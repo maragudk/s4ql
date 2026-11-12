@@ -3,7 +3,8 @@ package format_test
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"flag"
 	"os"
@@ -107,6 +108,33 @@ func TestParseManifest(t *testing.T) {
 `, string(b))
 	})
 
+	t.Run("should keep the strings and numbers of the fields it does not know as they are written", func(t *testing.T) {
+		m, err := format.ParseManifest(manifestWithLease(`{"holder":"h","expires":"2026-11-11T12:00:30Z","x":["\u0041\/<&>",1.50,1E+2,-0]}`))
+		is.NotError(t, err)
+
+		b, err := m.Marshal()
+		is.NotError(t, err)
+		is.True(t, bytes.Contains(b, []byte(`"\u0041\/<&>",
+      1.50,
+      1E+2,
+      -0`)), string(b))
+	})
+
+	t.Run("should not change when the bytes it was read from change", func(t *testing.T) {
+		input := manifestWithLease(`{"holder":"h","expires":"2026-11-11T12:00:30Z","x":"abc"}`)
+		m, err := format.ParseManifest(input)
+		is.NotError(t, err)
+		want, err := m.Marshal()
+		is.NotError(t, err)
+
+		for i := range input {
+			input[i] = ' '
+		}
+		b, err := m.Marshal()
+		is.NotError(t, err)
+		is.Equal(t, string(want), string(b))
+	})
+
 	t.Run("should keep the fields it does not know after the head and the lease are changed", func(t *testing.T) {
 		m, err := format.ParseManifest(manifestWithLease(`{"holder":"h","expires":"2026-11-11T12:00:30Z","epoch":7}`))
 		is.NotError(t, err)
@@ -186,7 +214,8 @@ func TestParseManifest(t *testing.T) {
 		{name: "should refuse an expiry after year 9999 in UTC", input: string(manifestWithLease(`{"holder":"h","expires":"9999-12-31T23:59:59-01:00"}`))},
 		{name: "should refuse a lease given twice", input: `{"version":0,"branches":{"main":{"head":"` + zeros + `"}},"lease":{"holder":"h","expires":"2026-11-11T12:00:30Z"},"lease":{"holder":"h","expires":"2026-11-11T12:00:30Z"}}`},
 		{name: "should refuse an unknown key given twice", input: `{"version":0,"branches":{"main":{"head":"` + zeros + `"}},"x":1,"x":2}`},
-		{name: "should refuse a key given twice in another spelling", input: `{"version":0,"branches":{"main":{"head":"` + zeros + `"}},"x":1,"x":2}`},
+		{name: "should refuse a key given twice in an object it does not know", input: `{"version":0,"branches":{"main":{"head":"` + zeros + `"}},"x":{"a":1,"a":2}}`},
+		{name: "should refuse a key given twice in another spelling", input: `{"version":0,"branches":{"main":{"head":"` + zeros + `"}},"x":1,"\u0078":2}`},
 		{name: "should refuse bytes that are not valid UTF-8", input: `{"version":0,"branches":{"main":{"head":"` + zeros + `"}},"x":"` + "\xff" + `"}`},
 		{name: "should refuse an escaped lone surrogate", input: `{"version":0,"branches":{"main":{"head":"` + zeros + `"}},"x":"\ud800"}`},
 		{name: "should refuse an escaped lone low surrogate", input: `{"version":0,"branches":{"main":{"head":"` + zeros + `"}},"x":"\udc00"}`},
@@ -201,7 +230,7 @@ func TestParseManifest(t *testing.T) {
 	}
 
 	t.Run("should read an escaped surrogate pair", func(t *testing.T) {
-		m, err := format.ParseManifest(manifestWithLease(`{"holder":"😀","expires":"2026-11-11T12:00:30Z"}`))
+		m, err := format.ParseManifest(manifestWithLease(`{"holder":"\ud83d\ude00","expires":"2026-11-11T12:00:30Z"}`))
 		is.NotError(t, err)
 		is.Equal(t, "\U0001F600", m.Lease.Holder)
 	})
@@ -250,6 +279,13 @@ func TestManifest_Marshal(t *testing.T) {
 		b, err := m.Marshal()
 		is.NotError(t, err)
 		is.True(t, bytes.Contains(b, []byte(`"holder": "<&>`+"æ"+`"`)), string(b))
+	})
+
+	t.Run("should escape U+2028 and U+2029", func(t *testing.T) {
+		m := format.Manifest{Lease: &format.Lease{Holder: "a\u2028b\u2029c", Expires: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}}
+		b, err := m.Marshal()
+		is.NotError(t, err)
+		is.True(t, bytes.Contains(b, []byte(`"holder": "a\u2028b\u2029c"`)), string(b))
 	})
 
 	refused := []struct {
@@ -380,12 +416,22 @@ func manifestWithLease(lease string) []byte {
 	return []byte(`{"version":0,"branches":{"main":{"head":"` + strings.Repeat("0", 64) + `"}},"lease":` + lease + `}`)
 }
 
+// jsonNumber is the text of a JSON number, so that numbers are compared exactly, and not as float64.
+type jsonNumber string
+
+// decodeJSON into maps, slices, and values, with each number as a [jsonNumber].
 func decodeJSON(t *testing.T, b []byte) map[string]any {
 	t.Helper()
-	d := json.NewDecoder(bytes.NewReader(b))
-	d.UseNumber()
+	numbers := json.UnmarshalFromFunc(func(d *jsontext.Decoder, v *any) error {
+		if d.PeekKind() != jsontext.KindNumber {
+			return errors.ErrUnsupported
+		}
+		number, err := d.ReadValue()
+		*v = jsonNumber(number)
+		return err
+	})
 	var v map[string]any
-	if err := d.Decode(&v); err != nil {
+	if err := json.Unmarshal(b, &v, json.WithUnmarshalers(numbers)); err != nil {
 		t.Fatal(err)
 	}
 	return v

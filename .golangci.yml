@@ -1,0 +1,14 @@
+version: "2"
+
+linters:
+  enable:
+    - depguard
+  settings:
+    depguard:
+      rules:
+        json:
+          deny:
+            # The $ makes it an exact match, so that encoding/json/v2 and encoding/json/jsontext are
+            # still allowed.
+            - pkg: encoding/json$
+              desc: use encoding/json/v2 and encoding/json/jsontext
