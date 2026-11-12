@@ -11,7 +11,7 @@
 // what it writes itself for the cache.
 //
 // The rules that the package follows are in docs/spec.md under "Concurrency" and "Constraints".
-// What it does in each case is in the doc comments of [DB], [Tx.Commit], and [ReadTx].
+// What it does in each case is in the doc comments of [DB], [Tx.Commit], and [DB.Read].
 //
 // The package waits, reads the time, and draws random numbers only through the [host.Host] that
 // [Open] is given.
@@ -367,7 +367,6 @@ func (d *DB) stop(ctx context.Context, cause error) error {
 	first := d.stopped == nil
 	if first {
 		d.stopped = fmt.Errorf("%w: %w", ErrStopped, cause)
-		d.serving = false
 		close(d.done)
 		if d.cancelWork != nil {
 			d.cancelWork()
@@ -436,7 +435,8 @@ func (d *DB) stoppedError() error {
 	return d.stopped
 }
 
-// refusal is why the instance serves nothing now, in a word, or empty if it serves. It requires mu.
+// refusalLocked is why the instance serves nothing now, in a word, or empty if it serves. It
+// requires mu.
 func (d *DB) refusalLocked() string {
 	switch {
 	case !d.holder:

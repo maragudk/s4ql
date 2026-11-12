@@ -1,6 +1,7 @@
 package core_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -508,5 +509,101 @@ func TestDB_stop(t *testing.T) {
 		is.Error(t, core.ErrLocal, err)
 		is.Error(t, core.ErrStopped, tx.Commit(t.Context()))
 		is.True(t, isDone(d))
+	})
+}
+
+func TestMargin(t *testing.T) {
+	t.Run("should be a tenth of the holder's duration, and two seconds at the least", func(t *testing.T) {
+		for duration, margin := range map[time.Duration]time.Duration{
+			time.Second:      2 * time.Second,
+			10 * time.Second: 2 * time.Second,
+			20 * time.Second: 2 * time.Second,
+			30 * time.Second: 3 * time.Second,
+			45 * time.Second: 4500 * time.Millisecond,
+			10 * time.Minute: time.Minute,
+		} {
+			is.Equal(t, margin, core.Margin(duration), fmt.Sprint(duration))
+		}
+	})
+}
+
+func TestDB_stop_cache(t *testing.T) {
+	t.Run("should stop for good when SQLite reports that the cache is corrupt, and fail the read that met it", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{Readers: 2})
+		transact(t, d, create("t1", 1, "k", "v"))
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		for i := range 20_000 {
+			is.NotError(t, tx.Upsert(t.Context(), "t1", row(i, i)))
+		}
+		is.NotError(t, tx.Commit(t.Context()))
+
+		// Another connection moves everything from the write-ahead log into the file of the cache,
+		// and the file is then damaged from its second page on.
+		path := filepath.Join(w.dir, "a.db")
+		c, err := sqlite.Open(path)
+		is.NotError(t, err)
+		is.NotError(t, c.Exec("pragma wal_checkpoint(truncate)"))
+		is.NotError(t, c.Close())
+		f, err := os.OpenFile(path, os.O_RDWR, 0)
+		is.NotError(t, err)
+		info, err := f.Stat()
+		is.NotError(t, err)
+		_, err = f.WriteAt(bytes.Repeat([]byte{0xa5}, int(info.Size())-8192), 8192)
+		is.NotError(t, err)
+		is.NotError(t, f.Close())
+
+		// A read connection that has read none of the table's pages meets the damage.
+		r, err := d.Read(t.Context())
+		is.NotError(t, err)
+		var failed error
+		for _, err := range r.Scan(t.Context(), "t1") {
+			if err != nil {
+				failed = err
+			}
+		}
+		is.Error(t, core.ErrStopped, failed)
+		is.Error(t, core.ErrLocal, failed)
+		_ = r.Close(t.Context())
+
+		is.True(t, isDone(d))
+		is.Error(t, core.ErrLocal, d.Err())
+		is.Error(t, core.ErrLocal, beginErr(t, d))
+		is.Error(t, core.ErrLocal, readErr(t, d))
+		is.NotError(t, d.Close(t.Context()))
+		is.True(t, w.manifest(t).Lease == nil, "the lease is not released")
+	})
+}
+
+func TestDB_Close_hanging(t *testing.T) {
+	t.Run("should return when the store gives no answer at all, after trying for as long as the lease lasts", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s := newScriptStore(w.client())
+			d := w.openOn(t, "a", s, core.Options{})
+			is.NotError(t, d.Wait(t.Context()))
+			s.on("swap", "", hang, -1)
+			s.on("get", "", hang, -1)
+
+			// Without a timeout on each request, this would wait for ever, and the bubble would report
+			// a deadlock.
+			start := time.Now()
+			is.True(t, d.Close(t.Context()) != nil, "the close reports no error")
+			is.True(t, time.Since(start) < time.Minute, fmt.Sprint(time.Since(start)))
+		})
+	})
+
+	t.Run("should not close the cache under a write transaction that is open", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			d := w.serve(t, "a", core.Options{})
+			tx, err := d.Begin(t.Context())
+			is.NotError(t, err)
+
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			is.Error(t, context.DeadlineExceeded, d.Close(ctx))
+			is.NotError(t, tx.Rollback(t.Context()))
+			is.NotError(t, d.Close(t.Context()))
+		})
 	})
 }

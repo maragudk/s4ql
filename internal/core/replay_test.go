@@ -512,6 +512,24 @@ func TestReplay(t *testing.T) {
 		}
 	})
 
+	t.Run("should not follow a parent that damaged bytes seem to name, when it walks back through the log", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			l := newHandLog(t, w)
+			l.base()
+			l.publish()
+			data, _, _ := w.store.Object("db/commits/" + l.head.String())
+			parent, _, err := changes(l.head, data)
+			is.NotError(t, err)
+
+			// The first download is the one of the head, and the name of its parent is damaged in it.
+			s := newScriptStore(w.client())
+			s.damage("commits/", string(parent[:8]), 1)
+			d := w.openOn(t, "a", s, core.Options{})
+			is.NotError(t, d.Wait(t.Context()))
+			is.Equal(t, baseState, read(t, d))
+		})
+	})
+
 	t.Run("should keep nothing of a commit object that breaks off, and apply it when it comes whole", func(t *testing.T) {
 		bubble(t, func(t *testing.T, w *world) {
 			l := newHandLog(t, w)

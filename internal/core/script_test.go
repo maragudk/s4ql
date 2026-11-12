@@ -41,7 +41,8 @@ const (
 	// stick: the request is not applied now, the caller gets an error without an answer, and the
 	// test applies the request later with [scriptStore.deliver].
 	stick
-	// hold the answer: the request is applied now, and the caller gets the answer after a delay.
+	// hold the answer: the request is applied now, or the object is read now, and the caller gets
+	// the answer after a delay.
 	hold
 	// corrupt the content of a get: one of its bytes is changed.
 	corrupt
@@ -233,6 +234,13 @@ func (s *scriptStore) Get(ctx context.Context, key string) (io.ReadCloser, store
 		return nil, "", fmt.Errorf("scripted: %w", store.ErrNotFound)
 	}
 	body, version, err := s.Store.Get(ctx, key)
+	if r.what == hold {
+		select {
+		case <-time.After(r.delay):
+		case <-ctx.Done():
+			return nil, "", fmt.Errorf("%w: %w", errScripted, ctx.Err())
+		}
+	}
 	if err != nil || (r.what != corrupt && r.what != breakOff) {
 		return body, version, err
 	}

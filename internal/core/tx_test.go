@@ -940,3 +940,100 @@ func TestTx_Commit_large(t *testing.T) {
 		is.NotError(t, r.Close(t.Context()))
 	})
 }
+
+func TestTx_Commit_settling(t *testing.T) {
+	const without, with = "t1(k*0): ", "t1(k*0): \nt2(k*0): "
+
+	t.Run("should count a commit as not committed when the renewal that rules it out is applied without an answer", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s, d, tx := committing(t, w, core.Options{})
+			s.on("swap", "manifest", stick, 1)
+			s.on("swap", "", drop, -1)
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			is.Error(t, core.ErrOutcomeUnknown, tx.Commit(ctx))
+			head := w.manifest(t).Head
+
+			// The renewal without the commit is applied, and its answer is lost: two swaps are in
+			// flight now, and the manifest is the one of the second.
+			s.clear()
+			s.on("swap", "manifest", lose, 1)
+			is.NotError(t, d.Wait(t.Context()))
+			is.Equal(t, without, read(t, d))
+			is.Equal(t, head, w.manifest(t).Head)
+			is.True(t, s.deliver()[0] != nil, "the stuck swap was applied")
+			transact(t, d, create("t3", 1, "k"))
+			is.Equal(t, "t1(k*0): \nt3(k*0): ", read(t, d))
+			is.Equal(t, 2, len(w.commits(t)))
+		})
+	})
+
+	t.Run("should settle a commit of unknown outcome as soon as the caller has its answer, and not at the next renewal", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s, d, tx := committing(t, w, core.Options{})
+			// The swap is applied, its answer is lost, and the attempt after it is lost too.
+			s.on("swap", "manifest", lose, 1)
+			s.on("swap", "", drop, 1)
+			ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+			defer cancel()
+			is.Error(t, core.ErrOutcomeUnknown, tx.Commit(ctx))
+
+			start := time.Now()
+			is.NotError(t, d.Wait(t.Context()))
+			is.True(t, time.Since(start) < time.Second, fmt.Sprint(time.Since(start)))
+			is.Equal(t, with, read(t, d))
+		})
+	})
+
+	t.Run("should refuse a commit of nothing when the lease has run out by the clocks", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s := newScriptStore(w.client())
+			d := w.openOn(t, "a", s, core.Options{})
+			is.NotError(t, d.Wait(t.Context()))
+			transact(t, d, create("t1", 1, "k"), upsert("t1", 1))
+
+			tx, err := d.Begin(t.Context())
+			is.NotError(t, err)
+			upsert("t1", 2)(t, tx)
+			remove("t1", true, 2)(t, tx)
+			got, err := tx.Get(t.Context(), "t1", row(1))
+			is.NotError(t, err)
+			is.Equal(t, "1", text(got))
+			s.on("swap", "", drop, -1)
+			s.on("get", "", drop, -1)
+			time.Sleep(31 * time.Second)
+
+			// The transaction read the cache, and nothing says any more that the cache is current.
+			err = tx.Commit(t.Context())
+			is.Error(t, core.ErrNoLease, err)
+			is.Equal(t, 1, len(w.commits(t)))
+		})
+	})
+
+	t.Run("should not commit a transaction after a call of it failed in the cache", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k"), upsert("t1", 1), upsert("t1", 2))
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		upsert("t1", 3)(t, tx)
+		// SQLite refuses to drop a table that a statement of the same connection is reading.
+		var dropErr error
+		for _, err := range tx.Scan(t.Context(), "t1") {
+			is.NotError(t, err)
+			dropErr = tx.DropTable(t.Context(), "t1")
+			break
+		}
+		is.True(t, dropErr != nil, "the table was dropped under its scan")
+		is.True(t, !errors.Is(dropErr, core.ErrStopped))
+
+		is.True(t, tx.Upsert(t.Context(), "t1", row(4)) != nil, "the transaction goes on after a call of it failed")
+		is.True(t, tx.Commit(t.Context()) != nil, "the transaction was committed after a call of it failed")
+		is.Equal(t, "t1(k*0): 1 | 2", read(t, d))
+		is.Equal(t, 1, len(w.commits(t)))
+		// The instance goes on.
+		transact(t, d, upsert("t1", 5))
+		is.Equal(t, "t1(k*0): 1 | 2 | 5", read(t, d))
+	})
+}

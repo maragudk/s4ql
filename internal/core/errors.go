@@ -45,7 +45,8 @@ var (
 	ErrLogBroken = errors.New("the log is broken")
 
 	// ErrCacheVersion is wrapped by the error of [Open] for a cache that a newer version of s4ql
-	// made, or that s4ql did not make.
+	// made, or that s4ql did not make. An instance that finds such a cache while it runs stops, and
+	// the cause of the stop wraps it under [ErrLocal].
 	ErrCacheVersion = errors.New("the cache is not one that this version of s4ql reads")
 
 	// ErrBusy is wrapped by the error of a call for which SQLite reported that the cache is locked,

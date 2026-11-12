@@ -100,7 +100,8 @@ func refusal(err error) bool {
 }
 
 // send one attempt of the swap f, from the version that the instance knows. It requires the
-// manifest lock, which outside is nil for, except under the planted bug renewOutsideLock.
+// manifest lock. The locks outside are nil, except under the planted bug renewOutsideLock, which
+// gives the manifest lock back around the swap.
 func (d *DB) send(ctx context.Context, f *flight, outside *locks) (sendResult, error) {
 	f.attempts++
 	from := d.version
@@ -567,8 +568,8 @@ func (d *DB) keepLease(ctx context.Context) error {
 // renewLocked sends a renewal: a swap of the manifest for the same manifest with a new lease
 // entry. If an earlier renewal had an outcome that is unknown, it sends that same swap again. It
 // returns how long to wait before the next try, which is zero after a renewal that is known to
-// have happened and after the loss of the lease. It requires the manifest lock, which outside is
-// nil for: see [DB.send].
+// have happened and after the loss of the lease. It requires the manifest lock, and passes the
+// locks outside on to [DB.send].
 //
 // A renewal that ends without an answer leaves the lease as the last renewal that is known to
 // have happened gave it, so reads go on for as long as the clocks say that it holds. After a

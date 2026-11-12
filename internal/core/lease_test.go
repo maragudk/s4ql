@@ -286,3 +286,106 @@ func TestLease(t *testing.T) {
 		})
 	})
 }
+
+func TestLease_window(t *testing.T) {
+	t.Run("should count the lease that it took from when it sent the swap, and not from its answer", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s := newScriptStore(w.client())
+			// The write that takes the lease is applied at once, and its answer comes 15 seconds later,
+			// as that of every write after it.
+			s.on("create", "manifest", hold, -1, 15*time.Second)
+			s.on("swap", "manifest", hold, -1, 15*time.Second)
+			d := w.openOn(t, "a", s, core.Options{StoreTimeout: time.Minute})
+			is.NotError(t, d.Wait(t.Context()))
+			is.Equal(t, 15*time.Second, time.Since(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)))
+
+			// The lease lasts until 30 seconds, and the renewal that is sent at 20 is not answered
+			// before 35.
+			time.Sleep(time.Second)
+			is.NotError(t, readErr(t, d))
+			time.Sleep(16 * time.Second)
+			is.Error(t, core.ErrNoLease, readErr(t, d))
+		})
+	})
+
+	t.Run("should count the lease from the first attempt of a renewal, when a later attempt finds it applied", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s := newScriptStore(w.client())
+			d := w.openOn(t, "a", s, core.Options{})
+			is.NotError(t, d.Wait(t.Context()))
+			// The renewal at 20 seconds is applied, and its answer is lost. The store is then out of
+			// reach until 30 seconds, so that a later attempt is what finds the renewal applied.
+			s.on("swap", "manifest", lose, 1)
+			s.on("swap", "", drop, -1)
+			s.on("get", "", drop, -1)
+			time.Sleep(30 * time.Second)
+			s.clear()
+			// From then on the instance hears nothing from the store again, once it has found out.
+			s.on("swap", "manifest", pass, 1)
+			s.on("get", "manifest", pass, 1)
+			s.on("swap", "", drop, -1)
+			s.on("get", "", drop, -1)
+
+			// The renewal gave a lease from 20 to 50 seconds, whenever the instance found out.
+			time.Sleep(15 * time.Second)
+			is.NotError(t, readErr(t, d))
+			time.Sleep(6 * time.Second)
+			is.Error(t, core.ErrNoLease, readErr(t, d))
+		})
+	})
+
+	t.Run("should refuse while it catches up after taking the lease again, and serve only then", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s := newScriptStore(w.client())
+			a := w.openOn(t, "a", s, core.Options{})
+			is.NotError(t, a.Wait(t.Context()))
+			transact(t, a, create("t1", 1, "k"))
+
+			s.on("swap", "", drop, -1)
+			s.on("get", "", drop, -1)
+			b := w.serve(t, "b", core.Options{})
+			transact(t, b, upsert("t1", 2))
+			s.clear()
+			time.Sleep(6 * time.Second)
+			is.Error(t, core.ErrNoLease, readErr(t, a))
+
+			// The download of what the other instance committed takes 20 seconds each time.
+			s.on("get", "commits/", hold, -1, 20*time.Second)
+			is.NotError(t, b.Close(t.Context()))
+			time.Sleep(10 * time.Second)
+			is.Equal(t, a.ID(), w.manifest(t).Lease.Holder)
+			is.True(t, !serves(t, a), "the instance serves before it has caught up")
+			is.Error(t, core.ErrNoLease, readErr(t, a))
+			is.Error(t, core.ErrNoLease, beginErr(t, a))
+
+			is.NotError(t, a.Wait(t.Context()))
+			is.Equal(t, "t1(k*0): 2", read(t, a))
+		})
+	})
+
+	t.Run("should keep the lease while a catch-up takes longer than the lease lasts", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			first := w.serve(t, "first", core.Options{})
+			transact(t, first, create("t1", 1, "k"))
+			for i := range 5 {
+				transact(t, first, upsert("t1", i), upsert("t1", 10+i), upsert("t1", 20+i))
+			}
+			is.NotError(t, first.Close(t.Context()))
+
+			// Each download takes 9 seconds: six to walk back through the log, and six to apply.
+			s := newScriptStore(w.client())
+			s.on("get", "commits/", hold, -1, 9*time.Second)
+			a := w.openOn(t, "a", s, core.Options{})
+			time.Sleep(time.Second)
+			spare := w.open(t, "spare", core.Options{})
+
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
+			defer cancel()
+			is.NotError(t, a.Wait(ctx))
+			is.True(t, time.Since(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)) > 100*time.Second)
+			is.Equal(t, a.ID(), w.manifest(t).Lease.Holder)
+			is.True(t, !serves(t, spare), "the spare took the lease from an instance that was catching up")
+			is.NotError(t, readErr(t, a))
+		})
+	})
+}

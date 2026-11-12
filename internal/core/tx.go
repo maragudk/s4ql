@@ -658,9 +658,9 @@ func (tx *Tx) dropTemps() error {
 // same swap again, and after a refusal it reads the manifest, and looks for the commit object in
 // the log if another instance has taken the lease. It returns an error that wraps
 // [ErrOutcomeUnknown] only if ctx is done before it knows. The instance then serves nothing until
-// it has found out, and finds out without the caller: see [DB]. Every other error means that the
-// transaction is not committed: it wraps [ErrNoLease] if the instance did not hold the lease any
-// more, and [ErrStopped] if the instance has stopped.
+// it has found out, and finds out without the caller: see [DB.recoverLocked]. Every other error
+// means that the transaction is not committed: it wraps [ErrNoLease] if the instance did not hold
+// the lease any more, and [ErrStopped] if the instance has stopped.
 func (tx *Tx) Commit(ctx context.Context) (err error) {
 	d := tx.d
 	if tx.done {

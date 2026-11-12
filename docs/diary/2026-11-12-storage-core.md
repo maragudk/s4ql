@@ -84,3 +84,130 @@ Nothing yet.
 ### Future work
 
 The steps that follow, in the order the brief suggests: the cache, tables, replay, and the commit path against a calm store; the lease; unknown outcomes and the stop; the workloads, the model, and the planted bugs; and the mutation testing.
+
+## Step 2: The cache, replay, transactions, and the lease
+
+**Author:** core-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "A suggested order, so that a stop at any point leaves something whole and verified: the cache, tables, replay, and the commit path against a calm store; then the lease; then unknown outcomes and the stop; then the workloads, the model, and the planted bugs; then the mutation testing."
+**Interpretation:** Requirements 1 to 22 of Step 1, as code, with tests on a calm store before the simulation.
+**Inferred intent:** Have the whole of the core in place, in plain blocking Go on `host.Host`, so that the simulation has all of it to attack.
+
+### What I did
+
+The package is `/internal/core`. Its files:
+
+- `/internal/core/core.go`: `core.Options`, `core.DB`, `core.Open`, `core.DB.Wait`, `core.DB.Close`, `core.DB.Done`, `core.DB.Err`, the stop, and the two locks.
+- `/internal/core/lease.go`: the one goroutine, `DB.leaseLoop`, with `DB.acquire`, `DB.recoverLocked`, `DB.renewLocked`, `DB.observe`, and the release.
+- `/internal/core/catchup.go` and `/internal/core/replay.go`: the walk back through the log, the download with its second try, and replay.
+- `/internal/core/tx.go` and `/internal/core/read.go`: `core.Tx` with `CreateTable`, `DropTable`, `Upsert`, `Delete`, `Annotate`, `Table`, `Tables`, `Get`, `Scan`, `Commit`, and `Rollback`, and `core.ReadTx`.
+- `/internal/core/cache.go`, `/internal/core/spool.go`, `/internal/core/errors.go`, `/internal/core/telemetry.go`, and `/internal/core/bugs.go`.
+
+What I chose, where the brief left a choice:
+
+- **The SQLite binding got four methods.** `sqlite.Stmt.BindText`, `sqlite.Stmt.BindNull`, `sqlite.Stmt.ColumnText`, and `sqlite.Stmt.Reset`, with tests and a fuzz test, in `/internal/sqlite/sqlite.go`. The position of the cache and the names of tables and columns are text, and replay runs one statement for many rows. The binding bound and read integers only, and ran a statement once.
+- **SQLite's schema is the catalogue.** The core keeps no table of tables. It reads names from `sqlite_schema` and columns from `pragma_table_info`. The one table of its own is `s4ql_cache`, with a version and the position as text.
+- **The storage class of a value is checked before the cache sees it,** in a write and in replay, because a strict table converts `'1'` and `1.0` for an `INT` column.
+- **Which rows a transaction changed is in temporary tables of the cache,** one for each table that existed when the transaction began, with whether each row existed then. The commit object is written from joins of them, through a spool file that is unlinked when it is open. The annotations have a spool file of their own, because they come after all changes.
+- **A transaction without changes writes no commit object,** and commits if the lease holds by the clocks.
+- **`DB.Begin` checks the clocks, and `Tx.Commit` does not:** the swap decides a commit.
+- **Swaps in flight.** Every swap of the holder goes from the one version that it knows. One without an answer is kept, as a `flight`. Any swap from that version that is applied rules the others out, so one function, `DB.observe`, settles commits and renewals alike.
+- **Waiting needs nothing new from the host.** A wait is `host.Host.Sleep` or `host.Semaphore.Acquire` with a context derived from the caller's, and whoever changes the state cancels the contexts that are registered. Polling would not let a waiting writer fail "at once".
+- **The margin is the larger of two seconds and a tenth of the holder's duration.**
+- **Planted bugs are an unexported field of `core.Options`,** set only through `/internal/core/export_test.go`.
+
+### Why
+
+Each choice either follows from a rule (a waiting call fails at once, a transaction is never in memory at once) or removes a second source of truth (the catalogue, the bookkeeping of an unknown outcome).
+
+### What worked
+
+The first test of the whole path, `TestOpen` in `/internal/core/core_test.go`, passed at its first run: open, commit twice, close, open again, and replay into an empty cache. The scenario tests with a scripted store on the fake clock of `testing/synctest` (`/internal/core/script_test.go`, `/internal/core/lease_test.go`, `/internal/core/tx_test.go`) also passed nearly as written, which made me distrust them until the planted bugs and the mutation testing showed that they fail when the code is wrong.
+
+### What didn't work
+
+- `golangci-lint run ./internal/core/` found a real bug before any test did: `internal/core/tx.go:718:3: ineffectual assignment to err (ineffassign)`. In `if err := tx.dropTemps(); err == nil { err = tx.c.setPosition(out.name) }`, the inner `err` was the one of the `if`, so a failure to record the position was dropped.
+- One scenario test failed in one run of six: `lease_test.go:105: the manifest has a lease entry after the holder was closed`. The spare reads the manifest every five seconds, the test slept five minutes, and so the spare's read and the test's check fell on the same instant of the fake clock: the spare had taken the released lease before the check. The test now sleeps five minutes and a second.
+- `go test -race` reported a data race in my own scripted store, not in the core: the test set the delay of a rule after it had added the rule. `scriptStore.on` takes the delay now.
+- A shell command with a here-document and `go test` or `git` in one line was refused several times with `this command is too complex to verify that it stays inside the worktree`. Scripts go into the scratchpad with the write tool and run as plain commands.
+- The editing tool turned the escapes of U+0301, U+00E9, U+200B, and U+FEFF in a list of hostile names into the raw characters, as the brief warned. A raw byte order mark inside a Go file does not compile. The names are `string(rune(0x301))` and so on now, and I checked the bytes with `xxd`.
+
+### What I learned
+
+- `testing/synctest` makes two timers that are due at the same instant race, also across the goroutines of a test with real goroutines. A test on the fake clock must not check at a multiple of a period that the code under test also wakes at.
+- The toy stops an instance on an unknown outcome. Doing it properly needs only the rule that every swap of a holder is sent from one version, which makes "at most one of them is applied" true by construction.
+
+### What was tricky
+
+- The lock order and the stop. `serving` becomes true only under the writer lock, so that an open write transaction cannot miss a catch-up, and the lease task takes the writer lock before the manifest lock, as a commit does.
+- A release of a semaphore waits under the scheduler, and a crash ends a task in a wait and runs its deferred calls. `locks` in `/internal/core/core.go` marks a lock as given back before it releases it, which is the bug that the toy's builder hit.
+
+### What warrants review
+
+- `/internal/core/lease.go`, `DB.observe`, `DB.send`, and `DB.adopt`: the claim that every swap in flight is from the version that the instance knows.
+- `/internal/core/tx.go`, `Tx.publish` and `Tx.inLog`: each return value against the rule "nil if and only if committed".
+- `/internal/core/replay.go`, `authentic`: a refusal only after the bytes are known to match the name.
+
+### Future work
+
+The simulation, in the next step.
+
+## Step 3: The simulation, the model, and the planted bugs
+
+**Author:** core-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "The core is trusted only as far as its simulation is. Read how the toy is tested and do at least as much for the real thing."
+**Interpretation:** Workloads on `simstore` with every fault on, a model in place of counters, every seed twice, planted bugs with controls, aimed workloads, and a free-running mode.
+**Inferred intent:** Every rule must be shown to be exercised and shown to be checked, not only shown not to fail.
+
+### What I did
+
+- `/internal/core/model_test.go` is a second implementation in maps. `mstate.apply` replays a commit object strictly, `mtx` computes the net effect of a transaction, and `model` reads the log through the direct view of the simulated store.
+- `/internal/core/simulation_test.go` is the harness: callers create and drop tables, upsert, delete, get, and scan, on three table names in two spellings each, with characters that must be quoted, and four shapes. Every result of a call is compared with the model. `workload.run` lists the invariants, and `run.verifyHistory` checks the writes of the manifest in the store's history: who wrote each, that the head only moves forward by one commit object, that no version comes back, and that a takeover comes no earlier than the holder's duration and the margin after the write before it.
+- `/internal/core/workloads_test.go` holds the three workloads, the aimed workloads `competing` and `unknownOutcomes`, and 19 planted bugs, each with its workload, a control where the bug needs one fault or ability, and a run without the bug.
+- `/internal/core/free_test.go` runs the workloads on real goroutines, and runs the test binary again with a planted data race, which the race detector must report with the scheduler off and must not report under it.
+- `/internal/store/simstore/simstore.go` got `simstore.Store.Calm`, which ends new faults, with a test. Liveness is stated after the faults end, and the simulated store had no way to end them.
+
+### Why
+
+A model that predicts the lines of each commit object's changes, and the state after each, checks the net effect and replay with an independent implementation. The history of the store is a second witness for the lease that does not depend on any read happening at the right moment.
+
+### What worked
+
+The first run of 100 seeds of each workload had no violation and no pair of traces that differed. That says little by itself, so the planted bugs came next, and they found what was wrong with the planting and with the workloads, below.
+
+### What didn't work
+
+- The first run of the planted bugs, `S4QL_SIM_SEEDS=60 go test -run TestSimulation_plantedBugs ./internal/core/`, failed for five bugs with `found something else`:
+  - `serveUnknown`: `no instance serves 4m0s after the end of the workload`. My planted branch kept `serving` and still set `unresolved`, which nothing cleared, so the bug made the instance refuse for ever. The branch sets neither now.
+  - `renewOutsideLock`: `no instance serves 4m56s after the end of the workload`. I had planted it as a separate crude path that forgot a swap without an answer. It is now the real renewal with the lock released around the swap. Planted that way, an aimed workload was needed (a renewal one second after the last one, so that renewals race commits), and the symptoms are worse than the toy's: `the head of the log went back to commit 7, from commit 10` in 64 of 100 seeds. A renewal that lands after a commit and adopts its own manifest writes the old head back.
+  - `ackUnknown`: `commit: not committed: the log is at ca58..., and the transaction began at a0f9...`. That is a guard in `Tx.publish` that the correct code never reaches, reporting that the cache is ahead of the log, which is the bug. It is a symptom now.
+  - `settleByRead`: `an instance lost the lease 1 times, with no other instance`. The stuck commit landed after the wrong conclusion, and the instance then met a manifest of its own that it did not know. Also a symptom now.
+  - `forgetDelete`: `the commit of transaction 7025987658175066058 was acknowledged, and the log does not have it`. A transaction that only deletes has no changes left with the bug, and so writes no commit object. Also a symptom.
+- `lateVersion` had a control that found the bug in 3 of 50 seeds. With one node and a crash, a write of the crashed holder that arrives late changes the manifest during the wait, which is what the bug needs. The control now has no late writes.
+- `lostMeansFailed` was found by 0 of 200 seeds with callers that give up after 30 seconds: a takeover needs more than 30 seconds, so the caller always gave up first and got "outcome unknown". Its workload has callers that wait 100 seconds, and more lost answers and cut-offs. It is still found by only 4 of 100 seeds.
+- The whole default run took 93 seconds without the race detector. A CPU profile showed 75% of the time in `runtime.pthread_cond_signal` and `runtime.pthread_cond_wait`: the scheduler hands the baton between goroutines on different threads. With `GOMAXPROCS=1`, three workloads in sequence took as long as in parallel with 10. So the cost is per step of the scheduler, and the default run is cut by seeds: 40, 40, and 10 for `TestSimulation`, and 30 for each control and each run without the bug.
+- The lease task asked the store again every second for as long as it was cut off: `lease/renewed/unknown 27891` in 100 runs of one workload. It now backs off to the time between two looks of a watcher. One scenario test then failed, `lease_test.go:276: Expected "no valid lease" ... but got "<nil>"`, because it gave the instance two seconds to notice that it had lost the lease. It gives it six now.
+
+### What I learned
+
+- A planted bug must be the real code with one decision changed. Both of my first two failures were bugs planted as a separate, simpler path, which then failed for reasons of its own.
+- The read model finds a lease bug in few seeds, as the toy's builder wrote: 5 to 9 of 100 for the bugs of the clocks. The store's history finds the bugs of the watcher in nearly every seed, because it needs no read at the right moment.
+
+### What was tricky
+
+- Checking "the instance serves nothing until it knows" from outside. The check is made at the end, when the log is final: no read anywhere that started after a commit returned "outcome unknown" may show a state before that commit, if the log holds it.
+- The lease at the end of a run. A swap that takes a free lease can be stuck in the network and be applied after its instance was closed, because a manifest without a lease entry has the same bytes, and so the same version, whenever the head is the same. The check allows a holder whose last write was applied after it was closed.
+
+### What warrants review
+
+- `/internal/core/simulation_test.go`, `run.read`, `run.write`, and `run.verify`: whether a check can pass for the wrong reason.
+- `/internal/core/workloads_test.go`, `plantedBugs`: each control, and whether it removes exactly what the bug needs.
+
+### Future work
+
+The deterministic tests for what the simulation does not aim at, the mutation testing, and the large runs, in the next step.

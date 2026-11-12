@@ -232,8 +232,8 @@ func TestSimulation(t *testing.T) {
 // TestSimulationSeed runs the one seed that the environment variable S4QL_SIM_SEED names, with the
 // workload that S4QL_SIM_WORKLOAD names (single, the default, full, or hammer), and logs its whole
 // trace. The environment variable S4QL_SIM_BUG can name a planted bug by its name in
-// [plantedBugs], to run its workload instead, and S4QL_SIM_CONTROL to run the control of that
-// bug.
+// [plantedBugs], to run its workload instead, with S4QL_SIM_CONTROL to run the control of that
+// bug, or S4QL_SIM_CLEAN to run the workload without the bug.
 func TestSimulationSeed(t *testing.T) {
 	v := os.Getenv("S4QL_SIM_SEED")
 	if v == "" {
