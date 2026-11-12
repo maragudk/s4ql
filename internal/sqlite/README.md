@@ -2,13 +2,13 @@
 
 `internal/sqlite` is the project's own small cgo binding to the official SQLite C code. The cache and the oracle use it.
 
-The binding covers only what slice 1 of [docs/roadmap.md](../../docs/roadmap.md) needs:
+The binding covers only what slice 1 of [docs/roadmap.md](../../docs/roadmap.md) and the cache of the storage core in `internal/core` need:
 
 - open and close a database, in a file or `:memory:`
 - prepare one statement
-- bind and read 64-bit integers
+- bind and read 64-bit integers and text, and bind NULL
 - read the column count, the column names, and the type of each value
-- step and finalize
+- step, reset, and finalize
 - run a statement with `Exec`
 - return errors with SQLite's extended result code and message
 

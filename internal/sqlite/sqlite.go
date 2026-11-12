@@ -2,7 +2,7 @@
 // built with the compile options in options.h.
 //
 // It is deliberately small: opening and closing a database, preparing one statement, binding and
-// reading integers, stepping, and finalizing. Each statement runs in its own transaction, as SQLite
+// reading integers, text, and NULL, stepping, resetting, and finalizing. Each statement runs in its own transaction, as SQLite
 // does outside BEGIN and COMMIT.
 //
 // SQLite's C code is compiled into this package with file-local symbols, so this package can share a
@@ -36,6 +36,16 @@ static int s4ql_prepare(sqlite3 *db, const char *sql, int n, sqlite3_stmt **stmt
 	int rc = sqlite3_prepare_v3(db, sql, n, 0, stmt, &end);
 	*tail = end == 0 ? n : (int)(end - sql);
 	return rc;
+}
+
+// s4ql_bind_text binds the n bytes at text to parameter i as text. SQLite copies the bytes before it
+// returns. A NULL pointer with n of zero binds the empty text, where sqlite3_bind_text64 would bind
+// NULL.
+static int s4ql_bind_text(sqlite3_stmt *stmt, int i, const char *text, sqlite3_uint64 n) {
+	if (text == 0) {
+		text = "";
+	}
+	return sqlite3_bind_text64(stmt, i, text, n, SQLITE_TRANSIENT, SQLITE_UTF8);
 }
 
 // s4ql_disable_lookaside on the connection, so that every allocation goes through malloc and free.
@@ -209,6 +219,40 @@ func (s *Stmt) BindInt64(i int, v int64) error {
 	return nil
 }
 
+// BindText to the parameter at index i, which counts from 1. The text is bound as its bytes, whatever
+// they are, also with NUL bytes in it, and the empty text is not NULL. It fails as [Stmt.BindInt64]
+// does.
+func (s *Stmt) BindText(i int, v string) error {
+	if s.stmt == nil {
+		return errorFromConn(nil, C.SQLITE_MISUSE)
+	}
+	if i < 1 || i > math.MaxInt32 {
+		return errorFromConn(nil, C.SQLITE_RANGE)
+	}
+	// SQLite copies the bytes before the call returns, so it keeps no pointer into Go memory.
+	rc := C.s4ql_bind_text(s.stmt, C.int(i), (*C.char)(unsafe.Pointer(unsafe.StringData(v))), C.sqlite3_uint64(len(v)))
+	if rc != C.SQLITE_OK {
+		return s.error(rc)
+	}
+	return nil
+}
+
+// BindNull to the parameter at index i, which counts from 1. A parameter is NULL until it is bound,
+// and keeps its value over [Stmt.Reset], so this is for a statement that is run again. It fails as
+// [Stmt.BindInt64] does.
+func (s *Stmt) BindNull(i int) error {
+	if s.stmt == nil {
+		return errorFromConn(nil, C.SQLITE_MISUSE)
+	}
+	if i < 1 || i > math.MaxInt32 {
+		return errorFromConn(nil, C.SQLITE_RANGE)
+	}
+	if rc := C.sqlite3_bind_null(s.stmt, C.int(i)); rc != C.SQLITE_OK {
+		return s.error(rc)
+	}
+	return nil
+}
+
 // Step the statement. It returns true if a row is ready to read, and false when the statement has
 // finished. Stepping a statement that has finished, or that failed with anything but SQLITE_BUSY or
 // SQLITE_LOCKED, fails with SQLITE_MISUSE, so a statement runs at most once. After SQLITE_BUSY or
@@ -293,6 +337,24 @@ func (s *Stmt) ColumnInt64(i int) int64 {
 	return int64(C.sqlite3_column_int64(s.stmt, C.int(i)))
 }
 
+// ColumnText reads the value at index i of the current row, which counts from 0, as text: the bytes
+// of a text value as they are, also with NUL bytes in them. SQLite converts a value of another type,
+// and NULL reads as the empty text, so check [Stmt.ColumnType] first. It panics without a current row
+// and for an index out of range, as [Stmt.ColumnType] does.
+func (s *Stmt) ColumnText(i int) string {
+	s.mustHaveRow(i)
+	// The length is read after the text, because reading the text can convert the value.
+	text := C.sqlite3_column_text(s.stmt, C.int(i))
+	n := C.sqlite3_column_bytes(s.stmt, C.int(i))
+	if text == nil {
+		if C.sqlite3_errcode(C.sqlite3_db_handle(s.stmt)) == C.SQLITE_NOMEM {
+			panic("sqlite: out of memory")
+		}
+		return ""
+	}
+	return C.GoStringN((*C.char)(unsafe.Pointer(text)), n)
+}
+
 func (s *Stmt) mustNotBeFinalized() {
 	if s.stmt == nil {
 		panic("sqlite: statement is finalized")
@@ -310,6 +372,21 @@ func (s *Stmt) mustHaveRow(i int) {
 	if !s.row {
 		panic("sqlite: no current row")
 	}
+}
+
+// Reset the statement, so that it can be stepped again from its beginning. Its parameters keep the
+// values that were bound. If the most recent step of the statement failed, Reset returns that error
+// again, as SQLite does, and the statement is still reset. It fails with SQLITE_MISUSE on a finalized
+// statement.
+func (s *Stmt) Reset() error {
+	if s.stmt == nil {
+		return errorFromConn(nil, C.SQLITE_MISUSE)
+	}
+	s.row = false
+	if rc := C.sqlite3_reset(s.stmt); rc != C.SQLITE_OK {
+		return s.error(rc)
+	}
+	return nil
 }
 
 // Finalize the statement and free it. If the most recent step of the statement failed, Finalize
