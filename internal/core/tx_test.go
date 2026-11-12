@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -272,6 +273,29 @@ func TestTx_Commit(t *testing.T) {
 			is.Equal(t, test.state, read(t, replayed))
 		})
 	}
+
+	t.Run("should send every write to the store with the checksum of its content, and name a commit object by it", func(t *testing.T) {
+		w := newWorld(t)
+		s := newScriptStore(w.client())
+		d := w.openOn(t, "a", s, core.Options{})
+		is.NotError(t, d.Wait(t.Context()))
+		transact(t, d, start...)
+		transact(t, d, upsert("t1", 3, 30))
+		is.NotError(t, d.Close(t.Context()))
+
+		is.EqualSlice(t, nil, s.unchecked)
+		is.Equal(t, 2, s.count("create", "db/commits/"))
+		for _, key := range w.store.Keys() {
+			name, ok := strings.CutPrefix(key, "db/commits/")
+			if !ok {
+				is.Equal(t, "db/manifest.json", key)
+				continue
+			}
+			data, _, _ := w.store.Object(key)
+			sum := sha256.Sum256(data)
+			is.Equal(t, hex.EncodeToString(sum[:]), name)
+		}
+	})
 
 	t.Run("should let the transaction read its own writes, which no read transaction sees before the commit", func(t *testing.T) {
 		w := newWorld(t)

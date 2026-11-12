@@ -493,6 +493,25 @@ func TestReplay(t *testing.T) {
 		}
 	})
 
+	t.Run("should not refuse a commit object for what damaged bytes seem to say, before its bytes are known to match its name", func(t *testing.T) {
+		for i, find := range []string{"t1", "t2"} {
+			bubble(t, func(t *testing.T, w *world) {
+				l := newHandLog(t, w)
+				l.base()
+				l.publish()
+				s := newScriptStore(w.client())
+				// The walk back through the log reads both commit objects once. Then the name of the
+				// table that a commit object creates is damaged in its download, so that the commit
+				// object seems to upsert rows into a table that is not there.
+				s.on("get", "commits/", pass, 2+i)
+				s.damage("commits/", find, 1)
+				d := w.openOn(t, "a", s, core.Options{})
+				is.NotError(t, d.Wait(t.Context()))
+				is.Equal(t, baseState, read(t, d))
+			})
+		}
+	})
+
 	t.Run("should keep nothing of a commit object that breaks off, and apply it when it comes whole", func(t *testing.T) {
 		bubble(t, func(t *testing.T, w *world) {
 			l := newHandLog(t, w)

@@ -3,6 +3,7 @@ package core_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -59,6 +60,9 @@ type rule struct {
 	times int
 	// delay of the answer, for hold.
 	delay time.Duration
+	// find is what corrupt looks for in the content: it changes the first byte of it. If it is
+	// empty, corrupt changes the byte in the middle of the content.
+	find string
 }
 
 // scriptStore is a store that does to requests what a test tells it, and passes the others on to
@@ -73,6 +77,8 @@ type scriptStore struct {
 	seen []string
 	// stuck are the requests that stick, each ready to be applied.
 	stuck []func() error
+	// unchecked are the keys of the writes that came without the checksum of their content.
+	unchecked []string
 }
 
 func newScriptStore(s store.Store) *scriptStore {
@@ -89,6 +95,23 @@ func (s *scriptStore) on(op, key string, w what, times int, delay ...time.Durati
 		r.delay = delay[0]
 	}
 	s.rules = append(s.rules, r)
+}
+
+// damage the next times downloads whose key contains key: the first byte of find in the content
+// is changed.
+func (s *scriptStore) damage(key, find string, times int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rules = append(s.rules, &rule{op: "get", key: key, what: corrupt, times: times, find: find})
+}
+
+// check that a write came with the checksum of its content.
+func (s *scriptStore) check(key string, data []byte, checksum *store.Checksum) {
+	if checksum == nil || *checksum != sha256.Sum256(data) {
+		s.mu.Lock()
+		s.unchecked = append(s.unchecked, key)
+		s.mu.Unlock()
+	}
 }
 
 // clear the rules.
@@ -181,6 +204,7 @@ func (s *scriptStore) Create(ctx context.Context, key string, content io.ReadSee
 	if err != nil {
 		return "", err
 	}
+	s.check(key, data, checksum)
 	return s.write(ctx, s.match("create", key), func(ctx context.Context) (store.Version, error) {
 		return s.Store.Create(ctx, key, bytes.NewReader(data), checksum)
 	})
@@ -191,6 +215,7 @@ func (s *scriptStore) Swap(ctx context.Context, key string, from store.Version, 
 	if err != nil {
 		return "", err
 	}
+	s.check(key, data, checksum)
 	return s.write(ctx, s.match("swap", key), func(ctx context.Context) (store.Version, error) {
 		return s.Store.Swap(ctx, key, from, bytes.NewReader(data), checksum)
 	})
@@ -217,7 +242,11 @@ func (s *scriptStore) Get(ctx context.Context, key string) (io.ReadCloser, store
 		return nil, "", err
 	}
 	if r.what == corrupt {
-		data[len(data)/2] ^= 0x01
+		at := len(data) / 2
+		if r.find != "" {
+			at = bytes.Index(data, []byte(r.find))
+		}
+		data[at] ^= 0x01
 		return io.NopCloser(bytes.NewReader(data)), version, nil
 	}
 	return io.NopCloser(io.MultiReader(bytes.NewReader(data[:len(data)/2]), errReader{})), version, nil

@@ -272,6 +272,28 @@ func TestClassify(t *testing.T) {
 }
 
 func TestDB_Begin(t *testing.T) {
+	t.Run("should wait for a lock on the cache that another connection holds for a while, as long as the busy timeout allows", func(t *testing.T) {
+		w := newWorld(t)
+		// The timeout is far longer than the lock is held, so that the speed of the machine decides
+		// nothing.
+		d := w.serve(t, "a", core.Options{BusyTimeout: time.Minute})
+		transact(t, d, create("t1", 1, "k"))
+
+		other, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
+		is.NotError(t, err)
+		defer func() { is.NotError(t, other.Close()) }()
+		is.NotError(t, other.Exec("begin immediate"))
+		released := make(chan error, 1)
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+			released <- other.Exec("rollback")
+		}()
+
+		transact(t, d, upsert("t1", 1))
+		is.NotError(t, <-released)
+		is.Equal(t, "t1(k*0): 1", read(t, d))
+	})
+
 	t.Run("should return and log busy, and go on, when another connection holds the cache's write lock past the busy timeout", func(t *testing.T) {
 		w := newWorld(t)
 		events := &recorder{}
