@@ -160,13 +160,13 @@ What a commit object holds:
 - **The changes are applied in order,** and a commit object holds the net effect of its commit, so a primary key appears at most once per table. The kinds for the first slice are:
   - create a table, with its name, columns, and primary key as data and not as SQL text, so that replay needs no SQL parser
   - drop a table, by its name; the rows are not listed as deletes
-  - put rows, each a full row that replaces any row with the same primary key
+  - upsert rows, each a full row that is inserted or replaces the row with the same primary key. The name is Markus's; `PutRows`, `InsertRows`, and `ReplaceRows` were considered. An updated row is stored as a full row with an existing key, so "insert" alone would be wrong.
   - delete rows, each by its primary-key values
-- **The kinds of change follow the roadmap.** A kind is defined when the slice that needs it is built: `alter table` and indexes each become a new kind. Every `insert`, `update`, and `delete` ends up as put and delete, so row changes need nothing new.
+- **The kinds of change follow the roadmap.** A kind is defined when the slice that needs it is built: `alter table` and indexes each become a new kind. Every `insert`, `update`, and `delete` ends up as upserted and deleted rows, so row changes need nothing new.
 - **An unknown kind of change is refused, never skipped.** An instance that meets a kind it does not know stops replay with an error that says a newer version of s4ql is needed. Skipping a `drop table` would silently leave the cache different from the log.
-- **Every kind of change has a message named after it, and each holds only what it needs.** `CreateTable` holds the table name, the columns with their types, and the primary key. `DropTable` holds the table name. `PutRows` and `DeleteRows` hold the table name and the rows. Markus asked for this in the review: "DropTable doesn't need columns nor primary key. That's my point." The field for the table name is `table` in all four, and a column has a `name` and a `type`. The longer names from SQLite's grammar, `table_name`, `column_name`, and `type_name`, were tried and dropped; Markus: "maybe that's a bit much." Markus: "I'd just like to be consistent and aligned with SQLite if possible."
+- **Every kind of change has a message named after it, and each holds only what it needs.** `CreateTable` holds the table name, the columns with their types, and the primary key. `DropTable` holds the table name. `UpsertRows` and `DeleteRows` hold the table name and the rows. Markus asked for this in the review: "DropTable doesn't need columns nor primary key. That's my point." The field for the table name is `table` in all four, and a column has a `name` and a `type`. The longer names from SQLite's grammar, `table_name`, `column_name`, and `type_name`, were tried and dropped; Markus: "maybe that's a bit much." Markus: "I'd just like to be consistent and aligned with SQLite if possible."
 - **Row changes carry no column names or types,** and replay does not compare them with the cache. Markus: "The precondition is that the cache is correct up to the parent, and with a deterministic change, the commit is safe and the postcondition is the same." Replay already checks that precondition through the cache's recorded position, so a column check could never fail. The silent failures that the research found ([research/change-file-contents.md](research/change-file-contents.md)) come from systems where the reader's tables are managed apart from the writer's, which is not our case. This reverses the "heading" with names and types that was agreed on 2026-11-11. Two checks remain without extra data: a row with the wrong number of values is refused, and the cache's strict tables reject a value of the wrong type.
-- **Rows come in batches.** A `PutRows` or `DeleteRows` must be complete in memory before it is written, so it is limited to about a megabyte, and a commit that changes many rows of one table writes several.
+- **Rows come in batches.** A `UpsertRows` or `DeleteRows` must be complete in memory before it is written, so it is limited to about a megabyte, and a commit that changes many rows of one table writes several.
 - **The primary key is a list of column positions** in `CreateTable`, in key order, starting at 0. A position cannot disagree with a column name the way a second copy of the name could.
 - **A value is in one of SQLite's five storage classes,** under SQLite's names: integer, real, text, blob, and null. Null is stored explicitly, because SQLite treats it as a storage class, and because a value with no kind set must stay distinct from it: that is either a kind from a newer version or a malformed value, and both are refused.
 - **All text is valid UTF-8:** table names, column names, text values, and SQL text. They are `string` fields, which Protocol Buffers refuses to write or read otherwise. s4ql rejects a statement, a parameter, or an expression that would produce other text; see the restrictions in [roadmap.md](roadmap.md). Markus: "I have a hunch that's going to make life easier down the line."
@@ -241,8 +241,8 @@ message Change {
     CreateTable create_table = 1;
     // Drops a table and all its rows.
     DropTable drop_table = 2;
-    // Puts rows into a table.
-    PutRows put_rows = 3;
+    // Inserts rows into a table, or replaces the rows with the same keys.
+    UpsertRows upsert_rows = 3;
     // Deletes rows from a table.
     DeleteRows delete_rows = 4;
   }
@@ -282,11 +282,12 @@ message DropTable {
   string table = 1;
 }
 
-// Puts rows into a table. A row replaces any row with the same primary key.
+// Inserts rows into a table. A row replaces any row with the same primary
+// key.
 //
-// A PutRows is a batch that is small enough to hold in memory. A commit that
-// puts many rows into one table writes several batches.
-message PutRows {
+// An UpsertRows is a batch that is small enough to hold in memory. A commit
+// that upserts many rows into one table writes several batches.
+message UpsertRows {
   // The name of the table.
   string table = 1;
   // The rows. Each holds a value for every column, in the table's column
@@ -296,7 +297,7 @@ message PutRows {
 
 // Deletes rows from a table.
 //
-// A DeleteRows is a batch, like a PutRows.
+// A DeleteRows is a batch, like an UpsertRows.
 message DeleteRows {
   // The name of the table.
   string table = 1;
@@ -358,7 +359,7 @@ message Statement {
 Details chosen by maragubot, from the research in [research/change-file-contents.md](research/change-file-contents.md) and [research/protobuf-practices.md](research/protobuf-practices.md):
 
 - **Each commit object stands alone.** No state carries over from an earlier one.
-- **An update of a primary key is a delete of the old key and a put of the new row.**
+- **An update of a primary key is a delete of the old key and an upsert of the new row.**
 - **New kinds can be added to a `oneof` later,** as a new member with a new number. Old commit objects stay valid, and `buf breaking` accepts the addition. Moving an existing field into a `oneof` is unsafe.
 - **`Change` and `Value` never get a field outside their `oneof`.** Any unknown field in them then means a kind from a newer version, and the reader finds it with `ProtoReflect().GetUnknown()`. One with no kind and no unknown field is malformed.
 - **What the reader must do:**
