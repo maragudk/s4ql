@@ -3,6 +3,7 @@ package host_test
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -58,18 +59,25 @@ func TestNew(t *testing.T) {
 		})
 	})
 
-	t.Run("should let in only as many as there are permits, and fail an acquire when the context is done", func(t *testing.T) {
-		h := host.New()
-		s := h.NewSemaphore("s", 2)
-		is.NotError(t, s.Acquire(t.Context()))
-		is.NotError(t, s.Acquire(t.Context()))
+	t.Run("should let in only as many as there are permits, and the next when a permit is released", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			h := host.New()
+			s := h.NewSemaphore("s", 2)
+			is.NotError(t, s.Acquire(t.Context()))
+			is.NotError(t, s.Acquire(t.Context()))
 
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		is.Error(t, context.Canceled, s.Acquire(ctx))
+			var third atomic.Bool
+			task := h.Go(t.Context(), "third", func(ctx context.Context) {
+				is.NotError(t, s.Acquire(ctx))
+				third.Store(true)
+			})
+			synctest.Wait()
+			is.True(t, !third.Load(), "a third acquire got a permit")
 
-		s.Release(t.Context())
-		is.NotError(t, s.Acquire(t.Context()))
+			s.Release(t.Context())
+			is.NotError(t, task.Wait(t.Context()))
+			is.True(t, third.Load())
+		})
 	})
 
 	t.Run("should fail an acquire when the context is done, also with a permit free", func(t *testing.T) {

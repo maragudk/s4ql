@@ -27,8 +27,12 @@ import (
 )
 
 // clockFaults that a workload does to the clocks of its instances, as a set of bits. Each instance
-// gets at most one of them in its life, so that at most one of its two clocks is wrong at a time, as
-// the lease's design requires.
+// gets at most one of them in its life, so that at most one of its two clocks is wrong at a time.
+//
+// The faults are those that the lease's design survives. A wall clock set backward on a holder that
+// can still reach the store is not one of them: the holder renews with an expiry that is already past
+// on the other instances' clocks, another takes the lease, and both of the holder's own checks still
+// pass. So wallBackward cuts the instance off from the store for as long as its clock is wrong.
 type clockFaults int
 
 const (
@@ -39,8 +43,9 @@ const (
 	wallBackward
 	// wallForward sets an instance's wall clock forward by less than the takeover margin, for good.
 	wallForward
-
-	allClockFaults = stopMonotonic | wallBackward | wallForward
+	// partition cuts an instance off from the store for a while, and moves no clock. It is not a fault
+	// of a clock, and is there to show what wallBackward does without the shift.
+	partition
 )
 
 // workload that callers run against [toyDB] instances.
@@ -93,7 +98,7 @@ var fullWorkload = workload{
 	latency:   time.Millisecond,
 	options:   toyOptions{readers: 2, busyTimeout: 1000},
 	faults:    faults{errors: 30, lostAcks: 30, delays: 10},
-	clocks:    allClockFaults,
+	clocks:    stopMonotonic | wallBackward | wallForward,
 	crashes:   1,
 	buggify:   true,
 }
@@ -111,6 +116,8 @@ var hammerWorkload = workload{
 
 // attempt of a commit, as the caller that made it saw it.
 type attempt struct {
+	// id of the transaction, as in its change file.
+	id   uint64
 	seq  int64
 	sets [][2]int64
 	// state is pending until Commit returns, and stays pending if the caller's instance crashed.
@@ -130,6 +137,8 @@ const (
 // outcome of running a [workload].
 type outcome struct {
 	commits, failedCommits, unknownCommits, rollbacks, reads, failedReads, expiredReads atomic.Int64
+	// cutCommits are commits whose caller's instance crashed before Commit returned.
+	cutCommits atomic.Int64
 	// overtakenReads are reads that ended when the manifest had a commit that their snapshot did not,
 	// so a commit was in progress or finished while they ran.
 	overtakenReads atomic.Int64
@@ -159,9 +168,21 @@ func (o *outcome) violate(ctx context.Context, h tracer, format string, args ...
 }
 
 // expected reports whether err from a call of a caller is one that the faults and the design
-// explain. An instance that stopped for a reason that is not explained is reported by its node.
+// explain, and for an error that joins several, whether each of them is. An instance that stopped for
+// a reason that is not explained is reported by its node.
 func expected(err error) bool {
-	for _, target := range []error{errInjected, errSwapFailed, errLeaseExpired, errNotServing, errStopped, errOutcomeUnknown} {
+	if errors.Is(err, errStopped) {
+		return true
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, err := range joined.Unwrap() {
+			if err != nil && !expected(err) {
+				return false
+			}
+		}
+		return true
+	}
+	for _, target := range []error{errInjected, errSwapFailed, errLeaseExpired, errNotServing, errStopped, errOutcomeUnknown, errPrecondition, context.DeadlineExceeded} {
 		if errors.Is(err, target) {
 			return true
 		}
@@ -251,7 +272,7 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 			return
 		}
 
-		a := &attempt{seq: tx.seq, sets: sets}
+		a := &attempt{id: tx.id, seq: tx.seq, sets: sets}
 		o.mu.Lock()
 		o.attempts = append(o.attempts, a)
 		o.mu.Unlock()
@@ -318,8 +339,10 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 		if seq > man.Seq {
 			o.violate(ctx, c.world, "a read saw commit %v while the manifest was at %v", seq, man.Seq)
 		}
-		if v > seq {
-			o.violate(ctx, c.world, "a read saw the value of commit %v in the snapshot of commit %v", v, seq)
+		if want, err := valueAt(store, seq, k); err != nil {
+			o.violate(ctx, c.world, "the log: %v", err)
+		} else if v != want {
+			o.violate(ctx, c.world, "a read saw %v at key %v at commit %v, and the log has %v", v, k, seq, want)
 		}
 	}
 
@@ -377,11 +400,14 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 						_ = n.host.Sleep(ctx, time.Duration(intn(n.host, int(w.think/time.Millisecond)))*time.Millisecond)
 					}
 					d := n.current()
+					// Every call has a timeout, as a request of an application has.
+					ctx, cancel := n.host.WithTimeout(ctx, 30*time.Second)
 					if intn(n.host, 100) < 35 {
 						write(ctx, n, d)
 					} else {
 						read(ctx, n, d)
 					}
+					cancel()
 				}
 			}))
 		}
@@ -433,13 +459,23 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 				holders[d.id] = true
 				mu.Unlock()
 
-				// The restarted instance finds the files as the crash left them.
+				// The restarted instance finds the files as the crash left them, with every commit that
+				// the cache had.
 				name := fmt.Sprint(victim.name, i+2)
 				path := filepath.Join(c.dir, name+".db")
+				crashed, err := cacheState(victim.path)
+				if err != nil {
+					o.violate(ctx, c.world, "the cache of %v: %v", victim.name, err)
+					return
+				}
 				if err := copyCache(victim.path, path); err != nil {
 					o.violate(ctx, c.world, "copy of the cache: %v", err)
 					return
 				}
+				if restarted, err := cacheState(path); err != nil || restarted != crashed {
+					o.violate(ctx, c.world, "the cache of %v is %v %v after the restart, and was %v at the crash", name, restarted, err, crashed)
+				}
+				c.world.Trace(ctx, "%v restarts on the cache of %v at commit %v", name, victim.name, crashed.seq)
 				o.restarts.Add(1)
 				_, nodeTasks := start(ctx, name, path)
 				restarted = append(restarted, nodeTasks...)
@@ -471,7 +507,9 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 				if d := n.current(); d.stopErr() != nil {
 					stopped(ctx, n, d)
 				}
-				served = served || n.current().isServing()
+				if _, _, err := n.current().Read(ctx, 0); err == nil {
+					served = true
+				}
 			})
 		}
 		if served {
@@ -503,7 +541,7 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 // the seed picks, or by none.
 func (w workload) moveClocks(ctx context.Context, h tracer, inst *sim.Instance, n *node) {
 	var kinds []clockFaults
-	for _, kind := range []clockFaults{stopMonotonic, wallBackward, wallForward} {
+	for _, kind := range []clockFaults{stopMonotonic, wallBackward, wallForward, partition} {
 		if w.clocks&kind != 0 {
 			kinds = append(kinds, kind)
 		}
@@ -522,10 +560,14 @@ func (w workload) moveClocks(ctx context.Context, h tracer, inst *sim.Instance, 
 		inst.StopMonotonic()
 		_ = h.Sleep(ctx, span)
 		inst.StartMonotonic()
-	case wallBackward:
+	case wallBackward, partition:
+		// Both draw the same numbers, so that a seed gives the same partition with and without the shift.
 		n.client.partitioned.Store(true)
 		h.Trace(ctx, "%v is cut off from the store", n.name)
 		by := time.Duration(20_000+intn(h, 60_000)) * time.Millisecond
+		if kinds[kind] == partition {
+			by = 0
+		}
 		inst.ShiftWall(-by)
 		_ = h.Sleep(ctx, span)
 		inst.ShiftWall(by)
@@ -534,6 +576,56 @@ func (w workload) moveClocks(ctx context.Context, h tracer, inst *sim.Instance, 
 	case wallForward:
 		inst.ShiftWall(time.Duration(intn(h, int(takeoverMargin/time.Millisecond)/2)) * time.Millisecond)
 	}
+}
+
+// cache is what a cache holds: its commit, and the values at its keys.
+type cache struct {
+	seq int64
+	kv  [5]int64
+}
+
+// cacheState of the cache at path, read on a connection of its own, which sees what is committed.
+func cacheState(path string) (cache, error) {
+	var state cache
+	c, err := sqlite.Open(path)
+	if err != nil {
+		return state, err
+	}
+	state.seq, err = queryInt(c, "select seq from meta")
+	for k := range state.kv {
+		if err == nil {
+			state.kv[k], err = queryInt(c, "select coalesce((select v from kv where k = ?), 0)", int64(k))
+		}
+	}
+	return state, errors.Join(err, c.Close())
+}
+
+// valueAt is the value at key k after commit seq in the log of store, or 0 if no commit up to it
+// sets k.
+func valueAt(store *memStore, seq, k int64) (int64, error) {
+	man, err := store.manifest()
+	if err != nil {
+		return 0, err
+	}
+	for name := man.Head; name != ""; {
+		data, ok := store.object(name)
+		if !ok {
+			return 0, fmt.Errorf("no change file %v", name)
+		}
+		var file changeFile
+		if err := json.Unmarshal(data, &file); err != nil {
+			return 0, err
+		}
+		if file.Seq <= seq {
+			for _, set := range slices.Backward(file.Sets) {
+				if set[0] == k {
+					return set[1], nil
+				}
+			}
+		}
+		name = file.Prev
+	}
+	return 0, nil
 }
 
 // copyCache at from to to, with its write-ahead log, as files that a crashed process left behind.
@@ -603,21 +695,30 @@ func (o *outcome) verify(ctx context.Context, h tracer, store *memStore, live []
 	}
 
 	o.mu.Lock()
-	attempts := slices.Clone(o.attempts)
+	attempts := map[uint64]attempt{}
+	for _, a := range o.attempts {
+		attempts[a.id] = *a
+	}
 	o.mu.Unlock()
 	for _, file := range log[1:] {
-		if !slices.ContainsFunc(attempts, func(a *attempt) bool {
-			return a.seq == file.Seq && a.state != failed && slices.Equal(a.sets, file.Sets)
-		}) {
-			o.violate(ctx, h, "the log has commit %v with the writes %v, which no caller made, or whose commit failed", file.Seq, file.Sets)
+		a, ok := attempts[file.ID]
+		switch {
+		case !ok:
+			o.violate(ctx, h, "the log has commit %v of transaction %x, which no caller made", file.Seq, file.ID)
+		case a.state == failed:
+			o.violate(ctx, h, "the log has commit %v of transaction %x, whose commit failed", file.Seq, file.ID)
+		case a.seq != file.Seq || !slices.Equal(a.sets, file.Sets):
+			o.violate(ctx, h, "the log has commit %v of transaction %x with the writes %v, and the caller made commit %v with the writes %v", file.Seq, file.ID, file.Sets, a.seq, a.sets)
 		}
 	}
 	for _, a := range attempts {
-		if a.state != acknowledged {
-			continue
-		}
-		if a.seq > man.Seq || !slices.Equal(log[a.seq].Sets, a.sets) {
-			o.violate(ctx, h, "commit %v with the writes %v was acknowledged, and the log does not have it", a.seq, a.sets)
+		switch a.state {
+		case acknowledged:
+			if a.seq > man.Seq || log[a.seq].ID != a.id {
+				o.violate(ctx, h, "commit %v of transaction %x was acknowledged, and the log does not have it", a.seq, a.id)
+			}
+		case pending:
+			o.cutCommits.Add(1)
 		}
 	}
 
@@ -794,8 +895,8 @@ func TestSimulation(t *testing.T) {
 			n := seeds(t, 200, test.workload)
 			hashes, orders := map[string]bool{}, map[string]bool{}
 			all := sha256.New()
-			var steps, differing, buggifies, clockMoves, crashes int
-			var commits, failedCommits, unknownCommits, rollbacks, reads, failedReads, expiredReads, overtakenReads, stops, restarts int64
+			var steps, differing, buggifies, clockMoves, crashes, timeouts int
+			var commits, failedCommits, unknownCommits, cutCommits, rollbacks, reads, failedReads, expiredReads, overtakenReads, stops, restarts int64
 			start := time.Now()
 			for seed := range n {
 				first, second := simulate(t, seed, test.workload), simulate(t, seed, test.workload)
@@ -813,10 +914,12 @@ func TestSimulation(t *testing.T) {
 				buggifies += first.count(" fires")
 				clockMoves += first.count(" monotonic clock") + first.count(" shifts its wall clock")
 				crashes += first.count(" crashes")
+				timeouts += first.count(" expires")
 				o := first.outcome
 				commits += o.commits.Load()
 				failedCommits += o.failedCommits.Load()
 				unknownCommits += o.unknownCommits.Load()
+				cutCommits += o.cutCommits.Load()
 				rollbacks += o.rollbacks.Load()
 				reads += o.reads.Load()
 				failedReads += o.failedReads.Load()
@@ -827,9 +930,9 @@ func TestSimulation(t *testing.T) {
 			}
 			elapsed := time.Since(start)
 			t.Logf("%v seeds, each run twice: %v pairs differed; %v distinct traces, and %v distinct orders of tasks", n, differing, len(hashes), len(orders))
-			t.Logf("in the first run of each seed: %v steps, %v commits, %v failed commits, %v of unknown outcome, %v rollbacks, %v reads of which %v were overtaken by a commit, %v failed reads of which %v for an expired lease",
-				steps, commits, failedCommits, unknownCommits, rollbacks, reads, overtakenReads, failedReads, expiredReads)
-			t.Logf("and %v buggify points that fired, %v moves of a clock, %v crashes and %v restarts, %v stops of an instance", buggifies, clockMoves, crashes, restarts, stops)
+			t.Logf("in the first run of each seed: %v steps, %v commits, %v failed commits, %v of unknown outcome, %v cut off by a crash, %v rollbacks, %v reads of which %v were overtaken by a commit, %v failed reads of which %v for an expired lease",
+				steps, commits, failedCommits, unknownCommits, cutCommits, rollbacks, reads, overtakenReads, failedReads, expiredReads)
+			t.Logf("and %v buggify points that fired, %v moves of a clock, %v crashes and %v restarts, %v stops of an instance, %v timeouts that expired", buggifies, clockMoves, crashes, restarts, stops, timeouts)
 			t.Logf("%v runs in %v, %.0f runs per second, %.0f steps per second",
 				2*n, elapsed.Round(time.Millisecond), float64(2*n)/elapsed.Seconds(), float64(2*steps)/elapsed.Seconds())
 			// The hash depends only on the code and the seeds, so it can be compared between machines.
@@ -838,8 +941,12 @@ func TestSimulation(t *testing.T) {
 			if n >= 50 {
 				is.True(t, len(orders) > int(n)/2, "the seed hardly changes the order in which tasks run")
 				is.True(t, commits > 0 && reads > 0 && failedCommits > 0 && expiredReads > 0 && overtakenReads > 0, "the workload did not reach every kind of result")
+				is.True(t, timeouts > 0, "no timeout expired")
 				if test.workload.buggify {
 					is.True(t, buggifies > 0 && stops > 0, "buggify never fired, or no instance ever stopped")
+				}
+				if test.workload.buggify && n >= 200 {
+					is.True(t, unknownCommits > 0, "no commit had an unknown outcome")
 				}
 				if test.workload.clocks != 0 {
 					is.True(t, clockMoves > 0, "no clock moved")
@@ -893,8 +1000,9 @@ var plantedBugs = []struct {
 		}(),
 		control: func() *workload {
 			w := fullWorkload
+			// The same partitions, without the shift of the wall clock.
 			w.options.bugs.wallOnly = true
-			w.clocks, w.crashes, w.buggify = 0, 0, false
+			w.clocks, w.crashes, w.buggify = partition, 0, false
 			return &w
 		}(),
 		symptoms: []string{"after commit"},
@@ -945,13 +1053,17 @@ var plantedBugs = []struct {
 			w.options.bugs.ignoreCacheError = true
 			return &w
 		}(),
-		symptoms: []string{"after commit", "where the log should have commit", "the cache of", "the log does not have it", "which no caller made"},
+		symptoms: []string{"a read saw", "where the log should have commit", "the cache of", "the log does not have it", "the caller made commit"},
 	},
 }
 
 func TestSimulation_plantedBugs(t *testing.T) {
 	for _, bug := range plantedBugs {
-		t.Run("should find "+bug.name+" with some seed and again on every rerun of it, and never without the ability it needs", func(t *testing.T) {
+		name := "should find " + bug.name + " with some seed and again on every rerun of it"
+		if bug.control != nil {
+			name += ", and never without the ability it needs"
+		}
+		t.Run(name, func(t *testing.T) {
 			n := seeds(t, 200, bug.workload)
 			var found []uint64
 			for seed := range n {
@@ -1112,8 +1224,12 @@ func TestSchedulerWithSQLiteLocks(t *testing.T) {
 
 // TestSimulationSpeed logs how fast simulated runs are on this machine: the scheduler with tasks
 // that only yield, and the workloads. It is a test and not a benchmark because a bubble needs a
-// [testing.T].
+// [testing.T]. It only runs when the environment variable S4QL_SIM_SPEED is set, because it asserts
+// nothing that the other tests do not.
 func TestSimulationSpeed(t *testing.T) {
+	if os.Getenv("S4QL_SIM_SPEED") == "" {
+		t.Skip("S4QL_SIM_SPEED is not set")
+	}
 	t.Run("should log the speed of the scheduler with eight tasks that only yield", func(t *testing.T) {
 		start := time.Now()
 		var steps int

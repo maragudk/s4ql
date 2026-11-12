@@ -28,22 +28,36 @@
 //
 //   - A crashed task is not stopped where it is but at its next wait, which is where every task of
 //     the instance is unless the crash came from one of them.
-//   - A crashed task ends when the run ends, after every other task has returned. Its deferred calls
-//     run then, and a wait in them ends it at once. They cannot reach anything that the run checks,
-//     but they do run, and a real crash runs none.
-//   - Memory of the crashed instance, such as open SQLite connections, stays until the test frees it.
-//     Files stay as they are, and the test decides what a restarted instance finds: a real process
+//   - A crashed task ends when the run ends, after every task that did not crash has returned. Its
+//     deferred calls run then, and a wait in them ends it at once. A real crash runs none. Whatever
+//     they change without waiting, in memory, in files, or in SQLite, is changed after the run, so a
+//     check of the run must be made before the run ends, by a task.
+//   - Whatever a crashed task was waiting for never happens for it. A request that it sent and that
+//     has not arrived when it crashes, and is carried by its own task, never arrives. A real network
+//     can deliver it after the process has died. A simulated object store that wants to deliver it
+//     must carry it on a task that does not crash.
+//   - Memory of the crashed instance, such as open database connections, stays until the test frees
+//     it. Files stay as they are, and the test decides what a restarted instance finds: a real process
 //     crash leaves every write that the operating system has, so copying the files at the moment of
 //     the crash is faithful, and a power loss is not simulated.
+//
+// A context from [host.Host.WithTimeout] reports [context.DeadlineExceeded] after the timeout, as one
+// from [context.WithTimeout] does, but a context derived from it reports [context.Canceled], with
+// [context.DeadlineExceeded] as its cause. The waits of the host return [context.DeadlineExceeded] for
+// both. Code that tells a timeout from a cancellation by the error of the context, and not by the
+// error of a wait, uses [context.Cause].
 //
 // The rules for code that runs under the scheduler, and what happens when it breaks them:
 //
 //   - It waits only through the host: no channel operation that blocks, no sync.Cond or
 //     sync.WaitGroup, no time.Sleep. The run fails with the task and the place it last waited at.
-//   - It starts goroutines only with [host.Host.Go], never with a go statement. The run fails when
-//     such a goroutine reaches the host. One that never does is not noticed.
-//   - A task waits only through the host of its own instance, or through the [Scheduler] itself, and
-//     uses a semaphore only through the host that made it. The run fails.
+//   - It starts goroutines only with [host.Host.Go], never with a go statement or anything else that
+//     starts one. The run fails when such a goroutine reaches the host. One that never does is not
+//     noticed.
+//   - It passes the context of its task, or one derived from it, to the host. A context that no task
+//     was started with makes the host panic.
+//   - A task waits, and sets a timeout, only through the host of its own instance or through the
+//     [Scheduler] itself, and uses a semaphore only through the host that made it. The run fails.
 //   - It passes no context with a deadline from the context package to the host, because such a
 //     deadline is a timer of the bubble's clock, which stands still. [host.Host.WithTimeout] is the
 //     timeout to use. The run fails.
@@ -55,14 +69,11 @@
 //   - It switches to another task only where it waits, so a race in a stretch of code without a
 //     wait is never found. Where shared state is touched between waits, [host.Host.Yield] marks a
 //     point where another task may run.
-//
-// The lint in maragu.dev/s4ql/internal/simlint forbids, in library code, the go statement, the time
-// package's clock and timers, the context package's deadlines, sync.Cond, sync.WaitGroup, and the
-// random number packages.
 package sim
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -193,17 +204,18 @@ func (s *Scheduler) Run(f func(ctx context.Context)) error {
 	s.Go(context.Background(), "main", f)
 
 	for {
-		// Every goroutine in the bubble is durably blocked when Wait returns. A goroutine in a call
-		// into C is not durably blocked, so Wait also waits for C code to return.
+		// Every goroutine in the bubble is durably blocked when Wait returns. The tests of this
+		// package show that a goroutine in a call into C counts as running, so Wait also waits for C
+		// code to return.
 		synctest.Wait()
 
 		next, due, done, err := s.next()
 		if done {
 			return err
 		}
-		// Timeouts end while no task runs, in the order in which they were made.
+		// Timeouts expire while no task runs, in the order in which they were made.
 		for _, t := range due {
-			t.end()
+			t.expire()
 		}
 		if next != nil {
 			next.wake <- struct{}{}
@@ -269,26 +281,18 @@ func (s *Scheduler) next() (next *task, due []*timeout, done bool, err error) {
 		return t, nil, false, nil
 	}
 
+	// A timeout whose context is done some other way needs nothing more.
+	s.timeouts = slices.DeleteFunc(s.timeouts, func(t *timeout) bool { return t.Context.Err() != nil })
 	earliest := never
 	for _, t := range s.timeouts {
 		if t.clock.crashed {
 			continue
 		}
-		if t.inner.Err() != nil || t.clock.mono() >= t.at {
+		if t.clock.mono() >= t.at {
 			due = append(due, t)
 			continue
 		}
 		earliest = min(earliest, t.clock.trueAt(t.at))
-	}
-	if len(due) > 0 {
-		for _, t := range due {
-			if t.inner.Err() == nil {
-				t.expired.Store(true)
-				s.trace = append(s.trace, fmt.Sprintf("%v %v expires", s.now, t.name))
-			}
-			s.timeouts = slices.DeleteFunc(s.timeouts, func(other *timeout) bool { return other == t })
-		}
-		return nil, due, false, nil
 	}
 
 	var eligible []*task
@@ -300,9 +304,19 @@ func (s *Scheduler) next() (next *task, due []*timeout, done bool, err error) {
 		earliest = min(earliest, t.clock.trueAt(t.at))
 	}
 
+	// A task that may run at the instant when timeouts are due runs first or after them, as the seed
+	// decides, as a timer and a goroutine race in production.
+	if len(due) > 0 && (len(eligible) == 0 || s.rng.IntN(2) == 0) {
+		for _, t := range due {
+			s.trace = append(s.trace, fmt.Sprintf("%v %v expires", s.now, t.name))
+		}
+		s.timeouts = slices.DeleteFunc(s.timeouts, func(t *timeout) bool { return slices.Contains(due, t) })
+		return nil, due, false, nil
+	}
+
 	if len(eligible) == 0 {
 		if earliest == never {
-			s.fail(fmt.Errorf("deadlock: every task waits on a condition that is false: %v", waits()))
+			s.fail(fmt.Errorf("deadlock: no task can run: %v", waits()))
 			return nil, nil, false, nil
 		}
 		s.now = earliest
@@ -481,11 +495,6 @@ func (i *Instance) at(d time.Duration) time.Duration {
 	return now + max(d, 0)
 }
 
-// Name of the instance.
-func (i *Instance) Name() string {
-	return i.name
-}
-
 // String names the instance, or the test for the host of the test itself.
 func (i *Instance) String() string {
 	if i.name == "" {
@@ -543,7 +552,8 @@ func (i *Instance) Crashed() bool {
 
 // Go as [host.Host] describes, as a task of the instance. The task first runs when the scheduler
 // picks it, and its name, after the name of the instance and a slash, must be one that no other
-// running task has. Any task may start one.
+// running task has. Any task may start one, except while the run ends: then the run fails, unless
+// the instance has crashed and the task never runs.
 func (i *Instance) Go(ctx context.Context, name string, f func(ctx context.Context)) host.Task {
 	s := i.s
 	if i.name != "" {
@@ -555,6 +565,9 @@ func (i *Instance) Go(ctx context.Context, name string, f func(ctx context.Conte
 	if _, ok := s.tasks[name]; ok {
 		s.mu.Unlock()
 		panic("sim: a task named " + name + " is already running")
+	}
+	if s.unwinding && !i.crashed {
+		s.fail(fmt.Errorf("task %v starts while the run ends, after every task that did not crash has returned", name))
 	}
 	t.at = s.now + s.jitter()
 	s.tasks[name] = t
@@ -605,41 +618,52 @@ func (i *Instance) Sleep(ctx context.Context, d time.Duration) error {
 	at := i.at(d)
 	i.s.mu.Unlock()
 	i.s.park(ctx, i, "sleep", i, at, func() bool { return ctx.Err() != nil })
-	return ctx.Err()
+	return waitErr(ctx)
 }
 
-// WithTimeout as [host.Host] describes, on the monotonic clock of the instance. The context reports
-// no deadline of its own, because its time is not the time package's. A context derived from it
-// learns that its parent is done at the next point where a task waits, and the context itself at
-// once.
+// WithTimeout as [host.Host] describes, on the monotonic clock of the instance, for a task of the
+// instance. The context reports no deadline of its own, because its time is not the time package's.
+//
+// A context derived from it reports [context.Canceled] after the timeout, where one derived from
+// [context.WithTimeout] reports [context.DeadlineExceeded], and its cause is
+// [context.DeadlineExceeded] in both. The waits of the host return [context.DeadlineExceeded] for
+// both.
 func (i *Instance) WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
 	s := i.s
-	t := &timeout{s: s, clock: i, done: make(chan struct{})}
-	t.inner, t.cancelInner = context.WithCancelCause(ctx)
+	t := &timeout{clock: i}
+	t.Context, t.cancel = context.WithCancelCause(ctx)
 
 	s.mu.Lock()
-	t.at = i.at(d)
 	who := "the test"
 	if task, _ := ctx.Value(taskKey{}).(*task); task != nil && task.s == s {
 		who = task.name
+		if i != s.world && task.inst != i {
+			s.fail(fmt.Errorf("task %v sets a timeout on the host of %v, which is not its own", task.name, i))
+			s.mu.Unlock()
+			runtime.Goexit()
+		}
+	} else if i != s.world {
+		s.mu.Unlock()
+		panic("sim: a timeout on the host of an instance needs the context of a task of the instance")
 	}
+	t.at = i.at(d)
 	t.name = fmt.Sprintf("timeout of %v after %v", who, d)
+	expired := d <= 0 && ctx.Err() == nil
 	if d > 0 {
 		s.timeouts = append(s.timeouts, t)
-	} else {
-		t.expired.Store(true)
+	} else if expired {
 		s.addTrace(who, "has a timeout of %v, which expires at once", d)
 	}
 	s.mu.Unlock()
 
-	if d <= 0 {
-		t.end()
+	if expired {
+		t.expire()
 	}
 	return t, func() {
 		s.mu.Lock()
 		s.timeouts = slices.DeleteFunc(s.timeouts, func(other *timeout) bool { return other == t })
 		s.mu.Unlock()
-		t.end()
+		t.cancel(context.Canceled)
 	}
 }
 
@@ -789,7 +813,7 @@ func (t *task) Wait(ctx context.Context) error {
 	t.s.park(ctx, t.s.world, "wait for "+t.name, t.s.world, never, func() bool {
 		return t.done || t.inst.crashed || ctx.Err() != nil
 	})
-	return ctx.Err()
+	return waitErr(ctx)
 }
 
 // semaphore of an [Instance].
@@ -807,7 +831,7 @@ func (m *semaphore) Acquire(ctx context.Context) error {
 	// The task parks even when a permit is free, so that the seed decides who gets it.
 	s.parkAs(ctx, m.inst, true, "acquire of "+m.name, s.world, never, func() bool { return m.free > 0 || ctx.Err() != nil })
 
-	if err := ctx.Err(); err != nil {
+	if err := waitErr(ctx); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -830,114 +854,45 @@ func (m *semaphore) Release(ctx context.Context) {
 	s.parkAs(ctx, m.inst, true, "release of "+m.name, s.world, at, nil)
 }
 
-// timeout is the context of [Instance.WithTimeout]. Its error is [context.DeadlineExceeded] after it
-// expires, and otherwise that of inner, which is cancelled when its parent is, at once.
-//
-// It has a done channel of its own, and not inner's, so that the context package attaches a context
-// derived from it through [timeout.AfterFunc], which passes on the error of an expired timeout.
-// Through inner's channel, it would attach to inner and take inner's error, which is
-// [context.Canceled].
+// timeout is the context of [Instance.WithTimeout]: a cancelable copy of its parent, from
+// [context.WithCancelCause], which the scheduler cancels with the cause [context.DeadlineExceeded]
+// when the timeout expires. Its own error is then [context.DeadlineExceeded]. It is the copy's done
+// channel and values that it reports, so a context derived from it is a context derived from the
+// copy, which reports [context.Canceled] with that cause.
 type timeout struct {
-	s     *Scheduler
-	clock *Instance
+	context.Context
+	cancel context.CancelCauseFunc
+	clock  *Instance
 	// at is the reading of clock's monotonic clock at which the timeout expires. It and name are set
 	// before the timeout is shared.
-	at   time.Duration
-	name string
-
-	inner       context.Context
-	cancelInner context.CancelCauseFunc
-	done        chan struct{}
-	expired     atomic.Bool
-
-	// ended and afters are guarded by the scheduler's mutex.
-	ended  bool
-	afters []*afterFunc
-}
-
-// afterFunc registered with [timeout.AfterFunc]. Its state is guarded by the scheduler's mutex.
-type afterFunc struct {
-	f       func()
-	stopped bool
-	ran     bool
-}
-
-func (t *timeout) Deadline() (time.Time, bool) {
-	return t.inner.Deadline()
-}
-
-func (t *timeout) Done() <-chan struct{} {
-	return t.done
+	at      time.Duration
+	name    string
+	expired atomic.Bool
 }
 
 func (t *timeout) Err() error {
 	if t.expired.Load() {
 		return context.DeadlineExceeded
 	}
-	return t.inner.Err()
-}
-
-func (t *timeout) Value(key any) any {
-	return t.inner.Value(key)
+	return t.Context.Err()
 }
 
 func (t *timeout) String() string {
 	return t.name
 }
 
-// AfterFunc arranges to call f once the context is done, and returns a function that stops it from
-// being called. The context package calls it to attach a context derived from this one.
-func (t *timeout) AfterFunc(f func()) (stop func() bool) {
-	a := &afterFunc{f: f}
-	t.s.mu.Lock()
-	ended := t.ended
-	if !ended {
-		t.afters = append(t.afters, a)
-	} else {
-		a.ran = true
-	}
-	t.s.mu.Unlock()
-	if ended {
-		f()
-	}
-	return func() bool {
-		t.s.mu.Lock()
-		defer t.s.mu.Unlock()
-		if a.stopped || a.ran {
-			return false
-		}
-		a.stopped = true
-		return true
-	}
+// expire the timeout.
+func (t *timeout) expire() {
+	t.expired.Store(true)
+	t.cancel(context.DeadlineExceeded)
 }
 
-// end the timeout: cancel inner if it has not been, close the done channel, and call the functions
-// of [timeout.AfterFunc] in the order in which they were registered. It does nothing the second time.
-func (t *timeout) end() {
-	if t.expired.Load() {
-		t.cancelInner(context.DeadlineExceeded)
-	} else {
-		t.cancelInner(context.Canceled)
+// waitErr is the error of a wait that ctx ended, which is [context.DeadlineExceeded] also for a
+// context derived from a [timeout] that expired, as it is for one derived from [context.WithTimeout].
+func waitErr(ctx context.Context) error {
+	err := ctx.Err()
+	if errors.Is(err, context.Canceled) && errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
+		return context.DeadlineExceeded
 	}
-
-	t.s.mu.Lock()
-	if t.ended {
-		t.s.mu.Unlock()
-		return
-	}
-	t.ended = true
-	var afters []*afterFunc
-	for _, a := range t.afters {
-		if !a.stopped {
-			a.ran = true
-			afters = append(afters, a)
-		}
-	}
-	t.afters = nil
-	t.s.mu.Unlock()
-
-	close(t.done)
-	for _, a := range afters {
-		a.f()
-	}
+	return err
 }

@@ -1,18 +1,18 @@
 // Package host is everything that library code waits on, reads the time from, or draws randomness
 // from, behind one small interface, [Host].
 //
-// Library code does none of these things in any other way, so that a simulation can implement the
-// interface and run the library one goroutine at a time under a seed. [New] is the implementation for
-// production, which maps each method onto ordinary Go. The simulation in maragu.dev/s4ql/internal/sim
-// is the other.
+// Library code does none of these things in any other way, so that another implementation of the
+// interface can run the library one goroutine at a time under a seed. [New] is the implementation for
+// production, which maps each method onto ordinary Go.
 //
-// A context carries the identity of the goroutine that runs, in the simulation. Code passes the
-// context it was given, or one derived from it, to every method that takes one.
+// Code passes the context it was given, or one derived from it, to every method that takes one, so
+// that an implementation can tell from the context which goroutine calls.
 package host
 
 import (
 	"context"
-	"math/rand/v2"
+	"crypto/rand"
+	"encoding/binary"
 	"time"
 )
 
@@ -20,11 +20,11 @@ import (
 // the points where a simulation may make it do something unusual.
 type Host interface {
 	// Go starts f in a new goroutine and returns a handle to wait for it. The name says what the
-	// goroutine is for, and the simulation names the goroutine by it in its trace.
+	// goroutine is for, and no other goroutine of the host that has not returned has it.
 	Go(ctx context.Context, name string, f func(ctx context.Context)) Task
 
 	// NewSemaphore with n permits, which is safe to hold while waiting on anything else the host
-	// offers. With one permit it is a lock. The name appears in the simulation's trace.
+	// offers. With one permit it is a lock. The name says what the semaphore is for.
 	NewSemaphore(name string, n int) Semaphore
 
 	// Sleep for d on the monotonic clock. It fails only if ctx is done first, with the context's
@@ -81,7 +81,7 @@ type production struct {
 }
 
 // New host for production: real goroutines, the time package's clocks and timers, and random
-// numbers from a generator that the Go runtime seeds from the operating system.
+// numbers from crypto/rand.
 func New() Host {
 	return &production{start: time.Now()}
 }
@@ -167,10 +167,12 @@ func (p *production) Monotonic() time.Duration {
 	return time.Since(p.start)
 }
 
-// Uint64 as [Host] describes, from the generator of math/rand/v2, which the Go runtime seeds from
-// the operating system's randomness in every process.
+// Uint64 as [Host] describes, from crypto/rand.
 func (p *production) Uint64() uint64 {
-	return rand.Uint64()
+	var b [8]byte
+	// It never fails.
+	_, _ = rand.Read(b[:])
+	return binary.LittleEndian.Uint64(b[:])
 }
 
 // Buggify is always false.

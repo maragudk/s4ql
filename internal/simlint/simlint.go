@@ -1,25 +1,33 @@
-// Package simlint is a lint for library code, which must run under the simulation in
-// maragu.dev/s4ql/internal/sim. The scheduler there can replay a run only if library code waits,
-// reads the time, and draws randomness only through maragu.dev/s4ql/internal/host, and it notices
-// some breaches of that rule only when the code that breaks it runs, and others never.
+// Package simlint is a lint for library code, which must wait, read the time, start goroutines, and
+// draw randomness only through the host interface in maragu.dev/s4ql/internal/host, so that a
+// simulation can implement the interface and replay a run from a seed. A simulation can notice some
+// breaches of that rule only when the code that breaks it runs, and others never, so the lint checks
+// the code itself.
 //
-// [Analyzer] reports, in every Go file of the module that is not a test:
+// [Analyzer] reports, in every Go file that is not a test:
 //
-//   - a go statement, because a goroutine must be started with host.Host.Go;
+//   - a go statement, and iter.Pull, iter.Pull2, runtime.SetFinalizer, runtime.AddCleanup, and an
+//     import of golang.org/x/sync/errgroup, because they start goroutines, and a goroutine must be
+//     started with host.Host.Go;
+//   - a channel receive, a send, a range over a channel, and a select without a default, because
+//     they can wait outside the host;
 //   - the time package's clock, sleeps, timers, and tickers, because the time is host.Host.Wall and
 //     host.Host.Monotonic, and waiting is host.Host.Sleep;
 //   - context.WithTimeout, context.WithDeadline, and their Cause variants, because a timeout is
-//     host.Host.WithTimeout, and context.AfterFunc, because it starts a goroutine;
+//     host.Host.WithTimeout, context.AfterFunc, because it starts a goroutine, and
+//     context.Background and context.TODO, because code passes on the context it was given;
 //   - sync.Cond and sync.WaitGroup, because a wait for another goroutine is a host.Task or a
 //     host.Semaphore;
-//   - an import of math/rand, math/rand/v2, or crypto/rand, because randomness is host.Host.Uint64.
+//   - an import of math/rand, math/rand/v2, crypto/rand, or hash/maphash, because randomness is
+//     host.Host.Uint64.
 //
-// The packages that implement the host, and others that never run under the simulation, are exempt.
+// The packages that implement the host, and others that never run under a simulation, are exempt.
 // Their list is in this file.
 package simlint
 
 import (
 	"go/ast"
+	"go/token"
 	"go/types"
 	"strconv"
 	"strings"
@@ -64,19 +72,31 @@ var forbidden = map[string]map[string]string{
 		"WithDeadline":      "sets a timer on the real clock; use host.Host.WithTimeout",
 		"WithDeadlineCause": "sets a timer on the real clock; use host.Host.WithTimeout",
 		"AfterFunc":         "starts a goroutine; use host.Host.Go",
+		"Background":        "starts a context of its own; pass on the context you were given, or context.WithoutCancel of it",
+		"TODO":              "starts a context of its own; pass on the context you were given, or context.WithoutCancel of it",
 	},
 	"sync": {
 		"Cond":      "waits outside the host; use a host.Semaphore",
 		"NewCond":   "waits outside the host; use a host.Semaphore",
 		"WaitGroup": "waits outside the host; use host.Task.Wait",
 	},
+	"iter": {
+		"Pull":  "starts a goroutine; use the iterator with a range",
+		"Pull2": "starts a goroutine; use the iterator with a range",
+	},
+	"runtime": {
+		"SetFinalizer": "runs a function in a goroutine outside the host",
+		"AddCleanup":   "runs a function in a goroutine outside the host",
+	},
 }
 
 // forbiddenImports of packages, by import path, with what to use instead.
 var forbiddenImports = map[string]string{
-	"math/rand":    "draws randomness outside the host; use host.Host.Uint64",
-	"math/rand/v2": "draws randomness outside the host; use host.Host.Uint64",
-	"crypto/rand":  "draws randomness outside the host; use host.Host.Uint64",
+	"math/rand":                  "draws randomness outside the host; use host.Host.Uint64",
+	"math/rand/v2":               "draws randomness outside the host; use host.Host.Uint64",
+	"crypto/rand":                "draws randomness outside the host; use host.Host.Uint64",
+	"hash/maphash":               "draws randomness outside the host; use host.Host.Uint64",
+	"golang.org/x/sync/errgroup": "starts goroutines outside the host; use host.Host.Go",
 }
 
 func run(pass *analysis.Pass) (any, error) {
@@ -88,10 +108,37 @@ func run(pass *analysis.Pass) (any, error) {
 		if strings.HasSuffix(pass.Fset.Position(file.Package).Filename, "_test.go") {
 			continue
 		}
-		ast.Inspect(file, func(n ast.Node) bool {
+		var inspect func(n ast.Node) bool
+		inspect = func(n ast.Node) bool {
 			switch n := n.(type) {
 			case *ast.GoStmt:
 				pass.Reportf(n.Pos(), "a go statement starts a goroutine outside the host; use host.Host.Go")
+
+			case *ast.SelectStmt:
+				if !hasDefault(n) {
+					pass.Reportf(n.Pos(), "a select without a default waits outside the host; use a host.Semaphore or a host.Task")
+				}
+				// The receives and sends of a select are reported with it, or never wait because it
+				// has a default. The bodies of its clauses are checked as any other code.
+				for _, clause := range n.Body.List {
+					for _, stmt := range clause.(*ast.CommClause).Body {
+						ast.Inspect(stmt, inspect)
+					}
+				}
+				return false
+
+			case *ast.UnaryExpr:
+				if n.Op == token.ARROW {
+					pass.Reportf(n.Pos(), "a channel receive waits outside the host; use a host.Semaphore or a host.Task")
+				}
+
+			case *ast.SendStmt:
+				pass.Reportf(n.Pos(), "a channel send waits outside the host; use a host.Semaphore or a host.Task")
+
+			case *ast.RangeStmt:
+				if _, ok := pass.TypesInfo.TypeOf(n.X).Underlying().(*types.Chan); ok {
+					pass.Reportf(n.Pos(), "a range over a channel waits outside the host; use a host.Semaphore or a host.Task")
+				}
 
 			case *ast.ImportSpec:
 				path, err := strconv.Unquote(n.Path.Value)
@@ -115,7 +162,18 @@ func run(pass *analysis.Pass) (any, error) {
 				}
 			}
 			return true
-		})
+		}
+		ast.Inspect(file, inspect)
 	}
 	return nil, nil
+}
+
+// hasDefault reports whether the select has a default clause.
+func hasDefault(s *ast.SelectStmt) bool {
+	for _, clause := range s.Body.List {
+		if clause.(*ast.CommClause).Comm == nil {
+			return true
+		}
+	}
+	return false
 }

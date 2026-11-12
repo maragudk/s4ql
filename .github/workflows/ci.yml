@@ -19,13 +19,14 @@ jobs:
   lint:
     uses: maragudk/workflows/.github/workflows/lint.yml@main
 
-  # The reusable workflow runs the tests under the race detector, which is what the simulation's
-  # free-running mode needs.
   test:
     uses: maragudk/workflows/.github/workflows/test.yml@main
 
-  # Library code must follow the rules of the simulation, which golangci-lint does not know.
-  simlint:
+  # Library code must follow the rules of the simulation, which golangci-lint does not know. The lint
+  # is a separate module, which the reusable workflows above do not see. The free-running mode of the
+  # simulation exists for the race detector, so this job runs it under the race detector, whatever
+  # the reusable test workflow does.
+  simulation:
     runs-on: ubuntu-latest
 
     steps:
@@ -35,11 +36,29 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version-file: internal/simlint/go.mod
+          cache-dependency-path: internal/simlint/go.sum
           check-latest: true
 
+      - name: Check that the lint's go.mod and go.sum are tidy
+        working-directory: internal/simlint
+        run: go mod tidy && git diff --exit-code go.mod go.sum
+
+      - name: Test the lint
+        working-directory: internal/simlint
+        run: go test -shuffle on ./...
+
       - name: Lint for the simulation
-        run: go run ./internal/simlint/cmd/simlint ./...
+        run: (cd internal/simlint && go build -o "$RUNNER_TEMP/simlint" ./cmd/simlint) && "$RUNNER_TEMP/simlint" ./...
+
+      - name: Lint the lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          working-directory: internal/simlint
+
+      - name: Run the free-running mode under the race detector
+        run: go test -race -shuffle on -run 'TestFreeRunning|TestFree$' ./internal/sim/
 
   # The cross-checks against github.com/mattn/go-sqlite3 are a separate module, which the reusable
   # workflows above do not see.

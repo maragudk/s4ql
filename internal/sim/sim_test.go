@@ -157,7 +157,7 @@ func TestScheduler_Run(t *testing.T) {
 				})
 			}
 		})
-		is.Equal(t, "deadlock: every task waits on a condition that is false: worker-0 at acquire of b, worker-1 at acquire of a", errorString(err))
+		is.Equal(t, "deadlock: no task can run: worker-0 at acquire of b, worker-1 at acquire of a", errorString(err))
 		is.Equal(t, 2, unwound.Load())
 	})
 
@@ -381,7 +381,7 @@ func TestScheduler_WithTimeout(t *testing.T) {
 		is.NotError(t, err)
 	})
 
-	t.Run("should pass the error for an exceeded deadline on to a context derived from it", func(t *testing.T) {
+	t.Run("should end the waits of a context derived from it with the error for an exceeded deadline, which is its cause", func(t *testing.T) {
 		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
 			timeoutCtx, cancel := s.WithTimeout(ctx, time.Second)
 			defer cancel()
@@ -389,10 +389,38 @@ func TestScheduler_WithTimeout(t *testing.T) {
 			derived, cancelDerived := context.WithCancel(context.WithValue(timeoutCtx, key{}, "value"))
 			defer cancelDerived()
 			is.True(t, errors.Is(s.Sleep(derived, time.Hour), context.DeadlineExceeded))
-			is.True(t, errors.Is(derived.Err(), context.DeadlineExceeded))
+			is.True(t, errors.Is(context.Cause(derived), context.DeadlineExceeded))
+			// The one difference from context.WithTimeout.
+			is.Error(t, context.Canceled, derived.Err())
 			is.Equal(t, "value", derived.Value(key{}))
 			_, ok := derived.Deadline()
 			is.True(t, !ok)
+		})
+		is.NotError(t, err)
+	})
+
+	// The context package starts a goroutine to watch a parent of a type it does not know, and such a
+	// goroutine would run outside the scheduler, at a time that the seed does not decide.
+	t.Run("should cancel a context derived from it at once, also through a value, and start no goroutine", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			before := runtime.NumGoroutine()
+			type key struct{}
+			timeoutCtx, cancel := s.WithTimeout(ctx, time.Hour)
+			derived, cancelDerived := context.WithCancel(context.WithValue(timeoutCtx, key{}, "value"))
+			defer cancelDerived()
+			nested, cancelNested := s.WithTimeout(context.WithValue(derived, key{}, "nested"), time.Hour)
+			defer cancelNested()
+			is.Equal(t, before, runtime.NumGoroutine())
+
+			cancel()
+			for _, c := range []context.Context{timeoutCtx, derived, nested} {
+				is.Error(t, context.Canceled, c.Err())
+				select {
+				case <-c.Done():
+				default:
+					t.Error("the context is not done")
+				}
+			}
 		})
 		is.NotError(t, err)
 	})
@@ -419,10 +447,44 @@ func TestScheduler_WithTimeout(t *testing.T) {
 			defer cancel()
 			cancelParent()
 			is.Error(t, context.Canceled, timeoutCtx.Err())
+			select {
+			case <-timeoutCtx.Done():
+			default:
+				t.Error("the context is not done")
+			}
 			is.Error(t, context.Canceled, s.Sleep(timeoutCtx, time.Hour))
 			is.Equal(t, time.Duration(0), since(s))
+
+			// A timeout of a parent that is done is done, and not expired.
+			atOnce, cancelAtOnce := s.WithTimeout(parent, 0)
+			defer cancelAtOnce()
+			is.Error(t, context.Canceled, atOnce.Err())
+			is.Error(t, context.Canceled, context.Cause(atOnce))
 		})
 		is.NotError(t, err)
+	})
+
+	t.Run("should let the seed decide whether a sleep that ends when the timeout does ends first", func(t *testing.T) {
+		outcomes := map[string]int{}
+		for seed := range uint64(100) {
+			_, err := schedule(t, seed, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+				timeoutCtx, cancel := s.WithTimeout(ctx, time.Second)
+				defer cancel()
+				outcomes[errorString(s.Sleep(timeoutCtx, time.Second))]++
+			})
+			is.NotError(t, err)
+		}
+		t.Logf("%v", outcomes)
+		is.True(t, outcomes[""] > 0 && outcomes[context.DeadlineExceeded.Error()] > 0)
+	})
+
+	t.Run("should fail when a task sets a timeout through the host of an instance that it does not belong to", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			_, cancel := a.WithTimeout(ctx, time.Second)
+			defer cancel()
+		})
+		is.Equal(t, "task main sets a timeout on the host of instance a, which is not its own", errorString(err))
 	})
 
 	t.Run("should be done at once with a timeout that is not positive", func(t *testing.T) {
@@ -653,7 +715,26 @@ func TestInstance_clocks(t *testing.T) {
 				_ = a.Sleep(ctx, time.Second)
 			}).Wait(ctx))
 		})
-		is.Equal(t, "deadlock: every task waits on a condition that is false: a/sleeper at sleep, main at wait for a/sleeper", errorString(err))
+		is.Equal(t, "deadlock: no task can run: a/sleeper at sleep, main at wait for a/sleeper", errorString(err))
+	})
+
+	t.Run("should let a task of an instance whose monotonic clock stands still yield, take locks, and start tasks", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{Jitter: time.Second}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			a.StopMonotonic()
+			m := a.NewSemaphore("m", 1)
+			is.NotError(t, a.Go(ctx, "worker", func(ctx context.Context) {
+				for range 20 {
+					is.NotError(t, m.Acquire(ctx))
+					a.Yield(ctx, "inside")
+					m.Release(ctx)
+				}
+				is.NotError(t, a.Go(ctx, "child", func(ctx context.Context) { a.Yield(ctx, "child") }).Wait(ctx))
+			}).Wait(ctx))
+			is.Equal(t, time.Duration(0), a.Monotonic())
+			is.True(t, since(s) > 0, "jitter should have moved simulated time")
+		})
+		is.NotError(t, err)
 	})
 }
 
@@ -774,6 +855,21 @@ func TestInstance_Crash(t *testing.T) {
 			is.NotError(t, err)
 			is.True(t, len(applied) >= 9 && len(applied) <= 10, fmt.Sprint(applied))
 		}
+	})
+
+	t.Run("should fail when a deferred call of a crashed task starts a task that did not crash", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			a.Go(ctx, "worker", func(ctx context.Context) {
+				defer s.Go(ctx, "cleanup", func(ctx context.Context) {
+					t.Error("runs")
+				})
+				_ = a.Sleep(ctx, time.Hour)
+			})
+			is.NotError(t, s.Sleep(ctx, time.Second))
+			a.Crash()
+		})
+		is.Equal(t, "task cleanup starts while the run ends, after every task that did not crash has returned", errorString(err))
 	})
 
 	t.Run("should panic on a second instance with the same name", func(t *testing.T) {

@@ -42,13 +42,11 @@ var (
 	errInjected       = errors.New("injected fault")
 	errSwapFailed     = errors.New("manifest swap failed")
 	errOutcomeUnknown = errors.New("the outcome of a manifest swap is unknown")
-	errLeaseHeld      = errors.New("lease held by another instance")
 	errLeaseLost      = errors.New("lease lost")
 	errLeaseExpired   = errors.New("lease expired")
 	errNotServing     = errors.New("not serving yet")
 	errLocal          = errors.New("local I/O failure")
 	errStopped        = errors.New("stopped")
-	errClosed         = errors.New("closed")
 )
 
 // objectStore is the part of S3 that the toy library uses.
@@ -76,7 +74,9 @@ type manifest struct {
 
 // changeFile is one commit in the log.
 type changeFile struct {
-	Seq int64 `json:"seq"`
+	// ID of the transaction, which tells apart two transactions with the same writes.
+	ID  uint64 `json:"id"`
+	Seq int64  `json:"seq"`
 	// Prev is the name of the change file before this one, or empty for the first.
 	Prev string `json:"prev"`
 	// Sets are the keys and values that the commit wrote, in the order it wrote them.
@@ -318,12 +318,13 @@ func (d *toyDB) acquire(ctx context.Context) (time.Duration, error) {
 		return time.Second, err
 	}
 	if man.Holder != "" && man.Holder != d.id {
+		held := errors.New("the lease is held by another instance")
 		if d.bugs.takeoverAfterRelease {
 			// The planted bug.
-			return 5 * time.Second, errLeaseHeld
+			return 5 * time.Second, held
 		}
 		if wait := man.Expires.Add(takeoverMargin).Sub(d.host.Wall()); wait > 0 {
-			return min(max(wait, time.Second), 10*time.Second), errLeaseHeld
+			return min(max(wait, time.Second), 10*time.Second), held
 		}
 	}
 
@@ -505,6 +506,9 @@ var errCommittedElsewhere = fmt.Errorf("%w after the commit", errPrecondition)
 // only if the log that the manifest points to has the change file, and then it fails with
 // errCommittedElsewhere.
 func (d *toyDB) resolveSwap(ctx context.Context, data []byte, etag, change string, seq int64) (string, error) {
+	if d.host.Buggify(ctx, "toy: the read-back of a swap does not tell") {
+		return "", errOutcomeUnknown
+	}
 	for range 10 {
 		got, gotETag, err := d.store.Get(ctx, manifestKey)
 		switch {
@@ -632,7 +636,7 @@ func (d *toyDB) renew(ctx context.Context, force bool) error {
 // Close the database: stop serving, wait for the transactions that are open, release the lease if
 // this instance holds it, and close the cache. If the release fails, the lease times out.
 func (d *toyDB) Close(ctx context.Context) error {
-	_ = d.stop(errClosed)
+	_ = d.stop(errors.New("closed"))
 	d.cancel()
 	if err := d.leaser.Wait(ctx); err != nil {
 		return err
@@ -674,7 +678,8 @@ func (d *toyDB) Close(ctx context.Context) error {
 
 // toyTx is a write transaction.
 type toyTx struct {
-	d *toyDB
+	d  *toyDB
+	id uint64
 	// seq is the number that the commit of this transaction gets.
 	seq    int64
 	writes [][2]int64
@@ -703,18 +708,13 @@ func (d *toyDB) Begin(ctx context.Context) (*toyTx, error) {
 		d.writer.Release(ctx)
 		return nil, err
 	}
-	return &toyTx{d: d, seq: seq + 1}, nil
+	return &toyTx{d: d, id: d.host.Uint64(), seq: seq + 1}, nil
 }
 
 // Set the value at key k to the number of the transaction's commit.
 func (tx *toyTx) Set(k int64) error {
 	tx.writes = append(tx.writes, [2]int64{k, tx.seq})
 	return exec(tx.d.wconn, "insert into kv (k, v) values (?, ?) on conflict (k) do update set v = excluded.v", k, tx.seq)
-}
-
-// Get the value at key k as the transaction sees it, or 0 if there is none.
-func (tx *toyTx) Get(k int64) (int64, error) {
-	return queryInt(tx.d.wconn, "select coalesce((select v from kv where k = ?), 0)", k)
 }
 
 // Rollback the transaction.
@@ -790,7 +790,7 @@ func (tx *toyTx) publish(ctx context.Context) error {
 		return err
 	}
 
-	file, err := json.Marshal(changeFile{Seq: tx.seq, Prev: d.man.Head, Sets: tx.writes})
+	file, err := json.Marshal(changeFile{ID: tx.id, Seq: tx.seq, Prev: d.man.Head, Sets: tx.writes})
 	if err != nil {
 		return err
 	}
