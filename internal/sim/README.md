@@ -66,32 +66,42 @@ Other choices follow from these:
 - **Three workloads run it.** The first has one instance. The second has everything: two instances that compete for the lease, clocks that move, a crash and a restart, buggify, and faults of the store. The third has callers that never pause. They are in `simulation_test.go`, and the doc comment of `workload.run` lists the invariants.
 - **The checks compare data against a model, not counters.** Each commit is recorded with its writes before `Commit`, and then marked acknowledged, failed, or unknown. Each read is compared with the value that the log has at the read's commit.
 - **A restart finds a copy of the files.** A crash copies the cache and its write-ahead log to a new path at the moment of the crash, and a new instance starts on the copy.
-- **The toy's lease is the design of 2026-11-11,** with an expiry on the holder's wall clock. Its clock faults are limited to what that design claimed to survive: at most one wrong clock per instance at a time, and a wall clock set backward only while the instance is cut off from the store. Without the second limit, the review of the build found stale reads in 3 of 100 seeds. That finding changed the lease's design; see [The lease and its clocks](../../docs/todo.md#the-lease-and-its-clocks).
+- **The toy's lease is the design of 2026-11-12,** which compares no clocks between instances; see [The lease and its clocks](../../docs/todo.md#the-lease-and-its-clocks). The toy first had the design of 2026-11-11, with an expiry on the holder's wall clock. The review of the build found stale reads with it in 3 of 100 seeds, as soon as a holder whose wall clock was set backward could still reach the store. That finding changed the lease's design, and the toy was then changed to test the new one (`docs/diary/2026-11-12-lease-without-clock-comparison.md`).
+- **Two clock faults stay out of the workload,** because the design does not claim to survive them: both clocks of one instance wrong in the same direction, and a monotonic clock that runs fast on the instance that waits to take the lease. The comment on `clockFaults` in `simulation_test.go` says why. Every other move of a clock is in the workload, on instances that can reach the store.
+- **The toy's store gives a version from the content,** as S3's ETag does, so that a renewal that writes the same bytes is invisible. With numbered versions, the salt in the manifest could not have been tested.
 
 ## What was measured
 
 The spike ran 10000 seeds twice with no differing pair, and each seed gave a different interleaving.
 
-The build ran each workload with `S4QL_SIM_SEEDS=10000`. No pair of traces differed, and no seed violated an invariant:
+The numbers below are from the toy with the lease of 2026-11-12. Each workload ran with `S4QL_SIM_SEEDS=10000`. No pair of traces differed, and no seed violated an invariant:
 
-| Workload | Seeds, each run twice | Distinct traces | What the runs held |
-|---|---|---|---|
-| One instance | 10000 | 10000 | 133547 commits, 305534 reads, 4236 reads refused for an expired lease |
-| Everything | 10000 | 10000 | 106553 commits, 487 of unknown outcome, 10000 crashes and restarts, 16722 moves of a clock, 18713 buggify points that fired |
-| Callers that never pause | 2500 | 2500 | a quarter of the seeds, because its runs are several times longer |
+| Workload | Seeds, each run twice | What the runs held |
+|---|---|---|
+| One instance | 10000 | some instance served again at most 57 s after the workload |
+| Everything | 10000 | 97456 commits, 489 of unknown outcome, 239048 reads, 10000 crashes and restarts, 35905 moves of a clock, 25029 buggify points that fired |
+| Callers that never pause | 2500 | a quarter of the seeds, because its runs are several times longer |
 
-The planted bugs, over the same 10000 seeds, and their controls:
+The planted bugs, each over 10000 seeds. The control is the same workload without the fault that the bug needs. Each bug's workload also ran with the toy unchanged, and no seed failed then:
 
-| Planted bug | Seeds that found it | Control | Seeds of the control that found it |
-|---|---|---|---|
-| A renewal that swaps the manifest outside the lock | 1572 | none | |
-| A commit that reaches the cache before the manifest | 1750 | none | |
-| A read that checks the wall clock only | 1352 | a partition without the shift of the clock | 0 |
-| A read that checks the monotonic clock only | 1841 | no clock fault | 0 |
-| An instance that takes over a lease only after a release | 9915 | no crash | 0 |
-| A commit that ignores a failure of the cache | 2068 | buggify off | 0 |
+| Planted bug | Seeds that found it | Seeds of the control that found it |
+|---|---|---|
+| A renewal that writes no new salt | 813 | 0 |
+| An instance that waits for its own duration, not the holder's | 1367 | 0 |
+| A swap against the version read at the end of the wait | 6372 | 0 |
+| A holder that counts its lease from the answer of the renewal | 696 | 0 |
+| A read that checks the wall clock only | 2355 | 0 |
+| A read that checks the monotonic clock only | 2090 | 0 |
+| A renewal that swaps the manifest outside the lock | 1534 | no control |
+| A commit that reaches the cache before the manifest | 1666 | no control |
+| An instance that takes over a lease only after a release | 9917 | 0 |
+| A commit that ignores a failure of the cache | 2001 | 0 |
 
-Two more results:
+The bugs of the lease need workloads of their own to be found by many seeds. Planted in the workload with everything, the renewal without a new salt was found by 0 of 2500 seeds, so a clean run of that workload says little about the salt.
+
+What these runs do not show: the margin on the wait is untested, because the harness's clocks run at the true rate; and the toy's own store never applies a request after its sender saw it fail, which the simulated store in `internal/store/simstore` does.
+
+More results:
 
 - **Two instances found in 200 seeds a bug that 20000 runs with one instance could not.** It was a real bug in the toy, not a planted one. It needs another holder to move the manifest while a swap is unresolved.
 - **Buggify keeps its two probabilities.** Over 200 seeds it switched on 207 of 800 points, and a point that was on fired in 5196 of 20700 visits, which is a quarter of each.
