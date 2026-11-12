@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,12 +21,33 @@ import (
 
 	"maragu.dev/is"
 
+	"maragu.dev/s4ql/internal/host"
 	"maragu.dev/s4ql/internal/sim"
+	"maragu.dev/s4ql/internal/sqlite"
 )
 
-// workload that callers run against a [toyDB].
+// clockFaults that a workload does to the clocks of its instances, as a set of bits. Each instance
+// gets at most one of them in its life, so that at most one of its two clocks is wrong at a time, as
+// the lease's design requires.
+type clockFaults int
+
+const (
+	// stopMonotonic holds an instance's monotonic clock still for a while.
+	stopMonotonic clockFaults = 1 << iota
+	// wallBackward sets an instance's wall clock backward for a while, and cuts it off from the store
+	// for as long, so that it writes no expiry from the wrong clock.
+	wallBackward
+	// wallForward sets an instance's wall clock forward by less than the takeover margin, for good.
+	wallForward
+
+	allClockFaults = stopMonotonic | wallBackward | wallForward
+)
+
+// workload that callers run against [toyDB] instances.
 type workload struct {
-	// callers is the number of tasks that use the database at the same time.
+	// instances that run at the start, each with its own cache.
+	instances int
+	// callers is the number of tasks that use each instance at the same time.
 	callers int
 	// ops is the number of transactions that each caller runs.
 	ops int
@@ -36,269 +57,607 @@ type workload struct {
 	latency time.Duration
 	options toyOptions
 	faults  faults
+	// clocks that the workload moves, under the scheduler only.
+	clocks clockFaults
+	// crashes of a random instance, each followed by a restart on what it left on disk, under the
+	// scheduler only.
+	crashes int
+	// buggify for the run.
+	buggify bool
 }
 
-// defaultWorkload has enough callers, simulated time, and faults for commits, renewals, reads, and
-// lease timeouts to overlap.
-var defaultWorkload = workload{
-	callers: 4,
-	ops:     12,
-	think:   15 * time.Second,
-	latency: time.Millisecond,
-	options: toyOptions{readers: 2, busyTimeout: 1000},
-	faults:  faults{errors: 30, lostAcks: 30, delays: 10},
+// leaseLossExpected reports whether an instance may lose its lease, which it can only to another.
+func (w workload) leaseLossExpected() bool {
+	return w.instances > 1
+}
+
+// singleWorkload has one instance, and enough callers, simulated time, and faults for commits,
+// renewals, reads, and lease timeouts to overlap.
+var singleWorkload = workload{
+	instances: 1,
+	callers:   4,
+	ops:       12,
+	think:     15 * time.Second,
+	latency:   time.Millisecond,
+	options:   toyOptions{readers: 2, busyTimeout: 1000},
+	faults:    faults{errors: 30, lostAcks: 30, delays: 10},
+}
+
+// fullWorkload has everything the harness can do: two instances that compete for the lease, clocks
+// that move, a crash and a restart, buggify, and faults of the store.
+var fullWorkload = workload{
+	instances: 2,
+	callers:   3,
+	ops:       12,
+	think:     15 * time.Second,
+	latency:   time.Millisecond,
+	options:   toyOptions{readers: 2, busyTimeout: 1000},
+	faults:    faults{errors: 30, lostAcks: 30, delays: 10},
+	clocks:    allClockFaults,
+	crashes:   1,
+	buggify:   true,
 }
 
 // hammerWorkload has callers that never wait between transactions, so that with the scheduler off
 // they are in SQLite and in the toy library's own code at the same time.
 var hammerWorkload = workload{
-	callers: 8,
-	ops:     40,
-	latency: time.Millisecond,
-	options: toyOptions{readers: 4, busyTimeout: 1000},
-	faults:  faults{errors: 30, lostAcks: 30, delays: 10},
+	instances: 1,
+	callers:   8,
+	ops:       40,
+	latency:   time.Millisecond,
+	options:   toyOptions{readers: 4, busyTimeout: 1000},
+	faults:    faults{errors: 30, lostAcks: 30, delays: 10},
 }
+
+// attempt of a commit, as the caller that made it saw it.
+type attempt struct {
+	seq  int64
+	sets [][2]int64
+	// state is pending until Commit returns, and stays pending if the caller's instance crashed.
+	state attemptState
+}
+
+type attemptState int
+
+const (
+	pending attemptState = iota
+	acknowledged
+	failed
+	// unknown is a commit whose outcome Commit reported as unknown.
+	unknown
+)
 
 // outcome of running a [workload].
 type outcome struct {
-	commits, failedCommits, rollbacks, reads, failedReads, expiredReads atomic.Int64
+	commits, failedCommits, unknownCommits, rollbacks, reads, failedReads, expiredReads atomic.Int64
 	// overtakenReads are reads that ended when the manifest had a commit that their snapshot did not,
 	// so a commit was in progress or finished while they ran.
 	overtakenReads atomic.Int64
+	// stops of an instance, and restarts after a crash.
+	stops, restarts atomic.Int64
+	// acked is the highest commit that a caller knows to be acknowledged.
+	acked atomic.Int64
 
 	mu sync.Mutex
 	// violations of the invariants that the workload checks.
 	violations []string
-	// acked holds the writes of every acknowledged commit, by its number, as the callers made them.
-	acked map[int64][][2]int64
-	// lines of the trace of a free run.
-	lines []string
+	attempts   []*attempt
+	// crashed databases, whose files are closed after the run.
+	crashed []*toyDB
 }
 
-// violate records a violation, also in the trace of e.
-func (o *outcome) violate(ctx context.Context, e tracer, format string, args ...any) {
-	e.Trace(ctx, "VIOLATION: "+format, args...)
+func newOutcome() *outcome {
+	return &outcome{}
+}
+
+// violate records a violation, also in the trace of h.
+func (o *outcome) violate(ctx context.Context, h tracer, format string, args ...any) {
+	h.Trace(ctx, "VIOLATION: "+format, args...)
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.violations = append(o.violations, fmt.Sprintf(format, args...))
 }
 
-// expected reports whether err is one that the faults of the simulated store explain.
+// expected reports whether err from a call of a caller is one that the faults and the design
+// explain. An instance that stopped for a reason that is not explained is reported by its node.
 func expected(err error) bool {
-	return errors.Is(err, errInjected) || errors.Is(err, errSwapFailed) || errors.Is(err, errLeaseExpired)
+	for _, target := range []error{errInjected, errSwapFailed, errLeaseExpired, errNotServing, errStopped, errOutcomeUnknown} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
 }
 
-// run the workload w as the task of ctx, with the cache at path, and record what happened in o. It
-// checks these invariants:
+// cluster is where a workload runs: the host of the test itself, and a way to start the host of an
+// instance.
+type cluster struct {
+	world tracer
+	// instance starts the host of a new instance. Under the scheduler it is a [*sim.Instance].
+	instance func(name string) tracer
+	// dir for the caches.
+	dir string
+}
+
+// node is one process: an instance, its cache, its database, and its callers.
+type node struct {
+	name   string
+	host   tracer
+	client *storeClient
+	path   string
+	// callers that have not returned.
+	callers atomic.Int64
+
+	mu sync.Mutex
+	db *toyDB
+}
+
+func (n *node) current() *toyDB {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.db
+}
+
+// do f as a task of the node's instance, and wait until it has returned, because only a task of an
+// instance may wait through its host.
+func (n *node) do(ctx context.Context, name string, f func(ctx context.Context)) {
+	_ = n.host.Go(ctx, name, f).Wait(ctx)
+}
+
+// run the workload w as the task of ctx, in the cluster c, and record what happened in o. It checks
+// these invariants:
 //
-//   - A read that starts after a commit is acknowledged sees that commit.
+//   - A read that starts after a commit is acknowledged, by any instance, sees that commit.
 //   - A read never sees a commit that the manifest does not have, so the cache is never ahead.
-//   - The instance never loses its lease, because no other instance exists.
-//   - At the end, the log holds exactly the acknowledged commits with the writes that the callers
-//     made, and the cache holds what the log says.
-//   - After a close that reports no error, the lease is released.
-func (w workload) run(ctx context.Context, e tracer, path string, o *outcome) {
-	store := newMemStore(e, w.faults, w.latency)
+//   - An instance stops only for a reason that the faults explain.
+//   - Some instance serves again within two minutes of the end of the workload, also after a crash.
+//   - At the end, the log holds every acknowledged commit with the writes that its caller made, and
+//     no commit that is known to have failed, and every cache holds what the log says up to its
+//     commit.
+//   - After every instance is closed, the lease is released, or held by one that could not release
+//     it.
+func (w workload) run(ctx context.Context, c cluster, o *outcome) {
+	store := newMemStore(c.world, w.faults, w.latency)
+	var mu sync.Mutex
+	var nodes []*node
+	// holders that may hold the lease at the end: crashed databases, and those that could not release
+	// it.
+	holders := map[string]bool{}
 
-	d, err := openToy(ctx, e, store, path, w.options)
-	if err != nil {
-		o.violate(ctx, e, "open: %v", err)
-		return
-	}
-
-	// acked is the highest commit that a caller knows to be acknowledged.
-	var acked atomic.Int64
-
-	write := func(ctx context.Context) {
+	write := func(ctx context.Context, n *node, d *toyDB) {
 		tx, err := d.Begin(ctx)
 		if err != nil {
-			o.violate(ctx, e, "begin: %v", err)
+			if !expected(err) {
+				o.violate(ctx, c.world, "begin: %v", err)
+			}
 			return
 		}
 		var sets [][2]int64
-		for range 1 + intn(e, 3) {
-			k := int64(intn(e, 5))
+		for range 1 + intn(n.host, 3) {
+			k := int64(intn(n.host, 5))
 			if err := tx.Set(k); err != nil {
-				o.violate(ctx, e, "set: %v", err)
+				o.violate(ctx, c.world, "set: %v", err)
 			}
 			sets = append(sets, [2]int64{k, tx.seq})
-			e.Trace(ctx, "set %v in transaction %v", k, tx.seq)
-			e.Yield(ctx, "caller: between statements")
+			c.world.Trace(ctx, "set %v in transaction %v", k, tx.seq)
+			n.host.Yield(ctx, "caller: between statements")
 		}
-		if intn(e, 10) == 0 {
+		if intn(n.host, 10) == 0 {
 			if err := tx.Rollback(ctx); err != nil {
-				o.violate(ctx, e, "rollback: %v", err)
+				o.violate(ctx, c.world, "rollback: %v", err)
 			}
 			o.rollbacks.Add(1)
-			e.Trace(ctx, "rollback of transaction %v", tx.seq)
+			c.world.Trace(ctx, "rollback of transaction %v", tx.seq)
 			return
 		}
-		if err := tx.Commit(ctx); err != nil {
-			o.failedCommits.Add(1)
-			e.Trace(ctx, "commit of transaction %v: %v", tx.seq, err)
-			if !expected(err) {
-				o.violate(ctx, e, "commit of transaction %v: %v", tx.seq, err)
-			}
-			return
-		}
+
+		a := &attempt{seq: tx.seq, sets: sets}
 		o.mu.Lock()
-		o.acked[tx.seq] = sets
+		o.attempts = append(o.attempts, a)
 		o.mu.Unlock()
-		for {
-			high := acked.Load()
-			if tx.seq <= high || acked.CompareAndSwap(high, tx.seq) {
-				break
+		err = tx.Commit(ctx)
+		o.mu.Lock()
+		switch {
+		case err == nil:
+			a.state = acknowledged
+		case errors.Is(err, errOutcomeUnknown):
+			a.state = unknown
+		default:
+			a.state = failed
+		}
+		o.mu.Unlock()
+		switch {
+		case err == nil:
+			for {
+				high := o.acked.Load()
+				if tx.seq <= high || o.acked.CompareAndSwap(high, tx.seq) {
+					break
+				}
+			}
+			o.commits.Add(1)
+			c.world.Trace(ctx, "commit of transaction %v: acknowledged", tx.seq)
+		case errors.Is(err, errOutcomeUnknown):
+			o.unknownCommits.Add(1)
+			c.world.Trace(ctx, "commit of transaction %v: %v", tx.seq, err)
+		default:
+			o.failedCommits.Add(1)
+			c.world.Trace(ctx, "commit of transaction %v: %v", tx.seq, err)
+			if !expected(err) {
+				o.violate(ctx, c.world, "commit of transaction %v: %v", tx.seq, err)
 			}
 		}
-		o.commits.Add(1)
-		e.Trace(ctx, "commit of transaction %v: acknowledged", tx.seq)
 	}
 
-	read := func(ctx context.Context) {
-		before := acked.Load()
-		k := int64(intn(e, 5))
+	read := func(ctx context.Context, n *node, d *toyDB) {
+		before := o.acked.Load()
+		k := int64(intn(n.host, 5))
 		seq, v, err := d.Read(ctx, k)
 		if err != nil {
 			o.failedReads.Add(1)
 			if errors.Is(err, errLeaseExpired) {
 				o.expiredReads.Add(1)
 			}
-			e.Trace(ctx, "read of %v: %v", k, err)
+			c.world.Trace(ctx, "read of %v: %v", k, err)
 			if !expected(err) {
-				o.violate(ctx, e, "read of %v: %v", k, err)
+				o.violate(ctx, c.world, "read of %v: %v", k, err)
 			}
 			return
 		}
 		man, err := store.manifest()
 		if err != nil {
-			o.violate(ctx, e, "manifest: %v", err)
+			o.violate(ctx, c.world, "manifest: %v", err)
 		}
 		o.reads.Add(1)
 		if man.Seq > seq {
 			o.overtakenReads.Add(1)
 		}
-		e.Trace(ctx, "read of %v: %v as of commit %v", k, v, seq)
+		c.world.Trace(ctx, "read of %v: %v as of commit %v", k, v, seq)
 		if seq < before {
-			o.violate(ctx, e, "a read saw commit %v after commit %v was acknowledged", seq, before)
+			o.violate(ctx, c.world, "a read saw commit %v after commit %v was acknowledged", seq, before)
 		}
 		if seq > man.Seq {
-			o.violate(ctx, e, "a read saw commit %v while the manifest was at %v", seq, man.Seq)
+			o.violate(ctx, c.world, "a read saw commit %v while the manifest was at %v", seq, man.Seq)
 		}
 		if v > seq {
-			o.violate(ctx, e, "a read saw the value of commit %v in the snapshot of commit %v", v, seq)
+			o.violate(ctx, c.world, "a read saw the value of commit %v in the snapshot of commit %v", v, seq)
 		}
 	}
 
-	var tasks []sim.Task
-	for i := range w.callers {
-		tasks = append(tasks, e.Go(ctx, fmt.Sprint("caller-", i), func(ctx context.Context) {
-			for range w.ops {
-				if w.think > 0 {
-					_ = e.Sleep(ctx, time.Duration(intn(e, int(w.think/time.Millisecond)))*time.Millisecond)
+	// stopped checks why the database of n stopped, closes it, and opens it again, as an application
+	// does.
+	stopped := func(ctx context.Context, n *node, d *toyDB) {
+		cause := d.stopErr()
+		o.stops.Add(1)
+		c.world.Trace(ctx, "%v", cause)
+		explained := errors.Is(cause, errOutcomeUnknown) ||
+			(errors.Is(cause, errLeaseLost) && w.leaseLossExpected()) ||
+			(errors.Is(cause, errLocal) && w.buggify)
+		if !explained {
+			o.violate(ctx, c.world, "the instance stopped: %v", cause)
+		}
+		if err := d.Close(ctx); err != nil {
+			mu.Lock()
+			holders[d.id] = true
+			mu.Unlock()
+			if !expected(err) && !errors.Is(err, errPrecondition) {
+				o.violate(ctx, c.world, "close: %v", err)
+			}
+		}
+		next, err := openToy(ctx, n.host, n.client, n.path, w.options)
+		if err != nil {
+			o.violate(ctx, c.world, "open again: %v", err)
+			return
+		}
+		n.mu.Lock()
+		n.db = next
+		n.mu.Unlock()
+	}
+
+	// start a node with its callers and the task that opens its database again when it stops, and
+	// return the tasks.
+	start := func(ctx context.Context, name, path string) (*node, []host.Task) {
+		n := &node{name: name, host: c.instance(name), client: store.client(), path: path}
+		d, err := openToy(ctx, n.host, n.client, path, w.options)
+		if err != nil {
+			o.violate(ctx, c.world, "open: %v", err)
+			return n, nil
+		}
+		n.db = d
+		mu.Lock()
+		nodes = append(nodes, n)
+		mu.Unlock()
+
+		var tasks []host.Task
+		n.callers.Store(int64(w.callers))
+		for i := range w.callers {
+			tasks = append(tasks, n.host.Go(ctx, fmt.Sprint("caller-", i), func(ctx context.Context) {
+				defer n.callers.Add(-1)
+				for range w.ops {
+					if w.think > 0 {
+						_ = n.host.Sleep(ctx, time.Duration(intn(n.host, int(w.think/time.Millisecond)))*time.Millisecond)
+					}
+					d := n.current()
+					if intn(n.host, 100) < 35 {
+						write(ctx, n, d)
+					} else {
+						read(ctx, n, d)
+					}
 				}
-				if intn(e, 100) < 35 {
-					write(ctx)
-				} else {
-					read(ctx)
+			}))
+		}
+		tasks = append(tasks, n.host.Go(ctx, "supervisor", func(ctx context.Context) {
+			for n.callers.Load() > 0 {
+				if d := n.current(); d.stopErr() != nil {
+					stopped(ctx, n, d)
 				}
+				_ = n.host.Sleep(ctx, 2*time.Second)
+			}
+		}))
+		return n, tasks
+	}
+
+	var tasks []host.Task
+	for i := range w.instances {
+		name := string(rune('a' + i))
+		n, nodeTasks := start(ctx, name, filepath.Join(c.dir, name+".db"))
+		tasks = append(tasks, nodeTasks...)
+		if inst, ok := n.host.(*sim.Instance); ok && w.clocks != 0 {
+			tasks = append(tasks, c.world.Go(ctx, "clocks of "+name, func(ctx context.Context) {
+				w.moveClocks(ctx, c.world, inst, n)
+			}))
+		}
+	}
+	if _, ok := c.world.(*sim.Scheduler); ok && w.crashes > 0 {
+		tasks = append(tasks, c.world.Go(ctx, "crasher", func(ctx context.Context) {
+			var restarted []host.Task
+			for i := range w.crashes {
+				_ = c.world.Sleep(ctx, time.Duration(10_000+intn(c.world, 110_000))*time.Millisecond)
+				mu.Lock()
+				var live []*node
+				for _, n := range nodes {
+					if !n.host.(*sim.Instance).Crashed() {
+						live = append(live, n)
+					}
+				}
+				mu.Unlock()
+				if len(live) == 0 {
+					break
+				}
+				victim := live[intn(c.world, len(live))]
+				victim.host.(*sim.Instance).Crash()
+				d := victim.current()
+				o.mu.Lock()
+				o.crashed = append(o.crashed, d)
+				o.mu.Unlock()
+				mu.Lock()
+				holders[d.id] = true
+				mu.Unlock()
+
+				// The restarted instance finds the files as the crash left them.
+				name := fmt.Sprint(victim.name, i+2)
+				path := filepath.Join(c.dir, name+".db")
+				if err := copyCache(victim.path, path); err != nil {
+					o.violate(ctx, c.world, "copy of the cache: %v", err)
+					return
+				}
+				o.restarts.Add(1)
+				_, nodeTasks := start(ctx, name, path)
+				restarted = append(restarted, nodeTasks...)
+			}
+			for _, task := range restarted {
+				_ = task.Wait(ctx)
 			}
 		}))
 	}
 	for _, task := range tasks {
 		if err := task.Wait(ctx); err != nil {
-			o.violate(ctx, e, "wait: %v", err)
+			o.violate(ctx, c.world, "wait: %v", err)
 		}
 	}
 
-	if d.stopErr() == nil {
-		o.verify(ctx, e, d, store)
+	var live []*node
+	for _, n := range nodes {
+		if inst, ok := n.host.(*sim.Instance); !ok || !inst.Crashed() {
+			live = append(live, n)
+		}
 	}
 
-	// The renewal task runs until the close, so the instance can still stop after the callers are done.
-	err = d.Close(ctx)
-	switch cause := d.stopErr(); {
-	case !errors.Is(cause, errClosed):
-		o.violate(ctx, e, "the instance stopped: %v", cause)
-	case err != nil && !expected(err):
-		o.violate(ctx, e, "close: %v", err)
-	case err == nil:
-		man, err := store.manifest()
-		if err != nil {
-			o.violate(ctx, e, "manifest: %v", err)
+	// The clocks are right again and nothing crashes any more, so an instance must serve soon: an
+	// expired lease is taken over within its margin, and catching up takes seconds.
+	served := false
+	for range 120 {
+		for _, n := range live {
+			n.do(ctx, "end", func(ctx context.Context) {
+				if d := n.current(); d.stopErr() != nil {
+					stopped(ctx, n, d)
+				}
+				served = served || n.current().isServing()
+			})
 		}
-		if man.Holder != "" {
-			o.violate(ctx, e, "the lease is still held by %v after the close", man.Holder)
+		if served {
+			break
 		}
+		_ = c.world.Sleep(ctx, time.Second)
+	}
+	if !served && len(live) > 0 {
+		o.violate(ctx, c.world, "no instance serves two minutes after the end of the workload")
+	}
+
+	for _, n := range live {
+		n.do(ctx, "closer", func(ctx context.Context) {
+			d := n.current()
+			if err := d.Close(ctx); err != nil {
+				mu.Lock()
+				holders[d.id] = true
+				mu.Unlock()
+				if !expected(err) && !errors.Is(err, errPrecondition) {
+					o.violate(ctx, c.world, "close: %v", err)
+				}
+			}
+		})
+	}
+	o.verify(ctx, c.world, store, live, holders)
+}
+
+// moveClocks of the instance of n by one fault that the seed picks from those of w, at a time that
+// the seed picks, or by none.
+func (w workload) moveClocks(ctx context.Context, h tracer, inst *sim.Instance, n *node) {
+	var kinds []clockFaults
+	for _, kind := range []clockFaults{stopMonotonic, wallBackward, wallForward} {
+		if w.clocks&kind != 0 {
+			kinds = append(kinds, kind)
+		}
+	}
+	// As often as not, the clocks of an instance are right.
+	kind := intn(h, 2*len(kinds))
+	if kind >= len(kinds) {
+		return
+	}
+	if err := h.Sleep(ctx, time.Duration(intn(h, 100_000))*time.Millisecond); err != nil {
+		return
+	}
+	span := time.Duration(20_000+intn(h, 60_000)) * time.Millisecond
+	switch kinds[kind] {
+	case stopMonotonic:
+		inst.StopMonotonic()
+		_ = h.Sleep(ctx, span)
+		inst.StartMonotonic()
+	case wallBackward:
+		n.client.partitioned.Store(true)
+		h.Trace(ctx, "%v is cut off from the store", n.name)
+		by := time.Duration(20_000+intn(h, 60_000)) * time.Millisecond
+		inst.ShiftWall(-by)
+		_ = h.Sleep(ctx, span)
+		inst.ShiftWall(by)
+		n.client.partitioned.Store(false)
+		h.Trace(ctx, "%v reaches the store again", n.name)
+	case wallForward:
+		inst.ShiftWall(time.Duration(intn(h, int(takeoverMargin/time.Millisecond)/2)) * time.Millisecond)
 	}
 }
 
-// verify that the log in store holds exactly the acknowledged commits with the writes that the
-// callers made, and that the cache of d holds what the log says.
-func (o *outcome) verify(ctx context.Context, e tracer, d *toyDB, store *memStore) {
-	tx, err := d.Begin(ctx)
-	if err != nil {
-		o.violate(ctx, e, "begin at the end: %v", err)
-		return
-	}
-	defer func() {
-		if err := tx.Rollback(ctx); err != nil {
-			o.violate(ctx, e, "rollback at the end: %v", err)
+// copyCache at from to to, with its write-ahead log, as files that a crashed process left behind.
+// SQLite rebuilds the shared-memory index from the log when it opens them.
+func copyCache(from, to string) error {
+	for _, suffix := range []string{"", "-wal"} {
+		src, err := os.Open(from + suffix)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
 		}
-	}()
+		if err != nil {
+			return err
+		}
+		dst, err := os.Create(to + suffix)
+		if err != nil {
+			_ = src.Close()
+			return err
+		}
+		_, err = io.Copy(dst, src)
+		_ = src.Close()
+		if err := errors.Join(err, dst.Close()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
+// verify the log in store against the attempts of the callers, the caches of the nodes that did not
+// crash against the log, and the lease against holders that may still hold it.
+func (o *outcome) verify(ctx context.Context, h tracer, store *memStore, live []*node, holders map[string]bool) {
 	man, err := store.manifest()
 	if err != nil {
-		o.violate(ctx, e, "manifest: %v", err)
+		o.violate(ctx, h, "manifest: %v", err)
+		return
 	}
-	o.mu.Lock()
-	acked := maps.Clone(o.acked)
-	o.mu.Unlock()
-	if cached := tx.seq - 1; man.Seq != cached || man.Seq != int64(len(acked)) {
-		o.violate(ctx, e, "%v commits were acknowledged, the manifest has %v, and the cache has %v", len(acked), man.Seq, cached)
+	if man.Holder != "" && !holders[man.Holder] {
+		o.violate(ctx, h, "the lease is still held by %v after every instance was closed", man.Holder)
 	}
 
-	// The log is followed from its newest commit to its first, so the first value found for a key is
-	// the one that the database must have.
-	want := map[int64]int64{}
+	// The log is followed from its newest commit to its first.
+	log := make([]changeFile, man.Seq+1)
 	name, seq := man.Head, man.Seq
 	for name != "" {
 		data, ok := store.object(name)
 		if !ok {
-			o.violate(ctx, e, "the log has no change file %v for commit %v", name, seq)
+			o.violate(ctx, h, "the log has no change file %v for commit %v", name, seq)
 			return
 		}
 		if sum := sha256.Sum256(data); name != "changes/"+hex.EncodeToString(sum[:]) {
-			o.violate(ctx, e, "the change file %v is not named by its content", name)
+			o.violate(ctx, h, "the change file %v is not named by its content", name)
 		}
 		var file changeFile
 		if err := json.Unmarshal(data, &file); err != nil {
-			o.violate(ctx, e, "change file %v: %v", name, err)
+			o.violate(ctx, h, "change file %v: %v", name, err)
 			return
 		}
-		if file.Seq != seq {
-			o.violate(ctx, e, "the change file %v is commit %v, where the log should have commit %v", name, file.Seq, seq)
+		if file.Seq != seq || seq <= 0 {
+			o.violate(ctx, h, "the change file %v is commit %v, where the log should have commit %v", name, file.Seq, seq)
+			return
 		}
-		if !slices.Equal(file.Sets, acked[file.Seq]) {
-			o.violate(ctx, e, "the change file of commit %v has the writes %v, and the acknowledged writes are %v", file.Seq, file.Sets, acked[file.Seq])
-		}
-		for _, set := range slices.Backward(file.Sets) {
-			if _, ok := want[set[0]]; !ok {
-				want[set[0]] = set[1]
-			}
-		}
+		log[seq] = file
 		name, seq = file.Prev, seq-1
 	}
 	if seq != 0 {
-		o.violate(ctx, e, "the log ends before commit %v, not before the first", seq)
+		o.violate(ctx, h, "the log ends before commit %v, not before the first", seq)
+		return
 	}
 
-	for k := range int64(5) {
-		got, err := tx.Get(k)
+	o.mu.Lock()
+	attempts := slices.Clone(o.attempts)
+	o.mu.Unlock()
+	for _, file := range log[1:] {
+		if !slices.ContainsFunc(attempts, func(a *attempt) bool {
+			return a.seq == file.Seq && a.state != failed && slices.Equal(a.sets, file.Sets)
+		}) {
+			o.violate(ctx, h, "the log has commit %v with the writes %v, which no caller made, or whose commit failed", file.Seq, file.Sets)
+		}
+	}
+	for _, a := range attempts {
+		if a.state != acknowledged {
+			continue
+		}
+		if a.seq > man.Seq || !slices.Equal(log[a.seq].Sets, a.sets) {
+			o.violate(ctx, h, "commit %v with the writes %v was acknowledged, and the log does not have it", a.seq, a.sets)
+		}
+	}
+
+	for _, n := range live {
+		c, err := sqlite.Open(n.path)
 		if err != nil {
-			o.violate(ctx, e, "get: %v", err)
+			o.violate(ctx, h, "open the cache of %v: %v", n.name, err)
+			continue
+		}
+		o.verifyCache(ctx, h, n.name, c, log)
+		if err := c.Close(); err != nil {
+			o.violate(ctx, h, "close the cache of %v: %v", n.name, err)
+		}
+	}
+}
+
+// verifyCache c of the node name against the log up to the commit that the cache has.
+func (o *outcome) verifyCache(ctx context.Context, h tracer, name string, c *sqlite.Conn, log []changeFile) {
+	seq, err := queryInt(c, "select seq from meta")
+	if err != nil {
+		o.violate(ctx, h, "the cache of %v: %v", name, err)
+		return
+	}
+	if seq >= int64(len(log)) {
+		o.violate(ctx, h, "the cache of %v has commit %v, and the log only %v", name, seq, len(log)-1)
+		return
+	}
+	want := map[int64]int64{}
+	for _, file := range log[1 : seq+1] {
+		for _, set := range file.Sets {
+			want[set[0]] = set[1]
+		}
+	}
+	for k := range int64(5) {
+		got, err := queryInt(c, "select coalesce((select v from kv where k = ?), 0)", k)
+		if err != nil {
+			o.violate(ctx, h, "the cache of %v: %v", name, err)
 		}
 		if got != want[k] {
-			o.violate(ctx, e, "the cache has %v at key %v, and the log has %v", got, k, want[k])
+			o.violate(ctx, h, "the cache of %v has %v at key %v at commit %v, and the log has %v", name, got, k, seq, want[k])
 		}
 	}
 }
@@ -343,33 +702,55 @@ func (s simulation) violations() []string {
 	return append(violations, s.outcome.violations...)
 }
 
+// count of the lines of the trace that contain substring.
+func (s simulation) count(substring string) int {
+	var n int
+	for _, line := range s.lines {
+		if strings.Contains(line, substring) {
+			n++
+		}
+	}
+	return n
+}
+
 // simulate the workload w under the scheduler with seed, in a bubble of its own.
 func simulate(t *testing.T, seed uint64, w workload) simulation {
 	t.Helper()
-	s := simulation{outcome: &outcome{acked: map[int64][][2]int64{}}}
+	s := simulation{outcome: newOutcome()}
 	synctest.Test(t, func(t *testing.T) {
-		scheduler := sim.New(seed, sim.Options{Jitter: 50 * time.Millisecond})
-		path := filepath.Join(t.TempDir(), "cache.db")
+		scheduler := sim.New(seed, sim.Options{Jitter: 50 * time.Millisecond, Buggify: sim.Buggify{On: w.buggify}})
+		c := cluster{
+			world:    scheduler,
+			instance: func(name string) tracer { return scheduler.NewInstance(name) },
+			dir:      t.TempDir(),
+		}
 		s.err = scheduler.Run(func(ctx context.Context) {
-			w.run(ctx, scheduler, path, s.outcome)
+			w.run(ctx, c, s.outcome)
 		})
 		s.lines, s.draw, s.steps = scheduler.Lines(), scheduler.Uint64(), scheduler.Steps()
+		// The operating system would have closed the files of a crashed process.
+		for _, d := range s.outcome.crashed {
+			d.closeFiles()
+		}
 	})
 	return s
 }
 
-// free runs the workload w with the scheduler off and with seed, in a bubble of its own for the fake
-// clock.
-func free(t *testing.T, seed uint64, w workload) *outcome {
+// free runs the workload w with the scheduler off, in a bubble of its own for the fake clock. Every
+// instance shares the one host, and the workload moves no clocks and crashes nothing.
+func free(t *testing.T, w workload) *outcome {
 	t.Helper()
-	o := &outcome{acked: map[int64][][2]int64{}}
+	o := newOutcome()
 	synctest.Test(t, func(t *testing.T) {
-		r := sim.NewFree(seed)
-		path := filepath.Join(t.TempDir(), "cache.db")
+		r := sim.NewFree(sim.Buggify{On: w.buggify})
+		c := cluster{
+			world:    r,
+			instance: func(string) tracer { return r },
+			dir:      t.TempDir(),
+		}
 		is.NotError(t, r.Run(func(ctx context.Context) {
-			w.run(ctx, r, path, o)
+			w.run(ctx, c, o)
 		}))
-		o.lines = r.Lines()
 	})
 	return o
 }
@@ -405,15 +786,16 @@ func TestSimulation(t *testing.T) {
 		name     string
 		workload workload
 	}{
-		{name: "should give the same trace when a seed is run twice, and no violations", workload: defaultWorkload},
-		{name: "should give the same trace when a seed is run twice, and no violations, also with callers that never pause", workload: hammerWorkload},
+		{name: "should give the same trace when a seed is run twice, and no violations, with one instance", workload: singleWorkload},
+		{name: "should give the same trace when a seed is run twice, and no violations, with instances that compete, clocks that move, crashes, and buggify", workload: fullWorkload},
+		{name: "should give the same trace when a seed is run twice, and no violations, with callers that never pause", workload: hammerWorkload},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			n := seeds(t, 200, test.workload)
 			hashes, orders := map[string]bool{}, map[string]bool{}
 			all := sha256.New()
-			var steps, differing int
-			var commits, failedCommits, rollbacks, reads, failedReads, expiredReads, overtakenReads int64
+			var steps, differing, buggifies, clockMoves, crashes int
+			var commits, failedCommits, unknownCommits, rollbacks, reads, failedReads, expiredReads, overtakenReads, stops, restarts int64
 			start := time.Now()
 			for seed := range n {
 				first, second := simulate(t, seed, test.workload), simulate(t, seed, test.workload)
@@ -428,19 +810,26 @@ func TestSimulation(t *testing.T) {
 				orders[first.order()] = true
 				all.Write([]byte(first.hash()))
 				steps += first.steps
+				buggifies += first.count(" fires")
+				clockMoves += first.count(" monotonic clock") + first.count(" shifts its wall clock")
+				crashes += first.count(" crashes")
 				o := first.outcome
 				commits += o.commits.Load()
 				failedCommits += o.failedCommits.Load()
+				unknownCommits += o.unknownCommits.Load()
 				rollbacks += o.rollbacks.Load()
 				reads += o.reads.Load()
 				failedReads += o.failedReads.Load()
 				expiredReads += o.expiredReads.Load()
 				overtakenReads += o.overtakenReads.Load()
+				stops += o.stops.Load()
+				restarts += o.restarts.Load()
 			}
 			elapsed := time.Since(start)
 			t.Logf("%v seeds, each run twice: %v pairs differed; %v distinct traces, and %v distinct orders of tasks", n, differing, len(hashes), len(orders))
-			t.Logf("in the first run of each seed: %v steps, %v commits, %v failed commits, %v rollbacks, %v reads of which %v were overtaken by a commit, %v failed reads of which %v for an expired lease",
-				steps, commits, failedCommits, rollbacks, reads, overtakenReads, failedReads, expiredReads)
+			t.Logf("in the first run of each seed: %v steps, %v commits, %v failed commits, %v of unknown outcome, %v rollbacks, %v reads of which %v were overtaken by a commit, %v failed reads of which %v for an expired lease",
+				steps, commits, failedCommits, unknownCommits, rollbacks, reads, overtakenReads, failedReads, expiredReads)
+			t.Logf("and %v buggify points that fired, %v moves of a clock, %v crashes and %v restarts, %v stops of an instance", buggifies, clockMoves, crashes, restarts, stops)
 			t.Logf("%v runs in %v, %.0f runs per second, %.0f steps per second",
 				2*n, elapsed.Round(time.Millisecond), float64(2*n)/elapsed.Seconds(), float64(2*steps)/elapsed.Seconds())
 			// The hash depends only on the code and the seeds, so it can be compared between machines.
@@ -449,51 +838,137 @@ func TestSimulation(t *testing.T) {
 			if n >= 50 {
 				is.True(t, len(orders) > int(n)/2, "the seed hardly changes the order in which tasks run")
 				is.True(t, commits > 0 && reads > 0 && failedCommits > 0 && expiredReads > 0 && overtakenReads > 0, "the workload did not reach every kind of result")
+				if test.workload.buggify {
+					is.True(t, buggifies > 0 && stops > 0, "buggify never fired, or no instance ever stopped")
+				}
+				if test.workload.clocks != 0 {
+					is.True(t, clockMoves > 0, "no clock moved")
+				}
+				if test.workload.crashes > 0 {
+					is.True(t, crashes > 0 && restarts == int64(crashes), "no instance crashed, or not every crash was followed by a restart")
+				}
 			}
 		})
 	}
+}
 
-	renewOutsideLock := defaultWorkload
-	renewOutsideLock.options.bugs.renewOutsideLock = true
-	// Without faults, a commit never fails, so the cache is ahead of the manifest only for as long as
-	// a commit is on its way, and only a read at that moment finds the bug.
-	cacheFirst := defaultWorkload
-	cacheFirst.options.bugs.cacheFirst = true
-	cacheFirst.faults = faults{}
-	for _, test := range []struct {
-		name     string
-		workload workload
-		// symptom of the bug: every seed that finds anything must find a violation with it.
-		symptom string
-	}{
-		{
-			name:     "should find a renewal that swaps the manifest outside the lock, with some seed and again on every rerun of it",
-			workload: renewOutsideLock,
-			symptom:  "lease lost",
-		},
-		{
-			name:     "should find a commit that reaches the cache before the manifest, with some seed and again on every rerun of it",
-			workload: cacheFirst,
-			symptom:  "while the manifest was at",
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			n := seeds(t, 200, test.workload)
+// plantedBugs that the checks must find. Each holds the workload that finds the bug. A bug that needs
+// one ability of the harness also holds a control: the same workload without that ability, with
+// which no seed may find it.
+var plantedBugs = []struct {
+	name     string
+	workload workload
+	control  *workload
+	// symptoms of the bug: every seed that finds anything must find a violation with one of them.
+	symptoms []string
+}{
+	{
+		name: "a renewal that swaps the manifest outside the lock",
+		workload: func() workload {
+			w := singleWorkload
+			w.options.bugs.renewOutsideLock = true
+			return w
+		}(),
+		symptoms: []string{"lease lost"},
+	},
+	{
+		name: "a commit that reaches the cache before the manifest",
+		workload: func() workload {
+			// Without faults, a commit never fails, so the cache is ahead of the manifest only while a
+			// commit is on its way, and only a read at that moment finds the bug.
+			w := singleWorkload
+			w.options.bugs.cacheFirst = true
+			w.faults = faults{}
+			return w
+		}(),
+		symptoms: []string{"while the manifest was at"},
+	},
+	{
+		name: "a read that checks the lease against the wall clock only",
+		workload: func() workload {
+			w := fullWorkload
+			w.options.bugs.wallOnly = true
+			w.clocks, w.crashes, w.buggify = wallBackward, 0, false
+			return w
+		}(),
+		control: func() *workload {
+			w := fullWorkload
+			w.options.bugs.wallOnly = true
+			w.clocks, w.crashes, w.buggify = 0, 0, false
+			return &w
+		}(),
+		symptoms: []string{"after commit"},
+	},
+	{
+		name: "a read that checks the lease against the monotonic clock only",
+		workload: func() workload {
+			w := fullWorkload
+			w.options.bugs.monotonicOnly = true
+			w.clocks, w.crashes, w.buggify = stopMonotonic, 0, false
+			return w
+		}(),
+		control: func() *workload {
+			w := fullWorkload
+			w.options.bugs.monotonicOnly = true
+			w.clocks, w.crashes, w.buggify = 0, 0, false
+			return &w
+		}(),
+		symptoms: []string{"after commit"},
+	},
+	{
+		// A lease that is not released is left only by a holder that crashed, or one that could not
+		// release it, which the faults of one instance never cause.
+		name: "an instance that takes over a lease only after a release",
+		workload: func() workload {
+			w := singleWorkload
+			w.options.bugs.takeoverAfterRelease = true
+			w.crashes = 1
+			return w
+		}(),
+		control: func() *workload {
+			w := singleWorkload
+			w.options.bugs.takeoverAfterRelease = true
+			return &w
+		}(),
+		symptoms: []string{"no instance serves"},
+	},
+	{
+		name: "a commit that ignores a failure of the cache after the manifest swap",
+		workload: func() workload {
+			w := singleWorkload
+			w.options.bugs.ignoreCacheError = true
+			w.buggify = true
+			return w
+		}(),
+		control: func() *workload {
+			w := singleWorkload
+			w.options.bugs.ignoreCacheError = true
+			return &w
+		}(),
+		symptoms: []string{"after commit", "where the log should have commit", "the cache of", "the log does not have it", "which no caller made"},
+	},
+}
+
+func TestSimulation_plantedBugs(t *testing.T) {
+	for _, bug := range plantedBugs {
+		t.Run("should find "+bug.name+" with some seed and again on every rerun of it, and never without the ability it needs", func(t *testing.T) {
+			n := seeds(t, 200, bug.workload)
 			var found []uint64
 			for seed := range n {
-				first := simulate(t, seed, test.workload)
+				first := simulate(t, seed, bug.workload)
 				if len(first.violations()) == 0 {
 					continue
 				}
 				found = append(found, seed)
-				is.True(t, slices.ContainsFunc(first.violations(), func(v string) bool { return strings.Contains(v, test.symptom) }),
-					fmt.Sprintf("seed %v found something else: %v", seed, first.violations()))
+				is.True(t, slices.ContainsFunc(first.violations(), func(v string) bool {
+					return slices.ContainsFunc(bug.symptoms, func(symptom string) bool { return strings.Contains(v, symptom) })
+				}), fmt.Sprintf("seed %v found something else: %v", seed, first.violations()))
 				if len(found) > 3 {
 					continue
 				}
 				// The same seed finds the same violations at the same place in the same trace.
 				for range 5 {
-					again := simulate(t, seed, test.workload)
+					again := simulate(t, seed, bug.workload)
 					is.Equal(t, first.hash(), again.hash())
 					is.EqualSlice(t, first.violations(), again.violations())
 				}
@@ -504,6 +979,16 @@ func TestSimulation(t *testing.T) {
 				}
 			}
 			t.Logf("%v of %v seeds found the bug; the first are %v", len(found), n, found[:min(len(found), 10)])
+			if bug.control != nil {
+				var controlFound int
+				for seed := range n {
+					if v := simulate(t, seed, *bug.control).violations(); len(v) > 0 {
+						controlFound++
+						t.Errorf("seed %v found the bug without the ability it needs: %v", seed, v)
+					}
+				}
+				t.Logf("%v of %v seeds found the bug without the ability it needs", controlFound, n)
+			}
 			if n >= 200 {
 				is.True(t, len(found) > 0, "no seed found the bug")
 			}
@@ -512,8 +997,9 @@ func TestSimulation(t *testing.T) {
 }
 
 // TestSimulationSeed runs the one seed that the environment variable S4QL_SIM_SEED names, with the
-// default workload, and logs its whole trace. The environment variable S4QL_SIM_BUG can name a
-// planted bug, renewOutsideLock or cacheFirst.
+// workload that S4QL_SIM_WORKLOAD names (single, the default, full, or hammer), and logs its whole
+// trace. The environment variable S4QL_SIM_BUG can name a planted bug by its number in
+// [plantedBugs], from 0, to run its workload instead.
 func TestSimulationSeed(t *testing.T) {
 	v := os.Getenv("S4QL_SIM_SEED")
 	if v == "" {
@@ -522,15 +1008,20 @@ func TestSimulationSeed(t *testing.T) {
 	seed, err := strconv.ParseUint(v, 10, 64)
 	is.NotError(t, err)
 
-	w := defaultWorkload
-	switch bug := os.Getenv("S4QL_SIM_BUG"); bug {
-	case "":
-	case "renewOutsideLock":
-		w.options.bugs.renewOutsideLock = true
-	case "cacheFirst":
-		w.options.bugs.cacheFirst = true
+	w := singleWorkload
+	switch name := os.Getenv("S4QL_SIM_WORKLOAD"); name {
+	case "", "single":
+	case "full":
+		w = fullWorkload
+	case "hammer":
+		w = hammerWorkload
 	default:
-		t.Fatalf("no planted bug is named %v", bug)
+		t.Fatalf("no workload is named %v", name)
+	}
+	if v := os.Getenv("S4QL_SIM_BUG"); v != "" {
+		i, err := strconv.Atoi(v)
+		is.NotError(t, err)
+		w = plantedBugs[i].workload
 	}
 
 	s := simulate(t, seed, w)
@@ -538,10 +1029,10 @@ func TestSimulationSeed(t *testing.T) {
 	is.EqualSlice(t, nil, s.violations())
 }
 
-// contend runs one writer and eight readers as tasks of e, each on its own connection to the
+// contend runs one writer and eight readers as tasks of h, each on its own connection to the
 // database at path and in a loop without pauses, and returns how often the writer got SQLITE_BUSY
 // when it began a transaction. No connection has a busy timeout.
-func contend(ctx context.Context, t *testing.T, e env, path string) int64 {
+func contend(ctx context.Context, t *testing.T, h host.Host, path string) int64 {
 	t.Helper()
 	setup := openWAL(t, path, 0)
 	is.NotError(t, setup.Exec("create table t1 (k integer primary key, v integer not null) strict"))
@@ -549,22 +1040,22 @@ func contend(ctx context.Context, t *testing.T, e env, path string) int64 {
 
 	var stop atomic.Bool
 	var busyBegins atomic.Int64
-	var tasks []sim.Task
+	var tasks []host.Task
 	for i := range 8 {
 		c := openWAL(t, path, 0)
-		tasks = append(tasks, e.Go(ctx, fmt.Sprint("reader-", i), func(ctx context.Context) {
+		tasks = append(tasks, h.Go(ctx, fmt.Sprint("reader-", i), func(ctx context.Context) {
 			for !stop.Load() {
 				is.NotError(t, c.Exec("begin"))
-				e.Yield(ctx, "reader: after begin")
+				h.Yield(ctx, "reader: after begin")
 				is.NotError(t, c.Exec("select v from t1 where k = 1"))
-				e.Yield(ctx, "reader: after select")
+				h.Yield(ctx, "reader: after select")
 				is.NotError(t, c.Exec("commit"))
-				e.Yield(ctx, "reader: after commit")
+				h.Yield(ctx, "reader: after commit")
 			}
 		}))
 	}
 	c := openWAL(t, path, 0)
-	tasks = append(tasks, e.Go(ctx, "writer", func(ctx context.Context) {
+	tasks = append(tasks, h.Go(ctx, "writer", func(ctx context.Context) {
 		defer stop.Store(true)
 		for range 1000 {
 			for {
@@ -576,9 +1067,9 @@ func contend(ctx context.Context, t *testing.T, e env, path string) int64 {
 				busyBegins.Add(1)
 			}
 			is.NotError(t, c.Exec("update t1 set v = v + 1 where k = 1"))
-			e.Yield(ctx, "writer: after update")
+			h.Yield(ctx, "writer: after update")
 			is.NotError(t, c.Exec("commit"))
-			e.Yield(ctx, "writer: after commit")
+			h.Yield(ctx, "writer: after commit")
 		}
 	}))
 	for _, task := range tasks {
@@ -607,9 +1098,9 @@ func TestSchedulerWithSQLiteLocks(t *testing.T) {
 	// logged.
 	t.Run("should log how often the same writer gets SQLITE_BUSY with the scheduler off", func(t *testing.T) {
 		var busyBegins int64
-		for seed := range uint64(10) {
+		for range 10 {
 			synctest.Test(t, func(t *testing.T) {
-				r := sim.NewFree(seed)
+				r := sim.NewFree(sim.Buggify{})
 				is.NotError(t, r.Run(func(ctx context.Context) {
 					busyBegins += contend(ctx, t, r, filepath.Join(t.TempDir(), "test.db"))
 				}))
@@ -620,8 +1111,8 @@ func TestSchedulerWithSQLiteLocks(t *testing.T) {
 }
 
 // TestSimulationSpeed logs how fast simulated runs are on this machine: the scheduler with tasks
-// that only yield, the toy library, and the toy library when SQLite does not sync the cache to disk.
-// It is a test and not a benchmark because a bubble needs a [testing.T].
+// that only yield, and the workloads. It is a test and not a benchmark because a bubble needs a
+// [testing.T].
 func TestSimulationSpeed(t *testing.T) {
 	t.Run("should log the speed of the scheduler with eight tasks that only yield", func(t *testing.T) {
 		start := time.Now()
@@ -643,14 +1134,15 @@ func TestSimulationSpeed(t *testing.T) {
 		t.Logf("%v steps in %v, %.0f steps per second", steps, elapsed.Round(time.Millisecond), float64(steps)/elapsed.Seconds())
 	})
 
-	syncOff := defaultWorkload
+	syncOff := singleWorkload
 	syncOff.options.synchronousOff = true
 	for _, test := range []struct {
 		name     string
 		workload workload
 	}{
-		{name: "should log the speed of the toy library", workload: defaultWorkload},
-		{name: "should log the speed of the toy library without syncing the cache to disk", workload: syncOff},
+		{name: "should log the speed of the workload with one instance", workload: singleWorkload},
+		{name: "should log the speed of the workload with one instance without syncing the cache to disk", workload: syncOff},
+		{name: "should log the speed of the workload with everything", workload: fullWorkload},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			n := seeds(t, 200, test.workload)
@@ -673,68 +1165,31 @@ func TestFreeRunning(t *testing.T) {
 		name     string
 		workload workload
 	}{
-		{name: "should run the same workload with the scheduler off and no violations", workload: defaultWorkload},
+		{name: "should run the workload with one instance with the scheduler off and no violations", workload: singleWorkload},
+		{name: "should run two instances that compete for the lease, with buggify, with the scheduler off and no violations", workload: fullWorkload},
 		{name: "should run callers that never pause with the scheduler off and no violations", workload: hammerWorkload},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			n := seeds(t, 200, test.workload)
-			var commits, failedCommits, reads, failedReads, expiredReads int64
+			var commits, failedCommits, reads, failedReads, expiredReads, stops int64
 			start := time.Now()
 			for seed := range n {
-				o := free(t, seed, test.workload)
+				o := free(t, test.workload)
 				if len(o.violations) > 0 {
-					t.Errorf("seed %v: %v", seed, strings.Join(o.violations, "; "))
+					t.Errorf("run %v: %v", seed, strings.Join(o.violations, "; "))
 				}
 				commits += o.commits.Load()
 				failedCommits += o.failedCommits.Load()
 				reads += o.reads.Load()
 				failedReads += o.failedReads.Load()
 				expiredReads += o.expiredReads.Load()
+				stops += o.stops.Load()
 			}
 			elapsed := time.Since(start)
-			t.Logf("%v free runs in %v, %.0f runs per second: %v commits, %v failed commits, %v reads, %v failed reads of which %v for an expired lease",
-				n, elapsed.Round(time.Millisecond), float64(n)/elapsed.Seconds(), commits, failedCommits, reads, failedReads, expiredReads)
+			t.Logf("%v free runs in %v, %.0f runs per second: %v commits, %v failed commits, %v reads, %v failed reads of which %v for an expired lease, %v stops",
+				n, elapsed.Round(time.Millisecond), float64(n)/elapsed.Seconds(), commits, failedCommits, reads, failedReads, expiredReads, stops)
 		})
 	}
-
-	// The fake clock orders most of a run with the scheduler off, so a seed often gives the same run
-	// again. How often depends on the workload and on chance, so these two only log it.
-	t.Run("should log how often a seed gives two different traces with the scheduler off", func(t *testing.T) {
-		for _, test := range []struct {
-			name     string
-			workload workload
-		}{
-			{name: "callers that pause", workload: defaultWorkload},
-			{name: "callers that never pause", workload: hammerWorkload},
-		} {
-			n := seeds(t, 200, test.workload)
-			var differing int
-			for seed := range n {
-				first, second := free(t, seed, test.workload), free(t, seed, test.workload)
-				if !slices.Equal(first.lines, second.lines) {
-					differing++
-				}
-			}
-			t.Logf("with %v, %v of %v seeds gave two different traces when run twice with the scheduler off", test.name, differing, n)
-		}
-	})
-
-	t.Run("should log how often the planted renewal bug is found, and found again with the same seed, with the scheduler off", func(t *testing.T) {
-		w := defaultWorkload
-		w.options.bugs.renewOutsideLock = true
-		n := seeds(t, 200, w)
-		var found, again int
-		for seed := range n {
-			if len(free(t, seed, w).violations) == 0 {
-				continue
-			}
-			found++
-			if len(free(t, seed, w).violations) > 0 {
-				again++
-			}
-		}
-		t.Logf("%v of %v free runs found the bug; run again with the same seeds, %v of those %v found it", found, n, again, found)
-	})
 }
 
 // TestPlantedDataRace shows what the race detector reports in each mode for a counter that reads
@@ -751,8 +1206,8 @@ func TestPlantedDataRace(t *testing.T) {
 			is.EqualSlice(t, nil, simulate(t, seed, w).violations())
 		}
 	case "free":
-		for seed := range uint64(50) {
-			is.EqualSlice(t, nil, free(t, seed, w).violations)
+		for range 50 {
+			is.EqualSlice(t, nil, free(t, w).violations)
 		}
 	default:
 		t.Skip("S4QL_SIM_PLANT_RACE is not set")
