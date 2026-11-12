@@ -422,6 +422,19 @@ Details chosen by maragubot:
 - **A renewal with an unknown outcome is resolved the same way,** with no caller involved.
 - **An upload of a commit object with an unknown outcome is harmless.** The file is named by its content and created only if absent, so the instance retries, and "already exists" means success.
 
+## The S3 client and S3's checksums
+
+Status: agreed with Markus on 2026-11-12, not built. It belongs to the client for real S3, which comes after the simulated object store.
+
+Markus asked: "Maybe S3 already knows the hash of its objects?" It does, and s4ql uses it as a second guard next to its own check.
+
+- **On upload, the client sends the commit object's SHA-256 with the request.** S3 computes its own and rejects the object if they differ, so a commit object is never stored under a name that does not match its bytes.
+- **On download, the client compares the checksum that S3 returns with the name,** before it reads the body. S3 stores the checksum with the object and returns it in the response headers.
+- **The reader still computes the checksum itself as it reads.** That check covers the whole way into our process, and it is the same against the simulated store and against a store that does not offer checksums. The spec asks three things of a store, and checksums are not among them. Which S3-compatible stores offer them is not checked.
+- **This holds for commit objects up to 5 GB,** the limit of one `PutObject`. In a multipart upload, S3 offers SHA-256 only as a checksum of the checksums of the parts, which is not our name. Markus: "Don't worry too much about commit objects above 5GB for now."
+
+Source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html
+
 ## Vendoring s4ql
 
 Status: open, not fixed.
