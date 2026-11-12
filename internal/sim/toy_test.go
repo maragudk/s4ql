@@ -348,9 +348,10 @@ func (d *toyDB) acquire(ctx context.Context) (time.Duration, error) {
 		return d.stopErr()
 	}
 	unlock := func() {
+		// A release waits, and a crash ends the task in a wait, which runs the deferred unlock.
+		locked = false
 		d.swap.Release(ctx)
 		d.writer.Release(ctx)
-		locked = false
 	}
 	defer func() {
 		if locked {
