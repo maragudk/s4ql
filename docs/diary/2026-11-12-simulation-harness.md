@@ -285,3 +285,111 @@ Nothing beyond the choice of approach.
 ### Future work
 
 The lint cannot see a goroutine that a dependency starts, such as one of an S3 client. The scheduler's goroutine check is what catches one that reaches the host.
+
+
+## Step 5: Self-review, and what it changed
+
+**Author:** harness-builder
+
+### Prompt Context
+
+**Verbatim prompt:** The brief quoted in Step 2, and the builder's standing instructions: "Once the implementation is done, self-review before handing back to the lead. Work in two phases: first, review the code you wrote -- read the diff, check logic, look for missing edge cases and test coverage gaps; second, run automated checks (tests and linters). Be honest about real issues; if everything looks good, say so rather than inventing problems. Use the code-review skill for the first phase -- invoke it rather than reviewing inline; it dispatches competing reviewers over your diff. Address what you find, then report a summary of your review and any follow-up work back to the lead."
+**Interpretation:** Run the code-review skill over `git diff main...HEAD`, fix what is real, and verify again, because the first verification was of code that the review then changed.
+**Inferred intent:** The harness is only as trustworthy as its checks, so they have to survive someone who tries to make them pass for the wrong reason.
+
+### What I did
+
+Before the review, I ran the verification on the code of Steps 2 to 4. With `S4QL_SIM_SEEDS=10000 go test ./internal/sim/ -run 'TestSimulation$' -v`, all three workloads gave 0 differing pairs and no violation, and every planted bug was found with no control finding it. I also measured the goroutine check (below).
+
+Then I ran the `fabrik:code-review` skill. Two reviewers on the `fable` model reviewed the branch independently, told that they competed, and tried their claims through `go test -overlay` without touching the tree. They agreed on most findings, and I fixed all of those, and the serious single ones:
+
+- **A timeout derived through a value made the context package start a goroutine, and one seed gave two runs.** Both reviewers demonstrated it (reviewer A: one seed, 299 against 1 traces). My `AfterFunc` method helps only when the timeout is the direct parent, and `Instance.Go` wraps every task context in `context.WithValue`. The timeout now embeds a `context.WithCancelCause` copy of its parent and has no done channel of its own, so every derived context attaches to the copy at once. The cost is that a derived context reports `context.Canceled` with `context.DeadlineExceeded` as its cause, and the host's waits return `context.DeadlineExceeded`. This also fixed an error that was not nil while `Done` was open, and a timeout of a parent that is already done reporting the deadline. A new test asserts that no goroutine is started.
+- **A timeout always beat a sleep that ended at the same instant.** The seed now decides: 49 against 51 in 100 seeds.
+- **Read values were never compared with the model.** With `Read` returning 0 as the value, everything passed. Each read is now compared with the value that the log has at the read's commit.
+- **The liveness check read a flag that was never cleared.** With renewal removed, everything passed. The check is now a read that must succeed.
+- **Nothing checked the files that a restart finds.** With the copy turned off, everything passed. The crash now compares the copy with the crashed cache.
+- **Commits were matched by their writes, which two transactions can share.** Each change file now carries a transaction ID, and the model matches by it.
+- **The toy never used a timeout, and almost never reached a commit of unknown outcome** (6 in 2000 seeds). Every call of a caller now has a timeout of 30 seconds, and a buggify point makes the read-back of a swap say nothing.
+- **A task started by a deferred call of a crashed task ran with its waits ignored,** and **a timeout could be set through another instance's host.** Both fail the run now.
+- **Lint holes:** channel receives, sends, ranges, and selects without a default; `context.Background` and `TODO`; `iter.Pull` and `Pull2`; `runtime.SetFinalizer` and `AddCleanup`; `hash/maphash`; and `golang.org/x/sync/errgroup`. All are reported now, each with a planted violation.
+- **`golang.org/x/tools` in the library's `go.mod`** would have raised minimum versions for every module that requires s4ql. The lint is a module of its own now, like `/internal/sqlite/crosscheck`, built there and run on the root by `make lint` and by CI.
+- **`Free` copied the production host,** so the race runs never tested what ships. It embeds `host.New()` now and overrides `Go`, `Yield`, `Buggify`, and `Trace`.
+- **Production randomness relied on undocumented seeding of `math/rand/v2`.** It is `crypto/rand` now.
+- **The written crash differences** missed that a request in flight is never delivered, and claimed wrongly that deferred calls cannot reach what the run checks. Both are corrected in the package documentation.
+- **The `wallOnly` control** removed both the partition and the shift. A new fault, `partition`, draws the same numbers as `wallBackward` without the shift, and is the control now.
+- **The requirement that CI runs the free-running mode under the race detector "permanently"** rested on the reusable workflow. The new CI job `simulation` runs it itself.
+- **Comments and constants:** `host` named its importer and the internals of `math/rand/v2`; the `timeout` comment described the context package's internals; single-use constants and errors (`allClockFaults`, `errLeaseHeld`, `errClosed`) are inlined; the dead `toyTx.Get` and `Instance.Name` are gone; `expected` checks each error of a joined one; `TestSimulationSpeed` runs only with `S4QL_SIM_SPEED` set.
+
+I kept the lint's three rule tables as package-level variables, although each is used once: their names say what they are, and inlining them would bury the rules in `run`.
+
+### Why
+
+Each fix closes a way for a check to pass for the wrong reason, or for a seed not to be a replay.
+
+### What worked
+
+Six mutations that the reviewers had shown to pass now fail `TestSimulation` at 100 seeds: a read that returns 0, no renewal, no copy of the files at a crash, no copy of the write-ahead log, catch-up newest first, and catch-up that drops the oldest missing commit. Without the write-ahead log, the copy has no `meta` table at all, because the schema was never checkpointed into the database file. Of 39 mutations of the lint, one rule at a time, all 39 make its test fail.
+
+The verification after the fixes, with `S4QL_SIM_SEEDS=10000` (the workload whose callers never pause runs a quarter of that):
+
+```
+one instance:   10000 seeds, each run twice: 0 pairs differed; 10000 distinct traces, and 10000 distinct orders of tasks
+                133547 commits, 14608 failed, 305534 reads of which 2018 overtaken, 4236 refused for an expired lease, 6582 timeouts that expired
+everything:     10000 seeds, each run twice: 0 pairs differed; 10000 distinct traces, and 10000 distinct orders of tasks
+                106553 commits, 18106 failed, 487 of unknown outcome, 611 cut off by a crash, 254588 reads
+                18713 buggify points that fired, 16722 moves of a clock, 10000 crashes and 10000 restarts, 10435 stops, 9280 timeouts that expired
+never pause:    2500 seeds, each run twice: 0 pairs differed; 2500 distinct traces
+```
+
+No seed of any workload violated an invariant. The planted bugs, over 10000 seeds each, and their controls over the same 10000:
+
+```
+renewal outside the lock                1572 seeds   (no control)
+cache before the manifest               1750 seeds   (no control)
+wall clock only                         1352 seeds   control, partition without the shift: 0
+monotonic clock only                    1841 seeds   control, no clock fault: 0
+takeover only after a release           9915 seeds   control, no crash: 0
+ignore a failure of the cache           2068 seeds   control, buggify off: 0
+```
+
+Each of the first three seeds that found a bug gave the same trace hash and the same violations five times over. `make test` and `make lint` pass, and `go test -race -shuffle on ./internal/sim/ ./internal/host/` passes in 152 s. With `S4QL_SIM_PLANT_RACE=free go test -race -run TestPlantedDataRace ./internal/sim/`, the race detector reports `WARNING: DATA RACE` at `/internal/sim/toy_test.go:834`; with `S4QL_SIM_PLANT_RACE=scheduler`, it reports nothing, as in the spike.
+
+### What didn't work
+
+The goroutine check costs more than the spike measured. An A/B comparison with `go test -overlay`, where `goroutineID` returns a constant, interleaved three times on a machine with a load average of about 33:
+
+```
+                        with the check            without
+scheduler alone         98000 to 122000 steps/s   436000 to 508000 steps/s
+one instance            138 to 152 runs/s         192 to 259 runs/s
+everything              59 to 68 runs/s           103 to 113 runs/s
+```
+
+It matters, about 1.6 times on the workloads, but the lint does not cover what it covers: a goroutine that a dependency or test code starts. It stays on, with no option to switch it off. A CPU profile of the scheduler alone put 84% of the time in `pthread_cond_signal` and `pthread_cond_wait`, the hand-over between goroutines, and under 5% in the package's own code. All speed numbers in this diary are from a loaded machine, and other runs were going on at the same time.
+
+Moving the lint to its own module broke my mutation script's `go test ./internal/simlint/` from the root, which I fixed by running it in the module's directory.
+
+The first attempt at `expected` for joined errors also treated `fmt.Errorf("%w: %w", errStopped, cause)` as a joined error, because it too has `Unwrap() []error`, so a stopped error would have needed its cause in the list. A stopped error is checked first now.
+
+At the very end, the tooling moved this session's working directory to the other builder's worktree, `/.claude/worktrees/storage-formats`, and refused writes and git commands in `/.claude/worktrees/sim-harness`: `This session is isolated in the worktree /Users/maragubot/Developer/s4ql/.claude/worktrees/storage-formats, so its writes are limited to that folder.` I did not write there, so this step was handed to the lead to append and commit.
+
+### What I learned
+
+- The context package's fast path depends on the parent's done channel being the done channel of the nearest cancelable context in its chain. A context type of its own breaks it through any wrapper, and the fallback is a goroutine.
+- Removing a mechanism is a good test of a check. Three of the reviewers' strongest findings were "remove this, and everything still passes".
+
+### What was tricky
+
+Choosing between the error value of a derived context and determinism. No implementation from outside the context package gets both, so I chose determinism, and made the host's own waits hide the difference.
+
+### What warrants review
+
+- A design question for Markus, which both reviewers raised and which I did not settle: a wall clock set backward on a holder that can still reach the store gives stale reads with only one clock wrong. The holder renews with an expiry that is already past for the others, another instance takes the lease, and both of the holder's checks still pass. Reviewer B showed it with the partition removed and no planted bug: seeds 4, 31, and 47 of 100 report `a read saw commit 6 after commit 7 was acknowledged`. Reviewer A saw 19 of 200. `/docs/todo.md` says "A wall clock that is set backward is caught by the monotonic clock", which holds only while the holder writes no expiry from the wrong clock. The workload keeps such an instance cut off from the store, and `/internal/sim/simulation_test.go` says so.
+- `/internal/sim/sim.go`, the `timeout` type and `waitErr`.
+- `/internal/sim/simulation_test.go`, `valueAt` and the crash's check of the copy.
+
+### Future work
+
+- The host has no way to wait for a condition, such as "until the instance serves". The toy's supervisor polls with `Sleep`. The core will need to decide whether to poll too or to have the host grow a primitive.
+- A request in flight at a crash is never delivered. A simulated store that should deliver it late has to carry requests on a task of the test.
+- Two single-reviewer findings left as they are: the jitter of a release and of a task's start has no test of its own, and the planted-bug test asserts that a bug is found only at 200 seeds or more.
