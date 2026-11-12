@@ -68,3 +68,10 @@ Use `encoding/json/v2` and `encoding/json/jsontext` from the standard library fo
 
 - **Why:** Markus said on 2026-11-12: "Make sure to use the new json/v2 from Go stdlib". It rejects duplicate names and invalid UTF-8 and matches names exactly by default, which the storage formats need.
 - **How to apply:** this holds for code and tests. Read `go doc encoding/json/v2` for its behaviour instead of assuming that of version 1.
+
+### Each builder works in a worktree of its own
+
+A builder gets a git worktree of its own when it is spawned, through the Agent tool's worktree isolation. The lead stays on `main` and does not create or enter worktrees for builders.
+
+- **Why:** on 2026-11-12 the lead created the worktrees and switched between them while builders ran. One builder's working directory moved with the lead, and its writes and git commands in its own worktree were refused, so it could not commit its last diary step. Markus then said: "From now on maybe let builders create their worktrees?" A builder that got its own worktree the same day ran without friction.
+- **How to apply:** spawn builders and writers with worktree isolation. The builder writes the first step of the feature's diary from the requirements in its brief. The lead reviews a builder's branch from `main` with `git diff main...<branch>`, pushes it, and opens the pull request. After the merge, remove the worktree and the branch.
