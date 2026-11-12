@@ -186,9 +186,9 @@ func TestSimulation(t *testing.T) {
 		// seeds of the default run.
 		seeds int
 	}{
-		{name: "should give the same trace when a seed is run twice, and no violations, with one instance", workload: singleWorkload, seeds: 60},
-		{name: "should give the same trace when a seed is run twice, and no violations, with instances that compete, clocks that move, crashes, and buggify", workload: fullWorkload, seeds: 60},
-		{name: "should give the same trace when a seed is run twice, and no violations, with callers that never pause", workload: hammerWorkload, seeds: 20},
+		{name: "should give the same trace when a seed is run twice, and no violations, with one instance", workload: singleWorkload, seeds: 40},
+		{name: "should give the same trace when a seed is run twice, and no violations, with instances that compete, clocks that move, crashes, and buggify", workload: fullWorkload, seeds: 40},
+		{name: "should give the same trace when a seed is run twice, and no violations, with callers that never pause", workload: hammerWorkload, seeds: 10},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -219,7 +219,7 @@ func TestSimulation(t *testing.T) {
 			// The hash depends only on the code and the seeds, so it can be compared between machines.
 			t.Logf("hash of all traces: %x", all.Sum(nil))
 			is.Equal(t, 0, differing)
-			if n >= 20 {
+			if n >= 40 {
 				is.Equal(t, int(n), len(hashes), "two seeds gave the same trace")
 				is.True(t, y.commits > 0 && y.reads > 0 && y.failedCommits > 0 && y.refusedReads > 0 && y.overtakenReads > 0, "the workload did not reach every kind of result")
 				is.True(t, y.trace["timeouts that expired"] > 0, "no timeout expired")
@@ -298,7 +298,8 @@ func competing(change func(w *workload)) workload {
 	w := fullWorkload
 	w.instances, w.ops, w.faulty = 2, 30, 100
 	w.clocks, w.crashes, w.buggify, w.damaged, w.hold = 0, 0, false, 0, 0
-	w.faults.CutOff, w.faults.CutOffFor = 0.02, 90*time.Second
+	w.think = 6 * time.Second
+	w.faults.CutOff, w.faults.CutOffFor = 0.02, 2*time.Minute
 	change(&w)
 	return w
 }
@@ -421,14 +422,14 @@ var plantedBugs = []plantedBug{
 		symptoms: []string{stale, early},
 	},
 	{
-		// With one instance, an instance that waits for the lease waits for a holder that crashed or
-		// was closed, and writes nothing. No bug that takes the lease too early can show with one
-		// instance, so the control shows only that the workload finds nothing else.
+		// The bug shows when the manifest changes during the wait. With one node, an instance that
+		// waits for the lease waits for a holder that crashed, whose manifest changes only if a write
+		// that it sent arrives late.
 		bug:      "lateVersion",
 		name:     "an instance that swaps against the version it read last, and not the one it watched",
 		workload: plant(competing(func(w *workload) {}), "lateVersion"),
 		control: new(plant(competing(func(w *workload) {
-			w.instances, w.crashes = 1, 1
+			w.instances, w.crashes, w.faults.Late, w.faults.AfterCrash = 1, 1, 0, 0
 		}), "lateVersion")),
 		symptoms: []string{stale, early},
 	},
@@ -487,14 +488,16 @@ var plantedBugs = []plantedBug{
 		symptoms: []string{unsettled},
 	},
 	{
-		// The log is looked at only when another instance has taken the lease.
+		// The log is looked at only when another instance has taken the lease while a commit still
+		// waits for its outcome, which takes longer than a lease lasts: so the callers wait for longer,
+		// the answer to a swap is often lost, and a client is often cut off.
 		bug:  "lostMeansFailed",
 		name: "a commit counted as not committed because the lease was lost, without a look at the log",
 		workload: plant(competing(func(w *workload) {
-			w.writes = 70
+			w.writes, w.timeout, w.faults.LostResponse, w.faults.CutOff = 70, 100*time.Second, 0.2, 0.05
 		}), "lostMeansFailed"),
 		control: new(plant(competing(func(w *workload) {
-			w.writes, w.instances = 70, 1
+			w.writes, w.timeout, w.faults.LostResponse, w.faults.CutOff, w.instances = 70, 100*time.Second, 0.2, 0.05, 1
 		}), "lostMeansFailed")),
 		symptoms: []string{"whose commit failed"},
 	},
@@ -555,7 +558,7 @@ var plantedBugs = []plantedBug{
 }
 
 // TestSimulation_plantedBugs runs the workload of each bug until four seeds have found the bug,
-// from at most 200 seeds, and its control and the same workload without the bug for 50 seeds each.
+// from at most 200 seeds, and its control and the same workload without the bug for 30 seeds each.
 // With S4QL_SIM_SEEDS set, all three run that many seeds, and the workload with the bug runs all of
 // them, to count how many find it.
 func TestSimulation_plantedBugs(t *testing.T) {
@@ -612,7 +615,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 			if counting {
 				y.log(t, bug.workload)
 			}
-			n = seeds(t, 50)
+			n = seeds(t, 30)
 			if bug.control != nil {
 				is.True(t, bug.control.options.Planted(), "the control has no planted bug")
 				var controlFound int

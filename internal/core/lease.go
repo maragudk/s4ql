@@ -258,6 +258,8 @@ func (d *DB) leaseLoop(ctx context.Context) {
 	}
 	d.mu.Unlock()
 
+	// failures counts the tries in a row that ended without an answer from the store.
+	var failures int
 	for {
 		d.mu.Lock()
 		stopped, holder, serving := d.stopped != nil, d.holder, d.serving
@@ -274,6 +276,14 @@ func (d *DB) leaseLoop(ctx context.Context) {
 			wait = d.recover(work)
 		default:
 			wait = d.renew(work)
+		}
+		if wait == retryAfter {
+			// The store is asked again after a second, then after two, and so on, up to the time
+			// between two looks of an instance that watches the lease.
+			wait = min(retryAfter<<min(failures, 10), max(retryAfter, d.options.Watch))
+			failures++
+		} else {
+			failures = 0
 		}
 		if wait > 0 {
 			_ = d.pause(work, wait)

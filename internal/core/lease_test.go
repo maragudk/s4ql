@@ -205,7 +205,8 @@ func TestLease(t *testing.T) {
 
 			time.Sleep(time.Minute)
 			s.clear()
-			time.Sleep(2 * time.Second)
+			// The instance asks the store again every five seconds by now.
+			time.Sleep(6 * time.Second)
 			is.NotError(t, readErr(t, d))
 			is.NotError(t, beginErr(t, d))
 			is.Equal(t, d.ID(), w.manifest(t).Lease.Holder)
@@ -270,7 +271,7 @@ func TestLease(t *testing.T) {
 				is.NotError(t, tx.Upsert(t.Context(), "t1", row(2)))
 			})
 			s.clear()
-			time.Sleep(2 * time.Second)
+			time.Sleep(6 * time.Second)
 
 			// The write transaction that was open is not committed.
 			is.Error(t, core.ErrNoLease, tx.Upsert(t.Context(), "t1", row(3)))
