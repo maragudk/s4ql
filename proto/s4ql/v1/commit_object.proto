@@ -108,8 +108,7 @@ message DropTable {
 message UpsertRows {
   // The name of the table.
   string table = 1;
-  // The rows. Each holds a value for every column, in the table's column
-  // order.
+  // The rows.
   repeated Row rows = 2;
 }
 
@@ -119,12 +118,18 @@ message UpsertRows {
 message DeleteRows {
   // The name of the table.
   string table = 1;
-  // The rows. Each holds only its primary-key values, in key order.
-  repeated Row rows = 2;
+  // The primary keys of the rows to delete.
+  repeated Key keys = 2;
 }
 
-// One row: its values, in the order that the change gives.
+// One row: a value for every column, in the table's column order.
 message Row {
+  // The values.
+  repeated Value values = 1;
+}
+
+// One primary key: a value for every primary-key column, in key order.
+message Key {
   // The values.
   repeated Value values = 1;
 }
