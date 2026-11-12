@@ -143,9 +143,9 @@ The manifest, `manifest.json`:
 - An instance keeps the fields it does not know when it rewrites the manifest. Without this rule, an older version would delete the fields of a newer one at every renewal.
 - There is no count of commits. Markus: "Drop the "commits", let's keep the essentials."
 
-The commit objects. Markus reviewed the schema line by line in pull request #4 on 2026-11-12, which is for review only and is not merged:
+The commit objects. Markus reviewed the schema line by line in pull request #4 on 2026-11-12. That pull request was for review only and is closed without a merge, so the schema below is the only copy:
 
-- **The term is "commit object", and the pointer is `parent`.** "Commit" is the action, and "commit object" is the immutable object in S3 that the action stores, as in git. The term replaces "change file", which was our own invention. The spec and the research notes still say "change file", and the spec says so until its new wording is agreed.
+- **The term is "commit object", and the pointer is `parent`.** "Commit" is the action, and "commit object" is the immutable object in S3 that the action stores, as in git. The term replaces "change file", which was our own invention. The research notes still say "change file", and they mean a commit object.
 - **Both formats are drafts until we settle on version 1.** Markus: "while we're developing, this is all still a draft, so breaking changes are fine until we're settling on a v1." A draft commit object and a draft manifest carry version 0, so that a later release can refuse them cleanly. The rule that field numbers and types never change holds from version 1 on.
 - **What the format is optimised for.** Markus: "we don't optimize this for printing, but for robustness, consistency, speed, and other things. But printing to screen is not one of them."
 - **The encoding is Protocol Buffers, with the standard tooling:** a `.proto` file as the schema, generated Go code, and `google.golang.org/protobuf`. Markus asked for "a binary format that is forwards and backwards compatible". The comparison with CBOR, Cap'n Proto, and others is in [research/change-file-encodings.md](research/change-file-encodings.md).
@@ -187,7 +187,7 @@ Changed columns, agreed with Markus on 2026-11-12 after he asked "Wouldn't we ra
 
 Unknown fields, agreed with Markus on 2026-11-12: **a reader refuses a commit object that holds a field it does not know, anywhere outside the annotations.** Without the rule, an old reader would skip a later field such as "not null" on a column and create the column without the constraint, so its cache would silently differ from the log. The rule is mechanical and needs no discipline from us. The alternative was to raise the header's version for every such field, which depends on remembering it. Anything that an old reader may ignore goes into an annotation, where an unknown field is skipped. The version stays for a change of meaning that adds no field. The research tested the refusal with a small walker over the decoded message that looks for unknown fields ([research/protobuf-practices.md](research/protobuf-practices.md)).
 
-The schema, as revised in pull request #4. It passes `buf lint` with the `STANDARD` and `COMMENTS` rules. The file's place in the repository is not decided:
+The schema, as it stood when pull request #4 was closed. It passes `buf lint` with the `STANDARD` and `COMMENTS` rules. The file's place in the repository is not decided:
 
 ```proto
 // The format of an s4ql commit object.
