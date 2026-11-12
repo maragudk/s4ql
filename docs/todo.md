@@ -117,7 +117,7 @@ Details chosen by maragubot:
 
 ## Storage formats
 
-Status: agreed with Markus on 2026-11-11 and 2026-11-12, not built. Both formats are drafts until we settle on version 1. One question on the commit objects is open, and it is marked below.
+Status: agreed with Markus on 2026-11-11 and 2026-11-12, not built. Both formats are drafts until we settle on version 1.
 
 The manifest, `manifest.json`:
 
@@ -185,7 +185,7 @@ Changed columns, agreed with Markus on 2026-11-12 after he asked "Wouldn't we ra
 - **No marker for "unchanged" is needed,** because a column that is not listed is not touched. SQLite's changesets and Spanner send only changed columns too, and both need such a marker that is separate from NULL. PostgreSQL, MySQL by default, Debezium, and CockroachDB send the full row ([research/change-file-contents.md](research/change-file-contents.md)).
 - **The partial case is untested until a slice brings `update`.** It is safe to apply, because the cache is correct up to the parent.
 
-Open: what a reader does with a field it does not know outside the annotations, for example a later "not null" on a column. Either the reader refuses the commit object, or we raise the header's version for every such field. maragubot recommends the first.
+Unknown fields, agreed with Markus on 2026-11-12: **a reader refuses a commit object that holds a field it does not know, anywhere outside the annotations.** Without the rule, an old reader would skip a later field such as "not null" on a column and create the column without the constraint, so its cache would silently differ from the log. The rule is mechanical and needs no discipline from us. The alternative was to raise the header's version for every such field, which depends on remembering it. Anything that an old reader may ignore goes into an annotation, where an unknown field is skipped. The version stays for a change of meaning that adds no field. The research tested the refusal with a small walker over the decoded message that looks for unknown fields ([research/protobuf-practices.md](research/protobuf-practices.md)).
 
 The schema, as revised in pull request #4. It passes `buf lint` with the `STANDARD` and `COMMENTS` rules. The file's place in the repository is not decided:
 
@@ -212,6 +212,11 @@ option go_package = "maragu.dev/s4ql/internal/s4qlpb";
 //
 // It is written and read as a stream: the header first, then the changes
 // and the annotations, one at a time.
+//
+// A reader refuses a commit object that holds a field it does not know,
+// anywhere outside the annotations: a newer version of s4ql wrote it, and
+// the field may change what replay must do. Inside an annotation, a reader
+// skips a field it does not know.
 message CommitObject {
   // Exactly once, and first. A reader refuses a commit object without it.
   Header header = 1;
@@ -228,7 +233,7 @@ message CommitObject {
 message Header {
   // The version of this format: 0 while the format is a draft. A reader
   // refuses a version it does not know. From version 1 on, the version is
-  // raised when something is added that a reader must not ignore.
+  // raised when the meaning of the format changes without a new field.
   uint32 version = 1;
   // The name of the commit object before this one: 32 bytes, all zero in
   // the first one.
