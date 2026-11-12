@@ -100,16 +100,24 @@ message DropTable {
   string table = 1;
 }
 
-// Inserts rows into a table. A row replaces any row with the same primary
-// key.
+// Inserts rows into a table, or changes rows that are there.
+//
+// If `columns` lists every column of the table, each row is inserted, or
+// replaces the row with the same primary key. If it lists only some, each
+// row is there already, and only the listed columns change.
 //
 // An UpsertRows is a batch that is small enough to hold in memory. A commit
-// that upserts many rows into one table writes several batches.
+// that upserts many rows into one table writes several batches, and rows
+// with different columns go into different batches.
 message UpsertRows {
   // The name of the table.
   string table = 1;
+  // The columns that each row holds a value for, as positions in the
+  // table's columns, starting at 0. They always include the primary-key
+  // columns.
+  repeated uint32 columns = 2;
   // The rows.
-  repeated Row rows = 2;
+  repeated Row rows = 3;
 }
 
 // Deletes rows from a table.
@@ -119,17 +127,18 @@ message DeleteRows {
   // The name of the table.
   string table = 1;
   // The primary keys of the rows to delete.
-  repeated Key keys = 2;
+  repeated PrimaryKey primary_keys = 2;
 }
 
-// One row: a value for every column, in the table's column order.
+// One row: a value for each column that its UpsertRows lists, in that
+// order.
 message Row {
   // The values.
   repeated Value values = 1;
 }
 
 // One primary key: a value for every primary-key column, in key order.
-message Key {
+message PrimaryKey {
   // The values.
   repeated Value values = 1;
 }
