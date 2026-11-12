@@ -49,8 +49,9 @@ var singleWorkload = workload{
 }
 
 // fullWorkload has everything: three instances that compete for the lease, with leases of
-// different durations, clocks that move, a crash and a restart, buggify, every fault of the store,
-// and downloads that are damaged.
+// different durations, clocks that move, a crash and a restart, instances that are closed and
+// opened again while their callers run, buggify, every fault of the store, and downloads that are
+// damaged.
 var fullWorkload = workload{
 	instances: 3,
 	callers:   3,
@@ -67,6 +68,7 @@ var fullWorkload = workload{
 	clocks:    stopMonotonic | wallForward | wallBackward | stopWall,
 	faulty:    50,
 	crashes:   1,
+	closes:    1,
 	buggify:   true,
 }
 
@@ -297,7 +299,7 @@ func plant(w workload, bug string) workload {
 func competing(change func(w *workload)) workload {
 	w := fullWorkload
 	w.instances, w.ops, w.faulty = 2, 30, 100
-	w.clocks, w.crashes, w.buggify, w.damaged, w.hold = 0, 0, false, 0, 0
+	w.clocks, w.crashes, w.closes, w.buggify, w.damaged, w.hold = 0, 0, 0, false, 0, 0
 	w.think = 6 * time.Second
 	w.faults.CutOff, w.faults.CutOffFor = 0.02, 2*time.Minute
 	change(&w)

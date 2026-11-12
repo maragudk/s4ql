@@ -14,7 +14,8 @@
 // What it does in each case is in the doc comments of [DB], [Tx.Commit], and [DB.Read].
 //
 // The package waits, reads the time, and draws random numbers only through the [host.Host] that
-// [Open] is given.
+// [Open] is given, with two exceptions that decide nothing: log/slog stamps each event with the
+// time, and os.CreateTemp draws the name of a spool file.
 package core
 
 import (
@@ -73,7 +74,7 @@ func (o Options) withDefaults() (Options, error) {
 		o.Lease = 30 * time.Second
 	}
 	if o.RenewAfter == 0 {
-		o.RenewAfter = o.Lease * 2 / 3
+		o.RenewAfter = o.Lease / 3 * 2
 	}
 	if o.Readers == 0 {
 		o.Readers = 4
@@ -94,6 +95,9 @@ func (o Options) withDefaults() (Options, error) {
 		o.Logger = slog.New(slog.DiscardHandler)
 	}
 	switch {
+	case o.Lease > 365*24*time.Hour:
+		// Sums of a time and a lease stay far from the end of the range of a duration.
+		return o, fmt.Errorf("the lease lasts %v, which is more than a year", o.Lease)
 	case o.Lease < 0 || o.RenewAfter < 0 || o.RenewAfter >= o.Lease:
 		return o, fmt.Errorf("the lease lasts %v and is renewed after %v, which must be above zero and shorter", o.Lease, o.RenewAfter)
 	case o.Readers < 0:
@@ -106,10 +110,13 @@ func (o Options) withDefaults() (Options, error) {
 
 const (
 	// retryAfter is how long the instance waits before it asks the store again after a request
-	// that failed without an answer.
+	// that failed without an answer, at the most.
 	retryAfter = time.Second
 	// retrySoon is how long it waits before it asks again after an answer that settles nothing.
 	retrySoon = 100 * time.Millisecond
+	// backOff is what a step of the lease task returns in place of a time to wait when the store
+	// gave no answer: the task then waits longer after each such step in a row.
+	backOff time.Duration = -1
 )
 
 // margin that an instance waits on its own monotonic clock, beyond the duration of the holder's
@@ -193,9 +200,11 @@ type DB struct {
 	unresolved bool
 	// sent is when the last renewal that is known to have happened was first sent.
 	sent sentAt
-	// waiters are the waits that a change of stopped, holder, or serving ends, by a number.
+	// waiters are the waits that a change of stopped, holder, or serving ends, and a lease that is
+	// valid again by the clocks, by a number. changes counts those changes.
 	waiters map[uint64]context.CancelFunc
 	waiter  uint64
+	changes uint64
 	// cancelWork ends what the lease task is doing when the instance stops.
 	cancelWork context.CancelFunc
 	closed     bool
@@ -516,16 +525,18 @@ func (d *DB) refused(ctx context.Context, operation string, err error) error {
 
 // wakeLocked ends every wait that is registered. It requires mu.
 func (d *DB) wakeLocked() {
+	d.changes++
 	for id, cancel := range d.waiters {
 		cancel()
 		delete(d.waiters, id)
 	}
 }
 
-// waitLocked registers a wait and returns its context, which is done when ctx is, and when stopped,
-// holder, or serving changes. The caller registers under mu, in the same critical section in which
-// it found that it has to wait, so that no change is missed. It calls the returned function after
-// the wait, without mu. It requires mu.
+// waitLocked registers a wait and returns its context, which is done when ctx is, when stopped,
+// holder, or serving changes, and when the lease is valid again after it had run out by a clock.
+// The caller registers under mu, in the same critical section in which it found that it has to
+// wait, or after it has checked there that changes is what it was when it found that, so that no
+// change is missed. It calls the returned function after the wait, without mu. It requires mu.
 func (d *DB) waitLocked(ctx context.Context) (context.Context, func()) {
 	wctx, cancel := context.WithCancel(ctx)
 	d.waiter++
@@ -539,10 +550,15 @@ func (d *DB) waitLocked(ctx context.Context) (context.Context, func()) {
 	}
 }
 
-// pause for at most duration, or until stopped, holder, or serving changes. It fails only if ctx
-// is done first, with the error of the wait.
-func (d *DB) pause(ctx context.Context, duration time.Duration) error {
+// pause for at most duration, or until the state of the instance changes: see [DB.waitLocked]. It
+// does not wait at all if the state has changed since changes was read. It fails only if ctx is done
+// first, with the error of the wait.
+func (d *DB) pause(ctx context.Context, duration time.Duration, changes uint64) error {
 	d.mu.Lock()
+	if d.changes != changes {
+		d.mu.Unlock()
+		return nil
+	}
 	wctx, end := d.waitLocked(ctx)
 	d.mu.Unlock()
 	err := d.host.Sleep(wctx, duration)
@@ -553,9 +569,15 @@ func (d *DB) pause(ctx context.Context, duration time.Duration) error {
 	return nil
 }
 
+// leftLocked is how long the lease of an instance that serves is still valid by the monotonic
+// clock. It requires mu.
+func (d *DB) leftLocked() time.Duration {
+	return max(0, d.options.Lease-(d.host.Monotonic()-d.sent.monotonic))
+}
+
 // acquireServing acquires a permit of the semaphore for a caller that needs the instance to serve.
-// It fails at once, and whenever the instance stops serving while the caller waits, with the error
-// of [DB.servingLocked], and with the error of the wait if ctx is done first.
+// It fails at once, and whenever the instance stops serving or its lease runs out while the caller
+// waits, with the error of [DB.servingLocked], and with the error of the wait if ctx is done first.
 func (d *DB) acquireServing(ctx context.Context, sem host.Semaphore) error {
 	for {
 		d.mu.Lock()
@@ -564,9 +586,13 @@ func (d *DB) acquireServing(ctx context.Context, sem host.Semaphore) error {
 			return err
 		}
 		wctx, end := d.waitLocked(ctx)
+		left := d.leftLocked()
 		d.mu.Unlock()
 
-		err := sem.Acquire(wctx)
+		// Nothing wakes a caller when the lease runs out, so the wait ends then, and looks again.
+		tctx, cancel := d.host.WithTimeout(wctx, left)
+		err := sem.Acquire(tctx)
+		cancel()
 		end()
 		if err != nil {
 			if ctx.Err() != nil {
@@ -587,25 +613,22 @@ func (d *DB) acquireServing(ctx context.Context, sem host.Semaphore) error {
 	}
 }
 
-// Wait until the instance serves: until it holds the lease and its cache is caught up. It fails
-// with the error of the stop if the instance stops first, and with the error of the wait if ctx
-// is done first. A read or a write that follows can still fail, because the instance can stop
-// serving at any time.
+// Wait until the instance serves: until it holds the lease, its cache is caught up, and the lease
+// is valid by the clocks. It fails with the error of the stop if the instance stops first, and
+// with the error of the wait if ctx is done first. A read or a write that follows can still fail,
+// because the instance can stop serving at any time.
 func (d *DB) Wait(ctx context.Context) error {
 	for {
 		d.mu.Lock()
-		switch {
-		case d.stopped != nil:
+		err := d.servingLocked()
+		if err == nil || d.stopped != nil {
 			d.mu.Unlock()
-			return d.stopped
-		case d.holder && d.serving:
-			d.mu.Unlock()
-			return nil
+			return err
 		}
 		wctx, end := d.waitLocked(ctx)
 		d.mu.Unlock()
 
-		err := d.host.Sleep(wctx, time.Duration(1<<63-1))
+		err = d.host.Sleep(wctx, time.Duration(1<<63-1))
 		end()
 		if ctx.Err() != nil {
 			return err
@@ -666,9 +689,9 @@ func (d *DB) Close(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// locks that a function holds and gives back in a deferred call. A release waits, and a wait can
-// end the goroutine and run the deferred call again, so each lock is marked as given back before it
-// is released.
+// locks that a function holds and gives back in a deferred call. Each lock is marked as given back
+// before it is released, so that a deferred call that runs while a release is under way does not
+// release it a second time.
 type locks struct {
 	d        *DB
 	writer   bool

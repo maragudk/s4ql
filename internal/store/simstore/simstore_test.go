@@ -271,11 +271,23 @@ func TestStore_Calm(t *testing.T) {
 						ctx, cancel := s.WithTimeout(ctx, time.Hour)
 						defer cancel()
 						_, createErr := c.Create(ctx, fmt.Sprint("k", i), strings.NewReader("data"), nil)
-						body, _, getErr := c.Get(ctx, fmt.Sprint("k", i))
+						body, version, getErr := c.Get(ctx, fmt.Sprint("k", i))
 						if getErr == nil {
 							_, getErr = io.ReadAll(body)
 						}
-						return createErr != nil || getErr != nil
+						if createErr != nil || getErr != nil {
+							return true
+						}
+						// Two swaps from the same version at the same time: one of them is refused,
+						// for the version or, while the faults are on, for a conflict.
+						second := s.Go(ctx, fmt.Sprint("second swap ", i), func(ctx context.Context) {
+							_, _ = c.Swap(ctx, fmt.Sprint("k", i), version, strings.NewReader("second"), nil)
+						})
+						_, swapErr := c.Swap(ctx, fmt.Sprint("k", i), version, strings.NewReader("first"), nil)
+						if err := second.Wait(ctx); err != nil {
+							return true
+						}
+						return swapErr != nil && !errors.Is(swapErr, store.ErrChanged)
 					}
 
 					var failed int

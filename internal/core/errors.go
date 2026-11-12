@@ -18,7 +18,7 @@ var (
 	// ErrOutcomeUnknown is wrapped by the error of [Tx.Commit] when the context of the caller ended
 	// before the instance knew whether the transaction is committed. The transaction may be
 	// committed, may not be, and may still become committed. It is the one error of a commit that
-	// does not mean "not committed".
+	// does not mean "not committed", and an error that wraps it wraps no other error.
 	ErrOutcomeUnknown = errors.New("the outcome of the commit is unknown")
 
 	// ErrStopped is wrapped by the error of every call on an instance that has stopped for good, and

@@ -104,30 +104,42 @@ func parentOf(name format.Name, body io.Reader) (format.Name, error) {
 	return format.NameFromBytes(header.GetParent())
 }
 
-// fetch the commit object with the given name from the store and hand its content to use. If use
-// reports that the bytes do not match the name, it downloads the commit object once more, because
-// the bytes may have been damaged on their way.
-//
-// It stops the instance if the commit object is not in the store, if use reports one of the three
-// refusals of a reader, or that the commit object does not fit the cache, and for a failure of the
-// cache. It passes on any other error.
+// fetch the commit object with the given name from the store and hand its content to use, as
+// [DB.download] does. It stops the instance for a commit object that can never be read, by
+// [unreadable], and for a failure of the cache. It passes on any other error.
 func (d *DB) fetch(ctx context.Context, name format.Name, use func(body io.Reader) error) error {
-	for attempt := 1; ; attempt++ {
-		err := d.fetchOnce(ctx, name, use)
-		switch {
-		case err == nil:
-			return nil
-		case errors.Is(err, store.ErrNotFound):
-			return d.stop(ctx, brokenf("the commit object %v is not in the store", name))
-		case errors.Is(err, format.ErrNameMismatch) && attempt == 1 && !d.bugs.skipUnreadable:
-			continue
-		case errors.Is(err, format.ErrNameMismatch) && d.bugs.skipUnreadable:
-			return err
-		case errors.Is(err, format.ErrNameMismatch), errors.Is(err, format.ErrNewerVersion), errors.Is(err, format.ErrMalformed), errors.Is(err, ErrLogBroken):
-			return d.stop(ctx, err)
-		}
-		return d.cacheError(ctx, "catch up", err)
+	err := d.download(ctx, name, use)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, format.ErrNameMismatch) && d.bugs.skipUnreadable:
+		return err
+	case unreadable(err):
+		return d.stop(ctx, err)
 	}
+	return d.cacheError(ctx, "catch up", err)
+}
+
+// unreadable reports whether err says that a commit object can never be read, or never be applied:
+// it needs a newer version of s4ql, it is malformed, its bytes do not match its name, the store
+// does not have it, or it does not fit the cache.
+func unreadable(err error) bool {
+	return errors.Is(err, format.ErrNameMismatch) || errors.Is(err, format.ErrNewerVersion) || errors.Is(err, format.ErrMalformed) || errors.Is(err, ErrLogBroken)
+}
+
+// download the commit object with the given name from the store and hand its content to use. If
+// use reports that the bytes do not match the name, it downloads the commit object once more,
+// because the bytes may have been damaged on their way. A commit object that the store does not
+// have is an error that wraps [ErrLogBroken].
+func (d *DB) download(ctx context.Context, name format.Name, use func(body io.Reader) error) error {
+	err := d.fetchOnce(ctx, name, use)
+	if errors.Is(err, format.ErrNameMismatch) && !d.bugs.skipUnreadable {
+		err = d.fetchOnce(ctx, name, use)
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		return brokenf("the commit object %v is not in the store", name)
+	}
+	return err
 }
 
 // fetchOnce downloads the commit object with the given name and hands its content to use.

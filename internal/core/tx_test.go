@@ -25,6 +25,7 @@ import (
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/host"
 	"maragu.dev/s4ql/internal/s4qlpb"
+	"maragu.dev/s4ql/internal/sqlite"
 	"maragu.dev/s4ql/internal/store"
 )
 
@@ -1035,5 +1036,210 @@ func TestTx_Commit_settling(t *testing.T) {
 		// The instance goes on.
 		transact(t, d, upsert("t1", 5))
 		is.Equal(t, "t1(k*0): 1 | 2 | 5", read(t, d))
+	})
+}
+
+func TestTx_Commit_stopped(t *testing.T) {
+	const without, with = "t1(k*0): ", "t1(k*0): \nt2(k*0): "
+
+	t.Run("should go on finding out when the instance is closed while the outcome is unknown, and report the commit", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s, d, tx := committing(t, w, core.Options{})
+			// The swap is applied, its answer is lost, and the store is out of reach for a while.
+			s.on("swap", "manifest", lose, 1)
+			s.on("swap", "", drop, -1)
+			s.on("get", "", drop, -1)
+
+			committed := make(chan error, 1)
+			go func() { committed <- tx.Commit(t.Context()) }()
+			time.Sleep(5 * time.Second)
+			// The close waits for the commit, and gives up.
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			is.Error(t, context.DeadlineExceeded, d.Close(ctx))
+			cancel()
+			is.Equal(t, 0, len(committed))
+
+			s.clear()
+			is.NotError(t, <-committed)
+			is.Equal(t, 2, len(w.commits(t)))
+			is.NotError(t, d.Close(t.Context()))
+			is.True(t, w.manifest(t).Lease == nil, "the lease is not released")
+			again := w.serve(t, "a", core.Options{})
+			is.Equal(t, with, read(t, again))
+		})
+	})
+
+	t.Run("should report an unknown outcome, and not a stop, when the caller gives up after the instance was closed", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s, d, tx := committing(t, w, core.Options{})
+			s.on("swap", "manifest", lose, 1)
+			s.on("swap", "", drop, -1)
+			s.on("get", "", drop, -1)
+
+			committed := make(chan error, 1)
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			go func() { committed <- tx.Commit(ctx) }()
+			time.Sleep(5 * time.Second)
+			closed := make(chan error, 1)
+			go func() { closed <- d.Close(t.Context()) }()
+
+			err := <-committed
+			is.Error(t, core.ErrOutcomeUnknown, err)
+			is.True(t, !errors.Is(err, core.ErrStopped) && !errors.Is(err, core.ErrClosed), fmt.Sprint(err))
+			is.Equal(t, time.Minute, time.Since(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)))
+			<-closed
+			is.Equal(t, 2, len(w.commits(t)))
+		})
+	})
+
+	t.Run("should report a commit as not committed when the instance stops before a swap was sent", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s, d, tx := committing(t, w, core.Options{})
+			s.on("create", "commits/", hang, -1)
+
+			committed := make(chan error, 1)
+			go func() { committed <- tx.Commit(t.Context()) }()
+			time.Sleep(time.Second)
+			closed := make(chan error, 1)
+			go func() { closed <- d.Close(t.Context()) }()
+
+			err := <-committed
+			is.Error(t, core.ErrStopped, err)
+			is.True(t, !errors.Is(err, core.ErrOutcomeUnknown), fmt.Sprint(err))
+			is.NotError(t, <-closed)
+			is.Equal(t, 1, len(w.commits(t)))
+			again := w.serve(t, "a", core.Options{})
+			is.Equal(t, without, read(t, again))
+		})
+	})
+}
+
+func TestDB_Begin(t *testing.T) {
+	t.Run("should wait for a lock on the cache that another connection holds for a while, as long as the busy timeout allows", func(t *testing.T) {
+		w := newWorld(t)
+		// The timeout is far longer than the lock is held, so that the speed of the machine decides
+		// nothing.
+		d := w.serve(t, "a", core.Options{BusyTimeout: time.Minute})
+		transact(t, d, create("t1", 1, "k"))
+
+		other, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
+		is.NotError(t, err)
+		defer func() { is.NotError(t, other.Close()) }()
+		is.NotError(t, other.Exec("begin immediate"))
+		released := make(chan error, 1)
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+			released <- other.Exec("rollback")
+		}()
+
+		transact(t, d, upsert("t1", 1))
+		is.NotError(t, <-released)
+		is.Equal(t, "t1(k*0): 1", read(t, d))
+	})
+
+	t.Run("should return and log busy, and go on, when another connection holds the cache's write lock past the busy timeout", func(t *testing.T) {
+		w := newWorld(t)
+		events := &recorder{}
+		d := w.serve(t, "a", core.Options{BusyTimeout: 50 * time.Millisecond, Logger: events.logger()})
+		transact(t, d, create("t1", 1, "k"), upsert("t1", 1))
+
+		// Another process has the cache open and holds its write lock.
+		other, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
+		is.NotError(t, err)
+		defer func() { is.NotError(t, other.Close()) }()
+		is.NotError(t, other.Exec("begin immediate"))
+
+		_, err = d.Begin(t.Context())
+		is.Error(t, core.ErrBusy, err)
+		is.True(t, !errors.Is(err, core.ErrLocal) && !errors.Is(err, core.ErrStopped))
+		is.Equal(t, 1, len(events.named(core.EventBusy)))
+		is.Equal(t, "busy", at(events.named(core.EventBusy)[0], core.AttrOutcome))
+		is.Equal(t, "begin", at(events.named(core.EventBusy)[0], core.AttrOperation))
+
+		// It is no local I/O failure: the instance goes on, and reads do not wait for the lock.
+		is.NotError(t, d.Err())
+		is.Equal(t, "t1(k*0): 1", read(t, d))
+		is.NotError(t, other.Exec("rollback"))
+		transact(t, d, upsert("t1", 2))
+		is.Equal(t, "t1(k*0): 1 | 2", read(t, d))
+	})
+}
+
+func TestTx_CreateTable(t *testing.T) {
+	t.Run("should keep tables and columns with hostile names apart, in the cache and in a replay of the log", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+
+		// Every name is the name of a table, and every table has all the names as its columns, with
+		// the name of the table as the primary key, so that mixing two of them up would show.
+		var want []string
+		for i, name := range hostile {
+			columns := append([]string{name}, hostile[:i]...)
+			columns = append(columns, hostile[i+1:]...)
+			ct := tableOf(name, 1, columns...)
+			values := make([]any, len(columns))
+			for j := range values {
+				values[j] = 1000*i + j
+			}
+			// A table at a time, so that a failure names it.
+			tx, err := d.Begin(t.Context())
+			is.NotError(t, err)
+			is.NotError(t, tx.CreateTable(t.Context(), ct), name)
+			is.NotError(t, tx.Upsert(t.Context(), name, row(values...)), name)
+			got, err := tx.Get(t.Context(), name, row(1000*i))
+			is.NotError(t, err, name)
+			is.Equal(t, text(row(values...)), text(got), name)
+			is.NotError(t, tx.Commit(t.Context()), name)
+			want = append(want, fmt.Sprint(describe(ct), ": ", text(row(values...))))
+		}
+		got := strings.Split(read(t, d), "\n")
+		// Some names hold line breaks, so the comparison is of the whole text.
+		is.Equal(t, len(strings.Split(strings.Join(want, "\n"), "\n")), len(got))
+		for _, table := range want {
+			is.True(t, strings.Contains(read(t, d), table), table)
+		}
+		is.NotError(t, d.Close(t.Context()))
+
+		// The cache as a person sees it with sqlite3: the tables have the names of the database.
+		_, state, err := cacheDump(filepath.Join(w.dir, "a.db"))
+		is.NotError(t, err)
+		is.Equal(t, len(hostile), len(state))
+
+		replayed := w.serve(t, "b", core.Options{})
+		for _, table := range want {
+			is.True(t, strings.Contains(read(t, replayed), table), table)
+		}
+
+		// And they can be changed and dropped by their names.
+		for i, name := range hostile {
+			tx, err := replayed.Begin(t.Context())
+			is.NotError(t, err)
+			found, err := tx.Delete(t.Context(), name, row(1000*i))
+			is.NotError(t, err, name)
+			is.True(t, found, name)
+			is.NotError(t, tx.DropTable(t.Context(), name), name)
+			is.NotError(t, tx.Commit(t.Context()), name)
+		}
+		is.Equal(t, "", read(t, replayed))
+	})
+
+	t.Run("should refuse a table whose name starts with s4ql_ or sqlite_, in any case of the letters, and allow names that only look like it", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+
+		for _, name := range []string{"s4ql_", "s4ql_cache", "s4ql_touched_1", "S4QL_x", "s4Ql_x", "S4qL_", "sqlite_", "sqlite_schema", "sqlite_master", "SQLITE_x", "SqLiTe_stat1", "sqlite_autoindex_t1_1"} {
+			err := tx.CreateTable(t.Context(), tableOf(name, 1, "k"))
+			is.Error(t, core.ErrReservedName, err, name)
+			is.True(t, !errors.Is(err, core.ErrInvalid), name)
+		}
+		for _, name := range []string{"s4ql", "s4qlx", "_s4ql_", " s4ql_", "sqlite", "sqlitex", "xsqlite_", "s4ql-", "ſ4ql_x"} {
+			is.NotError(t, tx.CreateTable(t.Context(), tableOf(name, 1, "k")), name)
+		}
+		// A column may have such a name.
+		is.NotError(t, tx.CreateTable(t.Context(), tableOf("t1", 1, "s4ql_cache", "sqlite_schema")))
+		is.NotError(t, tx.Commit(t.Context()))
 	})
 }

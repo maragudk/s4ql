@@ -607,3 +607,155 @@ func TestDB_Close_hanging(t *testing.T) {
 		})
 	})
 }
+
+func TestDB_Close_waiting(t *testing.T) {
+	t.Run("should not close the cache under a read transaction that is open", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			d := w.serve(t, "a", core.Options{})
+			r, err := d.Read(t.Context())
+			is.NotError(t, err)
+
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			is.Error(t, context.DeadlineExceeded, d.Close(ctx))
+			is.NotError(t, r.Close(t.Context()))
+			is.NotError(t, d.Close(t.Context()))
+		})
+	})
+
+	t.Run("should end what the lease task is waiting for, and not wait for it", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s := newScriptStore(w.client())
+			// The lease task waits for an answer that does not come before the timeout of a minute.
+			s.on("get", "manifest", hang, -1)
+			d := w.openOn(t, "a", s, core.Options{StoreTimeout: time.Minute})
+			time.Sleep(time.Second)
+
+			start := time.Now()
+			is.NotError(t, d.Close(t.Context()))
+			is.Equal(t, 0, time.Since(start))
+		})
+	})
+}
+
+func TestOpen_cache(t *testing.T) {
+	t.Run("should record the name of the last commit object as the position of the cache, where a person can read it", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		path := filepath.Join(w.dir, "a.db")
+
+		position, _, err := cacheDump(path)
+		is.NotError(t, err)
+		is.Equal(t, format.EmptyLog, position)
+
+		for i := range 3 {
+			transact(t, d, create(fmt.Sprint("t", i), 1, "k"))
+			position, _, err := cacheDump(path)
+			is.NotError(t, err)
+			is.Equal(t, w.manifest(t).Head, position)
+
+			tx, err := d.Begin(t.Context())
+			is.NotError(t, err)
+			is.Equal(t, position, tx.Position())
+			is.NotError(t, tx.Rollback(t.Context()))
+			r, err := d.Read(t.Context())
+			is.NotError(t, err)
+			is.Equal(t, position, r.Position())
+			is.NotError(t, r.Close(t.Context()))
+		}
+	})
+
+	t.Run("should fail for a file that is not a database, and leave it as it is", func(t *testing.T) {
+		w := newWorld(t)
+		path := filepath.Join(w.dir, "a.db")
+		is.NotError(t, os.WriteFile(path, []byte(strings.Repeat("this is not a database\n", 100)), 0o600))
+
+		_, err := core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{})
+		is.Error(t, core.ErrLocal, err)
+		data, err := os.ReadFile(path)
+		is.NotError(t, err)
+		is.True(t, strings.HasPrefix(string(data), "this is not a database"), "the file was rebuilt")
+	})
+
+	t.Run("should fail for a cache in a directory that does not exist", func(t *testing.T) {
+		w := newWorld(t)
+		_, err := core.Open(t.Context(), w.host, w.client(), filepath.Join(w.dir, "missing", "a.db"), "db", core.Options{})
+		is.Error(t, core.ErrLocal, err)
+	})
+
+	t.Run("should fail for a cache of another version, and for one whose position is no name, and leave it as it is", func(t *testing.T) {
+		for _, tamper := range []string{
+			fmt.Sprint("update s4ql_cache set version = ", core.CacheVersion+1),
+			"update s4ql_cache set head = 'not a name'",
+			"delete from s4ql_cache",
+		} {
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+			transact(t, d, create("t1", 1, "k"), upsert("t1", 1))
+			is.NotError(t, d.Close(t.Context()))
+
+			path := filepath.Join(w.dir, "a.db")
+			c, err := sqlite.Open(path)
+			is.NotError(t, err)
+			is.NotError(t, c.Exec(tamper))
+			is.NotError(t, c.Close())
+
+			_, err = core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{})
+			is.Error(t, core.ErrCacheVersion, err, tamper)
+
+			// Nothing rebuilt it: the table and its row are still there.
+			c, err = sqlite.Open(path)
+			is.NotError(t, err)
+			is.NotError(t, c.Exec("insert into t1 (k) values (2)"))
+			is.True(t, c.Exec("insert into t1 (k) values (1)") != nil, "the row is gone")
+			is.NotError(t, c.Close())
+		}
+	})
+
+	t.Run("should refuse options, prefixes, and paths that make no sense", func(t *testing.T) {
+		w := newWorld(t)
+		path := filepath.Join(w.dir, "a.db")
+		for name, options := range map[string]core.Options{
+			"a renewal after the lease is over": {Lease: 10 * time.Second, RenewAfter: 10 * time.Second},
+			"a lease below zero":                {Lease: -time.Second},
+			"readers below zero":                {Readers: -1},
+			"a timeout below zero":              {StoreTimeout: -time.Second},
+		} {
+			_, err := core.Open(t.Context(), w.host, w.client(), path, "db", options)
+			is.True(t, err != nil, name)
+		}
+		for _, prefix := range []string{"/db", "db/", "a//b", ".", "a/../b", "a/./b", "\xff", strings.Repeat("x", 901)} {
+			_, err := core.Open(t.Context(), w.host, w.client(), path, prefix, core.Options{})
+			is.True(t, err != nil, prefix)
+		}
+		for _, path := range []string{"", ":memory:", "file:a.db"} {
+			_, err := core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{})
+			is.True(t, err != nil, path)
+		}
+		_, err := os.Stat(path)
+		is.True(t, os.IsNotExist(err), "a cache was made")
+	})
+
+	t.Run("should keep the objects of a database under its prefix, and those of a database without a prefix at the top", func(t *testing.T) {
+		w := newWorld(t)
+		for _, prefix := range []string{"", "one", "one/two", "smørrebrød/🥪"} {
+			d, err := core.Open(t.Context(), w.host, w.client(), filepath.Join(w.dir, fmt.Sprint(len(prefix), ".db")), prefix, core.Options{})
+			is.NotError(t, err)
+			is.NotError(t, d.Wait(t.Context()))
+			transact(t, d, create("t1", 1, "k"))
+			is.NotError(t, d.Close(t.Context()))
+		}
+		var manifests, commits []string
+		for _, key := range w.store.Keys() {
+			if name, ok := strings.CutSuffix(key, "manifest.json"); ok {
+				manifests = append(manifests, name)
+				continue
+			}
+			i := strings.LastIndex(key, "commits/")
+			is.True(t, i >= 0 && len(key[i+len("commits/"):]) == 64, key)
+			commits = append(commits, key[:i])
+		}
+		is.EqualSlice(t, []string{"", "one/", "one/two/", "smørrebrød/🥪/"}, manifests)
+		is.EqualSlice(t, []string{"", "one/", "one/two/", "smørrebrød/🥪/"}, commits)
+	})
+}

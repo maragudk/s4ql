@@ -117,6 +117,9 @@ type workload struct {
 	// crashes of a random instance, each followed by a restart on a copy of what it left on disk,
 	// under the scheduler only.
 	crashes int
+	// closes of a random instance while its callers run, each followed by opening it again, as an
+	// application that shuts down cleanly and starts again.
+	closes int
 	// buggify for the run.
 	buggify bool
 	// steady says that nothing in the workload can keep an instance from renewing its lease in
@@ -308,6 +311,8 @@ type node struct {
 	options core.Options
 	// callers that have not returned.
 	callers atomic.Int64
+	// restarting is set while the node's database is closed and opened again on purpose.
+	restarting atomic.Bool
 
 	mu sync.Mutex
 	db *core.DB
@@ -701,7 +706,8 @@ func (r *run) stopped(ctx context.Context, n *node, d *core.DB) {
 	cause := d.Err()
 	r.o.stops.Add(1)
 	r.c.world.Trace(ctx, "%v: %v", n.name, cause)
-	explained := (errors.Is(cause, core.ErrLocal) && r.w.buggify) ||
+	// Under buggify, the cache fails to commit after a manifest swap, and says that it was made to.
+	explained := (errors.Is(cause, core.ErrLocal) && r.w.buggify && strings.Contains(cause.Error(), "injected")) ||
 		(errors.Is(cause, format.ErrNameMismatch) && r.w.damaged > 0)
 	if !explained {
 		r.o.violate(ctx, r.c.world, "the instance stopped: %v", cause)
@@ -768,13 +774,45 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 	}
 	tasks = append(tasks, n.host.Go(ctx, "supervisor", func(ctx context.Context) {
 		for n.callers.Load() > 0 {
-			if d := n.current(); isStopped(d) {
+			if d := n.current(); isStopped(d) && !n.restarting.Load() {
 				r.stopped(ctx, n, d)
 			}
 			_ = n.host.Sleep(ctx, 2*time.Second)
 		}
 	}))
+	if w.closes > 0 {
+		tasks = append(tasks, n.host.Go(ctx, "restarter", func(ctx context.Context) {
+			for range w.closes {
+				// Each node is closed with a chance of one in two, at a time of its own.
+				if intn(n.host, 2) == 0 {
+					continue
+				}
+				_ = n.host.Sleep(ctx, time.Duration(5_000+intn(n.host, 100_000))*time.Millisecond)
+				if n.callers.Load() == 0 {
+					return
+				}
+				n.restarting.Store(true)
+				d := n.current()
+				c.world.Trace(ctx, "%v is closed and opened again", n.name)
+				cctx, cancel := n.host.WithTimeout(ctx, 2*time.Minute)
+				r.close(cctx, n, d)
+				cancel()
+				if isClosed(d) {
+					r.o.restarts.Add(1)
+					if _, err := r.open(ctx, n); err != nil {
+						r.o.violate(ctx, c.world, "open again: %v", err)
+					}
+				}
+				n.restarting.Store(false)
+			}
+		}))
+	}
 	return n, tasks
+}
+
+// isClosed reports whether d was closed: whether a second close has nothing left to do.
+func isClosed(d *core.DB) bool {
+	return errors.Is(d.Err(), core.ErrStopped)
 }
 
 // run the workload w as the task of ctx, in the cluster c, and record what happened in o. It
@@ -1090,6 +1128,7 @@ func (r *run) verify(ctx context.Context, live, crashed []*node) {
 	}
 
 	r.verifyHistory(ctx)
+	r.verifyLease(ctx)
 	r.verifyReplay(ctx)
 
 	// An instance loses its lease only to another one. With one node, a new instance starts only
@@ -1105,9 +1144,18 @@ func (r *run) verify(ctx context.Context, live, crashed []*node) {
 		o.violate(ctx, h, "%v reads were refused because the lease had run out by a clock, with nothing in the way of a renewal", expired)
 	}
 
-	// Every instance is closed, so the lease is released, unless its holder could not release it,
-	// or a request of the holder arrived after the holder was closed.
-	data, _, _ := r.store.Object(prefix + "/manifest.json")
+}
+
+// verifyLease checks that the lease is released when every instance is closed, unless its holder
+// crashed or could not release it, or a request of the holder arrived after the holder was closed:
+// a swap that takes a free lease can be applied late, because the manifest without a lease entry
+// has the same version whenever the head is the same.
+func (r *run) verifyLease(ctx context.Context) {
+	o, h := r.o, r.c.world
+	data, _, ok := r.store.Object(prefix + "/manifest.json")
+	if !ok {
+		return
+	}
 	man, err := format.ParseManifest(data)
 	if err != nil {
 		o.violate(ctx, h, "the manifest: %v", err)

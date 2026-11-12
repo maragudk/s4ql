@@ -14,6 +14,7 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
@@ -409,9 +410,10 @@ func TestLease_retries(t *testing.T) {
 			}
 			s.on("swap", "", drop, -1)
 			time.Sleep(40 * time.Second)
-			// The renewal at 20 seconds, and its attempts after 1, 2, 4, and 5 seconds more.
+			// The renewal at 20 seconds, and its attempts after 1, 2, 4, 5, and 5 seconds more: the
+			// instance asks less and less often, up to every five seconds.
 			lost := sent()
-			is.True(t, len(lost) >= 5, fmt.Sprint(len(lost)))
+			is.Equal(t, 6, len(lost))
 			for _, swap := range lost {
 				is.True(t, swap == lost[0], "an attempt of the renewal without an answer wrote another manifest")
 			}
@@ -500,5 +502,126 @@ func TestLease_clocks(t *testing.T) {
 			is.NotError(t, s.Sleep(ctx, 6*time.Second))
 			is.Error(t, core.ErrNoLease, started(ctx, d))
 		})
+	})
+}
+
+func TestLease_unsure(t *testing.T) {
+	t.Run("should take at once a lease that names it, after the answer to its taking was lost", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			first := w.serve(t, "first", core.Options{})
+			is.NotError(t, first.Close(t.Context()))
+
+			s := newScriptStore(w.client())
+			s.on("swap", "manifest", lose, 1)
+			d := w.openOn(t, "a", s, core.Options{})
+			start := time.Now()
+			is.NotError(t, d.Wait(t.Context()))
+			is.True(t, time.Since(start) < 5*time.Second, fmt.Sprint(time.Since(start)))
+			is.Equal(t, d.ID(), w.manifest(t).Lease.Holder)
+		})
+	})
+
+	t.Run("should release at its close a lease that it holds without knowing it", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			first := w.serve(t, "first", core.Options{})
+			is.NotError(t, first.Close(t.Context()))
+
+			// The swap that takes the lease is applied, its answer is lost, and the instance hears
+			// nothing from the store until it is closed.
+			s := newScriptStore(w.client())
+			s.on("swap", "manifest", lose, 1)
+			s.on("get", "manifest", pass, 1)
+			s.on("get", "", drop, -1)
+			d := w.openOn(t, "a", s, core.Options{})
+			time.Sleep(3 * time.Second)
+			is.True(t, !serves(t, d))
+			is.Equal(t, d.ID(), w.manifest(t).Lease.Holder)
+
+			s.clear()
+			is.NotError(t, d.Close(t.Context()))
+			is.True(t, w.manifest(t).Lease == nil, "the lease is not released")
+		})
+	})
+}
+
+func TestLease_waiting(t *testing.T) {
+	// waiting starts a write transaction on d and a call that waits for it.
+	waiting := func(t *testing.T, d *core.DB) (*core.Tx, chan error) {
+		t.Helper()
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		waiter := make(chan error, 1)
+		go func() { waiter <- beginErr(t, d) }()
+		time.Sleep(time.Second)
+		is.Equal(t, 0, len(waiter))
+		return tx, waiter
+	}
+
+	t.Run("should fail a call that waits when the lease runs out by the clocks, and not let Wait return until it is valid again", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s := newScriptStore(w.client())
+			d := w.openOn(t, "a", s, core.Options{})
+			is.NotError(t, d.Wait(t.Context()))
+			tx, waiter := waiting(t, d)
+			s.on("swap", "", drop, -1)
+			s.on("get", "", drop, -1)
+
+			time.Sleep(28 * time.Second)
+			is.Equal(t, 0, len(waiter))
+			time.Sleep(2 * time.Second)
+			is.Error(t, core.ErrNoLease, <-waiter)
+
+			// The instance still holds the lease, as far as it knows, and does not serve.
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			is.Error(t, context.DeadlineExceeded, d.Wait(ctx))
+			cancel()
+			waited := make(chan error, 1)
+			go func() { waited <- d.Wait(t.Context()) }()
+			time.Sleep(time.Second)
+			is.Equal(t, 0, len(waited))
+			s.clear()
+			is.NotError(t, <-waited)
+			is.NotError(t, readErr(t, d))
+			is.NotError(t, tx.Rollback(t.Context()))
+		})
+	})
+
+	t.Run("should fail a call that waits when the instance finds that it has lost the lease", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s := newScriptStore(w.client())
+			a := w.openOn(t, "a", s, core.Options{Lease: 10 * time.Minute, RenewAfter: 10 * time.Second})
+			is.NotError(t, a.Wait(t.Context()))
+			// The lease lasts ten minutes by the clocks, so only the news of its loss ends the wait.
+			tx, waiter := waiting(t, a)
+
+			// Another instance writes the manifest, as one does that has taken the lease.
+			l := newHandLog(t, w)
+			l.publish()
+			time.Sleep(15 * time.Second)
+			is.Error(t, core.ErrNoLease, <-waiter)
+			is.Error(t, core.ErrNoLease, tx.Commit(t.Context()))
+		})
+	})
+}
+
+func TestLease_duration(t *testing.T) {
+	t.Run("should wait for a holder whose lease lasts longer than a duration can be added to", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			l := newHandLog(t, w)
+			data, err := format.Manifest{Lease: &format.Lease{Holder: "another", Duration: 1<<63 - 1, Renewed: time.Now(), Salt: 1}}.Marshal()
+			is.NotError(t, err)
+			l.publishBytes(data)
+
+			d := w.open(t, "a", core.Options{})
+			time.Sleep(24 * time.Hour)
+			is.True(t, !serves(t, d), "the instance took a lease that lasts for ever")
+			is.Equal(t, "another", w.manifest(t).Lease.Holder)
+		})
+	})
+
+	t.Run("should refuse a lease of more than a year", func(t *testing.T) {
+		w := newWorld(t)
+		_, err := core.Open(t.Context(), w.host, w.client(), filepath.Join(w.dir, "a.db"), "db", core.Options{Lease: 366 * 24 * time.Hour, RenewAfter: time.Hour})
+		is.True(t, err != nil)
 	})
 }

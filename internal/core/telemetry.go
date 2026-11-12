@@ -72,7 +72,6 @@ const (
 
 	// The durations of the phases of a unit of work, on the monotonic clock of the host.
 	attrDurationTotal  = "duration.total"
-	attrDurationLock   = "duration.lock"
 	attrDurationSpool  = "duration.spool"
 	attrDurationUpload = "duration.upload"
 	attrDurationSwap   = "duration.swap"

@@ -14,10 +14,6 @@ import (
 	"maragu.dev/s4ql/internal/store"
 )
 
-// maxManifestSize is the largest manifest that an instance reads, in bytes. A manifest is a few
-// hundred bytes.
-const maxManifestSize = 1 << 20
-
 // watch is the version of the manifest that an instance without the lease waits on, and the
 // reading of its monotonic clock after the read that first returned that version. When the
 // manifest has stood still at that version for the duration of the holder's lease and the margin,
@@ -50,9 +46,9 @@ type flight struct {
 
 // newFlight is a swap that this instance sends as the holder: the manifest as it knows it, with a
 // new lease entry, and with the commit object commit as the new head if isCommit. Every write of
-// the manifest by the holder carries a new salt, so that it changes the bytes of the manifest, and
-// with them its version: an instance that watches then sees that the holder is alive, and no
-// version that a holder wrote ever comes back, so a swap that is sent from one can be applied only
+// a lease entry carries a new salt, so that it changes the bytes of the manifest, and with them its
+// version: an instance that watches then sees that the holder is alive, and no version of a
+// manifest with a lease entry ever comes back, so a swap that is sent from one can be applied only
 // while the manifest still has it. It requires the manifest lock.
 func (d *DB) newFlight(commit format.Name, isCommit bool) (*flight, error) {
 	sent := d.now()
@@ -146,7 +142,12 @@ func (d *DB) adopt(f *flight, version store.Version) {
 		sent = d.now()
 	}
 	d.mu.Lock()
+	expired := d.holder && d.serving && d.refusalLocked() != ""
 	d.holder, d.sent = true, sent
+	if expired && d.refusalLocked() == "" {
+		// The lease had run out by a clock, and is valid again.
+		d.wakeLocked()
+	}
 	d.mu.Unlock()
 }
 
@@ -174,13 +175,14 @@ func (d *DB) fetchManifest(ctx context.Context) (m format.Manifest, version stor
 	if err != nil {
 		return format.Manifest{}, "", false, err
 	}
-	data, err := io.ReadAll(io.LimitReader(body, maxManifestSize+1))
+	// A manifest is a few hundred bytes, so one of more than a mebibyte is none.
+	data, err := io.ReadAll(io.LimitReader(body, 1<<20+1))
 	_ = body.Close()
 	if err != nil {
 		return format.Manifest{}, "", false, err
 	}
-	if len(data) > maxManifestSize {
-		return format.Manifest{}, "", false, fmt.Errorf("manifest: %w: it is larger than %v bytes", format.ErrMalformed, maxManifestSize)
+	if len(data) > 1<<20 {
+		return format.Manifest{}, "", false, fmt.Errorf("manifest: %w: it is larger than a mebibyte", format.ErrMalformed)
 	}
 	if m, err = format.ParseManifest(data); err != nil {
 		return format.Manifest{}, "", false, fmt.Errorf("manifest: %w", err)
@@ -263,7 +265,7 @@ func (d *DB) leaseLoop(ctx context.Context) {
 	var failures int
 	for {
 		d.mu.Lock()
-		stopped, holder, serving := d.stopped != nil, d.holder, d.serving
+		stopped, holder, serving, changes := d.stopped != nil, d.holder, d.serving, d.changes
 		d.mu.Unlock()
 		if stopped {
 			break
@@ -278,7 +280,7 @@ func (d *DB) leaseLoop(ctx context.Context) {
 		default:
 			wait = d.renew(work)
 		}
-		if wait == retryAfter {
+		if wait == backOff {
 			// The store is asked again after a second, then after two, and so on, up to the time
 			// between two looks of an instance that watches the lease.
 			wait = min(retryAfter<<min(failures, 10), max(retryAfter, d.options.Watch))
@@ -287,7 +289,7 @@ func (d *DB) leaseLoop(ctx context.Context) {
 			failures = 0
 		}
 		if wait > 0 {
-			_ = d.pause(work, wait)
+			_ = d.pause(work, wait, changes)
 		}
 	}
 
@@ -316,7 +318,7 @@ func (d *DB) acquire(ctx context.Context) time.Duration {
 	clock := d.stopwatch()
 	m, version, found, err := d.readManifest(ctx)
 	if err != nil {
-		return retryAfter
+		return backOff
 	}
 	previous := ""
 	if found && m.Lease != nil && m.Lease.Holder != d.id {
@@ -341,7 +343,11 @@ func (d *DB) acquire(ctx context.Context) time.Duration {
 			// The planted bug.
 			duration = d.options.Lease
 		}
-		if remaining := d.watch.since + duration + margin(duration) - now; remaining > 0 {
+		// The duration is what the manifest says, and can be any, so it is compared before it is
+		// added to, and no sum leaves the range of a duration.
+		if left := duration - (now - d.watch.since); left >= d.options.Watch {
+			return d.options.Watch
+		} else if remaining := left + margin(duration); remaining > 0 {
 			return min(remaining, d.options.Watch)
 		}
 	}
@@ -351,7 +357,8 @@ func (d *DB) acquire(ctx context.Context) time.Duration {
 	next.Lease = &format.Lease{Holder: d.id, Duration: d.options.Lease, Renewed: sent.wall, Salt: d.host.Uint64()}
 	data, err := next.Marshal()
 	if err != nil {
-		return retryAfter
+		d.event(ctx, slog.LevelError, eventLease, slog.String(attrTransition, "taken"), slog.String(attrOutcome, "failed"), errAttr(err))
+		return backOff
 	}
 	sum := sha256.Sum256(data)
 	rctx, cancel := d.host.WithTimeout(ctx, d.options.StoreTimeout)
@@ -373,7 +380,7 @@ func (d *DB) acquire(ctx context.Context) time.Duration {
 		// If the request is applied after all, the manifest names this instance, and the next try
 		// takes the lease at once.
 		d.unsure = true
-		return retryAfter
+		return backOff
 	}
 
 	d.adopt(&flight{man: next, sent: sent}, taken)
@@ -418,7 +425,7 @@ func (d *DB) recoverLocked(ctx context.Context) time.Duration {
 		o, landed, _, _ := d.observe(ctx)
 		switch o {
 		case observedNothing:
-			return retryAfter
+			return backOff
 		case observedLost:
 			d.settledEvent(ctx, settled, nil, true)
 			return 0
@@ -431,7 +438,10 @@ func (d *DB) recoverLocked(ctx context.Context) time.Duration {
 				break
 			}
 			if wait := d.renewLocked(ctx, nil); len(d.flights) > 0 || !d.holds() {
-				return max(wait, retrySoon)
+				if wait == 0 {
+					wait = retrySoon
+				}
+				return wait
 			}
 		}
 	}
@@ -439,11 +449,7 @@ func (d *DB) recoverLocked(ctx context.Context) time.Duration {
 		return retrySoon
 	}
 	if err := d.catchUp(ctx); err != nil {
-		return retryAfter
-	}
-	if len(d.flights) > 0 || !d.holds() {
-		// A renewal during the catch-up had an outcome that is unknown, or lost the lease.
-		return retrySoon
+		return backOff
 	}
 
 	d.mu.Lock()
@@ -590,7 +596,7 @@ func (d *DB) renewLocked(ctx context.Context, outside *locks) time.Duration {
 		var err error
 		if f, err = d.newFlight(format.Name{}, false); err != nil {
 			d.event(ctx, slog.LevelError, eventLease, slog.String(attrTransition, "renewed"), slog.String(attrOutcome, "failed"), errAttr(err))
-			return retryAfter
+			return backOff
 		}
 	}
 
@@ -604,12 +610,12 @@ func (d *DB) renewLocked(ctx context.Context, outside *locks) time.Duration {
 			d.settledEvent(ctx, settled, f, false)
 		}
 	case sendUnknown:
-		outcome, wait = "unknown", retryAfter
+		outcome, wait = "unknown", backOff
 	case sendRefused:
 		o, landed, _, observeErr := d.observe(ctx)
 		switch o {
 		case observedNothing:
-			outcome, wait, err = "unknown", retryAfter, observeErr
+			outcome, wait, err = "unknown", backOff, observeErr
 		case observedUnchanged:
 			outcome, wait = "conflict", retrySoon
 		case observedLanded:

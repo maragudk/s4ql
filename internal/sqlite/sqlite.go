@@ -2,8 +2,8 @@
 // built with the compile options in options.h.
 //
 // It is deliberately small: opening and closing a database, preparing one statement, binding and
-// reading integers, text, and NULL, stepping, resetting, and finalizing. Each statement runs in its own transaction, as SQLite
-// does outside BEGIN and COMMIT.
+// reading integers, text, and NULL, stepping, resetting, and finalizing. Each statement runs in its
+// own transaction, as SQLite does outside BEGIN and COMMIT.
 //
 // SQLite's C code is compiled into this package with file-local symbols, so this package can share a
 // binary with another copy of SQLite without the two clashing at link time. Two copies of SQLite in
@@ -255,9 +255,9 @@ func (s *Stmt) BindNull(i int) error {
 
 // Step the statement. It returns true if a row is ready to read, and false when the statement has
 // finished. Stepping a statement that has finished, or that failed with anything but SQLITE_BUSY or
-// SQLITE_LOCKED, fails with SQLITE_MISUSE, so a statement runs at most once. After SQLITE_BUSY or
-// SQLITE_LOCKED, SQLite starts the statement again from the beginning. It fails with SQLITE_MISUSE on
-// a finalized statement.
+// SQLITE_LOCKED, fails with SQLITE_MISUSE, so a statement runs once until it is reset with
+// [Stmt.Reset]. After SQLITE_BUSY or SQLITE_LOCKED, SQLite starts the statement again from the
+// beginning. It fails with SQLITE_MISUSE on a finalized statement.
 func (s *Stmt) Step() (bool, error) {
 	if s.stmt == nil {
 		return false, errorFromConn(nil, C.SQLITE_MISUSE)

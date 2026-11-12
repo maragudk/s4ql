@@ -18,9 +18,6 @@ import (
 	"maragu.dev/s4ql/internal/store"
 )
 
-// maxColumns is the largest number of columns of a table, which is SQLite's default limit.
-const maxColumns = 2000
-
 // Tx is a write transaction. One runs at a time for each database: [DB.Begin] waits for the one
 // before it. It changes the cache in a transaction of the cache's write connection, so it reads
 // its own writes, and nothing else sees them until [Tx.Commit] has committed them. It ends with
@@ -161,8 +158,9 @@ func checkCreateTable(ct *s4qlpb.CreateTable, commitTime time.Time) error {
 	if reserved(ct.GetTable()) {
 		return fmt.Errorf("%w: %q", ErrReservedName, ct.GetTable())
 	}
-	if len(ct.GetColumns()) > maxColumns {
-		return invalidf("a table of %v columns, where the limit is %v", len(ct.GetColumns()), maxColumns)
+	// SQLite's default limit.
+	if len(ct.GetColumns()) > 2000 {
+		return invalidf("a table of %v columns, where the limit is 2000", len(ct.GetColumns()))
 	}
 	for _, c := range ct.GetColumns() {
 		if _, err := typeSQL(c.GetType()); err != nil {
@@ -412,7 +410,8 @@ func (tx *Tx) Get(ctx context.Context, name string, key []*s4qlpb.Value) ([]*s4q
 
 // Scan the rows of the table with the given name, as the transaction sees them, in the order of
 // the primary key. The sequence ends with an error if the scan fails, which wraps [ErrNoTable] if
-// there is no such table. The transaction must not change the table while it scans it.
+// there is no such table. The transaction must not change the table while it scans it, and must
+// not drop any table: SQLite refuses the drop, and the transaction can then only be rolled back.
 func (tx *Tx) Scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Value, error] {
 	const operation = "scan"
 	return func(yield func([]*s4qlpb.Value, error) bool) {
@@ -492,19 +491,23 @@ func (tx *Tx) spoolCommit(ctx context.Context) (_ *spooled, err error) {
 			sp.close()
 		}
 	}()
-	w, err := format.NewCommitWriter(sp, tx.parent, d.host.Wall())
-	if err != nil {
-		return nil, d.spoolError(ctx, err)
-	}
-	out := &spooled{spool: sp}
-
-	// fail tells an error of the cache from one of the spool file.
+	// fail tells an error of the cache from a refusal of the writer of the commit object and from
+	// an error of the spool file.
 	fail := func(err error) error {
-		if isSQLite(err) || errors.Is(err, ErrCacheVersion) {
+		switch {
+		case isSQLite(err) || errors.Is(err, ErrCacheVersion):
 			return d.cacheError(ctx, "commit", err)
+		case errors.Is(err, format.ErrMalformed):
+			// The writer refuses a commit time that it cannot write, which is the wall clock's.
+			return fmt.Errorf("%w: %w", ErrInvalid, err)
 		}
 		return d.spoolError(ctx, err)
 	}
+	w, err := format.NewCommitWriter(sp, tx.parent, d.host.Wall())
+	if err != nil {
+		return nil, fail(err)
+	}
+	out := &spooled{spool: sp}
 
 	for _, e := range tx.order {
 		if e.dropped != "" {
@@ -656,11 +659,13 @@ func (tx *Tx) dropTemps() error {
 //
 // If the swap ends without an answer, the instance asks the store until it knows: it sends the
 // same swap again, and after a refusal it reads the manifest, and looks for the commit object in
-// the log if another instance has taken the lease. It returns an error that wraps
-// [ErrOutcomeUnknown] only if ctx is done before it knows. The instance then serves nothing until
-// it has found out, and finds out without the caller: see [DB.recoverLocked]. Every other error
-// means that the transaction is not committed: it wraps [ErrNoLease] if the instance did not hold
-// the lease any more, and [ErrStopped] if the instance has stopped.
+// the log if another instance has taken the lease. It goes on with that when the instance stops
+// meanwhile. It returns an error that wraps [ErrOutcomeUnknown], and no other error, only if ctx
+// is done before it knows, or if it has to look for the commit object in a log that holds a commit
+// object that can never be read. The instance then serves nothing until it has found out, and
+// finds out without the caller: see [DB.recoverLocked]. Every other error means that the
+// transaction is not committed: it wraps [ErrNoLease] if the instance did not hold the lease any
+// more, and [ErrStopped] if the instance has stopped.
 func (tx *Tx) Commit(ctx context.Context) (err error) {
 	d := tx.d
 	if tx.done {
@@ -756,7 +761,8 @@ func (tx *Tx) Commit(ctx context.Context) (err error) {
 	case unknown:
 		_ = tx.rollback(ctx)
 		outcome = "unknown"
-		return fmt.Errorf("commit: %w: %w", ErrOutcomeUnknown, err)
+		// The error wraps nothing else: every other error of a commit means "not committed".
+		return fmt.Errorf("commit: %w: %v", ErrOutcomeUnknown, err)
 	}
 	_ = tx.rollback(ctx)
 	return fmt.Errorf("commit: not committed: %w", err)
@@ -852,10 +858,9 @@ func (tx *Tx) publish(ctx context.Context, name format.Name, attempts *int) (pub
 	var last error
 	wait := retrySoon
 	for {
-		if err := d.stoppedError(); err != nil {
-			if f != nil && f.unknown {
-				return unknown, err
-			}
+		// An instance that has stopped sends no commit. One whose commit is sent and may be in the
+		// log goes on finding out, because the caller is owed an answer for as long as it waits.
+		if err := d.stoppedError(); err != nil && (f == nil || !f.unknown) {
 			return unpublished, err
 		}
 		if f == nil {
@@ -939,7 +944,8 @@ func (tx *Tx) publish(ctx context.Context, name format.Name, attempts *int) (pub
 
 // inLog finds out whether the commit object with the given name is in the log that ends at head,
 // by walking the log back from head to the parent of the transaction. The instance no longer
-// holds the lease.
+// holds the lease. If the log holds a commit object that can never be read, nothing can tell, and
+// the outcome stays unknown.
 func (tx *Tx) inLog(ctx context.Context, head, name format.Name) (publishing, error) {
 	d := tx.d
 	wait := retrySoon
@@ -951,7 +957,7 @@ func (tx *Tx) inLog(ctx context.Context, head, name format.Name) (publishing, er
 			return unpublished, errLeaseLost
 		}
 		var parent format.Name
-		err := d.fetch(ctx, at, func(body io.Reader) error {
+		err := d.download(ctx, at, func(body io.Reader) error {
 			var err error
 			parent, err = parentOf(at, body)
 			return err
@@ -960,8 +966,11 @@ func (tx *Tx) inLog(ctx context.Context, head, name format.Name) (publishing, er
 			at, wait = parent, retrySoon
 			continue
 		}
-		if stopped := d.stoppedError(); stopped != nil {
-			return unknown, stopped
+		if unreadable(err) {
+			d.mu.Lock()
+			d.unresolved = true
+			d.mu.Unlock()
+			return unknown, err
 		}
 		if ctx.Err() != nil {
 			d.mu.Lock()
