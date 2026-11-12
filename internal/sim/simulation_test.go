@@ -30,16 +30,16 @@ import (
 //
 // The lease compares no clock of one machine with another's: a holder compares each of its clocks
 // only with itself, and an instance that waits to take the lease waits on its own monotonic clock.
-// So the faults move any one clock of an instance in either direction, by small and large amounts,
-// while the instance can reach the store. Two faults are left out, because the design does not
+// So the faults move any one clock of an instance that starts with the workload in either direction,
+// by small and large amounts, while the instance can reach the store. Two faults are left out, because the design does not
 // survive them, and accepts that:
 //
 //   - Both clocks of one instance wrong in the same direction, so that both show less time since a
 //     renewal than has passed: a wall clock set backward or standing still, and a monotonic clock
 //     that stands still. A holder that can no longer renew then serves after its lease is over by
 //     both of its checks, while another instance takes the lease. So an instance whose monotonic
-//     clock stands still has its wall clock moved only forward. Markus accepted stale reads when both
-//     clocks fail.
+//     clock stands still has its wall clock moved only forward. The design accepts stale reads when
+//     both clocks of the holder fail.
 //   - A monotonic clock that runs fast or jumps forward on an instance that waits to take the lease.
 //     The wait is then shorter than the holder's lease, and the instance can take over from a holder
 //     that is cut off but still serves. The margin covers a rate that is wrong by up to the margin
@@ -100,9 +100,10 @@ func (w workload) leaseLossExpected() bool {
 	return w.instances > 1
 }
 
-// liveness is how long after the end of the workload some instance must serve: two waits for the
-// longest lease and the margin, because an instance that ends a wait may find a new version and wait
-// again, and one operation that the store delays, which takes at most 70 thousand units of latency.
+// liveness is how long after the end of the workload some instance must serve. The store injects no
+// faults after the workload, but an operation in flight may still be delayed, by less than 70
+// thousand units of latency. After it, an instance waits for the longest lease and the margin, and
+// may find a new version at the end of the wait, and wait again.
 func (w workload) liveness() time.Duration {
 	return 2*(slices.Max(w.durations)+takeoverMargin) + 70_000*w.latency
 }
@@ -541,6 +542,8 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 			o.violate(ctx, c.world, "wait: %v", err)
 		}
 	}
+	store.healed.Store(true)
+	c.world.Trace(ctx, "the store injects no more faults")
 
 	var live []*node
 	for _, n := range nodes {
@@ -549,8 +552,8 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 		}
 	}
 
-	// No monotonic clock stands still any more, nothing is cut off, and nothing crashes, so an
-	// instance must serve soon.
+	// No monotonic clock stands still any more, nothing is cut off, nothing crashes, and the store
+	// injects no faults, so an instance must serve soon.
 	served := false
 	ended, bound := c.world.Monotonic(), w.liveness()
 	for !served && c.world.Monotonic()-ended < bound {
@@ -620,8 +623,8 @@ func (w workload) moveClocks(ctx context.Context, h tracer, inst *sim.Instance) 
 		if err := h.Sleep(ctx, time.Duration(intn(h, 60_000))*time.Millisecond); err != nil {
 			return
 		}
-		// A small move is less than the margin, and a large one up to two hours.
-		by := time.Duration(intn(h, int(takeoverMargin/time.Millisecond))) * time.Millisecond
+		// A small move is under two seconds, and a large one up to two hours.
+		by := time.Duration(intn(h, 2000)) * time.Millisecond
 		if intn(h, 2) == 0 {
 			by = time.Duration(intn(h, 7200)) * time.Second
 		}
@@ -1148,7 +1151,8 @@ var plantedBugs = []struct {
 	{
 		// The wait of the bug succeeds against a live holder only if it ends before the holder's next
 		// write, so the instance with the shorter lease, which waits 12 seconds, watches a holder that
-		// renews every 60 seconds.
+		// renews every 60 seconds. With leases of one duration, the bug waits as long as the design does,
+		// so its control shows only that the workload finds nothing else.
 		name: "an instance that waits for its own lease duration, and not for the holder's",
 		workload: competing(func(w *workload) {
 			w.options.bugs.ownDuration = true
@@ -1161,8 +1165,9 @@ var plantedBugs = []struct {
 		symptoms: []string{"after commit"},
 	},
 	{
-		// With one instance, the only instance that ever waits for the lease is the one that restarts
-		// after a crash, whose holder is dead and writes nothing.
+		// With one instance, an instance that waits for the lease waits for a holder that crashed or
+		// stopped, and writes nothing. No bug that takes the lease too early can show with one
+		// instance, so the control shows only that the workload finds nothing else.
 		name: "an instance that swaps against the version it reads at the end of its wait",
 		workload: competing(func(w *workload) {
 			w.options.bugs.lateVersion = true
@@ -1232,6 +1237,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		if bug.control != nil {
 			name += ", and never without the ability it needs"
 		}
+		name += ", and nothing without the bug"
 		t.Run(name, func(t *testing.T) {
 			n := seeds(t, 200, bug.workload)
 			var found []uint64
@@ -1270,6 +1276,18 @@ func TestSimulation_plantedBugs(t *testing.T) {
 				}
 				t.Logf("%v of %v seeds found the bug without the ability it needs", controlFound, n)
 			}
+			// The workload of a bug reaches what the full workload seldom does, so it must also find
+			// nothing in a toy without bugs.
+			clean := bug.workload
+			clean.options.bugs = bugs{}
+			var cleanFound int
+			for seed := range n {
+				if v := simulate(t, seed, clean).violations(); len(v) > 0 {
+					cleanFound++
+					t.Errorf("seed %v found something without the bug: %v", seed, v)
+				}
+			}
+			t.Logf("%v of %v seeds found something without the bug", cleanFound, n)
 			if n >= 200 {
 				is.True(t, len(found) > 0, "no seed found the bug")
 			}
@@ -1473,6 +1491,7 @@ func TestFreeRunning(t *testing.T) {
 			elapsed := time.Since(start)
 			t.Logf("%v free runs in %v, %.0f runs per second: %v commits, %v failed commits, %v reads, %v failed reads of which %v for an expired lease, %v stops",
 				n, elapsed.Round(time.Millisecond), float64(n)/elapsed.Seconds(), commits, failedCommits, reads, failedReads, expiredReads, stops)
+			is.True(t, commits > 0 && reads > 0, "the workload committed or read nothing")
 		})
 	}
 }

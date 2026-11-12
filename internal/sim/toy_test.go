@@ -80,8 +80,8 @@ type lease struct {
 	Duration int64 `json:"duration"`
 	// Wall is the holder's wall clock when it sent the write. Nothing reads it for a decision.
 	Wall time.Time `json:"wall"`
-	// Salt is new at every write by the holder, so that no two writes of the manifest have the same
-	// bytes, and so the same version.
+	// Salt is new at every write by the holder, so that no two writes of the manifest by holders have
+	// the same bytes, and so the same version.
 	Salt string `json:"salt"`
 }
 
@@ -166,6 +166,9 @@ type toyDB struct {
 	// unsure is whether an acquire of the lease had an outcome that is unknown, so that the manifest
 	// may name this instance as the holder without its knowing. It is guarded by swap too.
 	unsure bool
+	// waited is the version of the manifest for which this instance has waited the duration of its
+	// lease and the margin. Only the task that takes the lease uses it.
+	waited string
 	// readers has one permit for every read connection.
 	readers host.Semaphore
 
@@ -327,13 +330,42 @@ func (d *toyDB) renewalDue() time.Duration {
 // acquire the lease, catch up the cache, and start serving. If the manifest has the lease entry of
 // another instance, it first waits for the duration of that lease and the margin on this instance's
 // monotonic clock, and then swaps against the version it read before the wait, which fails if the
-// holder has written the manifest since. It returns how long to wait before trying again if it fails.
+// holder has written the manifest since. It waits once for a version: if the manifest still has it
+// after a swap that failed for another reason, the holder has written nothing since. It holds the
+// writer lock and the swap lock, except during the wait, so that a transaction waits for it. It
+// returns how long to wait before trying again if it fails.
 func (d *toyDB) acquire(ctx context.Context) (time.Duration, error) {
+	locked := false
+	lock := func() error {
+		if err := d.writer.Acquire(ctx); err != nil {
+			return err
+		}
+		if err := d.swap.Acquire(ctx); err != nil {
+			d.writer.Release(ctx)
+			return err
+		}
+		locked = true
+		return d.stopErr()
+	}
+	unlock := func() {
+		d.swap.Release(ctx)
+		d.writer.Release(ctx)
+		locked = false
+	}
+	defer func() {
+		if locked {
+			unlock()
+		}
+	}()
+
+	if err := lock(); err != nil {
+		return 0, err
+	}
 	man, etag, err := d.readManifest(ctx)
 	if err != nil {
 		return time.Second, err
 	}
-	if man.Lease != nil && man.Lease.Holder != d.id {
+	if man.Lease != nil && man.Lease.Holder != d.id && etag != d.waited {
 		if d.bugs.takeoverAfterRelease {
 			// The planted bug.
 			return 5 * time.Second, errors.New("the lease is held by another instance")
@@ -343,27 +375,20 @@ func (d *toyDB) acquire(ctx context.Context) (time.Duration, error) {
 			// The planted bug.
 			wait = d.duration
 		}
+		unlock()
 		if err := d.host.Sleep(ctx, wait+takeoverMargin); err != nil {
 			return 0, err
 		}
+		if err := lock(); err != nil {
+			return 0, err
+		}
+		d.waited = etag
 		if d.bugs.lateVersion {
 			// The planted bug.
 			if man, etag, err = d.readManifest(ctx); err != nil {
 				return time.Second, err
 			}
 		}
-	}
-
-	if err := d.writer.Acquire(ctx); err != nil {
-		return 0, err
-	}
-	defer d.writer.Release(ctx)
-	if err := d.swap.Acquire(ctx); err != nil {
-		return 0, err
-	}
-	defer d.swap.Release(ctx)
-	if err := d.stopErr(); err != nil {
-		return 0, err
 	}
 
 	man.Lease = d.newLease(false)
@@ -1026,7 +1051,7 @@ type faults struct {
 	errors int
 	// lostAcks apply the operation and report a failure.
 	lostAcks int
-	// delays make the operation take longer than a lease lasts, on the way in.
+	// delays make the operation take 40 to 70 thousand units of latency longer, on the way in.
 	delays int
 	// delayAnswers puts a delay on the way out instead, as often as not. A delay on the way out is
 	// one that the store applies the operation before.
@@ -1040,6 +1065,9 @@ type memStore struct {
 	faults faults
 	// unit of latency: an operation takes between 1 and 50 units each way.
 	unit time.Duration
+
+	// healed stops the faults, but not the delays of the operations that are in flight.
+	healed atomic.Bool
 
 	mu      sync.Mutex
 	objects map[string][]byte
@@ -1076,12 +1104,12 @@ func (c *storeClient) do(ctx context.Context, what string, apply func() (string,
 	latency := time.Duration(1+intn(s.host, 50)) * s.unit
 	answerLatency := time.Duration(1+intn(s.host, 50)) * s.unit
 	switch n := intn(s.host, 1000); {
+	case s.healed.Load():
 	case n < s.faults.errors:
 		fault = "error"
 	case n < s.faults.errors+s.faults.lostAcks:
 		fault = "lost ack"
 	case n < s.faults.errors+s.faults.lostAcks+s.faults.delays:
-		// With a unit of a millisecond, this is 40 to 70 seconds, which is longer than a lease lasts.
 		delay := time.Duration(40_000+1000*intn(s.host, 30)) * s.unit
 		// The number is drawn also without delayAnswers, so that a seed gives the same delays either way.
 		if intn(s.host, 2) == 0 && s.faults.delayAnswers {
