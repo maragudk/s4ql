@@ -109,15 +109,15 @@ func TestEvents(t *testing.T) {
 			is.Error(t, core.ErrNoLease, readErr(t, d))
 			refusals := events.named(core.EventRefusal)
 			is.Equal(t, 1, len(refusals))
-			is.Equal(t, fmt.Sprint("refused"), at(refusals[0], core.AttrOutcome))
-			is.Equal(t, fmt.Sprint("read"), at(refusals[0], core.AttrOperation))
-			is.Equal(t, fmt.Sprint("not_holder"), at(refusals[0], core.AttrReason))
+			is.Equal(t, "refused", at(refusals[0], core.AttrOutcome))
+			is.Equal(t, "read", at(refusals[0], core.AttrOperation))
+			is.Equal(t, "not_holder", at(refusals[0], core.AttrReason))
 
 			// The lease is taken.
 			is.NotError(t, d.Wait(t.Context()))
 			taken := events.with(core.EventLease, core.AttrTransition, "taken")
 			is.Equal(t, 1, len(taken))
-			is.Equal(t, fmt.Sprint("taken"), at(taken[0], core.AttrOutcome))
+			is.Equal(t, "taken", at(taken[0], core.AttrOutcome))
 			is.Equal(t, fmt.Sprint(d.ID()), at(taken[0], "lease.holder"))
 			is.Equal(t, fmt.Sprint(30*time.Second), at(taken[0], "lease.duration"))
 
@@ -125,9 +125,9 @@ func TestEvents(t *testing.T) {
 			transact(t, d, create("t1", 1, "k"), upsert("t1", 1), upsert("t1", 2), note("insert"))
 			commits := events.named(core.EventCommit)
 			is.Equal(t, 1, len(commits))
-			is.Equal(t, fmt.Sprint("committed"), at(commits[0], core.AttrOutcome))
+			is.Equal(t, "committed", at(commits[0], core.AttrOutcome))
 			is.Equal(t, fmt.Sprint(w.manifest(t).Head.String()), at(commits[0], core.AttrCommit))
-			is.Equal(t, fmt.Sprint("0000000000000000000000000000000000000000000000000000000000000000"), at(commits[0], "commit.parent"))
+			is.Equal(t, "0000000000000000000000000000000000000000000000000000000000000000", at(commits[0], "commit.parent"))
 			is.Equal(t, fmt.Sprint(int64(3)), at(commits[0], "commit.changes"))
 			is.Equal(t, fmt.Sprint(int64(1)), at(commits[0], "commit.annotations"))
 			is.Equal(t, fmt.Sprint(int64(2)), at(commits[0], "attempts"))
@@ -145,7 +145,7 @@ func TestEvents(t *testing.T) {
 			time.Sleep(21 * time.Second)
 			renewed := events.with(core.EventLease, core.AttrTransition, "renewed")
 			is.Equal(t, 1, len(renewed))
-			is.Equal(t, fmt.Sprint("renewed"), at(renewed[0], core.AttrOutcome))
+			is.Equal(t, "renewed", at(renewed[0], core.AttrOutcome))
 			is.Equal(t, fmt.Sprint(int64(1)), at(renewed[0], "attempts"))
 
 			// A renewal whose outcome is unknown, and how it was settled.
@@ -154,8 +154,8 @@ func TestEvents(t *testing.T) {
 			is.Equal(t, 1, len(events.with(core.EventLease, core.AttrOutcome, "unknown")))
 			unknown := events.named(core.EventUnknown)
 			is.Equal(t, 1, len(unknown))
-			is.Equal(t, fmt.Sprint("renewal"), at(unknown[0], core.AttrUnknownKind))
-			is.Equal(t, fmt.Sprint("renewed"), at(unknown[0], core.AttrOutcome))
+			is.Equal(t, "renewal", at(unknown[0], core.AttrUnknownKind))
+			is.Equal(t, "renewed", at(unknown[0], core.AttrOutcome))
 			is.Equal(t, fmt.Sprint(int64(2)), at(unknown[0], "attempts"))
 
 			// A commit whose outcome is unknown when its caller gives up, and how it was settled.
@@ -174,7 +174,7 @@ func TestEvents(t *testing.T) {
 			is.NotError(t, d.Wait(t.Context()))
 			settled := events.with(core.EventUnknown, core.AttrUnknownKind, "commit")
 			is.Equal(t, 1, len(settled))
-			is.Equal(t, fmt.Sprint("not_committed"), at(settled[0], core.AttrOutcome))
+			is.Equal(t, "not_committed", at(settled[0], core.AttrOutcome))
 			is.True(t, settled[0][core.AttrCommit] != nil)
 
 			// The lease is lost to another instance, which catches up.
@@ -184,7 +184,7 @@ func TestEvents(t *testing.T) {
 			b := w.serve(t, "b", core.Options{Logger: other.logger()})
 			caught := other.named(core.EventCatchUp)
 			is.Equal(t, 1, len(caught))
-			is.Equal(t, fmt.Sprint("caught_up"), at(caught[0], core.AttrOutcome))
+			is.Equal(t, "caught_up", at(caught[0], core.AttrOutcome))
 			is.Equal(t, fmt.Sprint(int64(1)), at(caught[0], "catch_up.commits"))
 			is.Equal(t, fmt.Sprint(w.manifest(t).Head.String()), at(caught[0], "catch_up.to"))
 			is.Equal(t, fmt.Sprint(d.ID()), at(other.with(core.EventLease, core.AttrTransition, "taken")[0], "lease.previous_holder"))
@@ -192,17 +192,17 @@ func TestEvents(t *testing.T) {
 			time.Sleep(6 * time.Second)
 			lost := events.with(core.EventLease, core.AttrTransition, "lost")
 			is.Equal(t, 1, len(lost))
-			is.Equal(t, fmt.Sprint("lost"), at(lost[0], core.AttrOutcome))
+			is.Equal(t, "lost", at(lost[0], core.AttrOutcome))
 			is.Equal(t, fmt.Sprint(b.ID()), at(lost[0], "lease.holder"))
 
 			// The lease is released, and the instance stops.
 			is.NotError(t, b.Close(t.Context()))
 			released := other.with(core.EventLease, core.AttrTransition, "released")
 			is.Equal(t, 1, len(released))
-			is.Equal(t, fmt.Sprint("released"), at(released[0], core.AttrOutcome))
+			is.Equal(t, "released", at(released[0], core.AttrOutcome))
 			stops := other.named(core.EventStop)
 			is.Equal(t, 1, len(stops))
-			is.Equal(t, fmt.Sprint("closed"), at(stops[0], core.AttrOutcome))
+			is.Equal(t, "closed", at(stops[0], core.AttrOutcome))
 
 			// Every event names the database and the instance, and every name is lowercase with dots
 			// and underscores.

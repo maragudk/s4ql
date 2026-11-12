@@ -2,19 +2,24 @@ package core_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sim"
+	"maragu.dev/s4ql/internal/sqlite"
 	"maragu.dev/s4ql/internal/store"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
@@ -214,5 +219,294 @@ func TestOpen(t *testing.T) {
 
 		empty := w.serve(t, "b", core.Options{})
 		is.Equal(t, "t1(k*0,v): 1,null | 3,30", read(t, empty))
+	})
+}
+
+// isDone reports whether the instance has signalled that it has stopped.
+func isDone(d *core.DB) bool {
+	select {
+	case <-d.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+func TestDB_Close(t *testing.T) {
+	t.Run("should release the lease, close the cache, signal the stop, and refuse every call after it", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k"))
+		is.True(t, !isDone(d))
+		is.NotError(t, d.Err())
+
+		is.NotError(t, d.Close(t.Context()))
+		is.True(t, isDone(d))
+		is.Error(t, core.ErrStopped, d.Err())
+		is.Error(t, core.ErrClosed, d.Err())
+		is.True(t, w.manifest(t).Lease == nil, "the manifest has a lease entry")
+
+		for name, err := range map[string]error{
+			"read":  readErr(t, d),
+			"begin": beginErr(t, d),
+			"wait":  d.Wait(t.Context()),
+		} {
+			is.Error(t, core.ErrStopped, err, name)
+			is.Error(t, core.ErrClosed, err, name)
+		}
+		// Closing it again does nothing.
+		is.NotError(t, d.Close(t.Context()))
+
+		// The cache is closed: another connection can take every lock on it.
+		c, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
+		is.NotError(t, err)
+		is.NotError(t, c.Exec("pragma locking_mode = exclusive"))
+		is.NotError(t, c.Exec("begin exclusive"))
+		is.NotError(t, c.Exec("rollback"))
+		is.NotError(t, c.Close())
+	})
+
+	t.Run("should make calls that wait fail, abort a read that is open, and wait for the transactions that are open", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			d := w.serve(t, "a", core.Options{Readers: 1})
+			transact(t, d, create("t1", 1, "k"), upsert("t1", 1))
+
+			tx, err := d.Begin(t.Context())
+			is.NotError(t, err)
+			upsert("t1", 2)(t, tx)
+			r, err := d.Read(t.Context())
+			is.NotError(t, err)
+
+			// A writer waits for the write transaction, and a reader for the one read connection.
+			waiting := make(chan error, 2)
+			go func() { waiting <- beginErr(t, d) }()
+			go func() { waiting <- readErr(t, d) }()
+			time.Sleep(time.Second)
+			is.Equal(t, 0, len(waiting))
+
+			// Close does not return while the two transactions are open.
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			err = d.Close(ctx)
+			cancel()
+			is.Error(t, context.DeadlineExceeded, err)
+			is.True(t, isDone(d))
+			is.True(t, w.manifest(t).Lease == nil, "the lease is released before the transactions have ended")
+
+			// The calls that waited have failed, and the transactions that are open fail from now on.
+			is.Error(t, core.ErrStopped, <-waiting)
+			is.Error(t, core.ErrStopped, <-waiting)
+			_, err = r.Get(t.Context(), "t1", row(1))
+			is.Error(t, core.ErrStopped, err)
+			for _, err := range r.Scan(t.Context(), "t1") {
+				is.Error(t, core.ErrStopped, err)
+			}
+			is.Error(t, core.ErrStopped, tx.Upsert(t.Context(), "t1", row(3)))
+			is.Error(t, core.ErrStopped, tx.Commit(t.Context()))
+			is.NotError(t, r.Close(t.Context()))
+
+			is.NotError(t, d.Close(t.Context()))
+			again := w.serve(t, "a", core.Options{})
+			is.Equal(t, "t1(k*0): 1", read(t, again))
+		})
+	})
+
+	t.Run("should give up releasing a lease that it cannot release, and leave it to time out", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s := newScriptStore(w.client())
+			d := w.openOn(t, "a", s, core.Options{})
+			is.NotError(t, d.Wait(t.Context()))
+			s.on("swap", "", drop, -1)
+			s.on("get", "", drop, -1)
+
+			start := time.Now()
+			err := d.Close(t.Context())
+			is.True(t, err != nil, "the close reports no error")
+			is.True(t, time.Since(start) > 30*time.Second && time.Since(start) < time.Minute, fmt.Sprint(time.Since(start)))
+			is.Equal(t, d.ID(), w.manifest(t).Lease.Holder)
+
+			// The cache is closed all the same, and the next instance waits for the lease to time out.
+			b := w.open(t, "b", core.Options{})
+			start = time.Now()
+			is.NotError(t, b.Wait(t.Context()))
+			is.True(t, time.Since(start) >= 30*time.Second+core.Margin(30*time.Second), fmt.Sprint(time.Since(start)))
+		})
+	})
+}
+
+func TestDB_Wait(t *testing.T) {
+	t.Run("should return when the instance serves, and fail when the instance stops or the context ends first", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			a := w.serve(t, "a", core.Options{})
+			b := w.open(t, "b", core.Options{})
+
+			// The spare waits for as long as the holder lives.
+			waited := make(chan error, 1)
+			go func() { waited <- b.Wait(t.Context()) }()
+			time.Sleep(10 * time.Minute)
+			is.Equal(t, 0, len(waited))
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			is.Error(t, context.DeadlineExceeded, b.Wait(ctx))
+			cancel()
+
+			is.NotError(t, a.Close(t.Context()))
+			is.NotError(t, <-waited)
+
+			c := w.open(t, "c", core.Options{})
+			go func() { waited <- c.Wait(t.Context()) }()
+			time.Sleep(time.Second)
+			is.NotError(t, c.Close(t.Context()))
+			is.Error(t, core.ErrClosed, <-waited)
+		})
+	})
+}
+
+// failing is the outcome of one run of [fail].
+type failing struct {
+	// variant of the failure: whether the cache had the transaction when the instance stopped.
+	landed bool
+	events *recorder
+}
+
+// fail runs one instance under the scheduler with seed, with buggify on at every point, so that the
+// cache fails to commit after the first manifest swap, and checks what the instance does then.
+func fail(t *testing.T, seed uint64) failing {
+	t.Helper()
+	f := failing{events: &recorder{}}
+	synctest.Test(t, func(t *testing.T) {
+		s := sim.New(seed, sim.Options{Buggify: sim.Buggify{On: true, Activation: 1, Fire: 1}})
+		dir := t.TempDir()
+		is.NotError(t, s.Run(func(ctx context.Context) {
+			st := simstore.New(s, simstore.Options{Latency: 10 * time.Millisecond})
+			inst := s.NewInstance("a")
+			_ = inst.Go(ctx, "test", func(ctx context.Context) {
+				path := filepath.Join(dir, "a.db")
+				o := options()
+				o.Logger = f.events.logger()
+				d, err := core.Open(ctx, inst, st.Client("a", inst), path, "db", o)
+				is.NotError(t, err)
+				is.NotError(t, d.Wait(ctx))
+
+				tx, err := d.Begin(ctx)
+				is.NotError(t, err)
+				is.NotError(t, tx.CreateTable(ctx, tableOf("t1", 1, "k")))
+				is.NotError(t, tx.Upsert(ctx, "t1", row(1)))
+				// The manifest swap is applied, so the commit is acknowledged, whatever the cache does.
+				is.NotError(t, tx.Commit(ctx))
+
+				// By then the instance has stopped: no read starts on a cache that may lack the commit.
+				is.True(t, isDone(d), "the instance has not signalled a stop")
+				for name, err := range map[string]error{"err": d.Err(), "wait": d.Wait(ctx)} {
+					is.Error(t, core.ErrStopped, err, name)
+					is.Error(t, core.ErrLocal, err, name)
+				}
+				_, err = d.Read(ctx)
+				is.Error(t, core.ErrLocal, err)
+				_, err = d.Begin(ctx)
+				is.Error(t, core.ErrLocal, err)
+
+				// The commit is in the log, and the cache has it or not.
+				data, _, _ := st.Object("db/manifest.json")
+				man, err := format.ParseManifest(data)
+				is.NotError(t, err)
+				is.True(t, man.Head != format.EmptyLog, "the log does not have the commit")
+				position, state, err := cacheDump(path)
+				is.NotError(t, err)
+				switch position {
+				case man.Head:
+					f.landed = true
+					is.Equal(t, "t1(k*0): 1", show(state))
+				case format.EmptyLog:
+					is.Equal(t, "", show(state))
+				default:
+					t.Errorf("the cache is at %v", position)
+				}
+
+				// The instance releases the lease by itself, and does not open itself again.
+				is.NotError(t, inst.Sleep(ctx, 10*time.Second))
+				data, _, _ = st.Object("db/manifest.json")
+				man, err = format.ParseManifest(data)
+				is.NotError(t, err)
+				is.True(t, man.Lease == nil, "the lease is not released")
+				is.Error(t, core.ErrLocal, d.Wait(ctx))
+				is.NotError(t, d.Close(ctx))
+
+				// Opening it again shows the transaction, once, whichever way the cache failed.
+				again, err := core.Open(ctx, inst, st.Client("again", inst), path, "db", options())
+				is.NotError(t, err)
+				is.NotError(t, again.Wait(ctx))
+				r, err := again.Read(ctx)
+				is.NotError(t, err)
+				state, err = dump(ctx, r)
+				is.NotError(t, err)
+				is.Equal(t, "t1(k*0): 1", show(state))
+				is.Equal(t, man.Head, r.Position())
+				is.NotError(t, r.Close(ctx))
+				// Under buggify the next commit stops the instance again, so it is closed as it is.
+				is.NotError(t, again.Close(ctx))
+			}).Wait(ctx)
+		}))
+	})
+	return f
+}
+
+func TestDB_stop(t *testing.T) {
+	t.Run("should acknowledge the commit, stop for good, release the lease once, and show the transaction when opened again, whether the cache rolled back or committed when it failed", func(t *testing.T) {
+		variants := map[bool]int{}
+		for seed := uint64(0); seed < 40 && (variants[true] == 0 || variants[false] == 0); seed++ {
+			f := fail(t, seed)
+			variants[f.landed]++
+
+			stops := f.events.named(core.EventStop)
+			is.Equal(t, 1, len(stops))
+			is.Equal(t, "local_failure", at(stops[0], core.AttrOutcome))
+			is.Equal(t, 1, len(f.events.with(core.EventCommit, core.AttrOutcome, "committed_and_stopped")))
+			// One try to release the lease, which is the one of the stop: closing the instance finds
+			// the lease released.
+			is.Equal(t, 1, len(f.events.with(core.EventLease, core.AttrTransition, "released")))
+		}
+		is.True(t, variants[true] > 0 && variants[false] > 0, fmt.Sprint("the cache failed in one way only: ", variants))
+	})
+
+	t.Run("should stop for a failure to write the spool file, and commit nothing", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k"))
+		head := w.manifest(t).Head
+
+		// The directory of the cache takes no new files from now on.
+		is.NotError(t, os.Chmod(w.dir, 0o500))
+		defer func() { is.NotError(t, os.Chmod(w.dir, 0o700)) }()
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		upsert("t1", 1)(t, tx)
+		err = tx.Commit(t.Context())
+		is.Error(t, core.ErrStopped, err)
+		is.Error(t, core.ErrLocal, err)
+		is.True(t, !errors.Is(err, core.ErrOutcomeUnknown))
+
+		is.True(t, isDone(d))
+		is.Error(t, core.ErrLocal, d.Err())
+		is.Error(t, core.ErrLocal, readErr(t, d))
+		is.Equal(t, head, w.manifest(t).Head)
+		is.NotError(t, os.Chmod(w.dir, 0o700))
+		is.NotError(t, d.Close(t.Context()))
+		is.True(t, w.manifest(t).Lease == nil, "the lease is not released")
+
+		again := w.serve(t, "a", core.Options{})
+		is.Equal(t, "t1(k*0): ", read(t, again))
+	})
+
+	t.Run("should stop for a failure to write the spool file of the annotations", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		is.NotError(t, os.Chmod(w.dir, 0o500))
+		defer func() { is.NotError(t, os.Chmod(w.dir, 0o700)) }()
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		err = tx.Annotate(t.Context(), "select 1", nil)
+		is.Error(t, core.ErrLocal, err)
+		is.Error(t, core.ErrStopped, tx.Commit(t.Context()))
+		is.True(t, isDone(d))
 	})
 }

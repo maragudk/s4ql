@@ -288,8 +288,8 @@ func TestDB_Begin(t *testing.T) {
 		is.Error(t, core.ErrBusy, err)
 		is.True(t, !errors.Is(err, core.ErrLocal) && !errors.Is(err, core.ErrStopped))
 		is.Equal(t, 1, len(events.named(core.EventBusy)))
-		is.Equal(t, fmt.Sprint("busy"), at(events.named(core.EventBusy)[0], core.AttrOutcome))
-		is.Equal(t, fmt.Sprint("begin"), at(events.named(core.EventBusy)[0], core.AttrOperation))
+		is.Equal(t, "busy", at(events.named(core.EventBusy)[0], core.AttrOutcome))
+		is.Equal(t, "begin", at(events.named(core.EventBusy)[0], core.AttrOperation))
 
 		// It is no local I/O failure: the instance goes on, and reads do not wait for the lock.
 		is.NotError(t, d.Err())
