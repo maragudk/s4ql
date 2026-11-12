@@ -80,6 +80,8 @@ type scriptStore struct {
 	stuck []func() error
 	// unchecked are the keys of the writes that came without the checksum of their content.
 	unchecked []string
+	// swaps are the contents of the swaps of the manifest, in the order in which they were sent.
+	swaps []string
 }
 
 func newScriptStore(s store.Store) *scriptStore {
@@ -217,6 +219,9 @@ func (s *scriptStore) Swap(ctx context.Context, key string, from store.Version, 
 		return "", err
 	}
 	s.check(key, data, checksum)
+	s.mu.Lock()
+	s.swaps = append(s.swaps, string(data))
+	s.mu.Unlock()
 	return s.write(ctx, s.match("swap", key), func(ctx context.Context) (store.Version, error) {
 		return s.Store.Swap(ctx, key, from, bytes.NewReader(data), checksum)
 	})

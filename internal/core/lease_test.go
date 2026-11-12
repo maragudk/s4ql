@@ -4,12 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/sim"
+	"maragu.dev/s4ql/internal/store/simstore"
 )
 
 // readErr is the error of starting a read transaction on d, which is closed again if it starts.
@@ -386,6 +392,113 @@ func TestLease_window(t *testing.T) {
 			is.Equal(t, a.ID(), w.manifest(t).Lease.Holder)
 			is.True(t, !serves(t, spare), "the spare took the lease from an instance that was catching up")
 			is.NotError(t, readErr(t, a))
+		})
+	})
+}
+
+func TestLease_retries(t *testing.T) {
+	t.Run("should send the same renewal again while it has no answer, and a new one after it knows", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s := newScriptStore(w.client())
+			d := w.openOn(t, "a", s, core.Options{})
+			is.NotError(t, d.Wait(t.Context()))
+			sent := func() []string {
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				return slices.Clone(s.swaps)
+			}
+			s.on("swap", "", drop, -1)
+			time.Sleep(40 * time.Second)
+			// The renewal at 20 seconds, and its attempts after 1, 2, 4, and 5 seconds more.
+			lost := sent()
+			is.True(t, len(lost) >= 5, fmt.Sprint(len(lost)))
+			for _, swap := range lost {
+				is.True(t, swap == lost[0], "an attempt of the renewal without an answer wrote another manifest")
+			}
+
+			s.clear()
+			time.Sleep(10 * time.Second)
+			all := sent()
+			is.Equal(t, len(lost)+2, len(all))
+			is.True(t, all[len(lost)] == lost[0], "the attempt that was answered wrote another manifest")
+			is.True(t, all[len(lost)+1] != lost[0], "the next renewal wrote the same manifest")
+			is.NotError(t, readErr(t, d))
+		})
+	})
+}
+
+// clocked runs f as a task of one instance under the scheduler, with a calm store, after the
+// instance serves and has been cut off from the store for an hour, so that it can renew nothing.
+func clocked(t *testing.T, f func(ctx context.Context, s *sim.Scheduler, inst *sim.Instance, d *core.DB)) {
+	t.Helper()
+	synctest.Test(t, func(t *testing.T) {
+		s := sim.New(1, sim.Options{})
+		dir := t.TempDir()
+		is.NotError(t, s.Run(func(ctx context.Context) {
+			st := simstore.New(s, simstore.Options{Latency: 10 * time.Millisecond})
+			inst := s.NewInstance("a")
+			_ = inst.Go(ctx, "test", func(ctx context.Context) {
+				client := st.Client("a", inst)
+				d, err := core.Open(ctx, inst, client, filepath.Join(dir, "a.db"), "db", options())
+				is.NotError(t, err)
+				is.NotError(t, d.Wait(ctx))
+				client.CutOff(ctx, time.Hour)
+				f(ctx, s, inst, d)
+				cctx, cancel := inst.WithTimeout(ctx, time.Second)
+				defer cancel()
+				_ = d.Close(cctx)
+			}).Wait(ctx)
+		}))
+	})
+}
+
+func TestLease_clocks(t *testing.T) {
+	// started reports the error of starting a read on d.
+	started := func(ctx context.Context, d *core.DB) error {
+		r, err := d.Read(ctx)
+		if err != nil {
+			return err
+		}
+		return r.Close(ctx)
+	}
+
+	t.Run("should refuse a read by the monotonic clock when the wall clock stands still or was set backward", func(t *testing.T) {
+		for name, move := range map[string]func(inst *sim.Instance){
+			"stands still": func(inst *sim.Instance) { inst.StopWall() },
+			"set backward": func(inst *sim.Instance) { inst.ShiftWall(-time.Hour) },
+		} {
+			clocked(t, func(ctx context.Context, s *sim.Scheduler, inst *sim.Instance, d *core.DB) {
+				move(inst)
+				is.NotError(t, s.Sleep(ctx, 25*time.Second))
+				is.NotError(t, started(ctx, d), name)
+				is.NotError(t, s.Sleep(ctx, 6*time.Second))
+				err := started(ctx, d)
+				is.Error(t, core.ErrNoLease, err, name)
+				is.True(t, strings.Contains(fmt.Sprint(err), "lease_expired_monotonic"), fmt.Sprint(name, ": ", err))
+			})
+		}
+	})
+
+	t.Run("should refuse a read by the wall clock when the monotonic clock stands still", func(t *testing.T) {
+		clocked(t, func(ctx context.Context, s *sim.Scheduler, inst *sim.Instance, d *core.DB) {
+			inst.StopMonotonic()
+			is.NotError(t, s.Sleep(ctx, 25*time.Second))
+			is.NotError(t, started(ctx, d))
+			is.NotError(t, s.Sleep(ctx, 6*time.Second))
+			err := started(ctx, d)
+			is.Error(t, core.ErrNoLease, err)
+			is.True(t, strings.Contains(fmt.Sprint(err), "lease_expired_wall"), fmt.Sprint(err))
+			inst.StartMonotonic()
+		})
+	})
+
+	t.Run("should not refuse a read because the wall clock was set forward by less than the lease has left", func(t *testing.T) {
+		clocked(t, func(ctx context.Context, s *sim.Scheduler, inst *sim.Instance, d *core.DB) {
+			inst.ShiftWall(10 * time.Second)
+			is.NotError(t, s.Sleep(ctx, 15*time.Second))
+			is.NotError(t, started(ctx, d))
+			is.NotError(t, s.Sleep(ctx, 6*time.Second))
+			is.Error(t, core.ErrNoLease, started(ctx, d))
 		})
 	})
 }
