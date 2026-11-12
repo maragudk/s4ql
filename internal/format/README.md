@@ -6,7 +6,7 @@ What the formats hold, and what a reader refuses, is in the code:
 
 - the comments of the schema
 - the package comment in `format.go`, with the three kinds of refusal
-- the doc comments of `Manifest`, `Name`, `CommitReader`, and `CommitWriter`
+- the doc comments of `Manifest`, `Lease`, `Name`, `CommitReader`, and `CommitWriter`
 
 This file holds the reasons behind the design. Markus agreed the design on 2026-11-11 and 2026-11-12, and he reviewed the schema line by line in pull request #4 on 2026-11-12.
 
@@ -43,6 +43,12 @@ The reader and the writer handle the top level of the stream themselves with `pr
 - **The manifest keeps the fields it does not know** when an instance rewrites it, as the doc comment of `Manifest` says. The lease is renewed often, so without this rule an older version would delete the fields of a newer one at every renewal.
 - **There is no count of commits.** Markus: "Drop the "commits", let's keep the essentials."
 - **The JSON is handled with `encoding/json/v2`.** Markus, on 2026-11-12: "Make sure to use the new json/v2 from Go stdlib". By default it matches keys exactly and refuses a key given twice, invalid UTF-8, and lone surrogates, and an embedded fallback keeps the fields that the manifest does not know, so none of that needs code of our own. A `depguard` rule in [.golangci.yml](../../.golangci.yml) refuses an import of `encoding/json` in `make lint` and in CI.
+- **The lease compares no clocks between machines.** Agreed with Markus on 2026-11-12: another instance takes the lease only after it has watched the manifest stay unchanged for the lease's duration, on its own monotonic clock. This replaces the expiry time, `expires`, of the first draft. Old manifests break on purpose, and the version stays 0. The fuller story is the item [The lease and its clocks](../../docs/todo.md#the-lease-and-its-clocks) in `docs/todo.md`.
+- **The lease records its duration,** because an instance that watches must wait for the holder's duration, not for its own setting.
+- **The duration is in Go's format:** a JSON string such as `"30s"` or `"1m30s"`, as `time.Duration.String` writes it. Markus, on 2026-11-12: "Maybe even use the Go time.Duration format?" Only that spelling is read, so `"90s"`, `"30000ms"`, `"+30s"`, and a JSON number are refused. One duration then has one spelling, and a manifest that is read and written again keeps the bytes of its duration. A fraction of a second, such as `"500ms"`, is allowed.
+- **The salt makes every renewal change the bytes.** It is 64 random bits, written as 16 lowercase hexadecimal digits, and the holder writes a new one at every write of the manifest. S3 makes the ETag from the content, so a renewal that wrote the same bytes would be invisible to an instance that watches, and that instance's compare-and-swap would then succeed against a live holder.
+- **It is a salt, not a counter.** Markus, on 2026-11-12: "But then we have to handle counter overflows and all that stuff. And I like that there's no state to keep track of."
+- **`renewed` is for people.** It is the holder's wall-clock time at the renewal, and nothing reads it for a decision. The package reads no clock and draws no salt: the caller passes in the renewal time and the salt, as it passes the commit time.
 
 ## The commit object
 
