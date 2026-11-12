@@ -162,3 +162,85 @@ Making a control that removes exactly one ability. `unmoved` draws the clock fau
 ### Future work
 
 The verification at 10000 seeds and the self-review follow in the next step.
+
+## Step 3: Self-review, its fixes, and the verification
+
+**Author:** lease-toy-builder
+
+### Prompt Context
+
+**Verbatim prompt:** The brief quoted in Step 1, and the builder's standing instructions: "Once the implementation is done, self-review before handing back to the lead. Work in two phases: first, review the code you wrote -- read the diff, check logic, look for missing edge cases and test coverage gaps; second, run automated checks (tests and linters). Be honest about real issues; if everything looks good, say so rather than inventing problems. Use the code-review skill for the first phase -- invoke it rather than reviewing inline; it dispatches competing reviewers over your diff. Address what you find, then report a summary of your review and any follow-up work back to the lead."
+**Interpretation:** Run the `fabrik:code-review` skill over commit `5c1fa31`, fix what is real, and verify the result at 10000 seeds.
+**Inferred intent:** The answer "the design holds" is only worth something if the checks behind it cannot pass for the wrong reason.
+
+### What I did
+
+Two reviewers on the `fable` model reviewed `git diff origin/main...HEAD` independently and tried their claims with `go test -overlay`. Both found no hole in the design: no fault that it fails under that the workload neither includes nor names. Both showed that the first exclusion is real: with both clocks of one instance stopped at once, there are stale reads with no bug planted (35 of 400 seeds for reviewer A, 1 of 400 for reviewer B with a different variant). They agreed on these findings, which I fixed:
+
+- **Serious: the free-running test of callers that never pause had become vacuous.** `acquire` read the manifest before it took the writer lock, so `Begin` no longer waited for the first lease, and with the scheduler off the callers ran through all their transactions with `errNotServing` before the lease was taken: `0 commits, 0 failed commits, 0 reads, 5194 failed reads`. With it, `S4QL_SIM_PLANT_RACE=free go test -race -run 'TestPlantedDataRace$' ./internal/sim/` reported no race. `acquire` now holds the writer lock and the swap lock except during its wait, and `TestFreeRunning` requires commits and reads. After the fix: `25 free runs ...: 1680 commits, 210 failed commits, 3853 reads`, and the planted race is reported again.
+- **Serious: `workload.liveness` was not a bound.** `S4QL_SIM_SEEDS=400 go test ./internal/sim/ -run 'TestSimulation_plantedBugs/counts_its_lease_from_the_answer'` gave `seed 354 found something else: [no instance serves 1m34s after the end of the workload]`, and seed 1217 of the same workload without the bug did too. My argument counted one delayed operation, but delays come one after another and catch-up has one operation per missing commit. The store now injects no faults after the workload (`memStore.healed`), as the clocks are right and the partitions over by then, so only an operation in flight can still be delayed, and the bound is that delay plus two waits.
+- **The toy waited again on a version it had already waited on**, after a swap that failed for a reason other than a changed manifest. The design restarts the wait only when the manifest changed. `acquire` keeps the version it waited on (`toyDB.waited`) and does not wait for it again.
+- **The full workload hardly reaches the salt and the two-clock check.** Reviewer B planted `keepSalt` in the full workload: 0 of 2500 seeds found it. So a clean full workload says little about them. `TestSimulation_plantedBugs` now also runs each bug's workload without the bug, and requires that no seed finds anything.
+- **Comments:** "longer than a lease lasts" was false for leases of 45 and 90 s; "Markus accepted" put a decision in code; the salt comment overstated (two releases at the same commit have the same bytes, which is safe, since only an instance that takes a free lease swaps against such a version); a small clock move was sized by the margin; the clock faults reach only the instances that start with the workload; the controls of `ownDuration` and `lateVersion` cannot fail by construction, which their comments now say.
+
+The verification at 10000 seeds then failed with `panic: sim: release of a semaphore that is not held` from `toy_test.go:351`, in the full workload and in the `lateVersion` workload, both of which crash an instance. The new `unlock` in `acquire` set `locked = false` after its releases. A release waits, a crash ends the task in that wait, and the deferred `unlock` then released the swap lock a second time. `unlock` now clears `locked` first. I had run the planted bugs at 400 seeds after the change to `acquire`, but not `TestSimulation`, whose full workload is the one with crashes; that is how it reached a 10000-seed run.
+
+### Why
+
+Each serious finding was a check that passed for the wrong reason, which is the one thing this experiment cannot afford.
+
+### What worked
+
+The final verification, on commit `3aa7698`, with `S4QL_SIM_SEEDS=10000`:
+
+```
+one instance:   10000 seeds, each run twice: 0 pairs differed; 10000 distinct traces
+                133622 commits, 14621 failed, 305945 reads; served at most 57s after the workload (bound 2m14s)
+everything:     10000 seeds, each run twice: 0 pairs differed; 10000 distinct traces
+                97456 commits, 24455 failed, 489 of unknown outcome, 711 cut off by a crash, 239048 reads
+                25029 buggify points that fired, 35905 moves of a clock, 10000 crashes and 10000 restarts
+                served at most 1m6.6s after the workload (bound 2m44s)
+never pause:    2500 seeds, each run twice: 0 pairs differed; served at most 1m7.5s (bound 2m14s)
+```
+
+No seed of any workload violated an invariant. The planted bugs, over 10000 seeds each, with their controls and the same workload without the bug over the same seeds:
+
+```
+renewal outside the lock                1534   (no control)                       without the bug: 0
+cache before the manifest               1666   (no control)                       without the bug: 0
+wall clock only                         2355   control, clocks drawn not moved: 0  without the bug: 0
+monotonic clock only                    2090   control, clocks drawn not moved: 0  without the bug: 0
+renewal without a new salt               813   control, clocks drawn not moved: 0  without the bug: 0
+watcher waits its own duration          1367   control, one duration: 0            without the bug: 0
+swap against the version after the wait 6372   control, one instance: 0           without the bug: 0
+lease counted from the answer            696   control, no late answers: 0        without the bug: 0
+takeover only after a release           9917   control, no crash: 0               without the bug: 0
+ignore a failure of the cache           2001   control, buggify off: 0            without the bug: 0
+```
+
+`make test` and `make lint` pass, and `go test -race -shuffle on ./internal/sim/ ./internal/host/` passes in 668 s on a loaded machine.
+
+### What didn't work
+
+The double release above. Also, the first 10000-seed run of the planted bugs had to be stopped after five bugs, because the review fixes changed the code it tested.
+
+### What I learned
+
+- Removing a mechanism and seeing whether anything fails is again what found the weak checks: reviewer B removed the wait after a release and the `unsure` release in `Close`, and nothing failed; reviewer A shrank the margin to 1 ms, and nothing failed.
+- The margin is not tested, and cannot be with this harness: its clocks run at the true rate and every network latency is positive, so a watcher that waits exactly the holder's duration is already safe here. The margin is there for a fast monotonic clock, which the harness cannot make.
+
+### What was tricky
+
+Telling a liveness failure that the design causes from one that the workload's endless faults cause. The answer was to let the faults stop, which is how liveness is stated anyway: after the faults end, an instance serves within a bound.
+
+### What warrants review
+
+- `/internal/sim/toy_test.go`, `toyDB.acquire`: the locks, the wait, `waited`, and the swap against the version read before the wait.
+- `/internal/sim/simulation_test.go`, the planted bugs with their controls, and the run of each workload without its bug.
+
+### Future work
+
+- Things that no check notices when they are removed, from the review: the margin; taking the lease at once after a release (only liveness depends on it); and the `unsure` release in `Close`.
+- The harness never delivers a request after its sender saw it fail, as a real network can. By argument this is safe for the lease, because an instance counts its lease only from a swap it knows to have happened; the simulation does not show it.
+- `resolveSwap` treats "the manifest still has the ETag the swap was sent against" as "the swap did not happen". With ETags from content, that is not sound for a swap from a released manifest, which can come back with the same bytes. It is harmless in the toy, but the core should know.
+- Clock faults reach only the instances that start with the workload, not one restarted after a crash.
