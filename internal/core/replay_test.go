@@ -571,6 +571,28 @@ func TestReplay(t *testing.T) {
 		})
 	})
 
+	t.Run("should try a download again where it failed, and not walk back through the log from its head again", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			a := w.serve(t, "a", core.Options{})
+			transact(t, a, create("t1", 1, "k"))
+			for i := range 4 {
+				transact(t, a, upsert("t1", i))
+			}
+			is.NotError(t, a.Close(t.Context()))
+
+			// Of the five downloads of the walk and the five to apply, the fourth and the eighth fail.
+			s := newScriptStore(w.client())
+			s.on("get", "commits/", pass, 3)
+			s.on("get", "commits/", drop, 1)
+			s.on("get", "commits/", pass, 3)
+			s.on("get", "commits/", drop, 1)
+			b := w.openOn(t, "b", s, core.Options{})
+			is.NotError(t, b.Wait(t.Context()))
+			is.Equal(t, "t1(k*0): 0 | 1 | 2 | 3", read(t, b))
+			is.Equal(t, 12, s.count("get", "commits/"))
+		})
+	})
+
 	t.Run("should catch up from the position of its cache, and not from the start", func(t *testing.T) {
 		bubble(t, func(t *testing.T, w *world) {
 			a := w.serve(t, "a", core.Options{})
