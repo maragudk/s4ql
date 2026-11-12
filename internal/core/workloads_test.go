@@ -440,7 +440,11 @@ var plantedBugs = []plantedBug{
 		// Only an answer that comes late after the store applied the swap makes the lease of the bug
 		// outlast the wait of another instance, which starts when it reads the swap. So the answers are
 		// often slow, a request waits for its answer for longer than they are, and the leases are short
-		// enough for the wait to end before a slow answer comes.
+		// enough for the wait to end before a slow answer comes. An instance also learns late of a swap
+		// whose answer was lost, which every cut-off can cause, so no fault can be taken away that
+		// leaves the takeovers and takes the late answers. The lease that the bug counts too long
+		// matters only when another instance takes the lease, so the control has one instance, and
+		// shows only that the workload finds nothing else.
 		bug:  "leaseFromAnswer",
 		name: "a holder that counts its lease from the answer to a swap",
 		workload: plant(competing(func(w *workload) {
@@ -448,7 +452,7 @@ var plantedBugs = []plantedBug{
 			w.durations = []time.Duration{10 * time.Second}
 		}), "leaseFromAnswer"),
 		control: new(plant(competing(func(w *workload) {
-			w.faults.Slow, w.options.StoreTimeout = 0, time.Minute
+			w.faults.Slow, w.options.StoreTimeout, w.instances = 0.1, time.Minute, 1
 			w.durations = []time.Duration{10 * time.Second}
 		}), "leaseFromAnswer")),
 		symptoms: []string{stale},
@@ -506,14 +510,17 @@ var plantedBugs = []plantedBug{
 	},
 	{
 		// Replay keeps a part of a commit object only if the commit object breaks off. A download
-		// has five minutes, so that none ends because its time is up.
+		// has five minutes, so that none ends because its time is up. The content of a download also
+		// breaks off when its client is cut off or the store is out of reach while it is read, which
+		// happens when replay renews the lease between two changes. So the control has neither, and
+		// its catch-ups are those after the crash.
 		bug:  "replayCommitsEarly",
 		name: "a replay that commits before the reader has reported the end",
 		workload: plant(competing(func(w *workload) {
 			w.faults.BrokenRead, w.options.ObjectTimeout, w.crashes = 0.3, 5*time.Minute, 1
 		}), "replayCommitsEarly"),
 		control: new(plant(competing(func(w *workload) {
-			w.faults.BrokenRead, w.options.ObjectTimeout, w.crashes = 0, 5*time.Minute, 1
+			w.faults.BrokenRead, w.faults.CutOff, w.faults.Outage, w.options.ObjectTimeout, w.crashes = 0, 0, 0, 5*time.Minute, 1
 		}), "replayCommitsEarly")),
 		symptoms: []string{"the cache of", "the instance stopped", "a read saw at commit", "the replay of the whole log"},
 	},

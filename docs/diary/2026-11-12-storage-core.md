@@ -211,3 +211,129 @@ The first run of 100 seeds of each workload had no violation and no pair of trac
 ### Future work
 
 The deterministic tests for what the simulation does not aim at, the mutation testing, and the large runs, in the next step.
+
+## Step 4: Tests without the simulation, and mutation testing
+
+**Author:** core-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Mutation testing in the style of the object store's builder (`go test -overlay`, never touching the tree) over the core's decisions: which mutants no test catches, and for each, either a new test or the reason it does not matter."
+**Interpretation:** Tests for what is deterministic by itself, then one mutant for each decision of the core, and a test or a reason for each mutant that survives.
+**Inferred intent:** Find the checks that pass with the mechanism they guard removed, before a reviewer or a user does.
+
+### What I did
+
+The tests without the simulation, each in the file of what it tests:
+
+- `/internal/core/tx_test.go`: 15 cases of the net effect, each with the exact lines of its commit object and a replay into an empty cache; reads of a transaction's own writes; every refusal with its error; the cases of a manifest swap without an answer, spelled out with a scripted store; a commit while the instance is closed; a transaction of 600,000 rows whose commit object is 23 MB, during which the heap of the Go runtime grew by 3.2 MB, and whose replay grew it by 20 MB.
+- `/internal/core/replay_test.go`: logs written by hand with every kind of change, also rows that list only some columns; 25 commit objects that a reader accepts and that do not fit the cache; 9 that a reader refuses or the store lacks; manifests that cannot be read; a cache whose position is not in the log; bytes that are damaged on their way, once and twice.
+- `/internal/core/lease_test.go`: the rules of the lease on the fake clock of `testing/synctest`, and each clock of the lease check under the scheduler.
+- `/internal/core/cache_test.go`, `/internal/core/core_test.go`, `/internal/core/errors_test.go`, `/internal/core/telemetry_test.go`: 57 hostile names as tables and as columns, the reserved names, the cache's version and position, the classification of SQLite's result codes, the stop for a cache that SQLite reports as corrupt and for a spool file that cannot be written, both ways in which the cache fails after a manifest swap, and one event for each unit of work.
+
+The mutation testing is a script in the scratchpad, `mutate.py`. Each mutant is a copy of one file with one decision changed, put in place of the file with `go test -overlay`. It first runs the tests without the simulation, and the three workloads if those pass.
+
+### Why
+
+The simulation shows that the rules hold under faults. It does not say which line of the core each test depends on. A mutant per decision does.
+
+### What worked
+
+- The first run, before the review: 117 mutants, 81 caught, 23 not caught, and 13 that did not build, which was my mistake in writing them. I rewrote the 13 and wrote tests for the survivors that deserved one. A rerun of those 35 mutants: 23 caught, 12 not caught, and after two more tests, 10.
+- Tests that a surviving mutant made me write: the margin's value; the lease that an instance took counted from when the swap was sent; the lease counted from the first attempt of a renewal when a later attempt finds it applied; a renewal without an answer sent again with the same bytes; a manifest of the instance's own that is not the first swap in flight; no serving between taking the lease again and catching up; the lease renewed during a catch-up that takes longer than a lease; a parent that damaged bytes seem to name; a commit of nothing after the lease ran out; a transaction that failed in the cache; the lease task woken when a commit returns "outcome unknown"; a close with a store that gives no answer at all; a cache that SQLite reports as corrupt; and each clock of the lease check alone.
+
+### What didn't work
+
+- `TestLease_window` failed when I wrote it: `lease_test.go:357: the instance serves before it has caught up`. The core was right. My scripted store did not hold the answer of a read, only of a write, so the catch-up that the test meant to slow down was not slow. The scripted store holds reads now.
+- The same test file: `lease_test.go:300: Expected "25s", but got "50s"`. An instance whose swap for the lease was answered after 25 seconds renews first, because a renewal is due, and serves after that. The test now has an answer after 15 seconds.
+- A test of a damaged table name panicked in the scripted store, `index out of range [-1]`: the commit object that was downloaded did not hold the name that the test wanted damaged.
+- The last full run of the mutation testing, on the code as it is after the review, was stopped by the system after 64 of 144 mutants: `Background command "Run the full mutation testing on the final code" was stopped because the system is running low on memory`. I did not start it again. Of those 64, 53 were caught, 9 were not, one was a mutant whose text no longer matched, and two of the 9 got a test afterwards that no mutation run has confirmed: a download without a timeout, and a fixed salt in the write that takes the lease. The other 80 mutants, of the transaction, the cache, and the 29 that I added for what the review changed, have not run on the final code. The mutants of the transaction and the cache were all caught in the first run but three, which are in the list below.
+
+### What I learned
+
+The mutants that no test catches, and why each does not matter. None of them changes what a caller can see:
+
+- **No second look after a call waited for its lock** (`DB.acquireServing`), **and no check after the state of a read is fixed** (`DB.Read`). The check before the wait is the one that the rule needs. The other two make a refusal come at once, where the next call of the transaction would bring it.
+- **Replay does not check the parent of a commit object against the position.** The walk back through the log makes it true. It is a guard against a bug in the catch-up.
+- **Replay does not check that a table to create is not there, a key that it deletes, the storage class of a value, or that a row with only some columns lists the primary key.** In each case the commit object is still refused with `ErrLogBroken`, by SQLite or by the binding of the value, with a worse message. The last of them is refused by accident, through a parameter `?0`, which I would not rely on.
+- **The rows of a table that the transaction created are tracked like changed rows.** The commit object is the same. The cost is time and disk.
+- **A commit does not check that the log is where the transaction began.** The correct code never reaches the check. The planted bug `ackUnknown` does.
+- **The read connections open before the write connection has run its first statement.** It guards against SQLite's "busy" after a crash under real parallelism, which no test here produces.
+
+### What was tricky
+
+A mutant that does not build looks like a mutant that is caught unless the script builds first. The object store's builder wrote that down, and I still wrote 13 mutants that did not build: deleting a branch leaves a variable unused. A mutant that keeps the branch and adds `&& false` to its condition builds.
+
+### What warrants review
+
+- The list above: whether "the commit object is still refused, by SQLite" is good enough for the checks of replay, or whether each should have a test that pins its own message.
+- The 80 mutants that have not run on the final code. The script is `mutate.py` in the session's scratchpad, and is not in the tree.
+
+### Future work
+
+Run the mutation testing again on the final code, on a machine with memory to spare.
+
+## Step 5: Self-review, and what it changed
+
+**Author:** core-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "When the implementation is done, self-review it as your standing instructions say, and fix what is real."
+**Interpretation:** The `fabrik:code-review` skill over `git diff origin/main...HEAD`: two reviewers that compete, told to try their claims with `go test -overlay` and to leave the tree alone.
+**Inferred intent:** The core is what the project's correctness rests on, so it has to survive two readers who are paid in bugs.
+
+### What I did
+
+Two reviewers on the `fable` model reviewed the branch independently. Neither found a schedule that breaks the safety of a commit or of a read. Both found the same four things, and each found serious things alone. What I fixed:
+
+- **Both: a `Commit` that returned "outcome unknown" because the instance stopped, in an error that also wrapped `ErrStopped`.** The documentation said that an error that wraps `ErrStopped` means "not committed". A caller that tested for it first would have repeated a committed transaction. `Tx.publish` now goes on finding out when the instance stops while a swap of the commit may be applied, and the error for an unknown outcome wraps nothing else. No test had stopped an instance during a commit: three scripted tests do now, and the workload with everything closes and opens instances while their callers run.
+- **Reviewer B: the catch-up started its walk from the head again after any download that failed.** A cache that is N commit objects behind then needs N downloads in a row to succeed. With a store that fails every twentieth download, the reviewer's log of 15 commit objects was caught up after 46 downloads, and a log of 30 was not caught up after 345,640. `DB.fetchAgain` tries a download again where it failed.
+- **Reviewer B: the documentation of `DB.Read` said that one check of the lease is enough, before or after the state of the read is fixed.** That is the todo's sentence, and it is wrong for the order "after": catch-up puts the commits of other instances into the cache, so a spare that fixed the state of a read could take the lease and catch up before the check. The code checks before, so it was right, and the comment now says why the check before is the one that counts.
+- **Reviewer A: the wait of a watcher overflowed for a lease of more than about 265 years,** from an option or from the manifest, and the watcher then took a live holder's lease at once. A lease lasts a year at the most now, and the wait is computed without a sum that can overflow.
+- **Reviewer A: calls that waited for a lock were not failed when the lease ran out by the clocks, and `DB.Wait` returned at once in that state,** so that a loop of "wait, then try" would spin. A wait for a lock now ends when the lease has no time left, and `DB.Wait` waits for a lease that is valid by the clocks.
+- **Reviewer A: the lease task could miss a wake-up** between reading the state and going to sleep, with real parallelism only. The state has a count of its changes, and the task does not sleep if the count has moved.
+- **Reviewer B: a primary key of 499 columns or more made the cache's own SQL too deep for SQLite.** A primary key has at most 250 columns now.
+- **Reviewer A: the simulation checked the lease at the end only after its own replay instance had taken and released it,** so the check saw nothing. It runs before the replay now. The reviewer's mutant, an instance that never releases, passed 100 seeds before.
+- **Both: weak spots in the tests.** A stop for a local failure was excused under buggify whatever its text; a stop for bytes that do not match their name was excused after one damaged download; the symptom of a stale read matched another violation's text; the planted-bug test asserted one find where its comment said four. All four are tightened.
+- **Both: comments and constants.** Comments that looked outward, a comment that described the scheduler, the result codes of SQLite as constants that one function used, two limits as constants that one function used, and tests in the files of other sources.
+
+What I did not change:
+
+- **A manifest without a lease entry has the same bytes whenever the head is the same,** so a swap that takes a free lease and is stuck in the network can be applied after a later release, also after a clean `Close`. Both reviewers reproduced it. It adds no commit, and the instance that is named takes over or is dead, so the cost is one wait for a lease. A salt outside the lease entry would end it. That changes the manifest's format, so it is a question for the lead.
+- **The manifest has no guard against bytes that are damaged on their way** (reviewer B). A damaged manifest that still parses would be written back by the swap that takes the lease. The store's contract promises unchanged content, and the design has no checksum for the manifest. Also a question for the lead.
+- **The names of events and attributes stay constants in one place,** as the brief asks, though each is used once.
+- **The control of `lateVersion` changes four things,** and the control of `ownDuration` cannot fail by construction, as their comments say.
+
+### Why
+
+Every fix closes a way in which the core does something other than what its documentation promises, or a way in which a test passes for the wrong reason.
+
+### What worked
+
+Asking for mutants. Reviewer A's "an instance that has committed never releases" and reviewer B's "keep only the check after the state is fixed" each showed a hole that no reading of the code had.
+
+### What didn't work
+
+- My fix for the calls that wait made the planted-bug suite fail, and reviewer B found it before I did: `scheduler: no end after 5000000 steps; waiting: a/caller-2 at acquire of a/readers`. The wait took the time that the lease has left from the monotonic clock alone. Under the planted bug `wallOnly` the check passed while that time was zero, so the timeout expired at once, for ever. The time left now comes from the clocks that the check looks at, and is never zero.
+- I had run only the tests without the simulation after that fix, and committed. The planted bugs are part of the default run for this reason.
+- Reviewer B's own mutant "Open accepts any path" created three files named `file:a.db` in the tree, which the reviewer removed and reported.
+
+### What I learned
+
+- A fix made during a review needs the whole default run, not the part that the fix is about.
+- The sentence in the todo about the order of the lease check and the state of a read is wrong, and was copied into my comment unchecked.
+
+### What was tricky
+
+Keeping "nil if and only if committed" when the instance stops in the middle of a commit. The stop must fail what waits, and must not turn "we do not know yet" into an answer.
+
+### What warrants review
+
+- `/internal/core/tx.go`, `Tx.publish`: the commit that goes on after a stop, and holds the manifest lock while it does, so that a `Close` waits for it.
+- `/internal/core/core.go`, `DB.acquireServing`, `DB.pause`, and `DB.Wait`.
+- `/internal/core/catchup.go`, `DB.fetchAgain`.
+
+### Future work
+
+The two questions for the lead above.

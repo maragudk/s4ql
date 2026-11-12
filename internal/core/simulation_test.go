@@ -325,8 +325,9 @@ type node struct {
 	callers atomic.Int64
 	// damagedTwice is set when two downloads in a row of one commit object were damaged for the node.
 	damagedTwice atomic.Bool
-	// restarting is set while the node's database is closed and opened again on purpose.
-	restarting atomic.Bool
+	// reopening is set while a task closes the node's database and opens it again, so that one
+	// task does it at a time, and no database is opened that nothing closes.
+	reopening atomic.Bool
 
 	mu sync.Mutex
 	db *core.DB
@@ -700,8 +701,12 @@ func (r *run) open(ctx context.Context, n *node) (*core.DB, error) {
 	return d, nil
 }
 
-// close the database d of n, and note whether it may still hold the lease.
+// close the database d of n, and note whether it may still hold the lease. A close that does not
+// come to its end within five minutes is a violation: every transaction of a caller ends within
+// the timeout of the caller, and the release of the lease gives up after the lease's duration.
 func (r *run) close(ctx context.Context, n *node, d *core.DB) {
+	ctx, cancel := n.host.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
 	err := d.Close(ctx)
 	r.mu.Lock()
 	r.closedAt[d.ID()] = r.c.world.Monotonic()
@@ -711,6 +716,9 @@ func (r *run) close(ctx context.Context, n *node, d *core.DB) {
 	r.mu.Unlock()
 	if err != nil {
 		r.c.world.Trace(ctx, "close of %v: %v", n.name, err)
+	}
+	if ctx.Err() != nil {
+		r.o.violate(ctx, r.c.world, "the close of %v did not end: %v", n.name, err)
 	}
 }
 
@@ -789,8 +797,9 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 	}
 	tasks = append(tasks, n.host.Go(ctx, "supervisor", func(ctx context.Context) {
 		for n.callers.Load() > 0 {
-			if d := n.current(); isStopped(d) && !n.restarting.Load() {
+			if d := n.current(); isStopped(d) && n.reopening.CompareAndSwap(false, true) {
 				r.stopped(ctx, n, d)
+				n.reopening.Store(false)
 			}
 			_ = n.host.Sleep(ctx, 2*time.Second)
 		}
@@ -803,31 +812,20 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 					continue
 				}
 				_ = n.host.Sleep(ctx, time.Duration(5_000+intn(n.host, 100_000))*time.Millisecond)
-				if n.callers.Load() == 0 {
+				if n.callers.Load() == 0 || !n.reopening.CompareAndSwap(false, true) {
 					return
 				}
-				n.restarting.Store(true)
-				d := n.current()
 				c.world.Trace(ctx, "%v is closed and opened again", n.name)
-				cctx, cancel := n.host.WithTimeout(ctx, 2*time.Minute)
-				r.close(cctx, n, d)
-				cancel()
-				if isClosed(d) {
-					r.o.reopens.Add(1)
-					if _, err := r.open(ctx, n); err != nil {
-						r.o.violate(ctx, c.world, "open again: %v", err)
-					}
+				r.close(ctx, n, n.current())
+				r.o.reopens.Add(1)
+				if _, err := r.open(ctx, n); err != nil {
+					r.o.violate(ctx, c.world, "open again: %v", err)
 				}
-				n.restarting.Store(false)
+				n.reopening.Store(false)
 			}
 		}))
 	}
 	return n, tasks
-}
-
-// isClosed reports whether d was closed: whether a second close has nothing left to do.
-func isClosed(d *core.DB) bool {
-	return errors.Is(d.Err(), core.ErrStopped)
 }
 
 // run the workload w as the task of ctx, in the cluster c, and record what happened in o. It
@@ -963,8 +961,6 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 
 	for _, n := range live {
 		n.do(ctx, "closer", func(ctx context.Context) {
-			ctx, cancel := n.host.WithTimeout(ctx, 2*time.Minute)
-			defer cancel()
 			r.close(ctx, n, n.current())
 		})
 	}
