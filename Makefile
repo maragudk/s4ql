@@ -11,9 +11,12 @@ benchmark:
 cover:
 	go tool cover -html cover.out
 
+# fmt formats all Go files except generated ones, because make generate writes those and the CI job
+# proto checks that they stay as it wrote them.
 .PHONY: fmt
 fmt:
-	goimports -w -local `head -n 1 go.mod | sed 's/^module //'` .
+	grep -rLE '^// Code generated .* DO NOT EDIT\.$$' --include='*.go' . | \
+		xargs goimports -w -local `head -n 1 go.mod | sed 's/^module //'`
 
 # fuzz runs each fuzz test in the SQLite binding, its cross-checks, and the storage formats for
 # FUZZTIME. Pass FUZZFLAGS=-asan to fuzz under the address sanitizer (Linux only).
