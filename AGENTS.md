@@ -45,8 +45,8 @@ Do not spend effort scrubbing Markus's email address from documents, transcripts
 
 Commit agreed work and merge pull requests when you judge them ready, without asking Markus first. Involve him in high-level design, architecture, and goals.
 
-- **Why:** Markus said on 2026-11-10: "If it's what we agreed you can just commit. Less friction, I don't want to be the bottleneck in this project", and later the same day: "merge whenever you like. We can always revert. But I'd like to stay involved in high-level design, architecture, goals, etc."
-- **How to apply:** check the work yourself against what was agreed, and commit and merge it if it matches and CI passes. Decide implementation details yourself and tell him what you chose. Bring him questions of design, architecture, scope, and goals, and anything that deviates from what was agreed. Wording in `docs/spec.md` still needs his explicit agreement before it is written.
+- **Why:** Markus said on 2026-11-10: "If it's what we agreed you can just commit. Less friction, I don't want to be the bottleneck in this project", and later the same day: "merge whenever you like. We can always revert. But I'd like to stay involved in high-level design, architecture, goals, etc." On 2026-11-12, when asked to approve the wording of a comment in the schema: "Remember, you own the code. I want to be part of high-level design and architecture decisions (such as specs, data formats), you handle the details."
+- **How to apply:** check the work yourself against what was agreed, and commit and merge it if it matches and CI passes. Decide implementation details yourself and tell him what you chose. A detail inside a file he reviewed, such as a comment in the schema, is still a detail: fix it and do not ask. Bring him questions of design, architecture, scope, and goals, and anything that deviates from what was agreed. Wording in `docs/spec.md` still needs his explicit agreement before it is written.
 
 ### Second opinions are allowed without asking
 
@@ -61,3 +61,10 @@ When Markus exports a conversation, move the export into `docs/conversations/` a
 
 - **Why:** Markus said on 2026-11-11: "every time I export a conversation, just move it (potentially overwriting another one if it's an update to a conversation) and commit."
 - **How to apply:** name the file by the date the conversation started and a short topic, like `2026-11-10-kickoff.txt`. If the export is a newer version of a conversation that is already there, overwrite that file. Run the cheap check for the S3 access key and secret first.
+
+### JSON is handled with `encoding/json/v2`
+
+Use `encoding/json/v2` and `encoding/json/jsontext` from the standard library for all JSON. Do not import `encoding/json`.
+
+- **Why:** Markus said on 2026-11-12: "Make sure to use the new json/v2 from Go stdlib". It rejects duplicate names and invalid UTF-8 and matches names exactly by default, which the storage formats need.
+- **How to apply:** this holds for code and tests. Read `go doc encoding/json/v2` for its behaviour instead of assuming that of version 1.

@@ -24,7 +24,8 @@ import (
 	"crypto/sha256"
 	"crypto/sha3"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"flag"
 	"fmt"
@@ -133,7 +134,7 @@ func run() error {
 		m.Files[name] = sha256Hex(contents[name])
 	}
 
-	b, err := json.MarshalIndent(m, "", "\t")
+	b, err := json.Marshal(m, jsontext.WithIndent("\t"), json.Deterministic(true))
 	if err != nil {
 		return err
 	}

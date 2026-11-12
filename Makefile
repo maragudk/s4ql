@@ -1,3 +1,4 @@
+BUF := go run github.com/bufbuild/buf/cmd/buf@v1.75.0
 CROSSCHECK := internal/sqlite/crosscheck
 SIMLINT := internal/simlint
 FUZZTIME ?= 30s
@@ -14,15 +15,21 @@ cover:
 fmt:
 	goimports -w -local `head -n 1 go.mod | sed 's/^module //'` .
 
-# fuzz runs each fuzz test in the SQLite binding and its cross-checks for FUZZTIME. Pass
-# FUZZFLAGS=-asan to fuzz under the address sanitizer (Linux only).
+# fuzz runs each fuzz test in the SQLite binding, its cross-checks, and the storage formats for
+# FUZZTIME. Pass FUZZFLAGS=-asan to fuzz under the address sanitizer (Linux only).
 .PHONY: fuzz
 fuzz:
-	for dir in internal/sqlite $(CROSSCHECK); do \
+	for dir in internal/sqlite $(CROSSCHECK) internal/format; do \
 		for test in $$(cd $$dir && go test -list '^Fuzz' . | grep '^Fuzz'); do \
 			(cd $$dir && go test $(FUZZFLAGS) -run '^$$' -fuzz "^$$test\$$" -fuzztime $(FUZZTIME) .) || exit 1; \
 		done; \
 	done
+
+# generate the Go code for the schema of the commit object in proto/ into internal/s4qlpb, with the
+# Buf pinned above and the protoc-gen-go pinned as a tool in go.mod.
+.PHONY: generate
+generate:
+	$(BUF) generate
 
 # lint also runs the lint for code that runs under the simulation, from internal/simlint. It is a
 # module of its own, so that its dependencies stay out of the library's, and is built there and run
@@ -34,6 +41,13 @@ lint:
 	cd $(SIMLINT) && golangci-lint run
 	dir=$$(mktemp -d) && (cd $(SIMLINT) && go build -o $$dir/simlint ./cmd/simlint) && $$dir/simlint ./...; \
 		status=$$?; rm -rf $$dir; exit $$status
+	$(MAKE) lint-proto
+
+# lint-proto checks the schema in proto/ with Buf's lint rules and its formatter.
+.PHONY: lint-proto
+lint-proto:
+	$(BUF) lint
+	$(BUF) format --diff --exit-code
 
 # sqlite-update vendors the SQLite amalgamation of VERSION, such as make sqlite-update VERSION=3.54.1.
 .PHONY: sqlite-update
