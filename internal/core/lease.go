@@ -594,6 +594,7 @@ func (d *DB) renewLocked(ctx context.Context, outside *locks) time.Duration {
 	}
 
 	result, err := d.send(ctx, f, outside)
+	settled.attempts++
 	outcome := "renewed"
 	wait := time.Duration(0)
 	switch result {

@@ -204,8 +204,23 @@ func (c *conn) setUp(syncOff bool) error {
 		) strict`); err != nil {
 		return err
 	}
-	if err := c.exec("insert or ignore into main.s4ql_cache (id, version, head) values (1, ?, ?)", int64(cacheVersion), format.EmptyLog.String()); err != nil {
+	// A cache gets its one row when it is new. A cache that has tables and no row is not one that
+	// this package made, and giving it a position would be a guess.
+	rows, err := c.count("select 1 from main.s4ql_cache")
+	if err != nil {
 		return err
+	}
+	if rows == 0 {
+		tables, err := c.count("select 1 from main.sqlite_schema where name != 's4ql_cache'")
+		if err != nil {
+			return err
+		}
+		if tables > 0 {
+			return fmt.Errorf("%w: it records no position, and holds %v tables and indexes", ErrCacheVersion, tables)
+		}
+		if err := c.exec("insert into main.s4ql_cache (id, version, head) values (1, ?, ?)", int64(cacheVersion), format.EmptyLog.String()); err != nil {
+			return err
+		}
 	}
 	if _, err := c.position(); err != nil {
 		return err

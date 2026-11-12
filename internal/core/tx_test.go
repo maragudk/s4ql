@@ -3,10 +3,18 @@ package core_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"strings"
+	"os"
+	"path/filepath"
+	"runtime"
+	"runtime/debug"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,7 +22,9 @@ import (
 
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/format"
+	"maragu.dev/s4ql/internal/host"
 	"maragu.dev/s4ql/internal/s4qlpb"
+	"maragu.dev/s4ql/internal/store"
 )
 
 // commits of the log of the world's database, oldest first, each as the lines of [changes].
@@ -390,7 +400,7 @@ func TestTx_Commit(t *testing.T) {
 			"a column of an unknown type": s4qlpb.CreateTable_builder{Table: new("t3"), Columns: []*s4qlpb.Column{s4qlpb.Column_builder{Name: new("k"), Type: new(s4qlpb.Type(99))}.Build()}, PrimaryKey: []uint32{0}}.Build(),
 			"a key column twice":          s4qlpb.CreateTable_builder{Table: new("t3"), Columns: tableOf("t3", 1, "k").GetColumns(), PrimaryKey: []uint32{0, 0}}.Build(),
 			"a key column outside":        s4qlpb.CreateTable_builder{Table: new("t3"), Columns: tableOf("t3", 1, "k").GetColumns(), PrimaryKey: []uint32{1}}.Build(),
-			"too many columns":            tableOf("t3", 1, strings.Split(strings.TrimSuffix(strings.Repeat("c,", 2001), ","), ",")...),
+			"too many columns":            tableOf("t3", 1, manyColumns(2001)...),
 		} {
 			err := tx.CreateTable(ctx, ct)
 			is.Error(t, core.ErrInvalid, err, name)
@@ -685,5 +695,224 @@ func TestTx_Commit_unknownOutcome(t *testing.T) {
 			is.NotError(t, a.Wait(t.Context()))
 			is.Equal(t, "t1(k*0): \nt3(k*0): ", read(t, a))
 		})
+	})
+}
+
+// fileStore is a store that keeps its objects in files and never holds one in memory, so that the
+// memory of a test with a large commit object is the memory of the core. It is calm, and it is for
+// one instance.
+type fileStore struct {
+	dir string
+	mu  sync.Mutex
+}
+
+func (s *fileStore) path(key string) string {
+	return filepath.Join(s.dir, hex.EncodeToString([]byte(key)))
+}
+
+// version of the object in the file: the checksum of its content, read in pieces.
+func (s *fileStore) version(path string) (store.Version, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return store.Version(hex.EncodeToString(h.Sum(nil))), nil
+}
+
+func (s *fileStore) Get(_ context.Context, key string) (io.ReadCloser, store.Version, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	version, err := s.version(s.path(key))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, "", store.ErrNotFound
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	f, err := os.Open(s.path(key))
+	return f, version, err
+}
+
+// put the content in the file of key.
+func (s *fileStore) put(key string, content io.Reader) (store.Version, error) {
+	f, err := os.Create(s.path(key))
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(f, content); err != nil {
+		_ = f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	return s.version(s.path(key))
+}
+
+func (s *fileStore) Create(_ context.Context, key string, content io.ReadSeeker, _ *store.Checksum) (store.Version, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := os.Stat(s.path(key)); err == nil {
+		return "", store.ErrExists
+	}
+	return s.put(key, content)
+}
+
+func (s *fileStore) Swap(_ context.Context, key string, from store.Version, content io.ReadSeeker, _ *store.Checksum) (store.Version, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	version, err := s.version(s.path(key))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", store.ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if version != from {
+		return "", store.ErrChanged
+	}
+	return s.put(key, content)
+}
+
+// manifest of the database "db" in the store.
+func (s *fileStore) manifest(t *testing.T) format.Manifest {
+	t.Helper()
+	data, err := os.ReadFile(s.path("db/manifest.json"))
+	is.NotError(t, err)
+	m, err := format.ParseManifest(data)
+	is.NotError(t, err)
+	return m
+}
+
+// heapWatch samples the heap of the Go runtime while a test runs, and reports how far it grew.
+type heapWatch struct {
+	base uint64
+	peak atomic.Uint64
+	stop chan struct{}
+	done chan struct{}
+}
+
+func watchHeap() *heapWatch {
+	runtime.GC()
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	w := &heapWatch{base: m.HeapAlloc, stop: make(chan struct{}), done: make(chan struct{})}
+	go func() {
+		defer close(w.done)
+		ticker := time.NewTicker(2 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-w.stop:
+				return
+			case <-ticker.C:
+				var m runtime.MemStats
+				runtime.ReadMemStats(&m)
+				if m.HeapAlloc > w.peak.Load() {
+					w.peak.Store(m.HeapAlloc)
+				}
+			}
+		}
+	}()
+	return w
+}
+
+// grown is how many bytes the heap held at most above what it held at the start.
+func (w *heapWatch) grown() int64 {
+	close(w.stop)
+	<-w.done
+	return int64(w.peak.Load()) - int64(w.base)
+}
+
+func TestTx_Commit_large(t *testing.T) {
+	// The number of rows in each of two tables is 300,000 unless the environment variable
+	// S4QL_CORE_ROWS sets another, such as some millions. The heap may grow by a fixed number of
+	// bytes, whatever the number of rows. While the transaction is written, the writer of a commit
+	// object holds one batch of rows, of a mebibyte, and the collector lags behind. While it is
+	// replayed, the reader holds one batch as the messages that it decodes to, which are some twenty
+	// times its bytes, so only a run with millions of rows tells that from the whole commit object.
+	//
+	// Under the race detector the test is some twenty times slower and the heap is another, so it
+	// runs with a tenth of the rows there, and checks only that the transaction commits and replays.
+	rows := 300_000
+	if raceEnabled {
+		rows = 30_000
+	}
+	const limit, replayLimit = 8 << 20, 48 << 20
+	if v := os.Getenv("S4QL_CORE_ROWS"); v != "" {
+		var err error
+		rows, err = strconv.Atoi(v)
+		is.NotError(t, err)
+	}
+
+	t.Run("should never hold a large transaction in memory: not its rows, not its commit object, and not which rows it changed, and neither when it is replayed", func(t *testing.T) {
+		// The collector runs often, so that the heap is close to what is in use.
+		defer debug.SetGCPercent(debug.SetGCPercent(10))
+		dir := t.TempDir()
+		s := &fileStore{dir: t.TempDir()}
+		h := host.New()
+		d, err := core.Open(t.Context(), h, s, filepath.Join(dir, "a.db"), "db", core.Options{})
+		is.NotError(t, err)
+		defer func() { _ = d.Close(context.WithoutCancel(t.Context())) }()
+		is.NotError(t, d.Wait(t.Context()))
+		// A table that the transaction creates, and one that is there before, so that the transaction
+		// keeps track of which of its rows it changed.
+		transact(t, d, create("old", 2, "a", "b", "c", "d"))
+
+		large := int64(1) << 40
+		start := time.Now()
+		heap := watchHeap()
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		is.NotError(t, tx.CreateTable(t.Context(), tableOf("new", 1, "k", "v", "w")))
+		for i := range int64(rows) {
+			is.NotError(t, tx.Upsert(t.Context(), "old", row(large+i, i%7, large-i, nil)))
+			is.NotError(t, tx.Upsert(t.Context(), "new", row(large+i, large-i, i)))
+			if i%3 == 0 {
+				is.NotError(t, tx.Annotate(t.Context(), "insert into new (k, v, w) values (?, ?, ?)", row(large+i, large-i, i)))
+			}
+		}
+		is.NotError(t, tx.Commit(t.Context()))
+		grown := heap.grown()
+
+		info, err := os.Stat(s.path("db/commits/" + s.manifest(t).Head.String()))
+		is.NotError(t, err)
+		t.Logf("a transaction of %v rows gave a commit object of %v bytes in %v, and the heap grew by at most %v bytes", 2*rows, info.Size(), time.Since(start).Round(time.Millisecond), grown)
+		if !raceEnabled {
+			is.True(t, info.Size() > 2*limit, "the commit object is too small to tell anything")
+			is.True(t, grown < limit, fmt.Sprintf("the heap grew by %v bytes for a commit object of %v bytes", grown, info.Size()))
+		}
+		is.NotError(t, d.Close(t.Context()))
+
+		// An empty cache replays the commit object, and holds no more of it in memory.
+		start = time.Now()
+		heap = watchHeap()
+		replayed, err := core.Open(t.Context(), h, s, filepath.Join(dir, "b.db"), "db", core.Options{})
+		is.NotError(t, err)
+		defer func() { _ = replayed.Close(context.WithoutCancel(t.Context())) }()
+		is.NotError(t, replayed.Wait(t.Context()))
+		grown = heap.grown()
+		t.Logf("the replay took %v, and the heap grew by at most %v bytes", time.Since(start).Round(time.Millisecond), grown)
+		if !raceEnabled {
+			is.True(t, grown < replayLimit, fmt.Sprintf("the heap grew by %v bytes for a commit object of %v bytes", grown, info.Size()))
+		}
+
+		r, err := replayed.Read(t.Context())
+		is.NotError(t, err)
+		for _, table := range []string{"old", "new"} {
+			var n int64
+			for values, err := range r.Scan(t.Context(), table) {
+				is.NotError(t, err)
+				is.Equal(t, large+n, values[0].GetInteger())
+				n++
+			}
+			is.Equal(t, int64(rows), n)
+		}
+		is.NotError(t, r.Close(t.Context()))
 	})
 }
