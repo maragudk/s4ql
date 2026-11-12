@@ -1,3 +1,4 @@
+BUF := go run github.com/bufbuild/buf/cmd/buf@v1.75.0
 CROSSCHECK := internal/sqlite/crosscheck
 FUZZTIME ?= 30s
 
@@ -13,20 +14,33 @@ cover:
 fmt:
 	goimports -w -local `head -n 1 go.mod | sed 's/^module //'` .
 
-# fuzz runs each fuzz test in the SQLite binding and its cross-checks for FUZZTIME. Pass
-# FUZZFLAGS=-asan to fuzz under the address sanitizer (Linux only).
+# fuzz runs each fuzz test in the SQLite binding, its cross-checks, and the storage formats for
+# FUZZTIME. Pass FUZZFLAGS=-asan to fuzz under the address sanitizer (Linux only).
 .PHONY: fuzz
 fuzz:
-	for dir in internal/sqlite $(CROSSCHECK); do \
+	for dir in internal/sqlite $(CROSSCHECK) internal/format; do \
 		for test in $$(cd $$dir && go test -list '^Fuzz' . | grep '^Fuzz'); do \
 			(cd $$dir && go test $(FUZZFLAGS) -run '^$$' -fuzz "^$$test\$$" -fuzztime $(FUZZTIME) .) || exit 1; \
 		done; \
 	done
 
+# generate the Go code for the schema of the commit object in proto/ into internal/s4qlpb, with the
+# Buf pinned above and the protoc-gen-go pinned as a tool in go.mod.
+.PHONY: generate
+generate:
+	$(BUF) generate
+
 .PHONY: lint
 lint:
 	golangci-lint run
 	cd $(CROSSCHECK) && golangci-lint run
+	$(MAKE) lint-proto
+
+# lint-proto checks the schema in proto/ with Buf's lint rules and its formatter.
+.PHONY: lint-proto
+lint-proto:
+	$(BUF) lint
+	$(BUF) format --diff --exit-code
 
 # sqlite-update vendors the SQLite amalgamation of VERSION, such as make sqlite-update VERSION=3.54.1.
 .PHONY: sqlite-update

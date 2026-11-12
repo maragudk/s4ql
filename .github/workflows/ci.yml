@@ -22,6 +22,27 @@ jobs:
   test:
     uses: maragudk/workflows/.github/workflows/test.yml@main
 
+  # The schema of the commit object: Buf's lint, and a check that the committed generated code is what
+  # the schema generates.
+  proto:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Lint the schema
+        run: make lint-proto
+
+      - name: Check that the generated code is up to date
+        run: make generate && git status --porcelain && test -z "$(git status --porcelain)"
+
   # The cross-checks against github.com/mattn/go-sqlite3 are a separate module, which the reusable
   # workflows above do not see.
   crosscheck:
