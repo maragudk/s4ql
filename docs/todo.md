@@ -160,11 +160,11 @@ What a commit object holds:
 - **The changes are applied in order,** and a commit object holds the net effect of its commit, so a primary key appears at most once per table. The kinds for the first slice are:
   - create a table, with its name, columns, and primary key as data and not as SQL text, so that replay needs no SQL parser
   - drop a table, by its name; the rows are not listed as deletes
-  - upsert rows, each a full row that is inserted or replaces the row with the same primary key. The name is Markus's; `PutRows`, `InsertRows`, and `ReplaceRows` were considered. An updated row is stored as a full row with an existing key, so "insert" alone would be wrong.
-  - delete rows, as a list of primary keys. A key is its own message, `Key`, and not a `Row`, because it is not a full row; Markus asked for this in the review.
+  - upsert rows, each a row that is inserted or replaces the row with the same primary key, or that changes some columns of a row that is there; see "Changed columns" below. The name is Markus's; `PutRows`, `InsertRows`, and `ReplaceRows` were considered. An updated row is stored as a full row with an existing key, so "insert" alone would be wrong.
+  - delete rows, as a list of primary keys. A key is its own message, `PrimaryKey`, and not a `Row`, because it is not a row; Markus asked for this in the review. The field is `primary_keys`.
 - **The kinds of change follow the roadmap.** A kind is defined when the slice that needs it is built: `alter table` and indexes each become a new kind. Every `insert`, `update`, and `delete` ends up as upserted and deleted rows, so row changes need nothing new.
 - **An unknown kind of change is refused, never skipped.** An instance that meets a kind it does not know stops replay with an error that says a newer version of s4ql is needed. Skipping a `drop table` would silently leave the cache different from the log.
-- **Every kind of change has a message named after it, and each holds only what it needs.** `CreateTable` holds the table name, the columns with their types, and the primary key. `DropTable` holds the table name. `UpsertRows` holds the table name and the rows, and `DeleteRows` holds the table name and the primary keys. Markus asked for this in the review: "DropTable doesn't need columns nor primary key. That's my point." The field for the table name is `table` in all four, and a column has a `name` and a `type`. The longer names from SQLite's grammar, `table_name`, `column_name`, and `type_name`, were tried and dropped; Markus: "maybe that's a bit much." Markus: "I'd just like to be consistent and aligned with SQLite if possible."
+- **Every kind of change has a message named after it, and each holds only what it needs.** `CreateTable` holds the table name, the columns with their types, and the primary key. `DropTable` holds the table name. `UpsertRows` holds the table name, the positions of the columns, and the rows, and `DeleteRows` holds the table name and the primary keys. Markus asked for this in the review: "DropTable doesn't need columns nor primary key. That's my point." The field for the table name is `table` in all four, and a column has a `name` and a `type`. The longer names from SQLite's grammar, `table_name`, `column_name`, and `type_name`, were tried and dropped; Markus: "maybe that's a bit much." Markus: "I'd just like to be consistent and aligned with SQLite if possible."
 - **Row changes carry no column names or types,** and replay does not compare them with the cache. Markus: "The precondition is that the cache is correct up to the parent, and with a deterministic change, the commit is safe and the postcondition is the same." Replay already checks that precondition through the cache's recorded position, so a column check could never fail. The silent failures that the research found ([research/change-file-contents.md](research/change-file-contents.md)) come from systems where the reader's tables are managed apart from the writer's, which is not our case. This reverses the "heading" with names and types that was agreed on 2026-11-11. Two checks remain without extra data: a row with the wrong number of values is refused, and the cache's strict tables reject a value of the wrong type.
 - **Rows come in batches.** A `UpsertRows` or `DeleteRows` must be complete in memory before it is written, so it is limited to about a megabyte, and a commit that changes many rows of one table writes several.
 - **The primary key is a list of column positions** in `CreateTable`, in key order, starting at 0. A position cannot disagree with a column name the way a second copy of the name could.
@@ -175,13 +175,15 @@ What a commit object holds:
 - **Where something sits says whether it may be skipped.** Everything in `changes` must be understood, or the commit object is refused. Everything in `annotations` may be skipped, including a kind of annotation that the reader does not know. Markus chose the name "annotation" over "evidence".
 - **The statements and the changes are not linked.** The commit object does not say which statement caused which change.
 
-Open, for the slice that brings `update`: whether an updated row is stored in full or only with the columns that changed. Markus asked on 2026-11-12: "Wouldn't we rather want only the columns that need changing?"
+Changed columns, agreed with Markus on 2026-11-12 after he asked "Wouldn't we rather want only the columns that need changing?":
 
-- **Today an updated row is a full row in `UpsertRows`.** Nothing in slice 1 changes part of a row.
-- **The case for changed columns is size.** If a row holds a large text or blob and a commit changes a small value in it, a full row stores the large value again in every such commit, and with no snapshots the log keeps all of them.
-- **It would be a new kind of change next to `UpsertRows`,** because an inserted row is always full. It is safe to apply, because the cache is correct up to the parent.
-- **Markus leans towards this shape:** "the column position first, then the values after". The change names the changed columns by their positions in the table, and then holds their values.
-- **How others do it** ([research/change-file-contents.md](research/change-file-contents.md)): PostgreSQL, MySQL by default, Debezium, and CockroachDB send the full row. SQLite's changesets and Spanner send only the changed columns, and both need a marker for "unchanged" that is separate from NULL. Naming the columns by position avoids that marker.
+- **`UpsertRows` lists the columns that its rows hold values for,** as positions in the table's columns, and each row holds its values in that order. Markus: "I lean towards the column position first, then the values after."
+- **All columns listed:** each row is inserted, or replaces the row with the same primary key. This is every case in slice 1.
+- **Some columns listed:** each row is there already, and only the listed columns change. The primary-key columns are always listed, because they say which row is meant.
+- **The positions are on the batch, not on each row.** The rows that one statement changes nearly always change the same columns, so the list is stored once per batch. Rows with different columns go into different batches.
+- **The reason is size.** If a row holds a large text or blob and a commit changes a small value in it, a full row would store the large value again in every such commit, and with no snapshots the log keeps all of them.
+- **No marker for "unchanged" is needed,** because a column that is not listed is not touched. SQLite's changesets and Spanner send only changed columns too, and both need such a marker that is separate from NULL. PostgreSQL, MySQL by default, Debezium, and CockroachDB send the full row ([research/change-file-contents.md](research/change-file-contents.md)).
+- **The partial case is untested until a slice brings `update`.** It is safe to apply, because the cache is correct up to the parent.
 
 Open: what a reader does with a field it does not know outside the annotations, for example a later "not null" on a column. Either the reader refuses the commit object, or we raise the header's version for every such field. maragubot recommends the first.
 
@@ -290,16 +292,24 @@ message DropTable {
   string table = 1;
 }
 
-// Inserts rows into a table. A row replaces any row with the same primary
-// key.
+// Inserts rows into a table, or changes rows that are there.
+//
+// If `columns` lists every column of the table, each row is inserted, or
+// replaces the row with the same primary key. If it lists only some, each
+// row is there already, and only the listed columns change.
 //
 // An UpsertRows is a batch that is small enough to hold in memory. A commit
-// that upserts many rows into one table writes several batches.
+// that upserts many rows into one table writes several batches, and rows
+// with different columns go into different batches.
 message UpsertRows {
   // The name of the table.
   string table = 1;
+  // The columns that each row holds a value for, as positions in the
+  // table's columns, starting at 0. They always include the primary-key
+  // columns.
+  repeated uint32 columns = 2;
   // The rows.
-  repeated Row rows = 2;
+  repeated Row rows = 3;
 }
 
 // Deletes rows from a table.
@@ -309,17 +319,18 @@ message DeleteRows {
   // The name of the table.
   string table = 1;
   // The primary keys of the rows to delete.
-  repeated Key keys = 2;
+  repeated PrimaryKey primary_keys = 2;
 }
 
-// One row: a value for every column, in the table's column order.
+// One row: a value for each column that its UpsertRows lists, in that
+// order.
 message Row {
   // The values.
   repeated Value values = 1;
 }
 
 // One primary key: a value for every primary-key column, in key order.
-message Key {
+message PrimaryKey {
   // The values.
   repeated Value values = 1;
 }
