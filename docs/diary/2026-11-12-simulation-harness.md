@@ -64,3 +64,224 @@ Whether crash and restart can be simulated faithfully enough. A task that is end
 ### Future work
 
 The object store interface and the simulated store follow this piece, and then the core. `/docs/todo.md` loses what this piece builds.
+
+## Step 2: The host interface and the scheduler behind it
+
+**Author:** harness-builder
+
+### Prompt Context
+
+**Verbatim prompt:**
+
+> You are building the simulation harness of s4ql, a Go SQL database whose truth is a log in S3, with a local SQLite cache. The repository is `maragudk/s4ql`, module `maragu.dev/s4ql`.
+>
+> **Your worktree is `/Users/maragubot/Developer/s4ql/.claude/worktrees/sim-harness`, on branch `worktree-sim-harness`.** Run `pwd` and `git branch --show-current` first. If you are somewhere else, switch into that worktree before you write anything. Never work in `/Users/maragubot/Developer/s4ql` itself. Another builder works at the same time in a different worktree on a different feature (the storage formats); you share nothing with it.
+>
+> ## The goal
+>
+> Turn the research spike in `internal/sim` into the simulation harness that the storage core is built on. The spike is merged and works: a seeded scheduler that runs plain blocking Go code one goroutine at a time inside a `testing/synctest` bubble, a free-running runtime with the same methods, and a toy library in test code with planted bugs.
+>
+> ## Read first
+>
+> - `AGENTS.md`: how to work in this repository.
+> - `docs/diary/2026-11-12-simulation-harness.md`, Step 1: **the requirements, numbered 1 to 9, the scope, and how the goal is verified. They are binding; read them completely.**
+> - `docs/diary/2026-11-10-simulation-spike.md`: what the spike found, especially Step 5.
+> - `docs/todo.md`, the items "Concurrency and the simulation harness", "The lease and its clocks", "A manifest swap whose outcome is unknown", and "Local I/O failure handling": what the core that will run on your harness has to do. You do not build the core, but the harness must be able to test it.
+> - `docs/spec.md`, the sections "Testing" and "Concurrency".
+> - `docs/research/foundationdb.md`, the part on buggify.
+> - `internal/sim/`: the code you start from.
+>
+> ## What I want beyond the diary's list
+>
+> - Invoke the `fabrik:go` skill before you read or write Go code, and follow it.
+> - Decide implementation details yourself and say in your report what you chose: the name and shape of the runtime package and interface, how the lint is built (a test over the syntax tree, a `go/analysis` analyzer, or something else), and how a crash is simulated.
+> - Keep the interface small. It is the only thing the core will see of your work, so every method needs a reason.
+> - The goroutine check of the spike (`goroutineID`) stays switched on, unless you measure that it matters and the lint covers what it covers. If you make it optional, it is on by default.
+> - The checks of the toy compare data against a model, not counters. Keep that for everything you add.
+> - Check whether the reusable workflow `maragudk/workflows/.github/workflows/test.yml@main`, which `.github/workflows/ci.yml` uses, runs the tests under the race detector. If not, add what is needed so that the free-running mode runs under it in CI.
+> - Do not edit `docs/spec.md`, `docs/todo.md`, `README.md`, or `AGENTS.md`. Report what in them is out of date after your work.
+> - No telemetry.
+>
+> ## How to work
+>
+> - Keep the diary: add a step to `docs/diary/2026-11-12-simulation-harness.md` for each meaningful chunk of work, with the `fabrik:diary` skill, under your name `harness-builder`. Record failures with the exact commands and errors, and record the numbers that verify the goal.
+> - Commit as you go, on the branch, with the `fabrik:git` skill's conventions. Do not ask about GitHub issues; there are none to reference. No attribution lines in commit messages. Do not push and do not open a pull request; I do that.
+> - When the implementation is done, self-review it as your standing instructions say, fix what is real, and run `make test`, `make lint`, and the race run again.
+> - You cannot ask me anything while you run. If you hit a question of scope or design that you cannot settle from the documents, stop and put the question in your report; I will answer and continue you. Questions of implementation you settle yourself.
+>
+> ## Your report
+>
+> It is read by me, not by Markus. Give me: what you built and what you chose, the numbers from the verification, what the harness still cannot do, what a builder of the object store and of the core must know to use it, and what is now out of date in `docs/todo.md`.
+
+**Interpretation:** Requirements 1 to 5 of Step 1: a small interface that library code waits through, implemented for production, by the scheduler, and by the free-running runtime; instances with their own clocks; crash; buggify.
+**Inferred intent:** Give the core one seam to the world that the simulation can take over completely, so that the core is never the first user of an unproven ability.
+
+### What I did
+
+I wrote `/internal/host/host.go` with `host.Host` and the production implementation `host.New`, and its tests in `/internal/host/host_test.go`. The interface has nine methods: `Go`, `NewSemaphore`, `Sleep`, `WithTimeout`, `Yield`, `Wall`, `Monotonic`, `Uint64`, and `Buggify`, with `host.Task` (`Wait`) and `host.Semaphore` (`Acquire`, `Release`). Production maps them onto a goroutine and a channel, a buffered channel, a timer, `context.WithTimeout`, nothing, `time.Now().Round(0)`, `time.Since` a start time, the generator of `math/rand/v2`, which the Go runtime seeds from the operating system in every process, and `false`.
+
+I rewrote `/internal/sim/sim.go`. `*sim.Scheduler` implements `host.Host` as the host of the test itself, and `Scheduler.NewInstance(name)` returns a `*sim.Instance` for each simulated process, which implements `host.Host` too and adds `ShiftWall`, `StopMonotonic`, `StartMonotonic`, `Crash`, `Crashed`, and `Trace`. The free-running runtime moved to `/internal/sim/free.go`. Tests are in `/internal/sim/sim_test.go` and `/internal/sim/free_test.go`.
+
+### Why
+
+Each method of the interface has one reason. `Go`, because the lease task is the library's one goroutine. `NewSemaphore`, because the writer lock, the manifest lock, and the reader pool are a lock, a lock, and a semaphore. `Sleep`, for the renewal and for backoff. `WithTimeout`, because `context.WithTimeout` is a timer of the bubble's clock, which stands still. `Yield`, for the windows between waits. `Wall` and `Monotonic`, because the lease is checked against both, separately. `Uint64`, for the lease holder ID and every random choice. `Buggify`, for requirement 5. I left `Trace` out: library code needs nothing from a trace, and the simulated store, which is simulation code, gets it from the concrete type.
+
+How the pieces work:
+
+- **Clocks.** Every instance has a wall clock (simulated time plus an offset that `ShiftWall` moves) and a monotonic clock (simulated time since the instance started, minus the time it stood still). Sleeps and timeouts through an instance run on its monotonic clock, as Go's timers run on the runtime's monotonic clock, so they stand still with it. Yields, releases, and the start of a task get their jitter on simulated time, so a stopped clock does not freeze an instance that is not sleeping.
+- **Timeouts.** `WithTimeout` returns a context of its own type. Its error after the timeout is `context.DeadlineExceeded`, as in production, also for contexts derived from it: it has its own done channel and an `AfterFunc` method, so the context package attaches children through that method, which hands them the right error. Built on `context.WithCancelCause` alone, it would report `context.Canceled`, with the deadline only as its cause. The scheduler ends timeouts between steps, in the order they were made, so that two that are due at the same instant cannot race.
+- **Crash.** `Instance.Crash` marks the instance. Its tasks are never picked again and stay parked. When every task that did not crash has returned, the scheduler wakes the crashed ones one at a time, and each ends with `runtime.Goexit` inside its wait; a wait in a deferred call then ends it at once. A task of a crashed instance counts as returned for `Task.Wait`.
+- **Membership.** A task waits only through the host of its own instance or through the scheduler, and uses a semaphore only through the host that made it. A crashed task could otherwise hold a permit that a live instance waits for.
+- **Buggify.** `Options.Buggify` switches it on with FoundationDB's gates: each site is switched on or off with probability 0.25 the first time it is reached, and a site that is on fires with probability 0.25. Both probabilities are options. The decision for a site holds for the run, in every instance. With buggify off, no number is drawn, so the rest of the run is the same as without the calls.
+- **Free.** `sim.NewFree` takes the buggify options and no seed. Its random numbers come from `math/rand/v2`, and its `Trace` does nothing, because a seeded generator or a trace behind a mutex is a happens-before edge between every pair of goroutines that use it, which hides data races from the race detector. Free has no instances: a test uses the one host for every process, and moves no clocks and crashes nothing.
+
+### What worked
+
+The scheduler's tests passed after the fixes below, including the crash test over 50 seeds: after the crash no task of the instance runs again, and its deferred calls run after the main task has returned. Buggify over 200 seeds switched on 207 of 800 sites and fired 5196 times in 20700 visits of a site that was on, which is a quarter of each.
+
+### What didn't work
+
+My first `next` treated every task in the map as parked, so the test of a task that blocks on a raw channel hung in the bubble:
+
+```
+goroutine 3751 [chan send (durable), synctest bubble 556]:
+maragu.dev/s4ql/internal/sim.(*Scheduler).Run(0x41a9f58fa0c0, 0x100c3a510?)
+	/Users/maragubot/Developer/s4ql/.claude/worktrees/sim-harness/internal/sim/sim.go:209 +0xa8
+```
+
+The failed run tried to wake the blocked task for unwinding, and it never receives. `next` again collects only parked tasks.
+
+One test assumed that the order of the "resumes from start" lines gives the order in which the timeouts were made, and counted `main` among them: `Expected "timeout of main after 1s expires", but got "timeout of waiter-0 after 1s expires"`. The test now looks only at the waiters.
+
+`golangci-lint run ./internal/sim/` reported `SA1029: should not use built-in type string as key for value` in a test, which uses a key type now.
+
+### What I learned
+
+- The context package attaches a derived context to a parent of a foreign type through an `AfterFunc` method if the parent has one, and otherwise starts a goroutine that waits on the parent's done channel. That goroutine would run outside the scheduler, so the method is what makes a custom context safe under it.
+- A seeded generator in the free-running runtime is not harmless: the mutex around it synchronises every goroutine that draws, in the eyes of the race detector.
+
+### What was tricky
+
+Deciding which clock each kind of wait follows. Sleeps follow the instance's monotonic clock, because that is Go's behaviour, and because it is what makes a stopped clock dangerous: the renewal stalls, and the lease runs out in real time. Network latency in the simulated store follows simulated time, because it is not the instance's.
+
+### What warrants review
+
+- `/internal/sim/sim.go`, `Scheduler.next` and `Scheduler.parkAs`: the order of the checks, the end of a run when only crashed tasks are left, and that nothing depends on the order of goroutines.
+- `/internal/sim/sim.go`, the `timeout` type: whether its error and its children's behave as those of `context.WithTimeout`. A context derived from it learns that the parent of the timeout was cancelled at the next scheduling point, not at once. I accepted that.
+
+### Future work
+
+None beyond the steps that follow.
+
+## Step 3: The toy, with two instances, clocks, crashes, and buggify
+
+**Author:** harness-builder
+
+### Prompt Context
+
+**Verbatim prompt:** The brief quoted in Step 2.
+**Interpretation:** Requirement 8: extend the toy to show two instances that compete for the lease, with clocks that the test moves, and a crash followed by a restart, with a planted bug for each new ability that only that ability finds, and checks that compare data against a model.
+**Inferred intent:** Prove each ability on a library with s4ql's shape before the core relies on it.
+
+### What I did
+
+`/internal/sim/toy_test.go` now follows the agreed design where an ability needs it. A lease task takes the lease if it is free or has expired by the instance's own wall clock plus a margin of two seconds, catches up the cache from the log (walking back from the manifest's head to the commit that the cache has), and only then serves. A read checks the lease against both clocks. A local failure after the manifest swap stops the instance, and `Commit` still returns nil. Each instance reaches the store through its own client, which a partition can cut off. The toy has two buggify points: the cache fails to commit after the swap (after a rollback or after the commit, at random), and the lease is renewed early.
+
+`/internal/sim/simulation_test.go` has three workloads: one instance (the spike's), the full workload (two instances, a clock fault for each instance as often as not, a crash and a restart, buggify, and store faults), and callers that never pause. The model is per attempt: each commit is recorded with its writes before `Commit`, then marked acknowledged, failed, or unknown, and stays pending if its instance crashed. At the end, the log must hold every acknowledged commit with its writes and no failed one, and every cache must equal the log up to its own commit. A supervisor task per instance closes and reopens a stopped database, as an application would. A crash copies the cache and its write-ahead log, without the shared-memory index, to a new path at the moment of the crash, and starts a new instance on the copy.
+
+Clock faults are limited to what the design claims to survive: at most one clock wrong per instance at a time, and a wall clock set backward only while the instance is cut off from the store. A holder that renews with a wall clock behind the others writes an expiry that is already past for them, which is outside the design ("the wall clocks of the instances must therefore agree").
+
+The planted bugs for the new abilities, each with a control that runs the same workload without the ability:
+
+- `wallOnly`, a read that checks only the wall clock, needs the wall clock set backward.
+- `monotonicOnly`, a read that checks only the monotonic clock, needs the monotonic clock stopped.
+- `takeoverAfterRelease`, an instance that takes over a lease only after a release, needs a crash. A new check finds it: some instance must serve within two minutes of the end of the workload.
+- `ignoreCacheError`, a commit that goes on serving after the cache failed, needs buggify.
+
+### Why
+
+A bug that only one ability can produce is the proof that the ability works and that a check looks at it. The control shows the "only".
+
+### What worked
+
+With 200 seeds and no planted bug, the three workloads gave no differing pair and no violation, and every planted bug was found: in 30, 27, 26, 38, 198, and 33 of 200 seeds, and in 0 of 200 in every control. The trace of `wallOnly`, seed 4, shows the mechanism: `a` is cut off and its wall clock is set back by 1m17.526s, `b` takes over the expired lease at 1m42.5s and acknowledges commit 8, and at 1m53.3s `a/caller-0 VIOLATION: a read saw commit 7 after commit 8 was acknowledged`.
+
+### What didn't work
+
+The first run of the planted bugs found a real bug in the toy, which the spike's single instance could not have produced:
+
+```
+simulation_test.go:963: seed 190 found something else: [the log has commit 3 with the writes [[4 3]], which no caller made, or whose commit failed]
+```
+
+`S4QL_SIM_SEED=190 S4QL_SIM_BUG=3 go test ./internal/sim/ -run TestSimulationSeed -v` showed it. The swap for transaction 3 was applied and its answer lost (`store swap manifest.json from v5: applied with v7 <nil>, reported as an injected error`). The read-back that resolves it was delayed 53 seconds, the lease ran out meanwhile, and `b` took it over and caught up, commit 3 included. The toy then saw a manifest that was not its own and reported `commit of transaction 3: stopped: lease lost`, a definite failure, for a committed transaction. The agreed design for a swap whose outcome is unknown says what to do: walk the log back from the new head and look for the commit. The toy does that now, and returns nil from `Commit` with the instance stopped.
+
+The first run also found `wallOnly` in 0 of 200 seeds. A holder that was cut off stopped at its first renewal, whose outcome was unknown, so it never served a stale read. The agreed design resolves an unknown renewal later and keeps serving while the clocks say that the lease holds, which is the window that the wall clock check guards. The toy now keeps such a renewal pending and resolves it before the next swap.
+
+My first crash-only bug, `trustCache` (catch up only into an empty cache), was not crash-only: an instance that the supervisor reopens after losing its lease has a cache with data too, so the control would find it. I replaced it before running it.
+
+### What I learned
+
+- The two-instance workload found in 200 seeds a bug that 20000 runs with one instance could not, because it needs another holder to move the manifest while a swap is unresolved.
+- A planted bug that the checks do not find can be a wrong toy and not a weak check. Both of today's misses were the toy departing from the agreed design.
+
+### What was tricky
+
+Keeping the clock faults inside the design's assumptions. The first scheme, a wall clock set backward for good, breaks the assumption that wall clocks agree as soon as the instance renews, and would have produced violations that the design accepts.
+
+### What warrants review
+
+- `/internal/sim/simulation_test.go`, `workload.run` and `outcome.verify`: whether a check can pass for the wrong reason, and whether the liveness check of two minutes is tight enough to mean something.
+- `/internal/sim/simulation_test.go`, `workload.moveClocks`: whether the faults are the ones that the design claims to survive, and no others.
+- `/internal/sim/toy_test.go`, `toyDB.resolveSwap` and `toyDB.resolvePending`.
+
+### Future work
+
+The toy stops on a commit whose outcome is unknown, where the design refuses and keeps trying. The core must do it properly, and its simulation needs the same check for commits that are in the log without an acknowledgement.
+
+## Step 4: The lint
+
+**Author:** harness-builder
+
+### Prompt Context
+
+**Verbatim prompt:** The brief quoted in Step 2.
+**Interpretation:** Requirement 6: forbid the listed constructs in every non-test Go file of the module outside an explicit list, in `make lint` and in CI, with a test that has a planted violation for each rule. Also check whether CI runs the free-running mode under the race detector.
+**Inferred intent:** Turn the rules that the scheduler sees only when the code runs, or never, into a check that runs on every change.
+
+### What I did
+
+`/internal/simlint/simlint.go` is a `go/analysis` analyzer, and `/internal/simlint/cmd/simlint/main.go` runs it with `singlechecker`. It resolves identifiers with the type checker, so a renamed import, a dot import, a method value such as `now := time.Now`, and an embedded `sync.WaitGroup` are all caught. It reports go statements; `time.Now`, `Since`, `Until`, `Sleep`, `After`, `AfterFunc`, `NewTimer`, `NewTicker`, `Tick`, `Timer`, and `Ticker`; `context.WithTimeout`, `WithDeadline`, and their `Cause` variants; `context.AfterFunc`, which starts a goroutine and is beyond the list in Step 1; `sync.Cond`, `NewCond`, and `WaitGroup`; and imports of `math/rand`, `math/rand/v2`, and `crypto/rand`. It skips `_test.go` files and exempts `internal/host`, `internal/sim`, and `internal/sqlite/update`, each with its reason. The test, `/internal/simlint/simlint_test.go`, runs `analysistest` over `/internal/simlint/testdata/src/library`, which breaks every rule once, a test file there that breaks rules and must not be reported, and a stand-in for the exempt `internal/host`.
+
+`make lint` runs it, and `/.github/workflows/ci.yml` has a new job, `simlint`, that runs it. The reusable test workflow already runs `go test -race -shuffle on ./...` (I read `maragudk/workflows/.github/workflows/test.yml` with `gh api`), so the free-running mode runs under the race detector in CI without a change.
+
+### Why
+
+An analyzer over typed syntax is the standard way to do this in Go, and `analysistest` gives the planted violations for free. A test over the bare syntax tree would miss renamed and dot imports. The cost is a dependency on `golang.org/x/tools` v0.52.0, which also brings `golang.org/x/mod` and `golang.org/x/sync` into `/go.mod` as indirect requirements. Nothing outside the lint imports them.
+
+### What worked
+
+`go run ./internal/simlint/cmd/simlint ./...` reports nothing on the module. A file planted in `/internal/sqlite` with `go time.Sleep(time.Second)` gave two reports, `a go statement starts a goroutine outside the host; use host.Host.Go` and `time.Sleep waits on the real clock; use host.Host.Sleep`, and exit status 3. I deleted the file again.
+
+To show that the test fails for each planted violation, a script removed one rule at a time from the analyzer and ran the test with `go test -overlay`: all 25 mutations made it fail (22 identifiers and imports, the go statement, the skip of test files, and the exemption).
+
+### What didn't work
+
+Running the command with `GOFLAGS=-overlay=...` to plant the file without touching the tree failed with `internal/sqlite/planted.go:1: no such file or directory`, because `go/packages` reads the files itself. I copied the file into the tree for one run instead.
+
+### What I learned
+
+`singlechecker` analyses test files by default (`-test=true`), so the analyzer skips them by name rather than relying on a flag.
+
+### What was tricky
+
+Nothing beyond the choice of approach.
+
+### What warrants review
+
+- The exempt list in `/internal/simlint/simlint.go`. The lint does not see the cross-check module in `/internal/sqlite/crosscheck`, which is a separate module of test code.
+- Whether `context.AfterFunc` belongs in the list.
+
+### Future work
+
+The lint cannot see a goroutine that a dependency starts, such as one of an S3 client. The scheduler's goroutine check is what catches one that reaches the host.
