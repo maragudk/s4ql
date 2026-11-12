@@ -11,7 +11,9 @@
   },
   "lease": {
     "holder": "5b0e3a4f9c1d77c3",
-    "expires": "2026-11-11T12:00:30.123Z",
+    "duration": "30s",
+    "renewed": "2026-11-12T12:00:30.123Z",
+    "salt": "c41d07a9e2b35f68",
     "epoch": 42
   },
   "retention": {

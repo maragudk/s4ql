@@ -500,3 +500,88 @@ There are two intended changes of behaviour, both from version 2:
 ### Future work
 
 - If the order of the output must hold across Go versions, and not only be caught by the tests, the writer needs its own ordering again, for example through a `MarshalerTo` on the structs. That is for the lead and Markus to decide.
+
+## Step 8: The lease entry without clocks compared between machines
+
+**Author:** lease-builder
+
+### Prompt Context
+
+**Verbatim prompt:** One change to a storage format of s4ql [...] The manifest, `manifest.json`, is read and written by `internal/format/manifest.go`. Its `lease` entry holds a holder and an absolute expiry time today. The product owner, Markus, agreed on 2026-11-12 to a new design of the lease that compares no clocks between machines: another instance takes the lease only after it has watched the manifest stay unchanged for the lease's duration, on its own monotonic clock. The lease entry changes to this: `"lease": {"holder": "5b0e…77c3", "duration": 30, "renewed": "2026-11-12T12:00:30.123456789Z", "salt": "c41d07a9e2b35f68"}` [...] `expires` is gone. [...] 1. `format.Lease` holds the four values, with Go types that make a wrong value hard to write [...] 2. The reader refuses, as malformed: a lease without any of the four [...] 3. `Manifest.Marshal` refuses a lease that the reader would refuse [...] 4. The package does not draw the salt and does not read the clock [...] 5. Everything else about the manifest stays as it is [...] 6. Tests first [...] 7. `internal/format/README.md` and the doc comments describe the lease entry as it now is [...] 8. Nothing outside `internal/format` uses `format.Lease` yet; check that [...]
+
+A change arrived mid-run from the lead, from Markus: "the lease's `duration` is written in Go's `time.Duration` format, as a JSON string, not as a number of seconds. He said: "Maybe even use the Go time.Duration format?" So the entry reads `"duration": "30s"`. [...] The reader accepts only that canonical spelling: parse it, and refuse it as malformed unless `String` of the parsed value equals the text that was read. [...] A duration of zero or below is refused. A fraction of a second is allowed (`500ms`) [...] `Manifest.Marshal` refuses a duration of zero or below. [...] Check in `go doc encoding/json/v2` how version 2 handles `time.Duration` [...]"
+
+**Interpretation:** Replace `Lease.Expires` with `Duration`, `Renewed`, and `Salt`, read and written with exact spellings: the duration only as `time.Duration.String` writes it, the renewal time under the rules the expiry had, and the salt as exactly 16 lowercase hexadecimal digits. Break old manifests at version 0. Keep every other behaviour of the manifest.
+
+**Inferred intent:** A lease that watches the manifest's bytes needs the holder's duration, and a manifest whose bytes change at every renewal. The format must make both hard to get wrong.
+
+### What I did
+
+- Merged `origin/main` into the branch first. It fast-forwarded to `e116bdc`, which contains "Return the lease expiry of `format.ParseManifest` in UTC".
+- Checked requirement 8: `grep` finds `format.Lease` only in `/internal/format/`. `/internal/sim/toy_test.go` has an `Expires` of its own on the toy's manifest type, which is not `format.Lease`, so nothing outside moved.
+- Read `go doc -all encoding/json/v2`. It says: "A Go time.Duration currently has no default representation and results in a SemanticError, unless the encoding/json.FormatDurationAsNano option is specified". It documents no `format:` tag option for durations. So `leaseJSON` holds the duration, the renewal time, and the salt as strings, and `parseLease` checks each spelling.
+- Tests first in `/internal/format/manifest_test.go`. I rewrote the lease JSON of the existing tests with `perl` substitutions instead of the editing tools, because several of those lines also hold `\u` escapes, and checked the bytes with `sed 's/\\/BS/g'` afterwards. New tests read and write each field, and there is one refusal row per case below. `go vet ./internal/format/` was red: `m.Lease.Duration undefined (type *format.Lease has no field or method Duration)`.
+- `/internal/format/manifest.go`: `Lease{Holder string; Duration time.Duration; Renewed time.Time; Salt uint64}`. `parseLease` refuses a missing or null field by name, then calls `parseDuration`, `parseRenewed`, and `parseSalt`. `parseDuration` is `time.ParseDuration`, then `d.String() == s`, then `d > 0`. `parseRenewed` is the old expiry code, renamed. `parseSalt` checks 16 lowercase hexadecimal digits, as `format.ParseName` does, and then calls `strconv.ParseUint`. `Marshal` refuses a duration of zero or below, and writes `Duration.String()` and `fmt.Sprintf("%016x", Salt)`. The package comment in `/internal/format/format.go` now says that the caller passes in the renewal time and the salt.
+- Regenerated the samples with `go test ./internal/format -run 'TestCommitSamples|TestManifestSamples' -update`, and edited `/internal/format/testdata/manifest-v0-unknown.json` by hand. `git diff internal/format/testdata` shows changes only inside `lease`, in both manifest files. The commit samples are unchanged.
+- A writer sub-agent added six bullets to "The manifest" in `/internal/format/README.md`. I checked them against the brief and kept them. I also added `Lease` to the README's list of doc comments.
+- Commits: `3c5c2fd` (the change) and `8d19edc` (the review fixes).
+
+The refusals added to `ParseManifest`, all `ErrMalformed`:
+
+- a lease without a duration, without a renewal time, or without a salt, and each of these given as null
+- a lease with `expires` and no `renewed`, and the old form with only `holder` and `expires`
+- a duration that is a JSON number or an empty string, or that is `0s`, `0`, `-30s`, `+30s`, `0.5m`, `30000ms`, `30s0ms`, `1m`, `90s`, `1.50s`, `030s`, `1us`, `1μs` (Greek mu), ` 30s`, `30S`, `30`, `3e1s`, or `2562047h47m16.854775808s` (overflow)
+- a salt that is a JSON number or an empty string, of 15 or 17 digits, with uppercase digits, with a `g`, with `0x`, with `+`, with `_`, or with a space
+- every refusal of the old expiry, now of `renewed`
+
+`Marshal` now refuses a duration of zero, of -1s, and of `math.MinInt64`, besides what it refused before.
+
+### Why
+
+The brief asks for Go types that make a wrong value hard to write. `time.Duration` and `uint64` cannot hold a fraction of a nanosecond or a salt that is not hexadecimal. The wrong values left are a duration of zero or below, which both sides refuse, and a renewal time outside the years 0 to 9999, which both sides refused before. The canonical spelling gives one duration one spelling, so `FuzzParseManifest` compares the duration and the salt of the input and of the output as text.
+
+### What worked
+
+- The refusal tests passed on the first run of the new code. A mutation check showed that they test what they say. With `|| d.String() != s` removed, ten of the duration rows and the fuzz seed with `90s` failed. With the duration check in `Marshal` disabled, its three new rows failed. Both were reverted, and `git diff` was checked afterwards.
+- On `8d19edc`: `make test` passes in all modules, with 96.9% coverage in `/internal/format`. `go test -race ./internal/format/` passes. `make lint` reports 0 issues in all three modules, and simlint and `buf` print nothing. `FuzzParseManifest` ran 5 minutes with `-fuzztime 5m` and found nothing, in 29,468,643 runs. I did not touch the code while it ran.
+- `time.Duration(math.MaxInt64).String()` is `2562047h47m16.854775807s`, and `time.ParseDuration` reads it back. So no upper limit of our own is needed: `ParseDuration` refuses anything beyond the range of `time.Duration`, and every positive `time.Duration` round-trips. The tests pin both ends.
+
+### What didn't work
+
+- My first mutation of the `Marshal` check, a `perl` substitution that split one `if` into two, left `err` undefined, and `go test ./` printed `FAIL maragu.dev/s4ql/internal/format [build failed]`. A second substitution, `err != nil && false`, worked, and I reverted it the same way.
+- The first commit had a gofmt issue in the test file: `Head:  format.Name(...)` was still aligned for a field that I had made multi-line. `make lint` did not report it. `gofmt -l internal/format` did, and `8d19edc` fixes it.
+- Appending this step with a `cat >> ... <<'EOF'` here-document was refused: "This agent is isolated in the worktree [...], but this command is too complex to verify that it stays inside the worktree." I appended it with the editing tool instead.
+- I first started the five-minute fuzz run on `3c5c2fd`. I stopped it when the review led to a code change, and ran it again on `8d19edc`.
+
+### What I learned
+
+- `encoding/json/v2` in Go 1.27 has no default representation for `time.Duration`. Without `FormatDurationAsNano` it gives a `SemanticError`, so a `time.Duration` field in `leaseJSON` would not work.
+- `time.Duration.String` writes microseconds with U+00B5 (micro sign), and `time.ParseDuration` also reads `us` and U+03BC (Greek mu). The canonical check refuses the last two. The test file holds each sign as raw UTF-8. I checked them with `xxd`: `c2 b5` in the accepted row, and `ce bc` in the refused row.
+- `Duration.String` writes a whole hour as `1h0m0s` and a whole minute as `1m0s`, so `1m` and `1h` are refused.
+
+### What was tricky
+
+- Requirement 3 and the fuzz property push against each other on zero values. The reader accepts `0000000000000000` as a salt, because it is a valid draw, and `0001-01-01T00:00:00Z` as a renewal time, because the old rules accepted it. If `Marshal` refused a zero `Salt` or a zero `Renewed`, a manifest that was read could not always be written again, and `FuzzParseManifest` would fail. So `Marshal` accepts both, and a holder that forgets to set them is not caught here.
+- A JSON escape such as `"1µs"` decodes to the canonical text and is accepted, and the writer then writes the raw character. That is the same as for the holder: the known fields are written in their shortest form.
+
+### What warrants review
+
+Self-review with the `code-review` skill at medium effort over `e116bdc..HEAD` gave seven findings. I acted on two:
+
+- The hand-written hex parser in `parseSalt` is now the digit check of `format.ParseName` plus `strconv.ParseUint`. The error branch after `ParseUint` cannot be reached after the digit check, and it is kept as a guard.
+- The doc comment of `ParseManifest` said that a lease with `expires` and no `renewed` "lacks its renewal time". The error for the old form says `has no duration`, because the duration is checked first. The comment now says that `expires` is a field it does not know, and that such a lease is refused like any lease that lacks a field.
+
+I left the other five alone:
+
+- `/docs/spec.md` line 39 and `/docs/todo.md` still describe the absolute expiry. The brief forbids editing either, and says that a writer is rewriting the todo item. The spec's wording needs Markus's agreement, so I report it to the lead.
+- `Marshal` accepts a zero salt. The reason is under "What was tricky", and it is a question for the lead.
+- `Marshal` accepts a zero renewal time, for the same reason.
+- An `expires` next to `renewed` is kept and written back at every renewal. Requirement 2 asks for exactly this.
+- The checks for an empty field repeat what the parsers refuse. I kept them for their error text, such as `has no salt`, as Step 7 did for the expiry.
+
+To validate: `go test -shuffle on ./internal/format/`, then `git diff e116bdc -- internal/format/testdata` (only `lease` changes), then `cd internal/format && go test -run '^$' -fuzz '^FuzzParseManifest$' -fuzztime 5m .`.
+
+### Future work
+
+- The lease code that uses `format.Lease` must draw a new salt at every write, and set `Renewed` from the host's wall clock through the host interface that simlint allows. Nothing in the format can check that the salt is new.
+- `/docs/spec.md` needs the new lease design in its "Constraints", in wording that Markus agrees to.
