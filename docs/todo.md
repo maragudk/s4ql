@@ -161,10 +161,10 @@ What a commit object holds:
   - create a table, with its name, columns, and primary key as data and not as SQL text, so that replay needs no SQL parser
   - drop a table, by its name; the rows are not listed as deletes
   - upsert rows, each a full row that is inserted or replaces the row with the same primary key. The name is Markus's; `PutRows`, `InsertRows`, and `ReplaceRows` were considered. An updated row is stored as a full row with an existing key, so "insert" alone would be wrong.
-  - delete rows, each by its primary-key values
+  - delete rows, as a list of primary keys. A key is its own message, `Key`, and not a `Row`, because it is not a full row; Markus asked for this in the review.
 - **The kinds of change follow the roadmap.** A kind is defined when the slice that needs it is built: `alter table` and indexes each become a new kind. Every `insert`, `update`, and `delete` ends up as upserted and deleted rows, so row changes need nothing new.
 - **An unknown kind of change is refused, never skipped.** An instance that meets a kind it does not know stops replay with an error that says a newer version of s4ql is needed. Skipping a `drop table` would silently leave the cache different from the log.
-- **Every kind of change has a message named after it, and each holds only what it needs.** `CreateTable` holds the table name, the columns with their types, and the primary key. `DropTable` holds the table name. `UpsertRows` and `DeleteRows` hold the table name and the rows. Markus asked for this in the review: "DropTable doesn't need columns nor primary key. That's my point." The field for the table name is `table` in all four, and a column has a `name` and a `type`. The longer names from SQLite's grammar, `table_name`, `column_name`, and `type_name`, were tried and dropped; Markus: "maybe that's a bit much." Markus: "I'd just like to be consistent and aligned with SQLite if possible."
+- **Every kind of change has a message named after it, and each holds only what it needs.** `CreateTable` holds the table name, the columns with their types, and the primary key. `DropTable` holds the table name. `UpsertRows` holds the table name and the rows, and `DeleteRows` holds the table name and the primary keys. Markus asked for this in the review: "DropTable doesn't need columns nor primary key. That's my point." The field for the table name is `table` in all four, and a column has a `name` and a `type`. The longer names from SQLite's grammar, `table_name`, `column_name`, and `type_name`, were tried and dropped; Markus: "maybe that's a bit much." Markus: "I'd just like to be consistent and aligned with SQLite if possible."
 - **Row changes carry no column names or types,** and replay does not compare them with the cache. Markus: "The precondition is that the cache is correct up to the parent, and with a deterministic change, the commit is safe and the postcondition is the same." Replay already checks that precondition through the cache's recorded position, so a column check could never fail. The silent failures that the research found ([research/change-file-contents.md](research/change-file-contents.md)) come from systems where the reader's tables are managed apart from the writer's, which is not our case. This reverses the "heading" with names and types that was agreed on 2026-11-11. Two checks remain without extra data: a row with the wrong number of values is refused, and the cache's strict tables reject a value of the wrong type.
 - **Rows come in batches.** A `UpsertRows` or `DeleteRows` must be complete in memory before it is written, so it is limited to about a megabyte, and a commit that changes many rows of one table writes several.
 - **The primary key is a list of column positions** in `CreateTable`, in key order, starting at 0. A position cannot disagree with a column name the way a second copy of the name could.
@@ -290,8 +290,7 @@ message DropTable {
 message UpsertRows {
   // The name of the table.
   string table = 1;
-  // The rows. Each holds a value for every column, in the table's column
-  // order.
+  // The rows.
   repeated Row rows = 2;
 }
 
@@ -301,12 +300,18 @@ message UpsertRows {
 message DeleteRows {
   // The name of the table.
   string table = 1;
-  // The rows. Each holds only its primary-key values, in key order.
-  repeated Row rows = 2;
+  // The primary keys of the rows to delete.
+  repeated Key keys = 2;
 }
 
-// One row: its values, in the order that the change gives.
+// One row: a value for every column, in the table's column order.
 message Row {
+  // The values.
+  repeated Value values = 1;
+}
+
+// One primary key: a value for every primary-key column, in key order.
+message Key {
   // The values.
   repeated Value values = 1;
 }
