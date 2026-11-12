@@ -5,6 +5,7 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -109,8 +110,9 @@ type leaseJSON struct {
 //
 // The first two points are checked before the version, at every level, so bytes that fail them are
 // malformed whatever their version. Keys are matched exactly, so
-// "Version" is a field it does not know, and "version" is then missing. A lease with "expires" and
-// no "renewed" lacks its renewal time, and "expires" next to "renewed" is a field it does not know.
+// "Version" is a field it does not know, and "version" is then missing. "expires" is a field it
+// does not know too, so a lease with "expires" and without one of the four fields is refused like
+// any lease that lacks a field.
 // A leap second cannot be read, and a renewal time is read to the nanosecond, with more digits
 // dropped. The renewal time that it returns is in UTC, whatever its offset and the time zone of the
 // machine.
@@ -275,17 +277,15 @@ func parseSalt(s string) (uint64, error) {
 	if len(s) != 16 {
 		return 0, fmt.Errorf("%w: manifest lease salt %q is not 16 hexadecimal digits", ErrMalformed, s)
 	}
-	var salt uint64
+	// strconv.ParseUint also reads uppercase digits, so the digits are checked first.
 	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c >= '0' && c <= '9':
-			salt = salt<<4 | uint64(c-'0')
-		case c >= 'a' && c <= 'f':
-			salt = salt<<4 | uint64(c-'a'+10)
-		default:
+		if c := s[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return 0, fmt.Errorf("%w: manifest lease salt %q is not 16 lowercase hexadecimal digits", ErrMalformed, s)
 		}
+	}
+	salt, err := strconv.ParseUint(s, 16, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%w: manifest lease salt %q: %v", ErrMalformed, s, err)
 	}
 	return salt, nil
 }

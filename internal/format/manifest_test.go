@@ -528,7 +528,7 @@ func TestManifestSamples(t *testing.T) {
 	}{
 		{file: "manifest-v0-new.json", manifest: format.Manifest{}},
 		{file: "manifest-v0-lease.json", manifest: format.Manifest{
-			Head:  format.Name(sha256.Sum256([]byte("sample"))),
+			Head: format.Name(sha256.Sum256([]byte("sample"))),
 			Lease: &format.Lease{
 				Holder:   "5b0e3a4f9c1d77c3",
 				Duration: 30 * time.Second,
