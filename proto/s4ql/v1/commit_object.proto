@@ -26,15 +26,13 @@ message CommitObject {
   // What the commit changed, in the order in which replay applies it.
   // A reader refuses the commit object if it does not know a change.
   repeated Change changes = 2;
-  // The wall-clock time of the commit, from the clock of the lease holder.
-  // Replay does not use it.
-  google.protobuf.Timestamp commit_time = 3;
   // What else is known about the commit. Replay does not use them, and a
   // reader may skip them.
-  repeated Annotation annotations = 4;
+  repeated Annotation annotations = 3;
 }
 
-// What a reader needs before it reads anything else.
+// What the commit object is: its format, what came before it, and when it
+// was made.
 message Header {
   // The version of this format: 0 while the format is a draft. A reader
   // refuses a version it does not know. From version 1 on, the version is
@@ -43,6 +41,9 @@ message Header {
   // The name of the commit object before this one: 32 bytes, all zero in
   // the first one.
   bytes parent = 2;
+  // The wall-clock time of the commit, from the clock of the lease holder.
+  // Replay does not use it.
+  google.protobuf.Timestamp commit_time = 3;
 }
 
 // One change to the database.
@@ -54,23 +55,21 @@ message Header {
 message Change {
   // What the change is.
   oneof kind {
-    // Creates this table.
-    Table create_table = 1;
-    // Drops this table and all its rows.
+    // Creates a table.
+    CreateTable create_table = 1;
+    // Drops a table and all its rows.
     DropTable drop_table = 2;
-    // Puts rows. Each row holds a value for every column, in the table's
-    // column order, and replaces any row with the same primary key.
-    Rows put_rows = 3;
-    // Deletes rows. Each row holds only its primary-key values, in key
-    // order.
-    Rows delete_rows = 4;
+    // Puts rows into a table.
+    PutRows put_rows = 3;
+    // Deletes rows from a table.
+    DeleteRows delete_rows = 4;
   }
 }
 
-// A table.
-message Table {
+// Creates a table.
+message CreateTable {
   // The name of the table.
-  string name = 1;
+  string table = 1;
   // The columns, in their declared order.
   repeated Column columns = 2;
   // The primary-key columns, in key order, as positions in `columns`,
@@ -95,22 +94,31 @@ enum Type {
   TYPE_INT = 1;
 }
 
-// The table to drop.
+// Drops a table and all its rows.
 message DropTable {
   // The name of the table.
-  string name = 1;
+  string table = 1;
 }
 
-// Rows of one table, together with the table they belong to.
+// Puts rows into a table. A row replaces any row with the same primary key.
 //
-// A Rows is a batch that is small enough to hold in memory. A commit that
-// changes many rows of one table writes several batches, and each one holds
-// the table again, so a batch is read without the ones before it.
-message Rows {
-  // The table. A reader refuses the commit object if this differs from the
-  // table it has.
-  Table table = 1;
-  // The rows.
+// A PutRows is a batch that is small enough to hold in memory. A commit that
+// puts many rows into one table writes several batches.
+message PutRows {
+  // The name of the table.
+  string table = 1;
+  // The rows. Each holds a value for every column, in the table's column
+  // order.
+  repeated Row rows = 2;
+}
+
+// Deletes rows from a table.
+//
+// A DeleteRows is a batch, like a PutRows.
+message DeleteRows {
+  // The name of the table.
+  string table = 1;
+  // The rows. Each holds only its primary-key values, in key order.
   repeated Row rows = 2;
 }
 
