@@ -12,9 +12,9 @@
 // What the scheduler offers beyond the host:
 //
 //   - Instances. Each has its own wall clock, which the test can shift forward and backward with
-//     [Instance.ShiftWall], and its own monotonic clock, which the test can hold still with
-//     [Instance.StopMonotonic]. Sleeps and timeouts of an instance run on its monotonic clock, as Go's
-//     timers do, so they stand still with it.
+//     [Instance.ShiftWall] and hold still with [Instance.StopWall], and its own monotonic clock,
+//     which the test can hold still with [Instance.StopMonotonic]. Sleeps and timeouts of an
+//     instance run on its monotonic clock, as Go's timers do, so they stand still with it.
 //   - Crashes. [Instance.Crash] ends the instance: none of its tasks ever runs again. To restart it,
 //     the test starts a new instance on what the crashed one left behind.
 //   - Buggify. [Options.Buggify] switches it on for the run. Each point is then switched on or off
@@ -457,6 +457,9 @@ type Instance struct {
 	created time.Duration
 	// wallOffset of the wall clock from the simulated time.
 	wallOffset time.Duration
+	// wallHeld is whether the wall clock stands still, since the simulated time wallHeldAt.
+	wallHeld   bool
+	wallHeldAt time.Duration
 	// held is whether the monotonic clock stands still, since the simulated time heldAt.
 	held   bool
 	heldAt time.Duration
@@ -509,6 +512,29 @@ func (i *Instance) ShiftWall(d time.Duration) {
 	defer i.s.mu.Unlock()
 	i.wallOffset += d
 	i.s.addTrace(i.name, "shifts its wall clock by %v", d)
+}
+
+// StopWall clock, so that it reads the same until [Instance.StartWall], except for the shifts of
+// [Instance.ShiftWall]. The monotonic clock goes on.
+func (i *Instance) StopWall() {
+	i.s.mu.Lock()
+	defer i.s.mu.Unlock()
+	if !i.wallHeld {
+		i.wallHeld, i.wallHeldAt = true, i.s.now
+	}
+	i.s.addTrace(i.name, "stops its wall clock")
+}
+
+// StartWall clock again after [Instance.StopWall]. It goes on from where it stood, so it is behind by
+// the time it stood still.
+func (i *Instance) StartWall() {
+	i.s.mu.Lock()
+	defer i.s.mu.Unlock()
+	if i.wallHeld {
+		i.wallOffset -= i.s.now - i.wallHeldAt
+		i.wallHeld = false
+	}
+	i.s.addTrace(i.name, "starts its wall clock")
 }
 
 // StopMonotonic clock, so that it reads the same until [Instance.StartMonotonic]. The sleeps and
@@ -679,6 +705,9 @@ func (i *Instance) Yield(ctx context.Context, site string) {
 func (i *Instance) Wall() time.Time {
 	i.s.mu.Lock()
 	defer i.s.mu.Unlock()
+	if i.wallHeld {
+		return Epoch().Add(i.wallHeldAt + i.wallOffset)
+	}
 	return Epoch().Add(i.s.now + i.wallOffset)
 }
 

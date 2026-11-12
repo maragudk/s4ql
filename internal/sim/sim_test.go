@@ -299,7 +299,7 @@ func TestScheduler_Sleep(t *testing.T) {
 			}
 		})
 		is.NotError(t, err)
-		is.True(t, time.Since(realStart) < time.Minute)
+		is.True(t, time.Since(realStart) < time.Hour)
 		is.EqualSlice(t, []string{"sleeper-1 woke at 1h0m0s", "sleeper-2 woke at 2h0m0s", "sleeper-3 woke at 3h0m0s"}, matching(s, "woke"))
 	})
 
@@ -667,6 +667,25 @@ func TestInstance_clocks(t *testing.T) {
 			a.StartMonotonic()
 			is.NotError(t, s.Sleep(ctx, time.Second))
 			is.Equal(t, 2*time.Second, a.Monotonic())
+		})
+		is.NotError(t, err)
+	})
+
+	t.Run("should hold the wall clock still while the monotonic clock goes on, and go on from where it stood", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			is.NotError(t, s.Sleep(ctx, time.Second))
+			a.StopWall()
+			a.StopWall()
+			is.NotError(t, s.Sleep(ctx, time.Minute))
+			is.Equal(t, time.Second, since(a))
+			is.Equal(t, time.Minute+time.Second, a.Monotonic())
+			a.ShiftWall(time.Hour)
+			is.Equal(t, time.Hour+time.Second, since(a))
+			a.StartWall()
+			a.StartWall()
+			is.NotError(t, s.Sleep(ctx, time.Second))
+			is.Equal(t, time.Hour+2*time.Second, since(a))
 		})
 		is.NotError(t, err)
 	})

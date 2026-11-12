@@ -66,32 +66,42 @@ Other choices follow from these:
 - **Three workloads run it.** The first has one instance. The second has everything: two instances that compete for the lease, clocks that move, a crash and a restart, buggify, and faults of the store. The third has callers that never pause. They are in `simulation_test.go`, and the doc comment of `workload.run` lists the invariants.
 - **The checks compare data against a model, not counters.** Each commit is recorded with its writes before `Commit`, and then marked acknowledged, failed, or unknown. Each read is compared with the value that the log has at the read's commit.
 - **A restart finds a copy of the files.** A crash copies the cache and its write-ahead log to a new path at the moment of the crash, and a new instance starts on the copy.
-- **The toy's lease is the design of 2026-11-11,** with an expiry on the holder's wall clock. Its clock faults are limited to what that design claimed to survive: at most one wrong clock per instance at a time, and a wall clock set backward only while the instance is cut off from the store. Without the second limit, the review of the build found stale reads in 3 of 100 seeds. That finding changed the lease's design; see [The lease and its clocks](../../docs/todo.md#the-lease-and-its-clocks).
+- **The toy's lease is the design of 2026-11-12,** which compares no clocks between instances; see [The lease and its clocks](../../docs/todo.md#the-lease-and-its-clocks). The toy first had the design of 2026-11-11, with an expiry on the holder's wall clock. The review of the build found stale reads with it in 3 of 100 seeds, as soon as a holder whose wall clock was set backward could still reach the store. That finding changed the lease's design, and the toy was then changed to test the new one (`docs/diary/2026-11-12-lease-without-clock-comparison.md`).
+- **Two clock faults stay out of the workload,** because the design does not claim to survive them: both clocks of one instance wrong in the same direction, and a monotonic clock that runs fast on the instance that waits to take the lease. The comment on `clockFaults` in `simulation_test.go` says why. Every other move of a clock is in the workload, on instances that can reach the store.
+- **The toy's store gives a version from the content,** as S3's ETag does, so that a renewal that writes the same bytes is invisible. With numbered versions, the salt in the manifest could not have been tested.
 
 ## What was measured
 
 The spike ran 10000 seeds twice with no differing pair, and each seed gave a different interleaving.
 
-The build ran each workload with `S4QL_SIM_SEEDS=10000`. No pair of traces differed, and no seed violated an invariant:
+The numbers below are from the toy with the lease of 2026-11-12. Each workload ran with `S4QL_SIM_SEEDS=10000`. No pair of traces differed, and no seed violated an invariant:
 
-| Workload | Seeds, each run twice | Distinct traces | What the runs held |
-|---|---|---|---|
-| One instance | 10000 | 10000 | 133547 commits, 305534 reads, 4236 reads refused for an expired lease |
-| Everything | 10000 | 10000 | 106553 commits, 487 of unknown outcome, 10000 crashes and restarts, 16722 moves of a clock, 18713 buggify points that fired |
-| Callers that never pause | 2500 | 2500 | a quarter of the seeds, because its runs are several times longer |
+| Workload | Seeds, each run twice | What the runs held |
+|---|---|---|
+| One instance | 10000 | some instance served again at most 57 s after the workload |
+| Everything | 10000 | 97456 commits, 489 of unknown outcome, 239048 reads, 10000 crashes and restarts, 35905 moves of a clock, 25029 buggify points that fired |
+| Callers that never pause | 2500 | a quarter of the seeds, because its runs are several times longer |
 
-The planted bugs, over the same 10000 seeds, and their controls:
+The planted bugs, each over 10000 seeds. The control is the same workload without the fault that the bug needs. Each bug's workload also ran with the toy unchanged, and no seed failed then:
 
-| Planted bug | Seeds that found it | Control | Seeds of the control that found it |
-|---|---|---|---|
-| A renewal that swaps the manifest outside the lock | 1572 | none | |
-| A commit that reaches the cache before the manifest | 1750 | none | |
-| A read that checks the wall clock only | 1352 | a partition without the shift of the clock | 0 |
-| A read that checks the monotonic clock only | 1841 | no clock fault | 0 |
-| An instance that takes over a lease only after a release | 9915 | no crash | 0 |
-| A commit that ignores a failure of the cache | 2068 | buggify off | 0 |
+| Planted bug | Seeds that found it | Seeds of the control that found it |
+|---|---|---|
+| A renewal that writes no new salt | 813 | 0 |
+| An instance that waits for its own duration, not the holder's | 1367 | 0 |
+| A swap against the version read at the end of the wait | 6372 | 0 |
+| A holder that counts its lease from the answer of the renewal | 696 | 0 |
+| A read that checks the wall clock only | 2355 | 0 |
+| A read that checks the monotonic clock only | 2090 | 0 |
+| A renewal that swaps the manifest outside the lock | 1534 | no control |
+| A commit that reaches the cache before the manifest | 1666 | no control |
+| An instance that takes over a lease only after a release | 9917 | 0 |
+| A commit that ignores a failure of the cache | 2001 | 0 |
 
-Two more results:
+The bugs of the lease need workloads of their own to be found by many seeds. Planted in the workload with everything, the renewal without a new salt was found by 0 of 2500 seeds, so a clean run of that workload says little about the salt.
+
+What these runs do not show: the margin on the wait is untested, because the harness's clocks run at the true rate; and the toy's own store never applies a request after its sender saw it fail, which the simulated store in `internal/store/simstore` does.
+
+More results:
 
 - **Two instances found in 200 seeds a bug that 20000 runs with one instance could not.** It was a real bug in the toy, not a planted one. It needs another holder to move the manifest while a swap is unresolved.
 - **Buggify keeps its two probabilities.** Over 200 seeds it switched on 207 of 800 points, and a point that was on fired in 5196 of 20700 visits, which is a quarter of each.
@@ -103,7 +113,7 @@ The spike set five conditions. Each is met as follows:
 - **A lint forbids in library packages what the scheduler cannot run.** `internal/simlint` does, in `make lint` and in the CI job `simulation`. It forbids more than the spike's list, such as channel operations that block and `context.Background`. One rule has no check: an ordinary mutex must not be held across a wait. Neither the lint nor the scheduler detects that, and the test hangs, as `TestScheduler_mutexHeldAcrossWait` shows.
 - **Every seed is run twice, permanently.** `TestSimulation` runs 200 seeds of each workload twice and compares the traces, in `make test` and in CI. The workload whose callers never pause runs 50.
 - **The free-running mode runs under the race detector in CI.** The CI job `simulation` runs `TestFreeRunning` and `TestFree` with `-race` itself, whatever the reusable test workflow does.
-- **The checks compare data against a model, and planted bugs stay as tests of the checks.** `TestSimulation_plantedBugs` holds the six bugs above. A bug that needs one ability of the harness also has a control, the same workload without that ability, which must never find it. The reason for the condition is that a check can pass for the wrong reason. The spike's toy had a real bug that 20000 clean runs produced and no check looked for. In the review of the build, three checks still passed with the mechanism they guard removed.
+- **The checks compare data against a model, and planted bugs stay as tests of the checks.** `TestSimulation_plantedBugs` holds the ten bugs above. A bug that needs one ability of the harness also has a control, the same workload without that ability, which must never find it. The reason for the condition is that a check can pass for the wrong reason. The spike's toy had a real bug that 20000 clean runs produced and no check looked for. In the review of the build, three checks still passed with the mechanism they guard removed.
 - **Every lock acquire and release is a scheduling point, and yields are placed wherever shared state is touched between waits.** The semaphore of the scheduler meets the first half. The second half is a rule for library code, and nothing checks it.
 
 ## What the scheduled mode cannot do
@@ -127,6 +137,14 @@ Markus on 2026-11-11, on whether the free-running mode can go: "I'd rather keep 
 
 ## Tests
 
-`make test` runs the simulation with 200 seeds for each workload. The environment variable `S4QL_SIM_SEEDS` sets another number. The large runs above set it to 10000 for `TestSimulation` and `TestSimulation_plantedBugs`, with a `-timeout` long enough for them.
+By default, `TestSimulation` runs 200 seeds of each workload, each seed twice, and 50 for the workload whose callers never pause. `TestSimulation_plantedBugs` runs the workload of each bug until four seeds have found the bug, from at most 200 seeds, and fails if none does. With the shares in the table above, a check that works misses a bug in 200 seeds with a chance of less than one in a million. The control and the same workload without the bug run 100 seeds each. The tests of the workloads run in parallel, and each logs a hash of its traces that is the same with `-parallel 1`. On a Mac with 10 cores and a load of 11 to 16, the package took 58 seconds, and 87 seconds under the race detector.
+
+The environment variable `S4QL_SIM_SEEDS` sets another number of seeds for every workload, a quarter of it for the one whose callers never pause, and makes the workload of each bug run all of them. The large runs above set it to 10000:
+
+```sh
+S4QL_SIM_SEEDS=10000 go test -timeout 4h -run '^TestSimulation(_plantedBugs)?$' ./internal/sim/
+```
+
+With 1000 seeds, these two tests took 8 minutes 20 seconds on the same Mac. The time grows with the number of seeds, so 10000 seeds need about ten times that, and the `-timeout` leaves room for a slower machine.
 
 `TestSimulationSeed` runs one seed and logs its whole trace. Its doc comment names the environment variables that choose the seed, the workload, and a planted bug.
