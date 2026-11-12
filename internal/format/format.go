@@ -12,8 +12,9 @@
 //
 // An error from the underlying reader or writer is passed on and wraps none of the three.
 //
-// The package does no I/O of its own and reads no clock: the caller passes in the readers, the
-// writers, and the commit time.
+// The package does no I/O of its own, reads no clock, and draws no random numbers: the caller
+// passes in the readers, the writers, the commit time, and the renewal time and the salt of the
+// lease.
 package format
 
 import (
