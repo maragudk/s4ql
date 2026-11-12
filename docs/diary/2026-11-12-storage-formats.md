@@ -398,3 +398,105 @@ Keeping the bytes of a batch identical to marshalling the whole message while wr
 
 - `/docs/todo.md` loses the item "Storage formats", and the reasoning in it moves next to the code where it is not there yet; the lead decides with Markus.
 - The departure of point 8 from "checked against its SHA-256 name before it is decoded" needs Markus's agreement.
+
+## Step 7: The manifest on `encoding/json/v2`, and a guard against version 1
+
+**Author:** json-builder
+
+### Prompt Context
+
+**Verbatim prompt:** Markus, the product owner, said: "Make sure to use the new json/v2 from Go stdlib". The package `internal/format` was built today, and its manifest code in `internal/format/manifest.go` uses `encoding/json` (version 1) with a good deal of code of its own around it. Move it to `encoding/json/v2` and `encoding/json/jsontext`. [...] No `encoding/json` version 1 in the module [...] Use what version 2 gives, and delete what it makes unnecessary. [...] The behaviour of the manifest stays as it is. [...] The sample files stay byte for byte the same [...] A guard against version 1 coming back. [...] No other change of behaviour, and no change to the commit object's reader, writer, or schema.
+
+A second message arrived mid-run: "One small addition to your task, as its own commit: fix a stale comment in `proto/s4ql/v1/commit.proto`. In message `Change`, the comment on the field `upsert_rows` says "Inserts rows into a table, or replaces the rows with the same keys." Change it to "Inserts rows into a table, or changes rows that are there." [...] Then run `make generate` and commit the schema together with the regenerated `internal/s4qlpb/commit.pb.go`, and check that `make lint-proto` passes."
+
+**Interpretation:** Replace the hand-written JSON object parser and writer of the manifest with struct tags and embedded fallbacks of version 2. Keep every pinned behaviour and the sample bytes. Move every other import of `encoding/json` in the repository to version 2. Add a lint rule that keeps version 1 out. Separately, fix one comment in the schema.
+
+**Inferred intent:** Less code of our own to trust in the manifest, with the stricter and safer defaults of version 2, and no way for version 1 to come back unnoticed.
+
+### What I did
+
+The schema comment came first, as commit `fc0d02f`: the one comment line in `/proto/s4ql/v1/commit.proto` and the two lines that `make generate` changed in `/internal/s4qlpb/commit.pb.go`. `make lint-proto` passed.
+
+In `/internal/format/manifest.go`, `ParseManifest` and `Manifest.Marshal` now go through four unexported structs, `manifestJSON`, `branchesJSON`, `branchJSON`, and `leaseJSON`. Each has a field `Unknown map[string]jsontext.Value` with the tag `json:",embed"`, the embedded fallback of version 2, which collects the members that the struct does not know. The head is a `*Name`, so `Name.UnmarshalText` checks the digits. `decodeObject`, `decodeString`, `checkSurrogates`, `appendObject`, `appendString`, and `member` are gone, and so is the explicit UTF-8 check on the holder: `json.Marshal` refuses invalid UTF-8, and its error is wrapped in `ErrMalformed`. The code without comments and blank lines went from 328 lines to 161.
+
+These parts of our own stay. Each one does something that version 2 does not:
+
+- **A first pass that reads only `version` and `lease` as `jsontext.Value`.** A newer version must be told apart even when the rest does not fit the structs, such as `{"version":1,"branches":[]}`. A null `lease` must be refused, and a `*leaseJSON` reads null as nil, the same as a missing lease.
+- **`checkManifestVersion` on the raw text of the version.** Version 2 cannot tell `0.0`, `0e0`, and a version too large for `uint64` apart the way the tests want.
+- **The nil checks for `branches`, `main`, and `head`,** which version 2 leaves nil when they are missing or null.
+- **The parsing and formatting of the expiry,** with `rfc3339`, `checkExpiry`, and `formatExpiry`, as the brief asked.
+
+`Marshal` calls `json.Marshal` with `jsontext.WithIndent("  ")`, `json.Deterministic(true)`, `jsontext.PreserveRawStrings(true)`, and `jsontext.EscapeForJS(true)`. The first two give the layout and the sorted unknown keys. With `PreserveRawStrings`, unknown values keep their escapes, as `json.Compact` and `json.Indent` kept them before. With `EscapeForJS`, U+2028 and U+2029 in our own strings and in keys are written as `\u2028` and `\u2029`, as the encoder of version 1 always wrote them.
+
+The other users of version 1 were `/internal/format/name_test.go`, `/internal/sim/simulation_test.go`, `/internal/sim/toy_test.go`, `/internal/sqlite/sqlite_test.go`, and `/internal/sqlite/update/main.go`. All except the update tool only needed the import changed. The update tool's `json.MarshalIndent(m, "", "\t")` became `json.Marshal(m, jsontext.WithIndent("\t"), json.Deterministic(true))`. A throwaway program read `/internal/sqlite/c/source.json` back and marshalled it 20 times with the new call, and got the same bytes each time. In the test helper `decodeJSON` of `FuzzParseManifest`, an `UnmarshalFromFunc` for `*any` keeps each number as its text, as `UseNumber` did before. A throwaway test checked that nested numbers come out as text and strings stay strings.
+
+The guard is the new `/.golangci.yml`: version 2 of the configuration, the standard linters, which are the ones that ran before, and `depguard` with a rule that denies `encoding/json$`. The `$` makes the match exact, so `encoding/json/v2` and `encoding/json/jsontext` pass. Before the migration, `golangci-lint run` reported `internal/format/manifest.go:5:2: import 'encoding/json' is not allowed from list 'json': use encoding/json/v2 and encoding/json/jsontext (depguard)`. In `/internal/sqlite/crosscheck`, `golangci-lint config path` prints `../../../.golangci.yml`, and a temporary test file there that imported `encoding/json` was reported. CI's reusable workflow, read with `gh api repos/maragudk/workflows/contents/.github/workflows/lint.yml`, runs `golangci/golangci-lint-action@v9` with `version: latest` at the repository root, so it reads the same file. The crosscheck job runs the action with `working-directory: internal/sqlite/crosscheck`, where the configuration is found in the parent directories. Generated files are excluded by golangci-lint's default, so `/internal/s4qlpb/commit.pb.go` is not checked. It does not import `encoding/json` anyway.
+
+I checked the new code against the old with a differential test that I did not commit. It was the old `manifest.go` with every identifier prefixed by `old`, in a temporary internal test file, and two fuzz targets. One compared the error class and the `Marshal` bytes of both parsers on any input, for 3 minutes and then 1 more minute: 7,728,981 and 4,960,195 runs. The other compared `Marshal` of a lease with any holder and expiry, for 1 minute: 2,784,090 runs. They found no difference other than the two below. Each was skipped by name in the target.
+
+`/internal/format/README.md` has a new point under "The manifest" with Markus's request and the guard. The doc comments of `ParseManifest` and `Marshal` say what version 2 now decides.
+
+For the self-review I ran the `fabrik:code-review` skill on commit `e2a314c`. Two reviewers each ran their own differential fuzz against the old code, and both found nothing serious. Both found the same set of minor points, and I fixed them in commit `6f5e824`:
+
+- No test pinned that the version is checked before the lease. Swapping the two checks passed every test.
+- No test pinned the order of unknown keys at every level. The one ordering test had two unknown keys at the top level, so removing `Deterministic` failed it only about 7 runs in 8.
+- No test covered the escaping of U+2028 in unknown values.
+- The aliasing test covered one level only.
+- The comment "The version comes first" said more than the code does. The `Marshal` doc said that unknown fields keep their escapes, which holds for their values but not for their names.
+- A missing expiry was reported as `manifest lease expiry "" is not an RFC 3339 time`. It now says `has no expiry`.
+- The README point claimed "anywhere in the repository", which files behind a build tag disprove.
+- `jsonNumber` was a package-level type used in one function.
+
+I left two points from the review alone. The other error messages are less precise than before, and some name the unexported types, as in `cannot unmarshal JSON number into Go format.leaseJSON`. Every manifest is also decoded twice. One pass with `branches` and `lease` as raw values would still not keep the version ahead of the duplicate check, and it would need more code.
+
+New tests:
+
+- the escapes and numbers of unknown values are written as read
+- the order of unknown keys at all four levels, with five keys each
+- U+2028 and U+2029 are escaped in a holder and in unknown values
+- a parsed manifest does not change when its input bytes change, at all four levels
+- version 1 is newer even with a null lease, or a lease that is not an object
+- a key given twice inside an unknown value is refused, also in a newer version
+
+### Why
+
+Markus asked for version 2. Its defaults are the rules that the old parser was written to enforce: exact keys, no duplicate names, no invalid UTF-8, no lone surrogates. With version 2 they come from the standard library, which is tested far more than our parser was.
+
+### What worked
+
+- All tests of `/internal/format/manifest_test.go` passed on the first run of the new code. The three sample files in `/internal/format/testdata/` are byte for byte the same, and `TestManifestSamples` checks them without `-update`.
+- The checks on the final commit `6f5e824`: `make test` passes in both modules, and `/internal/format` has 96.9% coverage, with every block of `manifest.go` covered. `go test -race -shuffle on ./internal/format/` passes. `make lint` reports 0 issues in both modules, and `buf lint` and `buf format` print nothing. `FuzzParseManifest` ran 5 minutes with `-fuzztime 5m` with no finding, both on `e2a314c` (24,987,689 runs) and on `6f5e824` (27,298,043 runs). I did not touch the code while either run was going.
+- Red checks for the options. Without `PreserveRawStrings` the escape test fails. Without `EscapeForJS` the U+2028 test fails. Without `Deterministic` the new order test failed in 5 of 5 runs.
+
+### What didn't work
+
+- My first experiment, a module in the scratchpad directory, was refused: "This agent is isolated in the worktree [...], but this command is too complex to verify that it stays inside the worktree." I moved the experiments to `/tmpexp/` in the worktree and deleted it afterwards. A directory named `source` there could not be renamed or deleted, because any command with the word `source` in it was refused as "runs a string through source". I deleted it with the parent directory.
+- The editing tools turn the text `\u2028` or `\u0041` in what I write into the raw character. My first U+2028 test held a raw U+2028 in a raw string, and it failed with `manifest_test.go:288: Not true`, although the output was right. I write such escapes with a placeholder and replace it with `perl -pi -e 's/@@/\x5c/g'`, and I check the bytes with `sed 's/\\/BS/g'`.
+- The same mangling had already weakened three things in the tests of Step 3. "should refuse a key given twice in another spelling" gave `"x"` twice and no escape. "should read an escaped surrogate pair" read a raw emoji. The seed of `FuzzParseManifest` had a raw emoji. The first two now use `\u0078` and `\ud83d\ude00` again. The seed is kept, and a second one with the escaped pair was added.
+- The first `make lint` with the new rule showed only 3 of the 7 imports. golangci-lint's default `max-same-issues` is 3, so this was not a gap in the rule.
+
+### What I learned
+
+- In Go 1.27 the tag for an embedded fallback is `json:",embed"`, not `inline` or `unknown`. `go doc encoding/json/v2` lists only `omitzero`, `omitempty`, `string`, `case`, and `embed`.
+- The fallback is written after the declared fields. Under `Deterministic`, its keys are sorted with `slices.Sort`, which is byte order, as `slices.Sort` sorted them before. The documentation promises neither, so the tests pin both. See "What warrants review".
+- `PreserveRawStrings` keeps the escapes of raw values, but `EscapeForJS` still applies to them.
+- Unmarshalling into `jsontext.Value` copies, so the manifest does not alias the caller's bytes.
+- A JSON null in a pointer field gives nil, the same as a missing field. Where the two must differ, the value has to be read raw.
+
+### What was tricky
+
+There are two intended changes of behaviour, both from version 2:
+
+- **A key given twice is refused at any depth,** also inside an unknown value. The old parser checked only the objects it parsed itself: the manifest, `branches`, `main`, and `lease`. `{"version":0,...,"x":{"a":1,"a":2}}` was accepted and written back with the duplicate. The doc comment always said "a key given twice in the same object". Because the whole document is checked before the version, `{"version":1,"x":{"a":1,"a":2}}` and `{"version":1,"branches":{"main":1,"main":2}}` are now `ErrMalformed`, where they were `ErrNewerVersion`. Keeping the old split would mean `jsontext.AllowDuplicateNames(true)` in the first pass, and then `{"version":0,"version":1}` would no longer be refused.
+- **A raw U+2028 or U+2029 inside an unknown value is written as `\u2028` or `\u2029`.** Before, it was written raw. It is the same JSON value. The alternative, without `EscapeForJS`, would write our own holder and keys with raw U+2028 where version 1 escaped them. I chose to keep what we write ourselves the same.
+
+### What warrants review
+
+- **The output order rests on how version 2 behaves, not on a promise.** `go doc encoding/json/v2.Deterministic` guarantees determinism only "across different instances of identical binaries, but not across different builds of a program (such as different source or toolchain version [...])". Where the fallback goes is not documented either. A Go upgrade that changed either would fail the new order test and `TestManifestSamples`. It would not go unnoticed, but it would need code of our own again.
+- `/internal/format/manifest.go`, `ParseManifest`: the two passes, and the comment on why the lease is read raw.
+- `/.golangci.yml`: the rule and its comment. Files behind a build tag that is off on the linting platform, such as `/internal/sqlite/asan.go` with `//go:build asan`, are not checked. A reviewer found this with a probe file.
+- `/internal/sim/toy_test.go`: a change file with no writes is now written with `"sets":[]` instead of `"sets":null`, so its name changes. Nothing pins names, and the oracle compares with `slices.Equal`.
+
+### Future work
+
+- If the order of the output must hold across Go versions, and not only be caught by the tests, the writer needs its own ordering again, for example through a `MarshalerTo` on the structs. That is for the lead and Markus to decide.
