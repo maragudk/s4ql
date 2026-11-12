@@ -140,7 +140,7 @@ The reason for planted bugs is in [Conditions for keeping the design](../sim/REA
 
 `script_test.go` holds a store that does to chosen requests what a test spells out. The scenario tests in `lease_test.go`, `tx_test.go`, `replay_test.go`, and `core_test.go` use it, and they run on the fake clock of `testing/synctest`. The tests of each clock of the lease check (`TestLease_clocks`) and of the cache that fails after the manifest swap (`TestDB_stop`) run one instance under the scheduler, because only it can move one clock and fire one buggify point.
 
-By default, `TestSimulation` runs 40 seeds of the workload with one instance, 30 of the workload with everything, and 10 of the workload whose callers never pause. Every seed runs twice, and the traces are compared. The events of the instances are part of the trace. `TestSimulation_plantedBugs` runs the workload of each bug until four seeds have found the bug, from at most 200 seeds. It runs the control and the same workload without the bug for 24 seeds each.
+By default, `TestSimulation` runs 40 seeds of the workload with one instance, 30 of the workload with everything, and 10 of the workload whose callers never pause. Every seed runs twice, and the traces are compared. The events of the instances are part of the trace. `TestSimulation_plantedBugs` runs the workload of each bug until four seeds have found the bug, from at most 200 seeds. It runs the control and the same workload without the bug for 20 seeds each.
 
 The environment variables:
 
