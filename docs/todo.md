@@ -164,7 +164,7 @@ What a commit object holds:
   - delete rows, each by its primary-key values
 - **The kinds of change follow the roadmap.** A kind is defined when the slice that needs it is built: `alter table` and indexes each become a new kind. Every `insert`, `update`, and `delete` ends up as put and delete, so row changes need nothing new.
 - **An unknown kind of change is refused, never skipped.** An instance that meets a kind it does not know stops replay with an error that says a newer version of s4ql is needed. Skipping a `drop table` would silently leave the cache different from the log.
-- **Every kind of change has a message named after it, and each holds only what it needs.** `CreateTable` holds the table name, the columns with their types, and the primary key. `DropTable` holds the table name. `PutRows` and `DeleteRows` hold the table name and the rows. Markus asked for this in the review: "DropTable doesn't need columns nor primary key. That's my point." The field for the table name is `table_name` in all four, because SQLite's grammar calls it `table-name`. Markus: "I'd just like to be consistent and aligned with SQLite if possible."
+- **Every kind of change has a message named after it, and each holds only what it needs.** `CreateTable` holds the table name, the columns with their types, and the primary key. `DropTable` holds the table name. `PutRows` and `DeleteRows` hold the table name and the rows. Markus asked for this in the review: "DropTable doesn't need columns nor primary key. That's my point." The field for the table name is `table_name` in all four, because SQLite's grammar calls it `table-name`. For the same reason a column has a `column_name` and a `type_name`. Markus: "I'd just like to be consistent and aligned with SQLite if possible."
 - **Row changes carry no column names or types,** and replay does not compare them with the cache. Markus: "The precondition is that the cache is correct up to the parent, and with a deterministic change, the commit is safe and the postcondition is the same." Replay already checks that precondition through the cache's recorded position, so a column check could never fail. The silent failures that the research found ([research/change-file-contents.md](research/change-file-contents.md)) come from systems where the reader's tables are managed apart from the writer's, which is not our case. This reverses the "heading" with names and types that was agreed on 2026-11-11. Two checks remain without extra data: a row with the wrong number of values is refused, and the cache's strict tables reject a value of the wrong type.
 - **Rows come in batches.** A `PutRows` or `DeleteRows` must be complete in memory before it is written, so it is limited to about a megabyte, and a commit that changes many rows of one table writes several.
 - **The primary key is a list of column positions** in `CreateTable`, in key order, starting at 0. A position cannot disagree with a column name the way a second copy of the name could.
@@ -262,18 +262,18 @@ message CreateTable {
 // One column of a table.
 message Column {
   // The name of the column.
-  string name = 1;
+  string column_name = 1;
   // The declared type of the column.
-  Type type = 2;
+  TypeName type_name = 2;
 }
 
 // The declared type of a column. More are added as the roadmap grows.
 // A reader refuses a value it does not know.
-enum Type {
+enum TypeName {
   // Never written. A reader refuses it.
-  TYPE_UNSPECIFIED = 0;
+  TYPE_NAME_UNSPECIFIED = 0;
   // The STRICT type INT.
-  TYPE_INT = 1;
+  TYPE_NAME_INT = 1;
 }
 
 // Drops a table and all its rows.
@@ -362,7 +362,7 @@ Details chosen by maragubot, from the research in [research/change-file-contents
 - **New kinds can be added to a `oneof` later,** as a new member with a new number. Old commit objects stay valid, and `buf breaking` accepts the addition. Moving an existing field into a `oneof` is unsafe.
 - **`Change` and `Value` never get a field outside their `oneof`.** Any unknown field in them then means a kind from a newer version, and the reader finds it with `ProtoReflect().GetUnknown()`. One with no kind and no unknown field is malformed.
 - **What the reader must do:**
-  - refuse a `Type` value it does not know, which Go keeps as a plain number without an error
+  - refuse a `TypeName` value it does not know, which Go keeps as a plain number without an error
   - never set `DiscardUnknown`
   - raise the size limit of `protodelim`, whose default of 4 MiB is below SQLite's limit of 1 GB for one value
 - **The schema uses `edition = "2024"`,** not `proto3`. Every field then records whether it was set, and the generated Go code is the kind the documentation recommends. The bytes are the same, so this can be changed.
