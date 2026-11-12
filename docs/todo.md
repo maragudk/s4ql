@@ -164,7 +164,7 @@ What a commit object holds:
   - delete rows, each by its primary-key values
 - **The kinds of change follow the roadmap.** A kind is defined when the slice that needs it is built: `alter table` and indexes each become a new kind. Every `insert`, `update`, and `delete` ends up as put and delete, so row changes need nothing new.
 - **An unknown kind of change is refused, never skipped.** An instance that meets a kind it does not know stops replay with an error that says a newer version of s4ql is needed. Skipping a `drop table` would silently leave the cache different from the log.
-- **Every kind of change has a message named after it, and each holds only what it needs.** `CreateTable` holds the table name, the columns with their types, and the primary key. `DropTable` holds the table name. `PutRows` and `DeleteRows` hold the table name and the rows. Markus asked for this in the review: "DropTable doesn't need columns nor primary key. That's my point." The field for the table name is `table` in all four.
+- **Every kind of change has a message named after it, and each holds only what it needs.** `CreateTable` holds the table name, the columns with their types, and the primary key. `DropTable` holds the table name. `PutRows` and `DeleteRows` hold the table name and the rows. Markus asked for this in the review: "DropTable doesn't need columns nor primary key. That's my point." The field for the table name is `table_name` in all four, because SQLite's grammar calls it `table-name`. Markus: "I'd just like to be consistent and aligned with SQLite if possible."
 - **Row changes carry no column names or types,** and replay does not compare them with the cache. Markus: "The precondition is that the cache is correct up to the parent, and with a deterministic change, the commit is safe and the postcondition is the same." Replay already checks that precondition through the cache's recorded position, so a column check could never fail. The silent failures that the research found ([research/change-file-contents.md](research/change-file-contents.md)) come from systems where the reader's tables are managed apart from the writer's, which is not our case. This reverses the "heading" with names and types that was agreed on 2026-11-11. Two checks remain without extra data: a row with the wrong number of values is refused, and the cache's strict tables reject a value of the wrong type.
 - **Rows come in batches.** A `PutRows` or `DeleteRows` must be complete in memory before it is written, so it is limited to about a megabyte, and a commit that changes many rows of one table writes several.
 - **The primary key is a list of column positions** in `CreateTable`, in key order, starting at 0. A position cannot disagree with a column name the way a second copy of the name could.
@@ -251,7 +251,7 @@ message Change {
 // Creates a table.
 message CreateTable {
   // The name of the table.
-  string table = 1;
+  string table_name = 1;
   // The columns, in their declared order.
   repeated Column columns = 2;
   // The primary-key columns, in key order, as positions in `columns`,
@@ -279,7 +279,7 @@ enum Type {
 // Drops a table and all its rows.
 message DropTable {
   // The name of the table.
-  string table = 1;
+  string table_name = 1;
 }
 
 // Puts rows into a table. A row replaces any row with the same primary key.
@@ -288,7 +288,7 @@ message DropTable {
 // puts many rows into one table writes several batches.
 message PutRows {
   // The name of the table.
-  string table = 1;
+  string table_name = 1;
   // The rows. Each holds a value for every column, in the table's column
   // order.
   repeated Row rows = 2;
@@ -299,7 +299,7 @@ message PutRows {
 // A DeleteRows is a batch, like a PutRows.
 message DeleteRows {
   // The name of the table.
-  string table = 1;
+  string table_name = 1;
   // The rows. Each holds only its primary-key values, in key order.
   repeated Row rows = 2;
 }
