@@ -64,7 +64,7 @@ message Change {
     CreateTable create_table = 1;
     // Drops a table and all its rows.
     DropTable drop_table = 2;
-    // Inserts rows into a table, or replaces the rows with the same keys.
+    // Inserts rows into a table, or changes rows that are there.
     UpsertRows upsert_rows = 3;
     // Deletes rows from a table.
     DeleteRows delete_rows = 4;

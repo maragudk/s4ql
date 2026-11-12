@@ -540,7 +540,7 @@ type Change_builder struct {
 	CreateTable *CreateTable
 	// Drops a table and all its rows.
 	DropTable *DropTable
-	// Inserts rows into a table, or replaces the rows with the same keys.
+	// Inserts rows into a table, or changes rows that are there.
 	UpsertRows *UpsertRows
 	// Deletes rows from a table.
 	DeleteRows *DeleteRows
@@ -591,7 +591,7 @@ type change_DropTable struct {
 }
 
 type change_UpsertRows struct {
-	// Inserts rows into a table, or replaces the rows with the same keys.
+	// Inserts rows into a table, or changes rows that are there.
 	UpsertRows *UpsertRows `protobuf:"bytes,3,opt,name=upsert_rows,json=upsertRows,oneof"`
 }
 
