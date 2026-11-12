@@ -221,7 +221,7 @@ func (s *Store) carry(ctx context.Context, c *Client, r *request) {
 	}
 
 	// The way there.
-	_ = s.host.Sleep(ctx, s.way())
+	_ = s.host.Sleep(ctx, s.way(trace, "there"))
 
 	s.mu.Lock()
 	gaveUp := r.gaveUp
@@ -252,7 +252,7 @@ func (s *Store) carry(ctx context.Context, c *Client, r *request) {
 	s.apply(ctx, c, r)
 
 	// The way back.
-	_ = s.host.Sleep(ctx, s.way())
+	_ = s.host.Sleep(ctx, s.way(trace, "back"))
 
 	s.mu.Lock()
 	gaveUp = r.gaveUp
@@ -269,11 +269,13 @@ func (s *Store) carry(ctx context.Context, c *Client, r *request) {
 	}
 }
 
-// way is the time that one way of a request takes.
-func (s *Store) way() time.Duration {
+// way is the time that one way of a request takes, named by which for the trace.
+func (s *Store) way(trace func(format string, args ...any), which string) time.Duration {
 	d := s.upTo(s.options.Latency)
 	if s.chance(s.options.Faults.Slow) {
-		d += s.upTo(s.options.Faults.SlowBy)
+		slow := s.upTo(s.options.Faults.SlowBy)
+		trace("is slow on its way %v, by %v", which, slow)
+		d += slow
 	}
 	return d
 }
