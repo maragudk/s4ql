@@ -93,6 +93,74 @@ func TestClient_CutOff(t *testing.T) {
 	})
 }
 
+func TestClient_Get(t *testing.T) {
+	t.Run("should fail to read content after the context of the read is done", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			s := sim.New(0, sim.Options{})
+			is.NotError(t, s.Run(func(ctx context.Context) {
+				st := simstore.New(s, simstore.Options{Latency: latency})
+				c := st.Client("a", nil)
+				_, err := c.Create(ctx, "k", strings.NewReader("data"), nil)
+				is.NotError(t, err)
+				readCtx, cancel := s.WithTimeout(ctx, time.Hour)
+				body, _, err := c.Get(readCtx, "k")
+				is.NotError(t, err)
+				cancel()
+				_, err = io.ReadAll(body)
+				is.True(t, errors.Is(err, context.Canceled), fmt.Sprint(err))
+			}))
+		})
+	})
+
+	t.Run("should break off content at its start, in the middle, and at its end, under the fault", func(t *testing.T) {
+		const size = 100
+		var start, middle, end int
+		for seed := range uint64(20) {
+			synctest.Test(t, func(t *testing.T) {
+				s := sim.New(seed, sim.Options{})
+				is.NotError(t, s.Run(func(ctx context.Context) {
+					st := simstore.New(s, simstore.Options{Faults: simstore.Faults{BrokenRead: 1}})
+					c := st.Client("a", nil)
+					content := strings.Repeat("x", size)
+					_, err := c.Create(ctx, "k", strings.NewReader(content), nil)
+					is.NotError(t, err)
+					body, _, err := c.Get(ctx, "k")
+					is.NotError(t, err)
+					data, err := io.ReadAll(body)
+					is.True(t, errors.Is(err, simstore.ErrFault), fmt.Sprint(err))
+					is.Equal(t, content[:len(data)], string(data))
+					switch len(data) {
+					case 0:
+						start++
+					case size:
+						end++
+					default:
+						middle++
+					}
+				}))
+			})
+		}
+		is.True(t, middle > 0 && start+end < 20, fmt.Sprint(start, " ", middle, " ", end))
+	})
+}
+
+func TestClient_Create(t *testing.T) {
+	t.Run("should not send a request whose context is done", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			s := sim.New(0, sim.Options{})
+			is.NotError(t, s.Run(func(ctx context.Context) {
+				st := simstore.New(s, simstore.Options{Latency: latency, Faults: simstore.Faults{Late: 1}})
+				done, cancel := s.WithTimeout(ctx, time.Hour)
+				cancel()
+				_, err := st.Client("a", nil).Create(done, "k", strings.NewReader("data"), nil)
+				is.True(t, errors.Is(err, context.Canceled), fmt.Sprint(err))
+				is.NotError(t, st.Wait(ctx))
+				is.Equal(t, 0, len(st.History()))
+			}))
+		})
+	})
+}
+
 // latency of the store in a probe.
 const latency = time.Second
 
