@@ -18,7 +18,7 @@ These hold for every slice unless this document says otherwise.
 - Double quotes mean identifiers only. A double-quoted string is rejected, and so are `[brackets]` and backticks around names.
 - No `ANY` column type.
 - No settings that change behaviour, for now.
-- UTF-8 only.
+- UTF-8 only. SQL text, identifiers, and text values are always valid UTF-8. A statement whose text is not valid UTF-8 is rejected before it is parsed, and so is a parameter or an expression that would produce text that is not valid UTF-8. SQLite accepts such text.
 
 Rejected for now, to be decided later: upserts, and join variants such as comma joins and `NATURAL JOIN`.
 
@@ -36,14 +36,16 @@ select * from t1;
 insert into t1 (v1) values (1);
 
 select * from t1;
+
+drop table t1;
 ```
 
 Included, without adding syntax:
 
-- Any table name, column name, and integer value, in exactly these statement shapes: one `int primary key` column, `select *` from one table, and a single-row `insert` that names the column.
+- Any table name, column name, and integer value, in exactly these statement shapes: one `int primary key` column, `select *` from one table, a single-row `insert` that names the column, and `drop table` with one table name.
 - Several rows and several tables. `select *` returns rows in primary-key order, as SQLite does for these tables.
-- The errors these statements can produce, matching SQLite's: inserting a key twice, creating a table that exists, and reading or writing a table that does not exist.
+- The errors these statements can produce, matching SQLite's: inserting a key twice, creating a table that exists, and reading, writing, or dropping a table that does not exist.
 - Each statement is its own transaction.
 - Surviving a restart: with an empty cache, replaying the log from S3 gives the same answers.
 
-Everything else is rejected, including a second column, `integer` spelled out, `where`, and `begin`.
+Everything else is rejected, including a second column, `integer` spelled out, `where`, `begin`, and `drop table if exists`.

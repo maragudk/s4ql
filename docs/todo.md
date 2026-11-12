@@ -117,13 +117,13 @@ Details chosen by maragubot:
 
 ## Storage formats
 
-Status: the manifest and the encoding of the commit objects are agreed with Markus on 2026-11-11 and not built. What a commit object holds is open.
+Status: agreed with Markus on 2026-11-11 and 2026-11-12, not built. Both formats are drafts until we settle on version 1. One question on the commit objects is open, and it is marked below.
 
 The manifest, `manifest.json`:
 
 ```json
 {
-  "version": 1,
+  "version": 0,
   "branches": {
     "main": {
       "head": "9f2c…e41a"
@@ -136,46 +136,59 @@ The manifest, `manifest.json`:
 }
 ```
 
-- `version` is the version of the manifest format.
+- `version` is the version of the manifest format. It is 0 while the format is a draft.
 - `branches.main.head` is the name of the newest commit object, which is the SHA-256 checksum of its content. A branch entry is an object so that it can gain fields later.
 - **An empty log has the name of 32 zero bytes.** The `head` of a new database is that name, written as 64 zeros, and so is the `parent` field of the first commit object. Both fields are required. A forgotten `parent` is then an error, and not a file that looks like the first one and silently cuts off the log before it. The first commit is also no special case: every commit sets `parent` to the `head` it read. Markus proposed the required pointer with a magic name on 2026-11-11.
 - `lease.holder` is the random ID of the process that holds the lease, and `lease.expires` is the wall-clock time at which it expires. A released lease has no `lease` entry.
 - An instance keeps the fields it does not know when it rewrites the manifest. Without this rule, an older version would delete the fields of a newer one at every renewal.
 - There is no count of commits. Markus: "Drop the "commits", let's keep the essentials."
 
-The commit objects:
+The commit objects. Markus reviewed the schema line by line in pull request #4 on 2026-11-12, which is for review only and is not merged:
 
-- **The term is "commit object", and the pointer is `parent`.** Agreed with Markus on 2026-11-11. "Commit" is the action, and "commit object" is the immutable object in S3 that the action stores, as in git. The term replaces "change file", which was our own invention. The spec and the research notes still say "change file", and the spec says so until its new wording is agreed.
+- **The term is "commit object", and the pointer is `parent`.** "Commit" is the action, and "commit object" is the immutable object in S3 that the action stores, as in git. The term replaces "change file", which was our own invention. The spec and the research notes still say "change file", and the spec says so until its new wording is agreed.
+- **Both formats are drafts until we settle on version 1.** Markus: "while we're developing, this is all still a draft, so breaking changes are fine until we're settling on a v1." A draft commit object and a draft manifest carry version 0, so that a later release can refuse them cleanly. The rule that field numbers and types never change holds from version 1 on.
+- **What the format is optimised for.** Markus: "we don't optimize this for printing, but for robustness, consistency, speed, and other things. But printing to screen is not one of them."
 - **The encoding is Protocol Buffers, with the standard tooling:** a `.proto` file as the schema, generated Go code, and `google.golang.org/protobuf`. Markus asked for "a binary format that is forwards and backwards compatible". The comparison with CBOR, Cap'n Proto, and others is in [research/change-file-encodings.md](research/change-file-encodings.md).
 - **Why not Cap'n Proto,** which Markus leaned towards first: its strengths are reading single fields without decoding and RPC, and a log that is read once from front to back uses neither. Its byte format is a memory layout with pointers and segments, which is more to trust in a file that must stay readable forever.
 - **Why the tooling and not a hand-written codec,** which maragubot recommended first: less code of ours, a decoder that is fuzzed continuously, the `.proto` file as the real schema, and a check in CI that a schema change does not break old files. Both ways write the same bytes, so the choice can be changed later without touching a stored file.
-- **Text is stored as bytes.** SQLite accepts text that is not valid UTF-8, even in a strict table, and the Go library rejects such text in a `string` field.
-- **A field that can be absent is declared so,** with `optional` or a `oneof`, so that an empty value and a missing value stay distinct.
-- **A file is one `Commit` message that holds a list of records,** and it is written and read as a stream, one record at a time. In the bytes, a list is its items one after another, each with the field number and its length in front, so a reader never has to build the whole message in memory. The schema then describes the whole file, and a standard tool can print one. Markus noticed on 2026-11-11 that nothing in the first sketch held the records.
 - **A commit object is checked against its SHA-256 name before it is decoded.**
 
-What a commit object holds. Agreed so far; Markus and maragubot are still iterating on it:
+What a commit object holds:
 
-- **A header:** the format version, the required `parent` name, and the wall-clock time of the commit. The time is evidence only and comes from the holder's clock. It is included because a later feature such as restoring to a point in time needs it, and it cannot be added to old files.
-- **A list of changes, applied in order.** A file holds the net effect of its commit, so a primary key appears at most once per table. The kinds for the first slice are:
-  - create a table, with its name and columns as data and not as SQL text, so that replay needs no SQL parser
-  - put a row, with the full row, which replaces any row with the same primary key
-  - delete a row, by its primary key
-- **The kinds of change follow the roadmap.** A kind is defined when the slice that needs it is built: `drop table`, `alter table`, and indexes each become a new kind. Every `insert`, `update`, and `delete` ends up as put and delete, so row changes need nothing new.
-- **An unknown kind of change is refused, never skipped.** An instance that meets a kind it does not know stops replay with an error that says a newer version of s4ql is needed. Skipping an unknown field is safe only for evidence. Skipping a `drop table` would silently leave the cache different from the log.
-- **The statements, as evidence:** each statement's SQL text, its parameters, and its non-deterministic inputs. The parameters make the evidence complete, so a tool can run a commit's statements through the engine again and compare the outcome with the recorded changes. The cost is that the data of an insert is stored roughly twice. Leaving them out can become a setting later.
-- **The statements and the changes are not linked.** The file does not say which statement caused which change.
-- **Rows are grouped under a heading.** The heading holds the table name, the column names in order, each column's type, and which columns form the primary key. The rows that follow hold their values in that order, and each value carries its own type tag. A put holds all columns, and a delete holds the primary-key columns. Replay compares the heading with the table in the cache and refuses the file on any difference. Markus chose the heading over names and types in every row on 2026-11-11: it is smaller, and a commit object is always read whole from the front, so a row never travels alone.
-- **Why names and types, and not the table name only:** every surveyed system that gives its reader less than the column names has a documented way to go wrong silently, among them MySQL with minimal row images and SQLite's changesets. See [research/change-file-contents.md](research/change-file-contents.md).
+- **A header, a list of changes, the commit time, and a list of annotations,** as four fields of `CommitObject`. It is written and read as a stream: the header first, then the changes and the annotations one at a time, so that a commit of millions of rows is never in memory at once.
+- **The header holds only what replay needs:** the format version and the required `parent` name. It is a field of `CommitObject` and not a kind of record, because it appears exactly once. Protocol Buffers has no way to mark a field as required, and it does not reject bytes where the header is missing, late, or doubled. The reader checks that the header is there and comes first.
+- **The changes are applied in order,** and a commit object holds the net effect of its commit, so a primary key appears at most once per table. The kinds for the first slice are:
+  - create a table, with its name, columns, and primary key as data and not as SQL text, so that replay needs no SQL parser
+  - drop a table, by its name; the rows are not listed as deletes
+  - put rows, each a full row that replaces any row with the same primary key
+  - delete rows, each by its primary-key values
+- **The kinds of change follow the roadmap.** A kind is defined when the slice that needs it is built: `alter table` and indexes each become a new kind. Every `insert`, `update`, and `delete` ends up as put and delete, so row changes need nothing new.
+- **An unknown kind of change is refused, never skipped.** An instance that meets a kind it does not know stops replay with an error that says a newer version of s4ql is needed. Skipping a `drop table` would silently leave the cache different from the log.
+- **Rows come in batches that hold their table.** A `Rows` message holds the table, with its name, its columns with their types, and its primary key, and then the rows. A row can therefore not exist without its table, and the reader keeps no state from one record to the next. Markus asked for this: "Can we express that the heading must always comes before the rows?" A batch must be complete in memory before it is written, so it is limited to about a megabyte, and a large table gets several batches that each hold the table again.
+- **Replay compares the table in a batch with the table in the cache,** and refuses the commit object on any difference. Every surveyed system that gives its reader less than the column names has a documented way to go wrong silently, among them MySQL with minimal row images and SQLite's changesets. See [research/change-file-contents.md](research/change-file-contents.md).
+- **The primary key is a list of column positions** on the table, in key order, starting at 0. A position cannot disagree with a column name the way a second copy of the name could.
+- **A value is in one of SQLite's five storage classes,** under SQLite's names: integer, real, text, blob, and null. Null is stored explicitly, because SQLite treats it as a storage class, and because a value with no kind set must stay distinct from it: that is either a kind from a newer version or a malformed value, and both are refused.
+- **All text is valid UTF-8:** table names, column names, text values, and SQL text. They are `string` fields, which Protocol Buffers refuses to write or read otherwise. s4ql rejects a statement, a parameter, or an expression that would produce other text; see the restrictions in [roadmap.md](roadmap.md). Markus: "I have a hunch that's going to make life easier down the line."
+- **The commit time is a field of `CommitObject`,** not of the header, because replay does not use it. It comes from the holder's wall clock. It is included because a later feature such as restoring to a point in time needs it, and it cannot be added to old commit objects. The time that a statement read is a different thing: SQLite fixes the time per statement, not per transaction, so it will be a field of `Statement` when a slice needs it.
+- **Annotations are what replay may skip.** An annotation is today always one statement: its SQL text and its parameters. Its non-deterministic inputs become fields when a slice first needs them. The parameters make it complete, so a tool can run a commit's statements through the engine again and compare the outcome with the recorded changes. The cost is that the data of an insert is stored roughly twice. Leaving them out can become a setting later.
+- **Where something sits says whether it may be skipped.** Everything in `changes` must be understood, or the commit object is refused. Everything in `annotations` may be skipped, including a kind of annotation that the reader does not know. Markus chose the name "annotation" over "evidence".
+- **The statements and the changes are not linked.** The commit object does not say which statement caused which change.
 
-The schema as shown to Markus on 2026-11-11, revised after a review against the official Protocol Buffers guidance ([research/protobuf-practices.md](research/protobuf-practices.md)). It passes `buf lint`. Names can change at any time, because they are not stored in the bytes. Numbers and types can change only until the first commit object is written:
+Open: what a reader does with a field it does not know outside the annotations, for example a later "not null" on a column. Either the reader refuses the commit object, or we raise the header's version for every such field. maragubot recommends the first.
+
+The schema, as revised in pull request #4. It passes `buf lint` with the `STANDARD` and `COMMENTS` rules. The file's place in the repository is not decided:
 
 ```proto
 // The format of an s4ql commit object.
 //
-// Commit objects are kept forever, and every version of s4ql must read
-// every one ever written. Field numbers and field types never change, and
-// a number that is no longer used is reserved. Names can change.
+// The format is a draft while s4ql is in development. Anything in it can
+// change, including field numbers and types, and a commit object written
+// in it carries version 0.
+//
+// From version 1 on, commit objects are kept forever, and every version of
+// s4ql must read every one ever written. Field numbers and field types then
+// never change, and a number that is no longer used is reserved. Names can
+// change.
 edition = "2024";
 
 package s4ql.v1;
@@ -186,67 +199,72 @@ option go_package = "maragu.dev/s4ql/internal/s4qlpb";
 
 // A commit object: everything one commit did.
 //
-// It is written and read as a stream, one record at a time: each record is
-// the byte 0x0a, the length of the record as a varint, and the record.
-message Commit {
-  // The records, in the order they were written.
-  repeated Record records = 1;
+// It is written and read as a stream: the header first, then the changes
+// and the annotations, one at a time.
+message CommitObject {
+  // Exactly once, and first. A reader refuses a commit object without it.
+  Header header = 1;
+  // What the commit changed, in the order in which replay applies it.
+  // A reader refuses the commit object if it does not know a change.
+  repeated Change changes = 2;
+  // The wall-clock time of the commit, from the clock of the lease holder.
+  // Replay does not use it.
+  google.protobuf.Timestamp commit_time = 3;
+  // What else is known about the commit. Replay does not use them, and a
+  // reader may skip them.
+  repeated Annotation annotations = 4;
 }
 
-// One record of a commit object.
-//
-// A Record holds no field outside `kind`, now or later. A reader that finds
-// no known kind refuses the commit object: if the record holds an unknown
-// field, a newer version of s4ql wrote it; if it holds nothing, it is
-// malformed.
-message Record {
-  // What the record is.
-  oneof kind {
-    // Exactly once, and first.
-    Header header = 1;
-    // A change: creates this table.
-    Table create_table = 2;
-    // The puts and deletes that follow belong to this table.
-    Table heading = 3;
-    // A change: one full row, in the heading's column order.
-    Row put = 4;
-    // A change: the primary-key values of the row to remove.
-    Row delete = 5;
-    // Not needed for replay. A reader may skip it.
-    Evidence evidence = 6;
-  }
-}
-
-// The first record of every commit object.
+// What a reader needs before it reads anything else.
 message Header {
-  // The version of this format. A reader refuses a version it does not know.
-  // It is raised when something is added that a reader must not ignore.
+  // The version of this format: 0 while the format is a draft. A reader
+  // refuses a version it does not know. From version 1 on, the version is
+  // raised when something is added that a reader must not ignore.
   uint32 version = 1;
   // The name of the commit object before this one: 32 bytes, all zero in
   // the first one.
   bytes parent = 2;
-  // The wall-clock time of the commit, from the clock of the lease holder.
-  // Evidence only.
-  google.protobuf.Timestamp time = 3;
 }
 
-// A table: what "create table" creates, and what a heading names.
+// One change to the database.
+//
+// A Change holds no field outside `kind`, now or later. A reader that finds
+// no known kind refuses the commit object: if the change holds an unknown
+// field, a newer version of s4ql wrote it; if it holds nothing, it is
+// malformed.
+message Change {
+  // What the change is.
+  oneof kind {
+    // Creates this table.
+    Table create_table = 1;
+    // Drops this table and all its rows.
+    DropTable drop_table = 2;
+    // Puts rows. Each row holds a value for every column, in the table's
+    // column order, and replaces any row with the same primary key.
+    Rows put_rows = 3;
+    // Deletes rows. Each row holds only its primary-key values, in key
+    // order.
+    Rows delete_rows = 4;
+  }
+}
+
+// A table.
 message Table {
-  // The name of the table. s4ql refuses an identifier that is not valid UTF-8.
+  // The name of the table.
   string name = 1;
   // The columns, in their declared order.
   repeated Column columns = 2;
+  // The primary-key columns, in key order, as positions in `columns`,
+  // starting at 0.
+  repeated uint32 primary_key = 3;
 }
 
 // One column of a table.
 message Column {
-  // The name of the column. s4ql refuses an identifier that is not valid UTF-8.
+  // The name of the column.
   string name = 1;
   // The declared type of the column.
   Type type = 2;
-  // The column's position in the primary key, starting at 1,
-  // or 0 if it is not part of the key.
-  uint32 primary_key = 3;
 }
 
 // The declared type of a column. More are added as the roadmap grows.
@@ -258,16 +276,35 @@ enum Type {
   TYPE_INT = 1;
 }
 
-// A row: its values in the heading's column order.
+// The table to drop.
+message DropTable {
+  // The name of the table.
+  string name = 1;
+}
+
+// Rows of one table, together with the table they belong to.
+//
+// A Rows is a batch that is small enough to hold in memory. A commit that
+// changes many rows of one table writes several batches, and each one holds
+// the table again, so a batch is read without the ones before it.
+message Rows {
+  // The table. A reader refuses the commit object if this differs from the
+  // table it has.
+  Table table = 1;
+  // The rows.
+  repeated Row rows = 2;
+}
+
+// One row: its values, in the order that the change gives.
 message Row {
   // The values.
   repeated Value values = 1;
 }
 
-// One SQLite value.
+// One SQLite value, in one of SQLite's five storage classes.
 //
 // A Value holds no field outside `kind`, now or later. A reader refuses a
-// value with no known kind, as it does a record.
+// value with no known kind, as it does a change.
 message Value {
   // The storage class of the value, and the value.
   oneof kind {
@@ -275,8 +312,8 @@ message Value {
     sint64 integer = 1;
     // A 64-bit IEEE 754 floating-point number.
     double real = 2;
-    // Text, as bytes, because SQLite text need not be valid UTF-8.
-    bytes text = 3;
+    // Text. It is always valid UTF-8.
+    string text = 3;
     // A blob.
     bytes blob = 4;
     // NULL.
@@ -287,9 +324,11 @@ message Value {
 // The SQL NULL. It has no fields.
 message Null {}
 
-// Evidence of what ran. A reader skips a kind of evidence it does not know.
-message Evidence {
-  // What the evidence is.
+// One thing that is known about a commit beyond its changes.
+//
+// A reader skips a kind of annotation it does not know.
+message Annotation {
+  // What the annotation is.
   oneof kind {
     // One statement, as it ran.
     Statement statement = 1;
@@ -298,35 +337,29 @@ message Evidence {
 
 // One statement, as it ran.
 message Statement {
-  // The SQL text, as bytes, because it can hold text that is not valid UTF-8.
-  bytes sql = 1;
+  // The SQL text. It is always valid UTF-8.
+  string sql = 1;
   // The parameters, by position, starting with parameter 1.
   repeated Value parameters = 2;
-  // Non-deterministic inputs, such as the time, become fields here
-  // when a slice of the roadmap first needs them.
+  // Non-deterministic inputs, such as the time the statement read, become
+  // fields here when a slice of the roadmap first needs them.
 }
 ```
 
-Details chosen by maragubot, from that research:
+Details chosen by maragubot, from the research in [research/change-file-contents.md](research/change-file-contents.md) and [research/protobuf-practices.md](research/protobuf-practices.md):
 
-- **Each commit object stands alone.** No heading or other state carries over from an earlier file. A heading is repeated after a schema change to its table in the same file.
+- **Each commit object stands alone.** No state carries over from an earlier one.
 - **An update of a primary key is a delete of the old key and a put of the new row.**
-- **Evidence and changes are separate kinds of record,** so that "may be skipped" and "must be refused" are two different places in the format. An unknown kind of evidence is skipped. An unknown kind of change, and an unknown kind of record, are refused.
-- **The decoder must make the refusal true.** With Protocol Buffers, a `oneof` that holds a kind the reader does not know reads as not set. Replay treats a change with no known kind as an error.
-- **There are no before-images and no count of changes, for now.** Both can be added later as new fields.
 - **New kinds can be added to a `oneof` later,** as a new member with a new number. Old commit objects stay valid, and `buf breaking` accepts the addition. Moving an existing field into a `oneof` is unsafe.
-- **`Record` and `Value` never get a field outside their `oneof`.** Any unknown field in them then means a kind from a newer version, and the reader finds it with `ProtoReflect().GetUnknown()`. A record with no kind and no unknown field is malformed.
-- **What the reader must do,** from [research/protobuf-practices.md](research/protobuf-practices.md):
-  - check that there is exactly one header and that it is first, because two commit objects joined end to end decode as one valid message
+- **`Change` and `Value` never get a field outside their `oneof`.** Any unknown field in them then means a kind from a newer version, and the reader finds it with `ProtoReflect().GetUnknown()`. One with no kind and no unknown field is malformed.
+- **What the reader must do:**
   - refuse a `Type` value it does not know, which Go keeps as a plain number without an error
   - never set `DiscardUnknown`
   - raise the size limit of `protodelim`, whose default of 4 MiB is below SQLite's limit of 1 GB for one value
-- **Writing as a stream** is the byte `0x0a` and then `protodelim.MarshalTo` for each record. A test gave exactly the bytes of `proto.Marshal` on the whole message.
 - **The schema uses `edition = "2024"`,** not `proto3`. Every field then records whether it was set, and the generated Go code is the kind the documentation recommends. The bytes are the same, so this can be changed.
-- **The SQL text of a statement is stored as bytes.** A `string` field refuses text that is not valid UTF-8, and a commit must never fail on its evidence after its statements ran.
-- **The commit time is Google's standard timestamp type,** as the official guidance advises.
 - **CI checks the schema** with `buf lint` and with `buf breaking` under its `WIRE` rules, checks that the committed generated code matches the schema, and reads sample commit objects from every format version.
-- **For later slices:** replay applies results only, so it must not run triggers or cascades, and foreign keys cannot be checked row by row, because a file holds the net effect and not the order of the statements. Adding a column with a default, and dropping a table, are one change each, with no rows repeated.
+- **There are no before-images and no count of changes, for now.** Both can be added later as new fields.
+- **For later slices:** replay applies results only, so it must not run triggers or cascades, and foreign keys cannot be checked row by row, because a commit object holds the net effect and not the order of the statements. Adding a column with a default is one change, with no rows repeated.
 
 ## A manifest swap whose outcome is unknown
 
