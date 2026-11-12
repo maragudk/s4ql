@@ -94,7 +94,8 @@ type leaseJSON struct {
 // The first two points are checked before the version, at every level, so bytes that fail them are
 // malformed whatever their version. Keys are matched exactly, so
 // "Version" is a field it does not know, and "version" is then missing. A leap second cannot be
-// read, and an expiry is read to the nanosecond, with more digits dropped.
+// read, and an expiry is read to the nanosecond, with more digits dropped. The expiry that it
+// returns is in UTC, whatever its offset and the time zone of the machine.
 func ParseManifest(b []byte) (Manifest, error) {
 	// Each [json.Unmarshal] refuses invalid syntax, invalid UTF-8, lone surrogates, and keys given
 	// twice, at every level. The second also refuses values of the wrong kind. The rest is checked
@@ -182,6 +183,9 @@ func parseLease(j leaseJSON) (Lease, error) {
 	if err != nil {
 		return Lease{}, fmt.Errorf("%w: manifest lease expiry %q is not an RFC 3339 time", ErrMalformed, expires)
 	}
+	// time.Parse returns a time in time.Local if the offset is the one of the machine, so the
+	// location of the result, and the text of an error that prints it, would depend on the machine.
+	t = t.UTC()
 	if err := checkExpiry(t); err != nil {
 		return Lease{}, err
 	}

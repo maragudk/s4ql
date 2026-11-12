@@ -19,6 +19,8 @@
 //     context.Background and context.TODO, because code passes on the context it was given;
 //   - sync.Cond and sync.WaitGroup, because a wait for another goroutine is a host.Task or a
 //     host.Semaphore;
+//   - io.Pipe and its types io.PipeReader and io.PipeWriter, because their goroutines block on
+//     waits that the scheduler cannot see, and a wait must be a host.Semaphore or a host.Task;
 //   - an import of math/rand, math/rand/v2, crypto/rand, or hash/maphash, because randomness is
 //     host.Host.Uint64.
 //
@@ -80,6 +82,11 @@ var forbidden = map[string]map[string]string{
 		"Cond":      "waits outside the host; use a host.Semaphore",
 		"NewCond":   "waits outside the host; use a host.Semaphore",
 		"WaitGroup": "waits outside the host; use host.Task.Wait",
+	},
+	"io": {
+		"Pipe":       "blocks its goroutines on waits outside the host; use a host.Semaphore or a host.Task",
+		"PipeReader": "blocks its goroutines on waits outside the host; use a host.Semaphore or a host.Task",
+		"PipeWriter": "blocks its goroutines on waits outside the host; use a host.Semaphore or a host.Task",
 	},
 	"iter": {
 		"Pull":  "starts a goroutine; use the iterator with a range",

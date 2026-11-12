@@ -59,6 +59,31 @@ func TestParseManifest(t *testing.T) {
 		}
 	})
 
+	// This test sets time.Local, so it must not run in parallel.
+	t.Run("should return the expiry in UTC and write the same error text whatever the time zone of the machine", func(t *testing.T) {
+		local := time.Local
+		t.Cleanup(func() { time.Local = local })
+
+		var errTexts []string
+		for _, zone := range []*time.Location{time.UTC, time.FixedZone("TEST", 3600), time.FixedZone("OTHER", -7200)} {
+			time.Local = zone
+
+			// The offset +01:00 is the one of the second zone, for which time.Parse returns time.Local.
+			for _, expires := range []string{"2026-11-11T13:00:30+01:00", "2026-11-11T12:00:30Z", "2026-11-11T05:30:30-06:30"} {
+				m, err := format.ParseManifest(manifestWithLease(`{"holder":"a","expires":"` + expires + `"}`))
+				is.NotError(t, err, expires)
+				is.True(t, time.Date(2026, 11, 11, 12, 0, 30, 0, time.UTC).Equal(m.Lease.Expires), expires)
+				is.True(t, m.Lease.Expires.Location() == time.UTC, expires+" in "+zone.String())
+			}
+
+			_, err := format.ParseManifest(manifestWithLease(`{"holder":"h","expires":"0000-01-01T00:00:00+01:00"}`))
+			is.True(t, errors.Is(err, format.ErrMalformed), "error is not ErrMalformed")
+			errTexts = append(errTexts, err.Error())
+		}
+		is.Equal(t, errTexts[0], errTexts[1])
+		is.Equal(t, errTexts[0], errTexts[2])
+	})
+
 	t.Run("should read an expiry with more than nine digits of fraction to the nanosecond", func(t *testing.T) {
 		m, err := format.ParseManifest(manifestWithLease(`{"holder":"h","expires":"2026-11-11T12:00:30.1234567899Z"}`))
 		is.NotError(t, err)

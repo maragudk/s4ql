@@ -5,6 +5,7 @@ import (
 	"context"
 	crand "crypto/rand" // want `crypto/rand draws randomness outside the host`
 	"hash/maphash"      // want `hash/maphash draws randomness outside the host`
+	"io"
 	"iter"
 	"math/rand"           // want `math/rand draws randomness outside the host`
 	randv2 "math/rand/v2" // want `math/rand/v2 draws randomness outside the host`
@@ -112,4 +113,13 @@ func channels(ch chan int) {
 	default:
 	}
 	close(ch)
+}
+
+func pipes() {
+	r, w := io.Pipe()        // want `io.Pipe blocks its goroutines on waits outside the host`
+	var _ *io.PipeReader = r // want `io.PipeReader blocks its goroutines on waits outside the host`
+	var _ *io.PipeWriter = w // want `io.PipeWriter blocks its goroutines on waits outside the host`
+
+	// The other readers and writers of io are fine.
+	_ = io.MultiWriter(io.Discard)
 }
