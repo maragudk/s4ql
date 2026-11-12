@@ -127,7 +127,6 @@ A possible later addition:
 
 Status: the manifest and the commit object are built in `internal/format`, with the schema in `proto/s4ql/v1/commit.proto`. Replay into the cache and one check in CI are not built, and two questions are open. The reasons behind the formats are in [internal/format/README.md](../internal/format/README.md).
 
-- **The manifest's lease entry changes** to the one that [The lease and its clocks](#the-lease-and-its-clocks) describes: `expires` goes, and `duration`, `renewed`, and `salt` come. This is being built.
 - **`buf breaking` under its `WIRE` rules is set up when version 1 is settled.** While the formats are drafts, a change to the schema may break old commit objects.
 - **Nothing produces an `UpsertRows` with only some columns yet.** The format writes and reads it, and the samples cover it. It is first produced when a slice of the roadmap brings `update`.
 - **Replay of commit objects into the cache is not built.** It applies the changes of one commit object inside one SQLite transaction, and commits that transaction only after `CommitReader` has reported the end with `io.EOF`. It refuses what the format cannot check because it needs the table: a column position outside the table's columns, and a row with the wrong number of values for the table. For later slices, replay applies results only, so it must not run triggers or cascades, and foreign keys cannot be checked row by row, because a commit object holds the net effect and not the order of the statements.
