@@ -96,7 +96,7 @@ The design:
 - **The duration is in the manifest** because an instance that watches must use the holder's duration and not its own setting. With a shorter setting of its own, it would take the lease too early.
 - **Clocks affect only reads.** Writes are correct whatever the clocks do, because S3 checks the manifest swap. The danger is a holder that has lost the lease without knowing it and answers a read from its cache, which lacks the new holder's commits.
 - **A read checks the lease against both of the holder's clocks.** It passes only if less than the lease's duration has passed since the holder sent its last renewal, by the wall clock and by the monotonic clock. Each clock is compared only with itself. Both stay because Go's monotonic clock on Linux stands still while a machine is suspended, and the wall clock catches that. A wall clock that is set backward is caught by the monotonic clock. If both fail, reads can be stale, and Markus accepts that: "if the server is in such bad a state that both clocks fail, stale reads are probably okay too."
-- **One check when the read starts is enough.** Its order relative to the SQLite snapshot does not matter. The cache never holds another instance's commits, so a snapshot taken after a pause shows a state that was correct at the moment of the check.
+- **One check when the read starts is enough.** Its order relative to the SQLite snapshot does not matter. The cache never holds another instance's commits, so a snapshot taken after a pause shows a state that was correct at the moment of the check. That moment lies between the start and the end of the read, which is all that a read promises. The research note on S3's clock advises the check after the read instead; either order is correct, and before is simpler.
 - **An instance without a valid lease refuses and keeps trying.** Reads and writes fail at once with a distinct temporary error, and a write transaction that is open then is not committed. The instance keeps trying to get the lease. When it gets it, it applies the commit objects it is missing, with the same code as at startup, and serves again. This one rule covers three cases:
   - The instance cannot reach S3 and its lease runs out. If a later renewal succeeds, the manifest was unchanged and there is nothing to catch up. Markus: "this is where we'd return a HTTP 502 and let the clients retry."
   - Another instance has taken the lease.
@@ -142,9 +142,11 @@ Markus on the state after "outcome unknown": "it's kind of the same as when the 
 
 The manifest swap can end without telling the instance whether it succeeded, for example when the connection drops before the answer arrives. The transaction is then either committed or not, and the instance cannot tell which.
 
-- **The instance asks S3 again.** It retries the same swap. If the first attempt never arrived, the retry succeeds and the transaction is committed. If the first attempt did arrive, S3 rejects the retry, because the manifest has changed.
-- **After a rejection, the instance reads the manifest.** The transaction is committed if and only if its commit object is in the log that the manifest points to. Another instance may have taken the lease and committed on top in the meantime, so the check walks the log back from the newest commit object and does not look at that file alone.
-- **A request stuck in the network cannot commit later.** Once the manifest has changed, S3 rejects the old request.
+- **The instance asks S3 again.** It retries the same swap. If the retry succeeds, the transaction is committed, whether the first attempt arrived or not.
+- **After a rejection, the instance reads the manifest.** If its commit object is in the log that the manifest points to, the transaction is committed. Another instance may have taken the lease and committed on top in the meantime, so the check walks the log back from the newest commit object and does not look at that file alone.
+- **A rejection does not prove that the first attempt arrived.** S3 can refuse a swap from the right version while another write to the same key is on the way, with "409 Conflict", and the first attempt can be that other write. The manifest is then unchanged, and the first attempt can still land. The builder of the simulated store found this in AWS's documentation on 2026-11-12, and the simulated store does it on purpose (`internal/store`).
+- **Only a swap that succeeds rules the stuck request out.** If the manifest is unchanged and the commit object is not in the log, the instance renews the lease without the commit. When that renewal succeeds, the manifest has a new version, the stuck request is refused whenever it arrives, and the transaction is not committed. A read alone never settles it, because the request can arrive after the read.
+- **The manifest's bytes never repeat.** A version comes from the content, so a version that came back would let an old request through. Every write of the manifest by a holder carries a new salt, which rules that out; see [The lease and its clocks](#the-lease-and-its-clocks).
 - **`Commit` returns only when the instance knows,** with nil if the transaction is committed and an error if it is not.
 - **If S3 stays unreachable, `Commit` waits until the caller's context ends,** and then returns a distinct "outcome unknown" error. An application must check its own data then, or make its transactions safe to repeat. FoundationDB does the same with `commit_unknown_result` ([research/foundationdb.md](research/foundationdb.md)). This is the one case where `Commit` returns an error for a transaction that may be committed.
 
@@ -158,7 +160,7 @@ Details chosen by maragubot:
 
 ## The S3 client and S3's checksums
 
-Status: agreed with Markus on 2026-11-12, not built. It belongs to the client for real S3, which comes after the simulated object store.
+Status: agreed with Markus on 2026-11-12, not built. The interface `store.Store` and the simulated store are built in `internal/store`; the client for real S3 is the next piece.
 
 Markus asked: "Maybe S3 already knows the hash of its objects?" It does, and s4ql uses it as a second guard next to its own check.
 
@@ -168,6 +170,17 @@ Markus asked: "Maybe S3 already knows the hash of its objects?" It does, and s4q
 - **This holds for commit objects up to 5 GB,** the limit of one `PutObject`. In a multipart upload, S3 offers SHA-256 only as a checksum of the checksums of the parts, which is not our name. Markus: "Don't worry too much about commit objects above 5GB for now."
 
 Source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html
+
+What the client must do, from building the simulated store. The sources are in `docs/diary/2026-11-12-object-store.md`:
+
+- **It passes the conformance suite,** `storetest.Test`, against real S3, with a new and empty key prefix for each case.
+- **It never lets the SDK retry a conditional write by itself,** or it reports the refusal of such a retry as an unknown outcome. Otherwise the first attempt can be what made the retry fail, and the client would report "not applied" for a write that was applied.
+- **It maps S3's answers to the errors of `store.Store`:** 412 on a create is `ErrExists`; 412 and 409 on a swap are `ErrChanged`; 404 is `ErrNotFound`; `BadDigest` is `ErrChecksum`. Everything else on a write is an unknown outcome.
+- **It needs the permission `s3:ListBucket`,** because S3 answers 403 and not 404 for a missing object without it.
+- **It never sends an empty `If-Match`,** which Tigris treats as "create only".
+- **On Tigris, the checksum goes in a trailer.** Tigris does not check a checksum that is sent as a header ([research/tigris-probe-results.md](research/tigris-probe-results.md)).
+- **Open: the check on download.** `store.Store.Get` neither returns the checksum that the store holds nor takes one to compare. The builder of the client adds one of the two to the interface, the simulated store, and the suite, if it is cheap, and otherwise says why not.
+- **Telemetry for requests to S3 is decided with this client.**
 
 ## Vendoring s4ql
 
