@@ -244,3 +244,166 @@ Telling a liveness failure that the design causes from one that the workload's e
 - The harness never delivers a request after its sender saw it fail, as a real network can. By argument this is safe for the lease, because an instance counts its lease only from a swap it knows to have happened; the simulation does not show it.
 - `resolveSwap` treats "the manifest still has the ETag the swap was sent against" as "the swap did not happen". With ETags from content, that is not sound for a swap from a released manifest, which can come back with the same bytes. It is harmless in the toy, but the core should know.
 - Clock faults reach only the instances that start with the workload, not one restarted after a crash.
+
+## Step 4: The tests of the simulation within CI's ten minutes
+
+**Author:** ci-time-builder
+
+### Prompt Context
+
+**Verbatim prompt:**
+
+> You are fixing a CI failure in s4ql, a Go SQL database (repository `maragudk/s4ql`, module `maragu.dev/s4ql`, Go 1.27.3). You work in your own git worktree: run `pwd` and `git branch --show-current` first and stay in that directory. Never write in `/Users/maragubot/Developer/s4ql` itself or in another worktree under `.claude/worktrees/`.
+>
+> **Your work builds on the branch of pull request #11, not on `main`.** First run `git fetch origin` and `git merge --ff-only origin/lease-toy` (if a fast-forward is not possible, `git merge origin/lease-toy`), and check with `git log --oneline -3` that the commit "Describe the toy with the lease of 2026-11-12 in the README of the harness" is in your branch.
+>
+> Read `AGENTS.md`. Invoke the `fabrik:go` skill before you read or write Go code.
+>
+> ## The failure
+>
+> Pull request #11 changed the toy library in the tests of the simulation harness (`internal/sim/toy_test.go`, `internal/sim/simulation_test.go`) to a new lease design and added planted bugs with workloads of their own. The diary of that work is `docs/diary/2026-11-12-lease-without-clock-comparison.md`; read it, and `internal/sim/README.md`, to learn what the tests are for.
+>
+> In CI, two jobs now fail, both in the same way:
+>
+> ```
+> panic: test timed out after 10m0s
+> 	running tests:
+> 		TestSimulation_plantedBugs (10m0s)
+> FAIL	maragu.dev/s4ql/internal/sim	600.054s
+> ```
+>
+> - `test / test` is the reusable workflow `maragudk/workflows/.github/workflows/test.yml@main`, which runs `go test -race -shuffle on ./...` (read it with `gh api repos/maragudk/workflows/contents/.github/workflows/test.yml -q .content | base64 -d` to see the exact command; we cannot change it).
+> - `asan` runs `make test-asan` (see the `Makefile` and `.github/workflows/ci.yml`).
+>
+> Without the race detector, on a fast Mac, `go test ./internal/sim/` now takes 132 s; before this pull request it took about 50 s. The author measured `go test -race` at 668 s on a loaded machine. CI runners are slower and have 4 cores.
+>
+> ## The goal
+>
+> The default run of the tests of `internal/sim` finishes in CI with a wide margin under the 10-minute limit, under the race detector and under the address sanitizer, without losing what the tests prove.
+>
+> 1. **Measure first.** Find out which tests and which planted-bug workloads take the time, at the default number of seeds, with and without `-race` (`go test -race -run ... -v`, and `-json` or timing per subtest). Write the numbers into your report.
+> 2. **Decide how to cut it,** and say what you chose and why. The options I see; you may find better ones:
+>    - fewer seeds by default for the workloads that are aimed at one planted bug, with the full count behind the existing `S4QL_SIM_SEEDS` variable
+>    - running the independent workloads in parallel (`t.Parallel()`), if runs inside `testing/synctest` bubbles with their own temporary directories really are independent; check, do not assume
+>    - a shorter default under the race detector and the sanitizer, where the simulation's scheduled mode gains nothing from them anyway (the scheduler runs one goroutine at a time; `internal/sim/README.md` says what the race detector can and cannot see there). The free-running tests are the ones that need the race detector and must keep running under it.
+> 3. **What must not be lost:**
+>    - Every seed that runs is still run twice and its traces compared.
+>    - Every planted bug is still found in the default run, and the test still fails if one is not found. If the default count of seeds is too small for a bug to be found reliably, choose seeds or counts so that it is found every time, and say how you made sure (the runs are deterministic for a seed, so this can be exact, not a probability).
+>    - Each control still runs and still finds nothing.
+>    - The free-running tests still run under `-race`, including the test that requires the planted data race to be reported.
+>    - `S4QL_SIM_SEEDS=10000` still runs everything at full size. Say what `-timeout` such a run needs, and put the exact command in `internal/sim/README.md`, section "Tests" (it has a sentence that says the large runs need a long enough `-timeout` without giving the command).
+> 4. **Targets:** `go test -race -shuffle on ./internal/sim/` in under 3 minutes on this machine when it is not otherwise loaded (check the load with `uptime` and say what it was), and the same package under plain `go test` in under a minute. If you cannot reach them without giving up something from point 3, stop at what you can reach and tell me what the trade is.
+> 5. Do not change what the toy does or what the workloads check, only how much of them the default run does and how it is scheduled. Do not touch `internal/sim/sim.go`, `free.go`, or `internal/host`.
+>
+> Verify at the end: `make test`, `make lint`, and `go test -race -shuffle on ./internal/sim/ ./internal/host/` pass, with the times. If Docker is available, also run `make test-asan FUZZTIME=5s` once, since that is the other failing job; if it is not available or takes too long, say so.
+>
+> ## How to work
+>
+> - Add a step to the diary `docs/diary/2026-11-12-lease-without-clock-comparison.md` with the `fabrik:diary` skill, under your name `ci-time-builder`, with the measurements.
+> - Commit on your branch with the `fabrik:git` skill's conventions. Do not ask about GitHub issues; there are none. No attribution lines. Do not push and do not open a pull request.
+> - Do not edit `docs/spec.md`, `docs/todo.md`, the root `README.md`, or `AGENTS.md`.
+> - You cannot ask me anything while you run. If you hit a question you cannot settle, stop and put it in your report.
+>
+> ## Your report
+>
+> Read by me, the lead, not by the product owner. Give me: the name of your branch and the absolute path of your worktree, the measurements before and after, what you chose and what it trades away, how you made sure each planted bug is still found, and the verification results.
+
+**Interpretation:** Measure where the time of `/internal/sim` goes, then cut the default run with fewer seeds for the planted bugs and parallel subtests, keeping replay of every seed in `TestSimulation`, a find of every bug, every control, the free-running tests under `-race`, and the full run behind `S4QL_SIM_SEEDS`.
+
+**Inferred intent:** Make pull request #11 mergeable without weakening what its tests show about the lease.
+
+### What I did
+
+Worktree `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a72db84b19a8263f9`, branch `worktree-agent-a72db84b19a8263f9`, fast-forwarded to `origin/lease-toy` at `2219a32`. The machine has 10 cores, and other sessions kept its load between 11 and 20 the whole time, so no measurement is from an unloaded machine.
+
+**Before,** with `go test -count=1 -json ./internal/sim/` and the same with `-race -shuffle on`:
+
+| | Plain (load 11.6 to 14.0) | `-race` (load 12.6) |
+|---|---|---|
+| The package, wall time | 143 s | 388 s |
+| `TestSimulation_plantedBugs` | 107 s | 320 s |
+| each of the six bugs on `competing` workloads | 13.6 to 15.9 s | 41 to 48 s |
+| takeover after a release, ignore a cache failure, cache first, renewal outside the lock | 6.9, 4.1, 2.7, 2.7 s | 20.2, 11.6, 7.7, 7.6 s |
+| `TestSimulation` (full, single, never pause) | 11.6 s (6.3, 2.7, 2.6) | 33 s (16.7, 7.6, 8.9) |
+| `TestSynctestWithCgo`, `TestSchedulerWithSQLiteLocks`, `TestFreeRunning` | 5.9, 3.5, 2.2 s | 6.5, 7.0, 5.5 s |
+
+The planted bugs were three quarters of the time: each runs 200 seeds of three workloads (with the bug, the control, and without the bug), and the six on `competing` workloads cost about 25 ms a run. The race detector costs about three times here. The hash of all traces of each `TestSimulation` workload, and the first ten seeds that found each bug, were the same with and without `-race`, so the build mode does not change a trace.
+
+**First version** (commit `0658796`): a field `seeds` on each planted bug, the smallest multiple of ten for which a reshuffle of the seeds leaves the bug unfound with a chance under one in a thousand at its share of 10000 seeds, at least 30, used for all three of the bug's workloads; and `t.Parallel()` on `TestSimulation`, `TestSimulation_plantedBugs`, and their subtests. Plain 47 to 49 s, `-race` 74 to 77 s.
+
+**Self-review** with the `fabrik:code-review` skill: two reviewers on `fable` over `git diff HEAD~1`. Both found no correctness bug and confirmed that the parallel subtests are safe: the package-level variables are error values, constants, and workloads that are only read, each run has its own scheduler, store, and `t.TempDir()`, SQLite is built with `SQLITE_THREADSAFE 1` and no shared cache, and the hashes of `TestSimulation` were the same with `-parallel 1` as in parallel (`S4QL_SIM_SEEDS=10` and `=24`). Both found, and I agree:
+
+- the control and the run without the bug were cut from 200 seeds to 30 to 100 by a measure that has nothing to do with them, how easily the bug is found, so the workloads with the easiest bugs got the fewest clean seeds (2000 clean runs became 490, 1600 control runs became 400);
+- "one in a thousand" was per bug, and any change that changes a trace reshuffles all ten bugs at once, so the test would fail by chance about once in 240 such changes, with a message that does not say so;
+- the new doc comment of `simulate` reasoned about the toy and SQLite behind it, and described its callers;
+- small errors in the README: `S4QL_SIM_SEEDS` does not set one number for every workload, and "about a minute under the race detector" named no machine.
+
+Both also found that a planted bug with `think == 0` would have skipped the must-find check without a word, because `seeds` quarters the count for it. No bug has that today.
+
+**The fix:** the workload with the bug now runs from seed 0 until four seeds have found the bug, from at most 200, and the test fails if none does. The control and the run without the bug run 100 seeds each. With `S4QL_SIM_SEEDS` set, all three run that many, and the workload with the bug runs all of them to count the finds; the check that some seed finds the bug then applies from 200 seeds run. The field `seeds` is gone, and with it the ten hand-computed numbers and the `think == 0` hole. `simulate` has its old comment back; `TestSimulation` and `TestSimulation_plantedBugs` have doc comments that say what they run; the speed line of `TestSimulation` says that `TestSimulationSpeed` is the measure of speed. The README section "Tests" says all this and gives the command for 10000 seeds.
+
+**After** (final code):
+
+| | Plain | `-race` |
+|---|---|---|
+| `go test -count=1 -shuffle on ./internal/sim/`, load 10.9 to 14.9 | 57.8 s | |
+| `go test -race -count=1 -shuffle on ./internal/sim/`, load 14.9 to 16.1 | | 87.0 s |
+| `GOMAXPROCS=4 go test -race -shuffle on ./internal/sim/`, load 14.2, for CI's four cores | | 100 s |
+| longest subtest | 43.8 s (no new salt) | 56.9 s (lease from the answer) |
+
+What each bug's workload found in the default run, the same with and without `-race`:
+
+```
+renewal outside the lock        4 of 40 seeds   [28 31 35 39]
+cache before the manifest       4 of 29         [24 25 27 28]
+wall clock only                 4 of 24         [9 16 22 23]
+monotonic clock only            4 of 30         [9 21 22 29]
+no new salt                     4 of 71         [33 34 56 70]
+watcher waits its own duration  4 of 29         [15 21 22 28]
+swap against the late version   4 of 6          [2 3 4 5]
+lease counted from the answer   4 of 33         [12 15 17 32]
+takeover only after a release   4 of 4          [0 1 2 3]
+ignore a failure of the cache   4 of 10         [2 6 8 9]
+```
+
+Every control and every run without the bug found 0 of 100. These seeds are the first that found each bug in the run before the change too, so the change runs the same seeds of the same code.
+
+The full run: `S4QL_SIM_SEEDS=1000 go test -count=1 -timeout 3h -run '^TestSimulation(_plantedBugs)?$' ./internal/sim/` took 8 min 20 s at a load of 14 to 16 (855 s user, 898 s system), with every bug found (from 59 of 1000 for the lease from the answer to 988 for the takeover) and no control or clean seed finding anything. The work at a given `S4QL_SIM_SEEDS` is the same in the first version and the final one. Ten times that is about 83 minutes, so the README gives `S4QL_SIM_SEEDS=10000 go test -timeout 4h -run '^TestSimulation(_plantedBugs)?$' ./internal/sim/`. I did not run 10000 seeds.
+
+Verification on the final code: `make test` passes in 59.5 s (`internal/sim` 57.4 s); `make lint` exits 0; `go test -race -shuffle on -count=1 ./internal/sim/ ./internal/host/` passes in 84.4 s. `S4QL_SIM_PLANT_RACE=free go test -race -run 'TestPlantedDataRace$' ./internal/sim/` still reports `WARNING: DATA RACE` and fails, and `S4QL_SIM_PLANT_RACE=scheduler` passes. `S4QL_SIM_SEEDS=20` runs every bug's workload for all 20 seeds and passes, with finds from 0 to 19. `make test-asan FUZZTIME=5s` in Docker (Linux, 10 CPUs, 4 GB) passed on the first version in 3 min 27 s, with `internal/sim` at 146 s, and on the final code in 3 min 26 s, with `internal/sim` at 149 s, at a load of 16 to 21 on the host. The sanitizer costs more than the race detector here, but it is not near the limit.
+
+### Why
+
+The six bugs on `competing` workloads cost most of the time, and their seeds and their controls need not be 200 in every run: the 10000-seed run in Step 3 is the evidence, and the default run is a regression check of it. Each simulation runs one goroutine at a time, so a test on one core left the others idle; parallel subtests use them. I did not make the default shorter under `-race` or `-asan`. With the two changes above, every mode finishes well inside the limit, and every mode runs the same seeds and finds the same bugs, so CI, which runs the package only under `-race` and `-asan`, still proves the planted bugs.
+
+### What worked
+
+- Comparing the hash of all traces per workload of `TestSimulation`, and the seeds that find each bug, between runs: serial against parallel, plain against `-race`. It turned "the runs are independent" from an argument into a check.
+- Stopping at the fourth find. It costs less than a fixed count for the bugs that are easy to find, and a fixed count of 200 for the hard ones. It also needs no number per bug.
+
+### What didn't work
+
+- `for f in plain-after2 race-after2; do echo == $f; ...` in zsh failed with `(eval):1: = not found`, because zsh expands `==` as a command lookup. `echo "-- $f"` works.
+- An inline Python script to add the `seeds` fields was refused by the sandbox: "this command is too complex to verify that it stays inside the worktree". I made the ten edits one by one.
+- The first version sized the control and the run without the bug from how easily the bug is found, and gave the test a chance of failing by chance of about 1 in 240 for each change that changes traces. The review caught both.
+
+### What I learned
+
+- The race detector does not change a trace: the seeds that find each bug, and the hashes of `TestSimulation`, are the same in both builds. A trace depends only on the code and the seed.
+- On this machine, system time is as large as user time in these tests (898 s system against 855 s user at 1000 seeds). Where it comes from, I did not look.
+- Go runs top-level parallel tests only after all sequential top-level tests have ended, so `TestFreeRunning`, `TestPlantedDataRace`, and the tests that time real waits in `/internal/sim/cgo_test.go` still run alone.
+
+### What was tricky
+
+The probabilities. The runs are deterministic, so whether the default seeds find a bug today is a fact, and the test checks it. What can be judged only by chance is whether they still will after a change, because any change that changes a trace draws new seeds for every bug at once. That chance must be summed over the bugs, not taken per bug. At 200 seeds it is under one in a million for the whole test.
+
+### What warrants review
+
+- `/internal/sim/simulation_test.go`, `TestSimulation_plantedBugs`: the stop at the fourth find, the `counting` switch for `S4QL_SIM_SEEDS`, and the condition `!counting || ran >= 200` on the must-find check.
+- What the default run now does less of: the symptom check covers the first four finds of each bug, not every find in 200 seeds; a control and the run without the bug run 100 seeds, not 200; the workload with the bug no longer counts its finds over 200 seeds unless `S4QL_SIM_SEEDS` is set.
+- `/internal/sim/README.md`, section "Tests".
+
+### Future work
+
+- Check the time of the default run in CI once the branch is pushed. It should be about two minutes for `internal/sim` under `-race` on four cores.
+- System time as large as user time may be worth a look in `TestSimulationSpeed` if the runs ever become too slow again.

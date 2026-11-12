@@ -137,14 +137,14 @@ Markus on 2026-11-11, on whether the free-running mode can go: "I'd rather keep 
 
 ## Tests
 
-`make test` runs `TestSimulation` with 200 seeds of each workload, each seed twice, and 50 for the workload whose callers never pause. `TestSimulation_plantedBugs` runs from 30 to 100 seeds of each bug's workloads, as the field `seeds` of `plantedBugs` sets for each bug: enough that a change which shuffles the seeds that find a bug leaves it unfound with a chance under one in a thousand. The test fails if a bug is not found. The default run then takes about a minute under the race detector, against the ten minutes that `go test` allows a package. The tests of the workloads run in parallel. A run shares nothing with another that reaches its trace, and the traces of `TestSimulation` hash the same in parallel as one test after another.
+By default, `TestSimulation` runs 200 seeds of each workload, each seed twice, and 50 for the workload whose callers never pause. `TestSimulation_plantedBugs` runs the workload of each bug until four seeds have found the bug, from at most 200 seeds, and fails if none does. With the shares in the table above, a check that works misses a bug in 200 seeds with a chance of less than one in a million. The control and the same workload without the bug run 100 seeds each. The tests of the workloads run in parallel, and each logs a hash of its traces that is the same with `-parallel 1`. On a Mac with 10 cores and a load of 11 to 16, the package took 58 seconds, and 87 seconds under the race detector.
 
-The environment variable `S4QL_SIM_SEEDS` sets one number of seeds for every workload. The large runs above set it to 10000:
+The environment variable `S4QL_SIM_SEEDS` sets another number of seeds for every workload, a quarter of it for the one whose callers never pause, and makes the workload of each bug run all of them. The large runs above set it to 10000:
 
 ```sh
 S4QL_SIM_SEEDS=10000 go test -timeout 4h -run '^TestSimulation(_plantedBugs)?$' ./internal/sim/
 ```
 
-The time grows with the number of seeds. With 1000 seeds, these two tests took 8 minutes 20 seconds on a Mac with 10 cores and a load of 14 to 16, so 10000 seeds take about an hour and a half on it. The `-timeout` leaves room for a slower machine.
+With 1000 seeds, these two tests took 8 minutes 20 seconds on the same Mac. The time grows with the number of seeds, so 10000 seeds need about ten times that, and the `-timeout` leaves room for a slower machine.
 
 `TestSimulationSeed` runs one seed and logs its whole trace. Its doc comment names the environment variables that choose the seed, the workload, and a planted bug.
