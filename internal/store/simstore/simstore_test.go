@@ -256,6 +256,54 @@ func TestStore_Outage(t *testing.T) {
 	})
 }
 
+func TestStore_Calm(t *testing.T) {
+	t.Run("should make no new fault happen, so that every request succeeds once the faults before it are over", func(t *testing.T) {
+		for seed := range uint64(10) {
+			synctest.Test(t, func(t *testing.T) {
+				s := sim.New(seed, sim.Options{})
+				var lines []string
+				is.NotError(t, s.Run(func(ctx context.Context) {
+					faults := faultsOn()
+					st := simstore.New(s, simstore.Options{Latency: latency, Faults: faults})
+					c := st.Client("a", nil)
+					// request the store once, with a timeout, and report whether it failed.
+					request := func(ctx context.Context, i int) bool {
+						ctx, cancel := s.WithTimeout(ctx, time.Hour)
+						defer cancel()
+						_, createErr := c.Create(ctx, fmt.Sprint("k", i), strings.NewReader("data"), nil)
+						body, _, getErr := c.Get(ctx, fmt.Sprint("k", i))
+						if getErr == nil {
+							_, getErr = io.ReadAll(body)
+						}
+						return createErr != nil || getErr != nil
+					}
+
+					var failed int
+					for i := range 50 {
+						if request(ctx, i) {
+							failed++
+						}
+					}
+					is.True(t, failed > 0, "no request failed with every fault on")
+
+					st.Calm(ctx)
+					// What the faults started is over after the longest of each, one after another.
+					is.NotError(t, s.Sleep(ctx, 2*faults.SlowBy+faults.LateBy+faults.CutOffFor+faults.OutageFor+4*latency))
+					is.NotError(t, st.Wait(ctx))
+					calm := len(s.Lines())
+					for i := range 200 {
+						is.True(t, !request(ctx, 100+i), "a request failed after the store was calmed")
+					}
+					lines = s.Lines()[calm:]
+				}))
+				for _, marker := range []string{"lost", "unreachable", "cut off", "is slow", "breaks off", "conflict", "no answer", "stuck", "never applied", "later"} {
+					is.True(t, !slices.ContainsFunc(lines, func(line string) bool { return strings.Contains(line, marker) }), marker)
+				}
+			})
+		}
+	})
+}
+
 // The workload: several instances whose callers swap a counter object, create objects named by their
 // content, and read, against a store with every fault on, and a crash of one instance after which
 // another instance joins. A model checks everything that the callers and the history saw.

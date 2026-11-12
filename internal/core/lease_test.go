@@ -218,7 +218,7 @@ func TestLease(t *testing.T) {
 			d := w.openOn(t, "a", s, core.Options{StoreTimeout: time.Minute})
 			is.NotError(t, d.Wait(t.Context()))
 			// Every swap is applied at once, and its answer comes 25 seconds later.
-			s.on("swap", "manifest", hold, -1, 25 * time.Second)
+			s.on("swap", "manifest", hold, -1, 25*time.Second)
 
 			// The renewal is sent after 20 seconds and answered after 45. Until then, the lease is the
 			// one that the instance took at the start.

@@ -54,6 +54,8 @@ func replay(c *conn, name format.Name, body io.Reader, tick func() error, bugs b
 	counted := &countingReader{r: body}
 	r := format.NewCommitReader(counted, name)
 	var done replayed
+	// ticked is whether tick ended the replay, and not the commit object.
+	var ticked bool
 
 	if err := c.c.Exec("begin immediate"); err != nil {
 		return done, err
@@ -64,7 +66,7 @@ func replay(c *conn, name format.Name, body io.Reader, tick func() error, bugs b
 			return
 		}
 		c.forget()
-		if bugs.replayCommitsEarly && isFromBody(err) {
+		if bugs.replayCommitsEarly && !ticked && isFromBody(err) {
 			// The planted bug: what was applied before the commit object broke off is kept.
 			_ = c.c.Exec("commit")
 			return
@@ -102,6 +104,7 @@ func replay(c *conn, name format.Name, body io.Reader, tick func() error, bugs b
 		}
 		if tick != nil {
 			if err := tick(); err != nil {
+				ticked = true
 				return done, err
 			}
 		}

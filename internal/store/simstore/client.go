@@ -225,7 +225,7 @@ func (c *Client) send(ctx context.Context, r *request) error {
 // carry the request r of c to the store, apply it, and carry the response back, with the faults
 // that the seed picks.
 func (s *Store) carry(ctx context.Context, c *Client, r *request) {
-	f := s.options.Faults
+	f := s.faults()
 	trace := func(format string, args ...any) {
 		s.host.Trace(ctx, "%v: request %v: "+format, append([]any{s.name, r.id}, args...)...)
 	}
@@ -244,6 +244,9 @@ func (s *Store) carry(ctx context.Context, c *Client, r *request) {
 	gaveUp := r.gaveUp
 	s.mu.Unlock()
 	crashed := c.sender != nil && c.sender.Crashed()
+	// The faults are read again at each decision, so that a request that is on its way when the
+	// store is calmed gets no new fault.
+	f = s.faults()
 	if crashed || gaveUp {
 		why, p := "the caller gave up", f.Late
 		if crashed {
@@ -274,6 +277,7 @@ func (s *Store) carry(ctx context.Context, c *Client, r *request) {
 
 	// The way back.
 	_ = s.host.Sleep(ctx, s.way(trace, "back"))
+	f = s.faults()
 
 	s.mu.Lock()
 	gaveUp = r.gaveUp
@@ -302,7 +306,7 @@ func (s *Store) carry(ctx context.Context, c *Client, r *request) {
 // [Faults.Hang], and a write is stuck in the network by [Faults.Late], to arrive later, or is never
 // applied.
 func (s *Store) lose(ctx context.Context, c *Client, r *request, trace func(format string, args ...any), err error) {
-	f := s.options.Faults
+	f := s.faults()
 	hang := s.chance(f.Hang)
 	stuck := r.kind != get && s.chance(f.Late)
 	s.mu.Lock()
@@ -364,8 +368,8 @@ func (s *Store) settle(r *request) {
 // way is the time that one way of a request takes, named by which for the trace.
 func (s *Store) way(trace func(format string, args ...any), which string) time.Duration {
 	d := s.upTo(s.options.Latency)
-	if s.chance(s.options.Faults.Slow) {
-		slow := s.upTo(s.options.Faults.SlowBy)
+	if f := s.faults(); s.chance(f.Slow) {
+		slow := s.upTo(f.SlowBy)
 		trace("is slow on its way %v, by %v", which, slow)
 		d += slow
 	}
@@ -384,7 +388,7 @@ func (s *Store) unreachable(c *Client) bool {
 func (s *Store) apply(ctx context.Context, c *Client, r *request) {
 	// The fault is drawn before the store's mutex is taken, and counts only if another write to the
 	// key is in flight.
-	conflict := r.kind == swap && s.chance(s.options.Faults.Conflict)
+	conflict := r.kind == swap && s.chance(s.faults().Conflict)
 	breakAt := -1
 	var result string
 	func() {
@@ -444,7 +448,7 @@ func (s *Store) apply(ctx context.Context, c *Client, r *request) {
 		result = fmt.Sprintf("applied as write %v, at version %v", len(s.history), short(r.version))
 	}()
 
-	if r.kind == get && r.err == nil && s.chance(s.options.Faults.BrokenRead) {
+	if r.kind == get && r.err == nil && s.chance(s.faults().BrokenRead) {
 		breakAt = int(s.host.Uint64() % uint64(len(r.content)+1))
 		result += fmt.Sprintf(", whose content breaks off after %v bytes", breakAt)
 	}

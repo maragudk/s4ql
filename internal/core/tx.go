@@ -884,16 +884,15 @@ func (tx *Tx) publish(ctx context.Context, name format.Name, attempts *int) (pub
 			// it, while the request that is stuck commits the first one.
 			d.mu.Lock()
 			if !d.bugs.serveUnknown {
-				d.serving = false
+				d.serving, d.unresolved = false, true
 			}
-			d.unresolved = true
 			d.wakeLocked()
 			d.mu.Unlock()
 			return unknown, after(context.Cause(ctx), last)
 		}
 
 		*attempts++
-		result, err := d.send(ctx, f)
+		result, err := d.send(ctx, f, nil)
 		switch result {
 		case sendApplied:
 			return published, nil

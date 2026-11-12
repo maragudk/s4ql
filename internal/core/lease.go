@@ -100,12 +100,23 @@ func refusal(err error) bool {
 }
 
 // send one attempt of the swap f, from the version that the instance knows. It requires the
-// manifest lock.
-func (d *DB) send(ctx context.Context, f *flight) (sendResult, error) {
+// manifest lock, which outside is nil for, except under the planted bug renewOutsideLock.
+func (d *DB) send(ctx context.Context, f *flight, outside *locks) (sendResult, error) {
 	f.attempts++
+	from := d.version
+	if outside != nil {
+		// The planted bug: the swap is sent without the lock, from the version that was read under
+		// it.
+		outside.releaseManifest(ctx)
+	}
 	rctx, cancel := d.host.WithTimeout(ctx, d.options.StoreTimeout)
-	version, err := d.store.Swap(rctx, d.manifestKey, d.version, bytes.NewReader(f.data), &f.sum)
+	version, err := d.store.Swap(rctx, d.manifestKey, from, bytes.NewReader(f.data), &f.sum)
 	cancel()
+	if outside != nil {
+		if lockErr := outside.acquireManifest(ctx); lockErr != nil {
+			return sendUnknown, lockErr
+		}
+	}
 	switch {
 	case err == nil:
 		d.adopt(f, version)
@@ -408,7 +419,7 @@ func (d *DB) recoverLocked(ctx context.Context) time.Duration {
 				d.flights = nil
 				break
 			}
-			if wait := d.renewLocked(ctx); len(d.flights) > 0 || !d.holds() {
+			if wait := d.renewLocked(ctx, nil); len(d.flights) > 0 || !d.holds() {
 				return max(wait, retrySoon)
 			}
 		}
@@ -521,32 +532,18 @@ func (d *DB) renew(ctx context.Context) time.Duration {
 		return 0
 	}
 
-	if d.bugs.renewOutsideLock && len(d.flights) == 0 {
-		// The planted bug: the swap is sent without the lock, from the version that was read under
-		// it, and its manifest is adopted whatever happened in between.
-		f, err := d.newFlight(format.Name{}, false)
-		if err != nil {
-			return retryAfter
-		}
-		from := d.version
-		held.releaseManifest(ctx)
-		rctx, cancel := d.host.WithTimeout(ctx, d.options.StoreTimeout)
-		version, err := d.store.Swap(rctx, d.manifestKey, from, bytes.NewReader(f.data), &f.sum)
-		cancel()
-		if held.acquireManifest(ctx) != nil || err != nil {
-			return retryAfter
-		}
-		d.adopt(f, version)
-		return 0
+	if d.bugs.renewOutsideLock {
+		// The planted bug.
+		return d.renewLocked(ctx, &held)
 	}
-	return d.renewLocked(ctx)
+	return d.renewLocked(ctx, nil)
 }
 
 // keepLease renews the lease if a renewal is due, for a holder that is busy with something long.
 // It fails if the instance no longer holds the lease. It requires the manifest lock.
 func (d *DB) keepLease(ctx context.Context) error {
 	if d.renewalDue() <= d.host.Monotonic() {
-		d.renewLocked(ctx)
+		d.renewLocked(ctx, nil)
 	}
 	if err := d.stoppedError(); err != nil {
 		return err
@@ -560,14 +557,15 @@ func (d *DB) keepLease(ctx context.Context) error {
 // renewLocked sends a renewal: a swap of the manifest for the same manifest with a new lease
 // entry. If an earlier renewal had an outcome that is unknown, it sends that same swap again. It
 // returns how long to wait before the next try, which is zero after a renewal that is known to
-// have happened and after the loss of the lease. It requires the manifest lock.
+// have happened and after the loss of the lease. It requires the manifest lock, which outside is
+// nil for: see [DB.send].
 //
 // A renewal that ends without an answer leaves the lease as the last renewal that is known to
 // have happened gave it, so reads go on for as long as the clocks say that it holds. After a
 // refusal, the instance reads the manifest, because a refusal does not say whether an earlier
 // attempt was applied, and the store may refuse a swap from the right version while another
 // write to the manifest is on its way.
-func (d *DB) renewLocked(ctx context.Context) time.Duration {
+func (d *DB) renewLocked(ctx context.Context, outside *locks) time.Duration {
 	clock := d.stopwatch()
 	var f *flight
 	for _, other := range d.flights {
@@ -585,7 +583,7 @@ func (d *DB) renewLocked(ctx context.Context) time.Duration {
 		}
 	}
 
-	result, err := d.send(ctx, f)
+	result, err := d.send(ctx, f, outside)
 	outcome := "renewed"
 	wait := time.Duration(0)
 	switch result {

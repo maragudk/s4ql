@@ -114,8 +114,8 @@ func note(sql string, vs ...any) step {
 	}
 }
 
-// run the steps in one write transaction of d, and commit it.
-func run(t *testing.T, d *core.DB, steps ...step) {
+// transact runs the steps in one write transaction of d, and commit it.
+func transact(t *testing.T, d *core.DB, steps ...step) {
 	t.Helper()
 	write(t, d, func(tx *core.Tx) {
 		for _, s := range steps {
@@ -241,10 +241,10 @@ func TestTx_Commit(t *testing.T) {
 		t.Run(test.name+", and replay it to the same state", func(t *testing.T) {
 			w := newWorld(t)
 			d := w.serve(t, "a", core.Options{})
-			run(t, d, start...)
+			transact(t, d, start...)
 			before := w.manifest(t).Head
 
-			run(t, d, test.steps...)
+			transact(t, d, test.steps...)
 			log := w.commits(t)
 			if test.commit == nil {
 				is.Equal(t, before, w.manifest(t).Head)
@@ -266,7 +266,7 @@ func TestTx_Commit(t *testing.T) {
 	t.Run("should let the transaction read its own writes, which no read transaction sees before the commit", func(t *testing.T) {
 		w := newWorld(t)
 		d := w.serve(t, "a", core.Options{})
-		run(t, d, start...)
+		transact(t, d, start...)
 
 		tx, err := d.Begin(t.Context())
 		is.NotError(t, err)
@@ -298,7 +298,7 @@ func TestTx_Commit(t *testing.T) {
 	t.Run("should keep nothing of a transaction that is rolled back", func(t *testing.T) {
 		w := newWorld(t)
 		d := w.serve(t, "a", core.Options{})
-		run(t, d, start...)
+		transact(t, d, start...)
 		head := w.manifest(t).Head
 
 		tx, err := d.Begin(t.Context())
@@ -312,7 +312,7 @@ func TestTx_Commit(t *testing.T) {
 		is.Equal(t, head, w.manifest(t).Head)
 		is.Equal(t, "t1(k*0,v): 1,10 | 2,20\nt2(a*0,b*1,c): 1,1,100", read(t, d))
 		// The next transaction starts clean.
-		run(t, d, upsert("t1", 4, 40))
+		transact(t, d, upsert("t1", 4, 40))
 		is.EqualSlice(t, []string{"upsert t1 [0 1] 4,40"}, w.commits(t)[1])
 	})
 
@@ -350,7 +350,7 @@ func TestTx_Commit(t *testing.T) {
 	t.Run("should refuse what the database cannot hold, each with its own error, and go on", func(t *testing.T) {
 		w := newWorld(t)
 		d := w.serve(t, "a", core.Options{})
-		run(t, d, start...)
+		transact(t, d, start...)
 
 		tx, err := d.Begin(t.Context())
 		is.NotError(t, err)
@@ -481,7 +481,7 @@ func committing(t *testing.T, w *world, options core.Options) (*scriptStore, *co
 	s := newScriptStore(w.client())
 	d := w.openOn(t, "a", s, options)
 	is.NotError(t, d.Wait(t.Context()))
-	run(t, d, create("t1", 1, "k"))
+	transact(t, d, create("t1", 1, "k"))
 	tx, err := d.Begin(t.Context())
 	is.NotError(t, err)
 	create("t2", 1, "k")(t, tx)
@@ -581,7 +581,7 @@ func TestTx_Commit_unknownOutcome(t *testing.T) {
 			is.True(t, errs[0] != nil, "the stuck swap was applied after the instance had settled that it is not committed")
 			is.Equal(t, without, read(t, d))
 			is.Equal(t, 1, len(w.commits(t)))
-			run(t, d, create("t3", 1, "k"))
+			transact(t, d, create("t3", 1, "k"))
 			is.Equal(t, "t1(k*0): \nt3(k*0): ", read(t, d))
 		})
 	})
@@ -650,7 +650,7 @@ func TestTx_Commit_unknownOutcome(t *testing.T) {
 			}()
 			b := w.serve(t, "b", core.Options{})
 			is.Equal(t, with, read(t, b))
-			run(t, b, create("t3", 1, "k"))
+			transact(t, b, create("t3", 1, "k"))
 			s.clear()
 
 			<-committed
@@ -675,7 +675,7 @@ func TestTx_Commit_unknownOutcome(t *testing.T) {
 				close(committed)
 			}()
 			b := w.serve(t, "b", core.Options{})
-			run(t, b, create("t3", 1, "k"))
+			transact(t, b, create("t3", 1, "k"))
 			s.clear()
 
 			<-committed
