@@ -69,7 +69,7 @@ message Change {
 // Creates a table.
 message CreateTable {
   // The name of the table.
-  string table = 1;
+  string table_name = 1;
   // The columns, in their declared order.
   repeated Column columns = 2;
   // The primary-key columns, in key order, as positions in `columns`,
@@ -97,7 +97,7 @@ enum Type {
 // Drops a table and all its rows.
 message DropTable {
   // The name of the table.
-  string table = 1;
+  string table_name = 1;
 }
 
 // Puts rows into a table. A row replaces any row with the same primary key.
@@ -106,7 +106,7 @@ message DropTable {
 // puts many rows into one table writes several batches.
 message PutRows {
   // The name of the table.
-  string table = 1;
+  string table_name = 1;
   // The rows. Each holds a value for every column, in the table's column
   // order.
   repeated Row rows = 2;
@@ -117,7 +117,7 @@ message PutRows {
 // A DeleteRows is a batch, like a PutRows.
 message DeleteRows {
   // The name of the table.
-  string table = 1;
+  string table_name = 1;
   // The rows. Each holds only its primary-key values, in key order.
   repeated Row rows = 2;
 }
