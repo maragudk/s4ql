@@ -149,10 +149,97 @@ The environment variables:
 - `S4QL_SIM_BUG` makes `TestSimulationSeed` run the workload of the planted bug that it names. `S4QL_SIM_CONTROL` then runs the control of that bug, and `S4QL_SIM_CLEAN` runs the workload without the bug.
 - `S4QL_CORE_ROWS` sets the number of rows of `TestTx_Commit_large`.
 
-The full run:
+The large runs, as they were made for the numbers below:
 
-TODO(core-builder): the command with its -timeout.
+```sh
+S4QL_SIM_SEEDS=10000 go test -timeout 6h -run '^TestSimulation$' ./internal/core/
+S4QL_SIM_SEEDS=1000 go test -timeout 3h -run '^TestSimulation_plantedBugs$' ./internal/core/
+```
+
+On a Mac with 10 cores and a load of 13 to 18 from other work, the first took 23 minutes for the workload with one instance, 30 minutes for the workload with everything, and 39 minutes for the workload whose callers never pause, and the second took 33 minutes while the first ran beside it. The planted bugs over 10000 seeds were not run. The time grows with the number of seeds, so they need about ten times that, and `-timeout 12h` leaves room.
+
+The default run of the package took 53 seconds on that machine, and 112 to 123 seconds under the race detector. A profile shows three quarters of the time in handing the baton between the scheduler and the task that it runs, so the time goes with the number of steps, and parallel subtests gain a factor of three to four, not ten.
+
+`S4QL_CORE_ROWS=2000000 go test -run TestTx_Commit_large ./internal/core/` runs a transaction of four million rows. Its commit object was 157 MB. The heap of the Go runtime grew by 3.4 MB while the transaction was written and committed, and by 20 MB while it was replayed, which is one batch of rows as the messages that it decodes to. With the default of 600,000 rows and a commit object of 23 MB, the numbers were 3.2 MB and 20 MB, so neither grows with the transaction.
 
 ### What was measured
 
-TODO(core-builder): the numbers of the 10000-seed runs, the planted bugs, and the mutation testing.
+Each workload ran with `S4QL_SIM_SEEDS=10000`. No seed violated an invariant, and no pair of traces differed:
+
+| | One instance | Everything | Callers that never pause |
+|---|---|---|---|
+| Seeds, each run twice | 10000 | 10000 | 10000 |
+| Commits acknowledged | 143626 | 110225 | 635909 |
+| Commits of nothing | 24898 | 19422 | 109932 |
+| Commits that failed | 423 | 2622 | 4468 |
+| Commits of unknown outcome | 308 | 473 | 2812 |
+| Of those, settled as committed | 114 | 121 | 1064 |
+| Settled as not committed, by a renewal | 194 | 156 | 1748 |
+| Settled by the loss of the lease | 0 | 151 | 0 |
+| Commits cut off by a crash | 0 | 294 | 0 |
+| Reads served | 294934 | 245988 | 1331510 |
+| Reads overtaken by a commit | 6345 | 2626 | 264404 |
+| Reads and writes refused for lack of a valid lease | 6898 | 828216 | 219957 |
+| Reads refused because a clock said that the lease had run out | 805 | 5691 | 6264 |
+| Leases taken | 20000 | 38763 | 20000 |
+| Leases lost to another instance | 0 | 2706 | 0 |
+| Renewals whose outcome was unknown, and then settled | 931 | 13222 | 1329 |
+| Crashes, each with a restart on a copy of the cache | 0 | 10000 | 0 |
+| Instances closed and opened again while callers ran | 0 | 17702 | 0 |
+| Stops for a cache that failed after the manifest swap | 0 | 7082 | 0 |
+| Stops for a commit object damaged in two downloads in a row | 0 | 38 | 0 |
+| Moves of a clock | 0 | 167174 | 0 |
+| Buggify points that fired | 0 | 37794 | 0 |
+| Longest time until an instance served after the workload | 20 s | 2 m 8 s | 32 s |
+| The bound on that time | 4 m 56 s | 5 m 29 s | 4 m 56 s |
+
+Half of the leases taken in each column are those of the instance that replays the whole log into an empty cache at the end of every run. The faults of the store in the same runs:
+
+| Fault | One instance | Everything | Callers that never pause |
+|---|---|---|---|
+| Requests lost on their way | 7364 | 45819 | 30167 |
+| Answers lost on their way | 6790 | 43815 | 28896 |
+| Calls that got no answer at all | 7390 | 36817 | 32116 |
+| Swaps refused for a conflict with another write | 3434 | 6830 | 39309 |
+| Slow ways | 14531 | 87789 | 61472 |
+| Downloads whose content broke off | 206 | 32033 | 1352 |
+| Clients cut off | 1941 | 11217 | 8040 |
+| Outages | 762 | 4649 | 3264 |
+| Writes stuck in the network, to arrive later | 14175 | 18580 | 61533 |
+| Writes applied after their caller gave up or crashed | 2600 | 4273 | 9611 |
+| Callers that gave up on a request | 19744 | 113983 | 84164 |
+| Downloads of commit objects damaged on their way | 0 | 1925 | 0 |
+
+The planted bugs, each over 1000 seeds. The control is the same workload without what the bug needs. Each bug's workload also ran without the bug:
+
+| Planted bug | Seeds that found it | Seeds of the control that found it | Seeds that found anything without the bug |
+|---|---|---|---|
+| A renewal that swaps the manifest outside the lock | 884 | no control | 0 |
+| A commit that reaches the cache before the manifest | 166 | no control | 0 |
+| A read that checks the wall clock only | 115 | 0 | 0 |
+| A read that checks the monotonic clock only | 123 | 0 | 0 |
+| An instance that takes over a lease only after a release | 1000 | 0 | 0 |
+| A renewal that writes no new salt | 968 | 0 | 0 |
+| An instance that waits for its own duration, not the holder's | 347 | 0 | 0 |
+| A swap against the version read last, not the one watched | 997 | 0 | 0 |
+| A holder that counts its lease from the answer to a swap | 53 | 0 | 0 |
+| A commit that ignores a failure of the cache | 223 | 0 | 0 |
+| A commit acknowledged before the outcome of its swap is known | 984 | 0 | 0 |
+| "Not committed" from a read of an unchanged manifest | 131 | 0 | 0 |
+| An instance that serves on after "outcome unknown" | 884 | 0 | 0 |
+| "Not committed" because the lease was lost, without the log | 73 | 0 | 0 |
+| A replay that commits before the reader reported the end | 219 | 0 | 0 |
+| A commit object that lists a key twice | 1000 | no control | 0 |
+| A commit object that forgets a delete | 918 | no control | 0 |
+| A catch-up that skips a commit object that it cannot read | 562 | 0 | 0 |
+| A renewal that waits for the writer lock | 870 | 0 | 0 |
+
+- **Two controls found their bug in the first count, and were wrong, not the core.** The control of the lease counted from the answer had no slow answers, and found the bug in 1 of 1000 seeds: an instance also learns late of a swap whose answer a cut-off lost. It has one instance now. The control of the replay that commits early had no downloads that break off by themselves, and found the bug in 3 of 1000: content also breaks off when its client is cut off while replay renews the lease. It has no cut-offs and no outages now. Both were counted again.
+- **The read model finds the bugs of the clocks in about one seed in nine, and the lease counted from the answer in one in nineteen.** The stale window runs from the new holder's first acknowledged commit to the old holder's next contact with the store. The history of the store finds the bugs of the watcher in nearly every seed, because it needs no read at the right moment.
+- **The default run finds every bug four times within 81 seeds.**
+
+Mutation testing, with one mutant for each decision of the core, each a copy of one file put in place with `go test -overlay`:
+
+- **Before the review of the build:** 117 mutants, of which 81 were caught, 23 were not, and 13 did not build. After tests for the survivors that deserved one, 10 were not caught.
+- **After the review,** the run of 144 mutants on the final code was stopped by the system for lack of memory after 64, of which 53 were caught and 9 were not, and was not started again. Two of the 9 got a test afterwards. The other 80 have not run on the final code.
+- **The mutants that no test catches change nothing that a caller can see:** the second look at the lease after a call waited for its lock, and the one after the state of a read is fixed; four checks of replay whose commit objects SQLite or the binding still refuses; the check of a commit object's parent, which the walk through the log makes true; a guard in the commit that the correct code never reaches; the temporary table that a created table does not need; and the order in which the connections open. The diary has the reason for each.

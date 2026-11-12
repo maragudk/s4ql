@@ -337,3 +337,53 @@ Keeping "nil if and only if committed" when the instance stops in the middle of 
 ### Future work
 
 The two questions for the lead above.
+
+## Step 6: Verification
+
+**Author:** core-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "`S4QL_SIM_SEEDS=10000` on every workload: no violation, no pair of traces that differ. Give the counts of what happened in those runs (commits, unknown outcomes, takeovers, crashes, each fault), so that I can see the faults really occurred. Each planted bug: how many seeds find it, its control, and the run without the bug."
+**Interpretation:** The large runs on the code as it is after the review, with the numbers, and the default run's times.
+**Inferred intent:** Numbers that someone else can check, on the code that is handed over.
+
+### What I did
+
+- `S4QL_SIM_SEEDS=10000 go test -timeout 6h -run '^TestSimulation$' ./internal/core/`: each of the three workloads, 10000 seeds, each seed twice. No violation and no pair of traces that differed. The workload with one instance ran on commit `512466d` (23 minutes), and the workload with everything (30 minutes) and the workload whose callers never pause (39 minutes) on `d9fad45`, after the fix below. In the workload with everything: 110225 commits acknowledged, 473 of unknown outcome, 38763 leases taken, 2706 leases lost to another instance, 10000 crashes with a restart, 17702 instances closed and opened again while callers ran, 7082 stops for a cache that failed after the manifest swap, 167174 moves of a clock, and every fault of the store between 4273 and 87789 times. The longest time until an instance served after a workload was 2 minutes 8 seconds, where the bound is 5 minutes 29 seconds. The tables are in `/internal/core/README.md`, "What was measured".
+- `S4QL_SIM_SEEDS=1000 go test -timeout 3h -run '^TestSimulation_plantedBugs$' ./internal/core/`: every planted bug, its control, and its workload without the bug, 1000 seeds each, in 33 minutes. Every bug was found, by 53 to 1000 seeds. No seed found anything without the bug. I did not run the planted bugs over 10000 seeds: that is about five and a half hours on this machine.
+- The default run: `go test -count=1 -shuffle on ./internal/core/` in 53 seconds, and with `-race` in 112 to 123 seconds, at a load of 13 to 17 on 10 cores from other sessions. `make test` passes in 78 seconds, with `internal/core` at 70 seconds beside the other packages, and `make lint` passes, with `simlint` and no exemption for the core.
+- `TestFreeRunning` under the race detector: 30 runs of each workload on real goroutines, with no report, and `TestFreeRunning_plantedDataRace` gets its report of the planted race with the scheduler off and none under it.
+
+### Why
+
+The claims of the report rest on these runs.
+
+### What worked
+
+The 10000-seed run did what it is for. It found a fault that 600 seeds and the default run had not.
+
+### What didn't work
+
+- The first 10000-seed run of the workload with everything failed in 5 of the first 2700 seeds, each with a run that never ended: `seed 668: scheduler: no end after 5000000 steps; waiting: b/lease of 7e8cc65308108648a574c34f7a38bab2 at release of b/manifest`. It was my harness and not the core. The task that closes and opens an instance while its callers run, which I had added after the review, and the supervisor that opens an instance again after a stop could both open a database for the same node. The one that lost was never closed, and its lease task ran for ever. One task at a time does it now, behind a flag, and the five seeds pass.
+- My first fix of that added a check that a close ends, and the check failed for seed 2369: `the close of b did not end: close: release of the lease: gave up after 27 attempts: simstore: request 77: context deadline exceeded`. The close had ended. Its error wrapped the timeout of one request, which my check took for the timeout of the close. The check looks at the context of the close now.
+- Two controls found their bug in the count over 1000 seeds: `1 of 1000 seeds found the bug without what it needs` for the lease counted from the answer, and 3 of 1000 for the replay that commits early, such as `seed 986 found the bug without what it needs: [the cache of b2 holds at commit 3 the state "TBL 2;--(select*0): 0 | 1 | 3\nt0(select*0): ", and the log has "TBL 2;--(select*0): 0 | 1 | 3"]`. Neither control took away everything that its bug needs. An instance also learns late of a swap whose answer a cut-off lost, and the content of a download also breaks off when its client is cut off while replay renews the lease. The first control has one instance now, the second has no cut-offs and no outages, and both were counted again: 0 of 1000.
+
+### What I learned
+
+- The default run of 20 seeds of a control says little: both wrong controls passed it, and one of them passed 60 seeds earlier in the day.
+- A harness fault can look like the worst kind of fault of the code under test, a run that never ends. What told them apart was the list of tasks that still waited: only a lease task, of an instance that no test task held any more.
+
+### What was tricky
+
+Running the large runs on a machine that 13 sessions share. The system stopped one background job of mine for lack of memory, and the times are from a load of 13 to 18.
+
+### What warrants review
+
+- The numbers in `/internal/core/README.md`, "What was measured", against the logs of the runs, which are in the session's scratchpad and not in the tree.
+- The two controls that changed: `leaseFromAnswer` and `replayCommitsEarly` in `/internal/core/workloads_test.go`.
+
+### Future work
+
+- The planted bugs over 10000 seeds, and the mutation testing on the final code, on a machine with time and memory to spare.
+- What the simulation still does not show: the margin on the watcher's wait, because no clock runs fast; SQLite's "busy" and the order in which the connections open, because the scheduler runs one goroutine at a time; a manifest that is damaged on its way; a cache that fails anywhere but at the commit after a manifest swap; a power loss; and clock faults on an instance that was restarted after a crash.
