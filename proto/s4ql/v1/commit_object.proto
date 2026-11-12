@@ -20,6 +20,11 @@ option go_package = "maragu.dev/s4ql/internal/s4qlpb";
 //
 // It is written and read as a stream: the header first, then the changes
 // and the annotations, one at a time.
+//
+// A reader refuses a commit object that holds a field it does not know,
+// anywhere outside the annotations: a newer version of s4ql wrote it, and
+// the field may change what replay must do. Inside an annotation, a reader
+// skips a field it does not know.
 message CommitObject {
   // Exactly once, and first. A reader refuses a commit object without it.
   Header header = 1;
@@ -36,7 +41,7 @@ message CommitObject {
 message Header {
   // The version of this format: 0 while the format is a draft. A reader
   // refuses a version it does not know. From version 1 on, the version is
-  // raised when something is added that a reader must not ignore.
+  // raised when the meaning of the format changes without a new field.
   uint32 version = 1;
   // The name of the commit object before this one: 32 bytes, all zero in
   // the first one.
