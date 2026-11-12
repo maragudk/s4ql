@@ -104,7 +104,7 @@ Three packages, all library code under `simlint` with no exemption:
 
 - `/internal/store/store.go`: `store.Store` with `Get(ctx, key) (io.ReadCloser, Version, error)`, `Create(ctx, key, content io.ReadSeeker, checksum *Checksum) (Version, error)`, and `Swap(ctx, key, from Version, content io.ReadSeeker, checksum *Checksum) (Version, error)`. `Version` is an opaque string. `Checksum` is an alias of `[32]byte`, passed as a pointer that may be nil. The four sentinel errors `ErrNotFound`, `ErrExists`, `ErrChanged`, and `ErrChecksum` each mean "not applied", and the package documentation says that every other error of a write means the outcome is unknown, also one that wraps a context error.
 - `/internal/store/simstore/`: `simstore.New(host, Options)` on the host of the test itself, and `Store.Client(name, sender)` for each instance, where the sender is anything with `Crashed() bool`, such as a `*sim.Instance`, or nil. Every request is carried by a task of the test, named `store request N`, so that it survives its caller giving up and its sender crashing. The caller waits for that task with its own context. The carrier draws the faults, sleeps the way there, decides a request whose caller gave up or whose sender crashed by `Faults.Late` or `Faults.AfterCrash`, checks cut-offs and outages, applies the request at one instant under the mutex, sleeps the way back, and decides the response. A version is an HMAC-SHA256 of the content, with a key drawn from the seed, so the same content gets the same version at every key, and nothing outside can compute it. The direct view is `Store.Object`, `Store.Keys`, and `Store.History`, which copy what they return. `Store.Wait` waits for every carrier, including late ones. `Client.CutOff` and `Store.Outage` let a test cut a client or every client off by hand, and `Faults.CutOff` and `Faults.Outage` do it from the seed. `simstore.AllFaults` is a default with every fault on. Every error that a fault causes wraps `simstore.ErrFault`.
-- `/internal/store/storetest/storetest.go`: `storetest.Test(t, harness)` runs 17 cases, `storetest.Cases` lists them, and each case reports through a small `storetest.T` interface with `Errorf` only, because a case runs in a task of a host and must not call `FailNow` there. A `Harness` runs a case once against a new, empty store, as a task of a host, so the same cases run under the scheduler and, later, against real S3 with `host.New()`. Racing cases start eight tasks through the host.
+- `/internal/store/storetest/storetest.go`: `storetest.Test(t, harness)` runs 17 cases, `storetest.Cases` lists them, and each case reports through a small `storetest.T` interface with `Helper` and `Errorf`, and no `FailNow`, because a case runs in a task of a host and must not call `FailNow` there. A `Harness` runs a case once against a new, empty store, as a task of a host, so the same cases run under the scheduler and, later, against real S3 with `host.New()`. Racing cases start eight tasks through the host.
 
 The tests: `/internal/store/storetest/storetest_test.go` runs the suite against five wrong stores, which wrap a correct simulated client: a swap that ignores its version, a create that overwrites, a read that serves what it read first, a write that drops its checksum, and a swap that creates where no object is. Each is caught by the case named for it. `/internal/store/simstore/client_test.go` runs the suite over 20 seeds, and has a probe (instances `a`, `b`, `c`, each with a caller of 25 operations, with or without short timeouts, and with or without a crash of `c`) with which each of the eight faults is seen through the interface and in the trace with only it on, and never with it off and every other fault on. It also checks a calm run, replay of 50 seeds, and, in every run of the fault tests, that no write of a client is applied, and no call of it succeeds, inside a window in which the trace says it was cut off. `/internal/store/simstore/simstore_test.go` tests the direct view, versions, `Wait`, `Outage`, and the workload of point 17.
 
@@ -130,7 +130,7 @@ The suite passed against the simulated store at the first run, and the tests of 
 
 ### What I learned
 
-- What the AWS documentation says, with sources, is in the step on verification.
+- What the AWS documentation says, with sources, is in Step 4.
 - A shell command with a here-document was refused with `This session is isolated in the worktree ..., but this command is too complex to verify that it stays inside the worktree`. Debug files go in the tree and are deleted after, and scripts run from the scratchpad with plain commands.
 
 ### What was tricky
@@ -148,3 +148,146 @@ The suite passed against the simulated store at the first run, and the tests of 
 
 - The client for real S3 runs `storetest.Test` with a harness of its own.
 - Only a planted bug in a consumer of the store, such as the core, shows that the faults reach the consumer. The workload here shows that they reach a model of the store.
+
+## Step 3: Self-review, and what it changed
+
+**Author:** store-builder
+
+### Prompt Context
+
+**Verbatim prompt:** When the implementation is done, self-review it as your standing instructions say, fix what is real, and run `make test`, `make lint`, and the race run again.
+**Interpretation:** Run the code-review skill over `git diff main...HEAD`, with two competing reviewers, fix what they found that is real, and verify again, since the review changes the code that the first verification ran.
+**Inferred intent:** The simulated store is the judge of the core, so it has to survive someone who tries to make it kinder than S3 without a test noticing.
+
+### What I did
+
+I ran the `fabrik:code-review` skill. Two reviewers on the `fable` model reviewed the branch independently. They were told that they competed and that the store must never be kinder than S3, and they tried their claims with `go test -overlay` from the scratchpad. Both reran the 10000 seeds and the race run on the unchanged tree, and both passed.
+
+Findings that both reported, which I fixed:
+
+- **After any error that was not the caller's own context, the outcome of a write was settled.** This was the serious one. A lost request and an unreachable store meant "never applied", and a lost response meant "applied before the error". The contract says such a write may still land later, and a real network does that after a reset or a timeout of the transport. Reviewer A counted 3422 writes that failed with `ErrFault` over 300 seeds, 0 of them applied after the call returned. Now a write that is lost or does not reach the store is, by `Faults.Late`, stuck in the network: a task of its own carries a copy of it, which arrives up to `LateBy` later, and is applied unless the store is unreachable by then. Both reviewers noted that requirement 11 as worded allowed the old behaviour, so the gap was in the requirement as well.
+- **No call blocked until its context ended.** A core that calls the store without a timeout would never be caught. The new `Faults.Hang` makes a call that a fault made fail get no answer at all, so it returns only when its context ends. A call without a deadline then hangs the run, which the scheduler reports.
+- **S3 documents a third outcome for racing swaps.** The conditional-writes page says of `If-Match`: "You can also receive a `409 Conflict` response in the case of concurrent requests." The new `Faults.Conflict` refuses a swap from the right version with `store.ErrChanged` while another write to its key is in flight. The contract now says that `ErrChanged` can mean this too. The suite's racing swaps accept zero winners if the object is then unchanged, and the counter case allows ten times as many failed swaps as can succeed. My earlier citation came from the `If-None-Match` paragraph, and the package documentation now quotes both.
+- **The contract's sentence on unknown outcomes was wrong.** "Only a later read, or a conditional write that the stuck request would make fail, tells what happened" suggested that a read settles the outcome, but the write can land after the read. The package documentation now says that only a conditional write that succeeds rules a stuck write out: a create rules out every create of the key, and a swap rules out swaps from the version it replaced, for as long as that version does not come back.
+- **The SDK's own retries break the four errors.** A real client that sends a conditional write again by itself, after a first attempt whose response was lost, gets 412 for a write that this very call applied. The contract now says that such a refusal is an unknown outcome.
+- **The ETag claim was imprecise.** SSE-KMS gives an ETag that is not MD5 too, also with a key that AWS manages. The comment now says "not encrypted with SSE-KMS or SSE-C", with the source.
+- **Mechanisms that could be removed with every test passing:** the delay of a late write (`LateBy`), the client and request of each write in the history, slowness on each way separately, the key check, the panic on a swap from an empty version, the refusal of closed content, the panic on a duplicate client name, and `Store.Wait` waiting for requests sent while it waits. Each has a test now.
+- **The "never happens" checks of cut-offs and outages were the trace marker twice.** Each fault now has two such checks: the marker, with every other fault on, and the effect through the interface and the history, with the other faults that look the same switched off too. For example, a lost response and a stuck request look the same to a caller.
+- **The workload's IDs were not unique.** Both callers of an instance used `name-i`. They are `name-caller-i` now.
+- **`go test -race` saw nothing.** Every test ran under the scheduler, one goroutine at a time. `TestClient_free` runs the conformance suite and eight parallel callers with every fault on, on `sim.Free`.
+- **Comments looked outward**, to the lease, to "the correctness of s4ql", to the simulation's instances and the host of the test, and to the client for real S3. **Single-use package-level variables:** `wrongStores` and the two regular expressions of `probed.breach` are inlined.
+
+Findings of one reviewer that I fixed for their seriousness:
+
+- A task that calls `Crash` on its own instance runs on until it waits, and its request was still delivered, which a dead process never sends. A deferred call to the store from a crashed task failed the whole run, with `task store request 1 starts while the run ends`. A client whose sender has crashed now sends nothing and returns an error at once. A request that is never applied now gives a live caller an error, where it gave `nil` before (reviewer B).
+- The check of the workload traced violations while it ranged over maps, so a run that found a bug could give two traces. Reviewer A found 4 such seeds of 195 with a planted bug. The check now ranges in sorted order (reviewer A).
+- Which switch decides a write whose caller gave up and whose sender crashed before it arrived was not pinned. `TestClient_crash` pins it to `AfterCrash` (reviewer A).
+- Reading content took no simulated time, and nothing could touch it after the response. Content now breaks off if its client is cut off while it is read. Reading still takes no simulated time (reviewer A).
+- The test that cuts a client off while a response is on its way polled every millisecond and passed by the luck of the seed. Reviewer A found 2 of 2000 seeds where it fails. Both ways are now slow by up to an hour, and the poll runs once a second (reviewer A).
+- Two stores on one host collided on the names of their tasks. `Options.Name` sets the name (reviewer B).
+- The keys case required `a`, `a/`, and `a/b` side by side, which a store that keeps objects as files cannot hold. It no longer does (reviewer B).
+- The workload counted "applied late" by a trace line that is written before the write can still be refused. It now counts from the history (reviewer A).
+
+What I did not change:
+
+- With `Late` or `AfterCrash` at zero, a write whose caller gave up, or whose sender crashed, is never applied. Reviewer A pointed out that this is the kind side for a calm run. I kept it. Each switch is a probability between the two outcomes, `AllFaults` has both at 0.5, and the workload sees both. "Off" means that the fault (applied after the caller has stopped waiting) never happens, which requirement 16 asks for.
+- Reading content still takes no simulated time and is no scheduling point. A body may be read by another task than the one that called `Get`, and a wait in `Read` would bind it to the caller's task.
+- Both reviewers noted that `Get` cannot carry the download check of `/docs/todo.md` ("On download, the client compares the checksum that S3 returns with the name"). Changing the interface for it is a question for the lead, and I did not.
+- `chance` draws no random number for a probability of zero, so a fault that is off leaves the random numbers as they were. No test pins that, because no test needs it yet.
+
+### Why
+
+Every fix closes a way for the core to pass against the simulated store and fail against S3, or a way for a test to pass for the wrong reason.
+
+### What worked
+
+The mutation script now has 45 mutants, one for each mechanism above and the earlier 25. All 45 make `go test ./internal/store/...` fail. The script now also reports a mutant that does not build, so that a compile error is not counted as caught.
+
+### What didn't work
+
+- After the rework, the "never happens" checks of a lost response and of a write after a crash failed for seeds 0 and 3, as they should: a lost request can now be stuck and land later. That led to the split into a check by marker and a check by effect with the look-alikes off.
+- The new conflict was seen in 8 of 30 seeds and traced in none: `client_test.go:606: 8 of 30 seeds saw it, and 0 traced it`. The trace line of a refused write named only the sentinel error, not why. It names the reason now.
+- `TestStore_Wait` failed with `task main waits at wait for store request 2 in a goroutine that is not its own`. My closure used `main`'s context inside another task, and the scheduler caught it.
+- The parallel run on `sim.Free` with `faultsOn()` applied no write at all. Outages of up to 10 s start on 5% of requests there, and the callers had timeouts of 1 s. It uses `simstore.AllFaults()` now.
+- Two mutants were missed after the rework: a stuck write that arrives with no delay, and a `Wait` that does not wait for requests sent while it waits. The first needed `LostRequest` in the run that shows `Late`. The second test passed the mutant by the luck of seed 0, and now runs 10 seeds.
+- The editing tools refused a shell command that wrote with a here-document and then ran `grep`, with `this command is too complex to verify that it stays inside the worktree`. Scripts for bulk edits now sit in the scratchpad and run as plain commands.
+
+### What I learned
+
+- Writing the "never happens" check by effect forces the question of which faults look the same to a caller. That question has an answer for each fault, and the answer is the list of faults to switch off with it.
+- A reviewer's count of "applied after the call returned, by the error it returned" was the clearest way to see the serious gap. No single test had looked at the store from that side.
+
+### What was tricky
+
+- The copy of a stuck write. If the stuck task applied the caller's own request, a late result could overwrite what the caller was about to read: a lost write would then report success. The stuck task applies a copy, which also takes over the original's place among the writes in flight.
+- A caller of a stuck write with `Hang` waits until its context ends, while its write may land in the meantime. The checks by effect must allow for it.
+
+### What warrants review
+
+- `/internal/store/simstore/client.go`, `Store.carry` and `Store.lose`: the order of the decisions, and which of `Late` and `AfterCrash` decides each case.
+- `/internal/store/store.go`: the package documentation on unknown outcomes and on retries, which the core's design rests on.
+- `/internal/store/simstore/client_test.go`, `TestClient_faults`: the `alike` list of each fault.
+
+### Future work
+
+- Whether `store.Store.Get` should carry the stored checksum, for the download check of `/docs/todo.md`.
+
+## Step 4: Verification, and what S3 does
+
+**Author:** store-builder
+
+### Prompt Context
+
+**Verbatim prompt:** Record failures with the exact commands and errors, and record the numbers that verify the goal. [...] Where S3's behaviour is something you are not sure of, check AWS's documentation, cite it in a comment, and choose the less forgiving behaviour when the documentation leaves it open. Do not rely on memory for S3's behaviour.
+**Interpretation:** Run the verification of Step 1 on the code as it is after the review, and write down what the AWS documentation says that the store and the contract rest on.
+**Inferred intent:** Let the reader check the claim that the goal is met, and let the builder of the client for real S3 start from what is known.
+
+### What I did
+
+The verification of Step 1, on commit `ccd1b3b`:
+
+- `make test` and `make lint` pass. `simlint` reports nothing on `internal/store`, `internal/store/simstore`, or `internal/store/storetest`, none of which is exempt.
+- `go test -race -count=1 -shuffle on ./internal/store/...` passes in 66 s. `TestClient_free` runs the suite and eight parallel callers on `sim.Free`, so the race detector sees real parallelism.
+- `S4QL_SIM_SEEDS=10000 go test ./internal/store/simstore/ -run TestStore_workload -v` passes in 4 min 2 s: 10000 seeds, each run twice, 0 pairs differed, 10000 distinct traces, and no violation. Of 680517 writes attempted in the first runs, 487087 were acknowledged, 69591 failed for sure, 120462 had an unknown outcome, and 3377 were cut off by the crash. 535382 writes were applied, 15808 of them after every attempt of them had returned, and 670 after the crash that cut their attempt off. 4963 of 309573 reads broke off. Every fault happened: 25587 lost requests, 31622 writes stuck in the network, 23685 lost responses, 31162 calls with no answer, 10845 conflicts, 52677 slow ways, 12113 broken reads, 7132 cut-offs, 2895 outages, 12563 writes applied after their caller gave up, and 955 after their sender crashed.
+- The suite fails for each of the five wrong stores of `TestCases`, each in the case named for it.
+- Mutation testing: 45 of 45 mutants of the store make `go test ./internal/store/...` fail. The workload's model alone catches 14 of them, all of which break a promise of S3 or change which writes land late. The other 31 make the store kinder, or concern a guard that the workload never touches, and the tests of each fault and each guard catch them.
+
+What the AWS documentation says, as the store and the contract use it:
+
+- Strong read-after-write consistency, atomic updates of one key, and a read concurrent with a write gives "either the old data or the new data, but never partial or corrupt data" (https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html, "Amazon S3 data consistency model"). Also: "Amazon S3 never adds partial objects" (https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObject.html).
+- Conditional writes (https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html): with `If-None-Match`, an existing object gives `412 Precondition Failed`, and "If multiple conditional writes or copies occur for the same object name, the first write operation to finish succeeds". With `If-Match`, a different ETag gives 412, "You can also receive a `409 Conflict` response in the case of concurrent requests", and with no current object "the operation fails with a `404 Not Found` error". The PutObject reference adds that on a 409 "you should fetch the object's ETag and retry the upload". So the condition is evaluated when the upload finishes, which the store follows by checking at arrival, and a 404 for a swap where no object is is `store.ErrNotFound`.
+- ETags (https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html): an object written with `PutObject` in plaintext or with SSE-S3 has the MD5 of its content as ETag. One encrypted with SSE-C or SSE-KMS does not, and neither does one from a multipart upload. Whether SSE-KMS gives the same content the same ETag is not documented, so the contract promises neither, and the simulated store takes the harsher side: the same content, the same version.
+- Checksums (same page): "If the values don't match, the request is rejected", with `BadDigest`, and nothing is stored. `PutObject` checksums are full-object checksums, and for multipart uploads SHA-256 is only composite.
+- Content length: the Go SDK v2 needs a body that implements `io.Seeker` to find the length and to hash the payload, or else `ContentLength` and an unsigned payload, because "Amazon S3 requires the content length to be provided for all object's uploaded to a bucket" (https://docs.aws.amazon.com/sdk-for-go/v2/developer-guide/sdk-utilities-s3.html, "Unseekable Streaming Input"). That is why the content of a write is an `io.ReadSeeker`.
+- A missing object gives 404 only with the `s3:ListBucket` permission, and 403 without it (https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObject.html).
+- Keys are UTF-8 of at most 1024 bytes, and keys with `.` or `..` segments are normalized by some tools (https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-keys.html). The simulated store panics on them.
+
+From `/docs/research/tigris-probe-results.md` and `/docs/research/s3-fault-injection.md`, not from AWS: Tigris does not check a checksum sent as a header, and the SDK retries a conditional `PutObject` by itself after a reset, after which the retry gets 412 for a write that the first attempt applied.
+
+### Why
+
+Step 1 set the numbers that verify the goal, and the brief asked for sources for S3's behaviour.
+
+### What worked
+
+The verification passed on the first run after the review.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+The 409 for racing swaps came from reading the page that I had cited for something else. Rereading a source in full is worth it when one quote from it carries a decision.
+
+### What was tricky
+
+Nothing beyond what Step 3 records.
+
+### What warrants review
+
+- Whether 45 mutants are the mechanisms that matter. The script is in the session's scratchpad, not in the tree.
+
+### Future work
+
+- The client for real S3 maps a 404 and a 403 for a missing object to `store.ErrNotFound` according to the bucket's permissions, sends the checksum so that it is checked (by a trailer on Tigris), sends no conditional write again by itself, or reports the refusal of a retry as unknown, and maps a 409 on a swap to `store.ErrChanged`.
