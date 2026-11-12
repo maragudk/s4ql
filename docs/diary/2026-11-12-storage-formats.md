@@ -322,3 +322,79 @@ Whether the samples should also include a commit object that a pretended newer v
 ### Future work
 
 None from this step.
+
+## Step 6: Self-review and verification
+
+**Author:** formats-builder
+
+### Prompt Context
+
+**Verbatim prompt:** When the implementation is done, self-review it as your standing instructions say, fix what is real, and run `make test`, `make lint`, `buf lint`, and the fuzz tests again.
+**Interpretation:** Run the code-review skill over the branch, fix the real findings, and verify the goal of Step 1 on the final code.
+**Inferred intent:** Hand back work whose claims have been checked by someone other than its author.
+
+### What I did
+
+I ran the `code-review` skill at level `high` on `main...worktree-storage-formats`. It returned nine findings, and confirmed the first three with probes. I fixed five:
+
+- **The writer reported a record above the limit from a later call.** A row only went into the batch, and the size was checked at the flush, so the next `DropTable` or `Close` failed with an error about another change. Now `add` computes, before anything is written, the size of the change with the row added, and the size of a change of the row alone. It starts a new batch when the first is too large, and refuses the row in the same call when the second is. Three new tests in `/internal/format/writer_internal_test.go` cover this.
+- **`time.Parse` with `time.RFC3339Nano` accepts what RFC 3339 does not**: a comma before the fraction, and offsets of `+24:00` and `+23:60`. Probe output: `2026-11-11T12:00:30,123Z 2026-11-11 12:00:30.123 +0000 UTC <nil>` and `2026-11-11T12:00:30+24:00 2026-11-11 12:00:30 +2400 +2400 <nil>`. The expiry is now matched against the syntax of RFC 3339, section 5.6, before it is parsed. More than nine digits of fraction are still read, to the nanosecond, and the doc comment says so.
+- **The writer copied a large row several times.** A batch now keeps headroom of 30 bytes in front of its buffer. The rows are marshalled straight into the buffer with `MarshalAppend` after their size is known from `MarshalOptions.Size`. At the flush, the tags and lengths of the record and the change go into the headroom, and the buffer is written as it is. A non-batch record is marshalled once into its final buffer. Both check that `MarshalAppend` wrote exactly `Size` bytes.
+- **The checks built a path string for every row and value even when nothing failed.** They now return a `checkError` without a path. Each level adds its own name only when a check below it refuses, so a check that passes allocates no strings. A new test pins two messages, for example `malformed: record 2.upsert_rows.columns[2] lists column 0 twice`.
+- **Field numbers were constants written by hand.** They now come from the generated descriptors through `fieldNumber`, which panics at start if a field is renamed.
+
+I did not change four things:
+
+- **The reader accepts a change after an annotation.** Requirement 7 says that it accepts changes and annotations in any order after the header. Only the writer keeps the order, for requirement 4.
+- **The UTF-8 checks run again on reading** after `proto.Unmarshal` has checked strings. The reader and the writer share one set of checks, which is how requirement 10 holds by construction. A UTF-8 check costs little next to the unmarshalling.
+- **`/docs/todo.md` still says the formats are not built** and still holds a copy of the schema. I may not edit it, so it goes in my report.
+- **The reader hands out changes before the name is checked,** where `/docs/todo.md` says a commit object "is checked against its SHA-256 name before it is decoded". This is the departure of point 8 that Step 1 already records, and it is for the lead to take to Markus.
+
+The rework itself produced a bug that the error messages showed: `checkColumnPositions` and its caller both added `columns`, giving `record 2.upsert_rows.columns.columns[2]`. Each now adds its own name once.
+
+I ran the mutation script again on the reworked code. A new survivor showed that the copy of the caller's column positions was no longer covered: the bytes of a batch are now written when it starts, so only the comparison with the next row reads the stored positions. The test "should copy the values it is handed" now hands in a second row with the changed slice. With `slices.Clone` removed it fails, and with it there it passes. The four survivors that remain are the ones of Step 5.
+
+### Why
+
+The goal of Step 1 is verified on the code that is handed back, not on the code before the review.
+
+### What worked
+
+The results on the final code, commit `6732cea`:
+
+- `make test`: all packages pass; `/internal/format` has 95.3% coverage. `go test -race -shuffle on ./internal/format` passes.
+- `make lint`: `golangci-lint` reports 0 issues in both modules, and `buf lint` and `buf format --diff --exit-code` print nothing.
+- `make generate` changes nothing, and `go mod tidy` changes neither `/go.mod` nor `/go.sum`.
+- Each fuzz test for five minutes with `-fuzztime 5m`, with no finding: `FuzzParseManifest` 21,395,874 runs, `FuzzCommitReader` 20,594,326, `FuzzCommitWriter` 1,870,485. A run before the review fixes gave 21,025,036 and 29,347,017 for the first two.
+
+### What didn't work
+
+My first round of five-minute fuzz runs ran in the background while I edited the checks, so the third test was built from code in the middle of a change:
+
+```
+== FuzzCommitWriter
+	have (*s4qlpb.Annotation, string)
+	want (*s4qlpb.Annotation)
+./writer.go:248:31: too many errors
+FAIL	maragu.dev/s4ql/internal/format [build failed]
+```
+
+I ran all three again after the last commit and left the code alone until they finished.
+
+### What I learned
+
+`MarshalOptions.Size` with the same options gives the length that `MarshalAppend` writes, so a writer can lay out a record before it marshals into the record. A `oneof` or other field whose wire type differs from the schema is kept by Go as an unknown field, so the reader reports it as needing a newer version, not as malformed. The checksum is compared first, so this happens only for bytes that match their name.
+
+### What was tricky
+
+Keeping the bytes of a batch identical to marshalling the whole message while writing them in place. The test of requirement 20 and `FuzzCommitWriter` both compare the stream with `proto.Marshal` of the decoded message, and they kept passing through the rework.
+
+### What warrants review
+
+- `/internal/format/writer.go`, `add` and `flush`: the arithmetic of the headroom and of `changeSize`.
+- `/internal/format/check.go`, `checkError` and `in`: `in` changes the path of an error it is handed, which is safe because every `checkError` is new and used once.
+
+### Future work
+
+- `/docs/todo.md` loses the item "Storage formats", and the reasoning in it moves next to the code where it is not there yet; the lead decides with Markus.
+- The departure of point 8 from "checked against its SHA-256 name before it is decoded" needs Markus's agreement.
