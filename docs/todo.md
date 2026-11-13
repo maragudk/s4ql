@@ -49,27 +49,14 @@ Status: the manifest and the commit object are built in `internal/format`, with 
 
 ## The S3 client and S3's checksums
 
-Status: agreed with Markus on 2026-11-12, not built. The interface `store.Store` and the simulated store are built in `internal/store`; the client for real S3 is the next piece.
+Status: built in `internal/store/s3store` on 2026-11-13. It passes the conformance suite against the project's Tigris bucket. What was found about Tigris, and what rests on AWS's documentation alone, is in [internal/store/s3store/README.md](../internal/store/s3store/README.md). This item holds what is still open.
 
-Markus asked: "Maybe S3 already knows the hash of its objects?" It does, and s4ql uses it as a second guard next to its own check.
+Markus asked: "Maybe S3 already knows the hash of its objects?" It does. On upload, the client signs the request with the commit object's SHA-256 as the hash of its payload and sends it as the object's checksum, and the store refuses content that does not match it.
 
-- **On upload, the client sends the commit object's SHA-256 with the request.** S3 computes its own and rejects the object if they differ, so a commit object is never stored under a name that does not match its bytes.
-- **On download, the client compares the checksum that S3 returns with the name,** before it reads the body. S3 stores the checksum with the object and returns it in the response headers.
-- **The reader still computes the checksum itself as it reads.** That check covers the whole way into our process, and it is the same against the simulated store and against a store that does not offer checksums. The spec asks three things of a store, and checksums are not among them. Which S3-compatible stores offer them is not checked.
-- **This holds for commit objects up to 5 GB,** the limit of one `PutObject`. In a multipart upload, S3 offers SHA-256 only as a checksum of the checksums of the parts, which is not our name. Markus: "Don't worry too much about commit objects above 5GB for now."
-
-Source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html
-
-What the client must do, from building the simulated store. The sources are in `docs/diary/2026-11-12-object-store.md`:
-
-- **It passes the conformance suite,** `storetest.Test`, against real S3, with a new and empty key prefix for each case.
-- **It never lets the SDK retry a conditional write by itself,** or it reports the refusal of such a retry as an unknown outcome. Otherwise the first attempt can be what made the retry fail, and the client would report "not applied" for a write that was applied.
-- **It maps S3's answers to the errors of `store.Store`:** 412 on a create is `ErrExists`; 412 and 409 on a swap are `ErrChanged`; 404 is `ErrNotFound`; `BadDigest` is `ErrChecksum`. Everything else on a write is an unknown outcome.
-- **It needs the permission `s3:ListBucket`,** because S3 answers 403 and not 404 for a missing object without it.
-- **It never sends an empty `If-Match`,** which Tigris treats as "create only".
-- **On Tigris, the checksum goes in a trailer.** Tigris does not check a checksum that is sent as a header ([research/tigris-probe-results.md](research/tigris-probe-results.md)).
-- **Open: the check on download.** `store.Store.Get` neither returns the checksum that the store holds nor takes one to compare. The builder of the client adds one of the two to the interface, the simulated store, and the suite, if it is cheap, and otherwise says why not.
-- **Telemetry for requests to S3 is decided with this client.**
+- **Open: the check on download is not the one that was agreed.** The agreed bullet was: "On download, the client compares the checksum that S3 returns with the name, before it reads the body." The builder of the client did not add a checksum to `store.Store.Get`. The client asks the store for the checksum that it holds, and the SDK compares it with the content as it is read, so a read of content that does not match it fails at its end. A comparison with the name before the body would need the name in the interface, and it would only catch an object stored with another checksum, which the check on upload rules out for every object that s4ql writes. The reader of a commit object reads to the end and checks the name anyway. Markus decides whether that is enough.
+- **Open: a commit object above 5 GiB.** The client refuses one with `s3store.ErrTooLarge` before it sends anything. The core takes that error as an unknown outcome and tries the upload again until its context ends. Markus: "Don't worry too much about commit objects above 5GB for now."
+- **Not set up: the integration tests in CI.** They need a bucket for CI and its credentials as secrets of the repository.
+- **Not checked: AWS, and other stores than Tigris.** There are no AWS credentials. The spec asks three things of a store, and checksums are not among them, so a store that does not check the payload's hash still works, without the second guard.
 
 ## Vendoring s4ql
 

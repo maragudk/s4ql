@@ -10,6 +10,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -48,14 +50,32 @@ func newFake(t *testing.T) *fake {
 	return f
 }
 
-// client of the fake, with credentials and a region from the environment of the test.
-func (f *fake) client(t *testing.T, opts ...func(*s3store.Options)) *s3store.Client {
+// isolate the test from the AWS configuration of the machine that runs it: no shared files, no
+// settings of the SDK from the environment but those that a test sets after this, and static
+// credentials.
+func isolate(t *testing.T) {
 	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("AWS_CONFIG_FILE", filepath.Join(dir, "config"))
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(dir, "credentials"))
+	for _, name := range []string{
+		"AWS_PROFILE", "AWS_SESSION_TOKEN", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3", "AWS_CA_BUNDLE",
+		"AWS_DEFAULTS_MODE", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+		"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN",
+	} {
+		t.Setenv(name, "")
+	}
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
-	t.Setenv("AWS_SESSION_TOKEN", "")
-	t.Setenv("AWS_PROFILE", "")
-	t.Setenv("AWS_ENDPOINT_URL_S3", "")
+}
+
+// client of the fake, in a test that is isolated from the machine's AWS configuration, unless the
+// test isolated itself before.
+func (f *fake) client(t *testing.T, opts ...func(*s3store.Options)) *s3store.Client {
+	t.Helper()
+	if os.Getenv("AWS_ACCESS_KEY_ID") != "test" {
+		isolate(t)
+	}
 	o := s3store.Options{
 		Bucket:    "bucket",
 		Endpoint:  f.srv.URL,
@@ -180,10 +200,14 @@ func (f *fake) apply(w http.ResponseWriter, r *http.Request, data []byte) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// fail the request with an error of S3.
+// fail the request with an error of S3, or with the status alone if the code is empty.
 func fail(w http.ResponseWriter, status int, code string) {
-	w.Header().Set("Content-Type", "application/xml")
 	w.Header().Set("x-amz-request-id", "fake-request")
+	if code == "" {
+		w.WriteHeader(status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(status)
 	_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>%v</Code><Message>%v</Message><RequestId>fake-request</RequestId></Error>`, code, code)
 }

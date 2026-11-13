@@ -5,12 +5,14 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"runtime"
 	"runtime/metrics"
@@ -32,15 +34,13 @@ import (
 	"maragu.dev/s4ql/internal/store/storetest"
 )
 
-// refusals are the four errors of a write that mean that it was not applied.
-var refusals = []error{store.ErrNotFound, store.ErrExists, store.ErrChanged, store.ErrChecksum}
-
-// isUnknown reports whether err is the error of a write whose outcome is unknown.
+// isUnknown reports whether err is the error of a write whose outcome is unknown: it is none of the
+// four errors that mean that a write was not applied.
 func isUnknown(err error) bool {
 	if err == nil {
 		return false
 	}
-	for _, r := range refusals {
+	for _, r := range []error{store.ErrNotFound, store.ErrExists, store.ErrChanged, store.ErrChecksum} {
 		if errors.Is(err, r) {
 			return false
 		}
@@ -68,7 +68,11 @@ func TestClient_answers(t *testing.T) {
 		{name: "404 NoSuchKey", answer: answer{404, "NoSuchKey"}, swap: store.ErrNotFound},
 		{name: "400 BadDigest", answer: answer{400, "BadDigest"}, create: store.ErrChecksum, swap: store.ErrChecksum},
 		{name: "400 XAmzContentSHA256Mismatch", answer: answer{400, "XAmzContentSHA256Mismatch"}, create: store.ErrChecksum, swap: store.ErrChecksum},
+		// Without a body, the SDK takes the code from the status, and a 412 is still a refusal.
+		{name: "412 without a body", answer: answer{412, ""}, create: store.ErrExists, swap: store.ErrChanged},
 		{name: "412 with another code", answer: answer{412, "SomethingElse"}},
+		{name: "500 BadDigest", answer: answer{500, "BadDigest"}},
+		{name: "404 without a body", answer: answer{404, ""}},
 		{name: "409 OperationAborted", answer: answer{409, "OperationAborted"}},
 		{name: "404 NoSuchBucket", answer: answer{404, "NoSuchBucket"}},
 		{name: "400 InvalidArgument", answer: answer{400, "InvalidArgument"}},
@@ -175,6 +179,11 @@ func TestClient_answers(t *testing.T) {
 			case "no-etag":
 				w.Header().Set("Content-Length", "4")
 				_, _ = w.Write([]byte("data"))
+			case "no-length":
+				// Flushed before the content, so that the answer is chunked, without a length.
+				w.Header().Set("ETag", `"v"`)
+				_ = http.NewResponseController(w).Flush()
+				_, _ = w.Write([]byte("data"))
 			default:
 				return false
 			}
@@ -183,10 +192,19 @@ func TestClient_answers(t *testing.T) {
 		c := f.client(t)
 		_, _, err := c.Get(t.Context(), "missing")
 		is.True(t, errors.Is(err, store.ErrNotFound), fmt.Sprint(err))
-		for _, k := range []string{"no-bucket", "denied", "broken", "no-etag"} {
+		for _, k := range []string{"no-bucket", "denied", "broken", "no-etag", "no-length"} {
 			_, _, err := c.Get(t.Context(), k)
 			is.True(t, err != nil && !errors.Is(err, store.ErrNotFound), k, fmt.Sprint(err))
 		}
+	})
+}
+
+// TestClient_conformanceOnFake runs the conformance suite against the fake, so that what the
+// suite checks, such as that a swap is conditional, is checked without a real bucket too.
+func TestClient_conformanceOnFake(t *testing.T) {
+	storetest.Test(t, func(t *testing.T, f func(t *testing.T, ctx context.Context, env storetest.Env)) {
+		c := newFake(t).client(t)
+		f(t, t.Context(), storetest.Env{Host: host.New(), Client: func(string) store.Store { return c }})
 	})
 }
 
@@ -252,9 +270,10 @@ func TestClient_connections(t *testing.T) {
 		is.True(t, !ok)
 	})
 
-	t.Run("should let net/http send a read again on a reused connection, which shows that the writes above would see it", func(t *testing.T) {
+	t.Run("should let net/http send a read again on a reused connection, and count both attempts, which shows that the writes above would see it", func(t *testing.T) {
 		f := newFake(t)
-		c := f.client(t)
+		e := &events{}
+		c := f.client(t, func(o *s3store.Options) { o.Logger = slog.New(e) })
 		f.put("k", []byte("data"))
 		_, _, _ = c.Get(t.Context(), "warm")
 		var cuts atomic.Int32
@@ -272,6 +291,54 @@ func TestClient_connections(t *testing.T) {
 		is.NotError(t, body.Close())
 		is.Equal(t, "data", string(data))
 		is.Equal(t, 2, f.count(http.MethodGet, "k"))
+		_, attrs := e.last()
+		is.Equal(t, "2", attrs["attempts"])
+	})
+
+	t.Run("should count only the request to the store as an attempt, and not a request for credentials", func(t *testing.T) {
+		isolate(t)
+		var requests atomic.Int32
+		creds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests.Add(1)
+			_, _ = fmt.Fprint(w, `{"AccessKeyId":"a","SecretAccessKey":"s","Token":"t","Expiration":"2099-01-01T00:00:00Z"}`)
+		}))
+		defer creds.Close()
+		t.Setenv("AWS_ACCESS_KEY_ID", "")
+		t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+		t.Setenv("AWS_CONTAINER_CREDENTIALS_FULL_URI", creds.URL+"/credentials")
+		f := newFake(t)
+		f.put("k", []byte("data"))
+		e := &events{}
+		c, err := s3store.New(t.Context(), s3store.Options{
+			Bucket: "bucket", Endpoint: f.srv.URL, Region: "us-east-1", PathStyle: true, RootCAs: f.pool(), Logger: slog.New(e),
+		})
+		is.NotError(t, err)
+		_, err = c.Create(t.Context(), "k", strings.NewReader("data"), nil)
+		is.True(t, errors.Is(err, store.ErrExists), fmt.Sprint(err))
+		is.Equal(t, int32(1), requests.Load(), "no request for credentials")
+		_, attrs := e.last()
+		is.Equal(t, "1", attrs["attempts"])
+	})
+
+	t.Run("should not wrap an error of the content in the error of a write whose outcome is unknown", func(t *testing.T) {
+		f := newFake(t)
+		c := f.client(t)
+		for _, sentinel := range []error{store.ErrNotFound, store.ErrExists, store.ErrChanged, store.ErrChecksum} {
+			// net/http reads once more after the length of the content, when the store may already
+			// have it all.
+			content := &failing{r: strings.NewReader("data"), err: fmt.Errorf("a broken disk: %w", sentinel)}
+			_, err := c.Create(t.Context(), "k", content, nil)
+			is.True(t, isUnknown(err), fmt.Sprint(err))
+		}
+	})
+
+	t.Run("should wrap the error of a context that ended in the error of a write whose outcome is unknown", func(t *testing.T) {
+		f := newFake(t)
+		c := f.client(t)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		_, err := c.Create(ctx, "k", strings.NewReader("data"), nil)
+		is.True(t, isUnknown(err) && errors.Is(err, context.Canceled), fmt.Sprint(err))
 	})
 
 	t.Run("should fail a read whose content ends before its length", func(t *testing.T) {
@@ -337,14 +404,34 @@ func TestClient_connections(t *testing.T) {
 		_, _, err = c.Get(ctx, "k")
 		is.True(t, errors.Is(err, context.DeadlineExceeded), fmt.Sprint(err))
 
-		ctx, cancel = context.WithTimeout(t.Context(), 50*time.Millisecond)
+		// The context ends only once the answer is there, while its content is read.
+		ctx, cancel = context.WithCancel(t.Context())
 		defer cancel()
 		body, _, err := c.Get(ctx, "slow-body")
 		is.NotError(t, err)
+		time.AfterFunc(50*time.Millisecond, cancel)
 		_, err = io.ReadAll(body)
 		_ = body.Close()
-		is.True(t, errors.Is(err, context.DeadlineExceeded), fmt.Sprint(err))
+		is.True(t, errors.Is(err, context.Canceled), fmt.Sprint(err))
 	})
+}
+
+// failing content, which ends with err instead of io.EOF.
+type failing struct {
+	r   io.ReadSeeker
+	err error
+}
+
+func (f *failing) Read(p []byte) (int, error) {
+	n, err := f.r.Read(p)
+	if errors.Is(err, io.EOF) {
+		return n, f.err
+	}
+	return n, err
+}
+
+func (f *failing) Seek(offset int64, whence int) (int64, error) {
+	return f.r.Seek(offset, whence)
 }
 
 // watched content of a write, which records a read or seek that starts after the test marks the
@@ -376,6 +463,8 @@ func (w *watched) Seek(offset int64, whence int) (int64, error) {
 
 func TestClient_content(t *testing.T) {
 	t.Run("should not read the content after a write has returned, also when the store answered before it read the content", func(t *testing.T) {
+		// net/http alone would read on here, and the SDK closes the body after the call, as the
+		// guard of the client does too, so this shows the two together.
 		f := newFake(t)
 		held := make(chan struct{})
 		t.Cleanup(func() { close(held) })
@@ -413,8 +502,18 @@ func TestClient_content(t *testing.T) {
 		is.Equal(t, 0, f.count(http.MethodPut, "k"))
 	})
 
+	t.Run("should refuse content whose offset is past its end without sending anything", func(t *testing.T) {
+		f := newFake(t)
+		r := strings.NewReader("data")
+		_, err := r.Seek(10, io.SeekStart)
+		is.NotError(t, err)
+		_, err = f.client(t).Create(t.Context(), "k", r, nil)
+		is.True(t, err != nil)
+		is.Equal(t, 0, f.count(http.MethodPut, "k"))
+	})
+
 	t.Run("should write and read a large object with a small heap", func(t *testing.T) {
-		const size = 256 << 20
+		const size = 64 << 20
 		f := newFake(t)
 		var got atomic.Int64
 		f.hook = func(w http.ResponseWriter, r *http.Request, f *fake) bool {
@@ -518,9 +617,13 @@ func (s *sized) Seek(offset int64, whence int) (int64, error) {
 func TestClient_requests(t *testing.T) {
 	t.Run("should send no swap from an empty version, and no request for a key that the store does not take", func(t *testing.T) {
 		f := newFake(t)
-		c := f.client(t)
+		e := &events{}
+		c := f.client(t, func(o *s3store.Options) { o.Logger = slog.New(e) })
 		_, err := c.Swap(t.Context(), "k", "", strings.NewReader("data"), nil)
 		is.True(t, err != nil)
+		level, attrs := e.last()
+		is.Equal(t, slog.LevelWarn, level)
+		is.Equal(t, "not_sent", attrs["outcome"])
 		for _, k := range []string{"", strings.Repeat("k", 1025), "a/../b", "./a", "a/.", "\xff"} {
 			_, err := c.Create(t.Context(), k, strings.NewReader("data"), nil)
 			is.True(t, err != nil, k)
@@ -532,19 +635,60 @@ func TestClient_requests(t *testing.T) {
 		is.Equal(t, 0, len(f.requests), fmt.Sprint(f.requests))
 	})
 
-	t.Run("should send the checksum as the SHA-256 of the signed payload, and with the object", func(t *testing.T) {
+	t.Run("should take a key of 1024 bytes", func(t *testing.T) {
 		f := newFake(t)
-		var payload, header string
+		k := strings.Repeat("k", 1024)
+		_, err := f.client(t).Create(t.Context(), k, strings.NewReader("data"), nil)
+		is.NotError(t, err)
+	})
+
+	t.Run("should send a create with If-None-Match: *, a swap with If-Match: its version, and the checksum as the SHA-256 of the signed payload and with the object", func(t *testing.T) {
+		f := newFake(t)
+		var headers []http.Header
 		f.hook = func(w http.ResponseWriter, r *http.Request, f *fake) bool {
-			payload = r.Header.Get("x-amz-content-sha256")
-			header = r.Header.Get("x-amz-checksum-sha256")
+			headers = append(headers, r.Header.Clone())
 			return false
 		}
-		_, err := f.client(t).Create(t.Context(), "k", strings.NewReader("data"), sum("data"))
+		c := f.client(t)
+		v, err := c.Create(t.Context(), "k", strings.NewReader("data"), sum("data"))
 		is.NotError(t, err)
-		is.Equal(t, fmt.Sprintf("%x", *sum("data")), payload)
-		is.Equal(t, base64.StdEncoding.EncodeToString(sum("data")[:]), header)
-		is.True(t, strings.Contains(payload, fmt.Sprintf("%x", *sum("data"))))
+		_, err = c.Swap(t.Context(), "k", v, strings.NewReader("more"), nil)
+		is.NotError(t, err)
+
+		create, swap := headers[0], headers[1]
+		is.Equal(t, "*", create.Get("If-None-Match"))
+		is.Equal(t, "", create.Get("If-Match"))
+		is.Equal(t, fmt.Sprintf("%x", *sum("data")), create.Get("x-amz-content-sha256"))
+		is.Equal(t, base64.StdEncoding.EncodeToString(sum("data")[:]), create.Get("x-amz-checksum-sha256"))
+		is.Equal(t, string(v), swap.Get("If-Match"))
+		is.Equal(t, "", swap.Get("If-None-Match"))
+		is.Equal(t, "", swap.Get("x-amz-checksum-sha256"))
+	})
+
+	t.Run("should speak HTTP/1.1 also to a store that offers HTTP/2", func(t *testing.T) {
+		isolate(t)
+		var proto atomic.Value
+		srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			proto.Store(r.Proto)
+			fail(w, http.StatusPreconditionFailed, "PreconditionFailed")
+		}))
+		srv.EnableHTTP2 = true
+		srv.StartTLS()
+		defer srv.Close()
+		pool := x509.NewCertPool()
+		pool.AddCert(srv.Certificate())
+		c, err := s3store.New(t.Context(), s3store.Options{Bucket: "bucket", Endpoint: srv.URL, Region: "us-east-1", PathStyle: true, RootCAs: pool})
+		is.NotError(t, err)
+		_, err = c.Create(t.Context(), "k", strings.NewReader("data"), nil)
+		is.True(t, errors.Is(err, store.ErrExists), fmt.Sprint(err))
+		is.Equal(t, "HTTP/1.1", proto.Load())
+	})
+
+	t.Run("should refuse a store whose certificate does not chain to the roots", func(t *testing.T) {
+		f := newFake(t)
+		_, err := f.client(t, func(o *s3store.Options) { o.RootCAs = x509.NewCertPool() }).Create(t.Context(), "k", strings.NewReader("data"), nil)
+		is.True(t, isUnknown(err), fmt.Sprint(err))
+		is.Equal(t, 0, f.count(http.MethodPut, "k"))
 	})
 
 	t.Run("should write the content from its current offset", func(t *testing.T) {
@@ -569,15 +713,18 @@ func TestClient_requests(t *testing.T) {
 		is.True(t, !ok)
 	})
 
-	t.Run("should need a bucket and a region", func(t *testing.T) {
-		_, err := s3store.New(t.Context(), s3store.Options{})
-		is.True(t, err != nil)
-		t.Setenv("AWS_REGION", "")
-		t.Setenv("AWS_DEFAULT_REGION", "")
-		t.Setenv("AWS_CONFIG_FILE", "/nonexistent")
-		t.Setenv("AWS_PROFILE", "")
+	t.Run("should need a bucket, a region, and an endpoint that is an http or https URL", func(t *testing.T) {
+		isolate(t)
+		_, err := s3store.New(t.Context(), s3store.Options{Region: "r"})
+		is.True(t, err != nil && strings.Contains(err.Error(), "no bucket"), fmt.Sprint(err))
 		_, err = s3store.New(t.Context(), s3store.Options{Bucket: "b"})
-		is.True(t, err != nil)
+		is.True(t, err != nil && strings.Contains(err.Error(), "no region"), fmt.Sprint(err))
+		for _, endpoint := range []string{"t3.storage.dev", "ftp://t3.storage.dev", "https://"} {
+			_, err = s3store.New(t.Context(), s3store.Options{Bucket: "b", Region: "r", Endpoint: endpoint})
+			is.True(t, err != nil && strings.Contains(err.Error(), "endpoint"), endpoint, fmt.Sprint(err))
+		}
+		_, err = s3store.New(t.Context(), s3store.Options{Bucket: "b", Region: "r", Endpoint: "https://t3.storage.dev"})
+		is.NotError(t, err)
 	})
 }
 
@@ -624,6 +771,7 @@ func TestClient_events(t *testing.T) {
 
 		v, err := c.Create(t.Context(), "k", strings.NewReader("data"), sum("data"))
 		is.NotError(t, err)
+		is.Equal(t, 1, e.len())
 		level, attrs := e.last()
 		is.Equal(t, slog.LevelDebug, level)
 		is.Equal(t, "create", attrs["operation"])
@@ -667,7 +815,46 @@ func TestClient_events(t *testing.T) {
 		is.Equal(t, slog.LevelWarn, level)
 		is.Equal(t, "unknown", attrs["outcome"])
 		is.Equal(t, "500", attrs["http.status_code"])
+		is.Equal(t, "fake-request", attrs["store.request_id"])
 		is.True(t, attrs["error"] != "")
+
+		_, _, err = c.Get(t.Context(), "k")
+		is.True(t, err != nil)
+		level, attrs = e.last()
+		is.Equal(t, slog.LevelWarn, level)
+		is.Equal(t, "get", attrs["operation"])
+		is.Equal(t, "failed", attrs["outcome"])
+	})
+
+	t.Run("should log a checksum that does not match and an answer without an ETag at Warn, and a read closed before its end as incomplete", func(t *testing.T) {
+		f := newFake(t)
+		e := &events{}
+		c := f.client(t, func(o *s3store.Options) { o.Logger = slog.New(e) })
+
+		_, err := c.Create(t.Context(), "k", strings.NewReader("data"), sum("other"))
+		is.True(t, errors.Is(err, store.ErrChecksum))
+		level, attrs := e.last()
+		is.Equal(t, slog.LevelWarn, level)
+		is.Equal(t, "checksum", attrs["outcome"])
+
+		f.put("k", []byte("data"))
+		body, _, err := c.Get(t.Context(), "k")
+		is.NotError(t, err)
+		_ = body.Close()
+		level, attrs = e.last()
+		is.Equal(t, slog.LevelDebug, level)
+		is.Equal(t, "incomplete", attrs["outcome"])
+
+		f.hook = func(w http.ResponseWriter, r *http.Request, f *fake) bool {
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusOK)
+			return true
+		}
+		_, err = c.Create(t.Context(), "other", strings.NewReader("data"), nil)
+		is.True(t, isUnknown(err))
+		level, attrs = e.last()
+		is.Equal(t, slog.LevelWarn, level)
+		is.Equal(t, "unexpected", attrs["outcome"])
 	})
 }
 
