@@ -554,6 +554,19 @@ func TestTx_Commit_unknownOutcome(t *testing.T) {
 		})
 	}
 
+	t.Run("should give up an upload that gets no answer after five minutes by default, and send it again", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s, d, tx := committing(t, w, core.Options{})
+			s.on("create", "commits/", hang, 1)
+
+			start := time.Now()
+			is.NotError(t, tx.Commit(t.Context()))
+			elapsed := time.Since(start)
+			is.True(t, elapsed >= 5*time.Minute && elapsed < 6*time.Minute, fmt.Sprint(elapsed))
+			is.Equal(t, with, read(t, d))
+		})
+	})
+
 	t.Run("should commit with a new swap when a renewal whose outcome was unknown turns out to be applied", func(t *testing.T) {
 		bubble(t, func(t *testing.T, w *world) {
 			s, d, tx := committing(t, w, core.Options{})
@@ -578,6 +591,8 @@ func TestTx_Commit_unknownOutcome(t *testing.T) {
 			defer cancel()
 			err := tx.Commit(ctx)
 			is.Error(t, core.ErrOutcomeUnknown, err)
+			// The error wraps no other error, as the doc of Commit says: every other one means "not committed".
+			is.True(t, !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, errScripted), fmt.Sprint(err))
 			is.Error(t, core.ErrNoLease, readErr(t, d))
 			is.Error(t, core.ErrNoLease, beginErr(t, d))
 			time.Sleep(10 * time.Second)
@@ -654,18 +669,21 @@ func TestTx_Commit_unknownOutcome(t *testing.T) {
 	})
 
 	t.Run("should report a commit as not committed, and go on serving, when every swap was refused before the caller gave up", func(t *testing.T) {
-		bubble(t, func(t *testing.T, w *world) {
-			s, d, tx := committing(t, w, core.Options{})
-			s.on("swap", "manifest", conflict, -1)
+		// The store refuses each swap for a conflict, or because its bytes were damaged on their way.
+		for _, refusal := range []what{conflict, mismatch} {
+			bubble(t, func(t *testing.T, w *world) {
+				s, d, tx := committing(t, w, core.Options{})
+				s.on("swap", "manifest", refusal, -1)
 
-			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-			defer cancel()
-			err := tx.Commit(ctx)
-			is.True(t, err != nil && !errors.Is(err, core.ErrOutcomeUnknown), fmt.Sprint(err))
-			s.clear()
-			is.Equal(t, without, read(t, d))
-			is.Equal(t, 1, len(w.commits(t)))
-		})
+				ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+				defer cancel()
+				err := tx.Commit(ctx)
+				is.True(t, err != nil && !errors.Is(err, core.ErrOutcomeUnknown), fmt.Sprint(refusal, ": ", err))
+				s.clear()
+				is.Equal(t, without, read(t, d), fmt.Sprint(refusal))
+				is.Equal(t, 1, len(w.commits(t)), fmt.Sprint(refusal))
+			})
+		}
 	})
 
 	t.Run("should find a commit in the log on which another instance has committed after taking the lease", func(t *testing.T) {
@@ -694,6 +712,43 @@ func TestTx_Commit_unknownOutcome(t *testing.T) {
 			is.NotError(t, b.Close(t.Context()))
 			is.NotError(t, a.Wait(t.Context()))
 			is.Equal(t, "t1(k*0): \nt2(k*0): \nt3(k*0): ", read(t, a))
+		})
+	})
+
+	t.Run("should report an unknown outcome without waiting for the caller when the log in which it looks for the commit holds a commit object that can never be read", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s, a, tx := committing(t, w, core.Options{})
+			s.on("swap", "manifest", lose, 1)
+			s.on("swap", "", drop, -1)
+			s.on("get", "", drop, -1)
+
+			var commitErr error
+			committed := make(chan struct{})
+			go func() {
+				commitErr = tx.Commit(t.Context())
+				close(committed)
+			}()
+			// Another instance takes the lease, and the log then gets a malformed commit object on top,
+			// under a lease of another holder, so that the first instance stays a spare.
+			b := w.serve(t, "b", core.Options{})
+			is.NotError(t, b.Close(t.Context()))
+			l := newHandLog(t, w)
+			l.head = w.manifest(t).Head
+			l.raw(nil, []*s4qlpb.Change{{}}, nil)
+			data, err := format.Manifest{Head: l.head, Lease: &format.Lease{Holder: "another", Duration: time.Hour, Renewed: time.Now(), Salt: 1}}.Marshal()
+			is.NotError(t, err)
+			l.publishBytes(data)
+			start := time.Now()
+			s.clear()
+
+			select {
+			case <-committed:
+			case <-time.After(time.Hour):
+				t.Fatal("the commit is still looking in the log after an hour")
+			}
+			is.True(t, time.Since(start) < 10*time.Second, fmt.Sprint(time.Since(start)))
+			is.Error(t, core.ErrOutcomeUnknown, commitErr)
+			is.Error(t, core.ErrNoLease, readErr(t, a))
 		})
 	})
 
@@ -1138,6 +1193,26 @@ func TestDB_Begin(t *testing.T) {
 		transact(t, d, upsert("t1", 1))
 		is.NotError(t, <-released)
 		is.Equal(t, "t1(k*0): 1", read(t, d))
+	})
+
+	t.Run("should wait for a lock on the cache for a second by default", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k"))
+
+		other, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
+		is.NotError(t, err)
+		defer func() { is.NotError(t, other.Close()) }()
+		is.NotError(t, other.Exec("begin immediate"))
+
+		// SQLite waits at least the busy timeout. The bound above it is far, so that the speed of the
+		// machine decides nothing.
+		start := time.Now()
+		err = beginErr(t, d)
+		elapsed := time.Since(start)
+		is.Error(t, core.ErrBusy, err)
+		is.True(t, elapsed >= time.Second && elapsed < 8*time.Second, fmt.Sprint(elapsed))
+		is.NotError(t, other.Exec("rollback"))
 	})
 
 	t.Run("should return and log busy, and go on, when another connection holds the cache's write lock past the busy timeout", func(t *testing.T) {

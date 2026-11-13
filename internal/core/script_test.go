@@ -48,7 +48,7 @@ const (
 	corrupt
 	// breakOff the content of a get after half of it, with an error.
 	breakOff
-	// missing: a get finds no object.
+	// missing: a get finds no object, and a swap finds none to replace.
 	missing
 	// mismatch: a write is not applied, and refused because its content does not have its checksum.
 	mismatch
@@ -183,6 +183,8 @@ func (s *scriptStore) write(ctx context.Context, r rule, apply func(ctx context.
 		return "", fmt.Errorf("scripted conflict: %w", store.ErrChanged)
 	case mismatch:
 		return "", fmt.Errorf("scripted mismatch: %w", store.ErrChecksum)
+	case missing:
+		return "", fmt.Errorf("scripted: %w", store.ErrNotFound)
 	case hang:
 		<-ctx.Done()
 		return "", fmt.Errorf("%w: %w", errScripted, ctx.Err())
