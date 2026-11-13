@@ -73,6 +73,11 @@ func (d *DB) Begin(ctx context.Context) (*Tx, error) {
 	if err := d.acquireServing(ctx, d.writerLock); err != nil {
 		return nil, d.refused(ctx, "begin", err)
 	}
+	if err := d.use(d.w); err != nil {
+		d.writerLock.Release(ctx)
+		return nil, err
+	}
+	defer d.unuse(d.w)
 	if err := d.w.c.Exec("begin immediate"); err != nil {
 		d.writerLock.Release(ctx)
 		return nil, d.cacheError(ctx, "begin", err)
@@ -92,7 +97,8 @@ func (tx *Tx) Position() format.Name {
 	return tx.parent
 }
 
-// check that the transaction can go on with the given operation.
+// check that the transaction can go on with the given operation, and use its connection for the
+// call, which gives it back with [Tx.leave].
 func (tx *Tx) check(ctx context.Context, operation string) error {
 	switch {
 	case tx.done:
@@ -103,7 +109,12 @@ func (tx *Tx) check(ctx context.Context, operation string) error {
 	if err := tx.d.usable(); err != nil {
 		return tx.d.refused(ctx, operation, err)
 	}
-	return nil
+	return tx.d.use(tx.c)
+}
+
+// leave a call of the transaction, which [Tx.check] began.
+func (tx *Tx) leave() {
+	tx.d.unuse(tx.c)
 }
 
 // fail the transaction for an error of the cache during the given operation: it can then only be
@@ -185,6 +196,7 @@ func (tx *Tx) CreateTable(ctx context.Context, ct *s4qlpb.CreateTable) error {
 	if err := tx.check(ctx, operation); err != nil {
 		return err
 	}
+	defer tx.leave()
 	if err := checkCreateTable(ct, tx.d.host.Wall()); err != nil {
 		return err
 	}
@@ -209,6 +221,7 @@ func (tx *Tx) DropTable(ctx context.Context, name string) error {
 	if err := tx.check(ctx, operation); err != nil {
 		return err
 	}
+	defer tx.leave()
 	t, err := tx.table(ctx, operation, name)
 	if err != nil {
 		return err
@@ -286,6 +299,7 @@ func (tx *Tx) Upsert(ctx context.Context, name string, row []*s4qlpb.Value) erro
 	if err := tx.check(ctx, operation); err != nil {
 		return err
 	}
+	defer tx.leave()
 	t, err := tx.table(ctx, operation, name)
 	if err != nil {
 		return err
@@ -308,6 +322,7 @@ func (tx *Tx) Delete(ctx context.Context, name string, key []*s4qlpb.Value) (boo
 	if err := tx.check(ctx, operation); err != nil {
 		return false, err
 	}
+	defer tx.leave()
 	t, err := tx.table(ctx, operation, name)
 	if err != nil {
 		return false, err
@@ -331,6 +346,7 @@ func (tx *Tx) Annotate(ctx context.Context, sql string, parameters []*s4qlpb.Val
 	if err := tx.check(ctx, operation); err != nil {
 		return err
 	}
+	defer tx.leave()
 	a := s4qlpb.Annotation_builder{Statement: s4qlpb.Statement_builder{Sql: new(sql), Parameters: parameters}.Build()}.Build()
 	// The writer of commit objects knows what a valid annotation is.
 	w, err := format.NewCommitWriter(io.Discard, format.EmptyLog, tx.d.host.Wall())
@@ -368,6 +384,7 @@ func (tx *Tx) Table(ctx context.Context, name string) (*s4qlpb.CreateTable, erro
 	if err := tx.check(ctx, operation); err != nil {
 		return nil, err
 	}
+	defer tx.leave()
 	t, err := tx.table(ctx, operation, name)
 	if err != nil {
 		return nil, err
@@ -381,6 +398,7 @@ func (tx *Tx) Tables(ctx context.Context) ([]*s4qlpb.CreateTable, error) {
 	if err := tx.check(ctx, operation); err != nil {
 		return nil, err
 	}
+	defer tx.leave()
 	tables, err := tx.c.list()
 	if err != nil {
 		return nil, tx.fail(ctx, operation, err)
@@ -403,6 +421,7 @@ func (tx *Tx) Get(ctx context.Context, name string, key []*s4qlpb.Value) ([]*s4q
 	if err := tx.check(ctx, operation); err != nil {
 		return nil, err
 	}
+	defer tx.leave()
 	t, err := tx.table(ctx, operation, name)
 	if err != nil {
 		return nil, err
@@ -425,6 +444,7 @@ func (tx *Tx) Scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Value, 
 			yield(nil, err)
 			return
 		}
+		defer tx.leave()
 		t, err := tx.table(ctx, operation, name)
 		if err != nil {
 			yield(nil, err)
@@ -448,6 +468,11 @@ func (tx *Tx) Rollback(ctx context.Context) error {
 		return ErrTxDone
 	}
 	defer tx.end(ctx)
+	if tx.d.use(tx.c) != nil {
+		// [DB.Close] closed the connection, which rolled the transaction of the cache back.
+		return nil
+	}
+	defer tx.leave()
 	return tx.rollback(ctx)
 }
 
@@ -463,7 +488,10 @@ func (tx *Tx) end(ctx context.Context) {
 		return
 	}
 	tx.done = true
-	tx.c.forget()
+	if tx.d.use(tx.c) == nil {
+		tx.c.forget()
+		tx.leave()
+	}
 	tx.notes.close()
 	tx.d.writerLock.Release(ctx)
 }
@@ -681,17 +709,25 @@ func (tx *Tx) Commit(ctx context.Context) (err error) {
 
 	clock := d.stopwatch()
 	outcome := "not_committed"
-	attrs := []slog.Attr{slog.String(attrParent, tx.parent.String())}
+	report := commitReport{parent: tx.parent}
 	attempts := 0
 	defer func() {
-		level := slog.LevelInfo
-		if err != nil {
+		// A commit that succeeded is routine, and its event is only for debugging.
+		level := slog.LevelDebug
+		if err != nil || outcome == "committed_and_stopped" {
 			level = slog.LevelWarn
 		}
-		attrs = append(attrs, slog.String(attrOutcome, outcome), slog.Int(attrAttempts, attempts), clock.total(), errAttr(err))
-		d.event(ctx, level, eventCommit, attrs...)
+		if d.enabled(ctx, level) {
+			d.event(ctx, level, eventCommit, report.attrs(outcome, attempts, clock.total(), err)...)
+		}
 	}()
 
+	// The commit uses the connection until it knows its outcome, also while it finds that out after
+	// a stop, because it then commits or rolls back the transaction of the cache.
+	if err := d.use(tx.c); err != nil {
+		return err
+	}
+	defer tx.leave()
 	if tx.failed != nil {
 		_ = tx.rollback(ctx)
 		return tx.failed
@@ -707,8 +743,8 @@ func (tx *Tx) Commit(ctx context.Context) (err error) {
 		return fmt.Errorf("commit: %w", err)
 	}
 	defer out.spool.close()
-	attrs = append(attrs, slog.String(attrCommit, out.name.String()), slog.Int(attrChanges, out.changes),
-		slog.Int(attrAnnotations, tx.annotations), slog.Int64(attrBytes, out.spool.size), clock.phase(attrDurationSpool))
+	report.spooled, report.name, report.changes, report.annotations, report.bytes = true, out.name, out.changes, tx.annotations, out.spool.size
+	report.phase(clock.phase(attrDurationSpool))
 
 	if out.changes == 0 {
 		if err := tx.rollback(ctx); err != nil {
@@ -746,10 +782,10 @@ func (tx *Tx) Commit(ctx context.Context) (err error) {
 		_ = tx.rollback(ctx)
 		return fmt.Errorf("commit: not committed: %w", err)
 	}
-	attrs = append(attrs, clock.phase(attrDurationUpload))
+	report.phase(clock.phase(attrDurationUpload))
 
 	result, err := tx.publish(ctx, out.name, &attempts)
-	attrs = append(attrs, clock.phase(attrDurationSwap))
+	report.phase(clock.phase(attrDurationSwap))
 	switch result {
 	case published:
 		d.host.Yield(ctx, "core: a commit between the manifest swap and the cache")
@@ -761,7 +797,7 @@ func (tx *Tx) Commit(ctx context.Context) (err error) {
 				outcome = "committed_and_stopped"
 			}
 		}
-		attrs = append(attrs, clock.phase(attrDurationCache))
+		report.phase(clock.phase(attrDurationCache))
 		return nil
 
 	case unknown:
@@ -772,6 +808,36 @@ func (tx *Tx) Commit(ctx context.Context) (err error) {
 	}
 	_ = tx.rollback(ctx)
 	return fmt.Errorf("commit: not committed: %w", err)
+}
+
+// commitReport is what the event of a commit says, kept as plain values until the event is logged,
+// so that a commit whose event the logger drops builds no attributes.
+type commitReport struct {
+	parent format.Name
+	// spooled is whether the commit object was written, and the fields up to bytes then say what it
+	// holds.
+	spooled              bool
+	name                 format.Name
+	changes, annotations int
+	bytes                int64
+	// phases that have ended, each as its duration.
+	phases []slog.Attr
+}
+
+// phase that has ended.
+func (r *commitReport) phase(a slog.Attr) {
+	r.phases = append(r.phases, a)
+}
+
+// attrs of the event of the commit, which ended with the outcome after the attempts.
+func (r *commitReport) attrs(outcome string, attempts int, total slog.Attr, err error) []slog.Attr {
+	attrs := []slog.Attr{slog.String(attrParent, r.parent.String())}
+	if r.spooled {
+		attrs = append(attrs, slog.String(attrCommit, r.name.String()), slog.Int(attrChanges, r.changes),
+			slog.Int(attrAnnotations, r.annotations), slog.Int64(attrBytes, r.bytes))
+	}
+	attrs = append(attrs, r.phases...)
+	return append(attrs, slog.String(attrOutcome, outcome), slog.Int(attrAttempts, attempts), total, errAttr(err))
 }
 
 // spoolReader reads the spool file of a commit object for an upload, and keeps the first error of

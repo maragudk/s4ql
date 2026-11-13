@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -34,7 +35,7 @@ func (w *world) commits(t *testing.T) [][]string {
 	t.Helper()
 	var log [][]string
 	for name := w.manifest(t).Head; name != format.EmptyLog; {
-		data, _, ok := w.store.Object("db/commits/" + name.String())
+		data, _, ok := w.store.Object(commitKey("db", name))
 		is.True(t, ok, "the log names a commit object that the store does not have")
 		parent, lines, err := changes(name, data)
 		is.NotError(t, err)
@@ -287,14 +288,15 @@ func TestTx_Commit(t *testing.T) {
 		is.EqualSlice(t, nil, s.unchecked)
 		is.Equal(t, 2, s.count("create", "db/commits/"))
 		for _, key := range w.store.Keys() {
-			name, ok := strings.CutPrefix(key, "db/commits/")
-			if !ok {
+			if !strings.HasPrefix(key, "db/commits/") {
 				is.Equal(t, "db/manifest.json", key)
 				continue
 			}
 			data, _, _ := w.store.Object(key)
 			sum := sha256.Sum256(data)
-			is.Equal(t, hex.EncodeToString(sum[:]), name)
+			// The key is in a folder named by the first two digits of the name, and ends with the name.
+			name := hex.EncodeToString(sum[:])
+			is.Equal(t, "db/commits/"+name[:2]+"/"+name, key)
 		}
 	})
 
@@ -962,7 +964,7 @@ func TestTx_Commit_large(t *testing.T) {
 		is.NotError(t, tx.Commit(t.Context()))
 		grown := heap.grown()
 
-		info, err := os.Stat(s.path("db/commits/" + s.manifest(t).Head.String()))
+		info, err := os.Stat(s.path(commitKey("db", s.manifest(t).Head)))
 		is.NotError(t, err)
 		t.Logf("a transaction of %v rows gave a commit object of %v bytes in %v, and the heap grew by at most %v bytes", 2*rows, info.Size(), time.Since(start).Round(time.Millisecond), grown)
 		if !instrumented {
@@ -1110,14 +1112,19 @@ func TestTx_Commit_stopped(t *testing.T) {
 			committed := make(chan error, 1)
 			go func() { committed <- tx.Commit(t.Context()) }()
 			time.Sleep(5 * time.Second)
-			// The close waits for the commit, and gives up.
+			// The close waits for the commit, and gives up. The commit still uses the write connection.
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			is.Error(t, context.DeadlineExceeded, d.Close(ctx))
 			cancel()
 			is.Equal(t, 0, len(committed))
+			open, err := leftOpen(w.dir)
+			is.NotError(t, err)
+			is.EqualSlice(t, []string{"a.db"}, open)
 
+			// The commit closes the connection when it ends.
 			s.clear()
 			is.NotError(t, <-committed)
+			cacheClosed(t, w.dir)
 			is.Equal(t, 2, len(w.commits(t)))
 			is.NotError(t, d.Close(t.Context()))
 			is.True(t, w.manifest(t).Lease == nil, "the lease is not released")
@@ -1233,6 +1240,7 @@ func TestDB_Begin(t *testing.T) {
 		is.Equal(t, 1, len(events.named(core.EventBusy)))
 		is.Equal(t, "busy", at(events.named(core.EventBusy)[0], core.AttrOutcome))
 		is.Equal(t, "begin", at(events.named(core.EventBusy)[0], core.AttrOperation))
+		is.Equal(t, slog.LevelWarn, levelOf(events.named(core.EventBusy)[0]))
 
 		// It is no local I/O failure: the instance goes on, and reads do not wait for the lock.
 		is.NotError(t, d.Err())

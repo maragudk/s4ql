@@ -244,20 +244,26 @@ func (d *DB) lose(ctx context.Context, m format.Manifest) {
 	if m.Lease != nil {
 		holder = m.Lease.Holder
 	}
-	d.event(ctx, slog.LevelWarn, eventLease, slog.String(attrTransition, "lost"), slog.String(attrOutcome, "lost"), slog.String(attrLeaseHolder, holder))
+	d.event(ctx, slog.LevelInfo, eventLease, slog.String(attrTransition, "lost"), slog.String(attrOutcome, "lost"), slog.String(attrLeaseHolder, holder))
 }
 
 // leaseLoop is the one goroutine of the instance. Until the instance stops, it takes the lease
 // when the instance does not hold it, catches the cache up and settles the swaps whose outcome is
 // unknown when the instance holds the lease and does not serve, and renews the lease while the
-// instance serves. When the instance has stopped, it tries once to release the lease.
+// instance serves. When the instance has stopped, it tries once to release the lease, unless
+// [DB.Close] has begun, which releases it itself.
 func (d *DB) leaseLoop(ctx context.Context) {
+	ctx, cancelTask := context.WithCancel(ctx)
+	defer cancelTask()
 	work, cancel := context.WithCancel(ctx)
 	defer cancel()
 	d.mu.Lock()
-	d.cancelWork = cancel
+	d.cancelWork, d.cancelTask = cancel, cancelTask
 	if d.stopped != nil {
 		cancel()
+	}
+	if d.closing {
+		cancelTask()
 	}
 	d.mu.Unlock()
 
@@ -311,9 +317,10 @@ func (d *DB) acquire(ctx context.Context) time.Duration {
 	if held.acquireWriter(ctx) != nil || held.acquireManifest(ctx) != nil {
 		return 0
 	}
-	if d.stoppedError() != nil {
+	if d.stoppedError() != nil || d.use(d.w) != nil {
 		return 0
 	}
+	defer d.unuse(d.w)
 
 	clock := d.stopwatch()
 	m, version, found, err := d.readManifest(ctx)
@@ -352,12 +359,20 @@ func (d *DB) acquire(ctx context.Context) time.Duration {
 		}
 	}
 
+	// Every attempt to take the lease draws a new salt, so that no two takes carry the same bytes.
+	// A request that is stuck in the network can be applied late only if the version that it is
+	// from comes back, and a version comes back only if the same bytes are written again. The only
+	// manifest that is written again with the same bytes is the one without a lease entry, whenever
+	// the head is the same, and the only swaps sent from it are takes. So a take that arrives late
+	// can install a lease and nothing else: the manifest then names a holder that does not know it,
+	// and the next instance waits for that lease to time out. Every other swap is sent from a version
+	// that a holder wrote, which holds a salt, and never comes back.
 	next := m
 	sent := d.now()
 	next.Lease = &format.Lease{Holder: d.id, Duration: d.options.Lease, Renewed: sent.wall, Salt: d.host.Uint64()}
 	data, err := next.Marshal()
 	if err != nil {
-		d.event(ctx, slog.LevelError, eventLease, slog.String(attrTransition, "taken"), slog.String(attrOutcome, "failed"), errAttr(err))
+		d.event(ctx, slog.LevelWarn, eventLease, slog.String(attrTransition, "taken"), slog.String(attrOutcome, "failed"), errAttr(err))
 		return backOff
 	}
 	sum := sha256.Sum256(data)
@@ -402,9 +417,10 @@ func (d *DB) resume(ctx context.Context) time.Duration {
 	d.mu.Lock()
 	ok := d.stopped == nil && d.holder && !d.serving
 	d.mu.Unlock()
-	if !ok {
+	if !ok || d.use(d.w) != nil {
 		return 0
 	}
+	defer d.unuse(d.w)
 	return d.resumeLocked(ctx)
 }
 
@@ -595,7 +611,7 @@ func (d *DB) renewLocked(ctx context.Context, outside *locks) time.Duration {
 	if f == nil {
 		var err error
 		if f, err = d.newFlight(format.Name{}, false); err != nil {
-			d.event(ctx, slog.LevelError, eventLease, slog.String(attrTransition, "renewed"), slog.String(attrOutcome, "failed"), errAttr(err))
+			d.event(ctx, slog.LevelWarn, eventLease, slog.String(attrTransition, "renewed"), slog.String(attrOutcome, "failed"), errAttr(err))
 			return backOff
 		}
 	}
@@ -631,12 +647,13 @@ func (d *DB) renewLocked(ctx context.Context, outside *locks) time.Duration {
 			return 0
 		}
 	}
+	level := slog.LevelWarn
 	if outcome == "renewed" {
-		err = nil
+		// A routine renewal is logged only when the level of debugging is on.
+		err, level = nil, slog.LevelDebug
 	}
-	level := slog.LevelInfo
-	if outcome != "renewed" {
-		level = slog.LevelWarn
+	if !d.enabled(ctx, level) {
+		return wait
 	}
 	d.event(ctx, level, eventLease, slog.String(attrTransition, "renewed"), slog.String(attrOutcome, outcome),
 		slog.String(attrLeaseHolder, d.id), slog.Int(attrAttempts, f.attempts), clock.total(), errAttr(err))
@@ -653,12 +670,12 @@ func (d *DB) releaseOnce(ctx context.Context) {
 	}
 	clock := d.stopwatch()
 	err := d.releaseFrom(ctx, d.man, d.version)
-	outcome := "released"
+	outcome, level := "released", slog.LevelInfo
 	if err != nil {
 		// The manifest may have no lease entry all the same, and may still name this instance.
-		outcome, d.unsure = "failed", true
+		outcome, level, d.unsure = "failed", slog.LevelWarn, true
 	}
-	d.event(ctx, slog.LevelInfo, eventLease, slog.String(attrTransition, "released"), slog.String(attrOutcome, outcome), slog.Int(attrAttempts, 1), clock.total(), errAttr(err))
+	d.event(ctx, level, eventLease, slog.String(attrTransition, "released"), slog.String(attrOutcome, outcome), slog.Int(attrAttempts, 1), clock.total(), errAttr(err))
 }
 
 // releaseFrom swaps the manifest m, which names this instance as the holder and has the given
@@ -685,14 +702,20 @@ func (d *DB) releaseFrom(ctx context.Context, m format.Manifest, version store.V
 // release the lease when the instance is closed, until the manifest does not name this instance,
 // ctx is done, or it has tried for as long as the lease lasts. Unlike [DB.releaseOnce], it reads
 // the manifest first, so it also releases a lease that the instance holds without knowing it.
-func (d *DB) release(ctx context.Context) error {
+func (d *DB) release(ctx context.Context) (err error) {
+	clock := d.stopwatch()
+	attempts := 0
+	defer func() {
+		if err != nil {
+			d.event(ctx, slog.LevelWarn, eventLease, slog.String(attrTransition, "released"), slog.String(attrOutcome, "failed"),
+				slog.Int(attrAttempts, attempts), clock.total(), errAttr(err))
+		}
+	}()
 	held := locks{d: d}
 	defer held.release(ctx)
 	if err := held.acquireManifest(ctx); err != nil {
 		return err
 	}
-	clock := d.stopwatch()
-	attempts := 0
 	for d.version != "" || d.unsure {
 		attempts++
 		m, version, found, err := d.fetchManifest(ctx)

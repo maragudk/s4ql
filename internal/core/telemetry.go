@@ -8,6 +8,21 @@ import (
 
 // The events that an instance logs: one for each unit of work, when the unit ends, with everything
 // that is known about it as flat attributes.
+//
+// The level says how much an operator needs the event, so that a healthy instance that commits
+// and renews logs nothing at the default level, Info, after it has started:
+//
+//   - Debug: a commit that succeeded, also one of nothing; a renewal of the lease that succeeded;
+//     and a call that was refused for lack of a valid lease.
+//   - Info: a change of state: the lease taken, lost, or released, a catch-up, and a close.
+//   - Warn: a commit that failed or whose outcome is unknown, a commit whose cache then failed, a
+//     swap of unknown outcome and how it was settled, a renewal, a take, or a release of the lease
+//     that failed, a catch-up that failed, and "busy" of the cache after the busy timeout.
+//   - Error: a stop for good for any cause but a close, with the cause.
+//
+// An event of the call of a caller carries the caller's context. An event of the lease task
+// carries the context that [Open] was given, without its cancellation, and an event of [DB.Close]
+// the context of Close.
 const (
 	// eventCommit is one call of [Tx.Commit].
 	eventCommit = "commit"
@@ -78,9 +93,15 @@ const (
 	attrDurationCache  = "duration.cache"
 )
 
-// event logs one unit of work.
+// event logs one unit of work, with the context of the call that did it.
 func (d *DB) event(ctx context.Context, level slog.Level, name string, attrs ...slog.Attr) {
 	d.log.LogAttrs(ctx, level, name, attrs...)
+}
+
+// enabled reports whether the logger takes events at the level, so that the attributes of an event
+// that it would drop are not built.
+func (d *DB) enabled(ctx context.Context, level slog.Level) bool {
+	return d.log.Enabled(ctx, level)
 }
 
 // errAttr is the attribute for the error of a unit of work.

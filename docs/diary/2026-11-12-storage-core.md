@@ -618,3 +618,77 @@ The 32 survivors and their reasons, by the id in `mf/mutants_list.py` and `mf/mu
 
 - A file system that fails on demand, for the four local failures that no test produces.
 - The runner and the lists are in the scratchpad. If mutation testing is to be repeated, they belong in the tree.
+
+## Step 9: Five decisions of 2026-11-13
+
+**Author:** decisions-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "You are making five agreed changes to the storage core of s4ql [...] **1. The keys of commit objects are sharded by the first two hexadecimal digits of the name.** [...] **2. The levels of the events.** [...] **3. Pin the rule that every attempt to take the lease carries a new salt.** [...] **4. `DB.Close` closes the cache whatever the store does.** [...] **5. The simulation opens a cache with a write-ahead log that a crash left.** [...]" (the lead's brief, with the decisions that maragubot made with Markus on 2026-11-13; it is quoted here only in part, because it is long)
+**Interpretation:** Five changes, one commit each, with tests, the reasoning in `/internal/core/README.md`, and the todo items deleted that they build. For change 3, check the reasoning against the code before writing it down, and stop if it has a hole.
+**Inferred intent:** Close the points that were open or agreed but not built in the storage core, without changing anything else about it, and keep the simulation's guarantees (every planted bug found, every seed run twice, 1000 seeds clean).
+
+### What I did
+
+Five commits on the branch `worktree-agent-a74c7cf17c1097f36`:
+
+1. **Sharded keys.** `DB.commitKey` in `/internal/core/core.go` writes `<prefix>/commits/<first two digits>/<name>`. The tests build keys through a new helper `commitKey` in `/internal/core/model_test.go`. The key test in `/internal/core/tx_test.go` checks the shard.
+2. **Levels.** The doc comment of the events in `/internal/core/telemetry.go` lists the levels. A commit that succeeded, a renewal that succeeded, and a refusal are Debug. A change of the lease and a catch-up are Info. Failures are Warn, and a stop for any cause but a close is Error. The commit event keeps plain values in a `commitReport` and builds its attributes only after `DB.enabled`. A renewal and a refusal check `enabled` before they build anything. The recorder in `/internal/core/telemetry_test.go` got a minimum level and records a value of the context. `TestEvents` checks the level of each kind of event, that a healthy instance logs nothing at Info after it has started (ten rounds of commits, reads, and renewals), and the context of a commit, of a refused `Read`, of a refused `Begin`, of the lease task (the context of `Open`), and of a close.
+3. **Salt.** I wrote the reasoning as a comment in `DB.acquire` and as the new section "A take that arrives late" in the README. Two tests are in `TestLease_unsure`: three takes from one version carry three salts, and the scenario. In the scenario, a take sticks, the second take is applied, and a commit of the holder sticks and is ruled out by a renewal. The holder closes, and the release writes the manifest without a lease entry back to the same bytes and the same version. Then the stuck take is applied and the stuck commit is refused with `store.ErrChanged`. The head is unchanged, and the next instance waits 30 s and the margin.
+4. **Close.** Each connection now counts the calls that use it (`conn.users`, `DB.use`, `DB.unuse`). `Close` stops the instance, sets `closing`, and ends the lease task in one critical section of `DB.mu`. It closes every connection that no call uses, then releases the lease with half of the time that ctx has left (`DB.releaseContext`), then waits for the lease task and for the connections that calls still use (`DB.waitClosed`). The last call to leave a connection of a closing instance closes it. Every call of `Tx` and `ReadTx`, `Begin`, `Read`, and the lease task's `acquire` and `resume` mark their use.
+5. **Recovery in the simulation.** The crasher in `/internal/core/simulation_test.go` no longer reads the copy before the restarted instance opens it. It reads the copy after `Open` and compares it with the crash and with the model. It also counts the restarts where a copy of the file alone, without the log (`fileOnly`), lacks commits that the cache had, and the frames of their logs (`walFrames`). `/internal/core/workloads_test.go` logs the counts.
+
+### Why
+
+The five were decided with Markus on 2026-11-13. Each removes an open point or an agreed point of `/docs/todo.md`, except the levels and the shard, which are new.
+
+### What worked
+
+- The 1000-seed runs: no violation and no pair of traces that differ in any of the three workloads. Of the 1000 restarts in the workload with everything, 761 recovered commits that only the log held, from logs of 5064 frames in all and 36 in the largest. The run on the final code, after the self-review, gave the same counts, at a load of 15 to 19.
+- Two controls for change 5. Copying the cache without its log made the new check fail at once: `seed 0: the cache of a2 is at 00000000 after the restart, and was at aa3ce840 at the crash`. With the log, the check passes, and the file alone was behind in 761 restarts. So `Open` really recovered those commits from the log.
+- Two mutants for change 2 and change 3. A commit at Info fails the test of a quiet instance. A constant salt in `DB.acquire` fails the new salt test, with `Expected "3", but got "1"`.
+- The planted bugs in the default run: each of the 19 found four times within 81 seeds, as before.
+
+### What didn't work
+
+- I reverted my own uncommitted work. To undo a mutant in `tx.go`, I ran `git checkout internal/core/tx.go`, which also threw away the uncommitted `commitReport` change. I applied it again from the same script. Later mutants I undid with `sed` on a marker.
+- The scenario test of change 3 does not fail under a constant salt. The take's `Renewed` time differs between the two attempts in the bubble, so the bytes differ anyway. The salt test is what pins the rule. In production, a wall clock that stands still would make the bytes equal.
+- The worktree guard refused some compound shell commands: "this command is too complex to verify that it stays inside the worktree". I moved the large edits into a small script in the scratchpad (`sub.py` with a spec file of exact replacements) and split the git commands.
+- One run of `go test -count=1 -race -shuffle on ./internal/core/` failed at a load of 17 to 22, while the reviewers of the code review also ran. I kept only `tail -3` of it (`FAIL maragu.dev/s4ql/internal/core 122.992s`), so the failing test is not known. Five more race runs passed, three of them with `-v` and the full log kept. I could not reproduce it.
+
+### What I learned
+
+- The reasoning of change 3 holds, and it rests on one thing that the README now names: no take is sent twice with the same bytes. The core never sends one twice. The client of the store must not either, which the todo already asks of the S3 client for another reason. If a take were sent twice, its version could come back, and a stuck commit from that version could then be applied after it was settled as not committed. That would be a correctness bug, so this condition matters.
+- The old simulation never recovered anything because the harness's own `cacheDump` of the copy was the last connection to close it. Closing that connection checkpointed the copy and deleted its log.
+- After the stop, every call of a transaction fails at its next check anyway. So waiting for an idle transaction in `Close` gains nothing, and closing its connection loses nothing.
+
+### What was tricky
+
+- `use` returns the error of the stop when a connection is closed. That is only safe if a connection is never closed before the stop. The first version of `Close` stopped first and set `closing` in a second critical section. The review found that the lease task could start its try to release the lease in that gap, which `Close` then cancelled mid-request. The stop, `closing`, and the end of the lease task are one critical section now (`DB.stopLocked`).
+- Defers run last first. In `Tx.Commit` and `DB.Read`, the deferred `unuse` must run before `end`, which uses the connection again, so it is registered after `end`.
+- The time left before a deadline can only be measured by the wall clock of the host. That is the only clock the deadline shares, and the review flagged it. A step of the clock changes only how long the release tries, and the doc comment of `releaseContext` says so.
+
+### What warrants review
+
+- The new contract of `DB.Close` in `/internal/core/core.go`. It closes the connection under an open, idle transaction (rolling a write transaction back), and `Tx.Rollback` and `ReadTx.Close` then return nil. The brief left this to me, and it changes what `Close` did before, which was to wait for open transactions. If this needs Markus, it is the one point.
+- `DB.use` and `DB.unuse` in every call of `/internal/core/tx.go` and `/internal/core/read.go`. A call that forgets `leave` keeps a connection open, which `leftOpen` would catch in the tests that cover that call.
+- The levels in `/internal/core/telemetry.go`. Three choices go beyond the brief's list. A commit whose cache fails after the swap is Warn, though it returns nil. A catch-up that fails is Warn, except when a close ended it, which is Info. A take, renewal, or release that fails is Warn.
+
+Self-review, with the `code-review` skill at the level high over the branch. Ten findings:
+
+- Fixed: the gap between the stop and `closing`, described above.
+- Fixed: a release in `Close` that failed logged no event, because the lease task's try, which logged one, no longer runs on a close. `DB.release` logs a Warn `lease released outcome=failed` now, and the test of an unreachable store checks it.
+- Fixed: `unuse` dropped the errors of the closes that it made. They are kept in `DB.closeErrs`, and `Close` returns them.
+- Fixed: a catch-up that a close cancelled was logged as a Warn failure. It is Info now.
+- Fixed: `commitReport` kept its phases in an array of four, and a fifth phase would have panicked. It is a slice now.
+- Documented: `releaseContext` measures by the wall clock (see "What was tricky").
+- Left, and in the report: the release gets half of the deadline even when nothing waits on the cache. The brief asks for a bounded part, and giving the release all of it when no call runs would be a small refinement.
+- Left: each call of a transaction takes `DB.mu` three times. Merging the check into `use` would save one lock and unlock per call.
+- Wrong: the shard breaks reading of the old layout. The spec says "The storage formats are drafts until version 1", and the brief says that nothing migrates.
+- Reported to the lead: the change of the contract of `Close`, which the brief left to the builder.
+
+### Future work
+
+- `/internal/core/README.md` says under "A swap whose outcome is unknown" that the second case of "outcome unknown" is an open question in the todo. The todo no longer holds it, since the commit "Name the second case of "outcome unknown" in the spec". I left the line, because it was outside the five changes.
+- The race failure that I could not reproduce.

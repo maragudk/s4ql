@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -208,9 +209,15 @@ type DB struct {
 	waiters map[uint64]context.CancelFunc
 	waiter  uint64
 	changes uint64
-	// cancelWork ends what the lease task is doing when the instance stops.
-	cancelWork context.CancelFunc
-	closed     bool
+	// cancelWork ends what the lease task is doing when the instance stops, and cancelTask ends the
+	// lease task, also its one try to release the lease, when the instance is closed.
+	cancelWork, cancelTask context.CancelFunc
+	// closing is whether [DB.Close] has begun, which it does together with the stop: every
+	// connection that no call uses is then closed, and every other one when the last call that uses
+	// it ends. closeErrs are the errors of those closes that no Close has returned yet. closed is
+	// whether a Close has come to its end.
+	closing, closed bool
+	closeErrs       []error
 	// racy is the counter of the planted data race.
 	racy int
 
@@ -332,9 +339,13 @@ func key(prefix, name string) string {
 	return prefix + "/" + name
 }
 
-// commitKey of the commit object with the given name.
+// commitKey of the commit object with the given name: in a folder named by the first two
+// hexadecimal digits of the name, and with the whole name, so that a tool that copies the bucket to
+// a disk does not make one folder of every commit object, and a file that is copied alone still
+// names itself.
 func (d *DB) commitKey(name format.Name) string {
-	return key(d.prefix, "commits/"+name.String())
+	s := name.String()
+	return key(d.prefix, "commits/"+s[:2]+"/"+s)
 }
 
 // spoolDir and spoolPattern say where a transaction keeps its files: next to the cache.
@@ -346,8 +357,8 @@ func (d *DB) spoolPattern() string {
 	return filepath.Base(d.path) + "-spool-*"
 }
 
-// closeCache closes every connection to the cache, also one that a transaction holds, ignoring
-// errors. It is for an instance that nothing uses any more.
+// closeCache closes every connection to the cache, also one that a call uses, ignoring errors. It
+// is for an instance that nothing uses any more.
 func (d *DB) closeCache() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -378,7 +389,18 @@ func (d *DB) Err() error {
 // tries once to release the lease.
 func (d *DB) stop(ctx context.Context, cause error) error {
 	d.mu.Lock()
-	first := d.stopped == nil
+	first, err := d.stopLocked(cause)
+	d.mu.Unlock()
+	if first {
+		d.stopEvent(ctx, cause)
+	}
+	return err
+}
+
+// stopLocked is [DB.stop] without the event, which the caller logs with [DB.stopEvent] if first is
+// true. It requires mu.
+func (d *DB) stopLocked(cause error) (first bool, err error) {
+	first = d.stopped == nil
 	if first {
 		d.stopped = fmt.Errorf("%w: %w", ErrStopped, cause)
 		close(d.done)
@@ -387,17 +409,16 @@ func (d *DB) stop(ctx context.Context, cause error) error {
 		}
 		d.wakeLocked()
 	}
-	err := d.stopped
-	d.mu.Unlock()
+	return first, d.stopped
+}
 
-	if first {
-		level := slog.LevelError
-		if errors.Is(cause, ErrClosed) {
-			level = slog.LevelInfo
-		}
-		d.event(ctx, level, eventStop, slog.String(attrOutcome, stopOutcome(cause)), errAttr(cause))
+// stopEvent logs the stop for the cause.
+func (d *DB) stopEvent(ctx context.Context, cause error) {
+	level := slog.LevelError
+	if errors.Is(cause, ErrClosed) {
+		level = slog.LevelInfo
 	}
-	return err
+	d.event(ctx, level, eventStop, slog.String(attrOutcome, stopOutcome(cause)), errAttr(cause))
 }
 
 // stopOutcome names the kind of the cause of a stop.
@@ -431,7 +452,7 @@ func (d *DB) cacheError(ctx context.Context, operation string, err error) error 
 	case classify(err) == kindLocal || errors.Is(err, ErrCacheVersion):
 		return d.stop(ctx, fmt.Errorf("%w: %v: %w", ErrLocal, operation, err))
 	case classify(err) == kindBusy:
-		d.event(ctx, slog.LevelError, eventBusy, slog.String(attrOperation, operation), slog.String(attrOutcome, "busy"), errAttr(err))
+		d.event(ctx, slog.LevelWarn, eventBusy, slog.String(attrOperation, operation), slog.String(attrOutcome, "busy"), errAttr(err))
 		return fmt.Errorf("%w: %v: %w", ErrBusy, operation, err)
 	}
 	return err
@@ -521,9 +542,9 @@ func (d *DB) usable() error {
 // refused logs that the operation was refused for lack of a valid lease, if err says so, and
 // returns err.
 func (d *DB) refused(ctx context.Context, operation string, err error) error {
-	if errors.Is(err, ErrNoLease) {
+	if errors.Is(err, ErrNoLease) && d.enabled(ctx, slog.LevelDebug) {
 		reason := strings.TrimPrefix(err.Error(), ErrNoLease.Error()+": ")
-		d.event(ctx, slog.LevelInfo, eventRefusal, slog.String(attrOperation, operation), slog.String(attrReason, reason), slog.String(attrOutcome, "refused"))
+		d.event(ctx, slog.LevelDebug, eventRefusal, slog.String(attrOperation, operation), slog.String(attrReason, reason), slog.String(attrOutcome, "refused"))
 	}
 	return err
 }
@@ -652,59 +673,147 @@ func (d *DB) Wait(ctx context.Context) error {
 	}
 }
 
-// Close the instance: stop it for good, release the lease, so that the manifest then has no lease
-// entry and the next instance does not wait, wait for the transactions that are open to end, and
-// close the cache. A request to take the lease that this instance sent earlier, and that got no
-// answer, can still be applied after Close has returned, while the log has not grown: the manifest
-// then names this instance, and the next instance waits for that lease to time out. If ctx is done first, it returns the error of the wait, and the cache stays
-// open. It returns an error if it could not release the lease, which then times out. Closing a
-// closed instance does nothing.
+// Close the instance: stop it for good, close the cache, and release the lease, so that the
+// manifest then has no lease entry and the next instance does not wait.
+//
+// The cache is closed whatever the store does. Every connection that no call uses is closed at
+// once, also the one of a transaction that is open, whose every call fails from then on: a write
+// transaction is then rolled back, and its Rollback returns nil. A connection that a call uses is
+// closed when the call ends. After the stop, every call fails at its next check, except a
+// [Tx.Commit] whose swap may be applied, which goes on finding out, and a request to the store that
+// is on its way ends at its answer or its timeout. Close waits for those calls until ctx is done,
+// and returns an error if one still runs.
+//
+// The release of the lease gets half of the time that ctx has left, if ctx has a deadline, and the
+// duration of the lease at the most. Close returns an error that says that the lease is not
+// released, if it is not, and the lease then times out. A request to take the lease that this
+// instance sent earlier, and that got no answer, can still be applied after Close has returned,
+// while the log has not grown: the manifest then names this instance, and the next instance waits
+// for that lease to time out. Closing an instance whose Close came to its end does nothing.
 func (d *DB) Close(ctx context.Context) error {
-	_ = d.stop(ctx, ErrClosed)
-	if err := d.leaseTask.Wait(ctx); err != nil {
-		return fmt.Errorf("close: %w", err)
-	}
 	d.mu.Lock()
-	closed := d.closed
-	d.mu.Unlock()
-	if closed {
+	if d.closed {
+		d.mu.Unlock()
 		return nil
 	}
-
-	// The lease is released before the wait for the transactions, which can be long.
-	releaseErr := d.release(ctx)
-	if releaseErr != nil {
-		releaseErr = fmt.Errorf("close: release of the lease: %w", releaseErr)
+	// The lease task is ended in the same critical section as the stop, so that it never starts its
+	// one try to release the lease. The release below reads the manifest first, so it also does what
+	// that try would do.
+	first, _ := d.stopLocked(ErrClosed)
+	d.closing = true
+	if d.cancelTask != nil {
+		d.cancelTask()
 	}
-
-	held := locks{d: d}
-	defer held.release(ctx)
-	if err := held.acquireWriter(ctx); err != nil {
-		return errors.Join(releaseErr, fmt.Errorf("close: %w", err))
-	}
-	readers := 0
-	defer func() {
-		for ; readers > 0; readers-- {
-			d.readerPool.Release(ctx)
-		}
-	}()
-	for readers < d.options.Readers {
-		if err := d.readerPool.Acquire(ctx); err != nil {
-			return errors.Join(releaseErr, fmt.Errorf("close: %w", err))
-		}
-		readers++
-	}
-
-	d.mu.Lock()
-	d.closed = true
-	errs := []error{releaseErr}
-	for _, c := range d.idle {
-		errs = append(errs, c.close())
-	}
-	d.idle = nil
-	errs = append(errs, d.w.close())
+	d.closeIdleLocked()
 	d.mu.Unlock()
-	return errors.Join(errs...)
+	if first {
+		d.stopEvent(ctx, ErrClosed)
+	}
+
+	rctx, cancel := d.releaseContext(ctx)
+	releaseErr := d.release(rctx)
+	cancel()
+	if releaseErr != nil {
+		releaseErr = fmt.Errorf("close: the lease is not released, and times out: %w", releaseErr)
+	}
+
+	if err := d.leaseTask.Wait(ctx); err != nil {
+		return errors.Join(d.closeErrors(false), releaseErr, fmt.Errorf("close: the lease task: %w", err))
+	}
+	if err := d.waitClosed(ctx); err != nil {
+		return errors.Join(d.closeErrors(false), releaseErr, fmt.Errorf("close: a call still uses the cache, which is closed when the call ends: %w", err))
+	}
+	return errors.Join(d.closeErrors(true), releaseErr)
+}
+
+// closeErrors are the errors of the connections that were closed since the last call, and closed
+// marks the end of a [DB.Close].
+func (d *DB) closeErrors(closed bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	err := errors.Join(d.closeErrs...)
+	d.closeErrs = nil
+	d.closed = d.closed || closed
+	return err
+}
+
+// releaseContext is the context of the release of the lease in [DB.Close]: with half of the time
+// that ctx has left, if ctx has a deadline, so that the release does not take the time of the calls
+// that still use the cache. The time left is measured by the wall clock of the host, against which
+// the deadline was set, so a step of that clock during the close changes only how long the release
+// tries, and the release then ends at ctx's deadline at the latest.
+func (d *DB) releaseContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return context.WithCancel(ctx)
+	}
+	return d.host.WithTimeout(ctx, deadline.Sub(d.host.Wall())/2)
+}
+
+// use the connection c for a call, which gives it back with [DB.unuse]. It fails with the error of
+// the stop if [DB.Close] has closed c.
+func (d *DB) use(c *conn) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if c.closed {
+		return d.stopped
+	}
+	c.users++
+	return nil
+}
+
+// unuse gives back the connection c after a call. While the instance is closed, it closes every
+// connection that no call uses any more.
+func (d *DB) unuse(c *conn) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	c.users--
+	if d.closing {
+		d.closeIdleLocked()
+	}
+}
+
+// closeIdleLocked closes every connection to the cache that no call uses, the read connections
+// first, so that the write connection is the last to close when no call uses any, keeps the errors
+// of the closes for [DB.Close] to return, and wakes the waits if it closed one. It requires mu, and
+// that the instance has stopped.
+func (d *DB) closeIdleLocked() {
+	closed := false
+	for _, c := range append(slices.Clone(d.readers), d.w) {
+		if !c.closed && c.users == 0 {
+			c.closed, closed = true, true
+			if err := c.close(); err != nil {
+				d.closeErrs = append(d.closeErrs, fmt.Errorf("close: a connection to the cache: %w", err))
+			}
+		}
+	}
+	if closed {
+		d.wakeLocked()
+	}
+}
+
+// waitClosed waits until every connection to the cache is closed. It fails with the error of the
+// wait if ctx is done first.
+func (d *DB) waitClosed(ctx context.Context) error {
+	for {
+		d.mu.Lock()
+		open := !d.w.closed
+		for _, c := range d.readers {
+			open = open || !c.closed
+		}
+		if !open {
+			d.mu.Unlock()
+			return nil
+		}
+		wctx, end := d.waitLocked(ctx)
+		d.mu.Unlock()
+
+		err := d.host.Sleep(wctx, time.Duration(1<<63-1))
+		end()
+		if ctx.Err() != nil {
+			return err
+		}
+	}
 }
 
 // locks that a function holds and gives back in a deferred call. Each lock is marked as given back

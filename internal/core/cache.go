@@ -23,6 +23,11 @@ type conn struct {
 	stmts map[string]*sqlite.Stmt
 	// tables that were looked up, by their folded name. A nil table does not exist.
 	tables map[string]*table
+
+	// users is the number of calls that use the connection now, and closed whether [DB.Close] has
+	// closed it. [DB.mu] guards both.
+	users  int
+	closed bool
 }
 
 // openConn to the cache at path, with the busy timeout in milliseconds, after which SQLite reports

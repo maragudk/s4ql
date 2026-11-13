@@ -51,6 +51,10 @@ func (d *DB) Read(ctx context.Context) (_ *ReadTx, err error) {
 			_ = r.end(ctx)
 		}
 	}()
+	if err := d.use(c); err != nil {
+		return nil, err
+	}
+	defer d.unuse(c)
 
 	if d.bugs.unlockedCounter {
 		// The planted data race.
@@ -81,12 +85,21 @@ func (r *ReadTx) Position() format.Name {
 	return r.position
 }
 
-// check that the transaction can go on.
+// check that the transaction can go on, and use its connection for the call, which gives it back
+// with [ReadTx.leave].
 func (r *ReadTx) check() error {
 	if r.done {
 		return ErrTxDone
 	}
-	return r.d.stoppedError()
+	if err := r.d.stoppedError(); err != nil {
+		return err
+	}
+	return r.d.use(r.c)
+}
+
+// leave a call of the transaction, which [ReadTx.check] began.
+func (r *ReadTx) leave() {
+	r.d.unuse(r.c)
 }
 
 // table with the given name, or an error that wraps [ErrNoTable].
@@ -106,6 +119,7 @@ func (r *ReadTx) Table(ctx context.Context, name string) (*s4qlpb.CreateTable, e
 	if err := r.check(); err != nil {
 		return nil, err
 	}
+	defer r.leave()
 	t, err := r.table(ctx, "table", name)
 	if err != nil {
 		return nil, err
@@ -118,6 +132,7 @@ func (r *ReadTx) Tables(ctx context.Context) ([]*s4qlpb.CreateTable, error) {
 	if err := r.check(); err != nil {
 		return nil, err
 	}
+	defer r.leave()
 	tables, err := r.c.list()
 	if err != nil {
 		return nil, r.d.cacheError(ctx, "tables", err)
@@ -134,6 +149,7 @@ func (r *ReadTx) Get(ctx context.Context, name string, key []*s4qlpb.Value) ([]*
 	if err := r.check(); err != nil {
 		return nil, err
 	}
+	defer r.leave()
 	t, err := r.table(ctx, operation, name)
 	if err != nil {
 		return nil, err
@@ -154,6 +170,7 @@ func (r *ReadTx) Scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Valu
 			yield(nil, err)
 			return
 		}
+		defer r.leave()
 		t, err := r.table(ctx, operation, name)
 		if err != nil {
 			yield(nil, err)
@@ -189,14 +206,20 @@ func (r *ReadTx) end(ctx context.Context) error {
 		return nil
 	}
 	r.done = true
-	r.c.forget()
-	// A transaction that only read loses nothing when it is rolled back. If it never began, there
-	// is nothing to roll back, and SQLite says so with an error that is no failure of the cache.
-	err := r.c.c.Exec("rollback")
-	if classify(err) == kindOther {
-		err = nil
+	var err error
+	// [DB.Close] may have closed the connection, which ended the transaction of the cache.
+	if r.d.use(r.c) == nil {
+		r.c.forget()
+		// A transaction that only read loses nothing when it is rolled back. If it never began,
+		// there is nothing to roll back, and SQLite says so with an error that is no failure of the
+		// cache.
+		err = r.c.c.Exec("rollback")
+		if classify(err) == kindOther {
+			err = nil
+		}
+		err = r.d.cacheError(ctx, "read", err)
+		r.leave()
 	}
-	err = r.d.cacheError(ctx, "read", err)
 	r.d.mu.Lock()
 	r.d.idle = append(r.d.idle, r.c)
 	r.d.mu.Unlock()
