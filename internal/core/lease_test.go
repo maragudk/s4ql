@@ -395,6 +395,30 @@ func TestLease_window(t *testing.T) {
 			is.NotError(t, readErr(t, a))
 		})
 	})
+
+	t.Run("should keep the lease while it tries a download again for longer than the lease lasts", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			first := w.serve(t, "first", core.Options{})
+			transact(t, first, create("t1", 1, "k"))
+			is.NotError(t, first.Close(t.Context()))
+
+			// The download of the one commit object fails 40 times, which takes minutes of waiting.
+			s := newScriptStore(w.client())
+			s.on("get", "commits/", drop, 40)
+			start := time.Now()
+			a := w.openOn(t, "a", s, core.Options{})
+			time.Sleep(time.Second)
+			spare := w.open(t, "spare", core.Options{})
+
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
+			defer cancel()
+			is.NotError(t, a.Wait(ctx))
+			is.True(t, time.Since(start) > 2*time.Minute, fmt.Sprint(time.Since(start)))
+			is.Equal(t, a.ID(), w.manifest(t).Lease.Holder)
+			is.True(t, !serves(t, spare), "the spare took the lease from an instance that was catching up")
+			is.Equal(t, "t1(k*0): ", read(t, a))
+		})
+	})
 }
 
 func TestLease_retries(t *testing.T) {
@@ -494,6 +518,27 @@ func TestLease_clocks(t *testing.T) {
 		})
 	})
 
+	t.Run("should fail a call that waits for a lock when the first of the two clocks says that the lease has run out", func(t *testing.T) {
+		clocked(t, func(ctx context.Context, s *sim.Scheduler, inst *sim.Instance, d *core.DB) {
+			tx, err := d.Begin(ctx)
+			is.NotError(t, err)
+			// The wall clock says that the lease runs out ten seconds before the monotonic clock does.
+			inst.ShiftWall(10 * time.Second)
+			done := make(chan error, 1)
+			waiter := inst.Go(ctx, "waiter", func(ctx context.Context) {
+				_, err := d.Begin(ctx)
+				done <- err
+			})
+			is.NotError(t, s.Sleep(ctx, 21*time.Second))
+			is.Equal(t, 1, len(done))
+			err = <-done
+			is.Error(t, core.ErrNoLease, err)
+			is.True(t, strings.Contains(fmt.Sprint(err), "lease_expired_wall"), fmt.Sprint(err))
+			is.NotError(t, tx.Rollback(ctx))
+			is.NotError(t, waiter.Wait(ctx))
+		})
+	})
+
 	t.Run("should not refuse a read because the wall clock was set forward by less than the lease has left", func(t *testing.T) {
 		clocked(t, func(ctx context.Context, s *sim.Scheduler, inst *sim.Instance, d *core.DB) {
 			inst.ShiftWall(10 * time.Second)
@@ -501,6 +546,42 @@ func TestLease_clocks(t *testing.T) {
 			is.NotError(t, started(ctx, d))
 			is.NotError(t, s.Sleep(ctx, 6*time.Second))
 			is.Error(t, core.ErrNoLease, started(ctx, d))
+		})
+	})
+}
+
+func TestLease_gone(t *testing.T) {
+	t.Run("should lose the lease when a renewal finds no manifest to replace", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s := newScriptStore(w.client())
+			d := w.openOn(t, "a", s, core.Options{})
+			is.NotError(t, d.Wait(t.Context()))
+			// The manifest is gone, as far as the instance can tell.
+			s.on("swap", "manifest", missing, -1)
+			s.on("get", "manifest", missing, -1)
+
+			time.Sleep(25 * time.Second)
+			err := readErr(t, d)
+			is.Error(t, core.ErrNoLease, err)
+			is.True(t, strings.Contains(fmt.Sprint(err), "not_holder"), fmt.Sprint(err))
+		})
+	})
+}
+
+func TestLease_end(t *testing.T) {
+	t.Run("should serve until the moment that the duration of the lease has passed since it was sent, and not at that moment", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s := newScriptStore(w.client())
+			start := time.Now()
+			d := w.openOn(t, "a", s, core.Options{})
+			is.NotError(t, d.Wait(t.Context()))
+			s.on("swap", "", drop, -1)
+			s.on("get", "", drop, -1)
+
+			time.Sleep(time.Until(start.Add(30*time.Second - time.Nanosecond)))
+			is.NotError(t, readErr(t, d))
+			time.Sleep(time.Nanosecond)
+			is.Error(t, core.ErrNoLease, readErr(t, d))
 		})
 	})
 }
@@ -553,6 +634,29 @@ func TestLease_unsure(t *testing.T) {
 			is.True(t, w.manifest(t).Lease == nil, "the lease is not released")
 		})
 	})
+
+	t.Run("should not release at its close the lease of another instance, when it was unsure whether it held it", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			first := w.serve(t, "first", core.Options{})
+			is.NotError(t, first.Close(t.Context()))
+
+			// The swap that would take the lease is lost on its way, and the instance hears nothing
+			// from the store while another instance takes the lease.
+			s := newScriptStore(w.client())
+			s.on("get", "manifest", pass, 1)
+			s.on("swap", "manifest", drop, 1)
+			s.on("get", "", drop, -1)
+			d := w.openOn(t, "a", s, core.Options{})
+			time.Sleep(3 * time.Second)
+			b := w.serve(t, "b", core.Options{})
+
+			s.clear()
+			is.NotError(t, d.Close(t.Context()))
+			lease := w.manifest(t).Lease
+			is.True(t, lease != nil && lease.Holder == b.ID(), "the lease of the other instance was released")
+			is.True(t, serves(t, b))
+		})
+	})
 }
 
 func TestLease_waiting(t *testing.T) {
@@ -594,6 +698,35 @@ func TestLease_waiting(t *testing.T) {
 			is.NotError(t, <-waited)
 			is.NotError(t, readErr(t, d))
 			is.NotError(t, tx.Rollback(t.Context()))
+		})
+	})
+
+	t.Run("should fail a call whose lock comes free after the lease ran out by the clocks, before its wait ended", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s := newScriptStore(w.client())
+			start := time.Now()
+			d := w.openOn(t, "a", s, core.Options{})
+			is.NotError(t, d.Wait(t.Context()))
+			tx, err := d.Begin(t.Context())
+			is.NotError(t, err)
+			s.on("swap", "", drop, -1)
+			s.on("get", "", drop, -1)
+
+			// The lease has 50 milliseconds left, so the call waits for the lock for the least time
+			// that a wait lasts, which is longer than that.
+			time.Sleep(time.Until(start.Add(30*time.Second - 50*time.Millisecond)))
+			is.True(t, serves(t, d))
+			waiter := make(chan error, 1)
+			go func() { waiter <- beginErr(t, d) }()
+			time.Sleep(75 * time.Millisecond)
+			is.True(t, !serves(t, d))
+			is.Equal(t, 0, len(waiter))
+
+			// The lock comes free while the call still waits, and the lease has run out.
+			is.NotError(t, tx.Rollback(t.Context()))
+			err = <-waiter
+			is.Error(t, core.ErrNoLease, err)
+			is.True(t, strings.Contains(fmt.Sprint(err), "lease_expired"), fmt.Sprint(err))
 		})
 	})
 

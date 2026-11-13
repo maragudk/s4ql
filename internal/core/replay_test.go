@@ -265,6 +265,19 @@ func TestReplay(t *testing.T) {
 		})
 	}
 
+	t.Run("should name the primary-key column that a commit object leaves out when it changes some columns", func(t *testing.T) {
+		w := newWorld(t)
+		l := newHandLog(t, w)
+		l.base()
+		l.raw(nil, []*s4qlpb.Change{upsertRows("t2", []uint32{0, 2}, row(1, 5))}, nil)
+		l.publish()
+
+		d := w.open(t, "a", core.Options{})
+		err := d.Wait(t.Context())
+		is.Error(t, core.ErrLogBroken, err)
+		is.True(t, strings.Contains(fmt.Sprint(err), `without the primary-key column "b"`), fmt.Sprint(err))
+	})
+
 	// What a reader of the format refuses, and what the store lacks.
 	for _, test := range []struct {
 		name  string

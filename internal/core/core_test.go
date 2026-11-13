@@ -332,6 +332,18 @@ func TestDB_Close(t *testing.T) {
 			is.True(t, time.Since(start) >= 30*time.Second+core.Margin(30*time.Second), fmt.Sprint(time.Since(start)))
 		})
 	})
+
+	t.Run("should give up releasing at once when it cannot read the manifest", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			d := w.serve(t, "a", core.Options{})
+			newHandLog(t, w).publishBytes([]byte("not a manifest"))
+
+			start := time.Now()
+			err := d.Close(t.Context())
+			is.Error(t, format.ErrMalformed, err)
+			is.Equal(t, 0, time.Since(start))
+		})
+	})
 }
 
 func TestDB_Wait(t *testing.T) {
@@ -574,6 +586,77 @@ func TestDB_stop_cache(t *testing.T) {
 		is.NotError(t, d.Close(t.Context()))
 		is.True(t, w.manifest(t).Lease == nil, "the lease is not released")
 	})
+
+	t.Run("should stop for good when another process makes the cache one of another version, or takes its position, while it runs", func(t *testing.T) {
+		for _, tamper := range []string{
+			fmt.Sprint("update s4ql_cache set version = ", core.CacheVersion+1),
+			"delete from s4ql_cache",
+		} {
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+			transact(t, d, create("t1", 1, "k"))
+
+			c, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
+			is.NotError(t, err)
+			is.NotError(t, c.Exec(tamper))
+			is.NotError(t, c.Close())
+
+			err = beginErr(t, d)
+			is.Error(t, core.ErrStopped, err, tamper)
+			is.Error(t, core.ErrLocal, err, tamper)
+			is.Error(t, core.ErrCacheVersion, err, tamper)
+			is.True(t, isDone(d), tamper)
+		}
+	})
+
+	t.Run("should stop for good when another process adds to the cache a table that s4ql did not make", func(t *testing.T) {
+		for _, table := range []string{
+			"t9 (k text primary key) strict, without rowid",
+			"t9 (k int) strict",
+		} {
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+
+			c, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
+			is.NotError(t, err)
+			is.NotError(t, c.Exec("create table "+table))
+			is.NotError(t, c.Close())
+
+			r, err := d.Read(t.Context())
+			is.NotError(t, err)
+			_, err = r.Table(t.Context(), "t9")
+			is.Error(t, core.ErrLocal, err, table)
+			is.Error(t, core.ErrCacheVersion, err, table)
+			_ = r.Close(t.Context())
+			is.True(t, isDone(d), table)
+		}
+	})
+
+	t.Run("should stop for good when the cache fails while it applies a commit object in a catch-up", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			first := w.serve(t, "first", core.Options{})
+			transact(t, first, create("t1", 1, "k"))
+			is.NotError(t, first.Close(t.Context()))
+
+			// The first download of the commit object takes a while, and meanwhile another process
+			// makes the cache one of another version.
+			s := newScriptStore(w.client())
+			s.on("get", "commits/", hold, 1, 5*time.Second)
+			d := w.openOn(t, "a", s, core.Options{})
+			time.Sleep(time.Second)
+			c, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
+			is.NotError(t, err)
+			is.NotError(t, c.Exec(fmt.Sprint("update s4ql_cache set version = ", core.CacheVersion+1)))
+			is.NotError(t, c.Close())
+
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
+			defer cancel()
+			err = d.Wait(ctx)
+			is.Error(t, core.ErrStopped, err)
+			is.Error(t, core.ErrLocal, err)
+			is.Error(t, core.ErrCacheVersion, err)
+		})
+	})
 }
 
 func TestDB_Close_hanging(t *testing.T) {
@@ -720,6 +803,9 @@ func TestOpen_cache(t *testing.T) {
 			"a lease below zero":                {Lease: -time.Second},
 			"readers below zero":                {Readers: -1},
 			"a timeout below zero":              {StoreTimeout: -time.Second},
+			"a busy timeout below zero":         {BusyTimeout: -time.Second},
+			"an object timeout below zero":      {ObjectTimeout: -time.Second},
+			"a watch interval below zero":       {Watch: -time.Second},
 		} {
 			_, err := core.Open(t.Context(), w.host, w.client(), path, "db", options)
 			is.True(t, err != nil, name)
@@ -780,6 +866,18 @@ func TestOpen_manifest(t *testing.T) {
 		l.publishBytes([]byte(`{"version": 0, "branches": {"main": {"head": "0000000000000000000000000000000000000000000000000000000000000000"}}, "more": "` + strings.Repeat("x", 1<<20) + `"}`))
 		d := w.open(t, "a", core.Options{})
 		err := d.Wait(t.Context())
+		is.Error(t, core.ErrStopped, err)
+		is.Error(t, format.ErrMalformed, err)
+	})
+
+	t.Run("should stop for a manifest of more than a mebibyte whose first mebibyte is a manifest", func(t *testing.T) {
+		w := newWorld(t)
+		l := newHandLog(t, w)
+		data, err := format.Manifest{Head: format.EmptyLog}.Marshal()
+		is.NotError(t, err)
+		l.publishBytes(append(data, bytes.Repeat([]byte(" "), 1<<20)...))
+		d := w.open(t, "a", core.Options{})
+		err = d.Wait(t.Context())
 		is.Error(t, core.ErrStopped, err)
 		is.Error(t, format.ErrMalformed, err)
 	})
