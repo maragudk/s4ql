@@ -323,11 +323,13 @@ func TestClient_connections(t *testing.T) {
 	t.Run("should not wrap an error of the content in the error of a write whose outcome is unknown", func(t *testing.T) {
 		f := newFake(t)
 		c := f.client(t)
-		for _, sentinel := range []error{store.ErrNotFound, store.ErrExists, store.ErrChanged, store.ErrChecksum} {
+		for i, sentinel := range []error{store.ErrNotFound, store.ErrExists, store.ErrChanged, store.ErrChecksum} {
 			// net/http reads once more after the length of the content, when the store may already
 			// have it all.
 			content := &failing{r: strings.NewReader("data"), err: fmt.Errorf("a broken disk: %w", sentinel)}
-			_, err := c.Create(t.Context(), "k", content, nil)
+			// Each create has a key of its own: the store may have applied the create before, and a
+			// second create of that key would then be refused for real, with one attempt.
+			_, err := c.Create(t.Context(), fmt.Sprint("k", i), content, nil)
 			is.True(t, isUnknown(err), fmt.Sprint(err))
 		}
 	})
