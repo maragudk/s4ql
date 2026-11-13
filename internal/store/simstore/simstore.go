@@ -23,7 +23,7 @@
 // request and its outcome are in the trace of the host.
 //
 // The store can be looked at directly, without faults and without waiting, with [Store.Object],
-// [Store.Keys], and [Store.History].
+// [Store.Keys], and [Store.History]. [Store.Calm] ends the faults.
 package simstore
 
 import (
@@ -148,6 +148,8 @@ type Store struct {
 	clients     map[string]bool
 	// inFlight counts the writes to each key that are not settled.
 	inFlight map[string]int
+	// calm is set by [Store.Calm].
+	calm bool
 }
 
 // object at a key.
@@ -252,6 +254,26 @@ func (s *Store) Outage(ctx context.Context, d time.Duration) {
 	s.outageUntil = max(s.outageUntil, s.host.Monotonic()+d)
 	s.mu.Unlock()
 	s.host.Trace(ctx, "%v: unreachable for %v", s.name, d)
+}
+
+// Calm the store: from now on it makes no new fault happen. What a fault started before goes on
+// to its end: a client that is cut off, an outage, a request that is slow on its way, and a write
+// that is stuck in the network or is to be applied late. The latency stays.
+func (s *Store) Calm(ctx context.Context) {
+	s.mu.Lock()
+	s.calm = true
+	s.mu.Unlock()
+	s.host.Trace(ctx, "%v: calm from now on", s.name)
+}
+
+// faults that the store makes happen now: those of its options, and none after [Store.Calm].
+func (s *Store) faults() Faults {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.calm {
+		return Faults{}
+	}
+	return s.options.Faults
 }
 
 // Sender of requests: the process that a client belongs to.

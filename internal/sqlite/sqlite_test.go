@@ -248,6 +248,169 @@ func TestStmt_BindInt64(t *testing.T) {
 	})
 }
 
+func TestStmt_BindText(t *testing.T) {
+	for _, v := range []string{"", "a", "it's", "smørrebrød 🥪", "a\x00b", "\x00", "\xff\xfe", strings.Repeat("x", 1<<20)} {
+		t.Run(fmt.Sprintf("should bind text of %v bytes and read the same bytes back as text", len(v)), func(t *testing.T) {
+			c := memory(t)
+			s := prepare(t, c, "select ?, length(cast(?1 as blob))")
+
+			is.NotError(t, s.BindText(1, v))
+			ok, err := s.Step()
+			is.NotError(t, err)
+			is.True(t, ok)
+			is.Equal(t, sqlite.TypeText, s.ColumnType(0))
+			is.True(t, v == s.ColumnText(0), "the text is not what was bound")
+			is.Equal(t, int64(len(v)), s.ColumnInt64(1))
+		})
+	}
+
+	t.Run("should store bound text in a table and find it again by a bound text", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.Exec("create table t1 (v1 text primary key) strict, without rowid"))
+		insert := prepare(t, c, "insert into t1 (v1) values (?)")
+		is.NotError(t, insert.BindText(1, `a"b'c`))
+		is.EqualSlice(t, nil, rows(t, insert))
+
+		s := prepare(t, c, "select count(*) from t1 where v1 = ?")
+		is.NotError(t, s.BindText(1, `a"b'c`))
+		is.EqualSlice(t, []string{"integer:1"}, rows(t, s))
+	})
+
+	t.Run("should fail with SQLITE_RANGE for a parameter index out of range, and with SQLITE_MISUSE when finalized", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select ?")
+
+		for _, i := range []int{0, -1, 2, 1<<32 + 1, math.MinInt} {
+			is.Equal(t, codeRange, code(t, s.BindText(i, "a")), fmt.Sprint(i))
+		}
+		is.NotError(t, s.Finalize())
+		is.Equal(t, codeMisuse, code(t, s.BindText(1, "a")))
+	})
+}
+
+func TestStmt_BindNull(t *testing.T) {
+	t.Run("should make a parameter NULL again that was bound before a reset", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select ?")
+
+		is.NotError(t, s.BindInt64(1, 7))
+		is.EqualSlice(t, []string{"integer:7"}, rows(t, s))
+		is.NotError(t, s.Reset())
+		is.NotError(t, s.BindNull(1))
+		is.EqualSlice(t, []string{"null:"}, rows(t, s))
+	})
+
+	t.Run("should fail with SQLITE_RANGE for a parameter index out of range, and with SQLITE_MISUSE when finalized", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select ?")
+
+		for _, i := range []int{0, -1, 2, 1<<32 + 1, math.MinInt} {
+			is.Equal(t, codeRange, code(t, s.BindNull(i)), fmt.Sprint(i))
+		}
+		is.NotError(t, s.Finalize())
+		is.Equal(t, codeMisuse, code(t, s.BindNull(1)))
+	})
+}
+
+func TestStmt_ColumnText(t *testing.T) {
+	t.Run("should convert a value of another type as SQLite does, and read NULL as the empty text", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select 12, 2.5, null, x'6162', ''")
+
+		ok, err := s.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+
+		is.Equal(t, "12", s.ColumnText(0))
+		is.Equal(t, "2.5", s.ColumnText(1))
+		is.Equal(t, "", s.ColumnText(2))
+		is.Equal(t, "ab", s.ColumnText(3))
+		is.Equal(t, sqlite.TypeText, s.ColumnType(4))
+		is.Equal(t, "", s.ColumnText(4))
+	})
+
+	t.Run("should read the text of each row, and not the text of the row before", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select * from (values ('first'), ('2'), ('the third'))")
+
+		var got []string
+		for {
+			ok, err := s.Step()
+			is.NotError(t, err)
+			if !ok {
+				break
+			}
+			got = append(got, s.ColumnText(0))
+		}
+		is.EqualSlice(t, []string{"first", "2", "the third"}, got)
+	})
+
+	t.Run("should panic without a current row, for an index out of range, and on a finalized statement", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select 'a'")
+
+		is.Equal(t, "sqlite: no current row", panicMessage(t, func() { s.ColumnText(0) }))
+		ok, err := s.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+		is.Equal(t, "sqlite: column index 1 out of range for 1 columns", panicMessage(t, func() { s.ColumnText(1) }))
+		is.NotError(t, s.Finalize())
+		is.Equal(t, "sqlite: statement is finalized", panicMessage(t, func() { s.ColumnText(0) }))
+	})
+}
+
+func TestStmt_Reset(t *testing.T) {
+	t.Run("should let a finished statement run again, with the values that were bound", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.Exec("create table t1 (v1 int primary key, v2 int) strict, without rowid"))
+		s := prepare(t, c, "insert into t1 (v1, v2) values (?, ?)")
+
+		is.NotError(t, s.BindInt64(2, 7))
+		for i := range int64(3) {
+			is.NotError(t, s.BindInt64(1, i))
+			is.EqualSlice(t, nil, rows(t, s))
+			is.NotError(t, s.Reset())
+		}
+		is.EqualSlice(t, []string{"integer:0,integer:7", "integer:1,integer:7", "integer:2,integer:7"}, query(t, c, "select * from t1"))
+	})
+
+	t.Run("should start a statement again from its first row, and leave no current row", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select * from (values (1), (2))")
+
+		ok, err := s.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+		is.NotError(t, s.Reset())
+		is.Equal(t, "sqlite: no current row", panicMessage(t, func() { s.ColumnInt64(0) }))
+		is.EqualSlice(t, []string{"integer:1", "integer:2"}, rows(t, s))
+	})
+
+	t.Run("should return the error of a failed step again, and let the statement run again", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.Exec("create table t1 (v1 int primary key) strict, without rowid"))
+		is.NotError(t, c.Exec("insert into t1 (v1) values (1)"))
+		s := prepare(t, c, "insert into t1 (v1) values (?)")
+
+		is.NotError(t, s.BindInt64(1, 1))
+		_, err := s.Step()
+		is.Equal(t, codeConstraintPrimary, code(t, err))
+		is.Equal(t, codeConstraintPrimary, code(t, s.Reset()))
+
+		is.NotError(t, s.BindInt64(1, 2))
+		is.EqualSlice(t, nil, rows(t, s))
+		is.EqualSlice(t, []string{"integer:1", "integer:2"}, query(t, c, "select * from t1"))
+	})
+
+	t.Run("should fail with SQLITE_MISUSE on a finalized statement", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select 1")
+
+		is.NotError(t, s.Finalize())
+		is.Equal(t, codeMisuse, code(t, s.Reset()))
+	})
+}
+
 func TestStmt_ColumnCount(t *testing.T) {
 	t.Run("should report the number of result columns", func(t *testing.T) {
 		c := memory(t)
@@ -761,6 +924,39 @@ func FuzzStmt_BindInt64(f *testing.F) {
 	})
 }
 
+func FuzzStmt_BindText(f *testing.F) {
+	f.Add("")
+	f.Add("a")
+	f.Add("a\x00b")
+	f.Add("\xff")
+	f.Add("smørrebrød")
+
+	f.Fuzz(func(t *testing.T, v string) {
+		c := memory(t)
+		is.NotError(t, c.Exec("create table t1 (v1 text primary key) strict, without rowid"))
+
+		// Store the value and read it back, so it is not only passed through.
+		insert := prepare(t, c, "insert into t1 (v1) values (?)")
+		is.NotError(t, insert.BindText(1, v))
+		ok, err := insert.Step()
+		is.NotError(t, err)
+		is.True(t, !ok)
+
+		sel := prepare(t, c, "select v1, length(cast(v1 as blob)) from t1 where v1 = ?")
+		is.NotError(t, sel.BindText(1, v))
+		ok, err = sel.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+		is.Equal(t, sqlite.TypeText, sel.ColumnType(0))
+		is.True(t, v == sel.ColumnText(0), "the text is not what was bound")
+		is.Equal(t, int64(len(v)), sel.ColumnInt64(1))
+
+		ok, err = sel.Step()
+		is.NotError(t, err)
+		is.True(t, !ok)
+	})
+}
+
 func FuzzConn_Prepare(f *testing.F) {
 	f.Add("select 1")
 	f.Add("select ?, :a, @b, $c, ?5")
@@ -841,7 +1037,7 @@ func query(t *testing.T, c *sqlite.Conn, sql string) []string {
 
 // rows of a statement, stepped to the end, each encoded as its values joined by commas, and each value
 // as its type and, for an integer, its decimal value. A value of any other type than integer or NULL
-// fails the test, because the binding reads only integers.
+// fails the test, because the tests that use it read only integers.
 func rows(t *testing.T, s *sqlite.Stmt) []string {
 	t.Helper()
 	var rows []string
