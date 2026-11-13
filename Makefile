@@ -18,11 +18,11 @@ fmt:
 	grep -rLE '^// Code generated .* DO NOT EDIT\.$$' --include='*.go' . | \
 		xargs goimports -w -local `head -n 1 go.mod | sed 's/^module //'`
 
-# fuzz runs each fuzz test in the SQLite binding, its cross-checks, and the storage formats for
-# FUZZTIME. Pass FUZZFLAGS=-asan to fuzz under the address sanitizer (Linux only).
+# fuzz runs each fuzz test in the SQLite binding, its cross-checks, the storage formats, and the SQL
+# tokenizer for FUZZTIME. Pass FUZZFLAGS=-asan to fuzz under the address sanitizer (Linux only).
 .PHONY: fuzz
 fuzz:
-	for dir in internal/sqlite $(CROSSCHECK) internal/format; do \
+	for dir in internal/sqlite $(CROSSCHECK) internal/format internal/sql/token; do \
 		for test in $$(cd $$dir && go test -list '^Fuzz' . | grep '^Fuzz'); do \
 			(cd $$dir && go test $(FUZZFLAGS) -run '^$$' -fuzz "^$$test\$$" -fuzztime $(FUZZTIME) .) || exit 1; \
 		done; \

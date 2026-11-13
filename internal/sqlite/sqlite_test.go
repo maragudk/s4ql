@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -721,6 +722,70 @@ func TestVendored(t *testing.T) {
 			is.True(t, bytes.Contains(header, []byte(define)), "checksum of "+name+" in source.h")
 		}
 	})
+}
+
+func TestTokenize(t *testing.T) {
+	tk := tokenCodes(t)
+
+	t.Run("should give the type and length of each token, and end with a token of length 0", func(t *testing.T) {
+		tokens := sqlite.Tokenize("select 1;")
+		is.EqualSlice(t, []sqlite.Token{
+			{Type: tk["SELECT"], Len: 6},
+			{Type: tk["SPACE"], Len: 1},
+			{Type: tk["INTEGER"], Len: 1},
+			{Type: tk["SEMI"], Len: 1},
+			{Type: tk["ILLEGAL"], Len: 0},
+		}, tokens)
+	})
+
+	t.Run("should give only the token of length 0 for the empty text", func(t *testing.T) {
+		is.EqualSlice(t, []sqlite.Token{{Type: tk["ILLEGAL"], Len: 0}}, sqlite.Tokenize(""))
+	})
+
+	t.Run("should stop at a NUL byte, as SQLite's parser does", func(t *testing.T) {
+		tokens := sqlite.Tokenize("'a\x00b' c")
+		is.EqualSlice(t, []sqlite.Token{
+			{Type: tk["ILLEGAL"], Len: 2},
+			{Type: tk["ILLEGAL"], Len: 0},
+		}, tokens)
+	})
+}
+
+func TestKeywords(t *testing.T) {
+	t.Run("should give the 147 keywords of this build in upper case, each once", func(t *testing.T) {
+		keywords := sqlite.Keywords()
+		is.Equal(t, 147, len(keywords))
+		seen := map[string]bool{}
+		for _, k := range keywords {
+			is.True(t, regexp.MustCompile(`^[A-Z_]+$`).MatchString(k), k)
+			is.True(t, !seen[k], k)
+			seen[k] = true
+		}
+		is.True(t, seen["SELECT"])
+		is.True(t, seen["CURRENT_TIMESTAMP"])
+		is.True(t, !seen["STRICT"])
+	})
+}
+
+// tokenCodes of the parser, by name without the TK_ prefix, from the definitions in the vendored
+// c/sqlite3.c, which has them twice, once from parse.h and once in parse.c. The two must agree.
+func tokenCodes(t *testing.T) map[string]int {
+	t.Helper()
+	b, err := os.ReadFile("c/sqlite3.c")
+	is.NotError(t, err)
+	codes := map[string]int{}
+	matches := regexp.MustCompile(`(?m)^#define TK_(\w+) +(\d+)$`).FindAllSubmatch(b, -1)
+	for _, m := range matches {
+		code, err := strconv.Atoi(string(m[2]))
+		is.NotError(t, err)
+		if c, ok := codes[string(m[1])]; ok {
+			is.Equal(t, c, code, string(m[1]))
+		}
+		codes[string(m[1])] = code
+	}
+	is.True(t, len(codes) > 150, "too few token codes; is the pattern above still right?")
+	is.Equal(t, 2*len(codes), len(matches))
+	return codes
 }
 
 func TestSymbols(t *testing.T) {
