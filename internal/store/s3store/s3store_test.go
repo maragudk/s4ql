@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"runtime/metrics"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -430,9 +431,12 @@ func TestClient_content(t *testing.T) {
 			return true
 		}
 		c := f.client(t)
+		hash := sha256.New()
+		_, _ = io.Copy(hash, &sized{size: size})
+		checksum := store.Checksum(hash.Sum(nil))
 
-		before := allocated()
-		_, err := c.Create(t.Context(), "k", &sized{size: size}, nil)
+		peak := watchHeap(t)
+		_, err := c.Create(t.Context(), "k", &sized{size: size}, &checksum)
 		is.NotError(t, err)
 		is.Equal(t, int64(size), got.Load())
 		body, _, err := c.Get(t.Context(), "k")
@@ -441,17 +445,44 @@ func TestClient_content(t *testing.T) {
 		is.NotError(t, err)
 		is.NotError(t, body.Close())
 		is.Equal(t, int64(size), n)
-		// Twice 256 MiB went through, and less than a tenth of one of them was ever allocated.
-		used := allocated() - before
-		is.True(t, used < size/10, fmt.Sprint(used>>20, " MiB allocated"))
+		used := peak()
+		t.Logf("%v KiB more on the heap at its peak, for %v MiB up and down", used>>10, size>>20)
+		is.True(t, used < size/16, fmt.Sprint(used>>20, " MiB more on the heap at its peak"))
 	})
 }
 
-// allocated is the number of bytes allocated on the heap so far.
-func allocated() uint64 {
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	return m.TotalAlloc
+// watchHeap samples the bytes of live objects on the heap until the returned function is called,
+// which returns by how much the highest sample was above the first.
+func watchHeap(t *testing.T) func() uint64 {
+	t.Helper()
+	sample := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
+	heap := func() uint64 {
+		metrics.Read(sample)
+		return sample[0].Value.Uint64()
+	}
+	runtime.GC()
+	start := heap()
+	var highest atomic.Uint64
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			if h := heap(); h > highest.Load() {
+				highest.Store(h)
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}()
+	return func() uint64 {
+		close(stop)
+		<-done
+		return max(highest.Load(), start) - start
+	}
 }
 
 // sized content of the given size, made up as it is read, so that it is never in memory.
