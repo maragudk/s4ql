@@ -1,6 +1,7 @@
 package sim_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 
 	"maragu.dev/is"
 
+	"maragu.dev/s4ql/internal/host"
+	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sqlite"
 )
 
@@ -328,4 +331,88 @@ func TestSynctestWithCgo(t *testing.T) {
 			}
 		})
 	}
+}
+
+// contend runs one writer and eight readers as tasks of h, each on its own connection to the
+// database at path and in a loop without pauses, and returns how often the writer got SQLITE_BUSY
+// when it began a transaction. No connection has a busy timeout.
+func contend(ctx context.Context, t *testing.T, h host.Host, path string) int64 {
+	t.Helper()
+	setup := openWAL(t, path, 0)
+	is.NotError(t, setup.Exec("create table t1 (k integer primary key, v integer not null) strict"))
+	is.NotError(t, setup.Exec("insert into t1 (k, v) values (1, 0)"))
+
+	var stop atomic.Bool
+	var busyBegins atomic.Int64
+	var tasks []host.Task
+	for i := range 8 {
+		c := openWAL(t, path, 0)
+		tasks = append(tasks, h.Go(ctx, fmt.Sprint("reader-", i), func(ctx context.Context) {
+			for !stop.Load() {
+				is.NotError(t, c.Exec("begin"))
+				h.Yield(ctx, "reader: after begin")
+				is.NotError(t, c.Exec("select v from t1 where k = 1"))
+				h.Yield(ctx, "reader: after select")
+				is.NotError(t, c.Exec("commit"))
+				h.Yield(ctx, "reader: after commit")
+			}
+		}))
+	}
+	c := openWAL(t, path, 0)
+	tasks = append(tasks, h.Go(ctx, "writer", func(ctx context.Context) {
+		defer stop.Store(true)
+		for range 1000 {
+			for {
+				err := c.Exec("begin immediate")
+				if err == nil {
+					break
+				}
+				is.True(t, busy(err), fmt.Sprint(err))
+				busyBegins.Add(1)
+				// Under the scheduler, the holder of the lock is parked, and a retry without a wait would
+				// never let it go on.
+				h.Yield(ctx, "writer: after busy")
+			}
+			is.NotError(t, c.Exec("update t1 set v = v + 1 where k = 1"))
+			h.Yield(ctx, "writer: after update")
+			is.NotError(t, c.Exec("commit"))
+			h.Yield(ctx, "writer: after commit")
+		}
+	}))
+	for _, task := range tasks {
+		is.NotError(t, task.Wait(ctx))
+	}
+	return busyBegins.Load()
+}
+
+// TestSchedulerWithSQLiteLocks checks that SQLite never finds a lock taken while one task at a time
+// runs, with a workload that does find one with the scheduler off.
+func TestSchedulerWithSQLiteLocks(t *testing.T) {
+	t.Run("should never give SQLITE_BUSY to a writer among readers when one task runs at a time", func(t *testing.T) {
+		for seed := range uint64(10) {
+			synctest.Test(t, func(t *testing.T) {
+				s := sim.New(seed, sim.Options{})
+				var busyBegins int64
+				is.NotError(t, s.Run(func(ctx context.Context) {
+					busyBegins = contend(ctx, t, s, filepath.Join(t.TempDir(), "test.db"))
+				}))
+				is.Equal(t, 0, busyBegins)
+			})
+		}
+	})
+
+	// This is the control for the test above. The number varies and is sometimes zero, so it is only
+	// logged.
+	t.Run("should log how often the same writer gets SQLITE_BUSY with the scheduler off", func(t *testing.T) {
+		var busyBegins int64
+		for range 10 {
+			synctest.Test(t, func(t *testing.T) {
+				r := sim.NewFree(sim.Buggify{})
+				is.NotError(t, r.Run(func(ctx context.Context) {
+					busyBegins += contend(ctx, t, r, filepath.Join(t.TempDir(), "test.db"))
+				}))
+			})
+		}
+		t.Logf("with the scheduler off, the writer got SQLITE_BUSY %v times in 10000 transactions", busyBegins)
+	})
 }

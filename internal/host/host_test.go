@@ -120,6 +120,15 @@ func TestNew(t *testing.T) {
 		is.Equal(t, 100, len(seen))
 	})
 
+	t.Run("should return from a yield without waiting", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			h := host.New()
+			start := h.Monotonic()
+			h.Yield(t.Context(), "site")
+			is.Equal(t, time.Duration(0), h.Monotonic()-start)
+		})
+	})
+
 	t.Run("should never buggify", func(t *testing.T) {
 		h := host.New()
 		for range 1000 {

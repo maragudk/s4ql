@@ -105,6 +105,37 @@ func TestFree(t *testing.T) {
 		})
 	})
 
+	t.Run("should return from a yield and a trace at once, also with a context of no task", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			r := sim.NewFree(sim.Buggify{})
+			start := r.Monotonic()
+			// Unlike the scheduler's, they accept a context that no task was started with.
+			r.Yield(t.Context(), "site")
+			r.Trace(t.Context(), "line %v", 1)
+			is.NotError(t, r.Run(func(ctx context.Context) {
+				r.Yield(ctx, "site")
+				r.Trace(ctx, "line %v", 2)
+			}))
+			is.Equal(t, time.Duration(0), r.Monotonic()-start)
+		})
+	})
+
+	t.Run("should wait in Run for tasks that the tasks start, also after the first task has returned", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			r := sim.NewFree(sim.Buggify{})
+			var done atomic.Bool
+			is.NotError(t, r.Run(func(ctx context.Context) {
+				r.Go(ctx, "child", func(ctx context.Context) {
+					r.Go(ctx, "grandchild", func(ctx context.Context) {
+						is.NotError(t, r.Sleep(ctx, time.Hour))
+						done.Store(true)
+					})
+				})
+			}))
+			is.True(t, done.Load())
+		})
+	})
+
 	t.Run("should buggify only when switched on", func(t *testing.T) {
 		off := sim.NewFree(sim.Buggify{})
 		always := sim.NewFree(sim.Buggify{On: true, Activation: 1, Fire: 1})
@@ -112,6 +143,37 @@ func TestFree(t *testing.T) {
 			is.True(t, !off.Buggify(t.Context(), "site"))
 			is.True(t, always.Buggify(t.Context(), "site"))
 		}
+	})
+
+	// Run with the race detector, this is also the test that buggify shares its sites between
+	// goroutines safely.
+	t.Run("should switch each site on or off once for every goroutine, also when they reach it at once", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			r := sim.NewFree(sim.Buggify{On: true, Activation: 0.5, Fire: 1})
+			// Each goroutine records into its own slice, because anything that they shared would
+			// synchronise them and hide a data race in buggify.
+			var fired [8][50]bool
+			is.NotError(t, r.Run(func(ctx context.Context) {
+				for i := range fired {
+					r.Go(ctx, fmt.Sprint("worker-", i), func(ctx context.Context) {
+						for j := range fired[i] {
+							fired[i][j] = r.Buggify(ctx, fmt.Sprint("site-", j))
+							r.Yield(ctx, "between")
+						}
+					})
+				}
+			}))
+			var on int
+			for j := range fired[0] {
+				for i := range fired {
+					is.Equal(t, fired[0][j], fired[i][j], fmt.Sprint("site-", j, " was both on and off"))
+				}
+				if fired[0][j] {
+					on++
+				}
+			}
+			is.True(t, on > 0 && on < 50, fmt.Sprint(on, " of 50 sites on"))
+		})
 	})
 
 	t.Run("should keep a site that is off for the run off", func(t *testing.T) {

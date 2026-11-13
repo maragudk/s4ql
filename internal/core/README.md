@@ -173,7 +173,7 @@ The rules for a local I/O failure were agreed with Markus on 2026-11-10, and the
 
 - **A wait for a condition needs nothing new from the host.** The wait is `host.Host.Sleep`, or the `Acquire` of a semaphore, with a context that is derived from the caller's. Whoever changes `stopped`, `holder`, or `serving` cancels the contexts that are registered (`DB.waitLocked`, `DB.wakeLocked`).
 - **Three things wait this way.** `DB.Wait` waits until the instance serves. A writer or a reader that waits for its lock fails at once when the instance stops serving. The lease task is woken from its pause.
-- **Polling was rejected,** because a call that waits must fail "at once". The toy of the harness polls with `Sleep`; see [The host interface](../sim/README.md#the-host-interface). The build was free to add a method to the host, and none was needed.
+- **Polling was rejected,** because a call that waits must fail "at once". The toy library that the harness once had polled with `Sleep`. The host has no method to wait for a condition; see [The host interface](../sim/README.md#the-host-interface). The build was free to add one, and none was needed.
 
 ## Planted bugs
 

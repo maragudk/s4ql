@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -139,6 +140,87 @@ func TestScheduler_Run(t *testing.T) {
 			is.NotError(t, err)
 			is.Equal(t, 1, most.Load())
 		}
+	})
+
+	// Moving simulated time, expiring a timeout, and ending a crashed task are not steps.
+	t.Run("should count a step each time it runs a task from one wait to its next, and at nothing else", func(t *testing.T) {
+		s, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			is.Equal(t, 1, s.Steps())
+			s.Yield(ctx, "first")
+			is.Equal(t, 2, s.Steps())
+			is.NotError(t, s.Go(ctx, "worker", func(ctx context.Context) {
+				s.Yield(ctx, "in the worker")
+			}).Wait(ctx))
+			// The worker ran twice, and main once more after its wait.
+			is.Equal(t, 5, s.Steps())
+
+			is.NotError(t, s.Sleep(ctx, time.Hour))
+			is.Equal(t, 6, s.Steps())
+			timeoutCtx, cancel := s.WithTimeout(ctx, time.Second)
+			defer cancel()
+			is.True(t, errors.Is(s.Sleep(timeoutCtx, time.Hour), context.DeadlineExceeded))
+			is.Equal(t, 7, s.Steps())
+
+			a := s.NewInstance("a")
+			a.Go(ctx, "sleeper", func(ctx context.Context) { _ = a.Sleep(ctx, time.Hour) })
+			is.NotError(t, s.Sleep(ctx, time.Second))
+			// The sleeper started, and main woke.
+			is.Equal(t, 9, s.Steps())
+			a.Crash()
+		})
+		is.NotError(t, err)
+		is.Equal(t, 9, s.Steps())
+		is.Equal(t, 9, len(matching(s, " resumes from ")))
+	})
+
+	t.Run("should delay half of the yields, releases, and starts of a task by up to the jitter, and the others not at all", func(t *testing.T) {
+		delays := map[string][]time.Duration{}
+		_, err := schedule(t, 1, sim.Options{Jitter: time.Second}, func(ctx context.Context, s *sim.Scheduler) {
+			m := s.NewSemaphore("m", 1)
+			for range 400 {
+				before := since(s)
+				s.Yield(ctx, "between")
+				delays["yield"] = append(delays["yield"], since(s)-before)
+
+				is.NotError(t, m.Acquire(ctx))
+				before = since(s)
+				m.Release(ctx)
+				delays["release"] = append(delays["release"], since(s)-before)
+
+				before = since(s)
+				is.NotError(t, s.Go(ctx, "task", func(context.Context) {
+					delays["start"] = append(delays["start"], since(s)-before)
+				}).Wait(ctx))
+			}
+		})
+		is.NotError(t, err)
+		for what, ds := range delays {
+			var none int
+			for _, d := range ds {
+				is.True(t, d >= 0 && d <= time.Second, fmt.Sprint(what, " delayed by ", d))
+				if d == 0 {
+					none++
+				}
+			}
+			t.Logf("%v of %v of each %v had no delay", none, len(ds), what)
+			is.True(t, none > len(ds)/4 && none < len(ds)*3/4, fmt.Sprint(none, " of ", len(ds), " of each ", what, " had no delay"))
+		}
+		is.Equal(t, 3, len(delays))
+	})
+
+	t.Run("should panic on a context that no task of the scheduler was started with", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			other := sim.New(1, sim.Options{})
+			for _, c := range []context.Context{t.Context(), ctx} {
+				func() {
+					defer func() {
+						is.Equal(t, "sim: the context does not belong to a task of this scheduler", fmt.Sprint(recover()))
+					}()
+					other.Yield(c, "never")
+				}()
+			}
+		})
+		is.NotError(t, err)
 	})
 
 	t.Run("should fail with the waiting tasks when they deadlock, and unwind them", func(t *testing.T) {
@@ -441,7 +523,7 @@ func TestScheduler_WithTimeout(t *testing.T) {
 	})
 
 	t.Run("should be done at once when its parent is", func(t *testing.T) {
-		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+		s, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
 			parent, cancelParent := context.WithCancel(ctx)
 			timeoutCtx, cancel := s.WithTimeout(parent, time.Hour)
 			defer cancel()
@@ -460,8 +542,13 @@ func TestScheduler_WithTimeout(t *testing.T) {
 			defer cancelAtOnce()
 			is.Error(t, context.Canceled, atOnce.Err())
 			is.Error(t, context.Canceled, context.Cause(atOnce))
+
+			// It never expires later either.
+			is.NotError(t, s.Sleep(ctx, 2*time.Hour))
+			is.Error(t, context.Canceled, timeoutCtx.Err())
 		})
 		is.NotError(t, err)
+		is.EqualSlice(t, nil, matching(s, "expires"))
 	})
 
 	t.Run("should let the seed decide whether a sleep that ends when the timeout does ends first", func(t *testing.T) {
@@ -487,8 +574,50 @@ func TestScheduler_WithTimeout(t *testing.T) {
 		is.Equal(t, "task main sets a timeout on the host of instance a, which is not its own", errorString(err))
 	})
 
-	t.Run("should be done at once with a timeout that is not positive", func(t *testing.T) {
+	t.Run("should name the task that set it and its duration", func(t *testing.T) {
 		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			is.NotError(t, a.Go(ctx, "worker", func(ctx context.Context) {
+				timeoutCtx, cancel := a.WithTimeout(ctx, time.Second)
+				defer cancel()
+				is.Equal(t, "timeout of a/worker after 1s", fmt.Sprint(timeoutCtx))
+			}).Wait(ctx))
+			// The context of the outer test would be cancelled from outside the bubble, which a context
+			// derived from it inside the bubble does not allow.
+			timeoutCtx, cancel := s.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			is.Equal(t, "timeout of the test after 1m0s", fmt.Sprint(timeoutCtx))
+		})
+		is.NotError(t, err)
+	})
+
+	t.Run("should panic when a timeout on the host of an instance has no context of a task of the scheduler", func(t *testing.T) {
+		// foreign is the context of a task of another scheduler, which carries no channel of its bubble.
+		var foreign context.Context
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) { foreign = ctx })
+		is.NotError(t, err)
+
+		_, err = schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			// The context of the outer test would be cancelled from outside the bubble, which a context
+			// derived from it inside the bubble does not allow.
+			for _, c := range []context.Context{context.Background(), foreign} {
+				func() {
+					defer func() {
+						is.Equal(t, "sim: a timeout on the host of an instance needs the context of a task of the instance", fmt.Sprint(recover()))
+					}()
+					a.WithTimeout(c, time.Second)
+				}()
+			}
+			timeoutCtx, cancel := s.WithTimeout(foreign, time.Minute)
+			defer cancel()
+			is.Equal(t, "timeout of the test after 1m0s", fmt.Sprint(timeoutCtx))
+		})
+		is.NotError(t, err)
+	})
+
+	t.Run("should be done at once with a timeout that is not positive", func(t *testing.T) {
+		s, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
 			timeoutCtx, cancel := s.WithTimeout(ctx, 0)
 			defer cancel()
 			is.True(t, errors.Is(timeoutCtx.Err(), context.DeadlineExceeded))
@@ -497,6 +626,21 @@ func TestScheduler_WithTimeout(t *testing.T) {
 			default:
 				t.Error("the context is not done")
 			}
+		})
+		is.NotError(t, err)
+		is.EqualSlice(t, []string{"main has a timeout of 0s, which expires at once"}, matching(s, "timeout"))
+	})
+
+	t.Run("should let a task of an instance set a timeout through the host of the test, on the simulated time", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			a.StopMonotonic()
+			is.NotError(t, a.Go(ctx, "worker", func(ctx context.Context) {
+				timeoutCtx, cancel := s.WithTimeout(ctx, time.Second)
+				defer cancel()
+				is.True(t, errors.Is(s.Sleep(timeoutCtx, time.Hour), context.DeadlineExceeded))
+				is.Equal(t, time.Second, since(s))
+			}).Wait(ctx))
 		})
 		is.NotError(t, err)
 	})
@@ -614,12 +758,98 @@ func TestScheduler_NewSemaphore(t *testing.T) {
 		is.NotError(t, err)
 	})
 
+	t.Run("should keep every permit after acquires that a cancellation or a timeout ended", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			is.NotError(t, a.Go(ctx, "worker", func(ctx context.Context) {
+				m := a.NewSemaphore("m", 2)
+				is.NotError(t, m.Acquire(ctx))
+				is.NotError(t, m.Acquire(ctx))
+				for range 3 {
+					timeoutCtx, cancel := a.WithTimeout(ctx, time.Second)
+					is.Error(t, context.DeadlineExceeded, m.Acquire(timeoutCtx))
+					cancel()
+					cancelled, cancel := context.WithCancel(ctx)
+					cancel()
+					is.Error(t, context.Canceled, m.Acquire(cancelled))
+				}
+				m.Release(ctx)
+				m.Release(ctx)
+
+				// Both permits are free, and no more.
+				timeoutCtx, cancel := a.WithTimeout(ctx, time.Second)
+				defer cancel()
+				is.NotError(t, m.Acquire(timeoutCtx))
+				is.NotError(t, m.Acquire(timeoutCtx))
+				is.Error(t, context.DeadlineExceeded, m.Acquire(timeoutCtx))
+				m.Release(ctx)
+				m.Release(ctx)
+			}).Wait(ctx))
+		})
+		is.NotError(t, err)
+	})
+
+	t.Run("should let the seed decide whether a task that waits for the permit runs before the task that released it goes on", func(t *testing.T) {
+		orders := map[string]int{}
+		for seed := range uint64(50) {
+			s, err := schedule(t, seed, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+				m := s.NewSemaphore("m", 1)
+				is.NotError(t, m.Acquire(ctx))
+				waiter := s.Go(ctx, "waiter", func(ctx context.Context) {
+					is.NotError(t, m.Acquire(ctx))
+					s.Trace(ctx, "acquires")
+					m.Release(ctx)
+				})
+				is.NotError(t, s.Sleep(ctx, time.Second))
+				m.Release(ctx)
+				s.Trace(ctx, "goes on")
+				is.NotError(t, waiter.Wait(ctx))
+			})
+			is.NotError(t, err)
+			first := slices.IndexFunc(s.Lines(), func(line string) bool {
+				return strings.HasSuffix(line, " acquires") || strings.HasSuffix(line, " goes on")
+			})
+			orders[strings.Fields(s.Lines()[first])[1]]++
+		}
+		t.Logf("which task went first: %v", orders)
+		is.True(t, orders["waiter"] > 0 && orders["main"] > 0, "the same task always went first")
+	})
+
+	t.Run("should panic on the release of a semaphore that is not held", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			m := s.NewSemaphore("m", 2)
+			is.NotError(t, m.Acquire(ctx))
+			m.Release(ctx)
+			defer func() {
+				is.Equal(t, "sim: release of a semaphore that is not held", fmt.Sprint(recover()))
+			}()
+			m.Release(ctx)
+		})
+		is.NotError(t, err)
+	})
+
 	t.Run("should return the context's error when the context is done, also with a permit free", func(t *testing.T) {
 		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
 			m := s.NewSemaphore("m", 1)
 			ctx, cancel := context.WithCancel(ctx)
 			cancel()
 			is.Error(t, context.Canceled, m.Acquire(ctx))
+		})
+		is.NotError(t, err)
+	})
+}
+
+func TestScheduler_NewInstance(t *testing.T) {
+	t.Run("should panic on an instance whose name is empty or has a slash", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			for _, name := range []string{"", "a/b"} {
+				func() {
+					defer func() {
+						is.Equal(t, "sim: an instance needs a name without a slash", fmt.Sprint(recover()))
+					}()
+					s.NewInstance(name)
+				}()
+			}
 		})
 		is.NotError(t, err)
 	})
@@ -635,6 +865,19 @@ func TestInstance_clocks(t *testing.T) {
 			is.NotError(t, s.Sleep(ctx, time.Second))
 			is.Equal(t, time.Hour+time.Second, since(a))
 			is.Equal(t, time.Second, a.Monotonic())
+		})
+		is.NotError(t, err)
+	})
+
+	t.Run("should give the test clocks that both read the simulated time, whatever the instances' clocks do", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			a.ShiftWall(-time.Hour)
+			a.StopWall()
+			a.StopMonotonic()
+			is.NotError(t, s.Sleep(ctx, time.Minute))
+			is.Equal(t, time.Minute, s.Monotonic())
+			is.Equal(t, sim.Epoch().Add(time.Minute), s.Wall())
 		})
 		is.NotError(t, err)
 	})
@@ -724,6 +967,71 @@ func TestInstance_clocks(t *testing.T) {
 			}
 		}
 		is.EqualSlice(t, []string{"1m10s", "2m20s"}, at)
+	})
+
+	t.Run("should keep a clock that stands still where it stopped first, and start it only once", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			is.NotError(t, s.Sleep(ctx, time.Second))
+			a.StopWall()
+			a.StopMonotonic()
+			is.NotError(t, s.Sleep(ctx, time.Minute))
+			a.StopWall()
+			a.StopMonotonic()
+			is.NotError(t, s.Sleep(ctx, time.Minute))
+			is.Equal(t, time.Second, since(a))
+			is.Equal(t, time.Second, a.Monotonic())
+
+			a.StartWall()
+			a.StartMonotonic()
+			is.NotError(t, s.Sleep(ctx, time.Minute))
+			a.StartWall()
+			a.StartMonotonic()
+			is.Equal(t, time.Minute+time.Second, since(a))
+			is.Equal(t, time.Minute+time.Second, a.Monotonic())
+		})
+		is.NotError(t, err)
+	})
+
+	t.Run("should trace every move of a clock, with the instance and the time", func(t *testing.T) {
+		s, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			is.NotError(t, s.Sleep(ctx, time.Second))
+			a.ShiftWall(-time.Minute)
+			a.StopWall()
+			a.StartWall()
+			a.StopMonotonic()
+			a.StartMonotonic()
+		})
+		is.NotError(t, err)
+		is.EqualSlice(t, []string{
+			"0s a starts",
+			"1s a shifts its wall clock by -1m0s",
+			"1s a stops its wall clock",
+			"1s a starts its wall clock",
+			"1s a stops its monotonic clock",
+			"1s a starts its monotonic clock",
+		}, slices.DeleteFunc(s.Lines(), func(line string) bool { return !strings.Contains(line, " a ") }))
+	})
+
+	t.Run("should sleep until the context is done on an instance that started late, when the duration is longer than its clock can hold", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			is.NotError(t, s.Sleep(ctx, time.Hour))
+			a := s.NewInstance("a")
+			a.StopMonotonic()
+			is.NotError(t, s.Sleep(ctx, time.Minute))
+			a.StartMonotonic()
+
+			sleepCtx, cancel := context.WithCancel(ctx)
+			sleeper := a.Go(sleepCtx, "sleeper", func(ctx context.Context) {
+				is.Error(t, context.Canceled, a.Sleep(ctx, math.MaxInt64-time.Minute))
+				is.Equal(t, 2*time.Hour+time.Minute, since(s))
+			})
+			is.NotError(t, s.Sleep(ctx, time.Hour))
+			cancel()
+			is.NotError(t, sleeper.Wait(ctx))
+		})
+		is.NotError(t, err)
 	})
 
 	t.Run("should report a deadlock when every task sleeps on a monotonic clock that stands still", func(t *testing.T) {
@@ -891,6 +1199,57 @@ func TestInstance_Crash(t *testing.T) {
 		is.Equal(t, "task cleanup starts while the run ends, after every task that did not crash has returned", errorString(err))
 	})
 
+	t.Run("should report a crash to the test and to tasks of other instances", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a, b := s.NewInstance("a"), s.NewInstance("b")
+			is.True(t, !a.Crashed())
+			a.Crash()
+			is.True(t, a.Crashed())
+			is.True(t, !b.Crashed())
+			is.NotError(t, b.Go(ctx, "watcher", func(ctx context.Context) {
+				is.True(t, a.Crashed())
+				is.True(t, !b.Crashed())
+			}).Wait(ctx))
+		})
+		is.NotError(t, err)
+	})
+
+	t.Run("should never expire a timeout of a crashed instance", func(t *testing.T) {
+		s, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			a.Go(ctx, "waiter", func(ctx context.Context) {
+				timeoutCtx, cancel := a.WithTimeout(ctx, time.Minute)
+				defer cancel()
+				_ = a.Sleep(timeoutCtx, time.Hour)
+			})
+			is.NotError(t, s.Sleep(ctx, time.Second))
+			a.Crash()
+			is.NotError(t, s.Sleep(ctx, time.Hour))
+		})
+		is.NotError(t, err)
+		is.EqualSlice(t, nil, matching(s, "expires"))
+	})
+
+	t.Run("should report a deadlock, without moving simulated time, when the only wait on time belongs to a crashed instance", func(t *testing.T) {
+		s, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			m := s.NewSemaphore("m", 1)
+			is.NotError(t, m.Acquire(ctx))
+			a.Go(ctx, "sleeper", func(ctx context.Context) {
+				timeoutCtx, cancel := a.WithTimeout(ctx, time.Minute)
+				defer cancel()
+				_ = a.Sleep(timeoutCtx, time.Hour)
+			})
+			is.NotError(t, s.Sleep(ctx, time.Second))
+			a.Crash()
+			s.Go(ctx, "waiter", func(ctx context.Context) { _ = m.Acquire(ctx) })
+			is.NotError(t, m.Acquire(ctx))
+		})
+		is.Equal(t, "deadlock: no task can run: main at acquire of m, waiter at acquire of m", errorString(err))
+		is.Equal(t, time.Second, since(s))
+		is.EqualSlice(t, nil, matching(s, "expires"))
+	})
+
 	t.Run("should panic on a second instance with the same name", func(t *testing.T) {
 		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
 			a := s.NewInstance("a")
@@ -948,6 +1307,14 @@ func TestScheduler_Buggify(t *testing.T) {
 		}
 	})
 
+	t.Run("should buggify through the host of the test, with the task's name in the trace", func(t *testing.T) {
+		s, err := schedule(t, 1, sim.Options{Buggify: sim.Buggify{On: true, Activation: 1, Fire: 1}}, func(ctx context.Context, s *sim.Scheduler) {
+			is.True(t, s.Buggify(ctx, "site"))
+		})
+		is.NotError(t, err)
+		is.EqualSlice(t, []string{"main switches buggify on site for the run", "main buggify site fires"}, matching(s, "buggify"))
+	})
+
 	t.Run("should switch each site on or off once per run, in the trace, and fire the same with the same seed", func(t *testing.T) {
 		var on, sites, fires, visits int
 		for seed := range uint64(200) {
@@ -975,6 +1342,199 @@ func TestScheduler_Buggify(t *testing.T) {
 		t.Logf("%v of %v sites on, and %v fires in %v visits of a site that is on", on, sites, fires, visits)
 		is.True(t, on > sites/8 && on < sites*3/8, "about a quarter of sites should be on")
 		is.True(t, fires > visits/8 && fires < visits*3/8, "about a quarter of visits should fire")
+	})
+}
+
+// everything is a workload that uses the abilities of the scheduler together, for the check that a
+// seed gives the same run twice. Instances have workers that share a lock and a pool, wait with
+// timeouts and with contexts derived from them, hit a buggify point, draw numbers from the seed, and
+// start and wait for tasks of their own, which wait through the host of the test. The test's own
+// tasks share a semaphore, and one of them moves each kind of clock, crashes an instance, and starts
+// it again. Another instance crashes itself. The workload fails t if a semaphore lets in more holders
+// than it has permits, or has lost a permit at the end.
+func everything(t *testing.T) func(ctx context.Context, s *sim.Scheduler) {
+	return func(ctx context.Context, s *sim.Scheduler) {
+		start := func(name string) (*sim.Instance, []host.Task) {
+			inst := s.NewInstance(name)
+			lock, pool := inst.NewSemaphore("lock", 1), inst.NewSemaphore("pool", 2)
+			holders := map[host.Semaphore]int{}
+			var workers []host.Task
+			for i := range 3 {
+				workers = append(workers, inst.Go(ctx, fmt.Sprint("worker-", i), func(ctx context.Context) {
+					// A crashed worker ends when the run ends, and the trace pins the order.
+					defer inst.Trace(ctx, "ends")
+					for j := range 6 {
+						m, permits := pool, 2
+						if inst.Uint64()%2 == 0 {
+							m, permits = lock, 1
+						}
+						timeoutCtx, cancel := inst.WithTimeout(ctx, time.Duration(1+inst.Uint64()%3)*time.Second)
+						if err := m.Acquire(timeoutCtx); err != nil {
+							inst.Trace(ctx, "gives up %v: %v", j, err)
+							cancel()
+							continue
+						}
+						holders[m]++
+						if holders[m] > permits {
+							t.Errorf("%v holders of a semaphore with %v permits", holders[m], permits)
+						}
+						if inst.Buggify(ctx, "hold longer") {
+							_ = inst.Sleep(ctx, 2*time.Second)
+						}
+						derived, cancelDerived := context.WithCancel(timeoutCtx)
+						err := inst.Sleep(derived, time.Duration(inst.Uint64()%1500)*time.Millisecond)
+						cancelDerived()
+						inst.Yield(ctx, "inside")
+						holders[m]--
+						m.Release(ctx)
+						cancel()
+						inst.Trace(ctx, "done %v with %v, at %v on the wall clock and %v on the monotonic clock", j, err, since(inst), inst.Monotonic())
+					}
+					child := inst.Go(ctx, fmt.Sprint("child-", i), func(ctx context.Context) {
+						s.Yield(ctx, "through the test")
+						inst.Trace(ctx, "ran")
+					})
+					_ = child.Wait(ctx)
+				}))
+			}
+			// The check waits until the workers have returned, and then takes every permit.
+			check := inst.Go(ctx, "check", func(ctx context.Context) {
+				for _, worker := range workers {
+					_ = worker.Wait(ctx)
+				}
+				timeoutCtx, cancel := inst.WithTimeout(ctx, time.Second)
+				defer cancel()
+				for _, m := range []host.Semaphore{lock, pool, pool} {
+					if err := m.Acquire(timeoutCtx); err != nil {
+						t.Errorf("a permit of instance %v is lost: %v", name, err)
+					}
+				}
+			})
+			return inst, append(workers, check)
+		}
+
+		world := s.NewSemaphore("world", 1)
+		ticker := s.Go(ctx, "ticker", func(ctx context.Context) {
+			for range 5 {
+				_ = world.Acquire(ctx)
+				s.Trace(ctx, "ticks at %v, %v", since(s), s.Monotonic())
+				_ = s.Sleep(ctx, time.Duration(s.Uint64()%3000)*time.Millisecond)
+				world.Release(ctx)
+			}
+		})
+
+		a, aTasks := start("a")
+		b, bTasks := start("b")
+		c, cTasks := start("c")
+		c.Go(ctx, "crasher", func(ctx context.Context) {
+			_ = c.Sleep(ctx, time.Duration(c.Uint64()%5000)*time.Millisecond)
+			c.Crash()
+			c.Trace(ctx, "goes on after the crash")
+			c.Yield(ctx, "after the crash")
+		})
+
+		pause := func() { _ = s.Sleep(ctx, time.Duration(s.Uint64()%2000)*time.Millisecond) }
+		for range 4 {
+			pause()
+			_ = world.Acquire(ctx)
+			inst := []*sim.Instance{a, b}[s.Uint64()%2]
+			switch s.Uint64() % 3 {
+			case 0:
+				inst.ShiftWall(time.Duration(s.Uint64()%20)*time.Second - 10*time.Second)
+			case 1:
+				inst.StopWall()
+				pause()
+				inst.StartWall()
+			case 2:
+				inst.StopMonotonic()
+				pause()
+				inst.StartMonotonic()
+			}
+			world.Release(ctx)
+		}
+		a.Crash()
+		if !a.Crashed() || b.Crashed() {
+			t.Error("a crash of a was not reported, or one of b was")
+		}
+		_, a2Tasks := start("a2")
+		for _, task := range slices.Concat(aTasks, bTasks, cTasks, a2Tasks, []host.Task{ticker}) {
+			_ = task.Wait(ctx)
+		}
+	}
+}
+
+// after is the first line of the trace from the one that ends with event on that bad matches, the
+// empty string if there is none, or a message if no line ends with event.
+func after(lines []string, event string, bad func(line string) bool) string {
+	i := slices.IndexFunc(lines, func(line string) bool { return strings.HasSuffix(line, event) })
+	if i < 0 {
+		return "no line ends with" + event
+	}
+	if j := slices.IndexFunc(lines[i:], bad); j >= 0 {
+		return lines[i+j]
+	}
+	return ""
+}
+
+// TestSimulation runs every seed twice and compares the traces, with [everything] as the workload.
+func TestSimulation(t *testing.T) {
+	t.Run("should give the same trace when a seed is run twice, with instances, clocks that move, crashes, buggify, timeouts, and semaphores together", func(t *testing.T) {
+		options := sim.Options{Jitter: 50 * time.Millisecond, Buggify: sim.Buggify{On: true}}
+		n := uint64(200)
+		if v := os.Getenv("S4QL_SIM_SEEDS"); v != "" {
+			var err error
+			n, err = strconv.ParseUint(v, 10, 64)
+			is.NotError(t, err)
+		}
+		traces := map[string]bool{}
+		var all []string
+		// cut counts the seeds where the crash of a cut off the work of one of its workers.
+		var cut int
+		for seed := range n {
+			first, err := schedule(t, seed, options, everything(t))
+			is.NotError(t, err)
+			second, err := schedule(t, seed, options, everything(t))
+			is.NotError(t, err)
+			lines := first.Lines()
+			is.EqualSlice(t, lines, second.Lines(), fmt.Sprint("seed ", seed))
+			is.Equal(t, first.Steps(), second.Steps(), fmt.Sprint("seed ", seed))
+			is.Equal(t, first.Uint64(), second.Uint64(), fmt.Sprint("seed ", seed))
+			traces[strings.Join(lines, "\n")] = true
+			all = append(all, lines...)
+
+			// No task of an instance runs after the crash, and no timeout of it expires, except that the
+			// task that crashed it goes on to its next wait.
+			for _, name := range []string{"a", "c"} {
+				bad := func(line string) bool {
+					fields := strings.Fields(line)
+					return strings.HasPrefix(fields[1], name+"/") && strings.Contains(line, " resumes from ") ||
+						strings.Contains(line, " timeout of "+name+"/") && strings.HasSuffix(line, " expires")
+				}
+				is.Equal(t, "", after(lines, " "+name+" crashes", bad), fmt.Sprint("seed ", seed))
+			}
+			for i := range 3 {
+				worker := fmt.Sprint(" a/worker-", i, " ")
+				var finished int
+				for _, line := range lines {
+					if strings.Contains(line, worker+"done ") || strings.Contains(line, worker+"gives up ") {
+						finished++
+					}
+				}
+				if finished < 6 {
+					cut++
+					break
+				}
+			}
+		}
+		t.Logf("%v distinct traces from %v seeds, and the crash cut off work in %v", len(traces), n, cut)
+		is.Equal(t, int(n), len(traces))
+		is.True(t, cut > 0, "the crash never cut off any work")
+		joined := strings.Join(all, "\n")
+		for _, event := range []string{" expires", " gives up ", " fires", "a2/worker-0 resumes", "a2/child-0 ran", "b/check resumes",
+			"ticker ticks", "a/worker-0 ends", "c/crasher goes on after the crash", "shifts its wall clock", "stops its wall clock", "starts its wall clock",
+			"stops its monotonic clock", "starts its monotonic clock"} {
+			is.True(t, strings.Contains(joined, event), "no seed has "+event)
+		}
 	})
 }
 
@@ -1046,6 +1606,34 @@ func TestScheduler_window(t *testing.T) {
 			})
 		}
 		t.Logf("%v of 1000 free runs found the race", found)
+	})
+}
+
+// TestSimulationSpeed logs how fast the scheduler is on this machine, with tasks that only yield. It
+// is a test and not a benchmark because a bubble needs a [testing.T]. It only runs when the
+// environment variable S4QL_SIM_SPEED is set, because it asserts nothing that the other tests do not.
+func TestSimulationSpeed(t *testing.T) {
+	if os.Getenv("S4QL_SIM_SPEED") == "" {
+		t.Skip("S4QL_SIM_SPEED is not set")
+	}
+	t.Run("should log the speed of the scheduler with eight tasks that only yield", func(t *testing.T) {
+		start := time.Now()
+		var steps int
+		for seed := range uint64(20) {
+			s, err := schedule(t, seed, sim.Options{Jitter: time.Millisecond}, func(ctx context.Context, s *sim.Scheduler) {
+				for i := range 8 {
+					s.Go(ctx, fmt.Sprint("worker-", i), func(ctx context.Context) {
+						for range 2000 {
+							s.Yield(ctx, "between")
+						}
+					})
+				}
+			})
+			is.NotError(t, err)
+			steps += s.Steps()
+		}
+		elapsed := time.Since(start)
+		t.Logf("%v steps in %v, %.0f steps per second", steps, elapsed.Round(time.Millisecond), float64(steps)/elapsed.Seconds())
 	})
 }
 

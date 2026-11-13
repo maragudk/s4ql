@@ -61,7 +61,7 @@ jobs:
           working-directory: internal/simlint
 
       - name: Run the free-running mode under the race detector
-        run: go test -race -shuffle on -run 'TestFreeRunning|TestFree$' ./internal/sim/
+        run: go test -race -shuffle on -run '^TestFree' ./internal/sim/ ./internal/core/
 
   # The schema of the commit object: Buf's lint, and a check that the committed generated code is what
   # the schema generates.
