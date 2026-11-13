@@ -12,7 +12,7 @@ The binding covers only what slice 1 of [docs/roadmap.md](../../docs/roadmap.md)
 - run a statement with `Exec`
 - return errors with SQLite's extended result code and message
 
-It also reports the SQLite version, the source ID, and the compile options. More is added when a slice needs it.
+It also reports the SQLite version, the source ID, the compile options, and the keywords. `Tokenize` splits SQL text with SQLite's private tokenizer `sqlite3GetToken`, which no public API exposes, so that the Go tokenizer in `internal/sql/token` can be checked against it. It is a wrapper in the binding's translation unit and not a second compile of SQLite: production builds then carry no second copy, and the build cache tracks the vendored source through `source.h` as it does for the rest of the binding. More is added when a slice needs it.
 
 The vendored version is SQLite 3.54.1, from https://sqlite.org/2026/sqlite-amalgamation-3540100.zip.
 
