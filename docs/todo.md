@@ -4,6 +4,21 @@ A working list of things that are agreed but not built, and of design questions 
 
 Each item is marked agreed or open. An agreed item carries the details that a builder needs who was not in the conversation. When an item is built, it is deleted from this list, and its reasoning moves next to the code as tests and doc comments. The code is then the source of truth for how it was done.
 
+## The SQL front end
+
+Status: open. Nothing of the SQL half is built but the tokenizer, which is being built. The facts and the options behind every point here are in [research/sql-front-end.md](research/sql-front-end.md). Markus decides each open point before it is built.
+
+- **Agreed, and not in the spec yet: `database/sql` is the main interface.** Markus agreed on 2026-11-10 that the driver is not registered by a blank import, that the open function builds a `driver.Connector` and passes it to `sql.OpenDB`, and that an explicit `Register` function exists for code that needs `sql.Open` by name. It is recorded only in `docs/conversations/2026-11-10-kickoff.txt`.
+- **Open: the parser.** A parser for the grammar of the slices only, grown slice by slice, or a parser for all of SQLite's grammar with a pass after it that rejects what the roadmap does not list. Only the second can give SQLite's own syntax error for a statement outside the subset and tell it from "not supported". `sqlc-dev/meyer` is such a parser in Go; whether it is a reference, a starting point, or a dependency is part of the question.
+- **Open: what an error promises to match.** The result code, the extended result code, and the message text, and for which statements. The codes alone do not tell `no such table` from `table already exists`.
+- **Open: how "not supported" is marked.** A sentinel error, the result code it carries, and a message that cannot be one of SQLite's.
+- **Open: whether an API of s4ql's own exists next to the driver, and whether it is public.** `database/sql` cannot carry the stop of an instance, a context on `Close`, or a context on `Commit`.
+- **Open: single-quoted names.** SQLite accepts `'t1'` as a name in some places. The restrictions in the roadmap do not mention it.
+- **Open: what "any integer value" in slice 1 includes.** A sign, hex literals, digit separators, and 9223372036854775808, which SQLite reads as a real and refuses for an `int` column.
+- **Open: the errors of slice 1 that the roadmap does not list.** Its statement shapes can also give `table t1 has no column named v2`, `object name reserved for internal use`, `table sqlite_master may not be dropped`, `cannot store REAL value in INT column`, and `hex literal too big`.
+- **Open: a bytecode machine or a tree of iterators for execution.** For slice 1 the two hardly differ.
+- **A rule for the driver, whatever is decided: no error of an unknown commit outcome or of a lost lease wraps `driver.ErrBadConn`.** `database/sql` runs an operation again, up to three times, when the driver returns it.
+
 ## The storage core
 
 Status: built in `internal/core` on 2026-11-12 and 2026-11-13, and merged in pull request #12. The reasoning behind its design, with Markus's words, is in [internal/core/README.md](../internal/core/README.md). This item holds what is still open or not built. What its tests do not show yet is in [Tests of the storage core](#tests-of-the-storage-core).
