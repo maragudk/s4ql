@@ -95,6 +95,7 @@ type tally struct {
 	runs, steps                                                                                           int
 	commits, emptyCommits, failedCommits, unknownCommits, cutCommits, rollbacks, abandoned, refusedWrites int64
 	reads, refusedReads, expiredReads, overtakenReads, statements, stops, restarts, reopens               int64
+	recoveries, recoveredFrames, mostFrames                                                               int64
 	events                                                                                                map[string]int
 	// trace counts the lines of the traces that contain each marker.
 	trace map[string]int
@@ -147,6 +148,9 @@ func (y *tally) add(seed uint64, s simulation) {
 	y.stops += o.stops.Load()
 	y.restarts += o.restarts.Load()
 	y.reopens += o.reopens.Load()
+	y.recoveries += o.recoveries.Load()
+	y.recoveredFrames += o.recoveredFrames.Load()
+	y.mostFrames = max(y.mostFrames, o.mostFrames.Load())
 	for kind, n := range o.events {
 		y.events[kind] += n
 	}
@@ -174,6 +178,8 @@ func (y *tally) log(t *testing.T, w workload) {
 		y.runs, y.steps, y.statements, y.commits, y.emptyCommits, y.failedCommits, y.unknownCommits, y.cutCommits, y.rollbacks, y.abandoned, y.refusedWrites)
 	t.Logf("%v reads of which %v were overtaken by a commit, %v refused reads of which %v for a lease that had run out by a clock, %v stops of an instance, %v restarts after a crash, %v instances closed and opened again while their callers ran",
 		y.reads, y.overtakenReads, y.refusedReads, y.expiredReads, y.stops, y.restarts, y.reopens)
+	t.Logf("%v restarts whose Open recovered commits from a write-ahead log that the file of the cache alone lacked, with %v frames in those logs, and %v in the largest",
+		y.recoveries, y.recoveredFrames, y.mostFrames)
 	t.Logf("in the traces: %v", sorted(y.trace))
 	t.Logf("events of the instances: %v", sorted(y.events))
 	t.Logf("an instance served at most %v after the end of the workload, in seed %v, where %v is the bound", y.serveAfter, y.slowest, w.liveness())

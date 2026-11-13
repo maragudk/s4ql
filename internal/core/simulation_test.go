@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -183,6 +184,10 @@ type outcome struct {
 	// stops of an instance, restarts after a crash, and instances that were closed and opened again
 	// while their callers ran.
 	stops, restarts, reopens atomic.Int64
+	// recoveries are the restarts after a crash whose cache had commits in its write-ahead log that
+	// its file alone did not have, which the Open of the restarted instance recovered.
+	// recoveredFrames counts the frames of their logs, and mostFrames is the most in one.
+	recoveries, recoveredFrames, mostFrames atomic.Int64
 	// acked is the highest commit that a caller knows to be acknowledged.
 	acked atomic.Int64
 	// count of the starts of reads and the returns of commits, which orders them.
@@ -904,8 +909,10 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 				r.holders[d.ID()] = true
 				r.mu.Unlock()
 
-				// The restarted instance finds a copy of the files as the crash left them, with every
-				// commit that the cache had.
+				// The restarted instance finds a copy of the files as the crash left them: the cache and
+				// its write-ahead log, with the transactions that are not checkpointed, and without the
+				// shared-memory index, which SQLite rebuilds from the log. Nothing opens the copy before
+				// the instance does, so its Open recovers the cache from the log.
 				name := fmt.Sprint(victim.name, i+2)
 				path := filepath.Join(c.dir, name+".db")
 				crashedAt, crashedState, err := cacheDump(victim.path)
@@ -917,13 +924,45 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 					o.violate(ctx, c.world, "copy of the cache: %v", err)
 					return
 				}
-				if at, state, err := cacheDump(path); err != nil || at != crashedAt || show(state) != show(crashedState) {
-					o.violate(ctx, c.world, "the cache of %v is at %v %v after the restart, and was at %v at the crash", name, at, err, crashedAt)
+				frames, err := walFrames(path)
+				if err != nil {
+					o.violate(ctx, c.world, "the write-ahead log of %v: %v", name, err)
+					return
 				}
+				// Whether the file of the cache alone, without the log, lacks commits that the cache had.
+				filed, err := fileOnly(path)
+				behind := err != nil || filed != crashedAt
 				c.world.Trace(ctx, "%v restarts on the cache of %v at %v", name, victim.name, short(crashedAt))
 				o.restarts.Add(1)
-				_, nodeTasks := r.start(ctx, name, path)
+				n, nodeTasks := r.start(ctx, name, path)
 				restarted = append(restarted, nodeTasks...)
+				if n.current() == nil {
+					continue
+				}
+
+				// Open recovered the cache from the log, before any task of the new instance ran: it
+				// holds what the cache held at the crash, which is what the log says up to its position.
+				at, state, err := cacheDump(path)
+				commit, want, ok := r.model.at(at)
+				switch {
+				case err != nil:
+					o.violate(ctx, c.world, "the cache of %v after the restart: %v", name, err)
+				case at != crashedAt || show(state) != show(crashedState):
+					o.violate(ctx, c.world, "the cache of %v is at %v after the restart, and was at %v at the crash", name, short(at), short(crashedAt))
+				case !ok:
+					o.violate(ctx, c.world, "the cache of %v is at the position %v after the restart, which the log does not hold", name, short(at))
+				case show(state) != want.text():
+					o.violate(ctx, c.world, "the cache of %v holds at commit %v after the restart the state %q, and the log has %q", name, commit, show(state), want.text())
+				case behind:
+					o.recoveries.Add(1)
+					o.recoveredFrames.Add(frames)
+					for {
+						most := o.mostFrames.Load()
+						if frames <= most || o.mostFrames.CompareAndSwap(most, frames) {
+							break
+						}
+					}
+				}
 			}
 			for _, task := range restarted {
 				_ = task.Wait(ctx)
@@ -1055,9 +1094,14 @@ func (w workload) moveClocks(ctx context.Context, h tracer, inst *sim.Instance) 
 }
 
 // copyCache at from to to, with its write-ahead log, as files that a crashed process left behind.
-// SQLite rebuilds the shared-memory index from the log when it opens them.
-func copyCache(from, to string) error {
-	for _, suffix := range []string{"", "-wal"} {
+// The shared-memory index is not copied: the first connection to a cache that no other connection
+// has open rebuilds it from the log, whether its file is there or not, and that recovery is what the
+// copy is for.
+func copyCache(from, to string, suffixes ...string) error {
+	if len(suffixes) == 0 {
+		suffixes = []string{"", "-wal"}
+	}
+	for _, suffix := range suffixes {
 		src, err := os.Open(from + suffix)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
@@ -1077,6 +1121,42 @@ func copyCache(from, to string) error {
 		}
 	}
 	return nil
+}
+
+// walFrames is the number of frames in the write-ahead log of the cache at path, from the size of
+// the log and the page size in its header, and zero if it has none. Frames after the last commit
+// of the log, and those of transactions that are checkpointed already, count too.
+func walFrames(path string) (int64, error) {
+	data, err := os.ReadFile(path + "-wal")
+	if errors.Is(err, os.ErrNotExist) || (err == nil && len(data) < 32) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	// The header of the log is 32 bytes, with the page size at offset 8, and each frame is a header
+	// of 24 bytes and a page (https://sqlite.org/fileformat2.html#walformat).
+	page := int64(binary.BigEndian.Uint32(data[8:12]))
+	return (int64(len(data)) - 32) / (24 + page), nil
+}
+
+// fileOnly is the position that the file of the cache at path records, read from a copy of the
+// file without its write-ahead log, which is removed again. It fails for a file that does not hold
+// the table of the position yet.
+func fileOnly(path string) (_ format.Name, err error) {
+	copied := path + "-file"
+	defer func() {
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			if removeErr := os.Remove(copied + suffix); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				err = errors.Join(err, removeErr)
+			}
+		}
+	}()
+	if err := copyCache(path, copied, ""); err != nil {
+		return format.Name{}, err
+	}
+	position, _, err := cacheDump(copied)
+	return position, err
 }
 
 // verify the log against the attempts of the callers and the reads, the caches against the log, a

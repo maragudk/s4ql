@@ -19,7 +19,6 @@ Status: built in `internal/core` on 2026-11-12 and 2026-11-13, and merged in pul
 Status: open. What the tests of `internal/core` and the simulation harness do not show yet, and the runs that are not done.
 
 - **No test shows that the margin on the watcher's wait is enough.** The harness cannot make a clock run fast, so the fault that the margin is for stays out of the workloads.
-- **The recovery in `Open` after a crash is not exercised.** A restarted instance in the simulation never opens a cache with a write-ahead log that the crash left, because the copy of the cache is checkpointed first (`cacheDump`).
 - **The simulation does not reach every failure.** It does not have SQLite's "busy" or the order in which the connections open, because the scheduler runs one goroutine at a time. It also does not have a manifest that is damaged on its way, a cache that fails anywhere but at the commit after a manifest swap, a power loss, or clock faults on an instance that was restarted after a crash.
 - **A real S3 client under simulation is not shown.**
 - **A separate stress test on the real clock is not built.** It covers what only true parallelism reaches. The free-running mode runs on the fake clock of a `testing/synctest` test. Ideas to revisit later about the free-running mode are in [internal/sim/README.md](../internal/sim/README.md#ideas-to-revisit-later).
