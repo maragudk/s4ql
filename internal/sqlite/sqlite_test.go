@@ -76,6 +76,66 @@ func TestOpen(t *testing.T) {
 	})
 }
 
+func TestOpenVFS(t *testing.T) {
+	t.Run("should open a database file through the default VFS for an empty name, and through a VFS by its name", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "test.db")
+		c, err := sqlite.OpenVFS(path, "")
+		is.NotError(t, err)
+		is.NotError(t, c.Exec("create table t1 (v1 int primary key) strict, without rowid"))
+		is.NotError(t, c.Close())
+
+		// The default VFS on macOS and Linux.
+		c, err = sqlite.OpenVFS(path, "unix")
+		is.NotError(t, err)
+		is.NotError(t, c.Exec("insert into t1 (v1) values (42)"))
+		is.EqualSlice(t, []string{"integer:42"}, query(t, c, "select * from t1"))
+		is.NotError(t, c.Close())
+	})
+
+	t.Run("should fail for a VFS that is not registered", func(t *testing.T) {
+		_, err := sqlite.OpenVFS(filepath.Join(t.TempDir(), "test.db"), "s4ql-no-such-vfs")
+		is.Equal(t, codeError, code(t, err))
+		is.Equal(t, "no such vfs: s4ql-no-such-vfs", message(t, err))
+	})
+
+	t.Run("should refuse a name with a NUL byte", func(t *testing.T) {
+		_, err := sqlite.OpenVFS(filepath.Join(t.TempDir(), "test.db"), "unix\x00")
+		is.Equal(t, "sqlite: VFS name contains a NUL byte", errorString(t, err))
+	})
+}
+
+func TestFindVFS(t *testing.T) {
+	t.Run("should find no VFS for a name that is not registered", func(t *testing.T) {
+		is.True(t, sqlite.FindVFS("s4ql-no-such-vfs") == nil)
+	})
+
+	t.Run("should find the default VFS by its name, the unix VFS on macOS and Linux", func(t *testing.T) {
+		vfs := sqlite.FindVFS("")
+		is.True(t, vfs != nil)
+		is.True(t, sqlite.FindVFS("unix") == vfs)
+	})
+
+	t.Run("should find no VFS for a name with a NUL byte", func(t *testing.T) {
+		is.True(t, sqlite.FindVFS("unix\x00x") == nil)
+	})
+}
+
+func TestRegisterVFS(t *testing.T) {
+	t.Run("should register a VFS under its name, not as the default, and unregister it", func(t *testing.T) {
+		// The unix-excl VFS is one of SQLite's own, so registering it again changes nothing but the
+		// order of the list.
+		vfs := sqlite.FindVFS("unix-excl")
+		is.True(t, vfs != nil)
+		is.NotError(t, sqlite.RegisterVFS(vfs))
+		is.True(t, sqlite.FindVFS("") == sqlite.FindVFS("unix"), "the default VFS changed")
+		is.NotError(t, sqlite.UnregisterVFS(vfs))
+		is.True(t, sqlite.FindVFS("unix-excl") == nil)
+		is.NotError(t, sqlite.UnregisterVFS(vfs))
+		is.NotError(t, sqlite.RegisterVFS(vfs))
+		is.True(t, sqlite.FindVFS("unix-excl") == vfs)
+	})
+}
+
 func TestConn_Close(t *testing.T) {
 	t.Run("should fail with SQLITE_BUSY while a statement is not finalized, and succeed after", func(t *testing.T) {
 		c, err := sqlite.Open(":memory:")

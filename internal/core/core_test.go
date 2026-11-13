@@ -23,6 +23,7 @@ import (
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sqlite"
+	"maragu.dev/s4ql/internal/sqlite/faultvfs"
 	"maragu.dev/s4ql/internal/store"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
@@ -623,6 +624,64 @@ func TestDB_stop(t *testing.T) {
 		is.Error(t, core.ErrStopped, tx.Commit(t.Context()))
 		is.True(t, isDone(d))
 	})
+
+	// stoppedBySpool checks that a commit failed because a spool file failed, that the instance
+	// stopped with a local failure and released the lease, and that nothing was committed: the log
+	// is still at head, and the instance that is opened again serves state.
+	stoppedBySpool := func(t *testing.T, w *world, d *core.DB, err error, head format.Name, state string) {
+		t.Helper()
+		is.Error(t, core.ErrStopped, err)
+		is.Error(t, core.ErrLocal, err)
+		is.True(t, !errors.Is(err, core.ErrOutcomeUnknown))
+		is.True(t, isDone(d))
+		is.Error(t, core.ErrLocal, d.Err())
+		is.Error(t, core.ErrLocal, readErr(t, d))
+		is.Equal(t, head, w.manifest(t).Head)
+		is.NotError(t, d.Close(t.Context()))
+		is.True(t, w.manifest(t).Lease == nil, "the lease is not released")
+
+		again := w.serve(t, "a", core.Options{})
+		is.Equal(t, state, read(t, again))
+	}
+
+	t.Run("should stop for a failure to read the spool file during the upload, and not try the upload again", func(t *testing.T) {
+		w := newWorld(t)
+		o := core.Options{}
+		faults := failSpools(&o)
+		d := w.serve(t, "a", o)
+		transact(t, d, create("t1", 1, "k"))
+		head := w.manifest(t).Head
+
+		// The upload reads the spool file of the commit object, and its first read fails. A second
+		// upload would read it whole.
+		faults.failReads("commit", 1)
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		upsert("t1", 1)(t, tx)
+		err = tx.Commit(t.Context())
+		is.Equal(t, 1, faults.failures())
+		stoppedBySpool(t, w, d, err, head, "t1(k*0): ")
+	})
+
+	t.Run("should stop for a failure to read the length of an annotation from its spool file, and not commit without it", func(t *testing.T) {
+		w := newWorld(t)
+		o := core.Options{}
+		faults := failSpools(&o)
+		d := w.serve(t, "a", o)
+		transact(t, d, create("t1", 1, "k"))
+		head := w.manifest(t).Head
+
+		// The first read of the spool file of the annotations is the one of the length of the first
+		// annotation.
+		faults.failReads("annotations", 1)
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		upsert("t1", 1)(t, tx)
+		note("insert into t1 values (?)", 1)(t, tx)
+		err = tx.Commit(t.Context())
+		is.Equal(t, 1, faults.failures())
+		stoppedBySpool(t, w, d, err, head, "t1(k*0): ")
+	})
 }
 
 func TestMargin(t *testing.T) {
@@ -756,6 +815,88 @@ func TestDB_stop_cache(t *testing.T) {
 			is.Error(t, core.ErrStopped, err)
 			is.Error(t, core.ErrLocal, err)
 			is.Error(t, core.ErrCacheVersion, err)
+		})
+	})
+
+	t.Run("should stop for good with a local failure, and not a broken log, when the file system fails while replay applies a change, and keep the cache as it was", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			// The connections to the cache are closed by the cleanups that are registered later, which
+			// run first.
+			vfs, err := faultvfs.New()
+			is.NotError(t, err)
+			t.Cleanup(func() { is.NotError(t, vfs.Close()) })
+
+			// The cache is made, so that the instance that opens it again writes nothing to it before
+			// the catch-up.
+			is.NotError(t, w.serve(t, "a", core.Options{}).Close(t.Context()))
+
+			// The rows of the commit object take more pages than SQLite's page cache holds, about twice
+			// as many, so replay writes pages to the write-ahead log while it applies the changes,
+			// before its commit. The check of the bytes that replay read, below, fails the test if it
+			// does not.
+			first := w.serve(t, "first", core.Options{})
+			columns := make([]string, 100)
+			for i := range columns {
+				columns[i] = fmt.Sprint("c", i)
+			}
+			write(t, first, func(tx *core.Tx) {
+				is.NotError(t, tx.CreateTable(t.Context(), tableOf("t1", 1, columns...)))
+				for i := range 4000 {
+					values := make([]any, len(columns))
+					for j := range values {
+						// A value of eight bytes in SQLite's records.
+						values[j] = int64(1)<<50 + int64(i*len(columns)+j)
+					}
+					is.NotError(t, tx.Upsert(t.Context(), "t1", row(values...)))
+				}
+			})
+			head := w.manifest(t).Head
+			object, _, ok := w.store.Object(commitKey("db", head))
+			is.True(t, ok, "the store has no commit object")
+			is.NotError(t, first.Close(t.Context()))
+
+			// Every write to the write-ahead log fails.
+			vfs.Fail(faultvfs.Fault{Ops: faultvfs.Write, Files: faultvfs.WAL})
+			events := &recorder{}
+			o := core.Options{Logger: events.logger()}
+			o.UseVFS(vfs.Name())
+			d := w.open(t, "a", o)
+
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
+			defer cancel()
+			err = d.Wait(ctx)
+			is.True(t, vfs.Failures() > 0, "no write failed")
+			is.Error(t, core.ErrStopped, err)
+			is.Error(t, core.ErrLocal, err)
+			is.True(t, !errors.Is(err, core.ErrLogBroken), "the stop blames the log")
+			is.True(t, isDone(d))
+			is.Error(t, core.ErrLocal, d.Err())
+			is.NotError(t, d.Close(ctx))
+			is.True(t, w.manifest(t).Lease == nil, "the lease is not released")
+
+			// Replay failed before it read the commit object to its end, so in a change, and not in
+			// its commit. The event of the catch-up is logged by the lease task after the stop, and
+			// the close waits for that task.
+			failed := events.with(core.EventCatchUp, core.AttrOutcome, "failed")
+			is.Equal(t, 1, len(failed))
+			read, ok := failed[0][core.AttrBytes].(int64)
+			is.True(t, ok, "the event has no count of bytes")
+			is.True(t, read < int64(len(object)), fmt.Sprint("replay read ", read, " of ", len(object), " bytes"))
+
+			// Nothing of the commit object stayed in the cache, which catches up when it is opened
+			// again.
+			position, state, err := cacheDump(filepath.Join(w.dir, "a.db"))
+			is.NotError(t, err)
+			is.Equal(t, format.EmptyLog, position)
+			is.Equal(t, 0, len(state))
+			again := w.serve(t, "a", core.Options{})
+			r, err := again.Read(t.Context())
+			is.NotError(t, err)
+			is.Equal(t, head, r.Position())
+			rows, err := r.Get(t.Context(), "t1", row(int64(1)<<50))
+			is.NotError(t, err)
+			is.Equal(t, len(columns), len(rows))
+			is.NotError(t, r.Close(t.Context()))
 		})
 	})
 }

@@ -19,15 +19,21 @@ import (
 // changes. The file has no name once it is open, so it is gone when it is closed, and when the
 // process ends.
 type spool struct {
-	f *os.File
+	f spoolFile
 	w *bufio.Writer
 	// size is the number of bytes written.
 	size int64
 }
 
-// newSpool file in the directory dir, with a name from pattern as [os.CreateTemp] takes it.
-func newSpool(dir, pattern string) (*spool, error) {
-	f, err := os.CreateTemp(dir, pattern)
+// spoolFile is the file of a spool: an [*os.File], or a wrapper of one that a test makes fail.
+type spoolFile interface {
+	io.ReadWriteSeeker
+	io.Closer
+}
+
+// newSpool file of the given kind, "commit" or "annotations", next to the cache.
+func (d *DB) newSpool(kind string) (*spool, error) {
+	f, err := os.CreateTemp(d.spoolDir(), d.spoolPattern())
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +41,11 @@ func newSpool(dir, pattern string) (*spool, error) {
 		_ = f.Close()
 		return nil, err
 	}
-	return &spool{f: f, w: bufio.NewWriterSize(f, 64<<10)}, nil
+	var file spoolFile = f
+	if wrap := d.options.local.spool; wrap != nil {
+		file = (*wrap)(kind, f)
+	}
+	return &spool{f: file, w: bufio.NewWriterSize(file, 64<<10)}, nil
 }
 
 // Write to the file, through a buffer.

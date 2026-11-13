@@ -50,10 +50,9 @@ func (c *countingReader) Read(p []byte) (int, error) {
 // parent, so such a commit object is wrong, and applying a part of it would leave the cache in a
 // state that the log never had. An error of body, of tick, or of the cache is passed on as it is.
 // After any error, the cache is as it was.
-func replay(c *conn, name format.Name, body io.Reader, tick func() error, bugs bugs) (_ replayed, err error) {
+func replay(c *conn, name format.Name, body io.Reader, tick func() error, bugs bugs) (done replayed, err error) {
 	counted := &countingReader{r: body}
 	r := format.NewCommitReader(counted, name)
-	var done replayed
 	// ticked is whether tick ended the replay, and not the commit object.
 	var ticked bool
 
