@@ -352,6 +352,14 @@ func (d *DB) acquire(ctx context.Context) time.Duration {
 		}
 	}
 
+	// Every attempt to take the lease draws a new salt, so that no two takes carry the same bytes.
+	// A request that is stuck in the network can be applied late only if the version that it is
+	// from comes back, and a version comes back only if the same bytes are written again. The only
+	// manifest that is written again with the same bytes is the one without a lease entry, whenever
+	// the head is the same, and the only swaps sent from it are takes. So a take that arrives late
+	// can install a lease and nothing else: the manifest then names a holder that does not know it,
+	// and the next instance waits for that lease to time out. Every other swap is sent from a version
+	// that a holder wrote, which holds a salt, and never comes back.
 	next := m
 	sent := d.now()
 	next.Lease = &format.Lease{Holder: d.id, Duration: d.options.Lease, Renewed: sent.wall, Salt: d.host.Uint64()}

@@ -16,6 +16,7 @@ import (
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/sim"
+	"maragu.dev/s4ql/internal/store"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
 
@@ -625,6 +626,89 @@ func TestLease_unsure(t *testing.T) {
 			answered, err := format.ParseManifest([]byte(swaps[1]))
 			is.NotError(t, err)
 			is.True(t, lost.Lease.Salt != answered.Lease.Salt, "two writes of the manifest carry the same salt")
+		})
+	})
+
+	t.Run("should draw a new salt for every attempt to take the lease, also when each is sent from the same version", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			first := w.serve(t, "first", core.Options{})
+			is.NotError(t, first.Close(t.Context()))
+
+			// The first two takes are lost on their way, so all three are swaps from the version of the
+			// manifest without a lease entry.
+			s := newScriptStore(w.client())
+			s.on("swap", "manifest", drop, 2)
+			d := w.openOn(t, "a", s, core.Options{})
+			is.NotError(t, d.Wait(t.Context()))
+
+			s.mu.Lock()
+			swaps := slices.Clone(s.swaps)
+			s.mu.Unlock()
+			is.Equal(t, 3, len(swaps))
+			salts := map[uint64]bool{}
+			for _, data := range swaps {
+				m, err := format.ParseManifest([]byte(data))
+				is.NotError(t, err)
+				is.Equal(t, d.ID(), m.Lease.Holder)
+				salts[m.Lease.Salt] = true
+			}
+			is.Equal(t, 3, len(salts), "two attempts to take the lease carry the same salt")
+		})
+	})
+
+	t.Run("should let a take that arrives after a release install a lease and nothing else, which the next instance waits out", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			first := w.serve(t, "first", core.Options{})
+			transact(t, first, create("t1", 1, "k"))
+			is.NotError(t, first.Close(t.Context()))
+			free, version, _ := w.store.Object("db/manifest.json")
+
+			// The first take of the lease is stuck in the network, and the second one is applied.
+			s := newScriptStore(w.client())
+			s.on("swap", "manifest", stick, 1)
+			a := w.openOn(t, "a", s, core.Options{})
+			is.NotError(t, a.Wait(t.Context()))
+
+			// A commit of the holder is stuck too, and every later attempt of it is lost until the caller
+			// gives up. A renewal then rules it out.
+			tx, err := a.Begin(t.Context())
+			is.NotError(t, err)
+			upsert("t1", 1)(t, tx)
+			s.on("swap", "manifest", stick, 1)
+			s.on("swap", "manifest", drop, -1)
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+			is.Error(t, core.ErrOutcomeUnknown, tx.Commit(ctx))
+			cancel()
+			s.clear()
+			is.NotError(t, a.Wait(t.Context()))
+			is.Equal(t, "t1(k*0): ", read(t, a))
+
+			// The release writes the manifest without a lease entry as it was, so its version comes back.
+			is.NotError(t, a.Close(t.Context()))
+			released, again, _ := w.store.Object("db/manifest.json")
+			is.Equal(t, string(free), string(released))
+			is.Equal(t, version, again)
+
+			// The stuck take is applied now, and the stuck commit, which was sent from a version that the
+			// holder wrote, is not.
+			errs := s.deliver()
+			is.Equal(t, 2, len(errs))
+			is.NotError(t, errs[0])
+			is.Error(t, store.ErrChanged, errs[1])
+			m := w.manifest(t)
+			is.Equal(t, a.ID(), m.Lease.Holder)
+			parsed, err := format.ParseManifest(free)
+			is.NotError(t, err)
+			is.Equal(t, parsed.Head, m.Head)
+
+			// The manifest names a holder that does not know it, so the next instance waits for that
+			// lease to time out, and then serves the log as it was.
+			b := w.open(t, "b", core.Options{})
+			start := time.Now()
+			is.NotError(t, b.Wait(t.Context()))
+			is.True(t, time.Since(start) >= 30*time.Second+core.Margin(30*time.Second), fmt.Sprint(time.Since(start)))
+			is.Equal(t, "t1(k*0): ", read(t, b))
+			is.Equal(t, parsed.Head, w.manifest(t).Head)
 		})
 	})
 

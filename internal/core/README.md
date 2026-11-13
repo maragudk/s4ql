@@ -122,6 +122,21 @@ What follows from the mechanism:
 - **One more case gives "outcome unknown" without the caller giving up:** the lease is lost, the commit must be looked for in the log, and the log holds a commit object that can never be read. Nothing can tell then. The spec says "only if the caller gives up first", so this is a departure that the build owns up to. The todo holds it as an open question for Markus, under [The storage core](../../docs/todo.md#the-storage-core).
 - **The transaction of the cache is rolled back when `Tx.Commit` returns "outcome unknown".** If the commit object turns out to be in the log, catch-up applies it from the store. There is then one path, and it is the path of every start.
 
+### A take that arrives late
+
+The version of a manifest without a lease entry can come back, because such a manifest has the same bytes whenever the head is the same, and a version comes from the bytes, as S3's ETag does. A request to take a free lease that is stuck in the network can therefore be applied after a later release. The manifest then names a holder that does not know it, and the next instance waits for that lease to time out. maragubot proposed a salt at the top level of the manifest, new at every write, so that no version ever comes back. Markus decided against it on 2026-11-13: "Isn't that a bit theoretical? And the cost is only a delay in lease? I'd say no. As long as we don't gamble with correctness."
+
+It is no gamble with correctness, for this reason:
+
+- **A request that is stuck in the network can be applied late only if the version that it is from comes back,** and a version comes back only if the same bytes are written again.
+- **The only manifest that is written again with the same bytes is the one without a lease entry.** Every write of a lease entry carries a new salt.
+- **The only swaps sent from a manifest without a lease entry are takes of the lease** (`DB.acquire`), and every attempt of a take draws a new salt, so no two takes carry the same bytes. A take that arrives late can therefore install a lease and nothing else.
+- **Every commit and every renewal is sent from a version that a holder wrote,** which holds a salt and never comes back: the holder's first swap is from the version that its take wrote, and each later one from the version of the swap before it. A release is sent from such a version too.
+
+The reasoning rests on one more thing: nothing sends a take twice with the same bytes. The core never does, and the client of the store must not either. The client for real S3 must already never let the SDK retry a conditional write by itself ([docs/todo.md](../../docs/todo.md#the-s3-client-and-s3s-checksums)), which also covers this.
+
+`TestLease_unsure` shows both: that every attempt of a take carries a salt of its own, and the case itself, in which a take that is stuck is applied after the holder released the lease, a commit of the holder that is stuck is refused, the head is unchanged, and the next instance takes the lease after the holder's duration and the margin. The workloads of the simulation meet the case too, which `run.verifyLease` allows for.
+
 ## Catching up and replay
 
 - **Catch-up downloads every missing commit object twice.** It walks the log back from the head to the cache's position, and it reads each commit object on the way to its end, so that it trusts a parent only when the bytes match the name. It then applies the commit objects, oldest first, and downloads each again. A spool of the walk could remove the second download later.
@@ -175,7 +190,7 @@ The reason for planted bugs is in [Conditions for keeping the design](../sim/REA
 - **A catch-up downloads every missing commit object twice.** See [Catching up and replay](#catching-up-and-replay).
 - **Replay holds one batch of rows decoded.** That is about twenty mebibytes for a batch of one mebibyte, whatever the size of the commit object.
 - **No test shows that the margin is enough.** The tests check that an instance waits for the holder's duration and the margin (`run.verifyHistory`). The harness cannot make a clock run fast, so the fault that the margin is for stays out of the workloads; see the comment of `clockFaults` in `simulation_test.go`.
-- **The version of a manifest without a lease entry can come back.** Such a manifest has the same bytes whenever the head is the same. A swap that takes a free lease and is stuck in the network can therefore be applied after a later release. It adds no commit. The cost is that the manifest names a holder that does not know it, and the next instance waits for that lease to time out. A salt at the top level of the manifest would end it, which is an open question in the todo, under [The storage core](../../docs/todo.md#the-storage-core).
+- **A take of the lease that arrives late can make the next instance wait for a lease to time out.** It adds no commit. See [A take that arrives late](#a-take-that-arrives-late).
 - **The simulation does not reach SQLite's "busy".** The write connection opens first, and every connection has a busy timeout; see [The cache](#the-cache). Both guard against "busy" under real parallelism, which the scheduler never produces; see [What the scheduled mode cannot do](../sim/README.md#what-the-scheduled-mode-cannot-do).
 - **The manifest has no guard against bytes that are damaged on their way.** A commit object is checked against its name and downloaded a second time. A manifest that is damaged and no longer parses stops the instance at the first download. One that is damaged and still parses would be believed, and the swap that takes the lease would write it back, because the swap is from the version that the store gave, not from the bytes. The store's contract promises content that is not changed, and the design has no checksum for the manifest.
 - **There is no layer under SQLite that injects faults, for now.** SQLite tests its own handling of I/O errors, and using the official C code is how s4ql inherits that.
