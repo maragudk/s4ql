@@ -75,3 +75,10 @@ A builder gets a git worktree of its own when it is spawned, through the Agent t
 
 - **Why:** on 2026-11-12 the lead created the worktrees and switched between them while builders ran. One builder's working directory moved with the lead, and its writes and git commands in its own worktree were refused, so it could not commit its last diary step. Markus then said: "From now on maybe let builders create their worktrees?" A builder that got its own worktree the same day ran without friction.
 - **How to apply:** spawn builders and writers with worktree isolation. The builder writes the first step of the feature's diary from the requirements in its brief. The lead reviews a builder's branch from `main` with `git diff main...<branch>`, pushes it, and opens the pull request. After the merge, remove the worktree and the branch.
+
+### A test must not depend on timing
+
+A test passes or fails for the same reason on every machine, however slow or loaded.
+
+- **Why:** on 2026-11-12 and 2026-11-13 five tests failed only in CI's sanitizer job, which is several times slower than a developer's machine. One assumed that work finished within a busy timeout of five seconds. One told a fake store to hang only after the instance that reads from it had started. One reused a key that an earlier step may or may not have written. None showed a fault in the code under test.
+- **How to apply:** set up every fake before the code that uses it starts. Where two orders of events are both legal, make the test accept both or force one. Bound real time only from the side that a slower machine cannot break. Before handing in a new test, run it many times, also under `-race` and with the machine under load (`go test -count=50`), and run `make test-asan` for anything that waits.
