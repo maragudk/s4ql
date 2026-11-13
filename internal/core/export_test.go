@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"os"
 	"time"
 )
 
@@ -54,6 +55,15 @@ func (o Options) Unplanted() Options {
 // SyncOff stops SQLite from syncing the cache to disk.
 func (o *Options) SyncOff() {
 	o.syncOff = true
+}
+
+// SpoolFile is the file of a spool, which [Options.WrapSpools] wraps.
+type SpoolFile = spoolFile
+
+// WrapSpools makes the instance wrap each of its spool files, of the kind "commit" or
+// "annotations", with wrap when it creates the file.
+func (o *Options) WrapSpools(wrap func(kind string, f *os.File) SpoolFile) {
+	o.local.spool = wrap
 }
 
 // ID under which the instance holds the lease.

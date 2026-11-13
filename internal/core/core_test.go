@@ -623,6 +623,64 @@ func TestDB_stop(t *testing.T) {
 		is.Error(t, core.ErrStopped, tx.Commit(t.Context()))
 		is.True(t, isDone(d))
 	})
+
+	// stoppedBySpool checks that a commit failed because a spool file failed, that the instance
+	// stopped with a local failure and released the lease, and that nothing was committed: the log
+	// is still at head, and the instance that is opened again serves state.
+	stoppedBySpool := func(t *testing.T, w *world, d *core.DB, err error, head format.Name, state string) {
+		t.Helper()
+		is.Error(t, core.ErrStopped, err)
+		is.Error(t, core.ErrLocal, err)
+		is.True(t, !errors.Is(err, core.ErrOutcomeUnknown))
+		is.True(t, isDone(d))
+		is.Error(t, core.ErrLocal, d.Err())
+		is.Error(t, core.ErrLocal, readErr(t, d))
+		is.Equal(t, head, w.manifest(t).Head)
+		is.NotError(t, d.Close(t.Context()))
+		is.True(t, w.manifest(t).Lease == nil, "the lease is not released")
+
+		again := w.serve(t, "a", core.Options{})
+		is.Equal(t, state, read(t, again))
+	}
+
+	t.Run("should stop for a failure to read the spool file during the upload, and not try the upload again", func(t *testing.T) {
+		w := newWorld(t)
+		o := core.Options{}
+		faults := failSpools(&o)
+		d := w.serve(t, "a", o)
+		transact(t, d, create("t1", 1, "k"))
+		head := w.manifest(t).Head
+
+		// The upload reads the spool file of the commit object, and its first read fails. A second
+		// upload would read it whole.
+		faults.on("commit", "read", 1)
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		upsert("t1", 1)(t, tx)
+		err = tx.Commit(t.Context())
+		is.Equal(t, 1, faults.failures())
+		stoppedBySpool(t, w, d, err, head, "t1(k*0): ")
+	})
+
+	t.Run("should stop for a failure to read the length of an annotation from its spool file, and not commit without it", func(t *testing.T) {
+		w := newWorld(t)
+		o := core.Options{}
+		faults := failSpools(&o)
+		d := w.serve(t, "a", o)
+		transact(t, d, create("t1", 1, "k"))
+		head := w.manifest(t).Head
+
+		// The first read of the spool file of the annotations is the one of the length of the first
+		// annotation.
+		faults.on("annotations", "read", 1)
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		upsert("t1", 1)(t, tx)
+		note("insert into t1 values (?)", 1)(t, tx)
+		err = tx.Commit(t.Context())
+		is.Equal(t, 1, faults.failures())
+		stoppedBySpool(t, w, d, err, head, "t1(k*0): ")
+	})
 }
 
 func TestMargin(t *testing.T) {

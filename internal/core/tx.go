@@ -358,7 +358,7 @@ func (tx *Tx) Annotate(ctx context.Context, sql string, parameters []*s4qlpb.Val
 	}
 
 	if tx.notes == nil {
-		if tx.notes, err = newSpool(tx.d.spoolDir(), tx.d.spoolPattern()); err != nil {
+		if tx.notes, err = tx.d.newSpool("annotations"); err != nil {
 			return tx.spoolFailed(ctx, err)
 		}
 	}
@@ -516,7 +516,7 @@ type spooled struct {
 // a table that is dropped and created again is a drop, a create, and its rows.
 func (tx *Tx) spoolCommit(ctx context.Context) (_ *spooled, err error) {
 	d := tx.d
-	sp, err := newSpool(d.spoolDir(), d.spoolPattern())
+	sp, err := d.newSpool("commit")
 	if err != nil {
 		return nil, d.spoolError(ctx, err)
 	}

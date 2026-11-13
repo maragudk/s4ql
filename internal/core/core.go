@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -67,6 +68,17 @@ type Options struct {
 	syncOff bool
 	// bugs that tests plant.
 	bugs bugs
+	// local is how the instance reaches its local files, which tests change to make them fail.
+	local local
+}
+
+// local is how an instance reaches its local files: its spool files and the files of its cache.
+// The zero value is the files of the operating system and SQLite's default VFS. A value is a field
+// of [Options] that is not exported, and nothing in this package sets it but its tests.
+type local struct {
+	// spool wraps each spool file of the given kind, "commit" or "annotations", when it is
+	// created, if it is not nil.
+	spool func(kind string, f *os.File) spoolFile
 }
 
 // withDefaults sets the options that are zero to their defaults, and checks the others.
