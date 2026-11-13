@@ -864,8 +864,10 @@ func TestTx_Commit_large(t *testing.T) {
 	//
 	// Under the race detector the test is some twenty times slower and the heap is another, so it
 	// runs with a tenth of the rows there, and checks only that the transaction commits and replays.
+	// The same holds under the address sanitizer, where the test would take a minute alone.
+	instrumented := raceEnabled || asanEnabled
 	rows := 300_000
-	if raceEnabled {
+	if instrumented {
 		rows = 30_000
 	}
 	const limit, replayLimit = 8 << 20, 48 << 20
@@ -878,7 +880,7 @@ func TestTx_Commit_large(t *testing.T) {
 	t.Run("should never hold a large transaction in memory: not its rows, not its commit object, and not which rows it changed, and neither when it is replayed", func(t *testing.T) {
 		// The collector runs often, so that the heap is close to what is in use.
 		defer debug.SetGCPercent(debug.SetGCPercent(10))
-		dir := t.TempDir()
+		dir := cacheDir(t)
 		s := &fileStore{dir: t.TempDir()}
 		h := host.New()
 		d, err := core.Open(t.Context(), h, s, filepath.Join(dir, "a.db"), "db", core.Options{})
@@ -908,7 +910,7 @@ func TestTx_Commit_large(t *testing.T) {
 		info, err := os.Stat(s.path("db/commits/" + s.manifest(t).Head.String()))
 		is.NotError(t, err)
 		t.Logf("a transaction of %v rows gave a commit object of %v bytes in %v, and the heap grew by at most %v bytes", 2*rows, info.Size(), time.Since(start).Round(time.Millisecond), grown)
-		if !raceEnabled {
+		if !instrumented {
 			is.True(t, info.Size() > 2*limit, "the commit object is too small to tell anything")
 			is.True(t, grown < limit, fmt.Sprintf("the heap grew by %v bytes for a commit object of %v bytes", grown, info.Size()))
 		}
@@ -923,7 +925,7 @@ func TestTx_Commit_large(t *testing.T) {
 		is.NotError(t, replayed.Wait(t.Context()))
 		grown = heap.grown()
 		t.Logf("the replay took %v, and the heap grew by at most %v bytes", time.Since(start).Round(time.Millisecond), grown)
-		if !raceEnabled {
+		if !instrumented {
 			is.True(t, grown < replayLimit, fmt.Sprintf("the heap grew by %v bytes for a commit object of %v bytes", grown, info.Size()))
 		}
 

@@ -13,6 +13,7 @@ import (
 // TestFreeRunning runs the workloads with the scheduler off, on real goroutines in parallel, for
 // the race detector, which sees nothing under the scheduler.
 func TestFreeRunning(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		workload workload
@@ -23,6 +24,7 @@ func TestFreeRunning(t *testing.T) {
 		{name: "should run callers that never pause with the scheduler off and no violations", workload: hammerWorkload, runs: 30},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			n := seeds(t, test.runs)
 			var commits, failedCommits, unknownCommits, reads, refusedReads, stops int64
 			start := time.Now()
