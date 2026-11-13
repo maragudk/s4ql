@@ -440,7 +440,7 @@ func (m *model) extend(head format.Name) error {
 		if name == format.EmptyLog {
 			return fmt.Errorf("the log that ends at %v does not hold its commit %v, %v", head, len(m.chain), last)
 		}
-		data, _, ok := m.store.Object(m.prefix + "/commits/" + name.String())
+		data, _, ok := m.store.Object(commitKey(m.prefix, name))
 		if !ok {
 			return fmt.Errorf("the log names the commit object %v, which the store does not have", name)
 		}
@@ -502,6 +502,13 @@ func (m *model) head() int {
 	defer m.mu.Unlock()
 	_ = m.syncLocked()
 	return len(m.states) - 1
+}
+
+// commitKey of the commit object with the given name in the database under the prefix: in a
+// folder named by the first two hexadecimal digits of the name, under the whole name.
+func commitKey(prefix string, name format.Name) string {
+	s := name.String()
+	return prefix + "/commits/" + s[:2] + "/" + s
 }
 
 // cacheDump reads the cache at path with a connection of its own and SQL of its own: its recorded

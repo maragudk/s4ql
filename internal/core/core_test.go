@@ -896,7 +896,8 @@ func TestOpen_cache(t *testing.T) {
 				continue
 			}
 			i := strings.LastIndex(key, "commits/")
-			is.True(t, i >= 0 && len(key[i+len("commits/"):]) == 64, key)
+			rest := key[i+len("commits/"):]
+			is.True(t, i >= 0 && len(rest) == 67 && rest[2] == '/' && rest[:2] == rest[3:5], key)
 			commits = append(commits, key[:i])
 		}
 		is.EqualSlice(t, []string{"", "one/", "one/two/", "smørrebrød/🥪/"}, manifests)

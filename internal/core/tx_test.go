@@ -34,7 +34,7 @@ func (w *world) commits(t *testing.T) [][]string {
 	t.Helper()
 	var log [][]string
 	for name := w.manifest(t).Head; name != format.EmptyLog; {
-		data, _, ok := w.store.Object("db/commits/" + name.String())
+		data, _, ok := w.store.Object(commitKey("db", name))
 		is.True(t, ok, "the log names a commit object that the store does not have")
 		parent, lines, err := changes(name, data)
 		is.NotError(t, err)
@@ -287,14 +287,15 @@ func TestTx_Commit(t *testing.T) {
 		is.EqualSlice(t, nil, s.unchecked)
 		is.Equal(t, 2, s.count("create", "db/commits/"))
 		for _, key := range w.store.Keys() {
-			name, ok := strings.CutPrefix(key, "db/commits/")
-			if !ok {
+			if !strings.HasPrefix(key, "db/commits/") {
 				is.Equal(t, "db/manifest.json", key)
 				continue
 			}
 			data, _, _ := w.store.Object(key)
 			sum := sha256.Sum256(data)
-			is.Equal(t, hex.EncodeToString(sum[:]), name)
+			// The key is in a folder named by the first two digits of the name, and ends with the name.
+			name := hex.EncodeToString(sum[:])
+			is.Equal(t, "db/commits/"+name[:2]+"/"+name, key)
 		}
 	})
 
@@ -962,7 +963,7 @@ func TestTx_Commit_large(t *testing.T) {
 		is.NotError(t, tx.Commit(t.Context()))
 		grown := heap.grown()
 
-		info, err := os.Stat(s.path("db/commits/" + s.manifest(t).Head.String()))
+		info, err := os.Stat(s.path(commitKey("db", s.manifest(t).Head)))
 		is.NotError(t, err)
 		t.Logf("a transaction of %v rows gave a commit object of %v bytes in %v, and the heap grew by at most %v bytes", 2*rows, info.Size(), time.Since(start).Round(time.Millisecond), grown)
 		if !instrumented {

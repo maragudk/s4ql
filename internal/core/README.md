@@ -60,7 +60,8 @@ How the cache handles SQLite's "busy" was chosen by maragubot on 2026-11-11, aft
 
 ## The commit
 
-- **The keys of a database are `<prefix>/manifest.json` and `<prefix>/commits/<name>`,** where the name is the commit object's SHA-256 as 64 hexadecimal digits. With an empty prefix, the keys have none. maragubot chose the keys before the build and told Markus on 2026-11-12.
+- **The keys of a database are `<prefix>/manifest.json` and `<prefix>/commits/<shard>/<name>`,** where the name is the commit object's SHA-256 as 64 hexadecimal digits, and the shard is the first two digits of the name, as in `commits/9f/9f2c…e41a`. With an empty prefix, the keys have none. maragubot chose the keys before the build and told Markus on 2026-11-12, and the shard was agreed with Markus on 2026-11-13.
+- **The commit objects are sharded for a copy on a disk, not for S3.** S3 does not care how many keys share a prefix. A generic tool that mirrors a bucket to a disk keeps the layout, though, and a database writes one commit object for every transaction, so one flat folder would reach millions of files. Markus on 2026-11-13: "Sharding by the first few characters might be a good thing? In case we ever need to replicate commits to a disk or something." One level of 256 folders holds about 39,000 files each at ten million commits. Two levels would give a small database nearly one folder per commit. Unlike git, the file keeps the full name, so that a file that is copied alone still names itself. The format is a draft at version 0, so nothing reads the old layout, and nothing migrates.
 - **The commit object is uploaded before the manifest lock is taken.** The lease task can then renew the lease while a large commit object is on its way.
 - **The position is written into the cache's transaction before the swap.** After the swap, all that the cache has to do is to commit.
 - **The two locks are taken in one order:** the writer lock, then the manifest lock.

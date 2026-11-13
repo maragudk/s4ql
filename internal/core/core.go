@@ -332,9 +332,13 @@ func key(prefix, name string) string {
 	return prefix + "/" + name
 }
 
-// commitKey of the commit object with the given name.
+// commitKey of the commit object with the given name: in a folder named by the first two
+// hexadecimal digits of the name, and with the whole name, so that a tool that copies the bucket to
+// a disk does not make one folder of every commit object, and a file that is copied alone still
+// names itself.
 func (d *DB) commitKey(name format.Name) string {
-	return key(d.prefix, "commits/"+name.String())
+	s := name.String()
+	return key(d.prefix, "commits/"+s[:2]+"/"+s)
 }
 
 // spoolDir and spoolPattern say where a transaction keeps its files: next to the cache.

@@ -38,7 +38,7 @@ func newHandLog(t *testing.T, w *world) *handLog {
 // put the bytes of a commit object under the given name, whatever the bytes are.
 func (l *handLog) put(name format.Name, data []byte) {
 	l.t.Helper()
-	_, err := l.s.Create(l.t.Context(), "db/commits/"+name.String(), bytes.NewReader(data), nil)
+	_, err := l.s.Create(l.t.Context(), commitKey("db", name), bytes.NewReader(data), nil)
 	is.NotError(l.t, err)
 }
 
@@ -517,7 +517,7 @@ func TestReplay(t *testing.T) {
 			l := newHandLog(t, w)
 			l.base()
 			l.publish()
-			data, _, _ := w.store.Object("db/commits/" + l.head.String())
+			data, _, _ := w.store.Object(commitKey("db", l.head))
 			parent, _, err := changes(l.head, data)
 			is.NotError(t, err)
 
