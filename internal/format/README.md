@@ -76,7 +76,7 @@ The reader and the writer handle the top level of the stream themselves with `pr
 
 Replay does not compare a row with the cache's tables. Markus: "The precondition is that the cache is correct up to the parent, and with a deterministic change, the commit is safe and the postcondition is the same." Replay already checks that precondition through the cache's recorded position, so a check of the columns could never fail. The silent failures that the research found come from systems where the reader's tables are managed apart from the writer's, which is not our case. This reverses the "heading" with names and types that was agreed on 2026-11-11.
 
-Two checks remain without extra data, both at replay: a row with the wrong number of values for its table is refused, and the cache's strict tables reject a value of the wrong type.
+Two checks remain without extra data, both at replay: a row with the wrong number of values for its table is refused, and so is a value of the wrong storage class for its column. The cache's strict tables do not catch every such value: for an `INT` column, SQLite converts the text `'1'` and the real `1.0` to an integer without an error. The storage core therefore checks the storage class itself (`table.checkValue` in `internal/core`).
 
 ### Only the changed columns
 

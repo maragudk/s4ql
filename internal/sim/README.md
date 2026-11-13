@@ -61,7 +61,7 @@ Other choices follow from these:
 
 ## The toy library
 
-`toy_test.go` holds a toy library with the shape of s4ql, in test code. It is the harness's own workload until the storage core replaces it, and it is not a design for s4ql.
+`toy_test.go` holds a toy library with the shape of s4ql, in test code. It was the harness's own workload before the storage core, and it is not a design for s4ql. The tests of the core in `internal/core` now cover its ten planted bugs, its three workloads, the free-running mode, and the planted data race, and removing the toy is in [docs/todo.md](../../docs/todo.md#tests-of-the-storage-core).
 
 - **Three workloads run it.** The first has one instance. The second has everything: two instances that compete for the lease, clocks that move, a crash and a restart, buggify, and faults of the store. The third has callers that never pause. They are in `simulation_test.go`, and the doc comment of `workload.run` lists the invariants.
 - **The checks compare data against a model, not counters.** Each commit is recorded with its writes before `Commit`, and then marked acknowledged, failed, or unknown. Each read is compared with the value that the log has at the read's commit.
