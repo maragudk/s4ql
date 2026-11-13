@@ -26,7 +26,7 @@ The API fits the engine, not `database/sql`, and stays small. It can change shap
 
 `options.h` holds the compile options, each with its reason, and the options that were considered and left out. Every option is a way in which this build differs from a stock build of SQLite, so an option is added only for a reason that `options.h` states, never for performance alone. The research behind the choice, which covers every option on https://sqlite.org/compile.html, is in [docs/research/sqlite-compile-options.md](../../docs/research/sqlite-compile-options.md).
 
-`SQLITE_MAX_MMAP_SIZE=0` covers the database file only. In WAL mode SQLite memory-maps the wal-index (`-shm`) file in any case, so an I/O error there can still arrive as a signal. This is an open point in [docs/todo.md](../../docs/todo.md#local-io-failure-handling).
+`SQLITE_MAX_MMAP_SIZE=0` covers the database file only. In WAL mode SQLite memory-maps the wal-index (`-shm`) file in any case, so an I/O error there can still arrive as a signal. This is an open point in [docs/todo.md](../../docs/todo.md#the-memory-mapped-wal-index).
 
 ## Requirements
 
