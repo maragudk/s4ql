@@ -54,6 +54,8 @@ type request struct {
 	from     store.Version
 	content  []byte
 	checksum *store.Checksum
+	// sent is when the request was sent, on the monotonic clock of the store's host.
+	sent time.Duration
 
 	// The fields from here on are guarded by the store's mutex.
 
@@ -188,7 +190,7 @@ func (c *Client) send(ctx context.Context, r *request) error {
 
 	s.mu.Lock()
 	s.requests++
-	r.id = s.requests
+	r.id, r.sent = s.requests, s.host.Monotonic()
 	if r.kind != get {
 		s.inFlight[r.key]++
 	}
@@ -247,6 +249,8 @@ func (s *Store) carry(ctx context.Context, c *Client, r *request) {
 	// The faults are read again at each decision, so that a request that is on its way when the
 	// store is calmed gets no new fault.
 	f = s.faults()
+	// held is set when the store holds the write back, so that its landing is recorded.
+	held := false
 	if crashed || gaveUp {
 		why, p := "the caller gave up", f.Late
 		if crashed {
@@ -260,7 +264,8 @@ func (s *Store) carry(ctx context.Context, c *Client, r *request) {
 			trace("arrives after %v, and is never applied", why)
 			return
 		}
-		late := s.upTo(f.LateBy)
+		late := s.holdBack(f)
+		held = true
 		trace("arrives after %v, and is applied %v later", why, late)
 		_ = s.host.Sleep(ctx, late)
 	}
@@ -274,6 +279,9 @@ func (s *Store) carry(ctx context.Context, c *Client, r *request) {
 		return
 	}
 	s.apply(ctx, c, r)
+	if held {
+		s.landed(c, r)
+	}
 
 	// The way back.
 	_ = s.host.Sleep(ctx, s.way(trace, "back"))
@@ -323,8 +331,8 @@ func (s *Store) lose(ctx context.Context, c *Client, r *request, trace func(form
 
 	// The write that arrives later is a copy, so that what it gets back is not mixed up with what
 	// the caller got. It takes over the place of r among the writes in flight.
-	stuckR := &request{id: r.id, kind: r.kind, key: r.key, from: r.from, content: r.content, checksum: r.checksum, breakAt: -1}
-	late := s.upTo(f.LateBy)
+	stuckR := &request{id: r.id, kind: r.kind, key: r.key, from: r.from, content: r.content, checksum: r.checksum, sent: r.sent, breakAt: -1}
+	late := s.holdBack(f)
 	s.mu.Lock()
 	r.settled = true
 	s.mu.Unlock()
@@ -340,6 +348,7 @@ func (s *Store) lose(ctx context.Context, c *Client, r *request, trace func(form
 		}
 		s.host.Trace(ctx, "%v: request %v: arrives after it was stuck", s.name, r.id)
 		s.apply(ctx, c, stuckR)
+		s.landed(c, stuckR)
 	})
 	s.mu.Lock()
 	s.carriers = append(s.carriers, task)

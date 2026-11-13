@@ -97,14 +97,23 @@ type Faults struct {
 	// [store.ErrChanged] while another write to its key is in flight, as S3 may refuse it.
 	Conflict float64
 	// Late is the probability that a write whose caller no longer waits for it is still applied, up to
-	// LateBy after it arrived: a write whose caller gave up before it arrived, and a write that was
-	// lost or did not reach the store, which is then stuck in the network. Otherwise it is never
-	// applied.
+	// LateBy after it arrived, or up to LongBy by Long: a write whose caller gave up before it
+	// arrived, and a write that was lost or did not reach the store, which is then stuck in the
+	// network. Otherwise it is never applied.
 	Late float64
 	// AfterCrash is the probability that a write whose sender crashed before the write arrived is
-	// still applied, up to LateBy after it arrived. Otherwise it is never applied.
+	// still applied, up to LateBy after it arrived, or up to LongBy by Long. Otherwise it is never
+	// applied.
 	AfterCrash float64
 	LateBy     time.Duration
+	// Long is the probability that a write that Late or AfterCrash holds back waits up to LongBy, and
+	// not up to LateBy. No store documents how long it may hold a request, and AWS refuses a signed
+	// request for its time only when that is 15 minutes off ("RequestTimeTooSkewed",
+	// https://docs.aws.amazon.com/AmazonS3/latest/API/ErrorResponses.html, with the window in
+	// https://docs.aws.amazon.com/AmazonS3/latest/API/RESTAuthentication.html), so 15 minutes is a
+	// delay that a real request can have.
+	Long   float64
+	LongBy time.Duration
 }
 
 // AllFaults on, each often enough to happen in most runs of a few hundred requests, with durations of
@@ -150,6 +159,8 @@ type Store struct {
 	inFlight map[string]int
 	// calm is set by [Store.Calm].
 	calm bool
+	// landings of the writes that were held back, in the order in which they arrived.
+	landings []Landing
 }
 
 // object at a key.
