@@ -369,6 +369,9 @@ func contend(ctx context.Context, t *testing.T, h host.Host, path string) int64 
 				}
 				is.True(t, busy(err), fmt.Sprint(err))
 				busyBegins.Add(1)
+				// Under the scheduler, the holder of the lock is parked, and a retry without a wait would
+				// never let it go on.
+				h.Yield(ctx, "writer: after busy")
 			}
 			is.NotError(t, c.Exec("update t1 set v = v + 1 where k = 1"))
 			h.Yield(ctx, "writer: after update")
