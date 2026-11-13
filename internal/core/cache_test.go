@@ -2,12 +2,14 @@ package core_test
 
 import (
 	"fmt"
+	"iter"
 	"strings"
 	"testing"
 
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sqlite"
 )
 
@@ -41,5 +43,47 @@ func TestQuote(t *testing.T) {
 			is.True(t, name == s.ColumnText(0), fmt.Sprintf("%q was read as %q", name, s.ColumnText(0)))
 			is.NotError(t, s.Finalize())
 		}
+	})
+}
+
+func TestScan(t *testing.T) {
+	// unwind runs a loop over the scan that panics, as a caller's loop can, and recovers.
+	unwind := func(t *testing.T, scan iter.Seq2[[]*s4qlpb.Value, error]) {
+		t.Helper()
+		defer func() { _ = recover() }()
+		for _, err := range scan {
+			is.NotError(t, err)
+			panic("in the loop over a scan")
+		}
+	}
+
+	t.Run("should give back the statement of a read's scan that a panic ends, so that a later read sees a later commit and the instance closes", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{Readers: 1})
+		transact(t, d, create("t1", 1, "k"), upsert("t1", 1))
+
+		r, err := d.Read(t.Context())
+		is.NotError(t, err)
+		unwind(t, r.Scan(t.Context(), "t1"))
+		is.NotError(t, r.Close(t.Context()))
+
+		transact(t, d, upsert("t1", 2))
+		is.Equal(t, "t1(k*0): 1 | 2", read(t, d))
+		is.NotError(t, d.Close(t.Context()))
+	})
+
+	t.Run("should give back the statement of a write's scan that a panic ends, so that a later write commits and the instance closes", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k"), upsert("t1", 1))
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		unwind(t, tx.Scan(t.Context(), "t1"))
+		is.NotError(t, tx.Rollback(t.Context()))
+
+		transact(t, d, upsert("t1", 2))
+		is.Equal(t, "t1(k*0): 1 | 2", read(t, d))
+		is.NotError(t, d.Close(t.Context()))
 	})
 }

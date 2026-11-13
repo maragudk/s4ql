@@ -183,6 +183,8 @@ type DB struct {
 
 	// readerPool has one permit for every read connection.
 	readerPool host.Semaphore
+	// readers are all the read connections, idle or not. It does not change after Open.
+	readers []*conn
 
 	// mu guards the fields below. It is never held while waiting.
 	mu sync.Mutex
@@ -285,6 +287,7 @@ func Open(ctx context.Context, h host.Host, s store.Store, path, prefix string, 
 			return nil, openError(err)
 		}
 		d.idle = append(d.idle, c)
+		d.readers = append(d.readers, c)
 		if err := c.exec("pragma query_only = on"); err != nil {
 			return nil, openError(err)
 		}
@@ -343,11 +346,12 @@ func (d *DB) spoolPattern() string {
 	return filepath.Base(d.path) + "-spool-*"
 }
 
-// closeCache closes every connection to the cache that is not in use, ignoring errors.
+// closeCache closes every connection to the cache, also one that a transaction holds, ignoring
+// errors. It is for an instance that nothing uses any more.
 func (d *DB) closeCache() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for _, c := range d.idle {
+	for _, c := range d.readers {
 		_ = c.close()
 	}
 	d.idle = nil
