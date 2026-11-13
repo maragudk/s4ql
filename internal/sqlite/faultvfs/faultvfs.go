@@ -1,17 +1,16 @@
-// Package faultvfs is an SQLite VFS that makes file operations fail on demand, for tests. It wraps
-// SQLite's default VFS, and passes every operation on to it except those that a [Fault] makes
-// fail. Whether an operation fails depends only on the operations before it, so a test that uses
-// it gives the same result on every machine.
+// Package faultvfs is an SQLite VFS that makes file operations fail on demand. It wraps SQLite's
+// default VFS, and passes every operation on to it except those that a [Fault] makes fail. Whether
+// an operation fails depends only on the fault that is armed and on the operations since it was
+// armed, and not on time.
 //
-// Only tests import this package, so no other build carries it. The C code needs only the types of
-// sqlite3.h, and reaches SQLite through the function pointers of the default VFS and of its files,
-// so it links no second copy of SQLite.
+// The C code needs only the types of sqlite3.h, and reaches SQLite through the function pointers of
+// the default VFS and of its files, so it links no second copy of SQLite.
 package faultvfs
 
 /*
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include "../c/sqlite3.h"
 
@@ -54,11 +53,6 @@ typedef struct s4ql_fault_file {
 
 // S4QL_REAL_OFFSET of the real file in the memory of a file, which keeps it aligned.
 #define S4QL_REAL_OFFSET ((sizeof(s4ql_fault_file) + 15) / 16 * 16)
-
-// S4QL_KINDS are the flags of SQLite that say what kind of file is opened.
-#define S4QL_KINDS (SQLITE_OPEN_MAIN_DB | SQLITE_OPEN_TEMP_DB | SQLITE_OPEN_TRANSIENT_DB | \
-	SQLITE_OPEN_MAIN_JOURNAL | SQLITE_OPEN_TEMP_JOURNAL | SQLITE_OPEN_SUBJOURNAL | \
-	SQLITE_OPEN_SUPER_JOURNAL | SQLITE_OPEN_WAL)
 
 // s4ql_fault_check whether the operation op on a file of the kind fails, and return the result
 // code of the failure, or SQLITE_OK.
@@ -178,8 +172,8 @@ static int s4ql_unfetch(sqlite3_file *f, sqlite3_int64 offset, void *p) {
 	return S4QL_REAL(f)->pMethods->xUnfetch(S4QL_REAL(f), offset, p);
 }
 
-// s4ql_methods of a file whose real file has methods of version 3, as every file of SQLite's
-// default VFSs on unix has.
+// s4ql_methods of a file whose real file has methods of version 3 with shared memory. s4ql_open
+// refuses a real file whose methods are of an older version.
 static const sqlite3_io_methods s4ql_methods = {
 	3,
 	s4ql_close,
@@ -202,28 +196,55 @@ static const sqlite3_io_methods s4ql_methods = {
 	s4ql_unfetch,
 };
 
+// s4ql_methods_without_shm of a file whose real file has no shared memory, as one without locks
+// has: SQLite then uses no write-ahead log on it.
+static const sqlite3_io_methods s4ql_methods_without_shm = {
+	3,
+	s4ql_close,
+	s4ql_read,
+	s4ql_write,
+	s4ql_truncate,
+	s4ql_sync,
+	s4ql_file_size,
+	s4ql_lock,
+	s4ql_unlock,
+	s4ql_check_reserved_lock,
+	s4ql_file_control,
+	s4ql_sector_size,
+	s4ql_device_characteristics,
+	0,
+	0,
+	0,
+	0,
+	s4ql_fetch,
+	s4ql_unfetch,
+};
+
 // s4ql_open a file through the real VFS, unless the fault makes it fail.
 static int s4ql_open(sqlite3_vfs *vfs, sqlite3_filename name, sqlite3_file *f, int flags, int *out) {
 	s4ql_fault *v = (s4ql_fault *)vfs;
 	s4ql_fault_file *ff = S4QL_FILE(f);
 	ff->base.pMethods = 0;
 	ff->vfs = v;
-	ff->kind = flags & S4QL_KINDS;
+	ff->kind = flags & (SQLITE_OPEN_MAIN_DB | SQLITE_OPEN_TEMP_DB | SQLITE_OPEN_TRANSIENT_DB |
+		SQLITE_OPEN_MAIN_JOURNAL | SQLITE_OPEN_TEMP_JOURNAL | SQLITE_OPEN_SUBJOURNAL |
+		SQLITE_OPEN_SUPER_JOURNAL | SQLITE_OPEN_WAL);
 	ff->real = (sqlite3_file *)((char *)ff + S4QL_REAL_OFFSET);
 	int rc = s4ql_fault_check(v, ff->kind, S4QL_OP_OPEN);
 	if (rc) {
 		return rc;
 	}
 	rc = v->real->xOpen(v->real, name, ff->real, flags, out);
-	// SQLite closes a file whose open failed if it has methods, so it gets ours then too.
+	// A file whose open failed is closed here, because SQLite does not close every such file, and
+	// it then has no methods, so that SQLite closes it nowhere else.
 	if (ff->real->pMethods == 0) {
 		return rc;
 	}
-	if (ff->real->pMethods->iVersion < 3) {
+	if (rc != SQLITE_OK || ff->real->pMethods->iVersion < 3) {
 		ff->real->pMethods->xClose(ff->real);
-		return SQLITE_CANTOPEN;
+		return rc != SQLITE_OK ? rc : SQLITE_CANTOPEN;
 	}
-	ff->base.pMethods = &s4ql_methods;
+	ff->base.pMethods = ff->real->pMethods->xShmMap ? &s4ql_methods : &s4ql_methods_without_shm;
 	pthread_mutex_lock(&v->mu);
 	v->open++;
 	pthread_mutex_unlock(&v->mu);
@@ -264,19 +285,19 @@ static int s4ql_current_time_int64(sqlite3_vfs *vfs, sqlite3_int64 *now) {
 	return S4QL_VFS(vfs)->xCurrentTimeInt64(S4QL_VFS(vfs), now);
 }
 
-// s4ql_fault_new VFS named name that wraps real, which has a version of 2 at the least. Nothing is
-// armed. It returns NULL if memory runs out.
-static s4ql_fault *s4ql_fault_new(sqlite3_vfs *real, const char *name) {
+// s4ql_fault_new VFS that wraps base, which has a version of 2 at the least, and is named by its
+// address. Nothing is armed. It returns NULL if memory runs out.
+static s4ql_fault *s4ql_fault_new(sqlite3_vfs *base) {
 	s4ql_fault *v = calloc(1, sizeof(s4ql_fault));
 	if (v == 0) {
 		return 0;
 	}
-	v->real = real;
-	strncpy(v->name, name, sizeof(v->name) - 1);
+	v->real = base;
+	snprintf(v->name, sizeof(v->name), "s4ql-fault-%p", (void *)v);
 	pthread_mutex_init(&v->mu, 0);
 	v->base.iVersion = 2;
-	v->base.szOsFile = (int)S4QL_REAL_OFFSET + real->szOsFile;
-	v->base.mxPathname = real->mxPathname;
+	v->base.szOsFile = (int)S4QL_REAL_OFFSET + base->szOsFile;
+	v->base.mxPathname = base->mxPathname;
 	v->base.zName = v->name;
 	v->base.xOpen = s4ql_open;
 	v->base.xDelete = s4ql_delete;
@@ -319,7 +340,6 @@ import "C"
 import (
 	"errors"
 	"fmt"
-	"sync/atomic"
 	"unsafe"
 
 	"maragu.dev/s4ql/internal/sqlite"
@@ -343,6 +363,8 @@ const (
 	Size Op = C.S4QL_OP_SIZE
 	// Lock a file, or raise its lock, which fails with SQLITE_IOERR_LOCK. Unlocking never fails.
 	Lock Op = C.S4QL_OP_LOCK
+	// AnyOp of the operations above.
+	AnyOp = Open | Read | Write | Truncate | Sync | Size | Lock
 )
 
 // File is a set of kinds of file, as SQLite's SQLITE_OPEN_ flags name them.
@@ -376,26 +398,21 @@ type Fault struct {
 
 // VFS that wraps SQLite's default VFS and makes the operations of a [Fault] fail. It is registered
 // under its own name, and a connection uses it only when it is opened through that name, with
-// [sqlite.OpenVFS]. It is safe for concurrent use.
+// [sqlite.OpenVFS]. Its methods are safe for concurrent use, except [VFS.Close].
 type VFS struct {
 	v *C.s4ql_fault
 }
 
-// count of the VFSs made so far, for their names.
-var count atomic.Uint64
-
 // New VFS, registered. Nothing fails until [VFS.Fail] arms a fault. [VFS.Close] frees it.
 func New() (*VFS, error) {
-	real := sqlite.FindVFS("")
-	if real == nil {
+	base := sqlite.FindVFS("")
+	if base == nil {
 		return nil, errors.New("faultvfs: SQLite has no default VFS")
 	}
-	if (*C.sqlite3_vfs)(real).iVersion < 2 {
+	if (*C.sqlite3_vfs)(base).iVersion < 2 {
 		return nil, errors.New("faultvfs: the default VFS of SQLite is older than version 2")
 	}
-	name := C.CString(fmt.Sprint("s4ql-fault-", count.Add(1)))
-	defer C.free(unsafe.Pointer(name))
-	v := C.s4ql_fault_new((*C.sqlite3_vfs)(real), name)
+	v := C.s4ql_fault_new((*C.sqlite3_vfs)(base))
 	if v == nil {
 		return nil, errors.New("faultvfs: out of memory")
 	}
@@ -406,14 +423,23 @@ func New() (*VFS, error) {
 	return &VFS{v: v}, nil
 }
 
-// Name under which the VFS is registered.
+// Name under which the VFS is registered. It panics after [VFS.Close], as [VFS.Fail] and
+// [VFS.Failures] do.
 func (f *VFS) Name() string {
+	f.mustBeOpen()
 	return C.GoString(&f.v.name[0])
+}
+
+func (f *VFS) mustBeOpen() {
+	if f.v == nil {
+		panic("faultvfs: the VFS is closed")
+	}
 }
 
 // Fail the operations of the fault from now on, in place of the fault that was armed before. A
 // fault with no operations or no kinds of file disarms it.
 func (f *VFS) Fail(fault Fault) {
+	f.mustBeOpen()
 	times := fault.Times
 	if times == 0 {
 		times = -1
@@ -423,14 +449,21 @@ func (f *VFS) Fail(fault Fault) {
 
 // Failures that the VFS has made so far.
 func (f *VFS) Failures() int {
+	f.mustBeOpen()
 	var failed, open C.int
 	C.s4ql_fault_counts(f.v, &failed, &open)
 	return int(failed)
 }
 
-// Close the VFS: unregister it and free it. It fails, and frees nothing, while a file that was
-// opened through it is open.
+// Close the VFS: unregister it and free it. Every connection that was opened through it must be
+// closed first, also one that has no file open, such as a connection to ":memory:", and no
+// connection may be opened through it while Close runs. As a check of the first, Close fails, and
+// frees nothing, while a file that was opened through the VFS is open. Closing a closed VFS does
+// nothing.
 func (f *VFS) Close() error {
+	if f.v == nil {
+		return nil
+	}
 	var failed, open C.int
 	C.s4ql_fault_counts(f.v, &failed, &open)
 	if open > 0 {

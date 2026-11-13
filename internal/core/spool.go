@@ -43,7 +43,7 @@ func (d *DB) newSpool(kind string) (*spool, error) {
 	}
 	var file spoolFile = f
 	if wrap := d.options.local.spool; wrap != nil {
-		file = wrap(kind, f)
+		file = (*wrap)(kind, f)
 	}
 	return &spool{f: file, w: bufio.NewWriterSize(file, 64<<10)}, nil
 }

@@ -12,3 +12,9 @@ linters:
             # still allowed.
             - pkg: encoding/json$
               desc: use encoding/json/v2 and encoding/json/jsontext
+        faultvfs:
+          files:
+            - "!$test"
+          deny:
+            - pkg: maragu.dev/s4ql/internal/sqlite/faultvfs
+              desc: it makes the files of SQLite fail on demand, which only tests may do

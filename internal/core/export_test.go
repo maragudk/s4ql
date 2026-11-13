@@ -63,7 +63,7 @@ type SpoolFile = spoolFile
 // WrapSpools makes the instance wrap each of its spool files, of the kind "commit" or
 // "annotations", with wrap when it creates the file.
 func (o *Options) WrapSpools(wrap func(kind string, f *os.File) SpoolFile) {
-	o.local.spool = wrap
+	o.local.spool = &wrap
 }
 
 // UseVFS makes the instance open its cache through the SQLite VFS registered under the name.
@@ -132,6 +132,7 @@ const (
 	AttrOperation   = attrOperation
 	AttrReason      = attrReason
 	AttrCommit      = attrCommit
+	AttrBytes       = attrBytes
 	AttrUnknownKind = attrUnknownKind
 )
 

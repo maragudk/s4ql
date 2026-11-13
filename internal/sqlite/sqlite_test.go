@@ -84,9 +84,8 @@ func TestOpenVFS(t *testing.T) {
 		is.NotError(t, c.Exec("create table t1 (v1 int primary key) strict, without rowid"))
 		is.NotError(t, c.Close())
 
-		name := sqlite.VFSName(sqlite.FindVFS(""))
-		is.True(t, name != "", "the default VFS has no name")
-		c, err = sqlite.OpenVFS(path, name)
+		// The default VFS on macOS and Linux.
+		c, err = sqlite.OpenVFS(path, "unix")
 		is.NotError(t, err)
 		is.NotError(t, c.Exec("insert into t1 (v1) values (42)"))
 		is.EqualSlice(t, []string{"integer:42"}, query(t, c, "select * from t1"))
@@ -110,10 +109,30 @@ func TestFindVFS(t *testing.T) {
 		is.True(t, sqlite.FindVFS("s4ql-no-such-vfs") == nil)
 	})
 
-	t.Run("should find the default VFS by its name", func(t *testing.T) {
+	t.Run("should find the default VFS by its name, the unix VFS on macOS and Linux", func(t *testing.T) {
 		vfs := sqlite.FindVFS("")
 		is.True(t, vfs != nil)
-		is.True(t, sqlite.FindVFS(sqlite.VFSName(vfs)) == vfs)
+		is.True(t, sqlite.FindVFS("unix") == vfs)
+	})
+
+	t.Run("should find no VFS for a name with a NUL byte", func(t *testing.T) {
+		is.True(t, sqlite.FindVFS("unix\x00x") == nil)
+	})
+}
+
+func TestRegisterVFS(t *testing.T) {
+	t.Run("should register a VFS under its name, not as the default, and unregister it", func(t *testing.T) {
+		// The unix-excl VFS is one of SQLite's own, so registering it again changes nothing but the
+		// order of the list.
+		vfs := sqlite.FindVFS("unix-excl")
+		is.True(t, vfs != nil)
+		is.NotError(t, sqlite.RegisterVFS(vfs))
+		is.True(t, sqlite.FindVFS("") == sqlite.FindVFS("unix"), "the default VFS changed")
+		is.NotError(t, sqlite.UnregisterVFS(vfs))
+		is.True(t, sqlite.FindVFS("unix-excl") == nil)
+		is.NotError(t, sqlite.UnregisterVFS(vfs))
+		is.NotError(t, sqlite.RegisterVFS(vfs))
+		is.True(t, sqlite.FindVFS("unix-excl") == vfs)
 	})
 }
 

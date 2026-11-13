@@ -654,7 +654,7 @@ func TestDB_stop(t *testing.T) {
 
 		// The upload reads the spool file of the commit object, and its first read fails. A second
 		// upload would read it whole.
-		faults.on("commit", "read", 1)
+		faults.failReads("commit", 1)
 		tx, err := d.Begin(t.Context())
 		is.NotError(t, err)
 		upsert("t1", 1)(t, tx)
@@ -673,7 +673,7 @@ func TestDB_stop(t *testing.T) {
 
 		// The first read of the spool file of the annotations is the one of the length of the first
 		// annotation.
-		faults.on("annotations", "read", 1)
+		faults.failReads("annotations", 1)
 		tx, err := d.Begin(t.Context())
 		is.NotError(t, err)
 		upsert("t1", 1)(t, tx)
@@ -826,8 +826,14 @@ func TestDB_stop_cache(t *testing.T) {
 			is.NotError(t, err)
 			t.Cleanup(func() { is.NotError(t, vfs.Close()) })
 
-			// The rows of the commit object take more pages than SQLite's page cache holds, so replay
-			// writes pages to the write-ahead log while it applies the changes, before its commit.
+			// The cache is made, so that the instance that opens it again writes nothing to it before
+			// the catch-up.
+			is.NotError(t, w.serve(t, "a", core.Options{}).Close(t.Context()))
+
+			// The rows of the commit object take more pages than SQLite's page cache holds, about twice
+			// as many, so replay writes pages to the write-ahead log while it applies the changes,
+			// before its commit. The check of the bytes that replay read, below, fails the test if it
+			// does not.
 			first := w.serve(t, "first", core.Options{})
 			columns := make([]string, 100)
 			for i := range columns {
@@ -845,18 +851,16 @@ func TestDB_stop_cache(t *testing.T) {
 				}
 			})
 			head := w.manifest(t).Head
+			object, _, ok := w.store.Object(commitKey("db", head))
+			is.True(t, ok, "the store has no commit object")
 			is.NotError(t, first.Close(t.Context()))
 
-			// The first download of the commit object takes a while. Everything that the instance
-			// writes to its cache before the catch-up is written by then, and every write to the
-			// write-ahead log fails from then on.
-			s := newScriptStore(w.client())
-			s.on("get", "commits/", hold, 1, 5*time.Second)
-			o := core.Options{}
-			o.UseVFS(vfs.Name())
-			d := w.openOn(t, "a", s, o)
-			time.Sleep(time.Second)
+			// Every write to the write-ahead log fails.
 			vfs.Fail(faultvfs.Fault{Ops: faultvfs.Write, Files: faultvfs.WAL})
+			events := &recorder{}
+			o := core.Options{Logger: events.logger()}
+			o.UseVFS(vfs.Name())
+			d := w.open(t, "a", o)
 
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
 			defer cancel()
@@ -865,6 +869,13 @@ func TestDB_stop_cache(t *testing.T) {
 			is.Error(t, core.ErrStopped, err)
 			is.Error(t, core.ErrLocal, err)
 			is.True(t, !errors.Is(err, core.ErrLogBroken), "the stop blames the log")
+			// Replay failed before it read the commit object to its end, so in a change, and not in
+			// its commit.
+			failed := events.with(core.EventCatchUp, core.AttrOutcome, "failed")
+			is.Equal(t, 1, len(failed))
+			read, ok := failed[0][core.AttrBytes].(int64)
+			is.True(t, ok, "the event has no count of bytes")
+			is.True(t, read < int64(len(object)), fmt.Sprint("replay read ", read, " of ", len(object), " bytes"))
 			is.True(t, isDone(d))
 			is.Error(t, core.ErrLocal, d.Err())
 			is.NotError(t, d.Close(ctx))

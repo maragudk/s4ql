@@ -13,37 +13,32 @@ import (
 	"maragu.dev/s4ql/internal/core"
 )
 
-// spoolFaults makes operations on the spool files of an instance fail on demand. Each failure is
-// an I/O error of the operating system, [syscall.EIO]. Whether an operation fails depends only on
-// the operations before it, so a test gives the same result on every machine.
+// spoolFaults makes reads of the spool files of an instance fail on demand. Each failure is an I/O
+// error of the operating system, [syscall.EIO]. Whether a read fails depends only on the reads
+// before it, and not on time.
 type spoolFaults struct {
-	mu    sync.Mutex
-	rules []*spoolRule
-	// failed is the number of operations that failed.
+	mu sync.Mutex
+	// reads that are still to fail, by the kind of spool file: "commit" or "annotations".
+	reads map[string]int
+	// failed is the number of reads that failed.
 	failed int
 }
 
-// spoolRule fails the next operations op ("read", "write", or "seek") on the spool files of the
-// given kind ("commit" or "annotations"), as many as times.
-type spoolRule struct {
-	kind, op string
-	times    int
-}
-
-// failSpools of the instance that is opened with the options o, as f says.
+// failSpools of the instance that is opened with the options o, from when [spoolFaults.failReads]
+// arms them.
 func failSpools(o *core.Options) *spoolFaults {
-	f := &spoolFaults{}
+	f := &spoolFaults{reads: map[string]int{}}
 	o.WrapSpools(func(kind string, file *os.File) core.SpoolFile {
-		return &faultySpool{File: file, kind: kind, faults: f}
+		return &faultySpool{f: file, kind: kind, faults: f}
 	})
 	return f
 }
 
-// on makes the next operations op on a spool file of the kind fail, as many as times.
-func (f *spoolFaults) on(kind, op string, times int) {
+// failReads makes the next reads of a spool file of the kind fail, as many as times.
+func (f *spoolFaults) failReads(kind string, times int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.rules = append(f.rules, &spoolRule{kind: kind, op: op, times: times})
+	f.reads[kind] += times
 }
 
 // failures so far.
@@ -53,47 +48,43 @@ func (f *spoolFaults) failures() int {
 	return f.failed
 }
 
-// fail reports whether the operation op on a spool file of the kind fails, and counts it if it
-// does.
-func (f *spoolFaults) fail(kind, op string) bool {
+// failRead reports whether a read of a spool file of the kind fails, and counts it if it does.
+func (f *spoolFaults) failRead(kind string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for _, r := range f.rules {
-		if r.kind == kind && r.op == op && r.times > 0 {
-			r.times--
-			f.failed++
-			return true
-		}
+	if f.reads[kind] == 0 {
+		return false
 	}
-	return false
+	f.reads[kind]--
+	f.failed++
+	return true
 }
 
-// faultySpool is a spool file whose operations fail when its faults say so.
+// faultySpool is a spool file whose reads fail when its faults say so. It does not embed the file,
+// so that no method of the file, such as ReadFrom or WriteTo, goes around the faults.
 type faultySpool struct {
-	*os.File
+	f      *os.File
 	kind   string
 	faults *spoolFaults
 }
 
 func (s *faultySpool) Read(p []byte) (int, error) {
-	if s.faults.fail(s.kind, "read") {
-		return 0, &fs.PathError{Op: "read", Path: s.Name(), Err: syscall.EIO}
+	if s.faults.failRead(s.kind) {
+		return 0, &fs.PathError{Op: "read", Path: s.f.Name(), Err: syscall.EIO}
 	}
-	return s.File.Read(p)
+	return s.f.Read(p)
 }
 
 func (s *faultySpool) Write(p []byte) (int, error) {
-	if s.faults.fail(s.kind, "write") {
-		return 0, &fs.PathError{Op: "write", Path: s.Name(), Err: syscall.EIO}
-	}
-	return s.File.Write(p)
+	return s.f.Write(p)
 }
 
 func (s *faultySpool) Seek(offset int64, whence int) (int64, error) {
-	if s.faults.fail(s.kind, "seek") {
-		return 0, &fs.PathError{Op: "seek", Path: s.Name(), Err: syscall.EIO}
-	}
-	return s.File.Seek(offset, whence)
+	return s.f.Seek(offset, whence)
+}
+
+func (s *faultySpool) Close() error {
+	return s.f.Close()
 }
 
 func TestSpool(t *testing.T) {

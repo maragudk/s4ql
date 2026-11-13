@@ -80,8 +80,8 @@ type local struct {
 	// or empty for the default.
 	vfs string
 	// spool wraps each spool file of the given kind, "commit" or "annotations", when it is
-	// created, if it is not nil.
-	spool func(kind string, f *os.File) spoolFile
+	// created, if it is not nil. It is a pointer, so that [Options] stays comparable.
+	spool *func(kind string, f *os.File) spoolFile
 }
 
 // withDefaults sets the options that are zero to their defaults, and checks the others.

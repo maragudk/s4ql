@@ -1,8 +1,9 @@
 // Package sqlite is a small cgo binding to the official SQLite C code vendored in the c directory,
 // built with the compile options in options.h.
 //
-// It is deliberately small: opening and closing a database, preparing one statement, binding and
-// reading integers, text, and NULL, stepping, resetting, and finalizing. Each statement runs in its
+// It is deliberately small: opening and closing a database, through a VFS by its name if need be,
+// finding and registering a VFS, preparing one statement, binding and reading integers, text, and
+// NULL, stepping, resetting, and finalizing. Each statement runs in its
 // own transaction, as SQLite does outside BEGIN and COMMIT.
 //
 // SQLite's C code is compiled into this package with file-local symbols, so this package can share a
@@ -118,8 +119,8 @@ func Open(path string) (*Conn, error) {
 	return OpenVFS(path, "")
 }
 
-// OpenVFS opens the database file at path as [Open] does, through the VFS registered under the
-// name vfs, or through SQLite's default VFS if vfs is empty.
+// OpenVFS is [Open] through the VFS registered under the name vfs, or through SQLite's default VFS
+// if vfs is empty.
 func OpenVFS(path, vfs string) (*Conn, error) {
 	if strings.IndexByte(path, 0) >= 0 {
 		return nil, errors.New("sqlite: path contains a NUL byte")
@@ -153,8 +154,11 @@ func OpenVFS(path, vfs string) (*Conn, error) {
 }
 
 // FindVFS registered under the given name, or SQLite's default VFS for the empty name. The result
-// points to an sqlite3_vfs, and is nil if there is no such VFS.
+// points to an sqlite3_vfs, and is nil if there is no such VFS, as for a name with a NUL byte.
 func FindVFS(name string) unsafe.Pointer {
+	if strings.IndexByte(name, 0) >= 0 {
+		return nil
+	}
 	var cname *C.char
 	if name != "" {
 		cname = C.CString(name)
@@ -163,12 +167,7 @@ func FindVFS(name string) unsafe.Pointer {
 	return unsafe.Pointer(C.sqlite3_vfs_find(cname))
 }
 
-// VFSName is the name of the sqlite3_vfs at vfs.
-func VFSName(vfs unsafe.Pointer) string {
-	return C.GoString((*C.sqlite3_vfs)(vfs).zName)
-}
-
-// RegisterVFS registers the sqlite3_vfs at vfs under its name, and not as the default VFS. The
+// RegisterVFS that vfs points to, an sqlite3_vfs, under its name, and not as the default VFS. The
 // memory at vfs must stay valid, and in C memory, until [UnregisterVFS] has unregistered it and the
 // last connection that was opened through it is closed.
 func RegisterVFS(vfs unsafe.Pointer) error {
