@@ -13,9 +13,9 @@ What the package does in each case is in the code:
 - the names of the events and of their attributes in `telemetry.go`
 - the planted bugs in `bugs.go`
 
-This file holds the reasons behind the design, what was chosen and what was rejected, what was measured, and what the package cannot do. The rules that the package follows are in [docs/spec.md](../../docs/spec.md) under "Concurrency" and "Constraints". The reasoning behind those rules is in four items of [docs/todo.md](../../docs/todo.md): [Local I/O failure handling](../../docs/todo.md#local-io-failure-handling), [Concurrency](../../docs/todo.md#concurrency), [The lease and its clocks](../../docs/todo.md#the-lease-and-its-clocks), and [A manifest swap whose outcome is unknown](../../docs/todo.md#a-manifest-swap-whose-outcome-is-unknown). This file repeats neither.
+This file holds the reasons behind the design, what was chosen and what was rejected, what was measured, and what the package cannot do. The rules that the package follows are in [docs/spec.md](../../docs/spec.md) under "Concurrency" and "Constraints", and this file does not repeat them. Until the core was built, the reasoning behind those rules was in four items of [docs/todo.md](../../docs/todo.md). That reasoning is now here, with Markus's words and their dates. What is still open or not built is in the todo, under [The storage core](../../docs/todo.md#the-storage-core) and [Tests of the storage core](../../docs/todo.md#tests-of-the-storage-core).
 
-The core was built on 2026-11-12. It is the first code that uses the simulation harness ([internal/sim/README.md](../sim/README.md)), the storage formats ([internal/format/README.md](../format/README.md)), and the object store in `internal/store` together. The diary is [2026-11-12-storage-core.md](../../docs/diary/2026-11-12-storage-core.md).
+The core was built on 2026-11-12 and 2026-11-13, and merged in pull request #12. It is the first code that uses the simulation harness ([internal/sim/README.md](../sim/README.md)), the storage formats ([internal/format/README.md](../format/README.md)), and the object store in `internal/store` together. The diary is [2026-11-12-storage-core.md](../../docs/diary/2026-11-12-storage-core.md).
 
 ## The interface
 
@@ -25,27 +25,42 @@ The future SQL engine is the only user of the package, and the interface is made
 - **A table is an `s4qlpb.CreateTable`, and a value is an `s4qlpb.Value`.** They are the messages of the commit object, so nothing is converted between the engine and the log.
 - **A scan is an `iter.Seq2`.** It runs on the goroutine of the caller, so a scan starts no goroutine.
 - **The names of tables are compared as SQLite compares them:** ASCII letters without regard to case, and every other character exactly (`fold`). The cache is SQLite, and the oracle is SQLite. A table keeps the spelling of its create.
-- **A primary key has at most 250 columns.** A row is found by a condition with a term for each column of its key, and SQLite refuses a condition that is nested deeper than a thousand levels, which about 500 terms are. SQLite itself allows a key of 2000 columns, so this is a restriction of the build.
-- **The core checks the storage class of every value itself,** in a write and in replay (`table.checkValue`). A `STRICT` table does not refuse every wrong value: for an `INT` column, SQLite converts the text `'1'` and the real `1.0` to an integer without an error.
+- **A primary key has at most 250 columns.** A row is found by a condition with a term for each column of its key, and SQLite refuses a condition that is nested deeper than a thousand levels, which about 500 terms are. SQLite itself allows a key of 2000 columns, so this is a restriction of the build. maragubot accepted it on 2026-11-13.
+- **The core checks the storage class of every value itself,** in a write and in replay (`table.checkValue`). A `STRICT` table does not refuse every wrong value: for an `INT` column, SQLite converts the text `'1'` and the real `1.0` to an integer without an error. This is a choice of the build, and maragubot accepted it on 2026-11-13.
+
+## Concurrency
+
+- **There is no state machine.** The package is plain blocking Go. Each caller's goroutine does its own work from top to bottom, and the one goroutine of the package renews the lease. The rest of the concurrency comes from the callers. The spec once asked for a state machine that does no I/O, and that sentence was deleted with Markus's agreement on 2026-11-10 and 2026-11-11. The reasons: a state machine does not solve the hard part, which is the order goroutines run in; it fits interactive transactions poorly; and FoundationDB, whose testing this project follows, runs plain coroutine code on a deterministic scheduler and has no such state machine. The design was to be judged by building on it. Markus on 2026-11-11: "I think we should just try it out."
+- **No read starts on a cache that lacks an acknowledged commit.** If the cache fails after the manifest swap, `Tx.Commit` stops the instance before it returns, and no read starts after the stop. A read can still start while SQLite fails and before the core sees the error. That read sees the state before the commit, which is allowed, because the commit is not acknowledged until `Tx.Commit` returns. Before the build, the todo asked that no read start between the failure and the return of `Commit`, which cannot be met as worded. The rule that the build keeps is the spec's: a read that starts after a commit is acknowledged sees it. The workload with everything has readers that race these stops.
 
 ## The cache
 
 - **SQLite's own schema is the catalogue.** The core keeps no table of tables. It reads the names from `sqlite_schema` and the columns from `pragma_table_info`. There is then one source of truth, and a person with the `sqlite3` shell sees the tables of the database.
 - **The cache has one table of its own, `s4ql_cache`.** It holds the version of the cache's layout and the position, which is the name of the last commit object that the cache has applied. The position is text, 64 hexadecimal digits, so that a person can compare it with the manifest.
+- **The names that start with `s4ql_` are the core's.** The core refuses a table whose name starts with `s4ql_` or `sqlite_`, in any case of the letters (`ErrReservedName`). SQLite reserves `sqlite_` itself. maragubot chose the prefix before the build and told Markus on 2026-11-12. The roadmap lists the restriction under [Restrictions](../../docs/roadmap.md#restrictions).
 - **`synchronous` is `normal`, not `full`.** A cache that loses its last commits in a power loss is behind, which catch-up handles, and it is never corrupt. A commit is acknowledged from S3, so the sync at every commit that `full` adds buys nothing. The doc comment of `conn.setUp` names the source.
 - **The SQLite binding got four methods for this package:** `Stmt.BindText`, `Stmt.BindNull`, `Stmt.ColumnText`, and `Stmt.Reset`, in `internal/sqlite`. The position and the names of tables and columns are text, a value can be NULL, and replay runs one statement for many rows.
+
+How the cache handles SQLite's "busy" was chosen by maragubot on 2026-11-11, after an investigation, and told to Markus. The investigation is [research/sqlite-busy.md](../../docs/research/sqlite-busy.md).
+
+- **A lock in Go does not keep SQLite from reporting "busy".** A reader that starts while the writer commits can take the WAL write lock for a moment, and the writer's next `begin immediate` then fails at once. It happens with a single reader, and only with real parallelism.
+- **Every connection has a busy timeout,** one second by default (`Options.BusyTimeout`). SQLite then waits out the window itself. In the investigation a timeout of one millisecond already removed every failure, and the wait was about 1.5 ms on fewer than 1% of begins.
+- **The write connection opens first, runs one statement, and stays open while the instance runs.** Recovery of the WAL after a crash, and the cleanup when the last connection closes, also report "busy", and this keeps both away from the read connections.
+- **"Busy" after the timeout is returned to the caller and logged as an error** (`ErrBusy`). It is not a local I/O failure, and the instance goes on. In this design it means that another process has the cache open, or that s4ql has a bug.
 
 ## A write transaction
 
 - **Which rows a transaction changed is kept in the cache, not in memory.** For each table that existed when the transaction began, a temporary table holds the primary key of every row that the transaction upserted or deleted, and whether the row existed then. A key goes in with `insert or ignore`, so the first record of a key stays. `Tx.Commit` writes the commit object from joins of those tables with the real ones. A transaction can therefore change any number of rows.
 - **A table that the transaction created needs no temporary table,** because all its rows are new.
 - **The commit object and the annotations go through spool files.** The files are next to the cache. Each is unlinked as soon as it is open, so a crash leaves none behind. A failure of a spool file is a local I/O failure, and it stops the instance.
-- **A transaction that changed nothing writes no commit object,** also when it has annotations, which are then stored nowhere. It commits if the lease is valid by the clocks, as a read does. A commit object without changes would only lengthen the log, and without a manifest swap nothing but the clocks can judge the commit. This is a choice of the build, not an agreed rule.
+- **A transaction that changed nothing writes no commit object,** also when it has annotations, which are then stored nowhere. It commits if the lease is valid by the clocks, as a read does. A commit object without changes would only lengthen the log, and without a manifest swap nothing but the clocks can judge the commit. This is a choice of the build, not an agreed rule, and maragubot accepted it on 2026-11-13.
 - **An error of the cache in a call of a transaction leaves the transaction fit only for a rollback.** One way to get there is to drop a table while a scan of the transaction is running, which SQLite refuses.
 - **`DB.Begin` looks at the clocks, and `Tx.Commit` does not.** `DB.Begin` refuses at once when the lease has run out by a clock, as the spec says. In `Tx.Commit` the manifest swap decides, and a swap that is applied also renews the lease. This is a choice of the build too.
+- **A write transaction has no maximum duration, for now.** A writer that waits for the writer lock gives up when its own context ends.
 
 ## The commit
 
+- **The keys of a database are `<prefix>/manifest.json` and `<prefix>/commits/<name>`,** where the name is the commit object's SHA-256 as 64 hexadecimal digits. With an empty prefix, the keys have none. maragubot chose the keys before the build and told Markus on 2026-11-12.
 - **The commit object is uploaded before the manifest lock is taken.** The lease task can then renew the lease while a large commit object is on its way.
 - **The position is written into the cache's transaction before the swap.** After the swap, all that the cache has to do is to commit.
 - **The two locks are taken in one order:** the writer lock, then the manifest lock.
@@ -54,18 +69,39 @@ The future SQL engine is the only user of the package, and the interface is made
 
 ## The lease
 
+The design was agreed with Markus on 2026-11-11 and changed on 2026-11-12. Markus on the frame for all of it, on 2026-11-11: s4ql is "designed mostly for always-on server-side usage", and "I don't want to design around theoretical failures."
+
+- **The cost of the design is a wait after a crash.** An instance that starts after a crash waits the holder's duration and the margin before it serves, even if the crash was long ago: 33 seconds with the defaults. A clean shutdown releases the lease, so a normal restart does not wait. Markus asked on 2026-11-12: "we agree that regular shutdowns still don't have to wait, right?" A spare that is already running takes over sooner, because it has watched the manifest since about the holder's last renewal.
 - **An instance without the lease reads the manifest every `Options.Watch`,** which is 5 seconds by default. It then sees a release within that time. When a holder dies, the instance has already watched the manifest since about the holder's last renewal.
 - **The wait counts from after the read,** because a read shows the manifest as it was at some moment before the answer came.
 - **The margin is the larger of two seconds and a tenth of the holder's duration.** It is for a monotonic clock that runs fast on the instance that waits. The doc comment of `margin` gives the numbers.
+- **The holder counts its lease from when the first attempt of a renewal was sent,** not from a retry and not from the answer. Section 6 of [research/s3-clock.md](../../docs/research/s3-clock.md) says why.
 - **A new holder writes a new lease entry.** The fields of the old holder's entry that this version does not know are not kept. One holder keeps them from renewal to renewal. The todo lists this as an open question under [Storage formats](../../docs/todo.md#storage-formats), and this is what the build chose.
 - **The retries of the lease task back off,** from one second to `Options.Watch`, while the store gives no answer.
-- **The lease is checked before the state of a read is fixed, and that check is the one that counts.** At its moment no other instance holds the lease, so the cache holds the newest state, and the state that the read fixes later is that state or a newer one. The todo says that the order does not matter, "The cache never holds another instance's commits". That is not so: catch-up puts the commits of other instances into the cache, so an instance that fixed the state of a read while it was a spare could take the lease and catch up before a check that came only afterwards. The review of the build found this. `DB.Read` checks a second time after the state is fixed, which only keeps a read from being served late.
+- **Both clocks of the holder stay in the check.** If both fail, reads can be stale, and Markus accepts that, on 2026-11-11: "if the server is in such bad a state that both clocks fail, stale reads are probably okay too."
+- **The lease is checked before the state of a read is fixed, and that check is the one that counts.** At its moment no other instance holds the lease, so the cache holds the newest state, and the state that the read fixes later is that state or a newer one. Before the build, the todo said that one check was enough and that its order did not matter, because "The cache never holds another instance's commits". The research note on S3's clock advises the check after the read. Neither is so: catch-up puts the commits of other instances into the cache, so an instance that fixed the state of a read while it was a spare could take the lease and catch up before a check that came only afterwards. That check would then pass on stale data. The review of the build found this. `DB.Read` checks a second time after the state is fixed, which only keeps a read from being served late.
 - **A call that waits for its lock waits no longer than the lease has left** (`DB.acquireServing`). Nothing wakes a caller when the lease runs out by a clock, so the wait ends then and looks again. `DB.Wait` returns only when the lease is valid by the clocks too, and is woken when a renewal makes it valid again.
-- **A lease lasts a year at the most,** so that no sum of a time and a lease leaves the range of a duration. The duration of another holder comes from the manifest and can be any, so the wait for it is computed without such a sum.
+- **A lease lasts a year at the most,** so that no sum of a time and a lease leaves the range of a duration. The duration of another holder comes from the manifest and can be any, so the wait for it is computed without such a sum. This is a choice of the build, and maragubot accepted it on 2026-11-13.
+- **An instance without a valid lease is a normal state.** It covers an instance that cannot reach S3 and whose lease runs out, an instance whose lease another one has taken, and an instance that has just started. Markus on 2026-11-11, on an instance that cannot reach S3: "this is where we'd return a HTTP 502 and let the clients retry." On a spare: "we can have a spare instance running, and it'll never serve anything until it gets the lease."
+- **Opening does not wait for the lease.** `DB.Wait` waits, as `Ping` does next to `Open` in `database/sql`. Wrong S3 settings therefore do not fail `Open`. They show in `DB.Wait` and in the error of every call.
+
+### How the design of the lease came about
+
+On 2026-11-12, unless a date is given:
+
+- **On 2026-11-11 the manifest was to record an absolute expiry time.** Another instance was to take the lease when its own wall clock had passed that time, which is only safe if the wall clocks of the machines agree. The alternative was a duration and a value that another instance watches stand still, and it was passed over. Markus: "A is fine for now."
+- **The simulation harness showed that one wrong wall clock is enough for stale reads.** The holder's wall clock is behind. The holder renews, and writes an expiry that is already past for every other instance. A spare takes the lease, correctly by its own clock, and commits. The holder's two checks both pass, so it serves reads from its cache until its next renewal fails. A spare whose clock is ahead does the same. The design of 2026-11-11 said "A wall clock that is set backward is caught by the monotonic clock", which held only while the holder wrote no expiry from the wrong clock.
+- **maragubot proposed to take the time from S3:** compare the manifest's `Last-Modified` with the `Date` of S3's response. Markus: "Ooh, of course. S3 should be our clock, I can't believe I didn't think of that."
+- **The research found S3's clock better than the wall clocks, but not safe enough to rest the lease on.** On Tigris a client can set `Last-Modified` with a request header, and MinIO has the same hole through a header of its own. The two timestamps usually come from different machines. The only store that documents a bound on the skew between its own clocks is MinIO, and its bound is 15 minutes. No system was found that compares the two timestamps. The idea swaps "our machines' clocks agree" for "the store's clocks agree", which cannot be checked either. The note is [research/s3-clock.md](../../docs/research/s3-clock.md).
+- **The research pointed to the rule that Kubernetes and the DynamoDB Lock Client use, which compares no clocks.** It is the alternative of 2026-11-11. Markus: "didn't we discard this design already? But I think it sounds good."
+
+Why the manifest has a salt, and not a counter, is in [internal/format/README.md](../format/README.md#the-manifest).
 
 ## A swap whose outcome is unknown
 
-The rules are in the todo item. One mechanism serves them, for commits and for renewals:
+The rule is in the spec, under "An unknown commit outcome is resolved from S3". It was agreed with Markus on 2026-11-11. Markus on the state after "outcome unknown": "it's kind of the same as when the lease expired? We return a temporary error to readers and writers." It is the same state: the instance does not know whether its cache is current, so it refuses and keeps trying.
+
+One mechanism serves the rule, for commits and for renewals:
 
 - **Every swap that the holder sends is a swap from the one version that it knows.** A swap that ends without an answer is kept as a `flight`.
 - **At most one flight is ever applied,** because all flights are swaps from the same version. Any swap from that version that is applied rules all the others out for good. A version that a holder wrote never comes back, because of the salt.
@@ -74,12 +110,15 @@ The rules are in the todo item. One mechanism serves them, for commits and for r
 What follows from the mechanism:
 
 - **A commit can be sent while the outcome of a renewal is unknown.** If the renewal turns out to be applied, the commit is sent again as a new swap from the new version.
-- **After a refusal with an unchanged manifest, the same swap is sent again.** This is the 409 of S3.
-- **After the lease is lost, a commit with an unknown attempt is looked for in the log** (`Tx.inLog`). The walk goes back from the new head to the parent of the transaction.
+- **After a refusal with an unchanged manifest, the same swap is sent again.** This is the 409 of S3: S3 can refuse a swap from the right version while another write to the same key is on its way, and that other write can be the first attempt. A refusal therefore does not prove that the first attempt arrived. The builder of the simulated store found this in AWS's documentation on 2026-11-12, and the simulated store does it on purpose (`internal/store`).
+- **After the lease is lost, a commit with an unknown attempt is looked for in the log** (`Tx.inLog`). The walk goes back from the new head to the parent of the transaction. Another instance may have committed on top in the meantime, so the walk does not look at the head alone.
 - **While `Tx.Commit` still waits, it pushes the commit:** it sends the same swap again.
-- **After the caller gave up, the lease task does not push the commit.** It reads the manifest. If the manifest is unchanged, the lease task renews the lease without the commit, and that renewal is the swap that rules the stuck request out.
+- **While `Tx.Commit` still waits, reads go on** for as long as the lease is valid by the clocks. They see the state before the transaction, which is allowed, because the commit is not acknowledged.
+- **After the caller gave up, the lease task does not push the commit.** It reads the manifest. If the manifest is unchanged, the lease task renews the lease without the commit, and that renewal is the swap that rules the stuck request out. A read alone never settles it, because the stuck request can arrive after the read.
+- **After "outcome unknown", the instance serves nothing until it knows.** It refuses reads and writes with `ErrNoLease`, as an instance without a valid lease does. Otherwise the application could check its data on a cache that lacks the transaction, conclude that the transaction was not committed, and repeat it, while the stuck request commits the first one.
+- **An application that gets "outcome unknown" must check its own data,** or make its transactions safe to repeat. FoundationDB does the same with `commit_unknown_result` ([research/foundationdb.md](../../docs/research/foundationdb.md)).
 - **`Tx.Commit` goes on finding out when the instance stops meanwhile.** The caller is owed an answer for as long as it waits, and the answer comes from the store. The error for an unknown outcome wraps nothing but `ErrOutcomeUnknown`, so that a caller that tests for `ErrStopped` first is not told "not committed" for a commit that may be in the log.
-- **One more case gives "outcome unknown" without the caller giving up:** the lease is lost, the commit must be looked for in the log, and the log holds a commit object that can never be read. Nothing can tell then. The spec says "only if the caller gives up first", so this is a departure that the build owns up to.
+- **One more case gives "outcome unknown" without the caller giving up:** the lease is lost, the commit must be looked for in the log, and the log holds a commit object that can never be read. Nothing can tell then. The spec says "only if the caller gives up first", so this is a departure that the build owns up to. The todo holds it as an open question for Markus, under [The storage core](../../docs/todo.md#the-storage-core).
 - **The transaction of the cache is rolled back when `Tx.Commit` returns "outcome unknown".** If the commit object turns out to be in the log, catch-up applies it from the store. There is then one path, and it is the path of every start.
 
 ## Catching up and replay
@@ -93,10 +132,19 @@ What follows from the mechanism:
 
 ## Stopping
 
-- **`DB.stop` is for three things:** a local I/O failure, something in the store that the instance cannot read, and `DB.Close`.
-- **The lease task makes the one attempt to release the lease** (`DB.releaseOnce`).
+The rules for a local I/O failure were agreed with Markus on 2026-11-10, and they are in the spec. The failure that started them: the manifest swap succeeded, so the transaction is committed in S3, and the commit to the cache then fails. The commit is real, but the cache cannot show it, so the instance must not go on serving reads from the cache at the old state. Markus asked for a story that covers every local I/O failure, not only a full disk, because local disk I/O can fail in many ways. What comparable systems tell the client, and what the node does, in that failure is in [research/commit-acknowledgement.md](../../docs/research/commit-acknowledgement.md).
+
+- **One rule covers every local I/O failure.** Any I/O failure on the cache stops the instance, also where nothing was committed: a full disk during a write before the swap, a failed read, or a failure during catch-up. There is then one rule and one recovery path to test, at the cost of availability on transient failures. Markus: "We can relax later if needed."
+- **Which SQLite codes are a local I/O failure** was chosen by maragubot on 2026-11-11 and told to Markus. The list is in the doc comment of `classify`, and the full classification is in [research/sqlite-busy.md](../../docs/research/sqlite-busy.md). SQLite's `INTERNAL` is not in the list, and the core does not treat it as one.
+- **Nothing is tried again in place.** After a failed fsync, the local state cannot be trusted until it is opened again. PostgreSQL makes the same choice for the same reason.
+- **Stopped means a dead handle.** s4ql is a library and cannot crash the process, so the `DB` dies instead. It also signals the stop directly, in the style of a context: `DB.Done` closes, and `DB.Err` gives the cause. The application can then react at once, and not only at its next call.
+- **`Tx.Commit` returns nil when the swap succeeded,** also when the cache then fails. Its result keeps one meaning: nil if and only if the transaction is known to be committed. An error that means "committed, but stopped" was considered and rejected. Almost all Go code treats any error from `Commit` as "not committed", so a job queue would deliver the job again and a user would submit again after the restart, and the transaction would be written twice.
+- **Running reads fail.** This is a lean, not a hard rule. Markus: "Sounds theoretical. Don't overfocus on it. Leaning towards abort." Letting them finish would break no rule, because they hold a state from before the commit.
+- **The library does not open itself again, for now.** The application closes the database and opens it again, so recovery from a stop is the same path as recovery from a crash of the application.
+- **Recovery follows the cache's recorded position.** If the failed local commit did not land, the start applies the missing commit object. If it landed despite the error, there is nothing to apply. An I/O error from SQLite's `COMMIT` does not say whether the commit happened, so recovery never assumes either state.
+- **`DB.stop` is for three things:** a local I/O failure, something in the store that the instance cannot read, and `DB.Close`. Before the build, the item on the lease in the todo said that a permanent stop is for local I/O failures only. maragubot chose before the build, and told Markus on 2026-11-12, that what cannot be read stops the instance too: a manifest or a commit object that needs a newer version of s4ql, one that is malformed, a commit object whose bytes do not match its name after a second download, and a log that is broken. Nothing that cannot be read is skipped.
+- **The lease task makes the one attempt to release the lease** (`DB.releaseOnce`), after the stop.
 - **`DB.Close` then tries again** (`DB.release`). It reads the manifest and releases the lease while the manifest names the instance, for at most as long as the lease lasts. A clean shutdown therefore releases the lease also after a failed first try.
-- **The SQLite codes that are a local I/O failure are those of the list in the todo, exactly.** SQLite's `INTERNAL` is not in that list, and the core does not treat it as one.
 
 ## Waiting
 
@@ -114,17 +162,18 @@ The reason for planted bugs is in [Conditions for keeping the design](../sim/REA
 
 ## Events
 
-- **The instance logs one wide event for each unit of work,** through `Options.Logger`, which is a `*slog.Logger`. The names of the events and of the attributes are in one place, `telemetry.go`.
-- **There is no OpenTelemetry, no trace, and no metric yet.** They are decided with the public driver.
+- **The instance logs one wide event for each unit of work,** through `Options.Logger`, which is a `*slog.Logger`. The names of the events and of the attributes are in one place, `telemetry.go`. maragubot chose this before the build and told Markus on 2026-11-12.
+- **There is no OpenTelemetry, no trace, and no metric yet.** The todo holds them, to be decided with the public driver.
 
 ## What the package does not do, and what to know
 
 - **A catch-up downloads every missing commit object twice.** See [Catching up and replay](#catching-up-and-replay).
 - **Replay holds one batch of rows decoded.** That is about twenty mebibytes for a batch of one mebibyte, whatever the size of the commit object.
 - **No test shows that the margin is enough.** The tests check that an instance waits for the holder's duration and the margin (`run.verifyHistory`). The harness cannot make a clock run fast, so the fault that the margin is for stays out of the workloads; see the comment of `clockFaults` in `simulation_test.go`.
-- **The version of a manifest without a lease entry can come back.** Such a manifest has the same bytes whenever the head is the same. A swap that takes a free lease and is stuck in the network can therefore be applied after a later release. It adds no commit. The cost is that the manifest names a holder that does not know it, and the next instance waits for that lease to time out.
-- **The simulation does not reach SQLite's "busy".** The write connection opens first, and every connection has a busy timeout, as the todo says. Both guard against "busy" under real parallelism, which the scheduler never produces; see [What the scheduled mode cannot do](../sim/README.md#what-the-scheduled-mode-cannot-do).
+- **The version of a manifest without a lease entry can come back.** Such a manifest has the same bytes whenever the head is the same. A swap that takes a free lease and is stuck in the network can therefore be applied after a later release. It adds no commit. The cost is that the manifest names a holder that does not know it, and the next instance waits for that lease to time out. A salt at the top level of the manifest would end it, which is an open question in the todo, under [The storage core](../../docs/todo.md#the-storage-core).
+- **The simulation does not reach SQLite's "busy".** The write connection opens first, and every connection has a busy timeout; see [The cache](#the-cache). Both guard against "busy" under real parallelism, which the scheduler never produces; see [What the scheduled mode cannot do](../sim/README.md#what-the-scheduled-mode-cannot-do).
 - **The manifest has no guard against bytes that are damaged on their way.** A commit object is checked against its name and downloaded a second time. A manifest that is damaged and no longer parses stops the instance at the first download. One that is damaged and still parses would be believed, and the swap that takes the lease would write it back, because the swap is from the version that the store gave, not from the bytes. The store's contract promises content that is not changed, and the design has no checksum for the manifest.
+- **There is no layer under SQLite that injects faults, for now.** SQLite tests its own handling of I/O errors, and using the official C code is how s4ql inherits that.
 - **There are no snapshots and no garbage collection.** Nothing deletes a commit object of the log, or one that was uploaded and never committed.
 - **There is no branch other than `main`.**
 
@@ -138,7 +187,11 @@ The reason for planted bugs is in [Conditions for keeping the design](../sim/REA
 
 `free_test.go` runs the workloads on real goroutines, for the race detector. `TestFreeRunning_plantedDataRace` runs the test binary again, and requires the race detector to report a planted data race with the scheduler off.
 
+A buggify point sits between the manifest swap and the commit to the cache (`Tx.commitCache`), with two variants: the commit to the cache is rolled back and reports an error, or it goes through and still reports an error. The second variant is not distrust of SQLite, which can legitimately return an I/O error from `COMMIT` after the transaction became durable. It catches a bug of ours: recovery that assumes that an error means that the cache did not get the transaction, and so applies the commit object twice.
+
 Every test that opens a cache checks at its end that no connection to it is left open (`leftOpen`): the scenario tests through `cacheDir`, and each run of a workload as a violation of the run. SQLite deletes the write-ahead log when the last connection to a database closes, so a log that is left shows a connection that is left. A connection that has not read the cache keeps no log, so the check misses that one. The C address sanitizer finds a connection that is left too, but only once nothing on the Go heap points to its memory any more, which depends on when the collector ran, and only when the whole test binary passes.
+
+The hunt for a leak under the sanitizer found a real bug in the core on 2026-11-13, which is fixed. A scan that ended by a panic left its statement open. On a read, the connection then went back to the pool with its old snapshot, so a later read on it could serve the state from before an acknowledged commit. In a write transaction, the next commit failed with "database table is locked". No simulation had found it, because no workload ends a scan by a panic. `TestScan` in `cache_test.go` now shows both cases. The check for a write-ahead log that is left also catches the bug, because a statement that stays open keeps its connection from closing.
 
 `script_test.go` holds a store that does to chosen requests what a test spells out. The scenario tests in `lease_test.go`, `tx_test.go`, `replay_test.go`, and `core_test.go` use it, and they run on the fake clock of `testing/synctest`. The tests of each clock of the lease check (`TestLease_clocks`) and of the cache that fails after the manifest swap (`TestDB_stop`) run one instance under the scheduler, because only it can move one clock and fire one buggify point.
 

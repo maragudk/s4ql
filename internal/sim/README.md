@@ -66,7 +66,7 @@ Other choices follow from these:
 - **Three workloads run it.** The first has one instance. The second has everything: two instances that compete for the lease, clocks that move, a crash and a restart, buggify, and faults of the store. The third has callers that never pause. They are in `simulation_test.go`, and the doc comment of `workload.run` lists the invariants.
 - **The checks compare data against a model, not counters.** Each commit is recorded with its writes before `Commit`, and then marked acknowledged, failed, or unknown. Each read is compared with the value that the log has at the read's commit.
 - **A restart finds a copy of the files.** A crash copies the cache and its write-ahead log to a new path at the moment of the crash, and a new instance starts on the copy.
-- **The toy's lease is the design of 2026-11-12,** which compares no clocks between instances; see [The lease and its clocks](../../docs/todo.md#the-lease-and-its-clocks). The toy first had the design of 2026-11-11, with an expiry on the holder's wall clock. The review of the build found stale reads with it in 3 of 100 seeds, as soon as a holder whose wall clock was set backward could still reach the store. That finding changed the lease's design, and the toy was then changed to test the new one (`docs/diary/2026-11-12-lease-without-clock-comparison.md`).
+- **The toy's lease is the design of 2026-11-12,** which compares no clocks between instances; see [How the design of the lease came about](../core/README.md#how-the-design-of-the-lease-came-about) in `internal/core/README.md`. The toy first had the design of 2026-11-11, with an expiry on the holder's wall clock. The review of the build found stale reads with it in 3 of 100 seeds, as soon as a holder whose wall clock was set backward could still reach the store. That finding changed the lease's design, and the toy was then changed to test the new one (`docs/diary/2026-11-12-lease-without-clock-comparison.md`).
 - **Two clock faults stay out of the workload,** because the design does not claim to survive them: both clocks of one instance wrong in the same direction, and a monotonic clock that runs fast on the instance that waits to take the lease. The comment on `clockFaults` in `simulation_test.go` says why. Every other move of a clock is in the workload, on instances that can reach the store.
 - **The toy's store gives a version from the content,** as S3's ETag does, so that a renewal that writes the same bytes is invisible. With numbered versions, the salt in the manifest could not have been tested.
 
@@ -124,7 +124,7 @@ The spike set five conditions. Each is met as follows:
 - **It finds only what the checks look for.**
 - **It runs only under `go test`, and a seed is tied to the exact code.** A trace that prints text that depends on the build, such as an error of Protocol Buffers, replays only in the same binary.
 
-The free-running mode has a limit of its own. Its tests run on the fake clock of a bubble, where time moves only when every goroutine is blocked, so a goroutine that wakes from a wait often runs alone. What the harness does not do yet is in [docs/todo.md](../../docs/todo.md#concurrency).
+The free-running mode has a limit of its own. Its tests run on the fake clock of a bubble, where time moves only when every goroutine is blocked, so a goroutine that wakes from a wait often runs alone. What the harness does not do yet is in [docs/todo.md](../../docs/todo.md#tests-of-the-storage-core).
 
 ## Ideas to revisit later
 
