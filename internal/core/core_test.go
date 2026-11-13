@@ -869,17 +869,19 @@ func TestDB_stop_cache(t *testing.T) {
 			is.Error(t, core.ErrStopped, err)
 			is.Error(t, core.ErrLocal, err)
 			is.True(t, !errors.Is(err, core.ErrLogBroken), "the stop blames the log")
+			is.True(t, isDone(d))
+			is.Error(t, core.ErrLocal, d.Err())
+			is.NotError(t, d.Close(ctx))
+			is.True(t, w.manifest(t).Lease == nil, "the lease is not released")
+
 			// Replay failed before it read the commit object to its end, so in a change, and not in
-			// its commit.
+			// its commit. The event of the catch-up is logged by the lease task after the stop, and
+			// the close waits for that task.
 			failed := events.with(core.EventCatchUp, core.AttrOutcome, "failed")
 			is.Equal(t, 1, len(failed))
 			read, ok := failed[0][core.AttrBytes].(int64)
 			is.True(t, ok, "the event has no count of bytes")
 			is.True(t, read < int64(len(object)), fmt.Sprint("replay read ", read, " of ", len(object), " bytes"))
-			is.True(t, isDone(d))
-			is.Error(t, core.ErrLocal, d.Err())
-			is.NotError(t, d.Close(ctx))
-			is.True(t, w.manifest(t).Lease == nil, "the lease is not released")
 
 			// Nothing of the commit object stayed in the cache, which catches up when it is opened
 			// again.

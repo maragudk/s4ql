@@ -216,3 +216,49 @@ The fix in `/internal/core/replay.go` is one line, the named result `done`, with
 ### Future work
 
 None from the review. The question of decision 2 is in the report.
+
+## Step 5: The last checks, and a race in my own test
+
+**Author:** builder (failing file system)
+
+### Prompt Context
+
+**Verbatim prompt:** "Run `make lint`, `make test`, and `make test-asan`. Run the new tests with `go test -count=50`, also under `-race`."
+**Interpretation:** the checks of the brief, on the code after the review.
+**Inferred intent:** the new tests pass for the same reason on every machine, also in CI's slow jobs.
+
+### What I did
+
+`make lint`: 0 issues. `make test`: every package passes. `make test-asan FUZZTIME=5s` in Docker: every package passes, `internal/core` in 134 s and `internal/sqlite/faultvfs` in 0.3 s. The fuzz tests ran for 5 seconds each, not the 30 of CI, to save time; this change touches no fuzzed code.
+
+`go test -count=50` of the new tests passed, but under `-race`, 15 of 50 runs of the replay test failed: `core_test.go:875: Expected "1", but got "0" (type int)`, the count of catch-up events with the outcome "failed". `DB.Wait` returns when the stop closes `Done`, and the lease task logs the event of the catch-up after that, in a deferred function of `DB.catchUp`. So the test read the events before they were all logged. The check now comes after `DB.Close`, which waits for the lease task. After that, `go test -race -count=50` of the test passed 50 of 50, with a plain `-count=50` run of it alongside for load, and the mutants gave the same results as before.
+
+Run times of `go test -count=1 ./internal/core/` on this machine: 46.0 s before the change, 45.7 s after. Under `-race`: 114 s without the new tests, and 112 s with them, the same within noise. The replay test alone takes about 0.6 s, about 9 s under `-race`, and about 7 s under `-asan` (reviewer A's measurement).
+
+### Why
+
+AGENTS.md: "Before handing in a new test, run it many times, also under `-race` and with the machine under load".
+
+### What worked
+
+The 50 runs under `-race` found what 20 plain runs had not.
+
+### What didn't work
+
+The order of my assertions, as above. The asan run before the fix passed by luck.
+
+### What I learned
+
+An event that a task logs in a deferred function on its way out is not there when `Done` closes. `Close`, which waits for the task, is the moment that is safe for such a check.
+
+### What was tricky
+
+The two forms of the test had the same race. The first, with the held download, passed 50 runs without `-race`, so the race was there from the start.
+
+### What warrants review
+
+That nothing else in the new tests reads what the lease task writes before `Close`. The spool tests read the state after `Tx.Commit`, which stops the instance on its own goroutine before it returns.
+
+### Future work
+
+None.
