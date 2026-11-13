@@ -584,6 +584,26 @@ func TestLease_gone(t *testing.T) {
 	})
 }
 
+func TestLease_tooLarge(t *testing.T) {
+	t.Run("should keep asking for the lease, and not stop, when the store refuses every write of the manifest as too large", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			h := sim.NewFree(sim.Buggify{})
+			// No manifest fits.
+			w := &world{host: h, store: simstore.New(h, simstore.Options{MaxSize: 16}), dir: cacheDir(t)}
+			s := newScriptStore(w.client())
+			d := w.openOn(t, "a", s, core.Options{})
+
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			is.Error(t, context.DeadlineExceeded, d.Wait(ctx))
+			is.True(t, s.count("create", "manifest") >= 2, "the take was not sent again")
+			is.NotError(t, d.Err())
+			is.Error(t, core.ErrNoLease, readErr(t, d))
+			is.Equal(t, 0, len(w.store.Keys()))
+		})
+	})
+}
+
 func TestLease_end(t *testing.T) {
 	t.Run("should serve until the moment that the duration of the lease has passed since it was sent, and not at that moment", func(t *testing.T) {
 		bubble(t, func(t *testing.T, w *world) {

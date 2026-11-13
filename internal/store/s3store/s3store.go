@@ -3,13 +3,14 @@
 //
 // A write is sent once, and only once. The SDK retries nothing, and the HTTP transport speaks
 // HTTP/1.1, goes through no proxy, and follows no redirect. The client counts how many times the
-// transport wrote the request, and takes an answer as one of the four errors of [store.Store] only
-// if it wrote it once, because the refusal of a second attempt could be caused by the first. Only a
-// retry of net/http on a reused connection can write it twice.
+// transport wrote the request, and takes an answer as one of the errors of [store.Store] that mean
+// that the write was not applied only if it wrote it once, because the refusal of a second attempt
+// could be caused by the first. Only a retry of net/http on a reused connection can write it twice.
+// Content larger than [MaxSize] is refused with [store.ErrTooLarge] before anything is sent.
 //
 // The error of a write whose outcome is unknown wraps nothing but a [context.Canceled] or
 // [context.DeadlineExceeded] that ended it, so that no error from the content, the transport, or
-// the SDK can make it look like one of the four errors.
+// the SDK can make it look like one of the errors that mean that the write was not applied.
 //
 // A write with a checksum is checked by the store: the request is signed with the checksum as the
 // SHA-256 of its payload, which the store compares with the bytes it receives before it stores
@@ -55,12 +56,9 @@ import (
 )
 
 // MaxSize of the content of one write: 5 GiB, the most that S3 takes in one PutObject. A larger
-// write needs a multipart upload, which the client does not make.
+// write needs a multipart upload, which the client does not make, so it fails with
+// [store.ErrTooLarge], and the client sends nothing.
 const MaxSize = 5 << 30
-
-// ErrTooLarge is wrapped by the error of a write whose content is larger than [MaxSize]. The
-// client sent nothing.
-var ErrTooLarge = errors.New("the content is larger than one write can take")
 
 // Options of a [Client].
 type Options struct {
@@ -114,9 +112,9 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 	}
 
 	// The transport has no timeout of its own: a call ends when its context does, and every
-	// error of a write but the four means that its outcome is unknown anyway. It speaks HTTP/1.1
-	// only, so that the retries of net/http that can happen are those of HTTP/1.1, and goes
-	// through no proxy, which could send a request again.
+	// error of a write but those that mean "not applied" means that its outcome is unknown anyway.
+	// It speaks HTTP/1.1 only, so that the retries of net/http that can happen are those of
+	// HTTP/1.1, and goes through no proxy, which could send a request again.
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
 	transport := &http.Transport{
@@ -231,7 +229,7 @@ func (c *Client) put(ctx context.Context, op, key string, from store.Version, co
 		return "", r.end(outcomeNotSent, fail(err))
 	}
 	if size > MaxSize {
-		return "", r.end(outcomeNotSent, fail(fmt.Errorf("%v bytes: %w", size, ErrTooLarge)))
+		return "", r.end(outcomeTooLarge, fail(fmt.Errorf("%v bytes, more than %v: %w", size, MaxSize, store.ErrTooLarge)))
 	}
 	r.bytes = size
 
@@ -277,7 +275,7 @@ func (c *Client) put(ctx context.Context, op, key string, from store.Version, co
 
 // unknown is the error of a write whose outcome is unknown because of err. It has the text of err,
 // and wraps only the error of a context that ended, because err can wrap anything, such as an
-// error of the caller's content, which may be one of the four errors.
+// error of the caller's content, which may be one of the errors that mean "not applied".
 func unknown(err error) error {
 	for _, done := range []error{context.Canceled, context.DeadlineExceeded} {
 		if errors.Is(err, done) {
@@ -307,6 +305,9 @@ func (r *request) refusal() (string, error) {
 		return outcomeNotFound, store.ErrNotFound
 	case r.status == http.StatusBadRequest && (r.code == "BadDigest" || r.code == "XAmzContentSHA256Mismatch"):
 		return outcomeChecksum, store.ErrChecksum
+	case r.status == http.StatusBadRequest && r.code == "EntityTooLarge":
+		// A store whose limit is below [MaxSize].
+		return outcomeTooLarge, store.ErrTooLarge
 	}
 	return "", nil
 }
