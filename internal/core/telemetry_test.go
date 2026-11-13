@@ -122,10 +122,10 @@ func TestEvents(t *testing.T) {
 		bubble(t, func(t *testing.T, w *world) {
 			events := &recorder{}
 			s := newScriptStore(w.client())
-			d := w.openOn(t, "a", s, core.Options{Logger: events.logger()})
-
-			// A refusal for lack of the lease, before the instance has it.
+			// A refusal for lack of the lease, before the instance has it. The store hangs before the
+			// instance opens, so that the lease task cannot read the manifest first.
 			s.on("get", "manifest", hang, 1)
+			d := w.openOn(t, "a", s, core.Options{Logger: events.logger()})
 			is.Error(t, core.ErrNoLease, readErr(t, d))
 			refusals := events.named(core.EventRefusal)
 			is.Equal(t, 1, len(refusals))
