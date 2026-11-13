@@ -250,14 +250,20 @@ func (d *DB) lose(ctx context.Context, m format.Manifest) {
 // leaseLoop is the one goroutine of the instance. Until the instance stops, it takes the lease
 // when the instance does not hold it, catches the cache up and settles the swaps whose outcome is
 // unknown when the instance holds the lease and does not serve, and renews the lease while the
-// instance serves. When the instance has stopped, it tries once to release the lease.
+// instance serves. When the instance has stopped, it tries once to release the lease, unless
+// [DB.Close] has begun, which releases it itself.
 func (d *DB) leaseLoop(ctx context.Context) {
+	ctx, cancelTask := context.WithCancel(ctx)
+	defer cancelTask()
 	work, cancel := context.WithCancel(ctx)
 	defer cancel()
 	d.mu.Lock()
-	d.cancelWork = cancel
+	d.cancelWork, d.cancelTask = cancel, cancelTask
 	if d.stopped != nil {
 		cancel()
+	}
+	if d.closing {
+		cancelTask()
 	}
 	d.mu.Unlock()
 
@@ -311,9 +317,10 @@ func (d *DB) acquire(ctx context.Context) time.Duration {
 	if held.acquireWriter(ctx) != nil || held.acquireManifest(ctx) != nil {
 		return 0
 	}
-	if d.stoppedError() != nil {
+	if d.stoppedError() != nil || d.use(d.w) != nil {
 		return 0
 	}
+	defer d.unuse(d.w)
 
 	clock := d.stopwatch()
 	m, version, found, err := d.readManifest(ctx)
@@ -410,9 +417,10 @@ func (d *DB) resume(ctx context.Context) time.Duration {
 	d.mu.Lock()
 	ok := d.stopped == nil && d.holder && !d.serving
 	d.mu.Unlock()
-	if !ok {
+	if !ok || d.use(d.w) != nil {
 		return 0
 	}
+	defer d.unuse(d.w)
 	return d.resumeLocked(ctx)
 }
 
@@ -694,14 +702,20 @@ func (d *DB) releaseFrom(ctx context.Context, m format.Manifest, version store.V
 // release the lease when the instance is closed, until the manifest does not name this instance,
 // ctx is done, or it has tried for as long as the lease lasts. Unlike [DB.releaseOnce], it reads
 // the manifest first, so it also releases a lease that the instance holds without knowing it.
-func (d *DB) release(ctx context.Context) error {
+func (d *DB) release(ctx context.Context) (err error) {
+	clock := d.stopwatch()
+	attempts := 0
+	defer func() {
+		if err != nil {
+			d.event(ctx, slog.LevelWarn, eventLease, slog.String(attrTransition, "released"), slog.String(attrOutcome, "failed"),
+				slog.Int(attrAttempts, attempts), clock.total(), errAttr(err))
+		}
+	}()
 	held := locks{d: d}
 	defer held.release(ctx)
 	if err := held.acquireManifest(ctx); err != nil {
 		return err
 	}
-	clock := d.stopwatch()
-	attempts := 0
 	for d.version != "" || d.unsure {
 		attempts++
 		m, version, found, err := d.fetchManifest(ctx)

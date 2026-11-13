@@ -1112,14 +1112,19 @@ func TestTx_Commit_stopped(t *testing.T) {
 			committed := make(chan error, 1)
 			go func() { committed <- tx.Commit(t.Context()) }()
 			time.Sleep(5 * time.Second)
-			// The close waits for the commit, and gives up.
+			// The close waits for the commit, and gives up. The commit still uses the write connection.
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			is.Error(t, context.DeadlineExceeded, d.Close(ctx))
 			cancel()
 			is.Equal(t, 0, len(committed))
+			open, err := leftOpen(w.dir)
+			is.NotError(t, err)
+			is.EqualSlice(t, []string{"a.db"}, open)
 
+			// The commit closes the connection when it ends.
 			s.clear()
 			is.NotError(t, <-committed)
+			cacheClosed(t, w.dir)
 			is.Equal(t, 2, len(w.commits(t)))
 			is.NotError(t, d.Close(t.Context()))
 			is.True(t, w.manifest(t).Lease == nil, "the lease is not released")

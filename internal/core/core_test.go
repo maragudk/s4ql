@@ -314,7 +314,7 @@ func TestDB_Close(t *testing.T) {
 		is.NotError(t, c.Close())
 	})
 
-	t.Run("should make calls that wait fail, abort a read that is open, and wait for the transactions that are open", func(t *testing.T) {
+	t.Run("should make calls that wait fail, close the cache under the transactions that are open, and fail their every call", func(t *testing.T) {
 		bubble(t, func(t *testing.T, w *world) {
 			d := w.serve(t, "a", core.Options{Readers: 1})
 			transact(t, d, create("t1", 1, "k"), upsert("t1", 1))
@@ -332,13 +332,13 @@ func TestDB_Close(t *testing.T) {
 			time.Sleep(time.Second)
 			is.Equal(t, 0, len(waiting))
 
-			// Close does not return while the two transactions are open.
-			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-			err = d.Close(ctx)
-			cancel()
-			is.Error(t, context.DeadlineExceeded, err)
+			// No call of the two transactions runs, so Close closes the cache at once.
+			start := time.Now()
+			is.NotError(t, d.Close(t.Context()))
+			is.Equal(t, 0, time.Since(start))
 			is.True(t, isDone(d))
-			is.True(t, w.manifest(t).Lease == nil, "the lease is released before the transactions have ended")
+			is.True(t, w.manifest(t).Lease == nil, "the lease is not released")
+			cacheClosed(t, w.dir)
 
 			// The calls that waited have failed, and the transactions that are open fail from now on.
 			is.Error(t, core.ErrStopped, <-waiting)
@@ -350,12 +350,51 @@ func TestDB_Close(t *testing.T) {
 			}
 			is.Error(t, core.ErrStopped, tx.Upsert(t.Context(), "t1", row(3)))
 			is.Error(t, core.ErrStopped, tx.Commit(t.Context()))
+			is.Error(t, core.ErrTxDone, tx.Rollback(t.Context()))
 			is.NotError(t, r.Close(t.Context()))
 
 			is.NotError(t, d.Close(t.Context()))
 			again := w.serve(t, "a", core.Options{})
 			is.Equal(t, "t1(k*0): 1", read(t, again))
 		})
+	})
+
+	t.Run("should close the cache whatever the store does, and say that the lease is not released", func(t *testing.T) {
+		for _, fault := range []what{drop, hang} {
+			bubble(t, func(t *testing.T, w *world) {
+				events := &recorder{}
+				s := newScriptStore(w.client())
+				d := w.openOn(t, "a", s, core.Options{Logger: events.logger()})
+				is.NotError(t, d.Wait(t.Context()))
+				transact(t, d, create("t1", 1, "k"))
+				s.on("swap", "", fault, -1)
+				s.on("get", "", fault, -1)
+
+				start := time.Now()
+				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+				err := d.Close(ctx)
+				cancel()
+				is.True(t, err != nil && strings.Contains(err.Error(), "the lease is not released"), fmt.Sprint(err))
+				// The release that failed is logged, once: Close ends the lease task before its try.
+				released := events.with(core.EventLease, core.AttrTransition, "released")
+				is.Equal(t, 1, len(released))
+				is.Equal(t, "failed", at(released[0], core.AttrOutcome))
+				is.Equal(t, slog.LevelWarn, levelOf(released[0]))
+				// The release had half of the time.
+				is.True(t, time.Since(start) <= time.Second, fmt.Sprint(time.Since(start)))
+				cacheClosed(t, w.dir)
+				is.Equal(t, d.ID(), w.manifest(t).Lease.Holder)
+
+				// Closing it again does nothing, and the next instance waits for the lease to time out.
+				s.clear()
+				is.NotError(t, d.Close(t.Context()))
+				b := w.open(t, "b", core.Options{})
+				start = time.Now()
+				is.NotError(t, b.Wait(t.Context()))
+				is.True(t, time.Since(start) >= 30*time.Second+core.Margin(30*time.Second), fmt.Sprint(time.Since(start)))
+				is.Equal(t, "t1(k*0): ", read(t, b))
+			})
+		}
 	})
 
 	t.Run("should give up releasing a lease that it cannot release, and leave it to time out", func(t *testing.T) {
@@ -738,31 +777,110 @@ func TestDB_Close_hanging(t *testing.T) {
 		})
 	})
 
-	t.Run("should not close the cache under a write transaction that is open", func(t *testing.T) {
+	t.Run("should close the cache under a write transaction that is open, which is then rolled back", func(t *testing.T) {
 		bubble(t, func(t *testing.T, w *world) {
 			d := w.serve(t, "a", core.Options{})
+			transact(t, d, create("t1", 1, "k"))
 			tx, err := d.Begin(t.Context())
 			is.NotError(t, err)
+			upsert("t1", 1)(t, tx)
 
-			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-			defer cancel()
-			is.Error(t, context.DeadlineExceeded, d.Close(ctx))
+			is.NotError(t, d.Close(t.Context()))
+			cacheClosed(t, w.dir)
+			is.Error(t, core.ErrStopped, tx.Upsert(t.Context(), "t1", row(2)))
 			is.NotError(t, tx.Rollback(t.Context()))
 			is.NotError(t, d.Close(t.Context()))
+
+			again := w.serve(t, "a", core.Options{})
+			is.Equal(t, "t1(k*0): ", read(t, again))
 		})
 	})
 }
 
+// cacheClosed fails the test if a connection to a cache in dir is still open, as far as [leftOpen]
+// can tell.
+func cacheClosed(t *testing.T, dir string) {
+	t.Helper()
+	open, err := leftOpen(dir)
+	is.NotError(t, err)
+	is.EqualSlice(t, nil, open)
+}
+
 func TestDB_Close_waiting(t *testing.T) {
-	t.Run("should not close the cache under a read transaction that is open", func(t *testing.T) {
+	t.Run("should close the cache under a read transaction that is open, whose calls then fail", func(t *testing.T) {
 		bubble(t, func(t *testing.T, w *world) {
 			d := w.serve(t, "a", core.Options{})
+			transact(t, d, create("t1", 1, "k"))
+			r, err := d.Read(t.Context())
+			is.NotError(t, err)
+			_, err = r.Tables(t.Context())
+			is.NotError(t, err)
+
+			is.NotError(t, d.Close(t.Context()))
+			cacheClosed(t, w.dir)
+			_, err = r.Tables(t.Context())
+			is.Error(t, core.ErrStopped, err)
+			is.NotError(t, r.Close(t.Context()))
+		})
+	})
+
+	t.Run("should not close a connection under a call that runs on it, and close it when the call ends", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			d := w.serve(t, "a", core.Options{})
+			transact(t, d, create("t1", 1, "k"), upsert("t1", 1), upsert("t1", 2))
 			r, err := d.Read(t.Context())
 			is.NotError(t, err)
 
-			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-			defer cancel()
-			is.Error(t, context.DeadlineExceeded, d.Close(ctx))
+			closed := make(chan error, 1)
+			var rows []string
+			for row, err := range r.Scan(t.Context(), "t1") {
+				if err != nil {
+					// The scan fails at its next row after the stop, and so ends.
+					is.Error(t, core.ErrStopped, err)
+					break
+				}
+				rows = append(rows, text(row))
+				if len(rows) > 1 {
+					continue
+				}
+				// Close waits for the scan, which is a call that runs on its connection.
+				go func() { closed <- d.Close(t.Context()) }()
+				time.Sleep(time.Minute)
+				is.Equal(t, 0, len(closed))
+				open, err := leftOpen(w.dir)
+				is.NotError(t, err)
+				is.EqualSlice(t, []string{"a.db"}, open)
+			}
+			is.EqualSlice(t, []string{"1"}, rows)
+			is.NotError(t, <-closed)
+			cacheClosed(t, w.dir)
+			is.NotError(t, r.Close(t.Context()))
+		})
+	})
+
+	t.Run("should return when its context is done while a call still runs, and close the connection when the call ends", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			d := w.serve(t, "a", core.Options{})
+			transact(t, d, create("t1", 1, "k"), upsert("t1", 1))
+			r, err := d.Read(t.Context())
+			is.NotError(t, err)
+
+			next, stop := iter.Pull2(r.Scan(t.Context(), "t1"))
+			_, err, ok := next()
+			is.True(t, ok)
+			is.NotError(t, err)
+
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			err = d.Close(ctx)
+			cancel()
+			is.Error(t, context.DeadlineExceeded, err)
+			is.True(t, strings.Contains(err.Error(), "a call still uses the cache"), err.Error())
+			open, err := leftOpen(w.dir)
+			is.NotError(t, err)
+			is.EqualSlice(t, []string{"a.db"}, open)
+
+			stop()
+			cacheClosed(t, w.dir)
 			is.NotError(t, r.Close(t.Context()))
 			is.NotError(t, d.Close(t.Context()))
 		})
