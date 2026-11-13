@@ -99,6 +99,9 @@ type tally struct {
 	events                                                                                                map[string]int
 	// trace counts the lines of the traces that contain each marker.
 	trace map[string]int
+	// landings counts the writes that the store held back, as [run.verifyLandings] does, and
+	// landingSeeds the seeds that had at least one of each.
+	landings, landingSeeds map[string]int
 	// serveAfter is how long after the end of the workload an instance served, at most, and the seed
 	// where it took longest.
 	serveAfter time.Duration
@@ -127,7 +130,7 @@ var markers = map[string]string{
 
 func (y *tally) add(seed uint64, s simulation) {
 	if y.events == nil {
-		y.events, y.trace = map[string]int{}, map[string]int{}
+		y.events, y.trace, y.landings, y.landingSeeds = map[string]int{}, map[string]int{}, map[string]int{}, map[string]int{}
 	}
 	o := s.outcome
 	y.runs++
@@ -157,6 +160,12 @@ func (y *tally) add(seed uint64, s simulation) {
 	for name, marker := range markers {
 		y.trace[name] += s.count(marker)
 	}
+	for kind, n := range o.landings {
+		y.landings[kind] += n
+		if n > 0 {
+			y.landingSeeds[kind]++
+		}
+	}
 	if o.serveAfter > y.serveAfter {
 		y.serveAfter, y.slowest = o.serveAfter, seed
 	}
@@ -182,6 +191,10 @@ func (y *tally) log(t *testing.T, w workload) {
 		y.recoveries, y.recoveredFrames, y.mostFrames)
 	t.Logf("in the traces: %v", sorted(y.trace))
 	t.Logf("events of the instances: %v", sorted(y.events))
+	if len(y.landings) > 0 {
+		t.Logf("writes that the store held back, by what became of them: %v", sorted(y.landings))
+		t.Logf("seeds with at least one of each: %v", sorted(y.landingSeeds))
+	}
 	t.Logf("an instance served at most %v after the end of the workload, in seed %v, where %v is the bound", y.serveAfter, y.slowest, w.liveness())
 }
 
@@ -198,6 +211,7 @@ func TestSimulation(t *testing.T) {
 		{name: "should give the same trace when a seed is run twice, and no violations, with one instance", workload: singleWorkload, seeds: 40},
 		{name: "should give the same trace when a seed is run twice, and no violations, with instances that compete, clocks that move, crashes, and buggify", workload: fullWorkload, seeds: 30},
 		{name: "should give the same trace when a seed is run twice, and no violations, with callers that never pause", workload: hammerWorkload, seeds: 10},
+		{name: "should give the same trace when a seed is run twice, and no violations, with writes that land long after they were sent", workload: lateWrites(func(w *workload) {}), seeds: 10},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -234,12 +248,25 @@ func TestSimulation(t *testing.T) {
 				is.True(t, y.trace["timeouts that expired"] > 0, "no timeout expired")
 				is.True(t, y.events["lease/renewed/renewed"] > 0 && y.events["lease/taken/taken"] > 0, "no lease was taken or renewed")
 			}
+			if test.workload.faults.Long > 0 && n >= 10 {
+				// Writes of both kinds land long after they were sent, after another node took the lease,
+				// in at least a quarter of the seeds, and after other nodes took it twice, and after
+				// another node committed. A late create of a commit object is applied when its
+				// transaction failed, and refused when an attempt after it was applied.
+				for _, kind := range []string{"manifest swaps", "commit objects"} {
+					for _, what := range []string{"after other nodes took the lease twice", "after a commit of another node", "later than LateBy allows"} {
+						is.True(t, y.landingSeeds[kind+" "+what] > 0, "no seed had "+kind+" that landed "+what)
+					}
+					is.True(t, 4*y.landingSeeds[kind+" after another node took the lease"] >= int(n), "too few seeds had "+kind+" that landed after another node took the lease")
+				}
+				is.True(t, y.landings["commit objects applied"] > 0 && y.landings["commit objects refused"] > 0, "no late create of a commit object was applied, or none was refused")
+			}
 		})
 	}
 }
 
 // TestSimulationSeed runs the one seed that the environment variable S4QL_SIM_SEED names, with the
-// workload that S4QL_SIM_WORKLOAD names (single, the default, full, or hammer), and logs its whole
+// workload that S4QL_SIM_WORKLOAD names (single, the default, full, hammer, or late), and logs its whole
 // trace. The environment variable S4QL_SIM_BUG can name a planted bug by its name in
 // [plantedBugs], to run its workload instead, with S4QL_SIM_CONTROL to run the control of that
 // bug, or S4QL_SIM_CLEAN to run the workload without the bug.
@@ -258,6 +285,8 @@ func TestSimulationSeed(t *testing.T) {
 		w = fullWorkload
 	case "hammer":
 		w = hammerWorkload
+	case "late":
+		w = lateWrites(func(*workload) {})
 	default:
 		t.Fatalf("no workload is named %v", name)
 	}
@@ -321,6 +350,23 @@ func unknownOutcomes(change func(w *workload)) workload {
 	w.ops, w.think, w.timeout = 30, 5*time.Second, 4*time.Second
 	w.faults.LostRequest, w.faults.LostResponse, w.faults.Hang = 0.1, 0.1, 0.5
 	w.faults.Late, w.faults.LateBy = 0.8, 30*time.Second
+	change(&w)
+	return w
+}
+
+// lateWrites is a workload aimed at writes that land long after they were sent: three instances
+// that compete for the lease, with crashes and restarts, instances that are closed and opened
+// again, and clients that are cut off for longer than a lease lasts, and a store that holds back
+// most of the writes that it loses or whose callers gave up, half of them for up to 15 minutes,
+// changed by change. The callers run for about 15 minutes, so that a write of one holder lands
+// after others took the lease and committed, both a swap of the manifest and a create of a commit
+// object, and [run.verifyLandings] counts how often.
+func lateWrites(change func(w *workload)) workload {
+	w := competing(func(w *workload) {})
+	w.instances, w.crashes, w.closes = 3, 2, 1
+	w.ops, w.think, w.timeout = 40, 30*time.Second, 10*time.Second
+	w.faults.Slow = 0.05
+	w.faults.Late, w.faults.AfterCrash, w.faults.Long, w.faults.LongBy = 0.8, 0.8, 0.5, 15*time.Minute
 	change(&w)
 	return w
 }
@@ -553,6 +599,26 @@ var plantedBugs = []plantedBug{
 			w.damaged, w.crashes = 0, 1
 		}), "skipUnreadable")),
 		symptoms: []string{"the cache of", "a read saw at commit", "the instance stopped", "began at the position", "the replay of the whole log"},
+	},
+	{
+		// A take is sent from a manifest without a lease entry, whose version comes back whenever a
+		// holder releases the lease at the same head, so the callers only read, and two instances
+		// close and open again often. A take that is sent again with the same bytes gives the
+		// manifest a version that it had before only when its first attempt lands after the next
+		// release, which needs a write that is held back for longer than a holder keeps the lease.
+		// Over 1000 seeds on 2026-11-13, the workload found the bug in 387, the same workload with
+		// writes held back for up to LateBy only, a minute, in 33, and the control in none. The
+		// default run found it four times within the first 10 seeds.
+		bug:  "resendTake",
+		name: "a take of the lease that is sent again with the same bytes",
+		workload: plant(lateWrites(func(w *workload) {
+			w.instances, w.writes, w.closes, w.faults.LostRequest, w.faults.Long = 2, 0, 30, 0.2, 1
+		}), "resendTake"),
+		control: new(plant(lateWrites(func(w *workload) {
+			w.instances, w.writes, w.closes, w.faults.LostRequest, w.faults.Long = 2, 0, 30, 0.2, 1
+			w.faults.Late, w.faults.AfterCrash = 0, 0
+		}), "resendTake")),
+		symptoms: []string{"a version that it had before"},
 	},
 	{
 		// The renewal waits for the writer lock for longer than the lease has left only if a write

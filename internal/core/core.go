@@ -166,7 +166,7 @@ type DB struct {
 	w *conn
 
 	// manifestLock is held around each swap of the manifest and what follows from its answer. It
-	// guards the fields from man to unsure.
+	// guards the fields from man to lastTakeFrom.
 	manifestLock host.Semaphore
 	// man is the manifest as this instance last knew the store to have it while it held the lease,
 	// and version is its version there. The version is empty while the instance does not hold the
@@ -181,6 +181,10 @@ type DB struct {
 	// unsure is whether a request that takes or releases the lease had an outcome that is unknown,
 	// so that the manifest may name this instance as the holder without its knowing.
 	unsure bool
+	// lastTake is the take of the lease that was sent last, and lastTakeFrom the version that it was
+	// sent from, under the planted bug resendTake only.
+	lastTake     *flight
+	lastTakeFrom store.Version
 
 	// readerPool has one permit for every read connection.
 	readerPool host.Semaphore

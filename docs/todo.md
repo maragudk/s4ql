@@ -40,7 +40,7 @@ Status: open. What the tests of `internal/core` and the simulation harness do no
 - **A separate stress test on the real clock is not built.** It covers what only true parallelism reaches. The free-running mode runs on the fake clock of a `testing/synctest` test. Ideas to revisit later about the free-running mode are in [internal/sim/README.md](../internal/sim/README.md#ideas-to-revisit-later).
 - **The planted bugs were counted over 1000 seeds each, not 10000.** Over 10000 seeds they need about five and a half hours on the machine of the build.
 - **Six decisions of the core have no test that can reach them.** The mutation testing on the final code changed each of them, and no test failed; the list is in [internal/core/README.md](../internal/core/README.md). Four need a file system that fails in the middle of an operation: a spool file that fails during an upload, a local failure at the end of a read, a failure of the cache during replay, and a spool file whose length cannot be read. One needs a power loss, and one needs real parallelism after a crash. A file system that fails on demand would cover the first four.
-- **The clean runs of the planted bugs repeat each other.** 40 of the 190 clean runs are the same as others, because several bugs share a workload. Each distinct clean workload could run once, or each bug could get its own seeds.
+- **The clean runs of the planted bugs repeat each other.** 40 of the 200 clean runs are the same as others, because several bugs share a workload. Each distinct clean workload could run once, or each bug could get its own seeds.
 
 ## The memory-mapped wal-index
 

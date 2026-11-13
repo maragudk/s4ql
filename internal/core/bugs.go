@@ -52,6 +52,9 @@ type bugs struct {
 	forgetDelete bool
 	// skipUnreadable makes a catch-up skip a commit object whose bytes do not match its name.
 	skipUnreadable bool
+	// resendTake makes an instance send a take of the lease that got no answer again with the same
+	// bytes, while the manifest has the version that the take was sent from.
+	resendTake bool
 	// renewWaitsForWriter makes the renewal wait for the writer lock, so that the lease is not
 	// renewed while a write transaction is open.
 	renewWaitsForWriter bool
