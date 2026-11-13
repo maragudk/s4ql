@@ -33,7 +33,7 @@ The research behind it is in three notes: [foundationdb.md](../../docs/research/
 
 There is no method for the trace. Library code needs nothing from a trace, and simulation code, such as a simulated object store, gets it from the concrete type.
 
-The host has no way to wait for a condition, such as "until the instance serves". The toy's supervisor polls with `Sleep`.
+The host has no way to wait for a condition, such as "until the instance serves". The core waits for one with `Sleep`, or the `Acquire` of a semaphore, and a context that whoever changes the condition cancels; see [Waiting](../core/README.md#waiting) in `internal/core/README.md`.
 
 ## Why the scheduler owns the clock, the locks, and the randomness
 
@@ -48,7 +48,7 @@ Other choices follow from these:
 
 - **Sleeps and timeouts follow the instance's monotonic clock,** because Go's timers do. It is also what makes a stopped clock dangerous: the renewal stalls, and the lease runs out in real time. Yields, releases, and the start of a task get their delay on simulated time, so a stopped clock does not freeze an instance that is not sleeping.
 - **A context derived from a timeout reports `context.Canceled`,** as the package comment says. The reason is determinism. For a context type of its own, the context package starts a goroutine to pass the end on to derived contexts, and that goroutine runs outside the scheduler. One seed then gave two different runs. No type from outside the context package gets both the error value and determinism. The timeout therefore wraps a context of the context package, and the host's own waits hide the difference.
-- **Each task records the ID of its goroutine,** read from its stack trace, and a wait from any other goroutine fails the run. The check costs about 1.6 times on the workloads: 138 to 152 runs per second with it against 192 to 259 without, for one instance, on a loaded machine. It stays on, with no switch, because the lint cannot see a goroutine that a dependency or test code starts.
+- **Each task records the ID of its goroutine,** read from its stack trace, and a wait from any other goroutine fails the run. The check cost about 1.6 times on the workloads of the toy library that the harness once had (see below): 138 to 152 runs per second with it against 192 to 259 without, for one instance, on a loaded machine. It stays on, with no switch, because the lint cannot see a goroutine that a dependency or test code starts.
 - **`Free` shares nothing between goroutines that the race detector counts as synchronisation.** A seeded generator or a trace behind a mutex is a happens-before edge between every pair of goroutines that use it, and hides data races. Its random numbers therefore come from no seed, and it keeps no trace. It embeds the production host, so the race runs test the code that ships.
 - **`testing/synctest` works with cgo.** A goroutine inside a SQLite call counts as running, so the scheduler waits for the call to return, and fake time does not move meanwhile. This is not documented, so `TestSynctestWithCgo` stays as a canary for Go upgrades.
 
@@ -59,67 +59,36 @@ Other choices follow from these:
 - **It skips test files by name,** because the command that runs it analyses test files by default.
 - **It cannot see a goroutine that a dependency starts,** such as one of an S3 client. The scheduler's goroutine check catches one that reaches the host.
 
-## The toy library
+## The toy library, which is gone
 
-`toy_test.go` holds a toy library with the shape of s4ql, in test code. It was the harness's own workload before the storage core, and it is not a design for s4ql. The tests of the core in `internal/core` now cover its ten planted bugs, its three workloads, the free-running mode, and the planted data race, and removing the toy is in [docs/todo.md](../../docs/todo.md#tests-of-the-storage-core).
+Before the storage core existed, the harness's own tests held a toy library with the shape of s4ql: a store behind a manifest, a lease, and a SQLite cache, with three workloads, a model, and ten planted bugs. It proved the harness, and it tested the design of the lease before the core was built on it. It was removed on 2026-11-13. What it found:
 
-- **Three workloads run it.** The first has one instance. The second has everything: two instances that compete for the lease, clocks that move, a crash and a restart, buggify, and faults of the store. The third has callers that never pause. They are in `simulation_test.go`, and the doc comment of `workload.run` lists the invariants.
-- **The checks compare data against a model, not counters.** Each commit is recorded with its writes before `Commit`, and then marked acknowledged, failed, or unknown. Each read is compared with the value that the log has at the read's commit.
-- **A restart finds a copy of the files.** A crash copies the cache and its write-ahead log to a new path at the moment of the crash, and a new instance starts on the copy.
-- **The toy's lease is the design of 2026-11-12,** which compares no clocks between instances; see [How the design of the lease came about](../core/README.md#how-the-design-of-the-lease-came-about) in `internal/core/README.md`. The toy first had the design of 2026-11-11, with an expiry on the holder's wall clock. The review of the build found stale reads with it in 3 of 100 seeds, as soon as a holder whose wall clock was set backward could still reach the store. That finding changed the lease's design, and the toy was then changed to test the new one (`docs/diary/2026-11-12-lease-without-clock-comparison.md`).
-- **Two clock faults stay out of the workload,** because the design does not claim to survive them: both clocks of one instance wrong in the same direction, and a monotonic clock that runs fast on the instance that waits to take the lease. The comment on `clockFaults` in `simulation_test.go` says why. Every other move of a clock is in the workload, on instances that can reach the store.
-- **The toy's store gives a version from the content,** as S3's ETag does, so that a renewal that writes the same bytes is invisible. With numbered versions, the salt in the manifest could not have been tested.
+- **Two instances found in 200 seeds a bug that 20000 runs with one instance could not.** It was a real bug in the toy, not a planted one. It needed another holder to move the manifest while a swap was unresolved.
+- **The first design of the lease had a hole.** The design of 2026-11-11 put an expiry from the holder's wall clock in the manifest. The review of the build found stale reads with it in 3 of 100 seeds, as soon as a holder whose wall clock was set backward could still reach the store. That finding changed the design to one that compares no clocks between instances; see [How the design of the lease came about](../core/README.md#how-the-design-of-the-lease-came-about) in `internal/core/README.md`.
+- **The salt in the manifest earns its place.** The toy's store gave a version from the content, as S3's ETag does. A renewal that wrote no new salt was then invisible to an instance that waited to take the lease, and the planted bug was found by 813 of 10000 seeds, against none of the control. The bug needed a wall clock that stands still, which is why `Instance.StopWall` exists. Planted in the workload with everything, it was found by 0 of 2500 seeds: the bugs of the lease need workloads of their own.
+
+The toy is in the diaries [2026-11-12-simulation-harness.md](../../docs/diary/2026-11-12-simulation-harness.md) and [2026-11-12-lease-without-clock-comparison.md](../../docs/diary/2026-11-12-lease-without-clock-comparison.md), and its removal in [2026-11-13-remove-the-toy.md](../../docs/diary/2026-11-13-remove-the-toy.md). The toy's work now lives in the tests of the core, which carry over its ten planted bugs and add nine, and run the same three kinds of workload, the free-running mode, and a planted data race; see [Tests](../core/README.md#tests) in `internal/core/README.md`. The harness's own abilities are tested directly in `sim_test.go` and `free_test.go`.
 
 ## What was measured
 
-The spike ran 10000 seeds twice with no differing pair, and each seed gave a different interleaving.
-
-The numbers below are from the toy with the lease of 2026-11-12. Each workload ran with `S4QL_SIM_SEEDS=10000`. No pair of traces differed, and no seed violated an invariant:
-
-| Workload | Seeds, each run twice | What the runs held |
-|---|---|---|
-| One instance | 10000 | some instance served again at most 57 s after the workload |
-| Everything | 10000 | 97456 commits, 489 of unknown outcome, 239048 reads, 10000 crashes and restarts, 35905 moves of a clock, 25029 buggify points that fired |
-| Callers that never pause | 2500 | a quarter of the seeds, because its runs are several times longer |
-
-The planted bugs, each over 10000 seeds. The control is the same workload without the fault that the bug needs. Each bug's workload also ran with the toy unchanged, and no seed failed then:
-
-| Planted bug | Seeds that found it | Seeds of the control that found it |
-|---|---|---|
-| A renewal that writes no new salt | 813 | 0 |
-| An instance that waits for its own duration, not the holder's | 1367 | 0 |
-| A swap against the version read at the end of the wait | 6372 | 0 |
-| A holder that counts its lease from the answer of the renewal | 696 | 0 |
-| A read that checks the wall clock only | 2355 | 0 |
-| A read that checks the monotonic clock only | 2090 | 0 |
-| A renewal that swaps the manifest outside the lock | 1534 | no control |
-| A commit that reaches the cache before the manifest | 1666 | no control |
-| An instance that takes over a lease only after a release | 9917 | 0 |
-| A commit that ignores a failure of the cache | 2001 | 0 |
-
-The bugs of the lease need workloads of their own to be found by many seeds. Planted in the workload with everything, the renewal without a new salt was found by 0 of 2500 seeds, so a clean run of that workload says little about the salt.
-
-What these runs do not show: the margin on the wait is untested, because the harness's clocks run at the true rate; and the toy's own store never applies a request after its sender saw it fail, which the simulated store in `internal/store/simstore` does.
-
-More results:
-
-- **Two instances found in 200 seeds a bug that 20000 runs with one instance could not.** It was a real bug in the toy, not a planted one. It needs another holder to move the manifest while a swap is unresolved.
+- **Determinism.** The spike ran 10000 seeds twice with no differing pair, and each seed gave a different interleaving. The toy's workloads then ran twice for each seed, 10000 seeds of the workload with one instance and of the workload with two instances, clocks that move, a crash and a restart, and buggify, and 2500 of the workload whose callers never pause. No pair of traces differed.
 - **Buggify keeps its two probabilities.** Over 200 seeds it switched on 207 of 800 points, and a point that was on fired in 5196 of 20700 visits, which is a quarter of each.
+- **Speed.** In the spike, the scheduler alone took 1217657 steps per second with tasks that only yield, and 253130 once each task checked the ID of its goroutine. `TestSimulationSpeed` logs the number on the machine at hand.
 
 ## Conditions for keeping the design
 
 The spike set five conditions. Each is met as follows:
 
 - **A lint forbids in library packages what the scheduler cannot run.** `internal/simlint` does, in `make lint` and in the CI job `simulation`. It forbids more than the spike's list, such as channel operations that block and `context.Background`. One rule has no check: an ordinary mutex must not be held across a wait. Neither the lint nor the scheduler detects that, and the test hangs, as `TestScheduler_mutexHeldAcrossWait` shows.
-- **Every seed is run twice, permanently.** `TestSimulation` runs 200 seeds of each workload twice and compares the traces, in `make test` and in CI. The workload whose callers never pause runs 50.
-- **The free-running mode runs under the race detector in CI.** The CI job `simulation` runs `TestFreeRunning` and `TestFree` with `-race` itself, whatever the reusable test workflow does.
-- **The checks compare data against a model, and planted bugs stay as tests of the checks.** `TestSimulation_plantedBugs` holds the ten bugs above. A bug that needs one ability of the harness also has a control, the same workload without that ability, which must never find it. The reason for the condition is that a check can pass for the wrong reason. The spike's toy had a real bug that 20000 clean runs produced and no check looked for. In the review of the build, three checks still passed with the mechanism they guard removed.
-- **Every lock acquire and release is a scheduling point, and yields are placed wherever shared state is touched between waits.** The semaphore of the scheduler meets the first half. The second half is a rule for library code, and nothing checks it.
+- **Every seed is run twice, permanently.** `TestSimulation` in this package runs 200 seeds twice and compares the traces, with a workload that uses the abilities of the scheduler together. The core's `TestSimulation` runs every seed of its workloads twice too. Both run in `make test` and in CI.
+- **The free-running mode runs under the race detector in CI.** The CI job `simulation` runs `TestFree` of this package and the free-running tests of the core with `-race` itself, whatever the reusable test workflow does.
+- **The checks compare data against a model, and planted bugs stay as tests of the checks.** The simulation of the core compares every result with the model in `internal/core/model_test.go`, and its `TestSimulation_plantedBugs` holds nineteen planted bugs. A bug that needs one ability of the harness also has a control, the same workload without that ability, which must never find it. The reason for the condition is that a check can pass for the wrong reason. The spike's toy had a real bug that 20000 clean runs produced and no check looked for. In the review of the build, three checks still passed with the mechanism they guard removed.
+- **Every lock acquire and release is a scheduling point, and yields are placed wherever shared state is touched between waits.** The semaphore of the scheduler meets the first half, and `TestScheduler_NewSemaphore` shows that a task that waits for a permit can run before the task that released it goes on. The second half is a rule for library code, and nothing checks it.
 
 ## What the scheduled mode cannot do
 
 - **It switches goroutines only at waits.** `TestScheduler_window` shows it. In the spike, a race with no wait in the window was found by 0 of 1000 seeds, and by 659 once a yield was added.
-- **It hides data races from the race detector.** `TestPlantedDataRace` plants one: the detector reports it in free-running mode, and nothing in scheduled mode.
+- **It hides data races from the race detector.** `TestFreeRunning_plantedDataRace` in `internal/core` plants one: the detector reports it in free-running mode, and nothing in scheduled mode.
 - **It never has two goroutines inside SQLite.** In `TestSchedulerWithSQLiteLocks`, a writer among eight readers never gets `SQLITE_BUSY` under the scheduler. In the spike, the same code got it 70 times in 10000 transactions with the scheduler off.
 - **It finds only what the checks look for.**
 - **It runs only under `go test`, and a seed is tied to the exact code.** A trace that prints text that depends on the build, such as an error of Protocol Buffers, replays only in the same binary.
@@ -137,14 +106,12 @@ Markus on 2026-11-11, on whether the free-running mode can go: "I'd rather keep 
 
 ## Tests
 
-By default, `TestSimulation` runs 200 seeds of each workload, each seed twice, and 50 for the workload whose callers never pause. `TestSimulation_plantedBugs` runs the workload of each bug until four seeds have found the bug, from at most 200 seeds, and fails if none does. With the shares in the table above, a check that works misses a bug in 200 seeds with a chance of less than one in a million. The control and the same workload without the bug run 100 seeds each. The tests of the workloads run in parallel, and each logs a hash of its traces that is the same with `-parallel 1`. On a Mac with 10 cores and a load of 11 to 16, the package took 58 seconds, and 87 seconds under the race detector.
+The tests of the harness use no store, no lease, and no database, except the canaries below. `sim_test.go` tests the scheduler, its instances, their clocks, crashes, timeouts, semaphores, buggify, and the trace, each with a small and aimed test. `free_test.go` tests `Free`.
 
-The environment variable `S4QL_SIM_SEEDS` sets another number of seeds for every workload, a quarter of it for the one whose callers never pause, and makes the workload of each bug run all of them. The large runs above set it to 10000:
+`TestSimulation` runs 200 seeds twice and compares the traces, the number of steps, and the next number from the seed. Its workload, `everything`, uses the abilities of the scheduler together: instances whose workers each share a lock and a pool, wait with timeouts and contexts derived from them, hit a buggify point, and start tasks that wait through the host of the test; tasks of the test that share a semaphore; clocks that the test moves; a crash followed by a restart; and an instance that crashes itself. The test also checks that no semaphore lets in too many holders or loses a permit, and that nothing of an instance runs after its crash. It checks the scheduler, not a database, so nothing in it compares data. The environment variable `S4QL_SIM_SEEDS` sets another number of seeds.
 
-```sh
-S4QL_SIM_SEEDS=10000 go test -timeout 4h -run '^TestSimulation(_plantedBugs)?$' ./internal/sim/
-```
+Three tests are canaries for Go upgrades. They record what `testing/synctest` does with timers and with calls into C, which the design rests on and the documentation of Go does not promise: `TestSynctestTimerOrder` in `timers_test.go`, and `TestSynctestWithCgo` and `TestSchedulerWithSQLiteLocks` in `cgo_test.go`, which use SQLite.
 
-With 1000 seeds, these two tests took 8 minutes 20 seconds on the same Mac. The time grows with the number of seeds, so 10000 seeds need about ten times that, and the `-timeout` leaves room for a slower machine.
+On a Mac with 10 cores and a load of 12 to 18 from other work, the package took 12 seconds, and 22 seconds under the race detector. With the toy, it took 57 and 83 seconds, and 172 seconds under the address sanitizer in a Docker container with four CPUs.
 
-`TestSimulationSeed` runs one seed and logs its whole trace. Its doc comment names the environment variables that choose the seed, the workload, and a planted bug.
+Two tests run only when an environment variable is set. `S4QL_SIM_SPEED` makes `TestSimulationSpeed` log how fast the scheduler is. `S4QL_SIM_HANG` makes `TestScheduler_mutexHeldAcrossWait` show a run that hangs, and needs a short `-timeout`.
