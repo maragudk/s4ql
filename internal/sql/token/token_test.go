@@ -276,16 +276,31 @@ func TestTokens(t *testing.T) {
 		}
 	})
 
-	t.Run("should tokenize every input of three and four bytes from an alphabet of interesting bytes as SQLite does", func(t *testing.T) {
+	t.Run("should tokenize every input of three bytes from an alphabet of interesting bytes as SQLite does", func(t *testing.T) {
+		// A byte of every character class, the bytes of the byte order mark, and the bytes that the
+		// tokenizer looks for after the first: digits, hex digits, exponents, signs, and separators.
 		alphabet := []byte("\x00\t\n\v \x80\xbb\xbf\xef!\"#$'()*-./019:<=>?@EX[]_`aefx|")
-		b := make([]byte, 4)
+		b := make([]byte, 3)
 		for _, c0 := range alphabet {
 			for _, c1 := range alphabet {
 				for _, c2 := range alphabet {
 					b[0], b[1], b[2] = c0, c1, c2
-					compare(t, string(b[:3]))
+					compare(t, string(b))
+				}
+			}
+		}
+	})
+
+	t.Run("should tokenize every input of four bytes from a smaller alphabet as SQLite does", func(t *testing.T) {
+		// Enough for the comment /**/, the arrow ->>, a blob x'', hex 0x1_, a fraction .5e, a Tcl
+		// suffix $a(), and a byte order mark after a byte.
+		alphabet := []byte("\x00 \v\xef\xbb\xbf'\"*-/>0_e.x$a(")
+		b := make([]byte, 4)
+		for _, c0 := range alphabet {
+			for _, c1 := range alphabet {
+				for _, c2 := range alphabet {
 					for _, c3 := range alphabet {
-						b[3] = c3
+						b[0], b[1], b[2], b[3] = c0, c1, c2, c3
 						compare(t, string(b))
 					}
 				}
@@ -384,9 +399,8 @@ func TestKind(t *testing.T) {
 	})
 
 	t.Run("should have a kind for every TK_ code that sqlite3GetToken can give", func(t *testing.T) {
-		b, err := os.ReadFile("../../sqlite/c/sqlite3.c")
+		src, err := vendored()
 		is.NotError(t, err)
-		src := string(b)
 
 		// The non-keyword codes are assigned in sqlite3GetToken itself; the keyword codes are in
 		// the table aKWCode of keywordhash.h.
@@ -506,7 +520,7 @@ func kindsByCode(t *testing.T) map[int]token.Kind {
 }
 
 var kindsByCodeOnce = sync.OnceValues(func() (map[int]token.Kind, error) {
-	codes, err := readTokenCodes()
+	codes, err := tokenCodesOnce()
 	if err != nil {
 		return nil, err
 	}
@@ -524,23 +538,23 @@ var kindsByCodeOnce = sync.OnceValues(func() (map[int]token.Kind, error) {
 // tokenCodes of SQLite's parser, by name without the TK_ prefix.
 func tokenCodes(t *testing.T) map[string]int {
 	t.Helper()
-	codes, err := readTokenCodes()
+	codes, err := tokenCodesOnce()
 	is.NotError(t, err)
 	return codes
 }
 
-// readTokenCodes from their definitions in the vendored c/sqlite3.c, which has them twice, once from
-// parse.h and once in parse.c. The two must agree.
-func readTokenCodes() (map[string]int, error) {
-	b, err := os.ReadFile("../../sqlite/c/sqlite3.c")
+// tokenCodesOnce reads the codes from their definitions in the vendored c/sqlite3.c, which has them
+// twice, once from parse.h and once in parse.c. The two must agree.
+var tokenCodesOnce = sync.OnceValues(func() (map[string]int, error) {
+	src, err := vendored()
 	if err != nil {
 		return nil, err
 	}
 	codes := map[string]int{}
-	matches := regexp.MustCompile(`(?m)^#define TK_(\w+) +(\d+)$`).FindAllSubmatch(b, -1)
+	matches := regexp.MustCompile(`(?m)^#define TK_(\w+) +(\d+)$`).FindAllStringSubmatch(src, -1)
 	for _, m := range matches {
-		name := string(m[1])
-		code, err := strconv.Atoi(string(m[2]))
+		name := m[1]
+		code, err := strconv.Atoi(m[2])
 		if err != nil {
 			return nil, err
 		}
@@ -553,4 +567,10 @@ func readTokenCodes() (map[string]int, error) {
 		return nil, fmt.Errorf("found %v TK_ codes in %v definitions; is the pattern still right?", len(codes), len(matches))
 	}
 	return codes, nil
-}
+})
+
+// vendored SQLite source, the amalgamation c/sqlite3.c of the binding.
+var vendored = sync.OnceValues(func() (string, error) {
+	b, err := os.ReadFile("../../sqlite/c/sqlite3.c")
+	return string(b), err
+})

@@ -56,7 +56,7 @@ static int s4ql_disable_lookaside(sqlite3 *db) {
 // s4ql_tokenize the NUL-terminated SQL text at z with sqlite3GetToken, and write the type and the
 // length of each token into types and lens, which have room for max tokens. It stops after the token
 // at the NUL, which has length 0, and returns the number of tokens, or -1 if they do not fit.
-static int s4ql_tokenize(const unsigned char *z, int *types, long long *lens, int max) {
+static int s4ql_tokenize(const unsigned char *z, int *types, sqlite3_int64 *lens, int max) {
 	for (int k = 0; k < max; k++) {
 		i64 n = sqlite3GetToken(z, &types[k]);
 		lens[k] = n;
@@ -441,19 +441,23 @@ type Token struct {
 // Tokenize the SQL text src with SQLite's own tokenizer, sqlite3GetToken, which SQLite's parser reads
 // its input with and which no public API of SQLite exposes. It is here so that another tokenizer can
 // be checked against it. The types are the parser's TK_ codes, which SQLite's parser generator numbers
-// anew for each version, so they are compared by name, through the definitions in c/sqlite3.c.
+// anew for each version, so their names are in the TK_ definitions in c/sqlite3.c and not here.
 //
 // Like the parser, it reads src up to its first NUL byte, or to its end. The last token is the one
 // that starts there: it has the type TK_ILLEGAL and length 0. Every other token is at least one byte
-// long, and the tokens cover the bytes before the end without a gap.
+// long, and the tokens cover the bytes before the end without a gap. It panics for a text of 2 GiB
+// or more, whose token count may not fit a C int.
 func Tokenize(src string) []Token {
+	if len(src) >= math.MaxInt32 {
+		panic("sqlite: text too long to tokenize")
+	}
 	z := C.CString(src)
 	defer C.free(unsafe.Pointer(z))
 
 	// Every token but the last is at least one byte long, so len(src) + 1 tokens always fit.
 	room := len(src) + 1
 	types := make([]C.int, room)
-	lens := make([]C.longlong, room)
+	lens := make([]C.sqlite3_int64, room)
 	k := C.s4ql_tokenize((*C.uchar)(unsafe.Pointer(z)), &types[0], &lens[0], C.int(room))
 	if k < 0 {
 		panic("sqlite: tokens of length 0 before the end of the text")

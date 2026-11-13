@@ -22,7 +22,7 @@ func TestKinds(t *testing.T) {
 }
 
 func TestKeywordTable(t *testing.T) {
-	t.Run("should hold exactly the keywords of SQLite, each with a keyword kind", func(t *testing.T) {
+	t.Run("should hold exactly the words of SQLite's keywords, each with a keyword kind, which the external tests check against SQLite", func(t *testing.T) {
 		want := sqlite.Keywords()
 		slices.Sort(want)
 		var got []string

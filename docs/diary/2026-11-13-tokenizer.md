@@ -90,7 +90,7 @@ At the end of the text, or at a NUL byte, `Next` gives `Illegal` and length 0, a
 The tests in `/internal/sql/token/token_test.go`:
 
 - 175 hand-written cases, each with the tokens written out by hand and each also compared with the oracle. They cover every quirk of section 1.1 of the research note and the ones below.
-- Every input of one and two bytes, and every input of three and four bytes over an alphabet of 40 bytes chosen to hit every character class and the BOM, compared with the oracle.
+- Every input of one and two bytes, and every input of three bytes over an alphabet of 40 bytes chosen to hit every character class and the BOM, and every input of four bytes over a smaller alphabet (Step 3), compared with the oracle.
 - Every keyword of `sqlite.Keywords` in lower, upper, and mixed case, and eight near-keywords per keyword (one letter less at either end, `S`, `_`, `1`, or a byte from 0x80 appended, `A` prepended, `_` inserted), each in two cases.
 - `FuzzTokens`, seeded with the cases and 15 statements that use most kinds of tokens. `/Makefile`'s `fuzz` target now includes `internal/sql/token`, so `make fuzz` and `make test-asan` run it.
 
@@ -137,3 +137,71 @@ Choosing what `Next` gives at the end. SQLite gives `TK_ILLEGAL` with length 0, 
 ### Future work
 
 The parser takes over what the package documentation lists as left out.
+
+## Step 3: Mutation checks, fuzzing, self-review, and the sanitizer
+
+**Author:** tokenizer-builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Break the tokenizer by hand in two or three places once (for example the vertical-tab rule) and see that a test fails, then restore it." and "Run it yourself for long enough to mean something, on several cores, and report how many executions it made and what it found." and "Review your own diff against this brief."
+**Interpretation:** Show that the tests can fail, fuzz for real, review with the code-review skill, and run the full checks.
+**Inferred intent:** Evidence that the comparison is not vacuous and that nothing is left that a reviewer would find first.
+
+### What I did
+
+Four mutations of `/internal/sql/token/token.go` and `/internal/sql/token/kind.go`, each made with the editor, run with `go test -shuffle on ./internal/sql/token/`, and undone; `cmp` against a copy in the scratch directory confirmed that `token.go` was restored byte for byte.
+
+- The vertical tab out of `ctypeMap` (0x0b no longer a space): the cases "every whitespace byte in one token", "vertical tab after other whitespace", and "vertical tab after a space after a keyword" failed, and so did the exhaustive inputs, for example `tokens of "\t\v"`.
+- The test `|| at(2) == 0` removed from the block comment: "block comment opening at the end" failed with "panic: runtime error: slice bounds out of range [3:2]", because the comment loop then reads past the end, as C would read past the NUL.
+- The condition `n > 0` removed from the Tcl suffix: "Tcl suffix without a name" failed ("Expected slice of length 4, but got 1"), and the exhaustive inputs with `tokens of "#("`.
+- `WINDOW` removed from the keyword table: `TestKeywords`, `TestKeywordTable` ("Expected slice of length 147, but got 146"), the case "window keywords", and a seed statement failed.
+
+`FuzzTokens` ran natively for 30 minutes with `-parallel 8` on the 10-core machine: 271,578,460 executions, 580 inputs in the corpus at the end (390 new), and no difference from SQLite. `make test-asan FUZZTIME=60s` passed in Docker: every test of both modules under `-asan`, then every fuzz target for 60 seconds, among them `FuzzTokens` with 1,042,797 executions. `make test` and `make lint` passed ("0 issues." in all three modules, and the simulation lint and Buf said nothing).
+
+The code-review skill (medium, over `560cc9a..HEAD`) found no correctness bugs; it compared `Next` with `sqlite3GetToken` case by case. Of its nine smaller findings I fixed these:
+
+- `sqlite.Tokenize` had no length guard: for a text of 2 GiB or more, `C.int(len(src)+1)` overflows. It now panics with "sqlite: text too long to tokenize", as `Prepare` refuses such text.
+- The lengths went from `i64` into a `long long` array. Both sides now use `sqlite3_int64`.
+- The doc of `token.Tokens` said "as SQLite's parser reads them", but `Tokens` goes on past an `Illegal` token, where the parser stops. The doc now says so, and the package doc's promise is about `sqlite3GetToken` called token after token.
+- The tests read the 9 MB `sqlite3.c` up to three times per run. It is now read once, behind `sync.OnceValues`.
+- `/docs/todo.md` recorded built work in its new item. The item now holds only what is open.
+
+Not changed, and why:
+
+- The byte reader `at` is a closure. `go build -gcflags=-m` shows "can inline Next.func1" and "inlining call to Next.func1" at every use, so it costs nothing, and it keeps `z[i]` readable against the C code.
+- The parsing of the `TK_` definitions is in both the binding's test and the token package's test. Sharing it would need an exported function in the production binding for a test helper.
+- `TestKeywordTable` checks only the words, not their kinds. The kinds are checked against SQLite by `TestKeywords`, in three cases each; I renamed the subtest to say so.
+- `README.md`'s section "Status" is not updated, because the brief says not to change `README.md`. It is for the lead to update on merge.
+
+The race detector made the exhaustive test of four-byte inputs over 40 bytes (2.6 million oracle calls) take about 32 seconds per run on the loaded machine. I split it into all three-byte inputs over the 40-byte alphabet and all four-byte inputs over a smaller alphabet of 19 bytes, chosen to still reach `/**/`, `->>`, `x''`, `0x1_`, `.5e`, `$a()`, and a BOM after a byte. With `-race` the package now takes under 10 seconds on the loaded machine, and under `-asan` in Docker 5.6 seconds.
+
+### Why
+
+A comparison that passes is worth something only if it is seen to fail on a wrong tokenizer, and the fuzzer's figures say how much of the input space was tried.
+
+### What worked
+
+The fuzzer, guided by the Go tokenizer's coverage, reached 187,000 executions a second with the oracle in the loop. Every mutation was caught by several tests at once.
+
+### What didn't work
+
+The run with the 40-byte alphabet for four-byte inputs under `-race -count 3` took "ok maragu.dev/s4ql/internal/sql/token 95.232s", too slow for CI's sanitizer job; that is why I split it. No fuzz input differed from SQLite, so no new hand-written case came from fuzzing.
+
+### What I learned
+
+Go's fuzzer measures the coverage of the Go tokenizer, so for this package it is guided, unlike for the C code of the binding, where it is close to random mutation.
+
+### What was tricky
+
+Keeping the background fuzz run and the mutation checks apart: the go command compiles the fuzz binary when it starts, so any edit of the package before that point is fuzzed. Step 2 records the run that hit this.
+
+### What warrants review
+
+- The guard and the `sqlite3_int64` change in `sqlite.Tokenize`.
+- Whether the two exhaustive subtests of `TestTokens` are worth their time in CI.
+
+### Future work
+
+- The open question of a NUL byte in SQL text, in `/docs/todo.md`.
+- The section "Status" of `/README.md`, when this is merged.

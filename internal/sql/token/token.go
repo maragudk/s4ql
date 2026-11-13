@@ -2,8 +2,9 @@
 //
 // The promise: for any text, also text that is not UTF-8 or that has NUL bytes in it, [Next] gives
 // the same kind and length as sqlite3GetToken of the vendored SQLite, built with the compile options
-// of the binding in internal/sqlite, and [Tokens] gives the tokens that SQLite's parser reads, one
-// after the other. The tests check this against SQLite's own sqlite3GetToken, token by token.
+// of the binding in internal/sqlite, and [Tokens] gives the tokens that sqlite3GetToken gives when it
+// is called over the text one token after the other. The tests check this against SQLite's own
+// sqlite3GetToken, token by token.
 //
 // The code follows sqlite3GetToken in tokenize.c (lines 187252-187574 of the vendored sqlite3.c)
 // case by case, with SQLite's character classes and its table of keywords, so that the two can be
@@ -53,9 +54,10 @@ func (t Token) Text(src string) string {
 	return src[t.Offset : t.Offset+t.Len]
 }
 
-// Tokens of src, in order, as SQLite's parser reads them: from the start, one token after the other,
-// until the end of src or its first NUL byte. The tokens cover the text before that point without a
-// gap, so if the last one does not end at len(src), src has a NUL byte there.
+// Tokens of src, in order, as [Next] gives them from the start of src, one after the other, until the
+// end of src or its first NUL byte. The tokens cover the text before that point without a gap, so if
+// the last one does not end at len(src), src has a NUL byte there. Tokens goes on past an [Illegal]
+// token, where SQLite's parser stops and reads no more.
 func Tokens(src string) []Token {
 	var tokens []Token
 	offset := 0
