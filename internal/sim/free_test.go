@@ -105,6 +105,37 @@ func TestFree(t *testing.T) {
 		})
 	})
 
+	t.Run("should return from a yield and a trace, with any context, and record nothing", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			r := sim.NewFree(sim.Buggify{})
+			start := r.Monotonic()
+			// Unlike the scheduler's, they accept a context that no task was started with.
+			r.Yield(t.Context(), "site")
+			r.Trace(t.Context(), "line %v", 1)
+			is.NotError(t, r.Run(func(ctx context.Context) {
+				r.Yield(ctx, "site")
+				r.Trace(ctx, "line %v", 2)
+			}))
+			is.Equal(t, time.Duration(0), r.Monotonic()-start)
+		})
+	})
+
+	t.Run("should wait in Run for tasks that the tasks start, also after the first task has returned", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			r := sim.NewFree(sim.Buggify{})
+			var done atomic.Bool
+			is.NotError(t, r.Run(func(ctx context.Context) {
+				r.Go(ctx, "child", func(ctx context.Context) {
+					r.Go(ctx, "grandchild", func(ctx context.Context) {
+						is.NotError(t, r.Sleep(ctx, time.Hour))
+						done.Store(true)
+					})
+				})
+			}))
+			is.True(t, done.Load())
+		})
+	})
+
 	t.Run("should buggify only when switched on", func(t *testing.T) {
 		off := sim.NewFree(sim.Buggify{})
 		always := sim.NewFree(sim.Buggify{On: true, Activation: 1, Fire: 1})

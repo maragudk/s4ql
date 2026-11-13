@@ -141,6 +141,37 @@ func TestScheduler_Run(t *testing.T) {
 		}
 	})
 
+	t.Run("should count a step each time it runs a task from one wait to its next", func(t *testing.T) {
+		s, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			is.Equal(t, 1, s.Steps())
+			s.Yield(ctx, "first")
+			is.Equal(t, 2, s.Steps())
+			is.NotError(t, s.Go(ctx, "worker", func(ctx context.Context) {
+				s.Yield(ctx, "in the worker")
+			}).Wait(ctx))
+			// The worker ran twice, and main once more after its wait.
+			is.Equal(t, 5, s.Steps())
+		})
+		is.NotError(t, err)
+		is.Equal(t, 5, s.Steps())
+		is.Equal(t, 5, len(matching(s, " resumes from ")))
+	})
+
+	t.Run("should panic on a context that no task of the scheduler was started with", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			other := sim.New(1, sim.Options{})
+			for _, c := range []context.Context{t.Context(), ctx} {
+				func() {
+					defer func() {
+						is.Equal(t, "sim: the context does not belong to a task of this scheduler", fmt.Sprint(recover()))
+					}()
+					other.Yield(c, "never")
+				}()
+			}
+		})
+		is.NotError(t, err)
+	})
+
 	t.Run("should fail with the waiting tasks when they deadlock, and unwind them", func(t *testing.T) {
 		var unwound atomic.Int64
 		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
@@ -487,6 +518,32 @@ func TestScheduler_WithTimeout(t *testing.T) {
 		is.Equal(t, "task main sets a timeout on the host of instance a, which is not its own", errorString(err))
 	})
 
+	t.Run("should name the task that set it and its duration", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			is.NotError(t, a.Go(ctx, "worker", func(ctx context.Context) {
+				timeoutCtx, cancel := a.WithTimeout(ctx, time.Second)
+				defer cancel()
+				is.Equal(t, "timeout of a/worker after 1s", fmt.Sprint(timeoutCtx))
+			}).Wait(ctx))
+			timeoutCtx, cancel := s.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			is.Equal(t, "timeout of the test after 1m0s", fmt.Sprint(timeoutCtx))
+		})
+		is.NotError(t, err)
+	})
+
+	t.Run("should panic when a timeout on the host of an instance has no context of a task", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			defer func() {
+				is.Equal(t, "sim: a timeout on the host of an instance needs the context of a task of the instance", fmt.Sprint(recover()))
+			}()
+			a.WithTimeout(context.Background(), time.Second)
+		})
+		is.NotError(t, err)
+	})
+
 	t.Run("should be done at once with a timeout that is not positive", func(t *testing.T) {
 		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
 			timeoutCtx, cancel := s.WithTimeout(ctx, 0)
@@ -614,6 +671,19 @@ func TestScheduler_NewSemaphore(t *testing.T) {
 		is.NotError(t, err)
 	})
 
+	t.Run("should panic on the release of a semaphore that is not held", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			m := s.NewSemaphore("m", 2)
+			is.NotError(t, m.Acquire(ctx))
+			m.Release(ctx)
+			defer func() {
+				is.Equal(t, "sim: release of a semaphore that is not held", fmt.Sprint(recover()))
+			}()
+			m.Release(ctx)
+		})
+		is.NotError(t, err)
+	})
+
 	t.Run("should return the context's error when the context is done, also with a permit free", func(t *testing.T) {
 		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
 			m := s.NewSemaphore("m", 1)
@@ -635,6 +705,34 @@ func TestInstance_clocks(t *testing.T) {
 			is.NotError(t, s.Sleep(ctx, time.Second))
 			is.Equal(t, time.Hour+time.Second, since(a))
 			is.Equal(t, time.Second, a.Monotonic())
+		})
+		is.NotError(t, err)
+	})
+
+	t.Run("should give the test clocks that both read the simulated time, whatever the instances' clocks do", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			a.ShiftWall(-time.Hour)
+			a.StopWall()
+			a.StopMonotonic()
+			is.NotError(t, s.Sleep(ctx, time.Minute))
+			is.Equal(t, time.Minute, s.Monotonic())
+			is.Equal(t, time.Minute, since(s))
+			is.Equal(t, sim.Epoch().Add(time.Minute), s.Wall())
+		})
+		is.NotError(t, err)
+	})
+
+	t.Run("should panic on an instance whose name is empty or has a slash", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			for _, name := range []string{"", "a/b"} {
+				func() {
+					defer func() {
+						is.Equal(t, "sim: an instance needs a name without a slash", fmt.Sprint(recover()))
+					}()
+					s.NewInstance(name)
+				}()
+			}
 		})
 		is.NotError(t, err)
 	})
@@ -724,6 +822,71 @@ func TestInstance_clocks(t *testing.T) {
 			}
 		}
 		is.EqualSlice(t, []string{"1m10s", "2m20s"}, at)
+	})
+
+	t.Run("should keep a clock that stands still where it stopped first, and start it only once", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			is.NotError(t, s.Sleep(ctx, time.Second))
+			a.StopWall()
+			a.StopMonotonic()
+			is.NotError(t, s.Sleep(ctx, time.Minute))
+			a.StopWall()
+			a.StopMonotonic()
+			is.NotError(t, s.Sleep(ctx, time.Minute))
+			is.Equal(t, time.Second, since(a))
+			is.Equal(t, time.Second, a.Monotonic())
+
+			a.StartWall()
+			a.StartMonotonic()
+			is.NotError(t, s.Sleep(ctx, time.Minute))
+			a.StartWall()
+			a.StartMonotonic()
+			is.Equal(t, time.Minute+time.Second, since(a))
+			is.Equal(t, time.Minute+time.Second, a.Monotonic())
+		})
+		is.NotError(t, err)
+	})
+
+	t.Run("should trace every move of a clock, with the instance and the time", func(t *testing.T) {
+		s, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			is.NotError(t, s.Sleep(ctx, time.Second))
+			a.ShiftWall(-time.Minute)
+			a.StopWall()
+			a.StartWall()
+			a.StopMonotonic()
+			a.StartMonotonic()
+		})
+		is.NotError(t, err)
+		is.EqualSlice(t, []string{
+			"0s a starts",
+			"1s a shifts its wall clock by -1m0s",
+			"1s a stops its wall clock",
+			"1s a starts its wall clock",
+			"1s a stops its monotonic clock",
+			"1s a starts its monotonic clock",
+		}, slices.DeleteFunc(s.Lines(), func(line string) bool { return !strings.Contains(line, " a ") }))
+	})
+
+	t.Run("should sleep until the context is done on an instance that started late, when the duration is longer than its clock can hold", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			is.NotError(t, s.Sleep(ctx, time.Hour))
+			a := s.NewInstance("a")
+			a.StopMonotonic()
+			is.NotError(t, s.Sleep(ctx, time.Minute))
+			a.StartMonotonic()
+
+			sleepCtx, cancel := context.WithCancel(ctx)
+			sleeper := a.Go(sleepCtx, "sleeper", func(ctx context.Context) {
+				is.Error(t, context.Canceled, a.Sleep(ctx, math.MaxInt64-time.Minute))
+				is.Equal(t, 2*time.Hour+time.Minute, since(s))
+			})
+			is.NotError(t, s.Sleep(ctx, time.Hour))
+			cancel()
+			is.NotError(t, sleeper.Wait(ctx))
+		})
+		is.NotError(t, err)
 	})
 
 	t.Run("should report a deadlock when every task sleeps on a monotonic clock that stands still", func(t *testing.T) {
@@ -891,6 +1054,55 @@ func TestInstance_Crash(t *testing.T) {
 		is.Equal(t, "task cleanup starts while the run ends, after every task that did not crash has returned", errorString(err))
 	})
 
+	t.Run("should report a crash to the test and to tasks of other instances", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a, b := s.NewInstance("a"), s.NewInstance("b")
+			is.True(t, !a.Crashed())
+			a.Crash()
+			is.True(t, a.Crashed())
+			is.True(t, !b.Crashed())
+			is.NotError(t, b.Go(ctx, "watcher", func(ctx context.Context) {
+				is.True(t, a.Crashed())
+				is.True(t, !b.Crashed())
+			}).Wait(ctx))
+		})
+		is.NotError(t, err)
+	})
+
+	t.Run("should never expire a timeout of a crashed instance, nor move simulated time to it", func(t *testing.T) {
+		s, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			a.Go(ctx, "waiter", func(ctx context.Context) {
+				timeoutCtx, cancel := a.WithTimeout(ctx, time.Minute)
+				defer cancel()
+				_ = a.Sleep(timeoutCtx, time.Hour)
+			})
+			is.NotError(t, s.Sleep(ctx, time.Second))
+			a.Crash()
+			is.NotError(t, s.Sleep(ctx, time.Hour))
+		})
+		is.NotError(t, err)
+		is.EqualSlice(t, nil, matching(s, "expires"))
+	})
+
+	t.Run("should report a deadlock when the only task that waits on time belongs to a crashed instance", func(t *testing.T) {
+		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
+			a := s.NewInstance("a")
+			m := s.NewSemaphore("m", 1)
+			is.NotError(t, m.Acquire(ctx))
+			a.Go(ctx, "sleeper", func(ctx context.Context) {
+				timeoutCtx, cancel := a.WithTimeout(ctx, time.Minute)
+				defer cancel()
+				_ = a.Sleep(timeoutCtx, time.Hour)
+			})
+			is.NotError(t, s.Sleep(ctx, time.Second))
+			a.Crash()
+			s.Go(ctx, "waiter", func(ctx context.Context) { _ = m.Acquire(ctx) })
+			is.NotError(t, m.Acquire(ctx))
+		})
+		is.Equal(t, "deadlock: no task can run: main at acquire of m, waiter at acquire of m", errorString(err))
+	})
+
 	t.Run("should panic on a second instance with the same name", func(t *testing.T) {
 		_, err := schedule(t, 1, sim.Options{}, func(ctx context.Context, s *sim.Scheduler) {
 			a := s.NewInstance("a")
@@ -948,6 +1160,14 @@ func TestScheduler_Buggify(t *testing.T) {
 		}
 	})
 
+	t.Run("should buggify through the host of the test, with the task's name in the trace", func(t *testing.T) {
+		s, err := schedule(t, 1, sim.Options{Buggify: sim.Buggify{On: true, Activation: 1, Fire: 1}}, func(ctx context.Context, s *sim.Scheduler) {
+			is.True(t, s.Buggify(ctx, "site"))
+		})
+		is.NotError(t, err)
+		is.EqualSlice(t, []string{"main switches buggify on site for the run", "main buggify site fires"}, matching(s, "buggify"))
+	})
+
 	t.Run("should switch each site on or off once per run, in the trace, and fire the same with the same seed", func(t *testing.T) {
 		var on, sites, fires, visits int
 		for seed := range uint64(200) {
@@ -975,6 +1195,96 @@ func TestScheduler_Buggify(t *testing.T) {
 		t.Logf("%v of %v sites on, and %v fires in %v visits of a site that is on", on, sites, fires, visits)
 		is.True(t, on > sites/8 && on < sites*3/8, "about a quarter of sites should be on")
 		is.True(t, fires > visits/8 && fires < visits*3/8, "about a quarter of visits should fire")
+	})
+}
+
+// everything is a workload that uses every ability of the scheduler at once: instances whose workers
+// share a lock and a pool and wait with timeouts, buggify, numbers from the seed, a test that moves
+// each kind of clock, and a crash followed by a restart. It checks nothing but what the scheduler
+// promises, so it needs no model.
+func everything(ctx context.Context, s *sim.Scheduler) {
+	start := func(name string) (*sim.Instance, []host.Task) {
+		inst := s.NewInstance(name)
+		lock, pool := inst.NewSemaphore("lock", 1), inst.NewSemaphore("pool", 2)
+		var workers []host.Task
+		for i := range 3 {
+			workers = append(workers, inst.Go(ctx, fmt.Sprint("worker-", i), func(ctx context.Context) {
+				for j := range 6 {
+					m := pool
+					if inst.Uint64()%2 == 0 {
+						m = lock
+					}
+					timeoutCtx, cancel := inst.WithTimeout(ctx, time.Duration(1+inst.Uint64()%3)*time.Second)
+					if err := m.Acquire(timeoutCtx); err != nil {
+						inst.Trace(ctx, "gives up %v: %v", j, err)
+						cancel()
+						continue
+					}
+					if inst.Buggify(ctx, "hold longer") {
+						_ = inst.Sleep(ctx, 2*time.Second)
+					}
+					err := inst.Sleep(timeoutCtx, time.Duration(inst.Uint64()%1500)*time.Millisecond)
+					inst.Yield(ctx, "inside")
+					m.Release(ctx)
+					cancel()
+					inst.Trace(ctx, "done %v with %v, at %v on the wall clock and %v on the monotonic clock", j, err, since(inst), inst.Monotonic())
+				}
+			}))
+		}
+		return inst, workers
+	}
+
+	a, aWorkers := start("a")
+	b, _ := start("b")
+	pause := func() { _ = s.Sleep(ctx, time.Duration(s.Uint64()%2000)*time.Millisecond) }
+	for range 4 {
+		pause()
+		inst := []*sim.Instance{a, b}[s.Uint64()%2]
+		switch s.Uint64() % 3 {
+		case 0:
+			inst.ShiftWall(time.Duration(s.Uint64()%20)*time.Second - 10*time.Second)
+		case 1:
+			inst.StopWall()
+			pause()
+			inst.StartWall()
+		case 2:
+			inst.StopMonotonic()
+			pause()
+			inst.StartMonotonic()
+		}
+	}
+	a.Crash()
+	for _, worker := range aWorkers {
+		_ = worker.Wait(ctx)
+	}
+	start("a2")
+}
+
+// TestSimulation runs every seed twice and compares the traces, with a workload that uses every
+// ability of the scheduler at once.
+func TestSimulation(t *testing.T) {
+	t.Run("should give the same trace when a seed is run twice, with every ability of the scheduler at once", func(t *testing.T) {
+		options := sim.Options{Jitter: 50 * time.Millisecond, Buggify: sim.Buggify{On: true}}
+		traces := map[string]bool{}
+		var all []string
+		for seed := range uint64(200) {
+			first, err := schedule(t, seed, options, everything)
+			is.NotError(t, err)
+			second, err := schedule(t, seed, options, everything)
+			is.NotError(t, err)
+			is.EqualSlice(t, first.Lines(), second.Lines(), fmt.Sprint("seed ", seed))
+			is.Equal(t, first.Steps(), second.Steps())
+			is.Equal(t, first.Uint64(), second.Uint64())
+			traces[strings.Join(first.Lines(), "\n")] = true
+			all = append(all, first.Lines()...)
+		}
+		t.Logf("%v distinct traces from 200 seeds", len(traces))
+		is.Equal(t, 200, len(traces))
+		joined := strings.Join(all, "\n")
+		for _, event := range []string{" expires", " gives up ", "crashes", "a2 starts", "a2/worker-0 resumes", " fires",
+			"shifts its wall clock", "stops its wall clock", "stops its monotonic clock", "on the monotonic clock"} {
+			is.True(t, strings.Contains(joined, event), "no seed has "+event)
+		}
 	})
 }
 
@@ -1046,6 +1356,34 @@ func TestScheduler_window(t *testing.T) {
 			})
 		}
 		t.Logf("%v of 1000 free runs found the race", found)
+	})
+}
+
+// TestSimulationSpeed logs how fast the scheduler is on this machine, with tasks that only yield. It
+// is a test and not a benchmark because a bubble needs a [testing.T]. It only runs when the
+// environment variable S4QL_SIM_SPEED is set, because it asserts nothing that the other tests do not.
+func TestSimulationSpeed(t *testing.T) {
+	if os.Getenv("S4QL_SIM_SPEED") == "" {
+		t.Skip("S4QL_SIM_SPEED is not set")
+	}
+	t.Run("should log the speed of the scheduler with eight tasks that only yield", func(t *testing.T) {
+		start := time.Now()
+		var steps int
+		for seed := range uint64(20) {
+			s, err := schedule(t, seed, sim.Options{Jitter: time.Millisecond}, func(ctx context.Context, s *sim.Scheduler) {
+				for i := range 8 {
+					s.Go(ctx, fmt.Sprint("worker-", i), func(ctx context.Context) {
+						for range 2000 {
+							s.Yield(ctx, "between")
+						}
+					})
+				}
+			})
+			is.NotError(t, err)
+			steps += s.Steps()
+		}
+		elapsed := time.Since(start)
+		t.Logf("%v steps in %v, %.0f steps per second", steps, elapsed.Round(time.Millisecond), float64(steps)/elapsed.Seconds())
 	})
 }
 
