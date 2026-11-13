@@ -137,7 +137,11 @@ type workload struct {
 // each wait.
 func (w workload) liveness() time.Duration {
 	f := w.faults
-	quiet := 2*f.SlowBy + f.LateBy + max(f.CutOffFor, f.OutageFor) + w.timeout
+	late := f.LateBy
+	if f.Long > 0 && (f.Late > 0 || f.AfterCrash > 0) {
+		late = max(late, f.LongBy)
+	}
+	quiet := 2*f.SlowBy + late + max(f.CutOffFor, f.OutageFor) + w.timeout
 	lease := slices.Max(w.durations)
 	return quiet + 2*(lease+core.Margin(lease)+w.options.Watch) + 10*time.Second
 }
@@ -204,10 +208,13 @@ type outcome struct {
 	events map[string]int
 	// crashed databases, whose files are closed after the run.
 	crashed []*core.DB
+	// landings of the writes that the store held back, counted by what they were and what happened
+	// between their send and their landing: see [run.verifyLandings].
+	landings map[string]int
 }
 
 func newOutcome() *outcome {
-	return &outcome{events: map[string]int{}}
+	return &outcome{events: map[string]int{}, landings: map[string]int{}}
 }
 
 // violate records a violation, also in the trace of h.
@@ -1020,6 +1027,7 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 	if err := st.Wait(ctx); err != nil {
 		o.violate(ctx, c.world, "wait for the store: %v", err)
 	}
+	r.verifyLandings(ctx)
 	r.verify(ctx, live, crashed)
 }
 
@@ -1385,6 +1393,120 @@ func (r *run) verifyHistory(ctx context.Context) {
 			}
 		}
 		before, beforeAt, beforeVersion = &man, write.Time, write.Version
+	}
+}
+
+// verifyLandings of the writes that the store held back. A swap of the manifest that lands after
+// the lease changed hands since it was sent may be applied only if it is a take of a free lease: the
+// version of every manifest with a lease entry is new, so a swap from one is refused once another
+// holder has written. It also counts into the outcome, for manifest swaps and for creates of commit
+// objects, how many were applied and how many refused, and how many landed after the lease had
+// changed hands since they were sent, after another node had taken it once and twice, and after
+// another node had committed. A node is a client of the store: an instance that is closed and opened
+// again is a new holder on the same node, and one that restarts after a crash is a new node. The
+// store's history tells, so it needs every request to have arrived.
+func (r *run) verifyLandings(ctx context.Context) {
+	type change struct {
+		at      time.Duration
+		client  string
+		request int
+		// holder of the lease after the write, or empty for a release.
+		holder string
+		// commit is set when the write moved the head of the log, and free when the manifest before
+		// it had no lease entry.
+		commit, free bool
+	}
+	var changes []change
+	head := format.EmptyLog
+	free := true
+	for _, write := range r.store.History() {
+		if write.Key != prefix+"/manifest.json" {
+			continue
+		}
+		man, err := format.ParseManifest(write.Content)
+		if err != nil {
+			// verifyHistory reports it.
+			return
+		}
+		holder := ""
+		if man.Lease != nil {
+			holder = man.Lease.Holder
+		}
+		changes = append(changes, change{at: write.Time, client: write.Client, request: write.Request, holder: holder, commit: man.Head != head, free: free})
+		head, free = man.Head, holder == ""
+	}
+
+	var violations []string
+	defer func() {
+		for _, v := range violations {
+			r.o.violate(ctx, r.c.world, "%v", v)
+		}
+	}()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.o.mu.Lock()
+	defer r.o.mu.Unlock()
+	for _, l := range r.store.Landings() {
+		kind := "manifest swaps"
+		if l.Create {
+			if !strings.Contains(l.Key, "/commits/") {
+				// A create of the manifest, which takes the lease of a new database.
+				continue
+			}
+			kind = "commit objects"
+		}
+		if l.Applied {
+			r.o.landings[kind+" applied"]++
+		} else {
+			r.o.landings[kind+" refused"]++
+		}
+		// The holder when the write was sent, and the changes of holder and the commits of other
+		// instances after it, up to the landing. A release is no change of holder.
+		var holder string
+		var handovers, takeovers, commits int
+		for _, c := range changes {
+			switch {
+			case c.at <= l.Sent:
+				if c.holder != "" {
+					holder = c.holder
+				}
+				continue
+			case c.at >= l.Landed:
+				continue
+			}
+			if c.holder != "" && c.holder != holder {
+				handovers++
+				if r.nodeOf[c.holder] != l.Client {
+					takeovers++
+				}
+				holder = c.holder
+			}
+			if c.commit && c.client != l.Client {
+				commits++
+			}
+		}
+		if handovers >= 1 {
+			r.o.landings[kind+" after a change of holder"]++
+		}
+		if handovers >= 1 && l.Applied && !l.Create {
+			r.o.landings[kind+" applied after a change of holder"]++
+			i := slices.IndexFunc(changes, func(c change) bool { return c.request == l.Request })
+			if i < 0 || !changes[i].free {
+				violations = append(violations, fmt.Sprintf("request %v of %v, a swap of the manifest that was sent at %v, was applied at %v, after the lease changed hands, and not as a take of a free lease", l.Request, l.Client, l.Sent, l.Landed))
+			}
+		}
+		if takeovers >= 1 {
+			r.o.landings[kind+" after another node took the lease"]++
+		}
+		if takeovers >= 2 {
+			r.o.landings[kind+" after other nodes took the lease twice"]++
+		}
+		if commits > 0 {
+			r.o.landings[kind+" after a commit of another node"]++
+		}
+		if l.Landed-l.Sent > r.w.faults.LateBy+2*r.w.faults.SlowBy {
+			r.o.landings[kind+" later than LateBy allows"]++
+		}
 	}
 }
 

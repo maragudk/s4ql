@@ -370,6 +370,14 @@ func (d *DB) acquire(ctx context.Context) time.Duration {
 	next := m
 	sent := d.now()
 	next.Lease = &format.Lease{Holder: d.id, Duration: d.options.Lease, Renewed: sent.wall, Salt: d.host.Uint64()}
+	if d.bugs.resendTake {
+		// The planted bug: a take that got no answer is sent again with its bytes, as a client sends
+		// a request again, while the manifest has the version that it was sent from.
+		if d.lastTake != nil && d.lastTakeFrom == version {
+			next, sent = d.lastTake.man, d.lastTake.sent
+		}
+		d.lastTake, d.lastTakeFrom = &flight{man: next, sent: sent}, version
+	}
 	data, err := next.Marshal()
 	if err != nil {
 		d.event(ctx, slog.LevelWarn, eventLease, slog.String(attrTransition, "taken"), slog.String(attrOutcome, "failed"), errAttr(err))
@@ -385,6 +393,10 @@ func (d *DB) acquire(ctx context.Context) time.Duration {
 		taken, err = d.store.Create(rctx, d.manifestKey, bytes.NewReader(data), &sum)
 	}
 	cancel()
+	if d.bugs.resendTake && (err == nil || refusal(err)) {
+		// The planted bug sends only a take that got no answer again.
+		d.lastTake = nil
+	}
 	switch {
 	case err == nil:
 	case refusal(err):

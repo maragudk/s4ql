@@ -35,6 +35,7 @@ var plantable = map[string]func(b *bugs){
 	"keyTwice":             func(b *bugs) { b.keyTwice = true },
 	"forgetDelete":         func(b *bugs) { b.forgetDelete = true },
 	"skipUnreadable":       func(b *bugs) { b.skipUnreadable = true },
+	"resendTake":           func(b *bugs) { b.resendTake = true },
 	"renewWaitsForWriter":  func(b *bugs) { b.renewWaitsForWriter = true },
 	"unlockedCounter":      func(b *bugs) { b.unlockedCounter = true },
 }
