@@ -326,12 +326,14 @@ func TestClient_connections(t *testing.T) {
 		c := f.client(t)
 		for i, sentinel := range []error{store.ErrNotFound, store.ErrExists, store.ErrChanged, store.ErrChecksum, store.ErrTooLarge} {
 			// net/http reads once more after the length of the content, when the store may already
-			// have it all.
+			// have it all. Whether the create then fails depends on which comes first, the error of
+			// that read or the answer of the store, so both are legal: the create succeeds, or its
+			// outcome is unknown. It must never look like a refusal.
 			content := &failing{r: strings.NewReader("data"), err: fmt.Errorf("a broken disk: %w", sentinel)}
 			// Each create has a key of its own: the store may have applied the create before, and a
 			// second create of that key would then be refused for real, with one attempt.
 			_, err := c.Create(t.Context(), fmt.Sprint("k", i), content, nil)
-			is.True(t, isUnknown(err), fmt.Sprint(err))
+			is.True(t, err == nil || isUnknown(err), fmt.Sprint(err))
 		}
 	})
 
