@@ -210,6 +210,33 @@ func TestClient_Create(t *testing.T) {
 	})
 }
 
+func TestClient_tooLarge(t *testing.T) {
+	t.Run("should refuse a write larger than the limit with store.ErrTooLarge, without sending it, and take one at the limit", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			s := sim.New(0, sim.Options{})
+			is.NotError(t, s.Run(func(ctx context.Context) {
+				// Every fault that could make a write that is sent fail, or land late, is on.
+				st := simstore.New(s, simstore.Options{Latency: latency, MaxSize: 4, Faults: simstore.Faults{LostRequest: 1, Late: 1}})
+				c := st.Client("a", nil)
+				_, err := c.Create(ctx, "big", strings.NewReader("12345"), nil)
+				is.True(t, errors.Is(err, store.ErrTooLarge), fmt.Sprint(err))
+				st.Calm(ctx)
+				v, err := c.Create(ctx, "k", strings.NewReader("1234"), nil)
+				is.NotError(t, err)
+				_, err = c.Swap(ctx, "k", v, strings.NewReader("12345"), nil)
+				is.True(t, errors.Is(err, store.ErrTooLarge), fmt.Sprint(err))
+
+				is.NotError(t, st.Wait(ctx))
+				is.Equal(t, 1, len(st.History()))
+				content, _, _ := st.Object("k")
+				is.Equal(t, "1234", string(content))
+				_, _, ok := st.Object("big")
+				is.True(t, !ok)
+			}))
+		})
+	})
+}
+
 // latency of the store in a probe.
 const latency = time.Second
 

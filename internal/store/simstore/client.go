@@ -109,6 +109,9 @@ func (c *Client) Create(ctx context.Context, key string, content io.ReadSeeker, 
 		return "", err
 	}
 	r := &request{kind: create, key: key, content: data, checksum: checksum}
+	if err := c.checkSize(ctx, r); err != nil {
+		return "", err
+	}
 	if err := c.send(ctx, r); err != nil {
 		return "", err
 	}
@@ -127,10 +130,24 @@ func (c *Client) Swap(ctx context.Context, key string, from store.Version, conte
 		return "", err
 	}
 	r := &request{kind: swap, key: key, from: from, content: data, checksum: checksum}
+	if err := c.checkSize(ctx, r); err != nil {
+		return "", err
+	}
 	if err := c.send(ctx, r); err != nil {
 		return "", err
 	}
 	return r.version, nil
+}
+
+// checkSize of the write r against [Options.MaxSize]: a larger one fails with [store.ErrTooLarge],
+// before it is sent.
+func (c *Client) checkSize(ctx context.Context, r *request) error {
+	s := c.s
+	if s.options.MaxSize == 0 || len(r.content) <= s.options.MaxSize {
+		return nil
+	}
+	s.host.Trace(ctx, "%v: a write to %v of %v bytes from %v: not sent, because it is larger than %v bytes", s.name, r.key, len(r.content), c.name, s.options.MaxSize)
+	return fmt.Errorf("simstore: %v bytes, more than %v: %w", len(r.content), s.options.MaxSize, store.ErrTooLarge)
 }
 
 // checkKey panics for a key that S3 refuses, or that S3 and its SDKs may treat as another key: one

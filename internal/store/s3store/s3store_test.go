@@ -35,12 +35,12 @@ import (
 )
 
 // isUnknown reports whether err is the error of a write whose outcome is unknown: it is none of the
-// four errors that mean that a write was not applied.
+// errors that mean that a write was not applied.
 func isUnknown(err error) bool {
 	if err == nil {
 		return false
 	}
-	for _, r := range []error{store.ErrNotFound, store.ErrExists, store.ErrChanged, store.ErrChecksum} {
+	for _, r := range []error{store.ErrNotFound, store.ErrExists, store.ErrChanged, store.ErrChecksum, store.ErrTooLarge} {
 		if errors.Is(err, r) {
 			return false
 		}
@@ -68,6 +68,7 @@ func TestClient_answers(t *testing.T) {
 		{name: "404 NoSuchKey", answer: answer{404, "NoSuchKey"}, swap: store.ErrNotFound},
 		{name: "400 BadDigest", answer: answer{400, "BadDigest"}, create: store.ErrChecksum, swap: store.ErrChecksum},
 		{name: "400 XAmzContentSHA256Mismatch", answer: answer{400, "XAmzContentSHA256Mismatch"}, create: store.ErrChecksum, swap: store.ErrChecksum},
+		{name: "400 EntityTooLarge", answer: answer{400, "EntityTooLarge"}, create: store.ErrTooLarge, swap: store.ErrTooLarge},
 		// Without a body, the SDK takes the code from the status, and a 412 is still a refusal.
 		{name: "412 without a body", answer: answer{412, ""}, create: store.ErrExists, swap: store.ErrChanged},
 		{name: "412 with another code", answer: answer{412, "SomethingElse"}},
@@ -323,14 +324,16 @@ func TestClient_connections(t *testing.T) {
 	t.Run("should not wrap an error of the content in the error of a write whose outcome is unknown", func(t *testing.T) {
 		f := newFake(t)
 		c := f.client(t)
-		for i, sentinel := range []error{store.ErrNotFound, store.ErrExists, store.ErrChanged, store.ErrChecksum} {
+		for i, sentinel := range []error{store.ErrNotFound, store.ErrExists, store.ErrChanged, store.ErrChecksum, store.ErrTooLarge} {
 			// net/http reads once more after the length of the content, when the store may already
-			// have it all.
+			// have it all. Whether the create then fails depends on which comes first, the error of
+			// that read or the answer of the store, so both are legal: the create succeeds, or its
+			// outcome is unknown. It must never look like a refusal.
 			content := &failing{r: strings.NewReader("data"), err: fmt.Errorf("a broken disk: %w", sentinel)}
 			// Each create has a key of its own: the store may have applied the create before, and a
 			// second create of that key would then be refused for real, with one attempt.
 			_, err := c.Create(t.Context(), fmt.Sprint("k", i), content, nil)
-			is.True(t, isUnknown(err), fmt.Sprint(err))
+			is.True(t, err == nil || isUnknown(err), fmt.Sprint(err))
 		}
 	})
 
@@ -500,7 +503,7 @@ func TestClient_content(t *testing.T) {
 	t.Run("should refuse content larger than one PutObject takes without sending anything", func(t *testing.T) {
 		f := newFake(t)
 		_, err := f.client(t).Create(t.Context(), "k", &sized{size: s3store.MaxSize + 1}, nil)
-		is.True(t, errors.Is(err, s3store.ErrTooLarge), fmt.Sprint(err))
+		is.True(t, errors.Is(err, store.ErrTooLarge), fmt.Sprint(err))
 		is.Equal(t, 0, f.count(http.MethodPut, "k"))
 	})
 

@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"maragu.dev/is"
@@ -26,8 +27,10 @@ import (
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/host"
 	"maragu.dev/s4ql/internal/s4qlpb"
+	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sqlite"
 	"maragu.dev/s4ql/internal/store"
+	"maragu.dev/s4ql/internal/store/simstore"
 )
 
 // commits of the log of the world's database, oldest first, each as the lines of [changes].
@@ -1351,6 +1354,52 @@ func TestTx_Commit_checksum(t *testing.T) {
 				is.Equal(t, 1, len(w.commits(t)))
 			})
 		}
+	})
+}
+
+func TestTx_Commit_tooLarge(t *testing.T) {
+	t.Run("should fail at once with ErrTooLarge for a commit object that the store can never take, commit nothing, and commit the next transaction", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			h := sim.NewFree(sim.Buggify{})
+			// The limit is far above a manifest, and below the commit object of a thousand rows.
+			w := &world{host: h, store: simstore.New(h, simstore.Options{MaxSize: 2 << 10}), dir: cacheDir(t)}
+			events := &recorder{}
+			s := newScriptStore(w.client())
+			d := w.openOn(t, "a", s, core.Options{Logger: events.logger()})
+			is.NotError(t, d.Wait(t.Context()))
+			transact(t, d, create("t1", 1, "k", "v"))
+			before, head := read(t, d), w.manifest(t).Head
+
+			tx, err := d.Begin(t.Context())
+			is.NotError(t, err)
+			for i := range 1000 {
+				upsert("t1", i, i)(t, tx)
+			}
+			// A core that sent the upload again would give up only when this context ends.
+			ctx, cancel := context.WithTimeout(t.Context(), time.Hour)
+			defer cancel()
+			uploads := s.count("create", "commits/")
+			err = tx.Commit(ctx)
+			is.Error(t, core.ErrTooLarge, err)
+			is.True(t, ctx.Err() == nil, "the commit waited until its context ended")
+			is.Equal(t, 1, s.count("create", "commits/")-uploads, "the upload was sent again")
+			for _, other := range []error{core.ErrOutcomeUnknown, core.ErrNoLease, core.ErrStopped, context.DeadlineExceeded} {
+				is.True(t, !errors.Is(err, other), fmt.Sprint(err))
+			}
+			is.Error(t, core.ErrTxDone, tx.Rollback(t.Context()))
+
+			failed := events.with(core.EventCommit, core.AttrOutcome, "not_committed")
+			is.Equal(t, 1, len(failed))
+			is.Equal(t, slog.LevelWarn, levelOf(failed[0]))
+			is.Equal(t, "1", at(failed[0], "attempts"))
+
+			// Nothing changed, and the instance serves on.
+			is.Equal(t, head, w.manifest(t).Head)
+			is.Equal(t, before, read(t, d))
+			is.NotError(t, d.Wait(t.Context()))
+			transact(t, d, upsert("t1", 1, 2))
+			is.Equal(t, "[[create t1(k*0,v)] [upsert t1 [0 1] 1,2]]", fmt.Sprint(w.commits(t)))
+		})
 	})
 }
 

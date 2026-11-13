@@ -21,8 +21,11 @@ const (
 	outcomeExists   = "exists"
 	outcomeChanged  = "changed"
 	outcomeChecksum = "checksum"
+	// outcomeTooLarge is a write whose content is larger than one write takes: larger than [MaxSize],
+	// which the client refuses before it sends anything, or larger than the store takes.
+	outcomeTooLarge = "too_large"
 	// outcomeNotSent is a call that the client refused before it sent anything, such as one with a
-	// key that the store does not take.
+	// key that the store does not take, for another reason than its size.
 	outcomeNotSent = "not_sent"
 	// outcomeUnknown is a write that ended without an answer that shows what happened.
 	outcomeUnknown = "unknown"
@@ -36,13 +39,13 @@ const (
 
 // end r with the given outcome and error, which it returns, and log its event, store_request. A
 // request that succeeded, or was refused as part of normal work, is logged at Debug. A checksum
-// that does not match, a call that was not sent, an unknown outcome, an unexpected answer, and a
+// that does not match, content that is too large, a call that was not sent, an unknown outcome, an unexpected answer, and a
 // failed read are logged at Warn. The attempts are the number of times that the HTTP transport
 // wrote the request.
 func (r *request) end(outcome string, err error) error {
 	level := slog.LevelDebug
 	switch outcome {
-	case outcomeChecksum, outcomeNotSent, outcomeUnknown, outcomeUnexpected, outcomeFailed:
+	case outcomeChecksum, outcomeTooLarge, outcomeNotSent, outcomeUnknown, outcomeUnexpected, outcomeFailed:
 		level = slog.LevelWarn
 	}
 	attrs := []slog.Attr{
