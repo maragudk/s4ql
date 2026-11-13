@@ -59,3 +59,9 @@ Markus asked: "Maybe S3 already knows the hash of its objects?" It does. On uplo
 Status: open, not fixed.
 
 A module that vendors s4ql with `go mod vendor` cannot build, because Go vendors only directories that hold Go packages and so drops `internal/sqlite/c/`, which holds the SQLite C code. It is not fixed, because nothing depends on s4ql yet.
+
+## The SQL front end
+
+Status: the tokenizer is built in `internal/sql/token` on 2026-11-13. What SQLite's parser driver does on top of the tokenizer, and is left to the parser, is listed in the package's documentation. The parser, the engine, and the public API are not designed yet; the facts and options are in [research/sql-front-end.md](research/sql-front-end.md).
+
+- **Open: a NUL byte in SQL text.** SQLite's tokenizer reads a NUL byte as the end of the text, and so does `internal/sql/token`: the tokens stop there, and the bytes after it are never read. The binding's `Conn.Prepare` refuses such SQL. Whether the engine refuses it too, or reads up to the NUL as SQLite does, is not decided.
