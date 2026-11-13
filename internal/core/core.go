@@ -435,7 +435,7 @@ func (d *DB) cacheError(ctx context.Context, operation string, err error) error 
 	case classify(err) == kindLocal || errors.Is(err, ErrCacheVersion):
 		return d.stop(ctx, fmt.Errorf("%w: %v: %w", ErrLocal, operation, err))
 	case classify(err) == kindBusy:
-		d.event(ctx, slog.LevelError, eventBusy, slog.String(attrOperation, operation), slog.String(attrOutcome, "busy"), errAttr(err))
+		d.event(ctx, slog.LevelWarn, eventBusy, slog.String(attrOperation, operation), slog.String(attrOutcome, "busy"), errAttr(err))
 		return fmt.Errorf("%w: %v: %w", ErrBusy, operation, err)
 	}
 	return err
@@ -525,9 +525,9 @@ func (d *DB) usable() error {
 // refused logs that the operation was refused for lack of a valid lease, if err says so, and
 // returns err.
 func (d *DB) refused(ctx context.Context, operation string, err error) error {
-	if errors.Is(err, ErrNoLease) {
+	if errors.Is(err, ErrNoLease) && d.enabled(ctx, slog.LevelDebug) {
 		reason := strings.TrimPrefix(err.Error(), ErrNoLease.Error()+": ")
-		d.event(ctx, slog.LevelInfo, eventRefusal, slog.String(attrOperation, operation), slog.String(attrReason, reason), slog.String(attrOutcome, "refused"))
+		d.event(ctx, slog.LevelDebug, eventRefusal, slog.String(attrOperation, operation), slog.String(attrReason, reason), slog.String(attrOutcome, "refused"))
 	}
 	return err
 }

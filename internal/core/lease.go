@@ -244,7 +244,7 @@ func (d *DB) lose(ctx context.Context, m format.Manifest) {
 	if m.Lease != nil {
 		holder = m.Lease.Holder
 	}
-	d.event(ctx, slog.LevelWarn, eventLease, slog.String(attrTransition, "lost"), slog.String(attrOutcome, "lost"), slog.String(attrLeaseHolder, holder))
+	d.event(ctx, slog.LevelInfo, eventLease, slog.String(attrTransition, "lost"), slog.String(attrOutcome, "lost"), slog.String(attrLeaseHolder, holder))
 }
 
 // leaseLoop is the one goroutine of the instance. Until the instance stops, it takes the lease
@@ -357,7 +357,7 @@ func (d *DB) acquire(ctx context.Context) time.Duration {
 	next.Lease = &format.Lease{Holder: d.id, Duration: d.options.Lease, Renewed: sent.wall, Salt: d.host.Uint64()}
 	data, err := next.Marshal()
 	if err != nil {
-		d.event(ctx, slog.LevelError, eventLease, slog.String(attrTransition, "taken"), slog.String(attrOutcome, "failed"), errAttr(err))
+		d.event(ctx, slog.LevelWarn, eventLease, slog.String(attrTransition, "taken"), slog.String(attrOutcome, "failed"), errAttr(err))
 		return backOff
 	}
 	sum := sha256.Sum256(data)
@@ -595,7 +595,7 @@ func (d *DB) renewLocked(ctx context.Context, outside *locks) time.Duration {
 	if f == nil {
 		var err error
 		if f, err = d.newFlight(format.Name{}, false); err != nil {
-			d.event(ctx, slog.LevelError, eventLease, slog.String(attrTransition, "renewed"), slog.String(attrOutcome, "failed"), errAttr(err))
+			d.event(ctx, slog.LevelWarn, eventLease, slog.String(attrTransition, "renewed"), slog.String(attrOutcome, "failed"), errAttr(err))
 			return backOff
 		}
 	}
@@ -631,12 +631,13 @@ func (d *DB) renewLocked(ctx context.Context, outside *locks) time.Duration {
 			return 0
 		}
 	}
+	level := slog.LevelWarn
 	if outcome == "renewed" {
-		err = nil
+		// A routine renewal is logged only when the level of debugging is on.
+		err, level = nil, slog.LevelDebug
 	}
-	level := slog.LevelInfo
-	if outcome != "renewed" {
-		level = slog.LevelWarn
+	if !d.enabled(ctx, level) {
+		return wait
 	}
 	d.event(ctx, level, eventLease, slog.String(attrTransition, "renewed"), slog.String(attrOutcome, outcome),
 		slog.String(attrLeaseHolder, d.id), slog.Int(attrAttempts, f.attempts), clock.total(), errAttr(err))
@@ -653,12 +654,12 @@ func (d *DB) releaseOnce(ctx context.Context) {
 	}
 	clock := d.stopwatch()
 	err := d.releaseFrom(ctx, d.man, d.version)
-	outcome := "released"
+	outcome, level := "released", slog.LevelInfo
 	if err != nil {
 		// The manifest may have no lease entry all the same, and may still name this instance.
-		outcome, d.unsure = "failed", true
+		outcome, level, d.unsure = "failed", slog.LevelWarn, true
 	}
-	d.event(ctx, slog.LevelInfo, eventLease, slog.String(attrTransition, "released"), slog.String(attrOutcome, outcome), slog.Int(attrAttempts, 1), clock.total(), errAttr(err))
+	d.event(ctx, level, eventLease, slog.String(attrTransition, "released"), slog.String(attrOutcome, outcome), slog.Int(attrAttempts, 1), clock.total(), errAttr(err))
 }
 
 // releaseFrom swaps the manifest m, which names this instance as the holder and has the given

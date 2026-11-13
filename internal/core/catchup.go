@@ -40,11 +40,15 @@ func (d *DB) catchUp(ctx context.Context) (err error) {
 	var applied int
 	var bytes int64
 	defer func() {
-		outcome := "caught_up"
+		outcome, level := "caught_up", slog.LevelInfo
 		if err != nil {
-			outcome = "failed"
+			outcome, level = "failed", slog.LevelWarn
+			if errors.Is(d.stoppedError(), ErrClosed) {
+				// A close ended it, which is no failure.
+				level = slog.LevelInfo
+			}
 		}
-		d.event(ctx, slog.LevelInfo, eventCatchUp, slog.String(attrOutcome, outcome), slog.String(attrCatchUpFrom, from.String()),
+		d.event(ctx, level, eventCatchUp, slog.String(attrOutcome, outcome), slog.String(attrCatchUpFrom, from.String()),
 			slog.String(attrCatchUpTo, head.String()), slog.Int(attrCatchUpCommits, applied), slog.Int64(attrBytes, bytes), clock.total(), errAttr(err))
 	}()
 

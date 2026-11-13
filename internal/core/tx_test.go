@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1234,6 +1235,7 @@ func TestDB_Begin(t *testing.T) {
 		is.Equal(t, 1, len(events.named(core.EventBusy)))
 		is.Equal(t, "busy", at(events.named(core.EventBusy)[0], core.AttrOutcome))
 		is.Equal(t, "begin", at(events.named(core.EventBusy)[0], core.AttrOperation))
+		is.Equal(t, slog.LevelWarn, levelOf(events.named(core.EventBusy)[0]))
 
 		// It is no local I/O failure: the instance goes on, and reads do not wait for the lock.
 		is.NotError(t, d.Err())

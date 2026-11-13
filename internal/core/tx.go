@@ -681,15 +681,17 @@ func (tx *Tx) Commit(ctx context.Context) (err error) {
 
 	clock := d.stopwatch()
 	outcome := "not_committed"
-	attrs := []slog.Attr{slog.String(attrParent, tx.parent.String())}
+	report := commitReport{parent: tx.parent}
 	attempts := 0
 	defer func() {
-		level := slog.LevelInfo
-		if err != nil {
+		// A commit that succeeded is routine, and its event is only for debugging.
+		level := slog.LevelDebug
+		if err != nil || outcome == "committed_and_stopped" {
 			level = slog.LevelWarn
 		}
-		attrs = append(attrs, slog.String(attrOutcome, outcome), slog.Int(attrAttempts, attempts), clock.total(), errAttr(err))
-		d.event(ctx, level, eventCommit, attrs...)
+		if d.enabled(ctx, level) {
+			d.event(ctx, level, eventCommit, report.attrs(outcome, attempts, clock.total(), err)...)
+		}
 	}()
 
 	if tx.failed != nil {
@@ -707,8 +709,8 @@ func (tx *Tx) Commit(ctx context.Context) (err error) {
 		return fmt.Errorf("commit: %w", err)
 	}
 	defer out.spool.close()
-	attrs = append(attrs, slog.String(attrCommit, out.name.String()), slog.Int(attrChanges, out.changes),
-		slog.Int(attrAnnotations, tx.annotations), slog.Int64(attrBytes, out.spool.size), clock.phase(attrDurationSpool))
+	report.spooled, report.name, report.changes, report.annotations, report.bytes = true, out.name, out.changes, tx.annotations, out.spool.size
+	report.phase(clock.phase(attrDurationSpool))
 
 	if out.changes == 0 {
 		if err := tx.rollback(ctx); err != nil {
@@ -746,10 +748,10 @@ func (tx *Tx) Commit(ctx context.Context) (err error) {
 		_ = tx.rollback(ctx)
 		return fmt.Errorf("commit: not committed: %w", err)
 	}
-	attrs = append(attrs, clock.phase(attrDurationUpload))
+	report.phase(clock.phase(attrDurationUpload))
 
 	result, err := tx.publish(ctx, out.name, &attempts)
-	attrs = append(attrs, clock.phase(attrDurationSwap))
+	report.phase(clock.phase(attrDurationSwap))
 	switch result {
 	case published:
 		d.host.Yield(ctx, "core: a commit between the manifest swap and the cache")
@@ -761,7 +763,7 @@ func (tx *Tx) Commit(ctx context.Context) (err error) {
 				outcome = "committed_and_stopped"
 			}
 		}
-		attrs = append(attrs, clock.phase(attrDurationCache))
+		report.phase(clock.phase(attrDurationCache))
 		return nil
 
 	case unknown:
@@ -772,6 +774,36 @@ func (tx *Tx) Commit(ctx context.Context) (err error) {
 	}
 	_ = tx.rollback(ctx)
 	return fmt.Errorf("commit: not committed: %w", err)
+}
+
+// commitReport is what the event of a commit says, kept as plain values until the event is logged,
+// so that a commit whose event the logger drops builds no attributes.
+type commitReport struct {
+	parent format.Name
+	// spooled is whether the commit object was written, and the fields up to bytes then say what it
+	// holds.
+	spooled              bool
+	name                 format.Name
+	changes, annotations int
+	bytes                int64
+	// phases that have ended, each as its duration.
+	phases []slog.Attr
+}
+
+// phase that has ended.
+func (r *commitReport) phase(a slog.Attr) {
+	r.phases = append(r.phases, a)
+}
+
+// attrs of the event of the commit, which ended with the outcome after the attempts.
+func (r *commitReport) attrs(outcome string, attempts int, total slog.Attr, err error) []slog.Attr {
+	attrs := []slog.Attr{slog.String(attrParent, r.parent.String())}
+	if r.spooled {
+		attrs = append(attrs, slog.String(attrCommit, r.name.String()), slog.Int(attrChanges, r.changes),
+			slog.Int(attrAnnotations, r.annotations), slog.Int64(attrBytes, r.bytes))
+	}
+	attrs = append(attrs, r.phases...)
+	return append(attrs, slog.String(attrOutcome, outcome), slog.Int(attrAttempts, attempts), total, errAttr(err))
 }
 
 // spoolReader reads the spool file of a commit object for an upload, and keeps the first error of

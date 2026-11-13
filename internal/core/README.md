@@ -46,7 +46,7 @@ How the cache handles SQLite's "busy" was chosen by maragubot on 2026-11-11, aft
 - **A lock in Go does not keep SQLite from reporting "busy".** A reader that starts while the writer commits can take the WAL write lock for a moment, and the writer's next `begin immediate` then fails at once. It happens with a single reader, and only with real parallelism.
 - **Every connection has a busy timeout,** one second by default (`Options.BusyTimeout`). SQLite then waits out the window itself. In the investigation a timeout of one millisecond already removed every failure, and the wait was about 1.5 ms on fewer than 1% of begins.
 - **The write connection opens first, runs one statement, and stays open while the instance runs.** Recovery of the WAL after a crash, and the cleanup when the last connection closes, also report "busy", and this keeps both away from the read connections.
-- **"Busy" after the timeout is returned to the caller and logged as an error** (`ErrBusy`). It is not a local I/O failure, and the instance goes on. In this design it means that another process has the cache open, or that s4ql has a bug.
+- **"Busy" after the timeout is returned to the caller and logged as a warning** (`ErrBusy`). It is not a local I/O failure, and the instance goes on. In this design it means that another process has the cache open, or that s4ql has a bug.
 
 ## A write transaction
 
@@ -164,6 +164,10 @@ The reason for planted bugs is in [Conditions for keeping the design](../sim/REA
 ## Events
 
 - **The instance logs one wide event for each unit of work,** through `Options.Logger`, which is a `*slog.Logger`. The names of the events and of the attributes are in one place, `telemetry.go`. maragubot chose this before the build and told Markus on 2026-11-12.
+- **The level of an event says how much an operator needs it.** Routine work is Debug: a commit that succeeded, also one that changed nothing, a renewal of the lease that succeeded, and a call that was refused for lack of a valid lease. A change of state is Info: the lease taken, lost, or released, a catch-up, and a close. What went wrong and did not stop the instance is Warn, and a stop for good is Error. The list is in the doc comment of the events in `telemetry.go`. With a logger at the default level, Info, a healthy instance logs nothing after it has started. The levels were agreed with Markus on 2026-11-13, who asked: "So we log on each commit? Isn't that a bit much? But maybe on a debug or trace level it's fine".
+- **A commit whose cache fails after the manifest swap is Warn,** though `Tx.Commit` returns nil for it, because something went wrong. The stop that follows is Error.
+- **An event at Debug costs almost nothing while Debug is off.** The core asks the logger whether it takes the level, with the context, before it builds attributes that cost anything to build: the event of a commit keeps plain values until then (`commitReport`), and the events of a renewal and of a refusal are not built at all.
+- **Every event is logged with a context, through `slog.Logger.LogAttrs`,** so that tracing can later add a span to it through the context. Markus on 2026-11-13: "make sure to use their context-aware log function counterparts, so we can add tracing context (span ID etc.) later through the context". An event of a call carries the context of its caller. The lease task has no caller: its events carry the context that `Open` was given, without its cancellation, because the task outlives the call of `Open`. The events of `DB.Close` carry the context of `Close`. `TestEvents` checks the contexts of a commit, of a read and a `Begin` that are refused, of the lease task, and of a close.
 - **There is no OpenTelemetry, no trace, and no metric yet.** The todo holds them, to be decided with the public driver.
 
 ## What the package does not do, and what to know

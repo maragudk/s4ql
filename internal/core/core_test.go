@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -532,7 +533,10 @@ func TestDB_stop(t *testing.T) {
 			stops := f.events.named(core.EventStop)
 			is.Equal(t, 1, len(stops))
 			is.Equal(t, "local_failure", at(stops[0], core.AttrOutcome))
-			is.Equal(t, 1, len(f.events.with(core.EventCommit, core.AttrOutcome, "committed_and_stopped")))
+			is.Equal(t, slog.LevelError, levelOf(stops[0]))
+			stopped := f.events.with(core.EventCommit, core.AttrOutcome, "committed_and_stopped")
+			is.Equal(t, 1, len(stopped))
+			is.Equal(t, slog.LevelWarn, levelOf(stopped[0]))
 			// One try to release the lease, which is the one of the stop: closing the instance finds
 			// the lease released.
 			is.Equal(t, 1, len(f.events.with(core.EventLease, core.AttrTransition, "released")))
