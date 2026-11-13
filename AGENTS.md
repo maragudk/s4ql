@@ -39,7 +39,7 @@ Do not spend effort scrubbing Markus's email address from documents, transcripts
 `README.md` is not a dumping ground for all kinds of information. Things are added to it judiciously.
 
 - **Why:** Markus said on 2026-11-11 that "the readme isn't a dumping ground for all kinds of info, we'll add things there judiciously", when he had the paragraph on cgo and the C compiler removed from it.
-- **How to apply:** do not add to `README.md` as a side effect of other work. Details on building, internals, and design go next to the code they describe or in `docs/`. If something seems to belong in the README, propose it to Markus instead of writing it.
+- **How to apply:** do not add to `README.md` as a side effect of other work. Details on building, internals, and design go next to the code they describe or in `docs/`. If something seems to belong in the README, propose it to Markus instead of writing it. The section "Status" is the exception: Markus asked for it on 2026-11-13, "we can keep it up to date without dumping everything there". Update it when a piece of the project is merged, and keep it to what is built, what is not, and what is next, in a few lines. Details stay in `docs/todo.md`.
 
 ### Work without waiting for Markus, except on design
 
