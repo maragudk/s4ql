@@ -115,15 +115,29 @@ type Conn struct {
 // ":memory:" opens a new in-memory database, and "" opens a new temporary database on disk that is
 // deleted when it is closed. Extended result codes are enabled.
 func Open(path string) (*Conn, error) {
+	return OpenVFS(path, "")
+}
+
+// OpenVFS opens the database file at path as [Open] does, through the VFS registered under the
+// name vfs, or through SQLite's default VFS if vfs is empty.
+func OpenVFS(path, vfs string) (*Conn, error) {
 	if strings.IndexByte(path, 0) >= 0 {
 		return nil, errors.New("sqlite: path contains a NUL byte")
+	}
+	if strings.IndexByte(vfs, 0) >= 0 {
+		return nil, errors.New("sqlite: VFS name contains a NUL byte")
 	}
 
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))
+	var cvfs *C.char
+	if vfs != "" {
+		cvfs = C.CString(vfs)
+		defer C.free(unsafe.Pointer(cvfs))
+	}
 
 	var db *C.sqlite3
-	rc := C.sqlite3_open_v2(cpath, &db, C.SQLITE_OPEN_READWRITE|C.SQLITE_OPEN_CREATE|C.SQLITE_OPEN_EXRESCODE, nil)
+	rc := C.sqlite3_open_v2(cpath, &db, C.SQLITE_OPEN_READWRITE|C.SQLITE_OPEN_CREATE|C.SQLITE_OPEN_EXRESCODE, cvfs)
 	if rc == C.SQLITE_OK && asan {
 		// The lookaside allocator reuses memory that the address sanitizer cannot see, so it would
 		// hide a statement used after it is finalized.
@@ -136,6 +150,41 @@ func Open(path string) (*Conn, error) {
 		return nil, err
 	}
 	return &Conn{db: db}, nil
+}
+
+// FindVFS registered under the given name, or SQLite's default VFS for the empty name. The result
+// points to an sqlite3_vfs, and is nil if there is no such VFS.
+func FindVFS(name string) unsafe.Pointer {
+	var cname *C.char
+	if name != "" {
+		cname = C.CString(name)
+		defer C.free(unsafe.Pointer(cname))
+	}
+	return unsafe.Pointer(C.sqlite3_vfs_find(cname))
+}
+
+// VFSName is the name of the sqlite3_vfs at vfs.
+func VFSName(vfs unsafe.Pointer) string {
+	return C.GoString((*C.sqlite3_vfs)(vfs).zName)
+}
+
+// RegisterVFS registers the sqlite3_vfs at vfs under its name, and not as the default VFS. The
+// memory at vfs must stay valid, and in C memory, until [UnregisterVFS] has unregistered it and the
+// last connection that was opened through it is closed.
+func RegisterVFS(vfs unsafe.Pointer) error {
+	if rc := C.sqlite3_vfs_register((*C.sqlite3_vfs)(vfs), 0); rc != C.SQLITE_OK {
+		return errorFromConn(nil, rc)
+	}
+	return nil
+}
+
+// UnregisterVFS that [RegisterVFS] registered. Unregistering a VFS that is not registered does
+// nothing.
+func UnregisterVFS(vfs unsafe.Pointer) error {
+	if rc := C.sqlite3_vfs_unregister((*C.sqlite3_vfs)(vfs)); rc != C.SQLITE_OK {
+		return errorFromConn(nil, rc)
+	}
+	return nil
 }
 
 // Close the connection. It fails with SQLITE_BUSY, and leaves the connection open, if any statement

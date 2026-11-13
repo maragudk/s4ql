@@ -76,6 +76,9 @@ type Options struct {
 // The zero value is the files of the operating system and SQLite's default VFS. A value is a field
 // of [Options] that is not exported, and nothing in this package sets it but its tests.
 type local struct {
+	// vfs is the name of the SQLite VFS that the connections to the cache open the cache through,
+	// or empty for the default.
+	vfs string
 	// spool wraps each spool file of the given kind, "commit" or "annotations", when it is
 	// created, if it is not nil.
 	spool func(kind string, f *os.File) spoolFile
@@ -298,14 +301,14 @@ func Open(ctx context.Context, h host.Host, s store.Store, path, prefix string, 
 	// write-ahead log after a crash, which reports "busy" to every other connection, is over before
 	// a read connection exists.
 	busy := options.BusyTimeout.Milliseconds()
-	if d.w, err = openConn(path, busy); err != nil {
+	if d.w, err = openConn(path, options.local.vfs, busy); err != nil {
 		return nil, openError(err)
 	}
 	if err := d.w.setUp(options.syncOff); err != nil {
 		return nil, openError(err)
 	}
 	for range options.Readers {
-		c, err := openConn(path, busy)
+		c, err := openConn(path, options.local.vfs, busy)
 		if err != nil {
 			return nil, openError(err)
 		}

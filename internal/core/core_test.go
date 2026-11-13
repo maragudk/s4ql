@@ -23,6 +23,7 @@ import (
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sqlite"
+	"maragu.dev/s4ql/internal/sqlite/faultvfs"
 	"maragu.dev/s4ql/internal/store"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
@@ -814,6 +815,75 @@ func TestDB_stop_cache(t *testing.T) {
 			is.Error(t, core.ErrStopped, err)
 			is.Error(t, core.ErrLocal, err)
 			is.Error(t, core.ErrCacheVersion, err)
+		})
+	})
+
+	t.Run("should stop for good with a local failure, and not a broken log, when the file system fails while replay applies a change, and keep the cache as it was", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			// The connections to the cache are closed by the cleanups that are registered later, which
+			// run first.
+			vfs, err := faultvfs.New()
+			is.NotError(t, err)
+			t.Cleanup(func() { is.NotError(t, vfs.Close()) })
+
+			// The rows of the commit object take more pages than SQLite's page cache holds, so replay
+			// writes pages to the write-ahead log while it applies the changes, before its commit.
+			first := w.serve(t, "first", core.Options{})
+			columns := make([]string, 100)
+			for i := range columns {
+				columns[i] = fmt.Sprint("c", i)
+			}
+			write(t, first, func(tx *core.Tx) {
+				is.NotError(t, tx.CreateTable(t.Context(), tableOf("t1", 1, columns...)))
+				for i := range 4000 {
+					values := make([]any, len(columns))
+					for j := range values {
+						// A value of eight bytes in SQLite's records.
+						values[j] = int64(1)<<50 + int64(i*len(columns)+j)
+					}
+					is.NotError(t, tx.Upsert(t.Context(), "t1", row(values...)))
+				}
+			})
+			head := w.manifest(t).Head
+			is.NotError(t, first.Close(t.Context()))
+
+			// The first download of the commit object takes a while. Everything that the instance
+			// writes to its cache before the catch-up is written by then, and every write to the
+			// write-ahead log fails from then on.
+			s := newScriptStore(w.client())
+			s.on("get", "commits/", hold, 1, 5*time.Second)
+			o := core.Options{}
+			o.UseVFS(vfs.Name())
+			d := w.openOn(t, "a", s, o)
+			time.Sleep(time.Second)
+			vfs.Fail(faultvfs.Fault{Ops: faultvfs.Write, Files: faultvfs.WAL})
+
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
+			defer cancel()
+			err = d.Wait(ctx)
+			is.True(t, vfs.Failures() > 0, "no write failed")
+			is.Error(t, core.ErrStopped, err)
+			is.Error(t, core.ErrLocal, err)
+			is.True(t, !errors.Is(err, core.ErrLogBroken), "the stop blames the log")
+			is.True(t, isDone(d))
+			is.Error(t, core.ErrLocal, d.Err())
+			is.NotError(t, d.Close(ctx))
+			is.True(t, w.manifest(t).Lease == nil, "the lease is not released")
+
+			// Nothing of the commit object stayed in the cache, which catches up when it is opened
+			// again.
+			position, state, err := cacheDump(filepath.Join(w.dir, "a.db"))
+			is.NotError(t, err)
+			is.Equal(t, format.EmptyLog, position)
+			is.Equal(t, 0, len(state))
+			again := w.serve(t, "a", core.Options{})
+			r, err := again.Read(t.Context())
+			is.NotError(t, err)
+			is.Equal(t, head, r.Position())
+			rows, err := r.Get(t.Context(), "t1", row(int64(1)<<50))
+			is.NotError(t, err)
+			is.Equal(t, len(columns), len(rows))
+			is.NotError(t, r.Close(t.Context()))
 		})
 	})
 }

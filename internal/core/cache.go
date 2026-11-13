@@ -30,10 +30,11 @@ type conn struct {
 	closed bool
 }
 
-// openConn to the cache at path, with the busy timeout in milliseconds, after which SQLite reports
-// a lock that it waited for as "busy".
-func openConn(path string, busyTimeout int64) (*conn, error) {
-	c, err := sqlite.Open(path)
+// openConn to the cache at path through the SQLite VFS of the given name, or SQLite's default VFS
+// if it is empty, with the busy timeout in milliseconds, after which SQLite reports a lock that it
+// waited for as "busy".
+func openConn(path, vfs string, busyTimeout int64) (*conn, error) {
+	c, err := sqlite.OpenVFS(path, vfs)
 	if err != nil {
 		return nil, err
 	}
