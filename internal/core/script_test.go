@@ -184,7 +184,7 @@ func (s *scriptStore) write(ctx context.Context, r rule, apply func(ctx context.
 	case mismatch:
 		return "", fmt.Errorf("scripted mismatch: %w", store.ErrChecksum)
 	case missing:
-		return "", fmt.Errorf("scripted missing: %w", store.ErrNotFound)
+		return "", fmt.Errorf("scripted: %w", store.ErrNotFound)
 	case hang:
 		<-ctx.Done()
 		return "", fmt.Errorf("%w: %w", errScripted, ctx.Err())

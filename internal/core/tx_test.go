@@ -591,7 +591,7 @@ func TestTx_Commit_unknownOutcome(t *testing.T) {
 			defer cancel()
 			err := tx.Commit(ctx)
 			is.Error(t, core.ErrOutcomeUnknown, err)
-			// The error wraps no other error, so that no test of it for another reads "not committed".
+			// The error wraps no other error, as the doc of Commit says: every other one means "not committed".
 			is.True(t, !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, errScripted), fmt.Sprint(err))
 			is.Error(t, core.ErrNoLease, readErr(t, d))
 			is.Error(t, core.ErrNoLease, beginErr(t, d))
@@ -678,10 +678,10 @@ func TestTx_Commit_unknownOutcome(t *testing.T) {
 				ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 				defer cancel()
 				err := tx.Commit(ctx)
-				is.True(t, err != nil && !errors.Is(err, core.ErrOutcomeUnknown), fmt.Sprint(err))
+				is.True(t, err != nil && !errors.Is(err, core.ErrOutcomeUnknown), fmt.Sprint(refusal, ": ", err))
 				s.clear()
-				is.Equal(t, without, read(t, d))
-				is.Equal(t, 1, len(w.commits(t)))
+				is.Equal(t, without, read(t, d), fmt.Sprint(refusal))
+				is.Equal(t, 1, len(w.commits(t)), fmt.Sprint(refusal))
 			})
 		}
 	})
@@ -715,7 +715,7 @@ func TestTx_Commit_unknownOutcome(t *testing.T) {
 		})
 	})
 
-	t.Run("should report an unknown outcome at once when the log in which it looks for the commit holds a commit object that can never be read", func(t *testing.T) {
+	t.Run("should report an unknown outcome without waiting for the caller when the log in which it looks for the commit holds a commit object that can never be read", func(t *testing.T) {
 		bubble(t, func(t *testing.T, w *world) {
 			s, a, tx := committing(t, w, core.Options{})
 			s.on("swap", "manifest", lose, 1)
@@ -728,13 +728,17 @@ func TestTx_Commit_unknownOutcome(t *testing.T) {
 				commitErr = tx.Commit(t.Context())
 				close(committed)
 			}()
-			// Another instance takes the lease, and the log then gets a malformed commit object on top.
+			// Another instance takes the lease, and the log then gets a malformed commit object on top,
+			// under a lease of another holder, so that the first instance stays a spare.
 			b := w.serve(t, "b", core.Options{})
 			is.NotError(t, b.Close(t.Context()))
 			l := newHandLog(t, w)
 			l.head = w.manifest(t).Head
 			l.raw(nil, []*s4qlpb.Change{{}}, nil)
-			l.publish()
+			data, err := format.Manifest{Head: l.head, Lease: &format.Lease{Holder: "another", Duration: time.Hour, Renewed: time.Now(), Salt: 1}}.Marshal()
+			is.NotError(t, err)
+			l.publishBytes(data)
+			start := time.Now()
 			s.clear()
 
 			select {
@@ -742,6 +746,7 @@ func TestTx_Commit_unknownOutcome(t *testing.T) {
 			case <-time.After(time.Hour):
 				t.Fatal("the commit is still looking in the log after an hour")
 			}
+			is.True(t, time.Since(start) < 10*time.Second, fmt.Sprint(time.Since(start)))
 			is.Error(t, core.ErrOutcomeUnknown, commitErr)
 			is.Error(t, core.ErrNoLease, readErr(t, a))
 		})
@@ -1193,20 +1198,19 @@ func TestDB_Begin(t *testing.T) {
 		d := w.serve(t, "a", core.Options{})
 		transact(t, d, create("t1", 1, "k"))
 
-		// The lock is held for twice the default, so that the speed of the machine decides nothing.
 		other, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
 		is.NotError(t, err)
 		defer func() { is.NotError(t, other.Close()) }()
 		is.NotError(t, other.Exec("begin immediate"))
-		released := make(chan error, 1)
-		go func() {
-			time.Sleep(2 * time.Second)
-			released <- other.Exec("rollback")
-		}()
 
-		_, err = d.Begin(t.Context())
+		// SQLite waits at least the busy timeout. The bound above it is far, so that the speed of the
+		// machine decides nothing.
+		start := time.Now()
+		err = beginErr(t, d)
+		elapsed := time.Since(start)
 		is.Error(t, core.ErrBusy, err)
-		is.NotError(t, <-released)
+		is.True(t, elapsed >= time.Second && elapsed < 8*time.Second, fmt.Sprint(elapsed))
+		is.NotError(t, other.Exec("rollback"))
 	})
 
 	t.Run("should return and log busy, and go on, when another connection holds the cache's write lock past the busy timeout", func(t *testing.T) {

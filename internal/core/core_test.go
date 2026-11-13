@@ -18,6 +18,7 @@ import (
 
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/format"
+	"maragu.dev/s4ql/internal/host"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sqlite"
@@ -52,7 +53,13 @@ func (w *world) open(t *testing.T, cache string, options core.Options) *core.DB 
 // openOn opens an instance that reaches the store through s.
 func (w *world) openOn(t *testing.T, cache string, s store.Store, options core.Options) *core.DB {
 	t.Helper()
-	d, err := core.Open(t.Context(), w.host, s, filepath.Join(w.dir, cache+".db"), "db", options)
+	return w.openWith(t, cache, w.host, s, options)
+}
+
+// openWith opens an instance on the host h that reaches the store through s.
+func (w *world) openWith(t *testing.T, cache string, h host.Host, s store.Store, options core.Options) *core.DB {
+	t.Helper()
+	d, err := core.Open(t.Context(), h, s, filepath.Join(w.dir, cache+".db"), "db", options)
 	is.NotError(t, err)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), time.Minute)

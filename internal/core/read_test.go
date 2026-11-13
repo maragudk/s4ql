@@ -2,7 +2,6 @@ package core_test
 
 import (
 	"context"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -96,9 +95,12 @@ func TestReadTx_Close(t *testing.T) {
 		is.Error(t, core.ErrTxDone, err)
 		_, err = r.Get(t.Context(), "t1", row(1))
 		is.Error(t, core.ErrTxDone, err)
+		var scanned int
 		for _, err := range r.Scan(t.Context(), "t1") {
+			scanned++
 			is.Error(t, core.ErrTxDone, err)
 		}
+		is.Equal(t, 1, scanned)
 	})
 }
 
@@ -146,13 +148,7 @@ func TestDB_Read(t *testing.T) {
 		bubble(t, func(t *testing.T, w *world) {
 			h := &yieldHook{Host: w.host, site: "core: a read before the check of the lease"}
 			s := newScriptStore(w.client())
-			d, err := core.Open(t.Context(), h, s, filepath.Join(w.dir, "a.db"), "db", core.Options{})
-			is.NotError(t, err)
-			t.Cleanup(func() {
-				ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), time.Minute)
-				defer cancel()
-				_ = d.Close(ctx)
-			})
+			d := w.openWith(t, "a", h, s, core.Options{})
 			is.NotError(t, d.Wait(t.Context()))
 			is.NotError(t, readErr(t, d))
 

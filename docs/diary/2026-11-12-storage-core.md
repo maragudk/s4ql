@@ -387,3 +387,94 @@ Running the large runs on a machine that 13 sessions share. The system stopped o
 
 - The planted bugs over 10000 seeds, and the mutation testing on the final code, on a machine with time and memory to spare.
 - What the simulation still does not show: the margin on the watcher's wait, because no clock runs fast; SQLite's "busy" and the order in which the connections open, because the scheduler runs one goroutine at a time; a manifest that is damaged on its way; a cache that fails anywhere but at the commit after a manifest swap; a power loss; and clock faults on an instance that was restarted after a crash.
+
+## Step 7: Mutation testing on the final code
+
+**Author:** mutation-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Every mutant of the core's decisions has run against the final code, and every one that no test catches has either a new test that catches it or a written reason why it does not matter."
+**Interpretation:** Find the builder's script and list, run every mutant one after another without running out of memory, extend the list where decisions had no mutant, and for each survivor write a test or a one-line reason, without changing the core.
+**Inferred intent:** The claim that the tests check the core rested on a run that the system killed after 64 of 144 mutants. It should rest on a run that finished.
+
+### What I did
+
+The builder's script, `mutate.py`, and its list were in the session's scratchpad. The list held 134 mutants, not the 144 that Step 4 counts, and every one of them still applied to the final code. I kept the list, and moved it to a runner of my own, `mf/run.py` in the same scratchpad:
+
+- One mutant at a time, each through `go test -overlay` on a snapshot of `HEAD` made with `git archive`, so that the tree stayed free for new tests.
+- `GOMAXPROCS=3`, `-p 1`, `-parallel 2`, and `-failfast`, in three phases: the tests without the simulation, then the three workloads, the free runs, and the large transaction, then the planted bugs.
+- Each result written to a file when it is known, and a mutant that is in the file skipped, so that a kill loses one mutant.
+- A guard that kills the process group of a test whose memory goes above 2 GB, and counts it as a failure.
+
+I added 111 mutants for decisions that the list did not cover, mostly in `read.go`, `spool.go`, `errors.go`, `cache.go`, the options, and the release, and one control without a change. The run took about three hours at a load of 12 to 28 on 10 cores. 188 of 245 were caught, 57 were not, and the control passed every test.
+
+For the 57 I wrote 21 new subtests and extended four. Each failed with its mutant and passed without, and I ran all 57 again against the tree with the new tests: 25 caught, and 32 survivors, each with a reason below.
+
+Two reviewers on the `fable` model read the new tests. Besides the two wrong tests below, both found: an assertion that pinned the floor of 100 milliseconds on a wait, which no doc comment promises; a test that pinned the wording of an error of replay; a loop over a scan that could pass with no rows; a copy of the helper `world.openOn`; and a comment that was hard to read. I removed the two assertions, which leaves `left-no-floor` and `replay-partial-without-key` as survivors, fixed the rest, and ran the 57 again. Both found the tests of `catchup.go` in `lease_test.go` and `core_test.go`, where the older tests of the catch-up are; I left them there.
+
+The default run afterwards, at a load of 13 to 16 on 10 cores: `go test -count=1 ./internal/core/` in 55 seconds, and `go test -count=1 -race -shuffle on ./internal/core/` in 127 seconds, 140 with the build. `make test` and `make lint` pass.
+
+### Why
+
+A survivor is a decision that no test checks. Some are redundant on purpose, and some are holes. Only a test per survivor, or a reason per survivor, tells which.
+
+### What worked
+
+- The snapshot: the main run could not see a half-written test, and the tests could be written while it ran.
+- The control: it shows that the memory guard and the timeouts do not catch correct code.
+- Many survivors pointed at a promise of a doc comment that no test checked: the default of each option, an option below zero, the end of the lease to the nanosecond, the first of the two clocks ending a wait, a cache that another process changes while the instance runs, a manifest that is gone, a swap refused for its checksum, a close that cannot read the manifest or must not release the lease of another instance, a commit that looks in a log that cannot be read, a catch-up that tries a download again for longer than the lease, and every call of a read transaction after it ended or the instance stopped.
+
+### What didn't work
+
+- `stop-no-wake` made its test binary grow to 4 GB in two minutes: `ps` showed `4051088` kB resident for `core.test`. Four such runs in parallel are what killed the builder's run. The memory guard came after that, and caught seven mutants: `upload-no-timeout`, `upload-exists-is-failure`, `mismatch-downloaded-forever`, `adopt-keeps-flights`, and three of mine. Each is a test that never ends on the fake clock, and allocates for every step of it.
+- I stopped the first runner with `pkill -f "mf/mutants/.*/overlay.json"`, which also killed the `go test` of the mutant that was running. The runner recorded it as `no-refusal-at-once  caught  5s ... | ?`. I removed the line, and the mutant ran again: caught by a timeout.
+- A later command that used `pkill -f core.test` was refused: `Permission for this action was denied by the Claude Code auto mode classifier. Reason: [Interfere With Workloads]`. It would have killed the main run's tests too. A small script, `mf/probe.py`, runs one command in its own process group with the same guard.
+- One of my mutants did not build: `../mutants-snap/set-position-unchecked/cache.go:258:2: declared and not used: n`. It got `&& false` in its condition and ran again.
+- My test for a download tried again did not end under its mutant, and grew to 1.4 GB, because the bubble's fake time went on for ever. It waits with a timeout now, and fails in a moment.
+- The code review found that two of my tests were wrong. The test of the default busy timeout checked only that the wait is shorter than two seconds, so a busy timeout of zero passed it. It measures the wait now. The test of a look in an unreadable log asserted `ErrNoLease` after the commit returned, while the lease task could take the free lease and stop the instance in parallel. The manifest it publishes now has a lease of another holder.
+
+### What I learned
+
+- The reason "no caller can see it" was wrong for the two second looks at the lease that Step 4 lists. A `Begin` whose lock comes free after the lease ran out by the clocks, and a `Read` whose lease runs out between fixing its state and the check, are both refused, as the doc comments say. Each has a test now.
+- `manifest-any-size` was not redundant either: a manifest followed by a mebibyte of spaces parses when its first mebibyte is read. The check of the size is what refuses it.
+- A test that kills a mutant only because of a timing detail of the correct code pins that detail. The review removed one such assertion, which is why `left-no-floor` survives.
+
+### What was tricky
+
+Telling a hang from a kill. A mutant that makes a test never end looks like a test that uses too much memory, or one that waits for its timeout. Both are caught, and the control is what shows that neither happens without a mutant.
+
+### What warrants review
+
+The 32 survivors and their reasons, by the id in `mf/mutants_list.py` and `mf/mutants_more.py` in the session's scratchpad:
+
+- `replay-no-parent-check`: the walk back through the log makes the parent the position.
+- `replay-create-existing`, `replay-delete-key-unchecked`, `replay-values-unchecked`, `replay-partial-without-key`: SQLite or the binding still refuses the commit object with `ErrLogBroken`, with a worse message; the last only by accident, through a parameter `?0`.
+- `create-type-unchecked`: the writer of commit objects refuses every type but `TYPE_INT` first.
+- `open-memory-path`: SQLite refuses the write-ahead log for an in-memory database, so `Open` still fails.
+- `commit-no-usable-check`: the upload makes the same check before its first attempt.
+- `set-position-unchecked`: the write lock is held from the read of the position at `Begin`, so the row is there.
+- `resume-no-recheck`: `DB.keepLease` refuses an instance that no longer holds the lease.
+- `observe-salt-only`, `observe-head-only`: at most one renewal and one commit are in flight, and they differ in both.
+- `close-twice-closes`: the binding's close is idempotent, and nothing can hold a lock after the first close.
+- `readers-writable`: the read connections run only the core's own reads.
+- `created-table-touched`: the same commit object, at the cost of a temporary table.
+- `back-off-never-resets`: only how soon the lease task asks again, at most the watch interval.
+- `renew-no-second-look`: one renewal more.
+- `send-duplicate-flights`: only the count of attempts in an event.
+- `lose-keeps-version`: one refused release and its event.
+- `adopt-keeps-unsure`: a successful release clears it.
+- `refusal-exists-unknown`: a create of the manifest that finds one waits a second, not a tenth, for the read that follows either way.
+- `spool-commit-unflushed`: the upload's rewind flushes.
+- `scan-unordered`: SQLite scans a table without a rowid in the order of its key.
+- `left-no-floor`: the check passes only while time is left, so the wait is never zero.
+- `acquire-after-stop`: an instance that stopped while it waited for the locks takes a free lease and releases it at once, and serves nothing.
+- `newflight-fresh-lease`: the holder's own lease entry has no fields that this version does not know.
+- `readers-before-writer`: it guards against "busy" after a crash under real parallelism, which no test here produces.
+- `setup-sync-off`: only a power loss shows it.
+- `upload-spool-error-retried`, `read-end-swallows-local`, `replay-cache-error-as-broken`, `spool-length-error-ends`: a local failure in the middle of an operation, which needs a file system that fails. These four change what matters, and are not tested.
+
+### Future work
+
+- A file system that fails on demand, for the four local failures that no test produces.
+- The runner and the lists are in the scratchpad. If mutation testing is to be repeated, they belong in the tree.

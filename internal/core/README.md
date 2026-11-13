@@ -138,7 +138,7 @@ The reason for planted bugs is in [Conditions for keeping the design](../sim/REA
 
 `free_test.go` runs the workloads on real goroutines, for the race detector. `TestFreeRunning_plantedDataRace` runs the test binary again, and requires the race detector to report a planted data race with the scheduler off.
 
-`script_test.go` holds a store that does to chosen requests what a test spells out. The scenario tests in `lease_test.go`, `tx_test.go`, `replay_test.go`, and `core_test.go` use it, and they run on the fake clock of `testing/synctest`. The tests of each clock of the lease check (`TestLease_clocks`) and of the cache that fails after the manifest swap (`TestDB_stop`) run one instance under the scheduler, because only it can move one clock and fire one buggify point.
+`script_test.go` holds a store that does to chosen requests what a test spells out. The scenario tests in `lease_test.go`, `tx_test.go`, `replay_test.go`, `read_test.go`, and `core_test.go` use it, and they run on the fake clock of `testing/synctest`. The tests of each clock of the lease check (`TestLease_clocks`) and of the cache that fails after the manifest swap (`TestDB_stop`) run one instance under the scheduler, because only it can move one clock and fire one buggify point.
 
 By default, `TestSimulation` runs 40 seeds of the workload with one instance, 30 of the workload with everything, and 10 of the workload whose callers never pause. Every seed runs twice, and the traces are compared. The events of the instances are part of the trace. `TestSimulation_plantedBugs` runs the workload of each bug until four seeds have found the bug, from at most 200 seeds. It runs the control and the same workload without the bug for 20 seeds each.
 
@@ -240,6 +240,12 @@ The planted bugs, each over 1000 seeds. The control is the same workload without
 
 Mutation testing, with one mutant for each decision of the core, each a copy of one file put in place with `go test -overlay`:
 
-- **Before the review of the build:** 117 mutants, of which 81 were caught, 23 were not, and 13 did not build. After tests for the survivors that deserved one, 10 were not caught.
-- **After the review,** the run of 144 mutants on the final code was stopped by the system for lack of memory after 64, of which 53 were caught and 9 were not, and was not started again. Two of the 9 got a test afterwards. The other 80 have not run on the final code.
-- **The mutants that no test catches change nothing that a caller can see:** the second look at the lease after a call waited for its lock, and the one after the state of a read is fixed; four checks of replay whose commit objects SQLite or the binding still refuses; the check of a commit object's parent, which the walk through the log makes true; a guard in the commit that the correct code never reaches; the temporary table that a created table does not need; and the order in which the connections open. The diary has the reason for each.
+- **On the final code:** 245 mutants over `core.go`, `lease.go`, `tx.go`, `catchup.go`, `replay.go`, `read.go`, `cache.go`, `spool.go`, and `errors.go`, run one after another. With the tests as the build left them, 188 were caught and 57 were not. 23 of the 188 made a test hang, and were caught by its timeout or by a limit of 2 GB on its memory. A control without a change passed every test.
+- **After tests for the survivors that deserved one,** 213 are caught and 32 are not.
+- **The mutants that no test catches:**
+  - 14 remove a check whose case something else still refuses: four checks of replay whose commit objects SQLite or the binding refuses (one of them by accident, through a parameter `?0`), the check of a commit object's parent, which the walk through the log makes true, and nine guards that an earlier or a later check covers.
+  - 11 change only a cost, a time, or an event: the temporary table that a created table does not need, the back-off after failures, one extra renewal or refused swap, the count of attempts, the order of a scan that SQLite gives anyway, and the like.
+  - 1 is equivalent: the fields of a lease entry that this version does not know, which the holder's own entry never has.
+  - 6 change what matters, and no test here can produce their case: the order in which the connections open, which guards against "busy" after a crash under real parallelism; the sync of the cache, which only a power loss shows; and four local failures in the middle of an operation (a read of the spool file, the rollback of a read, a change during replay, a length in the spool), which need a file system that fails.
+
+  The diary has the reason for each.
