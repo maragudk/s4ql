@@ -1463,12 +1463,12 @@ func everything(t *testing.T) func(ctx context.Context, s *sim.Scheduler) {
 	}
 }
 
-// after is the first line of the trace from the one that ends with event on that bad matches, or the
-// empty string.
+// after is the first line of the trace from the one that ends with event on that bad matches, the
+// empty string if there is none, or a message if no line ends with event.
 func after(lines []string, event string, bad func(line string) bool) string {
 	i := slices.IndexFunc(lines, func(line string) bool { return strings.HasSuffix(line, event) })
 	if i < 0 {
-		return ""
+		return "no line ends with" + event
 	}
 	if j := slices.IndexFunc(lines[i:], bad); j >= 0 {
 		return lines[i+j]
