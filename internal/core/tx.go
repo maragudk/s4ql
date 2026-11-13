@@ -699,7 +699,8 @@ func (tx *Tx) dropTemps() error {
 // object that can never be read. The instance then serves nothing until it has found out, and
 // finds out without the caller: see [DB.resumeLocked]. Every other error means that the
 // transaction is not committed: it wraps [ErrNoLease] if the instance did not hold the lease any
-// more, and [ErrStopped] if the instance has stopped.
+// more, [ErrStopped] if the instance has stopped, and [ErrTooLarge] if the store refuses the commit
+// object as too large, which it does at once, without trying again.
 func (tx *Tx) Commit(ctx context.Context) (err error) {
 	d := tx.d
 	if tx.done {
@@ -866,7 +867,8 @@ func (r *spoolReader) Seek(offset int64, whence int) (int64, error) {
 // upload the commit object under its name, with its checksum, if no object is there. An object
 // that is there already can only be this commit object, left by an upload that reported a failure,
 // so it counts as success. An upload that ends without an answer is sent again until ctx is done,
-// which is harmless, because the object is named by its content and created only if absent.
+// which is harmless, because the object is named by its content and created only if absent. An
+// upload that the store refuses as too large fails at once with [ErrTooLarge].
 func (tx *Tx) upload(ctx context.Context, out *spooled, attempts *int) error {
 	d := tx.d
 	sum := store.Checksum(out.name)
@@ -889,6 +891,9 @@ func (tx *Tx) upload(ctx context.Context, out *spooled, attempts *int) error {
 			return d.spoolError(ctx, content.err)
 		case err == nil, errors.Is(err, store.ErrExists):
 			return nil
+		case errors.Is(err, store.ErrTooLarge):
+			// Every attempt sends the same bytes, so none can succeed.
+			return fmt.Errorf("%w: %v", ErrTooLarge, err)
 		case errors.Is(err, store.ErrChecksum):
 			// The bytes may have been damaged on their way once. Twice, it is the file.
 			if mismatches++; mismatches == 2 {

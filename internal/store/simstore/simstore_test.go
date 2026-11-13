@@ -339,7 +339,7 @@ type attempt struct {
 // definite reports whether the error of a is one that says the write was not applied.
 func (a *attempt) definite() bool {
 	return errors.Is(a.err, store.ErrNotFound) || errors.Is(a.err, store.ErrExists) ||
-		errors.Is(a.err, store.ErrChanged) || errors.Is(a.err, store.ErrChecksum)
+		errors.Is(a.err, store.ErrChanged) || errors.Is(a.err, store.ErrChecksum) || errors.Is(a.err, store.ErrTooLarge)
 }
 
 // read, as its caller saw it.

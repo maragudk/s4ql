@@ -69,6 +69,12 @@ var (
 	// value of the wrong storage class for its column, or NULL in a primary key.
 	ErrInvalid = errors.New("invalid")
 
+	// ErrTooLarge is wrapped by the error of [Tx.Commit] when the store refuses the commit object of
+	// the transaction because it is larger than the store takes in one write. The transaction is not
+	// committed. The error is not temporary: the same changes give a commit object of the same size
+	// again. The instance goes on serving.
+	ErrTooLarge = errors.New("the commit object is too large for the store")
+
 	// ErrTxDone is the error of a call on a transaction that was committed, rolled back, or closed.
 	ErrTxDone = errors.New("the transaction has ended")
 )
