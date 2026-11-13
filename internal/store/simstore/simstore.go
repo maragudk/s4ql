@@ -63,6 +63,10 @@ type Options struct {
 	// Latency is the longest time that a request takes on its way to the store, and again on its way
 	// back. Each way takes a time from zero to Latency, from the seed.
 	Latency time.Duration
+	// MaxSize is the largest content of a write that the store takes, in bytes, or no limit if it is
+	// zero. A client refuses a larger write with [store.ErrTooLarge] and sends nothing, as an S3
+	// client refuses content above the 5 GiB that one PutObject takes.
+	MaxSize int
 	Faults  Faults
 }
 

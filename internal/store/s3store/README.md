@@ -5,7 +5,7 @@
 What the client does is in the code:
 
 - the package comment in `s3store.go`, on a write that is sent once and on the checksums of a write and of a read
-- the doc comments of `Options`, `New`, `MaxSize`, and `ErrTooLarge` in `s3store.go`
+- the doc comments of `Options`, `New`, and `MaxSize` in `s3store.go`
 - the doc comments of `guard` and `body` in `content.go`
 - the event of a request, and the names of its attributes, in `telemetry.go`
 
@@ -68,9 +68,9 @@ Each of these was seen on Tigris, or is in AWS's documentation. None was checked
 
 - **That the store checks the payload hash and the header.** Tigris checks the payload hash only. For AWS there are only the two quotes above.
 - **The codes of a refusal:** 412 `PreconditionFailed`, 404 `NoSuchKey`, and 409 `ConditionalRequestConflict`. Tigris was seen to send the first two. AWS documents the 409 for `If-Match` "in the case of concurrent requests", and for `If-None-Match` only when a delete races the write (https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html).
-- **What a 409 means.** The client reports a 409 on a swap as `store.ErrChanged`. It reports a 409 on a create as an unknown outcome, because none of the four errors means "refused, and no object is known to be at the key".
+- **What a 409 means.** The client reports a 409 on a swap as `store.ErrChanged`. It reports a 409 on a create as an unknown outcome, because none of the five errors that mean "not applied" means "refused, and no object is known to be at the key".
 - **A read of a missing object gives 404 only with `s3:ListBucket`,** and 403 without it (https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObject.html). The client never takes a 403 as `store.ErrNotFound`.
-- **One PutObject takes up to 5 GB.** "You can send a PUT request to upload an object of up to 5 GB in a single operation" (https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html). The client refuses more than 5 GiB with `s3store.ErrTooLarge` before it sends anything.
+- **One PutObject takes up to 5 GB.** "You can send a PUT request to upload an object of up to 5 GB in a single operation" (https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html). The client refuses more than 5 GiB with `store.ErrTooLarge` before it sends anything. It makes no multipart upload. It also reports `400 EntityTooLarge` as `store.ErrTooLarge`, for a store whose limit is lower; AWS documents the code as "Your proposed upload exceeds the maximum allowed object size" (https://docs.aws.amazon.com/AmazonS3/latest/API/ErrorResponses.html), and no store was seen to send it.
 - **Keys with characters that mean something in a URL or a path are kept apart and read back.** `TestClient_realBucket` shows it on Tigris for `?`, `#`, `%20`, `+`, `//`, a leading or a trailing slash, a tab, a newline, `...`, é in its NFC and NFD forms, and keys of 1024 bytes. These keys were not tried on AWS.
 
 ## What no test shows

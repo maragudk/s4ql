@@ -89,8 +89,14 @@ const (
 	sendUnknown
 )
 
-// refusal reports whether err is one of the errors of the store that mean that a write was not
-// applied.
+// refusal reports whether err is one of the errors of the store that mean that a write of the
+// manifest was not applied.
+//
+// It leaves out [store.ErrTooLarge], which means that too, so that a write of the manifest that the
+// store refuses as too large is taken as of unknown outcome, as any other error is. A manifest is a
+// few hundred bytes, so only a store that is set up wrong refuses one. Taking a write that was not
+// applied as of unknown outcome is never wrong, only slower: the instance asks again, and stops
+// serving when its lease runs out by its clocks.
 func refusal(err error) bool {
 	return errors.Is(err, store.ErrChanged) || errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrExists) || errors.Is(err, store.ErrChecksum)
 }

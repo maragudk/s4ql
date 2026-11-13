@@ -1,13 +1,14 @@
 // Package store is the interface through which s4ql talks to its object store, [Store]: read an
 // object, create one where none is, and replace one that is unchanged since it was read.
 //
-// The errors of a write tell four cases apart, each of which means that the write was not applied:
+// The errors of a write tell five cases apart, each of which means that the write was not applied:
 //
 //   - [ErrNotFound]: no object is at the key.
 //   - [ErrExists]: an object is already at the key.
 //   - [ErrChanged]: the object changed since its version was read, or another write to the key
 //     raced this one.
 //   - [ErrChecksum]: the content does not match the checksum that came with it.
+//   - [ErrTooLarge]: the content is larger than the store takes in one write.
 //
 // Every other error of a write means that its outcome is unknown: the write may have been applied,
 // it may not have been, and it may still be applied later, after the call has returned. A request
@@ -20,7 +21,7 @@
 // object does not have that version again. A swap that writes the bytes that are there may leave the
 // version as it was, and writing earlier content again may bring an earlier version back.
 //
-// A store reports one of the four errors only if the write is known not to have been applied. A
+// A store reports one of the five errors only if the write is known not to have been applied. A
 // store that sends a conditional write again by itself, after the first attempt ended without an
 // answer, must report the refusal of the second attempt as an unknown outcome, because the first
 // attempt may be what made the second fail.
@@ -50,6 +51,10 @@ var (
 	// ErrChecksum is wrapped by the error of a write whose content does not have the SHA-256
 	// checksum that came with it. The write was not applied.
 	ErrChecksum = errors.New("the content does not match its checksum")
+
+	// ErrTooLarge is wrapped by the error of a write whose content is larger than the store takes
+	// in one write. The write was not applied, and a write of the same content will never be.
+	ErrTooLarge = errors.New("the content is larger than one write can take")
 )
 
 // Version of an object, as a read or a write returns it, which a swap is checked against. It is
@@ -81,15 +86,16 @@ type Store interface {
 	// content is what content reads from its current offset to its end. The store may seek in
 	// content, and reads it only until Create returns, so the caller may then use it again. If
 	// checksum is not nil, the store refuses content that does not have it. Create fails with
-	// [ErrExists] if an object is at key, and with [ErrChecksum] for a checksum that does not match.
-	// Any other error means that the outcome is unknown.
+	// [ErrExists] if an object is at key, with [ErrChecksum] for a checksum that does not match, and
+	// with [ErrTooLarge] for content that is too large. Any other error means that the outcome is
+	// unknown.
 	Create(ctx context.Context, key string, content io.ReadSeeker, checksum *Checksum) (Version, error)
 
 	// Swap the object at key for one with content, if the object there has the version from, and
 	// return the new version. The version from is one that a read or a write of this store returned.
 	// The content and checksum are as for [Store.Create]. Swap fails with [ErrNotFound] if no object
 	// is at key, with [ErrChanged] if the object there has another version or another write raced
-	// this one, and with [ErrChecksum] for a checksum that does not match. Any other error means that
-	// the outcome is unknown.
+	// this one, with [ErrChecksum] for a checksum that does not match, and with [ErrTooLarge] for
+	// content that is too large. Any other error means that the outcome is unknown.
 	Swap(ctx context.Context, key string, from Version, content io.ReadSeeker, checksum *Checksum) (Version, error)
 }
