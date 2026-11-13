@@ -213,6 +213,19 @@ func (o *outcome) violate(ctx context.Context, h tracer, format string, args ...
 	o.violations = append(o.violations, fmt.Sprintf(format, args...))
 }
 
+// checkClosed records a violation for each cache in dir that a connection still has open after the
+// run, as far as [leftOpen] can tell.
+func (o *outcome) checkClosed(t *testing.T, dir string) {
+	t.Helper()
+	open, err := leftOpen(dir)
+	is.NotError(t, err)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, name := range open {
+		o.violations = append(o.violations, fmt.Sprint("a connection to the cache ", name, " is still open after the run"))
+	}
+}
+
 // expected reports whether err from a call of a caller is one that the faults and the design
 // explain: a refusal for lack of the lease, a stop, a commit of unknown outcome, and the end of the
 // caller's own timeout.
@@ -1354,6 +1367,7 @@ func simulate(t *testing.T, seed uint64, w workload) simulation {
 		for _, d := range s.outcome.crashed {
 			d.CloseCache()
 		}
+		s.outcome.checkClosed(t, c.dir)
 	})
 	return s
 }
@@ -1373,6 +1387,7 @@ func free(t *testing.T, w workload) *outcome {
 		is.NotError(t, r.Run(func(ctx context.Context) {
 			w.run(ctx, c, o)
 		}))
+		o.checkClosed(t, c.dir)
 	})
 	return o
 }

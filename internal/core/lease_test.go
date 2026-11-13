@@ -460,7 +460,7 @@ func clocked(t *testing.T, f func(ctx context.Context, s *sim.Scheduler, inst *s
 	t.Helper()
 	synctest.Test(t, func(t *testing.T) {
 		s := sim.New(1, sim.Options{})
-		dir := t.TempDir()
+		dir := cacheDir(t)
 		is.NotError(t, s.Run(func(ctx context.Context) {
 			st := simstore.New(s, simstore.Options{Latency: 10 * time.Millisecond})
 			inst := s.NewInstance("a")
@@ -471,9 +471,13 @@ func clocked(t *testing.T, f func(ctx context.Context, s *sim.Scheduler, inst *s
 				is.NotError(t, d.Wait(ctx))
 				client.CutOff(ctx, time.Hour)
 				f(ctx, s, inst, d)
-				cctx, cancel := inst.WithTimeout(ctx, time.Second)
+				// The client is still cut off, so the release of the lease gives up after the lease's
+				// duration, and only then does Close close the cache. A Close that ends before leaves
+				// the cache open. Its error is that of the release.
+				cctx, cancel := inst.WithTimeout(ctx, 5*time.Minute)
 				defer cancel()
 				_ = d.Close(cctx)
+				is.NotError(t, cctx.Err())
 			}).Wait(ctx)
 		}))
 	})

@@ -18,6 +18,7 @@ These hold for every slice unless this document says otherwise.
 - Double quotes mean identifiers only. A double-quoted string is rejected, and so are `[brackets]` and backticks around names.
 - No `ANY` column type.
 - No settings that change behaviour, for now.
+- A table whose name starts with `s4ql_` or `sqlite_`, in any case of the letters, is rejected. SQLite reserves `sqlite_` itself, and `s4ql_` is for the tables that s4ql keeps in its cache.
 - UTF-8 only. SQL text, identifiers, and text values are always valid UTF-8. A statement whose text is not valid UTF-8 is rejected before it is parsed, and so is a parameter or an expression that would produce text that is not valid UTF-8. SQLite accepts such text.
 
 Rejected for now, to be decided later: upserts, and join variants such as comma joins and `NATURAL JOIN`.

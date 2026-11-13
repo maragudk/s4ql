@@ -579,7 +579,9 @@ func (c *conn) get(t *table, key []*s4qlpb.Value) ([]*s4qlpb.Value, error) {
 	return row, err
 }
 
-// scan the rows of the table in the order of its primary key.
+// scan the rows of the table in the order of its primary key. The statement is given back also when
+// a panic or [runtime.Goexit] in the loop over the scan unwinds through it: a statement that stays
+// stepped would hold its transaction's snapshot and locks, and the connection could not close.
 func (c *conn) scan(t *table) iter.Seq2[[]*s4qlpb.Value, error] {
 	return func(yield func([]*s4qlpb.Value, error) bool) {
 		sql := fmt.Sprint("select * from main.", quote(t.name), " order by ", t.columnList(t.key))
@@ -588,15 +590,24 @@ func (c *conn) scan(t *table) iter.Seq2[[]*s4qlpb.Value, error] {
 			yield(nil, err)
 			return
 		}
+		// s is nil once it is given back.
+		defer func() {
+			if s != nil {
+				_ = c.rest(sql, s)
+			}
+		}()
 		for {
 			ok, err := s.Step()
 			if err != nil {
 				_ = s.Finalize()
+				s = nil
 				yield(nil, err)
 				return
 			}
 			if !ok {
-				if err := c.rest(sql, s); err != nil {
+				err := c.rest(sql, s)
+				s = nil
+				if err != nil {
 					yield(nil, err)
 				}
 				return
@@ -604,11 +615,11 @@ func (c *conn) scan(t *table) iter.Seq2[[]*s4qlpb.Value, error] {
 			row, err := readRow(s, 0, len(t.columns))
 			if err != nil {
 				_ = c.rest(sql, s)
+				s = nil
 				yield(nil, err)
 				return
 			}
 			if !yield(row, nil) {
-				_ = c.rest(sql, s)
 				return
 			}
 		}

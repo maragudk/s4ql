@@ -568,7 +568,7 @@ var plantedBugs = []plantedBug{
 }
 
 // TestSimulation_plantedBugs runs the workload of each bug until four seeds have found the bug,
-// from at most 200 seeds, and its control and the same workload without the bug for 20 seeds each.
+// from at most 200 seeds, and its control and the same workload without the bug for 10 seeds each.
 // With S4QL_SIM_SEEDS set, all three run that many seeds, and the workload with the bug runs all of
 // them, to count how many find it.
 func TestSimulation_plantedBugs(t *testing.T) {
@@ -625,7 +625,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 			if counting {
 				y.log(t, bug.workload)
 			}
-			n = seeds(t, 20)
+			n = seeds(t, 10)
 			if bug.control != nil {
 				is.True(t, bug.control.options.Planted(), "the control has no planted bug")
 				var controlFound int

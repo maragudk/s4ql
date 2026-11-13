@@ -131,6 +131,12 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
+      # The check that a large transaction is never held in memory runs only without the race
+      # detector and the sanitizer, which change the heap, and the reusable test workflow uses the
+      # race detector.
+      - name: Check the heap of a large transaction
+        run: go test -run '^TestTx_Commit_large$' ./internal/core/
+
       - name: Test and fuzz under the address sanitizer
         run: make test-asan FUZZTIME=30s
 

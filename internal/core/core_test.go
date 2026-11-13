@@ -36,7 +36,46 @@ type world struct {
 func newWorld(t *testing.T) *world {
 	t.Helper()
 	h := sim.NewFree(sim.Buggify{})
-	return &world{host: h, store: simstore.New(h, simstore.Options{}), dir: t.TempDir()}
+	return &world{host: h, store: simstore.New(h, simstore.Options{}), dir: cacheDir(t)}
+}
+
+// cacheDir is a temporary directory for caches. When the test ends, after the cleanups that were
+// registered later, such as those that close instances, it fails the test for each cache in it whose
+// write-ahead log is left: see [leftOpen]. A test that has failed already is not checked, because
+// a failure can skip the close of an instance.
+func cacheDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Cleanup(func() {
+		if t.Failed() {
+			return
+		}
+		open, err := leftOpen(dir)
+		is.NotError(t, err)
+		for _, name := range open {
+			t.Errorf("a connection to the cache %v is still open", name)
+		}
+	})
+	return dir
+}
+
+// leftOpen are the caches in dir whose write-ahead log is there, which a connection that has read
+// them keeps: "The WAL file exists for as long as any database connection has the database open.
+// Usually, the WAL file is deleted automatically when the last connection to the database closes."
+// (https://sqlite.org/wal.html) A connection that has not read a cache yet keeps no log, so not every
+// connection that is left shows.
+func leftOpen(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, e := range entries {
+		if name, ok := strings.CutSuffix(e.Name(), "-wal"); ok {
+			names = append(names, name)
+		}
+	}
+	return names, nil
 }
 
 // client of the world's store, with a name of its own.
@@ -394,7 +433,7 @@ func fail(t *testing.T, seed uint64) failing {
 	f := failing{events: &recorder{}}
 	synctest.Test(t, func(t *testing.T) {
 		s := sim.New(seed, sim.Options{Buggify: sim.Buggify{On: true, Activation: 1, Fire: 1}})
-		dir := t.TempDir()
+		dir := cacheDir(t)
 		is.NotError(t, s.Run(func(ctx context.Context) {
 			st := simstore.New(s, simstore.Options{Latency: 10 * time.Millisecond})
 			inst := s.NewInstance("a")
@@ -469,6 +508,20 @@ func fail(t *testing.T, seed uint64) failing {
 	return f
 }
 
+// readOnly makes the directory take no new files until the test ends, and skips the test where it
+// takes them anyway, as it does for root, whom the permissions of a directory do not bind.
+func readOnly(t *testing.T, dir string) {
+	t.Helper()
+	is.NotError(t, os.Chmod(dir, 0o500))
+	t.Cleanup(func() { is.NotError(t, os.Chmod(dir, 0o700)) })
+	f, err := os.CreateTemp(dir, "probe-*")
+	if err != nil {
+		return
+	}
+	is.NotError(t, errors.Join(f.Close(), os.Remove(f.Name())))
+	t.Skip("the directory takes new files whatever its permissions, as it does for root")
+}
+
 func TestDB_stop(t *testing.T) {
 	t.Run("should acknowledge the commit, stop for good, release the lease once, and show the transaction when opened again, whether the cache rolled back or committed when it failed", func(t *testing.T) {
 		variants := map[bool]int{}
@@ -494,8 +547,7 @@ func TestDB_stop(t *testing.T) {
 		head := w.manifest(t).Head
 
 		// The directory of the cache takes no new files from now on.
-		is.NotError(t, os.Chmod(w.dir, 0o500))
-		defer func() { is.NotError(t, os.Chmod(w.dir, 0o700)) }()
+		readOnly(t, w.dir)
 		tx, err := d.Begin(t.Context())
 		is.NotError(t, err)
 		upsert("t1", 1)(t, tx)
@@ -519,8 +571,7 @@ func TestDB_stop(t *testing.T) {
 	t.Run("should stop for a failure to write the spool file of the annotations", func(t *testing.T) {
 		w := newWorld(t)
 		d := w.serve(t, "a", core.Options{})
-		is.NotError(t, os.Chmod(w.dir, 0o500))
-		defer func() { is.NotError(t, os.Chmod(w.dir, 0o700)) }()
+		readOnly(t, w.dir)
 
 		tx, err := d.Begin(t.Context())
 		is.NotError(t, err)

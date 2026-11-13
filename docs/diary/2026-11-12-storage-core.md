@@ -388,7 +388,147 @@ Running the large runs on a machine that 13 sessions share. The system stopped o
 - The planted bugs over 10000 seeds, and the mutation testing on the final code, on a machine with time and memory to spare.
 - What the simulation still does not show: the margin on the watcher's wait, because no clock runs fast; SQLite's "busy" and the order in which the connections open, because the scheduler runs one goroutine at a time; a manifest that is damaged on its way; a cache that fails anywhere but at the commit after a manifest swap; a power loss; and clock faults on an instance that was restarted after a crash.
 
-## Step 7: Mutation testing on the final code
+## Step 7: The leak under the address sanitizer, and the time of the tests
+
+**Author:** leak-builder
+
+### Prompt Context
+
+**Verbatim prompt:**
+
+> You are fixing a CI failure of the storage core of s4ql, a Go SQL database whose truth is a log in S3 (repository `maragudk/s4ql`, module `maragu.dev/s4ql`, Go 1.27.3). You work in your own git worktree: run `pwd` and `git branch --show-current` first and stay in that directory. Never write in `/Users/maragubot/Developer/s4ql` itself or in another worktree under `.claude/worktrees/`.
+>
+> **Your work builds on the branch of pull request #12, not on `main`.** First run `git fetch origin` and `git merge --ff-only origin/storage-core`, and check with `git log --oneline -1` that you are on the commit `8ff0a57` or a later one of that branch.
+>
+> Read `AGENTS.md`. Invoke the `fabrik:go` skill before you read or write Go code. Read `internal/core/README.md`, and `internal/sqlite/README.md` for how the SQLite binding works and how it is tested under the sanitizer.
+>
+> ## The failure
+>
+> `internal/core` is new: the storage core, with a SQLite cache through our own cgo binding in `internal/sqlite`. The CI job `asan` runs `make test-asan` (see the `Makefile` and `.github/workflows/ci.yml`): all tests under the C address sanitizer, on Linux. On pull request #12 it failed in the core's tests:
+>
+> ```
+> ==6387==ERROR: LeakSanitizer: detected memory leaks
+> Indirect leak of 887264 byte(s) in 604 object(s) allocated from:
+>     #0 ... in malloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:67
+>     #1 ... (/tmp/go-build.../b001/core.test+0xaed496)
+> Indirect leak of 13728 byte(s) in 36 object(s) allocated from: ...
+> Indirect leak of 2400 byte(s) in 40 object(s) allocated from: ...
+> ... (ten groups in all)
+> SUMMARY: AddressSanitizer: 907040 byte(s) leaked in 748 allocation(s).
+> FAIL	maragu.dev/s4ql/internal/core	585.611s
+> ```
+>
+> The stacks have no symbols. Every other package passed, among them `internal/sqlite` and `internal/sim`, whose tests also open many SQLite connections, so the binding itself and the harness's toy do not leak. Two things are wrong:
+>
+> 1. **Memory that C allocated is not freed when the test binary exits.** It is almost certainly SQLite's: connections or prepared statements that are never closed. Either the tests leave them open (for example a simulated crash that abandons an instance and never closes its connections; the toy in `internal/sim` closes a crashed instance's connections after the run, so look at how it does it), or the core itself fails to close something on some path (a statement that is not finalized, a connection of the pool that is not closed in `Close` or after a stop, a spool, an early return). **The second would be a real bug in the core, and finding out which it is matters more than making the job green.**
+> 2. **The core's tests took 585 seconds under the sanitizer,** against Go's limit of 600 seconds for one package. Under the race detector in CI the whole test job took 8 minutes 23 seconds. Both are too close.
+>
+> ## The goal
+>
+> 1. **Reproduce it.** Go supports `-asan` on Linux only; the `Makefile`'s `test-asan` target runs in Docker elsewhere. Run only the core under the sanitizer (copy the `docker run` line of the Makefile and run `go test -asan ./internal/core/` in it, with `-run` to narrow down), and get symbols if you can (`ASAN_OPTIONS`, `ASAN_SYMBOLIZER_PATH`, or `addr2line` on the test binary built with `go test -c -asan`). Find which tests leak, by running them one at a time or by halves.
+> 2. **Find the cause and say which kind it is,** with the evidence: a test that leaves something open, or the core.
+>    - If it is the core: write a test that shows the leak without the sanitizer if that is possible (for example by counting open statements or connections through the binding, if the binding can tell, or by a check in `Close`), then fix the core. Look for the same mistake on the other paths: every error return, the stop after a local failure, `Close` after a stop, a rollback, a scan that is abandoned half way, a read transaction that is not closed, catch-up that fails in the middle.
+>    - If it is the tests: fix the tests so that every connection that a test opens is closed, also after a simulated crash, as the toy does.
+>    - If the sanitizer reports memory that SQLite keeps on purpose for the life of the process, show that from SQLite's documentation before you suppress anything, and suppress only that.
+> 3. **Bring the core's time under the sanitizer well below the limit:** find out which tests take the time under `-asan` (it may differ from the plain run), and cut the default run as `docs/diary/2026-11-12-lease-without-clock-comparison.md`, Step 4, did for the harness's tests, without losing what the tests prove: every planted bug is still found in the default run and the test fails if one is not, every seed that runs still runs twice, and the full run stays behind `S4QL_SIM_SEEDS`. Target: `internal/core` under `-asan` in the Docker container with `--cpus 4` in under 5 minutes, and under `go test -race` on this machine in under 3 minutes. Say what you measured before and after, and what the load of the machine was.
+> 4. **Another builder is adding tests to this package at the same time,** on the same base, to finish a mutation run. Keep your changes small and where they belong, so that the two branches merge easily. Do not reorganise files.
+>
+> Verify at the end: `make test` and `make lint` pass; `make test-asan FUZZTIME=5s` passes in Docker (limit the container to 4 CPUs in a copy of the command, not in the Makefile); `go test -race -shuffle on ./internal/core/` passes, with the time.
+>
+> ## How to work
+>
+> - Add a step to the diary `docs/diary/2026-11-12-storage-core.md` with the `fabrik:diary` skill, under your name `leak-builder`, with the failure quoted above, how you found the cause, and the measurements. Update `internal/core/README.md` where it describes the default test run, if you change it.
+> - Commit on your branch with the `fabrik:git` skill's conventions. Do not ask about GitHub issues; there are none. No attribution lines. Do not push and do not open a pull request.
+> - Do not edit `docs/spec.md`, `docs/todo.md`, the root `README.md`, or `AGENTS.md`.
+> - You cannot ask me anything while you run. If you hit a question you cannot settle, stop and put it in your report.
+>
+> ## Your report
+>
+> Read by me, the lead, not by the product owner. Give me: the name of your branch and the absolute path of your worktree; the cause of the leak and whether it was in the core or in the tests, with the evidence; what you changed; the times before and after; and the verification results.
+
+**Interpretation:** Reproduce the leak of `internal/core` under `-asan`, find which test leaks and whether the core or the test is at fault, fix it, look for the same mistake elsewhere, and cut the default run under the sanitizer well below Go's 600 seconds without losing what the tests prove.
+
+**Inferred intent:** Make pull request #12 mergeable, and know whether the core can leak connections in production.
+
+### What I did
+
+Worktree `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a323fc251db2ed494`, branch `worktree-agent-a323fc251db2ed494`, fast-forwarded to `origin/storage-core` at `8ff0a57`. The Mac has 10 cores, and other sessions kept its load between 11 and 19 the whole time.
+
+**Reproducing.** `go test -c -asan -o /out/core.test ./internal/core/` in `golang:1.27.3` with `--cpus 4`, run with `ASAN_OPTIONS=symbolize=1:external_symbolizer_path=/usr/bin/addr2line`, gives symbolized stacks: `go test -c` keeps the DWARF that `go test` strips. The first full run reported no leak at all, because two tests failed (below), and Go runs the leak check only when the binary exits with 0 (`os_beforeExit` in `/runtime/proc.go`: `if exitCode == 0 && asanenabled ...`). With those two skipped, the group of scenario tests leaked `907136 byte(s) in 748 allocation(s)`, the 748 of CI; `TestSimulation`, `TestSimulation_plantedBugs`, `TestFreeRunning`, and `TestTx_Commit_large` each alone leaked nothing. Each scenario test alone also leaked nothing, until I ran them with `GOGC=1`: then `TestLease_clocks` alone leaked `226784 byte(s) in 187 allocation(s)`, exactly a quarter of the total. LeakSanitizer scans the Go heap as roots, so memory is reported only once the Go object that points to it is collected. The stacks were SQLite's: `sqlite3_open_v2` (12 objects, the three connections of four instances), `pcache1AllocPage` under `sqlite3BtreeBeginTrans`, `sqlite3VdbeCreate` under `sqlite3Pragma` and `sqlite3Select`.
+
+**The cause, in the tests.** `clocked` in `/internal/core/lease_test.go` cuts the client off for an hour, runs the test, and closes the instance with a context of one simulated second. `DB.Close` spends that second on releasing the lease, then fails to take the writer lock, and leaves the cache open, as its doc comment says it does when the context ends first. Logging the error showed `close: release of the lease: context deadline exceeded, after: simulated fault: request 17 of a did not reach the store, which was unreachable\nclose: context deadline exceeded`. Four calls of `clocked`, four instances of three connections each. The core did what it promises; the test gave it too little time and threw the error away. The fix gives the close five simulated minutes, as the workloads do, and checks that the close ended in time.
+
+**A check without the sanitizer.** SQLite deletes the write-ahead log when the last connection to a database closes ("The WAL file exists for as long as any database connection has the database open", https://sqlite.org/wal.html). `leftOpen` in `/internal/core/core_test.go` lists the caches of a directory whose log is left. `cacheDir` gives the scenario tests a temporary directory and fails a test, at its end, for each such cache; `simulate` and `free` record each one as a violation of the run, with its seed. Before the fix of `clocked`, plain `go test` failed exactly the three subtests of `TestLease_clocks`, and nothing else in the default run.
+
+**The self-review found two more,** with two reviewers on `fable` over the diff. Both found the same two things:
+
+- **A crashed instance with a read in flight left its read connection open, also in C memory.** `DB.closeCache`, which `CloseCache` calls after the run for a crashed instance, closed only the idle connections and the write connection. A read connection that a crashed caller held was not closed. The default seeds never hit it; seeds 470, 946, and 1254 of 2000 of the workload with everything did, and seed 22 of the workload of `takeoverAfterRelease`. A reviewer ran seed 470 under the sanitizer with the check off and got a LeakSanitizer report, so the CI failure would have come back the day a default seed crashed an instance in a read. `DB` now keeps all its read connections in `readers`, and `closeCache` closes them all. With `closeCache` back on the idle connections, `S4QL_SIM_SEEDS=23 go test -run 'TestSimulation_plantedBugs$/takes_over_a_lease'` fails with `seed 22 found something without the bug: [a connection to the cache a.db is still open after the run]`; with the fix, 2000 seeds of the workload with everything pass (224 s), and so does `S4QL_SIM_SEEDS=200 go test -run '^TestSimulation_plantedBugs$' ./internal/core/`, every bug, control, and run without the bug over 200 seeds (355 s).
+- **The core leaked the statement of a scan that a panic or `runtime.Goexit` ends.** `conn.scan` in `/internal/core/cache.go` gave its statement back only on paths that return normally. A panic in the loop over `ReadTx.Scan` left the statement stepped; after a recover, `ReadTx.Close` returned nil, and the connection went back to the pool with its old snapshot: the next read on it served the state before a later acknowledged commit. After the same in `Tx.Scan`, the next commit failed with `commit: sqlite: database table is locked (code 6)`. In both, `DB.Close` could not close the connection (`unable to close due to unfinalized statements`). `TestScan` in `/internal/core/cache_test.go` shows both: before the fix it failed with `Expected "t1(k*0): 1 | 2", but got "t1(k*0): 1"` and `commit: sqlite: database table is locked (code 6)`. A deferred call now gives the statement back. That is a real bug of the core, but not the one CI saw.
+
+I looked at the other paths the task names. The error returns of `Open` close through `closeCache`; `Close` after a stop, a rollback, catch-up and replay, and a read transaction that ends with an error, reset or finalize what they hold; both reviewers found the same. `conn.query` and `conn.count` call back only into the core's own code, which waits for nothing, so a crash cannot stop them half way.
+
+**The root user in Docker.** Two subtests of `TestDB_stop` make the directory of the cache read-only with `chmod`, which does not bind root, and the `golang` container runs as root: `core_test.go:484: Expected "the instance has stopped" ..., but got "<nil>"`, and the second one hung for 60 seconds. So `make test-asan` on macOS failed, and hid every leak by the exit code. `readOnly` now skips a test whose directory still takes a file after the `chmod`, and restores the mode in a cleanup. CI runs `make test-asan` on the runner, not as root, so it still runs both.
+
+**The time.** Under `-asan` in the container with four CPUs, at a load of 14 to 16, each group in its own process: `TestSimulation_plantedBugs` 133 s, `TestTx_Commit_large` 67 s, `TestSimulation` 21 s, `TestFreeRunning` 13 s, the rest 8 s. `TestTx_Commit_large` and `TestFreeRunning` are sequential, so they add to the wall time in full. In the planted bugs, the controls and the runs without the bug were about 700 of about 1090 runs. A CPU profile of one planted bug under `-asan` showed a quarter of the time in C, an eighth in `asancall`, a tenth in `sim.goroutineID` through `runtime.Stack`, and much in waking goroutines: nothing that a change of the core's tests could remove. Three changes:
+
+- the control and the run without the bug of each planted bug run 10 seeds by default, not 20; the workload with the bug still runs until four seeds have found it;
+- `TestFreeRunning` and its subtests are parallel, so they overlap the simulations;
+- under the sanitizer, `TestTx_Commit_large` runs a tenth of its rows and does not check the heap, as it already did under the race detector. The heap check then ran nowhere in CI, whose test job uses the race detector, so the `asan` job in `/.github/workflows/ci.yml` runs `go test -run '^TestTx_Commit_large$' ./internal/core/` first, without either.
+
+| `internal/core` | Before | After |
+|---|---|---|
+| `-asan`, container with `--cpus 4`, the package alone | 240 s (300 s with the 60 s hang of `TestDB_stop`), load 14 to 16 | 126 s, load 13 to 16 |
+| `-asan`, container with `--cpus 4`, inside `go test -asan ./...` | 265 s, load 14 to 15 | 158 s, load 16 to 18, in `make test-asan FUZZTIME=5s` |
+| `go test -race`, this machine | 136 s, load 16 to 18 | 98 s, load 16 |
+| `GOMAXPROCS=4 go test -race`, this machine | 164 s, load 14 to 19 (with the seed cut only) | 133 s, load 16 to 18 |
+| `go test` | 55 s | 46 s |
+
+Every bug's workload found the same four seeds under `-asan` after the cut as before (for example `[5 31 39 80]` for the bug that needs 81 seeds), and every control and run without the bug found 0 of 10.
+
+### Why
+
+The leak had to be pinned to one test before anything was changed, because the task cared more about whether the core leaks than about a green job. The WAL check makes the same question answerable in every plain run, on every platform, without depending on when the collector ran. The time went into the planted bugs' controls and the large transaction, so that is where the cut went.
+
+### What worked
+
+- Running each group of tests in its own process, and then each test with `GOGC=1`. The sum of four quarters was the whole leak.
+- The leftover write-ahead log as the sign of a connection that is left. It found the same leak as the sanitizer, then the crash in a read that no default seed reaches.
+- Two reviewers who ran the large seed counts against the new check.
+
+### What didn't work
+
+- The first full run under `-asan` printed no leak, only `--- FAIL: TestDB_stop (60.09s)`: Go skips the leak check when the binary fails. I spent a run on that before I read `os_beforeExit`.
+- Running each scenario test alone, without `GOGC=1`, found nothing: `TestLease_clocks exit=0` with no `SUMMARY`.
+- `sh -c 'time ...'` in the `golang` image: `sh: 1: time: not found`. `bash -c` works.
+- An inline `python3` heredoc to append the test to `cache_test.go` was refused: "this command is too complex to verify that it stays inside the worktree". I used the Edit tool.
+- My first time cut was 20 to 10 seeds and the parallel `TestFreeRunning` only. A reviewer measured it at 7%, 176 s to 164 s on ten CPUs, because `TestTx_Commit_large` stayed sequential at a minute. My own before and after compared a run beside `internal/sim` with a run alone, which is not the same thing.
+- The first version of the check failed with `t.Errorf` inside the bubble of `simulate`. `synctest.Test` then ends the outer test with `FailNow`, so the message named no seed and the rest of the seeds never ran. It is a violation of the run now.
+
+### What I learned
+
+- LeakSanitizer in a Go binary reports C memory only when the binary passes, and only once nothing on the Go heap points to it, so a leak can come and go with the timing of the collector.
+- `go test` strips DWARF from the test binary, so its sanitizer stacks have no symbols; `go test -c` keeps it.
+- A connection that has not read a database keeps no write-ahead log, so the check misses a connection that was opened and never used.
+
+### What was tricky
+
+Telling a leak of the tests from one of the core. `DB.Close` leaving the cache open when its context ends is documented, so the leak that CI saw is the test's. The same check then found one of the harness and one of the core. The crash that leaves a read connection open is the harness's, because a real crash frees everything, but the leak was real C memory.
+
+### What warrants review
+
+- `/internal/core/cache.go`, `conn.scan`: the deferred call, and that every path that gives the statement back first sets `s` to nil.
+- `/internal/core/core.go`, `DB.readers` and `DB.closeCache`: it closes connections that a transaction holds, which is right only for an instance that nothing uses any more.
+- `/internal/core/core_test.go`, `cacheDir`, `leftOpen`, `readOnly`; `/internal/core/simulation_test.go`, `outcome.checkClosed`.
+- What the default run does less of: the controls and the runs without the bug run 10 seeds, not 20; `TestTx_Commit_large` checks the heap only in the plain run, and in CI only in the new step of the `asan` job.
+
+### Future work
+
+- **A question of design for the lead:** `DB.Close` spends its context on the release of the lease first, so a caller with a short deadline and an unreachable store gets an error and an open cache, again on every retry. The cache could be closed without waiting when no transaction holds a lock, or the release could get only part of the context.
+- `DB.Close` sets `closed` before it knows that the connections closed, so a connection whose close fails is never closed. With the fix of the scan, only an `iter.Pull` of a scan without its `stop` can still cause that.
+- The clean runs of `cacheFirst`, `keyTwice`, and `forgetDelete` are the same runs, and so are those of `ackUnknown`, `settleByRead`, and `serveUnknown`: 40 of the 190 clean runs repeat others. Running each distinct clean workload once, or giving each bug its own seeds, would buy back more coverage than the cut took.
+- A restarted instance never opens a cache with a write-ahead log left by the crash, because `cacheDump` on the copy recovers and checkpoints it first (found by a reviewer), so the recovery in `Open` after a crash is not exercised by the simulation.
+
+## Step 8: Mutation testing on the final code
 
 **Author:** mutation-builder
 
