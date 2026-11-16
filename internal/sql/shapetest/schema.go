@@ -3,6 +3,7 @@ package shapetest
 import (
 	"fmt"
 	"hash/fnv"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -518,11 +519,12 @@ func (s *schema) fix(msg string) bool {
 			t.cols = append(t.cols, fmt.Sprint("s4ql_c", len(t.cols)))
 		}
 		// Too many columns: drop those that were only guessed for unqualified references.
-		for col, ts := range s.added {
+		for _, col := range slices.Sorted(maps.Keys(s.added)) {
 			if len(t.cols) <= want {
 				break
 			}
-			if i := slices.Index(ts, t); i >= 0 {
+			if ts := s.added[col]; slices.Contains(ts, t) {
+				i := slices.Index(ts, t)
 				t.remove(col)
 				s.added[col] = slices.Delete(ts, i, i+1)
 			}
