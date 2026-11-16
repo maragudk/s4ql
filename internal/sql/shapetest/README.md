@@ -477,15 +477,30 @@ None of these is a hole in the check. Each is the same program and the same valu
 
 ## Fuzzing
 
-`FuzzCheck` checks the shape of the tree of any text that the parser parses. It is seeded with every 25th corpus entry, the `Structure` statements, and a sample of the pairs. `make fuzz` runs it.
+`FuzzCheck` checks the shape of the tree of any text that the parser parses. It is seeded with every 25th corpus entry (every 100th under `-short`, the race detector, and the address sanitizer), the `Structure` statements, and a sample of the pairs. `make fuzz` runs it.
 
-Its one finding so far is the comment inside a declared type, which the check now [skips](#what-is-skipped). The input is in `testdata/fuzz/FuzzCheck`.
+Seven runs with 6 workers made 313,138,000 executions, about 30,000 a second, since most texts do not parse and cost little. Six runs ended with a finding, and every finding was a fault of the check, not of the parser's tree. Each input is a regression case in `testdata/fuzz/FuzzCheck`:
 
-TODO(builder): fill in
+| Run | Executions | Finding | Now |
+| --- | ---: | --- | --- |
+| 1 | 216,097 | `CREATE TABLE A(A A--\nA)`: a comment inside a declared type is part of the type | [skipped](#what-is-skipped) |
+| 2 | 25,381,073 | `CREATE TABLE A(A CHECK(a\| b),B CHECK(a\|b))`: two CHECK texts that print alike got different masks | one mask for every CHECK |
+| 3 | 2,358,650 | a chain of about 1,300 unary `+` prints deeper than the parser's limit | skipped |
+| 4 | 96,317,059 | a shallower chain reaches `Recursion limit` in the query that evaluates the printed expression | skipped |
+| 5 | 6,645,514 | `WITH A(A)AS(SELECT WITH%0)SELECT 0`: after `(`, WITH is the keyword | [not wrapped](#where-the-check-is-weaker) |
+| 6 | 59,172,008 | a chain that reaches `Recursion limit` only under EXPLAIN | skipped |
+| 7 | 123,112,704 | none, in 30 minutes | |
 
 ## Run times
 
-TODO(builder): fill in
+Measured on a machine with 10 cores that other work kept at a load of about 15; the address sanitizer runs in a Linux container in Docker on the same machine, as `make test-asan` does.
+
+- `go test ./internal/sql/shapetest` takes about 15 s, with about 53 s of CPU, since the corpus and the pairs run in 8 processes. The whole corpus takes most of it.
+- With `-race` it takes about 26 s, in one process, on every tenth corpus entry and smaller samples.
+- Under the address sanitizer it takes about 42 s on the same samples, and `make fuzz` adds 30 s for `FuzzCheck`. `make test-asan` passes, in 756 s at a load of about 30.
+- At a load of 30 or more, the plain run took up to 82 s.
+
+The corpus test in one process needs about 90 MB. With 8 processes under the sanitizer, the processes were killed for memory in Docker's 4 GB, which is why the shards run only in the plain mode.
 
 ## Surprises
 
