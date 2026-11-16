@@ -41,7 +41,7 @@ type class int
 
 const (
 	// classNm is nm: ID, INDEXED, JOIN_KW, and STRING.
-	classNm class = iota + 1
+	classNm class = iota
 	// classIdj is idj: ID, INDEXED, and JOIN_KW.
 	classIdj
 	// classId is id: ID and INDEXED.
