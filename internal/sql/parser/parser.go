@@ -84,9 +84,10 @@ func ParseAll(src string) ([]*ast.Statement, error) {
 	}
 }
 
-// Tokens that [Parse] reads for the statement that starts at or after start in src: every token that
-// is not a space or a comment, from the first token of the statement to its semicolon, if it has one.
-// The empty statements before it are skipped. The tokens are as the tree holds them.
+// Tokens of src that the parser read for stmt, a statement that [Parse] or [ParseAll] read from src:
+// every token that is not a space or a comment, from the first token of the statement to its
+// semicolon, if it has one, as the tokenizer gives them and in the form that the tree holds them. By
+// the ownership rule of the tree, they are the tokens of [ast.AllTokens] of stmt.
 func Tokens(src string, stmt *ast.Statement) []ast.Token {
 	var tokens []ast.Token
 	s := stmt.Bounds()
@@ -125,7 +126,7 @@ func (t tok) atEnd() bool {
 	return t.kind == kindEOF || t.synthetic()
 }
 
-// bailout is the panic with which a syntax error unwinds the parser, recovered in parseAt.
+// bailout is the panic with which an error unwinds the parser, recovered in [parser.run].
 type bailout struct{}
 
 // pendingError is an error that SQLite raises in a grammar action when the token after the one it
