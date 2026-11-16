@@ -1,0 +1,1 @@
+# Equivalent mutants of the SQL tokenizer, syntax tree, and parser.

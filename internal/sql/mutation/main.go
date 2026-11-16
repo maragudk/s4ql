@@ -1,0 +1,209 @@
+// Command mutation runs mutation testing of the SQL tokenizer, syntax tree, and parser: it changes
+// their code on purpose, one small change at a time, runs the tests against each change, and reports
+// the changes that no test notices.
+//
+// Usage, from the root of the module:
+//
+//	go run ./internal/sql/mutation -out DIR
+//	go run ./internal/sql/mutation -out DIR -pkgs internal/sql/parser -run 'expr.go'
+//	go run ./internal/sql/mutation -list
+//	go run ./internal/sql/mutation -out DIR -report
+//
+// Each mutant is a copy of one file with one change, which the go command compiles in place of the
+// file through -overlay, so the repository is never changed and mutants run in parallel. The tests
+// run in stages, the fastest first, each with a time limit of a multiple of its time on the code as
+// it is. The results go to DIR/results.jsonl, and a run with the same DIR skips the mutants that
+// already have a result. The report, in DIR/report.txt, counts the mutants by package and by file,
+// and lists each survivor that is not in the list of equivalent mutants in equivalent.txt.
+//
+// The README next to this file describes the operators, the stages, and the list.
+package main
+
+import (
+	"context"
+	"encoding/json/v2"
+	"flag"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
+	"sync"
+	"time"
+)
+
+func main() {
+	if err := start(); err != nil {
+		fmt.Fprintln(os.Stderr, "mutation:", err)
+		os.Exit(1)
+	}
+}
+
+func start() error {
+	pkgs := flag.String("pkgs", "internal/sql/token,internal/sql/ast,internal/sql/parser", "packages to mutate, separated by commas")
+	out := flag.String("out", "", "directory of the results (required, unless -list)")
+	jobs := flag.Int("j", runtime.NumCPU(), "mutants to run at once")
+	match := flag.String("run", "", "run only the mutants whose key or file:line matches this regular expression")
+	list := flag.Bool("list", false, "list the mutants and exit")
+	reportOnly := flag.Bool("report", false, "write the report of the results in -out and exit")
+	factor := flag.Float64("factor", 20, "time limit of each stage, as a multiple of its time on the code as it is")
+	minTime := flag.Duration("min-time", time.Minute, "smallest time limit of a stage")
+	memory := flag.Int64("memory", 4<<30, "limit in bytes of the resident memory of a test binary")
+	procs := flag.Int("procs", 2, "GOMAXPROCS of each test binary, or 0 to leave it unset")
+	gocache := flag.String("gocache", "", "GOCACHE for the builds of the mutants, or empty for the usual one; each mutant adds about 3 MB to it")
+	equivalent := flag.String("equivalent", "internal/sql/mutation/equivalent.txt", "the list of equivalent mutants")
+	flag.Parse()
+
+	root, err := moduleRoot()
+	if err != nil {
+		return err
+	}
+	dirs := strings.Split(*pkgs, ",")
+	u, err := newUniverse(root, dirs)
+	if err != nil {
+		return err
+	}
+	var re *regexp.Regexp
+	if *match != "" {
+		if re, err = regexp.Compile(*match); err != nil {
+			return err
+		}
+	}
+	var mutants []mutant
+	for _, d := range dirs {
+		files, err := goFiles(filepath.Join(root, d))
+		if err != nil {
+			return err
+		}
+		for _, f := range files {
+			rel, _ := filepath.Rel(root, f)
+			ms, err := u.generate(root, d, rel)
+			if err != nil {
+				return err
+			}
+			for _, m := range ms {
+				if re == nil || re.MatchString(m.Key) || re.MatchString(fmt.Sprintf("%v:%v", m.File, m.Line)) {
+					mutants = append(mutants, m)
+				}
+			}
+		}
+	}
+	if *list {
+		for _, m := range mutants {
+			fmt.Printf("%v:%v\t%v\n", m.File, m.Line, m.Key)
+		}
+		fmt.Fprintf(os.Stderr, "%v mutants\n", len(mutants))
+		return nil
+	}
+	if *out == "" {
+		return fmt.Errorf("-out is required")
+	}
+	if *out, err = filepath.Abs(*out); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(*out, 0o755); err != nil {
+		return err
+	}
+	eq, err := readEquivalent(filepath.Join(root, *equivalent))
+	if err != nil {
+		return err
+	}
+	resultsPath := filepath.Join(*out, "results.jsonl")
+	results, err := readResults(resultsPath)
+	if err != nil {
+		return err
+	}
+	writeReportFile := func() error {
+		f, err := os.Create(filepath.Join(*out, "report.txt"))
+		if err != nil {
+			return err
+		}
+		writeReport(f, mutants, results, eq)
+		if err := f.Close(); err != nil {
+			return err
+		}
+		writeReport(os.Stdout, mutants, results, eq)
+		return nil
+	}
+	if *reportOnly {
+		return writeReportFile()
+	}
+
+	var todo []mutant
+	for _, m := range mutants {
+		if _, ok := results[m.Key]; !ok {
+			todo = append(todo, m)
+		}
+	}
+	fmt.Fprintf(os.Stderr, "%v mutants, %v with a result already, %v to run with %v at once\n",
+		len(mutants), len(mutants)-len(todo), len(todo), *jobs)
+	r := &runner{root: root, out: *out, factor: *factor, minTime: *minTime, memory: *memory, procs: *procs, gocache: *gocache}
+	began := time.Now()
+	if err := r.plan(dirs); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "planned in %v\n", time.Since(began).Round(time.Second))
+
+	rf, err := os.OpenFile(resultsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	work := make(chan mutant)
+	done := make(chan result)
+	var wg sync.WaitGroup
+	for w := range *jobs {
+		dir := filepath.Join(*out, "work", fmt.Sprint(w))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		wg.Go(func() {
+			for m := range work {
+				done <- r.run(context.Background(), m, dir)
+			}
+		})
+	}
+	go func() {
+		for _, m := range todo {
+			work <- m
+		}
+		close(work)
+		wg.Wait()
+		close(done)
+	}()
+	n := 0
+	for res := range done {
+		n++
+		results[res.Key] = res
+		line, err := json.Marshal(res)
+		if err != nil {
+			return err
+		}
+		if _, err := rf.Write(append(line, '\n')); err != nil {
+			return err
+		}
+		if res.Status == statusSurvived || n%50 == 0 {
+			fmt.Fprintf(os.Stderr, "%v/%v %v: %v %v:%v %v\n", n, len(todo), time.Since(began).Round(time.Second),
+				res.Status, res.File, res.Line, res.Key)
+		}
+	}
+	if err := rf.Close(); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "ran %v mutants in %v\n", len(todo), time.Since(began).Round(time.Second))
+	return writeReportFile()
+}
+
+// moduleRoot is the directory of the go.mod of the module in which the command runs.
+func moduleRoot() (string, error) {
+	out, err := exec.Command("go", "env", "GOMOD").Output()
+	if err != nil {
+		return "", err
+	}
+	gomod := strings.TrimSpace(string(out))
+	if gomod == "" || gomod == os.DevNull {
+		return "", fmt.Errorf("not in a module")
+	}
+	return filepath.Dir(gomod), nil
+}
