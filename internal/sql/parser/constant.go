@@ -232,8 +232,8 @@ func isQuoted(text string) bool {
 	return text != "" && (text[0] == '"' || text[0] == '\'' || text[0] == '`' || text[0] == '[')
 }
 
-// dequote a name as sqlite3Dequote does: a name in "", ”, or “ with its doubled quote characters
-// made single, and a name in [] as it is inside.
+// dequote a name as sqlite3Dequote does: in double quotes, single quotes, or backticks, with its
+// doubled quote characters made single, and in square brackets as it is inside.
 func dequote(text string) string {
 	if !isQuoted(text) {
 		return text
