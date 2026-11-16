@@ -63,7 +63,7 @@ type Result struct {
 	Fault string
 }
 
-// ExprResult of the comparison of one expression, on its own in a SELECT without FROM.
+// ExprResult of the comparison of one expression, on its own, over the table of values s4ql_v.
 type ExprResult struct {
 	// Forms of expression that the expression holds, such as "Binary +" or "Like NOT LIKE ESCAPE".
 	Forms []string

@@ -173,7 +173,7 @@ Where parentheses cannot be added, the printer adds none, and the check sees les
 
 The third requirement has one exception. An error of SQLite's grammar actions, such as `IN(...) element has 3 terms - expected 2` or `variable number must be between ?1 and ?32766`, comes after the parse of the original. In the printed text SQLite can raise it at an added `)` and stop there. The check accepts that if the message is that of the original.
 
-A fault in requirements 2 to 4 counts only for a statement that SQLite parses. `Check` asks the oracle about the original text only when it has found such a fault, because the verdict costs as much as the rest of the check.
+A fault counts only for a statement that SQLite parses. `Check` asks the oracle about the original text only when it has found a fault, because the verdict costs as much as the rest of the check.
 
 ### A schema for the statement
 
@@ -213,7 +213,7 @@ For a statement that does not change the schema, the check compares the output o
 SQLite copies text of the statement into three operands, which the check masks:
 
 - P4 of `Trace` is the text of a trigger step.
-- P4 of a `Halt` for a CHECK constraint without a name is the text of the constraint. Both sides get `<check N>` in its place. A named CHECK has its name there, so the check still compares what `CONSTRAINT name` is attached to.
+- P4 of a `Halt` for a CHECK constraint without a name is the text of the constraint, as SQLite takes it: from between the parentheses, trimmed of spaces, dequoted if it starts with a quote, comments kept. Both sides get `<check>` in its place. It is the same for every CHECK, because two texts can print alike, as `a| b` and `a|b` do. A named CHECK has its name there, so the check still compares what `CONSTRAINT name` is attached to.
 - P4 of the virtual-table opcodes is `vtab:` and an address in memory.
 
 ### Statements that change the schema
