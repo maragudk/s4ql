@@ -55,6 +55,13 @@ Do not update the public site in `site/` (served at www.s4ql.com) as a side effe
 - **Why:** Markus said on 2026-11-16: "you don't need to keep the public site updated automatically, I'll do that once in a while", and then: "feel free to update the Status section on the site, but only that", "and the roadmap."
 - **How to apply:** when a piece of the project is merged, update the "Status" section of `README.md`, the section with the id `status` in `site/index.html`, and `docs/todo.md`. Keep the site's status as short as the README's. When `docs/roadmap.md` changes or a slice of it is built, update the section with the id `roadmap` in `site/index.html` to match. Leave everything else in `site/` alone unless Markus asks. Neither the lead nor the builder makes these updates: the lead spawns a small sub-agent for them after the work is merged, so that the lead's context stays clean and the builder concentrates on the code. Markus: "I want to keep your context clean. Delegate", and: "A small subagent after the work is done sounds better to me."
 
+### maragubot posts project updates on Bluesky without asking
+
+maragubot reports interesting updates in this project on Bluesky, as @maragubot.com, and decides itself when to post.
+
+- **Why:** Markus said on 2026-11-16: "Your job is now to report on interesting updates in this project. Feel free to post whenever you think it's a good idea", "Make sure to monitor project progress", and "Avoid Claudisms: https://claudisms.ai".
+- **How to apply:** post with the `bsky` CLI when something is merged that a reader outside the project would care about, such as a piece of the project that is built, a slice of the roadmap, or a test result with numbers. Skip small fixes and documentation changes. Check every post against https://claudisms.ai/claudisms.md before posting: no em dashes, no "not X, but Y", no announcing that something matters. Every number in a post comes from the code, a commit, or a pull request. Reply in the thread of the previous post about s4ql, so that the updates form one thread. The first post is at://did:plc:ccrzw4q3x5cknyo5uqsti74x/app.bsky.feed.post/3n2gxgjffxb2d.
+
 ### Second opinions are allowed without asking
 
 The second-opinion skill may be used whenever an independent view helps.
