@@ -285,6 +285,8 @@ func TestParse_sqlite(t *testing.T) {
 		"select 0x1_g", "select 1_.5_e1_0", "select 1e1_0", "select 0x_1", "select 0x1__1", "select ._5", "select 5._",
 		"select #1abc", "select #a", "select #", "select 1 from t where #1 and 1_", "explain query select 1",
 		"select #$a", "select #::a", "select #a::b", "select 0_e1", "select 0_E1", "select 01_e5", "select 0x1_e",
+		"select 0x0_9", "select 0x9_0", "select 0xa_f", "select 0xf_a", "select 0xA_F", "select 0xF_A", "select 0_9",
+		"select 9_0",
 		"values(0),(0) union select #1", "values(0),(a) union select #1", "values(0),(0) union select #1 from t",
 		"insert into t values(0),(0) returning #1", "attach (values(0),(0)) as #1",
 		"explain query plan explain select 1", "pragma x.y(z)", "pragma x = +1.5", "pragma x = - 1", "pragma x = 'a'",
