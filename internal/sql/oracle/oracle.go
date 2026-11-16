@@ -135,6 +135,11 @@ type Verdict struct {
 	// Reason is why SQLite does not say, for [NotSaid] only.
 	Reason Reason
 
+	// OffsetNotSaid is true for a [SyntaxError] whose offset SQLite does not settle: Offset is what
+	// SQLite gave, but it depends on whether SQLite had read the schema of the connection while it
+	// parsed. The message and the tail are SQLite's verdict as for any syntax error. See [Judge].
+	OffsetNotSaid bool
+
 	// Setup holds the statements that were run on the empty database before the verdict, if the
 	// oracle needed them for the parse to reach further; see [Judge].
 	Setup []string
@@ -159,15 +164,27 @@ type Verdict struct {
 // select #1` gives the offset 28 once aux is attached, which reads its schema, while in the empty
 // database the action's "unknown database aux" overwrites the error. Such a verdict, of a #N whose
 // error came with the statement's end, is [NotSaid], [Overwritten], as it is in the empty database.
+//
+// Even the empty database does not settle that offset when SQLite reads the schema while it parses,
+// before the end. A VALUES with more than one row does that when SQLite compiles its rows into a
+// co-routine, which it does if no common table expression came before and the rows are constant,
+// and so depends on the functions registered on the connection: `values(0),(0) union select #0`
+// gives the offset 27, and `values(0),(a) union select #0` gives -1. The verdict on the error of a
+// #N that came with the end of a statement that may be a SELECT, CREATE VIEW, ATTACH, or DETACH,
+// and that has a VALUES with more than one row, therefore has [Verdict.OffsetNotSaid]. That is
+// decided from the tokens alone, and holds for more statements than those whose offset depends on
+// the schema.
 func Judge(src string) Verdict {
 	var s schema
-	v := s.classify(src, s.prepare(src))
+	r := s.prepare(src)
+	v := s.classify(src, r)
 	for fixes := 0; v.Kind == NotSaid && fixes < maxFixes && s.fix(v.Message); fixes++ {
-		r := s.prepare(src)
-		if r.failed {
+		next := s.prepare(src)
+		if next.failed {
 			// The object could not be created, so the verdict without it stands.
 			break
 		}
+		r = next
 		v = s.classify(src, r)
 		if v.Kind == SyntaxError && isVariableError(v.Message) {
 			// The statement has a #N, so reachedEnd says Overwritten when the parse reached its end.
@@ -176,7 +193,99 @@ func Judge(src string) Verdict {
 			}
 		}
 	}
+	if v.Kind == SyntaxError && isVariableError(v.Message) {
+		v.OffsetNotSaid = s.offsetNotSaid(src, r)
+	}
 	return v
+}
+
+// offsetNotSaid tells, for the error of a variable #N in r, whether its offset may depend on whether
+// SQLite read the schema while it parsed the first statement of src.
+//
+// The offset is lost only when the error comes with the statement's end, and the action of the
+// command reads the schema even after the error, which `cmd ::= select`, sqlite3CreateView,
+// sqlite3Attach, and sqlite3Detach do. They read it only if it was not read before in the
+// statement, which happens while SQLite parses only in sqlite3MultiValues, for a VALUES with more
+// than one row. So the offset is said if the parse stopped before the end, if the statement is none
+// of those commands, or if it has no such VALUES.
+func (s *schema) offsetNotSaid(src string, r result) bool {
+	switch s.reachedEnd(src, r) {
+	case StoppedEarly, InsideTrigger, InsideArguments:
+		// The parse loop stops on the token that raised the error, which was not the statement's end.
+		return false
+	}
+	var fed []token.Token
+	for _, t := range fedTokens(token.Tokens(src)) {
+		if t.Offset >= r.tail {
+			break
+		}
+		if len(fed) == 0 && t.Kind == token.Semi {
+			// An empty statement before the first.
+			continue
+		}
+		fed = append(fed, t)
+	}
+	return readsSchemaAfterError(fed) && hasMultiRowValues(fed)
+}
+
+// hasMultiRowValues tells whether the tokens of a statement, which SQLite's grammar read without a
+// syntax error, have a VALUES with more than one row: VALUES and a parenthesis, and after the
+// parenthesis that closes it, a comma and another parenthesis.
+func hasMultiRowValues(fed []token.Token) bool {
+	kind := func(i int) token.Kind { return kindAt(fed, i) }
+	for i, t := range fed {
+		if t.Kind != token.Values || kind(i+1) != token.LP {
+			continue
+		}
+		depth := 0
+		for j := i + 1; j < len(fed); j++ {
+			switch fed[j].Kind {
+			case token.LP:
+				depth++
+			case token.RP:
+				depth--
+			}
+			if depth == 0 {
+				if kind(j+1) == token.Comma && kind(j+2) == token.LP {
+					return true
+				}
+				break
+			}
+		}
+	}
+	return false
+}
+
+// readsSchemaAfterError tells whether the tokens of a statement may be a SELECT, CREATE VIEW,
+// ATTACH, or DETACH, after EXPLAIN or EXPLAIN QUERY PLAN, by its first tokens. A SELECT starts with
+// SELECT, VALUES, or WITH; a WITH may also start an INSERT, UPDATE, or DELETE, which counts too.
+func readsSchemaAfterError(fed []token.Token) bool {
+	kind := func(i int) token.Kind { return kindAt(fed, i) }
+	i := 0
+	if kind(i) == token.Explain {
+		i++
+		if kind(i) == token.Query && kind(i+1) == token.Plan {
+			i += 2
+		}
+	}
+	switch kind(i) {
+	case token.Select, token.Values, token.With, token.Attach, token.Detach:
+		return true
+	case token.Create:
+		if kind(i+1) == token.Temp {
+			i++
+		}
+		return kind(i+1) == token.View
+	}
+	return false
+}
+
+// kindAt gives the kind of the token at index i, or [token.Illegal] past the last.
+func kindAt(fed []token.Token, i int) token.Kind {
+	if i < len(fed) {
+		return fed[i].Kind
+	}
+	return token.Illegal
 }
 
 // isVariableError reports whether msg is the syntax error of a variable #N, as the action of

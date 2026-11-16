@@ -146,6 +146,76 @@ func TestJudge(t *testing.T) {
 			Code: 1, Tail: 59, Setup: []string{`create table main."t" (c)`}}, v)
 	})
 
+	t.Run("should not say the offset of a variable #N at the end of a statement with VALUES, which depends on the schema", func(t *testing.T) {
+		tests := []struct {
+			src          string
+			offset, tail int
+		}{
+			// The constant rows of a multi-row VALUES make SQLite read the schema while it parses, so
+			// the action at the end does not read it again, and the offset stays.
+			{"VALUES(0),(0)UNION SELECT#0", 25, 27},
+			{"values(0),(0) union select #0", 27, 29},
+			{"values(0),(0) union select #0;", 27, 30},
+			{"values(0),(0) union select #0; select 1", 27, 30},
+			{";; values(0),(0) union select #0", 30, 32},
+			{"values(0),(0),(1) union select #0", 31, 33},
+			{"explain values(0),(0) union select #0", 35, 37},
+			{"explain query plan values(0),(0) union select #0", 46, 48},
+			{"select * from (values(0),(0)) union select #0", 43, 45},
+			{"create view v as values(0),(0) union select #0", 44, 46},
+			{"create temp view v as values(0),(0) union select #0", 49, 51},
+			{"attach (values(0),(0)) as #0", 26, 28},
+			{"detach (values(0),(0)) + #0", 25, 27},
+			// Rows that are not constant, or a common table expression before them, make SQLite read
+			// the schema only at the end, which loses the offset.
+			{"values(0),(a) union select #0", -1, 29},
+			{"values(0),(random()) union select #0", -1, 36},
+			{"with c as (select 1) select * from (values(0),(0)) union select #0", -1, 66},
+			{"create view v as values(0),(a) union select #0", -1, 46},
+			{"attach (values(0),(a)) as #0", -1, 28},
+			{"values((0)+(0)),(0) union select #0", 33, 35},
+		}
+		for _, test := range tests {
+			expected := syntaxError(`near "#0": syntax error`, test.offset, test.tail)
+			expected.OffsetNotSaid = true
+			equal(t, expected, oracle.Judge(test.src))
+		}
+	})
+
+	t.Run("should give the offset of a variable #N where it does not depend on the schema", func(t *testing.T) {
+		tests := []struct {
+			src          string
+			offset, tail int
+		}{
+			// Raised on the token after the variable, before the statement's end.
+			{"values(0),(0) union select #0 from t", 27, 34},
+			{"select #0 from (values(0),(0))", 7, 14},
+			// The actions at the end of these commands do not read the schema after an error.
+			{"insert into t values(0),(0) returning #0", 38, 40},
+			{"delete from t where #0 in (values(0),(0))", 20, 25},
+			{"create table t as values(0),(0) union select #0", 45, 47},
+			// No VALUES with more than one row.
+			{"select #0", -1, 9},
+			{"select * from (values(0)) union select #0", -1, 41},
+			{"select (values(0)), (1) union select #0", -1, 39},
+			{"values((0),(0)) union select #0", -1, 31},
+			{"with i(x) as (values(1) union all select x<1 from i order by 1) select x from i limit 0,#0", -1, 90},
+		}
+		for _, test := range tests {
+			equal(t, syntaxError(`near "#0": syntax error`, test.offset, test.tail), oracle.Judge(test.src))
+		}
+
+		v := oracle.Judge("create trigger r after insert on t begin values(0),(0) union select #0; end")
+		equal(t, oracle.Verdict{Kind: oracle.SyntaxError, Message: `near "#0": syntax error`, Offset: 68,
+			Code: 1, Tail: 71, Setup: []string{`create table main."t" (c)`}}, v)
+	})
+
+	t.Run("should not say on the error of a variable #N at the end of a statement with VALUES that needed a schema", func(t *testing.T) {
+		v := oracle.Judge("create view aux.v as values(0),(0) union select #0")
+		equal(t, oracle.Verdict{Kind: oracle.NotSaid, Reason: oracle.Overwritten, Message: `near "#0": syntax error`, Offset: 48,
+			Code: 1, Tail: 50, Setup: []string{"attach ':memory:' as aux"}}, v)
+	})
+
 	t.Run("should attach the schema of a missing table in an unknown schema", func(t *testing.T) {
 		v := oracle.Judge("alter table aux.t1 add column d integer not null default 1")
 		equal(t, oracle.Verdict{Kind: oracle.Parses, Offset: -1, Tail: 58,
@@ -390,5 +460,6 @@ func equal(t *testing.T, expected, actual oracle.Verdict) {
 	is.Equal(t, expected.Code, actual.Code, "code")
 	is.Equal(t, expected.Tail, actual.Tail, "tail")
 	is.Equal(t, expected.Reason, actual.Reason, "reason")
+	is.Equal(t, expected.OffsetNotSaid, actual.OffsetNotSaid, "offset not said")
 	is.EqualSlice(t, expected.Setup, actual.Setup, "setup")
 }
