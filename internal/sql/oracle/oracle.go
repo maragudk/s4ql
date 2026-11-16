@@ -157,8 +157,8 @@ type Verdict struct {
 // is raised on the semicolon at the end, some commands read the schema before they give up, which
 // runs SQL of its own and loses the offset if the schema was not read yet: `create view aux.v as
 // select #1` gives the offset 28 once aux is attached, which reads its schema, while in the empty
-// database the action's "unknown database aux" overwrites the error. Such a verdict is [NotSaid],
-// [Overwritten], as it is in the empty database.
+// database the action's "unknown database aux" overwrites the error. Such a verdict, of a #N whose
+// error came with the statement's end, is [NotSaid], [Overwritten], as it is in the empty database.
 func Judge(src string) Verdict {
 	var s schema
 	v := s.classify(src, s.prepare(src))
@@ -170,7 +170,10 @@ func Judge(src string) Verdict {
 		}
 		v = s.classify(src, r)
 		if v.Kind == SyntaxError && isVariableError(v.Message) {
-			v.Kind, v.Reason = NotSaid, Overwritten
+			// The statement has a #N, so reachedEnd says Overwritten when the parse reached its end.
+			if reason := s.reachedEnd(src, r); reason == 0 || reason == Overwritten {
+				v.Kind, v.Reason = NotSaid, Overwritten
+			}
 		}
 	}
 	return v
