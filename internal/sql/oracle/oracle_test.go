@@ -166,14 +166,16 @@ func TestJudge(t *testing.T) {
 			{"create temp view v as values(0),(0) union select #0", 49, 51},
 			{"attach (values(0),(0)) as #0", 26, 28},
 			{"detach (values(0),(0)) + #0", 25, 27},
+			{"values((0)+(0)),(0) union select #0", 33, 35},
+			{"select with from (values(0),(0)) union select #0", 46, 48},
 			// Rows that are not constant, or a common table expression before them, make SQLite read
 			// the schema only at the end, which loses the offset.
 			{"values(0),(a) union select #0", -1, 29},
 			{"values(0),(random()) union select #0", -1, 36},
-			{"with c as (select 1) select * from (values(0),(0)) union select #0", -1, 66},
+			{"select * from (with c as (select 1) select 1), (values(0),(0)) union select #0", -1, 78},
 			{"create view v as values(0),(a) union select #0", -1, 46},
+			{"create view v as with c as (select 1) values(0),(0) union select #0", -1, 67},
 			{"attach (values(0),(a)) as #0", -1, 28},
-			{"values((0)+(0)),(0) union select #0", 33, 35},
 		}
 		for _, test := range tests {
 			expected := syntaxError(`near "#0": syntax error`, test.offset, test.tail)
@@ -194,6 +196,11 @@ func TestJudge(t *testing.T) {
 			{"insert into t values(0),(0) returning #0", 38, 40},
 			{"delete from t where #0 in (values(0),(0))", 20, 25},
 			{"create table t as values(0),(0) union select #0", 45, 47},
+			// A common table expression at the start, which keeps SQLite from reading the schema for
+			// a VALUES after it.
+			{"with c as (select 1) select * from (values(0),(0)) union select #0", -1, 66},
+			{"with c as (values(0),(0)) select #0", -1, 35},
+			{"explain with c as (select 1) values(0),(0) union select #0", -1, 58},
 			// No VALUES with more than one row.
 			{"select #0", -1, 9},
 			{"select * from (values(0)) union select #0", -1, 41},

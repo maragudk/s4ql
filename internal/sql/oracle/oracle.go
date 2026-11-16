@@ -171,9 +171,9 @@ type Verdict struct {
 // and so depends on the functions registered on the connection: `values(0),(0) union select #0`
 // gives the offset 27, and `values(0),(a) union select #0` gives -1. The verdict on the error of a
 // #N that came with the end of a statement that may be a SELECT, CREATE VIEW, ATTACH, or DETACH,
-// and that has a VALUES with more than one row, therefore has [Verdict.OffsetNotSaid]. That is
-// decided from the tokens alone, and holds for more statements than those whose offset depends on
-// the schema.
+// does not start with WITH, and has a VALUES with more than one row, therefore has
+// [Verdict.OffsetNotSaid]. That is decided from the tokens alone, and holds for more statements than
+// those whose offset depends on the schema.
 func Judge(src string) Verdict {
 	var s schema
 	r := s.prepare(src)
@@ -206,14 +206,10 @@ func Judge(src string) Verdict {
 // command reads the schema even after the error, which `cmd ::= select`, sqlite3CreateView,
 // sqlite3Attach, and sqlite3Detach do. They read it only if it was not read before in the
 // statement, which happens while SQLite parses only in sqlite3MultiValues, for a VALUES with more
-// than one row. So the offset is said if the parse stopped before the end, if the statement is none
-// of those commands, or if it has no such VALUES.
+// than one row and no common table expression before it. So the offset is said if the statement is
+// none of those commands or starts with WITH, if it has no such VALUES, or if the parse stopped
+// before the end.
 func (s *schema) offsetNotSaid(src string, r result) bool {
-	switch s.reachedEnd(src, r) {
-	case StoppedEarly, InsideTrigger, InsideArguments:
-		// The parse loop stops on the token that raised the error, which was not the statement's end.
-		return false
-	}
 	var fed []token.Token
 	for _, t := range fedTokens(token.Tokens(src)) {
 		if t.Offset >= r.tail {
@@ -225,16 +221,23 @@ func (s *schema) offsetNotSaid(src string, r result) bool {
 		}
 		fed = append(fed, t)
 	}
-	return readsSchemaAfterError(fed) && hasMultiRowValues(fed)
+	if !readsSchemaAfterError(fed) || !hasMultiRowValues(fed) {
+		return false
+	}
+	switch s.reachedEnd(src, r) {
+	case StoppedEarly, InsideTrigger, InsideArguments:
+		// The parse loop stops on the token that raised the error, which was not the statement's end.
+		return false
+	}
+	return true
 }
 
 // hasMultiRowValues tells whether the tokens of a statement, which SQLite's grammar read without a
 // syntax error, have a VALUES with more than one row: VALUES and a parenthesis, and after the
 // parenthesis that closes it, a comma and another parenthesis.
 func hasMultiRowValues(fed []token.Token) bool {
-	kind := func(i int) token.Kind { return kindAt(fed, i) }
 	for i, t := range fed {
-		if t.Kind != token.Values || kind(i+1) != token.LP {
+		if t.Kind != token.Values || kindAt(fed, i+1) != token.LP {
 			continue
 		}
 		depth := 0
@@ -246,7 +249,7 @@ func hasMultiRowValues(fed []token.Token) bool {
 				depth--
 			}
 			if depth == 0 {
-				if kind(j+1) == token.Comma && kind(j+2) == token.LP {
+				if kindAt(fed, j+1) == token.Comma && kindAt(fed, j+2) == token.LP {
 					return true
 				}
 				break
@@ -257,27 +260,35 @@ func hasMultiRowValues(fed []token.Token) bool {
 }
 
 // readsSchemaAfterError tells whether the tokens of a statement may be a SELECT, CREATE VIEW,
-// ATTACH, or DETACH, after EXPLAIN or EXPLAIN QUERY PLAN, by its first tokens. A SELECT starts with
-// SELECT, VALUES, or WITH; a WITH may also start an INSERT, UPDATE, or DELETE, which counts too.
+// ATTACH, or DETACH, by its first tokens, and not one that starts with WITH. A SELECT starts with
+// SELECT, VALUES, or WITH. A WITH at the start is always the keyword, and the action of the name of
+// its first common table expression sets bHasWith, which keeps sqlite3MultiValues from reading the
+// schema for any VALUES after it.
 func readsSchemaAfterError(fed []token.Token) bool {
-	kind := func(i int) token.Kind { return kindAt(fed, i) }
+	i := commandStart(fed)
+	switch kindAt(fed, i) {
+	case token.Select, token.Values, token.Attach, token.Detach:
+		return true
+	case token.Create:
+		if kindAt(fed, i+1) == token.Temp {
+			i++
+		}
+		return kindAt(fed, i+1) == token.View
+	}
+	return false
+}
+
+// commandStart gives the index of the first token of the command in the tokens of a statement, after
+// EXPLAIN or EXPLAIN QUERY PLAN.
+func commandStart(fed []token.Token) int {
 	i := 0
-	if kind(i) == token.Explain {
+	if kindAt(fed, i) == token.Explain {
 		i++
-		if kind(i) == token.Query && kind(i+1) == token.Plan {
+		if kindAt(fed, i) == token.Query && kindAt(fed, i+1) == token.Plan {
 			i += 2
 		}
 	}
-	switch kind(i) {
-	case token.Select, token.Values, token.With, token.Attach, token.Detach:
-		return true
-	case token.Create:
-		if kind(i+1) == token.Temp {
-			i++
-		}
-		return kind(i+1) == token.View
-	}
-	return false
+	return i
 }
 
 // kindAt gives the kind of the token at index i, or [token.Illegal] past the last.
@@ -509,13 +520,7 @@ func (s *schema) reachedEnd(src string, r result) Reason {
 // In CREATE VIRTUAL TABLE, the arguments of the module are any tokens, a semicolon too, with
 // parentheses that must balance, so a semicolon is inside the arguments if a parenthesis is open.
 func insideStatement(fed []token.Token) Reason {
-	i := 0
-	if fed[i].Kind == token.Explain {
-		i++
-		if i+1 < len(fed) && fed[i].Kind == token.Query && fed[i+1].Kind == token.Plan {
-			i += 2
-		}
-	}
+	i := commandStart(fed)
 	if i >= len(fed) || fed[i].Kind != token.Create {
 		return 0
 	}
