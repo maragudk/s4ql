@@ -284,8 +284,8 @@ func getToken(z string) (token.Kind, string) {
 		if kind == token.Space || kind == token.Comment {
 			continue
 		}
-		if kind == token.ID || kind == token.String || kind == token.JoinKw || kind == token.Window ||
-			kind == token.Over || isFallback(kind) {
+		if kind == token.String || kind == token.JoinKw || kind == token.Window || kind == token.Over ||
+			isFallback(kind) {
 			kind = token.ID
 		}
 		return kind, z

@@ -36,3 +36,27 @@ func TestParser_run(t *testing.T) {
 		_, _, _ = newParser("select", 0, 100).run()
 	})
 }
+
+func TestParser_advance(t *testing.T) {
+	// i is the index of the token to consume: the empty semicolon, the end of input after it, or an
+	// unrecognized token.
+	tests := []struct {
+		name string
+		src  string
+		i    int
+	}{
+		{"should refuse to consume the empty semicolon at the end", "", 0},
+		{"should refuse to consume the end of input", "", 1},
+		{"should refuse to consume an unrecognized token", "'abc", 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			defer func() {
+				is.Equal(t, "parser: advance past the end or an unrecognized token", recover())
+			}()
+			p := newParser(test.src, 0, len(test.src))
+			p.i = test.i
+			p.advance()
+		})
+	}
+}
