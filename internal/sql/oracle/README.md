@@ -114,7 +114,7 @@ Three rows need a note:
 - `select ?0` shows that the loss is not special to `#N`. Its message is `variable number must be between ?1 and ?32766`, which is not a syntax message, and its verdict is `Parses`.
 - `delete from t where #1` keeps its offset because the action of DELETE does not load the schema after an error.
 
-The message, the result code, and the tail are the same on both connections; only the offset differs. The cost is lost in the spread between runs: the whole corpus through the oracle takes about 3.1 to 3.5 s with and without the `select 1`.
+The message, the result code, and the tail are the same on both connections; only the offset differs. The `select 1` adds about 4 µs to each prepare: over the corpus, the bare prepares on a new connection take about 2.1 s with it and 1.6 s without. The whole corpus through the oracle still takes about 3 s.
 
 Two syntax errors have the offset -1 on any connection: `incomplete input`, and a misplaced digit separator, as in `select 1_`.
 
