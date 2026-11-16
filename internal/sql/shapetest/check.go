@@ -412,11 +412,12 @@ func typeComment(src string, n ast.Node) bool {
 // sqlite3Dequote does; comments stay. inner gives that text, before the trim, for each side: from
 // the source for the original, and the printed expression for the printed tree.
 func checksOf(stmt *ast.Statement, sd side, inner func(*ast.CheckConstraint) string) {
-	i := 0
+	// Two constraints can have the same text on one side and not on the other, as `a| b` and `a|b`
+	// print the same, so every such text becomes the same mask. A named CHECK keeps its name, so the
+	// mask still tells a named constraint from an unnamed one.
 	ast.Walk(stmt, func(n ast.Node) bool {
 		if ch, ok := n.(*ast.CheckConstraint); ok {
-			sd.masks[sqliteDequote(strings.TrimSpace(inner(ch)))] = fmt.Sprint("<check ", i, ">")
-			i++
+			sd.masks[sqliteDequote(strings.TrimSpace(inner(ch)))] = "<check>"
 		}
 		return true
 	})

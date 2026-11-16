@@ -1,0 +1,2 @@
+go test fuzz v1
+string("CREATE TABLE A(A CHECK(a| b),B CHECK(a|b))")
