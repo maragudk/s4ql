@@ -852,12 +852,13 @@ footer ul {
               <li>The S3 client, which passes the conformance suite on Tigris.</li>
               <li>The SQL tokenizer and the SQL parser.</li>
               <li>The parser agrees with SQLite on what parses and on every syntax error, across 139,234 statements from SQLite's own tests, documentation, and fuzz corpora.</li>
+              <li>The shape of the syntax tree is checked against SQLite as well: the same <code>EXPLAIN</code> output and the same values.</li>
             </ul>
           </td>
         </tr>
         <tr>
           <th scope="row" class="caps">Not built</th>
-          <td><p>The rest of the SQL. There is no engine and no public API yet, so the database cannot be used.</p></td>
+          <td><p>The pass after the parser, the engine, and the rest of the SQL. There is no engine and no public API yet, so the database cannot be used.</p></td>
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
@@ -895,9 +896,14 @@ footer ul {
         <div><h3>Tokenizer</h3><p>The first piece of the SQL front end.</p></div>
         <span class="where caps">Built</span>
       </li>
+      <li class="built">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Parser</h3><p>s4ql's own parser for all of SQLite's grammar. It agrees with SQLite on which statements parse, on the message of each syntax error, and on the shape of the syntax tree.</p></div>
+        <span class="where caps">Built</span>
+      </li>
       <li class="agreed">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Parser</h3><p>s4ql's own parser for all of SQLite's grammar, and a pass after it that rejects whatever the roadmap does not list. It must agree with SQLite on which statements parse, on the exact message of each syntax error, and on where the error is.</p></div>
+        <div><h3>The pass after the parser</h3><p>It rejects whatever the roadmap does not list, and it raises the errors that SQLite's grammar actions raise while they parse.</p></div>
         <span class="where caps">Agreed, not built</span>
       </li>
       <li class="agreed">
