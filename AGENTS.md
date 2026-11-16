@@ -53,7 +53,7 @@ Commit agreed work and merge pull requests when you judge them ready, without as
 Do not update the public site in `site/` (served at www.s4ql.com) as a side effect of other work, except its "Status" and "Roadmap" sections.
 
 - **Why:** Markus said on 2026-11-16: "you don't need to keep the public site updated automatically, I'll do that once in a while", and then: "feel free to update the Status section on the site, but only that", "and the roadmap."
-- **How to apply:** when a piece of the project is merged, update the "Status" section of `README.md`, the section with the id `status` in `site/index.html`, and `docs/todo.md`. Keep the site's status as short as the README's. When `docs/roadmap.md` changes or a slice of it is built, update the section with the id `roadmap` in `site/index.html` to match. Leave everything else in `site/` alone unless Markus asks.
+- **How to apply:** when a piece of the project is merged, update the "Status" section of `README.md`, the section with the id `status` in `site/index.html`, and `docs/todo.md`. Keep the site's status as short as the README's. When `docs/roadmap.md` changes or a slice of it is built, update the section with the id `roadmap` in `site/index.html` to match. Leave everything else in `site/` alone unless Markus asks. The lead does not make these updates itself: they are part of the brief of the builder or writer whose work is merged, or of a small sub-agent after the merge. Markus: "I want to keep your context clean. Delegate."
 
 ### Second opinions are allowed without asking
 
