@@ -25,8 +25,8 @@ corpus:
 	go run ./internal/sql/corpus/update
 
 # fuzz runs each fuzz test in the SQLite binding, its cross-checks, the storage formats, the SQL
-# tokenizer, SQLite's verdicts on SQL, and the SQL parser for FUZZTIME. Pass FUZZFLAGS=-asan to fuzz under the address
-# sanitizer (Linux only).
+# tokenizer, SQLite's verdicts on SQL, and the SQL parser for FUZZTIME. Pass FUZZFLAGS=-asan to fuzz
+# under the address sanitizer (Linux only).
 .PHONY: fuzz
 fuzz:
 	for dir in internal/sqlite $(CROSSCHECK) internal/format internal/sql/token internal/sql/oracle internal/sql/parsetest internal/sql/parser; do \
