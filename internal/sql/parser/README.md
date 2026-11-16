@@ -95,7 +95,7 @@ The check is generic, so no list of node kinds can go stale:
 - `Children` and `Tokens` read the fields of any node through reflection, with a plan cached per type. A field must be a `Token`, a `[]Token`, a node, a slice of nodes, or a struct made of those. Any other field type, such as `bool`, `int`, or `string`, panics. A token cannot hide where the walk does not look, and a node cannot keep what was written in anything but tokens.
 - `TestPlanOf` in `ast_internal_test.go` parses the package's source with `go/parser`. It checks that every node type is in the test's list and has a valid plan, and that a node with an `int` field panics.
 - `ast.CheckOwnership` compares `ast.AllTokens(root)` with the tokens that the tokenizer gives for the statement's span, and checks the spans of every node.
-- `TestCheckOwnership` in `check_test.go` proves the check with trees broken on purpose. It finds each one: a token that no node owns, a token that two nodes own, a token that was not read, a span too wide, a span too narrow, a child that overlaps a token of its parent, a token of the wrong kind, and an empty node outside its parent.
+- `TestCheckOwnership` in `check_test.go` proves the check with trees broken on purpose. It requires the exact message of the part of the check that finds each one: a token that no node owns, a token that two nodes own, a token that was not read, a token of the wrong kind, a token without text, a span too wide, a span too narrow, a span that ends before it starts, a child that overlaps a token of its parent, an empty node outside or before its parent, and a node without tokens whose span is not empty. An empty node at either end of its parent passes.
 
 The check runs on every statement that parses in the corpus test, the mutant test, the generator test, `TestParse_sqlite`, the shape tests, and both fuzz tests.
 
@@ -468,13 +468,11 @@ Under `-short`, the race detector, or the address sanitizer, the corpus tests us
 
 ### Statement coverage
 
-Go's statement coverage of package `parser` is 99.5%. Five places are not covered:
+Go's statement coverage of package `parser` is 99.9%. One place is not covered: the guard in `Tokens` against an empty token, which the tokenizer does not give inside a statement.
 
-- the default case of `tableConstraint`, because its caller checks the token first
-- the code that passes on a panic that is not a syntax error, which only a bug reaches
-- the guard in `advance`, which only a bug reaches
-- the guard in `Tokens` against an empty token, which the tokenizer does not give inside a statement
-- the lookahead past the end of input, because no rule needs three tokens of lookahead there
+### Mutation testing
+
+[`internal/sql/mutation`](../mutation/README.md) measures the tests by mutation testing. It changes the code of `token`, `ast`, and `parser`, one small change at a time, and reports every change that no test notices. `make mutation` runs it. The score is MUTATION-SCORE-PLACEHOLDER. Every survivor is killed by a new test, removed with its code, or listed in [`../mutation/equivalent.txt`](../mutation/equivalent.txt) with its reason.
 
 ### Fuzzing
 

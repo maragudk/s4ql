@@ -11,8 +11,8 @@
 //
 // Each mutant is a copy of one file with one change, which the go command compiles in place of the
 // file through -overlay, so the repository is never changed and mutants run in parallel. The tests
-// run in stages, in an order that puts the fast layers first, each with a time limit of a multiple of its time on the code as
-// it is. The results go to DIR/results.jsonl, and a run with the same DIR skips the mutants that
+// run in stages, in an order that puts the fast layers first, each with a time limit of a multiple
+// of its time on the code as it is. The results go to DIR/results.jsonl, and a run with the same DIR skips the mutants that
 // already have a result. The report, in DIR/report.txt, counts the mutants by package and by file,
 // and lists each survivor that is not in the list of equivalent mutants in equivalent.txt.
 //
