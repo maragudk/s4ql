@@ -206,7 +206,7 @@ The limit never rejects what SQLite parses, and it affects no entry of the corpu
 
 ### Length
 
-`MaxLength` is 1,000,000,000 bytes, SQLite's SQLITE_LIMIT_SQL_LENGTH. The parser counts the tokens it reads, spaces and comments included. The error is `s4ql: the statement is longer than the limit of 1000000000 bytes`. SQLite also refuses a whole text longer than that before it parses, and the oracle does not say on such texts.
+`MaxLength` is 1,000,000,000 bytes, SQLite's SQLITE_LIMIT_SQL_LENGTH. The parser counts the tokens it reads, spaces and comments included. The error is `s4ql: the statement is longer than the limit of 1000000000 bytes`. The parser counts from where its parse starts, as SQLite does for each prepare. SQLite also refuses a whole text longer than that before it parses, and the oracle does not say on such texts.
 
 ### Memory and time
 
@@ -482,13 +482,14 @@ A run of `FuzzParse` for 40 minutes on 10 cores made 352,479,538 executions and 
 
 ### Run times
 
-Measured on an Apple M4.
+Measured on an Apple M4; the numbers under the address sanitizer are from a Linux container in Docker on the same machine.
 
-- `go test ./internal/sql/parser` takes TBD.
-- With `-race` it takes TBD.
-- Under the address sanitizer it takes TBD.
+- `go test ./internal/sql/parser` takes about 10 s. The corpus test, the mutant test, the generator test, and rule coverage take most of it.
+- With `-race` it takes about 10 s, since the tests on the corpus then use a sample.
+- Under the address sanitizer it takes about 20 s, on the same sample, and `make test-asan` passes.
+- With `-count=20` the package took 385 s.
 
-`BenchmarkParse` parses every statement of the corpus: about TBD µs per statement, TBD MB/s.
+`BenchmarkParse` parses every statement of the corpus: about 1.4 µs per statement, 50 MB/s, with about 22 allocations per statement.
 
 ## Surprises
 
