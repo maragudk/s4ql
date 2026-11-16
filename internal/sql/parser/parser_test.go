@@ -120,6 +120,42 @@ func TestParse(t *testing.T) {
 	}
 }
 
+func TestParseAll(t *testing.T) {
+	t.Run("should read every statement, with offsets in the whole text", func(t *testing.T) {
+		src := "select 1;; select (2) ; ;select 3 -- end"
+		stmts, err := parser.ParseAll(src)
+		is.NotError(t, err)
+		is.Equal(t, 3, len(stmts))
+		is.Equal(t, ast.Span{Start: 0, End: 9}, stmts[0].Bounds())
+		is.Equal(t, ast.Span{Start: 11, End: 23}, stmts[1].Bounds())
+		is.Equal(t, ast.Span{Start: 25, End: 33}, stmts[2].Bounds())
+		for _, stmt := range stmts {
+			is.NotError(t, ast.CheckOwnership(stmt, parser.Tokens(src, stmt)))
+		}
+	})
+
+	t.Run("should stop at the first error, with its offset in the whole text", func(t *testing.T) {
+		stmts, err := parser.ParseAll("select 1; select 2 frm t; select 3")
+		is.Equal(t, 1, len(stmts))
+		var e *parser.Error
+		is.True(t, errors.As(err, &e))
+		is.Equal(t, parser.Error{Message: `near "t": syntax error`, Offset: 23}, *e)
+	})
+
+	t.Run("should read nothing from a text without statements", func(t *testing.T) {
+		stmts, err := parser.ParseAll(" ;\x00select 1")
+		is.NotError(t, err)
+		is.Equal(t, 0, len(stmts))
+	})
+
+	t.Run("should read a window keyword after a statement as at the start of a text", func(t *testing.T) {
+		// OVER is a keyword only after ")", which a new prepare has not seen.
+		stmts, err := parser.ParseAll("select (1); select 1 over")
+		is.NotError(t, err)
+		is.Equal(t, 2, len(stmts))
+	})
+}
+
 func ok(tail int) parsetest.Result {
 	return parsetest.Result{OK: true, Offset: -1, Tail: tail}
 }
