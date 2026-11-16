@@ -180,3 +180,45 @@ Memory under the sanitizer: a test that is fine on a laptop is killed in the 4 G
 ### Future work
 
 None beyond what the README lists.
+
+## Step 5: Until the fuzzer was quiet, and the numbers
+
+**Author:** tree-shape-check-builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt) "run long on several cores until quiet; report the execution count and add every finding as a regression case."
+**Interpretation:** Keep fuzzing after each fix until a full run finds nothing, and put the final numbers in the README.
+**Inferred intent:** Confidence that what the check reports is about the parser, not about the check.
+
+### What I did
+
+Fuzz runs 5 and 6 found two more faults of the check: `WITH A(A)AS(SELECT WITH%0)SELECT 0` prints `( WITH % 0 )`, where WITH after `(` is the keyword that starts a SELECT, so the printer no longer wraps an operation that starts with the name WITH; and a deep chain that reaches `Recursion limit` only under EXPLAIN, now skipped. Run 7 made 123,112,704 executions in 30 minutes and found nothing; the seven runs made about 313 million. I filled in the fuzzing and run times of `/internal/sql/shapetest/README.md` and updated its numbers from a last run of the corpus, the pairs, and the mutations.
+
+### Why
+
+Each finding of the fuzzer was a place where the printer or the comparison did not match SQLite, and each would have made the check report a fault of the parser that was not one.
+
+### What worked
+
+The parser's tree had SQLite's shape everywhere: no fault on the corpus (83,991 statements), on 3,721 pairs and 20,000 triples, on 66 statements by hand, or in 313 million fuzz executions.
+
+### What didn't work
+
+`go test ... -run=FuzzCheck/e3a68107840df925` showed `the printed text does not parse: s4ql: the statement is nested deeper than the limit of 2500`, and the run after its fix showed the same class one level shallower, twice: a printed text gains one level per operation, and EXPLAIN and the evaluating query add their own.
+
+### What I learned
+
+Every place where the printer adds a token is a place where SQLite's reading of the next token can change: WITH after `(`, and the depth of the parser's stack.
+
+### What was tricky
+
+Telling the last depth findings apart: the oracle's prepare, EXPLAIN, and the query around an expression each sit at a different depth.
+
+### What warrants review
+
+`startsWithWith` in `/internal/sql/shapetest/print.go`, and the three places in `/internal/sql/shapetest/check.go` that skip for depth.
+
+### Future work
+
+None.
