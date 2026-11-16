@@ -107,8 +107,8 @@ import "maragu.dev/s4ql/internal/sql/token"
 
 var fallback = []token.Kind{token.Abort}
 `)
-		is.True(t, slices.Contains(keys, "parser/p.go fallback add to set:  => token.Action,"), strings.Join(keys, "\n"))
-		is.True(t, slices.Contains(keys, "parser/p.go fallback add to set:  => token.Add,"), strings.Join(keys, "\n"))
+		is.True(t, slices.Contains(keys, "parser/p.go fallback add to set: => token.Action,"), strings.Join(keys, "\n"))
+		is.True(t, slices.Contains(keys, "parser/p.go fallback add to set: => token.Add,"), strings.Join(keys, "\n"))
 		is.True(t, !slices.ContainsFunc(keys, func(k string) bool { return strings.Contains(k, "=> token.Abort,") }))
 	})
 

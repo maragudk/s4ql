@@ -74,8 +74,40 @@ token/token.go Next constant: i = 1 => i = 0 #6
 token/token.go Next neighbour: aiClass[at(i)] <= ccKywd => aiClass[at(i)] <= ccDigit
 	A word that takes in digits is looked up and found to be no keyword, an ID of the same length.
 
+# A word that reaches the loop of identifier characters at the end of Next: its first byte, and every
+# byte the case has read, are identifier characters, so the loop ends at the same byte from any start
+# among them.
+token/token.go Next remove statement: i++ => #7
+	After the break, the loop of identifier characters reads the byte that i++ skips, an identifier character.
+token/token.go Next increment: i++ => i-- #20
+	After the break, the loop of identifier characters reads the bytes from one before, all identifier characters.
+token/token.go Next remove statement: i = 1 => #2
+	From 0, the loop of identifier characters reads the 'x' first, an identifier character.
+token/token.go Next constant: i = 1 => i = 0 #7
+	From 0, the loop of identifier characters reads the 'x' first, an identifier character.
+token/token.go Next remove statement: i = 1 => #3
+	From 0, the loop of identifier characters reads the first byte, a letter or a byte from 0x80 up, an identifier character.
+token/token.go Next constant: i = 1 => i = 0 #8
+	From 0, the loop of identifier characters reads the first byte, a letter or a byte from 0x80 up, an identifier character.
+token/token.go Next remove statement: i = 1 => #4
+	From 0, the loop of identifier characters reads 0xEF first, an identifier character.
+token/token.go Next constant: i = 1 => i = 0 #9
+	From 0, the loop of identifier characters reads 0xEF first, an identifier character.
+
+# keywordCode is given only words of ASCII letters and '_'.
+token/token.go keywordCode constant: 17 => 18
+	A word of 18 letters is looked up and is no keyword, so it is ID either way.
+token/token.go keywordCode condition: c <= 'z' => true
+	A word holds no byte above 'z'.
+token/token.go keywordCode constant: c <= 'z' => c <= '{'
+	A word holds no '{'.
+token/token.go keywordCode constant: 'a' <= c => '`' <= c
+	A word holds no '`'.
+
 # The syntax tree, internal/sql/ast.
 
+ast/ast.go planOf remove statement: f.kind = fieldToken =>
+	fieldToken is the zero value of fieldKind.
 ast/ast.go planOf remove statement: plans.Store(t, fs) =>
 	The cache of plans only saves time: a plan is built again on each use.
 ast/ast.go AllTokens swap arguments: append(tokens, Tokens(m)...) => append(Tokens(m), tokens...)
@@ -84,8 +116,6 @@ ast/check.go checkSpans swap arguments: cmp.Or(cmp.Compare(a.span.Start, b.span.
 	Parts that do not overlap are in the same order by end as by start, and parts that overlap fail the check in either order.
 ast/check.go checkSpans swap arguments: cmp.Compare(a.span.End, b.span.End) => cmp.Compare(b.span.End, a.span.End)
 	Only parts with the same start are ordered by their end, and two such parts overlap, which fails the check in either order.
-ast/check.go checkSpans condition: !p.empty => true
-	An empty part inside the span changes neither the covered span nor an overlap; one outside it fails the check later.
 ast/check.go checkSpans condition: p.empty => true
 	A part that is not empty lies inside the span once the checks of the covered span and of overlaps have passed.
 ast/dump.go dumpFields constant: inner.Len() > 0 => inner.Len() > 1
@@ -121,7 +151,7 @@ parser/expr.go parser.unary neighbour: p.exprPrec(precBitNot, false) => p.exprPr
 
 # The flag stopAtAnd of exprPrec matters only for an operand below AND's level, which only the low
 # operand of BETWEEN is.
-parser/expr.go parser.infix boolean: false => true #2
+parser/expr.go parser.infix boolean: false => true
 	The right operand of IS is read at the level of IS, above AND, where an AND stops the loop anyway.
 parser/expr.go parser.like boolean: false => true
 	The right operand of LIKE is read at the level of LIKE, above AND, where an AND stops the loop anyway.
@@ -154,6 +184,8 @@ parser/expr.go digitSeparatorError constant: 'A' <= c => '@' <= c
 	'@' cannot be in a number.
 parser/expr.go digitSeparatorError constant: c <= 'F' => c <= 'G'
 	A 'G' makes a hexadecimal number an unrecognized token, which is no QNUMBER.
+parser/expr.go digitSeparatorError condition: c <= 'f' => true
+	A byte above 'f' in a hexadecimal number makes it an unrecognized token, but for the 'x' at index 1, which is never next to a separator.
 parser/expr.go digitSeparatorError constant: '0' <= c => '/' <= c #2
 	'/' cannot be in a number.
 parser/expr.go digitSeparatorError constant: c <= '9' => c <= ':' #2
@@ -173,6 +205,8 @@ parser/parser.go kindEOF constant: 255 => 254
 	Any value that is no kind of the tokenizer does; 254 is none.
 parser/parser.go parser.read condition: len(p.toks) == 0 || p.toks[len(p.toks)-1].kind != token.Semi => true
 	An empty semicolon after a semicolon at the end is never read: the statement ends at the first, and a trigger or a virtual table that is open fails with incomplete input at either.
+parser/parser.go parser.read condition: len(p.toks) == 0 => true
+	An empty semicolon after a semicolon at the end is never read: the statement ends at the first, and a trigger or a virtual table that is open fails with incomplete input at either.
 parser/parser.go parser.read condition: p.toks[len(p.toks)-1].kind != token.Semi => true
 	An empty semicolon after a semicolon at the end is never read: the statement ends at the first, and a trigger or a virtual table that is open fails with incomplete input at either.
 parser/parser.go parser.read neighbour: p.toks[len(p.toks)-1].kind != token.Semi => p.toks[len(p.toks)-1].kind != token.LP
@@ -181,6 +215,8 @@ parser/parser.go parser.read element: , off: p.next =>
 	The offset of the empty semicolon is never read: no node starts at it, and its error has no offset.
 parser/parser.go parser.read element: , off: p.next => #2
 	The offset of the end of input is never read: no node starts at it, and its error has no offset.
+parser/parser.go parser.read remove statement: return => #2
+	Without it, read goes on to append an unrecognized token of length 0 after the end of input, which nothing reads.
 parser/parser.go parser.lastKind constant: return 0 => return 1
 	The kind before the first token is only compared with RP.
 parser/parser.go parser.run constant: stmt, tail, err = nil, 0, p.result() => stmt, tail, err = nil, 1, p.result()

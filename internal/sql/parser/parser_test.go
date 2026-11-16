@@ -4,6 +4,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -393,6 +395,18 @@ func TestParse_depth(t *testing.T) {
 	})
 }
 
+// TestMaxLength checks the length limit against the vendored SQLite, since a text of that length is
+// too large for a test: TestParse_length in parser_internal_test.go tests the rule at a smaller limit.
+func TestMaxLength(t *testing.T) {
+	t.Run("should be SQLITE_MAX_SQL_LENGTH of the vendored SQLite, which the binding does not change", func(t *testing.T) {
+		src, err := os.ReadFile("../../sqlite/c/sqlite3.c")
+		is.NotError(t, err)
+		m := regexp.MustCompile(`(?m)^# define SQLITE_MAX_SQL_LENGTH (\d+)$`).FindSubmatch(src)
+		is.True(t, m != nil, "no SQLITE_MAX_SQL_LENGTH")
+		is.Equal(t, fmt.Sprint(parser.MaxLength), string(m[1]))
+	})
+}
+
 // TestParse_mutants compares the parser with SQLite on one-token mutants of the corpus, -mutants of
 // each entry, three by default, from -seed.
 func TestParse_mutants(t *testing.T) {
@@ -579,6 +593,7 @@ func TestParse_expressions(t *testing.T) {
 		{`:name`, `Variable{Name: :name}`},
 		{`"t"`, `ColumnRef{Column: "t"}`},
 		{`window`, `ColumnRef{Column: window}`},
+		{`window x`, `ColumnRef{Column: window}`},
 		{`over`, `ColumnRef{Column: over}`},
 		{`filter`, `ColumnRef{Column: filter}`},
 		{`[t]`, `ColumnRef{Column: [t]}`},

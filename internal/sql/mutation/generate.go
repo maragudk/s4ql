@@ -221,8 +221,9 @@ func (g *generator) addSpan(op string, start, end int, edits ...edit) {
 		return
 	}
 	g.seen[textKey] = true
-	// A removal has an empty To; the key has no space at its end, which editors drop.
-	base := strings.TrimSpace(fmt.Sprintf("%v %v %v: %v => %v", strings.TrimPrefix(g.path, "internal/sql/"), g.fn, op, m.From, m.To))
+	// An addition has an empty From and a removal an empty To. The key has single spaces and none at
+	// its end, which editors drop.
+	base := strings.Join(strings.Fields(fmt.Sprintf("%v %v %v: %v => %v", strings.TrimPrefix(g.path, "internal/sql/"), g.fn, op, m.From, m.To)), " ")
 	m.Key = base
 	for n := 2; g.seen["key "+m.Key]; n++ {
 		m.Key = fmt.Sprintf("%v #%v", base, n)
