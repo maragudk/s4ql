@@ -155,7 +155,13 @@ func (r Result) NotChecked() bool {
 func (c *Checker) compare(r *Result, src string, orig, shown *ast.Statement) {
 	r.Printed = Print(shown)
 	again, _, err := parser.Parse(r.Printed)
+	var perr *parser.Error
 	switch {
+	case errors.As(err, &perr) && perr.Limit:
+		// Every operation adds a parenthesis, and with it a level of nesting, so a deep original
+		// can print deeper than the parser allows.
+		r.Way, r.Reason = Skipped, deepReason
+		return
 	case err != nil:
 		r.Fault = fmt.Sprintf("the printed text does not parse: %v", err)
 		return
@@ -166,7 +172,10 @@ func (c *Checker) compare(r *Result, src string, orig, shown *ast.Statement) {
 		r.Fault = fmt.Sprintf("printing the printed text gives another text: %q", Print(again))
 		return
 	}
-	if w := oracle.Judge(r.Printed); w.Kind != oracle.Parses {
+	if w := oracle.Judge(r.Printed); w.Kind == oracle.NotSaid && w.Message == "Recursion limit" {
+		r.Way, r.Reason = Skipped, deepReason
+		return
+	} else if w.Kind != oracle.Parses {
 		// An error of SQLite's grammar actions, which comes after the parse in the original, can come
 		// at a parenthesis of the printed text, and stop the parse there: that is the same error.
 		if v := oracle.Judge(src); w.Kind != oracle.NotSaid || w.Reason != oracle.StoppedEarly || w.Message != v.Message {
@@ -180,6 +189,8 @@ func (c *Checker) compare(r *Result, src string, orig, shown *ast.Statement) {
 	}
 	r.Exprs, r.Fault = c.exprs(src, orig, shown)
 }
+
+const deepReason = "the printed text, with a parenthesis for every operation, is nested deeper than the limit of the parser"
 
 // checkPrinted checks that [Print] writes every token of the tree once, or leaves it out where its
 // rules say so.

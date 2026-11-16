@@ -257,9 +257,10 @@ An expression is skipped entirely if:
 
 ### What is skipped
 
-A statement is `Skipped` in four cases:
+A statement is `Skipped` in five cases:
 
 - It is a CREATE VIRTUAL TABLE.
+- The printed text is nested deeper than the limit of the parser, or of SQLite's parser (`Recursion limit`). Every operation adds a parenthesis, and with it a level, so a long chain such as `+ + + ... x` of more than 1,250 operators prints too deep.
 - A declared type in it holds a comment.
 - The schema that it needs cannot be built.
 - The two sides differ only because the printed text no longer finds a column that SQLite named by the text of an expression without an alias, as in `select [count(*)] from (select count(*) ...)`. The corpus has 5 such statements.
