@@ -57,6 +57,7 @@ var Structure = []string{
 	"select first_value(a) over (order by b rows between current row and 2 following exclude no others) from t1",
 	"select group_concat(a, ',' order by b desc) from t1",
 	"select count(distinct a) filter (where a > 0) from t1",
+	"select max(abs(a)) filter (where b > 0) over (order by c) from t1",
 	// Upserts with several targets, and INSERT ... SELECT ... ON CONFLICT.
 	"insert into t1(a, b) values (1, 2) on conflict (a) where a > 0 do update set b = excluded.b where b < 10 on conflict (b) do nothing on conflict do nothing",
 	"insert into t1(a, b) select a, b from t2 where true on conflict (a) do update set b = 1",
