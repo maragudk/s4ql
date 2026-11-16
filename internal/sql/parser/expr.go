@@ -12,12 +12,12 @@ import (
 // the precedence of a rule is that of its first terminal with a precedence, unless the rule names one
 // in brackets.
 const (
-	precOr      = 1  // %left OR.
-	precAnd     = 2  // %left AND.
-	precNot     = 3  // %right NOT.
-	precEq      = 4  // %left IS MATCH LIKE_KW BETWEEN IN ISNULL NOTNULL NE EQ.
-	precCompare = 5  // %left GT LE LT GE.
-	precEscape  = 6  // %right ESCAPE.
+	precOr      = 1 // %left OR.
+	precAnd     = 2 // %left AND.
+	precNot     = 3 // %right NOT.
+	precEq      = 4 // %left IS MATCH LIKE_KW BETWEEN IN ISNULL NOTNULL NE EQ.
+	precCompare = 5 // %left GT LE LT GE.
+	// 6 is %right ESCAPE, which like reads itself after its right operand.
 	precBit     = 7  // %left BITAND BITOR LSHIFT RSHIFT.
 	precAdd     = 8  // %left PLUS MINUS.
 	precMul     = 9  // %left STAR SLASH REM.
