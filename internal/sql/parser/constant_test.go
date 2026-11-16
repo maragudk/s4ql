@@ -29,6 +29,7 @@ func TestParse_schemaRead(t *testing.T) {
 		"(1, 2)", "(cast(1 as int), 2)", "(1, cast(2 as int))", "raise(ignore)", "(1)", "((cast(1 as int)))",
 		"row_number() over ()", "length('a') + 1", `"abs"(1)`, "[abs](1)", "replace('a', 'b', 'c')",
 		"like(1, 2)", "json_object()", "printf('%d', 1)", "changes()",
+		"(a -> 1) in ()", "current_time in ()", `"a""b"(1)`, "`abs`(1)",
 	}
 	shapes := []string{
 		"values(0),(E) union select #0",
