@@ -148,3 +148,50 @@ Finding a definition of depth that is provably no greater than Lemon's stack: it
 ### Future work
 
 None.
+
+## Step 4: A fault in the oracle, the list of action errors, review, and documentation
+
+**Author:** sql-parser-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "If you believe a disagreement is a fault of the oracle or the harness and not of the parser, do not work around it in the parser: prove it with SQLite's source and an experiment, fix the oracle or harness with a test, and report it." and "Do make a list, in the package documentation or its README, of every error that SQLite's grammar actions raise [...] That list is a deliverable." and "Self-review before you report".
+**Interpretation:** Close the remaining deliverables: the oracle's soundness where the parser exposed a gap, the error list, the review, the READMEs, and the measurements.
+**Inferred intent:** Hand the next builder a parser whose claims are checked and whose limits are written down.
+
+### What I did
+
+- While probing the `#N` offset I found that `create view aux.v as select #1` gets `SyntaxError` at offset 28 from the oracle, but only after it attached `aux`; in the empty database `unknown database aux` overwrites the error, and the parser's rule gives -1. The offset depends on whether the connection read its schema. `/internal/sql/oracle/oracle.go` now makes such a verdict, found with setup and reaching the statement's end, `NotSaid` and `Overwritten`, with two tests in `oracle_test.go` and a paragraph in its README. A first version that changed every `#N` verdict found with setup moved a corpus entry inside a trigger body from agreement to `NotSaid` (308 became 309); limiting it with `reachedEnd` brought the count back to 308.
+- A research sub-agent traced every error that the grammar's actions raise before the final semicolon, through the functions they call, with file and line in 3.54.1's `src/`, and verified a sample against a build of the amalgamation. A writer sub-agent wrote `/internal/sql/parser/README.md` from that list and my facts, which I reviewed and merged.
+- The code-review skill (level high) found eight issues. I fixed all of them: the README was missing (the writer's), `TestRuleCoverage` now accepts a rule as folded only if Lemon numbers it among the rules without code and it has one symbol on its right, `parser.Tokens` no longer tokenizes the whole text on each call, `docs/todo.md` no longer lists built work, the length message formats its limit, a redundant reflection condition, an absent-token check written two ways, and the doc comment of `reachedEnd`.
+- Added `TestParse_sqlite` (about 200 hand-written texts on window keywords, virtual tables, constraints, upserts, triggers, `#N`, digit separators, and keywords as names), `TestParseAll`, `TestParse_length`, `FuzzGenerate`, and the walk and dump tests of `ast`. All agree with SQLite.
+
+### Why
+
+The oracle's claim that a verdict found with setup holds for the empty database was false for one offset, and the parser cannot know the schema, so the oracle must not say.
+
+### What worked
+
+`make test-asan` passes in Docker. `make lint` passes. `-count=20` passed for the parser, ast, and oracle packages (385 s, 0.1 s, 208 s). `BenchmarkParse`: about 1.4 µs and 22 allocations per corpus statement, 50 MB/s; `BenchmarkParse_long` keeps a constant rate from 1,000 to 100,000 items. The first 40-minute fuzz run made 352,479,538 executions without a finding.
+
+### What didn't work
+
+- The first `make test-asan` failed on the parser package after `PASS`, with `ERROR: LeakSanitizer: detected memory leaks` and `SUMMARY: AddressSanitizer: 14384 byte(s) leaked in 41 allocation(s).` No single test leaked under `-asan`, the whole package passed twice, and the failing shuffle seed `-shuffle 1794836674597361168` passed too. That run compiled the package while the review agent had a scratch test file in it and while I edited files, so I believe the leak came from that file; the second full `make test-asan` passed.
+- `git add internal/sql` twice picked up the untracked development tool `/internal/sql/probe`, which prints the oracle's verdict; it was removed again in the next commit each time.
+
+### What I learned
+
+The errors of the grammar's actions fall into two groups for the next pass: those raised while the statement is read, which can stop the parse early and whose timing matters (about 90, listed in the README), and those of the command's action on the final semicolon, which are code generation and name resolution.
+
+### What was tricky
+
+Two agents working in the same worktree as the asan run, which mounts it into a container, made one run unreliable.
+
+### What warrants review
+
+The `#N` rule in `Judge` in `/internal/sql/oracle/oracle.go`, and the error list in `/internal/sql/parser/README.md`, which is researched from source and only partly verified by experiment.
+
+### Future work
+
+- The pass after the parser: it must raise the listed errors at SQLite's moment, and `Recursion limit` for texts nested 2,494 to 2,499 deep, which the parser accepts.
+- The round-trip printer, the third check of `docs/todo.md`.
