@@ -1,6 +1,10 @@
 package parser
 
-import "maragu.dev/s4ql/internal/sql/token"
+import (
+	"fmt"
+
+	"maragu.dev/s4ql/internal/sql/token"
+)
 
 // TraceToken is a token as the parser hands it on: its kind as the parser sees it, its offset, and
 // its length. The empty semicolon at the end has length 0, and the end of input the kind
@@ -43,3 +47,12 @@ func TraceParse(src string) Trace {
 
 // IsFallback is isFallback.
 var IsFallback = isFallback
+
+// BuiltinFunctions of the table of the parser, as "name nArg constant".
+func BuiltinFunctions() []string {
+	var fs []string
+	for _, f := range builtinFunctions {
+		fs = append(fs, fmt.Sprintf("%v %v %v", f.name, f.nArg, f.constant))
+	}
+	return fs
+}

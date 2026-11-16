@@ -91,12 +91,18 @@ func (p *parser) oneSelect() ast.SelectCore {
 func (p *parser) values() *ast.Values {
 	start := p.mark()
 	v := &ast.Values{Values: p.advance()}
+	started := false
 	for {
 		rs := p.mark()
 		r := &ast.ValuesRow{LParen: p.expect(token.LP)}
 		r.Exprs, r.Commas = p.exprList()
 		r.RParen = p.expect(token.RP)
 		v.Rows = append(v.Rows, finish(p, r, rs))
+		if len(v.Rows) > 1 {
+			// parse.y: mvalues ::= values COMMA LP nexprlist RP. mvalues ::= mvalues COMMA LP
+			// nexprlist RP. The action runs when the next token arrives.
+			started = p.valuesRow(r, v.Rows[len(v.Rows)-2], p.i, started)
+		}
 		if !p.is(token.Comma) {
 			break
 		}
@@ -372,6 +378,9 @@ func (p *parser) withClause() *ast.With {
 	w.Recursive = p.accept(token.Recursive)
 	for {
 		cs := p.mark()
+		if p.withAt < 0 {
+			p.withAt = p.i
+		}
 		c := &ast.CTE{Name: p.nm()}
 		if p.is(token.LP) {
 			c.Columns = p.columnNames()

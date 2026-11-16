@@ -168,6 +168,10 @@ type parser struct {
 	err      *Error
 	errAt    int
 	pending  *pendingError
+	// withAt is the index of the name of the first common table expression, and schemaReadAt the
+	// index of the token on whose arrival SQLite reads the schema while it parses, or -1.
+	withAt       int
+	schemaReadAt int
 }
 
 // textEnd of src: the offset of its first NUL byte, or its length.
@@ -181,7 +185,7 @@ func textEnd(src string) int {
 // newParser of the first statement of src that starts at or after the offset start, where the text
 // ends at end.
 func newParser(src string, start, end int) *parser {
-	return &parser{src: src, end: end, start: start, next: start, lastEnd: start}
+	return &parser{src: src, end: end, start: start, next: start, lastEnd: start, withAt: -1, schemaReadAt: -1}
 }
 
 // parseAt parses the first statement of src that starts at or after the offset start, where the
@@ -225,10 +229,12 @@ func (p *parser) result(stmt *ast.Statement) error {
 		return nil
 	}
 	offset := pe.offset
-	if pe.variable && stmt != nil && p.endsAt(stmt, pe.trigger) && resetsOffset(stmt.Cmd) {
+	if pe.variable && stmt != nil && p.endsAt(stmt, pe.trigger) && resetsOffset(stmt.Cmd) &&
+		(p.schemaReadAt < 0 || p.schemaReadAt > pe.trigger) {
 		// SQLite raises the error of #N when the semicolon at the end arrives, and the action of the
-		// command, which runs on that semicolon too, reads the schema of the new connection first.
-		// That runs SQL of its own, which leaves the offset of the error at -1.
+		// command, which runs on that semicolon too, reads the schema of the new connection first,
+		// unless a multi-row VALUES read it while SQLite parsed. Reading it runs SQL of its own, which
+		// leaves the offset of the error at -1.
 		offset = -1
 	}
 	return &Error{Message: pe.message, Offset: offset}
