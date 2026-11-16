@@ -352,7 +352,7 @@ func (g *generator) node(n, parent ast.Node) {
 				g.fn = fmt.Sprintf("%v[%d]", fn, i)
 			}
 		}
-		g.literal(n)
+		g.literal(n, g.context(n, parent))
 		g.fn = fn
 	case *ast.Ident:
 		switch n.Name {
@@ -362,11 +362,11 @@ func (g *generator) node(n, parent ast.Node) {
 			g.add("boolean", n, g.replace(n, "true"))
 		}
 		if !g.isDeclOrKey(n, parent) {
-			g.neighbour(n, n.Name, g.u.consts[g.pkg], "")
+			g.neighbour(n, g.context(n, parent), n.Name, g.u.consts[g.pkg], "")
 		}
 	case *ast.SelectorExpr:
 		if x, ok := n.X.(*ast.Ident); ok && x.Name == "token" && g.pkg != tokenDir {
-			g.neighbour(n, n.Sel.Name, g.u.consts[tokenDir], "token.")
+			g.neighbour(n, g.context(n, parent), n.Sel.Name, g.u.consts[tokenDir], "token.")
 		}
 	case *ast.CallExpr:
 		if id, ok := n.Fun.(*ast.Ident); ok && (id.Name == "min" || id.Name == "max") {
@@ -494,34 +494,49 @@ func (g *generator) commaAfter(at int) int {
 	return -1
 }
 
-// literal adds the change of an integer or a character to its neighbours.
-func (g *generator) literal(n *ast.BasicLit) {
+// context of the node n for the key of its mutant: its parent if that is a short expression or
+// statement, so that a key such as `i = 1 => i = 0` says where the change is, or n itself.
+func (g *generator) context(n, parent ast.Node) ast.Node {
+	switch parent.(type) {
+	case *ast.BinaryExpr, *ast.AssignStmt, *ast.CallExpr, *ast.IndexExpr, *ast.ReturnStmt, *ast.UnaryExpr,
+		*ast.KeyValueExpr, *ast.IncDecStmt, *ast.SliceExpr:
+		if g.off(parent.End())-g.off(parent.Pos()) <= 80 {
+			return parent
+		}
+	}
+	return n
+}
+
+// literal adds the change of an integer or a character to its neighbours, shown in the key in the
+// node shown.
+func (g *generator) literal(n *ast.BasicLit, shown ast.Node) {
 	switch n.Kind {
 	case token.INT:
 		v, err := strconv.ParseInt(strings.ReplaceAll(n.Value, "_", ""), 0, 64)
 		if err != nil {
 			return
 		}
-		g.add("constant", n, g.replace(n, fmt.Sprint(v+1)))
+		g.add("constant", shown, g.replace(n, fmt.Sprint(v+1)))
 		if v > 0 {
-			g.add("constant", n, g.replace(n, fmt.Sprint(v-1)))
+			g.add("constant", shown, g.replace(n, fmt.Sprint(v-1)))
 		}
 	case token.CHAR:
 		r, _, _, err := strconv.UnquoteChar(n.Value[1:len(n.Value)-1], '\'')
 		if err != nil {
 			return
 		}
-		g.add("constant", n, g.replace(n, strconv.QuoteRune(r+1)))
+		g.add("constant", shown, g.replace(n, strconv.QuoteRune(r+1)))
 		if r > 0 {
-			g.add("constant", n, g.replace(n, strconv.QuoteRune(r-1)))
+			g.add("constant", shown, g.replace(n, strconv.QuoteRune(r-1)))
 		}
 	}
 }
 
 // neighbour adds the change of a use of the constant name, of the blocks, to its neighbours in its
 // block: both neighbours in a block of at most 20 names, and the next one in a longer block, such
-// as the kinds of tokens. The node n is the use, and prefix the qualifier of a name in its text.
-func (g *generator) neighbour(n ast.Node, name string, blocks constBlocks, prefix string) {
+// as the kinds of tokens. The node n is the use, shown is the node shown in the key, and prefix the
+// qualifier of a name in its text.
+func (g *generator) neighbour(n, shown ast.Node, name string, blocks constBlocks, prefix string) {
 	block, ok := blocks[name]
 	if !ok {
 		return
@@ -542,7 +557,7 @@ func (g *generator) neighbour(n ast.Node, name string, blocks constBlocks, prefi
 		to = append(to, block[i-1])
 	}
 	for _, t := range to {
-		g.add("neighbour", n, g.replace(n, prefix+t))
+		g.add("neighbour", shown, g.replace(n, prefix+t))
 	}
 }
 
