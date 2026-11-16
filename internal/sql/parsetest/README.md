@@ -21,7 +21,7 @@ type Parser interface {
 - `Offset` is the byte offset of the syntax error, or -1 where SQLite gives none, as for `incomplete input`.
 - `Tail` is the offset of the first byte after a statement that parses: after its semicolon, or at the end of the text.
 
-`Message` and `Offset` are compared only where SQLite gives a syntax error, and `Tail` only where the statement parses.
+`Message` and `Offset` are compared only where SQLite gives a syntax error, and `Tail` only where the statement parses. `Offset` is not compared where the verdict has `OffsetNotSaid`: the error of a `#N` at the end of a statement with a multi-row VALUES, whose offset depends on whether SQLite read the schema while it parsed (see [the oracle's README](../oracle/README.md#the-offset-of-n-after-values)).
 
 A test of a parser runs it on the corpus in [`internal/sql/corpus`](../corpus/README.md) and on mutants of it, and a fuzz test checks one text at a time. Here `parse` is a `func(src string) parsetest.Result` that calls the parser:
 
@@ -76,12 +76,12 @@ A disagreement has one of five kinds:
 
 `Run` groups the disagreements by kind and key, so that those with the same likely cause can be worked through together. The key holds the pattern of SQLite's message, of the parser's, or of both, as `Pattern` gives it: the quoted token of a syntax error becomes its kind, as in `near ID: syntax error` or `unrecognized token: STRING...`, and in any other message the part after the first colon becomes `...`. For an offset or a tail the key also holds the difference: `offset +1`, `SQLite -1` or `parser -1` where one side gives no offset, and `tail +9`.
 
-The groups are sorted with the largest first, and each keeps its five shortest texts as examples. Texts on which SQLite does not say are never compared. They are counted apart, grouped by the reason and the pattern of SQLite's message. The report is the same for the same texts in any order.
+The groups are sorted with the largest first, and each keeps its five shortest texts as examples. Texts on which SQLite does not say are never compared. They are counted apart, grouped by the reason and the pattern of SQLite's message. Texts on which SQLite does not say the offset are compared on the rest. Those that agree on the rest are counted apart too, in `Report.OffsetNotSaid`, and listed with the reason `offset not said`. The report is the same for the same texts in any order.
 
 This is the report for a parser that accepts everything, on four texts:
 
 ```
-4 texts: 0 agree, 3 disagree, SQLite does not say on 1
+4 texts: 0 agree, 3 disagree, SQLite does not say on 1, nor the offset on 0
 
 accepts what SQLite rejects, incomplete input: 1
   accepts what SQLite rejects: "select * from": SQLite: syntax error "incomplete input" at -1, tail 13; parser: ok=true "" at -1, tail 0
@@ -115,6 +115,7 @@ The harness uses no property-based testing library. The repository has none, and
 `parsetest_test.go` tests the harness with SQLite and with stand-ins, apart from any parser:
 
 - SQLite compared with itself gives no disagreement, on the whole corpus and on 8,331 mutants, three of every fiftieth entry.
+- A parser that gives no offset agrees on a `#N` error after a multi-row VALUES, which is counted in `OffsetNotSaid`, and still disagrees where the message differs.
 - A stand-in parser is SQLite's verdict with one known fault. Each fault is reported with the right count in the right group: a parser that accepts everything, one that is off by one in the offset, one that gives an offset where SQLite gives none, one that differs in one message, one that rejects valid statements, and one that ignores the semicolon.
 - `FuzzMutants` checks that mutants are reproducible and that SQLite agrees with itself on them. `make fuzz` runs it.
 
