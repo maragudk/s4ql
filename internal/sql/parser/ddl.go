@@ -66,18 +66,17 @@ func (p *parser) createTable(start int, create, temp ast.Token) *ast.CreateTable
 		for {
 			t.Constraints = append(t.Constraints, p.tableConstraint())
 			if p.is(token.Comma) {
+				// After a comma a constraint must follow; tableConstraint fails at any other token.
 				t.Commas = append(t.Commas, p.advance())
-				if !p.startsTableConstraint() {
-					p.fail()
-				}
 			} else if !p.startsTableConstraint() {
 				break
 			}
 		}
 	}
 	t.RParen = p.expect(token.RP)
-	// The first option can be empty, so a comma can come right after the parenthesis.
-	if p.is(token.Without) || isName(p.cur(), classNm) {
+	// The first option can be empty, so a comma can come right after the parenthesis. WITHOUT falls
+	// back to ID, so it is a name here too.
+	if isName(p.cur(), classNm) {
 		t.Options = append(t.Options, p.tableOption())
 	}
 	for p.is(token.Comma) {
@@ -396,9 +395,6 @@ func (p *parser) tableConstraint() ast.TableConstraint {
 		return finish(p, c, start)
 	case token.Foreign:
 		fk := &ast.TableForeignKey{Foreign: p.advance(), Key: p.expect(token.Key)}
-		if !p.is(token.LP) {
-			p.fail()
-		}
 		fk.Columns = p.columnNames()
 		fk.References = p.references()
 		if p.is(token.Not) || p.is(token.Deferrable) {
