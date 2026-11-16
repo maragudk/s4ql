@@ -18,11 +18,18 @@ fmt:
 	grep -rLE '^// Code generated .* DO NOT EDIT\.$$' --include='*.go' . | \
 		xargs goimports -w -local `head -n 1 go.mod | sed 's/^module //'`
 
-# fuzz runs each fuzz test in the SQLite binding, its cross-checks, the storage formats, and the SQL
-# tokenizer for FUZZTIME. Pass FUZZFLAGS=-asan to fuzz under the address sanitizer (Linux only).
+# corpus regenerates the corpus of SQL statements in internal/sql/corpus from the archives of SQLite
+# that internal/sql/corpus/source.json pins, which it downloads from sqlite.org.
+.PHONY: corpus
+corpus:
+	go run ./internal/sql/corpus/update
+
+# fuzz runs each fuzz test in the SQLite binding, its cross-checks, the storage formats, the SQL
+# tokenizer, and SQLite's verdicts on SQL for FUZZTIME. Pass FUZZFLAGS=-asan to fuzz under the address
+# sanitizer (Linux only).
 .PHONY: fuzz
 fuzz:
-	for dir in internal/sqlite $(CROSSCHECK) internal/format internal/sql/token; do \
+	for dir in internal/sqlite $(CROSSCHECK) internal/format internal/sql/token internal/sql/oracle internal/sql/parsetest; do \
 		for test in $$(cd $$dir && go test -list '^Fuzz' . | grep '^Fuzz'); do \
 			(cd $$dir && go test $(FUZZFLAGS) -run '^$$' -fuzz "^$$test\$$" -fuzztime $(FUZZTIME) .) || exit 1; \
 		done; \

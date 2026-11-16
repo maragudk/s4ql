@@ -1,0 +1,250 @@
+# s4ql's own statements, written by hand, for what SQLite's tests may miss. One statement per line,
+# in the form of corpus.Encode: \n, \t, \r, \\, and \xHH for any other byte that is not printable.
+# Lines that start with # are comments. Nothing here says what SQLite does; the oracle does.
+
+# Whitespace: a vertical tab is whitespace only after other whitespace.
+select\x0b1
+select \x0b1
+select\t1\r\n
+select\x0c1
+# A byte order mark is whitespace where a token starts, and an identifier character inside a word.
+\xef\xbb\xbfselect 1
+select\xef\xbb\xbf1
+select \xef\xbb\xbf1
+# Bytes from 0x80 up are identifier characters, also a no-break space and invalid UTF-8.
+select \xc2\xa0
+select 1\xc2\xa0
+select 1 as \xff
+select \xff\xfe from t
+create table \xe6\x97\xa5 (\xc3\xa9 int)
+
+# NUL bytes end the text.
+select 1\x00 frm
+select \x00 1
+select 'a\x00b'
+select 1 /*\x00 */
+\x00select 1
+select 1; \x00 drop table t
+
+# Comments.
+select 1 /* open
+select 1 /*
+select 1 /* \nfrm
+select 1 -- comment
+select -- comment\n1
+select 1 --
+select /**/1
+select 1/**/2
+select 1/**/frm
+
+# Strings, names, and blobs, closed and not.
+select 'abc
+select "abc
+select `abc
+select [abc
+select 'it''s'
+select "a""b" from t
+select `a``b` from t
+select [a]]b] from t
+select x'0'
+select x'zz'
+select x'00
+select X'0A'
+select x
+select x 'a'
+select x''
+
+# Numbers.
+select 1x
+select 1e
+select 1e+
+select 1e+5
+select 0x
+select 0xg
+select 0x1g
+select .5
+select 5.
+select .
+select 1..2
+select 1.2.3
+select 1_000
+select 1_
+select 1__2
+select 1__2__3
+select _1
+select 1_2__3
+select 0x1_F
+select 0x_1
+select 1.5_5
+select 1e1_0
+select 1_e10
+select 1_ 2
+select (1_
+select 1_ from nosuch
+select 9223372036854775807
+select 9223372036854775808
+select -9223372036854775808
+select 0x7fffffffffffffff
+select 0xffffffffffffffff
+select 0x1ffffffffffffffff
+
+# Variables.
+select ?
+select ?1
+select ?0
+select ?32766
+select ?32767
+select ?99999999999999999999
+select :a
+select @a
+select $a
+select #a
+select #1
+select #1 2
+select #1 from t
+select 1 from t where #1
+select :a(b)
+select #a(b)
+select @a::b
+select $a::b(c)
+select $
+select :
+select ?a
+
+# Operators.
+select 1 == 1
+select 1 != 1
+select 1 <> 1
+select 1 !
+select 1 ! = 1
+select 1 -> 'a'
+select 1 ->> 'a'
+select 1 - > 1
+select 1 << 2 >> 3
+select ~1
+select 1 || 2
+select 1 | | 2
+
+# Keywords as names, where the grammar allows it and where it does not.
+create table abort (x)
+create table left (x)
+create table key (rowid int primary key)
+create table select (x)
+create table t (true integer)
+create table strict (x)
+create table t (x) strict
+create table 'z' (x)
+select cast.* from t
+select raise.* from t
+select current_date.* from t
+select current_time.* from t
+select current_timestamp.* from t
+select abort.* from t
+select x, cast.* from t
+select * from t window window as ()
+select window from window
+select over from over
+select filter from filter
+select count(*) filter (where 1) from t
+select count(*) over () from t
+select count(*) filter (where 1) over w from t window w as ()
+pragma x = select
+select cast(1 as left)
+create table null (x)
+begin transaction s
+update strict set x = 1
+select 1 as end
+select end from t
+
+# Precedence and associativity.
+select not 7 not null
+select not null not null
+select 'a' like not 'b' not null escape 'x'
+select 1 is not distinct from 2 is null
+select 1 between 2 and 3 between 4 and 5
+select 1 in (2) in (3)
+select - - 1
+select - -1
+select 1 collate nocase collate binary
+select 1 not between 2 and 3
+select x not null from t
+select x notnull from t
+select x isnull from t
+select 1 = 2 = 3
+select 1 < 2 < 3
+select a glob b escape c
+select a regexp b
+select a match b
+select a like b escape c escape d
+
+# Statements that SQLite stops early in an empty database, and with a schema the oracle makes.
+create trigger tr after insert on t begin select 1; end
+create trigger tr instead of insert on v begin select 1; end
+create trigger tr before insert on t begin select 1 as end; select 2; end
+create trigger tr after insert on t begin select 1; end; select 2
+create trigger tr after insert on t begin delete from t indexed by i; end
+create temp trigger tr after insert on main.t begin select 1; end
+create trigger tr after insert on t begin
+alter table t add column y
+alter table t add column y integer not null default 1
+alter table aux.t add column y
+create table aux.t (x)
+create table aux.t (x) foo, bar
+create virtual table v using m(a;b)
+create virtual table v using m(a, (b; c))
+create virtual table v using m(
+create virtual table v using m
+
+# Action errors before and after a syntax error.
+create table t (x) foo
+create table t (x) foo, bar
+create table t (x) foo bar
+create table t (x) strict, foo, without rowid
+create table t (v1 int primary key) strict, without rowid, bar
+select 0 limit 0 union select #0
+select 0 limit 0 union select 1_
+select 1 union select 2 order by 1 union select 3
+select * from t1 left right join t2
+select * from t1 natural natural join t2
+
+# Parts of slice 1 and near it.
+create table t1 (v1 int primary key) strict, without rowid
+create table t1 (v1 int primary key) without rowid, strict
+create table t1 (v1 int primary key) strict without rowid
+create table t1 (v1 int primary key) strict,
+create table if not exists t1 (v1 int primary key) strict, without rowid
+create table "t1" (v1 int primary key) strict, without rowid
+create table t1 (v1 int primary key, v2 int) strict, without rowid
+insert into t1 (v1) values (1)
+insert into t1 (v1) values (1), (2)
+insert into t1 values (1)
+insert into t1 (v1) values (1
+insert into t1 (v1) values ()
+insert into t1 () values (1)
+insert into t1 default values
+insert or replace into t1 (v1) values (1)
+insert into t1 (v1) values (1) on conflict do nothing
+insert into t1 (v1) values (1) returning *
+select * from t1
+select * from t1 order by v1
+select * from t1 where v1 = 1
+select *
+select * from
+drop table t1
+drop table if exists t1
+drop table
+drop table t1, t2
+
+# Empty statements and the tail.
+;
+;;
+; select 1
+select 1;
+select 1;;
+select 1 ; select 2
+select 1 -- c\n; select 2
+explain select 1
+explain query plan select 1
+explain
+explain query plan
+explain explain select 1

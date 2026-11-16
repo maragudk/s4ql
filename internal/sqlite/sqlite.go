@@ -601,6 +601,15 @@ func Tokenize(src string) []Token {
 	return tokens
 }
 
+// Complete reports whether sql ends a statement, by sqlite3_complete: whether it ends with a
+// semicolon that is not inside a string, a name, a comment, or the body of CREATE TRIGGER. The
+// sqlite3 shell splits its input into statements with it. It reads sql up to its first NUL byte.
+func Complete(sql string) bool {
+	z := C.CString(sql)
+	defer C.free(unsafe.Pointer(z))
+	return C.sqlite3_complete(z) != 0
+}
+
 // Keywords of SQL in this build of SQLite, in upper case, as sqlite3_keyword_name gives them.
 func Keywords() []string {
 	keywords := make([]string, C.sqlite3_keyword_count())

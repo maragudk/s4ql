@@ -1,0 +1,4 @@
+# The generated corpus of SQL statements is large, and is reviewed through the tool that writes it.
+/internal/sql/corpus/tcl.txt linguist-generated=true -diff
+/internal/sql/corpus/doc.txt linguist-generated=true -diff
+/internal/sql/corpus/fuzz.txt linguist-generated=true -diff

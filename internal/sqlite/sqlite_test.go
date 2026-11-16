@@ -954,6 +954,22 @@ func TestTokenize(t *testing.T) {
 	})
 }
 
+func TestComplete(t *testing.T) {
+	t.Run("should report a statement that ends with a semicolon as complete", func(t *testing.T) {
+		is.True(t, sqlite.Complete("select 1;"))
+		is.True(t, sqlite.Complete("select 1; -- done\n"))
+		is.True(t, sqlite.Complete("create trigger tr after insert on t begin select 1; end;"))
+	})
+
+	t.Run("should report a statement without its end as not complete", func(t *testing.T) {
+		is.True(t, !sqlite.Complete("select 1"))
+		is.True(t, !sqlite.Complete("select ';"))
+		is.True(t, !sqlite.Complete("select 1 /* ; */"))
+		is.True(t, !sqlite.Complete("create trigger tr after insert on t begin select 1;"))
+		is.True(t, !sqlite.Complete("select 1\x00;"))
+	})
+}
+
 func TestKeywords(t *testing.T) {
 	t.Run("should give the 147 keywords of this build in upper case, each once", func(t *testing.T) {
 		keywords := sqlite.Keywords()
