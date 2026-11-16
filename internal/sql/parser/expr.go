@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"strings"
 
 	"maragu.dev/s4ql/internal/sql/ast"
 	"maragu.dev/s4ql/internal/sql/token"
@@ -486,7 +487,7 @@ func (p *parser) checkDigitSeparators() {
 // digitSeparatorError of the number z, as sqlite3DequoteNumber reports it.
 func digitSeparatorError(z string) (string, bool) {
 	buf := append([]byte(z), 0)
-	hex := len(z) >= 2 && z[0] == '0' && (z[1] == 'x' || z[1] == 'X')
+	hex := strings.HasPrefix(z, "0x") || strings.HasPrefix(z, "0X")
 	digit := func(c byte) bool {
 		if hex {
 			return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
