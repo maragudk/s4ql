@@ -327,6 +327,10 @@ func (c *Checker) statement(src string, orig, shown *ast.Statement) (Way, string
 	got, _ := observe(conn, shown.Cmd, s)
 	_ = conn.Close()
 	if i, ok := differ(want, got); ok {
+		if len(got) > 0 && got[len(got)-1] == "error: Recursion limit" {
+			// EXPLAIN, or a probe around the statement, adds a level to the parser's stack.
+			return Skipped, deepReason, ""
+		}
 		if name := textName(src, orig, got); name != "" {
 			return Skipped, "a column is named by the text of its expression, which the printer changes: " + name, ""
 		}
