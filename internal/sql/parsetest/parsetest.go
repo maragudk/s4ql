@@ -125,7 +125,8 @@ func (d Disagreement) String() string {
 }
 
 // Compare a parser's result for src with SQLite's verdict on it. It reports false if they agree, or
-// if SQLite does not say.
+// if SQLite does not say. Where SQLite does not say the offset of a syntax error, it compares the
+// rest.
 func Compare(src string, v oracle.Verdict, r Result) (Disagreement, bool) {
 	d := Disagreement{SQL: src, Verdict: v, Result: r}
 	switch v.Kind {
@@ -145,6 +146,8 @@ func Compare(src string, v oracle.Verdict, r Result) (Disagreement, bool) {
 			d.Mismatch, d.Key = AcceptsInvalid, sqlite
 		case r.Message != v.Message:
 			d.Mismatch, d.Key = Message, "SQLite "+sqlite+", parser "+Pattern(r.Message)
+		case v.OffsetNotSaid:
+			return d, false
 		case r.Offset != v.Offset && v.Offset == -1:
 			d.Mismatch, d.Key = Offset, sqlite+": SQLite -1"
 		case r.Offset != v.Offset && r.Offset == -1:
@@ -235,11 +238,17 @@ type Report struct {
 	// Total number of texts, Agreed on, and NotSaid by SQLite.
 	Total, Agreed, NotSaid int
 
+	// OffsetNotSaid is the number of texts with a syntax error whose offset SQLite does not say, see
+	// [oracle.Verdict.OffsetNotSaid], on which the parser agrees with SQLite on everything else. They
+	// are not in Agreed.
+	OffsetNotSaid int
+
 	// Groups of disagreements, the largest first.
 	Groups []Group
 
 	// NotSaidGroups of the texts on which SQLite does not say, by the reason and the pattern of
-	// SQLite's message, the largest first. They are not compared.
+	// SQLite's message, the largest first, and of those in OffsetNotSaid, with the reason "offset not
+	// said". They are not compared, or not on the offset.
 	NotSaidGroups []Group
 }
 
@@ -258,13 +267,14 @@ const maxExamples = 5
 
 // Disagreements in the report.
 func (r Report) Disagreements() int {
-	return r.Total - r.Agreed - r.NotSaid
+	return r.Total - r.Agreed - r.NotSaid - r.OffsetNotSaid
 }
 
 // String of the report, with each group and its examples.
 func (r Report) String() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%v texts: %v agree, %v disagree, SQLite does not say on %v\n", r.Total, r.Agreed, r.Disagreements(), r.NotSaid)
+	fmt.Fprintf(&b, "%v texts: %v agree, %v disagree, SQLite does not say on %v, nor the offset on %v\n",
+		r.Total, r.Agreed, r.Disagreements(), r.NotSaid, r.OffsetNotSaid)
 	for _, g := range r.Groups {
 		fmt.Fprintf(&b, "\n%v, %v: %v\n", g.Mismatch, g.Key, g.Count)
 		for _, d := range g.Examples {
@@ -312,6 +322,9 @@ func Run(p Parser, sqls []string) Report {
 			add(0, v.Reason.String()+": "+Pattern(v.Message), d)
 		case found:
 			add(d.Mismatch, d.Key, d)
+		case v.OffsetNotSaid:
+			r.OffsetNotSaid++
+			add(0, "offset not said: "+Pattern(v.Message), d)
 		default:
 			r.Agreed++
 		}

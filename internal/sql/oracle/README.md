@@ -81,6 +81,18 @@ On such a `NotSaid`, `Judge` creates what is missing and judges again: the table
 
 One offset does depend on the schema: that of the error of a variable `#N` raised on the semicolon at the end. SELECT, CREATE VIEW, ATTACH, and DETACH read the schema in their action even after an error, and reading it the first time runs SQL that leaves the offset at -1. `create view aux.v as select #1` gives the offset 28 once `aux` is attached, since attaching read the schema, while in the empty database the action's `unknown database aux` overwrites the error. A `#N` error found with setup is therefore `NotSaid`, `Overwritten`, as in the empty database.
 
+## The offset of `#N` after VALUES
+
+SQLite can also read the schema while it parses, before the end. `sqlite3MultiValues` in insert.c does that for a VALUES with more than one row, when it compiles the rows into a co-routine. It does so when no common table expression came before and the rows are constant. Then the action at the end does not read the schema again, and the `#N` error keeps its offset: `values(0),(0) union select #0` gives 27, and `values(0),(a) union select #0` gives -1. Whether a row is constant depends on SQLite's code generator and on the functions registered on the connection, not on the grammar.
+
+For such a statement, `Verdict.OffsetNotSaid` is true. The verdict is a `SyntaxError` with SQLite's message, offset, and tail, but the offset is not a fact about the grammar. `Judge` decides this from the tokens alone, with no knowledge of functions or constant expressions. All of these must hold:
+
+- The error is that of a `#N`, and it came with the statement's end: the parse did not stop early, inside a trigger, or inside the arguments of a virtual table.
+- The statement may be one of the four commands: after EXPLAIN or EXPLAIN QUERY PLAN, its first token is SELECT, VALUES, ATTACH, or DETACH, or it starts with CREATE VIEW or CREATE TEMP VIEW. A statement that starts with WITH does not count. A WITH at the start is always the keyword, and the action on the name of its first common table expression keeps `sqlite3MultiValues` from reading the schema for any VALUES after it. A WITH anywhere else may be a name, since WITH is a fallback keyword, so it is not used.
+- The statement has a VALUES with more than one row: VALUES and `(`, and after the `)` that closes it, `,` and `(`.
+
+The rule covers more statements than those whose offset depends on the schema. Each condition is necessary for SQLite to keep an offset that the end would otherwise lose. The parse loop stops on the token that raised the error, so an error before the end has the token's offset. The actions of the other commands do not read the schema after an error. Nothing else that SQLite runs while it parses one of those commands reads the schema. A `#N` error at the end that needed setup stays `NotSaid`, `Overwritten`, as described above, since in the empty database another message replaces it.
+
 ## Verdicts on the corpus
 
 On the 139,234 statements of the corpus in [`internal/sql/corpus`](../corpus/README.md):
@@ -88,6 +100,7 @@ On the 139,234 statements of the corpus in [`internal/sql/corpus`](../corpus/REA
 - `Parses`: 84,215. Of these, 25,608 prepared and 58,607 failed after the parse, 53,588 of them with `no such table`.
 - `SyntaxError`: 54,711.
 - `NotSaid`: 308. Of these, 295 stopped early, 11 stopped inside a trigger, and 2 are overwritten. None is unsettled or inside arguments.
+- No syntax error has `OffsetNotSaid`.
 
 The largest groups that stopped early are `duplicate column name` (78), `no such collation sequence` (49), `object name reserved for internal use` (24), `no such column`, as for `UNIQUE(rowid)` (18), and `unknown join type` (14). The report of the harness lists every group.
 
@@ -113,7 +126,7 @@ These are the facts about SQLite's messages, offsets, and tails that are easy to
 - `unrecognized token: "X"` has its offset at the token, and its tail at the start of the token, not after it.
 - An unterminated string, quoted name, or blob runs to the end of the text or to a NUL byte: `select 'a\x00b'` gives `unrecognized token: "'a"`.
 - A misplaced digit separator has the offset -1, and its message shows the number partly rewritten: `select 1_` gives `unrecognized token: "1_"`, and `select 1__2__3` gives `unrecognized token: "12_2__3"`.
-- A variable `#N` has the offset -1 when its error is raised at the end of the text: `select #1` gives `near "#1": syntax error` at -1, but `select #1 from t` gives it at 7.
+- A variable `#N` has the offset -1 when its error is raised at the end of the text: `select #1` gives `near "#1": syntax error` at -1, but `select #1 from t` gives it at 7. After a multi-row VALUES the oracle does not say that offset; see [The offset of `#N` after VALUES](#the-offset-of-n-after-values).
 - The corpus has 2,836 syntax errors with the offset -1: 2,812 `incomplete input`, 13 for `#N`, and 11 for a digit separator.
 - The checks of `#N` and of the digit separator run when the next token arrives, and a syntax error on that token wins: `select 1_ 2` gives `near "2": syntax error` at 10, and `select (1_` gives `incomplete input`.
 - The last message raised while one token is handled wins. `create table t (x) foo bar` gives `near "bar": syntax error`, which replaces the action's `unknown table option: foo`. `select 0 limit 0 union select #0` gives `LIMIT clause should come after UNION not before`.

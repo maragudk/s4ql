@@ -88,6 +88,7 @@ func TestParse(t *testing.T) {
 		{"should report #N at the end of a DELETE with its offset", "delete from t where #1", syntax(`near "#1": syntax error`, 20)},
 		{"should report #N at the end of a CREATE VIEW without an offset", "create view v as select #1", syntax(`near "#1": syntax error`, -1)},
 		{"should report #N at the end of an ATTACH without an offset", "attach x as #1", syntax(`near "#1": syntax error`, -1)},
+		{"should report #N at the end of a SELECT with a multi-row VALUES without an offset", "values(0),(0) union select #1", syntax(`near "#1": syntax error`, -1)},
 		{"should report a misplaced digit separator without an offset", "select 1_", syntax(`unrecognized token: "1_"`, -1)},
 		{"should report a digit separator with the number partly rewritten", "select 1__2__3", syntax(`unrecognized token: "12_2__3"`, -1)},
 		{"should let a syntax error on the next token win over a digit separator", "select 1_ 2", syntax(`near "2": syntax error`, 10)},
@@ -164,6 +165,60 @@ func syntax(message string, offset int) parsetest.Result {
 	return parsetest.Result{Message: message, Offset: offset}
 }
 
+// TestParse_offsetAfterValues compares the parser with SQLite on the error of #N at the end of a
+// statement with a multi-row VALUES, for many forms of expression in the rows and places of the
+// VALUES. SQLite keeps the offset of that error when it read the schema while it parsed, which
+// depends on whether the rows are constant; the parser gives -1. They agree only if the oracle does
+// not say the offset wherever SQLite keeps it.
+func TestParse_offsetAfterValues(t *testing.T) {
+	exprs := []string{
+		"1", "-1", "'a'", "x'00'", "1.5", "1_0", "null", "?", "?1", ":a", "true", "FALSE", `"true"`, "[true]",
+		"a", "t.a", "s.t.a", `"a"`, "current_time", "CURRENT_DATE",
+		"abs(1)", "abs(a)", "random()", "abs(1) filter (where 1)", "count(*)", "max(1)", "max(1, 2)",
+		"sqlite_version()", "sqlite_version(*)", "nosuch(1)", "coalesce(1)", "coalesce(1, 2)", "iif(1, 2, 3)",
+		"1 is 2", "1 is not 2", "1 is null", "a is null", "1 is (null)", "1 is not distinct from null",
+		"1 isnull", "1 not null", "1 in ()", "a in ()", "abs(a) in ()", "1 in (2)", "1 in (2, 3)",
+		"1 in (a)", "(1, 2) in ((1, 2))", "(1) in (1)", "1 in (select 1)", "1 in t", "exists (select 1)",
+		"(select 1)", "1 like 2", "1 like 2 escape 3", "1 glob 2", "1 regexp 2", "1 match 2", "1 -> 2",
+		"1 ->> 2", "1 between 2 and 3", "1 between a and 3", "not 1", "~1", "+1", "1 + 2", "1 || a",
+		"case when 1 then 2 end", "case a when 1 then 2 end", "case 1 when 2 then 3 else a end",
+		"cast(1 as int)", "cast(a as int)", "cast(1 as)", "1 collate nocase", "cast(1 as int) collate x",
+		"(1, 2)", "(cast(1 as int), 2)", "(1, cast(2 as int))", "raise(ignore)", "(1)", "((cast(1 as int)))",
+		"row_number() over ()", "length('a') + 1", `"abs"(1)`, "[abs](1)", "replace('a', 'b', 'c')",
+		"like(1, 2)", "json_object()", "printf('%d', 1)", "changes()",
+		"(a -> 1) in ()", "current_time in ()", `"a""b"(1)`, "`abs`(1)",
+	}
+	shapes := []string{
+		"values(0),(E) union select #0",
+		"values(E),(1) union select #0",
+		"values(0),(E),(1) union select #0",
+		"values(E),(a),(1) union select #0",
+		"select * from (values(0),(E)) union select #0",
+		"with c as (select 1) select * from (values(0),(E)) union select #0",
+		"select * from (values(0),(E)) union select #0 from (with c as (select 1) select 1)",
+		"create view v as values(0),(E) union select #0",
+		"select (values(0),(E)), #0",
+		"select #0 from (values(0),(E))",
+		"attach (values(0),(E)) as #0",
+	}
+	var sqls []string
+	kept := 0
+	for _, e := range exprs {
+		for _, shape := range shapes {
+			src := strings.ReplaceAll(shape, "E", e)
+			sqls = append(sqls, src)
+			if v := oracle.Judge(src); v.OffsetNotSaid && v.Offset >= 0 {
+				kept++
+			}
+		}
+	}
+	r := parsetest.Test(t, parsetest.ParserFunc(parse), sqls)
+	t.Logf("%v texts, SQLite keeps the offset on %v, does not say on %v, nor the offset on %v", r.Total, kept, r.NotSaid, r.OffsetNotSaid)
+	// Both outcomes must be common, or the test checks little.
+	is.True(t, kept > len(sqls)/5 && kept < r.OffsetNotSaid, fmt.Sprint(kept, " of ", r.OffsetNotSaid, " keep the offset"))
+	is.True(t, r.NotSaid < len(sqls)/5, fmt.Sprint("SQLite does not say on ", r.NotSaid))
+}
+
 // TestParse_sqlite compares the parser with SQLite on texts written by hand for corners of the
 // grammar that the corpus touches little: window keywords, virtual tables, constraints, upserts,
 // triggers, the checks of #N and digit separators, and keywords as names.
@@ -227,6 +282,8 @@ func TestParse_sqlite(t *testing.T) {
 		"select 1_ from t", "select 1 limit 1_", "select x'0' 1_", "select #1 #2", "select 1_ #1", "select #1 1_",
 		"select 0x1_g", "select 1_.5_e1_0", "select 1e1_0", "select 0x_1", "select 0x1__1", "select ._5", "select 5._",
 		"select #1abc", "select #a", "select #", "select 1 from t where #1 and 1_", "explain query select 1",
+		"values(0),(0) union select #1", "values(0),(a) union select #1", "values(0),(0) union select #1 from t",
+		"insert into t values(0),(0) returning #1", "attach (values(0),(0)) as #1",
 		"explain query plan explain select 1", "pragma x.y(z)", "pragma x = +1.5", "pragma x = - 1", "pragma x = 'a'",
 		"pragma x(on)", "pragma x = null", "pragma x = 1_0", "pragma x = x'00'", "pragma x = default", "pragma x(delete)",
 		"attach 'a' as b key", "attach database", "detach database 'x'", "vacuum into", "vacuum x into y",
@@ -318,7 +375,7 @@ func TestParse_mutants(t *testing.T) {
 		sqls = append(sqls, parsetest.Mutants(sql, *seed+uint64(i), *mutants)...)
 	}
 	r := parsetest.Test(t, parsetest.ParserFunc(parse), sqls)
-	t.Logf("%v texts, %v agree, SQLite does not say on %v", r.Total, r.Agreed, r.NotSaid)
+	t.Logf("%v texts, %v agree, SQLite does not say on %v, nor the offset on %v", r.Total, r.Agreed, r.NotSaid, r.OffsetNotSaid)
 	for _, sql := range sqls {
 		checkOwnership(t, sql)
 	}
@@ -332,7 +389,7 @@ func TestParse_corpus(t *testing.T) {
 		sqls = every(sqls, 10)
 	}
 	r := parsetest.Test(t, parsetest.ParserFunc(parse), sqls)
-	t.Logf("%v texts, %v agree, SQLite does not say on %v", r.Total, r.Agreed, r.NotSaid)
+	t.Logf("%v texts, %v agree, SQLite does not say on %v, nor the offset on %v", r.Total, r.Agreed, r.NotSaid, r.OffsetNotSaid)
 	for _, sql := range sqls {
 		checkOwnership(t, sql)
 	}

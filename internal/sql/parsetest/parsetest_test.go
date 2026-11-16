@@ -25,8 +25,40 @@ func TestRun_corpus(t *testing.T) {
 	is.Equal(t, len(sqls), r.Total)
 	is.Equal(t, 0, r.Disagreements())
 	is.Equal(t, 0, len(r.Groups))
-	is.Equal(t, r.Total, r.Agreed+r.NotSaid)
-	t.Logf("%v statements, SQLite does not say on %v", r.Total, r.NotSaid)
+	is.Equal(t, r.Total, r.Agreed+r.NotSaid+r.OffsetNotSaid)
+	t.Logf("%v statements, SQLite does not say on %v, nor the offset on %v", r.Total, r.NotSaid, r.OffsetNotSaid)
+}
+
+func TestRun(t *testing.T) {
+	t.Run("should count apart the texts on which SQLite does not say the offset", func(t *testing.T) {
+		noOffset := parsetest.ParserFunc(func(src string) parsetest.Result {
+			r := parsetest.Oracle().Parse(src)
+			if !r.OK {
+				r.Offset = -1
+			}
+			return r
+		})
+		r := parsetest.Run(noOffset, []string{"values(0),(0) union select #0", "values(0),(a) union select #0", "select #0", "select 1"})
+		is.Equal(t, 4, r.Total)
+		is.Equal(t, 2, r.Agreed)
+		is.Equal(t, 0, r.NotSaid)
+		is.Equal(t, 2, r.OffsetNotSaid)
+		is.Equal(t, 0, r.Disagreements())
+		is.Equal(t, 1, len(r.NotSaidGroups))
+		is.Equal(t, "offset not said: near VARIABLE: syntax error", r.NotSaidGroups[0].Key)
+		is.Equal(t, 2, r.NotSaidGroups[0].Count)
+		is.True(t, strings.HasPrefix(r.String(), "4 texts: 2 agree, 0 disagree, SQLite does not say on 0, nor the offset on 2\n"), r.String())
+	})
+
+	t.Run("should count a text on which SQLite does not say the offset as a disagreement on the message", func(t *testing.T) {
+		other := parsetest.ParserFunc(func(src string) parsetest.Result {
+			return parsetest.Result{Message: `near "x": syntax error`, Offset: -1}
+		})
+		r := parsetest.Run(other, []string{"values(0),(0) union select #0"})
+		is.Equal(t, 1, r.Disagreements())
+		is.Equal(t, 0, r.OffsetNotSaid)
+		is.Equal(t, parsetest.Message, r.Groups[0].Mismatch)
+	})
 }
 
 // TestRun_mutants compares SQLite with itself on one-token mutations of a sample of the corpus.
@@ -77,7 +109,7 @@ func TestRun_wrong(t *testing.T) {
 		}), sqls)
 		expected := 0
 		for _, v := range verdicts {
-			if v.Kind == oracle.SyntaxError && v.Offset >= 0 {
+			if v.Kind == oracle.SyntaxError && v.Offset >= 0 && !v.OffsetNotSaid {
 				expected++
 			}
 		}
@@ -165,6 +197,7 @@ func TestCompare(t *testing.T) {
 	syntaxError := oracle.Verdict{Kind: oracle.SyntaxError, Message: `near "frm": syntax error`, Offset: 9, Code: 1, Tail: 12}
 	parses := oracle.Verdict{Kind: oracle.Parses, Offset: -1, Tail: 9}
 	notSaid := oracle.Verdict{Kind: oracle.NotSaid, Reason: oracle.StoppedEarly, Message: "unknown table option: foo", Offset: -1}
+	offsetNotSaid := oracle.Verdict{Kind: oracle.SyntaxError, Message: `near "#0": syntax error`, Offset: 27, Code: 1, Tail: 29, OffsetNotSaid: true}
 
 	tests := []struct {
 		name     string
@@ -192,6 +225,13 @@ func TestCompare(t *testing.T) {
 			result: parsetest.Result{Message: `near "frm": syntax error`, Offset: -1}, mismatch: parsetest.Offset, key: "near ID: syntax error: parser -1"},
 		{name: "should find another tail", verdict: parses,
 			result: parsetest.Result{OK: true, Tail: 8}, mismatch: parsetest.Tail, key: "tail -1"},
+		{name: "should not compare the offset where SQLite does not say it", verdict: offsetNotSaid,
+			result: parsetest.Result{Message: `near "#0": syntax error`, Offset: -1}},
+		{name: "should compare the message where SQLite does not say the offset", verdict: offsetNotSaid,
+			result:   parsetest.Result{Message: `near "x": syntax error`, Offset: 27},
+			mismatch: parsetest.Message, key: "SQLite near VARIABLE: syntax error, parser near ID: syntax error"},
+		{name: "should find a parser that accepts what SQLite rejects where SQLite does not say the offset", verdict: offsetNotSaid,
+			result: parsetest.Result{OK: true}, mismatch: parsetest.AcceptsInvalid, key: "near VARIABLE: syntax error"},
 	}
 
 	for _, test := range tests {
