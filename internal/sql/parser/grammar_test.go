@@ -560,7 +560,7 @@ func TestGenerate(t *testing.T) {
 		}
 		checkOwnership(t, sql)
 	}
-	t.Logf("%v texts, %v parse, %v agree, SQLite does not say on %v", r.Total, parsed, r.Agreed, r.NotSaid)
+	t.Logf("%v texts, %v parse, %v agree, SQLite does not say on %v, nor the offset on %v", r.Total, parsed, r.Agreed, r.NotSaid, r.OffsetNotSaid)
 }
 
 // FuzzGenerate compares the parser with SQLite on a sentence of the grammar and a mutant of it,

@@ -88,6 +88,7 @@ func TestParse(t *testing.T) {
 		{"should report #N at the end of a DELETE with its offset", "delete from t where #1", syntax(`near "#1": syntax error`, 20)},
 		{"should report #N at the end of a CREATE VIEW without an offset", "create view v as select #1", syntax(`near "#1": syntax error`, -1)},
 		{"should report #N at the end of an ATTACH without an offset", "attach x as #1", syntax(`near "#1": syntax error`, -1)},
+		{"should report #N at the end of a SELECT with a multi-row VALUES without an offset", "values(0),(0) union select #1", syntax(`near "#1": syntax error`, -1)},
 		{"should report a misplaced digit separator without an offset", "select 1_", syntax(`unrecognized token: "1_"`, -1)},
 		{"should report a digit separator with the number partly rewritten", "select 1__2__3", syntax(`unrecognized token: "12_2__3"`, -1)},
 		{"should let a syntax error on the next token win over a digit separator", "select 1_ 2", syntax(`near "2": syntax error`, 10)},
@@ -227,6 +228,8 @@ func TestParse_sqlite(t *testing.T) {
 		"select 1_ from t", "select 1 limit 1_", "select x'0' 1_", "select #1 #2", "select 1_ #1", "select #1 1_",
 		"select 0x1_g", "select 1_.5_e1_0", "select 1e1_0", "select 0x_1", "select 0x1__1", "select ._5", "select 5._",
 		"select #1abc", "select #a", "select #", "select 1 from t where #1 and 1_", "explain query select 1",
+		"values(0),(0) union select #1", "values(0),(a) union select #1", "values(0),(0) union select #1 from t",
+		"insert into t values(0),(0) returning #1", "attach (values(0),(0)) as #1",
 		"explain query plan explain select 1", "pragma x.y(z)", "pragma x = +1.5", "pragma x = - 1", "pragma x = 'a'",
 		"pragma x(on)", "pragma x = null", "pragma x = 1_0", "pragma x = x'00'", "pragma x = default", "pragma x(delete)",
 		"attach 'a' as b key", "attach database", "detach database 'x'", "vacuum into", "vacuum x into y",
@@ -318,7 +321,7 @@ func TestParse_mutants(t *testing.T) {
 		sqls = append(sqls, parsetest.Mutants(sql, *seed+uint64(i), *mutants)...)
 	}
 	r := parsetest.Test(t, parsetest.ParserFunc(parse), sqls)
-	t.Logf("%v texts, %v agree, SQLite does not say on %v", r.Total, r.Agreed, r.NotSaid)
+	t.Logf("%v texts, %v agree, SQLite does not say on %v, nor the offset on %v", r.Total, r.Agreed, r.NotSaid, r.OffsetNotSaid)
 	for _, sql := range sqls {
 		checkOwnership(t, sql)
 	}
@@ -332,7 +335,7 @@ func TestParse_corpus(t *testing.T) {
 		sqls = every(sqls, 10)
 	}
 	r := parsetest.Test(t, parsetest.ParserFunc(parse), sqls)
-	t.Logf("%v texts, %v agree, SQLite does not say on %v", r.Total, r.Agreed, r.NotSaid)
+	t.Logf("%v texts, %v agree, SQLite does not say on %v, nor the offset on %v", r.Total, r.Agreed, r.NotSaid, r.OffsetNotSaid)
 	for _, sql := range sqls {
 		checkOwnership(t, sql)
 	}

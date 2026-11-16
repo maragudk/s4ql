@@ -186,7 +186,7 @@ SQLite raises both when the next token arrives. The parser records a pending err
 
 The `#N` error has the offset of the variable, with one exception. It has the offset -1 when the next token is the final semicolon of a SELECT, CREATE VIEW, ATTACH, or DETACH. The actions of these commands read the schema of the new connection even after the error. That runs SQL of SQLite's own, which resets the offset. DELETE, INSERT, UPDATE, VACUUM, CREATE INDEX, and CREATE TABLE AS keep the offset: `select #1` gives -1, and `delete from t where #1` gives 20.
 
-The schema is read only once, so the offset stays when SQLite has read the schema earlier in the same statement. That happens for a multi-row VALUES: `sqlite3MultiValues` in insert.c compiles the rows into a co-routine while it parses, and reads the schema first, when no common table expression came before it in the statement, the new row is constant, and the co-routine has started or the row before has no affinity. `values(0),(0) union select #0` keeps the offset 25, and `values(0),(a) union select #0` gives -1. "Constant" is SQLite's `exprIsConst`, which `constant.go` follows on the tree. It depends on whether a function is deterministic, so `functions.go` holds the built-in functions of the binding, as `pragma_function_list` lists them. `TestBuiltinFunctions` checks that table against the binding, and against SQLite's decision for a call of every function with 0 to 4 arguments; `TestParse_schemaRead` compares 1,034 texts of this kind with SQLite.
+After a multi-row VALUES, SQLite can keep the offset where the parser gives -1. SQLite reads the schema only once in a statement, and `sqlite3MultiValues` in insert.c reads it while SQLite parses, when it compiles the rows into a co-routine. It does that when no common table expression came before and the rows are constant. `values(0),(0) union select #0` then keeps the offset 27, and `values(0),(a) union select #0` gives -1. Whether a row is constant is a question for SQLite's code generator, and depends on the functions registered on the connection, not on the grammar. The parser does not follow it. The oracle does not say the offset of a `#N` error at the end of a statement with a multi-row VALUES (see [the oracle's README](../oracle/README.md#the-offset-of-n-after-values)), and the harness compares only the message and the tail there.
 
 ## Limits
 
@@ -439,7 +439,6 @@ Against SQLite on many texts:
 - `TestParse_mutants` runs three one-token mutants of every corpus entry, 416,271 texts, with no disagreement. A run with `-args -mutants 40 -seed 1000` compared 5,550,280 mutants with no disagreement.
 - `TestGenerate` runs random sentences of the grammar. A generator derives them from the rules of `parse.y`, from the start symbol `input`. Half the time it prefers the least used rule of a nonterminal, and it takes the shortest rules when its budget runs out. Names come from a pool of plain names, every quote style, every fallback keyword, the join keywords, and some keywords that are not names. By default it runs 20,000 sentences and two mutants of each, 60,000 texts, with no disagreement. A run with `-args -generated 400000 -seed 77` compared 1,200,000 texts with no disagreement, of which 415,679 parse.
 - `TestParse_sqlite` compares about 200 texts written by hand for corners that the corpus touches little.
-- `TestParse_schemaRead` and `TestBuiltinFunctions` compare the offset of `#N` after a multi-row VALUES, for 94 forms of expression in 11 places, and for a call of every built-in function.
 
 Against SQLite's grammar and automaton:
 
@@ -448,7 +447,7 @@ Against SQLite's grammar and automaton:
 
 Pinned results:
 
-- `TestParse` pins the result for 34 texts that are easy to get wrong, and checks each against SQLite too.
+- `TestParse` pins the result for 35 texts that are easy to get wrong, and checks each against SQLite too.
 - `TestParse_expressions` and `TestParse_statements` pin the shape of the tree for every form of expression and every kind of statement.
 - `TestParseAll` checks the offsets of several statements in one text, the stop at the first error, and a text without statements.
 - `TestParse_depth` and `TestParse_length` check the [limits](#limits).
@@ -500,7 +499,7 @@ SQLite behaviour that one would not guess:
 
 - GENERATED is a word of a column's type: `a int generated always as (1)` has the type `int generated always`. See [Keywords as names](#keywords-as-names).
 - `create table t(a), strict` parses, because the first table option may be empty.
-- The offset of a `#N` error depends on the command, on whether the connection has read its schema, and so on whether a multi-row VALUES before it has constant rows and on which functions are deterministic. See [`#N` and digit separators](#n-and-digit-separators).
+- The offset of a `#N` error depends on the command, and on whether the connection has read its schema, which a multi-row VALUES with constant rows makes it do. See [`#N` and digit separators](#n-and-digit-separators).
 - `select 1 end` parses: END is an alias.
 - `create table if(a)` fails at the `(`: IF after CREATE TABLE is the keyword.
 - `x BETWEEN a OR b AND c` fails. `a OR (b AND c)` is the low operand, and BETWEEN still needs its AND.
