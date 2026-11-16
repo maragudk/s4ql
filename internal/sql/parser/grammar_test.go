@@ -548,7 +548,7 @@ var generatedCount = flag.Int("generated", 20000, "sentences of the generator in
 // checks the ownership of the tokens of those that parse.
 func TestGenerate(t *testing.T) {
 	n := *generatedCount
-	if testing.Short() || asanEnabled {
+	if slow() {
 		n /= 10
 	}
 	sqls := generated(t, *seed, n, 2)

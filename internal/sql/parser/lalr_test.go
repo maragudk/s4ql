@@ -257,7 +257,7 @@ func TestRuleCoverage(t *testing.T) {
 		}
 	}
 	corpus := corpusSQL(t)
-	if testing.Short() || asanEnabled {
+	if slow() {
 		corpus = every(corpus, 10)
 	}
 	add(corpus, count, byCorpus)
@@ -273,7 +273,7 @@ func TestRuleCoverage(t *testing.T) {
 	derived := make([]int, len(names))
 	gen := newGenerator(g, 1)
 	n := 20000
-	if testing.Short() || asanEnabled {
+	if slow() {
 		n /= 10
 	}
 	for range n {
@@ -298,7 +298,8 @@ func TestRuleCoverage(t *testing.T) {
 			covered++
 		case derived[i] > 0:
 			folded++
-		default:
+		case !slow():
+			// The sample of a slow run is too small to use every rule.
 			t.Errorf("rule (%v) %v is used by no statement that parses", i, names[i])
 		}
 		if byCorpus[i] > 0 {

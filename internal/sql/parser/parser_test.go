@@ -50,6 +50,12 @@ func corpusSQL(t testing.TB) []string {
 	return sqls
 }
 
+// slow reports whether the tests run with -short, the race detector, or the address sanitizer, which
+// make them several times slower: the tests on the corpus then use every tenth entry.
+func slow() bool {
+	return testing.Short() || raceEnabled || asanEnabled
+}
+
 // every nth of sqls.
 func every(sqls []string, n int) []string {
 	var some []string
@@ -175,9 +181,15 @@ func TestParse_depth(t *testing.T) {
 	})
 }
 
+// TestParse_mutants compares the parser with SQLite on one-token mutants of the corpus, -mutants of
+// each entry, three by default, from -seed.
 func TestParse_mutants(t *testing.T) {
+	entries := corpusSQL(t)
+	if slow() {
+		entries = every(entries, 10)
+	}
 	var sqls []string
-	for i, sql := range corpusSQL(t) {
+	for i, sql := range entries {
 		sqls = append(sqls, parsetest.Mutants(sql, *seed+uint64(i), *mutants)...)
 	}
 	r := parsetest.Test(t, parsetest.ParserFunc(parse), sqls)
@@ -187,8 +199,13 @@ func TestParse_mutants(t *testing.T) {
 	}
 }
 
+// TestParse_corpus compares the parser with SQLite on the corpus, and checks the ownership of the
+// tokens of every statement that parses.
 func TestParse_corpus(t *testing.T) {
 	sqls := corpusSQL(t)
+	if slow() {
+		sqls = every(sqls, 10)
+	}
 	r := parsetest.Test(t, parsetest.ParserFunc(parse), sqls)
 	t.Logf("%v texts, %v agree, SQLite does not say on %v", r.Total, r.Agreed, r.NotSaid)
 	for _, sql := range sqls {
@@ -222,6 +239,45 @@ func FuzzParse(f *testing.F) {
 			}
 		}
 	})
+}
+
+// BenchmarkParse parses every statement of the corpus once per iteration.
+func BenchmarkParse(b *testing.B) {
+	sqls := corpusSQL(b)
+	bytes := 0
+	for _, sql := range sqls {
+		bytes += len(sql)
+	}
+	b.SetBytes(int64(bytes))
+	b.ReportAllocs()
+	for b.Loop() {
+		for _, sql := range sqls {
+			_, _, _ = parser.Parse(sql)
+		}
+	}
+	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*len(sqls)), "ns/statement")
+}
+
+// BenchmarkParse_long parses texts of growing length and nesting, to show that the time grows with
+// the length of the text and not faster.
+func BenchmarkParse_long(b *testing.B) {
+	for _, n := range []int{1_000, 10_000, 100_000} {
+		texts := map[string]string{
+			"list":    "select " + strings.Repeat("1, ", n) + "1",
+			"chain":   "select " + strings.Repeat("1 + ", n) + "1",
+			"nesting": "select " + strings.Repeat("(", min(n, 2000)) + "1" + strings.Repeat(")", min(n, 2000)),
+			"values":  "values " + strings.Repeat("(1), ", n) + "(1)",
+			"many":    strings.Repeat("select 1;", n),
+		}
+		for name, src := range texts {
+			b.Run(fmt.Sprint(name, "/", n), func(b *testing.B) {
+				b.SetBytes(int64(len(src)))
+				for b.Loop() {
+					_, _ = parser.ParseAll(src)
+				}
+			})
+		}
+	}
 }
 
 // TestParse_expressions pins the shape of the tree for every form of expression, and for the traps
