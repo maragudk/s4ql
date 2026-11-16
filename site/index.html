@@ -209,7 +209,19 @@ a:hover { text-decoration-thickness: 3px; }
   align-self: center;
   padding: 40px 0;
 }
-.claim h1 span + span { margin-top: 0.3em; }
+.claim h1 > span + span { margin-top: 0.3em; }
+.ko {
+  background: var(--void);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  padding: 0.04em 0.2em;
+  margin: 0 -0.2em;
+}
+@media (min-width: 961px) {
+  .lede .ko { padding: 0.2em 0.4em; margin: 0 -0.4em; }
+  .lede { line-height: 2; }
+}
+.state li { background: var(--void); }
 h1 {
   font-size: clamp(32px, 4.3vw, 64px);
   line-height: 1.06;
@@ -683,13 +695,13 @@ footer ul {
   <div class="wrap">
     <div class="claim">
       <h1 id="claim">
-        <span>An SQL database for Go that lives in S3.</span>
-        <span class="process">Written by agents. Trusted as far as the tests reach.</span>
+        <span><span class="ko">An SQL database for Go that lives in S3.</span></span>
+        <span class="process"><span class="ko">Written by agents. Trusted as far as the tests reach.</span></span>
       </h1>
-      <p class="lede">s4ql is an embedded database engine in the spirit of SQLite that keeps all its data in an S3 bucket, with no server to run. Every line of it is written by AI agents, and no human reviews the code. Trust has to come from verification.</p>
+      <p class="lede"><span class="ko">s4ql is an embedded database engine in the spirit of SQLite that keeps all its data in an S3 bucket, with no server to run. Every line of it is written by AI agents, and no human reviews the code. Trust has to come from verification.</span></p>
       <div class="actions">
         <a class="btn" href="https://github.com/maragudk/s4ql">Follow on GitHub <span class="bars" aria-hidden="true"></span></a>
-        <a href="https://github.com/maragudk/s4ql/blob/main/docs/spec.md">Read the spec</a>
+        <a class="ko" href="https://github.com/maragudk/s4ql/blob/main/docs/spec.md">Read the spec</a>
       </div>
       <ul class="state caps" aria-label="Project state">
         <li class="on">Experiment</li>
@@ -960,9 +972,9 @@ footer ul {
       // Density bands from three slow waves, shaped by the caller's ramp.
       const wave = 0.5 + 0.22 * Math.sin(u * 7.1 + phase[0]) + 0.16 * Math.sin(u * 17.3 + phase[1]) + 0.12 * Math.sin(u * 41.9 + phase[2]);
       const d = Math.max(0, Math.min(1, wave * density(u)));
-      const gap = 1 + Math.floor((1 - d) * 7 + r() * 3);
+      const gap = 1 + Math.floor((1 - d) * 3 + r() * 2.2);
       let used = 0;
-      if (r() < d * 0.9) {
+      if (r() < 0.25 + d * 0.7) {
         const roll = r();
         if (roll < 0.74) {
           used = 1;
@@ -1082,7 +1094,7 @@ footer ul {
     const c = heroCanvas.getBoundingClientRect();
     cut = (claimEl.getBoundingClientRect().right - c.left + 48) / c.width;
   };
-  const hero = field(heroCanvas, (u) => (window.innerWidth < 960 ? 0.6 : u < cut ? 0 : 1.15), true);
+  const hero = field(heroCanvas, (u) => (window.innerWidth < 960 ? 0.75 : 1.1), true);
   const replay = field(document.getElementById("replay"), () => 1);
   const close = field(document.getElementById("close-field"), (u) => 0.35 + u * 0.75);
   (document.fonts ? document.fonts.ready : Promise.resolve()).then(() => hero.run(true));
