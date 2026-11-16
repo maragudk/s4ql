@@ -148,6 +148,17 @@ func TestJudge(t *testing.T) {
 			Offset:  -1, Code: 1, Tail: 68, Setup: []string{`create table main."t" (c)`}}, v)
 	})
 
+	t.Run("should not say when the parse stopped at a semicolon inside the arguments of a virtual table", func(t *testing.T) {
+		// SQLite counts the arguments as columns, and each argument is added when the first token
+		// of the next arrives, which here is always a semicolon.
+		src := "create virtual table v using m(" + strings.Repeat("; a, ", 2100) + ")"
+		v := oracle.Judge(src)
+		is.Equal(t, oracle.NotSaid, v.Kind)
+		is.Equal(t, oracle.InsideArguments, v.Reason)
+		is.Equal(t, "too many columns on v", v.Message)
+		is.Equal(t, byte(';'), src[v.Tail-1])
+	})
+
 	t.Run("should parse a trigger whose error came at its end", func(t *testing.T) {
 		v := oracle.Judge("create trigger tr after insert on t begin select 1; end; select 2")
 		is.Equal(t, oracle.Parses, v.Kind)
@@ -190,6 +201,20 @@ func TestJudge(t *testing.T) {
 			for range 10 {
 				equal(t, first, oracle.Judge(src))
 			}
+		}
+	})
+}
+
+func TestKind_String(t *testing.T) {
+	t.Run("should name each kind and reason", func(t *testing.T) {
+		is.Equal(t, "parses", oracle.Parses.String())
+		is.Equal(t, "syntax error", oracle.SyntaxError.String())
+		is.Equal(t, "not said", oracle.NotSaid.String())
+		is.Equal(t, "Kind(9)", oracle.Kind(9).String())
+		for r, name := range map[oracle.Reason]string{0: "", oracle.StoppedEarly: "stopped early", oracle.InsideTrigger: "inside trigger",
+			oracle.InsideArguments: "inside arguments", oracle.Overwritten: "overwritten", oracle.Unsettled: "unsettled",
+			oracle.NotParsed: "not parsed", 9: "Reason(9)"} {
+			is.Equal(t, name, r.String())
 		}
 	})
 }
