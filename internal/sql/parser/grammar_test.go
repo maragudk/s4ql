@@ -563,6 +563,23 @@ func TestGenerate(t *testing.T) {
 	t.Logf("%v texts, %v parse, %v agree, SQLite does not say on %v", r.Total, parsed, r.Agreed, r.NotSaid)
 }
 
+// FuzzGenerate compares the parser with SQLite on a sentence of the grammar and a mutant of it,
+// from a seed that the fuzzer chooses.
+func FuzzGenerate(f *testing.F) {
+	g := readGrammar(f)
+	f.Add(uint64(1), uint8(10), uint64(2))
+	f.Fuzz(func(t *testing.T, seed uint64, budget uint8, mutant uint64) {
+		gen := newGenerator(g, seed)
+		s := gen.sentence("input", int(budget%100))
+		for _, sql := range append([]string{s}, parsetest.Mutants(s, mutant, 1)...) {
+			if d, found, _ := parsetest.Check(parsetest.ParserFunc(parse), sql); found {
+				t.Fatal(d)
+			}
+			checkOwnership(t, sql)
+		}
+	})
+}
+
 // generated sentences of the grammar, n of them from seed, from its start symbol input, with
 // mutantsEach mutants of each.
 func generated(t testing.TB, seed uint64, n, mutantsEach int) []string {
