@@ -60,6 +60,61 @@ static int s4ql_set_deny_process_pragmas(sqlite3 *db) {
 	return sqlite3_set_authorizer(db, s4ql_deny_process_pragmas, 0);
 }
 
+// s4ql_order of the texts of two values, byte by byte with a prefix first: -1, 0, or 1. It sets
+// *nomem if a text cannot be made.
+static int s4ql_order(sqlite3_value *a, sqlite3_value *b, int *nomem) {
+	const unsigned char *x = sqlite3_value_text(a);
+	int nx = sqlite3_value_bytes(a);
+	const unsigned char *y = sqlite3_value_text(b);
+	int ny = sqlite3_value_bytes(b);
+	if (x == 0 || y == 0) {
+		*nomem = 1;
+		return 0;
+	}
+	int n = nx < ny ? nx : ny;
+	int c = n > 0 ? memcmp(x, y, (size_t)n) : 0;
+	if (c == 0) {
+		c = nx - ny;
+	}
+	return c < 0 ? -1 : c > 0;
+}
+
+// s4ql_test_order is the stub of regexp, match, and glob that s4ql_add_test_functions registers:
+// NULL if an argument is NULL, else the order of the first argument to the second, and with a third
+// argument 3 times that plus the order of the second to the third.
+static void s4ql_test_order(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+	for (int i = 0; i < argc; i++) {
+		if (sqlite3_value_type(argv[i]) == SQLITE_NULL) {
+			sqlite3_result_null(ctx);
+			return;
+		}
+	}
+	int nomem = 0;
+	int r = s4ql_order(argv[0], argv[1], &nomem);
+	if (argc == 3) {
+		r = 3 * r + s4ql_order(argv[1], argv[2], &nomem);
+	}
+	if (nomem) {
+		sqlite3_result_error_nomem(ctx);
+		return;
+	}
+	sqlite3_result_int(ctx, r);
+}
+
+static int s4ql_add_test_functions(sqlite3 *db) {
+	static const struct {
+		const char *name;
+		int args;
+	} fs[] = {{"regexp", 2}, {"regexp", 3}, {"match", 2}, {"match", 3}, {"glob", 3}};
+	for (int i = 0; i < (int)(sizeof(fs) / sizeof(fs[0])); i++) {
+		int rc = sqlite3_create_function_v2(db, fs[i].name, fs[i].args, SQLITE_UTF8 | SQLITE_DETERMINISTIC | SQLITE_INNOCUOUS, 0, s4ql_test_order, 0, 0, 0);
+		if (rc != SQLITE_OK) {
+			return rc;
+		}
+	}
+	return SQLITE_OK;
+}
+
 // s4ql_bind_text binds the n bytes at text to parameter i as text. SQLite copies the bytes before it
 // returns. A NULL pointer with n of zero binds the empty text, where sqlite3_bind_text64 would bind
 // NULL.
@@ -292,6 +347,29 @@ func (c *Conn) DenyProcessPragmas() error {
 		return errorFromConn(nil, C.SQLITE_MISUSE)
 	}
 	if rc := C.s4ql_set_deny_process_pragmas(c.db); rc != C.SQLITE_OK {
+		return errorFromConn(c.db, rc)
+	}
+	return nil
+}
+
+// AddTestFunctions to the connection: stubs of the functions regexp and match, with two or three
+// arguments, and glob with three, which SQLite calls for X REGEXP Y, X MATCH Y, and X GLOB Y ESCAPE
+// Z, with the operands in the order Y, X, Z. SQLite has no regexp of its own, its match is a
+// placeholder for virtual tables that fails when it runs, and its glob takes no ESCAPE, so without
+// the stubs a statement with these operators does not prepare or does not run. They are for tests
+// of how SQLite compiles and evaluates the operators, and only a test's connection may have them:
+// they give the operators a meaning that SQLite does not give them.
+//
+// Each stub is NULL if an argument is NULL. Otherwise it is -1, 0, or 1 as the text of its first
+// argument sorts before, the same as, or after the text of its second, byte by byte and a prefix
+// first; with a third argument it is 3 times that plus the same order of the second to the third.
+// So the value depends on every argument and on their order. The stubs are deterministic and
+// innocuous.
+func (c *Conn) AddTestFunctions() error {
+	if c.db == nil {
+		return errorFromConn(nil, C.SQLITE_MISUSE)
+	}
+	if rc := C.s4ql_add_test_functions(c.db); rc != C.SQLITE_OK {
 		return errorFromConn(c.db, rc)
 	}
 	return nil

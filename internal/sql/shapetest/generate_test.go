@@ -98,8 +98,21 @@ func summary(name string, gs []shapetest.Generated, results []shapetest.Result) 
 		name, len(gs), texts.rejected, texts.both, texts.bytecode, texts.values, texts.neither)
 	fmt.Fprintf(&b, "%s: %d combinations: %d always rejected, %d compared by bytecode and values, %d by bytecode only, %d by values only, %d only by the same error\n",
 		name, len(combos), byCombo.rejected, byCombo.both, byCombo.bytecode, byCombo.values, byCombo.neither)
-	if len(neither) > 0 && len(neither) <= 400 {
-		fmt.Fprintf(&b, "  only by the same error: %s\n", strings.Join(neither, ", "))
+	rows := 0
+	var others []string
+	for _, key := range neither {
+		if strings.Contains(key, "row value") {
+			rows++
+		} else {
+			others = append(others, key)
+		}
+	}
+	if len(neither) > 0 {
+		listed := ""
+		if len(others) <= 400 {
+			listed = ": " + strings.Join(others, ", ")
+		}
+		fmt.Fprintf(&b, "  only by the same error: %d with a row value, and %d others%s\n", rows, len(others), listed)
 	}
 	return b.String()
 }

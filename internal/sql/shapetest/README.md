@@ -6,6 +6,8 @@ The parser already agrees with SQLite on whether a text parses, through [`intern
 
 The check writes the tree out again as SQL, with every operation in parentheses and every clause explicit. SQLite must treat that text as it treats the original: the same `EXPLAIN` output for a statement, and the same values for an expression. This is the third of the four checks of the parser that [docs/todo.md](../../../docs/todo.md) lists.
 
+Some faults print the same tokens in the same order, such as a wrong boundary between a column's type and its constraints. No comparison of two texts can see them. For CREATE TABLE, ALTER TABLE ... ADD, CREATE INDEX, and CREATE VIEW, the check therefore makes a second comparison, without the printed text. It derives from the tree [what the statement declares](#what-the-tree-declares), and SQLite must record the same when it runs the original text.
+
 The check has found no fault in the parser's tree: not on the corpus, not on the generated pairs and triples of operators, not on the statements written by hand, and not under fuzzing.
 
 ## Checking statements
@@ -49,8 +51,9 @@ A `Result` has these fields:
 - `SQL` is the text checked, and `Printed` is its tree as `Print` writes it.
 - `Kind` is the kind of statement as `KindOf` names it, such as `select`, `create table`, or `alter table add column`.
 - `Way` says how SQLite compared the statement, and `Reason` holds the error or the reason for the last two ways.
+- `Declared` is true if [what the tree declares](#what-the-tree-declares) was compared with what SQLite made of the text.
 - `Exprs` holds an `ExprResult` for each expression of the statement.
-- `Fault` says what differed, or is `""` if the check passed.
+- `Fault` says what differed, or is `""` if the check passed. A difference in what the tree declares starts with `the tree declares what SQLite does not make of the text:`.
 
 The ways:
 
@@ -79,11 +82,12 @@ A `Report` counts the results:
 - `Kinds` counts the statements by kind and way.
 - `ByValues` counts, by kind, the statements with at least one expression compared by values.
 - `Uncompared` counts, by kind, the statements that SQLite compared in no way but by an error: not by bytecode or probes, and in none of their expressions.
+- `Declared` counts, by kind, the statements for which what the tree declares was compared.
 - `Reasons` counts the errors of `SameError` and the reasons of `Skipped`.
 - `Exprs` counts the expressions, and `Forms` counts them by form.
 - `Faults` holds the results with a fault.
 
-`Compared()` is the number of statements compared by bytecode or probes, `Checked()` is the number checked, and `String()` is the report as text.
+`Compared()` is the number of statements compared by bytecode or probes, `Checked()` is the number checked, and `String()` is the report as text. The table by kind in that text has the column `declared` for the count of `Declared`.
 
 ### Many texts in parallel
 
@@ -158,8 +162,16 @@ Where parentheses cannot be added, the printer adds none, and the check sees les
 - **FROM.** A table, a join, or a SELECT in parentheses is a different source (`NestedFrom`, `SubquerySource`), so parentheses cannot mark the grouping of joins. Joins group left to right, and the text shows that only by their order.
 - **Compound SELECT.** SQLite allows no parentheses around the parts. The operators group left to right, and an ORDER BY or LIMIT at the end applies to the whole compound. The tree holds it on the last part either way.
 - **IN and row values.** `x IN (SELECT ...)` is not `x IN ((SELECT ...))`, which is a list with a scalar subquery, and a row value needs its own parentheses.
-- **Text that SQLite copies.** SQLite takes four things from the text of the statement: the names of result columns without an alias, such as `count(*)`, the text of a CHECK, which goes into its Halt, the text of a DEFAULT, which `pragma table_info` shows, and the declared type. The printer changes that text, so the comparison masks it, leaves it out, or compares it without its spaces.
-- **Boundaries between keywords.** A fault at the boundary between a column's type and its constraints, or between clauses that are only keywords in a row, prints the same tokens in the same order. No comparison of texts can see it, so pinned tests in the parser must cover it.
+- **Text that SQLite copies.** SQLite takes four things from the text of the statement: the names of result columns without an alias, such as `count(*)`, the text of a CHECK, which goes into its Halt, the text of a DEFAULT, which `pragma table_info` shows, and the declared type. The printer changes that text, so the comparison of the two texts masks it, leaves it out, or compares it without its spaces. The comparison of [what the tree declares](#what-the-tree-declares) uses the original text only. It compares the type, the default, and the text of a CHECK without a name exactly.
+- **Boundaries between keywords.** A fault at the boundary between a column's type and its constraints prints the same tokens in the same order. No comparison of texts can see it. The comparison of [what the tree declares](#what-the-tree-declares) sees it, because it does not use the printed text. Five things stay out of its sight:
+  - `GENERATED ALWAYS` at the end of a type against `GENERATED ALWAYS` before AS. The two are the same for SQLite, by design.
+  - The names of constraints other than CHECK. SQLite does not record them. ALTER TABLE ... DROP CONSTRAINT finds a name in the text of the statement, not in a tree.
+  - ON CONFLICT. No PRAGMA shows it. It can only follow its constraint, so a tree that holds it elsewhere prints another order of tokens. The comparison of the two texts sees that in the programs of the probes.
+  - MATCH of a foreign key, which SQLite drops.
+  - Whether a foreign key is deferred, in a table that refers to itself.
+
+  Elsewhere, clauses that are only keywords in a row are fields of one node each, and the printer writes them by their role: join operators, frames, `IS NOT DISTINCT FROM`, `INSERT OR`, and the time of a trigger. CREATE INDEX and CREATE VIEW have no ambiguity that keeps the order of the tokens. The COLLATE of an index column is an expression, which the printer wraps, and the columns of a view are names between commas. What they declare is compared anyway, because it costs little.
+- **REGEXP, MATCH, and GLOB with ESCAPE.** SQLite has no function of its own that runs for them, so the check compares them through [stubs](#expressions-on-their-own). The values show the grouping and the order of the operands, not what a real function gives.
 - **The name WITH.** After a parenthesis SQLite reads WITH as the keyword that starts a SELECT, so an operation whose first token is the name WITH is not wrapped: `select with % 2 + 1` prints as it is, and its grouping is shown only by precedence. The fuzzer found it with `SELECT WITH%0`.
 - **NOT before an operator.** SQLite lowers `x NOT BETWEEN a AND b` and `NOT (x BETWEEN a AND b)` to the same tree, and does the same for NOT LIKE, NOT GLOB, NOT REGEXP, NOT MATCH, and NOT IN.
 
@@ -173,6 +185,8 @@ Where parentheses cannot be added, the printer adds none, and the check sees les
 4. SQLite treats both texts the same, as the sections below describe.
 
 The third requirement has one exception. An error of SQLite's grammar actions, such as `IN(...) element has 3 terms - expected 2` or `variable number must be between ?1 and ?32766`, comes after the parse of the original. In the printed text SQLite can raise it at an added `)` and stop there. The check accepts that if the message is that of the original.
+
+For a statement that declares a table, an index, or the columns of a view, `Check` requires a fifth thing, which does not use the printed text: the tree declares what SQLite made of the original text. See [What the tree declares](#what-the-tree-declares). `Check` reports a difference between the two texts before a difference there.
 
 A fault counts only for a statement that SQLite parses. `Check` asks the oracle about the original text only when it has found a fault, because the verdict costs as much as the rest of the check.
 
@@ -231,6 +245,78 @@ A statement that changes the schema is executed on two connections with the same
 - **CREATE VIEW.** The program of `select * from v`.
 - **CREATE TRIGGER.** The program of a statement that fires the trigger. `EXPLAIN` shows the trigger's subprogram as part of it.
 
+### What the tree declares
+
+Some faults print the same tokens in the same order. In `a int primary key`, a tree that takes `primary key` for words of the type prints the text that the right tree prints. So does a tree that takes the name after `DEFAULT` for a column reference. The comparison of the two texts cannot see such a fault.
+
+For these statements the check therefore makes a second comparison, without the printed text:
+
+- CREATE TABLE, but not CREATE TABLE ... AS
+- ALTER TABLE ... ADD COLUMN and ADD CHECK
+- CREATE INDEX
+- CREATE VIEW with a list of columns
+
+The check derives from the tree what SQLite records of the statement. It compares that with what SQLite says about the schema after it ran the original text. The code is in `declared.go`. The derivation is a model of SQLite's `build.c`: it applies the columns and constraints of the tree in their order, as the actions of `parse.y` do. It is a model for tests, not a part of the engine.
+
+The probes [above](#statements-that-change-the-schema) leave out the text of a default and compare a type without its spaces, because the printer changes both. This comparison compares both exactly.
+
+#### What is compared
+
+For CREATE TABLE:
+
+| What the tree declares | Where SQLite says it |
+| --- | --- |
+| Each column: its name, its type, NOT NULL, the text of its default, its position in the primary key, and whether it is hidden (2 for a virtual generated column, 3 for a stored one) | `pragma table_xinfo` |
+| The collation of each column | `pragma index_xinfo` of an index on every column, which the check makes and drops. No PRAGMA gives the collation of a column. |
+| WITHOUT ROWID, STRICT, and the number of columns | `pragma table_list` |
+| AUTOINCREMENT | `sqlite_schema` has the table `sqlite_sequence`. SQLite creates it for the first AUTOINCREMENT table, and no guessed schema has it. |
+| Each foreign key: its parent table, its columns, the columns it refers to or NULL, ON UPDATE, ON DELETE, and MATCH, the newest first | `pragma foreign_key_list` |
+| Whether each foreign key is deferred | The program of `insert into t default values`. For each foreign key, in the order of the PRAGMA, it holds an `FkCounter` whose P1 says whether the key is deferred, or a `Halt` with P1 787 (`SQLITE_CONSTRAINT_FOREIGNKEY`) for an immediate one (`fkLookupParent`). No PRAGMA gives it. |
+| Each index of a UNIQUE or PRIMARY KEY: unique, its origin, partial, and its key columns with their order and collation | `pragma index_list`, and `pragma index_xinfo` of each index |
+| The names of the CHECKs, in order | The same program. For each CHECK it holds a `Halt` with P1 275 (`SQLITE_CONSTRAINT_CHECK`) and the name in P4. |
+
+Six details:
+
+- The check reads the table in the schema that the statement names: `temp` for TEMP, the schema that qualifies the name, or else `main`. For ALTER TABLE and CREATE INDEX with an unqualified name it searches as SQLite does: `temp`, then `main`, then the attached databases.
+- The index on every column gets a name that the schema does not have yet: `s4ql_collations`, or that name with a number. A statement that uses the name itself is therefore still compared.
+- The text of a default is compared exactly. No default is not the same as the default `NULL`.
+- The indexes are compared as a sorted set. Their names and their order in the list follow from the order of the tokens, not from the shape of the tree.
+- Deferral is not compared for a table that refers to itself, or if the number of these instructions is not the number of foreign keys. With REPLACE, a table that refers to itself also counts the rows that refer to a row it deletes, so its `FkCounter` instructions do not tell its foreign keys apart.
+- If SQLite cannot prepare the INSERT, the CHECKs and the deferral are not compared.
+
+For the other statements:
+
+- **ALTER TABLE ... ADD COLUMN.** The new column, the foreign keys, and the CHECKs. The table is one of the guessed schema, which has no foreign keys and no CHECKs of its own.
+- **ALTER TABLE ... ADD CHECK.** The CHECKs.
+- **CREATE INDEX.** The key of the new index, from `pragma index_xinfo`, and unique, the origin `c`, and partial, from `pragma index_list`. The names of the columns resolve against the columns of the table, and their collations come from the index on every column.
+- **CREATE VIEW.** The names of the columns, from `pragma table_xinfo` of the view. They are not compared if two names are the same but for case. `sqlite3ColumnsFromExprList` makes such names unique with `:N`, and with random numbers after 3 collisions.
+
+#### The rules of SQLite
+
+The model follows these rules. Each names the function of SQLite that it follows. The functions are in `build.c` of the amalgamation, unless the rule names another file.
+
+- **`sqlite3AddColumn`.** The type is the text from the first token of the type to the last (`typetoken` in `parse.y`). A type of 16 bytes or more that ends in ALWAYS loses that word, and then a GENERATED before it. For a type of 3 bytes or more, `sqlite3DequoteToken` takes the quotes off if no quote is inside, and drops the last byte whatever it is: `[int] x` becomes `int] `. A standard type (ANY, BLOB, INT, INTEGER, REAL, or TEXT, in any case) is shown in upper case. For any other type, `sqlite3Dequote` keeps the first quoted part: `'abc' def` becomes `abc`, and `"in""t"` becomes `in"t`. The name of the column is dequoted. A new column ends a CONSTRAINT name.
+- **`sqlite3AddDefaultValue`**, with the actions of `ccons` for DEFAULT in `parse.y`, and `sqlite3DbSpanDup`. The text of the default is the literal, the sign and the literal, the name, or the text between the parentheses, without the spaces around it. The last DEFAULT counts. A generated column shows no default.
+- **`sqlite3AddNotNull`.** NOT NULL makes the column not null. NULL means nothing.
+- **`sqlite3AddPrimaryKey`.** A single column of the type INTEGER, exactly, becomes the rowid, unless a column constraint says DESC. A table constraint passes the order 0, so `primary key(a desc)` on an INTEGER column is the rowid too. Any other key is a unique index. A string under COLLATE is a name (`sqlite3StringToId`). AUTOINCREMENT is allowed only on the rowid.
+- **`sqlite3CreateIndex`.** A UNIQUE or PRIMARY KEY with the same columns and collations as one before it makes no index, whatever its order. If it is the primary key, the earlier index becomes the primary key. The collation of a key column is that of the outer COLLATE, else that of the column, else BINARY. An expression is an error.
+- **`sqlite3AddCollateType`.** The last COLLATE counts. It also sets the collation of the indexes made on the column so far.
+- **`sqlite3AddCheckConstraint`.** A CHECK is named by the CONSTRAINT name before it, else by its text between the parentheses, trimmed. Either is dequoted (`sqlite3ExprListSetName`). A CONSTRAINT name is not used up: it names every CHECK after it, up to the next column (`sqlite3AddColumn`) or a comma between table constraints (`tconscomma` in `parse.y`). The comma before the first table constraint is not `tconscomma`, so a CONSTRAINT name at the end of the last column names the first table CHECK.
+- **`sqlite3AddGenerated`.** The column is VIRTUAL unless it says STORED. A DEFAULT before or after it is an error.
+- **`sqlite3CreateForeignKey`**, with `refargs` in `parse.y`. The last ON DELETE and the last ON UPDATE count. MATCH and ON INSERT are read and dropped, so the PRAGMA always says `NONE`. New foreign keys come first.
+- **`sqlite3DeferForeignKey`.** DEFERRABLE INITIALLY DEFERRED applies to the foreign key made last, of whichever column. Anything else makes that foreign key immediate.
+- **`sqlite3EndTable`.** STRICT adds NOT NULL to the columns of the primary key, but not to the rowid. WITHOUT ROWID (`convertToWithoutRowidTable`) adds NOT NULL to the columns of the primary key, turns the rowid back into a primary-key index, and drops repeated columns from the key: those with the same column and collation. A table option is matched by its raw text, without dequoting: `rowid` in 5 bytes after WITHOUT, and `strict` in 6 bytes.
+- **`pragma table_xinfo`**, in `pragma.c`. The primary-key position of a column is its position in the key of the primary-key index, or 1 for the rowid. The PRAGMA looks only at the first nCol entries of the key, where nCol is the number of columns of the table. A column that comes later in a key with repeated columns gets nCol+1.
+
+#### When it does not run
+
+The comparison runs on the connection on which the original text ran, and compares with the tree, never with the printed text. It therefore also runs for a statement that is [skipped](#what-is-skipped) because a declared type holds a comment.
+
+It does not run in two cases:
+
+- The original text fails in SQLite. There is then nothing to observe.
+- The guessed schema already holds a table or a view of the name that the CREATE TABLE or CREATE VIEW creates, in the same database. With IF NOT EXISTS, SQLite then leaves the schema as it is, and what the statement declares is not what SQLite has.
+
 ### Expressions on their own
 
 Every expression is also compared on its own, with the expression at the same place in the printed tree. That adds values to the comparison of programs, and it covers the expressions of a statement that fails as a whole with an error. An expression counts if it is not inside another one. An expression in a clause of a subquery counts on its own again.
@@ -247,6 +333,8 @@ select typeof(v), quote(v), v = 'A', v < 'b', v = 1, v = '1' from (select e as v
 ```
 
 The connection limits a string or blob to 100,000 bytes, with `sqlite.Conn.SetLengthLimit`, and so do the connections of the statements, since CREATE TABLE ... AS runs its SELECT. Without the limit, `CAST(zeroblob(1E9) AS INT)` from the corpus makes a value of a gigabyte. A larger value fails with `string or blob too big` on both sides. A value of more than 1,000 bytes is compared by its length and its first 1,000 bytes.
+
+The connection also has stubs of the functions `regexp` and `match`, and of `glob` with three arguments, from `sqlite.Conn.AddTestFunctions`. So do the connections of the statements. SQLite calls these functions for `X REGEXP Y`, `X MATCH Y`, and `X GLOB Y ESCAPE Z`, and has none of its own that runs, as [the results](#the-corpus) explain. A stub gives NULL if an argument is NULL. Otherwise it gives -1, 0, or 1 as the text of its first argument sorts before, the same as, or after the text of its second. With a third argument, it gives 3 times that plus the order of the second to the third. The value therefore depends on every operand and on the order of the operands, which is what the check needs. It is not what a real function gives.
 
 The values come from this pool: `0`, `1`, `2`, `3`, `7`, `-1`, `NULL`, `'a'`, `'B'`, `''`, `2.5`, `x'01'`, `'%'`, `'a_c'`, `'{"a":[1,2]}'`, `'12'`, and `1e300`.
 
@@ -268,7 +356,7 @@ A statement is `Skipped` in five cases:
 - The schema that it needs cannot be built.
 - The two sides differ only because the printed text no longer finds a column that SQLite named by the text of an expression without an alias, as in `select [count(*)] from (select count(*) ...)`. The corpus has 5 such statements.
 
-The expressions of a skipped statement are still compared.
+The expressions of a skipped statement are still compared. For a statement that is skipped because a declared type holds a comment, [what the tree declares](#what-the-tree-declares) is compared too.
 
 ## Results
 
@@ -282,40 +370,42 @@ The numbers are those of the full tests. Under `-short`, the race detector, or t
 - 55,232 do not parse in the parser.
 - On 11, SQLite does not say that they parse.
 
-Of the 83,991 statements, 72,383 (86.2%) are compared by bytecode or probes. 4,551 (5.4%) are compared in no way but by an error, and 2,306 of those are CREATE VIRTUAL TABLE. The other 7,057 fail with the same error or are skipped as statements, and have at least one expression that is compared on its own.
+Of the 83,991 statements, 72,510 (86.3%) are compared by bytecode or probes. 4,462 (5.3%) are compared in no way but by an error, and 2,306 of those are CREATE VIRTUAL TABLE. The other 7,019 fail with the same error or are skipped as statements, and have at least one expression that is compared on its own.
 
-By kind of statement. "By values" counts the statements with at least one expression compared by values, and "None" those compared in no way but by an error:
+[What the tree declares](#what-the-tree-declares) is compared for 10,303 statements: 7,367 CREATE TABLE, 2,541 CREATE INDEX, 289 ALTER TABLE ... ADD COLUMN, 9 ALTER TABLE ... ADD CHECK, and 97 CREATE VIEW with a list of columns.
 
-| Kind | Bytecode | Probes | Same error | Skipped | By values | None |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| alter table add column | 0 | 289 | 8 | 0 | 192 | 6 |
-| alter table drop column | 0 | 48 | 1 | 0 | 0 | 1 |
-| alter table other | 0 | 35 | 18 | 0 | 9 | 18 |
-| alter table rename | 0 | 208 | 4 | 0 | 0 | 4 |
-| alter table rename column | 0 | 121 | 2 | 0 | 0 | 2 |
-| analyze | 91 | 0 | 4 | 0 | 0 | 4 |
-| attach | 873 | 0 | 12 | 0 | 885 | 0 |
-| create index | 0 | 2,541 | 98 | 0 | 2,589 | 14 |
-| create table | 0 | 7,367 | 218 | 1 | 1,299 | 148 |
-| create table as | 0 | 128 | 26 | 0 | 116 | 3 |
-| create trigger | 0 | 807 | 122 | 0 | 839 | 27 |
-| create view | 0 | 897 | 194 | 0 | 943 | 23 |
-| create virtual table | 0 | 0 | 0 | 2,306 | 0 | 2,306 |
-| delete | 923 | 0 | 29 | 0 | 684 | 13 |
-| detach | 541 | 0 | 69 | 0 | 493 | 16 |
-| drop index | 109 | 0 | 0 | 2 | 0 | 2 |
-| drop table | 328 | 0 | 5 | 0 | 0 | 5 |
-| drop trigger | 82 | 0 | 0 | 0 | 0 | 0 |
-| drop view | 42 | 0 | 0 | 0 | 0 | 0 |
-| insert | 19,394 | 0 | 1,731 | 10 | 19,995 | 271 |
-| pragma | 3,234 | 0 | 213 | 0 | 0 | 213 |
-| reindex | 20 | 0 | 51 | 0 | 0 | 51 |
-| replace | 269 | 0 | 16 | 0 | 267 | 2 |
-| select | 30,640 | 0 | 6,064 | 9 | 32,898 | 1,374 |
-| transaction | 1,063 | 0 | 0 | 0 | 0 | 0 |
-| update | 1,527 | 0 | 378 | 0 | 1,780 | 44 |
-| vacuum | 714 | 0 | 7 | 0 | 12 | 4 |
-| values | 92 | 0 | 10 | 0 | 100 | 0 |
+By kind of statement. "By values" counts the statements with at least one expression compared by values, "None" those compared in no way but by an error, and "Declared" those for which what the tree declares is compared:
+
+| Kind | Bytecode | Probes | Same error | Skipped | By values | None | Declared |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| alter table add column | 0 | 289 | 8 | 0 | 192 | 6 | 289 |
+| alter table drop column | 0 | 48 | 1 | 0 | 0 | 1 | 0 |
+| alter table other | 0 | 35 | 18 | 0 | 9 | 18 | 9 |
+| alter table rename | 0 | 208 | 4 | 0 | 0 | 4 | 0 |
+| alter table rename column | 0 | 121 | 2 | 0 | 0 | 2 | 0 |
+| analyze | 91 | 0 | 4 | 0 | 0 | 4 | 0 |
+| attach | 873 | 0 | 12 | 0 | 885 | 0 | 0 |
+| create index | 0 | 2,541 | 98 | 0 | 2,589 | 14 | 2,541 |
+| create table | 0 | 7,367 | 218 | 1 | 1,299 | 148 | 7,367 |
+| create table as | 0 | 128 | 26 | 0 | 116 | 3 | 0 |
+| create trigger | 0 | 811 | 118 | 0 | 842 | 24 | 0 |
+| create view | 0 | 897 | 194 | 0 | 945 | 23 | 97 |
+| create virtual table | 0 | 0 | 0 | 2,306 | 0 | 2,306 | 0 |
+| delete | 923 | 0 | 29 | 0 | 742 | 13 | 0 |
+| detach | 541 | 0 | 69 | 0 | 497 | 16 | 0 |
+| drop index | 109 | 0 | 0 | 2 | 0 | 2 | 0 |
+| drop table | 328 | 0 | 5 | 0 | 0 | 5 | 0 |
+| drop trigger | 82 | 0 | 0 | 0 | 0 | 0 | 0 |
+| drop view | 42 | 0 | 0 | 0 | 0 | 0 | 0 |
+| insert | 19,394 | 0 | 1,731 | 10 | 19,997 | 271 | 0 |
+| pragma | 3,234 | 0 | 213 | 0 | 0 | 213 | 0 |
+| reindex | 20 | 0 | 51 | 0 | 0 | 51 | 0 |
+| replace | 269 | 0 | 16 | 0 | 267 | 2 | 0 |
+| select | 30,762 | 0 | 5,942 | 9 | 33,807 | 1,288 | 0 |
+| transaction | 1,063 | 0 | 0 | 0 | 0 | 0 | 0 |
+| update | 1,528 | 0 | 377 | 0 | 1,789 | 44 | 0 |
+| vacuum | 714 | 0 | 7 | 0 | 12 | 4 | 0 |
+| values | 92 | 0 | 10 | 0 | 100 | 0 | 0 |
 
 The most common errors of `SameError` are functions and modules that the binding lacks, and errors that no schema avoids:
 
@@ -327,53 +417,69 @@ The most common errors of `SameError` are functions and modules that the binding
 | `no such column: "a" - should this be a string literal in single-quotes?` | 227 |
 | `table sqlite_master may not be modified` | 221 |
 | `no such function: random_vector` | 217 |
+| `no such column: "b" - should this be a string literal in single-quotes?` | 159 |
 | `no such function: offsets` | 156 |
 | `'t1' is not a function` | 154 |
 | `'generate_series' is not a function` | 133 |
-| `no such function: REGEXP` | 119 |
 
-The statements hold 208,989 expressions. A `Checker` had seen 134,111 of them before. Of the other 74,878, 57,994 are compared by bytecode and 53,390 by values. The values are not compared for 13,195 that name a table, and for about 2,400 that are not deterministic: `randomblob` 913, `time` 383, `strftime` 338, `datetime` 196, `random` 141, the clock 101, and smaller groups.
+The statements hold 208,989 expressions. A `Checker` had seen 134,111 of them before. Of the other 74,878, 58,157 are compared by bytecode and 55,310 by values. The values are not compared for 13,195 that name a table, and for about 2,400 that are not deterministic: `randomblob` 913, `time` 383, `strftime` 338, `datetime` 196, `random` 141, the clock 101, and smaller groups.
 
 A selection of the 73 forms, with the expressions that hold each. Expressions seen before are not counted:
 
 | Form | Expressions | By bytecode | By values |
 | --- | ---: | ---: | ---: |
-| `Binary +` | 11,768 | 4,068 | 3,872 |
-| `Binary =` | 9,002 | 5,453 | 5,202 |
-| `Binary AND` | 6,394 | 2,419 | 2,276 |
-| `Binary OR` | 5,709 | 1,681 | 1,579 |
-| `Binary \|\|` | 1,160 | 1,068 | 910 |
+| `Binary +` | 11,768 | 4,068 | 3,875 |
+| `Binary =` | 9,002 | 5,454 | 5,263 |
+| `Binary AND` | 6,394 | 2,421 | 2,385 |
+| `Binary OR` | 5,709 | 1,681 | 1,586 |
+| `Binary \|\|` | 1,160 | 1,069 | 911 |
 | `Binary ->` | 25 | 25 | 22 |
 | `Binary ->>` | 116 | 116 | 110 |
-| `Between BETWEEN` | 3,952 | 988 | 976 |
+| `Between BETWEEN` | 3,952 | 988 | 979 |
 | `Between NOT BETWEEN` | 3,627 | 695 | 695 |
-| `Case` | 7,236 | 892 | 886 |
-| `Case with operand` | 6,375 | 1,475 | 1,444 |
-| `Cast` | 6,079 | 2,049 | 2,041 |
+| `Case` | 7,236 | 892 | 887 |
+| `Case with operand` | 6,375 | 1,475 | 1,448 |
+| `Cast` | 6,079 | 2,049 | 2,044 |
 | `Collate` | 500 | 429 | 291 |
 | `FuncCall OVER` | 2,740 | 2,390 | 2,367 |
 | `FuncCall FILTER` | 96 | 83 | 83 |
-| `InList IN` | 4,766 | 1,733 | 1,692 |
-| `InSelect IN` | 6,054 | 148 | 145 |
-| `Is IS` | 491 | 356 | 343 |
+| `InList IN` | 4,766 | 1,733 | 1,685 |
+| `InSelect IN` | 6,054 | 148 | 147 |
+| `Is IS` | 491 | 356 | 344 |
 | `Is IS NOT DISTINCT FROM` | 38 | 38 | 38 |
-| `Like LIKE` | 722 | 688 | 663 |
+| `Like LIKE` | 722 | 688 | 665 |
 | `Like LIKE ESCAPE` | 76 | 76 | 60 |
-| `Like MATCH` | 1,791 | 1,753 | 0 |
-| `Like REGEXP` | 154 | 0 | 0 |
-| `NullTest ISNULL` | 64 | 50 | 48 |
+| `Like GLOB` | 308 | 273 | 265 |
+| `Like GLOB ESCAPE` | 2 | 1 | 1 |
+| `Like NOT GLOB ESCAPE` | 2 | 0 | 0 |
+| `Like MATCH` | 1,791 | 1,753 | 1,748 |
+| `Like NOT MATCH` | 5 | 4 | 4 |
+| `Like REGEXP` | 154 | 153 | 153 |
+| `Like NOT REGEXP` | 1 | 1 | 1 |
+| `NullTest ISNULL` | 64 | 50 | 49 |
 | `NullTest NOT NULL` | 40 | 37 | 37 |
 | `Unary NOT` | 5,833 | 879 | 872 |
-| `Unary -` | 15,020 | 6,280 | 6,101 |
+| `Unary -` | 15,020 | 6,280 | 6,124 |
 | `Unary ~` | 6,244 | 1,751 | 1,709 |
 | `Row` | 487 | 270 | 263 |
-| `Subquery` | 9,813 | 307 | 302 |
+| `Subquery` | 9,813 | 307 | 303 |
 
 `go test -run TestCheck_corpus -v` prints the report with all 73 forms.
 
 Where a form has far more expressions than comparisons, most of them hold a subquery that reads a table. Such an expression is not compared on its own. The bytecode of its statement compares it.
 
-`REGEXP` and `MATCH` stand out. The binding has no `REGEXP` function, so SQLite builds no program. For `MATCH` SQLite builds a program, but the function fails when it runs, with `unable to use function MATCH in the requested context`, so there are no values.
+`REGEXP`, `MATCH`, and `GLOB` with `ESCAPE` are compared through the [stubs](#expressions-on-their-own) of `sqlite.Conn.AddTestFunctions`. Without the stubs, each operator fails for a reason of its own:
+
+- SQLite has no `regexp` function. A statement with `REGEXP` does not prepare: `no such function: regexp`.
+- SQLite's `match` is a placeholder for virtual tables, which `sqlite3RegisterPerConnectionBuiltinFunctions` makes with `sqlite3_overload_function`. SQLite builds a program, but the function fails when it runs: `unable to use function MATCH in the requested context`. There are then no values.
+- SQLite's `glob` takes two arguments, and `X GLOB Y ESCAPE Z` calls `glob(Y, X, Z)`: `wrong number of arguments to function glob()`.
+
+With the stubs, 153 of the 154 expressions with `REGEXP` and 1,748 of the 1,791 with `MATCH` are compared by values. The expressions with these operators that are still not compared fail for other reasons:
+
+- They call a function that the binding lacks, such as `error`, `box`, `cube`, or `snippet`, or a random name from a fuzzed corpus entry.
+- They name a table, as a `MATCH` against a full-text table does.
+- They misuse a row value.
+- Their `ESCAPE` is not one character. That fails when the expression runs, so it is compared by bytecode only.
 
 ### Pairs and triples
 
@@ -392,22 +498,25 @@ The texts have no parentheses but those of the forms, so SQLite's precedence and
 | --- | ---: | ---: |
 | Texts | 21,594 | 20,000 |
 | Rejected by SQLite and the parser alike | 222 | 281 |
-| Compared by bytecode and values | 17,163 | 15,009 |
-| Compared by bytecode only | 1,474 | 1,577 |
-| Compared only by the same error | 2,735 | 3,133 |
+| Compared by bytecode and values | 20,393 | 18,616 |
+| Compared by bytecode only | 308 | 288 |
+| Compared only by the same error | 671 | 815 |
 
 The test also runs every text through `internal/sql/parsetest`, which found no disagreement on the rejected texts or on any other.
 
-Counted by pair, where a pair takes the best of its texts, 3,084 of the 3,721 are compared by bytecode and values, 198 by bytecode only, and 439 only by the same error. Each of those 637 pairs involves one of these:
+A text is compared by bytecode only if its values fail for every assignment when it runs. Most such texts have an `ESCAPE` that is not one character (`ESCAPE expression must be a single character`), or a `->` or `->>` on text that is not JSON.
 
-- `REGEXP` or `NOT REGEXP`, for which SQLite builds no program
-- `MATCH` or `NOT MATCH`, which fail when they run
-- `GLOB` with `ESCAPE`, which gives `wrong number of arguments to function GLOB()`
-- a row value where none is allowed, which gives `row value misused`
+Counted by pair, where a pair takes the best of its texts, 3,610 of the 3,721 are compared by bytecode and values, none by bytecode only, and 111 only by the same error. Each of those 111 pairs holds a row value where SQLite needs a single value. The generator puts a single value on the other side, so SQLite gives one of these errors, which no function avoids:
+
+- `row value misused`
+- `IN(...) element has 1 term - expected 2`
+- `sub-select returns 1 columns - expected 2`
+
+The triples make 19,100 combinations of three forms. Counted in the same way, 17,786 are compared by bytecode and values, 268 by bytecode only, and 783 only by the same error, and 263 are always rejected. Each of the 783 holds a row value too.
 
 ### Statements written by hand
 
-A generator does not fit the structure of statements. `Structure` in `export_test.go` holds 66 statements written by hand, on:
+A generator does not fit the structure of statements. `Structure` in `export_test.go` holds 67 statements written by hand, on:
 
 - joins of every kind, with ON and USING
 - ORDER BY and LIMIT on compounds and in subqueries, and LIMIT with a comma
@@ -420,38 +529,109 @@ A generator does not fit the structure of statements. `Structure` in `export_tes
 - triggers with several steps
 - constraints with conflict clauses, DEFERRABLE, the actions of foreign keys, generated columns, STRICT, and WITHOUT ROWID
 - indexes with expressions, COLLATE, an order, and WHERE
-- views
+- views, and a view that SQLite does not make because the schema has a table of its name
 - numbers with digit separators
 
 `TestCheck_statements` requires that each is compared by bytecode or probes, and not skipped.
 
+`Declared` in `export_test.go` holds 55 statements written by hand for [the rules of SQLite](#the-rules-of-sqlite) that the model of declarations follows, one or more for each rule, on:
+
+- GENERATED and ALWAYS as words of a type, and a type of 16 bytes or more that loses them
+- conflict clauses
+- the text of a type as SQLite dequotes it, and the standard types
+- defaults
+- primary keys: the rowid, indexes, the order, AUTOINCREMENT, WITHOUT ROWID, and STRICT
+- CONSTRAINT names and the CHECKs that they name
+- foreign keys: actions, MATCH, and DEFERRABLE
+- collations and generated columns
+- table options, TEMP, another database, and IF NOT EXISTS
+- ALTER TABLE ... ADD
+- CREATE INDEX and CREATE VIEW
+- names that the check uses itself, such as `s4ql_collations`
+
+`TestCheck_declared` in `declared_test.go` requires that what the tree declares is compared for each, and that none has a fault.
+
 ## Proof that the check can fail
 
-A check that never fails proves nothing. `TestCheck_mutations` in `mutate_internal_test.go` damages trees on purpose and counts how often the check fails. It takes the trees of every 20th corpus entry, of the `Structure` statements, and of a sample of pairs and triples, and damages each at up to 2 sites for each kind of damage.
+A check that never fails proves nothing. `TestCheck_mutations` in `mutate_internal_test.go` damages trees on purpose and counts how often the check fails. It takes the trees of every 20th corpus entry, of the `Structure` and `Declared` statements, and of a sample of pairs and triples, and damages each at up to 2 sites for each kind of damage. The kinds that damage what a statement declares have few sites in that sample. They also run on every tenth CREATE TABLE and ALTER TABLE of the corpus.
 
-"Detected" means that the check fails. "Not compared" means that SQLite compared the changed part only by an error. The rate is the share detected of those compared.
+"Detected" means that the check fails. "Not compared" means that SQLite compared the changed part only by an error. The rate is the share detected of those compared. "Declared" counts the detected cases that only the comparison of [what the tree declares](#what-the-tree-declares) detects. The other requirements of the check come first, and they hold in these cases.
 
-| Damage | Detected | Undetected | Not compared | Rate |
-| --- | ---: | ---: | ---: | ---: |
-| Rotate two operators | 2,226 | 69 | 129 | 97.0% |
-| Swap the operands | 4,240 | 130 | 405 | 97.0% |
-| Move the NOT of IS NOT to its operand | 122 | 0 | 6 | 100% |
-| Move the NOT of NOT BETWEEN, LIKE, or IN out | 0 | 650 | 102 | 0% |
-| Swap the operands of LIMIT | 19 | 1 | 0 | 95.0% |
-| Move ON or USING to the next join | 6 | 1 | 0 | 85.7% |
-| Swap two join operators | 140 | 10 | 2 | 93.3% |
-| Move ORDER BY or LIMIT | 33 | 0 | 0 | 100% |
-| Move the ELSE of a nested CASE | 1 | 0 | 0 | 100% |
-| Move FILTER or OVER to an argument | 3 | 0 | 0 | 100% |
-| Move ORDER BY between the arguments and the window | 83 | 0 | 0 | 100% |
-| Swap the WHEREs of an upsert | 7 | 0 | 0 | 100% |
-| Move a column constraint to the next column | 146 | 9 | 3 | 94.2% |
-| Move CONSTRAINT name after its constraint | 1 | 2 | 0 | 33.3% |
-| Split a number with digit separators into a number and an alias | 2 | 0 | 0 | 100% |
+| Damage | Detected | Undetected | Not compared | Rate | Declared |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Rotate two operators | 2,320 | 72 | 32 | 97.0% | 0 |
+| Swap the operands | 4,480 | 133 | 179 | 97.1% | 0 |
+| Move the NOT of IS NOT to its operand | 125 | 0 | 3 | 100% | 0 |
+| Move the NOT of NOT BETWEEN, LIKE, or IN out | 0 | 744 | 8 | 0% | 0 |
+| Swap the operands of LIMIT | 19 | 1 | 0 | 95.0% | 0 |
+| Move ON or USING to the next join | 6 | 1 | 0 | 85.7% | 0 |
+| Swap two join operators | 140 | 10 | 2 | 93.3% | 0 |
+| Move ORDER BY or LIMIT | 33 | 0 | 0 | 100% | 0 |
+| Move the ELSE of a nested CASE | 1 | 0 | 0 | 100% | 0 |
+| Move FILTER or OVER to an argument | 3 | 0 | 0 | 100% | 0 |
+| Move ORDER BY between the arguments and the window | 83 | 0 | 0 | 100% | 0 |
+| Swap the WHEREs of an upsert | 7 | 0 | 0 | 100% | 0 |
+| Move a column constraint to the next column | 494 | 16 | 14 | 96.9% | 1 |
+| Move CONSTRAINT name after its constraint, among table constraints | 5 | 6 | 0 | 45.5% | 0 |
+| Move CONSTRAINT name after its constraint, in a column | 2 | 4 | 2 | 33.3% | 0 |
+| Split a number with digit separators into a number and an alias | 2 | 0 | 0 | 100% | 0 |
+| Move GENERATED ALWAYS from the end of a type into AS | 0 | 13 | 1 | 0% | 0 |
+| Move the last word of a type into AS, as its ALWAYS | 3 | 0 | 0 | 100% | 3 |
+| Move the first constraint of a column into its type | 773 | 0 | 17 | 100% | 649 |
+| Move ON CONFLICT to the next constraint | 3 | 0 | 0 | 100% | 0 |
+| Swap ON DELETE and ON UPDATE | 4 | 0 | 0 | 100% | 0 |
+| Change the form of DEFAULT | 29 | 0 | 0 | 100% | 9 |
 
 A rotation groups two neighbouring operators the other way, with the tokens in the same order. An ORDER BY or LIMIT is moved from a compound to its first part, or into or out of a subquery.
 
-The fourth row is expected: SQLite reads `x NOT BETWEEN a AND b` as `NOT (x BETWEEN a AND b)`, as [above](#where-the-check-is-weaker). The test fails if the check ever detects that damage. It also fails if the check never detects one of the other kinds.
+Four kinds of damage keep the tokens of a column definition in their order, as a parser does that puts a boundary in the wrong place:
+
+- GENERATED ALWAYS moves from the end of a type into the AS after it.
+- The last word of a type, which is not ALWAYS, becomes the ALWAYS of the AS after it: `a int always as (1)` has the type `int always`.
+- The tokens of the first constraint of a column become words of its type.
+- A DEFAULT changes its form. A name after DEFAULT, which SQLite reads as a string, becomes a column reference. The sign of a signed literal becomes a unary operator, which only `DEFAULT ( expr )` can hold.
+
+Two rows are expected to show no detection. The fourth row is one: SQLite reads `x NOT BETWEEN a AND b` as `NOT (x BETWEEN a AND b)`, as [above](#where-the-check-is-weaker). The row on GENERATED ALWAYS is the other: `sqlite3AddColumn` drops these words from the end of a type, so the two trees are the same for SQLite. The test fails if the check ever detects one of these two kinds. It also fails if the check never detects one of the other kinds.
+
+### What the declarations add
+
+The comparison of declarations alone detects 662 cases:
+
+- 649 of the 773 constraints moved into a type. The printed text is that of the right tree, such as `a INTEGER PRIMARY KEY`, and only the type that the tree declares, `INTEGER PRIMARY KEY`, differs from the type that SQLite records. In the other 124 cases the damaged tree prints another text than the right tree, for example a CHECK without its added parentheses, and the check fails before it compares the declarations.
+- All 3 last words of a type moved into AS.
+- 9 of the 29 changes of a DEFAULT: the 9 names read as column references. The 20 signs read as operators print another text.
+- 1 column constraint moved to the next column.
+
+A constraint moved into a type, by the constraint. None is undetected:
+
+| Constraint | Detected | Not compared |
+| --- | ---: | ---: |
+| CHECK | 21 | 0 |
+| COLLATE | 39 | 9 |
+| CONSTRAINT name | 6 | 2 |
+| DEFAULT | 96 | 0 |
+| DEFERRABLE | 1 | 0 |
+| GENERATED | 27 | 0 |
+| NULL or NOT NULL | 145 | 0 |
+| PRIMARY KEY | 278 | 2 |
+| REFERENCES | 64 | 0 |
+| UNIQUE | 96 | 4 |
+
+A column constraint moved to the next column, by the constraint:
+
+| Constraint | Detected | Undetected | Not compared |
+| --- | ---: | ---: | ---: |
+| CHECK | 2 | 10 | 5 |
+| COLLATE | 15 | 0 | 6 |
+| DEFAULT | 28 | 0 | 0 |
+| DEFERRABLE | 0 | 2 | 0 |
+| GENERATED | 16 | 0 | 0 |
+| NULL or NOT NULL | 112 | 4 | 0 |
+| PRIMARY KEY | 246 | 0 | 2 |
+| REFERENCES | 17 | 0 | 0 |
+| UNIQUE | 58 | 0 | 1 |
+
+A moved column constraint and a moved CONSTRAINT name change the order of the tokens. The comparison of the two texts therefore already sees what SQLite sees, and the comparison of declarations adds almost nothing to these two kinds. A second measurement shows that. On the sample that the test had before, without `Declared` and without the CREATE TABLE and ALTER TABLE statements added from the corpus, the numbers are those of before: 146 detected, 9 undetected, and 3 not compared for a moved column constraint, and 1 detected and 2 undetected for a moved CONSTRAINT name. The declarations alone detect none of them. The undetected cases are those where SQLite records the same, as the next section lists.
 
 ### What stays undetected
 
@@ -460,6 +640,8 @@ Every undetected case is one where SQLite treats the two trees the same:
 - Rotations under unary `+`, such as `+(a*b)` against `(+a)*b`. Unary plus compiles to nothing, and the result of arithmetic has no affinity to lose. With literal operands nothing changes either.
 - `AND` under `AND`, and `OR` under `OR`. They are associative, and SQLite splits a WHERE into its AND terms.
 - `COLLATE` moved over an arithmetic operator, a bit operator, or `~`, as in `(a % b) COLLATE NOCASE`. The result is a number, which no collation affects, and SQLite finds a COLLATE below an operator anyway.
+- `COLLATE` moved over `REGEXP`, `MATCH`, or `GLOB`. These call a function that takes no collation and gives a number.
+- `GLOB` with `ESCAPE` with its operands swapped, where they are equal but for a `COLLATE`. The function takes no collation.
 - `COLLATE BINARY`, which is the default collation.
 - `x OR <true constant>` and `x AND 0`. SQLite folds the whole expression, so the other side is dead code.
 - `x IN ()`, which is the constant false.
@@ -471,15 +653,18 @@ Every undetected case is one where SQLite treats the two trees the same:
 - Join operators swapped where the WHERE rejects NULLs, so that SQLite turns the outer joins into inner ones, or swapped with a CROSS JOIN where the planner picks the same order.
 - A CHECK of a column moved to another column. SQLite keeps every CHECK on the table.
 - A NULL constraint moved. It means nothing.
-- `CONSTRAINT name` moved off a UNIQUE or PRIMARY KEY. SQLite keeps only the names of CHECK constraints, for their messages.
+- A DEFERRABLE moved to the next column. SQLite applies it to the foreign key made last, whichever column holds it (`sqlite3DeferForeignKey`). That is the same foreign key if the next column has no REFERENCES.
+- `CONSTRAINT name` moved off a UNIQUE, PRIMARY KEY, NOT NULL, DEFAULT, or REFERENCES. SQLite keeps only the names of CHECK constraints, for their messages.
+- `CONSTRAINT name` moved so that it still comes before the same CHECKs, or after a comma that ends it anyway.
+- GENERATED ALWAYS moved from the end of a type into AS. `sqlite3AddColumn` drops these words from the end of a type of 16 bytes or more, and a type that ends in them always has 16 bytes or more.
 
-None of these is a hole in the check. Each is the same program and the same values for SQLite.
+None of these is a hole in the check. Each is the same program, the same values, and the same schema for SQLite.
 
 ## Fuzzing
 
-`FuzzCheck` checks the shape of the tree of any text that the parser parses. It is seeded with every 25th corpus entry (every 100th under `-short`, the race detector, and the address sanitizer), the `Structure` statements, and a sample of the pairs. `make fuzz` runs it.
+`FuzzCheck` checks the shape of the tree of any text that the parser parses, and what the tree declares. It is seeded with every 25th corpus entry (every 100th under `-short`, the race detector, and the address sanitizer), the `Structure` and `Declared` statements, and a sample of the pairs. `make fuzz` runs it.
 
-Seven runs with 6 workers made about 313,203,000 executions (the counts of the runs that failed are the last that the fuzzer reported), 15,000 to 45,000 a second, since most texts do not parse and cost little. Six runs ended with a finding, and every finding was a fault of the check, not of the parser's tree. Each input is a regression case in `testdata/fuzz/FuzzCheck`:
+Nine runs with 6 workers made about 408,435,000 executions (the counts of the runs that failed are the last that the fuzzer reported), 15,000 to 45,000 a second, since most texts do not parse and cost little. Six runs ended with a finding, and every finding was a fault of the check, not of the parser's tree. Each input is a regression case in `testdata/fuzz/FuzzCheck`:
 
 | Run | Executions | Finding | Now |
 | --- | ---: | --- | --- |
@@ -490,10 +675,23 @@ Seven runs with 6 workers made about 313,203,000 executions (the counts of the r
 | 5 | 6,645,514 | `WITH A(A)AS(SELECT WITH%0)SELECT 0`: after `(`, WITH is the keyword | [not wrapped](#where-the-check-is-weaker) |
 | 6 | 59,172,008 | a chain that reaches `Recursion limit` only under EXPLAIN | skipped |
 | 7 | 123,112,704 | none, in 30 minutes | |
+| 8 | 35,737,982 | none, in 20 minutes | |
+| 9 | 59,494,380 | none, in 30 minutes | |
+
+Runs 8 and 9 also compared what the tree declares, and ran REGEXP, MATCH, and GLOB with ESCAPE through the stubs. Run 9 ran on the code as it is now. Run 8 ran before the fixes of a review, which changed only how the declarations are observed. Other work kept the machine at a load of 40 to 65, so these runs made 8,000 to 55,000 executions a second.
 
 ## Run times
 
 Measured on a machine with 10 cores that other work kept at a load of about 15; the address sanitizer runs in a Linux container in Docker on the same machine, as `make test-asan` does.
+
+The comparison of declarations and the stubs were measured at a load of 40 to 55, back to back with the code before them. At that load the wall times say little, and the CPU times are the better measure:
+
+- The plain run took 39 s with 65 s of CPU, against 52 s with 62 s of CPU before.
+- With `-race` it took 116 s with 49 s of CPU, against 79 s with 45 s before.
+- Under the address sanitizer it took 85 s, and `make test-asan` passed in 790 s.
+- `TestCheck_declared` takes about 0.3 s, and `TestCheck_mutations` about 11 s with its sample of CREATE TABLE and ALTER TABLE.
+
+The measurements before these additions, at a load of about 15:
 
 - `go test ./internal/sql/shapetest` takes about 15 s, with about 53 s of CPU, since the corpus and the pairs run in 8 processes. The whole corpus takes most of it.
 - With `-race` it takes about 26 s, in one process, on every tenth corpus entry and smaller samples.
@@ -515,7 +713,15 @@ SQLite behaviour that one would not guess:
 
 - A comment inside a declared type is part of the type, and can change its affinity.
 - The text of a CHECK without a name is the message of its Halt.
-- A comma after `CONSTRAINT name` drops the name.
+- A comma between two table constraints drops a `CONSTRAINT name` before it.
+- A `CONSTRAINT name` names every CHECK after it in the column. The comma before the first table constraint does not drop it, so a name at the end of the last column names the first table CHECK. In `create table t(a constraint c1, check(a>0), check(1))` the first CHECK has the name `c1` and the second the name `1`.
+- DEFERRABLE applies to the foreign key made last, even one of an earlier column.
+- The type `[int] x` is recorded as `int] `, and the type `'abc' def` as `abc`.
+- `pragma table_xinfo` gives the primary-key position nCol+1, where nCol is the number of columns, to a column that comes late in a key with repeated columns.
+- MATCH in a foreign key is read and ignored: `pragma foreign_key_list` always says `NONE`.
+- SQLite's `match` function is a placeholder for virtual tables, which fails when it runs.
+- An index cannot name the rowid: `create index i on t(rowid)` fails with `no such column: rowid`.
+- `x REGEXP y >= 0` is `x REGEXP (y >= 0)`: the comparisons `<`, `<=`, `>`, and `>=` bind tighter than REGEXP.
 - `x OR 5` is folded: SQLite never reads `x`.
 - P4 of the virtual-table opcodes is an address in memory.
 - `ORDER BY (1)` is still a column number.

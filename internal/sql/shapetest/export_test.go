@@ -88,6 +88,8 @@ var Structure = []string{
 	"create index if not exists i on t1(a) where a not between 1 and 2",
 	// Views.
 	"create view v(x, y) as select a, b * 2 from t1 where a > 0 order by 2 limit 1",
+	// A view that SQLite does not make, because the schema has a table of its name.
+	"create view if not exists v(x) as select 1 from v",
 	// The text of an unnamed CHECK as SQLite takes it, dequoted and with comments; primary keys and
 	// generated columns in the probes; INDEXED BY on a table that is not the first.
 	"create table t(a check(\"a\" > 0), b check (b > 0 /* c */))",
@@ -96,4 +98,79 @@ var Structure = []string{
 	"select * from t1, t2 indexed by i where t1.a = t2.a",
 	// Numbers with digit separators stay one literal.
 	"select 1_000, 1_000.5_0e1_0, 0x1_F, a from t1 where a > 1_0",
+}
+
+// Declared holds statements written by hand for the rules by which SQLite records what a CREATE
+// TABLE, an ALTER TABLE ... ADD, a CREATE INDEX, or a CREATE VIEW declares, which the check
+// compares with what the tree declares.
+var Declared = []string{
+	// GENERATED and ALWAYS as words of a type, and a type of 16 bytes or more that loses them.
+	"create table t(a int generated always as (1), b)",
+	"create table t(a intgenerated always as (1), b)",
+	"create table t(a generated always as (1), b)",
+	"create table t(a always generated always as (1), b)",
+	"create table t(e int                         Always default(5), f int Always, g x generated)",
+	"create table t(a int(5) generated always as (1), b)",
+	"create table t(a int as (1), b text always as (a) stored, c real generated always as (b), d)",
+	// Conflict clauses, on the constraint before them.
+	"create table t(a not null on conflict ignore unique, b primary key on conflict replace not null, c unique on conflict fail check (c > 0), d, unique (d) on conflict rollback, check (d > 0))",
+	// The text of a type, dequoted as sqlite3AddColumn does, and the standard types.
+	"create table t(a [int] x, b 'x' y, c \"in\"\"t\", d '', f [int], g \"integer\", h \"\", i Integer, j any)",
+	"create table t(a varchar ( 10 , -2 ), b double precision, c unsigned big int, d decimal(10,5), e int(+3))",
+	"create table t(a big /* c */ int, b char -- d\n(4))",
+	// Defaults, as their text.
+	"create table t(a default - 1, b default ( 1 + 2 ) , c default \"abc\", d default x'01', e default -0x1_0, f default true, g default null, h default NULL)",
+	"create table t(i default +1.5, j default current_time, k default 'it''s', l default (  'x'  ), m default (/* c */ 1), n default 1 default 2)",
+	// Primary keys: the rowid, indexes, order, AUTOINCREMENT, WITHOUT ROWID, and STRICT.
+	"create table t(a integer primary key desc, b)",
+	"create table t(a integer, b, primary key(a desc))",
+	"create table t(a integer, b, primary key(a desc)) without rowid",
+	"create table t(a int primary key, b)",
+	"create table t(a integer primary key autoincrement, b)",
+	"create table t(a, b, primary key(b, a, b)) without rowid",
+	"create table t(a, b, primary key(b, a, b))",
+	"create table t(a, b, primary key(a, b collate nocase, b)) without rowid",
+	"create table t(a text primary key collate nocase, b unique collate rtrim unique)",
+	"create table t(a unique, b, unique(a), unique(a collate nocase), primary key(a))",
+	"create table t(a integer primary key, b, unique(a)) without rowid",
+	"create table t(a int primary key, b text, c any not null, d integer) strict",
+	"create table t(a int primary key, b integer) without rowid, strict",
+	"create table t('a', \"b\", [c], primary key('a' collate nocase, \"b\"))",
+	"create table t(a, b, unique(b desc, a), unique (b, a))",
+	// CONSTRAINT names: a name names every CHECK after it, up to the next column or a comma between
+	// table constraints, and the one after the last column names the first table constraint.
+	"create table t(a constraint c1 check(a > 0) check(a < 5), b check(b > 0))",
+	"create table t(a constraint c1, check(a > 0), check(a < 9))",
+	"create table t(a, constraint c1 check(a > 0) check(a < 5), constraint c2, check(a <> 3))",
+	"create table t(a check( \"a\" ), b check( 'y' > 0 ))",
+	"create table t(a constraint \"q\" check(a), constraint [r] constraint s check(a))",
+	"create table t(a constraint c1 not null constraint c2 default 1 check(a > 0))",
+	// Foreign keys: actions, MATCH, and DEFERRABLE, which applies to the foreign key made last.
+	"create table t(a references p, b references p(x) on delete cascade on update set null on delete restrict match simple, c references p(y) deferrable initially deferred, d deferrable initially immediate, e references p not deferrable initially deferred)",
+	"create table t(a, b, foreign key(a, b) references p(x, y) on update cascade deferrable initially deferred, foreign key(b) references p on insert set default)",
+	"create table t(A references p, foreign key(\"a\") references p(x) on delete no action on update set default)",
+	"create table t(a references p deferrable initially deferred, b, foreign key(b) references p deferrable)",
+	// Collations and generated columns.
+	"create table t(a collate nocase collate rtrim, b as (a) stored, c as (a || 'x') virtual, d)",
+	"create table t(a text unique, b collate \"nocase\", c collate [rtrim])",
+	// Options, TEMP, another database, and IF NOT EXISTS.
+	"create table t(a int), strict",
+	"create temp table t(a unique)",
+	"create table aux.t(a references p, b primary key)",
+	"create table if not exists t(a)",
+	// ALTER TABLE ... ADD.
+	"alter table t1 add column d int default 3 check (d > 0) references t2(a) deferrable initially deferred",
+	"alter table t1 add e text collate nocase not null default 'x'",
+	"alter table t1 add f int generated always as (1)",
+	"alter table t1 add constraint c9 check (a > 0)",
+	"alter table t1 add check ( a > 0 )",
+	// CREATE INDEX and CREATE VIEW.
+	"create unique index i on t1(a collate nocase desc, b + 1 asc, lower(c), 'b') where a > 0",
+	"create index i on t1((a) collate rtrim, \"b\" desc, c collate binary collate nocase)",
+	"create view v(x, \"y\", [z]) as select 1, 2, 3",
+	// Names that the check uses itself, and a view of the name of a table it reads from another
+	// schema.
+	"create table s4ql_collations(a unique, b)",
+	"create index s4ql_collations on t1(a)",
+	"create temp view v(x) as select 1 from main.v",
 }

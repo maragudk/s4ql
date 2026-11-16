@@ -56,6 +56,11 @@ type Result struct {
 	Way    Way
 	Reason string
 
+	// Declared is true if what the tree declares was compared with what SQLite made of the text:
+	// the columns, constraints, and options of CREATE TABLE and of ALTER TABLE ... ADD, the key of
+	// CREATE INDEX, and the columns of CREATE VIEW.
+	Declared bool
+
 	// Exprs holds what was compared for each expression of the statement.
 	Exprs []ExprResult
 
@@ -183,7 +188,7 @@ func (c *Checker) compare(r *Result, src string, orig, shown *ast.Statement) {
 			return
 		}
 	}
-	r.Way, r.Reason, r.Fault = c.statement(src, orig, shown)
+	r.Way, r.Reason, r.Fault = c.statement(r, src, orig, shown)
 	if r.Fault != "" {
 		return
 	}
@@ -291,13 +296,11 @@ type side struct {
 // maxFixes of the schema for one statement.
 const maxFixes = 40
 
-// statement compares orig with the printed tree shown, by its kind.
-func (c *Checker) statement(src string, orig, shown *ast.Statement) (Way, string, string) {
+// statement compares orig with the printed tree shown, by its kind, and compares what shown
+// declares with what SQLite made of the original text, which sets r.Declared.
+func (c *Checker) statement(r *Result, src string, orig, shown *ast.Statement) (Way, string, string) {
 	if _, ok := orig.Cmd.(*ast.CreateVirtualTable); ok {
 		return Skipped, "the arguments of a virtual table are tokens, without structure", ""
-	}
-	if typeComment(src, orig) {
-		return Skipped, typeCommentReason, ""
 	}
 	o := side{text: func(n ast.Node) string { return src[n.Bounds().Start:n.Bounds().End] }, masks: map[string]string{}}
 	s := side{text: Print, masks: map[string]string{}}
@@ -307,6 +310,7 @@ func (c *Checker) statement(src string, orig, shown *ast.Statement) (Way, string
 	sch := guess(orig, src)
 	var want []string
 	var err error
+	declFault := ""
 	for i := range maxFixes {
 		var conn *sqlite.Conn
 		conn, err = sch.open()
@@ -314,11 +318,24 @@ func (c *Checker) statement(src string, orig, shown *ast.Statement) (Way, string
 			return Skipped, "the schema it needs cannot be built: " + err.Error(), ""
 		}
 		want, err = observe(conn, orig.Cmd, o)
+		if err == nil && !sch.holdsTarget(orig.Cmd) {
+			r.Declared, declFault = declared(conn, src, shown)
+			if declFault != "" {
+				declFault = declaredFault + declFault
+			}
+		}
 		_ = conn.Close()
 		// The observation is always of the schema as it is: the loop ends before a fix.
 		if err == nil || i == maxFixes-1 || !sch.fix(message(err)) {
 			break
 		}
+	}
+	if typeComment(src, orig) {
+		// What the tree declares does not depend on the printed text, so it is compared all the same.
+		if declFault != "" {
+			return 0, "", declFault
+		}
+		return Skipped, typeCommentReason, ""
 	}
 	conn, err2 := sch.open()
 	if err2 != nil {
@@ -327,17 +344,26 @@ func (c *Checker) statement(src string, orig, shown *ast.Statement) (Way, string
 	got, _ := observe(conn, shown.Cmd, s)
 	_ = conn.Close()
 	if i, ok := differ(want, got); ok {
+		skip := ""
 		if len(got) > 0 && got[len(got)-1] == "error: Recursion limit" {
 			// EXPLAIN, or a probe around the statement, adds a level to the parser's stack.
-			return Skipped, deepReason, ""
+			skip = deepReason
+		} else if name := textName(src, orig, got); name != "" {
+			skip = "a column is named by the text of its expression, which the printer changes: " + name
 		}
-		if name := textName(src, orig, got); name != "" {
-			return Skipped, "a column is named by the text of its expression, which the printer changes: " + name, ""
+		switch {
+		case skip != "" && declFault != "":
+			return 0, "", declFault
+		case skip != "":
+			return Skipped, skip, ""
 		}
 		return 0, "", fmt.Sprintf("SQLite treats the printed text differently: at %d, the original gives %q and the printed text %q", i, at(want, i), at(got, i))
 	}
 	if err != nil {
 		return SameError, message(err), ""
+	}
+	if declFault != "" {
+		return 0, "", declFault
 	}
 	switch orig.Cmd.(type) {
 	case *ast.CreateTable, *ast.CreateIndex, *ast.CreateView, *ast.CreateTrigger, *ast.AlterTable:
@@ -432,7 +458,7 @@ func checksOf(stmt *ast.Statement, sd side, inner func(*ast.CheckConstraint) str
 	// mask still tells a named constraint from an unnamed one.
 	ast.Walk(stmt, func(n ast.Node) bool {
 		if ch, ok := n.(*ast.CheckConstraint); ok {
-			sd.masks[sqliteDequote(strings.TrimSpace(inner(ch)))] = "<check>"
+			sd.masks[sqliteDequote(trimSpace(inner(ch)))] = "<check>"
 		}
 		return true
 	})
@@ -912,6 +938,10 @@ func (c *Checker) values(n, k int) error {
 		// An expression such as CAST(zeroblob(1e9) AS INT) would make a value of a gigabyte. With a
 		// limit of 100,000 bytes it fails with "string or blob too big" on both sides.
 		if err := conn.SetLengthLimit(100_000); err != nil {
+			_ = conn.Close()
+			return err
+		}
+		if err := conn.AddTestFunctions(); err != nil {
 			_ = conn.Close()
 			return err
 		}
