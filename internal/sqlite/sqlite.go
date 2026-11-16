@@ -297,6 +297,17 @@ func (c *Conn) DenyProcessPragmas() error {
 	return nil
 }
 
+// SetLengthLimit of the connection, SQLITE_LIMIT_LENGTH: the largest string or blob, in bytes, that
+// it makes. A larger one fails with SQLITE_TOOBIG and "string or blob too big". SQLite lowers a
+// limit above its compile-time default, 1,000,000,000, to that default. n must be positive.
+func (c *Conn) SetLengthLimit(n int) error {
+	if c.db == nil || n <= 0 {
+		return errorFromConn(nil, C.SQLITE_MISUSE)
+	}
+	C.sqlite3_limit(c.db, C.SQLITE_LIMIT_LENGTH, C.int(min(n, math.MaxInt32)))
+	return nil
+}
+
 // Exec one SQL statement to completion, discarding any rows it returns. The SQL is checked as by
 // [Conn.Prepare].
 func (c *Conn) Exec(sql string) error {

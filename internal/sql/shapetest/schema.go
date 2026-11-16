@@ -163,6 +163,11 @@ func (s *schema) open() (*sqlite.Conn, error) {
 		_ = c.Close()
 		return nil, err
 	}
+	// CREATE TABLE ... AS runs its SELECT, which may make a value of a gigabyte.
+	if err := c.SetLengthLimit(100_000); err != nil {
+		_ = c.Close()
+		return nil, err
+	}
 	for _, stmt := range s.statements() {
 		if err := c.Exec(stmt); err != nil {
 			_ = c.Close()

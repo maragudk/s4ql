@@ -905,6 +905,12 @@ func (c *Checker) values(n, k int) error {
 			_ = conn.Close()
 			return err
 		}
+		// An expression such as CAST(zeroblob(1e9) AS INT) would make a value of a gigabyte. With a
+		// limit of 100,000 bytes it fails with "string or blob too big" on both sides.
+		if err := conn.SetLengthLimit(100_000); err != nil {
+			_ = conn.Close()
+			return err
+		}
 		cols := make([]string, valueColumns)
 		for i := range cols {
 			cols[i] = fmt.Sprint("c", i, " ", columnTypes[i%len(columnTypes)])
@@ -934,7 +940,10 @@ func (c *Checker) values(n, k int) error {
 // which is exact for every type, or the error. Comparisons of the value show its affinity and
 // collation, which a SELECT passes on from an expression to its column.
 func evaluate(conn *sqlite.Conn, e string) string {
-	rows, err := query(conn, "select typeof(v), quote(v), v = 'A', v < 'b', v = 1, v = '1' from (select "+e+" as v from s4ql_v)")
+	// A value of more than 1,000 bytes is compared by its length and its first 1,000 bytes, so that
+	// an expression such as zeroblob(500000000) does not become a text of a gigabyte in Go.
+	rows, err := query(conn, "select typeof(v), case when length(cast(v as blob)) > 1000 then 'long ' || length(cast(v as blob)) || ' ' || quote(substr(cast(v as blob), 1, 1000)) else quote(v) end, "+
+		"v = 'A', v < 'b', v = 1, v = '1' from (select "+e+" as v from s4ql_v)")
 	if err != nil {
 		return "error: " + message(err)
 	}
