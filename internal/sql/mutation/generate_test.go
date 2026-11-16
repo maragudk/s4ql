@@ -156,9 +156,13 @@ func infixPrec(k token.Kind) int {
 				is.NotError(t, err)
 				src, err := os.ReadFile(f)
 				is.NotError(t, err)
-				for _, m := range ms {
+				for i, m := range ms {
 					is.True(t, !seen[m.Key], "twice: "+m.Key)
 					seen[m.Key] = true
+					// The race detector makes parsing each mutant several times slower: then every tenth.
+					if raceEnabled && i%10 != 0 {
+						continue
+					}
 					out := m.apply(src)
 					is.True(t, string(out) != string(src), m.Key)
 					if m.Op != "remove statement" && m.Op != "case element" && m.Op != "element" {
