@@ -35,6 +35,10 @@ type schema struct {
 	aliases map[string]*table
 	// upserts of the statement, for a unique index that ON CONFLICT needs.
 	upserts []string
+	// indexed holds the table of each INDEXED BY, by lower-case name of the index, and indexes the
+	// indexes that a fix made.
+	indexed map[string]*table
+	indexes map[string]bool
 }
 
 // table of a schema. A table that must be a view, for an INSTEAD OF trigger, is created as a view
@@ -206,7 +210,7 @@ func (s *schema) candidate(t *table) {
 
 // guess the schema of the statement from its tree.
 func guess(stmt *ast.Statement, src string) *schema {
-	s := &schema{tried: map[string]int{}, added: map[string][]*table{}, aliases: map[string]*table{}}
+	s := &schema{tried: map[string]int{}, added: map[string][]*table{}, aliases: map[string]*table{}, indexed: map[string]*table{}}
 	ctes := map[string]bool{}
 	ast.Walk(stmt, func(n ast.Node) bool {
 		if c, ok := n.(*ast.CTE); ok {
@@ -229,6 +233,11 @@ func guess(stmt *ast.Statement, src string) *schema {
 			s.aliases[strings.ToLower(dequote(alias.Text))] = t
 		}
 	}
+	indexed := func(t *table, i *ast.IndexedBy) {
+		if i != nil && i.Index.Present() {
+			s.indexed[strings.ToLower(dequote(i.Index.Text))] = t
+		}
+	}
 	var trigger *table
 	ast.Walk(stmt, func(n ast.Node) bool {
 		switch n := n.(type) {
@@ -237,12 +246,21 @@ func guess(stmt *ast.Statement, src string) *schema {
 				if t := named(ts.Name); t != nil {
 					s.candidate(t)
 					alias(t, n.Alias)
+					indexed(t, n.Indexed)
 				}
 			}
 		case *ast.TargetTable:
 			if t := named(n.Name); t != nil {
 				s.candidate(t)
 				alias(t, n.Alias)
+			}
+		case *ast.Update:
+			if t := named(n.Table.Name); t != nil {
+				indexed(t, n.Indexed)
+			}
+		case *ast.Delete:
+			if t := named(n.Table.Name); t != nil {
+				indexed(t, n.Indexed)
 			}
 		case *ast.InTable:
 			if !n.LParen.Present() {
@@ -462,11 +480,14 @@ var (
 // fix the schema for SQLite's error message msg, and report whether it changed.
 func (s *schema) fix(msg string) bool {
 	if m := reNoTable.FindStringSubmatch(msg); m != nil {
-		if s.find(m[1], m[2]) != nil {
+		db := m[1]
+		if strings.EqualFold(db, "main") {
+			db = ""
+		}
+		if s.find(db, m[2]) != nil || strings.HasPrefix(strings.ToLower(m[2]), "sqlite_") {
 			return false
 		}
-		t := s.table(m[1], m[2])
-		s.candidate(t)
+		s.candidate(s.table(db, m[2]))
 		return true
 	}
 	if m := reUnknownDB.FindStringSubmatch(msg); m != nil {
@@ -532,7 +553,18 @@ func (s *schema) fix(msg string) bool {
 		return len(t.cols) != before
 	}
 	if m := reNoIndex.FindStringSubmatch(msg); m != nil {
-		t := s.firstTable()
+		key := strings.ToLower(m[2])
+		if s.indexes[key] {
+			return false
+		}
+		t := s.indexed[key]
+		if t == nil {
+			t = s.firstTable()
+		}
+		if s.indexes == nil {
+			s.indexes = map[string]bool{}
+		}
+		s.indexes[key] = true
 		s.extra = append(s.extra, "create index "+qualify(m[1], m[2])+" on "+quote(t.name)+" ("+quote(t.firstColumn())+")")
 		return true
 	}
@@ -623,23 +655,36 @@ func qualify(db, name string) string {
 	return quote(db) + "." + quote(name)
 }
 
-// dequote the raw text of a name as SQLite does: quotes of any of SQLite's kinds are removed, and a
-// doubled quote inside stands for one.
+// dequote the raw text of a name as SQLite does, by [sqliteDequote].
 func dequote(raw string) string {
-	if len(raw) < 2 {
-		return raw
+	return sqliteDequote(raw)
+}
+
+// sqliteDequote is sqlite3Dequote: if s starts with a quote, ", ', `, or [, the text up to the first
+// closing quote that is not doubled, with each doubled quote as one; otherwise s.
+func sqliteDequote(s string) string {
+	if s == "" {
+		return s
 	}
-	switch q := raw[0]; q {
+	q := s[0]
+	switch q {
 	case '"', '\'', '`':
-		if raw[len(raw)-1] != q {
-			return raw
-		}
-		return strings.ReplaceAll(raw[1:len(raw)-1], string([]byte{q, q}), string(q))
 	case '[':
-		if raw[len(raw)-1] != ']' {
-			return raw
-		}
-		return raw[1 : len(raw)-1]
+		q = ']'
+	default:
+		return s
 	}
-	return raw
+	var b strings.Builder
+	for i := 1; i < len(s); i++ {
+		if s[i] == q {
+			if q != ']' && i+1 < len(s) && s[i+1] == q {
+				b.WriteByte(q)
+				i++
+				continue
+			}
+			break
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }

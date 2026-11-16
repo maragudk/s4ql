@@ -87,6 +87,12 @@ var Structure = []string{
 	"create index if not exists i on t1(a) where a not between 1 and 2",
 	// Views.
 	"create view v(x, y) as select a, b * 2 from t1 where a > 0 order by 2 limit 1",
+	// The text of an unnamed CHECK as SQLite takes it, dequoted and with comments; primary keys and
+	// generated columns in the probes; INDEXED BY on a table that is not the first.
+	"create table t(a check(\"a\" > 0), b check (b > 0 /* c */))",
+	"create table t(a integer primary key, b, g as (b + 1))",
+	"create trigger r after update on t1 begin update t2 set a = new.a; end",
+	"select * from t1, t2 indexed by i where t1.a = t2.a",
 	// Numbers with digit separators stay one literal.
 	"select 1_000, 1_000.5_0e1_0, 0x1_F, a from t1 where a > 1_0",
 }

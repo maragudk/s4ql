@@ -109,7 +109,7 @@ type Checker struct {
 	conn *sqlite.Conn
 	// seen holds the result of each expression compared, by its original text with the column
 	// references replaced.
-	seen map[string]ExprResult
+	seen map[string]seenExpr
 }
 
 // Close the connection of the checker.
@@ -129,12 +129,11 @@ func (c *Checker) Check(src string) Result {
 		return r
 	}
 	r.Kind = KindOf(stmt.Cmd)
-	r.Printed = Print(stmt)
 	if err := checkPrinted(stmt); err != nil {
-		r.Fault = err.Error()
-		return r
+		r.Printed, r.Fault = Print(stmt), err.Error()
+	} else {
+		c.compare(&r, src, stmt, stmt)
 	}
-	c.compare(&r, src, stmt, stmt)
 	if r.Fault != "" {
 		// A fault counts only for a statement that SQLite parses; SQLite's verdict is asked only
 		// then, since it costs as much as the rest of the check.
@@ -291,8 +290,8 @@ func (c *Checker) statement(src string, orig, shown *ast.Statement) (Way, string
 	}
 	o := side{text: func(n ast.Node) string { return src[n.Bounds().Start:n.Bounds().End] }, masks: map[string]string{}}
 	s := side{text: Print, masks: map[string]string{}}
-	checksOf(orig, o)
-	checksOf(shown, s)
+	checksOf(orig, o, func(ch *ast.CheckConstraint) string { return src[ch.LParen.End():ch.RParen.Offset] })
+	checksOf(shown, s, func(ch *ast.CheckConstraint) string { return Print(ch.X) })
 
 	sch := guess(orig, src)
 	var want []string
@@ -408,12 +407,15 @@ func typeComment(src string, n ast.Node) bool {
 }
 
 // checksOf the statement: the text of each CHECK constraint, which SQLite puts into the message of
-// its Halt when the constraint has no name.
-func checksOf(stmt *ast.Statement, sd side) {
+// its Halt when the constraint has no name. SQLite takes that text from between the parentheses of
+// the CHECK, trims the spaces around it, and dequotes it if it starts with a quote, as
+// sqlite3Dequote does; comments stay. inner gives that text, before the trim, for each side: from
+// the source for the original, and the printed expression for the printed tree.
+func checksOf(stmt *ast.Statement, sd side, inner func(*ast.CheckConstraint) string) {
 	i := 0
 	ast.Walk(stmt, func(n ast.Node) bool {
 		if ch, ok := n.(*ast.CheckConstraint); ok {
-			sd.masks[sd.text(ch.X)] = fmt.Sprint("<check ", i, ">")
+			sd.masks[sqliteDequote(strings.TrimSpace(inner(ch)))] = fmt.Sprint("<check ", i, ">")
 			i++
 		}
 		return true
@@ -551,7 +553,7 @@ func columns(conn *sqlite.Conn, q ast.QualifiedName) ([]string, error) {
 	}
 	var cols []string
 	for _, r := range rows {
-		if r[5] == "integer:0" {
+		if r[6] == "integer:0" {
 			cols = append(cols, strings.TrimPrefix(r[1], "text:"))
 		}
 	}
@@ -572,7 +574,7 @@ func tableProbes(conn *sqlite.Conn, q ast.QualifiedName, sd side, names bool) ([
 	}
 	var cols []string
 	for _, r := range rows {
-		if r[5] == "integer:0" {
+		if r[6] == "integer:0" {
 			cols = append(cols, strings.TrimPrefix(r[1], "text:"))
 		}
 		r[2] = typeText(r[2])
@@ -724,7 +726,8 @@ func topExprs(n ast.Node) []ast.Expr {
 }
 
 // isSelectBoundary reports whether n starts a part of the tree whose expressions stand on their own
-// again: a SELECT inside an expression, or the parts of a function call that are not its arguments.
+// again: a SELECT inside an expression. The clauses of a function call, such as FILTER and OVER, are
+// part of the call.
 func isSelectBoundary(n ast.Node) bool {
 	switch n.(type) {
 	case *ast.Select:
@@ -795,20 +798,25 @@ func (c *Checker) expr(src string, eo, es ast.Expr) (ExprResult, string) {
 	}
 	b.WriteString(src[start:eo.Bounds().End])
 	ot := b.String()
+	if prev, ok := c.seen[ot]; ok {
+		prev.r.Duplicate = true
+		return prev.r, prev.fault
+	}
 	p := printer{column: column}
 	p.expr(es)
 	pt := p.b.String()
-
-	if prev, ok := c.seen[ot]; ok {
-		prev.Duplicate = true
-		return prev, ""
-	}
 	r, fault := c.compareExpr(r, eo, ot, pt, len(index))
 	if c.seen == nil {
-		c.seen = map[string]ExprResult{}
+		c.seen = map[string]seenExpr{}
 	}
-	c.seen[ot] = r
+	c.seen[ot] = seenExpr{r, fault}
 	return r, fault
+}
+
+// seenExpr is the result of the comparison of an expression, and its fault.
+type seenExpr struct {
+	r     ExprResult
+	fault string
 }
 
 // compareExpr compares the original expression eo, as the text ot, with the printed text pt, where
