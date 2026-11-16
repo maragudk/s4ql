@@ -479,7 +479,7 @@ None of these is a hole in the check. Each is the same program and the same valu
 
 `FuzzCheck` checks the shape of the tree of any text that the parser parses. It is seeded with every 25th corpus entry (every 100th under `-short`, the race detector, and the address sanitizer), the `Structure` statements, and a sample of the pairs. `make fuzz` runs it.
 
-Seven runs with 6 workers made 313,138,000 executions, about 30,000 a second, since most texts do not parse and cost little. Six runs ended with a finding, and every finding was a fault of the check, not of the parser's tree. Each input is a regression case in `testdata/fuzz/FuzzCheck`:
+Seven runs with 6 workers made about 313,203,000 executions (the counts of the runs that failed are the last that the fuzzer reported), 15,000 to 45,000 a second, since most texts do not parse and cost little. Six runs ended with a finding, and every finding was a fault of the check, not of the parser's tree. Each input is a regression case in `testdata/fuzz/FuzzCheck`:
 
 | Run | Executions | Finding | Now |
 | --- | ---: | --- | --- |
