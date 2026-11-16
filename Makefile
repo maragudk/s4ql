@@ -59,6 +59,14 @@ lint-proto:
 	$(BUF) lint
 	$(BUF) format --diff --exit-code
 
+# mutation runs the mutation testing of the SQL tokenizer, syntax tree, and parser, with the results
+# and the report in MUTATIONDIR. It is not part of test, since a full run takes long; see
+# internal/sql/mutation/README.md. A run with the same MUTATIONDIR goes on where the last one stopped.
+MUTATIONDIR ?= $(or $(TMPDIR),/tmp)/s4ql-mutation
+.PHONY: mutation
+mutation:
+	go run ./internal/sql/mutation -out $(MUTATIONDIR) $(MUTATIONFLAGS)
+
 # sqlite-update vendors the SQLite amalgamation of VERSION, such as make sqlite-update VERSION=3.54.1.
 .PHONY: sqlite-update
 sqlite-update:

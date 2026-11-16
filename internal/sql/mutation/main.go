@@ -21,9 +21,13 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json/v2"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -108,6 +112,9 @@ func start() error {
 	}
 	eq, err := readEquivalent(filepath.Join(root, *equivalent))
 	if err != nil {
+		return err
+	}
+	if err := checkFingerprint(root, *out); err != nil {
 		return err
 	}
 	resultsPath := filepath.Join(*out, "results.jsonl")
@@ -206,4 +213,45 @@ func moduleRoot() (string, error) {
 		return "", fmt.Errorf("not in a module")
 	}
 	return filepath.Dir(gomod), nil
+}
+
+// checkFingerprint of the code and the tests under internal/sql against the one that the results in
+// out were made with, and record it if out has none: results of other code must not be reused.
+func checkFingerprint(root, out string) error {
+	h := sha256.New()
+	dir := filepath.Join(root, "internal", "sql")
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == "mutation" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, path)
+		fmt.Fprintf(h, "%v %v\n", rel, len(data))
+		h.Write(data)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	sum := hex.EncodeToString(h.Sum(nil))
+	path := filepath.Join(out, "fingerprint")
+	old, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return os.WriteFile(path, []byte(sum+"\n"), 0o644)
+	case err != nil:
+		return err
+	case strings.TrimSpace(string(old)) != sum:
+		return fmt.Errorf("the results in %v are of other code under internal/sql; use another -out", out)
+	}
+	return nil
 }
