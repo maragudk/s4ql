@@ -472,7 +472,7 @@ Go's statement coverage of package `parser` is 99.9%. One place is not covered: 
 
 ### Mutation testing
 
-[`internal/sql/mutation`](../mutation/README.md) measures the tests by mutation testing. It changes the code of `token`, `ast`, and `parser`, one small change at a time, and reports every change that no test notices. `make mutation` runs it. The score is MUTATION-SCORE-PLACEHOLDER. Every survivor is killed by a new test, removed with its code, or listed in [`../mutation/equivalent.txt`](../mutation/equivalent.txt) with its reason.
+[`internal/sql/mutation`](../mutation/README.md) measures the tests by mutation testing. It changes the code of `token`, `ast`, and `parser`, one small change at a time, and reports every change that no test notices. `make mutation` runs it. Of the 6,223 mutants that compile, the tests kill or time out on 98.55%, and the other 90 are equivalent. Every survivor is killed by a new test, removed with its code, or listed in [`../mutation/equivalent.txt`](../mutation/equivalent.txt) with its reason.
 
 ### Fuzzing
 

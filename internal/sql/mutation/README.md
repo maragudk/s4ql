@@ -168,9 +168,18 @@ The entries are of these classes:
 
 ## Results
 
-RESULTS-TABLE-PLACEHOLDER
+The final run, on the code as it is now, made 7,029 mutants:
 
-RUN-TIME-PLACEHOLDER
+| Package | Generated | Not compiled | Killed | Timed out | Equivalent | Unexplained | Score | Score without equivalent |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `token` | 2,514 | 118 | 2,293 | 66 | 37 | 0 | 98.46% | 100.00% |
+| `ast` | 421 | 89 | 325 | 0 | 7 | 0 | 97.89% | 100.00% |
+| `parser` | 4,094 | 599 | 3,418 | 31 | 46 | 0 | 98.68% | 100.00% |
+| total | 7,029 | 806 | 6,036 | 97 | 90 | 0 | 98.55% | 100.00% |
+
+The layers that killed them first: hand-written 5,545, corpus 221, ownership 94, generator 119, LALR automaton 10, fuzz seeds 0, mutants 13, shape check 34, other packages 0. Every survivor is in `equivalent.txt`.
+
+The run took 1 h 15 min with 10 workers on an Apple M4 with 10 cores and 16 GB, while a fuzz run used 4 of the cores. Five of its mutants survived only because the tests that kill them came after the copy of the tree that the run read; a run of those five on the final tests killed them all in 1 min. Planning, which builds and times every stage on the code as it is, takes about 3 min of the total.
 
 ### What the first run found
 
