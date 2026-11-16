@@ -79,7 +79,8 @@ func (p *parser) exprPrec(min int, stopAtAnd bool) ast.Expr {
 	for {
 		k := p.cur().kind
 		prec := infixPrec(k)
-		if prec == 0 || prec < min || (prec == min && k != token.Not) {
+		// A token that starts no operator has the precedence 0, which is never above min.
+		if prec < min || (prec == min && k != token.Not) {
 			return x
 		}
 		if stopAtAnd && k == token.And {
