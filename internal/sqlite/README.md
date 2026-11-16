@@ -6,12 +6,13 @@ The binding covers only what slice 1 of [docs/roadmap.md](../../docs/roadmap.md)
 
 - open and close a database, in a file or `:memory:`, through the default VFS or one by its name
 - find, register, and unregister a VFS, which the tests of the cache need for `faultvfs/`
-- prepare one statement
+- prepare one statement, and, for the oracle of the parser, prepare the first statement of any text and say where it ends
+- deny the PRAGMAs that change settings for the whole process, which the oracle needs because it prepares any SQL
 - bind and read 64-bit integers and text, and bind NULL
 - read the column count, the column names, and the type of each value
 - step, reset, and finalize
 - run a statement with `Exec`
-- return errors with SQLite's extended result code and message
+- return errors with SQLite's extended result code, its message, and the byte offset of the error in the SQL text (`sqlite3_error_offset`)
 
 It also reports the SQLite version, the source ID, the compile options, and the keywords. `Tokenize` splits SQL text with SQLite's private tokenizer `sqlite3GetToken`, which no public API exposes, so that the Go tokenizer in `internal/sql/token` can be checked against it. It is a wrapper in the binding's translation unit and not a second compile of SQLite: production builds then carry no second copy, and the build cache tracks the vendored source through `source.h` as it does for the rest of the binding. More is added when a slice needs it.
 
