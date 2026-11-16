@@ -51,6 +51,7 @@ var exempt = map[string]string{
 	"maragu.dev/s4ql/internal/host":          "it is the production host, which maps the host onto ordinary Go",
 	"maragu.dev/s4ql/internal/sim":           "it is the simulation, which implements the host",
 	"maragu.dev/s4ql/internal/sql/parsetest": "it is a harness for the tests of the SQL parser, which compares it with SQLite and never runs under the simulation",
+	"maragu.dev/s4ql/internal/sql/shapetest": "it is a check of the tree of the SQL parser against SQLite, for tests, and never runs under the simulation",
 	"maragu.dev/s4ql/internal/sqlite/update": "it is a command that vendors SQLite, and never runs under the simulation",
 	"maragu.dev/s4ql/internal/store/s3store": "it is the client of real S3, whose SDK and net/http start goroutines, read the clock, and wait on the network outside the host, so it never runs under the simulation",
 }
