@@ -317,9 +317,10 @@ func IsSyntaxMessage(msg string) bool {
 	return strings.HasPrefix(msg, `unrecognized token: "`) && strings.HasSuffix(msg, `"`) && len(msg) > len(`unrecognized token: ""`)
 }
 
-// reachedEnd tells, for an error that is not about syntax, whether SQLite's parser had been handed
-// the end of the first statement when the error was raised: it gives 0 if so, and otherwise the
-// reason it cannot say.
+// reachedEnd tells, for an error that is not about syntax or for the error of a variable #N, whether
+// SQLite's parser had been handed the end of the first statement when the error was raised: it gives
+// 0 if so, and otherwise the reason it cannot say. A statement with a #N or a misplaced digit
+// separator that reached its end gives [Overwritten].
 //
 // The parser stops after the token it was handed when an error was raised, and sets the tail after
 // it; the end of the text is handed over as an empty semicolon, which leaves the tail at the end.

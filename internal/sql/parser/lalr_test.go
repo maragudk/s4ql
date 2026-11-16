@@ -203,6 +203,16 @@ func (l *lalr) code(t parser.TraceToken) int {
 	return n
 }
 
+// foldedRHS gives the right side of the rule of g named name, as Lemon writes it.
+func foldedRHS(g *grammar, name string) []symbol {
+	for _, r := range g.rules {
+		if r.String() == name {
+			return r.rhs
+		}
+	}
+	return nil
+}
+
 // shadow runs the automaton over the first statement of src as the parser reads it, and checks
 // that the two agree: on whether the grammar accepts the statement, on the token of a syntax error,
 // and that the depth of the parser never exceeds the depth of the automaton's stack. It returns the
@@ -239,6 +249,9 @@ func shadow(t testing.TB, l *lalr, src string) (lalrRun, bool) {
 func TestRuleCoverage(t *testing.T) {
 	l := loadLALR(t)
 	names := lemonRules(t)
+	if n, ok := l.c["YYNRULE_WITH_ACTION"]; !ok || n <= 0 || n > len(names) {
+		t.Fatalf("YYNRULE_WITH_ACTION is %v", n)
+	}
 	count := make([]int, len(names))
 	byCorpus := make([]int, len(names))
 	statements := 0
@@ -296,7 +309,9 @@ func TestRuleCoverage(t *testing.T) {
 		switch {
 		case count[i] > 0:
 			covered++
-		case derived[i] > 0:
+		case derived[i] > 0 && i >= l.c["YYNRULE_WITH_ACTION"] && len(foldedRHS(g, names[i])) == 1:
+			// Lemon numbers the rules with code first, and folds a rule without code that has one
+			// symbol on its right into the goto on that symbol.
 			folded++
 		case !slow():
 			// The sample of a slow run is too small to use every rule.

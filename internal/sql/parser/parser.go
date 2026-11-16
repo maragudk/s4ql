@@ -91,11 +91,15 @@ func ParseAll(src string) ([]*ast.Statement, error) {
 func Tokens(src string, stmt *ast.Statement) []ast.Token {
 	var tokens []ast.Token
 	s := stmt.Bounds()
-	for _, t := range token.Tokens(src) {
-		if t.Offset < s.Start || t.Offset >= s.End || t.Kind == token.Space || t.Kind == token.Comment {
-			continue
+	for at := s.Start; at < s.End; {
+		kind, n := token.Next(src[at:])
+		if n == 0 {
+			break
 		}
-		tokens = append(tokens, ast.Token{Kind: t.Kind, Offset: t.Offset, Text: t.Text(src)})
+		if kind != token.Space && kind != token.Comment {
+			tokens = append(tokens, ast.Token{Kind: kind, Offset: at, Text: src[at : at+n]})
+		}
+		at += n
 	}
 	return tokens
 }
@@ -280,7 +284,7 @@ func (p *parser) read() {
 		t := tok{kind: kind, raw: kind, off: p.next, n: n}
 		p.next += n
 		if p.next-p.start > lengthLimit {
-			p.overLimit("s4ql: the statement is longer than the limit of 1000000000 bytes")
+			p.overLimit(fmt.Sprintf("s4ql: the statement is longer than the limit of %v bytes", lengthLimit))
 		}
 		switch kind {
 		case token.Space, token.Comment:

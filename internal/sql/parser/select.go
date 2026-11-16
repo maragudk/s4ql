@@ -439,7 +439,7 @@ func (p *parser) window() *ast.Window {
 	if p.is(token.Range) || p.is(token.Rows) || p.is(token.Groups) {
 		w.Frame = p.frame()
 	}
-	if !w.Base.Present() && w.Partition.Kind == 0 && w.OrderBy == nil && w.Frame == nil {
+	if !w.Base.Present() && !w.Partition.Present() && w.OrderBy == nil && w.Frame == nil {
 		return nil
 	}
 	return finish(p, w, start)

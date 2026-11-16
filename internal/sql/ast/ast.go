@@ -137,7 +137,7 @@ func planOf(t reflect.Type) []field {
 			f.kind = fieldToken
 		case ft.Kind() == reflect.Slice && ft.Elem() == tokenType:
 			f.kind = fieldTokens
-		case ft.Implements(nodeType) || (ft.Kind() == reflect.Interface && ft.Implements(nodeType)):
+		case ft.Implements(nodeType):
 			f.kind = fieldNode
 		case ft.Kind() == reflect.Slice && ft.Elem().Implements(nodeType):
 			f.kind = fieldNodes
