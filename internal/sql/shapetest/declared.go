@@ -420,10 +420,10 @@ func (t *declTable) makePrimaryKey(col *declColumn) {
 
 // indexColumn resolves a term of an index as sqlite3CreateIndex does: a string under at most one
 // COLLATE is a name (sqlite3StringToId), or under any number for a PRIMARY KEY, pk, whose terms
-// sqlite3AddPrimaryKey has converted before; a name of a column is that column; a name of the rowid
-// is the INTEGER PRIMARY KEY, or the rowid; anything else is an expression. The collation is that
+// sqlite3AddPrimaryKey has converted before; a name of a column is that column; anything else is
+// an expression. SQLite refuses the rowid in an index (no such column: rowid). The collation is that
 // of the outer COLLATE, or the column's, or BINARY.
-func indexColumn(e ast.Expr, desc, pk bool, cols []*declColumn, iPKey int) declIndexColumn {
+func indexColumn(e ast.Expr, desc, pk bool, cols []*declColumn) declIndexColumn {
 	e = bare(e)
 	coll := ""
 	inner := e
@@ -442,8 +442,6 @@ func indexColumn(e ast.Expr, desc, pk bool, cols []*declColumn, iPKey int) declI
 		name := dequote(ref.Column.Text)
 		if j := slices.IndexFunc(cols, func(c *declColumn) bool { return foldEqual(c.name, name) }); j >= 0 {
 			cid = j
-		} else if isRowid(name) {
-			cid = iPKey
 		}
 	}
 	if coll == "" && cid >= 0 {
@@ -469,7 +467,7 @@ func (t *declTable) createIndex(terms []*ast.OrderingTerm, origin string, desc b
 		idx.cols = []declIndexColumn{{cid: i, desc: desc, coll: coll}}
 	} else {
 		for _, term := range terms {
-			ic := indexColumn(term.X, foldEqual(term.Order.Text, "desc"), origin == "pk", t.cols, t.iPKey)
+			ic := indexColumn(term.X, foldEqual(term.Order.Text, "desc"), origin == "pk", t.cols)
 			if ic.cid == -2 {
 				t.fail("expressions prohibited in PRIMARY KEY and UNIQUE constraints")
 				return
@@ -1085,25 +1083,13 @@ func declaredIndex(conn *sqlite.Conn, cmd *ast.CreateIndex) (bool, string) {
 	if err != nil {
 		return true, "pragma index_list fails: " + err.Error()
 	}
-	// The rowid is the INTEGER PRIMARY KEY if the table has one: a single column of the key, of the
-	// type INTEGER, that has no index of its own.
 	var cols []*declColumn
-	iPKey, keys := -1, 0
 	for i, r := range xinfo {
 		cols = append(cols, &declColumn{name: r[1], coll: colls[i]})
-		if r[5] != "0" {
-			keys++
-			if r[2] == "INTEGER" {
-				iPKey = i
-			}
-		}
-	}
-	if keys != 1 || slices.ContainsFunc(idxs, func(r []string) bool { return r[3] == "pk" }) {
-		iPKey = -1
 	}
 	var key []string
 	for _, term := range cmd.Columns {
-		ic := indexColumn(term.X, foldEqual(term.Order.Text, "desc"), false, cols, iPKey)
+		ic := indexColumn(term.X, foldEqual(term.Order.Text, "desc"), false, cols)
 		name := sqlNull
 		if ic.cid >= 0 {
 			name = cols[ic.cid].name
