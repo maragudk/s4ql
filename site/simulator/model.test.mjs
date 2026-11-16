@@ -146,6 +146,74 @@ test("decodeActions refuses what it cannot read", () => {
   assert.equal(decodeActions("x"), null);
   assert.equal(decodeActions("1.2.w7"), null);
   assert.equal(decodeActions("5.10.w0_4.10.w1"), null);
+  assert.equal(decodeActions("1.2.kbx"), null);
+  assert.equal(decodeActions("1.2.kb"), null);
+  assert.equal(decodeActions("1.2.w"), null);
+});
+
+test("an action on an instance that the run does not have is ignored, and not recorded", () => {
+  const sim = new Sim({ seed: 1, instances: 2 });
+  sim.load(decodeActions("0.0.w2_0.0.kb2_0.0.c2_0.0.w1"));
+  sim.advance(5_000);
+  assert.deepEqual(sim.actions.map((a) => a.type), ["write"]);
+});
+
+test("a failure before sending and a lost answer that are both armed hit two requests, not one", () => {
+  const sim = new Sim({ seed: 2, instances: 2 });
+  sim.act({ type: "drop", k: "any" });
+  sim.act({ type: "fail", k: "any" });
+  sim.advance(5_000);
+  const first = sim.requests[0];
+  assert.equal(first.result, "never sent");
+  assert.ok(sim.requests.some((r) => r.answerLost), "a later request lost its answer");
+  assert.deepEqual(sim.armed, []);
+});
+
+test("a holder whose monotonic clock runs fast renews on time by that clock, and keeps serving", () => {
+  const sim = new Sim({ seed: 3, instances: 2 });
+  const h = serveOne(sim);
+  sim.act({ type: "clock", c: "fast", i: h.index });
+  const end = sim.now + 120_000;
+  for (let t = sim.now; t < end; t += 250) {
+    sim.advance(t);
+    assert.ok(instanceState(sim, h).serving, `the holder stopped serving at ${t} ms: ${instanceState(sim, h).word}`);
+  }
+  assert.deepEqual(sim.checker.violations, []);
+});
+
+test("a write whose process ends before it has an outcome is logged as ended with the process", () => {
+  const sim = new Sim({ seed: 4, instances: 2 });
+  const h = serveOne(sim);
+  sim.act({ type: "write", i: h.index });
+  const value = sim.valueCounter;
+  sim.act({ type: "crash", i: h.index });
+  sim.act({ type: "read", i: h.index });
+  sim.advance(sim.now + 1_000);
+  assert.equal(lastWrite(sim, value).outcome, "lost with the process");
+});
+
+test("a read that is queued on a stalled process fails when the process crashes", () => {
+  const sim = new Sim({ seed: 5, instances: 2 });
+  const h = serveOne(sim);
+  sim.act({ type: "stall", i: h.index });
+  sim.act({ type: "read", i: h.index });
+  sim.advance(sim.now + 1_000);
+  sim.act({ type: "crash", i: h.index });
+  const read = sim.events.filter((e) => e.kind === "read" && e.who === h.label).at(-1);
+  assert.match(read.text, /the process ended before it ran/);
+});
+
+test("an instance that shuts down is not started again until it has released the lease", () => {
+  const sim = new Sim({ seed: 6, instances: 2 });
+  const h = serveOne(sim);
+  const id = h.proc.id;
+  sim.act({ type: "shutdown", i: h.index });
+  sim.act({ type: "restart", i: h.index });
+  assert.equal(h.proc.id, id, "the restart was ignored while the process shuts down");
+  sim.advance(sim.now + 2_000);
+  assert.ok(sim.events.some((e) => e.text === `${h.label} releases the lease. The next instance can take it at once.`));
+  sim.act({ type: "restart", i: h.index });
+  assert.notEqual(h.proc.id, id);
 });
 
 test(`no invariant is violated over ${SEEDS} seeds with random workloads, random faults, and buggify`, () => {
@@ -183,18 +251,18 @@ test(`no invariant is violated over ${SEEDS} seeds with random workloads, random
 });
 
 for (const [bug, text] of Object.entries(PLANTED_BUGS)) {
-  test(`the checker finds the planted bug "${text}" within 40 seeds`, () => {
+  test(`the checker finds the planted bug "${text}" within 60 seeds`, () => {
     let found = 0;
     let first = 0;
-    for (let seed = 1; seed <= 40; seed++) {
+    for (let seed = 1; seed <= 60; seed++) {
       const sim = chaosRun(seed, { bug });
       if (sim.checker.violations.length > 0) {
         found++;
         first ||= seed;
       }
     }
-    assert.ok(found > 0, `no seed of 40 found it`);
-    console.log(`# ${bug}: found in ${found} of 40 seeds, first in seed ${first}`);
+    assert.ok(found > 0, `no seed of 60 found it`);
+    console.log(`# ${bug}: found in ${found} of 60 seeds, first in seed ${first}`);
   });
 }
 

@@ -288,7 +288,6 @@ class Proc {
     this.sim = sim;
     this.slot = slot;
     this.id = sim.rand.ids.hex(16);
-    this.startedAt = sim.now;
     this.dead = false;
     this.stalled = false;
     this.deferred = [];
@@ -308,7 +307,10 @@ class Proc {
     this.leaseTask = null;
     this.changes = 0;
     this.catchingUp = false;
-    this.writes = 0;
+    // pending are the writes of the application that this process runs and that have no outcome yet.
+    this.pending = new Set();
+    // timers that wait on the monotonic clock of this process.
+    this.timers = new Set();
   }
 }
 
@@ -375,6 +377,38 @@ export class Sim {
     return e;
   }
 
+  // after runs fn when ms have passed on the monotonic clock of p, which is what the timers of a
+  // process run on: a clock that runs fast makes its timers fire early in true time. A timer follows
+  // a change of the clock's rate while it waits (see armTimer).
+  after(p, ms, fn) {
+    const timer = { p, target: this.mono(p) + ms, fn, gen: 0 };
+    p.timers.add(timer);
+    this.armTimer(timer);
+  }
+
+  // armTimer schedules the next look of timer, at the true time when the clock of its process is
+  // due to reach the target at the clock's present rate. Only the latest look counts, so arming
+  // again after a change of the rate replaces the look before.
+  armTimer(timer) {
+    const p = timer.p;
+    const gen = ++timer.gen;
+    const left = Math.max(0, timer.target - this.mono(p));
+    this.at(this.now + left / p.slot.mono.rate, p, () => {
+      if (timer.gen !== gen || !p.timers.has(timer)) return;
+      // The time is in whole milliseconds, so the clock can miss its target by a rounding error.
+      if (timer.target - this.mono(p) > 1e-6) {
+        this.armTimer(timer);
+        return;
+      }
+      p.timers.delete(timer);
+      timer.fn();
+    });
+  }
+
+  rearmTimers(slot) {
+    if (slot.proc) for (const timer of slot.proc.timers) this.armTimer(timer);
+  }
+
   // step processes the next recorded action that is due, or the next event. It returns false only
   // when there is nothing at all to do, which does not happen while an instance runs.
   step() {
@@ -392,6 +426,7 @@ export class Sim {
     this.now = e.t;
     if (e.proc) {
       if (e.proc.dead) {
+        if (e.dropped) e.dropped();
         this.checker.check();
         return true;
       }
@@ -443,8 +478,9 @@ export class Sim {
   }
 
   apply(a) {
-    this.actions.push(a);
     const slot = a.i === undefined ? null : this.slots[a.i];
+    if (a.i !== undefined && !slot) return;
+    this.actions.push(a);
     const who = "you";
     switch (a.type) {
       case "write":
@@ -584,6 +620,8 @@ export class Sim {
     return ms;
   }
 
+  // takeArmed takes the armed fault that applies to the next request of the given kind: a failure
+  // before sending first, and only without one, a lost answer.
   takeArmed(kind) {
     const out = { drop: false, fail: false };
     for (const type of ["fail", "drop"]) {
@@ -591,6 +629,7 @@ export class Sim {
       if (i >= 0) {
         this.armed.splice(i, 1);
         out[type] = true;
+        break;
       }
     }
     return out;
@@ -622,7 +661,7 @@ export class Sim {
       this.at(this.now + 1, p, () => answer("failed before it was sent", { err: "failed" }));
       return;
     }
-    this.at(this.now + STORE_TIMEOUT_MS, p, () => answer("timed out", { err: "timeout" }));
+    this.after(p, STORE_TIMEOUT_MS, () => answer("timed out", { err: "timeout" }));
     if (p.slot.partitioned) {
       req.result = "lost on its way";
       req.fault = "partition";
@@ -683,7 +722,7 @@ export class Sim {
           const token = {};
           task.sleep = token;
           task.wakeable = !!e.wakeable;
-          this.at(this.now + e.ms, p, () => {
+          this.after(p, e.ms, () => {
             if (task.sleep !== token) return;
             task.sleep = null;
             this.drive(task, "timer");
@@ -790,7 +829,12 @@ export class Sim {
 
   kill(p) {
     p.dead = true;
+    for (const e of p.deferred) if (e.dropped) e.dropped();
     p.deferred = [];
+    for (const w of p.pending) {
+      this.log(p.slot.label, "write", `Write ${w.value} on ${p.slot.label} ends with its process, without an answer. It is committed only if its swap landed.`, "info", { value: w.value, outcome: "lost with the process" });
+    }
+    p.pending.clear();
   }
 
   crash(slot, who) {
@@ -805,7 +849,8 @@ export class Sim {
 
   restart(slot, who) {
     const p = slot.proc;
-    if (p && !p.stopped) return;
+    // A process that runs, or that is shutting down and releasing the lease, is not started again.
+    if (p && (!p.stopped || p.closing)) return;
     if (p) this.kill(p);
     slot.proc = null;
     this.log(who, "fault", `${slot.label} is started again.`);
@@ -834,7 +879,10 @@ export class Sim {
     p.stalled = false;
     const deferred = p.deferred;
     p.deferred = [];
-    for (const e of deferred) this.at(this.now, p, e.fn);
+    for (const e of deferred) {
+      const again = this.at(this.now, p, e.fn);
+      again.dropped = e.dropped;
+    }
     this.log(who, "fault", `${slot.label} resumes after its stall.`);
   }
 
@@ -876,6 +924,7 @@ export class Sim {
         this.log(who, "fault", `Both of ${slot.label}'s clocks run at half speed.`);
         break;
       case "true":
+        this.checker.onClocksTrue(slot);
         slot.clockFault = { wallShort: false, monoShort: false, monoFast: false };
         slot.mono.setRate(t, 1);
         slot.wall = new Clock(EPOCH + t + slot.wallJitter);
@@ -884,7 +933,7 @@ export class Sim {
       default:
         return;
     }
-    this.checker.onClockFault();
+    this.rearmTimers(slot);
   }
 
   arm(type, kind, who) {
@@ -1011,6 +1060,7 @@ export class Sim {
       this.adopt(p, { man: next, sent }, res.version);
       p.watch = { version: "", since: 0 };
       this.stats.takes++;
+      if (previous) this.checker.onTake(p.slot);
       const how = !r.found ? "it creates the manifest of a new database" : previous ? `the lease of ${previous} timed out` : "the manifest has no lease entry";
       this.log(p.slot.label, "lease", `${p.slot.label} takes the lease: ${how}.`, "info", { take: true, previous });
       return yield* this.resumeLocked(p);
@@ -1325,11 +1375,13 @@ export class Sim {
       this.log(slot.label, "write", `Write ${value} to ${slot.label} fails: ${slot.label} is not running.`, source === "you" ? "info" : "debug", { value, outcome: "refused" });
       return;
     }
-    const w = { value, source, submitted: this.now };
+    const w = { value, source, deadline: this.mono(p) + CALLER_TIMEOUT_MS };
+    p.pending.add(w);
     this.at(this.now, p, () => this.spawn(p, "write", this.write(p, w)));
   }
 
   finishWrite(p, w, outcome, why) {
+    p.pending.delete(w);
     const label = p.slot.label;
     const level = w.source === "you" || outcome === "acknowledged" || outcome === "outcome unknown" ? "info" : "debug";
     switch (outcome) {
@@ -1355,7 +1407,7 @@ export class Sim {
   // write is a write transaction that inserts one value: Begin, the insert, and Commit, as in
   // internal/core/tx.go.
   *write(p, w) {
-    const deadline = w.submitted + CALLER_TIMEOUT_MS;
+    const deadline = w.deadline;
     let why = this.servingErr(p);
     if (why) return this.finishWrite(p, w, "refused", why);
     const got = yield { op: "lock", name: "writer", servingOnly: true };
@@ -1402,7 +1454,7 @@ export class Sim {
         if (why) return this.finishWrite(p, w, "not committed", why);
         const res = yield this.req("create", commitKey(name), "upload", { body, commit: name });
         if (res.ok || res.err === "exists") break;
-        if (this.now >= deadline) return this.finishWrite(p, w, "not committed", "the caller gave up during the upload");
+        if (this.mono(p) >= deadline) return this.finishWrite(p, w, "not committed", "the caller gave up during the upload");
         yield { op: "sleep", ms: wait };
         wait = Math.min(2 * wait, RETRY_AFTER_MS);
       }
@@ -1457,7 +1509,7 @@ export class Sim {
           if (p.man.branches.main.head !== parent) return { result: "unpublished", why: "the log moved on since the transaction began" };
           f = this.newFlight(p, name, true);
         }
-        if (this.now >= deadline) {
+        if (this.mono(p) >= deadline) {
           if (!f.unknown) return { result: "unpublished", why: "the caller gave up" };
           if (this.settings.bug === "ackunknown") return { result: "published" };
           p.serving = false;
@@ -1522,7 +1574,7 @@ export class Sim {
         wait = RETRY_SOON_MS;
         continue;
       }
-      if (this.now >= deadline) {
+      if (this.mono(p) >= deadline) {
         p.unresolved = true;
         return { result: "unknown", why: "the caller gave up while it looked for the commit in the log" };
       }
@@ -1538,7 +1590,11 @@ export class Sim {
       this.log(slot.label, "read", `A read on ${slot.label} fails: ${slot.label} is not running.`, source === "you" ? "info" : "debug");
       return;
     }
-    this.at(this.now, p, () => this.read(p, source));
+    const e = this.at(this.now, p, () => this.read(p, source));
+    e.dropped = () => {
+      this.stats.refusedReads++;
+      this.log(slot.label, "read", `A read on ${slot.label} fails: the process ended before it ran.`, source === "you" ? "info" : "debug", { outcome: "refused" });
+    };
   }
 
   // read checks the lease by both clocks and reads the cache, in one step.
@@ -1631,7 +1687,7 @@ export class Sim {
     } else if (roll < 0.46) {
       if (!slot.partitioned) {
         this.partition(slot, true, who);
-        this.at(this.now + r.int(1_000, 45_000), null, () => this.partition(slot, false, who));
+        this.at(this.now + r.int(1_000, 90_000), null, () => this.partition(slot, false, who));
       }
     } else if (roll < 0.58) {
       this.arm("drop", r.pick(Object.keys(FAULT_KINDS)), who);
@@ -1670,18 +1726,24 @@ class Checker {
     // and with chain[i].
     this.flat = [];
     this.ends = [0];
+    // verified[i] is how many rows of slot i's cache are known to equal the start of flat.
+    this.verified = sim.slots.map(() => 0);
     this.head = EMPTY_LOG;
     this.acked = new Set();
     this.ackedMax = 0;
-    this.lastAck = "";
     this.violations = [];
     this.seen = new Set();
     this.checks = { acked: 0, chain: 0, ahead: 0, fresh: 0, replay: 0 };
     this.dirty = true;
-    // clockExcuse says why a stale read is allowed, while excuseUntil has not passed: from when an
-    // instance starts to measure time wrongly until two leases after every clock runs true again.
-    this.clockExcuse = "";
-    this.excuseUntil = -1;
+    // A stale read is allowed only where an instance measured time wrongly in a way that can cause
+    // it. shortUntil[i] is until when reads on slot i are excused, because both of its clocks
+    // measured too little time: while they do, and two lease durations after. earlyUntil is until
+    // when reads on other instances are excused, because the instance earlyBy took the lease while
+    // its monotonic clock ran fast; fastUntil[i] is until when a take by slot i counts as early.
+    this.shortUntil = sim.slots.map(() => -1);
+    this.fastUntil = sim.slots.map(() => -1);
+    this.earlyUntil = -1;
+    this.earlyBy = -1;
   }
 
   violate(key, text) {
@@ -1693,23 +1755,34 @@ class Checker {
     this.sim.log("checker", "violation", "Invariant violated: " + text, "info", { invariant: key });
   }
 
-  onClockFault() {
-    let reason = "";
-    for (const slot of this.sim.slots) {
-      const f = slot.clockFault;
-      if (f.monoFast) reason = `${slot.label}'s monotonic clock ran fast, so it may have taken the lease before the holder's lease ran out by the holder's clocks`;
-      else if (f.wallShort && f.monoShort) reason = `both of ${slot.label}'s clocks measured too little time, so it may have served after its lease ran out`;
-    }
-    if (reason) {
-      this.clockExcuse = reason;
-      this.excuseUntil = Infinity;
-    } else if (this.excuseUntil === Infinity) {
-      this.excuseUntil = this.sim.now + 2 * LEASE_MS;
+  // onClocksTrue records that the clocks of slot run true again from now.
+  onClocksTrue(slot) {
+    const f = slot.clockFault;
+    const now = this.sim.now;
+    if (f.wallShort && f.monoShort) this.shortUntil[slot.index] = now + 2 * LEASE_MS;
+    // A wait that a fast clock shortened can end up to a lease and its margin later.
+    if (f.monoFast) this.fastUntil[slot.index] = now + LEASE_MS + margin(LEASE_MS);
+  }
+
+  // onTake records that slot took the lease from another holder.
+  onTake(slot) {
+    if (slot.clockFault.monoFast || this.sim.now < this.fastUntil[slot.index]) {
+      this.earlyUntil = this.sim.now + 2 * LEASE_MS;
+      this.earlyBy = slot.index;
     }
   }
 
-  excused() {
-    return this.sim.now < this.excuseUntil;
+  // excuse is why a stale read on slot is allowed, or empty if it is not.
+  excuse(slot) {
+    const f = slot.clockFault;
+    const now = this.sim.now;
+    if ((f.wallShort && f.monoShort) || now < this.shortUntil[slot.index]) {
+      return `both of ${slot.label}'s clocks measured too little time, so it may have served after its lease ran out`;
+    }
+    if (now < this.earlyUntil && slot.index !== this.earlyBy) {
+      return `${this.sim.slots[this.earlyBy].label}'s monotonic clock ran fast, so it took the lease before ${slot.label}'s lease ran out by ${slot.label}'s clocks`;
+    }
+    return "";
   }
 
   onManifest(m) {
@@ -1728,7 +1801,8 @@ class Checker {
       at = obj.parent;
     }
     const meet = this.index.get(at);
-    if (meet !== this.chain.length - 1) {
+    const forked = meet !== this.chain.length - 1;
+    if (forked) {
       const cut = this.chain.slice(meet + 1);
       this.violate("chain", `the log forked: the new head ${short(head)} does not follow ${short(this.head)}, and ${cut.map(short).join(", ")} dropped out of the log`);
     }
@@ -1736,6 +1810,7 @@ class Checker {
     this.chain.length = meet + 1;
     this.ends.length = meet + 1;
     this.flat.length = this.ends[meet];
+    for (let k = 0; k < this.verified.length; k++) this.verified[k] = Math.min(this.verified[k], this.flat.length);
     for (let i = walk.length - 1; i >= 0; i--) {
       const name = walk[i];
       this.index.set(name, this.chain.length);
@@ -1746,6 +1821,8 @@ class Checker {
     this.head = head;
     this.dirty = true;
     this.checks.acked++;
+    // Without a fork the log only grew, so every acknowledged commit is still in it at its index.
+    if (!forked) return;
     this.ackedMax = 0;
     for (const name of this.acked) {
       const i = this.index.get(name);
@@ -1777,9 +1854,10 @@ class Checker {
     if (i === undefined) return true;
     if (i >= this.ackedMax) return true;
     const missed = this.chain[this.ackedMax];
-    if (this.excused()) {
+    const excuse = this.excuse(p.slot);
+    if (excuse) {
       this.sim.stats.staleAllowed++;
-      this.sim.log("checker", "stale", `A read on ${p.slot.label} missed the acknowledged commit ${short(missed)}. The spec allows this only because an instance measured time wrongly: ${this.clockExcuse}.`);
+      this.sim.log("checker", "stale", `A read on ${p.slot.label} missed the acknowledged commit ${short(missed)}. The spec allows this only because an instance measured time wrongly: ${excuse}.`);
       return false;
     }
     this.violate("fresh", `a read on ${p.slot.label} at ${pos(position)} missed the acknowledged commit ${short(missed)}`);
@@ -1798,10 +1876,13 @@ class Checker {
         continue;
       }
       this.checks.replay++;
+      // The rows of a cache are only ever appended to, so the rows that were checked before and are
+      // still in the log need no second look.
       const want = this.ends[i];
       const got = disk.rows;
       let same = want === got.length;
-      for (let k = 0; same && k < want; k++) same = this.flat[k] === got[k];
+      for (let k = this.verified[slot.index]; same && k < want; k++) same = this.flat[k] === got[k];
+      if (same) this.verified[slot.index] = want;
       if (!same) this.violate("replay", `${slot.label}'s cache has ${got.length} rows that differ from the ${want} that replaying the log to its position gives`);
     }
   }
@@ -1861,7 +1942,7 @@ export function decodeActions(s) {
       case "clock":
         a.c = CLOCKS_BACK[rest[0]];
         a.i = Number(rest.slice(1));
-        if (!a.c) return null;
+        if (!a.c || !/^[0-2]$/.test(rest.slice(1))) return null;
         break;
       case "drop": case "fail":
         a.k = KINDS_BACK[rest] || "any";
@@ -1875,8 +1956,8 @@ export function decodeActions(s) {
       case "heal":
         break;
       default:
+        if (!/^[0-2]$/.test(rest)) return null;
         a.i = Number(rest);
-        if (!(a.i >= 0 && a.i <= 2)) return null;
     }
     out.push(a);
   }

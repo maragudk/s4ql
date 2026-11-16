@@ -649,7 +649,7 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
   <div class="wrap">
     <div class="panel-head">
       <h2 id="faults-h">Workload and faults</h2>
-      <p class="small">Faults of one instance are on its card under "Instances". These act on S3, on the network, and on the whole run.</p>
+      <p class="small">Faults of one instance are on its card under "Instances". These act on S3, on the network, and on the run.</p>
     </div>
     <div class="cells">
       <div class="knobs">
@@ -748,7 +748,7 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
   <div class="wrap">
     <h2 id="simpler-h">Where the model is simpler</h2>
     <dl class="sheet">
-      <div><dt class="caps">Commit objects</dt><dd>JSON, not Protocol Buffers. A write inserts one value into one table, and the commit object holds that row and the statement as an annotation.</dd></div>
+      <div><dt class="caps">Commit objects</dt><dd>JSON, not Protocol Buffers. A write inserts one value into one table, and the commit object contains that row and the statement as an annotation.</dd></div>
       <div><dt class="caps">Reads</dt><dd>A read is one step: the check of the lease by both clocks and the read of the cache happen together. The Go code checks the lease before it fixes the state that the read sees, and once more after.</dd></div>
       <div><dt class="caps">Catch-up</dt><dd>Each missing commit object is downloaded once, checked against its name, and applied. The Go code downloads it a second time to apply it.</dd></div>
       <div><dt class="caps">Timeouts</dt><dd>Every request to S3 times out after 5 seconds. In the Go code, uploads and downloads of commit objects have 5 minutes. The application gives up on a write after 45 seconds, longer than a takeover, so that a write that is open while its instance stalls can still reach its swap.</dd></div>
@@ -779,7 +779,7 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
 <script type="module">
 import {
   Sim, DEFAULT_SEED, EMPTY_LOG, EPOCH, LEASE_MS, MANIFEST_KEY, INVARIANTS, PLANTED_BUGS, BUGGIFY_POINTS, FAULT_KINDS,
-  encodeActions, decodeActions, instanceState, margin, short, pos, commitRows,
+  encodeActions, decodeActions, instanceState, margin, short, pos, commitRows, commitKey,
 } from "./model.js";
 
 const reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -861,8 +861,11 @@ function readURL() {
   const params = new URLSearchParams(location.hash.slice(1));
   const s = parseSeed(params.get("seed") || "");
   const n = Number(params.get("n"));
-  const actions = decodeActions(params.get("a") || "");
-  return { seed: s === null ? DEFAULT_SEED : s, n: n === 2 ? 2 : 3, actions: actions || [], bad: actions === null };
+  const count = n === 2 ? 2 : 3;
+  let actions = decodeActions(params.get("a") || "");
+  // An action on an instance that the run does not have makes the link one that cannot be read.
+  if (actions && actions.some((a) => a.i !== undefined && a.i >= count)) actions = null;
+  return { seed: s === null ? DEFAULT_SEED : s, n: count, actions: actions || [], bad: actions === null };
 }
 
 // reset starts a new run. With actions, it loads them to replay.
@@ -981,6 +984,8 @@ function instanceAction(slot, a, c) {
   const p = slot.proc;
   switch (a) {
     case "crash":
+      // A process that shuts down is left to finish releasing the lease.
+      if (p && p.closing) break;
       act({ type: !p || p.stopped ? "restart" : "crash", i: slot.index });
       break;
     case "stall":
@@ -1053,7 +1058,7 @@ function renderInstance(card) {
   set(f.rows, rows.length === 0 ? "none" : `${rows.length}: ${rows.length > 30 ? "… " : ""}${rows.slice(-30).join(", ")}`);
   set(f.disk, slot.disk.failing ? "failing: the next local read or write fails" : "fine");
   const down = !p || !!p.stopped;
-  set(b.crash, down ? "Start" : "Crash");
+  set(b.crash, p && p.closing ? "Shutting down" : down ? "Start" : "Crash");
   set(b.stall, p && p.stalled ? "Resume" : "Stall");
   b.stall.setAttribute("aria-pressed", p && p.stalled ? "true" : "false");
   set(b.partition, slot.partitioned ? "Reconnect" : "Cut off from S3");
@@ -1084,7 +1089,7 @@ function renderChecks() {
   set(chip, broken ? `Checker: ${broken} violated` : `Checker: all ${Object.keys(INVARIANTS).length} kept`);
   chip.classList.toggle("bad", broken > 0);
   const allowed = sim.stats.staleAllowed;
-  set($("allowed"), allowed ? `${allowed} read${allowed === 1 ? "" : "s"} missed an acknowledged commit while an instance measured time wrongly. The spec allows that: clocks affect only reads. The other rules still hold.` : "");
+  set($("allowed"), allowed ? `${allowed} read${allowed === 1 ? "" : "s"} missed an acknowledged commit while an instance measured time wrongly. The spec allows that: clocks affect only reads. No other rule was broken.` : "");
 }
 
 // The bucket.
@@ -1111,7 +1116,7 @@ function renderBucket() {
   let html = "";
   for (const o of orphans.slice(-6).reverse()) html += commitItem(o.name, "orphan", o);
   const shown = chain.slice(1).slice(-24).reverse();
-  for (const name of shown) html += commitItem(name, name === headName ? "head" : "", sim.s3.get("commits/" + name.slice(0, 2) + "/" + name));
+  for (const name of shown) html += commitItem(name, name === headName ? "head" : "", sim.s3.get(commitKey(name)));
   if (!html) html = `<li class="commits-empty small">No commit objects yet. The log is empty, and the head is 64 zeros.</li>`;
   if (chain.length - 1 > shown.length) html += `<li class="commits-empty small">${chain.length - 1 - shown.length} older commit objects in the log are not shown.</li>`;
   $("commits").innerHTML = html;
