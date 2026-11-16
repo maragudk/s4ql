@@ -6,3 +6,6 @@
 /internal/sql/corpus/tcl.txt linguist-generated=true -diff
 /internal/sql/corpus/doc.txt linguist-generated=true -diff
 /internal/sql/corpus/fuzz.txt linguist-generated=true -diff
+
+# SQLite's grammar, copied unchanged from its source archive by internal/sql/corpus/update.
+/internal/sql/parser/testdata/parse.y linguist-vendored=true text eol=lf

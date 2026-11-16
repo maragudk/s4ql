@@ -13,8 +13,6 @@ import (
 // oneselect. multiselect_op ::= UNION. multiselect_op ::= UNION ALL.
 // multiselect_op ::= EXCEPT|INTERSECT.
 func (p *parser) selectStmt(w *ast.With) *ast.Select {
-	p.enter()
-	defer p.leave()
 	start := p.mark()
 	if w != nil {
 		start = w.Bounds().Start
@@ -32,6 +30,15 @@ func (p *parser) selectStmt(w *ast.With) *ast.Select {
 		s.Compounds = append(s.Compounds, finish(p, c, cs))
 	}
 	return finish(p, s, start)
+}
+
+// nestedSelect reads a SELECT after a "(" that is not part of an expression, one level deeper: in a
+// FROM clause, and in a common table expression. A SELECT in an expression is one level deeper
+// through the expression.
+func (p *parser) nestedSelect() *ast.Select {
+	p.enter()
+	defer p.leave()
+	return p.selectStmt(nil)
 }
 
 // oneSelect reads one part of a select: SELECT with its clauses, or VALUES.
@@ -196,7 +203,7 @@ func (p *parser) selTabList() []*ast.FromItem {
 			ss := p.mark()
 			lp := p.advance()
 			if p.startsSelect() {
-				s := &ast.SubquerySource{LParen: lp, Select: p.selectStmt(nil)}
+				s := &ast.SubquerySource{LParen: lp, Select: p.nestedSelect()}
 				s.RParen = p.expect(token.RP)
 				item.Source = finish(p, s, ss)
 			} else {
@@ -377,7 +384,7 @@ func (p *parser) withClause() *ast.With {
 			c.Materialized = p.accept(token.Materialized)
 		}
 		c.LParen = p.expect(token.LP)
-		c.Select = p.selectStmt(nil)
+		c.Select = p.nestedSelect()
 		c.RParen = p.expect(token.RP)
 		w.CTEs = append(w.CTEs, finish(p, c, cs))
 		if !p.is(token.Comma) {

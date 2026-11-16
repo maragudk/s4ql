@@ -18,6 +18,7 @@ package parser
 
 import (
 	"fmt"
+	"strings"
 
 	"maragu.dev/s4ql/internal/sql/ast"
 	"maragu.dev/s4ql/internal/sql/token"
@@ -59,16 +60,16 @@ const MaxLength = 1_000_000_000
 // and no error, with the tail at the end of the text. On an error it returns an [*Error] and no
 // statement.
 func Parse(src string) (*ast.Statement, int, error) {
-	return parseAt(src, 0)
+	return parseAt(src, 0, textEnd(src))
 }
 
 // ParseAll statements of src, each as [Parse] would from where the one before it ends, until the end
 // of the text or the first error.
 func ParseAll(src string) ([]*ast.Statement, error) {
 	var stmts []*ast.Statement
-	at := 0
+	at, end := 0, textEnd(src)
 	for {
-		stmt, tail, err := parseAt(src, at)
+		stmt, tail, err := parseAt(src, at, end)
 		if err != nil {
 			return stmts, err
 		}
@@ -154,20 +155,35 @@ type parser struct {
 	// lastEnd is the end offset of the last token consumed.
 	lastEnd int
 	depth   int
-	err     *Error
-	errAt   int
-	pending *pendingError
+	// maxDepth reached, for the tests.
+	maxDepth int
+	err      *Error
+	errAt    int
+	pending  *pendingError
 }
 
-// parseAt parses the first statement of src that starts at or after the offset start.
-func parseAt(src string, start int) (stmt *ast.Statement, tail int, err error) {
-	p := &parser{src: src, end: len(src), start: start, next: start, lastEnd: start}
-	for i := start; i < len(src); i++ {
-		if src[i] == 0 {
-			p.end = i
-			break
-		}
+// textEnd of src: the offset of its first NUL byte, or its length.
+func textEnd(src string) int {
+	if i := strings.IndexByte(src, 0); i >= 0 {
+		return i
 	}
+	return len(src)
+}
+
+// newParser of the first statement of src that starts at or after the offset start, where the text
+// ends at end.
+func newParser(src string, start, end int) *parser {
+	return &parser{src: src, end: end, start: start, next: start, lastEnd: start}
+}
+
+// parseAt parses the first statement of src that starts at or after the offset start, where the
+// text ends at end.
+func parseAt(src string, start, end int) (*ast.Statement, int, error) {
+	return newParser(src, start, end).run()
+}
+
+// run the parser.
+func (p *parser) run() (stmt *ast.Statement, tail int, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			if _, ok := r.(bailout); !ok {
@@ -409,6 +425,7 @@ func (p *parser) overLimit(message string) {
 // enter one level of nesting, and fail if it is deeper than [MaxDepth].
 func (p *parser) enter() {
 	p.depth++
+	p.maxDepth = max(p.maxDepth, p.depth)
 	if p.depth > MaxDepth {
 		p.overLimit(fmt.Sprintf("s4ql: the statement is nested deeper than the limit of %v", MaxDepth))
 	}

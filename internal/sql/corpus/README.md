@@ -63,6 +63,8 @@ The rule is a fixed list and not Unicode's tables, so the same statement is writ
 
 Run `make corpus` from the repository root. It downloads both archives from sqlite.org, about 27 MB, checks them against `source.json`, and writes the three files within a few seconds. The same archives always give byte-identical files: the output is sorted and holds no timestamps.
 
+The tool also copies `src/parse.y` of the source archive, unchanged, to [`internal/sql/parser/testdata/parse.y`](../parser/testdata/parse.y), where the tests of the parser read SQLite's grammar from. `-check` checks that copy too.
+
 The target runs the tool without flags. The tool takes three:
 
 ```sh

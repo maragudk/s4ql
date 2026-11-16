@@ -28,14 +28,14 @@ type CreateTable struct {
 	Constraints []TableConstraint
 	// Commas between the columns and constraints, in the order written. Between two table
 	// constraints the comma can be left out.
-	Commas        []Token
+	Commas []Token
 	RParen Token
 	// Options after the parentheses, and the commas between them. The grammar allows the first
 	// option to be empty, so a comma can come right after the parenthesis, before the first option.
-	Options       []*TableOption
-	OptionCommas  []Token
-	As            Token
-	Select        *Select
+	Options      []*TableOption
+	OptionCommas []Token
+	As           Token
+	Select       *Select
 }
 
 // TableOption is WITHOUT name, or a name, after the parentheses of [CreateTable]. Which names are
@@ -506,11 +506,11 @@ func (*DropColumn) alterAction() {}
 // parse.y: cmd ::= ALTER TABLE fullname RENAME kwcolumn_opt nm TO nm.
 type RenameColumn struct {
 	base
-	Rename  Token
-	Column  Token
-	Old     Token
-	To      Token
-	New     Token
+	Rename Token
+	Column Token
+	Old    Token
+	To     Token
+	New    Token
 }
 
 func (*RenameColumn) alterAction() {}

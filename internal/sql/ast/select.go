@@ -379,13 +379,13 @@ type WindowDef struct {
 // sortlist frame_opt. window ::= frame_opt. window ::= nm frame_opt.
 type Window struct {
 	base
-	Base             Token
-	Partition        Token
-	PartitionBy      Token
-	PartitionExprs   []Expr
-	PartitionCommas  []Token
-	OrderBy          *OrderBy
-	Frame            *Frame
+	Base            Token
+	Partition       Token
+	PartitionBy     Token
+	PartitionExprs  []Expr
+	PartitionCommas []Token
+	OrderBy         *OrderBy
+	Frame           *Frame
 }
 
 // Frame is the frame of a [Window]: RANGE, ROWS, or GROUPS, a start bound or BETWEEN two bounds, and

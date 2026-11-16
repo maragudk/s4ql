@@ -13,8 +13,9 @@
 // each against source.json. It extracts SQL from the TCL test scripts (test/*.test and ext/**/*.test
 // in the source archive), from the <pre> blocks of the documentation's HTML pages, and from the table
 // xsql of the fuzz corpora test/fuzzdata*.db, splits it into statements, deduplicates them, and
-// writes tcl.txt, doc.txt, and fuzz.txt, each sorted by its bytes. The same archives always give the
-// same files. With -check, it writes nothing and fails if the files differ from what it would write.
+// writes tcl.txt, doc.txt, and fuzz.txt, each sorted by its bytes. It also copies src/parse.y of the
+// source archive to internal/sql/parser/testdata/parse.y, unchanged, for the tests of the parser. The
+// same archives always give the same files. With -check, it writes nothing and fails if the files differ from what it would write.
 //
 // With -version, it first pins that version: it reads the URLs, sizes, and SHA3-256 checksums of
 // both archives from the PRODUCT lines of https://sqlite.org/download.html and rewrites source.json.
@@ -50,6 +51,7 @@ import (
 
 const (
 	dir          = "internal/sql/corpus"
+	grammarPath  = "internal/sql/parser/testdata/parse.y"
 	manifestPath = "internal/sql/corpus/source.json"
 	downloadPage = "https://sqlite.org/download.html"
 )
@@ -142,6 +144,11 @@ func run() error {
 	for _, source := range []string{"tcl", "doc", "fuzz"} {
 		outputs[filepath.Join(dir, source+".txt")] = render(source, m.Version, sources[source])
 	}
+	grammar, err := extractGrammar(contents[srcName], m.Version)
+	if err != nil {
+		return err
+	}
+	outputs[grammarPath] = grammar
 
 	if *check {
 		for name, want := range outputs {
@@ -270,6 +277,26 @@ func extractAll(src, doc []byte, version string) (map[string][]string, error) {
 		result[source] = sqls
 	}
 	return result, nil
+}
+
+// extractGrammar gives src/parse.y of the source archive, unchanged: the grammar of SQLite's parser,
+// which the tests of internal/sql/parser read.
+func extractGrammar(src []byte, version string) ([]byte, error) {
+	number, err := versionNumber(version)
+	if err != nil {
+		return nil, err
+	}
+	srcZip, err := zip.NewReader(bytes.NewReader(src), int64(len(src)))
+	if err != nil {
+		return nil, err
+	}
+	name := fmt.Sprintf("sqlite-src-%v/src/parse.y", number)
+	for _, f := range srcZip.File {
+		if f.Name == name {
+			return readFile(f)
+		}
+	}
+	return nil, fmt.Errorf("the source archive has no %v", name)
 }
 
 // fuzzData is the name of a fuzz corpus in the source archive.
