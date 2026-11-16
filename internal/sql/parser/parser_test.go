@@ -350,7 +350,7 @@ func TestParse_depth(t *testing.T) {
 		var e *parser.Error
 		is.True(t, errors.As(err, &e))
 		is.True(t, e.Limit)
-		is.Equal(t, "s4ql: the statement is nested deeper than the limit of 2500", e.Message)
+		is.Equal(t, parser.Error{Message: "s4ql: the statement is nested deeper than the limit of 2500", Offset: -1, Limit: true}, *e)
 		_, _, err = parser.Parse("select " + strings.Repeat("(", 2499) + "1" + strings.Repeat(")", 2499))
 		is.NotError(t, err)
 	})
