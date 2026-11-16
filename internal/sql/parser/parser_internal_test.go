@@ -13,6 +13,7 @@ func TestParse_length(t *testing.T) {
 		lengthLimit = 100
 		_, _, err := Parse("select 1" + strings.Repeat(" ", 100))
 		is.Equal(t, Error{Message: "s4ql: the statement is longer than the limit of 100 bytes", Offset: -1, Limit: true}, *err.(*Error))
+		is.Equal(t, "s4ql: the statement is longer than the limit of 100 bytes", err.Error())
 		_, _, err = Parse("select 1" + strings.Repeat(" ", 92))
 		is.NotError(t, err)
 	})

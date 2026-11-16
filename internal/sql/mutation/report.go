@@ -95,8 +95,9 @@ func (c counts) score() (all, nonEquivalent float64) {
 
 // writeReport of the results of the mutants to w: the counts per package and per file, the
 // survivors that the list of equivalent mutants does not explain, and the entries of that list that
-// match no surviving mutant.
-func writeReport(w io.Writer, mutants []mutant, results map[string]result, eq map[string]string) {
+// match no surviving mutant: an entry whose mutant was run and was not a survivor, or whose key is
+// not in all, the keys of every mutant that the generator makes.
+func writeReport(w io.Writer, mutants []mutant, all map[string]bool, results map[string]result, eq map[string]string) {
 	byPkg, byFile := map[string]*counts{}, map[string]*counts{}
 	var total counts
 	var unexplained []result
@@ -149,12 +150,15 @@ func writeReport(w io.Writer, mutants []mutant, results map[string]result, eq ma
 	for _, r := range unexplained {
 		_, _ = fmt.Fprintf(w, "\n%v:%v\n%v\n", r.File, r.Line, r.Key)
 	}
+	selected := map[string]bool{}
+	for _, m := range mutants {
+		selected[m.Key] = true
+	}
 	var stale []string
 	for k := range eq {
-		if res, ok := results[k]; !ok || res.Status != statusSurvived {
-			if ok || !slices.ContainsFunc(mutants, func(m mutant) bool { return m.Key == k }) {
-				stale = append(stale, k)
-			}
+		res, ok := results[k]
+		if !all[k] || selected[k] && ok && res.Status != statusSurvived {
+			stale = append(stale, k)
 		}
 	}
 	slices.Sort(stale)

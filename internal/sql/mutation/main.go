@@ -11,7 +11,7 @@
 //
 // Each mutant is a copy of one file with one change, which the go command compiles in place of the
 // file through -overlay, so the repository is never changed and mutants run in parallel. The tests
-// run in stages, the fastest first, each with a time limit of a multiple of its time on the code as
+// run in stages, in an order that puts the fast layers first, each with a time limit of a multiple of its time on the code as
 // it is. The results go to DIR/results.jsonl, and a run with the same DIR skips the mutants that
 // already have a result. The report, in DIR/report.txt, counts the mutants by package and by file,
 // and lists each survivor that is not in the list of equivalent mutants in equivalent.txt.
@@ -76,6 +76,7 @@ func start() error {
 		}
 	}
 	var mutants []mutant
+	all := map[string]bool{}
 	for _, d := range dirs {
 		files, err := goFiles(filepath.Join(root, d))
 		if err != nil {
@@ -88,6 +89,7 @@ func start() error {
 				return err
 			}
 			for _, m := range ms {
+				all[m.Key] = true
 				if re == nil || re.MatchString(m.Key) || re.MatchString(fmt.Sprintf("%v:%v", m.File, m.Line)) {
 					mutants = append(mutants, m)
 				}
@@ -127,11 +129,11 @@ func start() error {
 		if err != nil {
 			return err
 		}
-		writeReport(f, mutants, results, eq)
+		writeReport(f, mutants, all, results, eq)
 		if err := f.Close(); err != nil {
 			return err
 		}
-		writeReport(os.Stdout, mutants, results, eq)
+		writeReport(os.Stdout, mutants, all, results, eq)
 		return nil
 	}
 	if *reportOnly {
