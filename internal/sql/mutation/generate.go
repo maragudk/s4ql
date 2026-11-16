@@ -344,7 +344,16 @@ func (g *generator) node(n, parent ast.Node) {
 	case *ast.BlockStmt:
 		g.statements(n.List)
 	case *ast.BasicLit:
+		// An element of a table is named by its index, so that its key does not depend on the
+		// elements before it.
+		fn := g.fn
+		if lit, ok := parent.(*ast.CompositeLit); ok {
+			if i := slices.Index(lit.Elts, ast.Expr(n)); i >= 0 {
+				g.fn = fmt.Sprintf("%v[%d]", fn, i)
+			}
+		}
 		g.literal(n)
+		g.fn = fn
 	case *ast.Ident:
 		switch n.Name {
 		case "true":

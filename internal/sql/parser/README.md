@@ -92,7 +92,7 @@ The rule has four parts:
 
 The check is generic, so no list of node kinds can go stale:
 
-- `Children` and `Tokens` read the fields of any node through reflection, with a plan cached per type. A field must be a `Token`, a `[]Token`, a node, a slice of nodes, or a struct or pointer to a struct made of those. Any other field type, such as `bool`, `int`, or `string`, panics. A token cannot hide where the walk does not look, and a node cannot keep what was written in anything but tokens.
+- `Children` and `Tokens` read the fields of any node through reflection, with a plan cached per type. A field must be a `Token`, a `[]Token`, a node, a slice of nodes, or a struct made of those. Any other field type, such as `bool`, `int`, or `string`, panics. A token cannot hide where the walk does not look, and a node cannot keep what was written in anything but tokens.
 - `TestPlanOf` in `ast_internal_test.go` parses the package's source with `go/parser`. It checks that every node type is in the test's list and has a valid plan, and that a node with an `int` field panics.
 - `ast.CheckOwnership` compares `ast.AllTokens(root)` with the tokens that the tokenizer gives for the statement's span, and checks the spans of every node.
 - `TestCheckOwnership` in `check_test.go` proves the check with trees broken on purpose. It finds each one: a token that no node owns, a token that two nodes own, a token that was not read, a span too wide, a span too narrow, a child that overlaps a token of its parent, a token of the wrong kind, and an empty node outside its parent.

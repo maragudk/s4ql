@@ -381,6 +381,21 @@ func TestKind_String(t *testing.T) {
 
 	t.Run("should give the number of a kind that does not exist", func(t *testing.T) {
 		is.Equal(t, "Kind(255)", token.Kind(255).String())
+		is.Equal(t, fmt.Sprintf("Kind(%d)", token.Without+1), (token.Without + 1).String())
+	})
+}
+
+func TestKind_IsKeyword(t *testing.T) {
+	t.Run("should be true for exactly the kinds of SQLite's keywords", func(t *testing.T) {
+		keywordKinds := map[token.Kind]bool{}
+		for _, k := range sqlite.Keywords() {
+			kind, _ := token.Next(k)
+			keywordKinds[kind] = true
+		}
+		for k := range 256 {
+			kind := token.Kind(k)
+			is.Equal(t, keywordKinds[kind], kind.IsKeyword(), kind.String())
+		}
 	})
 }
 

@@ -46,6 +46,31 @@ func TestWalk(t *testing.T) {
 		is.Equal(t, "ResultColumn", typeName(children[0]))
 		is.Equal(t, "From", typeName(children[1]))
 	})
+
+	t.Run("should visit nothing from a nil node", func(t *testing.T) {
+		ast.Walk(nil, func(ast.Node) bool {
+			t.Fatal("visited")
+			return true
+		})
+	})
+
+	t.Run("should leave out a nil element of a list of nodes", func(t *testing.T) {
+		row := &ast.Row{Exprs: []ast.Expr{nil, &ast.Literal{Value: ast.Token{Kind: token.Integer, Offset: 1, Text: "1"}}}}
+		is.Equal(t, 1, len(ast.Children(row)))
+		is.Equal(t, "Row{Exprs: [nil, Literal{Value: 1}]}", ast.Dump(row))
+	})
+
+	t.Run("should give the own tokens of a node by offset, whatever the order of its fields", func(t *testing.T) {
+		// A Limit with its operands swapped by hand: the comma comes before the LIMIT in the text.
+		l := &ast.Limit{
+			Limit: ast.Token{Kind: token.Limit, Offset: 10, Text: "limit"},
+			Sep:   ast.Token{Kind: token.Comma, Offset: 2, Text: ","},
+		}
+		tokens := ast.Tokens(l)
+		is.Equal(t, 2, len(tokens))
+		is.Equal(t, ",", tokens[0].Text)
+		is.Equal(t, "limit", tokens[1].Text)
+	})
 }
 
 func TestDump(t *testing.T) {

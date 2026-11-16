@@ -19,6 +19,12 @@ type badNode struct {
 	Count int
 }
 
+// badSlice holds a slice of values that are neither tokens nor nodes.
+type badSlice struct {
+	base
+	Names []string
+}
+
 // TestPlanOf checks that the walk refuses a node with a field that could hide what was read, and
 // that every node type of the package passes.
 func TestPlanOf(t *testing.T) {
@@ -28,6 +34,14 @@ func TestPlanOf(t *testing.T) {
 			is.True(t, r != nil && strings.Contains(r.(string), "badNode.Count"))
 		}()
 		planOf(reflect.TypeFor[badNode]())
+	})
+
+	t.Run("should panic on a slice of values that are neither tokens nor nodes", func(t *testing.T) {
+		defer func() {
+			r := recover()
+			is.True(t, r != nil && strings.Contains(r.(string), "badSlice.Names"))
+		}()
+		planOf(reflect.TypeFor[badSlice]())
 	})
 
 	t.Run("should list every node type of the package in allNodes", func(t *testing.T) {
