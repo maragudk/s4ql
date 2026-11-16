@@ -153,7 +153,12 @@ type Verdict struct {
 // verdict is [NotSaid] with one of those messages, Judge creates the missing table, view, or attached
 // database and judges again, at most three times, and records what it ran in [Verdict.Setup]. The
 // grammar does not depend on the schema, so a [Parses] or [SyntaxError] found that way holds for the
-// empty database too.
+// empty database too, with one exception: the offset of the error of a variable #N. When that error
+// is raised on the semicolon at the end, some commands read the schema before they give up, which
+// runs SQL of its own and loses the offset if the schema was not read yet: `create view aux.v as
+// select #1` gives the offset 28 once aux is attached, which reads its schema, while in the empty
+// database the action's "unknown database aux" overwrites the error. Such a verdict, of a #N whose
+// error came with the statement's end, is [NotSaid], [Overwritten], as it is in the empty database.
 func Judge(src string) Verdict {
 	var s schema
 	v := s.classify(src, s.prepare(src))
@@ -164,8 +169,21 @@ func Judge(src string) Verdict {
 			break
 		}
 		v = s.classify(src, r)
+		if v.Kind == SyntaxError && isVariableError(v.Message) {
+			// The statement has a #N, so reachedEnd says Overwritten when the parse reached its end.
+			if reason := s.reachedEnd(src, r); reason == 0 || reason == Overwritten {
+				v.Kind, v.Reason = NotSaid, Overwritten
+			}
+		}
 	}
 	return v
+}
+
+// isVariableError reports whether msg is the syntax error of a variable #N, as the action of
+// `expr ::= VARIABLE` raises it, or a syntax error on such a variable.
+func isVariableError(msg string) bool {
+	text, ok := strings.CutPrefix(msg, `near "#`)
+	return ok && text != "" && '0' <= text[0] && text[0] <= '9'
 }
 
 // maxFixes of the schema that [Judge] makes for one statement.
@@ -299,9 +317,10 @@ func IsSyntaxMessage(msg string) bool {
 	return strings.HasPrefix(msg, `unrecognized token: "`) && strings.HasSuffix(msg, `"`) && len(msg) > len(`unrecognized token: ""`)
 }
 
-// reachedEnd tells, for an error that is not about syntax, whether SQLite's parser had been handed
-// the end of the first statement when the error was raised: it gives 0 if so, and otherwise the
-// reason it cannot say.
+// reachedEnd tells, for an error that is not about syntax or for the error of a variable #N, whether
+// SQLite's parser had been handed the end of the first statement when the error was raised: it gives
+// 0 if so, and otherwise the reason it cannot say. A statement with a #N or a misplaced digit
+// separator that reached its end gives [Overwritten].
 //
 // The parser stops after the token it was handed when an error was raised, and sets the tail after
 // it; the end of the text is handed over as an empty semicolon, which leaves the tail at the end.

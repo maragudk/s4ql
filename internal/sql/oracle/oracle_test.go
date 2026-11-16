@@ -134,6 +134,18 @@ func TestJudge(t *testing.T) {
 		equal(t, notSaid(oracle.StoppedEarly, "trigger tr cannot reference objects in database aux", 15, 45), v)
 	})
 
+	t.Run("should not say on the error of a variable #N that needed a schema, whose offset depends on it", func(t *testing.T) {
+		v := oracle.Judge("create view aux.v as select #1")
+		equal(t, oracle.Verdict{Kind: oracle.NotSaid, Reason: oracle.Overwritten, Message: `near "#1": syntax error`, Offset: 28,
+			Code: 1, Tail: 30, Setup: []string{"attach ':memory:' as aux"}}, v)
+	})
+
+	t.Run("should give the error of a variable #N inside a trigger, which needed a table", func(t *testing.T) {
+		v := oracle.Judge("create trigger r after insert on t begin select 1 limit #1; end")
+		equal(t, oracle.Verdict{Kind: oracle.SyntaxError, Message: `near "#1": syntax error`, Offset: 56,
+			Code: 1, Tail: 59, Setup: []string{`create table main."t" (c)`}}, v)
+	})
+
 	t.Run("should attach the schema of a missing table in an unknown schema", func(t *testing.T) {
 		v := oracle.Judge("alter table aux.t1 add column d integer not null default 1")
 		equal(t, oracle.Verdict{Kind: oracle.Parses, Offset: -1, Tail: 58,

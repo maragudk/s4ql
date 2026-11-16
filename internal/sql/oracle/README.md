@@ -1,6 +1,6 @@
 # SQL oracle
 
-`internal/sql/oracle` gives SQLite's verdict on SQL text. s4ql's own parser, which is not written yet, will be tested against it through the harness in [`internal/sql/parsetest`](../parsetest/README.md).
+`internal/sql/oracle` gives SQLite's verdict on SQL text. s4ql's own parser in [`internal/sql/parser`](../parser/README.md) is tested against it through the harness in [`internal/sql/parsetest`](../parsetest/README.md).
 
 `oracle.Judge(src)` judges the first statement of `src` and returns a `Verdict`: whether the statement parses in the vendored SQLite 3.54.1, SQLite's syntax error and its byte offset if it does not, and where the statement ends. Any bytes are allowed, NUL bytes and invalid UTF-8 included, and the verdict is the same on every call. `Judge` prepares the text with `sqlite3_prepare_v2`, through `Conn.PrepareFirst` of the binding in [`internal/sqlite`](../../sqlite/README.md), and never steps it.
 
@@ -78,6 +78,8 @@ Some statements must name an object that exists, and in an empty database SQLite
 - A name in an unknown schema stops at the next token, with `unknown database`.
 
 On such a `NotSaid`, `Judge` creates what is missing and judges again: the table (`create table "name" (c)`), a view for an INSTEAD OF trigger, or an attached `:memory:` database for the unknown schema. It does this at most three times for one statement, and `Verdict.Setup` lists the statements it ran. The grammar does not depend on the schema, so a `Parses` or a `SyntaxError` found this way holds for the empty database too.
+
+One offset does depend on the schema: that of the error of a variable `#N` raised on the semicolon at the end. SELECT, CREATE VIEW, ATTACH, and DETACH read the schema in their action even after an error, and reading it the first time runs SQL that leaves the offset at -1. `create view aux.v as select #1` gives the offset 28 once `aux` is attached, since attaching read the schema, while in the empty database the action's `unknown database aux` overwrites the error. A `#N` error found with setup is therefore `NotSaid`, `Overwritten`, as in the empty database.
 
 ## Verdicts on the corpus
 
