@@ -423,6 +423,8 @@ func readResults(path string) (map[string]result, error) {
 		if err := json.Unmarshal([]byte(line), &res); err != nil {
 			return nil, fmt.Errorf("%v: %w", path, err)
 		}
+		// Keys are compared with single spaces between their words.
+		res.Key = strings.Join(strings.Fields(res.Key), " ")
 		results[res.Key] = res
 	}
 	return results, nil
