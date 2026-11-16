@@ -52,9 +52,20 @@ func checkSharded(t *testing.T, sqls []string) (shapetest.Report, bool) {
 	return r, ok
 }
 
-// checkShardedResults is [checkSharded], with the results of the texts in their order.
+// checkShardedResults is [checkSharded], with the results of the texts in their order. Under
+// -short, the race detector, and the address sanitizer, which check a tenth of the texts and need
+// much more memory for each process, it checks them in this process.
 func checkShardedResults(t *testing.T, sqls []string) (shapetest.Report, []shapetest.Result, bool) {
 	t.Helper()
+	if slow() {
+		var c shapetest.Checker
+		defer c.Close()
+		results := make([]shapetest.Result, len(sqls))
+		for i, sql := range sqls {
+			results[i] = c.Check(sql)
+		}
+		return shapetest.Summarize(results), results, true
+	}
 	if shard := os.Getenv("S4QL_SHAPETEST_SHARD"); shard != "" {
 		i, err := strconv.Atoi(shard)
 		is.NotError(t, err)
