@@ -334,6 +334,11 @@ func TestParse_depth(t *testing.T) {
 				tr := parser.TraceParse(src)
 				r := l.run(tr.Tokens)
 				is.True(t, tr.MaxDepth <= max(r.maxStack, 1), fmt.Sprint(k, ": depth ", tr.MaxDepth, ", stack ", r.maxStack))
+				// Each level of a nesting that parses is a level of depth, or the check above would prove
+				// nothing.
+				if tr.OK {
+					is.True(t, tr.MaxDepth >= k, fmt.Sprint(k, ": depth ", tr.MaxDepth))
+				}
 				_, _, err := parser.Parse(src)
 				var e *parser.Error
 				if errors.As(err, &e) && e.Limit {
