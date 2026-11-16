@@ -48,6 +48,13 @@ Commit agreed work and merge pull requests when you judge them ready, without as
 - **Why:** Markus said on 2026-11-10: "If it's what we agreed you can just commit. Less friction, I don't want to be the bottleneck in this project", and later the same day: "merge whenever you like. We can always revert. But I'd like to stay involved in high-level design, architecture, goals, etc." On 2026-11-12, when asked to approve the wording of a comment in the schema: "Remember, you own the code. I want to be part of high-level design and architecture decisions (such as specs, data formats), you handle the details."
 - **How to apply:** check the work yourself against what was agreed, and commit and merge it if it matches and CI passes. Decide implementation details yourself and tell him what you chose. A detail inside a file he reviewed, such as a comment in the schema, is still a detail: fix it and do not ask. Bring him questions of design, architecture, scope, and goals, and anything that deviates from what was agreed. Wording in `docs/spec.md` still needs his explicit agreement before it is written.
 
+### The public site is not kept up to date automatically
+
+Do not update the public site in `site/` (served at www.s4ql.com) as a side effect of other work.
+
+- **Why:** Markus said on 2026-11-16: "you don't need to keep the public site updated automatically, I'll do that once in a while."
+- **How to apply:** when a piece of the project is merged, update the "Status" section of `README.md` and `docs/todo.md`, and leave `site/` alone. Change the site only when Markus asks.
+
 ### Second opinions are allowed without asking
 
 The second-opinion skill may be used whenever an independent view helps.
