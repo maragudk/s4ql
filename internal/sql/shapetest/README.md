@@ -245,6 +245,8 @@ Two things are compared:
 select typeof(v), quote(v), v = 'A', v < 'b', v = 1, v = '1' from (select e as v from s4ql_v)
 ```
 
+The connection limits a string or blob to 100,000 bytes, with `sqlite.Conn.SetLengthLimit`, and so do the connections of the statements, since CREATE TABLE ... AS runs its SELECT. Without the limit, `CAST(zeroblob(1E9) AS INT)` from the corpus makes a value of a gigabyte. A larger value fails with `string or blob too big` on both sides. A value of more than 1,000 bytes is compared by its length and its first 1,000 bytes.
+
 The values come from this pool: `0`, `1`, `2`, `3`, `7`, `-1`, `NULL`, `'a'`, `'B'`, `''`, `2.5`, `x'01'`, `'%'`, `'a_c'`, `'{"a":[1,2]}'`, `'12'`, and `1e300`.
 
 The values are skipped, and the bytecode is still compared, for an expression whose value can change from one call to the next. That holds for `random`, `randomblob`, `changes`, `total_changes`, `last_insert_rowid`, and `sqlite_offset`, for the date and time functions, which read the clock for `'now'`, and for `CURRENT_DATE`, `CURRENT_TIME`, and `CURRENT_TIMESTAMP`.
@@ -279,7 +281,7 @@ The numbers are those of the full tests. Under `-short`, the race detector, or t
 - 55,232 do not parse in the parser.
 - On 11, SQLite does not say that they parse.
 
-Of the 83,991 statements, 72,373 (86.2%) are compared by bytecode or probes. 4,552 (5.4%) are compared in no way but by an error, and 2,306 of those are CREATE VIRTUAL TABLE. The other 7,066 fail with the same error or are skipped as statements, and have at least one expression that is compared on its own.
+Of the 83,991 statements, 72,383 (86.2%) are compared by bytecode or probes. 4,551 (5.4%) are compared in no way but by an error, and 2,306 of those are CREATE VIRTUAL TABLE. The other 7,057 fail with the same error or are skipped as statements, and have at least one expression that is compared on its own.
 
 By kind of statement. "By values" counts the statements with at least one expression compared by values, and "None" those compared in no way but by an error:
 
@@ -299,18 +301,18 @@ By kind of statement. "By values" counts the statements with at least one expres
 | create view | 0 | 897 | 194 | 0 | 943 | 23 |
 | create virtual table | 0 | 0 | 0 | 2,306 | 0 | 2,306 |
 | delete | 923 | 0 | 29 | 0 | 684 | 13 |
-| detach | 541 | 0 | 69 | 0 | 497 | 16 |
+| detach | 541 | 0 | 69 | 0 | 493 | 16 |
 | drop index | 109 | 0 | 0 | 2 | 0 | 2 |
 | drop table | 328 | 0 | 5 | 0 | 0 | 5 |
 | drop trigger | 82 | 0 | 0 | 0 | 0 | 0 |
 | drop view | 42 | 0 | 0 | 0 | 0 | 0 |
-| insert | 19,394 | 0 | 1,731 | 10 | 20,004 | 271 |
+| insert | 19,394 | 0 | 1,731 | 10 | 19,995 | 271 |
 | pragma | 3,234 | 0 | 213 | 0 | 0 | 213 |
 | reindex | 20 | 0 | 51 | 0 | 0 | 51 |
 | replace | 269 | 0 | 16 | 0 | 267 | 2 |
-| select | 30,630 | 0 | 6,064 | 19 | 32,926 | 1,375 |
+| select | 30,640 | 0 | 6,064 | 9 | 32,898 | 1,374 |
 | transaction | 1,063 | 0 | 0 | 0 | 0 | 0 |
-| update | 1,527 | 0 | 378 | 0 | 1,781 | 44 |
+| update | 1,527 | 0 | 378 | 0 | 1,780 | 44 |
 | vacuum | 714 | 0 | 7 | 0 | 12 | 4 |
 | values | 92 | 0 | 10 | 0 | 100 | 0 |
 
@@ -329,7 +331,7 @@ The most common errors of `SameError` are functions and modules that the binding
 | `'generate_series' is not a function` | 133 |
 | `no such function: REGEXP` | 119 |
 
-The statements hold 208,989 expressions. A `Checker` had seen 134,111 of them before. Of the other 74,878, 57,994 are compared by bytecode and 53,497 by values. The values are not compared for 13,195 that name a table, and for about 2,400 that are not deterministic: `randomblob` 913, `time` 383, `strftime` 338, `datetime` 196, `random` 141, the clock 101, and smaller groups.
+The statements hold 208,989 expressions. A `Checker` had seen 134,111 of them before. Of the other 74,878, 57,994 are compared by bytecode and 53,390 by values. The values are not compared for 13,195 that name a table, and for about 2,400 that are not deterministic: `randomblob` 913, `time` 383, `strftime` 338, `datetime` 196, `random` 141, the clock 101, and smaller groups.
 
 A selection of the 73 forms, with the expressions that hold each. Expressions seen before are not counted:
 
@@ -389,13 +391,13 @@ The texts have no parentheses but those of the forms, so SQLite's precedence and
 | --- | ---: | ---: |
 | Texts | 21,594 | 20,000 |
 | Rejected by SQLite and the parser alike | 222 | 281 |
-| Compared by bytecode and values | 16,915 | 14,509 |
-| Compared by bytecode only | 1,560 | 1,756 |
-| Compared only by the same error | 2,897 | 3,454 |
+| Compared by bytecode and values | 17,163 | 15,009 |
+| Compared by bytecode only | 1,474 | 1,577 |
+| Compared only by the same error | 2,735 | 3,133 |
 
 The test also runs every text through `internal/sql/parsetest`, which found no disagreement on the rejected texts or on any other.
 
-Counted by pair, where a pair takes the best of its texts, 3,042 of the 3,721 are compared by bytecode and values, 212 by bytecode only, and 467 only by the same error. Each of those 679 pairs involves one of these:
+Counted by pair, where a pair takes the best of its texts, 3,084 of the 3,721 are compared by bytecode and values, 198 by bytecode only, and 439 only by the same error. Each of those 637 pairs involves one of these:
 
 - `REGEXP` or `NOT REGEXP`, for which SQLite builds no program
 - `MATCH` or `NOT MATCH`, which fail when they run
@@ -404,7 +406,7 @@ Counted by pair, where a pair takes the best of its texts, 3,042 of the 3,721 ar
 
 ### Statements written by hand
 
-A generator does not fit the structure of statements. `Structure` in `export_test.go` holds 61 statements written by hand, on:
+A generator does not fit the structure of statements. `Structure` in `export_test.go` holds 66 statements written by hand, on:
 
 - joins of every kind, with ON and USING
 - ORDER BY and LIMIT on compounds and in subqueries, and LIMIT with a comma
@@ -431,7 +433,7 @@ A check that never fails proves nothing. `TestCheck_mutations` in `mutate_intern
 | Damage | Detected | Undetected | Not compared | Rate |
 | --- | ---: | ---: | ---: | ---: |
 | Rotate two operators | 2,226 | 69 | 129 | 97.0% |
-| Swap the operands | 4,235 | 130 | 405 | 97.0% |
+| Swap the operands | 4,240 | 130 | 405 | 97.0% |
 | Move the NOT of IS NOT to its operand | 122 | 0 | 6 | 100% |
 | Move the NOT of NOT BETWEEN, LIKE, or IN out | 0 | 650 | 102 | 0% |
 | Swap the operands of LIMIT | 19 | 1 | 0 | 95.0% |
@@ -439,10 +441,10 @@ A check that never fails proves nothing. `TestCheck_mutations` in `mutate_intern
 | Swap two join operators | 140 | 10 | 2 | 93.3% |
 | Move ORDER BY or LIMIT | 33 | 0 | 0 | 100% |
 | Move the ELSE of a nested CASE | 1 | 0 | 0 | 100% |
-| Move FILTER or OVER to an argument | 2 | 0 | 0 | 100% |
-| Move ORDER BY between the arguments and the window | 82 | 0 | 0 | 100% |
+| Move FILTER or OVER to an argument | 3 | 0 | 0 | 100% |
+| Move ORDER BY between the arguments and the window | 83 | 0 | 0 | 100% |
 | Swap the WHEREs of an upsert | 7 | 0 | 0 | 100% |
-| Move a column constraint to the next column | 145 | 8 | 3 | 94.8% |
+| Move a column constraint to the next column | 146 | 9 | 3 | 94.2% |
 | Move CONSTRAINT name after its constraint | 1 | 2 | 0 | 33.3% |
 | Split a number with digit separators into a number and an alias | 2 | 0 | 0 | 100% |
 
