@@ -55,6 +55,7 @@ Each prepare runs on a new connection to an empty `:memory:` database, so a PRAG
 - comments allowed, which is the default of SQLITE_DBCONFIG_ENABLE_COMMENTS; with it off, a comment is an unrecognized token
 - `Conn.DenyProcessPragmas`, because the PRAGMAs `soft_heap_limit`, `hard_heap_limit`, `temp_store_directory`, and `data_store_directory` change the whole process when they are prepared. They fail with `not authorized` after the parse, so their syntax is still judged.
 - SQLite's default limits
+- its schema loaded before the text is prepared, so that an error raised with the end of a statement keeps its offset; see [The loaded schema](#the-loaded-schema)
 
 The limits that show in verdicts are the compile-time defaults of 3.54.1:
 
@@ -79,19 +80,43 @@ Some statements must name an object that exists, and in an empty database SQLite
 
 On such a `NotSaid`, `Judge` creates what is missing and judges again: the table (`create table "name" (c)`), a view for an INSTEAD OF trigger, or an attached `:memory:` database for the unknown schema. It does this at most three times for one statement, and `Verdict.Setup` lists the statements it ran. The grammar does not depend on the schema, so a `Parses` or a `SyntaxError` found this way holds for the empty database too.
 
-One offset does depend on the schema: that of the error of a variable `#N` raised on the semicolon at the end. SELECT, CREATE VIEW, ATTACH, and DETACH read the schema in their action even after an error, and reading it the first time runs SQL that leaves the offset at -1. `create view aux.v as select #1` gives the offset 28 once `aux` is attached, since attaching read the schema, while in the empty database the action's `unknown database aux` overwrites the error. A `#N` error found with setup is therefore `NotSaid`, `Overwritten`, as in the empty database.
+One verdict found with setup does not hold for the empty database: the syntax error of a variable `#N` that came with the statement's end. In the empty database, `create view aux.v as select #1` gives `unknown database aux`. The action raises that error on the same end token, and it replaces the `#N` error. Once `aux` is attached, the text gives `near "#1": syntax error` at 28. The syntax error is not SQLite's verdict on the empty database, so a `#N` error found with setup is `NotSaid`, `Overwritten`, when it came with the statement's end. A `#N` error raised before the end, as in a step of a trigger that needed a table, stays a `SyntaxError`.
 
-## The offset of `#N` after VALUES
+## The loaded schema
 
-SQLite can also read the schema while it parses, before the end. `sqlite3MultiValues` in insert.c does that for a VALUES with more than one row, when it compiles the rows into a co-routine. It does so when no common table expression came before and the rows are constant. Then the action at the end does not read the schema again, and the `#N` error keeps its offset: `values(0),(0) union select #0` gives 27, and `values(0),(a) union select #0` gives -1. Whether a row is constant depends on SQLite's code generator and on the functions registered on the connection, not on the grammar.
+`Judge` prepares every text on a connection whose schema is loaded. After the setup statements and before the text, it prepares and finalizes `select 1`. It does this on every connection that it uses: with and without setup, and for the text with a space added.
 
-For such a statement, `Verdict.OffsetNotSaid` is true. The verdict is a `SyntaxError` with SQLite's message, offset, and tail, but the offset is not a fact about the grammar. `Judge` decides this from the tokens alone, with no knowledge of functions or constant expressions. All of these must hold:
+A fresh connection loses the offset of some errors. `sqlite3_error_offset` is documented to give the byte offset of the token that the error refers to, or -1 if the error refers to no token. But SQLite 3.54.1 loads the schema of a connection the first time a statement needs it. The load runs nested SQL, `SELECT*FROM"main".sqlite_master ORDER BY rowid` in `sqlite3InitOne`, and the successful prepare of that SQL calls `sqlite3ErrorClear`, which sets the offset to -1.
 
-- The error is that of a `#N`, and it came with the statement's end: the parse did not stop early, inside a trigger, or inside the arguments of a virtual table.
-- The statement may be one of the four commands: after EXPLAIN or EXPLAIN QUERY PLAN, its first token is SELECT, VALUES, ATTACH, or DETACH, or it starts with CREATE VIEW or CREATE TEMP VIEW. A statement that starts with WITH does not count. A WITH at the start is always the keyword, and the action on the name of its first common table expression keeps `sqlite3MultiValues` from reading the schema for any VALUES after it. A WITH anywhere else may be a name, since WITH is a fallback keyword, so it is not used.
-- The statement has a VALUES with more than one row: VALUES and `(`, and after the `)` that closes it, `,` and `(`.
+The actions of four commands load the schema when the statement's end arrives, even after an error: SELECT (`cmd ::= select` calls `sqlite3ReadSchema` unless `DBFLAG_EncodingFixed` is set), CREATE VIEW (through `sqlite3StartTable`), and ATTACH and DETACH (through `codeAttach`). On a fresh connection, an error raised with the end of one of these statements therefore has the offset -1. That is an artifact of the new connection, not SQLite's verdict on the text.
 
-The rule covers more statements than those whose offset depends on the schema. Each condition is necessary for SQLite to keep an offset that the end would otherwise lose. The parse loop stops on the token that raised the error, so an error before the end has the token's offset. The actions of the other commands do not read the schema after an error. Nothing else that SQLite runs while it parses one of those commands reads the schema. A `#N` error at the end that needed setup stays `NotSaid`, `Overwritten`, as described above, since in the empty database another message replaces it.
+Once the schema is loaded, `sqlite3ReadSchema` does nothing, and the error keeps the offset of its token. Creating a table or a view leaves the loaded schemas loaded, and so does attaching a database, which loads the new one. The setup statements load the schema themselves.
+
+`TestSchema_prepare` in `oracle_internal_test.go` measures the offset of the error on both connections:
+
+| Statement | Fresh connection | The oracle's connection |
+| --- | --- | --- |
+| `select #1` | -1 | 7 |
+| `create view v as select #1` | -1 | 24 |
+| `detach #1` | -1 | 7 |
+| `select 1 where #1` | -1 | 15 |
+| `with c as (select 1) select #2` | -1 | 28 |
+| `explain select #1` | -1 | 15 |
+| `attach 'x' as #1` | -1 | 14 |
+| `values(0),(a) union select #0` | -1 | 27 |
+| `values(0),(0) union select #0` | 27 | 27 |
+| `select ?0` | -1 | 7 |
+| `delete from t where #1` | 20 | 20 |
+
+Three rows need a note:
+
+- `values(0),(0) union select #0` keeps its offset on a fresh connection too. SQLite loads the schema while it parses a multi-row VALUES, when the rows are constant and no common table expression came before. The action at the end then finds the schema loaded.
+- `select ?0` shows that the loss is not special to `#N`. Its message is `variable number must be between ?1 and ?32766`, which is not a syntax message, and its verdict is `Parses`.
+- `delete from t where #1` keeps its offset because the action of DELETE does not load the schema after an error.
+
+The message, the result code, and the tail are the same on both connections; only the offset differs. The `select 1` adds about 4 µs to each prepare: over the corpus, the bare prepares on a new connection take about 2.1 s with it and 1.6 s without. The whole corpus through the oracle still takes about 3 s.
+
+Two syntax errors have the offset -1 on any connection: `incomplete input`, and a misplaced digit separator, as in `select 1_`.
 
 ## Verdicts on the corpus
 
@@ -100,7 +125,6 @@ On the 139,234 statements of the corpus in [`internal/sql/corpus`](../corpus/REA
 - `Parses`: 84,215. Of these, 25,608 prepared and 58,607 failed after the parse, 53,588 of them with `no such table`.
 - `SyntaxError`: 54,711.
 - `NotSaid`: 308. Of these, 295 stopped early, 11 stopped inside a trigger, and 2 are overwritten. None is unsettled or inside arguments.
-- No syntax error has `OffsetNotSaid`.
 
 The largest groups that stopped early are `duplicate column name` (78), `no such collation sequence` (49), `object name reserved for internal use` (24), `no such column`, as for `UNIQUE(rowid)` (18), and `unknown join type` (14). The report of the harness lists every group.
 
@@ -110,11 +134,12 @@ Setup was needed for 1,463 statements and settled 1,379 of them: 1,011 CREATE TR
 
 - `TestJudge` in `oracle_test.go` holds a table of texts with their whole verdicts.
 - `oracle_internal_test.go` covers the code paths that would need a text of a gigabyte or a failing connection.
+- `TestSchema_prepare` in the same file compares a fresh connection with the oracle's, as [The loaded schema](#the-loaded-schema) describes. It also pins the message that `create view aux.v as select #1` gives in the empty database.
 - `TestJudge_corpus` checks five properties on every entry of the corpus, or on every tenth with `-short` and under the address sanitizer:
   1. The fields of the verdict are in range.
-  2. The offset of a syntax error is at the token that the message names.
+  2. The offset of a syntax error is at the token that the message names, and a `near "X"` syntax error always has an offset.
   3. A statement that parses is complete: with `)` in place of its end it gives `near ")": syntax error` at that `)`, because no statement of the grammar can go on with `)`.
-  4. A syntax error is the first one: the text before its token has no syntax error that names an earlier token.
+  4. A syntax error is the first one: the text before its token has no syntax error that names an earlier token, except a `#N` right before that token. The check of a `#N` runs when the next token arrives, and a syntax error on that token wins: `select #1 2` gives `near "2": syntax error` at 10, and the text before the `2` gives the `#1` error at 7.
   5. Bytes after a NUL byte change nothing.
 - `FuzzJudge` checks the same properties, and that two calls give the same verdict. `make fuzz` runs it.
 
@@ -126,8 +151,8 @@ These are the facts about SQLite's messages, offsets, and tails that are easy to
 - `unrecognized token: "X"` has its offset at the token, and its tail at the start of the token, not after it.
 - An unterminated string, quoted name, or blob runs to the end of the text or to a NUL byte: `select 'a\x00b'` gives `unrecognized token: "'a"`.
 - A misplaced digit separator has the offset -1, and its message shows the number partly rewritten: `select 1_` gives `unrecognized token: "1_"`, and `select 1__2__3` gives `unrecognized token: "12_2__3"`.
-- A variable `#N` has the offset -1 when its error is raised at the end of the text: `select #1` gives `near "#1": syntax error` at -1, but `select #1 from t` gives it at 7. After a multi-row VALUES the oracle does not say that offset; see [The offset of `#N` after VALUES](#the-offset-of-n-after-values).
-- The corpus has 2,836 syntax errors with the offset -1: 2,812 `incomplete input`, 13 for `#N`, and 11 for a digit separator.
+- A variable `#N` has the offset of the variable, also when its error is raised at the end of the text: `select #1` gives `near "#1": syntax error` at 7, and so does `select #1 from t`. A fresh connection gives -1 for the first; see [The loaded schema](#the-loaded-schema).
+- The corpus has 2,823 syntax errors with the offset -1: 2,812 `incomplete input` and 11 for a digit separator.
 - The checks of `#N` and of the digit separator run when the next token arrives, and a syntax error on that token wins: `select 1_ 2` gives `near "2": syntax error` at 10, and `select (1_` gives `incomplete input`.
 - The last message raised while one token is handled wins. `create table t (x) foo bar` gives `near "bar": syntax error`, which replaces the action's `unknown table option: foo`. `select 0 limit 0 union select #0` gives `LIMIT clause should come after UNION not before`.
 - `/*` as the last two bytes of the text, or right before a NUL byte, is the two tokens `/` and `*`: `select 1 /*` gives `near "*": syntax error` at 10.

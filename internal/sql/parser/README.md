@@ -184,9 +184,7 @@ SQLite raises both when the next token arrives. The parser records a pending err
 - If that token is a syntax error, the syntax error wins. `select 1_ 2` gives `near "2": syntax error`, and `select (1_` gives `incomplete input`.
 - Otherwise the pending error is the result, even if a later token has a syntax error. SQLite stops after the token on which the error was raised.
 
-The `#N` error has the offset of the variable, with one exception. It has the offset -1 when the next token is the final semicolon of a SELECT, CREATE VIEW, ATTACH, or DETACH. The actions of these commands read the schema of the new connection even after the error. That runs SQL of SQLite's own, which resets the offset. DELETE, INSERT, UPDATE, VACUUM, CREATE INDEX, and CREATE TABLE AS keep the offset: `select #1` gives -1, and `delete from t where #1` gives 20.
-
-After a multi-row VALUES, SQLite can keep the offset where the parser gives -1. SQLite reads the schema only once in a statement, and `sqlite3MultiValues` in insert.c reads it while SQLite parses, when it compiles the rows into a co-routine. It does that when no common table expression came before and the rows are constant. `values(0),(0) union select #0` then keeps the offset 27, and `values(0),(a) union select #0` gives -1. Whether a row is constant is a question for SQLite's code generator, and depends on the functions registered on the connection, not on the grammar. The parser does not follow it. The oracle does not say the offset of a `#N` error at the end of a statement with a multi-row VALUES (see [the oracle's README](../oracle/README.md#the-offset-of-n-after-values)), and the harness compares only the message and the tail there.
+The `#N` error has the offset of the variable: `select #1` gives 7, and `delete from t where #1` gives 20. SQLite gives that offset on a connection whose schema is loaded, which is how the oracle judges. See [The loaded schema](../oracle/README.md#the-loaded-schema) in the oracle's README.
 
 ## Limits
 
@@ -439,7 +437,7 @@ Against SQLite on many texts:
 - `TestParse_mutants` runs three one-token mutants of every corpus entry, 416,271 texts, with no disagreement. A run with `-args -mutants 40 -seed 1000` compared 5,550,280 mutants with no disagreement.
 - `TestGenerate` runs random sentences of the grammar. A generator derives them from the rules of `parse.y`, from the start symbol `input`. Half the time it prefers the least used rule of a nonterminal, and it takes the shortest rules when its budget runs out. Names come from a pool of plain names, every quote style, every fallback keyword, the join keywords, and some keywords that are not names. By default it runs 20,000 sentences and two mutants of each, 60,000 texts, with no disagreement. A run with `-args -generated 400000 -seed 77` compared 1,200,000 texts with no disagreement, of which 415,679 parse.
 - `TestParse_sqlite` compares about 200 texts written by hand for corners that the corpus touches little.
-- `TestParse_offsetAfterValues` compares 1,034 texts with a `#N` error after a multi-row VALUES, for 94 forms of expression in 11 places. SQLite keeps the offset on 389 of them, and the oracle does not say it there.
+- `TestParse_offsetAfterValues` compares 1,034 texts with a `#N` and a multi-row VALUES, for 94 forms of expression in 11 places. On a fresh connection, the offset of the `#N` error there depends on whether the rows are constant. On the oracle's connection, SQLite gives an offset for all 1,008 syntax errors, and does not say on the other 26 texts.
 
 Against SQLite's grammar and automaton:
 
@@ -448,7 +446,7 @@ Against SQLite's grammar and automaton:
 
 Pinned results:
 
-- `TestParse` pins the result for 35 texts that are easy to get wrong, and checks each against SQLite too.
+- `TestParse` pins the result for 36 texts that are easy to get wrong, and checks each against SQLite too.
 - `TestParse_expressions` and `TestParse_statements` pin the shape of the tree for every form of expression and every kind of statement.
 - `TestParseAll` checks the offsets of several statements in one text, the stop at the first error, and a text without statements.
 - `TestParse_depth` and `TestParse_length` check the [limits](#limits).
@@ -481,7 +479,7 @@ Go's statement coverage of package `parser` is 99.5%. Five places are not covere
 - `FuzzParse` is seeded with every 25th corpus entry and with `own.txt`. It compares the parser with SQLite on the text, and checks the ownership of every statement that `ParseAll` reads from it.
 - `FuzzGenerate` fuzzes the seed and the budget of the generator, and one mutant of the sentence.
 
-A run of `FuzzParse` for 40 minutes on 10 cores made 352,479,538 executions and found nothing. A second run found, after 135,493,514 executions in 19 minutes, that a multi-row VALUES can keep the offset of a `#N` error (see [`#N` and digit separators](#n-and-digit-separators)); the input is in `testdata/fuzz/FuzzParse`. After the fix, a third run of 30 minutes made 279,930,645 executions and found nothing, 767,903,697 executions in all. A run of `FuzzGenerate` for 10 minutes made 16,059,438 executions and found nothing.
+A run of `FuzzParse` for 40 minutes on 10 cores made 352,479,538 executions and found nothing. A second run found, after 135,493,514 executions in 19 minutes, that a multi-row VALUES can keep the offset of a `#N` error that a fresh connection otherwise loses (see [The loaded schema](../oracle/README.md#the-loaded-schema) in the oracle's README); the input is in `testdata/fuzz/FuzzParse`. After a first fix, which loading the schema has since replaced, a third run of 30 minutes made 279,930,645 executions and found nothing, 767,903,697 executions in all. A run of `FuzzGenerate` for 10 minutes made 16,059,438 executions and found nothing. With the oracle on a connection whose schema is loaded, two runs of `FuzzParse` of 20 and 15 minutes on 8 cores, on a busy machine, made 129,798,343 executions and found nothing. `FuzzGenerate` made 12,011,778 executions in 10 minutes and found nothing.
 
 ### Run times
 
@@ -500,7 +498,7 @@ SQLite behaviour that one would not guess:
 
 - GENERATED is a word of a column's type: `a int generated always as (1)` has the type `int generated always`. See [Keywords as names](#keywords-as-names).
 - `create table t(a), strict` parses, because the first table option may be empty.
-- The offset of a `#N` error depends on the command, and on whether the connection has read its schema, which a multi-row VALUES with constant rows makes it do. See [`#N` and digit separators](#n-and-digit-separators).
+- On a fresh connection, a `#N` error raised with the end of a SELECT, CREATE VIEW, ATTACH, or DETACH has the offset -1. The action of the command loads the schema, and that load clears the offset. The oracle loads the schema first, and the error then has the offset of the variable. See [The loaded schema](../oracle/README.md#the-loaded-schema) in the oracle's README.
 - `select 1 end` parses: END is an alias.
 - `create table if(a)` fails at the `(`: IF after CREATE TABLE is the keyword.
 - `x BETWEEN a OR b AND c` fails. `a OR (b AND c)` is the low operand, and BETWEEN still needs its AND.
@@ -509,6 +507,6 @@ SQLite behaviour that one would not guess:
 
 ### A fault found in the oracle
 
-The work on the parser found one fault in the oracle. `create view aux.v as select #1` gave a `SyntaxError` with the offset 28, after the oracle had attached `aux`. In the empty database, the action's `unknown database aux` overwrites the `#N` error. The offset of a `#N` error raised on the final semicolon also depends on whether the schema was read.
+The work on the parser found one fault in the oracle. `create view aux.v as select #1` gave a `SyntaxError` with the offset 28, after the oracle had attached `aux`. In the empty database, the text gives `unknown database aux`: the action raises that error on the statement's end, where the `#N` error is raised too, and replaces it. The syntax error was not SQLite's verdict on the empty database.
 
 The fix is in `internal/sql/oracle`. A `#N` verdict found with setup is now `NotSaid`, `Overwritten`, when the parse reached the statement's end. A `#N` inside a trigger step, which needed a table, stays a `SyntaxError`. `oracle_test.go` has the tests, and the oracle's README describes the rule. No corpus entry was affected.

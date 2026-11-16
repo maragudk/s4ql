@@ -83,12 +83,13 @@ func TestParse(t *testing.T) {
 		{"should say incomplete input at the end", "select", syntax("incomplete input", -1)},
 		{"should name the token of a syntax error", "select 1 frm t", syntax(`near "t": syntax error`, 13)},
 		{"should report an unterminated string as an unrecognized token", "select 'abc", syntax(`unrecognized token: "'abc"`, 7)},
-		{"should report #N at the end without an offset", "select #1", syntax(`near "#1": syntax error`, -1)},
+		{"should report #N at the end with its offset", "select #1", syntax(`near "#1": syntax error`, 7)},
 		{"should report #N before the end with its offset", "select #1 from t", syntax(`near "#1": syntax error`, 7)},
 		{"should report #N at the end of a DELETE with its offset", "delete from t where #1", syntax(`near "#1": syntax error`, 20)},
-		{"should report #N at the end of a CREATE VIEW without an offset", "create view v as select #1", syntax(`near "#1": syntax error`, -1)},
-		{"should report #N at the end of an ATTACH without an offset", "attach x as #1", syntax(`near "#1": syntax error`, -1)},
-		{"should report #N at the end of a SELECT with a multi-row VALUES without an offset", "values(0),(0) union select #1", syntax(`near "#1": syntax error`, -1)},
+		{"should report #N at the end of a CREATE VIEW with its offset", "create view v as select #1", syntax(`near "#1": syntax error`, 24)},
+		{"should report #N at the end of an ATTACH with its offset", "attach x as #1", syntax(`near "#1": syntax error`, 12)},
+		{"should report #N at the end of a DETACH with its offset", "detach #1", syntax(`near "#1": syntax error`, 7)},
+		{"should report #N at the end of a SELECT with a multi-row VALUES with its offset", "values(0),(a) union select #1", syntax(`near "#1": syntax error`, 27)},
 		{"should report a misplaced digit separator without an offset", "select 1_", syntax(`unrecognized token: "1_"`, -1)},
 		{"should report a digit separator with the number partly rewritten", "select 1__2__3", syntax(`unrecognized token: "12_2__3"`, -1)},
 		{"should let a syntax error on the next token win over a digit separator", "select 1_ 2", syntax(`near "2": syntax error`, 10)},
@@ -167,9 +168,9 @@ func syntax(message string, offset int) parsetest.Result {
 
 // TestParse_offsetAfterValues compares the parser with SQLite on the error of #N at the end of a
 // statement with a multi-row VALUES, for many forms of expression in the rows and places of the
-// VALUES. SQLite keeps the offset of that error when it read the schema while it parsed, which
-// depends on whether the rows are constant; the parser gives -1. They agree only if the oracle does
-// not say the offset wherever SQLite keeps it.
+// VALUES. SQLite reads the schema while it parses such a VALUES when its rows are constant, and on a
+// fresh connection only that kept the offset of the error. On the oracle's connection, whose schema
+// is loaded, every such error has the offset of its token, as the parser gives it.
 func TestParse_offsetAfterValues(t *testing.T) {
 	exprs := []string{
 		"1", "-1", "'a'", "x'00'", "1.5", "1_0", "null", "?", "?1", ":a", "true", "FALSE", `"true"`, "[true]",
@@ -202,20 +203,21 @@ func TestParse_offsetAfterValues(t *testing.T) {
 		"attach (values(0),(E)) as #0",
 	}
 	var sqls []string
-	kept := 0
+	errs := 0
 	for _, e := range exprs {
 		for _, shape := range shapes {
 			src := strings.ReplaceAll(shape, "E", e)
 			sqls = append(sqls, src)
-			if v := oracle.Judge(src); v.OffsetNotSaid && v.Offset >= 0 {
-				kept++
+			if v := oracle.Judge(src); v.Kind == oracle.SyntaxError {
+				errs++
+				is.True(t, v.Offset >= 0, "no offset: "+src)
 			}
 		}
 	}
 	r := parsetest.Test(t, parsetest.ParserFunc(parse), sqls)
-	t.Logf("%v texts, SQLite keeps the offset on %v, does not say on %v, nor the offset on %v", r.Total, kept, r.NotSaid, r.OffsetNotSaid)
-	// Both outcomes must be common, or the test checks little.
-	is.True(t, kept > len(sqls)/5 && kept < r.OffsetNotSaid, fmt.Sprint(kept, " of ", r.OffsetNotSaid, " keep the offset"))
+	t.Logf("%v texts, %v with a syntax error, SQLite does not say on %v", r.Total, errs, r.NotSaid)
+	// Most texts must give the syntax error, or the test checks little.
+	is.True(t, errs > len(sqls)*9/10, fmt.Sprint(errs, " syntax errors"))
 	is.True(t, r.NotSaid < len(sqls)/5, fmt.Sprint("SQLite does not say on ", r.NotSaid))
 }
 
@@ -375,7 +377,7 @@ func TestParse_mutants(t *testing.T) {
 		sqls = append(sqls, parsetest.Mutants(sql, *seed+uint64(i), *mutants)...)
 	}
 	r := parsetest.Test(t, parsetest.ParserFunc(parse), sqls)
-	t.Logf("%v texts, %v agree, SQLite does not say on %v, nor the offset on %v", r.Total, r.Agreed, r.NotSaid, r.OffsetNotSaid)
+	t.Logf("%v texts, %v agree, SQLite does not say on %v", r.Total, r.Agreed, r.NotSaid)
 	for _, sql := range sqls {
 		checkOwnership(t, sql)
 	}
@@ -389,7 +391,7 @@ func TestParse_corpus(t *testing.T) {
 		sqls = every(sqls, 10)
 	}
 	r := parsetest.Test(t, parsetest.ParserFunc(parse), sqls)
-	t.Logf("%v texts, %v agree, SQLite does not say on %v, nor the offset on %v", r.Total, r.Agreed, r.NotSaid, r.OffsetNotSaid)
+	t.Logf("%v texts, %v agree, SQLite does not say on %v", r.Total, r.Agreed, r.NotSaid)
 	for _, sql := range sqls {
 		checkOwnership(t, sql)
 	}
