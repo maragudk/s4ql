@@ -54,6 +54,25 @@ func TestCheckOwnership(t *testing.T) {
 			errString(ast.CheckOwnership(stmt, read)))
 	})
 
+	t.Run("should find a child that overlaps a token of its parent", func(t *testing.T) {
+		stmt, read := parse(t, src)
+		col := firstColumn(stmt)
+		b := col.Expr.(*ast.Binary)
+		lit := &ast.Literal{Value: col.As}
+		lit.Span = ast.Span{Start: col.As.Offset, End: col.As.End()}
+		b.Y = lit
+		b.Span.End = col.As.End()
+		is.Equal(t, `in *ast.ResultColumn, token "as" at {13 15} overlaps *ast.Binary at {7 15}`,
+			errString(ast.CheckOwnership(stmt, read)))
+	})
+
+	t.Run("should find a difference in the first token", func(t *testing.T) {
+		stmt, read := parse(t, src)
+		stmt.Cmd.(*ast.SelectCmd).Select.First.(*ast.SimpleSelect).Select.Kind = token.ID
+		is.Equal(t, `token 0 of the tree is "select" at 0 of kind ID, but the token read is "select" at 0 of kind SELECT`,
+			errString(ast.CheckOwnership(stmt, read)))
+	})
+
 	t.Run("should find a token that was not read", func(t *testing.T) {
 		stmt, read := parse(t, src)
 		is.Equal(t, `token ";" at 32 is owned by a node, but was not read`, errString(ast.CheckOwnership(stmt, read[:len(read)-1])))
@@ -79,7 +98,7 @@ func TestCheckOwnership(t *testing.T) {
 		is.Equal(t, "*ast.ResultColumn has the span {17 7}", errString(ast.CheckOwnership(stmt, read)))
 	})
 
-	t.Run("should find a child whose span covers a token of its parent", func(t *testing.T) {
+	t.Run("should find a child whose span is wider than its tokens", func(t *testing.T) {
 		stmt, read := parse(t, src)
 		col := firstColumn(stmt)
 		col.Expr.(*ast.Binary).Span.End = col.As.End()
