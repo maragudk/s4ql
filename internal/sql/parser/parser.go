@@ -54,6 +54,9 @@ const MaxDepth = 2500
 // tokens add up to more, counted from the start of the text, spaces and comments included.
 const MaxLength = 1_000_000_000
 
+// lengthLimit is [MaxLength], and smaller in tests.
+var lengthLimit = MaxLength
+
 // Parse the first statement of src. It reads src up to its first NUL byte, as SQLite does, skips
 // empty statements, and returns the statement and the tail: the offset of the first byte after the
 // statement's semicolon, or of the end of the text. A text with no statement gives a nil statement
@@ -275,7 +278,7 @@ func (p *parser) read() {
 		}
 		t := tok{kind: kind, raw: kind, off: p.next, n: n}
 		p.next += n
-		if p.next-p.start > MaxLength {
+		if p.next-p.start > lengthLimit {
 			p.overLimit("s4ql: the statement is longer than the limit of 1000000000 bytes")
 		}
 		switch kind {
