@@ -9,13 +9,14 @@ The binding covers only what slice 1 of [docs/roadmap.md](../../docs/roadmap.md)
 - prepare one statement, and, for the oracle of the parser, prepare the first statement of any text and say where it ends
 - deny the PRAGMAs that change settings for the whole process, which the oracle needs because it prepares any SQL
 - lower the length limit of a connection, which the shape check of the SQL parser in `internal/sql/shapetest` needs because it evaluates any expression
+- add stubs of the functions `regexp` and `match`, and of `glob` with ESCAPE, to a connection with `AddTestFunctions`, which the shape check in `internal/sql/shapetest` needs because SQLite has no function of its own that runs for REGEXP, MATCH, and GLOB ... ESCAPE. The stubs give the operators a meaning that SQLite does not give them, so they are for the connections of tests only
 - bind and read 64-bit integers and text, and bind NULL
 - read the column count, the column names, and the type of each value
 - step, reset, and finalize
 - run a statement with `Exec`
 - return errors with SQLite's extended result code, its message, and the byte offset of the error in the SQL text (`sqlite3_error_offset`)
 
-It also reports the SQLite version, the source ID, the compile options, and the keywords. `Tokenize` splits SQL text with SQLite's private tokenizer `sqlite3GetToken`, which no public API exposes, so that the Go tokenizer in `internal/sql/token` can be checked against it. It is a wrapper in the binding's translation unit and not a second compile of SQLite: production builds then carry no second copy, and the build cache tracks the vendored source through `source.h` as it does for the rest of the binding. More is added when a slice needs it.
+It also reports the SQLite version, the source ID, the compile options, and the keywords. `Tokenize` splits SQL text with SQLite's private tokenizer `sqlite3GetToken`, which no public API exposes, so that the Go tokenizer in `internal/sql/token` can be checked against it. It is a wrapper in the binding's translation unit and not a second compile of SQLite: production builds then carry no second copy, and the build cache tracks the vendored source through `source.h` as it does for the rest of the binding. The stubs of `AddTestFunctions` are static C in the same translation unit, so the rules under "Symbols" below hold. More is added when a slice needs it.
 
 The vendored version is SQLite 3.54.1, from https://sqlite.org/2026/sqlite-amalgamation-3540100.zip.
 
