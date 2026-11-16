@@ -481,7 +481,7 @@ Go's statement coverage of package `parser` is 99.5%. Five places are not covere
 - `FuzzParse` is seeded with every 25th corpus entry and with `own.txt`. It compares the parser with SQLite on the text, and checks the ownership of every statement that `ParseAll` reads from it.
 - `FuzzGenerate` fuzzes the seed and the budget of the generator, and one mutant of the sentence.
 
-A run of `FuzzParse` for 40 minutes on 10 cores made 352,479,538 executions and found nothing. A second run found, after 135,493,514 executions in 19 minutes, that a multi-row VALUES can keep the offset of a `#N` error (see [`#N` and digit separators](#n-and-digit-separators)); the input is in `testdata/fuzz/FuzzParse`. After the fix, a third run of 30 minutes: FUZZ3. A run of `FuzzGenerate` for 10 minutes made 16,059,438 executions and found nothing.
+A run of `FuzzParse` for 40 minutes on 10 cores made 352,479,538 executions and found nothing. A second run found, after 135,493,514 executions in 19 minutes, that a multi-row VALUES can keep the offset of a `#N` error (see [`#N` and digit separators](#n-and-digit-separators)); the input is in `testdata/fuzz/FuzzParse`. After the fix, a third run of 30 minutes made 279,930,645 executions and found nothing, 767,903,697 executions in all. A run of `FuzzGenerate` for 10 minutes made 16,059,438 executions and found nothing.
 
 ### Run times
 
