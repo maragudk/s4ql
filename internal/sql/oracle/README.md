@@ -83,13 +83,13 @@ On such a `NotSaid`, `Judge` creates what is missing and judges again: the table
 
 On the 139,234 statements of the corpus in [`internal/sql/corpus`](../corpus/README.md):
 
-- `Parses`: 84,214. Of these, 25,607 prepared and 58,607 failed after the parse, 53,588 of them with `no such table`.
+- `Parses`: 84,215. Of these, 25,608 prepared and 58,607 failed after the parse, 53,588 of them with `no such table`.
 - `SyntaxError`: 54,711.
-- `NotSaid`: 309. Of these, 296 stopped early, 11 stopped inside a trigger, and 2 are overwritten. None is unsettled or inside arguments.
+- `NotSaid`: 308. Of these, 295 stopped early, 11 stopped inside a trigger, and 2 are overwritten. None is unsettled or inside arguments.
 
 The largest groups that stopped early are `duplicate column name` (78), `no such collation sequence` (49), `object name reserved for internal use` (24), `no such column`, as for `UNIQUE(rowid)` (18), and `unknown join type` (14). The report of the harness lists every group.
 
-Setup was needed for 1,463 statements and settled 1,378 of them: 1,010 CREATE TRIGGER, 189 CREATE TABLE in a schema that is not attached, 167 ALTER TABLE, and 12 CREATE VIRTUAL TABLE. With the empty schema alone, 1,687 statements would be `NotSaid`.
+Setup was needed for 1,463 statements and settled 1,379 of them: 1,011 CREATE TRIGGER, 189 CREATE TABLE in a schema that is not attached, 167 ALTER TABLE, and 12 CREATE VIRTUAL TABLE. With the empty schema alone, 1,687 statements would be `NotSaid`.
 
 ## How the oracle is checked
 
