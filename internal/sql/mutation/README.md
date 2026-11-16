@@ -42,7 +42,8 @@ The target runs `go run ./internal/sql/mutation -out DIR` in the root of the mod
 Before you start a run, know these points:
 
 - **A run continues.** A run with the same `-out` skips the mutants that already have a result. A run that was stopped goes on where it stopped.
-- **Results belong to one state of the code.** The first run records a fingerprint of the files under `internal/sql`, code and tests, without this directory. A later run on other code refuses the directory, and so does `-report`. Use another `-out` then.
+- **Results belong to one state of the code.** The first run records a fingerprint of the files under `internal/sql`, code and tests, without this directory, of `internal/sqlite`, of `go.mod` and `go.sum`, and of the version of Go. A later run on anything else refuses the directory, and so does `-report`. Remove the directory or use another `-out` then.
+- **A run stops on a failure of its own.** If a test binary does not start, or a file changed since its mutants were made, the run stops without a result for that mutant.
 - **It is not part of `make test` or of CI.** A full run takes too long for that. See [Results](#results).
 - **The build cache grows.** Each mutant adds about 3 MB to the Go build cache, which is about 20 GB for a full run. `-gocache` gives the builds a cache of their own, which you can delete afterwards.
 - **The run reads the files while it runs.** For each mutant, it reads the file again from the module that it runs in. Do not edit `internal/sql` during a run. To keep editing, run it on a copy of the tree.

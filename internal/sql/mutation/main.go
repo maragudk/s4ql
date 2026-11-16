@@ -183,6 +183,9 @@ func start() error {
 	}()
 	n := 0
 	for res := range done {
+		if res.Status == statusError {
+			return fmt.Errorf("%v: %v", res.Key, res.Detail)
+		}
 		n++
 		results[res.Key] = res
 		line, err := json.Marshal(res)
@@ -217,32 +220,47 @@ func moduleRoot() (string, error) {
 	return filepath.Dir(gomod), nil
 }
 
-// checkFingerprint of the code and the tests under internal/sql against the one that the results in
-// out were made with, and record it if out has none: results of other code must not be reused.
+// checkFingerprint of what the results in out depend on against the one that they were made with,
+// and record it if out has none, so that results of other code are never reused: the files under
+// internal/sql but this command, the binding of SQLite in internal/sqlite, which judges, go.mod,
+// go.sum, and the version of Go.
 func checkFingerprint(root, out string) error {
 	h := sha256.New()
-	dir := filepath.Join(root, "internal", "sql")
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if d.Name() == "mutation" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
+	version, err := exec.Command("go", "env", "GOVERSION").Output()
+	if err != nil {
+		return err
+	}
+	_, _ = h.Write(version)
+	add := func(path string) error {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		rel, _ := filepath.Rel(dir, path)
+		rel, _ := filepath.Rel(root, path)
 		_, _ = fmt.Fprintf(h, "%v %v\n", rel, len(data))
 		_, _ = h.Write(data)
 		return nil
-	})
-	if err != nil {
-		return err
+	}
+	for _, name := range []string{"go.mod", "go.sum"} {
+		if err := add(filepath.Join(root, name)); err != nil {
+			return err
+		}
+	}
+	for _, dir := range []string{filepath.Join(root, "internal", "sql"), filepath.Join(root, "internal", "sqlite")} {
+		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			switch {
+			case err != nil:
+				return err
+			case d.IsDir() && path == filepath.Join(root, "internal", "sql", "mutation"):
+				return filepath.SkipDir
+			case d.IsDir():
+				return nil
+			}
+			return add(path)
+		})
+		if err != nil {
+			return err
+		}
 	}
 	sum := hex.EncodeToString(h.Sum(nil))
 	path := filepath.Join(out, "fingerprint")
@@ -253,7 +271,7 @@ func checkFingerprint(root, out string) error {
 	case err != nil:
 		return err
 	case strings.TrimSpace(string(old)) != sum:
-		return fmt.Errorf("the results in %v are of other code under internal/sql; use another -out", out)
+		return fmt.Errorf("the results in %v are of other code or another SQLite or Go; remove the directory or use another -out", out)
 	}
 	return nil
 }

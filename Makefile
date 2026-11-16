@@ -61,7 +61,8 @@ lint-proto:
 
 # mutation runs the mutation testing of the SQL tokenizer, syntax tree, and parser, with the results
 # and the report in MUTATIONDIR. It is not part of test, since a full run takes long; see
-# internal/sql/mutation/README.md. A run with the same MUTATIONDIR goes on where the last one stopped.
+# internal/sql/mutation/README.md. A run with the same MUTATIONDIR goes on where the last one stopped,
+# and refuses it after a change of the code; remove the directory then.
 MUTATIONDIR ?= $(or $(TMPDIR),/tmp)/s4ql-mutation
 .PHONY: mutation
 mutation:

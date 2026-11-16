@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -32,6 +33,8 @@ type mutant struct {
 	Key string
 
 	edits []edit
+	// sum of the file's text that the edits are for.
+	sum [sha256.Size]byte
 }
 
 // edit of a text: the bytes [start, end) become text.
@@ -152,7 +155,7 @@ func (u *universe) generate(root, pkg, path string) ([]mutant, error) {
 	if err != nil {
 		return nil, err
 	}
-	g := &generator{u: u, pkg: pkg, path: path, src: src, fset: fset, file: f, seen: map[string]bool{}}
+	g := &generator{u: u, pkg: pkg, path: path, src: src, sum: sha256.Sum256(src), fset: fset, file: f, seen: map[string]bool{}}
 	for _, d := range f.Decls {
 		g.decl(d)
 	}
@@ -165,12 +168,13 @@ type generator struct {
 	pkg  string
 	path string
 	src  []byte
+	sum  [sha256.Size]byte
 	fset *token.FileSet
 	file *ast.File
 	// fn is the name of the declaration being walked.
 	fn      string
 	mutants []mutant
-	// seen keys and texts, so that two operators that give the same text give one mutant.
+	// seen keys and sums of texts, so that two operators that give the same text give one mutant.
 	seen map[string]bool
 }
 
@@ -201,7 +205,7 @@ func (g *generator) add(op string, n ast.Node, edits ...edit) {
 // addSpan adds a mutant with the operator op, which changes the bytes [start, end) by the edits.
 // From and To show those bytes before and after.
 func (g *generator) addSpan(op string, start, end int, edits ...edit) {
-	m := mutant{Pkg: g.pkg, File: g.path, Func: g.fn, Op: op, edits: edits}
+	m := mutant{Pkg: g.pkg, File: g.path, Func: g.fn, Op: op, edits: edits, sum: g.sum}
 	for _, e := range edits {
 		start, end = min(start, e.start), max(end, e.end)
 	}
@@ -212,7 +216,7 @@ func (g *generator) addSpan(op string, start, end int, edits ...edit) {
 	if m.From == m.To {
 		return
 	}
-	textKey := string(after)
+	textKey := fmt.Sprintf("text %x", sha256.Sum256(after))
 	if g.seen[textKey] {
 		return
 	}

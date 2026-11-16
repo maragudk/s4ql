@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -84,6 +85,9 @@ const (
 	statusSurvived   = "survived"
 	statusTimeout    = "timeout"
 	statusUncompiled = "uncompiled"
+	// statusError is a failure of the run itself, such as a test binary that does not start, or a
+	// file that changed since its mutants were made. It is not a result: the run stops.
+	statusError = "error"
 )
 
 // runner of the mutants.
@@ -255,11 +259,14 @@ func (r *runner) run(ctx context.Context, m mutant, dir string) result {
 func (r *runner) runIn(ctx context.Context, m mutant, dir string) result {
 	src, err := os.ReadFile(filepath.Join(r.root, m.File))
 	if err != nil {
-		return result{Status: statusUncompiled, Detail: err.Error()}
+		return result{Status: statusError, Detail: err.Error()}
+	}
+	if sha256.Sum256(src) != m.sum {
+		return result{Status: statusError, Detail: m.File + " changed since its mutants were made"}
 	}
 	mutated := filepath.Join(dir, filepath.Base(m.File))
 	if err := os.WriteFile(mutated, m.apply(src), 0o644); err != nil {
-		return result{Status: statusUncompiled, Detail: err.Error()}
+		return result{Status: statusError, Detail: err.Error()}
 	}
 	overlay := filepath.Join(dir, "overlay.json")
 	data, err := json.Marshal(map[string]map[string]string{"Replace": {filepath.Join(r.root, m.File): mutated}})
@@ -267,7 +274,7 @@ func (r *runner) runIn(ctx context.Context, m mutant, dir string) result {
 		panic(err)
 	}
 	if err := os.WriteFile(overlay, data, 0o644); err != nil {
-		return result{Status: statusUncompiled, Detail: err.Error()}
+		return result{Status: statusError, Detail: err.Error()}
 	}
 	built := map[string]string{}
 	defer func() {
@@ -310,7 +317,7 @@ func (r *runner) runStage(ctx context.Context, bin string, s stage, timeout time
 	var out head
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Start(); err != nil {
-		return result{Status: statusKilled, Layer: s.layer, Detail: err.Error()}
+		return result{Status: statusError, Detail: err.Error()}
 	}
 	overMemory := make(chan bool, 1)
 	done := make(chan struct{})
