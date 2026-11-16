@@ -3,6 +3,7 @@ package shapetest
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"maragu.dev/s4ql/internal/sql/ast"
@@ -648,7 +649,7 @@ func indexColumnLine(cid int, name string, desc bool, coll string) string {
 	if desc {
 		d = 1
 	}
-	return fmt.Sprintf("%d %s %d %s", cid, name, d, coll)
+	return fmt.Sprintf("%d %s %d %q", cid, quoted(name), d, coll)
 }
 
 // declare a table from the tree of its CREATE TABLE, or give why SQLite would fail on it.
@@ -711,7 +712,7 @@ func (t *declTable) lines() declaration {
 	for _, idx := range t.indexes {
 		var cols []string
 		for _, ic := range idx.cols {
-			name := "NULL"
+			name := sqlNull
 			if ic.cid >= 0 {
 				name = t.cols[ic.cid].name
 			}
@@ -756,13 +757,24 @@ type observation struct {
 	d     declaration
 }
 
-// rows of a statement, each value as its text, or NULL.
+// sqlNull stands for NULL among the values that [rows] gives, which are texts otherwise.
+const sqlNull = "\x00NULL"
+
+// quoted value of [rows] for a line: the text in quotes, or NULL.
+func quoted(v string) string {
+	if v == sqlNull {
+		return "NULL"
+	}
+	return fmt.Sprintf("%q", v)
+}
+
+// rows of a statement, each value as its text, or [sqlNull].
 func rows(conn *sqlite.Conn, sql string) ([][]string, error) {
 	rs, err := query(conn, sql)
 	for _, r := range rs {
 		for i, v := range r {
 			if v == "null:" {
-				r[i] = "NULL"
+				r[i] = sqlNull
 			} else {
 				_, r[i], _ = strings.Cut(v, ":")
 			}
@@ -786,20 +798,6 @@ func observeTable(conn *sqlite.Conn, q ast.QualifiedName) (*observation, error) 
 	}
 	o.schema = list[0][0]
 	q = ast.QualifiedName{Schema: ast.Token{Kind: token.ID, Text: quote(o.schema)}, Name: q.Name}
-	xinfo, err := query(conn, pragma(q, "table_xinfo", name))
-	if err != nil {
-		return nil, err
-	}
-	// The default is NULL when there is none, and can be the text NULL.
-	var dflts []string
-	for _, r := range xinfo {
-		dflt := "NULL"
-		if r[4] != "null:" {
-			_, text, _ := strings.Cut(r[4], ":")
-			dflt = fmt.Sprintf("%q", text)
-		}
-		dflts = append(dflts, dflt)
-	}
 	if o.xinfo, err = rows(conn, pragma(q, "table_xinfo", name)); err != nil {
 		return nil, err
 	}
@@ -807,17 +805,13 @@ func observeTable(conn *sqlite.Conn, q ast.QualifiedName) (*observation, error) 
 	if err != nil {
 		return nil, err
 	}
-	o.d.table = fmt.Sprintf("table: without rowid %v, strict %v, columns %s, autoincrement %v", list[0][4] == "1", list[0][5] == "1", list[0][3], seq[0][0] != "0")
+	o.d.table = tableLine(list[0][4] == "1", list[0][5] == "1", atoi(list[0][3]), seq[0][0] != "0")
 	fks, err := rows(conn, pragma(q, "foreign_key_list", name))
 	if err != nil {
 		return nil, err
 	}
 	for _, r := range fks {
-		to := r[4]
-		if to != "NULL" {
-			to = fmt.Sprintf("%q", to)
-		}
-		o.d.fks = append(o.d.fks, fkLine(atoi(r[0]), atoi(r[1]), r[2], fmt.Sprintf("%q", r[3]), to, r[5], r[6], r[7]))
+		o.d.fks = append(o.d.fks, fkLine(atoi(r[0]), atoi(r[1]), r[2], quoted(r[3]), quoted(r[4]), r[5], r[6], r[7]))
 	}
 	idxs, err := rows(conn, pragma(q, "index_list", name))
 	if err != nil {
@@ -887,20 +881,14 @@ func observeTable(conn *sqlite.Conn, q ast.QualifiedName) (*observation, error) 
 		return nil, err
 	}
 	for i, r := range o.xinfo {
-		o.d.columns = append(o.d.columns, columnLine(atoi(r[0]), r[1], r[2], r[3] == "1", dflts[i], atoi(r[5]), atoi(r[6]), o.colls[i]))
+		o.d.columns = append(o.d.columns, columnLine(atoi(r[0]), r[1], r[2], r[3] == "1", quoted(r[4]), atoi(r[5]), atoi(r[6]), o.colls[i]))
 	}
 	return o, nil
 }
 
+// atoi of an integer that a PRAGMA gives.
 func atoi(s string) int {
-	n := 0
-	neg := strings.HasPrefix(s, "-")
-	for _, c := range strings.TrimPrefix(s, "-") {
-		n = n*10 + int(c-'0')
-	}
-	if neg {
-		return -n
-	}
+	n, _ := strconv.Atoi(s)
 	return n
 }
 
@@ -1027,7 +1015,7 @@ func declaredIndex(conn *sqlite.Conn, cmd *ast.CreateIndex) (bool, string) {
 	var key []string
 	for _, term := range cmd.Columns {
 		ic := indexColumn(term.X, foldEqual(term.Order.Text, "desc"), false, cols, -1)
-		name := "NULL"
+		name := sqlNull
 		if ic.cid >= 0 {
 			name = cols[ic.cid].name
 		}

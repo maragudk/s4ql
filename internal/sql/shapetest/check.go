@@ -344,12 +344,18 @@ func (c *Checker) statement(r *Result, src string, orig, shown *ast.Statement) (
 	got, _ := observe(conn, shown.Cmd, s)
 	_ = conn.Close()
 	if i, ok := differ(want, got); ok {
+		skip := ""
 		if len(got) > 0 && got[len(got)-1] == "error: Recursion limit" {
 			// EXPLAIN, or a probe around the statement, adds a level to the parser's stack.
-			return Skipped, deepReason, ""
+			skip = deepReason
+		} else if name := textName(src, orig, got); name != "" {
+			skip = "a column is named by the text of its expression, which the printer changes: " + name
 		}
-		if name := textName(src, orig, got); name != "" {
-			return Skipped, "a column is named by the text of its expression, which the printer changes: " + name, ""
+		switch {
+		case skip != "" && declFault != "":
+			return 0, "", declFault
+		case skip != "":
+			return Skipped, skip, ""
 		}
 		return 0, "", fmt.Sprintf("SQLite treats the printed text differently: at %d, the original gives %q and the printed text %q", i, at(want, i), at(got, i))
 	}
