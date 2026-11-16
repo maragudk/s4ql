@@ -182,7 +182,7 @@ The brief asks for the score of the changed code; the first run's score was of c
 
 ### What worked
 
-`-run` with the keys of a few mutants made the verification of the last five cheap. Keys without line numbers meant the second run's results could be reported against the final list with `-report`.
+`-run` with the keys of a few mutants made the verification of the last five cheap. Keys without line numbers meant the second run's results could be reported against the final list with `-report`. On the final code, `make lint`, `make test`, and `make test-asan` (in Docker, with every fuzz test for 30 s under the sanitizer) pass, and the new tests pass with `-race -count=20`.
 
 ### What didn't work
 
