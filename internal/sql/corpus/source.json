@@ -1,0 +1,17 @@
+{
+	"version": "3.54.1",
+	"archives": [
+		{
+			"url": "https://sqlite.org/2026/sqlite-src-3540100.zip",
+			"size": 14899528,
+			"sha3_256": "877c6f4996ce7adb368686bce21638de9e3d91534832ad3d9d119037d1bc22ad",
+			"sha256": "387e7f6cad4797b17848c07d453dc6606917bb356a6cfe5a3abafd38c240c71b"
+		},
+		{
+			"url": "https://sqlite.org/2026/sqlite-doc-3540100.zip",
+			"size": 11961740,
+			"sha3_256": "6ea5c0eff56c7fb305ca85e820070eacd96da44ae9edfb04d4c82d909540297b",
+			"sha256": "e9f634ac28a4c7b48f5c389e4b08c039654ec1487512092b330ccfcfdc0816e0"
+		}
+	]
+}

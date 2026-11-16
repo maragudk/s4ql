@@ -27,16 +27,37 @@ package sqlite
 
 #cgo !darwin LDFLAGS: -lm
 
-// s4ql_prepare a statement from the n bytes at sql, and set *tail to the offset of the first byte
-// after it.
+// s4ql_prepare the first statement of the n bytes at sql, and set *tail to the offset of the first
+// byte after it, or to -1 when SQLite did not say where it stopped, as when it refused the text
+// before parsing it.
 static int s4ql_prepare(sqlite3 *db, const char *sql, int n, sqlite3_stmt **stmt, int *tail) {
 	const char *end = 0;
 	if (sql == 0) {
 		sql = "";
 	}
 	int rc = sqlite3_prepare_v3(db, sql, n, 0, stmt, &end);
-	*tail = end == 0 ? n : (int)(end - sql);
+	*tail = end == 0 ? -1 : (int)(end - sql);
 	return rc;
+}
+
+// s4ql_deny_process_pragmas is an authorizer that denies the PRAGMAs that change settings for the
+// whole process, and allows everything else.
+static int s4ql_deny_process_pragmas(void *arg, int action, const char *a, const char *b, const char *c, const char *d) {
+	(void)arg; (void)b; (void)c; (void)d;
+	if (action != SQLITE_PRAGMA || a == 0) {
+		return SQLITE_OK;
+	}
+	static const char *const denied[] = {"soft_heap_limit", "hard_heap_limit", "temp_store_directory", "data_store_directory"};
+	for (int i = 0; i < (int)(sizeof(denied) / sizeof(denied[0])); i++) {
+		if (sqlite3_stricmp(a, denied[i]) == 0) {
+			return SQLITE_DENY;
+		}
+	}
+	return SQLITE_OK;
+}
+
+static int s4ql_set_deny_process_pragmas(sqlite3 *db) {
+	return sqlite3_set_authorizer(db, s4ql_deny_process_pragmas, 0);
 }
 
 // s4ql_bind_text binds the n bytes at text to parameter i as text. SQLite copies the bytes before it
@@ -87,10 +108,15 @@ func (c ResultCode) Primary() ResultCode {
 	return c & 0xff
 }
 
-// Error from SQLite, with its extended result code and its message.
+// Error from SQLite, with its extended result code, its message, and the byte offset in the SQL text
+// of the token that the message names.
 type Error struct {
 	Code    ResultCode
 	Message string
+	// Offset in bytes, from the start of the SQL text, of the token that the message names, as
+	// sqlite3_error_offset gives it. It is -1 when SQLite has none: for a message that names no token,
+	// such as "incomplete input", and for an error that is not about SQL text.
+	Offset int
 }
 
 func (e *Error) Error() string {
@@ -102,9 +128,9 @@ func (e *Error) Error() string {
 // because not every failure sets the message.
 func errorFromConn(db *C.sqlite3, rc C.int) error {
 	if db == nil || C.sqlite3_extended_errcode(db) != rc {
-		return &Error{Code: ResultCode(rc), Message: C.GoString(C.sqlite3_errstr(rc))}
+		return &Error{Code: ResultCode(rc), Message: C.GoString(C.sqlite3_errstr(rc)), Offset: -1}
 	}
-	return &Error{Code: ResultCode(rc), Message: C.GoString(C.sqlite3_errmsg(db))}
+	return &Error{Code: ResultCode(rc), Message: C.GoString(C.sqlite3_errmsg(db)), Offset: int(C.sqlite3_error_offset(db))}
 }
 
 // Conn is a connection to a database.
@@ -204,32 +230,71 @@ func (c *Conn) Close() error {
 // comments and a NUL byte, because SQLite would ignore that part. Some PRAGMAs take effect when they
 // are prepared, and so take effect even when the SQL after them is refused.
 func (c *Conn) Prepare(sql string) (*Stmt, error) {
+	s, tail, err := c.PrepareFirst(sql)
+	if err != nil {
+		return nil, err
+	}
+
+	// A statement that prepared always has its tail.
+	rest := sql[tail:]
+	if strings.Trim(rest, " \t\n\f\r") != "" {
+		if s != nil {
+			_ = s.Finalize()
+		}
+		if len(rest) > 100 {
+			rest = rest[:100] + "..."
+		}
+		return nil, fmt.Errorf("sqlite: SQL continues after the first statement: %q", rest)
+	}
+	if s == nil {
+		return nil, errors.New("sqlite: no statement in SQL")
+	}
+	return s, nil
+}
+
+// PrepareFirst prepares the first SQL statement of sql, and gives it with its tail: the offset of the
+// first byte after it, which is after its semicolon, or at the end of the text if it has none. Unlike
+// [Conn.Prepare], it accepts anything after the first statement, and leaves it unread. SQLite reads
+// sql up to its first NUL byte, as it would read a C string, so a NUL byte ends the text. Empty
+// statements, which are semicolons with nothing between them, are skipped. If the text has no
+// statement, as for an empty text or one with only comments, the statement is nil and there is no
+// error.
+//
+// On an error the tail is where SQLite's parser stopped reading: after the token it was reading when
+// the error was raised, or at an unrecognized token. It is -1 when SQLite did not parse the text at
+// all, as on a closed connection.
+func (c *Conn) PrepareFirst(sql string) (*Stmt, int, error) {
 	if c.db == nil {
-		return nil, errorFromConn(nil, C.SQLITE_MISUSE)
+		return nil, -1, errorFromConn(nil, C.SQLITE_MISUSE)
 	}
 	if len(sql) > math.MaxInt32 {
-		return nil, &Error{Code: C.SQLITE_TOOBIG, Message: "statement too long"}
+		return nil, -1, &Error{Code: C.SQLITE_TOOBIG, Message: "statement too long", Offset: -1}
 	}
 
 	var stmt *C.sqlite3_stmt
 	var tail C.int
 	rc := C.s4ql_prepare(c.db, (*C.char)(unsafe.Pointer(unsafe.StringData(sql))), C.int(len(sql)), &stmt, &tail)
 	if rc != C.SQLITE_OK {
-		return nil, errorFromConn(c.db, rc)
-	}
-
-	rest := sql[tail:]
-	if strings.Trim(rest, " \t\n\f\r") != "" {
-		C.sqlite3_finalize(stmt)
-		if len(rest) > 100 {
-			rest = rest[:100] + "..."
-		}
-		return nil, fmt.Errorf("sqlite: SQL continues after the first statement: %q", rest)
+		return nil, int(tail), errorFromConn(c.db, rc)
 	}
 	if stmt == nil {
-		return nil, errors.New("sqlite: no statement in SQL")
+		return nil, int(tail), nil
 	}
-	return &Stmt{stmt: stmt}, nil
+	return &Stmt{stmt: stmt}, int(tail), nil
+}
+
+// DenyProcessPragmas on the connection from now on: the PRAGMAs soft_heap_limit, hard_heap_limit,
+// temp_store_directory, and data_store_directory, which change settings for the whole process when
+// they are prepared, fail with SQLITE_AUTH and the message "not authorized". SQLite checks this after
+// it has parsed the whole statement, so the statement's syntax is still checked.
+func (c *Conn) DenyProcessPragmas() error {
+	if c.db == nil {
+		return errorFromConn(nil, C.SQLITE_MISUSE)
+	}
+	if rc := C.s4ql_set_deny_process_pragmas(c.db); rc != C.SQLITE_OK {
+		return errorFromConn(c.db, rc)
+	}
+	return nil
 }
 
 // Exec one SQL statement to completion, discarding any rows it returns. The SQL is checked as by
@@ -516,6 +581,15 @@ func Tokenize(src string) []Token {
 		tokens[i] = Token{Type: int(types[i]), Len: int(lens[i])}
 	}
 	return tokens
+}
+
+// Complete reports whether sql ends a statement, by sqlite3_complete: whether it ends with a
+// semicolon that is not inside a string, a name, a comment, or the body of CREATE TRIGGER. The
+// sqlite3 shell splits its input into statements with it. It reads sql up to its first NUL byte.
+func Complete(sql string) bool {
+	z := C.CString(sql)
+	defer C.free(unsafe.Pointer(z))
+	return C.sqlite3_complete(z) != 0
 }
 
 // Keywords of SQL in this build of SQLite, in upper case, as sqlite3_keyword_name gives them.

@@ -1,0 +1,8 @@
+# The corpus of SQL statements is read line by line, and a carriage return in a line is an error, so
+# its files keep line feeds on every checkout.
+/internal/sql/corpus/*.txt text eol=lf
+
+# The generated corpus is large, and is reviewed through the tool that writes it.
+/internal/sql/corpus/tcl.txt linguist-generated=true -diff
+/internal/sql/corpus/doc.txt linguist-generated=true -diff
+/internal/sql/corpus/fuzz.txt linguist-generated=true -diff

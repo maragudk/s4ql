@@ -29,6 +29,7 @@ import (
 const (
 	codeError             = 1
 	codeMisuse            = 21
+	codeAuth              = 23
 	codeRange             = 25
 	codeConstraintPrimary = 1555
 )
@@ -213,6 +214,148 @@ func TestConn_Prepare(t *testing.T) {
 			_, err := c.Prepare(sql)
 			is.Equal(t, "sqlite: no statement in SQL", errorString(t, err), sql)
 		}
+	})
+
+	t.Run("should give the byte offset of the token that an error names", func(t *testing.T) {
+		c := memory(t)
+
+		_, err := c.Prepare("select 1 frm t")
+		is.Equal(t, `near "t": syntax error`, message(t, err))
+		is.Equal(t, 13, offset(t, err))
+
+		_, err = c.Prepare("select 'ünterminated")
+		is.Equal(t, `unrecognized token: "'ünterminated"`, message(t, err))
+		is.Equal(t, 7, offset(t, err))
+
+		_, err = c.Prepare("select 1, nosuch")
+		is.Equal(t, "no such column: nosuch", message(t, err))
+		is.Equal(t, 10, offset(t, err))
+	})
+
+	t.Run("should give the offset -1 for an error that names no token", func(t *testing.T) {
+		c := memory(t)
+
+		_, err := c.Prepare("select * from")
+		is.Equal(t, "incomplete input", message(t, err))
+		is.Equal(t, -1, offset(t, err))
+
+		_, err = c.Prepare("select 1_")
+		is.Equal(t, `unrecognized token: "1_"`, message(t, err))
+		is.Equal(t, -1, offset(t, err))
+
+		_, err = c.Prepare("select * from nosuch")
+		is.Equal(t, "no such table: nosuch", message(t, err))
+		is.Equal(t, -1, offset(t, err))
+	})
+
+	t.Run("should give the offset -1 for an error that is not about SQL text", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.Close())
+
+		_, err := c.Prepare("select 1")
+		is.Equal(t, codeMisuse, code(t, err))
+		is.Equal(t, -1, offset(t, err))
+	})
+}
+
+func TestConn_PrepareFirst(t *testing.T) {
+	t.Run("should prepare the first statement and give the offset after it", func(t *testing.T) {
+		c := memory(t)
+
+		s, tail, err := c.PrepareFirst("select 1; select 2")
+		is.NotError(t, err)
+		is.Equal(t, 9, tail)
+		is.EqualSlice(t, []string{"integer:1"}, rows(t, s))
+		is.NotError(t, s.Finalize())
+	})
+
+	t.Run("should give the end of the text as the tail of a statement without a semicolon", func(t *testing.T) {
+		c := memory(t)
+
+		s, tail, err := c.PrepareFirst("select 1  ")
+		is.NotError(t, err)
+		is.Equal(t, 10, tail)
+		is.NotError(t, s.Finalize())
+	})
+
+	t.Run("should read the text up to its first NUL byte", func(t *testing.T) {
+		c := memory(t)
+
+		s, tail, err := c.PrepareFirst("select 1\x00 this is not read")
+		is.NotError(t, err)
+		is.Equal(t, 8, tail)
+		is.NotError(t, s.Finalize())
+
+		_, tail, err = c.PrepareFirst("select \x00 1")
+		is.Equal(t, "incomplete input", message(t, err))
+		is.Equal(t, 7, tail)
+	})
+
+	t.Run("should skip empty statements before the first statement", func(t *testing.T) {
+		c := memory(t)
+
+		s, tail, err := c.PrepareFirst(" ; ;select 1;")
+		is.NotError(t, err)
+		is.Equal(t, 13, tail)
+		is.NotError(t, s.Finalize())
+	})
+
+	t.Run("should give no statement and no error for text without a statement", func(t *testing.T) {
+		c := memory(t)
+
+		for _, sql := range []string{"", " ", "-- comment", ";", "\x00select 1"} {
+			s, tail, err := c.PrepareFirst(sql)
+			is.NotError(t, err, sql)
+			is.True(t, s == nil, sql)
+			is.Equal(t, min(len(sql), strings.IndexByte(sql+"\x00", 0)), tail, sql)
+		}
+	})
+
+	t.Run("should give where the parser stopped, and the error's offset, on an error", func(t *testing.T) {
+		c := memory(t)
+
+		s, tail, err := c.PrepareFirst("select 1 frm t; select 2")
+		is.True(t, s == nil)
+		is.Equal(t, `near "t": syntax error`, message(t, err))
+		is.Equal(t, 13, offset(t, err))
+		is.Equal(t, 14, tail)
+	})
+
+	t.Run("should give the tail -1 when SQLite refuses the text before parsing it", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.Close())
+
+		_, tail, err := c.PrepareFirst("select 1")
+		is.Equal(t, codeMisuse, code(t, err))
+		is.Equal(t, -1, tail)
+	})
+}
+
+func TestConn_DenyProcessPragmas(t *testing.T) {
+	t.Run("should refuse the PRAGMAs that change settings for the whole process", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.DenyProcessPragmas())
+
+		for _, sql := range []string{
+			"pragma soft_heap_limit = 1",
+			"PRAGMA Hard_Heap_Limit=1",
+			"pragma main.soft_heap_limit",
+			"pragma temp_store_directory = 'x'",
+			"pragma data_store_directory = 'x'",
+		} {
+			_, _, err := c.PrepareFirst(sql)
+			is.Equal(t, codeAuth, code(t, err), sql)
+			is.Equal(t, "not authorized", message(t, err), sql)
+		}
+	})
+
+	t.Run("should allow other PRAGMAs and other statements", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.DenyProcessPragmas())
+
+		is.EqualSlice(t, []string{"integer:1"}, query(t, c, "pragma foreign_keys"))
+		is.NotError(t, c.Exec("create table t1 (v1 int primary key) strict, without rowid"))
+		is.EqualSlice(t, []string{"integer:0"}, query(t, c, "select count(*) from t1"))
 	})
 }
 
@@ -811,6 +954,22 @@ func TestTokenize(t *testing.T) {
 	})
 }
 
+func TestComplete(t *testing.T) {
+	t.Run("should report a statement that ends with a semicolon as complete", func(t *testing.T) {
+		is.True(t, sqlite.Complete("select 1;"))
+		is.True(t, sqlite.Complete("select 1; -- done\n"))
+		is.True(t, sqlite.Complete("create trigger tr after insert on t begin select 1; end;"))
+	})
+
+	t.Run("should report a statement without its end as not complete", func(t *testing.T) {
+		is.True(t, !sqlite.Complete("select 1"))
+		is.True(t, !sqlite.Complete("select ';"))
+		is.True(t, !sqlite.Complete("select 1 /* ; */"))
+		is.True(t, !sqlite.Complete("create trigger tr after insert on t begin select 1;"))
+		is.True(t, !sqlite.Complete("select 1\x00;"))
+	})
+}
+
 func TestKeywords(t *testing.T) {
 	t.Run("should give the 147 keywords of this build in upper case, each once", func(t *testing.T) {
 		keywords := sqlite.Keywords()
@@ -1205,6 +1364,16 @@ func message(t *testing.T, err error) string {
 		t.Fatalf("expected *sqlite.Error, got %T: %v", err, err)
 	}
 	return sqliteErr.Message
+}
+
+// offset of a [*sqlite.Error], failing the test for any other error.
+func offset(t *testing.T, err error) int {
+	t.Helper()
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		t.Fatalf("expected *sqlite.Error, got %T: %v", err, err)
+	}
+	return sqliteErr.Offset
 }
 
 // errorString of an error, failing the test if there is none.
