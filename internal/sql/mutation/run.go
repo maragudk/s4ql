@@ -167,15 +167,15 @@ func (r *runner) plan(pkgs []string) error {
 			byLayer := map[string][]string{}
 			for _, t := range tests {
 				l := layerOther
-				switch {
-				case tp == parserPkg:
+				switch tp {
+				case parserPkg:
 					l = layerHand
 					if pl, ok := parserLayers[t]; ok {
 						l = pl
 					}
-				case tp == shapePkg:
+				case shapePkg:
 					l = layerShape
-				case tp == pkg:
+				case pkg:
 					l = layerHand
 				}
 				byLayer[l] = append(byLayer[l], t)

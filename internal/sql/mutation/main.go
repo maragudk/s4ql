@@ -235,8 +235,8 @@ func checkFingerprint(root, out string) error {
 			return err
 		}
 		rel, _ := filepath.Rel(dir, path)
-		fmt.Fprintf(h, "%v %v\n", rel, len(data))
-		h.Write(data)
+		_, _ = fmt.Fprintf(h, "%v %v\n", rel, len(data))
+		_, _ = h.Write(data)
 		return nil
 	})
 	if err != nil {
