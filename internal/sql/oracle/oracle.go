@@ -295,8 +295,8 @@ func (s *schema) prepare(src string) result {
 // so that SQLite gives the error offset that sqlite3_error_offset documents.
 //
 // SQLite 3.54.1 loads the schema of a connection the first time a statement needs it, and that runs
-// nested SQL, "SELECT*FROM main.sqlite_schema ORDER BY rowid", whose successful prepare clears the
-// error offset of the connection. The actions of SELECT, CREATE VIEW, ATTACH, and DETACH load the
+// nested SQL, `SELECT*FROM"main".sqlite_master ORDER BY rowid` in sqlite3InitOne, whose successful
+// prepare clears the error offset of the connection with sqlite3ErrorClear. The actions of SELECT, CREATE VIEW, ATTACH, and DETACH load the
 // schema when the statement's end arrives, even after an error, so on a fresh connection the
 // syntax error of a variable #N that comes with the end has the offset -1: `select #1` gives -1
 // there, and 7 once the schema is loaded. The action of `cmd ::= select` calls sqlite3ReadSchema
