@@ -360,6 +360,24 @@ func TestParse_depth(t *testing.T) {
 		is.NotError(t, err)
 	})
 
+	t.Run("should not count a sibling as a level of nesting", func(t *testing.T) {
+		var ctes []string
+		for i := range parser.MaxDepth + 10 {
+			ctes = append(ctes, fmt.Sprintf("c%v as (select 1)", i))
+		}
+		for _, src := range []string{
+			"with " + strings.Join(ctes, ", ") + " select 1",
+			"select * from " + strings.Repeat("(select 1), ", parser.MaxDepth+10) + "t",
+			"select * from " + strings.Repeat("(a join b), ", parser.MaxDepth+10) + "t",
+			"select " + strings.Repeat("(1), ", parser.MaxDepth+10) + "1",
+		} {
+			_, _, err := parser.Parse(src)
+			is.NotError(t, err)
+			d, found, _ := parsetest.Check(parsetest.ParserFunc(parse), src)
+			is.True(t, !found, d.String())
+		}
+	})
+
 	t.Run("should fail at once on a nesting of a million", func(t *testing.T) {
 		for _, open := range []string{"(", "- ", "not ", "(select ", "f(", "case when 1 then "} {
 			_, _, err := parser.Parse("select " + strings.Repeat(open, 1_000_000))
