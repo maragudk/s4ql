@@ -134,7 +134,7 @@ func TestJudge(t *testing.T) {
 		equal(t, notSaid(oracle.StoppedEarly, "trigger tr cannot reference objects in database aux", 15, 45), v)
 	})
 
-	t.Run("should not say on the error of a variable #N that needed a schema, whose offset depends on it", func(t *testing.T) {
+	t.Run("should not say on the error of a variable #N at the end that needed a schema, which another message replaces in the empty database", func(t *testing.T) {
 		v := oracle.Judge("create view aux.v as select #1")
 		equal(t, oracle.Verdict{Kind: oracle.NotSaid, Reason: oracle.Overwritten, Message: `near "#1": syntax error`, Offset: 28,
 			Code: 1, Tail: 30, Setup: []string{"attach ':memory:' as aux"}}, v)
