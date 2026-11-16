@@ -2,7 +2,7 @@
 
 `internal/sql/parsetest` compares a SQL parser under test with SQLite, through the oracle in [`internal/sql/oracle`](../oracle/README.md). It compares three things: whether the first statement of a text parses, the exact message and byte offset of a syntax error, and where the statement ends.
 
-s4ql's own parser is not written yet. This package is how it will be tested, in the first of the four checks that [docs/todo.md](../../../docs/todo.md) lists. The other checks are not built. Before writing the parser, read [What the parser must match](../oracle/README.md#what-the-parser-must-match) in the oracle's README.
+s4ql's own parser in [`internal/sql/parser`](../parser/README.md) is tested with this package, in the first of the four checks that [docs/todo.md](../../../docs/todo.md) lists. [What the parser must match](../oracle/README.md#what-the-parser-must-match) in the oracle's README lists the facts about SQLite that are easy to get wrong.
 
 ## Testing a parser
 
@@ -112,7 +112,7 @@ The harness uses no property-based testing library. The repository has none, and
 
 ## Proof that the harness works
 
-No parser exists to test, so `parsetest_test.go` tests the harness with SQLite and with stand-ins:
+`parsetest_test.go` tests the harness with SQLite and with stand-ins, apart from any parser:
 
 - SQLite compared with itself gives no disagreement, on the whole corpus and on 8,331 mutants, three of every fiftieth entry.
 - A stand-in parser is SQLite's verdict with one known fault. Each fault is reported with the right count in the right group: a parser that accepts everything, one that is off by one in the offset, one that gives an offset where SQLite gives none, one that differs in one message, one that rejects valid statements, and one that ignores the semicolon.

@@ -1,6 +1,6 @@
 # SQL oracle
 
-`internal/sql/oracle` gives SQLite's verdict on SQL text. s4ql's own parser, which is not written yet, will be tested against it through the harness in [`internal/sql/parsetest`](../parsetest/README.md).
+`internal/sql/oracle` gives SQLite's verdict on SQL text. s4ql's own parser in [`internal/sql/parser`](../parser/README.md) is tested against it through the harness in [`internal/sql/parsetest`](../parsetest/README.md).
 
 `oracle.Judge(src)` judges the first statement of `src` and returns a `Verdict`: whether the statement parses in the vendored SQLite 3.54.1, SQLite's syntax error and its byte offset if it does not, and where the statement ends. Any bytes are allowed, NUL bytes and invalid UTF-8 included, and the verdict is the same on every call. `Judge` prepares the text with `sqlite3_prepare_v2`, through `Conn.PrepareFirst` of the binding in [`internal/sqlite`](../../sqlite/README.md), and never steps it.
 

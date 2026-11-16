@@ -51,7 +51,7 @@ func (e *Error) Error() string {
 const MaxDepth = 2500
 
 // MaxLength of a statement in bytes, SQLite's SQLITE_LIMIT_SQL_LENGTH: SQLite refuses a text whose
-// tokens add up to more, counted from the start of the text, spaces and comments included.
+// tokens add up to more, counted from where the parse starts, spaces and comments included.
 const MaxLength = 1_000_000_000
 
 // lengthLimit is [MaxLength], and smaller in tests.
