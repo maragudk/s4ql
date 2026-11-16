@@ -99,6 +99,7 @@ func TestSchema_prepare(t *testing.T) {
 		// So a verdict on such a #N found with setup is not SQLite's verdict on the empty database.
 		var s schema
 		r := s.prepare("create view aux.v as select #1")
+		is.True(t, !r.failed && r.err != nil, "prepared")
 		is.Equal(t, "unknown database aux", r.err.Message)
 		is.Equal(t, 30, r.tail)
 	})
@@ -111,6 +112,7 @@ func (s *schema) prepareFresh(t *testing.T, src string) result {
 	c, err := sqlite.Open(":memory:")
 	is.NotError(t, err)
 	defer func() { _ = c.Close() }()
+	is.NotError(t, c.DenyProcessPragmas())
 	for _, statement := range s.setup() {
 		is.NotError(t, c.Exec(statement))
 	}

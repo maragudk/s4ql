@@ -216,6 +216,8 @@ func TestParse_offsetAfterValues(t *testing.T) {
 	}
 	r := parsetest.Test(t, parsetest.ParserFunc(parse), sqls)
 	t.Logf("%v texts, %v with a syntax error, SQLite does not say on %v", r.Total, errs, r.NotSaid)
+	// Most texts must give the syntax error, or the test checks little.
+	is.True(t, errs > len(sqls)*9/10, fmt.Sprint(errs, " syntax errors"))
 	is.True(t, r.NotSaid < len(sqls)/5, fmt.Sprint("SQLite does not say on ", r.NotSaid))
 }
 

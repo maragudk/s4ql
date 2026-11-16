@@ -296,13 +296,14 @@ func (s *schema) prepare(src string) result {
 //
 // SQLite 3.54.1 loads the schema of a connection the first time a statement needs it, and that runs
 // nested SQL, `SELECT*FROM"main".sqlite_master ORDER BY rowid` in sqlite3InitOne, whose successful
-// prepare clears the error offset of the connection with sqlite3ErrorClear. The actions of SELECT, CREATE VIEW, ATTACH, and DETACH load the
-// schema when the statement's end arrives, even after an error, so on a fresh connection the
-// syntax error of a variable #N that comes with the end has the offset -1: `select #1` gives -1
-// there, and 7 once the schema is loaded. The action of `cmd ::= select` calls sqlite3ReadSchema
-// unless DBFLAG_EncodingFixed is set, which only reading a row of a schema sets, so it loads every
-// schema that is not loaded yet. Creating a table or a view, or attaching a database, leaves the
-// loaded schemas loaded, and sqlite3ReadSchema does nothing once they are.
+// prepare clears the error offset of the connection with sqlite3ErrorClear. The actions of SELECT,
+// CREATE VIEW, ATTACH, and DETACH load the schema when the statement's end arrives, even after an
+// error, so on a fresh connection the syntax error of a variable #N that comes with the end has the
+// offset -1: `select #1` gives -1 there, and 7 once the schema is loaded. The action of `cmd ::=
+// select` calls sqlite3ReadSchema unless DBFLAG_EncodingFixed is set, which only reading a row of a
+// schema sets, so it loads every schema that is not loaded yet. Creating a table or a view, or
+// attaching a database, leaves the loaded schemas loaded, and sqlite3ReadSchema does nothing once
+// they are.
 func loadSchema(c *sqlite.Conn) error {
 	stmt, _, err := c.PrepareFirst("select 1")
 	if err != nil {
