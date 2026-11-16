@@ -135,11 +135,6 @@ type Verdict struct {
 	// Reason is why SQLite does not say, for [NotSaid] only.
 	Reason Reason
 
-	// OffsetNotSaid is true for a [SyntaxError] whose offset SQLite does not settle: Offset is what
-	// SQLite gave, but it depends on whether SQLite had read the schema of the connection while it
-	// parsed. The message and the tail are SQLite's verdict as for any syntax error. See [Judge].
-	OffsetNotSaid bool
-
 	// Setup holds the statements that were run on the empty database before the verdict, if the
 	// oracle needed them for the parse to reach further; see [Judge].
 	Setup []string
@@ -152,28 +147,20 @@ type Verdict struct {
 // Each call prepares src on new connections to an empty in-memory database, with the compile options
 // and the default limits of the binding in internal/sqlite, comments allowed (the default of
 // SQLITE_DBCONFIG_ENABLE_COMMENTS), and [sqlite.Conn.DenyProcessPragmas], since PRAGMAs such as
-// soft_heap_limit act on the whole process when they are prepared. Statements that have to name an
-// existing object stop early in an empty database: CREATE TRIGGER always stops at BEGIN with "no such
-// table", and a name in an unknown schema stops at the next token with "unknown database". When the
-// verdict is [NotSaid] with one of those messages, Judge creates the missing table, view, or attached
-// database and judges again, at most three times, and records what it ran in [Verdict.Setup]. The
-// grammar does not depend on the schema, so a [Parses] or [SyntaxError] found that way holds for the
-// empty database too, with one exception: the offset of the error of a variable #N. When that error
-// is raised on the semicolon at the end, some commands read the schema before they give up, which
-// runs SQL of its own and loses the offset if the schema was not read yet: `create view aux.v as
-// select #1` gives the offset 28 once aux is attached, which reads its schema, while in the empty
-// database the action's "unknown database aux" overwrites the error. Such a verdict, of a #N whose
-// error came with the statement's end, is [NotSaid], [Overwritten], as it is in the empty database.
+// soft_heap_limit act on the whole process when they are prepared. The schema of each connection is
+// loaded before src is prepared, since on a fresh connection SQLite loses the offset of an error that
+// comes with the end of some statements; see [loadSchema].
 //
-// Even the empty database does not settle that offset when SQLite reads the schema while it parses,
-// before the end. A VALUES with more than one row does that when SQLite compiles its rows into a
-// co-routine, which it does if no common table expression came before and the rows are constant,
-// and so depends on the functions registered on the connection: `values(0),(0) union select #0`
-// gives the offset 27, and `values(0),(a) union select #0` gives -1. The verdict on the error of a
-// #N that came with the end of a statement that may be a SELECT, CREATE VIEW, ATTACH, or DETACH,
-// does not start with WITH, and has a VALUES with more than one row, therefore has
-// [Verdict.OffsetNotSaid]. That is decided from the tokens alone, and holds for more statements than
-// those whose offset depends on the schema.
+// Statements that have to name an existing object stop early in an empty database: CREATE TRIGGER
+// always stops at BEGIN with "no such table", and a name in an unknown schema stops at the next token
+// with "unknown database". When the verdict is [NotSaid] with one of those messages, Judge creates
+// the missing table, view, or attached database and judges again, at most three times, and records
+// what it ran in [Verdict.Setup]. The grammar does not depend on the schema, so a [Parses] or
+// [SyntaxError] found that way holds for the empty database too, with one exception: the error of a
+// variable #N that comes with the statement's end, where the error that the setup fixed is raised
+// too and replaces it. `create view aux.v as select #1` gives the syntax error once aux is attached,
+// while in the empty database the action's "unknown database aux" replaces it. Such a verdict is
+// [NotSaid], [Overwritten], as it is in the empty database.
 func Judge(src string) Verdict {
 	var s schema
 	r := s.prepare(src)
@@ -193,89 +180,7 @@ func Judge(src string) Verdict {
 			}
 		}
 	}
-	if v.Kind == SyntaxError && isVariableError(v.Message) {
-		v.OffsetNotSaid = s.offsetNotSaid(src, r)
-	}
 	return v
-}
-
-// offsetNotSaid tells, for the error of a variable #N in r, whether its offset may depend on whether
-// SQLite read the schema while it parsed the first statement of src.
-//
-// The offset is lost only when the error comes with the statement's end, and the action of the
-// command reads the schema even after the error, which `cmd ::= select`, sqlite3CreateView,
-// sqlite3Attach, and sqlite3Detach do. They read it only if it was not read before in the
-// statement, which happens while SQLite parses only in sqlite3MultiValues, for a VALUES with more
-// than one row and no common table expression before it. So the offset is said if the statement is
-// none of those commands or starts with WITH, if it has no such VALUES, or if the parse stopped
-// before the end.
-func (s *schema) offsetNotSaid(src string, r result) bool {
-	var fed []token.Token
-	for _, t := range fedTokens(token.Tokens(src)) {
-		if t.Offset >= r.tail {
-			break
-		}
-		if len(fed) == 0 && t.Kind == token.Semi {
-			// An empty statement before the first.
-			continue
-		}
-		fed = append(fed, t)
-	}
-	if !readsSchemaAfterError(fed) || !hasMultiRowValues(fed) {
-		return false
-	}
-	switch s.reachedEnd(src, r) {
-	case StoppedEarly, InsideTrigger, InsideArguments:
-		// The parse loop stops on the token that raised the error, which was not the statement's end.
-		return false
-	}
-	return true
-}
-
-// hasMultiRowValues tells whether the tokens of a statement, which SQLite's grammar read without a
-// syntax error, have a VALUES with more than one row: VALUES and a parenthesis, and after the
-// parenthesis that closes it, a comma and another parenthesis.
-func hasMultiRowValues(fed []token.Token) bool {
-	for i, t := range fed {
-		if t.Kind != token.Values || kindAt(fed, i+1) != token.LP {
-			continue
-		}
-		depth := 0
-		for j := i + 1; j < len(fed); j++ {
-			switch fed[j].Kind {
-			case token.LP:
-				depth++
-			case token.RP:
-				depth--
-			}
-			if depth == 0 {
-				if kindAt(fed, j+1) == token.Comma && kindAt(fed, j+2) == token.LP {
-					return true
-				}
-				break
-			}
-		}
-	}
-	return false
-}
-
-// readsSchemaAfterError tells whether the tokens of a statement may be a SELECT, CREATE VIEW,
-// ATTACH, or DETACH, by its first tokens, and not one that starts with WITH. A SELECT starts with
-// SELECT, VALUES, or WITH. A WITH at the start is always the keyword, and the action of the name of
-// its first common table expression sets bHasWith, which keeps sqlite3MultiValues from reading the
-// schema for any VALUES after it.
-func readsSchemaAfterError(fed []token.Token) bool {
-	i := commandStart(fed)
-	switch kindAt(fed, i) {
-	case token.Select, token.Values, token.Attach, token.Detach:
-		return true
-	case token.Create:
-		if kindAt(fed, i+1) == token.Temp {
-			i++
-		}
-		return kindAt(fed, i+1) == token.View
-	}
-	return false
 }
 
 // commandStart gives the index of the first token of the command in the tokens of a statement, after
@@ -368,6 +273,9 @@ func (s *schema) prepare(src string) result {
 			return result{failed: true}
 		}
 	}
+	if err := loadSchema(c); err != nil {
+		return result{failed: true}
+	}
 
 	stmt, tail, err := c.PrepareFirst(src)
 	if err == nil {
@@ -381,6 +289,26 @@ func (s *schema) prepare(src string) result {
 		return result{failed: true}
 	}
 	return result{err: sqliteErr, tail: tail}
+}
+
+// loadSchema of every database of the connection, main, temp, and attached, by preparing a SELECT,
+// so that SQLite gives the error offset that sqlite3_error_offset documents.
+//
+// SQLite 3.54.1 loads the schema of a connection the first time a statement needs it, and that runs
+// nested SQL, "SELECT*FROM main.sqlite_schema ORDER BY rowid", whose successful prepare clears the
+// error offset of the connection. The actions of SELECT, CREATE VIEW, ATTACH, and DETACH load the
+// schema when the statement's end arrives, even after an error, so on a fresh connection the
+// syntax error of a variable #N that comes with the end has the offset -1: `select #1` gives -1
+// there, and 7 once the schema is loaded. The action of `cmd ::= select` calls sqlite3ReadSchema
+// unless DBFLAG_EncodingFixed is set, which only reading a row of a schema sets, so it loads every
+// schema that is not loaded yet. Creating a table or a view, or attaching a database, leaves the
+// loaded schemas loaded, and sqlite3ReadSchema does nothing once they are.
+func loadSchema(c *sqlite.Conn) error {
+	stmt, _, err := c.PrepareFirst("select 1")
+	if err != nil {
+		return err
+	}
+	return stmt.Finalize()
 }
 
 // classify SQLite's result r for src as a verdict.

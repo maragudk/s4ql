@@ -51,8 +51,8 @@ func TestJudge(t *testing.T) {
 			expected: parsesWith(22, "unknown table option: foo", -1)},
 		{name: "should parse an unknown table option at the end of the text with a space after it", src: "create table t (x) foo ",
 			expected: parsesWith(23, "unknown table option: foo", -1)},
-		{name: "should parse a variable number out of range at the end", src: "select ?0",
-			expected: parsesWith(9, "variable number must be between ?1 and ?32766", -1)},
+		{name: "should parse a variable number out of range at the end, with the offset of the variable", src: "select ?0",
+			expected: parsesWith(9, "variable number must be between ?1 and ?32766", 7)},
 		{name: "should parse an ORDER BY before UNION", src: "select 1 union select 2 order by 1 union select 3",
 			expected: parsesWith(49, "ORDER BY clause should come after UNION not before", -1)},
 		{name: "should parse a statement with a valid digit separator and an error at the end", src: "select 1_000 from nosuch",
@@ -71,8 +71,8 @@ func TestJudge(t *testing.T) {
 			expected: syntaxError(`unrecognized token: "'a"`, 7, 7)},
 		{name: "should give the syntax error of a variable #N, raised by an action", src: "select #1 from t",
 			expected: syntaxError(`near "#1": syntax error`, 7, 14)},
-		{name: "should give the syntax error of a variable #N at the end without an offset", src: "select #1",
-			expected: syntaxError(`near "#1": syntax error`, -1, 9)},
+		{name: "should give the syntax error of a variable #N at the end with its offset", src: "select #1",
+			expected: syntaxError(`near "#1": syntax error`, 7, 9)},
 		{name: "should give a misplaced digit separator as an unrecognized token without an offset", src: "select 1_ from nosuch",
 			expected: syntaxError(`unrecognized token: "1_"`, -1, 14)},
 		{name: "should let a later syntax error win over a misplaced digit separator", src: "select 1_ 2",
@@ -146,70 +146,61 @@ func TestJudge(t *testing.T) {
 			Code: 1, Tail: 59, Setup: []string{`create table main."t" (c)`}}, v)
 	})
 
-	t.Run("should not say the offset of a variable #N at the end of a statement with VALUES, which depends on the schema", func(t *testing.T) {
+	t.Run("should give the offset of a variable #N, raised with the end of the statement or before it", func(t *testing.T) {
 		tests := []struct {
-			src          string
-			offset, tail int
+			src  string
+			tail int
 		}{
-			// The constant rows of a multi-row VALUES make SQLite read the schema while it parses, so
-			// the action at the end does not read it again, and the offset stays.
-			{"VALUES(0),(0)UNION SELECT#0", 25, 27},
-			{"values(0),(0) union select #0", 27, 29},
-			{"values(0),(0) union select #0;", 27, 30},
-			{"values(0),(0) union select #0; select 1", 27, 30},
-			{";; values(0),(0) union select #0", 30, 32},
-			{"values(0),(0),(1) union select #0", 31, 33},
-			{"explain values(0),(0) union select #0", 35, 37},
-			{"explain query plan values(0),(0) union select #0", 46, 48},
-			{"select * from (values(0),(0)) union select #0", 43, 45},
-			{"create view v as values(0),(0) union select #0", 44, 46},
-			{"create temp view v as values(0),(0) union select #0", 49, 51},
-			{"attach (values(0),(0)) as #0", 26, 28},
-			{"detach (values(0),(0)) + #0", 25, 27},
-			{"values((0)+(0)),(0) union select #0", 33, 35},
-			{"select with from (values(0),(0)) union select #0", 46, 48},
-			// Rows that are not constant, or a common table expression before them, make SQLite read
-			// the schema only at the end, which loses the offset.
-			{"values(0),(a) union select #0", -1, 29},
-			{"values(0),(random()) union select #0", -1, 36},
-			{"select * from (with c as (select 1) select 1), (values(0),(0)) union select #0", -1, 78},
-			{"create view v as values(0),(a) union select #0", -1, 46},
-			{"create view v as with c as (select 1) values(0),(0) union select #0", -1, 67},
-			{"attach (values(0),(a)) as #0", -1, 28},
-		}
-		for _, test := range tests {
-			expected := syntaxError(`near "#0": syntax error`, test.offset, test.tail)
-			expected.OffsetNotSaid = true
-			equal(t, expected, oracle.Judge(test.src))
-		}
-	})
-
-	t.Run("should give the offset of a variable #N where it does not depend on the schema", func(t *testing.T) {
-		tests := []struct {
-			src          string
-			offset, tail int
-		}{
+			// The commands whose action at the end loads the schema even after an error, which on a
+			// fresh connection loses the offset.
+			{"select #0", 9},
+			{"select #0;", 10},
+			{"select #0; select 1", 10},
+			{";; select #0", 12},
+			{"select 1 where #0", 17},
+			{"explain select #0", 17},
+			{"explain query plan select #0", 28},
+			{"with c as (select 1) select #0", 30},
+			{"create view v as select #0", 26},
+			{"create temp view v as select #0", 31},
+			{"attach 'x' as #0", 16},
+			{"detach #0", 9},
+			// A multi-row VALUES, which loads the schema while SQLite parses it when its rows are
+			// constant and no common table expression came before.
+			{"VALUES(0),(0)UNION SELECT#0", 27},
+			{"values(0),(0) union select #0", 29},
+			{"values(0),(0),(1) union select #0", 33},
+			{"explain values(0),(0) union select #0", 37},
+			{"select * from (values(0),(0)) union select #0", 45},
+			{"create view v as values(0),(0) union select #0", 46},
+			{"attach (values(0),(0)) as #0", 28},
+			{"detach (values(0),(0)) + #0", 27},
+			{"values((0)+(0)),(0) union select #0", 35},
+			{"select with from (values(0),(0)) union select #0", 48},
+			{"values(0),(a) union select #0", 29},
+			{"values(0),(random()) union select #0", 36},
+			{"select * from (with c as (select 1) select 1), (values(0),(0)) union select #0", 78},
+			{"create view v as values(0),(a) union select #0", 46},
+			{"create view v as with c as (select 1) values(0),(0) union select #0", 67},
+			{"attach (values(0),(a)) as #0", 28},
+			{"with c as (select 1) select * from (values(0),(0)) union select #0", 66},
+			{"with c as (values(0),(0)) select #0", 35},
+			{"explain with c as (select 1) values(0),(0) union select #0", 58},
+			{"select * from (values(0)) union select #0", 41},
+			{"select (values(0)), (1) union select #0", 39},
+			{"values((0),(0)) union select #0", 31},
+			{"with i(x) as (values(1) union all select x<1 from i order by 1) select x from i limit 0,#0", 90},
 			// Raised on the token after the variable, before the statement's end.
-			{"values(0),(0) union select #0 from t", 27, 34},
-			{"select #0 from (values(0),(0))", 7, 14},
-			// The actions at the end of these commands do not read the schema after an error.
-			{"insert into t values(0),(0) returning #0", 38, 40},
-			{"delete from t where #0 in (values(0),(0))", 20, 25},
-			{"create table t as values(0),(0) union select #0", 45, 47},
-			// A common table expression at the start, which keeps SQLite from reading the schema for
-			// a VALUES after it.
-			{"with c as (select 1) select * from (values(0),(0)) union select #0", -1, 66},
-			{"with c as (values(0),(0)) select #0", -1, 35},
-			{"explain with c as (select 1) values(0),(0) union select #0", -1, 58},
-			// No VALUES with more than one row.
-			{"select #0", -1, 9},
-			{"select * from (values(0)) union select #0", -1, 41},
-			{"select (values(0)), (1) union select #0", -1, 39},
-			{"values((0),(0)) union select #0", -1, 31},
-			{"with i(x) as (values(1) union all select x<1 from i order by 1) select x from i limit 0,#0", -1, 90},
+			{"values(0),(0) union select #0 from t", 34},
+			{"select #0 from (values(0),(0))", 14},
+			// The actions at the end of these commands do not load the schema after an error.
+			{"insert into t values(0),(0) returning #0", 40},
+			{"delete from t where #0 in (values(0),(0))", 25},
+			{"create table t as values(0),(0) union select #0", 47},
 		}
 		for _, test := range tests {
-			equal(t, syntaxError(`near "#0": syntax error`, test.offset, test.tail), oracle.Judge(test.src))
+			offset := strings.Index(test.src, "#0")
+			equal(t, syntaxError(`near "#0": syntax error`, offset, test.tail), oracle.Judge(test.src))
 		}
 
 		v := oracle.Judge("create trigger r after insert on t begin values(0),(0) union select #0; end")
@@ -369,11 +360,11 @@ func TestJudge_corpus(t *testing.T) {
 // follow from what it claims:
 //
 //   - Its fields are in range.
-//   - A syntax error names the token at its offset.
+//   - A syntax error names the token at its offset, and one near a token always has an offset.
 //   - A statement that parses is complete: with ) in place of its end, it has the syntax error
 //     near ")", at that ), because no statement of SQLite's grammar can go on with ).
 //   - A syntax error is the first: the text before the token that it names has no syntax error that
-//     names an earlier token.
+//     names an earlier token, but for a #N right before that token.
 //   - Text after a NUL byte changes nothing.
 func check(t *testing.T, src string, v oracle.Verdict) {
 	t.Helper()
@@ -410,14 +401,18 @@ func check(t *testing.T, src string, v oracle.Verdict) {
 		is.True(t, oracle.IsSyntaxMessage(v.Message), "syntax error with another message")
 		is.Equal(t, sqlite.ResultCode(1), v.Code)
 		if v.Offset < 0 {
+			is.True(t, !strings.HasPrefix(v.Message, `near "`), "a syntax error near a token without an offset")
 			break
 		}
 		name := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(v.Message, "near "), "unrecognized token: "), ": syntax error")
 		name = name[1 : len(name)-1]
 		is.True(t, strings.HasPrefix(src[v.Offset:], name), "the offset is not at the token named")
 
+		// The error of a #N is raised when the token after it arrives, and a syntax error on that
+		// token wins, so a #N right before the token may give its error in the text before it.
 		prefix := oracle.Judge(src[:v.Offset])
-		is.True(t, prefix.Kind != oracle.SyntaxError || prefix.Offset == -1, "syntax error before the first: "+prefix.Message)
+		is.True(t, prefix.Kind != oracle.SyntaxError || prefix.Offset == -1 || prefix.Offset == lastVariable(src[:v.Offset]),
+			"syntax error before the first: "+prefix.Message)
 
 	case oracle.NotSaid:
 		is.True(t, v.Reason != 0, "no reason")
@@ -430,6 +425,20 @@ func check(t *testing.T, src string, v oracle.Verdict) {
 	if end == len(src) {
 		equal(t, v, oracle.Judge(src+"\x00 drop table t; frm"))
 	}
+}
+
+// lastVariable gives the offset of the last token of src if it is a variable #N, or -2.
+func lastVariable(src string) int {
+	tokens := fed(token.Tokens(src))
+	if len(tokens) == 0 {
+		return -2
+	}
+	last := tokens[len(tokens)-1]
+	text := last.Text(src)
+	if last.Kind != token.Variable || len(text) < 2 || text[0] != '#' || text[1] < '0' || text[1] > '9' {
+		return -2
+	}
+	return last.Offset
 }
 
 func fed(tokens []token.Token) []token.Token {
@@ -467,6 +476,5 @@ func equal(t *testing.T, expected, actual oracle.Verdict) {
 	is.Equal(t, expected.Code, actual.Code, "code")
 	is.Equal(t, expected.Tail, actual.Tail, "tail")
 	is.Equal(t, expected.Reason, actual.Reason, "reason")
-	is.Equal(t, expected.OffsetNotSaid, actual.OffsetNotSaid, "offset not said")
 	is.EqualSlice(t, expected.Setup, actual.Setup, "setup")
 }

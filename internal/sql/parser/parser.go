@@ -141,8 +141,6 @@ type pendingError struct {
 	offset  int
 	// trigger is the index of the token on whose arrival SQLite raises the error.
 	trigger int
-	// variable is true for a #N, whose offset can be lost; see [parser.result].
-	variable bool
 }
 
 // parser of one statement.
@@ -197,14 +195,14 @@ func (p *parser) run() (stmt *ast.Statement, tail int, err error) {
 			if _, ok := r.(bailout); !ok {
 				panic(r)
 			}
-			stmt, tail, err = nil, 0, p.result(nil)
+			stmt, tail, err = nil, 0, p.result()
 		}
 	}()
 	stmt = p.statement()
 	if stmt == nil {
 		return nil, p.end, nil
 	}
-	if err := p.result(stmt); err != nil {
+	if err := p.result(); err != nil {
 		return nil, 0, err
 	}
 	if stmt.Semi.Present() {
@@ -216,7 +214,7 @@ func (p *parser) run() (stmt *ast.Statement, tail int, err error) {
 // result of the parse: the syntax error p.err at token p.errAt, if any, or the pending error of a
 // variable #N or a digit separator, which SQLite raises when the token after it arrives and which is
 // lost only if that token is the syntax error.
-func (p *parser) result(stmt *ast.Statement) error {
+func (p *parser) result() error {
 	pe := p.pending
 	if pe == nil || (p.err != nil && p.errAt <= pe.trigger) {
 		if p.err != nil {
@@ -224,32 +222,7 @@ func (p *parser) result(stmt *ast.Statement) error {
 		}
 		return nil
 	}
-	offset := pe.offset
-	if pe.variable && stmt != nil && p.endsAt(stmt, pe.trigger) && resetsOffset(stmt.Cmd) {
-		// SQLite raises the error of #N when the semicolon at the end arrives, and the action of the
-		// command, which runs on that semicolon too, reads the schema of the new connection first.
-		// That runs SQL of its own, which leaves the offset of the error at -1.
-		offset = -1
-	}
-	return &Error{Message: pe.message, Offset: offset}
-}
-
-// endsAt reports whether the token at index i is the semicolon that ends stmt, or the empty
-// semicolon at the end of the text after it.
-func (p *parser) endsAt(stmt *ast.Statement, i int) bool {
-	t := p.toks[i]
-	return t.kind == token.Semi && t.off >= stmt.Cmd.Bounds().End
-}
-
-// resetsOffset reports whether the action of the command reads the schema even after an error in
-// the statement, as `cmd ::= select` does with sqlite3ReadSchema, sqlite3CreateView through
-// sqlite3StartTable, and sqlite3Attach and sqlite3Detach through codeAttach.
-func resetsOffset(c ast.Cmd) bool {
-	switch c.(type) {
-	case *ast.SelectCmd, *ast.CreateView, *ast.Attach, *ast.Detach:
-		return true
-	}
-	return false
+	return &Error{Message: pe.message, Offset: pe.offset}
 }
 
 // tokAt index i, reading more of the text if needed.

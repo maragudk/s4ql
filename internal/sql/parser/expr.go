@@ -465,7 +465,7 @@ func (p *parser) checkVariable() {
 	t := p.cur()
 	text := p.src[t.off : t.off+t.n]
 	if len(text) >= 2 && text[0] == '#' && '0' <= text[1] && text[1] <= '9' {
-		p.setPending(&pendingError{message: fmt.Sprintf(`near "%s": syntax error`, text), offset: t.off, variable: true})
+		p.setPending(&pendingError{message: fmt.Sprintf(`near "%s": syntax error`, text), offset: t.off})
 	}
 }
 
