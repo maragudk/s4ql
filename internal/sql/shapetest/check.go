@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
 
 	"maragu.dev/s4ql/internal/sql/ast"
 	"maragu.dev/s4ql/internal/sql/oracle"
@@ -80,8 +79,8 @@ type ExprResult struct {
 	// Skipped is why the values were not compared, or "".
 	Skipped string
 
-	// Duplicate is true if the same expression was compared before in the same run, and nothing
-	// was compared again.
+	// Duplicate is true if the same expression was compared before by the same [Checker], and it
+	// was not compared again: the other fields are those of the first comparison.
 	Duplicate bool
 }
 
@@ -108,24 +107,9 @@ func Check(src string) Result {
 // each expression only once. It is not safe for concurrent use. The zero value is ready to use.
 type Checker struct {
 	conn *sqlite.Conn
-	seen *seenSet
-}
-
-// seenSet of expressions, which several checkers can share.
-type seenSet struct {
-	mu sync.Mutex
-	m  map[string]bool
-}
-
-// add the expression, and report whether it was not in the set yet.
-func (s *seenSet) add(e string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.m[e] {
-		return false
-	}
-	s.m[e] = true
-	return true
+	// seen holds the result of each expression compared, by its original text with the column
+	// references replaced.
+	seen map[string]ExprResult
 }
 
 // Close the connection of the checker.
@@ -302,6 +286,9 @@ func (c *Checker) statement(src string, orig, shown *ast.Statement) (Way, string
 	if _, ok := orig.Cmd.(*ast.CreateVirtualTable); ok {
 		return Skipped, "the arguments of a virtual table are tokens, without structure", ""
 	}
+	if typeComment(src, orig) {
+		return Skipped, typeCommentReason, ""
+	}
 	o := side{text: func(n ast.Node) string { return src[n.Bounds().Start:n.Bounds().End] }, masks: map[string]string{}}
 	s := side{text: Print, masks: map[string]string{}}
 	checksOf(orig, o)
@@ -390,6 +377,34 @@ func differ(a, b []string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+const typeCommentReason = "a declared type holds a comment, which SQLite keeps as part of the type, and which is no token of the tree"
+
+// typeComment reports whether a declared type in the tree from n has a comment between its tokens.
+// SQLite keeps the text of a type from its first token to its last, comments too, and derives the
+// affinity from it, so `a /*int*/ x` has the affinity INTEGER; the printer writes the tokens only.
+func typeComment(src string, n ast.Node) bool {
+	found := false
+	ast.Walk(n, func(n ast.Node) bool {
+		if t, ok := n.(*ast.TypeName); ok {
+			if gap := src[t.Span.Start:t.Span.End]; strings.Contains(gap, "--") || strings.Contains(gap, "/*") {
+				// A string or a quoted name can hold the same bytes, so look between the tokens.
+				ts := ast.Tokens(t)
+				for _, c := range ast.Children(t) {
+					ts = append(ts, ast.AllTokens(c)...)
+				}
+				slices.SortFunc(ts, func(a, b ast.Token) int { return a.Offset - b.Offset })
+				for i := 1; i < len(ts); i++ {
+					if strings.TrimSpace(src[ts[i-1].End():ts[i].Offset]) != "" {
+						found = true
+					}
+				}
+			}
+		}
+		return !found
+	})
+	return found
 }
 
 // checksOf the statement: the text of each CHECK constraint, which SQLite puts into the message of
@@ -742,6 +757,10 @@ func (c *Checker) exprs(src string, orig, shown *ast.Statement) ([]ExprResult, s
 
 func (c *Checker) expr(src string, eo, es ast.Expr) (ExprResult, string) {
 	r := ExprResult{Forms: forms(eo)}
+	if typeComment(src, eo) {
+		r.Skipped = typeCommentReason
+		return r, ""
+	}
 	if reason := cannotEvaluate(eo); reason != "" {
 		r.Skipped = reason
 		return r, ""
@@ -780,14 +799,22 @@ func (c *Checker) expr(src string, eo, es ast.Expr) (ExprResult, string) {
 	p.expr(es)
 	pt := p.b.String()
 
+	if prev, ok := c.seen[ot]; ok {
+		prev.Duplicate = true
+		return prev, ""
+	}
+	r, fault := c.compareExpr(r, eo, ot, pt, len(index))
 	if c.seen == nil {
-		c.seen = &seenSet{m: map[string]bool{}}
+		c.seen = map[string]ExprResult{}
 	}
-	if !c.seen.add(ot) {
-		r.Duplicate = true
-		return r, ""
-	}
-	if err := c.values(len(index), 0); err != nil {
+	c.seen[ot] = r
+	return r, fault
+}
+
+// compareExpr compares the original expression eo, as the text ot, with the printed text pt, where
+// the n column references are columns of s4ql_v.
+func (c *Checker) compareExpr(r ExprResult, eo ast.Expr, ot, pt string, n int) (ExprResult, string) {
+	if err := c.values(n, 0); err != nil {
 		panic(err)
 	}
 	want, werr := explain(c.conn, "select "+ot+" from s4ql_v", side{})
@@ -801,19 +828,19 @@ func (c *Checker) expr(src string, eo, es ast.Expr) (ExprResult, string) {
 		r.Skipped = reason
 		return r, ""
 	}
-	n := 3
-	if len(refs) == 0 {
-		n = 1
+	assignments := 3
+	if n == 0 {
+		assignments = 1
 	}
-	for k := range n {
-		if err := c.values(len(index), k); err != nil {
+	for k := range assignments {
+		if err := c.values(n, k); err != nil {
 			panic(err)
 		}
 		want := evaluate(c.conn, ot)
 		got := evaluate(c.conn, pt)
 		if want != got {
 			return r, fmt.Sprintf("SQLite gives another value for the printed expression %q than for %q, with the values %v: %s and %s",
-				pt, ot, valueList(len(index), k), got, want)
+				pt, ot, valueList(n, k), got, want)
 		}
 		if strings.HasPrefix(want, "error: ") {
 			r.Errors++

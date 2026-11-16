@@ -4,10 +4,8 @@ import (
 	"cmp"
 	"fmt"
 	"maps"
-	"runtime"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -22,6 +20,11 @@ type Report struct {
 
 	// Kinds counts the statements that were checked, by kind and by the [Way] they were compared.
 	Kinds map[string]map[Way]int
+
+	// ByValues counts the statements, by kind, of which at least one expression was compared by
+	// values, and Uncompared those that SQLite compared in no way but by an error: neither by
+	// bytecode nor probes, nor by an expression compared by bytecode or values, or compared before.
+	ByValues, Uncompared map[string]int
 
 	// Reasons counts the statements that were compared by [SameError] or [Skipped], by the error or
 	// the reason.
@@ -40,8 +43,8 @@ type Report struct {
 // ExprCounts of the expressions, by how they were compared. An expression compared by both
 // bytecode and values counts in both.
 type ExprCounts struct {
-	// All is the number of expressions, Duplicates those that were compared before in the run, and
-	// are not counted in the others.
+	// All is the number of expressions, and Duplicates the number of those that their [Checker] had
+	// compared before, which are not counted in the others.
 	All, Duplicates int
 	// Bytecode counts those with the same program, Values those with the same values.
 	Bytecode, Values int
@@ -69,29 +72,16 @@ func (c *ExprCounts) add(r ExprResult) {
 	}
 }
 
-// Run [Check] on every text, with one [Checker] for each of as many goroutines as there are
-// processors.
+// Run [Check] on every text, in turn, with one [Checker]. SQLite serializes its allocations over
+// the threads of a process, so goroutines would barely run in parallel; to check many texts in
+// parallel, split them over processes and [Summarize] the results.
 func Run(sqls []string) Report {
+	var c Checker
+	defer c.Close()
 	results := make([]Result, len(sqls))
-	var wg sync.WaitGroup
-	next := make(chan int)
-	// The workers share the expressions they have seen, so that each expression is compared once
-	// in the run, and the counts do not depend on how the texts are spread over the workers.
-	seen := &seenSet{m: map[string]bool{}}
-	for range runtime.GOMAXPROCS(0) {
-		wg.Go(func() {
-			c := Checker{seen: seen}
-			defer c.Close()
-			for i := range next {
-				results[i] = c.Check(sqls[i])
-			}
-		})
+	for i, sql := range sqls {
+		results[i] = c.Check(sql)
 	}
-	for i := range sqls {
-		next <- i
-	}
-	close(next)
-	wg.Wait()
 	return Summarize(results)
 }
 
@@ -101,6 +91,8 @@ func Summarize(results []Result) Report {
 		Texts:      len(results),
 		NotChecked: map[string]int{},
 		Kinds:      map[string]map[Way]int{},
+		ByValues:   map[string]int{},
+		Uncompared: map[string]int{},
 		Reasons:    map[Way]map[string]int{},
 		Forms:      map[string]*ExprCounts{},
 	}
@@ -122,6 +114,17 @@ func Summarize(results []Result) Report {
 				r.Reasons[res.Way] = map[string]int{}
 			}
 			r.Reasons[res.Way][res.Reason]++
+		}
+		byValues, compared := false, res.Way == Bytecode || res.Way == Probes
+		for _, e := range res.Exprs {
+			byValues = byValues || e.Values > 0
+			compared = compared || e.Bytecode || e.Values > 0
+		}
+		if byValues {
+			r.ByValues[res.Kind]++
+		}
+		if !compared {
+			r.Uncompared[res.Kind]++
 		}
 		for _, e := range res.Exprs {
 			r.Exprs.add(e)
@@ -167,9 +170,14 @@ func (r Report) String() string {
 		fmt.Fprintf(&b, "  not checked, %s: %d\n", reason, r.NotChecked[reason])
 	}
 	if checked > 0 {
-		fmt.Fprintf(&b, "compared by bytecode or probes: %d (%.1f%%)\n", r.Compared(), 100*float64(r.Compared())/float64(checked))
+		uncompared := 0
+		for _, n := range r.Uncompared {
+			uncompared += n
+		}
+		fmt.Fprintf(&b, "compared by bytecode or probes: %d (%.1f%%); compared in no way but by an error: %d (%.1f%%)\n",
+			r.Compared(), 100*float64(r.Compared())/float64(checked), uncompared, 100*float64(uncompared)/float64(checked))
 	}
-	fmt.Fprintf(&b, "\n%-28s %8s %8s %8s %8s %8s\n", "kind", "bytecode", "probes", "error", "skipped", "fault")
+	fmt.Fprintf(&b, "\n%-28s %8s %8s %8s %8s %8s %8s %8s\n", "kind", "bytecode", "probes", "error", "skipped", "values", "none", "fault")
 	faults := map[string]int{}
 	for _, f := range r.Faults {
 		faults[f.Kind]++
@@ -183,7 +191,7 @@ func (r Report) String() string {
 	slices.Sort(kinds)
 	for _, k := range kinds {
 		w := r.Kinds[k]
-		fmt.Fprintf(&b, "%-28s %8d %8d %8d %8d %8d\n", k, w[Bytecode], w[Probes], w[SameError], w[Skipped], faults[k])
+		fmt.Fprintf(&b, "%-28s %8d %8d %8d %8d %8d %8d %8d\n", k, w[Bytecode], w[Probes], w[SameError], w[Skipped], r.ByValues[k], r.Uncompared[k], faults[k])
 	}
 	for _, way := range []Way{SameError, Skipped} {
 		reasons := r.Reasons[way]
