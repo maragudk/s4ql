@@ -179,7 +179,7 @@ func textEnd(src string) int {
 // newParser of the first statement of src that starts at or after the offset start, where the text
 // ends at end.
 func newParser(src string, start, end int) *parser {
-	return &parser{src: src, end: end, start: start, next: start, lastEnd: start}
+	return &parser{src: src, end: end, start: start, next: start}
 }
 
 // parseAt parses the first statement of src that starts at or after the offset start, where the

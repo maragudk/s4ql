@@ -17,4 +17,22 @@ func TestParse_length(t *testing.T) {
 		_, _, err = Parse("select 1" + strings.Repeat(" ", 92))
 		is.NotError(t, err)
 	})
+
+	t.Run("should count the length of each statement from where its parse starts", func(t *testing.T) {
+		defer func(l int) { lengthLimit = l }(lengthLimit)
+		lengthLimit = 100
+		stmts, err := ParseAll("select 1;" + strings.Repeat(" ", 60) + "select 2" + strings.Repeat(" ", 30))
+		is.NotError(t, err)
+		is.Equal(t, 2, len(stmts))
+	})
+}
+
+func TestParser_run(t *testing.T) {
+	t.Run("should pass on a panic that is not a syntax error", func(t *testing.T) {
+		defer func() {
+			is.True(t, recover() != nil, "no panic")
+		}()
+		// A text shorter than its end makes the tokenizer slice past it, which only a bug can do.
+		_, _, _ = newParser("select", 0, 100).run()
+	})
 }
