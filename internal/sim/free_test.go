@@ -146,7 +146,8 @@ func TestFree(t *testing.T) {
 	})
 
 	// Run with the race detector, this is also the test that buggify shares its sites between
-	// goroutines safely.
+	// goroutines safely. The sites are switched on from no seed, so the check that some are on and
+	// some off fails by chance when all 50 draw the same, with a probability of 2^-49.
 	t.Run("should switch each site on or off once for every goroutine, also when they reach it at once", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			r := sim.NewFree(sim.Buggify{On: true, Activation: 0.5, Fire: 1})

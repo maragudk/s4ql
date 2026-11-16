@@ -61,25 +61,47 @@ func TestClient_free(t *testing.T) {
 		})
 	})
 
-	t.Run("should take requests from callers in parallel with every fault on", func(t *testing.T) {
+	// The faults come from no seed here, so how many requests they fail differs from run to run, and
+	// in some runs an outage outlasts every round, so that no write is sent. What the test asserts
+	// holds in every run.
+	t.Run("should take requests from callers in parallel with every fault on, and apply what they saw as one chain of writes", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
+			faults := simstore.AllFaults()
 			r := sim.NewFree(sim.Buggify{})
-			st := simstore.New(r, simstore.Options{Latency: 50 * time.Millisecond, Faults: simstore.AllFaults()})
+			st := simstore.New(r, simstore.Options{Latency: 50 * time.Millisecond, Faults: faults})
 			is.NotError(t, r.Run(func(ctx context.Context) {
+				// saw holds what each caller's reads and writes returned, in order. Each caller has its own
+				// slice, because anything that they shared would synchronise them and hide a data race.
+				type result struct {
+					write   bool
+					version store.Version
+					content string
+				}
+				var saw [8][]result
 				var tasks []host.Task
-				for i := range 8 {
-					c := st.Client(fmt.Sprint("caller-", i), nil)
-					tasks = append(tasks, r.Go(ctx, fmt.Sprint("caller-", i), func(ctx context.Context) {
+				for i := range saw {
+					name := fmt.Sprint("caller-", i)
+					c := st.Client(name, nil)
+					tasks = append(tasks, r.Go(ctx, name, func(ctx context.Context) {
 						for n := range 20 {
 							ctx, cancel := r.WithTimeout(ctx, time.Second)
+							// The content names its client, and is written once, so its version is of one write.
+							content := fmt.Sprint(name, " ", n)
 							body, v, err := c.Get(ctx, "counter")
 							switch {
 							case errors.Is(err, store.ErrNotFound):
-								_, _ = c.Create(ctx, "counter", strings.NewReader(fmt.Sprint(i, n)), nil)
+								if v, err := c.Create(ctx, "counter", strings.NewReader(content), nil); err == nil {
+									saw[i] = append(saw[i], result{true, v, content})
+								}
 							case err == nil:
-								_, _ = io.ReadAll(body)
+								data, err := io.ReadAll(body)
 								_ = body.Close()
-								_, _ = c.Swap(ctx, "counter", v, strings.NewReader(fmt.Sprint(i, n)), nil)
+								if err == nil {
+									saw[i] = append(saw[i], result{false, v, string(data)})
+								}
+								if v, err := c.Swap(ctx, "counter", v, strings.NewReader(content), nil); err == nil {
+									saw[i] = append(saw[i], result{true, v, content})
+								}
 							}
 							cancel()
 						}
@@ -89,7 +111,61 @@ func TestClient_free(t *testing.T) {
 					is.NotError(t, task.Wait(ctx))
 				}
 				is.NotError(t, st.Wait(ctx))
-				is.True(t, len(st.History()) > 0)
+
+				// Every version that a caller read or wrote is one of a write in the history, with the
+				// content of that write. A caller's calls are one after the other, and the store is
+				// strongly consistent, so each read is of that write or a later one than the caller saw
+				// before, and each write is later.
+				history := st.History()
+				index := map[store.Version]int{}
+				for j, w := range history {
+					index[w.Version] = j
+				}
+				for i := range saw {
+					previous := -1
+					for _, s := range saw[i] {
+						j, ok := index[s.version]
+						is.True(t, ok, fmt.Sprintf("caller-%v saw %q at version %v, which no write in the history has", i, s.content, s.version))
+						is.Equal(t, s.content, string(history[j].Content), fmt.Sprintf("caller-%v at version %v", i, s.version))
+						is.True(t, j > previous || (!s.write && j == previous), fmt.Sprintf("caller-%v saw write %v after write %v", i, j, previous))
+						previous = j
+					}
+				}
+
+				// One more write, from a client that was never cut off, with the store calm, lands in every
+				// run. No request is in flight after the wait, so no outage starts, and one that started ends
+				// within OutageFor.
+				st.Calm(ctx)
+				is.NotError(t, r.Sleep(ctx, faults.OutageFor))
+				c := st.Client("last", nil)
+				var last store.Version
+				body, v, err := c.Get(ctx, "counter")
+				switch {
+				case errors.Is(err, store.ErrNotFound):
+					last, err = c.Create(ctx, "counter", strings.NewReader("last"), nil)
+				case err == nil:
+					_ = body.Close()
+					last, err = c.Swap(ctx, "counter", v, strings.NewReader("last"), nil)
+				}
+				is.NotError(t, err)
+
+				// The store has one key and deletes nothing, so it applies one create and then swaps, each
+				// from the version that the write before it gave, and each by the client that sent it.
+				history = st.History()
+				is.True(t, len(history) > 0)
+				for j, w := range history {
+					if j == 0 {
+						is.True(t, w.Create, fmt.Sprintf("the first write, request %v of %v, is a swap", w.Request, w.Client))
+					} else {
+						is.True(t, !w.Create && w.From == history[j-1].Version, fmt.Sprintf("write %v, request %v of %v, is not a swap from %v, the version of the write before it", j, w.Request, w.Client, history[j-1].Version))
+					}
+					is.Equal(t, strings.Fields(string(w.Content))[0], w.Client, fmt.Sprintf("write %v, request %v, of %q", j, w.Request, w.Content))
+				}
+				is.Equal(t, last, history[len(history)-1].Version)
+				content, version, ok := st.Object("counter")
+				is.True(t, ok, "no object")
+				is.Equal(t, last, version)
+				is.Equal(t, "last", string(content))
 			}))
 		})
 	})
