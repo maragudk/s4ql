@@ -1,2 +1,4 @@
 /cover.out
 /.env
+/.playwright-cli/
+/.impeccable/reference/

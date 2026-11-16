@@ -1,0 +1,1178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>s4ql: an SQL database for Go that lives in S3</title>
+<meta name="description" content="s4ql is an embedded SQL database engine for Go that keeps all its data in S3. It is written and owned by AI agents, and trusted only as far as its tests reach.">
+<meta name="theme-color" content="#000000">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preload" href="fonts/commit-mono-400.otf" as="font" type="font/otf" crossorigin>
+<style>
+@font-face {
+  font-family: "Commit Mono";
+  src: url("fonts/commit-mono-400.otf") format("opentype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Commit Mono";
+  src: url("fonts/commit-mono-700.otf") format("opentype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --void: #000;
+  --lumin: #fff;
+  --ink: var(--lumin);
+  --ground: var(--void);
+  --font: "Commit Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --unit: 8px;
+  --gutter: clamp(16px, 4vw, 48px);
+  --max: 1440px;
+  --rule: 1px solid var(--ink);
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  background: var(--void);
+  scrollbar-color: var(--lumin) var(--void);
+  scroll-behavior: smooth;
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+}
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  caret-color: var(--lumin);
+}
+
+::selection { background: var(--lumin); color: var(--void); }
+.invert ::selection { background: var(--void); color: var(--lumin); }
+
+a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.25em;
+}
+a:hover { text-decoration-thickness: 3px; }
+
+:focus-visible {
+  outline: 2px solid var(--lumin);
+  outline-offset: 3px;
+}
+.invert :focus-visible { outline-color: var(--void); }
+
+.skip {
+  position: absolute;
+  left: var(--gutter);
+  top: -100px;
+  background: var(--lumin);
+  color: var(--void);
+  padding: 8px 16px;
+  z-index: 10;
+}
+.skip:focus { top: 8px; }
+
+.wrap {
+  max-width: var(--max);
+  margin: 0 auto;
+  padding: 0 var(--gutter);
+}
+
+.caps {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.small { font-size: 13px; line-height: 1.55; }
+
+/* Header */
+
+.top {
+  border-bottom: var(--rule);
+  position: relative;
+  z-index: 2;
+  background: var(--void);
+}
+.top .wrap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  min-height: 64px;
+}
+.mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 20px;
+  letter-spacing: 0.02em;
+}
+.mark svg { display: block; }
+.top nav ul {
+  display: flex;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.top nav a {
+  display: block;
+  padding: 8px 12px;
+  text-decoration: none;
+}
+.top nav a:hover { background: var(--lumin); color: var(--void); }
+@media (max-width: 860px) {
+  .top nav .sec { display: none; }
+}
+
+/* Buttons */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 24px;
+  border: var(--rule);
+  padding: 14px 16px 14px 20px;
+  text-decoration: none;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 14px;
+  background: var(--void);
+  color: var(--lumin);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 120ms steps(1), color 120ms steps(1);
+}
+.btn .bars {
+  display: block;
+  width: 36px;
+  height: 18px;
+  background:
+    repeating-linear-gradient(90deg,
+      currentColor 0 1px, transparent 1px 3px,
+      currentColor 3px 5px, transparent 5px 6px,
+      currentColor 6px 7px, transparent 7px 10px);
+}
+.btn:hover, .btn:focus-visible { background: var(--lumin); color: var(--void); text-decoration: none; }
+.btn.small { padding: 8px 12px; gap: 12px; font-size: 12px; }
+.btn.small .bars { width: 20px; height: 12px; }
+.invert .btn { background: var(--lumin); color: var(--void); border-color: var(--void); }
+.invert .btn:hover, .invert .btn:focus-visible { background: var(--void); color: var(--lumin); }
+
+/* Hero */
+
+.hero {
+  position: relative;
+  border-bottom: var(--rule);
+  overflow: hidden;
+}
+.hero canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.hero .wrap {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 232px;
+  gap: 48px;
+  align-items: end;
+  min-height: min(calc(100svh - 65px), 860px);
+  padding-top: 72px;
+  padding-bottom: 48px;
+}
+.claim {
+  max-width: 44rem;
+  align-self: center;
+  padding: 40px 0;
+}
+.claim h1 span + span { margin-top: 0.3em; }
+h1 {
+  font-size: clamp(32px, 4.3vw, 64px);
+  line-height: 1.06;
+  letter-spacing: -0.035em;
+  font-weight: 700;
+  margin: 0 0 32px;
+  text-wrap: balance;
+}
+h1 span { display: block; }
+h1 .process { font-weight: 400; }
+.lede {
+  font-size: 17px;
+  max-width: 60ch;
+  margin: 0 0 32px;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px 32px;
+  margin-bottom: 32px;
+}
+.state {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.state li {
+  border: var(--rule);
+  margin: 0 -1px -1px 0;
+  padding: 4px 10px;
+}
+.state li.on { background: var(--lumin); color: var(--void); }
+
+.rail {
+  background: var(--void);
+  border: var(--rule);
+  align-self: center;
+}
+.rail dl { margin: 0; }
+.rail div {
+  padding: 12px 16px;
+  border-bottom: var(--rule);
+}
+.rail div:last-child { border-bottom: 0; }
+.rail dt { margin: 0; }
+.rail dd {
+  margin: 4px 0 0;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.seedline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+.seedline .wrap {
+  display: flex;
+  justify-content: flex-end;
+  min-height: 0;
+  padding: 0 var(--gutter) 12px;
+}
+.seedline span {
+  background: var(--void);
+  padding: 2px 8px;
+}
+
+@media (max-width: 960px) {
+  .hero .wrap {
+    grid-template-columns: 1fr;
+    align-items: start;
+    gap: 32px;
+    padding-top: 40px;
+    padding-bottom: 64px;
+  }
+  .claim {
+    background: var(--void);
+    border: var(--rule);
+    border-left: 0;
+    margin-left: calc(var(--gutter) * -1);
+    padding: 32px 24px 32px var(--gutter);
+  }
+  .rail dl { display: grid; grid-template-columns: 1fr 1fr; }
+  .rail div:nth-child(odd) { border-right: var(--rule); }
+  .rail div:nth-last-child(-n+2) { border-bottom: 0; }
+  .seedline { position: relative; }
+  .seedline .wrap { justify-content: flex-start; padding-bottom: 16px; margin-top: -40px; }
+}
+
+/* Sections */
+
+section.block {
+  border-bottom: var(--rule);
+  padding: 112px 0 96px;
+}
+.block-head {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: 48px;
+  align-items: end;
+  margin-bottom: 64px;
+}
+h2 {
+  font-size: clamp(30px, 3.6vw, 52px);
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+  font-weight: 700;
+  margin: 0;
+  text-wrap: balance;
+}
+.block-head p {
+  margin: 0;
+  font-size: 17px;
+  max-width: 62ch;
+}
+h3 {
+  font-size: 16px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 0 0 12px;
+}
+p { margin: 0 0 16px; }
+p:last-child { margin-bottom: 0; }
+
+@media (max-width: 860px) {
+  section.block { padding: 72px 0 64px; }
+  .block-head { grid-template-columns: 1fr; gap: 24px; margin-bottom: 40px; }
+}
+
+/* A grid of cells that share hairlines, not cards */
+
+.cells {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: var(--rule);
+  border-left: var(--rule);
+}
+.cells > * {
+  border-right: var(--rule);
+  border-bottom: var(--rule);
+  padding: 32px;
+}
+.cells.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.cells p { max-width: 58ch; }
+@media (max-width: 1100px) {
+  .cells.three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .cells, .cells.three { grid-template-columns: 1fr; }
+  .cells > * { padding: 24px 20px; }
+}
+
+.cell-wide { grid-column: 1 / -1; }
+
+/* Product: the log */
+
+.log {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  border: var(--rule);
+  margin-bottom: 64px;
+}
+.manifest {
+  min-width: 0;
+  border-right: var(--rule);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.manifest pre {
+  margin: 0;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.manifest .hl { background: var(--lumin); color: var(--void); }
+.commits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.commit {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  padding: 20px 24px;
+  border-bottom: var(--rule);
+  outline-offset: -4px;
+  cursor: default;
+}
+.commit:last-child { border-bottom: 0; }
+.commit .code {
+  display: block;
+  width: 100%;
+  height: 40px;
+}
+.commit .meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 24px;
+  font-size: 13px;
+}
+.commit .name { font-weight: 700; word-break: break-all; }
+.commit .note {
+  font-size: 13px;
+}
+.commit.lit, .commit:focus-visible { background: var(--lumin); color: var(--void); }
+.commit.parent-lit { outline: 1px dashed var(--lumin); }
+.log-note {
+  grid-column: 1 / -1;
+  border-top: var(--rule);
+  padding: 12px 24px;
+}
+@media (max-width: 860px) {
+  .log { grid-template-columns: minmax(0, 1fr); }
+  .manifest { border-right: 0; border-bottom: var(--rule); }
+  .commit, .manifest { padding: 16px; }
+  .log-note { padding: 12px 16px; }
+}
+
+/* Data sheet */
+
+.sheet {
+  margin: 0;
+  border-top: var(--rule);
+}
+.sheet > div {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 24px;
+  padding: 14px 0;
+  border-bottom: var(--rule);
+}
+.sheet dt { margin: 0; padding-top: 2px; }
+.sheet dd { margin: 0; max-width: 72ch; }
+@media (max-width: 720px) {
+  .sheet > div { grid-template-columns: 1fr; gap: 4px; }
+}
+
+/* Process: the replay */
+
+.replay {
+  border: var(--rule);
+  margin-bottom: 64px;
+}
+.replay canvas {
+  display: block;
+  width: 100%;
+  height: 160px;
+  border-bottom: var(--rule);
+}
+.replay-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px 24px;
+  padding: 16px 24px;
+}
+.replay-bar form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.replay label { display: inline-flex; align-items: center; gap: 12px; }
+.replay input {
+  font: inherit;
+  font-size: 14px;
+  color: var(--lumin);
+  background: var(--void);
+  border: var(--rule);
+  padding: 7px 10px;
+  width: 15ch;
+  border-radius: 0;
+}
+.replay input:focus-visible { outline-offset: 2px; }
+.replay input[aria-invalid="true"] { border-style: dashed; }
+.replay output { display: block; }
+@media (max-width: 720px) {
+  .replay-bar { padding: 16px; }
+  .replay canvas { height: 112px; }
+}
+
+/* Inverted frames */
+
+.invert {
+  --ink: var(--void);
+  --ground: var(--lumin);
+  background: var(--lumin);
+  color: var(--void);
+  --rule: 1px solid var(--void);
+}
+.invert a:hover { text-decoration-thickness: 3px; }
+
+.status-table {
+  width: 100%;
+  border-collapse: collapse;
+  border-top: var(--rule);
+}
+.status-table th, .status-table td {
+  text-align: left;
+  vertical-align: top;
+  border-bottom: var(--rule);
+  padding: 20px 0;
+}
+.status-table th {
+  width: 220px;
+  padding-right: 24px;
+  font-weight: 700;
+}
+.status-table td p { max-width: 72ch; }
+.status-table ul { margin: 0; padding: 0; list-style: none; }
+.status-table li { padding-left: 24px; position: relative; margin-bottom: 8px; max-width: 72ch; }
+.status-table li:last-child { margin-bottom: 0; }
+.status-table li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.55em;
+  width: 12px;
+  height: 9px;
+  background: repeating-linear-gradient(90deg, currentColor 0 1px, transparent 1px 3px);
+}
+@media (max-width: 720px) {
+  .status-table th, .status-table td { display: block; width: auto; padding: 16px 0; }
+  .status-table th { border-bottom: 0; padding-bottom: 0; }
+}
+
+/* Roadmap */
+
+.road {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: var(--rule);
+}
+.road li {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) 220px;
+  gap: 24px;
+  align-items: start;
+  padding: 20px 0;
+  border-bottom: var(--rule);
+}
+.road .glyph {
+  height: 24px;
+  margin-top: 2px;
+  border: var(--rule);
+}
+.road .built .glyph {
+  background: repeating-linear-gradient(90deg,
+    var(--lumin) 0 2px, transparent 2px 3px, var(--lumin) 3px 4px, transparent 4px 6px,
+    var(--lumin) 6px 9px, transparent 9px 10px);
+}
+.road .agreed .glyph {
+  background: repeating-linear-gradient(90deg, var(--lumin) 0 1px, transparent 1px 8px);
+}
+.road .open .glyph { border-style: dashed; }
+.road h3 { margin-bottom: 6px; }
+.road p { max-width: 68ch; margin: 0; }
+.road .where { text-align: right; }
+@media (max-width: 860px) {
+  .road li { grid-template-columns: 64px minmax(0, 1fr); }
+  .road .where { grid-column: 2; text-align: left; }
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 32px;
+  margin: 0 0 24px;
+  padding: 0;
+  list-style: none;
+}
+.legend li { display: inline-flex; align-items: center; gap: 12px; }
+.legend .glyph { display: inline-block; width: 40px; height: 14px; border: var(--rule); }
+.legend .built .glyph { background: repeating-linear-gradient(90deg, var(--lumin) 0 2px, transparent 2px 3px, var(--lumin) 3px 4px, transparent 4px 6px); }
+.legend .agreed .glyph { background: repeating-linear-gradient(90deg, var(--lumin) 0 1px, transparent 1px 8px); }
+.legend .open .glyph { border-style: dashed; }
+
+/* Close */
+
+.close {
+  padding: 120px 0;
+  border-bottom: var(--rule);
+  position: relative;
+  overflow: hidden;
+}
+.close canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.close .wrap { position: relative; }
+.close-panel {
+  background: var(--void);
+  border: var(--rule);
+  padding: 40px;
+  max-width: 44rem;
+}
+.close-panel h2 { margin-bottom: 20px; }
+.close-panel p { font-size: 17px; margin-bottom: 32px; max-width: 56ch; }
+@media (max-width: 720px) {
+  .close { padding: 64px 0; }
+  .close-panel { padding: 24px 20px; }
+}
+
+footer {
+  padding: 40px 0 56px;
+}
+footer .wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 24px 48px;
+  align-items: start;
+}
+footer p { max-width: 64ch; }
+footer ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+}
+@media (max-width: 720px) {
+  footer .wrap { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <div class="wrap">
+    <a class="mark" href="#top" aria-label="s4ql, top of page">
+      <svg id="mark" width="32" height="22" viewBox="0 0 32 22" aria-hidden="true" shape-rendering="crispEdges"></svg>
+      <span>s4ql</span>
+    </a>
+    <nav aria-label="Sections">
+      <ul>
+        <li class="sec"><a href="#why">Why</a></li>
+        <li class="sec"><a href="#product">Product</a></li>
+        <li class="sec"><a href="#process">Process</a></li>
+        <li class="sec"><a href="#status">Status</a></li>
+        <li class="sec"><a href="#roadmap">Roadmap</a></li>
+        <li><a href="https://github.com/maragudk/s4ql">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="hero" id="top" aria-labelledby="claim">
+  <canvas id="field" aria-hidden="true"></canvas>
+  <div class="wrap">
+    <div class="claim">
+      <h1 id="claim">
+        <span>An SQL database for Go that lives in S3.</span>
+        <span class="process">Written by agents. Trusted as far as the tests reach.</span>
+      </h1>
+      <p class="lede">s4ql is an embedded database engine in the spirit of SQLite that keeps all its data in an S3 bucket, with no server to run. Every line of it is written by AI agents, and no human reviews the code. Trust has to come from verification.</p>
+      <div class="actions">
+        <a class="btn" href="https://github.com/maragudk/s4ql">Follow on GitHub <span class="bars" aria-hidden="true"></span></a>
+        <a href="https://github.com/maragudk/s4ql/blob/main/docs/spec.md">Read the spec</a>
+      </div>
+      <ul class="state caps" aria-label="Project state">
+        <li class="on">Experiment</li>
+        <li>Storage built</li>
+        <li>SQL not built</li>
+        <li>Not ready for use</li>
+      </ul>
+    </div>
+    <aside class="rail" aria-label="Figures from the spec">
+      <dl>
+        <div><dt class="caps">Infrastructure</dt><dd>S3 only</dd></div>
+        <div><dt class="caps">Commit name</dt><dd>SHA-256</dd></div>
+        <div><dt class="caps">Writers</dt><dd>1 per db</dd></div>
+        <div><dt class="caps">Lease</dt><dd>30 s</dd></div>
+        <div><dt class="caps">Renewal</dt><dd>20 s</dd></div>
+        <div><dt class="caps">Dialect</dt><dd>SQLite, strict</dd></div>
+      </dl>
+    </aside>
+  </div>
+  <div class="seedline" aria-hidden="true"><div class="wrap"><span><span class="caps">Field from seed</span> <b class="seed-echo">0x7334716c</b></span></div></div>
+</section>
+
+<section class="block" id="why" aria-labelledby="why-h">
+  <div class="wrap">
+    <div class="block-head">
+      <h2 id="why-h">Why it exists</h2>
+      <p>Two experiments in one repository. One is a database that needs nothing but object storage. The other is whether software that nobody reads can still be trusted.</p>
+    </div>
+    <dl class="sheet">
+      <div><dt class="caps">Nothing to operate</dt><dd>Your Go application talks to S3 directly through the module. There is no server, no cluster, and no replica to look after. The bucket is the only infrastructure and the source of truth.</dd></div>
+      <div><dt class="caps">A database per user</dt><dd>Each database is a key prefix, so one bucket holds as many databases as you like. One database per user costs nothing extra, and write-heavy work spreads across them.</dd></div>
+      <div><dt class="caps">SQLite's SQL, strictly</dt><dd>s4ql speaks a strict subset of SQLite's SQL. Whatever it accepts behaves exactly as in SQLite. Everything else is rejected, never reinterpreted.</dd></div>
+      <div><dt class="caps">Trust without reading</dt><dd>AI agents write and own the code. <a href="https://www.maragu.dev/">Markus</a> sets the goals and takes part in design and architecture; he does not review code. The bet is that a database can earn trust when its correctness is checked, not read.</dd></div>
+    </dl>
+  </div>
+</section>
+
+<section class="block" id="product" aria-labelledby="product-h">
+  <div class="wrap">
+    <div class="block-head">
+      <h2 id="product-h">What it does</h2>
+      <p>A database in S3 is a log. Each commit is an immutable object named by the SHA-256 of its content and linked to its parent, as in git. One small file, <code>manifest.json</code>, points at the newest commit. Swapping that pointer is the commit.</p>
+    </div>
+
+    <div class="log" id="log">
+      <div class="manifest">
+        <h3>manifest.json</h3>
+<pre aria-label="Example manifest">{
+  "version": 0,
+  "branches": {
+    "main": {
+      "head": "<span class="hl">d39febcf6aba…</span>"
+    }
+  },
+  "lease": {
+    "holder": "5b0e3a4f9c1d77c3",
+    "duration": "30s",
+    "renewed": "2026-11-12T12:00:30.123Z",
+    "salt": "c41d07a9e2b35f68"
+  }
+}</pre>
+        <p class="small">A compare-and-swap replaces this file. The transaction is committed when the swap succeeds, and not before.</p>
+      </div>
+      <ol class="commits" reversed aria-label="Commit objects, newest first">
+        <li class="commit" tabindex="0" data-hash="d39febcf6abaf7ee47aea6f615ae6e8be31d10f1c7ba4f3c8133917f63981295" data-parent="b2116a9830d36bf1e6397287f9fab487243dd15484685c6e877f29376fb0e7da">
+          <svg class="code" aria-hidden="true"></svg>
+          <div class="meta"><span class="name">d39febcf6abaf7ee47aea6f615ae6e8be31d10f1c7ba4f3c8133917f63981295</span></div>
+          <div class="meta"><span class="note">insert into t1 (v1) values (2);</span><span><span class="caps">Parent</span> b2116a98…</span></div>
+        </li>
+        <li class="commit" tabindex="0" data-hash="b2116a9830d36bf1e6397287f9fab487243dd15484685c6e877f29376fb0e7da" data-parent="2f4e68582035cc5f8c0ab2f4d0e39d85a04e143979ac62ab3a2432493a12a1c7">
+          <svg class="code" aria-hidden="true"></svg>
+          <div class="meta"><span class="name">b2116a9830d36bf1e6397287f9fab487243dd15484685c6e877f29376fb0e7da</span></div>
+          <div class="meta"><span class="note">insert into t1 (v1) values (1);</span><span><span class="caps">Parent</span> 2f4e6858…</span></div>
+        </li>
+        <li class="commit" tabindex="0" data-hash="2f4e68582035cc5f8c0ab2f4d0e39d85a04e143979ac62ab3a2432493a12a1c7" data-parent="">
+          <svg class="code" aria-hidden="true"></svg>
+          <div class="meta"><span class="name">2f4e68582035cc5f8c0ab2f4d0e39d85a04e143979ac62ab3a2432493a12a1c7</span></div>
+          <div class="meta"><span class="note">create table t1 (v1 int primary key) strict, without rowid;</span><span class="caps">no parent</span></div>
+        </li>
+      </ol>
+      <p class="log-note small">Illustration. Each bar code is the 256 bits of a real SHA-256, taken over sample content. A real commit object records the rows it changed, with the SQL kept beside them as a note.</p>
+    </div>
+
+    <dl class="sheet">
+      <div><dt class="caps">Transactions</dt><dd>ACID within one database. No transaction spans databases.</dd></div>
+      <div><dt class="caps">Writes</dt><dd>One write transaction at a time per database. A second writer waits until the first has committed or rolled back.</dd></div>
+      <div><dt class="caps">Reads</dt><dd>In parallel, from a local SQLite cache, without contacting S3. Each read sees one consistent state, even while a write is in progress.</dd></div>
+      <div><dt class="caps">Cache</dt><dd>Holds the same tables and rows as the database, is never ahead of S3, and can be rebuilt from the log at any time.</dd></div>
+      <div><dt class="caps">Lease</dt><dd>One instance at a time holds the database's lease, recorded in the manifest. It lasts 30 seconds and is renewed every 20. A spare instance waits and takes over when the lease times out.</dd></div>
+      <div><dt class="caps">Unknown outcome</dt><dd>If the swap ends without an answer, the instance asks S3 until it knows. The transaction is committed if and only if its commit object is in the log.</dd></div>
+      <div><dt class="caps">S3 must offer</dt><dd>Strong consistency, compare-and-swap, and create-if-absent.</dd></div>
+      <div><dt class="caps">Interface</dt><dd>Go's <code>database/sql</code>. Agreed, not built yet.</dd></div>
+    </dl>
+  </div>
+</section>
+
+<section class="block" id="process" aria-labelledby="process-h">
+  <div class="wrap">
+    <div class="block-head">
+      <h2 id="process-h">How it is built</h2>
+      <p>Agents write the code, and the tests decide what is true. The production code runs unchanged inside a simulation where S3, time, and randomness are driven by one seed. The same seed always replays the same run, failures included.</p>
+    </div>
+
+    <div class="replay">
+      <canvas id="replay" aria-hidden="true"></canvas>
+      <div class="replay-bar">
+        <form id="replay-form">
+          <label class="caps" for="seed">Seed <input id="seed" name="seed" value="0x7334716c" spellcheck="false" autocomplete="off" inputmode="text" aria-describedby="replay-out"></label>
+          <button class="btn small" type="submit">Replay <span class="bars" aria-hidden="true"></span></button>
+          <button class="btn small" type="button" id="new-seed">New seed <span class="bars" aria-hidden="true"></span></button>
+        </form>
+        <output id="replay-out" class="small" for="seed">Same seed, same field. Replay it and compare.</output>
+      </div>
+    </div>
+
+    <dl class="sheet">
+      <div><dt class="caps">Deterministic simulation</dt><dd>S3, clocks, and randomness sit behind interfaces. One seed drives a whole run, so any failure the simulation finds can be replayed exactly.</dd></div>
+      <div><dt class="caps">Buggify</dt><dd>Marked points in the production code do something legal but unusual in simulation: return an error, add a delay, take a rare branch. Each run switches on a different subset.</dd></div>
+      <div><dt class="caps">SQLite is the oracle</dt><dd>s4ql writes its own parser and engine, and SQLite judges them. Results and errors are compared with SQLite's, and the parser is checked against SQLite's own test statements.</dd></div>
+      <div><dt class="caps">Real S3</dt><dd>A conformance suite and integration tests run against a real S3-compatible bucket on Tigris, to check that the simulated store behaves like the real one.</dd></div>
+      <div><dt class="caps">Tests that test the tests</dt><dd>Property-based tests, fuzzing, and mutation testing. Bugs are planted on purpose to count how many seeds the simulation needs to find each one.</dd></div>
+      <div><dt class="caps">Everything written down</dt><dd>The <a href="https://github.com/maragudk/s4ql/blob/main/docs/spec.md">spec</a>, the <a href="https://github.com/maragudk/s4ql/tree/main/docs/research">research</a>, the builders' diaries, and the <a href="https://github.com/maragudk/s4ql/tree/main/docs/conversations">conversations</a> behind each decision are in the repository.</dd></div>
+    </dl>
+  </div>
+</section>
+
+<section class="block invert" id="status" aria-labelledby="status-h">
+  <div class="wrap">
+    <div class="block-head">
+      <h2 id="status-h">Status</h2>
+      <p>As of 13 November 2026. s4ql is an experiment. It is not ready for use, and anything in it may change.</p>
+    </div>
+    <table class="status-table">
+      <tbody>
+        <tr>
+          <th scope="row" class="caps">Built</th>
+          <td>
+            <ul>
+              <li>The storage core. A database is a log of commits in S3 with a local SQLite cache, and one instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work.</li>
+              <li>The tests behind it: a deterministic simulation, and a real S3-compatible bucket.</li>
+              <li>The S3 client, which passes the conformance suite on Tigris.</li>
+              <li>The SQL tokenizer.</li>
+            </ul>
+          </td>
+        </tr>
+        <tr>
+          <th scope="row" class="caps">Not built</th>
+          <td><p>The SQL. There is no parser, no engine, and no public API yet, so the database cannot be used.</p></td>
+        </tr>
+        <tr>
+          <th scope="row" class="caps">Next</th>
+          <td><p>The first slice of SQL: <code>create table</code>, <code>insert</code>, <code>select</code>, and <code>drop table</code> for one integer column, checked against SQLite.</p></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="block" id="roadmap" aria-labelledby="roadmap-h">
+  <div class="wrap">
+    <div class="block-head">
+      <h2 id="roadmap-h">Roadmap</h2>
+      <p>SQL grows in small slices. Nothing is supported until it is listed, all the way down to <code>select 1</code>, and each slice goes through every layer and is checked against SQLite before the next one starts.</p>
+    </div>
+    <ul class="legend caps" aria-label="Legend">
+      <li class="built"><span class="glyph" aria-hidden="true"></span>Built</li>
+      <li class="agreed"><span class="glyph" aria-hidden="true"></span>Agreed, not built</li>
+      <li class="open"><span class="glyph" aria-hidden="true"></span>Open</li>
+    </ul>
+    <ol class="road">
+      <li class="built">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Storage core</h3><p>The log of commit objects, the manifest swap, the lease, crash recovery, and the local cache.</p></div>
+        <span class="where caps">Built</span>
+      </li>
+      <li class="built">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>S3 client</h3><p>Uploads are signed with the commit object's SHA-256, so the store refuses content that does not match it.</p></div>
+        <span class="where caps">Built</span>
+      </li>
+      <li class="built">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Tokenizer</h3><p>The first piece of the SQL front end.</p></div>
+        <span class="where caps">Built</span>
+      </li>
+      <li class="agreed">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Parser</h3><p>s4ql's own parser for all of SQLite's grammar, and a pass after it that rejects whatever the roadmap does not list. It must agree with SQLite on which statements parse, on the exact message of each syntax error, and on where the error is.</p></div>
+        <span class="where caps">Agreed, not built</span>
+      </li>
+      <li class="agreed">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Slice 1: one integer column</h3><p><code>create table</code>, <code>insert</code>, <code>select *</code>, and <code>drop table</code> on a strict table with one <code>int primary key</code>. The answers must survive a restart with an empty cache.</p></div>
+        <span class="where caps">Agreed, not built</span>
+      </li>
+      <li class="agreed">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>The driver</h3><p>A <code>database/sql</code> driver as the main interface.</p></div>
+        <span class="where caps">Agreed, not built</span>
+      </li>
+      <li class="open">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>More SQL, slice by slice</h3><p>Each slice is agreed before it is built. Every table is strict and without rowid, and foreign keys are always enforced.</p></div>
+        <span class="where caps">Open</span>
+      </li>
+      <li class="open">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Storage format version 1</h3><p>The formats are drafts until then. From version 1 on, every version of s4ql reads what any older version wrote.</p></div>
+        <span class="where caps">Open</span>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<section class="close" aria-labelledby="close-h">
+  <canvas id="close-field" aria-hidden="true"></canvas>
+  <div class="wrap">
+    <div class="close-panel">
+      <h2 id="close-h">Follow along</h2>
+      <p>The code, the spec, the open questions, and every conversation behind the decisions are public. Watch the repository to see whether a database written by agents can earn trust.</p>
+      <a class="btn" href="https://github.com/maragudk/s4ql">maragudk/s4ql on GitHub <span class="bars" aria-hidden="true"></span></a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Made by <a href="https://www.maragu.dev/">maragu</a>: independent software consulting for cloud-native Go apps and AI engineering. s4ql is MIT licensed. Set in <a href="https://commitmono.com/">Commit Mono</a>.</p>
+    <ul class="caps">
+      <li><a href="https://github.com/maragudk/s4ql">GitHub</a></li>
+      <li><a href="https://pkg.go.dev/maragu.dev/s4ql">Go docs</a></li>
+      <li><a href="https://github.com/maragudk/s4ql/blob/main/docs/spec.md">Spec</a></li>
+      <li><a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">Roadmap</a></li>
+      <li><a href="https://github.com/maragudk/s4ql/blob/main/docs/todo.md">To do</a></li>
+    </ul>
+  </div>
+</footer>
+
+<script>
+(() => {
+  "use strict";
+
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const DEFAULT_SEED = 0x7334716c; // the bytes of "s4ql"
+
+  // mulberry32: a small deterministic generator. The same seed gives the same sequence.
+  function rng(seed) {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // Build the columns of a field once from a seed, in CSS pixels.
+  function layout(seed, width, height, density) {
+    const r = rng(seed);
+    const phase = [r() * 6.283, r() * 6.283, r() * 6.283];
+    const cols = [];
+    let x = 0;
+    while (x < width) {
+      const u = x / width;
+      // Density bands from three slow waves, shaped by the caller's ramp.
+      const wave = 0.5 + 0.22 * Math.sin(u * 7.1 + phase[0]) + 0.16 * Math.sin(u * 17.3 + phase[1]) + 0.12 * Math.sin(u * 41.9 + phase[2]);
+      const d = Math.max(0, Math.min(1, wave * density(u)));
+      const gap = 1 + Math.floor((1 - d) * 7 + r() * 3);
+      let used = 0;
+      if (r() < d * 0.9) {
+        const roll = r();
+        if (roll < 0.74) {
+          used = 1;
+          cols.push({ x, w: used, kind: "line" });
+        } else if (roll < 0.84) {
+          used = 2 + Math.floor(r() * 2);
+          cols.push({ x, w: used, kind: "line" });
+        } else {
+          const segs = [];
+          let y = r() * 40;
+          while (y < height) {
+            const h = 2 + Math.floor(r() * 14);
+            segs.push([y, h]);
+            y += h + 4 + Math.floor(r() * 46);
+          }
+          used = r() < 0.5 ? 1 : 3;
+          cols.push({ x, w: used, kind: "dash", segs });
+        }
+      }
+      x += gap + used;
+    }
+    return cols;
+  }
+
+  function sizeCanvas(canvas) {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.max(1, Math.round(rect.width * dpr));
+    canvas.height = Math.max(1, Math.round(rect.height * dpr));
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { ctx, w: rect.width, h: rect.height };
+  }
+
+  function paint(ctx, w, h, cols, upto, data) {
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = "#fff";
+    for (const c of cols) {
+      if (c.x > upto) break;
+      if (c.kind === "line") {
+        ctx.fillRect(c.x, 0, c.w, h);
+      } else {
+        for (const [y, sh] of c.segs) ctx.fillRect(c.x, y, c.w, sh);
+      }
+    }
+    if (data) {
+      // The generator's own output, as tabular hex, at the edge where the field begins.
+      ctx.font = "12px 'Commit Mono', ui-monospace, monospace";
+      ctx.textBaseline = "top";
+      const colW = ctx.measureText("00000000").width + 16;
+      ctx.fillStyle = "#000";
+      ctx.fillRect(data.x, 0, colW, h);
+      ctx.fillStyle = "#fff";
+      const shown = upto >= data.x ? data.values.length : 0;
+      for (let i = 0; i < shown; i++) {
+        const y = 16 + i * 20;
+        if (y > h - 24) break;
+        ctx.fillText(data.values[i], data.x + 8, y);
+      }
+    }
+  }
+
+  // A field: draws from its seed, stepping in from the left once unless motion is reduced.
+  function field(canvas, density, dataColumn) {
+    let seed = DEFAULT_SEED;
+    let frame = 0;
+    let cols = [];
+    let size = null;
+    let data = null;
+    const build = () => {
+      size = sizeCanvas(canvas);
+      cols = layout(seed, size.w, size.h, density);
+      data = null;
+      if (dataColumn && cut > 0) {
+        const r = rng(seed);
+        const values = [];
+        for (let i = 0; i < 64; i++) values.push((Math.floor(r() * 4294967296) >>> 0).toString(16).padStart(8, "0"));
+        data = { x: cut * size.w - 40, values };
+      }
+    };
+    const run = (animate) => {
+      cancelAnimationFrame(frame);
+      if (dataColumn) measureCut();
+      build();
+      if (!animate || reduce.matches) {
+        paint(size.ctx, size.w, size.h, cols, Infinity, data);
+        return;
+      }
+      const start = performance.now();
+      const dur = 1400;
+      const step = (now) => {
+        const t = Math.min(1, (now - start) / dur);
+        const eased = 1 - Math.pow(2, -10 * t);
+        paint(size.ctx, size.w, size.h, cols, eased * size.w, data);
+        if (t < 1) frame = requestAnimationFrame(step);
+      };
+      frame = requestAnimationFrame(step);
+    };
+    let resizeTimer = 0;
+    new ResizeObserver(() => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => run(false), 80);
+    }).observe(canvas);
+    return {
+      run,
+      setSeed(s) { seed = s >>> 0; },
+    };
+  }
+
+  // The hero field is knocked out behind the claim and runs from its edge to the right.
+  const heroCanvas = document.getElementById("field");
+  const claimEl = document.querySelector(".claim");
+  let cut = 0;
+  const measureCut = () => {
+    if (window.innerWidth < 960) { cut = 0; return; }
+    const c = heroCanvas.getBoundingClientRect();
+    cut = (claimEl.getBoundingClientRect().right - c.left + 48) / c.width;
+  };
+  const hero = field(heroCanvas, (u) => (window.innerWidth < 960 ? 0.6 : u < cut ? 0 : 1.15), true);
+  const replay = field(document.getElementById("replay"), () => 1);
+  const close = field(document.getElementById("close-field"), (u) => 0.35 + u * 0.75);
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(() => hero.run(true));
+  replay.run(false);
+  close.run(false);
+
+  // The replay strip.
+  const form = document.getElementById("replay-form");
+  const input = document.getElementById("seed");
+  const out = document.getElementById("replay-out");
+  const hex = (n) => "0x" + (n >>> 0).toString(16).padStart(8, "0");
+  function parseSeed(s) {
+    const m = /^\s*(0x)?([0-9a-f]{1,8})\s*$/i.exec(s);
+    return m ? parseInt(m[2], 16) >>> 0 : null;
+  }
+  let runs = 0;
+  function play(seed, isNew) {
+    replay.setSeed(seed);
+    replay.run(true);
+    runs = isNew ? 1 : runs + 1;
+    out.textContent = runs > 1
+      ? "Seed " + hex(seed) + ", run " + runs + ": the same field as run 1."
+      : "Seed " + hex(seed) + ", run 1. Replay it and compare.";
+  }
+  let current = DEFAULT_SEED;
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const s = parseSeed(input.value);
+    if (s === null) {
+      input.setAttribute("aria-invalid", "true");
+      out.textContent = "A seed is up to 8 hexadecimal digits, like 0x7334716c.";
+      return;
+    }
+    input.removeAttribute("aria-invalid");
+    input.value = hex(s);
+    play(s, s !== current);
+    current = s;
+  });
+  document.getElementById("new-seed").addEventListener("click", () => {
+    const s = (crypto.getRandomValues(new Uint32Array(1))[0]) >>> 0;
+    input.value = hex(s);
+    input.removeAttribute("aria-invalid");
+    current = s;
+    play(s, true);
+  });
+
+  // Bar codes of commit names: one bar per bit of the SHA-256.
+  const NS = "http://www.w3.org/2000/svg";
+  function barcode(svg, hexstr) {
+    svg.setAttribute("viewBox", "0 0 256 40");
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("shape-rendering", "crispEdges");
+    let d = "";
+    for (let i = 0; i < 64; i++) {
+      const nib = parseInt(hexstr[i], 16);
+      for (let b = 0; b < 4; b++) {
+        if (nib & (8 >> b)) d += "M" + (i * 4 + b) + " 0h0.72v40h-0.72z";
+      }
+    }
+    const p = document.createElementNS(NS, "path");
+    p.setAttribute("d", d);
+    p.setAttribute("fill", "currentColor");
+    svg.replaceChildren(p);
+  }
+  const commits = [...document.querySelectorAll(".commit")];
+  for (const c of commits) barcode(c.querySelector(".code"), c.dataset.hash);
+  function light(c, on) {
+    c.classList.toggle("lit", on);
+    const parent = commits.find((p) => p.dataset.hash === c.dataset.parent);
+    if (parent) parent.classList.toggle("parent-lit", on);
+  }
+  for (const c of commits) {
+    c.addEventListener("mouseenter", () => light(c, true));
+    c.addEventListener("mouseleave", () => light(c, false));
+    c.addEventListener("focus", () => light(c, true));
+    c.addEventListener("blur", () => light(c, false));
+  }
+
+  // The mark: the 32 bits of "s4ql" as bars.
+  const mark = document.getElementById("mark");
+  let md = "";
+  [0x73, 0x34, 0x71, 0x6c].forEach((byte, i) => {
+    for (let b = 0; b < 8; b++) if (byte & (128 >> b)) md += "M" + (i * 8 + b) + " 0h1v22h-1z";
+  });
+  const mp = document.createElementNS(NS, "path");
+  mp.setAttribute("d", md);
+  mp.setAttribute("fill", "currentColor");
+  mark.setAttribute("viewBox", "0 0 32 22");
+  mark.appendChild(mp);
+})();
+</script>
+</body>
+</html>
