@@ -165,6 +165,60 @@ func syntax(message string, offset int) parsetest.Result {
 	return parsetest.Result{Message: message, Offset: offset}
 }
 
+// TestParse_offsetAfterValues compares the parser with SQLite on the error of #N at the end of a
+// statement with a multi-row VALUES, for many forms of expression in the rows and places of the
+// VALUES. SQLite keeps the offset of that error when it read the schema while it parsed, which
+// depends on whether the rows are constant; the parser gives -1. They agree only if the oracle does
+// not say the offset wherever SQLite keeps it.
+func TestParse_offsetAfterValues(t *testing.T) {
+	exprs := []string{
+		"1", "-1", "'a'", "x'00'", "1.5", "1_0", "null", "?", "?1", ":a", "true", "FALSE", `"true"`, "[true]",
+		"a", "t.a", "s.t.a", `"a"`, "current_time", "CURRENT_DATE",
+		"abs(1)", "abs(a)", "random()", "abs(1) filter (where 1)", "count(*)", "max(1)", "max(1, 2)",
+		"sqlite_version()", "sqlite_version(*)", "nosuch(1)", "coalesce(1)", "coalesce(1, 2)", "iif(1, 2, 3)",
+		"1 is 2", "1 is not 2", "1 is null", "a is null", "1 is (null)", "1 is not distinct from null",
+		"1 isnull", "1 not null", "1 in ()", "a in ()", "abs(a) in ()", "1 in (2)", "1 in (2, 3)",
+		"1 in (a)", "(1, 2) in ((1, 2))", "(1) in (1)", "1 in (select 1)", "1 in t", "exists (select 1)",
+		"(select 1)", "1 like 2", "1 like 2 escape 3", "1 glob 2", "1 regexp 2", "1 match 2", "1 -> 2",
+		"1 ->> 2", "1 between 2 and 3", "1 between a and 3", "not 1", "~1", "+1", "1 + 2", "1 || a",
+		"case when 1 then 2 end", "case a when 1 then 2 end", "case 1 when 2 then 3 else a end",
+		"cast(1 as int)", "cast(a as int)", "cast(1 as)", "1 collate nocase", "cast(1 as int) collate x",
+		"(1, 2)", "(cast(1 as int), 2)", "(1, cast(2 as int))", "raise(ignore)", "(1)", "((cast(1 as int)))",
+		"row_number() over ()", "length('a') + 1", `"abs"(1)`, "[abs](1)", "replace('a', 'b', 'c')",
+		"like(1, 2)", "json_object()", "printf('%d', 1)", "changes()",
+		"(a -> 1) in ()", "current_time in ()", `"a""b"(1)`, "`abs`(1)",
+	}
+	shapes := []string{
+		"values(0),(E) union select #0",
+		"values(E),(1) union select #0",
+		"values(0),(E),(1) union select #0",
+		"values(E),(a),(1) union select #0",
+		"select * from (values(0),(E)) union select #0",
+		"with c as (select 1) select * from (values(0),(E)) union select #0",
+		"select * from (values(0),(E)) union select #0 from (with c as (select 1) select 1)",
+		"create view v as values(0),(E) union select #0",
+		"select (values(0),(E)), #0",
+		"select #0 from (values(0),(E))",
+		"attach (values(0),(E)) as #0",
+	}
+	var sqls []string
+	kept := 0
+	for _, e := range exprs {
+		for _, shape := range shapes {
+			src := strings.ReplaceAll(shape, "E", e)
+			sqls = append(sqls, src)
+			if v := oracle.Judge(src); v.OffsetNotSaid && v.Offset >= 0 {
+				kept++
+			}
+		}
+	}
+	r := parsetest.Test(t, parsetest.ParserFunc(parse), sqls)
+	t.Logf("%v texts, SQLite keeps the offset on %v, does not say on %v, nor the offset on %v", r.Total, kept, r.NotSaid, r.OffsetNotSaid)
+	// Both outcomes must be common, or the test checks little.
+	is.True(t, kept > len(sqls)/5 && kept < r.OffsetNotSaid, fmt.Sprint(kept, " of ", r.OffsetNotSaid, " keep the offset"))
+	is.True(t, r.NotSaid < len(sqls)/5, fmt.Sprint("SQLite does not say on ", r.NotSaid))
+}
+
 // TestParse_sqlite compares the parser with SQLite on texts written by hand for corners of the
 // grammar that the corpus touches little: window keywords, virtual tables, constraints, upserts,
 // triggers, the checks of #N and digit separators, and keywords as names.

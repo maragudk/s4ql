@@ -439,6 +439,7 @@ Against SQLite on many texts:
 - `TestParse_mutants` runs three one-token mutants of every corpus entry, 416,271 texts, with no disagreement. A run with `-args -mutants 40 -seed 1000` compared 5,550,280 mutants with no disagreement.
 - `TestGenerate` runs random sentences of the grammar. A generator derives them from the rules of `parse.y`, from the start symbol `input`. Half the time it prefers the least used rule of a nonterminal, and it takes the shortest rules when its budget runs out. Names come from a pool of plain names, every quote style, every fallback keyword, the join keywords, and some keywords that are not names. By default it runs 20,000 sentences and two mutants of each, 60,000 texts, with no disagreement. A run with `-args -generated 400000 -seed 77` compared 1,200,000 texts with no disagreement, of which 415,679 parse.
 - `TestParse_sqlite` compares about 200 texts written by hand for corners that the corpus touches little.
+- `TestParse_offsetAfterValues` compares 1,034 texts with a `#N` error after a multi-row VALUES, for 94 forms of expression in 11 places. SQLite keeps the offset on 389 of them, and the oracle does not say it there.
 
 Against SQLite's grammar and automaton:
 
