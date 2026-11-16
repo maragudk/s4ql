@@ -25,11 +25,11 @@ corpus:
 	go run ./internal/sql/corpus/update
 
 # fuzz runs each fuzz test in the SQLite binding, its cross-checks, the storage formats, the SQL
-# tokenizer, SQLite's verdicts on SQL, and the SQL parser for FUZZTIME. Pass FUZZFLAGS=-asan to fuzz
-# under the address sanitizer (Linux only).
+# tokenizer, SQLite's verdicts on SQL, the SQL parser, and the check of the shape of its tree for
+# FUZZTIME. Pass FUZZFLAGS=-asan to fuzz under the address sanitizer (Linux only).
 .PHONY: fuzz
 fuzz:
-	for dir in internal/sqlite $(CROSSCHECK) internal/format internal/sql/token internal/sql/oracle internal/sql/parsetest internal/sql/parser; do \
+	for dir in internal/sqlite $(CROSSCHECK) internal/format internal/sql/token internal/sql/oracle internal/sql/parsetest internal/sql/parser internal/sql/shapetest; do \
 		for test in $$(cd $$dir && go test -list '^Fuzz' . | grep '^Fuzz'); do \
 			(cd $$dir && go test $(FUZZFLAGS) -run '^$$' -fuzz "^$$test\$$" -fuzztime $(FUZZTIME) .) || exit 1; \
 		done; \

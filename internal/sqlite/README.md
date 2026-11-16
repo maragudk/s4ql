@@ -8,6 +8,7 @@ The binding covers only what slice 1 of [docs/roadmap.md](../../docs/roadmap.md)
 - find, register, and unregister a VFS, which the tests of the cache need for `faultvfs/`
 - prepare one statement, and, for the oracle of the parser, prepare the first statement of any text and say where it ends
 - deny the PRAGMAs that change settings for the whole process, which the oracle needs because it prepares any SQL
+- lower the length limit of a connection, which the shape check of the SQL parser in `internal/sql/shapetest` needs because it evaluates any expression
 - bind and read 64-bit integers and text, and bind NULL
 - read the column count, the column names, and the type of each value
 - step, reset, and finalize

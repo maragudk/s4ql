@@ -4,7 +4,7 @@
 
 The grammar is SQLite's own `src/parse.y`, with the compile options of the binding in [`internal/sqlite`](../../sqlite/README.md). The parser is a hand-written recursive descent for that grammar. Every non-trivial function names the rules of `parse.y` that it reads.
 
-The parser keeps everything as written. It rejects only what SQLite's grammar rejects. A pass after the parser, which is agreed and not built, rejects what s4ql does not support, and raises the errors that SQLite's grammar actions raise. [docs/todo.md](../../../docs/todo.md) describes that pass and the four checks of the parser, of which the first two are built: agreement with SQLite, and the ownership of every token.
+The parser keeps everything as written. It rejects only what SQLite's grammar rejects. A pass after the parser, which is agreed and not built, rejects what s4ql does not support, and raises the errors that SQLite's grammar actions raise. [docs/todo.md](../../../docs/todo.md) describes that pass and the four checks of the parser, of which the first three are built: agreement with SQLite, the ownership of every token, and the shape of the tree, which [`internal/sql/shapetest`](../shapetest/README.md) compares with SQLite.
 
 SQLite's verdicts come from the oracle in [`internal/sql/oracle`](../oracle/README.md), through the harness in [`internal/sql/parsetest`](../parsetest/README.md).
 
@@ -443,6 +443,10 @@ Against SQLite's grammar and automaton:
 
 - `TestGrammar` reads `testdata/parse.y` and resolves its `%if` sections for the options of the build. It checks that its 412 rules are exactly those in the comments of the generated parser in the vendored amalgamation, and that its 73 `%fallback` keywords are exactly the parser's. `make corpus` copies `parse.y` unchanged from the verified source archive, and `go run ./internal/sql/corpus/update -check` checks the copy.
 - `TestRuleCoverage` in `lalr_test.go` runs SQLite's own LALR automaton over the tokens that the parser read, for every corpus entry and for 20,000 generated sentences. It reads the automaton from the tables in the vendored amalgamation and drives it as `lempar.c` does. It checks that the automaton and the parser agree on acceptance and on the token of every syntax error, and that the parser's depth never exceeds the automaton's stack.
+
+Against SQLite on the shape of the tree:
+
+- `internal/sql/shapetest` checks the shape of the tree against SQLite, on the corpus, on every ordered pair of operator forms and a sample of triples, on statements written by hand, and by fuzzing. It found no fault in the tree.
 
 Pinned results:
 

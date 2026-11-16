@@ -359,6 +359,28 @@ func TestConn_DenyProcessPragmas(t *testing.T) {
 	})
 }
 
+func TestConn_SetLengthLimit(t *testing.T) {
+	t.Run("should refuse a longer string or blob with SQLITE_TOOBIG", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.SetLengthLimit(1000))
+
+		is.EqualSlice(t, []string{"integer:1000"}, query(t, c, "select length(zeroblob(1000))"))
+		err := c.Exec("select zeroblob(1001)")
+		is.Equal(t, 18, code(t, err))
+		is.Equal(t, "string or blob too big", message(t, err))
+	})
+
+	t.Run("should refuse a limit that is not positive, and a closed connection", func(t *testing.T) {
+		c := memory(t)
+		is.Equal(t, codeMisuse, code(t, c.SetLengthLimit(0)))
+
+		closed, err := sqlite.Open(":memory:")
+		is.NotError(t, err)
+		is.NotError(t, closed.Close())
+		is.Equal(t, codeMisuse, code(t, closed.SetLengthLimit(10)))
+	})
+}
+
 func TestConn_Exec(t *testing.T) {
 	t.Run("should run a statement without results", func(t *testing.T) {
 		c := memory(t)
