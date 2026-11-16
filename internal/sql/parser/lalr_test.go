@@ -22,7 +22,7 @@ import (
 // parser once more.
 type lalr struct {
 	action, lookahead, shiftOfst, reduceOfst, dflt, fallback, ruleLHS, ruleNRHS []int
-	c                                                                              map[string]int
+	c                                                                           map[string]int
 	// tk is the code of each token by the name of its TK_ macro without the prefix.
 	tk map[string]int
 }
