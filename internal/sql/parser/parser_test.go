@@ -164,6 +164,95 @@ func syntax(message string, offset int) parsetest.Result {
 	return parsetest.Result{Message: message, Offset: offset}
 }
 
+// TestParse_sqlite compares the parser with SQLite on texts written by hand for corners of the
+// grammar that the corpus touches little: window keywords, virtual tables, constraints, upserts,
+// triggers, the checks of #N and digit separators, and keywords as names.
+func TestParse_sqlite(t *testing.T) {
+	sqls := []string{
+		"select 1 window w as ()", "select 1 window /*x*/ w /*y*/ as ()", "select 1 window filter as ()",
+		"select 1 window window as ()", "select 1 window over as ()", "select 1 window 'w' as ()",
+		"select 1 window left as ()", "select 1 window indexed as ()", "select 1 window abort as ()",
+		"select f(x) over", "select f(x) over(", "select f(x) over w", "select f(x) over 'w'",
+		"select f(x) over indexed", "select f(x) over left", "select f(x) over window", "select f(x) over over",
+		"select f(x) filter (where 1) over w", "select f(x) filter", "select f(x) filter(", "select f(x) filter (",
+		"select f(x) /**/ filter /**/ (where 1)", "select (1) over", "select (1) over (", "select (1) filter (where 1)",
+		"select f(*) over ()", "select f(*) filter (where 1)", "select count(distinct x) filter (where 1) over ()",
+		"select x from t window w as (partition by 1), v as (w order by 2)", "select over from over",
+		"select window from window", "select filter from filter", "select * from t window",
+		"select * from t window w", "select * from t window w as", "select * from window as window",
+		"select f() over (order by x rows between current row and current row)",
+		"select f() over (range unbounded preceding)", "select f() over (current)",
+		"select f() over (current row)", "select f() over (w rows 1 preceding exclude group)",
+		"select f() over (w rows 1 preceding exclude)", "create table window(over, filter)",
+		"select 1 as window", "select 1 window", "values(1) window w as ()",
+		"select 1 from t group by 1 having 1 window w as () order by 1",
+		"select f(x) over (partition by y) as over from t",
+		"select x filter from t", "select f(x)filter(where 1)over(w)",
+		"select f(x) over w window w as (rows 1 following)", "select f(x) over (rows between 1 following and 1 preceding)",
+		"select f() over (groups between unbounded preceding and unbounded following exclude no others)",
+		"select f() over (exclude ties)", "select f() over (partition by a, b order by c, d)",
+		"select f() over (a partition by b)", "select f() over (a order by b)", "select f() over (a rows current row)",
+		"select f() over (rows unbounded following)", "select f() over (rows between 1 + 1 preceding and current row)",
+		"select f() over (rows a and b preceding)", "select f() over (rows between a and b preceding and 1 following)",
+		"create virtual table t using m(", "create virtual table t using m((", "create virtual table t using m(()",
+		"create virtual table t using m(a))", "create virtual table t using m(a) x", "create virtual table t using m(,)",
+		"create virtual table t using m(;)", "create virtual table t using m(a,(b,c),d e f)", "create virtual table t using 'm'",
+		"create virtual table if not exists s.t using m", "create virtual table t using m(x'00' 'a)",
+		"create virtual table t using m(1_)", "create virtual table t using m(#1)",
+		"create table t(a generated)", "create table t(a generated always)", "create table t(a as (1) generated)",
+		"create table t(a as (1) generated always as (2))", "create table t(a as (1) 'stored')", "create table t(a as (1) stored stored)",
+		"create table t(a default -current_time)", "create table t(a default +'x')", "create table t(a default -x)",
+		"create table t(a default left)", "create table t(a default indexed)", "create table t(a default 1_)",
+		"create table t(a default 1_ not null)", "create table t(a default (1_))", "create table t(a int(1_0))",
+		"create table t(a, constraint c)", "create table t(a, constraint c, constraint d unique(a))",
+		"create table t(a, primary key(a) unique(a))", "create table t(a, primary key(a),)", "create table t(a,)",
+		"create table t(a references b match full on delete no action)", "create table t(a not deferrable initially immediate)",
+		"create table t(a collate)", "create table t(a collate 'x')", "create table t(a key)", "create table t(a primary)",
+		"create table t(a int unsigned big int(1,-2))", "create table t(a varchar(+1))", "create table t(a varchar(1.5))",
+		"insert into t select 1 on conflict(a) do nothing on conflict do nothing returning *",
+		"insert into t select 1 on conflict do nothing on conflict do nothing", "insert into t values(1) returning",
+		"insert into t default values on conflict do nothing", "insert into t(a) default values",
+		"insert into t select * from u where 1 on conflict(a) do update set a = 1 where 1 returning a",
+		"replace or ignore into t values(1)", "insert or abort into t values(1)", "update t set (a) = (1)",
+		"update t set a = 1, from u", "update t as x set a = 1 from u, v where 1", "delete from t indexed by",
+		"create trigger t before delete on s.x begin select 1; select 2; end",
+		"create trigger t delete on x begin replace into y values(1); end",
+		"create trigger t update of a on x for each row begin with c as (select 1) select * from c; end",
+		"create trigger t update of a on x begin insert into y default values; end",
+		"create trigger t update on x begin delete from y returning *; end",
+		"create trigger t update on x begin update y set a = 1 returning *; end",
+		"create trigger t update on x begin values(1); end", "create trigger t update on x begin ; end",
+		"create trigger t update on x begin select 1 end", "create trigger t update on x begin select 1; end end",
+		"create trigger t update on x when #1 begin select 1; end", "create trigger t update on x begin select #1; end",
+		"select 1_ from t", "select 1 limit 1_", "select x'0' 1_", "select #1 #2", "select 1_ #1", "select #1 1_",
+		"select 0x1_g", "select 1_.5_e1_0", "select 1e1_0", "select 0x_1", "select 0x1__1", "select ._5", "select 5._",
+		"select #1abc", "select #a", "select #", "select 1 from t where #1 and 1_", "explain query select 1",
+		"explain query plan explain select 1", "pragma x.y(z)", "pragma x = +1.5", "pragma x = - 1", "pragma x = 'a'",
+		"pragma x(on)", "pragma x = null", "pragma x = 1_0", "pragma x = x'00'", "pragma x = default", "pragma x(delete)",
+		"attach 'a' as b key", "attach database", "detach database 'x'", "vacuum into", "vacuum x into y",
+		"reindex left", "analyze s.t.u", "begin immediate transaction", "begin exclusive x", "commit to x",
+		"end transaction x", "rollback to", "rollback transaction x to y", "release", "savepoint",
+		"alter table t add column", "alter table t add constraint", "alter table t add constraint c",
+		"alter table t add constraint c check", "alter table t drop", "alter table t alter column x",
+		"alter table t alter column x drop", "alter table t alter x set not null on", "alter table t rename column to x",
+		"alter table t rename to", "alter table t add column x generated always as (1)",
+		"with x as (select 1) values(1)", "with x as materialized select 1", "with x(a,) as (select 1) select 1",
+		"with recursive select 1", "with x as (select 1), select 1", "select * from (with x as (select 1) select 1)",
+		"select * from ((select 1))", "select * from ((a))", "select * from (a) as b on 1",
+		"select * from a natural join b natural join c", "select * from a left outer outer join b",
+		"select * from a join b using (x, y) join c on 1", "select * from a, b as c indexed by d not indexed",
+		"select * from f() as g indexed by h", "select * from s.f(1) x", "select * from 'a'.'b'",
+		"select a.* from t", "select 'a'.* from t", "select left.* from t", "select raise.* from t", "select current_date.* from t",
+		"select x.y.* from t", "select * , from t", "select distinct * from t", "select all from t",
+	}
+	for _, sql := range sqls {
+		if d, found, _ := parsetest.Check(parsetest.ParserFunc(parse), sql); found {
+			t.Error(d)
+		}
+		checkOwnership(t, sql)
+	}
+}
+
 // TestParse_depth checks the depth limit of the parser against the stack of SQLite's own automaton,
 // for every kind of nesting: the parser's depth never exceeds the depth of the stack, so a text that
 // the limit rejects overflows SQLite's stack too, which SQLite limits to 2500 entries; and text nested
