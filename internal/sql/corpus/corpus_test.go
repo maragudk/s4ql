@@ -1,6 +1,7 @@
 package corpus_test
 
 import (
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -83,6 +84,21 @@ func TestRead(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("should hold every line of every file in the form that Encode gives", func(t *testing.T) {
+		for _, source := range corpus.Sources {
+			b, err := os.ReadFile(source + ".txt")
+			is.NotError(t, err)
+			for _, line := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
+				if line == "" || line[0] == '#' {
+					continue
+				}
+				sql, err := corpus.Decode(line)
+				is.NotError(t, err)
+				is.Equal(t, line, corpus.Encode(sql), source)
+			}
+		}
+	})
 
 	t.Run("should hold the hand-written statements", func(t *testing.T) {
 		sqls, err := corpus.Read("own")

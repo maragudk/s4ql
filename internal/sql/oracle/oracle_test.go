@@ -123,6 +123,17 @@ func TestJudge(t *testing.T) {
 			Setup: []string{"attach ':memory:' as aux"}}, v)
 	})
 
+	t.Run("should attach an unknown database written in brackets, and create a table in it", func(t *testing.T) {
+		v := oracle.Judge("create trigger [aux].tr after insert on t begin select 1; end")
+		equal(t, oracle.Verdict{Kind: oracle.Parses, Offset: -1, Tail: 61,
+			Setup: []string{"attach ':memory:' as [aux]", `create table [aux]."t" (c)`}}, v)
+	})
+
+	t.Run("should not say for a trigger in main on a table in another schema, which no schema can fix", func(t *testing.T) {
+		v := oracle.Judge("create trigger tr after insert on aux.t begin select 1; end")
+		equal(t, notSaid(oracle.StoppedEarly, "trigger tr cannot reference objects in database aux", 15, 45), v)
+	})
+
 	t.Run("should attach the schema of a missing table in an unknown schema", func(t *testing.T) {
 		v := oracle.Judge("alter table aux.t1 add column d integer not null default 1")
 		equal(t, oracle.Verdict{Kind: oracle.Parses, Offset: -1, Tail: 58,

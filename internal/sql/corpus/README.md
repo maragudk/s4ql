@@ -6,10 +6,10 @@
 
 | File | Statements from | Statements | Bytes |
 | --- | --- | --- | --- |
-| `tcl.txt` | SQLite's TCL test scripts | 54,599 | 5,232,452 |
+| `tcl.txt` | SQLite's TCL test scripts | 54,599 | 5,232,470 |
 | `doc.txt` | SQLite's documentation | 1,176 | 127,752 |
-| `fuzz.txt` | SQLite's fuzz corpora | 83,247 | 6,049,922 |
-| `own.txt` | s4ql, written by hand | 219 | 6,115 |
+| `fuzz.txt` | SQLite's fuzz corpora | 83,247 | 6,048,569 |
+| `own.txt` | s4ql, written by hand | 219 | 6,100 |
 
 The tool in `update/` generates the first three from the archives that `source.json` pins. Together the files take 11.4 MB on disk, and about 1.4 MB compressed with `gzip -9`. `.gitattributes` marks the three generated files as generated and turns off their diffs.
 
@@ -52,12 +52,12 @@ The statements are deduplicated across tcl, doc, and fuzz in that order, and eac
 
 Each file holds one statement per line, in the form of `corpus.Encode`:
 
-- A printable character stands for itself.
+- Printable ASCII stands for itself, and so does a character from U+00A1 up, except a few that are invisible or spaces: U+00AD, U+2000-U+200F, U+2028-U+202F, U+205F-U+206F, U+3000, U+FEFF, and U+FFF0-U+FFFF.
 - A backslash is `\\`, a line feed `\n`, a tab `\t`, and a carriage return `\r`.
-- Every other byte is `\xHH`: a control character, a NUL byte, a byte that is not UTF-8, and each byte of a character that is not printable, such as a byte order mark or a no-break space.
+- Every other byte is `\xHH`: a control character, a NUL byte, a byte that is not UTF-8, and each byte of one of the characters above, such as a byte order mark or a no-break space.
 - A `#` at the start of a line is `\x23`.
 
-Empty lines and lines that start with `#` are comments. Each generated file starts with two comment lines.
+The rule is a fixed list and not Unicode's tables, so the same statement is written the same with any version of Go. Empty lines and lines that start with `#` are comments. Each generated file starts with two comment lines. A test checks that every line of every file, `own.txt` too, is in this form. `.gitattributes` keeps line feeds in the files on every checkout, since a carriage return in a line is an error.
 
 ## Regenerating
 
@@ -72,7 +72,7 @@ go run ./internal/sql/corpus/update -version X.Y.Z
 ```
 
 - `-archives DIR` reads the archives from `DIR` and downloads nothing. They are still checked.
-- `-check` writes nothing, and fails if the files differ from what it would write.
+- `-check` writes nothing, and fails if the files differ from what it would write. It refuses `-version`, which writes `source.json`.
 - `-version X.Y.Z` first pins that version: it reads both archives' URLs, sizes, and SHA3-256 checksums from the PRODUCT lines of https://sqlite.org/download.html and rewrites `source.json`.
 
 Another version of SQLite gives another corpus. Move the vendored amalgamation in `internal/sqlite` with it, so that the corpus and the oracle are of one version.

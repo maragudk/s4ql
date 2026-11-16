@@ -151,13 +151,13 @@ type Verdict struct {
 // existing object stop early in an empty database: CREATE TRIGGER always stops at BEGIN with "no such
 // table", and a name in an unknown schema stops at the next token with "unknown database". When the
 // verdict is [NotSaid] with one of those messages, Judge creates the missing table, view, or attached
-// database and judges again, a few times at most, and records what it ran in [Verdict.Setup]. The
+// database and judges again, at most three times, and records what it ran in [Verdict.Setup]. The
 // grammar does not depend on the schema, so a [Parses] or [SyntaxError] found that way holds for the
 // empty database too.
 func Judge(src string) Verdict {
 	var s schema
 	v := s.classify(src, s.prepare(src))
-	for v.Kind == NotSaid && len(s.objects) < maxObjects && s.fix(v.Message) {
+	for fixes := 0; v.Kind == NotSaid && fixes < maxFixes && s.fix(v.Message); fixes++ {
 		r := s.prepare(src)
 		if r.failed {
 			// The object could not be created, so the verdict without it stands.
@@ -168,8 +168,8 @@ func Judge(src string) Verdict {
 	return v
 }
 
-// maxObjects that [Judge] creates for one statement.
-const maxObjects = 3
+// maxFixes of the schema that [Judge] makes for one statement.
+const maxFixes = 3
 
 // schema that the text is judged against: objects created in an empty in-memory database.
 type schema struct {
@@ -374,7 +374,9 @@ func (s *schema) reachedEnd(src string, r result) Reason {
 //
 // In CREATE TRIGGER, a semicolon ends each step of the body, and the statement ends after `; END`:
 // after a step's semicolon the parser takes END as the end of the body, never as a name. So a
-// semicolon after `; END` is the statement's end, and any other is inside the body.
+// semicolon after `; END` is the statement's end, and any other is inside the body. sqlite3_complete
+// cannot decide this: it takes any END before a semicolon as the end of the body, also the name in
+// `select 1 as end;` inside it.
 //
 // In CREATE VIRTUAL TABLE, the arguments of the module are any tokens, a semicolon too, with
 // parentheses that must balance, so a semicolon is inside the arguments if a parenthesis is open.
@@ -502,10 +504,28 @@ func (s *schema) fix(msg string) bool {
 				return false
 			}
 		}
-		s.objects = append(s.objects, object{kind: database, raw: raw})
+		s.objects = append(s.objects, object{kind: database, raw: raw, name: dequote(raw)})
 		return true
 	}
 	return false
+}
+
+// dequote a name as SQLite does, for a name in "", “, [], or ”; any other name stays as it is.
+func dequote(raw string) string {
+	if len(raw) < 2 {
+		return raw
+	}
+	switch q := raw[0]; q {
+	case '"', '`', '\'':
+		if raw[len(raw)-1] == q {
+			return strings.ReplaceAll(raw[1:len(raw)-1], string([]byte{q, q}), string(q))
+		}
+	case '[':
+		if raw[len(raw)-1] == ']' {
+			return raw[1 : len(raw)-1]
+		}
+	}
+	return raw
 }
 
 // split a table name from a message into its schema, quoted for SQL with a dot after it, and its

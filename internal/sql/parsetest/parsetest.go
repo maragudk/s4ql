@@ -132,19 +132,19 @@ func Compare(src string, v oracle.Verdict, r Result) (Disagreement, bool) {
 	case oracle.Parses:
 		switch {
 		case !r.OK:
-			d.Mismatch, d.Key = RejectsValid, Pattern(src, r.Message, r.Offset)
+			d.Mismatch, d.Key = RejectsValid, Pattern(r.Message)
 		case r.Tail != v.Tail:
 			d.Mismatch, d.Key = Tail, fmt.Sprintf("tail %+d", r.Tail-v.Tail)
 		default:
 			return d, false
 		}
 	case oracle.SyntaxError:
-		sqlite := Pattern(src, v.Message, v.Offset)
+		sqlite := Pattern(v.Message)
 		switch {
 		case r.OK:
 			d.Mismatch, d.Key = AcceptsInvalid, sqlite
 		case r.Message != v.Message:
-			d.Mismatch, d.Key = Message, "SQLite "+sqlite+", parser "+Pattern(src, r.Message, r.Offset)
+			d.Mismatch, d.Key = Message, "SQLite "+sqlite+", parser "+Pattern(r.Message)
 		case r.Offset != v.Offset && v.Offset == -1:
 			d.Mismatch, d.Key = Offset, sqlite+": SQLite -1"
 		case r.Offset != v.Offset && r.Offset == -1:
@@ -170,7 +170,7 @@ func Check(p Parser, src string) (Disagreement, bool, oracle.Verdict) {
 // Pattern of an error message that groups messages of the same form: the quoted token of a syntax
 // error becomes its kind, as `near ID: syntax error` or `unrecognized token: STRING...`, and for any
 // other message the part after the first colon becomes `...` and anything quoted `"..."`.
-func Pattern(src, msg string, offset int) string {
+func Pattern(msg string) string {
 	if text, ok := strings.CutPrefix(msg, `near "`); ok {
 		if text, ok := strings.CutSuffix(text, `": syntax error`); ok {
 			return "near " + kindOf(text) + ": syntax error"
@@ -309,7 +309,7 @@ func Run(p Parser, sqls []string) Report {
 		switch {
 		case v.Kind == oracle.NotSaid:
 			r.NotSaid++
-			add(0, v.Reason.String()+": "+Pattern(sql, v.Message, v.Offset), d)
+			add(0, v.Reason.String()+": "+Pattern(v.Message), d)
 		case found:
 			add(d.Mismatch, d.Key, d)
 		default:

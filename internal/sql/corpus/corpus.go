@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -78,11 +77,12 @@ func Parse(data string) ([]string, error) {
 	return sqls, nil
 }
 
-// Encode a statement as one line: printable characters stand for themselves, apart from the
-// backslash, which is \\; a line feed is \n, a tab \t, a carriage return \r; and every other byte,
-// such as a control character, a NUL, a byte that is not UTF-8, or a character that is not printable,
-// such as a byte order mark or a no-break space, is \xHH for each byte. A # at the start of the line
-// is \x23, so that the line is not a comment.
+// Encode a statement as one line: printable ASCII and the characters of [visible] stand for
+// themselves, apart from the backslash, which is \\; a line feed is \n, a tab \t, a carriage return
+// \r; and every other byte, such as a control character, a NUL, a byte that is not UTF-8, or a
+// character that is invisible or a space, such as a byte order mark or a no-break space, is \xHH for
+// each byte. A # at the start of the line is \x23, so that the line is not a comment. The rule does
+// not depend on Unicode's tables, so the encoding of a statement never changes with the Go version.
 func Encode(sql string) string {
 	var b strings.Builder
 	for i := 0; i < len(sql); {
@@ -98,7 +98,7 @@ func Encode(sql string) string {
 			b.WriteString(`\r`)
 		case r == '#' && i == 0:
 			b.WriteString(`\x23`)
-		case r == utf8.RuneError && n == 1, !unicode.IsPrint(r):
+		case r == utf8.RuneError && n == 1, !visible(r):
 			for _, c := range []byte(sql[i : i+n]) {
 				fmt.Fprintf(&b, `\x%02x`, c)
 			}
@@ -108,6 +108,22 @@ func Encode(sql string) string {
 		i += n
 	}
 	return b.String()
+}
+
+// visible reports whether a character stands for itself in [Encode]: printable ASCII, and any
+// character from U+00A1 up, except the soft hyphen U+00AD, the spaces and format characters
+// U+2000-U+200F, U+2028-U+202F, and U+205F-U+206F, the ideographic space U+3000, the byte order
+// mark U+FEFF, and the specials U+FFF0-U+FFFF.
+func visible(r rune) bool {
+	switch {
+	case r >= 0x20 && r < 0x7f:
+		return true
+	case r < 0xa1, r == 0xad, r >= 0x2000 && r <= 0x200f, r >= 0x2028 && r <= 0x202f,
+		r >= 0x205f && r <= 0x206f, r == 0x3000, r == 0xfeff, r >= 0xfff0 && r <= 0xffff:
+		return false
+	default:
+		return true
+	}
 }
 
 // Decode a line in the form of [Encode] into its statement.

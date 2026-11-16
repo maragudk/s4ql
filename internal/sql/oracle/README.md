@@ -77,7 +77,7 @@ Some statements must name an object that exists, and in an empty database SQLite
 - ALTER TABLE ... ADD COLUMN with column constraints stops before its end, with `no such table`.
 - A name in an unknown schema stops at the next token, with `unknown database`.
 
-On such a `NotSaid`, `Judge` creates what is missing and judges again: the table (`create table "name" (c)`), a view for an INSTEAD OF trigger, or an attached `:memory:` database for the unknown schema. It creates at most three objects for one statement, and `Verdict.Setup` lists the statements it ran. The grammar does not depend on the schema, so a `Parses` or a `SyntaxError` found this way holds for the empty database too.
+On such a `NotSaid`, `Judge` creates what is missing and judges again: the table (`create table "name" (c)`), a view for an INSTEAD OF trigger, or an attached `:memory:` database for the unknown schema. It does this at most three times for one statement, and `Verdict.Setup` lists the statements it ran. The grammar does not depend on the schema, so a `Parses` or a `SyntaxError` found this way holds for the empty database too.
 
 ## Verdicts on the corpus
 

@@ -44677,7 +44677,7 @@ SELECT randomblob(32) is not null
 SELECT randomblob(5000)
 SELECT rank FROM ( SELECT rank FROM t1('a NOT "" NOT def') )
 SELECT rank FROM ( SELECT rank FROM t1('a NOT "" NOT def') ) ORDER BY 1
-SELECT rank FROM ( SELECT rank FROM t1('a NOT � NOT def') ) ORDER BY 1
+SELECT rank FROM ( SELECT rank FROM t1('a NOT \xef\xbf\xbd NOT def') ) ORDER BY 1
 SELECT rank IS $arg FROM zzz WHERE zzz MATCH 'a + b + c'
 SELECT rank() OVER ( ORDER BY a RANGE BETWEEN CURRENT ROW         AND CURRENT ROW ) FROM t2
 SELECT rank() OVER ( ORDER BY a RANGE BETWEEN CURRENT ROW         AND UNBOUNDED FOLLOWING ) FROM t2
@@ -52299,7 +52299,7 @@ UPDATE t1 SET (c) = 99 WHERE a=3
 UPDATE t1 SET (c,d) = (SELECT x,y,z FROM t2 WHERE w=a)
 UPDATE t1 SET (c,d) = (SELECT y,z FROM t2 WHERE (w,x)=(a,b))
 UPDATE t1 SET (c,d) = (SELECT y,z FROM t2 WHERE w=a)
-UPDATE t1 SET B =quote(zeroblob(200)) WHERE b MATCH 'threa*thrad*tlrad*the�d'
+UPDATE t1 SET B =quote(zeroblob(200)) WHERE b MATCH 'threa*thrad*tlrad*the\xef\xbf\xbdd'
 UPDATE t1 SET Col0 = 1
 UPDATE t1 SET [join $cols ,]
 UPDATE t1 SET [lindex $cols $iCol] = $doc WHERE rowid = $rowid

@@ -27,22 +27,10 @@ package sqlite
 
 #cgo !darwin LDFLAGS: -lm
 
-// s4ql_prepare a statement from the n bytes at sql, and set *tail to the offset of the first byte
-// after it.
+// s4ql_prepare the first statement of the n bytes at sql, and set *tail to the offset of the first
+// byte after it, or to -1 when SQLite did not say where it stopped, as when it refused the text
+// before parsing it.
 static int s4ql_prepare(sqlite3 *db, const char *sql, int n, sqlite3_stmt **stmt, int *tail) {
-	const char *end = 0;
-	if (sql == 0) {
-		sql = "";
-	}
-	int rc = sqlite3_prepare_v3(db, sql, n, 0, stmt, &end);
-	*tail = end == 0 ? n : (int)(end - sql);
-	return rc;
-}
-
-// s4ql_prepare_first prepares the first statement of the n bytes at sql, as s4ql_prepare does, but
-// sets *tail to -1 when SQLite did not say where it stopped, as when it refused the text before
-// parsing it.
-static int s4ql_prepare_first(sqlite3 *db, const char *sql, int n, sqlite3_stmt **stmt, int *tail) {
 	const char *end = 0;
 	if (sql == 0) {
 		sql = "";
@@ -242,32 +230,26 @@ func (c *Conn) Close() error {
 // comments and a NUL byte, because SQLite would ignore that part. Some PRAGMAs take effect when they
 // are prepared, and so take effect even when the SQL after them is refused.
 func (c *Conn) Prepare(sql string) (*Stmt, error) {
-	if c.db == nil {
-		return nil, errorFromConn(nil, C.SQLITE_MISUSE)
-	}
-	if len(sql) > math.MaxInt32 {
-		return nil, &Error{Code: C.SQLITE_TOOBIG, Message: "statement too long", Offset: -1}
+	s, tail, err := c.PrepareFirst(sql)
+	if err != nil {
+		return nil, err
 	}
 
-	var stmt *C.sqlite3_stmt
-	var tail C.int
-	rc := C.s4ql_prepare(c.db, (*C.char)(unsafe.Pointer(unsafe.StringData(sql))), C.int(len(sql)), &stmt, &tail)
-	if rc != C.SQLITE_OK {
-		return nil, errorFromConn(c.db, rc)
-	}
-
+	// A statement that prepared always has its tail.
 	rest := sql[tail:]
 	if strings.Trim(rest, " \t\n\f\r") != "" {
-		C.sqlite3_finalize(stmt)
+		if s != nil {
+			_ = s.Finalize()
+		}
 		if len(rest) > 100 {
 			rest = rest[:100] + "..."
 		}
 		return nil, fmt.Errorf("sqlite: SQL continues after the first statement: %q", rest)
 	}
-	if stmt == nil {
+	if s == nil {
 		return nil, errors.New("sqlite: no statement in SQL")
 	}
-	return &Stmt{stmt: stmt}, nil
+	return s, nil
 }
 
 // PrepareFirst prepares the first SQL statement of sql, and gives it with its tail: the offset of the
@@ -291,7 +273,7 @@ func (c *Conn) PrepareFirst(sql string) (*Stmt, int, error) {
 
 	var stmt *C.sqlite3_stmt
 	var tail C.int
-	rc := C.s4ql_prepare_first(c.db, (*C.char)(unsafe.Pointer(unsafe.StringData(sql))), C.int(len(sql)), &stmt, &tail)
+	rc := C.s4ql_prepare(c.db, (*C.char)(unsafe.Pointer(unsafe.StringData(sql))), C.int(len(sql)), &stmt, &tail)
 	if rc != C.SQLITE_OK {
 		return nil, int(tail), errorFromConn(c.db, rc)
 	}

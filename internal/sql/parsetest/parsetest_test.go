@@ -62,7 +62,7 @@ func TestRun_wrong(t *testing.T) {
 		for _, g := range r.Groups {
 			is.Equal(t, parsetest.AcceptsInvalid, g.Mismatch)
 			for _, d := range g.Examples {
-				is.Equal(t, parsetest.Pattern(d.SQL, d.Verdict.Message, d.Verdict.Offset), g.Key)
+				is.Equal(t, parsetest.Pattern(d.Verdict.Message), g.Key)
 			}
 		}
 		is.True(t, hasGroup(r, parsetest.AcceptsInvalid, "incomplete input"))
@@ -226,7 +226,7 @@ func TestPattern(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run("should give the pattern of "+test.msg, func(t *testing.T) {
-			is.Equal(t, test.expected, parsetest.Pattern("", test.msg, -1))
+			is.Equal(t, test.expected, parsetest.Pattern(test.msg))
 		})
 	}
 }

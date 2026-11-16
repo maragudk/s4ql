@@ -28,6 +28,7 @@ import (
 	"encoding/hex"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"flag"
 	"fmt"
 	"html"
@@ -90,6 +91,9 @@ func run() error {
 	}
 
 	if *version != "" {
+		if *check {
+			return errors.New("-check writes nothing, so it cannot pin a version with -version")
+		}
 		if err := pin(*version, *archives); err != nil {
 			return err
 		}

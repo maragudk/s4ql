@@ -16,7 +16,7 @@ select \xc2\xa0
 select 1\xc2\xa0
 select 1 as \xff
 select \xff\xfe from t
-create table \xe6\x97\xa5 (\xc3\xa9 int)
+create table 日 (é int)
 
 # NUL bytes end the text.
 select 1\x00 frm
