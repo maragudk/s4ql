@@ -33,6 +33,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -45,8 +46,11 @@ func main() {
 	}
 }
 
+// allPkgs are the packages that the command mutates by default.
+var allPkgs = []string{"internal/sql/token", "internal/sql/ast", "internal/sql/parser"}
+
 func start() error {
-	pkgs := flag.String("pkgs", "internal/sql/token,internal/sql/ast,internal/sql/parser", "packages to mutate, separated by commas")
+	pkgs := flag.String("pkgs", strings.Join(allPkgs, ","), "packages to mutate, separated by commas")
 	out := flag.String("out", "", "directory of the results (required, unless -list)")
 	jobs := flag.Int("j", runtime.NumCPU(), "mutants to run at once")
 	match := flag.String("run", "", "run only the mutants whose key or file:line matches this regular expression")
@@ -65,7 +69,7 @@ func start() error {
 		return err
 	}
 	dirs := strings.Split(*pkgs, ",")
-	u, err := newUniverse(root, dirs)
+	u, err := newUniverse(root, append(slices.Clone(allPkgs), dirs...))
 	if err != nil {
 		return err
 	}
@@ -75,9 +79,12 @@ func start() error {
 			return err
 		}
 	}
+	// all holds the keys of the mutants of every package, which the report needs to tell an entry of
+	// the list of equivalent mutants that names no mutant from one outside the selection.
 	var mutants []mutant
 	all := map[string]bool{}
-	for _, d := range dirs {
+	for _, d := range slices.Compact(slices.Sorted(slices.Values(append(slices.Clone(allPkgs), dirs...)))) {
+		selected := slices.Contains(dirs, d)
 		files, err := goFiles(filepath.Join(root, d))
 		if err != nil {
 			return err
@@ -90,7 +97,7 @@ func start() error {
 			}
 			for _, m := range ms {
 				all[m.Key] = true
-				if re == nil || re.MatchString(m.Key) || re.MatchString(fmt.Sprintf("%v:%v", m.File, m.Line)) {
+				if selected && (re == nil || re.MatchString(m.Key) || re.MatchString(fmt.Sprintf("%v:%v", m.File, m.Line))) {
 					mutants = append(mutants, m)
 				}
 			}
