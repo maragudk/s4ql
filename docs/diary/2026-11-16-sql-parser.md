@@ -195,3 +195,51 @@ The `#N` rule in `Judge` in `/internal/sql/oracle/oracle.go`, and the error list
 
 - The pass after the parser: it must raise the listed errors at SQLite's moment, and `Recursion limit` for texts nested 2,494 to 2,499 deep, which the parser accepts.
 - The round-trip printer, the third check of `docs/todo.md`.
+
+## Step 5: What the second fuzz run found
+
+**Author:** sql-parser-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Run it long, on several cores, until it stops finding anything [...] Report the count and what it found along the way. Add every input it finds as a regression case."
+**Interpretation:** Fuzz the final code again, and fix what it finds.
+**Inferred intent:** Zero means zero, also for inputs that no corpus has.
+
+### What I did
+
+The second run of `FuzzParse` failed after 135,493,514 executions in 19 minutes:
+
+    other offset: "VALUES(0),(0)UNION SELECT#0": SQLite: syntax error "near \"#0\": syntax error" at 25, tail 27; parser: ok=false "near \"#0\": syntax error" at -1, tail 0
+
+`sqlite3MultiValues` in insert.c compiles the rows of a multi-row VALUES into a co-routine while it parses, and reads the schema first, so the final `cmd ::= select` has nothing left to read and the offset stays. It takes that path when no common table expression came before in the statement, the new row is constant by `exprIsConst`, and the co-routine has started or the row before has no affinity. I wrote `/internal/sql/parser/constant.go`, which follows `exprIsConst` (with the walker's eCode 1 and 6) and `exprListIsNoAffinity` on the tree, as the grammar's actions build the expression (IS NULL into ISNULL, `x IN ()` into a constant, a row value IN a list into a SELECT, LIKE and `->` and CURRENT_TIME into function calls, true and false into constants). A function call is constant if the function that `sqlite3FindFunction` picks by `matchQuality` is deterministic or slow-changing and not an aggregate; `/internal/sql/parser/functions.go` holds the 159 built-in overloads of the binding from `pragma_function_list`, and the seven slow-changing ones that it does not mark, from the `DFUNCTION` and `STR_FUNCTION` lines of the amalgamation. The parser notes the index of the token on which SQLite reads the schema, and keeps the offset of `#N` if that came before.
+
+Tests: `TestBuiltinFunctions` checks the table against the binding, and against SQLite's decision for a call of every built-in function with 0 to 4 arguments, plain and as a quoted name; `TestParse_schemaRead` compares 1,034 texts (94 forms of expression in 11 places) with SQLite, of which 600 keep the offset; the fuzz input is in `/internal/sql/parser/testdata/fuzz/FuzzParse`. `FuzzGenerate` ran for 10 minutes, 16,059,438 executions, without a finding.
+
+### Why
+
+The offset of `#N` is part of SQLite's syntax error, and the brief asks for it on every input.
+
+### What worked
+
+The first version agreed with SQLite on all 990 texts of the new test, and on every function.
+
+### What didn't work
+
+My probe binary in the scratch directory had been overwritten by the research agent's C probe of the same name, and printed nothing; I rebuilt mine as `judge`. The TEST_FUNC internal functions (`affinity`, `expr_compare`, ...) are not in `pragma_function_list`; SQLite stops early on them with `unknown function: affinity()`, so the oracle does not say and the table leaves them out.
+
+### What I learned
+
+Whether SQLite reads the schema while it parses depends on the functions registered on the connection: an application-defined function could change the offset of this one error. The table is for the binding as it is.
+
+### What was tricky
+
+Seeing that `gofmt` turns '' and `` in a doc comment into typographic quotes.
+
+### What warrants review
+
+`constant` in `/internal/sql/parser/constant.go` against `exprNodeIsConstant` in SQLite's expr.c, and `valuesRow` against `sqlite3MultiValues`.
+
+### Future work
+
+None.
