@@ -381,6 +381,69 @@ func TestConn_SetLengthLimit(t *testing.T) {
 	})
 }
 
+func TestConn_AddTestFunctions(t *testing.T) {
+	t.Run("should leave REGEXP, MATCH, and GLOB with ESCAPE as SQLite has them without the stubs", func(t *testing.T) {
+		c := memory(t)
+
+		is.Equal(t, "no such function: regexp", message(t, c.Exec("select 'a' regexp 'b'")))
+		is.Equal(t, "unable to use function MATCH in the requested context", message(t, c.Exec("select 'a' match 'b'")))
+		is.Equal(t, "wrong number of arguments to function glob()", message(t, c.Exec("select 'a' glob 'b' escape 'c'")))
+	})
+
+	t.Run("should order the text of the first argument to the second, a prefix first", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.AddTestFunctions())
+
+		is.EqualSlice(t, []string{"integer:-1,integer:0,integer:1,integer:-1,integer:1,integer:0,integer:-1"},
+			query(t, c, "select regexp('a', 'b'), regexp('b', 'b'), regexp('b', 'a'), regexp('a', 'ab'), regexp('ab', 'a'), regexp('', ''), regexp(x'00', x'0000')"))
+		is.EqualSlice(t, []string{"integer:-1,integer:1,integer:0"},
+			query(t, c, "select match(12, 3), match(x'ff', 'a'), match(2.5, '2.5')"))
+	})
+
+	t.Run("should call the stubs with the operands of the operators in the order SQLite gives them", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.AddTestFunctions())
+
+		// X REGEXP Y is regexp(Y, X), and X GLOB Y ESCAPE Z is glob(Y, X, Z).
+		is.EqualSlice(t, []string{"integer:1,integer:-1,integer:0,integer:0,integer:1"},
+			query(t, c, "select 'a' regexp 'b', 'a' match 'B', not ('a' regexp 'b'), not ('a' not match 'a'), 'a' not regexp 'a'"))
+		is.EqualSlice(t, []string{"integer:3,integer:-4,integer:-3,integer:1,integer:0"},
+			query(t, c, "select 'a' glob 'b' escape 'a', 'b' glob 'a' escape 'c', 'b' regexp 'a' escape 'b', 'a' match 'a' escape '', 'x' glob 'x' escape 'x'"))
+	})
+
+	t.Run("should give NULL if any argument is NULL", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.AddTestFunctions())
+
+		is.EqualSlice(t, []string{"null:,null:,null:,null:"},
+			query(t, c, "select regexp(null, 'a'), match('a', null), glob('a', 'b', null), null regexp null"))
+	})
+
+	t.Run("should keep the GLOB of SQLite with two arguments", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.AddTestFunctions())
+
+		is.EqualSlice(t, []string{"integer:1,integer:0"}, query(t, c, "select 'abc' glob 'a*', 'abc' glob 'b*'"))
+	})
+
+	t.Run("should be deterministic, so that an index and a CHECK can use them", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.AddTestFunctions())
+
+		is.NotError(t, c.Exec("create table t1 (v1 text check ((v1 regexp 'm') >= 0))"))
+		is.NotError(t, c.Exec("create index i1 on t1 (regexp(v1, 'm'))"))
+		is.NotError(t, c.Exec("insert into t1 (v1) values ('a')"))
+		is.Equal(t, "CHECK constraint failed: (v1 regexp 'm') >= 0", message(t, c.Exec("insert into t1 (v1) values ('z')")))
+	})
+
+	t.Run("should refuse a closed connection", func(t *testing.T) {
+		closed, err := sqlite.Open(":memory:")
+		is.NotError(t, err)
+		is.NotError(t, closed.Close())
+		is.Equal(t, codeMisuse, code(t, closed.AddTestFunctions()))
+	})
+}
+
 func TestConn_Exec(t *testing.T) {
 	t.Run("should run a statement without results", func(t *testing.T) {
 		c := memory(t)
