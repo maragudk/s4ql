@@ -839,6 +839,10 @@ func (c *Checker) compareExpr(r ExprResult, eo ast.Expr, ot, pt string, n int) (
 	}
 	want, werr := explain(c.conn, "select "+ot+" from s4ql_v", side{})
 	got, gerr := explain(c.conn, "select "+pt+" from s4ql_v", side{})
+	if message(gerr) == "Recursion limit" {
+		r.Skipped = deepReason
+		return r, ""
+	}
 	if i, ok := differ(want, got); ok || message(werr) != message(gerr) {
 		return r, fmt.Sprintf("SQLite gives another program for the printed expression %q than for %q: at %d, %q and %q, errors %v and %v",
 			pt, ot, i, at(want, i), at(got, i), werr, gerr)
@@ -858,6 +862,11 @@ func (c *Checker) compareExpr(r ExprResult, eo ast.Expr, ot, pt string, n int) (
 		}
 		want := evaluate(c.conn, ot)
 		got := evaluate(c.conn, pt)
+		if got == "error: Recursion limit" {
+			// The query around the expression adds levels of its own.
+			r.Skipped = deepReason
+			return r, ""
+		}
 		if want != got {
 			return r, fmt.Sprintf("SQLite gives another value for the printed expression %q than for %q, with the values %v: %s and %s",
 				pt, ot, valueList(n, k), got, want)
