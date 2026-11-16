@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>s4ql: an SQL database for Go that lives in S3</title>
+<title>s4ql: an SQL database for Go that stores everything in S3</title>
 <meta name="description" content="s4ql is an embedded SQL database engine for Go that keeps all its data in S3. It is written and owned by AI agents, and trusted only as far as its tests reach.">
 <meta name="theme-color" content="#000000">
 <link rel="canonical" href="https://www.s4ql.com/">
@@ -12,13 +12,13 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="s4ql">
 <meta property="og:url" content="https://www.s4ql.com/">
-<meta property="og:title" content="s4ql: an SQL database for Go that lives in S3">
+<meta property="og:title" content="s4ql: an SQL database for Go that stores everything in S3">
 <meta property="og:description" content="An embedded SQL database engine for Go that keeps all its data in S3. Written and owned by AI agents, and trusted only as far as its tests reach.">
 <meta property="og:image" content="https://www.s4ql.com/og.png">
 <meta property="og:image:type" content="image/png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="s4ql. An SQL database for Go that lives in S3. Written by agents. Trusted as far as the tests reach. White text on a field of black and white bars.">
+<meta property="og:image:alt" content="s4ql. An SQL database for Go that stores everything in S3. Written by agents. Trusted as far as the tests reach. White text on a field of black and white bars.">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="preload" href="fonts/commit-mono-400.otf" as="font" type="font/otf" crossorigin>
 <style>
@@ -242,7 +242,7 @@ a:hover { text-decoration-thickness: 3px; }
 }
 .state li { background: var(--void); }
 h1 {
-  font-size: clamp(32px, 4.3vw, 64px);
+  font-size: clamp(32px, 3.9vw, 58px);
   line-height: 1.06;
   letter-spacing: -0.035em;
   font-weight: 700;
@@ -683,6 +683,7 @@ footer ul {
         <li class="sec"><a href="#process">Process</a></li>
         <li class="sec"><a href="#status">Status</a></li>
         <li class="sec"><a href="#roadmap">Roadmap</a></li>
+        <li class="sec"><a href="#inspiration">Inspiration</a></li>
         <li><a href="https://github.com/maragudk/s4ql">GitHub</a></li>
       </ul>
     </nav>
@@ -696,11 +697,11 @@ footer ul {
   <div class="wrap">
     <div class="claim">
       <h1 id="claim">
-        <span><span class="ko">An SQL database for Go that lives in S3.</span></span>
+        <span><span class="ko">An SQL database for Go that stores everything in S3.</span></span>
         <span class="process"><span class="ko">Written by agents. Trusted as far as the tests reach.</span></span>
       </h1>
       <div class="claim-body">
-      <p class="lede">s4ql is an embedded database engine in the spirit of SQLite that keeps all its data in an S3 bucket, with no server to run. Every line of it is written by AI agents, and no human reviews the code. Trust has to come from verification.</p>
+      <p class="lede">s4ql is an embedded database engine in the spirit of SQLite. Your Go application talks to the bucket directly, and there is no server to run. Every line of it is written by AI agents, and no human reviews the code. Trust has to come from verification.</p>
       <div class="actions">
         <a class="btn" href="https://github.com/maragudk/s4ql">Follow on GitHub <span class="bars" aria-hidden="true"></span></a>
         <a href="https://github.com/maragudk/s4ql/blob/main/docs/spec.md">Read the spec</a>
@@ -805,7 +806,7 @@ footer ul {
   <div class="wrap">
     <div class="block-head">
       <h2 id="process-h">How it is built</h2>
-      <p>Agents write the code, and the tests decide what is true. The production code runs unchanged inside a simulation where S3, time, and randomness are driven by one seed. The same seed always replays the same run, failures included.</p>
+      <p>Agents write the code and nobody reviews it, so the tests have to show that it works. The production code runs unchanged inside a simulation where S3, time, and randomness are driven by one seed. The same seed always replays the same run, failures included.</p>
     </div>
 
     <div class="replay">
@@ -821,9 +822,9 @@ footer ul {
     </div>
 
     <dl class="sheet">
-      <div><dt class="caps">Deterministic simulation</dt><dd>S3, clocks, and randomness sit behind interfaces. One seed drives a whole run, so any failure the simulation finds can be replayed exactly.</dd></div>
+      <div><dt class="caps">Deterministic simulation</dt><dd>S3, clocks, and randomness are reached only through interfaces. One seed controls a whole run, so any failure the simulation finds can be replayed exactly.</dd></div>
       <div><dt class="caps">Buggify</dt><dd>Marked points in the production code do something legal but unusual in simulation: return an error, add a delay, take a rare branch. Each run switches on a different subset.</dd></div>
-      <div><dt class="caps">SQLite is the oracle</dt><dd>s4ql writes its own parser and engine, and SQLite judges them. Results and errors are compared with SQLite's, and the parser is checked against SQLite's own test statements.</dd></div>
+      <div><dt class="caps">SQLite is the oracle</dt><dd>s4ql writes its own parser and engine, and checks them against SQLite. Results and errors are compared with SQLite's, and the parser is run on SQLite's own test statements.</dd></div>
       <div><dt class="caps">Real S3</dt><dd>A conformance suite and integration tests run against a real S3-compatible bucket on Tigris, to check that the simulated store behaves like the real one.</dd></div>
       <div><dt class="caps">Tests that test the tests</dt><dd>Property-based tests, fuzzing, and mutation testing. Bugs are planted on purpose to count how many seeds the simulation needs to find each one.</dd></div>
       <div><dt class="caps">Everything written down</dt><dd>The <a href="https://github.com/maragudk/s4ql/blob/main/docs/spec.md">spec</a>, the <a href="https://github.com/maragudk/s4ql/tree/main/docs/research">research</a>, the builders' diaries, and the <a href="https://github.com/maragudk/s4ql/tree/main/docs/conversations">conversations</a> behind each decision are in the repository.</dd></div>
@@ -916,6 +917,23 @@ footer ul {
         <span class="where caps">Open</span>
       </li>
     </ol>
+  </div>
+</section>
+
+<section class="block" id="inspiration" aria-labelledby="inspiration-h">
+  <div class="wrap">
+    <div class="block-head">
+      <h2 id="inspiration-h">Inspired by</h2>
+      <p>s4ql builds on ideas from other databases and storage engines. How each idea works in its own project is written up in <a href="https://github.com/maragudk/s4ql/blob/main/docs/inspiration.md">docs/inspiration.md</a>.</p>
+    </div>
+    <dl class="sheet">
+      <div><dt class="caps"><a href="https://sqlite.org/">SQLite</a></dt><dd>The embedded database s4ql is modelled on. s4ql speaks a subset of its SQL, checks its own answers against it, and uses it for the local cache.</dd></div>
+      <div><dt class="caps"><a href="https://www.foundationdb.org/">FoundationDB</a></dt><dd>A distributed, transactional key-value store, tested in deterministic simulation. s4ql's simulation and its buggify points follow its example, and so does the rule that an application checks its own data after an unknown commit outcome.</dd></div>
+      <div><dt class="caps"><a href="https://graft.rs/">Graft</a></dt><dd>A storage engine in Rust that replicates SQLite pages to object storage as an append-only log of commits, with no server in between.</dd></div>
+      <div><dt class="caps"><a href="https://slatedb.io/">SlateDB</a></dt><dd>An embedded key-value store in Rust that keeps all its files in object storage, with a manifest that lists the current state of the database.</dd></div>
+      <div><dt class="caps"><a href="https://turbopuffer.com/">Turbopuffer</a></dt><dd>A search service where object storage is the only source of truth and each namespace is a prefix in the bucket, with caches in memory and on disk in front of it.</dd></div>
+      <div><dt class="caps"><a href="https://litestream.io/">Litestream</a></dt><dd>A tool in Go that replicates a SQLite database to object storage from its write-ahead log, and a SQLite plugin that queries the copy in object storage directly.</dd></div>
+    </dl>
   </div>
 </section>
 
