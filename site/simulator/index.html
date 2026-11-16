@@ -1,0 +1,1279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>s4ql simulator: play with the storage design and inject faults</title>
+<meta name="description" content="A model of s4ql's storage design that runs in your browser. Crash, stall, and cut off instances, lose answers from S3, and set clocks wrong, while a checker watches the rules of the design.">
+<meta name="theme-color" content="#000000">
+<link rel="canonical" href="https://www.s4ql.com/simulator/">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="s4ql">
+<meta property="og:url" content="https://www.s4ql.com/simulator/">
+<meta property="og:title" content="s4ql simulator: play with the storage design and inject faults">
+<meta property="og:description" content="A model of s4ql's storage design in your browser. Crash, stall, and cut off instances, lose answers from S3, and set clocks wrong, while a checker watches the rules.">
+<meta property="og:image" content="https://www.s4ql.com/og.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="s4ql. An SQL database for Go that stores everything in S3. Written by agents, trusted with simulation testing. White text on a field of black and white bars.">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preload" href="../fonts/commit-mono-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="modulepreload" href="model.js">
+<script src="https://cdn.usefathom.com/script.js" data-site="MRQEPWJY" defer></script>
+<style>
+@font-face {
+  font-family: "Commit Mono";
+  src: url("../fonts/commit-mono-400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Commit Mono";
+  src: url("../fonts/commit-mono-700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --void: #000;
+  --lumin: #fff;
+  --ink: var(--lumin);
+  --ground: var(--void);
+  --font: "Commit Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --gutter: clamp(16px, 4vw, 48px);
+  --max: 1440px;
+  --rule: 1px solid var(--ink);
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  background: var(--void);
+  scrollbar-color: var(--lumin) var(--void);
+  scroll-behavior: smooth;
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  caret-color: var(--lumin);
+}
+
+::selection { background: var(--lumin); color: var(--void); }
+.invert ::selection, .lit ::selection { background: var(--void); color: var(--lumin); }
+
+a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.25em;
+}
+a:hover { text-decoration-thickness: 3px; }
+
+:focus-visible {
+  outline: 2px solid var(--lumin);
+  outline-offset: 3px;
+}
+.invert :focus-visible, .lit :focus-visible { outline-color: var(--void); }
+
+.skip {
+  position: absolute;
+  left: var(--gutter);
+  top: -100px;
+  background: var(--lumin);
+  color: var(--void);
+  padding: 8px 16px;
+  z-index: 10;
+}
+.skip:focus { top: 8px; }
+
+.wrap {
+  max-width: var(--max);
+  margin: 0 auto;
+  padding: 0 var(--gutter);
+}
+
+.caps {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.small { font-size: 13px; line-height: 1.55; }
+
+.vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Header, as on the main page */
+
+.top {
+  border-bottom: var(--rule);
+  position: relative;
+  z-index: 2;
+  background: var(--void);
+}
+.top .wrap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  min-height: 64px;
+}
+.mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 20px;
+  letter-spacing: 0.02em;
+}
+.mark svg { display: block; }
+.top nav ul {
+  display: flex;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.top nav a {
+  display: block;
+  padding: 8px 12px;
+  text-decoration: none;
+}
+.top nav a:hover, .top nav a[aria-current="page"] { background: var(--lumin); color: var(--void); }
+@media (max-width: 860px) {
+  .top nav .sec { display: none; }
+}
+
+/* Buttons and fields */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  border: var(--rule);
+  padding: 8px 12px;
+  text-decoration: none;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--void);
+  color: var(--lumin);
+  font-family: inherit;
+  cursor: pointer;
+  border-radius: 0;
+  transition: background-color 120ms steps(1), color 120ms steps(1);
+}
+.btn .bars {
+  display: block;
+  width: 20px;
+  height: 12px;
+  background:
+    repeating-linear-gradient(90deg,
+      currentColor 0 1px, transparent 1px 3px,
+      currentColor 3px 5px, transparent 5px 6px,
+      currentColor 6px 7px, transparent 7px 10px);
+}
+.btn:hover, .btn:focus-visible, .btn[aria-pressed="true"] { background: var(--lumin); color: var(--void); text-decoration: none; }
+.btn[aria-pressed="true"]:hover { background: var(--void); color: var(--lumin); }
+.btn.big { padding: 12px 16px 12px 20px; font-size: 14px; gap: 20px; }
+.btn.big .bars { width: 32px; height: 16px; }
+
+select, input[type="text"] {
+  font: inherit;
+  font-size: 13px;
+  color: var(--lumin);
+  background: var(--void);
+  border: var(--rule);
+  border-radius: 0;
+  padding: 6px 8px;
+}
+select { padding-right: 24px; appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--lumin) 50%), linear-gradient(135deg, var(--lumin) 50%, transparent 50%); background-position: calc(100% - 13px) 55%, calc(100% - 8px) 55%; background-size: 5px 5px; background-repeat: no-repeat; }
+select { max-width: 100%; min-width: 0; text-overflow: ellipsis; }
+input[aria-invalid="true"] { border-style: dashed; }
+label { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; min-width: 0; }
+input[type="checkbox"] {
+  appearance: none;
+  margin: 0;
+  width: 16px;
+  height: 16px;
+  border: var(--rule);
+  background: var(--void);
+  border-radius: 0;
+  cursor: pointer;
+}
+input[type="checkbox"]:checked { background: repeating-linear-gradient(90deg, var(--lumin) 0 2px, transparent 2px 3px); }
+
+/* Intro */
+
+.intro {
+  border-bottom: var(--rule);
+  padding: 48px 0 40px;
+}
+.intro-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: 48px;
+}
+h1 {
+  font-size: clamp(30px, 3.2vw, 46px);
+  line-height: 1.06;
+  letter-spacing: -0.035em;
+  font-weight: 700;
+  margin: 0 0 20px;
+  text-wrap: balance;
+}
+.lede { font-size: 16px; max-width: 64ch; }
+.intro p { max-width: 64ch; margin: 0 0 12px; font-size: 14px; }
+.intro p.lede { font-size: 16px; }
+.tries {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: var(--rule);
+  counter-reset: try;
+}
+.tries li {
+  counter-increment: try;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: var(--rule);
+  font-size: 13px;
+}
+.tries li::before { content: counter(try, decimal-leading-zero); font-weight: 700; }
+h2 {
+  font-size: clamp(26px, 3vw, 40px);
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+  font-weight: 700;
+  margin: 0 0 24px;
+  text-wrap: balance;
+}
+h3 {
+  font-size: 14px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 0;
+}
+@media (max-width: 960px) {
+  .intro { padding: 48px 0 40px; }
+  .intro-grid { grid-template-columns: 1fr; gap: 32px; }
+}
+
+/* The bar of controls */
+
+.bar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--void);
+  border-bottom: var(--rule);
+}
+.bar .wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+.bar .clock {
+  font-weight: 700;
+  font-size: 18px;
+  min-width: 9.5ch;
+}
+.bar .group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.bar .grow { flex: 1 1 auto; }
+.chip { border: var(--rule); padding: 6px 10px; text-decoration: none; }
+.chip.bad { background: var(--lumin); color: var(--void); font-weight: 700; }
+#seed { width: 13ch; }
+.bar .note { flex-basis: 100%; }
+.bar .note:empty { display: none; }
+@media (max-width: 720px) {
+  .bar { position: static; }
+}
+
+/* Panels: cells that share hairlines */
+
+.panel { border-bottom: var(--rule); padding: 28px 0 32px; }
+.panel h2 { font-size: clamp(24px, 2.4vw, 32px); margin: 0; }
+.panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 24px;
+  margin-bottom: 16px;
+}
+.panel-head p { margin: 0; max-width: 72ch; }
+
+.cells {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: var(--rule);
+  border-left: var(--rule);
+}
+.cells.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.cells > * {
+  min-width: 0;
+  border-right: var(--rule);
+  border-bottom: var(--rule);
+}
+@media (max-width: 1100px) {
+  .cells { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .cells, .cells.two { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* The checker */
+
+.checks { width: 100%; border-collapse: collapse; border-top: var(--rule); }
+.checks th, .checks td { text-align: left; vertical-align: top; border-bottom: var(--rule); padding: 10px 12px 10px 0; }
+.checks th { font-weight: 400; font-size: 14px; }
+.checks td { font-size: 12px; line-height: 1.5; padding-top: 12px; }
+.checks td.state { width: 12ch; font-weight: 700; padding-left: 12px; }
+.checks td.count { width: 10ch; text-align: right; }
+.checks th { padding-left: 12px; }
+.checks tr.bad, .checks tr.bad td, .checks tr.bad th { background: var(--lumin); color: var(--void); border-bottom-color: var(--void); }
+.panel h2, #simpler-h { scroll-margin-top: 140px; }
+.alarm {
+  border: var(--rule);
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  background: var(--lumin);
+  color: var(--void);
+}
+.alarm[hidden] { display: none; }
+.alarm strong { display: block; font-size: 18px; margin-bottom: 4px; }
+.alarm p { margin: 0 0 8px; }
+.alarm p:last-child { margin: 0; }
+.allowed { margin: 12px 0 0; }
+.allowed:empty { display: none; }
+
+/* Instances */
+
+.inst { display: flex; flex-direction: column; }
+.inst-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: var(--rule);
+}
+.inst-head .who { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.inst-head .letter { font-size: 32px; font-weight: 700; line-height: 1; }
+.inst-head .word { font-weight: 700; }
+.inst.lit .inst-head { background: var(--lumin); color: var(--void); }
+.inst .tags { display: flex; gap: 0; flex-wrap: wrap; }
+.inst .tags span { border: var(--rule); padding: 0 8px; margin: 0 -1px 0 0; }
+.inst.lit .inst-head .tags span { border-color: var(--void); }
+.inst .tags span:empty { display: none; }
+.facts { margin: 0; padding: 0 20px; }
+.facts > div {
+  display: grid;
+  grid-template-columns: 11ch minmax(0, 1fr);
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: var(--rule);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.facts > div:last-child { border-bottom: 0; }
+.facts dt { margin: 0; }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.facts .code { display: block; width: 100%; height: 20px; margin-top: 4px; }
+.rows { word-break: break-word; }
+.inst-actions {
+  margin-top: auto;
+  border-top: var(--rule);
+  padding: 16px 20px 20px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+.inst-actions .row { display: flex; flex-wrap: wrap; gap: 8px; }
+.inst-actions .row > .caps { flex-basis: 100%; }
+.inst-actions .btn { padding: 5px 9px; font-size: 11px; }
+
+/* The bucket */
+
+.bucket { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); border: var(--rule); }
+.manifest { border-right: var(--rule); padding: 20px; min-width: 0; }
+.manifest pre {
+  margin: 12px 0;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.manifest .hl { background: var(--lumin); color: var(--void); }
+.commits { list-style: none; margin: 0; padding: 0; max-height: 640px; overflow-y: auto; scrollbar-width: thin; }
+.commit { padding: 14px 20px; border-bottom: var(--rule); display: grid; gap: 6px; }
+.commit:last-child { border-bottom: 0; }
+.commit .code { display: block; width: 100%; height: 28px; }
+.commit .meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 16px; font-size: 13px; }
+.commit .name { font-weight: 700; word-break: break-all; font-size: 13px; }
+.commit.head { background: var(--lumin); color: var(--void); }
+.commit.orphan { outline: 1px dashed var(--lumin); outline-offset: -6px; }
+.commits-empty { padding: 20px; margin: 0; }
+@media (max-width: 860px) {
+  .bucket { grid-template-columns: minmax(0, 1fr); }
+  .manifest { border-right: 0; border-bottom: var(--rule); }
+}
+
+/* Logs */
+
+.logs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); border: var(--rule); }
+.logs > section { min-width: 0; }
+.logs > section + section { border-left: var(--rule); }
+.log-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 16px; padding: 14px 20px; border-bottom: var(--rule); }
+.scroll { max-height: 560px; overflow-y: auto; scrollbar-width: thin; }
+.entries { list-style: none; margin: 0; padding: 0; }
+.entries li {
+  display: grid;
+  grid-template-columns: 9ch 7ch minmax(0, 1fr);
+  gap: 12px;
+  padding: 6px 20px;
+  border-bottom: var(--rule);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.entries li:last-child { border-bottom: 0; }
+.entries .text { overflow-wrap: anywhere; }
+.entries li.loud { background: var(--lumin); color: var(--void); font-weight: 700; }
+.entries li.routine { opacity: 1; }
+.entries .sub { display: block; }
+@media (max-width: 960px) {
+  .logs { grid-template-columns: minmax(0, 1fr); }
+  .logs > section + section { border-left: 0; border-top: var(--rule); }
+}
+@media (max-width: 520px) {
+  .entries li { grid-template-columns: 8ch minmax(0, 1fr); padding: 6px 16px; }
+  .entries .who { grid-column: 2; grid-row: 1; }
+  .entries .text { grid-column: 1 / -1; }
+}
+
+/* S3 faults and settings */
+
+.knobs { padding: 16px 20px 20px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-content: start; }
+.knobs .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.knobs h3 { margin-bottom: 4px; }
+.knobs p { margin: 0; font-size: 13px; }
+.points { margin: 0; padding: 0; list-style: none; font-size: 13px; }
+.points li { padding-left: 20px; position: relative; }
+.points li::before { content: ""; position: absolute; left: 0; top: 0.55em; width: 10px; height: 8px; background: repeating-linear-gradient(90deg, currentColor 0 1px, transparent 1px 3px); }
+
+/* What the model leaves out */
+
+section.block { border-bottom: var(--rule); padding: 72px 0 64px; }
+.sheet { margin: 0; border-top: var(--rule); }
+.sheet > div {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 24px;
+  padding: 14px 0;
+  border-bottom: var(--rule);
+}
+.sheet dt { margin: 0; padding-top: 2px; }
+.sheet dd { margin: 0; max-width: 72ch; }
+@media (max-width: 720px) {
+  .sheet > div { grid-template-columns: 1fr; gap: 4px; }
+  section.block { padding: 48px 0 40px; }
+}
+
+footer { padding: 40px 0 56px; }
+footer .wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 24px 48px;
+  align-items: start;
+}
+footer p { max-width: 64ch; margin: 0; }
+footer ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+}
+@media (max-width: 720px) {
+  footer .wrap { grid-template-columns: 1fr; }
+}
+noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule); }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <div class="wrap">
+    <a class="mark" href="../" aria-label="s4ql, home">
+      <svg id="mark" width="32" height="22" viewBox="0 0 32 22" aria-hidden="true" shape-rendering="crispEdges"></svg>
+      <span>s4ql</span>
+    </a>
+    <nav aria-label="Sections">
+      <ul>
+        <li class="sec"><a href="../#why">Why</a></li>
+        <li class="sec"><a href="../#product">Product</a></li>
+        <li class="sec"><a href="../#process">Process</a></li>
+        <li class="sec"><a href="../#status">Status</a></li>
+        <li class="sec"><a href="../#roadmap">Roadmap</a></li>
+        <li><a href="./" aria-current="page">Simulator</a></li>
+        <li><a href="https://github.com/maragudk/s4ql">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="intro" aria-labelledby="intro-h">
+  <div class="wrap intro-grid">
+    <div>
+      <h1 id="intro-h">A simulator of the storage design</h1>
+      <p class="lede">This page runs a model of s4ql's storage design in your browser. Instances of one database share a bucket in S3. They write, read, and take turns with the lease while you crash them, pause them, cut them off, lose answers from S3, fail disks, and set clocks wrong.</p>
+      <p>A checker looks at the state after every step and tells you when a rule of the design breaks. Plant a bug to see it do that.</p>
+      <p>The model is JavaScript, written from <a href="https://github.com/maragudk/s4ql/blob/main/docs/spec.md">the spec</a>, <a href="https://github.com/maragudk/s4ql/blob/main/internal/core/README.md">the notes of the storage core</a>, and the Go code. It is not the Go code, which is tested in a simulation of its own. Where the model is simpler than the design, <a href="#simpler">the list at the end</a> says so.</p>
+      <p>One seed drives every random choice. The seed and your actions are kept in the link, so you can share a run and replay it step for step.</p>
+    </div>
+    <div>
+      <h2>Things to try</h2>
+      <ol class="tries">
+        <li><span>Stall the instance that serves. A spare takes the lease once the manifest has stood still for 33 seconds. Resume the stalled one: its next swap fails, and it refuses reads.</span></li>
+        <li><span>Lose the answer of the next swap of <code>manifest.json</code>, then write. The instance asks S3 again and finds its commit in the log.</span></li>
+        <li><span>Crash the instance that serves, then start it again. It waits for its old lease to time out, because its holder ID was in memory. The next holder catches up from the log.</span></li>
+        <li><span>Make a spare's monotonic clock run twice as fast. It can take the lease early, and a read on the old holder can miss a commit. The spec allows that: clocks affect only reads. No acknowledged write is lost.</span></li>
+        <li><span>Plant a bug, turn on random faults, and wait for the checker to stop the run.</span></li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<noscript><p>The simulator needs JavaScript.</p></noscript>
+
+<div class="bar" role="region" aria-label="Run controls">
+  <div class="wrap">
+    <div class="group">
+      <button class="btn big" type="button" id="play" aria-pressed="false">Play <span class="bars" aria-hidden="true"></span></button>
+      <button class="btn" type="button" id="step">Step</button>
+      <label class="caps" for="speed">Speed
+        <select id="speed">
+          <option value="1">1×</option>
+          <option value="4" selected>4×</option>
+          <option value="16">16×</option>
+          <option value="64">64×</option>
+        </select>
+      </label>
+    </div>
+    <div class="clock" id="clock" aria-label="Virtual time">0:00.000</div>
+    <a class="chip caps" id="chip" href="#checker-h">Checker</a>
+    <div class="grow"></div>
+    <form class="group" id="seed-form">
+      <label class="caps" for="seed">Seed <input type="text" id="seed" spellcheck="false" autocomplete="off" value="0x7334716c"></label>
+      <label class="caps" for="count">Instances
+        <select id="count"><option value="2">2</option><option value="3" selected>3</option></select>
+      </label>
+      <button class="btn" type="submit">Reset</button>
+      <button class="btn" type="button" id="new-seed">New seed</button>
+      <button class="btn" type="button" id="replay">Replay from start</button>
+      <button class="btn" type="button" id="share">Copy link</button>
+    </form>
+    <p class="note small" id="note" role="status"></p>
+  </div>
+</div>
+
+<section class="panel" aria-labelledby="inst-h">
+  <div class="wrap">
+    <div class="panel-head">
+      <h2 id="inst-h">Instances</h2>
+      <p class="small">Each instance is one process with a random holder ID in memory, a cache on its own disk, a wall clock, and a monotonic clock. The one that holds the lease and is caught up serves.</p>
+    </div>
+    <div class="cells" id="instances"></div>
+  </div>
+</section>
+
+<section class="panel" aria-labelledby="s3-h">
+  <div class="wrap">
+    <div class="panel-head">
+      <h2 id="s3-h">The bucket</h2>
+      <p class="small">S3 is strongly consistent. <code>manifest.json</code> is replaced only by a compare-and-swap on its version, which S3 makes from its content. A commit object is created only if nothing is at its key, under its SHA-256.</p>
+    </div>
+    <div class="bucket">
+      <div class="manifest">
+        <h3>manifest.json</h3>
+        <pre id="manifest" aria-live="off">Not written yet.</pre>
+        <p class="small" id="manifest-meta"></p>
+      </div>
+      <div>
+        <ol class="commits" id="commits" aria-label="Commit objects, newest first" tabindex="0"></ol>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="panel" aria-labelledby="faults-h">
+  <div class="wrap">
+    <div class="panel-head">
+      <h2 id="faults-h">Workload and faults</h2>
+      <p class="small">Faults of one instance are on its card under "Instances". These act on S3, on the network, and on the whole run.</p>
+    </div>
+    <div class="cells">
+      <div class="knobs">
+        <h3>Workload</h3>
+        <p>Writes and reads from the application, to random instances. A write inserts one value.</p>
+        <div class="row">
+          <button class="btn" type="button" id="auto" aria-pressed="false">Automatic workload</button>
+          <button class="btn" type="button" id="chaos" aria-pressed="false">Random faults</button>
+        </div>
+        <div class="row">
+          <button class="btn" type="button" id="heal">Clear all faults</button>
+        </div>
+      </div>
+      <div class="knobs">
+        <h3>S3 and the network</h3>
+        <div class="row">
+          <label class="caps" for="kind">Next
+            <select id="kind">
+              <option value="any">any request</option>
+              <option value="swap" selected>swap of manifest.json</option>
+              <option value="upload">upload of a commit object</option>
+              <option value="read">read of manifest.json</option>
+            </select>
+          </label>
+        </div>
+        <div class="row">
+          <button class="btn" type="button" id="drop">Lose its answer</button>
+          <button class="btn" type="button" id="fail">Fail it before sending</button>
+        </div>
+        <div class="row">
+          <button class="btn" type="button" id="slow" aria-pressed="false">Slow S3</button>
+        </div>
+        <p id="armed"></p>
+      </div>
+      <div class="knobs">
+        <h3>Buggify and planted bugs</h3>
+        <p>Buggify makes marked points of the model do legal but unusual things, from the seed. A planted bug is one wrong decision.</p>
+        <div class="row">
+          <button class="btn" type="button" id="buggify" aria-pressed="false">Buggify</button>
+          <label class="caps" for="bug">Bug
+            <select id="bug"><option value="">none</option></select>
+          </label>
+        </div>
+        <p id="points-intro">This seed switches on these points:</p>
+        <ul class="points" id="points" aria-labelledby="points-intro"></ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="panel" aria-labelledby="checker-h">
+  <div class="wrap">
+    <div class="panel-head">
+      <h2 id="checker-h">The checker</h2>
+      <p class="small">After every step of the model, it checks the rules again on what changed.</p>
+    </div>
+    <div class="alarm" id="alarm" role="alert" hidden></div>
+    <table class="checks">
+      <caption class="vh">Invariants and how often each was checked</caption>
+      <tbody id="checks"></tbody>
+    </table>
+    <p class="allowed small" id="allowed"></p>
+  </div>
+</section>
+
+<section class="panel" aria-labelledby="logs-h">
+  <div class="wrap">
+    <div class="panel-head">
+      <h2 id="logs-h">What happened</h2>
+      <p class="small">Times are virtual, from the start of the run. Newest first.</p>
+    </div>
+    <div class="logs">
+      <section aria-labelledby="timeline-h">
+        <div class="log-head">
+          <h3 id="timeline-h">Timeline</h3>
+          <label class="caps" for="routine"><input type="checkbox" id="routine"> Routine events</label>
+        </div>
+        <div class="scroll" tabindex="0" aria-label="Timeline">
+          <ol class="entries" id="timeline"></ol>
+        </div>
+      </section>
+      <section aria-labelledby="requests-h">
+        <div class="log-head">
+          <h3 id="requests-h">Requests to S3</h3>
+          <span class="caps" id="request-count"></span>
+        </div>
+        <div class="scroll" tabindex="0" aria-label="Requests to S3">
+          <ol class="entries" id="requests"></ol>
+        </div>
+      </section>
+    </div>
+  </div>
+</section>
+
+<section class="block" id="simpler" aria-labelledby="simpler-h">
+  <div class="wrap">
+    <h2 id="simpler-h">Where the model is simpler</h2>
+    <dl class="sheet">
+      <div><dt class="caps">Commit objects</dt><dd>JSON, not Protocol Buffers. A write inserts one value into one table, and the commit object holds that row and the statement as an annotation.</dd></div>
+      <div><dt class="caps">Reads</dt><dd>A read is one step: the check of the lease by both clocks and the read of the cache happen together. The Go code checks the lease before it fixes the state that the read sees, and once more after.</dd></div>
+      <div><dt class="caps">Catch-up</dt><dd>Each missing commit object is downloaded once, checked against its name, and applied. The Go code downloads it a second time to apply it.</dd></div>
+      <div><dt class="caps">Timeouts</dt><dd>Every request to S3 times out after 5 seconds. In the Go code, uploads and downloads of commit objects have 5 minutes. The application gives up on a write after 45 seconds, longer than a takeover, so that a write that is open while its instance stalls can still reach its swap.</dd></div>
+      <div><dt class="caps">The cache</dt><dd>A list of values and the name of the last commit it applied, changed in one step. SQLite's own behaviour, such as its locks and its log, is not modelled. A failed disk fails the next local read or write, and a restart clears it.</dd></div>
+      <div><dt class="caps">S3</dt><dd>Requests are applied one at a time as they arrive. Each way of a request takes 8 to 60 ms. Under buggify, S3 refuses a correct swap with 409 at random, where real S3 does it while another write to the key is on its way.</dd></div>
+      <div><dt class="caps">Shutdown</dt><dd>The instance releases the lease and ends, without waiting for calls that still run.</dd></div>
+      <div><dt class="caps">Clocks</dt><dd>A stale read counts as allowed while an instance measures time wrongly, and for two lease durations after every clock runs true again. Other clock faults never excuse anything.</dd></div>
+      <div><dt class="caps">Not in the design yet</dt><dd>Snapshots, garbage collection, and branches other than <code>main</code>. A commit object that was uploaded and never committed stays in the bucket.</dd></div>
+    </dl>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Made by <a href="https://www.maragu.dev/">maragu</a>: independent software consulting for cloud-native Go apps and AI engineering. s4ql is MIT licensed. Set in <a href="https://commitmono.com/">Commit Mono</a>. <a href="../">Back to the main page</a>.</p>
+    <ul class="caps">
+      <li><a href="https://github.com/maragudk/s4ql">GitHub</a></li>
+      <li><a href="https://pkg.go.dev/maragu.dev/s4ql">Go docs</a></li>
+      <li><a href="https://github.com/maragudk/s4ql/blob/main/docs/spec.md">Spec</a></li>
+      <li><a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">Roadmap</a></li>
+      <li><a href="https://github.com/maragudk/s4ql/blob/main/docs/todo.md">To do</a></li>
+    </ul>
+  </div>
+</footer>
+
+<script type="module">
+import {
+  Sim, DEFAULT_SEED, EMPTY_LOG, EPOCH, LEASE_MS, MANIFEST_KEY, INVARIANTS, PLANTED_BUGS, BUGGIFY_POINTS, FAULT_KINDS,
+  encodeActions, decodeActions, instanceState, margin, short, pos, commitRows,
+} from "./model.js";
+
+const reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
+const $ = (id) => document.getElementById(id);
+const NS = "http://www.w3.org/2000/svg";
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const hex = (n) => "0x" + (n >>> 0).toString(16).padStart(8, "0");
+
+function parseSeed(s) {
+  const m = /^\s*(0x)?([0-9a-f]{1,8})\s*$/i.exec(s);
+  return m ? parseInt(m[2], 16) >>> 0 : null;
+}
+
+function clockText(ms) {
+  const m = Math.floor(ms / 60000);
+  const s = ((ms % 60000) / 1000).toFixed(3).padStart(6, "0");
+  return m + ":" + s;
+}
+const secs = (ms) => (ms / 1000).toFixed(1) + " s";
+
+// Bar codes of commit names: one bar per bit of the SHA-256, as on the main page.
+function barcodePath(hexstr) {
+  let d = "";
+  for (let i = 0; i < 64; i++) {
+    const nib = parseInt(hexstr[i], 16);
+    for (let b = 0; b < 4; b++) if (nib & (8 >> b)) d += "M" + (i * 4 + b) + " 0h0.72v40h-0.72z";
+  }
+  return d;
+}
+function barcodeSVG(hexstr, cls) {
+  return `<svg class="${cls}" viewBox="0 0 256 40" preserveAspectRatio="none" shape-rendering="crispEdges" aria-hidden="true"><path fill="currentColor" d="${barcodePath(hexstr)}"/></svg>`;
+}
+
+// The mark: the 32 bits of "s4ql" as bars.
+{
+  const mark = $("mark");
+  let md = "";
+  [0x73, 0x34, 0x71, 0x6c].forEach((byte, i) => {
+    for (let b = 0; b < 8; b++) if (byte & (128 >> b)) md += "M" + (i * 8 + b) + " 0h1v22h-1z";
+  });
+  const p = document.createElementNS(NS, "path");
+  p.setAttribute("d", md);
+  p.setAttribute("fill", "currentColor");
+  mark.appendChild(p);
+}
+
+// State of the page.
+let sim;
+let seed = DEFAULT_SEED;
+let count = 3;
+let playing = false;
+let last = 0;
+let dirty = true;
+let lastRender = 0;
+let shownViolations = 0;
+let inst = [];
+
+for (const [name, text] of Object.entries(PLANTED_BUGS)) {
+  const o = document.createElement("option");
+  o.value = name;
+  o.textContent = text;
+  $("bug").appendChild(o);
+}
+
+function note(text) {
+  $("note").textContent = text;
+}
+
+function writeURL() {
+  const params = new URLSearchParams();
+  params.set("seed", hex(seed).slice(2));
+  params.set("n", String(count));
+  const actions = sim.actions.concat(sim.queue);
+  if (actions.length) params.set("a", encodeActions(actions));
+  history.replaceState(null, "", "#" + params.toString());
+}
+
+function readURL() {
+  const params = new URLSearchParams(location.hash.slice(1));
+  const s = parseSeed(params.get("seed") || "");
+  const n = Number(params.get("n"));
+  const actions = decodeActions(params.get("a") || "");
+  return { seed: s === null ? DEFAULT_SEED : s, n: n === 2 ? 2 : 3, actions: actions || [], bad: actions === null };
+}
+
+// reset starts a new run. With actions, it loads them to replay.
+function reset(newSeed, n, actions) {
+  seed = newSeed >>> 0;
+  count = n;
+  sim = new Sim({ seed, instances: count });
+  shownViolations = 0;
+  $("seed").value = hex(seed);
+  $("seed").removeAttribute("aria-invalid");
+  $("count").value = String(count);
+  if (actions) sim.load(actions);
+  else sim.act({ type: "auto", on: true });
+  buildInstances();
+  buildPoints();
+  $("alarm").hidden = true;
+  dirty = true;
+  writeURL();
+}
+
+function act(action) {
+  const replaying = sim.queue.length > 0;
+  sim.act(action);
+  if (replaying) note("You acted during the replay, so the run goes its own way from here. The recorded actions after this point are dropped.");
+  writeURL();
+  dirty = true;
+  render(true);
+}
+
+function setPlaying(on) {
+  playing = on;
+  const b = $("play");
+  b.setAttribute("aria-pressed", on ? "true" : "false");
+  b.firstChild.textContent = on ? "Pause " : "Play ";
+  last = performance.now();
+}
+
+// The loop: virtual time runs at the chosen speed while playing.
+function frame(ts) {
+  if (playing) {
+    const dt = Math.min(100, Math.max(0, ts - last));
+    const speed = Number($("speed").value);
+    const reached = sim.advance(sim.now + dt * speed, { stopOnViolation: true });
+    if (!reached) setPlaying(false);
+    if (sim.queue.length === 0 && replayingNote) {
+      replayingNote = false;
+      note("The replay has applied every recorded action. The run goes on from the seed alone.");
+    }
+    dirty = true;
+  }
+  last = ts;
+  if (dirty && ts - lastRender > 90) render();
+  requestAnimationFrame(frame);
+}
+let replayingNote = false;
+
+// Instances: the cards are built once per run, so that focus stays on their buttons.
+
+function buildInstances() {
+  const root = $("instances");
+  root.replaceChildren();
+  inst = sim.slots.map((slot) => {
+    const el = document.createElement("article");
+    el.className = "inst";
+    el.setAttribute("aria-labelledby", "inst-" + slot.label);
+    el.innerHTML = `
+      <div class="inst-head">
+        <div class="who"><h3 class="letter" id="inst-${slot.label}">${slot.label}</h3><span class="word" data-f="word"></span></div>
+        <div class="tags caps"><span data-f="stalled"></span><span data-f="cut"></span></div>
+      </div>
+      <dl class="facts">
+        <div><dt class="caps">Holder ID</dt><dd data-f="id"></dd></div>
+        <div><dt class="caps">Lease</dt><dd data-f="lease"></dd></div>
+        <div><dt class="caps">Unknown</dt><dd data-f="flights"></dd></div>
+        <div><dt class="caps">Clocks</dt><dd data-f="clocks"></dd></div>
+        <div><dt class="caps">Cache</dt><dd><span data-f="pos"></span><span data-f="code"></span></dd></div>
+        <div><dt class="caps">Rows</dt><dd class="rows" data-f="rows"></dd></div>
+        <div><dt class="caps">Disk</dt><dd data-f="disk"></dd></div>
+      </dl>
+      <div class="inst-actions">
+        <div class="row">
+          <span class="caps">Application</span>
+          <button class="btn" type="button" data-a="write">Write</button>
+          <button class="btn" type="button" data-a="read">Read</button>
+        </div>
+        <div class="row">
+          <span class="caps">Process and network</span>
+          <button class="btn" type="button" data-a="crash">Crash</button>
+          <button class="btn" type="button" data-a="shutdown">Shut down</button>
+          <button class="btn" type="button" data-a="stall" aria-pressed="false">Stall</button>
+          <button class="btn" type="button" data-a="partition" aria-pressed="false">Cut off from S3</button>
+          <button class="btn" type="button" data-a="disk">Fail disk</button>
+        </div>
+        <div class="row">
+          <span class="caps">Clocks</span>
+          <button class="btn" type="button" data-a="clock" data-c="back">Wall −60 s</button>
+          <button class="btn" type="button" data-a="clock" data-c="ahead">Wall +60 s</button>
+          <button class="btn" type="button" data-a="clock" data-c="fast">Monotonic ×2</button>
+          <button class="btn" type="button" data-a="clock" data-c="slow">Both ×0.5</button>
+          <button class="btn" type="button" data-a="clock" data-c="true">True</button>
+        </div>
+      </div>`;
+    root.appendChild(el);
+    const f = {};
+    for (const n of el.querySelectorAll("[data-f]")) f[n.dataset.f] = n;
+    const b = {};
+    for (const n of el.querySelectorAll("[data-a]")) {
+      if (n.dataset.a !== "clock") b[n.dataset.a] = n;
+      n.addEventListener("click", () => instanceAction(slot, n.dataset.a, n.dataset.c));
+    }
+    return { el, f, b, slot, last: {} };
+  });
+}
+
+function instanceAction(slot, a, c) {
+  const p = slot.proc;
+  switch (a) {
+    case "crash":
+      act({ type: !p || p.stopped ? "restart" : "crash", i: slot.index });
+      break;
+    case "stall":
+      act({ type: p && p.stalled ? "resume" : "stall", i: slot.index });
+      break;
+    case "partition":
+      act({ type: slot.partitioned ? "reconnect" : "partition", i: slot.index });
+      break;
+    case "clock":
+      act({ type: "clock", c, i: slot.index });
+      break;
+    default:
+      act({ type: a, i: slot.index });
+  }
+}
+
+function set(node, text) {
+  if (node.textContent !== text) node.textContent = text;
+}
+
+function renderInstance(card) {
+  const { slot, f, b, el } = card;
+  const p = slot.proc;
+  const st = instanceState(sim, slot);
+  el.classList.toggle("lit", st.serving);
+  set(f.word, p && p.stopped && !p.closing ? "stopped: " + p.stopped : st.word);
+  set(f.stalled, p && p.stalled ? "stalled" : "");
+  set(f.cut, slot.partitioned ? "cut off" : "");
+  set(f.id, p ? p.id : "none: not running");
+  let lease = "";
+  if (p) {
+    const c = sim.clocks(p);
+    if (p.holder) {
+      const byMono = c.mono - p.sent.mono;
+      const byWall = c.wall - p.sent.wall;
+      const left = Math.min(LEASE_MS - byMono, LEASE_MS - byWall);
+      lease = `As far as it knows, it holds the lease. The last renewal it knows of was sent ${secs(byMono)} ago by its monotonic clock and ${secs(byWall)} by its wall clock. ` +
+        (left > 0 ? `${secs(left)} left.` : "It ran out by its clocks, so it refuses reads and new writes.");
+    } else if (p.seen) {
+      const watched = c.mono - p.watch.since;
+      const need = p.seen.duration + margin(p.seen.duration);
+      lease = p.watch.version
+        ? `It waits. The manifest names ${p.seen.holder} and has stood still for ${secs(Math.max(0, watched))} of ${secs(need)} by its monotonic clock.`
+        : `The manifest names ${p.seen.holder}.`;
+    } else {
+      lease = p.stopped ? "None." : "It has not read the manifest yet.";
+    }
+  } else {
+    lease = "None. The lease belongs to a running process.";
+  }
+  set(f.lease, lease);
+  let flights = "none";
+  if (p && p.flights.length) {
+    flights = p.flights.map((x) => (x.isCommit ? "the commit " + short(x.commit) : "a renewal") + `, sent ${x.attempts} time${x.attempts === 1 ? "" : "s"}`).join("; ");
+  }
+  set(f.flights, flights);
+  const now = sim.now;
+  const wallOff = slot.wall.read(now) - (EPOCH + now);
+  const mono = slot.mono.read(now);
+  const wallText = new Date(Math.round(slot.wall.read(now))).toISOString().slice(11, 23);
+  const rate = (r) => (r === 1 ? "" : ` (×${r})`);
+  set(f.clocks, `Wall ${wallText}${Math.abs(wallOff) >= 1000 ? ` (${wallOff > 0 ? "+" : "−"}${secs(Math.abs(wallOff))})` : ""}${rate(slot.wall.rate)}. Monotonic ${clockText(Math.round(mono) % 3_600_000)}${rate(slot.mono.rate)}.`);
+  const position = slot.disk.position;
+  set(f.pos, position === EMPTY_LOG ? "the empty log" : position);
+  if (card.last.pos !== position) {
+    card.last.pos = position;
+    f.code.innerHTML = position === EMPTY_LOG ? "" : barcodeSVG(position, "code");
+  }
+  const rows = slot.disk.rows;
+  set(f.rows, rows.length === 0 ? "none" : `${rows.length}: ${rows.length > 30 ? "… " : ""}${rows.slice(-30).join(", ")}`);
+  set(f.disk, slot.disk.failing ? "failing: the next local read or write fails" : "fine");
+  const down = !p || !!p.stopped;
+  set(b.crash, down ? "Start" : "Crash");
+  set(b.stall, p && p.stalled ? "Resume" : "Stall");
+  b.stall.setAttribute("aria-pressed", p && p.stalled ? "true" : "false");
+  set(b.partition, slot.partitioned ? "Reconnect" : "Cut off from S3");
+  b.partition.setAttribute("aria-pressed", slot.partitioned ? "true" : "false");
+}
+
+// The checker panel.
+
+function renderChecks() {
+  const c = sim.checker;
+  const bad = new Set(c.violations.map((v) => v.key));
+  let html = "";
+  for (const [key, text] of Object.entries(INVARIANTS)) {
+    html += `<tr class="${bad.has(key) ? "bad" : ""}"><th scope="row">${esc(text)}</th><td class="state caps">${bad.has(key) ? "Violated" : "Kept"}</td><td class="count small">${c.checks[key].toLocaleString("en")}</td></tr>`;
+  }
+  if ($("checks").innerHTML !== html) $("checks").innerHTML = html;
+  if (c.violations.length > shownViolations) {
+    shownViolations = c.violations.length;
+    const v = c.violations[0];
+    const alarm = $("alarm");
+    alarm.innerHTML = `<strong>Invariant violated at ${clockText(v.t)}, step ${v.n}</strong><p>${esc(v.text[0].toUpperCase() + v.text.slice(1))}.</p>` +
+      (c.violations.length > 1 ? `<p>${c.violations.length - 1} more violation${c.violations.length > 2 ? "s" : ""} since.</p>` : "") +
+      `<p>${sim.settings.bug ? "A bug is planted, so this is the checker doing its job. " : ""}The run paused. Press play to go on, or reset.</p>`;
+    alarm.hidden = false;
+  }
+  const chip = $("chip");
+  const broken = bad.size;
+  set(chip, broken ? `Checker: ${broken} violated` : `Checker: all ${Object.keys(INVARIANTS).length} kept`);
+  chip.classList.toggle("bad", broken > 0);
+  const allowed = sim.stats.staleAllowed;
+  set($("allowed"), allowed ? `${allowed} read${allowed === 1 ? "" : "s"} missed an acknowledged commit while an instance measured time wrongly. The spec allows that: clocks affect only reads. The other rules still hold.` : "");
+}
+
+// The bucket.
+
+function renderBucket() {
+  const m = sim.s3.get(MANIFEST_KEY);
+  if (m) {
+    const text = esc(m.body).replace(/&quot;head&quot;: &quot;([0-9a-f]{64})&quot;/, (_, h) => `&quot;head&quot;: &quot;<span class="hl">${h}</span>&quot;`);
+    if ($("manifest").innerHTML !== text) $("manifest").innerHTML = text;
+    set($("manifest-meta"), `Version ${m.version}, written by ${m.by} at ${clockText(m.t)}. ${sim.manifestWrites} writes so far.`);
+  }
+  const chain = sim.checker.chain;
+  const headName = sim.checker.head;
+  const key = chain.length + ":" + headName + ":" + sim.s3.size;
+  if ($("commits").dataset.key === key) return;
+  $("commits").dataset.key = key;
+  const inLog = new Set(chain);
+  const orphans = [];
+  for (const [k, o] of sim.s3) {
+    if (!k.startsWith("commits/")) continue;
+    const name = k.slice(-64);
+    if (!inLog.has(name)) orphans.push({ name, t: o.t, by: o.by });
+  }
+  let html = "";
+  for (const o of orphans.slice(-6).reverse()) html += commitItem(o.name, "orphan", o);
+  const shown = chain.slice(1).slice(-24).reverse();
+  for (const name of shown) html += commitItem(name, name === headName ? "head" : "", sim.s3.get("commits/" + name.slice(0, 2) + "/" + name));
+  if (!html) html = `<li class="commits-empty small">No commit objects yet. The log is empty, and the head is 64 zeros.</li>`;
+  if (chain.length - 1 > shown.length) html += `<li class="commits-empty small">${chain.length - 1 - shown.length} older commit objects in the log are not shown.</li>`;
+  $("commits").innerHTML = html;
+}
+
+function commitItem(name, cls, o) {
+  const obj = sim.commitObject(name);
+  const rows = obj ? commitRows(obj) : [];
+  const tag = cls === "head" ? "Head of the log" : cls === "orphan" ? "Not in the log" : "In the log";
+  return `<li class="commit ${cls}">${barcodeSVG(name, "code")}<span class="name">${name}</span>` +
+    `<div class="meta"><span>Inserts ${rows.join(", ")}. Uploaded by ${o ? o.by : "?"} at ${o ? clockText(o.t) : "?"}.</span><span><span class="caps">Parent</span> ${obj ? pos(obj.parent) : "?"}</span></div>` +
+    `<div class="meta"><span class="caps">${tag}</span></div></li>`;
+}
+
+// The logs.
+
+function renderLogs() {
+  const routine = $("routine").checked;
+  const ev = [];
+  for (let i = sim.events.length - 1; i >= 0 && ev.length < 160; i--) {
+    const e = sim.events[i];
+    if (!routine && e.level === "debug") continue;
+    ev.push(e);
+  }
+  const key = sim.events.length + ":" + routine;
+  if ($("timeline").dataset.key !== key) {
+    $("timeline").dataset.key = key;
+    $("timeline").innerHTML = ev.map((e) =>
+      `<li class="${e.kind === "violation" ? "loud" : e.level === "debug" ? "routine" : ""}"><span class="t">${clockText(e.t)}</span><span class="who caps">${esc(e.who)}</span><span class="text">${esc(e.text)}</span></li>`).join("");
+  }
+  const reqs = sim.requests.slice(-120).reverse();
+  let html = "";
+  for (const r of reqs) {
+    const what = r.op === "get" ? (r.key === MANIFEST_KEY ? "read manifest.json" : "download " + short(r.key.slice(-64))) :
+      r.op === "create" ? (r.key === MANIFEST_KEY ? "create manifest.json" : "upload " + short(r.key.slice(-64))) :
+      "swap manifest.json" + (r.purpose ? ` (${r.purpose})` : "");
+    const s3 = r.result || (r.answered ? "" : "on its way");
+    let client = r.client === "waiting" ? "waiting" : r.client;
+    const extra = [];
+    if (r.held) extra.push("held in the network");
+    if (r.answerLost) extra.push("answer lost");
+    if (r.lateAnswer) extra.push("answer came after the timeout");
+    if (r.damaged) extra.push("damaged on its way");
+    const loud = r.answerLost || (r.result || "").startsWith("refused") || r.result === "never sent" || r.result === "lost on its way" || r.held || r.damaged || (r.result || "").startsWith("written without");
+    html += `<li class="${loud ? "loud" : ""}"><span class="t">${clockText(r.sentAt)}</span><span class="who caps">${r.slot}</span><span class="text">#${r.id} ${esc(what)}<span class="sub">S3: ${esc(s3)}. Client: ${esc(client)}${extra.length ? ". " + esc(extra.join(", ")) : ""}.</span></span></li>`;
+  }
+  if ($("requests").innerHTML !== html) $("requests").innerHTML = html;
+  set($("request-count"), sim.reqSeq.toLocaleString("en") + " sent");
+}
+
+function renderKnobs() {
+  const s = sim.settings;
+  $("auto").setAttribute("aria-pressed", s.auto ? "true" : "false");
+  $("chaos").setAttribute("aria-pressed", s.chaos ? "true" : "false");
+  $("slow").setAttribute("aria-pressed", s.slow ? "true" : "false");
+  $("buggify").setAttribute("aria-pressed", s.buggify ? "true" : "false");
+  if ($("bug").value !== s.bug) $("bug").value = s.bug;
+  const armed = sim.armed.map((a) => (a.type === "drop" ? "lose the answer to " : "fail before sending ") + "the next " + FAULT_KINDS[a.kind]);
+  set($("armed"), armed.length ? "Armed: " + armed.join("; ") + "." : "Nothing armed.");
+}
+
+function buildPoints() {
+  $("points").innerHTML = Object.entries(BUGGIFY_POINTS).filter(([name]) => sim.buggifyOn[name]).map(([name, p]) =>
+    `<li>${esc(p.text[0].toUpperCase() + p.text.slice(1))}.</li>`).join("");
+}
+
+function render(force) {
+  if (!force && !dirty) return;
+  dirty = false;
+  lastRender = performance.now();
+  set($("clock"), clockText(sim.now));
+  for (const card of inst) renderInstance(card);
+  renderChecks();
+  renderBucket();
+  renderKnobs();
+  renderLogs();
+}
+
+// Controls.
+
+$("play").addEventListener("click", () => setPlaying(!playing));
+$("step").addEventListener("click", () => {
+  setPlaying(false);
+  sim.step();
+  dirty = true;
+  render(true);
+});
+$("seed-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const s = parseSeed($("seed").value);
+  if (s === null) {
+    $("seed").setAttribute("aria-invalid", "true");
+    note("A seed is up to 8 hexadecimal digits, like 0x7334716c.");
+    return;
+  }
+  reset(s, Number($("count").value), null);
+  note(`A new run with seed ${hex(s)}.`);
+  render(true);
+});
+$("new-seed").addEventListener("click", () => {
+  // Only the choice of a new seed uses the browser's randomness. The run itself never does.
+  const s = crypto.getRandomValues(new Uint32Array(1))[0] >>> 0;
+  reset(s, Number($("count").value), null);
+  note(`A new run with seed ${hex(s)}.`);
+  render(true);
+});
+$("count").addEventListener("change", () => {
+  reset(seed, Number($("count").value), null);
+  note(`A new run with ${count} instances.`);
+  render(true);
+});
+$("replay").addEventListener("click", () => {
+  const actions = sim.actions.concat(sim.queue);
+  reset(seed, count, actions);
+  replayingNote = true;
+  note(`Replaying seed ${hex(seed)} with ${actions.length} recorded action${actions.length === 1 ? "" : "s"}. Each one is applied at the step where it happened, so the run is the same as before.`);
+  setPlaying(true);
+  render(true);
+});
+$("share").addEventListener("click", async () => {
+  writeURL();
+  try {
+    await navigator.clipboard.writeText(location.href);
+    note("The link is copied. It holds the seed and every action, so it replays this run.");
+  } catch {
+    note("Copy the address from the address bar. It holds the seed and every action.");
+  }
+});
+$("auto").addEventListener("click", () => act({ type: "auto", on: !sim.settings.auto }));
+$("chaos").addEventListener("click", () => act({ type: "chaos", on: !sim.settings.chaos }));
+$("slow").addEventListener("click", () => act({ type: "slow", on: !sim.settings.slow }));
+$("buggify").addEventListener("click", () => act({ type: "buggify", on: !sim.settings.buggify }));
+$("bug").addEventListener("change", () => act({ type: "bug", name: $("bug").value }));
+$("heal").addEventListener("click", () => act({ type: "heal" }));
+$("drop").addEventListener("click", () => act({ type: "drop", k: $("kind").value }));
+$("fail").addEventListener("click", () => act({ type: "fail", k: $("kind").value }));
+$("routine").addEventListener("change", () => { dirty = true; render(true); });
+
+// Start: from the link if it holds a run, and otherwise from the default seed.
+{
+  const u = readURL();
+  if (u.actions.length > 0) {
+    reset(u.seed, u.n, u.actions);
+    // Fast-forward to the last recorded action, and wait there.
+    const lastAction = u.actions[u.actions.length - 1];
+    let guard = 0;
+    while (sim.queue.length > 0 && guard++ < 5_000_000) sim.step();
+    sim.advance(Math.max(sim.now, lastAction.t));
+    if (sim.now === 0) {
+      setPlaying(!reduce.matches);
+    } else {
+      note(`Replayed seed ${hex(u.seed)} and ${u.actions.length} action${u.actions.length === 1 ? "" : "s"} from the link, up to ${clockText(sim.now)}. Press play to go on.`);
+      setPlaying(false);
+    }
+  } else {
+    reset(u.seed, u.n, null);
+    if (u.bad) note("The actions in the link could not be read, so the run starts from its seed alone.");
+    setPlaying(!reduce.matches);
+  }
+  render(true);
+  requestAnimationFrame(frame);
+}
+</script>
+</body>
+</html>
