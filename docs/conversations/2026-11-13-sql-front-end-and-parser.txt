@@ -1,0 +1,2489 @@
+ ▐▛███▛█   Claude Code v2.1.325
+▝▜██████▀  Fable 5.2 · Claude Ultra
+ ▝▝   ▝▝   ~/Developer/s4ql
+
+
+⏺ Added and pushed. The new section at the end of the README:
+
+  ▎ Status
+  ▎
+  ▎ As of 2026-11-13:
+  ▎
+  ▎ - Built: the storage. A database is a log of commits in S3, with a local 
+  ▎ SQLite cache. One instance at a time holds a lease on it. Commits, recovery 
+  ▎ after a crash, and replay of the log work. They are tested in a 
+  ▎ deterministic simulation and against a real S3-compatible bucket.
+  ▎ - Not built: the SQL. There is no parser, no engine, and no public API yet, 
+  ▎ so the database cannot be used.
+  ▎ - Next: the first slice of SQL in the roadmap: create table, insert, select,
+  ▎ and drop table for one integer column, checked against SQLite.
+  ▎
+  ▎ What is open in detail is in docs/todo.md.
+
+  I put it below everything, as you said, which places it after the "Made with
+  sparkles" footer and the contact line. Say if you'd rather have it above those
+  two.
+
+  To keep it current, I added a line to the README rule in AGENTS.md: the
+  section is updated when a piece of the project is merged, stays at three short
+  points, and the details stay in the todo.
+
+✻ Crunched for 21s · done Friday 1:45 PM
+
+⏺ Background shell command didn't finish before the previous session ended
+
+❯ /compact                                                                      
+  ⎿  Compacted (ctrl+o to see full summary)
+  ⎿  Read ../../../README.md (26 lines)
+  ⎿  Referenced file ../../../internal/core/lease.go
+  ⎿  Skills restored (fabrik:address-code-review, fabrik:git, 
+     fabrik:one-at-a-time, fabrik:diary)
+
+❯ I've compated your session, but you can see the raw conversation in           
+  docs/conversations/ as always. Wake up at 9:02 pm and continue work. Use up   
+  until 20% of weekly usage.                                                    
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ CronCreate(2 21 13 11 *: It is after 21:00 on Fri 13 Nov and the weekly usage
+            has re…)
+  ⎿  Scheduled cdc8a930 (2 21 13 11 *, next run Friday 9:02 PM)
+
+⏺ Scheduled: I wake at 21:02 tonight and continue, stopping before 20% of the
+  new week's usage.
+
+  The wake-up lives only in this session, so it fires only if this Claude
+  session is still open then.
+
+  The plan for tonight:
+
+  1. SQL research: restart the note on the SQL front end (tokenizer, parser
+     options, SQLite's exact errors, testing against SQLite, the public Go API,
+     layering).
+  2. Two follow-ups that need no decision from you: a commit object above 5 GiB
+     fails cleanly, and a simulation workload where a stuck write lands minutes
+     late.
+  3. A proposal for the first SQL slice: I prepare it from the research and
+     build none of it before you agree.
+
+  I'll leave a report with the open decisions and the usage figure.
+
+✻ Cooked for 18s · done Friday 2:00 PM
+
+❯ Maybe don't use Sonnet for the research, I think it needs Opus at least       
+
+⏺ Agreed, and the wake-up already says so: the research agent runs on Opus
+  tonight, not Sonnet.
+
+✻ Churned for 2s · done Friday 3:23 PM
+
+✻ Running scheduled task (Nov 13 9:02pm)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Cleaning up worktree
+  ⎿  Removed worktree (branch worktree-object-store)
+     Returned to /Users/maragubot/Developer/s4ql
+
+  Listed 1 directory, ran 1 shell command (ctrl+o to expand)
+
+⏺ 3 background agents launched (↓ to manage)
+   ├ Agent (Research SQL front end)
+   ├ fabrik:builder (Commit too large fails cleanly)
+   └ fabrik:builder (Late stuck write workload)
+
+⏺ Usage has reset to 0%, main is clean and green, and three agents are now
+  running, each in its own worktree:
+
+  - SQL front-end research on Opus, writing docs/research/sql-front-end.md.
+  - A builder making a commit object that is too large fail cleanly instead of
+    being retried.
+  - A builder adding a simulation workload where a stuck write lands up to 15
+    minutes late.
+
+  I also removed the stale object-store worktree, so I am back on main. I'll
+  review and merge each as it reports, and watch usage against the 20% limit.
+
+✻ Cooked for 2m 17s · done Friday 9:04 PM
+
+› Message from fabrik:builder
+  ## Report: a commit object that the store can never take
+
+  The branch is `worktree-agent-a7c599482bc144ef6`. It is one commit, `87939e3`,
+  on top of `main` (`186ccdb`). Nothing is pushed.
+
+  A commit whose commit object is too large for the store now fails at once,
+  with an error the caller can test for. Before, the core retried the upload
+  until the caller's context ended. `make test`, `make lint` and `make test-asan
+  FUZZTIME=1s` (in Docker) pass.
+
+  ### Decisions
+  - **`store.ErrTooLarge`** is the fifth "not applied" error. It is documented
+  in `/internal/store/store.go`: in the package comment, in its own doc ("a
+  write of the same content will never be applied"), and in the docs of `Create`
+  and `Swap`.
+  - **`s3store.ErrTooLarge` is gone.** `s3store` returns `store.ErrTooLarge`, so
+  callers have one name to test. `MaxSize` stays.
+  - **`s3store` also maps a store's own `400 EntityTooLarge` answer to
+  `store.ErrTooLarge`.** This was not in the brief; the review found it was
+  needed. Without it, a store whose limit is below 5 GiB would still be retried
+  until the context ended. This rests on AWS's error-code list only; no store
+  was seen to send that answer. The README says so.
+  - **New request outcome in `s3store`:** `too_large`, logged at Warn, for both
+  the client's own check and the store's answer. Before, a too-large write
+  showed as `not_sent`, the same as a bad key.
+  - **`core.ErrTooLarge`** is in `/internal/core/errors.go` and documented as
+  not temporary.
+    - `Tx.upload` returns `fmt.Errorf("%w: %v", ErrTooLarge, err)` at the first
+  such refusal, with no retry. It wraps the core's error and not the store's.
+    - `Tx.Commit` already did the rest for a failed upload: it rolls back the
+  cache, closes the spool file (which deletes it), ends the transaction, and
+  logs a Warn event with outcome `not_committed` through `LogAttrs(ctx, ...)`.
+    - The docs of `Tx.Commit` and `Tx.upload` name the new error.
+  - **The manifest case:** a manifest write refused as too large is treated as
+  an unknown outcome, like any other error.
+    - `refusal` in `/internal/core/lease.go` leaves `store.ErrTooLarge` out on
+  purpose. The comment says why: only a misconfigured store refuses a manifest
+  of a few hundred bytes, and treating a write that was not applied as unknown
+  is never wrong, only slower.
+    - It needs no new code path.
+    - Treating it as a refusal would make renewals and takes retry every 100 ms
+  (`retrySoon`) for as long as the store is misconfigured. Unknown backs off
+  instead.
+  - **The size limit in `simstore`** is `Options.MaxSize int` (bytes, 0 means no
+  limit). The new `Client.checkSize` refuses a larger create or swap with
+  `store.ErrTooLarge` before sending it, and traces it. It draws no random
+  number and counts no request, so seeds and traces are unchanged when it is
+  off. The change is small and stays out of `Faults` and the in-flight code, so
+  it should merge cleanly with the other builder's branch.
+  - **`storetest` is unchanged.** A general case would need the suite to know
+  each store's limit.
+
+  ### How the tests show it
+  - **`TestTx_Commit_tooLarge`** (`/internal/core/tx_test.go`) runs against a
+  `simstore` with a 2 KiB limit. A transaction of 1000 rows (about 12 KB) is
+  committed under a context of one hour. It checks:
+    - the error wraps `core.ErrTooLarge` and not `ErrOutcomeUnknown`,
+  `ErrNoLease`, `ErrStopped` or `DeadlineExceeded`;
+    - the context has not ended;
+    - exactly one upload was sent;
+    - the transaction is over (`ErrTxDone`);
+    - there is one `not_committed` commit event at Warn with `attempts=1`;
+    - the manifest head and the cache are unchanged, and `Wait` still succeeds;
+    - the next transaction commits, and the log has exactly two commits.
+  - **Red/green:** before the fix, the test failed with the old behaviour:
+  `upload of the commit object …: context deadline exceeded, after: simstore:
+  11932 bytes, more than 2048: …`.
+  - **Broken by hand:** I changed the handling to retry once (`case
+  errors.Is(err, store.ErrTooLarge) && *attempts >= 2:`). The test failed with
+  `Expected "1", but got "2" … the upload was sent again`. I then restored the
+  code.
+  - **`TestLease_tooLarge`** (`/internal/core/lease_test.go`) uses a 16-byte
+  limit. The instance keeps asking for the lease (at least 2 attempts to create
+  the manifest), does not stop (`d.Err()` is nil), and refuses reads with
+  `ErrNoLease`. It does not tell "unknown" from "refusal"; that would mean
+  counting attempts against the back-off.
+  - **`TestClient_tooLarge`** (simstore) shows a refused create and swap, a
+  create exactly at the limit, and that the refused writes are not applied, even
+  with faults on that would otherwise make a sent write fail or land late.
+  - **`TestClient_answers`** (s3store) has a new row for `400 EntityTooLarge` on
+  create and on swap.
+  - **Repeat runs:** the new tests passed with `-count=50`, with `-race
+  -count=50`, and with `-race -count=200 -cpu 1,4` while `make test` ran
+  alongside.
+  - **Caveat on asan:** `make test-asan` ran before the review fixes. Those
+  fixes touch no code that waits, and the core tests passed again under `-race
+  -count=50` after them.
+
+  ### Docs
+  - The bullet is deleted from `/docs/todo.md`.
+  - `/internal/store/s3store/README.md` uses the new name and has the
+  `EntityTooLarge` sentence.
+  - `/internal/core/README.md` has two new bullets under "The commit": the clean
+  failure, and the manifest case.
+  - `README.md` and `docs/spec.md` are untouched.
+  - The diary is `/docs/diary/2026-11-13-commit-too-large.md`, three steps,
+  committed with the code.
+
+  ### Self-review
+  The code-review skill (medium) found eight things. I acted on four:
+  - the `EntityTooLarge` mapping;
+  - the `too_large` outcome;
+  - `attempt.definite` in the `simstore` test model now knows the fifth error;
+  - a shorter error message from `Tx.upload`.
+
+  I left four:
+  - **The manifest case as a refusal:** this is decision 1 below.
+  - **A sentinel leaking through `remaining` in `s3store`:** the claim is wrong,
+  since it formats errors with `%v`.
+  - **A `storetest` case:** it does not fit the suite, as above.
+  - **`simstore` reads the content before checking its size:** fixing it would
+  touch more of `simstore` while the other builder is changing it.
+
+  ### Surprises
+  - The schema has only `TYPE_INT`, so the test cannot use a blob and needs many
+  rows.
+  - A size limit alone cannot make a store accept the lease and then refuse a
+  commit's manifest swap, because a small commit object is smaller than the
+  manifest. So the manifest case is tested on taking the lease.
+
+  ### For you to decide
+  1. **The manifest case: unknown (what I built) or refusal?** With refusal, a
+  commit whose swap is refused as too large would return "not committed" instead
+  of `ErrOutcomeUnknown`, and the instance would not wait unresolved. The cost
+  is a retry every 100 ms on renewals and takes. Either is safe.
+  2. **Proposed sentence for `docs/spec.md`, if Markus wants it:** "A
+  transaction whose commit object is larger than the store takes in one write is
+  not committed, and its commit fails at once with an error that says so; on S3
+  the limit is 5 GiB."
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Commit too large fails cleanly" finished · 15m 11s
+
+  Created PR #18, ran 1 shell command (ctrl+o to expand)
+
+⏺ The first builder is done: a commit whose commit object is too large for the
+  store now fails at once with core.ErrTooLarge, instead of being retried until
+  the caller gives up. It is in pull request #18, and I merge it when CI is
+  green.
+
+  Two choices I made as details:
+
+  - One error name: store.ErrTooLarge joins the four "not applied" errors of the
+    store, and s3store.ErrTooLarge is gone.
+  - The manifest case stays "unknown": a manifest write refused as too large is
+    treated like any other unclear error, because only a store that is set up
+    wrong refuses a few hundred bytes.
+
+  The builder proposes one sentence for the spec, which is yours to accept or
+  drop: "A transaction whose commit object is larger than the store takes in one
+  write is not committed, and its commit fails at once with an error that says
+  so; on S3 the limit is 5 GiB."
+
+  The research agent and the late-write builder are still running. Usage is at
+  1%.
+
+✻ Cogitated for 27s · done Friday 9:19 PM
+
+› Message from general-purpose
+  The note is written and committed on branch `worktree-agent-a95f60c048b3c6625`
+  (commit 560cc9a), not pushed. It is `docs/research/sql-front-end.md`, about
+  395 lines, plus one entry in `docs/research/README.md`. The secrets check is
+  clean.
+
+  **How I got the facts.** I didn't trust the Homebrew shell, whose compile
+  options differ. Instead I built throwaway C probes against the vendored
+  amalgamation with `options.h`, opened the way `sqlite.Open` opens (EXRESCODE).
+  I read `parse.y` and `lemon.c` at tag version-3.54.1, and the Go 1.27.3
+  `database/sql` source. Three research agents surveyed the parsers, the testing
+  practice and the APIs; I checked their key claims. The probes are in
+  `/private/tmp/claude-502/-Users-maragubot-Developer-s4ql--claude-worktrees-obj
+  ect-store/f1343515-adca-4ca0-9eb0-f507768f8fc7/scratchpad/fe/probe/`.
+
+  **1. Tokenizer.** SQLite's tokenizer is one byte-level function,
+  `sqlite3GetToken`, with quirks a Go copy must keep:
+  - A vertical tab is legal only after other whitespace.
+  - A byte order mark counts as whitespace only at the start of a token.
+  - Every byte from 0x80 up is an identifier character, so a no-break space
+  (U+00A0) is part of a name.
+  - Digit separators like `1_` are checked later, and that error carries offset
+  -1.
+  - An unterminated `/*` comment is accepted.
+
+  s4ql's restrictions don't shrink the tokenizer, because brackets and backticks
+  must still be found as tokens to be rejected.
+  - **Oracle:** a C test program that includes `sqlite3.c` can call the private
+  `sqlite3GetToken` directly. I did this, and it gives an exact token-by-token
+  oracle for Go's fuzzer.
+  - **Weak oracle:** `sqlite3_complete` uses a different scanner. `select 1;--x`
+  counts as incomplete, which contradicts its own header doc.
+  `sqlite3_incomplete` is new in 3.54.0.
+  - **Evidence favours:** a tokenizer for all of SQLite's tokens, checked
+  against `sqlite3GetToken`.
+
+  **2. Parser.**
+  - **Facts:**
+    - `near "X"` is fixed by the grammar's language (inferred from LR theory,
+  not proven). So a parser for slice 1 alone stops earlier than SQLite and
+  cannot match SQLite's syntax errors on inputs outside the subset.
+    - The order of errors is subtle. `sqlite3ErrorMsg` overwrites any earlier
+  message, and the parse loop checks only between tokens. Measured: `... strict,
+  bar, without rowid` reports the bad table option, but `(v1 foo ...) strict,
+  without rowid, bar` reports `unknown datatype`.
+    - `table X already exists` is raised mid-parse, so it wins over later
+  faults.
+  - **Biggest find:** `github.com/sqlc-dev/meyer`. It is an MIT, hand-written
+  recursive-descent port of all of `parse.y` that claims SQLite's exact syntax
+  messages and offsets on 21,326 cases. sqlc main switched to it on 2026-08-01.
+  It has one author and seven commits, and pins 3.53.4. I checked that between
+  3.53.4 and 3.54.1 `tokenize.c` is identical and `parse.y` differs only inside
+  C action code. I did not run its tests.
+  - **Others:**
+    - rqlite/sql: Go-style errors, no digit separators.
+    - modernc: transpiled C with no parser API.
+    - ANTLR grammars: ANTLR's messages, and the Go runtime has had no release
+  since 2024.
+    - golemon: the author promises no support, and a 2022 attempt on `parse.y`
+  was abandoned.
+    - goyacc: has no `%fallback`.
+  - **Evidence favours:** a full-grammar parser that s4ql owns, with a pass
+  after parsing that rejects anything slice 1 does not list. meyer would serve
+  as a reference or a starting point. A slice-1-only parser is the smaller start
+  if Markus doesn't require SQLite's syntax messages for unsupported inputs.
+
+  **3. Exact errors (run on 3.54.1).**
+
+  | Case | Message | Primary / extended | At |
+  |---|---|---|---|
+  | Key inserted twice | `UNIQUE constraint failed: t1.v1` | 19 / 1555 | step |
+  | Table exists | `table t1 already exists` | 1 / 1, offset 13 | prepare |
+  | Missing table (select, insert, drop) | `no such table: t2` | 1 / 1 | prepare
+  |
+
+  How names appear:
+  - `already exists` prints the name exactly as typed, quotes included: `table
+  "t1" already exists`.
+  - `no such table` prints the name as typed but without quotes, and keeps any
+  schema prefix.
+  - `UNIQUE` prints the stored names (`Foo.Bar`), whatever case the statement
+  used.
+
+  So the syntax tree must keep the raw token text of names.
+
+  Slice 1's own shapes can also produce errors the roadmap doesn't list:
+  - `table t1 has no column named v2`
+  - `object name reserved for internal use: sqlite_x`
+  - `table sqlite_master may not be dropped`
+  - `cannot store REAL value in INT column t1.v1` (3091), for
+  9223372036854775808
+  - `hex literal too big`
+
+  For most inputs s4ql will reject, SQLite gives no error at all: a second
+  column, `integer`, `where`, `if exists`, missing `strict`. A few are SQLite
+  errors too, such as `PRIMARY KEY missing` and `sqlite_` names.
+
+  The note lays out three options for what s4ql promises to match, and how to
+  mark "not supported" (a distinct error, a message that can't be SQLite's, the
+  offset). The facts for that choice: matching codes alone can't tell `no such
+  table` from `already exists`, because both are 1 / 1. And the docs promise no
+  stable message text, but the version is pinned.
+
+  **4. Testing.**
+  - **musql** (`samyfodil/musql`) is a Go engine with mattn/go-sqlite3 as its
+  oracle, which is s4ql's setup. It compares outcome kind, column names and
+  typed values, and keeps "declined" separate from "wrong".
+  - **Turso** runs `EXPLAIN` on both sides first and skips any statement either
+  side can't prepare, so the two states never drift.
+  - None of the surveyed projects compares error messages in live differential
+  tests. Exact messages would make s4ql stricter than all of them, which a
+  pinned in-process oracle allows.
+  - The note sketches a slice-1 harness:
+    - hand-written scripts for each measured case
+    - a Hegel generator of slice-1 shapes
+    - a mutator that changes one token, to check the "reject what is not listed"
+  rule
+    - tokenizer fuzzing against `sqlite3GetToken`
+    - mined TCL corpora
+    - table snapshots after each change and after replay from S3
+
+  **5. API.**
+  - **Retry hazard:** `database/sql` runs an operation up to three times when
+  the driver returns `ErrBadConn` (`sql.go` 1574-1589). This covers
+  `DB.ExecContext`, `QueryContext`, `BeginTx`, `Ping` and `Stmt.Exec`. An insert
+  whose commit outcome is unknown, and `ErrNoLease`, must never wrap
+  `ErrBadConn`.
+  - **Commit context:** `driver.Tx.Commit()` takes no context. `sql.Tx.Commit`
+  cancels its own derived context before calling the driver, but the driver's
+  `BeginTx` gets the caller's original context, so the driver can keep it for
+  `core.Tx.Commit`.
+  - **What the driver can't carry:** `DB.Close` takes no context, and nothing in
+  `database/sql` expresses the instance stopping.
+  - **Other drivers:** none of the surveyed ones returns `ErrBadConn` from query
+  paths.
+  - **Agreement:** what Markus agreed on 2026-11-10 (`database/sql` as the main
+  interface, `OpenDB` with a connector, an explicit `Register`) is only in the
+  conversation export, not in `spec.md` or `todo.md`.
+  - **Evidence favours:** the driver as the main interface, built as a thin
+  adapter over an own API, the way ncruces is built.
+
+  **6. Layers.**
+  - The core's catalogue (`Tx.Table`/`Tables`) and its errors cover slice 1's
+  cases, but the engine has to format SQLite's messages itself from the syntax
+  tree.
+  - `Tx.Upsert` replaces silently, so the engine must check the key first and
+  raise `UNIQUE` itself.
+  - SQLite's bytecode is not a stable interface by its own docs (opcode.html).
+  Turso copies it and compares `EXPLAIN` by hand; go-mysql-server, chai, TiDB
+  and ramsql all use iterator trees.
+  - For slice 1 the two hardly differ.
+  - The note lists four places where the oracle plugs in: tokens, statements,
+  table state (the cache is SQLite too) and acceptance.
+
+  **Surprising:**
+  - meyer exists and claims SQLite-exact syntax errors in Go.
+  - Error messages depend on whether several errors happen while the same token
+  is handled.
+  - `sqlite3_complete` contradicts its own doc.
+  - SQLite accepts `insert into t (v1, v1) values (1, 2)`.
+  - SQLite accepts single-quoted names, and the roadmap's restrictions don't
+  mention them.
+
+  **Open for Markus:** whether single-quoted names are rejected; what "any
+  integer value" includes (sign, hex, separators); what an error promises to
+  match; whether SQLite may classify rejected statements in production; whether
+  the own API is public.
+
+  **Not verified:** meyer's coverage claims; whether musql's harness runs in CI;
+  whether Turso compares `EXPLAIN` automatically; the LR argument that default
+  reductions never move the error token; whether SQLite has its own "not
+  supported" messages; the authorizer as a way to see dequoted names; whether
+  modernc's newest tag has `NewConnector`.
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Research SQL front end" finished · 25m 21s
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ fabrik:builder(Build SQL tokenizer with oracle)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ The SQL research is merged to main as docs/research/sql-front-end.md, and I'm
+  logging its open decisions while two builders run and PR #18 waits on CI. I've
+  also started a tokenizer builder, checked against SQLite's sqlite3GetToken,
+  and the parser, engine and API stay untouched until you decide. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The open decisions of the SQL front end are now in docs/todo.md, pushed to
+  main. I'm waiting for CI on pull request #18 and for the two builders
+  (late-write workload, tokenizer).
+
+✻ Baked for 1m 43s · done Friday 9:31 PM
+
+⏺ Agent "Late stuck write workload" is waiting on its own background work · 31m 
+15s
+
+⏺ The late-write builder hasn't reported yet: it is waiting on test runs of its
+  own and will hand back when they finish. Nothing for me to act on until then;
+  pull request #18 is still in CI and the tokenizer builder is still running.
+
+✻ Cooked for 1s · done Friday 9:35 PM
+
+⏺ Background command "Wait for CI on pull request 18" completed (exit code 0)
+
+  Ran 6 shell commands (ctrl+o to expand)
+
+⏺ Pull request #18 failed CI on one flaky test, which I fixed and pushed; CI is
+  running again.
+
+  The test was TestClient_connections in s3store, and the fault was in the test,
+  not the client. It makes the content fail after its last byte and expected an
+  "unknown outcome" every time. The store can answer before that late read
+  fails, and then the create simply succeeds. Both are legal, so the test now
+  accepts both and still requires that the error never looks like a refusal. It
+  passed 100 runs plain and 50 under the race detector.
+
+  Still running: the late-write builder and the tokenizer builder.
+
+✻ Cogitated for 1m 17s · done Friday 9:38 PM
+
+⏺ Background command "Wait for CI on pull request 18 after the test fix"
+completed (exit code 0)
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ The CI watch ended early because the new run was still queued; the checks on
+  pull request #18 are pending, and I've set a watch that waits until none is.
+  The two builders are still running.
+
+✻ Churned for 8s · done Friday 9:38 PM
+
+⏺ Agent "Late stuck write workload" is waiting on its own background work · 35m 
+42s
+
+⏺ Background command "Wait until no check on pull request 18 is pending"
+completed (exit code 0)
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ Pull request #18 is merged: a commit that is too large for the store now fails
+  at once. CI was green on the second run, and the worktree and branch are
+  removed.
+
+  Usage is at 2%. The late-write builder and the tokenizer builder are still
+  running.
+
+✻ Cooked for 20s · done Friday 9:51 PM
+
+⏺ Agent "Late stuck write workload" is waiting on its own background work · 51m 
+29s
+
+⏺ Agent "Build SQL tokenizer with oracle" is waiting on its own background work 
+· 24m 43s
+
+⏺ Both builders are waiting on their own test runs and haven't reported yet.
+  Nothing to review until they hand back.
+
+✻ Baked for 53m 48s · done Friday 9:55 PM
+
+⏺ Agent "Late stuck write workload" is waiting on its own background work · 54m 
+48s
+
+※ recap: Building s4ql's SQL half after the storage: the research note and the too-large-commit fix are merged, and two builders (late-write simulation workload, tokenizer) are still running. Next I review and merge them, then bring you the SQL design decisions. (disable recaps in /config)
+
+⏺ Agent "Build SQL tokenizer with oracle" is waiting on its own background work 
+· 38m 36s
+
+⏺ Agent "Late stuck write workload" is waiting on its own background work · 1h 
+7m 52s
+
+⏺ Agent "Late stuck write workload" is waiting on its own background work · 1h 
+11m 22s
+› Message from fabrik:builder
+  The tokenizer is built and committed on branch
+  `worktree-agent-a081df3f8405340b0`, in two commits on `560cc9a` (`477201a`,
+  `09cb1fe`). It is not pushed. On every check it matches SQLite's
+  `sqlite3GetToken` token for token: the hand-written cases, every keyword, the
+  exhaustive short inputs, and 271.6 million fuzz inputs, with no difference
+  found. `make test`, `make lint` (0 issues in all three modules, simulation
+  lint and Buf quiet) and `make test-asan FUZZTIME=60s` all pass.
+
+  **Package and API** (`internal/sql/token`, in `/Users/maragubot/Developer/s4ql
+  /.claude/worktrees/agent-a081df3f8405340b0/internal/sql/token/`)
+  - `Kind`: one kind per TK_ code the tokenizer can give, 33 plain kinds and 136
+  keyword kinds for the 147 keywords. Some keywords share a code as in SQLite:
+  `LikeKw`, `JoinKw`, `CTimeKw`, `Temp`. It has `String()`, which gives the TK_
+  name, and `IsKeyword()`.
+  - `Next(z string) (Kind, int)`: a case-by-case port of `sqlite3GetToken`. It
+  copies SQLite's `aiClass` and `sqlite3CtypeMap` tables as they are, and reads
+  any byte past the end as NUL.
+  - `Tokens(src string) []Token`, with `Token{Kind, Offset, Len}` and
+  `Token.Text(src)`.
+  - At the end of the text, or at a NUL byte, `Next` gives `(Illegal, 0)`
+  exactly as SQLite does, and `Tokens` stops there. I chose this over a separate
+  end kind so that kinds map one to one onto TK_ codes. The parser can spot a
+  NUL by comparing where the tokens stop with `len(src)`.
+  - The package comment says what it promises and what it leaves to the parser,
+  with line numbers in the vendored `sqlite3.c`.
+
+  **How the oracle is reached, and why**
+  - The oracle is a thin wrapper in the binding's own translation unit, not a
+  test-only package with its own copy of SQLite. In `internal/sqlite/sqlite.go`,
+  a static C function `s4ql_tokenize` sits in the preamble, and two new Go
+  functions use it: `sqlite.Tokenize(src) []sqlite.Token{Type, Len}` and
+  `sqlite.Keywords()`.
+  - A separate package would include the amalgamation from another directory,
+  and the go command does not track files there. That is the stale-build bug the
+  binding's review found and fixed with `source.h`; the wrapper inherits that
+  fix.
+  - This way there is no second compile of SQLite, normally or under `-asan`.
+  The oracle is also the same object the cache runs, so the two cannot drift.
+  - The cost is two exported functions in the production binding that production
+  does not call.
+  - The tests never hard-code TK_ numbers. They read the `#define TK_` lines
+  from the vendored `sqlite3.c`, where each appears twice, and fail if the two
+  copies disagree. `TestKind` also checks that every code `sqlite3GetToken` can
+  assign (read from its body and from the `aKWCode` table) has exactly one Go
+  kind, and that no Go kind is left over.
+
+  **Tests and fuzzing**
+  - 175 hand-written cases, each written out by hand and also compared with the
+  oracle.
+  - Every input of 1 and 2 bytes, every 3-byte input over a 40-byte alphabet,
+  and every 4-byte input over a 19-byte alphabet.
+  - Every keyword in lower, upper and mixed case, plus eight near-keywords per
+  keyword.
+  - `FuzzTokens` is added to the `Makefile` fuzz loop, so `make fuzz` and `make
+  test-asan` run it.
+  - Native fuzzing: 30 minutes with `-parallel 8`, 271,578,460 executions, 580
+  corpus entries, no difference from SQLite.
+  - Under ASan the fuzzer ran 60 seconds: 1,042,797 executions, clean.
+  - Because no fuzz input ever differed, no new hand-written cases came from
+  fuzzing. One hand-written expectation of mine was wrong (`1_e5` is one
+  `QNUMBER`); the oracle caught it.
+  - Four deliberate breakages each made several tests fail, and each was
+  restored: the vertical-tab rule, the `/*` at end of input, the `n > 0`
+  condition on Tcl suffixes, and `WINDOW` removed from the keyword table.
+  - The 4-byte test first used the 40-byte alphabet and took about 32 s per run
+  under `-race`, so I cut that alphabet to 19 bytes. The package now takes under
+  10 s with `-race` and 5.6 s under `-asan`.
+
+  **Left to the parser** (listed in the package comment)
+  - Skipping spaces, and skipping comments only while
+  `SQLITE_DBCONFIG_ENABLE_COMMENTS` is on.
+  - The `unrecognized token` error, and stopping at the first illegal token.
+  - The digit-separator check in `sqlite3DequoteNumber`.
+  - Deciding whether `WINDOW`, `OVER` and `FILTER` are keywords from the tokens
+  around them.
+  - The synthetic `;` and end token fed at end of input.
+  - The `SQLITE_LIMIT_SQL_LENGTH` and interrupt checks.
+  - All token values: unquoting, number conversion and range, blob bytes, and
+  keywords read as names.
+
+  **Research note corrections** (`docs/research/sql-front-end.md` §1.1 and §1.3)
+  - `/*` as the last two bytes of input is not a comment but `/` then `*`.
+  `select 1 /*` fails with `near "*": syntax error`, while `select 1 /* `
+  returns 1.
+  - Tcl suffixes (`::` and `(…)`) work after all four named variable forms, not
+  only `$`. `select :a(b)`, `select #a(b)` and `select @a::b` each return a row.
+  - A malformed blob is illegal up to and including the next quote.
+  - A NUL byte inside a token ends that token.
+  - §1.3 now says how the oracle was built.
+  - I also added the wrapper to `internal/sqlite/README.md`.
+
+  **Self-review**: the code-review skill found no correctness bugs. I fixed:
+  - `sqlite.Tokenize` now panics on texts of 2 GiB or more instead of
+  overflowing a C int.
+  - Token lengths are passed as `sqlite3_int64` on both sides.
+  - The `Tokens` doc now says it carries on past an illegal token, where
+  SQLite's parser stops.
+  - The tests read `sqlite3.c` once instead of up to three times.
+  - `todo.md` held built work; it now holds only what is open.
+
+  I left two findings as they are. The byte reader closure is inlined at every
+  use (checked with `-gcflags=-m`). The TK_ parsing appears in two test
+  packages; sharing it would need an export in the production binding.
+
+  **Decisions for you**
+  - `docs/todo.md` has a new item, "The SQL front end", with one open question:
+  should the engine refuse SQL containing a NUL byte, as `Conn.Prepare` does, or
+  read up to the NUL as SQLite does?
+  - Whether two exported test-oriented functions in `internal/sqlite` are
+  acceptable to you (Markus too, if you think it needs him).
+  - The `README.md` Status section is not updated because the brief said not to
+  touch the README. It needs a line on merge.
+
+  The diary is `docs/diary/2026-11-13-tokenizer.md`, three steps.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Build SQL tokenizer with oracle" finished · 45m 9s
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ The tokenizer builder is done, and I'm running tests and lint on its branch
+  before I open the pull request.
+
+  It matches SQLite's own tokenizer token for token: 175 hand-written cases,
+  every keyword, every short input, and 271.6 million fuzz inputs found no
+  difference. It lives in internal/sql/token, and the oracle is a thin wrapper
+  inside the existing binding, so there is no second copy of SQLite.
+
+  It also corrected the research note in four places, for example that /* as the
+  last two bytes of input is not a comment.
+
+  The late-write builder is still running its own tests.
+
+✻ Churned for 2m 18s · done Friday 10:18 PM
+
+⏺ Background command "Fold the todo sections together, update the README status,
+run tests and lint" completed (exit code 0)
+
+  Created PR #19, ran 2 shell commands (ctrl+o to expand)
+
+⏺ The tokenizer is in pull request #19, with tests and lint passing locally; I
+  merge it when CI is green. The branch also updates the README's Status line
+  and folds the tokenizer's one open question (a NUL byte in SQL text) into the
+  todo list.
+
+  Still running: the late-write builder.
+
+✻ Cogitated for 23s · done Friday 10:19 PM
+
+※ recap: Tonight's work on s4ql: the SQL research and the too-large-commit fix are merged, the tokenizer waits for CI in pull request 19, and a late-write simulation builder still runs. Next I merge 19 when green. (disable recaps in /config)
+
+⏺ Agent "Late stuck write workload" is waiting on its own background work · 1h 
+18m 9s
+
+› Message from fabrik:builder
+  ## Report: workload for writes that land late
+
+  Branch: `worktree-agent-a8569e9b46c707813`. It has two commits on top of
+  `main` (`186ccdb`): `6c97e52` changes `simstore`, and `2bc636e` adds the
+  workload, the planted bug, and the docs. Nothing is pushed.
+
+  **No fault was found in the core or in the harness.** Over 1000 seeds of the
+  new workload, each run twice, no seed violated an invariant and no pair of
+  traces differed.
+
+  ### What I built
+
+  **`simstore`** (`internal/store/simstore/`):
+  - Two new fields on `Faults`: `Long` and `LongBy`. A write that `Late` or
+  `AfterCrash` holds back now waits up to `LongBy` with probability `Long`, and
+  up to `LateBy` otherwise.
+  - With `Long` at zero no random number is drawn, so `AllFaults` and every
+  existing workload behave exactly as before. I checked this: the hashes of all
+  traces of `single`, `full` and `hammer` in `TestSimulation` are identical on
+  this branch and on `main`.
+  - A new method, `Store.Landings`, records every write that was held back when
+  it arrives: when it was sent, when it landed, and whether it was applied or
+  refused.
+  - To keep the merge with the other builder easy, the new code is in new files
+  (`late.go`, `late_test.go`). `client.go` gains a few lines, and `simstore.go`
+  only gains the two fields and the slice of landings.
+
+  **`core` tests**:
+  - **`lateWrites(change)`** in `workloads_test.go`:
+    - three instances, two crashes with restarts, closes, and two-minute
+  cut-offs;
+    - `Late` and `AfterCrash` at 0.8, and `Long` 0.5 with `LongBy` 15 minutes;
+    - callers that run for about 15 simulated minutes, at about 8000 steps per
+  seed.
+  - **`TestSimulation`** runs it for 10 seeds, each twice, and compares the
+  traces. It also asserts that:
+    - both kinds of write (manifest swap, commit-object create) land after
+  another node took the lease in at least a quarter of the seeds;
+    - in some seed, each kind lands after other nodes took the lease twice,
+  after another node committed, and later than `LateBy` allows.
+  - **`run.verifyLandings`** in `simulation_test.go` counts what became of every
+  held write against the manifest history. It is also a new check: a late
+  manifest swap that is applied after the lease changed hands must be a take of
+  a free lease, otherwise it is a violation.
+    - To confirm the check fires, I briefly made the store skip the version
+  check for swaps older than 70 s. The first five seeds all found violations,
+  two of them through this check. The change was undone.
+  - `liveness()` now includes `LongBy` in its bound when writes can be held
+  back. `S4QL_SIM_WORKLOAD=late` runs the workload in `TestSimulationSeed`.
+
+  ### The planted bug the workload finds
+
+  None of the existing flight or salt bugs fit:
+  - Over 100 seeds the workload found `settleByRead`, `lostMeansFailed` and
+  `keepSalt` in none.
+  - It does find `lateVersion` (100), `ackUnknown` (66), `ownDuration` (65),
+  `takeoverAfterRelease` (60), `serveUnknown` (34) and `renewOutsideLock` (10),
+  but none of those needs a long delay.
+
+  So I planted a new bug, **`resendTake`**: a take of the lease that got no
+  answer is sent again with the same bytes, as a retrying client would. This
+  breaks the condition the core README states under "A take that arrives late":
+  nothing sends a take twice with the same bytes.
+  - The manifest without a lease entry is the only one whose version comes back.
+  If the first attempt of the take lands after the next release at the same
+  head, the manifest gets back a version it had before.
+  - **Its workload** is a variant of `lateWrites`: 2 instances, callers that
+  only read, 30 closes, `LostRequest` 0.2, `Long` 1. With writes, the head moves
+  and the free manifest at the old head never returns; `lateWrites` itself
+  found the bug in 0 of 200 seeds.
+  - **Its control** has no held-back writes.
+
+  Seed counts, over 1000 seeds each:
+
+  | Run | Seeds that found it |
+  |---|---|
+  | The bug's workload | 387 |
+  | Same workload with `Long` off (holds of up to a minute) | 33 |
+  | Control (no held-back writes) | 0 |
+  | Same workload without the bug | 0 |
+
+  The default run finds it four times within the first 10 seeds (2, 5, 6, 9).
+  The test comment gives these numbers.
+
+  ### Run times (`main` → this branch)
+
+  The race and sanitizer binaries were run in turns with binaries built from
+  `main`; the machine was under heavy load throughout.
+
+  | Run | `main` | This branch | Load |
+  |---|---|---|---|
+  | `go test ./internal/core/` | 46 s | 45 s (measured 20 minutes apart) | 12–17
+  |
+  | `-race` | 88 s, 97 s | 104 s, 105 s | 15–17 |
+  | Address sanitizer in Docker | 124 s, 118 s | 121 s, 128 s | up to 34 |
+
+  So about +10–15% under the race detector, and within noise otherwise. The
+  1000-seed runs sit behind `S4QL_SIM_SEEDS`.
+
+  ### Checks run
+
+  - `make lint`: 0 issues.
+  - `make test`: passes.
+  - `make test-asan`: passes, with `internal/core` at 143 s.
+  - The new tests 50 times each:
+    - `TestStore_Landings` passes plain and under `-race`.
+    - The `lateWrites` and `resendTake` subtests pass in 757 s plain and 988 s
+  under `-race`.
+
+  ### Self-review
+
+  The code-review skill reported nine findings. I fixed seven:
+  - A node that closed and reopened counted as a change of holder. "Another node
+  took the lease" is now counted separately, and the assertion uses it.
+  - The README said `resendTake` is the bug the long hold finds. It now gives
+  both numbers.
+  - `request.held` was needless state; it is now a local in `carry`.
+  - The liveness bound grew when `Long` was on but nothing could be held back.
+  - The doc comments of `Late` and `AfterCrash` were stale.
+  - One store subtest claimed more than it showed; I renamed it, and the
+  trace-hash comparison now backs the claim.
+  - The temporary exploration test was left in the tree; it is out of the
+  branch.
+
+  I did not change one finding: `Store.History` is copied a second time per run,
+  which is cheap next to the steps.
+
+  ### Docs
+
+  - `internal/core/README.md`: the workload with its 1000-seed numbers, the new
+  table row, the seed counts, the run times, a note under "A take that arrives
+  late", and nineteen changed to twenty.
+  - `internal/sim/README.md`: the counts of planted bugs and workloads.
+  - `docs/todo.md`: 190 clean runs changed to 200. No todo item was about this
+  work, so none was deleted.
+  - `docs/diary/2026-11-13-late-write-workload.md`: four steps.
+
+  ### For you to decide
+
+  - **Other builder's merge:** they may also touch `request` or `apply` in
+  `client.go`; my edits there are small.
+  - **`TestFreeRunning`:** I did not add `lateWrites` to it, to keep the race
+  job short. Its free-running value over `fullWorkload` looks small.
+  - **`simstore` package comment:** it does not mention `Store.Landings`, which
+  I left out to avoid touching the package comment that the other builder may
+  also edit.
+
+  Merged main (ctrl+o to expand)
+
+⏺ Agent "Late stuck write workload" finished · 1h 25m 12s
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ The late-write builder is done and found no fault in the core or the harness.
+  I merged main into its branch without conflicts and am running tests and lint
+  before I open the pull request.
+
+  - The workload: three instances, crashes, and writes held up to 15 simulated
+    minutes. Over 1000 seeds, each run twice, no invariant broke and every pair
+    of traces was identical.
+  - A new check: a manifest swap that lands after the lease changed hands must
+    be a take of a free lease; anything else counts as a violation.
+  - A new planted bug, resendTake: an instance sends an unanswered take of the
+    lease again with the same bytes. A variant of the workload finds it in 387
+    of 1000 seeds with long holds, 33 with holds of up to a minute, and 0
+    without held writes. This is the rule we rested the salt decision on, so it
+    is now shown by a test.
+  - Cost: about 10–15% more time for the core's tests under the race detector,
+    within noise otherwise.
+
+  Pull request #19 (tokenizer) is still in CI.
+
+✻ Cogitated for 14s · done Friday 10:29 PM
+
+⏺ Background command "Build, vet, test, and lint the merged late-write branch"
+completed (exit code 0)
+
+  Created PR #20, ran 2 shell commands (ctrl+o to expand)
+
+⏺ The late-write workload is in pull request #20; tests and lint pass locally on
+  the branch with main merged in. Both #19 (tokenizer) and #20 are now waiting
+  on CI, where only the sanitizer job of #19 is still running. Usage is at 3%.
+
+✻ Brewed for 22s · done Friday 10:31 PM
+
+※ recap: Tonight's goal is to start the SQL half of s4ql within 20% usage: the research note and the too-large fix are merged, and the tokenizer and late-write workload wait on CI. Next I merge both pull requests when green. (disable recaps in /config)
+
+⏺ Background command "Wait until no check on pull request 19 is pending"
+completed (exit code 0)
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ fabrik:builder(Failing file system for core tests)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ Pull request #19 is merged: the tokenizer is on main, CI green, worktree and
+  branch removed.
+
+  I started one more builder, since usage is only at 3%: a way for tests to make
+  the local file system fail on demand. The todo list names four decisions in
+  the core that no test can reach without it (a spool file failing during an
+  upload, a failure at the end of a read, a cache failure during replay, a spool
+  file whose length cannot be read). It needs no design decision from you.
+
+  Pull request #20 (late-write workload) is still in CI.
+
+✻ Crunched for 51s · done Friday 10:35 PM
+
+⏺ Background command "Wait until no check on pull request 20 is pending"
+completed (exit code 0)
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ Pull request #20 is merged: the late-write workload is on main, CI green.
+  Usage is at 3%.
+
+  One builder is still running (the failing file system for the core's tests).
+  I'll review and merge it when it reports, then write up the night for you.
+
+✻ Cooked for 18s · done Friday 10:48 PM
+
+⏺ Agent "Failing file system for core tests" is waiting on its own background
+work · 45m 33s
+⏺ The failing-file-system builder is waiting on its own test runs and hasn't
+  reported yet. Nothing to review until it hands back.
+
+✻ Crunched for 46m 26s · done Friday 11:20 PM
+
+⏺ Agent "Failing file system for core tests" is waiting on its own background
+work · 47m 26s
+
+※ recap: Building s4ql's SQL half after finishing storage: tonight the front-end research, a too-large-commit fix, a late-write simulation workload, and the tokenizer all merged, and one builder is still adding file-system failure tests. Next, you decide the parser and error-matching questions.
+
+⏺ Agent "Failing file system for core tests" is waiting on its own background
+work · 53m 11s
+
+⏺ Agent "Failing file system for core tests" is waiting on its own background
+work · 58m 15s
+
+※ recap: Tonight's goal is to move s4ql forward within 20% of weekly usage: research, tokenizer, and two storage fixes are merged, and one builder is still testing a failing file system. Next, I review and merge its branch.
+
+› Message from fabrik:builder
+  Three of the four decisions now have a test that fails when its mutant is
+  applied: 1, 3, and 4. Decision 2 cannot be reached through any file system, so
+  it is still uncovered. Writing the tests also turned up one fault in the
+  core, which I fixed.
+
+  Branch: `worktree-agent-a3fd95ac6eb146e8e`. It is
+  `worktree-agent-a8569e9b46c707813` plus `origin/main`, merged at f10638e, then
+  5 commits. Not pushed.
+
+  ## Fault found in the core (fixed)
+  Every catch-up event logged `commit.bytes` as 0. `replay` in
+  `internal/core/replay.go` returned `(_ replayed, err error)` and set
+  `done.bytes` in a deferred function. By then `return done, ...` had already
+  copied the value, so the count never reached `DB.catchUp`. The fix is one
+  line: the result is named `done`. `TestEvents` now checks the count against
+  the size of the commit object; it failed with "99, got 0" before the fix.
+  Commit 89401d5. I found it because the replay test now relies on that count
+  (see below).
+
+  ## The seams
+  - **Spool file, in plain Go.** A new unexported field `Options.local` in
+  `core.go` holds `spool *func(kind string, f *os.File) spoolFile`, which wraps
+  each spool file ("commit" or "annotations"). `spool.f` is now a small
+  interface (read, write, seek, close); `*os.File` satisfies it. Only
+  `export_test.go` sets the field, through `Options.WrapSpools`. The field is a
+  pointer so that `Options` stays comparable. Production pays one nil check per
+  spool file. The test double, `spoolFaults` in `spool_test.go`, fails the next
+  N reads with `syscall.EIO`.
+  - **Cache, through SQLite.** I judged a shim VFS small and clean enough, so I
+  built `internal/sqlite/faultvfs`: about 250 lines of C in a cgo preamble, plus
+  a Go API.
+    - It wraps SQLite's default VFS and replaces only `xOpen`. The file it wraps
+  forwards all 18 methods.
+    - It can fail open, read, write, truncate, sync, file size, and lock, chosen
+  by kind of file (database, write-ahead log, journal, temporary file). A test
+  arms one fault at a time: `Fault{Ops, Files, After, Times, Code}`.
+    - It uses only the types of `sqlite3.h` and the function pointers SQLite
+  hands out, so there is no second copy of SQLite and the symbol rules hold.
+    - The binding gained `OpenVFS`, `FindVFS`, `RegisterVFS`, and
+  `UnregisterVFS`; `Open` is now `OpenVFS(path, "")`. The core's `openConn`
+  passes `Options.local.vfs`, which only `export_test.go` sets, through
+  `UseVFS`.
+    - A new depguard rule in `.golangci.yml` lets only test files import
+  `faultvfs`; I checked that it fires on a non-test import. So no production
+  build carries the shim.
+    - Why not the alternatives: real failures differ between macOS, Linux, and
+  the sanitizer container, and cannot be aimed at one operation. The unix VFS's
+  `xSetSystemCall` is process-wide and depends on the platform.
+
+  ## Which test kills which mutant
+  I rebuilt the mutants from their names, because the old runner and lists were
+  in another session's scratchpad. Each was applied with `go test -overlay`; a
+  control without a change passes.
+  - **`upload-spool-error-retried`** (`case content.err != nil && false:` in
+  `Tx.upload`): killed by `TestDB_stop` / "should stop for a failure to read the
+  spool file during the upload, and not try the upload again".
+  - **`spool-length-error-ends`** (`if errors.Is(err, io.EOF) || err != nil {`
+  after `ReadUvarint` in `spool.annotations`): killed by `TestDB_stop` / "should
+  stop for a failure to read the length of an annotation from its spool file,
+  and not commit without it".
+  - **`replay-cache-error-as-broken`** (`(classify(err) != kindOther && false)
+  || ...` after `apply`): killed by `TestDB_stop_cache` / "should stop for good
+  with a local failure, and not a broken log, when the file system fails while
+  replay applies a change, and keep the cache as it was". The mutant's stop says
+  "the log is broken: sqlite: disk I/O error (code 778)".
+    - How the test works: a commit object of 100 columns × 4000 rows is about
+  twice SQLite's default 2 MB page cache, so replay writes pages to the
+  write-ahead log before its commit. The fault (every write to the log fails) is
+  armed before the instance opens.
+    - The guard: the catch-up event's byte count must be below the size of the
+  commit object. With too few rows the write would fail at the commit instead,
+  and the test would pass without reaching the check; with 500 rows the guard
+  now fails the test.
+
+  Each test checks the error the caller sees (`ErrStopped` and `ErrLocal`, not
+  `ErrOutcomeUnknown`, and not `ErrLogBroken` for replay), that the instance
+  stopped, that the log head is unchanged, that the lease is released, and that
+  the instance opened again serves the old state, or for replay catches up from
+  an untouched cache.
+
+  ## Still unreachable, and what it would take
+  - **`read-end-swallows-local` (decision 2).** No file system can make it fail.
+  SQLite 3.54.1 ends a read transaction through functions that return nothing
+  (`sqlite3RollbackAll`, `pager_unlock`, `sqlite3WalEndReadTransaction`). So a
+  `ROLLBACK` after only reads returns `SQLITE_OK`, or a "no transaction is
+  active" error, which is not a local failure. Both reviewers confirmed this
+  against the source. With `err = nil` always in `ReadTx.end`, the whole package
+  passes. A faultvfs test shows the rollback meets no operation that can fail.
+  Only out of memory, in the prepare of the `ROLLBACK`, could still reach the
+  check.
+  - The other two remain as before: the order in which connections open (needs
+  real parallelism after a crash) and the sync of the cache (needs a power
+  loss).
+
+  The core README list and the todo bullet now say this.
+
+  ## Run time of `go test -count=1 ./internal/core/`
+  - Plain: 46.0 s before, 45.7 s after.
+  - Under `-race`: 114 s without the new tests, 112 s with them — the same
+  within noise.
+  - The replay test alone takes about 0.6 s, about 9 s under `-race`, and about
+  7 s under asan.
+
+  ## Checks
+  - `make lint`: 0 issues. `make test`: passes.
+  - `make test-asan`: passes, but I ran it with `FUZZTIME=5s` instead of CI's 30
+  s; no fuzzed code changed.
+  - `-count=50`, plain and under `-race`: passes. The first race run caught a
+  race in my own test: 15 of 50 runs read the catch-up event before the lease
+  task had logged it. The check now comes after `DB.Close`, which waits for that
+  task, and it then passed 50 of 50 under `-race` with a plain run alongside
+  for load.
+
+  ## Self-review
+  Two reviewers, both of whom confirmed the kills and the decision-2 claim. What
+  I fixed from them:
+  - `VFS.Close` freed the VFS under a connection that has no file open, such as
+  one to `:memory:` (a use after free under asan). Its doc now states the
+  contract, and the open-file check stays as a safety net.
+  - Any method after `Close` crashed the test binary in C. Now a second `Close`
+  does nothing and the others panic in Go.
+  - The replay test could pass without reaching its decision. Fixed by the
+  byte-count guard, and it now arms its fault before the instance starts, as
+  AGENTS.md asks.
+  - Four fault kinds and `After` were untested. They now have tests, and six
+  mutants of the C that passed before are now killed.
+  - A file with no shared memory would have been offered `xShmMap`, and a failed
+  open could leave the count of open files too high. Both fixed.
+  - The spool double embedded `*os.File`, which let some of its methods go
+  around the faults. It now holds the file in a field.
+  - Smaller fixes: `Options` stays comparable, a comment that was wrong on
+  macOS, the README wording, `FindVFS` and a NUL byte, `VFSName` removed,
+  constants used once inlined.
+
+  One thing I left as it is: the comments in `core.go` and `spool.go` that say
+  only the package's tests set `local` follow the existing `bugs` comment.
+
+  ## For you to decide
+  - **Decision 2.** The only way to cover it is an error made up in the core,
+  for example a buggify point in `ReadTx.end` like the one in `Tx.commitCache`.
+  The simulation workloads would then also meet random stops at the end of
+  reads. I did not add one; your call.
+  - **`faultvfs` lives in the binding's directory** and adds four exported
+  functions to the binding. If you would rather keep the binding's API minimal,
+  they could move behind a build tag, but cgo makes that awkward.
+
+  ## Files
+  - Diary, steps 1 to 5: `/Users/maragubot/Developer/s4ql/.claude/worktrees/agen
+  t-a3fd95ac6eb146e8e/docs/diary/2026-11-13-failing-file-system.md`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a3fd95ac6eb146e8e/i
+  nternal/sqlite/faultvfs/faultvfs.go`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a3fd95ac6eb146e8e/i
+  nternal/sqlite/faultvfs/faultvfs_test.go`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a3fd95ac6eb146e8e/i
+  nternal/sqlite/sqlite.go`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a3fd95ac6eb146e8e/i
+  nternal/core/core.go`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a3fd95ac6eb146e8e/i
+  nternal/core/spool.go`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a3fd95ac6eb146e8e/i
+  nternal/core/replay.go`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a3fd95ac6eb146e8e/i
+  nternal/core/core_test.go`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a3fd95ac6eb146e8e/i
+  nternal/core/spool_test.go`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a3fd95ac6eb146e8e/i
+  nternal/core/README.md`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a3fd95ac6eb146e8e/d
+  ocs/todo.md`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a3fd95ac6eb146e8e/.
+  golangci.yml`
+
+  The mutant scripts are not in the tree:
+  - `/private/tmp/claude-502/-Users-maragubot-Developer-s4ql--claude-worktrees-o
+  bject-store/f1343515-adca-4ca0-9eb0-f507768f8fc7/scratchpad/core_mutants.sh`
+  - `/private/tmp/claude-502/-Users-maragubot-Developer-s4ql--claude-worktrees-o
+  bject-store/f1343515-adca-4ca0-9eb0-f507768f8fc7/scratchpad/shim_mutants.sh`
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Failing file system for core tests" finished · 1h 7m 4s
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The failing-file-system builder is done, and it found a real fault in the
+  core, which it fixed. I'm running tests and lint on its branch with main
+  merged in before I open the pull request.
+
+  - The fault: every catch-up event logged commit.bytes as 0. A deferred
+    function set the count after the return value had already been copied. The
+    fix is one line in replay, and TestEvents now checks the count. It only
+    affected the log event, not what was replayed.
+  - Three of the four decisions now have a test that fails when the decision is 
+    changed: a spool file that fails during an upload, a spool file whose length
+    cannot be read, and a cache failure during replay.
+  - The fourth cannot be reached through any file system: SQLite ends a read
+    transaction through functions that return nothing, so a local failure at the
+    end of a read cannot happen short of running out of memory. I'm leaving
+    that check as a defensive one, with the reason in the todo list.
+  - How the cache is made to fail: a small fault-injecting SQLite VFS in
+    internal/sqlite/faultvfs, which a lint rule lets only test files import, so
+    no production build carries it.
+
+✻ Worked for 13s · done Friday 11:42 PM
+
+⏺ Background command "Merge main into the failing-file-system branch, then test
+and lint" completed (exit code 0)
+
+  Created PR #21, ran 2 shell commands (ctrl+o to expand)
+
+⏺ The failing-file-system work is in pull request #21; tests and lint pass
+  locally with main merged in. I merge it when CI is green, and then nothing
+  else is running.
+
+✻ Baked for 18s · done Friday 11:43 PM
+
+※ recap: Tonight's goal was to continue s4ql within 20% usage: research, tokenizer, and three storage follow-ups are merged or in review, with pull request #21 waiting on CI. Next, I merge it and bring you the SQL design decisions one at a time.
+
+⏺ Background command "Wait until no check on pull request 21 is pending"
+completed (exit code 0)
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+⏺ Tonight's work is merged and main is clean, with no agents, worktrees, or
+  branches left. The last merge (#21) is still running CI on main; its pull
+  request was green. Usage is at 5% of the week (Fable 4%), well under the 20%
+  limit.
+
+  What was done
+
+  - SQL research: docs/research/sql-front-end.md covers the tokenizer, parser
+    options, SQLite's exact errors for slice 1 (measured on 3.54.1, not from
+    memory), testing against SQLite, the Go API, and layering.
+  - Tokenizer (#19): internal/sql/token matches SQLite's own tokenizer token for
+    token; 271.6 million fuzz inputs found no difference. I started this
+    without asking, because every parser option needs it except taking a
+    third-party parser as a dependency.
+  - Too-large commit (#18): a commit object the store can never take now fails
+    at once with core.ErrTooLarge instead of being retried.
+  - Late writes (#20): a simulation workload holds writes up to 15 simulated
+    minutes across changes of lease holder. It found no fault in 1000 seeds. A
+    new planted bug shows that sending a lease take twice with the same bytes is
+    caught.
+  - Failing file system (#21): tests can now make the spool files and the cache
+    fail on demand. Three of the four untested decisions are covered; the fourth
+    cannot be reached through any file system.
+  - One real fault fixed: catch-up events logged the commit size as 0. Only the
+    log event was wrong.
+  - One flaky test fixed: TestClient_connections in s3store expected one of two
+    legal outcomes.
+
+  The README's Status section and docs/todo.md are up to date.
+
+  For you to decide
+
+  The SQL half is blocked on these; the research note has the facts for each,
+  and the todo list has them under "The SQL front end".
+
+  1. The parser. I recommend our own parser for all of SQLite's grammar, with a
+     pass after it that rejects what the roadmap does not list. Only that can
+     tell a SQLite syntax error from "not supported". A new Go project,
+     sqlc-dev/meyer, does this and would serve as a reference; it is too young
+     to depend on.
+  2. What an error promises to match. I recommend the result code, the extended
+     code, and the message text for statements of a supported shape. The codes
+     alone cannot tell no such table from table already exists.
+  3. How "not supported" is marked. I recommend a sentinel error and a message
+     that cannot be SQLite's.
+  4. An API of our own under the database/sql driver. I recommend it, because
+     the driver cannot carry the stop of an instance or a context on Close and
+     Commit. Whether it is public is your call.
+  5. Smaller points of slice 1: single-quoted names, what "any integer value"
+     includes, a NUL byte in SQL text, and five SQLite errors the roadmap does
+     not list.
+
+  Three things outside the SQL:
+
+  - The download check as built: the SDK checks the content against the stored
+    checksum while reading, instead of comparing with the name before the body.
+    I think it is enough.
+  - Integration tests in CI: they need a bucket and its credentials as
+    repository secrets from you.
+  - Two spec additions, if you want them: a sentence on a transaction that is
+    too large, and the database/sql agreement from 10 Nov, which is recorded
+    only in the conversation export.
+
+  I can take these one at a time when you're back, starting with the parser.
+
+✻ Brewed for 38s · done Saturday 12:00 AM
+
+※ recap: We're building s4ql, a SQL database on S3; tonight's storage follow-ups, SQL research, and tokenizer are merged, and the rest of the SQL half waits on your design decisions. Next: decide the parser approach, where I recommend our own full-grammar parser.
+
+❯ Summarize what was done since my last message. For anything I need to respond 
+  to, let's take it one by one.                                                 
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Since your last message I woke at 21:02 on Friday and merged four pull
+  requests and one research note. main is clean, nothing is running, and usage
+  is at 6% of the week.
+
+  What was done
+
+  - SQL research (Opus): docs/research/sql-front-end.md covers the tokenizer,
+    parser options, SQLite's exact errors for slice 1 (measured on 3.54.1),
+    testing against SQLite, the Go API, and layering.
+  - Tokenizer (#19): internal/sql/token matches SQLite's own tokenizer token for
+    token; 271.6 million fuzz inputs found no difference. I started it without
+    asking, because every parser option needs it except taking a third-party
+    parser as a dependency.
+  - Too-large commit (#18): a commit object the store can never take now fails
+    at once with core.ErrTooLarge instead of being retried.
+  - Late writes (#20): a simulation workload holds writes up to 15 simulated
+    minutes across changes of lease holder. It found no fault in 1000 seeds, and
+    a new planted bug shows that a lease take sent twice with the same bytes is
+    caught.
+  - Failing file system (#21): tests can make the spool files and the cache fail
+    on demand. Three of the four untested decisions in the core are now
+    covered; the fourth cannot be reached through any file system.
+  - One real fault fixed: catch-up events logged the commit size as 0. Only the
+    log event was wrong.
+  - One flaky test fixed: a test in s3store expected one of two legal outcomes.
+
+  The README's Status section and docs/todo.md are up to date, and the stale
+  object-store worktree is gone.
+
+  First decision: the parser
+
+  The question is whether the parser knows only the grammar of the slices, or
+  all of SQLite's grammar with a pass after it that rejects what the roadmap
+  does not list.
+
+  I recommend the full grammar, written by us. Only a parser that knows all of
+  SQLite's grammar can tell "SQLite would call this a syntax error" from "valid
+  SQLite that s4ql does not support", and give SQLite's own near "X": syntax 
+  error for the first. A slice-only parser stops earlier than SQLite does, so
+  its error for anything outside the subset is its own invention.
+
+  The cost is a large parser surface that slice 1 never executes but that must
+  still be right, because its job is to classify. It can be checked against
+  SQLite's own acceptance over SQLite's test scripts and by fuzzing, as the
+  tokenizer was.
+
+  A new Go project, sqlc-dev/meyer, is a hand-written port of all of SQLite's
+  grammar that claims exact syntax messages. It has one author and seven
+  commits, so I would use it as a reference to compare against and not as a
+  dependency.
+
+  Full grammar with a reject pass, written by us?
+
+✻ Cooked for 13s · done 9:56 AM
+
+❯ Yes, that sounds reasonable. But write your own parser instead of relying on  
+  other people's work. Should be doable with SQLite as the oracle? Are we using 
+  just SQLite's parser for that, or do we need to go through the entire SQLite  
+  engine?                                                                       
+
+⏺ Noted: our own parser, no code from other projects. I'll keep meyer out
+  entirely, also as a starting point.
+
+  On the oracle: we have to go through more than SQLite's parser, but not
+  through the whole engine. SQLite has no parser-only entry point. Its grammar
+  actions call the code generator directly, and it builds no syntax tree that it
+  hands out. The way in is sqlite3_prepare_v2, which runs the tokenizer, the
+  parser, and the code generator, and stops before anything executes.
+
+  That gives the oracle three properties:
+
+  - Accept or reject, and the syntax message, come from SQLite itself. A
+    statement that fails with near "X": syntax error, unrecognized token, or
+    incomplete input failed in the parser. One that prepares, or fails with
+    something like no such table, got through the parser.
+  - A semantic error can hide a later syntax error. The research measured this:
+    table t1 already exists is raised in the middle of parsing and wins over a
+    fault further on. So for pure syntax checks we prepare against a schema
+    where names resolve, or an empty one, and treat the remaining cases as
+    "SQLite does not say".
+  - The tree has no oracle. SQLite can tell us whether a statement parses, not
+    what our tree should look like. The tree is checked indirectly: the engine
+    runs the statement and the rows and errors are compared with SQLite's.
+
+  I have not checked whether the private sqlite3RunParser could be called
+  directly, as we did with sqlite3GetToken. It would still run the code
+  generator, so I expect it to add nothing over prepare.
+
+  Shall I go on to the next decision, what an error promises to match?
+
+✻ Cooked for 20s · done 10:00 AM
+
+❯ Maybe let's build the tokenizer/parser thing first? Also subagent-research    
+  https://github.com/rqlite/sql , maybe we can just use that as a dependency.   
+  I'd be okay with that, I trust Ben Johnson, the original author, and I see    
+  Brad Fitzpatrick is a contributor as well. Would be nice to upstream any bugs 
+  we might find (but don't interact with the project without my explicit        
+  approval first).                                                              
+
+⏺ Agent(Research rqlite/sql as dependency) Opus 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ A research agent on Opus is now measuring rqlite/sql against SQLite; the
+  parser build waits for its result, and the other decisions wait behind the
+  parser, as you said. The tokenizer is already built and merged.
+
+  The agent reads and clones only. It has a hard rule against any contact with
+  the project, and any bugs it finds go into the note in a form you could report
+  upstream later.
+
+  What it measures, with our SQLite binding as the oracle:
+
+  - Acceptance: over a large corpus, what rqlite/sql accepts that SQLite rejects
+    (the dangerous kind for "reject, never reinterpret"), and the reverse.
+  - Tokens: its lexer against SQLite's own tokenizer, and whether our tokenizer
+    could feed its parser.
+  - Errors: whether it stops at the token SQLite names in near "X", so that
+    SQLite's syntax message could be produced with it.
+  - The tree: whether it keeps names exactly as written, with their quotes, and
+    every spelling the reject pass must see (int against integer, strict, if 
+    exists).
+  - The project: licence, maintenance, tests, dependencies, and robustness under
+    fuzzing.
+
+  One thing from the earlier research to keep in mind until the numbers are in:
+  that note read rqlite/sql from source only and said its errors and keyword
+  handling are not SQLite's and its tree does not keep raw names. This run
+  checks that by measurement.
+✻ Churned for 50s · done 10:05 AM
+
+❯ Actually, maybe compare it to sqlc-dev/meyer too, another subagent-research?  
+
+⏺ Agent(Research sqlc-dev/meyer as dependency) Opus 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ A second Opus agent is now studying sqlc-dev/meyer the same way, with the same
+  no-contact rule.
+
+  To make the two comparable, the meyer agent also runs rqlite/sql through its
+  acceptance and error measurements on the same corpus, and ends its note with a
+  table that sets meyer, rqlite/sql, and a parser of our own side by side.
+
+  Two things I asked it to check specifically for meyer:
+
+  - Its claims: the 21,326 cases with SQLite's exact syntax messages. I told it
+    to make sure a good part of the corpus is independent of meyer's own test
+    set, on which it agrees by construction.
+  - The version gap: meyer pins SQLite 3.53.4 and we pin 3.54.1.
+
+  I'll bring you both results together when they are in.
+
+✻ Sautéed for 36s · done 10:06 AM
+
+❯ sqlc-dev/meyer notes that the 21k cases are extracted from the SQLite test    
+  suite. Do we have access to that test suite as well?                          
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ Fetch(https://sqlite.org/testing.html)
+  ⎿  Received 58.2KB (200 OK)
+
+⏺ Yes, the part meyer uses is public. SQLite's testing page says of its TCL
+  tests: "They are contained in the same source tree as the SQLite core and like
+  the SQLite core are in the public domain." It gives 1390 files with 51445
+  distinct test cases.
+
+  What we can and cannot use, per that page (https://sqlite.org/testing.html):
+
+  - The TCL tests: public domain, in the test/ directory of SQLite's source
+    tree. We don't have them in the repository today, because we vendor only the
+    amalgamation.
+  - The fuzz corpora: historical cases from AFL, OSS Fuzz, and dbsqlfuzz are
+    kept as database files in the same source tree, so they are public too.
+  - TH3: proprietary, so not available to us.
+  - dbsqlfuzz: proprietary as well; only its past findings are in the tree.
+
+  One catch with the TCL tests: they are TCL scripts, not lists of SQL. The SQL
+  sits inside commands like do_execsql_test, often with TCL variables
+  substituted in, so pulling statements out is imperfect. Meyer's 21k cases
+  against the page's 51k test cases suggests it extracted what could be
+  extracted cleanly, though I'm inferring that from the two numbers.
+
+  For us the expected results don't need extracting at all. We only need the SQL
+  text, and our pinned SQLite gives the expected answer for each statement, as
+  it did for the tokenizer. The meyer agent is already told to extract
+  statements from the TCL scripts for its corpus, so we'll see how well that
+  works.
+
+✻ Cogitated for 34s · done 10:09 AM
+
+❯ I like the conformance section in their readme, mirrors our approach to an    
+  extent: https://github.com/sqlc-dev/meyer#conformance                         
+
+⏺ Fetch(https://github.com/sqlc-dev/meyer)
+  ⎿  Received 248.5KB (200 OK)
+
+⏺ I read it, and I agree: it is the same idea as ours, with SQLite as the judge
+  and the project's own expectations ranked below it. Its README even states the
+  limit I described earlier: "There is no upstream parse-tree oracle — SQLite
+  cannot dump its parse tree."
+
+  It has two things our plan lacked, and both are methods we can adopt without
+  taking any of their code:
+
+  - A round-trip property for the tree. Each accepted statement is rendered back
+    to SQL and parsed again, and the two trees are compared. That catches a
+    dropped clause or a wrongly grouped operator, which accept-or-reject cannot
+    see. It is a direct answer to the tree having no oracle.
+  - One-token mutations over SQLite's fuzz corpora. Its difftest runs about 36k
+    inputs from SQLite's fuzzdata databases against a live SQLite, each as is
+    and then mutated one token at a time, comparing message and byte offset.
+
+  Two differences from our side:
+
+  - We get a check they cannot have. Our engine executes what it parses, so rows
+    and errors are compared with SQLite's. A tree that is wrong in meaning but
+    survives the round trip still shows up there.
+  - We don't compare byte offsets yet. Our binding does not expose
+    sqlite3_error_offset. If we want SQLite's offsets, that is a small addition
+    to the binding.
+
+  The meyer research agent is checking these claims by running them, including
+  where the 21k cases come from and whether the tool really compares what the
+  README says. Both agents are still running.
+
+✻ Brewed for 19s · done 10:10 AM
+
+› Message from general-purpose
+  ## rqlite/sql as s4ql's parser: research note committed
+
+  **Branch:** `worktree-agent-a5035f23b6f597177`, commit `0dafc1d` ("Add
+  research note on rqlite/sql as the SQL parser"). It holds only
+  `docs/research/rqlite-sql.md` and one new entry in `docs/research/README.md`.
+  Nothing is pushed, and there is no pull request. The secrets check is clean.
+  `go.mod`, `go.sum` and `internal/sqlite/sqlite.go` are back to their committed
+  state, and the temporary package is deleted. There was no contact with the
+  rqlite/sql project; I only read it through clone and the read-only GitHub API.
+
+  **Short answer:** rqlite/sql parses 96.8% of what SQLite parses. But it also
+  accepts some of what SQLite rejects, and some of that changes meaning. Its
+  tree drops distinctions the "supported?" pass needs. Its errors are not
+  SQLite's. The evidence favours the parser we already agreed to write, with
+  rqlite/sql as a reference and a source of test inputs, not as a dependency.
+  The note says what the evidence favours; it does not decide.
+
+  **State of the project**
+  - MIT licence. Clone is at commit `5c0832f` (2026-10-16). 233 commits, nearly
+  all by one maintainer, Philip O'Toole; 83 commits in October 2026, several
+  pull requests titled "fixes by Claude".
+  - No tags or releases. No open issues or pull requests.
+  - Its tests are hand-written expectations with 76.4% coverage. It has no fuzz
+  test, and no test compares it with SQLite.
+  - `benbjohnson/sql` is a GitHub fork of rqlite/sql, frozen at 2024-03-09.
+  rqlite/sql is 187 commits ahead of it.
+  - Brad Fitzpatrick has one commit and four issues.
+  - rqlite itself parses only statements it wants to rewrite (`random()`, time
+  functions, `RETURNING`, `EXPLAIN`). It sends anything that fails to parse to
+  SQLite unchanged and recovers from parser panics, so it barely depends on
+  correct rejection.
+
+  **Corpus:** 68,032 distinct statements:
+
+  | Source | Statements |
+  |---|---|
+  | SQLite 3.54.1's TCL test scripts | 47,418 |
+  | SQLite's documentation | 1,178 |
+  | rqlite/sql's own tests | 726 |
+  | meyer's corpus (new ones only) | 95 |
+  | `internal/sql/token` tests | 325 |
+  | Generated variations | 18,290 |
+
+  After leaving out 358 statements whose parse SQLite stopped early (a check
+  inside the grammar failed before the end) and 18 multi-statement texts, 67,656
+  count.
+
+  **Measured results**
+
+  *Acceptance (point 2)*
+
+  | SQLite says | rqlite/sql accepts | rqlite/sql rejects | rqlite/sql panics |
+  |---|---|---|---|
+  | parses (53,965) | 52,217 | 1,748 (3.2%) | 0 |
+  | syntax error (13,691) | 154 (1.1%) | 13,534 | 3 |
+
+  On SQLite's own test statements alone, rqlite/sql accepts 47 of 371 syntax
+  errors (12.7%).
+
+  A second check compared SQLite's `EXPLAIN` of each accepted statement with the
+  `EXPLAIN` of rqlite/sql's `String()` reprint, over 18,286 statements. 67
+  differ:
+  - 42 come from changed quoting in `ALTER TABLE`, which SQLite stores as
+  written.
+  - 10 are digit separators read as an alias.
+  - 8 are `LIMIT a, b`, where the meaning is reversed.
+  - 7 reprints do not prepare at all.
+
+  *Tokenizer (point 3)*
+  - The tokenizer is built into the parser and cannot be swapped without a fork,
+  so `internal/sql/token` cannot feed it.
+  - Token boundaries match SQLite's in 99.63% of statements. Boundaries and
+  token kinds both match in 83.3%; the gap is words that one side reads as a
+  keyword and the other as a name.
+  - Positions are counted in runes, not bytes. The source documents `Column` as
+  a byte count.
+  - `ROWID`, `STORED`, `STRICT`, `TRUE` and `FALSE` are keywords in rqlite/sql
+  but names in SQLite.
+
+  *Errors (point 4)*
+  - Errors are Go-style, e.g. `1:8: expected expression, found 'EOF'`. The error
+  carries only a position and a message, not the failing token.
+
+  | SQLite's message | Cases | rqlite/sql stops at SQLite's token |
+  |---|---|---|
+  | `near "X"` | 12,801 | 11,942 (93.3%) |
+  | `unrecognized token` | 278 | 245 (88.1%) |
+  | `incomplete input` | 451 | 439 say EOF (97.3%) |
+
+  Many of the misses report the position of the statement's first keyword
+  instead (e.g. `drop - t1` reports position 1:1).
+
+  **Most important disagreements**
+  - **Accepted by rqlite/sql, rejected by SQLite (the dangerous kind):**
+    - `DELETE ... ORDER BY/LIMIT`: 45
+    - `select select 1` (SELECT without parentheses as an expression): 23
+    - `update t x set ...` (alias without `AS`): 21
+    - join keywords as type names, e.g. `a left`: 19
+    - `NULL` as a name, e.g. `drop table null`: 17
+    - a number followed by letters, e.g. `select 1x` read as `1 AS x`: 16
+  - **Accepted by both, different meaning:**
+    - `select 1_000` is read as `1 AS "_000"`.
+    - `v1 int null` becomes a column whose type is `int null`, with no NULL
+  constraint.
+    - `select true from t` is always the literal TRUE; SQLite returns the column
+  `"true"` if one exists.
+    - `LIMIT 1, 2`: the field named `LimitExpr` holds what SQLite treats as the
+  offset, and `String()` prints `LIMIT 1 OFFSET 2`.
+  - **Rejected by rqlite/sql, accepted by SQLite:**
+    - fallback keywords as table names or aliases: 881, including `SELECT * FROM
+  temp.sqlite_master`
+    - `ROWID`/`STRICT`/`TRUE`/`FALSE` as names: 196
+    - single-quoted names: 102
+    - `$::name` parameters: 100
+    - `ALTER TABLE ... CONSTRAINT`: 53
+    - virtual table arguments: 47
+  - **For slice 1:** `NULL` as a name is accepted; `rowid`, `strict`, `true` and
+  `false` as column names are rejected; brackets and backticks cannot be told
+  from double quotes in the tree; a repeated `strict` collapses into one; error
+  positions miss SQLite's in about 7% of cases.
+
+  **What the tree keeps and loses**
+  - **Keeps:** positions of keywords and names, `IF EXISTS`, `STRICT`, `WITHOUT
+  ROWID`, `int` versus `integer`, numbers and parameters as written.
+  - **Loses:**
+    - the quote style: `"x"`, `[x]`, `` `x` `` and an alias `'x'` all become
+  `Quoted: true`
+    - raw name text and end positions
+    - some spellings: `<>`/`!=`, `TEMP`/`TEMPORARY`, `0X`/`0x`
+    - a repeated `strict`
+    - spacing inside multi-word type names
+  - A rejection pass needs the source text next to the tree. It cannot see what
+  the parser already reinterpreted, such as digit separators.
+
+  **Robustness (point 7)**
+  - The depth limit of 1000 prevents stack overflow.
+  - 300 s of fuzzing (28.8M runs) found one logged panic site. The site of about
+  50k panics on non-UTF-8 input was not logged.
+  - Compound selects parse in quadratic time: 7.7 s for 30,000 `UNION`s.
+
+  **Bugs that could be reported upstream** (listed in §9 of the note; nothing
+  sent):
+  - **Panic:** `create table zz (a, check (1), b)` panics with `assert failed`
+  (parser.go line 536); SQLite says `near "b"`.
+  - **`LIMIT a, b`:** `String()` reverses its meaning, and rqlite itself
+  rewrites statements with `String()`.
+  - **Wrongly accepted:**
+    - digit separators and a number followed by letters, read as aliases
+    - `NULL` as a name
+    - bare `SELECT` as an operand
+    - alias without `AS` on UPDATE/DELETE
+    - join keywords and `NULL` as type-name words
+    - `t.*` inside an expression
+    - `/*` as the last two bytes
+    - U+00A0 read as whitespace
+    - `INSERT ... SELECT ... ON CONFLICT` without `WHERE`
+  - **Wrongly rejected:** `temp.sqlite_master`, `rowid`/`true` as column names,
+  a leading byte order mark, `$::a`.
+  - **Other:** quadratic `UNION` parsing; the `Pos.Column` documentation says
+  bytes but it counts runes.
+
+  **Not verified**
+  - How the 83 GitHub repositories that list rqlite/sql in `go.mod` use it.
+  - The panic site for the fuzz inputs that were not valid UTF-8.
+  - When SQLite added `ALTER TABLE ... CONSTRAINT`.
+  - That every extracted TCL brace block is SQL the tests really run; a few are
+  templates.
+
+  **Scripts and data (not committed)**, all under
+  `/private/tmp/claude-502/-Users-maragubot-Developer-s4ql--claude-worktrees-obj
+  ect-store/f1343515-adca-4ca0-9eb0-f507768f8fc7/scratchpad/`:
+  - `scripts/zzrqlite/`: the Go test harness (corpus extraction, comparison,
+  `EXPLAIN` check, tree dumps, keyword sets, nesting probes, fuzz target, bug
+  probes)
+  - `scripts/binding-probe.patch`: the temporary binding functions
+  - `scripts/go.mod.orig`, `scripts/go.sum.orig`
+  - `results/`: `corpus.jsonl`, `results.jsonl`, `meaning.jsonl`,
+  `classify.txt`, `panics.jsonl`
+  - `rqlite-src/sql` and `benbjohnson-src/sql`: the clones
+  - `corpus/`: SQLite source tarball, SQLite docs, meyer clone
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Research rqlite/sql as dependency" finished · 34m 40s
+
+⏺ The rqlite/sql research is in, and the measurements speak against using it as
+  our parser. The note is on main as docs/research/rqlite-sql.md. The meyer
+  research is still running, so I'll hold the recommendation until both are in.
+
+  Measured over 67,656 statements, 47,418 of them extracted from SQLite's own
+  TCL tests, with our pinned SQLite as the judge:
+
+  ┌───────────────────────┬────────────────────┬──────────────┬────────┐
+  │      SQLite says      │ rqlite/sql accepts │   rejects    │ panics │
+  ├───────────────────────┼────────────────────┼──────────────┼────────┤
+  │ parses (53,965)       │ 52,217             │ 1,748 (3.2%) │ 0      │
+  ├───────────────────────┼────────────────────┼──────────────┼────────┤
+  │ syntax error (13,691) │ 154 (1.1%)         │ 13,534       │ 3      │
+  └───────────────────────┴────────────────────┴──────────────┴────────┘
+
+  The problems, in order of weight for us:
+
+  - It changes meaning in places. select 1_000 is read as 1 AS "_000". LIMIT 1, 
+    2 is printed back with offset and limit swapped. v1 int null becomes a
+    column of type int null with no constraint.
+  - It accepts some of what SQLite rejects. Examples are drop table null, select
+    1x (read as 1 AS x), and update t x set .... This is the dangerous kind for
+    "reject, never reinterpret".
+  - Its tree loses what our reject pass needs. "x", [x], and `x` all become one
+    "quoted" flag, raw name text is gone, and a repeated strict collapses into
+    one.
+  - Its errors are not SQLite's. They are Go-style, and it stops at the token
+    SQLite names in about 93% of the syntax errors.
+  - Its tokenizer is built in, so ours cannot feed it without a fork.
+
+  On the project itself:
+
+  - Maintainer: nearly all 233 commits are by rqlite's maintainer, Philip
+    O'Toole, with 83 of them in October 2026. Ben Johnson's repository is now a
+    frozen fork of it, and Brad Fitzpatrick has one commit.
+  - Tests: it has no fuzz test and no test that compares it with SQLite.
+  - Use in rqlite: rqlite parses only the statements it wants to rewrite and
+    passes everything else to SQLite unchanged, so it barely depends on correct
+    rejection.
+
+  The agent found about fifteen bugs that could be reported upstream, among them
+  a panic on create table zz (a, check (1), b). They are listed in section 9 of
+  the note, and nothing was sent.
+
+✻ Churned for 18s · done 10:40 AM
+
+❯ I don't want to report those upstream, I think Philip O'Toole is probably     
+  working on it already, with so many commits in October.                       
+
+⏺ Understood, nothing goes upstream. The list stays in section 9 of the note as
+  a record of what we measured, and I won't raise it again.
+
+  The meyer research is still running; I'll bring its result and the
+  side-by-side comparison when it reports.
+
+✻ Churned for 1s · done 10:43 AM
+
+❯ Maybe silly idea, but: would it be possible to read the SQLite parser's       
+  output out from its memory?                                                   
+
+⏺ Agent(Research reading SQLite's parse tree) Opus 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ Not silly, and I think it is possible, but none of what follows is verified
+  yet. I've started a third Opus research agent to check it by doing it.
+
+  The reason it could work is the same as for the tokenizer: we compile SQLite
+  ourselves, so C code in our binding can reach SQLite's private functions and
+  structs.
+
+  What I expect, from memory:
+
+  - SQLite may have its own tree printer. Its source has a treeview.c that
+    prints select trees in debug builds. If that holds for 3.54.1, meyer's
+    "SQLite cannot dump its parse tree" is only true of the public API.
+  - We could walk the structs ourselves. The hard part is catching the tree
+    before the code generator consumes and frees it. Possible ways in: the
+    parse-only mode that ALTER TABLE ... RENAME uses, or reading what SQLite
+    keeps in its schema. A view stores the tree of its select, and a trigger
+    stores the trees of the statements in its body.
+  - It is not a syntax tree. By the time a tree exists, the parser has already
+    changed things: != and <> share one code, and names are dequoted. So the
+    check would be "our tree, lowered by the same rules, equals SQLite's". That
+    would still catch wrong operator grouping or a clause attached to the wrong
+    select, which accept-or-reject cannot see.
+  - Some statements have no tree at all, because the parser generates code for
+    them directly.
+
+  The agent is to produce real dumps for a handful of statements, a table of
+  which statement kinds are reachable by which route, and the cost of each route
+  (a debug build differs from the production one; private structs change
+  between versions).
+
+  Running now: this agent and the meyer research.
+
+✻ Worked for 1m 18s · done 10:52 AM
+
+› Message from general-purpose
+  **Branch:** `worktree-agent-afeb6e898afb83f6a`, commit `4872928`. It holds
+  `docs/research/meyer.md` and one new entry in `docs/research/README.md`. Not
+  pushed. The sibling writing `rqlite-sql.md` may also add a README entry, so
+  the index can conflict on merge.
+
+  **Short answer.** On acceptance and error messages, meyer is very close to
+  SQLite and far ahead of rqlite/sql. My checks found faults that meyer's own
+  tests cannot see, and one of them changes what an accepted `where` clause
+  means.
+
+  **Corpus.** 535,220 statements, measured against SQLite 3.54.1 through the
+  binding. 125,507 are independent of meyer's corpus:
+  - 63,979 from sqllogictest, the docs, rqlite/sql's tests, s4ql's token tests
+  and quirks.
+  - 41,998 from SQLite's fuzzdata, which meyer's difftest already uses.
+  - 19,465 TCL statements that meyer's extractor did not take.
+  - 65 from more than one of these.
+
+  30,009 are in meyer's corpus, and 379,704 are one-token mutations. SQLite
+  classified 526,495 of them; 7,475 stopped mid-parse and were left out.
+
+  **Results:**
+
+  | Point | meyer | rqlite/sql |
+  |---|---|---|
+  | 2. Agrees with SQLite on acceptance | 526,493 of 526,495 | 511,342 (97.12%)
+  |
+  | 2. Accepts what SQLite rejects | 2 | 4,626 |
+  | 2. Rejects what SQLite accepts | 0 | 10,527 |
+  | 4. Same message, where both reject | 304,706 of 304,706 | 0 of 300,082 |
+  | 4. Same position | 304,685 (the 21 others are cases where SQLite gives -1) |
+  244,229 (81.4%) |
+  | 3. Tokens equal to sqlite3GetToken | 532,571 of 535,220; the other 2,649
+  differ only by the WINDOW/OVER/FILTER decision, made in the lexer by design |
+  not measured |
+
+  - **Tokenizer:** meyer's lexer is built into the parser, so s4ql's tokenizer
+  cannot feed it without changing meyer. s4ql's own tokenizer matched SQLite on
+  all 535,220.
+  - **Keyword-as-name templates** (16,491 statements): meyer agrees on 16,484,
+  rqlite/sql on 13,259.
+  - **Generated slice shapes** (111,841 statements, prepared on a schema where
+  the names resolve): meyer agrees on all 102,828 that SQLite classified. 93 of
+  64,290 messages differ, all from one cause. rqlite/sql gets 472 accept-wrong
+  and 21,018 reject-wrong.
+
+  **The most important disagreements:**
+  1. **Wrong tree for `NOT x NOT NULL`.** I built an oracle for expression
+  shape: SQLite evaluates the expression, and also evaluates meyer's tree
+  printed with every operation in parentheses. Of 276,022 random expressions,
+  450 gave different values, all from this one cause. meyer builds `(NOT x) NOT
+  NULL`; SQLite builds `NOT (x NOT NULL)`. Measured on a table with one NULL
+  row: `where not v1 not null` gives 1 row in SQLite and 0 under meyer's tree.
+  The same cause makes meyer reject `'a' like not 'b' not null escape 'x'` (16
+  inputs). meyer's round-trip test cannot catch it, because the renderer prints
+  the tokens back in the same order. The cause is `parser/parse_expr.go` 103.
+  2. **`select cast.* from t` is accepted** (also `raise`, `current_date`,
+  `current_time`, `current_timestamp`). SQLite says `near ".": syntax error`.
+  The cause is `parse_select.go` 169: it uses the `%fallback` keyword set in a
+  state where the keyword has its own action.
+  3. **Digit-separator error is not deferred.** For `select 1_ 2`, SQLite says
+  `near "2"`; meyer says `unrecognized token: "1_"`. This one cause accounts for
+  all 93 message differences in the slice shapes.
+  4. **Smaller corners:**
+     - `select 1__2__3`: SQLite reports `"12_2__3"`, meyer `"1__2__3"`.
+     - Offsets: meyer gives the token offset where SQLite gives -1 (`#N` and
+  digit separators).
+     - Recursion: SQLite says `Recursion limit` from 2,494 nested parentheses;
+  meyer accepts up to 9,998, on purpose.
+     - Errors from grammar actions (`table t1 already exists` mid-statement,
+  `unknown table option`, `LIMIT clause should come after UNION`) are outside
+  meyer's scope by design.
+  5. **rqlite/sql:**
+     - It accepts `SELECT SELECT 1`; this pattern is 3,570 of its 4,626 wrong
+  accepts.
+     - It also accepts `DELETE … LIMIT`, `UPDATE t1 t1 SET`, `create table null
+  (…)` and `pragma x = select`.
+     - It rejects valid slice-1 names such as `'z'`, `true`, `rowid` and
+  `strict`.
+     - 35 `assert failed` panics, and it took more than 10 s on a compound
+  select of 100,000 terms.
+
+  **Robustness (point 7):**
+  - meyer's own FuzzParse: 5 minutes, 24.7 million inputs, clean.
+  - My differential fuzz of meyer against SQLite: two stops, both harness
+  artifacts. One was an input ending in `/*`. The other was two action errors at
+  one token, where SQLite's last message wins. After fixing those, 10 minutes
+  and 87.3 million inputs, clean.
+  - meyer had no panics or hangs on the corpus.
+
+  **What the tree keeps and loses (points 5 and 6).**
+  - Kept:
+    - The raw text and quote style of every name: none, `"`, backtick, `[`, or
+  `'`.
+    - A byte span on every node.
+    - Raw literals.
+    - Type names as written (`int` and `integer` stay apart).
+    - Table options in order with raw text, and the optional keywords.
+    - A string used as a key column (`primary key ('a')`) stays a string
+  literal, so it is visible.
+  - Folded: `=`/`==`, `<>`/`!=`, and `TEMP`/`TEMPORARY`. The spans still hold
+  the text.
+  - So a pass after parsing can see and reject brackets, backticks,
+  single-quoted names and unlisted clauses. It needs a reflection-based "every
+  unallowed field is zero" check so that a field it forgot cannot slip through.
+  The shape of the tree cannot be trusted without the evaluation oracle.
+
+  **Comparison table:** section 9.2 of the note sets meyer, rqlite/sql and an
+  own parser side by side on these properties with the numbers.
+
+  **What the evidence favours (no decision taken):**
+  - Neither depending on meyer as it is, nor rqlite/sql in any role except as a
+  source of test inputs. rqlite/sql fails "reject, never reinterpret" outright.
+  meyer reinterprets one `where` form, and as a dependency the fixes and the
+  SQLite pin stay outside s4ql's control.
+  - Between owning a copy of meyer and using it only as a reference, the
+  evidence alone does not decide:
+    - A copy starts from measured near-exact code with a few located faults.
+    - Reference-only keeps meyer as an independent second implementation.
+  Comparison is what found these bugs.
+    - In either case, the trust rests on the harness: differential acceptance
+  and messages, the slice generator, the mutator, the keyword templates and the
+  evaluation oracle.
+
+  **Project facts (point 1):**
+  - MIT licence, one author (GitHub account `kyleconroy`), 7 commits and 6 PRs.
+  - The parser was written in about 4 hours on 2026-07-30 in an agent loop
+  (`CLAUDE.md`; PR 3 says "Runs 'the loop'"). Last commit 2026-08-25.
+  - No dependencies, Go 1.24.
+  - sqlc's main branch has used it since PR #4535 (2026-08-01), with an option
+  for a grammar the default SQLite build lacks. No sqlc release uses it yet; the
+  latest, v1.31.1, is older.
+  - The 21,326 cases come from SQLite 3.53.4's TCL scripts, prepared on an empty
+  in-memory database. Only 156 expect a rejection.
+  - 3.53.4 to 3.54.1: `tokenize.c` and `mkkeywordhash.c` are identical.
+  `parse.y` differs in 2 places, both action code: INDEXED BY carried through a
+  parenthesized table, and the `IN` rewrite skipped with COLLATE. So meyer is
+  not affected by the version gap.
+
+  **Bugs to report upstream later:** six meyer items with minimal inputs are in
+  note section 10. Nothing was reported, and I had no contact with any project.
+
+  **Where everything is:**
+  `/private/tmp/claude-502/-Users-maragubot-Developer-s4ql--claude-worktrees-obj
+  ect-store/f1343515-adca-4ca0-9eb0-f507768f8fc7/scratchpad/meyer-research/`.
+  The scratch directory is shared with the sibling, so I kept to this subfolder.
+  - `src-meyer/` and `src-rqlite/`: the clones.
+  - `src-sqlite/`: the source and doc zips.
+  - `corpus/`: the extracted records.
+  - `scripts/`: the throwaway test package (`zzresearch`), the binding patch,
+  the original `go.mod` and `go.sum`, the extractor and the Python analysis
+  scripts.
+  - `out/`: `results.tsv` and the disagreement, token, keyword, slice and shape
+  outputs.
+
+  The worktree is back to clean: the test package is removed, `sqlite.go` and
+  `go.mod` are restored, and the build passes.
+
+  **Not verified:**
+  - Nothing was run on SQLite 3.53.4 itself.
+  - The shape of trees beyond expressions.
+  - How many inputs have two independent faults.
+  - Whether meyer's weekly difftest workflow is green.
+  - The 7,475 stopped statements and the 1,095 inputs that held a second
+  statement were not compared.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Research sqlc-dev/meyer as dependency" finished · 47m 3s
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The meyer research is in, and with both results my recommendation is the one
+  you gave first: we write our own parser, and depend on neither. The note is on
+  main as docs/research/meyer.md.
+
+  Both parsers were measured on one corpus of 526,495 statements that SQLite
+  classified, with 125,507 of the inputs independent of meyer's own test set:
+
+  ┌───────────────────────────────────────┬───────────────────┬─────────────┐
+  │                                       │       meyer       │ rqlite/sql  │
+  ├───────────────────────────────────────┼───────────────────┼─────────────┤
+  │ Agrees with SQLite on accept or       │ all but 2         │ 97.12%      │
+  │ reject                                │                   │             │
+  ├───────────────────────────────────────┼───────────────────┼─────────────┤
+  │ Accepts what SQLite rejects           │ 2                 │ 4,626       │
+  ├───────────────────────────────────────┼───────────────────┼─────────────┤
+  │ Rejects what SQLite accepts           │ 0                 │ 10,527      │
+  ├───────────────────────────────────────┼───────────────────┼─────────────┤
+  │ Same error message, where both reject │ 304,706 of        │ 0 of        │
+  │                                       │ 304,706           │ 300,082     │
+  ├───────────────────────────────────────┼───────────────────┼─────────────┤
+  │ Keeps names as written, with quote    │ yes               │ no          │
+  │ style                                 │                   │             │
+  └───────────────────────────────────────┴───────────────────┴─────────────┘
+
+  So meyer's claims hold: on acceptance and messages it is almost exact, and
+  rqlite/sql is out. But the agent found a fault in meyer that meyer's own tests
+  cannot see:
+
+  - It builds the wrong tree for NOT x NOT NULL. Meyer reads it as (NOT x) NOT 
+    NULL, SQLite as NOT (x NOT NULL). On a table with one NULL row, where not v1
+    not null gives 1 row in SQLite and 0 under meyer's tree.
+  - Its round-trip test cannot catch this, because printing the tokens back in
+    the same order hides the grouping.
+  - It accepts select cast.* from t, which SQLite rejects.
+
+  Why not depend on meyer anyway:
+
+  - Control: the fixes and the SQLite version pin would sit outside our control,
+    in a project with one author and seven commits whose last commit was in
+    August.
+  - Tokenizer: its lexer is built in, so our tokenizer could not feed it.
+  - Trust: the trust rests on the test harness either way, and that we build
+    ourselves.
+
+  Two things from this research that carry over to our own parser:
+
+  - An oracle for expression shape that needs only SQLite. The agent printed
+    each tree with every operation in parentheses and had SQLite evaluate both
+    forms. Over 276,022 random expressions this found the NOT fault. It partly
+    answers your question about reading the tree from memory, from another
+    direction.
+  - A fact about meyer, not an estimate for us: its repository records that the
+    parser was written in about four hours in an agent loop.
+
+  The agent also listed six meyer bugs in section 10 of the note; nothing was
+  sent, and I'll treat them like the rqlite/sql ones unless you say otherwise.
+
+  Do you confirm: our own parser, no dependency on meyer or rqlite/sql, and I
+  start a builder for it?
+
+✻ Cogitated for 24s · done 10:54 AM
+
+❯ Agreed, but let's explore a few test approaches before we start building (and 
+  maybe wait for the last research agent also?). I've heard Nix is good for     
+  patching dependencies, maybe that would be good for pulling in SQLite and     
+  patching it in a way so we can get the parser output? I don't know much about 
+  Nix, so could be good or bad. Maybe another subagent-research?                
+
+⏺ Agreed: our own parser, and no builder until we have gone through the test
+  approaches and the last research agent has reported.
+
+  On Nix, I'd hold the research until that agent is back, because its result
+  decides whether there is anything to patch. It is checking several ways to get
+  the tree without changing SQLite's source, and a patched copy only as the
+  last resort. If one of the clean routes works, the Nix question goes away.
+
+  If we do end up needing a patched SQLite for tests, my expectation is that Nix
+  is more than the job needs. This is general knowledge of Nix, not checked
+  against our setup:
+
+  - What Nix is good at: fetching a source by hash, applying patches, and giving
+    every machine the same toolchain.
+  - What we already have: the amalgamation is vendored in internal/sqlite/c/,
+    and internal/sqlite/update fetches and verifies it. A patch file in the
+    repository, applied by that tool into a test-only copy, does the same job
+    with no new tool.
+  - Where Nix would not help: the Go command compiles cgo code from files in the
+    package's directory. So the patched source has to end up as files in our
+    tree either way, and Nix would only be another way of producing them.
+  - What it would cost: every developer machine and CI would need Nix.
+
+  Nix could still be worth a look for a different reason, a pinned toolchain for
+  the whole project, but that is a separate question from the parser.
+
+  So my proposal: when the parse-tree research lands, I bring you the test
+  approaches for the parser one at a time, and if a patched SQLite is among
+  them, we decide then whether Nix gets its own research. Is that order fine?
+
+✻ Worked for 18s · done 11:02 AM
+
+❯ Yes                                                                           
+
+⏺ Good. I'm waiting for the parse-tree research and will come back with its
+  result, then the test approaches one at a time.
+
+✻ Churned for 1s · done 11:04 AM
+
+❯ /model 
+  ⎿  Kept model as Fable 5.2
+
+› Message from general-purpose
+  The answer to Markus's question is yes, for the statements that build a tree,
+  and I committed the note on branch **`worktree-agent-ace8d188704080c06`**
+  (commit `f9d8f78`, not pushed). It adds `docs/research/sqlite-parse-tree.md`
+  and one entry in `docs/research/README.md`. The values of `AWS_ACCESS_KEY_ID`
+  and `AWS_SECRET_ACCESS_KEY` from `.env` do not appear in either file.
+
+  **Short answer.** `select`, `insert`, `update`, `delete` and `create
+  table/index/view/trigger` build a tree. Every other statement's grammar action
+  generates bytecode straight from tokens, so no tree of it ever exists. The
+  meyer README claim ("SQLite cannot dump its parse tree") holds for the public
+  API only. It is false for a project that compiles SQLite itself.
+
+  **Routes that work, all run on 3.54.1:**
+  1. **SQLite's tree printer (`treeview.c`).** It needs `-DSQLITE_DEBUG
+  -DSQLITE_ENABLE_TREETRACE`; TREETRACE alone prints nothing. You switch it on
+  with `.treetrace 0x10000` or `SQLITE_TESTCTRL_TRACEFLAGS`, and it prints to
+  stdout through a process-wide global. It dumps at the entry of
+  `sqlite3Select`, `sqlite3Insert`, `sqlite3Update` and `sqlite3Delete`. That is
+  after the grammar's actions, before name resolution.
+     - It loses quote style, every position, the `RETURNING` expressions (prints
+  only the word) and `NATURAL`.
+     - In normal mode, `x and 5 is null` (or `a in () and b`) replaces the whole
+  `WHERE` with `0`.
+     - Multi-row `VALUES` is compiled into a co-routine while parsing (since
+  3.46.0). The first dump is the first row alone, and later rows appear in no
+  dump.
+     - Each statement also prints dumps of nested and rewritten statements, so
+  "the first dump is the statement's tree" does not hold.
+  2. **A C walker of our own over a rename-mode parse, in the production
+  build.** The static `renameParseSql` (used by `ALTER TABLE ... RENAME`) is
+  callable from the binding's translation unit. I wrap a `select` as `CREATE
+  VIEW s4ql_v AS ...`, and an `insert`, `update` or `delete` as a trigger body.
+  The trees stay in `pNewTable`, `pNewIndex` and `pNewTrigger`.
+     - It also gives `create table/index/view/trigger`.
+     - It keeps quote flags and source positions (rename tokens plus
+  `Expr.w.iOfst`).
+     - Rename mode skips the AND-false fold and turns multi-row `VALUES` into
+  `UNION ALL`.
+     - It works with `options.h` and `-DSQLITE_API=static`, and ran clean under
+  ASan and UBSan over 167 statements.
+     - The wrappers refuse with an error, never silently: parameters; another
+  schema in a view; and in trigger bodies `WITH`, `RETURNING`, `DEFAULT VALUES`,
+  `INDEXED BY` and schema-qualified targets. `CREATE TABLE ... AS SELECT` also
+  fails.
+     - The fixer reduces `main.t` to a flag.
+  3. **Lemon's parser trace (`PRAGMA parser_trace`, debug build only).** It
+  covers every statement kind, but as a derivation of rule texts, with token
+  kinds instead of text. 14 of 412 unit rules are optimized out by Lemon (e.g.
+  `expr ::= term`, `selectnowith ::= oneselect`).
+
+  The schema after a statement ran also holds trees, but they are
+  `EXPRDUP_REDUCE` copies without positions, so they give nothing route 2 lacks.
+  The authorizer, `sqlite3_trace_v2`, the test controls, `declare_vtab` and
+  `EXPLAIN` give no tree. A patched copy of `sqlite3.c` was analysed only, not
+  built.
+
+  **Coverage.**
+
+  | Statement | Route 1 | Route 2 | Route 3 |
+  |---|---|---|---|
+  | `select` | yes | yes, as a view | yes |
+  | `insert` / `update` / `delete` | yes | yes, as a trigger step, with the
+  restrictions above | yes |
+  | `create table/index/view/trigger` | no | yes | yes |
+  | `create virtual table` | no | arguments as text only | yes |
+  | `drop`, `alter`, transactions, `pragma`, `attach`/`detach`, `vacuum`,
+  `analyze`, `reindex` | no | no | yes only |
+  | `explain` | inner statement's tree | no | yes |
+
+  **What a comparison could assert.** The tree is SQLite's internal form,
+  already lowered by the grammar. Section 7 of the note lists about 30 rewrites
+  with sources, for example:
+  - `<>` and `!=` are one operator; `IN (5)` becomes `= +5`; `5 IS NULL` becomes
+  `0`.
+  - `LIKE` becomes `like(p, x)` with the operands swapped; `LIMIT a, b` is
+  stored as `LIMIT b OFFSET a`.
+  - `count(*)` equals `count()`, and `ALL` in a function is dropped.
+  - Named windows are chained and their list is reversed.
+  - `,`, `JOIN` and `INNER JOIN` are the same; `LEFT` and `LEFT OUTER` are the
+  same.
+  - `CHECK`, generated-column and index expressions are already resolved;
+  defaults are wrapped in `SPAN`.
+
+  So a check can assert that our tree, lowered by the same rules, equals
+  SQLite's.
+  - **It catches:** wrong grouping and associativity, clauses on the wrong term
+  of a compound, dropped or swapped clauses that don't change results
+  (`DISTINCT`, `NULLS FIRST`, `LIMIT` against `OFFSET`, frames, upsert details),
+  name quoting and aliases, and name positions.
+  - **It cannot catch:** anything lowered away, keyword spellings, operator
+  positions, statements without a tree or refused by the wrappers, or the
+  acceptance question itself.
+
+  **What the evidence favours.** Route 2 as the oracle for kinds that have a
+  tree, plus a small explicit lowering function on our side. It uses the same
+  compiled object as production, with no `SQLITE_DEBUG` and no second copy. It
+  keeps more of the input than route 1, and its gaps show up as errors.
+  - It has to live in the C preamble of `sqlite.go`. cgo drops bit fields and
+  turns unions into byte arrays, so Go can't read these structs directly.
+  - A build-tagged file can switch it on through package-wide `#cgo CFLAGS`,
+  which I tested in a two-file module. Production would then carry none of it.
+  - Route 1 could cover what route 2 refuses, as a debug shell run as a separate
+  process. That is the same mechanism the tests already use to build the shell.
+  - Route 4 only suits a parser that follows `parse.y` rule by rule.
+  - The note leaves the decision to Markus.
+
+  **Stability.** Renamed or removed fields break at compile time. For example,
+  `SrcItem` lost `pSelect` and `zDatabase` between 3.45.0 and 3.50.0, and
+  `TriggerStep` swapped `zTarget` for `pSrc` before 3.53.0. Other changes are
+  silent: a union read under the wrong flag (my first walker misread a virtual
+  table's union this way), fields the walker doesn't print, and lowering changes
+  such as the 3.46.0 `VALUES` change.
+
+  **Where your leads were wrong or imprecise:**
+  - `sqlite3ParserTrace` depends on `NDEBUG` rather than `SQLITE_DEBUG`
+  directly, but in effect it is debug-only. Its derivation is of Lemon's
+  optimized grammar, not of `parse.y` as written.
+  - `PARSE_MODE_DECLARE_VTAB` accepts only `CREATE TABLE`.
+  - Parameters are refused in views by a `nVar` check and in triggers by the
+  fixer.
+  - Rename mode does not just keep trees: it changes two of them (the AND-false
+  fold and the form of `VALUES`).
+  - `create table` trees are partly resolved even in rename mode.
+  - Trigger bodies can't hold `WITH`, `DEFAULT VALUES` or `RETURNING` at all.
+  - The authorizer cannot reach the `Select`.
+  - One wrong lead was my own, not yours: I first thought rename mode skips
+  dequoting of column names, and a test showed it does not.
+
+  **Programs**, in
+  `/private/tmp/claude-502/-Users-maragubot-Developer-s4ql--claude-worktrees-obj
+  ect-store/f1343515-adca-4ca0-9eb0-f507768f8fc7/scratchpad/work/` (not
+  committed):
+  - `walker/walker.c`, its generated `tknames.inc`, and the inputs `demo.txt`,
+  `probe.txt`, `probe2.txt`, with outputs.
+  - `dbgshell/` with the debug and non-debug shells and the `t1.sql`–`t5.sql`
+  scripts.
+  - `cgotag/`, the build-tag test.
+
+  The 3.54.1 source tree is in
+  `/private/tmp/claude-502/-Users-maragubot-Developer-s4ql--claude-worktrees-obj
+  ect-store/f1343515-adca-4ca0-9eb0-f507768f8fc7/scratchpad/src-dl/`, and the
+  older `sqliteInt.h` files are in
+  `/private/tmp/claude-502/-Users-maragubot-Developer-s4ql--claude-worktrees-obj
+  ect-store/f1343515-adca-4ca0-9eb0-f507768f8fc7/scratchpad/old-dl/`.
+
+  **Not verified:**
+  - That a debug build builds the same trees as production for every input.
+  - Whether `treeview.c`'s output format changed between versions.
+  - Route 3 for virtual tables.
+  - The patched copy, which was never built.
+  - That rename mode has no other tree-changing difference: I read all 76 uses
+  of the two macros but did not test them exhaustively.
+  - Whether Go's linker drops unused C from the binary.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Research reading SQLite's parse tree" finished · 26m 9s
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Yes, the tree can be read out of SQLite's memory, and no patch is needed, so
+  the Nix question goes away. The note is on main as
+  docs/research/sqlite-parse-tree.md. Nothing is running now, and usage is at
+  8%.
+
+  The agent got three routes working on 3.54.1. The one it favours, and I agree,
+  is the second:
+
+  - A walker of our own, in the production build. SQLite has a private
+    parse-only mode that ALTER TABLE ... RENAME uses. Called from our binding,
+    it parses a statement and keeps the trees instead of generating code. A
+    select is wrapped as a view, and an insert, update, or delete as a trigger
+    body. A small C function then walks the structs and prints them.
+  - What it covers: select, insert, update, delete, and create table, index,
+    view, and trigger. It keeps quote flags and source positions of names.
+  - What has no tree at all: drop, alter, transactions, pragma, and the rest.
+    SQLite generates code for those straight from the tokens.
+  - What the wrapping refuses, with an error and never silently: parameters, and
+    in trigger bodies WITH, RETURNING, and DEFAULT VALUES.
+
+  The other two routes are SQLite's own tree printer and the Lemon parser's
+  trace. Both need a debug build, which is a second, different copy of SQLite,
+  and the printer loses quote style and positions.
+
+  Two limits to know:
+
+  - It is SQLite's internal form, not a syntax tree. The note lists about 30
+    rewrites the grammar has already made, such as LIMIT a, b stored as LIMIT b 
+    OFFSET a. So the check is: our tree, lowered by the same rules, equals
+    SQLite's. It catches wrong grouping, a clause on the wrong part of a
+    compound, and dropped clauses that don't change results.
+  - The structs are private. A renamed field breaks at compile time when we bump
+    SQLite, but some changes are silent, such as a union read under the wrong
+    flag. The agent's own first walker made that mistake.
+
+  This is the first test approach to decide. It adds test-only C to the binding,
+  which a build tag can keep out of production builds, and a lowering function
+  on our side that mirrors SQLite's rewrites.
+
+  Do you want this tree oracle as one of the parser's tests?
+
+✻ Cooked for 1h 14m 14s · done 11:19 AM
+
+※ recap: We're choosing test approaches for s4ql's own SQL parser before building it; all research is merged. Next: you decide whether to adopt the tree oracle that reads SQLite's parse trees from memory.
+
+❯ Hmm. What do you think, is it worth it? Compared to the other options we      
+  have? I think it would be nice if we had an internal tokenizer and parser     
+  (into a real AST?) that we have total confidence in, with whatever testing    
+  approaches we need.                                                           
+
+⏺ No, I don't think it is worth it now. I'd keep it in reserve and reach total
+  confidence with checks that use SQLite only through its public behaviour.
+
+  And yes to a real syntax tree: one that keeps everything as written, with raw
+  text, quote style, positions, and keyword spellings. That is itself a reason
+  the memory oracle fits badly, because SQLite has no such tree. We would be
+  comparing against its internal form through a function of ours that mirrors
+  about 30 of its rewrites, and that function is a second place for bugs.
+
+  What can go wrong in a parser, and what catches each:
+
+  - It accepts or rejects wrongly, or gives the wrong message.
+    sqlite3_prepare_v2 is an exact oracle for this, over SQLite's own test
+    statements, one-token mutations, and fuzzing. The meyer research ran this at
+    526,495 statements.
+  - It drops something. A property with no oracle catches it: every token of the
+    statement must be owned by some node of the tree. This matters most for the
+    reject pass, which only has to see that an unlisted construct is there.
+  - It groups wrongly. We print our tree back with every operation in
+    parentheses and every clause explicit, and SQLite must treat the reprint as
+    it treats the original: the same values for expressions, the same bytecode
+    from EXPLAIN for statements. Both were run in the research. The first found
+    meyer's NOT fault, and the second found rqlite/sql's swapped LIMIT.
+  - It is wrong in meaning for something we support. The engine runs the
+    statement, and rows and errors are compared with SQLite's.
+
+  What the memory oracle would add is a narrow case: a parser bug and a printer
+  bug that cancel each other, such as limit and offset swapped in both. For a
+  supported feature the engine comparison catches that. For an unsupported one
+  it does no harm, because the statement is rejected either way.
+
+  Its costs are real: test-only C over private structs that can misread silently
+  (the agent's own first walker did), the lowering function to keep in step
+  with every SQLite upgrade, and gaps for parameters, WITH, and RETURNING.
+
+  One caveat on my side: that the reprint check catches every dropped or
+  misplaced clause is my reasoning from two runs, not a measurement. If it
+  leaves a gap we can name, the memory oracle is the tool to close it, and the
+  research note keeps it ready.
+
+  Shall I record it as "not now, in reserve" and go on to the next approach?
+
+✻ Worked for 30s · done 11:29 AM
+
+❯ yes                                                                           
+
+⏺ Recorded as "not now, in reserve"; I'll write it into the todo list with the
+  other decisions when we are through.
+
+  Second approach: accept or reject, with message and offset
+
+  For every statement in a corpus, our parser and sqlite3_prepare_v2 must agree
+  on three things:
+
+  - Whether it parses. A syntax error in SQLite must be one in ours, and the
+    reverse.
+  - The message, exactly. For example near "X": syntax error, unrecognized 
+    token: "X", or incomplete input.
+  - The byte offset of the error. This needs sqlite3_error_offset exposed in the
+    binding, which is a small addition.
+
+  The corpus is statements extracted from SQLite's own TCL tests (47,418 in the
+  rqlite/sql run), its documentation, and its public fuzz corpora. All three are
+  public domain. No expected results are stored: the pinned SQLite gives the
+  answer when the test runs, so an upgrade of SQLite re-checks everything by
+  itself.
+
+  Two known limits, both from the research:
+
+  - Errors raised in the middle of parsing. table t1 already exists comes from a
+    grammar action and can hide a syntax error further on. The test runs
+    against a schema where names resolve, and skips the statements SQLite
+    stopped early (358 of 68,032 in one run, 7,475 of 535,220 in the other).
+  - Two faults at one token. SQLite's last message wins there. The meyer agent's
+    harness tripped on this once.
+
+  This is the base that everything else stands on, and I see no real alternative
+  to it. Do you agree to it, including the exact message and the offset?
+
+✻ Churned for 11s · done 11:39 AM
+
+❯ Yes, sounds good. And feel free to add our own corpus with our own            
+  property-based testing, fuzz testing etc.                                     
+
+⏺ Agreed, and noted: our own corpus on top, with property-based tests, fuzzing
+  against SQLite, and one-token mutations of valid statements. I'll treat the
+  choice of generators as a detail.
+
+  Third approach: nothing is dropped from the tree
+
+  A property that needs no oracle: every token of a statement is owned by
+  exactly one node of the tree, and the nodes' spans, put back together in
+  order, give the token stream again. Whitespace and comments are the only
+  tokens allowed outside a node.
+
+  What it gives us:
+
+  - No construct can be invisible. If the parser read a clause but built nothing
+    for it, a token is left without an owner and the test fails. This is what
+    the reject pass depends on: it can only refuse what it can see.
+  - Names and literals stay as written. A node holds a span of the source, not a
+    cleaned-up copy, so quote style, case, and spelling cannot be lost. The
+    research showed why this matters: SQLite's table "t1" already exists prints
+    the name with its quotes.
+  - It runs on every input the parser accepts, including fuzzed ones, because it
+    needs nothing from SQLite. The tokens themselves are already checked
+    against SQLite.
+
+  What it does not show is that the tokens are owned by the right node. A clause
+  attached to the wrong select of a compound still passes. That is the job of
+  the next approach.
+
+  It also puts one rule on the design of the tree: every node kind must record
+  its span and every keyword it consumed. I think that is a good rule in any
+  case.
+
+  Do you agree to this property, and to that rule for the tree?
+
+✻ Cogitated for 10s · done 11:41 AM
+
+❯ I don't understand it all, but yes, I'll trust you on that one                
+
+⏺ Recorded. In one sentence: the test takes the tree apart again and checks that
+  every word of the original statement comes back, so the parser cannot have
+  silently skipped anything.
+
+  Fourth approach: the tree has the right shape
+
+  This one checks that the parser understood the statement the way SQLite does,
+  not only that it kept all the words.
+
+  How it works: we write the statement out again from our tree, with brackets
+  around every operation so that nothing is left to precedence rules. For a + b 
+  * c our tree gives (a + (b * c)). Then we ask SQLite about both texts:
+
+  - For expressions: SQLite computes both with the same values, and the results
+    must be equal. If our parser had grouped it as ((a + b) * c), the results
+    differ.
+  - For whole statements: SQLite compiles both, and its EXPLAIN output, the
+    program it would run, must be the same. A clause that we attached in the
+    wrong place or left out changes that program.
+
+  Both were tried in the research, on the other parsers. The first found meyer's
+  wrong reading of NOT x NOT NULL in 276,022 random expressions. The second
+  found rqlite/sql swapping limit and offset, in 18,286 statements.
+
+  Its limits:
+
+  - It needs a printer, code that writes a tree out as SQL. A bug in the printer
+    that exactly undoes a bug in the parser would hide both. For anything the
+    engine supports, the comparison of real query results catches that later.
+  - It covers what SQLite can compile. Statements with no program to compare,
+    and the 67 differences in the rqlite/sql run that came from quoting SQLite
+    stores as written, need rules of their own.
+
+  The printer is also useful beyond tests, for error messages and debugging.
+
+  Do you agree to this check?
+
+✻ Worked for 8s · done 11:42 AM
+
+❯ yes                                                                           
+
+  Searched for 1 pattern, ran 1 shell command (ctrl+o to expand)
+⏺ fabrik:builder(Parser corpus and oracle harness)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ That was the last test approach I had. The decisions are recorded in
+  docs/todo.md and pushed, and I've started the first builder.
+
+  What is agreed for the parser:
+
+  1. Own parser for all of SQLite's grammar, into a syntax tree that keeps
+     everything as written, with no dependency on meyer or rqlite/sql.
+  2. Accept or reject, message, and offset against sqlite3_prepare_v2, over
+     SQLite's own tests, docs, and fuzz corpora, plus our own corpus with
+     property-based tests, fuzzing, and mutations.
+  3. Nothing dropped: every token is owned by a node of the tree.
+  4. Right shape: the tree written out with full brackets must mean the same to
+     SQLite as the original.
+  5. In reserve: reading SQLite's tree from its memory.
+
+  I'm building it in two steps:
+
+  - Now running: the corpus and the harness. A builder extracts the corpus from
+    the pinned SQLite source, adds the error offset to the binding, and builds
+    the test harness that compares any parser with SQLite. It proves the harness
+    with stand-in parsers, since ours does not exist yet.
+  - After that: the parser itself, with a fresh builder that drives it to zero
+    disagreements in that harness.
+
+  Two things I decided as details: once the parser exists, I'll have its code
+  mutated to see that the tests notice, as we did for the storage core. And the
+  reject pass is a separate piece after the parser, with its own tests.
+
+  The other open decisions (what an error promises, how "not supported" is
+  marked, our own API) wait until the parser is built, as you said.
+
+✻ Crunched for 1m 36s · done 11:44 AM
+
+❯ /context 
+  ⎿  Context Usage
+     ⛀ ⛁ ⛁ ⛁ ⛁ ⛀ ⛀ ⛀ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   Fable 5.2
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   claude-fable-5-2
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   254.2k/1m tokens (25%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ 
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System prompt: 2.9k tokens (0.3%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System tools: 19.8k tokens (2.0%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP server instructions: 2.1k tokens (0.2%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Custom agents: 403 tokens (0.0%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Memory files: 3.1k tokens (0.3%)
+                                               ⛁ Skills: 10k tokens (1.0%)
+                                               ⛁ Messages: 215.9k tokens (21.6%)
+                                               ⛶ Free space: 712.8k (71.3%)
+                                               ⛝ Autocompact buffer: 33k tokens (3.3%)
+
+     Auto-compact window: 1m tokens
+
+     MCP tools · /mcp (loaded on-demand)
+     └ 46 tools · 0 tokens
+
+     Custom agents · .claude/agents/
+     └ 7 agents · 403 tokens
+
+     Skills · /skills
+     └ 98 skills · 10k tokens
+
+     /context all to expand
+
+❯ Stop the builder, I'd like to export and compact first.                       
+
+⏺ Stop Task
+  ⎿  Parser corpus and oracle harness · stopped
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Parser corpus and oracle harness" was stopped by Claude
+
+⏺ The builder is stopped. It had committed nothing, and its worktree and branch
+  are already gone, so main is clean at f4626a7 with no agents, worktrees, or
+  branches left.
+
+  Go ahead with the export and the compaction. When you send the export path,
+  I'll move it into docs/conversations/ and commit it. After compacting, I
+  restart the corpus-and-harness builder from the same brief.
+
+✻ Baked for 6m 57s · done 11:49 AM
