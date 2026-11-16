@@ -356,9 +356,9 @@ func (c *Conn) DenyProcessPragmas() error {
 // arguments, and glob with three, which SQLite calls for X REGEXP Y, X MATCH Y, and X GLOB Y ESCAPE
 // Z, with the operands in the order Y, X, Z. SQLite has no regexp of its own, its match is a
 // placeholder for virtual tables that fails when it runs, and its glob takes no ESCAPE, so without
-// the stubs a statement with these operators does not prepare or does not run. They are for tests of how SQLite compiles
-// and evaluates the operators, and only a test's connection may have them: they give the operators
-// a meaning that SQLite does not give them.
+// the stubs a statement with these operators does not prepare or does not run. They are for tests
+// of how SQLite compiles and evaluates the operators, and only a test's connection may have them:
+// they give the operators a meaning that SQLite does not give them.
 //
 // Each stub is NULL if an argument is NULL. Otherwise it is -1, 0, or 1 as the text of its first
 // argument sorts before, the same as, or after the text of its second, byte by byte and a prefix

@@ -107,7 +107,13 @@ func summary(name string, gs []shapetest.Generated, results []shapetest.Result) 
 			others = append(others, key)
 		}
 	}
-	fmt.Fprintf(&b, "  only by the same error: %d with a row value, and %d others: %s\n", rows, len(others), strings.Join(others, ", "))
+	if len(neither) > 0 {
+		listed := ""
+		if len(others) <= 400 {
+			listed = ": " + strings.Join(others, ", ")
+		}
+		fmt.Fprintf(&b, "  only by the same error: %d with a row value, and %d others%s\n", rows, len(others), listed)
+	}
 	return b.String()
 }
 

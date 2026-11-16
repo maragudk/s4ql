@@ -6,6 +6,8 @@ The parser already agrees with SQLite on whether a text parses, through [`intern
 
 The check writes the tree out again as SQL, with every operation in parentheses and every clause explicit. SQLite must treat that text as it treats the original: the same `EXPLAIN` output for a statement, and the same values for an expression. This is the third of the four checks of the parser that [docs/todo.md](../../../docs/todo.md) lists.
 
+Some faults print the same tokens in the same order, such as a wrong boundary between a column's type and its constraints. No comparison of two texts can see them. For CREATE TABLE, ALTER TABLE ... ADD, CREATE INDEX, and CREATE VIEW, the check therefore makes a second comparison, without the printed text. It derives from the tree [what the statement declares](#what-the-tree-declares), and SQLite must record the same when it runs the original text.
+
 The check has found no fault in the parser's tree: not on the corpus, not on the generated pairs and triples of operators, not on the statements written by hand, and not under fuzzing.
 
 ## Checking statements
@@ -49,8 +51,9 @@ A `Result` has these fields:
 - `SQL` is the text checked, and `Printed` is its tree as `Print` writes it.
 - `Kind` is the kind of statement as `KindOf` names it, such as `select`, `create table`, or `alter table add column`.
 - `Way` says how SQLite compared the statement, and `Reason` holds the error or the reason for the last two ways.
+- `Declared` is true if [what the tree declares](#what-the-tree-declares) was compared with what SQLite made of the text.
 - `Exprs` holds an `ExprResult` for each expression of the statement.
-- `Fault` says what differed, or is `""` if the check passed.
+- `Fault` says what differed, or is `""` if the check passed. A difference in what the tree declares starts with `the tree declares what SQLite does not make of the text:`.
 
 The ways:
 
@@ -79,11 +82,12 @@ A `Report` counts the results:
 - `Kinds` counts the statements by kind and way.
 - `ByValues` counts, by kind, the statements with at least one expression compared by values.
 - `Uncompared` counts, by kind, the statements that SQLite compared in no way but by an error: not by bytecode or probes, and in none of their expressions.
+- `Declared` counts, by kind, the statements for which what the tree declares was compared.
 - `Reasons` counts the errors of `SameError` and the reasons of `Skipped`.
 - `Exprs` counts the expressions, and `Forms` counts them by form.
 - `Faults` holds the results with a fault.
 
-`Compared()` is the number of statements compared by bytecode or probes, `Checked()` is the number checked, and `String()` is the report as text.
+`Compared()` is the number of statements compared by bytecode or probes, `Checked()` is the number checked, and `String()` is the report as text. The table by kind in that text has the column `declared` for the count of `Declared`.
 
 ### Many texts in parallel
 
@@ -158,8 +162,16 @@ Where parentheses cannot be added, the printer adds none, and the check sees les
 - **FROM.** A table, a join, or a SELECT in parentheses is a different source (`NestedFrom`, `SubquerySource`), so parentheses cannot mark the grouping of joins. Joins group left to right, and the text shows that only by their order.
 - **Compound SELECT.** SQLite allows no parentheses around the parts. The operators group left to right, and an ORDER BY or LIMIT at the end applies to the whole compound. The tree holds it on the last part either way.
 - **IN and row values.** `x IN (SELECT ...)` is not `x IN ((SELECT ...))`, which is a list with a scalar subquery, and a row value needs its own parentheses.
-- **Text that SQLite copies.** SQLite takes four things from the text of the statement: the names of result columns without an alias, such as `count(*)`, the text of a CHECK, which goes into its Halt, the text of a DEFAULT, which `pragma table_info` shows, and the declared type. The printer changes that text, so the comparison masks it, leaves it out, or compares it without its spaces.
-- **Boundaries between keywords.** A fault at the boundary between a column's type and its constraints, or between clauses that are only keywords in a row, prints the same tokens in the same order. No comparison of texts can see it, so pinned tests in the parser must cover it.
+- **Text that SQLite copies.** SQLite takes four things from the text of the statement: the names of result columns without an alias, such as `count(*)`, the text of a CHECK, which goes into its Halt, the text of a DEFAULT, which `pragma table_info` shows, and the declared type. The printer changes that text, so the comparison of the two texts masks it, leaves it out, or compares it without its spaces. The comparison of [what the tree declares](#what-the-tree-declares) uses the original text only. It compares the type, the default, and the text of a CHECK without a name exactly.
+- **Boundaries between keywords.** A fault at the boundary between a column's type and its constraints prints the same tokens in the same order. No comparison of texts can see it. The comparison of [what the tree declares](#what-the-tree-declares) sees it, because it does not use the printed text. Five things stay out of its sight:
+  - `GENERATED ALWAYS` at the end of a type against `GENERATED ALWAYS` before AS. The two are the same for SQLite, by design.
+  - The names of constraints other than CHECK. SQLite does not record them. ALTER TABLE ... DROP CONSTRAINT finds a name in the text of the statement, not in a tree.
+  - ON CONFLICT. No PRAGMA shows it. It can only follow its constraint, so a tree that holds it elsewhere prints another order of tokens. The comparison of the two texts sees that in the programs of the probes.
+  - MATCH of a foreign key, which SQLite drops.
+  - Whether a foreign key is deferred, in a table that refers to itself.
+
+  Elsewhere, clauses that are only keywords in a row are fields of one node each, and the printer writes them by their role: join operators, frames, `IS NOT DISTINCT FROM`, `INSERT OR`, and the time of a trigger. CREATE INDEX and CREATE VIEW have no ambiguity that keeps the order of the tokens. The COLLATE of an index column is an expression, which the printer wraps, and the columns of a view are names between commas. What they declare is compared anyway, because it costs little.
+- **REGEXP, MATCH, and GLOB with ESCAPE.** SQLite has no function of its own that runs for them, so the check compares them through [stubs](#expressions-on-their-own). The values show the grouping and the order of the operands, not what a real function gives.
 - **The name WITH.** After a parenthesis SQLite reads WITH as the keyword that starts a SELECT, so an operation whose first token is the name WITH is not wrapped: `select with % 2 + 1` prints as it is, and its grouping is shown only by precedence. The fuzzer found it with `SELECT WITH%0`.
 - **NOT before an operator.** SQLite lowers `x NOT BETWEEN a AND b` and `NOT (x BETWEEN a AND b)` to the same tree, and does the same for NOT LIKE, NOT GLOB, NOT REGEXP, NOT MATCH, and NOT IN.
 
@@ -173,6 +185,8 @@ Where parentheses cannot be added, the printer adds none, and the check sees les
 4. SQLite treats both texts the same, as the sections below describe.
 
 The third requirement has one exception. An error of SQLite's grammar actions, such as `IN(...) element has 3 terms - expected 2` or `variable number must be between ?1 and ?32766`, comes after the parse of the original. In the printed text SQLite can raise it at an added `)` and stop there. The check accepts that if the message is that of the original.
+
+For a statement that declares a table, an index, or the columns of a view, `Check` requires a fifth thing, which does not use the printed text: the tree declares what SQLite made of the original text. See [What the tree declares](#what-the-tree-declares). `Check` reports a difference between the two texts before a difference there.
 
 A fault counts only for a statement that SQLite parses. `Check` asks the oracle about the original text only when it has found a fault, because the verdict costs as much as the rest of the check.
 
@@ -230,6 +244,76 @@ A statement that changes the schema is executed on two connections with the same
 - **CREATE TABLE AS.** The program of the SELECT, and the probes of the table without the names of its columns, which come from the text.
 - **CREATE VIEW.** The program of `select * from v`.
 - **CREATE TRIGGER.** The program of a statement that fires the trigger. `EXPLAIN` shows the trigger's subprogram as part of it.
+
+### What the tree declares
+
+Some faults print the same tokens in the same order. In `a int primary key`, a tree that takes `primary key` for words of the type prints the text of the right tree. So does a tree that takes the name after `DEFAULT` for a column reference. SQLite sees no difference between the original and the printed text, because there is none.
+
+For these statements the check therefore makes a second comparison, without the printed text:
+
+- CREATE TABLE, but not CREATE TABLE ... AS
+- ALTER TABLE ... ADD COLUMN and ADD CHECK
+- CREATE INDEX
+- CREATE VIEW with a list of columns
+
+The check derives from the tree what SQLite records of the statement. It compares that with what SQLite says about the schema after it ran the original text. The code is in `declared.go`. The derivation is a model of SQLite's `build.c`: it applies the columns and constraints of the tree in their order, as the actions of `parse.y` do. It is a model for tests, not a part of the engine.
+
+The probes [above](#statements-that-change-the-schema) leave out the text of a default and compare a type without its spaces, because the printer changes both. This comparison compares both exactly.
+
+#### What is compared
+
+For CREATE TABLE:
+
+| What the tree declares | Where SQLite says it |
+| --- | --- |
+| Each column: its name, its type, NOT NULL, the text of its default, its position in the primary key, and whether it is hidden (2 for a virtual generated column, 3 for a stored one) | `pragma table_xinfo` |
+| The collation of each column | `pragma index_xinfo` of an index `s4ql_collations` on every column, which the check makes and drops. No PRAGMA gives the collation of a column. |
+| WITHOUT ROWID, STRICT, and the number of columns | `pragma table_list` |
+| AUTOINCREMENT | `sqlite_schema` has the table `sqlite_sequence`. SQLite creates it for the first AUTOINCREMENT table, and no guessed schema has it. |
+| Each foreign key: its parent table, its columns, the columns it refers to or NULL, ON UPDATE, ON DELETE, and MATCH, the newest first | `pragma foreign_key_list` |
+| Whether each foreign key is deferred | The program of `insert into t default values`. For each foreign key, in the order of the PRAGMA, it holds an `FkCounter` whose P1 says whether the key is deferred, or a `Halt` with P1 787 (`SQLITE_CONSTRAINT_FOREIGNKEY`) for an immediate one (`fkLookupParent`). No PRAGMA gives it. |
+| Each index of a UNIQUE or PRIMARY KEY: unique, its origin, partial, and its key columns with their order and collation | `pragma index_list`, and `pragma index_xinfo` of each index |
+| The names of the CHECKs, in order | The same program. For each CHECK it holds a `Halt` with P1 275 (`SQLITE_CONSTRAINT_CHECK`) and the name in P4. |
+
+Four details:
+
+- The text of a default is compared exactly. No default is not the same as the default `NULL`.
+- The indexes are compared as a sorted set. Their names and their order in the list follow from the order of the tokens, not from the shape of the tree.
+- Deferral is not compared for a table that refers to itself, or if the number of these instructions is not the number of foreign keys. With REPLACE, a table that refers to itself also counts the rows that refer to a row it deletes, so its `FkCounter` instructions do not tell its foreign keys apart.
+- If SQLite cannot prepare the INSERT, the CHECKs and the deferral are not compared.
+
+For the other statements:
+
+- **ALTER TABLE ... ADD COLUMN.** The new column, the foreign keys, and the CHECKs. The table is one of the guessed schema, which has no foreign keys and no CHECKs of its own.
+- **ALTER TABLE ... ADD CHECK.** The CHECKs.
+- **CREATE INDEX.** The key of the new index, from `pragma index_xinfo`, and unique, the origin `c`, and partial, from `pragma index_list`. The names of the columns resolve against the columns of the table, and their collations come from the index on every column.
+- **CREATE VIEW.** The names of the columns, from `pragma table_xinfo` of the view. They are not compared if two names are the same but for case. `sqlite3ColumnsFromExprList` makes such names unique with `:N`, and with random numbers after 3 collisions.
+
+#### The rules of SQLite
+
+The model follows these rules. Each names the function of SQLite that it follows. The functions are in `build.c` of the amalgamation, unless the rule names another file.
+
+- **`sqlite3AddColumn`.** The type is the text from the first token of the type to the last (`typetoken` in `parse.y`). A type of 16 bytes or more that ends in ALWAYS loses that word, and then a GENERATED before it. For a type of 3 bytes or more, `sqlite3DequoteToken` takes the quotes off if no quote is inside, and drops the last byte whatever it is: `[int] x` becomes `int] `. A standard type (ANY, BLOB, INT, INTEGER, REAL, or TEXT, in any case) is shown in upper case. For any other type, `sqlite3Dequote` keeps the first quoted part: `'abc' def` becomes `abc`, and `"in""t"` becomes `in"t`. The name of the column is dequoted. A new column ends a CONSTRAINT name.
+- **`sqlite3AddDefaultValue`**, with the actions of `ccons` for DEFAULT in `parse.y`, and `sqlite3DbSpanDup`. The text of the default is the literal, the sign and the literal, the name, or the text between the parentheses, without the spaces around it. The last DEFAULT counts. A generated column shows no default.
+- **`sqlite3AddNotNull`.** NOT NULL makes the column not null. NULL means nothing.
+- **`sqlite3AddPrimaryKey`.** A single column of the type INTEGER, exactly, becomes the rowid, unless a column constraint says DESC. A table constraint passes the order 0, so `primary key(a desc)` on an INTEGER column is the rowid too. Any other key is a unique index. A string under COLLATE is a name (`sqlite3StringToId`). AUTOINCREMENT is allowed only on the rowid.
+- **`sqlite3CreateIndex`.** A UNIQUE or PRIMARY KEY with the same columns and collations as one before it makes no index, whatever its order. If it is the primary key, the earlier index becomes the primary key. The collation of a key column is that of the outer COLLATE, else that of the column, else BINARY. An expression is an error.
+- **`sqlite3AddCollateType`.** The last COLLATE counts. It also sets the collation of the indexes made on the column so far.
+- **`sqlite3AddCheckConstraint`.** A CHECK is named by the CONSTRAINT name before it, else by its text between the parentheses, trimmed. Either is dequoted (`sqlite3ExprListSetName`). A CONSTRAINT name is not used up: it names every CHECK after it, up to the next column (`sqlite3AddColumn`) or a comma between table constraints (`tconscomma` in `parse.y`). The comma before the first table constraint is not `tconscomma`, so a CONSTRAINT name at the end of the last column names the first table CHECK.
+- **`sqlite3AddGenerated`.** The column is VIRTUAL unless it says STORED. A DEFAULT before or after it is an error.
+- **`sqlite3CreateForeignKey`**, with `refargs` in `parse.y`. The last ON DELETE and the last ON UPDATE count. MATCH and ON INSERT are read and dropped, so the PRAGMA always says `NONE`. New foreign keys come first.
+- **`sqlite3DeferForeignKey`.** DEFERRABLE INITIALLY DEFERRED applies to the foreign key made last, of whichever column. Anything else makes that foreign key immediate.
+- **`sqlite3EndTable`.** STRICT adds NOT NULL to the columns of the primary key, but not to the rowid. WITHOUT ROWID (`convertToWithoutRowidTable`) adds NOT NULL to the columns of the primary key, turns the rowid back into a primary-key index, and drops repeated columns from the key: those with the same column and collation. A table option is matched by its raw text, without dequoting: `rowid` in 5 bytes after WITHOUT, and `strict` in 6 bytes.
+- **`pragma table_xinfo`**, in `pragma.c`. The primary-key position of a column is its position in the key of the primary-key index, or 1 for the rowid. The PRAGMA looks only at the first nCol entries of the key, where nCol is the number of columns of the table. A column that comes later in a key with repeated columns gets nCol+1.
+
+#### When it does not run
+
+The comparison runs on the connection on which the original text ran, and compares with the tree, never with the printed text. It therefore also runs for a statement that is [skipped](#what-is-skipped) because a declared type holds a comment.
+
+It does not run in two cases:
+
+- The original text fails in SQLite. There is then nothing to observe.
+- The guessed schema already holds a table of the name that the CREATE TABLE creates. With IF NOT EXISTS, SQLite then leaves the schema as it is, and what the statement declares is not what SQLite has.
 
 ### Expressions on their own
 

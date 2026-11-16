@@ -431,16 +431,22 @@ func guess(stmt *ast.Statement, src string) *schema {
 	return s
 }
 
-// holdsTarget reports whether the schema already holds a table or view of the name that a CREATE
-// TABLE creates. With IF NOT EXISTS SQLite then leaves the schema as it is, and what the statement
-// declares is not what SQLite has.
+// holdsTarget reports whether the schema already holds a table or view of the name, in the same
+// database, that a CREATE TABLE or CREATE VIEW creates. With IF NOT EXISTS SQLite then leaves the
+// schema as it is, and what the statement declares is not what SQLite has.
 func (s *schema) holdsTarget(cmd ast.Cmd) bool {
-	ct, ok := cmd.(*ast.CreateTable)
-	if !ok {
+	var db, name string
+	switch c := cmd.(type) {
+	case *ast.CreateTable:
+		db, name = schemaOf(c.Temp, c.Name), dequote(c.Name.Name.Text)
+	case *ast.CreateView:
+		db, name = schemaOf(c.Temp, c.Name), dequote(c.Name.Name.Text)
+	default:
 		return false
 	}
-	name := dequote(ct.Name.Name.Text)
-	return slices.ContainsFunc(s.tables, func(t *table) bool { return foldEqual(t.name, name) })
+	return slices.ContainsFunc(s.tables, func(t *table) bool {
+		return foldEqual(t.name, name) && (foldEqual(t.db, db) || (t.db == "" && foldEqual(db, "main")))
+	})
 }
 
 // parent table of a foreign key with n columns, with a primary key or a unique constraint that

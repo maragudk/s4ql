@@ -88,6 +88,8 @@ var Structure = []string{
 	"create index if not exists i on t1(a) where a not between 1 and 2",
 	// Views.
 	"create view v(x, y) as select a, b * 2 from t1 where a > 0 order by 2 limit 1",
+	// A view that SQLite does not make, because the schema has a table of its name.
+	"create view if not exists v(x) as select 1 from v",
 	// The text of an unnamed CHECK as SQLite takes it, dequoted and with comments; primary keys and
 	// generated columns in the probes; INDEXED BY on a table that is not the first.
 	"create table t(a check(\"a\" > 0), b check (b > 0 /* c */))",
@@ -166,4 +168,9 @@ var Declared = []string{
 	"create unique index i on t1(a collate nocase desc, b + 1 asc, lower(c), 'b') where a > 0",
 	"create index i on t1((a) collate rtrim, \"b\" desc, c collate binary collate nocase)",
 	"create view v(x, \"y\", [z]) as select 1, 2, 3",
+	// Names that the check uses itself, and a view of the name of a table it reads from another
+	// schema.
+	"create table s4ql_collations(a unique, b)",
+	"create index s4ql_collations on t1(a)",
+	"create temp view v(x) as select 1 from main.v",
 }

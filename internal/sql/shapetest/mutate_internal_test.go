@@ -852,7 +852,8 @@ func mutate(t *testing.T, outcomes map[string]*outcome, sqls []string, perKind i
 				if o.byWhat[what] == nil {
 					o.byWhat[what] = &[3]int{}
 				}
-				compared := r.Way == Bytecode || r.Way == Probes || r.Declared
+				// The comparison of declarations compares only what damage to declarations changes.
+				compared := r.Way == Bytecode || r.Way == Probes || (r.Declared && slices.Contains(declarationKinds, m.kind))
 				if !compared {
 					// The statement was compared only by its expressions: the mutation was compared
 					// if every expression that it changed was.

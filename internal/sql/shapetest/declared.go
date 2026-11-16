@@ -477,9 +477,16 @@ func (t *declTable) createIndex(terms []*ast.OrderingTerm, origin string, desc b
 			idx.cols = append(idx.cols, ic)
 		}
 	}
+	t.addIndex(idx)
+}
+
+// addIndex unless the table has an index with the same columns and collations in the same order,
+// which is the same index for sqlite3CreateIndex whatever the order of sorting. A primary key then
+// makes that index the primary key.
+func (t *declTable) addIndex(idx *declIndex) {
 	for _, old := range t.indexes {
-		if sameKey(old.cols, idx.cols) {
-			if origin == "pk" {
+		if slices.EqualFunc(old.cols, idx.cols, sameColumn) {
+			if idx.origin == "pk" {
 				old.origin = "pk"
 			}
 			return
@@ -488,10 +495,9 @@ func (t *declTable) createIndex(terms []*ast.OrderingTerm, origin string, desc b
 	t.indexes = append(t.indexes, idx)
 }
 
-// sameKey reports whether two indexes have the same columns with the same collations, in the same
-// order, which makes them the same index for sqlite3CreateIndex whatever their order of sorting.
-func sameKey(a, b []declIndexColumn) bool {
-	return slices.EqualFunc(a, b, func(x, y declIndexColumn) bool { return x.cid == y.cid && foldEqual(x.coll, y.coll) })
+// sameColumn of an index: the same column with the same collation (isDupColumn).
+func sameColumn(x, y declIndexColumn) bool {
+	return x.cid == y.cid && foldEqual(x.coll, y.coll)
 }
 
 // createForeignKey is sqlite3CreateForeignKey, with the actions of refargs in parse.y: the last ON
@@ -578,22 +584,12 @@ func (t *declTable) endTable(options []*ast.TableOption) {
 			}
 			ipk := t.iPKey
 			t.iPKey = -1
-			idx := &declIndex{origin: "pk", cols: []declIndexColumn{{cid: ipk, desc: t.pkDesc, coll: coll}}}
-			dup := false
-			for _, old := range t.indexes {
-				if sameKey(old.cols, idx.cols) {
-					old.origin, dup = "pk", true
-					break
-				}
-			}
-			if !dup {
-				t.indexes = append(t.indexes, idx)
-			}
+			t.addIndex(&declIndex{origin: "pk", cols: []declIndexColumn{{cid: ipk, desc: t.pkDesc, coll: coll}}})
 		} else if pk := t.primaryKey(); pk != nil {
 			// The key loses its repeated columns, those with the same column and collation.
 			var cols []declIndexColumn
 			for _, c := range pk.cols {
-				if !slices.ContainsFunc(cols, func(d declIndexColumn) bool { return d.cid == c.cid && foldEqual(d.coll, c.coll) }) {
+				if !slices.ContainsFunc(cols, func(d declIndexColumn) bool { return sameColumn(c, d) }) {
 					cols = append(cols, c)
 				}
 			}
@@ -783,40 +779,97 @@ func rows(conn *sqlite.Conn, sql string) ([][]string, error) {
 	return rs, err
 }
 
-// observe the table q as SQLite made it: its columns and their collations, its foreign keys, its
-// indexes, its options, and from the program of an INSERT its checks and which foreign keys are
-// deferred.
-func observeTable(conn *sqlite.Conn, q ast.QualifiedName) (*observation, error) {
-	name := dequote(q.Name.Text)
-	o := &observation{}
+// schemaOf the object that a statement creates: temp for TEMP, the schema that qualifies its name,
+// or else main.
+func schemaOf(temp ast.Token, q ast.QualifiedName) string {
+	switch {
+	case temp.Present():
+		return "temp"
+	case q.Schema.Present():
+		return dequote(q.Schema.Text)
+	}
+	return "main"
+}
+
+// locate the table or view of the name in the schema db, or for db "" as SQLite finds an
+// unqualified name: in temp, then main, then the attached databases. It gives the row of pragma
+// table_list: schema, name, type, ncol, wr, strict.
+func locate(conn *sqlite.Conn, db, name string) ([]string, error) {
+	q := ast.QualifiedName{Name: ast.Token{Kind: token.ID, Text: quote(name)}}
+	if db != "" {
+		q.Schema = ast.Token{Kind: token.ID, Text: quote(db)}
+	}
 	list, err := rows(conn, pragma(q, "table_list", name))
 	if err != nil {
 		return nil, err
 	}
-	if len(list) != 1 || list[0][2] != "table" {
-		return nil, fmt.Errorf("pragma table_list gives %v", list)
+	for _, s := range []string{"temp", "main", ""} {
+		for _, r := range list {
+			if s == "" || foldEqual(r[0], s) {
+				return r, nil
+			}
+		}
 	}
-	o.schema = list[0][0]
-	q = ast.QualifiedName{Schema: ast.Token{Kind: token.ID, Text: quote(o.schema)}, Name: q.Name}
-	if o.xinfo, err = rows(conn, pragma(q, "table_xinfo", name)); err != nil {
-		return nil, err
+	return nil, fmt.Errorf("pragma table_list does not have %s", name)
+}
+
+// observeColumns of the table name in the schema db: the rows of pragma table_xinfo, and the
+// collation of each column. No PRAGMA gives the collation of a column, but an index on every column
+// does, in pragma index_xinfo. The index gets a name that the schema does not have yet, and is
+// dropped again.
+func observeColumns(conn *sqlite.Conn, db, name string) (xinfo [][]string, colls []string, err error) {
+	q := ast.QualifiedName{Schema: ast.Token{Kind: token.ID, Text: quote(db)}, Name: ast.Token{Kind: token.ID, Text: quote(name)}}
+	if xinfo, err = rows(conn, pragma(q, "table_xinfo", name)); err != nil {
+		return nil, nil, err
 	}
-	seq, err := rows(conn, "select count(*) from "+quote(o.schema)+".sqlite_schema where type = 'table' and name = 'sqlite_sequence'")
+	probe := "s4ql_collations"
+	for i := 1; ; i++ {
+		taken, err := rows(conn, "select count(*) from "+quote(db)+".sqlite_schema where name = "+quoteString(probe)+" collate nocase")
+		if err != nil {
+			return nil, nil, err
+		}
+		if taken[0][0] == "0" {
+			break
+		}
+		probe = fmt.Sprint("s4ql_collations_", i)
+	}
+	var cols []string
+	for _, r := range xinfo {
+		cols = append(cols, quote(r[1]))
+	}
+	if err := conn.Exec("create index " + quote(db) + "." + quote(probe) + " on " + quote(name) + " (" + strings.Join(cols, ", ") + ")"); err != nil {
+		return nil, nil, err
+	}
+	xs, err := rows(conn, "pragma "+quote(db)+".index_xinfo("+quoteString(probe)+")")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	o.d.table = tableLine(list[0][4] == "1", list[0][5] == "1", atoi(list[0][3]), seq[0][0] != "0")
-	fks, err := rows(conn, pragma(q, "foreign_key_list", name))
-	if err != nil {
-		return nil, err
+	for _, x := range xs {
+		if x[5] == "1" {
+			colls = append(colls, x[4])
+		}
 	}
-	for _, r := range fks {
-		o.d.fks = append(o.d.fks, fkLine(atoi(r[0]), atoi(r[1]), r[2], quoted(r[3]), quoted(r[4]), r[5], r[6], r[7]))
+	if len(colls) != len(xinfo) {
+		return nil, nil, fmt.Errorf("the index on every column has %d columns, and the table %d", len(colls), len(xinfo))
 	}
+	if err := conn.Exec("drop index " + quote(db) + "." + quote(probe)); err != nil {
+		return nil, nil, err
+	}
+	return xinfo, colls, nil
+}
+
+// quoteString as an SQL string literal.
+func quoteString(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+// indexes of the table q, from pragma index_list and the key columns of pragma index_xinfo, sorted.
+func indexes(conn *sqlite.Conn, q ast.QualifiedName, name string) ([]string, error) {
 	idxs, err := rows(conn, pragma(q, "index_list", name))
 	if err != nil {
 		return nil, err
 	}
+	var lines []string
 	for _, r := range idxs {
 		xs, err := rows(conn, pragma(q, "index_xinfo", r[1]))
 		if err != nil {
@@ -828,9 +881,46 @@ func observeTable(conn *sqlite.Conn, q ast.QualifiedName) (*observation, error) 
 				cols = append(cols, indexColumnLine(atoi(x[1]), x[2], x[3] == "1", x[4]))
 			}
 		}
-		o.d.indexes = append(o.d.indexes, indexLine(r[3], r[2] == "1", r[4] == "1", cols))
+		lines = append(lines, indexLine(r[3], r[2] == "1", r[4] == "1", cols))
 	}
-	slices.Sort(o.d.indexes)
+	slices.Sort(lines)
+	return lines, nil
+}
+
+// observeTable of the name in the schema db, or as SQLite finds it for db "", as SQLite made it: its
+// columns and their collations, its foreign keys, its indexes, its options, and from the program of
+// an INSERT its checks and which foreign keys are deferred.
+func observeTable(conn *sqlite.Conn, db, name string) (*observation, error) {
+	o := &observation{}
+	list, err := locate(conn, db, name)
+	if err != nil {
+		return nil, err
+	}
+	if list[2] != "table" {
+		return nil, fmt.Errorf("%s is a %s", name, list[2])
+	}
+	o.schema = list[0]
+	q := ast.QualifiedName{Schema: ast.Token{Kind: token.ID, Text: quote(o.schema)}, Name: ast.Token{Kind: token.ID, Text: quote(name)}}
+	if o.xinfo, o.colls, err = observeColumns(conn, o.schema, name); err != nil {
+		return nil, err
+	}
+	// SQLite makes sqlite_sequence with the first AUTOINCREMENT table of a schema, and the schema of
+	// the check has none, as schema.statements writes its tables without AUTOINCREMENT.
+	seq, err := rows(conn, "select count(*) from "+quote(o.schema)+".sqlite_schema where type = 'table' and name = 'sqlite_sequence'")
+	if err != nil {
+		return nil, err
+	}
+	o.d.table = tableLine(list[4] == "1", list[5] == "1", atoi(list[3]), seq[0][0] != "0")
+	fks, err := rows(conn, pragma(q, "foreign_key_list", name))
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range fks {
+		o.d.fks = append(o.d.fks, fkLine(atoi(r[0]), atoi(r[1]), r[2], quoted(r[3]), quoted(r[4]), r[5], r[6], r[7]))
+	}
+	if o.d.indexes, err = indexes(conn, q, name); err != nil {
+		return nil, err
+	}
 	// The program of an INSERT holds a Halt for every CHECK, in order, with its name in P4; and for
 	// every foreign key, newest first as pragma foreign_key_list numbers them, an FkCounter whose P1
 	// says whether it is deferred, or a Halt for an immediate one (fkLookupParent).
@@ -856,29 +946,6 @@ func observeTable(conn *sqlite.Conn, q ast.QualifiedName) (*observation, error) 
 			}
 		}
 		o.d.deferralSeen = !self && len(o.d.deferred) == ids
-	}
-	// No PRAGMA gives the collation of a column, but an index on every column does.
-	var cols []string
-	for _, r := range o.xinfo {
-		cols = append(cols, quote(r[1]))
-	}
-	if err := conn.Exec("create index " + quote(o.schema) + ".s4ql_collations on " + quote(name) + " (" + strings.Join(cols, ", ") + ")"); err != nil {
-		return nil, err
-	}
-	xs, err := rows(conn, "pragma "+quote(o.schema)+".index_xinfo('s4ql_collations')")
-	if err != nil {
-		return nil, err
-	}
-	for _, x := range xs {
-		if x[5] == "1" {
-			o.colls = append(o.colls, x[4])
-		}
-	}
-	if len(o.colls) != len(o.xinfo) {
-		return nil, fmt.Errorf("the index on every column has %d columns, and the table %d", len(o.colls), len(o.xinfo))
-	}
-	if err := conn.Exec("drop index " + quote(o.schema) + ".s4ql_collations"); err != nil {
-		return nil, err
 	}
 	for i, r := range o.xinfo {
 		o.d.columns = append(o.d.columns, columnLine(atoi(r[0]), r[1], r[2], r[3] == "1", quoted(r[4]), atoi(r[5]), atoi(r[6]), o.colls[i]))
@@ -936,7 +1003,7 @@ func declared(conn *sqlite.Conn, src string, shown *ast.Statement) (bool, string
 			return false, ""
 		}
 		t, err := declare(src, cmd)
-		o, oerr := observeTable(conn, cmd.Name)
+		o, oerr := observeTable(conn, schemaOf(cmd.Temp, cmd.Name), dequote(cmd.Name.Name.Text))
 		if oerr != nil {
 			return true, "SQLite made a table that cannot be observed: " + oerr.Error()
 		}
@@ -963,7 +1030,7 @@ func declaredAlter(conn *sqlite.Conn, src string, cmd *ast.AlterTable) (bool, st
 	default:
 		return false, ""
 	}
-	o, err := observeTable(conn, cmd.Name)
+	o, err := observeTable(conn, dequote(cmd.Name.Schema.Text), dequote(cmd.Name.Name.Text))
 	if err != nil {
 		return true, "SQLite altered a table that cannot be observed: " + err.Error()
 	}
@@ -1003,18 +1070,40 @@ func declaredAlter(conn *sqlite.Conn, src string, cmd *ast.AlterTable) (bool, st
 // declaredIndex compares the key of the index that CREATE INDEX makes with pragma index_xinfo,
 // and whether it is unique and partial with pragma index_list.
 func declaredIndex(conn *sqlite.Conn, cmd *ast.CreateIndex) (bool, string) {
-	q := ast.QualifiedName{Schema: cmd.Name.Schema, Dot: cmd.Name.Dot, Name: cmd.Table}
-	o, err := observeTable(conn, q)
+	table := dequote(cmd.Table.Text)
+	list, err := locate(conn, dequote(cmd.Name.Schema.Text), table)
 	if err != nil {
 		return true, "SQLite indexed a table that cannot be observed: " + err.Error()
 	}
+	db := list[0]
+	xinfo, colls, err := observeColumns(conn, db, table)
+	if err != nil {
+		return true, "SQLite indexed a table that cannot be observed: " + err.Error()
+	}
+	q := ast.QualifiedName{Schema: ast.Token{Kind: token.ID, Text: quote(db)}, Name: ast.Token{Kind: token.ID, Text: quote(table)}}
+	idxs, err := rows(conn, pragma(q, "index_list", table))
+	if err != nil {
+		return true, "pragma index_list fails: " + err.Error()
+	}
+	// The rowid is the INTEGER PRIMARY KEY if the table has one: a single column of the key, of the
+	// type INTEGER, that has no index of its own.
 	var cols []*declColumn
-	for i, r := range o.xinfo {
-		cols = append(cols, &declColumn{name: r[1], coll: o.colls[i]})
+	iPKey, keys := -1, 0
+	for i, r := range xinfo {
+		cols = append(cols, &declColumn{name: r[1], coll: colls[i]})
+		if r[5] != "0" {
+			keys++
+			if r[2] == "INTEGER" {
+				iPKey = i
+			}
+		}
+	}
+	if keys != 1 || slices.ContainsFunc(idxs, func(r []string) bool { return r[3] == "pk" }) {
+		iPKey = -1
 	}
 	var key []string
 	for _, term := range cmd.Columns {
-		ic := indexColumn(term.X, foldEqual(term.Order.Text, "desc"), false, cols, -1)
+		ic := indexColumn(term.X, foldEqual(term.Order.Text, "desc"), false, cols, iPKey)
 		name := sqlNull
 		if ic.cid >= 0 {
 			name = cols[ic.cid].name
@@ -1023,15 +1112,10 @@ func declaredIndex(conn *sqlite.Conn, cmd *ast.CreateIndex) (bool, string) {
 	}
 	want := indexLine("c", cmd.Unique.Present(), cmd.Where != nil, key)
 	name := dequote(cmd.Name.Name.Text)
-	qs := ast.QualifiedName{Schema: ast.Token{Kind: token.ID, Text: quote(o.schema)}, Name: cmd.Table}
-	list, err := rows(conn, pragma(qs, "index_list", dequote(cmd.Table.Text)))
-	if err != nil {
-		return true, "pragma index_list fails: " + err.Error()
-	}
 	got := ""
-	for _, r := range list {
+	for _, r := range idxs {
 		if foldEqual(r[1], name) {
-			xs, err := rows(conn, pragma(qs, "index_xinfo", r[1]))
+			xs, err := rows(conn, pragma(q, "index_xinfo", r[1]))
 			if err != nil {
 				return true, "pragma index_xinfo fails: " + err.Error()
 			}
@@ -1062,7 +1146,8 @@ func declaredView(conn *sqlite.Conn, cmd *ast.CreateView) (bool, string) {
 		}
 		want = append(want, name)
 	}
-	xs, err := rows(conn, pragma(cmd.Name, "table_xinfo", dequote(cmd.Name.Name.Text)))
+	q := ast.QualifiedName{Schema: ast.Token{Kind: token.ID, Text: quote(schemaOf(cmd.Temp, cmd.Name))}, Name: cmd.Name.Name}
+	xs, err := rows(conn, pragma(q, "table_xinfo", dequote(cmd.Name.Name.Text)))
 	if err != nil {
 		return true, "pragma table_xinfo fails on the view: " + err.Error()
 	}
