@@ -48,12 +48,12 @@ Commit agreed work and merge pull requests when you judge them ready, without as
 - **Why:** Markus said on 2026-11-10: "If it's what we agreed you can just commit. Less friction, I don't want to be the bottleneck in this project", and later the same day: "merge whenever you like. We can always revert. But I'd like to stay involved in high-level design, architecture, goals, etc." On 2026-11-12, when asked to approve the wording of a comment in the schema: "Remember, you own the code. I want to be part of high-level design and architecture decisions (such as specs, data formats), you handle the details."
 - **How to apply:** check the work yourself against what was agreed, and commit and merge it if it matches and CI passes. Decide implementation details yourself and tell him what you chose. A detail inside a file he reviewed, such as a comment in the schema, is still a detail: fix it and do not ask. Bring him questions of design, architecture, scope, and goals, and anything that deviates from what was agreed. Wording in `docs/spec.md` still needs his explicit agreement before it is written.
 
-### The public site is not kept up to date automatically
+### On the public site, only the "Status" section is kept up to date
 
-Do not update the public site in `site/` (served at www.s4ql.com) as a side effect of other work.
+Do not update the public site in `site/` (served at www.s4ql.com) as a side effect of other work, except its "Status" section.
 
-- **Why:** Markus said on 2026-11-16: "you don't need to keep the public site updated automatically, I'll do that once in a while."
-- **How to apply:** when a piece of the project is merged, update the "Status" section of `README.md` and `docs/todo.md`, and leave `site/` alone. Change the site only when Markus asks.
+- **Why:** Markus said on 2026-11-16: "you don't need to keep the public site updated automatically, I'll do that once in a while", and then: "feel free to update the Status section on the site, but only that."
+- **How to apply:** when a piece of the project is merged, update the "Status" section of `README.md`, the section with the id `status` in `site/index.html`, and `docs/todo.md`. Keep the site's status as short as the README's. Leave everything else in `site/` alone, the roadmap section too, unless Markus asks.
 
 ### Second opinions are allowed without asking
 
