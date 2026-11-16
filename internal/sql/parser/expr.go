@@ -497,12 +497,13 @@ func digitSeparatorError(z string) (string, bool) {
 	var msg string
 	bad := false
 	out := 0
+	// A number starts with a digit or a ".", so a separator is never first and has a byte before it.
 	for in := 0; ; in++ {
 		c := buf[in]
 		if c != '_' {
 			buf[out] = c
 			out++
-		} else if in == 0 || !digit(buf[in-1]) || !digit(buf[in+1]) {
+		} else if !digit(buf[in-1]) || !digit(buf[in+1]) {
 			msg = fmt.Sprintf(`unrecognized token: "%s"`, buf[:len(z)])
 			bad = true
 		}
