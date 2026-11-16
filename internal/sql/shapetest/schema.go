@@ -168,6 +168,12 @@ func (s *schema) open() (*sqlite.Conn, error) {
 		_ = c.Close()
 		return nil, err
 	}
+	// REGEXP, MATCH, and GLOB ... ESCAPE then prepare and run, so they are compared by their
+	// programs and values.
+	if err := c.AddTestFunctions(); err != nil {
+		_ = c.Close()
+		return nil, err
+	}
 	for _, stmt := range s.statements() {
 		if err := c.Exec(stmt); err != nil {
 			_ = c.Close()
@@ -423,6 +429,18 @@ func guess(stmt *ast.Statement, src string) *schema {
 		})
 	}
 	return s
+}
+
+// holdsTarget reports whether the schema already holds a table or view of the name that a CREATE
+// TABLE creates. With IF NOT EXISTS SQLite then leaves the schema as it is, and what the statement
+// declares is not what SQLite has.
+func (s *schema) holdsTarget(cmd ast.Cmd) bool {
+	ct, ok := cmd.(*ast.CreateTable)
+	if !ok {
+		return false
+	}
+	name := dequote(ct.Name.Name.Text)
+	return slices.ContainsFunc(s.tables, func(t *table) bool { return foldEqual(t.name, name) })
 }
 
 // parent table of a foreign key with n columns, with a primary key or a unique constraint that

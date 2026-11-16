@@ -26,6 +26,10 @@ type Report struct {
 	// bytecode nor probes, nor by an expression compared by bytecode or values, or compared before.
 	ByValues, Uncompared map[string]int
 
+	// Declared counts the statements, by kind, of which what the tree declares was compared with what
+	// SQLite made of the text: see [Result].Declared.
+	Declared map[string]int
+
 	// Reasons counts the statements that were compared by [SameError] or [Skipped], by the error or
 	// the reason.
 	Reasons map[Way]map[string]int
@@ -93,6 +97,7 @@ func Summarize(results []Result) Report {
 		Kinds:      map[string]map[Way]int{},
 		ByValues:   map[string]int{},
 		Uncompared: map[string]int{},
+		Declared:   map[string]int{},
 		Reasons:    map[Way]map[string]int{},
 		Forms:      map[string]*ExprCounts{},
 	}
@@ -114,6 +119,9 @@ func Summarize(results []Result) Report {
 				r.Reasons[res.Way] = map[string]int{}
 			}
 			r.Reasons[res.Way][res.Reason]++
+		}
+		if res.Declared {
+			r.Declared[res.Kind]++
 		}
 		byValues, compared := false, res.Way == Bytecode || res.Way == Probes
 		for _, e := range res.Exprs {
@@ -177,7 +185,7 @@ func (r Report) String() string {
 		fmt.Fprintf(&b, "compared by bytecode or probes: %d (%.1f%%); compared in no way but by an error: %d (%.1f%%)\n",
 			r.Compared(), 100*float64(r.Compared())/float64(checked), uncompared, 100*float64(uncompared)/float64(checked))
 	}
-	fmt.Fprintf(&b, "\n%-28s %8s %8s %8s %8s %8s %8s %8s\n", "kind", "bytecode", "probes", "error", "skipped", "values", "none", "fault")
+	fmt.Fprintf(&b, "\n%-28s %8s %8s %8s %8s %8s %8s %8s %8s\n", "kind", "bytecode", "probes", "error", "skipped", "values", "none", "declared", "fault")
 	faults := map[string]int{}
 	for _, f := range r.Faults {
 		faults[f.Kind]++
@@ -191,7 +199,7 @@ func (r Report) String() string {
 	slices.Sort(kinds)
 	for _, k := range kinds {
 		w := r.Kinds[k]
-		fmt.Fprintf(&b, "%-28s %8d %8d %8d %8d %8d %8d %8d\n", k, w[Bytecode], w[Probes], w[SameError], w[Skipped], r.ByValues[k], r.Uncompared[k], faults[k])
+		fmt.Fprintf(&b, "%-28s %8d %8d %8d %8d %8d %8d %8d %8d\n", k, w[Bytecode], w[Probes], w[SameError], w[Skipped], r.ByValues[k], r.Uncompared[k], r.Declared[k], faults[k])
 	}
 	for _, way := range []Way{SameError, Skipped} {
 		reasons := r.Reasons[way]

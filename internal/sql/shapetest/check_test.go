@@ -139,9 +139,10 @@ func TestCheck_statements(t *testing.T) {
 	}
 }
 
-// FuzzCheck checks the shape of the tree of any text that the parser parses. It is seeded with
-// every 25th entry of the corpus, or every 100th under -short, the race detector, and the address
-// sanitizer, the statements of [shapetest.Structure], and a sample of the generated pairs.
+// FuzzCheck checks the shape of the tree of any text that the parser parses, and what the tree
+// declares. It is seeded with every 25th entry of the corpus, or every 100th under -short, the race
+// detector, and the address sanitizer, the statements of [shapetest.Structure] and
+// [shapetest.Declared], and a sample of the generated pairs.
 func FuzzCheck(f *testing.F) {
 	step := 25
 	if slow() {
@@ -153,6 +154,9 @@ func FuzzCheck(f *testing.F) {
 		}
 	}
 	for _, sql := range shapetest.Structure {
+		f.Add(sql)
+	}
+	for _, sql := range shapetest.Declared {
 		f.Add(sql)
 	}
 	for i, g := range shapetest.Pairs(5, 1) {

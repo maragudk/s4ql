@@ -496,6 +496,260 @@ func moveConstraintName(stmt *ast.Statement) []func() string {
 	return sites
 }
 
+// columnDefs of the tree: the columns of CREATE TABLE and of ALTER TABLE ... ADD COLUMN.
+func columnDefs(stmt *ast.Statement) []*ast.ColumnDef {
+	var defs []*ast.ColumnDef
+	ast.Walk(stmt, func(n ast.Node) bool {
+		if d, ok := n.(*ast.ColumnDef); ok {
+			defs = append(defs, d)
+		}
+		return true
+	})
+	return defs
+}
+
+// firstGenerated gives the GENERATED ALWAYS AS of a column, if it is the first constraint and is
+// written without GENERATED ALWAYS.
+func firstGenerated(d *ast.ColumnDef) *ast.GeneratedConstraint {
+	if len(d.Constraints) == 0 {
+		return nil
+	}
+	g, ok := d.Constraints[0].(*ast.GeneratedConstraint)
+	if !ok || g.Generated.Present() || g.Always.Present() {
+		return nil
+	}
+	return g
+}
+
+// typeEndsInGeneratedAlways reports whether the words of a type end in GENERATED ALWAYS.
+func typeEndsInGeneratedAlways(t *ast.TypeName) bool {
+	if t == nil {
+		return false
+	}
+	n := len(t.Names)
+	return !t.LParen.Present() && n >= 2 && strings.EqualFold(t.Names[n-2].Text, "generated") && strings.EqualFold(t.Names[n-1].Text, "always")
+}
+
+// generatedAlwaysToAs moves GENERATED ALWAYS at the end of a type into the AS after it, and GENERATED
+// ALWAYS of AS into the type, with the tokens in the same order: a int generated always as (1) has
+// the type int generated always, and a parser could read the words as part of AS.
+func generatedAlwaysToAs(stmt *ast.Statement) []func() string {
+	var sites []func() string
+	for _, d := range columnDefs(stmt) {
+		if g := firstGenerated(d); g != nil && d.Type != nil && typeEndsInGeneratedAlways(d.Type) {
+			sites = append(sites, func() string {
+				n := len(d.Type.Names)
+				g.Generated, g.Always = d.Type.Names[n-2], d.Type.Names[n-1]
+				d.Type.Names = d.Type.Names[:n-2]
+				if len(d.Type.Names) == 0 {
+					d.Type = nil
+				}
+				return "GENERATED ALWAYS of the type into AS"
+			})
+		}
+		if len(d.Constraints) > 0 {
+			if g, ok := d.Constraints[0].(*ast.GeneratedConstraint); ok && g.Generated.Present() && (d.Type == nil || !d.Type.LParen.Present()) {
+				sites = append(sites, func() string {
+					if d.Type == nil {
+						d.Type = &ast.TypeName{}
+					}
+					d.Type.Names = append(d.Type.Names, g.Generated, g.Always)
+					g.Generated, g.Always = ast.Token{}, ast.Token{}
+					return "GENERATED ALWAYS of AS into the type"
+				})
+			}
+		}
+	}
+	return sites
+}
+
+// typeWordToAs moves the last word of a type, which is not ALWAYS, into the AS after it as its
+// ALWAYS: a int always as (1) has the type int always.
+func typeWordToAs(stmt *ast.Statement) []func() string {
+	var sites []func() string
+	for _, d := range columnDefs(stmt) {
+		g := firstGenerated(d)
+		if g == nil || d.Type == nil || d.Type.LParen.Present() || typeEndsInGeneratedAlways(d.Type) {
+			continue
+		}
+		sites = append(sites, func() string {
+			n := len(d.Type.Names)
+			g.Always = d.Type.Names[n-1]
+			d.Type.Names = d.Type.Names[:n-1]
+			if n == 1 {
+				d.Type = nil
+			}
+			return "the last word of the type into AS"
+		})
+	}
+	return sites
+}
+
+// constraintToType moves the tokens of the first constraint of a column into its type, as words of
+// the type, with the tokens in the same order: a parser that took a constraint for words of the
+// type.
+func constraintToType(stmt *ast.Statement) []func() string {
+	var sites []func() string
+	for _, d := range columnDefs(stmt) {
+		if len(d.Constraints) == 0 || (d.Type != nil && d.Type.LParen.Present()) {
+			continue
+		}
+		sites = append(sites, func() string {
+			c := d.Constraints[0]
+			if d.Type == nil {
+				d.Type = &ast.TypeName{}
+			}
+			d.Type.Names = append(d.Type.Names, ast.AllTokens(c)...)
+			d.Constraints = d.Constraints[1:]
+			return fmt.Sprintf("%T into the type", c)
+		})
+	}
+	return sites
+}
+
+// moveColumnConstraintName moves CONSTRAINT name in a column's constraints after the constraint it
+// names.
+func moveColumnConstraintName(stmt *ast.Statement) []func() string {
+	var sites []func() string
+	for _, d := range columnDefs(stmt) {
+		for i := 0; i+1 < len(d.Constraints); i++ {
+			if _, ok := d.Constraints[i].(*ast.ConstraintName); !ok {
+				continue
+			}
+			sites = append(sites, func() string {
+				cs := d.Constraints
+				cs[i], cs[i+1] = cs[i+1], cs[i]
+				return fmt.Sprintf("CONSTRAINT name after %T", cs[i])
+			})
+		}
+	}
+	return sites
+}
+
+// conflictOf gives the ON CONFLICT of a constraint that can have one.
+func conflictOf(n ast.Node) (**ast.OnConflict, bool) {
+	switch c := n.(type) {
+	case *ast.NullConstraint:
+		return &c.Conflict, true
+	case *ast.PrimaryKeyConstraint:
+		return &c.Conflict, true
+	case *ast.UniqueConstraint:
+		return &c.Conflict, true
+	case *ast.CheckConstraint:
+		return &c.Conflict, true
+	case *ast.TablePrimaryKey:
+		return &c.Conflict, true
+	case *ast.TableUnique:
+		return &c.Conflict, true
+	}
+	return nil, false
+}
+
+// moveConflict moves the ON CONFLICT of a constraint to the next constraint of the same column, or
+// of the table, that can have one and has none.
+func moveConflict(stmt *ast.Statement) []func() string {
+	var sites []func() string
+	try := func(nodes []ast.Node, column bool) {
+		for i := 0; i+1 < len(nodes); i++ {
+			from, ok := conflictOf(nodes[i])
+			if !ok || *from == nil {
+				continue
+			}
+			to, ok := conflictOf(nodes[i+1])
+			if !ok || *to != nil {
+				continue
+			}
+			if _, isCheck := nodes[i+1].(*ast.CheckConstraint); isCheck && column {
+				// A column's CHECK has no ON CONFLICT in the grammar, so SQLite would reject the
+				// printed text.
+				continue
+			}
+			a, b := nodes[i], nodes[i+1]
+			sites = append(sites, func() string {
+				*to, *from = *from, nil
+				return fmt.Sprintf("ON CONFLICT of %T to %T", a, b)
+			})
+		}
+	}
+	for _, d := range columnDefs(stmt) {
+		var nodes []ast.Node
+		for _, c := range d.Constraints {
+			nodes = append(nodes, c)
+		}
+		try(nodes, true)
+	}
+	ast.Walk(stmt, func(n ast.Node) bool {
+		if ct, ok := n.(*ast.CreateTable); ok {
+			var nodes []ast.Node
+			for _, c := range ct.Constraints {
+				nodes = append(nodes, c)
+			}
+			try(nodes, false)
+		}
+		return true
+	})
+	return sites
+}
+
+// swapActions swaps the events of two actions of a foreign key, so that the action of ON DELETE
+// becomes that of ON UPDATE and back.
+func swapActions(stmt *ast.Statement) []func() string {
+	var sites []func() string
+	ast.Walk(stmt, func(n ast.Node) bool {
+		r, ok := n.(*ast.References)
+		if !ok {
+			return true
+		}
+		for i, a := range r.Args {
+			for _, b := range r.Args[i+1:] {
+				if a.On.Present() && b.On.Present() && !strings.EqualFold(a.Event.Text, b.Event.Text) && joinTokens(a.Action) != joinTokens(b.Action) {
+					sites = append(sites, func() string {
+						a.Event, b.Event = b.Event, a.Event
+						return "ON " + strings.ToUpper(a.Event.Text) + " and ON " + strings.ToUpper(b.Event.Text)
+					})
+				}
+			}
+		}
+		return true
+	})
+	return sites
+}
+
+func joinTokens(ts []ast.Token) string {
+	var words []string
+	for _, t := range ts {
+		words = append(words, strings.ToUpper(t.Text))
+	}
+	return strings.Join(words, " ")
+}
+
+// defaultForms changes the form of a DEFAULT, with the tokens in the same order: a name after
+// DEFAULT, which SQLite reads as a string, becomes a column reference, and the sign of a signed
+// literal becomes a unary operator on it, which only DEFAULT ( expr ) can hold.
+func defaultForms(stmt *ast.Statement) []func() string {
+	var sites []func() string
+	ast.Walk(stmt, func(n ast.Node) bool {
+		d, ok := n.(*ast.DefaultConstraint)
+		if !ok {
+			return true
+		}
+		switch {
+		case d.Name.Present():
+			sites = append(sites, func() string {
+				d.X, d.Name = &ast.ColumnRef{Column: d.Name}, ast.Token{}
+				return "the name of DEFAULT as a column"
+			})
+		case d.Sign.Present():
+			sites = append(sites, func() string {
+				d.X, d.Sign = &ast.Unary{Op: d.Sign, X: d.X}, ast.Token{}
+				return "the sign of DEFAULT as an operator"
+			})
+		}
+		return true
+	})
+	return sites
+}
+
 // splitNumber splits a number with digit separators in a result column into a number and an alias,
 // as a parser that does not know digit separators would read it: 1_000 becomes 1 AS _000.
 func splitNumber(stmt *ast.Statement) []func() string {
@@ -539,7 +793,22 @@ var mutations = []mutation{
 	{"swap the WHEREs of an upsert", swapUpsertWhere, ""},
 	{"move a column constraint", moveColumnConstraint, ""},
 	{"move CONSTRAINT name", moveConstraintName, ""},
+	{"move a column's CONSTRAINT name", moveColumnConstraintName, ""},
 	{"split a number with digit separators", splitNumber, ""},
+	{"move GENERATED ALWAYS between type and AS", generatedAlwaysToAs, "sqlite3AddColumn drops GENERATED ALWAYS from the end of a type of 16 bytes or more, which a type that ends in these words always is"},
+	{"move the last word of a type into AS", typeWordToAs, ""},
+	{"move a column's first constraint into its type", constraintToType, ""},
+	{"move ON CONFLICT to the next constraint", moveConflict, ""},
+	{"swap ON DELETE and ON UPDATE", swapActions, ""},
+	{"change the form of DEFAULT", defaultForms, ""},
+}
+
+// declarationKinds of mutation, which damage what a CREATE TABLE or an ALTER TABLE declares.
+var declarationKinds = []string{
+	"move a column constraint", "move CONSTRAINT name", "move a column's CONSTRAINT name",
+	"move GENERATED ALWAYS between type and AS", "move the last word of a type into AS",
+	"move a column's first constraint into its type", "move ON CONFLICT to the next constraint",
+	"swap ON DELETE and ON UPDATE", "change the form of DEFAULT",
 }
 
 // outcome of a mutation: detected, not detected although compared, or not compared.
@@ -547,15 +816,20 @@ type outcome struct {
 	detected, undetected, notCompared int
 	// examples of undetected mutations, by what was done.
 	examples map[string][]string
+	// byWhat counts the detected, the undetected, and those not compared, by what was done.
+	byWhat map[string]*[3]int
+	// byDeclared counts the mutations that only the comparison of what the tree declares detected.
+	byDeclared int
 }
 
 // mutate applies every mutation at up to perKind sites of each statement of sqls that parses, and
 // gives the outcome by kind.
-func mutate(t *testing.T, sqls []string, perKind int) map[string]*outcome {
+func mutate(t *testing.T, outcomes map[string]*outcome, sqls []string, perKind int, ms []mutation) {
 	t.Helper()
-	outcomes := map[string]*outcome{}
-	for _, m := range mutations {
-		outcomes[m.kind] = &outcome{examples: map[string][]string{}}
+	for _, m := range ms {
+		if outcomes[m.kind] == nil {
+			outcomes[m.kind] = &outcome{examples: map[string][]string{}, byWhat: map[string]*[3]int{}}
+		}
 	}
 	var c Checker
 	defer c.Close()
@@ -564,7 +838,7 @@ func mutate(t *testing.T, sqls []string, perKind int) map[string]*outcome {
 		if err != nil || orig == nil {
 			continue
 		}
-		for _, m := range mutations {
+		for _, m := range ms {
 			n := len(m.sites(orig))
 			for k := range min(n, perKind) {
 				// Spread the sites that are tried over the statement.
@@ -575,7 +849,10 @@ func mutate(t *testing.T, sqls []string, perKind int) map[string]*outcome {
 				var r Result
 				c.compare(&r, src, orig, shown)
 				o := outcomes[m.kind]
-				compared := r.Way == Bytecode || r.Way == Probes
+				if o.byWhat[what] == nil {
+					o.byWhat[what] = &[3]int{}
+				}
+				compared := r.Way == Bytecode || r.Way == Probes || r.Declared
 				if !compared {
 					// The statement was compared only by its expressions: the mutation was compared
 					// if every expression that it changed was.
@@ -594,10 +871,16 @@ func mutate(t *testing.T, sqls []string, perKind int) map[string]*outcome {
 				switch {
 				case r.Fault != "":
 					o.detected++
+					o.byWhat[what][0]++
+					if strings.HasPrefix(r.Fault, declaredFault) {
+						o.byDeclared++
+					}
 				case !compared:
 					o.notCompared++
+					o.byWhat[what][2]++
 				default:
 					o.undetected++
+					o.byWhat[what][1]++
 					if len(o.examples[what]) < 3 {
 						o.examples[what] = append(o.examples[what], fmt.Sprintf("%q printed as %q", src, r.Printed))
 					} else {
@@ -607,20 +890,30 @@ func mutate(t *testing.T, sqls []string, perKind int) map[string]*outcome {
 			}
 		}
 	}
-	return outcomes
 }
 
 func reportMutations(t *testing.T, outcomes map[string]*outcome) string {
 	t.Helper()
 	var b strings.Builder
-	fmt.Fprintf(&b, "%-46s %8s %10s %12s %8s\n", "mutation", "detected", "undetected", "not compared", "rate")
+	fmt.Fprintf(&b, "%-46s %8s %10s %12s %8s %8s\n", "mutation", "detected", "undetected", "not compared", "rate", "declared")
 	for _, m := range mutations {
 		o := outcomes[m.kind]
 		rate := 0.0
 		if o.detected+o.undetected > 0 {
 			rate = 100 * float64(o.detected) / float64(o.detected+o.undetected)
 		}
-		fmt.Fprintf(&b, "%-46s %8d %10d %12d %7.1f%%\n", m.kind, o.detected, o.undetected, o.notCompared, rate)
+		fmt.Fprintf(&b, "%-46s %8d %10d %12d %7.1f%% %8d\n", m.kind, o.detected, o.undetected, o.notCompared, rate, o.byDeclared)
+	}
+	fmt.Fprintf(&b, "\n%-46s %-46s %8s %10s %12s\n", "mutation", "what", "detected", "undetected", "not compared")
+	for _, m := range mutations {
+		o := outcomes[m.kind]
+		if !slices.Contains(declarationKinds, m.kind) {
+			continue
+		}
+		for _, what := range sortedKeys(o.byWhat) {
+			c := o.byWhat[what]
+			fmt.Fprintf(&b, "%-46s %-46s %8d %10d %12d\n", m.kind, what, c[0], c[1], c[2])
+		}
 	}
 	for _, m := range mutations {
 		o := outcomes[m.kind]
@@ -660,12 +953,38 @@ func TestCheck_mutations(t *testing.T) {
 		}
 	}
 	sqls = append(sqls, Structure...)
+	sqls = append(sqls, Declared...)
 	for i, g := range append(Pairs(3, 1), Triples(4, 2000)...) {
 		if i%(step/4) == 0 {
 			sqls = append(sqls, g.SQL)
 		}
 	}
-	outcomes := mutate(t, sqls, 2)
+	outcomes := map[string]*outcome{}
+	mutate(t, outcomes, sqls, 2, mutations)
+	// The damage to declarations has few sites in that sample, so it also runs on every tenth
+	// CREATE TABLE and ALTER TABLE of the corpus, or every hundredth.
+	var ddl []string
+	n := 0
+	for _, e := range corpus.All() {
+		stmt, _, err := parser.Parse(e.SQL)
+		if err != nil || stmt == nil {
+			continue
+		}
+		switch stmt.Cmd.(type) {
+		case *ast.CreateTable, *ast.AlterTable:
+			if n%(step/2) == 0 {
+				ddl = append(ddl, e.SQL)
+			}
+			n++
+		}
+	}
+	var declaring []mutation
+	for _, m := range mutations {
+		if slices.Contains(declarationKinds, m.kind) {
+			declaring = append(declaring, m)
+		}
+	}
+	mutate(t, outcomes, ddl, 2, declaring)
 	t.Log("\n" + reportMutations(t, outcomes))
 	for _, m := range mutations {
 		o := outcomes[m.kind]
