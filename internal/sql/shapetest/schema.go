@@ -2,6 +2,7 @@ package shapetest
 
 import (
 	"fmt"
+	"hash/fnv"
 	"regexp"
 	"slices"
 	"strconv"
@@ -41,6 +42,10 @@ type table struct {
 	db, name string
 	cols     []string
 	view     bool
+	// keys is the number of columns of a primary key, for a foreign key that names no columns of
+	// this table, and unique holds the sets of columns that a foreign key names.
+	keys   int
+	unique [][]string
 }
 
 func (t *table) has(col string) bool {
@@ -107,13 +112,40 @@ func (s *schema) statements() []string {
 				if i > 0 {
 					b.WriteString(", ")
 				}
-				b.WriteString(quote(c))
+				b.WriteString(quote(c) + " " + columnType(c))
+			}
+			if t.keys > 0 {
+				var keys []string
+				for i := range t.keys {
+					keys = append(keys, fmt.Sprint("s4ql_k", i))
+				}
+				b.WriteString(", " + strings.Join(keys, ", ") + ", primary key (" + strings.Join(keys, ", ") + ")")
+			}
+			for _, u := range t.unique {
+				var qs []string
+				for _, c := range u {
+					qs = append(qs, quote(c))
+				}
+				b.WriteString(", unique (" + strings.Join(qs, ", ") + ")")
 			}
 			b.WriteString(")")
 		}
 		stmts = append(stmts, b.String())
 	}
 	return append(stmts, s.extra...)
+}
+
+// columnTypes that the columns of a schema get, by their names, so that the affinity and the
+// collation of a column take part in the programs: SQLite compares with the collation of the left
+// operand, and applies the affinity of a column that is not inside another operator, so a wrong
+// grouping or a swap of operands shows in the program where untyped columns would hide it.
+var columnTypes = []string{"INTEGER", "TEXT", "", "REAL", "TEXT COLLATE NOCASE", "NUMERIC", "TEXT COLLATE RTRIM", "BLOB"}
+
+// columnType of the column named col.
+func columnType(col string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(strings.ToLower(col)))
+	return columnTypes[h.Sum32()%uint32(len(columnTypes))]
 }
 
 // open a connection to a new in-memory database with the schema.
@@ -244,6 +276,12 @@ func guess(stmt *ast.Statement, src string) *schema {
 			case *ast.AlterColumnNotNull:
 				t.add(dequote(a.Name.Text))
 			}
+		case *ast.ReferencesConstraint:
+			s.parent(stmt, n.References, 1)
+		case *ast.TableForeignKey:
+			if n.Columns != nil {
+				s.parent(stmt, n.References, len(n.Columns.Columns))
+			}
 		case *ast.Drop:
 			name := dequote(n.Name.Name.Text)
 			db := dequote(n.Name.Schema.Text)
@@ -326,6 +364,22 @@ func guess(stmt *ast.Statement, src string) *schema {
 		}
 		return true
 	})
+	// A column that ALTER TABLE adds, or renames a column to, must not be there yet.
+	defer func() {
+		if a, ok := stmt.Cmd.(*ast.AlterTable); ok {
+			t := s.find(dequote(a.Name.Schema.Text), dequote(a.Name.Name.Text))
+			switch act := a.Action.(type) {
+			case *ast.AddColumn:
+				if t != nil {
+					t.remove(dequote(act.Def.Name.Text))
+				}
+			case *ast.RenameColumn:
+				if t != nil {
+					t.remove(dequote(act.New.Text))
+				}
+			}
+		}
+	}()
 	// An unqualified column is guessed to be in the first table.
 	if len(s.candidates) > 0 {
 		t := s.candidates[0]
@@ -345,6 +399,38 @@ func guess(stmt *ast.Statement, src string) *schema {
 		})
 	}
 	return s
+}
+
+// parent table of a foreign key with n columns, with a primary key or a unique constraint that
+// the foreign key can refer to. A table that refers to itself is not made here.
+func (s *schema) parent(stmt *ast.Statement, r *ast.References, n int) {
+	name := dequote(r.Table.Text)
+	switch c := stmt.Cmd.(type) {
+	case *ast.CreateTable:
+		if strings.EqualFold(dequote(c.Name.Name.Text), name) {
+			return
+		}
+	case *ast.AlterTable:
+		if strings.EqualFold(dequote(c.Name.Name.Text), name) {
+			return
+		}
+	}
+	db := ""
+	if c, ok := stmt.Cmd.(*ast.CreateTable); ok {
+		db = dequote(c.Name.Schema.Text)
+	}
+	t := s.table(db, name)
+	if r.Columns == nil {
+		t.keys = max(t.keys, n)
+		return
+	}
+	var cols []string
+	for _, c := range r.Columns.Columns {
+		col := dequote(c.Name.Text)
+		t.add(col)
+		cols = append(cols, col)
+	}
+	t.unique = append(t.unique, cols)
 }
 
 func assign(t *table, a *ast.Assignment) {
@@ -368,6 +454,7 @@ var (
 	reUnknownDB  = regexp.MustCompile(`^unknown database (.+)$`)
 	reNoIndex    = regexp.MustCompile(`^no such index: (?:([^.]+)\.)?(.+)$`)
 	reInsteadOf  = regexp.MustCompile(`^cannot create INSTEAD OF trigger on table: (?:([^.]+)\.)?(.+)$`)
+	reUpsert     = regexp.MustCompile(`^(?:\d+(?:st|nd|rd|th) )?ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint$`)
 	reTriggerOnV = regexp.MustCompile(`^cannot create (?:BEFORE|AFTER) trigger on view: (?:([^.]+)\.)?(.+)$`)
 )
 
@@ -461,7 +548,7 @@ func (s *schema) fix(msg string) bool {
 		}
 		return false
 	}
-	if msg == "ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint" && len(s.upserts) > 0 {
+	if reUpsert.MatchString(msg) && len(s.upserts) > 0 {
 		s.extra = append(s.extra, s.upserts...)
 		s.upserts = nil
 		return true

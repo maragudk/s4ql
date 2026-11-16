@@ -17,10 +17,8 @@ import (
 	"maragu.dev/s4ql/internal/sql/shapetest"
 )
 
-// slow reports whether the tests run with -short, the race detector, or the address sanitizer, which
-// make them several times slower: the tests on the corpus then use every tenth entry.
 func slow() bool {
-	return testing.Short() || raceEnabled || asanEnabled
+	return shapetest.Slow()
 }
 
 func corpusSQL(t testing.TB) []string {
@@ -50,6 +48,13 @@ const shards = 8
 // and returns false; the caller then returns at once.
 func checkSharded(t *testing.T, sqls []string) (shapetest.Report, bool) {
 	t.Helper()
+	r, _, ok := checkShardedResults(t, sqls)
+	return r, ok
+}
+
+// checkShardedResults is [checkSharded], with the results of the texts in their order.
+func checkShardedResults(t *testing.T, sqls []string) (shapetest.Report, []shapetest.Result, bool) {
+	t.Helper()
 	if shard := os.Getenv("S4QL_SHAPETEST_SHARD"); shard != "" {
 		i, err := strconv.Atoi(shard)
 		is.NotError(t, err)
@@ -62,7 +67,7 @@ func checkSharded(t *testing.T, sqls []string) (shapetest.Report, bool) {
 		var data bytes.Buffer
 		is.NotError(t, gob.NewEncoder(&data).Encode(results))
 		is.NotError(t, os.WriteFile(os.Getenv("S4QL_SHAPETEST_OUT"), data.Bytes(), 0o600))
-		return shapetest.Report{}, false
+		return shapetest.Report{}, nil, false
 	}
 	dir := t.TempDir()
 	cmds := make([]*exec.Cmd, shards)
@@ -91,7 +96,7 @@ func checkSharded(t *testing.T, sqls []string) (shapetest.Report, bool) {
 			results[i+j*shards] = r
 		}
 	}
-	return shapetest.Summarize(results), true
+	return shapetest.Summarize(results), results, true
 }
 
 // TestCheck_corpus checks the shape of the tree of every statement of the corpus that parses, or of
@@ -105,4 +110,44 @@ func TestCheck_corpus(t *testing.T) {
 	t.Log("\n" + r.String())
 	is.Equal(t, len(sqls), r.Texts)
 	is.Equal(t, 0, len(r.Faults))
+}
+
+// TestCheck_statements checks the statements of [shapetest.Structure], and requires that each is
+// compared by bytecode or probes, not skipped.
+func TestCheck_statements(t *testing.T) {
+	var c shapetest.Checker
+	defer c.Close()
+	for _, sql := range shapetest.Structure {
+		t.Run(sql, func(t *testing.T) {
+			r := c.Check(sql)
+			is.Equal(t, "", r.Fault)
+			if r.Way != shapetest.Bytecode && r.Way != shapetest.Probes {
+				t.Errorf("not compared: %v %v", r.Way, r.Reason)
+			}
+		})
+	}
+}
+
+// FuzzCheck checks the shape of the tree of any text that the parser parses. It is seeded with
+// every 25th entry of the corpus, the statements of [shapetest.Structure], and a sample of the
+// generated pairs.
+func FuzzCheck(f *testing.F) {
+	for i, e := range corpus.All() {
+		if i%25 == 0 {
+			f.Add(e.SQL)
+		}
+	}
+	for _, sql := range shapetest.Structure {
+		f.Add(sql)
+	}
+	for i, g := range shapetest.Pairs(5, 1) {
+		if i%20 == 0 {
+			f.Add(g.SQL)
+		}
+	}
+	f.Fuzz(func(t *testing.T, src string) {
+		if r := shapetest.Check(src); r.Fault != "" {
+			t.Fatalf("%q printed as %q: %s", src, r.Printed, r.Fault)
+		}
+	})
 }

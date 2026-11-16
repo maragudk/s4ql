@@ -73,8 +73,9 @@ type ExprResult struct {
 	Bytecode bool
 
 	// Values is the number of assignments of values to the column references for which both texts
-	// gave the same value, of the same type, or the same error.
-	Values int
+	// gave the same value, of the same type, and Errors the number for which both gave the same
+	// error.
+	Values, Errors int
 
 	// Skipped is why the values were not compared, or "".
 	Skipped string
@@ -597,11 +598,13 @@ func tableProbes(conn *sqlite.Conn, q ast.QualifiedName, sd side, names bool) ([
 	t := qname(q)
 	probes := []string{"insert into " + t + " default values", "delete from " + t}
 	if names && len(cols) > 0 {
-		var sets []string
+		var sets, compares []string
 		for _, col := range cols {
 			sets = append(sets, quote(col)+" = "+quote(col))
+			compares = append(compares, quote(col)+" = 'a'")
 		}
-		probes = append(probes, "update "+t+" set "+strings.Join(sets, ", "))
+		// The comparisons hold the affinity and the collation of each column.
+		probes = append(probes, "update "+t+" set "+strings.Join(sets, ", "), "select "+strings.Join(compares, ", ")+" from "+t)
 	}
 	for _, probe := range probes {
 		p, err := explain(conn, probe, sd)
@@ -715,7 +718,8 @@ func isSelectBoundary(n ast.Node) bool {
 	return false
 }
 
-// pool of values for the column references of an expression.
+// pool of values for the column references of an expression: of every type, and texts that look
+// like numbers, patterns, and JSON.
 var pool = []string{"0", "1", "2", "3", "7", "-1", "NULL", "'a'", "'B'", "''", "2.5", "x'01'", "'%'", "'a_c'", "'{\"a\":[1,2]}'", "'12'", "1e300"}
 
 // exprs compares each expression of orig, on its own, with the expression at the same place in
@@ -742,7 +746,9 @@ func (c *Checker) expr(src string, eo, es ast.Expr) (ExprResult, string) {
 		r.Skipped = reason
 		return r, ""
 	}
-	// The column references, in the order of the text, named by their tokens.
+	// The column references, in the order of the text, named by their tokens, become the columns of
+	// a table of one row, s4ql_v, which holds the values. They stay column references, which SQLite
+	// cannot fold as it folds literals, and keep the affinity and collation of a column.
 	refs := columnRefs(eo)
 	index := map[string]int{}
 	for _, ref := range refs {
@@ -750,55 +756,45 @@ func (c *Checker) expr(src string, eo, es ast.Expr) (ExprResult, string) {
 			index[refName(ref)] = len(index)
 		}
 	}
-	values := func(k int) func(*ast.ColumnRef) string {
-		return func(ref *ast.ColumnRef) string {
-			i, ok := index[refName(ref)]
-			if !ok {
-				return ""
-			}
-			return "(" + pool[(i*5+k*11+i*k)%len(pool)] + ")"
+	if len(index) > valueColumns {
+		r.Skipped = "it has more column references than the table of values has columns"
+		return r, ""
+	}
+	column := func(ref *ast.ColumnRef) string {
+		i, ok := index[refName(ref)]
+		if !ok {
+			return ""
 		}
+		return fmt.Sprint("s4ql_v.c", i)
 	}
-	origText := func(k int) string {
-		var b strings.Builder
-		start := eo.Bounds().Start
-		v := values(k)
-		for _, ref := range refs {
-			b.WriteString(src[start:ref.Span.Start])
-			b.WriteString(" " + v(ref) + " ")
-			start = ref.Span.End
-		}
-		b.WriteString(src[start:eo.Bounds().End])
-		return b.String()
+	var b strings.Builder
+	start := eo.Bounds().Start
+	for _, ref := range refs {
+		b.WriteString(src[start:ref.Span.Start])
+		b.WriteString(" " + column(ref) + " ")
+		start = ref.Span.End
 	}
-	printedText := func(k int) string {
-		p := printer{column: values(k)}
-		p.expr(es)
-		return p.b.String()
-	}
-	o0 := origText(0)
+	b.WriteString(src[start:eo.Bounds().End])
+	ot := b.String()
+	p := printer{column: column}
+	p.expr(es)
+	pt := p.b.String()
+
 	if c.seen == nil {
 		c.seen = &seenSet{m: map[string]bool{}}
 	}
-	if !c.seen.add(o0) {
+	if !c.seen.add(ot) {
 		r.Duplicate = true
 		return r, ""
 	}
-	if c.conn == nil {
-		conn, err := sqlite.Open(":memory:")
-		if err != nil {
-			panic(err)
-		}
-		if err := conn.DenyProcessPragmas(); err != nil {
-			panic(err)
-		}
-		c.conn = conn
+	if err := c.values(len(index), 0); err != nil {
+		panic(err)
 	}
-	want, werr := explain(c.conn, "select "+o0, side{})
-	got, gerr := explain(c.conn, "select "+printedText(0), side{})
+	want, werr := explain(c.conn, "select "+ot+" from s4ql_v", side{})
+	got, gerr := explain(c.conn, "select "+pt+" from s4ql_v", side{})
 	if i, ok := differ(want, got); ok || message(werr) != message(gerr) {
 		return r, fmt.Sprintf("SQLite gives another program for the printed expression %q than for %q: at %d, %q and %q, errors %v and %v",
-			printedText(0), o0, i, at(want, i), at(got, i), werr, gerr)
+			pt, ot, i, at(want, i), at(got, i), werr, gerr)
 	}
 	r.Bytecode = werr == nil
 	if reason := nondeterministic(eo); reason != "" {
@@ -810,23 +806,84 @@ func (c *Checker) expr(src string, eo, es ast.Expr) (ExprResult, string) {
 		n = 1
 	}
 	for k := range n {
-		ot, pt := origText(k), printedText(k)
+		if err := c.values(len(index), k); err != nil {
+			panic(err)
+		}
 		want := evaluate(c.conn, ot)
 		got := evaluate(c.conn, pt)
 		if want != got {
-			return r, fmt.Sprintf("SQLite gives another value for the printed expression %q than for %q: %s and %s", pt, ot, got, want)
+			return r, fmt.Sprintf("SQLite gives another value for the printed expression %q than for %q, with the values %v: %s and %s",
+				pt, ot, valueList(len(index), k), got, want)
 		}
-		r.Values++
+		if strings.HasPrefix(want, "error: ") {
+			r.Errors++
+		} else {
+			r.Values++
+		}
 	}
 	return r, ""
 }
 
-// evaluate the expression on its own, and give its type and value as quote() writes it, which is
-// exact for every type, or the error.
+// valueColumns is the number of columns of the table of values, s4ql_v.
+const valueColumns = 64
+
+// valueList of the k-th assignment of values to n columns.
+func valueList(n, k int) []string {
+	vs := make([]string, n)
+	for i := range vs {
+		vs[i] = pool[(i*5+k*11+i*k)%len(pool)]
+	}
+	return vs
+}
+
+// values sets the first n columns of the one row of the table s4ql_v to the k-th assignment of
+// values. The table is made on the first call, with [valueColumns] columns of the types of
+// [columnTypes] in turn.
+func (c *Checker) values(n, k int) error {
+	if c.conn == nil {
+		conn, err := sqlite.Open(":memory:")
+		if err != nil {
+			return err
+		}
+		if err := conn.DenyProcessPragmas(); err != nil {
+			_ = conn.Close()
+			return err
+		}
+		cols := make([]string, valueColumns)
+		for i := range cols {
+			cols[i] = fmt.Sprint("c", i, " ", columnTypes[i%len(columnTypes)])
+		}
+		for _, stmt := range []string{
+			"create table s4ql_v (" + strings.Join(cols, ", ") + ")",
+			"insert into s4ql_v default values",
+		} {
+			if err := conn.Exec(stmt); err != nil {
+				_ = conn.Close()
+				return err
+			}
+		}
+		c.conn = conn
+	}
+	if n == 0 {
+		return nil
+	}
+	sets := make([]string, n)
+	for i, v := range valueList(n, k) {
+		sets[i] = fmt.Sprint("c", i, " = ", v)
+	}
+	return c.conn.Exec("update s4ql_v set " + strings.Join(sets, ", "))
+}
+
+// evaluate the expression on the row of s4ql_v, and give its type and value as quote() writes it,
+// which is exact for every type, or the error. Comparisons of the value show its affinity and
+// collation, which a SELECT passes on from an expression to its column.
 func evaluate(conn *sqlite.Conn, e string) string {
-	rows, err := query(conn, "select typeof(v), quote(v) from (select "+e+" as v)")
+	rows, err := query(conn, "select typeof(v), quote(v), v = 'A', v < 'b', v = 1, v = '1' from (select "+e+" as v from s4ql_v)")
 	if err != nil {
 		return "error: " + message(err)
+	}
+	if len(rows) != 1 {
+		return fmt.Sprint(len(rows), " rows")
 	}
 	return strings.Join(rows[0], " ")
 }
@@ -857,9 +914,7 @@ func cannotEvaluate(e ast.Expr) string {
 	reason := ""
 	ast.Walk(e, func(n ast.Node) bool {
 		switch n.(type) {
-		case *ast.Subquery, *ast.Exists, *ast.InSelect:
-			reason = "it holds a SELECT"
-		case *ast.InTable:
+		case *ast.TableSource, *ast.TableFunction, *ast.InTable:
 			reason = "it names a table"
 		}
 		return reason == ""
