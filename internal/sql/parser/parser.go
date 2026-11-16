@@ -240,10 +240,11 @@ func (p *parser) read() {
 		if n == 0 {
 			// At the end of the input, SQLite hands the parser an empty semicolon, unless the last
 			// token was a semicolon, and then the end itself.
+			// Neither is a token of the tree, so neither needs its raw kind.
 			if len(p.toks) == 0 || p.toks[len(p.toks)-1].kind != token.Semi {
-				p.toks = append(p.toks, tok{kind: token.Semi, raw: token.Semi, off: p.next})
+				p.toks = append(p.toks, tok{kind: token.Semi, off: p.next})
 			}
-			p.toks = append(p.toks, tok{kind: kindEOF, raw: kindEOF, off: p.next})
+			p.toks = append(p.toks, tok{kind: kindEOF, off: p.next})
 			return
 		}
 		t := tok{kind: kind, raw: kind, off: p.next, n: n}
