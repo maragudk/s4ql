@@ -49,6 +49,7 @@ func TestPrint(t *testing.T) {
 		{"should write the arguments of a virtual table as tokens", "create virtual table t using m(a b, (c, d), )", "create virtual table t using m ( a b , ( c , d ) , )"},
 		{"should keep EXPLAIN", "explain query plan select 1", "explain query plan select 1"},
 		{"should keep a number with digit separators as one literal", "select 1_000", "select 1_000"},
+		{"should not put an operation that starts with the name WITH in parentheses, where WITH would start a SELECT", "select with % 2 + 1, - with", "select with % 2 + 1 , ( - with )"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

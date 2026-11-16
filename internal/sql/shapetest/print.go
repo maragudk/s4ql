@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"maragu.dev/s4ql/internal/sql/ast"
+	"maragu.dev/s4ql/internal/sql/token"
 )
 
 // Print the tree from n as SQL text written from its structure, so that the text shows the shape
@@ -120,7 +121,13 @@ func (p *printer) terms(ts []*ast.OrderingTerm, commas []ast.Token) {
 // wrapped reports whether the printer puts e in parentheses of its own: every operation, whose
 // grouping the parentheses show. Names, literals, parameters, and the forms that have parentheses
 // of their own, such as a function call, CAST, a subquery, and a row value, are not wrapped.
+//
+// An operation that starts with the name WITH is not wrapped either: after a parenthesis SQLite reads
+// WITH as the keyword that starts a SELECT, so `( WITH % 0 )` would not parse.
 func wrapped(e ast.Expr) bool {
+	if startsWithWith(e) {
+		return false
+	}
 	switch e := e.(type) {
 	case *ast.Unary, *ast.Binary, *ast.Is, *ast.NullTest, *ast.Like, *ast.Between, *ast.InList, *ast.InSelect,
 		*ast.InTable, *ast.Collate, *ast.Case:
@@ -129,6 +136,41 @@ func wrapped(e ast.Expr) bool {
 		return wrapped(e.X) || isParen(e.X)
 	default:
 		return false
+	}
+}
+
+// startsWithWith reports whether the first token of e is WITH, read as a name.
+func startsWithWith(e ast.Expr) bool {
+	for {
+		switch x := e.(type) {
+		case *ast.ColumnRef:
+			for _, t := range []ast.Token{x.Schema, x.Table, x.Column} {
+				if t.Present() {
+					return t.Kind == token.With
+				}
+			}
+			return false
+		case *ast.Binary:
+			e = x.X
+		case *ast.Is:
+			e = x.X
+		case *ast.NullTest:
+			e = x.X
+		case *ast.Like:
+			e = x.X
+		case *ast.Between:
+			e = x.X
+		case *ast.InList:
+			e = x.X
+		case *ast.InSelect:
+			e = x.X
+		case *ast.InTable:
+			e = x.X
+		case *ast.Collate:
+			e = x.X
+		default:
+			return false
+		}
 	}
 }
 

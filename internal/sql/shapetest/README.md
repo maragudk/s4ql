@@ -160,6 +160,7 @@ Where parentheses cannot be added, the printer adds none, and the check sees les
 - **IN and row values.** `x IN (SELECT ...)` is not `x IN ((SELECT ...))`, which is a list with a scalar subquery, and a row value needs its own parentheses.
 - **Text that SQLite copies.** SQLite takes four things from the text of the statement: the names of result columns without an alias, such as `count(*)`, the text of a CHECK, which goes into its Halt, the text of a DEFAULT, which `pragma table_info` shows, and the declared type. The printer changes that text, so the comparison masks it, leaves it out, or compares it without its spaces.
 - **Boundaries between keywords.** A fault at the boundary between a column's type and its constraints, or between clauses that are only keywords in a row, prints the same tokens in the same order. No comparison of texts can see it, so pinned tests in the parser must cover it.
+- **The name WITH.** After a parenthesis SQLite reads WITH as the keyword that starts a SELECT, so an operation whose first token is the name WITH is not wrapped: `select with % 2 + 1` prints as it is, and its grouping is shown only by precedence. The fuzzer found it with `SELECT WITH%0`.
 - **NOT before an operator.** SQLite lowers `x NOT BETWEEN a AND b` and `NOT (x BETWEEN a AND b)` to the same tree, and does the same for NOT LIKE, NOT GLOB, NOT REGEXP, NOT MATCH, and NOT IN.
 
 ## The comparison
