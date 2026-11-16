@@ -1,0 +1,227 @@
+# Equivalent mutants of the SQL tokenizer, syntax tree, and parser: changes that no test can notice,
+# because the code behaves the same with them. Each entry is the key of a mutant on a line of its
+# own, as `go run ./internal/sql/mutation -list` prints it, and the reason on the indented line after
+# it. The report lists every survivor that is not here, and every entry here that matches no
+# survivor, so the list cannot go stale unnoticed. TestEquivalent checks that each key names a mutant
+# that the generator makes.
+
+# The tokenizer, internal/sql/token.
+
+# A constant that the code never names.
+token/token.go ccIllegal constant: 28 => 29
+	ccIllegal is not used by name: class 28 in aiClass goes to the default case of Next.
+token/token.go ccIllegal constant: 28 => 27
+	ccIllegal is not used by name: class 28 in aiClass goes to the default case of Next.
+
+# The length of a table indexed by a byte.
+token/token.go aiClass constant: 256 => 257
+	aiClass is indexed by a byte, so the extra entry is never read.
+token/token.go ctypeMap constant: 256 => 257
+	ctypeMap is indexed by a byte, so the extra entry is never read.
+
+# Character classes that share a case of Next.
+token/token.go aiClass[35] constant: 5 => 4
+	'#' as ccDollar instead of ccVarAlpha: Next has one case for both.
+token/token.go aiClass[36] constant: 4 => 5
+	'$' as ccVarAlpha instead of ccDollar: Next has one case for both.
+token/token.go aiClass[58] constant: 5 => 4
+	':' as ccDollar instead of ccVarAlpha: Next has one case for both.
+token/token.go aiClass[64] constant: 5 => 4
+	'@' as ccDollar instead of ccVarAlpha: Next has one case for both.
+
+# Letters that start no keyword, as ccKywd0 instead of ccKywd: the word is looked up, is no keyword,
+# and is an ID of the same length.
+token/token.go aiClass[89] constant: 2 => 1
+	No keyword starts with 'Y', so the lookup gives ID for the same word.
+token/token.go aiClass[90] constant: 2 => 1
+	No keyword starts with 'Z', so the lookup gives ID for the same word.
+token/token.go aiClass[95] constant: 2 => 1
+	No keyword starts with '_', so the lookup gives ID for the same word.
+token/token.go aiClass[121] constant: 2 => 1
+	No keyword starts with 'y', so the lookup gives ID for the same word.
+token/token.go aiClass[122] constant: 2 => 1
+	No keyword starts with 'z', so the lookup gives ID for the same word.
+
+# Loops of Next that start one byte early, on a byte that the case has already checked: the extra
+# iteration changes nothing.
+token/token.go Next constant: i = 1 => i = 0
+	The first byte of a space has the class ccSpace, so isSpace holds for it too.
+token/token.go Next constant: i = 2 => i = 1
+	The second byte of a comment "--" is '-', neither NUL nor a line feed.
+token/token.go Next constant: i = 3 => i = 2
+	The loop of a block comment reads z[2] again into c, which it already holds, and a NUL there was refused before.
+token/token.go Next constant: i = 3 => i = 2 #2
+	z[2] of a hexadecimal number is a hexadecimal digit, checked before the loop.
+token/token.go Next constant: i = 1 => i = 0 #3
+	The loop of a [name] reads z[0], '[', again into c, which it already holds.
+token/token.go Next constant: i = 2 => i = 1 #2
+	z[1] of a keyword's word has a class of ccKywd or less, checked before the loop.
+
+# The loop of a variable ends at a NUL in its body anyway: a NUL is no identifier character, '(' or ':'.
+token/token.go Next condition: at(i) != 0 => true #2
+	A NUL in the body of a variable is not an identifier character, '(', or ':', so the body breaks there.
+token/token.go Next constant: at(i) != 0 => at(i) != 1 #2
+	A NUL or a 0x01 in the body of a variable is not an identifier character, '(', or ':', so the body breaks at either.
+
+# A word that starts with a keyword's first letter and has a digit after it: no keyword has a digit, so
+# the lookup gives ID, and the word ends where it ends either way.
+token/token.go Next neighbour: aiClass[at(1)] > ccKywd => aiClass[at(1)] > ccDigit
+	A word with a digit at z[1] is looked up and found to be no keyword, an ID of the same length.
+token/token.go Next remove statement: i = 1 =>
+	With i at 0 the loop of identifier characters reads z[0], a letter, and ends where it does from 1.
+token/token.go Next constant: i = 1 => i = 0 #6
+	With i at 0 the loop of identifier characters reads z[0], a letter, and ends where it does from 1.
+token/token.go Next neighbour: aiClass[at(i)] <= ccKywd => aiClass[at(i)] <= ccDigit
+	A word that takes in digits is looked up and found to be no keyword, an ID of the same length.
+
+# A word that reaches the loop of identifier characters at the end of Next: its first byte, and every
+# byte the case has read, are identifier characters, so the loop ends at the same byte from any start
+# among them.
+token/token.go Next remove statement: i++ => #7
+	After the break, the loop of identifier characters reads the byte that i++ skips, an identifier character.
+token/token.go Next increment: i++ => i-- #20
+	After the break, the loop of identifier characters reads the bytes from one before, all identifier characters.
+token/token.go Next remove statement: i = 1 => #2
+	From 0, the loop of identifier characters reads the 'x' first, an identifier character.
+token/token.go Next constant: i = 1 => i = 0 #7
+	From 0, the loop of identifier characters reads the 'x' first, an identifier character.
+token/token.go Next remove statement: i = 1 => #3
+	From 0, the loop of identifier characters reads the first byte, a letter or a byte from 0x80 up, an identifier character.
+token/token.go Next constant: i = 1 => i = 0 #8
+	From 0, the loop of identifier characters reads the first byte, a letter or a byte from 0x80 up, an identifier character.
+token/token.go Next remove statement: i = 1 => #4
+	From 0, the loop of identifier characters reads 0xEF first, an identifier character.
+token/token.go Next constant: i = 1 => i = 0 #9
+	From 0, the loop of identifier characters reads 0xEF first, an identifier character.
+
+# keywordCode is given only words of ASCII letters and '_'.
+token/token.go keywordCode constant: 17 => 18
+	A word of 18 letters is looked up and is no keyword, so it is ID either way.
+token/token.go keywordCode condition: c <= 'z' => true
+	A word holds no byte above 'z'.
+token/token.go keywordCode constant: c <= 'z' => c <= '{'
+	A word holds no '{'.
+token/token.go keywordCode constant: 'a' <= c => '`' <= c
+	A word holds no '`'.
+
+# The syntax tree, internal/sql/ast.
+
+ast/ast.go planOf remove statement: f.kind = fieldToken =>
+	fieldToken is the zero value of fieldKind.
+ast/ast.go planOf remove statement: plans.Store(t, fs) =>
+	The cache of plans only saves time: a plan is built again on each use.
+ast/ast.go AllTokens swap arguments: append(tokens, Tokens(m)...) => append(Tokens(m), tokens...)
+	AllTokens sorts the tokens after the walk.
+ast/check.go checkSpans swap arguments: cmp.Or(cmp.Compare(a.span.Start, b.span.Start), cmp.Compare(a.span.End, b.span.End)) => cmp.Or(cmp.Compare(a.span.End, b.span.End), cmp.Compare(a.span.Start, b.span.Start))
+	Parts that do not overlap are in the same order by end as by start, and parts that overlap fail the check in either order.
+ast/check.go checkSpans swap arguments: cmp.Compare(a.span.End, b.span.End) => cmp.Compare(b.span.End, a.span.End)
+	Only parts with the same start are ordered by their end, and two such parts overlap, which fails the check in either order.
+ast/check.go checkSpans condition: p.empty => true
+	A part that is not empty lies inside the span once the checks of the covered span and of overlaps have passed.
+ast/dump.go dumpFields constant: inner.Len() > 0 => inner.Len() > 1
+	A field that is written is at least its name and ": ", so the text is never one byte long.
+
+# The parser, internal/sql/parser.
+
+# Precedences. Only their order matters, and a tie stops the loop of exprPrec unless the operator is
+# NOT: two neighbouring levels behave as one where no operator of the higher one can follow an
+# operand of the lower one, or the only one that can is NOT.
+parser/expr.go precAnd constant: 2 => 3
+	AND at the level of NOT: the only operator of that level after an operand is NOT, which continues on a tie.
+parser/expr.go precNot constant: 3 => 2
+	NOT at the level of AND: NOT continues on a tie, and AND stops on one, as it did below NOT.
+parser/expr.go precCompare constant: 5 => 6
+	Level 6, ESCAPE's, is unused, so the order of the levels stays the same.
+parser/expr.go precBit constant: 7 => 6
+	Level 6, ESCAPE's, is unused, so the order of the levels stays the same.
+parser/expr.go precCollate constant: 11 => 12
+	No infix operator has the level of BITNOT, and COLLATE after a unary operand stops on the tie as it did below it.
+parser/expr.go precBitNot constant: 12 => 13
+	Unary + - ~ stay above every infix operator.
+parser/expr.go precBitNot constant: 12 => 11
+	COLLATE after a unary operand stops on the tie, as it did below the unary level.
+parser/expr.go infixPrec neighbour: return precAnd => return precNot
+	AND at the level of NOT: the only operator of that level after an operand is NOT, which continues on a tie.
+parser/expr.go infixPrec neighbour: return precCollate => return precBitNot
+	No infix operator has the level of BITNOT, and COLLATE after a unary operand stops on the tie as it did below it.
+parser/expr.go parser.unary neighbour: p.exprPrec(precNot, false) => p.exprPrec(precAnd, false)
+	The operand of NOT read at AND's level: AND stops on the tie and NOT continues, as at NOT's level.
+parser/expr.go parser.unary neighbour: p.exprPrec(precBitNot, false) => p.exprPrec(precCollate, false)
+	The operand of a unary operator read at COLLATE's level: COLLATE stops on the tie, as it did below.
+
+# The flag stopAtAnd of exprPrec matters only for an operand below AND's level, which only the low
+# operand of BETWEEN is.
+parser/expr.go parser.infix boolean: false => true
+	The right operand of IS is read at the level of IS, above AND, where an AND stops the loop anyway.
+parser/expr.go parser.like boolean: false => true
+	The right operand of LIKE is read at the level of LIKE, above AND, where an AND stops the loop anyway.
+parser/expr.go parser.like boolean: false => true #2
+	The operand of ESCAPE is read at the level of LIKE, above AND, where an AND stops the loop anyway.
+parser/expr.go parser.between boolean: false => true
+	The high operand of BETWEEN is read at the level of BETWEEN, above AND, where an AND stops the loop anyway.
+parser/expr.go parser.unary boolean: false => true
+	The operand of NOT is read at the level of NOT, above AND, where an AND stops the loop anyway.
+parser/expr.go parser.unary boolean: false => true #2
+	The operand of a unary operator is read at the level of BITNOT, above AND, where an AND stops the loop anyway.
+
+parser/expr.go parser.primary neighbour: isName(t, classIdj) => isName(t, classNm)
+	classNm adds STRING to classIdj, and primary has read a STRING in its case before.
+parser/expr.go parser.checkVariable condition: len(text) >= 2 => true
+	A variable that starts with '#' has a name after it, so the length matters only for one that does not, where the next test fails first.
+parser/expr.go parser.checkVariable constant: len(text) >= 2 => len(text) >= 1
+	A variable that starts with '#' has a name after it, so the length matters only for one that does not, where the next test fails first.
+parser/expr.go parser.checkVariable constant: '0' <= text[1] => '/' <= text[1]
+	'/' cannot follow '#' in a variable: it is not an identifier character.
+parser/expr.go digitSeparatorError constant: '0' <= c => '/' <= c
+	'/' cannot be in a number.
+parser/expr.go digitSeparatorError constant: c <= '9' => c <= ':'
+	':' cannot be in a number.
+parser/expr.go digitSeparatorError constant: 'a' <= c => '`' <= c
+	'`' cannot be in a number.
+parser/expr.go digitSeparatorError constant: c <= 'f' => c <= 'g'
+	A 'g' makes a hexadecimal number an unrecognized token, which is no QNUMBER.
+parser/expr.go digitSeparatorError constant: 'A' <= c => '@' <= c
+	'@' cannot be in a number.
+parser/expr.go digitSeparatorError constant: c <= 'F' => c <= 'G'
+	A 'G' makes a hexadecimal number an unrecognized token, which is no QNUMBER.
+parser/expr.go digitSeparatorError condition: c <= 'f' => true
+	A byte above 'f' in a hexadecimal number makes it an unrecognized token, but for the 'x' at index 1, which is never next to a separator.
+parser/expr.go digitSeparatorError constant: '0' <= c => '/' <= c #2
+	'/' cannot be in a number.
+parser/expr.go digitSeparatorError constant: c <= '9' => c <= ':' #2
+	':' cannot be in a number.
+
+parser/ddl.go parser.createVirtualTable swap cases: case token.LP: depth++ case token.RP: depth-- => case token.LP: depth-- case token.RP: depth++
+	The depth is only compared with 0, and a ")" at depth 0 ends the argument before it is counted, so counting down for "(" gives the same.
+
+# The token stream and the end of input.
+parser/parser.go Tokens condition: n == 0 => false
+	Inside the span of a statement read from src the tokenizer never gives an empty token; only a statement from another text reaches the guard.
+parser/parser.go Tokens remove statement: break =>
+	Inside the span of a statement read from src the tokenizer never gives an empty token; only a statement from another text reaches the guard.
+parser/parser.go tok.synthetic condition: t.kind == token.Semi => true
+	The only other token of length 0 is the end of input, and every caller has checked that the token is a semicolon or not the end.
+parser/parser.go kindEOF constant: 255 => 254
+	Any value that is no kind of the tokenizer does; 254 is none.
+parser/parser.go parser.read condition: len(p.toks) == 0 || p.toks[len(p.toks)-1].kind != token.Semi => true
+	An empty semicolon after a semicolon at the end is never read: the statement ends at the first, and a trigger or a virtual table that is open fails with incomplete input at either.
+parser/parser.go parser.read condition: len(p.toks) == 0 => true
+	An empty semicolon after a semicolon at the end is never read: the statement ends at the first, and a trigger or a virtual table that is open fails with incomplete input at either.
+parser/parser.go parser.read condition: p.toks[len(p.toks)-1].kind != token.Semi => true
+	An empty semicolon after a semicolon at the end is never read: the statement ends at the first, and a trigger or a virtual table that is open fails with incomplete input at either.
+parser/parser.go parser.read neighbour: p.toks[len(p.toks)-1].kind != token.Semi => p.toks[len(p.toks)-1].kind != token.LP
+	With or without the empty semicolon, a text that ends after "(" or ";" fails with incomplete input or ends at the ";".
+parser/parser.go parser.read element: , off: p.next =>
+	The offset of the empty semicolon is never read: no node starts at it, and its error has no offset.
+parser/parser.go parser.read element: , off: p.next => #2
+	The offset of the end of input is never read: no node starts at it, and its error has no offset.
+parser/parser.go parser.read remove statement: return => #2
+	Without it, read goes on to append an unrecognized token of length 0 after the end of input, which nothing reads.
+parser/parser.go parser.lastKind constant: return 0 => return 1
+	The kind before the first token is only compared with RP.
+parser/parser.go parser.run constant: stmt, tail, err = nil, 0, p.result() => stmt, tail, err = nil, 1, p.result()
+	Parse promises no tail with an error, and no caller reads it.
+parser/parser.go parser.run constant: return nil, 0, err => return nil, 1, err
+	Parse promises no tail with an error, and no caller reads it.
+parser/parser.go parser.enter swap arguments: max(p.maxDepth, p.depth) => max(p.depth, p.maxDepth)
+	max is symmetric.

@@ -92,10 +92,10 @@ The rule has four parts:
 
 The check is generic, so no list of node kinds can go stale:
 
-- `Children` and `Tokens` read the fields of any node through reflection, with a plan cached per type. A field must be a `Token`, a `[]Token`, a node, a slice of nodes, or a struct or pointer to a struct made of those. Any other field type, such as `bool`, `int`, or `string`, panics. A token cannot hide where the walk does not look, and a node cannot keep what was written in anything but tokens.
+- `Children` and `Tokens` read the fields of any node through reflection, with a plan cached per type. A field must be a `Token`, a `[]Token`, a node, a slice of nodes, or a struct made of those. Any other field type, such as `bool`, `int`, or `string`, panics. A token cannot hide where the walk does not look, and a node cannot keep what was written in anything but tokens.
 - `TestPlanOf` in `ast_internal_test.go` parses the package's source with `go/parser`. It checks that every node type is in the test's list and has a valid plan, and that a node with an `int` field panics.
 - `ast.CheckOwnership` compares `ast.AllTokens(root)` with the tokens that the tokenizer gives for the statement's span, and checks the spans of every node.
-- `TestCheckOwnership` in `check_test.go` proves the check with trees broken on purpose. It finds each one: a token that no node owns, a token that two nodes own, a token that was not read, a span too wide, a span too narrow, a child that overlaps a token of its parent, a token of the wrong kind, and an empty node outside its parent.
+- `TestCheckOwnership` in `check_test.go` proves the check with trees broken on purpose. It requires the exact message of the part of the check that finds each one: a token that no node owns, a token that two nodes own, a token that was not read, a token of the wrong kind, a token without text, a span too wide, a span too narrow, a span that ends before it starts, a child that overlaps a token of its parent, an empty node outside or before its parent, and a node without tokens whose span is not empty. An empty node at either end of its parent passes.
 
 The check runs on every statement that parses in the corpus test, the mutant test, the generator test, `TestParse_sqlite`, the shape tests, and both fuzz tests.
 
@@ -436,7 +436,7 @@ Against SQLite on many texts:
 - `TestParse_corpus` runs the whole corpus of 139,234 statements. The parser and SQLite agree on 138,926, SQLite does not say on 308, and they disagree on none. It checks ownership on every statement that parses.
 - `TestParse_mutants` runs three one-token mutants of every corpus entry, 416,271 texts, with no disagreement. A run with `-args -mutants 40 -seed 1000` compared 5,550,280 mutants with no disagreement.
 - `TestGenerate` runs random sentences of the grammar. A generator derives them from the rules of `parse.y`, from the start symbol `input`. Half the time it prefers the least used rule of a nonterminal, and it takes the shortest rules when its budget runs out. Names come from a pool of plain names, every quote style, every fallback keyword, the join keywords, and some keywords that are not names. By default it runs 20,000 sentences and two mutants of each, 60,000 texts, with no disagreement. A run with `-args -generated 400000 -seed 77` compared 1,200,000 texts with no disagreement, of which 415,679 parse.
-- `TestParse_sqlite` compares about 200 texts written by hand for corners that the corpus touches little.
+- `TestParse_sqlite` compares about 230 texts written by hand for corners that the corpus touches little.
 - `TestParse_offsetAfterValues` compares 1,034 texts with a `#N` and a multi-row VALUES, for 94 forms of expression in 11 places. On a fresh connection, the offset of the `#N` error there depends on whether the rows are constant. On the oracle's connection, SQLite gives an offset for all 1,008 syntax errors, and does not say on the other 26 texts.
 
 Against SQLite's grammar and automaton:
@@ -468,13 +468,11 @@ Under `-short`, the race detector, or the address sanitizer, the corpus tests us
 
 ### Statement coverage
 
-Go's statement coverage of package `parser` is 99.5%. Five places are not covered:
+Go's statement coverage of package `parser` is 99.9%. One place is not covered: the guard in `Tokens` against an empty token, which the tokenizer does not give inside a statement.
 
-- the default case of `tableConstraint`, because its caller checks the token first
-- the code that passes on a panic that is not a syntax error, which only a bug reaches
-- the guard in `advance`, which only a bug reaches
-- the guard in `Tokens` against an empty token, which the tokenizer does not give inside a statement
-- the lookahead past the end of input, because no rule needs three tokens of lookahead there
+### Mutation testing
+
+[`internal/sql/mutation`](../mutation/README.md) measures the tests by mutation testing. It changes the code of `token`, `ast`, and `parser`, one small change at a time, and reports every change that no test notices. `make mutation` runs it. Of the 6,223 mutants that compile, the tests kill or time out on 98.55%, and the other 90 are equivalent. Every survivor is killed by a new test, removed with its code, or listed in [`../mutation/equivalent.txt`](../mutation/equivalent.txt) with its reason.
 
 ### Fuzzing
 
@@ -483,7 +481,7 @@ Go's statement coverage of package `parser` is 99.5%. Five places are not covere
 - `FuzzParse` is seeded with every 25th corpus entry and with `own.txt`. It compares the parser with SQLite on the text, and checks the ownership of every statement that `ParseAll` reads from it.
 - `FuzzGenerate` fuzzes the seed and the budget of the generator, and one mutant of the sentence.
 
-A run of `FuzzParse` for 40 minutes on 10 cores made 352,479,538 executions and found nothing. A second run found, after 135,493,514 executions in 19 minutes, that a multi-row VALUES can keep the offset of a `#N` error that a fresh connection otherwise loses (see [The loaded schema](../oracle/README.md#the-loaded-schema) in the oracle's README); the input is in `testdata/fuzz/FuzzParse`. After a first fix, which loading the schema has since replaced, a third run of 30 minutes made 279,930,645 executions and found nothing, 767,903,697 executions in all. A run of `FuzzGenerate` for 10 minutes made 16,059,438 executions and found nothing. With the oracle on a connection whose schema is loaded, two runs of `FuzzParse` of 20 and 15 minutes on 8 cores, on a busy machine, made 129,798,343 executions and found nothing. `FuzzGenerate` made 12,011,778 executions in 10 minutes and found nothing.
+A run of `FuzzParse` for 40 minutes on 10 cores made 352,479,538 executions and found nothing. A second run found, after 135,493,514 executions in 19 minutes, that a multi-row VALUES can keep the offset of a `#N` error that a fresh connection otherwise loses (see [The loaded schema](../oracle/README.md#the-loaded-schema) in the oracle's README); the input is in `testdata/fuzz/FuzzParse`. After a first fix, which loading the schema has since replaced, a third run of 30 minutes made 279,930,645 executions and found nothing, 767,903,697 executions in all. A run of `FuzzGenerate` for 10 minutes made 16,059,438 executions and found nothing. With the oracle on a connection whose schema is loaded, two runs of `FuzzParse` of 20 and 15 minutes on 8 cores, on a busy machine, made 129,798,343 executions and found nothing. `FuzzGenerate` made 12,011,778 executions in 10 minutes and found nothing. After the changes of the mutation testing, a run of `FuzzParse` on 4 workers made 105,000,000 executions in 75 minutes, on a busy machine, and found nothing.
 
 ### Run times
 

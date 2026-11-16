@@ -4,6 +4,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -284,6 +286,11 @@ func TestParse_sqlite(t *testing.T) {
 		"select 1_ from t", "select 1 limit 1_", "select x'0' 1_", "select #1 #2", "select 1_ #1", "select #1 1_",
 		"select 0x1_g", "select 1_.5_e1_0", "select 1e1_0", "select 0x_1", "select 0x1__1", "select ._5", "select 5._",
 		"select #1abc", "select #a", "select #", "select 1 from t where #1 and 1_", "explain query select 1",
+		"select #$a", "select #::a", "select #a::b", "select 0_e1", "select 0_E1", "select 01_e5", "select 0x1_e",
+		"select 0x0_9", "select 0x9_0", "select 0xa_f", "select 0xf_a", "select 0xA_F", "select 0xF_A", "select 0_9",
+		"select 9_0", "select 1._5", "select 1_._5", "select window(1)", "select over(1)", "select filter(1)",
+		"select window.x from t", "select (1) over(1)", "with c as (select 1) delete from t returning *",
+		"with c as (select 1) update t set a = 1 returning *", "with c as (select 1) insert into t default values returning *",
 		"values(0),(0) union select #1", "values(0),(a) union select #1", "values(0),(0) union select #1 from t",
 		"insert into t values(0),(0) returning #1", "attach (values(0),(0)) as #1",
 		"explain query plan explain select 1", "pragma x.y(z)", "pragma x = +1.5", "pragma x = - 1", "pragma x = 'a'",
@@ -330,6 +337,11 @@ func TestParse_depth(t *testing.T) {
 				tr := parser.TraceParse(src)
 				r := l.run(tr.Tokens)
 				is.True(t, tr.MaxDepth <= max(r.maxStack, 1), fmt.Sprint(k, ": depth ", tr.MaxDepth, ", stack ", r.maxStack))
+				// Each level of a nesting that parses is a level of depth, or the check above would prove
+				// nothing.
+				if tr.OK {
+					is.True(t, tr.MaxDepth >= k, fmt.Sprint(k, ": depth ", tr.MaxDepth))
+				}
 				_, _, err := parser.Parse(src)
 				var e *parser.Error
 				if errors.As(err, &e) && e.Limit {
@@ -346,9 +358,27 @@ func TestParse_depth(t *testing.T) {
 		var e *parser.Error
 		is.True(t, errors.As(err, &e))
 		is.True(t, e.Limit)
-		is.Equal(t, "s4ql: the statement is nested deeper than the limit of 2500", e.Message)
+		is.Equal(t, parser.Error{Message: "s4ql: the statement is nested deeper than the limit of 2500", Offset: -1, Limit: true}, *e)
 		_, _, err = parser.Parse("select " + strings.Repeat("(", 2499) + "1" + strings.Repeat(")", 2499))
 		is.NotError(t, err)
+	})
+
+	t.Run("should not count a sibling as a level of nesting", func(t *testing.T) {
+		var ctes []string
+		for i := range parser.MaxDepth + 10 {
+			ctes = append(ctes, fmt.Sprintf("c%v as (select 1)", i))
+		}
+		for _, src := range []string{
+			"with " + strings.Join(ctes, ", ") + " select 1",
+			"select * from " + strings.Repeat("(select 1), ", parser.MaxDepth+10) + "t",
+			"select * from " + strings.Repeat("(a join b), ", parser.MaxDepth+10) + "t",
+			"select " + strings.Repeat("(1), ", parser.MaxDepth+10) + "1",
+		} {
+			_, _, err := parser.Parse(src)
+			is.NotError(t, err)
+			d, found, _ := parsetest.Check(parsetest.ParserFunc(parse), src)
+			is.True(t, !found, d.String())
+		}
 	})
 
 	t.Run("should fail at once on a nesting of a million", func(t *testing.T) {
@@ -362,6 +392,18 @@ func TestParse_depth(t *testing.T) {
 		is.True(t, errors.As(err, &e) && e.Limit)
 		_, _, err = parser.Parse(strings.Repeat("with a as (", 1_000_000))
 		is.True(t, errors.As(err, &e) && e.Limit)
+	})
+}
+
+// TestMaxLength checks the length limit against the vendored SQLite, since a text of that length is
+// too large for a test: TestParse_length in parser_internal_test.go tests the rule at a smaller limit.
+func TestMaxLength(t *testing.T) {
+	t.Run("should be SQLITE_MAX_SQL_LENGTH of the vendored SQLite, which the binding does not change", func(t *testing.T) {
+		src, err := os.ReadFile("../../sqlite/c/sqlite3.c")
+		is.NotError(t, err)
+		m := regexp.MustCompile(`(?m)^# define SQLITE_MAX_SQL_LENGTH (\d+)$`).FindSubmatch(src)
+		is.True(t, m != nil, "no SQLITE_MAX_SQL_LENGTH")
+		is.Equal(t, fmt.Sprint(parser.MaxLength), string(m[1]))
 	})
 }
 
@@ -550,6 +592,10 @@ func TestParse_expressions(t *testing.T) {
 		{`?1`, `Variable{Name: ?1}`},
 		{`:name`, `Variable{Name: :name}`},
 		{`"t"`, `ColumnRef{Column: "t"}`},
+		{`window`, `ColumnRef{Column: window}`},
+		{`window x`, `ColumnRef{Column: window}`},
+		{`over`, `ColumnRef{Column: over}`},
+		{`filter`, `ColumnRef{Column: filter}`},
 		{`[t]`, `ColumnRef{Column: [t]}`},
 		{"`t`", "ColumnRef{Column: `t`}"},
 		{`t.c`, `ColumnRef{Table: t, Dot2: ., Column: c}`},

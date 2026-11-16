@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"strings"
 
 	"maragu.dev/s4ql/internal/sql/ast"
 	"maragu.dev/s4ql/internal/sql/token"
@@ -12,12 +13,12 @@ import (
 // the precedence of a rule is that of its first terminal with a precedence, unless the rule names one
 // in brackets.
 const (
-	precOr      = 1  // %left OR.
-	precAnd     = 2  // %left AND.
-	precNot     = 3  // %right NOT.
-	precEq      = 4  // %left IS MATCH LIKE_KW BETWEEN IN ISNULL NOTNULL NE EQ.
-	precCompare = 5  // %left GT LE LT GE.
-	precEscape  = 6  // %right ESCAPE.
+	precOr      = 1 // %left OR.
+	precAnd     = 2 // %left AND.
+	precNot     = 3 // %right NOT.
+	precEq      = 4 // %left IS MATCH LIKE_KW BETWEEN IN ISNULL NOTNULL NE EQ.
+	precCompare = 5 // %left GT LE LT GE.
+	// 6 is %right ESCAPE, which like reads itself after its right operand.
 	precBit     = 7  // %left BITAND BITOR LSHIFT RSHIFT.
 	precAdd     = 8  // %left PLUS MINUS.
 	precMul     = 9  // %left STAR SLASH REM.
@@ -79,7 +80,8 @@ func (p *parser) exprPrec(min int, stopAtAnd bool) ast.Expr {
 	for {
 		k := p.cur().kind
 		prec := infixPrec(k)
-		if prec == 0 || prec < min || (prec == min && k != token.Not) {
+		// A token that starts no operator has the precedence 0, which is never above min.
+		if prec < min || (prec == min && k != token.Not) {
 			return x
 		}
 		if stopAtAnd && k == token.And {
@@ -485,7 +487,7 @@ func (p *parser) checkDigitSeparators() {
 // digitSeparatorError of the number z, as sqlite3DequoteNumber reports it.
 func digitSeparatorError(z string) (string, bool) {
 	buf := append([]byte(z), 0)
-	hex := len(z) >= 2 && z[0] == '0' && (z[1] == 'x' || z[1] == 'X')
+	hex := strings.HasPrefix(z, "0x") || strings.HasPrefix(z, "0X")
 	digit := func(c byte) bool {
 		if hex {
 			return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
@@ -495,12 +497,13 @@ func digitSeparatorError(z string) (string, bool) {
 	var msg string
 	bad := false
 	out := 0
+	// A number starts with a digit or a ".", so a separator is never first and has a byte before it.
 	for in := 0; ; in++ {
 		c := buf[in]
 		if c != '_' {
 			buf[out] = c
 			out++
-		} else if in == 0 || !digit(buf[in-1]) || !digit(buf[in+1]) {
+		} else if !digit(buf[in-1]) || !digit(buf[in+1]) {
 			msg = fmt.Sprintf(`unrecognized token: "%s"`, buf[:len(z)])
 			bad = true
 		}

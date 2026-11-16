@@ -150,12 +150,9 @@ type parser struct {
 	end int
 	// toks read so far, without spaces and comments.
 	toks []tok
-	// start of the text to parse, next offset in src for the tokenizer, and whether the end, or an
-	// unrecognized token, has been reached.
-	start   int
-	next    int
-	atEnd   bool
-	illegal bool
+	// start of the text to parse, and next offset in src for the tokenizer.
+	start int
+	next  int
 	// i is the index in toks of the current token.
 	i int
 	// lastEnd is the end offset of the last token consumed.
@@ -179,7 +176,7 @@ func textEnd(src string) int {
 // newParser of the first statement of src that starts at or after the offset start, where the text
 // ends at end.
 func newParser(src string, start, end int) *parser {
-	return &parser{src: src, end: end, start: start, next: start, lastEnd: start}
+	return &parser{src: src, end: end, start: start, next: start}
 }
 
 // parseAt parses the first statement of src that starts at or after the offset start, where the
@@ -234,24 +231,20 @@ func (p *parser) tokAt(i int) tok {
 }
 
 // read the next token that is not a space or a comment into p.toks: as the parse loop
-// sqlite3RunParser in tokenize.c hands tokens to the parser.
+// sqlite3RunParser in tokenize.c hands tokens to the parser. The parser never reads past the end of
+// input or past an unrecognized token: it fails at either, and it looks ahead at most two tokens,
+// and only past a name and a dot.
 func (p *parser) read() {
-	if p.atEnd || p.illegal {
-		// Past the end, or past an unrecognized token, the parser never reads; a lookahead there sees
-		// the same token again.
-		p.toks = append(p.toks, p.toks[len(p.toks)-1])
-		return
-	}
 	for {
 		kind, n := token.Next(p.src[p.next:p.end])
 		if n == 0 {
 			// At the end of the input, SQLite hands the parser an empty semicolon, unless the last
 			// token was a semicolon, and then the end itself.
-			p.atEnd = true
+			// Neither is a token of the tree, so neither needs its raw kind.
 			if len(p.toks) == 0 || p.toks[len(p.toks)-1].kind != token.Semi {
-				p.toks = append(p.toks, tok{kind: token.Semi, raw: token.Semi, off: p.next})
+				p.toks = append(p.toks, tok{kind: token.Semi, off: p.next})
 			}
-			p.toks = append(p.toks, tok{kind: kindEOF, raw: kindEOF, off: p.next})
+			p.toks = append(p.toks, tok{kind: kindEOF, off: p.next})
 			return
 		}
 		t := tok{kind: kind, raw: kind, off: p.next, n: n}
@@ -262,8 +255,6 @@ func (p *parser) read() {
 		switch kind {
 		case token.Space, token.Comment:
 			continue
-		case token.Illegal:
-			p.illegal = true
 		case token.Window:
 			t.kind = analyzeWindowKeyword(p.src[p.next:p.end])
 		case token.Over:
@@ -293,8 +284,8 @@ func getToken(z string) (token.Kind, string) {
 		if kind == token.Space || kind == token.Comment {
 			continue
 		}
-		if kind == token.ID || kind == token.String || kind == token.JoinKw || kind == token.Window ||
-			kind == token.Over || isFallback(kind) {
+		if kind == token.String || kind == token.JoinKw || kind == token.Window || kind == token.Over ||
+			isFallback(kind) {
 			kind = token.ID
 		}
 		return kind, z

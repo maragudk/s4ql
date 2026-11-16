@@ -87,16 +87,6 @@ func dumpFields(b *strings.Builder, v reflect.Value, plan []field, first *bool) 
 				b.WriteString(inner.String())
 				b.WriteByte('}')
 			}
-		case fieldStructPtr:
-			if !fv.IsNil() {
-				inner := &strings.Builder{}
-				innerFirst := true
-				dumpFields(inner, fv.Elem(), f.plan, &innerFirst)
-				sep(name)
-				b.WriteByte('{')
-				b.WriteString(inner.String())
-				b.WriteByte('}')
-			}
 		}
 	}
 }

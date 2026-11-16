@@ -98,19 +98,18 @@ var (
 type fieldKind int
 
 const (
-	fieldToken     fieldKind = iota + 1 // a Token
-	fieldTokens                         // a []Token
-	fieldNode                           // a Node: an interface or a pointer to a node
-	fieldNodes                          // a slice of Nodes
-	fieldStruct                         // a struct that is not a node, whose fields belong to the node
-	fieldStructPtr                      // a pointer to such a struct
+	fieldToken  fieldKind = iota // a Token
+	fieldTokens                  // a []Token
+	fieldNode                    // a Node: an interface or a pointer to a node
+	fieldNodes                   // a slice of Nodes
+	fieldStruct                  // a struct that is not a node, whose fields belong to the node
 )
 
 // field of a node type that the walk visits.
 type field struct {
 	index []int
 	kind  fieldKind
-	plan  []field // for fieldStruct and fieldStructPtr: the fields of the struct
+	plan  []field // for fieldStruct: the fields of the struct
 }
 
 // plans of the node types, by type of the struct, built on first use.
@@ -144,9 +143,6 @@ func planOf(t reflect.Type) []field {
 		case ft.Kind() == reflect.Struct:
 			f.kind = fieldStruct
 			f.plan = planOf(ft)
-		case ft.Kind() == reflect.Pointer && ft.Elem().Kind() == reflect.Struct:
-			f.kind = fieldStructPtr
-			f.plan = planOf(ft.Elem())
 		default:
 			panic(fmt.Sprintf("ast: field %v.%v of type %v holds neither tokens nor nodes", t.Name(), sf.Name, ft))
 		}
@@ -181,21 +177,14 @@ func visit(v reflect.Value, plan []field, tok func(Token), child func(Node)) {
 			}
 		case fieldStruct:
 			visit(fv, f.plan, tok, child)
-		case fieldStructPtr:
-			if !fv.IsNil() {
-				visit(fv.Elem(), f.plan, tok, child)
-			}
 		}
 	}
 }
 
-// structOf the node n, which must be a non-nil pointer to a struct.
+// structOf the node n, which must not be nil. Every node is a pointer to a struct, since the methods
+// of Node come from embedding base, whose methods have pointer receivers.
 func structOf(n Node) reflect.Value {
-	v := reflect.ValueOf(n)
-	if v.Kind() != reflect.Pointer || v.Elem().Kind() != reflect.Struct {
-		panic(fmt.Sprintf("ast: node of type %T is not a pointer to a struct", n))
-	}
-	return v.Elem()
+	return reflect.ValueOf(n).Elem()
 }
 
 // Children of n that are present, in the order of its fields.
