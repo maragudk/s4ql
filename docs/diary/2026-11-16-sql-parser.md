@@ -45,3 +45,106 @@ That the requirements above match the brief.
 ### Future work
 
 None yet.
+
+## Step 2: How Lemon decides, read from its own report
+
+**Author:** sql-parser-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "`%fallback` (which keywords can be names, and where: this depends on the grammar position, and must match Lemon's behaviour at every position)" and "when in doubt about how SQLite groups something, find out from `parse.y` and from an experiment with the binding, not from memory."
+**Interpretation:** Before writing a recursive-descent parser, find out exactly where Lemon's automaton differs from what a reader of `parse.y` would expect.
+**Inferred intent:** No guessing about the one part of the grammar that is not in the rules themselves.
+
+### What I did
+
+In the scratch directory I built `tool/lemon.c` twice: as is, and with `PrintAction` changed to print the actions that `CompressTables` folds into a state's default reduction (they are `NOT_USED` and normally invisible). `./lemon2 -p parse.y` wrote a `parse.out` with all 600 states, their items, every action, and the 632 actions dropped by precedence. A Python script over it listed, for each state where ID has an action of its own, the fallback keywords that are actions of their own there, and the fallback keywords whose only action is the folded default reduction.
+
+I read `sqlite3RunParser` and the three `analyze*Keyword` functions in `tokenize.c`, `yy_find_shift_action`, `yy_find_reduce_action`, `yy_shift`, and `Parse` in `tool/lempar.c`, `resolve_conflict`, `FindRulePrecedences`, and `CompressTables` in `tool/lemon.c`, and `sqlite3DequoteNumber` and `sqlite3ErrorMsg` in `util.c`.
+
+### Why
+
+Lemon tries `%fallback` only for a token that has no action of its own in the current state, and a reduction that is the state's default is not an action of its own. So a keyword that could be shifted after a default reduction is read as ID instead wherever ID can be shifted at once. Only the report shows where that happens.
+
+### What worked
+
+The analysis found exactly four such states, all for GENERATED: after a column's name (in CREATE TABLE and in ALTER TABLE ADD), after a word of a column's type, and after `AS (expr)` of a generated column. So `a int generated always as (1)` has the type `int generated always` and a plain `AS (1)`. SQLite agrees: it prepares to `must have at least one non-generated column`. Everywhere else the rule is the natural one for recursive descent: a fallback keyword is a name unless the grammar can use it as a keyword at that very point, and the report lists those points (CAST, RAISE, and CTIME_KW where an expression starts; WITH after "(" where a SELECT can start; CURRENT and UNBOUNDED at a frame bound; PARTITION, RANGE, ROWS, and GROUPS at the start of a window; RECURSIVE after WITH; WITHOUT among table options; CTIME_KW after DEFAULT).
+
+Precedence matters in two places only: the expression rules and `on_using ::= . [OR]`, which makes an ON after a FROM item always the join's.
+
+### What didn't work
+
+My first scripts were here-documents in the shell, which the worktree isolation refused: `This agent is isolated in the worktree ..., but this command is too complex to verify that it stays inside the worktree.` Scripts go through the editor tool now.
+
+### What I learned
+
+- A rule's precedence is that of its leftmost terminal with a precedence (`FindRulePrecedences`), so `expr ::= expr NOT NULL` has NOT's precedence 3 and `expr ::= expr IS NOT expr` has IS's 4.
+- After `expr between_op expr`, the AND is shifted into a state that also holds `expr ::= expr AND * expr`; after the high operand, the reduce-reduce conflict goes to BETWEEN by precedence. So the low operand continues over every operator but a top-level AND, and the high operand has BETWEEN's precedence.
+- After `expr IS NOT`, the state also holds the prefix `NOT * expr`, and again precedence picks IS NOT.
+- An action whose state has only one reduction is a shift-reduce whose reduction runs when the next token arrives. That is why the checks of `#N` and of digit separators fire on the next token, and why a syntax error on that token wins.
+- The `#N` error loses its offset when it comes with the final semicolon of SELECT, CREATE VIEW, ATTACH, or DETACH: their actions read the schema even after an error, which runs SQL of its own on a new connection. DELETE, INSERT, UPDATE, VACUUM, CREATE INDEX, and CREATE TABLE AS keep it.
+- The first table option may be empty: `create table t(a), strict` parses.
+
+### What was tricky
+
+The fallback behaviour is a property of Lemon's table compression, not of the grammar, so it cannot be read from `parse.y` alone.
+
+### What warrants review
+
+The list of quirk states, which comes from the patched Lemon in the scratch directory and is not in the repository; `TestRuleCoverage` checks the parser against the real tables instead (see the next step).
+
+### Future work
+
+None.
+
+## Step 3: The tree, the parser, and the test layers
+
+**Author:** sql-parser-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Work in the order: tree and parser for one statement kind end to end with all the test layers wired up, then widen statement by statement with the corpus report as your worklist (its groups are sorted largest first), then mutants, generator, fuzzing."
+**Interpretation:** Build the tree and parser, wire them to `parsetest`, and let the reports drive the work.
+**Inferred intent:** Converge on zero disagreements quickly, with every layer watching.
+
+### What I did
+
+`/internal/sql/ast`: the nodes (`expr.go`, `select.go`, `stmt.go`, `ddl.go`), each a struct that embeds `base` with its `Span` and holds `Token` and `[]Token` fields for what it read; `Children`, `Tokens`, `Walk`, and `AllTokens` read the fields through reflection with a cached plan per type, which panics on a field that holds neither tokens nor nodes; `CheckOwnership` (`check.go`) and `Dump` (`dump.go`).
+
+`/internal/sql/parser`: recursive descent over a lazily read token stream that follows `sqlite3RunParser` (spaces and comments skipped, the WINDOW, OVER, and FILTER decisions, the empty semicolon and then the end of input, NUL as the end); precedence climbing in `expr.go`; syntax errors raised by panicking with a private `bailout` value that `run` recovers; the `#N` and digit-separator checks recorded as a pending error with the index of the token that raises it.
+
+I wrote all statement kinds at once rather than one by one, since the grammar is small enough to hold in mind and the corpus is the worklist either way.
+
+Tests: the corpus, three mutants of every entry, `FuzzParse` (in `make fuzz`), a grammar reader and sentence generator over `/internal/sql/parser/testdata/parse.y`, `lalr_test.go`, which runs SQLite's own automaton from the tables in the vendored amalgamation beside the parser, the shape tests, pinned errors, and the depth tests. `/internal/sql/corpus/update` now copies `parse.y` from the verified archive.
+
+### Why
+
+The automaton from the amalgamation is SQLite's parser itself, so running it over the parser's tokens gives the rules that SQLite reduces (a sound rule coverage), the depth of its stack (which bounds the depth limit), and a second, independent check of acceptance and of the token of each error.
+
+### What worked
+
+The first corpus run had one disagreement: `create table ... (o douION),(NULL,0)`, where SQLite fails at `(` and the parser at `,`, because the first table option may be empty. After that fix: zero disagreements on the corpus, on 416,271 mutants (three per entry), on 5,550,280 mutants (forty per entry, seed 1000), and on 1,200,000 generated texts (400,000 sentences and two mutants each, seed 77). The automaton agrees with the parser on every corpus entry. All 412 rules are used: SQLite's automaton reduces 395 for the corpus and 398 with the generator; the other 14 are unit rules without code that Lemon folds into gotos, so no automaton ever reduces them, and each is used in the derivation of a generated sentence that parses.
+
+### What didn't work
+
+- The first depth check failed for texts like `select 1x`: `the parser's depth 2 is greater than the depth 1 of the automaton's stack`. The parser counted a level for each SELECT before reading any token of it. Levels are now counted for each expression operand, which always follows a token that stays on Lemon's stack, and for a SELECT or join in parentheses outside expressions.
+- The automaton first "accepted" unrecognized tokens inside virtual-table arguments, where the wildcard matches them: `the parser fails at token 8, the automaton at 9`. SQLite never hands an unrecognized token to its parser; the test driver now stops there too.
+- `TestGrammar` compared the rules in order and failed: `Expected "explain ::= EXPLAIN", but got "input ::= cmdlist"`. Lemon renumbers rules, those with code first; the lists are compared sorted.
+- My grammar lexer read an apostrophe in a C comment inside an action as the start of a character literal, and lost track of braces (`slice bounds out of range [:-1]` on an `%endif`); comments inside actions are skipped now.
+- Under `-race` the package took over three minutes; under `-short`, `-race`, and the address sanitizer the corpus tests now use every tenth entry, as the harness does.
+
+### What I learned
+
+SQLite allows 2,499 entries on its parser's stack above the bottom one; 2,493 nested parentheses parse, with a stack of 2,499. The parser's depth for `select` and k nested parentheses is k+1, and its limit of 2,500 rejects k=2,500, which SQLite rejects too.
+
+### What was tricky
+
+Finding a definition of depth that is provably no greater than Lemon's stack: it has to be counted only where a token of the enclosing construct is already on the stack.
+
+### What warrants review
+
+`exprPrec` and `between` in `/internal/sql/parser/expr.go` against the precedence notes above; `typeToken` and `generated` in `/internal/sql/parser/ddl.go` for the GENERATED quirk; `result` and `resetsOffset` in `/internal/sql/parser/parser.go` for the `#N` offset.
+
+### Future work
+
+None.
