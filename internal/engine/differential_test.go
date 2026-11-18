@@ -1,0 +1,574 @@
+package engine_test
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"math/rand/v2"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"maragu.dev/is"
+
+	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/engine"
+	"maragu.dev/s4ql/internal/s4qlpb"
+	"maragu.dev/s4ql/internal/sim"
+	"maragu.dev/s4ql/internal/sql/sqlerr"
+	"maragu.dev/s4ql/internal/sql/stmt"
+	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
+	"maragu.dev/s4ql/internal/sqlite"
+	"maragu.dev/s4ql/internal/store/simstore"
+)
+
+var (
+	seed      = flag.Uint64("seed", 0, "first seed of the sequences of statements")
+	sequences = flag.Int("sequences", 300, "sequences of statements of TestDifferential")
+	length    = flag.Int("length", 40, "statements in each sequence of TestDifferential")
+)
+
+// slow reports whether the tests run with -short, the race detector, or the address sanitizer, which
+// make them several times slower: the tests of many sequences then run a tenth of them.
+func slow() bool {
+	return testing.Short() || raceEnabled || asanEnabled
+}
+
+// answer of a statement: what is compared between the engine and SQLite.
+type answer struct {
+	// err is SQLite's error as "code/extended: message", "not supported", "no statement", or "".
+	err string
+	// columns of a query, each as its name and declared type, and its rows, each as its values.
+	columns string
+	rows    []string
+}
+
+func (a answer) String() string {
+	if a.err != "" {
+		return a.err
+	}
+	return fmt.Sprintf("columns %q, rows %q", a.columns, a.rows)
+}
+
+// oracle is SQLite, on a database in memory, which runs the statements that the engine runs.
+type oracle struct {
+	c *sqlite.Conn
+}
+
+func newOracle(t testing.TB) *oracle {
+	t.Helper()
+	c, err := sqlite.Open(":memory:")
+	is.NotError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	return &oracle{c: c}
+}
+
+// sqliteText of an error of the binding.
+func sqliteText(t testing.TB, err error) string {
+	t.Helper()
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		t.Fatalf("SQLite gives %v, which is not one of its errors", err)
+	}
+	return fmt.Sprint(se.Code.Primary(), "/", int(se.Code), ": ", se.Message)
+}
+
+// run the statement of src, as sqlite3_prepare_v2 and sqlite3_step run it.
+func (o *oracle) run(t testing.TB, src string) answer {
+	t.Helper()
+	s, _, err := o.c.PrepareFirst(src)
+	if err != nil {
+		return answer{err: sqliteText(t, err)}
+	}
+	if s == nil {
+		return answer{err: "no statement"}
+	}
+	defer func() { _ = s.Finalize() }()
+	var a answer
+	var columns []string
+	for i := range s.ColumnCount() {
+		columns = append(columns, s.ColumnName(i)+" "+s.ColumnDeclType(i))
+	}
+	a.columns = strings.Join(columns, ", ")
+	for {
+		ok, err := s.Step()
+		if err != nil {
+			return answer{err: sqliteText(t, err)}
+		}
+		if !ok {
+			return a
+		}
+		values := make([]string, s.ColumnCount())
+		for i := range values {
+			switch typ := s.ColumnType(i); typ {
+			case sqlite.TypeInteger:
+				values[i] = fmt.Sprint(s.ColumnInt64(i))
+			case sqlite.TypeNull:
+				values[i] = "null"
+			default:
+				t.Fatalf("SQLite gives a value of type %v", typ)
+			}
+		}
+		a.rows = append(a.rows, strings.Join(values, ","))
+	}
+}
+
+// integer that the SQL text sql gives in SQLite.
+func (o *oracle) integer(t testing.TB, sql string) int64 {
+	t.Helper()
+	s, err := o.c.Prepare(sql)
+	is.NotError(t, err)
+	defer func() { _ = s.Finalize() }()
+	ok, err := s.Step()
+	is.NotError(t, err)
+	is.True(t, ok)
+	return s.ColumnInt64(0)
+}
+
+// state of the database in SQLite: each table, in the order of the names as bytes, with its
+// columns and its rows in the order of select *.
+func (o *oracle) state(t testing.TB) string {
+	t.Helper()
+	s, err := o.c.Prepare("select name from sqlite_schema where type = 'table' order by name collate binary")
+	is.NotError(t, err)
+	var names []string
+	for {
+		ok, err := s.Step()
+		is.NotError(t, err)
+		if !ok {
+			break
+		}
+		names = append(names, s.ColumnText(0))
+	}
+	is.NotError(t, s.Finalize())
+	var b strings.Builder
+	for _, name := range names {
+		a := o.run(t, "select * from "+stmttest.Quote(name))
+		fmt.Fprintf(&b, "%v (%v): %v\n", name, a.columns, strings.Join(a.rows, " "))
+	}
+	return b.String()
+}
+
+// errText of an error of the engine, as [answer] has it. Any other error fails the test.
+func errText(t testing.TB, src string, err error) string {
+	t.Helper()
+	var se *sqlerr.Error
+	switch {
+	case err == nil:
+		return ""
+	case errors.As(err, &se):
+		return fmt.Sprint(se.Code, "/", se.ExtendedCode, ": ", se.Message)
+	case errors.Is(err, stmt.ErrNotSupported):
+		return "not supported"
+	case errors.Is(err, engine.ErrNoStatement):
+		return "no statement"
+	}
+	t.Fatalf("%q: the engine gives %v", src, err)
+	return ""
+}
+
+// valueText of a value of the engine.
+func valueText(t testing.TB, v *s4qlpb.Value) string {
+	t.Helper()
+	switch v.WhichKind() {
+	case s4qlpb.Value_Integer_case:
+		return fmt.Sprint(v.GetInteger())
+	case s4qlpb.Value_Null_case:
+		return "null"
+	}
+	t.Fatalf("the engine gives a value of kind %v", v.WhichKind())
+	return ""
+}
+
+// instance of the engine on a database of the storage core: a store in memory, and an instance on
+// a host with real goroutines.
+type instance struct {
+	t     testing.TB
+	host  *sim.Free
+	store *simstore.Store
+	dir   string
+	// caches counts the caches made, each a file of its own.
+	caches int
+	path   string
+	d      *core.DB
+	e      *engine.Engine
+	// changes is SQLite's count of changes on the connection, as the results of the engine give it.
+	changes int64
+}
+
+func newInstance(t testing.TB, options engine.Options) *instance {
+	t.Helper()
+	h := sim.NewFree(sim.Buggify{})
+	i := &instance{t: t, host: h, store: simstore.New(h, simstore.Options{}), dir: t.TempDir()}
+	i.open(true, options)
+	t.Cleanup(func() { i.close() })
+	return i
+}
+
+// open an instance of the database, with an empty cache if empty, and with the last one otherwise.
+func (i *instance) open(empty bool, options engine.Options) {
+	i.t.Helper()
+	if empty || i.path == "" {
+		i.caches++
+		i.path = filepath.Join(i.dir, fmt.Sprint("cache", i.caches, ".db"))
+	}
+	ctx := context.WithoutCancel(i.t.Context())
+	d, err := core.Open(ctx, i.host, i.store.Client(fmt.Sprint("client-", i.host.Uint64()), nil), i.path, "db", core.Options{})
+	is.NotError(i.t, err)
+	is.NotError(i.t, d.Wait(ctx))
+	i.d, i.e = d, engine.New(d, i.host, options)
+}
+
+// close the instance, which releases the lease.
+func (i *instance) close() {
+	if i.d == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(i.t.Context()), time.Minute)
+	defer cancel()
+	is.NotError(i.t, i.d.Close(ctx))
+	i.d = nil
+}
+
+// restart the instance: close it, and open a new one, with an empty cache if empty.
+func (i *instance) restart(empty bool, options engine.Options) {
+	i.t.Helper()
+	i.close()
+	i.open(empty, options)
+}
+
+// query src through [engine.Engine.Query].
+func (i *instance) query(src string) answer {
+	i.t.Helper()
+	rows, err := i.e.Query(i.t.Context(), src)
+	if err != nil {
+		return answer{err: errText(i.t, src, err)}
+	}
+	if res := rows.Result(); res.SetsChanges {
+		i.changes = res.Changes
+	}
+	var a answer
+	var columns []string
+	for _, c := range rows.Columns() {
+		columns = append(columns, c.Name+" "+c.DeclType)
+	}
+	a.columns = strings.Join(columns, ", ")
+	for row, err := range rows.All() {
+		if err != nil {
+			return answer{err: errText(i.t, src, err)}
+		}
+		values := make([]string, len(row))
+		for j, v := range row {
+			values[j] = valueText(i.t, v)
+		}
+		a.rows = append(a.rows, strings.Join(values, ","))
+	}
+	return a
+}
+
+// exec src through [engine.Engine.Exec], and keep SQLite's count of changes as its result says.
+func (i *instance) exec(src string) answer {
+	i.t.Helper()
+	res, err := i.e.Exec(i.t.Context(), src)
+	if err != nil {
+		return answer{err: errText(i.t, src, err)}
+	}
+	if res.SetsChanges {
+		i.changes = res.Changes
+	}
+	return answer{}
+}
+
+// state of the database in the engine's instance, as [oracle.state] gives it, read from the core.
+func (i *instance) state() string {
+	i.t.Helper()
+	ctx := i.t.Context()
+	r, err := i.d.Read(ctx)
+	is.NotError(i.t, err)
+	defer func() { is.NotError(i.t, r.Close(ctx)) }()
+	tables, err := r.Tables(ctx)
+	is.NotError(i.t, err)
+	var b strings.Builder
+	for _, ct := range tables {
+		var columns []string
+		for _, c := range ct.GetColumns() {
+			columns = append(columns, c.GetName()+" INT")
+		}
+		var rows []string
+		for row, err := range r.Scan(ctx, ct.GetTable()) {
+			is.NotError(i.t, err)
+			values := make([]string, len(row))
+			for j, v := range row {
+				values[j] = valueText(i.t, v)
+			}
+			rows = append(rows, strings.Join(values, ","))
+		}
+		fmt.Fprintf(&b, "%v (%v): %v\n", ct.GetTable(), strings.Join(columns, ", "), strings.Join(rows, " "))
+	}
+	return b.String()
+}
+
+// sequence of random statements of slice 1 that meet at a few tables and columns, each named in
+// several spellings that SQLite takes for one name and in some that it takes for others, with
+// values from a small set so that keys repeat, and with statements that are not supported and texts
+// that SQLite refuses mixed in.
+type sequence struct {
+	r       *rand.Rand
+	g       *stmttest.Generator
+	tables  []string
+	columns []string
+}
+
+// spellings of the name raw: itself, and other spellings in and without quotes, of which those that
+// change only ASCII letters name the same name, and an upper case that changes other letters names
+// another.
+func spellings(r *rand.Rand, raw string) []string {
+	if raw[0] == '"' {
+		v := strings.ReplaceAll(raw[1:len(raw)-1], `""`, `"`)
+		return []string{raw, stmttest.Quote(swapCase(v)), stmttest.Quote(strings.ToUpper(v)), stmttest.Quote(randomCase(r, v))}
+	}
+	return []string{raw, strings.ToUpper(raw), randomCase(r, raw), stmttest.Quote(raw), stmttest.Quote(randomCase(r, raw))}
+}
+
+// swapCase of the ASCII letters of s.
+func swapCase(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		switch {
+		case 'a' <= c && c <= 'z':
+			b[i] = c - 'a' + 'A'
+		case 'A' <= c && c <= 'Z':
+			b[i] = c - 'A' + 'a'
+		}
+	}
+	return string(b)
+}
+
+// randomCase of the ASCII letters of s.
+func randomCase(r *rand.Rand, s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if r.IntN(2) == 0 {
+			continue
+		}
+		switch {
+		case 'a' <= c && c <= 'z':
+			b[i] = c - 'a' + 'A'
+		case 'A' <= c && c <= 'Z':
+			b[i] = c - 'A' + 'a'
+		}
+	}
+	return string(b)
+}
+
+// common names of the pools at the positions.
+func common(t testing.TB, positions ...stmttest.Position) []string {
+	t.Helper()
+	pools, err := stmttest.NamePools()
+	is.NotError(t, err)
+	var names []string
+	for _, n := range pools[positions[0]] {
+		in := true
+		for _, p := range positions[1:] {
+			in = in && slices.Contains(pools[p], n)
+		}
+		if in {
+			names = append(names, n)
+		}
+	}
+	return names
+}
+
+func newSequence(t testing.TB, r *rand.Rand) *sequence {
+	t.Helper()
+	q := &sequence{r: r}
+	tableNames := common(t, stmttest.CreateTable, stmttest.InsertTable, stmttest.SelectTable, stmttest.DropTable)
+	columnNames := common(t, stmttest.CreateColumn, stmttest.InsertColumn)
+	for range 1 + r.IntN(2) {
+		q.tables = append(q.tables, spellings(r, tableNames[r.IntN(len(tableNames))])...)
+	}
+	for range 1 + r.IntN(2) {
+		q.columns = append(q.columns, spellings(r, columnNames[r.IntN(len(columnNames))])...)
+	}
+	pools := make([][]string, len(stmttest.PositionTexts))
+	for _, p := range []stmttest.Position{stmttest.CreateTable, stmttest.InsertTable, stmttest.SelectTable, stmttest.DropTable} {
+		pools[p] = q.tables
+	}
+	pools[stmttest.CreateColumn], pools[stmttest.InsertColumn] = q.columns, q.columns
+	q.g = stmttest.NewGenerator(r, pools)
+	q.g.Value = func() int64 {
+		if r.IntN(4) == 0 {
+			return stmttest.Integer(r)
+		}
+		return int64(r.IntN(5)) - 1
+	}
+	return q
+}
+
+// others are texts that are not statements of slice 1, with %[1]v for a table, %[2]v for a column,
+// and %[3]v for a value: statements that the pass does not support, texts that SQLite refuses with a
+// syntax error, and texts without a statement.
+var others = []string{
+	"create table %[1]v (%[2]v integer primary key) strict, without rowid",
+	"create table %[1]v (%[2]v int primary key) strict",
+	"create table if not exists %[1]v (%[2]v int primary key) strict, without rowid",
+	`create table "" (%[2]v int primary key) strict, without rowid`,
+	`create table %[1]v ("" int primary key) strict, without rowid`,
+	"insert into %[1]v (%[2]v) values (%[3]v), (%[3]v)",
+	"insert or replace into %[1]v (%[2]v) values (%[3]v)",
+	"insert into %[1]v (%[2]v) values (+%[3]v)",
+	"insert into %[1]v values (%[3]v)",
+	`insert into "" (%[2]v) values (%[3]v)`,
+	"select * from %[1]v where %[2]v = %[3]v",
+	"select %[2]v from %[1]v",
+	`select * from ""`,
+	"drop table if exists %[1]v",
+	"update %[1]v set %[2]v = %[3]v",
+	"begin",
+	"select * from %[1]v; select * from %[1]v",
+	"select * frm %[1]v",
+	"insert into %[1]v (%[2]v) values (",
+	"create table %[1]v (%[2]v int primary key) strict without rowid",
+	"drop table",
+	"",
+	" ; -- nothing",
+}
+
+// next statement of the sequence, and whether to run it as a query.
+func (q *sequence) next() (string, bool) {
+	r := q.r
+	if r.IntN(12) == 0 {
+		form := others[r.IntN(len(others))]
+		return fmt.Sprintf(form, q.tables[r.IntN(len(q.tables))], q.columns[r.IntN(len(q.columns))], r.IntN(5)), r.IntN(2) == 0
+	}
+	var k stmttest.Kind
+	switch n := r.IntN(20); {
+	case n < 4:
+		k = stmttest.KindCreateTable
+	case n < 14:
+		k = stmttest.KindInsert
+	case n < 19:
+		k = stmttest.KindSelect
+	default:
+		k = stmttest.KindDropTable
+	}
+	src, _ := q.g.StatementOf(k)
+	// A query runs through Exec one time in eight, and every other statement through Query one time
+	// in eight.
+	return src, (k == stmttest.KindSelect) != (r.IntN(8) == 0)
+}
+
+// tally of the outcomes of the statements of a differential test.
+type tally map[string]int
+
+func (y tally) add(src string, a answer) {
+	kind := "other"
+	if s, _ := stmt.Check(src); s != nil {
+		kind = strings.ToLower(strings.TrimPrefix(fmt.Sprintf("%T", s), "*stmt."))
+	}
+	switch {
+	case a.err == "":
+		y[kind+" ok"]++
+	case strings.Contains(a.err, ": "):
+		y[kind+" "+messageKind(a.err)]++
+	default:
+		y[kind+" "+a.err]++
+	}
+}
+
+// messageKind of an error's text: its message without the names.
+func messageKind(err string) string {
+	for _, kind := range []string{"already exists", "no such table", "has no column named", "UNIQUE constraint failed", "syntax error", "incomplete input"} {
+		if strings.Contains(err, kind) {
+			return kind
+		}
+	}
+	return err
+}
+
+// differential runs the sequence of n statements from seed on the engine and on SQLite, and compares
+// after each statement what each gives, the count of changes, and the last insert rowid, and at the
+// end, and after each restart, every table. With restarts, the instance is closed and opened again
+// at random points, with an empty cache or with its cache.
+func differential(t testing.TB, seed uint64, n int, restarts bool, y tally) {
+	t.Helper()
+	r := rand.New(rand.NewPCG(seed, 0xe1e))
+	q := newSequence(t, r)
+	o := newOracle(t)
+	i := newInstance(t, engine.Options{})
+	var log []string
+	fail := func(format string, args ...any) {
+		t.Helper()
+		t.Fatalf("seed %v, after\n%v\n%v", seed, strings.Join(log, "\n"), fmt.Sprintf(format, args...))
+	}
+	for range n {
+		if restarts && r.IntN(10) == 0 {
+			empty := r.IntN(2) == 0
+			log = append(log, fmt.Sprint("-- restart, with an empty cache: ", empty))
+			i.restart(empty, engine.Options{})
+			if got, want := i.state(), o.state(t); got != want {
+				fail("after the restart the engine holds\n%v\nand SQLite\n%v", got, want)
+			}
+		}
+		src, query := q.next()
+		log = append(log, src)
+		var got answer
+		if query {
+			got = i.query(src)
+		} else {
+			got = i.exec(src)
+		}
+		y.add(src, got)
+		if got.err == "not supported" {
+			continue
+		}
+		before := o.integer(t, "select changes()")
+		want := o.run(t, src)
+		if !query {
+			want.columns, want.rows = "", nil
+		}
+		if got.String() != want.String() {
+			fail("%q: the engine gives\n%v\nand SQLite\n%v", src, got, want)
+		}
+		// SQLite's count of changes: the engine's result sets it, and a statement that fails keeps it,
+		// except one that fails while SQLite steps it, a broken constraint, which sets it to 0.
+		changes := o.integer(t, "select changes()")
+		switch {
+		case strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeConstraint, "/")):
+			if changes != 0 {
+				fail("%q: SQLite counts %v changes after a broken constraint", src, changes)
+			}
+			i.changes = 0
+		case want.err != "" && changes != before:
+			fail("%q: SQLite counts %v changes after its error, and %v before", src, changes, before)
+		}
+		if changes != i.changes {
+			fail("%q: SQLite counts %v changes, and the engine's results %v", src, changes, i.changes)
+		}
+		if rowid := o.integer(t, "select last_insert_rowid()"); rowid != 0 {
+			fail("%q: SQLite's last insert rowid is %v", src, rowid)
+		}
+	}
+	if got, want := i.state(), o.state(t); got != want {
+		fail("at the end the engine holds\n%v\nand SQLite\n%v", got, want)
+	}
+}
+
+
+// TestDifferential runs random sequences of statements on the engine and on SQLite, and requires
+// the same answers, the same count of changes, and the same tables and rows, half of them with
+// restarts of the instance, with an empty cache and with its own.
+func TestDifferential(t *testing.T) {
+	n := *sequences
+	if slow() {
+		n /= 10
+	}
+	y := tally{}
+	for s := range uint64(n) {
+		differential(t, *seed+s, *length, s%2 == 1, y)
+	}
+	t.Logf("%v sequences of %v statements: %v", n, *length, y)
+}
