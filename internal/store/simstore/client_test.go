@@ -218,6 +218,48 @@ func TestClient_CutOff(t *testing.T) {
 	})
 }
 
+func TestClient_hang(t *testing.T) {
+	t.Run("should apply a write whose response is lost, and give its caller no answer until it gives up", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			s := sim.New(0, sim.Options{})
+			is.NotError(t, s.Run(func(ctx context.Context) {
+				st := simstore.New(s, simstore.Options{Latency: latency, Faults: simstore.Faults{LostResponse: 1, Hang: 1}})
+				c := st.Client("a", nil)
+				// write runs f with a context that ends after an hour, and checks that the call
+				// returned only then, because the caller gave up.
+				write := func(f func(ctx context.Context) error) {
+					t.Helper()
+					start := s.Monotonic()
+					writeCtx, cancel := s.WithTimeout(ctx, time.Hour)
+					defer cancel()
+					err := f(writeCtx)
+					is.True(t, errors.Is(err, context.DeadlineExceeded), fmt.Sprint(err))
+					is.True(t, s.Monotonic()-start >= time.Hour, fmt.Sprint("the call returned after ", s.Monotonic()-start))
+				}
+
+				write(func(ctx context.Context) error {
+					_, err := c.Create(ctx, "k", strings.NewReader("one"), nil)
+					return err
+				})
+				history := st.History()
+				is.Equal(t, 1, len(history))
+				is.True(t, history[0].Create && history[0].Key == "k" && string(history[0].Content) == "one")
+
+				write(func(ctx context.Context) error {
+					_, err := c.Swap(ctx, "k", history[0].Version, strings.NewReader("two"), nil)
+					return err
+				})
+				history = st.History()
+				is.Equal(t, 2, len(history))
+				is.True(t, !history[1].Create && history[1].From == history[0].Version && string(history[1].Content) == "two")
+				content, _, ok := st.Object("k")
+				is.True(t, ok)
+				is.Equal(t, "two", string(content))
+			}))
+		})
+	})
+}
+
 func TestClient_Get(t *testing.T) {
 	t.Run("should fail to read content after the context of the read is done", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
