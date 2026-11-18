@@ -1021,14 +1021,16 @@ func TestSimulation_plantedBugs(t *testing.T) {
 	bugs := []struct {
 		name string
 		w    workload
-		// finds is a part of the violation that the bug causes.
-		finds string
+		// finds holds a part of each violation that the bug causes.
+		finds []string
 	}{
-		{"skipUnique", defaultWorkload, "fails in SQLite: 19/1555: UNIQUE constraint failed"},
-		{"ackUnknown", defaultWorkload, "is not in the log"},
-		{"checkOutside", hammerWorkload, "fails in SQLite: 19/1555: UNIQUE constraint failed"},
-		{"keepOpen", defaultWorkload, "no instance runs a write"},
-		{"keepRead", defaultWorkload, "read connections ten minutes after the end of the workload"},
+		{"skipUnique", defaultWorkload, []string{"fails in SQLite: 19/1555: UNIQUE constraint failed"}},
+		{"ackUnknown", defaultWorkload, []string{"is not in the log"}},
+		{"checkOutside", hammerWorkload, []string{"fails in SQLite: 19/1555: UNIQUE constraint failed"}},
+		// A write transaction left open keeps the instance from a write, and from a close that
+		// releases the lease, so the next instance never takes its read connections.
+		{"keepOpen", defaultWorkload, []string{"no instance runs a write", "read connections ten minutes after the end of the workload"}},
+		{"keepRead", defaultWorkload, []string{"read connections ten minutes after the end of the workload"}},
 	}
 	for _, b := range bugs {
 		bug := b.name
@@ -1039,7 +1041,9 @@ func TestSimulation_plantedBugs(t *testing.T) {
 			for seed := uint64(0); seed < limit && (found < 2 || os.Getenv("S4QL_ENGINE_SIM_SEEDS") != ""); seed++ {
 				seeds++
 				if v := simulate(t, seed, w).violations(); len(v) > 0 {
-					if !slices.ContainsFunc(v, func(v string) bool { return strings.Contains(v, b.finds) }) {
+					if !slices.ContainsFunc(v, func(v string) bool {
+						return slices.ContainsFunc(b.finds, func(f string) bool { return strings.Contains(v, f) })
+					}) {
 						t.Fatalf("seed %v finds the bug by another violation: %v", seed, v)
 					}
 					if found == 0 {
