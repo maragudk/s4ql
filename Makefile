@@ -152,6 +152,27 @@ simulator:
 simulator-demo:
 	go run -tags s4ql_browser ./internal/simulator/serve -out $(SIMULATORDIR) -addr $(SIMULATORADDR)
 
+# site builds the simulator's engine into the project site, in SITEENGINE, which .gitignore covers,
+# with build.json for the page, which names SITECOMMIT as the commit it is built from. The Pages
+# workflow runs it before it uploads site/. site-serve builds it and serves site/ on SITEADDR, without
+# the headers of cross-origin isolation, as GitHub Pages serves it. site-check builds it and checks
+# the simulator's page in headless Chromium: see internal/simulator/sitecheck.
+SITEENGINE := site/simulator/engine
+SITECOMMIT ?= $(shell git rev-parse HEAD)
+SITEADDR ?= 127.0.0.1:8081
+.PHONY: site
+site:
+	rm -rf $(SITEENGINE)
+	go run -tags s4ql_browser ./internal/simulator/serve -out $(SITEENGINE) -demo=false -commit $(SITECOMMIT)
+
+.PHONY: site-serve
+site-serve: site
+	go run -tags s4ql_browser ./internal/simulator/serve -root site -isolated=false -addr $(SITEADDR)
+
+.PHONY: site-check
+site-check: site
+	go run -tags s4ql_browser ./internal/simulator/sitecheck -root site
+
 # test-asan runs all tests, and then each fuzz test for FUZZTIME, under the C address sanitizer. Go
 # supports -asan on Linux only, so elsewhere it runs in a Linux container with Docker, with Docker
 # volumes for the module and build caches.
