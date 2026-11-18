@@ -7,11 +7,13 @@
 //
 //	go run -tags s4ql_browser ./internal/simulator/sitecheck -root site
 //
-// The check passes if the page loads, the engine becomes ready, the default run has events, a crash
-// added at a time changes the run from that time on and not before it, the link of the page gives the
-// same run with the same hash, and a link of another format gives the default run. It writes what it
-// saw, and exits with 0 if the check passed, 1 if it failed, and 2 if it could not run.
+// The check passes if the page loads, the engine becomes ready, the first run has events, a crash
+// added at a time changes the run from that time on and not before it, the run grows past its first
+// end with the same events before that end and stops at its limit, "Start over" gives a new run, and
+// the page neither writes its address nor reads a fragment of an old link. It writes what it saw, and
+// exits with 0 if the check passed, 1 if it failed, and 2 if it could not run.
 //
+// The page picks a random seed for each visit, and every step of the check holds for any seed.
 // Nothing in the check waits for a time: it waits for what the page says through data attributes.
 // -timeout only stops a check that hangs, and is far above what a run takes on a slow machine.
 //
@@ -117,6 +119,9 @@ func run(root string, timeout time.Duration) (bool, error) {
 		"--headless", "--no-first-run", "--no-default-browser-check", "--disable-extensions",
 		"--disable-background-timer-throttling", "--disable-renderer-backgrounding",
 		"--disable-backgrounding-occluded-windows", "--user-data-dir=" + profile,
+		// The page plays its run in animation frames, which Chromium does not run for a frame out of
+		// sight, so the window holds the frame of check.html whole.
+		"--window-size=1600,1200",
 	}
 	flags = append(flags, strings.Fields(os.Getenv("S4QL_CHROMIUM_FLAGS"))...)
 	flags = append(flags, "http://"+listener.Addr().String()+"/__check/")

@@ -8,8 +8,12 @@
 <p>This page loads the simulator page in frames, drives it, and posts what it saw to sitecheck.</p>
 <script type="module">
 // Each step waits for what the page says through data attributes on its <html>: data-engine
-// (loading, ready, or failed), data-runs (the runs applied), and data-hash (the hash of the last).
-// No step waits for a time; sitecheck stops a check that hangs.
+// (loading, ready, or failed), data-runs (the runs applied), data-busy (whether a run is in flight),
+// and data-hash (the hash of the run shown), or for the state of an element. No step waits for a
+// time; sitecheck stops a check that hangs.
+//
+// The page picks a random seed, and every check holds for any seed: a crash always adds events, and
+// the engine gives the same events before a time for runs that agree before it.
 const lines = [];
 const say = (s) => lines.push(s);
 let ok = true;
@@ -27,12 +31,14 @@ const until = async (f) => {
   }
 };
 
-// open the simulator page at the address in a new frame, and wait until it has applied a run, or
-// failed.
+// open the simulator page at the address in a new frame, in place of the one before, and wait until
+// it has applied a run, or failed. The frame lies inside the window of Chromium, which sitecheck
+// opens larger than it, because Chromium does not run the animation frames of a frame that is out of
+// sight, and the page plays its run in them.
 async function open(address) {
+  for (const f of document.querySelectorAll("iframe")) f.remove();
   const frame = document.createElement("iframe");
-  frame.style.width = "1280px";
-  frame.style.height = "900px";
+  frame.style.cssText = "position: fixed; top: 0; left: 0; width: 1280px; height: 900px; border: 0;";
   frame.src = address;
   document.body.appendChild(frame);
   await new Promise((r) => frame.addEventListener("load", r, { once: true }));
@@ -40,88 +46,114 @@ async function open(address) {
   const html = win.document.documentElement;
   await until(() => html.dataset.engine === "failed" || Number(html.dataset.runs || 0) >= 1);
   if (html.dataset.engine === "failed") throw new Error("the page failed: " + win.document.getElementById("failure").textContent);
-  return { win, doc: win.document, html };
+  const page = {
+    win, doc: win.document, html,
+    get response() { return win.s4qlPage.response; },
+    get runs() { return Number(html.dataset.runs); },
+    idle: () => html.dataset.busy === "false",
+    $: (sel) => win.document.querySelector(sel),
+  };
+  return page;
 }
 
 const json = (events) => events.map((e) => JSON.stringify(e));
+const before = (r, t) => JSON.stringify(json(r.events.filter((e) => e.t < t)));
+const after = (r, t) => JSON.stringify(json(r.events.filter((e) => e.t >= t)));
 
-// unit checks of run.js, the run as data: the link and the schedule.
+// unit checks of run.js: the request, the seed, the schedule, and the words of the log.
 async function unit() {
   const R = await import("/simulator/run.js");
-  const run = R.defaults();
-  run.seed = 2 ** 53 - 1;
-  run.buggify = true;
-  run.faults = { lostRequest: 1e-7, hang: 0.5, slowBy: 1000 }; // in the order of R.FAULTS, as decode gives them
-  for (const a of [
-    { at: 45001, do: "cutOff", instance: "c", for: 20000 },
-    { at: 45001, do: "shiftWall", instance: "a", by: -60000 },
-    { at: 50000, do: "loseAnswer", request: "commit" },
-    { at: 50000, do: "failRequest", request: "upload", instance: "b" },
-    { at: 50001, do: "outage", for: 10000 },
-    { at: 50002, do: "workload", on: false },
-    { at: 50003, do: "calm" },
-  ]) run.schedule = R.insert(run.schedule, a);
-  const back = R.decode("#" + R.encode(run, 12345));
-  expect(back && JSON.stringify(back.run) === JSON.stringify(run) && back.t === 12345, "a run goes through the link and back unchanged");
-  const s = R.insert([{ at: 1, do: "calm" }, { at: 5, do: "calm" }, { at: 9, do: "calm" }], { at: 5, do: "write", instance: "a" });
-  expect(JSON.stringify(s.map((a) => a.at + a.do)) === JSON.stringify(["1calm", "5calm", "5write", "9calm"]), "an action goes after every action at its time or before it");
-  const bad = [
-    "", "#seed=7334716c&n=3", "#seed=7334716c&n=3&a=1.crash.0", "#v=2", "#v=1&x=1", "#v=1&v=1",
-    "#v=1&seed=20000000000000", "#v=1&n=6", "#v=1&end=0", "#v=1&callers=9",
-    "#v=1&s=1.loseAnswer.toString", "#v=1&s=1.loseAnswer.__proto__", "#v=1&s=1.crash.d", "#v=1&n=2&s=1.crash.c",
-    "#v=1&s=5.calm~1.calm", "#v=1&s=120000.calm", "#v=1&s=1.cutOff.a.0", "#v=1&s=1.shiftWall.a.0", "#v=1&s=1.jump.a",
-    "#v=1&faults=slowBy:1.5", "#v=1&faults=hang:0.1:2", "#v=1&faults=hang:2", "#v=1&faults=hang:0.1,hang:0.2", "#v=1&faults=toString:1",
-    "#v=1&t=120001",
+  const seeds = Array.from({ length: 1000 }, () => R.newSeed());
+  expect(seeds.every((s) => Number.isSafeInteger(s) && s >= 0), "a new seed is a whole number below 2^53");
+  const req = R.request({ seed: 5, end: R.CHUNK, schedule: [{ at: 1, do: "crash", instance: "a" }] });
+  expect(req.instances === 2 && !("faults" in req) && !("buggify" in req) && req.schedule.length === 1, "the request has two instances, no random faults, and no buggify");
+  const s = R.insert([{ at: 1, do: "outage" }, { at: 5, do: "outage" }, { at: 9, do: "outage" }], { at: 5, do: "crash", instance: "a" });
+  expect(JSON.stringify(s.map((a) => a.at + a.do)) === JSON.stringify(["1outage", "5outage", "5crash", "9outage"]), "a fault goes after every action at its time or before it");
+
+  // The instance without the lease refuses every call, and takes one line for a spell of refusals.
+  const refused = (t, inst, reason) => ({ t, kind: "call", what: "refused", instance: inst, process: inst, op: "read", error: "no valid lease: " + reason });
+  const events = [
+    refused(1, "b", "not_holder"), refused(2, "b", "not_holder"), refused(3, "b", "not_holder"),
+    refused(4, "a", "lease_expired_monotonic"), refused(5, "a", "lease_expired_monotonic"), refused(6, "a", "not_holder"),
+    { t: 7, kind: "call", what: "served", instance: "b", process: "b", op: "read", keys: [1] },
+    refused(8, "b", "not_holder"),
   ];
-  const accepted = bad.filter((h) => R.decode(h) !== null);
-  expect(accepted.length === 0, `${bad.length} links that are not runs of the page are refused` + (accepted.length ? ": accepted " + accepted.join(" ") : ""));
+  const words = R.story(events, []);
+  const shown = events.map((e, i) => (words[i].tier ? e.t : null)).filter((t) => t !== null);
+  expect(JSON.stringify(shown) === JSON.stringify([1, 4, 6, 7, 8]), `a spell of refusals takes one line for each reason, until the instance serves (lines at ${shown.join(", ")})`);
 }
 
 async function check() {
   await unit();
+
+  // The page runs by itself, and writes nothing into its address.
   const a = await open("/simulator/");
-  const first = a.win.s4qlPage.response;
-  expect(first.events.length > 0, `the default run has ${first.events.length} events`);
-  expect(first.events.some((e) => e.kind === "call" && e.what === "committed"), "the default run commits writes");
-  expect(first.summary.violations === 0 || first.summary.violations === first.summary.excused, `the default run has no violation that is not excused (${first.summary.violations} violations, ${first.summary.excused} excused)`);
+  const first = a.response;
+  expect(first.events.length > 0, `the first run has ${first.events.length} events`);
+  expect(first.events.some((e) => e.kind === "call" && e.what === "committed"), "the first run commits writes");
+  expect(first.events.some((e) => e.kind === "call" && e.what === "served"), "the first run serves reads");
+  expect(first.summary.violations === 0, `the first run has no violation (${first.summary.violations})`);
+  expect(first.request.instances === 2 && first.request.end === 120000 && first.request.schedule.length === 0, "the first run has two instances, 2 min, and no faults");
+  expect(Object.values(first.request.faults).every((v) => v === 0) && !first.request.buggify, "the first run has no random faults and no buggify");
+  expect(Number.isSafeInteger(first.request.seed), "the seed of the run is below 2^53");
   expect(/^[0-9a-f]{64}$/.test(a.html.dataset.hash), "the page reports the hash of the run");
 
-  // Pause, go to 30 s, and crash a there.
-  const play = a.doc.getElementById("play");
+  // Pause, and crash a just after the current time. The instances are in the state from their first
+  // events on, a few milliseconds into the run, so the check lets the run play until a can crash.
+  const crash = a.$('[data-instance="a"] [data-a="crash"]');
+  await until(() => a.idle() && !crash.disabled);
+  const play = a.$("#play");
   if (play.getAttribute("aria-pressed") === "true") play.click();
-  const scrub = a.doc.getElementById("scrub");
-  scrub.value = "30000";
-  scrub.dispatchEvent(new Event("input", { bubbles: true }));
-  await until(() => a.win.s4qlPage.cursor === 30000);
-  const crash = a.doc.querySelector('[data-instance="a"] [data-a="crash"]');
-  await until(() => !crash.disabled && crash.textContent === "Crash");
+  await until(() => a.idle() && !crash.disabled && crash.textContent === "Crash");
+  const shown = a.response;
+  const runs = a.runs;
+  const at = Math.floor(a.win.s4qlPage.cursor) + 1;
   crash.click();
-  await until(() => Number(a.html.dataset.runs) >= 2 && a.doc.getElementById("field").getAttribute("aria-busy") === "false");
-  const second = a.win.s4qlPage.response;
-  const at = 30001;
+  await until(() => a.runs > runs && a.idle());
+  const second = a.response;
   const action = second.events.find((e) => e.kind === "action" && e.do === "crash" && e.instance === "a");
   expect(action && action.t === at && action.what === "done", `the crash of a is in the new run at ${at} ms, and done`);
-  const before = (r) => json(r.events.filter((e) => e.t < at));
-  const after = (r) => json(r.events.filter((e) => e.t >= at));
-  expect(JSON.stringify(before(first)) === JSON.stringify(before(second)), `the ${before(second).length} events before ${at} ms are the same in both runs`);
-  expect(JSON.stringify(after(first)) !== JSON.stringify(after(second)), "the events from that time on differ");
-  expect(first.hash !== second.hash, "the hash differs");
+  expect(before(shown, at) === before(second, at), `the ${second.events.filter((e) => e.t < at).length} events before ${at} ms are the same in both runs`);
+  expect(after(shown, at) !== after(second, at), "the events from that time on differ");
+  expect(second.hash !== shown.hash, "the hash differs");
+  expect(a.win.location.hash === "", "the page writes nothing into its address");
 
-  // A link inside the page scrolls, and keeps the run in the address.
-  a.doc.getElementById("chip").click();
-  await until(() => a.win.location.hash.startsWith("#v=1"));
-  expect(a.win.document === a.doc && a.html.dataset.runs === "2", "a link inside the page keeps the page and its run");
+  // Play at 64×: the page asks for a longer run before the playback reaches the end, and goes on.
+  const end = second.request.end;
+  a.$("#speed").value = "64";
+  a.$("#play").click();
+  await until(() => a.win.s4qlPage.cursor > end);
+  const longer = a.response;
+  expect(longer.request.end > end && longer.request.seed === second.request.seed, `the run grows past ${end / 1000} s, to ${longer.request.end / 1000} s, with the same seed`);
+  expect(JSON.stringify(longer.request.schedule) === JSON.stringify(second.request.schedule), "the longer run has the same faults");
+  expect(before(second, end) === before(longer, end), `the ${second.events.filter((e) => e.t < end).length} events before the first end are the same`);
+  expect(a.win.s4qlPage.playing, "the playback goes on past the first end");
 
-  // The link of the page gives the same run, at the same time.
-  const link = a.win.location.href;
-  expect(link.includes("30001.crash.a") && link.includes("t=30000"), "the link holds the crash and the time: " + link.slice(link.indexOf("#")));
-  const b = await open(link);
-  expect(b.html.dataset.hash === second.hash, `the link gives the same run, with the hash ${second.hash.slice(0, 16)}`);
-  expect(b.win.s4qlPage.cursor === 30000, "the link opens the run at 30 s");
+  // At the limit the playback stops, and "Start over" is offered.
+  const limit = a.$("#limit");
+  await until(() => !limit.hidden);
+  const last = a.response;
+  expect(last.request.end === 600000 && a.win.s4qlPage.cursor === 600000, "the run stops at 10 min");
+  expect(!a.win.s4qlPage.playing && a.$("#play").disabled, "the playback stops there, and Play is off");
+  expect(a.$("#again").classList.contains("call") && !a.$("#again").disabled, "Start over is offered");
+  expect(before(longer, longer.request.end) === before(last, longer.request.end), "every run on the way has the events of the one before it");
 
-  // A link of the old model's format gives the default run.
-  const c = await open("/simulator/#seed=7334716c&n=3&a=1.crash.0");
-  expect(c.html.dataset.hash === first.hash, "a link of another format gives the default run");
+  // "Start over" gives a new run with a new seed, from the start, and it plays.
+  const before4 = a.runs;
+  a.$("#again").click();
+  await until(() => a.runs > before4 && a.idle());
+  const fresh = a.response;
+  expect(fresh.request.seed !== last.request.seed && fresh.hash !== last.hash, "Start over gives a new run with a new seed");
+  // At 64× the page asks for a longer run at once, so the new run may have grown by now.
+  expect(fresh.request.schedule.length === 0 && fresh.request.end < 600000, `the new run has no faults, and ${fresh.request.end / 1000} s`);
+  expect(a.win.s4qlPage.cursor < 600000 && limit.hidden, "the new run starts from the start");
+  await until(() => a.win.s4qlPage.playing);
+  expect(true, "the new run plays");
+
+  // An address with a fragment from a link of the old page gives a run of its own.
+  const b = await open("/simulator/#v=1&seed=7334716c&n=3&s=40000.crash.b");
+  expect(b.response.request.instances === 2 && b.response.request.schedule.length === 0, "a link of the old page is ignored");
+  expect(b.doc.getElementById("note").textContent === "", "and without a note");
 }
 
 try {

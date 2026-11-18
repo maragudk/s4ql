@@ -612,6 +612,8 @@ The time of one run, the mean of five after two to warm up, in the runner of `in
 | 10 min, the preset | 425 ms | 1,559,583 bytes |
 | 30 min, 5 instances, the preset, buggify | 1,467 ms | 6,628,991 bytes |
 
+The page of the site runs two instances, the default workload, and no random faults, and asks for a longer run every 2 min of fake time, up to 10 min. Its runs, the mean of five with a crash and a restart, in headless Chrome driven by `playwright-cli` on the same machine: 2 min 70 ms, 4 min 146 ms, 6 min 222 ms, 8 min 300 ms, 10 min 375 ms, 12 min 457 ms, and 15 min 632 ms, of which the transfer and parse of the answer took 1 to 4 ms. A fault that the visitor adds holds the playback for one run, so the page stops at 10 min.
+
 In the demo page, the request of the demo, 2 min with the preset and six actions, took 166 to 186 ms the first time and 88 to 110 ms after that, of which the transfer and parse of the answer took 1 to 8 ms. Natively the same run takes about 40 ms, so the browser is about 2.3 times slower.
 
 The time grows with the steps of the scheduler, which grow with fake time, instances, and callers. A native profile of a 10 min run put half of the time in handing the baton between the scheduler and its tasks, as the README of `internal/core` measured for its tests, and a tenth in creating the spool files of commits. Encoding the response took 3%. A page that must run faster has these levers: a shorter `end`, fewer instances or callers, and a longer `think`. Calling SQLite through `//go:wasmimport` in place of `syscall/js` would make each call cheaper, at 6 ns against 807 ns by the measurement of step 1; it was not needed for these times.
