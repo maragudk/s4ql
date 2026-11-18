@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simulator engine</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; background: #fff; color: #111; }
+  textarea { width: 100%; height: 12em; font: 12px ui-monospace, monospace; }
+  pre { background: #f4f4f4; padding: 8px; overflow: auto; max-height: 30em; font-size: 12px; }
+  button { cursor: pointer; font: inherit; padding: 4px 12px; }
+</style>
+</head>
+<body>
+<h1>Simulator engine</h1>
+<p>A demo of the engine of internal/simulator: the storage core of s4ql in a Worker, on the official SQLite WebAssembly build. It runs the request below three times on load, and again on "Run".</p>
+<p id="ready">Starting the engine...</p>
+<p id="status"></p>
+<pre id="timings"></pre>
+<textarea id="request">{
+  "seed": 1,
+  "end": 120000,
+  "instances": 3,
+  "faults": {"lostRequest": 0.02, "lostResponse": 0.02, "hang": 0.2, "conflict": 0.1, "slow": 0.02, "slowBy": 45000,
+             "brokenRead": 0.02, "cutOff": 0.005, "cutOffFor": 40000, "outage": 0.002, "outageFor": 20000,
+             "late": 0.5, "afterCrash": 0.5, "lateBy": 60000},
+  "schedule": [
+    {"at": 20000, "do": "crash", "instance": "a"},
+    {"at": 30000, "do": "restart", "instance": "a"},
+    {"at": 40000, "do": "loseAnswer", "request": "commit"},
+    {"at": 50000, "do": "shiftWall", "instance": "b", "by": -60000},
+    {"at": 60000, "do": "cutOff", "instance": "c", "for": 20000},
+    {"at": 70000, "do": "write", "instance": "b"}
+  ]
+}</textarea>
+<p><button id="run" type="button" disabled>Run</button></p>
+<h2>Summary</h2>
+<pre id="summary"></pre>
+<h2>State at the end</h2>
+<pre id="state"></pre>
+<h2>Events</h2>
+<pre id="events"></pre>
+<script type="module">
+import { Engine } from './simulator.js';
+
+const loaded = performance.now();
+const $ = (id) => document.getElementById(id);
+window.demo = { runs: [] };
+
+const run = async () => {
+  $('run').disabled = true;
+  try {
+    const request = JSON.parse($('request').value);
+    const t0 = performance.now();
+    const response = await engine.run(request);
+    const ms = performance.now() - t0;
+    const engineMs = engine.timings.run;
+    const memory = engine.memory;
+    const state = await engine.state(response.request.end);
+    const result = { ms, engineMs, memory, events: response.events.length, steps: response.steps, hash: response.hash, summary: response.summary };
+    window.demo.runs.push(result);
+    $('status').textContent = `Ran ${response.steps} steps and ${response.events.length} events in ${ms.toFixed(0)} ms (${engineMs.toFixed(0)} ms in the engine). Hash ${response.hash.slice(0, 16)}.`;
+    $('summary').textContent = JSON.stringify(response.summary, null, 2);
+    $('state').textContent = JSON.stringify(state, null, 2);
+    $('timings').textContent = window.demo.runs.map((r, i) => `run ${i + 1}: ${r.ms.toFixed(0)} ms, ${r.engineMs.toFixed(0)} ms in the engine, SQLite memory ${r.memory}, hash ${r.hash.slice(0, 16)}`).join('\n');
+    $('events').textContent = response.events.slice(0, 300).map((e) => JSON.stringify(e)).join('\n');
+  } catch (e) {
+    $('status').textContent = 'Error: ' + e.message;
+    window.demo.error = e.message;
+  } finally {
+    $('run').disabled = false;
+  }
+};
+
+const engine = await Engine.start();
+window.demo.ready = performance.now() - loaded;
+window.demo.workerReady = engine.timings.ready;
+$('ready').textContent = `The engine was ready ${window.demo.ready.toFixed(0)} ms after the page loaded its module, ${window.demo.workerReady.toFixed(0)} ms after its Worker started.`;
+$('run').addEventListener('click', run);
+for (let i = 0; i < 3; i++) await run();
+window.demo.done = true;
+</script>
+</body>
+</html>

@@ -43,16 +43,19 @@ generate:
 	$(BUF) generate
 
 # lint also runs lint-proto, the lint for code that runs under the simulation, from
-# internal/simlint, and golangci-lint over the browser's build of BROWSERPKGS, whose files a native
-# run does not see. The simulation's lint is a module of its own, so that its dependencies stay out
-# of the library's, and is built there and run here.
+# internal/simlint, golangci-lint over the browser's build of BROWSERPKGS, whose files a native
+# run does not see, and both lints over the native build of SIMULATORPKGS with the tag s4ql_browser.
+# The simulation's lint is a module of its own, so that its dependencies stay out of the library's,
+# and is built there and run here.
 .PHONY: lint
 lint:
 	golangci-lint run
 	GOOS=js GOARCH=wasm golangci-lint run --build-tags s4ql_browser $(BROWSERPKGS)
+	golangci-lint run --build-tags s4ql_browser $(SIMULATORPKGS)
 	cd $(CROSSCHECK) && golangci-lint run
 	cd $(SIMLINT) && golangci-lint run
-	dir=$$(mktemp -d) && (cd $(SIMLINT) && go build -o $$dir/simlint ./cmd/simlint) && $$dir/simlint ./...; \
+	dir=$$(mktemp -d) && (cd $(SIMLINT) && go build -o $$dir/simlint ./cmd/simlint) && $$dir/simlint ./... && \
+		GOFLAGS=-tags=s4ql_browser $$dir/simlint $(SIMULATORPKGS); \
 		status=$$?; rm -rf $$dir; exit $$status
 	$(MAKE) lint-proto
 
@@ -97,12 +100,17 @@ sqlite-verify:
 .PHONY: test
 test:
 	go test -coverprofile cover.out -shuffle on ./...
+	go test -tags s4ql_browser -shuffle on $(SIMULATORPKGS)
 	cd $(CROSSCHECK) && go test -shuffle on ./...
 	cd $(SIMLINT) && go test -shuffle on ./...
 
 # BROWSERPKGS are the packages that build for GOOS=js GOARCH=wasm with the tag s4ql_browser, on the
 # official SQLite WebAssembly build in internal/sqlite/browser; see its README.
-BROWSERPKGS ?= ./internal/sqlite ./internal/sqlite/faultvfs ./internal/core ./internal/sim ./internal/store/simstore
+BROWSERPKGS ?= ./internal/sqlite ./internal/sqlite/faultvfs ./internal/core ./internal/sim ./internal/store/simstore \
+	./internal/simulator ./internal/simulator/engine
+# SIMULATORPKGS are the packages of the simulator, which build only with the tag s4ql_browser, and
+# natively too; see internal/simulator/README.md.
+SIMULATORPKGS := ./internal/simulator/...
 BROWSER := GOOS=js GOARCH=wasm go
 BROWSERTIMEOUT ?= 30m
 # BROWSERSKIP are the tests that cannot pass in a browser for a reason in the route, and that
@@ -130,6 +138,19 @@ test-browser:
 	dir=$$(mktemp -d) && go build -o $$dir/browser ./internal/sqlite/browser && \
 		$(BROWSER) test -tags s4ql_browser -exec $$dir/browser -timeout $(BROWSERTIMEOUT) -skip '$(BROWSERSKIP)' $(BROWSERFLAGS) $(BROWSERPKGS); \
 		status=$$?; rm -rf $$dir; exit $$status
+
+# simulator builds the simulator's engine for a browser, and writes it with every file that a page
+# needs into SIMULATORDIR. simulator-demo also serves that directory, with the demo page of
+# internal/simulator/engine, on SIMULATORADDR.
+SIMULATORDIR ?= $(or $(TMPDIR),/tmp)/s4ql-simulator
+SIMULATORADDR ?= 127.0.0.1:8080
+.PHONY: simulator
+simulator:
+	go run -tags s4ql_browser ./internal/simulator/serve -out $(SIMULATORDIR)
+
+.PHONY: simulator-demo
+simulator-demo:
+	go run -tags s4ql_browser ./internal/simulator/serve -out $(SIMULATORDIR) -addr $(SIMULATORADDR)
 
 # test-asan runs all tests, and then each fuzz test for FUZZTIME, under the C address sanitizer. Go
 # supports -asan on Linux only, so elsewhere it runs in a Linux container with Docker, with Docker
