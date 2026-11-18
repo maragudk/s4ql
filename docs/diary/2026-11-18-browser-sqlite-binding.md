@@ -175,7 +175,7 @@ The research's pairing of hashes to workloads looked off once `-json` gave the o
 
 ### What worked
 
-The review's fixes changed no result: the binding, `faultvfs`, `sim`, and `simstore` passed again in Chromium.
+The review's fixes changed no result. The last full `make test-browser` after them passed everything again in 3 min 14 s (`internal/core` 192 s, 44 and 213 passed, the same three skips), with the same four trace hashes, and `internal/sqlite` with its new test, 9 top-level tests and 15 subtests.
 
 ### What didn't work
 
