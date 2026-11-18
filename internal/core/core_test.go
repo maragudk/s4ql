@@ -549,18 +549,25 @@ func fail(t *testing.T, seed uint64) failing {
 	return f
 }
 
-// readOnly makes the directory take no new files until the test ends, and skips the test where it
-// takes them anyway, as it does for root, whom the permissions of a directory do not bind.
-func readOnly(t *testing.T, dir string) {
+// moveAway the directory, so that no new file can be made in it by its path, until the returned
+// function or the end of the test moves it back. The files that are open in it stay open. It is a
+// rename and not a change of permissions, which do not bind root, as in the container of the
+// address sanitizer.
+func moveAway(t *testing.T, dir string) (back func()) {
 	t.Helper()
-	is.NotError(t, os.Chmod(dir, 0o500))
-	t.Cleanup(func() { is.NotError(t, os.Chmod(dir, 0o700)) })
-	f, err := os.CreateTemp(dir, "probe-*")
-	if err != nil {
-		return
+	away := dir + "-away"
+	is.NotError(t, os.Rename(dir, away))
+	_, err := os.CreateTemp(dir, "probe-*")
+	is.True(t, err != nil, "a file was made in the directory that was moved away")
+	moved := true
+	back = func() {
+		if moved {
+			moved = false
+			is.NotError(t, os.Rename(away, dir))
+		}
 	}
-	is.NotError(t, errors.Join(f.Close(), os.Remove(f.Name())))
-	t.Skip("the directory takes new files whatever its permissions, as it does for root")
+	t.Cleanup(back)
+	return back
 }
 
 func TestDB_stop(t *testing.T) {
@@ -591,7 +598,7 @@ func TestDB_stop(t *testing.T) {
 		head := w.manifest(t).Head
 
 		// The directory of the cache takes no new files from now on.
-		readOnly(t, w.dir)
+		back := moveAway(t, w.dir)
 		tx, err := d.Begin(t.Context())
 		is.NotError(t, err)
 		upsert("t1", 1)(t, tx)
@@ -604,7 +611,7 @@ func TestDB_stop(t *testing.T) {
 		is.Error(t, core.ErrLocal, d.Err())
 		is.Error(t, core.ErrLocal, readErr(t, d))
 		is.Equal(t, head, w.manifest(t).Head)
-		is.NotError(t, os.Chmod(w.dir, 0o700))
+		back()
 		is.NotError(t, d.Close(t.Context()))
 		is.True(t, w.manifest(t).Lease == nil, "the lease is not released")
 
@@ -615,7 +622,7 @@ func TestDB_stop(t *testing.T) {
 	t.Run("should stop for a failure to write the spool file of the annotations", func(t *testing.T) {
 		w := newWorld(t)
 		d := w.serve(t, "a", core.Options{})
-		readOnly(t, w.dir)
+		moveAway(t, w.dir)
 
 		tx, err := d.Begin(t.Context())
 		is.NotError(t, err)
