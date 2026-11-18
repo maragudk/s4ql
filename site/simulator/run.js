@@ -35,8 +35,6 @@ export function request(run) {
   };
 }
 
-export const instanceName = (i) => String.fromCharCode(97 + i);
-
 // insert the action into the schedule after every action at its time or before it, so that the
 // actions before its time keep their indexes, and the run before that time stays the same.
 export function insert(schedule, action) {
@@ -71,7 +69,7 @@ export function keysText(keys) {
 }
 
 // actionWords of an action of the schedule, as the visitor's own words.
-export function actionWords(a) {
+function actionWords(a) {
   switch (a.do) {
     case "crash": return `You crash ${a.instance}.`;
     case "restart": return `You restart ${a.instance}.`;
