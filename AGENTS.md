@@ -76,6 +76,13 @@ When Markus exports a conversation, move the export into `docs/conversations/` a
 - **Why:** Markus said on 2026-11-11: "every time I export a conversation, just move it (potentially overwriting another one if it's an update to a conversation) and commit."
 - **How to apply:** name the file by the date the conversation started and a short topic, like `2026-11-10-kickoff.txt`. If the export is a newer version of a conversation that is already there, overwrite that file. Run the cheap check for the S3 access key and secret first.
 
+### The lead's conversations with Markus can be read in `docs/conversations/`
+
+The exports in `docs/conversations/` are the full record of the lead's conversations with Markus, up to the moment of each export.
+
+- **Why:** a compacted session and a new session start from a summary, and a summary leaves things out. Markus asked on 2026-11-18 for a note that the conversations can always be found there, "in case the compacted session leaves out details".
+- **How to apply:** when a detail is missing after a compaction or in a new session, such as the exact wording of a decision or the reason for it, search the exports before guessing or asking Markus again. Search them with a sub-agent or with `grep`, and do not read a whole export into context, because they are large. What is in `docs/spec.md`, `docs/roadmap.md`, and `docs/todo.md` is newer than a conversation where they differ.
+
 ### JSON is handled with `encoding/json/v2`
 
 Use `encoding/json/v2` and `encoding/json/jsontext` from the standard library for all JSON. Do not import `encoding/json`.
