@@ -33,3 +33,6 @@ const (
 	AttrExtendedCode = attrExtendedCode
 	AttrDuration     = attrDuration
 )
+
+// FromCore is [fromCore].
+var FromCore = fromCore
