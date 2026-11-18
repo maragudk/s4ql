@@ -1,9 +1,9 @@
 # Equivalent mutants of the SQL tokenizer, syntax tree, parser, and the pass after the parser:
 # changes that no test can notice, because the code behaves the same with them. Each entry is the key
 # of a mutant on a line of its own, as `go run ./internal/sql/mutation -list` prints it, and the
-# reason on the indented line after it. The report lists every survivor that is not here, and every entry here that matches no
-# survivor, so the list cannot go stale unnoticed. TestEquivalent checks that each key names a mutant
-# that the generator makes.
+# reason on the indented line after it. The report lists every survivor that is not here, and every
+# entry here that matches no survivor, so the list cannot go stale unnoticed. TestEquivalent checks
+# that each key names a mutant that the generator makes.
 
 # The tokenizer, internal/sql/token.
 
