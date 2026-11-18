@@ -27,6 +27,10 @@ func TestRun_corpus(t *testing.T) {
 	is.Equal(t, 0, len(r.Groups))
 	is.Equal(t, r.Total, r.Agreed+r.NotSaid)
 	t.Logf("%v statements, SQLite does not say on %v", r.Total, r.NotSaid)
+	if !testing.Short() && !asanEnabled {
+		// The texts on which SQLite does not say escape every comparison with it.
+		is.Equal(t, 308, r.NotSaid, "the texts of the corpus on which SQLite does not say; change the pinned number only on purpose, and say why in the commit")
+	}
 }
 
 func TestRun(t *testing.T) {

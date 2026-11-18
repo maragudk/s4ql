@@ -137,6 +137,15 @@ func TestCheck_pairs(t *testing.T) {
 	}
 	t.Log("\n" + r.String())
 	is.Equal(t, 0, len(r.Faults))
+	if !slow() {
+		pinnedOutcomes(t, `not checked, the parser does not parse it: 503
+bytecode: 1310
+probes: 0
+same error: 39781
+skipped: 0
+compared in no way but by an error: 1486
+`, r)
+	}
 
 	pr := parsetest.Run(parsetest.ParserFunc(parse), sqls)
 	is.Equal(t, 0, pr.Disagreements(), pr.String())

@@ -58,6 +58,27 @@ func slow() bool {
 	return testing.Short() || raceEnabled || asanEnabled
 }
 
+// pinned fails the test unless got, a number of texts that a full run counts, is want. Such a number
+// is pinned when it tells how much of a test escapes the comparison with SQLite, so that a change that
+// lets more escape cannot pass unseen.
+func pinned(t *testing.T, what string, want, got int) {
+	t.Helper()
+	if got != want {
+		t.Errorf("%v: %v, but the test pins %v. Change the pinned number only on purpose, and say why in the commit", what, got, want)
+	}
+}
+
+// atDefault reports whether each flag of names has its default value, for which the pinned numbers
+// hold.
+func atDefault(names ...string) bool {
+	for _, name := range names {
+		if f := flag.Lookup(name); f.Value.String() != f.DefValue {
+			return false
+		}
+	}
+	return true
+}
+
 // every nth of sqls.
 func every(sqls []string, n int) []string {
 	var some []string
@@ -420,6 +441,9 @@ func TestParse_mutants(t *testing.T) {
 	}
 	r := parsetest.Test(t, parsetest.ParserFunc(parse), sqls)
 	t.Logf("%v texts, %v agree, SQLite does not say on %v", r.Total, r.Agreed, r.NotSaid)
+	if !slow() && atDefault("seed", "mutants") {
+		pinned(t, "mutants of the corpus on which SQLite does not say", 745, r.NotSaid)
+	}
 	for _, sql := range sqls {
 		checkOwnership(t, sql)
 	}
@@ -434,6 +458,9 @@ func TestParse_corpus(t *testing.T) {
 	}
 	r := parsetest.Test(t, parsetest.ParserFunc(parse), sqls)
 	t.Logf("%v texts, %v agree, SQLite does not say on %v", r.Total, r.Agreed, r.NotSaid)
+	if !slow() {
+		pinned(t, "texts of the corpus on which SQLite does not say", 308, r.NotSaid)
+	}
 	for _, sql := range sqls {
 		checkOwnership(t, sql)
 	}
