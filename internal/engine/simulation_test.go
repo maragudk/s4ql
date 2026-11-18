@@ -276,7 +276,7 @@ func withID(src string, id uint64) string {
 
 // statement runs one statement of the sequence q on the engine e of n, and records it.
 func (r *run) statement(ctx context.Context, n *node, e *engine.Engine, q *sequence) {
-	src, query := q.next()
+	src, query, supported := q.next()
 	r.mu.Lock()
 	r.nextID++
 	a := &attempt{id: r.nextID, node: n.name, query: query, acked: len(r.acked)}
@@ -337,6 +337,11 @@ func (r *run) statement(ctx context.Context, n *node, e *engine.Engine, q *seque
 		a.state, a.answer = sqliteFailed, answer{err: fmt.Sprint(se.Code, "/", se.ExtendedCode, ": ", se.Message)}
 	case errors.Is(err, stmt.ErrNotSupported), errors.Is(err, engine.ErrNoStatement):
 		a.state = skipped
+		if supported {
+			r.mu.Unlock()
+			r.violate(ctx, "statement %v, %q, of slice 1: %v", a.id, a.src, err)
+			r.mu.Lock()
+		}
 	case errors.Is(err, core.ErrOutcomeUnknown):
 		a.state = unknown
 	case errors.Is(err, core.ErrNoLease), errors.Is(err, core.ErrStopped), errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):

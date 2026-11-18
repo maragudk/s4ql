@@ -20,6 +20,7 @@ import (
 	"maragu.dev/s4ql/internal/engine"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sim"
+	sqloracle "maragu.dev/s4ql/internal/sql/oracle"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
@@ -88,6 +89,20 @@ func (o *oracle) changes(t testing.TB) (changes, rowid int64) {
 	changes, rowid = o.counts.ColumnInt64(0), o.counts.ColumnInt64(1)
 	is.NotError(t, o.counts.Reset())
 	return changes, rowid
+}
+
+// prepare src, and finalize its statement without a step, so that nothing changes. It gives SQLite's
+// error, or nil.
+func (o *oracle) prepare(src string) *sqlite.Error {
+	s, _, err := o.c.PrepareFirst(src)
+	var se *sqlite.Error
+	if errors.As(err, &se) {
+		return se
+	}
+	if s != nil {
+		_ = s.Finalize()
+	}
+	return nil
 }
 
 // sqliteText of an error of the binding.
@@ -496,12 +511,19 @@ var others = []string{
 	" ; -- nothing",
 }
 
-// next statement of the sequence, and whether to run it as a query.
-func (q *sequence) next() (string, bool) {
+// next statement of the sequence, whether to run it as a query, and whether it is a statement of
+// slice 1, which the engine must support.
+func (q *sequence) next() (src string, query, supported bool) {
 	r := q.r
 	if r.IntN(12) == 0 {
 		form := others[r.IntN(len(others))]
-		return fmt.Sprintf(form, q.tables[r.IntN(len(q.tables))], q.columns[r.IntN(len(q.columns))], r.IntN(5)), r.IntN(2) == 0
+		table, column, value := q.tables[r.IntN(len(q.tables))], q.columns[r.IntN(len(q.columns))], r.IntN(5)
+		query := r.IntN(2) == 0
+		if !strings.Contains(form, "%") {
+			// Sprintf would add the arguments that a form without a verb does not use to its text.
+			return form, query, false
+		}
+		return fmt.Sprintf(form, table, column, value), query, false
 	}
 	var k stmttest.Kind
 	switch n := r.IntN(20); {
@@ -514,10 +536,10 @@ func (q *sequence) next() (string, bool) {
 	default:
 		k = stmttest.KindDropTable
 	}
-	src, _ := q.g.StatementOf(k)
+	src, _ = q.g.StatementOf(k)
 	// A query runs through Exec one time in eight, and every other statement through Query one time
 	// in eight.
-	return src, (k == stmttest.KindSelect) != (r.IntN(8) == 0)
+	return src, (k == stmttest.KindSelect) != (r.IntN(8) == 0), true
 }
 
 // tally of the outcomes of the statements of a differential test, which counts nothing if it is
@@ -602,6 +624,10 @@ func differentialOn(t testing.TB, seed uint64, n int, restarts bool, y tally, i 
 	q := newSequence(t, r)
 	o := newOracle(t)
 	defer o.close()
+	// empty is SQLite on an empty database, which prepares each text that the engine does not
+	// support, and changes nothing.
+	empty := newOracle(t)
+	defer empty.close()
 	// prev is SQLite's count of changes after the statement before.
 	var prev int64
 	var log []string
@@ -618,7 +644,7 @@ func differentialOn(t testing.TB, seed uint64, n int, restarts bool, y tally, i 
 				fail("after the restart the engine holds\n%v\nand SQLite\n%v", got, want)
 			}
 		}
-		src, query := q.next()
+		src, query, supported := q.next()
 		log = append(log, src)
 		var got answer
 		if query {
@@ -628,6 +654,14 @@ func differentialOn(t testing.TB, seed uint64, n int, restarts bool, y tally, i 
 		}
 		y.add(src, got)
 		if got.err == "not supported" {
+			// A statement of slice 1 is supported, and a text that is not supported is one that SQLite
+			// accepts: SQLite prepares it on an empty database without a syntax error.
+			if supported {
+				fail("%q: the engine does not support a statement of slice 1", src)
+			}
+			if err := empty.prepare(src); err != nil && sqloracle.IsSyntaxMessage(err.Message) {
+				fail("%q: the engine does not support it, and SQLite gives %v", src, err.Message)
+			}
 			continue
 		}
 		before := prev
