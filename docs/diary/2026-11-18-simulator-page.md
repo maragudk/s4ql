@@ -210,3 +210,65 @@ See the later steps.
 **Interpretation:** rebuild the page on the same engine as a calm view of two instances and S3: one serves a workload, the other stands by, the visitor adds a few faults, and the run extends itself to 10 min of fake time.
 
 **Inferred intent:** a visitor understands in a minute what s4ql's storage does when its one instance fails, without learning the controls of a test tool, and without taking s4ql for a distributed database.
+
+## Step 5: The simpler page, its check, and self-review
+
+**Author:** builder (simpler simulator page)
+
+### Prompt Context
+
+**Verbatim prompt:** (continues from Step 4)
+
+**Interpretation:** build the page that Step 4 describes on the unchanged engine, check it in `sitecheck`, and review it.
+
+**Inferred intent:** the lead can merge, and the live page shows the code under faults in a minute of attention.
+
+### What I did
+
+- `/site/simulator/run.js`: only the run as data now. The request (two instances, no `faults`, no `buggify`, the default workload), `newSeed` (two `Uint32` from `crypto.getRandomValues`, below 2^53), `insert`, the limits (`CHUNK` 2 min, `LEAD` 1 min, `LIMIT` 10 min, `SPAN` 40 s), and `story`, which gives each event its words and a tier: `stream` (reads served and commits), `story` (lease, catch-up, unknown outcomes, refusals), `you` (the visitor's faults), `alarm` (a violation of the engine's checker, which no longer has a panel but must not be hidden), or none. The link's `encode` and `decode`, the presets, the fault table, the purposes, and the invariants are gone.
+- `/site/simulator/page.js`: playback, the cards of a, b, and S3, the log, the commit objects, and the field, which now covers 0 to 10 min and shows only the past. No scrubber, Back, Step, checker, settings, schedule, link, or `hashchange` handler. "Start over" is always there and is called out at the limit.
+- `/site/simulator/index.html`: a short intro (two paragraphs, the build line), the bar (Play, speed, the clock, the engine's time, Start over, the field), three cells (a, b, S3) with their faults, "Things to try" as four hairline cells under them, then the log beside the commit objects, and one sentence on what is left out. The `<head>` says what the page is now.
+- `/internal/simulator/sitecheck/`: `check.html` checks run.js (seeds, the request, `insert`, the spells of refusals), and the page: the first run, a crash of a just after the current time, the growth past 2 min, the stop at 10 min with Start over offered, Start over, nothing written to the address, and an old link ignored without a note. `main.go` opens Chromium at 1600 by 1200.
+- `/internal/simulator/README.md`: the run times of the page's runs, two instances.
+
+### Why
+
+- **The faults:** per instance Crash/Restart, "Cut off from S3 for 40 s", and "Stop/Start its monotonic clock"; for S3 "Make S3 unreachable for 40 s" and "Lose the answer to the next commit". Native runs of seeds 7, 99, 4242, and 12345 showed that the wall clock set back, set ahead, or stopped changes nothing that a visitor can see, on the holder or on the standby: the lease goes on, and only the card's clock would differ. Its one visible effect, with a stopped monotonic clock, is a stale read that the checker excuses, and that needs the checker and a paragraph. So the page has no wall clock fault. A stopped monotonic clock shows a takeover, and after the start a refusal by the wall clock and "learns that b holds the lease now". 40 s is longer than the 30 s lease, so a cut-off or an outage lets the lease run out.
+- **The refusals of the standby:** the workload runs on both processes, so the standby refuses every call. In the log a refusal starts a spell: one line per instance and reason ("b refuses calls: it does not hold the lease."), until the instance serves again. The same spells keep a renewal without an answer and a failed catch-up to one line while a fault lasts. The card counts them: "0 writes and 0 reads served, 36 refused, the last because it does not hold the lease."
+- **Extending:** when the playback comes within `max(60 s, 2 s × speed)` of fake time of the end, the page asks for 2 min more; such a run does not hold the playback, and its state is still valid, since the events before the old end are the same. A fault or Start over holds the playback until its run is shown. At 10 min the playback stops and Start over is called out.
+- **One engine.** While a longer run is in flight the engine cannot answer a request for the state, so the cards and the bucket hold for that run, up to about 0.4 s at 8 to 10 min, while the clock, the log, and the counts go on. A second Worker for the longer runs would avoid that at the cost of a second engine's memory; I left it out and say so in the report. The cards no longer show ticking clocks, only whether the monotonic clock runs, so a held card shows less.
+- **The check holds for any seed**, so the page has no hook for the seed: a crash always adds events, and the engine's determinism gives the rest.
+
+### What worked
+
+- Run times in headless Chrome, two instances, a crash and a restart, mean of five: 2 min 70 ms, 4 min 146, 6 min 222, 8 min 300, 10 min 375, 12 min 457, 15 min 632. 10 min holds; a fault at 9 min holds the playback for about 0.4 s.
+- `make site-check` passed 15 times in a row, and 15 more, five at a time. A check takes about 15 s, most of it the playback at 64× to 10 min.
+- `make lint`, `make test`, and `make check-browser` passed. No Go that runs in the browser changed.
+- Phone at 390: `scrollWidth` 390 in every state.
+
+### What didn't work
+
+- The first `sitecheck` hung for 3 min and was stopped. A dump after 20 s showed `["1","false",0,false,...]`: one run, the page idle, the cursor at 0. Two causes. In Chromium's default 800 by 600 window the frame's animation frames did not run, so the page did not play; with `--window-size=1600,1200` and the frame fixed at the top left, they do. And when the check paused at once, the cursor was before the instances' first events at about 14 ms, so the state had no instances and the crash button stayed off; the check now lets the run play until a can crash.
+- `FAIL the new run has 2 min and no faults`: at 64× the page asks for a longer run at once (the lead of 128 s is above 2 min), so the new run had grown. The check now asks only for no faults and less than 10 min.
+- The harness refused `playwright-cli eval` ("runs a string through eval"); `run-code` worked.
+- The old words had a bug: "Process a starts on a copy of the cache that the crashed process left" at 0:00.014, because `describe` tested `e.t === 0`. `story` tests whether the process has the name of its instance.
+- The action event of `loseAnswer` has no `request`, so the old words said "the next undefined". `story` takes the words from the schedule.
+
+### What I learned
+
+- In two-instance runs without random faults, the instance that takes the lease first depends on the seed (a for 12345, 99, 4242; b for 7), so no copy names an instance.
+- After an outage of 40 s the holder kept the lease in every seed tried: it asks S3 and learns that its renewal went through. "Things to try" says only what the log shows for every seed.
+
+### What was tricky
+
+- A Start over while the old run sits at 10 min first asked for longer runs of the new seed, because the extension looked at `run.end` against the old cursor. It now extends only a run with the seed shown.
+- Keeping a refused run from looping: the restore of the old page reset `run`, and the next frame asked for the longer run again. A refusal now stops the page with "Start over" as the way on.
+
+### What warrants review
+
+- Self-review with the code-review skill at medium found eight things. Fixed: the loop after a refused run, the silent wait at the end when a longer run is late (the field turns dashed, and the lead grows with the speed), a request for the state on every frame (at most every 100 ms while playing), no way on after a failure (Start over), autoplay after a refused Start over, and `REASONS` in two places. Not changed: `apply` runs `story` over every event for each longer run, a few milliseconds at most for the 4,600 events of 10 min; and the cards hold during a longer run, as above.
+- By eye: the copy of the intro and "Things to try", and whether the log's stream of reads and writes buries the story too fast at 16× and 64×; the story lines are bold and the visitor's faults inverted, and the last 100 lines can be scrolled.
+
+### Future work
+
+- A second Worker for the longer runs, if the held cards are noticed.
