@@ -128,3 +128,62 @@ See the later steps.
 ### Future work
 
 - Random faults of processes, drawn from the seed into the schedule, as the README suggests. The page does not offer them.
+
+## Step 3: Self-review
+
+**Author:** builder (simulator page)
+
+### Prompt Context
+
+**Verbatim prompt:** (continues from Step 1)
+
+**Interpretation:** review the diff with competing reviewers, fix what holds up, and run every check of the brief.
+
+**Inferred intent:** the lead can merge on the evidence.
+
+### What I did
+
+- The code-review skill, at medium, over `main...HEAD`. Ten findings; what I did with each:
+  - Fixed: every `hashchange` reloaded the page, so the skip link and the checker's chip threw the run away. A hash that names an element of the page now only scrolls, and the run goes back into the address. `sitecheck` clicks the chip and checks that the page and its run stay.
+  - Fixed: a failed request for the state was asked again on every frame. The page records the time it failed at, stops playing, and shows the failure once.
+  - Fixed: after a refused run, `run` and the schedule on screen differed, so "Remove" could delete another action. The page now goes back to the shown run and asks the engine for it again, because the engine forgets its last run when it refuses one.
+  - Fixed: the toggles of a card (crash or restart, close or open, stop or start) were decided from the state of the run before. A new run clears the state, and the card's buttons wait for the new one.
+  - Fixed: `in PURPOSES` let `toString` and `__proto__` through; `Object.hasOwn` now. A fault with more than one `:` and a duration that is not whole milliseconds are refused too.
+  - Fixed: the select of callers did not offer a value from a link, such as 3, and had a dead ternary.
+  - Fixed: the checker and the schedule scanned every event on each frame; the indexes of the checks and the results of the actions are computed once for each run, and "Back" searches by halves.
+  - Fixed: `run.js` had no tests after `model.test.mjs` went. `sitecheck` now imports it in Chromium and checks the round trip of a run through the link, `insert`, and 25 links that must be refused.
+  - Not changed: `sitecheck` copies the lookup of Chromium and its flags from the runner in `internal/sqlite/browser`. Sharing them needs a package for both commands; it is a follow-up for the lead to decide.
+- The impeccable detector found one advisory, "Repeating-gradient stripes", for the bars of the buttons and the checkbox, which are the site's identity as on `site/index.html`. It is recorded in `/.impeccable/config.json` with that reason.
+- Checked the copy against claudisms.ai: "its lease then lives too long" became "lasts too long", and "An acknowledged write is never lost" became "The checker still requires that no acknowledged write is lost", which claims only what the checker does.
+- A crashed process's card now offers only "Restart", since the engine ignores the rest for it, and the sticky bar is shorter on a phone (no seed, no engine status, no "of 2:00.000").
+
+### Why
+
+- Each fix has a check in `sitecheck` where the browser is needed to show it, and the checks of `run.js` run where the module runs.
+
+### What worked
+
+- `make lint`, `make test`, and `make check-browser` passed. `make site-check` passed 30 times, ten at once. No Go that runs in the browser changed, so `make test-browser` was not run.
+- The console of the page in Chromium had no messages during a run.
+
+### What didn't work
+
+- The first round trip in the unit checks failed, `FAIL a run goes through the link and back unchanged`, because the test's faults were in another key order than `decode` gives them. The values were the same; the test now lists them in the order of `R.FAULTS`.
+
+### What I learned
+
+- Under the default seed, a lost answer of a commit on b comes during a commit whose swap was already applied: the core swaps again, is refused by the version, reads the manifest, and settles the commit as committed after six attempts.
+
+### What was tricky
+
+- `drawControls` and `drawState` both decide whether a card's buttons are enabled; `drawState` calls `drawControls` once after the cards, so the two do not fight.
+
+### What warrants review
+
+- By eye before it goes live: the first viewport on a laptop shows the intro and only the top of the bar, as the old page did; the copy of "Things to try" names b and 0:40, which hold for the default seed and the current code and change if the core's behaviour changes.
+- GitHub Pages and `engine.wasm`: compression and the ten-minute cache after a deploy.
+
+### Future work
+
+- A shared package for finding and starting Chromium, for the runner and `sitecheck`.
+- Random faults of processes from the seed, if Markus wants them.
