@@ -166,7 +166,7 @@ The brief asks for all three, and the mutation run is the only layer that tests 
 ### What worked
 
 - Mutation testing, run 1: 976 mutants, 55 survivors. Run 2 after the fixes: 895 mutants, 10 survivors. Run 3: 890 mutants, 2 survivors, of which one is equivalent (`childAt condition: s.Start <= offset => true`: the children of an accepted node are in the order of the text) and one was killed by a new case `create table t (v int(10)) strict, without rowid`, in a run of the 7 mutants of that line. Final: 760 killed, 12 timed out, 117 not compiled, 1 equivalent, 0 unexplained.
-- Fuzzing: `FuzzCheck` 202,673,795 executions in 40 min on 6 workers on the first version, and 87,983,456 in 30 min on 4 workers after the reviews; no finding.
+- Fuzzing: `FuzzCheck` 202,673,795 executions in 40 min on 6 workers on the first version, and 87,983,456 in 30 min on 4 workers after the reviews; `FuzzGenerate` 11,418,100 in 15 min on 4 workers. No finding.
 - Reviewer B ran an independent token-pattern matcher of the four forms over 824,746 texts: all 62,881 supported texts matched. Neither reviewer found a way to get an unlisted statement through.
 - `make lint`, `make test`, and `make test-asan` pass; the package takes about 43 s under the sanitizer.
 

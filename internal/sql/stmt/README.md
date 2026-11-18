@@ -388,7 +388,7 @@ On the code as it is now, with the default flags:
 
 The 729 supported texts of the corpus are 3 CREATE TABLE, 192 DROP TABLE, 184 INSERT, and 350 SELECT, each checked in SQLite. The supported mutants of the generator are the same statement with a semicolon or a comment changed, or the same form with another name, a keyword from the pool of the mutants, or with the sign of the value dropped; none is another kind of statement. `TestGenerate` checks 20,000 statements of the generator, each as the statement it wrote.
 
-Fuzzing: `FuzzCheck` made 202,673,795 executions in 40 minutes on 6 workers, and on the code after the review 87,983,456 in 30 minutes on 4 workers. Neither found anything.
+Fuzzing: `FuzzCheck` made 202,673,795 executions in 40 minutes on 6 workers, and on the code after the review 87,983,456 in 30 minutes on 4 workers. `FuzzGenerate` made 11,418,100 executions in 15 minutes on 4 workers; each checks a statement of the generator and its mutant in SQLite. None of the runs found anything.
 
 Mutation testing: of 890 mutants, 117 do not compile, 760 are killed, 12 time out, and 1 is equivalent; none is unexplained. See [`internal/sql/mutation`](../mutation/README.md#the-pass-after-the-parser).
 
