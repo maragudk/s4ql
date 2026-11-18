@@ -110,9 +110,52 @@ func channels(ch chan int) {
 	select {
 	case <-ch:
 	case ch <- 1:
+	case v := <-ch:
+		_ = v
+	case (<-ch):
 	default:
 	}
 	close(ch)
+
+	// What the communication clauses of a select compute before it chooses is checked as any
+	// other code, with a default and without.
+	other := make(chan chan int)
+	select {
+	case <-time.After(time.Second): // want `time.After waits on the real clock`
+	case ch <- time.Now().Second(): // want `time.Now reads the real clock`
+	case ch <- <-ch: // want `a channel receive waits outside the host`
+	case <-<-other: // want `a channel receive waits outside the host`
+	case values()[<-ch] = <-ch: // want `a channel receive waits outside the host`
+	default:
+	}
+	select { // want `a select without a default waits outside the host`
+	case <-time.After(time.Second): // want `time.After waits on the real clock`
+	case ch <- <-ch: // want `a channel receive waits outside the host`
+	}
+}
+
+func values() map[int]int {
+	return map[int]int{}
+}
+
+// typeParameters are channels, and a range over them waits as one over any channel.
+func typeParameters[C ~chan int, R ~<-chan int, U interface{ ~chan int | ~<-chan int }](c C, r R, u U) {
+	for range c { // want `a range over a channel waits outside the host`
+	}
+	for range r { // want `a range over a channel waits outside the host`
+	}
+	for range u { // want `a range over a channel waits outside the host`
+	}
+}
+
+// A range over a type parameter that is not a channel is fine.
+func otherParameters[S ~[]int, M ~map[string]int, N ~int](s S, m M, n N) {
+	for range s {
+	}
+	for range m {
+	}
+	for range n {
+	}
 }
 
 func pipes() {

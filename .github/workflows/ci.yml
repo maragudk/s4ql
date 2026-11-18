@@ -187,6 +187,15 @@ jobs:
       - name: Lint the simulator for the simulation
         run: (cd internal/simlint && go build -o "$RUNNER_TEMP/simlint" ./cmd/simlint) && GOFLAGS=-tags=s4ql_browser "$RUNNER_TEMP/simlint" ./internal/simulator/...
 
+      # The files built only for the browser, such as the binding on the SQLite WebAssembly build,
+      # are library code too.
+      - name: Lint the browser's build for the simulation
+        env:
+          GOOS: js
+          GOARCH: wasm
+          GOFLAGS: -tags=s4ql_browser
+        run: '"$RUNNER_TEMP/simlint" ./internal/sqlite ./internal/sqlite/faultvfs ./internal/core ./internal/sim ./internal/store/simstore ./internal/simulator ./internal/simulator/engine'
+
       # Chrome's sandbox needs user namespaces, which the runner may not allow, and the page runs only
       # the project's own code from 127.0.0.1.
       - name: Test in headless Chrome

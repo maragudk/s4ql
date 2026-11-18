@@ -9,8 +9,10 @@
 //   - a go statement, and iter.Pull, iter.Pull2, runtime.SetFinalizer, runtime.AddCleanup, and an
 //     import of golang.org/x/sync/errgroup, because they start goroutines, and a goroutine must be
 //     started with host.Host.Go;
-//   - a channel receive, a send, a range over a channel, and a select without a default, because
-//     they can wait outside the host;
+//   - a channel receive, a send, a range over a channel or over a type parameter whose type set
+//     holds one, and a select without a default, because they can wait outside the host, and
+//     anything that the clauses of a select compute before it chooses, also in a select with a
+//     default;
 //   - the time package's clock, sleeps, timers, and tickers, and timestamppb.Now of Protocol
 //     Buffers, because the time is host.Host.Wall and host.Host.Monotonic, and waiting is
 //     host.Host.Sleep;
@@ -22,7 +24,9 @@
 //   - io.Pipe and its types io.PipeReader and io.PipeWriter, because their goroutines block on
 //     waits that the scheduler cannot see, and a wait must be a host.Semaphore or a host.Task;
 //   - an import of math/rand, math/rand/v2, crypto/rand, or hash/maphash, because randomness is
-//     host.Host.Uint64.
+//     host.Host.Uint64;
+//   - host.New, because it makes the production host, and library code runs on the host it is
+//     given, so that a simulation can give it another.
 //
 // The packages that implement the host, and others that never run under a simulation, are exempt.
 // Their list is in this file.
@@ -32,6 +36,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -106,6 +111,10 @@ var forbidden = map[string]map[string]string{
 	"google.golang.org/protobuf/types/known/timestamppb": {
 		"Now": "reads the real clock; use timestamppb.New with host.Host.Wall",
 	},
+	// The packages that may make the production host, to run a real instance on it, are exempt.
+	"maragu.dev/s4ql/internal/host": {
+		"New": "makes the production host; run on the host.Host that the code is given",
+	},
 }
 
 // forbiddenImports of packages, by import path, with what to use instead.
@@ -136,10 +145,16 @@ func run(pass *analysis.Pass) (any, error) {
 				if !hasDefault(n) {
 					pass.Reportf(n.Pos(), "a select without a default waits outside the host; use a host.Semaphore or a host.Task")
 				}
-				// The receives and sends of a select are reported with it, or never wait because it
-				// has a default. The bodies of its clauses are checked as any other code.
+				// The receive or send of each clause is reported with the select, or never waits
+				// because the select has a default. What a clause computes before the select chooses,
+				// its channel, the value it sends, and where it puts what it receives, and the bodies
+				// of the clauses, are checked as any other code.
 				for _, clause := range n.Body.List {
-					for _, stmt := range clause.(*ast.CommClause).Body {
+					clause := clause.(*ast.CommClause)
+					for _, operand := range commOperands(clause.Comm) {
+						ast.Inspect(operand, inspect)
+					}
+					for _, stmt := range clause.Body {
 						ast.Inspect(stmt, inspect)
 					}
 				}
@@ -154,7 +169,7 @@ func run(pass *analysis.Pass) (any, error) {
 				pass.Reportf(n.Pos(), "a channel send waits outside the host; use a host.Semaphore or a host.Task")
 
 			case *ast.RangeStmt:
-				if _, ok := pass.TypesInfo.TypeOf(n.X).Underlying().(*types.Chan); ok {
+				if isChan(pass.TypesInfo.TypeOf(n.X)) {
 					pass.Reportf(n.Pos(), "a range over a channel waits outside the host; use a host.Semaphore or a host.Task")
 				}
 
@@ -184,6 +199,50 @@ func run(pass *analysis.Pass) (any, error) {
 		ast.Inspect(file, inspect)
 	}
 	return nil, nil
+}
+
+// commOperands of the communication of a select's clause: the expressions that it evaluates before
+// the select chooses, without the receive or the send itself. A default clause has none.
+func commOperands(comm ast.Stmt) []ast.Expr {
+	switch comm := comm.(type) {
+	case *ast.SendStmt:
+		return []ast.Expr{comm.Chan, comm.Value}
+	case *ast.ExprStmt:
+		return []ast.Expr{receiveOperand(comm.X)}
+	case *ast.AssignStmt:
+		// The receive is the one expression on the right.
+		return append(slices.Clone(comm.Lhs), receiveOperand(comm.Rhs[0]))
+	}
+	return nil
+}
+
+// receiveOperand is the channel of the receive expression x, which may be in parentheses.
+func receiveOperand(x ast.Expr) ast.Expr {
+	return ast.Unparen(x).(*ast.UnaryExpr).X
+}
+
+// isChan reports whether t is a channel, or a type parameter whose type set holds a channel. The
+// underlying type of a type parameter is the interface of its constraint. A range over a type
+// parameter is valid only if every type in its set ranges alike, so one channel in the set means
+// that the range is over a channel.
+func isChan(t types.Type) bool {
+	switch u := t.Underlying().(type) {
+	case *types.Chan:
+		return true
+	case *types.Interface:
+		for e := range u.EmbeddedTypes() {
+			if union, ok := e.(*types.Union); ok {
+				for term := range union.Terms() {
+					if isChan(term.Type()) {
+						return true
+					}
+				}
+			} else if isChan(e) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // hasDefault reports whether the select has a default clause.
