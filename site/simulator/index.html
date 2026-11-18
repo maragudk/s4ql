@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>s4ql simulator: the storage code under faults, in your browser</title>
-<meta name="description" content="The storage code of s4ql, compiled to WebAssembly, runs in your browser on the official SQLite WebAssembly build, with a simulated S3 and simulated time. Crash instances, cut them off, stop their clocks, and lose answers from S3, while a checker watches six invariants.">
+<meta name="description" content="The storage code of s4ql, compiled to WebAssembly, runs in your browser on the official SQLite WebAssembly build, with a simulated S3 and simulated time. One instance holds the lease and serves, a second takes over when it fails. Crash it, cut it off, stop its clock, or take S3 away, and watch what the code does.">
 <meta name="theme-color" content="#000000">
 <link rel="canonical" href="https://www.s4ql.com/simulator/">
 <link rel="icon" href="../favicon.svg" type="image/svg+xml">
@@ -13,7 +13,7 @@
 <meta property="og:site_name" content="s4ql">
 <meta property="og:url" content="https://www.s4ql.com/simulator/">
 <meta property="og:title" content="s4ql simulator: the storage code under faults, in your browser">
-<meta property="og:description" content="The storage code of s4ql runs in your browser as WebAssembly, with a simulated S3 and simulated time. Crash instances, cut them off, stop their clocks, and lose answers from S3, while a checker watches six invariants.">
+<meta property="og:description" content="The storage code of s4ql runs in your browser as WebAssembly, with a simulated S3 and simulated time. One instance serves, a second takes over when it fails. Add a fault and watch what the code does.">
 <meta property="og:image" content="https://www.s4ql.com/og.png">
 <meta property="og:image:type" content="image/png">
 <meta property="og:image:width" content="1200">
@@ -78,7 +78,7 @@ body {
 }
 
 ::selection { background: var(--lumin); color: var(--void); }
-.lit ::selection, .alarm ::selection, li.loud ::selection { background: var(--void); color: var(--lumin); }
+.cell.lit .cell-head ::selection, .alarm ::selection, .commit.head ::selection, .hl::selection, li.you ::selection, li.alarm ::selection { background: var(--void); color: var(--lumin); }
 
 a {
   color: inherit;
@@ -92,7 +92,7 @@ a:hover { text-decoration-thickness: 3px; }
   outline: 2px solid var(--lumin);
   outline-offset: 3px;
 }
-.lit :focus-visible, .alarm :focus-visible, li.loud :focus-visible { outline-color: var(--void); }
+.alarm :focus-visible { outline-color: var(--void); }
 
 code { font-family: inherit; }
 
@@ -173,7 +173,7 @@ code { font-family: inherit; }
   .top nav .sec { display: none; }
 }
 
-/* Buttons and fields */
+/* Buttons and the select */
 
 .btn {
   display: inline-flex;
@@ -204,107 +204,54 @@ code { font-family: inherit; }
       currentColor 3px 5px, transparent 5px 6px,
       currentColor 6px 7px, transparent 7px 10px);
 }
-.btn:hover, .btn:focus-visible, .btn[aria-pressed="true"] { background: var(--lumin); color: var(--void); text-decoration: none; }
-.btn[aria-pressed="true"]:hover { background: var(--void); color: var(--lumin); }
+.btn:hover, .btn:focus-visible, .btn[aria-pressed="true"], .btn.call { background: var(--lumin); color: var(--void); text-decoration: none; }
+.btn[aria-pressed="true"]:hover, .btn.call:hover { background: var(--void); color: var(--lumin); }
 .btn:disabled { cursor: not-allowed; border-style: dashed; }
 .btn:disabled:hover { background: var(--void); color: var(--lumin); }
 .btn.big { padding: 12px 16px 12px 20px; font-size: 14px; gap: 20px; }
 .btn.big .bars { width: 32px; height: 16px; }
-.lit .btn { border-color: var(--void); background: var(--lumin); color: var(--void); }
-.lit .btn:hover, .lit .btn:focus-visible { background: var(--void); color: var(--lumin); }
-.lit .btn:disabled:hover { background: var(--lumin); color: var(--void); }
 
-select, input[type="text"] {
+select {
   font: inherit;
   font-size: 13px;
   color: var(--lumin);
   background: var(--void);
   border: var(--rule);
   border-radius: 0;
-  padding: 6px 8px;
-}
-.rates input { width: 9ch; }
-.rates .key { display: block; font-size: 12px; }
-select { padding-right: 24px; appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--lumin) 50%), linear-gradient(135deg, var(--lumin) 50%, transparent 50%); background-position: calc(100% - 13px) 55%, calc(100% - 8px) 55%; background-size: 5px 5px; background-repeat: no-repeat; }
-select { max-width: 100%; min-width: 0; text-overflow: ellipsis; }
-input[aria-invalid="true"] { border-style: dashed; }
-label { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; min-width: 0; }
-input[type="checkbox"] {
+  padding: 6px 24px 6px 8px;
   appearance: none;
-  margin: 0;
-  width: 16px;
-  height: 16px;
-  flex: none;
-  border: var(--rule);
-  background: var(--void);
-  border-radius: 0;
-  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--lumin) 50%), linear-gradient(135deg, var(--lumin) 50%, transparent 50%);
+  background-position: calc(100% - 13px) 55%, calc(100% - 8px) 55%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
 }
-input[type="checkbox"]:checked { background: repeating-linear-gradient(90deg, var(--lumin) 0 2px, transparent 2px 3px); }
+label { display: inline-flex; align-items: center; gap: 8px; }
 
 /* Intro */
 
 .intro {
   border-bottom: var(--rule);
-  padding: 48px 0 40px;
+  padding: 28px 0 24px;
 }
 .intro-grid {
   display: grid;
   grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-  gap: 48px;
+  gap: 16px 56px;
+  align-items: start;
 }
 h1 {
-  font-size: clamp(30px, 3.2vw, 46px);
+  font-size: clamp(28px, 2.8vw, 40px);
   line-height: 1.06;
   letter-spacing: -0.035em;
   font-weight: 700;
-  margin: 0 0 20px;
-  text-wrap: balance;
-}
-.intro p { max-width: 64ch; margin: 0 0 12px; font-size: 14px; }
-.intro p.lede { font-size: 16px; }
-.provenance {
-  margin: 20px 0 0;
-  border-top: var(--rule);
-  border-bottom: var(--rule);
-}
-.provenance > div {
-  display: grid;
-  grid-template-columns: 13ch minmax(0, 1fr);
-  gap: 12px;
-  padding: 8px 0;
-  font-size: 13px;
-  line-height: 1.5;
-}
-.provenance > div + div { border-top: var(--rule); }
-.provenance dt { margin: 0; }
-.provenance dd { margin: 0; overflow-wrap: anywhere; }
-.tries {
   margin: 0;
-  padding: 0;
-  list-style: none;
-  border-top: var(--rule);
-  counter-reset: try;
-}
-.tries li {
-  counter-increment: try;
-  display: grid;
-  grid-template-columns: 40px minmax(0, 1fr);
-  gap: 16px;
-  padding: 10px 0;
-  border-bottom: var(--rule);
-  font-size: 13px;
-}
-.tries li::before { content: counter(try, decimal-leading-zero); font-weight: 700; }
-h2 {
-  font-size: clamp(26px, 3vw, 40px);
-  line-height: 1.08;
-  letter-spacing: -0.03em;
-  font-weight: 700;
-  margin: 0 0 24px;
   text-wrap: balance;
 }
-h3 {
+.intro p { max-width: 72ch; margin: 0 0 8px; font-size: 14px; }
+.intro p:last-child { margin-bottom: 0; }
+.intro p.lede { font-size: 16px; }
+.intro p.built { font-size: 13px; margin: 14px 0 0; }
+h2 {
   font-size: 14px;
   font-weight: 700;
   text-transform: uppercase;
@@ -312,10 +259,34 @@ h3 {
   margin: 0;
 }
 @media (max-width: 960px) {
-  .intro-grid { grid-template-columns: 1fr; gap: 32px; }
+  .intro-grid { grid-template-columns: 1fr; }
 }
 
-/* The bar of controls, with the field of the run */
+.tries { margin-top: 24px; }
+.tries ul {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: var(--rule);
+  border-left: var(--rule);
+}
+.tries li {
+  padding: 12px 16px 14px;
+  border-right: var(--rule);
+  border-bottom: var(--rule);
+  font-size: 13px;
+  line-height: 1.5;
+}
+@media (max-width: 1100px) {
+  .tries ul { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .tries ul { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* The bar: playback, the clock, and the field of the run so far */
 
 .bar {
   position: sticky;
@@ -328,54 +299,38 @@ h3 {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px 16px;
+  gap: 10px 16px;
   padding-top: 12px;
   padding-bottom: 12px;
 }
 .bar .clock {
   font-weight: 700;
   font-size: 18px;
-  min-width: 17ch;
   white-space: nowrap;
 }
 .bar .clock .of { font-weight: 400; font-size: 13px; }
-.bar .group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.bar .group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
 .bar .grow { flex: 1 1 auto; }
-.chip { border: var(--rule); padding: 6px 10px; text-decoration: none; }
-.chip.bad { background: var(--lumin); color: var(--void); font-weight: 700; }
-.bar .status { flex-basis: 100%; margin: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.bar .status { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; min-width: 0; }
 .bar .status span:empty { display: none; }
 .field {
   flex-basis: 100%;
   position: relative;
-  height: 44px;
+  height: 28px;
   border: var(--rule);
 }
 .field svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-.field input {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  opacity: 0;
-  cursor: pointer;
-  appearance: none;
-  background: transparent;
-}
-.field input::-webkit-slider-thumb { appearance: none; width: 1px; height: 44px; }
-.field input::-moz-range-thumb { width: 1px; height: 44px; border: 0; }
-.field:has(input:focus-visible) { outline: 2px solid var(--lumin); outline-offset: 3px; }
 .field[aria-busy="true"] { border-style: dashed; }
-.field-note { position: absolute; inset: 0; display: flex; align-items: center; padding: 0 12px; margin: 0; font-size: 13px; pointer-events: none; }
+.field-note { position: absolute; inset: 0; display: flex; align-items: center; padding: 0 12px; margin: 0; font-size: 13px; }
 .field-note:empty { display: none; }
+.limit { flex-basis: 100%; margin: 0; font-weight: 700; }
+.limit[hidden] { display: none; }
 @media (max-width: 720px) {
   .bar .wrap { gap: 8px 12px; padding-top: 10px; padding-bottom: 10px; }
-  .bar .clock { font-size: 16px; min-width: 0; }
-  .bar .speed-label, .bar .seed, .bar .clock .of, #engine-status { display: none; }
+  .bar .clock { font-size: 16px; }
+  .bar .speed-label, .bar .clock .of, #engine-status { display: none; }
   .bar .btn.big { padding: 8px 12px; font-size: 12px; gap: 12px; }
-  .field { height: 36px; }
-  .field input::-webkit-slider-thumb { height: 36px; }
+  .field { height: 20px; }
 }
 
 .alarm {
@@ -390,19 +345,9 @@ h3 {
 .alarm p { margin: 0 0 8px; max-width: 72ch; }
 .alarm p:last-child { margin: 0; }
 
-/* Panels: cells that share hairlines */
+/* Cells that share hairlines: the two instances and S3 */
 
-.panel { border-bottom: var(--rule); padding: 28px 0 32px; }
-.panel h2 { font-size: clamp(24px, 2.4vw, 32px); margin: 0; scroll-margin-top: 160px; }
-.panel-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px 24px;
-  margin-bottom: 16px;
-}
-.panel-head p { margin: 0; max-width: 72ch; }
+.panel { border-bottom: var(--rule); padding: 24px 0 28px; }
 
 .cells {
   display: grid;
@@ -410,7 +355,6 @@ h3 {
   border-top: var(--rule);
   border-left: var(--rule);
 }
-.cells.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .cells > * {
   min-width: 0;
   border-right: var(--rule);
@@ -418,36 +362,34 @@ h3 {
 }
 @media (max-width: 1100px) {
   .cells { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cells > .s3 { grid-column: 1 / -1; }
 }
 @media (max-width: 720px) {
-  .cells, .cells.two { grid-template-columns: minmax(0, 1fr); }
+  .cells { grid-template-columns: minmax(0, 1fr); }
 }
-.waiting { padding: 20px; margin: 0; font-size: 13px; }
 
-/* Instances */
-
-.inst { display: flex; flex-direction: column; }
-.inst-head {
+.cell { display: flex; flex-direction: column; }
+.cell-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 16px 20px;
+  padding: 14px 20px;
   border-bottom: var(--rule);
 }
-.inst-head .who { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
-.inst-head .letter { font-size: 32px; font-weight: 700; line-height: 1; text-transform: none; letter-spacing: 0; }
-.inst-head .word { font-weight: 700; }
-.inst.lit .inst-head { background: var(--lumin); color: var(--void); }
-.inst.down .inst-head .letter { text-decoration: line-through; text-decoration-thickness: 3px; }
-.inst .tags { display: flex; gap: 0; flex-wrap: wrap; justify-content: flex-end; }
-.inst .tags span { border: var(--rule); padding: 0 8px; margin: 0 -1px 0 0; }
-.inst.lit .inst-head .tags span { border-color: var(--void); }
-.inst .tags span:empty { display: none; }
+.cell-head .who { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.cell-head .letter { font-size: 32px; font-weight: 700; line-height: 1; margin: 0; }
+.cell-head .word { font-weight: 700; }
+.cell.lit .cell-head { background: var(--lumin); color: var(--void); }
+.cell.down .cell-head .letter { text-decoration: line-through; text-decoration-thickness: 3px; }
+.cell .tags { display: flex; flex-wrap: wrap; justify-content: flex-end; }
+.cell .tags span { border: var(--rule); padding: 0 8px; margin: 0 -1px 0 0; }
+.cell.lit .cell-head .tags span { border-color: var(--void); }
+.cell .tags span:empty { display: none; }
 .facts { margin: 0; padding: 0 20px; }
 .facts > div {
   display: grid;
-  grid-template-columns: 11ch minmax(0, 1fr);
+  grid-template-columns: 9ch minmax(0, 1fr);
   gap: 12px;
   padding: 8px 0;
   border-bottom: var(--rule);
@@ -457,154 +399,60 @@ h3 {
 .facts > div:last-child { border-bottom: 0; }
 .facts dt { margin: 0; }
 .facts dd { margin: 0; overflow-wrap: anywhere; }
-.facts .code { display: block; width: 100%; height: 20px; margin-top: 4px; }
-.inst-actions {
+.facts .code { display: block; width: 100%; height: 16px; margin-top: 4px; }
+.facts .hl { background: var(--lumin); color: var(--void); padding: 0 4px; }
+.faults {
   margin-top: auto;
   border-top: var(--rule);
-  padding: 16px 20px 20px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
+  padding: 14px 20px 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
-.inst-actions .row { display: flex; flex-wrap: wrap; gap: 8px; }
-.inst-actions .row > .caps { flex-basis: 100%; }
-.inst-actions .btn { padding: 5px 9px; font-size: 11px; }
+.faults .caps { flex-basis: 100%; }
+.faults .btn { padding: 5px 9px; font-size: 11px; }
 
-/* The bucket */
+/* The log and the commit objects */
 
-.bucket { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); border: var(--rule); }
-.manifest { border-right: var(--rule); padding: 20px; min-width: 0; }
-.manifest .sheet { margin-top: 12px; }
-.manifest .hl { background: var(--lumin); color: var(--void); padding: 0 4px; }
-.commits { list-style: none; margin: 0; padding: 0; max-height: 640px; overflow-y: auto; scrollbar-width: thin; }
-.commit { padding: 14px 20px; border-bottom: var(--rule); display: grid; gap: 6px; }
-.commit:last-child { border-bottom: 0; }
-.commit .code { display: block; width: 100%; height: 28px; }
-.commit .meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 16px; font-size: 13px; }
-.commit .name { font-weight: 700; word-break: break-all; font-size: 13px; }
-.commit.head { background: var(--lumin); color: var(--void); }
-.commit.orphan { outline: 1px dashed var(--lumin); outline-offset: -6px; }
-.commits-empty { padding: 20px; margin: 0; }
-@media (max-width: 860px) {
-  .bucket { grid-template-columns: minmax(0, 1fr); }
-  .manifest { border-right: 0; border-bottom: var(--rule); }
-}
-
-/* Sheets: label and value on hairlines */
-
-.sheet { margin: 0; border-top: var(--rule); }
-.sheet > div {
-  display: grid;
-  grid-template-columns: 12ch minmax(0, 1fr);
-  gap: 12px;
-  padding: 8px 0;
-  border-bottom: var(--rule);
-  font-size: 13px;
-  line-height: 1.5;
-}
-.sheet dt { margin: 0; }
-.sheet dd { margin: 0; overflow-wrap: anywhere; }
-
-/* Lists of entries: requests, calls, the log, the schedule */
-
-.logs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); border: var(--rule); }
-.logs.wide { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+.logs { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); border: var(--rule); }
 .logs > section { min-width: 0; }
 .logs > section + section { border-left: var(--rule); }
-.log-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 16px; padding: 14px 20px; border-bottom: var(--rule); min-height: 56px; }
+.log-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px 16px; padding: 14px 20px; border-bottom: var(--rule); }
+.log-head p { margin: 0; }
 .scroll { max-height: 560px; overflow-y: auto; scrollbar-width: thin; }
-.scroll.short { max-height: 360px; }
 .entries { list-style: none; margin: 0; padding: 0; }
 .entries li {
   display: grid;
-  grid-template-columns: 10ch 5ch minmax(0, 1fr);
+  grid-template-columns: 9ch minmax(0, 1fr);
   gap: 12px;
-  padding: 6px 20px;
+  padding: 5px 20px;
   border-bottom: var(--rule);
   font-size: 13px;
   line-height: 1.5;
 }
 .entries li:last-child { border-bottom: 0; }
 .entries .text { overflow-wrap: anywhere; }
-.entries .sub { display: block; }
-.entries li.loud { background: var(--lumin); color: var(--void); font-weight: 700; }
-.entries li.visitor .text { font-weight: 700; }
+.entries li.story .text { font-weight: 700; }
+.entries li.you, .entries li.alarm { background: var(--lumin); color: var(--void); }
+.entries li.alarm { font-weight: 700; }
 .entries li.empty { display: block; padding: 14px 20px; }
-.entries .t {
-  font: inherit;
-  color: inherit;
-  background: none;
-  border: 0;
-  padding: 0;
-  text-align: left;
-  cursor: pointer;
-  text-decoration: underline;
-  text-decoration-thickness: 1px;
-  text-underline-offset: 0.25em;
-  align-self: start;
-}
-.entries .t:hover { text-decoration-thickness: 3px; }
-.entries.plan li { grid-template-columns: 10ch minmax(0, 1fr) auto; align-items: start; }
-.entries.plan .btn { padding: 2px 8px; font-size: 11px; }
-.entries.plan li.later .text .sub { font-style: normal; }
+.commits { list-style: none; margin: 0; padding: 0; }
+.commit { padding: 12px 20px; border-bottom: var(--rule); display: grid; gap: 6px; }
+.commit:last-child { border-bottom: 0; }
+.commit .code { display: block; width: 100%; height: 24px; }
+.commit .meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 16px; font-size: 13px; }
+.commit .name { font-weight: 700; word-break: break-all; font-size: 12px; }
+.commit.head { background: var(--lumin); color: var(--void); }
+.commit.orphan { outline: 1px dashed var(--lumin); outline-offset: -6px; }
+.commits .empty { padding: 14px 20px; margin: 0; }
+.leaves { margin: 16px 0 0; max-width: 96ch; }
 @media (max-width: 960px) {
-  .logs, .logs.wide { grid-template-columns: minmax(0, 1fr); }
+  .logs { grid-template-columns: minmax(0, 1fr); }
   .logs > section + section { border-left: 0; border-top: var(--rule); }
+  .scroll { max-height: 420px; }
 }
 @media (max-width: 520px) {
-  .entries li { grid-template-columns: 10ch minmax(0, 1fr); padding: 6px 16px; }
-  .entries .who { grid-column: 2; grid-row: 1; }
-  .entries .text { grid-column: 1 / -1; }
-  .entries.plan li { grid-template-columns: minmax(0, 1fr) auto; }
-  .entries.plan .t { grid-column: 1; grid-row: 1; }
-  .entries.plan .text { grid-column: 1 / -1; grid-row: 2; }
-  .entries.plan .btn { grid-column: 2; grid-row: 1; justify-self: end; }
-}
-
-/* Faults, actions, and settings */
-
-.knobs { padding: 16px 20px 20px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-content: start; }
-.knobs .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.knobs h3 { margin-bottom: 4px; }
-.knobs p { margin: 0; font-size: 13px; max-width: 64ch; }
-.rates { margin: 0; padding: 0; list-style: none; border-top: var(--rule); }
-.rates li {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 4px 16px;
-  padding: 8px 0;
-  border-bottom: var(--rule);
-  font-size: 13px;
-  line-height: 1.5;
-}
-.rates label { display: block; }
-.rates .unit { display: inline-block; width: 2ch; margin-left: 6px; }
-
-/* The checker */
-
-.checks { width: 100%; border-collapse: collapse; border-top: var(--rule); }
-.checks th, .checks td { text-align: left; vertical-align: top; border-bottom: var(--rule); padding: 10px 12px 10px 0; }
-.checks th { font-weight: 400; font-size: 14px; padding-left: 12px; }
-.checks td { font-size: 12px; line-height: 1.5; padding-top: 12px; }
-.checks td.state { width: 16ch; font-weight: 700; padding-left: 12px; }
-.checks td.when { width: 26ch; }
-.checks tr.bad, .checks tr.bad td, .checks tr.bad th { background: var(--lumin); color: var(--void); border-bottom-color: var(--void); }
-.check-note { margin: 12px 0 0; max-width: 72ch; }
-.check-note:empty { display: none; }
-@media (max-width: 720px) {
-  .checks td.when { display: none; }
-}
-
-/* Blocks of prose */
-
-section.block { border-bottom: var(--rule); padding: 72px 0 64px; }
-.block .sheet > div { grid-template-columns: 260px minmax(0, 1fr); gap: 24px; padding: 14px 0; font-size: 16px; line-height: 1.6; }
-.block .sheet dt { padding-top: 2px; }
-.block .sheet dd { max-width: 72ch; }
-@media (max-width: 720px) {
-  .block .sheet > div { grid-template-columns: 1fr; gap: 4px; }
-  section.block { padding: 48px 0 40px; }
+  .entries li { gap: 10px; padding: 5px 16px; }
 }
 
 footer { padding: 40px 0 56px; }
@@ -658,36 +506,21 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
   <div class="wrap intro-grid">
     <div>
       <h1 id="intro-h">The storage code, under faults</h1>
-      <p class="lede">This page runs the storage code of s4ql in your browser. Instances of one database share a bucket in S3. They write, read, and take turns with the lease while you crash them, cut them off from S3, stop and shift their clocks, and lose answers from S3.</p>
-      <p>It is the Go code itself, unchanged, compiled to WebAssembly. Its cache runs on the official SQLite WebAssembly build. S3 and time are simulated, and one seed decides every random choice, so a run is the same each time.</p>
-      <p>The engine runs a whole run at once, in a Worker, and the page plays it back. When you add a fault at the current time, the page asks the engine for the run again with the fault in its schedule. Everything before that time stays the same, so the run goes on from where it was. A checker in the engine watches six invariants.</p>
-      <p>The seed, the settings, and every fault you add are kept in the link, so you can share a run and anyone who opens it gets the same run.</p>
-      <dl class="provenance">
-        <div><dt class="caps">Code</dt><dd><a href="https://github.com/maragudk/s4ql/tree/main/internal/core"><code>internal/core</code></a>, run by <a href="https://github.com/maragudk/s4ql/blob/main/internal/simulator/README.md"><code>internal/simulator</code></a></dd></div>
-        <div><dt class="caps">Built from</dt><dd id="build">The commit is not known for this build.</dd></div>
-      </dl>
+      <p class="built small"><span class="caps">Built from</span> <span id="build">a commit that is not known for this build.</span> The code is <a href="https://github.com/maragudk/s4ql/tree/main/internal/core"><code>internal/core</code></a>, run by <a href="https://github.com/maragudk/s4ql/blob/main/internal/simulator/README.md"><code>internal/simulator</code></a>.</p>
     </div>
     <div>
-      <h2>Things to try</h2>
-      <ol class="tries">
-        <li><span>Watch the default run. b takes the lease and commits until it crashes at 0:40. Once b's lease has run out, another instance takes it over and starts to catch up from the log in S3.</span></li>
-        <li><span>Pause, arm "Lose its answer" for the next commit under "Faults and actions", and write on the instance that holds the lease. S3 handles the swap, but its answer never arrives, so the core does not know whether its commit went through. It asks S3 again until it knows.</span></li>
-        <li><span>Cut the writer off from S3 for 40 s. It stops serving once its lease runs out by its own clocks, and another instance takes over.</span></li>
-        <li><span>Stop the monotonic clock of the writer and shift its wall clock back. By its own clocks, its lease then lasts too long. The design accepts that a read on it may miss a commit, and the checker excuses such a read. The checker still requires that no acknowledged write is lost.</span></li>
-        <li><span>Switch on buggify under Settings and try new seeds. Marked points of the core then do legal but unusual things.</span></li>
-      </ol>
+      <p class="lede">The storage code of s4ql runs in this page: the Go code itself, unchanged, compiled to WebAssembly, with its cache on the official SQLite WebAssembly build. S3 and time are simulated.</p>
+      <p>s4ql is built for one long-running instance per database. Here that instance holds the lease and serves a stream of reads and writes, and a second instance stands by to take over when it fails. Add a fault, and watch what the code does.</p>
     </div>
   </div>
 </section>
 
 <noscript><p>The simulator needs JavaScript, WebAssembly, and Web Workers.</p></noscript>
 
-<div class="bar" role="region" aria-label="Run controls">
+<div class="bar" role="region" aria-label="Playback">
   <div class="wrap">
     <div class="group">
       <button class="btn big" type="button" id="play" aria-pressed="false" disabled>Play <span class="bars" aria-hidden="true"></span></button>
-      <button class="btn" type="button" id="back" disabled>Back</button>
-      <button class="btn" type="button" id="step" disabled>Step</button>
       <label class="caps" for="speed"><span class="speed-label">Speed</span>
         <select id="speed">
           <option value="1">1×</option>
@@ -696,20 +529,15 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
           <option value="64">64×</option>
         </select>
       </label>
+      <div class="clock" aria-live="off"><span id="clock">0:00.000</span> <span class="of">of fake time</span></div>
     </div>
-    <div class="clock" aria-live="off"><span id="clock">0:00.000</span> <span class="of">of <span id="end">2:00.000</span></span></div>
-    <a class="chip caps" id="chip" href="#checker-h">Checker</a>
-    <div class="grow"></div>
-    <div class="group">
-      <span class="small seed"><span class="caps">Seed</span> <span id="seed-shown"></span></span>
-      <button class="btn" type="button" id="copy">Copy link</button>
-    </div>
+    <p class="status small grow" role="status"><span id="engine-status">Starting.</span><span id="note"></span></p>
+    <button class="btn" type="button" id="again" disabled>Start over</button>
     <div class="field" id="field" aria-busy="true">
       <svg id="strip" preserveAspectRatio="none" shape-rendering="crispEdges" aria-hidden="true"></svg>
-      <p class="field-note" id="field-note" aria-hidden="true">Loading the engine.</p>
-      <input type="range" id="scrub" min="0" max="120000" step="100" value="0" aria-label="Time of the run" disabled>
+      <p class="field-note" id="field-note">Loading the engine.</p>
     </div>
-    <p class="status small" role="status"><span id="engine-status">Starting.</span><span id="note"></span></p>
+    <p class="limit" id="limit" role="status" hidden></p>
   </div>
 </div>
 
@@ -717,223 +545,95 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
   <div class="alarm" id="failure" role="alert" hidden></div>
 </div>
 
-<section class="panel" aria-labelledby="inst-h">
+<section class="panel" aria-labelledby="cells-h">
   <div class="wrap">
-    <div class="panel-head">
-      <h2 id="inst-h">Instances</h2>
-      <p class="small">Each instance is a process with its cache, a wall clock, and a monotonic clock. The one that holds the lease and is caught up serves. A restart starts a new process of the instance, such as b2, on a copy of the cache.</p>
-    </div>
-    <div class="cells" id="instances"><p class="waiting">The instances appear once the engine has run.</p></div>
-  </div>
-</section>
-
-<section class="panel" aria-labelledby="faults-h">
-  <div class="wrap">
-    <div class="panel-head">
-      <h2 id="faults-h">Faults and actions</h2>
-      <p class="small">Each one happens just after the current time. Faults of one instance are on its card under "Instances". These act on S3, the network, and the workload.</p>
-    </div>
+    <h2 class="vh" id="cells-h">The instances and S3</h2>
     <div class="cells">
-      <div class="knobs">
-        <h3>S3 and the network</h3>
-        <div class="row">
-          <label class="caps" for="span">For
-            <select id="span"></select>
-          </label>
+      <article class="cell" data-instance="a" aria-labelledby="inst-a">
+        <div class="cell-head">
+          <div class="who"><h3 class="letter" id="inst-a">a</h3><span class="word" data-f="word">…</span></div>
+          <div class="tags caps"><span data-f="process"></span><span data-f="cut"></span><span data-f="stopped"></span></div>
         </div>
-        <div class="row">
-          <button class="btn" type="button" id="outage" disabled>Make S3 unreachable</button>
-          <button class="btn" type="button" id="calm" disabled>Calm S3</button>
+        <dl class="facts">
+          <div><dt class="caps">Lease</dt><dd data-f="lease"></dd></div>
+          <div><dt class="caps">Cache</dt><dd><span data-f="pos"></span><span data-f="code"></span></dd></div>
+          <div><dt class="caps">Clocks</dt><dd data-f="clocks"></dd></div>
+          <div><dt class="caps">Calls</dt><dd data-f="calls"></dd></div>
+        </dl>
+        <div class="faults">
+          <span class="caps">Faults</span>
+          <button class="btn" type="button" data-a="crash" disabled>Crash</button>
+          <button class="btn" type="button" data-a="cutOff" disabled>Cut off from S3 for 40 s</button>
+          <button class="btn" type="button" data-a="clock" disabled>Stop its monotonic clock</button>
         </div>
-        <p>"For" is how long an outage or a cut-off lasts. Calm switches off the random faults of S3 for the rest of the run. What a fault has started goes on to its end.</p>
-      </div>
-      <div class="knobs">
-        <h3>The next request</h3>
-        <div class="row">
-          <label class="caps" for="purpose">Next
-            <select id="purpose"></select>
-          </label>
+      </article>
+      <article class="cell" data-instance="b" aria-labelledby="inst-b">
+        <div class="cell-head">
+          <div class="who"><h3 class="letter" id="inst-b">b</h3><span class="word" data-f="word">…</span></div>
+          <div class="tags caps"><span data-f="process"></span><span data-f="cut"></span><span data-f="stopped"></span></div>
         </div>
-        <div class="row">
-          <label class="caps" for="from">From
-            <select id="from"><option value="">any instance</option></select>
-          </label>
+        <dl class="facts">
+          <div><dt class="caps">Lease</dt><dd data-f="lease"></dd></div>
+          <div><dt class="caps">Cache</dt><dd><span data-f="pos"></span><span data-f="code"></span></dd></div>
+          <div><dt class="caps">Clocks</dt><dd data-f="clocks"></dd></div>
+          <div><dt class="caps">Calls</dt><dd data-f="calls"></dd></div>
+        </dl>
+        <div class="faults">
+          <span class="caps">Faults</span>
+          <button class="btn" type="button" data-a="crash" disabled>Crash</button>
+          <button class="btn" type="button" data-a="cutOff" disabled>Cut off from S3 for 40 s</button>
+          <button class="btn" type="button" data-a="clock" disabled>Stop its monotonic clock</button>
         </div>
-        <div class="row">
-          <button class="btn" type="button" id="lose" disabled>Lose its answer</button>
-          <button class="btn" type="button" id="fail" disabled>Fail it before sending</button>
+      </article>
+      <article class="cell s3" aria-labelledby="s3-h">
+        <div class="cell-head">
+          <div class="who"><h3 class="letter" id="s3-h">S3</h3><span class="word" id="s3-word">…</span></div>
         </div>
-        <p>An armed fault waits for the first request that matches. When the answer is lost, S3 has handled the request, and the caller cannot tell.</p>
-      </div>
-      <div class="knobs">
-        <h3>Workload</h3>
-        <p>Each instance runs callers, as an application would: <span id="workload-text">2 callers, each pausing up to 5 s between calls, 40% writes</span>. A write inserts one row with a key of its own, so the keys tell the transactions apart.</p>
-        <div class="row">
-          <button class="btn" type="button" id="workload" aria-pressed="true" disabled>Workload on</button>
+        <dl class="facts" id="manifest">
+          <div><dt class="caps">Manifest</dt><dd>Not written yet.</dd></div>
+        </dl>
+        <div class="faults">
+          <span class="caps">Faults</span>
+          <button class="btn" type="button" id="outage" disabled>Make S3 unreachable for 40 s</button>
+          <button class="btn" type="button" id="lose" disabled>Lose the answer to the next commit</button>
         </div>
-      </div>
+      </article>
     </div>
+    <section class="tries" aria-labelledby="tries-h">
+      <h2 id="tries-h">Things to try</h2>
+      <ul>
+        <li>Crash the instance with the lease, or cut it off from S3. Once its lease has run out, the other instance takes it over and catches up from the log in S3.</li>
+        <li>Stop the monotonic clock of the instance with the lease, and start it again a minute later. Its timers stop with the clock, so the other instance takes the lease over. When the clock runs again, it refuses calls and learns that it lost the lease.</li>
+        <li>Make S3 unreachable. The instance with the lease refuses calls once its lease runs out, and asks S3 how its last renewal went when S3 is back.</li>
+        <li>Lose the answer to the next commit. S3 has the commit, and the instance cannot tell. Watch it find out before it acknowledges the write.</li>
+      </ul>
+    </section>
   </div>
 </section>
 
-<section class="panel" aria-labelledby="s3-h">
+<section class="panel" aria-label="What happened">
   <div class="wrap">
-    <div class="panel-head">
-      <h2 id="s3-h">The bucket</h2>
-      <p class="small">S3 is strongly consistent. The manifest is replaced only by a compare-and-swap on its version. A commit object is created only if nothing is at its key, under its SHA-256. The log runs from the head of the manifest back through each parent.</p>
-    </div>
-    <div class="bucket">
-      <div class="manifest">
-        <h3><code>db/manifest.json</code></h3>
-        <dl class="sheet" id="manifest"><div><dt class="caps">Head</dt><dd>Not written yet.</dd></div></dl>
-        <p class="small" id="manifest-meta"></p>
-      </div>
-      <div>
-        <ol class="commits" id="commits" aria-label="Commit objects, newest first" tabindex="0"><li class="commits-empty small">No commit objects yet.</li></ol>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="panel" aria-labelledby="flight-h">
-  <div class="wrap">
-    <div class="panel-head">
-      <h2 id="flight-h">In flight</h2>
-      <p class="small">Requests to S3 that are on their way, held back in the network, or still waited for, and the calls of the application that have started and not ended.</p>
-    </div>
     <div class="logs">
-      <section aria-labelledby="requests-h">
+      <section aria-labelledby="log-h">
         <div class="log-head">
-          <h3 id="requests-h">Requests to S3</h3>
-          <span class="caps" id="request-count"></span>
+          <h2 id="log-h">What happens</h2>
+          <p class="small">Newest first, in fake time from the start of the run.</p>
         </div>
-        <div class="scroll short" tabindex="0" aria-label="Requests to S3 in flight">
-          <ol class="entries" id="requests"></ol>
-        </div>
-      </section>
-      <section aria-labelledby="calls-h">
-        <div class="log-head">
-          <h3 id="calls-h">Calls</h3>
-          <span class="caps" id="call-count"></span>
-        </div>
-        <div class="scroll short" tabindex="0" aria-label="Calls in progress">
-          <ol class="entries" id="calls"></ol>
-        </div>
-      </section>
-    </div>
-  </div>
-</section>
-
-<section class="panel" aria-labelledby="checker-h">
-  <div class="wrap">
-    <div class="panel-head">
-      <h2 id="checker-h">The checker</h2>
-      <p class="small">It sees what an application and S3 see: how each call ends, what each read returns, and the objects that S3 holds. It cannot see inside the core.</p>
-    </div>
-    <table class="checks">
-      <caption class="vh">Invariants, when each is checked, and whether it was kept up to the current time</caption>
-      <tbody id="checks"></tbody>
-    </table>
-    <p class="check-note small" id="check-note"></p>
-  </div>
-</section>
-
-<section class="panel" aria-labelledby="logs-h">
-  <div class="wrap">
-    <div class="panel-head">
-      <h2 id="logs-h">What happened</h2>
-      <p class="small">Times are fake, from the start of the run, newest first. Select a time to go there.</p>
-    </div>
-    <div class="logs wide">
-      <section aria-labelledby="timeline-h">
-        <div class="log-head">
-          <h3 id="timeline-h">Events</h3>
-          <label class="caps" for="every"><input type="checkbox" id="every"> Every event</label>
-        </div>
-        <div class="scroll" tabindex="0" aria-label="Events">
+        <div class="scroll" tabindex="0" aria-label="What happens">
           <ol class="entries" id="log"></ol>
         </div>
       </section>
-      <section aria-labelledby="schedule-h">
+      <section aria-labelledby="commits-h">
         <div class="log-head">
-          <h3 id="schedule-h">Your schedule</h3>
-          <button class="btn" type="button" id="clear" disabled>Remove all</button>
+          <h2 id="commits-h">Commit objects in S3</h2>
+          <p class="small" id="commit-count"></p>
         </div>
-        <div class="scroll" tabindex="0" aria-label="Your schedule">
-          <ol class="entries plan" id="schedule"></ol>
+        <div class="scroll" tabindex="0" aria-label="Commit objects, newest first">
+          <ol class="commits" id="commits"><li class="empty small">No commit objects yet.</li></ol>
         </div>
       </section>
     </div>
-  </div>
-</section>
-
-<section class="panel" aria-labelledby="settings-h">
-  <div class="wrap">
-    <div class="panel-head">
-      <h2 id="settings-h">Settings</h2>
-      <p class="small">A change runs the engine again from the start. The schedule stays, except for actions on instances or at times that the run no longer has.</p>
-    </div>
-    <form class="cells" id="settings">
-      <div class="knobs">
-        <h3>The run</h3>
-        <div class="row">
-          <label class="caps" for="seed">Seed <input type="text" id="seed" spellcheck="false" autocomplete="off" inputmode="text"></label>
-          <button class="btn" type="button" id="new-seed">New seed</button>
-        </div>
-        <div class="row">
-          <label class="caps" for="n">Instances <select id="n"></select></label>
-          <label class="caps" for="end-select">Length <select id="end-select"></select></label>
-        </div>
-        <div class="row">
-          <label class="caps" for="lease">Lease <select id="lease"></select></label>
-          <label class="caps" for="latency">Latency <select id="latency"></select></label>
-        </div>
-        <div class="row">
-          <label class="caps" for="buggify"><input type="checkbox" id="buggify"> Buggify</label>
-        </div>
-        <p>Latency is the longest time that a request takes to S3, and again back. Buggify makes marked points of the core do legal but unusual things, from the seed.</p>
-        <div class="row">
-          <button class="btn" type="button" id="reset">Default run</button>
-        </div>
-      </div>
-      <div class="knobs">
-        <h3>Workload</h3>
-        <div class="row">
-          <label class="caps" for="callers">Callers <select id="callers"></select></label>
-        </div>
-        <div class="row">
-          <label class="caps" for="think">Pause up to <select id="think"></select></label>
-        </div>
-        <div class="row">
-          <label class="caps" for="writes">Writes <select id="writes"></select></label>
-        </div>
-        <p>The callers of each instance. Each pauses before a call, then makes one write or one read.</p>
-      </div>
-      <div class="knobs">
-        <h3>Random faults of S3</h3>
-        <p>A probability is drawn for each request, from the seed. A time is an upper bound.</p>
-        <div class="row">
-          <button class="btn" type="button" id="faults-all">As in the tests of the core</button>
-          <button class="btn" type="button" id="faults-none">None</button>
-        </div>
-        <ul class="rates" id="rates"></ul>
-      </div>
-    </form>
-  </div>
-</section>
-
-<section class="block" id="differs" aria-labelledby="differs-h">
-  <div class="wrap">
-    <h2 id="differs-h">What the page simulates, and what it leaves out</h2>
-    <dl class="sheet">
-      <div><dt class="caps">The code</dt><dd>The storage core, <code>internal/core</code>, unchanged, through its exported API. The engine around it, <code>internal/simulator</code>, starts the instances, runs the workload and your schedule, and records what happens. Its tests check that a request gives the same run natively and in Chromium.</dd></div>
-      <div><dt class="caps">SQLite</dt><dd>The cache of each instance is a SQLite database on the official SQLite WebAssembly build, in memory in the Worker. The tests of the core run on SQLite compiled with cgo.</dd></div>
-      <div><dt class="caps">S3</dt><dd>A simulated store, the one the tests of the core run against, with every fault set here. Each way of a request takes from 0 to the latency. A conformance suite checks the simulated store against a real S3-compatible bucket.</dd></div>
-      <div><dt class="caps">Time</dt><dd>Fake time of the scheduler of the simulation. A clock can be shifted, stopped, and started again, but it never runs faster or slower than true time.</dd></div>
-      <div><dt class="caps">The workload</dt><dd>One table <code>t</code> with one integer key. A write inserts one row in one transaction, and a read reads every row. s4ql's own SQL is not part of the storage core, and not part of a run.</dd></div>
-      <div><dt class="caps">Random faults</dt><dd>Only S3 and the network fault at random. Faults of processes, clocks, and single requests come only from your schedule.</dd></div>
-      <div><dt class="caps">Not here</dt><dd>Faults of the local disk, which the tests of the core reach and this page cannot. Snapshots and garbage collection, which are not in the design yet. Planted bugs: the page shows the code as it is.</dd></div>
-    </dl>
+    <p class="leaves small">A write inserts one row with a key of its own, and a read reads every row. A commit object is named by its SHA-256, and the manifest names the head of the log. Left out: faults of the local disk, which the tests of the core reach and this page cannot, and the random faults of S3 that the tests run with.</p>
   </div>
 </section>
 
