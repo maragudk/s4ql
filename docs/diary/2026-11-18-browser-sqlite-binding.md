@@ -50,7 +50,7 @@ The download page still lists 3.54.1, so the tool ran without `-url`.
 
 ### What didn't work
 
-Nothing yet.
+Nothing in this step.
 
 ### What I learned
 
@@ -59,7 +59,7 @@ Nothing yet.
 
 ### What was tricky
 
-Nothing yet.
+Nothing in this step.
 
 ### What warrants review
 
@@ -67,4 +67,64 @@ Nothing yet.
 
 ### Future work
 
-None yet.
+See the later steps.
+
+## Step 2: The binding, the JavaScript, and the runner
+
+**Author:** builder (browser binding)
+
+### Prompt Context
+
+**Verbatim prompt:** (continues from Step 1)
+
+**Interpretation:** build what Step 1 planned, and run the tests in Chromium as soon as possible.
+
+**Inferred intent:** see the route work end to end before polishing it.
+
+### What I did
+
+- `internal/sqlite/sqlite_browser.go`, behind `js && wasm && s4ql_browser`: the API of the cgo binding that the storage core, its tests, `faultvfs`, and the canaries of `internal/sim` use, over the exports of the official build through `syscall/js`. Left out, because nothing in those packages calls them and some cannot be built on the exports: `Tokenize` (it needs the private `sqlite3GetToken`), `DenyProcessPragmas` and `AddTestFunctions` (they need C callbacks), and `FindVFS`, `RegisterVFS`, `UnregisterVFS` (they take C pointers). `SetLengthLimit`, `Complete`, `Keywords`, `CompileOptions`, `Version`, and `SourceID` are in, because they cost a few lines.
+- `internal/sqlite/faultvfs/faultvfs_browser.go`: the API of `faultvfs` over a fault state in JavaScript.
+- `internal/sqlite/browser/`: `vfs.js` (the VFS `s4ql`, registered as SQLite's default VFS, and one more per `faultvfs.New`), `fs.js` (the in-memory file system for Go's `os`), `bridge.js` (loads the build and the helpers that the Go binding calls), `worker.js` and `index.html` (the runner's page), and `main.go`, a runner for `go test -exec` that serves the page on 127.0.0.1, starts headless Chromium on it, streams the program's output back with synchronous requests, and exits with the program's exit code. It finds Chromium on the PATH or in `/Applications`, or in `S4QL_CHROMIUM`.
+- `make check-browser` (build, vet, `go test -c` of the browser packages; no browser needed) and `make test-browser` (the tests in Chromium). `make lint` also runs golangci-lint over the browser build.
+- `internal/sqlite/sqlite_browser_test.go`: tests of what is particular to the bridge: 64-bit integers at and around 2^53 and at the extremes, text with NUL bytes and bytes that are not UTF-8, the refusal of `Close` with a statement open, the refusal to step a finished or failed statement, the PRAGMAs of the options, the page size in the file's header, two connections in WAL mode, the files as Go's `os` sees them, and a lock released by another goroutine while SQLite waits in its busy handler.
+- The one constraint on an existing file: `//go:build !s4ql_browser` on `internal/sqlite/sqlite_test.go`, the tests of the cgo binding, which use functions that the browser binding lacks and build the `sqlite3` shell. `faultvfs_test.go` builds unchanged and passes in Chromium against the JavaScript fault VFS.
+
+### Why
+
+- The PRAGMAs on open: the research's two failures from compile options (page size and page cache) disappear when a connection has the cgo build's defaults.
+- `xSleep` calls into Go: Go's `handleEvent` in `runtime/lock_js.go` parks the goroutine that JavaScript called back on and runs every goroutine that is ready until all are idle, so the holder of a lock can release it during SQLite's sleep.
+- Device characteristics `SQLITE_IOCAP_POWERSAFE_OVERWRITE | SQLITE_IOCAP_SUBPAGE_READ` and sectors of 4096: read in `setDeviceCharacteristics` of the vendored `sqlite3.c`, the defaults of the unix VFS. With power-safe overwrite SQLite does not pad the log to sectors, so the log has the same frames as natively.
+
+### What worked
+
+- `faultvfs` and the binding's own tests passed in Chromium at the first full run, after one fix (below).
+- The first run of `internal/core`: `GOOS=js GOARCH=wasm go test -tags s4ql_browser -exec <runner> -timeout 25m -count 1 -v ./internal/core` passed, 44 of 44 top-level tests and 211 of 211 subtests, in 2 min 52 s of wall time (170.6 s by `go test`). The research's three failures are gone: the corruption test and the replay fault test by the PRAGMAs, and the lock held for a while by the `xSleep` that calls into Go.
+- A copy of the browser tests with the tag removed, run natively against the cgo binding, agreed on everything but the three points where the browser differs on purpose: `pragma temp.cache_size` is -2000 (natively 0 until the temporary database exists), `pragma temp_store` is 1 (natively 0, the default, which means a file), and `Open` of a file that is not a database fails (natively the first statement fails). The copy was deleted after the run.
+
+### What didn't work
+
+- `TestFault/should_fail_the_open_of_a_temporary_file` in `faultvfs`: `Expected "14", but got "0"`. The temporary database has a page cache of its own, which was still the official build's 16 MiB, so the 5 MB table never spilled to a file. Fixed with `pragma temp.cache_size = -2000` after `pragma temp_store = file`, because a change of the temp store drops the temporary database.
+- Two `core` tests skipped at first, "should stop for a failure to write the spool file", because `fs.js` ignored `chmod`, as for root (`readOnly` in `core_test.go` skips then). `fs.js` now keeps permission bits that bind as for a user who is not root, and the VFS refuses to create or delete a file in a directory without the write bit, as the unix VFS's `open` and `unlink` would. `xDelete` of a missing file returns `SQLITE_IOERR_DELETE_NOENT`, as `unixDelete` does.
+- The first run of `internal/sim` ended with `browser: RangeError: Map maximum size exceeded at Map.set (<anonymous>) at storeValue (wasm_exec.js:173:16)`. `syscall/js` keeps every JavaScript object that reaches Go in a `Map` until Go's garbage collector releases the `js.Value`, and the binding made a view of SQLite's memory per copy; Go's heap grows too little per call for the collector to run in time. Every helper now returns a number, and bytes pass through one `Uint8Array` that Go keeps.
+- After that fix, `internal/sim` hung in `TestSynctestWithCgo`, at "should log how often one writer among parallel readers gets SQLITE_BUSY when it begins with no busy timeout". Its eight readers loop without ever blocking, and Go's js/wasm port has one thread and no preemption ("There is no preemption", `runtime/lock_js.go`), so the first reader runs alone for good. Its twin "with a busy timeout" would hang the same way, and also in `xSleep`, because a call from JavaScript into Go returns only once every goroutine is idle. The cause is in the route, and `internal/sim` may not be edited, so `make test-browser` passes `-skip TestSynctestWithCgo/among_parallel_readers` (`BROWSERSKIP` in the Makefile, with the cause). With it, `internal/sim` passed in Chromium in 17 s.
+
+### What I learned
+
+- A runner for `go test -exec` needs no browser automation: the page posts the output and the exit code back to the runner's own server, and Chromium is a plain process in `--headless`.
+- The busy handler's yield has a limit that is the reverse of the research's failure: while SQLite sleeps, other goroutines run, but SQLite's call returns only once all of them wait. A goroutine that never waits keeps SQLite asleep. In the storage core every goroutine waits on a lock or a clock sooner or later, and its tests pass; a busy loop does not.
+
+### What was tricky
+
+- The order of the PRAGMAs: `temp.cache_size` before `temp_store` is lost.
+- The tool refused shell commands that it could not prove stay in the worktree, such as a Python heredoc next to `go vet` in one command. Scripts went to the scratch directory and ran on their own.
+
+### What warrants review
+
+- `BROWSERSKIP` lives in the Makefile, not in `internal/sim`, because the brief forbids editing that package. If the lead prefers, the two canaries could get a skip under the tag in `internal/sim` itself.
+- The `xSleep` yield: a goroutine that runs during SQLite's sleep can call into SQLite on another connection, inside the first call. That is safe only because each connection is used by one goroutine at a time and SQLite holds no global state across its busy handler; the official build has `SQLITE_THREADSAFE=0`, so nothing in SQLite checks it.
+- `CompileOptions` reports the official build's options, not those of `options.h`.
+
+### Future work
+
+- A check in CI that the trace hashes of the browser equal the native ones, which today is a manual comparison.
