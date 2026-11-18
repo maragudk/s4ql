@@ -962,8 +962,9 @@ func TestClient_conformance(t *testing.T) {
 	storetest.Test(t, func(t *testing.T, f func(t *testing.T, ctx context.Context, env storetest.Env)) {
 		prefix := newPrefix(t, raw, opts.Bucket)
 		f(t, t.Context(), storetest.Env{
-			Host:   host.New(),
-			Client: func(string) store.Store { return prefixed{c: c, prefix: prefix} },
+			Host:       host.New(),
+			Client:     func(string) store.Store { return prefixed{c: c, prefix: prefix} },
+			LongestKey: 1024 - len(prefix),
 		})
 	})
 }
