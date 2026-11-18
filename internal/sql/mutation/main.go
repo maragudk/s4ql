@@ -253,21 +253,19 @@ func checkFingerprint(root, out string) error {
 			return err
 		}
 	}
-	for _, dir := range []string{filepath.Join(root, "internal")} {
-		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-			switch {
-			case err != nil:
-				return err
-			case d.IsDir() && path == filepath.Join(root, "internal", "sql", "mutation"):
-				return filepath.SkipDir
-			case d.IsDir():
-				return nil
-			}
-			return add(path)
-		})
-		if err != nil {
+	err = filepath.WalkDir(filepath.Join(root, "internal"), func(path string, d fs.DirEntry, err error) error {
+		switch {
+		case err != nil:
 			return err
+		case d.IsDir() && path == filepath.Join(root, "internal", "sql", "mutation"):
+			return filepath.SkipDir
+		case d.IsDir():
+			return nil
 		}
+		return add(path)
+	})
+	if err != nil {
+		return err
 	}
 	sum := hex.EncodeToString(h.Sum(nil))
 	path := filepath.Join(out, "fingerprint")

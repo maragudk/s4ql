@@ -390,7 +390,7 @@ func (r *recognizer) tableName(q ast.QualifiedName) Name {
 }
 
 // name: a bare name, or one in double quotes, that is not empty. SQLite takes `""` for a name, and
-// the storage core does not hold a table or a column without a name.
+// s4ql holds no table or column without a name.
 func (r *recognizer) name(t ast.Token) Name {
 	if what := quotingName(t); what != "" && r.isNext(t) {
 		r.reject(what)

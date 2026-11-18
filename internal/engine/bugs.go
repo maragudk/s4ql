@@ -1,8 +1,8 @@
 package engine
 
 // bugs that the tests of this package plant in it, to show that their checks find them. Each field
-// switches on one wrong decision, at the one place where the right one is made, and the comment at
-// that place says "the planted bug".
+// switches on one wrong decision, where the right one is made, and the comment there says "the
+// planted bug".
 //
 // The zero value plants nothing. A value is the field of [Options] that is not exported, and nothing
 // in this package sets it but its tests.

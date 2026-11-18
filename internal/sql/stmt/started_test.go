@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"maragu.dev/is"
 
@@ -11,43 +12,70 @@ import (
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
+	"maragu.dev/s4ql/internal/sql/token"
 	"maragu.dev/s4ql/internal/sqlite"
 )
 
-// checkStarted checks [stmt.StartedTable] on src against SQLite, if src is a syntax error: on a
-// database with the table that it names, or with the table of the name fallback if it names none,
-// SQLite gives `table %s already exists` with the name as StartedTable gives it if it gives one, and
-// otherwise the syntax error of [stmt.Check]. It reports whether StartedTable gave a name.
-func checkStarted(t testing.TB, src, fallback string) bool {
+// checkStarted checks [stmt.StartedTable] on src against SQLite, if src is a syntax error. If it
+// gives a name, SQLite gives `table %s already exists` with the name as StartedTable gives it, on a
+// database with that table. If it gives none, SQLite does not give that a table exists, on a database
+// with a table for each of the first tokens of src as a name. It reports whether StartedTable gave a
+// name.
+func checkStarted(t testing.TB, src string) bool {
 	t.Helper()
 	_, err := stmt.Check(src)
 	var se *sqlerr.Error
 	if !errors.As(err, &se) {
-		_, ok := stmt.StartedTable(src)
-		is.True(t, !ok, src)
 		return false
 	}
-	n, ok := stmt.StartedTable(src)
+	n, ok := stmt.StartedTable(src, se)
 	d := open(t)
-	name := fallback
-	if ok {
-		name = n.Value
+	names := []string{n.Value}
+	if !ok {
+		names = tokenNames(src)
 	}
-	d.must("create table " + stmttest.Quote(name) + " (v int primary key) strict, without rowid")
+	for _, name := range names {
+		d.must("create table " + stmttest.Quote(name) + " (v int primary key) strict, without rowid")
+	}
 	var sqliteErr *sqlite.Error
 	if !errors.As(d.exec(src), &sqliteErr) {
 		t.Fatalf("%q: SQLite gives no error", src)
 	}
-	want := se.Message
-	if ok {
-		want = "table " + n.Raw + " already exists"
+	if ok && sqliteErr.Message != "table "+n.Raw+" already exists" {
+		t.Fatalf("%q, with the table %q: SQLite gives %q, and the pass reads the start of the table %v", src, n.Value, sqliteErr.Message, n.Raw)
 	}
 	// Where the pass reads no start of a table, SQLite gives the syntax error, or an error of its
-	// grammar actions, which the pass does not give, but not that the table exists.
-	if ok && sqliteErr.Message != want || !ok && sqliteErr.Message != want && strings.HasSuffix(sqliteErr.Message, "already exists") {
-		t.Fatalf("%q, with the table %q: SQLite gives %q, and the pass reads %q", src, name, sqliteErr.Message, want)
+	// grammar actions, which the pass does not give, but not that a table exists.
+	if !ok && strings.HasSuffix(sqliteErr.Message, " already exists") {
+		t.Fatalf("%q, with the tables %q: SQLite gives %q, and the pass reads no start of a table", src, names, sqliteErr.Message)
 	}
 	return ok
+}
+
+// tokenNames are the texts of the first tokens of src that are not spaces or comments, each without
+// its quotes, as names of tables that SQLite takes: not empty, without NUL, and not reserved.
+func tokenNames(src string) []string {
+	seen := map[string]bool{}
+	var names []string
+	for _, tok := range token.Tokens(src) {
+		if len(names) == 12 {
+			break
+		}
+		if tok.Kind == token.Space || tok.Kind == token.Comment {
+			continue
+		}
+		name := tok.Text(src)
+		if len(name) >= 2 && strings.ContainsRune("\"'`[", rune(name[0])) {
+			name = name[1 : len(name)-1]
+		}
+		lower := strings.ToLower(name)
+		if name == "" || seen[lower] || strings.ContainsRune(name, 0) || !utf8.ValidString(name) || strings.HasPrefix(lower, "sqlite_") {
+			continue
+		}
+		seen[lower] = true
+		names = append(names, name)
+	}
+	return names
 }
 
 func TestStartedTable(t *testing.T) {
@@ -89,14 +117,24 @@ func TestStartedTable(t *testing.T) {
 		{src: "selec * from t1"},
 		{src: ""},
 		{src: `create table "t1 (`},
+		{src: "create table sqlite_x ("},
+		{src: "create table main.SQLite_x (garbage"},
+		{src: "create table zzz (", name: "zzz", raw: "zzz"},
 	}
 	for _, c := range cases {
 		t.Run(c.src, func(t *testing.T) {
-			n, ok := stmt.StartedTable(c.src)
+			var n stmt.Name
+			var ok bool
+			if _, err := stmt.Check(c.src); err != nil {
+				var se *sqlerr.Error
+				if errors.As(err, &se) {
+					n, ok = stmt.StartedTable(c.src, se)
+				}
+			}
 			is.Equal(t, c.name != "", ok)
 			is.Equal(t, c.name, n.Value)
 			is.Equal(t, c.raw, n.Raw)
-			checkStarted(t, c.src, "t1")
+			checkStarted(t, c.src)
 		})
 	}
 
@@ -108,14 +146,13 @@ func TestStartedTable(t *testing.T) {
 		g := newGenerator(t, *seed+4)
 		started := 0
 		for i := range n {
-			src, s := g.StatementOf(stmttest.KindCreateTable)
-			fallback := s.(*stmt.CreateTable).Table.Value
+			src, _ := g.StatementOf(stmttest.KindCreateTable)
 			texts := parsetest.Mutants(src, *seed+uint64(i), 3)
 			for _, cut := range []int{len(src) / 3, len(src) / 2, len(src) - 1} {
 				texts = append(texts, src[:cut])
 			}
 			for _, m := range texts {
-				if checkStarted(t, m, fallback) {
+				if checkStarted(t, m) {
 					started++
 				}
 			}
@@ -131,6 +168,6 @@ func FuzzStartedTable(f *testing.F) {
 		f.Add(c)
 	}
 	f.Fuzz(func(t *testing.T, src string) {
-		checkStarted(t, src, "t1")
+		checkStarted(t, src)
 	})
 }

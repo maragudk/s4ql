@@ -192,7 +192,7 @@ func TestEngine_Query(t *testing.T) {
 			_, err := i.e.Exec(ctx, fmt.Sprint("insert into t1 (v1) values (", v, ")"))
 			is.NotError(t, err)
 		}
-		// The instance has the default number of read connections, 4, so a read transaction that
+		// The instance has [readers] read connections, so a read transaction that
 		// is left open shows after a few queries: the next one waits for a connection.
 		for range 10 {
 			rows, err := i.e.Query(ctx, "select * from t1")
@@ -247,15 +247,14 @@ func TestEngine_Query(t *testing.T) {
 }
 
 // noneOpen requires that the instance i holds no transaction: a write and every read connection can
-// begin at once.
+// begin. A transaction that is left open makes it wait until the test times out.
 func noneOpen(t *testing.T, i *instance) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	ctx := t.Context()
 	tx, err := i.d.Begin(ctx)
 	is.NotError(t, err)
 	var reads []*core.ReadTx
-	for range 4 {
+	for range readers {
 		r, err := i.d.Read(ctx)
 		is.NotError(t, err)
 		reads = append(reads, r)
@@ -362,7 +361,8 @@ func (e *events) last(t *testing.T) (map[string]string, slog.Level) {
 func TestEngine_events(t *testing.T) {
 	t.Run("should log one event for each statement, with its kind, table, outcome, rows, and position, and the text at Debug only", func(t *testing.T) {
 		h := &events{}
-		i := newInstance(t, engine.Options{Logger: slog.New(h)})
+		ch := &events{}
+		i := newInstanceLogged(t, engine.Options{Logger: slog.New(h)}, slog.New(ch))
 		ctx := t.Context()
 
 		_, err := i.e.Exec(ctx, t1)
@@ -387,6 +387,11 @@ func TestEngine_events(t *testing.T) {
 		is.Equal(t, "T1", e[engine.AttrTable])
 		is.Equal(t, "1", e[engine.AttrRows])
 		parent := e[engine.AttrParent]
+		// The event of the commit that the insert caused has the same parent, under the same name.
+		commit, _ := ch.last(t)
+		is.Equal(t, "commit", commit["msg"])
+		is.Equal(t, parent, commit[engine.AttrParent])
+		is.Equal(t, "committed", commit[engine.AttrOutcome])
 
 		_, err = i.e.Exec(ctx, "insert into t1 (v1) values (5)")
 		is.True(t, err != nil)

@@ -1,7 +1,6 @@
 package stmt
 
 import (
-	"errors"
 	"strings"
 
 	"maragu.dev/s4ql/internal/sql/sqlerr"
@@ -9,22 +8,23 @@ import (
 )
 
 // StartedTable gives the name of the table that the first statement of the text src creates, if
-// src is a syntax error in SQLite and SQLite's parser starts to create the table before it meets the
-// error, and reports whether it does.
+// SQLite's parser starts to create the table before it meets the syntax error that [Check] gave for
+// src, and reports whether it does.
 //
 // SQLite starts a table while it parses, in sqlite3StartTable, as soon as its parser has read
 // CREATE TABLE, the name, and the ( or AS after it, or CREATE VIRTUAL TABLE, the name, USING, the
 // module, and the ( after it. If a table of the name exists then, SQLite gives `table %s already
 // exists`, with the name as written, and never meets the syntax error. Whether a table exists is a
-// fact of the database and not of the text, so it is for the engine to check. SQLite does not look
-// in the main schema for a table that is TEMP or in the schema temp, and does not give the error
-// with IF NOT EXISTS, so StartedTable reports false for them; it reports false for a name in any
-// other schema too, for which SQLite gives `unknown database` first, an error of SQLite's grammar
-// actions that the pass does not give.
+// fact of the database and not of the text, so StartedTable does not say what SQLite gives. SQLite
+// does not look in the main schema for a table that is TEMP or in the schema temp, and does not give
+// the error with IF NOT EXISTS, so StartedTable reports false for them. It reports false for a name
+// in any other schema, and for a name that starts with sqlite_ in any case of the letters, for which
+// SQLite gives `unknown database` and `object name reserved for internal use` first: errors of its
+// grammar actions that the pass does not give.
 //
 // The name's value is the name without its quotes, as SQLite dequotes it: a name in double quotes,
 // backticks, or single quotes, with a doubled quote for one, or in brackets.
-func StartedTable(src string) (Name, bool) {
+func StartedTable(src string, syntax *sqlerr.Error) (Name, bool) {
 	var tokens []token.Token
 	for _, t := range token.Tokens(src) {
 		if t.Kind != token.Space && t.Kind != token.Comment {
@@ -83,13 +83,15 @@ func StartedTable(src string) (Name, bool) {
 		return Name{}, false
 	}
 	// The parser read the token after the name only if the syntax error is after it.
-	_, err := Check(src)
-	var se *sqlerr.Error
-	if !errors.As(err, &se) || (se.Offset >= 0 && se.Offset <= tokens[i].Offset) {
+	if syntax.Offset >= 0 && syntax.Offset <= tokens[i].Offset {
 		return Name{}, false
 	}
 	raw := name.Text(src)
-	return Name{Raw: raw, Value: dequoteAny(raw), Offset: name.Offset}, true
+	n := Name{Raw: raw, Value: dequoteAny(raw), Offset: name.Offset}
+	if strings.HasPrefix(n.Fold(), "sqlite_") {
+		return Name{}, false
+	}
+	return n, true
 }
 
 // dequoteAny gives the value of the name raw as sqlite3Dequote does: the text between double quotes,

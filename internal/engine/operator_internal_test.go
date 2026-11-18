@@ -352,7 +352,7 @@ func TestInsert(t *testing.T) {
 	t.Run("should name every column of a primary key of several in its error", func(t *testing.T) {
 		f := newFake().with("t", []string{"a", "b"}, []int64{1, 2})
 		f.tables["t"].ct.SetPrimaryKey([]uint32{1, 0})
-		get := &insert{w: errOnGet{fakeTx{f}}, table: f.tables["t"].ct, positions: []int{0, 1}, src: &values{width: 2, data: [][]*s4qlpb.Value{{eval(&Integer{Value: 1}), eval(&Integer{Value: 2})}}}}
+		get := &insert{w: foundOnGet{fakeTx{f}}, table: f.tables["t"].ct, positions: []int{0, 1}, src: &values{width: 2, data: [][]*s4qlpb.Value{{eval(&Integer{Value: 1}), eval(&Integer{Value: 2})}}}}
 		_, err := get.run(t.Context())
 		is.Equal(t, "UNIQUE constraint failed: t.b, t.a", err.Error())
 	})
@@ -379,13 +379,12 @@ func TestInsert(t *testing.T) {
 	})
 }
 
-// errOnGet is a writer whose get finds the row with the key in any order of its columns, for a key
-// of several columns.
-type errOnGet struct {
+// foundOnGet is a writer whose get finds a row for any key, for a key of several columns.
+type foundOnGet struct {
 	fakeTx
 }
 
-func (e errOnGet) get(context.Context, string, []*s4qlpb.Value) ([]*s4qlpb.Value, error) {
+func (e foundOnGet) get(context.Context, string, []*s4qlpb.Value) ([]*s4qlpb.Value, error) {
 	return []*s4qlpb.Value{}, nil
 }
 
@@ -509,7 +508,7 @@ func TestEngine_write(t *testing.T) {
 		f.calls, f.annotateFails, f.commitFails = nil, nil, core.ErrOutcomeUnknown
 		res, err := e.Exec(t.Context(), "insert into t1 (v1) values (2)")
 		is.True(t, errors.Is(err, core.ErrOutcomeUnknown))
-		is.Equal(t, Result{}, res)
+		is.Equal(t, Result{SetsChanges: true}, res)
 		is.Equal(t, "commit", f.calls[len(f.calls)-1])
 		is.Equal(t, 0, f.open)
 	})

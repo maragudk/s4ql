@@ -14,8 +14,8 @@ import (
 // by breaking out of the loop. A [sink] runs a statement that changes the database, and reports the
 // number of rows that it changed.
 //
-// Operators are built from a plan by [build], in the transaction that runs them, and read and change
-// the database only through the transaction's [reader] or [writer].
+// Operators are built from a plan by [buildQuery] and [buildSink], in the transaction that runs them,
+// and read and change the database only through the transaction's [reader] or [writer].
 
 // Column of the rows that an operator gives: its name, and its declared type, which is empty for a
 // column that is not a column of a table.
@@ -103,7 +103,8 @@ func (v *values) rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
 	}
 }
 
-// project gives the columns of each row of its source at the positions, in their order.
+// project gives the columns of each row of its source at the positions, in their order: none if
+// it has no positions.
 type project struct {
 	src       source
 	positions []int

@@ -76,28 +76,30 @@ func newEngine(d database, h host.Host, options Options) *Engine {
 	return &Engine{db: d, host: h, log: log, bugs: options.bugs}
 }
 
-// Result of a statement that changes the database.
+// Result of a statement, for SQLite's count of changes, which sqlite3_changes gives after the
+// statement.
 type Result struct {
-	// Changes is the number of rows that the statement inserted, if SetsChanges.
+	// Changes is the count of changes that the statement sets, if SetsChanges.
 	Changes int64
 
-	// SetsChanges reports whether the statement sets SQLite's count of changes, which
-	// sqlite3_changes gives after it. An insert sets it. CREATE TABLE, DROP TABLE, and SELECT leave
-	// the count as the statement before it on the same connection left it, so a connection that
-	// reports the count as SQLite does reports that one.
+	// SetsChanges reports whether the statement sets SQLite's count of changes. An insert sets it:
+	// to the number of rows that it inserted, and to 0 if it fails after it has started to write,
+	// as with `UNIQUE constraint failed`, which SQLite gives when it steps the statement. CREATE
+	// TABLE, DROP TABLE, SELECT, and a statement that fails before it starts to write, as SQLite
+	// fails it when it prepares it, leave the count as the statement before left it.
 	SetsChanges bool
 }
 
-// Exec runs the statement of the text src, and gives the number of rows that it changed. A query is
-// run to its end, in its read transaction, and its rows are dropped.
+// Exec runs the statement of the text src, and gives its result. A query is run to its end, in its
+// read transaction, and its rows are dropped. The result is given with an error too: a failed
+// insert sets the count of changes.
 //
 // SQLite's last insert rowid is not changed by any statement of s4ql, because every table is WITHOUT
 // ROWID, and SQLite does not record an insert into such a table.
 func (e *Engine) Exec(ctx context.Context, src string) (Result, error) {
 	r := e.newReport(src)
-	p, text, err := e.prepare(r, src)
+	p, text, err := e.prepare(ctx, r, src)
 	if err != nil {
-		err = e.started(ctx, r, src, err)
 		r.end(ctx, err)
 		return Result{}, err
 	}
@@ -113,46 +115,38 @@ func (e *Engine) Exec(ctx context.Context, src string) (Result, error) {
 		}
 		return Result{}, nil
 	}
-	n, err := e.write(ctx, r, p, text)
+	res, err := e.write(ctx, r, p, text)
 	r.end(ctx, err)
-	if err != nil {
-		return Result{}, err
-	}
-	_, insert := p.(*Insert)
-	return Result{Changes: n, SetsChanges: insert}, nil
+	return res, err
 }
 
 // Query runs the statement of the text src, and gives its rows. A statement that is not a query is
-// run as [Engine.Exec] runs it, and gives no columns and no rows.
+// run as [Engine.Exec] runs it, and gives rows with no columns and no rows, and its result in
+// [Rows.Result], also when it fails: Query then gives those rows with the error.
 //
-// The rows of a query are read in its read transaction, which is open until the rows are read to
-// the end with [Rows.All] or closed with [Rows.Close]. One of the two must happen.
+// The rows of a query are read in its read transaction, which is open until the rows end; see
+// [Rows].
 func (e *Engine) Query(ctx context.Context, src string) (*Rows, error) {
 	r := e.newReport(src)
-	p, text, err := e.prepare(r, src)
+	p, text, err := e.prepare(ctx, r, src)
 	if err != nil {
-		err = e.started(ctx, r, src, err)
 		r.end(ctx, err)
 		return nil, err
 	}
 	if q, ok := p.(*Query); ok {
 		return e.query(ctx, r, q)
 	}
-	n, err := e.write(ctx, r, p, text)
+	res, err := e.write(ctx, r, p, text)
 	r.end(ctx, err)
-	if err != nil {
-		return nil, err
-	}
-	_, insert := p.(*Insert)
-	return &Rows{done: true, result: Result{Changes: n, SetsChanges: insert}}, nil
+	return &Rows{done: true, result: res}, err
 }
 
 // prepare the text src for the report r: check it, and give the plan of its statement and the text
 // of the statement.
-func (e *Engine) prepare(r *report, src string) (Plan, string, error) {
+func (e *Engine) prepare(ctx context.Context, r *report, src string) (Plan, string, error) {
 	s, err := stmt.Check(src)
 	if err != nil {
-		return nil, "", err
+		return nil, "", e.started(ctx, r, src, err)
 	}
 	if s == nil {
 		return nil, "", ErrNoStatement
@@ -170,7 +164,7 @@ func (e *Engine) started(ctx context.Context, r *report, src string, err error) 
 	if !errors.As(err, &se) {
 		return err
 	}
-	n, ok := stmt.StartedTable(src)
+	n, ok := stmt.StartedTable(src, se)
 	if !ok {
 		return err
 	}
@@ -179,9 +173,10 @@ func (e *Engine) started(ctx context.Context, r *report, src string, err error) 
 		return rerr
 	}
 	r.at(tx.position(), false)
-	t, lerr := tx.table(ctx, n.Value)
-	if lerr = first(lerr, tx.end(ctx)); lerr != nil {
-		return lerr
+	defer func() { _ = tx.end(ctx) }()
+	t, rerr := tx.table(ctx, n.Value)
+	if rerr != nil {
+		return rerr
 	}
 	if t != nil {
 		return tableExists(n.Raw, n.Offset)
@@ -190,26 +185,25 @@ func (e *Engine) started(ctx context.Context, r *report, src string, err error) 
 }
 
 // write runs the plan p of a statement that changes the database, whose text is sql, in a write
-// transaction of its own, and gives the number of rows that it changed. The transaction is
-// committed if the statement succeeds, and rolled back otherwise, also when an operator panics.
-func (e *Engine) write(ctx context.Context, r *report, p Plan, sql string) (_ int64, err error) {
-	if _, ok := p.(*Insert); ok && e.bugs.checkOutside {
+// transaction of its own, and gives its result. The transaction is committed if the statement
+// succeeds, and rolled back otherwise, also when an operator panics.
+func (e *Engine) write(ctx context.Context, r *report, p Plan, sql string) (_ Result, err error) {
+	_, insert := p.(*Insert)
+	if insert && e.bugs.checkOutside {
 		// The planted bug: the checks of the insert, in a read transaction of their own.
 		if err := e.checkOutside(ctx, r, p); err != nil {
-			return 0, err
+			return Result{}, err
 		}
 	}
 	tx, err := e.db.begin(ctx)
 	if err != nil {
-		return 0, err
+		return Result{}, err
 	}
 	r.at(tx.position(), true)
 	ended := false
 	defer func() {
+		// The planted bug keepOpen leaves the transaction of a statement that failed open.
 		if !ended && (err == nil || !e.bugs.keepOpen) {
-			// The planted bug keepOpen leaves the transaction of a statement that failed open. A
-			// rollback that fails leaves nothing open: the core ends the transaction whatever the
-			// cache does.
 			_ = tx.rollback(ctx)
 		}
 	}()
@@ -217,27 +211,29 @@ func (e *Engine) write(ctx context.Context, r *report, p Plan, sql string) (_ in
 	b.skipUnique = b.skipUnique || b.checkOutside
 	s, err := buildSink(ctx, tx, p, b)
 	if err != nil {
-		return 0, err
+		return Result{}, err
 	}
+	// From here on, a failed insert sets the count of changes to 0.
+	failed := Result{SetsChanges: insert}
 	n, err := s.run(ctx)
-	r.rows = n
 	if err != nil {
-		return 0, err
+		return failed, err
 	}
 	if err := tx.annotate(ctx, sql); err != nil {
-		return 0, err
+		return failed, err
 	}
-	// A commit ends the transaction, whatever it gives.
+	// The transaction ends with its commit, whatever the commit gives.
 	ended = true
 	if err := tx.commit(ctx); err != nil {
 		if e.bugs.ackUnknown && errors.Is(err, core.ErrOutcomeUnknown) {
 			// The planted bug: a commit whose outcome is unknown counts as committed.
-			return n, nil
+			r.rows = n
+			return Result{Changes: n, SetsChanges: insert}, nil
 		}
-		r.rows = 0
-		return 0, err
+		return failed, err
 	}
-	return n, nil
+	r.rows = n
+	return Result{Changes: n, SetsChanges: insert}, nil
 }
 
 // checkOutside is the planted bug that checks an insert in a read transaction before its write
@@ -267,34 +263,51 @@ func (readOnly) dropTable(context.Context, string) error                { return
 func (readOnly) upsert(context.Context, string, []*s4qlpb.Value) error  { return nil }
 
 // query runs the plan q in a read transaction of its own, and gives its rows, which hold the
-// transaction until they end.
-func (e *Engine) query(ctx context.Context, r *report, q *Query) (*Rows, error) {
+// transaction until they end. The transaction ends if the rows cannot be built, also when that
+// panics.
+func (e *Engine) query(ctx context.Context, r *report, q *Query) (_ *Rows, err error) {
 	tx, err := e.db.read(ctx)
 	if err != nil {
 		r.end(ctx, err)
 		return nil, err
 	}
 	r.at(tx.position(), false)
+	built := false
+	defer func() {
+		if !built {
+			err = first(err, tx.end(ctx))
+			r.end(ctx, err)
+		}
+	}()
 	src, err := buildQuery(ctx, tx, q)
 	if err != nil {
-		err = first(err, tx.end(ctx))
-		r.end(ctx, err)
 		return nil, err
 	}
-	return &Rows{ctx: ctx, tx: tx, src: src, report: r}, nil
+	rows := &Rows{ctx: ctx, tx: tx, src: src, columns: src.columns(), report: r}
+	built = true
+	return rows, nil
 }
 
 // Rows of a query, which hold its read transaction until they end: when [Rows.All] has given the last
-// row or an error, when the loop over it stops early or panics, or when [Rows.Close] is called. Rows
-// are not safe for concurrent use.
+// row or an error, when the loop over it stops early or panics, or when [Rows.Close] is called
+// outside a loop over All. Rows are not safe for concurrent use.
+//
+// A loop over All holds the transaction while it runs, also while it is suspended in the body of
+// the loop, so Close during the loop cannot end it: it makes the loop end at its next row, and the
+// transaction ends then. An iterator that is suspended must be resumed, or stopped, for the
+// transaction to end.
 type Rows struct {
-	ctx    context.Context
-	tx     readTx
-	src    source
-	report *report
+	ctx     context.Context
+	tx      readTx
+	src     source
+	columns []Column
+	report  *report
 	// reading is set while a loop over All runs, closing when Close was called during it, and done
 	// once the rows have ended.
 	reading, closing, done bool
+	// endErr is the error of the end of the read transaction after an early end of the loop, which
+	// Close gives.
+	endErr error
 	// result of a statement that is not a query.
 	result Result
 }
@@ -307,15 +320,13 @@ func (r *Rows) Result() Result {
 
 // Columns of each row: their names as SQLite gives them for the query, and their declared types.
 func (r *Rows) Columns() []Column {
-	if r.src == nil {
-		return nil
-	}
-	return r.src.columns()
+	return r.columns
 }
 
 // All rows, in order, each with a value for each of [Rows.Columns]. The sequence ends at the first
-// error, and can be used once. When it ends, by its last row, an error, a loop that stops early,
-// or a panic in the loop, the read transaction of the query ends.
+// error, and can be used once: on rows that have ended, it gives nothing. When it ends, by its last
+// row, an error, a loop that stops early, or a panic in the loop, the read transaction of the query
+// ends.
 func (r *Rows) All() iter.Seq2[[]*s4qlpb.Value, error] {
 	return func(yield func([]*s4qlpb.Value, error) bool) {
 		if r.done || r.reading {
@@ -323,11 +334,13 @@ func (r *Rows) All() iter.Seq2[[]*s4qlpb.Value, error] {
 		}
 		r.reading = true
 		var err error
-		// The read transaction ends here when the loop stops early, panics, or meets an error, and
-		// the error of its end is then the error of Close or nobody's.
+		// The read transaction ends here when the loop stops early, panics, or meets an error. A
+		// failure of that end is the error of Close.
 		defer func() {
 			r.reading = false
-			_ = r.end(err)
+			if !r.done {
+				r.endErr = r.end(err)
+			}
 		}()
 		for row, e := range r.src.rows(r.ctx) {
 			if e != nil {
@@ -339,6 +352,7 @@ func (r *Rows) All() iter.Seq2[[]*s4qlpb.Value, error] {
 			if !yield(row, nil) || r.closing {
 				return
 			}
+			r.report.e.host.Yield(r.ctx, "engine: between two rows of a query")
 		}
 		// After the last row, a failure of the end of the read transaction is the last error.
 		r.reading = false
@@ -348,12 +362,16 @@ func (r *Rows) All() iter.Seq2[[]*s4qlpb.Value, error] {
 	}
 }
 
-// Close the rows, and end the read transaction of the query, unless it has ended. Close during a
-// loop over [Rows.All] ends the loop at its next row instead.
+// Close the rows, and end the read transaction of the query, unless it has ended; see [Rows]. It
+// gives the error of the end of the transaction, also of an end after a loop that stopped early.
 func (r *Rows) Close() error {
 	if r.reading {
 		r.closing = true
 		return nil
+	}
+	if err := r.endErr; err != nil {
+		r.endErr = nil
+		return err
 	}
 	return r.end(nil)
 }

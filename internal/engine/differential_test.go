@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"path/filepath"
 	"slices"
@@ -206,7 +207,12 @@ type instance struct {
 	changes int64
 	// memory is the state of an engine on a database in memory, which has no core, or nil.
 	memory func() string
+	// coreLog is the logger of the core, or nil.
+	coreLog *slog.Logger
 }
+
+// readers is the number of read connections of an instance.
+const readers = 4
 
 // newMemoryInstance of the engine on a database in memory.
 func newMemoryInstance(t testing.TB) *instance {
@@ -216,8 +222,14 @@ func newMemoryInstance(t testing.TB) *instance {
 
 func newInstance(t testing.TB, options engine.Options) *instance {
 	t.Helper()
+	return newInstanceLogged(t, options, nil)
+}
+
+// newInstanceLogged is [newInstance] with a logger of the core.
+func newInstanceLogged(t testing.TB, options engine.Options, coreLog *slog.Logger) *instance {
+	t.Helper()
 	h := sim.NewFree(sim.Buggify{})
-	i := &instance{t: t, host: h, store: simstore.New(h, simstore.Options{}), dir: t.TempDir()}
+	i := &instance{t: t, host: h, store: simstore.New(h, simstore.Options{}), dir: t.TempDir(), coreLog: coreLog}
 	i.open(true, options)
 	t.Cleanup(func() { i.close() })
 	return i
@@ -231,7 +243,10 @@ func (i *instance) open(empty bool, options engine.Options) {
 		i.path = filepath.Join(i.dir, fmt.Sprint("cache", i.caches, ".db"))
 	}
 	ctx := context.WithoutCancel(i.t.Context())
-	d, err := core.Open(ctx, i.host, i.store.Client(fmt.Sprint("client-", i.host.Uint64()), nil), i.path, "db", core.Options{})
+	// A slow machine must not make the cache busy or the lease run out: the waits for both are far
+	// longer than any statement takes.
+	coreOptions := core.Options{Readers: readers, BusyTimeout: time.Minute, Lease: time.Hour, Logger: i.coreLog}
+	d, err := core.Open(ctx, i.host, i.store.Client(fmt.Sprint("client-", i.host.Uint64()), nil), i.path, "db", coreOptions)
 	is.NotError(i.t, err)
 	is.NotError(i.t, d.Wait(ctx))
 	i.d, i.e = d, engine.New(d, i.host, options)
@@ -259,11 +274,13 @@ func (i *instance) restart(empty bool, options engine.Options) {
 func (i *instance) query(src string) answer {
 	i.t.Helper()
 	rows, err := i.e.Query(i.t.Context(), src)
+	if rows != nil {
+		if res := rows.Result(); res.SetsChanges {
+			i.changes = res.Changes
+		}
+	}
 	if err != nil {
 		return answer{err: errText(i.t, src, err)}
-	}
-	if res := rows.Result(); res.SetsChanges {
-		i.changes = res.Changes
 	}
 	var a answer
 	var columns []string
@@ -288,11 +305,11 @@ func (i *instance) query(src string) answer {
 func (i *instance) exec(src string) answer {
 	i.t.Helper()
 	res, err := i.e.Exec(i.t.Context(), src)
-	if err != nil {
-		return answer{err: errText(i.t, src, err)}
-	}
 	if res.SetsChanges {
 		i.changes = res.Changes
+	}
+	if err != nil {
+		return answer{err: errText(i.t, src, err)}
 	}
 	return answer{}
 }
@@ -592,7 +609,6 @@ func differentialOn(t testing.TB, seed uint64, n int, restarts bool, y tally, i 
 			if changes != 0 {
 				fail("%q: SQLite counts %v changes after a broken constraint", src, changes)
 			}
-			i.changes = 0
 		case want.err != "" && changes != before:
 			fail("%q: SQLite counts %v changes after its error, and %v before", src, changes, before)
 		}

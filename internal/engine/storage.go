@@ -79,14 +79,12 @@ func (c coreDB) read(ctx context.Context) (readTx, error) {
 	return coreReadTx{r: r}, nil
 }
 
-// refusals of the core that the engine checks for before it calls the core, and gives SQLite's error
-// for. One that the core still returns is a fault of the engine or of the pass after the parser.
-var refusals = []error{core.ErrTableExists, core.ErrNoTable, core.ErrReservedName, core.ErrInvalid}
-
 // fromCore is err of a call of the core, with a refusal of the core as an internal error, and every
-// other error as it is.
+// other error as it is. The engine checks for each refusal before it calls the core, and gives
+// SQLite's error for it, so one that the core still gives is a fault of the engine or of the pass
+// after the parser; so is a call on a transaction that has ended.
 func fromCore(err error) error {
-	for _, r := range refusals {
+	for _, r := range []error{core.ErrTableExists, core.ErrNoTable, core.ErrReservedName, core.ErrInvalid, core.ErrTxDone} {
 		if errors.Is(err, r) {
 			return internalError("the storage core refused a call that the engine had checked: %v", err)
 		}
@@ -178,8 +176,10 @@ func (c coreTx) annotate(ctx context.Context, sql string) error {
 	return fromCore(c.tx.Annotate(ctx, sql, nil))
 }
 
+// commit gives the error of the core as it is: [core.ErrInvalid] there is a commit time that the
+// commit object cannot hold, which comes from the clock and not from a call that the engine checks.
 func (c coreTx) commit(ctx context.Context) error {
-	return fromCore(c.tx.Commit(ctx))
+	return c.tx.Commit(ctx)
 }
 
 func (c coreTx) rollback(ctx context.Context) error {

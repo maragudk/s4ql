@@ -2,9 +2,8 @@
 // gives for the same statement, with SQLite's result code, extended result code, and message, all
 // three exactly as SQLite gives them.
 //
-// The type is for errors that s4ql reproduces, from its own parser and engine. It is never an error
-// that the SQLite library returned at run time, such as a failure of the cache, which is an error of
-// another kind.
+// The type is for errors that s4ql reproduces. It is never an error that the SQLite library itself
+// returned at run time, which is an error of another kind.
 package sqlerr
 
 // The result codes that s4ql gives, from https://sqlite.org/rescode.html. An extended result code

@@ -142,6 +142,8 @@ func Format(p Plan) string {
 	case *Query:
 		b.WriteString("query\n")
 		formatNode(&b, p.Root, 1)
+	default:
+		panic(fmt.Sprintf("engine: a plan of type %T", p))
 	}
 	return b.String()
 }
@@ -174,6 +176,8 @@ func formatNode(b *strings.Builder, n Node, depth int) {
 		}
 		b.WriteString("\n")
 		formatNode(b, n.Source, depth+1)
+	default:
+		panic(fmt.Sprintf("engine: a node of type %T", n))
 	}
 }
 

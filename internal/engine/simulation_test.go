@@ -124,6 +124,8 @@ type attempt struct {
 	position string
 	// acked is the number of writes that were acknowledged when the statement started.
 	acked int
+	// partial is set for a query whose rows were not read to their end.
+	partial bool
 }
 
 // idKey is the key of the context of a statement that holds its attempt.
@@ -291,7 +293,30 @@ func (r *run) statement(ctx context.Context, n *node, e *engine.Engine, q *seque
 		var rows *engine.Rows
 		rows, err = e.Query(ctx, a.src)
 		if err == nil {
-			got, err = readRows(rows)
+			// One query in four is not read to its end: its loop stops at the first row, it is closed
+			// unread, or its consumer panics. Its rows are then not compared.
+			switch (hostRand{n.inst}).IntN(12) {
+			case 0:
+				for _, err := range rows.All() {
+					_ = err
+					break
+				}
+				a.partial = true
+			case 1:
+				err = rows.Close()
+				a.partial = true
+			case 2:
+				func() {
+					defer func() { _ = recover() }()
+					for _, err := range rows.All() {
+						_ = err
+						panic("the consumer")
+					}
+				}()
+				a.partial = true
+			default:
+				got, err = readRows(rows)
+			}
 		}
 	} else {
 		_, err = e.Exec(ctx, a.src)
@@ -593,12 +618,12 @@ func (r *run) verify(ctx context.Context) {
 	// The observations of each state of the log: the statements that saw it.
 	seen := map[int][]*attempt{}
 	for _, a := range r.order {
-		if a.state != sqliteFailed && (a.state != succeeded || !a.query || a.write) {
+		if a.state != sqliteFailed && (a.state != succeeded || !a.query || a.write || a.partial) {
 			continue
 		}
 		if a.position == "" {
 			// A syntax error of a statement that saw no state.
-			if !strings.HasPrefix(a.answer.err, "1/1: ") {
+			if m := a.answer.err; !strings.HasPrefix(m, "1/1: ") || !strings.HasSuffix(m, ": syntax error") && !strings.HasSuffix(m, ": incomplete input") && !strings.Contains(m, ": unrecognized token: ") {
 				r.violate(ctx, "the statement %v, %q, saw no state, and gives %v", a.id, a.src, a.answer)
 			}
 			continue
@@ -835,16 +860,18 @@ func TestSimulationSeed(t *testing.T) {
 // seeds, and the same seeds without the bug, which find nothing.
 func TestSimulation_plantedBugs(t *testing.T) {
 	limit := simSeeds(t, 100)
-	// The workload of each bug: the check of an insert in a read transaction of its own needs two
-	// inserts of one key on one instance at once.
+	// The workload of each bug, and the violation that finds it: the check of an insert in a read
+	// transaction of its own needs two inserts of one key on one instance at once.
 	bugs := []struct {
 		name string
 		w    workload
+		// finds is a part of the violation that the bug causes.
+		finds string
 	}{
-		{"skipUnique", defaultWorkload},
-		{"ackUnknown", defaultWorkload},
-		{"checkOutside", hammerWorkload},
-		{"keepOpen", defaultWorkload},
+		{"skipUnique", defaultWorkload, "fails in SQLite: 19/1555: UNIQUE constraint failed"},
+		{"ackUnknown", defaultWorkload, "is not in the log"},
+		{"checkOutside", hammerWorkload, "fails in SQLite: 19/1555: UNIQUE constraint failed"},
+		{"keepOpen", defaultWorkload, "no instance runs a write"},
 	}
 	for _, b := range bugs {
 		bug := b.name
@@ -855,6 +882,9 @@ func TestSimulation_plantedBugs(t *testing.T) {
 			for seed := uint64(0); seed < limit && (found < 2 || os.Getenv("S4QL_ENGINE_SIM_SEEDS") != ""); seed++ {
 				seeds++
 				if v := simulate(t, seed, w).violations(); len(v) > 0 {
+					if !slices.ContainsFunc(v, func(v string) bool { return strings.Contains(v, b.finds) }) {
+						t.Fatalf("seed %v finds the bug by another violation: %v", seed, v)
+					}
 					if found == 0 {
 						t.Logf("seed %v finds: %v", seed, v[0])
 					}
