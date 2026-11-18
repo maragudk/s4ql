@@ -18,7 +18,6 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
-	"unicode/utf8"
 
 	"maragu.dev/is"
 
@@ -27,7 +26,6 @@ import (
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/host"
 	"maragu.dev/s4ql/internal/sim"
-	sqloracle "maragu.dev/s4ql/internal/sql/oracle"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/store/simstore"
@@ -740,9 +738,9 @@ func (r *run) verify(ctx context.Context) {
 	empty := newOracle(r.t)
 	defer empty.close()
 	for _, a := range r.order {
-		if a.state == skipped && a.answer.err == "not supported" && utf8.ValidString(a.src) && !strings.ContainsRune(a.src, 0) {
-			if err := empty.prepare(r.t, a.src); err != nil && sqloracle.IsSyntaxMessage(err.Message) {
-				r.violate(ctx, "the engine does not support the statement %v, %q, and SQLite gives %v", a.id, a.src, err.Message)
+		if a.state == skipped && a.answer.err == "not supported" {
+			if m := syntaxOfNotSupported(r.t, empty, a.src); m != "" {
+				r.violate(ctx, "the engine does not support the statement %v, %q, and SQLite gives %v", a.id, a.src, m)
 			}
 			continue
 		}
@@ -946,8 +944,9 @@ var storeFaults = map[string]string{
 	"fault: write applied after a crash":            "the sender crashed, and is applied",
 }
 
-// storeLine matches a line of the trace that a task of a request of the store wrote.
-var storeLine = regexp.MustCompile(`^\S+ store request \d+ store: `)
+// storeLine matches a line of the trace that a task of a request of the store wrote, also the task
+// of a write that was stuck in the network.
+var storeLine = regexp.MustCompile(`^\S+ store request \d+(, stuck)? store: `)
 
 // tallyOf the simulation s: its statements, by how they ended, its writes that were acknowledged,
 // its queries that were not read to their end, its commits, the faults that the store injected, by

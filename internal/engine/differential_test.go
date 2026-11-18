@@ -751,12 +751,8 @@ func (p *pair) step(src string, query, supported bool) string {
 		if supported {
 			return fmt.Sprintf("%q: the engine does not support a statement of slice 1", src)
 		}
-		// A text with a NUL byte or a byte that is not UTF-8 is not supported, whatever else it holds.
-		if !utf8.ValidString(src) || strings.ContainsRune(src, 0) {
-			return ""
-		}
-		if err := p.empty.prepare(t, src); err != nil && sqloracle.IsSyntaxMessage(err.Message) {
-			return fmt.Sprintf("%q: the engine does not support it, and SQLite gives %v", src, err.Message)
+		if m := syntaxOfNotSupported(t, p.empty, src); m != "" {
+			return fmt.Sprintf("%q: the engine does not support it, and SQLite gives %v", src, m)
 		}
 		return ""
 	}
@@ -793,6 +789,21 @@ func (p *pair) step(src string, query, supported bool) string {
 	}
 	if rowid != 0 {
 		return fmt.Sprintf("%q: SQLite's last insert rowid is %v", src, rowid)
+	}
+	return ""
+}
+
+// syntaxOfNotSupported gives the message of the syntax error that SQLite gives when it prepares src, a
+// text that the engine does not support, on the empty database empty, or "". A text that the engine
+// does not support is one that SQLite accepts, so the message must be "".
+func syntaxOfNotSupported(t testing.TB, empty *oracle, src string) string {
+	t.Helper()
+	// A text with a NUL byte or a byte that is not UTF-8 is not supported, whatever else it holds.
+	if !utf8.ValidString(src) || strings.ContainsRune(src, 0) {
+		return ""
+	}
+	if err := empty.prepare(t, src); err != nil && sqloracle.IsSyntaxMessage(err.Message) {
+		return err.Message
 	}
 	return ""
 }
