@@ -5,7 +5,8 @@
 // A parser implements [Parser]. [Run] compares it with SQLite on many texts, such as the entries of
 // the corpus in internal/sql/corpus, and gives a [Report] that groups the disagreements by their
 // [Mismatch] and a key, so that they can be worked through group by group. [Mutants] makes one-token
-// mutations of a text for more inputs near valid ones.
+// mutations of a text for more inputs near valid ones. A [Generator] writes random sentences of a
+// Lemon grammar that [ParseGrammar] reads, such as that of SQLite's parse.y.
 package parsetest
 
 import (

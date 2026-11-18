@@ -1,6 +1,6 @@
 # Parser test harness
 
-`internal/sql/parsetest` compares a SQL parser under test with SQLite, through the oracle in [`internal/sql/oracle`](../oracle/README.md). It compares three things: whether the first statement of a text parses, the exact message and byte offset of a syntax error, and where the statement ends.
+`internal/sql/parsetest` compares a SQL parser under test with SQLite, through the oracle in [`internal/sql/oracle`](../oracle/README.md). It compares three things: whether the first statement of a text parses, the exact message and byte offset of a syntax error, and where the statement ends. It also makes texts for such tests: one-token [mutants](#mutants) of a text, and random [sentences of SQLite's grammar](#sentences-of-the-grammar).
 
 s4ql's own parser in [`internal/sql/parser`](../parser/README.md) is tested with this package, in the first of the four checks that [docs/todo.md](../../../docs/todo.md) lists. [What the parser must match](../oracle/README.md#what-the-parser-must-match) in the oracle's README lists the facts about SQLite that are easy to get wrong.
 
@@ -108,7 +108,25 @@ SQLite does not say:
 
 The tokens to replace by or insert come from a pool of every keyword, every operator and punctuation, a literal of each kind, and names quoted in each way. The token and the operation are chosen at random from the seed and the text, so the same seed and text always give the same mutants. Only the text before the first NUL byte is mutated, since SQLite reads no further.
 
-The harness uses no property-based testing library. The repository has none, and seeded mutants and fuzzing cover the generation of inputs that is needed now.
+The harness uses no property-based testing library. The repository has none, and seeded mutants, seeded sentences of the grammar, and fuzzing cover the generation of inputs that is needed now.
+
+## Sentences of the grammar
+
+A `Generator` writes random sentences of a grammar. The parser's tests use it in `TestGenerate`, `FuzzGenerate`, and `TestRuleCoverage`, and the tests of [`internal/sql/stmt`](../stmt/README.md) in `TestCheck_grammar` and `TestAllowList`.
+
+`ParseGrammar(src)` reads a Lemon grammar file, such as SQLite's `parse.y`, and gives a `Grammar`: its rules, its token classes, and its `%fallback` keywords. It resolves the `%if` sections for the compile options of the binding in [`internal/sqlite`](../../sqlite/README.md), which defines none of the macros that `parse.y` tests. The package holds no grammar file. The repository's copy of `parse.y` is `internal/sql/parser/testdata/parse.y`, and the tests of each package read it themselves.
+
+`NewGenerator(g, seed)` gives a generator for the grammar, and `Sentence(start, budget)` a sentence derived from the nonterminal `start`, such as `input`:
+
+- The first `budget` nonterminals are expanded freely. After that, each nonterminal takes its rule of least height, the one whose derivation into terminals is least deep, so that every sentence is finite.
+- A nonterminal that is expanded freely takes any of its rules half the time, and the rule that the generator has used least the other half, so that every rule gets its turn.
+- A name comes from a pool of plain names, every quote style, every fallback keyword, the join keywords, and some keywords that are not names, which the grammar rejects there. A sentence is therefore not always one that SQLite parses.
+- A literal, an operator, a parameter, or a keyword of a class, such as the join keywords, comes from a short list of texts for it. Any other keyword is in lower case, and one time in four in upper case.
+- The words are separated by a space, and one time in ten by a line break or a comment.
+
+The same grammar, seed, and calls give the same sentences. `Used()` gives the rules in the derivation of the last sentence, by their index in `Grammar.Rules`. `IntN(n)` gives a random number from the generator's source, so that a test can draw its budgets from the same seed.
+
+The generator has no test in this package; the parser's tests check it. `TestGrammar` requires that the rules and the `%fallback` keywords that `ParseGrammar` reads are exactly those of the generated parser in the vendored amalgamation. `TestRuleCoverage` requires that every rule of the grammar is used by a statement that parses. For the unit rules that Lemon folds into gotos, it reads this from `Used`.
 
 ## Proof that the harness works
 
