@@ -92,7 +92,7 @@ type library struct {
 	free, openV2, closeV2, nextStmt, exec, prepareV3, extendedErrcode, errstr, errmsg, errorOffset,
 	dbHandle, limit, bindText, bindNull, step, columnCount, columnName, columnType, columnText,
 	columnBytes, reset, finalize, libversion, sourceid, complete, keywordCount, keywordName,
-	compileoptionGet js.Value
+	compileoptionGet, status64 js.Value
 
 	// transfer is a Uint8Array of transferLen bytes. A method uses it only between two calls into
 	// JavaScript that cannot call back into Go, so no other goroutine can use it meanwhile.
@@ -142,6 +142,7 @@ var lib = sync.OnceValue(func() *library {
 		keywordCount:     x.Get("sqlite3_keyword_count"),
 		keywordName:      x.Get("sqlite3_keyword_name"),
 		compileoptionGet: x.Get("sqlite3_compileoption_get"),
+		status64:         x.Get("sqlite3_status64"),
 	}
 })
 
@@ -632,6 +633,31 @@ func (s *Stmt) Finalize() error {
 		return errorFromConn(s.db, rc)
 	}
 	return nil
+}
+
+// MemoryUsed by SQLite, in bytes: what its allocations hold now, and the most they held at once
+// since the high-water mark was last reset, by sqlite3_status64 with SQLITE_STATUS_MEMORY_USED.
+// With reset, the mark is reset to what they hold now, after it is read.
+func MemoryUsed(reset bool) (used, highwater int64) {
+	l := lib()
+	out := call(l.alloc, 16)
+	if out == 0 {
+		panic("sqlite: out of memory")
+	}
+	defer l.release(out)
+	r := 0
+	if reset {
+		r = 1
+	}
+	const memoryUsed = 0 // SQLITE_STATUS_MEMORY_USED
+	if call(l.status64, memoryUsed, out, out+8, r) != codeOK {
+		panic("sqlite: sqlite3_status64 refused SQLITE_STATUS_MEMORY_USED")
+	}
+	// Each value is a little-endian 64-bit integer, read as two 32-bit halves.
+	at := func(p int) int64 {
+		return int64(call(l.peek32, p+4))<<32 | int64(uint32(call(l.peek32, p)))
+	}
+	return at(out), at(out + 8)
 }
 
 // Version of SQLite, such as 3.54.1.

@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -70,6 +71,30 @@ func TestVersion(t *testing.T) {
 		is.Equal(t, amalgamation.Version, browser.Version)
 		is.Equal(t, amalgamation.Version, sqlite.Version())
 		is.True(t, len(sqlite.SourceID()) > 64)
+	})
+}
+
+func TestMemoryUsed(t *testing.T) {
+	t.Run("should count what SQLite allocates, and keep the most that it held as the high-water mark until the mark is reset", func(t *testing.T) {
+		before, _ := sqlite.MemoryUsed(true)
+		c, err := sqlite.Open(":memory:")
+		is.NotError(t, err)
+		// An in-memory database holds its pages in memory that SQLite allocates, some 4 MB here.
+		is.NotError(t, c.Exec("create table t (v)"))
+		is.NotError(t, c.Exec("with recursive n(i) as (select 1 union all select i + 1 from n where i < 4000) insert into t select randomblob(1000) from n"))
+		held, highwater := sqlite.MemoryUsed(false)
+		is.True(t, held > before+4_000_000, fmt.Sprint(before, " ", held))
+		is.True(t, highwater >= held, fmt.Sprint(held, " ", highwater))
+
+		is.NotError(t, c.Close())
+		after, kept := sqlite.MemoryUsed(false)
+		is.True(t, after < held-4_000_000, fmt.Sprint(held, " ", after))
+		is.True(t, kept >= highwater, fmt.Sprint(highwater, " ", kept))
+
+		_, last := sqlite.MemoryUsed(true)
+		is.Equal(t, kept, last)
+		now, mark := sqlite.MemoryUsed(false)
+		is.True(t, mark >= now && mark < held-4_000_000, fmt.Sprint(held, " ", now, " ", mark))
 	})
 }
 
