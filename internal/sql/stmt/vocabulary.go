@@ -261,9 +261,10 @@ func reservedName(v string) string {
 }
 
 // eponymous virtual tables of SQLite, which every connection has without creating them, in lower
-// case: json_each and json_tree, and pragma_ and the name of each PRAGMA that gives rows.
+// case: json_each, json_tree, jsonb_each, and jsonb_tree, and pragma_ and the name of each PRAGMA that
+// gives rows.
 var eponymous = func() map[string]bool {
-	m := map[string]bool{"json_each": true, "json_tree": true}
+	m := map[string]bool{"json_each": true, "json_tree": true, "jsonb_each": true, "jsonb_tree": true}
 	for _, p := range strings.Fields(`
 		analysis_limit application_id auto_vacuum automatic_index busy_timeout cache_size cache_spill
 		cell_size_check checkpoint_fullfsync collation_list compile_options count_changes data_version
