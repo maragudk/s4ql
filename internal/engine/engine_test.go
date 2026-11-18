@@ -558,3 +558,38 @@ func TestEngine_namesOfTheCore(t *testing.T) {
 		t.Logf("%v statements of %v names", checked, len(names))
 	})
 }
+
+func TestEngine_concurrent(t *testing.T) {
+	t.Run("should run statements from several goroutines at once, for the race detector", func(t *testing.T) {
+		i := newInstance(t, engine.Options{Logger: slog.New(&events{})})
+		_, err := i.e.Exec(t.Context(), t1)
+		is.NotError(t, err)
+		var wg sync.WaitGroup
+		for g := range 8 {
+			wg.Go(func() {
+				for v := range 20 {
+					src := fmt.Sprint("insert into t1 (v1) values (", v%5, ")")
+					if v%2 == 1 {
+						src = "select * from t1"
+					}
+					rows, err := i.e.Query(t.Context(), src)
+					var se *sqlerr.Error
+					if err != nil && !errors.As(err, &se) {
+						t.Errorf("goroutine %v: %v", g, err)
+						return
+					}
+					if err == nil {
+						for _, err := range rows.All() {
+							if err != nil {
+								t.Errorf("goroutine %v: %v", g, err)
+							}
+						}
+					}
+				}
+			})
+		}
+		wg.Wait()
+		is.Equal(t, `columns "v1 INT", rows ["0" "1" "2" "3" "4"]`, i.query("select * from t1").String())
+		noneOpen(t, i)
+	})
+}
