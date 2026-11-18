@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Check of the simulator page</title>
+</head>
+<body>
+<p>This page loads the simulator page in frames, drives it, and posts what it saw to sitecheck.</p>
+<script type="module">
+// Each step waits for what the page says through data attributes on its <html>: data-engine
+// (loading, ready, or failed), data-runs (the runs applied), and data-hash (the hash of the last).
+// No step waits for a time; sitecheck stops a check that hangs.
+const lines = [];
+const say = (s) => lines.push(s);
+let ok = true;
+const expect = (cond, s) => {
+  say((cond ? "ok   " : "FAIL ") + s);
+  if (!cond) ok = false;
+  return cond;
+};
+
+const until = async (f) => {
+  for (;;) {
+    const v = f();
+    if (v) return v;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+};
+
+// open the simulator page at the address in a new frame, and wait until it has applied a run, or
+// failed.
+async function open(address) {
+  const frame = document.createElement("iframe");
+  frame.style.width = "1280px";
+  frame.style.height = "900px";
+  frame.src = address;
+  document.body.appendChild(frame);
+  await new Promise((r) => frame.addEventListener("load", r, { once: true }));
+  const win = frame.contentWindow;
+  const html = win.document.documentElement;
+  await until(() => html.dataset.engine === "failed" || Number(html.dataset.runs || 0) >= 1);
+  if (html.dataset.engine === "failed") throw new Error("the page failed: " + win.document.getElementById("failure").textContent);
+  return { win, doc: win.document, html };
+}
+
+const json = (events) => events.map((e) => JSON.stringify(e));
+
+// unit checks of run.js, the run as data: the link and the schedule.
+async function unit() {
+  const R = await import("/simulator/run.js");
+  const run = R.defaults();
+  run.seed = 2 ** 53 - 1;
+  run.buggify = true;
+  run.faults = { lostRequest: 1e-7, hang: 0.5, slowBy: 1000 }; // in the order of R.FAULTS, as decode gives them
+  for (const a of [
+    { at: 45001, do: "cutOff", instance: "c", for: 20000 },
+    { at: 45001, do: "shiftWall", instance: "a", by: -60000 },
+    { at: 50000, do: "loseAnswer", request: "commit" },
+    { at: 50000, do: "failRequest", request: "upload", instance: "b" },
+    { at: 50001, do: "outage", for: 10000 },
+    { at: 50002, do: "workload", on: false },
+    { at: 50003, do: "calm" },
+  ]) run.schedule = R.insert(run.schedule, a);
+  const back = R.decode("#" + R.encode(run, 12345));
+  expect(back && JSON.stringify(back.run) === JSON.stringify(run) && back.t === 12345, "a run goes through the link and back unchanged");
+  const s = R.insert([{ at: 1, do: "calm" }, { at: 5, do: "calm" }, { at: 9, do: "calm" }], { at: 5, do: "write", instance: "a" });
+  expect(JSON.stringify(s.map((a) => a.at + a.do)) === JSON.stringify(["1calm", "5calm", "5write", "9calm"]), "an action goes after every action at its time or before it");
+  const bad = [
+    "", "#seed=7334716c&n=3", "#seed=7334716c&n=3&a=1.crash.0", "#v=2", "#v=1&x=1", "#v=1&v=1",
+    "#v=1&seed=20000000000000", "#v=1&n=6", "#v=1&end=0", "#v=1&callers=9",
+    "#v=1&s=1.loseAnswer.toString", "#v=1&s=1.loseAnswer.__proto__", "#v=1&s=1.crash.d", "#v=1&n=2&s=1.crash.c",
+    "#v=1&s=5.calm~1.calm", "#v=1&s=120000.calm", "#v=1&s=1.cutOff.a.0", "#v=1&s=1.shiftWall.a.0", "#v=1&s=1.jump.a",
+    "#v=1&faults=slowBy:1.5", "#v=1&faults=hang:0.1:2", "#v=1&faults=hang:2", "#v=1&faults=hang:0.1,hang:0.2", "#v=1&faults=toString:1",
+    "#v=1&t=120001",
+  ];
+  const accepted = bad.filter((h) => R.decode(h) !== null);
+  expect(accepted.length === 0, `${bad.length} links that are not runs of the page are refused` + (accepted.length ? ": accepted " + accepted.join(" ") : ""));
+}
+
+async function check() {
+  await unit();
+  const a = await open("/simulator/");
+  const first = a.win.s4qlPage.response;
+  expect(first.events.length > 0, `the default run has ${first.events.length} events`);
+  expect(first.events.some((e) => e.kind === "call" && e.what === "committed"), "the default run commits writes");
+  expect(first.summary.violations === 0 || first.summary.violations === first.summary.excused, `the default run has no violation that is not excused (${first.summary.violations} violations, ${first.summary.excused} excused)`);
+  expect(/^[0-9a-f]{64}$/.test(a.html.dataset.hash), "the page reports the hash of the run");
+
+  // Pause, go to 30 s, and crash a there.
+  const play = a.doc.getElementById("play");
+  if (play.getAttribute("aria-pressed") === "true") play.click();
+  const scrub = a.doc.getElementById("scrub");
+  scrub.value = "30000";
+  scrub.dispatchEvent(new Event("input", { bubbles: true }));
+  await until(() => a.win.s4qlPage.cursor === 30000);
+  const crash = a.doc.querySelector('[data-instance="a"] [data-a="crash"]');
+  await until(() => !crash.disabled && crash.textContent === "Crash");
+  crash.click();
+  await until(() => Number(a.html.dataset.runs) >= 2 && a.doc.getElementById("field").getAttribute("aria-busy") === "false");
+  const second = a.win.s4qlPage.response;
+  const at = 30001;
+  const action = second.events.find((e) => e.kind === "action" && e.do === "crash" && e.instance === "a");
+  expect(action && action.t === at && action.what === "done", `the crash of a is in the new run at ${at} ms, and done`);
+  const before = (r) => json(r.events.filter((e) => e.t < at));
+  const after = (r) => json(r.events.filter((e) => e.t >= at));
+  expect(JSON.stringify(before(first)) === JSON.stringify(before(second)), `the ${before(second).length} events before ${at} ms are the same in both runs`);
+  expect(JSON.stringify(after(first)) !== JSON.stringify(after(second)), "the events from that time on differ");
+  expect(first.hash !== second.hash, "the hash differs");
+
+  // A link inside the page scrolls, and keeps the run in the address.
+  a.doc.getElementById("chip").click();
+  await until(() => a.win.location.hash.startsWith("#v=1"));
+  expect(a.win.document === a.doc && a.html.dataset.runs === "2", "a link inside the page keeps the page and its run");
+
+  // The link of the page gives the same run, at the same time.
+  const link = a.win.location.href;
+  expect(link.includes("30001.crash.a") && link.includes("t=30000"), "the link holds the crash and the time: " + link.slice(link.indexOf("#")));
+  const b = await open(link);
+  expect(b.html.dataset.hash === second.hash, `the link gives the same run, with the hash ${second.hash.slice(0, 16)}`);
+  expect(b.win.s4qlPage.cursor === 30000, "the link opens the run at 30 s");
+
+  // A link of the old model's format gives the default run.
+  const c = await open("/simulator/#seed=7334716c&n=3&a=1.crash.0");
+  expect(c.html.dataset.hash === first.hash, "a link of another format gives the default run");
+}
+
+try {
+  await check();
+} catch (e) {
+  expect(false, "the check could not go on: " + (e && e.stack || e));
+}
+await fetch("/__check/result", { method: "POST", body: JSON.stringify({ ok, lines }) });
+</script>
+</body>
+</html>

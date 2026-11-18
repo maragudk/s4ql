@@ -2,3 +2,4 @@
 /.env
 /.playwright-cli/
 /.impeccable/reference/
+/site/simulator/engine/

@@ -10,9 +10,18 @@
 // if -out is not given, and serves it on that address, with the headers that make the page
 // cross-origin isolated, until it is stopped. Run it from inside the module. It builds with the Go
 // on the PATH, whose wasm_exec.js it takes.
+//
+// For the project's site, -demo=false leaves out the demo page, and -commit writes build.json,
+// {"commit":"..."}, with the commit that the engine is built from. -root serves another directory
+// than that of -out, such as the whole site, and builds nothing unless -out is given too.
+// -isolated=false leaves out the two headers, as GitHub Pages serves the site:
+//
+//	go run -tags s4ql_browser ./internal/simulator/serve -out site/simulator/engine -demo=false -commit "$(git rev-parse HEAD)"
+//	go run -tags s4ql_browser ./internal/simulator/serve -root site -isolated=false -addr 127.0.0.1:8081
 package main
 
 import (
+	"encoding/json/v2"
 	"errors"
 	"flag"
 	"fmt"
@@ -25,51 +34,95 @@ import (
 )
 
 func main() {
-	out := flag.String("out", "", "the directory to write the files to")
-	addr := flag.String("addr", "", "the address to serve the files on")
+	var o options
+	flag.StringVar(&o.out, "out", "", "the directory to write the files to")
+	flag.StringVar(&o.addr, "addr", "", "the address to serve the files on")
+	flag.StringVar(&o.root, "root", "", "the directory to serve, if not that of -out")
+	flag.BoolVar(&o.demo, "demo", true, "whether to write the demo page")
+	flag.StringVar(&o.commit, "commit", "", "the commit to write into build.json, if any")
+	flag.BoolVar(&o.isolated, "isolated", true, "whether to serve with the headers that make a page cross-origin isolated")
 	flag.Parse()
-	if err := run(*out, *addr); err != nil {
+	if err := run(o); err != nil {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		os.Exit(1)
 	}
 }
 
-func run(out, addr string) error {
-	if out == "" && addr == "" {
+// options of a run, from the flags.
+type options struct {
+	out, addr, root, commit string
+	demo, isolated          bool
+}
+
+func run(o options) error {
+	if o.out == "" && o.addr == "" {
 		return errors.New("give -out, -addr, or both")
 	}
-	if out == "" {
+	if o.root != "" && o.addr == "" {
+		return errors.New("-root needs -addr")
+	}
+	if o.out == "" && o.root == "" {
 		dir, err := os.MkdirTemp("", "s4ql-simulator-")
 		if err != nil {
 			return err
 		}
 		defer func() { _ = os.RemoveAll(dir) }()
-		out = dir
+		o.out = dir
 	}
-	if err := bundle(out); err != nil {
-		return err
+	if o.out != "" {
+		if err := bundle(o.out, o.demo); err != nil {
+			return err
+		}
+		if o.commit != "" {
+			if err := writeBuild(o.out, o.commit); err != nil {
+				return err
+			}
+		}
 	}
-	if addr == "" {
+	if o.addr == "" {
 		return nil
 	}
-	fmt.Printf("serving %v on http://%v/\n", out, addr)
-	files := http.FileServer(http.Dir(out))
+	root := o.root
+	if root == "" {
+		root = o.out
+	}
+	fmt.Printf("serving %v on http://%v/\n", root, o.addr)
 	server := &http.Server{
-		Addr: addr,
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
-			w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
-			w.Header().Set("Cache-Control", "no-store")
-			files.ServeHTTP(w, r)
-		}),
+		Addr:              o.addr,
+		Handler:           handler(root, o.isolated),
 		ReadHeaderTimeout: time.Minute,
 	}
 	return server.ListenAndServe()
 }
 
+// handler of the files in root, without caching, and with the headers that make a page cross-origin
+// isolated if isolated is true.
+func handler(root string, isolated bool) http.Handler {
+	files := http.FileServer(http.Dir(root))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isolated {
+			w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+			w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		files.ServeHTTP(w, r)
+	})
+}
+
+// writeBuild into dir the file build.json, with the commit that the engine is built from.
+func writeBuild(dir, commit string) error {
+	b, err := json.Marshal(struct {
+		Commit string `json:"commit"`
+	}{Commit: commit})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "build.json"), append(b, '\n'), 0o644)
+}
+
 // bundle the files of the simulator into dir: the program, the JavaScript of the engine and of the
-// SQLite binding, the SQLite WebAssembly build, Go's wasm_exec.js, and the demo page.
-func bundle(dir string) error {
+// SQLite binding, the SQLite WebAssembly build, Go's wasm_exec.js, and the demo page if demo is true.
+func bundle(dir string, demo bool) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -94,13 +147,15 @@ func bundle(dir string) error {
 	copies := map[string]string{
 		"worker.js":    filepath.Join(engine, "worker.js"),
 		"simulator.js": filepath.Join(engine, "simulator.js"),
-		"index.html":   filepath.Join(engine, "index.html"),
 		"sqlite3.js":   filepath.Join(browser, "sqlite3.js"),
 		"sqlite3.wasm": filepath.Join(browser, "sqlite3.wasm"),
 		"vfs.js":       filepath.Join(browser, "vfs.js"),
 		"bridge.js":    filepath.Join(browser, "bridge.js"),
 		"fs.js":        filepath.Join(browser, "fs.js"),
 		"wasm_exec.js": filepath.Join(goroot, "lib", "wasm", "wasm_exec.js"),
+	}
+	if demo {
+		copies["index.html"] = filepath.Join(engine, "index.html")
 	}
 	for name, from := range copies {
 		b, err := os.ReadFile(from)

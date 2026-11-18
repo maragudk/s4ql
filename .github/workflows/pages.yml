@@ -1,7 +1,9 @@
 name: Pages
 
-# Deploys the project site in site/ to GitHub Pages at www.s4ql.com. The site is static and has no
-# build step, so the directory is uploaded as it is.
+# Deploys the project site in site/ to GitHub Pages at www.s4ql.com. The site is static, but for the
+# simulator's engine: make site builds the storage core into site/simulator/engine/ from this commit,
+# with build.json, which names the commit for the page. The workflow therefore also runs when the code
+# that the engine is built from changes, so that the simulator always runs the current code.
 
 on:
   push:
@@ -9,6 +11,10 @@ on:
       - main
     paths:
       - "site/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
+      - "Makefile"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -36,6 +42,16 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Build the simulator's engine into the site
+        env:
+          SITECOMMIT: ${{ github.sha }}
+        run: make site SITECOMMIT="$SITECOMMIT"
 
       - uses: actions/configure-pages@v6
 
