@@ -183,6 +183,23 @@ The layers that killed them first: hand-written 5,545, corpus 221, ownership 94,
 
 The run took 1 h 15 min with 10 workers on an Apple M4 with 10 cores and 16 GB, while a fuzz run used 4 of the cores. Five of its mutants survived only because the tests that kill them came after the copy of the tree that the run read; a run of those five on the final tests killed them all in 1 min. Planning, which builds and times every stage on the code as it is, takes about 3 min of the total.
 
+### The pass after the parser
+
+The final run of `internal/sql/stmt` alone, on the code as it is now, made 890 mutants:
+
+| Package | Generated | Not compiled | Killed | Timed out | Equivalent | Unexplained | Score | Score without equivalent |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `stmt` | 890 | 117 | 760 | 12 | 1 | 0 | 99.87% | 100.00% |
+
+The hand-written tests killed 759 of them first and the corpus 1. The run took 8 min 30 s with 5 workers on an Apple M4, while a fuzz run used 4 of the cores. One survivor of it was killed by a new hand-written case, in a run of the 7 mutants of that line.
+
+The first run, on the first version of the package, made 976 mutants, of which 55 survived. None showed a fault in the gate. They were:
+
+- Guards that the order of the tree makes redundant: a check that a token is the next one, where nothing can come before it, and `accept` of a node whose tokens get a name of their own anyway. The guards were removed.
+- Gaps in the tests: a missing part reported at the wrong token when an earlier token is not supported, as in `with c as (select 1) replace into ...`, a schema before a reserved name, a type of two words, and the case of `@` and `[` next to the ASCII letters. Each has a case in `TestCheck` now.
+- Code that nothing needs: a fast path for ASCII in the check for UTF-8, a branch for an error of the parser of another type, and names of fields that no offset can reach.
+- Paths that only a tree that the parser never gives reaches, such as the end of the tokens where the recognizer expects one. `TestRecognize` gives the recognizer such trees.
+
 ### What the first run found
 
 The first run, before any fix, made 7,186 mutants. It took 1 h 57 min with 10 workers on an Apple M4 with 10 cores and 16 GB, while the machine did other work.
