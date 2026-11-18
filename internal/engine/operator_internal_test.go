@@ -30,6 +30,9 @@ type fake struct {
 	getFails, upsertFails, annotateFails, commitFails, beginFails, readFails error
 	// upsertPanics makes an upsert panic.
 	upsertPanics bool
+	// tablePanics makes a lookup panic, and endFails is the error of the end of a read transaction.
+	tablePanics bool
+	endFails    error
 	// scans counts the scans that have started and not ended, and open the transactions.
 	scans, open int
 	// calls of the transactions, in order.
@@ -87,6 +90,9 @@ type fakeTx struct {
 
 func (x fakeTx) table(_ context.Context, name string) (*s4qlpb.CreateTable, error) {
 	x.f.calls = append(x.f.calls, "table "+name)
+	if x.f.tablePanics {
+		panic("the lookup panics")
+	}
 	if t, ok := x.f.tables[fold(name)]; ok {
 		return t.ct, nil
 	}
@@ -183,7 +189,7 @@ func (x fakeTx) rollback(context.Context) error {
 func (x fakeTx) end(context.Context) error {
 	x.f.calls = append(x.f.calls, "end")
 	x.f.open--
-	return nil
+	return x.f.endFails
 }
 
 // collect the rows of src as text, and its error.
@@ -564,6 +570,41 @@ func TestEngine_write(t *testing.T) {
 }
 
 func TestEngine_query(t *testing.T) {
+	t.Run("should end the read transaction when building the query panics, also for a syntax error that starts a table", func(t *testing.T) {
+		f := newFake()
+		f.tablePanics = true
+		e := newTestEngine(f, bugs{})
+		for _, src := range []string{"select * from t1", "create table t1 ("} {
+			func() {
+				defer func() { is.Equal(t, "the lookup panics", recover()) }()
+				_, _ = e.Query(t.Context(), src)
+			}()
+			is.Equal(t, 0, f.open)
+		}
+	})
+
+	t.Run("should give a failure of the end of the read transaction from Close after an early stop, once", func(t *testing.T) {
+		f := newFake().with("t1", []string{"v1"}, []int64{1}, []int64{2})
+		f.endFails = errors.New("the end fails")
+		rows, err := newTestEngine(f, bugs{}).Query(t.Context(), "select * from t1")
+		is.NotError(t, err)
+		for _, err := range rows.All() {
+			is.NotError(t, err)
+			break
+		}
+		is.Equal(t, "the end fails", rows.Close().Error())
+		is.NotError(t, rows.Close())
+
+		rows, err = newTestEngine(f, bugs{}).Query(t.Context(), "select * from t1")
+		is.NotError(t, err)
+		var last error
+		for _, err := range rows.All() {
+			last = err
+		}
+		is.Equal(t, "the end fails", last.Error())
+		is.NotError(t, rows.Close())
+	})
+
 	t.Run("should end the read transaction when the query cannot be built, and pass on the error of a read", func(t *testing.T) {
 		f := newFake()
 		e := newTestEngine(f, bugs{})
