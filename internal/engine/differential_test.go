@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"maragu.dev/is"
 
@@ -20,6 +21,7 @@ import (
 	"maragu.dev/s4ql/internal/engine"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sim"
+	"maragu.dev/s4ql/internal/sql/corpus"
 	sqloracle "maragu.dev/s4ql/internal/sql/oracle"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
@@ -564,12 +566,32 @@ func (y tally) add(src string, a answer) {
 	}
 }
 
-// addStarted counts a text with a syntax error for which SQLite gives that the table it starts
-// exists; see [startedTable].
-func (y tally) addStarted() {
-	if y != nil {
-		y["other already exists after the start of a table, accepted"]++
+// knownGap of the pass after the parser, which its README describes and its tests excuse in the same
+// way, that the engine's answer got and SQLite's answer want for the text src fall in, or "". The
+// engine gives a syntax error, and SQLite another error with the codes 1 and 1, of one of its
+// grammar actions:
+//
+//   - SQLite does not say whether src parses, because the error of the action stopped it before the
+//     end of the statement, also on an empty database, such as `unknown table option`.
+//   - SQLite gives the engine's syntax error for src on a database with the tables that src names,
+//     where [sqloracle.Judge] runs it, and the error of the action is about what the database holds,
+//     such as `no such table: main.X` for a trigger, which SQLite gives on an empty database too.
+func knownGap(src string, got, want answer) string {
+	prefix := fmt.Sprint(sqlerr.CodeError, "/", sqlerr.CodeError, ": ")
+	m, ok := strings.CutPrefix(got.err, prefix)
+	if !ok || !sqloracle.IsSyntaxMessage(m) {
+		return ""
 	}
+	if w, ok := strings.CutPrefix(want.err, prefix); !ok || sqloracle.IsSyntaxMessage(w) {
+		return ""
+	}
+	switch v := sqloracle.Judge(src); {
+	case v.Kind == sqloracle.NotSaid && v.Reason != sqloracle.Unsettled && v.Reason != sqloracle.NotParsed:
+		return "syntax error where SQLite does not say"
+	case v.Kind == sqloracle.SyntaxError && v.Message == m:
+		return "error about the database before a syntax error"
+	}
+	return ""
 }
 
 // startedTable reports whether the engine's answer got and SQLite's answer want for the text src
@@ -622,14 +644,7 @@ func differentialOn(t testing.TB, seed uint64, n int, restarts bool, y tally, i 
 	t.Helper()
 	r := rand.New(rand.NewPCG(seed, 0xe1e))
 	q := newSequence(t, r)
-	o := newOracle(t)
-	defer o.close()
-	// empty is SQLite on an empty database, which prepares each text that the engine does not
-	// support, and changes nothing.
-	empty := newOracle(t)
-	defer empty.close()
-	// prev is SQLite's count of changes after the statement before.
-	var prev int64
+	p := newPair(t, i, y)
 	var log []string
 	fail := func(format string, args ...any) {
 		t.Helper()
@@ -640,63 +655,106 @@ func differentialOn(t testing.TB, seed uint64, n int, restarts bool, y tally, i 
 			empty := r.IntN(2) == 0
 			log = append(log, fmt.Sprint("-- restart, with an empty cache: ", empty))
 			i.restart(empty, engine.Options{})
-			if got, want := i.state(), o.state(t); got != want {
+			if got, want := i.state(), p.o.state(t); got != want {
 				fail("after the restart the engine holds\n%v\nand SQLite\n%v", got, want)
 			}
 		}
 		src, query, supported := q.next()
 		log = append(log, src)
-		var got answer
-		if query {
-			got = i.query(src)
-		} else {
-			got = i.exec(src)
-		}
-		y.add(src, got)
-		if got.err == "not supported" {
-			// A statement of slice 1 is supported, and a text that is not supported is one that SQLite
-			// accepts: SQLite prepares it on an empty database without a syntax error.
-			if supported {
-				fail("%q: the engine does not support a statement of slice 1", src)
-			}
-			if err := empty.prepare(src); err != nil && sqloracle.IsSyntaxMessage(err.Message) {
-				fail("%q: the engine does not support it, and SQLite gives %v", src, err.Message)
-			}
-			continue
-		}
-		before := prev
-		want := o.run(t, src)
-		if !query {
-			want.columns, want.rows = "", nil
-		}
-		if got.String() != want.String() {
-			if !startedTable(t, src, got, want) {
-				fail("%q: the engine gives\n%v\nand SQLite\n%v", src, got, want)
-			}
-			y.addStarted()
-		}
-		// SQLite's count of changes: the engine's result sets it, and a statement that fails keeps it,
-		// except one that fails while SQLite steps it, a broken constraint, which sets it to 0.
-		changes, rowid := o.changes(t)
-		prev = changes
-		switch {
-		case strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeConstraint, "/")):
-			if changes != 0 {
-				fail("%q: SQLite counts %v changes after a broken constraint", src, changes)
-			}
-		case want.err != "" && changes != before:
-			fail("%q: SQLite counts %v changes after its error, and %v before", src, changes, before)
-		}
-		if changes != i.changes {
-			fail("%q: SQLite counts %v changes, and the engine's results %v", src, changes, i.changes)
-		}
-		if rowid != 0 {
-			fail("%q: SQLite's last insert rowid is %v", src, rowid)
+		if failure := p.step(src, query, supported); failure != "" {
+			fail("%v", failure)
 		}
 	}
-	if got, want := i.state(), o.state(t); got != want {
+	if got, want := i.state(), p.o.state(t); got != want {
 		fail("at the end the engine holds\n%v\nand SQLite\n%v", got, want)
 	}
+}
+
+// pair of the engine's instance i and SQLite o, which run the same statements.
+type pair struct {
+	t testing.TB
+	i *instance
+	o *oracle
+	// empty is SQLite on an empty database, which prepares each text that the engine does not
+	// support, and changes nothing.
+	empty *oracle
+	// prev is SQLite's count of changes after the statement before.
+	prev int64
+	y    tally
+}
+
+func newPair(t testing.TB, i *instance, y tally) *pair {
+	t.Helper()
+	p := &pair{t: t, i: i, o: newOracle(t), empty: newOracle(t), y: y}
+	t.Cleanup(p.o.close)
+	t.Cleanup(p.empty.close)
+	return p
+}
+
+// step runs src on the engine, through Query if query and through Exec otherwise, and on SQLite,
+// and compares what each gives, the count of changes, and the last insert rowid. A text that the
+// engine does not support is not run in SQLite: it must not be a statement of slice 1, which
+// supported says it is, and SQLite must prepare it on an empty database without a syntax error. step
+// gives what differs, or "".
+func (p *pair) step(src string, query, supported bool) string {
+	t, i, o := p.t, p.i, p.o
+	t.Helper()
+	var got answer
+	if query {
+		got = i.query(src)
+	} else {
+		got = i.exec(src)
+	}
+	p.y.add(src, got)
+	if got.err == "not supported" {
+		// A statement of slice 1 is supported, and a text that is not supported is one that SQLite
+		// accepts: SQLite prepares it on an empty database without a syntax error.
+		if supported {
+			return fmt.Sprintf("%q: the engine does not support a statement of slice 1", src)
+		}
+		// A text with a NUL byte or a byte that is not UTF-8 is not supported, whatever else it holds.
+		if !utf8.ValidString(src) || strings.ContainsRune(src, 0) {
+			return ""
+		}
+		if err := p.empty.prepare(src); err != nil && sqloracle.IsSyntaxMessage(err.Message) {
+			return fmt.Sprintf("%q: the engine does not support it, and SQLite gives %v", src, err.Message)
+		}
+		return ""
+	}
+	before := p.prev
+	want := o.run(t, src)
+	if !query {
+		want.columns, want.rows = "", nil
+	}
+	if got.String() != want.String() {
+		switch {
+		case startedTable(t, src, got, want):
+			p.y.add("", answer{err: "already exists after the start of a table, accepted"})
+		case knownGap(src, got, want) != "":
+			p.y.add("", answer{err: knownGap(src, got, want) + ", a known gap"})
+		default:
+			return fmt.Sprintf("%q: the engine gives\n%v\nand SQLite\n%v", src, got, want)
+		}
+	}
+	// SQLite's count of changes: the engine's result sets it, and a statement that fails keeps it,
+	// except one that fails while SQLite steps it, a broken constraint, which sets it to 0.
+	changes, rowid := o.changes(t)
+	p.prev = changes
+	switch {
+	case strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeConstraint, "/")):
+		if changes != 0 {
+			return fmt.Sprintf("%q: SQLite counts %v changes after a broken constraint", src, changes)
+		}
+	case want.err != "" && changes != before:
+		return fmt.Sprintf("%q: SQLite counts %v changes after its error, and %v before", src, changes, before)
+	}
+	if changes != i.changes {
+		return fmt.Sprintf("%q: SQLite counts %v changes, and the engine's results %v", src, changes, i.changes)
+	}
+	if rowid != 0 {
+		return fmt.Sprintf("%q: SQLite's last insert rowid is %v", src, rowid)
+	}
+	return ""
 }
 
 // TestDifferential runs random sequences of statements on the engine and on SQLite, and requires
@@ -715,8 +773,10 @@ func TestDifferential(t *testing.T) {
 }
 
 // FuzzDifferential runs the sequence of statements that its input chooses, the seed and the number of
-// statements, as [TestDifferential] does, on an engine on a database in memory, which is fast enough
-// for many millions of sequences. [FuzzDifferential_core] runs them on the storage core.
+// statements, as [TestDifferential] does, on an engine on a database in memory, a test double of the
+// core. Its input is a seed of the generator, not SQL text, so the guidance of the fuzzer by coverage
+// has little to work with: it explores seeds of the generator, and its executions are not a measure
+// of the SQL text that it covers. [FuzzSQL] gives the engine any text.
 func FuzzDifferential(f *testing.F) {
 	f.Add(uint64(0), uint8(40))
 	f.Add(uint64(1), uint8(10))
@@ -732,5 +792,68 @@ func FuzzDifferential_core(f *testing.F) {
 	f.Add(uint64(1), uint8(40), true)
 	f.Fuzz(func(t *testing.T, seed uint64, n uint8, restarts bool) {
 		differential(t, seed, int(n%64), restarts, nil)
+	})
+}
+
+// fuzzSetUp is the database that [FuzzSQL] runs each text on: tables with names in different cases
+// and in quotes, some with rows.
+var fuzzSetUp = []string{
+	"create table t1 (v1 int primary key) strict, without rowid",
+	"insert into t1 (v1) values (1)",
+	"insert into T1 (V1) values (-9223372036854775808)",
+	`create table "Foo bar" ("Bar""x" int primary key) strict, without rowid`,
+	`insert into "foo BAR" ("bar""X") values (7)`,
+	"create table Été (abort int primary key) strict, without rowid",
+	`create table "T""2" (v int primary key) strict, without rowid`,
+}
+
+// FuzzSQL runs any SQL text on the engine on a database in memory, a test double of the core, with
+// the tables of [fuzzSetUp], and on SQLite with the same tables, and compares what each gives, as
+// [TestDifferential] does, and the tables after it. It runs the text through Query, or through Exec
+// if exec. [FuzzSQL_core] runs the same on the storage core, which is several tens of times slower.
+func FuzzSQL(f *testing.F) {
+	fuzzSQL(f, newMemoryInstance)
+}
+
+// FuzzSQL_core is [FuzzSQL] on the storage core, with a store in memory.
+func FuzzSQL_core(f *testing.F) {
+	fuzzSQL(f, func(t testing.TB) *instance { return newInstance(t, engine.Options{}) })
+}
+
+// fuzzSQL is [FuzzSQL] on the instances of newInstance. Its seeds are statements of the sequence of
+// [TestDifferential], the texts of [others] and [fuzzSetUp], and every 500th text of the corpus.
+func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
+	q := newSequence(f, rand.New(rand.NewPCG(1, 2)))
+	for range 40 {
+		src, query, _ := q.next()
+		f.Add(src, !query)
+	}
+	for _, src := range slices.Concat(fuzzSetUp, others) {
+		if !strings.Contains(src, "%") {
+			f.Add(src, false)
+			continue
+		}
+		f.Add(fmt.Sprintf(src, `"foo BAR"`, `"BAR""x"`, 7), false)
+		f.Add(fmt.Sprintf(src, "T1", "v1", 1), true)
+	}
+	for i, e := range corpus.All() {
+		if i%500 == 0 {
+			f.Add(e.SQL, i%1000 == 0)
+		}
+	}
+	f.Fuzz(func(t *testing.T, src string, exec bool) {
+		i := newInstance(t)
+		p := newPair(t, i, nil)
+		for _, s := range fuzzSetUp {
+			if failure := p.step(s, false, true); failure != "" {
+				t.Fatalf("the set-up: %v", failure)
+			}
+		}
+		if failure := p.step(src, !exec, false); failure != "" {
+			t.Fatal(failure)
+		}
+		if got, want := i.state(), p.o.state(t); got != want {
+			t.Fatalf("%q: the engine holds\n%v\nand SQLite\n%v", src, got, want)
+		}
 	})
 }
