@@ -18,6 +18,7 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+	"unicode/utf8"
 
 	"maragu.dev/is"
 
@@ -26,6 +27,7 @@ import (
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/host"
 	"maragu.dev/s4ql/internal/sim"
+	sqloracle "maragu.dev/s4ql/internal/sql/oracle"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/store/simstore"
@@ -118,8 +120,8 @@ type attempt struct {
 	// write is true for a statement that changes the database if it succeeds.
 	write bool
 	state attemptState
-	// err is SQLite's error of a statement that failed with it, as [answer] has it, and rows the
-	// answer of a query that succeeded.
+	// answer of the statement: SQLite's error of a statement that failed with it, "not supported" or
+	// "no statement" for one that was skipped, and the rows of a query that succeeded.
 	answer answer
 	// position is the state that the statement saw, from its event.
 	position string
@@ -352,7 +354,10 @@ func (r *run) statement(ctx context.Context, n *node, e *engine.Engine, q *seque
 	case errors.As(err, &se):
 		a.state, a.answer = sqliteFailed, answer{err: fmt.Sprint(se.Code, "/", se.ExtendedCode, ": ", se.Message)}
 	case errors.Is(err, stmt.ErrNotSupported), errors.Is(err, engine.ErrNoStatement):
-		a.state = skipped
+		a.state, a.answer = skipped, answer{err: "not supported"}
+		if errors.Is(err, engine.ErrNoStatement) {
+			a.answer.err = "no statement"
+		}
 		if supported {
 			r.mu.Unlock()
 			r.violate(ctx, "statement %v, %q, of slice 1: %v", a.id, a.src, err)
@@ -694,6 +699,8 @@ type logCommit struct {
 //   - Each statement that failed with SQLite's error gives that error in SQLite on the state that
 //     it saw, and each query that succeeded gives its rows there: the state after a commit of the
 //     log, which holds every write that was acknowledged before the statement started.
+//   - Each text that the engine does not support is one that SQLite prepares on an empty database
+//     without a syntax error, as in [pair.step].
 //   - A new instance with an empty cache replays the log to the state that SQLite has after it.
 func (r *run) verify(ctx context.Context) {
 	log := readLog(r.store)
@@ -733,6 +740,12 @@ func (r *run) verify(ctx context.Context) {
 	empty := newOracle(r.t)
 	defer empty.close()
 	for _, a := range r.order {
+		if a.state == skipped && a.answer.err == "not supported" && utf8.ValidString(a.src) && !strings.ContainsRune(a.src, 0) {
+			if err := empty.prepare(r.t, a.src); err != nil && sqloracle.IsSyntaxMessage(err.Message) {
+				r.violate(ctx, "the engine does not support the statement %v, %q, and SQLite gives %v", a.id, a.src, err.Message)
+			}
+			continue
+		}
 		if a.state != sqliteFailed && (a.state != succeeded || !a.query || a.write || a.partial) {
 			continue
 		}
