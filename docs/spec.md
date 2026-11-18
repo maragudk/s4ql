@@ -15,6 +15,7 @@ This document holds only what Markus and maragubot have explicitly agreed to wri
 - **SQLite is the result oracle.** Results are judged against SQLite's.
 - **A strict subset of SQLite's SQL.** Because SQLite is the oracle, the dialect is SQLite's, and everything supported is also valid SQLite.
 - **Strict tables only.** Only `STRICT` tables are supported. Other restrictions may be added as they are found.
+- **The `database/sql` driver is the only public API.** An application uses s4ql through Go's `database/sql`, and s4ql has no API of its own next to it.
 
 Which SQL is supported today, and what comes next, is in the working document [roadmap.md](roadmap.md).
 
