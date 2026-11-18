@@ -13,7 +13,7 @@ This document holds only what Markus and maragubot have explicitly agreed to wri
 
 - **We write the SQL engine.** The engine parses, plans, and executes SQL itself. SQLite does not run the application's SQL.
 - **SQLite is the result oracle.** Results are judged against SQLite's.
-- **Errors match SQLite's.** Where SQLite gives an error, s4ql gives the same result code, extended result code, and message. This holds for a statement that s4ql runs, and for text that is a syntax error in SQLite, also when it is SQL that s4ql does not support. The position of the error in the text is not promised.
+- **Errors match SQLite's.** Where SQLite gives an error, s4ql gives the same result code, extended result code, and message. This holds for a statement that s4ql runs, and for text that is a syntax error in SQLite, also when it is SQL that s4ql does not support. The position of the error in the text is not promised. Text with a syntax error gets the error that SQLite gives for it on an empty database.
 - **What is not supported is rejected.** A statement that SQLite accepts and s4ql does not support fails with an error of s4ql's own, which says what is not supported and cannot be taken for an error of SQLite's.
 - **A strict subset of SQLite's SQL.** Because SQLite is the oracle, the dialect is SQLite's, and everything supported is also valid SQLite.
 - **Strict tables only.** Only `STRICT` tables are supported. Other restrictions may be added as they are found.
