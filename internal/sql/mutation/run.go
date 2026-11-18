@@ -47,9 +47,23 @@ var parserLayers = map[string]string{
 	"TestParse_mutants": layerMutants,
 }
 
+// stmtLayers of the tests of package stmt that are not hand-written, when stmt is the mutated package.
+var stmtLayers = map[string]string{
+	"TestCheck_corpus":        layerCorpus,
+	"TestAllowList":           layerCorpus,
+	"TestGenerate_nearMisses": layerMutants,
+	"TestCheck_grammar":       layerGenerator,
+	"TestGenerate":            layerGenerator,
+	"FuzzCheck":               layerFuzzSeeds,
+	"FuzzGenerate":            layerFuzzSeeds,
+	"TestCheck_corpusMutants": layerMutants,
+	"TestGenerate_mutants":    layerMutants,
+}
+
 const (
 	parserPkg = "internal/sql/parser"
 	shapePkg  = "internal/sql/shapetest"
+	stmtPkg   = "internal/sql/stmt"
 )
 
 // stage of the run of a mutant: the tests of one layer in one test binary.
@@ -171,15 +185,20 @@ func (r *runner) plan(pkgs []string) error {
 			byLayer := map[string][]string{}
 			for _, t := range tests {
 				l := layerOther
-				switch tp {
-				case parserPkg:
+				switch {
+				case tp == parserPkg:
 					l = layerHand
 					if pl, ok := parserLayers[t]; ok {
 						l = pl
 					}
-				case shapePkg:
+				case tp == shapePkg:
 					l = layerShape
-				case pkg:
+				case tp == pkg && pkg == stmtPkg:
+					l = layerHand
+					if sl, ok := stmtLayers[t]; ok {
+						l = sl
+					}
+				case tp == pkg:
 					l = layerHand
 				}
 				byLayer[l] = append(byLayer[l], t)

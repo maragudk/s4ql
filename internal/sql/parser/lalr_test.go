@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"maragu.dev/s4ql/internal/sql/parser"
+	"maragu.dev/s4ql/internal/sql/parsetest"
 	"maragu.dev/s4ql/internal/sql/token"
 )
 
@@ -204,10 +205,10 @@ func (l *lalr) code(t parser.TraceToken) int {
 }
 
 // foldedRHS gives the right side of the rule of g named name, as Lemon writes it.
-func foldedRHS(g *grammar, name string) []symbol {
-	for _, r := range g.rules {
+func foldedRHS(g *parsetest.Grammar, name string) []parsetest.Symbol {
+	for _, r := range g.Rules {
 		if r.String() == name {
-			return r.rhs
+			return r.RHS
 		}
 	}
 	return nil
@@ -284,13 +285,13 @@ func TestRuleCoverage(t *testing.T) {
 		lemonIndex[name] = i
 	}
 	derived := make([]int, len(names))
-	gen := newGenerator(g, 1)
+	gen := parsetest.NewGenerator(g, 1)
 	n := 20000
 	if slow() {
 		n /= 10
 	}
 	for range n {
-		sql := gen.sentence("input", 4+gen.r.IntN(100))
+		sql := gen.Sentence("input", 4+gen.IntN(100))
 		r, ok := shadow(t, l, sql)
 		if !ok || !r.ok {
 			continue
@@ -299,8 +300,8 @@ func TestRuleCoverage(t *testing.T) {
 		for _, rule := range r.rules {
 			count[rule]++
 		}
-		for _, rule := range gen.used {
-			derived[lemonIndex[g.rules[rule].String()]]++
+		for _, rule := range gen.Used() {
+			derived[lemonIndex[g.Rules[rule].String()]]++
 		}
 	}
 

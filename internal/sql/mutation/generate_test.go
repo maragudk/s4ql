@@ -139,10 +139,10 @@ func infixPrec(k token.Kind) int {
 		is.True(t, !slices.ContainsFunc(keys, func(k string) bool { return strings.Contains(k, "token.kinds") }), "kinds is not exported")
 	})
 
-	t.Run("should give mutants of the parser that each change the text, with unique keys, and that parse as Go", func(t *testing.T) {
+	t.Run("should give mutants of every package that each change the text, with unique keys, and that parse as Go", func(t *testing.T) {
 		root, err := moduleRoot()
 		is.NotError(t, err)
-		dirs := []string{"internal/sql/token", "internal/sql/ast", "internal/sql/parser"}
+		dirs := allPkgs
 		u, err := newUniverse(root, dirs)
 		is.NotError(t, err)
 		seen := map[string]bool{}
@@ -182,7 +182,7 @@ func TestEquivalent(t *testing.T) {
 		is.NotError(t, err)
 		eq, err := readEquivalent(filepath.Join(root, "internal/sql/mutation/equivalent.txt"))
 		is.NotError(t, err)
-		dirs := []string{"internal/sql/token", "internal/sql/ast", "internal/sql/parser"}
+		dirs := allPkgs
 		u, err := newUniverse(root, dirs)
 		is.NotError(t, err)
 		keys := map[string]bool{}

@@ -25,11 +25,12 @@ corpus:
 	go run ./internal/sql/corpus/update
 
 # fuzz runs each fuzz test in the SQLite binding, its cross-checks, the storage formats, the SQL
-# tokenizer, SQLite's verdicts on SQL, the SQL parser, and the check of the shape of its tree for
-# FUZZTIME. Pass FUZZFLAGS=-asan to fuzz under the address sanitizer (Linux only).
+# tokenizer, SQLite's verdicts on SQL, the SQL parser, the check of the shape of its tree, and the
+# pass after the parser for FUZZTIME. Pass FUZZFLAGS=-asan to fuzz under the address sanitizer (Linux
+# only).
 .PHONY: fuzz
 fuzz:
-	for dir in internal/sqlite $(CROSSCHECK) internal/format internal/sql/token internal/sql/oracle internal/sql/parsetest internal/sql/parser internal/sql/shapetest; do \
+	for dir in internal/sqlite $(CROSSCHECK) internal/format internal/sql/token internal/sql/oracle internal/sql/parsetest internal/sql/parser internal/sql/shapetest internal/sql/stmt; do \
 		for test in $$(cd $$dir && go test -list '^Fuzz' . | grep '^Fuzz'); do \
 			(cd $$dir && go test $(FUZZFLAGS) -run '^$$' -fuzz "^$$test\$$" -fuzztime $(FUZZTIME) .) || exit 1; \
 		done; \
@@ -59,8 +60,8 @@ lint-proto:
 	$(BUF) lint
 	$(BUF) format --diff --exit-code
 
-# mutation runs the mutation testing of the SQL tokenizer, syntax tree, and parser, with the results
-# and the report in MUTATIONDIR. It is not part of test, since a full run takes long; see
+# mutation runs the mutation testing of the SQL tokenizer, syntax tree, parser, and the pass after the
+# parser, with the results and the report in MUTATIONDIR. It is not part of test, since a full run takes long; see
 # internal/sql/mutation/README.md. A run with the same MUTATIONDIR goes on where the last one stopped,
 # and refuses it after a change of the code; remove the directory then.
 MUTATIONDIR ?= $(or $(TMPDIR),/tmp)/s4ql-mutation

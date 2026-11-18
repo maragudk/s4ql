@@ -1,6 +1,6 @@
-# Mutation testing of the tokenizer, tree, and parser
+# Mutation testing of the tokenizer, tree, parser, and pass after the parser
 
-`internal/sql/mutation` measures the tests of `internal/sql/token`, `internal/sql/ast`, and [`internal/sql/parser`](../parser/README.md). It changes the code of these packages on purpose, one small change at a time. It runs the tests against each change, and reports every change that no test notices.
+`internal/sql/mutation` measures the tests of `internal/sql/token`, `internal/sql/ast`, [`internal/sql/parser`](../parser/README.md), and [`internal/sql/stmt`](../stmt/README.md). It changes the code of these packages on purpose, one small change at a time. It runs the tests against each change, and reports every change that no test notices.
 
 A copy of the code with one change is a mutant. The tests kill a mutant when one of them fails on it. A mutant that no test kills is a survivor, and a survivor is one of three things:
 
@@ -27,7 +27,7 @@ The target runs `go run ./internal/sql/mutation -out DIR` in the root of the mod
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `-out` | | The directory of the results. Required, except with `-list`. |
-| `-pkgs` | the three packages | The packages to change, separated by commas. |
+| `-pkgs` | the four packages | The packages to change, separated by commas. |
 | `-run` | | A regular expression. Only the mutants whose [key](#keys) or `file:line` matches it are run. |
 | `-list` | | Print the mutants and exit. |
 | `-report` | | Write the report of the results in `-out` again and exit. |
@@ -105,6 +105,8 @@ The tests run in stages, in this order. The first stage that fails kills the mut
 7. `shape check`: the tests of [`internal/sql/shapetest`](../shapetest/README.md)
 8. `other packages`: the tests of the other packages under `internal/sql` that depend on the changed package
 
+The tests of `internal/sql/stmt`, when it is the changed package, run in the same layers: `TestCheck_corpus` and `TestAllowList` in `corpus`, `TestCheck_grammar` and `TestGenerate` in `generator`, `FuzzCheck` and `FuzzGenerate` in `fuzz seeds`, and `TestCheck_corpusMutants`, `TestGenerate_mutants`, and `TestGenerate_nearMisses` in `mutants`. Its other tests are `hand-written`. When another package is changed, the tests of `internal/sql/stmt` are `other packages`.
+
 Each stage runs with `-test.failfast`. The layer `ownership` is not a stage. A mutant counts for it when the ownership check fails inside the tests of the parser and the output shows no disagreement with SQLite.
 
 Three more rules decide the result of a mutant:
@@ -165,10 +167,11 @@ The entries are of these classes:
 - **Precedences.** Only the order of the levels matters. Level 6, that of ESCAPE, is unused, so its neighbours can move onto it. AND and NOT can share a level, because NOT continues on a tie and AND stops. COLLATE and the unary operators can share one, because no infix operator has the unary level. The flag `stopAtAnd` of `exprPrec` matters only for the low operand of BETWEEN.
 - **Bounds of character tests** in `checkVariable` and `digitSeparatorError`, moved by one onto a character that cannot stand there.
 - **The end of input.** The guard in `Tokens` that the tokenizer never reaches, the value of `kindEOF`, the empty semicolon after a semicolon, the offsets of the two end tokens, and the tail that `run` returns with an error.
+- **The pass after the parser.** In `childAt`, the test that a child starts before the token: the children of an accepted node are in the order of the text.
 
 ## Results
 
-The final run, on the code as it is now, made 7,029 mutants:
+The final run of `token`, `ast`, and `parser`, on their code as it is now, made 7,029 mutants:
 
 | Package | Generated | Not compiled | Killed | Timed out | Equivalent | Unexplained | Score | Score without equivalent |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -181,7 +184,7 @@ The layers that killed them first: hand-written 5,545, corpus 221, ownership 94,
 
 The run took 1 h 15 min with 10 workers on an Apple M4 with 10 cores and 16 GB, while a fuzz run used 4 of the cores. Five of its mutants survived only because the tests that kill them came after the copy of the tree that the run read; a run of those five on the final tests killed them all in 1 min. Planning, which builds and times every stage on the code as it is, takes about 3 min of the total.
 
-### What the first run found
+### What the first run of the parser found
 
 The first run, before any fix, made 7,186 mutants. It took 1 h 57 min with 10 workers on an Apple M4 with 10 cores and 16 GB, while the machine did other work.
 
@@ -252,3 +255,20 @@ In `parser`:
 #### The precedence table
 
 The shape check kills most mutants of the precedence table. The hand-written tests of the parser do not pin every pair of levels. SQLite does, through [`internal/sql/shapetest`](../shapetest/README.md).
+
+### The pass after the parser
+
+The final run of `internal/sql/stmt` alone, on the code as it is now, made 890 mutants:
+
+| Package | Generated | Not compiled | Killed | Timed out | Equivalent | Unexplained | Score | Score without equivalent |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `stmt` | 890 | 117 | 760 | 12 | 1 | 0 | 99.87% | 100.00% |
+
+The hand-written tests killed 759 of them first and the corpus 1. The run took 8 min 30 s with 5 workers on an Apple M4, while a fuzz run used 4 of the cores. One survivor of it was killed by a new hand-written case, in a run of the 7 mutants of that line.
+
+The first run, on the first version of the package, made 976 mutants, of which 55 survived. None showed a fault in the gate. They were:
+
+- Guards that the order of the tree makes redundant: a check that a token is the next one, where nothing can come before it, and `accept` of a node whose tokens get a name of their own anyway. The guards were removed.
+- Gaps in the tests: a missing part reported at the wrong token when an earlier token is not supported, as in `with c as (select 1) replace into ...`, a schema before a reserved name, a type of two words, and the case of `@` and `[` next to the ASCII letters. Each has a case in `TestCheck` now.
+- Code that nothing needs: a fast path for ASCII in the check for UTF-8, a branch for an error of the parser of another type, and names of fields that no offset can reach.
+- Paths that only a tree that the parser never gives reaches, such as the end of the tokens where the recognizer expects one. `TestRecognize` gives the recognizer such trees.

@@ -4,7 +4,7 @@
 
 The grammar is SQLite's own `src/parse.y`, with the compile options of the binding in [`internal/sqlite`](../../sqlite/README.md). The parser is a hand-written recursive descent for that grammar. Every non-trivial function names the rules of `parse.y` that it reads.
 
-The parser keeps everything as written. It rejects only what SQLite's grammar rejects. A pass after the parser, which is agreed and not built, rejects what s4ql does not support, and raises the errors that SQLite's grammar actions raise. [docs/todo.md](../../../docs/todo.md) describes that pass and the four checks of the parser, of which the first three are built: agreement with SQLite, the ownership of every token, and the shape of the tree, which [`internal/sql/shapetest`](../shapetest/README.md) compares with SQLite.
+The parser keeps everything as written. It rejects only what SQLite's grammar rejects. The pass after the parser, [`internal/sql/stmt`](../stmt/README.md), rejects what s4ql does not support. It is built for slice 1 of the roadmap. It does not yet raise the errors that SQLite's grammar actions raise. [docs/todo.md](../../../docs/todo.md) lists what of that pass is not built, and the four checks of the parser, of which the first three are built: agreement with SQLite, the ownership of every token, and the shape of the tree, which [`internal/sql/shapetest`](../shapetest/README.md) compares with SQLite.
 
 SQLite's verdicts come from the oracle in [`internal/sql/oracle`](../oracle/README.md), through the harness in [`internal/sql/parsetest`](../parsetest/README.md).
 
@@ -217,6 +217,8 @@ Time is linear in the length and in the nesting. `BenchmarkParse_long` shows a c
 ## Errors left to the pass after the parser
 
 SQLite runs the actions of its grammar while it parses, and some actions raise errors that are not syntax errors. The parser accepts every statement whose only fault is such an error. The tree keeps all that the pass needs to raise the error at the moment SQLite does.
+
+The pass, [`internal/sql/stmt`](../stmt/README.md), does not raise these errors yet. None of them can occur in a statement of slice 1, so the pass rejects a statement whose only fault is such an error as "not supported".
 
 This list is researched from SQLite's source and is partly verified against SQLite. The file and line references are to `src/` of SQLite 3.54.1. In a message, `%s`, `%T`, `%d`, and the like are SQLite's format verbs. The marks are:
 
@@ -435,7 +437,7 @@ Against SQLite on many texts:
 
 - `TestParse_corpus` runs the whole corpus of 139,234 statements. The parser and SQLite agree on 138,926, SQLite does not say on 308, and they disagree on none. It checks ownership on every statement that parses.
 - `TestParse_mutants` runs three one-token mutants of every corpus entry, 416,271 texts, with no disagreement. A run with `-args -mutants 40 -seed 1000` compared 5,550,280 mutants with no disagreement.
-- `TestGenerate` runs random sentences of the grammar. A generator derives them from the rules of `parse.y`, from the start symbol `input`. Half the time it prefers the least used rule of a nonterminal, and it takes the shortest rules when its budget runs out. Names come from a pool of plain names, every quote style, every fallback keyword, the join keywords, and some keywords that are not names. By default it runs 20,000 sentences and two mutants of each, 60,000 texts, with no disagreement. A run with `-args -generated 400000 -seed 77` compared 1,200,000 texts with no disagreement, of which 415,679 parse.
+- `TestGenerate` runs random sentences of the grammar. The generator of [`internal/sql/parsetest`](../parsetest/README.md#sentences-of-the-grammar) derives them from the rules of `parse.y`, from the start symbol `input`. Half the time it prefers the least used rule of a nonterminal, and it takes the shortest rules when its budget runs out. Names come from a pool of plain names, every quote style, every fallback keyword, the join keywords, and some keywords that are not names. By default it runs 20,000 sentences and two mutants of each, 60,000 texts, with no disagreement. A run with `-args -generated 400000 -seed 77` compared 1,200,000 texts with no disagreement, of which 415,679 parse.
 - `TestParse_sqlite` compares about 230 texts written by hand for corners that the corpus touches little.
 - `TestParse_offsetAfterValues` compares 1,034 texts with a `#N` and a multi-row VALUES, for 94 forms of expression in 11 places. On a fresh connection, the offset of the `#N` error there depends on whether the rows are constant. On the oracle's connection, SQLite gives an offset for all 1,008 syntax errors, and does not say on the other 26 texts.
 
