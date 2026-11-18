@@ -193,3 +193,10 @@ jobs:
         env:
           S4QL_CHROMIUM_FLAGS: --no-sandbox
         run: make test-browser
+
+      # Builds the engine into the site, as the Pages workflow does, and checks the simulator's page in
+      # headless Chrome: see internal/simulator/sitecheck.
+      - name: Check the simulator's page in headless Chrome
+        env:
+          S4QL_CHROMIUM_FLAGS: --no-sandbox
+        run: make site-check

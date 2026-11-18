@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Check of the simulator page</title>
+</head>
+<body>
+<p>This page loads the simulator page in frames, drives it, and posts what it saw to sitecheck.</p>
+<script type="module">
+// Each step waits for what the page says through data attributes on its <html>: data-engine
+// (loading, ready, or failed), data-runs (the runs applied), and data-hash (the hash of the last).
+// No step waits for a time; sitecheck stops a check that hangs.
+const lines = [];
+const say = (s) => lines.push(s);
+let ok = true;
+const expect = (cond, s) => {
+  say((cond ? "ok   " : "FAIL ") + s);
+  if (!cond) ok = false;
+  return cond;
+};
+
+const until = async (f) => {
+  for (;;) {
+    const v = f();
+    if (v) return v;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+};
+
+// open the simulator page at the address in a new frame, and wait until it has applied a run, or
+// failed.
+async function open(address) {
+  const frame = document.createElement("iframe");
+  frame.style.width = "1280px";
+  frame.style.height = "900px";
+  frame.src = address;
+  document.body.appendChild(frame);
+  await new Promise((r) => frame.addEventListener("load", r, { once: true }));
+  const win = frame.contentWindow;
+  const html = win.document.documentElement;
+  await until(() => html.dataset.engine === "failed" || Number(html.dataset.runs || 0) >= 1);
+  if (html.dataset.engine === "failed") throw new Error("the page failed: " + win.document.getElementById("failure").textContent);
+  return { win, doc: win.document, html };
+}
+
+const json = (events) => events.map((e) => JSON.stringify(e));
+
+async function check() {
+  const a = await open("/simulator/");
+  const first = a.win.s4qlPage.response;
+  expect(first.events.length > 0, `the default run has ${first.events.length} events`);
+  expect(first.events.some((e) => e.kind === "call" && e.what === "committed"), "the default run commits writes");
+  expect(first.summary.violations === 0 || first.summary.violations === first.summary.excused, `the default run has no violation that is not excused (${first.summary.violations} violations, ${first.summary.excused} excused)`);
+  expect(/^[0-9a-f]{64}$/.test(a.html.dataset.hash), "the page reports the hash of the run");
+
+  // Pause, go to 30 s, and crash a there.
+  const play = a.doc.getElementById("play");
+  if (play.getAttribute("aria-pressed") === "true") play.click();
+  const scrub = a.doc.getElementById("scrub");
+  scrub.value = "30000";
+  scrub.dispatchEvent(new Event("input", { bubbles: true }));
+  await until(() => a.win.s4qlPage.cursor === 30000);
+  const crash = a.doc.querySelector('[data-instance="a"] [data-a="crash"]');
+  await until(() => !crash.disabled && crash.textContent === "Crash");
+  crash.click();
+  await until(() => Number(a.html.dataset.runs) >= 2 && a.doc.getElementById("field").getAttribute("aria-busy") === "false");
+  const second = a.win.s4qlPage.response;
+  const at = 30001;
+  const action = second.events.find((e) => e.kind === "action" && e.do === "crash" && e.instance === "a");
+  expect(action && action.t === at && action.what === "done", `the crash of a is in the new run at ${at} ms, and done`);
+  const before = (r) => json(r.events.filter((e) => e.t < at));
+  const after = (r) => json(r.events.filter((e) => e.t >= at));
+  expect(JSON.stringify(before(first)) === JSON.stringify(before(second)), `the ${before(second).length} events before ${at} ms are the same in both runs`);
+  expect(JSON.stringify(after(first)) !== JSON.stringify(after(second)), "the events from that time on differ");
+  expect(first.hash !== second.hash, "the hash differs");
+
+  // The link of the page gives the same run, at the same time.
+  const link = a.win.location.href;
+  expect(link.includes("30001.crash.a") && link.includes("t=30000"), "the link holds the crash and the time: " + link.slice(link.indexOf("#")));
+  const b = await open(link);
+  expect(b.html.dataset.hash === second.hash, `the link gives the same run, with the hash ${second.hash.slice(0, 16)}`);
+  expect(b.win.s4qlPage.cursor === 30000, "the link opens the run at 30 s");
+
+  // A link of the old model's format gives the default run.
+  const c = await open("/simulator/#seed=7334716c&n=3&a=1.crash.0");
+  expect(c.html.dataset.hash === first.hash, "a link of another format gives the default run");
+}
+
+try {
+  await check();
+} catch (e) {
+  expect(false, "the check could not go on: " + (e && e.stack || e));
+}
+await fetch("/__check/result", { method: "POST", body: JSON.stringify({ ok, lines }) });
+</script>
+</body>
+</html>
