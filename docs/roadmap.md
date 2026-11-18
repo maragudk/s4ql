@@ -31,7 +31,7 @@ Rejected for now, to be decided later: upserts, and join variants such as comma 
 
 ### Slice 1: one integer column
 
-Status: agreed, not built.
+Status: the engine is built and checked against SQLite. The `database/sql` driver is not built yet.
 
 ```sql
 create table t1 (v1 int primary key) strict, without rowid;
