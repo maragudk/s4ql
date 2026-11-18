@@ -1,8 +1,9 @@
 name: SQLite source
 
-# The vendored SQLite source must match the archive on sqlite.org and the checksums on its download
-# page. The check downloads from sqlite.org, so it runs only when the vendored source, its manifest,
-# or the update tool changes, and not on every change, which would fail whenever sqlite.org is down.
+# The vendored SQLite source, and the vendored SQLite WebAssembly build, must match their archives on
+# sqlite.org and the checksums on its download page. The check downloads from sqlite.org, so it runs
+# only when the vendored files, their manifests, or the update tools change, and not on every change,
+# which would fail whenever sqlite.org is down.
 on:
   push:
     branches:
@@ -11,6 +12,10 @@ on:
       - internal/sqlite/c/**
       - internal/sqlite/source.h
       - internal/sqlite/update/**
+      - internal/sqlite/browser/source.json
+      - internal/sqlite/browser/sqlite3.js
+      - internal/sqlite/browser/sqlite3.wasm
+      - internal/sqlite/browser/update/**
       - .github/workflows/sqlite-verify.yml
   pull_request:
     branches:
@@ -19,6 +24,10 @@ on:
       - internal/sqlite/c/**
       - internal/sqlite/source.h
       - internal/sqlite/update/**
+      - internal/sqlite/browser/source.json
+      - internal/sqlite/browser/sqlite3.js
+      - internal/sqlite/browser/sqlite3.wasm
+      - internal/sqlite/browser/update/**
       - .github/workflows/sqlite-verify.yml
 
 concurrency:
@@ -44,3 +53,6 @@ jobs:
 
       - name: Verify the vendored SQLite source
         run: make sqlite-verify
+
+      - name: Verify the vendored SQLite WebAssembly build
+        run: make sqlite-browser-verify

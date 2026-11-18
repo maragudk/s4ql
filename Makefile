@@ -76,6 +76,19 @@ mutation:
 sqlite-update:
 	go run ./internal/sqlite/update -version $(VERSION)
 
+# sqlite-browser-update vendors the official SQLite WebAssembly build of VERSION into
+# internal/sqlite/browser, such as make sqlite-browser-update VERSION=3.54.1. It is the version of the
+# amalgamation, which the browser's tests require.
+.PHONY: sqlite-browser-update
+sqlite-browser-update:
+	go run ./internal/sqlite/browser/update -version $(VERSION)
+
+# sqlite-browser-verify downloads the vendored SQLite WebAssembly build again and checks it against
+# the vendored files.
+.PHONY: sqlite-browser-verify
+sqlite-browser-verify:
+	go run ./internal/sqlite/browser/update -verify
+
 # sqlite-verify downloads the vendored SQLite amalgamation again and checks it against the vendored files.
 .PHONY: sqlite-verify
 sqlite-verify:
