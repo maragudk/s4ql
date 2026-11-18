@@ -1,6 +1,6 @@
-// Command mutation runs mutation testing of the SQL tokenizer, syntax tree, and parser: it changes
-// their code on purpose, one small change at a time, runs the tests against each change, and reports
-// the changes that no test notices.
+// Command mutation runs mutation testing of the SQL tokenizer, syntax tree, parser, and the pass after
+// the parser: it changes their code on purpose, one small change at a time, runs the tests against
+// each change, and reports the changes that no test notices.
 //
 // Usage, from the root of the module:
 //
@@ -47,7 +47,7 @@ func main() {
 }
 
 // allPkgs are the packages that the command mutates by default.
-var allPkgs = []string{"internal/sql/token", "internal/sql/ast", "internal/sql/parser"}
+var allPkgs = []string{"internal/sql/token", "internal/sql/ast", "internal/sql/parser", "internal/sql/stmt"}
 
 func start() error {
 	pkgs := flag.String("pkgs", strings.Join(allPkgs, ","), "packages to mutate, separated by commas")

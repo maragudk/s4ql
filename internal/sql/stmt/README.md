@@ -200,24 +200,22 @@ A test checks that every name the pass gives in any test is in these tables.
 
 ### Names of fields
 
-These are the tokens of a node that the recognizer accepted, in a field that slice 1 does not support.
+These are the tokens of a node that the recognizer accepted, in a field that slice 1 does not support. Only the first token of such a construct can be at the offset, so only the fields that hold a first token are named.
 
 | Name | Fields |
 | --- | --- |
-| `EXPLAIN` | `Statement.Explain` |
-| `EXPLAIN QUERY PLAN` | `Statement.Query`, `Statement.Plan`. EXPLAIN comes first, so this name is given only if the tree changes. |
-| `schema name` | `QualifiedName.Schema` and `QualifiedName.Dot`, in any node |
+| `EXPLAIN` | `Statement.Explain`, for EXPLAIN and EXPLAIN QUERY PLAN |
+| `schema name` | `QualifiedName.Schema`, in any node |
 | `TEMP` | `CreateTable.Temp` |
 | `IF NOT EXISTS` | `CreateTable.IfNotExists` |
-| `second column or table constraint` | `CreateTable.Commas`. The checks `second column` and `table constraint` come first, so this name is given only if the tree changes. |
 | `empty table option` | `CreateTable.OptionCommas`, for a comma before the first option |
 | `CREATE TABLE AS` | `CreateTable.As` |
 | `ASC or DESC` | `PrimaryKeyConstraint.Order` |
 | `AUTOINCREMENT` | `PrimaryKeyConstraint.Autoincrement` |
 | `IF EXISTS` | `Drop.IfExists` |
-| `INSERT OR` | `Insert.Or`, `Insert.Resolution` |
-| `DEFAULT VALUES` | `Insert.Default`, `Insert.Values` |
-| `alias` | `TargetTable.As`, `TargetTable.Alias`, `FromItem.As`, `FromItem.Alias` |
+| `INSERT OR` | `Insert.Or` |
+| `DEFAULT VALUES` | `Insert.Default` |
+| `alias` | `TargetTable.As`, `FromItem.As`, `FromItem.Alias` |
 | `second value` | `ValuesRow.Commas` |
 | `second row` | `Values.Commas` |
 | `DISTINCT or ALL` | `SimpleSelect.Distinct` |
