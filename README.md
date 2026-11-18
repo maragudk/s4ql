@@ -18,8 +18,8 @@ Made with ✨sparkles✨ by [maragu](https://www.maragu.dev/): independent softw
 
 As of 2026-11-16:
 
-- **Built: the storage.** A database is a log of commits in S3, with a local SQLite cache. One instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work. They are tested in a deterministic simulation and against a real S3-compatible bucket.
-- **Not built: the engine and the public API.** The SQL tokenizer and parser exist, and they agree with SQLite on 139,234 statements from its tests, documentation, and fuzz corpora, and on the shape of the syntax tree. There is no engine and no public API yet, so the database cannot be used.
+- **Built: the storage.** A database is a log of commits in S3, with a local SQLite cache. One instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work. They are tested in a deterministic simulation. The S3 client and the simulated store pass the same conformance tests, which are also run by hand against a real S3-compatible bucket.
+- **Not built: the engine and the public API.** The SQL tokenizer and parser exist, and they agree with SQLite on all 138,926 statements of a corpus of 139,234 on which SQLite gives a clear verdict, and on the shape of the syntax tree. The corpus comes from its tests, documentation, and fuzz corpora. There is no engine and no public API yet, so the database cannot be used.
 - **Next:** the first slice of SQL in the [roadmap](docs/roadmap.md): `create table`, `insert`, `select`, and `drop table` for one integer column, checked against SQLite.
 
 What is open in detail is in [docs/todo.md](docs/todo.md).
