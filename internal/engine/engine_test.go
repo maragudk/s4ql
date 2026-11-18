@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
+	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
 
@@ -328,8 +330,8 @@ type events struct {
 }
 
 func (e *events) Enabled(context.Context, slog.Level) bool { return true }
-func (e *events) WithAttrs([]slog.Attr) slog.Handler        { return e }
-func (e *events) WithGroup(string) slog.Handler             { return e }
+func (e *events) WithAttrs([]slog.Attr) slog.Handler       { return e }
+func (e *events) WithGroup(string) slog.Handler            { return e }
 
 func (e *events) Handle(_ context.Context, r slog.Record) error {
 	m := map[string]string{"msg": r.Message}
@@ -447,3 +449,105 @@ func TestEngine_internal(t *testing.T) {
 	})
 }
 
+func TestEngine_noneOpen(t *testing.T) {
+	// run a statement of the sequence on i, and consume the rows of a query in the way mode says:
+	// to the end, a loop that stops at once, a close without a loop, or a loop that panics.
+	run := func(t *testing.T, i *instance, src string, mode int) {
+		t.Helper()
+		if mode == 0 {
+			_, _ = i.e.Exec(t.Context(), src)
+			return
+		}
+		rows, err := i.e.Query(t.Context(), src)
+		if err != nil {
+			return
+		}
+		switch mode {
+		case 1:
+			for range rows.All() {
+			}
+		case 2:
+			for range rows.All() {
+				break
+			}
+		case 3:
+			is.NotError(t, rows.Close())
+		case 4:
+			func() {
+				defer func() { _ = recover() }()
+				for range rows.All() {
+					panic("the consumer")
+				}
+			}()
+		}
+	}
+
+	t.Run("should hold no transaction after any statement, error, early stop, or panic", func(t *testing.T) {
+		n := 300
+		if slow() {
+			n /= 10
+		}
+		i := newInstance(t, engine.Options{})
+		r := rand.New(rand.NewPCG(*seed, 0x0be))
+		q := newSequence(t, r)
+		for range n {
+			src, _ := q.next()
+			run(t, i, src, r.IntN(5))
+			noneOpen(t, i)
+		}
+	})
+
+	t.Run("should find a transaction left open with the planted bug", func(t *testing.T) {
+		var options engine.Options
+		options.Plant("keepOpen")
+		i := newInstance(t, options)
+		_, err := i.e.Exec(t.Context(), "drop table t")
+		is.True(t, err != nil)
+		// The transaction is open, so no machine is slow enough for the begin to succeed.
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+		_, err = i.d.Begin(ctx)
+		is.True(t, errors.Is(err, context.DeadlineExceeded))
+	})
+}
+
+func TestEngine_namesOfTheCore(t *testing.T) {
+	t.Run("should take every name that the pass supports, as SQLite does, in every statement", func(t *testing.T) {
+		pools, err := stmttest.NamePools()
+		is.NotError(t, err)
+		names := slices.Concat(pools...)
+		r := rand.New(rand.NewPCG(*seed, 0x4a3e))
+		// Random names of letters, marks, symbols, spaces, quotes, and runes from every plane.
+		runes := []rune{'a', 'Z', '_', ' ', '"', '\'', '`', '[', ']', ';', '-', '/', '*', '\t', '\n', 'é', 'Ω', 'ı', 'ſ', 0x301, 0x200b, 0xfeff, '\U0001F600', '\U0010FFFD', 0x7f, 0x1}
+		n := 2000
+		if slow() {
+			n /= 10
+		}
+		for range n {
+			b := make([]rune, 1+r.IntN(8))
+			for i := range b {
+				b[i] = runes[r.IntN(len(runes))]
+			}
+			names = append(names, stmttest.Quote(string(b)))
+		}
+		i := newInstance(t, engine.Options{})
+		o := newOracle(t)
+		checked := 0
+		for _, n := range names {
+			for _, src := range []string{
+				"create table " + n + " (" + n + " int primary key) strict, without rowid",
+				"insert into " + n + " (" + n + ") values (1)",
+				"select * from " + n,
+				"drop table " + n,
+			} {
+				got := i.query(src)
+				if got.err == "not supported" {
+					continue
+				}
+				checked++
+				is.Equal(t, o.run(t, src).String(), got.String(), src)
+			}
+		}
+		t.Logf("%v statements of %v names", checked, len(names))
+	})
+}

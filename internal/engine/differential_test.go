@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -56,14 +57,32 @@ func (a answer) String() string {
 // oracle is SQLite, on a database in memory, which runs the statements that the engine runs.
 type oracle struct {
 	c *sqlite.Conn
+	// counts gives SQLite's count of changes and its last insert rowid.
+	counts *sqlite.Stmt
 }
 
 func newOracle(t testing.TB) *oracle {
 	t.Helper()
 	c, err := sqlite.Open(":memory:")
 	is.NotError(t, err)
-	t.Cleanup(func() { _ = c.Close() })
-	return &oracle{c: c}
+	counts, err := c.Prepare("select changes(), last_insert_rowid()")
+	is.NotError(t, err)
+	t.Cleanup(func() {
+		_ = counts.Finalize()
+		_ = c.Close()
+	})
+	return &oracle{c: c, counts: counts}
+}
+
+// changes is SQLite's count of changes, and rowid its last insert rowid.
+func (o *oracle) changes(t testing.TB) (changes, rowid int64) {
+	t.Helper()
+	ok, err := o.counts.Step()
+	is.NotError(t, err)
+	is.True(t, ok)
+	changes, rowid = o.counts.ColumnInt64(0), o.counts.ColumnInt64(1)
+	is.NotError(t, o.counts.Reset())
+	return changes, rowid
 }
 
 // sqliteText of an error of the binding.
@@ -114,18 +133,6 @@ func (o *oracle) run(t testing.TB, src string) answer {
 		}
 		a.rows = append(a.rows, strings.Join(values, ","))
 	}
-}
-
-// integer that the SQL text sql gives in SQLite.
-func (o *oracle) integer(t testing.TB, sql string) int64 {
-	t.Helper()
-	s, err := o.c.Prepare(sql)
-	is.NotError(t, err)
-	defer func() { _ = s.Finalize() }()
-	ok, err := s.Step()
-	is.NotError(t, err)
-	is.True(t, ok)
-	return s.ColumnInt64(0)
 }
 
 // state of the database in SQLite: each table, in the order of the names as bytes, with its
@@ -197,6 +204,14 @@ type instance struct {
 	e      *engine.Engine
 	// changes is SQLite's count of changes on the connection, as the results of the engine give it.
 	changes int64
+	// memory is the state of an engine on a database in memory, which has no core, or nil.
+	memory func() string
+}
+
+// newMemoryInstance of the engine on a database in memory.
+func newMemoryInstance(t testing.TB) *instance {
+	e, state := engine.NewMemory(sim.NewFree(sim.Buggify{}))
+	return &instance{t: t, e: e, memory: state}
 }
 
 func newInstance(t testing.TB, options engine.Options) *instance {
@@ -285,6 +300,9 @@ func (i *instance) exec(src string) answer {
 // state of the database in the engine's instance, as [oracle.state] gives it, read from the core.
 func (i *instance) state() string {
 	i.t.Helper()
+	if i.memory != nil {
+		return i.memory()
+	}
 	ctx := i.t.Context()
 	r, err := i.d.Read(ctx)
 	is.NotError(i.t, err)
@@ -364,11 +382,21 @@ func randomCase(r *rand.Rand, s string) string {
 	return string(b)
 }
 
-// common names of the pools at the positions.
-func common(t testing.TB, positions ...stmttest.Position) []string {
-	t.Helper()
+// commonPools are the names that SQLite reads as a name of a table in every position of a table, and
+// those that it reads as a name of a column in every position of a column.
+var commonPools = sync.OnceValues(func() ([2][]string, error) {
 	pools, err := stmttest.NamePools()
-	is.NotError(t, err)
+	if err != nil {
+		return [2][]string{}, err
+	}
+	return [2][]string{
+		common(pools, stmttest.CreateTable, stmttest.InsertTable, stmttest.SelectTable, stmttest.DropTable),
+		common(pools, stmttest.CreateColumn, stmttest.InsertColumn),
+	}, nil
+})
+
+// common names of the pools at the positions.
+func common(pools [][]string, positions ...stmttest.Position) []string {
 	var names []string
 	for _, n := range pools[positions[0]] {
 		in := true
@@ -385,8 +413,9 @@ func common(t testing.TB, positions ...stmttest.Position) []string {
 func newSequence(t testing.TB, r *rand.Rand) *sequence {
 	t.Helper()
 	q := &sequence{r: r}
-	tableNames := common(t, stmttest.CreateTable, stmttest.InsertTable, stmttest.SelectTable, stmttest.DropTable)
-	columnNames := common(t, stmttest.CreateColumn, stmttest.InsertColumn)
+	common, err := commonPools()
+	is.NotError(t, err)
+	tableNames, columnNames := common[0], common[1]
 	for range 1 + r.IntN(2) {
 		q.tables = append(q.tables, spellings(r, tableNames[r.IntN(len(tableNames))])...)
 	}
@@ -461,10 +490,14 @@ func (q *sequence) next() (string, bool) {
 	return src, (k == stmttest.KindSelect) != (r.IntN(8) == 0)
 }
 
-// tally of the outcomes of the statements of a differential test.
+// tally of the outcomes of the statements of a differential test, which counts nothing if it is
+// nil.
 type tally map[string]int
 
 func (y tally) add(src string, a answer) {
+	if y == nil {
+		return
+	}
 	kind := "other"
 	if s, _ := stmt.Check(src); s != nil {
 		kind = strings.ToLower(strings.TrimPrefix(fmt.Sprintf("%T", s), "*stmt."))
@@ -495,10 +528,18 @@ func messageKind(err string) string {
 // at random points, with an empty cache or with its cache.
 func differential(t testing.TB, seed uint64, n int, restarts bool, y tally) {
 	t.Helper()
+	differentialOn(t, seed, n, restarts, y, newInstance(t, engine.Options{}))
+}
+
+// differentialOn runs the sequence of n statements from seed on the instance i, as [differential]
+// does.
+func differentialOn(t testing.TB, seed uint64, n int, restarts bool, y tally, i *instance) {
+	t.Helper()
 	r := rand.New(rand.NewPCG(seed, 0xe1e))
 	q := newSequence(t, r)
 	o := newOracle(t)
-	i := newInstance(t, engine.Options{})
+	// prev is SQLite's count of changes after the statement before.
+	var prev int64
 	var log []string
 	fail := func(format string, args ...any) {
 		t.Helper()
@@ -525,7 +566,7 @@ func differential(t testing.TB, seed uint64, n int, restarts bool, y tally) {
 		if got.err == "not supported" {
 			continue
 		}
-		before := o.integer(t, "select changes()")
+		before := prev
 		want := o.run(t, src)
 		if !query {
 			want.columns, want.rows = "", nil
@@ -535,7 +576,8 @@ func differential(t testing.TB, seed uint64, n int, restarts bool, y tally) {
 		}
 		// SQLite's count of changes: the engine's result sets it, and a statement that fails keeps it,
 		// except one that fails while SQLite steps it, a broken constraint, which sets it to 0.
-		changes := o.integer(t, "select changes()")
+		changes, rowid := o.changes(t)
+		prev = changes
 		switch {
 		case strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeConstraint, "/")):
 			if changes != 0 {
@@ -548,7 +590,7 @@ func differential(t testing.TB, seed uint64, n int, restarts bool, y tally) {
 		if changes != i.changes {
 			fail("%q: SQLite counts %v changes, and the engine's results %v", src, changes, i.changes)
 		}
-		if rowid := o.integer(t, "select last_insert_rowid()"); rowid != 0 {
+		if rowid != 0 {
 			fail("%q: SQLite's last insert rowid is %v", src, rowid)
 		}
 	}
@@ -556,7 +598,6 @@ func differential(t testing.TB, seed uint64, n int, restarts bool, y tally) {
 		fail("at the end the engine holds\n%v\nand SQLite\n%v", got, want)
 	}
 }
-
 
 // TestDifferential runs random sequences of statements on the engine and on SQLite, and requires
 // the same answers, the same count of changes, and the same tables and rows, half of them with
@@ -571,4 +612,25 @@ func TestDifferential(t *testing.T) {
 		differential(t, *seed+s, *length, s%2 == 1, y)
 	}
 	t.Logf("%v sequences of %v statements: %v", n, *length, y)
+}
+
+// FuzzDifferential runs the sequence of statements that its input chooses, the seed and the number of
+// statements, as [TestDifferential] does, on an engine on a database in memory, which is fast enough
+// for many millions of sequences. [FuzzDifferential_core] runs them on the storage core.
+func FuzzDifferential(f *testing.F) {
+	f.Add(uint64(0), uint8(40))
+	f.Add(uint64(1), uint8(10))
+	f.Fuzz(func(t *testing.T, seed uint64, n uint8) {
+		differentialOn(t, seed, int(n%64), false, nil, newMemoryInstance(t))
+	})
+}
+
+// FuzzDifferential_core runs the sequence of statements that its input chooses, the seed, the number
+// of statements, and whether the instance restarts, as [TestDifferential] does.
+func FuzzDifferential_core(f *testing.F) {
+	f.Add(uint64(0), uint8(40), false)
+	f.Add(uint64(1), uint8(40), true)
+	f.Fuzz(func(t *testing.T, seed uint64, n uint8, restarts bool) {
+		differential(t, seed, int(n%64), restarts, nil)
+	})
 }
