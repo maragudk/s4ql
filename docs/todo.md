@@ -41,6 +41,7 @@ Status: open. Of the SQL half the tokenizer is built, in `internal/sql/token`, a
   - To change it later: the plan is the seam. An executor of another kind can replace the iterators behind it without touching the parser or the pass after it. For slice 1 the two kinds hardly differ.
 - **Open, and no slice needs it yet: whether s4ql promises SQLite's order of rows for a query without `ORDER BY`.** Slice 1 returns rows in primary-key order, as SQLite does for its tables. With joins and indexes, SQLite's order follows its query planner.
 - **A rule for the driver, whatever is decided: no error of an unknown commit outcome or of a lost lease wraps `driver.ErrBadConn`.** `database/sql` runs an operation again, up to three times, when the driver returns it.
+- **Decided on 2026-11-18: the statements of a transaction that changes nothing are stored nowhere.** Such a transaction writes no commit object, so its annotations are dropped. Examples are an `insert` that fails on a key that exists and a `drop table` of a table that does not exist. Markus agreed to keep it so: annotations explain the results in the log, and without results there is nothing to explain or to replay. The spec's wording fits, because it speaks of the statements that produced the results. If every statement is to be kept one day, for an audit for example, that needs a place of its own, since a commit object without changes would only make the log grow.
 
 ## The storage core
 
