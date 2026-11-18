@@ -155,3 +155,53 @@ The waits of the callers in `/internal/engine/simulation_test.go` change what th
 ### Future work
 
 None.
+
+## Step 4: Self-review, the checks, and the mutation runs
+
+**Author:** engine-review-builder
+
+### Prompt Context
+
+**Verbatim prompt:** see Step 1.
+**Interpretation:** The checks of the brief, and a self-review of the diff before the report.
+**Inferred intent:** Hand back a branch whose numbers are measured on the code as it is.
+
+### What I did
+
+Ran the `code-review` skill at medium on `e3cd0d4..HEAD`. Of its 10 findings I fixed eight: the event of a panic in the end of a read transaction; a caller that quit when its instance was closed and opened while it waited (`run.waitServing` now waits across it); a node whose task to take its read connections did not run, which dropped out unseen; `oracle.prepare`, which took a failure of the binding for a pass; `buildSink`, which panicked on a plan of an unknown type; the double call of `knownGap`; the new oracle in `startedTable`, which now uses the pair's empty one; and the checks of the shape of an insert, which moved from `insert.run` to `buildSink`. I left two: the shared empty oracle of `verify` in the simulation, which a text that succeeds could change, but only after a violation has failed the run already; and a helper shared by `stmt` and the engine for what they excuse, which would need a test-only API in `stmttest` or `oracle`.
+
+Then the checks: `make lint`, `make test`, `make test-asan FUZZTIME=10s` (9 min 10 s), `-short -count=20` and `-race -count=3` of the engine and `stmt`, `TestDifferential` at 10,000 sequences (266 s), `TestSimulation` at 1,000 seeds of each workload, the planted bugs at 200 seeds, the fuzz targets, and the mutation runs of both packages.
+
+### Why
+
+The brief asks for these numbers on the final code.
+
+### What worked
+
+Everything passed. The mutation run of `stmt` left no unexplained survivor; the second run of the engine left two, which two new tests kill, checked by hand.
+
+### What didn't work
+
+The first planted-bug run failed: `seed 81 finds the bug by another violation: [b2 does not take its 2 read connections ten minutes after the end of the workload: no valid lease: not_holder]` for `keepOpen`. A write transaction left open keeps its instance from releasing the lease on its close, so the next instance never serves; `keepOpen` now accepts that violation too, and is found in 200 of 200 seeds.
+
+The first long fuzz runs went through a test binary built with `go test -c`, and the fuzzer said `the test binary was not built with coverage instrumentation, so fuzzing will run without coverage guidance`; 9.4 million executions of `FuzzSQL` were therefore unguided. I ran them again with `go test -fuzz`.
+
+The first mutation run of the engine left 10 survivors: the flags `returned` in `Exec` and `Rows.end`, which were redundant and are gone; `consuming = false`, which a panic of a source after its first row now kills; an insert into a table without a key; the event of a write through `Query`; and two symmetric swaps of `slices.Equal`, now in `equivalent.txt`. One entry there, of `checkOutside`'s position, no longer survived, and is removed.
+
+A `rm -f $B/*.log` was refused by a safety check, so the reruns wrote logs of new names.
+
+### What I learned
+
+`DB.Wait` on a database that has been closed returns at once with its stop, so a wait must read the node's current database again.
+
+### What was tricky
+
+The machine ran at a load of about 28 throughout, so the times in the READMEs are from a loaded machine.
+
+### What warrants review
+
+The two findings of the self-review that I left, above.
+
+### Future work
+
+A helper that `stmt` and the engine share for the texts that they excuse from the comparison with SQLite.
