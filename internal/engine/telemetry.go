@@ -75,7 +75,7 @@ func outcomeOf(err error) (string, slog.Level) {
 	case errors.Is(err, ErrInternal):
 		return "internal_error", slog.LevelError
 	case errors.Is(err, core.ErrOutcomeUnknown):
-		// It is not a refusal, though the context of the call ended.
+		// It is not a refusal, also if it wraps the error of the context that ended.
 		return "core_error", slog.LevelWarn
 	case errors.Is(err, core.ErrNoLease), errors.Is(err, core.ErrStopped):
 		return "refused", slog.LevelDebug

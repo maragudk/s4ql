@@ -233,3 +233,69 @@ parser/parser.go parser.enter swap arguments: max(p.maxDepth, p.depth) => max(p.
 # holds it.
 stmt/vocabulary.go childAt condition: s.Start <= offset => true
 	The children of an accepted node are in the order of the text, so the first child that ends after the token starts before it.
+
+# The start of a table before a syntax error, stmt.StartedTable. It is called only for a text that
+# is a syntax error in SQLite, and its last check, that the syntax error is after the ( or AS after
+# the name, covers the checks of the shape before it wherever a token follows: the grammar lets only a
+# dot, a (, or AS follow the name of CREATE TABLE, and only USING follow the name of CREATE VIRTUAL
+# TABLE, so the parser fails at any other token there, at the offset of that token.
+stmt/started.go StartedTable operator: len(tokens) > 0 => len(tokens) >= 0
+	A text that is a syntax error has a token that is not a semicolon, so the loop never empties the tokens.
+stmt/started.go StartedTable condition: len(tokens) > 0 => true
+	A text that is a syntax error has a token that is not a semicolon, so the loop never empties the tokens.
+stmt/started.go StartedTable constant: len(tokens) > 0 => len(tokens) > 1
+	A text that is a syntax error has a token that is not a semicolon, and a last token that is a semicolon with nothing else left is not one.
+stmt/started.go StartedTable condition: is(token.Create, token.Virtual, token.Table) => true
+	Of a statement that parses past its fifth token, only CREATE VIRTUAL TABLE has USING there, so any other text fails at the check of USING or of the offset.
+stmt/started.go StartedTable operator: i+2 > len(tokens) => i+2 >= len(tokens)
+	It differs only when the name after the schema is the last token, where the check of the ( after it fails too.
+stmt/started.go StartedTable constant: i+2 => i+3
+	It differs only when the name after the schema is the last token, where the check of the ( after it fails too.
+stmt/started.go StartedTable condition: !is(token.Using) => false
+	The parser fails at any token other than USING after the name of CREATE VIRTUAL TABLE, so the check of the offset refuses the text.
+stmt/started.go StartedTable remove statement: return Name{}, false => #4
+	The parser fails at any token other than USING after the name of CREATE VIRTUAL TABLE, so the check of the offset refuses the text.
+stmt/started.go StartedTable condition: virtual => false #2
+	The parser fails at AS after the module of CREATE VIRTUAL TABLE, so the check of the offset refuses the text.
+stmt/started.go StartedTable operator: syntax.Offset >= 0 => syntax.Offset > 0
+	A syntax error at offset 0 is not after a CREATE there.
+stmt/started.go StartedTable constant: syntax.Offset >= 0 => syntax.Offset >= 1
+	A syntax error at offset 0 is not after a CREATE there.
+stmt/started.go dequoteAny condition: len(raw) < 2 => false
+	A name that the parser takes is not one byte that is a quote or a bracket.
+stmt/started.go dequoteAny constant: len(raw) < 2 => len(raw) < 1
+	A name that the parser takes is not one byte that is a quote or a bracket.
+stmt/started.go dequoteAny remove statement: return raw => #2
+	A name of one byte that the parser takes is a bare name, which the switch gives as it is.
+
+# The engine, internal/engine.
+
+# The planted bugs, which only the tests switch on.
+internal/engine/engine.go Engine.write condition: err == nil => false
+	It differs only with the planted bug keepOpen, when an operator panics.
+internal/engine/engine.go Engine.checkOutside remove statement: r.at(rt.position(), true) =>
+	The planted bug checkOutside: its position is replaced by that of the write transaction, and the bug is found by a commit that fails in SQLite either way.
+internal/engine/engine.go Engine.checkOutside boolean: true => false
+	The planted bug checkOutside: its position is replaced by that of the write transaction, and the bug is found by a commit that fails in SQLite either way.
+
+# Scheduling, which the production host ignores.
+internal/engine/engine.go Rows.All remove statement: r.report.e.host.Yield(r.ctx, "engine: between two rows of a query") =>
+	A yield only lets other tasks of the simulation run between two rows; the answers of the engine do not depend on it.
+
+# Bounds that mean "none".
+internal/engine/operator.go columnPosition constant: -1 => -2
+	The caller tests for a negative position.
+
+# The events.
+internal/engine/telemetry.go outcomeOf remove statement: return "core_error", slog.LevelWarn => #2
+	The case without its return ends the switch, whose last return gives the same.
+internal/engine/telemetry.go report.end condition: !r.e.log.Enabled(ctx, level) => false
+	It saves the building of the attributes only: slog.Logger.LogAttrs asks the handler whether it takes the level again.
+internal/engine/telemetry.go report.end remove statement: return =>
+	It saves the building of the attributes only: slog.Logger.LogAttrs asks the handler whether it takes the level again.
+internal/engine/telemetry.go report.end swap arguments: append(attrs, slog.String(attrKind, r.kind), slog.String(attrTable, r.table)) => append(attrs, slog.String(attrTable, r.table), slog.String(attrKind, r.kind))
+	The attributes of an event are named, and their order means nothing.
+internal/engine/telemetry.go report.end swap arguments: append(attrs, slog.Int64(attrRows, r.rows), slog.String(attrOutcome, outcome)) => append(attrs, slog.String(attrOutcome, outcome), slog.Int64(attrRows, r.rows))
+	The attributes of an event are named, and their order means nothing.
+internal/engine/telemetry.go report.end swap arguments: append(attrs, slog.Int(attrCode, se.Code), slog.Int(attrExtendedCode, se.ExtendedCode)) => append(attrs, slog.Int(attrExtendedCode, se.ExtendedCode), slog.Int(attrCode, se.Code))
+	The attributes of an event are named, and their order means nothing.
