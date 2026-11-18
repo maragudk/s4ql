@@ -386,13 +386,13 @@ On the code as it is now, with the default flags:
 
 | Layer | Texts | Rejected before parsing | Syntax error | Syntax error where SQLite does not say | Not supported | No statement | Supported |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Corpus, and the parts before a byte rejected before parsing | 183,694 | 44,460 | 52,938 | 62 | 79,068 | 6,437 | 729 |
+| Corpus, and the parts before a byte rejected before parsing | 183,694 | 44,460 | 52,938 | 62 | 79,070 | 6,437 | 727 |
 | One mutant of each corpus entry, and the parts before such a byte | 168,292 | 29,535 | 120,774 | 78 | 11,873 | 5,995 | 37 |
 | 20,000 sentences of the grammar and a mutant of each | 40,000 | 0 | 12,996 | 2,356 | 21,729 | 2,895 | 24 |
-| Five mutants of each of 20,000 statements of the generator | 100,000 | 0 | 80,514 | 3 | 8,249 | 0 | 11,234 |
-| Near misses of 2,000 statements of the generator | 53,852 | 0 | 55 | 0 | 53,797 | 0 | 0 |
+| Five mutants of each of 20,000 statements of the generator | 100,000 | 0 | 80,607 | 2 | 8,064 | 0 | 11,327 |
+| Near misses of 2,000 statements of the generator | 53,916 | 0 | 49 | 0 | 53,867 | 0 | 0 |
 
-The 729 supported texts of the corpus are 3 CREATE TABLE, 192 DROP TABLE, 184 INSERT, and 350 SELECT, each checked in SQLite. The supported mutants of the generator are the same statement with a semicolon or a comment changed, or the same form with another name, a keyword from the pool of the mutants, or with the sign of the value dropped; none is another kind of statement. `TestGenerate` checks 20,000 statements of the generator, each as the statement it wrote.
+The 727 supported texts of the corpus are 3 CREATE TABLE, 191 DROP TABLE, 183 INSERT, and 350 SELECT, each checked in SQLite; the two that were supported before the empty name was rejected are `DROP TABLE ""` and `INSERT INTO ""("") VALUES(1)`. The supported mutants of the generator are the same statement with a semicolon or a comment changed, or the same form with another name, a keyword from the pool of the mutants, or with the sign of the value dropped; none is another kind of statement. `TestGenerate` checks 20,000 statements of the generator, each as the statement it wrote.
 
 Fuzzing: `FuzzCheck` made 202,673,795 executions in 40 minutes on 6 workers, and on the code after the review 87,983,456 in 30 minutes on 4 workers. `FuzzGenerate` made 11,418,100 executions in 15 minutes on 4 workers; each checks a statement of the generator and its mutant in SQLite. None of the runs found anything.
 
