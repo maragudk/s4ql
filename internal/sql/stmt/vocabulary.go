@@ -17,12 +17,7 @@ func (r *recognizer) describe(t ast.Token) string {
 	var n ast.Node = r.tree
 	for {
 		if keys := fieldKeys(n, t); keys != nil {
-			for _, k := range keys {
-				if what, ok := fieldNames[k]; ok {
-					return what
-				}
-			}
-			return nodeName(n)
+			return fieldName(n, keys)
 		}
 		child := childAt(n, t.Offset)
 		if child == nil {
@@ -34,6 +29,16 @@ func (r *recognizer) describe(t ast.Token) string {
 		}
 		n = child
 	}
+}
+
+// fieldName from [fieldNames] for the first of keys that it has, or else the name of the node n.
+func fieldName(n ast.Node, keys []string) string {
+	for _, k := range keys {
+		if what, ok := fieldNames[k]; ok {
+			return what
+		}
+	}
+	return nodeName(n)
 }
 
 // childAt gives the child of n whose span holds the byte at offset, or nil if none does.

@@ -1,7 +1,7 @@
-# Equivalent mutants of the SQL tokenizer, syntax tree, and parser: changes that no test can notice,
-# because the code behaves the same with them. Each entry is the key of a mutant on a line of its
-# own, as `go run ./internal/sql/mutation -list` prints it, and the reason on the indented line after
-# it. The report lists every survivor that is not here, and every entry here that matches no
+# Equivalent mutants of the SQL tokenizer, syntax tree, parser, and the pass after the parser:
+# changes that no test can notice, because the code behaves the same with them. Each entry is the key
+# of a mutant on a line of its own, as `go run ./internal/sql/mutation -list` prints it, and the
+# reason on the indented line after it. The report lists every survivor that is not here, and every entry here that matches no
 # survivor, so the list cannot go stale unnoticed. TestEquivalent checks that each key names a mutant
 # that the generator makes.
 
@@ -225,3 +225,11 @@ parser/parser.go parser.run constant: return nil, 0, err => return nil, 1, err
 	Parse promises no tail with an error, and no caller reads it.
 parser/parser.go parser.enter swap arguments: max(p.maxDepth, p.depth) => max(p.depth, p.maxDepth)
 	max is symmetric.
+
+# The pass after the parser, internal/sql/stmt.
+
+# The children of every node that the recognizer accepts are in the order of the text, and a token that
+# is not an own token of the node lies in one of them, so the first child that ends after the token
+# holds it.
+stmt/vocabulary.go childAt condition: s.Start <= offset => true
+	The children of an accepted node are in the order of the text, so the first child that ends after the token starts before it.

@@ -225,7 +225,8 @@ func (r *recognizer) insert(c *ast.Insert) *Insert {
 	r.take(c.Into)
 	r.accept(c.Table)
 	table := r.tableName(c.Table.Name)
-	if !c.LParen.Present() && (c.Select != nil && r.at() == c.Select.Bounds().Start || r.isNext(c.Default)) {
+	// Without a column list, VALUES, SELECT, or DEFAULT follows the table.
+	if c.Select != nil && r.at() == c.Select.Bounds().Start || r.isNext(c.Default) {
 		r.reject("INSERT without a column list")
 	}
 	r.take(c.LParen)
