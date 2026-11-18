@@ -1,0 +1,11 @@
+{
+	"version": "3.54.1",
+	"url": "https://sqlite.org/2026/sqlite-wasm-3540100.zip",
+	"size": 728897,
+	"sha3_256": "87e24f6a4588692310b7942dc2fa7c7275bb9ba2e01d553e4115aa4a904a0050",
+	"sha256": "85ebce90b6d189442b29e11d193337b5e63203aae9b6590dbe89a601b9891da2",
+	"files_sha256": {
+		"sqlite3.js": "cbee562f4d632cfed46a0572ecb315deea2e1728f29dd1a9fd7b7ca7186c9807",
+		"sqlite3.wasm": "10fd727b37924755edc12c2f3ead0d54155d8f2d9f2abf6a1ef9b2b2597e0a51"
+	}
+}
