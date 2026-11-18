@@ -933,14 +933,14 @@ func simSeeds(t *testing.T, n int) uint64 {
 // storeFaults are the faults of [simstore.AllFaults] by a name, each with what the store writes into
 // the trace when it injects the fault.
 var storeFaults = map[string]string{
-	"fault: lost request":                           "was lost on its way to the store",
-	"fault: lost response":                          "was lost on its way back",
-	"fault: no answer":                              "no answer reaches the caller",
-	"fault: conflict":                               "a conflict with another write in flight",
-	"fault: slow way":                               "is slow on its way",
-	"fault: broken read":                            "whose content breaks off",
-	"fault: cut-off":                                "cut off for",
-	"fault: outage":                                 "store: unreachable for",
+	"fault: lost request":  "was lost on its way to the store",
+	"fault: lost response": "was lost on its way back",
+	"fault: no answer":     "no answer reaches the caller",
+	"fault: conflict":      "a conflict with another write in flight",
+	"fault: slow way":      "is slow on its way",
+	"fault: broken read":   "whose content breaks off",
+	"fault: cut-off":       "cut off for",
+	"fault: outage":        "store: unreachable for",
 	"fault: write applied after its caller gave up": "the caller gave up, and is applied",
 	"fault: write stuck in the network":             "is stuck in the network",
 	"fault: write applied after a crash":            "the sender crashed, and is applied",
