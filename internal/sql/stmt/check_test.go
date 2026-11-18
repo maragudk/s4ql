@@ -50,11 +50,12 @@ const (
 	supported
 	noStatement
 	syntaxNotSaid
+	notSupportedNotSaid
 )
 
 func (o outcome) String() string {
 	return [...]string{"rejected before parsing", "syntax error", "not supported", "supported", "no statement",
-		"syntax error where SQLite does not say"}[o]
+		"syntax error where SQLite does not say", "not supported where SQLite does not say"}[o]
 }
 
 // verify the answer of [stmt.Check] on src against SQLite: text that is not UTF-8 or that has a NUL
@@ -102,6 +103,10 @@ func verify(t testing.TB, src string) (outcome, stmt.Statement) {
 	case ne != nil:
 		if v.Kind == oracle.SyntaxError {
 			t.Fatalf("%q: gives %v, SQLite gives the syntax error %q", src, err, v.Message)
+		}
+		if v.Kind == oracle.NotSaid {
+			// SQLite does not say whether the text parses, so nothing holds the answer to SQLite's.
+			return notSupportedNotSaid, nil
 		}
 		return notSupported, nil
 	case err != nil:
@@ -209,16 +214,36 @@ type counts map[outcome]int
 
 func (c counts) String() string {
 	var parts []string
-	for o := preparse; o <= syntaxNotSaid; o++ {
+	for o := preparse; o <= notSupportedNotSaid; o++ {
 		parts = append(parts, fmt.Sprintf("%v %v", c[o], o))
 	}
 	return strings.Join(parts, ", ")
 }
 
+// excused requires, in a run of all the texts with the default flags, that exactly want of the
+// counts c are texts where SQLite does not say, which [oracle.Judge] excuses from the comparison with
+// SQLite: syntax errors and texts that are not supported. A change of the oracle or of the pass that
+// excuses more texts would otherwise pass unseen. The run is the same on every machine, so the
+// number is exact.
+func excused(t *testing.T, c counts, want int) {
+	t.Helper()
+	if slow() {
+		return
+	}
+	for _, name := range []string{"seed", "grammar", "generated", "mutants"} {
+		if f := flag.Lookup(name); f.Value.String() != f.DefValue {
+			return
+		}
+	}
+	if got := c[syntaxNotSaid] + c[notSupportedNotSaid]; got != want {
+		t.Errorf("%v texts are syntax errors or not supported where SQLite does not say, which the tests excuse from the comparison with SQLite, and %v were. The number may be changed only on purpose: find out why it changed, and change it here and in the README of the package, with the reason.", got, want)
+	}
+}
+
 // verifyAll texts, and log the counts of the outcomes and the supported texts by their kind of
-// statement, with a few of each. Of a text that is rejected before it is parsed, the part before its
-// first NUL byte or byte that is not UTF-8 is verified too.
-func verifyAll(t *testing.T, sqls []string) {
+// statement, with a few of each, and give the counts. Of a text that is rejected before it is
+// parsed, the part before its first NUL byte or byte that is not UTF-8 is verified too.
+func verifyAll(t *testing.T, sqls []string) counts {
 	t.Helper()
 	c := counts{}
 	byKind := map[string][]string{}
@@ -247,6 +272,7 @@ func verifyAll(t *testing.T, sqls []string) {
 			t.Logf("  %q", sql)
 		}
 	}
+	return c
 }
 
 func corpusSQL() []string {
@@ -263,7 +289,7 @@ func TestCheck_corpus(t *testing.T) {
 	if slow() {
 		sqls = every(sqls, 10)
 	}
-	verifyAll(t, sqls)
+	excused(t, verifyAll(t, sqls), 299)
 }
 
 // TestCheck_corpusMutants checks the pass against SQLite on one-token mutants of the corpus.
@@ -276,7 +302,7 @@ func TestCheck_corpusMutants(t *testing.T) {
 	for i, sql := range entries {
 		sqls = append(sqls, parsetest.Mutants(sql, *seed+uint64(i), 1)...)
 	}
-	verifyAll(t, sqls)
+	excused(t, verifyAll(t, sqls), 256)
 }
 
 var grammarCount = flag.Int("grammar", 20000, "sentences of the grammar in TestCheck_grammar")
@@ -305,7 +331,7 @@ func TestCheck_grammar(t *testing.T) {
 		sqls = append(sqls, s)
 		sqls = append(sqls, parsetest.Mutants(s, *seed+uint64(i), 1)...)
 	}
-	verifyAll(t, sqls)
+	excused(t, verifyAll(t, sqls), 3835)
 }
 
 // FuzzCheck checks the pass against SQLite on any text.

@@ -359,6 +359,7 @@ SQLite is the judge, through the oracle in [`internal/sql/oracle`](../oracle/REA
 - Text with a NUL byte or a byte that is not UTF-8 is not supported, with the right name and offset, and no other text is rejected for those.
 - A syntax error is SQLite's, with its message and the codes 1 and 1. Where SQLite does not say, as in the [known gap](#known-gaps), the syntax error must still be one of SQLite's three messages, and the tests count it apart.
 - A text that SQLite parses is never a syntax error.
+- A "not supported" text is never a syntax error in SQLite. Where SQLite does not say whether it parses, the tests count it apart.
 - A "not supported" error matches `ErrNotSupported`, has the form above, and has a name from the tables above, which the test reads from this README. Its offset is where a token that is not a space or a comment starts or ends.
 - A text without a statement holds only spaces, comments, and semicolons.
 - A supported statement is one that SQLite parses, and `checkMeaning` in `stmt_test.go` checks it in SQLite:
@@ -384,13 +385,15 @@ Under `-short`, the race detector, or the address sanitizer, the tests on the co
 
 On the code as it is now, with the default flags:
 
-| Layer | Texts | Rejected before parsing | Syntax error | Syntax error where SQLite does not say | Not supported | No statement | Supported |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Corpus, and the parts before a byte rejected before parsing | 183,694 | 44,460 | 52,938 | 62 | 79,070 | 6,437 | 727 |
-| One mutant of each corpus entry, and the parts before such a byte | 168,292 | 29,535 | 120,774 | 78 | 11,873 | 5,995 | 37 |
-| 20,000 sentences of the grammar and a mutant of each | 40,000 | 0 | 12,996 | 2,356 | 21,729 | 2,895 | 24 |
-| Five mutants of each of 20,000 statements of the generator | 100,000 | 0 | 80,607 | 2 | 8,064 | 0 | 11,327 |
-| Near misses of 2,000 statements of the generator | 53,916 | 0 | 49 | 0 | 53,867 | 0 | 0 |
+| Layer | Texts | Rejected before parsing | Syntax error | Syntax error where SQLite does not say | Not supported | Not supported where SQLite does not say | No statement | Supported |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Corpus, and the parts before a byte rejected before parsing | 183,694 | 44,460 | 52,938 | 62 | 78,833 | 237 | 6,437 | 727 |
+| One mutant of each corpus entry, and the parts before such a byte | 168,292 | 29,535 | 120,774 | 78 | 11,695 | 178 | 5,995 | 37 |
+| 20,000 sentences of the grammar and a mutant of each | 40,000 | 0 | 12,996 | 2,356 | 20,250 | 1,479 | 2,895 | 24 |
+| Five mutants of each of 20,000 statements of the generator | 100,000 | 0 | 80,607 | 2 | 7,689 | 375 | 0 | 11,327 |
+| Near misses of 2,000 statements of the generator | 53,916 | 0 | 49 | 0 | 52,821 | 1,046 | 0 | 0 |
+
+The two columns "where SQLite does not say" are the texts that the oracle excuses from the comparison with SQLite: SQLite stopped before the end of the statement for a reason that is not the grammar, so nothing holds the pass's answer to SQLite's there. With the default flags and all the texts, the tests require these sums exactly: 299, 256, 3,835, 377, and 1,046, in the order of the table (`excused` in `check_test.go`). A change of the oracle or of the pass that excuses more texts fails them, and the numbers may be changed only on purpose, with the reason.
 
 The 727 supported texts of the corpus are 3 CREATE TABLE, 191 DROP TABLE, 183 INSERT, and 350 SELECT, each checked in SQLite; the two that were supported before the empty name was rejected are `DROP TABLE ""` and `INSERT INTO ""("") VALUES(1)`. The supported mutants of the generator are the same statement with a semicolon or a comment changed, or the same form with another name, a keyword from the pool of the mutants, or with the sign of the value dropped; none is another kind of statement. `TestGenerate` checks 20,000 statements of the generator, each as the statement it wrote.
 

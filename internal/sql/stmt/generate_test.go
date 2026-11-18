@@ -94,6 +94,7 @@ func TestGenerate_mutants(t *testing.T) {
 		}
 	}
 	t.Logf("%v mutants: %v", n**mutantsEach, c)
+	excused(t, c, 377)
 	var names []string
 	for k := range kinds {
 		names = append(names, k)
@@ -318,5 +319,6 @@ func TestGenerate_nearMisses(t *testing.T) {
 			c[o]++
 		}
 	}
-	t.Logf("%v near misses: %v", c[syntaxError]+c[notSupported]+c[syntaxNotSaid], c)
+	t.Logf("%v near misses: %v", c[syntaxError]+c[notSupported]+c[syntaxNotSaid]+c[notSupportedNotSaid], c)
+	excused(t, c, 1046)
 }
