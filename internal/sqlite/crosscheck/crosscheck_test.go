@@ -188,6 +188,47 @@ func compareBindInt64(t *testing.T, v int64) {
 	is.EqualSlice(t, []string{fmt.Sprintf("integer:%v,integer:1,integer:1", v)}, expected)
 }
 
+func TestBindText(t *testing.T) {
+	for _, v := range []string{"", "a", "héllo, 世界", "a\x00b", "\x00", "it's", "\xff\xfe", strings.Repeat("x", 100_000)} {
+		t.Run(fmt.Sprintf("should bind and read %.20q as mattn/go-sqlite3 does", v), func(t *testing.T) {
+			compareBindText(t, v)
+		})
+	}
+
+	t.Run("should read text from SQL as mattn/go-sqlite3 does", func(t *testing.T) {
+		compareScript(t, []string{"select 'a', '', upper('x'), 'a' || 1, cast(12 as text), char(0, 97)"})
+	})
+}
+
+func FuzzBindText(f *testing.F) {
+	f.Add("")
+	f.Add("a\x00b")
+	f.Add("\xff")
+
+	f.Fuzz(func(t *testing.T, v string) {
+		compareBindText(t, v)
+	})
+}
+
+// compareBindText binds v as a parameter in both bindings and compares what they read back.
+func compareBindText(t *testing.T, v string) {
+	t.Helper()
+	query := "select ?1, typeof(?1) = 'text', length(cast(?1 as blob))"
+
+	c := binding(t)
+	s, err := c.Prepare(query)
+	is.NotError(t, err)
+	t.Cleanup(func() { is.NotError(t, s.Finalize()) })
+	is.NotError(t, s.BindText(1, v))
+	expected := bindingRows(t, s)
+
+	m := mattn(t)
+	rows, err := m.QueryContext(t.Context(), query, v)
+	is.NotError(t, err)
+	is.EqualSlice(t, expected, mattnRows(t, rows))
+	is.EqualSlice(t, []string{fmt.Sprintf("text:%q,integer:1,integer:%v", v, len(v))}, expected)
+}
+
 func TestSlice1(t *testing.T) {
 	// slice1Scripts are sequences of the statements in slice 1 of docs/roadmap.md, including the errors
 	// they can produce, run on a fresh database in each binding.
@@ -451,7 +492,8 @@ func bindingRows(t *testing.T, s *sqlite.Stmt) []string {
 }
 
 // bindingRow encodes the current row as its values joined by commas, each as its type and, for an
-// integer, its decimal value.
+// integer, its decimal value, and for a text, its bytes quoted by Go. The binding reads no other types
+// yet.
 func bindingRow(t *testing.T, s *sqlite.Stmt) string {
 	t.Helper()
 	var values []string
@@ -459,6 +501,8 @@ func bindingRow(t *testing.T, s *sqlite.Stmt) string {
 		switch typ := s.ColumnType(i); typ {
 		case sqlite.TypeInteger:
 			values = append(values, fmt.Sprint("integer:", s.ColumnInt64(i)))
+		case sqlite.TypeText:
+			values = append(values, fmt.Sprintf("text:%q", s.ColumnText(i)))
 		case sqlite.TypeNull:
 			values = append(values, "null:")
 		default:
@@ -491,6 +535,8 @@ func mattnRows(t *testing.T, rows *sql.Rows) []string {
 			switch v := v.(type) {
 			case int64:
 				encoded = append(encoded, fmt.Sprint("integer:", v))
+			case string:
+				encoded = append(encoded, fmt.Sprintf("text:%q", v))
 			case nil:
 				encoded = append(encoded, "null:")
 			default:
