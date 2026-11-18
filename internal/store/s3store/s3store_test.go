@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
@@ -479,17 +480,26 @@ func TestClient_content(t *testing.T) {
 		f := newFake(t)
 		held := make(chan struct{})
 		release := sync.OnceFunc(func() { close(held) })
-		t.Cleanup(release)
+		hijacked := make(chan net.Conn, 1)
+		t.Cleanup(func() {
+			release()
+			select {
+			case conn := <-hijacked:
+				_ = conn.Close()
+			default:
+			}
+		})
 		f.hook = func(w http.ResponseWriter, r *http.Request, f *fake) bool {
 			// The answer comes before the body is read, and the connection stays open without
 			// reading it, so that the transport goes on sending the body after the answer. When the
 			// write has returned, the store reads all that comes, so that a transport that goes on
 			// reading the content is not held up by a full buffer of the connection, until the
-			// transport closes the connection.
+			// transport or the test closes the connection.
 			conn, buf, err := http.NewResponseController(w).Hijack()
 			if err != nil {
 				panic(err)
 			}
+			hijacked <- conn
 			const xml = `<?xml version="1.0" encoding="UTF-8"?><Error><Code>PreconditionFailed</Code></Error>`
 			_, _ = fmt.Fprintf(buf, "HTTP/1.1 412 Precondition Failed\r\nContent-Type: application/xml\r\nContent-Length: %v\r\n\r\n%v", len(xml), xml)
 			_ = buf.Flush()
@@ -509,6 +519,8 @@ func TestClient_content(t *testing.T) {
 		ctx := httptrace.WithClientTrace(t.Context(), &httptrace.ClientTrace{
 			WroteRequest: func(httptrace.WroteRequestInfo) { close(wrote) },
 		})
+		// The client sends a write once, so WroteRequest is called once, and a second call would
+		// panic on the closed channel.
 		_, err := c.Create(ctx, "k", content, nil)
 		reading := content.reading.Load()
 		content.returned.Store(true)
@@ -1256,20 +1268,21 @@ func (db *database) manifestVersion(t *testing.T) (format.Manifest, store.Versio
 }
 
 // release the lease in the manifest, whoever holds it, with a swap. A renewal that comes between
-// the read and the swap makes the swap fail, and the release is tried again.
+// the read and the swap makes the swap fail, and the release is tried again, up to ten times.
 func (db *database) release(t *testing.T) {
 	t.Helper()
-	for {
+	var err error
+	for range 10 {
 		m, v := db.manifestVersion(t)
 		m.Lease = nil
-		data, err := m.Marshal()
-		is.NotError(t, err)
+		data, marshalErr := m.Marshal()
+		is.NotError(t, marshalErr)
 		_, err = db.c.Swap(t.Context(), db.manifestKey(), v, bytes.NewReader(data), new(sha256.Sum256(data)))
 		if !errors.Is(err, store.ErrChanged) {
-			is.NotError(t, err)
-			return
+			break
 		}
 	}
+	is.NotError(t, err)
 }
 
 // commits are the keys of the commit objects of the database in the bucket.

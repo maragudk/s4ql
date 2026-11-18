@@ -10,9 +10,9 @@
 //     import of golang.org/x/sync/errgroup, because they start goroutines, and a goroutine must be
 //     started with host.Host.Go;
 //   - a channel receive, a send, a range over a channel or over a type parameter whose type set
-//     holds one, and a select without a default, because they can wait outside the host, and
-//     anything that the clauses of a select compute before it chooses, also in a select with a
-//     default;
+//     holds one, and a select without a default, because they can wait outside the host;
+//     every rule holds in the clauses of a select too, with a default or without, and only the
+//     receive or send that a clause waits on is left to the rule for the select;
 //   - the time package's clock, sleeps, timers, and tickers, and timestamppb.Now of Protocol
 //     Buffers, because the time is host.Host.Wall and host.Host.Monotonic, and waiting is
 //     host.Host.Sleep;
@@ -111,7 +111,10 @@ var forbidden = map[string]map[string]string{
 	"google.golang.org/protobuf/types/known/timestamppb": {
 		"Now": "reads the real clock; use timestamppb.New with host.Host.Wall",
 	},
-	// The packages that may make the production host, to run a real instance on it, are exempt.
+	// The packages that make the production host today are exempt from every rule: the host itself,
+	// and the simulation's free-running mode. A package that must make it and keep the other rules,
+	// such as one that runs a real instance, needs an exception for this rule alone, which the lint
+	// does not have yet.
 	"maragu.dev/s4ql/internal/host": {
 		"New": "makes the production host; run on the host.Host that the code is given",
 	},
@@ -146,9 +149,9 @@ func run(pass *analysis.Pass) (any, error) {
 					pass.Reportf(n.Pos(), "a select without a default waits outside the host; use a host.Semaphore or a host.Task")
 				}
 				// The receive or send of each clause is reported with the select, or never waits
-				// because the select has a default. What a clause computes before the select chooses,
-				// its channel, the value it sends, and where it puts what it receives, and the bodies
-				// of the clauses, are checked as any other code.
+				// because the select has a default. The rest of each clause is checked as any other
+				// code: its channel and the value it sends, which run before the select chooses,
+				// where it puts what it receives, which runs after the select chose it, and its body.
 				for _, clause := range n.Body.List {
 					clause := clause.(*ast.CommClause)
 					for _, operand := range commOperands(clause.Comm) {
@@ -201,8 +204,8 @@ func run(pass *analysis.Pass) (any, error) {
 	return nil, nil
 }
 
-// commOperands of the communication of a select's clause: the expressions that it evaluates before
-// the select chooses, without the receive or the send itself. A default clause has none.
+// commOperands of the communication of a select's clause: its expressions without the receive or
+// the send itself. A default clause has none.
 func commOperands(comm ast.Stmt) []ast.Expr {
 	switch comm := comm.(type) {
 	case *ast.SendStmt:

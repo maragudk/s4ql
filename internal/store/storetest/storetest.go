@@ -394,6 +394,10 @@ func keyIdentity(t T, ctx context.Context, env Env) {
 	if longest == 0 {
 		longest = 1024
 	}
+	if longest < 8 || longest > 1024 {
+		t.Errorf("the harness gives %v as the longest key, which must be from 8 to 1024 bytes", longest)
+		return
+	}
 	long := strings.Repeat("k", longest-1)
 	// The keys of each group differ only in a way that a store may wrongly ignore. The first of a
 	// group is created alone first, so that a store that takes another of the group for it is
