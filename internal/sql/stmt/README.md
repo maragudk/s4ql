@@ -373,3 +373,31 @@ The layers:
 7. [`internal/sql/mutation`](../mutation/README.md) runs mutation testing of this package.
 
 Under `-short`, the race detector, or the address sanitizer, the tests on the corpus, the grammar, and the generator use a tenth of their texts.
+
+## Results
+
+On the code as it is now, with the default flags:
+
+| Layer | Texts | Rejected before parsing | Syntax error | Syntax error where SQLite does not say | Not supported | No statement | Supported |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Corpus, and the parts before a byte rejected before parsing | 183,694 | 44,460 | 52,938 | 62 | 79,068 | 6,437 | 729 |
+| One mutant of each corpus entry, and the parts before such a byte | 168,292 | 29,535 | 120,774 | 78 | 11,873 | 5,995 | 37 |
+| 20,000 sentences of the grammar and a mutant of each | 40,000 | 0 | 12,996 | 2,356 | 21,729 | 2,895 | 24 |
+| Five mutants of each of 20,000 statements of the generator | 100,000 | 0 | 80,514 | 0 | 8,249 | 0 | 11,234 |
+| Near misses of 2,000 statements of the generator | 53,852 | 0 | 55 | 0 | 53,797 | 0 | 0 |
+
+The 729 supported texts of the corpus are 3 CREATE TABLE, 192 DROP TABLE, 184 INSERT, and 350 SELECT, each checked in SQLite. The supported mutants of the generator are the same statement with a semicolon or a comment changed, or the same form with another name, a keyword from the pool of the mutants, or with the sign of the value dropped; none is another kind of statement. `TestGenerate` checks 20,000 statements of the generator, each as the statement it wrote.
+
+Fuzzing: `FuzzCheck` made 202,673,795 executions in 40 minutes on 6 workers, and on the code after the review 87,983,456 in 30 minutes on 4 workers. Neither found anything.
+
+Mutation testing: of 890 mutants, 117 do not compile, 760 are killed, 12 time out, and 1 is equivalent; none is unexplained. See [`internal/sql/mutation`](../mutation/README.md#the-pass-after-the-parser).
+
+Statement coverage is 99.0%. Three places are not covered: the defaults of `literalName` and `unaryName` for a kind of token that the grammar never puts there, and the name of a node for one of its own tokens whose field has no name, which no offset reaches.
+
+### Run times
+
+Measured on an Apple M4 with 10 cores while other tests ran; the number under the address sanitizer is from a Linux container in Docker on the same machine.
+
+- `go test ./internal/sql/stmt` takes about 20 s, `-short` about 3 s, and `-race` about 11 s.
+- Under the address sanitizer it takes about 43 s, and `make test-asan` passes.
+- `BenchmarkCheck` checks the corpus in about 1 s, at about 9 MB/s. `BenchmarkCheck_long` shows a time linear in the length for 1,000 to 100,000 result columns, rows, and bytes of a comment.
