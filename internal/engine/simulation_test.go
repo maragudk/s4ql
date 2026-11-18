@@ -144,9 +144,9 @@ type node struct {
 	lease  time.Duration
 	client *simstore.Client
 
-	callers   atomic.Int64
+	callers atomic.Int64
 	// running is the number of statements that the node's callers run.
-	running atomic.Int64
+	running   atomic.Int64
 	reopening atomic.Bool
 
 	mu sync.Mutex
@@ -930,10 +930,42 @@ func simSeeds(t *testing.T, n int) uint64 {
 	return uint64(n)
 }
 
-// tallyOf the run r: its statements by how they ended, its writes that were acknowledged, its
-// queries that were not read to their end, its commits, and its other events.
-func tallyOf(r *run) map[string]int {
+// storeFaults are the faults of [simstore.AllFaults] by a name, each with what the store writes into
+// the trace when it injects the fault.
+var storeFaults = map[string]string{
+	"fault: lost request":                           "was lost on its way to the store",
+	"fault: lost response":                          "was lost on its way back",
+	"fault: no answer":                              "no answer reaches the caller",
+	"fault: conflict":                               "a conflict with another write in flight",
+	"fault: slow way":                               "is slow on its way",
+	"fault: broken read":                            "whose content breaks off",
+	"fault: cut-off":                                "cut off for",
+	"fault: outage":                                 "store: unreachable for",
+	"fault: write applied after its caller gave up": "the caller gave up, and is applied",
+	"fault: write stuck in the network":             "is stuck in the network",
+	"fault: write applied after a crash":            "the sender crashed, and is applied",
+}
+
+// storeLine matches a line of the trace that a task of a request of the store wrote.
+var storeLine = regexp.MustCompile(`^\S+ store request \d+ store: `)
+
+// tallyOf the simulation s: its statements, by how they ended, its writes that were acknowledged,
+// its queries that were not read to their end, its commits, the faults that the store injected, by
+// kind, and its other events.
+func tallyOf(s simulation) map[string]int {
+	r := s.r
 	counts := maps.Clone(r.events)
+	for _, line := range s.lines {
+		if !storeLine.MatchString(line) {
+			continue
+		}
+		for name, marker := range storeFaults {
+			if strings.Contains(line, marker) {
+				counts[name]++
+			}
+		}
+	}
+	counts["statements"] = len(r.order)
 	for _, a := range r.order {
 		counts[a.state.String()]++
 		if a.reason != "" {
@@ -949,10 +981,13 @@ func tallyOf(r *run) map[string]int {
 }
 
 // TestSimulation runs the default workload and the hammer workload for many seeds each, and twice
-// for some, whose traces must be the same. In a run of at least 50 seeds, every kind of outcome and
-// of event must occur at least as often as reached says, for each seed: a third or less of what the
-// first 1,000 seeds give, so that the test fails when a kind stops happening, and not by chance. The
-// seeds are the same in every run, so the counts are too.
+// for some, whose traces must be the same. In a run of at least 50 seeds, every kind of outcome, of
+// fault of the store, and of event must occur at least as often as reached says, for each seed:
+// from a fifth to a third of what the first 1,000 seeds give, so that the test fails when a kind
+// stops happening, and not by chance. And at most the share noLease of the statements may be refused
+// for want of the lease, about twice what the first 1,000 seeds give, so that the test fails when
+// most statements no longer reach a transaction. The seeds are the same in every run, so the counts
+// are too.
 func TestSimulation(t *testing.T) {
 	n := simSeeds(t, 50)
 	if slow() {
@@ -963,16 +998,25 @@ func TestSimulation(t *testing.T) {
 		w    workload
 		// reached is the least number of each kind for each seed.
 		reached map[string]float64
+		// noLease is the largest share of the statements that may be refused for want of the lease.
+		noLease float64
 	}{
 		{"default", defaultWorkload, map[string]float64{
 			"succeeded": 4, "SQLite's error": 6, "unknown": 0.15, "pending": 0.25, "skipped": 1, "failed: no lease": 1.5,
 			"failed: stopped": 0.04, "failed: timeout": 0.25, "query not read to its end": 0.5, "acknowledged writes": 2.5,
 			"commits": 2.5, "crash, then an empty cache": 0.12, "crash, then a copy of the cache": 0.12, "close and open": 0.4,
-		}},
+			"fault: lost request": 0.4, "fault: lost response": 0.4, "fault: no answer": 0.35, "fault: conflict": 0.06,
+			"fault: slow way": 0.8, "fault: broken read": 0.25, "fault: cut-off": 0.1, "fault: outage": 0.04,
+			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.25,
+			"fault: write applied after a crash": 0.05,
+		}, 0.15},
 		{"hammer", hammerWorkload, map[string]float64{
 			"succeeded": 12, "SQLite's error": 17, "unknown": 0.4, "skipped": 2.5, "failed: no lease": 2,
 			"failed: timeout": 3, "query not read to its end": 1.5, "acknowledged writes": 6, "commits": 6,
-		}},
+			"fault: lost request": 0.25, "fault: lost response": 0.2, "fault: no answer": 0.35, "fault: conflict": 0.2,
+			"fault: slow way": 0.5, "fault: broken read": 0.02, "fault: cut-off": 0.09, "fault: outage": 0.025,
+			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.7,
+		}, 0.12},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			counts := map[string]int{}
@@ -981,7 +1025,7 @@ func TestSimulation(t *testing.T) {
 				if v := s.violations(); len(v) > 0 {
 					t.Fatalf("seed %v: %v", seed, strings.Join(v, "\n"))
 				}
-				for k, v := range tallyOf(s.r) {
+				for k, v := range tallyOf(s) {
 					counts[k] += v
 				}
 				counts["trace lines"] += len(s.lines)
@@ -998,6 +1042,9 @@ func TestSimulation(t *testing.T) {
 				if want := int(least * float64(n)); counts[kind] < want {
 					t.Errorf("%v seeds give %v of %q, and at least %v were expected: something that the workload did stopped happening", n, counts[kind], kind, want)
 				}
+			}
+			if share := float64(counts["failed: no lease"]) / float64(counts["statements"]); share > c.noLease {
+				t.Errorf("%v seeds refuse %v of %v statements for want of the lease, %.2f of them, and at most %v were expected: most statements must reach a transaction", n, counts["failed: no lease"], counts["statements"], share, c.noLease)
 			}
 		})
 	}
