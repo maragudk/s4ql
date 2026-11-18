@@ -150,3 +150,58 @@ Crashed instances keep their caches open, and only the core's own tests can clos
 ### Future work
 
 An exported way to close the cache of a crashed instance for the tests of other packages, so that crashes can run under the address sanitizer too.
+
+## Step 4: Self-review, and what it changed
+
+**Author:** engine-slice-1-builder
+
+### Prompt Context
+
+**Verbatim prompt:** (the same brief) "Self-review before you report (the code-review skill is available)."
+**Interpretation:** Two independent reviewers over the diff, then fix what they agree on and what is serious.
+**Inferred intent:** Find what the author cannot see.
+
+### What I did
+
+Ran the code-review skill: two reviewers, each told to compete with the other, over `git diff origin/main...HEAD`, with the checks on comments that look outward and on constants used once. Both found the same two serious things and a long list of smaller ones, nearly all in agreement. I fixed:
+
+- **A compiled binary in the history.** `go build ./internal/sql/mutation`, run in the root of the module to check that it compiles, wrote a 5.4 MB executable `mutation` there, and `git add -A` committed it in the commit of the mutation tool. `git filter-branch --index-filter` was refused in this worktree, so I rebuilt the branch: a new branch at the commit before, `git cherry-pick -n` of that commit, `git rm --cached mutation`, `git commit -C`, `git cherry-pick` of the rest, and `git branch -f`. No commit of the branch holds it now.
+- **`stmt.StartedTable` and reserved names.** For `create table sqlite_x (`, SQLite gives `object name reserved for internal use: sqlite_x` before it looks the table up, and `StartedTable` reported a start; `FuzzStartedTable` would have failed on it. It now reports none for a name that starts with `sqlite_`, and takes the syntax error of `stmt.Check` as an argument, so a text is not parsed twice. Its test now creates, where it expects no start, a table for each of the first tokens of the text, so a missed start shows whatever the name.
+- **The count of changes after a failed insert.** `Result` could not say that an insert that fails at `UNIQUE constraint failed` sets SQLite's count to 0; the differential test set its own count to 0 by hand. `Exec` now gives `Result{SetsChanges: true}` with the error of an insert that fails after its checks, and `Query` gives rows that carry it; the test now takes the count from the result alone.
+- **Read transactions on every path.** A panic while a query was built, or while `started` looked a table up, left a read transaction open; both now end it in a deferred call, with a test. The error of the end after an early stop is now given by `Close`, once.
+- **`Rows.Close` during a loop,** which a reviewer showed cannot end the transaction while an iterator is suspended in its body: documented on `Rows`, and in the todo for the driver.
+- **`fromCore`:** `core.ErrInvalid` from `Tx.Commit` (a commit time that the commit object cannot hold) is the clock's and passes through; `core.ErrTxDone` is an internal error.
+- **The join of the events is tested:** `TestEngine_events` now requires that the core's `commit` event has the same `commit.parent` as the engine's event of the insert.
+- **Tests on real time:** the instances of the differential tests have a busy timeout of a minute and a lease of an hour, and `noneOpen` has no deadline: a transaction left open makes it wait until the test times out. The number of read connections is a constant of the test.
+- **The simulation:** one query in four is not read to its end (a loop that stops, `Close` unread, a consumer that panics), and `Rows.All` yields to the scheduler between rows, so commits, closes, and crashes now come between the rows of a query. A statement that saw no state is let through only for the three messages of the parser. Each planted bug must be found by the violation it causes.
+- Comments that named the importers of a package or the core's internals, a doc link to a function that does not exist, and a constant used in one place.
+
+Not changed, by decision: the SQL text is in an event only at Debug, also for a statement that failed with an error of the core, because the brief rules it out at Info and above; the constants of the attribute names stay, because their names carry the documentation and the tests read them.
+
+### Why
+
+Both reviewers agreed on almost all of these; the binary and the leak of a read transaction on a panic are serious on their own.
+
+### What worked
+
+The rebuilt history: `git log origin/main..HEAD -- mutation` gives nothing.
+
+### What didn't work
+
+`git filter-branch -f --index-filter 'git rm --cached --ignore-unmatch -q mutation' origin/main..HEAD` was refused: "this command passes --index-filter to git, which runs a program that can't be verified".
+
+### What I learned
+
+`switch hostRand{n.inst}.IntN(12) {` does not parse: a composite literal in the head of a switch needs parentheses.
+
+### What was tricky
+
+Deciding what `Result` should say for a failed statement. SQLite's count after a failed statement depends on whether it failed when prepared or when stepped, which `database/sql` never shows, but a connection that keeps the count must know it.
+
+### What warrants review
+
+The rules of `Result.SetsChanges` in `/internal/engine/engine.go`, and the doc of `Rows`.
+
+### Future work
+
+Bridging `Rows.All` to a pull-style `driver.Rows` is the driver's to design, with the rule that a suspended iterator must be stopped.

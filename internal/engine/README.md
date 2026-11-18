@@ -7,8 +7,8 @@ The interface:
 | Name | What it does |
 | --- | --- |
 | `New(d, host, Options)` | Gives an `*Engine` for the database `d`. The engine reads the monotonic clock of the host, for the duration in its events. `Options.Logger` takes the events, and the default discards them. |
-| `Engine.Exec(ctx, src) (Result, error)` | Runs the statement of the text `src`. A query is run to its end, and its rows are dropped. |
-| `Engine.Query(ctx, src) (*Rows, error)` | Runs the statement and gives its rows. A statement that is not a query is run as `Exec` runs it. Its rows have no columns and no rows, and `Rows.Result` gives its result. |
+| `Engine.Exec(ctx, src) (Result, error)` | Runs the statement of the text `src`. A query is run to its end, and its rows are dropped. The result comes with an error too. |
+| `Engine.Query(ctx, src) (*Rows, error)` | Runs the statement and gives its rows. A statement that is not a query is run as `Exec` runs it. Its rows have no columns and no rows, and `Rows.Result` gives its result; Query gives these rows also with its error. |
 | `Rows.Columns()` | The columns of each row, each a `Column` with the name as the table stores it and the declared type, `INT`. |
 | `Rows.All()` | The rows in order, as an `iter.Seq2[[]*s4qlpb.Value, error]`. The sequence ends at the first error, and can be used once. |
 | `Rows.Close()` | Ends the rows. |
@@ -25,7 +25,10 @@ Each statement is its own transaction of the core.
 
 - **A statement that changes the database runs between `DB.Begin` and `Tx.Commit`.** The engine annotates the transaction with the text of the statement before the commit; see [Annotations](#annotations). Any failure rolls the transaction back, and so does a panic of an operator. A commit ends the transaction whatever it gives.
 - **A query runs in `DB.Read`.** Its `Rows` hold the read transaction until they end. They end when `Rows.All` has given the last row or an error, when the loop over it stops early, when the loop panics, or at `Rows.Close`. One of these must happen.
-- **`Rows.Close` during a loop over `Rows.All` ends the loop at its next row,** and the read transaction ends then.
+- **`Rows.Close` during a loop over `Rows.All` ends the loop at its next row,** and the read transaction ends then. The loop holds the transaction also while it is suspended in its body, so an iterator that is suspended must be resumed or stopped for the transaction to end.
+- **A failure of the end of the read transaction after a loop that stopped early is the error of the next `Rows.Close`.**
+- **A panic while a query is built ends its read transaction too.**
+- **`Rows.All` yields to the host between two rows,** so that under the simulation other tasks run while a query is open.
 - **A failure of the end of the read transaction after the last row is the last error of `Rows.All`.**
 
 ## The stages
@@ -86,7 +89,7 @@ A name of a table is compared as SQLite compares names: without regard to the ca
 The adapters `coreDB`, `coreTx`, and `coreReadTx` put the interfaces on a `*core.DB`, a `*core.Tx`, and a `*core.ReadTx`. They change two things:
 
 - **A lookup of a table that does not exist gives nil,** where the core gives an error that wraps `core.ErrNoTable` (`lookUp`). The operators turn the nil into SQLite's error.
-- **A refusal of the core becomes an internal error** (`fromCore`). The refusals are `core.ErrTableExists`, `core.ErrNoTable`, `core.ErrReservedName`, and `core.ErrInvalid`. The engine checks for each before it calls the core, so one that the core still returns is a fault of the engine or of the pass after the parser.
+- **A refusal of the core becomes an internal error** (`fromCore`). The refusals are `core.ErrTableExists`, `core.ErrNoTable`, `core.ErrReservedName`, and `core.ErrInvalid`. The engine checks for each before it calls the core, so one that the core still returns is a fault of the engine or of the pass after the parser. So is `core.ErrTxDone`, a call on a transaction that has ended. The error of `Tx.Commit` passes through as it is: its `core.ErrInvalid` is a commit time that the commit object cannot hold, which comes from the clock.
 
 Every other error of the core passes through as it is.
 
@@ -160,15 +163,11 @@ The engine gives what is needed to report `sqlite3_changes` and `sqlite3_last_in
 
 - **An insert that succeeds sets the count of changes to 1.** Its result has `Changes` 1 and `SetsChanges` true.
 - **CREATE TABLE, DROP TABLE, and SELECT leave the count as the statement before left it.** Their result has `SetsChanges` false.
-- **An insert that fails with `UNIQUE constraint failed` sets the count to 0.** SQLite gives this error when it steps the statement.
+- **An insert that fails with `UNIQUE constraint failed` sets the count to 0.** SQLite gives this error when it steps the statement. The engine gives `Result{SetsChanges: true}` with the error of an insert that fails after its checks: in its operator, in its annotation, or in its commit.
 - **An error that SQLite gives when it prepares the statement leaves the count:** `no such table`, `has no column named`, `already exists`, and a syntax error. A text without a statement leaves it too.
 - **The last insert rowid never changes.** Every table is WITHOUT ROWID, and SQLite does not record an insert into such a table. The value is 0 on a new connection, and stays 0.
 
-The engine keeps no count between statements. A connection that reports the counts as SQLite does keeps one number, its count of changes, which starts at 0:
-
-1. After a statement whose result has `SetsChanges`, the count is `Result.Changes`.
-2. After a statement that fails with a `*sqlerr.Error` of code 19, the count is 0.
-3. After any other statement, the count stays.
+The engine keeps no count between statements. A connection that reports the counts as SQLite does keeps one number, its count of changes, which starts at 0. After a statement whose result has `SetsChanges`, also one that failed, the count is `Result.Changes`; after any other statement, the count stays.
 
 Its last insert rowid is always 0.
 
@@ -233,8 +232,10 @@ The layers:
    - A statement that failed with SQLite's error gives that error in SQLite on the state that it saw. A query that succeeded gives its rows there. That state is the state after a commit of the log, and it holds every write that was acknowledged before the statement started.
    - A new instance with an empty cache replays the log to the state that SQLite has after it.
 
+   One query in four is not read to its end: its loop stops at the first row, it is closed unread, or its consumer panics. Its rows are not compared, and the rest of the run must still hold. A statement that saw no state, because it failed before it had a transaction, must have one of the three messages of the parser.
+
    A run also fails in four more cases: a statement gives an error that the workload does not expect, as an internal error is; an instance stops; a close does not end within five minutes; or no instance runs a write within ten minutes after the store has calmed.
-4. **Planted bugs.** `TestSimulation_plantedBugs` plants each of four bugs in the engine, and runs seeds until two have found it. Each seed that finds a bug runs again without it, and must find nothing. The bugs are fields of `bugs` in `bugs.go`, which only the test files can set, through `Options.Plant` in `export_test.go`.
+4. **Planted bugs.** `TestSimulation_plantedBugs` plants each of four bugs in the engine, and runs seeds until two have found it. A seed finds a bug only with the violation that the bug causes: a commit that fails in SQLite for `skipUnique` and `checkOutside`, an acknowledged statement that is not in the log for `ackUnknown`, and no write after the workload for `keepOpen`. Each seed that finds a bug runs again without it, and must find nothing. The bugs are fields of `bugs` in `bugs.go`, which only the test files can set, through `Options.Plant` in `export_test.go`.
 
    | Bug | The wrong decision | Workload |
    | --- | --- | --- |
