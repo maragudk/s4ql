@@ -10,7 +10,8 @@
 //   - {type: "ready", ms} once the engine takes messages, with the milliseconds since the Worker
 //     started;
 //   - {type: "answer", id, answer, ms, memory} for each message, with the answer as JSON text, the
-//     milliseconds that the engine took, and the bytes of SQLite's heap in use after it;
+//     milliseconds that the engine took, and the size in bytes of SQLite's WebAssembly memory after
+//     it, which only grows (or the bytes in use, if the build exports sqlite3_memory_used);
 //   - {type: "output", fd, text} for what the program writes to standard output or error;
 //   - {type: "exit", code} if the program ends, and {type: "error", message} if the Worker fails.
 //

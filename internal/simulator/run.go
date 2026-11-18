@@ -119,9 +119,11 @@ type run struct {
 	calls     int
 	values    int64
 	// visitors counts the calls of the schedule, which name their tasks.
-	visitors  int
-	auto      bool
-	ending    bool
+	visitors int
+	auto     bool
+	ending   bool
+	// calm is set once the store is calm, which also ends the damaged downloads.
+	calm      bool
 	armed     []Action
 	manifests map[store.Version]*ManifestObject
 }
@@ -260,6 +262,12 @@ func (r *run) sleepUntil(ctx context.Context, t time.Duration) {
 	if d := t - r.world.Monotonic(); d > 0 {
 		_ = r.world.Sleep(ctx, d)
 	}
+}
+
+func (r *run) isCalm() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calm
 }
 
 func (r *run) isEnding() bool {
@@ -572,7 +580,7 @@ func (r *run) act(ctx context.Context, i int, a Action) {
 		in.restarts++
 		path := filepath.Join(r.dir, fmt.Sprint(in.name, in.restarts+1, ".db"))
 		if err := copyCache(p.path, path); err != nil {
-			e.What, e.Error = "failed", err.Error()
+			e.What, e.Error, e.Text = "failed", err.Error(), "the cache could not be copied"
 			break
 		}
 		r.rec.add(e)
@@ -597,10 +605,12 @@ func (r *run) act(ctx context.Context, i int, a Action) {
 			r.shutDB(ctx, p)
 		})
 	case "open":
+		// A database that a close of an action stopped, that could not be opened, or whose close by
+		// the supervisor was not followed by an open, can be opened.
 		p.mu.Lock()
-		closed := p.closed
+		openable := p.closed || p.db == nil || p.db == p.shut
 		p.mu.Unlock()
-		if !closed {
+		if !openable {
 			ignore("the database of the instance is open")
 			break
 		}
@@ -627,6 +637,9 @@ func (r *run) act(ctx context.Context, i int, a Action) {
 		r.store.Outage(ctx, duration(a.For))
 	case "calm":
 		r.store.Calm(ctx)
+		r.mu.Lock()
+		r.calm = true
+		r.mu.Unlock()
 	case "shiftWall", "stopWall", "startWall", "stopMonotonic", "startMonotonic":
 		r.clock(p, a)
 	case "loseAnswer", "failRequest":
@@ -720,7 +733,7 @@ func (c *client) Get(ctx context.Context, key string) (io.ReadCloser, store.Vers
 		return nil, "", c.r.failed(k)
 	}
 	body, version, err := c.inner.Get(ctx, key)
-	if err == nil && k.purpose == "download" && c.r.req.Faults.Damaged > 0 && c.r.chance(c.r.req.Faults.Damaged) {
+	if err == nil && k.purpose == "download" && c.r.req.Faults.Damaged > 0 && !c.r.isCalm() && c.r.chance(c.r.req.Faults.Damaged) {
 		body = c.damage(k, body)
 	}
 	if fault == "loseAnswer" {
@@ -1002,6 +1015,6 @@ func summarize(r *run) *Summary {
 			}
 		}
 	}
-	s.Log = len(r.check.chain(r.check.headNow()))
+	s.Log = r.check.logAtEnd
 	return s
 }

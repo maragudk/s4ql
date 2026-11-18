@@ -54,8 +54,8 @@ type CommitState struct {
 type InstanceState struct {
 	Instance string `json:"instance"`
 	Process  string `json:"process"`
-	// State is "starting", "running", "closed", "stopped", "crashed", or "failed" for a database that
-	// could not be opened.
+	// State is "starting", "running", "closing" from a close of an action until its end, "closed",
+	// "stopped", "crashed", or "failed" for a database that could not be opened.
 	State string `json:"state"`
 	// Holder is the ID under which the process holds the lease.
 	Holder string `json:"holder,omitzero"`
@@ -149,6 +149,18 @@ func StateAt(res Response, t float64) State {
 				in.State, in.Lease = "stopped", "none"
 			case "crashed":
 				in.State, in.Lease = "crashed", "none"
+				// The calls of the process end with it, and nothing waits for its requests, which the
+				// network can still carry.
+				for id, c := range calls {
+					if c.Process == e.Process {
+						delete(calls, id)
+					}
+				}
+				for _, rs := range requests {
+					if rs.Process == e.Process {
+						rs.Waiting = false
+					}
+				}
 			}
 		case "clock":
 			in := at(e)
@@ -206,6 +218,10 @@ func StateAt(res Response, t float64) State {
 				s.OutageUntil = max(s.OutageUntil, e.T+e.For)
 			case "calm":
 				s.Calm = true
+			}
+		case "action":
+			if e.Do == "close" && e.What == "done" {
+				at(e).State = "closing"
 			}
 		case "check":
 			s.Violations++

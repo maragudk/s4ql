@@ -95,7 +95,8 @@ export class Engine {
     });
   }
 
-  // memory of SQLite in bytes after the last answer.
+  // memory of SQLite in bytes after the last answer: the size of its WebAssembly memory, which only
+  // grows.
   get memory() {
     return this.#memory;
   }

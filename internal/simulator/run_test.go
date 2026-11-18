@@ -120,6 +120,19 @@ func TestRun_actions(t *testing.T) {
 		is.True(t, simulator.StateAt(res, 30_000).Calm, "a calm store")
 	})
 
+	t.Run("should end damaged downloads when the store is calm", func(t *testing.T) {
+		res := run(t, &e, `{"end": 120000, "faults": {"damaged": 1}, "schedule": [{"at": 20000, "do": "crash", "instance": "a"},
+			{"at": 20000, "do": "crash", "instance": "b"}, {"at": 60000, "do": "calm"}]}`)
+		is.True(t, len(find(res, func(e simulator.Event) bool { return e.What == "damaged" && e.T < 60_000 })) > 0, "damaged before")
+		is.Equal(t, 0, len(find(res, func(e simulator.Event) bool { return e.What == "damaged" && e.T > 60_000 })))
+	})
+
+	t.Run("should ignore an open of a database that is open", func(t *testing.T) {
+		res := run(t, &e, `{"end": 30000, "instances": 1, "schedule": [{"at": 10000, "do": "open", "instance": "a"}]}`)
+		ignored := find(res, func(e simulator.Event) bool { return e.Kind == "action" && e.What == "ignored" })
+		is.Equal(t, 1, len(ignored))
+	})
+
 	t.Run("should shift, stop, and start a wall clock", func(t *testing.T) {
 		res := run(t, &e, `{"end": 90000, "schedule": [{"at": 20000, "do": "shiftWall", "instance": "a", "by": -60000},
 			{"at": 30000, "do": "stopWall", "instance": "a"}, {"at": 50000, "do": "startWall", "instance": "a"}]}`)

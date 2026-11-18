@@ -50,6 +50,8 @@ type checker struct {
 	acked, unknown, failed []int64
 	// reads that were served, for the checks at the end.
 	reads []readSeen
+	// logAtEnd is the number of commit objects in the log at the end of the run.
+	logAtEnd int
 }
 
 // readSeen is a read that was served: how many acknowledged and unknown writes had ended before it
@@ -219,6 +221,7 @@ func sameKeys(a, b map[int64]bool) bool {
 func (c *checker) final(_ context.Context) {
 	chain := c.chain(c.headNow())
 	c.mu.Lock()
+	c.logAtEnd = len(chain)
 	acked, unknown, failed, reads := slices.Clone(c.acked), slices.Clone(c.unknown), slices.Clone(c.failed), slices.Clone(c.reads)
 	c.mu.Unlock()
 

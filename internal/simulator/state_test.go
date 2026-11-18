@@ -78,6 +78,35 @@ func TestStateAt(t *testing.T) {
 		is.True(t, inFlight(returned.T) == nil, "not in flight once returned")
 	})
 
+	t.Run("should end the calls of a crashed process, and its waits for requests", func(t *testing.T) {
+		// A run is the same before the crash as without it, so the crash comes while a call that the run
+		// without it has is in progress.
+		request := `{"end": 60000, "schedule": [%v]}`
+		without := run(t, &e, fmt.Sprintf(request, ""))
+		var at float64
+		var process string
+		for _, c := range find(without, func(e simulator.Event) bool { return e.Kind == "call" && e.What != "started" }) {
+			if c.T-*c.Started > 20 {
+				at, process = *c.Started+10, c.Process
+				break
+			}
+		}
+		is.True(t, at > 0, "a call that takes a while")
+		of := func(c simulator.CallState) bool { return c.Process == process }
+		res := run(t, &e, fmt.Sprintf(request, fmt.Sprintf(`{"at": %v, "do": "crash", "instance": %q}`, at, process)))
+		is.True(t, slices.ContainsFunc(simulator.StateAt(res, at-1).Calls, of), "calls before the crash")
+		after := simulator.StateAt(res, at)
+		is.True(t, !slices.ContainsFunc(after.Calls, of), "no calls after the crash")
+		is.True(t, !slices.ContainsFunc(after.Requests, func(r simulator.RequestState) bool { return r.Process == process && r.Waiting }), "no waits after the crash")
+	})
+
+	t.Run("should show a database as closing from the action until its close ends", func(t *testing.T) {
+		res := run(t, &e, `{"end": 60000, "instances": 1, "schedule": [{"at": 20000, "do": "close", "instance": "a"}]}`)
+		is.Equal(t, "closing", simulator.StateAt(res, 20_000).Instances[0].State)
+		closed := find(res, func(e simulator.Event) bool { return e.Kind == "process" && e.What == "closed" })[0]
+		is.Equal(t, "closed", simulator.StateAt(res, closed.T).Instances[0].State)
+	})
+
 	t.Run("should list a call from its start until its end", func(t *testing.T) {
 		res := run(t, &e, `{"end": 30000, "instances": 1}`)
 		started := find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.What == "started" })[3]
