@@ -1237,9 +1237,14 @@ func TestDB_Begin(t *testing.T) {
 			}()
 		}()
 		// The lock is released only after SQLite's busy handler has slept, which it does only when it
-		// found the lock held, so the transaction waits for the lock on every machine.
+		// found the lock held, so the transaction waits for the lock on every machine. A transaction
+		// that ends while the lock is held ends the test.
 		for sleeps == 0 {
-			time.Sleep(time.Millisecond)
+			select {
+			case err := <-committed:
+				t.Fatalf("the transaction ended without waiting for the lock: %v", err)
+			case <-time.After(time.Millisecond):
+			}
 			sleeps, _ = vfs.Slept()
 		}
 		is.NotError(t, other.Exec("rollback"))
@@ -1257,6 +1262,8 @@ func TestDB_Begin(t *testing.T) {
 		is.NotError(t, err)
 		defer func() { is.NotError(t, other.Close()) }()
 		is.NotError(t, other.Exec("begin immediate"))
+		_, slept := vfs.Slept()
+		is.Equal(t, time.Duration(0), slept)
 
 		// SQLite's busy handler asks to sleep for the busy timeout in all, and sleeps at least as long
 		// as it asks. Only a bound from below on the time that passes holds on a slow machine.
@@ -1264,7 +1271,7 @@ func TestDB_Begin(t *testing.T) {
 		err = beginErr(t, d)
 		elapsed := time.Since(start)
 		is.Error(t, core.ErrBusy, err)
-		_, slept := vfs.Slept()
+		_, slept = vfs.Slept()
 		is.Equal(t, time.Second, slept)
 		is.True(t, elapsed >= time.Second, fmt.Sprint(elapsed))
 		is.NotError(t, other.Exec("rollback"))
