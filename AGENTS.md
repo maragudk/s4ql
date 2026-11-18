@@ -67,7 +67,7 @@ maragubot reports interesting updates in this project on Bluesky, as @maragubot.
 The second-opinion skill may be used whenever an independent view helps.
 
 - **Why:** Markus said on 2026-11-10: "Feel free to use second opinion skill whenever you want, but take results judiciously."
-- **How to apply:** use it for design decisions, stubborn bugs, and reviews. Treat the result as one input: check its claims before acting on them, and do not let it override what was agreed with Markus.
+- **How to apply:** use it for design decisions, stubborn bugs, and reviews. Treat the result as one input: check its claims before acting on them, and do not let it override what was agreed with Markus. Be wary of bugs that it reports from theory only: Markus on 2026-11-18: "be wary of theoretical-only bugs. Codex has a tendency towards that." Reproduce a reported bug, or find the path that reaches it, before fixing it.
 
 ### Exported conversations go in `docs/conversations/`
 
