@@ -24,15 +24,19 @@ func (r *recognizer) describe(t ast.Token) string {
 			}
 			return nodeName(n)
 		}
-		n = childAt(n, t.Offset)
-		if !r.accepted[n] {
+		child := childAt(n, t.Offset)
+		if child == nil {
+			// A token that the text has and no node of the tree holds.
 			return nodeName(n)
 		}
+		if !r.accepted[child] {
+			return nodeName(child)
+		}
+		n = child
 	}
 }
 
-// childAt gives the child of n whose span holds the byte at offset. A token that is in the tree and
-// is not one of the own tokens of n is in exactly one child of n.
+// childAt gives the child of n whose span holds the byte at offset, or nil if none does.
 func childAt(n ast.Node, offset int) ast.Node {
 	for _, c := range ast.Children(n) {
 		if s := c.Bounds(); s.Start <= offset && offset < s.End {

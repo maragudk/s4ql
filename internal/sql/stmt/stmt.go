@@ -120,15 +120,15 @@ type Statement interface {
 	setSpan(Span)
 }
 
-// CreateTable creates a table with one column, of type INT, that is its primary key. The table is
-// STRICT and WITHOUT ROWID.
+// CreateTable of one table, with one column of type INT that is its primary key. The table is STRICT
+// and WITHOUT ROWID.
 type CreateTable struct {
 	Span   Span
 	Table  Name
 	Column Name
 }
 
-// Insert inserts one row with one value, into the one column that it names.
+// Insert of one row with one value, into the one column that it names.
 type Insert struct {
 	Span   Span
 	Table  Name
@@ -138,13 +138,13 @@ type Insert struct {
 	ValueSpan Span
 }
 
-// Select reads every column and every row of one table.
+// Select of every column and every row of one table.
 type Select struct {
 	Span  Span
 	Table Name
 }
 
-// DropTable drops one table.
+// DropTable of one table.
 type DropTable struct {
 	Span  Span
 	Table Name

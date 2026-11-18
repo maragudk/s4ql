@@ -89,9 +89,9 @@ func verify(t testing.TB, src string) (outcome, stmt.Statement) {
 		if se.Code != 1 || se.ExtendedCode != 1 || !oracle.IsSyntaxMessage(se.Message) {
 			t.Fatalf("%q: gives the syntax error %+v", src, se)
 		}
-		if v.Kind == oracle.NotSaid {
-			// SQLite stopped at an error that one of its grammar actions raised, before the syntax
-			// error: the known gap of the README.
+		if v.Kind == oracle.NotSaid && v.Reason != oracle.Unsettled && v.Reason != oracle.NotParsed {
+			// An error that one of SQLite's grammar actions or a limit of its parser raised came before
+			// the syntax error, or may have replaced it: the known gap of the README.
 			return syntaxNotSaid, nil
 		}
 		if v.Kind != oracle.SyntaxError || v.Message != se.Message || v.Code != 1 {
@@ -595,6 +595,7 @@ func TestCheck(t *testing.T) {
 			is.Equal(t, supported, o, src)
 		}
 		slices.Sort(names)
+		is.True(t, len(names) > 80, "too few keywords are names")
 		t.Logf("%v keywords are names after FROM: %v", len(names), names)
 	})
 }

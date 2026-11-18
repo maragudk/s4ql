@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"maragu.dev/s4ql/internal/sql/ast"
+	"maragu.dev/s4ql/internal/sql/parser"
 	"maragu.dev/s4ql/internal/sql/token"
 )
 
@@ -19,7 +20,10 @@ import (
 // one, so that a reject names the token at the offset it gives.
 type recognizer struct {
 	tree *ast.Statement
-	// tokens of the statement, every one that a node of the tree owns, in the order of the text.
+	// tokens of the statement, every one that the parser read for it, in the order of the text, from
+	// the tokenizer. By the ownership rule of the tree they are the tokens of [ast.AllTokens]; since
+	// they come from the text, a token that no node holds, or that a node holds but the text does not
+	// have, is never taken.
 	tokens []ast.Token
 	// next is the index in tokens of the next token to take.
 	next int
@@ -33,9 +37,9 @@ type stop struct {
 	err *NotSupportedError
 }
 
-// recognize the statement of tree, or say why it is not supported.
-func recognize(tree *ast.Statement) (s Statement, err *NotSupportedError) {
-	r := &recognizer{tree: tree, tokens: ast.AllTokens(tree), accepted: map[ast.Node]bool{}}
+// recognize the statement of tree, which the parser read from src, or say why it is not supported.
+func recognize(src string, tree *ast.Statement) (s Statement, err *NotSupportedError) {
+	r := &recognizer{tree: tree, tokens: parser.Tokens(src, tree), accepted: map[ast.Node]bool{}}
 	defer func() {
 		if v := recover(); v != nil {
 			st, ok := v.(stop)
@@ -126,10 +130,11 @@ func (r *recognizer) createTable(c *ast.CreateTable) *CreateTable {
 	table := r.tableName(c.Name)
 	r.take(c.LParen)
 	column := r.column(c.Columns[0])
-	if len(c.Columns) > 1 {
-		r.reject("second column")
-	}
-	if len(c.Constraints) > 0 {
+	if len(c.Commas) > 0 && r.isNext(c.Commas[0]) {
+		// The comma after the column: a second column or a table constraint follows it.
+		if len(c.Columns) > 1 {
+			r.reject("second column")
+		}
 		r.reject("table constraint")
 	}
 	r.take(c.RParen)
@@ -306,8 +311,10 @@ func literalName(t ast.Token) string {
 		return "blob"
 	case token.Null:
 		return "NULL"
-	default:
+	case token.CTimeKw:
 		return "current date or time"
+	default:
+		return "literal"
 	}
 }
 
@@ -318,8 +325,10 @@ func unaryName(op ast.Token) string {
 		return "+ sign"
 	case token.BitNot:
 		return "~ operator"
-	default:
+	case token.Not:
 		return "NOT operator"
+	default:
+		return "unary operator"
 	}
 }
 

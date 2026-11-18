@@ -22,9 +22,16 @@ type db struct {
 // open a new in-memory database, which is closed when the test ends.
 func open(t testing.TB) *db {
 	t.Helper()
+	d := openUnmanaged(t)
+	t.Cleanup(func() { _ = d.c.Close() })
+	return d
+}
+
+// openUnmanaged opens a new in-memory database, which the caller closes.
+func openUnmanaged(t testing.TB) *db {
+	t.Helper()
 	c, err := sqlite.Open(":memory:")
 	is.NotError(t, err)
-	t.Cleanup(func() { _ = c.Close() })
 	return &db{t: t, c: c}
 }
 
@@ -178,6 +185,18 @@ func sqliteError(t testing.TB, src string, err error, code sqlite.ResultCode, me
 // prints in the errors that s can cause.
 func checkMeaning(t testing.TB, src string, s stmt.Statement) {
 	t.Helper()
+	// The databases of one check are closed when it ends, since a test checks many statements.
+	var opened []*db
+	defer func() {
+		for _, d := range opened {
+			_ = d.c.Close()
+		}
+	}()
+	open := func(t testing.TB) *db {
+		d := openUnmanaged(t)
+		opened = append(opened, d)
+		return d
+	}
 	checkPositions(t, src, s)
 
 	// The canonical text of s is supported and gives the same statement.

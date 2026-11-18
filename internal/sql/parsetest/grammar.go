@@ -24,6 +24,7 @@ type Symbol struct {
 	Terminals   []string
 }
 
+// String of the symbol: its nonterminal, or its terminals joined by |.
 func (s Symbol) String() string {
 	if s.Nonterminal != "" {
 		return s.Nonterminal
@@ -44,8 +45,9 @@ func (r Rule) String() string {
 	return b.String()
 }
 
-// Grammar of SQLite as read from its parse.y, with the %if sections resolved for the compile options
-// of the binding in internal/sqlite, which defines none of the macros that parse.y tests.
+// Grammar read from a Lemon grammar file, with its %if sections resolved as if no macro were
+// defined, which for SQLite's parse.y gives the grammar of the compile options of the binding in
+// internal/sqlite.
 type Grammar struct {
 	Rules []Rule
 	// ByLHS gives the indexes in Rules of the rules of each nonterminal.

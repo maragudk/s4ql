@@ -50,6 +50,8 @@ var parserLayers = map[string]string{
 // stmtLayers of the tests of package stmt that are not hand-written, when stmt is the mutated package.
 var stmtLayers = map[string]string{
 	"TestCheck_corpus":        layerCorpus,
+	"TestAllowList":           layerCorpus,
+	"TestGenerate_nearMisses": layerMutants,
 	"TestCheck_grammar":       layerGenerator,
 	"TestGenerate":            layerGenerator,
 	"FuzzCheck":               layerFuzzSeeds,

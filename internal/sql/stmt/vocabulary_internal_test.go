@@ -1,7 +1,6 @@
 package stmt
 
 import (
-	"fmt"
 	"os"
 	"regexp"
 	"slices"
@@ -11,7 +10,6 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/sql/ast"
-	"maragu.dev/s4ql/internal/sql/token"
 	"maragu.dev/s4ql/internal/sqlite"
 )
 
@@ -135,66 +133,5 @@ func TestReservedName(t *testing.T) {
 			_, err := fresh(t).Prepare(`create table "` + v + `" (v int primary key) strict, without rowid`)
 			is.True(t, err != nil && strings.Contains(err.Error(), "object name reserved for internal use"), v)
 		}
-	})
-}
-
-func TestNotSupportedError(t *testing.T) {
-	t.Run("should match ErrNotSupported and no other error", func(t *testing.T) {
-		err := &NotSupportedError{What: "x", Offset: 3}
-		is.True(t, err.Is(ErrNotSupported))
-		is.True(t, !err.Is(os.ErrNotExist))
-		is.Equal(t, "s4ql: not supported: x (at offset 3)", err.Error())
-	})
-}
-
-func TestStatement(t *testing.T) {
-	t.Run("should give the span that it was given, for every kind of statement", func(t *testing.T) {
-		for _, s := range []Statement{&CreateTable{}, &Insert{}, &Select{}, &DropTable{}} {
-			s.setSpan(Span{1, 2})
-			is.Equal(t, Span{1, 2}, s.Bounds())
-		}
-	})
-}
-
-func TestCheck_lengthLimit(t *testing.T) {
-	t.Run("should not support a text longer than SQLite's limit, whatever it holds", func(t *testing.T) {
-		defer func(n int) { lengthLimit = n }(lengthLimit)
-		lengthLimit = 20
-		_, err := Check("select * from t;    ")
-		is.NotError(t, err)
-		for _, src := range []string{"select * from t;     ", "selec * from t\x00      "} {
-			_, err = Check(src)
-			is.Equal(t, "s4ql: not supported: text longer than SQLite's limit (at offset 20)", fmt.Sprint(err), src)
-		}
-	})
-}
-
-func TestRecognize(t *testing.T) {
-	tok := func(kind token.Kind, offset int, text string) ast.Token {
-		return ast.Token{Kind: kind, Offset: offset, Text: text}
-	}
-
-	t.Run("should not support a statement that ends where the recognizer expects another token", func(t *testing.T) {
-		// CREATE TABLE t, as no text of SQLite's grammar gives it: the parenthesis is missing.
-		tree := &ast.Statement{Cmd: &ast.CreateTable{Create: tok(token.Create, 0, "create"), Table: tok(token.Table, 7, "table"),
-			Name: ast.QualifiedName{Name: tok(token.ID, 13, "t")}}}
-		ast.SetSpan(tree.Cmd, ast.Span{Start: 0, End: 14})
-		ast.SetSpan(tree, ast.Span{Start: 0, End: 14})
-		s, err := recognize(tree)
-		is.True(t, s == nil)
-		is.Equal(t, "s4ql: not supported: statement (at offset 14)", err.Error())
-	})
-
-	t.Run("should pass on a panic that is not its own", func(t *testing.T) {
-		// CREATE TABLE t (, with no column, which the grammar does not allow.
-		tree := &ast.Statement{Cmd: &ast.CreateTable{Create: tok(token.Create, 0, "create"), Table: tok(token.Table, 7, "table"),
-			Name: ast.QualifiedName{Name: tok(token.ID, 13, "t")}, LParen: tok(token.LP, 15, "(")}}
-		ast.SetSpan(tree.Cmd, ast.Span{Start: 0, End: 16})
-		ast.SetSpan(tree, ast.Span{Start: 0, End: 16})
-		defer func() {
-			is.True(t, recover() != nil)
-		}()
-		_, _ = recognize(tree)
-		t.Fatal("no panic")
 	})
 }

@@ -49,7 +49,7 @@ func Check(src string) (Statement, error) {
 		return nil, nil
 	}
 
-	s, ns := recognize(tree)
+	s, ns := recognize(src, tree)
 	if ns != nil {
 		return nil, ns
 	}

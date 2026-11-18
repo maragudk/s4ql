@@ -146,9 +146,6 @@ func (g *generator) name(p position) stmt.Name {
 	raw := pool[g.r.IntN(len(pool))]
 	if raw[0] != '"' && g.r.IntN(3) == 0 {
 		raw = strings.ToUpper(raw)
-		if oracle.Judge(fmt.Sprintf(positionTexts[p], raw)).Kind != oracle.Parses {
-			raw = strings.ToLower(raw)
-		}
 	}
 	value := raw
 	if raw[0] == '"' {
@@ -421,4 +418,159 @@ func FuzzGenerate(f *testing.F) {
 			verify(t, m)
 		}
 	})
+}
+
+// nearMisses of the four forms of slice 1: each is the form with one clause, keyword, or item added
+// or changed, which a one-token mutant cannot make. %[1]v is the table, %[2]v the column, and %[3]v
+// the value.
+var nearMisses = map[string][]string{
+	"*stmt.CreateTable": {
+		"explain create table %[1]v (%[2]v int primary key) strict, without rowid",
+		"explain query plan create table %[1]v (%[2]v int primary key) strict, without rowid",
+		"create temp table %[1]v (%[2]v int primary key) strict, without rowid",
+		"create temporary table %[1]v (%[2]v int primary key) strict, without rowid",
+		"create table if not exists %[1]v (%[2]v int primary key) strict, without rowid",
+		"create table main.%[1]v (%[2]v int primary key) strict, without rowid",
+		"create table temp.%[1]v (%[2]v int primary key) strict, without rowid",
+		"create table %[1]v (%[2]v int unsigned primary key) strict, without rowid",
+		"create table %[1]v (%[2]v int(10) primary key) strict, without rowid",
+		"create table %[1]v (%[2]v integer primary key) strict, without rowid",
+		"create table %[1]v (%[2]v primary key) strict, without rowid",
+		"create table %[1]v (%[2]v int) strict, without rowid",
+		"create table %[1]v (%[2]v int primary key not null) strict, without rowid",
+		"create table %[1]v (%[2]v int primary key null) strict, without rowid",
+		"create table %[1]v (%[2]v int primary key unique) strict, without rowid",
+		"create table %[1]v (%[2]v int primary key check (%[2]v > 0)) strict, without rowid",
+		"create table %[1]v (%[2]v int primary key default 1) strict, without rowid",
+		"create table %[1]v (%[2]v int primary key default (1)) strict, without rowid",
+		"create table %[1]v (%[2]v int primary key collate binary) strict, without rowid",
+		"create table %[1]v (%[2]v int primary key references u (x)) strict, without rowid",
+		"create table %[1]v (%[2]v int primary key references u deferrable initially deferred) strict, without rowid",
+		"create table %[1]v (%[2]v int primary key asc) strict, without rowid",
+		"create table %[1]v (%[2]v int primary key desc) strict, without rowid",
+		"create table %[1]v (%[2]v int primary key on conflict fail) strict, without rowid",
+		"create table %[1]v (%[2]v int primary key autoincrement) strict, without rowid",
+		"create table %[1]v (%[2]v int primary key generated always as (1)) strict, without rowid",
+		"create table %[1]v (%[2]v int primary key constraint c) strict, without rowid",
+		"create table %[1]v (%[2]v int constraint c primary key) strict, without rowid",
+		"create table %[1]v (%[2]v int not null primary key) strict, without rowid",
+		"create table %[1]v (%[2]v int primary key, w int) strict, without rowid",
+		"create table %[1]v (w int, %[2]v int primary key) strict, without rowid",
+		"create table %[1]v (%[2]v int primary key, unique (%[2]v)) strict, without rowid",
+		"create table %[1]v (%[2]v int primary key, check (%[2]v > 0)) strict, without rowid",
+		"create table %[1]v (%[2]v int, primary key (%[2]v)) strict, without rowid",
+		"create table %[1]v (%[2]v int primary key) strict",
+		"create table %[1]v (%[2]v int primary key) without rowid",
+		"create table %[1]v (%[2]v int primary key)",
+		"create table %[1]v (%[2]v int primary key) strict, without rowid, strict",
+		"create table %[1]v (%[2]v int primary key) strict, strict, without rowid",
+		"create table %[1]v (%[2]v int primary key), strict, without rowid",
+		"create table %[1]v (%[2]v int primary key) strict, without rowid, foo",
+		"create table %[1]v as select 1",
+		"create table %[1]v (%[2]v int primary key) strict, without rowid; select 1",
+	},
+	"*stmt.Insert": {
+		"explain insert into %[1]v (%[2]v) values (%[3]v)",
+		"with x as (select 1) insert into %[1]v (%[2]v) values (%[3]v)",
+		"replace into %[1]v (%[2]v) values (%[3]v)",
+		"insert or replace into %[1]v (%[2]v) values (%[3]v)",
+		"insert or ignore into %[1]v (%[2]v) values (%[3]v)",
+		"insert or abort into %[1]v (%[2]v) values (%[3]v)",
+		"insert into main.%[1]v (%[2]v) values (%[3]v)",
+		"insert into %[1]v as x (%[2]v) values (%[3]v)",
+		"insert into %[1]v values (%[3]v)",
+		"insert into %[1]v (%[2]v, w) values (%[3]v, 1)",
+		"insert into %[1]v (%[2]v, %[2]v) values (%[3]v, %[3]v)",
+		"insert into %[1]v (%[2]v) values (%[3]v), (%[3]v)",
+		"insert into %[1]v (%[2]v) values (%[3]v, 1)",
+		"insert into %[1]v (%[2]v) values ((%[3]v))",
+		"insert into %[1]v (%[2]v) values (+%[3]v)",
+		"insert into %[1]v (%[2]v) values (%[3]v + 0)",
+		"insert into %[1]v (%[2]v) values (- (%[3]v))",
+		"insert into %[1]v (%[2]v) values (%[3]v collate binary)",
+		"insert into %[1]v (%[2]v) values (cast(%[3]v as int))",
+		"insert into %[1]v (%[2]v) values (?)",
+		"insert into %[1]v (%[2]v) select %[3]v",
+		"insert into %[1]v (%[2]v) values (%[3]v) union select 1",
+		"insert into %[1]v (%[2]v) values (%[3]v) returning *",
+		"insert into %[1]v (%[2]v) values (%[3]v) on conflict do nothing",
+		"insert into %[1]v (%[2]v) values (%[3]v) on conflict (%[2]v) do update set %[2]v = 1",
+		"insert into %[1]v default values",
+		"insert into %[1]v (%[2]v) values (%[3]v); select 1",
+	},
+	"*stmt.Select": {
+		"explain select * from %[1]v",
+		"with x as (select 1) select * from %[1]v",
+		"select distinct * from %[1]v",
+		"select all * from %[1]v",
+		"select *, * from %[1]v",
+		"select %[1]v.* from %[1]v",
+		"select 1 from %[1]v",
+		"select * from main.%[1]v",
+		"select * from %[1]v as x",
+		"select * from %[1]v x",
+		"select * from %[1]v indexed by i",
+		"select * from %[1]v not indexed",
+		"select * from (%[1]v)",
+		"select * from (select * from %[1]v)",
+		"select * from %[1]v, u",
+		"select * from %[1]v join u",
+		"select * from %[1]v natural join u",
+		"select * from %[1]v left join u on 1",
+		"select * from %[1]v where 1",
+		"select * from %[1]v group by 1",
+		"select * from %[1]v group by 1 having 1",
+		"select * from %[1]v window w as ()",
+		"select * from %[1]v order by 1",
+		"select * from %[1]v limit 1",
+		"select * from %[1]v limit 1 offset 1",
+		"select * from %[1]v union select * from %[1]v",
+		"select * from %[1]v union all select * from %[1]v",
+		"select * from %[1]v except select * from %[1]v",
+		"select * from %[1]v; select 1",
+	},
+	"*stmt.DropTable": {
+		"explain drop table %[1]v",
+		"drop table if exists %[1]v",
+		"drop table main.%[1]v",
+		"drop table temp.%[1]v",
+		"drop view %[1]v",
+		"drop index %[1]v",
+		"drop trigger %[1]v",
+		"drop table %[1]v; select 1",
+	},
+}
+
+// TestGenerate_nearMisses checks that no near miss of a statement of the generator of slice 1 is
+// supported: each is a syntax error as in SQLite, or not supported.
+func TestGenerate_nearMisses(t *testing.T) {
+	n := *generatedCount / 10
+	if slow() {
+		n /= 10
+	}
+	g := newGenerator(t, *seed+3)
+	c := counts{}
+	for range n {
+		_, s := g.statement()
+		var table, column, value string
+		switch s := s.(type) {
+		case *stmt.CreateTable:
+			table, column = s.Table.Raw, s.Column.Raw
+		case *stmt.Insert:
+			table, column, value = s.Table.Raw, s.Column.Raw, fmt.Sprint(s.Value)
+		case *stmt.Select:
+			table = s.Table.Raw
+		case *stmt.DropTable:
+			table = s.Table.Raw
+		}
+		for _, form := range nearMisses[fmt.Sprintf("%T", s)] {
+			src := fmt.Sprintf(form, table, column, value)
+			o, _ := verify(t, src)
+			if o == supported {
+				t.Fatalf("%q, a near miss of slice 1, is supported", src)
+			}
+			c[o]++
+		}
+	}
+	t.Logf("%v near misses: %v", c[syntaxError]+c[notSupported]+c[syntaxNotSaid], c)
 }
