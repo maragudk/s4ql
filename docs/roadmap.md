@@ -16,6 +16,7 @@ These hold for every slice unless this document says otherwise.
 - All tables are `WITHOUT ROWID`. Every table therefore has a primary key, and no integer keys are generated.
 - Foreign keys are always enforced.
 - Double quotes mean identifiers only. A double-quoted string is rejected, and so are `[brackets]` and backticks around names.
+- Single quotes mean strings only. A single-quoted string where a name is expected is rejected.
 - No `ANY` column type.
 - No settings that change behaviour, for now.
 - A table whose name starts with `s4ql_` or `sqlite_`, in any case of the letters, is rejected. SQLite reserves `sqlite_` itself, and `s4ql_` is for the tables that s4ql keeps in its cache.
