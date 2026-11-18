@@ -77,6 +77,7 @@ function note(text) {
 }
 
 function fail(title, text) {
+  if (!shown) set($("field-note"), title);
   root.dataset.engine = "failed";
   const f = $("failure");
   f.innerHTML = `<strong>${esc(title)}</strong><p>${esc(text)}</p>`;
@@ -269,6 +270,7 @@ function drawStrip() {
   events.forEach((e) => {
     if (e.kind === "check") checks += `M${(e.t / end) * SLICES} 38h0.6v6h-0.6z`;
   });
+  set($("field-note"), "");
   $("strip").setAttribute("viewBox", `0 0 ${SLICES} 44`);
   $("strip").innerHTML =
     `<defs><clipPath id="past"><rect id="past-rect" x="0" y="0" width="0" height="44"/></clipPath><clipPath id="future"><rect id="future-rect" x="0" y="0" width="${SLICES}" height="44"/></clipPath></defs>` +
@@ -802,5 +804,9 @@ async function start() {
   rerun(fromLink && fromLink.t > 0 ? `The run from the link, at ${R.clock(fromLink.t)}. Press play to go on.` : "");
   autoplay = !(fromLink && fromLink.t > 0) && !reduce.matches;
 }
+
+// A link pasted into the address bar of the page changes only its hash; the page then starts again
+// from that link. The page itself changes the hash with history.replaceState, which fires no event.
+window.addEventListener("hashchange", () => location.reload());
 
 start();
