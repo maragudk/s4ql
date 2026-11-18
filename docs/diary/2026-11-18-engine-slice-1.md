@@ -205,3 +205,54 @@ The rules of `Result.SetsChanges` in `/internal/engine/engine.go`, and the doc o
 ### Future work
 
 Bridging `Rows.All` to a pull-style `driver.Rows` is the driver's to design, with the rule that a suspended iterator must be stopped.
+
+## Step 5: Mutation testing, and the long runs
+
+**Author:** engine-slice-1-builder
+
+### Prompt Context
+
+**Verbatim prompt:** (the same brief) "6. Mutation testing of the engine's package with the repository's tool (`internal/sql/mutation`; extend it to take a package outside `internal/sql` if needed): no survivor left unexplained. Also rerun it for `internal/sql/stmt` if you change it." and "Run the fuzzing long on several cores until quiet (at least 50 million executions) and report the count"
+**Interpretation:** Run the tool on `internal/engine` and `internal/sql/stmt`, close every gap it shows, and list the rest as equivalent with a reason; then the long runs on the final code.
+**Inferred intent:** Show that the tests notice a wrong decision anywhere in the new code.
+
+### What I did
+
+The tool reads the files of the module while it runs, so I ran it on a copy of the tree from `git archive HEAD` in the scratchpad, and kept working in the worktree:
+
+```
+go run ./internal/sql/mutation -out $S/mut -pkgs internal/engine,internal/sql/stmt -j 6
+```
+
+2,102 mutants in about 35 minutes. 110 survived: 74 in the engine, 34 in `stmt.StartedTable`, one in the recognizer (the guard `r.isNext(t)` of the empty name), and the known equivalent one. I wrote tests for every survivor that a test can see, ran the affected files again on a new copy (`-run 'internal/engine/|started.go|recognize.go recognizer.name'`, 1,208 mutants, 10 minutes with 9 workers), closed the last gaps in the events, ran `telemetry.go` once more, and listed 25 equivalent mutants in `/internal/sql/mutation/equivalent.txt`.
+
+### Why
+
+A survivor is a decision that no test checks.
+
+### What worked
+
+The gaps were real and small: no test looked at the event of a statement on its paths of failure (outcome, rows, position, duration), at the offsets of the errors, at `Rows.Close` during a loop on the fake (on the core it passed for the wrong reason: the rows still stopped, but the transaction ended under a running scan), at the end of a read after a loop that stopped early, or at plans that no statement of slice 1 gives. Two pieces of code went away instead of getting tests: the check of IF NOT EXISTS in `StartedTable`, which its later checks cover, and a second `r.reading = false` in `Rows.All`.
+
+The long runs on the final code: `TestDifferential` with 10,000 sequences (400,000 statements), `TestSimulation` with 1,000 seeds of each workload, and `TestSimulation_plantedBugs` with 200 seeds of each bug. Nothing differed from SQLite, no seed found a violation without a bug, and each bug was found by its own violation.
+
+### What didn't work
+
+- The first long differential run failed after some thousands of sequences with `open the cache: local I/O failure: sqlite: unable to open database file (code 14)`. Each sequence's instance was closed only by `t.Cleanup`, at the end of the test, so 10,000 instances held their files open at once. `differential` now closes the instance and the oracle at the end of each sequence.
+- The first long fuzz runs ran on code that the review then changed, so they were stopped (10 million and 3 million executions, nothing found) and run again on the final code.
+
+### What I learned
+
+Most of the shape checks of `StartedTable` are covered by its last check, of the offset of the syntax error: SQLite's grammar lets only a dot, `(`, or AS follow the name of CREATE TABLE, so the parser fails at any other token there.
+
+### What was tricky
+
+Telling an equivalent mutant from a gap: `return "core_error"` removed from the case of `ErrOutcomeUnknown` ends the switch at its last return, which gives the same, but the case itself matters, which a test now shows with an error that wraps both `ErrOutcomeUnknown` and `context.DeadlineExceeded`.
+
+### What warrants review
+
+The reasons in `/internal/sql/mutation/equivalent.txt` for the engine and `StartedTable`.
+
+### Future work
+
+None from this step.

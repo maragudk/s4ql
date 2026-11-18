@@ -279,27 +279,27 @@ S4QL_ENGINE_SIM_SEED=7 S4QL_ENGINE_SIM_BUG=skipUnique go test ./internal/engine/
 
 ## Results
 
-On the code as it is now:
+On the code as it is now, on 2026-11-18:
 
 | Layer | Run | Result |
 | --- | --- | --- |
-| `TestDifferential` | `TODO(counts)` sequences of `TODO(counts)` statements | `TODO(counts)` statements, none that differ from SQLite: `TODO(counts)` by kind and outcome |
+| `TestDifferential` | 10,000 sequences of 40 statements, from seed 2,000,000, half with restarts | 400,000 statements, none that differ from SQLite. By kind and outcome: CREATE TABLE 24,322 ok and 49,354 `already exists`; INSERT 65,978 ok, 25,683 `UNIQUE constraint failed`, 31,236 `has no column named`, and 60,490 `no such table`; SELECT 61,392 ok and 30,265 `no such table`; DROP TABLE 12,266 ok and 5,867 `no such table`; and of the other texts 21,687 not supported, 7,647 `syntax error`, 1,397 `incomplete input`, 985 `already exists` after the start of a table, and 1,431 without a statement |
 | `FuzzDifferential` | `TODO(counts)` executions in `TODO(counts)` on `TODO(counts)` workers | `TODO(counts)` |
 | `FuzzDifferential_core` | `TODO(counts)` executions in `TODO(counts)` on `TODO(counts)` workers | `TODO(counts)` |
-| `TestSimulation`, default workload | `TODO(counts)` seeds | `TODO(counts)` statements, `TODO(counts)` commits, `TODO(counts)` violations |
-| `TestSimulation`, hammer workload | `TODO(counts)` seeds | `TODO(counts)` statements, `TODO(counts)` commits, `TODO(counts)` violations |
-| `TestEngine_namesOfTheCore` | `TODO(counts)` names | `TODO(counts)` statements compared with SQLite |
+| `TestSimulation`, default workload | 1,000 seeds | 95,196 statements: 13,318 that succeeded, 20,385 with SQLite's error, 55,405 refused or ended by their timeout, 572 commits of unknown outcome, 29 cut by a crash, and 5,487 not supported or without a statement; 8,364 commits; no violation |
+| `TestSimulation`, hammer workload | 1,000 seeds | 120,000 statements: 28,001 that succeeded, 40,610 with SQLite's error, 43,360 refused or ended by their timeout, 1,078 of unknown outcome, and 6,951 not supported or without a statement; 15,155 commits; no violation |
+| `TestEngine_namesOfTheCore` | 2,832 names | 11,328 statements compared with SQLite, none that differ, and no internal error |
 
 The planted bugs:
 
 | Bug | Seeds that found it | Seeds that found anything without the bug |
 | --- | --- | --- |
-| `skipUnique` | `TODO(counts)` of `TODO(counts)` | `TODO(counts)` |
-| `ackUnknown` | `TODO(counts)` of `TODO(counts)` | `TODO(counts)` |
-| `checkOutside` | `TODO(counts)` of `TODO(counts)` | `TODO(counts)` |
-| `keepOpen` | `TODO(counts)` of `TODO(counts)` | `TODO(counts)` |
+| `skipUnique` | 124 of 200 | 0 |
+| `ackUnknown` | 47 of 200 | 0 |
+| `checkOutside` | 73 of 200, in the hammer workload | 0 |
+| `keepOpen` | 193 of 200 | 0 |
 
-Mutation testing: of `TODO(counts)` mutants, `TODO(counts)` do not compile, `TODO(counts)` are killed, `TODO(counts)` time out, and `TODO(counts)` are equivalent; `TODO(counts)` are unexplained. The score is `TODO(counts)`.
+Mutation testing: of 955 mutants, 312 do not compile, 632 are killed, none times out, and 11 are equivalent; none is unexplained. The score is 98.29%, and 100% without the equivalent ones. The first run found 74 survivors, each a gap in the tests but the equivalent ones; see [`internal/sql/mutation`](../sql/mutation/README.md#the-pass-after-the-parser-and-the-engine).
 
 ### Run times
 
