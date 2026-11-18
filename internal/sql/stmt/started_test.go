@@ -125,6 +125,7 @@ func TestStartedTable(t *testing.T) {
 		{src: "create table main.t1"},
 		{src: "create table if not exists"},
 		{src: "values ("},
+		{src: `create table "" (`, name: "", raw: `""`},
 		{src: "select ("},
 	}
 	for _, c := range cases {
@@ -137,9 +138,12 @@ func TestStartedTable(t *testing.T) {
 					n, ok = stmt.StartedTable(c.src, se)
 				}
 			}
-			is.Equal(t, c.name != "", ok)
+			is.Equal(t, c.raw != "", ok)
 			is.Equal(t, c.name, n.Value)
 			is.Equal(t, c.raw, n.Raw)
+			if ok {
+				is.Equal(t, c.raw, c.src[n.Offset:n.Offset+len(n.Raw)])
+			}
 			checkStarted(t, c.src)
 		})
 	}
