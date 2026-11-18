@@ -11,8 +11,8 @@ import (
 // State of a run at a time, folded from the events of its trace up to and including that time.
 type State struct {
 	// Error says why there is no state, and is the only field then.
-	Error string `json:"error,omitzero"`
-	T     float64 `json:"t"`
+	Error     string          `json:"error,omitzero"`
+	T         float64         `json:"t"`
 	Bucket    Bucket          `json:"bucket"`
 	Instances []InstanceState `json:"instances"`
 	// Requests to the store that are in flight: on their way, held back, or waited for by their

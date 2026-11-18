@@ -172,7 +172,14 @@ jobs:
           GOARCH: wasm
         with:
           version: latest
-          args: --build-tags s4ql_browser ./internal/sqlite ./internal/sqlite/faultvfs ./internal/core ./internal/sim ./internal/store/simstore
+          args: --build-tags s4ql_browser ./internal/sqlite ./internal/sqlite/faultvfs ./internal/core ./internal/sim ./internal/store/simstore ./internal/simulator ./internal/simulator/engine
+
+      # The simulator builds natively too, with the tag, and is linted for the simulation there.
+      - name: Test the simulator natively
+        run: go test -tags s4ql_browser -shuffle on ./internal/simulator/...
+
+      - name: Lint the simulator for the simulation
+        run: (cd internal/simlint && go build -o "$RUNNER_TEMP/simlint" ./cmd/simlint) && GOFLAGS=-tags=s4ql_browser "$RUNNER_TEMP/simlint" ./internal/simulator/...
 
       # Chrome's sandbox needs user namespaces, which the runner may not allow, and the page runs only
       # the project's own code from 127.0.0.1.

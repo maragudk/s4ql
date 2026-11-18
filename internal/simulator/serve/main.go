@@ -8,7 +8,8 @@
 //
 // With -out it writes the directory and exits. With -addr it writes the directory, to a temporary one
 // if -out is not given, and serves it on that address, with the headers that make the page
-// cross-origin isolated, until it is stopped. Run it from inside the module. It runs the Go on the PATH, whose wasm_exec.js it takes.
+// cross-origin isolated, until it is stopped. Run it from inside the module. It builds with the Go
+// on the PATH, whose wasm_exec.js it takes.
 package main
 
 import (
