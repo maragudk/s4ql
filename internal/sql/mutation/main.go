@@ -1,6 +1,6 @@
-// Command mutation runs mutation testing of the SQL tokenizer, syntax tree, parser, and the pass after
-// the parser: it changes their code on purpose, one small change at a time, runs the tests against
-// each change, and reports the changes that no test notices.
+// Command mutation runs mutation testing of the SQL tokenizer, syntax tree, parser, the pass after
+// the parser, and the engine: it changes their code on purpose, one small change at a time, runs the
+// tests against each change, and reports the changes that no test notices.
 //
 // Usage, from the root of the module:
 //
@@ -47,7 +47,7 @@ func main() {
 }
 
 // allPkgs are the packages that the command mutates by default.
-var allPkgs = []string{"internal/sql/token", "internal/sql/ast", "internal/sql/parser", "internal/sql/stmt"}
+var allPkgs = []string{"internal/sql/token", "internal/sql/ast", "internal/sql/parser", "internal/sql/stmt", "internal/engine"}
 
 func start() error {
 	pkgs := flag.String("pkgs", strings.Join(allPkgs, ","), "packages to mutate, separated by commas")
@@ -229,7 +229,7 @@ func moduleRoot() (string, error) {
 
 // checkFingerprint of what the results in out depend on against the one that they were made with,
 // and record it if out has none, so that results of other code are never reused: the files under
-// internal/sql but this command, the binding of SQLite in internal/sqlite, which judges, go.mod,
+// internal but this command, among them the binding of SQLite in internal/sqlite, which judges, go.mod,
 // go.sum, and the version of Go.
 func checkFingerprint(root, out string) error {
 	h := sha256.New()
@@ -253,7 +253,7 @@ func checkFingerprint(root, out string) error {
 			return err
 		}
 	}
-	for _, dir := range []string{filepath.Join(root, "internal", "sql"), filepath.Join(root, "internal", "sqlite")} {
+	for _, dir := range []string{filepath.Join(root, "internal")} {
 		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			switch {
 			case err != nil:

@@ -29,13 +29,14 @@ const (
 	layerFuzzSeeds = "fuzz seeds"
 	layerMutants   = "mutants"
 	layerShape     = "shape check"
+	layerSim       = "simulation"
 	layerOther     = "other packages"
 	// layerOwnership is not a stage of its own: a failure of the ownership check inside the tests of
 	// the parser, with no disagreement with SQLite, is counted for it.
 	layerOwnership = "ownership"
 )
 
-var layers = []string{layerHand, layerCorpus, layerOwnership, layerGenerator, layerLALR, layerFuzzSeeds, layerMutants, layerShape, layerOther}
+var layers = []string{layerHand, layerCorpus, layerOwnership, layerGenerator, layerLALR, layerFuzzSeeds, layerMutants, layerShape, layerSim, layerOther}
 
 // parserLayers of the tests of package parser that are not hand-written.
 var parserLayers = map[string]string{
@@ -60,10 +61,21 @@ var stmtLayers = map[string]string{
 	"TestGenerate_mutants":    layerMutants,
 }
 
+// engineLayers of the tests of package engine that are not hand-written, when engine is the mutated
+// package.
+var engineLayers = map[string]string{
+	"TestDifferential":           layerGenerator,
+	"FuzzDifferential":           layerFuzzSeeds,
+	"FuzzDifferential_core":      layerFuzzSeeds,
+	"TestSimulation":             layerSim,
+	"TestSimulation_plantedBugs": layerSim,
+}
+
 const (
 	parserPkg = "internal/sql/parser"
 	shapePkg  = "internal/sql/shapetest"
 	stmtPkg   = "internal/sql/stmt"
+	enginePkg = "internal/engine"
 )
 
 // stage of the run of a mutant: the tests of one layer in one test binary.
@@ -117,10 +129,10 @@ type runner struct {
 	stages map[string][]stage
 }
 
-// testPackages of the module under internal/sql whose test binaries depend on the package in pkg,
-// as directories relative to the root, sorted.
+// testPackages of the module under internal whose test binaries depend on the package in pkg, as
+// directories relative to the root, sorted.
 func (r *runner) testPackages(pkg string) ([]string, error) {
-	out, err := r.goCmd(context.Background(), "list", "-test", "-f", "{{.ImportPath}}\t{{join .Deps \" \"}}", "./internal/sql/...")
+	out, err := r.goCmd(context.Background(), "list", "-test", "-f", "{{.ImportPath}}\t{{join .Deps \" \"}}", "./internal/...")
 	if err != nil {
 		return nil, err
 	}
@@ -197,6 +209,11 @@ func (r *runner) plan(pkgs []string) error {
 					l = layerHand
 					if sl, ok := stmtLayers[t]; ok {
 						l = sl
+					}
+				case tp == pkg && pkg == enginePkg:
+					l = layerHand
+					if el, ok := engineLayers[t]; ok {
+						l = el
 					}
 				case tp == pkg:
 					l = layerHand
