@@ -1,9 +1,11 @@
 name: SQLite source
 
 # The vendored SQLite source, and the vendored SQLite WebAssembly build, must match their archives on
-# sqlite.org and the checksums on its download page. The check downloads from sqlite.org, so it runs
-# only when the vendored files, their manifests, or the update tools change, and not on every change,
-# which would fail whenever sqlite.org is down.
+# sqlite.org and the checksums on its download page, and the corpus of SQL statements, with the
+# parse.y that the tests of the parser read, must be what its update tool extracts from the archives
+# that it pins. The checks download from sqlite.org, so they run only when the vendored files, the
+# corpus, their manifests, or the code that makes them change, and not on every change, which would
+# fail whenever sqlite.org is down.
 on:
   push:
     branches:
@@ -16,6 +18,12 @@ on:
       - internal/sqlite/browser/sqlite3.js
       - internal/sqlite/browser/sqlite3.wasm
       - internal/sqlite/browser/update/**
+      # The corpus's update tool splits statements with the tokenizer and reads the fuzz corpora
+      # with the SQLite binding.
+      - internal/sql/corpus/**
+      - internal/sql/parser/testdata/parse.y
+      - internal/sql/token/**
+      - internal/sqlite/*.go
       - .github/workflows/sqlite-verify.yml
   pull_request:
     branches:
@@ -28,6 +36,12 @@ on:
       - internal/sqlite/browser/sqlite3.js
       - internal/sqlite/browser/sqlite3.wasm
       - internal/sqlite/browser/update/**
+      # The corpus's update tool splits statements with the tokenizer and reads the fuzz corpora
+      # with the SQLite binding.
+      - internal/sql/corpus/**
+      - internal/sql/parser/testdata/parse.y
+      - internal/sql/token/**
+      - internal/sqlite/*.go
       - .github/workflows/sqlite-verify.yml
 
 concurrency:
@@ -56,3 +70,6 @@ jobs:
 
       - name: Verify the vendored SQLite WebAssembly build
         run: make sqlite-browser-verify
+
+      - name: Verify the corpus of SQL statements
+        run: make corpus-verify
