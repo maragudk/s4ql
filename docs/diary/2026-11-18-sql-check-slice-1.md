@@ -97,3 +97,50 @@ The checks that look at a token's content (a reserved name, the type `int`, an o
 ### Future work
 
 None from this step.
+
+## Step 3: The test layers, and moving the grammar generator
+
+**Author:** sql-check-slice-1-builder
+
+### Prompt Context
+
+**Verbatim prompt:** (the same brief) "3. Tests: SQLite is the judge [...] 1. Every accepted statement is checked against SQLite for meaning, not only for syntax. [...] 2. Agreement on syntax errors: on the whole corpus [...], its one-token mutants [...], and sentences from the parser's grammar generator [...] 3. A generator of slice 1 [...] 4. Mutants of supported statements [...] 5. The allow-list holds [...] 6. Hand-written tests [...] 7. Fuzzing [...] 8. Mutation testing of the new package"
+**Interpretation:** One function, `verify`, that holds any text to SQLite, called from every layer; and a generator of slice 1 whose statements carry the typed form they must give.
+**Inferred intent:** A supported statement is never taken on trust: for each one, SQLite runs it and the typed form must describe what SQLite did.
+
+### What I did
+
+I moved the grammar parser and the sentence generator from `/internal/sql/parser/grammar_test.go` into `/internal/sql/parsetest/grammar.go`, exported (`ParseGrammar`, `NewGenerator`, `Sentence`, `IntN`, `Used`), and changed the parser's `TestGrammar`, `TestGenerate`, `FuzzGenerate`, and `TestRuleCoverage` to use it, with the same random stream. Then I wrote the tests of `/internal/sql/stmt`: `verify` in `check_test.go`, `checkMeaning` in `stmt_test.go`, the generator of slice 1 in `generate_test.go`, the allow-list test in `vocabulary_test.go`, and the hand-written cases. `verify` reads the vocabulary of "not supported" from the README, so the README is the list that the tests hold the code to.
+
+### Why
+
+The brief's second layer needs sentences of the grammar outside the parser's tests, and duplicating 300 lines of generator would let two copies drift.
+
+### What worked
+
+- The corpus: 139,234 texts and the 44,460 prefixes before a byte that is rejected before parsing; 729 supported (3 CREATE TABLE, 192 DROP TABLE, 184 INSERT, 350 SELECT), all of them checked in SQLite. Every supported text looks right on reading: they are plain statements of the corpus, and `INSERT INTO t1( current_date ) VALUES(1)` (CURRENT_DATE as a column name) and `INSERT INTO echo_abc(rowid) VALUES(31427)` (a real column named rowid in a WITHOUT ROWID table) pass the check of meaning too.
+- 100,000 mutants of the generator: 80,514 syntax errors, 8,249 not supported, 11,234 supported. The supported ones are all the same statement with a semicolon or comment changed, or the same form with another name (a keyword from the mutation pool) or with the sign dropped. None is another kind of statement.
+- The allow-list test found one field that the parser can never set, `Drop.IfExists.Not` (DROP has IF EXISTS, never IF NOT EXISTS), and nothing else missing.
+
+### What didn't work
+
+- `\v` in a gap gave `unrecognized token: ""` (step 2).
+- The first decoy table of `checkMeaning` was named `t + "_other"`, and for the table `sqlite` that gave `sqlite: object name reserved for internal use: sqlite_other (code 1)`. The decoy is now `"other_" + t`.
+- `golangci-lint` flagged `verify(t, c.src)` with errcheck, since `verify` returned an error that the callers dropped; `verify` now returns no error.
+- Requiring a syntax error only where the oracle says `SyntaxError` failed on the known gap: `create table full (virtual int primary key collate STRICT, without rowid;; ...` gives `near ";": syntax error` from the parser and `no such collation sequence: STRICT` (NotSaid, stopped early) from SQLite. The tests count such texts apart, as "syntax error where SQLite does not say".
+
+### What I learned
+
+The corpus holds 44,460 texts with a NUL byte or a byte that is not UTF-8, most from `fuzz.txt`. Without the prefixes before such a byte, the agreement on syntax errors would see only a third of the corpus.
+
+### What was tricky
+
+The generator must write a gap between two words but may write none between a word and punctuation, and a gap must never begin with `-` after a minus sign, where it would make a comment. None of the gaps does.
+
+### What warrants review
+
+`checkMeaning`: each kind of statement checks both what SQLite stores and the error messages that print each form of a name.
+
+### Future work
+
+None from this step.
