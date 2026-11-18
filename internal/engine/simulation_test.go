@@ -1072,8 +1072,8 @@ func TestSimulationSeed(t *testing.T) {
 	}
 }
 
-// TestSimulation_plantedBugs runs the workload with each planted bug until it finds the bug in two
-// seeds, and the same seeds without the bug, which find nothing.
+// TestSimulation_plantedBugs runs the workload with each planted bug until it finds the bug by its own
+// violation in two seeds, and the same seeds without the bug, which find nothing.
 func TestSimulation_plantedBugs(t *testing.T) {
 	limit := simSeeds(t, 100)
 	// The workload of each bug, and the violation that finds it: the check of an insert in a read
@@ -1081,7 +1081,8 @@ func TestSimulation_plantedBugs(t *testing.T) {
 	bugs := []struct {
 		name string
 		w    workload
-		// finds holds a part of each violation that the bug causes.
+		// finds holds a part of each violation that the bug causes, its own violation first, which the
+		// bug must cause in two seeds at least.
 		finds []string
 	}{
 		{"skipUnique", defaultWorkload, []string{"fails in SQLite: 19/1555: UNIQUE constraint failed"}},
@@ -1097,8 +1098,9 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		t.Run(bug, func(t *testing.T) {
 			w := b.w
 			w.bugs = []string{bug}
-			found, seeds := 0, uint64(0)
-			for seed := uint64(0); seed < limit && (found < 2 || os.Getenv("S4QL_ENGINE_SIM_SEEDS") != ""); seed++ {
+			// own is the number of seeds that find the bug by its own violation.
+			found, own, seeds := 0, 0, uint64(0)
+			for seed := uint64(0); seed < limit && (own < 2 || os.Getenv("S4QL_ENGINE_SIM_SEEDS") != ""); seed++ {
 				seeds++
 				if v := simulate(t, seed, w).violations(); len(v) > 0 {
 					if !slices.ContainsFunc(v, func(v string) bool {
@@ -1110,13 +1112,16 @@ func TestSimulation_plantedBugs(t *testing.T) {
 						t.Logf("seed %v finds: %v", seed, v[0])
 					}
 					found++
+					if slices.ContainsFunc(v, func(v string) bool { return strings.Contains(v, b.finds[0]) }) {
+						own++
+					}
 					if v := simulate(t, seed, b.w).violations(); len(v) > 0 {
 						t.Fatalf("seed %v finds something without the bug: %v", seed, v)
 					}
 				}
 			}
-			t.Logf("%v of %v seeds find the bug", found, seeds)
-			is.True(t, found >= 2, "the bug is found too rarely")
+			t.Logf("%v of %v seeds find the bug, %v of them by %q", found, seeds, own, b.finds[0])
+			is.True(t, own >= 2, fmt.Sprintf("the bug is found by %q too rarely", b.finds[0]))
 		})
 	}
 }
