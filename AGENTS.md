@@ -81,7 +81,7 @@ When Markus exports a conversation, move the export into `docs/conversations/` a
 The exports in `docs/conversations/` are the full record of the lead's conversations with Markus, up to the moment of each export.
 
 - **Why:** a compacted session and a new session start from a summary, and a summary leaves things out. Markus asked on 2026-11-18 for a note that the conversations can always be found there, "in case the compacted session leaves out details".
-- **How to apply:** when a detail is missing after a compaction or in a new session, such as the exact wording of a decision or the reason for it, search the exports before guessing or asking Markus again. Search them with a sub-agent or with `grep`, and do not read a whole export into context, because they are large. What is in `docs/spec.md`, `docs/roadmap.md`, and `docs/todo.md` is newer than a conversation where they differ.
+- **How to apply:** when a detail is missing after a compaction or in a new session, such as the exact wording of a decision or the reason for it, search the exports before guessing or asking Markus again. Spawn a small sub-agent for the search and have it report only the answer, with the quote that supports it. Do not read an export into your own context, because they are large. Markus on 2026-11-18: "That's also a good use case for a small subagent." What is in `docs/spec.md`, `docs/roadmap.md`, and `docs/todo.md` is newer than a conversation where they differ.
 
 ### JSON is handled with `encoding/json/v2`
 
