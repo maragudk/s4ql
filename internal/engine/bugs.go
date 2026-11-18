@@ -17,4 +17,6 @@ type bugs struct {
 	checkOutside bool
 	// keepOpen makes a write statement that fails leave its write transaction open.
 	keepOpen bool
+	// keepRead makes [Rows.Close] of rows that no loop has read leave the read transaction open.
+	keepRead bool
 }

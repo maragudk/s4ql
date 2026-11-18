@@ -16,6 +16,7 @@ var plantable = map[string]func(b *bugs){
 	"ackUnknown":   func(b *bugs) { b.ackUnknown = true },
 	"checkOutside": func(b *bugs) { b.checkOutside = true },
 	"keepOpen":     func(b *bugs) { b.keepOpen = true },
+	"keepRead":     func(b *bugs) { b.keepRead = true },
 }
 
 // The names of the event and of its attributes, for the tests of the telemetry.

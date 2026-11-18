@@ -214,6 +214,15 @@ func TestEngine_write(t *testing.T) {
 		_, err = newTestEngine(f, bugs{keepOpen: true}).Exec(t.Context(), "drop table t")
 		is.True(t, err != nil)
 		is.Equal(t, 1, f.open)
+
+		f = newFake().with("t1", []string{"v1"})
+		rows, err := newTestEngine(f, bugs{keepRead: true}).Query(t.Context(), "select * from t1")
+		is.NotError(t, err)
+		is.NotError(t, rows.Close())
+		is.Equal(t, 1, f.open)
+		rows, err = newTestEngine(f, bugs{keepRead: true}).Query(t.Context(), "drop table t1")
+		is.NotError(t, err)
+		is.NotError(t, rows.Close())
 	})
 
 	t.Run("should check an insert in a read transaction of its own, and write without the check, with the planted bug", func(t *testing.T) {

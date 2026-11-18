@@ -342,6 +342,10 @@ func (r *Rows) Close() error {
 		r.endErr = nil
 		return err
 	}
+	if r.report != nil && r.report.e.bugs.keepRead {
+		// The planted bug: the rows are closed, and their read transaction is left open.
+		return nil
+	}
 	return r.end(nil)
 }
 

@@ -219,10 +219,13 @@ func (h handler) Handle(ctx context.Context, rec slog.Record) error {
 	return nil
 }
 
+// simReaders is the number of read connections of an instance of the simulation.
+const simReaders = 2
+
 // open the database of n on its cache, with its engine.
 func (r *run) open(ctx context.Context, n *node) error {
 	d, err := core.Open(ctx, n.inst, n.client, n.path, "db", core.Options{
-		Readers:       2,
+		Readers:       simReaders,
 		BusyTimeout:   time.Minute,
 		ObjectTimeout: 10 * time.Second,
 		Lease:         n.lease,
@@ -556,14 +559,54 @@ func (w workload) do(ctx context.Context, world *sim.Scheduler, dir string, t te
 	if !served && len(live) > 0 {
 		r.violate(ctx, "no instance runs a write ten minutes after the end of the workload")
 	}
-	for _, n := range live {
-		n.do(ctx, "closer", func(ctx context.Context) { r.close(ctx, n) })
-	}
+	r.takeReaders(ctx, live)
 	if err := r.store.Wait(ctx); err != nil {
 		r.violate(ctx, "wait for the store: %v", err)
 	}
 	r.verify(ctx)
 	return r
+}
+
+// takeReaders of each live instance, and close it: no statement of the workload may leave a read
+// transaction open. An instance takes all its read connections at once only while it holds the lease,
+// so each instance that has taken them is closed, which releases the lease for the next. An instance
+// that has not taken them within ten minutes is a violation.
+func (r *run) takeReaders(ctx context.Context, live []*node) {
+	errs := map[*node]error{}
+	for start := r.world.Monotonic(); len(live) > 0 && r.world.Monotonic()-start < 10*time.Minute; {
+		var left []*node
+		for _, n := range live {
+			n.do(ctx, "readers", func(ctx context.Context) {
+				wait, cancel := n.inst.WithTimeout(ctx, r.w.timeout)
+				defer cancel()
+				d, _ := n.current()
+				var txs []*core.ReadTx
+				for range simReaders {
+					tx, err := d.Read(wait)
+					if err != nil {
+						errs[n] = err
+						break
+					}
+					txs = append(txs, tx)
+				}
+				for _, tx := range txs {
+					_ = tx.Close(ctx)
+				}
+				if len(txs) == simReaders {
+					r.close(ctx, n)
+					return
+				}
+				left = append(left, n)
+			})
+		}
+		if live = left; len(live) > 0 {
+			_ = r.world.Sleep(ctx, time.Second)
+		}
+	}
+	for _, n := range live {
+		r.violate(ctx, "%v does not take its %v read connections ten minutes after the end of the workload: %v", n.name, simReaders, errs[n])
+		n.do(ctx, "closer", func(ctx context.Context) { r.close(ctx, n) })
+	}
 }
 
 // logCommit is a commit object of the log: its name and the texts of its annotations.
@@ -875,6 +918,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		{"ackUnknown", defaultWorkload, "is not in the log"},
 		{"checkOutside", hammerWorkload, "fails in SQLite: 19/1555: UNIQUE constraint failed"},
 		{"keepOpen", defaultWorkload, "no instance runs a write"},
+		{"keepRead", defaultWorkload, "read connections ten minutes after the end of the workload"},
 	}
 	for _, b := range bugs {
 		bug := b.name
