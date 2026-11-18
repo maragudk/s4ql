@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"os"
 	"runtime"
 	"runtime/metrics"
@@ -472,10 +473,14 @@ func TestClient_content(t *testing.T) {
 		// guard of the client does too, so this shows the two together.
 		f := newFake(t)
 		held := make(chan struct{})
-		t.Cleanup(func() { close(held) })
+		release := sync.OnceFunc(func() { close(held) })
+		t.Cleanup(release)
 		f.hook = func(w http.ResponseWriter, r *http.Request, f *fake) bool {
 			// The answer comes before the body is read, and the connection stays open without
-			// reading it, so that the transport goes on sending the body after the answer.
+			// reading it, so that the transport goes on sending the body after the answer. When the
+			// write has returned, the store reads all that comes, so that a transport that goes on
+			// reading the content is not held up by a full buffer of the connection, until the
+			// transport closes the connection.
 			conn, buf, err := http.NewResponseController(w).Hijack()
 			if err != nil {
 				panic(err)
@@ -484,6 +489,7 @@ func TestClient_content(t *testing.T) {
 			_, _ = fmt.Fprintf(buf, "HTTP/1.1 412 Precondition Failed\r\nContent-Type: application/xml\r\nContent-Length: %v\r\n\r\n%v", len(xml), xml)
 			_ = buf.Flush()
 			<-held
+			_, _ = io.Copy(io.Discard, conn)
 			_ = conn.Close()
 			return true
 		}
@@ -491,12 +497,23 @@ func TestClient_content(t *testing.T) {
 		// Below the size at which the SDK asks for 100-continue, so that the body is sent at once,
 		// and slow to read, so that the answer comes while it is being sent.
 		content := &watched{r: bytes.NewReader(make([]byte, 2<<20-1)), delay: time.Millisecond}
-		_, err := c.Create(t.Context(), "k", content, nil)
+		// net/http calls WroteRequest when it has written the request with its body, or has given up
+		// on that, and never reads the body after it. So once it has been called, no read of the
+		// content can come any more, and the test need not wait for one.
+		wrote := make(chan struct{})
+		ctx := httptrace.WithClientTrace(t.Context(), &httptrace.ClientTrace{
+			WroteRequest: func(httptrace.WroteRequestInfo) { close(wrote) },
+		})
+		_, err := c.Create(ctx, "k", content, nil)
 		reading := content.reading.Load()
 		content.returned.Store(true)
 		is.True(t, errors.Is(err, store.ErrExists), fmt.Sprint(err))
 		is.Equal(t, int32(0), reading, "a read of the content was in progress when the write returned")
-		time.Sleep(200 * time.Millisecond)
+		// The store now reads what comes, so that a transport that would go on reading the content
+		// can, and the transport ends the request, by sending the rest of the content or by failing
+		// to read it.
+		release()
+		<-wrote
 		is.Equal(t, int32(0), content.late.Load(), "the content was read after the write returned")
 	})
 
