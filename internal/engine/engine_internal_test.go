@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"testing"
+	"time"
 
 	"maragu.dev/is"
 
@@ -52,7 +53,40 @@ func (h *recorder) last() string {
 	return fmt.Sprint(e)
 }
 
+// ticking is a host whose monotonic clock moves by a second at each reading.
+type ticking struct {
+	host.Host
+	now time.Duration
+}
+
+func (h *ticking) Monotonic() time.Duration {
+	h.now += time.Second
+	return h.now
+}
+
 func TestEngine_report(t *testing.T) {
+	t.Run("should give the duration from the start of the statement to its end, the kind of a drop, and no text at Warn", func(t *testing.T) {
+		h := &recorder{}
+		f := newFake().with("t1", []string{"v1"})
+		clock := &ticking{Host: host.New(), now: time.Hour}
+		e := newEngine(f, clock, Options{Logger: slog.New(h)})
+		_, err := e.Exec(t.Context(), "drop table T1")
+		is.NotError(t, err)
+		last := h.events[len(h.events)-1]
+		is.Equal(t, "1s", last[attrDuration])
+		is.Equal(t, "drop_table", last[attrKind])
+		is.Equal(t, "T1", last[attrTable])
+		is.Equal(t, "drop table T1", last[attrSQL])
+
+		f.beginFails = core.ErrBusy
+		_, err = e.Exec(t.Context(), "drop table t1")
+		is.True(t, errors.Is(err, core.ErrBusy))
+		last = h.events[len(h.events)-1]
+		is.Equal(t, "core_error", last[attrOutcome])
+		_, ok := last[attrSQL]
+		is.True(t, !ok, "the text at Warn")
+	})
+
 	empty := format.EmptyLog.String()
 	t.Run("should give the position, the rows, and the outcome of each path in the event", func(t *testing.T) {
 		h := &recorder{}

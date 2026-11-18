@@ -128,7 +128,7 @@ func (r *report) end(ctx context.Context, err error) {
 	if !r.e.log.Enabled(ctx, level) {
 		return
 	}
-	attrs := make([]slog.Attr, 0, 12)
+	var attrs []slog.Attr
 	if r.kind != "" {
 		attrs = append(attrs, slog.String(attrKind, r.kind), slog.String(attrTable, r.table))
 	}
