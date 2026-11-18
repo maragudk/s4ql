@@ -187,3 +187,26 @@ See the later steps.
 
 - A shared package for finding and starting Chromium, for the runner and `sitecheck`.
 - Random faults of processes from the seed, if Markus wants them.
+
+## Step 4: The brief to simplify the page
+
+**Author:** builder (simpler simulator page)
+
+### Prompt Context
+
+**Verbatim prompt:** (the brief from the lead, abridged to its requirements)
+
+> Markus looked at the live page and said: "I think there's too much going on. Let's just have the three instances, a stream of reads and writes, pause/play and the speedup selection, and then let the user inject faults manually. No buggify, no seeds etc." He then refined it.
+>
+> - **Two instances**, not three: "Maybe even just two instances, since one long-running instance is what it's built for? I don't want to give people the impression this is some sort of distributed database."
+> - A stream of reads and writes runs by itself. Play/pause and the speed stay. Faults are injected by hand only: no random faults, no buggify.
+> - No seed anywhere on the page, and no link: "Doesn't need to be replayable. The aim is to let users see what happens under regular runs and various faults." A random seed below 2^53 for each visit, shown nowhere; a fragment from an old link is ignored without a note.
+> - Keep the event log and the bucket. Remove the scrubber and Back/Step, the checker's chip and panel, the settings, the schedule list, and Copy link.
+> - The run keeps going: ask the engine for a longer run ahead of time, stop at a limit where a re-run would become noticeable, about 10 fake minutes unless measured better, and offer "Start over" there, with a new seed.
+> - The lead's details: "Start over" always available; fewer faults (per instance: crash and restart, cut off from S3, the clock faults a visitor can understand; for S3: an outage, and losing the answer to the next commit); the refusals of the instance without the lease must not flood the log or suggest that two instances serve; a shorter intro; "Things to try" only if true for every seed.
+> - A refinement in the site's visual world with the `impeccable:impeccable` skill (`distill`), checked at 1440, 1280, and 390 wide; the first viewport on a laptop shows the running simulation.
+> - Delete what the page no longer uses. The engine, `internal/core`, `internal/sim`, `internal/store/simstore`, and `docs/spec.md` stay as they are. `sitecheck` checks the new page; `make site-check` passes many times in a row.
+
+**Interpretation:** rebuild the page on the same engine as a calm view of two instances and S3: one serves a workload, the other stands by, the visitor adds a few faults, and the run extends itself to 10 min of fake time.
+
+**Inferred intent:** a visitor understands in a minute what s4ql's storage does when its one instance fails, without learning the controls of a test tool, and without taking s4ql for a distributed database.
