@@ -42,12 +42,14 @@ fuzz:
 generate:
 	$(BUF) generate
 
-# lint also runs lint-proto, and the lint for code that runs under the simulation, from
-# internal/simlint. That lint is a module of its own, so that its dependencies stay out of the
-# library's, and is built there and run here.
+# lint also runs lint-proto, the lint for code that runs under the simulation, from
+# internal/simlint, and golangci-lint over the browser's build of BROWSERPKGS, whose files a native
+# run does not see. The simulation's lint is a module of its own, so that its dependencies stay out
+# of the library's, and is built there and run here.
 .PHONY: lint
 lint:
 	golangci-lint run
+	GOOS=js GOARCH=wasm golangci-lint run --build-tags s4ql_browser $(BROWSERPKGS)
 	cd $(CROSSCHECK) && golangci-lint run
 	cd $(SIMLINT) && golangci-lint run
 	dir=$$(mktemp -d) && (cd $(SIMLINT) && go build -o $$dir/simlint ./cmd/simlint) && $$dir/simlint ./...; \
@@ -74,6 +76,19 @@ mutation:
 sqlite-update:
 	go run ./internal/sqlite/update -version $(VERSION)
 
+# sqlite-browser-update vendors the official SQLite WebAssembly build of VERSION into
+# internal/sqlite/browser, such as make sqlite-browser-update VERSION=3.54.1. It is the version of the
+# amalgamation, which the browser's tests require.
+.PHONY: sqlite-browser-update
+sqlite-browser-update:
+	go run ./internal/sqlite/browser/update -version $(VERSION)
+
+# sqlite-browser-verify downloads the vendored SQLite WebAssembly build again and checks it against
+# the vendored files.
+.PHONY: sqlite-browser-verify
+sqlite-browser-verify:
+	go run ./internal/sqlite/browser/update -verify
+
 # sqlite-verify downloads the vendored SQLite amalgamation again and checks it against the vendored files.
 .PHONY: sqlite-verify
 sqlite-verify:
@@ -84,6 +99,37 @@ test:
 	go test -coverprofile cover.out -shuffle on ./...
 	cd $(CROSSCHECK) && go test -shuffle on ./...
 	cd $(SIMLINT) && go test -shuffle on ./...
+
+# BROWSERPKGS are the packages that build for GOOS=js GOARCH=wasm with the tag s4ql_browser, on the
+# official SQLite WebAssembly build in internal/sqlite/browser; see its README.
+BROWSERPKGS ?= ./internal/sqlite ./internal/sqlite/faultvfs ./internal/core ./internal/sim ./internal/store/simstore
+BROWSER := GOOS=js GOARCH=wasm go
+BROWSERTIMEOUT ?= 30m
+# BROWSERSKIP are the tests that cannot pass in a browser for a reason in the route, and that
+# test-browser skips. Two canaries in internal/sim/cgo_test.go run eight goroutines that read in a
+# loop that never blocks, beside a writer. Go's js/wasm port has one thread and no preemption, so
+# the first such goroutine runs alone for good, and the test hangs; measured in Chromium, where it
+# never ended. A canary about calls into C and real parallelism has nothing to measure there.
+BROWSERSKIP ?= TestSynctestWithCgo/among_parallel_readers
+
+# check-browser builds and vets BROWSERPKGS for the browser, and compiles their tests, so that the
+# browser's binding cannot drift from the cgo binding's API unnoticed. It needs no browser.
+.PHONY: check-browser
+check-browser:
+	$(BROWSER) build -tags s4ql_browser $(BROWSERPKGS)
+	$(BROWSER) vet -tags s4ql_browser $(BROWSERPKGS)
+	dir=$$(mktemp -d) && for pkg in $(BROWSERPKGS); do \
+		$(BROWSER) test -tags s4ql_browser -c -o $$dir/ $$pkg || { rm -rf $$dir; exit 1; }; \
+	done; rm -rf $$dir
+
+# test-browser runs the tests of BROWSERPKGS in headless Chromium, through the runner in
+# internal/sqlite/browser as the -exec program of go test. BROWSERFLAGS go to go test, such as
+# BROWSERFLAGS='-run TestSimulation -v'.
+.PHONY: test-browser
+test-browser:
+	dir=$$(mktemp -d) && go build -o $$dir/browser ./internal/sqlite/browser && \
+		$(BROWSER) test -tags s4ql_browser -exec $$dir/browser -timeout $(BROWSERTIMEOUT) -skip '$(BROWSERSKIP)' $(BROWSERFLAGS) $(BROWSERPKGS); \
+		status=$$?; rm -rf $$dir; exit $$status
 
 # test-asan runs all tests, and then each fuzz test for FUZZTIME, under the C address sanitizer. Go
 # supports -asan on Linux only, so elsewhere it runs in a Linux container with Docker, with Docker

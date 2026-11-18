@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>s4ql in a browser</title>
+</head>
+<body>
+<p>The Go program runs in a Worker; its output goes to the runner.</p>
+<script>
+'use strict';
+const worker = new Worker('worker.js');
+worker.addEventListener('error', (e) => {
+  fetch('exit?code=3&error=' + encodeURIComponent(e.message || 'the Worker failed to start'), { method: 'POST' });
+});
+</script>
+</body>
+</html>

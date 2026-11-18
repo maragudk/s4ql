@@ -143,3 +143,40 @@ jobs:
       - name: Show the inputs that made a fuzz test fail
         if: failure()
         run: find . -path '*/testdata/fuzz/*' -type f -print -exec cat {} \;
+
+  # The storage core also runs in a web browser, on the official SQLite WebAssembly build, through a
+  # second implementation of the binding behind the tag s4ql_browser. A native build does not see its
+  # files, so this job builds, vets, and lints them, and compiles the tests of every package that runs
+  # in a browser, which fails on any drift from the API of the cgo binding. It then runs the tests in
+  # headless Chrome, which the runner image has.
+  browser:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Build, vet, and compile the tests for the browser
+        run: make check-browser
+
+      - name: Lint the browser's build
+        uses: golangci/golangci-lint-action@v9
+        env:
+          GOOS: js
+          GOARCH: wasm
+        with:
+          version: latest
+          args: --build-tags s4ql_browser ./internal/sqlite ./internal/sqlite/faultvfs ./internal/core ./internal/sim ./internal/store/simstore
+
+      # Chrome's sandbox needs user namespaces, which the runner may not allow, and the page runs only
+      # the project's own code from 127.0.0.1.
+      - name: Test in headless Chrome
+        env:
+          S4QL_CHROMIUM_FLAGS: --no-sandbox
+        run: make test-browser
