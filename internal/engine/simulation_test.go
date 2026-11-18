@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -126,6 +127,8 @@ type attempt struct {
 	acked int
 	// partial is set for a query whose rows were not read to their end.
 	partial bool
+	// reason why a statement failed: no lease, stopped, timeout, or canceled.
+	reason string
 }
 
 // idKey is the key of the context of a statement that holds its attempt.
@@ -140,6 +143,8 @@ type node struct {
 	client *simstore.Client
 
 	callers   atomic.Int64
+	// running is the number of statements that the node's callers run.
+	running atomic.Int64
 	reopening atomic.Bool
 
 	mu sync.Mutex
@@ -178,6 +183,15 @@ type run struct {
 	q *sequence
 	// crashed databases, which stay open: see [run.crash].
 	crashed []*core.DB
+	// events of the run that are not statements: crashes, closes, and restarts, by kind.
+	events map[string]int
+}
+
+// event of the run of the kind, which [run.events] counts.
+func (r *run) event(kind string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events[kind]++
 }
 
 func (r *run) violate(ctx context.Context, format string, args ...any) {
@@ -274,8 +288,8 @@ func withID(src string, id uint64) string {
 	return src[:at] + fmt.Sprint(" /* id ", id, " */ ") + src[at:]
 }
 
-// statement runs one statement of the sequence q on the engine e of n, and records it.
-func (r *run) statement(ctx context.Context, n *node, e *engine.Engine, q *sequence) {
+// statement runs one statement of the sequence q on the engine e of n, records it, and gives it.
+func (r *run) statement(ctx context.Context, n *node, e *engine.Engine, q *sequence) *attempt {
 	src, query, supported := q.next()
 	r.mu.Lock()
 	r.nextID++
@@ -289,6 +303,8 @@ func (r *run) statement(ctx context.Context, n *node, e *engine.Engine, q *seque
 	r.order = append(r.order, a)
 	r.mu.Unlock()
 	ctx = context.WithValue(ctx, idKey{}, a.id)
+	n.running.Add(1)
+	defer n.running.Add(-1)
 
 	var got answer
 	var err error
@@ -344,8 +360,14 @@ func (r *run) statement(ctx context.Context, n *node, e *engine.Engine, q *seque
 		}
 	case errors.Is(err, core.ErrOutcomeUnknown):
 		a.state = unknown
-	case errors.Is(err, core.ErrNoLease), errors.Is(err, core.ErrStopped), errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
-		a.state = failed
+	case errors.Is(err, core.ErrNoLease):
+		a.state, a.reason = failed, "no lease"
+	case errors.Is(err, core.ErrStopped):
+		a.state, a.reason = failed, "stopped"
+	case errors.Is(err, context.DeadlineExceeded):
+		a.state, a.reason = failed, "timeout"
+	case errors.Is(err, context.Canceled):
+		a.state, a.reason = failed, "canceled"
 	default:
 		a.state = failed
 		r.mu.Unlock()
@@ -353,6 +375,7 @@ func (r *run) statement(ctx context.Context, n *node, e *engine.Engine, q *seque
 		r.mu.Lock()
 	}
 	r.world.Trace(ctx, "statement %v ends as %v: %v", a.id, a.state, err)
+	return a
 }
 
 // readRows of a query to their end.
@@ -406,9 +429,21 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 				}
 				// Every statement has a timeout, as a request of an application has, of up to timeout, so
 				// that a commit can end with its outcome unknown.
-				ctx, cancel := inst.WithTimeout(ctx, time.Duration(1+rnd.IntN(int(r.w.timeout/time.Millisecond)))*time.Millisecond)
-				r.statement(ctx, n, e, r.q)
+				sctx, cancel := inst.WithTimeout(ctx, time.Duration(1+rnd.IntN(int(r.w.timeout/time.Millisecond)))*time.Millisecond)
+				a := r.statement(sctx, n, e, r.q)
 				cancel()
+				if a.reason == "no lease" {
+					// The caller of an instance that does not serve waits until it serves, for up to two
+					// minutes, and then stops, as the client of an application behind a check of its health
+					// would turn to another instance, so that most statements reach a transaction.
+					d, _ := n.current()
+					wctx, cancel := inst.WithTimeout(ctx, 2*time.Minute)
+					err := d.Wait(wctx)
+					cancel()
+					if err != nil {
+						return
+					}
+				}
 			}
 		}))
 	}
@@ -444,6 +479,7 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 					return
 				}
 				r.world.Trace(ctx, "%v is closed and opened again", n.name)
+				r.event("close and open")
 				r.close(ctx, n)
 				if err := r.open(ctx, n); err != nil {
 					r.violate(ctx, "open %v again: %v", n.name, err)
@@ -460,14 +496,28 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 // can close the cache of a crashed instance, so the address sanitizer, which reports what is left
 // open, runs no crashes.
 func (r *run) crash(ctx context.Context, i int) []host.Task {
-	r.mu.Lock()
+	// The victim is a node that runs a statement, if one does within ten seconds, so that a crash
+	// often cuts a statement.
 	var live []*node
-	for _, n := range r.nodes {
-		if !n.inst.Crashed() {
-			live = append(live, n)
+	for range 200 {
+		live = nil
+		var running []*node
+		r.mu.Lock()
+		for _, n := range r.nodes {
+			if !n.inst.Crashed() {
+				live = append(live, n)
+				if n.running.Load() > 0 {
+					running = append(running, n)
+				}
+			}
 		}
+		r.mu.Unlock()
+		if len(running) > 0 {
+			live = running
+			break
+		}
+		_ = r.world.Sleep(ctx, 50*time.Millisecond)
 	}
-	r.mu.Unlock()
 	if len(live) == 0 {
 		return nil
 	}
@@ -481,6 +531,7 @@ func (r *run) crash(ctx context.Context, i int) []host.Task {
 	path := filepath.Join(r.dir, name+".db")
 	empty := r.world.Uint64()%2 == 0
 	r.world.Trace(ctx, "%v crashes, and %v starts on %v", victim.name, name, map[bool]string{true: "an empty cache", false: "a copy of its cache"}[empty])
+	r.event(map[bool]string{true: "crash, then an empty cache", false: "crash, then a copy of the cache"}[empty])
 	if !empty {
 		if err := copyCache(victim.path, path); err != nil {
 			r.violate(ctx, "copy of the cache: %v", err)
@@ -511,7 +562,7 @@ func copyCache(from, to string) error {
 
 // do the workload, and check what happened: see [run.verify].
 func (w workload) do(ctx context.Context, world *sim.Scheduler, dir string, t testing.TB) *run {
-	r := &run{t: t, w: w, world: world, dir: dir, attempts: map[uint64]*attempt{},
+	r := &run{t: t, w: w, world: world, dir: dir, attempts: map[uint64]*attempt{}, events: map[string]int{},
 		store: simstore.New(world, simstore.Options{Latency: 50 * time.Millisecond, Faults: w.faults}), q: newSequenceFrom(hostRand{world})}
 	var tasks []host.Task
 	for i := range w.instances {
@@ -852,8 +903,29 @@ func simSeeds(t *testing.T, n int) uint64 {
 	return uint64(n)
 }
 
+// tallyOf the run r: its statements by how they ended, its writes that were acknowledged, its
+// queries that were not read to their end, its commits, and its other events.
+func tallyOf(r *run) map[string]int {
+	counts := maps.Clone(r.events)
+	for _, a := range r.order {
+		counts[a.state.String()]++
+		if a.reason != "" {
+			counts[fmt.Sprint(a.state, ": ", a.reason)]++
+		}
+		if a.partial {
+			counts["query not read to its end"]++
+		}
+	}
+	counts["acknowledged writes"] = len(r.acked)
+	counts["commits"] = len(readLog(r.store))
+	return counts
+}
+
 // TestSimulation runs the default workload and the hammer workload for many seeds each, and twice
-// for some, whose traces must be the same.
+// for some, whose traces must be the same. In a run of at least 50 seeds, every kind of outcome and
+// of event must occur at least as often as reached says, for each seed: a third or less of what the
+// first 1,000 seeds give, so that the test fails when a kind stops happening, and not by chance. The
+// seeds are the same in every run, so the counts are too.
 func TestSimulation(t *testing.T) {
 	n := simSeeds(t, 50)
 	if slow() {
@@ -862,7 +934,19 @@ func TestSimulation(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		w    workload
-	}{{"default", defaultWorkload}, {"hammer", hammerWorkload}} {
+		// reached is the least number of each kind for each seed.
+		reached map[string]float64
+	}{
+		{"default", defaultWorkload, map[string]float64{
+			"succeeded": 4, "SQLite's error": 6, "unknown": 0.15, "pending": 0.25, "skipped": 1, "failed: no lease": 1.5,
+			"failed: stopped": 0.04, "failed: timeout": 0.25, "query not read to its end": 0.5, "acknowledged writes": 2.5,
+			"commits": 2.5, "crash, then an empty cache": 0.12, "crash, then a copy of the cache": 0.12, "close and open": 0.4,
+		}},
+		{"hammer", hammerWorkload, map[string]float64{
+			"succeeded": 12, "SQLite's error": 17, "unknown": 0.4, "skipped": 2.5, "failed: no lease": 2,
+			"failed: timeout": 3, "query not read to its end": 1.5, "acknowledged writes": 6, "commits": 6,
+		}},
+	} {
 		t.Run(c.name, func(t *testing.T) {
 			counts := map[string]int{}
 			for seed := range n {
@@ -870,10 +954,9 @@ func TestSimulation(t *testing.T) {
 				if v := s.violations(); len(v) > 0 {
 					t.Fatalf("seed %v: %v", seed, strings.Join(v, "\n"))
 				}
-				for _, a := range s.r.order {
-					counts[a.state.String()]++
+				for k, v := range tallyOf(s.r) {
+					counts[k] += v
 				}
-				counts["commits"] += len(readLog(s.r.store))
 				counts["trace lines"] += len(s.lines)
 				if seed < 3 {
 					again := simulate(t, seed, c.w)
@@ -881,6 +964,14 @@ func TestSimulation(t *testing.T) {
 				}
 			}
 			t.Logf("%v seeds: %v", n, counts)
+			if n < 50 {
+				return
+			}
+			for kind, least := range c.reached {
+				if want := int(least * float64(n)); counts[kind] < want {
+					t.Errorf("%v seeds give %v of %q, and at least %v were expected: something that the workload did stopped happening", n, counts[kind], kind, want)
+				}
+			}
 		})
 	}
 }
