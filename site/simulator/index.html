@@ -672,7 +672,7 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
         <li><span>Watch the default run. b takes the lease and commits until it crashes at 0:40. Once b's lease has run out, another instance takes it over and starts to catch up from the log in S3.</span></li>
         <li><span>Pause, arm "Lose its answer" for the next commit under "Faults and actions", and write on the instance that holds the lease. S3 handles the swap, but its answer never arrives, so the core does not know whether its commit went through. It asks S3 again until it knows.</span></li>
         <li><span>Cut the writer off from S3 for 40 s. It stops serving once its lease runs out by its own clocks, and another instance takes over.</span></li>
-        <li><span>Stop the monotonic clock of the writer and shift its wall clock back. Its lease then lives too long by its own clocks. The design accepts that a read on it may miss a commit, and the checker excuses such a read. An acknowledged write is never lost.</span></li>
+        <li><span>Stop the monotonic clock of the writer and shift its wall clock back. By its own clocks, its lease then lasts too long. The design accepts that a read on it may miss a commit, and the checker excuses such a read. An acknowledged write is never lost.</span></li>
         <li><span>Switch on buggify under Settings and try new seeds. Marked points of the core then do legal but unusual things.</span></li>
       </ol>
     </div>

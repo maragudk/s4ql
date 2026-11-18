@@ -20,6 +20,15 @@
         ],
         "createdAt": "2026-11-18T14:35:36.529Z",
         "reason": "lead decided: a bare demo page for testing the simulator engine, not a designed surface"
+      },
+      {
+        "rule": "repeating-stripes-gradient",
+        "value": "*",
+        "files": [
+          "site/simulator/index.html"
+        ],
+        "createdAt": "2026-11-18T16:00:00.000Z",
+        "reason": "maragubot: the stripes are the bars of the site's bar-field identity on buttons and checked checkboxes, as on site/index.html, kept in the refinement of the simulator page"
       }
     ]
   }
