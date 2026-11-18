@@ -29,6 +29,7 @@ import (
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sqlite"
+	"maragu.dev/s4ql/internal/sqlite/faultvfs"
 	"maragu.dev/s4ql/internal/store"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
@@ -874,19 +875,24 @@ func (s *fileStore) manifest(t *testing.T) format.Manifest {
 	return m
 }
 
-// heapWatch samples the heap of the Go runtime while a test runs, and reports how far it grew.
-type heapWatch struct {
-	base uint64
-	peak atomic.Uint64
-	stop chan struct{}
-	done chan struct{}
+// memoryWatch samples the heap of the Go runtime while a test runs, and reads the high-water mark of
+// the memory that SQLite allocates, and reports how far each grew.
+type memoryWatch struct {
+	base   uint64
+	peak   atomic.Uint64
+	sqlite int64
+	stop   chan struct{}
+	done   chan struct{}
 }
 
-func watchHeap() *heapWatch {
+// watchMemory from now on. SQLite's mark counts every connection in the process, so a test that
+// watches it must not run beside another test that uses SQLite.
+func watchMemory() *memoryWatch {
 	runtime.GC()
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
-	w := &heapWatch{base: m.HeapAlloc, stop: make(chan struct{}), done: make(chan struct{})}
+	w := &memoryWatch{base: m.HeapAlloc, stop: make(chan struct{}), done: make(chan struct{})}
+	w.sqlite, _ = sqlite.MemoryUsed(true)
 	go func() {
 		defer close(w.done)
 		ticker := time.NewTicker(2 * time.Millisecond)
@@ -907,11 +913,12 @@ func watchHeap() *heapWatch {
 	return w
 }
 
-// grown is how many bytes the heap held at most above what it held at the start.
-func (w *heapWatch) grown() int64 {
+// grown is how many bytes the heap and SQLite held at most above what they held at the start.
+func (w *memoryWatch) grown() (heap, sqliteHeap int64) {
 	close(w.stop)
 	<-w.done
-	return int64(w.peak.Load()) - int64(w.base)
+	_, highwater := sqlite.MemoryUsed(false)
+	return int64(w.peak.Load()) - int64(w.base), highwater - w.sqlite
 }
 
 func TestTx_Commit_large(t *testing.T) {
@@ -925,12 +932,18 @@ func TestTx_Commit_large(t *testing.T) {
 	// Under the race detector the test is some twenty times slower and the heap is another, so it
 	// runs with a tenth of the rows there, and checks only that the transaction commits and replays.
 	// The same holds under the address sanitizer, where the test would take a minute alone.
+	//
+	// The memory that SQLite itself allocates, for its page caches and for the temporary files that
+	// it keeps in memory, may grow by a fixed number of bytes too. The cache of a connection is the
+	// default of 2000 KiB, and temporary files are on disk, so it grows by some 5 MB whatever the
+	// number of rows. A cache that holds every page, or temporary files in memory, take as much as
+	// the database, some 20 MB with 300,000 rows.
 	instrumented := raceEnabled || asanEnabled
 	rows := 300_000
 	if instrumented {
 		rows = 30_000
 	}
-	const limit, replayLimit = 8 << 20, 48 << 20
+	const limit, replayLimit, sqliteLimit = 8 << 20, 48 << 20, 8 << 20
 	if v := os.Getenv("S4QL_CORE_ROWS"); v != "" {
 		var err error
 		rows, err = strconv.Atoi(v)
@@ -953,7 +966,7 @@ func TestTx_Commit_large(t *testing.T) {
 
 		large := int64(1) << 40
 		start := time.Now()
-		heap := watchHeap()
+		memory := watchMemory()
 		tx, err := d.Begin(t.Context())
 		is.NotError(t, err)
 		is.NotError(t, tx.CreateTable(t.Context(), tableOf("new", 1, "k", "v", "w")))
@@ -965,11 +978,12 @@ func TestTx_Commit_large(t *testing.T) {
 			}
 		}
 		is.NotError(t, tx.Commit(t.Context()))
-		grown := heap.grown()
+		grown, sqliteGrown := memory.grown()
 
 		info, err := os.Stat(s.path(commitKey("db", s.manifest(t).Head)))
 		is.NotError(t, err)
-		t.Logf("a transaction of %v rows gave a commit object of %v bytes in %v, and the heap grew by at most %v bytes", 2*rows, info.Size(), time.Since(start).Round(time.Millisecond), grown)
+		t.Logf("a transaction of %v rows gave a commit object of %v bytes in %v, the heap grew by at most %v bytes, and the memory of SQLite by %v", 2*rows, info.Size(), time.Since(start).Round(time.Millisecond), grown, sqliteGrown)
+		is.True(t, sqliteGrown < sqliteLimit, fmt.Sprintf("the memory of SQLite grew by %v bytes for a commit object of %v bytes", sqliteGrown, info.Size()))
 		if !instrumented {
 			is.True(t, info.Size() > 2*limit, "the commit object is too small to tell anything")
 			is.True(t, grown < limit, fmt.Sprintf("the heap grew by %v bytes for a commit object of %v bytes", grown, info.Size()))
@@ -978,13 +992,14 @@ func TestTx_Commit_large(t *testing.T) {
 
 		// An empty cache replays the commit object, and holds no more of it in memory.
 		start = time.Now()
-		heap = watchHeap()
+		memory = watchMemory()
 		replayed, err := core.Open(t.Context(), h, s, filepath.Join(dir, "b.db"), "db", core.Options{})
 		is.NotError(t, err)
 		defer func() { _ = replayed.Close(context.WithoutCancel(t.Context())) }()
 		is.NotError(t, replayed.Wait(t.Context()))
-		grown = heap.grown()
-		t.Logf("the replay took %v, and the heap grew by at most %v bytes", time.Since(start).Round(time.Millisecond), grown)
+		grown, sqliteGrown = memory.grown()
+		t.Logf("the replay took %v, the heap grew by at most %v bytes, and the memory of SQLite by %v", time.Since(start).Round(time.Millisecond), grown, sqliteGrown)
+		is.True(t, sqliteGrown < sqliteLimit, fmt.Sprintf("the memory of SQLite grew by %v bytes for a commit object of %v bytes", sqliteGrown, info.Size()))
 		if !instrumented {
 			is.True(t, grown < replayLimit, fmt.Sprintf("the heap grew by %v bytes for a commit object of %v bytes", grown, info.Size()))
 		}
@@ -1182,46 +1197,83 @@ func TestTx_Commit_stopped(t *testing.T) {
 	})
 }
 
+// sleepCounter opens the cache of an instance with the options through a VFS of faultvfs that fails
+// nothing, and counts the sleeps of SQLite's busy handler. It is closed when the test ends, after
+// the instance, whose cleanup is registered later.
+func sleepCounter(t *testing.T, o core.Options) (*faultvfs.VFS, core.Options) {
+	t.Helper()
+	vfs, err := faultvfs.New()
+	is.NotError(t, err)
+	t.Cleanup(func() { is.NotError(t, vfs.Close()) })
+	o.UseVFS(vfs.Name())
+	return vfs, o
+}
+
 func TestDB_Begin(t *testing.T) {
 	t.Run("should wait for a lock on the cache that another connection holds for a while, as long as the busy timeout allows", func(t *testing.T) {
 		w := newWorld(t)
-		// The timeout is far longer than the lock is held, so that the speed of the machine decides
-		// nothing.
-		d := w.serve(t, "a", core.Options{BusyTimeout: time.Minute})
+		vfs, o := sleepCounter(t, core.Options{BusyTimeout: time.Minute})
+		d := w.serve(t, "a", o)
 		transact(t, d, create("t1", 1, "k"))
 
 		other, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
 		is.NotError(t, err)
 		defer func() { is.NotError(t, other.Close()) }()
 		is.NotError(t, other.Exec("begin immediate"))
-		released := make(chan error, 1)
-		go func() {
-			time.Sleep(200 * time.Millisecond)
-			released <- other.Exec("rollback")
-		}()
+		sleeps, _ := vfs.Slept()
+		is.Equal(t, 0, sleeps)
 
-		transact(t, d, upsert("t1", 1))
-		is.NotError(t, <-released)
+		committed := make(chan error, 1)
+		go func() {
+			committed <- func() error {
+				tx, err := d.Begin(t.Context())
+				if err != nil {
+					return err
+				}
+				if err := tx.Upsert(t.Context(), "t1", row(1)); err != nil {
+					return err
+				}
+				return tx.Commit(t.Context())
+			}()
+		}()
+		// The lock is released only after SQLite's busy handler has slept, which it does only when it
+		// found the lock held, so the transaction waits for the lock on every machine. A transaction
+		// that ends while the lock is held ends the test.
+		for sleeps == 0 {
+			select {
+			case err := <-committed:
+				t.Fatalf("the transaction ended without waiting for the lock: %v", err)
+			case <-time.After(time.Millisecond):
+			}
+			sleeps, _ = vfs.Slept()
+		}
+		is.NotError(t, other.Exec("rollback"))
+		is.NotError(t, <-committed)
 		is.Equal(t, "t1(k*0): 1", read(t, d))
 	})
 
 	t.Run("should wait for a lock on the cache for a second by default", func(t *testing.T) {
 		w := newWorld(t)
-		d := w.serve(t, "a", core.Options{})
+		vfs, o := sleepCounter(t, core.Options{})
+		d := w.serve(t, "a", o)
 		transact(t, d, create("t1", 1, "k"))
 
 		other, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
 		is.NotError(t, err)
 		defer func() { is.NotError(t, other.Close()) }()
 		is.NotError(t, other.Exec("begin immediate"))
+		_, slept := vfs.Slept()
+		is.Equal(t, time.Duration(0), slept)
 
-		// SQLite waits at least the busy timeout. The bound above it is far, so that the speed of the
-		// machine decides nothing.
+		// SQLite's busy handler asks to sleep for the busy timeout in all, and sleeps at least as long
+		// as it asks. Only a bound from below on the time that passes holds on a slow machine.
 		start := time.Now()
 		err = beginErr(t, d)
 		elapsed := time.Since(start)
 		is.Error(t, core.ErrBusy, err)
-		is.True(t, elapsed >= time.Second && elapsed < 8*time.Second, fmt.Sprint(elapsed))
+		_, slept = vfs.Slept()
+		is.Equal(t, time.Second, slept)
+		is.True(t, elapsed >= time.Second, fmt.Sprint(elapsed))
 		is.NotError(t, other.Exec("rollback"))
 	})
 

@@ -3,6 +3,7 @@ package core_test
 import (
 	"crypto/sha256"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strconv"
@@ -90,6 +91,175 @@ var hammerWorkload = workload{
 	faults:    simstore.AllFaults(),
 }
 
+// What each workload must reach, at least, in the seeds of the default run of [TestSimulation]:
+// each kind of result, fault, and event, by the names of [tally.reached]. A minimum is a quarter of
+// what the seeds reached on 2026-11-18, for each kind that they reached four times at least. A run
+// depends only on the code and its seed, so a minimum fails only when the code or the workload
+// changes, never by chance, and a quarter leaves room for a change that moves faults between seeds.
+// A kind of fault or event that a change switches off falls to zero, and fails.
+var (
+	// singleReaches is what the 40 seeds of the default run of [singleWorkload] must reach. It also
+	// has one failed commit, of the two that they reached, which the rule leaves out.
+	singleReaches = map[string]int64{
+		"callers that gave up":          25,
+		"calls with no answer":          11,
+		"commits":                       149,
+		"commits of nothing":            25,
+		"conflicts":                     3,
+		"cut-offs":                      3,
+		"event catch_up/caught_up":      10,
+		"event commit/committed":        149,
+		"event commit/empty":            25,
+		"event lease/released/released": 20,
+		"event lease/renewed/renewed":   8,
+		"event lease/renewed/unknown":   6,
+		"event lease/taken/taken":       20,
+		"event refusal/refused":         6,
+		"event stop/closed":             20,
+		"failed commits":                1,
+		"lost requests":                 6,
+		"lost responses":                6,
+		"reads":                         286,
+		"reads overtaken by a commit":   5,
+		"reads refused by a clock":      1,
+		"refused reads":                 2,
+		"rollbacks":                     20,
+		"slow ways":                     16,
+		"timeouts that expired":         27,
+		"transactions refused at start": 4,
+		"writes applied late":           3,
+		"writes stuck":                  21,
+	}
+
+	// fullReaches is what the 30 seeds of the default run of [fullWorkload] must reach.
+	fullReaches = map[string]int64{
+		"broken reads":                             21,
+		"buggify points that fired":                19,
+		"callers that gave up":                     95,
+		"calls with no answer":                     31,
+		"commits":                                  76,
+		"commits of nothing":                       15,
+		"conflicts":                                2,
+		"crashes":                                  7,
+		"cut-offs":                                 8,
+		"damaged downloads":                        1,
+		"event catch_up/caught_up":                 17,
+		"event commit/committed":                   71,
+		"event commit/committed_and_stopped":       4,
+		"event commit/empty":                       15,
+		"event commit/not_committed":               3,
+		"event lease/lost/lost":                    2,
+		"event lease/released/released":            24,
+		"event lease/renewed/renewed":              123,
+		"event lease/renewed/unknown":              18,
+		"event lease/taken/taken":                  29,
+		"event refusal/refused":                    628,
+		"event stop/closed":                        42,
+		"event stop/local_failure":                 4,
+		"event unknown_outcome/renewal/lease_lost": 1,
+		"event unknown_outcome/renewal/renewed":    7,
+		"failed commits":                           3,
+		"instances closed and opened":              12,
+		"lost requests":                            36,
+		"lost responses":                           33,
+		"moves of a clock":                         124,
+		"outages":                                  3,
+		"reads":                                    177,
+		"reads refused by a clock":                 7,
+		"refused reads":                            394,
+		"restarts after a crash":                   7,
+		"restarts that recovered from WAL":         5,
+		"rollbacks":                                12,
+		"slow ways":                                69,
+		"stops":                                    4,
+		"timeouts that expired":                    362,
+		"transactions abandoned":                   1,
+		"transactions refused at start":            244,
+		"writes applied late":                      3,
+		"writes stuck":                             13,
+	}
+
+	// hammerReaches is what the 10 seeds of the default run of [hammerWorkload] must reach.
+	hammerReaches = map[string]int64{
+		"callers that gave up":          17,
+		"calls with no answer":          6,
+		"commits":                       161,
+		"commits of nothing":            30,
+		"conflicts":                     6,
+		"cut-offs":                      1,
+		"event catch_up/caught_up":      2,
+		"event commit/committed":        161,
+		"event commit/empty":            30,
+		"event commit/not_committed":    1,
+		"event lease/released/released": 5,
+		"event lease/renewed/renewed":   1,
+		"event lease/renewed/unknown":   2,
+		"event lease/taken/taken":       5,
+		"event refusal/refused":         53,
+		"event stop/closed":             5,
+		"failed commits":                1,
+		"lost requests":                 7,
+		"lost responses":                5,
+		"reads":                         330,
+		"reads overtaken by a commit":   63,
+		"reads refused by a clock":      5,
+		"refused reads":                 32,
+		"rollbacks":                     22,
+		"slow ways":                     13,
+		"timeouts that expired":         31,
+		"transactions refused at start": 24,
+		"writes applied late":           1,
+		"writes stuck":                  11,
+	}
+
+	// lateReaches is what the 10 seeds of the default run of [lateWrites] must reach.
+	lateReaches = map[string]int64{
+		"broken reads":                             14,
+		"callers that gave up":                     192,
+		"calls with no answer":                     79,
+		"commits":                                  72,
+		"commits of nothing":                       12,
+		"commits of unknown outcome":               3,
+		"conflicts":                                14,
+		"crashes":                                  5,
+		"cut-offs":                                 31,
+		"event catch_up/caught_up":                 8,
+		"event catch_up/failed":                    2,
+		"event commit/committed":                   72,
+		"event commit/empty":                       12,
+		"event commit/not_committed":               13,
+		"event commit/unknown":                     3,
+		"event lease/lost/lost":                    7,
+		"event lease/released/released":            6,
+		"event lease/renewed/conflict":             4,
+		"event lease/renewed/renewed":              63,
+		"event lease/renewed/unknown":              72,
+		"event lease/taken/taken":                  15,
+		"event refusal/refused":                    673,
+		"event stop/closed":                        16,
+		"event unknown_outcome/commit/lease_lost":  1,
+		"event unknown_outcome/renewal/lease_lost": 5,
+		"event unknown_outcome/renewal/renewed":    8,
+		"failed commits":                           13,
+		"instances closed and opened":              6,
+		"lost requests":                            31,
+		"lost responses":                           24,
+		"outages":                                  2,
+		"reads":                                    178,
+		"reads overtaken by a commit":              1,
+		"reads refused by a clock":                 8,
+		"refused reads":                            410,
+		"restarts after a crash":                   5,
+		"restarts that recovered from WAL":         2,
+		"rollbacks":                                12,
+		"slow ways":                                132,
+		"timeouts that expired":                    509,
+		"transactions refused at start":            263,
+		"writes applied late":                      11,
+		"writes stuck":                             73,
+	}
+)
+
 // tally of what happened in the runs of a workload.
 type tally struct {
 	runs, steps                                                                                           int
@@ -171,6 +341,37 @@ func (y *tally) add(seed uint64, s simulation) {
 	}
 }
 
+// reached is how often each kind of result, fault, and event happened, by a name: the counts of
+// the outcomes, the markers of the traces, and the events of the instances, with "event " before
+// their kind.
+func (y *tally) reached() map[string]int64 {
+	counts := map[string]int64{
+		"commits":                          y.commits,
+		"commits of nothing":               y.emptyCommits,
+		"failed commits":                   y.failedCommits,
+		"commits of unknown outcome":       y.unknownCommits,
+		"commits cut off by a crash":       y.cutCommits,
+		"rollbacks":                        y.rollbacks,
+		"transactions abandoned":           y.abandoned,
+		"transactions refused at start":    y.refusedWrites,
+		"reads":                            y.reads,
+		"refused reads":                    y.refusedReads,
+		"reads refused by a clock":         y.expiredReads,
+		"reads overtaken by a commit":      y.overtakenReads,
+		"stops":                            y.stops,
+		"restarts after a crash":           y.restarts,
+		"instances closed and opened":      y.reopens,
+		"restarts that recovered from WAL": y.recoveries,
+	}
+	for name, n := range y.trace {
+		counts[name] = int64(n)
+	}
+	for kind, n := range y.events {
+		counts["event "+kind] = int64(n)
+	}
+	return counts
+}
+
 // sorted counts of a map, as text.
 func sorted(counts map[string]int) string {
 	var parts []string
@@ -207,11 +408,13 @@ func TestSimulation(t *testing.T) {
 		workload workload
 		// seeds of the default run.
 		seeds int
+		// reaches is what the seeds of the default run must reach at least.
+		reaches map[string]int64
 	}{
-		{name: "should give the same trace when a seed is run twice, and no violations, with one instance", workload: singleWorkload, seeds: 40},
-		{name: "should give the same trace when a seed is run twice, and no violations, with instances that compete, clocks that move, crashes, and buggify", workload: fullWorkload, seeds: 30},
-		{name: "should give the same trace when a seed is run twice, and no violations, with callers that never pause", workload: hammerWorkload, seeds: 10},
-		{name: "should give the same trace when a seed is run twice, and no violations, with writes that land long after they were sent", workload: lateWrites(func(w *workload) {}), seeds: 10},
+		{name: "should give the same trace when a seed is run twice, and no violations, with one instance", workload: singleWorkload, seeds: 40, reaches: singleReaches},
+		{name: "should give the same trace when a seed is run twice, and no violations, with instances that compete, clocks that move, crashes, and buggify", workload: fullWorkload, seeds: 30, reaches: fullReaches},
+		{name: "should give the same trace when a seed is run twice, and no violations, with callers that never pause", workload: hammerWorkload, seeds: 10, reaches: hammerReaches},
+		{name: "should give the same trace when a seed is run twice, and no violations, with writes that land long after they were sent", workload: lateWrites(func(w *workload) {}), seeds: 10, reaches: lateReaches},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -242,13 +445,31 @@ func TestSimulation(t *testing.T) {
 			// The hash depends only on the code and the seeds, so it can be compared between machines.
 			t.Logf("hash of all traces: %x", all.Sum(nil))
 			is.Equal(t, 0, differing)
-			if n >= 40 {
-				is.Equal(t, int(n), len(hashes), "two seeds gave the same trace")
-				is.True(t, y.commits > 0 && y.reads > 0 && y.failedCommits > 0 && y.refusedReads > 0 && y.overtakenReads > 0, "the workload did not reach every kind of result")
-				is.True(t, y.trace["timeouts that expired"] > 0, "no timeout expired")
-				is.True(t, y.events["lease/renewed/renewed"] > 0 && y.events["lease/taken/taken"] > 0, "no lease was taken or renewed")
+			is.Equal(t, int(n), len(hashes), "two seeds gave the same trace")
+			// The seeds are 0 to n-1, so more seeds than the default run reach at least as much.
+			if n < uint64(test.seeds) {
+				t.Logf("NOT CHECKED: what the workload reached, because %v seeds are fewer than the %v of the default run", n, test.seeds)
+				return
 			}
-			if test.workload.faults.Long > 0 && n >= 10 {
+			reached := y.reached()
+			var short bool
+			for _, name := range slices.Sorted(maps.Keys(test.reaches)) {
+				if least := test.reaches[name]; reached[name] < least {
+					short = true
+					t.Errorf("the workload reached %q %v times, and must reach it %v times at least", name, reached[name], least)
+				}
+			}
+			if short {
+				// The minimums by the rule above, from this run, for a change that is meant to move them.
+				var minimums strings.Builder
+				for _, name := range slices.Sorted(maps.Keys(reached)) {
+					if reached[name] >= 4 {
+						fmt.Fprintf(&minimums, "\t%q: %v,\n", name, reached[name]/4)
+					}
+				}
+				t.Logf("the minimums from this run:\n%v", minimums.String())
+			}
+			if test.workload.faults.Long > 0 {
 				// Writes of both kinds land long after they were sent, after another node took the lease,
 				// in at least a quarter of the seeds, and after other nodes took it twice, and after
 				// another node committed. A late create of a commit object is applied when its
@@ -494,19 +715,15 @@ var plantedBugs = []plantedBug{
 		// often slow, a request waits for its answer for longer than they are, and the leases are short
 		// enough for the wait to end before a slow answer comes. An instance also learns late of a swap
 		// whose answer was lost, which every cut-off can cause, so no fault can be taken away that
-		// leaves the takeovers and takes the late answers. The lease that the bug counts too long
-		// matters only when another instance takes the lease, so the control has one instance, and
-		// shows only that the workload finds nothing else.
+		// leaves the takeovers and takes the late answers, and the bug has no control. A workload
+		// without takeovers, of one instance, could not find it, so it would be no control. Every
+		// seed that finds the bug runs again without it, which shows that it finds nothing else.
 		bug:  "leaseFromAnswer",
 		name: "a holder that counts its lease from the answer to a swap",
 		workload: plant(competing(func(w *workload) {
 			w.faults.Slow, w.options.StoreTimeout = 0.1, time.Minute
 			w.durations = []time.Duration{10 * time.Second}
 		}), "leaseFromAnswer"),
-		control: new(plant(competing(func(w *workload) {
-			w.faults.Slow, w.options.StoreTimeout, w.instances = 0.1, time.Minute, 1
-			w.durations = []time.Duration{10 * time.Second}
-		}), "leaseFromAnswer")),
 		symptoms: []string{stale},
 	},
 	{
@@ -549,15 +766,14 @@ var plantedBugs = []plantedBug{
 	{
 		// The log is looked at only when another instance has taken the lease while a commit still
 		// waits for its outcome, which takes longer than a lease lasts: so the callers wait for longer,
-		// the answer to a swap is often lost, and a client is often cut off.
+		// the answer to a swap is often lost, and a client is often cut off. A lease is lost only to
+		// another instance, so a workload of one instance could not find the bug, and would be no
+		// control; the bug has none. Every seed that finds it runs again without it.
 		bug:  "lostMeansFailed",
 		name: "a commit counted as not committed because the lease was lost, without a look at the log",
 		workload: plant(competing(func(w *workload) {
 			w.writes, w.timeout, w.faults.LostResponse, w.faults.CutOff = 70, 100*time.Second, 0.2, 0.05
 		}), "lostMeansFailed"),
-		control: new(plant(competing(func(w *workload) {
-			w.writes, w.timeout, w.faults.LostResponse, w.faults.CutOff, w.instances = 70, 100*time.Second, 0.2, 0.05, 1
-		}), "lostMeansFailed")),
 		symptoms: []string{"whose commit failed"},
 	},
 	{
@@ -640,9 +856,9 @@ var plantedBugs = []plantedBug{
 }
 
 // TestSimulation_plantedBugs runs the workload of each bug until four seeds have found the bug,
-// from at most 200 seeds, and its control and the same workload without the bug for 10 seeds each.
-// With S4QL_SIM_SEEDS set, all three run that many seeds, and the workload with the bug runs all of
-// them, to count how many find it.
+// from at most 200 seeds, and its control for 10 seeds. It runs the same workload without the bug
+// for 10 seeds, and for every seed that found the bug. With S4QL_SIM_SEEDS set, all three run that
+// many seeds, and the workload with the bug runs all of them, to count how many find it.
 func TestSimulation_plantedBugs(t *testing.T) {
 	t.Parallel()
 	_, counting := os.LookupEnv("S4QL_SIM_SEEDS")
@@ -710,22 +926,35 @@ func TestSimulation_plantedBugs(t *testing.T) {
 				t.Logf("%v of %v seeds found the bug without what it needs", controlFound, n)
 			}
 			// The workload of a bug reaches what the full workload seldom does, so it must also find
-			// nothing in a core without bugs.
+			// nothing in a core without bugs: not in the first seeds, and not in any seed that found the
+			// bug, so that what such a seed found is the bug's doing, and not something else whose text
+			// happens to hold a symptom of the bug.
 			clean := bug.workload
 			clean.options = clean.options.Unplanted()
-			var cleanFound int
+			var cleanSeeds []uint64
 			for seed := range n {
+				cleanSeeds = append(cleanSeeds, seed)
+			}
+			for _, seed := range found {
+				if seed >= n {
+					cleanSeeds = append(cleanSeeds, seed)
+				}
+			}
+			var cleanFound int
+			for _, seed := range cleanSeeds {
 				if v := simulate(t, seed, clean).violations(); len(v) > 0 {
 					cleanFound++
 					t.Errorf("seed %v found something without the bug: %v", seed, v)
 				}
 			}
-			t.Logf("%v of %v seeds found something without the bug", cleanFound, n)
+			t.Logf("%v of %v seeds found something without the bug: the first %v, and every other seed that found the bug", cleanFound, len(cleanSeeds), n)
 			switch {
 			case !counting:
 				is.Equal(t, 4, len(found), fmt.Sprintf("%v seeds did not find the bug four times", ran))
 			case ran >= 200:
 				is.True(t, len(found) > 0, fmt.Sprintf("none of %v seeds found the bug", ran))
+			default:
+				t.Logf("NOT CHECKED: that the bug is found, because %v seeds are fewer than 200, in which a bug that is seldom found may not be", ran)
 			}
 		})
 	}

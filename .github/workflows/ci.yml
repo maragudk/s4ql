@@ -63,6 +63,25 @@ jobs:
       - name: Run the free-running mode under the race detector
         run: go test -race -shuffle on -run '^TestFree' ./internal/sim/ ./internal/core/
 
+  # Most tests of the SQL front end compare with SQLite on a tenth of the corpus and of the generated
+  # texts under the race detector, which the reusable test workflow uses, and under the address
+  # sanitizer, and leave out the checks that need all of them. This job runs them without either.
+  sql:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Test the SQL front end on the whole corpus
+        run: make test-sql
+
   # The schema of the commit object: Buf's lint, and a check that the committed generated code is what
   # the schema generates.
   proto:
@@ -186,6 +205,15 @@ jobs:
 
       - name: Lint the simulator for the simulation
         run: (cd internal/simlint && go build -o "$RUNNER_TEMP/simlint" ./cmd/simlint) && GOFLAGS=-tags=s4ql_browser "$RUNNER_TEMP/simlint" ./internal/simulator/...
+
+      # The files built only for the browser, such as the binding on the SQLite WebAssembly build,
+      # are library code too.
+      - name: Lint the browser's build for the simulation
+        env:
+          GOOS: js
+          GOARCH: wasm
+          GOFLAGS: -tags=s4ql_browser
+        run: '"$RUNNER_TEMP/simlint" ./internal/sqlite ./internal/sqlite/faultvfs ./internal/core ./internal/sim ./internal/store/simstore ./internal/simulator ./internal/simulator/engine'
 
       # Chrome's sandbox needs user namespaces, which the runner may not allow, and the page runs only
       # the project's own code from 127.0.0.1.

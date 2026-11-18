@@ -13,6 +13,7 @@ package faultvfs
 import (
 	"fmt"
 	"syscall/js"
+	"time"
 )
 
 // Op is a set of file operations, as bits.
@@ -120,6 +121,13 @@ func (f *VFS) Fail(fault Fault) {
 func (f *VFS) Failures() int {
 	f.mustBeOpen()
 	return f.fault.Get("failed").Int()
+}
+
+// Slept is how many times SQLite asked the VFS to sleep, as its busy handler does while it waits
+// for a lock, and for how long in all. The time is what SQLite asked for, not what passed.
+func (f *VFS) Slept() (int, time.Duration) {
+	f.mustBeOpen()
+	return f.fault.Get("sleeps").Int(), time.Duration(f.fault.Get("slept").Int()) * time.Microsecond
 }
 
 // Close the VFS: unregister it. Every connection that was opened through it must be closed first,

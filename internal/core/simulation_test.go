@@ -1595,13 +1595,17 @@ func free(t *testing.T, w workload) *outcome {
 }
 
 // seeds to run for the workload w, from 0. The number is n unless the environment variable
-// S4QL_SIM_SEEDS sets another.
+// S4QL_SIM_SEEDS sets another, of 1 or more.
 func seeds(t *testing.T, n int) uint64 {
 	t.Helper()
 	if v := os.Getenv("S4QL_SIM_SEEDS"); v != "" {
 		var err error
 		n, err = strconv.Atoi(v)
 		is.NotError(t, err)
+		// A run of no seeds would pass, and check nothing.
+		if n < 1 {
+			t.Fatalf("S4QL_SIM_SEEDS is %v, and must be 1 or more", n)
+		}
 	}
 	return uint64(n)
 }

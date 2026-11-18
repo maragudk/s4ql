@@ -3,8 +3,8 @@
 //
 // It is deliberately small: opening and closing a database, through a VFS by its name if need be,
 // finding and registering a VFS, preparing one statement, binding and reading integers, text, and
-// NULL, stepping, resetting, and finalizing. Each statement runs in its
-// own transaction, as SQLite does outside BEGIN and COMMIT.
+// NULL, stepping, resetting, and finalizing, and reading how much memory SQLite uses. Each statement
+// runs in its own transaction, as SQLite does outside BEGIN and COMMIT.
 //
 // SQLite's C code is compiled into this package with file-local symbols, so this package can share a
 // binary with another copy of SQLite without the two clashing at link time. Two copies of SQLite in
@@ -630,6 +630,22 @@ func (s *Stmt) Finalize() error {
 		return errorFromConn(db, rc)
 	}
 	return nil
+}
+
+// MemoryUsed by this copy of SQLite in the whole process, in bytes: what its allocations hold now,
+// and the most they held at once since the high-water mark was last reset, by sqlite3_status64 with
+// SQLITE_STATUS_MEMORY_USED. With reset, the mark is reset to what they hold now, after it is read.
+// Memory that another copy of SQLite in the same process allocates does not count.
+func MemoryUsed(reset bool) (used, highwater int64) {
+	var cur, hi C.sqlite3_int64
+	var r C.int
+	if reset {
+		r = 1
+	}
+	if C.sqlite3_status64(C.SQLITE_STATUS_MEMORY_USED, &cur, &hi, r) != C.SQLITE_OK {
+		panic("sqlite: sqlite3_status64 refused SQLITE_STATUS_MEMORY_USED")
+	}
+	return int64(cur), int64(hi)
 }
 
 // Version of SQLite, such as 3.54.1.

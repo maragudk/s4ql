@@ -7,6 +7,12 @@ import (
 	"time"
 )
 
+type Host interface{}
+
+func New() Host {
+	return nil
+}
+
 func Sleep(d time.Duration) uint64 {
 	go func() {}()
 	time.Sleep(d)

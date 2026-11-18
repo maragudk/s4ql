@@ -1,0 +1,93 @@
+package main
+
+import (
+	"crypto/sha256"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"maragu.dev/is"
+)
+
+// TestRunner_run runs mutants of a tiny module through the runner, from the plan of its stages to
+// the verdict on each mutant.
+func TestRunner_run(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"go.mod":                           "module " + module + "\n\ngo 1.24\n",
+		"internal/sql/parser/p.go":         "package parser\n\nfunc Add(a, b int) int {\n\treturn a + b\n}\n",
+		"internal/sql/parser/p_test.go":    "package parser\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif got := Add(1, 2); got != 3 {\n\t\tt.Errorf(\"Add(1, 2) = %v\", got)\n\t}\n}\n",
+		"internal/sql/loop/loop.go":        "package loop\n\nfunc Sum(n int) int {\n\ts := 0\n\tfor i := 0; i < n; i++ {\n\t\ts += i\n\t}\n\treturn s\n}\n",
+		"internal/sql/loop/loop_test.go":   "package loop\n\nimport \"testing\"\n\nfunc TestSum(t *testing.T) {\n\tif got := Sum(4); got != 6 {\n\t\tt.Errorf(\"Sum(4) = %v\", got)\n\t}\n}\n",
+		"internal/sql/other/other.go":      "package other\n\nimport \"maragu.dev/s4ql/internal/sql/parser\"\n\nfunc Three() int {\n\treturn parser.Add(1, 2)\n}\n",
+		"internal/sql/other/other_test.go": "package other\n\nimport \"testing\"\n\nfunc TestThree(t *testing.T) {\n\tif Three() != 3 {\n\t\tt.Error(\"not 3\")\n\t}\n}\n",
+	}
+	for name, text := range files {
+		path := filepath.Join(root, name)
+		is.NotError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		is.NotError(t, os.WriteFile(path, []byte(text), 0o644))
+	}
+
+	// The time limit of a stage is never reached by a mutant that ends, however slow the machine.
+	r := &runner{root: root, out: t.TempDir(), factor: 1, minTime: time.Hour, memory: 4 << 30, procs: 1}
+	is.NotError(t, r.plan([]string{"internal/sql/parser", "internal/sql/loop"}))
+
+	t.Run("should plan a stage for the tests of the package and one for each package that depends on it", func(t *testing.T) {
+		var got []string
+		for _, s := range r.stages["internal/sql/parser"] {
+			got = append(got, s.layer+" "+s.pkg+" "+strings.Join(s.tests, ","))
+		}
+		is.EqualSlice(t, []string{"hand-written internal/sql/parser TestAdd", "other packages internal/sql/other TestThree"}, got)
+		is.Equal(t, 1, len(r.stages["internal/sql/loop"]))
+	})
+
+	// A mutant that loops for good is over any time limit, so a short one tells it apart without
+	// depending on the speed of the machine.
+	r.stages["internal/sql/loop"][0].timeout = time.Second
+
+	tests := []struct {
+		name, file, from, to string
+		status, layer        string
+		detail               string
+	}{
+		{name: "should kill a mutant that a test notices, in the layer of that test", file: "internal/sql/parser/p.go",
+			from: "a + b", to: "a - b", status: statusKilled, layer: layerHand, detail: "TestAdd: p_test.go:7: Add(1, 2) = -1"},
+		{name: "should let a mutant that no test notices survive", file: "internal/sql/parser/p.go",
+			from: "a + b", to: "b + a", status: statusSurvived},
+		{name: "should give a mutant that does not compile as uncompiled", file: "internal/sql/parser/p.go",
+			from: "a + b", to: `a + "b"`, status: statusUncompiled, detail: "mismatched types"},
+		{name: "should give a mutant that runs over the time limit as timed out, in its layer", file: "internal/sql/loop/loop.go",
+			from: "i++", to: "i--", status: statusTimeout, layer: layerHand, detail: "over the time limit of 1s"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			m := mutantOf(t, root, test.file, test.from, test.to)
+			res := r.run(t.Context(), m, t.TempDir())
+			is.Equal(t, test.status, res.Status, res.Detail)
+			is.Equal(t, test.layer, res.Layer)
+			is.True(t, strings.Contains(res.Detail, test.detail), res.Detail)
+			is.Equal(t, m.Key, res.Key)
+		})
+	}
+
+	t.Run("should stop with an error on a mutant of a file that changed since it was made", func(t *testing.T) {
+		m := mutantOf(t, root, "internal/sql/parser/p.go", "a + b", "a - b")
+		m.sum[0]++
+		res := r.run(t.Context(), m, t.TempDir())
+		is.Equal(t, statusError, res.Status)
+		is.True(t, strings.Contains(res.Detail, "changed since its mutants were made"), res.Detail)
+	})
+}
+
+// mutantOf the file in root, relative to it, that changes its one occurrence of from to to.
+func mutantOf(t *testing.T, root, file, from, to string) mutant {
+	t.Helper()
+	src, err := os.ReadFile(filepath.Join(root, file))
+	is.NotError(t, err)
+	is.Equal(t, 1, strings.Count(string(src), from))
+	i := strings.Index(string(src), from)
+	return mutant{Pkg: filepath.Dir(file), File: file, Op: "test", From: from, To: to, Key: file + " " + from + " => " + to,
+		edits: []edit{{start: i, end: i + len(from), text: to}}, sum: sha256.Sum256(src)}
+}

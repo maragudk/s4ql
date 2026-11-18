@@ -996,4 +996,40 @@ func TestCheck_mutations(t *testing.T) {
 			t.Errorf("the check never noticed the mutation %q", m.kind)
 		}
 	}
+	if Slow() {
+		return
+	}
+	// The sample and the sites are fixed, so the outcome of each mutation is pinned: a change of the
+	// check that notices less cannot pass unseen.
+	var b strings.Builder
+	for _, m := range mutations {
+		o := outcomes[m.kind]
+		fmt.Fprintf(&b, "%v: %v detected, %v undetected, %v not compared\n", m.kind, o.detected, o.undetected, o.notCompared)
+	}
+	want := `rotate two operators: 2320 detected, 72 undetected, 32 not compared
+swap the operands: 4480 detected, 133 undetected, 179 not compared
+move the NOT of IS NOT to its operand: 125 detected, 0 undetected, 3 not compared
+move the NOT of NOT BETWEEN, LIKE, IN out: 0 detected, 744 undetected, 8 not compared
+swap the operands of LIMIT: 19 detected, 1 undetected, 0 not compared
+move ON or USING to the next join: 6 detected, 1 undetected, 0 not compared
+swap two join operators: 140 detected, 10 undetected, 2 not compared
+move ORDER BY or LIMIT: 33 detected, 0 undetected, 0 not compared
+move the ELSE of a nested CASE: 1 detected, 0 undetected, 0 not compared
+move FILTER or OVER to an argument: 3 detected, 0 undetected, 0 not compared
+move ORDER BY between arguments and window: 83 detected, 0 undetected, 0 not compared
+swap the WHEREs of an upsert: 7 detected, 0 undetected, 0 not compared
+move a column constraint: 494 detected, 16 undetected, 14 not compared
+move CONSTRAINT name: 5 detected, 6 undetected, 0 not compared
+move a column's CONSTRAINT name: 2 detected, 4 undetected, 2 not compared
+split a number with digit separators: 2 detected, 0 undetected, 0 not compared
+move GENERATED ALWAYS between type and AS: 0 detected, 13 undetected, 1 not compared
+move the last word of a type into AS: 3 detected, 0 undetected, 0 not compared
+move a column's first constraint into its type: 773 detected, 0 undetected, 17 not compared
+move ON CONFLICT to the next constraint: 3 detected, 0 undetected, 0 not compared
+swap ON DELETE and ON UPDATE: 4 detected, 0 undetected, 0 not compared
+change the form of DEFAULT: 29 detected, 0 undetected, 0 not compared
+`
+	if got := b.String(); got != want {
+		t.Errorf("the outcomes of the mutations are\n%v\nbut the test pins\n%v\nChange the pinned outcomes only on purpose, and say why in the commit", got, want)
+	}
 }

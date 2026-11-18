@@ -24,14 +24,26 @@ fmt:
 corpus:
 	go run ./internal/sql/corpus/update
 
+# corpus-verify downloads the archives of SQLite that internal/sql/corpus/source.json pins again, and
+# checks that the committed corpus is what make corpus writes from them.
+.PHONY: corpus-verify
+corpus-verify:
+	go run ./internal/sql/corpus/update -check
+
 # fuzz runs each fuzz test in the SQLite binding, its cross-checks, the storage formats, the SQL
 # tokenizer, SQLite's verdicts on SQL, the SQL parser, the check of the shape of its tree, the pass
 # after the parser, and the engine for FUZZTIME. Pass FUZZFLAGS=-asan to fuzz under the address
-# sanitizer (Linux only).
+# sanitizer (Linux only). It fails if it cannot list the fuzz tests of a directory, or if a directory
+# has none, so that no directory is skipped in silence.
+FUZZDIRS ?= internal/sqlite $(CROSSCHECK) internal/format internal/sql/token internal/sql/oracle internal/sql/parsetest \
+	internal/sql/parser internal/sql/shapetest internal/sql/stmt internal/engine
 .PHONY: fuzz
 fuzz:
-	for dir in internal/sqlite $(CROSSCHECK) internal/format internal/sql/token internal/sql/oracle internal/sql/parsetest internal/sql/parser internal/sql/shapetest internal/sql/stmt internal/engine; do \
-		for test in $$(cd $$dir && go test -list '^Fuzz' . | grep '^Fuzz'); do \
+	for dir in $(FUZZDIRS); do \
+		list=$$(cd $$dir && go test -list '^Fuzz' .) || { echo "fuzz: cannot list the fuzz tests of $$dir" >&2; exit 1; }; \
+		tests=$$(echo "$$list" | grep '^Fuzz'); \
+		[ -n "$$tests" ] || { echo "fuzz: no fuzz test in $$dir" >&2; exit 1; }; \
+		for test in $$tests; do \
 			(cd $$dir && go test $(FUZZFLAGS) -run '^$$' -fuzz "^$$test\$$" -fuzztime $(FUZZTIME) .) || exit 1; \
 		done; \
 	done
@@ -43,8 +55,8 @@ generate:
 	$(BUF) generate
 
 # lint also runs lint-proto, the lint for code that runs under the simulation, from
-# internal/simlint, golangci-lint over the browser's build of BROWSERPKGS, whose files a native
-# run does not see, and both lints over the native build of SIMULATORPKGS with the tag s4ql_browser.
+# internal/simlint, both lints over the browser's build of BROWSERPKGS, whose files a native run does
+# not see, and both lints over the native build of SIMULATORPKGS with the tag s4ql_browser.
 # The simulation's lint is a module of its own, so that its dependencies stay out of the library's,
 # and is built there and run here.
 .PHONY: lint
@@ -55,7 +67,8 @@ lint:
 	cd $(CROSSCHECK) && golangci-lint run
 	cd $(SIMLINT) && golangci-lint run
 	dir=$$(mktemp -d) && (cd $(SIMLINT) && go build -o $$dir/simlint ./cmd/simlint) && $$dir/simlint ./... && \
-		GOFLAGS=-tags=s4ql_browser $$dir/simlint $(SIMULATORPKGS); \
+		GOFLAGS=-tags=s4ql_browser $$dir/simlint $(SIMULATORPKGS) && \
+		GOOS=js GOARCH=wasm GOFLAGS=-tags=s4ql_browser $$dir/simlint $(BROWSERPKGS); \
 		status=$$?; rm -rf $$dir; exit $$status
 	$(MAKE) lint-proto
 
@@ -103,6 +116,14 @@ test:
 	go test -tags s4ql_browser -shuffle on $(SIMULATORPKGS)
 	cd $(CROSSCHECK) && go test -shuffle on ./...
 	cd $(SIMLINT) && go test -shuffle on ./...
+
+# test-sql runs the tests of the SQL front end and of the engine without the race detector and the
+# address sanitizer, under which they compare with SQLite on a tenth of the corpus and of the generated
+# texts only, and leave out the checks that need all of them, such as the use of every rule of the
+# grammar and the number of texts on which SQLite does not say.
+.PHONY: test-sql
+test-sql:
+	go test -count 1 -shuffle on ./internal/sql/... ./internal/engine/...
 
 # BROWSERPKGS are the packages that build for GOOS=js GOARCH=wasm with the tag s4ql_browser, on the
 # official SQLite WebAssembly build in internal/sqlite/browser; see its README.

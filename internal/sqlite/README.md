@@ -16,7 +16,7 @@ The binding covers only what slice 1 of [docs/roadmap.md](../../docs/roadmap.md)
 - run a statement with `Exec`
 - return errors with SQLite's extended result code, its message, and the byte offset of the error in the SQL text (`sqlite3_error_offset`)
 
-It also reports the SQLite version, the source ID, the compile options, and the keywords. `Tokenize` splits SQL text with SQLite's private tokenizer `sqlite3GetToken`, which no public API exposes, so that the Go tokenizer in `internal/sql/token` can be checked against it. It is a wrapper in the binding's translation unit and not a second compile of SQLite: production builds then carry no second copy, and the build cache tracks the vendored source through `source.h` as it does for the rest of the binding. The stubs of `AddTestFunctions` are static C in the same translation unit, so the rules under "Symbols" below hold. More is added when a slice needs it.
+It also reports the SQLite version, the source ID, the compile options, the keywords, and with `MemoryUsed` the memory that SQLite allocates and its high-water mark (`sqlite3_status64`), so that a test can bound what SQLite holds as well as what Go does. `Tokenize` splits SQL text with SQLite's private tokenizer `sqlite3GetToken`, which no public API exposes, so that the Go tokenizer in `internal/sql/token` can be checked against it. It is a wrapper in the binding's translation unit and not a second compile of SQLite: production builds then carry no second copy, and the build cache tracks the vendored source through `source.h` as it does for the rest of the binding. The stubs of `AddTestFunctions` are static C in the same translation unit, so the rules under "Symbols" below hold. More is added when a slice needs it.
 
 The vendored version is SQLite 3.54.1, from https://sqlite.org/2026/sqlite-amalgamation-3540100.zip.
 
@@ -66,11 +66,14 @@ The first reference is the official `sqlite3` shell. The tests build it from `c/
 
 The tests also build `testdata/subtype.c` against the same compiled SQLite, to show the effect of `SQLITE_STRICT_SUBTYPE`, which only C code can see.
 
-The second reference is `github.com/mattn/go-sqlite3`, for what the shell cannot exercise: parameter binding, typed column access, and statement reuse. The cross-check module checks that:
+The second reference is `github.com/mattn/go-sqlite3`, for what the shell cannot exercise: parameter binding and typed column access. The cross-check module checks that:
 
 - mattn's bundled C code is identical to `c/sqlite3.c`, apart from mattn's `#ifndef USE_LIBSQLITE3` wrapper
 - the versions and the source IDs match
+- both bindings read back the same integers and texts bound to parameters, texts with NUL bytes and invalid UTF-8 among them, also in differential fuzz tests
 - both bindings give the same rows and errors for slice-1 scripts, also in a differential fuzz test
+
+The cross-check covers integers, texts, and NULL only. The binding has no functions to bind or read a real or a blob, so a row with such a value fails the comparison.
 
 mattn builds the same C code with other compile options. The differences that SQL can see are listed in `TestCompileOptions` in `crosscheck/`, and the comparisons avoid them: mattn does not enforce foreign keys on a new connection, accepts double-quoted strings, lacks the math functions unless it is built with the `sqlite_math_functions` tag, and lets `PRAGMA mmap_size` switch on memory-mapped I/O.
 
