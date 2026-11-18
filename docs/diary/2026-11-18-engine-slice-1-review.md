@@ -95,3 +95,63 @@ In `query`, the deferred end of a read transaction that was not built must not l
 ### Future work
 
 None.
+
+## Step 3: Points 3, 4, 6, 7, and 8: text fuzzing, refused statements, the operators, the excused counts, and the workloads
+
+**Author:** engine-review-builder
+
+### Prompt Context
+
+**Verbatim prompt:** see Step 1.
+**Interpretation:** The rest of the code of the brief.
+**Inferred intent:** Tests that prove what they seem to prove, with numbers that fail when something stops happening.
+
+### What I did
+
+Point 6: the operators build only plans of slice 1. `values` lost its names of columns and is a `rowSource`, which has no `columns`; `buildValues` takes one row of one value; a projection needs `*`; `insert` needs a value for every column and a key of one column; `CreateTable` needs one column with the key `[0]`; `uniqueFailed` takes one column. Everything else is an internal error, pinned in `TestInsert` and `TestBuild`.
+
+Point 7: `excused` in `/internal/sql/stmt/check_test.go` requires exact counts in a full run with the default flags. I found that "not supported" texts where the oracle says `NotSaid` escape the comparison too, so they are an outcome of their own now, `notSupportedNotSaid`, and the count is the sum of both: 299 for the corpus, 256 for its mutants, 3,835 for the grammar, 377 for the generator's mutants, and 1,046 for the near misses.
+
+Point 4: `sequence.next` gives whether the statement is of slice 1. `pair.step` fails when the engine refuses one; for any other refused text, SQLite must prepare it on an empty database without a syntax error (texts with a NUL byte or invalid UTF-8 are skipped, since the roadmap rejects them before parsing). The simulation counts a refused statement of slice 1 as a violation.
+
+Point 3: the comparison of one statement moved from `differentialOn` into `pair.step`. `FuzzSQL` (on `memory`) and `FuzzSQL_core` (on the core) run any text after a fixed set-up, `fuzzSetUp`, and compare it as the differential test does, and the tables after it.
+
+Point 8: added a reason to each failed attempt, and found that nearly all refusals are `ErrNoLease`, from the callers of the instance that does not hold the lease. A caller so refused now waits up to two minutes in `DB.Wait`, and stops if its instance still does not serve. The crasher now takes an instance that runs a statement. `TestSimulation` asserts least counts per seed, in runs of at least 50 seeds.
+
+### Why
+
+Each point closes a gap that a reviewer showed.
+
+### What worked
+
+Planted for point 4: a prepare that refused every insert with a negative value made `TestDifferential` fail at once ("the engine does not support a statement of slice 1") and `TestSimulation` at seed 0; a prepare that turned every syntax error into "not supported" failed with `the engine does not support it, and SQLite gives near "%": syntax error`. Both reverted.
+
+Point 8, on 1,000 seeds of the default workload: refused or timed out 5,691 of 47,010 statements (12.1%, from 58%); succeeded 14,868, SQLite's error 21,725, unknown 594, cut by a crash 905 (from 18), commits 9,117. Hammer: 17,347 of 120,000 refused or timed out (14.5%, from 36%). The planted bugs with 200 seeds: `skipUnique` 123, `ackUnknown` 59, `checkOutside` 101, `keepOpen` 138 (from 193), `keepRead` 53, none found without the bug.
+
+`FuzzSQL_core` made about 125 executions a second under a load of 28; `FuzzSQL` on `memory` about 5,800, so both exist.
+
+### What didn't work
+
+The first fuzz run of `FuzzSQL` found `CreAte tABle""("")A,0` within seconds: the engine gives `near "0": syntax error`, SQLite `unknown table option: A`. Then `CREATE TRIGGER A INSERT ON A BEGIN`: the engine `incomplete input`, SQLite `no such table: main.A`. Both are the known gaps of `stmt`, so `knownGap` excuses them as `stmt`'s tests do: the oracle does not say, or the oracle, which creates the tables a text names, gives the engine's syntax error. The two inputs stay in `/internal/engine/testdata/fuzz/`.
+
+Running the compiled test binary with `-test.fuzz` failed with `testing: -test.fuzzcachedir must be set if -test.fuzz is set`.
+
+A pre-existing fault of the test: the forms of `others` without a verb (`begin`, `""`, `" ; -- nothing"`) went through `Sprintf`, which appended `%!(EXTRA ...)`, so they were never the texts they claim to be. Fixed in `sequence.next`.
+
+### What I learned
+
+Only `ErrNoLease` made the default workload's refusals; timeouts are a small part.
+
+### What was tricky
+
+The least counts must not fail by chance. The seeds are fixed, so the counts are deterministic, but a rare kind (a statement cut by a crash was 18 in 1,000 seeds) cannot be asserted in a run of 50; choosing a victim that runs a statement made it common enough (47 in 50 seeds).
+
+### What warrants review
+
+`knownGap` in `/internal/engine/differential_test.go`, which widens what the differential comparison excuses to the two known gaps of `stmt`. It cannot excuse a text that SQLite parses, since the oracle would then not say `SyntaxError`.
+
+The waits of the callers in `/internal/engine/simulation_test.go` change what the default workload does: fewer statements (47,010 against 95,196 in 1,000 seeds), more commits.
+
+### Future work
+
+None.
