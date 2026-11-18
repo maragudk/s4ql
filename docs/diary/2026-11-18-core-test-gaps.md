@@ -265,3 +265,45 @@ That nothing in the instance opens a new file in the directory of the cache betw
 ### Future work
 
 None.
+
+## Step 7: Self-review and the checks
+
+**Author:** builder (core test gaps)
+
+### Prompt Context
+
+**Verbatim prompt:** see step 1, "Checks before you report".
+**Interpretation:** review the diff, and run `make test`, `make lint`, `make test-asan`, and the changed tests many times, under `-race`, and under load.
+**Inferred intent:** hand in only what holds on every machine.
+
+### What I did
+
+Ran the `code-review` skill at medium over the branch. It made ten findings. I fixed four. The first was that the polling loop of `TestDB_Begin` could spin until the timeout of `go test` if the transaction ended without a sleep, so it now selects on the result and fails at once. The second was that the test of the default timeout did not check that nothing had slept before the timed wait. The third was that the minimums of a workload were hard to set again, so a run that falls short now logs the minimums from its own counts as Go map entries. The fourth was that the comment with the rule of the minimums was floating, and it now heads a `var` group. I left six. The memory check during the replay is not disturbed by the first instance, because `d` is closed before the replay is watched. `TestMemoryUsed` is copied into both test files of `/internal/sqlite`, because each of them carries a build tag, and the package has no untagged test file. The probe of `moveAway` proves only the rename, and that is what it is for. The reason of the case of 2001 columns is SQLite's own text, because that is the check. The other two were small.
+
+### Why
+
+The two findings about `TestDB_Begin` were real: a regression would have hung the test, not failed it.
+
+### What worked
+
+`make test` passed (the core in 94.6 s, coverage 92.7%). `make lint` passed. `make test-asan` passed in Docker, the core in 241 s. A Docker run of `id -u` printed 0, and there the two spool tests PASS instead of skipping. With `-count=20` and `-shuffle on`, `TestDB_Begin`, `TestDB_stop`, and `TestReplay` passed in 44 s, and in 365 s under `-race`. `TestMemoryUsed` and `TestVFS_Slept` passed 20 times each with and without `-race`. Everything ran at a load of 25 to 35 from other agents. The traces of `TestSimulation` had the same four hashes under `-race` as without it.
+
+### What didn't work
+
+The first `make test-asan` (with `FUZZTIME=5s`) failed. Three packages timed out after 10 minutes: `internal/core` in `TestSimulation_plantedBugs`, and also `internal/sim` and `internal/sql/shapetest`, which this branch does not touch. My timing runs and a load of 35 were on the machine at the same time. Run alone in Docker, the core passed under `-asan` in 175 s, and the second full `make test-asan` passed.
+
+### What I learned
+
+The default run of the core changed by little in work: the clean reruns of the seeds that found a bug above seed 9 add 22 runs, and the two controls that were removed take away 20. The wall clock of the test binary, measured in turns with one built from `origin/main`, was 78.7 s before against 83.8 s after, and 109.9 s against 132.9 s, at a load of 25 to 35. At that load the numbers mostly show noise.
+
+### What was tricky
+
+Measuring time on a machine that other agents load.
+
+### What warrants review
+
+The choices in step 5 (dropping the two controls) and step 6 (rename instead of a loud failure).
+
+### Future work
+
+None beyond `/docs/todo.md`.
