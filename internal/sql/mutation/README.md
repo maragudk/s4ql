@@ -1,6 +1,6 @@
-# Mutation testing of the tokenizer, tree, parser, and pass after the parser
+# Mutation testing of the tokenizer, tree, parser, pass after the parser, and engine
 
-`internal/sql/mutation` measures the tests of `internal/sql/token`, `internal/sql/ast`, [`internal/sql/parser`](../parser/README.md), and [`internal/sql/stmt`](../stmt/README.md). It changes the code of these packages on purpose, one small change at a time. It runs the tests against each change, and reports every change that no test notices.
+`internal/sql/mutation` measures the tests of `internal/sql/token`, `internal/sql/ast`, [`internal/sql/parser`](../parser/README.md), [`internal/sql/stmt`](../stmt/README.md), and [`internal/engine`](../../engine/README.md). It changes the code of these packages on purpose, one small change at a time. It runs the tests against each change, and reports every change that no test notices.
 
 A copy of the code with one change is a mutant. The tests kill a mutant when one of them fails on it. A mutant that no test kills is a survivor, and a survivor is one of three things:
 
@@ -8,7 +8,7 @@ A copy of the code with one change is a mutant. The tests kill a mutant when one
 - It is in code that nothing needs. That code is removed.
 - It shows a gap in the tests. A new test closes the gap.
 
-Only code that is not a test is changed. The tests are those that `make test` runs: the tests of every package under `internal/sql` that depend on the changed package. They run on the whole corpus.
+Only code that is not a test is changed. The tests are those that `make test` runs: the tests of every package under `internal` that depend on the changed package. They run on the whole corpus.
 
 ## How to run
 
@@ -27,7 +27,7 @@ The target runs `go run ./internal/sql/mutation -out DIR` in the root of the mod
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `-out` | | The directory of the results. Required, except with `-list`. |
-| `-pkgs` | the four packages | The packages to change, separated by commas. |
+| `-pkgs` | the five packages | The packages to change, separated by commas. |
 | `-run` | | A regular expression. Only the mutants whose [key](#keys) or `file:line` matches it are run. |
 | `-list` | | Print the mutants and exit. |
 | `-report` | | Write the report of the results in `-out` again and exit. |
@@ -42,11 +42,11 @@ The target runs `go run ./internal/sql/mutation -out DIR` in the root of the mod
 Before you start a run, know these points:
 
 - **A run continues.** A run with the same `-out` skips the mutants that already have a result. A run that was stopped goes on where it stopped.
-- **Results belong to one state of the code.** The first run records a fingerprint of the files under `internal/sql`, code and tests, without this directory, of `internal/sqlite`, of `go.mod` and `go.sum`, and of the version of Go. A later run on anything else refuses the directory, and so does `-report`. Remove the directory or use another `-out` then.
+- **Results belong to one state of the code.** The first run records a fingerprint of the files under `internal`, code and tests, without this directory, of `go.mod` and `go.sum`, and of the version of Go. A later run on anything else refuses the directory, and so does `-report`. Remove the directory or use another `-out` then.
 - **A run stops on a failure of its own.** If a test binary does not start, or a file changed since its mutants were made, the run stops without a result for that mutant.
 - **It is not part of `make test` or of CI.** A full run takes too long for that. See [Results](#results).
 - **The build cache grows.** Each mutant adds about 3 MB to the Go build cache, which is about 20 GB for a full run. `-gocache` gives the builds a cache of their own, which you can delete afterwards.
-- **The run reads the files while it runs.** For each mutant, it reads the file again from the module that it runs in. Do not edit `internal/sql` during a run. To keep editing, run it on a copy of the tree.
+- **The run reads the files while it runs.** For each mutant, it reads the file again from the module that it runs in. Do not edit `internal` during a run. To keep editing, run it on a copy of the tree.
 
 ## The operators
 
@@ -79,7 +79,7 @@ Each mutant has a key that names it without a line number. A key in the list of 
 parser/ddl.go parser.tableOption condition: p.is(token.Without) => false
 ```
 
-The key holds the file under `internal/sql`, the function or the declaration at package level, the operator, and the code before and after the change.
+The key holds the file under `internal/sql`, or its path from the root for a file outside it, the function or the declaration at package level, the operator, and the code before and after the change.
 
 - An element of a table is named by its index: `token/token.go aiClass[89] constant: 2 => 1`.
 - A constant shows the expression around it when that is short: `token/token.go Next constant: i = 1 => i = 0`.
@@ -103,9 +103,10 @@ The tests run in stages, in this order. The first stage that fails kills the mut
 5. `fuzz seeds`: the seeds of `FuzzParse` and `FuzzGenerate`
 6. `mutants`: `TestParse_mutants`
 7. `shape check`: the tests of [`internal/sql/shapetest`](../shapetest/README.md)
-8. `other packages`: the tests of the other packages under `internal/sql` that depend on the changed package
+8. `simulation`: the tests of `internal/engine` under the simulation, when it is the changed package
+9. `other packages`: the tests of the other packages under `internal` that depend on the changed package
 
-The tests of `internal/sql/stmt`, when it is the changed package, run in the same layers: `TestCheck_corpus` and `TestAllowList` in `corpus`, `TestCheck_grammar` and `TestGenerate` in `generator`, `FuzzCheck` and `FuzzGenerate` in `fuzz seeds`, and `TestCheck_corpusMutants`, `TestGenerate_mutants`, and `TestGenerate_nearMisses` in `mutants`. Its other tests are `hand-written`. When another package is changed, the tests of `internal/sql/stmt` are `other packages`.
+The tests of `internal/sql/stmt`, when it is the changed package, run in the same layers: `TestCheck_corpus` and `TestAllowList` in `corpus`, `TestCheck_grammar` and `TestGenerate` in `generator`, `FuzzCheck` and `FuzzGenerate` in `fuzz seeds`, and `TestCheck_corpusMutants`, `TestGenerate_mutants`, and `TestGenerate_nearMisses` in `mutants`. Its other tests are `hand-written`. When another package is changed, the tests of `internal/sql/stmt` are `other packages`. The tests of `internal/engine`, when it is the changed package, run in these layers: `TestDifferential` in `generator`, `FuzzDifferential` and `FuzzDifferential_core` in `fuzz seeds`, and `TestSimulation` and `TestSimulation_plantedBugs` in `simulation`; its other tests are `hand-written`. When a package under `internal/sql` is changed, the tests of `internal/engine` are `other packages`.
 
 Each stage runs with `-test.failfast`. The layer `ownership` is not a stage. A mutant counts for it when the ownership check fails inside the tests of the parser and the output shows no disagreement with SQLite.
 
@@ -183,6 +184,26 @@ The final run of `token`, `ast`, and `parser`, on their code as it is now, made 
 The layers that killed them first: hand-written 5,545, corpus 221, ownership 94, generator 119, LALR automaton 10, fuzz seeds 0, mutants 13, shape check 34, other packages 0. Every survivor is in `equivalent.txt`.
 
 The run took 1 h 15 min with 10 workers on an Apple M4 with 10 cores and 16 GB, while a fuzz run used 4 of the cores. Five of its mutants survived only because the tests that kill them came after the copy of the tree that the run read; a run of those five on the final tests killed them all in 1 min. Planning, which builds and times every stage on the code as it is, takes about 3 min of the total.
+
+### The pass after the parser and the engine
+
+On 2026-11-18, the run of `internal/sql/stmt` and `internal/engine` with 6 workers, while other work used the machine, made 2,102 mutants in about 35 min. It left 110 survivors: 74 in the engine, 34 in `stmt.StartedTable`, one in the recognizer, and the known equivalent one. Each was a gap in the tests but those listed in `equivalent.txt`: the events of the engine on its paths of failure (their outcomes, rows, positions, and durations), the end of a read transaction after a loop that stops early, `Rows.Close` during a loop, the offsets of the errors, plans that no statement of slice 1 gives, the ends of the texts of `StartedTable`, and an empty name after a schema name. The runs of the affected files on the tests that close them, and of all of the engine, then left:
+
+| Package | Generated | Not compiled | Killed | Timed out | Equivalent | Unexplained | Score | Score without equivalent |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `stmt` | 1,122 | 123 | 970 | 14 | 15 | 0 | 98.50% | 100.00% |
+| `engine` | 955 | 312 | 632 | 0 | 11 | 0 | 98.29% | 100.00% |
+
+After the review of the engine on 2026-11-18, `StartedTable` moved out of `stmt` into `stmttest`, which is code for tests and is not mutated, and the engine changed. The runs of each package with 6 workers, while other work loaded the machine, then left:
+
+| Package | Generated | Not compiled | Killed | Timed out | Equivalent | Unexplained |
+| --- | --- | --- | --- | --- | --- | --- |
+| `stmt` | 896 | 117 | 766 | 12 | 1 | 0 |
+| `engine` | 1,025 | 308 | 703 | 0 | 12 | 2, which tests added after the run kill |
+
+The run of `stmt` took 7 min, and that of the engine 13 min.
+
+Of the engine's killed mutants, the layers that killed them first were hand-written 628 and simulation 4. The equivalent ones of the engine are the planted bugs, a yield to the scheduler, a bound that means "none", the order of the attributes of an event, and a check of the level that `log/slog` makes again.
 
 ### What the first run of the parser found
 

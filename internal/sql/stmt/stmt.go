@@ -3,8 +3,8 @@
 //
 // [Check] gives one of four answers for a text:
 //
-//   - SQLite's syntax error, as a [*SyntaxError], when the text is a syntax error in SQLite, also when
-//     it is SQL that s4ql does not support.
+//   - SQLite's syntax error, as a [*sqlerr.Error] with the result codes 1 and 1, when the text is a
+//     syntax error in SQLite, also when it is SQL that s4ql does not support.
 //   - "Not supported", as a [*NotSupportedError] that matches [ErrNotSupported], when SQLite's parser
 //     accepts the text and it is not, token for token, a statement that s4ql supports. Text that is
 //     not valid UTF-8, or that has a NUL byte, is not supported either, and is rejected before it is
@@ -51,27 +51,6 @@ func (e *NotSupportedError) Error() string {
 // Is reports whether target is [ErrNotSupported].
 func (e *NotSupportedError) Is(target error) bool {
 	return target == ErrNotSupported
-}
-
-// SyntaxError of SQLite: one of the three messages of its parser, with its result codes.
-type SyntaxError struct {
-	// Code is SQLite's primary result code, which is always 1, SQLITE_ERROR.
-	Code int
-
-	// ExtendedCode is SQLite's extended result code, which is always 1 as well.
-	ExtendedCode int
-
-	// Message of SQLite, such as `near "frm": syntax error`.
-	Message string
-
-	// Offset of the error in bytes from the start of the text, as SQLite gives it, or -1 where it gives
-	// none. It is extra information: SQLite does not give the same offset on every connection.
-	Offset int
-}
-
-// Error gives SQLite's message.
-func (e *SyntaxError) Error() string {
-	return e.Message
 }
 
 // Span of bytes [Start, End) of the text.

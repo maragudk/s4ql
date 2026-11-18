@@ -233,3 +233,39 @@ parser/parser.go parser.enter swap arguments: max(p.maxDepth, p.depth) => max(p.
 # holds it.
 stmt/vocabulary.go childAt condition: s.Start <= offset => true
 	The children of an accepted node are in the order of the text, so the first child that ends after the token starts before it.
+
+# The engine, internal/engine.
+
+# The planted bugs, which only the tests switch on.
+internal/engine/engine.go Engine.write condition: err == nil => false
+	It differs only with the planted bug keepOpen, when an operator panics.
+internal/engine/engine.go Engine.checkOutside boolean: true => false
+	The planted bug checkOutside: its position is replaced by that of the write transaction, and the bug is found by a commit that fails in SQLite either way.
+
+# Scheduling, which the production host ignores.
+internal/engine/engine.go Rows.read remove statement: r.report.e.host.Yield(r.ctx, "engine: between two rows of a query") =>
+	A yield only lets other tasks of the simulation run between two rows; the answers of the engine do not depend on it.
+
+# Bounds that mean "none".
+internal/engine/operator.go columnPosition constant: -1 => -2
+	The caller tests for a negative position.
+
+# Arguments of a comparison that is symmetric.
+internal/engine/operator.go buildSink swap arguments: slices.Equal(p.PrimaryKey, []int{0}) => slices.Equal([]int{0}, p.PrimaryKey)
+	slices.Equal is symmetric.
+internal/engine/operator.go buildSink swap arguments: slices.Equal(t.GetPrimaryKey(), []uint32{0}) => slices.Equal([]uint32{0}, t.GetPrimaryKey())
+	slices.Equal is symmetric.
+
+# The events.
+internal/engine/telemetry.go outcomeOf remove statement: return "core_error", slog.LevelWarn => #2
+	The case without its return ends the switch, whose last return gives the same.
+internal/engine/telemetry.go report.end condition: !r.e.log.Enabled(ctx, level) => false
+	It saves the building of the attributes only: slog.Logger.LogAttrs asks the handler whether it takes the level again.
+internal/engine/telemetry.go report.end remove statement: return =>
+	It saves the building of the attributes only: slog.Logger.LogAttrs asks the handler whether it takes the level again.
+internal/engine/telemetry.go report.end swap arguments: append(attrs, slog.String(attrKind, r.kind), slog.String(attrTable, r.table)) => append(attrs, slog.String(attrTable, r.table), slog.String(attrKind, r.kind))
+	The attributes of an event are named, and their order means nothing.
+internal/engine/telemetry.go report.end swap arguments: append(attrs, slog.Int64(attrRows, r.rows), slog.String(attrOutcome, outcome)) => append(attrs, slog.String(attrOutcome, outcome), slog.Int64(attrRows, r.rows))
+	The attributes of an event are named, and their order means nothing.
+internal/engine/telemetry.go report.end swap arguments: append(attrs, slog.Int(attrCode, se.Code), slog.Int(attrExtendedCode, se.ExtendedCode)) => append(attrs, slog.Int(attrExtendedCode, se.ExtendedCode), slog.Int(attrCode, se.Code))
+	The attributes of an event are named, and their order means nothing.

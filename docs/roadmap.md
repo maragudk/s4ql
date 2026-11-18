@@ -18,6 +18,7 @@ These hold for every slice unless this document says otherwise.
 - Double quotes mean identifiers only. A double-quoted string is rejected, and so are `[brackets]` and backticks around names.
 - Single quotes mean strings only. A single-quoted string where a name is expected is rejected.
 - No `ANY` column type.
+- A name is never empty. `""` as the name of a table or a column is rejected, and SQLite accepts it.
 - No settings that change behaviour, for now.
 - A table whose name starts with `s4ql_` or `sqlite_`, in any case of the letters, is rejected. SQLite reserves `sqlite_` itself, and `s4ql_` is for the tables that s4ql keeps in its cache.
 - A table with the name of one of SQLite's built-in virtual tables, such as `json_each` or `pragma_table_info`, is rejected. SQLite reads those tables without a `create table`.

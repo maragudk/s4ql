@@ -509,6 +509,15 @@ func (s *Stmt) ColumnName(i int) string {
 	return C.GoString(name)
 }
 
+// ColumnDeclType of the result column at index i, which counts from 0: the declared type of the
+// column of a table that the result column is, as sqlite3_column_decltype gives it, or "" for a
+// result column that is an expression or a column without a type. It panics on a finalized statement
+// and for an index out of range.
+func (s *Stmt) ColumnDeclType(i int) string {
+	s.mustHaveColumn(i)
+	return C.GoString(C.sqlite3_column_decltype(s.stmt, C.int(i)))
+}
+
 // Type of a value.
 type Type int
 

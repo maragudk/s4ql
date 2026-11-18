@@ -31,12 +31,12 @@ corpus-verify:
 	go run ./internal/sql/corpus/update -check
 
 # fuzz runs each fuzz test in the SQLite binding, its cross-checks, the storage formats, the SQL
-# tokenizer, SQLite's verdicts on SQL, the SQL parser, the check of the shape of its tree, and the
-# pass after the parser for FUZZTIME. Pass FUZZFLAGS=-asan to fuzz under the address sanitizer (Linux
-# only). It fails if it cannot list the fuzz tests of a directory, or if a directory has none, so that
-# no directory is skipped in silence.
+# tokenizer, SQLite's verdicts on SQL, the SQL parser, the check of the shape of its tree, the pass
+# after the parser, and the engine for FUZZTIME. Pass FUZZFLAGS=-asan to fuzz under the address
+# sanitizer (Linux only). It fails if it cannot list the fuzz tests of a directory, or if a directory
+# has none, so that no directory is skipped in silence.
 FUZZDIRS ?= internal/sqlite $(CROSSCHECK) internal/format internal/sql/token internal/sql/oracle internal/sql/parsetest \
-	internal/sql/parser internal/sql/shapetest internal/sql/stmt
+	internal/sql/parser internal/sql/shapetest internal/sql/stmt internal/engine
 .PHONY: fuzz
 fuzz:
 	for dir in $(FUZZDIRS); do \
@@ -78,9 +78,9 @@ lint-proto:
 	$(BUF) lint
 	$(BUF) format --diff --exit-code
 
-# mutation runs the mutation testing of the SQL tokenizer, syntax tree, parser, and the pass after the
-# parser, with the results and the report in MUTATIONDIR. It is not part of test, since a full run takes long; see
-# internal/sql/mutation/README.md. A run with the same MUTATIONDIR goes on where the last one stopped,
+# mutation runs the mutation testing of the SQL tokenizer, syntax tree, parser, the pass after the
+# parser, and the engine, with the results and the report in MUTATIONDIR. It is not part of test,
+# since a full run takes long; see internal/sql/mutation/README.md. A run with the same MUTATIONDIR goes on where the last one stopped,
 # and refuses it after a change of the code; remove the directory then.
 MUTATIONDIR ?= $(or $(TMPDIR),/tmp)/s4ql-mutation
 .PHONY: mutation
@@ -117,13 +117,13 @@ test:
 	cd $(CROSSCHECK) && go test -shuffle on ./...
 	cd $(SIMLINT) && go test -shuffle on ./...
 
-# test-sql runs the tests of the SQL front end without the race detector and the address sanitizer,
-# under which they compare with SQLite on a tenth of the corpus and of the generated texts only, and
-# leave out the checks that need all of them, such as the use of every rule of the grammar and the
-# number of texts on which SQLite does not say.
+# test-sql runs the tests of the SQL front end and of the engine without the race detector and the
+# address sanitizer, under which they compare with SQLite on a tenth of the corpus and of the generated
+# texts only, and leave out the checks that need all of them, such as the use of every rule of the
+# grammar and the number of texts on which SQLite does not say.
 .PHONY: test-sql
 test-sql:
-	go test -count 1 -shuffle on ./internal/sql/...
+	go test -count 1 -shuffle on ./internal/sql/... ./internal/engine/...
 
 # BROWSERPKGS are the packages that build for GOOS=js GOARCH=wasm with the tag s4ql_browser, on the
 # official SQLite WebAssembly build in internal/sqlite/browser; see its README.

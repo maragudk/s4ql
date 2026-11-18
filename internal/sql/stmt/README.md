@@ -2,7 +2,7 @@
 
 `internal/sql/stmt` takes SQL text and gives one of four answers:
 
-1. **SQLite's syntax error**, as a `*stmt.SyntaxError`: the message of SQLite's parser, with the result code 1 and the extended result code 1, when the text is a syntax error in SQLite. This holds also when the text is SQL that s4ql does not support. Only the checks before parsing come first: a text longer than SQLite's limit, with a NUL byte, or with bytes that are not UTF-8 is not supported, whatever else it holds. The byte offset is kept as extra information; it is not part of the promise.
+1. **SQLite's syntax error**, as a `*sqlerr.Error` of [`internal/sql/sqlerr`](../sqlerr/sqlerr.go), the one type of SQLite's errors that s4ql gives, which the engine gives too: the message of SQLite's parser, with the result code 1 and the extended result code 1, when the text is a syntax error in SQLite. This holds also when the text is SQL that s4ql does not support. Only the checks before parsing come first: a text longer than SQLite's limit, with a NUL byte, or with bytes that are not UTF-8 is not supported, whatever else it holds. The byte offset is kept as extra information; it is not part of the promise.
 2. **"Not supported"**, as a `*stmt.NotSupportedError`, when SQLite's parser accepts the text and the text is not, token for token, a statement of [slice 1](#slice-1). The error matches `stmt.ErrNotSupported` with `errors.Is`, its message starts with `s4ql: not supported: `, and it carries no result code of SQLite.
 3. **No statement and no error**, for a text that is empty or holds only spaces, comments, and semicolons. SQLite prepares such a text into no statement and no error.
 4. **A supported statement**: a `*stmt.CreateTable`, `*stmt.Insert`, `*stmt.Select`, or `*stmt.DropTable`.
@@ -110,7 +110,9 @@ Not supported: IF EXISTS, DROP VIEW, DROP INDEX, DROP TRIGGER, and a schema name
 `table` and `column` are names:
 
 - A bare name, such as `t1` or `été`, or a keyword that SQLite reads as a name in that place, such as `abort`. The parser has decided which keywords are names, as SQLite's grammar does. The value of a bare name is its text.
-- A name in double quotes, with `""` for a quote inside. Its value is the text between the quotes, with `""` read as `"`. The empty name `""` is a name.
+- A name in double quotes, with `""` for a quote inside. Its value is the text between the quotes, with `""` read as `"`.
+
+Not supported: the empty name `""`, in every place, though SQLite takes it for a name and creates a table and a column of that name. The storage core and the format of the commit object do not hold a table or a column without a name (`checkIdentifier` in `internal/format/check.go`), and the pass is the one gate that decides what is supported. It is the only name that SQLite and this pass accept and the core refuses: the core's other rules on names are valid UTF-8, no NUL, and no reserved prefix, which the checks before parsing and the reserved names cover already. `TestEngine_namesOfTheCore` in `internal/engine` checks, against the real core, that every name of the pools of the generator and thousands of random names in double quotes, of every kind of character, are taken by the core wherever the pass supports them, as SQLite takes them.
 
 Not supported: a name in `[brackets]`, in backticks, or in single quotes, which SQLite accepts in some places. The roadmap's restrictions reject all three.
 
@@ -167,6 +169,7 @@ A test checks that every name the pass gives in any test is in these tables.
 | `name in brackets` | A name is in `[brackets]`. |
 | `name in backticks` | A name is in backticks. |
 | `single-quoted name` | A name is a string in single quotes. |
+| `empty name` | A name is `""`. |
 | `reserved table name` | A table name starts with `sqlite_` or `s4ql_`. |
 | `name of a virtual table of SQLite` | A table name is that of an eponymous virtual table. |
 | `second column` | CREATE TABLE has a second column, or INSERT names a second column. |
@@ -332,6 +335,9 @@ Any other field of an accepted node has the name of the node's type.
 ## Known gaps
 
 - **An error that is not a syntax error, before a syntax error.** When one of SQLite's grammar actions raises an error, such as `unknown table option`, or SQLite's parser hits its stack limit, `Recursion limit`, and a syntax error comes later in the same statement, SQLite gives that error and the pass gives the syntax error. The oracle does not say on such a text, so no test can hold the pass to SQLite's answer there, and the promise covers only texts that are a syntax error in SQLite. Giving SQLite's message would need the pass to raise the action errors and to count the stack as SQLite does. In the tests, 36 entries of the corpus are such texts, and the tests count them apart.
+- **An error about the database, before a syntax error.** Some grammar actions look the schema up while SQLite parses, so SQLite can give another error than the syntax error. The spec's rule settles which answer s4ql gives: "Text with a syntax error gets the error that SQLite gives for it on an empty database." So the answer of the pass never depends on what the database holds, and the engine gives it without a transaction.
+  - **Covered by the rule:** SQLite starts a table, in `sqlite3StartTable`, as soon as it has read `CREATE TABLE`, the name, and the `(` or `AS` after it, or `CREATE VIRTUAL TABLE`, the name, `USING`, the module, and the `(`. If a table of the name exists, it gives `table %s already exists` with the name as written, and never meets a later syntax error: `create table t1 (v1 int primary key) strict without rowid` gives `table t1 already exists` when `t1` exists, and `near "without": syntax error` on an empty database, which is what the pass gives. This is the one difference from SQLite that the tests accept. `StartedTable` in [`stmttest`](stmttest/started.go), which is code for tests, gives the name of the table that such a text starts, and the engine's differential test, its fuzz tests, and its simulation accept exactly this difference with it. `TestStartedTable` and `FuzzStartedTable` check it against SQLite on hand-written texts, mutants and prefixes of statements of the generator, and any text. Not after TEMP, IF NOT EXISTS, or a schema other than `main`: SQLite then does not look in `main`, or gives `unknown database` first.
+  - **A gap against the rule:** for the texts below SQLite gives another error than the syntax error also on an empty database, and the pass gives the syntax error. Each has the result code 1 and the extended code 1 on both sides; only the message differs. These are of the gap above, an error of a grammar action before a syntax error: `alter table nosuch add v1 int primary key x y` gives `no such table: nosuch`; `create table t2 (v1 int, v1 int) x y` gives `duplicate column name: v1`; others are `unknown database x`, `object name reserved for internal use: sqlite_x`, `temporary table name must be unqualified`, and `table "t2" has more than one primary key`; and `CREATE TRIGGER` gives `no such table: main.%s` at its `BEGIN` for a table that does not exist, before a syntax error in its body. On a database with the table and the column, the ALTER TABLE above gives `duplicate column name: v1`, and an INSTEAD OF trigger on a table gives `cannot create INSTEAD OF trigger on table: %s`: those differ from what SQLite gives on an empty database, so the rule does not ask for them, but the empty database's answer is still not the syntax error.
 
 ## How to add the next slice
 
@@ -340,7 +346,7 @@ Any other field of an accepted node has the name of the node's type.
 3. Extend the recognizer in `recognize.go`. Take every new token with `take`, accept every new node with `accept` before you take its tokens, and build the typed form only from tokens you took. Check the content of a token before you take it, with `isNext`, so that a reject names the right token. Do not loosen the check at the end of `recognize`.
 4. Add a name to `fieldNames` in `vocabulary.go` for each field of an accepted node that the slice does not support, and every new name of a check, to the tables above.
 5. Extend the allow-list in `vocabulary_test.go` with exactly the node types and fields that the slice adds. The test fails until every field outside the list has an example that is not supported.
-6. Extend the generator in `generate_test.go` to every new form, and `checkMeaning` in `stmt_test.go` to compare each new statement with what SQLite does.
+6. Extend the generator in [`stmttest`](stmttest/stmttest.go) to every new form, and `checkMeaning` in `stmt_test.go` to compare each new statement with what SQLite does.
 7. Add hand-written cases for each new form and its near misses to `checkCases` in `check_test.go`.
 8. Update this README: the definition of the slice, and the names.
 
@@ -353,6 +359,7 @@ SQLite is the judge, through the oracle in [`internal/sql/oracle`](../oracle/REA
 - Text with a NUL byte or a byte that is not UTF-8 is not supported, with the right name and offset, and no other text is rejected for those.
 - A syntax error is SQLite's, with its message and the codes 1 and 1. Where SQLite does not say, as in the [known gap](#known-gaps), the syntax error must still be one of SQLite's three messages, and the tests count it apart.
 - A text that SQLite parses is never a syntax error.
+- A "not supported" text is never a syntax error in SQLite. Where SQLite does not say whether it parses, the tests count it apart.
 - A "not supported" error matches `ErrNotSupported`, has the form above, and has a name from the tables above, which the test reads from this README. Its offset is where a token that is not a space or a comment starts or ends.
 - A text without a statement holds only spaces, comments, and semicolons.
 - A supported statement is one that SQLite parses, and `checkMeaning` in `stmt_test.go` checks it in SQLite:
@@ -366,7 +373,7 @@ The layers:
 
 1. `TestCheck` pins the answer for each supported form and each near miss, with its exact message and offset, and checks each with `verify`. It also checks that every keyword that SQLite reads as a name after FROM is supported there.
 2. `TestCheck_corpus`, `TestCheck_corpusMutants`, and `TestCheck_grammar` run `verify` on the corpus of [`internal/sql/corpus`](../corpus/README.md), on one mutant of each entry from `parsetest.Mutants`, and on sentences of SQLite's grammar from the generator of [`internal/sql/parsetest`](../parsetest/README.md) and one mutant of each.
-3. `TestGenerate` runs a generator of slice 1. It writes random statements of the four forms, with names from a pool of plain names, names in double quotes with odd content, names that differ only in case, names close to the reserved ones, and every keyword that SQLite reads as a name in that place; with values at and around the limits, with leading zeros and gaps after the sign; with keywords in any case, and with spaces and comments in every gap. Each statement must be supported as the statement that the generator wrote, offsets included, and pass `verify`.
+3. `TestGenerate` runs the generator of slice 1 in [`stmttest`](stmttest/stmttest.go), which the engine's tests use too. It writes random statements of the four forms, with names from a pool of plain names, names in double quotes with odd content, names that differ only in case, names close to the reserved ones, and every keyword that SQLite reads as a name in that place; with values at and around the limits, with leading zeros and gaps after the sign; with keywords in any case, and with spaces and comments in every gap. Each statement must be supported as the statement that the generator wrote, offsets included, and pass `verify`.
 4. `TestGenerate_mutants` runs `verify` on five one-token mutants of each statement of the generator, and logs the mutants that are still supported, by how they differ from their statement. `TestGenerate_nearMisses` adds what a one-token mutant cannot: each of about 30 clauses, keywords, and items, such as WHERE, RETURNING, a column constraint after PRIMARY KEY, or a second row, to statements of the generator, and requires that none is supported.
 5. `TestAllowList` in `vocabulary_test.go` parses many statements, and requires that a supported statement uses only the node types and fields of slice 1. It reads the node types from the source of `internal/sql/ast` and their fields through reflection, so the list cannot go stale: every node type, and every field of the node types of slice 1, must occur in some statement of the test, so that a statement that has one outside slice 1 is seen to be not supported. The test sees types and fields, not how many there are or what their tokens say: `strict, without rowid, strict` and `values (+1)` use only the types and fields of slice 1. The hand-written cases and the check of the meaning cover those. `vocabulary_internal_test.go` checks that every node type has a name, and `TestRecognize` there gives the recognizer trees that no text gives, for its paths that SQLite's grammar never reaches.
 6. `FuzzCheck` runs `verify` on any text, and `FuzzGenerate` on a statement of the generator and a mutant of it. `make fuzz` runs both.
@@ -378,19 +385,21 @@ Under `-short`, the race detector, or the address sanitizer, the tests on the co
 
 On the code as it is now, with the default flags:
 
-| Layer | Texts | Rejected before parsing | Syntax error | Syntax error where SQLite does not say | Not supported | No statement | Supported |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Corpus, and the parts before a byte rejected before parsing | 183,694 | 44,460 | 52,938 | 62 | 79,068 | 6,437 | 729 |
-| One mutant of each corpus entry, and the parts before such a byte | 168,292 | 29,535 | 120,774 | 78 | 11,873 | 5,995 | 37 |
-| 20,000 sentences of the grammar and a mutant of each | 40,000 | 0 | 12,996 | 2,356 | 21,729 | 2,895 | 24 |
-| Five mutants of each of 20,000 statements of the generator | 100,000 | 0 | 80,514 | 3 | 8,249 | 0 | 11,234 |
-| Near misses of 2,000 statements of the generator | 53,852 | 0 | 55 | 0 | 53,797 | 0 | 0 |
+| Layer | Texts | Rejected before parsing | Syntax error | Syntax error where SQLite does not say | Not supported | Not supported where SQLite does not say | No statement | Supported |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Corpus, and the parts before a byte rejected before parsing | 183,694 | 44,460 | 52,938 | 62 | 78,833 | 237 | 6,437 | 727 |
+| One mutant of each corpus entry, and the parts before such a byte | 168,292 | 29,535 | 120,774 | 78 | 11,695 | 178 | 5,995 | 37 |
+| 20,000 sentences of the grammar and a mutant of each | 40,000 | 0 | 12,996 | 2,356 | 20,250 | 1,479 | 2,895 | 24 |
+| Five mutants of each of 20,000 statements of the generator | 100,000 | 0 | 80,607 | 2 | 7,689 | 375 | 0 | 11,327 |
+| Near misses of 2,000 statements of the generator | 53,916 | 0 | 49 | 0 | 52,821 | 1,046 | 0 | 0 |
 
-The 729 supported texts of the corpus are 3 CREATE TABLE, 192 DROP TABLE, 184 INSERT, and 350 SELECT, each checked in SQLite. The supported mutants of the generator are the same statement with a semicolon or a comment changed, or the same form with another name, a keyword from the pool of the mutants, or with the sign of the value dropped; none is another kind of statement. `TestGenerate` checks 20,000 statements of the generator, each as the statement it wrote.
+The two columns "where SQLite does not say" are the texts that the oracle excuses from the comparison with SQLite: SQLite stopped before the end of the statement for a reason that is not the grammar, so nothing holds the pass's answer to SQLite's there. With the default flags and all the texts, the tests require these sums exactly: 299, 256, 3,835, 377, and 1,046, in the order of the table (`excused` in `check_test.go`). A change of the oracle or of the pass that excuses more texts fails them, and the numbers may be changed only on purpose, with the reason.
+
+The 727 supported texts of the corpus are 3 CREATE TABLE, 191 DROP TABLE, 183 INSERT, and 350 SELECT, each checked in SQLite; the two that were supported before the empty name was rejected are `DROP TABLE ""` and `INSERT INTO ""("") VALUES(1)`. The supported mutants of the generator are the same statement with a semicolon or a comment changed, or the same form with another name, a keyword from the pool of the mutants, or with the sign of the value dropped; none is another kind of statement. `TestGenerate` checks 20,000 statements of the generator, each as the statement it wrote.
 
 Fuzzing: `FuzzCheck` made 202,673,795 executions in 40 minutes on 6 workers, and on the code after the review 87,983,456 in 30 minutes on 4 workers. `FuzzGenerate` made 11,418,100 executions in 15 minutes on 4 workers; each checks a statement of the generator and its mutant in SQLite. None of the runs found anything.
 
-Mutation testing: of 890 mutants, 117 do not compile, 760 are killed, 12 time out, and 1 is equivalent; none is unexplained. See [`internal/sql/mutation`](../mutation/README.md#the-pass-after-the-parser).
+Mutation testing, on 2026-11-18 after `StartedTable` moved to `stmttest`, which is not mutated: of 896 mutants, 117 do not compile, 766 are killed, 12 time out, and 1 is equivalent; none is unexplained. Before, with `StartedTable` in the package, of 1,122 mutants, 123 did not compile, 970 were killed, 14 timed out, and 15 were equivalent, 14 of them in `StartedTable`. See [`internal/sql/mutation`](../mutation/README.md#the-pass-after-the-parser).
 
 Statement coverage is 99.0%. Three places are not covered: the defaults of `literalName` and `unaryName` for a kind of token that the grammar never puts there, and the name of a node for one of its own tokens whose field has no name, which no offset reaches.
 

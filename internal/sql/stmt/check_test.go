@@ -18,6 +18,7 @@ import (
 	"maragu.dev/s4ql/internal/sql/corpus"
 	"maragu.dev/s4ql/internal/sql/oracle"
 	"maragu.dev/s4ql/internal/sql/parsetest"
+	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/sql/token"
 )
@@ -49,11 +50,12 @@ const (
 	supported
 	noStatement
 	syntaxNotSaid
+	notSupportedNotSaid
 )
 
 func (o outcome) String() string {
 	return [...]string{"rejected before parsing", "syntax error", "not supported", "supported", "no statement",
-		"syntax error where SQLite does not say"}[o]
+		"syntax error where SQLite does not say", "not supported where SQLite does not say"}[o]
 }
 
 // verify the answer of [stmt.Check] on src against SQLite: text that is not UTF-8 or that has a NUL
@@ -67,7 +69,7 @@ func verify(t testing.TB, src string) (outcome, stmt.Statement) {
 	if s2, err2 := stmt.Check(src); fmt.Sprint(s2, err2) != fmt.Sprint(s, err) {
 		t.Fatalf("%q: two calls give %v %v and %v %v", src, s, err, s2, err2)
 	}
-	var se *stmt.SyntaxError
+	var se *sqlerr.Error
 	var ne *stmt.NotSupportedError
 	if errors.As(err, &ne) {
 		checkNotSupported(t, src, err, ne)
@@ -101,6 +103,10 @@ func verify(t testing.TB, src string) (outcome, stmt.Statement) {
 	case ne != nil:
 		if v.Kind == oracle.SyntaxError {
 			t.Fatalf("%q: gives %v, SQLite gives the syntax error %q", src, err, v.Message)
+		}
+		if v.Kind == oracle.NotSaid {
+			// SQLite does not say whether the text parses, so nothing holds the answer to SQLite's.
+			return notSupportedNotSaid, nil
 		}
 		return notSupported, nil
 	case err != nil:
@@ -208,16 +214,36 @@ type counts map[outcome]int
 
 func (c counts) String() string {
 	var parts []string
-	for o := preparse; o <= syntaxNotSaid; o++ {
+	for o := preparse; o <= notSupportedNotSaid; o++ {
 		parts = append(parts, fmt.Sprintf("%v %v", c[o], o))
 	}
 	return strings.Join(parts, ", ")
 }
 
+// excused requires, in a run of all the texts with the default flags, that exactly want of the
+// counts c are texts where SQLite does not say, which [oracle.Judge] excuses from the comparison with
+// SQLite: syntax errors and texts that are not supported. A change of the oracle or of the pass that
+// excuses more texts would otherwise pass unseen. The run is the same on every machine, so the
+// number is exact.
+func excused(t *testing.T, c counts, want int) {
+	t.Helper()
+	if slow() {
+		return
+	}
+	for _, name := range []string{"seed", "grammar", "generated", "mutants"} {
+		if f := flag.Lookup(name); f.Value.String() != f.DefValue {
+			return
+		}
+	}
+	if got := c[syntaxNotSaid] + c[notSupportedNotSaid]; got != want {
+		t.Errorf("%v texts are syntax errors or not supported where SQLite does not say, which the tests excuse from the comparison with SQLite, and %v were. The number may be changed only on purpose: find out why it changed, and change it here and in the README of the package, with the reason.", got, want)
+	}
+}
+
 // verifyAll texts, and log the counts of the outcomes and the supported texts by their kind of
-// statement, with a few of each. Of a text that is rejected before it is parsed, the part before its
-// first NUL byte or byte that is not UTF-8 is verified too.
-func verifyAll(t *testing.T, sqls []string) {
+// statement, with a few of each, and give the counts. Of a text that is rejected before it is
+// parsed, the part before its first NUL byte or byte that is not UTF-8 is verified too.
+func verifyAll(t *testing.T, sqls []string) counts {
 	t.Helper()
 	c := counts{}
 	byKind := map[string][]string{}
@@ -246,6 +272,7 @@ func verifyAll(t *testing.T, sqls []string) {
 			t.Logf("  %q", sql)
 		}
 	}
+	return c
 }
 
 func corpusSQL() []string {
@@ -262,7 +289,7 @@ func TestCheck_corpus(t *testing.T) {
 	if slow() {
 		sqls = every(sqls, 10)
 	}
-	verifyAll(t, sqls)
+	excused(t, verifyAll(t, sqls), 299)
 }
 
 // TestCheck_corpusMutants checks the pass against SQLite on one-token mutants of the corpus.
@@ -275,7 +302,7 @@ func TestCheck_corpusMutants(t *testing.T) {
 	for i, sql := range entries {
 		sqls = append(sqls, parsetest.Mutants(sql, *seed+uint64(i), 1)...)
 	}
-	verifyAll(t, sqls)
+	excused(t, verifyAll(t, sqls), 256)
 }
 
 var grammarCount = flag.Int("grammar", 20000, "sentences of the grammar in TestCheck_grammar")
@@ -304,7 +331,7 @@ func TestCheck_grammar(t *testing.T) {
 		sqls = append(sqls, s)
 		sqls = append(sqls, parsetest.Mutants(s, *seed+uint64(i), 1)...)
 	}
-	verifyAll(t, sqls)
+	excused(t, verifyAll(t, sqls), 3835)
 }
 
 // FuzzCheck checks the pass against SQLite on any text.
@@ -354,8 +381,8 @@ var checkCases = []checkCase{
 		want: &stmt.CreateTable{Span: stmt.Span{Start: 5, End: 68}, Table: name("t", "t", 25), Column: name("v", "v", 27)}},
 	{name: "create table named by a keyword", src: "create table abort (key int primary key) strict, without rowid",
 		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 62}, Table: name("abort", "abort", 13), Column: name("key", "key", 20)}},
-	{name: "create table with an empty name and a name of non-ASCII letters", src: `create table "" (été int primary key) strict, without rowid`,
-		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 61}, Table: name(`""`, "", 13), Column: name("été", "été", 17)}},
+	{name: "create table with a name of non-ASCII letters", src: `create table "é" (été int primary key) strict, without rowid`,
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 63}, Table: name(`"é"`, "é", 13), Column: name("été", "été", 19)}},
 	{name: "insert", src: "insert into t1 (v1) values (1)",
 		want: &stmt.Insert{Span: stmt.Span{Start: 0, End: 30}, Table: name("t1", "t1", 12), Column: name("v1", "v1", 16), Value: 1, ValueSpan: stmt.Span{Start: 28, End: 29}}},
 	{name: "insert of the largest integer", src: "insert into t (v) values (9223372036854775807)",
@@ -422,6 +449,13 @@ var checkCases = []checkCase{
 	{name: "a single-quoted name", src: "create table 't' (v int primary key) strict, without rowid", err: "s4ql: not supported: single-quoted name (at offset 13)"},
 	{name: "a single-quoted column name", src: "create table t ('v' int primary key) strict, without rowid", err: "s4ql: not supported: single-quoted name (at offset 16)"},
 	{name: "a single-quoted column name in insert", src: "insert into t ('v') values (1)", err: "s4ql: not supported: single-quoted name (at offset 15)"},
+	{name: "an empty table name", src: `create table "" (v int primary key) strict, without rowid`, err: "s4ql: not supported: empty name (at offset 13)"},
+	{name: "an empty column name", src: `create table t ("" int primary key) strict, without rowid`, err: "s4ql: not supported: empty name (at offset 16)"},
+	{name: "an empty table name in insert", src: `insert into "" (v) values (1)`, err: "s4ql: not supported: empty name (at offset 12)"},
+	{name: "an empty column name in insert", src: `insert into t ("") values (1)`, err: "s4ql: not supported: empty name (at offset 15)"},
+	{name: "an empty table name in select", src: `select * from ""`, err: "s4ql: not supported: empty name (at offset 14)"},
+	{name: "an empty table name in drop table", src: `drop table ""`, err: "s4ql: not supported: empty name (at offset 11)"},
+	{name: "an empty table name after a schema name", src: `insert into main."" (v) values (1)`, err: "s4ql: not supported: schema name (at offset 12)"},
 	{name: "a table name that starts with sqlite_", src: "select * from sqlite_schema", err: "s4ql: not supported: reserved table name (at offset 14)"},
 	{name: "a table name that starts with sqlite_ in another case", src: `drop table "SQLite_x"`, err: "s4ql: not supported: reserved table name (at offset 11)"},
 	{name: "a table name that starts with s4ql_", src: "insert into S4QL_t (v) values (1)", err: "s4ql: not supported: reserved table name (at offset 12)"},
@@ -573,9 +607,9 @@ func TestCheck(t *testing.T) {
 		is.True(t, errors.As(err, &ne))
 		is.True(t, errors.Is(err, stmt.ErrNotSupported))
 		_, err = stmt.Check("drop")
-		var se *stmt.SyntaxError
+		var se *sqlerr.Error
 		is.True(t, errors.As(err, &se))
-		is.Equal(t, stmt.SyntaxError{Code: 1, ExtendedCode: 1, Message: "incomplete input", Offset: -1}, *se)
+		is.Equal(t, sqlerr.Error{Code: 1, ExtendedCode: 1, Message: "incomplete input", Offset: -1}, *se)
 		is.True(t, !errors.Is(err, stmt.ErrNotSupported))
 	})
 

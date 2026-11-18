@@ -743,6 +743,31 @@ func TestStmt_ColumnName(t *testing.T) {
 	})
 }
 
+func TestStmt_ColumnDeclType(t *testing.T) {
+	t.Run("should report the declared type of a column, in upper case if it is one of the types of a strict table, and none for an expression or a column without one", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.Exec("create table t1 (v1 Int primary key, v2 Varchar ( 10 ), v3) without rowid"))
+		is.NotError(t, c.Exec("create table t2 (v1 Int primary key, v2 integer) strict, without rowid"))
+		s := prepare(t, c, `select *, v1 as x, v1 + 1 from t1`)
+		var types []string
+		for i := range s.ColumnCount() {
+			types = append(types, s.ColumnDeclType(i))
+		}
+		s2 := prepare(t, c, `select * from t2`)
+		for i := range s2.ColumnCount() {
+			types = append(types, s2.ColumnDeclType(i))
+		}
+		is.EqualSlice(t, []string{"INT", "Varchar ( 10 )", "", "INT", "", "INT", "INTEGER"}, types)
+	})
+
+	t.Run("should panic for an index out of range", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select 1")
+
+		is.Equal(t, "sqlite: column index 1 out of range for 1 columns", panicMessage(t, func() { s.ColumnDeclType(1) }))
+	})
+}
+
 func TestStmt_ColumnType(t *testing.T) {
 	t.Run("should report the type of each value, which can differ between rows of a column", func(t *testing.T) {
 		c := memory(t)

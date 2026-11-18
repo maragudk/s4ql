@@ -1,0 +1,200 @@
+package engine
+
+import (
+	"fmt"
+	"strings"
+
+	"maragu.dev/s4ql/internal/s4qlpb"
+	"maragu.dev/s4ql/internal/sql/stmt"
+)
+
+// Plan of a statement: what to do, as plain data, which [Format] prints. A plan holds the names as
+// the statement writes them, and nothing of the catalogue: the operators look the names up in the
+// transaction that runs the plan, which is where SQLite's errors about names come from.
+//
+// A plan is a [*CreateTable], a [*DropTable], an [*Insert], or a [*Query]. An insert and a query
+// read their rows from a tree of [Node]s.
+type Plan interface {
+	plan()
+}
+
+// Node of a plan that gives rows: a [*Scan], a [*Values], or a [*Project].
+type Node interface {
+	node()
+}
+
+// Expr is an expression that gives a value: an [*Integer].
+type Expr interface {
+	expr()
+}
+
+// CreateTable creates a table, which no table of its name may exist for.
+type CreateTable struct {
+	Table   stmt.Name
+	Columns []ColumnDef
+	// PrimaryKey holds the positions in Columns of the columns of the primary key, in key order.
+	PrimaryKey []int
+}
+
+// ColumnDef is a column of a [CreateTable].
+type ColumnDef struct {
+	Name stmt.Name
+	Type s4qlpb.Type
+}
+
+// DropTable drops a table, which must exist.
+type DropTable struct {
+	Table stmt.Name
+}
+
+// Insert inserts the rows of Source into a table, each as a new row. Source gives a value for each
+// of Columns, in their order.
+type Insert struct {
+	Table   stmt.Name
+	Columns []stmt.Name
+	Source  Node
+}
+
+// Query gives the rows of Root.
+type Query struct {
+	Root Node
+}
+
+// Scan gives every row of a table, in the order of its primary key.
+type Scan struct {
+	Table stmt.Name
+}
+
+// Values gives one row for each of Rows, which hold one expression for each value.
+type Values struct {
+	Rows [][]Expr
+}
+
+// Project gives the columns of each row of Source that a query names. Star is `*`: every column, in
+// the order of the table.
+type Project struct {
+	Source Node
+	Star   bool
+}
+
+// Integer is an integer literal.
+type Integer struct {
+	Value int64
+}
+
+func (*CreateTable) plan() {}
+func (*DropTable) plan()   {}
+func (*Insert) plan()      {}
+func (*Query) plan()       {}
+func (*Scan) node()        {}
+func (*Values) node()      {}
+func (*Project) node()     {}
+func (*Integer) expr()     {}
+
+// NewPlan of the statement s.
+func NewPlan(s stmt.Statement) Plan {
+	switch s := s.(type) {
+	case *stmt.CreateTable:
+		return &CreateTable{Table: s.Table, Columns: []ColumnDef{{Name: s.Column, Type: s4qlpb.Type_TYPE_INT}}, PrimaryKey: []int{0}}
+	case *stmt.DropTable:
+		return &DropTable{Table: s.Table}
+	case *stmt.Insert:
+		return &Insert{Table: s.Table, Columns: []stmt.Name{s.Column}, Source: &Values{Rows: [][]Expr{{&Integer{Value: s.Value}}}}}
+	case *stmt.Select:
+		return &Query{Root: &Project{Source: &Scan{Table: s.Table}, Star: true}}
+	}
+	panic(fmt.Sprintf("engine: a statement of type %T", s))
+}
+
+// Format the plan p as text: a line for each statement and node, with the nodes that a node reads
+// from indented under it, and every name as the statement writes it.
+func Format(p Plan) string {
+	var b strings.Builder
+	switch p := p.(type) {
+	case *CreateTable:
+		fmt.Fprint(&b, "create table ", p.Table.Raw, " (")
+		for i, c := range p.Columns {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprint(&b, c.Name.Raw, " ", typeName(c.Type))
+		}
+		b.WriteString(", primary key (")
+		for i, position := range p.PrimaryKey {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(p.Columns[position].Name.Raw)
+		}
+		b.WriteString("))\n")
+	case *DropTable:
+		fmt.Fprint(&b, "drop table ", p.Table.Raw, "\n")
+	case *Insert:
+		fmt.Fprint(&b, "insert into ", p.Table.Raw, " (")
+		for i, c := range p.Columns {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(c.Raw)
+		}
+		b.WriteString(")\n")
+		formatNode(&b, p.Source, 1)
+	case *Query:
+		b.WriteString("query\n")
+		formatNode(&b, p.Root, 1)
+	default:
+		panic(fmt.Sprintf("engine: a plan of type %T", p))
+	}
+	return b.String()
+}
+
+func formatNode(b *strings.Builder, n Node, depth int) {
+	b.WriteString(strings.Repeat("  ", depth))
+	switch n := n.(type) {
+	case *Scan:
+		fmt.Fprint(b, "scan ", n.Table.Raw, "\n")
+	case *Values:
+		b.WriteString("values")
+		for i, row := range n.Rows {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			b.WriteString(" (")
+			for j, e := range row {
+				if j > 0 {
+					b.WriteString(", ")
+				}
+				b.WriteString(formatExpr(e))
+			}
+			b.WriteString(")")
+		}
+		b.WriteString("\n")
+	case *Project:
+		b.WriteString("project")
+		if n.Star {
+			b.WriteString(" *")
+		}
+		b.WriteString("\n")
+		formatNode(b, n.Source, depth+1)
+	default:
+		panic(fmt.Sprintf("engine: a node of type %T", n))
+	}
+}
+
+func formatExpr(e Expr) string {
+	switch e := e.(type) {
+	case *Integer:
+		return fmt.Sprint(e.Value)
+	}
+	panic(fmt.Sprintf("engine: an expression of type %T", e))
+}
+
+// typeName of a column's type, as SQLite gives it for the declared type of a column of a strict
+// table.
+func typeName(t s4qlpb.Type) string {
+	switch t {
+	case s4qlpb.Type_TYPE_INT:
+		return "INT"
+	}
+	panic(fmt.Sprintf("engine: a column of type %v", t))
+}
