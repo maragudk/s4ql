@@ -145,16 +145,8 @@ func defaultRequest() Request {
 // not a field of the request is an error.
 func ParseRequest(b []byte) (Request, error) {
 	r := defaultRequest()
-	// A list that is given replaces the default, and does not add to it.
-	var lists struct {
-		Leases []float64 `json:"leases"`
-	}
-	if err := json.Unmarshal(b, &lists); err != nil {
-		return Request{}, fmt.Errorf("the request is not JSON of a request: %w", err)
-	}
-	if lists.Leases != nil {
-		r.Leases = nil
-	}
+	// A list that is given replaces the default: encoding/json/v2 empties a slice before it decodes
+	// an array into it.
 	if err := json.Unmarshal(b, &r, json.RejectUnknownMembers(true)); err != nil {
 		return Request{}, fmt.Errorf("the request is not JSON of a request: %w", err)
 	}

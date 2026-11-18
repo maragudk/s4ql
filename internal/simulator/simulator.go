@@ -39,6 +39,8 @@ func (e *Engine) Handle(t *testing.T, kind string, body []byte) []byte {
 	case "run":
 		req, err := ParseRequest(body)
 		if err != nil {
+			// A state from now on would be of a run that the page did not ask for last.
+			e.last = nil
 			return marshal(Response{Error: err.Error()})
 		}
 		res := simulate(t, req)

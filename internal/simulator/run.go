@@ -304,7 +304,7 @@ func (r *run) open(ctx context.Context, p *process) {
 		return
 	}
 	p.mu.Lock()
-	p.db, p.closed = d, false
+	p.db = d
 	holder := p.holder
 	p.mu.Unlock()
 	r.rec.add(Event{Kind: "process", What: "opened", Instance: p.i.name, Process: p.name, Holder: holder})
@@ -340,19 +340,15 @@ func (r *run) closeDB(ctx context.Context, p *process, d *core.DB) {
 // open it again. At the end of the run it closes the database for good.
 func (r *run) supervise(ctx context.Context, p *process) {
 	for !r.isEnding() {
-		d := p.current()
-		p.mu.Lock()
-		closed := p.closed
-		p.mu.Unlock()
-		if d != nil && !closed && stopped(d) {
-			if p.lifecycle.Acquire(ctx) == nil {
-				if p.current() == d && !r.isEnding() {
-					r.rec.add(Event{Kind: "process", What: "stopped", Instance: p.i.name, Process: p.name, Error: errText(d.Err())})
-					r.closeDB(ctx, p, d)
-					r.open(ctx, p)
-				}
-				p.lifecycle.Release(ctx)
+		if r.mustReopen(p) && p.lifecycle.Acquire(ctx) == nil {
+			// An action may have closed the database while the supervisor waited.
+			if r.mustReopen(p) && !r.isEnding() {
+				d := p.current()
+				r.rec.add(Event{Kind: "process", What: "stopped", Instance: p.i.name, Process: p.name, Error: errText(d.Err())})
+				r.closeDB(ctx, p, d)
+				r.open(ctx, p)
 			}
+			p.lifecycle.Release(ctx)
 		}
 		_ = p.inst.Sleep(ctx, 2*time.Second)
 	}
@@ -364,6 +360,15 @@ func (r *run) supervise(ctx context.Context, p *process) {
 	p.final = true
 	p.mu.Unlock()
 	r.shutDB(ctx, p)
+}
+
+// mustReopen reports whether the database of p has stopped for good, for a reason other than a close
+// by an action, and has not been closed since.
+func (r *run) mustReopen(p *process) bool {
+	p.mu.Lock()
+	d, shut, closed := p.db, p.shut, p.closed
+	p.mu.Unlock()
+	return d != nil && d != shut && !closed && stopped(d)
 }
 
 // stopped reports whether d has stopped for good, by its channel.
@@ -419,7 +424,7 @@ func (r *run) call(ctx context.Context, p *process, caller string, write bool) {
 	}
 	started := r.world.Monotonic()
 	r.rec.add(Event{Kind: "call", What: "started", Instance: p.i.name, Process: p.name, Call: call, Caller: caller, Op: op, Value: value})
-	e := Event{Kind: "call", Instance: p.i.name, Process: p.name, Call: call, Caller: caller, Op: op, Value: value, Started: millis(started)}
+	e := Event{Kind: "call", Instance: p.i.name, Process: p.name, Call: call, Caller: caller, Op: op, Value: value, Started: new(millis(started))}
 
 	ctx, cancel := p.inst.WithTimeout(ctx, duration(r.req.Workload.Timeout))
 	defer cancel()
@@ -610,6 +615,9 @@ func (r *run) act(ctx context.Context, i int, a Action) {
 			if !final {
 				// The close of the action before may not have run yet.
 				r.shutDB(ctx, p)
+				p.mu.Lock()
+				p.closed = false
+				p.mu.Unlock()
 				r.open(ctx, p)
 			}
 		})
@@ -713,16 +721,7 @@ func (c *client) Get(ctx context.Context, key string) (io.ReadCloser, store.Vers
 	}
 	body, version, err := c.inner.Get(ctx, key)
 	if err == nil && k.purpose == "download" && c.r.req.Faults.Damaged > 0 && c.r.chance(c.r.req.Faults.Damaged) {
-		var data []byte
-		data, err = io.ReadAll(body)
-		_ = body.Close()
-		if err == nil && len(data) > 0 {
-			at := int(c.r.world.Uint64() % uint64(len(data)))
-			data[at] ^= 0x40
-			c.r.rec.add(Event{Kind: "request", What: "damaged", Request: k.request, Instance: c.p.i.name, Process: c.p.name,
-				Method: k.method, Key: key, Purpose: k.purpose, Text: fmt.Sprintf("byte %v of the download is damaged on its way", at)})
-			body = io.NopCloser(bytes.NewReader(data))
-		}
+		body = c.damage(k, body)
 	}
 	if fault == "loseAnswer" {
 		if err == nil {
@@ -733,6 +732,29 @@ func (c *client) Get(ctx context.Context, key string) (io.ReadCloser, store.Vers
 	c.r.returned(k, version, err)
 	return body, version, err
 }
+
+// damage one byte of the content of the download k on its way. The content is read here, so a read
+// that breaks off still breaks off where it did, after the bytes before.
+func (c *client) damage(k *pending, body io.ReadCloser) io.ReadCloser {
+	data, err := io.ReadAll(body)
+	_ = body.Close()
+	if len(data) > 0 {
+		at := int(c.r.world.Uint64() % uint64(len(data)))
+		data[at] ^= 0x40
+		c.r.rec.add(Event{Kind: "request", What: "damaged", Request: k.request, Instance: c.p.i.name, Process: c.p.name,
+			Method: k.method, Key: k.key, Purpose: k.purpose, Text: fmt.Sprintf("byte %v of the download is damaged on its way", at)})
+	}
+	var rest io.Reader = bytes.NewReader(data)
+	if err != nil {
+		rest = io.MultiReader(rest, failing{err})
+	}
+	return io.NopCloser(rest)
+}
+
+// failing reader that fails with its error.
+type failing struct{ err error }
+
+func (f failing) Read([]byte) (int, error) { return 0, f.err }
 
 func (c *client) Create(ctx context.Context, key string, content io.ReadSeeker, checksum *store.Checksum) (store.Version, error) {
 	return c.write(ctx, "create", key, "", content, func(ctx context.Context) (store.Version, error) {

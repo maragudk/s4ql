@@ -44,7 +44,9 @@ func TestRun_actions(t *testing.T) {
 		is.Equal(t, 20_000.0, crashed[0].T)
 		is.Equal(t, "a", crashed[0].Process)
 		before := find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.Process == "a" && e.T < 20_000 })
-		after := find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.What == "started" && e.Process == "a" && e.T > 20_000 })
+		after := find(res, func(e simulator.Event) bool {
+			return e.Kind == "call" && e.What == "started" && e.Process == "a" && e.T > 20_000
+		})
 		is.True(t, len(before) > 0, "calls before the crash")
 		is.Equal(t, 0, len(after))
 	})
@@ -138,7 +140,9 @@ func TestRun_actions(t *testing.T) {
 		started := res.Events[0].T
 		is.Equal(t, 30_000-started, s.Instances[0].Monotonic)
 		renewals := func(from, to float64) int {
-			return len(find(res, func(e simulator.Event) bool { return e.What == "sent" && e.Purpose == "renew" && e.T >= from && e.T < to }))
+			return len(find(res, func(e simulator.Event) bool {
+				return e.What == "sent" && e.Purpose == "renew" && e.T >= from && e.T < to
+			}))
 		}
 		is.True(t, renewals(0, 30_000) > 0, "renewals before")
 		is.Equal(t, 0, renewals(31_000, 70_000))
@@ -201,7 +205,7 @@ func TestRun_faults(t *testing.T) {
 		{name: "writes held back after the caller gave up", faults: `{"slow": 0.3, "slowBy": 20000, "late": 1, "lateBy": 20000}`, kind: "request", what: "held", text: "the caller gave up"},
 		{name: "writes held back after a crash", faults: `{"slow": 0.5, "slowBy": 20000, "afterCrash": 1, "lateBy": 20000}`,
 			schedule: `{"at": 20000, "do": "crash", "instance": "a"}, {"at": 20000, "do": "crash", "instance": "b"}, {"at": 20000, "do": "crash", "instance": "c"}`,
-			kind: "request", what: "held", text: "the sender crashed"},
+			kind:     "request", what: "held", text: "the sender crashed"},
 		{name: "damaged downloads", faults: `{"damaged": 1}`, schedule: `{"at": 20000, "do": "crash", "instance": "a"}, {"at": 20000, "do": "crash", "instance": "b"}`,
 			kind: "request", what: "damaged"},
 		{name: "points of buggify", faults: `{}`, kind: "buggify", what: "fired"},

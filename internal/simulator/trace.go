@@ -30,10 +30,10 @@ type Event struct {
 
 	// Call is the number of a call of the application, Caller who made it, Op whether it is a
 	// write or a read, and Started when it started.
-	Call    int     `json:"call,omitzero"`
-	Caller  string  `json:"caller,omitzero"`
-	Op      string  `json:"op,omitzero"`
-	Started float64 `json:"started,omitzero"`
+	Call    int      `json:"call,omitzero"`
+	Caller  string   `json:"caller,omitzero"`
+	Op      string   `json:"op,omitzero"`
+	Started *float64 `json:"started,omitzero"`
 	// Value is the key of the row that a write inserts, and Keys those that a read saw.
 	Value int64   `json:"value,omitzero"`
 	Keys  []int64 `json:"keys,omitzero"`

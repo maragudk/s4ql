@@ -29,6 +29,7 @@
     if (!self.s4qlEngine.submit(m.id, m.kind, m.body)) {
       busy = null;
       queue.unshift(m);
+      setTimeout(pump, 10);
     }
   };
 

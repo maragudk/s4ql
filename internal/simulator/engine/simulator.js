@@ -22,6 +22,9 @@ export class Engine {
   #pending = new Map();
   #next = 1;
   #memory = 0;
+  // chain of the calls, so that each starts after the one before has ended, and a new Worker never
+  // starts while a call waits on the old one.
+  #chain = Promise.resolve();
 
   // timings of the last start and the last answer, in milliseconds: ready is the time from the
   // start of the Worker until the engine took messages, and run the time the engine took for the
@@ -97,19 +100,27 @@ export class Engine {
     return this.#memory;
   }
 
+  #serial(f) {
+    const call = this.#chain.then(f);
+    this.#chain = call.catch(() => {});
+    return call;
+  }
+
   // run the request, and resolve with the response.
-  async run(request) {
-    await this.#ready;
-    if (this.#memory > Engine.recycleBytes && this.#pending.size === 0) {
-      this.#worker.terminate();
-      await this.#start();
-    }
-    return this.#send('run', request);
+  run(request) {
+    return this.#serial(async () => {
+      await this.#ready;
+      if (this.#memory > Engine.recycleBytes) {
+        this.#worker.terminate();
+        await this.#start();
+      }
+      return this.#send('run', request);
+    });
   }
 
   // state of the last run at the time t, in milliseconds.
   state(t) {
-    return this.#send('state', { t });
+    return this.#serial(() => this.#send('state', { t }));
   }
 
   terminate() {

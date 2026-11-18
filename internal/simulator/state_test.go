@@ -28,7 +28,7 @@ func TestStateAt(t *testing.T) {
 				// The state that a read sees is fixed after it starts and before it ends, so its position is
 				// one that the cache had between the two.
 				var positions []string
-				for _, at := range []float64{r.Started, r.T} {
+				for _, at := range []float64{*r.Started, r.T} {
 					for _, in := range simulator.StateAt(withoutCalls, at).Instances {
 						if in.Process == r.Process {
 							positions = append(positions, in.Position)

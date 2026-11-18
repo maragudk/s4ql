@@ -176,7 +176,13 @@ jobs:
 
       # The simulator builds natively too, with the tag, and is linted for the simulation there.
       - name: Test the simulator natively
-        run: go test -tags s4ql_browser -shuffle on ./internal/simulator/...
+        run: go test -race -tags s4ql_browser -shuffle on ./internal/simulator/...
+
+      - name: Lint the simulator's native build
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          args: --build-tags s4ql_browser ./internal/simulator/...
 
       - name: Lint the simulator for the simulation
         run: (cd internal/simlint && go build -o "$RUNNER_TEMP/simlint" ./cmd/simlint) && GOFLAGS=-tags=s4ql_browser "$RUNNER_TEMP/simlint" ./internal/simulator/...

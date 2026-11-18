@@ -128,6 +128,15 @@ func TestEngine_Handle(t *testing.T) {
 		is.True(t, strings.Contains(s.Error, "not JSON of a time"), s.Error)
 	})
 
+	t.Run("should answer a state after a refused run with an error", func(t *testing.T) {
+		var e simulator.Engine
+		run(t, &e, `{"end": 10000}`)
+		e.Handle(t, "run", []byte(`{"end": 0}`))
+		var s simulator.State
+		is.NotError(t, json.Unmarshal(e.Handle(t, "state", []byte(`{"t": 1000}`)), &s))
+		is.Equal(t, "there is no run yet", s.Error)
+	})
+
 	t.Run("should answer a state of the last run", func(t *testing.T) {
 		var e simulator.Engine
 		run(t, &e, `{"end": 30000, "instances": 2}`)
