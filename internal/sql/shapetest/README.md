@@ -360,7 +360,9 @@ The expressions of a skipped statement are still compared. For a statement that 
 
 ## Results
 
-The numbers are those of the full tests. Under `-short`, the race detector, or the address sanitizer, the corpus test uses every tenth entry and the other tests use smaller samples.
+The numbers are those of the full tests. Under `-short`, the race detector, or the address sanitizer, the corpus test uses every tenth entry and the other tests use smaller samples. `make test-sql` runs the full tests, and CI runs it in the job `sql`.
+
+A full run pins how much escapes the comparison. `TestCheck_corpus` and `TestCheck_pairs` pin the texts not checked, by reason, the statements by the way they were compared, and those compared in no way but by an error. `TestCheck_mutations` pins the detected, undetected, and not compared cases of each kind of damage in the table [below](#proof-that-the-check-can-fail). A change of one of these numbers fails the test. Change the pinned numbers only on purpose, and say why in the commit.
 
 ### The corpus
 
@@ -591,7 +593,7 @@ Four kinds of damage keep the tokens of a column definition in their order, as a
 - The tokens of the first constraint of a column become words of its type.
 - A DEFAULT changes its form. A name after DEFAULT, which SQLite reads as a string, becomes a column reference. The sign of a signed literal becomes a unary operator, which only `DEFAULT ( expr )` can hold.
 
-Two rows are expected to show no detection. The fourth row is one: SQLite reads `x NOT BETWEEN a AND b` as `NOT (x BETWEEN a AND b)`, as [above](#where-the-check-is-weaker). The row on GENERATED ALWAYS is the other: `sqlite3AddColumn` drops these words from the end of a type, so the two trees are the same for SQLite. The test fails if the check ever detects one of these two kinds. It also fails if the check never detects one of the other kinds.
+Two rows are expected to show no detection. The fourth row is one: SQLite reads `x NOT BETWEEN a AND b` as `NOT (x BETWEEN a AND b)`, as [above](#where-the-check-is-weaker). The row on GENERATED ALWAYS is the other: `sqlite3AddColumn` drops these words from the end of a type, so the two trees are the same for SQLite. The test fails if the check ever detects one of these two kinds. It also fails if the check never detects one of the other kinds, and, in a full run, if a number in the table changes.
 
 ### What the declarations add
 

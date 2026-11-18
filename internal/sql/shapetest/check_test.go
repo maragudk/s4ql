@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -110,6 +112,40 @@ func checkShardedResults(t *testing.T, sqls []string) (shapetest.Report, []shape
 	return shapetest.Summarize(results), results, true
 }
 
+// outcomes of the statements of a report, one per line: the texts not checked, by reason, the
+// statements checked, by the way they were compared, and those compared in no way but by an error.
+func outcomes(r shapetest.Report) string {
+	var b strings.Builder
+	for _, reason := range slices.Sorted(maps.Keys(r.NotChecked)) {
+		fmt.Fprintf(&b, "not checked, %v: %v\n", reason, r.NotChecked[reason])
+	}
+	ways := map[shapetest.Way]int{}
+	for _, byWay := range r.Kinds {
+		for way, n := range byWay {
+			ways[way] += n
+		}
+	}
+	for _, way := range []shapetest.Way{shapetest.Bytecode, shapetest.Probes, shapetest.SameError, shapetest.Skipped} {
+		fmt.Fprintf(&b, "%v: %v\n", way, ways[way])
+	}
+	uncompared := 0
+	for _, n := range r.Uncompared {
+		uncompared += n
+	}
+	fmt.Fprintf(&b, "compared in no way but by an error: %v\n", uncompared)
+	return b.String()
+}
+
+// pinnedOutcomes fails the test unless the [outcomes] of a full run are want. They tell how much of
+// the test escapes the comparison with SQLite, so they are pinned, and a change that lets more escape
+// cannot pass unseen.
+func pinnedOutcomes(t *testing.T, want string, r shapetest.Report) {
+	t.Helper()
+	if got := outcomes(r); got != want {
+		t.Errorf("the outcomes are\n%v\nbut the test pins\n%v\nChange the pinned outcomes only on purpose, and say why in the commit", got, want)
+	}
+}
+
 // TestCheck_corpus checks the shape of the tree of every statement of the corpus that parses, or of
 // every tenth entry under -short, the race detector, and the address sanitizer.
 func TestCheck_corpus(t *testing.T) {
@@ -121,6 +157,16 @@ func TestCheck_corpus(t *testing.T) {
 	t.Log("\n" + r.String())
 	is.Equal(t, len(sqls), r.Texts)
 	is.Equal(t, 0, len(r.Faults))
+	if !slow() {
+		pinnedOutcomes(t, `not checked, SQLite does not say that it parses: 11
+not checked, the parser does not parse it: 55232
+bytecode: 60065
+probes: 12445
+same error: 9153
+skipped: 2328
+compared in no way but by an error: 4462
+`, r)
+	}
 }
 
 // TestCheck_statements checks the statements of [shapetest.Structure], and requires that each is

@@ -108,6 +108,10 @@ func TestGenerate(t *testing.T) {
 		checkOwnership(t, sql)
 	}
 	t.Logf("%v texts, %v parse, %v agree, SQLite does not say on %v", r.Total, parsed, r.Agreed, r.NotSaid)
+	if !slow() && *seed == 0 && *generatedCount == 20000 {
+		pinned(t, "texts of the generator on which SQLite does not say", 5357, r.NotSaid)
+		pinned(t, "texts of the generator that parse", 31731, parsed)
+	}
 }
 
 // FuzzGenerate compares the parser with SQLite on a sentence of the grammar and a mutant of it,

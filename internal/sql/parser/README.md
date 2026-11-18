@@ -458,7 +458,9 @@ Pinned results:
 - `TestParse_depth` and `TestParse_length` check the [limits](#limits).
 - `TestPlanOf` and `TestCheckOwnership` in `internal/sql/ast` check the [ownership rule](#the-ownership-rule) and its check.
 
-Under `-short`, the race detector, or the address sanitizer, the corpus tests use every tenth entry and the generator a tenth of its sentences. Rule coverage is then only reported, not required.
+Under `-short`, the race detector, or the address sanitizer, the corpus tests use every tenth entry and the generator a tenth of its sentences. Rule coverage is then only reported, not required. `make test-sql` runs the tests without either, and CI runs it in the job `sql`.
+
+A full run pins the number of texts on which SQLite does not say, which escape the comparison: 308 of the corpus, 745 of its mutants, and 5,357 of the generator's 60,000 texts, of which 31,731 parse. A change of the parser or of the oracle that changes one of these numbers fails the test. Change the pinned number only on purpose, and say why in the commit.
 
 ### Rule coverage
 
