@@ -13,6 +13,7 @@ This document holds only what Markus and maragubot have explicitly agreed to wri
 
 - **We write the SQL engine.** The engine parses, plans, and executes SQL itself. SQLite does not run the application's SQL.
 - **SQLite is the result oracle.** Results are judged against SQLite's.
+- **Errors match SQLite's.** Where SQLite gives an error, s4ql gives the same result code, extended result code, and message. This holds for a statement that s4ql runs, and for text that is a syntax error in SQLite, also when it is SQL that s4ql does not support. The position of the error in the text is not promised.
 - **A strict subset of SQLite's SQL.** Because SQLite is the oracle, the dialect is SQLite's, and everything supported is also valid SQLite.
 - **Strict tables only.** Only `STRICT` tables are supported. Other restrictions may be added as they are found.
 - **The `database/sql` driver is the only public API.** An application uses s4ql through Go's `database/sql`, and s4ql has no API of its own next to it.
