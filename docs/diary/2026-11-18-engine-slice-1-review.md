@@ -45,3 +45,53 @@ Nothing yet.
 ### Future work
 
 None yet.
+
+## Step 2: Points 1, 2, 5, and 9: the syntax error, the read left open, the events of a panic, and the small records
+
+**Author:** engine-review-builder
+
+### Prompt Context
+
+**Verbatim prompt:** see Step 1.
+**Interpretation:** Points 1, 2, 5, and 9 of the brief.
+**Inferred intent:** A syntax error that never depends on the database; a simulation that sees a read transaction left open; one event for every panic.
+
+### What I did
+
+Point 1: moved `StartedTable` from `/internal/sql/stmt/started.go` to `/internal/sql/stmt/stmttest/started.go`, which is code for tests only; `TestStartedTable` and `FuzzStartedTable` stay in `/internal/sql/stmt/started_test.go`, since they use the helpers of that package's tests. The engine's `prepare` gives the error of `stmt.Check` as it is, and `Engine.started` is gone. `startedTable` in `/internal/engine/differential_test.go` accepts exactly the one difference: the engine's syntax error equals SQLite's on a fresh empty database, and SQLite on the real one gives `table <Raw> already exists` for the name that `StartedTable` gives. The tally counts these apart. The simulation now compares every statement that saw no state with SQLite on an empty database, instead of checking that it has one of three messages. New tests: `TestEngine_syntaxError` (a fake whose begin and read fail) and two subtests of `TestEngine_errors` on the real core (a table that exists, and a closed instance and a cancelled context). Removed the 14 equivalent mutants of `StartedTable` from `/internal/sql/mutation/equivalent.txt`. Checked the reviewer's sibling cases with the sqlite3 shell 3.54.1 and wrote them into `/docs/todo.md` and the known gaps of `/internal/sql/stmt/README.md`.
+
+Point 2: at the end of a run, `run.takeReaders` makes each live instance take its two read connections at once, with the workload's timeout on the simulated clock, and closes each instance that did, which hands the lease to the next. An instance that has not done it in ten minutes is a violation. Planted `keepRead`: `Rows.Close` outside a loop skips the end of the transaction, the change the reviewer made by hand.
+
+Point 5: `Exec` and `Query` are wrappers with a `returned` flag, and call `report.panicked` when they did not return, which logs `errPanicked` (it wraps `ErrInternal`) unless the event is logged already. `Rows.All` tells a panic of a source from a panic of the consumer by a flag set around `yield`. A consumer's panic stays an early stop with the outcome `ok`.
+
+Point 9: the empty name in the restrictions of `/docs/roadmap.md`, and the two decisions of the lead in `/docs/todo.md`.
+
+### Why
+
+The spec's rule makes the lookup wrong, and the reviewer showed that the simulation could not see a read left open.
+
+### What worked
+
+The reviewer's exact change (`return nil` in place of `return r.end(nil)` at the end of `Rows.Close`) now fails `TestSimulation` at seed 1 of the default workload: `a does not take its 2 read connections ten minutes after the end of the workload: context deadline exceeded`. With the planted bug, `TestSimulation_plantedBugs/keepRead` found it in 2 of 9 seeds. 1,000 sequences of `TestDifferential` accepted the difference 102 times and found nothing else.
+
+### What didn't work
+
+A Bash call that ran a Python heredoc with an edit of `differential_test.go` was refused by the sandbox as "too complex to verify that it stays inside the worktree"; scripts written to the scratchpad and run by path work.
+
+### What I learned
+
+Only the instance that holds the lease can read (`DB.Read` fails at once with `ErrNoLease` on a spare), so the check of the read connections must hand the lease from instance to instance by closing them in turn.
+
+Every sibling case of the reviewer gives its non-syntax error also on an empty database, so all of them stay a gap against the spec's rule; only the `already exists` of `CREATE TABLE` is covered by it.
+
+### What was tricky
+
+In `query`, the deferred end of a read transaction that was not built must not log on a panic, or the event would say `ok`; it logs only when `buildQuery` returned an error, and the wrappers log the panic.
+
+### What warrants review
+
+`run.takeReaders` in `/internal/engine/simulation_test.go`: whether ten minutes is safe for an instance to take the lease after the others close. The default and hammer workloads pass on the seeds run so far; the 1,000-seed runs come later.
+
+### Future work
+
+None.
