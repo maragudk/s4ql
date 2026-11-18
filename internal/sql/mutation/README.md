@@ -1,6 +1,6 @@
-# Mutation testing of the tokenizer, tree, and parser
+# Mutation testing of the tokenizer, tree, parser, and pass after the parser
 
-`internal/sql/mutation` measures the tests of `internal/sql/token`, `internal/sql/ast`, and [`internal/sql/parser`](../parser/README.md). It changes the code of these packages on purpose, one small change at a time. It runs the tests against each change, and reports every change that no test notices.
+`internal/sql/mutation` measures the tests of `internal/sql/token`, `internal/sql/ast`, [`internal/sql/parser`](../parser/README.md), and [`internal/sql/stmt`](../stmt/README.md). It changes the code of these packages on purpose, one small change at a time. It runs the tests against each change, and reports every change that no test notices.
 
 A copy of the code with one change is a mutant. The tests kill a mutant when one of them fails on it. A mutant that no test kills is a survivor, and a survivor is one of three things:
 
@@ -27,7 +27,7 @@ The target runs `go run ./internal/sql/mutation -out DIR` in the root of the mod
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `-out` | | The directory of the results. Required, except with `-list`. |
-| `-pkgs` | the three packages | The packages to change, separated by commas. |
+| `-pkgs` | the four packages | The packages to change, separated by commas. |
 | `-run` | | A regular expression. Only the mutants whose [key](#keys) or `file:line` matches it are run. |
 | `-list` | | Print the mutants and exit. |
 | `-report` | | Write the report of the results in `-out` again and exit. |
@@ -104,6 +104,8 @@ The tests run in stages, in this order. The first stage that fails kills the mut
 6. `mutants`: `TestParse_mutants`
 7. `shape check`: the tests of [`internal/sql/shapetest`](../shapetest/README.md)
 8. `other packages`: the tests of the other packages under `internal/sql` that depend on the changed package
+
+The tests of `internal/sql/stmt`, when it is the changed package, run in the same layers: `TestCheck_corpus` and `TestAllowList` in `corpus`, `TestCheck_grammar` and `TestGenerate` in `generator`, `FuzzCheck` and `FuzzGenerate` in `fuzz seeds`, and `TestCheck_corpusMutants`, `TestGenerate_mutants`, and `TestGenerate_nearMisses` in `mutants`. Its other tests are `hand-written`. When another package is changed, the tests of `internal/sql/stmt` are `other packages`.
 
 Each stage runs with `-test.failfast`. The layer `ownership` is not a stage. A mutant counts for it when the ownership check fails inside the tests of the parser and the output shows no disagreement with SQLite.
 

@@ -457,6 +457,7 @@ var checkCases = []checkCase{
 	{name: "a type of two words that does not start with int", src: "create table t (v big int primary key) strict, without rowid", err: "s4ql: not supported: column type other than INT (at offset 18)"},
 	{name: "any", src: "create table t (v any primary key) strict, without rowid", err: "s4ql: not supported: column type other than INT (at offset 18)"},
 	{name: "no type", src: "create table t (v primary key) strict, without rowid", err: "s4ql: not supported: column without a type (at offset 18)"},
+	{name: "a type with a size and no primary key", src: "create table t (v int(10)) strict, without rowid", err: "s4ql: not supported: column type other than INT (at offset 21)"},
 	{name: "a type of two words and no primary key", src: "create table t (v int unsigned) strict, without rowid", err: "s4ql: not supported: column type other than INT (at offset 22)"},
 	{name: "a constraint after primary key and a second column", src: "create table t (a int primary key autoincrement, b int) strict, without rowid", err: "s4ql: not supported: AUTOINCREMENT (at offset 34)"},
 	{name: "a constraint after primary key and a table constraint", src: "create table t (a int primary key desc, check (a > 0)) strict, without rowid", err: "s4ql: not supported: ASC or DESC (at offset 34)"},
