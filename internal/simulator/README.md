@@ -2,7 +2,7 @@
 
 `internal/simulator` runs the storage core of s4ql under the simulation, one request at a time, and returns what happened as a structured trace. A request is a seed, settings, and a schedule of actions and faults at fake times.
 
-It exists for the simulator on the project's site, which is to show how the current code reacts to faults of its environment. The page must therefore run the code, where the page in `site/simulator/` runs a JavaScript model of the design. The engine replaces that model. This file is the specification for the page: the request, the response, the events, the state at a time, the invariants, and how a page loads the engine.
+It exists for the simulator on the project's site, which is to show how the current code reacts to faults of its environment. The page must therefore run the code, and `site/simulator/` runs this engine in place of the JavaScript model of the design that it ran before. This file is the specification for the page: the request, the response, the events, the state at a time, the invariants, and how a page loads the engine.
 
 - The package builds only with the tag `s4ql_browser`. With the tag it builds natively and for a browser, with `GOOS=js GOARCH=wasm`, where it runs on the SQLite binding of [internal/sqlite/browser](../sqlite/browser/README.md).
 - `internal/core`, `internal/sim`, and `internal/store/simstore` are used unchanged, through their exported API.
@@ -451,7 +451,7 @@ What the checker cannot see, and how far it is tested:
 
 ## The old page and the engine
 
-What the page in `site/simulator/` offers that the real code cannot:
+The page in `site/simulator/` ran a JavaScript model of the design before it ran this engine. What the model offered that the real code cannot:
 
 - **Stall and resume.** The model pauses a process while its clocks run. `sim` cannot pause the tasks of a process. `stopMonotonic` holds its sleeps and timeouts, and the clock stands still with them, which is a different fault.
 - **Clock rates.** The model has a monotonic clock that runs at twice the rate, and both clocks at half the rate. A clock of `sim` is shifted, stopped, and started, and runs at the true rate.
@@ -467,7 +467,7 @@ What the page in `site/simulator/` offers that the real code cannot:
 - **Unknown outcomes in flight.** The state has no field for them. The events have them: `call` with `unknown`, `core` with `unknown_outcome`, and refusals with the reason `outcome_unknown`.
 - **Checks inside the caches.** The model checks that no cache is ahead of the manifest and that replaying the log gives the rows of every cache. The engine's checker sees a cache only through reads, with `state`.
 
-What the engine offers that the old page does not:
+What the engine offers that the model did not:
 
 - The storage core itself, unchanged, on the official SQLite build. What the model simplified is as the code does it: a read checks the lease before and after it fixes its state, and a catch-up downloads each commit object twice.
 - Commit objects in Protocol Buffers, as the format defines them.
@@ -506,6 +506,8 @@ GOOS=js GOARCH=wasm go test -c -tags s4ql_browser -o dir/engine.wasm ./internal/
 ```
 
 The program is a test binary because a run needs a `testing.T` for its `testing/synctest` bubble, and a test binary is the supported way to get one. Its one test, `TestEngine`, serves the messages of the page for as long as the Worker lives.
+
+For the project's site, `make site` writes the files into `site/simulator/engine/`, which `.gitignore` covers, without the demo page, and with `build.json`, `{"commit":"..."}`, which names the commit that the engine is built from. The Pages workflow runs it before it uploads `site/`. `make site-serve` serves the site on `SITEADDR` without the two headers below, as GitHub Pages serves it, and `make site-check` checks the page in headless Chromium with `sitecheck`: see its package comment.
 
 The Worker instantiates `engine.wasm` while it streams, so the server must send it with the content type `application/wasm`.
 
