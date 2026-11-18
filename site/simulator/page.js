@@ -401,7 +401,12 @@ function drawControls() {
   $("back").disabled = !shown;
   $("step").disabled = !shown;
   $("play").disabled = !shown;
-  for (const card of cards) for (const b of card.buttons) b.disabled = off;
+  for (const card of cards) {
+    const st = instanceState(card.name);
+    // A crashed process can only be restarted: the engine ignores every other action for it.
+    const crashed = !!st && st.state === "crashed";
+    for (const b of card.buttons) b.disabled = off || (crashed && b.dataset.a !== "crash");
+  }
 }
 
 // Instances.
@@ -546,6 +551,7 @@ function drawState() {
     set(c.b.wall, st.wallStopped ? "Start wall" : "Stop wall");
     set(c.b.mono, st.monotonicStopped ? "Start monotonic" : "Stop monotonic");
   }
+  drawControls();
   drawBucket();
   drawFlight();
 }
