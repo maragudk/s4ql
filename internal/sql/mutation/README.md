@@ -194,6 +194,15 @@ On 2026-11-18, the run of `internal/sql/stmt` and `internal/engine` with 6 worke
 | `stmt` | 1,122 | 123 | 970 | 14 | 15 | 0 | 98.50% | 100.00% |
 | `engine` | 955 | 312 | 632 | 0 | 11 | 0 | 98.29% | 100.00% |
 
+After the review of the engine on 2026-11-18, `StartedTable` moved out of `stmt` into `stmttest`, which is code for tests and is not mutated, and the engine changed. The runs of each package with 6 workers, while other work loaded the machine, then left:
+
+| Package | Generated | Not compiled | Killed | Timed out | Equivalent | Unexplained |
+| --- | --- | --- | --- | --- | --- | --- |
+| `stmt` | 896 | 117 | 766 | 12 | 1 | 0 |
+| `engine` | 1,025 | 308 | 703 | 0 | 12 | 2, which tests added after the run kill |
+
+The run of `stmt` took 7 min, and that of the engine 13 min.
+
 Of the engine's killed mutants, the layers that killed them first were hand-written 628 and simulation 4. The equivalent ones of the engine are the planted bugs, a yield to the scheduler, a bound that means "none", the order of the attributes of an event, and a check of the level that `log/slog` makes again.
 
 ### What the first run of the parser found

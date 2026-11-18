@@ -310,11 +310,12 @@ The planted bugs:
 | `keepOpen` | 200 of 200 | 0 |
 | `keepRead` | 77 of 200 | 0 |
 
-Mutation testing: of 955 mutants, 312 do not compile, 632 are killed, none times out, and 11 are equivalent; none is unexplained. The score is 98.29%, and 100% without the equivalent ones. The first run found 74 survivors, each a gap in the tests but the equivalent ones; see [`internal/sql/mutation`](../sql/mutation/README.md#the-pass-after-the-parser-and-the-engine).
+Mutation testing, on 2026-11-18 after the review: of 1,025 mutants, 308 do not compile, 703 are killed, none times out, and 12 are equivalent. The two that survived are killed by tests added after the run, which was checked by hand for each: the event of a syntax error through `Query`, and of a panic of a source before its first row. None is unexplained. An earlier run of this round left 10 survivors, each a gap in the tests, an equivalent swap of the arguments of `slices.Equal`, or code that a simpler form removed. See [`internal/sql/mutation`](../sql/mutation/README.md#the-pass-after-the-parser-and-the-engine).
 
 ### Run times
 
 Measured on an Apple M4 with 10 cores, at a load of about 12 from other work:
 
-- `go test ./internal/engine` takes about 8 s, `-short` about 2.5 s, and `-race` about 7 s.
-- Under the address sanitizer, in a Linux container in Docker on the same machine while a fuzz run used 8 of its cores, the tests took 56 s, and each fuzz test of `make fuzz` runs for `FUZZTIME` on top. `make test-asan FUZZTIME=10s` passed in 10 min 45 s.
+- `go test ./internal/engine` takes about 8 s, `-short` about 2.5 s, and `-race` about 7 s. At a load of about 28, on 2026-11-18 after the review, it took 15 to 30 s.
+- Under the address sanitizer, in a Linux container in Docker on the same machine, the tests of the engine took 89 s, and each fuzz test of `make fuzz` runs for `FUZZTIME` on top. `make test-asan FUZZTIME=10s` passed in 9 min 10 s while a mutation run used 6 cores.
+- `TestDifferential` with 10,000 sequences took 266 s at a load of about 28, and `TestSimulation` with 1,000 seeds of each workload 233 s.
