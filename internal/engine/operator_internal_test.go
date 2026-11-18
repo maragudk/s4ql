@@ -476,6 +476,18 @@ func TestBuild(t *testing.T) {
 		is.Equal(t, "no such table: u", err.Error())
 	})
 
+	t.Run("should build plans that no statement of slice 1 gives: values of their width, a projection of no columns, and an insert from a table that does not exist", func(t *testing.T) {
+		f := newFake().with("t", []string{"v"}, []int64{1})
+		v, err := buildNode(t.Context(), fakeTx{f}, &Values{Rows: [][]Expr{{&Integer{Value: 1}, &Integer{Value: 2}}}})
+		is.NotError(t, err)
+		is.Equal(t, 2, len(v.columns()))
+		p, err := buildNode(t.Context(), fakeTx{f}, &Project{Source: &Scan{Table: stmt.Name{Value: "t"}}})
+		is.NotError(t, err)
+		is.Equal(t, 0, len(p.columns()))
+		_, err = buildSink(t.Context(), fakeTx{f}, &Insert{Table: stmt.Name{Value: "t"}, Columns: []stmt.Name{{Value: "v"}}, Source: &Scan{Table: stmt.Name{Value: "u"}}}, bugs{})
+		is.Equal(t, "no such table: u", err.Error())
+	})
+
 	t.Run("should pass on an error of a lookup", func(t *testing.T) {
 		for _, src := range []string{t1, "drop table t", "insert into t (v) values (1)", "select * from t"} {
 			var err error
