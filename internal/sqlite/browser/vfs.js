@@ -15,8 +15,8 @@
 // state makes operations fail as the C VFS of faultvfs does: ops and files are the operations and
 // kinds of file, as SQLITE_OPEN_ flags, that the fault matches, skip the number of matching
 // operations that still succeed, times the number that then fail (-1 for all), and code the result
-// code of a failure (0 for the usual one); failed counts the failures, and open the files that are
-// open through the VFS.
+// code of a failure (0 for the usual one); failed counts the failures, open the files that are
+// open through the VFS, sleeps the calls of xSleep, and slept the microseconds that they asked for.
 //
 // xSleep, which SQLite's busy handler and its retries call, waits in real time and calls
 // globalThis.s4qlYield, if it is set, about once a millisecond while it waits. A Go program sets it
@@ -239,7 +239,7 @@
     if (!globalThis.s4qlFS) throw new Error('vfs.js: load fs.js before the VFS is installed');
     if (!io) installIO(sqlite3);
 
-    const fault = { ops: 0, files: 0, skip: 0, times: 0, code: 0, failed: 0, open: 0 };
+    const fault = { ops: 0, files: 0, skip: 0, times: 0, code: 0, failed: 0, open: 0, sleeps: 0, slept: 0 };
     // check whether the operation op on a file of the kind fails, and return the result code of the
     // failure, or OK.
     const check = (kind, op) => {
@@ -341,6 +341,8 @@
         return OK;
       },
       xSleep(pVfs, microseconds) {
+        fault.sleeps++;
+        fault.slept += microseconds;
         const end = performance.now() + microseconds / 1000;
         for (;;) {
           if (globalThis.s4qlYield) globalThis.s4qlYield();

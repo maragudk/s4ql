@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"maragu.dev/is"
 
@@ -280,5 +281,28 @@ func TestVFS(t *testing.T) {
 		is.NotError(t, v.Close())
 		_, err = sqlite.OpenVFS(filepath.Join(t.TempDir(), "test.db"), name)
 		is.True(t, err != nil, "the VFS is still registered")
+	})
+}
+
+func TestVFS_Slept(t *testing.T) {
+	t.Run("should count the sleeps of SQLite's busy handler while it waits for a lock, and the time that they asked for, which is the busy timeout", func(t *testing.T) {
+		v := newVFS(t)
+		path := filepath.Join(t.TempDir(), "test.db")
+		waiter := open(t, v, path)
+		is.NotError(t, waiter.Exec("create table t1 (k int primary key) strict"))
+		is.NotError(t, waiter.Exec("pragma busy_timeout = 50"))
+		holder, err := sqlite.Open(path)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, holder.Close()) }()
+		is.NotError(t, holder.Exec("begin immediate"))
+		sleeps, slept := v.Slept()
+		is.Equal(t, 0, sleeps)
+		is.Equal(t, time.Duration(0), slept)
+
+		is.Equal(t, 5, code(t, waiter.Exec("begin immediate")))
+		sleeps, slept = v.Slept()
+		is.True(t, sleeps > 1, fmt.Sprint(sleeps))
+		is.Equal(t, 50*time.Millisecond, slept)
+		is.NotError(t, holder.Exec("rollback"))
 	})
 }

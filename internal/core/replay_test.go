@@ -213,39 +213,44 @@ func TestReplay(t *testing.T) {
 
 	// Each of these commit objects is one that a reader of the format accepts, on top of the base,
 	// and that does not fit the tables and rows that the base leaves.
-	for name, changes := range map[string][]*s4qlpb.Change{
-		"creates a table that exists":                                     {createTable(tableOf("t1", 1, "k"))},
-		"creates a table that exists under a name in another case":        {createTable(tableOf("T1", 1, "k"))},
-		"creates a table whose name is reserved":                          {createTable(tableOf("s4ql_x", 1, "k"))},
-		"creates a table with more columns than the cache can hold":       {createTable(tableOf("t3", 1, manyColumns(2001)...))},
-		"drops a table that does not exist":                               {dropTableChange("t3")},
-		"drops the cache's own table":                                     {dropTableChange("s4ql_cache")},
-		"upserts rows of a table that does not exist":                     {upsertRows("t3", []uint32{0}, row(1))},
-		"upserts a column position outside the table's columns":           {upsertRows("t1", []uint32{0, 2}, row(1, 1))},
-		"upserts more columns than the table has":                         {upsertRows("t1", []uint32{0, 1, 2}, row(1, 1, 1))},
-		"changes some columns of rows without the primary-key columns":    {upsertRows("t2", []uint32{0, 2}, row(1, 5))},
-		"changes some columns of a row that is not there":                 {upsertRows("t2", []uint32{0, 1}, row(1, 1)), upsertRows("t2", []uint32{0, 1}, row(5, 5))},
-		"changes a column of a row that is not there":                     {createTable(tableOf("t3", 1, "k", "x", "y")), upsertRows("t3", []uint32{0, 1, 2}, row(1, 1, 1)), upsertRows("t3", []uint32{2, 0}, row(5, 1), row(5, 2))},
-		"upserts text into an integer column":                             {upsertRows("t1", []uint32{0, 1}, row(3, "30"))},
-		"upserts a real into an integer column":                           {upsertRows("t1", []uint32{0, 1}, row(3, 30.0))},
-		"upserts a blob into an integer column":                           {upsertRows("t1", []uint32{0, 1}, row(3, []byte{30}))},
-		"upserts text that looks like an integer into the primary key":    {upsertRows("t1", []uint32{0, 1}, row("3", 30))},
-		"upserts NULL into the primary key":                               {upsertRows("t1", []uint32{0, 1}, row(nil, 30))},
-		"changes a column to text in a row that is there":                 {createTable(tableOf("t3", 1, "k", "x", "y")), upsertRows("t3", []uint32{0, 1, 2}, row(1, 1, 1)), upsertRows("t3", []uint32{2, 0}, row("7", 1))},
-		"deletes rows of a table that does not exist":                     {deleteRows("t3", row(1))},
-		"deletes a row that is not there":                                 {deleteRows("t1", row(1), row(3))},
-		"deletes with a key of more values than the primary key has":      {deleteRows("t1", row(1, 10))},
-		"deletes with a key of fewer values than the primary key has":     {deleteRows("t2", row(1))},
-		"deletes with a key of text":                                      {deleteRows("t1", row("1"))},
-		"deletes with a key that is NULL":                                 {deleteRows("t1", row(nil))},
-		"is right at first and wrong later, so that a part of it applies": {upsertRows("t1", []uint32{0, 1}, row(3, 30)), dropTableChange("t2"), deleteRows("t1", row(9))},
+	for name, test := range map[string]struct {
+		changes []*s4qlpb.Change
+		// reason in the error, so that the case fails when the check that it names is gone and
+		// another refuses the commit object instead.
+		reason string
+	}{
+		"creates a table that exists":                                     {changes: []*s4qlpb.Change{createTable(tableOf("t1", 1, "k"))}, reason: `it creates the table "t1", and the table "t1" exists`},
+		"creates a table that exists under a name in another case":        {changes: []*s4qlpb.Change{createTable(tableOf("T1", 1, "k"))}, reason: `it creates the table "T1", and the table "t1" exists`},
+		"creates a table whose name is reserved":                          {changes: []*s4qlpb.Change{createTable(tableOf("s4ql_x", 1, "k"))}, reason: `it creates the table "s4ql_x", whose name is reserved`},
+		"creates a table with more columns than the cache can hold":       {changes: []*s4qlpb.Change{createTable(tableOf("t3", 1, manyColumns(2001)...))}, reason: `sqlite: too many columns on t3`},
+		"drops a table that does not exist":                               {changes: []*s4qlpb.Change{dropTableChange("t3")}, reason: `it drops the table "t3", which does not exist`},
+		"drops the cache's own table":                                     {changes: []*s4qlpb.Change{dropTableChange("s4ql_cache")}, reason: `it drops the table "s4ql_cache", which does not exist`},
+		"upserts rows of a table that does not exist":                     {changes: []*s4qlpb.Change{upsertRows("t3", []uint32{0}, row(1))}, reason: `it upserts rows of the table "t3", which does not exist`},
+		"upserts a column position outside the table's columns":           {changes: []*s4qlpb.Change{upsertRows("t1", []uint32{0, 2}, row(1, 1))}, reason: `it upserts column 2 of the table "t1", which has 2 columns`},
+		"upserts more columns than the table has":                         {changes: []*s4qlpb.Change{upsertRows("t1", []uint32{0, 1, 2}, row(1, 1, 1))}, reason: `it upserts column 2 of the table "t1", which has 2 columns`},
+		"changes some columns of rows without the primary-key columns":    {changes: []*s4qlpb.Change{upsertRows("t2", []uint32{0, 2}, row(1, 5))}, reason: `it changes some columns of rows of the table "t2" without the primary-key column "b"`},
+		"changes some columns of a row that is not there":                 {changes: []*s4qlpb.Change{upsertRows("t2", []uint32{0, 1}, row(1, 1)), upsertRows("t2", []uint32{0, 1}, row(5, 5))}, reason: `it changes some columns of a row of the table "t2" that is not there, row 0 of its batch`},
+		"changes a column of a row that is not there":                     {changes: []*s4qlpb.Change{createTable(tableOf("t3", 1, "k", "x", "y")), upsertRows("t3", []uint32{0, 1, 2}, row(1, 1, 1)), upsertRows("t3", []uint32{2, 0}, row(5, 1), row(5, 2))}, reason: `it changes some columns of a row of the table "t3" that is not there, row 1 of its batch`},
+		"upserts text into an integer column":                             {changes: []*s4qlpb.Change{upsertRows("t1", []uint32{0, 1}, row(3, "30"))}, reason: `row 0 that it upserts: invalid: a value of kind text in the column "v" of the table "t1", whose type is TYPE_INT`},
+		"upserts a real into an integer column":                           {changes: []*s4qlpb.Change{upsertRows("t1", []uint32{0, 1}, row(3, 30.0))}, reason: `row 0 that it upserts: invalid: a value of kind real in the column "v" of the table "t1", whose type is TYPE_INT`},
+		"upserts a blob into an integer column":                           {changes: []*s4qlpb.Change{upsertRows("t1", []uint32{0, 1}, row(3, []byte{30}))}, reason: `row 0 that it upserts: invalid: a value of kind blob in the column "v" of the table "t1", whose type is TYPE_INT`},
+		"upserts text that looks like an integer into the primary key":    {changes: []*s4qlpb.Change{upsertRows("t1", []uint32{0, 1}, row("3", 30))}, reason: `row 0 that it upserts: invalid: a value of kind text in the column "k" of the table "t1", whose type is TYPE_INT`},
+		"upserts NULL into the primary key":                               {changes: []*s4qlpb.Change{upsertRows("t1", []uint32{0, 1}, row(nil, 30))}, reason: `row 0 that it upserts: invalid: NULL in the primary-key column "k" of the table "t1"`},
+		"changes a column to text in a row that is there":                 {changes: []*s4qlpb.Change{createTable(tableOf("t3", 1, "k", "x", "y")), upsertRows("t3", []uint32{0, 1, 2}, row(1, 1, 1)), upsertRows("t3", []uint32{2, 0}, row("7", 1))}, reason: `row 0 that it upserts: invalid: a value of kind text in the column "y" of the table "t3", whose type is TYPE_INT`},
+		"deletes rows of a table that does not exist":                     {changes: []*s4qlpb.Change{deleteRows("t3", row(1))}, reason: `it deletes rows of the table "t3", which does not exist`},
+		"deletes a row that is not there":                                 {changes: []*s4qlpb.Change{deleteRows("t1", row(1), row(3))}, reason: `it deletes a row of the table "t1" that is not there, key 1 of its batch`},
+		"deletes with a key of more values than the primary key has":      {changes: []*s4qlpb.Change{deleteRows("t1", row(1, 10))}, reason: `key 0 that it deletes: invalid: a key of 2 values for the table "t1", whose primary key has 1 columns`},
+		"deletes with a key of fewer values than the primary key has":     {changes: []*s4qlpb.Change{deleteRows("t2", row(1))}, reason: `key 0 that it deletes: invalid: a key of 1 values for the table "t2", whose primary key has 2 columns`},
+		"deletes with a key of text":                                      {changes: []*s4qlpb.Change{deleteRows("t1", row("1"))}, reason: `key 0 that it deletes: invalid: a value of kind text in the column "k" of the table "t1", whose type is TYPE_INT`},
+		"deletes with a key that is NULL":                                 {changes: []*s4qlpb.Change{deleteRows("t1", row(nil))}, reason: `key 0 that it deletes: invalid: NULL in the primary-key column "k" of the table "t1"`},
+		"is right at first and wrong later, so that a part of it applies": {changes: []*s4qlpb.Change{upsertRows("t1", []uint32{0, 1}, row(3, 30)), dropTableChange("t2"), deleteRows("t1", row(9))}, reason: `it deletes a row of the table "t1" that is not there, key 0 of its batch`},
 	} {
 		t.Run("should stop, apply nothing, and release the lease for a commit object that "+name, func(t *testing.T) {
 			w := newWorld(t)
 			l := newHandLog(t, w)
 			l.base()
 			base := l.head
-			l.raw(nil, changes, nil)
+			l.raw(nil, test.changes, nil)
 			l.publish()
 
 			d := w.open(t, "a", core.Options{})
@@ -253,6 +258,7 @@ func TestReplay(t *testing.T) {
 			is.Error(t, core.ErrStopped, err)
 			is.Error(t, core.ErrLogBroken, err)
 			is.True(t, !errors.Is(err, core.ErrLocal))
+			is.True(t, strings.Contains(err.Error(), "the log is broken: "+test.reason), err.Error())
 
 			// The cache holds the base, and nothing of the commit object.
 			position, state, err := cacheDump(filepath.Join(w.dir, "a.db"))
