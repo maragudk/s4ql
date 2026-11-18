@@ -334,7 +334,7 @@ func (i *instance) state() string {
 // values from a small set so that keys repeat, and with statements that are not supported and texts
 // that SQLite refuses mixed in.
 type sequence struct {
-	r       *rand.Rand
+	r       stmttest.Rand
 	g       *stmttest.Generator
 	tables  []string
 	columns []string
@@ -343,7 +343,7 @@ type sequence struct {
 // spellings of the name raw: itself, and other spellings in and without quotes, of which those that
 // change only ASCII letters name the same name, and an upper case that changes other letters names
 // another.
-func spellings(r *rand.Rand, raw string) []string {
+func spellings(r stmttest.Rand, raw string) []string {
 	if raw[0] == '"' {
 		v := strings.ReplaceAll(raw[1:len(raw)-1], `""`, `"`)
 		return []string{raw, stmttest.Quote(swapCase(v)), stmttest.Quote(strings.ToUpper(v)), stmttest.Quote(randomCase(r, v))}
@@ -366,7 +366,7 @@ func swapCase(s string) string {
 }
 
 // randomCase of the ASCII letters of s.
-func randomCase(r *rand.Rand, s string) string {
+func randomCase(r stmttest.Rand, s string) string {
 	b := []byte(s)
 	for i, c := range b {
 		if r.IntN(2) == 0 {
@@ -410,11 +410,20 @@ func common(pools [][]string, positions ...stmttest.Position) []string {
 	return names
 }
 
-func newSequence(t testing.TB, r *rand.Rand) *sequence {
+func newSequence(t testing.TB, r stmttest.Rand) *sequence {
 	t.Helper()
+	_, err := commonPools()
+	is.NotError(t, err)
+	return newSequenceFrom(r)
+}
+
+// newSequenceFrom r, after [commonPools] has succeeded once.
+func newSequenceFrom(r stmttest.Rand) *sequence {
 	q := &sequence{r: r}
 	common, err := commonPools()
-	is.NotError(t, err)
+	if err != nil {
+		panic(err)
+	}
 	tableNames, columnNames := common[0], common[1]
 	for range 1 + r.IntN(2) {
 		q.tables = append(q.tables, spellings(r, tableNames[r.IntN(len(tableNames))])...)

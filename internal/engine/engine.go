@@ -97,7 +97,7 @@ func (e *Engine) Exec(ctx context.Context, src string) (Result, error) {
 	r := e.newReport(src)
 	p, text, err := e.prepare(r, src)
 	if err != nil {
-		err = e.started(ctx, src, err)
+		err = e.started(ctx, r, src, err)
 		r.end(ctx, err)
 		return Result{}, err
 	}
@@ -131,7 +131,7 @@ func (e *Engine) Query(ctx context.Context, src string) (*Rows, error) {
 	r := e.newReport(src)
 	p, text, err := e.prepare(r, src)
 	if err != nil {
-		err = e.started(ctx, src, err)
+		err = e.started(ctx, r, src, err)
 		r.end(ctx, err)
 		return nil, err
 	}
@@ -165,7 +165,7 @@ func (e *Engine) prepare(r *report, src string) (Plan, string, error) {
 // started gives SQLite's error for the text src, which [stmt.Check] gave err for: if err is a syntax
 // error and SQLite starts to create a table before it meets it, and a table of the name exists,
 // SQLite gives `table %s already exists`, and otherwise err. See [stmt.StartedTable].
-func (e *Engine) started(ctx context.Context, src string, err error) error {
+func (e *Engine) started(ctx context.Context, r *report, src string, err error) error {
 	var se *sqlerr.Error
 	if !errors.As(err, &se) {
 		return err
@@ -178,6 +178,7 @@ func (e *Engine) started(ctx context.Context, src string, err error) error {
 	if rerr != nil {
 		return rerr
 	}
+	r.at(tx.position(), false)
 	t, lerr := tx.table(ctx, n.Value)
 	if lerr = first(lerr, tx.end(ctx)); lerr != nil {
 		return lerr
@@ -194,7 +195,7 @@ func (e *Engine) started(ctx context.Context, src string, err error) error {
 func (e *Engine) write(ctx context.Context, r *report, p Plan, sql string) (_ int64, err error) {
 	if _, ok := p.(*Insert); ok && e.bugs.checkOutside {
 		// The planted bug: the checks of the insert, in a read transaction of their own.
-		if err := e.checkOutside(ctx, p); err != nil {
+		if err := e.checkOutside(ctx, r, p); err != nil {
 			return 0, err
 		}
 	}
@@ -241,12 +242,13 @@ func (e *Engine) write(ctx context.Context, r *report, p Plan, sql string) (_ in
 
 // checkOutside is the planted bug that checks an insert in a read transaction before its write
 // transaction: the table, the column, and the key, without a write.
-func (e *Engine) checkOutside(ctx context.Context, p Plan) error {
+func (e *Engine) checkOutside(ctx context.Context, r *report, p Plan) error {
 	rt, err := e.db.read(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = rt.end(ctx) }()
+	r.at(rt.position(), true)
 	s, err := buildSink(ctx, readOnly{rt}, p, bugs{})
 	if err != nil {
 		return err
