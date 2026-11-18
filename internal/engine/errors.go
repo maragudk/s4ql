@@ -18,6 +18,10 @@ var (
 	// rules out, such as a refusal of the storage core for a table that the engine had checked. It
 	// is never SQLite's error.
 	ErrInternal = errors.New("s4ql: internal error")
+
+	// errPanicked is the error in the event of a statement that panicked in the engine. The panic goes
+	// on to the caller, and the error is only in the event.
+	errPanicked = fmt.Errorf("%w: the statement panicked", ErrInternal)
 )
 
 // internalError that matches [ErrInternal], and wraps nothing else.

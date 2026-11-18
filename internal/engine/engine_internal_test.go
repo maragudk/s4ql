@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -65,6 +66,54 @@ func (h *ticking) Monotonic() time.Duration {
 }
 
 func TestEngine_report(t *testing.T) {
+	t.Run("should log one event with the outcome internal_error at Error for a panic in the engine, and an early stop for a panic of the consumer", func(t *testing.T) {
+		cases := []struct {
+			name, src, panic string
+			set              func(f *fake)
+			query            bool
+			outcome          string
+		}{
+			{name: "build of a query, through Query", src: "select * from t1", panic: "the lookup panics", set: func(f *fake) { f.tablePanics = true }, query: true},
+			{name: "build of a query, through Exec", src: "select * from t1", panic: "the lookup panics", set: func(f *fake) { f.tablePanics = true }},
+			{name: "build of a write, through Exec", src: "drop table t1", panic: "the lookup panics", set: func(f *fake) { f.tablePanics = true }},
+			{name: "write, through Exec", src: "insert into t1 (v1) values (3)", panic: "the upsert panics", set: func(f *fake) { f.upsertPanics = true }},
+			{name: "write, through Query", src: "insert into t1 (v1) values (3)", panic: "the upsert panics", set: func(f *fake) { f.upsertPanics = true }, query: true},
+			{name: "scan, through Query", src: "select * from t1", panic: "the scan panics", set: func(f *fake) { f.scanPanics = true }, query: true},
+			{name: "scan, through Exec", src: "select * from t1", panic: "the scan panics", set: func(f *fake) { f.scanPanics = true }},
+			{name: "consumer, through Query", src: "select * from t1", panic: "the consumer", set: func(*fake) {}, query: true, outcome: "ok"},
+		}
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				h := &recorder{}
+				f := newFake().with("t1", []string{"v1"}, []int64{1}, []int64{2})
+				c.set(f)
+				e := newLoggedEngine(f, bugs{}, h)
+				func() {
+					defer func() { is.Equal(t, any(c.panic), recover()) }()
+					if !c.query {
+						_, _ = e.Exec(t.Context(), c.src)
+						return
+					}
+					rows, err := e.Query(t.Context(), c.src)
+					is.NotError(t, err)
+					for _, err := range rows.All() {
+						is.NotError(t, err)
+						panic("the consumer")
+					}
+				}()
+				is.Equal(t, 0, f.open)
+				is.Equal(t, 1, len(h.events))
+				outcome := cmp.Or(c.outcome, "internal_error")
+				is.Equal(t, outcome, h.events[0][attrOutcome])
+				if outcome == "internal_error" {
+					is.Equal(t, "s4ql: internal error: the statement panicked", h.events[0][attrError])
+					_, ok := h.events[0][attrSQL]
+					is.True(t, !ok, "the text at Error")
+				}
+			})
+		}
+	})
+
 	t.Run("should give the duration from the start of the statement to its end, the kind of a drop, and no text at Warn", func(t *testing.T) {
 		h := &recorder{}
 		f := newFake().with("t1", []string{"v1"})

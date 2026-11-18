@@ -96,6 +96,8 @@ type report struct {
 	position *format.Name
 	write    bool
 	rows     int64
+	// ended is set once the event is logged.
+	ended bool
 }
 
 // newReport of a statement of the text sql that starts now.
@@ -117,6 +119,15 @@ func (r *report) of(s stmt.Statement) {
 	}
 }
 
+// panicked ends the statement, which panicked in the engine, with [errPanicked], unless its event is
+// logged already. A panic of the application's code in a loop over [Rows.All] is not one: the loop
+// ends there as it ends at a break.
+func (r *report) panicked(ctx context.Context) {
+	if !r.ended {
+		r.end(ctx, errPanicked)
+	}
+}
+
 // at the position of the transaction of the statement.
 func (r *report) at(position format.Name, write bool) {
 	r.position, r.write = &position, write
@@ -124,6 +135,7 @@ func (r *report) at(position format.Name, write bool) {
 
 // end the statement with err, and log its event.
 func (r *report) end(ctx context.Context, err error) {
+	r.ended = true
 	outcome, level := outcomeOf(err)
 	if !r.e.log.Enabled(ctx, level) {
 		return

@@ -207,8 +207,9 @@ The level follows the conventions of the core, so a healthy instance logs nothin
 | Debug | `refused` | The core refused it with `ErrNoLease` or `ErrStopped`. The core logs that itself. |
 | Debug | `canceled` | Its context ended. |
 | Warn | `core_error` | It failed with another error of the core, such as a commit of unknown outcome. |
-| Error | `internal_error` | It failed with an internal error. |
+| Error | `internal_error` | It failed with an internal error, or panicked in the engine. |
 
+- **A statement that panics in the engine logs one event,** with the outcome `internal_error` and the error `s4ql: internal error: the statement panicked`, and the panic goes on to the caller. This holds for a panic while the statement is checked, planned, or built, while a write runs, and while a source gives the rows of a query. A panic in the body of a loop over `Rows.All` is the application's, and ends the rows as a break does: the event has the outcome `ok` and the rows given until then.
 - **The event of a write statement joins the core's event of its commit** by `commit.parent`, which is the same in both, and by the context, which both are logged with.
 - **The SQL text is only in an event at Debug,** because it can hold the application's data. An event at Warn or Error has no text.
 - **No value of a row is in any event.**

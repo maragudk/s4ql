@@ -26,8 +26,8 @@ type fake struct {
 	scanFails int
 	// getFails, upsertFails, annotateFails, and commitFails are the errors of those calls.
 	getFails, upsertFails, annotateFails, commitFails, beginFails, readFails error
-	// upsertPanics makes an upsert panic.
-	upsertPanics bool
+	// upsertPanics makes an upsert panic, and scanPanics a scan.
+	upsertPanics, scanPanics bool
 	// tablePanics makes a lookup panic, tableFails is the error of a lookup, and endFails is the
 	// error of the end of a read transaction.
 	tablePanics bool
@@ -106,6 +106,9 @@ func (x fakeTx) scan(_ context.Context, name string) iter.Seq2[[]*s4qlpb.Value, 
 	return func(yield func([]*s4qlpb.Value, error) bool) {
 		x.f.scans++
 		defer func() { x.f.scans-- }()
+		if x.f.scanPanics {
+			panic("the scan panics")
+		}
 		t := x.f.tables[fold(name)]
 		rows := slices.Clone(t.rows)
 		slices.SortFunc(rows, func(a, b []*s4qlpb.Value) int { return cmp.Compare(a[0].GetInteger(), b[0].GetInteger()) })

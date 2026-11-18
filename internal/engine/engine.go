@@ -97,6 +97,19 @@ type Result struct {
 // ROWID, and SQLite does not record an insert into such a table.
 func (e *Engine) Exec(ctx context.Context, src string) (Result, error) {
 	r := e.newReport(src)
+	returned := false
+	defer func() {
+		if !returned {
+			r.panicked(ctx)
+		}
+	}()
+	res, err := e.exec(ctx, r, src)
+	returned = true
+	return res, err
+}
+
+// exec is [Engine.Exec] of src for the report r.
+func (e *Engine) exec(ctx context.Context, r *report, src string) (Result, error) {
 	p, text, err := prepare(r, src)
 	if err != nil {
 		r.end(ctx, err)
@@ -127,6 +140,19 @@ func (e *Engine) Exec(ctx context.Context, src string) (Result, error) {
 // [Rows].
 func (e *Engine) Query(ctx context.Context, src string) (*Rows, error) {
 	r := e.newReport(src)
+	returned := false
+	defer func() {
+		if !returned {
+			r.panicked(ctx)
+		}
+	}()
+	rows, err := e.queryText(ctx, r, src)
+	returned = true
+	return rows, err
+}
+
+// queryText is [Engine.Query] of src for the report r.
+func (e *Engine) queryText(ctx context.Context, r *report, src string) (*Rows, error) {
 	p, text, err := prepare(r, src)
 	if err != nil {
 		r.end(ctx, err)
@@ -236,7 +262,7 @@ func (readOnly) upsert(context.Context, string, []*s4qlpb.Value) error  { return
 
 // query runs the plan q in a read transaction of its own, and gives its rows, which hold the
 // transaction until they end. The transaction ends if the rows cannot be built, also when that
-// panics.
+// panics; the event of a panic is then left to [Engine.Exec] and [Engine.Query].
 func (e *Engine) query(ctx context.Context, r *report, q *Query) (_ *Rows, err error) {
 	tx, err := e.db.read(ctx)
 	if err != nil {
@@ -246,8 +272,13 @@ func (e *Engine) query(ctx context.Context, r *report, q *Query) (_ *Rows, err e
 	r.at(tx.position(), false)
 	built := false
 	defer func() {
-		if !built {
-			err = first(err, tx.end(ctx))
+		if built {
+			return
+		}
+		endErr := tx.end(ctx)
+		// The rows are not built when buildQuery fails, with an error, or panics, with none.
+		if err != nil {
+			err = first(err, endErr)
 			r.end(ctx, err)
 		}
 	}()
@@ -306,28 +337,47 @@ func (r *Rows) All() iter.Seq2[[]*s4qlpb.Value, error] {
 		}
 		r.reading = true
 		var err error
+		// returned is set when the loop below returns, and consuming while the body of the loop over
+		// All runs. A panic at any other time is in the engine.
+		returned, consuming := false, false
 		// The read transaction ends here when the loop stops early, panics, or meets an error. A
 		// failure of that end is the error of Close.
 		defer func() {
 			r.reading = false
+			if !returned && !consuming {
+				err = errPanicked
+			}
 			r.endErr = r.end(err)
 		}()
-		for row, e := range r.src.rows(r.ctx) {
-			if e != nil {
-				err = e
-				yield(nil, e)
-				return
-			}
-			r.report.rows++
-			if !yield(row, nil) || r.closing {
-				return
-			}
-			r.report.e.host.Yield(r.ctx, "engine: between two rows of a query")
+		consume := func(row []*s4qlpb.Value, err error) bool {
+			consuming = true
+			more := yield(row, err)
+			consuming = false
+			return more
 		}
-		// After the last row, a failure of the end of the read transaction is the last error.
-		if err := r.end(nil); err != nil {
+		r.read(consume, &err)
+		returned = true
+	}
+}
+
+// read the rows of the query, and give each to yield, up to the first error, which read sets in
+// failed before it gives it. After the last row, it ends the read transaction, and a failure of
+// that end is the last error.
+func (r *Rows) read(yield func([]*s4qlpb.Value, error) bool, failed *error) {
+	for row, err := range r.src.rows(r.ctx) {
+		if err != nil {
+			*failed = err
 			yield(nil, err)
+			return
 		}
+		r.report.rows++
+		if !yield(row, nil) || r.closing {
+			return
+		}
+		r.report.e.host.Yield(r.ctx, "engine: between two rows of a query")
+	}
+	if err := r.end(nil); err != nil {
+		yield(nil, err)
 	}
 }
 
