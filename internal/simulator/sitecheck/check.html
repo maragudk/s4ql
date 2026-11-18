@@ -144,7 +144,8 @@ async function check() {
   await until(() => a.runs > before4 && a.idle());
   const fresh = a.response;
   expect(fresh.request.seed !== last.request.seed && fresh.hash !== last.hash, "Start over gives a new run with a new seed");
-  expect(fresh.request.end === 120000 && fresh.request.schedule.length === 0, "the new run has 2 min and no faults");
+  // At 64× the page asks for a longer run at once, so the new run may have grown by now.
+  expect(fresh.request.schedule.length === 0 && fresh.request.end < 600000, `the new run has no faults, and ${fresh.request.end / 1000} s`);
   expect(a.win.s4qlPage.cursor < 600000 && limit.hidden, "the new run starts from the start");
   await until(() => a.win.s4qlPage.playing);
   expect(true, "the new run plays");

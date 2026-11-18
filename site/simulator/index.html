@@ -259,7 +259,10 @@ h2 {
   margin: 0;
 }
 @media (max-width: 960px) {
-  .intro-grid { grid-template-columns: 1fr; }
+  /* One column, with the line on the build after the text. */
+  .intro-grid { display: flex; flex-direction: column; }
+  .intro-grid > div:first-child { display: contents; }
+  .intro p.built { order: 1; margin: 0; }
 }
 
 .tries { margin-top: 24px; }

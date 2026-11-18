@@ -86,8 +86,11 @@ function note(text) {
   set($("note"), text);
 }
 
+// fail shows what went wrong and stops the page until the visitor starts over, which asks the engine
+// for a new run.
 function fail(title, text) {
   failed = true;
+  autoplay = false;
   setPlaying(false);
   if (!shown) set($("field-note"), title);
   root.dataset.engine = "failed";
@@ -123,15 +126,11 @@ async function pump() {
       apply(w, response, performance.now() - started);
     } catch (e) {
       if (wanted) continue;
-      if (shown && !w.restore) {
-        // The engine forgets its last run when it refuses one, so the page asks for the run that it
-        // shows again.
-        run = structuredClone(shown.run);
-        wanted = { run: structuredClone(shown.run), why: `The engine refused the change: ${e.message}. The page shows the run from before it.`, hold: true, restore: true };
-        continue;
-      }
+      // The page asks only for runs that the engine takes, so a refusal is a fault of the page or of
+      // the Worker, and the engine has forgotten the run shown.
       flying = null;
-      fail("The engine refused the run.", e.message);
+      setBusy();
+      fail("The engine refused the run.", `${e.message}. Start over to ask for a new run.`);
       return;
     }
   }
@@ -139,9 +138,12 @@ async function pump() {
   setBusy();
 }
 
+// setBusy shows whether the playback waits for the engine: for a run that holds it, or at the end of
+// the run shown while a longer run is on its way.
 function setBusy() {
   root.dataset.busy = flying ? "true" : "false";
-  $("field").setAttribute("aria-busy", holding() || !shown ? "true" : "false");
+  const waits = holding() || !shown || (!!flying && cursor >= shown.run.end && !atLimit());
+  $("field").setAttribute("aria-busy", waits ? "true" : "false");
   if (shown) drawControls();
 }
 
@@ -230,20 +232,29 @@ function frame(ts) {
   }
   last = ts;
   if (shown && !failed) {
-    // Ask for a longer run ahead of time, so that it is there before the playback needs it.
-    if (run.seed === shown.run.seed && run.end < R.LIMIT && run.end - cursor <= R.LEAD) {
+    // Ask for a longer run ahead of time, so that it is there before the playback needs it: at least
+    // R.LEAD of fake time ahead, and 2 s of true time at a high speed.
+    const lead = Math.max(R.LEAD, 2000 * Number($("speed").value));
+    if (run.seed === shown.run.seed && run.end < R.LIMIT && run.end - cursor <= lead) {
       run.end = Math.min(R.LIMIT, run.end + R.CHUNK);
       rerun("", false);
     }
     drawCursor();
-    fetchState();
+    fetchState(ts);
   }
   requestAnimationFrame(frame);
 }
 
-async function fetchState() {
+// fetchState asks the engine for the state at the current time, at most every STATE_MS of true time
+// while the run plays, since the engine folds it from the first event on.
+const STATE_MS = 100;
+let stateAsked = -Infinity;
+
+async function fetchState(ts) {
   if (stateBusy || flying || !shown || failed) return;
   if (stateFor && stateFor.runs === runs && stateFor.t === cursor) return;
+  if (stateFor && stateFor.runs === runs && playing && ts - stateAsked < STATE_MS) return;
+  stateAsked = ts;
   stateBusy = true;
   const t = cursor, r = runs;
   try {
@@ -254,7 +265,7 @@ async function fetchState() {
       drawState();
     }
   } catch (e) {
-    fail("The engine could not give the state of the run.", e.message);
+    fail("The engine could not give the state of the run.", `${e.message}. Start over to ask for a new run.`);
   } finally {
     stateBusy = false;
   }
@@ -295,7 +306,7 @@ function drawCursor() {
   set($("clock"), R.clock(cursor));
   drawLog();
   drawCalls();
-  drawControls();
+  setBusy();
 }
 
 // The log.
@@ -319,14 +330,6 @@ function drawLog() {
 
 // The calls of each instance that ended up to the current time, from the events.
 
-const REASONS = {
-  not_holder: "it does not hold the lease",
-  outcome_unknown: "it does not know whether its last commit went through",
-  not_caught_up: "its cache is behind the log",
-  lease_expired_monotonic: "its lease ran out by its monotonic clock",
-  lease_expired_wall: "its lease ran out by its wall clock",
-};
-
 function drawCalls() {
   const n = upTo(cursor);
   for (const c of cards) {
@@ -335,7 +338,7 @@ function drawCalls() {
     let text = `${plural(w, "write")} and ${plural(r, "read")} served, ${x.toLocaleString("en")} refused`;
     if (x) {
       const reason = String(events[k.refused[x - 1]].error || "").split(": ").pop();
-      text += `, the last because ${REASONS[reason] || reason}`;
+      text += `, the last because ${R.REASONS[reason] || reason}`;
     }
     text += ".";
     set(c.f.calls, text);
@@ -348,7 +351,7 @@ function drawControls() {
   const ready = !!shown && !failed;
   const end = atLimit();
   $("play").disabled = !ready || end;
-  $("again").disabled = !engine || failed;
+  $("again").disabled = !engine;
   $("again").classList.toggle("call", end);
   const lim = $("limit");
   lim.hidden = !end;
@@ -511,8 +514,13 @@ $("play").addEventListener("click", () => setPlaying(!playing));
 $("again").addEventListener("click", () => {
   // A run that plays goes on playing. A run that stopped at the limit plays again, unless the visitor
   // asks for reduced motion.
-  autoplay = playing || (atLimit() && !reduce.matches);
+  autoplay = playing || ((atLimit() || failed) && !reduce.matches);
   setPlaying(false);
+  if (failed) {
+    failed = false;
+    $("failure").hidden = true;
+    root.dataset.engine = "ready";
+  }
   run = fresh();
   rerun("A new run.", true);
 });

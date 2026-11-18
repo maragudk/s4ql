@@ -84,9 +84,10 @@ export function actionWords(a) {
   return `You: ${a.do}.`;
 }
 
-const REASONS = {
+// REASONS of the core for refusing a call, in words.
+export const REASONS = {
   not_holder: "it does not hold the lease",
-  outcome_unknown: "it does not know yet whether its last commit went through",
+  outcome_unknown: "it does not know whether its last commit went through",
   not_caught_up: "its cache is behind the log",
   lease_expired_monotonic: "its lease ran out by its monotonic clock",
   lease_expired_wall: "its lease ran out by its wall clock",
