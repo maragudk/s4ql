@@ -94,12 +94,16 @@ func (o *oracle) changes(t testing.TB) (changes, rowid int64) {
 }
 
 // prepare src, and finalize its statement without a step, so that nothing changes. It gives SQLite's
-// error, or nil.
-func (o *oracle) prepare(src string) *sqlite.Error {
+// error, or nil. Any other error fails the test.
+func (o *oracle) prepare(t testing.TB, src string) *sqlite.Error {
+	t.Helper()
 	s, _, err := o.c.PrepareFirst(src)
 	var se *sqlite.Error
 	if errors.As(err, &se) {
 		return se
+	}
+	if err != nil {
+		t.Fatalf("%q: SQLite gives %v, which is not one of its errors", src, err)
 	}
 	if s != nil {
 		_ = s.Finalize()
@@ -599,7 +603,7 @@ func knownGap(src string, got, want answer) string {
 // the error that SQLite gives on an empty database, and SQLite gives `table %s already exists`, with
 // the name as written, for the table that [stmttest.StartedTable] says the text starts. The spec:
 // "Text with a syntax error gets the error that SQLite gives for it on an empty database."
-func startedTable(t testing.TB, src string, got, want answer) bool {
+func startedTable(t testing.TB, empty *oracle, src string, got, want answer) bool {
 	t.Helper()
 	_, err := stmt.Check(src)
 	var se *sqlerr.Error
@@ -610,8 +614,6 @@ func startedTable(t testing.TB, src string, got, want answer) bool {
 	if !ok || want.err != fmt.Sprint(sqlerr.CodeError, "/", sqlerr.CodeError, ": table ", n.Raw, " already exists") {
 		return false
 	}
-	empty := newOracle(t)
-	defer empty.close()
 	return got.String() == empty.run(t, src).String()
 }
 
@@ -716,7 +718,7 @@ func (p *pair) step(src string, query, supported bool) string {
 		if !utf8.ValidString(src) || strings.ContainsRune(src, 0) {
 			return ""
 		}
-		if err := p.empty.prepare(src); err != nil && sqloracle.IsSyntaxMessage(err.Message) {
+		if err := p.empty.prepare(t, src); err != nil && sqloracle.IsSyntaxMessage(err.Message) {
 			return fmt.Sprintf("%q: the engine does not support it, and SQLite gives %v", src, err.Message)
 		}
 		return ""
@@ -727,11 +729,12 @@ func (p *pair) step(src string, query, supported bool) string {
 		want.columns, want.rows = "", nil
 	}
 	if got.String() != want.String() {
+		gap := knownGap(src, got, want)
 		switch {
-		case startedTable(t, src, got, want):
+		case startedTable(t, p.empty, src, got, want):
 			p.y.add("", answer{err: "already exists after the start of a table, accepted"})
-		case knownGap(src, got, want) != "":
-			p.y.add("", answer{err: knownGap(src, got, want) + ", a known gap"})
+		case gap != "":
+			p.y.add("", answer{err: gap + ", a known gap"})
 		default:
 			return fmt.Sprintf("%q: the engine gives\n%v\nand SQLite\n%v", src, got, want)
 		}

@@ -405,7 +405,14 @@ func (r *Rows) end(err error) error {
 		return nil
 	}
 	r.done = true
+	returned := false
+	defer func() {
+		if !returned {
+			r.report.panicked(r.ctx)
+		}
+	}()
 	endErr := r.tx.end(r.ctx)
+	returned = true
 	r.report.end(r.ctx, first(err, endErr))
 	return endErr
 }

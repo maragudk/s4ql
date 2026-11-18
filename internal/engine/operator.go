@@ -137,51 +137,31 @@ func (p *project) rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
 	}
 }
 
-// insert writes each row of its source into a table as a new row, and fails with SQLite's error
-// for a row whose primary key the table has, also one that an earlier row of the source wrote. Each
-// row has a value for every column of the table, and the key is one column: anything else fails with
-// an internal error.
+// insert writes each row of its source into a table of one column, which is its primary key, as a
+// new row, and fails with SQLite's error for a row whose key the table has, also one that an earlier
+// row of the source wrote.
 type insert struct {
 	w     writer
 	table *s4qlpb.CreateTable
-	// positions in the table of the column of each value of a row of the source.
-	positions []int
-	src       rowSource
+	src   rowSource
 	// skipUnique is the planted bug that writes a row without the check of its key.
 	skipUnique bool
 }
 
 func (i *insert) run(ctx context.Context) (int64, error) {
 	name := i.table.GetTable()
-	pk := i.table.GetPrimaryKey()
-	if len(pk) != 1 {
-		return 0, internalError("an insert into a table with a key of %v columns", len(pk))
-	}
 	var n int64
-	for values, err := range i.src.rows(ctx) {
+	for row, err := range i.src.rows(ctx) {
 		if err != nil {
 			return n, err
 		}
-		if len(values) != len(i.positions) {
-			return n, internalError("an insert of %v values into %v columns", len(values), len(i.positions))
-		}
-		row := make([]*s4qlpb.Value, len(i.table.GetColumns()))
-		for j, position := range i.positions {
-			row[position] = values[j]
-		}
-		for j, v := range row {
-			if v == nil {
-				return n, internalError("an insert with no value for column %v of %v", j, len(row))
-			}
-		}
-		key := []*s4qlpb.Value{row[pk[0]]}
 		if !i.skipUnique {
-			existing, err := i.w.get(ctx, name, key)
+			existing, err := i.w.get(ctx, name, row)
 			if err != nil {
 				return n, err
 			}
 			if existing != nil {
-				return n, uniqueFailed(name, i.table.GetColumns()[pk[0]].GetName())
+				return n, uniqueFailed(name, i.table.GetColumns()[0].GetName())
 			}
 		}
 		if err := i.w.upsert(ctx, name, row); err != nil {
@@ -312,20 +292,21 @@ func buildSink(ctx context.Context, w writer, p Plan, b bugs) (sink, error) {
 		if t == nil {
 			return nil, noSuchTable(p.Table.Value)
 		}
-		positions := make([]int, len(p.Columns))
-		for i, c := range p.Columns {
-			positions[i] = columnPosition(t, c)
-			if positions[i] < 0 {
+		for _, c := range p.Columns {
+			if columnPosition(t, c) < 0 {
 				return nil, noSuchColumn(p.Table.Value, c.Value)
 			}
+		}
+		if len(p.Columns) != 1 || len(t.GetColumns()) != 1 || !slices.Equal(t.GetPrimaryKey(), []uint32{0}) {
+			return nil, internalError("an insert of %v columns into a table of %v columns with the key %v", len(p.Columns), len(t.GetColumns()), t.GetPrimaryKey())
 		}
 		src, err := buildValues(p.Source)
 		if err != nil {
 			return nil, err
 		}
-		return &insert{w: w, table: t, positions: positions, src: src, skipUnique: b.skipUnique}, nil
+		return &insert{w: w, table: t, src: src, skipUnique: b.skipUnique}, nil
 	}
-	panic(fmt.Sprintf("engine: a plan of type %T", p))
+	return nil, internalError("a plan of type %T", p)
 }
 
 // columnPosition of the column with the name in the table, compared as SQLite compares names, or -1

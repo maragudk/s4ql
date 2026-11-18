@@ -26,8 +26,9 @@ type fake struct {
 	scanFails int
 	// getFails, upsertFails, annotateFails, and commitFails are the errors of those calls.
 	getFails, upsertFails, annotateFails, commitFails, beginFails, readFails error
-	// upsertPanics makes an upsert panic, and scanPanics a scan.
-	upsertPanics, scanPanics bool
+	// upsertPanics makes an upsert panic, scanPanics a scan, and endPanics the end of a read
+	// transaction.
+	upsertPanics, scanPanics, endPanics bool
 	// tablePanics makes a lookup panic, tableFails is the error of a lookup, and endFails is the
 	// error of the end of a read transaction.
 	tablePanics bool
@@ -195,6 +196,9 @@ func (x fakeTx) rollback(context.Context) error {
 func (x fakeTx) end(context.Context) error {
 	x.f.calls = append(x.f.calls, "end")
 	x.f.open--
+	if x.f.endPanics {
+		panic("the end panics")
+	}
 	return x.f.endFails
 }
 
@@ -332,7 +336,7 @@ func TestInsert(t *testing.T) {
 
 	t.Run("should check each key before it writes the row, and count the rows", func(t *testing.T) {
 		f := newFake().with("T1", []string{"v"})
-		i := &insert{w: fakeTx{f}, table: f.tables["t1"].ct, positions: []int{0}, src: ints(2, 1)}
+		i := &insert{w: fakeTx{f}, table: f.tables["t1"].ct, src: ints(2, 1)}
 		n, err := i.run(t.Context())
 		is.NotError(t, err)
 		is.Equal(t, int64(2), n)
@@ -341,70 +345,36 @@ func TestInsert(t *testing.T) {
 
 	t.Run("should fail with SQLite's error for a key that the table has, also from an earlier row, with the stored names", func(t *testing.T) {
 		f := newFake().with("Tb", []string{"Vb"}, []int64{1})
-		i := &insert{w: fakeTx{f}, table: f.tables["tb"].ct, positions: []int{0}, src: ints(1)}
+		i := &insert{w: fakeTx{f}, table: f.tables["tb"].ct, src: ints(1)}
 		_, err := i.run(t.Context())
 		var se *sqlerr.Error
 		is.True(t, errors.As(err, &se))
 		is.Equal(t, sqlerr.Error{Code: 19, ExtendedCode: 1555, Message: "UNIQUE constraint failed: Tb.Vb", Offset: -1}, *se)
 
 		f = newFake().with("t", []string{"v"})
-		i = &insert{w: fakeTx{f}, table: f.tables["t"].ct, positions: []int{0}, src: ints(5, 5)}
+		i = &insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(5, 5)}
 		n, err := i.run(t.Context())
 		is.Equal(t, "UNIQUE constraint failed: t.v", err.Error())
 		is.Equal(t, int64(1), n)
 	})
 
-	t.Run("should fail with an internal error, and write nothing, for what no statement of slice 1 gives", func(t *testing.T) {
-		two := &values{data: [][]*s4qlpb.Value{{eval(&Integer{Value: 1}), eval(&Integer{Value: 2})}}}
-		cases := []struct {
-			name    string
-			columns []string
-			key     []uint32
-			insert  func(table *s4qlpb.CreateTable) *insert
-			err     string
-		}{
-			{name: "a column without a value", columns: []string{"k", "a"}, key: []uint32{0},
-				insert: func(ct *s4qlpb.CreateTable) *insert { return &insert{table: ct, positions: []int{0}, src: ints(1)} },
-				err:    "an insert with no value for column 1 of 2"},
-			{name: "a key of two columns", columns: []string{"a", "b"}, key: []uint32{1, 0},
-				insert: func(ct *s4qlpb.CreateTable) *insert { return &insert{table: ct, positions: []int{0, 1}, src: two} },
-				err:    "an insert into a table with a key of 2 columns"},
-			{name: "two values into one column", columns: []string{"a", "b"}, key: []uint32{0},
-				insert: func(ct *s4qlpb.CreateTable) *insert { return &insert{table: ct, positions: []int{0}, src: two} },
-				err:    "an insert of 2 values into 1 columns"},
-		}
-		for _, c := range cases {
-			t.Run(c.name, func(t *testing.T) {
-				f := newFake().with("t", c.columns)
-				f.tables["t"].ct.SetPrimaryKey(c.key)
-				i := c.insert(f.tables["t"].ct)
-				i.w = fakeTx{f}
-				n, err := i.run(t.Context())
-				is.True(t, errors.Is(err, ErrInternal))
-				is.Equal(t, "s4ql: internal error: "+c.err, err.Error())
-				is.Equal(t, int64(0), n)
-				is.Equal(t, 0, len(f.calls))
-			})
-		}
-	})
-
 	t.Run("should pass on an error of the storage, and of the source", func(t *testing.T) {
 		f := newFake().with("t", []string{"v"})
 		f.getFails = errors.New("get fails")
-		_, err := (&insert{w: fakeTx{f}, table: f.tables["t"].ct, positions: []int{0}, src: ints(1)}).run(t.Context())
+		_, err := (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1)}).run(t.Context())
 		is.Equal(t, "get fails", err.Error())
 		f.getFails, f.upsertFails = nil, errors.New("upsert fails")
-		_, err = (&insert{w: fakeTx{f}, table: f.tables["t"].ct, positions: []int{0}, src: ints(1)}).run(t.Context())
+		_, err = (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1)}).run(t.Context())
 		is.Equal(t, "upsert fails", err.Error())
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		_, err = (&insert{w: fakeTx{f}, table: f.tables["t"].ct, positions: []int{0}, src: ints(1)}).run(ctx)
+		_, err = (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1)}).run(ctx)
 		is.True(t, errors.Is(err, context.Canceled))
 	})
 
 	t.Run("should write without the check with the planted bug", func(t *testing.T) {
 		f := newFake().with("t", []string{"v"}, []int64{1})
-		_, err := (&insert{w: fakeTx{f}, table: f.tables["t"].ct, positions: []int{0}, src: ints(1), skipUnique: true}).run(t.Context())
+		_, err := (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1), skipUnique: true}).run(t.Context())
 		is.NotError(t, err)
 		is.Equal(t, "[upsert t 1]", fmt.Sprint(f.calls))
 	})
@@ -498,12 +468,15 @@ func TestBuild(t *testing.T) {
 			{name: "an insert of two rows", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Integer{Value: 1}}, {&Integer{Value: 2}}}}}, err: "an insert of 2 rows"},
 			{name: "an insert of no rows", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{}}, err: "an insert of 0 rows"},
 			{name: "an insert of two values", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Integer{Value: 1}, &Integer{Value: 2}}}}}, err: "an insert of 2 values"},
+			{name: "an insert into a table of two columns", plan: &Insert{Table: stmt.Name{Value: "ab"}, Columns: []stmt.Name{{Value: "a"}}, Source: &Values{Rows: one}}, err: "an insert of 1 columns into a table of 2 columns with the key [0]"},
+			{name: "an insert into two columns", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: []stmt.Name{{Value: "v"}, {Value: "V"}}, Source: &Values{Rows: one}}, err: "an insert of 2 columns into a table of 1 columns with the key [0]"},
+			{name: "a plan of a type that the engine does not know", plan: unknownPlan{}, err: "a plan of type engine.unknownPlan"},
 			{name: "a table of two columns", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}, {Name: stmt.Name{Value: "b"}}}, PrimaryKey: []int{0}}, err: "a table of 2 columns with the key [0]"},
 			{name: "a table without a key", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}}}, err: "a table of 1 columns with the key []"},
 		}
 		for _, c := range cases {
 			t.Run(c.name, func(t *testing.T) {
-				f := newFake().with("t", []string{"v"}, []int64{1})
+				f := newFake().with("t", []string{"v"}, []int64{1}).with("ab", []string{"a", "b"})
 				var err error
 				if q, ok := c.plan.(*Query); ok {
 					_, err = buildQuery(t.Context(), fakeTx{f}, q)
@@ -530,6 +503,11 @@ func TestBuild(t *testing.T) {
 }
 
 const t1 = "create table t1 (v1 int primary key) strict, without rowid"
+
+// unknownPlan is a plan of a type that the engine does not know.
+type unknownPlan struct{}
+
+func (unknownPlan) plan() {}
 
 // failingLookUp is a writer whose lookups fail.
 type failingLookUp struct {

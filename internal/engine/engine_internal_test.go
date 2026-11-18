@@ -66,6 +66,28 @@ func (h *ticking) Monotonic() time.Duration {
 }
 
 func TestEngine_report(t *testing.T) {
+	t.Run("should log one event with the outcome internal_error for a panic in the end of the read transaction of a query", func(t *testing.T) {
+		for _, end := range []string{"last row", "close"} {
+			h := &recorder{}
+			f := newFake().with("t1", []string{"v1"}, []int64{1})
+			f.endPanics = true
+			rows, err := newLoggedEngine(f, bugs{}, h).Query(t.Context(), "select * from t1")
+			is.NotError(t, err)
+			func() {
+				defer func() { is.Equal(t, any("the end panics"), recover()) }()
+				if end == "close" {
+					_ = rows.Close()
+					return
+				}
+				for _, err := range rows.All() {
+					is.NotError(t, err)
+				}
+			}()
+			is.Equal(t, 1, len(h.events), end)
+			is.Equal(t, "internal_error", h.events[0][attrOutcome], end)
+		}
+	})
+
 	t.Run("should log one event with the outcome internal_error at Error for a panic in the engine, and an early stop for a panic of the consumer", func(t *testing.T) {
 		cases := []struct {
 			name, src, panic string

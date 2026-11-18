@@ -403,6 +403,26 @@ func (s attemptState) String() string {
 	return [...]string{"pending", "succeeded", "SQLite's error", "failed", "unknown", "skipped"}[s]
 }
 
+// waitServing waits until the database of n serves, for up to two minutes, also across a close
+// and open of n, and reports whether it does. The caller of an instance that does not serve waits so,
+// and then stops, as the client of an application behind a check of its health would turn to
+// another instance, so that most statements reach a transaction.
+func (r *run) waitServing(ctx context.Context, n *node) bool {
+	ctx, cancel := n.inst.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	for {
+		d, _ := n.current()
+		if d.Wait(ctx) == nil {
+			return true
+		}
+		if ctx.Err() != nil {
+			return false
+		}
+		// The database stopped: the node opens it again, or a close has done so meanwhile.
+		_ = n.inst.Sleep(ctx, time.Second)
+	}
+}
+
 // start a node with its callers and the task that opens its database again when it stops.
 func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task) {
 	inst := r.world.NewInstance(name)
@@ -432,17 +452,8 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 				sctx, cancel := inst.WithTimeout(ctx, time.Duration(1+rnd.IntN(int(r.w.timeout/time.Millisecond)))*time.Millisecond)
 				a := r.statement(sctx, n, e, r.q)
 				cancel()
-				if a.reason == "no lease" {
-					// The caller of an instance that does not serve waits until it serves, for up to two
-					// minutes, and then stops, as the client of an application behind a check of its health
-					// would turn to another instance, so that most statements reach a transaction.
-					d, _ := n.current()
-					wctx, cancel := inst.WithTimeout(ctx, 2*time.Minute)
-					err := d.Wait(wctx)
-					cancel()
-					if err != nil {
-						return
-					}
+				if a.reason == "no lease" && !r.waitServing(ctx, n) {
+					return
 				}
 			}
 		}))
@@ -632,6 +643,7 @@ func (r *run) takeReaders(ctx context.Context, live []*node) {
 	for start := r.world.Monotonic(); len(live) > 0 && r.world.Monotonic()-start < 10*time.Minute; {
 		var left []*node
 		for _, n := range live {
+			taken := false
 			n.do(ctx, "readers", func(ctx context.Context) {
 				wait, cancel := n.inst.WithTimeout(ctx, r.w.timeout)
 				defer cancel()
@@ -649,11 +661,13 @@ func (r *run) takeReaders(ctx context.Context, live []*node) {
 					_ = tx.Close(ctx)
 				}
 				if len(txs) == simReaders {
+					taken = true
 					r.close(ctx, n)
-					return
 				}
-				left = append(left, n)
 			})
+			if !taken {
+				left = append(left, n)
+			}
 		}
 		if live = left; len(live) > 0 {
 			_ = r.world.Sleep(ctx, time.Second)
