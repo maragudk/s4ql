@@ -68,6 +68,17 @@ func pinned(t *testing.T, what string, want, got int) {
 	}
 }
 
+// atDefault reports whether each flag of names has its default value, for which the pinned numbers
+// hold.
+func atDefault(names ...string) bool {
+	for _, name := range names {
+		if f := flag.Lookup(name); f.Value.String() != f.DefValue {
+			return false
+		}
+	}
+	return true
+}
+
 // every nth of sqls.
 func every(sqls []string, n int) []string {
 	var some []string
@@ -430,7 +441,7 @@ func TestParse_mutants(t *testing.T) {
 	}
 	r := parsetest.Test(t, parsetest.ParserFunc(parse), sqls)
 	t.Logf("%v texts, %v agree, SQLite does not say on %v", r.Total, r.Agreed, r.NotSaid)
-	if !slow() && *seed == 0 && *mutants == 3 {
+	if !slow() && atDefault("seed", "mutants") {
 		pinned(t, "mutants of the corpus on which SQLite does not say", 745, r.NotSaid)
 	}
 	for _, sql := range sqls {

@@ -24,6 +24,7 @@ on:
       - internal/sql/parser/testdata/parse.y
       - internal/sql/token/**
       - internal/sqlite/*.go
+      - internal/sqlite/options.h
       - .github/workflows/sqlite-verify.yml
   pull_request:
     branches:
@@ -42,6 +43,7 @@ on:
       - internal/sql/parser/testdata/parse.y
       - internal/sql/token/**
       - internal/sqlite/*.go
+      - internal/sqlite/options.h
       - .github/workflows/sqlite-verify.yml
 
 concurrency:
