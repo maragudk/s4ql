@@ -19,6 +19,7 @@ globalThis.s4qlInitSQLite = async function () {
   // when it is exact as one, and as decimal text otherwise, because syscall/js has no BigInt.
   const MAX = BigInt(Number.MAX_SAFE_INTEGER), MIN = -MAX;
   let faults = 0;
+  const faultVFSes = new Map(); // pointer -> the struct of a VFS of newFaultVFS
 
   globalThis.s4qlSQLite = {
     sqlite3,
@@ -51,10 +52,20 @@ globalThis.s4qlInitSQLite = async function () {
     // newFaultVFS registers one more VFS of vfs.js, with a fault state of its own, for faultvfs.
     newFaultVFS() {
       const name = 's4ql-fault-' + (++faults);
-      const { pointer, fault } = s4qlInstallVFS(sqlite3, name, false);
+      const { pointer, fault, struct } = s4qlInstallVFS(sqlite3, name, false);
+      faultVFSes.set(pointer, struct);
       return { name, pointer, fault };
     },
-    unregisterVFS: (pointer) => x.sqlite3_vfs_unregister(pointer),
+    // unregisterVFS that newFaultVFS registered, and free it with its name and methods, which no
+    // connection may use any more.
+    unregisterVFS(pointer) {
+      const rc = x.sqlite3_vfs_unregister(pointer);
+      if (rc === 0 && faultVFSes.has(pointer)) {
+        faultVFSes.get(pointer).dispose();
+        faultVFSes.delete(pointer);
+      }
+      return rc;
+    },
   };
   return sqlite3;
 };

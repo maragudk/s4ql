@@ -5,8 +5,8 @@
 // their files where Go cannot see them.
 //
 // The files are those of the in-memory file system in fs.js, through globalThis.s4qlFS, so Go's os
-// package sees them too; without fs.js the VFS keeps files of its own. File locks are kept per
-// file, by connection, with the rules of SQLite's unix VFS inside one process. The wal-index is
+// package sees them too; load fs.js before the first VFS is installed. File locks are kept per file,
+// by connection, with the rules of SQLite's unix VFS inside one process. The wal-index is
 // kept in SQLite's own heap, in regions that every connection to the same database maps, and its
 // locks are kept per slot.
 //
@@ -22,10 +22,20 @@
 // globalThis.s4qlYield, if it is set, about once a millisecond while it waits. A Go program sets it
 // to a Go function, during which Go's runtime runs the goroutines that are ready, so that another
 // goroutine can release the lock that SQLite waits for.
+//
+// No method lets an exception unwind through SQLite's C code: each one that throws logs the
+// exception with console.error and returns an I/O error.
 (() => {
   const OK = 0, BUSY = 5, CANTOPEN = 14, NOTFOUND = 12, IOERR_DELETE = 2570, IOERR_DELETE_NOENT = 5898;
   const IOERR_READ = 266, IOERR_SHORT_READ = 522, IOERR_WRITE = 778, IOERR_FSYNC = 1034, IOERR_TRUNCATE = 1546, IOERR_FSTAT = 1802, IOERR_LOCK = 3850;
-  const OPEN_CREATE = 0x4, OPEN_DELETEONCLOSE = 0x8;
+  const OPEN_READONLY = 0x1, OPEN_READWRITE = 0x2, OPEN_CREATE = 0x4, OPEN_DELETEONCLOSE = 0x8;
+  // The result code of each method that throws.
+  const THROWN = {
+    xClose: 4106, xRead: IOERR_READ, xWrite: IOERR_WRITE, xTruncate: IOERR_TRUNCATE, xSync: IOERR_FSYNC,
+    xFileSize: IOERR_FSTAT, xLock: IOERR_LOCK, xUnlock: 2058, xCheckReservedLock: 3594, xShmMap: 5386,
+    xShmLock: 5130, xShmUnmap: 10, xOpen: CANTOPEN, xDelete: IOERR_DELETE, xAccess: 3338, xFullPathname: CANTOPEN,
+    xSleep: 0,
+  };
   const KINDS = 0x100 | 0x200 | 0x400 | 0x800 | 0x1000 | 0x2000 | 0x4000 | 0x80000; // every SQLITE_OPEN_ flag of a kind of file
   // The operations of a fault, as bits, as in faultvfs.
   const OP = { open: 1, read: 2, write: 4, truncate: 8, sync: 16, size: 32, lock: 64 };
@@ -37,8 +47,23 @@
   // SQLITE_IOCAP_SUBPAGE_READ, with sectors of 4096 bytes.
   const DEVICE = 0x1000 | 0x8000, SECTOR = 4096;
 
-  const own = { nodes: new Map(), norm: (p) => p, parent: () => null, writableDir: () => true, newFile: () => ({ dir: false, mode: 0o644, data: new Uint8Array(0), size: 0 }) };
-  const files = () => globalThis.s4qlFS || own;
+  const files = () => globalThis.s4qlFS;
+
+  // guarded methods, each of which catches what it throws.
+  const guarded = (methods) => {
+    const out = {};
+    for (const [name, f] of Object.entries(methods)) {
+      out[name] = function (...args) {
+        try {
+          return f.apply(this, args);
+        } catch (e) {
+          console.error('vfs.js: ' + name + ' threw: ' + ((e && e.stack) || e));
+          return THROWN[name] ?? 10; // SQLITE_IOERR
+        }
+      };
+    }
+    return out;
+  };
 
   // handles maps the pointer of an sqlite3_file to its handle, for every VFS of this kind.
   const handles = new Map();
@@ -93,14 +118,16 @@
       xWrite(pFile, pSrc, n, offset) {
         const h = handle(pFile);
         const rc = h.check(OP.write); if (rc) return rc;
+        if (h.readOnly) return IOERR_WRITE;
         const p = Number(pSrc);
-        writeAt(h.n, wasm.heap8u().subarray(p, p + n), Number(offset));
+        files().writeAt(h.n, wasm.heap8u().subarray(p, p + n), Number(offset));
         return OK;
       },
       xTruncate(pFile, size) {
         const h = handle(pFile);
         const rc = h.check(OP.truncate); if (rc) return rc;
-        resize(h.n, Number(size));
+        if (h.readOnly) return IOERR_TRUNCATE;
+        files().resize(h.n, Number(size));
         return OK;
       },
       xSync(pFile, flags) { return handle(pFile).check(OP.sync); },
@@ -114,6 +141,11 @@
         const h = handle(pFile), s = state(h.n);
         const rc = h.check(OP.lock); if (rc) return rc;
         if (level <= h.level) return OK;
+        // The rule of the unix VFS for the connections of one process: while another connection
+        // holds a higher lock, only a SHARED lock may be taken, and none while that lock is PENDING
+        // or higher.
+        const highest = s.exclusive ? EXCLUSIVE : s.pending ? PENDING : s.reserved ? RESERVED : s.shared.size > 0 ? SHARED : NONE;
+        if (h.level !== highest && (highest >= PENDING || level > SHARED)) return BUSY;
         if (level === SHARED) {
           if ((s.pending && s.pending !== h) || (s.exclusive && s.exclusive !== h)) return BUSY;
           s.shared.add(h);
@@ -199,28 +231,12 @@
         return OK;
       },
     };
-    sqlite3.vfs.installVfs({ io: { struct: io, methods } });
-  };
-
-  const resize = (n, size) => {
-    if (globalThis.s4qlFS) return globalThis.s4qlFS.resize(n, size);
-    if (size > n.data.length) {
-      const d = new Uint8Array(Math.max(size, n.data.length * 2, 65536));
-      d.set(n.data.subarray(0, n.size));
-      n.data = d;
-    } else if (size > n.size) {
-      n.data.fill(0, n.size, size);
-    }
-    n.size = size;
-  };
-  const writeAt = (n, src, at) => {
-    if (at + src.length > n.size) resize(n, at + src.length);
-    n.data.set(src, at);
-    n.mtime = Date.now();
+    sqlite3.vfs.installVfs({ io: { struct: io, methods: guarded(methods) } });
   };
 
   globalThis.s4qlInstallVFS = function (sqlite3, name, asDefault) {
     const { capi, wasm } = sqlite3;
+    if (!globalThis.s4qlFS) throw new Error('vfs.js: load fs.js before the VFS is installed');
     if (!io) installIO(sqlite3);
 
     const fault = { ops: 0, files: 0, skip: 0, times: 0, code: 0, failed: 0, open: 0 };
@@ -267,12 +283,18 @@
         const rc = check(kind, OP.open);
         if (rc) return fail(rc);
         const fsx = files();
-        let p = null, n;
+        let p = null, n, readOnly = false;
         if (zName) {
           p = path(zName);
           n = fsx.nodes.get(p);
           if (n && n.dir) return fail(CANTOPEN);
-          if (!n) {
+          if (n) {
+            // As the unix VFS: a file that may not be written opens read-only, and SQLite then
+            // refuses to write it with SQLITE_READONLY.
+            if (!(n.mode & 0o400)) return fail(CANTOPEN);
+            readOnly = !(n.mode & 0o200);
+            if (readOnly && !(flags & OPEN_READWRITE)) readOnly = false;
+          } else {
             if (!(flags & OPEN_CREATE)) return fail(CANTOPEN);
             const dir = fsx.parent(p);
             if (dir !== null && !fsx.writableDir(dir)) return fail(CANTOPEN);
@@ -283,13 +305,13 @@
           n = fsx.newFile();
         }
         handles.set(pFile, {
-          path: p, n, level: NONE, shm: false, fault, check: (op) => check(kind, op),
+          path: p, n, level: NONE, shm: false, fault, check: (op) => check(kind, op), readOnly,
           deleteOnClose: !!(flags & OPEN_DELETEONCLOSE),
         });
         fault.open++;
         file.$pMethods = io.pointer;
         file.dispose();
-        if (pOutFlags) wasm.poke32(pOutFlags, flags);
+        if (pOutFlags) wasm.poke32(pOutFlags, readOnly ? (flags & ~(OPEN_READWRITE | OPEN_CREATE)) | OPEN_READONLY : flags);
         return OK;
       },
       // xDelete returns what SQLite's unix VFS returns when unlink fails.
@@ -328,7 +350,7 @@
         }
       },
     };
-    sqlite3.vfs.installVfs({ vfs: { struct: vfs, methods, name, asDefault: !!asDefault } });
-    return { pointer: vfs.pointer, fault };
+    sqlite3.vfs.installVfs({ vfs: { struct: vfs, methods: guarded(methods), name, asDefault: !!asDefault } });
+    return { pointer: vfs.pointer, fault, struct: vfs };
   };
 })();

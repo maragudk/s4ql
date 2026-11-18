@@ -102,6 +102,19 @@ func TestOpen_options(t *testing.T) {
 	})
 }
 
+func TestOpen_readOnly(t *testing.T) {
+	t.Run("should open a file that may not be written read-only, as SQLite's unix VFS does", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "a.db")
+		c := open(t, path)
+		is.NotError(t, c.Exec("create table t (k integer primary key) strict"))
+		is.NotError(t, os.Chmod(path, 0o444))
+		r := open(t, path)
+		is.Equal(t, int64(0), queryInt64(t, r, "select count(*) from t"))
+		// SQLITE_READONLY
+		is.Equal(t, sqlite.ResultCode(8), code(t, r.Exec("insert into t values (1)")))
+	})
+}
+
 func TestConn_Close(t *testing.T) {
 	t.Run("should refuse to close with a statement that is not finalized, as sqlite3_close does", func(t *testing.T) {
 		c, err := sqlite.Open(":memory:")

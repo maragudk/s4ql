@@ -4,7 +4,9 @@
 // official SQLite WebAssembly build. It gives the API of faultvfs.go over a VFS of the kind in
 // internal/sqlite/browser/vfs.js, which works on the same files as SQLite's default VFS there, with
 // a fault state of its own that the methods below read and set through syscall/js. The operations,
-// the kinds of file, and the result codes of the failures are those of faultvfs.go.
+// the kinds of file, and the result codes of the failures are those of faultvfs.go. One difference:
+// the browser's sqlite.OpenVFS reads the database's schema, so a fault that is armed before a
+// connection is opened also counts the reads and locks of the open.
 
 package faultvfs
 

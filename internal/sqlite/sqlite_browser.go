@@ -22,8 +22,12 @@
 //     sqlite3_close does.
 //
 // What remains different: the official build has SQLITE_THREADSAFE=0, SQLITE_OMIT_UTF16,
-// SQLITE_OMIT_DEPRECATED, SQLITE_USE_URI, and more extensions, such as FTS5 and R*Tree. And the VFS
-// is the one in browser/vfs.js, not SQLite's unix VFS.
+// SQLITE_OMIT_DEPRECATED, SQLITE_USE_URI, and more extensions, such as FTS5 and R*Tree. The VFS is
+// the one in browser/vfs.js, not SQLite's unix VFS. The PRAGMAs themselves show: pragma temp_store
+// reads 1, where the cgo build reads its default, 0, which means a file there too. And the PRAGMA
+// of the page cache reads the schema, so [OpenVFS] reads the database file, and through a VFS of
+// faultvfs its reads and locks count against an armed fault, where the cgo binding reads nothing
+// before the first statement.
 //
 // SQLite's C code runs on the one thread of the page, so while it sleeps in its busy handler no
 // other goroutine could run, and a goroutine that holds the lock it waits for could never release
