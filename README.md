@@ -18,7 +18,7 @@ Made with ✨sparkles✨ by [maragu](https://www.maragu.dev/): independent softw
 
 As of 2026-11-19:
 
-- **Built: the storage and the SQL engine for slice 1.** A database is a log of commits in S3, with a local SQLite cache. One instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work. They are tested in a deterministic simulation, and also run by hand against a real S3-compatible bucket. The engine runs `create table`, `insert`, `select *`, and `drop table` for one integer column. It is checked against SQLite statement by statement, in a simulation with faults, and by fuzzing. The SQL parser agrees with SQLite on 138,926 of the 139,234 statements of a corpus on which SQLite gives a clear verdict.
+- **Built: the storage and the SQL engine for slice 1.** A database is a log of commits in S3, with a local SQLite cache. One instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work. They are tested in a deterministic simulation, and also run by hand against a real S3-compatible bucket. The engine runs `create table`, `insert`, `select *`, and `drop table` for one integer column. It is checked against SQLite statement by statement, in a simulation with faults, and by fuzzing. The SQL parser agrees with SQLite on all 138,926 statements on which SQLite gives a clear verdict, of a corpus of 139,234.
 - **Not built: the public API.** The `database/sql` driver does not exist yet, so an application cannot use the database.
 - **Next:** the driver. It completes slice 1 of the [roadmap](docs/roadmap.md).
 
