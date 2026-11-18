@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -158,14 +159,21 @@ func TestCheck_corpus(t *testing.T) {
 	is.Equal(t, len(sqls), r.Texts)
 	is.Equal(t, 0, len(r.Faults))
 	if !slow() {
-		pinnedOutcomes(t, `not checked, SQLite does not say that it parses: 11
+		// SQLite has PRAGMA lock_proxy_file only when it is built for Apple's systems, with
+		// SQLITE_ENABLE_LOCKING_STYLE, and there 7 statements of the corpus fail with "failed to set
+		// lock proxy file". Elsewhere the pragma is unknown, and they compile to the same program.
+		bytecode, sameError, uncompared := 60072, 9146, 4455
+		if runtime.GOOS == "darwin" || runtime.GOOS == "ios" {
+			bytecode, sameError, uncompared = bytecode-7, sameError+7, uncompared+7
+		}
+		pinnedOutcomes(t, fmt.Sprintf(`not checked, SQLite does not say that it parses: 11
 not checked, the parser does not parse it: 55232
-bytecode: 60065
+bytecode: %v
 probes: 12445
-same error: 9153
+same error: %v
 skipped: 2328
-compared in no way but by an error: 4462
-`, r)
+compared in no way but by an error: %v
+`, bytecode, sameError, uncompared), r)
 	}
 }
 
