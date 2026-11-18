@@ -165,7 +165,7 @@ func (r *recognizer) column(d *ast.ColumnDef) Name {
 		r.reject("column without a type")
 	}
 	r.accept(d.Type)
-	if t := d.Type.Names[0]; r.isNext(t) && !isWord(t, "int") {
+	if t := d.Type.Names[0]; r.isNext(t) && (!isWord(t, "int") || len(d.Type.Names) > 1 || d.Type.LParen.Present()) {
 		r.reject("column type other than INT")
 	}
 	r.take(d.Type.Names[0])
