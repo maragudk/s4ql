@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math/rand/v2"
 	"path/filepath"
 	"slices"
@@ -35,6 +36,27 @@ var (
 	sequences = flag.Int("sequences", 300, "sequences of statements of TestDifferential")
 	length    = flag.Int("length", 40, "statements in each sequence of TestDifferential")
 )
+
+// pinned fails the test unless got, a number of texts that a full run counts, is want. Such a number
+// is pinned when it tells how much of a test escapes the comparison with SQLite, so that a change that
+// lets more escape cannot pass unseen.
+func pinned(t *testing.T, what string, want, got int) {
+	t.Helper()
+	if got != want {
+		t.Errorf("%v: %v, but the test pins %v. Change the pinned number only on purpose, and say why in the commit", what, got, want)
+	}
+}
+
+// atDefault reports whether each flag of names has its default value, for which the pinned numbers
+// hold.
+func atDefault(names ...string) bool {
+	for _, name := range names {
+		if f := flag.Lookup(name); f.Value.String() != f.DefValue {
+			return false
+		}
+	}
+	return true
+}
 
 // slow reports whether the tests run with -short, the race detector, or the address sanitizer, which
 // make them several times slower: the tests of many sequences then run a tenth of them.
@@ -570,6 +592,21 @@ func (y tally) add(src string, a answer) {
 	}
 }
 
+// excused counts a text of the kind that the tests excuse from the comparison with SQLite, under
+// "excused: " and the kind.
+func (y tally) excused(kind string) {
+	if y != nil {
+		y["excused: "+kind]++
+	}
+}
+
+// acceptedStartedTable is the kind of a text that [startedTable] accepts, and knownGapSuffix ends the
+// kind of a text of a [knownGap], after the gap.
+const (
+	acceptedStartedTable = "already exists after the start of a table, accepted"
+	knownGapSuffix       = ", a known gap"
+)
+
 // knownGap of the pass after the parser, which its README describes and its tests excuse in the same
 // way, that the engine's answer got and SQLite's answer want for the text src fall in, or "". The
 // engine gives a syntax error, and SQLite another error with the codes 1 and 1, of one of its
@@ -732,9 +769,9 @@ func (p *pair) step(src string, query, supported bool) string {
 		gap := knownGap(src, got, want)
 		switch {
 		case startedTable(t, p.empty, src, got, want):
-			p.y.add("", answer{err: "already exists after the start of a table, accepted"})
+			p.y.excused(acceptedStartedTable)
 		case gap != "":
-			p.y.add("", answer{err: gap + ", a known gap"})
+			p.y.excused(gap + knownGapSuffix)
 		default:
 			return fmt.Sprintf("%q: the engine gives\n%v\nand SQLite\n%v", src, got, want)
 		}
@@ -773,6 +810,21 @@ func TestDifferential(t *testing.T) {
 		differential(t, *seed+s, *length, s%2 == 1, y)
 	}
 	t.Logf("%v sequences of %v statements: %v", n, *length, y)
+	// The texts that the full run excuses from the comparison with SQLite, by kind. Every other kind,
+	// such as each known gap, is pinned at 0.
+	if !slow() && atDefault("seed", "sequences", "length") {
+		want := map[string]int{acceptedStartedTable: 34}
+		kinds := slices.Collect(maps.Keys(want))
+		for name := range y {
+			if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) {
+				kinds = append(kinds, kind)
+			}
+		}
+		slices.Sort(kinds)
+		for _, kind := range kinds {
+			pinned(t, "texts excused from the comparison with SQLite as "+kind, want[kind], y["excused: "+kind])
+		}
+	}
 }
 
 // FuzzDifferential runs the sequence of statements that its input chooses, the seed and the number of
