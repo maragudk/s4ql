@@ -120,6 +120,12 @@ func TestStartedTable(t *testing.T) {
 		{src: "create table sqlite_x ("},
 		{src: "create table main.SQLite_x (garbage"},
 		{src: "create table zzz (", name: "zzz", raw: "zzz"},
+		{src: "create table"},
+		{src: "create table main."},
+		{src: "create table main.t1"},
+		{src: "create table if not exists"},
+		{src: "values ("},
+		{src: "select ("},
 	}
 	for _, c := range cases {
 		t.Run(c.src, func(t *testing.T) {

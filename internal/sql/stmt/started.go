@@ -61,7 +61,9 @@ func StartedTable(src string, syntax *sqlerr.Error) (Name, bool) {
 	default:
 		return Name{}, false
 	}
-	if is(token.If, token.Not, token.Exists) || i+2 > len(tokens) {
+	// After IF NOT EXISTS, which gives no start, IF is followed by NOT, and not by ( or AS, as a
+	// name would be.
+	if i >= len(tokens) {
 		return Name{}, false
 	}
 	name := tokens[i]
