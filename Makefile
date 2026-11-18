@@ -85,6 +85,31 @@ test:
 	cd $(CROSSCHECK) && go test -shuffle on ./...
 	cd $(SIMLINT) && go test -shuffle on ./...
 
+# BROWSERPKGS are the packages that build for GOOS=js GOARCH=wasm with the tag s4ql_browser, on the
+# official SQLite WebAssembly build in internal/sqlite/browser; see its README.
+BROWSERPKGS ?= ./internal/sqlite ./internal/sqlite/faultvfs ./internal/core ./internal/sim ./internal/store/simstore
+BROWSER := GOOS=js GOARCH=wasm go
+BROWSERTIMEOUT ?= 30m
+
+# check-browser builds and vets BROWSERPKGS for the browser, and compiles their tests, so that the
+# browser's binding cannot drift from the cgo binding's API unnoticed. It needs no browser.
+.PHONY: check-browser
+check-browser:
+	$(BROWSER) build -tags s4ql_browser $(BROWSERPKGS)
+	$(BROWSER) vet -tags s4ql_browser $(BROWSERPKGS)
+	dir=$$(mktemp -d) && for pkg in $(BROWSERPKGS); do \
+		$(BROWSER) test -tags s4ql_browser -c -o $$dir/ $$pkg || { rm -rf $$dir; exit 1; }; \
+	done; rm -rf $$dir
+
+# test-browser runs the tests of BROWSERPKGS in headless Chromium, through the runner in
+# internal/sqlite/browser as the -exec program of go test. BROWSERFLAGS go to go test, such as
+# BROWSERFLAGS='-run TestSimulation -v'.
+.PHONY: test-browser
+test-browser:
+	dir=$$(mktemp -d) && go build -o $$dir/browser ./internal/sqlite/browser && \
+		$(BROWSER) test -tags s4ql_browser -exec $$dir/browser -timeout $(BROWSERTIMEOUT) $(BROWSERFLAGS) $(BROWSERPKGS); \
+		status=$$?; rm -rf $$dir; exit $$status
+
 # test-asan runs all tests, and then each fuzz test for FUZZTIME, under the C address sanitizer. Go
 # supports -asan on Linux only, so elsewhere it runs in a Linux container with Docker, with Docker
 # volumes for the module and build caches.

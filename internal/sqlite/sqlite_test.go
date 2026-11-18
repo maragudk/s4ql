@@ -1,3 +1,5 @@
+//go:build !s4ql_browser
+
 package sqlite_test
 
 import (

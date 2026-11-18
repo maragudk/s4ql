@@ -1,0 +1,57 @@
+'use strict';
+// The bridge between a Go program built with GOOS=js and the tag s4ql_browser, and the official
+// SQLite WebAssembly build, which runs as a second WebAssembly instance beside Go. The two have
+// separate memories, so the Go binding in internal/sqlite calls SQLite's exported C functions
+// through syscall/js and copies every string and out parameter between them with these helpers.
+//
+// s4qlInitSQLite() loads the build, which sqlite3.js must have defined as sqlite3InitModule,
+// registers the VFS of vfs.js as SQLite's default VFS under the name "s4ql", and sets
+// globalThis.s4qlSQLite, which the Go binding reads. Call it, and await it, before the Go program
+// starts. Load fs.js before it, so that the VFS keeps its files where Go's os package sees them.
+globalThis.s4qlInitSQLite = async function () {
+  const sqlite3 = await sqlite3InitModule({ print: (...a) => console.log(...a), printErr: (...a) => console.error(...a) });
+  const { wasm } = sqlite3;
+  const x = wasm.exports;
+  s4qlInstallVFS(sqlite3, 's4ql', true);
+
+  // A 64-bit integer goes to Go as a Number when it is exact as one, and as decimal text otherwise,
+  // because syscall/js has no BigInt.
+  const MAX = BigInt(Number.MAX_SAFE_INTEGER), MIN = -MAX;
+  let faults = 0;
+
+  globalThis.s4qlSQLite = {
+    sqlite3,
+    // exports of the build: the C functions of SQLite, by their names.
+    exports: x,
+    // alloc n + 1 bytes with sqlite3_malloc, all zero, and return their address, or 0.
+    alloc(n) {
+      const p = x.sqlite3_malloc(n + 1);
+      if (p) wasm.heap8u().fill(0, p, p + n + 1);
+      return p;
+    },
+    // bytes of SQLite's memory from p, n of them, as a view.
+    bytes: (p, n) => wasm.heap8u().subarray(p, p + n),
+    // cstring at p, without its NUL, as a view of SQLite's memory.
+    cstring(p) {
+      const heap = wasm.heap8u();
+      let end = p;
+      while (heap[end] !== 0) end++;
+      return heap.subarray(p, end);
+    },
+    // peek32 at p, as a signed 32-bit integer, such as a pointer.
+    peek32: (p) => wasm.peek32(p),
+    bindInt64: (stmt, i, v) => x.sqlite3_bind_int64(stmt, i, BigInt(v)),
+    columnInt64(stmt, i) {
+      const v = x.sqlite3_column_int64(stmt, i);
+      return v >= MIN && v <= MAX ? Number(v) : v.toString();
+    },
+    // newFaultVFS registers one more VFS of vfs.js, with a fault state of its own, for faultvfs.
+    newFaultVFS() {
+      const name = 's4ql-fault-' + (++faults);
+      const { pointer, fault } = s4qlInstallVFS(sqlite3, name, false);
+      return { name, pointer, fault };
+    },
+    unregisterVFS: (pointer) => x.sqlite3_vfs_unregister(pointer),
+  };
+  return sqlite3;
+};
