@@ -76,6 +76,13 @@ When Markus exports a conversation, move the export into `docs/conversations/` a
 - **Why:** Markus said on 2026-11-11: "every time I export a conversation, just move it (potentially overwriting another one if it's an update to a conversation) and commit."
 - **How to apply:** name the file by the date the conversation started and a short topic, like `2026-11-10-kickoff.txt`. If the export is a newer version of a conversation that is already there, overwrite that file. Run the cheap check for the S3 access key and secret first.
 
+### The lead's conversations with Markus can be read in `docs/conversations/`
+
+The exports in `docs/conversations/` are the full record of the lead's conversations with Markus, up to the moment of each export.
+
+- **Why:** a compacted session and a new session start from a summary, and a summary leaves things out. Markus asked on 2026-11-18 for a note that the conversations can always be found there, "in case the compacted session leaves out details".
+- **How to apply:** when a detail is missing after a compaction or in a new session, such as the exact wording of a decision or the reason for it, search the exports before guessing or asking Markus again. Spawn a small sub-agent for the search and have it report only the answer, with the quote that supports it. Do not read an export into your own context, because they are large. Markus on 2026-11-18: "That's also a good use case for a small subagent." What is in `docs/spec.md`, `docs/roadmap.md`, and `docs/todo.md` is newer than a conversation where they differ.
+
 ### JSON is handled with `encoding/json/v2`
 
 Use `encoding/json/v2` and `encoding/json/jsontext` from the standard library for all JSON. Do not import `encoding/json`.
@@ -89,6 +96,13 @@ A builder gets a git worktree of its own when it is spawned, through the Agent t
 
 - **Why:** on 2026-11-12 the lead created the worktrees and switched between them while builders ran. One builder's working directory moved with the lead, and its writes and git commands in its own worktree were refused, so it could not commit its last diary step. Markus then said: "From now on maybe let builders create their worktrees?" A builder that got its own worktree the same day ran without friction.
 - **How to apply:** spawn builders and writers with worktree isolation. The builder writes the first step of the feature's diary from the requirements in its brief. The lead reviews a builder's branch from `main` with `git diff main...<branch>`, pushes it, and opens the pull request. After the merge, remove the worktree and the branch.
+
+### A builder's task fits well inside its context
+
+Split the work so that no builder comes near the limit of its context.
+
+- **Why:** on 2026-11-18 the builder of the engine for slice 1 had used 700,000 of its 1,000,000 tokens before it was done. Its brief held the code and every kind of test at once: differential tests, simulation with planted bugs, mutation testing, and fuzzing. Markus: "It might make sense to split work up more in the future?"
+- **How to apply:** the first builder writes the code and the tests that show it works, and its branch is merged. Each heavy check after that, such as simulation with planted bugs, mutation testing, or a long fuzz run, goes to a fresh builder that starts from the merged code. Where two pieces of code do not depend on each other, give them to two builders. Tell every builder to commit and to write its diary step as it goes, so that a fresh builder can take over if it runs out.
 
 ### A test must not depend on timing
 
