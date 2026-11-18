@@ -45,7 +45,7 @@ drop table t1;
 
 Included, without adding syntax:
 
-- Any table name, column name, and integer value, in exactly these statement shapes: one `int primary key` column, `select *` from one table, a single-row `insert` that names the column, and `drop table` with one table name.
+- Any table name, column name, and integer value, in exactly these statement shapes: one `int primary key` column, `select *` from one table, a single-row `insert` that names the column, and `drop table` with one table name. An integer value is a decimal integer literal, with at most one `-` in front, that fits a signed 64-bit integer. A `+` sign, a hex literal, a digit separator, and a number outside 64 bits are not supported yet.
 - Several rows and several tables. `select *` returns rows in primary-key order, as SQLite does for these tables.
 - The errors these statements can produce, matching SQLite's: inserting a key twice, creating a table that exists, and reading, writing, or dropping a table that does not exist.
 - Each statement is its own transaction.
