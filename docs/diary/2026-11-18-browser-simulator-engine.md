@@ -129,3 +129,65 @@ playwright-cli open http://127.0.0.1:18431/
 ### Future work
 
 See the later steps.
+
+## Step 3: The README, the numbers, and self-review
+
+**Author:** builder (simulator engine)
+
+### Prompt Context
+
+**Verbatim prompt:** (continues from Step 1)
+
+**Interpretation:** document the format for the builder of the page, measure what the brief asks for, review the diff with competing reviewers, and run every check of the brief.
+
+**Inferred intent:** the lead can merge on the evidence, and the next builder needs nothing but the README.
+
+### What I did
+
+- A writer sub-agent wrote `internal/simulator/README.md` from a brief, checking every claim against the code with a probe test of its own outside the worktree. I updated it for the fixes below and filled in "Measurements".
+- Measured in Chromium with a scratch test in the runner (not committed): runs of 2, 5, 10, and 30 min of fake time, and the size of SQLite's memory over 120 runs. Measured the demo page with `playwright-cli` in a fresh profile, and the sizes with `gzip -9` and `brotli -q 11`. Profiled a 10 min run natively with `-test.cpuprofile`.
+- The code-review skill, at medium, over `main...HEAD`. Ten findings; what I did with each:
+  - Fixed: a `close` of an action while the supervisor reopened a stopped database was undone, because `open` cleared the flag. Only the action `open` clears it now, and the supervisor checks again once it holds the lifecycle.
+  - Fixed: after a failed reopen the supervisor closed the same database every 2 s. It now reopens only a database whose close has not ended.
+  - Fixed: a damaged download turned a broken read into a failed `Get`. The content now breaks off where it did, after the damaged bytes.
+  - Fixed: a refused `submit` in `worker.js` left the queue stalled. It retries.
+  - Fixed: `simulator.js` could start a new Worker while a call waited on the old one. Every call is chained.
+  - Fixed: a refused run left the last run for `state`. It is forgotten.
+  - Fixed: CI did not lint the native build of the simulator, nor race-test it. It does both now.
+  - Fixed: the first parse of the leases was a workaround that `encoding/json/v2` does not need; the test of a given list still passes.
+  - Fixed: `started` at 0 would be dropped by `omitzero`; it is a pointer.
+  - Answered: the README the code pointed to did not exist yet.
+- The writer's report found more, which I fixed: `summary.log` counted commits applied after the end; the state kept the calls of a crashed process and its waits; the state said `running` while a close of an action ran; `calm` did not end damaged downloads; a database that could not be opened could never be opened again; a failed `restart` said `done`. Each has a test now, except the failed copy of a restart, which only a local failure reaches.
+
+### Why
+
+- The crash test finds a call in progress from a run without the crash, and then crashes at that time: by the prefix property, the run with the crash is the same up to it.
+
+### What worked
+
+- `make lint` and `make test` passed after the review's fixes, and `go test -race -tags s4ql_browser ./internal/simulator/...` too.
+- The demo in Chromium: ready 100 ms after the page loaded its module in a fresh profile; the demo's request, 2 min with every fault of the preset and six actions, in 88 to 110 ms after the first run, with the same hash as natively.
+
+### What didn't work
+
+- `playwright-cli eval` was refused by the harness as a string it cannot check, so the demo page writes its numbers into the page, and the snapshots read them.
+
+### What I learned
+
+- SQLite's WebAssembly memory grows by about 0.55 MB for each crashed process, whose connections nothing closes, and not at all without crashes. A Worker passes 64 MiB after about a hundred crashes.
+- The browser is about 2.3 times slower than native for a run; half of the native time is the baton between the scheduler and its tasks.
+
+### What was tricky
+
+- Another session ran a fuzz test with `-parallel 8` on the same machine during `make test-browser`, so the package times of that run are not comparable with step 1's.
+
+### What warrants review
+
+- File-system faults are out: `faultvfs` cannot be reached without an exported VFS option in `core.Options`. That is a change to `core`, which the brief rules out, so it is a question for the lead.
+- The engine's faults that are not in `simstore`: `loseAnswer`, `failRequest`, and `damaged`.
+- `make test` now also runs the simulator natively with the tag, which adds about 2 s.
+
+### Future work
+
+- An exported VFS option in `core.Options`, if Markus wants file-system faults on the page.
+- A check in CI that a request gives the same hash natively and in Chromium.
