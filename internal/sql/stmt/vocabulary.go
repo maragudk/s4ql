@@ -2,6 +2,7 @@ package stmt
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 
 	"maragu.dev/s4ql/internal/sql/ast"
@@ -9,9 +10,9 @@ import (
 
 // describe the token t, which the recognizer did not take: what it is part of. From the root, the
 // walk goes down through the nodes that the recognizer accepted. If t is a token of such a node, the
-// name is that of its field, from [fieldNames]; if t is in a child that the recognizer did not accept,
-// the name is that of the child, from [nodeNames]. So the name is that of the outermost construct
-// around t that the recognizer did not accept.
+// name is that of its field, from [fieldNames], or else that of the node; if t is in a child that the
+// recognizer did not accept, the name is that of the child, from [nodeNames]. So the name is that of
+// the outermost construct around t that the recognizer did not accept.
 func (r *recognizer) describe(t ast.Token) string {
 	var n ast.Node = r.tree
 	for {
@@ -23,30 +24,29 @@ func (r *recognizer) describe(t ast.Token) string {
 			}
 			return nodeName(n)
 		}
-		var child ast.Node
-		for _, c := range ast.Children(n) {
-			if s := c.Bounds(); s.Start <= t.Offset && t.Offset < s.End {
-				child = c
-				break
-			}
-		}
-		if child == nil {
+		n = childAt(n, t.Offset)
+		if !r.accepted[n] {
 			return nodeName(n)
 		}
-		if !r.accepted[child] {
-			return nodeName(child)
-		}
-		n = child
 	}
 }
 
+// childAt gives the child of n whose span holds the byte at offset. A token that is in the tree and
+// is not one of the own tokens of n is in exactly one child of n.
+func childAt(n ast.Node, offset int) ast.Node {
+	for _, c := range ast.Children(n) {
+		if s := c.Bounds(); s.Start <= offset && offset < s.End {
+			return c
+		}
+	}
+	return nil
+}
+
 // fieldKeys of the field of the node n that holds the token t, or nil if no field of n holds it. The
-// keys are tried in order: the type of n and the path of the field, as "CreateTable.Name.Schema"; then,
-// for a field of a struct that is not a node, the type of that struct and its field, as
-// "QualifiedName.Schema".
+// keys are tried in order: the type of n and the path of the field, as "CreateTable.Name.Schema"; then
+// the type of the struct that holds the field and its name, as "QualifiedName.Schema" for a field of a
+// struct that is not a node.
 func fieldKeys(n ast.Node, t ast.Token) []string {
-	v := reflect.ValueOf(n).Elem()
-	owner := v.Type().Name()
 	var find func(v reflect.Value, path string) []string
 	find = func(v reflect.Value, path string) []string {
 		for i := range v.NumField() {
@@ -55,17 +55,12 @@ func fieldKeys(n ast.Node, t ast.Token) []string {
 				continue
 			}
 			f := v.Field(i)
+			holds := false
 			switch x := f.Interface().(type) {
 			case ast.Token:
-				if x == t {
-					return []string{path + "." + sf.Name, v.Type().Name() + "." + sf.Name}
-				}
+				holds = x == t
 			case []ast.Token:
-				for _, y := range x {
-					if y == t {
-						return []string{path + "." + sf.Name, v.Type().Name() + "." + sf.Name}
-					}
-				}
+				holds = slices.Contains(x, t)
 			default:
 				if f.Kind() == reflect.Struct {
 					if keys := find(f, path+"."+sf.Name); keys != nil {
@@ -73,19 +68,19 @@ func fieldKeys(n ast.Node, t ast.Token) []string {
 					}
 				}
 			}
+			if holds {
+				return []string{path + "." + sf.Name, v.Type().Name() + "." + sf.Name}
+			}
 		}
 		return nil
 	}
-	return find(v, owner)
+	v := reflect.ValueOf(n).Elem()
+	return find(v, v.Type().Name())
 }
 
-// nodeName of the node n, from [nodeNames].
+// nodeName of the node n, from [nodeNames], which names every type of node.
 func nodeName(n ast.Node) string {
-	name := reflect.TypeOf(n).Elem().Name()
-	if what, ok := nodeNames[name]; ok {
-		return what
-	}
-	return name
+	return nodeNames[reflect.TypeOf(n).Elem().Name()]
 }
 
 // fieldNames of the tokens of accepted nodes that slice 1 does not support, by the keys of

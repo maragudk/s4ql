@@ -14,14 +14,17 @@ import (
 // token that it does not take stops it, and so does a token in a field that it never reads, because
 // that token is then the next one when the recognizer takes a later token, or is left over at the
 // end.
+//
+// A check of a token's content, such as whether a name is reserved, runs when the token is the next
+// one, so that a reject names the token at the offset it gives.
 type recognizer struct {
 	tree *ast.Statement
 	// tokens of the statement, every one that a node of the tree owns, in the order of the text.
 	tokens []ast.Token
 	// next is the index in tokens of the next token to take.
 	next int
-	// accepted nodes, which the recognizer has read as part of a supported form. The name of a token
-	// that stops it comes from them; see [recognizer.describe].
+	// accepted nodes, which the recognizer has read as part of a supported form, besides the root.
+	// The name of a token that stops it comes from them; see [recognizer.describe].
 	accepted map[ast.Node]bool
 }
 
@@ -44,10 +47,12 @@ func recognize(tree *ast.Statement) (s Statement, err *NotSupportedError) {
 	}()
 	s = r.statement()
 	// The check that holds for any kind of statement and any node: a token that the recognizer did
-	// not take makes the statement not supported.
+	// not take makes the statement not supported. A command of a kind that the recognizer does not
+	// know is rejected here too, since none of its tokens was taken.
 	if r.next != len(r.tokens) {
 		r.unexpected()
 	}
+	s.setSpan(Span{Start: r.tokens[0].Offset, End: r.tokens[len(r.tokens)-1].End()})
 	return s, nil
 }
 
@@ -56,14 +61,9 @@ func (r *recognizer) accept(n ast.Node) {
 	r.accepted[n] = true
 }
 
-// isNext reports whether t is the next token of the statement.
+// isNext reports whether t is the next token of the statement. An absent token never is.
 func (r *recognizer) isNext(t ast.Token) bool {
-	return t.Present() && r.next < len(r.tokens) && r.tokens[r.next] == t
-}
-
-// atEnd reports whether every token before the statement's semicolon is taken.
-func (r *recognizer) atEnd() bool {
-	return r.next == len(r.tokens) || r.isNext(r.tree.Semi)
+	return r.next < len(r.tokens) && r.tokens[r.next] == t
 }
 
 // take the token t, which must be the next token of the statement; otherwise the statement is not
@@ -74,17 +74,6 @@ func (r *recognizer) take(t ast.Token) ast.Token {
 	}
 	r.next++
 	return t
-}
-
-// takeOneOf the tokens ts: the one that is the next token of the statement.
-func (r *recognizer) takeOneOf(ts []ast.Token) {
-	for _, t := range ts {
-		if r.isNext(t) {
-			r.take(t)
-			return
-		}
-	}
-	r.unexpected()
 }
 
 // at gives the offset of the next token of the statement, or of the end of the statement if every
@@ -109,9 +98,8 @@ func (r *recognizer) unexpected() {
 	r.reject(r.describe(r.tokens[r.next]))
 }
 
-// statement of the tree.
+// statement of the tree, or nil for a command of another kind.
 func (r *recognizer) statement() Statement {
-	r.accept(r.tree)
 	var s Statement
 	switch c := r.tree.Cmd.(type) {
 	case *ast.CreateTable:
@@ -122,19 +110,11 @@ func (r *recognizer) statement() Statement {
 		s = r.selectCmd(c)
 	case *ast.Drop:
 		s = r.drop(c)
-	default:
-		r.unexpected()
 	}
 	if r.tree.Semi.Present() {
 		r.take(r.tree.Semi)
 	}
 	return s
-}
-
-// span of the statement in the text.
-func (r *recognizer) span() Span {
-	b := r.tree.Bounds()
-	return Span{Start: b.Start, End: b.End}
 }
 
 // createTable: CREATE TABLE name (column INT PRIMARY KEY) and the options STRICT and WITHOUT ROWID,
@@ -154,7 +134,7 @@ func (r *recognizer) createTable(c *ast.CreateTable) *CreateTable {
 	}
 	r.take(c.RParen)
 	r.tableOptions(c)
-	return &CreateTable{Span: r.span(), Table: table, Column: column}
+	return &CreateTable{Table: table, Column: column}
 }
 
 // column: name INT PRIMARY KEY.
@@ -164,11 +144,13 @@ func (r *recognizer) column(d *ast.ColumnDef) Name {
 	if d.Type == nil {
 		r.reject("column without a type")
 	}
-	r.accept(d.Type)
-	if t := d.Type.Names[0]; r.isNext(t) && (!isWord(t, "int") || len(d.Type.Names) > 1 || d.Type.LParen.Present()) {
+	if !isWord(d.Type.Names[0], "int") {
 		r.reject("column type other than INT")
 	}
 	r.take(d.Type.Names[0])
+	if len(d.Type.Names) > 1 || d.Type.LParen.Present() {
+		r.reject("column type other than INT")
+	}
 	if len(d.Constraints) == 0 {
 		r.reject("column without PRIMARY KEY")
 	}
@@ -186,16 +168,20 @@ func (r *recognizer) column(d *ast.ColumnDef) Name {
 func (r *recognizer) tableOptions(c *ast.CreateTable) {
 	var strict, withoutRowid bool
 	for i, o := range c.Options {
-		if i > 0 {
-			if i == 2 {
+		if i == 2 {
+			r.reject("table option")
+		}
+		if i == 1 {
+			// A comma before the first option would have stopped the take of that option, so the
+			// first comma is the one between the two.
+			r.take(c.OptionCommas[0])
+		}
+		if o.Without.Present() {
+			if withoutRowid {
 				r.reject("table option")
 			}
-			r.takeOneOf(c.OptionCommas)
-		}
-		r.accept(o)
-		if o.Without.Present() {
 			r.take(o.Without)
-			if r.isNext(o.Name) && (withoutRowid || !isWord(o.Name, "rowid")) {
+			if !isWord(o.Name, "rowid") {
 				r.reject("table option")
 			}
 			r.take(o.Name)
@@ -218,9 +204,10 @@ func (r *recognizer) tableOptions(c *ast.CreateTable) {
 	}
 }
 
-// isWord reports whether t is the bare word w, in any case of its letters.
+// isWord reports whether t is the bare word w, in any case of its letters. A word in quotes has its
+// quotes in its text, and no keyword is spelled as one of the words that slice 1 takes.
 func isWord(t ast.Token, w string) bool {
-	return t.Kind == token.ID && asciiLower(t.Text) == w
+	return asciiLower(t.Text) == w
 }
 
 // insert: INSERT INTO table (column) VALUES (value).
@@ -233,14 +220,10 @@ func (r *recognizer) insert(c *ast.Insert) *Insert {
 	r.take(c.Into)
 	r.accept(c.Table)
 	table := r.tableName(c.Table.Name)
-	if !c.LParen.Present() {
-		if c.Select != nil && r.at() == c.Select.Bounds().Start || r.isNext(c.Default) {
-			r.reject("INSERT without a column list")
-		}
-		r.unexpected()
+	if !c.LParen.Present() && (c.Select != nil && r.at() == c.Select.Bounds().Start || r.isNext(c.Default)) {
+		r.reject("INSERT without a column list")
 	}
 	r.take(c.LParen)
-	r.accept(c.Columns)
 	column := r.name(c.Columns.Names[0])
 	if len(c.Columns.Names) > 1 {
 		r.reject("second column")
@@ -264,21 +247,24 @@ func (r *recognizer) insert(c *ast.Insert) *Insert {
 	r.take(row.LParen)
 	value, span := r.integer(row.Exprs[0])
 	r.take(row.RParen)
-	return &Insert{Span: r.span(), Table: table, Column: column, Value: value, ValueSpan: span}
+	return &Insert{Table: table, Column: column, Value: value, ValueSpan: span}
 }
 
 // integer value: a decimal integer literal that fits in 64 bits, with at most one - before it.
 func (r *recognizer) integer(e ast.Expr) (int64, Span) {
 	start := r.at()
 	negative := false
-	if u, ok := e.(*ast.Unary); ok && r.isNext(u.Op) {
+	if u, ok := e.(*ast.Unary); ok {
 		if u.Op.Kind != token.Minus {
 			r.reject(unaryName(u.Op))
 		}
 		r.accept(u)
 		r.take(u.Op)
-		if _, ok := u.X.(*ast.Unary); ok && r.at() == u.X.Bounds().Start {
-			r.reject("second sign")
+		if v, ok := u.X.(*ast.Unary); ok {
+			if v.Op.Kind == token.Minus || v.Op.Kind == token.Plus {
+				r.reject("second sign")
+			}
+			r.reject(unaryName(v.Op))
 		}
 		negative = true
 		e = u.X
@@ -287,20 +273,17 @@ func (r *recognizer) integer(e ast.Expr) (int64, Span) {
 	if !ok {
 		r.unexpected()
 	}
-	if r.isNext(l.Value) {
-		if what := literalName(l.Value); what != "" {
-			r.reject(what)
-		}
+	if what := literalName(l.Value); what != "" {
+		r.reject(what)
 	}
 	digits := l.Value.Text
 	if negative {
 		digits = "-" + digits
 	}
 	v, err := strconv.ParseInt(digits, 10, 64)
-	if err != nil && r.isNext(l.Value) {
+	if err != nil {
 		r.reject("integer outside 64 bits")
 	}
-	r.accept(l)
 	r.take(l.Value)
 	return v, Span{Start: start, End: l.Value.End()}
 }
@@ -354,10 +337,9 @@ func (r *recognizer) selectCmd(c *ast.SelectCmd) *Select {
 	if (rc.Expr != nil || rc.Table.Present()) && r.at() == rc.Bounds().Start {
 		r.reject("result column other than *")
 	}
-	r.accept(rc)
 	r.take(rc.Star)
 	if core.From == nil {
-		if r.atEnd() {
+		if r.next == len(r.tokens) || r.isNext(r.tree.Semi) {
 			r.reject("SELECT without FROM")
 		}
 		r.unexpected()
@@ -371,26 +353,25 @@ func (r *recognizer) selectCmd(c *ast.SelectCmd) *Select {
 		r.unexpected()
 	}
 	r.accept(source)
-	table := r.tableName(source.Name)
-	return &Select{Span: r.span(), Table: table}
+	return &Select{Table: r.tableName(source.Name)}
 }
 
 // drop: DROP TABLE table.
 func (r *recognizer) drop(c *ast.Drop) *DropTable {
 	r.accept(c)
 	r.take(c.Drop)
-	if r.isNext(c.Object) && c.Object.Kind != token.Table {
+	if c.Object.Kind != token.Table {
 		r.reject("DROP " + strings.ToUpper(c.Object.Text))
 	}
 	r.take(c.Object)
-	table := r.tableName(c.Name)
-	return &DropTable{Span: r.span(), Table: table}
+	return &DropTable{Table: r.tableName(c.Name)}
 }
 
 // tableName: the name of a table, which must not be reserved, without a schema.
 func (r *recognizer) tableName(q ast.QualifiedName) Name {
 	if r.isNext(q.Name) {
-		r.quoting(q.Name)
+		// A name in brackets, backticks, or single quotes keeps its quotes in its value, so it is not
+		// reserved, and name rejects it.
 		if what := reservedName(dequote(q.Name)); what != "" {
 			r.reject(what)
 		}
@@ -400,30 +381,31 @@ func (r *recognizer) tableName(q ast.QualifiedName) Name {
 
 // name: a bare name, or one in double quotes.
 func (r *recognizer) name(t ast.Token) Name {
-	if r.isNext(t) {
-		r.quoting(t)
+	if what := quotingName(t); what != "" && r.isNext(t) {
+		r.reject(what)
 	}
 	r.take(t)
 	return Name{Raw: t.Text, Value: dequote(t), Offset: t.Offset}
 }
 
-// quoting of the name t, which must be the next token: a single-quoted string, brackets, and
-// backticks are not supported.
-func (r *recognizer) quoting(t ast.Token) {
+// quotingName gives why the quoting of the name t is not supported, or "" if it is: a single-quoted
+// string, brackets, and backticks are not.
+func quotingName(t ast.Token) string {
 	switch {
 	case t.Kind == token.String:
-		r.reject("single-quoted name")
-	case t.Kind == token.ID && t.Text[0] == '[':
-		r.reject("name in brackets")
-	case t.Kind == token.ID && t.Text[0] == '`':
-		r.reject("name in backticks")
+		return "single-quoted name"
+	case t.Text[0] == '[':
+		return "name in brackets"
+	case t.Text[0] == '`':
+		return "name in backticks"
 	}
+	return ""
 }
 
 // dequote the name t: the text of a bare name, and that of a name in double quotes without the quotes
-// and with "" for each quote inside.
+// and with "" for each quote inside. Only a name of kind ID starts with a double quote.
 func dequote(t ast.Token) string {
-	if t.Kind == token.ID && t.Text[0] == '"' {
+	if t.Text[0] == '"' {
 		return strings.ReplaceAll(t.Text[1:len(t.Text)-1], `""`, `"`)
 	}
 	return t.Text

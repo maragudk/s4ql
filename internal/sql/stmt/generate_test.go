@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -58,25 +59,33 @@ func keywords(t testing.TB) []string {
 	return kws
 }
 
-var (
-	poolsOnce sync.Once
-	pools     [][]string
-)
-
-// namePools for each position: the names of [basePool] and the keywords of SQLite that SQLite reads
-// as a name there.
-func namePools(t testing.TB) [][]string {
-	t.Helper()
-	poolsOnce.Do(func() {
-		pools = make([][]string, len(positionTexts))
-		for p, text := range positionTexts {
-			for _, n := range append(append([]string{}, basePool...), keywords(t)...) {
-				if oracle.Judge(fmt.Sprintf(text, n)).Kind == oracle.Parses {
-					pools[p] = append(pools[p], n)
-				}
+// readPools gives, for each position, the names of [basePool], all of which SQLite reads as names
+// everywhere, and the keywords of SQLite that SQLite reads as a name there.
+var readPools = sync.OnceValues(func() ([][]string, error) {
+	pools := make([][]string, len(positionTexts))
+	for p, text := range positionTexts {
+		pools[p] = basePool
+		for _, n := range basePool {
+			if v := oracle.Judge(fmt.Sprintf(text, n)); v.Kind != oracle.Parses {
+				return nil, fmt.Errorf("SQLite does not read %v as a name in %q: %+v", n, text, v)
 			}
 		}
-	})
+		for _, kw := range sqlite.Keywords() {
+			if oracle.Judge(fmt.Sprintf(text, kw)).Kind == oracle.Parses {
+				pools[p] = append(slices.Clip(pools[p]), strings.ToLower(kw))
+			}
+		}
+	}
+	return pools, nil
+})
+
+// namePools from [readPools].
+func namePools(t testing.TB) [][]string {
+	t.Helper()
+	pools, err := readPools()
+	if err != nil {
+		t.Fatal(err)
+	}
 	return pools
 }
 
@@ -109,9 +118,8 @@ func (g *generator) gap(required bool) {
 	}
 }
 
-// keyword written in a random case, and its offset.
-func (g *generator) keyword(w string) int {
-	at := g.b.Len()
+// keyword written in a random case.
+func (g *generator) keyword(w string) {
 	switch g.r.IntN(3) {
 	case 0:
 		g.b.WriteString(w)
@@ -125,14 +133,11 @@ func (g *generator) keyword(w string) int {
 			g.b.WriteRune(c)
 		}
 	}
-	return at
 }
 
-// punct writes a token that is not a word, and gives its offset.
-func (g *generator) punct(p string) int {
-	at := g.b.Len()
+// punct writes a token that is not a word.
+func (g *generator) punct(p string) {
 	g.b.WriteString(p)
-	return at
 }
 
 // name written for the position p, with its value.

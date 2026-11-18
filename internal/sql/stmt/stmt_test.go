@@ -8,6 +8,7 @@ import (
 
 	"maragu.dev/is"
 
+	"maragu.dev/s4ql/internal/sql/oracle"
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/sqlite"
 )
@@ -260,13 +261,18 @@ func checkMeaning(t testing.TB, src string, s stmt.Statement) {
 	}
 }
 
-// checkPositions of the statement s in src: its span, and the raw text of its names at their
-// offsets.
+// checkPositions of the statement s in src: its span, against the tail that SQLite gives, and the raw
+// text of its names at their offsets.
 func checkPositions(t testing.TB, src string, s stmt.Statement) {
 	t.Helper()
 	b := s.Bounds()
-	if b.Start < 0 || b.Start >= b.End || b.End > len(src) {
+	if b.Start < 0 || b.Start >= b.End || b.End > len(src) || !onlySpace(src[:b.Start]) || !onlySpace(src[b.End:]) {
 		t.Fatalf("%q: span %v", src, b)
+	}
+	// SQLite's tail is after the statement's semicolon, or at the end of the text if it has none.
+	tail := oracle.Judge(src).Tail
+	if src[b.End-1] == ';' && tail != b.End || src[b.End-1] != ';' && tail != len(src) {
+		t.Fatalf("%q: span %v, SQLite's tail %v", src, b, tail)
 	}
 	var names []stmt.Name
 	switch s := s.(type) {
@@ -292,7 +298,8 @@ func checkPositions(t testing.TB, src string, s stmt.Statement) {
 
 func TestName_Fold(t *testing.T) {
 	t.Run("should fold the ASCII letters only, as SQLite compares names", func(t *testing.T) {
-		is.Equal(t, "abc_1ÆØÅé", stmt.Name{Value: "AbC_1ÆØÅé"}.Fold())
+		is.Equal(t, "abc_1ÆØÅé@[z`{", stmt.Name{Value: "AbC_1ÆØÅé@[Z`{"}.Fold())
+		is.Equal(t, "\xff\xfe", stmt.Name{Value: "\xff\xfe"}.Fold())
 
 		// SQLite takes ÆØÅ and æøå for two tables, and T1 and t1 for one.
 		d := open(t)

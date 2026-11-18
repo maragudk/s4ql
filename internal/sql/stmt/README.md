@@ -36,7 +36,7 @@ Each check of the meaning in the tests runs the error of each name against SQLit
 
 `Check` makes its checks in this order:
 
-1. **Before parsing**, it rejects text that has a NUL byte or a byte that is not valid UTF-8, at the first such byte. Valid UTF-8 is as Go's `unicode/utf8` defines it: surrogates are not valid. These checks win over a syntax error.
+1. **Before parsing**, it rejects text that is longer than SQLite's limit of 1,000,000,000 bytes (`SQLITE_LIMIT_SQL_LENGTH`), which SQLite refuses with `SQLITE_TOOBIG` before it parses, whatever the text holds. Then it rejects text that has a NUL byte or a byte that is not valid UTF-8, at the first such byte. Valid UTF-8 is as Go's `unicode/utf8` defines it: surrogates are not valid. These checks win over a syntax error.
 2. It **parses** the first statement with `parser.Parse`, as `sqlite3_prepare_v2` does. A syntax error is SQLite's. An error of a limit of the parser, which SQLite rejects too with an error that is not a syntax error, is not supported.
 3. A text without a statement gives **no statement**.
 4. The **recognizer** reads the tree of the statement, and builds the typed form or says why the statement is not supported.
@@ -58,7 +58,7 @@ The parser's ownership rule, which its tests check on every statement, makes `as
 
 A statement is supported if it is one of the four forms below, token for token. The tables give the tokens in order. A gap between two tokens may hold any spaces and comments. A keyword may be in any case of its letters.
 
-The roadmap's restrictions and slice 1 define these forms, and the agreed points of [docs/todo.md](../../../docs/todo.md) refine them. Where the roadmap leaves the form open, the rule is: when in doubt, it is not supported. A form is supported only if a test against SQLite shows that SQLite treats it exactly as the plain form, or the roadmap names it.
+The roadmap's restrictions and slice 1 define these forms. Where the roadmap leaves the form open, the rule is: when in doubt, it is not supported. A form is supported only if a test against SQLite shows that SQLite treats it exactly as the plain form, or the roadmap names it.
 
 ### CREATE TABLE
 
@@ -116,7 +116,7 @@ Not supported: a name in `[brackets]`, in backticks, or in single quotes, which 
 
 A table name is reserved, and makes any statement that names it not supported, if it is one of these, in any case of the ASCII letters:
 
-- A name that starts with `sqlite_` or `s4ql_`. The roadmap's restrictions reject these, and the lead decided that this holds for every kind of statement, so `object name reserved for internal use` and `table sqlite_master may not be dropped` are not reproduced, and `sqlite_schema` cannot be read.
+- A name that starts with `sqlite_` or `s4ql_`. The roadmap's restrictions reject these, for every kind of statement, so `object name reserved for internal use` and `table sqlite_master may not be dropped` are not reproduced, and `sqlite_schema` cannot be read.
 - The name of an **eponymous virtual table** of SQLite: `json_each`, `json_tree`, `jsonb_each`, `jsonb_tree`, and `pragma_` followed by the name of each PRAGMA that gives rows, such as `pragma_table_list`. SQLite gives every connection these tables without a CREATE. With a table of that name missing, `select * from json_each` gives rows in SQLite, `drop table json_each` gives `table json_each may not be dropped`, and `insert into json_each (key) values (1)` gives `table json_each may not be modified`; an engine that knows only its own tables would give `no such table`. So the pass rejects these names rather than let the engine give an answer that is not SQLite's. `pragma_x`, which names no PRAGMA, is a name like any other. The list holds 59 PRAGMAs. `TestReservedName` checks the list against SQLite: of every PRAGMA of the build, every module, and every module that SQLite registers when a statement names it, exactly those in the list can be read without a CREATE, in any case of the letters.
 
 A column name is never reserved: `sqlite_v` is a column name like any other.
@@ -160,6 +160,7 @@ A test checks that every name the pass gives in any test is in these tables.
 | --- | --- |
 | `NUL byte` | The text has a NUL byte. |
 | `invalid UTF-8` | The text has a byte that is not valid UTF-8. |
+| `text longer than SQLite's limit` | The text is longer than 1,000,000,000 bytes. The offset is that of the first byte past the limit. |
 | `statement beyond a limit of the parser` | The statement is nested deeper than the parser reads, or is longer. The offset is that of the statement's first token. |
 | `second statement` | A statement follows the first one. |
 | `statement` | The recognizer expected a token after the end of the statement. No statement of SQLite's grammar gives this. |
@@ -181,9 +182,9 @@ A test checks that every name the pass gives in any test is in these tables.
 | `INSERT without a column list` | INSERT names no column. |
 | `INSERT with SELECT` | INSERT has a SELECT in place of VALUES. |
 | `+ sign` | The value has a `+` sign. |
-| `~ operator` | The value has a `~`. |
-| `NOT operator` | The value has a NOT. |
-| `second sign` | The value has a second sign. |
+| `~ operator` | The value has a `~`, also after its `-`. |
+| `NOT operator` | The value has a NOT, also after its `-`. |
+| `second sign` | The value has a `+` or `-` after its `-`. |
 | `hex literal` | The value is a hex literal. |
 | `number with a digit separator` | The value has a digit separator. |
 | `integer outside 64 bits` | The value does not fit a signed 64-bit integer. |
@@ -330,7 +331,7 @@ Any other field of an accepted node has the name of the node's type.
 
 ## Known gaps
 
-- **An action's error before a syntax error.** When one of SQLite's grammar actions raises an error, such as `unknown table option`, and a syntax error comes later in the same statement, SQLite gives the action's error and the pass gives the syntax error. The oracle does not say on such a text, so no test can hold the pass to SQLite's answer there. Neither answer is "not supported", and the promise of the agreed point covers only texts that are a syntax error in SQLite. Giving SQLite's message would need the pass to raise the action errors.
+- **An error that is not a syntax error, before a syntax error.** When one of SQLite's grammar actions raises an error, such as `unknown table option`, or SQLite's parser hits its stack limit, `Recursion limit`, and a syntax error comes later in the same statement, SQLite gives that error and the pass gives the syntax error. The oracle does not say on such a text, so no test can hold the pass to SQLite's answer there, and the promise covers only texts that are a syntax error in SQLite. Giving SQLite's message would need the pass to raise the action errors and to count the stack as SQLite does. In the tests, 36 entries of the corpus are such texts, and the tests count them apart.
 
 ## How to add the next slice
 
@@ -349,17 +350,17 @@ SQLite is the judge, through the oracle in [`internal/sql/oracle`](../oracle/REA
 
 `verify` in `check_test.go` checks one text, and every test layer below calls it:
 
-- Text with a NUL byte or a byte that is not UTF-8 is not supported, with the right name and offset.
-- A syntax error is SQLite's, with its message and the codes 1 and 1.
+- Text with a NUL byte or a byte that is not UTF-8 is not supported, with the right name and offset, and no other text is rejected for those.
+- A syntax error is SQLite's, with its message and the codes 1 and 1. Where SQLite does not say, as in the [known gap](#known-gaps), the syntax error must still be one of SQLite's three messages, and the tests count it apart.
 - A text that SQLite parses is never a syntax error.
-- A "not supported" error matches `ErrNotSupported`, has the form above, and has a name from the tables above, which the test reads from this README.
+- A "not supported" error matches `ErrNotSupported`, has the form above, and has a name from the tables above, which the test reads from this README. Its offset is where a token that is not a space or a comment starts or ends.
 - A text without a statement holds only spaces, comments, and semicolons.
 - A supported statement is one that SQLite parses, and `checkMeaning` in `stmt_test.go` checks it in SQLite:
   - CREATE TABLE: the schema that SQLite records for the text, the names, the type INT, and the options, is that of the canonical statement built from the typed form, and the second run of the text gives `table <Raw> already exists`.
   - INSERT: on a table created with the case of its ASCII letters swapped, the text stores the value as an integer, as the canonical statement does; a second run gives `UNIQUE constraint failed` with the names as the table stores them; without the table it gives `no such table: <Value>`; and on a table with another column it gives `table <Value> has no column named <Value>`.
   - SELECT: on a table created with the case swapped, beside another table, the text reads the rows of the named table in key order, as the canonical statement does; without the table it gives `no such table: <Value>`.
   - DROP TABLE: the text drops the named table and leaves the other, as the canonical statement does; without the table it gives `no such table: <Value>`.
-  - The canonical statement is supported and gives the same statement, and the raw text of each name is at its offset.
+  - The canonical statement is supported and gives the same statement, the raw text of each name is at its offset, and the span ends where SQLite's prepare ends the statement.
 
 The layers:
 
@@ -367,7 +368,7 @@ The layers:
 2. `TestCheck_corpus`, `TestCheck_corpusMutants`, and `TestCheck_grammar` run `verify` on the corpus of [`internal/sql/corpus`](../corpus/README.md), on one mutant of each entry from `parsetest.Mutants`, and on sentences of SQLite's grammar from the generator of [`internal/sql/parsetest`](../parsetest/README.md) and one mutant of each.
 3. `TestGenerate` runs a generator of slice 1. It writes random statements of the four forms, with names from a pool of plain names, names in double quotes with odd content, names that differ only in case, names close to the reserved ones, and every keyword that SQLite reads as a name in that place; with values at and around the limits, with leading zeros and gaps after the sign; with keywords in any case, and with spaces and comments in every gap. Each statement must be supported as the statement that the generator wrote, offsets included, and pass `verify`.
 4. `TestGenerate_mutants` runs `verify` on five one-token mutants of each statement of the generator, and logs the mutants that are still supported, by how they differ from their statement.
-5. `TestAllowList` in `vocabulary_test.go` parses many statements, and requires that a supported statement uses only the node types and fields of slice 1. It reads the node types from the source of `internal/sql/ast` and their fields through reflection, so the list cannot go stale: every node type and every field outside slice 1 must occur in some statement of the test, which is then not supported. `vocabulary_internal_test.go` checks that every node type has a name.
+5. `TestAllowList` in `vocabulary_test.go` parses many statements, and requires that a supported statement uses only the node types and fields of slice 1. It reads the node types from the source of `internal/sql/ast` and their fields through reflection, so the list cannot go stale: every node type, and every field of the node types of slice 1, must occur in some statement of the test, so that a statement that has one outside slice 1 is seen to be not supported. The test sees types and fields, not how many there are or what their tokens say: `strict, without rowid, strict` and `values (+1)` use only the types and fields of slice 1. The hand-written cases and the check of the meaning cover those. `vocabulary_internal_test.go` checks that every node type has a name, and `TestRecognize` there gives the recognizer trees that no text gives, for its paths that SQLite's grammar never reaches.
 6. `FuzzCheck` runs `verify` on any text, and `FuzzGenerate` on a statement of the generator and a mutant of it. `make fuzz` runs both.
 7. [`internal/sql/mutation`](../mutation/README.md) runs mutation testing of this package.
 

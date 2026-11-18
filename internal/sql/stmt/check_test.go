@@ -79,6 +79,9 @@ func verify(t testing.TB, src string) (outcome, stmt.Statement) {
 		}
 		return preparse, nil
 	}
+	if ne != nil && (ne.What == "NUL byte" || ne.What == "invalid UTF-8") {
+		t.Fatalf("%q: gives %v, but the text is valid UTF-8 without a NUL byte", src, err)
+	}
 
 	v := oracle.Judge(src)
 	switch {
@@ -150,7 +153,7 @@ func onlySpace(src string) bool {
 var messageForm = regexp.MustCompile(`^s4ql: not supported: (.+) \(at offset (\d+)\)$`)
 
 // checkNotSupported: the error matches [stmt.ErrNotSupported], its message has the form of the
-// README, its name is in the README's vocabulary, and its offset is in the text.
+// README, its name is in the README's vocabulary, and its offset is where a token starts or ends.
 func checkNotSupported(t testing.TB, src string, err error, ne *stmt.NotSupportedError) {
 	t.Helper()
 	m := messageForm.FindStringSubmatch(err.Error())
@@ -160,35 +163,44 @@ func checkNotSupported(t testing.TB, src string, err error, ne *stmt.NotSupporte
 	if !vocabulary(t)[ne.What] {
 		t.Fatalf("%q: %q is not in the vocabulary of the README", src, ne.What)
 	}
-	if ne.Offset < 0 || ne.Offset > len(src) {
-		t.Fatalf("%q: offset %v", src, ne.Offset)
+	if _, bad := badText(src); bad != "" {
+		return
 	}
+	for _, tk := range token.Tokens(src) {
+		if tk.Kind != token.Space && tk.Kind != token.Comment && (tk.Offset == ne.Offset || tk.Offset+tk.Len == ne.Offset) {
+			return
+		}
+	}
+	t.Fatalf("%q: the offset %v is neither the start nor the end of a token", src, ne.Offset)
 }
 
-var (
-	vocabularyOnce sync.Once
-	vocabularySet  map[string]bool
-)
-
-// vocabulary of the "not supported" errors: the names in the first column of the tables of the
+// readVocabulary of the "not supported" errors: the names in the first column of the tables of the
 // section "Not supported" of the README.
+var readVocabulary = sync.OnceValues(func() (map[string]bool, error) {
+	b, err := os.ReadFile("README.md")
+	if err != nil {
+		return nil, err
+	}
+	_, section, _ := strings.Cut(string(b), "\n## Not supported\n")
+	section, _, _ = strings.Cut(section, "\n## ")
+	names := map[string]bool{}
+	row := regexp.MustCompile("^\\| `([^`]+)` \\|")
+	for _, line := range strings.Split(section, "\n") {
+		if m := row.FindStringSubmatch(line); m != nil {
+			names[m[1]] = true
+		}
+	}
+	return names, nil
+})
+
+// vocabulary of the "not supported" errors, from [readVocabulary].
 func vocabulary(t testing.TB) map[string]bool {
 	t.Helper()
-	vocabularyOnce.Do(func() {
-		b, err := os.ReadFile("README.md")
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, section, _ := strings.Cut(string(b), "\n## Not supported\n")
-		section, _, _ = strings.Cut(section, "\n## ")
-		vocabularySet = map[string]bool{}
-		for _, line := range strings.Split(section, "\n") {
-			if m := regexp.MustCompile("^\\| `([^`]+)` \\|").FindStringSubmatch(line); m != nil {
-				vocabularySet[m[1]] = true
-			}
-		}
-	})
-	return vocabularySet
+	names, err := readVocabulary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return names
 }
 
 // counts of outcomes, for the log of a test.
@@ -399,6 +411,8 @@ var checkCases = []checkCase{
 	{name: "create view", src: "create view v as select 1", err: "s4ql: not supported: CREATE VIEW (at offset 0)"},
 	{name: "explain", src: "explain select * from t", err: "s4ql: not supported: EXPLAIN (at offset 0)"},
 	{name: "explain query plan", src: "explain query plan select * from t", err: "s4ql: not supported: EXPLAIN (at offset 0)"},
+	{name: "a statement after spaces nested deeper than the parser's limit", src: " ;\nselect " + strings.Repeat("(", 2500) + "1" + strings.Repeat(")", 2500),
+		err: "s4ql: not supported: statement beyond a limit of the parser (at offset 3)"},
 	{name: "a statement nested deeper than the parser's limit", src: "select " + strings.Repeat("(", 2500) + "1" + strings.Repeat(")", 2500),
 		err: "s4ql: not supported: statement beyond a limit of the parser (at offset 0)"},
 
@@ -428,16 +442,19 @@ var checkCases = []checkCase{
 	{name: "strict alone", src: "create table t (v int primary key) strict;", err: "s4ql: not supported: table without WITHOUT ROWID (at offset 41)"},
 	{name: "without rowid alone", src: "create table t (v int primary key) without rowid", err: "s4ql: not supported: table without STRICT (at offset 48)"},
 	{name: "strict twice", src: "create table t (v int primary key) strict, strict, without rowid", err: "s4ql: not supported: table option (at offset 43)"},
-	{name: "without rowid twice", src: "create table t (v int primary key) without rowid, without rowid", err: "s4ql: not supported: table option (at offset 58)"},
+	{name: "without rowid twice", src: "create table t (v int primary key) without rowid, without rowid", err: "s4ql: not supported: table option (at offset 50)"},
 	{name: "a third option", src: "create table t (v int primary key) strict, without rowid, strict", err: "s4ql: not supported: table option (at offset 56)"},
+	{name: "an empty first option and an unknown option", src: "create table t (v int primary key), foo", err: "s4ql: not supported: empty table option (at offset 34)"},
 	{name: "an empty first option", src: "create table t (v int primary key), strict, without rowid", err: "s4ql: not supported: empty table option (at offset 34)"},
 	{name: "an unknown option", src: "create table t (v int primary key) strict, without rowid, foo", err: "s4ql: not supported: table option (at offset 56)"},
 	{name: "rowid in quotes", src: `create table t (v int primary key) strict, without "rowid"`, err: "s4ql: not supported: table option (at offset 51)"},
 	{name: "strict in quotes", src: `create table t (v int primary key) "strict", without rowid`, err: "s4ql: not supported: table option (at offset 35)"},
 	{name: "integer", src: "create table t (v integer primary key) strict, without rowid", err: "s4ql: not supported: column type other than INT (at offset 18)"},
 	{name: "int in quotes", src: `create table t (v "int" primary key) strict, without rowid`, err: "s4ql: not supported: column type other than INT (at offset 18)"},
-	{name: "a type of two words", src: "create table t (v int generated always primary key) strict, without rowid", err: "s4ql: not supported: column type other than INT (at offset 18)"},
-	{name: "a type with a size", src: "create table t (v int(10) primary key) strict, without rowid", err: "s4ql: not supported: column type other than INT (at offset 18)"},
+	{name: "a type of two words", src: "create table t (v int generated always primary key) strict, without rowid", err: "s4ql: not supported: column type other than INT (at offset 22)"},
+	{name: "a type with a size", src: "create table t (v int(10) primary key) strict, without rowid", err: "s4ql: not supported: column type other than INT (at offset 21)"},
+	{name: "a type of two words that starts with int", src: "create table t (v int unsigned primary key) strict, without rowid", err: "s4ql: not supported: column type other than INT (at offset 22)"},
+	{name: "a type of two words that does not start with int", src: "create table t (v big int primary key) strict, without rowid", err: "s4ql: not supported: column type other than INT (at offset 18)"},
 	{name: "any", src: "create table t (v any primary key) strict, without rowid", err: "s4ql: not supported: column type other than INT (at offset 18)"},
 	{name: "no type", src: "create table t (v primary key) strict, without rowid", err: "s4ql: not supported: column without a type (at offset 18)"},
 	{name: "no primary key", src: "create table t (v int) strict, without rowid", err: "s4ql: not supported: column without PRIMARY KEY (at offset 21)"},
@@ -454,6 +471,8 @@ var checkCases = []checkCase{
 	// INSERT.
 	{name: "replace", src: "replace into t (v) values (1)", err: "s4ql: not supported: REPLACE (at offset 0)"},
 	{name: "insert or replace", src: "insert or replace into t (v) values (1)", err: "s4ql: not supported: INSERT OR (at offset 7)"},
+	{name: "with and replace", src: "with c as (select 1) replace into t (v) values (1)", err: "s4ql: not supported: WITH clause (at offset 0)"},
+	{name: "a select with a with", src: "insert into t (v) with c as (select 1) select * from c", err: "s4ql: not supported: WITH clause (at offset 18)"},
 	{name: "with", src: "with c as (select 1) insert into t (v) values (1)", err: "s4ql: not supported: WITH clause (at offset 0)"},
 	{name: "an alias", src: "insert into t as u (v) values (1)", err: "s4ql: not supported: alias (at offset 14)"},
 	{name: "an alias and no column list", src: "insert into t as u values (1)", err: "s4ql: not supported: alias (at offset 14)"},
@@ -470,6 +489,8 @@ var checkCases = []checkCase{
 	{name: "a plus sign", src: "insert into t (v) values (+1)", err: "s4ql: not supported: + sign (at offset 26)"},
 	{name: "two signs", src: "insert into t (v) values (- -1)", err: "s4ql: not supported: second sign (at offset 28)"},
 	{name: "a minus and a plus", src: "insert into t (v) values (-+1)", err: "s4ql: not supported: second sign (at offset 27)"},
+	{name: "a minus and a bitwise not", src: "insert into t (v) values (-~1)", err: "s4ql: not supported: ~ operator (at offset 27)"},
+	{name: "a minus and not", src: "insert into t (v) values (- not 1)", err: "s4ql: not supported: NOT operator (at offset 28)"},
 	{name: "a bitwise not", src: "insert into t (v) values (~1)", err: "s4ql: not supported: ~ operator (at offset 26)"},
 	{name: "not", src: "insert into t (v) values (not 1)", err: "s4ql: not supported: NOT operator (at offset 26)"},
 	{name: "a hex literal", src: "insert into t (v) values (0x10)", err: "s4ql: not supported: hex literal (at offset 26)"},
@@ -495,6 +516,10 @@ var checkCases = []checkCase{
 	{name: "a column", src: "select v from t", err: "s4ql: not supported: result column other than * (at offset 7)"},
 	{name: "table.*", src: "select t.* from t", err: "s4ql: not supported: result column other than * (at offset 7)"},
 	{name: "a second column", src: "select *, * from t", err: "s4ql: not supported: second result column (at offset 8)"},
+	{name: "distinct and a column", src: "select distinct v from t", err: "s4ql: not supported: DISTINCT or ALL (at offset 7)"},
+	{name: "no from and a semicolon", src: "select * ;", err: "s4ql: not supported: SELECT without FROM (at offset 9)"},
+	{name: "a schema before a reserved name", src: "select * from main.sqlite_schema", err: "s4ql: not supported: schema name (at offset 14)"},
+	{name: "a schema before a name in brackets", src: "select * from main.[t]", err: "s4ql: not supported: schema name (at offset 14)"},
 	{name: "distinct", src: "select distinct * from t", err: "s4ql: not supported: DISTINCT or ALL (at offset 7)"},
 	{name: "all", src: "select all * from t", err: "s4ql: not supported: DISTINCT or ALL (at offset 7)"},
 	{name: "no from", src: "select *", err: "s4ql: not supported: SELECT without FROM (at offset 8)"},

@@ -375,7 +375,8 @@ func (gen *Generator) IntN(n int) int {
 	return gen.r.IntN(n)
 }
 
-// Used rules, by their index in the grammar, in the derivation of the last sentence.
+// Used rules, by their index in the grammar, in the derivation of the last sentence. The next call of
+// [Generator.Sentence] overwrites the slice.
 func (gen *Generator) Used() []int {
 	return gen.used
 }

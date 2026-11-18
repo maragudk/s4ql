@@ -1,12 +1,8 @@
 package stmt
 
 import (
-	goast "go/ast"
-	goparser "go/parser"
-	gotoken "go/token"
+	"fmt"
 	"os"
-	"path/filepath"
-	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -15,57 +11,21 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/sql/ast"
+	"maragu.dev/s4ql/internal/sql/token"
 	"maragu.dev/s4ql/internal/sqlite"
 )
 
-// astTypes of package ast, read from its source: the name of every struct type, and the names of
-// the exported fields of each.
-func astTypes(t *testing.T) map[string][]string {
-	t.Helper()
-	files, err := filepath.Glob("../ast/*.go")
-	is.NotError(t, err)
-	types := map[string][]string{}
-	fset := gotoken.NewFileSet()
-	for _, name := range files {
-		if strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		f, err := goparser.ParseFile(fset, name, nil, 0)
-		is.NotError(t, err)
-		goast.Inspect(f, func(n goast.Node) bool {
-			ts, ok := n.(*goast.TypeSpec)
-			if !ok {
-				return true
-			}
-			if st, ok := ts.Type.(*goast.StructType); ok && ts.Name.IsExported() {
-				types[ts.Name.Name] = []string{}
-				for _, field := range st.Fields.List {
-					for _, id := range field.Names {
-						types[ts.Name.Name] = append(types[ts.Name.Name], id.Name)
-					}
-				}
-			}
-			return true
-		})
-	}
-	return types
-}
-
 func TestVocabulary(t *testing.T) {
-	types := astTypes(t)
+	types := ASTTypes(t)
 
 	t.Run("should name every node type of package ast, and nothing else", func(t *testing.T) {
-		for name := range types {
-			switch name {
-			case "Span", "Token", "QualifiedName", "IfNotExists":
-				continue
-			}
+		nodes := NodeTypes(t)
+		for _, name := range nodes {
 			_, ok := nodeNames[name]
 			is.True(t, ok, name+" has no name")
 		}
 		for name := range nodeNames {
-			_, ok := types[name]
-			is.True(t, ok, name+" is no type of package ast")
+			is.True(t, slices.Contains(nodes, name), name+" is no node type of package ast")
 		}
 	})
 
@@ -188,11 +148,53 @@ func TestNotSupportedError(t *testing.T) {
 }
 
 func TestStatement(t *testing.T) {
-	t.Run("should give the span of every kind of statement", func(t *testing.T) {
-		for _, s := range []Statement{&CreateTable{Span: Span{1, 2}}, &Insert{Span: Span{1, 2}}, &Select{Span: Span{1, 2}}, &DropTable{Span: Span{1, 2}}} {
+	t.Run("should give the span that it was given, for every kind of statement", func(t *testing.T) {
+		for _, s := range []Statement{&CreateTable{}, &Insert{}, &Select{}, &DropTable{}} {
+			s.setSpan(Span{1, 2})
 			is.Equal(t, Span{1, 2}, s.Bounds())
-			s.statement()
 		}
-		is.Equal(t, reflect.TypeFor[SyntaxError]().NumField(), 4)
+	})
+}
+
+func TestCheck_lengthLimit(t *testing.T) {
+	t.Run("should not support a text longer than SQLite's limit, whatever it holds", func(t *testing.T) {
+		defer func(n int) { lengthLimit = n }(lengthLimit)
+		lengthLimit = 20
+		_, err := Check("select * from t;    ")
+		is.NotError(t, err)
+		for _, src := range []string{"select * from t;     ", "selec * from t\x00      "} {
+			_, err = Check(src)
+			is.Equal(t, "s4ql: not supported: text longer than SQLite's limit (at offset 20)", fmt.Sprint(err), src)
+		}
+	})
+}
+
+func TestRecognize(t *testing.T) {
+	tok := func(kind token.Kind, offset int, text string) ast.Token {
+		return ast.Token{Kind: kind, Offset: offset, Text: text}
+	}
+
+	t.Run("should not support a statement that ends where the recognizer expects another token", func(t *testing.T) {
+		// CREATE TABLE t, as no text of SQLite's grammar gives it: the parenthesis is missing.
+		tree := &ast.Statement{Cmd: &ast.CreateTable{Create: tok(token.Create, 0, "create"), Table: tok(token.Table, 7, "table"),
+			Name: ast.QualifiedName{Name: tok(token.ID, 13, "t")}}}
+		ast.SetSpan(tree.Cmd, ast.Span{Start: 0, End: 14})
+		ast.SetSpan(tree, ast.Span{Start: 0, End: 14})
+		s, err := recognize(tree)
+		is.True(t, s == nil)
+		is.Equal(t, "s4ql: not supported: statement (at offset 14)", err.Error())
+	})
+
+	t.Run("should pass on a panic that is not its own", func(t *testing.T) {
+		// CREATE TABLE t (, with no column, which the grammar does not allow.
+		tree := &ast.Statement{Cmd: &ast.CreateTable{Create: tok(token.Create, 0, "create"), Table: tok(token.Table, 7, "table"),
+			Name: ast.QualifiedName{Name: tok(token.ID, 13, "t")}, LParen: tok(token.LP, 15, "(")}}
+		ast.SetSpan(tree.Cmd, ast.Span{Start: 0, End: 16})
+		ast.SetSpan(tree, ast.Span{Start: 0, End: 16})
+		defer func() {
+			is.True(t, recover() != nil)
+		}()
+		_, _ = recognize(tree)
+		t.Fatal("no panic")
 	})
 }

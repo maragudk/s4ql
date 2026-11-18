@@ -1,17 +1,10 @@
 package stmt_test
 
 import (
-	goast "go/ast"
-	goparser "go/parser"
-	gotoken "go/token"
 	"maps"
-	"path/filepath"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
-
-	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/sql/ast"
 	"maragu.dev/s4ql/internal/sql/parser"
@@ -95,8 +88,8 @@ func features(n ast.Node, types map[string]reflect.Type) map[string]bool {
 	return f
 }
 
-// fieldKeys of the type t, as [features] names them.
-func fieldKeys(t reflect.Type) []string {
+// featureKeys of the fields of the type t, as [features] names them.
+func featureKeys(t reflect.Type) []string {
 	var keys []string
 	var fields func(t reflect.Type, path string)
 	fields = func(t reflect.Type, path string) {
@@ -114,45 +107,6 @@ func fieldKeys(t reflect.Type) []string {
 	}
 	fields(t, t.Name())
 	return keys
-}
-
-// nodeTypes of package ast, read from its source: every struct that embeds base, exprBase, or
-// cmdBase.
-func nodeTypes(t testing.TB) []string {
-	t.Helper()
-	files, err := filepath.Glob("../ast/*.go")
-	is.NotError(t, err)
-	var names []string
-	fset := gotoken.NewFileSet()
-	for _, name := range files {
-		if strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		f, err := goparser.ParseFile(fset, name, nil, 0)
-		is.NotError(t, err)
-		for _, d := range f.Decls {
-			g, ok := d.(*goast.GenDecl)
-			if !ok {
-				continue
-			}
-			for _, spec := range g.Specs {
-				ts, ok := spec.(*goast.TypeSpec)
-				if !ok {
-					continue
-				}
-				st, ok := ts.Type.(*goast.StructType)
-				if !ok || len(st.Fields.List) == 0 || st.Fields.List[0].Names != nil {
-					continue
-				}
-				embedded, ok := st.Fields.List[0].Type.(*goast.Ident)
-				if ok && (embedded.Name == "base" || embedded.Name == "exprBase" || embedded.Name == "cmdBase") &&
-					ts.Name.Name != "exprBase" && ts.Name.Name != "cmdBase" {
-					names = append(names, ts.Name.Name)
-				}
-			}
-		}
-	}
-	return names
 }
 
 // neverPresent are the fields that the parser never sets: DROP has IF EXISTS, never IF NOT EXISTS.
@@ -213,7 +167,7 @@ func TestAllowList(t *testing.T) {
 		}
 	}
 
-	for _, name := range nodeTypes(t) {
+	for _, name := range stmt.NodeTypes(t) {
 		if !seen[name] {
 			t.Errorf("no statement of the test has a node of type %v", name)
 			continue
@@ -221,7 +175,7 @@ func TestAllowList(t *testing.T) {
 		if !allowed[name] {
 			continue
 		}
-		for _, k := range fieldKeys(types[name]) {
+		for _, k := range featureKeys(types[name]) {
 			if !allowed[k] && !seen[k] && !neverPresent[k] {
 				t.Errorf("no statement of the test has the field %v", k)
 			}

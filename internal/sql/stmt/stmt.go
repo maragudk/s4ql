@@ -26,7 +26,6 @@ package stmt
 import (
 	"errors"
 	"fmt"
-	"strings"
 )
 
 // ErrNotSupported is matched by every [*NotSupportedError], with [errors.Is].
@@ -104,12 +103,13 @@ func (n Name) Fold() string {
 
 // asciiLower of s: s with A to Z in lower case and every other byte as it is.
 func asciiLower(s string) string {
-	return strings.Map(func(r rune) rune {
-		if 'A' <= r && r <= 'Z' {
-			return r + 'a' - 'A'
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
 		}
-		return r
-	}, s)
+	}
+	return string(b)
 }
 
 // Statement that s4ql supports: a [*CreateTable], an [*Insert], a [*Select], or a [*DropTable].
@@ -117,7 +117,7 @@ type Statement interface {
 	// Bounds of the statement in the text, from its first token to the end of its semicolon, or of
 	// its last token if it has none.
 	Bounds() Span
-	statement()
+	setSpan(Span)
 }
 
 // CreateTable creates a table with one column, of type INT, that is its primary key. The table is
@@ -162,7 +162,7 @@ func (s *Select) Bounds() Span { return s.Span }
 // Bounds of the statement in the text.
 func (s *DropTable) Bounds() Span { return s.Span }
 
-func (*CreateTable) statement() {}
-func (*Insert) statement()      {}
-func (*Select) statement()      {}
-func (*DropTable) statement()   {}
+func (s *CreateTable) setSpan(sp Span) { s.Span = sp }
+func (s *Insert) setSpan(sp Span)      { s.Span = sp }
+func (s *Select) setSpan(sp Span)      { s.Span = sp }
+func (s *DropTable) setSpan(sp Span)   { s.Span = sp }
