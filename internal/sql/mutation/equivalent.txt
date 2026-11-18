@@ -245,7 +245,7 @@ internal/engine/engine.go Engine.checkOutside boolean: true => false
 	The planted bug checkOutside: its position is replaced by that of the write transaction, and the bug is found by a commit that fails in SQLite either way.
 
 # Scheduling, which the production host ignores.
-internal/engine/engine.go Rows.All remove statement: r.report.e.host.Yield(r.ctx, "engine: between two rows of a query") =>
+internal/engine/engine.go Rows.read remove statement: r.report.e.host.Yield(r.ctx, "engine: between two rows of a query") =>
 	A yield only lets other tasks of the simulation run between two rows; the answers of the engine do not depend on it.
 
 # Bounds that mean "none".
