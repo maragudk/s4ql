@@ -66,6 +66,14 @@ func (h *ticking) Monotonic() time.Duration {
 }
 
 func TestEngine_report(t *testing.T) {
+	t.Run("should log one event for a syntax error through Query", func(t *testing.T) {
+		h := &recorder{}
+		_, err := newLoggedEngine(newFake(), bugs{}, h).Query(t.Context(), "selec")
+		is.Equal(t, `near "selec": syntax error`, err.Error())
+		is.Equal(t, 1, len(h.events))
+		is.Equal(t, "sqlite_error", h.events[0][attrOutcome])
+	})
+
 	t.Run("should log one event for a write through Query", func(t *testing.T) {
 		h := &recorder{}
 		f := newFake().with("t1", []string{"v1"})
@@ -111,8 +119,9 @@ func TestEngine_report(t *testing.T) {
 			{name: "build of a write, through Exec", src: "drop table t1", panic: "the lookup panics", set: func(f *fake) { f.tablePanics = true }},
 			{name: "write, through Exec", src: "insert into t1 (v1) values (3)", panic: "the upsert panics", set: func(f *fake) { f.upsertPanics = true }},
 			{name: "write, through Query", src: "insert into t1 (v1) values (3)", panic: "the upsert panics", set: func(f *fake) { f.upsertPanics = true }, query: true},
-			{name: "scan, through Query", src: "select * from t1", panic: "the scan panics", set: func(f *fake) { f.scanPanics = true }, query: true},
-			{name: "scan, through Exec", src: "select * from t1", panic: "the scan panics", set: func(f *fake) { f.scanPanics = true }},
+			{name: "scan before its first row, through Query", src: "select * from t1", panic: "the scan panics", set: func(f *fake) { f.scanPanics = 0 }, query: true},
+			{name: "scan before its second row, through Query", src: "select * from t1", panic: "the scan panics", set: func(f *fake) { f.scanPanics = 1 }, query: true},
+			{name: "scan, through Exec", src: "select * from t1", panic: "the scan panics", set: func(f *fake) { f.scanPanics = 1 }},
 			{name: "consumer, through Query", src: "select * from t1", panic: "the consumer", set: func(*fake) {}, query: true, outcome: "ok"},
 		}
 		for _, c := range cases {

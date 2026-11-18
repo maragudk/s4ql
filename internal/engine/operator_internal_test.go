@@ -26,9 +26,10 @@ type fake struct {
 	scanFails int
 	// getFails, upsertFails, annotateFails, and commitFails are the errors of those calls.
 	getFails, upsertFails, annotateFails, commitFails, beginFails, readFails error
-	// upsertPanics makes an upsert panic, scanPanics a scan before its second row, and endPanics
-	// the end of a read transaction.
-	upsertPanics, scanPanics, endPanics bool
+	// upsertPanics makes an upsert panic, and endPanics the end of a read transaction.
+	upsertPanics, endPanics bool
+	// scanPanics makes a scan panic before the row of that index, if it is not negative.
+	scanPanics int
 	// tablePanics makes a lookup panic, tableFails is the error of a lookup, and endFails is the
 	// error of the end of a read transaction.
 	tablePanics bool
@@ -46,7 +47,7 @@ type fakeTable struct {
 }
 
 func newFake() *fake {
-	return &fake{tables: map[string]*fakeTable{}, scanFails: -1}
+	return &fake{tables: map[string]*fakeTable{}, scanFails: -1, scanPanics: -1}
 }
 
 // with a table of the name and the columns, of which the first is the primary key, and rows of
@@ -111,7 +112,7 @@ func (x fakeTx) scan(_ context.Context, name string) iter.Seq2[[]*s4qlpb.Value, 
 		rows := slices.Clone(t.rows)
 		slices.SortFunc(rows, func(a, b []*s4qlpb.Value) int { return cmp.Compare(a[0].GetInteger(), b[0].GetInteger()) })
 		for i, row := range rows {
-			if i == 1 && x.f.scanPanics {
+			if i == x.f.scanPanics {
 				panic("the scan panics")
 			}
 			if i == x.f.scanFails {

@@ -290,21 +290,25 @@ On the code as it is now, on 2026-11-18:
 
 | Layer | Run | Result |
 | --- | --- | --- |
-| `TestDifferential` | 10,000 sequences of 40 statements, from seed 2,000,000, half with restarts | 400,000 statements, none that differ from SQLite. By kind and outcome: CREATE TABLE 24,322 ok and 49,354 `already exists`; INSERT 65,978 ok, 25,683 `UNIQUE constraint failed`, 31,236 `has no column named`, and 60,490 `no such table`; SELECT 61,392 ok and 30,265 `no such table`; DROP TABLE 12,266 ok and 5,867 `no such table`; and of the other texts 21,687 not supported, 7,647 `syntax error`, 1,397 `incomplete input`, 985 `already exists` after the start of a table, and 1,431 without a statement |
-| `FuzzDifferential` | 50,000,000 executions in 2 h 57 min on 8 workers, while other work loaded the machine | nothing found; 15 new inputs of interest in the run, none in its last hour |
-| `FuzzDifferential_core` | 90,288 executions in 5 min on 6 workers | nothing found |
-| `TestSimulation`, default workload | 1,000 seeds | 95,196 statements: 13,318 that succeeded, 20,385 with SQLite's error, 55,405 refused or ended by their timeout, 572 commits of unknown outcome, 29 cut by a crash, and 5,487 not supported or without a statement; 8,364 commits; no violation |
-| `TestSimulation`, hammer workload | 1,000 seeds | 120,000 statements: 28,001 that succeeded, 40,610 with SQLite's error, 43,360 refused or ended by their timeout, 1,078 of unknown outcome, and 6,951 not supported or without a statement; 15,155 commits; no violation |
+| `TestDifferential` | 10,000 sequences of 40 statements, from seed 2,000,000, half with restarts | 400,000 statements, none that differ from SQLite but the 985 accepted. By kind and outcome: CREATE TABLE 24,322 ok and 49,354 `already exists`; INSERT 65,978 ok, 25,683 `UNIQUE constraint failed`, 31,236 `has no column named`, and 60,490 `no such table`; SELECT 61,392 ok and 30,265 `no such table`; DROP TABLE 12,266 ok and 5,867 `no such table`; and of the other texts 24,506 not supported, each prepared in SQLite on an empty database without a syntax error, 2,861 `syntax error`, 2,867 `incomplete input`, and 2,913 without a statement. Of the syntax errors, 985 are after the start of a table that exists, where SQLite gives `already exists`: the accepted difference |
+| `FuzzSQL` | 864,815 executions in 10 min on 4 workers, while other work loaded the machine | nothing found; 153 new inputs of interest |
+| `FuzzSQL_core` | 66,355 executions in 10 min on 4 workers, while other work loaded the machine | nothing found; 97 new inputs of interest. Its first runs found the two known gaps of `stmt`, which `knownGap` now excuses, and whose inputs are in `testdata/fuzz` |
+| `FuzzDifferential_core` | 65,263 executions in 5 min on 4 workers | nothing found |
+| `TestSimulation`, default workload | 1,000 seeds | 57,957 statements: 19,104 that succeeded, 27,179 with SQLite's error, 776 commits of unknown outcome, 928 cut by a crash, 3,884 not supported or without a statement, and 6,086 refused or ended by their timeout (10.5%): 4,756 for want of the lease, 209 by a stop, and 1,121 by the timeout; 11,424 commits; 492 crashes followed by an empty cache, 508 by a copy of the cache, and 1,316 closes; no violation |
+| `TestSimulation`, hammer workload | 1,000 seeds | 120,000 statements: 39,047 that succeeded, 53,890 with SQLite's error, 1,534 of unknown outcome, 8,182 not supported or without a statement, and 17,347 refused or ended by their timeout (14.5%): 7,823 for want of the lease and 9,524 by the timeout; 20,834 commits; no violation |
 | `TestEngine_namesOfTheCore` | 2,832 names | 11,328 statements compared with SQLite, none that differ, and no internal error |
+
+`FuzzDifferential` was not run at length on this code. Its executions are seeds of the generator, not SQL text.
 
 The planted bugs:
 
 | Bug | Seeds that found it | Seeds that found anything without the bug |
 | --- | --- | --- |
-| `skipUnique` | 124 of 200 | 0 |
-| `ackUnknown` | 47 of 200 | 0 |
-| `checkOutside` | 73 of 200, in the hammer workload | 0 |
-| `keepOpen` | 193 of 200 | 0 |
+| `skipUnique` | 153 of 200 | 0 |
+| `ackUnknown` | 74 of 200 | 0 |
+| `checkOutside` | 101 of 200, in the hammer workload | 0 |
+| `keepOpen` | 200 of 200 | 0 |
+| `keepRead` | 77 of 200 | 0 |
 
 Mutation testing: of 955 mutants, 312 do not compile, 632 are killed, none times out, and 11 are equivalent; none is unexplained. The score is 98.29%, and 100% without the equivalent ones. The first run found 74 survivors, each a gap in the tests but the equivalent ones; see [`internal/sql/mutation`](../sql/mutation/README.md#the-pass-after-the-parser-and-the-engine).
 
