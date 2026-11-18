@@ -60,8 +60,8 @@ lint-proto:
 	$(BUF) lint
 	$(BUF) format --diff --exit-code
 
-# mutation runs the mutation testing of the SQL tokenizer, syntax tree, parser, and the pass after the
-# parser, with the results and the report in MUTATIONDIR. It is not part of test, since a full run takes long; see
+# mutation runs the mutation testing of the SQL tokenizer, syntax tree, parser, the pass after the parser, and the engine,
+# with the results and the report in MUTATIONDIR. It is not part of test, since a full run takes long; see
 # internal/sql/mutation/README.md. A run with the same MUTATIONDIR goes on where the last one stopped,
 # and refuses it after a change of the code; remove the directory then.
 MUTATIONDIR ?= $(or $(TMPDIR),/tmp)/s4ql-mutation
