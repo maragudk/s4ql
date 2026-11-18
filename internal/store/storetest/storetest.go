@@ -39,6 +39,9 @@ type Env struct {
 	// Client of one store, by a name for it that no other client of the test has. Each call gives a
 	// new client of the same store, which is empty when the test starts.
 	Client func(name string) store.Store
+	// LongestKey that a client takes, in bytes. Zero means 1024, as [store.Store] allows. A harness
+	// whose clients put a prefix in front of each key gives 1024 less the length of the prefix.
+	LongestKey int
 }
 
 // Harness runs f once with a new, empty store, as a task of a host with the context ctx, and
@@ -79,6 +82,7 @@ func Cases() []Case {
 		{Name: "should write the content from the current offset of the reader to its end", Run: offset},
 		{Name: "should store empty content, and content of a mebibyte", Run: sizes},
 		{Name: "should keep keys apart, also keys that share a prefix or are not ASCII", Run: keys},
+		{Name: "should keep apart keys that differ only in the case of a letter, in a doubled slash, or in their last byte at the longest length", Run: keyIdentity},
 		{Name: "should give each read its own content, unchanged by a later write", Run: snapshot},
 		{Name: "should let exactly one of many racing creates of one key succeed", Run: raceCreate},
 		{Name: "should let at most one of many racing swaps from one version succeed", Run: raceSwap},
@@ -378,6 +382,54 @@ func keys(t T, ctx context.Context, env Env) {
 	}
 	for _, k := range ks {
 		expect(t, ctx, c, k, "content of "+k, versions[k])
+	}
+}
+
+// keyIdentity checks that a key is its exact bytes. A database is a key prefix, so a store that
+// takes two keys as one, by folding the case of letters, collapsing slashes, or cutting long keys
+// short, could give two databases one manifest.
+func keyIdentity(t T, ctx context.Context, env Env) {
+	c := env.Client("a")
+	longest := env.LongestKey
+	if longest == 0 {
+		longest = 1024
+	}
+	if longest < 8 || longest > 1024 {
+		t.Errorf("the harness gives %v as the longest key, which must be from 8 to 1024 bytes", longest)
+		return
+	}
+	long := strings.Repeat("k", longest-1)
+	// The keys of each group differ only in a way that a store may wrongly ignore. The first of a
+	// group is created alone first, so that a store that takes another of the group for it is
+	// caught at the read that should find nothing.
+	groups := [][]string{
+		{"case", "Case", "CASE"},
+		{"ÆØÅ", "æøå"},
+		{"d//k", "d/k", "d///k"},
+		{long + "a", long + "b"},
+	}
+	versions := map[string]store.Version{}
+	for _, group := range groups {
+		v, ok := create(t, ctx, c, group[0], "content of "+group[0])
+		if !ok {
+			return
+		}
+		versions[group[0]] = v
+		for _, k := range group[1:] {
+			expectNotFound(t, ctx, c, k)
+		}
+		for _, k := range group[1:] {
+			v, ok := create(t, ctx, c, k, "content of "+k)
+			if !ok {
+				return
+			}
+			versions[k] = v
+		}
+	}
+	for _, group := range groups {
+		for _, k := range group {
+			expect(t, ctx, c, k, "content of "+k, versions[k])
+		}
 	}
 }
 

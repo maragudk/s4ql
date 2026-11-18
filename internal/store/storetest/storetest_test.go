@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -73,6 +74,30 @@ func TestCases(t *testing.T) {
 			name:  "a swap that creates where no object is",
 			wrap:  func(c store.Store) store.Store { return &swapCreates{Store: c} },
 			finds: "should fail a swap where no object is with ErrNotFound, and create nothing",
+		},
+		{
+			name:  "keys that differ only in the case of their letters taken as one",
+			wrap:  func(c store.Store) store.Store { return &renamed{Store: c, rename: strings.ToLower} },
+			finds: identity,
+		},
+		{
+			name: "keys that differ only in a doubled slash taken as one",
+			wrap: func(c store.Store) store.Store {
+				return &renamed{Store: c, rename: func(key string) string {
+					for strings.Contains(key, "//") {
+						key = strings.ReplaceAll(key, "//", "/")
+					}
+					return key
+				}}
+			},
+			finds: identity,
+		},
+		{
+			name: "long keys cut short",
+			wrap: func(c store.Store) store.Store {
+				return &renamed{Store: c, rename: func(key string) string { return key[:min(len(key), 1000)] }}
+			},
+			finds: identity,
 		},
 	} {
 		t.Run("should fail for "+wrong.name, func(t *testing.T) {
@@ -192,6 +217,28 @@ func (s *swapCreates) Swap(ctx context.Context, key string, from store.Version, 
 		return "", err
 	}
 	return s.Create(ctx, key, content, checksum)
+}
+
+// identity is the name of the case of the suite that tells keys apart that stores may take as one.
+const identity = "should keep apart keys that differ only in the case of a letter, in a doubled slash, or in their last byte at the longest length"
+
+// renamed passes on each call with the key that rename makes of it, as a store does that takes some
+// keys as one.
+type renamed struct {
+	store.Store
+	rename func(key string) string
+}
+
+func (s *renamed) Get(ctx context.Context, key string) (io.ReadCloser, store.Version, error) {
+	return s.Store.Get(ctx, s.rename(key))
+}
+
+func (s *renamed) Create(ctx context.Context, key string, content io.ReadSeeker, checksum *store.Checksum) (store.Version, error) {
+	return s.Store.Create(ctx, s.rename(key), content, checksum)
+}
+
+func (s *renamed) Swap(ctx context.Context, key string, from store.Version, content io.ReadSeeker, checksum *store.Checksum) (store.Version, error) {
+	return s.Store.Swap(ctx, s.rename(key), from, content, checksum)
 }
 
 // failures of each case of the suite against the simulated store under seeds, with each client

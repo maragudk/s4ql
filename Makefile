@@ -55,8 +55,8 @@ generate:
 	$(BUF) generate
 
 # lint also runs lint-proto, the lint for code that runs under the simulation, from
-# internal/simlint, golangci-lint over the browser's build of BROWSERPKGS, whose files a native
-# run does not see, and both lints over the native build of SIMULATORPKGS with the tag s4ql_browser.
+# internal/simlint, both lints over the browser's build of BROWSERPKGS, whose files a native run does
+# not see, and both lints over the native build of SIMULATORPKGS with the tag s4ql_browser.
 # The simulation's lint is a module of its own, so that its dependencies stay out of the library's,
 # and is built there and run here.
 .PHONY: lint
@@ -67,7 +67,8 @@ lint:
 	cd $(CROSSCHECK) && golangci-lint run
 	cd $(SIMLINT) && golangci-lint run
 	dir=$$(mktemp -d) && (cd $(SIMLINT) && go build -o $$dir/simlint ./cmd/simlint) && $$dir/simlint ./... && \
-		GOFLAGS=-tags=s4ql_browser $$dir/simlint $(SIMULATORPKGS); \
+		GOFLAGS=-tags=s4ql_browser $$dir/simlint $(SIMULATORPKGS) && \
+		GOOS=js GOARCH=wasm GOFLAGS=-tags=s4ql_browser $$dir/simlint $(BROWSERPKGS); \
 		status=$$?; rm -rf $$dir; exit $$status
 	$(MAKE) lint-proto
 
