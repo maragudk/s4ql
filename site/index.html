@@ -848,10 +848,10 @@ footer ul {
           <td>
             <ul>
               <li>The storage core. A database is a log of commits in S3 with a local SQLite cache, and one instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work.</li>
-              <li>The tests behind it: a deterministic simulation, and a real S3-compatible bucket.</li>
+              <li>The tests behind it: a deterministic simulation. The conformance tests, which the S3 client and the simulated store both pass, are also run by hand against a real S3-compatible bucket.</li>
               <li>The S3 client, which passes the conformance suite on Tigris.</li>
               <li>The SQL tokenizer and the SQL parser.</li>
-              <li>The parser agrees with SQLite on what parses and on every syntax error, across 139,234 statements from SQLite's own tests, documentation, and fuzz corpora.</li>
+              <li>The parser agrees with SQLite on what parses and on every syntax error, across all 138,926 statements, of a corpus of 139,234, on which SQLite gives a clear verdict. The corpus comes from SQLite's own tests, documentation, and fuzz corpora.</li>
               <li>The shape of the syntax tree is checked against SQLite as well: the same <code>EXPLAIN</code> output and the same values.</li>
             </ul>
           </td>
