@@ -110,3 +110,64 @@ The `select` without a default was already reported, but its clauses were not in
 ### Future work
 
 None.
+
+## Step 3: The storage core on a real bucket, the runs on Tigris, and self-review
+
+**Author:** store-test-gaps builder
+
+### Prompt Context
+
+**Verbatim prompt:** (as in step 1) point 1 of the brief, and "Then run it against the bucket. [...] Run the existing real-bucket tests once as well and report the result. If the test finds a fault in the core or the client, stop and report it; do not fix production code in `internal/core` yourself." And: "Self-review your diff before you report."
+**Interpretation:** A test that runs the real `internal/core` on the real `s3store` against Tigris, gated like the other real-bucket tests, under a prefix that is deleted at the end, without a production dependency of the core on the client.
+**Inferred intent:** Make the claim that commits, replay, and the lease run on a real S3-compatible store true.
+
+### What I did
+
+`TestClient_core` is in `/internal/store/s3store/s3store_test.go`, next to `realBucket`, `realClient`, and `newPrefix`, which it uses. So the core depends on the client only in a test of the client's package, and the browser's build of `internal/core` does not pull in the AWS SDK. The database's prefix is the test's prefix plus `db`, because the core refuses a prefix with an empty segment. Each instance has a lease of ten minutes and watches four times a second. Three subtests, each under its own prefix:
+
+1. Two commits (a table and two rows; one row more and a delete), close, then: the manifest has no lease, two commit objects are under `commits/`, and the head is one of them; an instance with an empty cache replays the same rows; the first cache opens at the same rows.
+2. `b` opens while `a` serves, and `b.Read` and `b.Begin` fail with `core.ErrNoLease`; `a` commits and closes; `b.Wait` returns and `b` reads `a`'s rows, commits one more, closes; `a` reopens on its cache, one commit behind, and catches up.
+3. `a` begins a transaction; the test releases `a`'s lease in the manifest by hand with a swap (no correct instance takes a held lease); `b` takes the free lease, commits, and closes; then `a`'s commit fails with `core.ErrNoLease` and not `core.ErrOutcomeUnknown`, a wrapper around `a`'s store has counted a swap refused with `store.ErrChanged`, `a` takes the lease again and serves `b`'s row without its own, and a fresh instance replays the same.
+
+The order in 3 is forced by the test, except for `a`'s renewal, due after two thirds of ten minutes. If it came first, its swap would be the refused one, and the commit would fail at its check of the lease, with the same error. Every assertion holds in both orders. Once, with a temporary `slog` logger on the instances, I read the events of a run: `a`'s commit uploaded its object, its swap took 198 ms and was refused, `a` logged `lease.transition=lost`, and the commit's event was a warning. The logger is not committed.
+
+Runs against the project's Tigris bucket, with `set -a && . /Users/maragubot/Developer/s4ql/.env && set +a && S4QL_S3_BUCKET=$BUCKET go test ...` from the worktree (the values were never printed):
+
+- `TestClient_core`: 3 of 3 subtests pass, about 8 to 10 s; again with `-count=5`, and with `-race -count=3` together with the conformance suite.
+- The whole package with `-v`: `TestClient_conformance` 18 of 18 cases pass, among them the new case of key identity; `TestClient_realBucket` 5 of 5 pass, none skipped; `TestClient_core` passes; 21.9 s in all.
+
+Self-review with the code-review skill found no bug that breaks anything. I took five of its points: the late-read test now closes the hijacked connection in a cleanup, so that a transport that sends the whole body and keeps the connection does not leave the fake's handler in `io.Copy`; `release` in the core's test tries ten times and then fails; `keyIdentity` refuses a `LongestKey` below 8 or above 1024 with an error and not a panic in `strings.Repeat`; the comment of the select in `simlint` now says that the left side of a receive runs after the select chose the clause, as the spec says; and the comment on `host.New` says that only exempt packages make the host today, and that a package that must make it and keep the other rules needs an exception that the lint does not have. I left one point: the list of browser packages is written out in the new CI step, as it is in the golangci-lint step next to it, and not taken from `BROWSERPKGS` of the `Makefile`. The other builder is changing the CI file now, and one place for the list fits a change of its own. A second call of `WroteRequest` would panic on the closed channel; I kept that, since the client sends a write once and a second call would be a fault to see.
+
+Docs: `/internal/store/s3store/README.md` names the new test and the keys of the new case; `/internal/sim/README.md` says that the lint runs over the browser's files in the job `browser`; `/docs/todo.md`, under the tests of the storage core and the S3 client, says where the core runs on a real bucket and what the integration tests are.
+
+### Why
+
+The README of the project claimed what only this test now does. The forced release in 3 is the one way to make a commit's swap lose while the instance still believes it holds the lease, which is the case where only the store's compare-and-swap protects the log.
+
+### What worked
+
+The test passed on Tigris on the first run, and found no fault in the core or the client.
+
+### What didn't work
+
+- `make test-asan FUZZTIME=30s` failed on the shared machine, with a load average of about 26: `panic: test timed out after 10m0s` in `internal/core`, `internal/sim`, `internal/sql/parser`, `internal/sql/parsetest`, `internal/sql/shapetest`, and `internal/sql/stmt`, and `internal/sql/oracle` passed after 614 s. This branch changes no code that those packages build. The three store packages passed in that run. I ran the six again in the same container with `go test -asan -shuffle on -timeout 90m`, and all passed, in 250 to 383 s each. The fuzz half of the target did not run, because the target stops at the first failure; its fuzz tests are in packages that this branch does not touch.
+- `git status --short && docker info ...` and `git diff origin/main > file` piped with other commands were refused by the sandbox of the worktree as too complex; plain separate commands worked.
+
+### What I learned
+
+- After a failed commit, its commit object stays in the bucket with no manifest that names it, so a test of the log counts the objects only where no commit failed.
+- A test that needs a holder's lease to last can set it long: a released lease is taken at once, so a long lease costs a test nothing.
+
+### What was tricky
+
+Choosing how another writer gets in while `a` holds the lease. A forged manifest that names another holder would keep `a` out for ten minutes; a manifest without a lease lets a real second instance take it and commit, so the writer that wins is a real instance of the core.
+
+### What warrants review
+
+- `TestClient_core` is in the test file of `s3store`, so `go test ./internal/store/s3store/` now builds the core and SQLite.
+- `make lint`'s `simlint` line now has three runs joined by `&&`; the other builder may change the same target.
+
+### Future work
+
+- `simlint` has no exception for a package that must make the production host and keep the other rules; the package of the public driver will need one.
+- CI could take the list of browser packages from the `Makefile` instead of writing it out twice.
