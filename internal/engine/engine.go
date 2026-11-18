@@ -338,9 +338,7 @@ func (r *Rows) All() iter.Seq2[[]*s4qlpb.Value, error] {
 		// failure of that end is the error of Close.
 		defer func() {
 			r.reading = false
-			if !r.done {
-				r.endErr = r.end(err)
-			}
+			r.endErr = r.end(err)
 		}()
 		for row, e := range r.src.rows(r.ctx) {
 			if e != nil {
@@ -355,7 +353,6 @@ func (r *Rows) All() iter.Seq2[[]*s4qlpb.Value, error] {
 			r.report.e.host.Yield(r.ctx, "engine: between two rows of a query")
 		}
 		// After the last row, a failure of the end of the read transaction is the last error.
-		r.reading = false
 		if err := r.end(nil); err != nil {
 			yield(nil, err)
 		}

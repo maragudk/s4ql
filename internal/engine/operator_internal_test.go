@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -30,8 +32,10 @@ type fake struct {
 	getFails, upsertFails, annotateFails, commitFails, beginFails, readFails error
 	// upsertPanics makes an upsert panic.
 	upsertPanics bool
-	// tablePanics makes a lookup panic, and endFails is the error of the end of a read transaction.
+	// tablePanics makes a lookup panic, tableFails is the error of a lookup, and endFails is the
+	// error of the end of a read transaction.
 	tablePanics bool
+	tableFails  error
 	endFails    error
 	// scans counts the scans that have started and not ended, and open the transactions.
 	scans, open int
@@ -92,6 +96,9 @@ func (x fakeTx) table(_ context.Context, name string) (*s4qlpb.CreateTable, erro
 	x.f.calls = append(x.f.calls, "table "+name)
 	if x.f.tablePanics {
 		panic("the lookup panics")
+	}
+	if x.f.tableFails != nil {
+		return nil, x.f.tableFails
 	}
 	if t, ok := x.f.tables[fold(name)]; ok {
 		return t.ct, nil
@@ -251,12 +258,14 @@ func TestScan(t *testing.T) {
 	})
 
 	t.Run("should end at once with the error of a context that has ended", func(t *testing.T) {
-		f := newFake().with("t1", []string{"k"}, []int64{1})
+		f := newFake().with("t1", []string{"k"}, []int64{1}).with("t2", []string{"k"})
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		rows, err := collect(ctx, &scan{r: fakeTx{f}, table: f.tables["t1"].ct})
-		is.True(t, errors.Is(err, context.Canceled))
-		is.Equal(t, 0, len(rows))
+		for _, table := range []string{"t1", "t2"} {
+			rows, err := collect(ctx, &scan{r: fakeTx{f}, table: f.tables[table].ct})
+			is.True(t, errors.Is(err, context.Canceled), table)
+			is.Equal(t, 0, len(rows))
+		}
 	})
 
 	t.Run("should end with an error of the storage in the middle", func(t *testing.T) {
@@ -443,6 +452,14 @@ func TestBuild(t *testing.T) {
 				var se *sqlerr.Error
 				is.True(t, errors.As(err, &se))
 				is.Equal(t, c.err, se.Message)
+				is.Equal(t, 1, se.Code)
+				is.Equal(t, 1, se.ExtendedCode)
+				// The offset is that of the name for a table that exists, and none for the others.
+				want := -1
+				if strings.HasSuffix(c.err, "already exists") {
+					want = strings.Index(c.src, `"T1"`)
+				}
+				is.Equal(t, want, se.Offset)
 			}
 			is.Equal(t, c.calls, fmt.Sprint(c.f.calls))
 		})
@@ -486,6 +503,99 @@ func (failingLookUp) table(context.Context, string) (*s4qlpb.CreateTable, error)
 // newTestEngine on the fake f.
 func newTestEngine(f *fake, b bugs) *Engine {
 	return newEngine(f, host.New(), Options{bugs: b})
+}
+
+// newLoggedEngine on the fake f, whose events h records, each as its attributes.
+func newLoggedEngine(f *fake, b bugs, h *recorder) *Engine {
+	return newEngine(f, host.New(), Options{bugs: b, Logger: slog.New(h)})
+}
+
+// recorder of events, each as its attributes, with its message under "msg".
+type recorder struct {
+	events []map[string]string
+}
+
+func (h *recorder) Enabled(context.Context, slog.Level) bool { return true }
+func (h *recorder) WithAttrs([]slog.Attr) slog.Handler       { return h }
+func (h *recorder) WithGroup(string) slog.Handler            { return h }
+
+func (h *recorder) Handle(_ context.Context, r slog.Record) error {
+	m := map[string]string{"msg": r.Message}
+	r.Attrs(func(a slog.Attr) bool {
+		m[a.Key] = a.Value.String()
+		return true
+	})
+	h.events = append(h.events, m)
+	return nil
+}
+
+// last event, without its duration.
+func (h *recorder) last() string {
+	e := maps.Clone(h.events[len(h.events)-1])
+	delete(e, attrDuration)
+	delete(e, attrSQL)
+	return fmt.Sprint(e)
+}
+
+func TestEngine_report(t *testing.T) {
+	empty := format.EmptyLog.String()
+	t.Run("should give the position, the rows, and the outcome of each path in the event", func(t *testing.T) {
+		h := &recorder{}
+		f := newFake().with("t1", []string{"v1"}, []int64{1}, []int64{2})
+		e := newLoggedEngine(f, bugs{}, h)
+
+		_, _ = e.Exec(t.Context(), "create table t1 (")
+		is.Equal(t, fmt.Sprintf("map[error:table t1 already exists msg:statement outcome:sqlite_error sqlite.code:1 sqlite.extended_code:1 statement.position:%v statement.rows:0]", empty), h.last())
+
+		rows, err := e.Query(t.Context(), "select * from t1")
+		is.NotError(t, err)
+		for _, err := range rows.All() {
+			is.NotError(t, err)
+		}
+		is.Equal(t, fmt.Sprintf("map[msg:statement outcome:ok statement.kind:select statement.position:%v statement.rows:2 statement.table:t1]", empty), h.last())
+
+		f.scanFails = 1
+		_, err = e.Exec(t.Context(), "select * from t1")
+		is.Equal(t, "the scan fails", err.Error())
+		is.Equal(t, fmt.Sprintf("map[error:the scan fails msg:statement outcome:core_error statement.kind:select statement.position:%v statement.rows:1 statement.table:t1]", empty), h.last())
+
+		f.scanFails, f.endFails = 1, errors.New("the end fails")
+		_, err = e.Exec(t.Context(), "select * from t1")
+		is.Equal(t, "the scan fails", err.Error())
+		is.Equal(t, "the scan fails", h.events[len(h.events)-1][attrError])
+
+		f.scanFails = -1
+		rows, err = e.Query(t.Context(), "select * from t1")
+		is.NotError(t, err)
+		var last error
+		for _, err := range rows.All() {
+			last = err
+		}
+		is.Equal(t, "the end fails", last.Error())
+		is.Equal(t, "the end fails", h.events[len(h.events)-1][attrError])
+
+		_, err = e.Exec(t.Context(), "select * from nosuch")
+		is.Equal(t, "no such table: nosuch", err.Error())
+		is.Equal(t, "no such table: nosuch", h.events[len(h.events)-1][attrError])
+		f.endFails = nil
+
+		f.annotateFails = errors.New("annotate fails")
+		_, err = e.Exec(t.Context(), "insert into t1 (v1) values (3)")
+		is.Equal(t, "annotate fails", err.Error())
+		is.Equal(t, fmt.Sprintf("map[commit.parent:%[1]v error:annotate fails msg:statement outcome:core_error statement.kind:insert statement.position:%[1]v statement.rows:0 statement.table:t1]", empty), h.last())
+		f.annotateFails = nil
+
+		f.readFails = core.ErrNoLease
+		_, err = e.Query(t.Context(), "select * from t1")
+		is.True(t, errors.Is(err, core.ErrNoLease))
+		is.Equal(t, "map[error:no valid lease msg:statement outcome:refused statement.kind:select statement.rows:0 statement.table:t1]", h.last())
+		f.readFails = nil
+
+		f.commitFails = core.ErrOutcomeUnknown
+		_, err = newLoggedEngine(f, bugs{ackUnknown: true}, h).Exec(t.Context(), "insert into t1 (v1) values (4)")
+		is.NotError(t, err)
+		is.Equal(t, "1", h.events[len(h.events)-1][attrRows])
+	})
 }
 
 func TestEngine_write(t *testing.T) {
@@ -546,6 +656,10 @@ func TestEngine_write(t *testing.T) {
 		res, err := newTestEngine(f, bugs{ackUnknown: true}).Exec(t.Context(), "insert into t1 (v1) values (1)")
 		is.NotError(t, err)
 		is.Equal(t, Result{Changes: 1, SetsChanges: true}, res)
+		f.commitFails = core.ErrNoLease
+		_, err = newTestEngine(f, bugs{ackUnknown: true}).Exec(t.Context(), "insert into t1 (v1) values (2)")
+		is.True(t, errors.Is(err, core.ErrNoLease))
+		f.commitFails = nil
 
 		f = newFake()
 		_, err = newTestEngine(f, bugs{keepOpen: true}).Exec(t.Context(), "drop table t")
@@ -566,6 +680,9 @@ func TestEngine_write(t *testing.T) {
 		_, err = newTestEngine(f, bugs{checkOutside: true}).Exec(t.Context(), "insert into t1 (v1) values (1)")
 		is.True(t, errors.Is(err, core.ErrNoLease))
 		is.Equal(t, 0, f.open)
+		// Only an insert is checked so.
+		_, err = newTestEngine(f, bugs{checkOutside: true}).Exec(t.Context(), "drop table t1")
+		is.NotError(t, err)
 	})
 }
 
@@ -637,6 +754,22 @@ func TestEngine_query(t *testing.T) {
 		is.Equal(t, 0, f.open)
 	})
 
+	t.Run("should keep the read transaction when Close is called during the loop, until the loop ends", func(t *testing.T) {
+		f := newFake().with("t1", []string{"v1"}, []int64{1}, []int64{2})
+		rows, err := newTestEngine(f, bugs{}).Query(t.Context(), "select * from t1")
+		is.NotError(t, err)
+		n := 0
+		for _, err := range rows.All() {
+			is.NotError(t, err)
+			n++
+			is.NotError(t, rows.Close())
+			is.Equal(t, 1, f.open)
+			is.Equal(t, 1, f.scans)
+		}
+		is.Equal(t, 1, n)
+		is.Equal(t, 0, f.open)
+	})
+
 	t.Run("should give each row once, and nothing in a second loop", func(t *testing.T) {
 		f := newFake().with("t1", []string{"v1"}, []int64{1}, []int64{2})
 		rows, err := newTestEngine(f, bugs{}).Query(t.Context(), "select * from t1")
@@ -672,5 +805,14 @@ func TestEngine_started(t *testing.T) {
 		f.readFails = core.ErrNoLease
 		_, err = e.Exec(t.Context(), "create table T1 (")
 		is.True(t, errors.Is(err, core.ErrNoLease))
+		f.readFails, f.tableFails = nil, errors.New("the lookup fails")
+		_, err = e.Exec(t.Context(), "create table T1 (")
+		is.Equal(t, "the lookup fails", err.Error())
+		is.Equal(t, 0, f.open)
+
+		f.calls = nil
+		_, err = e.Exec(t.Context(), "create table t1 x")
+		is.Equal(t, `near "x": syntax error`, err.Error())
+		is.Equal(t, 0, len(f.calls))
 	})
 }
