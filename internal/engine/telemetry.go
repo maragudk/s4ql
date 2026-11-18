@@ -119,8 +119,8 @@ func (r *report) of(s stmt.Statement) {
 	}
 }
 
-// panicked ends the statement, which panicked in the engine, with [errPanicked], unless its event is
-// logged already. A panic of the application's code in a loop over [Rows.All] is not one: the loop
+// panicked ends the statement with [errPanicked], unless its event is logged already: then the
+// statement panicked in the engine before its end. A panic of the application's code in a loop over [Rows.All] is not one: the loop
 // ends there as it ends at a break.
 func (r *report) panicked(ctx context.Context) {
 	if !r.ended {

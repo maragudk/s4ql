@@ -97,15 +97,9 @@ type Result struct {
 // ROWID, and SQLite does not record an insert into such a table.
 func (e *Engine) Exec(ctx context.Context, src string) (Result, error) {
 	r := e.newReport(src)
-	returned := false
-	defer func() {
-		if !returned {
-			r.panicked(ctx)
-		}
-	}()
-	res, err := e.exec(ctx, r, src)
-	returned = true
-	return res, err
+	// Every statement of Exec has logged its event when exec returns, so one without is a panic.
+	defer r.panicked(ctx)
+	return e.exec(ctx, r, src)
 }
 
 // exec is [Engine.Exec] of src for the report r.
@@ -405,14 +399,9 @@ func (r *Rows) end(err error) error {
 		return nil
 	}
 	r.done = true
-	returned := false
-	defer func() {
-		if !returned {
-			r.report.panicked(r.ctx)
-		}
-	}()
+	// The event is logged below, unless the end of the transaction panics.
+	defer r.report.panicked(r.ctx)
 	endErr := r.tx.end(r.ctx)
-	returned = true
 	r.report.end(r.ctx, first(err, endErr))
 	return endErr
 }

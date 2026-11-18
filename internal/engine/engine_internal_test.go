@@ -66,6 +66,17 @@ func (h *ticking) Monotonic() time.Duration {
 }
 
 func TestEngine_report(t *testing.T) {
+	t.Run("should log one event for a write through Query", func(t *testing.T) {
+		h := &recorder{}
+		f := newFake().with("t1", []string{"v1"})
+		rows, err := newLoggedEngine(f, bugs{}, h).Query(t.Context(), "drop table t1")
+		is.NotError(t, err)
+		is.NotError(t, rows.Close())
+		is.Equal(t, 1, len(h.events))
+		is.Equal(t, "drop_table", h.events[0][attrKind])
+		is.Equal(t, "ok", h.events[0][attrOutcome])
+	})
+
 	t.Run("should log one event with the outcome internal_error for a panic in the end of the read transaction of a query", func(t *testing.T) {
 		for _, end := range []string{"last row", "close"} {
 			h := &recorder{}
@@ -120,7 +131,9 @@ func TestEngine_report(t *testing.T) {
 					is.NotError(t, err)
 					for _, err := range rows.All() {
 						is.NotError(t, err)
-						panic("the consumer")
+						if c.panic == "the consumer" {
+							panic("the consumer")
+						}
 					}
 				}()
 				is.Equal(t, 0, f.open)

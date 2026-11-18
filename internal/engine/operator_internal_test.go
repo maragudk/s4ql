@@ -26,8 +26,8 @@ type fake struct {
 	scanFails int
 	// getFails, upsertFails, annotateFails, and commitFails are the errors of those calls.
 	getFails, upsertFails, annotateFails, commitFails, beginFails, readFails error
-	// upsertPanics makes an upsert panic, scanPanics a scan, and endPanics the end of a read
-	// transaction.
+	// upsertPanics makes an upsert panic, scanPanics a scan before its second row, and endPanics
+	// the end of a read transaction.
 	upsertPanics, scanPanics, endPanics bool
 	// tablePanics makes a lookup panic, tableFails is the error of a lookup, and endFails is the
 	// error of the end of a read transaction.
@@ -107,13 +107,13 @@ func (x fakeTx) scan(_ context.Context, name string) iter.Seq2[[]*s4qlpb.Value, 
 	return func(yield func([]*s4qlpb.Value, error) bool) {
 		x.f.scans++
 		defer func() { x.f.scans-- }()
-		if x.f.scanPanics {
-			panic("the scan panics")
-		}
 		t := x.f.tables[fold(name)]
 		rows := slices.Clone(t.rows)
 		slices.SortFunc(rows, func(a, b []*s4qlpb.Value) int { return cmp.Compare(a[0].GetInteger(), b[0].GetInteger()) })
 		for i, row := range rows {
+			if i == 1 && x.f.scanPanics {
+				panic("the scan panics")
+			}
 			if i == x.f.scanFails {
 				yield(nil, errors.New("the scan fails"))
 				return
@@ -469,6 +469,7 @@ func TestBuild(t *testing.T) {
 			{name: "an insert of no rows", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{}}, err: "an insert of 0 rows"},
 			{name: "an insert of two values", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Integer{Value: 1}, &Integer{Value: 2}}}}}, err: "an insert of 2 values"},
 			{name: "an insert into a table of two columns", plan: &Insert{Table: stmt.Name{Value: "ab"}, Columns: []stmt.Name{{Value: "a"}}, Source: &Values{Rows: one}}, err: "an insert of 1 columns into a table of 2 columns with the key [0]"},
+			{name: "an insert into a table without a key", plan: &Insert{Table: stmt.Name{Value: "nokey"}, Columns: v, Source: &Values{Rows: one}}, err: "an insert of 1 columns into a table of 1 columns with the key []"},
 			{name: "an insert into two columns", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: []stmt.Name{{Value: "v"}, {Value: "V"}}, Source: &Values{Rows: one}}, err: "an insert of 2 columns into a table of 1 columns with the key [0]"},
 			{name: "a plan of a type that the engine does not know", plan: unknownPlan{}, err: "a plan of type engine.unknownPlan"},
 			{name: "a table of two columns", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}, {Name: stmt.Name{Value: "b"}}}, PrimaryKey: []int{0}}, err: "a table of 2 columns with the key [0]"},
@@ -476,7 +477,8 @@ func TestBuild(t *testing.T) {
 		}
 		for _, c := range cases {
 			t.Run(c.name, func(t *testing.T) {
-				f := newFake().with("t", []string{"v"}, []int64{1}).with("ab", []string{"a", "b"})
+				f := newFake().with("t", []string{"v"}, []int64{1}).with("ab", []string{"a", "b"}).with("nokey", []string{"v"})
+				f.tables["nokey"].ct.SetPrimaryKey(nil)
 				var err error
 				if q, ok := c.plan.(*Query); ok {
 					_, err = buildQuery(t.Context(), fakeTx{f}, q)

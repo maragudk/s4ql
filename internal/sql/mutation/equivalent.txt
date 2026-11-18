@@ -239,8 +239,6 @@ stmt/vocabulary.go childAt condition: s.Start <= offset => true
 # The planted bugs, which only the tests switch on.
 internal/engine/engine.go Engine.write condition: err == nil => false
 	It differs only with the planted bug keepOpen, when an operator panics.
-internal/engine/engine.go Engine.checkOutside remove statement: r.at(rt.position(), true) =>
-	The planted bug checkOutside: its position is replaced by that of the write transaction, and the bug is found by a commit that fails in SQLite either way.
 internal/engine/engine.go Engine.checkOutside boolean: true => false
 	The planted bug checkOutside: its position is replaced by that of the write transaction, and the bug is found by a commit that fails in SQLite either way.
 
@@ -251,6 +249,12 @@ internal/engine/engine.go Rows.read remove statement: r.report.e.host.Yield(r.ct
 # Bounds that mean "none".
 internal/engine/operator.go columnPosition constant: -1 => -2
 	The caller tests for a negative position.
+
+# Arguments of a comparison that is symmetric.
+internal/engine/operator.go buildSink swap arguments: slices.Equal(p.PrimaryKey, []int{0}) => slices.Equal([]int{0}, p.PrimaryKey)
+	slices.Equal is symmetric.
+internal/engine/operator.go buildSink swap arguments: slices.Equal(t.GetPrimaryKey(), []uint32{0}) => slices.Equal([]uint32{0}, t.GetPrimaryKey())
+	slices.Equal is symmetric.
 
 # The events.
 internal/engine/telemetry.go outcomeOf remove statement: return "core_error", slog.LevelWarn => #2
