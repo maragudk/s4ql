@@ -128,3 +128,74 @@ See the later steps.
 ### Future work
 
 - A check in CI that the trace hashes of the browser equal the native ones, which today is a manual comparison.
+
+## Step 3: Evidence, self-review, and the native checks
+
+**Author:** builder (browser binding)
+
+### Prompt Context
+
+**Verbatim prompt:** (continues from Step 1)
+
+**Interpretation:** measure what the brief asks for, review the diff with competing reviewers, and show that the native build is unchanged.
+
+**Inferred intent:** the lead can merge on the evidence without rerunning everything.
+
+### What I did
+
+- `make test-browser BROWSERFLAGS='-count=1 -json'`, all five packages in Chromium: every test passed, in 3 min 1 s of wall time. `internal/core` 177 s, 44 top-level tests and 213 subtests passed, three top-level tests skipped as natively by default (`TestSimulationSeed` and `TestPlantedDataRace` without their environment variables, `TestFreeRunning_plantedDataRace` without the race detector). `internal/store/simstore` 25 s (20 and 97), `internal/sim` 17 s (15 and 93, two skipped by default: `TestSimulationSpeed`, `TestScheduler_mutexHeldAcrossWait`), `internal/sqlite` 2 s, `internal/sqlite/faultvfs` 2 s (2 and 19).
+- The trace hashes of `TestSimulation` with the default seeds, read from `go test -json` so that each line belongs to its subtest, natively and in Chromium:
+
+  | Workload | Native (cgo) | Chromium |
+  |---|---|---|
+  | one instance | `5367e1c2…7438` | `5367e1c2…7438` |
+  | writes that land long after they were sent | `474a8a3e…b46c` | `474a8a3e…b46c` |
+  | instances that compete, clocks that move, crashes, and buggify | `9e400673…7809` | `9e400673…7809` |
+  | callers that never pause | `a063e0fc…03c7` | `a063e0fc…03c7` |
+
+  The research note §7 pairs the hashes with other workloads; with `-v` the lines of the parallel subtests interleave, and only `-json` says which is which. The set of four hashes is the same as there.
+- Sizes: `sqlite3.wasm` 879,430 bytes (406,762 with `gzip -9`), `sqlite3.js` 439,732 (93,665), the test binary of `internal/core` 14,021,415 bytes (3,296,330).
+- A writer sub-agent wrote `internal/sqlite/browser/README.md` from a brief; I filled in the measurements.
+- Native `make test`: 22 packages ok. `make lint` failed first: the simulation lint reported the runner's goroutines, `time.After`, `context.Background`, and channel waits (`main.go:132:2: a go statement starts a goroutine outside the host`). The runner and the update tool are commands that never run under the simulation, so they joined the exempt list in `internal/simlint/simlint.go`, as `internal/sqlite/update` is. Then `make lint` passed, with the browser build linted too.
+- The code-review skill, at medium, over `main...HEAD`. Ten findings; what I did with each:
+  - Fixed: a JavaScript exception in a VFS method unwound through SQLite's C frames. Every method now catches, logs, and returns the I/O error of its kind.
+  - Fixed: `xOpen` opened a file that may not be written for writing. It now opens it read-only and reports `SQLITE_OPEN_READONLY`, as the unix VFS does, and SQLite refuses the write with `SQLITE_READONLY`; a new test shows it.
+  - Fixed: `xLock` let a connection take PENDING while another held RESERVED. It now applies the unix VFS's rule for connections of one process (`unixLock`: a connection whose lock differs from the highest in the process may only take SHARED, and none while that is PENDING or higher).
+  - Fixed: each `faultvfs.New` leaked its `sqlite3_vfs`, its name, and its methods in the function table. `unregisterVFS` now disposes of them.
+  - Fixed: the fallback of `vfs.js` for running without `fs.js` was dead code with a second `resize` and `writeAt`. Removed; installing the VFS now requires `fs.js`.
+  - Documented: the open reads the schema, so through `faultvfs` an armed fault counts the reads of the open; `pragma temp_store` reads 1 where the cgo build reads 0.
+  - Already documented: a file operation of Go's `os` cannot finish while Go is inside a call into SQLite, so a holder of a lock that writes a file before it releases the lock keeps a waiter waiting for its busy timeout.
+  - Rejected: "options.h sets `SQLITE_DQS` 0 and the official build does not". The official build reports `DQS=0` among its compile options.
+  - Rejected: `SQLITE_THREADSAFE=0` with a `Conn` shared between goroutines. `Conn` is not safe for concurrent use in either binding.
+  - Not done: moving the code that does not depend on C into files shared by both bindings. It would edit `sqlite.go` and `faultvfs.go` beyond a build constraint, which the brief rules out. The duplicates are `ResultCode`, `Error`, `Type`, `Prepare`, `Exec`, and the constants of `faultvfs`.
+
+### Why
+
+The research's pairing of hashes to workloads looked off once `-json` gave the owner of each line, so the table here comes from `-json` on both sides.
+
+### What worked
+
+The review's fixes changed no result: the binding, `faultvfs`, `sim`, and `simstore` passed again in Chromium.
+
+### What didn't work
+
+- `make lint` and the simulation lint, as above.
+
+### What I learned
+
+- `go test -json` is the reliable way to attribute `t.Logf` lines of parallel subtests.
+
+### What was tricky
+
+- The tool refuses some long shell commands, so the edits after the review went through small Python scripts in the scratch directory.
+
+### What warrants review
+
+- The CI job `browser` was not run, since nothing was pushed. It assumes `google-chrome` on the PATH of `ubuntu-latest`, passes `--no-sandbox`, and lints with `golangci-lint-action` under `GOOS=js GOARCH=wasm` in the step's environment.
+- `internal/simlint/simlint.go` got two entries in its exempt list. It is not one of the packages the brief forbids, but it is outside `internal/sqlite`.
+
+### Future work
+
+- A CI check that the trace hashes in Chromium equal the native ones.
+- `//go:wasmimport` for the SQLite calls, which the research timed at 6 ns a call against 807 ns through `syscall/js`, if the page turns out too slow.
+- Step 2: the simulator on the site on this binding.
