@@ -573,3 +573,37 @@ func TestCheck(t *testing.T) {
 		t.Logf("%v keywords are names after FROM: %v", len(names), names)
 	})
 }
+
+// BenchmarkCheck checks every statement of the corpus once per iteration.
+func BenchmarkCheck(b *testing.B) {
+	sqls := corpusSQL()
+	n := 0
+	for _, sql := range sqls {
+		n += len(sql)
+	}
+	b.SetBytes(int64(n))
+	for b.Loop() {
+		for _, sql := range sqls {
+			_, _ = stmt.Check(sql)
+		}
+	}
+}
+
+// BenchmarkCheck_long checks long texts: a SELECT with many result columns, an INSERT with many rows,
+// both not supported, and a supported statement with a long comment.
+func BenchmarkCheck_long(b *testing.B) {
+	for _, n := range []int{1000, 10000, 100000} {
+		for _, c := range []struct{ name, src string }{
+			{"columns", "select " + strings.Repeat("*, ", n) + "* from t"},
+			{"rows", "insert into t (v) values " + strings.Repeat("(1), ", n) + "(1)"},
+			{"comment", "select * from t /* " + strings.Repeat("x", 10*n) + " */"},
+		} {
+			b.Run(fmt.Sprintf("%v-%v", c.name, n), func(b *testing.B) {
+				b.SetBytes(int64(len(c.src)))
+				for b.Loop() {
+					_, _ = stmt.Check(c.src)
+				}
+			})
+		}
+	}
+}
