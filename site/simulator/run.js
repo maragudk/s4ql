@@ -156,11 +156,13 @@ function parseFaults(s) {
   if (s === "none") return {};
   const f = {};
   for (const kv of s.split(",")) {
-    const [k, v] = kv.split(":");
+    const parts = kv.split(":");
+    const [k, v] = parts;
     const fault = FAULTS.find((x) => x.key === k);
-    if (!fault || k in f || !/^\d+(\.\d+)?(e-?\d+)?$/.test(v || "")) return null;
-    const n = Number(v);
-    if (fault.kind === "p" ? n > 1 : n > 1800000) return null;
+    if (parts.length !== 2 || !fault || Object.hasOwn(f, k)) return null;
+    // A probability is a decimal from 0 to 1, and a duration whole milliseconds, as the page writes them.
+    const n = fault.kind === "p" ? (/^\d+(\.\d+)?(e-\d+)?$/.test(v) ? Number(v) : null) : integer(v, 0, 1800000);
+    if (n === null || n > (fault.kind === "p" ? 1 : 1800000)) return null;
     f[k] = n;
   }
   return f;
@@ -185,7 +187,7 @@ function parseAction(s, run) {
   }
   if (name === "calm") return f.length === 2 ? { at, do: name } : null;
   if (name === "loseAnswer" || name === "failRequest") {
-    if (!(f[2] in PURPOSES) || f.length > 4 || (f.length === 4 && !inst(f[3]))) return null;
+    if (!Object.hasOwn(PURPOSES, f[2]) || f.length > 4 || (f.length === 4 && !inst(f[3]))) return null;
     return f.length === 4 ? { at, do: name, request: f[2], instance: f[3] } : { at, do: name, request: f[2] };
   }
   if (name === "workload") return f.length === 3 && (f[2] === "0" || f[2] === "1") ? { at, do: name, on: f[2] === "1" } : null;

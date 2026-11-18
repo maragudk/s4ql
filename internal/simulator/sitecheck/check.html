@@ -45,7 +45,40 @@ async function open(address) {
 
 const json = (events) => events.map((e) => JSON.stringify(e));
 
+// unit checks of run.js, the run as data: the link and the schedule.
+async function unit() {
+  const R = await import("/simulator/run.js");
+  const run = R.defaults();
+  run.seed = 2 ** 53 - 1;
+  run.buggify = true;
+  run.faults = { lostRequest: 1e-7, hang: 0.5, slowBy: 1000 }; // in the order of R.FAULTS, as decode gives them
+  for (const a of [
+    { at: 45001, do: "cutOff", instance: "c", for: 20000 },
+    { at: 45001, do: "shiftWall", instance: "a", by: -60000 },
+    { at: 50000, do: "loseAnswer", request: "commit" },
+    { at: 50000, do: "failRequest", request: "upload", instance: "b" },
+    { at: 50001, do: "outage", for: 10000 },
+    { at: 50002, do: "workload", on: false },
+    { at: 50003, do: "calm" },
+  ]) run.schedule = R.insert(run.schedule, a);
+  const back = R.decode("#" + R.encode(run, 12345));
+  expect(back && JSON.stringify(back.run) === JSON.stringify(run) && back.t === 12345, "a run goes through the link and back unchanged");
+  const s = R.insert([{ at: 1, do: "calm" }, { at: 5, do: "calm" }, { at: 9, do: "calm" }], { at: 5, do: "write", instance: "a" });
+  expect(JSON.stringify(s.map((a) => a.at + a.do)) === JSON.stringify(["1calm", "5calm", "5write", "9calm"]), "an action goes after every action at its time or before it");
+  const bad = [
+    "", "#seed=7334716c&n=3", "#seed=7334716c&n=3&a=1.crash.0", "#v=2", "#v=1&x=1", "#v=1&v=1",
+    "#v=1&seed=20000000000000", "#v=1&n=6", "#v=1&end=0", "#v=1&callers=9",
+    "#v=1&s=1.loseAnswer.toString", "#v=1&s=1.loseAnswer.__proto__", "#v=1&s=1.crash.d", "#v=1&n=2&s=1.crash.c",
+    "#v=1&s=5.calm~1.calm", "#v=1&s=120000.calm", "#v=1&s=1.cutOff.a.0", "#v=1&s=1.shiftWall.a.0", "#v=1&s=1.jump.a",
+    "#v=1&faults=slowBy:1.5", "#v=1&faults=hang:0.1:2", "#v=1&faults=hang:2", "#v=1&faults=hang:0.1,hang:0.2", "#v=1&faults=toString:1",
+    "#v=1&t=120001",
+  ];
+  const accepted = bad.filter((h) => R.decode(h) !== null);
+  expect(accepted.length === 0, `${bad.length} links that are not runs of the page are refused` + (accepted.length ? ": accepted " + accepted.join(" ") : ""));
+}
+
 async function check() {
+  await unit();
   const a = await open("/simulator/");
   const first = a.win.s4qlPage.response;
   expect(first.events.length > 0, `the default run has ${first.events.length} events`);
@@ -73,6 +106,11 @@ async function check() {
   expect(JSON.stringify(before(first)) === JSON.stringify(before(second)), `the ${before(second).length} events before ${at} ms are the same in both runs`);
   expect(JSON.stringify(after(first)) !== JSON.stringify(after(second)), "the events from that time on differ");
   expect(first.hash !== second.hash, "the hash differs");
+
+  // A link inside the page scrolls, and keeps the run in the address.
+  a.doc.getElementById("chip").click();
+  await until(() => a.win.location.hash.startsWith("#v=1"));
+  expect(a.win.document === a.doc && a.html.dataset.runs === "2", "a link inside the page keeps the page and its run");
 
   // The link of the page gives the same run, at the same time.
   const link = a.win.location.href;

@@ -50,6 +50,8 @@ let shown = null; // {run, response} that the page shows
 let events = [];
 let words = [];
 let notable = []; // indexes of the events that are not routine
+let checks = []; // indexes of the events of the kind check
+let results = new Map(); // the event of each action of the schedule, by its index
 let cursor = 0;
 let drawn = null; // the key of what was last drawn for the cursor
 let playing = false;
@@ -116,6 +118,15 @@ async function pump() {
       apply(w, response, performance.now() - started);
     } catch (e) {
       if (wanted) continue;
+      if (shown && !w.restore) {
+        // The engine forgets its last run when it refuses one, so the page asks for the run that it
+        // shows again, and the controls go back to it.
+        run = structuredClone(shown.run);
+        drawSettings();
+        writeLink(!playing);
+        wanted = { run: structuredClone(shown.run), why: `The engine refused the change: ${e.message}. The page shows the run from before it.`, restore: true };
+        continue;
+      }
       fail("The engine refused the run.", e.message);
     }
   }
@@ -139,7 +150,15 @@ function apply(w, response, ms) {
   });
   shown.names = names;
   notable = [];
+  checks = [];
+  results = new Map();
   words.forEach((w, i) => { if (!w.routine) notable.push(i); });
+  events.forEach((e, i) => {
+    if (e.kind === "check") checks.push(i);
+    if (e.kind === "action") results.set(e.action, e);
+  });
+  // The state of the run before is no guide to this one.
+  state = null;
   runs++;
   root.dataset.runs = String(runs);
   root.dataset.hash = response.hash;
@@ -150,6 +169,7 @@ function apply(w, response, ms) {
   $("failure").hidden = true;
   root.dataset.engine = "ready";
   buildInstances();
+  drawState();
   drawStrip();
   drawn = null;
   stateFor = null;
@@ -169,6 +189,16 @@ function upTo(t) {
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
     if (events[mid].t <= t) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+function below(t) {
+  // the number of events with t < the time.
+  let lo = 0, hi = events.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (events[mid].t < t) lo = mid + 1;
     else hi = mid;
   }
   return lo;
@@ -220,7 +250,7 @@ function frame(ts) {
 }
 
 async function fetchState() {
-  if (stateBusy || busy || !shown) return;
+  if (stateBusy || busy || !shown || root.dataset.engine === "failed") return;
   if (stateFor && stateFor.runs === runs && stateFor.t === cursor) return;
   stateBusy = true;
   const t = cursor, r = runs;
@@ -232,6 +262,8 @@ async function fetchState() {
       drawState();
     }
   } catch (e) {
+    stateFor = { runs: r, t };
+    setPlaying(false);
     fail("The engine could not give the state of the run.", e.message);
   } finally {
     stateBusy = false;
@@ -328,9 +360,9 @@ function drawChecks() {
   const n = upTo(cursor);
   const by = {};
   let violations = 0, excused = 0;
-  for (let i = 0; i < n; i++) {
+  for (const i of checks) {
+    if (i >= n) break;
     const e = events[i];
-    if (e.kind !== "check") continue;
     by[e.invariant] = by[e.invariant] || { bad: 0, excused: 0 };
     if (e.excused) { by[e.invariant].excused++; excused++; } else { by[e.invariant].bad++; violations++; }
   }
@@ -359,8 +391,6 @@ function drawChecks() {
 function drawSchedule() {
   const list = $("schedule");
   const s = shown.run.schedule;
-  const results = new Map();
-  for (const e of events) if (e.kind === "action") results.set(e.action, e);
   const reached = s.filter((a) => a.at <= cursor).length;
   const key = runs + ":" + reached + ":" + s.length;
   $("clear").disabled = s.length === 0 || busy;
@@ -405,7 +435,7 @@ function drawControls() {
     const st = instanceState(card.name);
     // A crashed process can only be restarted: the engine ignores every other action for it.
     const crashed = !!st && st.state === "crashed";
-    for (const b of card.buttons) b.disabled = off || (crashed && b.dataset.a !== "crash");
+    for (const b of card.buttons) b.disabled = off || !state || (crashed && b.dataset.a !== "crash");
   }
 }
 
@@ -476,6 +506,10 @@ function instanceState(name) {
 }
 
 function instanceAction(name, a) {
+  if (!state) {
+    note("The state at this time is still on its way from the engine.");
+    return;
+  }
   const st = instanceState(name);
   switch (a) {
     case "write": case "read": return add({ do: a, instance: name });
@@ -634,7 +668,8 @@ function drawSettings() {
   options($("lease"), R.LEASES.includes(run.lease) ? R.LEASES : [...R.LEASES, run.lease].sort((a, b) => a - b), R.span, run.lease);
   options($("latency"), R.LATENCIES.includes(run.latency) ? R.LATENCIES : [...R.LATENCIES, run.latency].sort((a, b) => a - b), R.span, run.latency);
   $("buggify").checked = run.buggify;
-  options($("callers"), [0, 1, 2, 4, 8], (v) => v + (v === 1 ? " each" : " each"), run.callers);
+  const callers = [0, 1, 2, 4, 8];
+  options($("callers"), callers.includes(run.callers) ? callers : [...callers, run.callers].sort((a, b) => a - b), (v) => v + " each", run.callers);
   options($("think"), R.THINKS.includes(run.think) ? R.THINKS : [...R.THINKS, run.think].sort((a, b) => a - b), R.span, run.think);
   options($("writes"), [0, 20, 40, 60, 80, 100].includes(run.writes) ? [0, 20, 40, 60, 80, 100] : [0, 20, 40, 60, 80, 100, run.writes].sort((a, b) => a - b), (v) => v + "%", run.writes);
   options($("from"), ["", ...Array.from({ length: run.instances }, (_, i) => R.instanceName(i))], (v) => v || "any instance", $("from").value || "");
@@ -674,7 +709,7 @@ $("step").addEventListener("click", () => {
   setCursor(next !== undefined && next < events.length ? events[next].t : shown.run.end);
 });
 $("back").addEventListener("click", () => {
-  const lo = countBelow(events.map((e) => e.t), cursor);
+  const lo = below(cursor);
   // the last shown event before the cursor.
   let i = lo - 1;
   if (!$("every").checked) while (i >= 0 && words[i].routine) i--;
@@ -701,6 +736,7 @@ document.addEventListener("click", (e) => {
   if (r && !busy) {
     const i = Number(r.dataset.remove);
     const a = run.schedule[i];
+    if (!a) return;
     run.schedule = run.schedule.filter((_, k) => k !== i);
     writeLink(!playing);
     rerun(`Removed: ${R.actionWords(a)} at ${R.clock(a.at)}. The run is the same up to that time.`);
@@ -813,6 +849,20 @@ async function start() {
 
 // A link pasted into the address bar of the page changes only its hash; the page then starts again
 // from that link. The page itself changes the hash with history.replaceState, which fires no event.
-window.addEventListener("hashchange", () => location.reload());
+window.addEventListener("hashchange", () => {
+  // A link inside the page, such as the skip link or the checker's chip, only scrolls; the run goes
+  // back into the address.
+  let id = "";
+  try {
+    id = decodeURIComponent(location.hash.slice(1));
+  } catch {
+    // not the id of an element.
+  }
+  if (id && document.getElementById(id)) {
+    if (shown) writeLink(!playing);
+    return;
+  }
+  location.reload();
+});
 
 start();
