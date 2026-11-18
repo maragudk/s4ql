@@ -1,7 +1,8 @@
 // Package faultvfs is an SQLite VFS that makes file operations fail on demand. It wraps SQLite's
 // default VFS, and passes every operation on to it except those that a [Fault] makes fail. Whether
 // an operation fails depends only on the fault that is armed and on the operations since it was
-// armed, and not on time.
+// armed, and not on time. It also counts the sleeps that SQLite asks of it, so that a test can tell
+// that SQLite waits for a lock without measuring time.
 //
 // The C code needs only the types of sqlite3.h, and reaches SQLite through the function pointers of
 // the default VFS and of its files, so it links no second copy of SQLite.
@@ -40,6 +41,10 @@ typedef struct s4ql_fault {
 	int ops, files, skip, times, code;
 	// failed is the number of operations that failed, and open the number of files that are open.
 	int failed, open;
+	// sleeps is the number of times that SQLite asked the VFS to sleep, and slept how many
+	// microseconds it asked for in all.
+	int sleeps;
+	sqlite3_int64 slept;
 } s4ql_fault;
 
 // s4ql_fault_file is a file of the VFS. The file of the real VFS follows it in the same memory.
@@ -270,6 +275,11 @@ static int s4ql_randomness(sqlite3_vfs *vfs, int n, char *out) {
 }
 
 static int s4ql_sleep(sqlite3_vfs *vfs, int microseconds) {
+	s4ql_fault *v = (s4ql_fault *)vfs;
+	pthread_mutex_lock(&v->mu);
+	v->sleeps++;
+	v->slept += microseconds;
+	pthread_mutex_unlock(&v->mu);
 	return S4QL_VFS(vfs)->xSleep(S4QL_VFS(vfs), microseconds);
 }
 
@@ -330,6 +340,15 @@ static void s4ql_fault_counts(s4ql_fault *v, int *failed, int *open) {
 	pthread_mutex_unlock(&v->mu);
 }
 
+// s4ql_fault_sleeps of the VFS: how many times SQLite asked it to sleep, and for how many
+// microseconds in all.
+static void s4ql_fault_sleeps(s4ql_fault *v, int *sleeps, sqlite3_int64 *slept) {
+	pthread_mutex_lock(&v->mu);
+	*sleeps = v->sleeps;
+	*slept = v->slept;
+	pthread_mutex_unlock(&v->mu);
+}
+
 static void s4ql_fault_free(s4ql_fault *v) {
 	pthread_mutex_destroy(&v->mu);
 	free(v);
@@ -340,6 +359,7 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"time"
 	"unsafe"
 
 	"maragu.dev/s4ql/internal/sqlite"
@@ -453,6 +473,16 @@ func (f *VFS) Failures() int {
 	var failed, open C.int
 	C.s4ql_fault_counts(f.v, &failed, &open)
 	return int(failed)
+}
+
+// Slept is how many times SQLite asked the VFS to sleep, as its busy handler does while it waits
+// for a lock, and for how long in all. The time is what SQLite asked for, not what passed.
+func (f *VFS) Slept() (int, time.Duration) {
+	f.mustBeOpen()
+	var sleeps C.int
+	var slept C.sqlite3_int64
+	C.s4ql_fault_sleeps(f.v, &sleeps, &slept)
+	return int(sleeps), time.Duration(slept) * time.Microsecond
 }
 
 // Close the VFS: unregister it and free it. Every connection that was opened through it must be

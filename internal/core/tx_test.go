@@ -29,6 +29,7 @@ import (
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sqlite"
+	"maragu.dev/s4ql/internal/sqlite/faultvfs"
 	"maragu.dev/s4ql/internal/store"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
@@ -1196,32 +1197,60 @@ func TestTx_Commit_stopped(t *testing.T) {
 	})
 }
 
+// sleepCounter opens the cache of an instance with the options through a VFS of faultvfs that fails
+// nothing, and counts the sleeps of SQLite's busy handler. It is closed when the test ends, after
+// the instance, whose cleanup is registered later.
+func sleepCounter(t *testing.T, o core.Options) (*faultvfs.VFS, core.Options) {
+	t.Helper()
+	vfs, err := faultvfs.New()
+	is.NotError(t, err)
+	t.Cleanup(func() { is.NotError(t, vfs.Close()) })
+	o.UseVFS(vfs.Name())
+	return vfs, o
+}
+
 func TestDB_Begin(t *testing.T) {
 	t.Run("should wait for a lock on the cache that another connection holds for a while, as long as the busy timeout allows", func(t *testing.T) {
 		w := newWorld(t)
-		// The timeout is far longer than the lock is held, so that the speed of the machine decides
-		// nothing.
-		d := w.serve(t, "a", core.Options{BusyTimeout: time.Minute})
+		vfs, o := sleepCounter(t, core.Options{BusyTimeout: time.Minute})
+		d := w.serve(t, "a", o)
 		transact(t, d, create("t1", 1, "k"))
 
 		other, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
 		is.NotError(t, err)
 		defer func() { is.NotError(t, other.Close()) }()
 		is.NotError(t, other.Exec("begin immediate"))
-		released := make(chan error, 1)
-		go func() {
-			time.Sleep(200 * time.Millisecond)
-			released <- other.Exec("rollback")
-		}()
+		sleeps, _ := vfs.Slept()
+		is.Equal(t, 0, sleeps)
 
-		transact(t, d, upsert("t1", 1))
-		is.NotError(t, <-released)
+		committed := make(chan error, 1)
+		go func() {
+			committed <- func() error {
+				tx, err := d.Begin(t.Context())
+				if err != nil {
+					return err
+				}
+				if err := tx.Upsert(t.Context(), "t1", row(1)); err != nil {
+					return err
+				}
+				return tx.Commit(t.Context())
+			}()
+		}()
+		// The lock is released only after SQLite's busy handler has slept, which it does only when it
+		// found the lock held, so the transaction waits for the lock on every machine.
+		for sleeps == 0 {
+			time.Sleep(time.Millisecond)
+			sleeps, _ = vfs.Slept()
+		}
+		is.NotError(t, other.Exec("rollback"))
+		is.NotError(t, <-committed)
 		is.Equal(t, "t1(k*0): 1", read(t, d))
 	})
 
 	t.Run("should wait for a lock on the cache for a second by default", func(t *testing.T) {
 		w := newWorld(t)
-		d := w.serve(t, "a", core.Options{})
+		vfs, o := sleepCounter(t, core.Options{})
+		d := w.serve(t, "a", o)
 		transact(t, d, create("t1", 1, "k"))
 
 		other, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
@@ -1229,13 +1258,15 @@ func TestDB_Begin(t *testing.T) {
 		defer func() { is.NotError(t, other.Close()) }()
 		is.NotError(t, other.Exec("begin immediate"))
 
-		// SQLite waits at least the busy timeout. The bound above it is far, so that the speed of the
-		// machine decides nothing.
+		// SQLite's busy handler asks to sleep for the busy timeout in all, and sleeps at least as long
+		// as it asks. Only a bound from below on the time that passes holds on a slow machine.
 		start := time.Now()
 		err = beginErr(t, d)
 		elapsed := time.Since(start)
 		is.Error(t, core.ErrBusy, err)
-		is.True(t, elapsed >= time.Second && elapsed < 8*time.Second, fmt.Sprint(elapsed))
+		_, slept := vfs.Slept()
+		is.Equal(t, time.Second, slept)
+		is.True(t, elapsed >= time.Second, fmt.Sprint(elapsed))
 		is.NotError(t, other.Exec("rollback"))
 	})
 
