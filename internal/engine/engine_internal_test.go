@@ -94,7 +94,7 @@ func TestEngine_report(t *testing.T) {
 		e := newLoggedEngine(f, bugs{}, h)
 
 		_, _ = e.Exec(t.Context(), "create table t1 (")
-		is.Equal(t, fmt.Sprintf("map[error:table t1 already exists msg:statement outcome:sqlite_error sqlite.code:1 sqlite.extended_code:1 statement.position:%v statement.rows:0]", empty), h.last())
+		is.Equal(t, "map[error:incomplete input msg:statement outcome:sqlite_error sqlite.code:1 sqlite.extended_code:1 statement.rows:0]", h.last())
 
 		rows, err := e.Query(t.Context(), "select * from t1")
 		is.NotError(t, err)
@@ -236,11 +236,11 @@ func TestEngine_write(t *testing.T) {
 }
 
 func TestEngine_query(t *testing.T) {
-	t.Run("should end the read transaction when building the query panics, also for a syntax error that starts a table", func(t *testing.T) {
+	t.Run("should end the read transaction when building the query panics", func(t *testing.T) {
 		f := newFake()
 		f.tablePanics = true
 		e := newTestEngine(f, bugs{})
-		for _, src := range []string{"select * from t1", "create table t1 ("} {
+		for _, src := range []string{"select * from t1", "select * from T1"} {
 			func() {
 				defer func() { is.Equal(t, "the lookup panics", recover()) }()
 				_, _ = e.Query(t.Context(), src)
@@ -340,28 +340,15 @@ func TestEngine_query(t *testing.T) {
 	})
 }
 
-func TestEngine_started(t *testing.T) {
-	t.Run("should give that a table exists for a syntax error after the start of a table that exists, and the syntax error otherwise", func(t *testing.T) {
+func TestEngine_syntaxError(t *testing.T) {
+	t.Run("should give the syntax error without a transaction, whatever the database holds", func(t *testing.T) {
 		f := newFake().with("t1", []string{"v1"})
+		f.readFails, f.beginFails = core.ErrNoLease, core.ErrNoLease
 		e := newTestEngine(f, bugs{})
 		_, err := e.Exec(t.Context(), "create table T1 (v1 int primary key) strict without rowid")
-		is.Equal(t, "table T1 already exists", err.Error())
-		_, err = e.Query(t.Context(), "create table t2 (v1 int primary key) strict without rowid")
 		is.Equal(t, `near "without": syntax error`, err.Error())
-		_, err = e.Exec(t.Context(), "selec")
-		is.Equal(t, `near "selec": syntax error`, err.Error())
-		is.Equal(t, 0, f.open)
-		f.readFails = core.ErrNoLease
-		_, err = e.Exec(t.Context(), "create table T1 (")
-		is.True(t, errors.Is(err, core.ErrNoLease))
-		f.readFails, f.tableFails = nil, errors.New("the lookup fails")
-		_, err = e.Exec(t.Context(), "create table T1 (")
-		is.Equal(t, "the lookup fails", err.Error())
-		is.Equal(t, 0, f.open)
-
-		f.calls = nil
-		_, err = e.Exec(t.Context(), "create table t1 x")
-		is.Equal(t, `near "x": syntax error`, err.Error())
+		_, err = e.Query(t.Context(), "create table t1 (")
+		is.Equal(t, "incomplete input", err.Error())
 		is.Equal(t, 0, len(f.calls))
 	})
 }

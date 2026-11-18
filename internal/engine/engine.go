@@ -39,7 +39,6 @@ import (
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/host"
 	"maragu.dev/s4ql/internal/s4qlpb"
-	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
@@ -98,7 +97,7 @@ type Result struct {
 // ROWID, and SQLite does not record an insert into such a table.
 func (e *Engine) Exec(ctx context.Context, src string) (Result, error) {
 	r := e.newReport(src)
-	p, text, err := e.prepare(ctx, r, src)
+	p, text, err := prepare(r, src)
 	if err != nil {
 		r.end(ctx, err)
 		return Result{}, err
@@ -128,7 +127,7 @@ func (e *Engine) Exec(ctx context.Context, src string) (Result, error) {
 // [Rows].
 func (e *Engine) Query(ctx context.Context, src string) (*Rows, error) {
 	r := e.newReport(src)
-	p, text, err := e.prepare(ctx, r, src)
+	p, text, err := prepare(r, src)
 	if err != nil {
 		r.end(ctx, err)
 		return nil, err
@@ -142,11 +141,12 @@ func (e *Engine) Query(ctx context.Context, src string) (*Rows, error) {
 }
 
 // prepare the text src for the report r: check it, and give the plan of its statement and the text
-// of the statement.
-func (e *Engine) prepare(ctx context.Context, r *report, src string) (Plan, string, error) {
+// of the statement. A syntax error is the one that SQLite gives for src on an empty database, which
+// [stmt.Check] alone decides, whatever the database holds.
+func prepare(r *report, src string) (Plan, string, error) {
 	s, err := stmt.Check(src)
 	if err != nil {
-		return nil, "", e.started(ctx, r, src, err)
+		return nil, "", err
 	}
 	if s == nil {
 		return nil, "", ErrNoStatement
@@ -154,34 +154,6 @@ func (e *Engine) prepare(ctx context.Context, r *report, src string) (Plan, stri
 	r.of(s)
 	span := s.Bounds()
 	return NewPlan(s), src[span.Start:span.End], nil
-}
-
-// started gives SQLite's error for the text src, which [stmt.Check] gave err for: if err is a syntax
-// error and SQLite starts to create a table before it meets it, and a table of the name exists,
-// SQLite gives `table %s already exists`, and otherwise err. See [stmt.StartedTable].
-func (e *Engine) started(ctx context.Context, r *report, src string, err error) error {
-	var se *sqlerr.Error
-	if !errors.As(err, &se) {
-		return err
-	}
-	n, ok := stmt.StartedTable(src, se)
-	if !ok {
-		return err
-	}
-	tx, rerr := e.db.read(ctx)
-	if rerr != nil {
-		return rerr
-	}
-	r.at(tx.position(), false)
-	defer func() { _ = tx.end(ctx) }()
-	t, rerr := tx.table(ctx, n.Value)
-	if rerr != nil {
-		return rerr
-	}
-	if t != nil {
-		return tableExists(n.Raw, n.Offset)
-	}
-	return err
 }
 
 // write runs the plan p of a statement that changes the database, whose text is sql, in a write

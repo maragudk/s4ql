@@ -16,7 +16,7 @@ import (
 	"maragu.dev/s4ql/internal/sqlite"
 )
 
-// checkStarted checks [stmt.StartedTable] on src against SQLite, if src is a syntax error. If it
+// checkStarted checks [stmttest.StartedTable] on src against SQLite, if src is a syntax error. If it
 // gives a name, SQLite gives `table %s already exists` with the name as StartedTable gives it, on a
 // database with that table. If it gives none, SQLite does not give that a table exists, on a database
 // with a table for each of the first tokens of src as a name. It reports whether StartedTable gave a
@@ -28,7 +28,7 @@ func checkStarted(t testing.TB, src string) bool {
 	if !errors.As(err, &se) {
 		return false
 	}
-	n, ok := stmt.StartedTable(src, se)
+	n, ok := stmttest.StartedTable(src, se)
 	d := open(t)
 	names := []string{n.Value}
 	if !ok {
@@ -135,7 +135,7 @@ func TestStartedTable(t *testing.T) {
 			if _, err := stmt.Check(c.src); err != nil {
 				var se *sqlerr.Error
 				if errors.As(err, &se) {
-					n, ok = stmt.StartedTable(c.src, se)
+					n, ok = stmttest.StartedTable(c.src, se)
 				}
 			}
 			is.Equal(t, c.raw != "", ok)
@@ -172,7 +172,7 @@ func TestStartedTable(t *testing.T) {
 	})
 }
 
-// FuzzStartedTable checks [stmt.StartedTable] against SQLite on any text.
+// FuzzStartedTable checks [stmttest.StartedTable] against SQLite on any text.
 func FuzzStartedTable(f *testing.F) {
 	for _, c := range []string{"create table t1 (", "create table main.t1 as", "create virtual table t1 using m(", "create table t1 x"} {
 		f.Add(c)

@@ -617,14 +617,17 @@ func (r *run) verify(ctx context.Context) {
 
 	// The observations of each state of the log: the statements that saw it.
 	seen := map[int][]*attempt{}
+	empty := newOracle(r.t)
+	defer empty.close()
 	for _, a := range r.order {
 		if a.state != sqliteFailed && (a.state != succeeded || !a.query || a.write || a.partial) {
 			continue
 		}
 		if a.position == "" {
-			// A syntax error of a statement that saw no state.
-			if m := a.answer.err; !strings.HasPrefix(m, "1/1: ") || !strings.HasSuffix(m, ": syntax error") && !strings.HasSuffix(m, ": incomplete input") && !strings.Contains(m, ": unrecognized token: ") {
-				r.violate(ctx, "the statement %v, %q, saw no state, and gives %v", a.id, a.src, a.answer)
+			// A statement that saw no state is a syntax error, which is the one that SQLite gives on an
+			// empty database, whatever the database holds.
+			if want := empty.run(r.t, a.src); a.answer.err == "" || a.answer.String() != want.String() {
+				r.violate(ctx, "the statement %v, %q, saw no state, and gives %v, and SQLite on an empty database %v", a.id, a.src, a.answer, want)
 			}
 			continue
 		}

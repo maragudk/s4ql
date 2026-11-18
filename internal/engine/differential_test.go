@@ -542,6 +542,35 @@ func (y tally) add(src string, a answer) {
 	}
 }
 
+// addStarted counts a text with a syntax error for which SQLite gives that the table it starts
+// exists; see [startedTable].
+func (y tally) addStarted() {
+	if y != nil {
+		y["other already exists after the start of a table, accepted"]++
+	}
+}
+
+// startedTable reports whether the engine's answer got and SQLite's answer want for the text src
+// differ in the one way that the tests accept. The text is a syntax error, for which the engine gives
+// the error that SQLite gives on an empty database, and SQLite gives `table %s already exists`, with
+// the name as written, for the table that [stmttest.StartedTable] says the text starts. The spec:
+// "Text with a syntax error gets the error that SQLite gives for it on an empty database."
+func startedTable(t testing.TB, src string, got, want answer) bool {
+	t.Helper()
+	_, err := stmt.Check(src)
+	var se *sqlerr.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	n, ok := stmttest.StartedTable(src, se)
+	if !ok || want.err != fmt.Sprint(sqlerr.CodeError, "/", sqlerr.CodeError, ": table ", n.Raw, " already exists") {
+		return false
+	}
+	empty := newOracle(t)
+	defer empty.close()
+	return got.String() == empty.run(t, src).String()
+}
+
 // messageKind of an error's text: its message without the names.
 func messageKind(err string) string {
 	for _, kind := range []string{"already exists", "no such table", "has no column named", "UNIQUE constraint failed", "syntax error", "incomplete input"} {
@@ -607,7 +636,10 @@ func differentialOn(t testing.TB, seed uint64, n int, restarts bool, y tally, i 
 			want.columns, want.rows = "", nil
 		}
 		if got.String() != want.String() {
-			fail("%q: the engine gives\n%v\nand SQLite\n%v", src, got, want)
+			if !startedTable(t, src, got, want) {
+				fail("%q: the engine gives\n%v\nand SQLite\n%v", src, got, want)
+			}
+			y.addStarted()
 		}
 		// SQLite's count of changes: the engine's result sets it, and a statement that fails keeps it,
 		// except one that fails while SQLite steps it, a broken constraint, which sets it to 0.

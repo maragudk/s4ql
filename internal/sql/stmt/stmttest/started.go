@@ -1,15 +1,21 @@
-package stmt
+package stmttest
 
 import (
 	"strings"
 
 	"maragu.dev/s4ql/internal/sql/sqlerr"
+	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/sql/token"
 )
 
 // StartedTable gives the name of the table that the first statement of the text src creates, if
-// SQLite's parser starts to create the table before it meets the syntax error that [Check] gave for
-// src, and reports whether it does.
+// SQLite's parser starts to create the table before it meets the syntax error that [stmt.Check] gave
+// for src, and reports whether it does.
+//
+// It is the one difference between SQLite and s4ql that the tests accept for a text with a syntax
+// error. Such a text gets the error that SQLite gives for it on an empty database, so [stmt.Check]
+// alone decides it, whatever the database holds. On a database with a table of the name that
+// StartedTable gives, SQLite gives `table %s already exists` instead, with the name as written.
 //
 // SQLite starts a table while it parses, in sqlite3StartTable, as soon as its parser has read
 // CREATE TABLE, the name, and the ( or AS after it, or CREATE VIRTUAL TABLE, the name, USING, the
@@ -24,7 +30,7 @@ import (
 //
 // The name's value is the name without its quotes, as SQLite dequotes it: a name in double quotes,
 // backticks, or single quotes, with a doubled quote for one, or in brackets.
-func StartedTable(src string, syntax *sqlerr.Error) (Name, bool) {
+func StartedTable(src string, syntax *sqlerr.Error) (stmt.Name, bool) {
 	var tokens []token.Token
 	for _, t := range token.Tokens(src) {
 		if t.Kind != token.Space && t.Kind != token.Comment {
@@ -59,39 +65,39 @@ func StartedTable(src string, syntax *sqlerr.Error) (Name, bool) {
 		i += 3
 		virtual = true
 	default:
-		return Name{}, false
+		return stmt.Name{}, false
 	}
 	// After IF NOT EXISTS, which gives no start, IF is followed by NOT, and not by ( or AS, as a
 	// name would be.
 	if i >= len(tokens) {
-		return Name{}, false
+		return stmt.Name{}, false
 	}
 	name := tokens[i]
 	i++
 	if is(token.Dot) {
-		if i+2 > len(tokens) || asciiLower(dequoteAny(name.Text(src))) != "main" {
-			return Name{}, false
+		if i+2 > len(tokens) || (stmt.Name{Value: dequoteAny(name.Text(src))}).Fold() != "main" {
+			return stmt.Name{}, false
 		}
 		name = tokens[i+1]
 		i += 2
 	}
 	if virtual {
 		if !is(token.Using) {
-			return Name{}, false
+			return stmt.Name{}, false
 		}
 		i += 2
 	}
 	if !is(token.LP) && (virtual || !is(token.As)) {
-		return Name{}, false
+		return stmt.Name{}, false
 	}
 	// The parser read the token after the name only if the syntax error is after it.
 	if syntax.Offset >= 0 && syntax.Offset <= tokens[i].Offset {
-		return Name{}, false
+		return stmt.Name{}, false
 	}
 	raw := name.Text(src)
-	n := Name{Raw: raw, Value: dequoteAny(raw), Offset: name.Offset}
+	n := stmt.Name{Raw: raw, Value: dequoteAny(raw), Offset: name.Offset}
 	if strings.HasPrefix(n.Fold(), "sqlite_") {
-		return Name{}, false
+		return stmt.Name{}, false
 	}
 	return n, true
 }

@@ -68,10 +68,6 @@ func TestEngine_errors(t *testing.T) {
 			src: `create table "T1" (x int primary key) strict, without rowid`, want: `1/1: table "T1" already exists`},
 		{name: "should give that a table exists for a name in another case", setup: []string{t1},
 			src: "CREATE TABLE T1 (x int primary key) without rowid, strict", want: "1/1: table T1 already exists"},
-		{name: "should give that a table exists before a syntax error after its start", setup: []string{t1},
-			src: "create table t1 (v1 int primary key) strict without rowid", want: "1/1: table t1 already exists"},
-		{name: "should give that a table exists before a syntax error after AS", setup: []string{t1},
-			src: "create table main.T1 as selec", want: "1/1: table T1 already exists"},
 		{name: "should give the syntax error when no table of the name exists", setup: []string{t1},
 			src: "create table t2 (v1 int primary key) strict without rowid", want: `1/1: near "without": syntax error`},
 		{name: "should give that there is no table to read, with the name without its quotes",
@@ -105,6 +101,44 @@ func TestEngine_errors(t *testing.T) {
 			pin(t, c.setup, c.src, c.want)
 		})
 	}
+
+	t.Run("should give the syntax error that SQLite gives on an empty database, after the start of a table that exists", func(t *testing.T) {
+		for _, src := range []string{"create table t1 (v1 int primary key) strict without rowid", "create table main.T1 as selec"} {
+			i := newInstance(t, engine.Options{})
+			o := newOracle(t)
+			want := o.run(t, src).err
+			is.True(t, strings.HasSuffix(want, ": syntax error"), want)
+			is.Equal(t, "", i.exec(t1).err)
+			is.Equal(t, "", o.run(t, t1).err)
+			is.Equal(t, want, i.exec(src).err, src)
+			is.Equal(t, want, i.query(src).err, src)
+			// SQLite gives that the table exists, which is the one difference between SQLite and s4ql
+			// that the tests accept.
+			is.True(t, strings.HasSuffix(o.run(t, src).err, " already exists"), src)
+		}
+	})
+
+	t.Run("should give the syntax error on a closed instance and with a context that has ended", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(t1).err)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		for _, src := range []string{"create table t1 (v1 int primary key) strict without rowid", "selec * from t1", "insert into t1 (v1) values ("} {
+			want := newOracle(t).run(t, src).err
+			_, err := i.e.Exec(ctx, src)
+			is.Equal(t, want, errText(t, src, err), src)
+			_, err = i.e.Query(ctx, src)
+			is.Equal(t, want, errText(t, src, err), src)
+		}
+		i.close()
+		for _, src := range []string{"create table T1 (", "selec * from t1"} {
+			want := newOracle(t).run(t, src).err
+			_, err := i.e.Exec(t.Context(), src)
+			is.Equal(t, want, errText(t, src, err), src)
+			_, err = i.e.Query(ctx, src)
+			is.Equal(t, want, errText(t, src, err), src)
+		}
+	})
 
 	t.Run("should give not supported, and no statement, as errors of their own", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
