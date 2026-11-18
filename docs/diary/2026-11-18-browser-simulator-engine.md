@@ -61,3 +61,71 @@ Nothing yet.
 ### Future work
 
 See the later steps.
+
+## Step 2: The engine, the program, and the tests
+
+**Author:** builder (simulator engine)
+
+### Prompt Context
+
+**Verbatim prompt:** (continues from Step 1)
+
+**Interpretation:** build what Step 1 planned, and get the whole path into Chromium early, since the Worker is the part that native tests cannot reach.
+
+**Inferred intent:** a page that a later builder can write from the README and the module alone.
+
+### What I did
+
+- `internal/simulator`: `request.go` (the request, its defaults, and its checks), `trace.go` (the events, and the reading of the store's lines by their format strings), `run.go` (one run: the instances and their processes, the callers, the actions of the schedule, the client that wraps the store's, and the end), `check.go` (six invariants over what the calls saw and the store holds), `state.go` (the state at a time, folded from the events), and `simulator.go` (`Engine.Handle` for the messages "run" and "state").
+- `internal/simulator/engine`: `doc.go`, `engine_test.go` with `TestEngine`, which serves the page, `worker.js`, `simulator.js` (the module for a page), and `index.html` (the demo).
+- `internal/simulator/serve`: a command that builds the engine with `go test -c`, puts every file a page needs into one directory, and serves it. `make simulator` and `make simulator-demo` run it.
+- Tests: `request_test.go`, `simulator_test.go` (the same bytes twice and on a second engine, ten seeds with every fault twice each, the same events before two schedules differ and before an earlier end, malformed requests, unknown kinds, the state message), `run_test.go` (each action and each fault of the store with its effect, and that every line of the store is classified), `state_test.go` (the position of each cache by the core's events against what the reads saw, the log, requests and calls in flight), and `check_internal_test.go` (each invariant on input made for it).
+- `Makefile`: `BROWSERPKGS` has the two packages, `SIMULATORPKGS` the three; `make test` and `make lint` run the simulator natively with the tag, and the simulation's lint over it with `GOFLAGS=-tags=s4ql_browser`. CI's job `browser` does the same, and lints the two packages for the browser.
+
+Commands that showed the path working:
+
+```
+go test -tags s4ql_browser ./internal/simulator/...
+GOOS=js GOARCH=wasm go test -tags s4ql_browser -exec <runner> -count=1 ./internal/simulator/ ./internal/simulator/engine
+go run -tags s4ql_browser ./internal/simulator/serve -out <dir> -addr 127.0.0.1:18431
+playwright-cli open http://127.0.0.1:18431/
+```
+
+### Why
+
+- **Run to completion**, as the brief recommends: a goroutine of the bubble that waits for the visitor is durably blocked, so fake time would run on.
+- **At the end** the engine stops recording, starts every monotonic clock that stands still, and lets each process close its database. A first run with a stopped monotonic clock ended with `deadlock: no task can run: b/caller-0 at sleep, b/caller-1 at sleep, b/lease of 03e6...ffacf7 at sleep, b/supervisor at sleep`, because the sleeps of an instance follow its monotonic clock.
+- **The lifecycle of a database** (open, close, reopen after a stop, the close at the end) holds a semaphore of the process, and a close happens only once for each database, so that a close and an open at the same time never leave two databases on one cache.
+- **A caller pauses at least a millisecond** before each call, so that a refused call, which returns without waiting, cannot spin without fake time moving.
+- **The position of a cache** follows the core's events: `commit` with the outcome `committed` or `committed_and_stopped` gives `commit.name`, and `catch_up` gives `catch_up.to`, or, after a failure, the commit object that is `catch_up.commits` after `catch_up.from` on the way to the head. Served reads give it too. The test reads it from the core's events alone and compares it with what each read saw.
+- **No snapshots during a run.** Reading the cache with a connection of the engine's own, or waking a task to take a snapshot, would change the run. The state at a time is folded from the events after the run.
+
+### What worked
+
+- The first native run of a request ran 2 minutes of three instances in 41 ms, with no violation.
+- In Chromium the hashes equal the native ones: `95308c33cd30a785...` for the demo's request and `b82b8ab6e0336832...` for a run with a crash, natively and in the runner.
+- The checker found nothing in ten seeds with every fault and buggify, and finds each invariant broken on input made for it.
+
+### What didn't work
+
+- In the demo page the second run never ended. A log in the Worker showed `submit 2 state true` after `done 2`: a call from JavaScript into Go returns only once every goroutine waits, so `TestEngine` handled the message and called `done` inside `submit`, and `pump` then marked the engine busy for good. `pump` now marks it busy before it calls `submit`.
+- `sqlite3_memory_used` is not among the exports of the official build, so the Worker reports the size of SQLite's WebAssembly memory instead.
+- Four first versions of tests failed for the seed, not the code: an outage that the last request before its end outlives, a renewal that comes at 20 s exactly, a spare that reads the manifest only when it does not hold the lease, and conflicts, which need another write to the manifest in flight and so a write stuck in the network.
+
+### What I learned
+
+- `simlint` ignores its `-tags` flag ("no effect (deprecated)"), and `GOFLAGS=-tags=s4ql_browser` makes it see the files behind the tag; a probe file with `time.Now` showed it.
+- The context of a call reaches every line that the store traces for it, also from its carriers and from a write stuck in the network, because `sim` passes the values of the context to a task.
+
+### What was tricky
+
+- The harness refuses shell commands with heredocs that it cannot check, and an `rm -rf` inside a Makefile recipe in a Python heredoc; edits went through scripts in the scratch directory.
+
+### What warrants review
+
+- `storeLine` in `trace.go` reads the lines of `simstore` by their format strings. A change of a format there turns its line into an event without `what`, and the test "should classify every line of the store under every fault" fails.
+- The engine's own faults in the client: `loseAnswer`, `failRequest`, and `damaged`. They are network faults that the store's contract allows, made outside `simstore`, as the tests of the core do with `damagingStore`.
+
+### Future work
+
+See the later steps.
