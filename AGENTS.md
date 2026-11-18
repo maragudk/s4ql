@@ -97,6 +97,13 @@ A builder gets a git worktree of its own when it is spawned, through the Agent t
 - **Why:** on 2026-11-12 the lead created the worktrees and switched between them while builders ran. One builder's working directory moved with the lead, and its writes and git commands in its own worktree were refused, so it could not commit its last diary step. Markus then said: "From now on maybe let builders create their worktrees?" A builder that got its own worktree the same day ran without friction.
 - **How to apply:** spawn builders and writers with worktree isolation. The builder writes the first step of the feature's diary from the requirements in its brief. The lead reviews a builder's branch from `main` with `git diff main...<branch>`, pushes it, and opens the pull request. After the merge, remove the worktree and the branch.
 
+### A builder's task fits well inside its context
+
+Split the work so that no builder comes near the limit of its context.
+
+- **Why:** on 2026-11-18 the builder of the engine for slice 1 had used 700,000 of its 1,000,000 tokens before it was done. Its brief held the code and every kind of test at once: differential tests, simulation with planted bugs, mutation testing, and fuzzing. Markus: "It might make sense to split work up more in the future?"
+- **How to apply:** the first builder writes the code and the tests that show it works, and its branch is merged. Each heavy check after that, such as simulation with planted bugs, mutation testing, or a long fuzz run, goes to a fresh builder that starts from the merged code. Where two pieces of code do not depend on each other, give them to two builders. Tell every builder to commit and to write its diary step as it goes, so that a fresh builder can take over if it runs out.
+
 ### A test must not depend on timing
 
 A test passes or fails for the same reason on every machine, however slow or loaded.
