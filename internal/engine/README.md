@@ -284,8 +284,8 @@ On the code as it is now, on 2026-11-18:
 | Layer | Run | Result |
 | --- | --- | --- |
 | `TestDifferential` | 10,000 sequences of 40 statements, from seed 2,000,000, half with restarts | 400,000 statements, none that differ from SQLite. By kind and outcome: CREATE TABLE 24,322 ok and 49,354 `already exists`; INSERT 65,978 ok, 25,683 `UNIQUE constraint failed`, 31,236 `has no column named`, and 60,490 `no such table`; SELECT 61,392 ok and 30,265 `no such table`; DROP TABLE 12,266 ok and 5,867 `no such table`; and of the other texts 21,687 not supported, 7,647 `syntax error`, 1,397 `incomplete input`, 985 `already exists` after the start of a table, and 1,431 without a statement |
-| `FuzzDifferential` | `TODO(counts)` executions in `TODO(counts)` on `TODO(counts)` workers | `TODO(counts)` |
-| `FuzzDifferential_core` | `TODO(counts)` executions in `TODO(counts)` on `TODO(counts)` workers | `TODO(counts)` |
+| `FuzzDifferential` | 50,000,000 executions in 2 h 57 min on 8 workers, while other work loaded the machine | nothing found; 15 new inputs of interest in the run, none in its last hour |
+| `FuzzDifferential_core` | 90,288 executions in 5 min on 6 workers | nothing found |
 | `TestSimulation`, default workload | 1,000 seeds | 95,196 statements: 13,318 that succeeded, 20,385 with SQLite's error, 55,405 refused or ended by their timeout, 572 commits of unknown outcome, 29 cut by a crash, and 5,487 not supported or without a statement; 8,364 commits; no violation |
 | `TestSimulation`, hammer workload | 1,000 seeds | 120,000 statements: 28,001 that succeeded, 40,610 with SQLite's error, 43,360 refused or ended by their timeout, 1,078 of unknown outcome, and 6,951 not supported or without a statement; 15,155 commits; no violation |
 | `TestEngine_namesOfTheCore` | 2,832 names | 11,328 statements compared with SQLite, none that differ, and no internal error |
@@ -303,7 +303,7 @@ Mutation testing: of 955 mutants, 312 do not compile, 632 are killed, none times
 
 ### Run times
 
-Measured on `TODO(counts)`:
+Measured on an Apple M4 with 10 cores, at a load of about 12 from other work:
 
-- `go test ./internal/engine` takes `TODO(counts)`, `-short` `TODO(counts)`, and `-race` `TODO(counts)`.
-- Under the address sanitizer it takes `TODO(counts)`.
+- `go test ./internal/engine` takes about 8 s, `-short` about 2.5 s, and `-race` about 7 s.
+- Under the address sanitizer, in a Linux container in Docker on the same machine while a fuzz run used 8 of its cores, the tests took 56 s, and each fuzz test of `make fuzz` runs for `FUZZTIME` on top. `make test-asan FUZZTIME=10s` passed in 10 min 45 s.

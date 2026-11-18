@@ -234,7 +234,7 @@ A survivor is a decision that no test checks.
 
 The gaps were real and small: no test looked at the event of a statement on its paths of failure (outcome, rows, position, duration), at the offsets of the errors, at `Rows.Close` during a loop on the fake (on the core it passed for the wrong reason: the rows still stopped, but the transaction ended under a running scan), at the end of a read after a loop that stopped early, or at plans that no statement of slice 1 gives. Two pieces of code went away instead of getting tests: the check of IF NOT EXISTS in `StartedTable`, which its later checks cover, and a second `r.reading = false` in `Rows.All`.
 
-The long runs on the final code: `TestDifferential` with 10,000 sequences (400,000 statements), `TestSimulation` with 1,000 seeds of each workload, and `TestSimulation_plantedBugs` with 200 seeds of each bug. Nothing differed from SQLite, no seed found a violation without a bug, and each bug was found by its own violation.
+The long runs on the final code: `TestDifferential` with 10,000 sequences (400,000 statements), `TestSimulation` with 1,000 seeds of each workload, and `TestSimulation_plantedBugs` with 200 seeds of each bug. Nothing differed from SQLite, no seed found a violation without a bug, and each bug was found by its own violation. `FuzzDifferential` made 50,000,000 executions in 2 h 57 min on 8 workers (the machine was loaded by other sessions to a load of up to 200, so the rate fell from 10,000 to 2,000 per second), with no new input of interest in its last 90 minutes and nothing found; `FuzzDifferential_core` made 90,288 in 5 minutes on 6 workers. `make test`, `make lint`, and `make test-asan FUZZTIME=10s` (10 min 45 s, in Docker, under load) pass.
 
 ### What didn't work
 
