@@ -144,3 +144,54 @@ The generator must write a gap between two words but may write none between a wo
 ### Future work
 
 None from this step.
+
+## Step 4: Mutation testing, two reviews, and fuzzing
+
+**Author:** sql-check-slice-1-builder
+
+### Prompt Context
+
+**Verbatim prompt:** (the same brief) "7. Fuzzing against SQLite with all of the above properties on any input, in `make fuzz`, run long on several cores until quiet (at least 100 million executions) [...] 8. Mutation testing of the new package with `internal/sql/mutation` [...] no survivor left unexplained" and "Self-review before you report (the code-review skill is available)."
+**Interpretation:** Run the mutation tool on `internal/sql/stmt`, fuzz long, have two competing reviewers read the diff, and fix what they find.
+**Inferred intent:** The gate is trusted because independent attacks on it found nothing, not because its author says so.
+
+### What I did
+
+I added `internal/sql/stmt` to `allPkgs` of `/internal/sql/mutation/main.go`, mapped its tests to the layers in `/internal/sql/mutation/run.go` (only when `stmt` is the package mutated, so the stages of the parser do not change), and ran it four times, each time on a copy of the tree in the scratchpad made with `git archive HEAD`, since the tool reads the files while it runs. Two reviewers on `fable` read `git diff main...HEAD` in parallel. I fuzzed `FuzzCheck` twice and `FuzzGenerate` once, and ran `make lint`, `make test`, and `make test-asan`.
+
+### Why
+
+The brief asks for all three, and the mutation run is the only layer that tests the tests.
+
+### What worked
+
+- Mutation testing, run 1: 976 mutants, 55 survivors. Run 2 after the fixes: 895 mutants, 10 survivors. Run 3: 890 mutants, 2 survivors, of which one is equivalent (`childAt condition: s.Start <= offset => true`: the children of an accepted node are in the order of the text) and one was killed by a new case `create table t (v int(10)) strict, without rowid`, in a run of the 7 mutants of that line. Final: 760 killed, 12 timed out, 117 not compiled, 1 equivalent, 0 unexplained.
+- Fuzzing: `FuzzCheck` 202,673,795 executions in 40 min on 6 workers on the first version, and 87,983,456 in 30 min on 4 workers after the reviews; no finding.
+- Reviewer B ran an independent token-pattern matcher of the four forms over 824,746 texts: all 62,881 supported texts matched. Neither reviewer found a way to get an unlisted statement through.
+- `make lint`, `make test`, and `make test-asan` pass; the package takes about 43 s under the sanitizer.
+
+### What didn't work
+
+- `TestEquivalent` failed after I listed the first equivalent mutant of `stmt`: `no such mutant: stmt/vocabulary.go childAt condition: s.Start <= offset => true`. The test built its keys from a hard-coded list of the three old packages; it now uses `allPkgs`.
+- Reviewer B measured `TestGenerate` at 2.76 GB peak footprint for 12,000 statements, linear at about 230 KB per statement: every SQLite connection of `checkMeaning` was closed by `t.Cleanup`, at the end of the test function. At the default of 20,000 that is near the 4 GiB watchdog of the mutation runner. `checkMeaning` now closes its databases when it returns.
+- Reviewer A found that a text over SQLite's 1,000,000,000-byte limit with a short first statement was supported: `"select * from t;" + strings.Repeat(" ", 1_000_000_001)` gave a `*stmt.Select`, while SQLite refuses the whole text with SQLITE_TOOBIG before it parses. `Check` now rejects it first, with `text longer than SQLite's limit`; `lengthLimit` is a variable so that `check_internal_test.go` can test it.
+
+### What I learned
+
+The mutation run's survivors were mostly guards (`isNext` before a content check) at places where the grammar puts nothing before the token, so the guard can never be false. Removing them made the recognizer shorter. The guards that remain are those where an untaken token can come first: the type keyword after a leading comma of the options, a name after a schema, a REPLACE after WITH, a result column after DISTINCT.
+
+### What was tricky
+
+- Offsets that contradicted the README's own rule: `without rowid, without rowid` reported the second `rowid` (58) instead of the second `without` (50), and `int(10)` reported the `int` instead of the `(`. The rule is "the first token, in text order, that is not part of a supported statement", so a check of content runs only on the token that is wrong.
+- `second column` was reported at the cursor even when the cursor was on `autoincrement` after the PRIMARY KEY; it is now given only when the comma after the column is the next token.
+- Running the cursor over `parser.Tokens` (the tokenizer's tokens of the statement's span) instead of `ast.AllTokens` makes the gate independent of the parser's ownership rule, which reviewer B pointed out it relied on, and made `BenchmarkCheck` 3.5 times faster (no reflection before the first reject). `TestRecognize` gives it trees with a token that no node holds and a token that the text does not have.
+
+### What warrants review
+
+- The decision to reserve the names of SQLite's eponymous virtual tables, and to support both orders of the table options: both are mine, made by the rule of the brief, and need the lead's and Markus's agreement.
+- The known gap: where an error that is not a syntax error (an action's, or the parser's stack limit) comes before a syntax error, the pass gives the syntax error, which is not SQLite's message. The tests count 62 such texts in the corpus.
+
+### Future work
+
+- Raising SQLite's action errors, when a slice needs them.
+- `TestReservedName` takes the lazily registered modules from `sqlite3LocateTable` by hand; an upgrade of SQLite that adds one there needs the test extended.
