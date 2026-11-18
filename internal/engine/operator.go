@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"slices"
 
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/stmt"
@@ -16,6 +17,10 @@ import (
 //
 // Operators are built from a plan by [buildQuery] and [buildSink], in the transaction that runs them,
 // and read and change the database only through the transaction's [reader] or [writer].
+//
+// They build only the plans that a statement of slice 1 gives. A plan of another shape, such as an
+// insert of several values or a projection without `*`, fails with an internal error, because what
+// SQLite gives for it has not been compared with SQLite.
 
 // Column of the rows that an operator gives: its name, and its declared type, which is empty for a
 // column that is not a column of a table.
@@ -24,12 +29,17 @@ type Column struct {
 	DeclType string
 }
 
-// source of rows.
-type source interface {
-	// columns of each row.
-	columns() []Column
+// rowSource of rows, which have no names of columns.
+type rowSource interface {
 	// rows, which end at the first error.
 	rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error]
+}
+
+// source of rows with named columns.
+type source interface {
+	rowSource
+	// columns of each row.
+	columns() []Column
 }
 
 // sink of a statement that changes the database.
@@ -76,17 +86,7 @@ func (s *scan) rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
 
 // values gives rows of constants.
 type values struct {
-	width int
-	data  [][]*s4qlpb.Value
-}
-
-func (v *values) columns() []Column {
-	cs := make([]Column, v.width)
-	for i := range cs {
-		// SQLite names the columns of VALUES so.
-		cs[i] = Column{Name: fmt.Sprint("column", i+1)}
-	}
-	return cs
+	data [][]*s4qlpb.Value
 }
 
 func (v *values) rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
@@ -138,24 +138,32 @@ func (p *project) rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
 }
 
 // insert writes each row of its source into a table as a new row, and fails with SQLite's error
-// for a row whose primary key the table has, also one that an earlier row of the source wrote. The
-// columns of the table that the source has no value for are NULL.
+// for a row whose primary key the table has, also one that an earlier row of the source wrote. Each
+// row has a value for every column of the table, and the key is one column: anything else fails with
+// an internal error.
 type insert struct {
 	w     writer
 	table *s4qlpb.CreateTable
 	// positions in the table of the column of each value of a row of the source.
 	positions []int
-	src       source
+	src       rowSource
 	// skipUnique is the planted bug that writes a row without the check of its key.
 	skipUnique bool
 }
 
 func (i *insert) run(ctx context.Context) (int64, error) {
 	name := i.table.GetTable()
+	pk := i.table.GetPrimaryKey()
+	if len(pk) != 1 {
+		return 0, internalError("an insert into a table with a key of %v columns", len(pk))
+	}
 	var n int64
 	for values, err := range i.src.rows(ctx) {
 		if err != nil {
 			return n, err
+		}
+		if len(values) != len(i.positions) {
+			return n, internalError("an insert of %v values into %v columns", len(values), len(i.positions))
 		}
 		row := make([]*s4qlpb.Value, len(i.table.GetColumns()))
 		for j, position := range i.positions {
@@ -163,22 +171,17 @@ func (i *insert) run(ctx context.Context) (int64, error) {
 		}
 		for j, v := range row {
 			if v == nil {
-				row[j] = s4qlpb.Value_builder{Null: &s4qlpb.Null{}}.Build()
+				return n, internalError("an insert with no value for column %v of %v", j, len(row))
 			}
 		}
-		key := make([]*s4qlpb.Value, len(i.table.GetPrimaryKey()))
-		columns := make([]string, len(key))
-		for j, position := range i.table.GetPrimaryKey() {
-			key[j] = row[position]
-			columns[j] = i.table.GetColumns()[position].GetName()
-		}
+		key := []*s4qlpb.Value{row[pk[0]]}
 		if !i.skipUnique {
 			existing, err := i.w.get(ctx, name, key)
 			if err != nil {
 				return n, err
 			}
 			if existing != nil {
-				return n, uniqueFailed(name, columns)
+				return n, uniqueFailed(name, i.table.GetColumns()[pk[0]].GetName())
 			}
 		}
 		if err := i.w.upsert(ctx, name, row); err != nil {
@@ -215,6 +218,7 @@ func buildQuery(ctx context.Context, r reader, q *Query) (source, error) {
 	return buildNode(ctx, r, q.Root)
 }
 
+// buildNode: the source of the rows of the node n of a query.
 func buildNode(ctx context.Context, r reader, n Node) (source, error) {
 	switch n := n.(type) {
 	case *Scan:
@@ -226,31 +230,36 @@ func buildNode(ctx context.Context, r reader, n Node) (source, error) {
 			return nil, noSuchTable(n.Table.Value)
 		}
 		return &scan{r: r, table: t}, nil
-	case *Values:
-		v := &values{}
-		for _, row := range n.Rows {
-			v.width = len(row)
-			out := make([]*s4qlpb.Value, len(row))
-			for i, e := range row {
-				out[i] = eval(e)
-			}
-			v.data = append(v.data, out)
-		}
-		return v, nil
 	case *Project:
+		if !n.Star {
+			return nil, internalError("a projection without *")
+		}
 		src, err := buildNode(ctx, r, n.Source)
 		if err != nil {
 			return nil, err
 		}
 		p := &project{src: src}
-		if n.Star {
-			for i := range src.columns() {
-				p.positions = append(p.positions, i)
-			}
+		for i := range src.columns() {
+			p.positions = append(p.positions, i)
 		}
 		return p, nil
 	}
-	panic(fmt.Sprintf("engine: a node of type %T", n))
+	return nil, internalError("a query of a node of type %T", n)
+}
+
+// buildValues: the source of the rows of the node n of an insert, which is one row of one value.
+func buildValues(n Node) (rowSource, error) {
+	v, ok := n.(*Values)
+	if !ok {
+		return nil, internalError("an insert from a node of type %T", n)
+	}
+	if len(v.Rows) != 1 {
+		return nil, internalError("an insert of %v rows", len(v.Rows))
+	}
+	if len(v.Rows[0]) != 1 {
+		return nil, internalError("an insert of %v values", len(v.Rows[0]))
+	}
+	return &values{data: [][]*s4qlpb.Value{{eval(v.Rows[0][0])}}}, nil
 }
 
 // eval the constant expression e.
@@ -276,12 +285,14 @@ func buildSink(ctx context.Context, w writer, p Plan, b bugs) (sink, error) {
 		if existing != nil {
 			return nil, tableExists(p.Table.Raw, p.Table.Offset)
 		}
-		ct := s4qlpb.CreateTable_builder{Table: new(p.Table.Value)}
-		for _, c := range p.Columns {
-			ct.Columns = append(ct.Columns, s4qlpb.Column_builder{Name: new(c.Name.Value), Type: new(c.Type)}.Build())
+		if len(p.Columns) != 1 || !slices.Equal(p.PrimaryKey, []int{0}) {
+			return nil, internalError("a table of %v columns with the key %v", len(p.Columns), p.PrimaryKey)
 		}
-		for _, position := range p.PrimaryKey {
-			ct.PrimaryKey = append(ct.PrimaryKey, uint32(position))
+		c := p.Columns[0]
+		ct := s4qlpb.CreateTable_builder{
+			Table:      new(p.Table.Value),
+			Columns:    []*s4qlpb.Column{s4qlpb.Column_builder{Name: new(c.Name.Value), Type: new(c.Type)}.Build()},
+			PrimaryKey: []uint32{0},
 		}
 		return &createTable{w: w, ct: ct.Build()}, nil
 	case *DropTable:
@@ -308,7 +319,7 @@ func buildSink(ctx context.Context, w writer, p Plan, b bugs) (sink, error) {
 				return nil, noSuchColumn(p.Table.Value, c.Value)
 			}
 		}
-		src, err := buildNode(ctx, w, p.Source)
+		src, err := buildValues(p.Source)
 		if err != nil {
 			return nil, err
 		}

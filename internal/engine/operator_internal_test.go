@@ -199,7 +199,7 @@ func (x fakeTx) end(context.Context) error {
 }
 
 // collect the rows of src as text, and its error.
-func collect(ctx context.Context, src source) ([]string, error) {
+func collect(ctx context.Context, src rowSource) ([]string, error) {
 	var rows []string
 	for row, err := range src.rows(ctx) {
 		if err != nil {
@@ -278,16 +278,15 @@ func TestScan(t *testing.T) {
 }
 
 func TestValues(t *testing.T) {
-	t.Run("should give its rows, with the names that SQLite gives the columns of VALUES", func(t *testing.T) {
-		v := &values{width: 2, data: [][]*s4qlpb.Value{{eval(&Integer{Value: 1}), eval(&Integer{Value: 2})}, {eval(&Integer{Value: 3}), eval(&Integer{Value: 4})}}}
+	t.Run("should give its rows", func(t *testing.T) {
+		v := &values{data: [][]*s4qlpb.Value{{eval(&Integer{Value: 1})}, {eval(&Integer{Value: 3})}}}
 		rows, err := collect(t.Context(), v)
 		is.NotError(t, err)
-		is.Equal(t, "[1,2 3,4]", fmt.Sprint(rows))
-		is.Equal(t, "[{column1 } {column2 }]", fmt.Sprint(v.columns()))
+		is.Equal(t, "[1 3]", fmt.Sprint(rows))
 	})
 
 	t.Run("should stop early, and end with the error of a context that ended", func(t *testing.T) {
-		v := &values{width: 1, data: [][]*s4qlpb.Value{{eval(&Integer{Value: 1})}, {eval(&Integer{Value: 2})}}}
+		v := &values{data: [][]*s4qlpb.Value{{eval(&Integer{Value: 1})}, {eval(&Integer{Value: 2})}}}
 		n := 0
 		for _, err := range v.rows(t.Context()) {
 			is.NotError(t, err)
@@ -324,7 +323,7 @@ func TestProject(t *testing.T) {
 
 func TestInsert(t *testing.T) {
 	ints := func(vs ...int64) *values {
-		v := &values{width: 1}
+		v := &values{}
 		for _, x := range vs {
 			v.data = append(v.data, []*s4qlpb.Value{eval(&Integer{Value: x})})
 		}
@@ -355,20 +354,38 @@ func TestInsert(t *testing.T) {
 		is.Equal(t, int64(1), n)
 	})
 
-	t.Run("should write NULL to the columns that the source has no value for", func(t *testing.T) {
-		f := newFake().with("t", []string{"k", "a", "b"})
-		i := &insert{w: fakeTx{f}, table: f.tables["t"].ct, positions: []int{0}, src: ints(1)}
-		_, err := i.run(t.Context())
-		is.NotError(t, err)
-		is.Equal(t, "upsert t 1,null,null", f.calls[len(f.calls)-1])
-	})
-
-	t.Run("should name every column of a primary key of several in its error", func(t *testing.T) {
-		f := newFake().with("t", []string{"a", "b"}, []int64{1, 2})
-		f.tables["t"].ct.SetPrimaryKey([]uint32{1, 0})
-		get := &insert{w: foundOnGet{fakeTx{f}}, table: f.tables["t"].ct, positions: []int{0, 1}, src: &values{width: 2, data: [][]*s4qlpb.Value{{eval(&Integer{Value: 1}), eval(&Integer{Value: 2})}}}}
-		_, err := get.run(t.Context())
-		is.Equal(t, "UNIQUE constraint failed: t.b, t.a", err.Error())
+	t.Run("should fail with an internal error, and write nothing, for what no statement of slice 1 gives", func(t *testing.T) {
+		two := &values{data: [][]*s4qlpb.Value{{eval(&Integer{Value: 1}), eval(&Integer{Value: 2})}}}
+		cases := []struct {
+			name    string
+			columns []string
+			key     []uint32
+			insert  func(table *s4qlpb.CreateTable) *insert
+			err     string
+		}{
+			{name: "a column without a value", columns: []string{"k", "a"}, key: []uint32{0},
+				insert: func(ct *s4qlpb.CreateTable) *insert { return &insert{table: ct, positions: []int{0}, src: ints(1)} },
+				err:    "an insert with no value for column 1 of 2"},
+			{name: "a key of two columns", columns: []string{"a", "b"}, key: []uint32{1, 0},
+				insert: func(ct *s4qlpb.CreateTable) *insert { return &insert{table: ct, positions: []int{0, 1}, src: two} },
+				err:    "an insert into a table with a key of 2 columns"},
+			{name: "two values into one column", columns: []string{"a", "b"}, key: []uint32{0},
+				insert: func(ct *s4qlpb.CreateTable) *insert { return &insert{table: ct, positions: []int{0}, src: two} },
+				err:    "an insert of 2 values into 1 columns"},
+		}
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				f := newFake().with("t", c.columns)
+				f.tables["t"].ct.SetPrimaryKey(c.key)
+				i := c.insert(f.tables["t"].ct)
+				i.w = fakeTx{f}
+				n, err := i.run(t.Context())
+				is.True(t, errors.Is(err, ErrInternal))
+				is.Equal(t, "s4ql: internal error: "+c.err, err.Error())
+				is.Equal(t, int64(0), n)
+				is.Equal(t, 0, len(f.calls))
+			})
+		}
 	})
 
 	t.Run("should pass on an error of the storage, and of the source", func(t *testing.T) {
@@ -391,15 +408,6 @@ func TestInsert(t *testing.T) {
 		is.NotError(t, err)
 		is.Equal(t, "[upsert t 1]", fmt.Sprint(f.calls))
 	})
-}
-
-// foundOnGet is a writer whose get finds a row for any key, for a key of several columns.
-type foundOnGet struct {
-	fakeTx
-}
-
-func (e foundOnGet) get(context.Context, string, []*s4qlpb.Value) ([]*s4qlpb.Value, error) {
-	return []*s4qlpb.Value{}, nil
 }
 
 func TestBuild(t *testing.T) {
@@ -475,16 +483,37 @@ func TestBuild(t *testing.T) {
 		is.Equal(t, "no such table: u", err.Error())
 	})
 
-	t.Run("should build plans that no statement of slice 1 gives: values of their width, a projection of no columns, and an insert from a table that does not exist", func(t *testing.T) {
-		f := newFake().with("t", []string{"v"}, []int64{1})
-		v, err := buildNode(t.Context(), fakeTx{f}, &Values{Rows: [][]Expr{{&Integer{Value: 1}, &Integer{Value: 2}}}})
-		is.NotError(t, err)
-		is.Equal(t, 2, len(v.columns()))
-		p, err := buildNode(t.Context(), fakeTx{f}, &Project{Source: &Scan{Table: stmt.Name{Value: "t"}}})
-		is.NotError(t, err)
-		is.Equal(t, 0, len(p.columns()))
-		_, err = buildSink(t.Context(), fakeTx{f}, &Insert{Table: stmt.Name{Value: "t"}, Columns: []stmt.Name{{Value: "v"}}, Source: &Scan{Table: stmt.Name{Value: "u"}}}, bugs{})
-		is.Equal(t, "no such table: u", err.Error())
+	t.Run("should fail with an internal error for plans that no statement of slice 1 gives", func(t *testing.T) {
+		one := [][]Expr{{&Integer{Value: 1}}}
+		v := []stmt.Name{{Value: "v"}}
+		cases := []struct {
+			name string
+			plan Plan
+			err  string
+		}{
+			{name: "a query of VALUES", plan: &Query{Root: &Values{Rows: one}}, err: "a query of a node of type *engine.Values"},
+			{name: "a projection without *", plan: &Query{Root: &Project{Source: &Scan{Table: stmt.Name{Value: "t"}}}}, err: "a projection without *"},
+			{name: "a projection of VALUES", plan: &Query{Root: &Project{Source: &Values{Rows: one}, Star: true}}, err: "a query of a node of type *engine.Values"},
+			{name: "an insert from a table", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Scan{Table: stmt.Name{Value: "u"}}}, err: "an insert from a node of type *engine.Scan"},
+			{name: "an insert of two rows", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Integer{Value: 1}}, {&Integer{Value: 2}}}}}, err: "an insert of 2 rows"},
+			{name: "an insert of no rows", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{}}, err: "an insert of 0 rows"},
+			{name: "an insert of two values", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Integer{Value: 1}, &Integer{Value: 2}}}}}, err: "an insert of 2 values"},
+			{name: "a table of two columns", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}, {Name: stmt.Name{Value: "b"}}}, PrimaryKey: []int{0}}, err: "a table of 2 columns with the key [0]"},
+			{name: "a table without a key", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}}}, err: "a table of 1 columns with the key []"},
+		}
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				f := newFake().with("t", []string{"v"}, []int64{1})
+				var err error
+				if q, ok := c.plan.(*Query); ok {
+					_, err = buildQuery(t.Context(), fakeTx{f}, q)
+				} else {
+					_, err = buildSink(t.Context(), fakeTx{f}, c.plan, bugs{})
+				}
+				is.True(t, errors.Is(err, ErrInternal))
+				is.Equal(t, "s4ql: internal error: "+c.err, err.Error())
+			})
+		}
 	})
 
 	t.Run("should pass on an error of a lookup", func(t *testing.T) {

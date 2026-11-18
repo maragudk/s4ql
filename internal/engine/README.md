@@ -107,10 +107,11 @@ Operators are of two kinds. A source gives rows to the operator above it. A sink
 | `scan` | source | Gives the rows of a table in the order of its primary key. It checks the context before each row, and ends with the error of the context when the context has ended. |
 | `values` | source | Gives rows of constants. It checks the context before each row too. |
 | `project` | source | Gives the columns of each row of its source at its positions. For `*`, they are all the columns, in the order of the table. |
-| `insert` | sink | Writes each row of its source into a table as a new row. Columns that the source has no value for are NULL. |
+| `insert` | sink | Writes each row of its source into a table as a new row. |
 | `createTable` | sink | Creates a table. |
 | `dropTable` | sink | Drops a table, by the name that the table stores. |
 
+- **The operators build only the plans of slice 1.** A plan of another shape fails with an internal error: a query of anything but `*` from a table, an insert of anything but one row of one value, a row without a value for a column, a key of several columns, and a table of several columns. What SQLite gives for these has not been compared with SQLite, so the engine gives no answer of SQLite's for them. A slice that adds such a shape replaces its internal error with what the differential test has compared with SQLite.
 - **`insert` checks each key itself.** The core has only an upsert, which replaces a row with the same key. So `insert` calls `get` for the key of each row, inside the write transaction, before it calls `upsert`. If the table has the key, also from an earlier row of the same statement, `insert` fails with `UNIQUE constraint failed`.
 - **A source is a push-style iterator,** an `iter.Seq2`. The operator above ranges over the rows, and ends the source by leaving the loop. Everything runs on the goroutine of the caller.
 - **No operator uses `iter.Pull`.** It starts a goroutine, and [`simlint`](../simlint/simlint.go) forbids it in code that runs under the simulation.
@@ -119,7 +120,7 @@ Operators are of two kinds. A source gives rows to the operator above it. A sink
 
 1. Add a type or a field to `stmt`. Its README has [the steps](../sql/stmt/README.md#how-to-add-the-next-slice), which start with the agreement on the slice in the roadmap.
 2. Add a plan node to `plan.go`, with a case in `NewPlan` and in `Format`.
-3. Add an operator to `operator.go`, and build it in `buildNode` or `buildSink`. Make the lookups there in the order in which SQLite gives their errors.
+3. Add an operator to `operator.go`, and build it in `buildNode`, `buildValues`, or `buildSink`. Make the lookups there in the order in which SQLite gives their errors. Replace the internal error of each shape of a plan that the slice adds.
 4. Add a constructor to `errors.go` for each new error of SQLite, and pin its codes, its message, and the form of each name against SQLite in `TestEngine_errors`.
 5. Add the kind of the statement to `report.of` in `telemetry.go`. If the statement sets SQLite's count of changes, set `SetsChanges` for it in `Exec` and `Query`.
 6. Extend the generator in [`stmttest`](../sql/stmt/stmttest/stmttest.go), and `sequence` in `differential_test.go`: the mix of statements in `next`, and the near misses in `others`.

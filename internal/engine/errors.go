@@ -3,7 +3,6 @@ package engine
 import (
 	"errors"
 	"fmt"
-	"strings"
 
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 )
@@ -50,13 +49,9 @@ func noSuchColumn(table, column string) error {
 	return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: fmt.Sprintf("table %v has no column named %v", table, column), Offset: -1}
 }
 
-// uniqueFailed is `UNIQUE constraint failed: %s.%s`, for each column of the primary key, with the
-// names as the table stores them.
-func uniqueFailed(table string, columns []string) error {
-	terms := make([]string, len(columns))
-	for i, c := range columns {
-		terms[i] = table + "." + c
-	}
+// uniqueFailed is `UNIQUE constraint failed: %s.%s`, for a primary key of one column, with the names
+// as the table stores them.
+func uniqueFailed(table, column string) error {
 	return &sqlerr.Error{Code: sqlerr.CodeConstraint, ExtendedCode: sqlerr.CodeConstraintPrimaryKey,
-		Message: "UNIQUE constraint failed: " + strings.Join(terms, ", "), Offset: -1}
+		Message: "UNIQUE constraint failed: " + table + "." + column, Offset: -1}
 }
