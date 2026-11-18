@@ -61,7 +61,7 @@ func (o outcome) String() string {
 // result codes; a text that SQLite parses is never a syntax error; a "not supported" error has the
 // form that the README gives, with a name from its vocabulary; a text without a statement holds only
 // spaces, comments, and semicolons; and a supported statement does in SQLite what it says.
-func verify(t testing.TB, src string) (outcome, stmt.Statement, error) {
+func verify(t testing.TB, src string) (outcome, stmt.Statement) {
 	t.Helper()
 	s, err := stmt.Check(src)
 	if s2, err2 := stmt.Check(src); fmt.Sprint(s2, err2) != fmt.Sprint(s, err) {
@@ -77,7 +77,7 @@ func verify(t testing.TB, src string) (outcome, stmt.Statement, error) {
 		if ne == nil || ne.What != what || ne.Offset != at {
 			t.Fatalf("%q: gives %v, want not supported %v at %v", src, err, what, at)
 		}
-		return preparse, nil, err
+		return preparse, nil
 	}
 
 	v := oracle.Judge(src)
@@ -89,30 +89,30 @@ func verify(t testing.TB, src string) (outcome, stmt.Statement, error) {
 		if v.Kind == oracle.NotSaid {
 			// SQLite stopped at an error that one of its grammar actions raised, before the syntax
 			// error: the known gap of the README.
-			return syntaxNotSaid, nil, err
+			return syntaxNotSaid, nil
 		}
 		if v.Kind != oracle.SyntaxError || v.Message != se.Message || v.Code != 1 {
 			t.Fatalf("%q: gives the syntax error %+v, SQLite gives %+v", src, se, v)
 		}
-		return syntaxError, nil, err
+		return syntaxError, nil
 	case ne != nil:
 		if v.Kind == oracle.SyntaxError {
 			t.Fatalf("%q: gives %v, SQLite gives the syntax error %q", src, err, v.Message)
 		}
-		return notSupported, nil, err
+		return notSupported, nil
 	case err != nil:
 		t.Fatalf("%q: gives the error %v of type %T", src, err, err)
 	case s == nil:
 		if v.Kind == oracle.SyntaxError || !onlySpace(src) {
 			t.Fatalf("%q: gives no statement, SQLite gives %+v", src, v)
 		}
-		return noStatement, nil, nil
+		return noStatement, nil
 	}
 	if v.Kind != oracle.Parses {
 		t.Fatalf("%q: is supported, SQLite gives %+v", src, v)
 	}
 	checkMeaning(t, src, s)
-	return supported, s, nil
+	return supported, s
 }
 
 // badText gives the offset of the first NUL byte or byte that is not valid UTF-8 in src, and which it
@@ -213,7 +213,7 @@ func verifyAll(t *testing.T, sqls []string) {
 	var one func(string)
 	one = func(sql string) {
 		n++
-		o, s, _ := verify(t, sql)
+		o, s := verify(t, sql)
 		c[o]++
 		if o == supported {
 			kind := fmt.Sprintf("%T", s)
@@ -566,8 +566,8 @@ func TestCheck(t *testing.T) {
 				continue
 			}
 			names = append(names, kw)
-			o, _, err := verify(t, src)
-			is.Equal(t, supported, o, fmt.Sprint(src, err))
+			o, _ := verify(t, src)
+			is.Equal(t, supported, o, src)
 		}
 		slices.Sort(names)
 		t.Logf("%v keywords are names after FROM: %v", len(names), names)

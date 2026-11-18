@@ -337,7 +337,7 @@ func TestGenerate_mutants(t *testing.T) {
 	for i := range n {
 		src, want := g.statement()
 		for _, m := range parsetest.Mutants(src, *seed+uint64(i), *mutantsEach) {
-			o, s, _ := verify(t, m)
+			o, s := verify(t, m)
 			c[o]++
 			if o == supported {
 				kind := difference(want, s)
