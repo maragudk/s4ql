@@ -175,7 +175,8 @@ func TestEngine_Query(t *testing.T) {
 		is.NotError(t, err)
 		is.Equal(t, engine.Result{Changes: 1, SetsChanges: true}, rows.Result())
 		is.Equal(t, 0, len(rows.Columns()))
-		for range rows.All() {
+		for _, err := range rows.All() {
+			_ = err
 			t.Fatal("a row")
 		}
 		is.NotError(t, rows.Close())
@@ -196,7 +197,8 @@ func TestEngine_Query(t *testing.T) {
 		for range 10 {
 			rows, err := i.e.Query(ctx, "select * from t1")
 			is.NotError(t, err)
-			for range rows.All() {
+			for _, err := range rows.All() {
+				_ = err
 				break
 			}
 			is.NotError(t, rows.Close())
@@ -204,7 +206,8 @@ func TestEngine_Query(t *testing.T) {
 			rows, err = i.e.Query(ctx, "select * from t1")
 			is.NotError(t, err)
 			is.NotError(t, rows.Close())
-			for range rows.All() {
+			for _, err := range rows.All() {
+				_ = err
 				t.Fatal("a row after Close")
 			}
 
@@ -233,7 +236,8 @@ func TestEngine_Query(t *testing.T) {
 			is.NotError(t, err)
 			func() {
 				defer func() { is.Equal(t, "the consumer", recover()) }()
-				for range rows.All() {
+				for _, err := range rows.All() {
+					_ = err
 					panic("the consumer")
 				}
 			}()
@@ -464,10 +468,12 @@ func TestEngine_noneOpen(t *testing.T) {
 		}
 		switch mode {
 		case 1:
-			for range rows.All() {
+			for _, err := range rows.All() {
+				_ = err
 			}
 		case 2:
-			for range rows.All() {
+			for _, err := range rows.All() {
+				_ = err
 				break
 			}
 		case 3:
@@ -475,7 +481,8 @@ func TestEngine_noneOpen(t *testing.T) {
 		case 4:
 			func() {
 				defer func() { _ = recover() }()
-				for range rows.All() {
+				for _, err := range rows.All() {
+					_ = err
 					panic("the consumer")
 				}
 			}()

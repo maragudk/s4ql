@@ -36,7 +36,7 @@ type hostRand struct {
 	h host.Host
 }
 
-func (r hostRand) IntN(n int) int  { return int(r.h.Uint64() % uint64(n)) }
+func (r hostRand) IntN(n int) int { return int(r.h.Uint64() % uint64(n)) }
 func (r hostRand) Uint64() uint64 { return r.h.Uint64() }
 
 // workload of engine statements that callers run against instances of one database, under the

@@ -216,7 +216,8 @@ func TestScan(t *testing.T) {
 	t.Run("should end the scan of the storage when the consumer stops early", func(t *testing.T) {
 		f := newFake().with("t1", []string{"k"}, []int64{1}, []int64{2})
 		s := &scan{r: fakeTx{f}, table: f.tables["t1"].ct}
-		for range s.rows(t.Context()) {
+		for _, err := range s.rows(t.Context()) {
+			is.NotError(t, err)
 			is.Equal(t, 1, f.scans)
 			break
 		}
@@ -274,7 +275,8 @@ func TestValues(t *testing.T) {
 	t.Run("should stop early, and end with the error of a context that ended", func(t *testing.T) {
 		v := &values{width: 1, data: [][]*s4qlpb.Value{{eval(&Integer{Value: 1})}, {eval(&Integer{Value: 2})}}}
 		n := 0
-		for range v.rows(t.Context()) {
+		for _, err := range v.rows(t.Context()) {
+			is.NotError(t, err)
 			n++
 			break
 		}
@@ -294,7 +296,8 @@ func TestProject(t *testing.T) {
 		is.NotError(t, err)
 		is.Equal(t, "[3,1 6,4]", fmt.Sprint(rows))
 		is.Equal(t, "[{c INT} {a INT}]", fmt.Sprint(p.columns()))
-		for range p.rows(t.Context()) {
+		for _, err := range p.rows(t.Context()) {
+			is.NotError(t, err)
 			break
 		}
 		is.Equal(t, 0, f.scans)
@@ -600,14 +603,15 @@ func TestEngine_query(t *testing.T) {
 		is.NotError(t, err)
 		is.Equal(t, "[{v1 INT}]", fmt.Sprint(rows.Columns()))
 		n := 0
-		for range rows.All() {
-			for range rows.All() {
-				t.Fatal("a row in a loop inside the loop")
+		for _, err := range rows.All() {
+			is.NotError(t, err)
+			for _, err := range rows.All() {
+				t.Fatal("a row in a loop inside the loop", err)
 			}
 			n++
 		}
-		for range rows.All() {
-			t.Fatal("a row in a second loop")
+		for _, err := range rows.All() {
+			t.Fatal("a row in a second loop", err)
 		}
 		is.Equal(t, 2, n)
 		is.Equal(t, 0, f.open)

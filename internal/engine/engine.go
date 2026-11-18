@@ -206,7 +206,7 @@ func (e *Engine) write(ctx context.Context, r *report, p Plan, sql string) (_ in
 	r.at(tx.position(), true)
 	ended := false
 	defer func() {
-		if !ended && !(err != nil && e.bugs.keepOpen) {
+		if !ended && (err == nil || !e.bugs.keepOpen) {
 			// The planted bug keepOpen leaves the transaction of a statement that failed open. A
 			// rollback that fails leaves nothing open: the core ends the transaction whatever the
 			// cache does.
@@ -323,9 +323,11 @@ func (r *Rows) All() iter.Seq2[[]*s4qlpb.Value, error] {
 		}
 		r.reading = true
 		var err error
+		// The read transaction ends here when the loop stops early, panics, or meets an error, and
+		// the error of its end is then the error of Close or nobody's.
 		defer func() {
 			r.reading = false
-			r.end(err)
+			_ = r.end(err)
 		}()
 		for row, e := range r.src.rows(r.ctx) {
 			if e != nil {
@@ -337,6 +339,11 @@ func (r *Rows) All() iter.Seq2[[]*s4qlpb.Value, error] {
 			if !yield(row, nil) || r.closing {
 				return
 			}
+		}
+		// After the last row, a failure of the end of the read transaction is the last error.
+		r.reading = false
+		if err := r.end(nil); err != nil {
+			yield(nil, err)
 		}
 	}
 }
