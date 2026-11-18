@@ -396,7 +396,7 @@ The 727 supported texts of the corpus are 3 CREATE TABLE, 191 DROP TABLE, 183 IN
 
 Fuzzing: `FuzzCheck` made 202,673,795 executions in 40 minutes on 6 workers, and on the code after the review 87,983,456 in 30 minutes on 4 workers. `FuzzGenerate` made 11,418,100 executions in 15 minutes on 4 workers; each checks a statement of the generator and its mutant in SQLite. None of the runs found anything.
 
-Mutation testing: of 890 mutants, 117 do not compile, 760 are killed, 12 time out, and 1 is equivalent; none is unexplained. See [`internal/sql/mutation`](../mutation/README.md#the-pass-after-the-parser).
+Mutation testing, on 2026-11-18 after the empty name and `StartedTable`: of 1,122 mutants, 123 do not compile, 970 are killed, 14 time out, and 15 are equivalent, 14 of them in `StartedTable`, whose last check, of the offset of the syntax error, covers the checks of the shape before it; none is unexplained. Before, of 890 mutants, 117 did not compile, 760 were killed, 12 timed out, and 1 was equivalent. See [`internal/sql/mutation`](../mutation/README.md#the-pass-after-the-parser).
 
 Statement coverage is 99.0%. Three places are not covered: the defaults of `literalName` and `unaryName` for a kind of token that the grammar never puts there, and the name of a node for one of its own tokens whose field has no name, which no offset reaches.
 

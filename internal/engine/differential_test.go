@@ -68,11 +68,15 @@ func newOracle(t testing.TB) *oracle {
 	is.NotError(t, err)
 	counts, err := c.Prepare("select changes(), last_insert_rowid()")
 	is.NotError(t, err)
-	t.Cleanup(func() {
-		_ = counts.Finalize()
-		_ = c.Close()
-	})
-	return &oracle{c: c, counts: counts}
+	o := &oracle{c: c, counts: counts}
+	t.Cleanup(o.close)
+	return o
+}
+
+// close the database of the oracle. Closing it again does nothing.
+func (o *oracle) close() {
+	_ = o.counts.Finalize()
+	_ = o.c.Close()
 }
 
 // changes is SQLite's count of changes, and rowid its last insert rowid.
@@ -554,7 +558,11 @@ func messageKind(err string) string {
 // at random points, with an empty cache or with its cache.
 func differential(t testing.TB, seed uint64, n int, restarts bool, y tally) {
 	t.Helper()
-	differentialOn(t, seed, n, restarts, y, newInstance(t, engine.Options{}))
+	// The instance closes at the end of the sequence, so that a test of many sequences does not keep
+	// the files of each open until it ends.
+	i := newInstance(t, engine.Options{})
+	defer i.close()
+	differentialOn(t, seed, n, restarts, y, i)
 }
 
 // differentialOn runs the sequence of n statements from seed on the instance i, as [differential]
@@ -564,6 +572,7 @@ func differentialOn(t testing.TB, seed uint64, n int, restarts bool, y tally, i 
 	r := rand.New(rand.NewPCG(seed, 0xe1e))
 	q := newSequence(t, r)
 	o := newOracle(t)
+	defer o.close()
 	// prev is SQLite's count of changes after the statement before.
 	var prev int64
 	var log []string

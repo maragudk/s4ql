@@ -185,6 +185,17 @@ The layers that killed them first: hand-written 5,545, corpus 221, ownership 94,
 
 The run took 1 h 15 min with 10 workers on an Apple M4 with 10 cores and 16 GB, while a fuzz run used 4 of the cores. Five of its mutants survived only because the tests that kill them came after the copy of the tree that the run read; a run of those five on the final tests killed them all in 1 min. Planning, which builds and times every stage on the code as it is, takes about 3 min of the total.
 
+### The pass after the parser and the engine
+
+On 2026-11-18, the run of `internal/sql/stmt` and `internal/engine` with 6 workers, while other work used the machine, made 2,102 mutants in about 35 min. It left 110 survivors: 74 in the engine, 34 in `stmt.StartedTable`, one in the recognizer, and the known equivalent one. Each was a gap in the tests but those listed in `equivalent.txt`: the events of the engine on its paths of failure (their outcomes, rows, positions, and durations), the end of a read transaction after a loop that stops early, `Rows.Close` during a loop, the offsets of the errors, plans that no statement of slice 1 gives, the ends of the texts of `StartedTable`, and an empty name after a schema name. The runs of the affected files on the tests that close them, and of all of the engine, then left:
+
+| Package | Generated | Not compiled | Killed | Timed out | Equivalent | Unexplained | Score | Score without equivalent |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `stmt` | 1,122 | 123 | 970 | 14 | 15 | 0 | 98.50% | 100.00% |
+| `engine` | 955 | 312 | 632 | 0 | 11 | 0 | 98.29% | 100.00% |
+
+Of the engine's killed mutants, the layers that killed them first were hand-written 628 and simulation 4. The equivalent ones of the engine are the planted bugs, a yield to the scheduler, a bound that means "none", the order of the attributes of an event, and a check of the level that `log/slog` makes again.
+
 ### What the first run of the parser found
 
 The first run, before any fix, made 7,186 mutants. It took 1 h 57 min with 10 workers on an Apple M4 with 10 cores and 16 GB, while the machine did other work.
