@@ -389,13 +389,18 @@ func (r *recognizer) tableName(q ast.QualifiedName) Name {
 	return r.name(q.Name)
 }
 
-// name: a bare name, or one in double quotes.
+// name: a bare name, or one in double quotes, that is not empty. SQLite takes `""` for a name, and
+// the storage core does not hold a table or a column without a name.
 func (r *recognizer) name(t ast.Token) Name {
 	if what := quotingName(t); what != "" && r.isNext(t) {
 		r.reject(what)
 	}
+	value := dequote(t)
+	if value == "" && r.isNext(t) {
+		r.reject("empty name")
+	}
 	r.take(t)
-	return Name{Raw: t.Text, Value: dequote(t), Offset: t.Offset}
+	return Name{Raw: t.Text, Value: value, Offset: t.Offset}
 }
 
 // quotingName gives why the quoting of the name t is not supported, or "" if it is: a single-quoted

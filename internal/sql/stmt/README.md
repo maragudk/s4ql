@@ -2,7 +2,7 @@
 
 `internal/sql/stmt` takes SQL text and gives one of four answers:
 
-1. **SQLite's syntax error**, as a `*stmt.SyntaxError`: the message of SQLite's parser, with the result code 1 and the extended result code 1, when the text is a syntax error in SQLite. This holds also when the text is SQL that s4ql does not support. Only the checks before parsing come first: a text longer than SQLite's limit, with a NUL byte, or with bytes that are not UTF-8 is not supported, whatever else it holds. The byte offset is kept as extra information; it is not part of the promise.
+1. **SQLite's syntax error**, as a `*sqlerr.Error` of [`internal/sql/sqlerr`](../sqlerr/sqlerr.go), the one type of SQLite's errors that s4ql gives, which the engine gives too: the message of SQLite's parser, with the result code 1 and the extended result code 1, when the text is a syntax error in SQLite. This holds also when the text is SQL that s4ql does not support. Only the checks before parsing come first: a text longer than SQLite's limit, with a NUL byte, or with bytes that are not UTF-8 is not supported, whatever else it holds. The byte offset is kept as extra information; it is not part of the promise.
 2. **"Not supported"**, as a `*stmt.NotSupportedError`, when SQLite's parser accepts the text and the text is not, token for token, a statement of [slice 1](#slice-1). The error matches `stmt.ErrNotSupported` with `errors.Is`, its message starts with `s4ql: not supported: `, and it carries no result code of SQLite.
 3. **No statement and no error**, for a text that is empty or holds only spaces, comments, and semicolons. SQLite prepares such a text into no statement and no error.
 4. **A supported statement**: a `*stmt.CreateTable`, `*stmt.Insert`, `*stmt.Select`, or `*stmt.DropTable`.
@@ -110,7 +110,9 @@ Not supported: IF EXISTS, DROP VIEW, DROP INDEX, DROP TRIGGER, and a schema name
 `table` and `column` are names:
 
 - A bare name, such as `t1` or `été`, or a keyword that SQLite reads as a name in that place, such as `abort`. The parser has decided which keywords are names, as SQLite's grammar does. The value of a bare name is its text.
-- A name in double quotes, with `""` for a quote inside. Its value is the text between the quotes, with `""` read as `"`. The empty name `""` is a name.
+- A name in double quotes, with `""` for a quote inside. Its value is the text between the quotes, with `""` read as `"`.
+
+Not supported: the empty name `""`, in every place, though SQLite takes it for a name and creates a table and a column of that name. The storage core and the format of the commit object do not hold a table or a column without a name (`checkIdentifier` in `internal/format/check.go`), and the pass is the one gate that decides what is supported. It is the only name that SQLite and this pass accept and the core refuses: the core's other rules on names are valid UTF-8, no NUL, and no reserved prefix, which the checks before parsing and the reserved names cover already. `TestCheck_namesOfTheCore` checks that every name of the generator, and every keyword that the pass reads as a name, is one that the core takes.
 
 Not supported: a name in `[brackets]`, in backticks, or in single quotes, which SQLite accepts in some places. The roadmap's restrictions reject all three.
 
@@ -167,6 +169,7 @@ A test checks that every name the pass gives in any test is in these tables.
 | `name in brackets` | A name is in `[brackets]`. |
 | `name in backticks` | A name is in backticks. |
 | `single-quoted name` | A name is a string in single quotes. |
+| `empty name` | A name is `""`. |
 | `reserved table name` | A table name starts with `sqlite_` or `s4ql_`. |
 | `name of a virtual table of SQLite` | A table name is that of an eponymous virtual table. |
 | `second column` | CREATE TABLE has a second column, or INSERT names a second column. |

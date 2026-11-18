@@ -4,6 +4,7 @@ import (
 	"unicode/utf8"
 
 	"maragu.dev/s4ql/internal/sql/parser"
+	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/token"
 )
 
@@ -17,7 +18,7 @@ var lengthLimit = parser.MaxLength
 //  1. A [*NotSupportedError] for text that is longer than [parser.MaxLength], which SQLite refuses
 //     before it parses, and for text that is not valid UTF-8 or that has a NUL byte, at the first
 //     byte that is either.
-//  2. A [*SyntaxError] if the text is a syntax error in SQLite, with SQLite's result codes and
+//  2. A [*sqlerr.Error] if the text is a syntax error in SQLite, with SQLite's result codes and
 //     message. A text that the parser refuses for one of its limits, which SQLite refuses too with
 //     an error that is not a syntax error, is not supported.
 //  3. No statement and no error if the text has no statement: if it is empty, or holds only spaces,
@@ -43,7 +44,7 @@ func Check(src string) (Statement, error) {
 		if e.Limit {
 			return nil, &NotSupportedError{What: "statement beyond a limit of the parser", Offset: firstToken(src, 0)}
 		}
-		return nil, &SyntaxError{Code: 1, ExtendedCode: 1, Message: e.Message, Offset: e.Offset}
+		return nil, &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: e.Message, Offset: e.Offset}
 	}
 	if tree == nil {
 		return nil, nil
