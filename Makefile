@@ -42,12 +42,14 @@ fuzz:
 generate:
 	$(BUF) generate
 
-# lint also runs lint-proto, and the lint for code that runs under the simulation, from
-# internal/simlint. That lint is a module of its own, so that its dependencies stay out of the
-# library's, and is built there and run here.
+# lint also runs lint-proto, the lint for code that runs under the simulation, from
+# internal/simlint, and golangci-lint over the browser's build of BROWSERPKGS, whose files a native
+# run does not see. The simulation's lint is a module of its own, so that its dependencies stay out
+# of the library's, and is built there and run here.
 .PHONY: lint
 lint:
 	golangci-lint run
+	GOOS=js GOARCH=wasm golangci-lint run --build-tags s4ql_browser $(BROWSERPKGS)
 	cd $(CROSSCHECK) && golangci-lint run
 	cd $(SIMLINT) && golangci-lint run
 	dir=$$(mktemp -d) && (cd $(SIMLINT) && go build -o $$dir/simlint ./cmd/simlint) && $$dir/simlint ./...; \
@@ -90,6 +92,12 @@ test:
 BROWSERPKGS ?= ./internal/sqlite ./internal/sqlite/faultvfs ./internal/core ./internal/sim ./internal/store/simstore
 BROWSER := GOOS=js GOARCH=wasm go
 BROWSERTIMEOUT ?= 30m
+# BROWSERSKIP are the tests that cannot pass in a browser for a reason in the route, and that
+# test-browser skips. Two canaries in internal/sim/cgo_test.go run eight goroutines that read in a
+# loop that never blocks, beside a writer. Go's js/wasm port has one thread and no preemption, so
+# the first such goroutine runs alone for good, and the test hangs; measured in Chromium, where it
+# never ended. A canary about calls into C and real parallelism has nothing to measure there.
+BROWSERSKIP ?= TestSynctestWithCgo/among_parallel_readers
 
 # check-browser builds and vets BROWSERPKGS for the browser, and compiles their tests, so that the
 # browser's binding cannot drift from the cgo binding's API unnoticed. It needs no browser.
@@ -107,7 +115,7 @@ check-browser:
 .PHONY: test-browser
 test-browser:
 	dir=$$(mktemp -d) && go build -o $$dir/browser ./internal/sqlite/browser && \
-		$(BROWSER) test -tags s4ql_browser -exec $$dir/browser -timeout $(BROWSERTIMEOUT) $(BROWSERFLAGS) $(BROWSERPKGS); \
+		$(BROWSER) test -tags s4ql_browser -exec $$dir/browser -timeout $(BROWSERTIMEOUT) -skip '$(BROWSERSKIP)' $(BROWSERFLAGS) $(BROWSERPKGS); \
 		status=$$?; rm -rf $$dir; exit $$status
 
 # test-asan runs all tests, and then each fuzz test for FUZZTIME, under the C address sanitizer. Go

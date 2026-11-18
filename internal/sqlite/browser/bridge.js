@@ -14,8 +14,9 @@ globalThis.s4qlInitSQLite = async function () {
   const x = wasm.exports;
   s4qlInstallVFS(sqlite3, 's4ql', true);
 
-  // A 64-bit integer goes to Go as a Number when it is exact as one, and as decimal text otherwise,
-  // because syscall/js has no BigInt.
+  // Every helper returns a number, or nothing, so that Go keeps no reference to a JavaScript object
+  // per call (see the type library in sqlite_browser.go). A 64-bit integer goes to Go as a Number
+  // when it is exact as one, and as decimal text otherwise, because syscall/js has no BigInt.
   const MAX = BigInt(Number.MAX_SAFE_INTEGER), MIN = -MAX;
   let faults = 0;
 
@@ -29,14 +30,16 @@ globalThis.s4qlInitSQLite = async function () {
       if (p) wasm.heap8u().fill(0, p, p + n + 1);
       return p;
     },
-    // bytes of SQLite's memory from p, n of them, as a view.
-    bytes: (p, n) => wasm.heap8u().subarray(p, p + n),
-    // cstring at p, without its NUL, as a view of SQLite's memory.
-    cstring(p) {
+    // copyIn copies the first n bytes of the Uint8Array buffer to SQLite's memory at p, and copyOut
+    // the n bytes there to the start of buffer.
+    copyIn: (buffer, p, n) => { wasm.heap8u().set(buffer.subarray(0, n), p); },
+    copyOut: (buffer, p, n) => { buffer.set(wasm.heap8u().subarray(p, p + n)); },
+    // strlen of the C string at p.
+    strlen(p) {
       const heap = wasm.heap8u();
       let end = p;
       while (heap[end] !== 0) end++;
-      return heap.subarray(p, end);
+      return end - p;
     },
     // peek32 at p, as a signed 32-bit integer, such as a pointer.
     peek32: (p) => wasm.peek32(p),

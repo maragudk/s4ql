@@ -64,6 +64,10 @@ const (
 const pragmas = "pragma page_size = 4096; pragma foreign_keys = on; pragma temp_store = file; " +
 	"pragma cache_size = -2000; pragma temp.cache_size = -2000"
 
+// asan, which noasan.go sets, is false for GOOS=js, which has no address sanitizer, so the lookaside
+// allocator stays on, as in the cgo binding without -asan.
+var _ = asan
+
 func init() {
 	// The function is made here, outside any testing/synctest bubble, so that it belongs to none and
 	// can run on any goroutine. A function made inside a bubble panics when it is called on a
@@ -72,13 +76,24 @@ func init() {
 }
 
 // library of SQLite's functions and of the helpers of bridge.js, looked up once.
+//
+// Every call returns a number, because syscall/js keeps each JavaScript object that reaches Go in a
+// table until Go's garbage collector finds the [js.Value] unreachable, and Go's heap grows too little
+// per call to make it collect in time: a view of SQLite's memory per call filled the table, which
+// holds 2^24 entries, in a loop of SQLite calls. Bytes therefore pass through transfer, one array
+// that Go keeps, and which the helpers copyIn and copyOut copy to and from SQLite's memory.
 type library struct {
-	alloc, bytes, cstring, peek32, bindInt64, columnInt64 js.Value
+	alloc, copyIn, copyOut, strlen, peek32, bindInt64, columnInt64 js.Value
 
 	free, openV2, closeV2, nextStmt, exec, prepareV3, extendedErrcode, errstr, errmsg, errorOffset,
 	dbHandle, limit, bindText, bindNull, step, columnCount, columnName, columnType, columnText,
 	columnBytes, reset, finalize, libversion, sourceid, complete, keywordCount, keywordName,
 	compileoptionGet js.Value
+
+	// transfer is a Uint8Array of transferLen bytes. A method uses it only between two calls into
+	// JavaScript that cannot call back into Go, so no other goroutine can use it meanwhile.
+	transfer    js.Value
+	transferLen int
 }
 
 var lib = sync.OnceValue(func() *library {
@@ -89,8 +104,9 @@ var lib = sync.OnceValue(func() *library {
 	x := b.Get("exports")
 	return &library{
 		alloc:            b.Get("alloc"),
-		bytes:            b.Get("bytes"),
-		cstring:          b.Get("cstring"),
+		copyIn:           b.Get("copyIn"),
+		copyOut:          b.Get("copyOut"),
+		strlen:           b.Get("strlen"),
 		peek32:           b.Get("peek32"),
 		bindInt64:        b.Get("bindInt64"),
 		columnInt64:      b.Get("columnInt64"),
@@ -131,15 +147,25 @@ func call(f js.Value, args ...any) int {
 	return f.Invoke(args...).Int()
 }
 
+// buffer gives transfer with room for n bytes at the least.
+func (l *library) buffer(n int) js.Value {
+	if n > l.transferLen {
+		l.transferLen = max(n, 2*l.transferLen, 64<<10)
+		l.transfer = js.Global().Get("Uint8Array").New(l.transferLen)
+	}
+	return l.transfer
+}
+
 // cString copies s into SQLite's memory with a NUL after it, and returns its address, which
-// [library.free] frees.
+// [library.release] frees.
 func (l *library) cString(s string) int {
 	p := call(l.alloc, len(s))
 	if p == 0 {
 		panic("sqlite: out of memory")
 	}
 	if len(s) > 0 {
-		js.CopyBytesToJS(l.bytes.Invoke(p, len(s)), unsafe.Slice(unsafe.StringData(s), len(s)))
+		js.CopyBytesToJS(l.buffer(len(s)), unsafe.Slice(unsafe.StringData(s), len(s)))
+		l.copyIn.Invoke(l.transfer, p, len(s))
 	}
 	return p
 }
@@ -150,20 +176,14 @@ func (l *library) goBytes(p, n int) string {
 		return ""
 	}
 	b := make([]byte, n)
-	js.CopyBytesToGo(b, l.bytes.Invoke(p, n))
+	l.copyOut.Invoke(l.buffer(n), p, n)
+	js.CopyBytesToGo(b, l.transfer)
 	return unsafe.String(unsafe.SliceData(b), len(b))
 }
 
 // goString copies the C string at p in SQLite's memory, without its NUL.
 func (l *library) goString(p int) string {
-	v := l.cstring.Invoke(p)
-	n := v.Length()
-	if n == 0 {
-		return ""
-	}
-	b := make([]byte, n)
-	js.CopyBytesToGo(b, v)
-	return unsafe.String(unsafe.SliceData(b), len(b))
+	return l.goBytes(p, call(l.strlen, p))
 }
 
 func (l *library) release(p int) {

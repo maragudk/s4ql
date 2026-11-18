@@ -154,8 +154,13 @@ func run(args []string) (int, error) {
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
-	stopped := make(chan error, 1)
-	go func() { stopped <- cmd.Wait() }()
+	// stopped is closed when Chromium has stopped, with the error of its stop in waitErr.
+	stopped := make(chan struct{})
+	var waitErr error
+	go func() {
+		waitErr = cmd.Wait()
+		close(stopped)
+	}()
 
 	var deadline <-chan time.Time
 	if timeout, ok := testTimeout(programArgs); ok {
@@ -166,8 +171,8 @@ func run(args []string) (int, error) {
 		cancel()
 		<-stopped
 		return code, nil
-	case err := <-stopped:
-		return 0, fmt.Errorf("chromium stopped before the program exited: %v\n%s", err, log.String())
+	case <-stopped:
+		return 0, fmt.Errorf("chromium stopped before the program exited: %v\n%s", waitErr, log.String())
 	case <-deadline:
 		cancel()
 		<-stopped
