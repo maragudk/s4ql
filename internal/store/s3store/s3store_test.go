@@ -15,8 +15,10 @@ import (
 	"net/http/httptest"
 	"net/http/httptrace"
 	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/metrics"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,7 +31,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"maragu.dev/is"
 
+	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/host"
+	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/store"
 	"maragu.dev/s4ql/internal/store/s3store"
 	"maragu.dev/s4ql/internal/store/storetest"
@@ -1060,4 +1065,293 @@ func TestClient_realBucket(t *testing.T) {
 			_ = body.Close()
 		}
 	})
+}
+
+// TestClient_core runs the storage core of internal/core on the client against a real bucket, so
+// that the path from a transaction to the bucket and back, which the core's own tests run on
+// simulated and local stores, also runs on a real one.
+func TestClient_core(t *testing.T) {
+	opts := realBucket(t)
+
+	t.Run("should commit rows to the bucket, and replay them into an empty cache", func(t *testing.T) {
+		db := newDatabase(t, opts)
+		a := db.serve(t, "a")
+		commit(t, a, func(tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(t.Context(), table("t")))
+			is.NotError(t, tx.Upsert(t.Context(), "t", values(1, 10)))
+			is.NotError(t, tx.Upsert(t.Context(), "t", values(2, 20)))
+		})
+		commit(t, a, func(tx *core.Tx) {
+			is.NotError(t, tx.Upsert(t.Context(), "t", values(3, 30)))
+			deleted, err := tx.Delete(t.Context(), "t", values(1))
+			is.NotError(t, err)
+			is.True(t, deleted)
+		})
+		const want = "t: 2,20 | 3,30"
+		is.Equal(t, want, rows(t, a))
+		is.NotError(t, a.Close(t.Context()))
+
+		// The bucket holds the log: a manifest without a lease, whose head is the second of two
+		// commit objects.
+		m := db.manifest(t)
+		is.True(t, m.Lease == nil, "the manifest names a holder after the close")
+		commits := db.commits(t)
+		is.Equal(t, 2, len(commits), fmt.Sprint(commits))
+		is.True(t, slices.ContainsFunc(commits, func(key string) bool { return strings.HasSuffix(key, "/"+m.Head.String()) }),
+			fmt.Sprint("the head ", m.Head, " is not among ", commits))
+
+		b := db.serve(t, "b")
+		is.Equal(t, want, rows(t, b), "the empty cache replayed another state")
+		is.NotError(t, b.Close(t.Context()))
+
+		a = db.serve(t, "a")
+		is.Equal(t, want, rows(t, a), "the cache at the head opened at another state")
+	})
+
+	t.Run("should hand the lease to a waiting instance when the holder closes, which then sees every commit", func(t *testing.T) {
+		db := newDatabase(t, opts)
+		a := db.serve(t, "a")
+		b := db.open(t, "b")
+		commit(t, a, func(tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(t.Context(), table("t")))
+			is.NotError(t, tx.Upsert(t.Context(), "t", values(1, 10)))
+		})
+
+		// While a holds the lease, b is a spare and serves nothing.
+		_, err := b.Read(t.Context())
+		is.Error(t, core.ErrNoLease, err)
+		_, err = b.Begin(t.Context())
+		is.Error(t, core.ErrNoLease, err)
+
+		is.NotError(t, a.Close(t.Context()))
+		is.NotError(t, b.Wait(t.Context()))
+		is.Equal(t, "t: 1,10", rows(t, b))
+		commit(t, b, func(tx *core.Tx) {
+			is.NotError(t, tx.Upsert(t.Context(), "t", values(2, 20)))
+		})
+		is.NotError(t, b.Close(t.Context()))
+
+		// The first cache is one commit behind, and catches up.
+		a = db.serve(t, "a")
+		is.Equal(t, "t: 1,10 | 2,20", rows(t, a))
+	})
+
+	t.Run("should refuse a commit whose manifest swap loses to another writer, and keep the other writer's commit", func(t *testing.T) {
+		db := newDatabase(t, opts)
+		seen := &refusals{Store: db.c}
+		a := db.openOn(t, "a", seen)
+		is.NotError(t, a.Wait(t.Context()))
+		commit(t, a, func(tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(t.Context(), table("t")))
+			is.NotError(t, tx.Upsert(t.Context(), "t", values(1, 10)))
+		})
+		tx, err := a.Begin(t.Context())
+		is.NotError(t, err)
+		is.NotError(t, tx.Upsert(t.Context(), "t", values(2, 20)))
+
+		// No instance takes a lease that is held, so the test releases a's lease by hand, as an
+		// operator could, and b takes it and commits while a still holds it as far as a knows.
+		db.release(t)
+		b := db.serve(t, "b")
+		commit(t, b, func(tx *core.Tx) {
+			is.NotError(t, tx.Upsert(t.Context(), "t", values(3, 30)))
+		})
+		is.NotError(t, b.Close(t.Context()))
+
+		// The manifest changed under a, so the store refuses a's swap, and the commit fails with
+		// the temporary error of an instance without the lease, and not as an unknown outcome. The
+		// refused swap is the commit's, unless a renewal came first, after the lease's two thirds,
+		// and was refused itself, so that the commit sent none.
+		err = tx.Commit(t.Context())
+		is.Error(t, core.ErrNoLease, err)
+		is.True(t, !errors.Is(err, core.ErrOutcomeUnknown), fmt.Sprint(err))
+		is.True(t, seen.changed.Load() > 0, "the store refused no swap of a")
+
+		// a takes the free lease again, and serves b's commit, without its own.
+		is.NotError(t, a.Wait(t.Context()))
+		is.Equal(t, "t: 1,10 | 3,30", rows(t, a))
+		is.NotError(t, a.Close(t.Context()))
+		c := db.serve(t, "c")
+		is.Equal(t, "t: 1,10 | 3,30", rows(t, c))
+	})
+}
+
+// database of the storage core under a new prefix of a real bucket, with its caches in a
+// temporary directory.
+type database struct {
+	c      *s3store.Client
+	raw    *s3.Client
+	bucket string
+	prefix string
+	dir    string
+	host   host.Host
+}
+
+func newDatabase(t *testing.T, opts s3store.Options) *database {
+	t.Helper()
+	c, raw := realClient(t, opts)
+	return &database{
+		c:      c,
+		raw:    raw,
+		bucket: opts.Bucket,
+		prefix: newPrefix(t, raw, opts.Bucket) + "db",
+		dir:    t.TempDir(),
+		host:   host.New(),
+	}
+}
+
+// open an instance of the database with the cache of the given name, which is closed when the test
+// ends. Its lease lasts ten minutes, so that it is renewed only by its commits during a test, and a
+// spare watches the manifest four times a second, so that it takes a lease that was released soon.
+func (db *database) open(t *testing.T, cache string) *core.DB {
+	t.Helper()
+	return db.openOn(t, cache, db.c)
+}
+
+// openOn opens an instance that reaches the bucket through s.
+func (db *database) openOn(t *testing.T, cache string, s store.Store) *core.DB {
+	t.Helper()
+	d, err := core.Open(t.Context(), db.host, s, filepath.Join(db.dir, cache+".db"), db.prefix,
+		core.Options{Lease: 10 * time.Minute, Watch: 250 * time.Millisecond})
+	is.NotError(t, err)
+	t.Cleanup(func() {
+		// The context of the test is done when its cleanup runs.
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		_ = d.Close(ctx)
+	})
+	return d
+}
+
+// serve opens an instance, and waits until it serves.
+func (db *database) serve(t *testing.T, cache string) *core.DB {
+	t.Helper()
+	d := db.open(t, cache)
+	is.NotError(t, d.Wait(t.Context()))
+	return d
+}
+
+// manifestKey of the database.
+func (db *database) manifestKey() string {
+	return db.prefix + "/manifest.json"
+}
+
+// manifest of the database, and its version.
+func (db *database) manifest(t *testing.T) format.Manifest {
+	t.Helper()
+	m, _ := db.manifestVersion(t)
+	return m
+}
+
+func (db *database) manifestVersion(t *testing.T) (format.Manifest, store.Version) {
+	t.Helper()
+	body, v, err := db.c.Get(t.Context(), db.manifestKey())
+	is.NotError(t, err)
+	data, err := io.ReadAll(body)
+	_ = body.Close()
+	is.NotError(t, err)
+	m, err := format.ParseManifest(data)
+	is.NotError(t, err)
+	return m, v
+}
+
+// release the lease in the manifest, whoever holds it, with a swap. A renewal that comes between
+// the read and the swap makes the swap fail, and the release is tried again.
+func (db *database) release(t *testing.T) {
+	t.Helper()
+	for {
+		m, v := db.manifestVersion(t)
+		m.Lease = nil
+		data, err := m.Marshal()
+		is.NotError(t, err)
+		_, err = db.c.Swap(t.Context(), db.manifestKey(), v, bytes.NewReader(data), new(sha256.Sum256(data)))
+		if !errors.Is(err, store.ErrChanged) {
+			is.NotError(t, err)
+			return
+		}
+	}
+}
+
+// commits are the keys of the commit objects of the database in the bucket.
+func (db *database) commits(t *testing.T) []string {
+	t.Helper()
+	var keys []string
+	pages := s3.NewListObjectsV2Paginator(db.raw, &s3.ListObjectsV2Input{Bucket: aws.String(db.bucket), Prefix: aws.String(db.prefix + "/commits/")})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(t.Context())
+		is.NotError(t, err)
+		for _, o := range page.Contents {
+			keys = append(keys, aws.ToString(o.Key))
+		}
+	}
+	return keys
+}
+
+// refusals of a store: it counts the swaps that the store refused with [store.ErrChanged].
+type refusals struct {
+	store.Store
+	changed atomic.Int32
+}
+
+func (r *refusals) Swap(ctx context.Context, key string, from store.Version, content io.ReadSeeker, checksum *store.Checksum) (store.Version, error) {
+	v, err := r.Store.Swap(ctx, key, from, content, checksum)
+	if errors.Is(err, store.ErrChanged) {
+		r.changed.Add(1)
+	}
+	return v, err
+}
+
+// commit a write transaction of d that f makes.
+func commit(t *testing.T, d *core.DB, f func(tx *core.Tx)) {
+	t.Helper()
+	tx, err := d.Begin(t.Context())
+	is.NotError(t, err)
+	f(tx)
+	is.NotError(t, tx.Commit(t.Context()))
+}
+
+// table of the given name, with the integer columns k and v, of which k is the primary key.
+func table(name string) *s4qlpb.CreateTable {
+	return s4qlpb.CreateTable_builder{
+		Table: new(name),
+		Columns: []*s4qlpb.Column{
+			s4qlpb.Column_builder{Name: new("k"), Type: new(s4qlpb.Type_TYPE_INT)}.Build(),
+			s4qlpb.Column_builder{Name: new("v"), Type: new(s4qlpb.Type_TYPE_INT)}.Build(),
+		},
+		PrimaryKey: []uint32{0},
+	}.Build()
+}
+
+// values of integers.
+func values(vs ...int64) []*s4qlpb.Value {
+	values := make([]*s4qlpb.Value, len(vs))
+	for i, v := range vs {
+		values[i] = s4qlpb.Value_builder{Integer: new(v)}.Build()
+	}
+	return values
+}
+
+// rows that d serves, as each table's name and its rows in the order of a scan, as in
+// "t: 1,10 | 2,20", one table to a line.
+func rows(t *testing.T, d *core.DB) string {
+	t.Helper()
+	r, err := d.Read(t.Context())
+	is.NotError(t, err)
+	defer func() { is.NotError(t, r.Close(t.Context())) }()
+	tables, err := r.Tables(t.Context())
+	is.NotError(t, err)
+	var lines []string
+	for _, ct := range tables {
+		var rows []string
+		for values, err := range r.Scan(t.Context(), ct.GetTable()) {
+			is.NotError(t, err)
+			var vs []string
+			for _, v := range values {
+				vs = append(vs, fmt.Sprint(v.GetInteger()))
+			}
+			rows = append(rows, strings.Join(vs, ","))
+		}
+		lines = append(lines, ct.GetTable()+": "+strings.Join(rows, " | "))
+	}
+	return strings.Join(lines, "\n")
 }
