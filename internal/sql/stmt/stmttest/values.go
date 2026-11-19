@@ -190,8 +190,8 @@ func Argument(v stmt.Value) any {
 // negative and maybe with a gap after the sign, and the value that SQLite gives it, which is v but
 // for a real in more than 17 digits, which SQLite may read as a neighbour of v. An integer is
 // written with leading zeros now and then, and 0 as -0; a real in one of the forms of a real literal
-// of SQLite; a string in single quotes, with ” for a quote; and a blob with an x or an X and hex
-// digits in lower case, upper case, or both.
+// of SQLite; a string in single quotes, with two single quotes for a quote; and a blob with an x
+// or an X and hex digits in lower case, upper case, or both.
 func Literal(r Rand, v stmt.Value) (string, stmt.Value) {
 	switch v := v.(type) {
 	case stmt.Integer:

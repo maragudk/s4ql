@@ -150,7 +150,8 @@ func (q *Sequence) columnType(table stmt.Name) stmt.Type {
 	return q.typeOf(table)
 }
 
-// Value of an insert into table: of the type of its name, and one time in ten of another type.
+// Value of an insert into table: of the type of its name, and one time in ten of any type, which is
+// mostly another.
 func (q *Sequence) Value(table stmt.Name) stmt.Value {
 	t := q.typeOf(table)
 	if q.r.IntN(10) == 0 {
@@ -353,7 +354,10 @@ func (q *Sequence) around(args []any) []any {
 				args[at] = int(v)
 			}
 		case float64:
-			args[at] = float32(v)
+			// Only where a float32 holds it as a finite real, so that it stays a value.
+			if f := float32(v); !math.IsInf(float64(f), 0) {
+				args[at] = f
+			}
 		case string:
 			args[at] = []string{"a\x00b", "\xff", v + "\x00"}[r.IntN(3)]
 		case []byte:

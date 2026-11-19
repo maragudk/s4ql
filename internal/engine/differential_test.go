@@ -1199,7 +1199,7 @@ func TestDifferential(t *testing.T) {
 	// such as each known gap, is pinned at 0. Of the calls that are excused because s4ql refuses
 	// their arguments by its rule, each is checked against the rule instead.
 	if !slow() && atDefault("seed", "sequences", "length") {
-		want := map[string]int{acceptedStartedTable: 21, excusedArguments: 644, excusedArgument: 141, excusedType: 363, excusedLong: 5}
+		want := map[string]int{acceptedStartedTable: 21, excusedArguments: 644, excusedArgument: 140, excusedType: 363, excusedLong: 5}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
 			if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) {

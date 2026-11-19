@@ -777,8 +777,11 @@ func readRows(rows *engine.Rows) (answer, error) {
 		values := make([]string, len(row))
 		for j, v := range row {
 			text, ok := valueString(v)
-			if !ok || v.HasBlob() && v.GetBlob() == nil {
+			switch {
+			case !ok:
 				return answer{}, fmt.Errorf("the engine gives %v", text)
+			case v.HasBlob() && v.GetBlob() == nil:
+				return answer{}, errors.New("the engine gives a blob that is nil")
 			}
 			values[j] = text
 		}
@@ -1472,6 +1475,10 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 			if a.position == "" || (a.state != succeeded && a.state != sqliteFailed) {
 				continue
 			}
+			if want := typeRule(r.t, o, a.src, oracleValues(a.args)); a.state == succeeded && want != "" {
+				// The check of the log does not see an insert of a transaction that did not commit.
+				r.violate(ctx, "the statement %v, %q, of the transaction %v (%v) succeeded, and stores a value of another type than its column: %v", a.id, a.src, tx.id, kind, want)
+			}
 			want := o.run(r.t, a.src, oracleValues(a.args)...)
 			if a.partial {
 				continue
@@ -1690,7 +1697,10 @@ func coreState(ctx context.Context, d *core.DB) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			text, _ := valueString(row[0])
+			text, ok := valueString(row[0])
+			if !ok || row[0].HasBlob() && row[0].GetBlob() == nil {
+				return "", fmt.Errorf("the table %v holds %v, or a blob that is nil", ct.GetTable(), text)
+			}
 			rows = append(rows, text)
 		}
 		fmt.Fprintf(&b, "%v (%v): %v\n", ct.GetTable(), strings.Join(columns, ", "), strings.Join(rows, " "))
