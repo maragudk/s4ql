@@ -30,6 +30,12 @@ export function offset(ms) {
 
 export const short = (name) => (name === EMPTY_LOG ? "empty" : name ? name.slice(0, 8) : "?");
 
+// instanceOf a process, which the page shows instead of the process: to a visitor, the process that
+// a restart starts is still the instance, restarted. The engine names the first process of an
+// instance by the instance, and the one that its nth restart starts by the instance and n+1, such as
+// a2.
+export const instanceOf = (process) => String(process || "").replace(/[0-9]+$/, "");
+
 export function keysText(keys) {
   if (!keys || keys.length === 0) return "no rows";
   if (keys.length <= 3) return (keys.length === 1 ? "key " : "keys ") + keys.join(", ");
@@ -132,8 +138,8 @@ function actionWords(e) {
     case "restart": return `You restart ${i}.`;
     case "close": return `You stop ${i}.`;
     case "open": return `You start ${i}.`;
-    case "hangNetwork": return e.on ? `You hang the network of ${i}.` : `The network of ${i} no longer hangs.`;
-    case "disconnectNetwork": return e.on ? `You disconnect ${i}.` : `You connect ${i} again.`;
+    case "hangNetwork": return e.on ? `You hang the requests of ${i} to S3.` : `The requests of ${i} to S3 no longer hang.`;
+    case "disconnectNetwork": return e.on ? `You disconnect ${i} from S3.` : `You connect ${i} to S3 again.`;
     case "failDisk": return e.on ? `You make the disk of ${i} fail.` : `The disk of ${i} works again.`;
     case "shiftWall": return `You move the wall clock of ${i} ${e.by > 0 ? "forward" : "back"} ${Math.abs(e.by) / 1000} s.`;
     case "pauseClocks": return `You pause the clocks of ${i}.`;
@@ -159,14 +165,14 @@ function actionWords(e) {
 // client is in the log when it begins a run of failures of its kind, which a call that is served, or
 // a switch of the client, ends.
 export function teller() {
-  const names = new Map(); // holder IDs, by the process that opened them
+  const names = new Map(); // the instances of holder IDs, by the process that opened them
   const keys = new Map(); // the keys of each commit object, by its name
   const opened = new Set(); // processes that have opened their database once
   const spells = new Map(); // the kinds of line that each instance has said in its spells, by group
   const holder = (id) => (id ? names.get(id) || short(id) : "nobody");
   let clientRun = null; // the kind of the run of failures of the client, or null
   return (e) => {
-    const who = e.process || e.instance || "";
+    const who = e.instance || instanceOf(e.process);
     let w = { text: "", tier: null };
     const say = (text, tier = "story") => (w = { text, tier });
     // once says the line only if the instance has not said the same kind of line in the spell of its
@@ -187,11 +193,11 @@ export function teller() {
         switch (e.what) {
           case "started":
             calm();
-            if (e.process !== e.instance) say(`${who} starts on the cache that the crashed process left.`);
+            if (e.process !== e.instance) say(`${who} starts again, on the cache that it left when it crashed.`);
             break;
           case "opened":
             calm("process");
-            names.set(e.holder, e.process);
+            names.set(e.holder, who);
             if (opened.has(e.process)) say(`${who} opens its database.`);
             opened.add(e.process);
             break;
@@ -209,7 +215,10 @@ export function teller() {
               case "taken":
                 if (a.outcome === "taken") {
                   calm("lease");
-                  say(a["lease.previous_holder"] ? `${who} takes the lease over from ${holder(a["lease.previous_holder"])}.` : `${who} takes the lease.`);
+                  // A process that takes the lease over from an earlier process of its instance
+                  // takes it again.
+                  const from = a["lease.previous_holder"] ? holder(a["lease.previous_holder"]) : "";
+                  say(!from ? `${who} takes the lease.` : from === who ? `${who} takes the lease again.` : `${who} takes the lease over from ${from}.`);
                 }
                 break;
               case "renewed":
@@ -218,7 +227,12 @@ export function teller() {
                 else if (a.outcome === "conflict") say(`S3 refuses the renewal of ${who}.`);
                 else once("lease:failed", `${who} fails to renew the lease.`);
                 break;
-              case "lost": calm("lease"); say(`${who} learns that ${holder(a["lease.holder"])} holds the lease.`); break;
+              case "lost": {
+                calm("lease");
+                const by = holder(a["lease.holder"]);
+                say(by === who ? `${who} learns that its lease from before has not run out yet.` : `${who} learns that ${by} holds the lease.`);
+                break;
+              }
               case "released": if (a.outcome === "released") say(`${who} releases the lease.`); break;
             }
             break;

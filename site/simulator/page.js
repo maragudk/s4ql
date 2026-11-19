@@ -92,7 +92,7 @@ const client = { w: 0, r: 0, x: 0, status: "", failing: false }; // what the cli
 const bars = new Map(); // events by slice of fake time
 const marks = []; // the times of the visitor's actions
 const starts = {}; // by instance: the t of the start of its process
-const names = new Map(); // the process of each holder ID
+const names = new Map(); // the instance of each holder ID
 const stopped = {}; // by instance: whether the visitor's Stop closed the database of its process
 
 // The page tells a check what it does through data attributes on <html>: data-engine is loading,
@@ -204,7 +204,7 @@ function take(answer) {
           starts[e.instance] = e.t;
           stopped[e.instance] = false;
         }
-        if (e.what === "opened") names.set(e.holder, e.process);
+        if (e.what === "opened") names.set(e.holder, e.instance);
         break;
       case "call": {
         if (e.caller === "client" && e.what !== "started") {
@@ -348,11 +348,13 @@ function drawCard(c) {
   c.el.dataset.role = r;
   c.el.dataset.state = st.state;
   set(c.f.word, WORDS[r] || r);
-  set(c.f.process, st.process !== c.name ? st.process : "");
 
   let lease = "none";
   if (r === "serves") lease = "held";
-  else if (r === "believes") lease = `it thinks so; S3 names ${m && m.lease ? holderName(m.lease.holder) : "nobody"}`;
+  else if (r === "believes") {
+    const named = m && m.lease ? holderName(m.lease.holder) : "nobody";
+    lease = `it thinks so; S3 names ${named === c.name ? "its lease from before" : named}`;
+  }
   set(c.f.lease, lease);
 
   const log = state.bucket.log;
@@ -407,7 +409,7 @@ function drawControls() {
     const st = instanceState(c.name);
     const off = !ready || waiting || !st;
     const crashed = !!st && st.state === "crashed";
-    // An instance that has not started takes only the faults of its network and its disk.
+    // An instance that has not started takes only the faults of its requests to S3 and of its disk.
     const notStarted = !!st && st.state === "waiting";
     c.b.crash.disabled = off || notStarted;
     c.b.stop.disabled = off || !(st.state === "running" || startable(c.name, st));
@@ -488,7 +490,7 @@ function drawS3() {
     const cls = c.name === head ? "head" : c.inLog ? "" : "orphan";
     const tag = c.name === head ? "head" : c.inLog ? "in the log" : "not in the log";
     return `<li class="commit ${cls}">${barcodeSVG(c.name, "code")}` +
-      `<div class="meta"><span class="name">${R.short(c.name)}</span><span>${R.keysText(c.keys)}</span><span>${esc(c.process)}</span><span>${R.clock(c.at)}</span><span class="caps">${tag}</span></div></li>`;
+      `<div class="meta"><span class="name">${R.short(c.name)}</span><span>${R.keysText(c.keys)}</span><span>${esc(R.instanceOf(c.process))}</span><span>${R.clock(c.at)}</span><span class="caps">${tag}</span></div></li>`;
   }).join("");
   if (!out) out = `<li class="empty">None yet.</li>`;
   if (total > b.commits.length) out += `<li class="empty">${count(total - b.commits.length)} older</li>`;

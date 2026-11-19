@@ -200,6 +200,25 @@ async function unit() {
   const opens = [proc(1, "open_failed"), proc(2, "open_failed"), proc(3, "opened"), proc(4, "open_failed")].map((e) => tell(e).tier);
   expect(JSON.stringify(opens) === JSON.stringify(["story", null, null, "story"]), `a spell of failed opens ends when the database opens (${opens.join(", ")})`);
 
+  // The log names the instance, never the process: a restart of a is a again, and a line about two
+  // processes of one instance stays true.
+  tell = R.teller();
+  const opened = (t, inst, proc, holder) => ({ t, kind: "process", what: "opened", instance: inst, process: proc, holder });
+  const lease = (t, inst, proc, attrs) => ({ t, kind: "core", event: "lease", instance: inst, process: proc, attrs });
+  const restartLines = [
+    opened(1, "a", "a", "h1"),
+    { t: 2, kind: "process", what: "started", instance: "a", process: "a2" },
+    opened(3, "a", "a2", "h2"),
+    lease(4, "a", "a2", { "lease.transition": "lost", "lease.holder": "h1" }),
+    lease(5, "a", "a2", { "lease.transition": "taken", outcome: "taken", "lease.previous_holder": "h1" }),
+    opened(6, "b", "b", "h3"),
+    lease(7, "b", "b", { "lease.transition": "taken", outcome: "taken", "lease.previous_holder": "h2" }),
+    { t: 8, kind: "core", event: "commit", instance: "a", process: "a3", attrs: { outcome: "unknown", "commit.name": "0123456789abcdef" } },
+  ].map((e) => tell(e)).filter((w) => w.tier).map((w) => w.text);
+  const wantRestart = ["a starts again, on the cache that it left when it crashed.", "a learns that its lease from before has not run out yet.", "a takes the lease again.", "b takes the lease over from a.", "a does not know whether its commit 01234567 went through."];
+  expect(JSON.stringify(restartLines) === JSON.stringify(wantRestart), `the log names the instance of a process after a restart (${restartLines.join(" | ")})`);
+  expect(JSON.stringify(["a", "a2", "b13", ""].map(R.instanceOf)) === JSON.stringify(["a", "a", "b", ""]), "the instance of a process is its name without the number of its restart");
+
   // A stale read after paused clocks takes one plain line a spell; a violation that is not excused is
   // an alarm on every event.
   tell = R.teller();
@@ -215,18 +234,30 @@ async function check() {
   const p = await open(address);
   const play = p.$("#play"), turbo = p.$("#turbo");
   const clientTexts = new Set();
+  const logTexts = new Set();
 
-  // Collect every text that the page shows about the client: its status, and its lines in the log.
+  // Collect every text that the page shows about the client, its status and its lines in the log,
+  // and every line of the log.
   const collect = () => {
     clientTexts.add(p.$("#client-status-words").textContent);
     for (const li of p.$("#log").children) {
       const text = li.querySelector(".text");
+      if (text) logTexts.add(text.textContent);
       if (text && text.textContent.startsWith("The client")) clientTexts.add(text.textContent);
     }
   };
   collect();
   new p.win.MutationObserver(collect).observe(p.$("#client"), { subtree: true, childList: true, characterData: true });
   new p.win.MutationObserver(collect).observe(p.$("#log"), { childList: true });
+
+  // noProcess checks that the page shows no name of a process, such as a2, but the instance: in the
+  // text of the page now, and in every line that the log has had.
+  const processName = /\b[a-e][2-9]\b/;
+  const noProcess = (when) => {
+    const now = p.win.document.body.innerText.split("\n").filter((s) => processName.test(s));
+    const logged = [...logTexts].filter((s) => processName.test(s));
+    expect(now.length === 0 && logged.length === 0, `${when}, the page names no process, only instances (${[...now, ...logged].join(" | ") || logTexts.size + " lines of the log"})`);
+  };
 
   // The page names the commit that the engine is built from, which it reads from build.json.
   const built = await until(() => p.$("#build a code"));
@@ -275,12 +306,20 @@ async function check() {
 
   // Each action on a, while paused: its effect in the state, and switched off again, gone.
   const a = () => p.instance("a");
-  for (const [name, flag] of [["hang", "networkHung"], ["disconnect", "networkDisconnected"], ["disk", "diskFailing"]]) {
+  // The engine names two of the faults by the network, but they act only on the requests of the
+  // instance to S3, and the page names them so.
+  const logged = (text) => [...p.$("#log").children].some((li) => li.querySelector(".text")?.textContent === text);
+  const toggles = [
+    ["hang", "networkHung", "Hang S3", "You hang the requests of a to S3.", "The requests of a to S3 no longer hang."],
+    ["disconnect", "networkDisconnected", "Disconnect S3", "You disconnect a from S3.", "You connect a to S3 again."],
+    ["disk", "diskFailing", "Error disk", "You make the disk of a fail.", "The disk of a works again."],
+  ];
+  for (const [name, flag, label, onLine, offLine] of toggles) {
     await p.press("a", name);
-    const on = !!a()[flag] && p.button("a", name).getAttribute("aria-pressed") === "true";
+    const on = !!a()[flag] && p.button("a", name).getAttribute("aria-pressed") === "true" && logged(onLine);
     await p.press("a", name);
-    const off = !a()[flag] && p.button("a", name).getAttribute("aria-pressed") === "false";
-    expect(on && off, `${name} switches ${flag} of a on, shows the button pressed, and switches it off again`);
+    const off = !a()[flag] && p.button("a", name).getAttribute("aria-pressed") === "false" && logged(offLine);
+    expect(on && off && p.button("a", name).textContent === label, `${label} switches ${flag} of a on, shows the button pressed, says "${onLine}", and switches it off again ("${offLine}")`);
   }
   const wall = () => a().wall - p.win.s4qlPage.state.t;
   await p.press("a", "forward");
@@ -304,9 +343,9 @@ async function check() {
     `the client keeps calling a while a is crashed (${down.failed - beforeCrash.failed} calls failed), and its status says that no answer came, failing (${down.status})`);
   expect([...p.$("#log").children].filter((li) => li.textContent.includes("The client gets no answer from a")).length === 1, "the log says once that the client gets no answer from a");
   const crashed = a().state === "crashed" && p.button("a", "crash").textContent === "Restart" && p.button("a", "pause").disabled && p.button("a", "stop").disabled && !p.button("a", "hang").disabled;
-  expect(crashed, "Crash crashes a: Crash becomes Restart, the clock and Stop are off, the network and the disk stay on");
+  expect(crashed, "Crash crashes a: Crash becomes Restart, the clock and Stop are off, Hang S3, Disconnect S3, and the disk stay on");
   await p.press("a", "crash");
-  expect(a().state !== "crashed" && a().process === "a2" && p.button("a", "crash").textContent === "Crash", `Restart starts process ${a().process}, in the state ${a().state}`);
+  expect(a().state !== "crashed" && a().process === "a2" && p.button("a", "crash").textContent === "Crash", `Restart starts process ${a().process} of a, in the state ${a().state}`);
 
   await p.skipUntil(() => a().state === "running");
   const restarted = p.client().calls;
@@ -323,6 +362,8 @@ async function check() {
   await p.skipUntil(() => p.client().writes + p.client().reads > servedBefore && p.client().status === `ok from ${serving}`);
   expect(!p.client().failing, `after the restart, ${serving} serves the client, and its status is ${p.client().status} again, not failing`);
   if (serving !== "a") await p.point("a");
+  noProcess("after a crash and a restart of a");
+  expect(logTexts.has("a starts again, on the cache that it left when it crashed."), "the log says that a starts again after its restart");
 
   // A switch of the client moves its calls to b, and a gets none of them.
   const aBefore = p.served("a"), bBefore = p.served("b"), switched = p.client().calls;
@@ -362,6 +403,9 @@ async function check() {
   expect(p.card(holder).dataset.state === "crashed", `after a crash of ${holder}, ${other} serves, ${took / 1000} s of fake time later`);
   await p.press(holder, "crash");
 
+  await p.skipUntil(() => p.instance(holder).state === "running");
+  noProcess(`after a crash and a restart of ${holder}, which served`);
+
   // No limit: fake time goes past 10 minutes, and the log and the commits grow.
   const before = { lines: p.lines, commits: p.commits };
   await p.skip(Math.max(0, 660000 - p.t));
@@ -374,6 +418,7 @@ async function check() {
   await until(() => p.t > late);
   expect(p.win.s4qlPage.playing, "Play goes on after 10 min");
 
+  noProcess("after 11 min");
   expect(cleanClient(clientTexts), `the page's texts about the client hold only what a client outside can know (${[...clientTexts].join(" | ")})`);
 
   expect(new URL(p.win.location.href).pathname === address && p.win.location.search === "" && p.win.location.hash === "", "the page writes nothing into its address");
