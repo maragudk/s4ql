@@ -53,6 +53,9 @@ type readTx interface {
 	reader
 	// position of the state that the transaction sees: the last commit object that it holds.
 	position() format.Name
+	// serving checks that the instance serves now, as a new read transaction needs it, before a
+	// further statement of a transaction that spans statements.
+	serving(ctx context.Context) error
 	end(ctx context.Context) error
 }
 
@@ -64,6 +67,14 @@ type writeTx interface {
 	// annotate the transaction with a statement that it ran: its SQL text, and the arguments of its
 	// parameters, by position.
 	annotate(ctx context.Context, sql string, args []*s4qlpb.Value) error
+	// serving checks that the instance serves now, as a new write transaction needs it, before a
+	// further statement of a transaction that spans statements.
+	serving(ctx context.Context) error
+	// savepoint marks the state of the transaction before a statement, which rollbackTo restores and
+	// release keeps. One is open at a time.
+	savepoint(ctx context.Context) error
+	release(ctx context.Context) error
+	rollbackTo(ctx context.Context) error
 	commit(ctx context.Context) error
 	rollback(ctx context.Context) error
 }
@@ -162,6 +173,10 @@ func (c coreReadTx) position() format.Name {
 	return c.r.Position()
 }
 
+func (c coreReadTx) serving(ctx context.Context) error {
+	return fromCore(c.r.Serving(ctx))
+}
+
 func (c coreReadTx) end(ctx context.Context) error {
 	return c.r.Close(ctx)
 }
@@ -202,6 +217,22 @@ func (c coreTx) position() format.Name {
 
 func (c coreTx) annotate(ctx context.Context, sql string, args []*s4qlpb.Value) error {
 	return fromCore(c.tx.Annotate(ctx, sql, args))
+}
+
+func (c coreTx) serving(ctx context.Context) error {
+	return fromCore(c.tx.Serving(ctx))
+}
+
+func (c coreTx) savepoint(ctx context.Context) error {
+	return fromCore(c.tx.Savepoint(ctx))
+}
+
+func (c coreTx) release(ctx context.Context) error {
+	return fromCore(c.tx.Release(ctx))
+}
+
+func (c coreTx) rollbackTo(ctx context.Context) error {
+	return fromCore(c.tx.RollbackTo(ctx))
 }
 
 // commit gives the error of the core as it is: [core.ErrInvalid] there is a commit time that the

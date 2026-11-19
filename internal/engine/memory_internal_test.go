@@ -57,6 +57,8 @@ func (m *memory) read(context.Context) (readTx, error) {
 type memTx struct {
 	m      *memory
 	tables map[string]*memTable
+	// saved is the state of tables at the savepoint that is open.
+	saved map[string]*memTable
 }
 
 func (x *memTx) table(_ context.Context, name string) (*s4qlpb.CreateTable, error) {
@@ -101,6 +103,18 @@ func (x *memTx) position() format.Name                                   { retur
 func (x *memTx) annotate(context.Context, string, []*s4qlpb.Value) error { return nil }
 func (x *memTx) rollback(context.Context) error                          { return nil }
 func (x *memTx) end(context.Context) error                               { return nil }
+func (x *memTx) serving(context.Context) error                           { return nil }
+func (x *memTx) release(context.Context) error                           { x.saved = nil; return nil }
+
+func (x *memTx) savepoint(context.Context) error {
+	x.saved = (&memory{tables: x.tables}).clone()
+	return nil
+}
+
+func (x *memTx) rollbackTo(context.Context) error {
+	x.tables, x.saved = x.saved, nil
+	return nil
+}
 
 func (x *memTx) commit(context.Context) error {
 	x.m.tables = x.tables

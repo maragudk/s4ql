@@ -17,6 +17,9 @@ const (
 	// CodeConstraintPrimaryKey is SQLITE_CONSTRAINT_PRIMARYKEY, the extended code of a primary key
 	// that a statement would have twice.
 	CodeConstraintPrimaryKey = CodeConstraint | 6<<8
+	// CodeReadOnly is SQLITE_READONLY, the code of a write that the connection may not make, such as
+	// one under `pragma query_only`.
+	CodeReadOnly = 8
 )
 
 // Error of SQLite, with its result codes.

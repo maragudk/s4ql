@@ -621,13 +621,14 @@ func (p *pair) step(src string, query, supported bool) string {
 		}
 	}
 	// SQLite's count of changes: the engine's result sets it, and a statement that fails keeps it,
-	// except one that fails while SQLite steps it, a broken constraint, which sets it to 0.
+	// except one that fails while SQLite steps it, which sets it to 0: a broken constraint, and an
+	// insert in a read-only transaction.
 	changes, rowid := o.changes(t)
 	p.prev = changes
 	switch {
-	case strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeConstraint, "/")):
+	case strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeConstraint, "/")), strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeReadOnly, "/")) && isInsert(src):
 		if changes != 0 {
-			return fmt.Sprintf("%q: SQLite counts %v changes after a broken constraint", src, changes)
+			return fmt.Sprintf("%q: SQLite counts %v changes after a broken constraint or a refused insert", src, changes)
 		}
 	case want.err != "" && changes != before:
 		return fmt.Sprintf("%q: SQLite counts %v changes after its error, and %v before", src, changes, before)
@@ -639,6 +640,13 @@ func (p *pair) step(src string, query, supported bool) string {
 		return fmt.Sprintf("%q: SQLite's last insert rowid is %v", src, rowid)
 	}
 	return ""
+}
+
+// isInsert reports whether src is a supported insert.
+func isInsert(src string) bool {
+	s, _ := stmt.Check(src)
+	_, ok := s.(*stmt.Insert)
+	return ok
 }
 
 // syntaxOfNotSupported gives the message of the syntax error that SQLite gives when it prepares src, a
