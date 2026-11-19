@@ -41,11 +41,13 @@ const (
 
 // checker of the invariants, over the store as it is and over what the calls saw.
 //
-// It checks a read in a time that does not grow with the log, as long as nothing has been found
-// wrong: it keeps the log as a chain that grows when the head moves on to a child of the head, with
-// where each key was inserted and deleted, and the number of rows after each commit object. Once it
-// finds a violation, or the log does anything else, it is no longer fast, and checks each read and
-// write against the chain from the head, as it is then.
+// It checks a read in a time that does not grow with the log, as long as the log is one chain: it
+// keeps the log as a chain that grows when the head moves on to a child of the head, with where each
+// key was inserted and deleted, and the number of rows after each commit object. A read that the fast
+// check does not pass is checked again against the chain from the head, which finds its violations
+// as before. Once the log is not one chain, an acknowledged write is not in it, or a key is inserted
+// or deleted twice, the checker is no longer fast, and checks each read and write against the chain
+// from the head, as it is then.
 type checker struct {
 	r *run
 
@@ -103,7 +105,6 @@ func newChecker(r *run) *checker {
 
 // violate records a violation of the invariant.
 func (c *checker) violate(invariant string, excused bool, p *process, format string, args ...any) {
-	c.slow()
 	e := Event{Kind: "check", What: "violated", Invariant: invariant, Excused: excused, Text: fmt.Sprintf(format, args...)}
 	if p != nil {
 		e.Instance, e.Process = p.i.name, p.name
@@ -123,6 +124,7 @@ func (c *checker) slow() {
 	for i, read := range c.reads {
 		if read.fast {
 			c.reads[i].keys, c.reads[i].deleted = rowsOf(c.log[:read.prefix])
+			c.reads[i].fast = false
 		}
 	}
 }
@@ -147,8 +149,10 @@ func (c *checker) manifest(_ context.Context, m *ManifestObject) {
 	switch {
 	case m.Head == before:
 	case o == nil:
+		c.slow()
 		c.violate(invariantChain, false, nil, "the manifest names the head %v, which is not in the store", short(m.Head))
 	case o.Parent != before:
+		c.slow()
 		c.violate(invariantChain, false, nil, "the manifest moves its head from %v to %v, whose parent is %v", short(before), short(m.Head), short(o.Parent))
 	}
 }
@@ -263,14 +267,16 @@ func (c *checker) writeEnded(_ context.Context, value int64, how string) {
 	}
 	fast := c.fast
 	if fast && how == "committed" {
-		i, ok := c.inserted[value]
-		if !ok {
+		if i, ok := c.inserted[value]; ok {
+			c.ackedAt = append(c.ackedAt, max(i, deref(last(c.ackedAt))))
+		} else {
 			fast = false
 		}
-		c.ackedAt = append(c.ackedAt, max(i, deref(last(c.ackedAt))))
 	}
 	c.mu.Unlock()
 	if how == "committed" && !fast {
+		// An acknowledged write that the log lacks leaves no place in the log for the fast check.
+		c.slow()
 		if n := count(c.chain(c.headNow()), value); n != 1 {
 			c.violate(invariantAcknowledged, false, nil, "the write of %v is acknowledged, and the log holds it %v times", value, n)
 		}
@@ -352,8 +358,10 @@ func (c *checker) readFast(p *process, before readSeen, keys []int64, position f
 	if !ok || len(keys) != c.rows[at] {
 		return false
 	}
-	for _, k := range keys {
-		if !c.live(k, at) {
+	// A scan gives the keys in order, so keys that rise are distinct, and as many distinct rows of
+	// the log as it has are all of them.
+	for i, k := range keys {
+		if !c.live(k, at) || (i > 0 && k <= keys[i-1]) {
 			return false
 		}
 	}

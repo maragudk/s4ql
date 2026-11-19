@@ -662,6 +662,14 @@ func (r *run) act(ctx context.Context, i int, a Action) {
 		p.inst.Go(ctx, task, func(ctx context.Context) { r.call(ctx, p, "visitor", a.Do == "write") })
 	case "crash":
 		p.inst.Crash()
+		// The calls of the process on the network end with it, and a disconnect has none to end.
+		r.mu.Lock()
+		for k := range in.inFlight {
+			if k.p == p {
+				delete(in.inFlight, k)
+			}
+		}
+		r.mu.Unlock()
 		r.rec.add(Event{Kind: "process", What: "crashed", Instance: in.name, Process: p.name})
 	case "restart":
 		if !crashed {
@@ -960,7 +968,34 @@ func (c *client) blocked(ctx context.Context, k *pending) error {
 
 // hang the call k until its caller gives up, and return why it gave up.
 func (c *client) hang(ctx context.Context, k *pending) error {
-	err := fmt.Errorf("simulator: no answer came while the network of the instance hung: %w", c.p.inst.Sleep(ctx, math.MaxInt64))
+	// A disconnect ends the wait, as it ends the calls on their way.
+	r, in := c.r, c.p.i
+	hangCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	r.mu.Lock()
+	prev := in.inFlight[k]
+	in.inFlight[k] = func() {
+		if prev != nil {
+			prev()
+		}
+		cancel()
+	}
+	r.mu.Unlock()
+	waited := c.p.inst.Sleep(hangCtx, math.MaxInt64)
+	r.mu.Lock()
+	if prev != nil {
+		in.inFlight[k] = prev
+	} else {
+		delete(in.inFlight, k)
+	}
+	cut := k.cut
+	r.mu.Unlock()
+	if cut {
+		r.rec.add(Event{Kind: "request", What: "disconnected", Request: k.request, Instance: in.name, Process: c.p.name, Method: k.method,
+			Key: k.key, Purpose: k.purpose, Text: "the network of the instance was disconnected while the caller waited for an answer, and its caller gets an error"})
+		return errDisconnected
+	}
+	err := fmt.Errorf("simulator: no answer came while the network of the instance hung: %w", waited)
 	c.r.returned(k, "", err)
 	return err
 }
@@ -1009,14 +1044,13 @@ type content struct {
 }
 
 func (c *content) Read(p []byte) (int, error) {
-	n, err := c.ReadCloser.Read(p)
 	c.r.mu.Lock()
 	cut := c.k.cut
 	c.r.mu.Unlock()
-	if err != nil && cut {
-		err = errDisconnected
+	if cut {
+		return 0, errDisconnected
 	}
-	return n, err
+	return c.ReadCloser.Read(p)
 }
 
 func (c *content) Close() error {

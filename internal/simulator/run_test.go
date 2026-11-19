@@ -273,6 +273,16 @@ func TestRun_actions(t *testing.T) {
 			func(r simulator.RequestState) bool { return r.Request == cut[0].Request && r.Waiting }), "the caller waits for it before")
 	})
 
+	t.Run("should end the waits of an instance whose network hangs when its network is disconnected", func(t *testing.T) {
+		res := run(t, &e, `{"seed": 1, "end": 60000, "instances": 2, "schedule": [{"at": 30000, "do": "hangNetwork", "instance": "a", "on": true},
+			{"at": 40000, "do": "disconnectNetwork", "instance": "a", "on": true}]}`)
+		cut := find(res, func(e simulator.Event) bool { return e.Kind == "request" && e.What == "disconnected" && e.T == 40_000 })
+		is.True(t, len(cut) > 0, "a call that waits gets an error at the disconnect")
+		is.Equal(t, 0, len(find(res, func(e simulator.Event) bool {
+			return e.Kind == "request" && e.What == "returned" && e.Process == "a" && e.T > 40_000
+		})))
+	})
+
 	t.Run("should fail the disk of an instance, after which its core stops, and its process opens it again once the disk works", func(t *testing.T) {
 		res := run(t, &e, switched("failDisk"))
 		stop := find(res, func(e simulator.Event) bool {

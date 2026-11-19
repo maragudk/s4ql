@@ -74,9 +74,10 @@ type Workload struct {
 	Writes int `json:"writes"`
 	// Timeout of each call.
 	Timeout float64 `json:"timeout"`
-	// Keep is the number of rows that the writes keep in the table: a write of the key k also
-	// deletes the key k - Keep, so that the table, and with it the cost of a read, stops growing.
-	// Zero keeps every row.
+	// Keep is the number of rows that the writes keep in the table: each write also deletes the rows
+	// with the smallest keys, until the table has Keep rows besides the one it inserts, so that the
+	// table, and with it the cost of a read, stops growing. A write reads the whole table to find
+	// them. Zero keeps every row.
 	Keep int `json:"keep"`
 }
 
@@ -138,7 +139,7 @@ const (
 	maxReaders   = 8
 	maxSchedule  = 1000
 	// maxKeep rows that the writes keep in the table.
-	maxKeep = 100_000
+	maxKeep = 10_000
 )
 
 // defaultRequest has the default of every field.
