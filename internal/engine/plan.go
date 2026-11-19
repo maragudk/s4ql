@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"maragu.dev/s4ql/internal/s4qlpb"
@@ -23,7 +25,8 @@ type Node interface {
 	node()
 }
 
-// Expr is an expression that gives a value: an [*Integer] or a [*Parameter].
+// Expr is an expression that gives a value: an [*Integer], a [*Real], a [*Text], a [*Blob], or a
+// [*Parameter].
 type Expr interface {
 	expr()
 }
@@ -82,6 +85,21 @@ type Integer struct {
 	Value int64
 }
 
+// Real is a real literal: a finite number, which can be -0.0.
+type Real struct {
+	Value float64
+}
+
+// Text is a string literal: valid UTF-8 without the character NUL.
+type Text struct {
+	Value string
+}
+
+// Blob is a blob literal. Its value is not nil, also when it is empty.
+type Blob struct {
+	Value []byte
+}
+
 // Parameter is the argument that the statement is run with for its parameter of the number Number,
 // which counts from 1.
 type Parameter struct {
@@ -96,17 +114,16 @@ func (*Scan) node()        {}
 func (*Values) node()      {}
 func (*Project) node()     {}
 func (*Integer) expr()     {}
+func (*Real) expr()        {}
+func (*Text) expr()        {}
+func (*Blob) expr()        {}
 func (*Parameter) expr()   {}
 
-// NewPlan of the statement s, which [Check] supports: its column is of type INT, and its value, if it
-// has one, an integer. It panics for another.
+// NewPlan of the statement s, which [stmt.Check] gives. It panics for a statement of another type.
 func NewPlan(s stmt.Statement) Plan {
 	switch s := s.(type) {
 	case *stmt.CreateTable:
-		if s.Type != stmt.TypeInt {
-			panic(fmt.Sprintf("engine: a column of type %v", s.Type))
-		}
-		return &CreateTable{Table: s.Table, Columns: []ColumnDef{{Name: s.Column, Type: s4qlpb.Type_TYPE_INT}}, PrimaryKey: []int{0}}
+		return &CreateTable{Table: s.Table, Columns: []ColumnDef{{Name: s.Column, Type: columnType(s.Type)}}, PrimaryKey: []int{0}}
 	case *stmt.DropTable:
 		return &DropTable{Table: s.Table}
 	case *stmt.Insert:
@@ -114,6 +131,12 @@ func NewPlan(s stmt.Statement) Plan {
 		switch v := s.Value.(type) {
 		case stmt.Integer:
 			value = &Integer{Value: int64(v)}
+		case stmt.Real:
+			value = &Real{Value: float64(v)}
+		case stmt.Text:
+			value = &Text{Value: string(v)}
+		case stmt.Blob:
+			value = &Blob{Value: []byte(v)}
 		case nil:
 			value = &Parameter{Number: s.Parameter}
 		default:
@@ -205,6 +228,18 @@ func formatExpr(e Expr) string {
 	switch e := e.(type) {
 	case *Integer:
 		return fmt.Sprint(e.Value)
+	case *Real:
+		// The shortest digits that give the value, with a point or an exponent, so that the text
+		// reads as a real: 1.0, -0.0, 1.5, 1e+300.
+		text := strconv.FormatFloat(e.Value, 'g', -1, 64)
+		if !strings.ContainsAny(text, ".e") {
+			text += ".0"
+		}
+		return text
+	case *Text:
+		return "'" + strings.ReplaceAll(e.Value, "'", "''") + "'"
+	case *Blob:
+		return "x'" + hex.EncodeToString(e.Value) + "'"
 	case *Parameter:
 		return fmt.Sprint("?", e.Number)
 	}
@@ -217,6 +252,32 @@ func typeName(t s4qlpb.Type) string {
 	switch t {
 	case s4qlpb.Type_TYPE_INT:
 		return "INT"
+	case s4qlpb.Type_TYPE_INTEGER:
+		return "INTEGER"
+	case s4qlpb.Type_TYPE_REAL:
+		return "REAL"
+	case s4qlpb.Type_TYPE_TEXT:
+		return "TEXT"
+	case s4qlpb.Type_TYPE_BLOB:
+		return "BLOB"
+	}
+	panic(fmt.Sprintf("engine: a column of type %v", t))
+}
+
+// columnType of the commit format for the type t of a column as the statement declares it. INT and
+// INTEGER stay apart, so that replay declares the column as it was declared.
+func columnType(t stmt.Type) s4qlpb.Type {
+	switch t {
+	case stmt.TypeInt:
+		return s4qlpb.Type_TYPE_INT
+	case stmt.TypeInteger:
+		return s4qlpb.Type_TYPE_INTEGER
+	case stmt.TypeReal:
+		return s4qlpb.Type_TYPE_REAL
+	case stmt.TypeText:
+		return s4qlpb.Type_TYPE_TEXT
+	case stmt.TypeBlob:
+		return s4qlpb.Type_TYPE_BLOB
 	}
 	panic(fmt.Sprintf("engine: a column of type %v", t))
 }

@@ -185,7 +185,7 @@ func TestTx(t *testing.T) {
 		_, err = inside.ExecContext(t.Context(), 424201)
 		sqliteError(t, 19, 1555, "UNIQUE constraint failed: t1.v1", err)
 		_, err = inside.ExecContext(t.Context(), "x")
-		is.Equal(t, "argument 1 of type string", notSupported(t, err))
+		is.Equal(t, "argument 1, which is text, for the column t1.v1 of type INT", notSupported(t, err))
 		taken := tx.StmtContext(t.Context(), outside)
 		res, err := taken.ExecContext(t.Context(), 424203)
 		is.Equal(t, int64(1), affected(t, res, err))

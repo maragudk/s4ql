@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"math"
 	"math/rand/v2"
 	"path/filepath"
 	"strings"
@@ -29,7 +30,7 @@ import (
 // run: "not supported", "no statement", or "wrong arguments".
 type txStep struct {
 	src  string
-	args []int64
+	args []any
 	want string
 }
 
@@ -65,18 +66,18 @@ func oracleEnd(readOnly, commit bool) []string {
 func runIn(t *testing.T, i *instance, s txStep) string {
 	t.Helper()
 	if s.want == "wrong arguments" {
-		_, err := i.c.Exec(t.Context(), s.src, integers(s.args)...)
+		_, err := i.c.Exec(t.Context(), s.src, values(s.args)...)
 		is.True(t, errors.Is(err, engine.ErrArguments), fmt.Sprint(err))
 		return s.want
 	}
 	if strings.Contains(strings.ToLower(s.src), "select") {
-		a := i.query(s.src, s.args...)
+		a := i.queryValues(s.src, values(s.args))
 		if a.err != "" {
 			return a.err
 		}
 		return strings.TrimSpace("rows " + strings.Join(a.rows, " "))
 	}
-	return i.exec(s.src, s.args...).err
+	return i.execValues(s.src, values(s.args)).err
 }
 
 // pinTx runs the statements of setup, each a transaction of its own, and then the steps in one
@@ -106,7 +107,7 @@ func pinTx(t *testing.T, setup []string, readOnly bool, steps []txStep, commit b
 		if s.own() {
 			continue
 		}
-		a := o.run(t, s.src, s.args...)
+		a := o.run(t, s.src, oracleArgs(s.args)...)
 		sqlite := a.err
 		if sqlite == "" && strings.Contains(strings.ToLower(s.src), "select") {
 			sqlite = strings.TrimSpace("rows " + strings.Join(a.rows, " "))
@@ -135,6 +136,9 @@ const (
 	insert2 = "insert into t1 (v1) values (2)"
 	insertP = "insert into t1 (v1) values (?)"
 	selectT = "select * from t1"
+	textT   = "create table tt (v text primary key) strict, without rowid"
+	realT   = "create table rt (v real primary key) strict, without rowid"
+	blobT   = "create table bt (v blob primary key) strict, without rowid"
 )
 
 func TestConn_Begin(t *testing.T) {
@@ -164,7 +168,7 @@ func TestConn_Begin(t *testing.T) {
 				{src: "selec * from t1", want: `1/1: near "selec": syntax error`},
 				{src: "select * from t1 where v1 = 1", want: "not supported"},
 				{src: " ; ", want: "no statement"},
-				{src: insertP, args: []int64{3, 4}, want: "wrong arguments"},
+				{src: insertP, args: []any{3, 4}, want: "wrong arguments"},
 				{src: "insert into t1 (v1) values (3)"},
 				{src: selectT, want: "rows 1 2 3"},
 			},
@@ -189,10 +193,10 @@ func TestConn_Begin(t *testing.T) {
 			want:  "t1 (v1 INT): \n"},
 		{name: "should bind the arguments of the statements in a transaction", setup: []string{t1}, commit: true,
 			steps: []txStep{
-				{src: insertP, args: []int64{-9223372036854775808}},
-				{src: insertP, args: []int64{9223372036854775807}},
-				{src: insertP, args: []int64{9223372036854775807}, want: "19/1555: UNIQUE constraint failed: t1.v1"},
-				{src: insertP, args: []int64{0}},
+				{src: insertP, args: []any{-9223372036854775808}},
+				{src: insertP, args: []any{9223372036854775807}},
+				{src: insertP, args: []any{9223372036854775807}, want: "19/1555: UNIQUE constraint failed: t1.v1"},
+				{src: insertP, args: []any{0}},
 				{src: selectT, want: "rows -9223372036854775808 0 9223372036854775807"},
 			},
 			want: "t1 (v1 INT): -9223372036854775808 0 9223372036854775807\n"},
@@ -211,7 +215,7 @@ func TestConn_Begin(t *testing.T) {
 				{src: selectT, want: "rows 1"},
 				{src: insert2, want: "8/8: attempt to write a readonly database"},
 				{src: insert1, want: "8/8: attempt to write a readonly database"},
-				{src: insertP, args: []int64{3}, want: "8/8: attempt to write a readonly database"},
+				{src: insertP, args: []any{3}, want: "8/8: attempt to write a readonly database"},
 				{src: "insert into t2 (v1) values (1)", want: "1/1: no such table: t2"},
 				{src: "insert into t1 (v2) values (1)", want: "1/1: table t1 has no column named v2"},
 				{src: "create table t2 (v int primary key) strict, without rowid", want: "8/8: attempt to write a readonly database"},
@@ -227,6 +231,42 @@ func TestConn_Begin(t *testing.T) {
 		{name: "should write nothing at the roll back of a read-only transaction", setup: []string{t1, insert1}, readOnly: true,
 			steps: []txStep{{src: selectT, want: "rows 1"}, {src: insert2, want: "8/8: attempt to write a readonly database"}},
 			want:  "t1 (v1 INT): 1\n"},
+		{name: "should commit values of every type, through literals and arguments, and keep the transaction open after a value of another type",
+			setup: []string{textT, realT, blobT}, commit: true,
+			steps: []txStep{
+				{src: "insert into tt (v) values ('b')"},
+				{src: "insert into tt (v) values (?)", args: []any{"a"}},
+				{src: "insert into tt (v) values (?)", args: []any{"a"}, want: `19/1555: UNIQUE constraint failed: tt.v`},
+				{src: "insert into tt (v) values (1)", want: "not supported"},
+				{src: "insert into tt (v) values (?)", args: []any{[]byte("c")}, want: "not supported"},
+				{src: "insert into rt (v) values (?)", args: []any{math.Copysign(0, -1)}},
+				{src: "insert into rt (v) values (0.0)", want: `19/1555: UNIQUE constraint failed: rt.v`},
+				{src: "insert into rt (v) values (-1.5e-310)"},
+				{src: "insert into bt (v) values (x'')"},
+				{src: "insert into bt (v) values (?)", args: []any{[]byte{0}}},
+				{src: "insert into bt (v) values ('')", want: "not supported"},
+				{src: "select * from tt", want: `rows "a" "b"`},
+				{src: "select * from rt", want: `rows real -1.5e-310 real 0`},
+				{src: "select * from bt", want: `rows x'' x'00'`},
+			},
+			want: "bt (v BLOB): x'' x'00'\nrt (v REAL): real -1.5e-310 real 0\ntt (v TEXT): \"a\" \"b\"\n"},
+		{name: "should undo values of every type at a roll back", setup: []string{textT, realT, blobT, "insert into tt (v) values ('a')"},
+			steps: []txStep{
+				{src: "insert into tt (v) values (?)", args: []any{"b"}}, {src: "insert into rt (v) values (1.5)"}, {src: "insert into bt (v) values (?)", args: []any{[]byte("b")}},
+				{src: "select * from tt", want: `rows "a" "b"`},
+			},
+			want: "bt (v BLOB): \nrt (v REAL): \ntt (v TEXT): \"a\"\n"},
+		{name: "should refuse a write of every type in a read-only transaction with SQLite's error, before the type of the value",
+			setup: []string{textT, "insert into tt (v) values ('a')"}, readOnly: true, commit: true,
+			steps: []txStep{
+				{src: "insert into tt (v) values ('b')", want: "8/8: attempt to write a readonly database"},
+				{src: "insert into tt (v) values (?)", args: []any{"a"}, want: "8/8: attempt to write a readonly database"},
+				{src: "insert into tt (v) values (1)", want: "8/8: attempt to write a readonly database"},
+				{src: "insert into tt (v) values (?)", args: []any{1.5}, want: "8/8: attempt to write a readonly database"},
+				{src: "insert into tt (x) values ('b')", want: "1/1: table tt has no column named x"},
+				{src: "select * from tt", want: `rows "a"`},
+			},
+			want: "tt (v TEXT): \"a\"\n"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -525,8 +565,8 @@ func TestConn_Commit(t *testing.T) {
 			{src: insert1},
 			{src: insert1, want: "19/1555: UNIQUE constraint failed: t1.v1"},
 			{src: selectT, want: "rows 1"},
-			{src: " /* before */ " + insertP + "; -- after", args: []int64{5}},
-			{src: insertP, args: []int64{5}, want: "19/1555: UNIQUE constraint failed: t1.v1"},
+			{src: " /* before */ " + insertP + "; -- after", args: []any{5}},
+			{src: insertP, args: []any{5}, want: "19/1555: UNIQUE constraint failed: t1.v1"},
 			{src: "insert into t2 (v1) values (1)", want: "1/1: no such table: t2"},
 			{src: "create table t2 (v int primary key) strict, without rowid"},
 			{src: "selec", want: `1/1: near "selec": syntax error`},

@@ -426,29 +426,26 @@ func (c *conn) Prepare(query string) (driver.Stmt, error) {
 
 // check the text query with [stmt.Check]: SQLite's syntax error, "not supported", or nil for a
 // statement that s4ql supports. The text alone decides, so the check reads no table, and does not
-// need the instance to serve. A statement that the pass supports is checked with [engine.Check] too,
-// for a column type or a literal that the engine does not hold yet.
+// need the instance to serve.
 func check(query string) error {
 	s, err := stmt.Check(query)
-	switch {
-	case err == nil && s == nil:
+	if err == nil && s == nil {
 		err = engine.ErrNoStatement
-	case err == nil:
-		err = engine.Check(query, s.Parameters())
 	}
 	return publicError(err)
 }
 
-// arguments of a statement of the text query: the value of each of args, in order. An argument is
-// supported if it is an integer that fits a signed 64-bit integer, after the conversion of
-// [conn.CheckNamedValue], and if it has no name.
+// arguments of a statement of the text query: the value of each of args, in order, as [argument]
+// gives it, after the conversion of [conn.CheckNamedValue].
 //
 // The errors come in this order, the first that holds, so that an error of the text never depends on
 // the arguments: the error of the text, as [check] gives it; another number of arguments than the
 // statement has parameters, an error that says both numbers; and "not supported" for the first
-// argument with a name or of another type, which says which type. The engine makes the first two
-// checks again when it runs the statement, so they are made here only for arguments that are not
-// supported, and the text is parsed once on the path where every argument is.
+// argument with a name or of a type that no column holds, which says which type. The engine makes
+// the first two checks again when it runs the statement, so they are made here only for arguments
+// that are not supported, and the text is parsed once on the path where every argument is. The
+// engine then refuses an argument whose value no column holds, such as a NaN or text with the
+// character NUL, and, once it has found the table, a value of another type than its column.
 func arguments(query string, args []driver.NamedValue) ([]*s4qlpb.Value, error) {
 	values := make([]*s4qlpb.Value, 0, len(args))
 	for _, a := range args {
@@ -464,8 +461,11 @@ func arguments(query string, args []driver.NamedValue) ([]*s4qlpb.Value, error) 
 	return values, nil
 }
 
-// argument a as a value, or "not supported" for an argument with a name, and for one of another type
-// than int64. The message names the argument by its position, and the type, never the value.
+// argument a as a value: an int64 as an integer, a float64 as a real, a string as text, and a
+// []byte that is not nil as a blob, which an empty one is too. It gives "not supported" for an
+// argument with a name, for nil, for a []byte that is nil, and for one of another type, such as a
+// bool or a time.Time. The message names the argument by its position, and the type, never the
+// value.
 func argument(a driver.NamedValue) (*s4qlpb.Value, error) {
 	if a.Name != "" {
 		return nil, notSupported(fmt.Sprintf("the named argument %q", a.Name))
@@ -473,6 +473,15 @@ func argument(a driver.NamedValue) (*s4qlpb.Value, error) {
 	switch v := a.Value.(type) {
 	case int64:
 		return s4qlpb.Value_builder{Integer: new(v)}.Build(), nil
+	case float64:
+		return s4qlpb.Value_builder{Real: new(v)}.Build(), nil
+	case string:
+		return s4qlpb.Value_builder{Text: new(v)}.Build(), nil
+	case []byte:
+		if v == nil {
+			return nil, notSupported(fmt.Sprintf("argument %v of type []byte, which is nil", a.Ordinal))
+		}
+		return s4qlpb.Value_builder{Blob: v}.Build(), nil
 	case nil:
 		return nil, notSupported(fmt.Sprintf("argument %v of type nil", a.Ordinal))
 	case unconverted:
@@ -523,8 +532,9 @@ func overflows(v any) bool {
 
 // CheckNamedValue converts the argument nv as database/sql converts one for a driver without this
 // method, with [driver.DefaultParameterConverter]: an integer of any size and a type whose kind is an
-// integer become an int64, a [driver.Valuer] gives its value, and a pointer gives what it points
-// to. It never fails, because database/sql gives its error before the driver judges the text. An
+// integer become an int64, a float32 and a type whose kind is a float a float64, a type whose kind
+// is a string a string, a type whose kind is a slice of bytes a []byte, a [driver.Valuer] gives its
+// value, and a pointer gives what it points to. It never fails, because database/sql gives its error before the driver judges the text. An
 // argument that the conversion refuses is kept with the error, which [arguments] gives after the
 // text, as the cause of a "not supported". So is an unsigned integer above the largest int64, which
 // the conversion takes for a negative int64 when its type is not uint64, as uint(1<<63) is.

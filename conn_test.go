@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -412,11 +414,16 @@ func TestPrepare(t *testing.T) {
 		is.Equal(t, "WHERE clause (at offset 17)", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values ($v)")
 		is.Equal(t, "named parameter (at offset 28)", notSupported(t, err))
-		// The engine does not hold the column types and the literals of slice 4 yet.
-		_, err = db.PrepareContext(t.Context(), "create table t2 (v2 real primary key) strict, without rowid")
-		is.Equal(t, "column type REAL", notSupported(t, err))
-		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values ('a')")
-		is.Equal(t, "a string literal, which is not an integer", notSupported(t, err))
+		_, err = db.PrepareContext(t.Context(), "create table t2 (v2 int(10) primary key) strict, without rowid")
+		is.Equal(t, "column type other than INT, INTEGER, REAL, TEXT, or BLOB (at offset 23)", notSupported(t, err))
+		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values (1e999)")
+		is.Equal(t, "infinite real number (at offset 28)", notSupported(t, err))
+		// The type of a column is looked up when the statement runs.
+		for _, src := range []string{"create table t2 (v2 real primary key) strict, without rowid", "insert into t1 (v1) values ('a')", "insert into t1 (v1) values (x'')"} {
+			prepared, err := db.PrepareContext(t.Context(), src)
+			is.NotError(t, err, src)
+			is.NotError(t, prepared.Close())
+		}
 
 		// A statement that is supported is prepared, and refused when it is run.
 		prepared, err := db.PrepareContext(t.Context(), insert1)
@@ -433,10 +440,15 @@ func TestPrepare(t *testing.T) {
 		defer func() { is.NotError(t, withParameter.Close()) }()
 		_, err = withParameter.ExecContext(t.Context())
 		is.Equal(t, "s4ql: wrong number of arguments: 0 for a statement with 1 parameter", failed(t, err).Error())
-		_, err = withParameter.ExecContext(t.Context(), "1")
-		is.Equal(t, "argument 1 of type string", notSupported(t, err))
-		_, err = withParameter.ExecContext(t.Context(), 1)
-		is.Error(t, s4ql.ErrNotServing, failed(t, err))
+		_, err = withParameter.ExecContext(t.Context(), true)
+		is.Equal(t, "argument 1 of type bool", notSupported(t, err))
+		_, err = withParameter.ExecContext(t.Context(), "1\x00")
+		is.Equal(t, "argument 1, which is text that holds the character NUL", notSupported(t, err))
+		// The type of the column needs the instance.
+		for _, arg := range []any{1, "1", 1.5, []byte{}} {
+			_, err = withParameter.ExecContext(t.Context(), arg)
+			is.Error(t, s4ql.ErrNotServing, failed(t, err))
+		}
 	})
 }
 
@@ -494,8 +506,18 @@ func annotations(t *testing.T, w *world) []string {
 			if a != nil {
 				note := a.GetStatement().GetSql()
 				for _, p := range a.GetStatement().GetParameters() {
-					is.True(t, p.HasInteger(), note)
-					note += fmt.Sprint(" with ", p.GetInteger())
+					switch {
+					case p.HasInteger():
+						note += fmt.Sprint(" with ", p.GetInteger())
+					case p.HasReal():
+						note += " with real " + strconv.FormatFloat(p.GetReal(), 'g', -1, 64)
+					case p.HasText():
+						note += " with " + strconv.Quote(p.GetText())
+					case p.HasBlob():
+						note += fmt.Sprintf(" with x'%x'", p.GetBlob())
+					default:
+						t.Fatalf("%q: a parameter of kind %v", note, p.WhichKind())
+					}
 				}
 				commit = append(commit, note)
 			}
@@ -635,26 +657,31 @@ func TestParameters(t *testing.T) {
 		is.Equal(t, 1, len(commits(t, w)))
 	})
 
-	t.Run("should refuse an argument of another type, and a named argument, as not supported, and run nothing", func(t *testing.T) {
+	t.Run("should refuse an argument that no column holds, and a named argument, as not supported, and run nothing", func(t *testing.T) {
 		w := newWorld(t)
 		db := w.serve(t, "a")
 		exec(t, db, t1)
 		prepared, err := db.PrepareContext(t.Context(), insertParameter)
 		is.NotError(t, err)
 		defer func() { is.NotError(t, prepared.Close()) }()
+		type flag bool
 		cases := []struct {
 			arg  any
 			want string
 		}{
 			{arg: nil, want: "argument 1 of type nil"},
 			{arg: sql.NullInt64{}, want: "argument 1 of type nil"},
+			{arg: sql.NullString{}, want: "argument 1 of type nil"},
 			{arg: (*int64)(nil), want: "argument 1 of type nil"},
-			{arg: "1", want: "argument 1 of type string"},
-			{arg: 1.0, want: "argument 1 of type float64"},
-			{arg: float32(1), want: "argument 1 of type float64"},
+			{arg: []byte(nil), want: "argument 1 of type []byte, which is nil"},
 			{arg: true, want: "argument 1 of type bool"},
-			{arg: []byte{1}, want: "argument 1 of type []uint8"},
+			{arg: flag(true), want: "argument 1 of type bool"},
 			{arg: time.Time{}, want: "argument 1 of type time.Time"},
+			{arg: math.NaN(), want: "argument 1, which is a real that is not a number"},
+			{arg: float32(math.Inf(1)), want: "argument 1, which is an infinite real"},
+			{arg: math.Inf(-1), want: "argument 1, which is an infinite real"},
+			{arg: "a\x00", want: "argument 1, which is text that holds the character NUL"},
+			{arg: "\xff", want: "argument 1, which is text that is not valid UTF-8"},
 			{arg: uint64(9223372036854775808), want: "argument 1 of type uint64, whose value does not fit a signed 64-bit integer"},
 			// database/sql's conversion would make these a negative int64.
 			{arg: uint(9223372036854775808), want: "argument 1 of type uint, whose value does not fit a signed 64-bit integer"},
@@ -716,6 +743,236 @@ func TestParameters(t *testing.T) {
 	})
 }
 
+// typedTables are a table of each of the five types of a column, each named by its type with an "s".
+var typedTables = []string{
+	"create table ints (v int primary key) strict, without rowid",
+	"create table integers (v integer primary key) strict, without rowid",
+	"create table reals (v real primary key) strict, without rowid",
+	"create table texts (v text primary key) strict, without rowid",
+	"create table blobs (v blob primary key) strict, without rowid",
+}
+
+// rowsOf the query src on db: each row as its one value, as database/sql gives it to an any.
+func rowsOf(t *testing.T, db querier, src string) []any {
+	t.Helper()
+	rows, err := db.QueryContext(t.Context(), src)
+	is.NotError(t, err)
+	vs := []any{}
+	for rows.Next() {
+		var v any
+		is.NotError(t, rows.Scan(&v))
+		vs = append(vs, v)
+	}
+	is.NotError(t, rows.Err())
+	is.NotError(t, rows.Close())
+	return vs
+}
+
+func TestTypes(t *testing.T) {
+	t.Run("should insert and give values of each type, through literals and arguments of the Go types that database/sql converts", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, typedTables...)
+		type name string
+		type number float64
+		type bytes []byte
+		cases := []struct {
+			table   string
+			literal string
+			args    []any
+			want    []any
+		}{
+			{table: "ints", literal: "-9223372036854775808", args: []any{int8(1), uint32(2), 9223372036854775807}, want: []any{int64(-9223372036854775808), int64(1), int64(2), int64(9223372036854775807)}},
+			{table: "integers", literal: "0", args: []any{-1, int64(7)}, want: []any{int64(-1), int64(0), int64(7)}},
+			{table: "reals", literal: "1.5", args: []any{float32(0.5), number(-2.25), math.MaxFloat64, math.SmallestNonzeroFloat64, sql.NullFloat64{Float64: 3, Valid: true}},
+				want: []any{-2.25, 4.9e-324, 0.5, 1.5, 3.0, math.MaxFloat64}},
+			{table: "texts", literal: "'it''s'", args: []any{"", name("日本"), "á", sql.NullString{String: "b", Valid: true}, new("c")},
+				want: []any{"", "á", "b", "c", "it's", "日本"}},
+			{table: "blobs", literal: "x'00'", args: []any{[]byte{}, bytes{0, 0}, []byte("ab"), new(bytes("1"))},
+				want: []any{[]byte{}, []byte{0}, []byte{0, 0}, []byte("1"), []byte("ab")}},
+		}
+		for _, c := range cases {
+			exec(t, db, "insert into "+c.table+" (v) values ("+c.literal+")")
+			prepared, err := db.PrepareContext(t.Context(), "insert into "+c.table+" (v) values (?)")
+			is.NotError(t, err)
+			for i, a := range c.args {
+				var res sql.Result
+				if i%2 == 0 {
+					res, err = db.ExecContext(t.Context(), "insert into "+c.table+" (v) values (?)", a)
+				} else {
+					res, err = prepared.ExecContext(t.Context(), a)
+				}
+				is.Equal(t, int64(1), affected(t, res, err), fmt.Sprintf("%T", a))
+			}
+			is.NotError(t, prepared.Close())
+			got := rowsOf(t, db, "select * from "+c.table)
+			is.Equal(t, fmt.Sprintf("%#v", c.want), fmt.Sprintf("%#v", got), c.table)
+		}
+		// Each type as declared, INT and INTEGER apart, also after a replay of the log into an empty
+		// cache.
+		check := func(db *sql.DB) {
+			t.Helper()
+			for _, typ := range []string{"INT", "INTEGER", "REAL", "TEXT", "BLOB"} {
+				rows, err := db.QueryContext(t.Context(), "select * from "+typ+"s")
+				is.NotError(t, err)
+				types, err := rows.ColumnTypes()
+				is.NotError(t, err)
+				is.Equal(t, typ, types[0].DatabaseTypeName())
+				is.NotError(t, rows.Close())
+			}
+			is.Equal(t, fmt.Sprintf("%#v", cases[4].want), fmt.Sprintf("%#v", rowsOf(t, db, "select * from blobs")))
+			is.Equal(t, fmt.Sprintf("%#v", cases[2].want), fmt.Sprintf("%#v", rowsOf(t, db, "select * from reals")))
+		}
+		check(db)
+		is.NotError(t, db.Close())
+		check(w.serve(t, "b"))
+	})
+
+	t.Run("should refuse a value of another type than its column as not supported, after SQLite's errors of the names, and run nothing", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, typedTables...)
+		cases := []struct {
+			src  string
+			args []any
+			want string
+		}{
+			// SQLite would convert these.
+			{src: "insert into ints (v) values ('1')", want: "a string literal for the column ints.v of type INT"},
+			{src: "insert into integers (v) values (?)", args: []any{"1"}, want: "argument 1, which is text, for the column integers.v of type INTEGER"},
+			{src: "insert into ints (v) values (1.0)", want: "a real literal for the column ints.v of type INT"},
+			{src: "insert into reals (v) values (1)", want: "an integer literal for the column reals.v of type REAL"},
+			{src: "insert into reals (v) values (?)", args: []any{1}, want: "argument 1, which is an integer, for the column reals.v of type REAL"},
+			{src: "insert into texts (v) values (1.5)", want: "a real literal for the column texts.v of type TEXT"},
+			{src: "insert into texts (v) values (?)", args: []any{2}, want: "argument 1, which is an integer, for the column texts.v of type TEXT"},
+			// SQLite would give an error of its own for these.
+			{src: "insert into ints (v) values ('a')", want: "a string literal for the column ints.v of type INT"},
+			{src: "insert into blobs (v) values ('a')", want: "a string literal for the column blobs.v of type BLOB"},
+			{src: "insert into blobs (v) values (?)", args: []any{"a"}, want: "argument 1, which is text, for the column blobs.v of type BLOB"},
+			{src: "insert into texts (v) values (x'61')", want: "a blob literal for the column texts.v of type TEXT"},
+			{src: "insert into texts (v) values (?)", args: []any{[]byte("a")}, want: "argument 1, which is a blob, for the column texts.v of type TEXT"},
+			{src: `insert into "REALS" (V) values (?)`, args: []any{"1.5"}, want: "argument 1, which is text, for the column reals.v of type REAL"},
+		}
+		for _, c := range cases {
+			_, err := db.ExecContext(t.Context(), c.src, c.args...)
+			is.Equal(t, c.want, notSupported(t, err), c.src)
+			_, err = db.QueryContext(t.Context(), c.src, c.args...)
+			is.Equal(t, c.want, notSupported(t, err), c.src)
+		}
+		_, err := db.ExecContext(t.Context(), "insert into nosuch (v) values (?)", "a")
+		sqliteError(t, 1, 1, "no such table: nosuch", err)
+		_, err = db.ExecContext(t.Context(), "insert into ints (w) values ('a')")
+		sqliteError(t, 1, 1, "table ints has no column named w", err)
+		is.Equal(t, len(typedTables), len(commits(t, w)))
+	})
+
+	t.Run("should store -0.0 as 0.0, give it back as 0.0, take it for the key 0.0, and annotate the argument as given", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, typedTables[2])
+		_, err := db.ExecContext(t.Context(), "insert into reals (v) values (?)", math.Copysign(0, -1))
+		is.NotError(t, err)
+		var v float64
+		is.NotError(t, db.QueryRowContext(t.Context(), "select * from reals").Scan(&v))
+		is.True(t, v == 0 && !math.Signbit(v), fmt.Sprint(v))
+		for _, src := range []string{"insert into reals (v) values (0.0)", "insert into reals (v) values (-0.0)"} {
+			_, err = db.ExecContext(t.Context(), src)
+			sqliteError(t, 19, 1555, "UNIQUE constraint failed: reals.v", err)
+		}
+		_, err = db.ExecContext(t.Context(), "insert into reals (v) values (?)", 0.0)
+		sqliteError(t, 19, 1555, "UNIQUE constraint failed: reals.v", err)
+		is.EqualSlice(t, []string{typedTables[2], "insert into reals (v) values (?) with real -0"}, annotations(t, w))
+		is.NotError(t, db.Close())
+		is.NotError(t, w.serve(t, "b").QueryRowContext(t.Context(), "select * from reals").Scan(&v))
+		is.True(t, v == 0 && !math.Signbit(v), fmt.Sprint(v))
+	})
+
+	t.Run("should give SQLite's error of a key that exists for every type", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, typedTables...)
+		for table, arg := range map[string]any{"ints": 1, "integers": -1, "reals": 1.5, "texts": "é", "blobs": []byte{}} {
+			src := "insert into " + table + " (v) values (?)"
+			_, err := db.ExecContext(t.Context(), src, arg)
+			is.NotError(t, err)
+			res, err := db.ExecContext(t.Context(), src, arg)
+			sqliteError(t, 19, 1555, "UNIQUE constraint failed: "+table+".v", err)
+			is.True(t, res == nil)
+		}
+	})
+
+	t.Run("should give each application a []byte of its own", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, typedTables[4], "insert into blobs (v) values (x'6162')")
+		var b []byte
+		is.NotError(t, db.QueryRowContext(t.Context(), "select * from blobs").Scan(&b))
+		b[0] = 'x'
+		var raw any
+		is.NotError(t, db.QueryRowContext(t.Context(), "select * from blobs").Scan(&raw))
+		is.Equal(t, "ab", string(raw.([]byte)))
+		raw.([]byte)[0] = 'y'
+
+		rows, err := db.QueryContext(t.Context(), "select * from blobs")
+		is.NotError(t, err)
+		is.True(t, rows.Next())
+		var r sql.RawBytes
+		is.NotError(t, rows.Scan(&r))
+		is.Equal(t, "ab", string(r))
+		is.NotError(t, rows.Close())
+	})
+
+	t.Run("should give SQLite's error for a text or a blob that is too long, and keep the transaction usable", func(t *testing.T) {
+		const limit = 1000
+		w := newWorld(t)
+		co := coreOptions()
+		co.LengthLimit = limit
+		db := w.openOn(t, "a", w.client(), co)
+		is.NotError(t, db.PingContext(t.Context()))
+		exec(t, db, typedTables[3], typedTables[4])
+		for _, arg := range []any{strings.Repeat("a", limit+1), make([]byte, limit+1), make([]byte, limit)} {
+			_, err := db.ExecContext(t.Context(), "insert into blobs (v) values (?)", arg)
+			sqliteError(t, 18, 18, "string or blob too big", err)
+		}
+		_, err := db.ExecContext(t.Context(), "insert into ints (v) values (?)", strings.Repeat("a", limit+1))
+		sqliteError(t, 1, 1, "no such table: ints", err)
+
+		tx := begin(t, db, nil)
+		_, err = tx.ExecContext(t.Context(), "insert into texts (v) values ('a')")
+		is.NotError(t, err)
+		_, err = tx.ExecContext(t.Context(), "insert into texts (v) values (?)", strings.Repeat("b", limit+1))
+		sqliteError(t, 18, 18, "string or blob too big", err)
+		_, err = tx.ExecContext(t.Context(), "insert into texts (v) values (?)", strings.Repeat("c", limit))
+		sqliteError(t, 18, 18, "string or blob too big", err)
+		_, err = tx.ExecContext(t.Context(), "insert into texts (v) values (?)", strings.Repeat("d", limit-10))
+		is.NotError(t, err)
+		is.NotError(t, tx.Commit())
+		is.Equal(t, fmt.Sprintf("%#v", []any{"a", strings.Repeat("d", limit-10)}), fmt.Sprintf("%#v", rowsOf(t, db, "select * from texts")))
+	})
+
+	t.Run("should run values of every type in a read-only transaction, and undo them at a roll back", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, typedTables[3], "insert into texts (v) values ('a')")
+		ro := begin(t, db, &sql.TxOptions{ReadOnly: true})
+		is.Equal(t, fmt.Sprintf("%#v", []any{"a"}), fmt.Sprintf("%#v", rowsOf(t, ro, "select * from texts")))
+		for _, arg := range []any{"b", 1} {
+			_, err := ro.ExecContext(t.Context(), "insert into texts (v) values (?)", arg)
+			sqliteError(t, 8, 8, "attempt to write a readonly database", err)
+		}
+		is.NotError(t, ro.Commit())
+
+		tx := begin(t, db, nil)
+		_, err := tx.ExecContext(t.Context(), "insert into texts (v) values (?)", "b")
+		is.NotError(t, err)
+		_, err = tx.ExecContext(t.Context(), "insert into texts (v) values (?)", 1)
+		is.Equal(t, "argument 1, which is an integer, for the column texts.v of type TEXT", notSupported(t, err))
+		is.Equal(t, fmt.Sprintf("%#v", []any{"a", "b"}), fmt.Sprintf("%#v", rowsOf(t, tx, "select * from texts")))
+		is.NotError(t, tx.Rollback())
+		is.Equal(t, fmt.Sprintf("%#v", []any{"a"}), fmt.Sprintf("%#v", rowsOf(t, db, "select * from texts")))
+	})
+}
+
 func TestConn_Raw(t *testing.T) {
 	t.Run("should run the calls of the driver's interfaces that database/sql makes no more, as it runs those with a context", func(t *testing.T) {
 		w := newWorld(t)
@@ -746,8 +1003,10 @@ func TestConn_Raw(t *testing.T) {
 			is.NotError(t, err)
 			_, err = insertParameter.Exec([]driver.Value{int64(1)}) //nolint:staticcheck // As above.
 			is.Equal(t, "UNIQUE constraint failed: t1.v1", failed(t, err).Error())
+			_, err = insertParameter.Query([]driver.Value{true}) //nolint:staticcheck // As above.
+			is.Equal(t, "argument 1 of type bool", notSupported(t, err))
 			_, err = insertParameter.Query([]driver.Value{"1"}) //nolint:staticcheck // As above.
-			is.Equal(t, "argument 1 of type string", notSupported(t, err))
+			is.Equal(t, "argument 1, which is text, for the column t1.v1 of type INT", notSupported(t, err))
 			is.NotError(t, insertParameter.Close())
 
 			query, err := c.Prepare(select1)
@@ -1606,9 +1865,12 @@ func TestStop(t *testing.T) {
 		is.Equal(t, `near "?": syntax error`, failed(t, err).Error())
 		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (?)", 1, 2)
 		is.Equal(t, "s4ql: wrong number of arguments: 2 for a statement with 1 parameter", failed(t, err).Error())
-		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (?)", 1.5)
-		is.Equal(t, "argument 1 of type float64", notSupported(t, err))
+		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (?)", math.NaN())
+		is.Equal(t, "argument 1, which is a real that is not a number", notSupported(t, err))
 		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (?)", 6)
+		stopped(err)
+		// The type of the column needs the instance.
+		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (?)", 1.5)
 		stopped(err)
 
 		// Recovery is a normal start: the application closes the database and opens it again, and

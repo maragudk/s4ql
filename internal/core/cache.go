@@ -46,7 +46,7 @@ func openConn(open func(path, vfs string) (*sqlite.Conn, error), path string, op
 	if err != nil {
 		return nil, err
 	}
-	cn := &conn{c: c, stmts: map[string]*sqlite.Stmt{}, tables: map[string]*table{}, limit: options.lengthLimit}
+	cn := &conn{c: c, stmts: map[string]*sqlite.Stmt{}, tables: map[string]*table{}, limit: options.LengthLimit}
 	if err := c.SetLengthLimit(cn.limit); err != nil {
 		_ = c.Close()
 		return nil, err

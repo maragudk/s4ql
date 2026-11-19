@@ -29,11 +29,11 @@
 // An error of a statement is one of these:
 //
 //   - SQLite's error, as a [*sqlerr.Error], with SQLite's result code, extended result code, and
-//     message: a syntax error, or an error about the tables, the columns, or a primary key.
+//     message: a syntax error, an error about the tables, the columns, or a primary key, or a text
+//     or a blob that is too long.
 //   - "Not supported", as a [*stmt.NotSupportedError] that matches [stmt.ErrNotSupported], or, for
-//     an argument that is not an integer, and for a column type other than INT or a literal that is
-//     not an integer, which the pass supports and the engine does not hold yet, an error that matches
-//     stmt.ErrNotSupported.
+//     an argument that no column holds, and for a value of another type than its column, an error
+//     that matches stmt.ErrNotSupported.
 //   - [ErrNoStatement], for a text that holds no statement.
 //   - An error that matches [ErrArguments], for another number of arguments than the statement has
 //     parameters.
@@ -195,8 +195,17 @@ func (c *Conn) begin(ctx context.Context) (writeTx, error) {
 // result. A query is run to its end, in its read transaction, and its rows are dropped. The result
 // is given with an error too: a failed insert sets the count of changes.
 //
-// The text is checked first, and then the arguments, as [Check] checks them, before the statement
-// needs the database: there must be one argument for each parameter, and each must be an integer.
+// The text is checked first, and then the arguments, before the statement needs the database: there
+// must be one argument for each parameter, as [Check] checks it, and each must be a value that a
+// column can hold: an integer, a real that is a finite number, valid UTF-8 text without the
+// character NUL, or a blob.
+//
+// An insert then fails, in this order, with SQLite's errors of the names, with SQLite's `string or
+// blob too big` for a text or a blob that is longer than the limit of the database, which SQLite
+// gives when it binds such an argument, with SQLite's error of a read-only transaction, with "not
+// supported" for a value of another type than its column, with SQLite's error of a key that exists,
+// and with `string or blob too big` for a row that is longer than the limit. A real that is -0.0 is
+// stored as 0.0, as SQLite stores it, and its key is the key of 0.0.
 //
 // In a transaction that spans statements, the statement then fails with the error of ctx if ctx has
 // ended, with the refusal of a statement of its own if the instance does not serve now, and with
@@ -295,9 +304,6 @@ func Check(src string, n int) error {
 	if err != nil {
 		return err
 	}
-	if err := checkTypes(s); err != nil {
-		return err
-	}
 	return countArguments(s.Parameters(), n)
 }
 
@@ -323,9 +329,6 @@ func prepare(r *report, src string, args []*s4qlpb.Value) (Plan, string, error) 
 		return nil, "", err
 	}
 	r.of(s)
-	if err := checkTypes(s); err != nil {
-		return nil, "", err
-	}
 	if err := checkArguments(s.Parameters(), args); err != nil {
 		return nil, "", err
 	}
@@ -366,8 +369,11 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	}()
 	b := e.bugs
 	b.skipUnique = b.skipUnique || b.checkOutside
-	s, err := buildSink(ctx, tx, p, args, b)
+	s, err := buildSink(ctx, tx, p, args, b, e.db.lengthLimit())
 	if err != nil {
+		return Result{}, err
+	}
+	if err := s.check(); err != nil {
 		return Result{}, err
 	}
 	// From here on, a failed insert sets the count of changes to 0.
@@ -410,8 +416,11 @@ func (c *Conn) checkOutside(ctx context.Context, r *report, p Plan, args []*s4ql
 	}
 	defer func() { _ = rt.end(ctx) }()
 	r.at(rt.position(), true)
-	s, err := buildSink(ctx, readOnly{rt}, p, args, bugs{})
+	s, err := buildSink(ctx, readOnly{rt}, p, args, bugs{}, c.e.db.lengthLimit())
 	if err != nil {
+		return err
+	}
+	if err := s.check(); err != nil {
 		return err
 	}
 	_, err = s.run(ctx)

@@ -1240,6 +1240,8 @@ func TestOpen_cache(t *testing.T) {
 			"a busy timeout below zero":         {BusyTimeout: -time.Second},
 			"an object timeout below zero":      {ObjectTimeout: -time.Second},
 			"a watch interval below zero":       {Watch: -time.Second},
+			"a length limit below SQLite's":     {LengthLimit: 29},
+			"a length limit above SQLite's":     {LengthLimit: 1_000_000_001},
 		} {
 			_, err := core.Open(t.Context(), w.host, w.client(), path, "db", options)
 			is.True(t, err != nil, name)

@@ -70,12 +70,14 @@ type Options struct {
 	// that a cache records. It is only compared: two databases must have two identities, and every
 	// instance of one database the same. The empty string is an identity as any other.
 	Identity string
+	// LengthLimit is the largest text or blob, and the largest row, in bytes, that the cache holds:
+	// SQLite's SQLITE_LIMIT_LENGTH of every connection. The default is 1,000,000,000, SQLite's
+	// default and its largest; nothing but tests sets another, which must be at least 30, SQLite's
+	// smallest.
+	LengthLimit int
 
 	// syncOff stops SQLite from syncing the cache to disk, for tests.
 	syncOff bool
-	// lengthLimit is the largest text or blob, and the largest row, in bytes, that the cache holds:
-	// SQLite's SQLITE_LIMIT_LENGTH of every connection. The default is [maxLength]; tests lower it.
-	lengthLimit int
 	// bugs that tests plant.
 	bugs bugs
 	// local is how the instance reaches its local files, which tests change to make them fail.
@@ -113,8 +115,8 @@ func (o Options) withDefaults() (Options, error) {
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.DiscardHandler)
 	}
-	if o.lengthLimit == 0 {
-		o.lengthLimit = maxLength
+	if o.LengthLimit == 0 {
+		o.LengthLimit = maxLength
 	}
 	switch {
 	case o.Lease > 365*24*time.Hour:
@@ -124,6 +126,8 @@ func (o Options) withDefaults() (Options, error) {
 		return o, fmt.Errorf("the lease lasts %v and is renewed after %v, which must be above zero and shorter", o.Lease, o.RenewAfter)
 	case o.BusyTimeout < 0 || o.StoreTimeout < 0 || o.ObjectTimeout < 0 || o.Watch < 0:
 		return o, errors.New("a timeout or an interval below zero")
+	case o.LengthLimit < 30 || o.LengthLimit > maxLength:
+		return o, fmt.Errorf("the length limit %v is not from 30 to %v", o.LengthLimit, maxLength)
 	}
 	return o, nil
 }
@@ -393,6 +397,12 @@ func (d *DB) closeCache() {
 // Done is closed when the instance has stopped for good.
 func (d *DB) Done() <-chan struct{} {
 	return d.done
+}
+
+// LengthLimit is the largest text or blob, and the largest row, in bytes, that the instance holds:
+// [Options.LengthLimit].
+func (d *DB) LengthLimit() int {
+	return d.options.LengthLimit
 }
 
 // Err is nil while the instance has not stopped, and after that an error that wraps [ErrStopped]

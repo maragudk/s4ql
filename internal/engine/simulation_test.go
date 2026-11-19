@@ -31,6 +31,7 @@ import (
 	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
+	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
 
@@ -546,10 +547,16 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 		if a.write && tx == nil {
 			r.acked = append(r.acked, a.id)
 		}
-		// A call that the rule for arguments refuses must not succeed.
+		// A call that the rule for arguments refuses must not succeed, nor one with a value of another
+		// type than its column.
 		if kind, failure := checkArguments(call, answer{}); kind != "" {
 			r.mu.Unlock()
 			r.violate(ctx, "the statement %v succeeded: %v", a.id, failure)
+			r.mu.Lock()
+		}
+		if _, ok := typeArgument(call); ok {
+			r.mu.Unlock()
+			r.violate(ctx, "the statement %v, %q, succeeded with the argument %#v for a column of type INT or INTEGER", a.id, a.src, call.Args[0])
 			r.mu.Lock()
 		}
 	case errors.As(err, &se):
@@ -565,6 +572,15 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 		// A call that s4ql refuses for its arguments must be refused by its rule, and a statement of
 		// slices 1 and 2 with the arguments that it takes must run.
 		kind, failure := checkArguments(call, a.answer)
+		if article, ok := typeArgument(call); ok && kind == "" {
+			// The insert found its table and its column, which is of type INT or INTEGER.
+			kind = excusedType
+			prefix := fmt.Sprintf("s4ql: not supported: argument 1, which is %v, for the column ", article)
+			integer := strings.HasSuffix(a.answer.message, " of type INT") || strings.HasSuffix(a.answer.message, " of type INTEGER")
+			if a.answer.err != "not supported" || !strings.HasPrefix(a.answer.message, prefix) || !integer {
+				failure = fmt.Sprintf("the statement %v, %q, with the argument %#v: %v", a.id, a.src, call.Args[0], err)
+			}
+		}
 		if kind == "" && (call.Supported || a.answer.err == wrongArguments) {
 			failure = fmt.Sprintf("the statement %v, %q, with %v arguments: %v", a.id, a.src, len(call.Args), err)
 		}
@@ -1318,7 +1334,7 @@ func (r *run) verify(ctx context.Context) {
 	o := newOracle(r.t)
 	for k := 0; k <= len(log); k++ {
 		for _, a := range seen[k] {
-			want := o.run(r.t, a.src, integerValues(a.args)...)
+			want := o.run(r.t, a.src, oracleValues(a.args)...)
 			if !a.query {
 				want.columns, want.rows = "", nil
 			}
@@ -1328,7 +1344,7 @@ func (r *run) verify(ctx context.Context) {
 		}
 		if k < len(log) {
 			for i, note := range log[k].notes {
-				if a := o.run(r.t, note, integerValues(log[k].params[i])...); a.err != "" {
+				if a := o.run(r.t, note, oracleValues(log[k].params[i])...); a.err != "" {
 					r.violate(ctx, "commit %v, %q, fails in SQLite: %v", k+1, note, a.err)
 				}
 			}
@@ -1411,7 +1427,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 		o := newOracle(r.t)
 		for _, c := range log[:at] {
 			for i, note := range c.notes {
-				o.run(r.t, note, integerValues(c.params[i])...)
+				o.run(r.t, note, oracleValues(c.params[i])...)
 			}
 		}
 		if tx.readOnly {
@@ -1422,7 +1438,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 			if a.position == "" || (a.state != succeeded && a.state != sqliteFailed) {
 				continue
 			}
-			want := o.run(r.t, a.src, integerValues(a.args)...)
+			want := o.run(r.t, a.src, oracleValues(a.args)...)
 			if a.partial {
 				continue
 			}
@@ -1593,13 +1609,46 @@ func stmtValue(v *s4qlpb.Value) any {
 	return nil
 }
 
-// integerValues of vs, values of the engine that are integers, as the oracle binds them.
-func integerValues(vs []*s4qlpb.Value) []int64 {
-	var ints []int64
-	for _, v := range vs {
-		ints = append(ints, v.GetInteger())
+// typeArgument reports whether the call c is a supported insert with one parameter whose argument
+// is a value that a column holds and is not an integer, and gives how the engine's message names its
+// kind. The tables of [stmttest.Sequence] are of type INT, or INTEGER through [stmttest.Others], so
+// the engine refuses such an argument as "not supported" once it has found the table and the column.
+func typeArgument(c stmttest.Call) (string, bool) {
+	s, _ := stmt.Check(c.Src)
+	insert, ok := s.(*stmt.Insert)
+	args := unnamed(c.Args)
+	if !ok || insert.Parameters() != 1 || len(args) != 1 || refusal(args[0]) != "" {
+		return "", false
 	}
-	return ints
+	switch args[0].(type) {
+	case float64:
+		return "a real", true
+	case string:
+		return "text", true
+	case []byte:
+		return "a blob", true
+	}
+	return "", false
+}
+
+// oracleValues of vs, values of the engine that a column holds, as the oracle binds them.
+func oracleValues(vs []*s4qlpb.Value) []any {
+	var as []any
+	for _, v := range vs {
+		switch v.WhichKind() {
+		case s4qlpb.Value_Integer_case:
+			as = append(as, v.GetInteger())
+		case s4qlpb.Value_Real_case:
+			as = append(as, v.GetReal())
+		case s4qlpb.Value_Text_case:
+			as = append(as, v.GetText())
+		case s4qlpb.Value_Blob_case:
+			as = append(as, v.GetBlob())
+		default:
+			panic(fmt.Sprintf("a value of kind %v for the oracle", v.WhichKind()))
+		}
+	}
+	return as
 }
 
 // coreState of the database d, as [oracle.state] gives it.
@@ -1622,14 +1671,15 @@ func coreState(ctx context.Context, d *core.DB) (string, error) {
 	for _, ct := range tables {
 		var columns []string
 		for _, c := range ct.GetColumns() {
-			columns = append(columns, c.GetName()+" INT")
+			columns = append(columns, c.GetName()+" "+declType(c.GetType()))
 		}
 		var rows []string
 		for row, err := range r.Scan(ctx, ct.GetTable()) {
 			if err != nil {
 				return "", err
 			}
-			rows = append(rows, fmt.Sprint(row[0].GetInteger()))
+			text, _ := valueString(row[0])
+			rows = append(rows, text)
 		}
 		fmt.Fprintf(&b, "%v (%v): %v\n", ct.GetTable(), strings.Join(columns, ", "), strings.Join(rows, " "))
 	}

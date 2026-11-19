@@ -3,6 +3,9 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"math"
+	"strings"
+	"unicode/utf8"
 
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
@@ -52,42 +55,127 @@ var (
 	errPanicked = fmt.Errorf("%w: the statement panicked", ErrInternal)
 )
 
-// checkTypes of the statement s, which [stmt.Check] supports: "not supported" for a column of
-// another type than INT, and for a literal that is not an integer. The engine holds integers only,
-// so far. No value of a literal is in an error.
-func checkTypes(s stmt.Statement) error {
-	switch s := s.(type) {
-	case *stmt.CreateTable:
-		if s.Type != stmt.TypeInt {
-			return fmt.Errorf("%w: column type %v", stmt.ErrNotSupported, s.Type)
-		}
-	case *stmt.Insert:
-		switch s.Value.(type) {
-		case stmt.Integer, nil:
-		case stmt.Real:
-			return fmt.Errorf("%w: a real literal, which is not an integer", stmt.ErrNotSupported)
-		case stmt.Text:
-			return fmt.Errorf("%w: a string literal, which is not an integer", stmt.ErrNotSupported)
-		case stmt.Blob:
-			return fmt.Errorf("%w: a blob literal, which is not an integer", stmt.ErrNotSupported)
-		}
-	}
-	return nil
-}
-
 // checkArguments of a statement with the given number of parameters: the error of [countArguments],
-// and then "not supported" for the first argument that is not an integer. No value of an argument
-// is in an error.
+// and then "not supported" for the first argument that is not a value that a column can hold, as
+// [checkArgument] says. Whether it is of the type of its column is checked when the statement runs,
+// after SQLite's errors of the names. No value of an argument is in an error.
 func checkArguments(parameters int, args []*s4qlpb.Value) error {
 	if err := countArguments(parameters, len(args)); err != nil {
 		return err
 	}
 	for i, a := range args {
-		if !a.HasInteger() {
-			return fmt.Errorf("%w: argument %v, which is not an integer", stmt.ErrNotSupported, i+1)
+		if err := checkArgument(i+1, a); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// checkArgument a, the argument of the given number: "not supported" for NULL and for a value of no
+// kind, which no column holds yet, for a real that is not a number or is infinite, which SQLite
+// stores as NULL or as itself, and for text that is not valid UTF-8 or holds the character NUL,
+// which s4ql never stores. An integer, a blob, and every other real and text are values that a
+// column can hold.
+func checkArgument(number int, a *s4qlpb.Value) error {
+	var which string
+	switch a.WhichKind() {
+	case s4qlpb.Value_Integer_case, s4qlpb.Value_Blob_case:
+		return nil
+	case s4qlpb.Value_Real_case:
+		switch r := a.GetReal(); {
+		case math.IsNaN(r):
+			which = "is a real that is not a number"
+		case math.IsInf(r, 0):
+			which = "is an infinite real"
+		default:
+			return nil
+		}
+	case s4qlpb.Value_Text_case:
+		switch text := a.GetText(); {
+		case !utf8.ValidString(text):
+			which = "is text that is not valid UTF-8"
+		case strings.IndexByte(text, 0) >= 0:
+			which = "is text that holds the character NUL"
+		default:
+			return nil
+		}
+	case s4qlpb.Value_Null_case:
+		which = "is NULL"
+	default:
+		which = "has no value"
+	}
+	return fmt.Errorf("%w: argument %v, which %v", stmt.ErrNotSupported, number, which)
+}
+
+// checkLength of the value v: SQLite's error for a text or a blob that is longer than limit bytes,
+// which SQLite gives when it binds such an argument.
+func checkLength(v *s4qlpb.Value, limit int) error {
+	var n int
+	switch v.WhichKind() {
+	case s4qlpb.Value_Text_case:
+		n = len(v.GetText())
+	case s4qlpb.Value_Blob_case:
+		n = len(v.GetBlob())
+	}
+	if n > limit {
+		return tooBig()
+	}
+	return nil
+}
+
+// checkType of the value v for the column at position of the table t: "not supported" unless the
+// value has the type of the column, an integer for INT and INTEGER, a real for REAL, text for TEXT,
+// and a blob for BLOB, also where SQLite would convert it or give an error of its own. The value
+// comes from the expression e, an argument or a literal, which the message names.
+func checkType(t *s4qlpb.CreateTable, position int, v *s4qlpb.Value, e Expr) error {
+	c := t.GetColumns()[position]
+	var holds bool
+	switch c.GetType() {
+	case s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INTEGER:
+		holds = v.HasInteger()
+	case s4qlpb.Type_TYPE_REAL:
+		holds = v.HasReal()
+	case s4qlpb.Type_TYPE_TEXT:
+		holds = v.HasText()
+	case s4qlpb.Type_TYPE_BLOB:
+		holds = v.HasBlob()
+	default:
+		return internalError("a column of type %v", c.GetType())
+	}
+	if holds {
+		return nil
+	}
+	var what string
+	switch e := e.(type) {
+	case *Parameter:
+		what = fmt.Sprintf("argument %v, which is %v,", e.Number, kindName(v))
+	case *Integer:
+		what = "an integer literal"
+	case *Real:
+		what = "a real literal"
+	case *Text:
+		what = "a string literal"
+	case *Blob:
+		what = "a blob literal"
+	default:
+		return internalError("a value of an expression of type %T", e)
+	}
+	return fmt.Errorf("%w: %v for the column %v.%v of type %v", stmt.ErrNotSupported, what, t.GetTable(), c.GetName(), typeName(c.GetType()))
+}
+
+// kindName of the kind of the value v, in a sentence: "an integer", "a real", "text", or "a blob".
+func kindName(v *s4qlpb.Value) string {
+	switch v.WhichKind() {
+	case s4qlpb.Value_Integer_case:
+		return "an integer"
+	case s4qlpb.Value_Real_case:
+		return "a real"
+	case s4qlpb.Value_Text_case:
+		return "text"
+	case s4qlpb.Value_Blob_case:
+		return "a blob"
+	}
+	return fmt.Sprint("a value of kind ", v.WhichKind())
 }
 
 // countArguments: [ErrArguments] if n arguments are not one for each of the given number of
@@ -134,6 +222,12 @@ func noSuchColumn(table, column string) error {
 func uniqueFailed(table, column string) error {
 	return &sqlerr.Error{Code: sqlerr.CodeConstraint, ExtendedCode: sqlerr.CodeConstraintPrimaryKey,
 		Message: "UNIQUE constraint failed: " + table + "." + column, Offset: -1}
+}
+
+// tooBig is `string or blob too big`, which SQLite gives for a text or a blob, and a row, that is
+// longer than its limit.
+func tooBig() error {
+	return &sqlerr.Error{Code: sqlerr.CodeTooBig, ExtendedCode: sqlerr.CodeTooBig, Message: "string or blob too big", Offset: -1}
 }
 
 // readOnlyDatabase is `attempt to write a readonly database`, which SQLite gives for a statement that

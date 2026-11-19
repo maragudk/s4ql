@@ -84,6 +84,11 @@ func (f *fake) begin(context.Context) (writeTx, error) {
 	return fakeTx{f}, nil
 }
 
+// lengthLimit of the fake is SQLite's default.
+func (f *fake) lengthLimit() int {
+	return 1_000_000_000
+}
+
 func (f *fake) reader(context.Context) (readConn, error) {
 	if f.readerFails != nil {
 		return nil, f.readerFails
@@ -429,7 +434,7 @@ func TestBuild(t *testing.T) {
 		for _, a := range args {
 			values = append(values, integer(a))
 		}
-		s, err := buildSink(t.Context(), fakeTx{f}, plan(src), values, bugs{})
+		s, err := buildSink(t.Context(), fakeTx{f}, plan(src), values, bugs{}, 1_000_000_000)
 		if err != nil {
 			return err
 		}
@@ -530,7 +535,7 @@ func TestBuild(t *testing.T) {
 				if q, ok := c.plan.(*Query); ok {
 					_, err = buildQuery(t.Context(), fakeTx{f}, q)
 				} else {
-					_, err = buildSink(t.Context(), fakeTx{f}, c.plan, nil, bugs{})
+					_, err = buildSink(t.Context(), fakeTx{f}, c.plan, nil, bugs{}, 1_000_000_000)
 				}
 				is.True(t, errors.Is(err, ErrInternal))
 				is.Equal(t, "s4ql: internal error: "+c.err, err.Error())
@@ -544,7 +549,7 @@ func TestBuild(t *testing.T) {
 			if q, ok := plan(src).(*Query); ok {
 				_, err = buildQuery(t.Context(), failingLookUp{}, q)
 			} else {
-				_, err = buildSink(t.Context(), failingLookUp{}, plan(src), nil, bugs{})
+				_, err = buildSink(t.Context(), failingLookUp{}, plan(src), nil, bugs{}, 1_000_000_000)
 			}
 			is.Equal(t, "the lookup fails", err.Error(), src)
 		}

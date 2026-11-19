@@ -44,6 +44,9 @@ type source interface {
 
 // sink of a statement that changes the database.
 type sink interface {
+	// check what the statement would write, before it writes anything: "not supported" for what
+	// s4ql does not support, where SQLite would run the statement or fail it while it steps it.
+	check() error
 	// run the statement, and give the number of rows that it changed.
 	run(ctx context.Context) (int64, error)
 }
@@ -139,13 +142,34 @@ func (p *project) rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
 
 // insert writes each row of its source into a table of one column, which is its primary key, as a
 // new row, and fails with SQLite's error for a row whose key the table has, also one that an earlier
-// row of the source wrote.
+// row of the source wrote. Its check fails with "not supported" for a value of another type than its
+// column.
 type insert struct {
 	w     writer
 	table *s4qlpb.CreateTable
-	src   rowSource
+	src   *values
+	// exprs are the expressions that the values of each row of the source come from, for the
+	// messages of the errors of the check.
+	exprs [][]Expr
 	// skipUnique is the planted bug that writes a row without the check of its key.
 	skipUnique bool
+}
+
+func (i *insert) check() error {
+	if len(i.src.data) != len(i.exprs) {
+		return internalError("an insert of %v rows from %v rows of expressions", len(i.src.data), len(i.exprs))
+	}
+	for n, row := range i.src.data {
+		if len(row) != len(i.exprs[n]) {
+			return internalError("an insert of %v values from %v expressions", len(row), len(i.exprs[n]))
+		}
+		for position, v := range row {
+			if err := checkType(i.table, position, v, i.exprs[n][position]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (i *insert) run(ctx context.Context) (int64, error) {
@@ -178,6 +202,8 @@ type createTable struct {
 	ct *s4qlpb.CreateTable
 }
 
+func (c *createTable) check() error { return nil }
+
 func (c *createTable) run(ctx context.Context) (int64, error) {
 	return 0, c.w.createTable(ctx, c.ct)
 }
@@ -187,6 +213,8 @@ type dropTable struct {
 	w    writer
 	name string
 }
+
+func (d *dropTable) check() error { return nil }
 
 func (d *dropTable) run(ctx context.Context) (int64, error) {
 	return 0, d.w.dropTable(ctx, d.name)
@@ -229,7 +257,7 @@ func buildNode(ctx context.Context, r reader, n Node) (source, error) {
 
 // buildValues: the source of the rows of the node n of an insert, which is one row of one value, with
 // args for its parameters.
-func buildValues(n Node, args []*s4qlpb.Value) (rowSource, error) {
+func buildValues(n Node, args []*s4qlpb.Value) (*values, error) {
 	v, ok := n.(*Values)
 	if !ok {
 		return nil, internalError("an insert from a node of type %T", n)
@@ -252,6 +280,15 @@ func eval(e Expr, args []*s4qlpb.Value) (*s4qlpb.Value, error) {
 	switch e := e.(type) {
 	case *Integer:
 		return s4qlpb.Value_builder{Integer: new(e.Value)}.Build(), nil
+	case *Real:
+		return s4qlpb.Value_builder{Real: new(e.Value)}.Build(), nil
+	case *Text:
+		return s4qlpb.Value_builder{Text: new(e.Value)}.Build(), nil
+	case *Blob:
+		if e.Value == nil {
+			return nil, internalError("a blob literal of no bytes that is nil")
+		}
+		return s4qlpb.Value_builder{Blob: e.Value}.Build(), nil
 	case *Parameter:
 		if e.Number < 1 || e.Number > len(args) {
 			return nil, internalError("the parameter %v of a statement with %v arguments", e.Number, len(args))
@@ -265,8 +302,11 @@ func eval(e Expr, args []*s4qlpb.Value) (*s4qlpb.Value, error) {
 // with the planted bugs of b. It makes the checks that SQLite makes when it prepares the statement,
 // in SQLite's order, and fails with SQLite's error: for CREATE TABLE, a table of the name; for DROP
 // TABLE, no table of the name; for INSERT, no table of the name, and then a column that the table
-// does not have.
-func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bugs) (sink, error) {
+// does not have. For INSERT it then makes the check that SQLite makes when it binds the arguments: a
+// text or a blob that is longer than limit bytes gets SQLite's `string or blob too big`. It checks
+// a literal so too, which SQLite meets in its text only with a limit below the length of the text:
+// see the README.
+func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bugs, limit int) (sink, error) {
 	switch p := p.(type) {
 	case *CreateTable:
 		existing, err := w.table(ctx, p.Table.Value)
@@ -315,7 +355,14 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 		if err != nil {
 			return nil, err
 		}
-		return &insert{w: w, table: t, src: src, skipUnique: b.skipUnique}, nil
+		for _, row := range src.data {
+			for _, v := range row {
+				if err := checkLength(v, limit); err != nil {
+					return nil, err
+				}
+			}
+		}
+		return &insert{w: w, table: t, src: src, exprs: p.Source.(*Values).Rows, skipUnique: b.skipUnique}, nil
 	}
 	return nil, internalError("a plan of type %T", p)
 }
