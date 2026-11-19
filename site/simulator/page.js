@@ -1,6 +1,8 @@
 // The simulator page. It loads the engine of internal/simulator in a Worker, starts a live session of
 // two instances with a random seed, and waits for Play. In the session, a starts alone and b stands by
-// once a serves, and the engine's client calls a, with no other calls in the processes. While it plays, the page advances the
+// once a serves, and the engine's client calls a, with no other calls in the processes. Each instance
+// is the app with s4ql embedded, and the page shows the calls of the client as the requests that reach
+// the app, such as requests over HTTP from browsers. While it plays, the page advances the
 // session's fake time by the real time that passed, or five times that with turbo, one step at a time,
 // and asks for the state after each step. An action of the visitor goes to the engine at once, paused
 // or playing, and happens at the session's fake time.
@@ -89,7 +91,7 @@ let tell = null; // the teller of run.js, which start makes
 const lines = []; // the last LINES lines of the log, newest first
 let linesTotal = 0;
 const calls = {}; // by instance: {w, r, x, why}
-const client = { w: 0, r: 0, x: 0, status: "", failing: false }; // what the client got, and its latest call
+const requests = { w: 0, r: 0, x: 0, status: "", failing: false }; // what the requests got, and the latest
 const bars = new Map(); // events by slice of fake time
 const marks = []; // the times of the visitor's actions
 const names = new Map(); // the process of each holder ID
@@ -98,9 +100,9 @@ const stopped = {}; // by instance: whether the visitor's Stop closed the databa
 // The page tells a check what it does through data attributes on <html>: data-engine is loading,
 // ready, or failed, data-busy is "true" while a command is on its way, data-t is the fake time in
 // whole ms, data-playing is "true" while it plays, data-lines counts the lines of the log so far, and
-// data-commits the commit objects. The element #client has data-target, the instance that the client
-// calls, and data-writes, data-reads, and data-failed, what its calls got. #client-status has
-// data-failing, "true" while the latest call of the client that ended failed. window.s4qlPage gives
+// data-commits the commit objects. The element #requests has data-target, the instance that the
+// requests go to, and data-writes, data-reads, and data-failed, what they got. #requests-status has
+// data-failing, "true" while the latest request that ended failed. window.s4qlPage gives
 // the check the state and a hook, skip, that advances fake time at once; a visitor reaches it only
 // through the console.
 const root = document.documentElement;
@@ -214,12 +216,12 @@ function take(answer, job = {}) {
         break;
       case "call": {
         if (e.caller === "client" && e.what !== "started") {
-          const st = R.clientStatus(e);
-          if (e.what === "committed") client.w++;
-          else if (e.what === "served") client.r++;
-          else client.x++;
-          client.status = st.words;
-          client.failing = st.failing;
+          const st = R.requestStatus(e);
+          if (e.what === "committed") requests.w++;
+          else if (e.what === "served") requests.r++;
+          else requests.x++;
+          requests.status = st.words;
+          requests.failing = st.failing;
         }
         const c = (calls[e.instance] ||= { w: 0, r: 0, x: 0, why: "" });
         if (e.what === "committed") c.w++;
@@ -268,7 +270,7 @@ function draw() {
   drawField();
   drawLog();
   if (!state) return;
-  drawClient();
+  drawRequests();
   for (const c of cards) drawCard(c);
   drawS3();
   drawControls();
@@ -316,7 +318,7 @@ function wire() {
     }
     return { name, el, f, b };
   });
-  for (const b of document.querySelectorAll("#client [data-target]")) b.addEventListener("click", () => point(b.dataset.target));
+  for (const b of document.querySelectorAll("#requests [data-target]")) b.addEventListener("click", () => send(b.dataset.target));
   $("play").addEventListener("click", () => setPlaying(!playing));
   $("turbo").addEventListener("click", () => setTurbo(!turbo));
 }
@@ -401,7 +403,7 @@ function drawCard(c) {
   set(c.f.calls, `${count(k.w)} writes, ${count(k.r)} reads`);
   set(c.f.refused, k.x ? `${count(k.x)}, last: ${R.reasonWords(k.why)}` : "0");
 
-  c.el.dataset.client = String(target() === c.name);
+  c.el.dataset.requests = String(target() === c.name);
   set(c.b.crash, st.state === "crashed" ? "Restart" : "Crash");
   set(c.b.stop, startable(c.name, st) ? "Start" : "Stop");
   c.b.hang.setAttribute("aria-pressed", String(!!st.networkHung));
@@ -422,7 +424,7 @@ function drawControls() {
     const st = instanceState(c.name);
     const off = !ready || waiting || !st;
     const crashed = !!st && st.state === "crashed";
-    // An instance that has not started takes only the faults of its requests to S3 and of its disk.
+    // An instance that has not started takes only the faults of its connection to S3 and of its disk.
     const notStarted = !!st && st.state === "waiting";
     c.b.crash.disabled = off || notStarted;
     c.b.stop.disabled = off || !(st.state === "running" || startable(c.name, st));
@@ -430,36 +432,36 @@ function drawControls() {
     for (const a of ["forward", "back", "wall", "monotonic"]) c.b[a].disabled = off || crashed || notStarted;
     c.b.reset.disabled = off || crashed || notStarted || !touched(st);
   }
-  for (const b of document.querySelectorAll("#client [data-target]")) b.disabled = !ready || waiting;
+  for (const b of document.querySelectorAll("#requests [data-target]")) b.disabled = !ready || waiting;
 }
 
-// The client.
+// The requests, which the engine's client makes.
 
-// target is the instance that the client calls now.
+// target is the instance that the requests go to now.
 const target = () => (state && state.client ? state.client.instance : "");
 
-// point the client at the instance, unless it calls it already.
-function point(name) {
+// send the requests to the instance, unless they go there already.
+function send(name) {
   if (!state || halted || target() === name) return;
   jobs.push({ act: { do: "client", instance: name } });
   drawControls();
   pump();
 }
 
-function drawClient() {
+function drawRequests() {
   const to = target();
-  const el = $("client");
+  const el = $("requests");
   el.dataset.target = to;
-  el.dataset.writes = String(client.w);
-  el.dataset.reads = String(client.r);
-  el.dataset.failed = String(client.x);
+  el.dataset.writes = String(requests.w);
+  el.dataset.reads = String(requests.r);
+  el.dataset.failed = String(requests.x);
   for (const b of el.querySelectorAll("[data-target]")) b.setAttribute("aria-pressed", String(b.dataset.target === to));
   for (const w of document.querySelectorAll("[data-wire]")) w.dataset.on = String(w.dataset.wire === to);
-  set($("client-writes"), count(client.w));
-  set($("client-reads"), count(client.r));
-  set($("client-failed"), count(client.x));
-  set($("client-status-words"), client.status || R.NO_CALLS);
-  $("client-status").dataset.failing = String(client.failing);
+  set($("requests-writes"), count(requests.w));
+  set($("requests-reads"), count(requests.r));
+  set($("requests-failed"), count(requests.x));
+  set($("requests-status-words"), requests.status || R.NO_REQUESTS);
+  $("requests-status").dataset.failing = String(requests.failing);
 }
 
 // startable says whether Start opens the database of the instance: after the visitor's Stop, and not

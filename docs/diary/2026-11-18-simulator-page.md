@@ -774,3 +774,45 @@ Self-review with the code-review skill at medium found eight things:
 
 - The `<head>` changed for this step: the two descriptions (one phrase each) and CSS for the status cell, the clock rows, and the removed process span.
 - Clock faults on the holder show nothing while the client calls the holder, because its writes renew the lease. A visitor who pauses a clock of the serving instance sees no story unless the client calls the other one. This is a question for the lead and Markus, not something the page can fix by its words.
+
+## Step 14: Requests in place of a client
+
+**Author:** builder (requests)
+
+### Prompt Context
+
+**Verbatim prompt:** Markus, through the lead: "I forgot the client isn't external, but in the app. So it would also crash when the app crashes." And: "There is no load balancer, maybe an HTTP proxy. The typical use case is one app instance serving requests (responding over HTTP to browsers basically) on one machine, just like when you would use SQLite in a server-side context." Then: "maybe we keep it as 'Requests'".
+
+**Interpretation:** the strip keeps its behaviour, and stands for the requests that reach the app; each instance is the app with s4ql embedded. A change of words only, in `site/simulator/` and `check.html`, because the engine already runs each call of its client in a task of the instance's process.
+
+**Inferred intent:** s4ql is embedded, like SQLite on a server. The page must not suggest a client outside the app, a load balancer, or a distributed database.
+
+### What I did
+
+- The strip is "Requests", its switch label "To" (so "Requests to a | b"; "Sent to" wrapped to two lines beside "Requests" at 390 px), its status before the first request "no requests yet". The counts and the status words ("ok from a", "no answer from a", "no answer from a, write outcome unknown", "error from b: no lease") are unchanged. The tag on the card at 720 px and narrower says "requests".
+- Log: "The client gets no answer from a." is "A request gets no answer from a."; "The client gets an error from b: no lease." is "A request gets an error from b: no lease."; "The client gets no answer from a to the write of key 7: outcome unknown." is "A request gets no answer from a: write of key 7, outcome unknown.", which matches the error form "A request gets an error from a: write of key 7, outcome unknown."; "You point the client at b." is "You send the requests to b." Singular throughout: a line describes the request that began the run.
+- Introduction, second paragraph: "s4ql is built for one long-running instance per database, an app with s4ql embedded. Here requests to the app go to one instance, and a second stands by to take over."
+- Names: `clientFailure`, `clientStatus`, `NO_CALLS` in `run.js` are `requestFailure`, `requestStatus`, `NO_REQUESTS`; `#client`, `#client-writes`, `#client-reads`, `#client-failed`, `#client-status`, `#client-status-words` are `#requests...`; the class `.client` is `.requests`; the cards' `data-client` is `data-requests`; `point` is `send`. The engine's `client` (session setting, caller, action, state) keeps its name. The `<head>` said no "client", and is unchanged.
+- `check.html`: the new words, and `noClient`, which asserts that no text says client (any case) in the title, the `<meta>` contents, `body.textContent`, the `aria-label`, `aria-description`, `title`, `alt`, and `placeholder` attributes, every line the log has had, and every text the strip has shown: at zero, while `a` is crashed, with the requests sent to `b`, and at 11 min. A unit check asserts the same of every request text that `run.js` can give and of the lines of a run of failures.
+
+### What worked
+
+- With a planted `aria-label="Client a"`, the check failed four times, "FAIL at zero, no text of the page says client (Client a)" and so on; without it, `make site-check` passed 9 times in a row. `make lint` passed.
+- `playwright-cli run-code` at 1280 and 390: at zero, served, `a` crashed, and the requests sent to `b`.
+
+### What didn't work
+
+- A Python heredoc with template literals in it was refused by the worktree guard ("too complex to verify that it stays inside the worktree"); the Edit tool did the same edits.
+- Element screenshots of `section.panel` had the sticky playback bar over the strip; page clips from the top fixed it.
+
+### What warrants review
+
+Self-review with the code-review skill at medium:
+
+- Fixed: the introduction's "the requests" had no antecedent; it says "requests to the app".
+- Not changed, for the lead and Markus: "requests" now names both the app's requests and the instance's requests to S3 ("You hang the requests of a to S3."). The brief kept the actions and their lines as they are.
+- Not changed: the cards and the instances' log lines still say "calls" ("b refuses calls: no lease."). These are the calls into s4ql that a request's handler makes, and the brief kept the cards.
+- Not changed: `noClient` reads `body.textContent`, which includes `<noscript>`, so it is stricter than what a visitor sees; the body has no inline script.
+- Not changed: the engine's names `"client"` are compared in `page.js` and `run.js` in four places, as before.
+- An ignored action `client` would log the engine's text "the run has no client", but the page always starts its session with a client, so it cannot happen.
+- Follow-up from the lead, on the double meaning of "requests": the Hang S3 lines say "You hang the connection of a to S3." and "The connection of a to S3 no longer hangs.". No other text the page shows says "request" for a request of an instance to S3: S3's refusals already name the renewal, commit, or release, the cards and the S3 row say no "request", and every format of `simstore` is known to `storeLine`, so no raw store text with "request" reaches the log. `check.html` asserts at 11 min that every line the log has had that says request begins "A request gets " or is "You send the requests to a." (or b). `make site-check` passed 4 times, `make lint` passed.
