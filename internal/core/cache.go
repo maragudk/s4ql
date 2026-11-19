@@ -13,7 +13,7 @@ import (
 
 // cacheVersion is the version of the layout of the cache that this package makes and reads: the
 // table s4ql_cache, and one table for each table of the database.
-const cacheVersion = 0
+const cacheVersion = 1
 
 // conn is a connection to the cache, with the prepared statements and the tables that the
 // transaction that uses it has looked up. It is used by one goroutine at a time.
@@ -177,22 +177,16 @@ func (c *conn) query(sql string, row func(s *sqlite.Stmt) error, args ...any) er
 // setUp the cache on the write connection: the write-ahead log, how hard SQLite syncs, and the
 // table s4ql_cache with its one row. It is the first statement on the first connection to the
 // cache, so it is what recovers the write-ahead log after a crash. It refuses a cache of another
-// version with [ErrCacheVersion].
+// version with [ErrCacheVersion], and one that records another identity than the given one with
+// [ErrCacheDatabase].
 //
 // With synchronous = normal, SQLite syncs the write-ahead log only at a checkpoint. After a power
 // loss the cache can then lack its last commits, and is never corrupt
 // (https://sqlite.org/pragma.html#pragma_synchronous). A cache that is behind is what catching up
 // from the log is for, so the sync at every commit that synchronous = full adds buys nothing.
-func (c *conn) setUp(syncOff bool) error {
-	var mode string
-	if err := c.query("pragma journal_mode = wal", func(s *sqlite.Stmt) error {
-		mode = s.ColumnText(0)
-		return nil
-	}); err != nil {
+func (c *conn) setUp(syncOff bool, identity string) error {
+	if err := c.wal(); err != nil {
 		return err
-	}
-	if mode != "wal" {
-		return fmt.Errorf("the journal mode of the cache is %q, not wal", mode)
 	}
 	synchronous := "pragma synchronous = normal"
 	if syncOff {
@@ -202,36 +196,114 @@ func (c *conn) setUp(syncOff bool) error {
 		return err
 	}
 
-	if err := c.exec(`
-		create table if not exists main.s4ql_cache (
-			id integer primary key check (id = 1),
-			version integer not null,
-			head text not null
-		) strict`); err != nil {
-		return err
-	}
-	// A cache gets its one row when it is new. A cache that has tables and no row is not one that
-	// this package made, and giving it a position would be a guess.
-	rows, err := c.count("select 1 from main.s4ql_cache")
+	// A cache that has its table is only read, so that an instance of the same database opens it
+	// while another one writes to it. A new cache gets its table in a transaction that holds the
+	// write lock from its start, and that looks again whether the table is there: of two instances
+	// that open one new cache at once, exactly one makes it, and the other then reads what the first
+	// recorded.
+	made, err := c.made()
 	if err != nil {
 		return err
 	}
-	if rows == 0 {
-		tables, err := c.count("select 1 from main.sqlite_schema where name != 's4ql_cache'")
-		if err != nil {
+	if !made {
+		if err := c.c.Exec("begin immediate"); err != nil {
 			return err
 		}
-		if tables > 0 {
-			return fmt.Errorf("%w: it records no position, and holds %v tables and indexes", ErrCacheVersion, tables)
+		if err := c.make(identity); err != nil {
+			_ = c.c.Exec("rollback")
+			c.forget()
+			return err
 		}
-		if err := c.exec("insert into main.s4ql_cache (id, version, head) values (1, ?, ?)", int64(cacheVersion), format.EmptyLog.String()); err != nil {
+		c.forget()
+		if err := c.c.Exec("commit"); err != nil {
+			_ = c.c.Exec("rollback")
 			return err
 		}
 	}
+
 	if _, err := c.position(); err != nil {
 		return err
 	}
+	var recorded string
+	if err := c.query("select database from main.s4ql_cache", func(s *sqlite.Stmt) error {
+		recorded = s.ColumnText(0)
+		return nil
+	}); err != nil {
+		return err
+	}
+	if recorded != identity {
+		return fmt.Errorf("%w: it records the database %q, and this instance opens the database %q; open each database with a cache of its own, or delete the cache, with its files -wal and -shm, if the database has moved", ErrCacheDatabase, recorded, identity)
+	}
 	return nil
+}
+
+// wal puts the cache into the journal mode wal, or finds it there.
+//
+// A new cache is in another journal mode, and the change to wal is a read that becomes a write.
+// SQLite waits, with the busy timeout, for the readers of the cache, but not for another
+// connection that holds the write lock, as one does that makes the same change at the same time:
+// it reports "busy" at once (sqlite3BtreeBeginTrans calls the busy handler only from no
+// transaction). So after "busy" it waits, with the busy timeout, for the write lock, and asks
+// again; the cache is then in wal already, if the other connection made the same change. A try
+// ends in "busy" again only if another connection took the write lock in between, so it gives up
+// after five.
+func (c *conn) wal() error {
+	for try := 1; ; try++ {
+		var mode string
+		err := c.query("pragma journal_mode = wal", func(s *sqlite.Stmt) error {
+			mode = s.ColumnText(0)
+			return nil
+		})
+		if classify(err) == kindBusy && try < 5 {
+			if err := c.c.Exec("begin immediate"); err != nil {
+				return err
+			}
+			if err := c.c.Exec("rollback"); err != nil {
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if mode != "wal" {
+			return fmt.Errorf("the journal mode of the cache is %q, not wal", mode)
+		}
+		return nil
+	}
+}
+
+// made reports whether the cache has its table s4ql_cache.
+func (c *conn) made() (bool, error) {
+	n, err := c.count("select 1 from main.sqlite_schema where name = 's4ql_cache'")
+	return n > 0, err
+}
+
+// make the table s4ql_cache with its one row, which records the identity, if the cache has no such
+// table, inside a transaction that holds the write lock. A cache that has tables and no table
+// s4ql_cache is not one that this package made, and giving it a position would be a guess.
+func (c *conn) make(identity string) error {
+	made, err := c.made()
+	if err != nil || made {
+		return err
+	}
+	tables, err := c.count("select 1 from main.sqlite_schema")
+	if err != nil {
+		return err
+	}
+	if tables > 0 {
+		return fmt.Errorf("%w: it records no position, and holds %v tables and indexes", ErrCacheVersion, tables)
+	}
+	if err := c.c.Exec(`
+		create table main.s4ql_cache (
+			id integer primary key check (id = 1),
+			version integer not null,
+			head text not null,
+			database text not null
+		) strict`); err != nil {
+		return err
+	}
+	return c.exec("insert into main.s4ql_cache (id, version, head, database) values (1, ?, ?, ?)", int64(cacheVersion), format.EmptyLog.String(), identity)
 }
 
 // position that the cache records: the name of the last commit object that it has applied, or
@@ -242,7 +314,7 @@ func (c *conn) position() (format.Name, error) {
 	err := c.query("select version, head from main.s4ql_cache", func(s *sqlite.Stmt) error {
 		rows++
 		if version := s.ColumnInt64(0); version != cacheVersion {
-			return fmt.Errorf("%w: it has version %v, and this version of s4ql reads version %v", ErrCacheVersion, version, cacheVersion)
+			return fmt.Errorf("%w: it has version %v, and this version of s4ql reads version %v; open the database with a new cache, or delete this one, with its files -wal and -shm", ErrCacheVersion, version, cacheVersion)
 		}
 		var err error
 		if name, err = format.ParseName(s.ColumnText(1)); err != nil {

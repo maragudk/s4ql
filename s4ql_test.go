@@ -24,6 +24,7 @@ import (
 	"maragu.dev/s4ql"
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/sim"
+	"maragu.dev/s4ql/internal/sqlite"
 	"maragu.dev/s4ql/internal/sqlite/faultvfs"
 	"maragu.dev/s4ql/internal/store"
 	"maragu.dev/s4ql/internal/store/simstore"
@@ -306,30 +307,115 @@ func TestOpen_cacheDir(t *testing.T) {
 		is.EqualSlice(t, []int64{1, 2, 3}, values(t, second, select1))
 	})
 
-	t.Run("should stop an instance that finds the cache of another database, which has commits", func(t *testing.T) {
+	t.Run("should record in a new cache the endpoint, the bucket, and the prefix of its database", func(t *testing.T) {
 		w := newWorld(t)
-		first := w.serve(t, "a")
+		for i, c := range []struct {
+			endpoint, bucket, prefix, want string
+		}{
+			{endpoint: "", bucket: "bucket", prefix: "", want: "s3://bucket/"},
+			{endpoint: "", bucket: "bucket", prefix: "app/one", want: "s3://bucket/app/one"},
+			{endpoint: "https://t3.storage.dev", bucket: "bucket", prefix: "app", want: "s3://bucket/app at https://t3.storage.dev"},
+			{endpoint: "http://127.0.0.1:9000", bucket: "my.bucket", prefix: "a b/smørrebrød?x", want: "s3://my.bucket/a%20b/sm%C3%B8rrebr%C3%B8d%3Fx at http://127.0.0.1:9000"},
+		} {
+			o := w.options(fmt.Sprint(i))
+			o.Endpoint, o.Bucket, o.Prefix = c.endpoint, c.bucket, c.prefix
+			db, err := s4ql.OpenStore(t.Context(), w.host, w.client(), o, coreOptions())
+			is.NotError(t, err)
+			is.NotError(t, db.Close())
+			is.Equal(t, c.want, cacheIdentity(t, o.CacheDir))
+		}
+	})
+
+	t.Run("should refuse at open a cache directory of another database, whether another instance runs on it or not, and leave the cache as it is", func(t *testing.T) {
+		w := newWorld(t)
+		o := w.options("a")
+		o.Endpoint, o.Bucket = "https://t3.storage.dev", "bucket"
+		first, err := s4ql.OpenStore(t.Context(), w.host, w.client(), o, coreOptions())
+		is.NotError(t, err)
+		is.NotError(t, first.PingContext(t.Context()))
 		exec(t, first, t1, insert1)
 
 		for _, running := range []bool{true, false} {
 			if !running {
 				is.NotError(t, first.Close())
 			}
-			o := w.options("a")
-			o.Prefix = "other"
-			second, err := s4ql.OpenStore(t.Context(), w.host, w.client(), o, coreOptions())
-			is.NotError(t, err)
-			err = failed(t, second.PingContext(t.Context()))
-			is.Error(t, s4ql.ErrStopped, err)
-			is.True(t, strings.Contains(err.Error(), "the position of the cache is not in the log"), err.Error())
-			_, err = second.QueryContext(t.Context(), select1)
-			is.Error(t, s4ql.ErrStopped, failed(t, err))
-			is.NotError(t, second.Close())
+			for _, c := range []struct {
+				name   string
+				change func(o *s4ql.Options)
+				opens  string
+			}{
+				{name: "another prefix", change: func(o *s4ql.Options) { o.Prefix = "other" }, opens: "s3://bucket/other at https://t3.storage.dev"},
+				{name: "another bucket", change: func(o *s4ql.Options) { o.Bucket = "other" }, opens: "s3://other/db at https://t3.storage.dev"},
+				{name: "another endpoint", change: func(o *s4ql.Options) { o.Endpoint = "https://fly.storage.tigris.dev" }, opens: "s3://bucket/db at https://fly.storage.tigris.dev"},
+				{name: "no endpoint", change: func(o *s4ql.Options) { o.Endpoint = "" }, opens: "s3://bucket/db"},
+			} {
+				other := o
+				c.change(&other)
+				_, err := s4ql.OpenStore(t.Context(), w.host, w.client(), other, coreOptions())
+				want := fmt.Sprintf(`s4ql: open the cache: the cache belongs to another database: it records the database "s3://bucket/db at https://t3.storage.dev", and this instance opens the database %q; open each database with a cache of its own, or delete the cache, with its files -wal and -shm, if the database has moved`, c.opens)
+				is.Equal(t, want, failed(t, err).Error(), c.name)
+				is.True(t, !errors.Is(err, s4ql.ErrStopped), c.name)
+			}
 		}
 
-		// The cache is as it was.
-		is.EqualSlice(t, []int64{1}, values(t, w.serve(t, "a"), select1))
+		// The cache is as it was, and its own database opens on it.
+		is.Equal(t, "s3://bucket/db at https://t3.storage.dev", cacheIdentity(t, o.CacheDir))
+		again, err := s4ql.OpenStore(t.Context(), w.host, w.client(), o, coreOptions())
+		is.NotError(t, err)
+		defer func() { is.NotError(t, again.Close()) }()
+		is.NotError(t, again.PingContext(t.Context()))
+		is.EqualSlice(t, []int64{1}, values(t, again, select1))
 	})
+
+	t.Run("should open exactly one of two databases that open one new cache directory at once, many times", func(t *testing.T) {
+		w := newWorld(t)
+		for i := range 20 {
+			prefixes := []string{fmt.Sprint("one", i), fmt.Sprint("two", i)}
+			dbs := make([]*sql.DB, len(prefixes))
+			errs := make([]error, len(prefixes))
+			start := make(chan struct{})
+			var wg sync.WaitGroup
+			for j, prefix := range prefixes {
+				o := w.options(fmt.Sprint(i))
+				o.Prefix = prefix
+				s := w.client()
+				wg.Go(func() {
+					<-start
+					dbs[j], errs[j] = s4ql.OpenStore(t.Context(), w.host, s, o, coreOptions())
+				})
+			}
+			close(start)
+			wg.Wait()
+
+			is.True(t, (errs[0] == nil) != (errs[1] == nil), fmt.Sprint("not exactly one opened: ", errs))
+			winner := 0
+			if errs[0] != nil {
+				winner = 1
+			}
+			loser := 1 - winner
+			is.True(t, strings.Contains(failed(t, errs[loser]).Error(), fmt.Sprintf(`it records the database "s3:///%v", and this instance opens the database "s3:///%v"`, prefixes[winner], prefixes[loser])), errs[loser].Error())
+			db := dbs[winner]
+			is.NotError(t, db.PingContext(t.Context()))
+			exec(t, db, t1)
+			is.NotError(t, db.Close())
+		}
+	})
+}
+
+// cacheIdentity is the identity of the database that the cache in the directory dir records.
+func cacheIdentity(t *testing.T, dir string) string {
+	t.Helper()
+	c, err := sqlite.Open(filepath.Join(dir, "cache.db"))
+	is.NotError(t, err)
+	defer func() { is.NotError(t, c.Close()) }()
+	s, err := c.Prepare("select database from s4ql_cache")
+	is.NotError(t, err)
+	ok, err := s.Step()
+	is.NotError(t, err)
+	is.True(t, ok, "the cache records no identity")
+	identity := s.ColumnText(0)
+	is.NotError(t, s.Finalize())
+	return identity
 }
 
 func TestOptions_Logger(t *testing.T) {
@@ -347,7 +433,7 @@ func TestOptions_Logger(t *testing.T) {
 		is.NotError(t, err)
 		defer func() { _ = db.Close() }()
 
-		is.EqualSlice(t, []string{"level=INFO msg=open db.prefix=db cache.path=" + filepath.Join(o.CacheDir, "cache.db")}, log.of("open"))
+		is.EqualSlice(t, []string{"level=INFO msg=open db.prefix=db cache.path=" + filepath.Join(o.CacheDir, "cache.db") + " db.identity=s3:///db"}, log.of("open"))
 		is.NotError(t, db.PingContext(t.Context()))
 		exec(t, db, t1)
 		is.Equal(t, 1, len(log.of("statement")))
