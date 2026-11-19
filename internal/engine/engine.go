@@ -126,9 +126,6 @@ func (e *Engine) Conn() *Conn {
 // connection that is closed fails with an internal error. Closing a closed connection does
 // nothing.
 func (c *Conn) Close(ctx context.Context) error {
-	if c.closed {
-		return nil
-	}
 	var err error
 	if c.rd != nil {
 		if err = c.rd.close(ctx); errors.Is(err, core.ErrReaderInUse) {

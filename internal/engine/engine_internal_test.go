@@ -535,7 +535,7 @@ func TestConn(t *testing.T) {
 		f := newFake().with("t1", []string{"v1"}, []int64{1})
 		c := newTestConn(f, bugs{})
 		read(t, c)
-		f.closeFails = core.ErrReaderInUse
+		f.closeFails = fmt.Errorf("close: %w", core.ErrReaderInUse)
 		is.True(t, errors.Is(c.Close(t.Context()), core.ErrReaderInUse))
 		is.Equal(t, 1, f.readers)
 		read(t, c)
