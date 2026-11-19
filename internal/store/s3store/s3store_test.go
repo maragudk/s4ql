@@ -3,7 +3,6 @@ package s3store_test
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -15,7 +14,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
-	"os"
 	"path/filepath"
 	"runtime"
 	"runtime/metrics"
@@ -38,6 +36,7 @@ import (
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/store"
 	"maragu.dev/s4ql/internal/store/s3store"
+	"maragu.dev/s4ql/internal/store/s3test"
 	"maragu.dev/s4ql/internal/store/storetest"
 )
 
@@ -922,18 +921,16 @@ func TestClient_events(t *testing.T) {
 	})
 }
 
-// realBucket gives the options of a real bucket from the environment, or skips the test.
+// realBucket gives the options of a real bucket from the environment, or skips the test. The
+// credentials come from the SDK's default chain.
 func realBucket(t *testing.T) s3store.Options {
 	t.Helper()
-	bucket := os.Getenv("S4QL_S3_BUCKET")
-	if bucket == "" {
-		t.Skip("set S4QL_S3_BUCKET to a bucket, and AWS_REGION, AWS_ENDPOINT_URL_S3, and credentials for the SDK, to run the integration tests against a real store; see internal/store/s3store/README.md")
-	}
+	c := s3test.FromEnv(t)
 	return s3store.Options{
-		Bucket:    bucket,
-		Endpoint:  os.Getenv("AWS_ENDPOINT_URL_S3"),
-		Region:    os.Getenv("AWS_REGION"),
-		PathStyle: os.Getenv("S4QL_S3_PATH_STYLE") == "true",
+		Bucket:    c.Bucket,
+		Endpoint:  c.Endpoint,
+		Region:    c.Region,
+		PathStyle: c.PathStyle,
 	}
 }
 
@@ -959,25 +956,7 @@ func realClient(t *testing.T, opts s3store.Options) (*s3store.Client, *s3.Client
 // test ends.
 func newPrefix(t *testing.T, raw *s3.Client, bucket string) string {
 	t.Helper()
-	prefix := fmt.Sprintf("s4ql-test/s3store/%v-%v/", time.Now().UTC().Format("20060102T150405"), rand.Text()[:8])
-	t.Cleanup(func() {
-		// The context of the test is done when its cleanup runs.
-		ctx := context.Background()
-		pages := s3.NewListObjectsV2Paginator(raw, &s3.ListObjectsV2Input{Bucket: aws.String(bucket), Prefix: aws.String(prefix)})
-		for pages.HasMorePages() {
-			page, err := pages.NextPage(ctx)
-			if err != nil {
-				t.Errorf("list %v to delete it: %v", prefix, err)
-				return
-			}
-			for _, o := range page.Contents {
-				if _, err := raw.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: o.Key}); err != nil {
-					t.Errorf("delete %v: %v", aws.ToString(o.Key), err)
-				}
-			}
-		}
-	})
-	return prefix
+	return s3test.NewPrefix(t, raw, bucket, "s3store")
 }
 
 // prefixed store, which puts a prefix in front of every key.
