@@ -111,3 +111,40 @@ Rejected as not supported, where SQLite would accept it:
 - The SQL texts `begin`, `commit`, `end`, `rollback`, `savepoint`, and `release`, also inside a transaction, which stays open.
 - Every other isolation level, such as `sql.LevelReadCommitted`. Nothing is begun.
 - A statement in a transaction while the rows of an earlier query of the transaction are open. For now, this rules out a write inside a loop over the rows of a query: close the rows first.
+
+### Slice 4: the other types
+
+Status: agreed on 2026-11-19, not built.
+
+```sql
+create table t1 (v1 text primary key) strict, without rowid;
+
+insert into t1 (v1) values ('a');
+
+select * from t1;
+```
+
+```go
+db.ExecContext(ctx, "insert into t1 (v1) values (?)", "b")
+```
+
+Included:
+
+- The column types `int`, `integer`, `real`, `text`, and `blob`, for the one column of a table, which is its primary key.
+- Literals: an integer as in slice 1; a real number, such as `1.5`, `.5`, and `1e3`, with at most one `-` in front; a string in single quotes, with `''` for a quote in it; and a blob as `x'6162'`. s4ql reads a real literal to the same 64-bit float as SQLite, bit for bit, and rejects a literal for which that is not sure.
+- Arguments: a Go integer, a `float64` or `float32`, a `string`, and a `[]byte` that is not nil.
+- Exact types. A value must have the type of its column: an integer for `int` and `integer`, a real for `real`, text for `text`, a blob for `blob`. A value of another type is rejected as not supported. This holds also where SQLite converts the value, such as the integer `1` for a `real` column, the text `'1'` for an `int` column, and the real `1.5` for a `text` column, and where SQLite gives an error of its own, such as text for a `blob` column. Markus on 2026-11-19: "Let's stay strict and maybe loosen later".
+- Keys are compared as SQLite compares them: text and blobs byte by byte, reals by their number. `select *` returns rows in that order. `0.0` and `-0.0` are the same key, and `-0.0` is stored as `0.0`, as in SQLite.
+- The error of a key that exists, matching SQLite's, for every type.
+- A text or a blob of up to 1,000,000,000 bytes, SQLite's limit. A longer one gets SQLite's error.
+- The commit object names the type of a column as it was declared, so `int` and `integer` stay apart, and replay declares the column in the same way.
+- Everything of slices 1 to 3 with these types: arguments, prepared statements, transactions, and a restart with an empty cache.
+
+Rejected as not supported, where SQLite would accept it:
+
+- A text value with a NUL byte. SQLite stores it, and its own functions stop at the NUL. A blob takes any bytes.
+- A text argument that is not valid UTF-8, as the restrictions say.
+- A real that is not a number, and an infinite one, as an argument or as a literal that is too large, such as `1e999`. SQLite stores a NaN as NULL.
+- `null` and a nil argument, and a nil `[]byte`: a table has no column yet that takes NULL.
+- An argument of type `bool` or `time.Time`.
+- An integer literal outside 64 bits, which SQLite reads as a real, a hex literal, and a digit separator, as before.
