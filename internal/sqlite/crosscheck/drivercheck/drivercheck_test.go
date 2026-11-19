@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"math/rand/v2"
 	"path/filepath"
 	"slices"
@@ -525,9 +526,13 @@ const (
 	// rule by [pair.checkArguments], and not run in SQLite.
 	excusedArguments = "the wrong number of arguments, checked against s4ql's rule"
 	// excusedArgument is a call with an argument that s4ql does not support, a named one or one of
-	// another type, which SQLite binds: it is checked against s4ql's rule by
-	// [pair.checkArgumentRefused], and not run in SQLite.
+	// a type or a value that no column holds, which SQLite binds: it is checked against s4ql's rule
+	// by [pair.checkRefused], and not run in SQLite.
 	excusedArgument = "an argument that s4ql does not support, checked against s4ql's rule"
+	// excusedType is an insert of a value, a literal or an argument, of another type than its column,
+	// which SQLite converts or refuses with an error of its own: it is checked against s4ql's rule by
+	// [pair.checkRefused], and not run in SQLite.
+	excusedType = "a value of another type than its column, checked against s4ql's rule"
 	// excusedLevel is a begin with another isolation level than the default and serializable, which
 	// s4ql refuses by its rule, where mattn ignores the level: it is checked against the rule by
 	// [pair.begin], and nothing is begun in SQLite.
@@ -790,9 +795,7 @@ func (p *pair) whileRowsOpen(src string, c call, supported bool, runs [][]any, s
 	defer p.closeRows()
 	got := run(tb, s, c, src, runs, s4qlText)
 	p.y.add(scope, src, got, runs)
-	runsAll := !slices.ContainsFunc(runs, func(args []any) bool {
-		return !(stmttest.Call{Src: src, Args: args, Supported: true}).Runs()
-	})
+	runsAll := !slices.ContainsFunc(runs, func(args []any) bool { return !reaches(src, args) })
 	if !runsAll || scope != p.tx.kind() {
 		return got, p.compare(src, c, supported, runs, got, o)
 	}
@@ -1004,7 +1007,7 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 		mattnRuns = make([][]any, len(runs))
 	} else {
 		for _, args := range runs {
-			if !(stmttest.Call{Src: src, Args: args, Supported: true}).Runs() {
+			if !reaches(src, args) {
 				return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v, and must refuse the arguments", src, args, got)
 			}
 		}
@@ -1061,10 +1064,7 @@ func (p *pair) checkNotSupported(src string, c call, supported bool, runs [][]an
 	tb.Helper()
 	s, err := stmt.Check(src)
 	if err == nil && s != nil {
-		// A column type or a literal that the engine does not hold yet is refused by the text too.
-		if err = engine.Check(src, s.Parameters()); err == nil {
-			return p.checkArgumentRefused(src, s, runs, got)
-		}
+		return p.checkRefused(src, s, runs, got)
 	}
 	// The text alone decides "not supported", before the arguments, with the "not supported" of its
 	// check, and Prepare checks the text.
@@ -1096,30 +1096,40 @@ func (p *pair) checkNotSupported(src string, c call, supported bool, runs [][]an
 	return ""
 }
 
-// checkArgumentRefused is [pair.checkNotSupported] of the text src, which holds the statement s that
-// s4ql supports, so that its "not supported" is of an argument: an error of s4ql's own, where SQLite
-// binds every type, and mattn takes a name. Each run must have one argument for each parameter, and
-// fail when the statement runs, since Prepare checks only the text, with the "not supported" of its
-// first argument that s4ql does not support, as [argumentRefusal] gives it.
-func (p *pair) checkArgumentRefused(src string, s stmt.Statement, runs [][]any, got outcome) string {
+// checkRefused is [pair.checkNotSupported] of the text src, which holds the statement s that s4ql
+// supports, so that its "not supported" is of an argument or of the type of a value. Each run must
+// have one argument for each parameter, and fail when the statement runs, since Prepare checks only
+// the text, with the "not supported" of its first argument that s4ql does not support, as
+// [argumentRefusal] gives it: an error of s4ql's own, where SQLite binds every type and value, and
+// mattn takes a name. If it has none, it must fail with the "not supported" of a value of another
+// type than its column, as [pair.typeRefusal] gives it, where SQLite converts the value or refuses it
+// with an error of its own.
+func (p *pair) checkRefused(src string, s stmt.Statement, runs [][]any, got outcome) string {
+	if len(got.runs()) != len(runs) {
+		return fmt.Sprintf("%q with %v runs: s4ql gives %v", src, len(runs), got)
+	}
+	kind := excusedType
 	for i, o := range got.runs() {
-		args := runs[min(i, len(runs)-1)]
+		args := runs[i]
 		want := argumentRefusal(args)
+		if want != "" {
+			kind = excusedArgument
+		} else if len(args) == s.Parameters() {
+			want = p.typeRefusal(src, s, args)
+		}
 		if len(args) != s.Parameters() || want == "" || o.failed == "prepare" || o.failed == "" || o.err != want {
 			return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v, where the rule gives %q", src, args, got, want)
 		}
 	}
-	if len(got.runs()) != len(runs) {
-		return fmt.Sprintf("%q with %v runs: s4ql gives %v", src, len(runs), got)
-	}
-	p.y.excused(excusedArgument)
+	p.y.excused(kind)
 	return ""
 }
 
 // argumentRefusal is the "not supported" of the first argument of args that s4ql does not support,
 // in order, its name before its type: one with a name, an unsigned integer above the largest int64,
-// and one of another type than an integer, by its type as database/sql converts it. It is "" if s4ql
-// supports every argument.
+// nil, a real that is not a number or is infinite, text that is not valid UTF-8 or holds the
+// character NUL, and one of a type that no column holds, by its type as database/sql converts it. It
+// is "" if s4ql supports every argument.
 func argumentRefusal(args []any) string {
 	for i, a := range args {
 		if n, ok := a.(sql.NamedArg); ok {
@@ -1128,16 +1138,107 @@ func argumentRefusal(args []any) string {
 		if _, ok := stmttest.Integers([]any{a}); ok {
 			continue
 		}
-		switch v := a.(type) {
+		var which string
+		switch v := converted(a).(type) {
 		case uint64:
 			return fmt.Sprintf("s4ql: not supported: argument %v of type uint64, whose value does not fit a signed 64-bit integer", i+1)
 		case nil:
 			return fmt.Sprintf("s4ql: not supported: argument %v of type nil", i+1)
+		case float64:
+			switch {
+			case math.IsNaN(v):
+				which = "is a real that is not a number"
+			case math.IsInf(v, 0):
+				which = "is an infinite real"
+			}
+		case string:
+			switch {
+			case !utf8.ValidString(v):
+				which = "is text that is not valid UTF-8"
+			case strings.ContainsRune(v, 0):
+				which = "is text that holds the character NUL"
+			}
+		case []byte:
+			if v == nil {
+				return fmt.Sprintf("s4ql: not supported: argument %v of type []byte, which is nil", i+1)
+			}
 		default:
 			return fmt.Sprintf("s4ql: not supported: argument %v of type %T", i+1, v)
 		}
+		if which != "" {
+			return fmt.Sprintf("s4ql: not supported: argument %v, which %v", i+1, which)
+		}
 	}
 	return ""
+}
+
+// converted argument a, as database/sql converts a float32 to a float64 for the driver. Every other
+// argument of the tests is as database/sql hands it, or is refused by its type.
+func converted(a any) any {
+	if f, ok := a.(float32); ok {
+		return float64(f)
+	}
+	return a
+}
+
+// reaches reports whether s4ql takes src with args to the instance: the text holds a statement that
+// s4ql supports, with one argument for each parameter, each one that s4ql supports.
+func reaches(src string, args []any) bool {
+	s, err := stmt.Check(src)
+	return err == nil && s != nil && len(args) == s.Parameters() && argumentRefusal(args) == ""
+}
+
+// typeRefusal is the "not supported" of the statement s of the text src, with the arguments args,
+// which s4ql supports, when it is an insert into a table and a column that SQLite has where the call
+// runs, outside a read-only transaction, and its value, a literal or an argument, is of another type
+// than the column. It is "" otherwise.
+func (p *pair) typeRefusal(src string, s stmt.Statement, args []any) string {
+	tb := p.tb
+	tb.Helper()
+	insert, ok := s.(*stmt.Insert)
+	if !ok || (p.tx != nil && p.tx.readOnly) {
+		return ""
+	}
+	_, o, _ := p.where(callExec, src)
+	ps, err := o.PrepareContext(tb.Context(), firstStatement(src))
+	if err != nil {
+		return ""
+	}
+	is.NotError(tb, ps.Close())
+	var table, column, typ string
+	err = o.QueryRowContext(tb.Context(), "select m.name, p.name, p.type from sqlite_schema m, pragma_table_info(m.name) p where m.type = 'table' and m.name = ? collate nocase and p.pk = 1", insert.Table.Value).Scan(&table, &column, &typ)
+	is.NotError(tb, err)
+	var what, kind string
+	switch v := insert.Value.(type) {
+	case nil:
+		switch a := converted(args[0]).(type) {
+		case float64:
+			kind, what = "REAL", "argument 1, which is a real,"
+		case string:
+			kind, what = "TEXT", "argument 1, which is text,"
+		case []byte:
+			kind, what = "BLOB", "argument 1, which is a blob,"
+		default:
+			if _, ok := stmttest.Integers([]any{a}); !ok {
+				tb.Fatalf("%q: an argument of type %T", src, a)
+			}
+			kind, what = "INT", "argument 1, which is an integer,"
+		}
+	case stmt.Integer:
+		kind, what = "INT", "an integer literal"
+	case stmt.Real:
+		kind, what = "REAL", "a real literal"
+	case stmt.Text:
+		kind, what = "TEXT", "a string literal"
+	case stmt.Blob:
+		kind, what = "BLOB", "a blob literal"
+	default:
+		tb.Fatalf("%q: a value of type %T", src, v)
+	}
+	if kind == typ || kind == "INT" && typ == "INTEGER" {
+		return ""
+	}
+	return fmt.Sprintf("s4ql: not supported: %v for the column %v.%v of type %v", what, table, column, typ)
 }
 
 // checkArguments of the outcome got of src, with the arguments of each run, which is s4ql's error
@@ -1361,8 +1462,11 @@ var sequences = map[string][]step{
 		{callExec, "insert into t1 (v1) values (?)", "exec: exec failed with s4ql: wrong number of arguments: 0 for a statement with 1 parameter"},
 		{callExec, "begin", ""},
 		{callQuery, "select * from t1; select * from t1", ""},
-		{callExec, "create table t2 (v2 integer primary key) strict, without rowid", "exec: exec failed with s4ql: not supported: column type INTEGER"},
-		{callPrepareExec, "insert into t1 (v1) values (1.5)", "prepare, exec: prepare failed with s4ql: not supported: a real literal, which is not an integer"},
+		{callExec, "create table t2 (v2 integer primary key) strict, without rowid", "exec: 0 affected, last insert id 0"},
+		{callPrepareExec, "insert into t1 (v1) values (1.5)", "prepare, exec: exec failed with s4ql: not supported: a real literal for the column t1.v1 of type INT"},
+		{callExecArgument, "insert into t2 (v2) values (?)", "exec with an argument: 1 affected, last insert id 0"},
+		{callExec, "insert into t2 (v2) values ('1')", "exec: exec failed with s4ql: not supported: a string literal for the column t2.v2 of type INTEGER"},
+		{callExec, "insert into t2 (v2) values (1e999)", "exec: exec failed with s4ql: not supported: infinite real number (at offset 28)"},
 		{callExec, `insert into t1 (v1) values ("x")`, ""},
 		{callPrepareExec, "drop table if exists t1", "prepare, exec: prepare failed with s4ql: not supported: IF EXISTS (at offset 11)"},
 		{callExec, "", "exec: exec failed with s4ql: not supported: a text that holds no statement"},
@@ -1533,6 +1637,82 @@ var sequences = map[string][]step{
 		{callRollback, "", "rollback"},
 		{callBeside, "select * from t1", `query beside the transaction: columns "v1" of types "INT", rows int64:1`},
 	},
+}
+
+// edges of each type of a column, each as a literal and as an argument of database/sql, in an order
+// that is not the order of the keys.
+var edges = map[string][]struct {
+	literal string
+	arg     any
+}{
+	"int": {
+		{"0", 0}, {"9223372036854775807", int64(math.MaxInt64)}, {"-9223372036854775808", int64(math.MinInt64)},
+		{"-1", int8(-1)}, {"1", uint16(1)}, {"9223372036854775806", uint64(math.MaxInt64 - 1)},
+	},
+	"real": {
+		{"0.0", 0.0}, {"-0.0", math.Copysign(0, -1)}, {"5e-324", math.SmallestNonzeroFloat64}, {"-5e-324", -math.SmallestNonzeroFloat64},
+		{"1.7976931348623157e308", math.MaxFloat64}, {"-1.7976931348623157e308", -math.MaxFloat64},
+		{"2.2250738585072014e-308", 0x1p-1022}, {"2.225073858507201e-308", 0x1p-1022 - math.SmallestNonzeroFloat64},
+		{"1.5", float32(1.5)}, {"-2.5", -2.5}, {"0.1", 0.1},
+	},
+	"text": {
+		{"''", ""}, {"'a'", "a"}, {"'A'", "A"}, {"'é'", "é"}, {"'日本語'", "日本語"}, {"'🙂'", "🙂"}, {"'it''s'", "it's"},
+		{"' '", " "}, {"'a '", "a "}, {"'\U0010ffff'", "\U0010ffff"}, {"'é'", "é"},
+	},
+	"blob": {
+		{"x''", []byte{}}, {"x'00'", []byte{0}}, {"x'0000'", []byte{0, 0}}, {"x'ff'", []byte{0xff}}, {"x'0001'", []byte{0, 1}},
+		{"x'6162'", []byte("ab")}, {"x'fffe00'", []byte{0xff, 0xfe, 0}},
+	},
+}
+
+func TestTypes(t *testing.T) {
+	w := newWorld(t)
+	types := map[string][]string{"int": {"int", "integer"}, "real": {"real"}, "text": {"text"}, "blob": {"blob"}}
+	for _, pinned := range []bool{true, false} {
+		for _, kind := range slices.Sorted(maps.Keys(edges)) {
+			for _, typ := range types[kind] {
+				t.Run(fmt.Sprintf("should give what SQLite gives for the edges of %v, refuse the values of the other types, and replay them, on a pinned connection: %v", typ, pinned), func(t *testing.T) {
+					p := newPair(t, w, pinned, nil)
+					step := func(src string, c call, runs ...[]any) {
+						t.Helper()
+						if len(runs) == 0 {
+							runs = [][]any{nil}
+						}
+						if _, failure := p.stepRuns(src, c, true, runs); failure != "" {
+							t.Fatal(failure)
+						}
+					}
+					for _, table := range []string{"t", "p"} {
+						step(fmt.Sprintf("create table %v (v %v primary key) strict, without rowid", table, typ), callExec)
+					}
+					var runs [][]any
+					// Each value twice: the second time it, or -0.0 after 0.0, is a key that exists.
+					for range 2 {
+						for _, e := range edges[kind] {
+							step("insert into t (v) values ("+e.literal+")", callExec)
+							step("insert into t (v) values (?)", callExecArgument, []any{e.arg})
+							runs = append(runs, []any{e.arg})
+						}
+					}
+					step("insert into p (v) values (?)", callPrepareExecRuns, runs...)
+					for other, es := range edges {
+						if other != kind {
+							step("insert into t (v) values ("+es[1].literal+")", callExec)
+							step("insert into t (v) values (?)", callExecArgument, []any{es[1].arg})
+						}
+					}
+					step("select * from t", callQuery)
+					step("select * from p", callPrepareQuery)
+					is.Equal(t, "", p.compareTables())
+					p.restart(true)
+					is.Equal(t, "", p.compareTables())
+					step("insert into p (v) values (?)", callPrepareExecRuns, runs[:2]...)
+					step("select * from P", callQuery)
+					p.close()
+				})
+			}
+		}
+	}
 }
 
 func TestSequences(t *testing.T) {
@@ -1790,14 +1970,15 @@ func TestGenerated(t *testing.T) {
 	// a text that SQLite refuses at its prepare and s4ql when it runs ([excusedPrepare]); a create
 	// table that SQLite finds started ([excusedStartedTable]); a call with another number of
 	// arguments than parameters ([excusedArguments]), or with an argument that s4ql does not support
-	// ([excusedArgument]); a begin with an isolation level that s4ql refuses ([excusedLevel]); a
+	// ([excusedArgument]); an insert of a value of another type than its column ([excusedType]); a
+	// begin with an isolation level that s4ql refuses ([excusedLevel]); a
 	// statement while rows of its transaction are open, which s4ql refuses ([excusedRowsOpen]); a
 	// begin on a pinned connection whose transaction is open, which both refuse ([excusedTxOpen]); and
 	// a statement prepared outside a transaction through the pool, whose names only the transaction
 	// has ([excusedOutside]).
 	want := map[string]int{
-		excusedPrepare: 1051, excusedStartedTable: 12, excusedArguments: 364, excusedArgument: 109,
-		excusedLevel: 67, excusedRowsOpen: 44, excusedTxOpen: 28, excusedOutside: 43,
+		excusedPrepare: 1064, excusedStartedTable: 12, excusedArguments: 364, excusedArgument: 85, excusedType: 8,
+		excusedLevel: 67, excusedRowsOpen: 45, excusedTxOpen: 28, excusedOutside: 46,
 	}
 	kinds := slices.Collect(maps.Keys(want))
 	for name := range y {
