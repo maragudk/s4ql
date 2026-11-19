@@ -16,10 +16,53 @@ permissions:
   contents: read
 
 jobs:
+  # Decides what the change touches, so that the other jobs run only where it needs them: with code,
+  # every job runs; with documents only, none; with the site and documents only, the job site alone.
+  # The rule is an allowlist of paths that are not code, in .github/scripts/changes.sh, and when the
+  # decision cannot be made, such as for a forced push, everything runs. The other jobs skip only on
+  # an output of exactly 'false', and run with !cancelled() even when this job fails, so that a
+  # failure here runs everything rather than nothing. The whole history is fetched, so that the base
+  # of a pull request and the commit before a push are in the checkout.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.decide.outputs.code }}
+      site: ${{ steps.decide.outputs.site }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # What make test-changes runs. The job has no Go set up, and make would run go env when it reads
+      # the Makefile, which may download the toolchain that go.mod names.
+      - name: Test the rule
+        run: sh .github/scripts/changes_test.sh
+
+      # A pull request is compared with its base, and a push with the commit before it, which takes
+      # in all the commits of the push.
+      - name: Decide what the change touches
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+          FORCED: ${{ github.event.forced }}
+          HEAD: ${{ github.sha }}
+        run: |
+          sh .github/scripts/changes.sh event >"$RUNNER_TEMP/changes"
+          cat "$RUNNER_TEMP/changes"
+          cat "$RUNNER_TEMP/changes" >>"$GITHUB_OUTPUT"
+
   lint:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     uses: maragudk/workflows/.github/workflows/lint.yml@main
 
   test:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     uses: maragudk/workflows/.github/workflows/test.yml@main
 
   # Library code must follow the rules of the simulation, which golangci-lint does not know. The lint
@@ -27,6 +70,8 @@ jobs:
   # simulation exists for the race detector, so this job runs it under the race detector, whatever
   # the reusable test workflow does.
   simulation:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -67,6 +112,8 @@ jobs:
   # texts under the race detector, which the reusable test workflow uses, and under the address
   # sanitizer, and leave out the checks that need all of them. This job runs them without either.
   sql:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -85,6 +132,8 @@ jobs:
   # The schema of the commit object: Buf's lint, and a check that the committed generated code is what
   # the schema generates.
   proto:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -106,6 +155,8 @@ jobs:
   # The cross-checks against github.com/mattn/go-sqlite3 are a separate module, which the reusable
   # workflows above do not see.
   crosscheck:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -140,6 +191,8 @@ jobs:
   # link C, and the job test alone runs the others. The jobs asan, asan-fuzz, and fuzz together run
   # what make test-asan runs, and fuzz also checks the heap of a large transaction.
   asan:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -158,6 +211,8 @@ jobs:
   # A short fuzz run of the fuzz tests whose test binaries link C, under the address sanitizer, in
   # shards that run at the same time. make fuzz puts each fuzz test in exactly one shard.
   asan-fuzz:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -184,6 +239,8 @@ jobs:
   # A short fuzz run of the fuzz tests whose test binaries link no C, without the sanitizer, which
   # has nothing to check in them.
   fuzz:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -213,8 +270,10 @@ jobs:
   # second implementation of the binding behind the tag s4ql_browser. A native build does not see its
   # files, so this job builds, vets, and lints them, and compiles the tests of every package that runs
   # in a browser, which fails on any drift from the API of the cgo binding. It then runs the tests in
-  # headless Chrome, which the runner image has.
+  # headless Chrome, which the runner image has. The job site checks the simulator's page.
   browser:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -268,8 +327,26 @@ jobs:
           S4QL_CHROMIUM_FLAGS: --no-sandbox
         run: make test-browser
 
-      # Builds the engine into the site, as the Pages workflow does, and checks the simulator's page in
-      # headless Chrome: see internal/simulator/sitecheck.
+  # Builds the engine into the site, as the Pages workflow does, and checks the simulator's page in
+  # headless Chrome: see internal/simulator/sitecheck. It reads site/ and the Go code, so it runs for
+  # a change to either, also when no other job but changes runs.
+  site:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.site != 'false' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # Chrome's sandbox needs user namespaces, which the runner may not allow, and the page runs only
+      # the project's own code from 127.0.0.1.
       - name: Check the simulator's page in headless Chrome
         env:
           S4QL_CHROMIUM_FLAGS: --no-sandbox
