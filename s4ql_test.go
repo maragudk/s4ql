@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"maragu.dev/s4ql"
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/sim"
+	"maragu.dev/s4ql/internal/sqlite/faultvfs"
 	"maragu.dev/s4ql/internal/store"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
@@ -271,6 +273,135 @@ func TestOpen(t *testing.T) {
 		is.Equal(t, 4, len(values(t, second, select1)))
 		exec(t, second, "insert into t1 (v1) values (2)")
 	})
+}
+
+func TestOpen_cacheDir(t *testing.T) {
+	t.Run("should make a second instance of the same database on the same cache directory a spare, which serves from the cache when it gets the lease", func(t *testing.T) {
+		w := newWorld(t)
+		first := w.serve(t, "a")
+		exec(t, first, t1, insert1)
+
+		second := w.open(t, "a")
+		_, err := second.QueryContext(t.Context(), select1)
+		is.Error(t, s4ql.ErrNotServing, failed(t, err))
+		exec(t, first, "insert into t1 (v1) values (2)")
+
+		is.NotError(t, first.Close())
+		is.NotError(t, second.PingContext(t.Context()))
+		is.EqualSlice(t, []int64{1, 2}, values(t, second, select1))
+		exec(t, second, "insert into t1 (v1) values (3)")
+		is.EqualSlice(t, []int64{1, 2, 3}, values(t, second, select1))
+	})
+
+	t.Run("should stop an instance that finds the cache of another database, which has commits", func(t *testing.T) {
+		w := newWorld(t)
+		first := w.serve(t, "a")
+		exec(t, first, t1, insert1)
+
+		for _, running := range []bool{true, false} {
+			if !running {
+				is.NotError(t, first.Close())
+			}
+			o := w.options("a")
+			o.Prefix = "other"
+			second, err := s4ql.OpenStore(t.Context(), w.host, w.client(), o, coreOptions())
+			is.NotError(t, err)
+			err = failed(t, second.PingContext(t.Context()))
+			is.Error(t, s4ql.ErrStopped, err)
+			is.True(t, strings.Contains(err.Error(), "the position of the cache is not in the log"), err.Error())
+			_, err = second.QueryContext(t.Context(), select1)
+			is.Error(t, s4ql.ErrStopped, failed(t, err))
+			is.NotError(t, second.Close())
+		}
+
+		// The cache is as it was.
+		is.EqualSlice(t, []int64{1}, values(t, w.serve(t, "a"), select1))
+	})
+}
+
+func TestOptions_Logger(t *testing.T) {
+	t.Run("should log the open, the close, and the first answer of a stop, with the events of the core and of the engine", func(t *testing.T) {
+		w := newWorld(t)
+		vfs, err := faultvfs.New()
+		is.NotError(t, err)
+		t.Cleanup(func() { is.NotError(t, vfs.Close()) })
+		co := coreOptions()
+		co.UseVFS(vfs.Name())
+		var log lines
+		o := w.options("a")
+		o.Logger = slog.New(slog.NewTextHandler(&log, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		db, err := s4ql.OpenStore(t.Context(), w.host, w.client(), o, co)
+		is.NotError(t, err)
+		defer func() { _ = db.Close() }()
+
+		is.EqualSlice(t, []string{"level=INFO msg=open db.prefix=db cache.path=" + filepath.Join(o.CacheDir, "cache.db")}, log.of("open"))
+		is.NotError(t, db.PingContext(t.Context()))
+		exec(t, db, t1)
+		is.Equal(t, 1, len(log.of("statement")))
+		is.True(t, len(log.of("lease")) > 0, "no event of the core")
+		is.Equal(t, 0, len(log.of("stop_seen")))
+
+		// The cache fails at the insert, which stops the instance.
+		vfs.Fail(faultvfs.Fault{Ops: faultvfs.Write, Files: faultvfs.WAL})
+		_, _ = db.ExecContext(t.Context(), insert1)
+		for range 3 {
+			_, err = db.ExecContext(t.Context(), insert1)
+			is.Error(t, s4ql.ErrStopped, failed(t, err))
+		}
+		is.Error(t, s4ql.ErrStopped, failed(t, db.PingContext(t.Context())))
+		seen := log.of("stop_seen")
+		is.Equal(t, 1, len(seen))
+		is.True(t, strings.HasPrefix(seen[0], `level=WARN msg=stop_seen db.prefix=db error="s4ql: `), seen[0])
+		is.Equal(t, 1, len(log.of("stop")))
+
+		is.NotError(t, db.Close())
+		is.EqualSlice(t, []string{"level=INFO msg=close db.prefix=db"}, log.of("close"))
+	})
+
+	t.Run("should log a close that fails as a warning", func(t *testing.T) {
+		w := newWorld(t)
+		s := &faulty{Store: w.client()}
+		var log lines
+		o := w.options("a")
+		o.Logger = slog.New(slog.NewTextHandler(&log, nil))
+		o.CloseTimeout = 100 * time.Millisecond
+		db, err := s4ql.OpenStore(t.Context(), w.host, s, o, coreOptions())
+		is.NotError(t, err)
+		is.NotError(t, db.PingContext(t.Context()))
+		s.down(true)
+		_ = failed(t, db.Close())
+		closes := log.of("close")
+		is.Equal(t, 1, len(closes))
+		is.True(t, strings.HasPrefix(closes[0], "level=WARN msg=close db.prefix=db error="), closes[0])
+		// A statement on a closed instance is no stop to report.
+		is.Equal(t, 0, len(log.of("stop_seen")))
+	})
+}
+
+// lines of a log in the text format of log/slog.
+type lines struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lines) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+// of the events with the given name, each without its time.
+func (l *lines) of(event string) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var events []string
+	for line := range strings.Lines(l.b.String()) {
+		_, rest, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " ")
+		if strings.Contains(rest, " msg="+event+" ") || strings.HasSuffix(rest, " msg="+event) {
+			events = append(events, rest)
+		}
+	}
+	return events
 }
 
 // drivers counts the names that [driverName] has given.

@@ -3,8 +3,10 @@ package s4ql_test
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"sync"
@@ -102,7 +104,7 @@ func TestExec(t *testing.T) {
 		defer func() { is.NotError(t, other.Close()) }()
 		res, err := other.ExecContext(t.Context(), select1)
 		is.Equal(t, int64(0), affected(t, res, err))
-		res, err = other.ExecContext(t.Context(), insert1)
+		_, err = other.ExecContext(t.Context(), insert1)
 		is.Equal(t, "UNIQUE constraint failed: t1.v1", failed(t, err).Error())
 		is.Equal(t, int64(1), run(select1))
 	})
@@ -306,6 +308,49 @@ func TestPrepare(t *testing.T) {
 		is.Error(t, s4ql.ErrNotServing, failed(t, err))
 		_, err = prepared.QueryContext(t.Context())
 		is.Error(t, s4ql.ErrNotServing, failed(t, err))
+	})
+}
+
+func TestConn_Raw(t *testing.T) {
+	t.Run("should run the calls of the driver's interfaces that database/sql makes no more, as it runs those with a context", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, t1)
+		conn, err := db.Conn(t.Context())
+		is.NotError(t, err)
+		defer func() { is.NotError(t, conn.Close()) }()
+
+		is.NotError(t, conn.Raw(func(driverConn any) error {
+			c := driverConn.(driver.Conn)
+			_, err := c.Begin() //nolint:staticcheck // The call is deprecated, and the driver has it.
+			is.Equal(t, "transactions", notSupported(t, err))
+			_, err = c.Prepare("selec")
+			is.Equal(t, `near "selec": syntax error`, failed(t, err).Error())
+
+			insert, err := c.Prepare(insert1)
+			is.NotError(t, err)
+			is.Equal(t, -1, insert.NumInput())
+			res, err := insert.Exec(nil) //nolint:staticcheck // As above.
+			is.Equal(t, int64(1), affected(t, res, err))
+			_, err = insert.Exec([]driver.Value{int64(1)}) //nolint:staticcheck // As above.
+			is.Equal(t, "parameters", notSupported(t, err))
+			is.NotError(t, insert.Close())
+
+			query, err := c.Prepare(select1)
+			is.NotError(t, err)
+			_, err = query.Query([]driver.Value{int64(1)}) //nolint:staticcheck // As above.
+			is.Equal(t, "parameters", notSupported(t, err))
+			rows, err := query.Query(nil) //nolint:staticcheck // As above.
+			is.NotError(t, err)
+			is.EqualSlice(t, []string{"v1"}, rows.Columns())
+			dest := make([]driver.Value, 1)
+			is.NotError(t, rows.Next(dest))
+			is.Equal(t, driver.Value(int64(1)), dest[0])
+			is.Error(t, io.EOF, rows.Next(dest))
+			is.NotError(t, rows.Close())
+			return query.Close()
+		}))
+		readersFree(t, db)
 	})
 }
 

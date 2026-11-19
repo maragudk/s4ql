@@ -121,9 +121,9 @@ type Options struct {
 	PathStyle bool
 
 	// CacheDir is the directory of the local cache of the database, which is created if it does not
-	// exist. It is required. It belongs to one database and to one instance at a time: see [Open].
-	// The cache is kept when the instance closes, and the next instance catches it up from where it
-	// stands. A cache that is lost is built again from the object store.
+	// exist. It is required. A cache directory is for one instance at a time: see [Open]. The cache
+	// is kept when the instance closes, and the next instance on the directory catches it up from
+	// where it stands. A cache that is lost is built again from the object store.
 	CacheDir string
 
 	// CloseTimeout is how long [database/sql.DB.Close] waits for the instance to close and to
@@ -143,11 +143,14 @@ type Options struct {
 // The context bounds only that local work. Open does not contact the object store and does not
 // wait for the lease: [database/sql.DB.PingContext] waits until the instance serves.
 //
-// A cache directory belongs to one database. An instance that finds the cache of another database
-// in it stops, with an error that matches [ErrStopped], as soon as the other database has a commit;
-// two databases that are both new can mix their tables in it. A second instance of the same
-// database on the same cache directory, in the same process or in another, is a spare, and serves
-// from the same cache when it gets the lease.
+// A cache directory is for one instance at a time, and nothing checks that it has one only:
+//
+//   - A second instance of the same database on the same cache directory is a spare, as any second
+//     instance is, and serves from the same cache when it gets the lease.
+//   - An instance that finds the cache of another database, with commits of that database in it,
+//     stops, with an error that matches [ErrStopped].
+//   - Two instances of two databases that run at the same time on a cache directory that was empty
+//     can each read the tables of the other. Never give two databases one cache directory.
 func Open(ctx context.Context, options Options) (*sql.DB, error) {
 	d := &opener{connect: options.connector}
 	c, err := d.connect(ctx, d)
