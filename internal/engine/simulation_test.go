@@ -118,8 +118,8 @@ type attempt struct {
 	// write is true for a statement that changes the database if it succeeds.
 	write bool
 	state attemptState
-	// err is SQLite's error of a statement that failed with it, as [answer] has it, and rows the
-	// answer of a query that succeeded.
+	// answer of the statement: SQLite's error of a statement that failed with it, "not supported" or
+	// "no statement" for one that was skipped, and the rows of a query that succeeded.
 	answer answer
 	// position is the state that the statement saw, from its event.
 	position string
@@ -142,9 +142,9 @@ type node struct {
 	lease  time.Duration
 	client *simstore.Client
 
-	callers   atomic.Int64
+	callers atomic.Int64
 	// running is the number of statements that the node's callers run.
-	running atomic.Int64
+	running   atomic.Int64
 	reopening atomic.Bool
 
 	mu sync.Mutex
@@ -352,7 +352,10 @@ func (r *run) statement(ctx context.Context, n *node, e *engine.Engine, q *seque
 	case errors.As(err, &se):
 		a.state, a.answer = sqliteFailed, answer{err: fmt.Sprint(se.Code, "/", se.ExtendedCode, ": ", se.Message)}
 	case errors.Is(err, stmt.ErrNotSupported), errors.Is(err, engine.ErrNoStatement):
-		a.state = skipped
+		a.state, a.answer = skipped, answer{err: "not supported"}
+		if errors.Is(err, engine.ErrNoStatement) {
+			a.answer.err = "no statement"
+		}
 		if supported {
 			r.mu.Unlock()
 			r.violate(ctx, "statement %v, %q, of slice 1: %v", a.id, a.src, err)
@@ -694,6 +697,8 @@ type logCommit struct {
 //   - Each statement that failed with SQLite's error gives that error in SQLite on the state that
 //     it saw, and each query that succeeded gives its rows there: the state after a commit of the
 //     log, which holds every write that was acknowledged before the statement started.
+//   - Each text that the engine does not support is one that SQLite prepares on an empty database
+//     without a syntax error, as in [pair.step].
 //   - A new instance with an empty cache replays the log to the state that SQLite has after it.
 func (r *run) verify(ctx context.Context) {
 	log := readLog(r.store)
@@ -733,6 +738,12 @@ func (r *run) verify(ctx context.Context) {
 	empty := newOracle(r.t)
 	defer empty.close()
 	for _, a := range r.order {
+		if a.state == skipped && a.answer.err == "not supported" {
+			if m := syntaxOfNotSupported(r.t, empty, a.src); m != "" {
+				r.violate(ctx, "the engine does not support the statement %v, %q, and SQLite gives %v", a.id, a.src, m)
+			}
+			continue
+		}
 		if a.state != sqliteFailed && (a.state != succeeded || !a.query || a.write || a.partial) {
 			continue
 		}
@@ -917,10 +928,43 @@ func simSeeds(t *testing.T, n int) uint64 {
 	return uint64(n)
 }
 
-// tallyOf the run r: its statements by how they ended, its writes that were acknowledged, its
-// queries that were not read to their end, its commits, and its other events.
-func tallyOf(r *run) map[string]int {
+// storeFaults are the faults of [simstore.AllFaults] by a name, each with what the store writes into
+// the trace when it injects the fault.
+var storeFaults = map[string]string{
+	"fault: lost request":  "was lost on its way to the store",
+	"fault: lost response": "was lost on its way back",
+	"fault: no answer":     "no answer reaches the caller",
+	"fault: conflict":      "a conflict with another write in flight",
+	"fault: slow way":      "is slow on its way",
+	"fault: broken read":   "whose content breaks off",
+	"fault: cut-off":       "cut off for",
+	"fault: outage":        "store: unreachable for",
+	"fault: write applied after its caller gave up": "the caller gave up, and is applied",
+	"fault: write stuck in the network":             "is stuck in the network",
+	"fault: write applied after a crash":            "the sender crashed, and is applied",
+}
+
+// storeLine matches a line of the trace that a task of a request of the store wrote, also the task
+// of a write that was stuck in the network.
+var storeLine = regexp.MustCompile(`^\S+ store request \d+(, stuck)? store: `)
+
+// tallyOf the simulation s: its statements, by how they ended, its writes that were acknowledged,
+// its queries that were not read to their end, its commits, the faults that the store injected, by
+// kind, and its other events.
+func tallyOf(s simulation) map[string]int {
+	r := s.r
 	counts := maps.Clone(r.events)
+	for _, line := range s.lines {
+		if !storeLine.MatchString(line) {
+			continue
+		}
+		for name, marker := range storeFaults {
+			if strings.Contains(line, marker) {
+				counts[name]++
+			}
+		}
+	}
+	counts["statements"] = len(r.order)
 	for _, a := range r.order {
 		counts[a.state.String()]++
 		if a.reason != "" {
@@ -936,10 +980,13 @@ func tallyOf(r *run) map[string]int {
 }
 
 // TestSimulation runs the default workload and the hammer workload for many seeds each, and twice
-// for some, whose traces must be the same. In a run of at least 50 seeds, every kind of outcome and
-// of event must occur at least as often as reached says, for each seed: a third or less of what the
-// first 1,000 seeds give, so that the test fails when a kind stops happening, and not by chance. The
-// seeds are the same in every run, so the counts are too.
+// for some, whose traces must be the same. In a run of at least 50 seeds, every kind of outcome, of
+// fault of the store, and of event must occur at least as often as reached says, for each seed:
+// from a fifth to a third of what the first 1,000 seeds give, so that the test fails when a kind
+// stops happening, and not by chance. And at most the share noLease of the statements may be refused
+// for want of the lease, about twice what the first 1,000 seeds give, so that the test fails when
+// most statements no longer reach a transaction. The seeds are the same in every run, so the counts
+// are too.
 func TestSimulation(t *testing.T) {
 	n := simSeeds(t, 50)
 	if slow() {
@@ -950,16 +997,25 @@ func TestSimulation(t *testing.T) {
 		w    workload
 		// reached is the least number of each kind for each seed.
 		reached map[string]float64
+		// noLease is the largest share of the statements that may be refused for want of the lease.
+		noLease float64
 	}{
 		{"default", defaultWorkload, map[string]float64{
 			"succeeded": 4, "SQLite's error": 6, "unknown": 0.15, "pending": 0.25, "skipped": 1, "failed: no lease": 1.5,
 			"failed: stopped": 0.04, "failed: timeout": 0.25, "query not read to its end": 0.5, "acknowledged writes": 2.5,
 			"commits": 2.5, "crash, then an empty cache": 0.12, "crash, then a copy of the cache": 0.12, "close and open": 0.4,
-		}},
+			"fault: lost request": 0.4, "fault: lost response": 0.4, "fault: no answer": 0.35, "fault: conflict": 0.06,
+			"fault: slow way": 0.8, "fault: broken read": 0.25, "fault: cut-off": 0.1, "fault: outage": 0.04,
+			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.25,
+			"fault: write applied after a crash": 0.05,
+		}, 0.15},
 		{"hammer", hammerWorkload, map[string]float64{
 			"succeeded": 12, "SQLite's error": 17, "unknown": 0.4, "skipped": 2.5, "failed: no lease": 2,
 			"failed: timeout": 3, "query not read to its end": 1.5, "acknowledged writes": 6, "commits": 6,
-		}},
+			"fault: lost request": 0.25, "fault: lost response": 0.2, "fault: no answer": 0.35, "fault: conflict": 0.2,
+			"fault: slow way": 0.5, "fault: broken read": 0.02, "fault: cut-off": 0.09, "fault: outage": 0.025,
+			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.7,
+		}, 0.12},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			counts := map[string]int{}
@@ -968,7 +1024,7 @@ func TestSimulation(t *testing.T) {
 				if v := s.violations(); len(v) > 0 {
 					t.Fatalf("seed %v: %v", seed, strings.Join(v, "\n"))
 				}
-				for k, v := range tallyOf(s.r) {
+				for k, v := range tallyOf(s) {
 					counts[k] += v
 				}
 				counts["trace lines"] += len(s.lines)
@@ -985,6 +1041,9 @@ func TestSimulation(t *testing.T) {
 				if want := int(least * float64(n)); counts[kind] < want {
 					t.Errorf("%v seeds give %v of %q, and at least %v were expected: something that the workload did stopped happening", n, counts[kind], kind, want)
 				}
+			}
+			if share := float64(counts["failed: no lease"]) / float64(counts["statements"]); share > c.noLease {
+				t.Errorf("%v seeds refuse %v of %v statements for want of the lease, %.2f of them, and at most %v were expected: most statements must reach a transaction", n, counts["failed: no lease"], counts["statements"], share, c.noLease)
 			}
 		})
 	}
@@ -1012,8 +1071,8 @@ func TestSimulationSeed(t *testing.T) {
 	}
 }
 
-// TestSimulation_plantedBugs runs the workload with each planted bug until it finds the bug in two
-// seeds, and the same seeds without the bug, which find nothing.
+// TestSimulation_plantedBugs runs the workload with each planted bug until it finds the bug by its own
+// violation in two seeds, and the same seeds without the bug, which find nothing.
 func TestSimulation_plantedBugs(t *testing.T) {
 	limit := simSeeds(t, 100)
 	// The workload of each bug, and the violation that finds it: the check of an insert in a read
@@ -1021,7 +1080,8 @@ func TestSimulation_plantedBugs(t *testing.T) {
 	bugs := []struct {
 		name string
 		w    workload
-		// finds holds a part of each violation that the bug causes.
+		// finds holds a part of each violation that the bug causes, its own violation first, which the
+		// bug must cause in two seeds at least.
 		finds []string
 	}{
 		{"skipUnique", defaultWorkload, []string{"fails in SQLite: 19/1555: UNIQUE constraint failed"}},
@@ -1037,8 +1097,9 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		t.Run(bug, func(t *testing.T) {
 			w := b.w
 			w.bugs = []string{bug}
-			found, seeds := 0, uint64(0)
-			for seed := uint64(0); seed < limit && (found < 2 || os.Getenv("S4QL_ENGINE_SIM_SEEDS") != ""); seed++ {
+			// own is the number of seeds that find the bug by its own violation.
+			found, own, seeds := 0, 0, uint64(0)
+			for seed := uint64(0); seed < limit && (own < 2 || os.Getenv("S4QL_ENGINE_SIM_SEEDS") != ""); seed++ {
 				seeds++
 				if v := simulate(t, seed, w).violations(); len(v) > 0 {
 					if !slices.ContainsFunc(v, func(v string) bool {
@@ -1050,13 +1111,16 @@ func TestSimulation_plantedBugs(t *testing.T) {
 						t.Logf("seed %v finds: %v", seed, v[0])
 					}
 					found++
+					if slices.ContainsFunc(v, func(v string) bool { return strings.Contains(v, b.finds[0]) }) {
+						own++
+					}
 					if v := simulate(t, seed, b.w).violations(); len(v) > 0 {
 						t.Fatalf("seed %v finds something without the bug: %v", seed, v)
 					}
 				}
 			}
-			t.Logf("%v of %v seeds find the bug", found, seeds)
-			is.True(t, found >= 2, "the bug is found too rarely")
+			t.Logf("%v of %v seeds find the bug, %v of them by %q", found, seeds, own, b.finds[0])
+			is.True(t, own >= 2, fmt.Sprintf("the bug is found by %q too rarely", b.finds[0]))
 		})
 	}
 }

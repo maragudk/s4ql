@@ -220,12 +220,12 @@ func (c counts) String() string {
 	return strings.Join(parts, ", ")
 }
 
-// excused requires, in a run of all the texts with the default flags, that exactly want of the
-// counts c are texts where SQLite does not say, which [oracle.Judge] excuses from the comparison with
-// SQLite: syntax errors and texts that are not supported. A change of the oracle or of the pass that
-// excuses more texts would otherwise pass unseen. The run is the same on every machine, so the
-// number is exact.
-func excused(t *testing.T, c counts, want int) {
+// excused requires, in a run of all the texts with the default flags, that of the counts c exactly
+// syntax are syntax errors and exactly notSupported are texts that are not supported, where SQLite
+// does not say, which [oracle.Judge] excuses from the comparison with SQLite. A change of the oracle
+// or of the pass that excuses more texts, or that moves a text from one outcome to the other, would
+// otherwise pass unseen. The run is the same on every machine, so the numbers are exact.
+func excused(t *testing.T, c counts, syntax, notSupported int) {
 	t.Helper()
 	if slow() {
 		return
@@ -235,8 +235,17 @@ func excused(t *testing.T, c counts, want int) {
 			return
 		}
 	}
-	if got := c[syntaxNotSaid] + c[notSupportedNotSaid]; got != want {
-		t.Errorf("%v texts are syntax errors or not supported where SQLite does not say, which the tests excuse from the comparison with SQLite, and %v were. The number may be changed only on purpose: find out why it changed, and change it here and in the README of the package, with the reason.", got, want)
+	for _, e := range []struct {
+		what string
+		o    outcome
+		want int
+	}{
+		{"syntax errors", syntaxNotSaid, syntax},
+		{"not supported", notSupportedNotSaid, notSupported},
+	} {
+		if got := c[e.o]; got != e.want {
+			t.Errorf("%v texts are %v where SQLite does not say, which the tests excuse from the comparison with SQLite, but the test pins %v. The number may be changed only on purpose: find out why it changed, and change it here and in the README of the package, with the reason.", got, e.what, e.want)
+		}
 	}
 }
 
@@ -289,7 +298,7 @@ func TestCheck_corpus(t *testing.T) {
 	if slow() {
 		sqls = every(sqls, 10)
 	}
-	excused(t, verifyAll(t, sqls), 299)
+	excused(t, verifyAll(t, sqls), 62, 237)
 }
 
 // TestCheck_corpusMutants checks the pass against SQLite on one-token mutants of the corpus.
@@ -302,7 +311,7 @@ func TestCheck_corpusMutants(t *testing.T) {
 	for i, sql := range entries {
 		sqls = append(sqls, parsetest.Mutants(sql, *seed+uint64(i), 1)...)
 	}
-	excused(t, verifyAll(t, sqls), 256)
+	excused(t, verifyAll(t, sqls), 78, 178)
 }
 
 var grammarCount = flag.Int("grammar", 20000, "sentences of the grammar in TestCheck_grammar")
@@ -331,7 +340,7 @@ func TestCheck_grammar(t *testing.T) {
 		sqls = append(sqls, s)
 		sqls = append(sqls, parsetest.Mutants(s, *seed+uint64(i), 1)...)
 	}
-	excused(t, verifyAll(t, sqls), 3835)
+	excused(t, verifyAll(t, sqls), 2356, 1479)
 }
 
 // FuzzCheck checks the pass against SQLite on any text.
