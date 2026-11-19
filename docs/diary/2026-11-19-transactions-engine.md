@@ -133,3 +133,49 @@ That `TestConn_stop`'s lost lease does not depend on how soon the first instance
 ### Future work
 
 The generators of the differential tests (`stmttest`, `drivercheck`) and the simulation do not make transactions yet.
+
+## Step 4: Documentation and self-review
+
+**Author:** transactions builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "`internal/engine/README.md` describes transactions. `docs/todo.md` gets a section \"Transactions\" with every decision of detail you made, and with what is open for the driver."
+**Interpretation:** Hand the long-form documentation to a writer with the decisions, review it against the code, and run a review of the diff.
+**Inferred intent:** A next builder of the driver reads the README and the todo, not this branch's history.
+
+### What I did
+
+A writer sub-agent wrote the section "Transactions" of `/internal/engine/README.md`, the event of a transaction, the layer of tests, and the section "Transactions" of `/docs/todo.md`, from a list of facts. It checked them against the code and found seven places where the code was narrower than my facts; the ones that mattered: `duration.total` of the event started after the wait of `Begin` (I moved the start before the wait, as the brief's "duration" suggests), the event of a transaction whose end is left to its rows was logged before that end, and `keepRead` also acts on the rows of a transaction (documented, left as it is). I added two bullets to `/internal/core/README.md` for the savepoints and `Serving`.
+
+The review of the diff (`/code-review high tx-engine`) found no bug that blocks, and six nits. Fixed: the event of a transaction whose end waits for a loop is now logged by that end (the type `ending` in `/internal/engine/tx.go`), with the commit's error or the end's, and `TestConn_events` shows it; the doc of `Conn.Rollback` no longer promises nil after a stop by a local failure, where the roll back in the cache can fail; the docs of `Tx.Release` and `Tx.RollbackTo` say that they fail with the stop only once `DB.Close` has closed the connection; `pair.step` decides that a text is an insert through `stmt.Check` and not by the word in the text; the doc of `transaction.writes` says what it counts; and `/docs/todo.md` says that a write is refused while rows of a transaction are open where SQLite runs it, also in the older item "To look at again with transactions".
+
+`make test` passed (exit 0), `make lint` passed, and `go test ./internal/engine -run 'TestConn_' -count=20` passed with and without `-race` after the fixes.
+
+### Why
+
+The review's points were each true; none changed a result of SQL.
+
+### What worked
+
+Briefing the writer with a numbered list of facts, and asking it to check each against the code, found real mismatches.
+
+### What didn't work
+
+My first version of the new event test took the last event for the transaction's; the end of the rows logs the transaction's event first and the query's after it (`Rows.end` ends its transaction before it logs the query's event): `Expected "transaction", but got "statement"`.
+
+### What I learned
+
+Nothing new beyond the above.
+
+### What was tricky
+
+Keeping the docs and the code in step while two sub-agents worked over the same branch; the writer did not commit, and I reviewed its diff before committing.
+
+### What warrants review
+
+The writer's prose in `/internal/engine/README.md`, section "Transactions", against `/internal/engine/tx.go`.
+
+### Future work
+
+The driver, and the items under "Not built" in the section "Transactions" of `/docs/todo.md`.
