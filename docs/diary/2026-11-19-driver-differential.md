@@ -198,3 +198,51 @@ Comparing tables that SQLite no longer has needs the names as their values, and 
 ### Future work
 
 None beyond the fix in `/conn.go`.
+
+## Step 5: The text before the arguments
+
+**Author:** driver-argument builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the brief) "Fix it so that the text is judged first, on every path that takes arguments: 1. a text with a syntax error gives SQLite's error, with or without arguments; 2. a text that s4ql does not support gives the "not supported" error of the text, with or without arguments; 3. a text that s4ql supports, run with any argument, gives `s4ql: not supported: parameters`, and the statement is not run (nothing is committed). Keep it simple: use `stmt.Check` as `Prepare` does, and do not parse a text twice where one check can be shared. A text with no statement keeps its present error."
+**Interpretation:** Close the difference of step 3 in `/conn.go`, and turn the pin of it in the differential test into a comparison without an excuse.
+**Inferred intent:** The spec's rule on syntax errors holds for every call, also one with arguments.
+
+### What I did
+
+In `/conn.go`, the body of `conn.Prepare` became `check`, which `Prepare` calls, and `withArguments`, which gives the error of `check` for a text that has one and `not supported: parameters` otherwise. `conn.ExecContext` and `conn.QueryContext` give `withArguments` for any argument, and run nothing. `prepared.ExecContext` and `prepared.QueryContext` give `not supported: parameters` for any argument at once, since their text passed `check` at `Prepare`, so the text is parsed once there. A text with no statement keeps `a text that holds no statement`, also with arguments: the text is judged first, as for any other text that s4ql does not support.
+
+In `/conn_test.go`, the loop over arguments in the subtest of what is not supported became a subtest of its own in `TestExec`: four syntax errors, one of them in SQL that s4ql does not support, six texts that s4ql does not support, and six statements that it supports, through `Exec`, `Query`, and `QueryRow`, each with six kinds of arguments; then a prepared insert and a prepared select with each kind of arguments. At the end t1 holds no row and the log holds the one commit of the create table.
+
+In `/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go`, `pair.compare` compares a call with an argument with SQLite when s4ql gives an error that is not "not supported", and requires that error to be a syntax error at the exec, so that a statement that s4ql runs with an argument fails the test. `pair.checkNotSupported` requires `not supported: parameters` for a text that `stmt.Check` accepts, and the text's own "not supported" for any other, and keeps the check that SQLite on an empty database does not find a syntax error in the text. The excuse `excusedArgumentSyntax` and its count are gone. `TestExecArgument` gave way to the hand-written sequence "texts with an argument, each of which is judged before the argument", which also seeds `FuzzSequence`. The point in `/docs/todo.md` is gone, and the decision on parameters there says that the text is checked first.
+
+### Why
+
+The spec: "This holds [...] for text that is a syntax error in SQLite, also when it is SQL that s4ql does not support."
+
+### What worked
+
+Red first: the new subtest failed with `conn_test.go:195: Exec drop table s4ql: not supported: parameters` before the fix, and passed after it. With the old behaviour put back by hand (`withArguments` giving `parameters` always), the differential test fails in `TestSequences`, `TestGenerated` (seed 17), and `FuzzSequence`, with `"drop table": s4ql gives exec with an argument: exec failed with s4ql: not supported: parameters, where its check of the text gives incomplete input`.
+
+The runs, all passing: the root package with `go test -count=20 -shuffle on .` (31 s) and `-race -count=3` (9 s), and its changed tests with `-race -count=20`; `go test -count=20 -shuffle on ./drivercheck/` in the cross-check module (61 s) and `-race -count=3` (26 s); `FuzzSequence` for 90 s, 13,038 executions with 98 new inputs of interest, and nothing found; `make test`, `make lint`, and `make test-asan FUZZTIME=5s` in Docker. The code-review skill at the level low reported no finding.
+
+### What didn't work
+
+The first run of `TestGenerated` after the change failed with `texts excused as already exists after the start of a table, accepted: 14, but the test pins 12`. The 3 texts that the old excuse let through were `drop table`, which now matches SQLite, and `create table "OvEr" ("range" int primary key) strict without rowid` and `create table "T1 " (IMMEDIATE int primary key) strict without rowid`, each on a database where the table exists, which SQLite answers with `already exists` and s4ql with `near "without": syntax error`. Those two are the accepted difference of `stmttest.ExistsAfterStart`, which now sees them since they are compared with SQLite, so its pin went from 12 to 14. I found them with a log line in `pair.compare` for a moment. Every other pin stayed: 816 at `Prepare`, and no known gap. Among the counts that are not pinned, `other not supported` went from 568 to 565, `other syntax error` from 46 to 48, and `other incomplete input` from 56 to 57: the same 3 texts.
+
+### What I learned
+
+The generator's random stream does not depend on what a text gives, so a change of the driver moves only the outcomes of the texts it touches, and a pinned count can be traced to its texts.
+
+### What was tricky
+
+A call with an argument whose text is a syntax error now reaches the general comparison, and so its general excuses too. That is right for the started table, which is about the text, not the argument, but it means the check that s4ql ran nothing must come before the comparison: a statement that s4ql wrongly ran with an argument would otherwise give the same outcome as mattn, which ignores an argument that a statement does not use.
+
+### What warrants review
+
+`check` and `withArguments` in `/conn.go`, and the branch of `callExecArgument` in `pair.compare` and `pair.checkNotSupported`.
+
+### Future work
+
+None.
