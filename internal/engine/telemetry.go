@@ -113,6 +113,9 @@ func outcomeOf(err error) (string, slog.Level) {
 	case errors.Is(err, core.ErrOutcomeUnknown):
 		// It is not a refusal, also if it wraps the error of the context that ended.
 		return "core_error", slog.LevelWarn
+	case errors.Is(err, core.ErrTxLeaseLost):
+		// The instance ended the write transaction, so that it could take its lease back.
+		return "lease_lost", slog.LevelDebug
 	case errors.Is(err, core.ErrNoLease), errors.Is(err, core.ErrStopped):
 		return "refused", slog.LevelDebug
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):

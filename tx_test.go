@@ -17,6 +17,7 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql"
+	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/sqlite/faultvfs"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
@@ -416,6 +417,66 @@ func TestTx_wait(t *testing.T) {
 			is.NotError(t, tx.Commit())
 		})
 	})
+}
+
+func TestTx_leaseLost(t *testing.T) {
+	for _, end := range []string{"commit", "rollback"} {
+		t.Run("should serve again while a write transaction is open and idle as the instance loses its lease, refuse its statements and its commit with ErrNotServing, return nil from its roll back, and put its connection back in the pool: "+end, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				w := newWorld(t)
+				options := core.Options{BusyTimeout: time.Minute}
+				s := &faulty{Store: w.client()}
+				a := w.openOn(t, "a", s, options)
+				is.NotError(t, a.PingContext(t.Context()))
+				exec(t, a, t1)
+				tx := begin(t, a, nil)
+				execIn(t, tx, insert1)
+
+				// a cannot reach the store while b takes the lease and commits, and b is closed then.
+				s.down(true)
+				b := w.openOn(t, "b", w.client(), options)
+				is.NotError(t, b.PingContext(t.Context()))
+				exec(t, b, "insert into t1 (v1) values (2)")
+				s.down(false)
+				time.Sleep(time.Minute)
+				is.NotError(t, b.Close())
+
+				// a serves again, on another connection, while the transaction is still open.
+				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+				defer cancel()
+				is.NotError(t, a.PingContext(ctx))
+				is.EqualSlice(t, []int64{2}, values(t, a, select1))
+
+				notServing := func(err error) {
+					t.Helper()
+					is.Error(t, s4ql.ErrNotServing, failed(t, err))
+					for _, other := range []error{s4ql.ErrStopped, s4ql.ErrOutcomeUnknown, s4ql.ErrNotSupported, s4ql.ErrTooLarge} {
+						is.True(t, !errors.Is(err, other), fmt.Sprint(err, " matches ", other))
+					}
+					is.True(t, strings.Contains(err.Error(), "the transaction was ended because the instance lost its lease"), err.Error())
+				}
+				_, err := tx.ExecContext(t.Context(), "insert into t1 (v1) values (3)")
+				notServing(err)
+				_, err = tx.QueryContext(t.Context(), select1)
+				notServing(err)
+				if end == "commit" {
+					notServing(tx.Commit())
+				} else {
+					is.NotError(t, tx.Rollback())
+				}
+				is.Error(t, sql.ErrTxDone, tx.Rollback())
+
+				// The connection of the transaction went back to the pool, beside the one of the ping.
+				is.Equal(t, 2, a.Stats().OpenConnections)
+				is.Equal(t, 2, a.Stats().Idle)
+				a.SetMaxOpenConns(1)
+				next := begin(t, a, nil)
+				execIn(t, next, "insert into t1 (v1) values (4)")
+				is.NotError(t, next.Commit())
+				is.EqualSlice(t, []int64{2, 4}, values(t, a, select1))
+			})
+		})
+	}
 }
 
 func TestTx_databaseSQL(t *testing.T) {

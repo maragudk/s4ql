@@ -77,6 +77,10 @@ type writeTx interface {
 	rollbackTo(ctx context.Context) error
 	commit(ctx context.Context) error
 	rollback(ctx context.Context) error
+	// lost is nil unless the instance ended the transaction because it lost its lease, and then the
+	// error that every call of the transaction gives, which matches [core.ErrTxLeaseLost]. The roll
+	// back of such a transaction returns nil.
+	lost() error
 }
 
 // coreDB is the [database] of a [*core.DB].
@@ -243,4 +247,8 @@ func (c coreTx) commit(ctx context.Context) error {
 
 func (c coreTx) rollback(ctx context.Context) error {
 	return fromCore(c.tx.Rollback(ctx))
+}
+
+func (c coreTx) lost() error {
+	return c.tx.Lost()
 }
