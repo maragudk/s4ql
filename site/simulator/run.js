@@ -130,6 +130,10 @@ export function clientStatus(e) {
 
 const SWAPS = { take: "take of the lease", commit: "commit", renew: "renewal", release: "release" };
 
+// resetWords of the visitor's reset of the clocks of the instance, which the page composes of actions
+// of the engine.
+export const resetWords = (i) => `You reset the clocks of ${i}.`;
+
 // actionWords of an action event of a session, as the visitor's own words.
 function actionWords(e) {
   const i = e.instance;

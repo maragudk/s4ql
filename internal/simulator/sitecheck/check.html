@@ -335,6 +335,23 @@ async function check() {
   const resumed = !a().wallStopped && !a().monotonicStopped && p.button("a", "pause").getAttribute("aria-pressed") === "false";
   expect(paused && resumed && Math.abs(behind + 5000) < 50, `Pause clocks stops both clocks of a (${behind.toFixed(0)} ms behind after 5 s), and resumes them`);
 
+  // Reset clocks, after a jump and a pause: the clocks of a run again, the wall clock at true time, and
+  // the card reads as for clocks that nobody touched. The log has one line for it.
+  await p.press("a", "forward");
+  await p.press("a", "pause");
+  await p.skip(5000);
+  const clocksBefore = p.card("a").querySelector('[data-f="clocks"]').textContent;
+  const touched = !p.button("a", "reset").disabled && /^paused, wall \+\d+ s$/.test(clocksBefore);
+  const linesBefore = p.lines;
+  await p.press("a", "reset");
+  const added = [...p.$("#log").children].slice(0, p.lines - linesBefore).filter((li) => li.classList.contains("you")).map((li) => li.querySelector(".text").textContent);
+  const clocksNow = p.card("a").querySelector('[data-f="clocks"]').textContent;
+  expect(touched && !a().wallStopped && !a().monotonicStopped && Math.abs(wall()) < 1e-3 && clocksNow === "true time",
+    `Reset clocks runs the clocks of a again (${clocksBefore} before), with the wall clock at true time (off by ${wall()} ms), and the card says ${clocksNow}`);
+  expect(p.button("a", "pause").getAttribute("aria-pressed") === "false" && p.button("a", "reset").disabled && !p.button("a", "pause").disabled,
+    "after Reset clocks, Pause clocks is not pressed, and Reset clocks is off");
+  expect(JSON.stringify(added) === JSON.stringify(["You reset the clocks of a."]), `the log has one line for Reset clocks (${added.join(" | ")})`);
+
   const beforeCrash = p.client();
   await p.press("a", "crash");
   await p.skipUntil(() => p.client().failed > beforeCrash.failed + 2);
