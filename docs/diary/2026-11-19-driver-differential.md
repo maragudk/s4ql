@@ -148,3 +148,53 @@ The excuses in `pair.compare` and `pair.checkNotSupported`, and the 26 kinds tha
 ### Future work
 
 The fix of the difference above, in `/conn.go`.
+
+## Step 4: Runs, and the review of the diff
+
+**Author:** driver-differential builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the brief) "Run new tests with `-count=20 -shuffle on`, with `-race`, and run the fuzz target for at least five minutes locally and report what it found and how many executions it ran. Run `make test`, `make lint`, and the targets of CI that your change touches [...] Review your own diff against `main` once more as a reviewer before you report."
+**Interpretation:** Run every check the brief names, review the diff with the code-review skill, and fix what matters.
+**Inferred intent:** Hand in a test that is right and stable, not only one that passes once.
+
+### What I did
+
+- `go test -count 20 -shuffle on ./drivercheck/` in the cross-check module passed in 381 s, while a fuzz run loaded the machine. `go test -race -count 5 -shuffle on ./...` in the module passed in 106 s, and `-race -count 3` again after the fixes below.
+- `go test -run '^$' -fuzz '^FuzzSequence$' -fuzztime 6m -fuzzminimizetime 10s` ran 39,047 executions on 10 workers, with 415 new inputs of interest, and found nothing.
+- `make lint` and `make test` passed. `make test-asan FUZZTIME=5s` ran in Docker; its result is in the report to the lead.
+- The code-review skill reviewed `main...HEAD` and reported five points, and I fixed four:
+  - The comparison of the tables at the end asked only for the tables that SQLite has, so a table that only s4ql had, such as a dropped table that a replay brought back, went unseen. `pair.created` now holds every table that a text created, and the comparison asks both sides for those too.
+  - The excuse of an error at `Prepare` held for any message and any step of s4ql. It now holds only for `no such table`, `already exists`, and `has no column named`, at the `Exec` or `Query` of the prepared statement. The pinned count stayed 816.
+  - The excuse of a syntax error with an argument trusted `stmt.Check`. It now also requires SQLite to give the same error for the text on an empty database.
+  - `restart` pinned a new connection of s4ql and kept SQLite's old one, with its count of changes. It pins both again. No text runs after a restart today, so this was latent.
+  - The fifth was an input in `testdata/fuzz/FuzzSequence` that I had not committed. It was mine: I had sent `SIGQUIT` to a fuzz worker to see what it was doing, and the fuzzer recorded the input that the worker was running as a crasher. It passes, and I deleted it.
+
+### Why
+
+The brief asks for these runs, and the review is part of the hand-off.
+
+### What worked
+
+The review found two gaps where a real fault could have hidden, the tables and the width of the excuse at `Prepare`, and both closed without a change of any pinned count.
+
+### What didn't work
+
+Sending `SIGQUIT` to a worker of `go test -fuzz`, to look for a hang that was minimization, left a false crasher in `testdata`.
+
+### What I learned
+
+The fuzzer records the input of a worker that dies by a signal, so killing a worker is not a safe way to look at it.
+
+### What was tricky
+
+Comparing tables that SQLite no longer has needs the names as their values, and a match without regard to the case of ASCII letters only, as `stmt.Name.Fold` gives it: `strings.EqualFold` would also take `Été` and `été` for one table, which SQLite does not.
+
+### What warrants review
+
+`pair.compareTables` and `pair.compare` in `/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go`.
+
+### Future work
+
+None beyond the fix in `/conn.go`.
