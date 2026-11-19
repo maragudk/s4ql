@@ -18,7 +18,8 @@ func TestNewPlan(t *testing.T) {
 		{src: `CREATE TABLE "T""1" (V1 INT PRIMARY KEY) WITHOUT ROWID, STRICT`, want: "create table \"T\"\"1\" (V1 INT, primary key (V1))\n"},
 		{src: "drop table t1;", want: "drop table t1\n"},
 		{src: "insert into t1 (\"v\") values (-  9223372036854775808)", want: "insert into t1 (\"v\")\n  values (-9223372036854775808)\n"},
-		{src: "select * from été", want: "query\n  project *\n    scan été\n"},
+		{src: "insert into t1 (v1) values ( ? )", want: "insert into t1 (v1)\n  values (?1)\n"},
+		{src: "select * from été", want:"query\n  project *\n    scan été\n"},
 	}
 	for _, c := range cases {
 		t.Run(c.src, func(t *testing.T) {

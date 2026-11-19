@@ -215,7 +215,7 @@ func isWord(t ast.Token, w string) bool {
 	return asciiLower(t.Text) == w
 }
 
-// insert: INSERT INTO table (column) VALUES (value).
+// insert: INSERT INTO table (column) VALUES (value), where the value is an integer or a parameter.
 func (r *recognizer) insert(c *ast.Insert) *Insert {
 	r.accept(c)
 	if r.isNext(c.Insert) && c.Insert.Kind == token.Replace {
@@ -251,9 +251,28 @@ func (r *recognizer) insert(c *ast.Insert) *Insert {
 	row := values.Rows[0]
 	r.accept(row)
 	r.take(row.LParen)
-	value, span := r.integer(row.Exprs[0])
+	s := &Insert{Table: table, Column: column}
+	if v, ok := row.Exprs[0].(*ast.Variable); ok {
+		s.Parameter, s.ValueSpan = r.parameter(v)
+	} else {
+		s.Value, s.ValueSpan = r.integer(row.Exprs[0])
+	}
 	r.take(row.RParen)
-	return &Insert{Table: table, Column: column, Value: value, ValueSpan: span}
+	return s
+}
+
+// parameter v: a plain ?, which is the statement's first parameter. SQLite numbers a ? one more than
+// the largest number before it, and the statement has no other parameter, so its number is 1.
+func (r *recognizer) parameter(v *ast.Variable) (int, Span) {
+	if r.isNext(v.Name) && v.Name.Text != "?" {
+		if v.Name.Text[0] == '?' {
+			r.reject("numbered parameter")
+		}
+		r.reject("named parameter")
+	}
+	r.accept(v)
+	r.take(v.Name)
+	return 1, Span{Start: v.Name.Offset, End: v.Name.End()}
 }
 
 // integer value: a decimal integer literal that fits in 64 bits, with at most one - before it.
@@ -266,11 +285,14 @@ func (r *recognizer) integer(e ast.Expr) (int64, Span) {
 		}
 		r.accept(u)
 		r.take(u.Op)
-		if v, ok := u.X.(*ast.Unary); ok {
-			if v.Op.Kind == token.Minus || v.Op.Kind == token.Plus {
+		switch x := u.X.(type) {
+		case *ast.Unary:
+			if x.Op.Kind == token.Minus || x.Op.Kind == token.Plus {
 				r.reject("second sign")
 			}
-			r.reject(unaryName(v.Op))
+			r.reject(unaryName(x.Op))
+		case *ast.Variable:
+			r.reject("parameter after a sign")
 		}
 		negative = true
 		e = u.X

@@ -3,6 +3,7 @@ package stmt_test
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -35,14 +36,21 @@ func openUnmanaged(t testing.TB) *db {
 	return &db{t: t, c: c}
 }
 
-// exec the first statement of sql to its end, as SQLite reads it, and give its error.
-func (d *db) exec(sql string) error {
+// exec the first statement of sql to its end, as SQLite reads it, with args bound to its parameters
+// by position, and give its error.
+func (d *db) exec(sql string, args ...int64) error {
 	s, _, err := d.c.PrepareFirst(sql)
 	if err != nil {
 		return err
 	}
 	if s == nil {
 		return errors.New("no statement")
+	}
+	for i, a := range args {
+		if err := s.BindInt64(i+1, a); err != nil {
+			_ = s.Finalize()
+			return err
+		}
 	}
 	for {
 		ok, err := s.Step()
@@ -56,11 +64,34 @@ func (d *db) exec(sql string) error {
 	}
 }
 
-// must exec the first statement of sql without an error.
-func (d *db) must(sql string) {
+// must exec the first statement of sql, with args, without an error.
+func (d *db) must(sql string, args ...int64) {
 	d.t.Helper()
-	if err := d.exec(sql); err != nil {
+	if err := d.exec(sql, args...); err != nil {
 		d.t.Fatalf("%q: %v", sql, err)
+	}
+}
+
+// parameters of the first statement of sql, as SQLite counts them when it prepares the statement on
+// this database: the largest index that sqlite3_bind_int64 takes, which refuses the next one with
+// SQLITE_RANGE. sqlite3_bind_parameter_count gives the same, and the binding has no call for it.
+func (d *db) parameters(sql string) int {
+	d.t.Helper()
+	s, _, err := d.c.PrepareFirst(sql)
+	if err != nil {
+		d.t.Fatalf("%q: %v", sql, err)
+	}
+	defer func() { _ = s.Finalize() }()
+	for i := 1; ; i++ {
+		err := s.BindInt64(i, 0)
+		if err == nil {
+			continue
+		}
+		var e *sqlite.Error
+		if !errors.As(err, &e) || e.Code != 25 {
+			d.t.Fatalf("%q: bind of parameter %v: %v", sql, i, err)
+		}
+		return i - 1
 	}
 }
 
@@ -161,7 +192,11 @@ func canonical(s stmt.Statement) string {
 	case *stmt.CreateTable:
 		return createFor(s.Table.Value, s.Column.Value)
 	case *stmt.Insert:
-		return fmt.Sprintf("insert into %v (%v) values (%v)", quote(s.Table.Value), quote(s.Column.Value), s.Value)
+		value := fmt.Sprint(s.Value)
+		if s.Parameter > 0 {
+			value = "?"
+		}
+		return fmt.Sprintf("insert into %v (%v) values (%v)", quote(s.Table.Value), quote(s.Column.Value), value)
 	case *stmt.Select:
 		return "select * from " + quote(s.Table.Value)
 	case *stmt.DropTable:
@@ -211,6 +246,7 @@ func checkMeaning(t testing.TB, src string, s stmt.Statement) {
 	switch s := s.(type) {
 	case *stmt.CreateTable:
 		d := open(t)
+		is.Equal(t, d.parameters(src), s.Parameters(), src)
 		d.must(src)
 		got := d.schema()
 		want := open(t)
@@ -229,23 +265,30 @@ func checkMeaning(t testing.TB, src string, s stmt.Statement) {
 		// same names, and the error of a second insert prints the names as the table stores them.
 		table, column := swapCase(s.Table.Value), swapCase(s.Column.Value)
 		read := "select " + quote(column) + ", typeof(" + quote(column) + ") from " + quote(table)
+		// A parameter is bound to a value at or near the limits, which the length of the text picks.
+		value, args := s.Value, []int64(nil)
+		if s.Parameter > 0 {
+			value = []int64{math.MinInt64, -1, 0, 1, math.MaxInt64}[len(src)%5]
+			args = []int64{value}
+		}
 		d := open(t)
 		d.must(createFor(table, column))
-		d.must(src)
+		is.Equal(t, d.parameters(src), s.Parameters(), src)
+		d.must(src, args...)
 		_, rows := d.query(read)
-		is.Equal(t, fmt.Sprint([][]string{{fmt.Sprintf("integer:%v", s.Value), "text:integer"}}), fmt.Sprint(rows), src)
-		sqliteError(t, src, d.exec(src), 1555, "UNIQUE constraint failed: "+table+"."+column)
+		is.Equal(t, fmt.Sprint([][]string{{fmt.Sprintf("integer:%v", value), "text:integer"}}), fmt.Sprint(rows), src)
+		sqliteError(t, src, d.exec(src, args...), 1555, "UNIQUE constraint failed: "+table+"."+column)
 
 		want := open(t)
 		want.must(createFor(table, column))
-		want.must(canonical(s))
+		want.must(canonical(s), args...)
 		_, wantRows := want.query(read)
 		is.Equal(t, fmt.Sprint(wantRows), fmt.Sprint(rows), src)
 
-		sqliteError(t, src, open(t).exec(src), 1, "no such table: "+s.Table.Value)
+		sqliteError(t, src, open(t).exec(src, args...), 1, "no such table: "+s.Table.Value)
 		other := open(t)
 		other.must(createFor(s.Table.Value, s.Column.Value+"_other"))
-		sqliteError(t, src, other.exec(src), 1, "table "+s.Table.Value+" has no column named "+s.Column.Value)
+		sqliteError(t, src, other.exec(src, args...), 1, "table "+s.Table.Value+" has no column named "+s.Column.Value)
 
 	case *stmt.Select:
 		table := swapCase(s.Table.Value)
@@ -257,6 +300,7 @@ func checkMeaning(t testing.TB, src string, s stmt.Statement) {
 				d.must(fmt.Sprintf("insert into %v (v) values (%v)", quote(table), v))
 			}
 			d.must(fmt.Sprintf("insert into %v (v) values (7)", quote("other_"+s.Table.Value)))
+			is.Equal(t, d.parameters(sql), s.Parameters(), sql)
 			names, rows := d.query(sql)
 			return fmt.Sprint(names, rows)
 		}
@@ -270,6 +314,7 @@ func checkMeaning(t testing.TB, src string, s stmt.Statement) {
 			d := open(t)
 			d.must(createFor(swapCase(s.Table.Value), "v"))
 			d.must(createFor("other_"+s.Table.Value, "v"))
+			is.Equal(t, d.parameters(sql), s.Parameters(), sql)
 			d.must(sql)
 			return d.tables()
 		}
@@ -300,7 +345,15 @@ func checkPositions(t testing.TB, src string, s stmt.Statement) {
 	case *stmt.Insert:
 		names = []stmt.Name{s.Table, s.Column}
 		v := s.ValueSpan
-		if v.Start < b.Start || v.End > b.End || v.Start >= v.End || !strings.HasSuffix(src[v.Start:v.End], strings.TrimPrefix(fmt.Sprint(s.Value), "-")) {
+		if v.Start < b.Start || v.End > b.End || v.Start >= v.End {
+			t.Fatalf("%q: value %v at %v", src, s.Value, v)
+		}
+		switch {
+		case s.Parameter > 0:
+			if s.Value != 0 || src[v.Start:v.End] != "?" {
+				t.Fatalf("%q: parameter %v with the value %v at %v", src, s.Parameter, s.Value, v)
+			}
+		case !strings.HasSuffix(src[v.Start:v.End], strings.TrimPrefix(fmt.Sprint(s.Value), "-")):
 			t.Fatalf("%q: value %v at %v", src, s.Value, v)
 		}
 	case *stmt.Select:

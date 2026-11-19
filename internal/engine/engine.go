@@ -25,8 +25,11 @@
 //
 //   - SQLite's error, as a [*sqlerr.Error], with SQLite's result code, extended result code, and
 //     message: a syntax error, or an error about the tables, the columns, or a primary key.
-//   - "Not supported", as a [*stmt.NotSupportedError] that matches [stmt.ErrNotSupported].
+//   - "Not supported", as a [*stmt.NotSupportedError] that matches [stmt.ErrNotSupported], or, for
+//     an argument that is not an integer, an error that matches stmt.ErrNotSupported.
 //   - [ErrNoStatement], for a text that holds no statement.
+//   - An error that matches [ErrArguments], for another number of arguments than the statement has
+//     parameters.
 //   - An error of the storage core, which matches its sentinel in package core with [errors.Is], or
 //     an error of the context.
 //   - An internal error, which matches [ErrInternal]: a fault of s4ql.
@@ -161,22 +164,25 @@ func (c *Conn) begin(ctx context.Context) (writeTx, error) {
 	return c.e.db.begin(ctx)
 }
 
-// Exec runs the statement of the text src, and gives its result. A query is run to its end, in its
-// read transaction, and its rows are dropped. The result is given with an error too: a failed
-// insert sets the count of changes.
+// Exec runs the statement of the text src, with args for its parameters, by position, and gives its
+// result. A query is run to its end, in its read transaction, and its rows are dropped. The result
+// is given with an error too: a failed insert sets the count of changes.
+//
+// The text is checked first, and then the arguments, as [Check] checks them, before the statement
+// needs the database: there must be one argument for each parameter, and each must be an integer.
 //
 // SQLite's last insert rowid is not changed by any statement of s4ql, because every table is WITHOUT
 // ROWID, and SQLite does not record an insert into such a table.
-func (c *Conn) Exec(ctx context.Context, src string) (Result, error) {
+func (c *Conn) Exec(ctx context.Context, src string, args ...*s4qlpb.Value) (Result, error) {
 	r := c.e.newReport(src)
 	// Every statement of Exec has logged its event when exec returns, so one without is a panic.
 	defer r.panicked(ctx)
-	return c.exec(ctx, r, src)
+	return c.exec(ctx, r, src, args)
 }
 
-// exec is [Conn.Exec] of src for the report r.
-func (c *Conn) exec(ctx context.Context, r *report, src string) (Result, error) {
-	p, text, err := prepare(r, src)
+// exec is [Conn.Exec] of src with args for the report r.
+func (c *Conn) exec(ctx context.Context, r *report, src string, args []*s4qlpb.Value) (Result, error) {
+	p, text, err := prepare(r, src, args)
 	if err != nil {
 		r.end(ctx, err)
 		return Result{}, err
@@ -193,19 +199,20 @@ func (c *Conn) exec(ctx context.Context, r *report, src string) (Result, error) 
 		}
 		return Result{}, nil
 	}
-	res, err := c.write(ctx, r, p, text)
+	res, err := c.write(ctx, r, p, text, args)
 	r.end(ctx, err)
 	return res, err
 }
 
-// Query runs the statement of the text src, and gives its rows. A statement that is not a query is
-// run as [Conn.Exec] runs it, and gives rows with no columns and no rows, and its result in
-// [Rows.Result], also when it fails: Query then gives those rows with the error.
+// Query runs the statement of the text src, with args for its parameters, and gives its rows. The
+// text and the arguments are checked as [Conn.Exec] checks them. A statement that is not a query is
+// run as Exec runs it, and gives rows with no columns and no rows, and its result in [Rows.Result],
+// also when it fails: Query then gives those rows with the error.
 //
 // The rows of a query are read in its read transaction, which is open until the rows end; see
 // [Rows]. Until then, the reader of the connection is taken, and a statement of the connection that
 // reads fails.
-func (c *Conn) Query(ctx context.Context, src string) (*Rows, error) {
+func (c *Conn) Query(ctx context.Context, src string, args ...*s4qlpb.Value) (*Rows, error) {
 	r := c.e.newReport(src)
 	returned := false
 	defer func() {
@@ -213,14 +220,14 @@ func (c *Conn) Query(ctx context.Context, src string) (*Rows, error) {
 			r.panicked(ctx)
 		}
 	}()
-	rows, err := c.queryText(ctx, r, src)
+	rows, err := c.queryText(ctx, r, src, args)
 	returned = true
 	return rows, err
 }
 
-// queryText is [Conn.Query] of src for the report r.
-func (c *Conn) queryText(ctx context.Context, r *report, src string) (*Rows, error) {
-	p, text, err := prepare(r, src)
+// queryText is [Conn.Query] of src with args for the report r.
+func (c *Conn) queryText(ctx context.Context, r *report, src string, args []*s4qlpb.Value) (*Rows, error) {
+	p, text, err := prepare(r, src, args)
 	if err != nil {
 		r.end(ctx, err)
 		return nil, err
@@ -228,36 +235,62 @@ func (c *Conn) queryText(ctx context.Context, r *report, src string) (*Rows, err
 	if q, ok := p.(*Query); ok {
 		return c.query(ctx, r, q)
 	}
-	res, err := c.write(ctx, r, p, text)
+	res, err := c.write(ctx, r, p, text, args)
 	r.end(ctx, err)
 	return &Rows{done: true, result: res}, err
 }
 
-// prepare the text src for the report r: check it, and give the plan of its statement and the text
-// of the statement. A syntax error is the one that SQLite gives for src on an empty database, which
-// [stmt.Check] alone decides, whatever the database holds.
-func prepare(r *report, src string) (Plan, string, error) {
+// Check the text src, as [Conn.Exec] and [Conn.Query] check it, for a run with n arguments, without
+// the database and without an event: the text's error, as [stmt.Check] gives it, [ErrNoStatement],
+// or the error of [ErrArguments] for another number of arguments than the statement has parameters;
+// otherwise nil. It does not check what the arguments are.
+func Check(src string, n int) error {
+	s, err := check(src)
+	if err != nil {
+		return err
+	}
+	return countArguments(s.Parameters(), n)
+}
+
+// check the text src: its statement, or its error, as [stmt.Check] gives it, or [ErrNoStatement].
+func check(src string) (stmt.Statement, error) {
 	s, err := stmt.Check(src)
+	if err != nil {
+		return nil, err
+	}
+	if s == nil {
+		return nil, ErrNoStatement
+	}
+	return s, nil
+}
+
+// prepare the text src with the arguments args for the report r: check the text, and then the
+// arguments, and give the plan of its statement and the text of the statement. A syntax error is
+// the one that SQLite gives for src on an empty database, which [stmt.Check] alone decides, whatever
+// the database holds.
+func prepare(r *report, src string, args []*s4qlpb.Value) (Plan, string, error) {
+	s, err := check(src)
 	if err != nil {
 		return nil, "", err
 	}
-	if s == nil {
-		return nil, "", ErrNoStatement
-	}
 	r.of(s)
+	if err := checkArguments(s.Parameters(), args); err != nil {
+		return nil, "", err
+	}
 	span := s.Bounds()
 	return NewPlan(s), src[span.Start:span.End], nil
 }
 
-// write runs the plan p of a statement that changes the database, whose text is sql, in a write
-// transaction of its own, and gives its result. The transaction is committed if the statement
-// succeeds, and rolled back otherwise, also when an operator panics.
-func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string) (_ Result, err error) {
+// write runs the plan p of a statement that changes the database, whose text is sql, with the
+// arguments args, in a write transaction of its own, and gives its result. The transaction is
+// annotated with the text and the arguments, and committed if the statement succeeds, and rolled
+// back otherwise, also when an operator panics.
+func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []*s4qlpb.Value) (_ Result, err error) {
 	e := c.e
 	_, insert := p.(*Insert)
 	if insert && e.bugs.checkOutside {
 		// The planted bug: the checks of the insert, in a read transaction of their own.
-		if err := c.checkOutside(ctx, r, p); err != nil {
+		if err := c.checkOutside(ctx, r, p, args); err != nil {
 			return Result{}, err
 		}
 	}
@@ -275,7 +308,7 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string) (_ Resu
 	}()
 	b := e.bugs
 	b.skipUnique = b.skipUnique || b.checkOutside
-	s, err := buildSink(ctx, tx, p, b)
+	s, err := buildSink(ctx, tx, p, args, b)
 	if err != nil {
 		return Result{}, err
 	}
@@ -285,7 +318,7 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string) (_ Resu
 	if err != nil {
 		return failed, err
 	}
-	if err := tx.annotate(ctx, sql); err != nil {
+	if err := tx.annotate(ctx, sql, args); err != nil {
 		return failed, err
 	}
 	// The transaction ends with its commit, whatever the commit gives.
@@ -304,14 +337,14 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string) (_ Resu
 
 // checkOutside is the planted bug that checks an insert in a read transaction before its write
 // transaction: the table, the column, and the key, without a write.
-func (c *Conn) checkOutside(ctx context.Context, r *report, p Plan) error {
+func (c *Conn) checkOutside(ctx context.Context, r *report, p Plan, args []*s4qlpb.Value) error {
 	rt, err := c.read(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = rt.end(ctx) }()
 	r.at(rt.position(), true)
-	s, err := buildSink(ctx, readOnly{rt}, p, bugs{})
+	s, err := buildSink(ctx, readOnly{rt}, p, args, bugs{})
 	if err != nil {
 		return err
 	}

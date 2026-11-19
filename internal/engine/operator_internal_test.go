@@ -201,8 +201,12 @@ func (x fakeTx) position() format.Name {
 	return format.EmptyLog
 }
 
-func (x fakeTx) annotate(_ context.Context, sql string) error {
-	x.f.calls = append(x.f.calls, "annotate "+sql)
+func (x fakeTx) annotate(_ context.Context, sql string, args []*s4qlpb.Value) error {
+	call := "annotate " + sql
+	for _, a := range args {
+		call += fmt.Sprint(" with ", a.GetInteger())
+	}
+	x.f.calls = append(x.f.calls, call)
 	return x.f.annotateFails
 }
 
@@ -308,14 +312,14 @@ func TestScan(t *testing.T) {
 
 func TestValues(t *testing.T) {
 	t.Run("should give its rows", func(t *testing.T) {
-		v := &values{data: [][]*s4qlpb.Value{{eval(&Integer{Value: 1})}, {eval(&Integer{Value: 3})}}}
+		v := &values{data: [][]*s4qlpb.Value{{integer(1)}, {integer(3)}}}
 		rows, err := collect(t.Context(), v)
 		is.NotError(t, err)
 		is.Equal(t, "[1 3]", fmt.Sprint(rows))
 	})
 
 	t.Run("should stop early, and end with the error of a context that ended", func(t *testing.T) {
-		v := &values{data: [][]*s4qlpb.Value{{eval(&Integer{Value: 1})}, {eval(&Integer{Value: 2})}}}
+		v := &values{data: [][]*s4qlpb.Value{{integer(1)}, {integer(2)}}}
 		n := 0
 		for _, err := range v.rows(t.Context()) {
 			is.NotError(t, err)
@@ -354,7 +358,7 @@ func TestInsert(t *testing.T) {
 	ints := func(vs ...int64) *values {
 		v := &values{}
 		for _, x := range vs {
-			v.data = append(v.data, []*s4qlpb.Value{eval(&Integer{Value: x})})
+			v.data = append(v.data, []*s4qlpb.Value{integer(x)})
 		}
 		return v
 	}
@@ -413,8 +417,12 @@ func TestBuild(t *testing.T) {
 		}
 		return NewPlan(s)
 	}
-	sink := func(f *fake, src string) error {
-		s, err := buildSink(t.Context(), fakeTx{f}, plan(src), bugs{})
+	sink := func(f *fake, src string, args ...int64) error {
+		var values []*s4qlpb.Value
+		for _, a := range args {
+			values = append(values, integer(a))
+		}
+		s, err := buildSink(t.Context(), fakeTx{f}, plan(src), values, bugs{})
 		if err != nil {
 			return err
 		}
@@ -426,6 +434,7 @@ func TestBuild(t *testing.T) {
 		name string
 		f    *fake
 		src  string
+		args []int64
 		err  string
 		// calls of the storage, after those of the lookups.
 		calls string
@@ -440,6 +449,10 @@ func TestBuild(t *testing.T) {
 			err: "no such table: x y", calls: "[table x y]"},
 		{name: "insert", f: newFake().with("t", []string{"V"}), src: "insert into T (v) values (-3)",
 			calls: "[table T get t -3 upsert t -3]"},
+		{name: "insert of a parameter", f: newFake().with("t", []string{"V"}), src: "insert into T (v) values (?)", args: []int64{-9223372036854775808},
+			calls: "[table T get t -9223372036854775808 upsert t -9223372036854775808]"},
+		{name: "insert of a parameter into a table that does not exist", f: newFake(), src: "insert into t (v) values (?)", args: []int64{1},
+			err: "no such table: t", calls: "[table t]"},
 		{name: "insert into a table that does not exist, with a column that does not exist", f: newFake(), src: "insert into t (w) values (1)",
 			err: "no such table: t", calls: "[table t]"},
 		{name: "insert into a column that does not exist", f: newFake().with("t", []string{"v"}), src: `insert into "T" ("w""") values (1)`,
@@ -447,7 +460,7 @@ func TestBuild(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := sink(c.f, c.src)
+			err := sink(c.f, c.src, c.args...)
 			if c.err == "" {
 				is.NotError(t, err)
 			} else {
@@ -498,6 +511,8 @@ func TestBuild(t *testing.T) {
 			{name: "an insert into two columns", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: []stmt.Name{{Value: "v"}, {Value: "V"}}, Source: &Values{Rows: one}}, err: "an insert of 2 columns into a table of 1 columns with the key [0]"},
 			{name: "a plan of a type that the engine does not know", plan: unknownPlan{}, err: "a plan of type engine.unknownPlan"},
 			{name: "a table of two columns", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}, {Name: stmt.Name{Value: "b"}}}, PrimaryKey: []int{0}}, err: "a table of 2 columns with the key [0]"},
+			{name: "an insert of a parameter without its argument", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Parameter{Number: 1}}}}}, err: "the parameter 1 of a statement with 0 arguments"},
+			{name: "an insert of the parameter 0", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Parameter{Number: 0}}}}}, err: "the parameter 0 of a statement with 0 arguments"},
 			{name: "a table without a key", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}}}, err: "a table of 1 columns with the key []"},
 		}
 		for _, c := range cases {
@@ -508,7 +523,7 @@ func TestBuild(t *testing.T) {
 				if q, ok := c.plan.(*Query); ok {
 					_, err = buildQuery(t.Context(), fakeTx{f}, q)
 				} else {
-					_, err = buildSink(t.Context(), fakeTx{f}, c.plan, bugs{})
+					_, err = buildSink(t.Context(), fakeTx{f}, c.plan, nil, bugs{})
 				}
 				is.True(t, errors.Is(err, ErrInternal))
 				is.Equal(t, "s4ql: internal error: "+c.err, err.Error())
@@ -522,7 +537,7 @@ func TestBuild(t *testing.T) {
 			if q, ok := plan(src).(*Query); ok {
 				_, err = buildQuery(t.Context(), failingLookUp{}, q)
 			} else {
-				_, err = buildSink(t.Context(), failingLookUp{}, plan(src), bugs{})
+				_, err = buildSink(t.Context(), failingLookUp{}, plan(src), nil, bugs{})
 			}
 			is.Equal(t, "the lookup fails", err.Error(), src)
 		}
@@ -530,6 +545,11 @@ func TestBuild(t *testing.T) {
 }
 
 const t1 = "create table t1 (v1 int primary key) strict, without rowid"
+
+// integer value v.
+func integer(v int64) *s4qlpb.Value {
+	return s4qlpb.Value_builder{Integer: new(v)}.Build()
+}
 
 // unknownPlan is a plan of a type that the engine does not know.
 type unknownPlan struct{}

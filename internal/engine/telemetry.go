@@ -24,13 +24,13 @@ import (
 //   - Debug: a statement that succeeded; one that failed with SQLite's error, which is an answer to
 //     the application and nothing that went wrong; one that is not supported, which includes one
 //     that reads on a connection whose rows of an earlier query are open; a text without a
-//     statement; one that the core refused for lack of a valid lease or because the instance has
+//     statement; one with another number of arguments than it has parameters; one that the core refused for lack of a valid lease or because the instance has
 //     stopped, which the core logs itself; and one whose context ended.
 //   - Warn: one that failed with another error of the core, such as a commit of unknown outcome.
 //   - Error: one that failed with an internal error, a fault of s4ql.
 //
 // The SQL text is in the event only at Debug, since it can hold the application's data. No value of
-// a row is in any event.
+// a row or of an argument is in any event.
 const eventStatement = "statement"
 
 // The names of the attributes, in the conventions of the core: lowercase, with dots for namespaces
@@ -74,6 +74,8 @@ func outcomeOf(err error) (string, slog.Level) {
 		return "not_supported", slog.LevelDebug
 	case errors.Is(err, ErrNoStatement):
 		return "no_statement", slog.LevelDebug
+	case errors.Is(err, ErrArguments):
+		return "wrong_arguments", slog.LevelDebug
 	case errors.Is(err, ErrInternal):
 		return "internal_error", slog.LevelError
 	case errors.Is(err, core.ErrOutcomeUnknown):

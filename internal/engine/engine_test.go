@@ -19,6 +19,7 @@ import (
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/engine"
 	"maragu.dev/s4ql/internal/format"
+	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
@@ -27,10 +28,11 @@ import (
 
 const t1 = "create table t1 (v1 int primary key) strict, without rowid"
 
-// pin runs the statements of setup and then src on a new instance of the engine and on SQLite, and
-// requires the same answer of both, and the answer want: an error as "code/extended: message", or
-// "columns ...; rows ..." for a query, or "" for a statement that changes the database.
-func pin(t *testing.T, setup []string, src, want string) {
+// pin runs the statements of setup and then src, with args for its parameters, on a new instance of
+// the engine and on SQLite, and requires the same answer of both, and the answer want: an error as
+// "code/extended: message", or "columns ...; rows ..." for a query, or "" for a statement that
+// changes the database. After a statement that is no query, the state of both must be the same.
+func pin(t *testing.T, setup []string, src, want string, args ...int64) {
 	t.Helper()
 	i := newInstance(t, engine.Options{})
 	o := newOracle(t)
@@ -41,13 +43,14 @@ func pin(t *testing.T, setup []string, src, want string) {
 	query := strings.Contains(strings.ToLower(src), "select")
 	var got answer
 	if query {
-		got = i.query(src)
+		got = i.query(src, args...)
 	} else {
-		got = i.exec(src)
+		got = i.exec(src, args...)
 	}
-	sqlite := o.run(t, src)
+	sqlite := o.run(t, src, args...)
 	if !query {
 		sqlite.columns, sqlite.rows = "", nil
+		is.Equal(t, o.state(t), i.state(), "SQLite and the engine")
 	}
 	is.Equal(t, sqlite.String(), got.String(), "SQLite and the engine")
 	text := got.err
@@ -171,6 +174,154 @@ func TestEngine_errors(t *testing.T) {
 		cancel()
 		_, err := i.c.Exec(ctx, t1)
 		is.True(t, errors.Is(err, context.Canceled))
+	})
+}
+
+func TestEngine_parameters(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup []string
+		src   string
+		args  []int64
+		want  string
+	}{
+		{name: "should insert the argument of the parameter", setup: []string{t1},
+			src: "insert into t1 (v1) values (?)", args: []int64{42}, want: ""},
+		{name: "should insert the smallest integer", setup: []string{t1},
+			src: "insert into t1 (v1) values (?)", args: []int64{-9223372036854775808}, want: ""},
+		{name: "should insert the largest integer, with comments around the parameter", setup: []string{t1},
+			src: "insert into T1 (V1) values (/* a */ ? -- b\n);", args: []int64{9223372036854775807}, want: ""},
+		{name: "should give that a key exists, inserted before through a literal", setup: []string{t1, "insert into t1 (v1) values (-7)"},
+			src: "insert into t1 (v1) values (?)", args: []int64{-7}, want: "19/1555: UNIQUE constraint failed: t1.v1"},
+		{name: "should give that a key exists, with the names as the table stores them",
+			setup: []string{`create table "Foo" ("Bar" int primary key) strict, without rowid`, "insert into foo (bar) values (0)"},
+			src:   "insert into FOO (BAR) values (?)", args: []int64{0}, want: "19/1555: UNIQUE constraint failed: Foo.Bar"},
+		{name: "should give that there is no table to write",
+			src: "insert into t2 (v1) values (?)", args: []int64{1}, want: "1/1: no such table: t2"},
+		{name: "should give that there is no column", setup: []string{t1},
+			src: "insert into t1 (v2) values (?)", args: []int64{1}, want: "1/1: table t1 has no column named v2"},
+		{name: "should give the syntax error of SQLite, whatever the arguments",
+			src: "insert into t1 (v1) values (? ?)", args: []int64{1, 2}, want: `1/1: near "?": syntax error`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pin(t, c.setup, c.src, c.want, c.args...)
+		})
+	}
+
+	t.Run("should read the rows that parameters inserted, as SQLite does", func(t *testing.T) {
+		setup := []string{t1}
+		for _, v := range []int64{3, -9223372036854775808, 0, 9223372036854775807} {
+			setup = append(setup, fmt.Sprint("insert into t1 (v1) values (", v, ")"))
+		}
+		pin(t, setup, "select * from t1", "columns v1 INT; rows -9223372036854775808 0 3 9223372036854775807")
+
+		i := newInstance(t, engine.Options{})
+		o := newOracle(t)
+		is.Equal(t, o.run(t, t1).String(), i.exec(t1).String())
+		for _, v := range []int64{3, -9223372036854775808, 0, 9223372036854775807, 3} {
+			src := "insert into t1 (v1) values (?)"
+			is.Equal(t, o.run(t, src, v).String(), i.exec(src, v).String(), v)
+			changes, _ := o.changes(t)
+			is.Equal(t, changes, i.changes, v)
+		}
+		is.Equal(t, o.state(t), i.state())
+		is.Equal(t, o.run(t, "select * from t1").String(), i.query("select * from t1").String())
+	})
+
+	t.Run("should refuse another number of arguments than parameters, before anything runs", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(t1).err)
+		cases := []struct {
+			src  string
+			args []int64
+			want string
+		}{
+			{src: "insert into t1 (v1) values (?)", want: "s4ql: wrong number of arguments: 0 for a statement with 1 parameter"},
+			{src: "insert into t1 (v1) values (?)", args: []int64{1, 2}, want: "s4ql: wrong number of arguments: 2 for a statement with 1 parameter"},
+			{src: "insert into t1 (v1) values (1)", args: []int64{1}, want: "s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
+			{src: "select * from t1", args: []int64{1}, want: "s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
+			{src: t1, args: []int64{1, 2, 3}, want: "s4ql: wrong number of arguments: 3 for a statement with 0 parameters"},
+			{src: "drop table t1", args: []int64{1}, want: "s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
+		}
+		for _, c := range cases {
+			_, err := i.c.Exec(t.Context(), c.src, integers(c.args)...)
+			is.True(t, errors.Is(err, engine.ErrArguments), c.src)
+			is.True(t, !errors.Is(err, stmt.ErrNotSupported), c.src)
+			is.Equal(t, c.want, fmt.Sprint(err), c.src)
+			is.Equal(t, c.want, fmt.Sprint(engine.Check(c.src, len(c.args))), c.src)
+			_, err = i.c.Query(t.Context(), c.src, integers(c.args)...)
+			is.Equal(t, c.want, fmt.Sprint(err), c.src)
+		}
+		is.Equal(t, "t1 (v1 INT): \n", i.state())
+		is.Equal(t, 0, len(logAnnotations(t, i.store)[1:]))
+	})
+
+	t.Run("should refuse an argument that is not an integer as not supported", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(t1).err)
+		for _, v := range []*s4qlpb.Value{
+			s4qlpb.Value_builder{Text: new("1")}.Build(),
+			s4qlpb.Value_builder{Real: new(1.0)}.Build(),
+			s4qlpb.Value_builder{Blob: []byte{1}}.Build(),
+			s4qlpb.Value_builder{Null: &s4qlpb.Null{}}.Build(),
+			{},
+			nil,
+		} {
+			_, err := i.c.Exec(t.Context(), "insert into t1 (v1) values (?)", v)
+			is.True(t, errors.Is(err, stmt.ErrNotSupported))
+			is.Equal(t, "s4ql: not supported: argument 1, which is not an integer", fmt.Sprint(err))
+		}
+		is.Equal(t, "t1 (v1 INT): \n", i.state())
+	})
+
+	t.Run("should judge the text before the arguments, and the arguments before the instance", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(t1).err)
+		text := map[string]string{
+			"insert into t1 (v1) values (? ?)": `near "?": syntax error`,
+			"insert into t1 (v1) values (?1)":  "s4ql: not supported: numbered parameter (at offset 28)",
+			"select * from t1 where v1 = ?":    "s4ql: not supported: WHERE clause (at offset 17)",
+			" ; ":                              "s4ql: the text holds no statement",
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		check := func(ctx context.Context) {
+			t.Helper()
+			for src, want := range text {
+				for _, args := range [][]*s4qlpb.Value{nil, integers([]int64{1}), integers([]int64{1, 2}), {nil}} {
+					_, err := i.c.Exec(ctx, src, args...)
+					is.Equal(t, want, fmt.Sprint(err), src)
+					_, err = i.c.Query(ctx, src, args...)
+					is.Equal(t, want, fmt.Sprint(err), src)
+					is.Equal(t, want, fmt.Sprint(engine.Check(src, len(args))), src)
+				}
+			}
+			_, err := i.c.Exec(ctx, "insert into t1 (v1) values (?)")
+			is.True(t, errors.Is(err, engine.ErrArguments))
+			_, err = i.c.Exec(ctx, "insert into t1 (v1) values (?)", s4qlpb.Value_builder{Text: new("1")}.Build())
+			is.True(t, errors.Is(err, stmt.ErrNotSupported))
+		}
+		check(ctx)
+		_, err := i.c.Exec(ctx, "insert into t1 (v1) values (?)", integers([]int64{1})...)
+		is.True(t, errors.Is(err, context.Canceled))
+		i.close()
+		check(t.Context())
+		_, err = i.c.Exec(t.Context(), "insert into t1 (v1) values (?)", integers([]int64{1})...)
+		is.True(t, errors.Is(err, core.ErrStopped))
+	})
+
+	t.Run("should replay rows that parameters inserted, with an empty cache", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(t1).err)
+		for _, v := range []int64{5, -9223372036854775808, 9223372036854775807} {
+			is.Equal(t, "", i.exec("insert into t1 (v1) values (?)", v).err)
+		}
+		want := i.state()
+		i.restart(true, engine.Options{})
+		is.Equal(t, want, i.state())
+		is.Equal(t, "t1 (v1 INT): -9223372036854775808 5 9223372036854775807\n", want)
+		is.Equal(t, "19/1555: UNIQUE constraint failed: t1.v1", i.exec("insert into t1 (v1) values (?)", 5).err)
 	})
 }
 
@@ -304,7 +455,7 @@ func readFree(t *testing.T, c *engine.Conn) {
 }
 
 // logAnnotations of the database in the store s, in the order of the log, each commit object as its
-// annotations.
+// annotations: the text of each, and " with " and the value of each of its parameters.
 func logAnnotations(t testing.TB, s *simstore.Store) [][]string {
 	t.Helper()
 	data, _, ok := s.Object("db/manifest.json")
@@ -329,8 +480,11 @@ func logAnnotations(t testing.TB, s *simstore.Store) [][]string {
 			}
 			is.NotError(t, err)
 			if a != nil {
-				is.Equal(t, 0, len(a.GetStatement().GetParameters()))
-				notes = append(notes, a.GetStatement().GetSql())
+				note := a.GetStatement().GetSql()
+				for _, p := range a.GetStatement().GetParameters() {
+					note += " with " + valueText(t, p)
+				}
+				notes = append(notes, note)
 			}
 		}
 		commits = append(commits, notes)
@@ -359,6 +513,21 @@ func TestEngine_annotations(t *testing.T) {
 			{"create table t1 (v1 int primary key) strict, without rowid;"},
 			{"insert into t1 (v1) /* inside */ values (1)"},
 			{"drop table T1;"},
+		}), fmt.Sprint(logAnnotations(t, i.store)))
+	})
+
+	t.Run("should annotate each commit with the arguments of its statement, and commit nothing for a statement that fails", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(t1).err)
+		is.Equal(t, "", i.exec("insert into t1 (v1) values (?);", -9223372036854775808).err)
+		is.Equal(t, "", i.exec("insert into t1 (v1) values (1)").err)
+		is.Equal(t, "19/1555: UNIQUE constraint failed: t1.v1", i.exec("insert into t1 (v1) values (?)", 1).err)
+		is.Equal(t, "", i.query("insert into t1 (v1) values ( ? ) -- q", 9223372036854775807).err)
+		is.Equal(t, fmt.Sprint([][]string{
+			{"create table t1 (v1 int primary key) strict, without rowid"},
+			{"insert into t1 (v1) values (?); with -9223372036854775808"},
+			{"insert into t1 (v1) values (1)"},
+			{"insert into t1 (v1) values ( ? ) with 9223372036854775807"},
 		}), fmt.Sprint(logAnnotations(t, i.store)))
 	})
 }
@@ -465,6 +634,22 @@ func TestEngine_events(t *testing.T) {
 		is.True(t, err != nil)
 		e, _ = h.last(t)
 		is.Equal(t, "no_statement", e[engine.AttrOutcome])
+
+		// No value of an argument is in an event, of a statement that succeeds or that fails.
+		for _, args := range [][]int64{{4815162342}, {4815162342, 4815162343}} {
+			_, _ = i.c.Exec(ctx, "insert into t1 (v1) values (?)", integers(args)...)
+			e, level = h.last(t)
+			is.Equal(t, slog.LevelDebug, level)
+			is.Equal(t, "insert", e[engine.AttrKind])
+			is.Equal(t, "insert into t1 (v1) values (?)", e[engine.AttrSQL])
+			is.True(t, !strings.Contains(fmt.Sprint(e), "481516234"), fmt.Sprint(e))
+		}
+		is.Equal(t, "wrong_arguments", e[engine.AttrOutcome])
+		is.Equal(t, "s4ql: wrong number of arguments: 2 for a statement with 1 parameter", e[engine.AttrError])
+		ch.mu.Lock()
+		ofCore := fmt.Sprint(ch.records)
+		ch.mu.Unlock()
+		is.True(t, !strings.Contains(ofCore, "481516234"), ofCore)
 
 		i.close()
 		_, err = i.c.Exec(ctx, "insert into t1 (v1) values (6)")

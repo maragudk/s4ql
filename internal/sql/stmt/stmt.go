@@ -9,11 +9,12 @@
 //     accepts the text and it is not, token for token, a statement that s4ql supports. Text that is
 //     not valid UTF-8, or that has a NUL byte, is not supported either, and is rejected before it is
 //     parsed.
-//   - A supported statement: a [*CreateTable], an [*Insert], a [*Select], or a [*DropTable].
+//   - A supported statement: a [*CreateTable], an [*Insert], a [*Select], or a [*DropTable]. Its
+//     [Statement.Parameters] says how many arguments it takes.
 //   - No statement, for a text of only spaces, comments, and semicolons, which SQLite prepares into no
 //     statement and no error.
 //
-// The supported statements are those of slice 1 of docs/roadmap.md. The README next to this file
+// The supported statements are those of slices 1 and 2 of docs/roadmap.md. The README next to this file
 // defines them token for token, and lists the names that a "not supported" error gives.
 //
 // A statement is built only from what the pass has recognized. The pass reads the syntax tree of
@@ -96,6 +97,11 @@ type Statement interface {
 	// Bounds of the statement in the text, from its first token to the end of its semicolon, or of
 	// its last token if it has none.
 	Bounds() Span
+
+	// Parameters of the statement: how many arguments it takes, as sqlite3_bind_parameter_count
+	// gives it. Every parameter is a plain ?, so this is the number of them.
+	Parameters() int
+
 	setSpan(Span)
 }
 
@@ -107,13 +113,18 @@ type CreateTable struct {
 	Column Name
 }
 
-// Insert of one row with one value, into the one column that it names.
+// Insert of one row with one value, into the one column that it names. The value is the integer
+// literal Value, or the argument of a parameter if Parameter is not 0.
 type Insert struct {
 	Span   Span
 	Table  Name
 	Column Name
-	Value  int64
-	// ValueSpan of the value in the text, its sign included.
+	// Value of the integer literal, and 0 for a parameter.
+	Value int64
+	// Parameter is the number of the parameter that gives the value, from 1 as SQLite counts them, or
+	// 0 if the value is a literal.
+	Parameter int
+	// ValueSpan of the value in the text, its sign included, or of the parameter.
 	ValueSpan Span
 }
 
@@ -140,6 +151,23 @@ func (s *Select) Bounds() Span { return s.Span }
 
 // Bounds of the statement in the text.
 func (s *DropTable) Bounds() Span { return s.Span }
+
+// Parameters of the statement, which has none.
+func (s *CreateTable) Parameters() int { return 0 }
+
+// Parameters of the statement: 1 if its value is a parameter, and 0 otherwise.
+func (s *Insert) Parameters() int {
+	if s.Parameter > 0 {
+		return 1
+	}
+	return 0
+}
+
+// Parameters of the statement, which has none.
+func (s *Select) Parameters() int { return 0 }
+
+// Parameters of the statement, which has none.
+func (s *DropTable) Parameters() int { return 0 }
 
 func (s *CreateTable) setSpan(sp Span) { s.Span = sp }
 func (s *Insert) setSpan(sp Span)      { s.Span = sp }
