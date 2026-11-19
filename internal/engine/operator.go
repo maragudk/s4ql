@@ -171,8 +171,7 @@ func (i *insert) check() error {
 			typ := i.table.GetColumns()[position].GetType()
 			if f := v.GetReal(); i.convertReal && v.HasReal() && (typ == s4qlpb.Type_TYPE_INT || typ == s4qlpb.Type_TYPE_INTEGER) &&
 				f == math.Trunc(f) && math.Abs(f) < 1<<63 {
-				// The planted bug: the real becomes the integer, as SQLite converts it for a column that
-				// is not STRICT.
+				// The planted bug: the real becomes the integer, as SQLite converts it.
 				v = s4qlpb.Value_builder{Integer: new(int64(f))}.Build()
 				row[position] = v
 			}
