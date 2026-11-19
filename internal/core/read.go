@@ -194,8 +194,10 @@ func (rd *Reader) Close(ctx context.Context) error {
 
 	// The connection closes under the mutex, as in [DB.closeIdleLocked], so that [DB.Close] does not
 	// return while a read connection that it takes for closed is still closing, and so that no two
-	// connections to the cache close at once: the close of the last one deletes the write-ahead log
-	// only if it can lock the cache alone, and two closes at once can keep each other from it.
+	// connections that have read the cache close at once: the close of the last one deletes the
+	// write-ahead log only if it can lock the cache alone, and two closes at once can keep each
+	// other from it. A connection that has not read the cache holds no lock on it, as one that
+	// [DB.Reader] closes after a failed open.
 	d.mu.Lock()
 	d.readers = slices.DeleteFunc(d.readers, func(other *conn) bool { return other == c })
 	var closeErr error

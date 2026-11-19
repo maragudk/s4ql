@@ -340,3 +340,56 @@ The new point in `/docs/todo.md` under the storage core, and the comment in `Rea
 ### Future work
 
 The point in the todo, if a slow close ever matters.
+
+## Step 7: The review of the branch, and the checks
+
+**Author:** reader-follow-ups builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "Checks before you report: your new and changed tests with `-count=50 -shuffle on` and with `-race`; `make test`; `make lint`; `make check-browser`. Because point 1 changes the binding, also run the sanitizer for the packages you touched only [...]. Review your own diff once more before you report."
+**Interpretation:** The checks on the final state of the branch, and a review by the code-review skill of `main...reader-follow-ups`.
+**Inferred intent:** The lead gets a branch whose weak spots are named.
+
+### What I did
+
+The code-review skill, at medium, on `main...reader-follow-ups`, found three things and nothing that blocks:
+
+- The new comment in `Reader.Close` said that no two connections to the cache close at once, and `DB.Reader` closes its new connection without `DB.mu` when `pragma query_only = on` fails, which is code from before this branch. That close cannot get in the way: a connection that has not read the cache holds no lock on it, and neither `busy_timeout` nor `query_only` reads the schema (in `/internal/sqlite/c/sqlite3.c` both have `PragFlg_Result0` and no `PragFlg_NeedSchema`). The comment now says "no two connections that have read the cache", and why the close after a failed open does not count. No code changed.
+- The README's bullet on who makes the cache said that a deletion stops the instance, which is so only at the next open of a reader. It now says that until then the write connection and the open readers go on with the deleted files, and that an instance whose readers are all open may never stop for it.
+- The package documentation left out the descriptor of the write connection. It now says "plus the one of the connection for writes", which the 51 for 50 queries shows.
+
+The checks on the branch before these three edits of comments and documentation, which `go vet`, `golangci-lint` of the two packages, and the tests of the reader then ran again:
+
+- `TestOpenExistingVFS` in `/internal/sqlite`, `TestDB_Reader` and `TestReader_Close` in `/internal/core`, and `TestStop` and `TestClose` in the root package: 50 times with `-shuffle on`, and 50 times with `-race -shuffle on`. All pass.
+- `make test`, `make lint`, and `make check-browser` pass.
+- `go test -asan -shuffle on ./internal/sqlite/ ./internal/core/ .` in Docker, `golang:1.26`, passes.
+- In headless Chromium, `TestOpenExistingVFS` of `/internal/sqlite` and `TestDB_Reader` of `/internal/core`, through `make test-browser` with `BROWSERPKGS` and `-run`, pass.
+
+### Why
+
+The brief asked for them.
+
+### What worked
+
+The sanitizer's run found the fault of step 4.
+
+### What didn't work
+
+Nothing in this step.
+
+### What I learned
+
+The flags of SQLite's pragma table say whether a pragma reads the schema.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+Nothing beyond the earlier steps.
+
+### Future work
+
+The two open points of `/docs/todo.md` for the lead and Markus (the bound of the pool, and waiting on a pinned connection), and the known point of the close of a reader under `DB.mu`.

@@ -70,8 +70,8 @@
 // the write-ahead log, but not the file of the cache: SQLite keeps that open while another
 // connection to the cache holds a lock on it, which the instance's own connection for writes always
 // does, and reuses it for the next connection that opens. So the open files of the cache stay at
-// the most connections that have read at once, until the database is closed, which closes them
-// all. A process that has no file descriptor left for it has a cache that cannot be
+// the most connections that have read at once, plus the one of the connection for writes, until the
+// database is closed, which closes them all. A process that has no file descriptor left for it has a cache that cannot be
 // opened, which stops the instance as any failure of the cache does: an application that can run
 // more queries at once than it has file descriptors for bounds the pool.
 //
