@@ -111,6 +111,13 @@ Before merging, confirm that the pull request has checks and that every one of t
 - **Why:** on 2026-11-19 the lead merged pull request #41 before its CI had run. The watch on its checks returned at once with "no checks reported", because GitHub had not registered them yet, and a pipe in the merge command hid the exit code that should have stopped it. CI passed afterwards. On 2026-11-18 a merge that the API refused was followed by a cleanup that deleted the branch and closed the pull request. `main` has no required status checks, because they would also block direct pushes; Markus: "I just want to avoid too much friction while still supporting correctness."
 - **How to apply:** count the checks with `gh pr checks <n> --json bucket`, and merge only if there are as many as CI has jobs and none is in another bucket than `pass`. Put no pipe between a check and the command that depends on it. An empty list of checks means "not run yet", never "passed". After `gh pr merge`, read the state with `gh pr view <n> --json state` before removing the branch or the worktree. A pull request that changes a workflow file is merged locally and pushed, because the API refuses it.
 
+### A test never skips itself, except under `-short`
+
+A test that cannot run fails. It does not skip.
+
+- **Why:** a skipped test looks like a passing one, so a missing credential or variable turns a check off without anyone seeing it. Markus said on 2026-11-19, about the tests against a real bucket: "the tests shouldn't skip but fail on missing creds. That goes for all tests btw, never skip tests unless it's because of -short."
+- **How to apply:** `testing.Short()` is the only reason for `t.Skip`. A test that needs something from outside, such as a bucket and its credentials, fails with a message that says what is missing, and skips under `-short`. Something that only a person runs with a variable, such as the replay of one seed, is not written as a test that skips when the variable is missing.
+
 ### A test must not depend on timing
 
 A test passes or fails for the same reason on every machine, however slow or loaded.
