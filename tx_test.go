@@ -908,6 +908,29 @@ func TestTx_instance(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("should close the rows of a transaction while the database is closed, beside statements of the transaction, and end the transaction", func(t *testing.T) {
+		for _, kind := range []*sql.TxOptions{nil, readOnly} {
+			closeBeside(t, func(t *testing.T, db *sql.DB) (*sql.Rows, func() (bool, error), func() error) {
+				tx := begin(t, db, kind)
+				rows, err := tx.QueryContext(t.Context(), select1)
+				is.NotError(t, err)
+				statement := func() (bool, error) {
+					_, err := tx.ExecContext(t.Context(), "insert into t1 (v1) values (4)")
+					switch {
+					case err == nil, closedError(err):
+						return false, nil
+					case errors.Is(err, s4ql.ErrNotSupported) && strings.Contains(err.Error(), "close the rows first"):
+						return true, nil
+					case kind != nil && strings.Contains(err.Error(), "attempt to write a readonly database"):
+						return false, nil
+					}
+					return false, err
+				}
+				return rows, statement, tx.Rollback
+			})
+		}
+	})
 }
 
 // TestTx_raw checks what the driver gives for calls of its own interfaces that database/sql does

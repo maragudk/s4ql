@@ -1238,6 +1238,80 @@ func TestClose(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("should close the rows of a connection while the database is closed, beside statements on the connection", func(t *testing.T) {
+		closeBeside(t, func(t *testing.T, db *sql.DB) (*sql.Rows, func() (bool, error), func() error) {
+			conn, err := db.Conn(t.Context())
+			is.NotError(t, err)
+			rows, err := conn.QueryContext(t.Context(), select1)
+			is.NotError(t, err)
+			// A write, which needs no reader and runs beside the rows, and a query, which needs the
+			// reader of the connection, by turns, with a new key for each write.
+			n := 3
+			statement := func() (bool, error) {
+				n++
+				var err error
+				if n%2 == 0 {
+					_, err = conn.ExecContext(t.Context(), "insert into t1 (v1) values (?)", n)
+				} else {
+					var r *sql.Rows
+					if r, err = conn.QueryContext(t.Context(), select1); err == nil {
+						err = r.Close()
+					}
+				}
+				switch {
+				case err == nil:
+					return true, nil
+				case closedError(err):
+					return false, nil
+				case errors.Is(err, s4ql.ErrNotSupported) && strings.Contains(err.Error(), "whose rows of an earlier query are open"):
+					return true, nil
+				}
+				return false, err
+			}
+			return rows, statement, conn.Close
+		})
+	})
+}
+
+// closeBeside closes a database many times over, each time a new one that holds t1 with three rows,
+// while the rows of a query on one of its connections are open, and while another goroutine runs
+// statements on that connection. The close of the database closes those rows from its own goroutine,
+// as it closes all rows that are open, so under -race the test shows whether that close and the
+// statements touch the state of the connection without an order between them. It does not depend on
+// how the two goroutines interleave: the race detector sees accesses without an order between them
+// whenever they come.
+//
+// open gives the rows, of a query on the connection, the statement, which runs on the connection
+// and gives whether to run it again, and its error, if it is one that the test does not expect, and
+// end, which ends what open began. The goroutine runs the statement once before the close begins,
+// and then until it is not to run again, and then closes the rows and calls end. Every second time,
+// the rows are read up to their first row first, so that the close ends a loop of the engine over
+// them; the other times no loop reads them.
+func closeBeside(t *testing.T, open func(t *testing.T, db *sql.DB) (rows *sql.Rows, statement func() (bool, error), end func() error)) {
+	t.Helper()
+	for i := range 20 {
+		db := newWorld(t).serve(t, "a")
+		exec(t, db, t1, insert1, "insert into t1 (v1) values (2)", "insert into t1 (v1) values (3)")
+		rows, statement, end := open(t, db)
+		if i%2 == 0 {
+			is.True(t, rows.Next())
+		}
+		started, done := make(chan struct{}), make(chan error, 1)
+		go func() {
+			var err error
+			for again, n := true, 0; again && err == nil; n++ {
+				again, err = statement()
+				if n == 0 {
+					close(started)
+				}
+			}
+			done <- errors.Join(err, rows.Close(), end())
+		}()
+		<-started
+		is.NotError(t, db.Close())
+		is.NotError(t, <-done)
+	}
 }
 
 // closedError reports whether err is the error of a statement on a database that is closed: that of

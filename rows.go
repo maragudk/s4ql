@@ -29,8 +29,10 @@ import (
 // recovers, with the stack where it came, as the event "panic" at Error.
 type rows struct {
 	// ctx of the query.
-	ctx  context.Context
-	c    *connector
+	ctx context.Context
+	c   *connector
+	// conn is the connection of the query, whose connection of the engine the rows are of.
+	conn *conn
 	rows *engine.Rows
 
 	// mu is held by Next, Close, and the close by the connector, which can come beside either.
@@ -177,10 +179,30 @@ func (r *rows) Close() error {
 
 // shut is the close of the rows by the connector. It drops the error of the close: the task has
 // logged a panic.
+//
+// database/sql makes no call of the rows while a call of their connection runs, but the connector
+// closes them from a goroutine of its own, and the close touches the state of the connection of the
+// engine. So shut holds that connection while it closes the rows, as a call does; see [conn]. If a
+// call holds it, shut leaves the close to the call, which closes the rows when it ends, and does
+// not wait: the call can wait for the stop of the instance, which the connector makes after shut.
 func (r *rows) shut() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		return
+	}
+	c := r.conn
+	c.mu.Lock()
+	if c.busy {
+		c.shut = append(c.shut, r)
+		c.mu.Unlock()
+		return
+	}
+	c.busy = true
+	c.mu.Unlock()
 	_ = r.close()
+	c.mu.Lock()
+	c.freeLocked(r.ctx)
 }
 
 // close the rows, unless they are closed, with mu held. It gives the error of the end of the
