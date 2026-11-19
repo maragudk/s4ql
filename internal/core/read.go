@@ -36,30 +36,48 @@ type Reader struct {
 // local I/O failure, which includes a file that cannot be opened for want of a file descriptor,
 // stops the instance, and the error wraps [ErrStopped] and [ErrLocal].
 func (d *DB) Reader(ctx context.Context) (*Reader, error) {
-	const operation = "open a reader"
-	if err := d.stoppedError(); err != nil {
+	// The connection opens without the mutex, which nothing holds across a call that can take
+	// long. The count of the readers that are opening is what [DB.Close] waits for meanwhile.
+	d.mu.Lock()
+	if err := d.stopped; err != nil {
+		d.mu.Unlock()
 		return nil, err
 	}
+	d.opening++
+	d.mu.Unlock()
+	d.host.Yield(ctx, "core: a reader before its open")
+
+	// Nothing waits between the open and the list, so that no task is ended between them with a
+	// connection that nothing knows of.
 	c, err := openConn(d.path, d.options.VFS, d.options.BusyTimeout.Milliseconds())
 	if err == nil {
 		if err = c.exec("pragma query_only = on"); err != nil {
 			_ = c.close()
 		}
 	}
-	if err != nil {
-		return nil, d.cacheError(ctx, operation, err)
-	}
 
 	d.mu.Lock()
-	if err := d.stopped; err != nil {
-		d.mu.Unlock()
-		// The instance stopped meanwhile, and its close may have looked at the read connections
-		// already. The connection has read nothing, so it holds no lock and no write-ahead log.
+	stopped := d.stopped
+	switch {
+	case err != nil:
+	case stopped != nil:
+		// The instance stopped meanwhile, and its close does not know the connection: it is closed
+		// here, before the count lets that close return.
 		_ = c.close()
-		return nil, err
+	default:
+		d.readers = append(d.readers, c)
 	}
-	d.readers = append(d.readers, c)
+	d.opening--
+	if d.closing && d.opening == 0 {
+		d.wakeLocked()
+	}
 	d.mu.Unlock()
+	switch {
+	case err != nil:
+		return nil, d.cacheError(ctx, "open a reader", err)
+	case stopped != nil:
+		return nil, stopped
+	}
 	return &Reader{d: d, c: c}, nil
 }
 

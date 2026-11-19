@@ -490,7 +490,7 @@ func (r *run) write(ctx context.Context, d *core.DB, value int64) (string, strin
 
 // read the keys of the table of the workload in a read transaction on d, and say how the call
 // ended, its error, and what it saw. The call opens a reader of its own for the transaction, and
-// closes it, as a connection that a pool opens for one query and then drops.
+// closes it.
 func (r *run) read(ctx context.Context, d *core.DB) (string, string, []int64, format.Name) {
 	rd, err := d.Reader(ctx)
 	if err != nil {

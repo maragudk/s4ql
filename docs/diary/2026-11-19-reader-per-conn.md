@@ -295,3 +295,89 @@ What `readersFree` should mean without a fixed number of readers. A read that is
 ### Future work
 
 Whether `Open` should raise the number of idle connections that the pool keeps is a question for the lead: the default of two means that a third query at once pays for a new reader. Nothing was changed.
+
+## Step 5: The documentation, the checks, and the review
+
+**Author:** reader-per-conn builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "Update `docs/todo.md` (remove the open point; record the decision and your details as built), `internal/core/README.md`, the engine's README if its API changes, and the root package's documentation where it speaks of 'four'. [...] Run the new and changed tests with `-count=50 -shuffle on` and with `-race`, then `make test`, `make lint`, `make test-sql`, the simulation as CI runs it (read `.github/workflows/ci.yml`), the cross-check module's tests, and `make test-asan FUZZTIME=5s`. [...] Review your own diff against `main` once more as a reviewer before you report."
+**Interpretation:** A writer for the four documents, every check that CI runs natively, and a review by two reviewers who do not know the builder's conclusions.
+**Inferred intent:** The branch is ready for the lead's own review, with its weak spots named.
+
+### What I did
+
+A writer sub-agent brought `/docs/todo.md`, `/internal/core/README.md`, `/internal/engine/README.md`, and `/internal/simulator/README.md` in line, from a brief with the facts, and I read its changes against the code. The todo has the decision in place of the open point.
+
+Mutation testing. The engine is under the tool of `/internal/sql/mutation`, so I ran it on the new functions of the engine (`Engine.Conn`, `Conn.Close`, `Conn.read`, `Conn.begin`, `coreDB.reader`, and `coreReader`): 48 mutants, of which 10 did not compile, 35 were killed, and 3 survived. Two of the three were a check in `Conn.Close` that changed nothing, which is gone. The third swapped the arguments of `errors.Is`, which the test did not notice because the fake returned the sentinel itself; the test now wraps it. The second run killed all 34 mutants that compiled. For the core and the driver, which the tool does not cover, I wrote 22 mutants by hand and ran each with `go test -overlay`: 19 were caught. One of the three that were not showed that `Reader.Read` refused a closed reader in two places, of which one is gone. The other two are not caught by any test: a reader without `pragma query_only = on`, which nothing can show, because the core never writes through a reader, and which no test showed before this work either; and the second look at `stopped` in `DB.Reader`, which the review then replaced.
+
+The two reviewers of the code-review skill found no serious issue. What both found, and what I did:
+
+- **`engine.Conn.Close` with rows open ends their read transaction, and the rows then give an internal error.** The driver cannot get there, because `database/sql` closes rows before their connection. The doc comment of `Conn.Close` and the README now say that such rows must not be used. The close still ends the transaction, so that a connection that is closed always gives its reader back.
+- **The pool has no bound by default, so a process can run out of file descriptors, which stops the instance for good.** It is in the package documentation and in the todo. One reviewer showed it with a limit of 64 file descriptors, where the 29th open query stopped the instance. Both suggest that `Open` set a default for `SetMaxOpenConns`. That is a question for the lead and Markus, and nothing was changed.
+
+What one reviewer found, and what I did:
+
+- **`DB.Close` could return while a reader that `DB.Reader` was opening had its connection open,** because the connection was opened without the mutex and put on the list after it. One reviewer saw 1 to 3 files open right after the close in dozens of 900 rounds of a stress test. I first opened the connection under `DB.mu`. The other reviewer, who saw that version in the worktree, objected that an open that stalls on a slow disk would then hold up every call and the lease task. So `DB.Reader` now counts itself in `DB.opening` under the mutex, opens without it, and closes its connection before it lowers the count if the instance has stopped meanwhile, and `DB.waitClosed` waits for the count. A yield, "core: a reader before its open", lets the simulation and a test put a close there. A test in a bubble of `testing/synctest` closes the instance at that yield and shows that the close waits, that no file is open when it returns, and that the reader wakes it.
+- A test on the real core for the close of a connection of the engine inside the loop over its rows, where before only the fake showed `core.ErrReaderInUse`.
+- A stale comment in `/internal/engine/engine_test.go`, two comments in the engine and the simulator that explained the code by a pool that the packages do not know, the comment of `DB.use`, and a line of a comment that was too long.
+- The package documentation now says that `SetMaxOpenConns` makes a write wait too.
+
+What I did not do: one reviewer showed that a reader opens whatever file is at the path of the cache, and creates it, because the binding opens with `SQLITE_OPEN_CREATE`. If a person deletes the files of the cache under a running instance, the connections that are open go on, and each new connection fails with "no such table: main.s4ql_cache" on a new empty file, without a stop. Opening a reader without `CREATE` needs a new function in the SQLite binding, in the native build and in the browser's. It is in the report to the lead.
+
+The writer noticed that the engine logged a read on a busy connection as `core_error` at Warn. It is what the caller asked for, so `outcomeOf` now gives `not_supported` at Debug for it, as the driver gives "not supported".
+
+The checks, all on this machine:
+
+- The new and the changed tests of the root package, the core, and the engine: 50 times with `-shuffle on`, and 50 times with `-race -shuffle on`.
+- `make test`, `make lint` (golangci-lint, also for the browser's build and the simulator, the simulation's lint, and Buf), and `make test-sql`.
+- The simulation as CI runs it: `go test -race -shuffle on -run '^TestFree' ./internal/sim/ ./internal/core/`, and `go test -race -tags s4ql_browser -shuffle on ./internal/simulator/...`.
+- The cross-check module: `go test -race -shuffle on ./...` in `/internal/sqlite/crosscheck`, which holds the differential test of the driver. It needed no change.
+- `make check-browser`, which builds and vets the browser's build and compiles its tests.
+- `make test-asan FUZZTIME=5s` in Docker.
+
+All of them ran once before the review. After it, on the code as it is committed, all ran once more but the last: while the second run of `make test-asan` was going, the lead wrote that the rule in `/AGENTS.md` had changed that day (commit `0f4d4f2` on `main`), that the run under the sanitizer and the fuzz tests are CI's work, and that a builder runs them locally only for a change to `/internal/sqlite` or to a fuzz test. I stopped the run and its container. The one change under `/internal/sqlite` is `VFS.OpenFiles` in `faultvfs`, which was in the first run under the sanitizer, which passed, and has not changed since. What the review changed in the core, `DB.Reader` with its count and its test, has not run under the sanitizer.
+
+### Why
+
+The reviewers were given the diff and the rules, and not the diary, so that they would not confirm what I had concluded.
+
+### What worked
+
+Running the reviewers against each other on the fix as well: the second one read the first fix in the worktree and found its cost.
+
+### What didn't work
+
+The first `make test` failed in `/internal/sql/mutation`, as step 3 tells.
+
+The first test of the wait of `DB.Close`, on real time, did not catch a mutant that leaves out the wake of the close: the reader had lowered the count before the close came to its wait. The test in the bubble now measures that no simulated time passes between the return of the reader and the return of the close, which fails without the wake, because the close then sleeps until its context ends.
+
+The yield in `DB.Reader` made `TestSimulation` fail, in the workload whose callers never pause:
+
+```
+workloads_test.go:454: the workload reached "reads refused by a clock" 0 times, and must reach it 5 times at least
+```
+
+The 10 seeds of that workload reached 20 such reads on `main`, 8 after step 2, and none with the yield. I ran 200 seeds of every workload on `main` and on the tree, with `S4QL_SIM_SEEDS=200`: the workload whose callers never pause reached 88 on `main` and 80 on the tree, so about 4 in 10 seeds, which is less than the minimum of 5 itself. The 20 of 2026-11-18 were a lucky ten seeds, and the change of the schedule moved the luck. The other workloads over 200 seeds, `main` against the tree: 23 and 14 with one instance, 128 and 105 with everything, 1033 and 1308 with writes that land late. No seed violated an invariant, and no pair of traces differed, on either. The workload now runs 30 seeds by default, which reached 18, and its minimums are a quarter of what the 30 seeds reached on 2026-11-19. Each is at least what it was, except that of the reads refused by a clock, which is 4 over 30 seeds where it was 5 over 10. The 30 seeds take about a second more than the 10 did.
+
+### What I learned
+
+- A mutant that survives is often a line that does nothing. Two of the three in the engine were.
+- In a bubble of `testing/synctest`, a sleep without an end returns when every goroutine is blocked, so a wake that is missing shows only as time that passes.
+- A minimum of the simulation that is a quarter of a small count can be more than the workload reaches on average. One more yield in the code is then enough to make it fail.
+
+### What was tricky
+
+Where `DB.Reader` may yield. A yield between the open and the list would let a crash of the simulation end the task with a connection that nothing knows of, which `DB.CloseCache` could then not close. The yield is before the open.
+
+### What warrants review
+
+- `DB.Reader` and `DB.waitClosed` in `/internal/core`, with the count `DB.opening`.
+- The minimums of the workload whose callers never pause, in `/internal/core/workloads_test.go`, and its 30 seeds. It is the one place where this work changed what the simulation must reach.
+- The tests of the browser (`make test-browser`, `make site-check`) need Chromium and were not run. `VFS.OpenFiles` of the browser's `faultvfs` reads a count that the browser's VFS already kept, and compiles.
+
+### Future work
+
+- A default for `SetMaxOpenConns`, and perhaps for `SetMaxIdleConns`, in `Open`: for the lead and Markus.
+- A reader that opens without `SQLITE_OPEN_CREATE`.

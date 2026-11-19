@@ -16,10 +16,10 @@
 // failure; a query runs in a read transaction, which ends when its rows are read to the end or
 // closed.
 //
-// A statement runs on a [Conn], a connection of the engine, which is to the engine what a
-// connection of a pool is to its database: it runs one statement at a time, and it owns one reader
-// of the storage core, on which its read transactions run. So the connections that are open are
-// the queries that can run at once, and nothing in the engine or in the core limits their number.
+// A statement runs on a [Conn], a connection of the engine: it runs one statement at a time, and
+// it owns one reader of the storage core, on which its read transactions run. So the connections
+// that are open are the queries that can run at once, and nothing in the engine or in the core
+// limits their number.
 //
 // An error of a statement is one of these:
 //
@@ -106,8 +106,8 @@ type Result struct {
 // reads tries again. If the cache cannot be opened, that is a local failure, which stops the
 // instance as any other.
 //
-// A Conn is not safe for concurrent use. It must be closed, after the rows of its queries have
-// ended.
+// A Conn is not safe for concurrent use. It must be closed, and only after the rows of its queries
+// have ended.
 type Conn struct {
 	e *Engine
 	// rd is the reader of the connection, from its first read on.
@@ -120,11 +120,12 @@ func (e *Engine) Conn() *Conn {
 	return &Conn{e: e}
 }
 
-// Close the connection, and its reader, if it has one. A read transaction of the connection that
-// is open ends with it, and the rows that hold it give an error from then on. It fails, and closes
-// nothing, while a loop over the rows of a query of the connection runs. A statement on a
-// connection that is closed fails with an internal error. Closing a closed connection does
-// nothing.
+// Close the connection, and its reader, if it has one. It fails, with an error that matches
+// [core.ErrReaderInUse], and closes nothing, while a loop over the rows of a query of the
+// connection runs. Rows of the connection that have not ended must not be used after its close:
+// their read transaction has ended with the reader, and what they give then is an internal error.
+// A statement on a connection that is closed fails with an internal error too. Closing a closed
+// connection does nothing.
 func (c *Conn) Close(ctx context.Context) error {
 	var err error
 	if c.rd != nil {

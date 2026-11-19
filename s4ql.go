@@ -59,8 +59,9 @@
 // One write runs at a time, and a second one waits for the first. Reads run in parallel, each on
 // one consistent state of the database, and the pool of database/sql sets how many run at once:
 // each connection of the pool runs one read at a time. [database/sql.DB.SetMaxOpenConns] therefore
-// bounds the reads that run at once, and a further query then waits for a connection, until one is
-// free or its context ends. Without it the pool has no bound, and neither have the reads.
+// bounds the reads that run at once, and a further statement then waits for a connection, until one
+// is free or its context ends: also one that writes, because the bound is on every statement.
+// Without it the pool has no bound, and neither have the reads.
 //
 // A connection opens a connection to the cache of its own for its first read, which is two open
 // files, and closes it when database/sql closes the connection, so the other settings of the pool,

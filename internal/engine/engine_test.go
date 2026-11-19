@@ -226,8 +226,8 @@ func TestEngine_Query(t *testing.T) {
 			_, err := i.c.Exec(ctx, fmt.Sprint("insert into t1 (v1) values (", v, ")"))
 			is.NotError(t, err)
 		}
-		// The instance has [readers] read connections, so a read transaction that
-		// is left open shows after a few queries: the next one waits for a connection.
+		// A read transaction that is left open shows at the next query of the connection, which
+		// fails.
 		for range 10 {
 			rows, err := i.c.Query(ctx, "select * from t1")
 			is.NotError(t, err)
@@ -656,6 +656,32 @@ func TestConn(t *testing.T) {
 			is.NotError(t, c.Close(ctx))
 		}
 		noneOpen(t, i)
+	})
+
+	t.Run("should not close a connection inside the loop over the rows of its query, and close it after the loop", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		ctx := t.Context()
+		_, err := i.c.Exec(ctx, t1)
+		is.NotError(t, err)
+		for v := range 3 {
+			_, err := i.c.Exec(ctx, fmt.Sprint("insert into t1 (v1) values (", v, ")"))
+			is.NotError(t, err)
+		}
+		c := i.e.Conn()
+		rows, err := c.Query(ctx, query)
+		is.NotError(t, err)
+		var n int
+		for _, err := range rows.All() {
+			is.NotError(t, err)
+			n++
+			is.True(t, errors.Is(c.Close(ctx), core.ErrReaderInUse))
+		}
+		is.Equal(t, 3, n)
+		// The refusals closed nothing: the connection reads again.
+		readFree(t, c)
+		is.NotError(t, c.Close(ctx))
+		_, err = c.Query(ctx, query)
+		is.True(t, errors.Is(err, engine.ErrInternal), fmt.Sprint(err))
 	})
 
 	t.Run("should close the reader of a connection after the close of its instance, and refuse its statements with the stop", func(t *testing.T) {

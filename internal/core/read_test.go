@@ -249,6 +249,45 @@ func TestDB_Reader(t *testing.T) {
 		is.Equal(t, 0, d.Readers())
 	})
 
+	t.Run("should make the close of the instance wait for a reader that is opening, which then leaves nothing open", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			// The connections to the cache are closed by the cleanups that are registered later,
+			// which run first.
+			vfs, err := faultvfs.New()
+			is.NotError(t, err)
+			t.Cleanup(func() { is.NotError(t, vfs.Close()) })
+			h := &yieldHook{Host: w.host, site: "core: a reader before its open"}
+			d := w.openWith(t, "a", h, w.client(), core.Options{VFS: vfs.Name()})
+			is.NotError(t, d.Wait(t.Context()))
+
+			// The instance is closed while the reader is about to open its connection. The close has
+			// stopped the instance and closed the write connection, and waits for the reader.
+			closed := make(chan error, 1)
+			closing := func() {
+				go func() {
+					ctx, cancel := context.WithTimeout(t.Context(), time.Hour)
+					defer cancel()
+					closed <- d.Close(ctx)
+				}()
+				time.Sleep(time.Minute)
+				is.True(t, isDone(d))
+				is.Equal(t, 0, vfs.OpenFiles())
+				is.Equal(t, 0, len(closed))
+			}
+			h.f.Store(&closing)
+			_, err = d.Reader(t.Context())
+			is.Error(t, core.ErrStopped, err)
+			is.Error(t, core.ErrClosed, err)
+
+			// The reader has woken the close, which returns without waiting for its context.
+			start := time.Now()
+			is.NotError(t, <-closed)
+			is.Equal(t, 0, time.Since(start))
+			is.Equal(t, 0, vfs.OpenFiles())
+			is.Equal(t, 0, d.Readers())
+		})
+	})
+
 	t.Run("should stop the instance for good when the cache cannot be opened for a reader, as for any local failure of the cache", func(t *testing.T) {
 		w := newWorld(t)
 		// The connections to the cache are closed by the cleanups that are registered later, which

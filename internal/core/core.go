@@ -201,8 +201,10 @@ type DB struct {
 	// mu guards the fields below. It is never held while waiting.
 	mu sync.Mutex
 	// readers are the read connections of the [Reader] values that are not closed, in the order in
-	// which they were opened, and those that [DB.Close] closed before their reader was.
+	// which they were opened, and those that [DB.Close] closed before their reader was. opening is
+	// the number of read connections that [DB.Reader] is opening, which are not on the list yet.
 	readers []*conn
+	opening int
 	// stopped is the error of every call once the instance has stopped for good, and done is closed
 	// then.
 	stopped error
@@ -683,10 +685,10 @@ func (d *DB) Wait(ctx context.Context) error {
 // once, also the one of every [Reader] and the one of a transaction that is open, whose every call
 // fails from then on: a write transaction is then rolled back, and its Rollback returns nil. A
 // connection that a call uses is closed when the call ends. A reader is still closed by its owner,
-// with [Reader.Close], which then has nothing left to close. After the stop, every call fails at its next check, except a
-// [Tx.Commit] whose swap may be applied, which goes on finding out, and a request to the store that
-// is on its way ends at its answer or its timeout. Close waits for those calls until ctx is done,
-// and returns an error if one still runs.
+// with [Reader.Close], which then has nothing left to close. After the stop, every call fails at
+// its next check, except a [Tx.Commit] whose swap may be applied, which goes on finding out, and a
+// request to the store that is on its way ends at its answer or its timeout. Close waits for those
+// calls until ctx is done, and returns an error if one still runs.
 //
 // The release of the lease gets half of the time that ctx has left, if ctx has a deadline, and the
 // duration of the lease at the most. Close returns an error that says that the lease is not
@@ -754,8 +756,9 @@ func (d *DB) releaseContext(ctx context.Context) (context.Context, context.Cance
 	return d.host.WithTimeout(ctx, deadline.Sub(d.host.Wall())/2)
 }
 
-// use the connection c for a call, which gives it back with [DB.unuse]. It fails with the error of
-// the stop if [DB.Close] has closed c, and with [ErrReaderClosed] if [Reader.Close] has.
+// use the connection c for a call, which gives it back with [DB.unuse]. It fails if c is closed:
+// with the error of the stop on an instance that has stopped, and with [ErrReaderClosed] on one
+// that runs, where only [Reader.Close] closes a connection.
 func (d *DB) use(c *conn) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -799,12 +802,12 @@ func (d *DB) closeIdleLocked() {
 	}
 }
 
-// waitClosed waits until every connection to the cache is closed. It fails with the error of the
-// wait if ctx is done first.
+// waitClosed waits until every connection to the cache is closed, also one that [DB.Reader] is
+// opening. It fails with the error of the wait if ctx is done first.
 func (d *DB) waitClosed(ctx context.Context) error {
 	for {
 		d.mu.Lock()
-		open := !d.w.closed
+		open := !d.w.closed || d.opening > 0
 		for _, c := range d.readers {
 			open = open || !c.closed
 		}
