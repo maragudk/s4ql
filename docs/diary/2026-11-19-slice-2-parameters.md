@@ -141,7 +141,7 @@ The Valuer's error is the application's; it should stay findable and must not ca
 
 ### What didn't work
 
-`go test -count=1 -run 'TestParameters|...' .` failed after the change of messages with `conn_test.go:641: Not true` / `no error`, for the argument `uint(9223372036854775808)`: the insert succeeded. Reading `/usr/local/go/src/database/sql/driver/types.go` (`case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32: return int64(rv.Uint()), nil`) showed why.
+`go test -count=1 -run 'TestParameters|...' .` failed after the change of messages with `conn_test.go:641: Not true` / `no error`, for the argument `uint(9223372036854775808)`: the insert succeeded. Reading `src/database/sql/driver/types.go` of the Go toolchain (`case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32: return int64(rv.Uint()), nil`) showed why.
 
 A `git commit` chained with `&&` to a `make` in a subshell was refused by the sandbox of the worktree ("this command names git in a form too complex to verify"); separate calls worked.
 
