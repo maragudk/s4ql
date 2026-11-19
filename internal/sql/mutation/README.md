@@ -8,7 +8,7 @@ A copy of the code with one change is a mutant. The tests kill a mutant when one
 - It is in code that nothing needs. That code is removed.
 - It shows a gap in the tests. A new test closes the gap.
 
-Only code that is not a test is changed. The tests are those that `make test` runs: the tests of every package under `internal` that depend on the changed package. They run on the whole corpus.
+Only code that is not a test is changed. The tests are those that `make test` runs: the tests of every package under `internal` that depend on the changed package. They run on the whole corpus. The package at the root, the driver, is not mutated by default; with `-pkgs .` it is, and its tests are its own, without `TestOpen_realBucket`, which needs a real bucket. The differential test of the driver is in another module, and does not run on its mutants.
 
 ## How to run
 
@@ -204,6 +204,18 @@ After the review of the engine on 2026-11-18, `StartedTable` moved out of `stmt`
 The run of `stmt` took 7 min, and that of the engine 13 min.
 
 Of the engine's killed mutants, the layers that killed them first were hand-written 628 and simulation 4. The equivalent ones of the engine are the planted bugs, a yield to the scheduler, a bound that means "none", the order of the attributes of an event, and a check of the level that `log/slog` makes again.
+
+### The parameters of slice 2
+
+On 2026-11-19, the code that slice 2 added was mutated: `recognizer.parameter`, the `?` in `recognizer.insert` and after a sign in `recognizer.integer`, and the methods `Parameters` in `stmt`; `prepare`, `Check`, `checkArguments`, `countArguments`, the parameter of `NewPlan`, and its case of `eval` in the engine; and `arguments`, `argument`, `CheckNamedValue`, and `overflows` in the driver at the root, for which the runner learned to plan the stage of the root's own tests. The runs with 8 and 4 workers took a few minutes each:
+
+| Package | Generated | Not compiled | Killed | Timed out | Equivalent | Unexplained |
+| --- | --- | --- | --- | --- | --- | --- |
+| `stmt` | 49 | 8 | 40 | 0 | 1 | 0 |
+| `engine` | 77 | 12 | 65 | 0 | 0 | 0 |
+| `.` | 80 | 23 | 55 | 2 | 0 | 0 |
+
+The hand-written tests killed every killed mutant first. Two survived the first run and were gaps in the tests, which new tests close: the guard that the name of a parameter is the next token, which only a tree that no text gives can reach (`TestRecognize`), and a `driver.Valuer` whose own value is an unsigned integer above the largest `int64`, which must give the value of its `Value` (`TestParameters`). The one equivalent mutant is the acceptance of a parameter's node, whose one token is taken at once. The two that time out loop for good on a pointer in `overflows`. The planted bug `annotateNext` of the engine has three equivalent mutants, each another wrong annotation.
 
 ### What the first run of the parser found
 

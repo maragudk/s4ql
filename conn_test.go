@@ -434,6 +434,14 @@ func (v valuer) Value() (driver.Value, error) {
 	return int64(v), nil
 }
 
+// bigValuer is a [driver.Valuer] of the int64 15, whose own value is an unsigned integer, which may
+// be above the largest int64: the value is what Value gives, and not its own.
+type bigValuer uint
+
+func (bigValuer) Value() (driver.Value, error) {
+	return int64(15), nil
+}
+
 // errNoValue is the error of a [failingValuer].
 var errNoValue = errors.New("no value for the secret 4815162342")
 
@@ -518,12 +526,12 @@ func TestParameters(t *testing.T) {
 		type id int16
 		args := []any{int(1), int8(-2), int16(3), int32(-4), int64(5), uint(6), uint8(7), uint16(8), uint32(9),
 			uint64(9223372036854775807), id(10), new(int64(11)), sql.NullInt64{Int64: 12, Valid: true}, valuer(13), new(uint(14)),
-			uint(9223372036854775806)}
+			uint(9223372036854775806), bigValuer(9223372036854775808)}
 		for _, a := range args {
 			_, err := db.ExecContext(t.Context(), insertParameter, a)
 			is.NotError(t, err, fmt.Sprintf("%T", a))
 		}
-		is.EqualSlice(t, []int64{-4, -2, 1, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 9223372036854775806, 9223372036854775807}, values(t, db, select1))
+		is.EqualSlice(t, []int64{-4, -2, 1, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 9223372036854775806, 9223372036854775807}, values(t, db, select1))
 	})
 
 	t.Run("should give SQLite's errors for a parameter as for a literal", func(t *testing.T) {

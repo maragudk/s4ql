@@ -23,6 +23,9 @@ func TestRunner_run(t *testing.T) {
 		"internal/sql/loop/loop_test.go":   "package loop\n\nimport \"testing\"\n\nfunc TestSum(t *testing.T) {\n\tif got := Sum(4); got != 6 {\n\t\tt.Errorf(\"Sum(4) = %v\", got)\n\t}\n}\n",
 		"internal/sql/other/other.go":      "package other\n\nimport \"maragu.dev/s4ql/internal/sql/parser\"\n\nfunc Three() int {\n\treturn parser.Add(1, 2)\n}\n",
 		"internal/sql/other/other_test.go": "package other\n\nimport \"testing\"\n\nfunc TestThree(t *testing.T) {\n\tif Three() != 3 {\n\t\tt.Error(\"not 3\")\n\t}\n}\n",
+		// The package at the root, with a test that needs a real bucket, which fails here.
+		"r.go":      "package root\n\nimport \"maragu.dev/s4ql/internal/sql/parser\"\n\nfunc Four() int {\n\treturn parser.Add(2, 2)\n}\n",
+		"r_test.go": "package root\n\nimport \"testing\"\n\nfunc TestFour(t *testing.T) {\n\tif Four() != 4 {\n\t\tt.Error(\"not 4\")\n\t}\n}\n\nfunc TestOpen_realBucket(t *testing.T) {\n\tt.Fatal(\"no bucket\")\n}\n",
 	}
 	for name, text := range files {
 		path := filepath.Join(root, name)
@@ -32,7 +35,7 @@ func TestRunner_run(t *testing.T) {
 
 	// The time limit of a stage is never reached by a mutant that ends, however slow the machine.
 	r := &runner{root: root, out: t.TempDir(), factor: 1, minTime: time.Hour, memory: 4 << 30, procs: 1}
-	is.NotError(t, r.plan([]string{"internal/sql/parser", "internal/sql/loop"}))
+	is.NotError(t, r.plan([]string{"internal/sql/parser", "internal/sql/loop", "."}))
 
 	t.Run("should plan a stage for the tests of the package and one for each package that depends on it", func(t *testing.T) {
 		var got []string
@@ -41,6 +44,14 @@ func TestRunner_run(t *testing.T) {
 		}
 		is.EqualSlice(t, []string{"hand-written internal/sql/parser TestAdd", "other packages internal/sql/other TestThree"}, got)
 		is.Equal(t, 1, len(r.stages["internal/sql/loop"]))
+	})
+
+	t.Run("should plan a stage for the tests of the package at the root, without those that need a real bucket", func(t *testing.T) {
+		var got []string
+		for _, s := range r.stages["."] {
+			got = append(got, s.layer+" "+s.pkg+" "+strings.Join(s.tests, ","))
+		}
+		is.EqualSlice(t, []string{"hand-written . TestFour"}, got)
 	})
 
 	// A mutant that loops for good is over any time limit, so a short one tells it apart without
@@ -60,6 +71,8 @@ func TestRunner_run(t *testing.T) {
 			from: "a + b", to: `a + "b"`, status: statusUncompiled, detail: "mismatched types"},
 		{name: "should give a mutant that runs over the time limit as timed out, in its layer", file: "internal/sql/loop/loop.go",
 			from: "i++", to: "i--", status: statusTimeout, layer: layerHand, detail: "over the time limit of 1s"},
+		{name: "should kill a mutant of the package at the root that its tests notice", file: "r.go",
+			from: "2, 2", to: "2, 3", status: statusKilled, layer: layerHand, detail: "TestFour: r_test.go:7: not 4"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

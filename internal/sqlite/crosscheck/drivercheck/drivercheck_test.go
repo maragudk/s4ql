@@ -36,17 +36,36 @@ const (
 	callPrepareExec  call = "prepare, exec"
 	callPrepareQuery call = "prepare, query"
 	callQueryRow     call = "query row"
-	// callExecArgument is Exec with one argument, the integer 1: a text gets SQLite's syntax error or
-	// the "not supported" of the text, as without the argument, a statement that s4ql supports with
-	// no parameter gets s4ql's error of the wrong number of arguments, and one with one parameter
-	// runs.
+	// callExecArgument is Exec with one argument, the integer 1, in the sequences written by hand and
+	// in the fuzz target: a text gets SQLite's syntax error or the "not supported" of the text, as
+	// without the argument, a statement that s4ql supports with no parameter gets s4ql's error of the
+	// wrong number of arguments, and one with one parameter runs.
 	callExecArgument call = "exec with an argument"
 	// callBegin is BeginTx, which runs no text, and which s4ql does not support.
 	callBegin call = "begin"
+	// callQueryArgument is Query with one argument, the integer 1, as [callExecArgument] is Exec.
+	callQueryArgument call = "query with an argument"
+	// callPrepareExecRuns is Prepare, and then Exec of the statement once for each run of arguments:
+	// in the sequences written by hand and in the fuzz target, the integers 1, 2, and 1, so that the
+	// third run meets the key of the first.
+	callPrepareExecRuns call = "prepare, exec several times"
 )
 
 // calls in the order of the bytes of the fuzz target.
-var calls = []call{callExec, callQuery, callPrepareExec, callPrepareQuery, callQueryRow, callExecArgument, callBegin}
+var calls = []call{callExec, callQuery, callPrepareExec, callPrepareQuery, callQueryRow, callExecArgument, callBegin, callQueryArgument, callPrepareExecRuns}
+
+// fixedRuns are the arguments of each run of the call c in the sequences written by hand and in the
+// fuzz target: one run with the integer 1 for a call with an argument, the runs of
+// [callPrepareExecRuns], and one run without arguments for every other call.
+func fixedRuns(c call) [][]any {
+	switch c {
+	case callExecArgument, callQueryArgument:
+		return [][]any{{int64(1)}}
+	case callPrepareExecRuns:
+		return [][]any{{int64(1)}, {int64(2)}, {int64(1)}}
+	}
+	return [][]any{nil}
+}
 
 // outcome of a text through a call: what an application sees.
 type outcome struct {
@@ -55,7 +74,7 @@ type outcome struct {
 	// "begin", or "" if none failed.
 	failed string
 	// err is the error of the failed step: "code/extended: message" for SQLite's, "no rows" for
-	// [sql.ErrNoRows], and the message for s4ql's "not supported".
+	// [sql.ErrNoRows], and the message for s4ql's own errors.
 	err string
 	// affected and lastID are of the [sql.Result] of an exec, or "" where there is none or it is not
 	// compared.
@@ -64,6 +83,8 @@ type outcome struct {
 	// each value as its Go type and its value.
 	columns, types string
 	rows           []string
+	// next are the outcomes of the runs after the first of [callPrepareExecRuns], without a call.
+	next []outcome
 }
 
 func (o outcome) String() string {
@@ -71,19 +92,26 @@ func (o outcome) String() string {
 	b.WriteString(string(o.call))
 	if o.failed != "" {
 		fmt.Fprintf(&b, ": %v failed with %v", o.failed, o.err)
-		return b.String()
-	}
-	if o.affected != "" || o.lastID != "" {
+	} else if o.affected != "" || o.lastID != "" {
 		fmt.Fprintf(&b, ": %v affected, last insert id %v", o.affected, o.lastID)
 	}
 	switch {
+	case o.failed != "":
 	case o.columns != "" || o.types != "":
 		fmt.Fprintf(&b, ": columns %q of types %q, rows %v", o.columns, o.types, strings.Join(o.rows, " "))
 	case len(o.rows) > 0:
 		// A row of QueryRow, whose columns database/sql does not give.
 		fmt.Fprintf(&b, ": row %v", strings.Join(o.rows, " "))
 	}
+	for _, n := range o.next {
+		fmt.Fprintf(&b, "; then%v", n)
+	}
 	return b.String()
+}
+
+// runs of the outcome: itself, and the outcomes of its later runs.
+func (o outcome) runs() []outcome {
+	return append([]outcome{o}, o.next...)
 }
 
 // notSupported reports whether the outcome is s4ql's "not supported".
@@ -100,8 +128,10 @@ type queryer interface {
 	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
 }
 
-// run src through the call c on q, with errText for the text of an error.
-func run(tb testing.TB, q queryer, c call, src string, errText func(testing.TB, error) string) outcome {
+// run src through the call c on q, with the arguments of each run, and with errText for the text of
+// an error. Every call but [callPrepareExecRuns] makes one run, with the arguments of the first, and
+// [callBegin] none.
+func run(tb testing.TB, q queryer, c call, src string, runs [][]any, errText func(testing.TB, error) string) outcome {
 	tb.Helper()
 	ctx := tb.Context()
 	o := outcome{call: c}
@@ -109,37 +139,54 @@ func run(tb testing.TB, q queryer, c call, src string, errText func(testing.TB, 
 		o.failed, o.err = step, errText(tb, err)
 		return o
 	}
+	var args []any
+	if len(runs) > 0 {
+		args = runs[0]
+	}
 	switch c {
 	case callExec, callExecArgument:
-		var args []any
-		if c == callExecArgument {
-			args = []any{int64(1)}
-		}
 		res, err := q.ExecContext(ctx, src, args...)
 		if err != nil {
 			return failed("exec", err)
 		}
 		return result(tb, o, res)
-	case callQuery:
-		rows, err := q.QueryContext(ctx, src)
+	case callQuery, callQueryArgument:
+		rows, err := q.QueryContext(ctx, src, args...)
 		if err != nil {
 			return failed("query", err)
 		}
 		return read(tb, o, rows, errText)
-	case callPrepareExec, callPrepareQuery:
+	case callPrepareExec, callPrepareQuery, callPrepareExecRuns:
 		s, err := q.PrepareContext(ctx, src)
 		if err != nil {
 			return failed("prepare", err)
 		}
 		defer func() { is.NotError(tb, s.Close()) }()
-		if c == callPrepareExec {
-			res, err := s.ExecContext(ctx)
+		switch c {
+		case callPrepareExec:
+			res, err := s.ExecContext(ctx, args...)
 			if err != nil {
 				return failed("exec", err)
 			}
 			return result(tb, o, res)
+		case callPrepareExecRuns:
+			for i, args := range runs {
+				var r outcome
+				if res, err := s.ExecContext(ctx, args...); err != nil {
+					r.failed, r.err = "exec", errText(tb, err)
+				} else {
+					r = result(tb, r, res)
+				}
+				if i == 0 {
+					r.call = c
+					o = r
+				} else {
+					o.next = append(o.next, r)
+				}
+			}
+			return o
 		}
-		rows, err := s.QueryContext(ctx)
+		rows, err := s.QueryContext(ctx, args...)
 		if err != nil {
 			return failed("query", err)
 		}
@@ -148,7 +195,7 @@ func run(tb testing.TB, q queryer, c call, src string, errText func(testing.TB, 
 		// database/sql gives the error of the query at Scan, and one destination is enough for slice
 		// 1, whose queries have one column.
 		var v any
-		if err := q.QueryRowContext(ctx, src).Scan(&v); err != nil {
+		if err := q.QueryRowContext(ctx, src, args...).Scan(&v); err != nil {
 			return failed("scan", err)
 		}
 		o.rows = []string{valueText(v)}
@@ -324,29 +371,43 @@ func open(tb testing.TB, o s4ql.Options) *sql.DB {
 // tally of the outcomes of the texts of a test, which counts nothing if it is nil.
 type tally map[string]int
 
-// add the outcome got of s4ql for src.
-func (y tally) add(src string, got outcome) {
+// add the outcome got of s4ql for src through its call with the arguments of each run: the call, with
+// arguments if a run has any, and the outcome of each run, by the kind of the statement, with a
+// parameter if it has one.
+func (y tally) add(src string, got outcome, runs [][]any) {
 	if y == nil {
 		return
 	}
 	kind := "other"
 	if s, _ := stmt.Check(src); s != nil && got.call != callBegin {
 		kind = strings.ToLower(strings.TrimPrefix(fmt.Sprintf("%T", s), "*stmt."))
+		if s.Parameters() > 0 {
+			kind += " with a parameter"
+		}
 	}
 	if got.call == callBegin {
 		kind = "begin"
 	}
 	y["call "+string(got.call)]++
-	switch {
-	case got.failed == "":
-		y[kind+" ok"]++
-		if len(got.rows) > 0 && got.columns != "" {
-			y[kind+" ok with rows"]++
+	if slices.ContainsFunc(runs, func(args []any) bool { return len(args) > 0 }) && got.call != callBegin {
+		y["call "+string(got.call)+" with arguments"]++
+	}
+	for _, o := range got.runs() {
+		switch {
+		case o.failed == "":
+			y[kind+" ok"]++
+			if len(o.rows) > 0 && o.columns != "" {
+				y[kind+" ok with rows"]++
+			}
+		case strings.HasPrefix(o.err, "s4ql: not supported: the named argument "):
+			y[kind+" named argument"]++
+		case strings.HasPrefix(o.err, "s4ql: not supported: argument "):
+			y[kind+" argument of a type not supported"]++
+		case o.notSupported():
+			y[kind+" not supported"]++
+		default:
+			y[kind+" "+messageKind(o.err)]++
 		}
-	case got.notSupported():
-		y[kind+" not supported"]++
-	default:
-		y[kind+" "+messageKind(got.err)]++
 	}
 }
 
@@ -382,6 +443,15 @@ const (
 	excusedStartedTable = "already exists after the start of a table, accepted"
 	// knownGapSuffix ends the kind of a text of a [stmttest.KnownGap], after the gap.
 	knownGapSuffix = ", a known gap"
+	// excusedArguments is a call with another number of arguments than its statement has
+	// parameters, which s4ql refuses by its rule, where SQLite binds NULL to a parameter without an
+	// argument and database/sql refuses an argument too many for mattn: it is checked against the
+	// rule by [pair.checkArguments], and not run in SQLite.
+	excusedArguments = "the wrong number of arguments, checked against s4ql's rule"
+	// excusedArgument is a call with an argument that s4ql does not support, a named one or one of
+	// another type, which SQLite binds: it is checked against s4ql's rule by
+	// [pair.checkArgumentRefused], and not run in SQLite.
+	excusedArgument = "an argument that s4ql does not support, checked against s4ql's rule"
 )
 
 // pair of a database of s4ql and one of SQLite through mattn, which run the same texts, on a
@@ -440,45 +510,60 @@ func (p *pair) pin() {
 	p.s, p.o = s, o
 }
 
-// step runs src through the call c on both sides, and compares what each gives. A text that s4ql
-// does not support is not run in SQLite: it must not be a statement of slice 1, which supported says
-// it is, and SQLite must prepare it on an empty database without a syntax error. step gives s4ql's
-// outcome, and what differs, or "".
+// step runs src through the call c on both sides, with the arguments of c in [fixedRuns], and compares
+// what each gives, as [pair.stepRuns] does.
 func (p *pair) step(src string, c call, supported bool) (outcome, string) {
-	tb := p.tb
-	tb.Helper()
-	got := run(tb, p.s, c, src, s4qlText)
-	p.y.add(src, got)
-	return got, p.compare(src, c, supported, got)
+	p.tb.Helper()
+	return p.stepRuns(src, c, supported, fixedRuns(c))
 }
 
-// compare s4ql's outcome got of src through the call c with SQLite's, as [pair.step] describes.
-func (p *pair) compare(src string, c call, supported bool, got outcome) string {
+// stepRuns runs src through the call c on both sides, with the arguments of each run, and compares
+// what each gives. A text that s4ql does not support is not run in SQLite: it must not be a statement
+// of slices 1 and 2, which supported says it is, and SQLite must prepare it on an empty database
+// without a syntax error. A call that s4ql refuses for its arguments by its rule is not run in SQLite
+// either, and must be refused as the rule says. stepRuns gives s4ql's outcome, and what differs, or
+// "".
+func (p *pair) stepRuns(src string, c call, supported bool, runs [][]any) (outcome, string) {
+	tb := p.tb
+	tb.Helper()
+	got := run(tb, p.s, c, src, runs, s4qlText)
+	p.y.add(src, got, runs)
+	return got, p.compare(src, c, supported, runs, got)
+}
+
+// compare s4ql's outcome got of src through the call c, with the arguments of each run, with
+// SQLite's, as [pair.stepRuns] describes.
+func (p *pair) compare(src string, c call, supported bool, runs [][]any, got outcome) string {
 	tb := p.tb
 	tb.Helper()
 	if got.notSupported() {
-		return p.checkNotSupported(src, c, supported, got)
+		return p.checkNotSupported(src, c, supported, runs, got)
 	}
 	if c == callBegin {
 		return fmt.Sprintf("%q: s4ql gives %v, and supports no %v", src, got, c)
 	}
 	if strings.HasPrefix(got.err, wrongArguments) {
-		return checkArguments(src, c, got)
+		return p.checkArguments(src, runs, got)
 	}
-	if c == callExecArgument {
-		// What s4ql gives for a text with an argument, other than "not supported" and the error of
-		// the number of arguments, is the syntax error of the text, which must be SQLite's for the text
-		// with the argument, or the outcome of a statement with one parameter, which must be SQLite's
-		// too. Any other error, or none, would mean that s4ql ran a statement that it should not run.
-		s, err := stmt.Check(src)
-		withParameter := err == nil && s != nil && s.Parameters() == 1
-		if m, ok := strings.CutPrefix(got.err, "1/1: "); !withParameter && (!ok || got.failed != "exec" || !sqloracle.IsSyntaxMessage(m)) {
-			return fmt.Sprintf("%q: s4ql gives %v, and supports no %v of it", src, got, c)
+	// Every other outcome is compared with SQLite's. It is the syntax error of a text, which SQLite
+	// gives before it binds the arguments, so that it runs there without them, or the outcome of a
+	// statement that s4ql ran, which must have had an argument that s4ql supports for each
+	// parameter in each run, and which runs there with them.
+	s, err := stmt.Check(src)
+	byText := err != nil || s == nil
+	mattnRuns := runs
+	if byText {
+		mattnRuns = make([][]any, len(runs))
+	} else {
+		for _, args := range runs {
+			if !(stmttest.Call{Src: src, Args: args, Supported: true}).Runs() {
+				return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v, and must refuse the arguments", src, args, got)
+			}
 		}
 	}
 
 	first := firstStatement(src)
-	want := run(tb, p.o, c, first, mattnText)
+	want := run(tb, p.o, c, first, mattnRuns, mattnText)
 	if !p.pinned {
 		// Through the pool, the count of changes is that of the connection that database/sql takes,
 		// so it is compared only for a statement that sets it. In slice 1 that is an insert.
@@ -496,11 +581,14 @@ func (p *pair) compare(src string, c call, supported bool, got outcome) string {
 	}
 
 	switch {
-	case (c == callPrepareExec && got.failed == "exec" || c == callPrepareQuery && got.failed == "query") && want.failed == "prepare" &&
-		got.err == want.err && slices.Contains([]string{"no such table", "already exists", "has no column named"}, messageKind(got.err)):
-		p.y.excused(excusedPrepare)
-		return ""
-	case p.startedTable(src, c, got, want):
+	case (c == callPrepareExec || c == callPrepareExecRuns) && got.failed == "exec" || c == callPrepareQuery && got.failed == "query":
+		// SQLite gives the error when it prepares the text, and s4ql in each run of the statement.
+		if want.failed == "prepare" && slices.Contains([]string{"no such table", "already exists", "has no column named"}, messageKind(got.err)) &&
+			!slices.ContainsFunc(got.runs(), func(o outcome) bool { return o.failed != got.failed || o.err != want.err }) {
+			p.y.excused(excusedPrepare)
+			return ""
+		}
+	case p.startedTable(src, c, mattnRuns, got, want):
 		p.y.excused(excusedStartedTable)
 		return ""
 	}
@@ -508,84 +596,122 @@ func (p *pair) compare(src string, c call, supported bool, got outcome) string {
 		p.y.excused(gap + knownGapSuffix)
 		return ""
 	}
-	return fmt.Sprintf("%q: s4ql gives\n%v\nand SQLite\n%v", src, got, want)
+	return fmt.Sprintf("%q with the arguments %#v: s4ql gives\n%v\nand SQLite\n%v", src, runs, got, want)
 }
 
-// checkNotSupported is [pair.step] of a text that s4ql answers with "not supported", in got.
-func (p *pair) checkNotSupported(src string, c call, supported bool, got outcome) string {
+// checkNotSupported is [pair.stepRuns] of a text that s4ql answers with "not supported", in got.
+func (p *pair) checkNotSupported(src string, c call, supported bool, runs [][]any, got outcome) string {
 	tb := p.tb
 	tb.Helper()
-	switch c {
-	case callBegin:
+	if c == callBegin {
 		if got.err != "s4ql: not supported: transactions" {
 			return fmt.Sprintf("s4ql gives %v", got)
 		}
 		return ""
-	case callExecArgument:
-		// The text is judged before the argument: a text gets the "not supported" that it gets
-		// without the argument, and a statement that s4ql supports gets none.
-		s, err := stmt.Check(src)
-		want := fmt.Sprintf("no \"not supported\" for the statement %T", s)
-		switch {
-		case err != nil:
-			want = err.Error()
-		case s == nil:
-			want = "s4ql: not supported: a text that holds no statement"
-		}
-		if got.failed != "exec" || got.err != want {
-			return fmt.Sprintf("%q: s4ql gives %v, where its check of the text gives %v", src, got, want)
-		}
-		if supported && s == nil {
-			return fmt.Sprintf("%q: s4ql does not support a statement of slice 1: %v", src, got)
-		}
-	case callPrepareExec, callPrepareQuery:
-		// The text alone decides "not supported", and Prepare checks the text.
-		if got.failed != "prepare" {
-			return fmt.Sprintf("%q: s4ql gives %v, after the statement was prepared", src, got)
-		}
-		fallthrough
-	default:
-		if supported {
-			return fmt.Sprintf("%q: s4ql does not support a statement of slice 1: %v", src, got)
-		}
+	}
+	s, err := stmt.Check(src)
+	if err == nil && s != nil {
+		return p.checkArgumentRefused(src, s, runs, got)
+	}
+	// The text alone decides "not supported", before the arguments, with the "not supported" of its
+	// check, and Prepare checks the text.
+	want := "s4ql: not supported: a text that holds no statement"
+	if err != nil {
+		want = err.Error()
+	}
+	if got.err != want {
+		return fmt.Sprintf("%q: s4ql gives %v, where its check of the text gives %v", src, got, want)
+	}
+	if (c == callPrepareExec || c == callPrepareQuery || c == callPrepareExecRuns) && got.failed != "prepare" {
+		return fmt.Sprintf("%q: s4ql gives %v, after the statement was prepared", src, got)
+	}
+	if supported {
+		return fmt.Sprintf("%q: s4ql does not support a statement of slice 1: %v", src, got)
 	}
 	// A text with a NUL byte or a byte that is not UTF-8 is not supported, whatever else it holds.
 	if !utf8.ValidString(src) || strings.ContainsRune(src, 0) {
 		return ""
 	}
-	s, err := p.empty.PrepareContext(tb.Context(), src)
+	ps, err := p.empty.PrepareContext(tb.Context(), src)
 	if err != nil {
 		if m := mattnText(tb, err); sqloracle.IsSyntaxMessage(m[strings.Index(m, ": ")+2:]) {
 			return fmt.Sprintf("%q: s4ql gives %v, and SQLite %v", src, got, m)
 		}
 		return ""
 	}
-	is.NotError(tb, s.Close())
+	is.NotError(tb, ps.Close())
 	return ""
 }
 
-// checkArguments of the outcome got of src through the call c, which is s4ql's error of another
-// number of arguments than the statement has parameters: an error of s4ql's own, where SQLite binds
-// NULL to a parameter without an argument and mattn refuses an argument too many itself. It must be
-// the error that [engine.Check] gives for the text with the arguments of c, and come when the
-// statement runs, since Prepare checks only the text.
-func checkArguments(src string, c call, got outcome) string {
-	n := 0
-	if c == callExecArgument {
-		n = 1
+// checkArgumentRefused is [pair.checkNotSupported] of the text src, which holds the statement s that
+// s4ql supports, so that its "not supported" is of an argument: an error of s4ql's own, where SQLite
+// binds every type, and mattn takes a name. Each run must have one argument for each parameter, and
+// fail when the statement runs, since Prepare checks only the text, with the "not supported" of its
+// first argument that s4ql does not support, as [argumentRefusal] gives it.
+func (p *pair) checkArgumentRefused(src string, s stmt.Statement, runs [][]any, got outcome) string {
+	for i, o := range got.runs() {
+		args := runs[min(i, len(runs)-1)]
+		want := argumentRefusal(args)
+		if len(args) != s.Parameters() || want == "" || o.failed == "prepare" || o.failed == "" || o.err != want {
+			return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v, where the rule gives %q", src, args, got, want)
+		}
 	}
-	want := engine.Check(src, n)
-	if !errors.Is(want, engine.ErrArguments) || got.err != want.Error() || got.failed == "prepare" {
-		return fmt.Sprintf("%q: s4ql gives %v, where its check of the text with %v arguments gives %v", src, got, n, want)
+	if len(got.runs()) != len(runs) {
+		return fmt.Sprintf("%q with %v runs: s4ql gives %v", src, len(runs), got)
 	}
+	p.y.excused(excusedArgument)
+	return ""
+}
+
+// argumentRefusal is the "not supported" of the first argument of args that s4ql does not support,
+// in order, its name before its type: one with a name, an unsigned integer above the largest int64,
+// and one of another type than an integer, by its type as database/sql converts it. It is "" if s4ql
+// supports every argument.
+func argumentRefusal(args []any) string {
+	for i, a := range args {
+		if n, ok := a.(sql.NamedArg); ok {
+			return fmt.Sprintf("s4ql: not supported: the named argument %q", n.Name)
+		}
+		if _, ok := stmttest.Integers([]any{a}); ok {
+			continue
+		}
+		switch v := a.(type) {
+		case uint64:
+			return fmt.Sprintf("s4ql: not supported: argument %v of type uint64, whose value does not fit a signed 64-bit integer", i+1)
+		case nil:
+			return fmt.Sprintf("s4ql: not supported: argument %v of type nil", i+1)
+		default:
+			return fmt.Sprintf("s4ql: not supported: argument %v of type %T", i+1, v)
+		}
+	}
+	return ""
+}
+
+// checkArguments of the outcome got of src, with the arguments of each run, which is s4ql's error
+// of another number of arguments than the statement has parameters: an error of s4ql's own, where
+// SQLite binds NULL to a parameter without an argument and mattn refuses an argument too many itself.
+// In each run, it must be the error that [engine.Check] gives for the text with the arguments of the
+// run, and come when the statement runs, since Prepare checks only the text.
+func (p *pair) checkArguments(src string, runs [][]any, got outcome) string {
+	if len(got.runs()) != len(runs) {
+		return fmt.Sprintf("%q with %v runs: s4ql gives %v", src, len(runs), got)
+	}
+	for i, o := range got.runs() {
+		n := len(runs[i])
+		want := engine.Check(src, n)
+		if !errors.Is(want, engine.ErrArguments) || o.err != want.Error() || o.failed == "prepare" || o.failed == "" {
+			return fmt.Sprintf("%q: s4ql gives %v, where its check of the text with %v arguments gives %v", src, got, n, want)
+		}
+	}
+	p.y.excused(excusedArguments)
 	return ""
 }
 
 // startedTable reports whether s4ql's outcome got and SQLite's outcome want for the text src through
-// the call c differ in the one way that the tests accept, which [stmttest.ExistsAfterStart]
-// describes: SQLite gives that a table exists, and s4ql gives what SQLite gives for src on an empty
-// database.
-func (p *pair) startedTable(src string, c call, got, want outcome) bool {
+// the call c, with the arguments of each run, differ in the one way that the tests accept, which
+// [stmttest.ExistsAfterStart] describes: SQLite gives that a table exists, and s4ql gives what SQLite
+// gives for src on an empty database.
+func (p *pair) startedTable(src string, c call, runs [][]any, got, want outcome) bool {
 	tb := p.tb
 	tb.Helper()
 	w, ok := strings.CutPrefix(want.err, "1/1: ")
@@ -593,7 +719,7 @@ func (p *pair) startedTable(src string, c call, got, want outcome) bool {
 		return false
 	}
 	// The text is a syntax error, so it changes nothing on the empty database.
-	return got.String() == run(tb, p.empty, c, firstStatement(src), mattnText).String()
+	return got.String() == run(tb, p.empty, c, firstStatement(src), runs, mattnText).String()
 }
 
 // knownGap of the pass after the parser, as [stmttest.KnownGap] gives it, that s4ql's outcome got and
@@ -638,7 +764,7 @@ func (p *pair) compareTables() string {
 	}
 	for _, name := range names {
 		src := "select * from " + stmttest.Quote(name)
-		got, want := run(tb, p.s4ql, callQuery, src, s4qlText), run(tb, p.sqlite, callQuery, src, mattnText)
+		got, want := run(tb, p.s4ql, callQuery, src, nil, s4qlText), run(tb, p.sqlite, callQuery, src, nil, mattnText)
 		if got.String() != want.String() {
 			return fmt.Sprintf("the table %q: s4ql holds\n%v\nand SQLite\n%v", name, got, want)
 		}
@@ -813,6 +939,19 @@ var sequences = map[string][]step{
 		{callExec, "insert into t1 (v1) values (?)", "exec: exec failed with s4ql: wrong number of arguments: 0 for a statement with 1 parameter"},
 		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1`},
 	},
+	"a prepared statement with a parameter, run several times, and a query with an argument": {
+		{callExec, t1, "exec: 0 affected, last insert id 0"},
+		// The runs have the arguments 1, 2, and 1.
+		{callPrepareExecRuns, "insert into t1 (v1) values (?)", "prepare, exec several times: 1 affected, last insert id 0; then: 1 affected, last insert id 0; then: exec failed with 19/1555: UNIQUE constraint failed: t1.v1"},
+		{callQueryArgument, "insert into T1 (V1) values ( ? )", "query with an argument: query failed with 19/1555: UNIQUE constraint failed: t1.v1"},
+		{callQueryArgument, "select * from t1", "query with an argument: query failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
+		{callPrepareExecRuns, "insert into t1 (v1) values (3)", "prepare, exec several times: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters; then: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters; then: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
+		// SQLite gives the error when it prepares the text, and s4ql in each run of the statement.
+		{callPrepareExecRuns, "insert into t9 (v1) values (?)", "prepare, exec several times: exec failed with 1/1: no such table: t9; then: exec failed with 1/1: no such table: t9; then: exec failed with 1/1: no such table: t9"},
+		{callPrepareExecRuns, "insert into t1 (v1) values (?1)", "prepare, exec several times: prepare failed with s4ql: not supported: numbered parameter (at offset 28)"},
+		{callPrepareExecRuns, "insert into t1 (v1) values (? ?)", `prepare, exec several times: prepare failed with 1/1: near "?": syntax error`},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1 int64:2`},
+	},
 	"a semicolon and a comment after the statement": {
 		{callExec, t1 + "; -- c", "exec: 0 affected, last insert id 0"},
 		{callExec, "insert into t1 (v1) values (1);;", "exec: 1 affected, last insert id 0"},
@@ -845,15 +984,12 @@ func TestSequences(t *testing.T) {
 	}
 }
 
-// pick the call of a text of a sequence, which is a query if query, from r: now and then BeginTx or
-// an argument, which s4ql does not support, and otherwise a call for a query or for a statement that
-// is no query.
+// pick the call of a text of a sequence, which is a query if query, from r: now and then BeginTx,
+// which s4ql does not support, and otherwise a call for a query or for a statement that is no query,
+// of which one in eight is a prepared statement that runs several times.
 func pick(r stmttest.Rand, query bool) call {
-	switch n := r.IntN(48); {
-	case n == 0:
+	if r.IntN(48) == 0 {
 		return callBegin
-	case n < 3:
-		return callExecArgument
 	}
 	if query {
 		switch r.IntN(4) {
@@ -864,16 +1000,34 @@ func pick(r stmttest.Rand, query bool) call {
 		}
 		return callQuery
 	}
-	if r.IntN(4) == 0 {
+	switch r.IntN(8) {
+	case 0, 1:
 		return callPrepareExec
+	case 2:
+		return callPrepareExecRuns
 	}
 	return callExec
 }
 
-// generated runs the sequence of n texts from seed on a new pair in the world w, and compares what
-// each side gives for each, and at the end every table. Every second sequence runs on pinned
-// connections, and every other one through the pool. Half of the sequences then restart the instance
-// of s4ql, with an empty cache or with its own, and compare every table again.
+// again are the arguments args of a call of q for another run of its prepared statement: each int64
+// replaced by another value of q, and every other argument as it is, so that the run has the same
+// number and the same types of arguments.
+func again(q *stmttest.Sequence, args []any) []any {
+	next := slices.Clone(args)
+	for i, a := range next {
+		if _, ok := a.(int64); ok {
+			next[i] = q.Value()
+		}
+	}
+	return next
+}
+
+// generated runs the sequence of n texts from seed on a new pair in the world w, each with its
+// arguments, and compares what each side gives for each, and at the end every table. A prepared
+// statement that runs several times runs one to three more times, with other values. Every second
+// sequence runs on pinned connections, and every other one through the pool. Half of the sequences
+// then restart the instance of s4ql, with an empty cache or with its own, and compare every table
+// again.
 func generated(t *testing.T, w *world, seed uint64, n int, y tally) {
 	t.Helper()
 	r := rand.New(rand.NewPCG(seed, 0xd51))
@@ -886,13 +1040,19 @@ func generated(t *testing.T, w *world, seed uint64, n int, y tally) {
 		t.Fatalf("seed %v, pinned %v, after\n%v\n%v", seed, p.pinned, strings.Join(log, "\n"), failure)
 	}
 	for range n {
-		src, query, supported := q.Next()
-		c := pick(r, query)
-		if c == callBegin {
-			src, supported = "", false
+		next := q.Next()
+		c := pick(r, next.Query)
+		src, supported, runs := next.Src, next.Supported, [][]any{next.Args}
+		switch c {
+		case callBegin:
+			src, supported, runs = "", false, nil
+		case callPrepareExecRuns:
+			for range 1 + r.IntN(3) {
+				runs = append(runs, again(q, next.Args))
+			}
 		}
-		log = append(log, fmt.Sprintf("%v: %v", c, src))
-		if _, failure := p.step(src, c, supported); failure != "" {
+		log = append(log, fmt.Sprintf("%v: %v -- with %#v", c, src, runs))
+		if _, failure := p.stepRuns(src, c, supported, runs); failure != "" {
 			fail(failure)
 		}
 	}
@@ -911,9 +1071,9 @@ func generated(t *testing.T, w *world, seed uint64, n int, y tally) {
 }
 
 // TestGenerated runs sequences of the generator that the engine's differential test uses, through
-// each call, on both sides, and requires the same outcomes and the same tables. It fails if a kind of
-// outcome is never reached, and it pins how many texts each kind of excuse lets through, so that a
-// change that excuses more cannot pass unseen.
+// each call, with their arguments, on both sides, and requires the same outcomes and the same tables.
+// It fails if a kind of outcome is never reached, and it pins how many texts each kind of excuse lets
+// through, so that a change that excuses more cannot pass unseen.
 func TestGenerated(t *testing.T) {
 	const n, length = 200, 40
 	w := newWorld(t)
@@ -924,20 +1084,28 @@ func TestGenerated(t *testing.T) {
 	t.Logf("%v sequences of %v texts: %v", n, length, y)
 
 	for _, kind := range []string{
-		"createtable ok", "createtable already exists", "createtable no rows",
+		"createtable ok", "createtable already exists", "createtable no rows", "createtable wrong number of arguments",
 		"insert ok", "insert UNIQUE constraint failed", "insert has no column named", "insert no such table", "insert no rows", "insert wrong number of arguments",
-		"select ok", "select ok with rows", "select no such table", "select no rows",
+		"insert with a parameter ok", "insert with a parameter UNIQUE constraint failed", "insert with a parameter no such table",
+		"insert with a parameter wrong number of arguments", "insert with a parameter argument of a type not supported", "insert with a parameter named argument",
+		"select ok", "select ok with rows", "select no such table", "select no rows", "select wrong number of arguments",
 		"droptable ok", "droptable no such table",
 		"other not supported", "other syntax error", "other incomplete input", "begin not supported",
 		"call " + string(callExec), "call " + string(callQuery), "call " + string(callPrepareExec), "call " + string(callPrepareQuery),
-		"call " + string(callQueryRow), "call " + string(callExecArgument), "call " + string(callBegin),
+		"call " + string(callQueryRow), "call " + string(callBegin), "call " + string(callPrepareExecRuns),
+		"call " + string(callExec) + " with arguments", "call " + string(callQuery) + " with arguments",
+		"call " + string(callPrepareExec) + " with arguments", "call " + string(callPrepareQuery) + " with arguments",
+		"call " + string(callQueryRow) + " with arguments", "call " + string(callPrepareExecRuns) + " with arguments",
 	} {
 		if y[kind] == 0 {
 			t.Errorf("no text has the outcome %q", kind)
 		}
 	}
 
-	want := map[string]int{excusedPrepare: 816, excusedStartedTable: 14}
+	// The texts that each kind of excuse lets through, by kind: those that the comparison accepts
+	// where SQLite and s4ql differ, and the calls that s4ql refuses for their arguments by its rule,
+	// which are checked against the rule instead of SQLite. Every other kind is pinned at 0.
+	want := map[string]int{excusedPrepare: 1120, excusedStartedTable: 13, excusedArguments: 412, excusedArgument: 103}
 	kinds := slices.Collect(maps.Keys(want))
 	for name := range y {
 		if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) {
@@ -956,8 +1124,9 @@ func TestGenerated(t *testing.T) {
 // a text with it is a syntax error.
 const fuzzSeparator = "\x1e"
 
-// FuzzSequence runs the texts of its input, each through the call that a byte of calls chooses, on a
-// new pair, pinned if pinned, and compares as [TestGenerated] does. Its seeds are the sequences of
+// FuzzSequence runs the texts of its input, each through the call that a byte of calls chooses, with
+// the arguments of that call in [fixedRuns], on a new pair, pinned if pinned, and compares as
+// [TestGenerated] does. Its seeds are the sequences of
 // [TestSequences], and each text of [stmttest.Others].
 func FuzzSequence(f *testing.F) {
 	for _, name := range slices.Sorted(maps.Keys(sequences)) {
