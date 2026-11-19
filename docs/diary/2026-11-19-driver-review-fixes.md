@@ -100,3 +100,50 @@ Which call raises a panic of the turn that the connector's close gave: `shut` mu
 ### Future work
 
 None.
+
+## Step 3: Tests of a close of the database while statements run
+
+**Author:** driver-review-fixes builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "**Tests of closing the database while statements run.** The reviewer wrote scratch tests that pass and assert no timing. [...] writers and readers in several goroutines with `db.Close()` in the middle, asserting that an insert is in the database after a reopen if and only if it was acknowledged; `Next` in several goroutines during `Close`; `Close` while a commit waits in the store, in both orders. Bring them into the package's tests in the style of the tests that are there (names, helpers, `t.Run` descriptions), without duplicating what a present test already shows."
+**Interpretation:** Three subtests of `TestClose` in `/conn_test.go`, one run each, since `-count` repeats them.
+**Inferred intent:** The close of the database under concurrency is pinned, so that a later change cannot lose an acknowledged insert or end rows early in silence.
+
+### What I did
+
+- Ran the reviewer's `TestReviewCloseConcurrent`, `TestReviewNextDuringClose`, and `TestReviewCloseDuringCommit` from a copy in the worktree first. All three passed. The last one logged what the two orders give: `late=false exec: s4ql: commit: not committed: the instance has stopped: closed`, and `late=true close: s4ql: close: a call still uses the cache, which is closed when the call ends: context deadline exceeded`.
+- `TestClose` has three new subtests:
+  - Four writers and eight queriers in goroutines until their first error, with `db.Close()` once five inserts are acknowledged (or once every writer has returned, so that a fault fails the test instead of hanging it). Every error must be that of a closed database, the instance's or `database/sql`'s, and the values after a reopen on another cache must be exactly the acknowledged ones. A helper `closedError` says what "closed" is.
+  - Four goroutines read 50 rows each while `db.Close()` runs; each must end at its last row or with `ErrStopped`.
+  - A commit that waits in the store's `Create` while the database closes, in both orders, inside `testing/synctest`: in the first, the close runs in a goroutine, `synctest.Wait()` returns once it has stopped the instance and waits for the call, and the commit then goes on; in the second, the close times out on the fake clock, and the commit goes on after it. The insert fails with `ErrStopped` and not `ErrOutcomeUnknown` in both, and is not in the database.
+- Planted two faults with a script: rows that the connector closed end with `io.EOF` (caught by the second test), and an insert that failed is acknowledged (caught by the first and the third).
+
+### Why
+
+The reviewer's test of the two orders used `time.Sleep(20 * time.Millisecond)` before the commit went on, against a close timeout of 300 ms, and the order where the close times out needs the release of the lease to succeed within half of the timeout, or the next instance waits an hour for the lease. Both are bounds from the side that a slow machine breaks. Fake clocks remove both: the close times out only when every goroutine of the bubble is blocked, and `synctest.Wait` says when the close waits for the call without polling.
+
+### What worked
+
+`testing/synctest` with the real core, engine, SQLite cache, `database/sql`, and the store in memory, as `/internal/core/tx_test.go` does it for the core. The second order takes a fake minute and no real time.
+
+### What didn't work
+
+The first draft named the counter of the inserts `values`, which shadows the helper `values` of the tests; it is `count`.
+
+### What I learned
+
+A commit that waits before its manifest swap when the instance stops is refused as "not committed" whether it goes on during the close or after it: the stop is checked before the swap, and the lease is released by then anyway.
+
+### What was tricky
+
+Not letting a fault hang the test: the wait for five acknowledged inserts also ends when every writer has returned.
+
+### What warrants review
+
+That the third test's assertions are the outcomes the core promises and not only what it does today: an insert that fails on a closed instance must not be `ErrOutcomeUnknown`, since the commit had not reached its swap.
+
+### Future work
+
+None.

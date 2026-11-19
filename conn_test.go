@@ -10,7 +10,9 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"maragu.dev/is"
@@ -430,6 +432,204 @@ func TestClose(t *testing.T) {
 		is.Equal(t, "sql: database is closed", failed(t, err).Error())
 		is.NotError(t, db.Close())
 	})
+
+	t.Run("should commit an insert if and only if it was acknowledged, when the database is closed while writes and queries run in many goroutines", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, t1)
+
+		const writers, queriers = 4, 8
+		var mu sync.Mutex
+		// acked are the inserts that succeeded.
+		acked := map[int64]bool{}
+		var count atomic.Int64
+		// some is closed once some inserts are acknowledged, and writing once the writers have all
+		// returned, so that the test waits for neither if the other does not come.
+		some, writing := make(chan struct{}), make(chan struct{})
+		var once sync.Once
+		// Each goroutine sends one error at the most.
+		errs := make(chan error, writers+queriers)
+		var writes, all sync.WaitGroup
+		for range writers {
+			writes.Go(func() {
+				for {
+					v := count.Add(1)
+					_, err := db.ExecContext(t.Context(), fmt.Sprint("insert into t1 (v1) values (", v, ")"))
+					if err != nil {
+						if !closedError(err) {
+							errs <- fmt.Errorf("the insert of %v: %w", v, err)
+						}
+						return
+					}
+					mu.Lock()
+					acked[v] = true
+					n := len(acked)
+					mu.Unlock()
+					if n >= 5 {
+						once.Do(func() { close(some) })
+					}
+				}
+			})
+		}
+		all.Go(func() {
+			writes.Wait()
+			close(writing)
+		})
+		for g := range queriers {
+			all.Go(func() {
+				for {
+					rows, err := db.QueryContext(t.Context(), select1)
+					if err != nil {
+						if !closedError(err) {
+							errs <- fmt.Errorf("a query: %w", err)
+						}
+						return
+					}
+					last := int64(-1)
+					for n := 1; rows.Next(); n++ {
+						var v int64
+						if err := rows.Scan(&v); err != nil || v <= last {
+							errs <- fmt.Errorf("the rows of a query are not in order, or cannot be scanned: %v after %v: %w", v, last, err)
+							return
+						}
+						last = v
+						// Every other goroutine closes its rows early.
+						if g%2 == 0 && n == 2 {
+							break
+						}
+					}
+					err = rows.Err()
+					// Every third leaves its rows open, for the close of the database.
+					if g%3 != 0 {
+						err = errors.Join(err, rows.Close())
+					}
+					if err != nil {
+						if !closedError(err) {
+							errs <- fmt.Errorf("the rows of a query: %w", err)
+						}
+						return
+					}
+				}
+			})
+		}
+
+		select {
+		case <-some:
+		case <-writing:
+		}
+		closeErr := db.Close()
+		writes.Wait()
+		all.Wait()
+		close(errs)
+		for err := range errs {
+			t.Error(err)
+		}
+		is.NotError(t, closeErr)
+		is.True(t, len(acked) >= 5, fmt.Sprint(len(acked), " inserts are acknowledged"))
+
+		var want []int64
+		for v := range acked {
+			want = append(want, v)
+		}
+		slices.Sort(want)
+		is.EqualSlice(t, want, values(t, w.serve(t, "b"), select1))
+	})
+
+	t.Run("should end the rows that goroutines read while the database is closed, each at its last row or with the error of an instance that was closed", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, t1)
+		for i := range 50 {
+			exec(t, db, fmt.Sprint("insert into t1 (v1) values (", i, ")"))
+		}
+
+		var wg sync.WaitGroup
+		// Each goroutine sends one error at the most.
+		errs := make(chan error, readers)
+		for range readers {
+			rows, err := db.QueryContext(t.Context(), select1)
+			is.NotError(t, err)
+			wg.Go(func() {
+				n := 0
+				for rows.Next() {
+					n++
+				}
+				err := errors.Join(rows.Err(), rows.Close())
+				switch {
+				case err == nil && n != 50:
+					errs <- fmt.Errorf("the rows ended without an error after %v of 50 rows", n)
+				case err != nil && (!errors.Is(err, s4ql.ErrStopped) || errors.Is(err, driver.ErrBadConn)):
+					errs <- fmt.Errorf("the rows of a query: %w", err)
+				}
+			})
+		}
+		is.NotError(t, db.Close())
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Error(err)
+		}
+	})
+
+	t.Run("should commit no insert whose commit waits in the store while the database closes, whether it goes on during the close or after the close has timed out", func(t *testing.T) {
+		for _, after := range []bool{false, true} {
+			// The clocks are fake, so the close times out only when nothing else can happen.
+			synctest.Test(t, func(t *testing.T) {
+				w := newWorld(t)
+				s := &faulty{Store: w.client()}
+				db := w.openOn(t, "a", s, coreOptions())
+				is.NotError(t, db.PingContext(t.Context()))
+				exec(t, db, t1)
+
+				// The insert uploads its commit object and waits there, before the manifest swap.
+				reached, gate := make(chan struct{}), make(chan struct{})
+				s.beforeCreate(func() {
+					close(reached)
+					<-gate
+				})
+				inserted := make(chan error, 1)
+				go func() {
+					_, err := db.ExecContext(t.Context(), insert1)
+					inserted <- err
+				}()
+				<-reached
+
+				var closeErr error
+				if after {
+					closeErr = db.Close()
+					close(gate)
+				} else {
+					closed := make(chan error, 1)
+					go func() { closed <- db.Close() }()
+					// The close has stopped the instance and waits for the insert.
+					synctest.Wait()
+					close(gate)
+					closeErr = <-closed
+				}
+				err := <-inserted
+				is.Error(t, s4ql.ErrStopped, failed(t, err))
+				is.True(t, !errors.Is(err, s4ql.ErrOutcomeUnknown), err.Error())
+				if after {
+					is.True(t, strings.HasPrefix(failed(t, closeErr).Error(), "s4ql: close: a call still uses the cache"), closeErr.Error())
+				} else {
+					is.NotError(t, closeErr)
+				}
+
+				// The lease is released either way. The cache is closed when the insert has ended, which
+				// the world checks when the test ends.
+				is.EqualSlice(t, []int64{}, values(t, w.serve(t, "b"), select1))
+			})
+		}
+	})
+}
+
+// closedError reports whether err is the error of a statement on a database that is closed: that of
+// the instance, or that of database/sql. It is never driver.ErrBadConn.
+func closedError(err error) bool {
+	if errors.Is(err, driver.ErrBadConn) {
+		return false
+	}
+	return errors.Is(err, s4ql.ErrStopped) && strings.HasSuffix(err.Error(), "the instance has stopped: closed") || err.Error() == "sql: database is closed"
 }
 
 func TestStop(t *testing.T) {
