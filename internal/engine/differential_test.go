@@ -595,7 +595,7 @@ func (y tally) add(src string, a answer) {
 		return
 	}
 	kind := "other"
-	if s, _ := stmt.Check(src); s != nil {
+	if s, _ := checkText(src); s != nil {
 		kind = strings.ToLower(strings.TrimPrefix(fmt.Sprintf("%T", s), "*stmt."))
 		if s.Parameters() > 0 {
 			kind += " with a parameter"
@@ -783,7 +783,7 @@ func (p *pair) step(c stmttest.Call) string {
 	// refuses before its arguments, a syntax error or no statement, which SQLite refuses before it
 	// binds them, so that it runs in SQLite without them.
 	args := oracleArgs(c.Args)
-	if s, err := stmt.Check(src); err != nil || s == nil {
+	if s, err := checkText(src); err != nil || s == nil {
 		args = nil
 	}
 	if kind, failure := p.checkLength(c, got); kind != "" {
@@ -862,14 +862,14 @@ func (p *pair) reach(c stmttest.Call, got answer) {
 	if p.y == nil {
 		return
 	}
-	s, _ := stmt.Check(c.Src)
+	s, _ := checkText(c.Src)
 	insert, ok := s.(*stmt.Insert)
 	if !ok {
 		return
 	}
 	count := func(what string) { p.y["reached: "+what]++ }
-	var value any = insert.Value
-	if insert.Parameter > 0 {
+	var value any = insert.Values[0].Value
+	if insert.Values[0].Parameter > 0 {
 		for _, a := range c.Args {
 			count("argument " + stmttest.ArgumentKind(a))
 		}
@@ -877,7 +877,7 @@ func (p *pair) reach(c stmttest.Call, got answer) {
 			value = converted(unnamed(c.Args)[0])
 		}
 	} else {
-		count("literal " + stmttest.LiteralKind(insert.Value))
+		count("literal " + stmttest.LiteralKind(insert.Values[0].Value))
 	}
 	if byteLength(value) > 900 {
 		count("long value")
@@ -909,7 +909,7 @@ func (p *pair) reach(c stmttest.Call, got answer) {
 // first such argument, as [refusal] says. It gives the kind of the excuse, [excusedArguments] or
 // [excusedArgument], if the rule decides the call, or "", and what differs from the rule, or "".
 func checkArguments(c stmttest.Call, got answer) (kind, failure string) {
-	s, err := stmt.Check(c.Src)
+	s, err := checkText(c.Src)
 	if err != nil || s == nil {
 		return "", ""
 	}
@@ -1016,12 +1016,12 @@ func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failu
 func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string) {
 	t := p.t
 	t.Helper()
-	s, _ := stmt.Check(c.Src)
+	s, _ := checkText(c.Src)
 	insert, ok := s.(*stmt.Insert)
 	if !ok || p.i.limit == 0 || p.o.prepare(t, c.Src) != nil {
 		return "", ""
 	}
-	n := byteLength(insert.Value)
+	n := byteLength(insert.Values[0].Value)
 	if n <= p.i.limit {
 		return "", ""
 	}
@@ -1057,7 +1057,7 @@ func byteLength(v any) int {
 // its column.
 func typeRule(t testing.TB, o *oracle, src string, args []any) string {
 	t.Helper()
-	s, _ := stmt.Check(src)
+	s, _ := checkText(src)
 	insert, ok := s.(*stmt.Insert)
 	if !ok || len(args) != insert.Parameters() || o.prepare(t, src) != nil {
 		return ""
@@ -1074,7 +1074,7 @@ func typeRule(t testing.TB, o *oracle, src string, args []any) string {
 // kind that [columnHolds] names, and how s4ql's message names the value.
 func valueKind(t testing.TB, insert *stmt.Insert, args []any) (kind, what string) {
 	t.Helper()
-	switch v := insert.Value.(type) {
+	switch v := insert.Values[0].Value.(type) {
 	case nil:
 		switch args[0].(type) {
 		case int64:
@@ -1105,7 +1105,7 @@ func valueKind(t testing.TB, insert *stmt.Insert, args []any) (kind, what string
 // o, or "" if src is not an insert that SQLite prepares.
 func insertType(t testing.TB, o *oracle, src string) string {
 	t.Helper()
-	s, _ := stmt.Check(src)
+	s, _ := checkText(src)
 	insert, ok := s.(*stmt.Insert)
 	if !ok || o.prepare(t, src) != nil {
 		return ""
@@ -1133,9 +1133,22 @@ func (o *oracle) column(t testing.TB, name string) (table, column, typ string) {
 	return s.ColumnText(0), s.ColumnText(1), s.ColumnText(2)
 }
 
+// checkText src as the engine checks a text before it runs it: as [stmt.Check] does, and with the
+// "not supported" of [engine.Check] for a statement of slice 5 that the pass supports and the engine
+// does not run yet, which the tests take for a text that is not supported.
+func checkText(src string) (stmt.Statement, error) {
+	s, err := stmt.Check(src)
+	if err == nil && s != nil {
+		if err := engine.Check(src, s.Parameters()); errors.Is(err, stmt.ErrNotSupported) {
+			return nil, err
+		}
+	}
+	return s, err
+}
+
 // isInsert reports whether src is a supported insert.
 func isInsert(src string) bool {
-	s, _ := stmt.Check(src)
+	s, _ := checkText(src)
 	_, ok := s.(*stmt.Insert)
 	return ok
 }

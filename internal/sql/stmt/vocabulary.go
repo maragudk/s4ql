@@ -108,9 +108,9 @@ var fieldNames = map[string]string{
 	"Insert.Default":                     "DEFAULT VALUES",
 	"TargetTable.As":                     "alias",
 	"Values.Commas":                      "second row",
-	"ValuesRow.Commas":                   "second value",
 	"SimpleSelect.Distinct":              "DISTINCT or ALL",
-	"SimpleSelect.Commas":                "second result column",
+	"ResultColumn.As":                    "alias",
+	"ResultColumn.Alias":                 "alias",
 	"FromItem.As":                        "alias",
 	"FromItem.Alias":                     "alias",
 }

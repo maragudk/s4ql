@@ -124,25 +124,38 @@ func (r *recognizer) statement() Statement {
 	return s
 }
 
-// createTable: CREATE TABLE name (column type PRIMARY KEY) and the options STRICT and WITHOUT ROWID,
-// in either order, separated by a comma.
+// createTable: CREATE TABLE name (columns) and the options STRICT and WITHOUT ROWID, in either
+// order, separated by a comma. The columns are one or more, separated by commas, and exactly one is
+// the primary key.
 func (r *recognizer) createTable(c *ast.CreateTable) *CreateTable {
 	r.accept(c)
 	r.take(c.Create)
 	r.take(c.Table)
 	table := r.tableName(c.Name)
 	r.take(c.LParen)
-	column, typ := r.column(c.Columns[0])
-	if len(c.Commas) > 0 && r.isNext(c.Commas[0]) {
-		// The comma after the column: a second column or a table constraint follows it.
-		if len(c.Columns) > 1 {
-			r.reject("second column")
+	s := &CreateTable{Table: table}
+	key := false
+	for i, d := range c.Columns {
+		if i > 0 {
+			// The commas between the columns come first, before those of the table constraints.
+			r.take(c.Commas[i-1])
 		}
+		column := r.column(d, key)
+		key = key || column.PrimaryKey
+		s.Columns = append(s.Columns, column)
+	}
+	// A table constraint follows a comma after the last column. Both rejects are for the token at
+	// the end of the columns: one that the recognizer did not take before it is named by the take of
+	// the parenthesis.
+	if len(c.Constraints) > 0 && r.isNext(c.Commas[len(c.Columns)-1]) {
 		r.reject("table constraint")
+	}
+	if !key && r.isNext(c.RParen) {
+		r.reject("table without PRIMARY KEY")
 	}
 	r.take(c.RParen)
 	r.tableOptions(c)
-	return &CreateTable{Table: table, Column: column, Type: typ}
+	return s
 }
 
 // columnTypes are the types of a column, by their bare word in lower case.
@@ -151,10 +164,13 @@ var columnTypes = map[string]Type{"int": TypeInt, "integer": TypeInteger, "real"
 // otherType is the name of a reject for a column type that is not one of [columnTypes].
 const otherType = "column type other than INT, INTEGER, REAL, TEXT, or BLOB"
 
-// column: name type PRIMARY KEY, where the type is one bare word of [columnTypes], in any case.
-func (r *recognizer) column(d *ast.ColumnDef) (Name, Type) {
+// column: name type and its constraints, where the type is one bare word of [columnTypes], in any
+// case, and the constraints are PRIMARY KEY and NOT NULL, each at most once, in either order. The
+// column has at least one of them. key reports whether an earlier column of the table is its primary
+// key, so that this one must not be.
+func (r *recognizer) column(d *ast.ColumnDef, key bool) Column {
 	r.accept(d)
-	name := r.name(d.Name)
+	c := Column{Name: r.name(d.Name)}
 	if d.Type == nil {
 		r.reject("column without a type")
 	}
@@ -167,17 +183,38 @@ func (r *recognizer) column(d *ast.ColumnDef) (Name, Type) {
 	if len(d.Type.Names) > 1 || d.Type.LParen.Present() {
 		r.reject(otherType)
 	}
-	if len(d.Constraints) == 0 {
-		r.reject("column without PRIMARY KEY")
+	c.Type = typ
+	for _, k := range d.Constraints {
+		switch k := k.(type) {
+		case *ast.PrimaryKeyConstraint:
+			if (key || c.PrimaryKey) && r.isNext(k.Primary) {
+				// SQLite gives `table "t" has more than one primary key` while it parses.
+				r.reject("second PRIMARY KEY")
+			}
+			r.accept(k)
+			r.take(k.Primary)
+			r.take(k.Key)
+			c.PrimaryKey = true
+		case *ast.NullConstraint:
+			if c.NotNull || !k.Not.Present() {
+				r.unexpected()
+			}
+			r.accept(k)
+			r.take(k.Not)
+			r.take(k.Null)
+			c.NotNull = true
+		default:
+			r.unexpected()
+		}
 	}
-	pk, ok := d.Constraints[0].(*ast.PrimaryKeyConstraint)
-	if !ok {
-		r.unexpected()
+	switch {
+	case c.PrimaryKey || c.NotNull:
+	case key:
+		r.reject("column without NOT NULL")
+	default:
+		r.reject("column without PRIMARY KEY or NOT NULL")
 	}
-	r.accept(pk)
-	r.take(pk.Primary)
-	r.take(pk.Key)
-	return name, typ
+	return c
 }
 
 // tableOptions: STRICT and WITHOUT ROWID, each once, in either order, with a comma between them.
@@ -226,7 +263,8 @@ func isWord(t ast.Token, w string) bool {
 	return asciiLower(t.Text) == w
 }
 
-// insert: INSERT INTO table (column) VALUES (value), where the value is a literal or a parameter.
+// insert: INSERT INTO table, an optional list of columns, and VALUES with one row of values, where
+// each value is a literal or a parameter.
 func (r *recognizer) insert(c *ast.Insert) *Insert {
 	r.accept(c)
 	if r.isNext(c.Insert) && c.Insert.Kind == token.Replace {
@@ -235,17 +273,25 @@ func (r *recognizer) insert(c *ast.Insert) *Insert {
 	r.take(c.Insert)
 	r.take(c.Into)
 	r.accept(c.Table)
-	table := r.tableName(c.Table.Name)
-	// Without a column list, VALUES, SELECT, or DEFAULT follows the table.
-	if c.Select != nil && r.at() == c.Select.Bounds().Start || r.isNext(c.Default) {
-		r.reject("INSERT without a column list")
+	s := &Insert{Table: r.tableName(c.Table.Name)}
+	if c.Columns != nil {
+		r.take(c.LParen)
+		r.accept(c.Columns)
+		seen := map[string]bool{}
+		for i, t := range c.Columns.Names {
+			if i > 0 {
+				r.take(c.Columns.Commas[i-1])
+			}
+			if r.isNext(t) && seen[asciiLower(dequote(t))] {
+				// SQLite takes the first value for the column and leaves the others unused.
+				r.reject("column named twice")
+			}
+			n := r.name(t)
+			seen[n.Fold()] = true
+			s.Columns = append(s.Columns, n)
+		}
+		r.take(c.RParen)
 	}
-	r.take(c.LParen)
-	column := r.name(c.Columns.Names[0])
-	if len(c.Columns.Names) > 1 {
-		r.reject("second column")
-	}
-	r.take(c.RParen)
 	if c.Select == nil {
 		r.unexpected()
 	}
@@ -262,19 +308,26 @@ func (r *recognizer) insert(c *ast.Insert) *Insert {
 	row := values.Rows[0]
 	r.accept(row)
 	r.take(row.LParen)
-	s := &Insert{Table: table, Column: column}
-	if v, ok := row.Exprs[0].(*ast.Variable); ok {
-		s.Parameter, s.ValueSpan = r.parameter(v)
-	} else {
-		s.Value, s.ValueSpan = r.literal(row.Exprs[0])
+	for i, e := range row.Exprs {
+		if i > 0 {
+			r.take(row.Commas[i-1])
+		}
+		var v Term
+		if p, ok := e.(*ast.Variable); ok {
+			v.Parameter, v.Span = r.parameter(p, s.Parameters())
+		} else {
+			v.Value, v.Span = r.literal(e)
+		}
+		s.Values = append(s.Values, v)
 	}
 	r.take(row.RParen)
 	return s
 }
 
-// parameter v: a plain ?, which is the statement's first parameter. SQLite numbers a ? one more than
-// the largest number before it, and the statement has no other parameter, so its number is 1.
-func (r *recognizer) parameter(v *ast.Variable) (int, Span) {
+// parameter v: a plain ?, after before parameters of the statement. SQLite numbers a ? one more than
+// the largest number before it, and each parameter before it is a plain ? too, so its number is one
+// more than their number.
+func (r *recognizer) parameter(v *ast.Variable, before int) (int, Span) {
 	if r.isNext(v.Name) && v.Name.Text != "?" {
 		if v.Name.Text[0] == '?' {
 			r.reject("numbered parameter")
@@ -283,7 +336,7 @@ func (r *recognizer) parameter(v *ast.Variable) (int, Span) {
 	}
 	r.accept(v)
 	r.take(v.Name)
-	return 1, Span{Start: v.Name.Offset, End: v.Name.End()}
+	return before + 1, Span{Start: v.Name.Offset, End: v.Name.End()}
 }
 
 // literal value: a decimal integer literal that fits in 64 bits or a real literal, with at most one
@@ -394,7 +447,7 @@ func unaryName(op ast.Token) string {
 	}
 }
 
-// selectCmd: SELECT * FROM table.
+// selectCmd: SELECT, * or the names of one or more columns, FROM table.
 func (r *recognizer) selectCmd(c *ast.SelectCmd) *Select {
 	r.accept(c)
 	r.accept(c.Select)
@@ -404,11 +457,13 @@ func (r *recognizer) selectCmd(c *ast.SelectCmd) *Select {
 	}
 	r.accept(core)
 	r.take(core.Select)
-	rc := core.Columns[0]
-	if (rc.Expr != nil || rc.Table.Present()) && r.at() == rc.Bounds().Start {
-		r.reject("result column other than *")
+	var columns []Name
+	for i, rc := range core.Columns {
+		if i > 0 {
+			r.take(core.Commas[i-1])
+		}
+		columns = r.resultColumn(rc, len(core.Columns), columns)
 	}
-	r.take(rc.Star)
 	if core.From == nil {
 		if r.next == len(r.tokens) || r.isNext(r.tree.Semi) {
 			r.reject("SELECT without FROM")
@@ -424,7 +479,34 @@ func (r *recognizer) selectCmd(c *ast.SelectCmd) *Select {
 		r.unexpected()
 	}
 	r.accept(source)
-	return &Select{Table: r.tableName(source.Name)}
+	return &Select{Table: r.tableName(source.Name), Columns: columns}
+}
+
+// resultColumn rc of a select list of n result columns, after the names of the columns before it: a
+// * that is the only result column, or the bare name of a column. It gives the names with that of rc
+// added.
+func (r *recognizer) resultColumn(rc *ast.ResultColumn, n int, before []Name) []Name {
+	if rc.Star.Present() && !rc.Table.Present() {
+		if n > 1 && r.isNext(rc.Star) {
+			r.reject("* and another result column")
+		}
+		r.take(rc.Star)
+		return before
+	}
+	ref, ok := rc.Expr.(*ast.ColumnRef)
+	if !ok || ref.Table.Present() {
+		if r.at() == rc.Bounds().Start {
+			r.reject("result column other than a column or *")
+		}
+		r.unexpected()
+	}
+	if r.isNext(ref.Column) && (isWord(ref.Column, "true") || isWord(ref.Column, "false")) {
+		// SQLite reads a bare TRUE or FALSE as 1 or 0 where the table has no column of that name.
+		r.reject("TRUE or FALSE")
+	}
+	r.accept(rc)
+	r.accept(ref)
+	return append(before, r.name(ref.Column))
 }
 
 // drop: DROP TABLE table.

@@ -212,17 +212,19 @@ A test checks that every name the pass gives in any test is in these tables.
 | `empty name` | A name is `""`. |
 | `reserved table name` | A table name starts with `sqlite_` or `s4ql_`. |
 | `name of a virtual table of SQLite` | A table name is that of an eponymous virtual table. |
-| `second column` | CREATE TABLE has a second column, or INSERT names a second column. |
 | `table constraint` | CREATE TABLE has a table constraint. |
 | `column without a type` | The column has no type. |
 | `column type other than INT, INTEGER, REAL, TEXT, or BLOB` | The column's type is not one of the bare words `int`, `integer`, `real`, `text`, and `blob`. |
-| `column without PRIMARY KEY` | The column's first constraint is missing. |
+| `column without PRIMARY KEY or NOT NULL` | A column has neither PRIMARY KEY nor NOT NULL, and no column before it is the primary key. |
+| `column without NOT NULL` | A column after the primary key has no NOT NULL. A column that may hold NULL comes in slice 6. |
+| `second PRIMARY KEY` | A column says PRIMARY KEY after an earlier one did, or says it twice. SQLite gives `table "t" has more than one primary key`. |
+| `table without PRIMARY KEY` | Every column says NOT NULL, and none PRIMARY KEY. SQLite gives `PRIMARY KEY missing on table t` after it has parsed the statement. |
 | `table option` | An option is not STRICT or WITHOUT ROWID, or comes again, or is a third. |
 | `table without STRICT and WITHOUT ROWID` | CREATE TABLE has no options. |
 | `table without STRICT` | CREATE TABLE has WITHOUT ROWID only. |
 | `table without WITHOUT ROWID` | CREATE TABLE has STRICT only. |
 | `REPLACE` | The statement is REPLACE INTO. |
-| `INSERT without a column list` | INSERT names no column. |
+| `column named twice` | The column list of INSERT names a column that it named before, as SQLite compares names. SQLite takes the first value for it. |
 | `INSERT with SELECT` | INSERT has a SELECT in place of VALUES. |
 | `+ sign` | The value has a `+` sign. |
 | `~ operator` | The value has a `~`, also after its `-`. |
@@ -240,7 +242,8 @@ A test checks that every name the pass gives in any test is in these tables.
 | `numbered parameter` | The value is a parameter with a number, such as `?1`. |
 | `named parameter` | The value is a parameter with a name: `:name`, `@name`, `$name`, or `#name`. |
 | `parameter after a sign` | The value is a parameter after its `-`. |
-| `result column other than *` | SELECT has a result column that is not `*`. |
+| `result column other than a column or *` | SELECT has a result column that is not the bare name of a column or `*`, such as `1`, `v + 1`, `t.v`, or `t.*`. |
+| `* and another result column` | SELECT has `*` and another result column. |
 | `SELECT without FROM` | SELECT has no FROM. |
 | `DROP VIEW` | The statement is DROP VIEW. |
 | `DROP INDEX` | The statement is DROP INDEX. |
@@ -263,11 +266,9 @@ These are the tokens of a node that the recognizer accepted, in a field that no 
 | `IF EXISTS` | `Drop.IfExists` |
 | `INSERT OR` | `Insert.Or` |
 | `DEFAULT VALUES` | `Insert.Default` |
-| `alias` | `TargetTable.As`, `FromItem.As`, `FromItem.Alias` |
-| `second value` | `ValuesRow.Commas` |
+| `alias` | `TargetTable.As`, `FromItem.As`, `FromItem.Alias`, `ResultColumn.As`, `ResultColumn.Alias` |
 | `second row` | `Values.Commas` |
 | `DISTINCT or ALL` | `SimpleSelect.Distinct` |
-| `second result column` | `SimpleSelect.Commas` |
 
 Any other field of an accepted node has the name of the node's type.
 

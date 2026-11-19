@@ -296,7 +296,7 @@ func readReal(text string) (float64, bool) {
 	if err != nil {
 		return 0, false
 	}
-	v, ok := s.(*stmt.Insert).Value.(stmt.Real)
+	v, ok := s.(*stmt.Insert).Values[0].Value.(stmt.Real)
 	return float64(v), ok
 }
 

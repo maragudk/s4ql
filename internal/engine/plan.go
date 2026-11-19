@@ -119,16 +119,22 @@ func (*Text) expr()        {}
 func (*Blob) expr()        {}
 func (*Parameter) expr()   {}
 
-// NewPlan of the statement s, which [stmt.Check] gives. It panics for a statement of another type.
+// NewPlan of the statement s, which [stmt.Check] gives and the engine runs: it is not of a form that
+// [checkColumns] refuses. It panics for a statement of another type or of such a form.
 func NewPlan(s stmt.Statement) Plan {
+	if err := checkColumns(s); err != nil {
+		panic(fmt.Sprintf("engine: %v", err))
+	}
 	switch s := s.(type) {
 	case *stmt.CreateTable:
-		return &CreateTable{Table: s.Table, Columns: []ColumnDef{{Name: s.Column, Type: columnType(s.Type)}}, PrimaryKey: []int{0}}
+		c := s.Columns[0]
+		return &CreateTable{Table: s.Table, Columns: []ColumnDef{{Name: c.Name, Type: columnType(c.Type)}}, PrimaryKey: []int{0}}
 	case *stmt.DropTable:
 		return &DropTable{Table: s.Table}
 	case *stmt.Insert:
+		t := s.Values[0]
 		var value Expr
-		switch v := s.Value.(type) {
+		switch v := t.Value.(type) {
 		case stmt.Integer:
 			value = &Integer{Value: int64(v)}
 		case stmt.Real:
@@ -138,11 +144,11 @@ func NewPlan(s stmt.Statement) Plan {
 		case stmt.Blob:
 			value = &Blob{Value: []byte(v)}
 		case nil:
-			value = &Parameter{Number: s.Parameter}
+			value = &Parameter{Number: t.Parameter}
 		default:
 			panic(fmt.Sprintf("engine: a value of type %T", v))
 		}
-		return &Insert{Table: s.Table, Columns: []stmt.Name{s.Column}, Source: &Values{Rows: [][]Expr{{value}}}}
+		return &Insert{Table: s.Table, Columns: s.Columns, Source: &Values{Rows: [][]Expr{{value}}}}
 	case *stmt.Select:
 		return &Query{Root: &Project{Source: &Scan{Table: s.Table}, Star: true}}
 	}
