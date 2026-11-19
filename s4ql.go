@@ -91,6 +91,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 	"time"
 
 	"maragu.dev/s4ql/internal/core"
@@ -111,6 +113,12 @@ type Options struct {
 	// Endpoint of the object store, an http or https URL such as https://t3.storage.dev for Tigris.
 	// If it is empty, it comes from the environment variable AWS_ENDPOINT_URL_S3 or the shared AWS
 	// configuration, and is otherwise Amazon S3 in the region.
+	//
+	// The cache records the endpoint as this option gives it, with the bucket and the prefix, as the
+	// database that it belongs to: see [Open]. Another text for the same store, such as an empty
+	// option in place of the URL, or a URL with a slash at its end, is therefore another database to
+	// the cache, and needs another cache directory. A change of the environment or of the shared AWS
+	// configuration is not seen.
 	Endpoint string
 
 	// Region of the bucket, such as eu-north-1, or auto for Tigris. If it is empty, it comes from
@@ -129,9 +137,10 @@ type Options struct {
 	PathStyle bool
 
 	// CacheDir is the directory of the local cache of the database, which is created if it does not
-	// exist. It is required. A cache directory is for one instance at a time: see [Open]. The cache
-	// is kept when the instance closes, and the next instance on the directory catches it up from
-	// where it stands. A cache that is lost is built again from the object store.
+	// exist. It is required. A cache directory belongs to one database, and is for one instance at a
+	// time: see [Open]. The cache is kept when the instance closes, and the next instance on the
+	// directory catches it up from where it stands. A cache that is lost is built again from the
+	// object store.
 	CacheDir string
 
 	// CloseTimeout is how long [database/sql.DB.Close] waits for the instance to close and to
@@ -151,14 +160,18 @@ type Options struct {
 // The context bounds only that local work. Open does not contact the object store and does not
 // wait for the lease: [database/sql.DB.PingContext] waits until the instance serves.
 //
-// A cache directory is for one instance at a time, and nothing checks that it has one only:
+// A cache directory belongs to one database: the endpoint, the bucket, and the prefix of the
+// options, as they are given, and with nothing else of the options. A new cache records them, and
+// Open fails for a cache that records another database, also while an instance of that database
+// runs on it. The error names both databases and starts with "s4ql: open the cache: the cache
+// belongs to another database: ". Nothing rebuilds or takes over such a cache: give each database
+// a cache directory of its own, or, if the database has moved, delete the files of the cache, which
+// the next instance builds again from the object store. Of two instances of two databases that
+// open one new cache directory at once, one opens and the other fails so.
 //
-//   - A second instance of the same database on the same cache directory is a spare, as any second
-//     instance is, and serves from the same cache when it gets the lease.
-//   - An instance that finds the cache of another database, with commits of that database in it,
-//     stops, with an error that matches [ErrStopped].
-//   - Two instances of two databases that run at the same time on a cache directory that was empty
-//     can each read the tables of the other. Never give two databases one cache directory.
+// A cache directory is for one instance at a time. A second instance of the same database on the
+// same cache directory is a spare, as any second instance is, and serves from the same cache when
+// it gets the lease.
 func Open(ctx context.Context, options Options) (*sql.DB, error) {
 	d := &opener{connect: options.connector}
 	c, err := d.connect(ctx, d)
@@ -202,6 +215,22 @@ func (o Options) connector(ctx context.Context, d driver.Driver) (*connector, er
 	}
 	// Four reads at once, as the documentation of the package says.
 	return newConnector(ctx, host.New(), s, o, core.Options{Readers: 4}, d)
+}
+
+// identity of the database of the options, which the cache records: an s3 URL of the bucket and the
+// prefix, followed by " at " and the endpoint if the options give one. The bucket and each segment
+// of the prefix are escaped as segments of a path, which escapes the slash, the space, and the
+// question mark, so that two databases never give one identity.
+func (o Options) identity() string {
+	segments := strings.Split(o.Prefix, "/")
+	for i, segment := range segments {
+		segments[i] = url.PathEscape(segment)
+	}
+	identity := "s3://" + url.PathEscape(o.Bucket) + "/" + strings.Join(segments, "/")
+	if o.Endpoint != "" {
+		identity += " at " + o.Endpoint
+	}
+	return identity
 }
 
 // opener is the [driver.Driver] of this package: it opens an instance with connect for each

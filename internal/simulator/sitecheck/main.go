@@ -3,19 +3,23 @@
 // Command sitecheck checks the simulator's page of the project site in headless Chromium, as GitHub
 // Pages serves it: without the headers of cross-origin isolation. It serves the site from -root,
 // which must hold the engine that make site builds into site/simulator/engine, and opens check.html,
-// which loads the page in frames and drives it as a visitor would:
+// which loads the page in a frame and drives it as a visitor would:
 //
 //	go run -tags s4ql_browser ./internal/simulator/sitecheck -root site
 //
-// The check passes if the page loads, the engine becomes ready, the first run has events, a crash
-// added at a time changes the run from that time on and not before it, the run grows past its first
-// end with the same events before that end and stops at its limit, "Start over" gives a new run, and
-// the page neither writes its address nor reads a fragment of an old link. It writes what it saw, and
-// exits with 0 if the check passed, 1 if it failed, and 2 if it could not run.
+// The check passes if the engine becomes ready and the page waits at zero until Play; Play advances
+// fake time by the real time, turbo by five times it, and the log and the commit objects grow; Pause
+// holds fake time; each action on an instance has its effect in the state, and an action switched off
+// again takes it away; a crash of the instance that serves lets the other take over; fake time goes
+// past 10 minutes; and the page writes nothing into its address. It also checks the words of run.js.
+// It writes what it saw, and exits with 0 if the check passed, 1 if it failed, and 2 if it could not
+// run.
 //
-// The page picks a random seed for each visit, and every step of the check holds for any seed.
-// Nothing in the check waits for a time: it waits for what the page says through data attributes.
-// -timeout only stops a check that hangs, and is far above what a run takes on a slow machine.
+// The page picks a random seed for each visit, and every step of the check holds for any seed. To go
+// on in fake time without waiting real minutes, the check calls the page's hook s4qlPage.skip, which
+// advances the session at once. Nothing in the check waits for a time: it waits for what the page
+// says through data attributes and its state, or for animation frames. -timeout only stops a check
+// that hangs, and is far above what a check takes on a slow machine.
 //
 // Chromium is found as the runner in internal/sqlite/browser finds it: S4QL_CHROMIUM, or the PATH, or
 // /Applications on macOS. S4QL_CHROMIUM_FLAGS adds flags, such as --no-sandbox.

@@ -40,6 +40,25 @@
 <pre id="state"></pre>
 <h2>Events</h2>
 <pre id="events"></pre>
+<h2>Live session</h2>
+<p>A live session has no end: "Advance" moves its fake time on, and "Play" advances it by the step every 100 ms of real time until "Pause". "Act" does the action below at the session's time.</p>
+<textarea id="session" style="height: 4em">{"seed": 7}</textarea>
+<p>
+  <button id="start" type="button" disabled>Start</button>
+  step <input id="step" value="1000" size="7"> ms
+  <button id="advance" type="button" disabled>Advance</button>
+  <button id="play" type="button" disabled>Play</button>
+  <button id="end" type="button" disabled>End</button>
+</p>
+<p>
+  <input id="action" size="70" value='{"do": "hangNetwork", "instance": "a", "on": true}'>
+  <button id="act" type="button" disabled>Act</button>
+</p>
+<p id="live"></p>
+<h3>Instances now</h3>
+<pre id="instances"></pre>
+<h3>Events of the session, the last 200</h3>
+<pre id="liveEvents"></pre>
 <script type="module">
 import { Engine } from './simulator.js';
 
@@ -72,11 +91,53 @@ const run = async () => {
   }
 };
 
+// The live session: its events, of which the page keeps the last 200, and the state after each answer.
+const session = { events: [], timer: null, answers: 0, ms: 0 };
+const live = async (call) => {
+  try {
+    const t0 = performance.now();
+    const answer = await call();
+    session.ms = performance.now() - t0;
+    session.answers++;
+    session.events.push(...answer.events);
+    session.events.splice(0, Math.max(0, session.events.length - 200));
+    const { state } = answer.ended ? { state: { instances: [] } } : await engine.now(5);
+    $('live').textContent = answer.ended
+      ? `Ended at ${answer.t} ms after ${answer.steps} steps, ${answer.summary.violations} violations, hash ${answer.hash.slice(0, 16)}.`
+      : `At ${(answer.t / 1000).toFixed(1)} s of fake time, ${answer.steps} steps; the last answer took ${session.ms.toFixed(1)} ms; SQLite memory ${engine.memory}.`;
+    $('instances').textContent = state.instances.map((i) => JSON.stringify(i)).join('\n');
+    $('liveEvents').textContent = session.events.map((e) => JSON.stringify(e)).join('\n');
+    window.demo.live = { t: answer.t, steps: answer.steps, ms: session.ms, ended: !!answer.ended };
+    return answer;
+  } catch (e) {
+    $('live').textContent = 'Error: ' + e.message;
+    window.demo.liveError = e.message;
+  }
+};
+const pause = () => { clearInterval(session.timer); session.timer = null; $('play').textContent = 'Play'; };
+$('start').addEventListener('click', () => { pause(); session.events = []; live(() => engine.start(JSON.parse($('session').value))); });
+$('advance').addEventListener('click', () => live(() => engine.advance(Number($('step').value))));
+$('act').addEventListener('click', () => live(() => engine.act(JSON.parse($('action').value))));
+$('end').addEventListener('click', () => { pause(); live(() => engine.end()); });
+$('play').addEventListener('click', () => {
+  if (session.timer) return pause();
+  $('play').textContent = 'Pause';
+  let busy = false;
+  session.timer = setInterval(async () => {
+    if (busy) return;
+    busy = true;
+    const answer = await live(() => engine.advance(Number($('step').value)));
+    busy = false;
+    if (!answer || answer.ended) pause();
+  }, 100);
+});
+
 const engine = await Engine.start();
 window.demo.ready = performance.now() - loaded;
 window.demo.workerReady = engine.timings.ready;
 $('ready').textContent = `The engine was ready ${window.demo.ready.toFixed(0)} ms after the page loaded its module, ${window.demo.workerReady.toFixed(0)} ms after its Worker started.`;
 $('run').addEventListener('click', run);
+for (const id of ['start', 'advance', 'play', 'end', 'act']) $(id).disabled = false;
 for (let i = 0; i < 3; i++) await run();
 window.demo.done = true;
 </script>

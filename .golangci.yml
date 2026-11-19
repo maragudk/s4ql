@@ -15,6 +15,9 @@ linters:
         faultvfs:
           files:
             - "!$test"
+            # The engine of the simulator makes the disks of its instances fail on demand, as tests
+            # do. It builds only with the tag s4ql_browser, and no part of the library imports it.
+            - "!**/internal/simulator/*.go"
           deny:
             - pkg: maragu.dev/s4ql/internal/sqlite/faultvfs
               desc: it makes the files of SQLite fail on demand, which only tests may do

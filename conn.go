@@ -59,8 +59,9 @@ var (
 
 // newConnector of a new instance of the database under the prefix of the options o in the store s,
 // which runs on the host h, with the cache in the cache directory of o, for the driver d. Of o it
-// uses the prefix, the cache directory, the timeout of a close, and the logger; co are the options
-// of the storage core, whose logger it sets. It fails only on local problems.
+// uses the prefix, the cache directory, the timeout of a close, the logger, and the endpoint, the
+// bucket, and the prefix for the identity of the database; co are the options of the storage core,
+// whose logger and identity it sets. It fails only on local problems.
 func newConnector(ctx context.Context, h host.Host, s store.Store, o Options, co core.Options, d driver.Driver) (*connector, error) {
 	if o.CacheDir == "" {
 		return nil, errors.New("s4ql: open: the options name no cache directory")
@@ -81,12 +82,13 @@ func newConnector(ctx context.Context, h host.Host, s store.Store, o Options, co
 	}
 	path := filepath.Join(o.CacheDir, "cache.db")
 	co.Logger = o.Logger
+	co.Identity = o.identity()
 	db, err := core.Open(ctx, h, s, path, o.Prefix, co)
 	if err != nil {
 		return nil, fmt.Errorf("s4ql: %w", err)
 	}
 	log = log.With("db.prefix", o.Prefix)
-	log.InfoContext(ctx, "open", "cache.path", path)
+	log.InfoContext(ctx, "open", "cache.path", path, "db.identity", co.Identity)
 	return &connector{
 		host:         h,
 		db:           db,

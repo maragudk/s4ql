@@ -73,9 +73,11 @@ type Event struct {
 	Level string         `json:"level,omitzero"`
 	Attrs map[string]any `json:"attrs,omitzero"`
 
-	// Action is the index of an action in the schedule, and Do the action.
+	// Action is the index of an action in the schedule, and Do the action. On is what an action that
+	// switches something switched it to.
 	Action *int   `json:"action,omitzero"`
 	Do     string `json:"do,omitzero"`
+	On     *bool  `json:"on,omitzero"`
 
 	// Invariant is the name of an invariant that a check found violated, and Excused says whether
 	// the design accepts the violation for the faults of the run.
@@ -114,26 +116,41 @@ type Lease struct {
 }
 
 // CommitObject is what a commit object holds: its name, the name of its parent, the keys of the
-// rows that it inserts into the table of the workload, the tables that it creates, and the number
-// of its changes.
+// rows that it inserts into the table of the workload and of those that it deletes from it, the
+// tables that it creates, and the number of its changes.
 type CommitObject struct {
 	Name    string   `json:"name"`
 	Parent  string   `json:"parent"`
 	Keys    []int64  `json:"keys,omitzero"`
+	Deletes []int64  `json:"deletes,omitzero"`
 	Tables  []string `json:"tables,omitzero"`
 	Changes int      `json:"changes"`
 }
 
-// recorder collects the events of a run, in the order in which they happen. One task runs at a
-// time under the scheduler, so the order is the same for a seed, and the mutex is there only for the
-// race detector's sake.
+// recorder collects the events of a run, in the order in which they happen, and counts them for the
+// summary. One task runs at a time under the scheduler, so the order is the same for a seed, and the
+// mutex is there only for the race detector's sake.
+//
+// In a batch run it keeps every event. In a live session it keeps the events only until [recorder.take]
+// hands them over, and folds each into the state of the session as it comes.
 type recorder struct {
 	world *sim.Scheduler
 	end   time.Duration
+	// fold of the events of a live session, or nil for a batch run.
+	fold *fold
 
 	mu      sync.Mutex
 	events  []Event
+	summary Summary
 	stopped bool
+}
+
+func newRecorder(world *sim.Scheduler, end time.Duration, live bool) *recorder {
+	r := &recorder{world: world, end: end, summary: Summary{Calls: map[string]int{}, Requests: map[string]int{}}}
+	if live {
+		r.fold = newFold()
+	}
+	return r
 }
 
 // add the event e at the time of the scheduler, unless the run is past its end or the recorder has
@@ -147,6 +164,37 @@ func (r *recorder) add(e Event) {
 	}
 	e.T = millis(now)
 	r.events = append(r.events, e)
+	switch s := &r.summary; {
+	case e.Kind == "call" && e.What != "started":
+		s.Calls[e.Op+" "+e.What]++
+	case e.Kind == "request":
+		s.Requests[e.What]++
+	case e.Kind == "check":
+		s.Violations++
+		if e.Excused {
+			s.Excused++
+		}
+	}
+	if r.fold != nil {
+		r.fold.add(e)
+	}
+}
+
+// take the events since the last take, which the recorder then forgets.
+func (r *recorder) take() []Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	events := r.events
+	r.events = nil
+	return events
+}
+
+// state of a live session now, with at most commits commit objects if commits is above 0.
+func (r *recorder) state(commits int) State {
+	now := millis(r.world.Monotonic())
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.fold.state(now, commits)
 }
 
 // stop the recorder: it adds no event from now on.
