@@ -322,7 +322,6 @@ type Session struct {
 	Seed      uint64    `json:"seed"`
 	Instances int       `json:"instances"`
 	Leases    []float64 `json:"leases"`
-	Readers   int       `json:"readers"`
 	Latency   float64   `json:"latency"`
 	Faults    Faults    `json:"faults"`
 	Buggify   bool      `json:"buggify"`
@@ -334,7 +333,7 @@ type Session struct {
 func defaultSession() Session {
 	r := defaultRequest()
 	r.Workload.Keep = 100
-	return Session{Seed: r.Seed, Instances: 2, Leases: r.Leases, Readers: r.Readers, Latency: r.Latency, Workload: r.Workload}
+	return Session{Seed: r.Seed, Instances: 2, Leases: r.Leases, Latency: r.Latency, Workload: r.Workload}
 }
 
 // ParseSession from its JSON, with the defaults for missing fields, and check it, as
@@ -345,7 +344,7 @@ func ParseSession(b []byte) (Request, error) {
 	if err := json.Unmarshal(b, &s, json.RejectUnknownMembers(true)); err != nil {
 		return Request{}, fmt.Errorf("the session is not JSON of a session: %w", err)
 	}
-	r := Request{Seed: s.Seed, End: maxEnd, Instances: s.Instances, Leases: s.Leases, Readers: s.Readers,
+	r := Request{Seed: s.Seed, End: maxEnd, Instances: s.Instances, Leases: s.Leases,
 		Latency: s.Latency, Faults: s.Faults, Buggify: s.Buggify, Workload: s.Workload}
 	if err := r.check(); err != nil {
 		return Request{}, err

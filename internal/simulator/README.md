@@ -251,7 +251,7 @@ An engine has one session at most. A command without a session gets an answer wi
 
 ### The settings
 
-The body of `start` is an object with the fields of a request that hold for a whole run: `seed`, `instances`, `leases`, `readers`, `latency`, `faults`, `buggify`, and `workload`. Each has the meaning and the limits that [The request](#the-request) gives it. A session has no `end`, no `schedule`, and no `lines`: each of them is an error, as any other member is.
+The body of `start` is an object with the fields of a request that hold for a whole run: `seed`, `instances`, `leases`, `latency`, `faults`, `buggify`, and `workload`. Each has the meaning and the limits that [The request](#the-request) gives it. A session has no `end`, no `schedule`, and no `lines`: each of them is an error, as any other member is.
 
 A field that is missing has the default of a request, with two exceptions:
 
