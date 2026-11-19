@@ -4,16 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
+	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/engine"
+	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
+	"maragu.dev/s4ql/internal/store/simstore"
 )
 
 // txStep is a statement of a transaction in a pinned test, with its arguments and the answer that
@@ -372,4 +378,586 @@ func do(t *testing.T, c *engine.Conn, src string, args ...int64) string {
 		values = append(values, valueText(t, row[0]))
 	}
 	return strings.TrimSpace("rows " + strings.Join(values, " "))
+}
+
+// conn of the engine of i, which is closed when the test ends.
+func conn(t *testing.T, i *instance) *engine.Conn {
+	t.Helper()
+	c := i.e.Conn()
+	t.Cleanup(func() { is.NotError(t, c.Close(context.WithoutCancel(t.Context()))) })
+	return c
+}
+
+func TestConn_isolation(t *testing.T) {
+	t.Run("should hide the writes of a transaction from every other connection until its commit, and show them to every read that starts after it", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(t1).err)
+		w, ro := conn(t, i), conn(t, i)
+		is.NotError(t, w.Begin(t.Context()))
+		is.Equal(t, "", do(t, w, insert1))
+		is.Equal(t, "rows 1", do(t, w, selectT))
+		is.Equal(t, "rows", do(t, i.c, selectT))
+		is.NotError(t, ro.BeginReadOnly(t.Context()))
+		is.Equal(t, "rows", do(t, ro, selectT))
+		is.Equal(t, "t1 (v1 INT): \n", i.state())
+
+		is.NotError(t, w.Commit(t.Context()))
+		is.Equal(t, "rows 1", do(t, i.c, selectT))
+		is.Equal(t, "rows 1", do(t, w, selectT))
+		// The read-only transaction began before the commit.
+		is.Equal(t, "rows", do(t, ro, selectT))
+		is.NotError(t, ro.Commit(t.Context()))
+		is.Equal(t, "rows 1", do(t, ro, selectT))
+	})
+
+	t.Run("should keep the state of the beginning of a read-only transaction for each of its statements, while others commit rows and tables", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(t1).err)
+		is.Equal(t, "", i.exec(insert1).err)
+		ro, w := conn(t, i), conn(t, i)
+		is.NotError(t, ro.BeginReadOnly(t.Context()))
+		is.Equal(t, "rows 1", do(t, ro, selectT))
+
+		is.Equal(t, "", i.exec(insert2).err)
+		is.NotError(t, w.Begin(t.Context()))
+		is.Equal(t, "", do(t, w, "insert into t1 (v1) values (3)"))
+		is.Equal(t, "", do(t, w, "create table t2 (v int primary key) strict, without rowid"))
+		is.NotError(t, w.Commit(t.Context()))
+		is.Equal(t, "rows 1", do(t, ro, selectT))
+		is.Equal(t, "", i.exec("drop table t1").err)
+
+		is.Equal(t, "rows 1", do(t, ro, selectT))
+		is.Equal(t, "1/1: no such table: t2", do(t, ro, "select * from t2"))
+		is.Equal(t, "8/8: attempt to write a readonly database", do(t, ro, "insert into t1 (v1) values (4)"))
+		is.Equal(t, "1/1: no such table: t2", do(t, ro, "insert into t2 (v) values (4)"))
+		is.NotError(t, ro.Rollback(t.Context()))
+		is.Equal(t, "1/1: no such table: t1", do(t, ro, selectT))
+		is.Equal(t, "rows", do(t, ro, "select * from t2"))
+	})
+
+	t.Run("should let a read-only transaction and a write transaction begin and run at once, neither waiting for the other", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			i := newInstance(t, engine.Options{})
+			is.Equal(t, "", i.exec(t1).err)
+			w, ro := conn(t, i), conn(t, i)
+			start := time.Now()
+			is.NotError(t, w.Begin(t.Context()))
+			is.NotError(t, ro.BeginReadOnly(t.Context()))
+			is.Equal(t, "", do(t, w, insert1))
+			is.Equal(t, "rows", do(t, ro, selectT))
+			is.NotError(t, w.Commit(t.Context()))
+			is.NotError(t, w.Begin(t.Context()))
+			is.Equal(t, "", do(t, w, insert2))
+			is.Equal(t, "rows", do(t, ro, selectT))
+			is.NotError(t, w.Commit(t.Context()))
+			is.NotError(t, ro.Commit(t.Context()))
+			// No call waited: the clock of the bubble moves only while every goroutine waits.
+			is.Equal(t, start, time.Now())
+		})
+	})
+
+	for _, end := range []string{"commit", "rollback"} {
+		t.Run("should begin a second write transaction only after the first has ended, by a "+end+", and let it see what the first committed", func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				i := newInstance(t, engine.Options{})
+				is.Equal(t, "", i.exec(t1).err)
+				first, second := conn(t, i), conn(t, i)
+				is.NotError(t, first.Begin(t.Context()))
+				is.Equal(t, "", do(t, first, insert1))
+
+				began := make(chan error)
+				go func() {
+					began <- second.Begin(t.Context())
+				}()
+				time.Sleep(time.Hour)
+				select {
+				case err := <-began:
+					t.Fatalf("a second write transaction began while the first was open, with %v", err)
+				default:
+				}
+
+				want := "rows"
+				if end == "commit" {
+					is.NotError(t, first.Commit(t.Context()))
+					want = "rows 1"
+				} else {
+					is.NotError(t, first.Rollback(t.Context()))
+				}
+				is.NotError(t, <-began)
+				is.Equal(t, want, do(t, second, selectT))
+				is.Equal(t, "", do(t, second, insert2))
+				is.NotError(t, second.Commit(t.Context()))
+				is.Equal(t, strings.TrimPrefix(want, "rows")+" 2", strings.TrimPrefix(do(t, i.c, selectT), "rows"))
+			})
+		})
+	}
+
+	t.Run("should give the error of a context that ends while a begin waits, and begin nothing", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			i := newInstance(t, engine.Options{})
+			is.Equal(t, "", i.exec(t1).err)
+			first, second := conn(t, i), conn(t, i)
+			is.NotError(t, first.Begin(t.Context()))
+
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			err := second.Begin(ctx)
+			is.Error(t, context.DeadlineExceeded, err)
+			is.Error(t, engine.ErrNoTx, second.Commit(t.Context()))
+			is.Error(t, engine.ErrNoTx, second.Rollback(t.Context()))
+
+			is.NotError(t, first.Rollback(t.Context()))
+			is.NotError(t, second.Begin(t.Context()))
+			is.Equal(t, "", do(t, second, insert1))
+			is.NotError(t, second.Commit(t.Context()))
+			is.Equal(t, "rows 1", do(t, first, selectT))
+		})
+	})
+}
+
+func TestConn_Commit(t *testing.T) {
+	t.Run("should write one commit object for a transaction, annotated in order with each statement that succeeded and wrote, with its arguments", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(t1).err)
+		is.NotError(t, i.c.Begin(t.Context()))
+		for _, s := range []txStep{
+			{src: insert1},
+			{src: insert1, want: "19/1555: UNIQUE constraint failed: t1.v1"},
+			{src: selectT, want: "rows 1"},
+			{src: " /* before */ " + insertP + "; -- after", args: []int64{5}},
+			{src: insertP, args: []int64{5}, want: "19/1555: UNIQUE constraint failed: t1.v1"},
+			{src: "insert into t2 (v1) values (1)", want: "1/1: no such table: t2"},
+			{src: "create table t2 (v int primary key) strict, without rowid"},
+			{src: "selec", want: `1/1: near "selec": syntax error`},
+			{src: "drop table t2"},
+			{src: "create table t3 (v int primary key) strict, without rowid"},
+		} {
+			is.Equal(t, s.want, runIn(t, i, s), s.src)
+		}
+		is.NotError(t, i.c.Commit(t.Context()))
+		is.Equal(t, fmt.Sprint([][]string{
+			{t1},
+			{insert1, insertP + "; with 5", "create table t2 (v int primary key) strict, without rowid", "drop table t2", "create table t3 (v int primary key) strict, without rowid"},
+		}), fmt.Sprint(logAnnotations(t, i.store)))
+		want := "t1 (v1 INT): 1 5\nt3 (v INT): \n"
+		is.Equal(t, want, i.state())
+		i.restart(true, engine.Options{})
+		is.Equal(t, want, i.state())
+	})
+
+	t.Run("should write no commit object for a transaction that changes nothing, and commit it", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(t1).err)
+		is.Equal(t, "", i.exec(insert1).err)
+		for _, steps := range [][]string{
+			{selectT, insert1, "drop table t2", "selec"},
+			{"create table t2 (v int primary key) strict, without rowid", "insert into t2 (v) values (1)", "drop table t2"},
+		} {
+			is.NotError(t, i.c.Begin(t.Context()))
+			for _, src := range steps {
+				_ = do(t, i.c, src)
+			}
+			is.NotError(t, i.c.Commit(t.Context()))
+		}
+		is.NotError(t, i.c.BeginReadOnly(t.Context()))
+		is.Equal(t, "8/8: attempt to write a readonly database", do(t, i.c, insert2))
+		is.NotError(t, i.c.Commit(t.Context()))
+		// And a transaction with changes that is rolled back.
+		is.NotError(t, i.c.Begin(t.Context()))
+		is.Equal(t, "", do(t, i.c, insert2))
+		is.NotError(t, i.c.Rollback(t.Context()))
+		is.Equal(t, 2, len(logAnnotations(t, i.store)))
+		is.Equal(t, "t1 (v1 INT): 1\n", i.state())
+	})
+
+	t.Run("should fail at once with ErrTooLarge for a commit object that the store cannot take, commit nothing, and go on", func(t *testing.T) {
+		// The limit is far above a manifest and a commit object of a few statements, and below that of
+		// a hundred inserts.
+		i := newInstanceOn(t, simstore.Options{MaxSize: 4 << 10})
+		is.Equal(t, "", i.exec(t1).err)
+		is.NotError(t, i.c.Begin(t.Context()))
+		for v := range 100 {
+			is.Equal(t, "", do(t, i.c, insertP, int64(v)))
+		}
+		err := i.c.Commit(t.Context())
+		is.Error(t, engine.ErrTooLarge, err)
+		is.Error(t, core.ErrTooLarge, err)
+		is.True(t, strings.HasPrefix(err.Error(), "s4ql: the transaction is too large to commit: "), err.Error())
+		is.Error(t, engine.ErrNoTx, i.c.Rollback(t.Context()))
+		is.Equal(t, "t1 (v1 INT): \n", i.state())
+		is.Equal(t, 1, len(logAnnotations(t, i.store)))
+
+		is.NotError(t, i.c.Begin(t.Context()))
+		is.Equal(t, "", do(t, i.c, insert1))
+		is.NotError(t, i.c.Commit(t.Context()))
+		is.Equal(t, "t1 (v1 INT): 1\n", i.state())
+	})
+}
+
+// newInstanceOn is [newInstance] on a store with the given options.
+func newInstanceOn(t *testing.T, options simstore.Options) *instance {
+	t.Helper()
+	h := sim.NewFree(sim.Buggify{})
+	i := &instance{t: t, host: h, store: simstore.New(h, options), dir: t.TempDir()}
+	i.open(true, engine.Options{})
+	t.Cleanup(func() {
+		i.close()
+		is.NotError(t, i.c.Close(context.WithoutCancel(t.Context())))
+	})
+	return i
+}
+
+func TestConn_rows(t *testing.T) {
+	kinds := []struct {
+		name  string
+		begin func(c *engine.Conn, ctx context.Context) error
+		// write is the answer of an insert of a new key in the transaction.
+		write string
+	}{
+		{name: "write", begin: (*engine.Conn).Begin},
+		{name: "read-only", begin: (*engine.Conn).BeginReadOnly, write: "8/8: attempt to write a readonly database"},
+	}
+	for _, k := range kinds {
+		t.Run("should refuse every statement of a "+k.name+" transaction while the rows of its earlier query are open, and go on after they end", func(t *testing.T) {
+			i := newInstance(t, engine.Options{})
+			is.Equal(t, "", i.exec(t1).err)
+			is.Equal(t, "", i.exec(insert1).err)
+			is.NotError(t, k.begin(i.c, t.Context()))
+			rows, err := i.c.Query(t.Context(), selectT)
+			is.NotError(t, err)
+			is.Equal(t, "rows open", do(t, i.c, insert2))
+			is.Equal(t, "rows open", do(t, i.c, selectT))
+			is.Equal(t, "rows open", do(t, i.c, "drop table t1"))
+			// Its errors of text and arguments come first.
+			is.Equal(t, `1/1: near "selec": syntax error`, do(t, i.c, "selec"))
+			is.NotError(t, rows.Close())
+			is.Equal(t, k.write, do(t, i.c, insert2))
+			is.Equal(t, "rows", strings.Fields(do(t, i.c, selectT))[0])
+			is.NotError(t, i.c.Rollback(t.Context()))
+			is.Equal(t, "rows 1", do(t, i.c, selectT))
+		})
+
+		t.Run("should close the rows of a "+k.name+" transaction that no loop reads at its commit and at its roll back, which then give nothing", func(t *testing.T) {
+			for _, end := range []func(c *engine.Conn, ctx context.Context) error{(*engine.Conn).Commit, (*engine.Conn).Rollback} {
+				i := newInstance(t, engine.Options{})
+				is.Equal(t, "", i.exec(t1).err)
+				is.Equal(t, "", i.exec(insert1).err)
+				is.NotError(t, k.begin(i.c, t.Context()))
+				rows, err := i.c.Query(t.Context(), selectT)
+				is.NotError(t, err)
+				is.NotError(t, end(i.c, t.Context()))
+				for _, err := range rows.All() {
+					t.Fatalf("the rows gave a row after the end of their transaction, with %v", err)
+				}
+				is.NotError(t, rows.Close())
+				is.Equal(t, "rows 1", do(t, i.c, selectT))
+				noneOpen(t, i)
+			}
+		})
+
+		t.Run("should end a loop over the rows of a "+k.name+" transaction at its next row with ErrTxDone when the transaction rolls back", func(t *testing.T) {
+			i := newInstance(t, engine.Options{})
+			is.Equal(t, "", i.exec(t1).err)
+			is.Equal(t, "", i.exec(insert1).err)
+			is.Equal(t, "", i.exec(insert2).err)
+			is.NotError(t, k.begin(i.c, t.Context()))
+			rows, err := i.c.Query(t.Context(), selectT)
+			is.NotError(t, err)
+			var got []string
+			for row, err := range rows.All() {
+				if err != nil {
+					got = append(got, txErr(err))
+					continue
+				}
+				got = append(got, valueText(t, row[0]))
+				is.NotError(t, i.c.Rollback(t.Context()))
+				// The transaction is over, and its end waits for the loop: the connection runs
+				// nothing meanwhile.
+				is.Equal(t, "rows open", do(t, i.c, selectT))
+				is.Equal(t, "rows open", do(t, i.c, insert1))
+				is.Error(t, core.ErrReaderInUse, i.c.Close(t.Context()))
+			}
+			is.Equal(t, "1 tx done", strings.Join(got, " "))
+			is.NotError(t, rows.Close())
+			is.Equal(t, "rows 1 2", do(t, i.c, selectT))
+			noneOpen(t, i)
+		})
+	}
+
+	t.Run("should roll a write transaction back and fail its commit while a loop over its rows runs, and free the place of the writer when the loop ends", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			i := newInstance(t, engine.Options{})
+			is.Equal(t, "", i.exec(t1).err)
+			is.NotError(t, i.c.Begin(t.Context()))
+			is.Equal(t, "", do(t, i.c, insert1))
+			is.Equal(t, "", do(t, i.c, insert2))
+			other := conn(t, i)
+			began := make(chan error)
+			rows, err := i.c.Query(t.Context(), selectT)
+			is.NotError(t, err)
+			var got []string
+			for row, err := range rows.All() {
+				if err != nil {
+					got = append(got, txErr(err))
+					continue
+				}
+				got = append(got, valueText(t, row[0]))
+				commitErr := i.c.Commit(t.Context())
+				is.Error(t, engine.ErrRowsOpen, commitErr)
+				is.True(t, strings.HasSuffix(commitErr.Error(), "so the transaction is rolled back and not committed"), commitErr.Error())
+				go func() {
+					began <- other.Begin(t.Context())
+				}()
+				time.Sleep(time.Hour)
+				select {
+				case err := <-began:
+					t.Fatalf("another write transaction began while the loop held the transaction that was rolled back, with %v", err)
+				default:
+				}
+			}
+			is.Equal(t, "1 tx done", strings.Join(got, " "))
+			is.NotError(t, <-began)
+			is.Equal(t, "rows", do(t, other, selectT))
+			is.NotError(t, other.Rollback(t.Context()))
+			is.Equal(t, "t1 (v1 INT): \n", i.state())
+		})
+	})
+
+	t.Run("should end a read-only transaction at a commit while a loop over its rows runs, which ends at its next row", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(t1).err)
+		is.Equal(t, "", i.exec(insert1).err)
+		is.Equal(t, "", i.exec(insert2).err)
+		is.NotError(t, i.c.BeginReadOnly(t.Context()))
+		rows, err := i.c.Query(t.Context(), selectT)
+		is.NotError(t, err)
+		var got []string
+		for row, err := range rows.All() {
+			if err != nil {
+				got = append(got, txErr(err))
+				continue
+			}
+			got = append(got, valueText(t, row[0]))
+			is.NotError(t, i.c.Commit(t.Context()))
+		}
+		is.Equal(t, "1 tx done", strings.Join(got, " "))
+		is.Equal(t, "rows 1 2", do(t, i.c, selectT))
+	})
+
+	t.Run("should refuse a begin while the rows of a query of the connection are open", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(t1).err)
+		rows, err := i.c.Query(t.Context(), selectT)
+		is.NotError(t, err)
+		is.Error(t, engine.ErrRowsOpen, i.c.Begin(t.Context()))
+		is.Error(t, engine.ErrRowsOpen, i.c.BeginReadOnly(t.Context()))
+		// A write of its own runs, as before.
+		is.Equal(t, "", do(t, i.c, insert1))
+		is.NotError(t, rows.Close())
+		is.NotError(t, i.c.Begin(t.Context()))
+		is.NotError(t, i.c.Rollback(t.Context()))
+	})
+
+	t.Run("should refuse a begin while a transaction is open, an end without one, and a begin on a closed connection", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		c := i.e.Conn()
+		is.Error(t, engine.ErrNoTx, c.Commit(t.Context()))
+		is.Error(t, engine.ErrNoTx, c.Rollback(t.Context()))
+		is.NotError(t, c.Begin(t.Context()))
+		is.Error(t, engine.ErrTxOpen, c.Begin(t.Context()))
+		is.Error(t, engine.ErrTxOpen, c.BeginReadOnly(t.Context()))
+		is.NotError(t, c.Commit(t.Context()))
+		is.NotError(t, c.BeginReadOnly(t.Context()))
+		is.Error(t, engine.ErrTxOpen, c.Begin(t.Context()))
+		// The close of a connection rolls its transaction back.
+		is.NotError(t, c.Close(t.Context()))
+		is.Error(t, engine.ErrInternal, c.Begin(t.Context()))
+		is.Error(t, engine.ErrInternal, c.BeginReadOnly(t.Context()))
+		noneOpen(t, i)
+	})
+
+	t.Run("should roll back the transaction of a connection that is closed, and free the place of the writer", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(t1).err)
+		c := i.e.Conn()
+		is.NotError(t, c.Begin(t.Context()))
+		is.Equal(t, "", do(t, c, insert1))
+		is.NotError(t, c.Close(t.Context()))
+		noneOpen(t, i)
+		is.Equal(t, "t1 (v1 INT): \n", i.state())
+	})
+}
+
+func TestConn_stop(t *testing.T) {
+	for _, end := range []string{"commit", "rollback"} {
+		t.Run("should fail the statements of an open write transaction of an instance that has stopped, and its "+end, func(t *testing.T) {
+			i := newInstance(t, engine.Options{})
+			is.Equal(t, "", i.exec(t1).err)
+			is.NotError(t, i.c.Begin(t.Context()))
+			is.Equal(t, "", do(t, i.c, insert1))
+			i.close()
+			is.Equal(t, "stopped", do(t, i.c, insert2))
+			is.Equal(t, "stopped", do(t, i.c, selectT))
+			// The errors of text and arguments come first.
+			is.Equal(t, `1/1: near "selec": syntax error`, do(t, i.c, "selec"))
+			if end == "commit" {
+				is.Equal(t, "stopped", txErr(i.c.Commit(t.Context())))
+			} else {
+				is.NotError(t, i.c.Rollback(t.Context()))
+			}
+			is.Error(t, engine.ErrNoTx, i.c.Rollback(t.Context()))
+			i.open(false, engine.Options{})
+			is.Equal(t, "t1 (v1 INT): \n", i.state())
+		})
+	}
+
+	t.Run("should fail the statements of an open read-only transaction of an instance that has stopped, and end it", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(t1).err)
+		is.NotError(t, i.c.BeginReadOnly(t.Context()))
+		is.Equal(t, "rows", do(t, i.c, selectT))
+		i.close()
+		is.Equal(t, "stopped", do(t, i.c, selectT))
+		is.Equal(t, "stopped", do(t, i.c, insert1))
+		is.NotError(t, i.c.Commit(t.Context()))
+		is.Error(t, engine.ErrNoTx, i.c.Rollback(t.Context()))
+	})
+
+	for _, end := range []string{"commit", "rollback"} {
+		t.Run("should fail the statements of an open transaction whose instance lost the lease, and its "+end+", and free the place of the writer", func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				h := sim.NewFree(sim.Buggify{})
+				s := simstore.New(h, simstore.Options{})
+				dir := t.TempDir()
+				open := func(name string, client *simstore.Client) (*core.DB, *engine.Conn) {
+					d, err := core.Open(t.Context(), h, client, filepath.Join(dir, name+".db"), "db", core.Options{})
+					is.NotError(t, err)
+					c := engine.New(d, h, engine.Options{}).Conn()
+					t.Cleanup(func() {
+						ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), time.Minute)
+						defer cancel()
+						_ = d.Close(ctx)
+						is.NotError(t, c.Close(ctx))
+					})
+					is.NotError(t, d.Wait(t.Context()))
+					return d, c
+				}
+				ca := s.Client("a", nil)
+				a, c := open("a", ca)
+				is.Equal(t, "", do(t, c, t1))
+				is.NotError(t, c.Begin(t.Context()))
+				is.Equal(t, "", do(t, c, insert1))
+
+				// The instance a cannot reach the store, and b takes the lease and commits.
+				ca.CutOff(t.Context(), 5*time.Minute)
+				b, cb := open("b", s.Client("b", nil))
+				is.Equal(t, "", do(t, cb, insert2))
+				time.Sleep(10 * time.Minute)
+
+				is.Equal(t, "no lease", do(t, c, "insert into t1 (v1) values (3)"))
+				is.Equal(t, "no lease", do(t, c, selectT))
+				is.Equal(t, `1/1: near "selec": syntax error`, do(t, c, "selec"))
+				if end == "commit" {
+					is.Equal(t, "no lease", txErr(c.Commit(t.Context())))
+				} else {
+					is.NotError(t, c.Rollback(t.Context()))
+				}
+				is.Error(t, engine.ErrNoTx, c.Rollback(t.Context()))
+				is.Equal(t, "no lease", txErr(c.Begin(t.Context())))
+
+				// Once a has the lease again, the place of the writer is free.
+				is.NotError(t, b.Close(t.Context()))
+				is.NotError(t, a.Wait(t.Context()))
+				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+				defer cancel()
+				is.NotError(t, c.Begin(ctx))
+				is.Equal(t, "rows 2", do(t, c, selectT))
+				is.NotError(t, c.Rollback(t.Context()))
+			})
+		})
+	}
+}
+
+func TestConn_events(t *testing.T) {
+	t.Run("should log one event for each transaction at its end, with its kind, its end, its outcome, and its number of statements, at Debug", func(t *testing.T) {
+		h, ch := &events{}, &events{}
+		i := newInstanceLogged(t, engine.Options{Logger: slog.New(h)}, slog.New(ch))
+		is.Equal(t, "", i.exec(t1).err)
+
+		is.NotError(t, i.c.Begin(t.Context()))
+		is.Equal(t, "", do(t, i.c, insertP, 4815162342))
+		e, _ := h.last(t)
+		is.Equal(t, engine.EventStatement, e["msg"])
+		is.Equal(t, "write", e[engine.AttrTxKind])
+		is.Equal(t, "19/1555: UNIQUE constraint failed: t1.v1", do(t, i.c, insertP, 4815162342))
+		is.Equal(t, "rows 4815162342", do(t, i.c, selectT))
+		e, _ = h.last(t)
+		is.Equal(t, e[engine.AttrPosition], e[engine.AttrParent])
+		is.NotError(t, i.c.Commit(t.Context()))
+		e, level := h.last(t)
+		is.Equal(t, slog.LevelDebug, level)
+		is.Equal(t, engine.EventTransaction, e["msg"])
+		is.Equal(t, "write", e[engine.AttrTxKind])
+		is.Equal(t, "commit", e[engine.AttrTxEnd])
+		is.Equal(t, "ok", e[engine.AttrOutcome])
+		is.Equal(t, "3", e[engine.AttrTxStatements])
+		is.Equal(t, "1", e[engine.AttrTxWrites])
+		is.Equal(t, e[engine.AttrTxPosition], e[engine.AttrParent])
+		_, ok := e[engine.AttrDuration]
+		is.True(t, ok)
+		_, ok = e[engine.AttrSQL]
+		is.True(t, !ok, "the event of a transaction has no text")
+		// The event of the core's commit has the same parent.
+		commit, _ := ch.last(t)
+		is.Equal(t, "commit", commit["msg"])
+		is.Equal(t, e[engine.AttrParent], commit[engine.AttrParent])
+
+		is.NotError(t, i.c.BeginReadOnly(t.Context()))
+		is.Equal(t, "rows 4815162342", do(t, i.c, selectT))
+		is.NotError(t, i.c.Rollback(t.Context()))
+		e, level = h.last(t)
+		is.Equal(t, slog.LevelDebug, level)
+		is.Equal(t, "read_only", e[engine.AttrTxKind])
+		is.Equal(t, "rollback", e[engine.AttrTxEnd])
+		is.Equal(t, "ok", e[engine.AttrOutcome])
+		is.Equal(t, "1", e[engine.AttrTxStatements])
+		is.Equal(t, "0", e[engine.AttrTxWrites])
+		_, ok = e[engine.AttrParent]
+		is.True(t, !ok, "a read-only transaction has no parent")
+
+		is.NotError(t, i.c.Begin(t.Context()))
+		is.Equal(t, "rows 4815162342", do(t, i.c, selectT))
+		i.close()
+		is.Equal(t, "stopped", txErr(i.c.Commit(t.Context())))
+		e, level = h.last(t)
+		is.Equal(t, slog.LevelDebug, level)
+		is.Equal(t, "refused", e[engine.AttrOutcome])
+		is.True(t, e[engine.AttrError] != "", "the event of a commit that failed has its error")
+
+		// No value of an argument is in any event, of the engine or of the core.
+		h.mu.Lock()
+		all := fmt.Sprint(h.records)
+		h.mu.Unlock()
+		ch.mu.Lock()
+		all += fmt.Sprint(ch.records)
+		ch.mu.Unlock()
+		is.True(t, !strings.Contains(all, "4815162342"), all)
+	})
+
+	t.Run("should log a commit that is too large at Debug", func(t *testing.T) {
+		h := &events{}
+		hi := newInstanceOn(t, simstore.Options{MaxSize: 4 << 10})
+		hi.e = engine.New(hi.d, hi.host, engine.Options{Logger: slog.New(h)})
+		hi.c = hi.e.Conn()
+		is.Equal(t, "", hi.exec(t1).err)
+		is.NotError(t, hi.c.Begin(t.Context()))
+		for v := range 100 {
+			is.Equal(t, "", do(t, hi.c, insertP, int64(v)))
+		}
+		is.Error(t, engine.ErrTooLarge, hi.c.Commit(t.Context()))
+		e, level := h.last(t)
+		is.Equal(t, slog.LevelDebug, level)
+		is.Equal(t, "too_large", e[engine.AttrOutcome])
+		is.Equal(t, "100", e[engine.AttrTxWrites])
+	})
 }
