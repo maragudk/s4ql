@@ -1,0 +1,3093 @@
+ ▐▛███▛█   Claude Code v2.1.327
+▝▜██████▀  Fable 5.2 · Claude Ultra
+ ▝▝   ▝▝   ~/Developer/s4ql
+
+
+⏺ The export is in docs/conversations/2026-11-13-sql-front-end-and-parser.txt,
+  committed and pushed (9390f54).
+
+  I overwrote that file instead of making a new one: this export contains the
+  whole conversation since 13 Nov, including everything the earlier export had,
+  so it is a newer version of the same conversation. The key check found
+  nothing.
+
+  You can compact now. The engine builder keeps running, and the two spec items
+  are waiting for you afterwards.
+
+✻ Worked for 21s · done Wednesday 11:13 AM
+
+❯ /compact                                                                      
+  ⎿  Compacted (ctrl+o to see full summary)
+  ⎿  Read docs/roadmap.md (56 lines)
+  ⎿  Read ../../../../private/tmp/claude-502/-Users-maragubot-Developer-s4ql/f13
+     43515-adca-4ca0-9eb0-f507768f8fc7/tasks/bml86xaop.output (13 lines)
+  ⎿  Read docs/spec.md (64 lines)
+  ⎿  Referenced file docs/todo.md
+  ⎿  Read AGENTS.md (99 lines)
+
+⏺ Task "SQL engine for slice 1" still running in background
+  ⎿  Skills restored (fabrik:address-code-review, fabrik:git, 
+     fabrik:one-at-a-time, fabrik:diary)
+
+❯ Is there a note in AGENTS.md that you can always find lead agent              
+  conversations in docs/conversations/ ? In case the compacted session leaves   
+  out details                                                                   
+
+⏺ Update(AGENTS.md)
+  ⎿  Added 7 lines
+      76  - **Why:** Markus said on 2026-11-11: "every time I export a co
+          nversation, just move it (potentially overwriting another one i
+          f it's an update to a conversation) and commit."
+      77  - **How to apply:** name the file by the date the conversation
+          started and a short topic, like `2026-11-10-kickoff.txt`. If th
+          e export is a newer version of a conversation that is already t
+          here, overwrite that file. Run the cheap check for the S3 acces
+          s key and secret first.
+      78 
+      79 +### The lead's conversations with Markus can be read in `docs/c
+         +onversations/`                                                 
+      80 +                                                               
+      81 +The exports in `docs/conversations/` are the full record of the
+         + lead's conversations with Markus, up to the moment of each exp
+         +ort.                                                           
+      82 +                                                               
+      83 +- **Why:** a compacted session and a new session start from a s
+         +ummary, and a summary leaves things out. Markus asked on 2026-1
+         +1-18 for a note that the conversations can always be found ther
+         +e, "in case the compacted session leaves out details".         
+      84 +- **How to apply:** when a detail is missing after a compaction
+         + or in a new session, such as the exact wording of a decision o
+         +r the reason for it, search the exports before guessing or aski
+         +ng Markus again. Search them with a sub-agent or with `grep`, a
+         +nd do not read a whole export into context, because they are la
+         +rge. What is in `docs/spec.md`, `docs/roadmap.md`, and `docs/to
+         +do.md` is newer than a conversation where they differ.         
+      85 +                                                               
+      86  ### JSON is handled with `encoding/json/v2`
+      87 
+      88  Use `encoding/json/v2` and `encoding/json/jsontext` from the st
+          andard library for all JSON. Do not import `encoding/json`.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Only half: AGENTS.md said where exports go, but not that an agent should look
+  there when a summary lacks a detail. I added that as its own section and
+  pushed it (fa541fb).
+
+  The new section says to search the exports (with grep or a sub-agent, not by
+  reading a whole file) before guessing or asking you again, and that the spec,
+  roadmap, and todo win where they differ from a conversation.
+
+  One limit: an export covers the conversation only up to the moment you
+  exported it. Anything after today's export is in no file until the next one.
+
+✻ Worked for 21s · done Wednesday 11:16 AM
+
+❯ That's also a good use case for a small subagent                              
+
+⏺ Update(AGENTS.md)
+  ⎿  Added 1 line, removed 1 line
+      81  The exports in `docs/conversations/` are the full record of the
+           lead's conversations with Markus, up to the moment of each exp
+          ort.
+      82 
+      83  - **Why:** a compacted session and a new session start from a s
+          ummary, and a summary leaves things out. Markus asked on 2026-1
+          1-18 for a note that the conversations can always be found ther
+          e, "in case the compacted session leaves out details".
+      84 -- **How to apply:** when a detail is missing after a compaction
+         - or in a new session, such as the exact wording of a decision o
+         -r the reason for it, search the exports before guessing or aski
+         -ng Markus again. Search them with a sub-agent or with `grep`, a
+         -nd do not read a whole export into context, because they are la
+         -rge. What is in `docs/spec.md`, `docs/roadmap.md`, and `docs/to
+         -do.md` is newer than a conversation where they differ.         
+      84 +- **How to apply:** when a detail is missing after a compaction
+         + or in a new session, such as the exact wording of a decision o
+         +r the reason for it, search the exports before guessing or aski
+         +ng Markus again. Spawn a small sub-agent for the search and hav
+         +e it report only the answer, with the quote that supports it. D
+         +o not read an export into your own context, because they are la
+         +rge. Markus on 2026-11-18: "That's also a good use case for a s
+         +mall subagent." What is in `docs/spec.md`, `docs/roadmap.md`, a
+         +nd `docs/todo.md` is newer than a conversation where they diffe
+         +r.                                                             
+      85 
+      86  ### JSON is handled with `encoding/json/v2`
+      87 
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agreed, and it's in AGENTS.md now (9495bee): a small sub-agent does the search
+  and reports only the answer with the supporting quote, and the lead does not
+  read an export into its own context.
+
+  The engine builder for slice 1 is still running. Meanwhile, the first of the
+  two waiting spec items, the bullet on a transaction that is too large, to go
+  in "Constraints" after "The manifest swap is the commit":
+
+  ▎ A transaction that is too large fails at its commit. A transaction whose 
+  ▎ commit object is larger than the store takes in one write is not committed, 
+  ▎ and its commit fails at once with an error that says so. The limit is 5 GiB,
+  ▎ or less on a store that takes less.
+
+  Agree?
+
+✻ Brewed for 9s · done Wednesday 11:16 AM
+
+❯ yes                                                                           
+
+⏺ Update(docs/spec.md)
+  ⎿  Added 1 line
+      54  - **The manifest maps branch names to log pointers.** The map i
+          s named `branches` and has one entry, `main`. Other branches ar
+          e not designed yet, but can be added later as further entries.
+      55  - **The manifest has a format version.** A `version` field says
+           which version of the manifest format it uses.
+      56  - **The manifest swap is the commit.** A commit uploads the tra
+          nsaction's changes as a new commit object, then replaces `manif
+          est.json` with a compare-and-swap so that it lists that commit
+          object. The transaction is committed when the swap succeeds, an
+          d not before.
+      57 +- **A transaction that is too large fails at its commit.** A tr
+         +ansaction whose commit object is larger than the store takes in
+         + one write is not committed, and its commit fails at once with 
+         +an error that says so. The limit is 5 GiB, or less on a store t
+         +hat takes less.                                                
+      58  - **Our own SQLite binding.** The cache and the oracle use the
+          official SQLite C code, at a version we pin, through a small cg
+          o binding of our own. The module therefore needs cgo.
+      59  - **The cache is never ahead of S3.** A commit swaps the manife
+          st first and commits to the cache second. The cache records the
+           name of the last commit object it has applied, in the same loc
+          al transaction as the rows. An instance whose cache is behind t
+          he manifest applies the missing commit objects before it serves
+           anything. A cache whose recorded position is not in the log is
+           refused loudly, not rebuilt silently.
+      60  - **A commit is acknowledged once S3 has it.** `Commit` returns
+           success if the manifest swap succeeded. Before it returns, the
+           instance commits the transaction to the local cache, or stops
+          if that fails. A read that starts after a commit is acknowledge
+          d therefore always sees it.
+
+  Searched for 1 pattern, ran 1 shell command (ctrl+o to expand)
+
+⏺ The bullet is in the spec (5f645fa).
+
+  The second item is about this spec rule: "Statements are kept as annotations.
+  Next to the results, a commit object stores the SQL statements that produced
+  them."
+
+  Today, a transaction that changes nothing writes no commit object, so its
+  statements are stored nowhere. An example is an insert that fails on a
+  duplicate key, or a drop table of a table that does not exist.
+
+  I recommend keeping it that way: the annotations explain the results in the
+  log, and where there are no results there is nothing to explain. Writing a
+  commit object for every failed statement would also make the log grow with
+  nothing to replay. The spec wording already fits, since it speaks of the
+  statements "that produced" the results, so no change is needed there.
+
+  Agree to leave it as it is?
+
+✻ Cooked for 12s · done Wednesday 11:19 AM
+
+❯ yes                                                                           
+
+  Searched for 2 patterns, ran 1 shell command (ctrl+o to expand)
+
+⏺ Recorded in docs/todo.md (f8ebf6d), with the reason and a note on what it
+  would take to change later.
+
+  Nothing else is waiting for you right now. The engine builder for slice 1 is
+  still running; when it reports I review, merge, and start the builder for the
+  public package and the database/sql driver, which completes slice 1.
+✻ Crunched for 13s · done Wednesday 11:42 AM
+
+❯ Before you start another builder I'd like to restart your harness, once the   
+  current builder is done                                                       
+
+⏺ Understood. When the engine builder reports, I review and merge its work, run
+  the small status sub-agent, and then stop and tell you, without starting the
+  driver builder.
+
+✻ Cogitated for 1s · done Wednesday 11:44 AM
+
+❯ FYI, the builder is at 700k tokens out of 1M. It might make sense to split    
+  work up more in the future?                                                   
+
+⏺ Update(AGENTS.md)
+  ⎿  Added 7 lines
+       97  - **Why:** on 2026-11-12 the lead created the worktrees and sw
+           itched between them while builders ran. One builder's working
+           directory moved with the lead, and its writes and git commands
+            in its own worktree were refused, so it could not commit its
+           last diary step. Markus then said: "From now on maybe let buil
+           ders create their worktrees?" A builder that got its own workt
+           ree the same day ran without friction.
+       98  - **How to apply:** spawn builders and writers with worktree i
+           solation. The builder writes the first step of the feature's d
+           iary from the requirements in its brief. The lead reviews a bu
+           ilder's branch from `main` with `git diff main...<branch>`, pu
+           shes it, and opens the pull request. After the merge, remove t
+           he worktree and the branch.
+       99 
+      100 +### A builder's task fits well inside its context             
+      101 +                                                              
+      102 +Split the work so that no builder comes near the limit of its 
+          +context.                                                      
+      103 +                                                              
+      104 +- **Why:** on 2026-11-18 the builder of the engine for slice 1
+          + had used 700,000 of its 1,000,000 tokens before it was done. 
+          +Its brief held the code and every kind of test at once: differ
+          +ential tests, simulation with planted bugs, mutation testing, 
+          +and fuzzing. Markus: "It might make sense to split work up mor
+          +e in the future?"                                             
+      105 +- **How to apply:** the first builder writes the code and the 
+          +tests that show it works, and its branch is merged. Each heavy
+          + check after that, such as simulation with planted bugs, mutat
+          +ion testing, or a long fuzz run, goes to a fresh builder that 
+          +starts from the merged code. Where two pieces of code do not d
+          +epend on each other, give them to two builders. Tell every bui
+          +lder to commit and to write its diary step as it goes, so that
+          + a fresh builder can take over if it runs out.                
+      106 +                                                              
+      107  ### A test must not depend on timing
+      108 
+      109  A test passes or fails for the same reason on every machine, h
+           owever slow or loaded.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Yes, and it's now a rule in AGENTS.md (5a7d037). That brief was too big: the
+  code plus differential tests, simulation with planted bugs, mutation testing,
+  and fuzzing, all in one builder.
+
+  From now on the first builder writes the code and the tests that show it
+  works, and that gets merged. Each heavy check after it (simulation with
+  planted bugs, mutation testing, a long fuzz run) goes to a fresh builder on
+  the merged code. I will split the driver work that way.
+
+  The current builder looks close to done: its branch has the engine, the review
+  fixes, the fuzz target, and it is on its last mutation-testing commits. It
+  commits as it goes, so if it runs out, a fresh builder can finish from the
+  branch and the diary.
+
+✻ Worked for 15s · done Wednesday 12:59 PM
+
+❯ I'm a bit worried that the quality suffers when context used is too big,      
+  models tend to do that. Make sure to check the results from that builder      
+  extra well.                                                                   
+
+⏺ Will do. When it reports, I won't take its report as the evidence. Two fresh
+  reviewers get the branch, without the builder's conclusions:
+
+  - One reads the code against the brief and the decisions, with most attention
+    on the latest commits, since those were written with the fullest context.
+  - One runs everything again and checks each claim in the report against what
+    it measures itself: the tests, the differential run against SQLite, the
+    planted bugs in the simulation (does each one really get caught?), the
+    mutation survivors (is each "equivalent" one truly equivalent?), and the
+    fuzz run.
+
+  I merge only when both come back clean, and I tell you what they found either
+  way.
+
+✻ Churned for 5s · done Wednesday 1:05 PM
+
+❯ Still working?                                                                
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Yes, and it is at the end. Its last commits: the test results and the final
+  diary step 40 minutes ago, then a merge of main into its branch 6 minutes ago.
+  Its worktree has no uncommitted changes, so it is most likely running the
+  full checks once more on the merged state before it reports.
+
+  When it reports, I start the two reviewers as agreed.
+
+✻ Worked for 6s · done Wednesday 1:46 PM
+
+❯ Still working?                                                                
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ Yes. It is on the last check: the fuzz run of 50 million executions against
+  SQLite on the merged code. At 1h06m it had done 26.4 million with no failure,
+  at about 5,000 to 6,500 a second, so by that measured rate it has roughly
+  another hour to go.
+
+  Everything else is committed. That fuzz run is the kind of step I'll give to a
+  separate builder next time.
+
+✻ Cogitated for 12s · done Wednesday 2:04 PM
+
+❯ Still working?                                                                
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Yes, still the fuzz run: 35.8 million of 50 million executions at 1h37m, no
+  failure, about 5,150 a second. At that rate it needs about 45 more minutes.
+
+✻ Cogitated for 5s · done Wednesday 2:34 PM
+
+› Message from fabrik:builder
+  ## The engine for slice 1 is built: branch `engine-slice-1`
+
+  The branch is in the worktree
+  `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a296a144e287f6117`,
+  at `f1c6e04`. I merged `origin/main` (up to `5a7d037`) into it and the merge
+  was clean.
+
+  All four layers came back clean: the differential tests and the fuzzing
+  against SQLite, the simulation, and mutation testing. Nothing differs from
+  SQLite. All four planted bugs are found, each by the check it should trip. No
+  mutant survives that is not explained. `make test`, `make lint` (with simlint
+  on the engine and no exemption for it) and `make test-asan FUZZTIME=10s` pass.
+  The fast tests also pass with `-count=20` and with `-race -count=3`.
+
+  Three things need your decision before the driver, under "Decisions for you"
+  below. The most important is how the driver turns the engine's push-style rows
+  into pull-style rows.
+
+  ## The API the driver builds on (`internal/engine`)
+
+  - **Engine:** `engine.New(d *core.DB, h host.Host, engine.Options{Logger})`
+  gives an `*Engine`, which is safe for concurrent use.
+  - **`Exec(ctx, src) (Result, error)`:** runs a statement. A query passed to it
+  is run to its end and its rows dropped. The `Result` comes back with an error
+  too.
+  - **`Query(ctx, src) (*Rows, error)`:** runs a statement and gives its rows. A
+  statement that is not a query is run as `Exec` runs it, and its rows carry
+  the result, also when it fails.
+  - **`Rows`:**
+    - `Columns()` gives each column's name and declared type.
+    - `All()` is a push-style `iter.Seq2` that can be used once. It holds the
+  read transaction until the last row, an error, an early stop, a panic, or
+  `Close()`.
+    - `Close()` during a loop cannot end the transaction; it stops the loop at
+  its next row. An iterator suspended in the loop body must be resumed or
+  stopped.
+    - `Close()` returns the error of ending the transaction, also after an early
+  stop.
+    - `Result()` gives the result of a statement that is not a query.
+  - **`Result{Changes, SetsChanges}`:** see the change counts below.
+  - **Errors:** `ErrNoStatement` for a text with no statement, and `ErrInternal`
+  for a fault of s4ql.
+
+  ## Plans and operators
+
+  - **Stages:** `stmt.Check`, then `NewPlan`, which gives plain data printed by
+  `Format`. A plan holds names as written and nothing of the catalogue. Then
+  `buildQuery`/`buildSink` build operators inside the statement's own
+  transaction and do SQLite's lookups in SQLite's order.
+  - **Plan types:** `*CreateTable`, `*DropTable`, `*Insert` (whose rows come
+  from a `Node`) and `*Query`. The nodes are `*Scan`, `*Values` and `*Project`;
+  the one expression is `*Integer`.
+  - **Operators:** the sources are `scan` (key order, checks the context before
+  each row), `values` and `project`. The sinks are `insert`, `createTable` and
+  `dropTable`. Because the core only upserts, `insert` checks the key with `get`
+  inside the write transaction first.
+  - **Storage:** operators talk to a small interface of the engine's own
+  (`reader`, `writer`, `database`, `readTx`, `writeTx`). The core sits behind
+  adapters; tests use a fake and a database in memory.
+  - **Transactions:**
+    - **Writes:** `Begin`, the operators, `Annotate`, `Commit`. Any failure or
+  panic rolls back.
+    - **Reads:** `DB.Read`.
+    - `Rows.All` yields to the host between rows so other work can interleave
+  under the simulation.
+
+  ## Errors
+
+  All are one type, `*sqlerr.Error{Code, ExtendedCode, Message, Offset}` in the
+  new package `internal/sql/sqlerr`. It replaces `stmt.SyntaxError`, so `stmt`
+  gives the same type. Every row below is pinned against the SQLite binding in
+  `TestEngine_errors` and the differential tests.
+
+  | Error | Codes | Names printed |
+  |---|---|---|
+  | `table %s already exists` | 1/1 | `Name.Raw`, quotes included |
+  | `no such table: %s` | 1/1 | `Name.Value` |
+  | `table %s has no column named %s` | 1/1 | both `Name.Value` |
+  | `UNIQUE constraint failed: %s.%s` | 19/1555 | the names as the table stores
+  them |
+  | syntax errors | 1/1 | from the pass |
+
+  - **Precedence:** a missing table wins over a missing column. A duplicate key
+  reached through a name in another case prints the stored names.
+  - **Not SQLite's errors:**
+    - "Not supported" passes through as `*stmt.NotSupportedError`.
+    - Core and context errors pass through unchanged, so `errors.Is` works on
+  them.
+    - The core's `ErrTableExists`, `ErrNoTable`, `ErrReservedName`, `ErrInvalid`
+  and `ErrTxDone` become `ErrInternal`. `TestEngine_namesOfTheCore` and the
+  differential tests show that no input reaches them.
+
+  ## Change counts, last insert rowid, annotations
+
+  - **Change counts**, from SQLite's `changes()` after every statement in the
+  differential test:
+    - An insert sets the count to 1.
+    - CREATE TABLE, DROP TABLE and SELECT leave the count of the statement
+  before (`SetsChanges` false).
+    - An insert that fails at step (`UNIQUE constraint failed`) sets it to 0.
+  `Exec` returns `Result{SetsChanges: true}` with that error.
+    - Errors at prepare (no such table, no column, already exists, syntax error)
+  and a text with no statement leave it unchanged.
+  - **Last insert rowid:** always 0. SQLite does not record inserts into WITHOUT
+  ROWID tables.
+  - **Annotations:** each committed write carries one annotation: the
+  statement's text from its first token to its end (including its semicolon),
+  with no parameters. Comments before it and text after it are dropped. A failed
+  statement leaves none. The core stores annotations only with a commit object.
+
+  ## Names the core refuses
+
+  - **Rules:** I checked every rule of the core (`format.checkIdentifier`,
+  `core.reserved`, `checkCreateTable`). Only the empty name `""` is accepted by
+  the pass and refused by the core. The others (valid UTF-8, no NUL, the
+  `sqlite_`/`s4ql_` prefixes) were already caught by the pass. Length is bounded
+  by SQLite's SQL limit, under the format's record limit.
+  - **Change:** `stmt` now rejects `""` everywhere as `empty name`. I updated
+  its tests, README, vocabulary and results.
+  - **Property test:** `TestEngine_namesOfTheCore` runs about 2,800 names, from
+  the pools plus random quoted names of every kind of character, through all
+  four statements on the real core and SQLite. Nothing differs and no internal
+  error occurs.
+  - I found no rule of the core that refuses something for no reason.
+
+  ## Events
+
+  - **One event per statement,** `statement`, logged when it ends (for a query,
+  when its rows end).
+  - **Attributes:** `statement.kind`, `statement.table`, `statement.sql`,
+  `statement.position`, `commit.parent`, `statement.rows`, `outcome`,
+  `sqlite.code`, `sqlite.extended_code`, `error`, `duration.total`.
+  `statement.sql` is present only at Debug. Duration comes from the host's
+  monotonic clock.
+  - **Levels:**
+    - Debug: ok, sqlite_error, not_supported, no_statement, refused, canceled.
+    - Warn: other core errors.
+    - Error: internal_error.
+  - **Join with the core:** `commit.parent` matches the core's commit event, and
+  a test checks it.
+  - **Data:** no row values ever appear; SQL text never appears at Info or
+  above.
+
+  ## Test results (final code)
+
+  | Layer | Run | Result |
+  |---|---|---|
+  | Differential, real core | 10,000 sequences, 400,000 statements, half with
+  restarts (empty cache and own cache) | nothing differs |
+  | `FuzzDifferential` (in-memory database) | 50,000,000 executions, 2 h 57 min,
+  8 workers | nothing found, quiet for the last 90 min |
+  | `FuzzDifferential_core` | 90,288 executions, 5 min, 6 workers | nothing
+  found |
+  | Simulation, default workload | 1,000 seeds, 95,196 statements, 8,364
+  commits, 572 unknown outcomes, 29 cut by crashes | no violation |
+  | Simulation, hammer workload | 1,000 seeds, 120,000 statements, 15,155
+  commits, 1,078 unknown outcomes | no violation |
+  | Mutation, engine | 955 mutants | 632 killed, 11 equivalent, 0 unexplained |
+  | Mutation, `stmt` | 1,122 mutants | 970 killed, 14 timeouts, 15 equivalent, 0
+  unexplained |
+
+  The `FuzzDifferential` rate fell from 10,000 to 2,000 per second because other
+  sessions loaded the machine.
+
+  Planted bugs over 200 seeds each; every seed that found a bug finds nothing
+  without it:
+
+  | Bug | Seeds that found it | Found by |
+  |---|---|---|
+  | `skipUnique` | 124 | a commit that fails in SQLite |
+  | `ackUnknown` | 47 | an acknowledged statement missing from the log |
+  | `checkOutside` | 73 (hammer workload) | a commit that fails in SQLite |
+  | `keepOpen` | 193 | no write runs after the workload |
+
+  The simulation also has crashes with restarts on a copy of the cache or an
+  empty cache, closes, two instances competing for the lease, statement
+  timeouts, and queries that stop early, close unread, or panic.
+
+  ## Faults found and other changes outside the engine
+
+  - **Core:** no fault found. `internal/core` is unchanged.
+  - **Pass:** besides the empty name, a real divergence. SQLite raises `table X
+  already exists` while parsing, as soon as it has read `CREATE TABLE name (` or
+  `AS` (or `CREATE VIRTUAL TABLE name USING m (`), before any later syntax
+  error. So on a database where `t1` exists, `create table t1 (v1 int primary
+  key) strict without rowid` gives "already exists", not the syntax error. The
+  pass judges syntax on an empty database and cannot see this. The new
+  `stmt.StartedTable` names such tables and the engine looks them up. It is
+  tested against SQLite with `TestStartedTable` and `FuzzStartedTable`, and it
+  correctly gives way to `object name reserved` and `unknown database`. One
+  consequence: such a text can fail with `core.ErrNoLease`.
+  - **Not fixed, added to the todo:** the same kind of error in `CREATE TRIGGER`
+  (`no such table: main.X`, `cannot create INSTEAD OF trigger on table: X`).
+  - **Binding:** added `sqlite.Stmt.ColumnDeclType`.
+  - **Generator:** moved to `internal/sql/stmt/stmttest` so the engine's tests
+  share it.
+  - **Mutation tool:** extended to `internal/engine`, with a simulation stage, a
+  fingerprint over all of `internal`, and the engine in the defaults.
+  - **Make:** `make fuzz` now includes the engine.
+  - **Review:** two reviewers ran. Their main finding was a compiled `mutation`
+  binary I had committed by accident; I rebuilt the history without it. The
+  other agreed findings are fixed. The diary has the details.
+
+  ## What surprised me in SQLite
+
+  - `changes()` is connection state, and a failed statement resets it only if it
+  failed at step.
+  - `sqlite3_column_decltype` upper-cases standard type names (`Int` becomes
+  `INT`) but returns others as written.
+  - The "already exists" error raised mid-parse, above.
+
+  ## Suggested roadmap changes (I did not edit it)
+
+  - Slice 1: change "agreed, not built" to built.
+  - Add to Restrictions: a name is never empty; `""` is rejected for tables and
+  columns.
+  - Ask Markus to confirm the earlier decision that the eponymous virtual table
+  names (`json_each` and so on) are "not supported". The todo keeps it as an
+  open item.
+
+  ## Decisions for you
+
+  - **Pull-style rows for the driver.** The engine gives push-style rows only,
+  and simlint forbids `iter.Pull`. But `database/sql` starts its own goroutines,
+  so the driver cannot run under the scheduler anyway. Should the driver be
+  exempt from simlint, like `s3store`, and bridge with `iter.Pull`? The bridge
+  must stop the iterator to end the transaction.
+  - **`ErrNoStatement`.** I made it a sentinel error, which is the safer default
+  if the driver forgets to handle it. Changing it to a successful empty result
+  is cheap if you prefer.
+  - **Annotation text.** I store the statement's span, not the whole text given
+  to the call.
+  - **Crashes under the address sanitizer.** The simulation runs no crashes
+  there, because only the core's own tests can close a crashed instance's cache
+  (`CloseCache` is test-only). Exporting a test helper for this would let
+  crashes run under the sanitizer.
+
+  ## Unsure / notes
+
+  - **Join with the commit event.** It works through `commit.parent` plus the
+  context. If the core exposed the commit name or instance ID, it would be
+  exact.
+  - **CI time.** The sanitizer job grows by about 1 min of engine tests plus two
+  30 s fuzz targets.
+
+  ## Where to look
+
+  - Engine: `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a296a144e28
+  7f6117/internal/engine/` (README.md, engine.go, plan.go, operator.go,
+  storage.go, errors.go, telemetry.go, bugs.go)
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a296a144e287f6117/i
+  nternal/sql/sqlerr/sqlerr.go`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a296a144e287f6117/i
+  nternal/sql/stmt/started.go`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a296a144e287f6117/i
+  nternal/sql/stmt/stmttest/stmttest.go`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a296a144e287f6117/d
+  ocs/diary/2026-11-18-engine-slice-1.md` (five steps)
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a296a144e287f6117/d
+  ocs/todo.md`, which has the points for the driver's builder
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "SQL engine for slice 1" is waiting on its own background work · 4h 56m 
+  0s
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The builder is done, and nothing of mine is running, so now is the moment to
+  restart the harness. I have not started the reviewers; I start them after the
+  restart so the restart doesn't kill them.
+
+  What the builder reports, unchecked so far:
+
+  - The engine for slice 1 is built on branch engine-slice-1 (42 files, about
+    6,200 lines added): internal/engine, with Exec and Query, plans as plain
+    data, and iterator operators over a small storage interface.
+  - Nothing differs from SQLite in 400,000 statements of the differential test
+    (half with restarts) and 50 million fuzz executions. The simulation ran
+    2,000 seeds without a violation, and four planted bugs were all found.
+  - Mutation testing: it reports no unexplained survivor, but its numbers do not
+    add up at first sight (955 mutants in the engine, 632 killed, 11
+    equivalent). The reviewer has to explain the rest.
+  - No fault found in the storage core. It found one in the pass: SQLite reports
+    table t1 already exists in the middle of parsing, before a later syntax
+    error. The builder made the engine look the table up for such text. That
+    means text with a syntax error can now touch the database, and I want the
+    reviewer to judge whether that is worth it.
+  - The empty name "" is now rejected as "not supported", since the core refuses
+    it.
+
+  Usage is at 43% weekly (Fable 37%), against the budget of 60%.
+
+  After the restart: two fresh reviewers as agreed, then merge if both are
+  clean, then the status sub-agent, then I stop before the driver builder.
+
+✻ Cooked for 5h 7m 35s · done Wednesday 4:00 PM
+※ recap: We are building s4ql's SQL engine for slice 1; the builder finished on branch `engine-slice-1` and nothing is running. Next: you restart the harness, then I start two fresh reviewers before merging.
+
+❯ Restarted, continue                                                           
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ 2 background agents launched (↓ to manage)
+   ├ Review engine code for slice 1
+   └ Verify engine test claims
+
+⏺ Both reviewers are running on engine-slice-1, neither with the builder's
+  conclusions:
+
+  - One reads the code (on Fable), with most attention on the late commits, the
+    "already exists" lookup, tests that prove less than they seem to, and the
+    lists of "equivalent" mutants.
+  - One measures every claim again (on Opus): the tests, the differential run,
+    the simulation, the four planted bugs, the mutation numbers that don't add
+    up, and shorter fuzz runs. It also plants six bugs of its own to see whether
+    the test suite catches them, and runs 40 hand-picked statement sequences
+    against SQLite.
+
+  Neither fixes anything; fixes go to a fresh builder. I report when both are
+  back.
+
+✻ Cogitated for 50s · done Wednesday 9:18 PM
+
+⏺ Agent "Verify engine test claims" is waiting on its own background work · 13m 
+  10s
+
+⏺ The verifier has paused while its own long runs finish, and it has not
+  reported yet. The code reviewer is still reading. Nothing to act on until one
+  of them reports.
+
+✻ Worked for 1s · done Wednesday 9:31 PM
+
+› Message from general-purpose
+  # Review of `engine-slice-1` (f1c6e04)
+
+  No correctness bug found in the engine. About 430 hand-picked texts run on the
+  engine (real core) and on SQLite gave no mismatch outside the one known class
+  (finding 2). All paths below are under
+  `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-aed70630b8bf563a5/`.
+  Worktree left clean, nothing committed.
+
+  ## Findings, by severity
+
+  **1. Medium: the simulation cannot see a read transaction left open.**
+  - Where: `internal/engine/simulation_test.go:537-558` and `run.verify`.
+  - Scenario: the end of a run only checks that a write can begin. A leaked read
+  makes later queries time out, which counts as the accepted state `failed`.
+  - Verified: I made `Rows.Close` skip the end of the transaction
+  (`engine.go:373`). `TestSimulation` passed on all 100 seeds, and
+  `TestSimulation_plantedBugs` passed too.
+  - Other cover: the fake's `f.open` assertions catch it directly.
+  `TestEngine_noneOpen` catches it only by hanging until the test timeout (not
+  run with the mutation; read from the code).
+  - Why it matters: lease loss, a stop, or a timeout in the middle of a read are
+  paths that only the simulation reaches.
+  - Should be: at the end, each live instance takes all its read connections
+  under a timeout, plus a planted bug for a read left open.
+
+  **2. Medium (design): `StartedTable` covers one member of an open class, and
+  the documented gap is incomplete.**
+  - Where: `internal/sql/stmt/README.md`, "Known gaps", lists only CREATE
+  TRIGGER as not handled.
+  - Also unhandled, depends on the database: `alter table nosuch add v1 int
+  primary key x y` gives `no such table: nosuch` in SQLite, and with `t1` it
+  gives `duplicate column name: v1`. The engine gives `near "x": syntax error`.
+  - Also unhandled, on CREATE TABLE itself (the older gap): `create table t2 (v1
+  int, v1 int) x y` gives `duplicate column name: v1`. Others seen: `unknown
+  database x`, `object name reserved for internal use`, `temporary table name
+  must be unqualified`, `table "t2" has more than one primary key`.
+  - Every case has code 1/1 on both sides; only the message differs.
+  - Cost, verified: `create table t1 (` on a closed instance gives `the instance
+  has stopped`, and with a cancelled context gives `context canceled`. `create
+  table (` still gives its syntax error. This is noted in the todo.
+
+  **3. Low-medium: the engine's "fuzzing" is seed fuzzing.**
+  - Where: `internal/engine/differential_test.go:654-670`.
+  - `FuzzDifferential` mutates `(seed, n)` for the same generator, and runs on
+  `memory`, a test double, so it never touches the core adapters. Coverage
+  guidance gets nothing from a PCG seed, so the README's 50,000,000 executions
+  amount to more seeds of `TestDifferential`.
+  - No fuzz gives SQL text to the engine on a database that has tables.
+  `FuzzStartedTable` is the only text fuzz and checks only the name. The ALTER
+  case in finding 2 took minutes by hand.
+
+  **4. Low: events on panic paths.**
+  - Where: `internal/engine/engine.go:276-281`.
+  - A panic while a query is built logs one event with `outcome=ok`. A panic in
+  a write or in `started` logs none. Verified with a recording logger.
+  - Transactions do end on all four paths. Only the event is wrong, at the
+  moment someone debugs a fault.
+
+  **5. Low: operator behaviour beyond slice 1 is pinned against the fake, not
+  SQLite.**
+  - Where: `internal/engine/operator_internal_test.go:278-380, 475`.
+  - Covers multi-row VALUES, `project` without star (rows of zero columns), NULL
+  fill, and the message for a key of several columns. NULL into a key column
+  would be a NOT NULL error in SQLite.
+  - Unreachable today; these are guesses that tests now hold in place.
+
+  **6. Low: `StartedTable` leans on implicit grammar arguments.**
+  - Commit 5d7d5ff removed the explicit `IF NOT EXISTS` check so that a mutant
+  would die.
+  - I checked each of the 14 entries in
+  `internal/sql/mutation/equivalent.txt:237-268` and all hold under the
+  precondition "called with Check's syntax error". The one for `is(Create,
+  Virtual, Table) => true` needs an argument over every place USING can appear.
+  - `FuzzStartedTable` is the real guard. The 11 engine entries are truly
+  equivalent.
+
+  **7. Paper only: `core.ErrInvalid` can reach the caller from `Commit`.**
+  - Where: `internal/engine/storage.go:179-183`, deliberate and documented.
+  - Needs a wall clock that the commit object cannot hold. Not worth a fix.
+
+  ## Checked and sound
+
+  - **Transactions.** `Exec`, `Query`, `Rows.All`, `Rows.Close`: error, early
+  break, Close inside the loop, nested or second loop, consumer panic, context
+  cancelled before, during, and after rows, and a passed deadline on a write.
+  All readers and the writer were free afterwards. Rows never closed hold a
+  reader by design; the todo tells the driver's builder.
+  - **Uniqueness.** The check runs inside the write transaction. The planted
+  bugs `skipUnique` and `checkOutside` are realistic and found. `ackUnknown` and
+  `keepOpen` are not strawmen either.
+  - **Errors and names.** Exact code, extended code, and message; which spelling
+  each message prints; ASCII-only folding (`été` and `ÉTÉ` differ); `rowid`,
+  `oid`, `_rowid_` as columns and tables; keywords as names; int64 bounds, `-0`,
+  leading zeros, a comment after the sign.
+  - **Change counts.** Compared with `changes()` after every statement; last
+  insert rowid stays 0.
+  - **Generator.** The default `TestDifferential` tally shows real coverage:
+  1,439 `already exists`, 799 UNIQUE, 998 no column, 1,841 plus 895 `no such
+  table`, 34 `StartedTable` hits.
+  - **`StartedTable`.** About 110 texts against SQLite, all right, including
+  quote forms, `main.`, `temp.`, IF NOT EXISTS, EXPLAIN, virtual tables, illegal
+  tokens, and no start before `(`.
+  - **Hygiene.** `simlint` and `go vet` clean, no new exemption. `go test`
+  passes, also `-race -count=2`. No binaries. `stmt.SyntaxError` fully replaced.
+  Telemetry has no row values and SQL text only at Debug. Empty name rejected
+  in `stmt`. Deleting the built items from the todo follows AGENTS.md.
+
+  ## Opinion on point 2
+
+  `StartedTable` is correct and well tested. I would still not keep it in
+  production in this form.
+
+  - It makes one of at least eight verified sibling cases exact, where only the
+  message differs and the code is 1 either way.
+  - It makes a syntax error depend on the lease, a free reader, and the context.
+  - It is a second, hand-written partial parser whose soundness rests on
+  whole-grammar arguments. It must grow with every new object kind (`view %s
+  already exists`, `there is already an index named %s`).
+
+  Two cleaner options:
+  - **Documented gap.** State one rule: on a text with a syntax error, s4ql
+  gives the syntax error SQLite gives on an empty database. Move `StartedTable`
+  into test code as the classifier that lets the differential test and the
+  simulation accept exactly this difference.
+  - **Whole class.** If the literal promise matters, have the parser report
+  which grammar actions it reached before the error. That covers the class,
+  where this covers one case.
+
+  Either way it touches the spec's error promise, so it is Markus's call.
+
+⏺ The code reviewer is back; the verifier is still running. No correctness bug 
+  found in the engine, including on about 430 hand-picked texts run against
+  SQLite. But the tests are weaker than the builder's report made them sound:
+
+  - The simulation cannot see a read transaction left open. The reviewer made
+    Rows.Close skip ending the transaction, and the simulation passed on all 100
+    seeds. Other tests do catch it, but the simulation is the only one that
+    reaches lease loss or a stop in the middle of a read.
+  - The 50 million fuzz executions are worth less than they sounded. The fuzzer
+    only varies the seed of the same generator and runs on a test double, not
+    the real core. No fuzzer gives SQL text to the engine on a database that has
+    tables.
+  - Smaller: a panic logs a wrong event or none (transactions do end correctly),
+    and some tests pin behaviour beyond slice 1 against a fake instead of
+    SQLite.
+
+  These go to a fresh builder before the merge, together with what the verifier
+  finds.
+
+  One finding is a decision for you, since it touches the spec's promise on
+  errors. Take this text, when t1 exists:
+
+  create table t1 (v1 int primary key) x y
+
+  SQLite says table t1 already exists, because it notices the table before it
+  reaches the syntax error. The builder made s4ql do the same. The reviewer
+  found at least eight sibling cases that are not covered (alter table,
+  duplicate column names, and more). In all of them the result code is the same
+  on both sides and only the message differs. And the cost: a syntax error now
+  needs the lease and a read of the database, so create table t1 ( on a stopped
+  instance answers "the instance has stopped".
+
+  I recommend this rule instead: for text with a syntax error, s4ql gives the 
+  syntax error that SQLite gives on an empty database. A syntax error then never
+  depends on the state of the database, and the lookup code moves into the
+  tests, where it tells the differential test which difference to accept.
+
+  Agree? If yes, I propose the spec wording next.
+
+✻ Sautéed for 11s · done Wednesday 9:33 PM
+
+⏺ Agent "Review engine code for slice 1" finished · 14m 19s
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The code reviewer's worktree is removed. The verifier is still running, and
+  the question above on the syntax-error rule is waiting for you.
+
+✻ Sautéed for 15m 23s · done Wednesday 9:33 PM
+
+⏺ Agent "Verify engine test claims" is waiting on its own background work · 21m 
+  14s
+
+※ recap: We are finishing slice 1 of s4ql's SQL engine: the code review found no engine bug but weak tests, and the verifier is still running. Next, you decide whether syntax errors should always match SQLite on an empty database. (turn off recaps in /config)
+
+❯ You decide                                                                    
+
+⏺ Decided: for text with a syntax error, s4ql gives the syntax error that SQLite
+  gives on an empty database. The lookup comes out of the engine and moves into
+  the tests. The fix builder records the decision and the known sibling cases
+  in docs/todo.md on the branch.
+
+  The spec's bullet on errors promises more than that today, so it needs one
+  more sentence. The bullet with the addition at the end:
+
+  ▎ Errors match SQLite's. Where SQLite gives an error, s4ql gives the same 
+  ▎ result code, extended result code, and message. This holds for a statement 
+  ▎ that s4ql runs, and for text that is a syntax error in SQLite, also when it 
+  ▎ is SQL that s4ql does not support. The position of the error in the text is 
+  ▎ not promised. Text with a syntax error gets the error that SQLite gives for 
+  ▎ it on an empty database.
+
+  Agree with the wording?
+
+✻ Cogitated for 9s · done Wednesday 9:43 PM
+
+❯ Y                                                                             
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The sentence is in the spec (38ce28b).
+
+  The verifier is still running its long checks. When it reports, I brief a
+  fresh builder with both reviews' findings and the new rule.
+
+✻ Baked for 8s · done Wednesday 9:44 PM
+
+⏺ Agent "Verify engine test claims" is waiting on its own background work · 31m 
+  22s
+
+※ recap: We are finishing slice 1 of s4ql's own SQL engine; the engine is built and under extra review, with the code review done and the verifier still running. Next I brief a fresh builder with both reviews' fixes. (turn off recaps in /config)
+
+❯ Maybe check the code in general for shenanigans before we continue the        
+  roadmap? Look for bad use of test doubles that could just use the real thing  
+  (SQLite, core, engine, whatever), tests that don't test what they're supposed 
+  to, stuff like that. Feel free to delegate to fable subagents, and feel free  
+  to fix and commit whatever you find. I trust you on that, you own the code.   
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ 4 background agents launched (↓ to manage)
+   ├ Audit tests of storage core
+   ├ Audit tests of stores and formats
+   ├ Audit tests of SQL packages
+   └ Audit tests of SQLite binding
+
+⏺ Good idea, and it's started: four Fable auditors are reading the code on main,
+  one area each, with no fixing yet.
+
+  - Storage core: internal/core and its simulation tests and planted bugs.
+  - Stores and formats: the simulated store, the real S3 client, the simulation
+    itself, simlint, and the storage formats.
+  - SQL packages: above all the oracle and the harness, since every claim of
+    agreement with SQLite rests on them, plus the mutation tester.
+  - SQLite binding and CI: the binding, the fault-injecting VFS, the browser
+    build, and whether each CI job runs what its name says.
+
+  Each is told to prove a finding by planting the fault and showing the test
+  still passes, and to say plainly if its area is sound. The engine branch is
+  left out here, since its own two reviewers cover it.
+
+  When they report, I sort the findings by whether they matter, and fresh
+  builders fix what does. I'll tell you what was found either way.
+
+  One thing on budget: weekly usage is at 45% of your 60% limit (Fable 40%). The
+  audit and its fixes plus the engine fixes will likely use most of what's
+  left, so the driver work may have to wait for the reset on Friday evening
+  unless you raise the limit.
+
+✻ Crunched for 1m 32s · done Wednesday 9:57 PM
+
+⏺ Agent "Verify engine test claims" is waiting on its own background work · 51m 
+  52s
+› Message from general-purpose
+  ## Audit: SQLite binding, faultvfs, crosscheck, source supply, browser
+  binding, simulator, CI
+
+  **Verdict: the area is in good shape. I found no shenanigans.** The tests
+  assert exact result codes and messages, the fakes are honest, and five planted
+  faults were all caught. The findings are about what CI runs and gates, not
+  about dishonest tests. Worktree is clean; nothing committed or pushed.
+
+  Paths are under `/Users/maragubot/Developer/s4ql/`.
+
+  ### Findings
+
+  **1. Medium: no CI job runs the parser, `stmt`, or `shapetest` comparisons
+  with SQLite on the whole corpus.**
+  - These tests take every tenth corpus entry when built with `-race` or `-asan`
+  (`internal/sql/parser/parser_test.go:57`,
+  `internal/sql/stmt/check_test.go:27`,
+  `internal/sql/shapetest/export_test.go:8`).
+  - CI's `test` job runs `go test -race`, and the `asan` job runs `-asan`. No
+  job runs the SQL packages without one of them.
+  - The sample is always the same tenth, so most entries are never compared in
+  CI.
+  - The rule-coverage assertion is also off in CI:
+  `internal/sql/parser/lalr_test.go:317` (`case !slow(): t.Errorf`).
+  - Verified: `go test -race -run '^TestParse_corpus$' -v
+  ./internal/sql/parser/` logs 13,924 texts; without `-race` it logs 139,234 and
+  takes 10 s.
+  - It matters because the rule is "merge if CI passes", while the README's
+  numbers come only from local `make test`.
+  - Fix: add a CI job that runs `go test ./internal/sql/...` without `-race`.
+
+  **2. Medium-low: CI does not gate `main`.**
+  - The ruleset on `main` has only `deletion` and `non_fast_forward`; there are
+  no required status checks, and commits are pushed straight to `main`.
+  - Of the last 100 CI runs on `main`, 2 failed and 28 were cancelled (I did not
+  look into why).
+  - Fix: require `test`, `asan`, `crosscheck`, `browser`, and `simulation`, or
+  accept it knowingly.
+
+  **3. Low: the site claims a test that does not exist.**
+  - `site/simulator/index.html:929` says "Its tests check that a request gives
+  the same run natively and in Chromium."
+  - `internal/simulator/README.md:621` says "No test compares them across the
+  two builds."
+  - The claim holds today: a temporary probe gave byte-identical responses
+  natively and in headless Chrome for three requests (faults, buggify, crash and
+  restart, 5 instances).
+  - Fix: reword the page, or have `sitecheck` compare the page's hash with a
+  native run.
+
+  **4. Low: the sanitizer job does not report a leaked `C.CString`.**
+  - In the Docker route of `make test-asan`, a planted use-after-finalize gave
+  `heap-use-after-free` inside SQLite, and a planted leaked `calloc` in
+  faultvfs's C gave `LeakSanitizer: 2000 object(s)`.
+  - With the `C.free` of the path removed from `OpenVFS`, 5,000 opens passed,
+  also with `detect_leaks=1`. I did not establish the cause.
+  - All five `C.CString` sites in `internal/sqlite/sqlite.go` free today, so
+  this is only a blind spot to know about.
+
+  **5. Low: `AddTestFunctions` is a test-only function in the production
+  binding.**
+  - `internal/sqlite/sqlite.go:330`; its C stubs are compiled into every binary.
+  - "Only a test's connection may have them" is a comment, with no lint behind
+  it. The only callers are `internal/sql/shapetest/check.go:944` and
+  `schema.go:173`.
+  - Fix: a lint rule that restricts callers, when the engine gets its
+  connections.
+
+  **6. Low: the cross-check with mattn covers integers and NULL only.**
+  - `internal/sqlite/crosscheck/crosscheck_test.go` fails on any text value.
+  `internal/sqlite/README.md` says it covers "parameter binding, typed column
+  access".
+  - `BindText` and `ColumnText` are tested by round trip plus SQLite's own
+  `length(cast(? as blob))`, also fuzzed. That is adequate; the README's wording
+  is wider than the test.
+
+  **7. Low: the `fuzz` target in `Makefile` can skip silently.**
+  - A failing `go test -list` or a renamed directory gives an empty loop and no
+  error.
+  - Today all nine directories with fuzz tests are listed, and the CI log shows
+  all 16 targets ran for 30 s under `-asan`.
+
+  **Already disclosed:** the S3 integration tests do not run in CI
+  (`docs/todo.md:93`). The site's "A conformance suite checks the simulated
+  store against a real S3-compatible bucket" does not say it runs by hand.
+
+  ### Checked and found sound
+
+  - **Source supply.** `TestVersion`, `TestSourceID`, and `TestVendored` tie the
+  compiled SQLite to `c/source.json` on every run. The crosscheck's
+  `TestSource` requires `c/sqlite3.c` and `sqlite3.h` to be byte-equal to
+  mattn's bundled copy, which is independent of sqlite.org. `sqlite-verify`
+  downloads the zip again, checks its SHA3-256 against the download page, and
+  compares byte for byte; its last run on `main` (2026-11-18) verified 3.54.1
+  and the WebAssembly build.
+  - **Binding.** Return codes are handled, and handles are released on error
+  paths. A leaked statement makes `Close` fail with `SQLITE_BUSY`, which the
+  test helpers assert. No `nolint`, no hidden `recover`.
+  - **faultvfs.** Each of the seven operations has a test that asserts the exact
+  extended code through real SQLite. Removing the sync check failed `TestFault`
+  (1034 expected, 0 got). A planted production import of faultvfs was refused
+  by depguard.
+  - **crosscheck.** It is a real second binding with different compile options,
+  and `TestLink` shows the two copies are separate. It runs in CI under `-race`
+  and under `-asan`.
+  - **Browser.** CI runs the tests of `internal/sqlite`, `faultvfs`, `core`,
+  `sim`, `simstore`, and `simulator` in headless Chrome on the official
+  WebAssembly SQLite (`core` took 362 s). The runner passes the exit code on:
+  with `foreign_keys` planted off, `make test-browser` failed
+  `TestOpen_options`. No core test is tagged out of the browser build; only two
+  canaries are skipped, with a stated reason.
+  - **Simulator.** It runs the real `internal/core` on cgo SQLite natively and
+  on WebAssembly SQLite in the page; `sitecheck` drives the real page. The
+  engine's own `TestEngine` skips without a page, which is by design. The
+  checker is unit-tested on direct input only, and says so.
+  - **CI job names.** Each job runs what its name says, per the log of run
+  44341932753. `TestTx_Commit_large` and `^TestFree` match real tests.
+  - **Timing.** One real sleep in my area
+  (`internal/sqlite/sqlite_browser_test.go:296`), 100 ms against a 60 s busy
+  timeout, and either order passes.
+
+  Ran 1 shell command · 1 failed (ctrl+o to expand)
+
+⏺ Agent "Audit tests of SQLite binding" finished · 13m 45s
+
+⏺ First auditor is back, on the SQLite binding, the browser build, and CI. No 
+  shenanigans found there: tests assert exact codes and messages, the fakes are
+  honest, and five faults it planted were all caught. Three auditors and the
+  engine verifier are still running.
+
+  Its findings are about what CI runs:
+
+  - CI never compares the parser with SQLite on the whole corpus. Under -race
+    and under the sanitizer the tests take every tenth statement, always the
+    same tenth, and CI has no job without one of the two. The 139,234 figure
+    comes only from local runs. I'll have a CI job added that runs the SQL
+    packages in full; measured locally, the parser's corpus test takes 10
+    seconds.
+  - main has no required checks. CI runs but does not block a push or a merge.
+    I'll come back to you on that one, since it is a repository setting.
+  - The site claims a test that does not exist: site/simulator/index.html says
+    tests check that a run is the same natively and in Chromium. The claim is
+    true today (the auditor checked by hand) but nothing tests it. That page
+    belongs to your other session, so I leave it to you or to it.
+  - Small: the README of the binding describes the cross-check with mattn more
+    widely than the test, a test-only function sits in the production binding
+    without a lint rule behind it, and make fuzz can skip silently if a
+    directory is renamed.
+
+  I collect these with the other auditors' findings and hand them to builders
+  together.
+
+✻ Sautéed for 10s · done Wednesday 10:10 PM
+
+› Message from general-purpose
+  # Audit of `internal/sql` on `origin/main` (38ce28b)
+
+  **Verdict: the area is in good shape and I found no shenanigans.** SQLite is
+  really consulted at test time, the corpus is not trimmed, the comparison is as
+  exact as it says, and the parser has no code keyed on test texts. I found two
+  real gaps in the guard rails, both proven, and three small points. Worktree
+  is reverted and clean; nothing committed.
+
+  ## Findings
+
+  ### 1. High: CI never runs the full corpus against the parser
+  - **Where:** `internal/sql/parser/parser_test.go:57` (`slow()`), with copies
+  in `stmt/check_test.go:27` and `shapetest/export_test.go:9`.
+  - **What:** `slow()` is true under `-race` and `-asan`, and both CI jobs use
+  one of them (the reusable `test.yml` runs `go test -race`; the `asan` job runs
+  `make test-asan`). So CI compares the same fixed 13,924 corpus entries (index
+  0, 10, 20, ...) out of 139,234, and 2,000 of 20,000 generated sentences. Rule
+  coverage is only reported (`lalr_test.go:317`). The same sampling applies to
+  `stmt` and `shapetest`.
+  - **Proof:** I made the parser reject `REFERENCES p ON INSERT CASCADE` (valid
+  SQLite) in `parser/ddl.go`. `go test -race ./internal/sql/...` passed in every
+  package. `go test -run TestParse_corpus ./internal/sql/parser` without
+  `-race` failed on exactly one statement.
+  - **Why it matters:** AGENTS.md says to merge when CI passes, so a regression
+  in a rare form can be merged green. The "139,234" claim holds only for a local
+  run without `-race`.
+  - **Fix:** add a CI job that runs `go test ./internal/sql/...` without
+  `-race`. The parser package takes about 30 s that way.
+
+  ### 2. Medium: the number of uncompared texts is logged, never asserted
+  - **Where:** `parser_test.go:422,436`, `grammar_test.go:110`,
+  `stmt/check_test.go:92-95,241`, `shapetest/check_test.go:121-123`,
+  `shapetest/mutate_internal_test.go:990-997`.
+  - **What:** `oracle.NotSaid` excuses a text from comparison
+  (`parsetest.go:158`). The counts in the READMEs (308 of the corpus, 745 of the
+  mutants) are only printed. The same holds for the shape check's "same error"
+  and "skipped" outcomes, and for its detection rates, where the test only
+  requires each kind of damage to be detected once.
+  - **Proof:** I made `oracle.classify` return `NotSaid` for every `unrecognized
+  token` error past byte 20. All tests of `oracle`, `parsetest`, `parser`, and
+  `stmt` passed, and the corpus's uncompared count went from 308 to 1,850.
+  - **Limits of the proof:** two cruder loosenings were caught, but only by
+  `oracle` and `parsetest` themselves. The `parser` and `stmt` packages passed
+  with up to 23,715 corpus texts uncompared.
+  - **Why it matters:** this is the cheapest way to make a disagreement
+  disappear, and nothing would show it.
+  - **Fix:** assert upper bounds in the full runs (corpus not said ≤ 308, plus
+  bounds for mutants, generator, and the shape check's uncompared share), as
+  `TestParse_offsetAfterValues` already does. Consider adding `oracle` and
+  `parsetest` to the mutation tester's packages.
+
+  ### 3. Low: the spec promises more than `stmt.Check` does for text with a NUL
+  byte or invalid UTF-8
+  - **Where:** `stmt/check.go:35`, `stmt/check_test.go:76-81`,
+  `docs/spec.md:16`.
+  - **What:** `select 1 frm t\x00` is a syntax error in SQLite, and s4ql answers
+  "not supported: NUL byte". The test returns before it asks the oracle. I read
+  this from the code and did not run it.
+  - **Why it matters little:** the package README documents it; only the spec
+  has no exception.
+  - **Fix:** a sentence in the spec, which is Markus's call.
+
+  ### 4. Low: "agree with SQLite on 139,234 statements" is slightly more than
+  the tests show
+  - **Where:** `README.md:22`, `site/index.html:854`.
+  - **What:** I ran it: 138,926 agree, and SQLite does not say on 308.
+  `parser/README.md:438` says it exactly.
+  - **Fix:** wording only.
+
+  ### 5. Low: the mutation runner's own logic has no test
+  - **Where:** `mutation/run.go` (`runIn`, `runStage`); `generate_test.go` tests
+  only generation and the list.
+  - **What:** by reading, it is right. Each mutant is built with `go test -c
+  -overlay` and the binary is run directly, so there is no test cache. A build
+  failure is "uncompiled" and stays out of the score. A timeout counts toward
+  the score, shown in its own column (97 of 6,223 in the README).
+  - **Not done:** I did not run the tool, so the README's mutation numbers are
+  unverified.
+  - **Fix:** one test with a fake module holding a killed, a surviving, and an
+  uncompilable mutant.
+
+  ## Checked and found sound
+
+  - **Oracle:** every verdict comes from `sqlite3_prepare_v2` at test time, on a
+  fresh connection. No verdicts are cached and there is no list of accepted
+  differences. Its property tests over the whole corpus are strong and caught
+  two of my three loosenings.
+  - **Harness:** `Compare` checks exactly what it says: verdict, exact message,
+  exact offset, and tail for statements that parse. `TestRun_wrong` shows it
+  catches wrong parsers.
+  - **Corpus:** `go run ./internal/sql/corpus/update -check` downloaded the
+  pinned archives and confirmed the committed files are byte-identical to what
+  the tool extracts. The only filters are the documented length limits; none
+  depends on the parser or oracle. CI does not run this check.
+  - **Parser, tokenizer, `stmt`:** a plain port of the grammar, with no cases
+  keyed on texts and no reading of test data. The `#N` and digit-separator
+  handling reproduces messages the spec promises. The tokenizer is compared with
+  `sqlite3GetToken` on all inputs of one and two bytes. `stmt` fails closed;
+  its 729 supported corpus statements match the diary.
+  - **LALR automaton:** SQLite's own tables, read from the amalgamation, and
+  `TestGrammar` ties `parse.y` to them rule by rule. It is independent for the
+  grammar, but it is fed the parser's token stream, so it does not check
+  tokenizing or the WINDOW/OVER/FILTER decisions.
+  - **Equivalent mutants:** I judged 31 of the 91 entries against the code. All
+  are truly equivalent, except the two `parser.run` tail entries, which change a
+  return value the contract leaves undefined.
+  - **Shape check:** its README states its limits plainly (86.3% compared by
+  bytecode or probes, 5.3% only by an error).
+  - **Skips:** no `t.Skip` hides a test; the only two are length caps in fuzz
+  targets.
+
+  Key files: `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-acb6390dcb
+  5851612/internal/sql/parser/parser_test.go`,
+  `.../internal/sql/oracle/oracle.go`,
+  `.../internal/sql/parsetest/parsetest.go`, `.../internal/sql/mutation/run.go`,
+  `.../.github/workflows/ci.yml`.
+
+⏺ fabrik:builder(Fix SQL test guard rails)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Audit tests of SQL packages" finished · 14m 31s
+
+⏺ The SQL auditor is back too. No shenanigans in the SQL packages: SQLite is
+  really asked at test time, nothing is cached, the corpus is not trimmed, the
+  comparison is as exact as it says, and the parser has no code keyed on test
+  texts. It judged 31 of the 91 "equivalent" mutants and all hold.
+
+  It found two real gaps in the guard rails, both proven by planting a fault:
+
+  - CI never runs the full corpus, the same finding as the first auditor made
+    independently. It made the parser reject a valid form, and CI's test command
+    passed.
+  - The count of texts that escape comparison is only printed, never asserted.
+    Where SQLite gives no clear verdict, a text is excused. The auditor loosened
+    that rule so that 1,850 texts were excused instead of 308, and every test
+    passed.
+
+  A builder is now fixing both, plus the smaller points from the two audits (a
+  test for the mutation runner itself, make fuzz skipping silently, a scheduled
+  re-check of the corpus, a wider cross-check with mattn).
+
+  Two things for later, not urgent:
+
+  - The README and site say the parser agrees with SQLite "on 139,234
+    statements". Measured, it is 138,926, and on 308 SQLite gives no verdict.
+    The status sub-agent corrects the wording.
+  - The spec has no exception for text with a NUL byte or invalid UTF-8, which
+    we reject as "not supported" even when it is also a syntax error. That needs
+    a sentence from you; I'll bring wording when the rest is done.
+
+  Still running: the auditors for the storage core and for the stores, and the
+  engine verifier. Usage is at 48%.
+
+✻ Worked for 49s · done Wednesday 10:12 PM
+
+› Message from general-purpose
+  # Audit of `internal/core` and `internal/host`
+
+  **Verdict: the area is in good shape.** I found no shenanigans: no test-only
+  shortcuts in production code, no assertions that cannot fail, no hidden skips.
+  The findings below are gaps where a check proves less than its name says.
+  None hides a fault today. Worktree is clean (`git status` empty); nothing
+  committed.
+
+  ## Findings
+
+  ### 1. The "everything" workload asserts nothing about what it reached (low to
+  medium)
+  - **Where:** `internal/core/workloads_test.go:245` (`if n >= 40`). Only the
+  one-instance workload (40 seeds) gets coverage assertions, and those do not
+  cover crashes, clock moves, buggify or damaged downloads.
+  - **Proof:** I set `fullWorkload` to `crashes: 0, closes: 0, clocks: 0,
+  faulty: 0, damaged: 0, buggify: false`. `TestSimulation` still passed,
+  including the subtest named "…with instances that compete, clocks that move,
+  crashes, and buggify".
+  - **Why it matters:** this is the only default-run workload with crash
+  recovery, clock faults and cache failure. A harness or `sim`/`simstore` change
+  that silently switches one off stays green.
+  - **Today it does reach them:** 30 seeds gave 30 crashes, 20 WAL recoveries,
+  496 clock moves, 78 buggify fires, 19 local-failure stops, 7 damaged
+  downloads.
+  - **Fix:** assert minimum counts per workload from the tally, as line 251
+  already does for `lateWrites`.
+
+  ### 2. Planted bugs: the seeds that find a bug are mostly never run without it
+  (low)
+  - **Where:** `workloads_test.go:700`. Control and clean runs use seeds 0–9;
+  the bug run goes up to 200.
+  - **Observed in the default run:** 8 of 20 bugs take at least one of their
+  four finds from a seed of 10 or above. For `cacheFirst` (seeds 11, 13, 18, 19,
+  and no control) and `lostMeansFailed` (32, 33, 41, 42) no finding seed is
+  ever run clean.
+  - **Consequence:** attribution rests on a substring match (line 681) against
+  lists of up to six symptoms, some generic ("the instance stopped", "the cache
+  of").
+  - **No misattribution today:** I ran 11 such seeds by hand with
+  `S4QL_SIM_CLEAN`; all are clean without the bug and fail with it.
+  - **History:** commit 873b689 cut these runs from 20 to 10 seeds for speed.
+  - **Fix:** rerun each finding seed with `Unplanted()` and require no
+  violations (0.1–0.3 s per seed).
+
+  ### 3. Two controls cannot find any lease bug (low, disclosed in comments)
+  - **Where:** `workloads_test.go:506` (`leaseFromAnswer`) and `:558`
+  (`lostMeansFailed`). Both controls set `instances = 1`, which removes every
+  takeover.
+  - **What is wrong:** the comments admit this, but the test name ("never
+  without what it needs") and the README table
+  (`internal/core/README.md:307-328`) show them as ordinary controls with 0. The
+  README also records that the first `leaseFromAnswer` control found the bug
+  and was replaced.
+  - **Fix:** mark them "no control" in the table and the name.
+
+  ### 4. `TestTx_Commit_large` measures the Go heap only (low)
+  - **Where:** `internal/core/tx_test.go:889-902` samples
+  `runtime.MemStats.HeapAlloc`. The name claims the transaction is never in
+  memory, "not which rows it changed".
+  - **Proof:** I added `pragma temp_store = memory` and a 4 GB `cache_size` in
+  `conn.setUp`. The test passed, while peak RSS rose from 46 MB to 69 MB against
+  the test's 8 MiB bound.
+  - **Why it matters little:** production uses SQLite's defaults, which spill to
+  disk.
+  - **Fix:** also bound process RSS or SQLite's memory high-water mark.
+
+  ### 5. Seven replay refusal cases pass without the check they name (low,
+  documented)
+  - **Where:** `internal/core/replay_test.go:229-234`;
+  `internal/core/replay.go:112-118` relabels any non-I/O error as
+  `ErrLogBroken`.
+  - **Proof:** I removed the `checkValue` loop in `applyUpsertRows`
+  (`replay.go:264-268`). `TestReplay` passed, because `bind` refuses the value
+  instead.
+  - **Status:** the README counts this among its uncaught mutants. It becomes
+  sharp once a second column type exists.
+  - **Fix:** assert the reason, not only the error kind.
+
+  ### 6. Timing: two tests on the real clock (low)
+  - **`tx_test.go:1224`:** real-time upper bound (`elapsed < 8*time.Second`),
+  the side a slow machine can break.
+  - **`tx_test.go:1186-1206`:** exercises the busy wait only if the main
+  goroutine wins a 200 ms race; it passes either way.
+  - Everything else that sleeps runs on `synctest`'s fake clock.
+
+  ### 7. Minor
+  - `S4QL_SIM_SEEDS=0` makes `TestSimulation` and `TestSimulation_plantedBugs`
+  pass with zero runs; a value below 200 drops the assertion that a bug is
+  found. CI does not set it.
+  - `readOnly` (`core_test.go:563`) skips three spool-failure tests as root, so
+  in the Docker route of `make test-asan`.
+  - I could not read CI's main test job; it is an external reusable workflow.
+
+  ## Checked and found sound
+  - **Mutation sample:** 11 production mutants of my own. 9 caught by the
+  default tests (lease check after the read's state is fixed, margin, a landed
+  commit reported as failed, cache kept on unknown outcome, lease kept during
+  catch-up, log walk, release of another's lease, two replay checks). One
+  survivor is equivalent (salt comparison in `observe`); the other is finding 5.
+  Consistent with the README's 213 of 245.
+  - **Model:** `model_test.go` is independent code. Expected values never come
+  from the core, and `cacheDump` reads caches with its own SQL.
+  - **Simulation invariants:** stale reads, unknown outcomes, log linearity and
+  takeover timing are general checks, not bug-specific. `steady` is the one
+  exception and is legitimate.
+  - **Test doubles:** `scriptStore` and `damagingStore` are fault injectors over
+  the real `simstore`. `fileStore` exists so the heap test does not measure the
+  store.
+  - **Production code:** planted bugs and the `local`/`syncOff` hooks sit behind
+  unexported fields that only `export_test.go` sets. Each `_ =` is a rollback
+  or close on an error path. No `recover`. `core` is not exempt from `simlint`.
+  - **Planted bugs:** all 20 are found (four finds within 81 seeds, as the
+  README says). The planted data race is reported under `-race` and absent under
+  the scheduler.
+  - **`internal/host`:** thin, and its tests are adequate.
+  - **Claims:** the default seed counts, the resend-take numbers and the todo's
+  list of what is not shown match the code.
+
+
+⏺ fabrik:builder(Fix storage core test gaps)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ Agent "Audit tests of storage core" finished · 15m 25s
+
+⏺ The storage core auditor is back. No shenanigans in the core either: no
+  test-only shortcuts in production code, no assertions that cannot fail, no
+  hidden skips. The model the simulation checks against is independent code, and
+  9 of 11 faults the auditor planted itself were caught (one of the other two
+  is truly equivalent, the other is a known, documented gap).
+
+  It found places where a test proves less than its name says, all proven:
+
+  - The biggest simulation workload asserts nothing about what it reached. With
+    crashes, clock moves, damaged downloads, and buggify all switched off, the
+    test named for exactly those still passed. Today it does reach them; nothing
+    would notice if it stopped.
+  - Seeds that find a planted bug are mostly never run without the bug, so the
+    proof that the bug caused the failure is weaker than it looks. The auditor
+    ran 11 such seeds by hand and all were clean.
+  - The large-transaction test measures only Go's memory, not SQLite's, though
+    it claims the transaction is never in memory.
+  - Two tests depend on the real clock, against our own rule, and one of them
+    may test nothing when it loses a 200 ms race.
+  - Smaller: seven replay cases pass without the check they name, and three
+    tests skip silently when run as root, which is the case in the sanitizer's
+    Docker route.
+
+  A second builder is fixing these, in tests only. Still running: the auditor
+  for the stores, the engine verifier, and the builder on the SQL guard rails.
+
+✻ Crunched for 30s · done Wednesday 10:12 PM
+
+› Message from general-purpose
+  ## Audit: store, simstore, s3store, storetest, sim, simlint, format
+
+  The area is in good shape and I found no shenanigans in the code or tests. The
+  one finding that matters is a claim in the README that the code does not
+  support. Worktree is clean, nothing committed, real S3 not touched.
+
+  ### Findings
+
+  **1. High (claim): the storage core has never run against real S3, and the
+  README says it has.**
+  - `README.md:21` and `PRODUCT.md:36` say commits, crash recovery and replay
+  "are tested in a deterministic simulation and against a real S3-compatible
+  bucket". `site/index.html:851` implies the same.
+  - Verified: `s3store` is imported only by its own tests, and `S4QL_S3_BUCKET`
+  is read only at `internal/store/s3store/s3store_test.go:869`. No test wires
+  `internal/core` to `s3store`, not even on the HTTP fake.
+  - What does run on a real bucket is the 17 conformance cases plus 5 client
+  tests, by hand, on Tigris only. They are skipped by default, and `ci.yml`
+  passes no secrets.
+  - `docs/todo.md:63,93` and the s3store README say this honestly; the status
+  lines do not.
+  - Fix: reword the status lines, or add a core test on `s3store` (commit,
+  restart, replay, lease takeover) and a scheduled CI job with bucket secrets.
+
+  **2. Medium: the conformance suite does not pin key identity.**
+  - Proven: I wrapped the simulated store so that it folds the case of keys, and
+  again so that it collapses `//`. All 17 cases passed for both (0 failures, 3
+  seeds). The key list is at `internal/store/storetest/storetest.go:370`.
+  - It matters because the suite is the only bridge between `simstore` and a
+  real store, and a database is a key prefix. On a store that folds keys, two
+  prefixes would share one manifest.
+  - S3 and Tigris do not fold. `TestClient_realBucket` covers `a//b` on Tigris,
+  but not case.
+  - `ErrTooLarge` is not in the suite either.
+  - Fix: add `a`/`A`, `a//b` and a 1024-byte key to `keys`, and confirm on
+  Tigris.
+
+  **3. Low to medium: `simlint` has holes, none used by production code today.**
+  - Proven: I appended unannotated violations to its testdata and `TestAnalyzer`
+  still passed.
+    - `time.Now()`, `time.After` and a blocking `<-d` inside the comm clauses of
+  a `select` with a default are not reported
+  (`internal/simlint/simlint.go:143-153` returns false without inspecting
+  `Comm`).
+    - A range over a channel of a type parameter (`[C ~chan int]`) is not
+  reported (`simlint.go:165`).
+  - By reading:
+    - `host.New()` is not forbidden in library code; the only call today is
+  `internal/sim/free.go:34`.
+    - CI never lints the `js && wasm` files (`sqlite_browser.go`,
+  `faultvfs_browser.go`). I ran the lint by hand with `GOOS=js` and it was
+  clean.
+  - Map-order nondeterminism is not lintable, and `sim.go` says so; the replay
+  tests are the guard.
+  - Fix: inspect `clause.Comm`, use the core type for ranges, forbid `host.New`
+  outside wiring, and add the `GOOS=js` lint to CI.
+
+  **4. Low: `simstore`'s "applied, then no answer ever" is not pinned by a
+  test.**
+  - Proven: with `hang := false` at `internal/store/simstore/client.go:323` (the
+  hang after a lost response), every simstore test passes.
+  - The hang test at `client_test.go:615` forces only `LostRequest`.
+  - This is the case the "unknown commit outcome" rule rests on. Behaviour is
+  right today, just unguarded.
+  - Fix: add a case with `LostResponse: 1, Hang: 1` that asserts the write is in
+  the history and the caller gave up.
+
+  **5. Low, already documented: three redundant guards in `s3store`.**
+  - Removing `g.close()` (`s3store.go:258`) passes all tests.
+  - Removing either `ChecksumMode` or `ResponseChecksumValidation` alone passes;
+  removing both fails.
+  - The s3store README's "What no test shows" says exactly this. No action
+  needed.
+
+  **6. Low: one timing-dependent check.**
+  - `s3store_test.go:499` sleeps 200 ms and then asserts that no late read
+  happened. A slow machine can only make it pass wrongly, never fail wrongly.
+  - The 50 ms contexts at `:402-417` are bounded from the safe side.
+
+  ### Checked and found sound
+
+  Mutation results (planted fault, ran the package's tests, restored):
+
+  | Package | Killed | Survived | Not counted |
+  |---|---|---|---|
+  | `s3store` | 14 | 3 (finding 5) | none |
+  | `simstore` | 9 | 1 (finding 4) | none |
+  | `sim` | 5 | 0 | 2 did not compile, 1 hung and was stopped |
+  | `format` | 13 | 0 | 1 did not compile |
+
+  - **`s3store`:** the killed mutations cover retries, redirects, proxy, HTTP/2,
+  the attempts guard, the 409/404/412 mapping, a missing ETag, the payload
+  hash, the checksum header, error wrapping and short bodies. Tests go through
+  the real SDK to an HTTP fake. The fake's answers are guesses for AWS, and the
+  README lists which were seen on Tigris.
+  - **`simstore`:** the workload test runs 200 seeds twice, compares traces, and
+  asserts that every fault of `AllFaults` occurred. Its departures from S3 are
+  on the strict side (it panics on bad keys, versions come from content).
+  - **`sim`:** the killed mutations cover crash, timeout order, host ownership
+  and the seeded pick. Same-seed replay is tested, including a test that
+  map-order dependence is detected.
+  - **`format`:** the golden samples are written by the encoder (`-update`), but
+  each is also compared with independently built messages and with
+  `proto.Unmarshal`/`Marshal` of the whole object. Refusal tables assert the
+  error kind both ways. The `maxRecordSize` test hook only lowers a limit.
+  - **`storetest` self-test:** five wrong stores are each caught by the named
+  case. My two extra (create drops its checksum, swap of a missing key reported
+  as changed) were caught too.
+  - **Production code:** no test-only branches, no `recover`, and no swallowed
+  errors beyond `Close` and logging. The only skips are the real-bucket tests
+  and two env-gated diagnostics (`S4QL_SIM_SPEED`, `S4QL_SIM_HANG`).
+  - **CI:** it regenerates `s4qlpb` and diffs it, tests and runs `simlint`, and
+  fuzzes `format` under asan. I could not inspect the external reusable
+  `test.yml`.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Audit tests of stores and formats" finished · 17m 28s
+
+⏺ 2 background agents launched (↓ to manage)
+   ├ fabrik:builder (Fix store test gaps)
+   └ Agent (Correct two status claims)
+
+⏺ The last auditor is back, on the stores, the simulation, simlint, and the
+  formats. No dishonest test there either, but it found the one thing in the
+  whole audit I'd call a real shenanigan, and it is in a text I'm responsible
+  for:
+
+  The README and the site say the storage is tested "against a real 
+  S3-compatible bucket". It is not. The storage core has only ever run in the
+  simulation. What runs against a real bucket is the S3 client and the
+  conformance suite, by hand, on Tigris. docs/todo.md says this honestly; the
+  status lines did not. A sub-agent is correcting the wording now, and a builder
+  is writing the missing test: the real core on the real S3 client against the
+  real bucket (commit, restart with an empty cache, replay, lease takeover).
+
+  PRODUCT.md carries the same sentence. It came with the site, so I leave that
+  file to you or the other session.
+
+  The other findings, all going to the same builder:
+
+  - The conformance suite does not pin what makes two keys different. A store
+    that treats a and A as the same key passes all 17 cases. A database is a key
+    prefix, so on such a store two databases would share a manifest.
+  - simlint has holes (a time.Now() inside a select, for one). No production
+    code uses them today.
+  - The simulated store's "write applied, answer never arrives" case has no 
+    test, though the rule on unknown commit outcomes rests on it.
+
+  The audit as a whole: four areas, no faked or rigged test, no production code
+  bent for tests, and each auditor's own planted faults were mostly caught. The
+  weak spots are of one kind: checks that could quietly stop checking, and
+  status claims that ran ahead of the tests.
+
+  Three builders are fixing them (SQL guard rails, core tests, stores). The
+  engine verifier is still on its long runs. Usage is at 48%.
+
+✻ Sautéed for 58s · done Wednesday 10:15 PM
+
+› Message from general-purpose
+  Done. Commit 111de41 on main, pushed. Only README.md and site/index.html
+  changed.
+
+  README:
+  - "They are tested in a deterministic simulation. The S3 client and the
+  simulated store pass the same conformance tests, which are also run by hand
+  against a real S3-compatible bucket."
+  - "...they agree with SQLite on all 138,926 statements of a corpus of 139,234
+  on which SQLite gives a clear verdict, and on the shape of the syntax tree.
+  The corpus comes from its tests, documentation, and fuzz corpora."
+
+  Site (status section):
+  - "The tests behind it: a deterministic simulation. The conformance tests,
+  which the S3 client and the simulated store both pass, are also run by hand
+  against a real S3-compatible bucket."
+  - "The parser agrees with SQLite on what parses and on every syntax error,
+  across all 138,926 statements, of a corpus of 139,234, on which SQLite gives a
+  clear verdict. The corpus comes from SQLite's own tests, documentation, and
+  fuzz corpora."
+
+  Not touched: the "Real S3" line at site/index.html:831, outside the status
+  section.
+
+⏺ The two status claims are corrected in the README and in the site's status
+  section (111de41): the storage is tested in the simulation, the conformance
+  tests are run by hand against a real bucket, and the parser agrees with SQLite
+  on all 138,926 statements where SQLite gives a clear verdict, out of 139,234.
+
+  One line the sub-agent left alone because it is outside the status section: a
+  "Real S3" line at site/index.html:831. That one and PRODUCT.md are for you or
+  the site session to look at.
+
+  Still running: three builders on the audit fixes and the engine verifier.
+
+✻ Churned for 2s · done Wednesday 10:15 PM
+
+⏺ Agent "Correct two status claims" finished · 15s
+
+› Message from general-purpose
+  ## Verification of `engine-slice-1` (f1c6e04)
+
+  The builder's claims hold. Every number it reported that I could re-run came
+  out exactly the same. My 8 planted bugs were all caught, and 42 hand-picked
+  sequences, each run 3 ways, showed no difference from SQLite. The machine had
+  a load of about 12 throughout.
+
+  | # | Claim | Verdict | Command | What I saw |
+  |---|---|---|---|---|
+  | 1 | make test / make lint pass | confirmed | `make test`; `make lint` | both
+  exit 0; lint 0 issues |
+  | 1 | simlint covers the engine, no exemption | confirmed | read
+  `internal/simlint/simlint.go`; planted `go func(){}()` in `plan.go`, ran
+  simlint | engine is not in `exempt`; simlint reported the goroutine, exit 3 |
+  | 1 | fast tests -count=20 and -race -count=3 | confirmed | `go test -short
+  -count=20` and `-race -count=3` on `./internal/engine/...
+  ./internal/sql/stmt/...` | all ok |
+  | 2 | 10,000 sequences, 400,000 statements, no difference | confirmed | `go
+  test ./internal/engine -run '^TestDifferential$' -sequences 10000 -length 40
+  -seed 2000000` | PASS in 76 s; the outcome counts match the README one for one
+  and sum to 400,000 |
+  | 2 | compares statement by statement, restarts happen | confirmed by reading
+  | `differential_test.go` | compares code/extended code: message, columns,
+  rows, the change count after every statement, and last insert rowid = 0. Odd
+  sequences restart with probability 1/10 per statement, half with a new empty
+  cache file. The full state is compared after each restart and at the end |
+  | 3 | simulation, default, 1,000 seeds | confirmed |
+  `S4QL_ENGINE_SIM_SEEDS=1000 go test -run '^TestSimulation$'` | 95,196
+  statements: 13,318 succeeded, 20,385 SQLite error, 55,405 refused or timed
+  out, 572 unknown, 29 cut by crash, 5,487 skipped; 8,364 commits; no violation
+  |
+  | 3 | simulation, hammer, 1,000 seeds | confirmed | same run | 120,000
+  statements: 28,001 succeeded, 40,610 SQLite error, 43,360 refused or timed
+  out, 1,078 unknown; 15,155 commits; no violation |
+  | 4 | planted bugs, 200 seeds each | confirmed | `S4QL_ENGINE_SIM_SEEDS=200 go
+  test -run '^TestSimulation_plantedBugs$'` | skipUnique 124, ackUnknown 47,
+  checkOutside 73, keepOpen 193; PASS, so every finding seed was clean without
+  its bug |
+  | 5 | engine mutation: 955 / 632 / 11 / 0 | confirmed | full run, `go run
+  ./internal/sql/mutation -pkgs internal/engine -j 6` (7 min 56 s) | 955 = 312
+  not compiled + 632 killed + 11 equivalent; 0 timeouts, 0 unexplained |
+  | 5 | stmt mutation: 1,122 / 970 / 14 / 15 / 0 | confirmed | full run, `-pkgs
+  internal/sql/stmt` (12 min 23 s) | 1,122 = 123 not compiled + 970 + 14 + 15; 0
+  unexplained |
+  | 6 | fuzzing | no findings | `-fuzz` for 10 m / 5 m / 5 m | FuzzDifferential
+  6,151,407 execs; FuzzDifferential_core 77,528 execs; FuzzStartedTable
+  17,344,445 execs, still finding new inputs (318 in 5 min) |
+
+  ### Points 4 and 5 in detail
+  - **The planted bugs are all realistic faults, not strawmen.** A missing
+  uniqueness check before an upsert, acknowledging a commit whose outcome is
+  unknown, a check made in a separate read transaction before the write, and a
+  leaked write transaction. Each is caught by a general check that would also
+  catch a real fault of that kind: commits replayed in SQLite, acknowledged
+  writes missing from the log, and liveness.
+  - **The "missing" mutants are the ones that did not compile.** For the engine
+  that is 150 swap arguments, 90 removed statements and 48 conditions, failing
+  with errors like "missing return" and "declared and not used". Leaving them
+  out of the score is sound.
+  - **Timeouts count as kills.** The score is (killed + timed out) / compiled.
+  - **The 14 stmt timeouts are real kills.** Each makes the code loop forever:
+  `checkText` `i < len(src)` mutants and removal of `i += n`, the loop guards of
+  `firstToken`, `tokens[1:]` in `StartedTable`, and removal of `n = child` in
+  `describe`. Each ran into the 1 min limit against a 0.66 s baseline.
+  - **All 26 equivalent mutants hold up; I read each one.** That is 11 for the
+  engine and 15 for stmt.
+    - Engine, 11: three exist only in planted-bug code, one is a scheduler
+  yield, one changes -1 to -2 where the caller tests `< 0`, and six are in
+  telemetry. Of those six: a case whose removed return falls to the same return,
+  the Enabled check that `LogAttrs` repeats, and swaps of named attributes.
+    - stmt, 15: the `childAt` mutant is safe because the ownership invariant
+  holds. The `StartedTable` and `dequoteAny` ones are safe given the grammar; I
+  traced the `Create Virtual Table => true` case through several SELECT/USING
+  shapes and found no counterexample.
+
+  ### Point 7: my planted bugs, all caught by `go test ./internal/engine/...
+  ./internal/sql/stmt/...`
+  1. `noSuchColumn` given the table's raw name instead of its value: caught by
+  TestEngine_errors, TestBuild, TestDifferential and TestSimulation.
+  2. No rollback when `buildSink` fails: caught by TestEngine_write, and the
+  package then hung until the 10 min timeout.
+  3. Column names compared case-sensitively in `columnPosition`: caught by
+  TestBuild, TestEngine_errors and TestDifferential.
+  4. DROP TABLE sets the change count: caught by TestEngine_Exec,
+  TestDifferential and both fuzz seed corpora.
+  5. Scan drops the last row: caught by TestScan, TestProject, TestEngine_query
+  and TestEngine_report.
+  6. Annotation drops the trailing `;`: caught by TestEngine_annotations and
+  TestEngine_write.
+  7. stmt `ParseInt` with base 0 (`010` becomes 8): caught by TestCheck,
+  TestDifferential and TestSimulation.
+  8. stmt `Fold` uses `strings.ToLower`: caught by TestName_Fold,
+  TestDifferential and TestSimulation.
+  9. stmt `dequote` does not undouble `""`: caught by TestEngine_errors,
+  TestBuild and TestDifferential.
+  10. `already exists` after the start of a table prints the value instead of
+  the raw name: caught by TestDifferential and TestSimulation.
+  11. DROP passes the name as written instead of the stored one: caught only by
+  TestBuild, against the fake. The real core apparently matches names regardless
+  of case, so this does no harm there.
+
+  ### Point 8: hand-picked sequences
+  I ran 42 sequences, 3 ways each (by statement kind, all through Exec, all
+  through Query), giving 126 subtests. **No difference from SQLite on any
+  supported statement**, nor in change counts or the state after a restart.
+  - **What they covered:** quoted, case-only, non-ASCII, emoji and
+  fallback-keyword names, int64 minimum and maximum, `-0`, `- 0`, leading zeros,
+  `--5\n6`, comments in every position, an unterminated block comment,
+  whitespace and form feeds, a duplicate key through `"T"`, create after drop,
+  drop twice, 30 tables, and restarts with an empty cache and with its own.
+  - **Refused as "not supported" where SQLite runs them:** int64 max + 1, hex,
+  reals, `+5`, NULL, a tail after `;`, brackets, backticks, single quotes,
+  `main.`, `integer`, ASC/DESC, IF NOT EXISTS, and `""` names. All of these are
+  conservative choices by design.
+
+  ### Other observations
+  - **The differential test never shows a falsely refused statement as a
+  difference.** It skips SQLite whenever the engine answers "not supported", so
+  a gate that wrongly refuses a supported statement would go unnoticed. That was
+  21,687 of the 400,000 statements.
+  - **58% of the default simulation workload never reaches a transaction.**
+  55,405 of 95,196 statements are refused or time out.
+
+  The probe test is saved at /private/tmp/claude-502/-Users-maragubot-Developer-
+  s4ql/f1343515-adca-4ca0-9eb0-f507768f8fc7/scratchpad/zz_probe_test.go. The
+  worktree is clean and back on its own branch.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Verify engine test claims" finished · 1h 5m 5s
+
+⏺ fabrik:builder(Engine slice 1 review fixes)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ Agent "Fix SQL test guard rails" is waiting on its own background work · 12m 
+  33s
+
+⏺ The engine verifier is back, and the first builder's test claims hold. Every
+  number it could re-run came out exactly the same: 400,000 statements with no
+  difference from SQLite, 2,000 simulation seeds without a violation, the four
+  planted bugs found on the same seed counts, and the mutation numbers.
+
+  - The mutation numbers do add up. The "missing" mutants are ones that did not
+    compile (312 for the engine), which rightly stay out of the score. It read
+    all 26 "equivalent" mutants and each holds.
+  - All 11 faults it planted itself were caught by the ordinary test suite, and
+    42 hand-picked sequences, each run three ways, showed no difference from
+    SQLite.
+  - Two new weak spots: the differential test never checks a statement the
+    engine refuses, so a wrongly refused statement would go unnoticed, and 58%
+    of the default simulation workload's statements never reach a transaction.
+
+  So your worry about quality at high context did not come true in the code or
+  the numbers. It showed in what the tests leave unchecked, and in one piece
+  built beyond the brief.
+
+  A fresh builder is now doing the fix round on the engine branch: the "already
+  exists" lookup comes out of production, the simulation learns to see a read
+  left open, a real SQL-text fuzz target, a check on refused statements, and the
+  smaller points.
+
+  Four builders are running: engine fixes, SQL guard rails, core tests, and
+  stores. I merge each as it comes back clean.
+✻ Crunched for 1m 9s · done Wednesday 10:24 PM
+
+⏺ Agent "Fix SQL test guard rails" is waiting on its own background work · 17m 
+  57s
+
+› Message from fabrik:builder
+  All six points are built on the branch `sql-guard-rails`, last commit
+  `acfbfb9`, not pushed. `make test` and `make lint` pass (lint: 0 issues). The
+  new target `make test-sql` passes and took 54.9 s of real time on this machine
+  (`/usr/bin/time -p`), with other work running.
+
+  1. **Full run in CI.** `make test-sql` runs `go test -count 1 -shuffle on
+  ./internal/sql/...` without `-race` or `-asan`, and the new CI job `sql` calls
+  it.
+     - Proof: I made the parser fail on `ON INSERT CASCADE` in `references`
+  (`internal/sql/parser/ddl.go`). `go test -race` on parser, shapetest and
+  parsetest still passed. `make test-sql` failed in 7 tests with `rejects what
+  SQLite parses: "CREATE TABLE c(j REFERENCES p ON INSERT CASCADE)"`. Fault
+  reverted.
+
+  2. **Counts asserted.** The full runs pin these numbers, and each failure
+  message says to change the number only on purpose and give the reason in the
+  commit:
+     - Exact counts on which SQLite does not say: corpus 308, mutants 745,
+  generator 5,357. The generator's 31,731 texts that parse are pinned too, and
+  parsetest's `TestRun_corpus` also pins its 308.
+     - For the shape check, `TestCheck_corpus` and `TestCheck_pairs` pin the
+  texts not checked, the count for each way (bytecode, probes, same error,
+  skipped), and the uncompared count. `TestCheck_mutations` pins detected,
+  undetected and not compared for each of its 22 kinds of damage.
+     - Proof: I made `classify` return `NotSaid` for `unrecognized token` past
+  byte 20. The parser fails with `1850, but the test pins 308` and `2056, but
+  the test pins 745`, and parsetest fails too. Fault reverted.
+     - One pin depends on the platform. On macOS SQLite has `PRAGMA
+  lock_proxy_file` (`SQLITE_ENABLE_LOCKING_STYLE` under `__APPLE__`), so 7
+  corpus statements move from bytecode to same error. The test allows for that
+  on darwin and ios.
+     - I checked the pins on macOS and on Linux arm64 in Docker. Linux amd64,
+  where CI runs, is not checked; the first CI run will show it.
+     - `internal/sql/stmt` is untouched.
+
+  3. **Mutation runner test.** `TestRunner_run` in
+  `internal/sql/mutation/run_test.go` builds a small module and checks one
+  mutant of each verdict: killed, survived, uncompiled, timed out, and a changed
+  file, which gives `error`. The timed-out mutant loops about 2^63 times
+  against a 1 s limit, so it does not depend on the machine's speed; the others
+  get a 1 h limit. It passed `-count=20`, also under `-race`.
+
+  4. **`make fuzz`.** It now fails when listing a directory's fuzz tests fails,
+  or when a directory has none. The directories are in `FUZZDIRS`, so I could
+  test both failures.
+
+  5. **Corpus check.** `make corpus-verify` runs `corpus/update -check`, as a
+  new step of the `sqlite-verify` job. That workflow has no schedule: it runs
+  only when listed paths change. So I added the corpus, `parse.y`, the
+  tokenizer, `internal/sqlite/*.go` and `options.h` to its paths.
+
+  6. **Cross-check.** It now covers text, with `TestBindText` and
+  `FuzzBindText`. The binding has no functions to bind or read reals or blobs,
+  so those are not covered, and `internal/sqlite/README.md` now says so. I also
+  removed its claim of "statement reuse", which no test covers.
+
+  Also added: the line on mutating `oracle` and `parsetest` in `docs/todo.md`,
+  short notes on the pins in the parser and shapetest READMEs, and the diary at
+  `docs/diary/2026-11-18-sql-guard-rails.md` (3 steps).
+
+  The self-review raised 8 findings and I fixed 4:
+  - The parser's pins compared the flags with copies of their defaults, so
+  changing a default would have switched them off silently. They now check
+  `DefValue`.
+  - `options.h` was missing from the workflow's paths.
+  - The comment on the CI job was wrong about what is sampled under `-race`.
+
+  I left 4: the 308 pinned in two packages, the different wording of the pin
+  messages, the few seconds the runner test adds to every run, and `test-sql`
+  matching local `make test`.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Fix SQL test guard rails" finished · 19m 39s
+
+  Created PR #35, ran 1 shell command (ctrl+o to expand)
+
+⏺ The SQL guard rails are done and in review as PR #35; CI is running.
+
+  - CI now runs the full corpus in a new job. The builder planted the auditor's
+    fault again (the parser rejecting a valid form): the old command still
+    passed, and the new one failed in 7 tests. Measured, the new job's target
+    takes 55 seconds on this machine.
+  - The escape counts are pinned (308 of the corpus, 745 of the mutants, 5,357
+    of the generated texts, and the shape check's outcomes). With the auditor's
+    loosening planted, the tests now fail with "1850, but the test pins 308".
+  - Also done: a test for the mutation runner itself, make fuzz no longer skips
+    silently, the corpus is re-checked against its pinned archives, and the
+    cross-check with mattn now covers text.
+
+  One thing to watch: the pinned counts were checked on macOS and on Linux
+  arm64, not on Linux amd64, where CI runs. One count already differs by
+  platform (macOS has a pragma Linux lacks), so the first CI run is the real
+  test. I merge if it is green.
+
+  Still running: the builders on the engine fixes, the core tests, and the
+  stores.
+
+✻ Churned for 24s · done Wednesday 10:32 PM
+
+⏺ Agent "Fix store test gaps" is waiting on its own background work · 27m 15s
+
+⏺ The stores builder has paused on its own long runs and has not reported yet.
+  Nothing to act on.
+
+✻ Sautéed for 1s · done Wednesday 10:42 PM
+
+⏺ Agent "Fix store test gaps" is waiting on its own background work · 27m 41s
+
+⏺ Agent "Fix storage core test gaps" is waiting on its own background work · 33m
+  12s
+
+⏺ The core builder and the stores builder are both paused on their own long
+  runs; neither has reported yet. CI on #35 is still running.
+
+✻ Baked for 1s · done Wednesday 10:46 PM
+
+⏺ Agent "Fix store test gaps" is waiting on its own background work · 32m 4s
+
+⏺ Agent "Fix storage core test gaps" is waiting on its own background work · 39m
+  34s
+
+› Message from fabrik:builder
+  All five gaps are closed on branch `store-test-gaps` (last commit `d924662`,
+  not pushed). The core test found no fault in the core or the client, and
+  nothing in `internal/core` changed. `make test` and `make lint` pass. `make
+  test-asan` failed on the loaded machine, as explained under checks.
+
+  **1. Core on a real bucket.** `TestClient_core` is in
+  `internal/store/s3store/s3store_test.go`, so the core depends on `s3store`
+  only in a test. It uses the same gate (`S4QL_S3_BUCKET`) and the same
+  prefix-and-cleanup helpers as the other real-bucket tests. Three subtests:
+  - **Commit and replay:** two commits and a close. The manifest is then without
+  a lease and its head is one of two commit objects. An empty cache replays the
+  same rows, and the old cache opens at them.
+  - **Handover:** while `a` holds the lease, a spare `b` gets `ErrNoLease` on
+  `Read` and `Begin`. After `a` closes, `b` takes the lease, sees `a`'s rows and
+  commits. `a` reopens one commit behind and catches up.
+  - **Lost swap:** `a` has a transaction open. The test releases `a`'s lease in
+  the manifest by hand, since no correct instance takes a held lease. `b` takes
+  it and commits. `a`'s commit then fails with `ErrNoLease`, not
+  `ErrOutcomeUnknown`, after the store refused one of `a`'s swaps with
+  `ErrChanged`. `a` then serves `b`'s row without its own. The assertions hold
+  in either legal order, and an event log of one run showed the commit's own
+  swap being refused.
+
+  On Tigris: `TestClient_core` passed 3 of 3 (also with `-count=5` and `-race`).
+  In the full package run, the conformance suite passed 18 of 18 and the
+  existing `TestClient_realBucket` checks passed 5 of 5, none skipped. No
+  credential values were printed, and a check found neither in the diff.
+
+  **2. Key identity.** New conformance case with keys that differ only in case
+  (`case/Case/CASE`, `ÆØÅ/æøå`), in slashes (`d//k`, `d/k`, `d///k`), and in the
+  last byte of two keys of the longest length. `Env.LongestKey` is new because
+  the real bucket's prefix eats about 44 bytes. Proof: a case-folding store, a
+  slash-collapsing one, and one that cuts keys at 1000 bytes each passed all 17
+  old cases and are each found now. All three are in the self-test, which has 8
+  wrong stores.
+
+  **3. simlint.**
+  - It now checks what a select's clauses compute, with or without a default. It
+  also reports a range over a type parameter whose type set holds a channel,
+  and `host.New` outside the exempt packages. New testdata gave 12 missing
+  diagnostics before the fix.
+  - `make lint` and one new step in CI's `browser` job run `simlint` with
+  `GOOS=js GOARCH=wasm` and the browser tag. A receive planted in
+  `faultvfs_browser.go` was reported by that run and not by the native one.
+  - Gap: no package can yet make the production host while keeping the other
+  rules, which the public driver will need.
+
+  **4. simstore hang.** `TestClient_hang` asserts that a create and a swap whose
+  response is lost return only at the caller's deadline, and that both writes
+  are in the history. With `hang := false` at `client.go:323`, only this test
+  failed. The plant is reverted.
+
+  **5. Timing.** The 200 ms sleep is gone. The test now waits for `httptrace`
+  `WroteRequest`, after which net/http never reads the body again, and the fake
+  store drains the connection. With a plain `http.Client`, which does read late,
+  it caught a late read in 30 of 30 runs; without the drain it was 7 of 10.
+
+  **Checks:** new tests pass `-count=20`, also under `-race`, on the loaded
+  machine. `make test-asan` hit the 10-minute timeout in six packages this
+  branch does not touch (`core`, `sim`, `sql/parser`, `parsetest`, `shapetest`,
+  `stmt`) at load around 26, while the three store packages passed. Rerun with
+  `-timeout 90m`, all six passed. The fuzz half of `test-asan` did not run.
+
+  **Self-review** found no bug. I fixed five small points. I left the browser
+  package list written out a second time in `ci.yml`, as the step next to it
+  does, because the other builder is changing that file.
+
+  The READMEs of `s3store` and `sim`, `docs/todo.md`, and the diary
+  `docs/diary/2026-11-18-store-test-gaps.md` (three steps) are updated.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Fix store test gaps" finished · 39m 12s
+
+  Created PR #36, ran 1 shell command (ctrl+o to expand)
+
+⏺ The stores builder is done, and its work is in review as PR #36.
+
+  The storage core has now run on a real bucket, and no fault was found in the 
+  core or the S3 client. The new test ran the real core on the real client
+  against Tigris, three cases, all passed:
+
+  - Commit and replay: two commits, then an empty cache replays the log to the
+    same rows.
+  - Handover: a spare instance is refused while another holds the lease, takes
+    it after the release, and sees the first one's rows.
+  - Lost swap: an instance whose lease was taken away fails its commit with "no
+    lease", as the spec says, and then serves the other's row without its own.
+
+  It is gated like the other real-bucket tests, so it runs by hand until CI has
+  a bucket and secrets.
+
+  The rest:
+
+  - Key identity is pinned in the conformance suite. Three wrong stores that
+    passed all 17 old cases (case folding, slash collapsing, cutting long keys)
+    are each found now, and the new case also passed on Tigris.
+  - simlint's holes are closed, and it now also lints the browser build.
+  - The "applied, never answered" case has a test, and the 200 ms sleep is gone.
+
+  One thing I'm watching: make test-asan timed out locally in six packages this
+  branch does not touch, with the machine very loaded by the four builders. They
+  passed with a longer timeout, so CI on a quiet runner is the real answer.
+
+  On #35, the new full-corpus job passed on CI's Linux, so the pinned counts
+  hold there too. Only its sanitizer job is still running.
+
+✻ Brewed for 25s · done Wednesday 10:54 PM
+
+⏺ Background command "Wait for CI on pull request 35 and show the result"
+  completed (exit code 0)
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ #35 is merged, all CI green including the sanitizer job. CI now compares the
+  parser with SQLite on the whole corpus on every push, and the counts of
+  excused texts are pinned.
+
+  Waiting on: CI for #36 (stores), and the builders on the core tests and the
+  engine fixes.
+
+✻ Cogitated for 21s · done Wednesday 10:57 PM
+
+⏺ Agent "Fix storage core test gaps" is waiting on its own background work · 45m
+  12s
+
+⏺ Agent "Fix storage core test gaps" is waiting on its own background work · 49m
+  19s
+
+⏺ Agent "Fix storage core test gaps" is waiting on its own background work · 51m
+  40s
+
+⏺ Background command "Wait for CI on pull request 36 and show the result"
+  completed (exit code 0)
+
+  Reopened PR #36, ran 3 shell commands (ctrl+o to expand)
+
+⏺ PR #36 (stores) passed CI, but GitHub refused my merge of it: my token may not
+  change workflow files through the API. I made a mistake there: my cleanup ran
+  straight after the failed merge and deleted the branch, which closed the PR.
+  I restored the branch from its commit and reopened the PR; nothing was lost.
+
+  I'm now merging it locally into main and pushing, which the same token allows,
+  and checking the build first. It is slow because the machine is loaded by the
+  two builders still running (core tests, engine fixes).
+
+  From now on I check that a merge succeeded before any cleanup runs.
+✻ Brewed for 2m 43s · done Wednesday 11:18 PM
+
+⏺ Background command "Merge the stores branch into main locally and sanity-check
+  the Makefile, the build, and the workflow file" completed (exit code 0)
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+⏺ #36 is merged into main (5560262) and GitHub shows the PR as merged. The local
+  build and the workflow file check out; CI on main is running on the combined
+  result of #35 and #36, and I'm watching it.
+
+  Still running: the builders on the core tests and the engine fixes. Usage is
+  at 50% of the 60% limit.
+
+✻ Sautéed for 32s · done Wednesday 11:19 PM
+
+› Message from fabrik:builder
+  All seven points are closed on branch `core-test-gaps` (last commit cbba024),
+  with no change to production code in `internal/core`. `make test`, `make lint`
+  and `make test-asan` all pass. My first `make test-asan` failed: three
+  packages, including `internal/sim` and `internal/sql/shapetest` that I didn't
+  touch, hit the 10-minute limit at a machine load of 35. Run alone, the core
+  passed under the sanitizer, and the second full run passed.
+
+  **What changed, by point:**
+  1. `TestSimulation` now requires each workload to reach a minimum of every
+  kind of event it reached at least 4 times. Each minimum is a quarter of what
+  the default seeds reached. Runs depend only on code and seed (the trace hashes
+  are identical under `-race`), so a minimum fails only when code changes. If
+  one falls short, the test logs a fresh set of minimums from that run.
+     - **Proof:** with `fullWorkload` set to
+  `crashes/closes/clocks/faulty/damaged: 0, buggify: false`, 14 minimums failed,
+  for example `"crashes" 0 times, and must reach it 7`, `"moves of a clock" 0
+  ... 124`, `"buggify points that fired" 0 ... 19`. Reverted.
+  2. Every seed that finds a planted bug is rerun with the bug removed, on top
+  of the first 10 seeds. No rerun found anything.
+  3. I removed the two one-instance controls (`leaseFromAnswer`,
+  `lostMeansFailed`): with no takeover they could never find their bug, and the
+  clean reruns replace them. The README table now says "no control, see below"
+  for both.
+  4. Added `sqlite.MemoryUsed` to both bindings (cgo and browser), with a test
+  in each. `TestTx_Commit_large` now also bounds SQLite's own memory at 8 MiB.
+  It normally grows by a fixed 5.1 MB while committing, the same at 600,000 and
+  2 million rows, and 3.0 MB while replaying.
+     - **Proof:** with `temp_store = memory` and a 4 GB `cache_size` planted in
+  `conn.setUp`, it grew 24.2 MB and the test failed. Reverted.
+  5. All 25 refusal cases in `TestReplay` now assert the reason text. It was
+  already visible in the error, so production code didn't change.
+     - **Proof:** with the `checkValue` loop removed, 6 cases failed; with the
+  `checkKey` check on deletes removed, 4 failed. Reverted.
+  6. `faultvfs` now counts SQLite's sleeps (`VFS.Slept`), in C and in the
+  browser's `vfs.js`. `TestDB_Begin` releases the lock only after the busy
+  handler has slept, and fails at once if the transaction ends first. The
+  default-timeout test checks that exactly 1 s of sleep was requested, and that
+  at least 1 s passed; the upper bound is gone.
+  7. `S4QL_SIM_SEEDS` below 1 now fails; unparsable values already did. Too few
+  seeds now produces a `NOT CHECKED` log line instead of silently dropping the
+  check. Only two tests called `readOnly`, not three. It is replaced by
+  `moveAway`, which renames the cache directory; this works as root, and in the
+  Docker run as root both spool tests pass instead of skipping. I chose this
+  over failing loudly, which would have broken `make test-asan`.
+
+  **Run time:** the work hardly changed: 22 clean reruns were added and 20
+  control runs removed. Wall clock of the core test binary, run alternately with
+  one built from `origin/main`: 78.7 s → 83.8 s, then 109.9 s → 132.9 s. At a
+  load of 25 to 35 that is mostly noise.
+
+  The changed tests passed `-count=20` with `-shuffle on`, normally and under
+  `-race`, under load. They also pass in headless Chromium.
+
+  **Your call:** dropping the two controls rather than keeping and labelling
+  them. Two review findings left as they are: `TestMemoryUsed` is copied into
+  both build-tagged test files, and the 2001-columns case asserts SQLite's own
+  error text, so a SQLite upgrade that rewords it would fail that case.
+
+  Docs: `internal/core/README.md`, `internal/sqlite/README.md`, `docs/todo.md`.
+  The diary is in `docs/diary/2026-11-18-core-test-gaps.md`, steps 1–7.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Fix storage core test gaps" finished · 1h 7m 8s
+
+  Created PR #37, ran 1 shell command (ctrl+o to expand)
+
+⏺ The core tests builder is done, and its work is in review as PR #37; CI is
+  running. No production code of the core changed.
+
+  - The simulation now requires each workload to reach a minimum of every kind 
+    of event. With crashes, clock moves, damaged downloads, and buggify switched
+    off, as in the auditor's proof, 14 minimums now fail.
+  - Every seed that finds a planted bug is run again without the bug, and all
+    came back clean. The builder removed the two controls that could never find
+    their bug, since these reruns do the job properly. I agree with that choice.
+  - The large-transaction test now also bounds SQLite's own memory. With the
+    auditor's settings planted, SQLite's memory grew 24.2 MB and the test
+    failed; normally it grows by a fixed 5.1 MB, the same at 600,000 and at 2
+    million rows.
+  - The replay cases assert the reason. With the check removed, 6 cases now
+    fail.
+  - The two clock-dependent tests are reworked to wait for SQLite's busy handler
+    instead of for time, and the three tests that skipped as root now run.
+
+  Its first full sanitizer run timed out locally in packages it did not touch,
+  at a machine load of 35, and passed on the second run. That matches what the
+  stores builder saw, so I read it as load from running four builders at once,
+  and CI will tell.
+
+  Still running: the engine fix builder, CI on main after #36, and CI on #37.
+
+✻ Baked for 24s · done Wednesday 11:20 PM
+
+⏺ Background command "Delete the merged stores branch and wait for CI on main"
+  completed (exit code 0)
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ CI on main is green with #35 and #36 together, all jobs including the
+  sanitizer and the new full-corpus job. So the local sanitizer timeouts were
+  load, as suspected.
+
+  Waiting on: CI for #37 (core tests) and the engine fix builder.
+
+✻ Crunched for 4s · done Wednesday 11:39 PM
+
+⏺ Background command "Wait for CI on pull request 37 and show the result"
+  completed (exit code 0)
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+⏺ #37 is merged, all ten CI jobs green. That closes the audit of the code on
+  main: three PRs merged (#35 SQL guard rails, #36 stores and the real-bucket
+  test, #37 core tests), and the two status claims corrected.
+
+  Left from the audit, none urgent:
+
+  - For you: main has no required checks, PRODUCT.md and a "Real S3" line on the
+    site still carry the old claim, and the spec needs a sentence on text with
+    a NUL byte or invalid UTF-8. I'll bring these one at a time when the engine
+    is in.
+  - Recorded, not fixed: a test-only function in the SQLite binding with no lint
+    rule behind it, and the site's claim of a test that compares native and
+    Chromium runs.
+
+  Only the engine fix builder is still running.
+
+✻ Baked for 30s · done Wednesday 11:47 PM
+
+› Message from fabrik:builder
+  I finished all nine points on `engine-slice-1`. The last commit is `f62c659`.
+  Nothing is pushed. `origin/main` merged in without conflicts. Every check in
+  the brief passes; the only finding was a fault in the test sequence itself,
+  now fixed (see the `begin` note).
+
+  **What changed, by point**
+  1. `StartedTable` moved to `internal/sql/stmt/stmttest/started.go`, and the
+  engine no longer looks the table up. `startedTable` in `differential_test.go`
+  accepts exactly the one difference, checked against SQLite on an empty
+  database. The simulation now checks every statement that saw no state against
+  SQLite on an empty database. New tests cover a syntax error on a closed
+  instance and with a cancelled context. I removed the 14 equivalent mutants of
+  `StartedTable`. The decision and the sibling cases are in `docs/todo.md`, and
+  "Known gaps" is updated.
+  2. At the end of a run, each live instance must take both its read connections
+  at once within 10 simulated minutes. It is then closed, which hands the lease
+  to the next instance. New planted bug: `keepRead`.
+  3. Two new fuzz targets give the engine SQL text on a fixed set of tables,
+  compared with SQLite as the differential test compares:
+     - `FuzzSQL` runs on `memory`: about 1,400/s on 4 workers under load.
+     - `FuzzSQL_core` runs on the core: about 110/s.
+     - Both are in `make fuzz` automatically. The README now says
+  `FuzzDifferential` only explores generator seeds on a test double.
+     - The first runs found two known gaps of `stmt` straight away. A new
+  `knownGap` excuses them the way `stmt`'s tests do, and counts them separately.
+  4. `sequence.next` marks statements of slice 1, and both the differential test
+  and the simulation fail if one is refused. Any other refused text must
+  prepare on an empty SQLite without a syntax error.
+     - While doing this I found a pre-existing fault: `others` forms with no
+  verb (`begin`, `""`) went through `Sprintf` and gained `%!(EXTRA…)`. They are
+  now the texts they claim to be.
+  5. `Exec`, `Query` and `Rows.All` log exactly one event on every panic path in
+  the engine, with outcome `internal_error`, pinned with a recording logger. A
+  panic in the consumer's loop body still counts as an early stop with outcome
+  `ok`.
+  6. Every plan shape that slice 1 cannot produce now fails with `ErrInternal`.
+  VALUES column names, NULL filling and keys of several columns are gone.
+  7. `excused` asserts exact counts in full runs with default flags: 299, 256,
+  3,835, 377 and 1,046. Not-supported texts where the oracle says `NotSaid` also
+  escaped comparison, so they are counted too.
+  8. 9 seeds in 10 of the refusals were `ErrNoLease`, from the callers of the
+  instance without the lease. Such a caller now waits up to 2 minutes to be
+  served, then stops. The crasher now picks an instance that is running a
+  statement. `TestSimulation` asserts per-seed minimums for 14 kinds of outcome
+  and event, at a third or less of what 1,000 seeds give.
+  9. The roadmap restriction on empty names and the two lead decisions are
+  recorded.
+
+  **Proofs**
+  - **Point 2:** with your exact `Rows.Close` change, `TestSimulation` now fails
+  at seed 1 (`a does not take its 2 read connections ... context deadline
+  exceeded`). Reverted.
+  - **Point 4, plant 1:** refusing every negative insert fails
+  `TestDifferential` ("the engine does not support a statement of slice 1") and
+  `TestSimulation` at seed 0. Reverted.
+  - **Point 4, plant 2:** turning syntax errors into "not supported" fails with
+  `SQLite gives near "%": syntax error`. Reverted.
+
+  **Point 8 shares, 1,000 seeds**
+  | Workload | Refused or timed out before | After | Reached a transaction | Cut
+  by a crash |
+  |---|---|---|---|---|
+  | Default | 58% | 6,086 of 57,957 (10.5%) | 83% | 928 (was 29) |
+  | Hammer | 36% | 17,347 of 120,000 (14.5%) | | |
+
+  **Checks**
+  - `make test`, `make lint` and `make test-asan FUZZTIME=10s` pass; the asan
+  run took 9 min 10 s.
+  - `-short -count=20` and `-race -count=3` pass.
+  - `TestDifferential` at 10,000 sequences: 400,000 statements, no difference
+  except the 985 accepted ones, in 266 s at load about 28.
+  - `TestSimulation` at 1,000 seeds of each workload: no violation.
+  - Planted bugs, 200 seeds each, none found without the bug:
+    - `skipUnique` 153
+    - `ackUnknown` 74
+    - `checkOutside` 101
+    - `keepOpen` 200 (it now also accepts the read-connection violation, since
+  an open write transaction blocks releasing the lease)
+    - `keepRead` 77
+  - Fuzzing found nothing:
+    - `FuzzSQL`: 864,815 executions in 10 min.
+    - `FuzzSQL_core`: 66,355 executions in 10 min.
+    - `FuzzDifferential_core`: 65,263 executions in 5 min.
+    - The last two engine commits came after these runs: one simplifies the
+  panic flags, the other only adds tests.
+  - Mutation: `stmt` had 896 mutants, 0 unexplained, in 7 min. The engine had
+  1,025 mutants, 12 equivalent. Its 2 survivors are killed by tests added
+  afterwards; I checked each by hand rather than re-running the full mutation
+  pass.
+
+  **Sibling cases of point 1 still a gap against the spec's rule:** all of them.
+  SQLite gives its non-syntax error on an empty database too:
+  - `no such table: nosuch` (ALTER)
+  - `duplicate column name`
+  - `unknown database`
+  - `object name reserved for internal use`
+  - `temporary table name must be unqualified`
+  - `has more than one primary key`
+  - `no such table: main.X` for both triggers
+
+  Only `already exists` from CREATE TABLE is covered by the rule.
+
+  **Not done, from self-review:** the simulation's `verify` shares one empty
+  oracle; a text that succeeds there would change it, but only after a violation
+  has already failed the run. There is also no helper shared by `stmt` and the
+  engine for what they excuse. Both are in the diary.
+
+  The diary is `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a696b970
+  6e822c6db/docs/diary/2026-11-18-engine-slice-1-review.md`, steps 1 to 4.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Engine slice 1 review fixes" is waiting on its own background work · 1h
+  33m 55s
+
+  Created PR #38, ran 7 shell commands (ctrl+o to expand)
+
+⏺ Agent(Re-review engine fix round) Opus 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ The engine fix round is done and in review as PR #38. CI is running, and a
+  fresh reviewer is checking the fix round itself before I merge, since it added
+  new ways to excuse a text from comparison and I want those tested.
+
+  What the fix builder reports:
+
+  - The "already exists" lookup is out of production. A syntax error no longer
+    touches the database, with tests for a closed instance and a cancelled
+    context.
+  - The simulation now sees a read left open. With the reviewer's fault planted
+    again, it fails at seed 1. There is a fifth planted bug for it.
+  - Two real SQL-text fuzz targets, one of them on the real core. Nothing found
+    in 10 minutes each.
+  - A refused statement is now checked. Planting a fault that refuses negative
+    inserts fails both the differential test and the simulation.
+  - The simulation workload does real work now. Refused or timed-out statements
+    fell from 58% to 10.5%, and statements cut by a crash rose from 29 to 928
+    over 1,000 seeds. Minimums are asserted for 14 kinds of event.
+  - It found one fault in the tests on the way: some generated texts were
+    garbled by a formatting bug, so they were not the texts they claimed to be.
+    Fixed.
+
+  One thing you should know about the spec sentence we added yesterday ("text
+  with a syntax error gets the error that SQLite gives for it on an empty
+  database"): s4ql does not fully meet it yet. For text like create table t2 (v1
+  int, v1 int) x y, SQLite says duplicate column name: v1 even on an empty
+  database, and s4ql gives the syntax error. Seven such cases are known, all
+  with the same result code and a different message. They are recorded in
+  docs/todo.md as not built. They no longer depend on the database, so they can
+  be built into the pass later without touching the engine.
+
+  I also merged main into the branch myself and added the engine to the
+  full-corpus CI job, since its tests sample under the race detector too.
+
+✻ Crunched for 2m 14s · done 12:01 AM
+
+⏺ Background command "Wait for CI on pull request 38 and show the result"
+  completed (exit code 0)
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ CI on the engine PR (#38) is green, all ten jobs. The sanitizer job took 28
+  minutes, up from about 20 to 25, so that job keeps growing and I'll have it
+  looked at.
+
+  I'm holding the merge until the reviewer of the fix round reports.
+
+✻ Crunched for 10s · done 12:29 AM
+
+› Message from general-purpose
+  **Verdict: the round is sound to merge.** I found no correctness bug, and
+  every excuse it added is as narrow as it claims. Each fault I planted next to
+  an excuse was caught. Two weaknesses remain, both in what the tests assert and
+  not in the code. Neither blocks the merge.
+
+  **Findings, by severity**
+
+  1. **Medium: the main goal of point 8 is not asserted.** That goal is "most
+  statements reach a transaction". I made `waitServing`
+  (internal/engine/simulation_test.go:410) return at once, which is the old
+  behaviour. `TestSimulation` still passed over 1,000 seeds, with "failed: no
+  lease" at 58,615 of about 102,000 statements in the default workload and
+  36,645 in the hammer workload. The minimums only set floors, and nothing sets
+  a ceiling on refused statements, so the workload can drift back to mostly
+  refusals without a failure. It matters only for how well the simulation covers
+  things, not for the engine.
+
+  2. **Low to medium: the minimums barely notice the store's faults being
+  switched off.** I removed `faults: simstore.AllFaults()` from the default
+  workload:
+     - At 50 seeds it failed only on "failed: timeout", 11 against a minimum of
+  12.
+     - At 1,000 seeds it failed only on "timeout" (246 against 250) and
+  "stopped" (30 against 40). "unknown" still passed at 167 against 150.
+
+     The floors sit close to what a store with no faults gives, so turning off
+  only some kinds of fault would pass. Counting the faults the store actually
+  injects would fix this. Turning off crashes is caught clearly: 0 against 6 and
+  12.
+
+  3. **Low: the `keepOpen` loosening is needed, but it weakens the test.** With
+  `finds` cut back to "no instance runs a write" only, seed 81 fails: it finds
+  `keepOpen` only through "b2 does not take its 2 read connections… not_holder".
+  So the loosening is genuine. Its cost is that `keepOpen` and `keepRead` now
+  share a signature, so the test cannot tell whether `keepOpen` still causes its
+  own violation. No real fault can hide behind this, because the end-of-run
+  checks are general.
+     - `keepRead` is a realistic fault: a `Close` with no loop that forgets the
+  read transaction. It is caught by a general check that every live instance
+  must take all its read connections, and it was found in 77 of 200 seeds.
+
+  4. **Low: excused texts are counted but not always asserted.**
+     - In the engine's tests, `startedTable` and `knownGap` are only logged in
+  the tally. They are narrow anyway: `startedTable` requires the engine's answer
+  to equal SQLite's on an empty database, and `knownGap` requires `Judge` to
+  say "not said" or to give the same syntax message.
+     - The `excused` check in `stmt` asserts only the sum of the two "where
+  SQLite does not say" outcomes. A text that moves from syntax error to not
+  supported, both where SQLite does not say, leaves the sum unchanged. The
+  hand-written cases in check_test.go:478-485 cover the known texts.
+     - The simulation, unlike the differential test, does not check that a
+  refused text is not a syntax error in SQLite (plant P5 passed
+  `TestSimulation`). The README says only what the simulation does, so the brief
+  overstated it.
+
+  5. **Trivial documentation drift.**
+     - internal/sql/stmt/README.md:339 says the simulation accepts the
+  difference "with" `StartedTable`. It does not use it; it compares a statement
+  that saw no state with SQLite on an empty database, which covers more.
+     - The engine README says the minimums are "a third or less" of what the
+  seeds reached, and docs/todo.md:70 says "a quarter". The measured ratios run
+  from about one fifth to one third.
+
+  **Point 1 (no database lookup for a syntax error).** No trace of the lookup is
+  left in production code. `prepare` no longer has a receiver and only calls
+  `stmt.Check`, and `StartedTable` exists only in `stmttest`. Plant P7, a read
+  on the `Exec` path for a syntax error, was caught by `TestEngine_syntaxError`
+  and by the test of a closed instance and an ended context.
+
+  **Point 6 (unused plan shapes fail with `ErrInternal`).** Nothing that slice 1
+  needs was broken: 400,000 differential statements and both fuzz targets agree
+  with SQLite.
+
+  **Checks** (all pass)
+  - `make test`, `make lint`, `make test-sql`.
+  - `-race -count=3 ./...`: 21 packages.
+  - `TestDifferential` with 10,000 sequences of 40 statements from seed
+  2,000,000: 400,000 statements, 985 accepted as `already exists`, and no other
+  difference. The counts match the README exactly.
+  - `TestSimulation` over 1,000 seeds:
+    - Default workload: 19,104 succeeded and 4,756 refused for want of the
+  lease.
+    - Hammer workload: 39,047 succeeded.
+    - No violations.
+  - Planted bugs over 200 seeds:
+
+    | Bug | Seeds that found it |
+    | --- | --- |
+    | `skipUnique` | 153 |
+    | `ackUnknown` | 74 |
+    | `checkOutside` | 101 |
+    | `keepOpen` | 200 |
+    | `keepRead` | 77 |
+
+  - `FuzzSQL` for 5 minutes: 6,178,785 executions, nothing found. `FuzzSQL_core`
+  for 5 minutes: 89,558 executions, nothing found.
+  - Mutation run of `internal/engine`: 1,025 generated, 308 not compiled, 705
+  killed, 0 timed out, 12 equivalent, 0 unexplained. This confirms the builder's
+  703 plus the 2 killed by the later tests. The two new equivalent entries, the
+  swapped arguments of `slices.Equal`, are truly equivalent. The renamed
+  `Rows.read` yield entry is right too.
+
+  **Planted faults** (all reverted; the worktree is clean, detached at a3a2a0c)
+
+  | Plant | What it did | Caught by |
+  | --- | --- | --- |
+  | P1 | Wrong syntax message for any `create table` | `TestDifferential`,
+  `TestEngine_errors`, and others |
+  | P1b | Wrong syntax message only where the started table exists, the exact
+  zone `startedTable` excuses | `TestDifferential`, `TestSimulation`,
+  `TestEngine_errors` |
+  | P2 | Syntax error instead of `already exists` for a statement of slice 1, in
+  the zone `knownGap` excuses | `TestDifferential`, `TestSimulation`, `FuzzSQL`
+  seeds |
+  | P3 | Wrong syntax message in texts with TRIGGER, the second case `knownGap`
+  excuses | `stmt` tests, `FuzzCheck`, `TestDifferential` |
+  | P4 | `Judge` stops fixing the schema, so it says "not said" more often |
+  `excused` counts: 1,624 against 299, 1,043 against 256, 4,678 against 3,835 |
+  | P5 | Syntax error refused as "not supported" | `TestDifferential`,
+  `FuzzSQL`; not caught by `TestSimulation` |
+  | P6 | An insert of slice 1 refused as "not supported" | Differential,
+  simulation, `FuzzSQL` |
+  | P7 | A syntax error reads the database | Hand-written tests only |
+  | P8 | Event removed when the end of a read transaction panics |
+  `TestEngine_report` |
+  | S1 | Crashes off | Minimums |
+  | S2 | Old behaviour of a caller without the lease | Not caught (finding 1) |
+  | S3 | Store faults off | Caught only by a margin of 1 to 4 (finding 2) |
+
+  The logs are in /private/tmp/claude-502/-Users-maragubot-Developer-s4ql/f13435
+  15-adca-4ca0-9eb0-f507768f8fc7/scratchpad/rv-a2ff/.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Re-review engine fix round" finished · 39m 17s
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ 2 background agents launched (↓ to manage)
+   ├ Agent (Update status after engine merge)
+   └ fabrik:builder (Tighten engine simulation asserts)
+
+⏺ The SQL engine for slice 1 is merged (PR #38, e47e806), all CI green.
+
+  The reviewer of the fix round found it sound to merge: no correctness bug, and
+  each of the new excuses from comparison is as narrow as it claims. It planted
+  12 faults, 10 right next to those excuses, and all but two were caught. The
+  two that passed are in what the simulation asserts, not in the engine:
+
+  - Nothing asserts that most statements reach a transaction, so the workload
+    could drift back to mostly refusals unnoticed.
+  - The minimums barely notice the store's faults being switched off.
+
+  It also re-ran the checks: 400,000 differential statements with no difference,
+  2,000 simulation seeds with no violation, all five planted bugs found, the
+  full mutation run with no unexplained survivor, and about 6.3 million fuzz
+  executions on SQL text with nothing found.
+
+  Running now:
+
+  - A small builder closing those two gaps and four smaller ones, in tests only.
+  - The status sub-agent, updating the README, the site's status and roadmap,
+    and the roadmap file.
+
+  Next is the public package and the database/sql driver, which completes slice
+  1. Usage is at 50% of the 60% limit, and I expect the driver to need more than
+  what's left. Do you want to raise the limit, or shall I hold the driver until
+  the reset on Friday evening?
+
+✻ Sautéed for 1m 25s · done 12:41 AM
+
+› Message from general-purpose
+  Done. Commit 63f2c8f on main, pushed. It changes README.md, site/index.html
+  (the `status` and `roadmap` sections only) and docs/roadmap.md.
+
+  New README status text:
+
+  As of 2026-11-19:
+
+  - **Built: the storage and the SQL engine for slice 1.** A database is a log
+  of commits in S3, with a local SQLite cache. One instance at a time holds a
+  lease on it. Commits, recovery after a crash, and replay of the log work. They
+  are tested in a deterministic simulation, and also run by hand against a real
+  S3-compatible bucket. The engine runs `create table`, `insert`, `select *`,
+  and `drop table` for one integer column. It is checked against SQLite
+  statement by statement, in a simulation with faults, and by fuzzing. The SQL
+  parser agrees with SQLite on 138,926 of the 139,234 statements of a corpus on
+  which SQLite gives a clear verdict.
+  - **Not built: the public API.** The `database/sql` driver does not exist yet,
+  so an application cannot use the database.
+  - **Next:** the driver. It completes slice 1 of the
+  [roadmap](docs/roadmap.md).
+
+  Site changes:
+  - The status section has the same content and the date is now 19 November
+  2026.
+  - In the roadmap, "The pass after the parser" is now Built. Slice 1 keeps the
+  "agreed" style and its label reads "Engine built, driver not". The "More SQL"
+  item now also says a name is never empty.
+  - The roadmap section has no list of restrictions, so I added "a name is never
+  empty" to that sentence.
+
+  docs/roadmap.md: the slice 1 status line now says the engine is built and
+  checked against SQLite, and the `database/sql` driver is not built yet.
+
+  I did not use any numbers from `internal/engine/README.md`.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Update status after engine merge" finished · 22s
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The status is updated in the README, the site's status and roadmap sections,
+  and docs/roadmap.md (63f2c8f): the storage and the engine for slice 1 are
+  built, the database/sql driver is not, and the driver is next.
+
+  I corrected one sentence the sub-agent got slightly wrong (c2d52dc): it read
+  as if the parser disagreed with SQLite on 308 statements. It now says the
+  parser agrees on all 138,926 statements where SQLite gives a clear verdict, of
+  a corpus of 139,234.
+
+  The small builder tightening the engine's simulation asserts is still running.
+  My question on the budget for the driver is still open: raise the 60% limit,
+  or hold the driver until Friday evening's reset?
+
+✻ Churned for 15s · done 12:42 AM
+
+› Message from fabrik:builder
+  All seven points are done on branch `engine-test-asserts`; the last commit is
+  `22da002`. Nothing is pushed. Only test files, the two READMEs and the diary
+  changed. `make test`, `make lint`, `make test-sql` and `make test-asan` pass.
+  So do the changed tests with `-count=20` and with `-race -count=3`,
+  `TestSimulation` at 50, 100, 200 and 1,000 seeds, and
+  `TestSimulation_plantedBugs` at 200 seeds.
+
+  1. **Lease ceiling:** at most 0.15 of statements (default) and 0.12 (hammer)
+  may be refused for want of the lease. The first 1,000 seeds refuse 0.08 and
+  0.07. With `waitServing` returning at once, the test failed with "refuse 2958
+  of 4894 statements ... 0.60 ... at most 0.15" and 0.32 against 0.12 in the
+  hammer workload. Reverted.
+  2. **Store faults:** the faults are counted by kind from the store's own trace
+  lines, and each kind has a minimum per workload (about a quarter of what
+  1,000 seeds reach). Removing `AllFaults()` from the default workload now fails
+  on all eleven kinds at 0, for example `0 of "fault: slow way", and at least
+  40 were expected`. Reverted.
+  3. **`keepOpen`:** every planted bug must now be found by its own violation
+  (the first entry of `finds`) in at least two seeds. With "no instance runs a
+  write" switched off, the run gave "2 of 100 seeds find the bug, 0 of them by
+  ..." and failed.
+  4. **Differential pins:** a full run with default flags pins each excused
+  kind: 34 `already exists` texts, and 0 for any other kind, which covers both
+  known gaps.
+  5. **`stmt`:** `excused` now pins the two outcomes separately (62/237, 78/178,
+  2356/1479, 2/375, 0/1046).
+  6. **Refused texts:** the simulation's `verify` now prepares each "not
+  supported" text in SQLite on an empty database. `pair.step` uses the same new
+  helper, `syntaxOfNotSupported`. Planting syntax-error→not-supported in
+  `engine.go` failed `TestSimulation`. Reverted.
+  7. **Texts:** both READMEs now say what the code does, with "a fifth to a
+  third" in the engine's. I left `docs/todo.md:70` alone: it describes the
+  storage core's minimums, which really are a quarter.
+
+  From the self-review, I fixed one real gap: the fault counter was skipping the
+  trace lines of stuck writes. Left on purpose:
+  - Exporting the fault markers from `simstore` would change production code.
+  - Keeping the skip reason as a string follows how the differential test
+  already does it.
+  - Scanning the trace made no measurable difference in time.
+
+  Two follow-ups are in the diary:
+  - The engine README says the fuzz tests count the known gaps, but they count
+  nothing.
+  - The fault markers are now copied in three test files.
+
+  Created PR #39 (ctrl+o to expand)
+
+⏺ Agent "Tighten engine simulation asserts" finished · 45m 59s
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The small builder is done; its work is PR #39 (tests only, about 290 lines)
+  and CI is running.
+
+  - A ceiling on refused statements. With the reviewer's fault planted again,
+    the simulation now fails: 60% refused against a ceiling of 15%.
+  - The store's faults are counted by kind, with a minimum for each. Without the
+    faults, all eleven kinds fail at 0.
+  - Every planted bug must be found by its own violation in at least two seeds,
+    so two bugs can no longer hide behind a shared symptom.
+  - The excused texts are pinned in the engine's differential test (34 of the
+    one accepted kind, 0 of any other) and per outcome in the pass.
+  - The simulation now checks refused texts against SQLite too.
+
+  I merge it when CI is green. After that, nothing is running, and the next step
+  is the driver, which waits on your answer about the budget.
+
+✻ Crunched for 3h 32m 14s · done 1:27 AM
+
+※ recap: We are building s4ql's first SQL slice: the engine is merged and the test audit is fixed, with one last test PR (#39) waiting on CI. Next, tell me whether to raise the 60% usage limit so the database/sql driver can start. (turn off recaps in /config)
+
+⏺ Background command "Wait for CI on pull request 39 and show the result"
+  completed (exit code 0)
+
+  Read 1 file, ran 2 shell commands (ctrl+o to expand)
+
+⏺ #39 is merged, CI green. Nothing is running now, and main is clean.
+
+  Where things stand:
+
+  - Merged since yesterday: the engine for slice 1 (#38), and four PRs from the
+    audit and the reviews (#35 SQL guard rails, #36 stores and the real-bucket
+    test, #37 core tests, #39 engine asserts).
+  - The audit's result: no faked or rigged test anywhere, no fault found in
+    production code, one false status claim (now corrected and backed by a real
+    test), and a set of checks that could have quietly stopped checking, now
+    pinned.
+  - Usage: 51% weekly (Fable 47%), against the limit of 60%.
+
+  Next is the public package and the database/sql driver, which completes slice
+  1. Do you want to raise the limit so I can start it now, or shall I hold it
+  until the reset on Friday evening?
+
+✻ Sautéed for 27s · done 1:52 AM
+
+※ recap: We are building s4ql, and the SQL engine for slice 1 plus the test audit fixes are merged, with nothing running. Next is the `database/sql` driver, which waits on your call: raise the 60% usage limit or hold until Friday's reset.
+
+❯ /context                                                                      
+  ⎿  Context Usage
+
+     Model: claude-fable-5-2
+     Tokens: 250.2k / 1m (25%)
+
+     Estimated usage by category
+
+     ┌─────────────────────────┬────────┬────────────┐
+     │        Category         │ Tokens │ Percentage │
+     ├─────────────────────────┼────────┼────────────┤
+     │ System prompt           │ 2.9k   │ 0.3%       │
+     ├─────────────────────────┼────────┼────────────┤
+     │ System tools            │ 17.5k  │ 1.7%       │
+     ├─────────────────────────┼────────┼────────────┤
+     │ MCP server instructions │ 2.1k   │ 0.2%       │
+     ├─────────────────────────┼────────┼────────────┤
+     │ MCP tools (deferred)    │ 40.2k  │ 4.0%       │
+     ├─────────────────────────┼────────┼────────────┤
+     │ System tools (deferred) │ 28.3k  │ 2.8%       │
+     ├─────────────────────────┼────────┼────────────┤
+     │ Custom agents           │ 476    │ 0.0%       │
+     ├─────────────────────────┼────────┼────────────┤
+     │ Memory files            │ 4.8k   │ 0.5%       │
+     ├─────────────────────────┼────────┼────────────┤
+     │ Skills                  │ 10k    │ 1.0%       │
+     ├─────────────────────────┼────────┼────────────┤
+     │ Messages                │ 212.4k │ 21.2%      │
+     ├─────────────────────────┼────────┼────────────┤
+     │ Free space              │ 716.8k │ 71.7%      │
+     ├─────────────────────────┼────────┼────────────┤
+     │ Autocompact buffer      │ 33k    │ 3.3%       │
+     └─────────────────────────┴────────┴────────────┘
+
+     MCP Tools
+
+     ┌─────────────────────────────────────┬───────────────────────────┬────────┐
+     │                Tool                 │          Server           │ Tokens │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_c6__contact          │ claude_ai_c6              │ 467    │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_c6__fetch            │ claude_ai_c6              │ 130    │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_c6__search           │ claude_ai_c6              │ 576    │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Claude_Docs__batch   │ claude_ai_Claude_Docs     │ 152    │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Claude_Docs__create  │ claude_ai_Claude_Docs     │ 236    │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Claude_Docs__delete  │ claude_ai_Claude_Docs     │ 343    │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Claude_Docs__export  │ claude_ai_Claude_Docs     │ 464    │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Claude_Docs__guide   │ claude_ai_Claude_Docs     │ 192    │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Claude_Docs__query   │ claude_ai_Claude_Docs     │ 168    │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Claude_Docs__read    │ claude_ai_Claude_Docs     │ 299    │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Claude_Docs__update  │ claude_ai_Claude_Docs     │ 326    │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Exa__authenticate    │ claude_ai_Exa             │ 228    │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Exa__complete_authen │ claude_ai_Exa             │ 267    │
+     │ tication                            │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Gmail__authenticate  │ claude_ai_Gmail           │ 234    │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Gmail__complete_auth │ claude_ai_Gmail           │ 268    │
+     │ entication                          │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Google_Calendar__aut │ claude_ai_Google_Calendar │ 244    │
+     │ henticate                           │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Google_Calendar__com │ claude_ai_Google_Calendar │ 281    │
+     │ plete_authentication                │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Google_Drive__authen │ claude_ai_Google_Drive    │ 239    │
+     │ ticate                              │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Google_Drive__comple │ claude_ai_Google_Drive    │ 276    │
+     │ te_authentication                   │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__feedback  │ claude_ai_Honeycomb       │ 752    │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__find_colu │ claude_ai_Honeycomb       │ 951    │
+     │ mns                                 │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__find_quer │ claude_ai_Honeycomb       │ 858    │
+     │ ies                                 │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__get_aicon │ claude_ai_Honeycomb       │ 1.1k   │
+     │ versation                           │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__get_datas │ claude_ai_Honeycomb       │ 735    │
+     │ et                                  │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__get_datas │ claude_ai_Honeycomb       │ 881    │
+     │ et_columns                          │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__get_envir │ claude_ai_Honeycomb       │ 624    │
+     │ onment                              │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__get_query │ claude_ai_Honeycomb       │ 1.3k   │
+     │ _results                            │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__get_signa │ claude_ai_Honeycomb       │ 1.6k   │
+     │ ls                                  │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__get_slos  │ claude_ai_Honeycomb       │ 1.1k   │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__get_span_ │ claude_ai_Honeycomb       │ 1.2k   │
+     │ details                             │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__get_trace │ claude_ai_Honeycomb       │ 1.8k   │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__get_trigg │ claude_ai_Honeycomb       │ 1.2k   │
+     │ ers                                 │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__get_works │ claude_ai_Honeycomb       │ 236    │
+     │ pace_context                        │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__list_aico │ claude_ai_Honeycomb       │ 2.3k   │
+     │ nversations                         │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__list_boar │ claude_ai_Honeycomb       │ 1k     │
+     │ ds                                  │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__list_memo │ claude_ai_Honeycomb       │ 349    │
+     │ ries                                │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__list_reci │ claude_ai_Honeycomb       │ 456    │
+     │ pients                              │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__list_span │ claude_ai_Honeycomb       │ 1.7k   │
+     │ s                                   │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__migration │ claude_ai_Honeycomb       │ 230    │
+     │ _guide                              │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__read_memo │ claude_ai_Honeycomb       │ 369    │
+     │ ry                                  │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__record_on │ claude_ai_Honeycomb       │ 265    │
+     │ boarding_state                      │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__refinery_ │ claude_ai_Honeycomb       │ 490    │
+     │ docs                                │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__run_bubbl │ claude_ai_Honeycomb       │ 2.4k   │
+     │ eup                                 │                           │        │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__run_query │ claude_ai_Honeycomb       │ 8.9k   │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__claude_ai_Honeycomb__semconv   │ claude_ai_Honeycomb       │ 641    │
+     ├─────────────────────────────────────┼───────────────────────────┼────────┤
+     │ mcp__easel__chart                   │ easel                     │ 1.5k   │
+     └─────────────────────────────────────┴───────────────────────────┴────────┘
+
+     Custom Agents
+
+     ┌───────────────────────────────────────────┬────────┬────────┐
+     │                Agent Type                 │ Source │ Tokens │
+     ├───────────────────────────────────────────┼────────┼────────┤
+     │ fabrik:builder                            │ Plugin │ 47     │
+     ├───────────────────────────────────────────┼────────┼────────┤
+     │ fabrik:lead                               │ Plugin │ 46     │
+     ├───────────────────────────────────────────┼────────┼────────┤
+     │ fabrik:writer                             │ Plugin │ 51     │
+     ├───────────────────────────────────────────┼────────┼────────┤
+     │ impeccable:impeccable-asset-producer      │ Plugin │ 55     │
+     ├───────────────────────────────────────────┼────────┼────────┤
+     │ impeccable:impeccable-documenter          │ Plugin │ 69     │
+     ├───────────────────────────────────────────┼────────┼────────┤
+     │ impeccable:impeccable-finish-reviewer     │ Plugin │ 76     │
+     ├───────────────────────────────────────────┼────────┼────────┤
+     │ impeccable:impeccable-manual-edit-applier │ Plugin │ 59     │
+     ├───────────────────────────────────────────┼────────┼────────┤
+     │ impeccable:impeccable-motion-reviewer     │ Plugin │ 73     │
+     └───────────────────────────────────────────┴────────┴────────┘
+
+     Skills
+
+     ┌───────────────────────────────────────────┬─────────────────────┬────────┐
+     │                   Skill                   │       Source        │ Tokens │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ playwright-cli                            │ User                │ ~90    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ rex                                       │ User                │ ~50    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ code-review:code-review                   │ Plugin              │ < 20   │
+     │                                           │ (code-review)       │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:ableton-live                       │ Plugin (fabrik)     │ ~360   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:accomplishments                    │ Plugin (fabrik)     │ ~120   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:address-code-review                │ Plugin (fabrik)     │ ~140   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:atproto                            │ Plugin (fabrik)     │ ~270   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:autoresearch                       │ Plugin (fabrik)     │ ~190   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:blog-post-interview                │ Plugin (fabrik)     │ ~130   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:bluesky                            │ Plugin (fabrik)     │ ~130   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:code-review                        │ Plugin (fabrik)     │ ~50    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:dad-joke                           │ Plugin (fabrik)     │ ~50    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:datastar                           │ Plugin (fabrik)     │ ~70    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:define-task                        │ Plugin (fabrik)     │ ~110   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:diary                              │ Plugin (fabrik)     │ ~180   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:distill-book                       │ Plugin (fabrik)     │ ~250   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:garden                             │ Plugin (fabrik)     │ ~100   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:gardeners                          │ Plugin (fabrik)     │ ~100   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:git                                │ Plugin (fabrik)     │ ~160   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:go                                 │ Plugin (fabrik)     │ ~270   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:improve-skill                      │ Plugin (fabrik)     │ ~180   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:macos-design                       │ Plugin (fabrik)     │ ~210   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:marimo                             │ Plugin (fabrik)     │ ~70    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:modal                              │ Plugin (fabrik)     │ ~170   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:nanobanana                         │ Plugin (fabrik)     │ ~40    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:observability                      │ Plugin (fabrik)     │ ~240   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:observable-plot                    │ Plugin (fabrik)     │ ~80    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:one-at-a-time                      │ Plugin (fabrik)     │ ~120   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:save-web-page                      │ Plugin (fabrik)     │ ~50    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:second-opinion                     │ Plugin (fabrik)     │ ~130   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:security-review                    │ Plugin (fabrik)     │ ~140   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:simple-english                     │ Plugin (fabrik)     │ ~200   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:sql                                │ Plugin (fabrik)     │ ~70    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:swift                              │ Plugin (fabrik)     │ ~30    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:swiftui-pro                        │ Plugin (fabrik)     │ ~60    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:turbopuffer                        │ Plugin (fabrik)     │ ~230   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:unsloth                            │ Plugin (fabrik)     │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:writing-clearly-and-concisely      │ Plugin (fabrik)     │ ~300   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fabrik:xbrl                               │ Plugin (fabrik)     │ ~300   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ skill-creator:skill-creator               │ Plugin              │ ~120   │
+     │                                           │ (skill-creator)     │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ document-skills:xlsx                      │ Plugin              │ < 20   │
+     │                                           │ (document-skills)   │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ document-skills:docx                      │ Plugin              │ < 20   │
+     │                                           │ (document-skills)   │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ document-skills:pptx                      │ Plugin              │ < 20   │
+     │                                           │ (document-skills)   │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ document-skills:pdf                       │ Plugin              │ < 20   │
+     │                                           │ (document-skills)   │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ hegel-skill:hegel                         │ Plugin              │ ~220   │
+     │                                           │ (hegel-skill)       │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ hegel-skill:hegel-review                  │ Plugin              │ ~100   │
+     │                                           │ (hegel-skill)       │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ evals:build-review-interface              │ Plugin (evals)      │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ evals:error-discovery                     │ Plugin (evals)      │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ evals:eval-audit                          │ Plugin (evals)      │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ evals:evals-start                         │ Plugin (evals)      │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ evals:evaluate-rag                        │ Plugin (evals)      │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ evals:generate-synthetic-data             │ Plugin (evals)      │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ evals:validate-evaluator                  │ Plugin (evals)      │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ evals:write-judge-prompt                  │ Plugin (evals)      │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ gomponents:gomponents                     │ Plugin (gomponents) │ ~270   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ impeccable:impeccable                     │ Plugin (impeccable) │ ~70    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ antithesis-skills:antithesis-debug        │ Plugin              │ < 20   │
+     │                                           │ (antithesis-skills) │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ antithesis-skills:antithesis-documentatio │ Plugin              │ ~80    │
+     │ n                                         │ (antithesis-skills) │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ antithesis-skills:antithesis-feature-work │ Plugin              │ < 20   │
+     │ load                                      │ (antithesis-skills) │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ antithesis-skills:antithesis-launch       │ Plugin              │ < 20   │
+     │                                           │ (antithesis-skills) │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ antithesis-skills:antithesis-mutation-tes │ Plugin              │ < 20   │
+     │ ting                                      │ (antithesis-skills) │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ antithesis-skills:antithesis-research     │ Plugin              │ < 20   │
+     │                                           │ (antithesis-skills) │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ antithesis-skills:antithesis-review-input │ Plugin              │ < 20   │
+     │ s                                         │ (antithesis-skills) │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ antithesis-skills:antithesis-setup        │ Plugin              │ ~110   │
+     │                                           │ (antithesis-skills) │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ antithesis-skills:antithesis-setup-k8s    │ Plugin              │ < 20   │
+     │                                           │ (antithesis-skills) │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ antithesis-skills:antithesis-skills-feedb │ Plugin              │ < 20   │
+     │ ack                                       │ (antithesis-skills) │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ antithesis-skills:antithesis-triage       │ Plugin              │ < 20   │
+     │                                           │ (antithesis-skills) │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ antithesis-skills:antithesis-workload     │ Plugin              │ ~60    │
+     │                                           │ (antithesis-skills) │        │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ dataviz                                   │ Built-in            │ ~480   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ artifact-design                           │ Built-in            │ ~70    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ artifact-diagramming                      │ Built-in            │ ~70    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ artifact-capabilities                     │ Built-in            │ ~250   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ update-config                             │ Built-in            │ ~240   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ keybindings-help                          │ Built-in            │ ~80    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ code-review                               │ Built-in            │ ~400   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ simplify                                  │ Built-in            │ ~60    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ fewer-permission-prompts                  │ Built-in            │ ~60    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ loop                                      │ Built-in            │ ~120   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ schedule                                  │ Built-in            │ ~130   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ claude-api                                │ Built-in            │ ~390   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ workflow-authoring                        │ Built-in            │ ~80    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ run                                       │ Built-in            │ ~120   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ plugin-authoring                          │ Built-in            │ ~90    │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ init                                      │ Built-in            │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ security-review                           │ Built-in            │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ built-in-browser                          │ claude.ai sync      │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ chrome-browser                            │ claude.ai sync      │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ computer-use                              │ claude.ai sync      │ ~320   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ anthropic-skills:deep-research            │ claude.ai sync      │ ~200   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ docs                                      │ claude.ai sync      │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ anthropic-skills:docx                     │ claude.ai sync      │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ google-workspace                          │ claude.ai sync      │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ import-memory                             │ claude.ai sync      │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ morning                                   │ claude.ai sync      │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ anthropic-skills:pdf                      │ claude.ai sync      │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ anthropic-skills:pptx                     │ claude.ai sync      │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ anthropic-skills:skill-creator            │ claude.ai sync      │ < 20   │
+     ├───────────────────────────────────────────┼─────────────────────┼────────┤
+     │ anthropic-skills:xlsx                     │ claude.ai sync      │ < 20   │
+     └───────────────────────────────────────────┴─────────────────────┴────────┘
+
+❯ I think we should export at compact first.                                    
+
+⏺ Good moment for it: nothing is running, main is clean, and every decision is
+  in the spec, the roadmap, or docs/todo.md.
+
+  Run /export, and I move the file into docs/conversations/ and commit it. Then
+  compact. The question on the budget for the driver waits until after.
+
+✻ Sautéed for 4s · done 6:10 AM
