@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1045,11 +1046,10 @@ func tallyOf(s simulation) map[string]int {
 // stops happening, and not by chance. And at most the share noLease of the statements may be refused
 // for want of the lease, about twice what the first 1,000 seeds give, so that the test fails when
 // most statements no longer reach a transaction. The seeds are the same in every run, so the counts
-// are too. With the environment variable S4QL_ENGINE_SIM_SEED set, it replays that one seed
-// instead: see [replaySeed].
+// are too. With the flag -replay, it replays that one seed instead: see [replaySeed].
 func TestSimulation(t *testing.T) {
-	if v := os.Getenv("S4QL_ENGINE_SIM_SEED"); v != "" {
-		replaySeed(t, v)
+	if *replay != "" {
+		replaySeed(t)
 		return
 	}
 	n := simSeeds(t, 50)
@@ -1086,7 +1086,7 @@ func TestSimulation(t *testing.T) {
 			for seed := range n {
 				s := simulate(t, seed, c.w)
 				if v := s.violations(); len(v) > 0 {
-					t.Fatalf("seed %v: %v\nreplay it with: %v", seed, strings.Join(v, "\n"), replayCommand(seed, "S4QL_ENGINE_SIM_WORKLOAD="+c.name))
+					t.Fatalf("seed %v: %v\nreplay it with: %v", seed, strings.Join(v, "\n"), replayCommand(seed, "-workload", c.name))
 				}
 				for k, v := range tallyOf(s) {
 					counts[k] += v
@@ -1094,7 +1094,7 @@ func TestSimulation(t *testing.T) {
 				counts["trace lines"] += len(s.lines)
 				if seed < 3 {
 					again := simulate(t, seed, c.w)
-					is.True(t, slices.Equal(s.lines, again.lines), fmt.Sprint("seed ", seed, " gives two traces"))
+					is.True(t, slices.Equal(s.lines, again.lines), fmt.Sprint("seed ", seed, " gives two traces; replay it with: ", replayCommand(seed, "-workload", c.name)))
 				}
 			}
 			t.Logf("%v seeds: %v", n, counts)
@@ -1113,23 +1113,29 @@ func TestSimulation(t *testing.T) {
 	}
 }
 
-// replaySeed runs the seed v, from the environment variable S4QL_ENGINE_SIM_SEED, of the workload
-// that S4QL_ENGINE_SIM_WORKLOAD names (default, the default, or hammer), with the bug of
-// S4QL_ENGINE_SIM_BUG, and logs its trace. [replayCommand] gives the command.
-func replaySeed(t *testing.T, v string) {
+// The flags of the test binary that replay one seed of [TestSimulation]: see [replaySeed].
+var (
+	replay         = flag.String("replay", "", "replay this one seed in TestSimulation, and nothing else, and log its trace")
+	replayWorkload = flag.String("workload", "default", "workload of the replay: default or hammer")
+	replayBug      = flag.String("bug", "", "planted bug of the replay")
+)
+
+// replaySeed runs the seed of the flag -replay, of the workload of the flag -workload, with the bug
+// of the flag -bug, and logs its trace. [replayCommand] gives the command.
+func replaySeed(t *testing.T) {
 	t.Helper()
-	seed, err := strconv.ParseUint(v, 10, 64)
+	seed, err := strconv.ParseUint(*replay, 10, 64)
 	is.NotError(t, err)
 	w := defaultWorkload
-	switch name := os.Getenv("S4QL_ENGINE_SIM_WORKLOAD"); name {
-	case "", "default":
+	switch *replayWorkload {
+	case "default":
 	case "hammer":
 		w = hammerWorkload
 	default:
-		t.Fatalf("no workload is named %v", name)
+		t.Fatalf("no workload is named %v", *replayWorkload)
 	}
-	if bug := os.Getenv("S4QL_ENGINE_SIM_BUG"); bug != "" {
-		w.bugs = []string{bug}
+	if *replayBug != "" {
+		w.bugs = []string{*replayBug}
 	}
 	s := simulate(t, seed, w)
 	for _, line := range s.lines {
@@ -1140,11 +1146,18 @@ func replaySeed(t *testing.T, v string) {
 	}
 }
 
-// replayCommand is the command that replays the seed with [replaySeed], with the environment
-// variables vars that choose the workload and the bug, such as "S4QL_ENGINE_SIM_WORKLOAD=hammer".
-func replayCommand(seed uint64, vars ...string) string {
-	return strings.Join(append([]string{fmt.Sprint("S4QL_ENGINE_SIM_SEED=", seed)}, vars...), " ") +
-		" go test -run '^TestSimulation$' -v ./internal/engine/"
+// replayCommand is the command that replays the seed with [replaySeed], with the flags that choose
+// the workload and the bug, such as "-workload", "hammer", and the race detector or the address
+// sanitizer if the test binary has one, which change what a run does.
+func replayCommand(seed uint64, flags ...string) string {
+	var mode string
+	if raceEnabled {
+		mode = "-race "
+	}
+	if asanEnabled {
+		mode = "-asan "
+	}
+	return "go test " + mode + "-run '^TestSimulation$' -v ./internal/engine/ -replay " + fmt.Sprint(seed) + " " + strings.Join(flags, " ")
 }
 
 // TestSimulation_plantedBugs runs the workload with each planted bug until it finds the bug by its own
@@ -1156,7 +1169,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 	bugs := []struct {
 		name string
 		w    workload
-		// replay is the name of the workload for S4QL_ENGINE_SIM_WORKLOAD.
+		// replay is the name of the workload for the flag -workload.
 		replay string
 		// finds holds a part of each violation that the bug causes, its own violation first, which the
 		// bug must cause in two seeds at least.
@@ -1185,7 +1198,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 					if !slices.ContainsFunc(v, func(v string) bool {
 						return slices.ContainsFunc(b.finds, func(f string) bool { return strings.Contains(v, f) })
 					}) {
-						t.Fatalf("seed %v finds the bug by another violation: %v\nreplay it with: %v", seed, v, replayCommand(seed, "S4QL_ENGINE_SIM_WORKLOAD="+b.replay, "S4QL_ENGINE_SIM_BUG="+bug))
+						t.Fatalf("seed %v finds the bug by another violation: %v\nreplay it with: %v", seed, v, replayCommand(seed, "-workload", b.replay, "-bug", bug))
 					}
 					if found == 0 {
 						t.Logf("seed %v finds: %v", seed, v[0])
@@ -1195,7 +1208,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 						own++
 					}
 					if v := simulate(t, seed, b.w).violations(); len(v) > 0 {
-						t.Fatalf("seed %v finds something without the bug: %v\nreplay it with: %v", seed, v, replayCommand(seed, "S4QL_ENGINE_SIM_WORKLOAD="+b.replay))
+						t.Fatalf("seed %v finds something without the bug: %v\nreplay it with: %v", seed, v, replayCommand(seed, "-workload", b.replay))
 					}
 				}
 			}

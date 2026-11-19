@@ -245,15 +245,20 @@ By default, `TestSimulation` runs 40 seeds of the workload with one instance, 30
 The environment variables:
 
 - `S4QL_SIM_SEEDS` sets the number of seeds for every workload and every bug, and the number of free runs, 1 or more. The workload of each bug then runs all of them, to count how many find the bug. With fewer seeds than the default run, what a workload reached is not checked, and with fewer than 200, whether a bug is found is not checked; the test logs a line that starts with "NOT CHECKED" for each.
-- `S4QL_SIM_SEED` makes `TestSimulation` replay that one seed, and nothing else, and log its whole trace. `S4QL_SIM_WORKLOAD` chooses the workload: `single`, `full`, `hammer`, or `late`.
-- `S4QL_SIM_BUG` makes the replay run the workload of the planted bug that it names. `S4QL_SIM_CONTROL` then runs the control of that bug, and `S4QL_SIM_CLEAN` runs the workload without the bug.
 - `S4QL_CORE_ROWS` sets the number of rows of `TestTx_Commit_large`.
 
-A seed that fails in `TestSimulation` or `TestSimulation_plantedBugs` prints the command that replays it, such as:
+The flags of the test binary replay one seed:
+
+- `-replay` makes `TestSimulation` replay that one seed, and nothing else, and log its whole trace. `-workload` chooses the workload: `single`, the default, `full`, `hammer`, or `late`.
+- `-bug` makes the replay run the workload of the planted bug that it names. `-control` then runs the control of that bug, and `-clean` runs the workload without the bug.
+
+A seed that fails in `TestSimulation` or `TestSimulation_plantedBugs` prints the command that replays it, with `-race` or `-asan` if the run that failed had one, such as:
 
 ```sh
-S4QL_SIM_SEED=7 S4QL_SIM_WORKLOAD=full go test -run '^TestSimulation$' -v ./internal/core/
+go test -run '^TestSimulation$' -v ./internal/core/ -replay 7 -workload full
 ```
+
+They are flags and not environment variables so that a variable left in the shell cannot turn the full simulation into one seed unseen.
 
 The large runs, as they were made for the numbers below:
 

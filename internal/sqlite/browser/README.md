@@ -102,7 +102,7 @@ CI's job `browser` runs `make check-browser`, lints the browser's build, and run
 
 Measured on an Apple M4 with Chrome 158, headless:
 
-- `make test-browser` passed every test of the five packages, in 3 min 1 s. `internal/core` took 177 s, with 44 top-level tests and 213 subtests passed. Three of its top-level tests skip, as they do natively by default: `TestSimulationSeed` and `TestPlantedDataRace` without their environment variables, and `TestFreeRunning_plantedDataRace` without the race detector, which js/wasm does not have. `internal/store/simstore` took 25 s, `internal/sim` 17 s, and `internal/sqlite` and `internal/sqlite/faultvfs` 2 s each.
+- `make test-browser` passed every test of the five packages, in 3 min 1 s. `internal/core` took 177 s, with 44 top-level tests and 213 subtests passed. Three of its top-level tests skipped then, as they did natively by default; none of them is in that build now, and no test skips other than under `-short`. `internal/store/simstore` took 25 s, `internal/sim` 17 s, and `internal/sqlite` and `internal/sqlite/faultvfs` 2 s each.
 - The trace hashes of `TestSimulation` for the default seeds equal the native ones, for each of the four workloads.
 
 Sizes, with `gzip -9` in parentheses:

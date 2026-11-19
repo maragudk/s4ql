@@ -3,6 +3,7 @@
 package core_test
 
 import (
+	"flag"
 	"os"
 	"os/exec"
 	"strings"
@@ -14,16 +15,19 @@ import (
 // raceEnabled reports whether the test binary is built with the race detector.
 const raceEnabled = true
 
+// plantRace is the mode of the child process of [TestFreeRunning_plantedDataRace].
+var plantRace = flag.String("plantrace", "", "run only the workload with the planted data race, free or under the scheduler, as the child process of TestFreeRunning_plantedDataRace")
+
 // TestFreeRunning_plantedDataRace shows that the free-running mode is what the race detector
 // needs: the race detector must report a planted data race with the scheduler off, and nothing under
 // the scheduler, which runs one goroutine at a time. The race is in the workload whose callers never
 // pause: every read adds to a counter without synchronisation. A race that is reported fails the
 // test binary, so the test runs the workload in a process of its own: this test again, with the
-// environment variable S4QL_CORE_PLANT_RACE set to "free" or "scheduler", in which it runs the
-// workload in that mode and nothing else.
+// flag -plantrace set to "free" or "scheduler", in which it runs the workload in that mode and
+// nothing else.
 func TestFreeRunning_plantedDataRace(t *testing.T) {
 	w := plant(hammerWorkload, "unlockedCounter")
-	switch mode := os.Getenv("S4QL_CORE_PLANT_RACE"); mode {
+	switch *plantRace {
 	case "":
 	case "scheduler":
 		for seed := range uint64(5) {
@@ -36,12 +40,11 @@ func TestFreeRunning_plantedDataRace(t *testing.T) {
 		}
 		return
 	default:
-		t.Fatalf("S4QL_CORE_PLANT_RACE is %q, and must be free or scheduler", mode)
+		t.Fatalf("-plantrace is %q, and must be free or scheduler", *plantRace)
 	}
 
 	run := func(mode string) (string, error) {
-		cmd := exec.Command(os.Args[0], "-test.run", "^"+t.Name()+"$", "-test.count", "1")
-		cmd.Env = append(os.Environ(), "S4QL_CORE_PLANT_RACE="+mode)
+		cmd := exec.Command(os.Args[0], "-test.run", "^"+t.Name()+"$", "-test.count", "1", "-plantrace", mode)
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}

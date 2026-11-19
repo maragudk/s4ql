@@ -2,6 +2,7 @@ package core_test
 
 import (
 	"crypto/sha256"
+	"flag"
 	"fmt"
 	"maps"
 	"os"
@@ -405,19 +406,28 @@ func (y *tally) log(t *testing.T, w workload) {
 	t.Logf("an instance served at most %v after the end of the workload, in seed %v, where %v is the bound", y.serveAfter, y.slowest, w.liveness())
 }
 
+// The flags of the test binary that replay one seed of [TestSimulation]: see [replaySeed].
+var (
+	replay         = flag.String("replay", "", "replay this one seed in TestSimulation, and nothing else, and log its trace")
+	replayWorkload = flag.String("workload", "single", "workload of the replay: single, full, hammer, or late")
+	replayBug      = flag.String("bug", "", "planted bug whose workload the replay runs")
+	replayControl  = flag.Bool("control", false, "replay the control of the bug")
+	replayClean    = flag.Bool("clean", false, "replay the workload of the bug without the bug")
+)
+
 // TestSimulation runs each workload in a parallel subtest, every seed twice. The hash of all its
-// traces that each subtest logs is the same with -parallel 1. With the environment variable
-// S4QL_SIM_SEED set, it replays that one seed instead: see [replaySeed].
+// traces that each subtest logs is the same with -parallel 1. With the flag -replay, it replays
+// that one seed instead: see [replaySeed].
 func TestSimulation(t *testing.T) {
 	t.Parallel()
-	if v := os.Getenv("S4QL_SIM_SEED"); v != "" {
-		replaySeed(t, v)
+	if *replay != "" {
+		replaySeed(t)
 		return
 	}
 	for _, test := range []struct {
 		name     string
 		workload workload
-		// replay is the name of the workload for S4QL_SIM_WORKLOAD.
+		// replay is the name of the workload for the flag -workload.
 		replay string
 		// seeds of the default run.
 		seeds int
@@ -441,10 +451,10 @@ func TestSimulation(t *testing.T) {
 				first, second := simulate(t, seed, test.workload), simulate(t, seed, test.workload)
 				if first.hash() != second.hash() {
 					differing++
-					t.Errorf("seed %v gave two different traces, at %v", seed, firstDifference(first.lines, second.lines))
+					t.Errorf("seed %v gave two different traces, at %v\nreplay it with: %v", seed, firstDifference(first.lines, second.lines), replayCommand(seed, "-workload", test.replay))
 				}
 				if v := first.violations(); len(v) > 0 {
-					t.Errorf("seed %v: %v\nreplay it with: %v", seed, strings.Join(v, "; "), replayCommand(seed, "S4QL_SIM_WORKLOAD="+test.replay))
+					t.Errorf("seed %v: %v\nreplay it with: %v", seed, strings.Join(v, "; "), replayCommand(seed, "-workload", test.replay))
 				}
 				hashes[first.hash()] = true
 				all.Write([]byte(first.hash()))
@@ -499,19 +509,18 @@ func TestSimulation(t *testing.T) {
 	}
 }
 
-// replaySeed runs the one seed v, from the environment variable S4QL_SIM_SEED, with the workload
-// that S4QL_SIM_WORKLOAD names (single, the default, full, hammer, or late), and logs its whole
-// trace. The environment variable S4QL_SIM_BUG can name a planted bug by its name in
-// [plantedBugs], to run its workload instead, with S4QL_SIM_CONTROL to run the control of that
-// bug, or S4QL_SIM_CLEAN to run the workload without the bug. [replayCommand] gives the command.
-func replaySeed(t *testing.T, v string) {
+// replaySeed runs the one seed of the flag -replay, with the workload of the flag -workload, and
+// logs its whole trace. The flag -bug names a planted bug by its name in [plantedBugs], to run its
+// workload instead, with -control to run the control of that bug, or -clean to run the workload
+// without the bug. [replayCommand] gives the command.
+func replaySeed(t *testing.T) {
 	t.Helper()
-	seed, err := strconv.ParseUint(v, 10, 64)
+	seed, err := strconv.ParseUint(*replay, 10, 64)
 	is.NotError(t, err)
 
 	w := singleWorkload
-	switch name := os.Getenv("S4QL_SIM_WORKLOAD"); name {
-	case "", "single":
+	switch *replayWorkload {
+	case "single":
 	case "full":
 		w = fullWorkload
 	case "hammer":
@@ -519,16 +528,17 @@ func replaySeed(t *testing.T, v string) {
 	case "late":
 		w = lateWrites(func(*workload) {})
 	default:
-		t.Fatalf("no workload is named %v", name)
+		t.Fatalf("no workload is named %v", *replayWorkload)
 	}
-	if name := os.Getenv("S4QL_SIM_BUG"); name != "" {
+	if name := *replayBug; name != "" {
 		i := slices.IndexFunc(plantedBugs, func(b plantedBug) bool { return b.bug == name })
 		is.True(t, i >= 0, "no planted bug is named "+name)
 		w = plantedBugs[i].workload
-		if os.Getenv("S4QL_SIM_CONTROL") != "" {
+		if *replayControl {
+			is.True(t, plantedBugs[i].control != nil, "the bug "+name+" has no control")
 			w = *plantedBugs[i].control
 		}
-		if os.Getenv("S4QL_SIM_CLEAN") != "" {
+		if *replayClean {
 			w.options = w.options.Unplanted()
 		}
 	}
@@ -538,11 +548,18 @@ func replaySeed(t *testing.T, v string) {
 	is.EqualSlice(t, nil, s.violations())
 }
 
-// replayCommand is the command that replays the seed with [replaySeed], with the environment
-// variables vars that choose the workload, such as "S4QL_SIM_WORKLOAD=full".
-func replayCommand(seed uint64, vars ...string) string {
-	return strings.Join(append([]string{fmt.Sprint("S4QL_SIM_SEED=", seed)}, vars...), " ") +
-		" go test -run '^TestSimulation$' -v ./internal/core/"
+// replayCommand is the command that replays the seed with [replaySeed], with the flags that choose
+// the workload, such as "-workload", "full", and the race detector or the address sanitizer if the
+// test binary has one.
+func replayCommand(seed uint64, flags ...string) string {
+	var mode string
+	if raceEnabled {
+		mode = "-race "
+	}
+	if asanEnabled {
+		mode = "-asan "
+	}
+	return "go test " + mode + "-run '^TestSimulation$' -v ./internal/core/ -replay " + fmt.Sprint(seed) + " " + strings.Join(flags, " ")
 }
 
 // plantedBug that the checks must find.
@@ -911,15 +928,16 @@ func TestSimulation_plantedBugs(t *testing.T) {
 						known = true
 					}
 				}
-				is.True(t, known, fmt.Sprintf("seed %v found something else: %v\nreplay it with: %v", seed, first.violations(), replayCommand(seed, "S4QL_SIM_BUG="+bug.bug)))
+				is.True(t, known, fmt.Sprintf("seed %v found something else: %v\nreplay it with: %v", seed, first.violations(), replayCommand(seed, "-bug", bug.bug)))
 				if len(found) > 2 {
 					continue
 				}
 				// The same seed finds the same violations at the same place in the same trace.
 				for range 2 {
 					again := simulate(t, seed, bug.workload)
-					is.Equal(t, first.hash(), again.hash())
-					is.EqualSlice(t, first.violations(), again.violations())
+					rerun := fmt.Sprint("seed ", seed, " gave another trace when run again; replay it with: ", replayCommand(seed, "-bug", bug.bug))
+					is.Equal(t, first.hash(), again.hash(), rerun)
+					is.EqualSlice(t, first.violations(), again.violations(), rerun)
 				}
 				if len(found) == 1 {
 					at := max(0, slices.IndexFunc(first.lines, func(line string) bool { return strings.Contains(line, "VIOLATION") }))
@@ -937,7 +955,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 				for seed := range n {
 					if v := simulate(t, seed, *bug.control).violations(); len(v) > 0 {
 						controlFound++
-						t.Errorf("seed %v found the bug without what it needs: %v\nreplay it with: %v", seed, v, replayCommand(seed, "S4QL_SIM_BUG="+bug.bug, "S4QL_SIM_CONTROL=1"))
+						t.Errorf("seed %v found the bug without what it needs: %v\nreplay it with: %v", seed, v, replayCommand(seed, "-bug", bug.bug, "-control"))
 					}
 				}
 				t.Logf("%v of %v seeds found the bug without what it needs", controlFound, n)
@@ -961,7 +979,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 			for _, seed := range cleanSeeds {
 				if v := simulate(t, seed, clean).violations(); len(v) > 0 {
 					cleanFound++
-					t.Errorf("seed %v found something without the bug: %v\nreplay it with: %v", seed, v, replayCommand(seed, "S4QL_SIM_BUG="+bug.bug, "S4QL_SIM_CLEAN=1"))
+					t.Errorf("seed %v found something without the bug: %v\nreplay it with: %v", seed, v, replayCommand(seed, "-bug", bug.bug, "-clean"))
 				}
 			}
 			t.Logf("%v of %v seeds found something without the bug: the first %v, and every other seed that found the bug", cleanFound, len(cleanSeeds), n)
