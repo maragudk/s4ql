@@ -179,3 +179,53 @@ The new paragraph of the package documentation in `/s4ql.go`, as `go doc .` show
 ### Future work
 
 None from this step. Whether to bound the pool by default is point 5 (b).
+
+## Step 4: `Reader.Close` closes its connection without `DB.mu`
+
+**Author:** reader-follow-ups builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "3. **`Reader.Close` closes the SQLite connection while it holds `DB.mu`** (`internal/core/read.go`). The open was moved out of the mutex so that a slow disk holds nothing up; the close was not. Move the close out of the mutex in the same way as the open (the builder counted opening readers in `DB.opening` so that `DB.Close` waits for them; closing readers need the same care, so that `DB.Close` and a stop never return while a reader's connection is still closing, and never close it twice). Only if it stays simple and you can show with the present life-cycle tests under `-race`, plus one new test for the new waiting, that nothing broke; if it does not stay simple, leave the code and record it in `docs/todo.md` as known and why."
+**Interpretation:** Mirror the count of `DB.opening` for closes, with a yield for a test that closes the instance in the middle.
+**Inferred intent:** A slow close of a file does not hold up every call and the lease task.
+
+### What I did
+
+`Reader.Close` in `/internal/core/read.go` now, after it has ended the read transaction, marks the connection closed under `DB.mu` and counts itself in a new field, `DB.closingReaders`, if the connection was not closed already; it then yields at "core: a reader before its close" and closes the connection without the mutex, and finally, under the mutex, takes it off `DB.readers`, lowers the count, and wakes the waits if the instance is closing and the count is 0. `DB.waitClosed` in `/internal/core/core.go` waits for `closingReaders` as it waits for `opening`.
+
+Never twice: the mark comes before the close, under the mutex, and `DB.closeIdleLocked` skips a connection that is marked. Never early: `DB.Close` waits for the count. The connection stays on the list until it is closed, so that a crash of the simulation that ends the task at the yield leaves the connection where `DB.CloseCache` closes it, which is why `DB.Reader` does not yield between its open and the list either. A stop alone closes no connection, so only `DB.Close` needed the wait.
+
+The new test, `TestReader_Close` "should make the close of the instance wait for a reader that is closing its connection, and close that connection once", is the twin of the one for the open in `TestDB_Reader`: in a bubble of `testing/synctest`, with `faultvfs` counting files, the hook at the new yield starts `DB.Close`, sleeps a simulated minute, and finds the instance stopped, two files open (the reader's cache and log; the write connection is closed), and no answer from the close. After the reader's close, no file is open, and the close returns with no simulated time passed, so the reader woke it.
+
+`/internal/core/README.md`: the bullet on the life cycle of a reader, the list of yields of the simulation, and the list of the tests of the life cycle say it.
+
+### Why
+
+The open was moved out of the mutex on the same branch for the same reason; the close was left.
+
+### What worked
+
+Two mutants by hand, each reverted after: without `|| d.closingReaders > 0` in `DB.waitClosed`, the new test fails with `read_test.go:406: Expected "0", but got "1"` (the close returned while the reader was closing) and `faultvfs: 2 files of s4ql-fault-0x10317e080 are open` at the end; without the wake, it fails with `close: a call still uses the cache, which is closed when the call ends: context deadline exceeded`.
+
+The life-cycle tests (`TestDB_Reader`, `TestReader_*`, `TestReadTx_*`, `TestDB_Close*`) pass 50 times with `-shuffle on`, with and without `-race`. The whole of `/internal/core`, with `TestSimulation`, its traces compared, its minimums, and the planted bugs, passes with the new yield, and so do `go test -race -shuffle on -run '^TestFree' ./internal/sim/ ./internal/core/`, and the root package and the engine under `-race`.
+
+### What didn't work
+
+The first version of the test expected three open files before the close, and got four: the write connection has its write-ahead log open too.
+
+### What I learned
+
+The new yield did not move the minimums of `TestSimulation`, unlike the yield of `DB.Reader` on the branch before: the callers close their readers only when a node has opened its database again or when they end.
+
+### What was tricky
+
+Where the yield may stand. Before the mark, a close of the instance at the yield closes the connection itself, and the test would show nothing new; between the list and the close, a crash would leave a connection that nothing knows of. Keeping the connection on the list until after its close resolves both.
+
+### What warrants review
+
+`Reader.Close` in `/internal/core/read.go`, against `DB.closeIdleLocked`, `DB.waitClosed`, and `DB.closeCache` in `/internal/core/core.go`.
+
+### Future work
+
+`DB.closeIdleLocked` still closes connections under `DB.mu`, in `DB.Close` and in `DB.unuse` while the instance is closing. That is the close of the instance, where nothing else is left to hold up but the lease task's end, and the brief named only `Reader.Close`.

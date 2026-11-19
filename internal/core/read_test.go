@@ -370,6 +370,56 @@ func TestDB_Reader(t *testing.T) {
 }
 
 func TestReader_Close(t *testing.T) {
+	t.Run("should make the close of the instance wait for a reader that is closing its connection, and close that connection once", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			// The connections to the cache are closed by the cleanups that are registered later,
+			// which run first.
+			vfs, err := faultvfs.New()
+			is.NotError(t, err)
+			t.Cleanup(func() { is.NotError(t, vfs.Close()) })
+			h := &yieldHook{Host: w.host, site: "core: a reader before its close"}
+			d := w.openWith(t, "a", h, w.client(), core.Options{VFS: vfs.Name()})
+			is.NotError(t, d.Wait(t.Context()))
+			transact(t, d, create("t1", 1, "k"), upsert("t1", 1))
+			rd, err := d.Reader(t.Context())
+			is.NotError(t, err)
+			r, err := rd.Read(t.Context())
+			is.NotError(t, err)
+			_, err = r.Get(t.Context(), "t1", row(1))
+			is.NotError(t, err)
+			// The write connection and the reader, each with the cache and its write-ahead log.
+			is.Equal(t, 4, vfs.OpenFiles())
+
+			// The instance is closed while the reader is about to close its connection. The close has
+			// stopped the instance and closed the write connection, and waits for the reader, whose
+			// connection it leaves alone.
+			closed := make(chan error, 1)
+			closing := func() {
+				go func() {
+					ctx, cancel := context.WithTimeout(t.Context(), time.Hour)
+					defer cancel()
+					closed <- d.Close(ctx)
+				}()
+				time.Sleep(time.Minute)
+				is.True(t, isDone(d))
+				is.Equal(t, 2, vfs.OpenFiles())
+				is.Equal(t, 0, len(closed))
+			}
+			h.f.Store(&closing)
+			is.NotError(t, rd.Close(t.Context()))
+			is.Equal(t, 0, vfs.OpenFiles())
+
+			// The reader has woken the close, which returns without waiting for its context.
+			start := time.Now()
+			is.NotError(t, <-closed)
+			is.Equal(t, 0, time.Since(start))
+			is.Equal(t, 0, vfs.OpenFiles())
+			is.Equal(t, 0, d.Readers())
+			is.Error(t, core.ErrTxDone, r.Close(t.Context()))
+			is.NotError(t, rd.Close(t.Context()))
+		})
+	})
+
 	t.Run("should end the read transaction that is open and close the connection, and do nothing a second time", func(t *testing.T) {
 		w := newWorld(t)
 		d := w.serve(t, "a", core.Options{})

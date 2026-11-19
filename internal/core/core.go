@@ -203,9 +203,11 @@ type DB struct {
 	mu sync.Mutex
 	// readers are the read connections of the [Reader] values that are not closed, in the order in
 	// which they were opened, and those that [DB.Close] closed before their reader was. opening is
-	// the number of read connections that [DB.Reader] is opening, which are not on the list yet.
-	readers []*conn
-	opening int
+	// the number of read connections that [DB.Reader] is opening, which are not on the list yet, and
+	// closingReaders the number that [Reader.Close] is closing, which are marked closed already.
+	readers        []*conn
+	opening        int
+	closingReaders int
 	// stopped is the error of every call once the instance has stopped for good, and done is closed
 	// then.
 	stopped error
@@ -805,11 +807,12 @@ func (d *DB) closeIdleLocked() {
 }
 
 // waitClosed waits until every connection to the cache is closed, also one that [DB.Reader] is
-// opening. It fails with the error of the wait if ctx is done first.
+// opening and one that [Reader.Close] is closing. It fails with the error of the wait if ctx is
+// done first.
 func (d *DB) waitClosed(ctx context.Context) error {
 	for {
 		d.mu.Lock()
-		open := !d.w.closed || d.opening > 0
+		open := !d.w.closed || d.opening > 0 || d.closingReaders > 0
 		for _, c := range d.readers {
 			open = open || !c.closed
 		}
