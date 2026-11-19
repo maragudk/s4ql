@@ -71,7 +71,7 @@ func realText(r *rand.Rand) string {
 	}
 	// An exponent far out of range, or with many digits.
 	return digits(1+r.IntN(5)) + "." + digits(r.IntN(5)) + "e" + []string{"", "+", "-"}[r.IntN(3)] +
-		strings.Repeat("0", r.IntN(10)) + strconv.Itoa(r.IntN(20000))
+		strings.Repeat("0", r.IntN(10)) + strconv.Itoa(r.IntN([]int{20000, 1e9}[r.IntN(2)]))
 }
 
 // realOfLiteral checks the real literal lit, with an optional sign, against SQLite, on the database d:

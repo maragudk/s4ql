@@ -589,6 +589,8 @@ var checkCases = []checkCase{
 		want: &stmt.Insert{Span: stmt.Span{Start: 0, End: 35}, Table: name("t", "t", 12), Column: name("v", "v", 15), Value: stmt.Real(math.SmallestNonzeroFloat64), ValueSpan: stmt.Span{Start: 26, End: 34}}},
 	{name: "a real too small for a float, which is zero", src: "insert into t (v) values (1e-400)",
 		want: &stmt.Insert{Span: stmt.Span{Start: 0, End: 33}, Table: name("t", "t", 12), Column: name("v", "v", 15), Value: stmt.Real(0), ValueSpan: stmt.Span{Start: 26, End: 32}}},
+	{name: "a real with an exponent of more digits than SQLite reads", src: "insert into t (v) values (0.5e-1000000)",
+		want: &stmt.Insert{Span: stmt.Span{Start: 0, End: 39}, Table: name("t", "t", 12), Column: name("v", "v", 15), Value: stmt.Real(0), ValueSpan: stmt.Span{Start: 26, End: 38}}},
 	{name: "a real of more digits than SQLite reads, which it rounds otherwise than to the nearest float", src: "insert into t (v) values (3500000000000000.2500001)",
 		want: &stmt.Insert{Span: stmt.Span{Start: 0, End: 51}, Table: name("t", "t", 12), Column: name("v", "v", 15), Value: stmt.Real(3500000000000000), ValueSpan: stmt.Span{Start: 26, End: 50}}},
 	{name: "a real with leading and trailing zeros", src: "insert into t (v) values (00012.50)",
