@@ -62,3 +62,47 @@ The code-review skill (medium) reported three things. One is fixed: a panic in `
 ### Future work
 
 - A panic in the close of rows by `connector.Close` (the `shut` path) still leaves the instance unclosed, because the panic goes on out of `db.Close()`. `connector.Close` already logs and drops a panic of a loop that it ends; it could do the same for a panic of the engine's `Rows.Close` there, so that the instance still closes. Not done, because the brief said to let the panic go on.
+
+## Step 2: `db.Close()` recovers a panic in its own close of rows
+
+**Author:** close-handover builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's answer) "yes, `connector.Close` recovers it, in the same way it already treats a panic from a loop that it ends. [...] recover the panic of the close of rows on the `shut` path, log it as the event `panic` at Error with the stack as the existing code does, go on with the other open rows and with the close of the instance (so the lease is released and the cache is closed), and return from `db.Close()` an error `s4ql: internal error: ...` in the wording of the existing error for a panic of a query, with the value. If the close of the instance fails too, join or prefer the errors in the way `connector.Close` already does for several errors. The panic on the `leave` path stays as you built it [...] Write the test that was not possible before [...] Record the decision in `docs/todo.md` where the driver's decisions on panics are."
+**Interpretation:** Wrap each `rows.shut` in `connector.Close` with a recover that logs and remembers the panic, close the instance anyway, and give the panic as the error of the close.
+**Inferred intent:** `db.Close()` always closes the instance and releases the lease, whatever the engine does while it closes rows.
+
+### What I did
+
+`connector.shut` in `/conn.go` calls `rows.shut` and recovers a panic: it logs `panic` at Error with the value and `debug.Stack()`, as the task of the loop does, and gives `fmt.Errorf("%w: the query panicked: %v", engine.ErrInternal, v)`. `connector.Close` keeps the first such error, goes on with the other rows and the close of the instance, and gives it through `publicError` after the close event at Info. `connector.Close` had only one error before, so for "several errors" I chose to prefer the error of the close of the instance, which says that the lease may not be released; the panic is in the log then. The doc comments of `connector` and `connector.Close`, and the entry on panics in `/docs/todo.md`, say so.
+
+The test, `TestClose` "should close the instance when the close of rows by the close of the database panics, log the panic, and give it as an internal error" in `/conn_test.go`: two queries whose rows no loop reads, so their close logs the event of the query on the goroutine of `db.Close()`. The log's hook panics once, at the first of them, and clears itself, so the other closes as usual whichever order the map of open rows gives. `db.Close()` must not panic, must give "s4ql: internal error: the query panicked: a panic of the test", log one `panic` event with the stack and `close` at Info; both rows then give `ErrStopped`, a new instance sees the row, and the world finds no `-wal` left.
+
+### Why
+
+The lease and the cache must not depend on the engine's close of one set of rows.
+
+### What worked
+
+Red before the change: "conn_test.go:1387: Not true" and "a panic of the test" (the panic came out of `db.Close()`). Green after it. `go test -short -race -count=30` over the four new tests, `make test`, `make lint`, and `go build -tags s4ql_browser ./...` passed.
+
+### What didn't work
+
+My first version of the test armed the log's panic for every event and read one of the two rows to its first row. Then the close of those rows panicked in the task of their loop too, which the task recovers and logs, so there could be two `panic` events, in an order that the map decides. Both rows are now unread and the hook panics once.
+
+### What I learned
+
+`internal/engine` has no exported counterpart of `ErrInternal` in the root package, so the tests of the root package check an internal error by its message.
+
+### What was tricky
+
+Choosing between joining and preferring the errors when both the panic and the close of the instance fail: the existing code had no case of several errors, so I picked the one that matters more to the caller, and logged the other.
+
+### What warrants review
+
+- `connector.shut` and the choice of error in `connector.Close` in `/conn.go`.
+
+### Future work
+
+None.

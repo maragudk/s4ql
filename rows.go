@@ -201,7 +201,7 @@ func (r *rows) shut() {
 	}
 	c.busy = true
 	c.mu.Unlock()
-	// The connection is freed also if the close panics, and the panic goes on.
+	// The connection is freed also if the close panics, and the panic goes on, to the connector.
 	defer func() {
 		c.mu.Lock()
 		c.freeLocked(r.ctx)

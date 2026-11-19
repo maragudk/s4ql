@@ -1365,6 +1365,46 @@ func TestClose(t *testing.T) {
 		is.NotError(t, conn.Close())
 		is.EqualSlice(t, []int64{1, 2}, values(t, w.serve(t, "b"), select1))
 	})
+
+	t.Run("should close the instance when the close of rows by the close of the database panics, log the panic, and give it as an internal error", func(t *testing.T) {
+		w := newWorld(t)
+		log := &panickyLog{}
+		db := openLogged(t, w, w.host, log)
+		exec(t, db, t1, insert1)
+		// No loop reads the rows, so their close by the close of the database logs the event of the
+		// query on its goroutine. The close of the first of them panics there, and the other closes
+		// as usual.
+		rows, err := db.QueryContext(t.Context(), select1)
+		is.NotError(t, err)
+		other, err := db.QueryContext(t.Context(), select1)
+		is.NotError(t, err)
+
+		log.at(func() {
+			log.at(nil)
+			panic(errPanic)
+		})
+		v, err := closeDB(db)
+		is.True(t, v == nil, fmt.Sprint(v))
+		is.Equal(t, "s4ql: internal error: the query panicked: a panic of the test", failed(t, err).Error())
+		panics := log.lines.of("panic")
+		is.Equal(t, 1, len(panics))
+		is.True(t, strings.HasPrefix(panics[0], `level=ERROR msg=panic db.prefix=db panic="a panic of the test" stack="goroutine `), panics[0])
+		is.EqualSlice(t, []string{"level=INFO msg=close db.prefix=db"}, log.lines.of("close"))
+
+		for _, rows := range []*sql.Rows{rows, other} {
+			is.True(t, !rows.Next())
+			is.Error(t, s4ql.ErrStopped, failed(t, rows.Err()))
+			is.NotError(t, rows.Close())
+		}
+		// The lease is released, and the cache is closed, which the world checks when the test ends.
+		is.EqualSlice(t, []int64{1}, values(t, w.serve(t, "b"), select1))
+	})
+}
+
+// closeDB is [sql.DB.Close] of db, with the value of a panic in it, if it panicked.
+func closeDB(db *sql.DB) (v any, err error) {
+	defer func() { v = recover() }()
+	return nil, db.Close()
 }
 
 // openLogged opens an instance of the world w on the host h with the cache directory "a", which
