@@ -854,17 +854,18 @@ footer ul {
               <li>The parser agrees with SQLite on all 138,926 statements on which SQLite gives a clear verdict, of a corpus of 139,234.</li>
               <li>The SQL engine for slice 1: <code>create table</code>, <code>insert</code>, <code>select *</code>, and <code>drop table</code> for one integer column. It is checked against SQLite statement by statement, in a simulation with faults, and by fuzzing.</li>
               <li>The <code>database/sql</code> driver, in the package <code>maragu.dev/s4ql</code>. With it, an application can run the statements of slice 1 on a bucket. It is checked against SQLite through <code>database/sql</code>, in 200 generated sequences of 40 statements and by fuzzing. A cache belongs to one database, and another database refuses it.</li>
-              <li>Slice 2, parameters: an <code>insert</code> takes an integer argument for a plain <code>?</code> through <code>database/sql</code>, directly and through a prepared statement.</li>
+              <li>Slice 2, parameters: an <code>insert</code> takes an integer argument for a plain <code>?</code> through <code>database/sql</code>, directly and through a prepared statement. It is checked against SQLite by generated tests in the engine and through <code>database/sql</code> (the engine's compares 12,000 statements), in a simulation, and by mutation testing.</li>
+              <li>Slice 3, transactions: <code>db.BeginTx</code> gives a transaction that is the single writer from its beginning until it commits or rolls back. <code>sql.TxOptions{ReadOnly: true}</code> gives a read-only transaction on one state that holds no one up.</li>
             </ul>
           </td>
         </tr>
         <tr>
           <th scope="row" class="caps">Not built</th>
-          <td><p>Transactions in the driver.</p></td>
+          <td><p>Generated comparisons with SQLite through <code>database/sql</code> and a simulation with transactions. Also more than one column, <code>where</code>, and other types.</p></td>
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
-          <td><p>Generated comparisons with SQLite that use arguments, then transactions.</p></td>
+          <td><p>The generated checks and the simulation of transactions.</p></td>
         </tr>
       </tbody>
     </table>
@@ -915,12 +916,17 @@ footer ul {
       </li>
       <li class="built">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>The driver</h3><p>A <code>database/sql</code> driver as the main interface. It has no transactions yet.</p></div>
+        <div><h3>The driver</h3><p>A <code>database/sql</code> driver as the main interface.</p></div>
         <span class="where caps">Built</span>
       </li>
       <li class="built">
         <span class="glyph" aria-hidden="true"></span>
         <div><h3>Slice 2: parameters</h3><p>A plain <code>?</code> in the place of the integer literal of an <code>insert</code>, with a Go integer as the argument, directly and through a prepared statement. The number of arguments must equal the number of <code>?</code>.</p></div>
+        <span class="where caps">Built</span>
+      </li>
+      <li class="built">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Slice 3: transactions</h3><p><code>db.BeginTx</code> begins a write transaction, which holds the place of the single writer until it commits or rolls back, or a read-only one with <code>sql.TxOptions{ReadOnly: true}</code>, which reads the state of its beginning and holds up no one. A transaction writes one commit object.</p></div>
         <span class="where caps">Built</span>
       </li>
       <li class="open">
