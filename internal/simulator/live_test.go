@@ -137,6 +137,39 @@ func TestEngine_live(t *testing.T) {
 		}
 	})
 
+	t.Run("should give the same events, steps, summary, and hash as a batch run with the client, its switches, and a standby", func(t *testing.T) {
+		// The first switch comes before the instances that stand by have started.
+		schedule := `[
+			{"at": 0, "do": "client", "instance": "b"}, {"at": 0, "do": "client", "instance": "a"},
+			{"at": 10000, "do": "crash", "instance": "a"}, {"at": 12000, "do": "client", "instance": "c"},
+			{"at": 30000, "do": "restart", "instance": "a"}, {"at": 45000, "do": "client", "instance": "a"},
+			{"at": 50000, "do": "close", "instance": "a"}, {"at": 51000, "do": "client", "instance": "b"},
+			{"at": 70000, "do": "open", "instance": "a"}, {"at": 80000, "do": "failDisk", "instance": "b", "on": true},
+			{"at": 90000, "do": "failDisk", "instance": "b"}, {"at": 95000, "do": "client", "instance": "a"}]`
+		for _, seed := range []int{1, 2, 3} {
+			settings := fmt.Sprintf(`"seed": %v, "instances": 3, "faults": %v, "workload": {"callers": 0, "think": 500, "keep": 20}, "client": {"instance": "a"}, "standby": true`, seed, allFaults)
+			res := run(t, &simulator.Engine{}, `{`+settings+`, "end": 120000, "schedule": `+schedule+`}`)
+			is.True(t, res.Summary.Calls["read served"]+res.Summary.Calls["write committed"] > 0, "the client is served")
+
+			l, states := replay(t, `{`+settings+`}`, res.Request.Schedule, 120_000)
+			is.True(t, l.last.Ended, "the session has ended")
+			is.Equal(t, "", l.last.SchedulerError)
+			is.EqualSlice(t, eventLines(t, res.Events), eventLines(t, l.events))
+			is.Equal(t, res.Hash, l.last.Hash)
+			is.Equal(t, res.Steps, l.last.Steps)
+			is.Equal(t, fmt.Sprint(*res.Summary), fmt.Sprint(*l.last.Summary))
+			is.Equal(t, 0, res.Summary.Violations-res.Summary.Excused, fmt.Sprint("seed ", seed))
+			for i, s := range states {
+				want, err := json.Marshal(simulator.StateAt(simulator.Response{Events: l.events[:s.events]}, s.state.T), json.Deterministic(true))
+				is.NotError(t, err)
+				got, err := json.Marshal(s.state, json.Deterministic(true))
+				is.NotError(t, err)
+				is.Equal(t, string(want), string(got), fmt.Sprint("the state after action ", i))
+			}
+			is.Equal(t, "a", states[len(states)-1].state.Client.Instance)
+		}
+	})
+
 	t.Run("should keep fake time still between advances, however long the page waits", func(t *testing.T) {
 		l := startLive(t, `{"seed": 4}`)
 		l.advanceTo(7000)
@@ -212,36 +245,40 @@ func TestEngine_live(t *testing.T) {
 		is.Equal(t, 1_000.0, l.advanceTo(1000).T)
 	})
 
-	t.Run("should take as many steps and give as many events for a fake minute after an hour as at the start", func(t *testing.T) {
-		l := startLive(t, `{"seed": 10}`)
-		type minute struct{ steps, events, bytes int }
-		var minutes []minute
-		steps := l.last.Steps
-		for range 60 {
-			a := l.advance(60_000)
-			b, err := json.Marshal(a.Events)
-			is.NotError(t, err)
-			minutes = append(minutes, minute{steps: a.Steps - steps, events: len(a.Events), bytes: len(b)})
-			steps = a.Steps
-			l.events = nil
-		}
-		mean := func(ms []minute) minute {
-			var sum minute
-			for _, m := range ms {
-				sum.steps, sum.events, sum.bytes = sum.steps+m.steps, sum.events+m.events, sum.bytes+m.bytes
+	// The client alone calls less than the four callers: shorter pauses give it about as many calls,
+	// and fewer rows to keep fill the table as early.
+	for _, settings := range []string{`{"seed": 10}`, `{"seed": 10, "workload": {"callers": 0, "think": 1000, "keep": 20}, "client": {"instance": "a"}, "standby": true}`} {
+		t.Run("should take as many steps and give as many events for a fake minute after an hour as at the start, with "+settings, func(t *testing.T) {
+			l := startLive(t, settings)
+			type minute struct{ steps, events, bytes int }
+			var minutes []minute
+			steps := l.last.Steps
+			for range 60 {
+				a := l.advance(60_000)
+				b, err := json.Marshal(a.Events)
+				is.NotError(t, err)
+				minutes = append(minutes, minute{steps: a.Steps - steps, events: len(a.Events), bytes: len(b)})
+				steps = a.Steps
+				l.events = nil
 			}
-			return minute{sum.steps / len(ms), sum.events / len(ms), sum.bytes / len(ms)}
-		}
-		// The table holds at most 100 rows from about the eighth minute on, so a read costs the same
-		// from then on.
-		early, late := mean(minutes[10:20]), mean(minutes[50:60])
-		t.Logf("steps, events, and bytes of events in a fake minute: %+v in minutes 10 to 20, %+v in minutes 50 to 60", early, late)
-		is.True(t, float64(late.steps) < 1.15*float64(early.steps), "steps")
-		is.True(t, float64(late.events) < 1.15*float64(early.events), "events")
-		is.True(t, float64(late.bytes) < 1.15*float64(early.bytes), "bytes")
-		rows := l.do("now", "{}").State
-		is.True(t, len(rows.Bucket.Log) > 500, "a long log")
-	})
+			mean := func(ms []minute) minute {
+				var sum minute
+				for _, m := range ms {
+					sum.steps, sum.events, sum.bytes = sum.steps+m.steps, sum.events+m.events, sum.bytes+m.bytes
+				}
+				return minute{sum.steps / len(ms), sum.events / len(ms), sum.bytes / len(ms)}
+			}
+			// The table holds all the rows that the writes keep from about the eighth minute on, so a read
+			// costs the same from then on.
+			early, late := mean(minutes[10:20]), mean(minutes[50:60])
+			t.Logf("steps, events, and bytes of events in a fake minute: %+v in minutes 10 to 20, %+v in minutes 50 to 60", early, late)
+			is.True(t, float64(late.steps) < 1.15*float64(early.steps), "steps")
+			is.True(t, float64(late.events) < 1.15*float64(early.events), "events")
+			is.True(t, float64(late.bytes) < 1.15*float64(early.bytes), "bytes")
+			rows := l.do("now", "{}").State
+			is.True(t, len(rows.Bucket.Log) > 200, "a long log")
+		})
+	}
 
 	t.Run("should list only the last commit objects of the bucket if asked", func(t *testing.T) {
 		l := startLive(t, `{"seed": 9}`)

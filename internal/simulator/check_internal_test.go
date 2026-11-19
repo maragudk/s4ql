@@ -56,6 +56,10 @@ func TestChecker(t *testing.T) {
 			log(c)
 			c.writeEnded(t.Context(), 1, "committed")
 			c.writeEnded(t.Context(), 2, "committed")
+			// A write lost at a crash may be missing from the log, and one that found its instance
+			// down is.
+			c.writeEnded(t.Context(), 8, "lost")
+			c.writeEnded(t.Context(), 9, "down")
 			c.readEnded(t.Context(), p, c.readStarted(), []int64{1, 2}, position(2))
 			c.final(t.Context())
 		})
@@ -83,6 +87,17 @@ func TestChecker(t *testing.T) {
 		{name: "a write that failed and that the log holds", invariant: invariantNotCommitted, f: func(c *checker, p *process) {
 			log(c)
 			c.writeEnded(t.Context(), 3, "not_committed")
+			c.final(t.Context())
+		}},
+		{name: "a write of the client that found its instance down and that the log holds", invariant: invariantNotCommitted, f: func(c *checker, p *process) {
+			log(c)
+			c.writeEnded(t.Context(), 3, "down")
+			c.final(t.Context())
+		}},
+		{name: "a read that missed a write lost at a crash that the log holds at the end", invariant: invariantFresh, f: func(c *checker, p *process) {
+			log(c)
+			c.writeEnded(t.Context(), 3, "lost")
+			c.readEnded(t.Context(), p, c.readStarted(), []int64{1, 2}, position(2))
 			c.final(t.Context())
 		}},
 		{name: "a write that the log holds twice", invariant: invariantOnce, f: func(c *checker, p *process) {
