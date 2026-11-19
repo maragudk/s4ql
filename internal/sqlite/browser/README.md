@@ -21,6 +21,7 @@ It exists so that the real storage core, `internal/core` with `internal/sim` and
 - Go and SQLite are two WebAssembly instances with separate memories. The Go binding calls the C functions that the build exports through `syscall/js`, and copies every string and out parameter between the memories.
 - All bytes pass through one transfer array, a `Uint8Array` that Go keeps, with the helpers `copyIn` and `copyOut` of `bridge.js`. Every helper returns a number or nothing. The reason: `syscall/js` keeps each JavaScript object that reaches Go in a table until Go's garbage collector frees it, and a view of SQLite's memory per call filled the table's 2^24 entries in a loop of SQLite calls.
 - A 64-bit integer passes as a Number when it is exact as one, and as decimal text otherwise, because `syscall/js` has no BigInt.
+- A double passes as its 8 bytes through the transfer array, because `syscall/js` turns -0.0 into 0 on its way to and from a Number.
 - `bridge.js` registers the VFS of `vfs.js` as SQLite's default VFS, under the name `s4ql`. None of the build's own VFSes lets several connections in one instance share a database in WAL mode with files that Go can see.
 - The VFS keeps its files in the file system of `fs.js`, so a file that SQLite writes is one that `os.ReadFile` reads.
 - File locks are kept per file, by connection, with the rules of SQLite's unix VFS inside one process. The wal-index lives in SQLite's own heap, in regions that every connection to the same database maps, and the last connection to unmap frees it.

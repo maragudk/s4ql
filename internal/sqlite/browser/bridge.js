@@ -54,6 +54,13 @@ globalThis.s4qlInitSQLite = async function (options = {}) {
       const v = x.sqlite3_column_int64(stmt, i);
       return v >= MIN && v <= MAX ? Number(v) : v.toString();
     },
+    // bindDouble binds the double in the first 8 bytes of the Uint8Array buffer, little-endian, and
+    // columnDouble writes the double of a column there. A double passes as its bytes, because
+    // syscall/js turns -0.0 into 0 on its way to and from a Number.
+    bindDouble: (stmt, i, buffer) => x.sqlite3_bind_double(stmt, i, new DataView(buffer.buffer, buffer.byteOffset, 8).getFloat64(0, true)),
+    columnDouble(stmt, i, buffer) {
+      new DataView(buffer.buffer, buffer.byteOffset, 8).setFloat64(0, x.sqlite3_column_double(stmt, i), true);
+    },
     // newFaultVFS registers one more VFS of vfs.js, with a fault state of its own, for faultvfs.
     newFaultVFS() {
       const name = 's4ql-fault-' + (++faults);

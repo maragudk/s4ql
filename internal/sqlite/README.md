@@ -10,7 +10,7 @@ The binding covers only what slice 1 of [docs/roadmap.md](../../docs/roadmap.md)
 - deny the PRAGMAs that change settings for the whole process, which the oracle needs because it prepares any SQL
 - lower the length limit of a connection, which the shape check of the SQL parser in `internal/sql/shapetest` needs because it evaluates any expression
 - add stubs of the functions `regexp` and `match`, and of `glob` with ESCAPE, to a connection with `AddTestFunctions`, which the shape check in `internal/sql/shapetest` needs because SQLite has no function of its own that runs for REGEXP, MATCH, and GLOB ... ESCAPE. The stubs give the operators a meaning that SQLite does not give them, so they are for the connections of tests only
-- bind and read 64-bit integers and text, and bind NULL
+- bind and read 64-bit integers, reals, text, and blobs, which slice 4 needs, and bind NULL
 - read the column count, the column names, and the type of each value
 - step, reset, and finalize
 - run a statement with `Exec`
@@ -70,10 +70,11 @@ The second reference is `github.com/mattn/go-sqlite3`, for what the shell cannot
 
 - mattn's bundled C code is identical to `c/sqlite3.c`, apart from mattn's `#ifndef USE_LIBSQLITE3` wrapper
 - the versions and the source IDs match
-- both bindings read back the same integers and texts bound to parameters, texts with NUL bytes and invalid UTF-8 among them, also in differential fuzz tests
+- both bindings read back the same integers, reals, texts, and blobs bound to parameters, also in differential fuzz tests: among them -0.0, the infinities, and NaN, texts with NUL bytes and invalid UTF-8, and blobs with zero bytes and the empty blob
+- both bindings read the same reals and blobs from SQL and from a strict table
 - both bindings give the same rows and errors for slice-1 scripts, also in a differential fuzz test
 
-The cross-check covers integers, texts, and NULL only. The binding has no functions to bind or read a real or a blob, so a row with such a value fails the comparison.
+A nil slice is left out of the comparison of blobs: mattn binds it as NULL, and the binding as the empty blob.
 
 mattn builds the same C code with other compile options. The differences that SQL can see are listed in `TestCompileOptions` in `crosscheck/`, and the comparisons avoid them: mattn does not enforce foreign keys on a new connection, accepts double-quoted strings, lacks the math functions unless it is built with the `sqlite_math_functions` tag, and lets `PRAGMA mmap_size` switch on memory-mapped I/O.
 

@@ -37,6 +37,7 @@
 package sqlite
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -87,11 +88,11 @@ func init() {
 // holds 2^24 entries, in a loop of SQLite calls. Bytes therefore pass through transfer, one array
 // that Go keeps, and which the helpers copyIn and copyOut copy to and from SQLite's memory.
 type library struct {
-	alloc, copyIn, copyOut, strlen, peek32, bindInt64, columnInt64 js.Value
+	alloc, copyIn, copyOut, strlen, peek32, bindInt64, columnInt64, bindDouble, columnDouble js.Value
 
 	free, openV2, closeV2, nextStmt, exec, prepareV3, extendedErrcode, errstr, errmsg, errorOffset,
-	dbHandle, limit, bindText, bindNull, step, columnCount, columnName, columnType, columnText,
-	columnBytes, reset, finalize, libversion, sourceid, complete, keywordCount, keywordName,
+	dbHandle, limit, bindText, bindBlob, bindNull, step, columnCount, columnName, columnType, columnText,
+	columnBlob, columnBytes, reset, finalize, libversion, sourceid, complete, keywordCount, keywordName,
 	compileoptionGet, status64 js.Value
 
 	// transfer is a Uint8Array of transferLen bytes. A method uses it only between two calls into
@@ -114,6 +115,8 @@ var lib = sync.OnceValue(func() *library {
 		peek32:           b.Get("peek32"),
 		bindInt64:        b.Get("bindInt64"),
 		columnInt64:      b.Get("columnInt64"),
+		bindDouble:       b.Get("bindDouble"),
+		columnDouble:     b.Get("columnDouble"),
 		free:             x.Get("sqlite3_free"),
 		openV2:           x.Get("sqlite3_open_v2"),
 		closeV2:          x.Get("sqlite3_close_v2"),
@@ -127,12 +130,14 @@ var lib = sync.OnceValue(func() *library {
 		dbHandle:         x.Get("sqlite3_db_handle"),
 		limit:            x.Get("sqlite3_limit"),
 		bindText:         x.Get("sqlite3_bind_text"),
+		bindBlob:         x.Get("sqlite3_bind_blob"),
 		bindNull:         x.Get("sqlite3_bind_null"),
 		step:             x.Get("sqlite3_step"),
 		columnCount:      x.Get("sqlite3_column_count"),
 		columnName:       x.Get("sqlite3_column_name"),
 		columnType:       x.Get("sqlite3_column_type"),
 		columnText:       x.Get("sqlite3_column_text"),
+		columnBlob:       x.Get("sqlite3_column_blob"),
 		columnBytes:      x.Get("sqlite3_column_bytes"),
 		reset:            x.Get("sqlite3_reset"),
 		finalize:         x.Get("sqlite3_finalize"),
@@ -175,14 +180,22 @@ func (l *library) cString(s string) int {
 	return p
 }
 
-// goBytes copies the n bytes at p in SQLite's memory.
+// goSlice copies the n bytes at p in SQLite's memory into a slice, which is not nil.
+func (l *library) goSlice(p, n int) []byte {
+	b := make([]byte, n)
+	if n > 0 {
+		l.copyOut.Invoke(l.buffer(n), p, n)
+		js.CopyBytesToGo(b, l.transfer)
+	}
+	return b
+}
+
+// goBytes copies the n bytes at p in SQLite's memory into a string.
 func (l *library) goBytes(p, n int) string {
 	if n == 0 {
 		return ""
 	}
-	b := make([]byte, n)
-	l.copyOut.Invoke(l.buffer(n), p, n)
-	js.CopyBytesToGo(b, l.transfer)
+	b := l.goSlice(p, n)
 	return unsafe.String(unsafe.SliceData(b), len(b))
 }
 
@@ -468,6 +481,53 @@ func (s *Stmt) BindText(i int, v string) error {
 	return nil
 }
 
+// BindDouble to the parameter at index i, which counts from 1. The value is bound as SQLite binds a
+// double: with its bits as they are, also -0.0 and the infinities, except that a NaN is bound as
+// NULL. It fails as [Stmt.BindInt64] does.
+func (s *Stmt) BindDouble(i int, v float64) error {
+	if s.stmt == 0 {
+		return errorFromConn(0, codeMisuse)
+	}
+	if i < 1 || i > math.MaxInt32 {
+		return errorFromConn(0, codeRange)
+	}
+	// The value goes as its bytes, because syscall/js turns -0.0 into 0 on its way to a Number.
+	l := lib()
+	var b [8]byte
+	binary.LittleEndian.PutUint64(b[:], math.Float64bits(v))
+	js.CopyBytesToJS(l.buffer(len(b)), b[:])
+	if rc := call(l.bindDouble, s.stmt, i, l.transfer); rc != codeOK {
+		return errorFromConn(s.db, rc)
+	}
+	return nil
+}
+
+// BindBlob to the parameter at index i, which counts from 1. The blob is bound as its bytes, and the
+// empty blob is not NULL. A nil slice binds the empty blob too, so that BindBlob always binds a blob,
+// and [Stmt.BindNull] binds NULL. It fails as [Stmt.BindInt64] does, and with SQLITE_TOOBIG for a blob
+// longer than the length limit of the connection.
+func (s *Stmt) BindBlob(i int, v []byte) error {
+	if s.stmt == 0 {
+		return errorFromConn(0, codeMisuse)
+	}
+	if i < 1 || i > math.MaxInt32 {
+		return errorFromConn(0, codeRange)
+	}
+	if len(v) > math.MaxInt32 {
+		return errorFromConn(s.db, codeTooBig)
+	}
+	l := lib()
+	// The copy in SQLite's memory has a byte more than the blob, so its address is not 0 even for the
+	// empty blob, which sqlite3_bind_blob would bind as NULL.
+	p := l.cString(unsafe.String(unsafe.SliceData(v), len(v)))
+	defer l.release(p)
+	// SQLITE_TRANSIENT, -1, makes SQLite copy the bytes before the call returns.
+	if rc := call(l.bindBlob, s.stmt, i, p, len(v), -1); rc != codeOK {
+		return errorFromConn(s.db, rc)
+	}
+	return nil
+}
+
 // BindNull to the parameter at index i, which counts from 1. It fails as [Stmt.BindInt64] does.
 func (s *Stmt) BindNull(i int) error {
 	if s.stmt == 0 {
@@ -559,7 +619,8 @@ func (t Type) String() string {
 }
 
 // ColumnType of the value at index i of the current row, which counts from 0. Call it before
-// [Stmt.ColumnInt64], because reading a value as an integer can convert it. It panics without a
+// [Stmt.ColumnInt64] and the other functions that read a value, because reading a value as another
+// type can convert it. It panics without a
 // current row and for an index out of range.
 func (s *Stmt) ColumnType(i int) Type {
 	s.mustHaveRow(i)
@@ -598,6 +659,42 @@ func (s *Stmt) ColumnText(i int) string {
 		return ""
 	}
 	return l.goBytes(text, n)
+}
+
+// ColumnDouble reads the value at index i of the current row, which counts from 0, as a real: the
+// bits of a real value as they are, also -0.0 and the infinities. SQLite converts a value of another
+// type, and NULL reads as 0. It panics without a current row and for an index out of range.
+func (s *Stmt) ColumnDouble(i int) float64 {
+	s.mustHaveRow(i)
+	// The value comes as its bytes, because syscall/js turns -0.0 into 0 on its way from a Number.
+	l := lib()
+	l.columnDouble.Invoke(s.stmt, i, l.buffer(8))
+	var b [8]byte
+	js.CopyBytesToGo(b[:], l.transfer)
+	return math.Float64frombits(binary.LittleEndian.Uint64(b[:]))
+}
+
+// ColumnBlob reads the value at index i of the current row, which counts from 0, as a blob: a copy of
+// its bytes, which stays valid after the next step. The empty blob reads as an empty slice that is
+// not nil, and NULL as nil. A text reads as its bytes, and SQLite converts a value of another type to
+// text first. It panics without a current row and for an index out of range.
+func (s *Stmt) ColumnBlob(i int) []byte {
+	s.mustHaveRow(i)
+	l := lib()
+	if call(l.columnType, s.stmt, i) == int(TypeNull) {
+		return nil
+	}
+	// The length is read after the bytes, because reading them can convert the value.
+	blob := call(l.columnBlob, s.stmt, i)
+	n := call(l.columnBytes, s.stmt, i)
+	if blob == 0 {
+		// SQLite gives no pointer for a value of no bytes, and none when memory runs out.
+		if call(l.extendedErrcode, call(l.dbHandle, s.stmt))&0xff == codeNoMem {
+			panic("sqlite: out of memory")
+		}
+		return []byte{}
+	}
+	return l.goSlice(blob, n)
 }
 
 func (s *Stmt) mustNotBeFinalized() {

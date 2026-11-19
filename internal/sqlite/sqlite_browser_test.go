@@ -258,6 +258,140 @@ func TestStmt_BindText(t *testing.T) {
 	})
 }
 
+func TestStmt_BindDouble(t *testing.T) {
+	t.Run("should keep the bits of every real, also -0.0 and the infinities, which a JavaScript Number passed by syscall/js does not", func(t *testing.T) {
+		c := open(t, ":memory:")
+		s, err := c.Prepare("select ?, typeof(?1)")
+		is.NotError(t, err)
+		defer func() { is.NotError(t, s.Finalize()) }()
+		for _, v := range []float64{0, math.Copysign(0, -1), 1.5, -2.25, 0.1, 1 << 53, math.MaxFloat64, -math.MaxFloat64, math.SmallestNonzeroFloat64, math.Inf(1), math.Inf(-1)} {
+			is.NotError(t, s.BindDouble(1, v))
+			ok, err := s.Step()
+			is.NotError(t, err)
+			is.True(t, ok)
+			is.Equal(t, sqlite.TypeFloat, s.ColumnType(0))
+			is.Equal(t, math.Float64bits(v), math.Float64bits(s.ColumnDouble(0)))
+			is.Equal(t, "real", s.ColumnText(1))
+			is.NotError(t, s.Reset())
+		}
+
+		// SQLite binds a NaN as NULL.
+		is.NotError(t, s.BindDouble(1, math.NaN()))
+		ok, err := s.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+		is.Equal(t, sqlite.TypeNull, s.ColumnType(0))
+		is.Equal(t, "null", s.ColumnText(1))
+	})
+
+	t.Run("should store reals in a strict table, where -0.0 reads back as 0.0, as in the cgo build", func(t *testing.T) {
+		c := open(t, ":memory:")
+		is.NotError(t, c.Exec("create table t1 (k1 int primary key, v1 real) strict"))
+		values := []float64{1.5, 3, math.MaxFloat64, math.Inf(-1), math.Copysign(0, -1)}
+		insert, err := c.Prepare("insert into t1 (k1, v1) values (?, ?)")
+		is.NotError(t, err)
+		defer func() { is.NotError(t, insert.Finalize()) }()
+		for k, v := range values {
+			is.NotError(t, insert.BindInt64(1, int64(k)))
+			is.NotError(t, insert.BindDouble(2, v))
+			ok, err := insert.Step()
+			is.NotError(t, err)
+			is.True(t, !ok)
+			is.NotError(t, insert.Reset())
+		}
+
+		s, err := c.Prepare("select v1 from t1 order by k1")
+		is.NotError(t, err)
+		defer func() { is.NotError(t, s.Finalize()) }()
+		for _, v := range []float64{1.5, 3, math.MaxFloat64, math.Inf(-1), 0} {
+			ok, err := s.Step()
+			is.NotError(t, err)
+			is.True(t, ok)
+			is.Equal(t, sqlite.TypeFloat, s.ColumnType(0))
+			is.Equal(t, math.Float64bits(v), math.Float64bits(s.ColumnDouble(0)))
+		}
+	})
+
+	t.Run("should read a real that SQL makes, and convert a value of another type as SQLite does", func(t *testing.T) {
+		c := open(t, ":memory:")
+		s, err := c.Prepare("select -0.0, 3, '2.5', null")
+		is.NotError(t, err)
+		defer func() { is.NotError(t, s.Finalize()) }()
+		ok, err := s.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+		is.Equal(t, math.Float64bits(math.Copysign(0, -1)), math.Float64bits(s.ColumnDouble(0)))
+		is.Equal(t, 3.0, s.ColumnDouble(1))
+		is.Equal(t, 2.5, s.ColumnDouble(2))
+		is.Equal(t, uint64(0), math.Float64bits(s.ColumnDouble(3)))
+	})
+}
+
+func TestStmt_BindBlob(t *testing.T) {
+	t.Run("should keep the bytes of a blob as they are, bind the empty blob and a nil slice as the empty blob, and read NULL as nil", func(t *testing.T) {
+		c := open(t, ":memory:")
+		s, err := c.Prepare("select ?, typeof(?1), length(?1)")
+		is.NotError(t, err)
+		defer func() { is.NotError(t, s.Finalize()) }()
+		large := make([]byte, 4<<20)
+		for i := range large {
+			large[i] = byte(i * 7)
+		}
+		for _, v := range [][]byte{nil, {}, {0}, []byte("a\x00b"), {0xff, 0xfe}, large} {
+			is.NotError(t, s.BindBlob(1, v))
+			ok, err := s.Step()
+			is.NotError(t, err)
+			is.True(t, ok)
+			is.Equal(t, sqlite.TypeBlob, s.ColumnType(0))
+			got := s.ColumnBlob(0)
+			is.True(t, got != nil, "the blob is nil")
+			is.True(t, bytes.Equal(v, got), "the blob is not what was bound")
+			is.Equal(t, "blob", s.ColumnText(1))
+			is.Equal(t, int64(len(v)), s.ColumnInt64(2))
+			is.NotError(t, s.Reset())
+		}
+
+		is.NotError(t, s.BindNull(1))
+		ok, err := s.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+		is.Equal(t, sqlite.TypeNull, s.ColumnType(0))
+		is.True(t, s.ColumnBlob(0) == nil, "NULL is not nil")
+	})
+
+	t.Run("should store blobs in a strict table, and give copies that keep their bytes after the next step", func(t *testing.T) {
+		c := open(t, ":memory:")
+		is.NotError(t, c.Exec("create table t1 (v1 blob primary key) strict, without rowid"))
+		insert, err := c.Prepare("insert into t1 (v1) values (?)")
+		is.NotError(t, err)
+		defer func() { is.NotError(t, insert.Finalize()) }()
+		for _, v := range [][]byte{{}, {0}, {0, 0}} {
+			is.NotError(t, insert.BindBlob(1, v))
+			ok, err := insert.Step()
+			is.NotError(t, err)
+			is.True(t, !ok)
+			is.NotError(t, insert.Reset())
+		}
+
+		s, err := c.Prepare("select v1 from t1 order by v1")
+		is.NotError(t, err)
+		defer func() { is.NotError(t, s.Finalize()) }()
+		var got [][]byte
+		for {
+			ok, err := s.Step()
+			is.NotError(t, err)
+			if !ok {
+				break
+			}
+			got = append(got, s.ColumnBlob(0))
+		}
+		is.Equal(t, 3, len(got))
+		is.True(t, got[0] != nil && len(got[0]) == 0, "the empty blob is not an empty slice")
+		is.EqualSlice(t, []byte{0}, got[1])
+		is.EqualSlice(t, []byte{0, 0}, got[2])
+	})
+}
+
 func TestConn_Prepare(t *testing.T) {
 	t.Run("should give the message and the offset of a syntax error", func(t *testing.T) {
 		c := open(t, ":memory:")
