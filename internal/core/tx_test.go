@@ -2110,7 +2110,8 @@ func TestTx_types(t *testing.T) {
 			is.Equal(t, committed.text(), read(t, d))
 
 			// A second transaction gets every key, also as it was given, deletes every other one,
-			// and upserts again one that it deleted, in a table that existed before it.
+			// upserts a key that existed and then deletes it, and upserts again one that it deleted,
+			// in a table that existed before it.
 			m = newTx(committed)
 			tx, err = d.Begin(ctx)
 			is.NotError(t, err)
@@ -2126,6 +2127,19 @@ func TestTx_types(t *testing.T) {
 					is.Equal(t, want, found, text([]*s4qlpb.Value{k}))
 				}
 			}
+			// The row of the key keys[1] existed, and is not deleted above: the commit object deletes
+			// it, and has no upsert of it.
+			existed := []*s4qlpb.Value{keys[1]}
+			for _, other := range types {
+				existed = append(existed, edges[other][1])
+			}
+			is.NotError(t, tx.Upsert(ctx, ct.GetTable(), existed))
+			m.upsert(ct.GetTable(), existed)
+			_, want := m.remove(ct.GetTable(), existed[:1])
+			is.True(t, want, "the row of "+text(existed[:1])+" is there")
+			found, err := tx.Delete(ctx, ct.GetTable(), existed[:1])
+			is.NotError(t, err)
+			is.True(t, found, text(existed[:1]))
 			again := []*s4qlpb.Value{keys[0]}
 			for _, other := range types {
 				again = append(again, edges[other][len(edges[other])-1])
