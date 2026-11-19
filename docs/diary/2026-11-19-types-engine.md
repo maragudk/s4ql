@@ -58,3 +58,47 @@ The table of edges passed against SQLite on its first run, in the engine and thr
 
 - Types in `stmttest`, the generated differential tests over all types, the simulation with a planted bug for types, mutation testing, and fuzz targets, as the brief leaves them.
 - s4ql gives no `statement too long` for a text above 1,000,000,000 bytes, where SQLite does.
+
+## Step 2: The checks, and the self-review
+
+**Author:** types-engine builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the brief) "Run `make test`, `make lint`, and `make check-browser`. [...] Review your own work with the code-review skill before you report, and fix what it finds."
+**Interpretation:** Run the checks of the brief and the new tests many times, review the branch, and fix what the review finds.
+**Inferred intent:** Hand the lead a branch that is checked and reviewed.
+
+### What I did
+
+`make test`, `make lint`, and `make check-browser` passed. The new and changed tests ran with `-count=20`, and under `-race` with `-count=20` (the driver's check with `-count=5` under `-race`): `TestEngine_types`, `TestEngine_tooBig`, `TestNewPlan`, `TestConn_Begin`, `TestEngine_errors`, `TestEngine_parameters` in the engine; `TestTypes`, `TestParameters`, `TestPrepare`, `TestConn_Raw`, `TestTx` in the driver; `TestTypes` and `TestSequences` in the driver's check. All passed.
+
+The review (`code-review high`, against 58e7b34, since `origin/types-stmt` was gone after the merge of #69) found one bug and one nit. The bug: the simulation's new check required a refused argument's message to end in ` of type INT`, and `stmttest.Others` makes INTEGER tables, which the engine now creates; `S4QL_ENGINE_SIM_SEEDS=400 go test ./internal/engine/ -run 'TestSimulation$'` failed at seed 55 of the default workload (`argument 1, which is text, for the column GENERATED.X_ of type INTEGER`) and seed 115 of the hammer workload. The check in `/internal/engine/simulation_test.go` accepts INT and INTEGER now, and 400 and 1,000 seeds pass. The nit: the comment of `Others` in `/internal/sql/stmt/stmttest/sequence.go` still called INTEGER not supported; it says now that a `Sequence` can make INTEGER tables.
+
+### Why
+
+The default run of 50 seeds did not reach an INTEGER table with such an argument, so only a longer run showed it.
+
+### What worked
+
+The review reproduced its finding with a command, which made the fix quick to confirm.
+
+### What didn't work
+
+The 50 seeds of the default run passed with the wrong check; see above.
+
+### What I learned
+
+A check that depends on what the generator makes must not trust a comment of the generator; the differential tests look the type of the column up in SQLite, which the simulation cannot do while it runs.
+
+### What was tricky
+
+Nothing more.
+
+### What warrants review
+
+`typeArgument` and its use in `/internal/engine/simulation_test.go`, which the next builder replaces when `stmttest` makes tables of every type.
+
+### Future work
+
+As in step 1.

@@ -556,7 +556,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 		}
 		if _, ok := typeArgument(call); ok {
 			r.mu.Unlock()
-			r.violate(ctx, "the statement %v, %q, succeeded with the argument %#v for a column of type INT", a.id, a.src, call.Args[0])
+			r.violate(ctx, "the statement %v, %q, succeeded with the argument %#v for a column of type INT or INTEGER", a.id, a.src, call.Args[0])
 			r.mu.Lock()
 		}
 	case errors.As(err, &se):
@@ -573,10 +573,11 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 		// slices 1 and 2 with the arguments that it takes must run.
 		kind, failure := checkArguments(call, a.answer)
 		if article, ok := typeArgument(call); ok && kind == "" {
-			// The insert found its table and its column, which is of type INT.
+			// The insert found its table and its column, which is of type INT or INTEGER.
 			kind = excusedType
 			prefix := fmt.Sprintf("s4ql: not supported: argument 1, which is %v, for the column ", article)
-			if a.answer.err != "not supported" || !strings.HasPrefix(a.answer.message, prefix) || !strings.HasSuffix(a.answer.message, " of type INT") {
+			integer := strings.HasSuffix(a.answer.message, " of type INT") || strings.HasSuffix(a.answer.message, " of type INTEGER")
+			if a.answer.err != "not supported" || !strings.HasPrefix(a.answer.message, prefix) || !integer {
 				failure = fmt.Sprintf("the statement %v, %q, with the argument %#v: %v", a.id, a.src, call.Args[0], err)
 			}
 		}
@@ -1610,8 +1611,8 @@ func stmtValue(v *s4qlpb.Value) any {
 
 // typeArgument reports whether the call c is a supported insert with one parameter whose argument
 // is a value that a column holds and is not an integer, and gives how the engine's message names its
-// kind. The tables of [stmttest.Sequence] are of type INT, so the engine refuses such an argument as
-// "not supported" once it has found the table and the column.
+// kind. The tables of [stmttest.Sequence] are of type INT, or INTEGER through [stmttest.Others], so
+// the engine refuses such an argument as "not supported" once it has found the table and the column.
 func typeArgument(c stmttest.Call) (string, bool) {
 	s, _ := stmt.Check(c.Src)
 	insert, ok := s.(*stmt.Insert)
