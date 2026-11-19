@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -1091,6 +1093,43 @@ func TestStop(t *testing.T) {
 		// Recovery is a normal start.
 		is.NotError(t, db.Close())
 		is.Equal(t, 0, vfs.OpenFiles())
+		is.EqualSlice(t, []int64{1, 2}, values(t, w.serve(t, "a"), select1))
+	})
+
+	t.Run("should stop the instance when the files of the cache are deleted under it, at the first read of a new connection, and make no empty cache", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, t1, insert1, "insert into t1 (v1) values (2)")
+		// A connection that is held has its reader, so the next query takes a new connection.
+		conn, err := db.Conn(t.Context())
+		is.NotError(t, err)
+		rows, err := conn.QueryContext(t.Context(), select1)
+		is.NotError(t, err)
+		is.NotError(t, rows.Close())
+
+		dir := filepath.Join(w.dir, "a")
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			is.NotError(t, os.Remove(filepath.Join(dir, "cache.db"+suffix)))
+		}
+
+		_, err = db.QueryContext(t.Context(), select1)
+		is.Error(t, s4ql.ErrStopped, failed(t, err))
+		is.Equal(t, "s4ql: the instance has stopped: local I/O failure: open a reader: sqlite: unable to open database file (code 14)", err.Error())
+		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (3)")
+		is.Error(t, s4ql.ErrStopped, failed(t, err))
+		_, err = conn.QueryContext(t.Context(), select1)
+		is.Error(t, s4ql.ErrStopped, failed(t, err))
+		is.Error(t, s4ql.ErrStopped, failed(t, db.PingContext(t.Context())))
+
+		is.NotError(t, conn.Close())
+		is.NotError(t, db.Close())
+		entries, err := os.ReadDir(dir)
+		is.NotError(t, err)
+		for _, e := range entries {
+			t.Errorf("the file %v is left", e.Name())
+		}
+
+		// Recovery is a normal start, which makes a cache and replays the log into it.
 		is.EqualSlice(t, []int64{1, 2}, values(t, w.serve(t, "a"), select1))
 	})
 }

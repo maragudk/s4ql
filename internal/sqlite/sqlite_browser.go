@@ -246,6 +246,24 @@ func Open(path string) (*Conn, error) {
 // compile options that the official build lacks, and the PRAGMA for the page cache reads the
 // database's schema, so a file that is not a database fails here and not at the first statement.
 func OpenVFS(path, vfs string) (*Conn, error) {
+	return open(path, vfs, openReadWrite|openCreate|openExtendedResultCode)
+}
+
+// OpenExistingVFS is [OpenVFS] of a database file that exists: it does not create the file, and
+// fails with SQLITE_CANTOPEN if there is none.
+func OpenExistingVFS(path, vfs string) (*Conn, error) {
+	return open(path, vfs, openReadWrite|openExtendedResultCode)
+}
+
+// The flags of sqlite3_open_v2 that the opens use.
+const (
+	openReadWrite          = 0x2        // SQLITE_OPEN_READWRITE
+	openCreate             = 0x4        // SQLITE_OPEN_CREATE
+	openExtendedResultCode = 0x02000000 // SQLITE_OPEN_EXRESCODE
+)
+
+// open the database file at path through the VFS vfs with the flags of sqlite3_open_v2.
+func open(path, vfs string, flags int) (*Conn, error) {
 	if strings.IndexByte(path, 0) >= 0 {
 		return nil, errors.New("sqlite: path contains a NUL byte")
 	}
@@ -267,7 +285,6 @@ func OpenVFS(path, vfs string) (*Conn, error) {
 	}
 	defer l.release(out)
 
-	const flags = 0x2 | 0x4 | 0x02000000 // SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_EXRESCODE
 	rc := call(l.openV2, cpath, out, flags, cvfs)
 	db := call(l.peek32, out)
 	if rc == codeOK {

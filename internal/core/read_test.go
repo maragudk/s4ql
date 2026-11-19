@@ -2,7 +2,10 @@ package core_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -286,6 +289,49 @@ func TestDB_Reader(t *testing.T) {
 			is.Equal(t, 0, vfs.OpenFiles())
 			is.Equal(t, 0, d.Readers())
 		})
+	})
+
+	t.Run("should stop the instance for good when the files of the cache are deleted under it, without making an empty cache, and a start after it rebuilds the cache from the store", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k"), upsert("t1", 1))
+		rd, err := d.Reader(t.Context())
+		is.NotError(t, err)
+		r, err := rd.Read(t.Context())
+		is.NotError(t, err)
+		_, err = r.Get(t.Context(), "t1", row(1))
+		is.NotError(t, err)
+		is.NotError(t, r.Close(t.Context()))
+
+		// The cache, its write-ahead log, and its wal-index, which the VFS of a browser keeps in memory.
+		path := filepath.Join(w.dir, "a.db")
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			if err := os.Remove(path + suffix); suffix != "-shm" || !errors.Is(err, os.ErrNotExist) {
+				is.NotError(t, err)
+			}
+		}
+
+		// A new reader opens the cache that is there, and does not make one.
+		_, err = d.Reader(t.Context())
+		is.Error(t, core.ErrStopped, err)
+		is.Error(t, core.ErrLocal, err)
+		is.True(t, strings.Contains(err.Error(), "open a reader: sqlite: unable to open database file (code 14)"), err.Error())
+		is.True(t, isDone(d))
+		is.Error(t, core.ErrLocal, d.Err())
+		is.Equal(t, 1, d.Readers())
+		_, err = rd.Read(t.Context())
+		is.Error(t, core.ErrLocal, err)
+		is.NotError(t, rd.Close(t.Context()))
+		is.NotError(t, d.Close(t.Context()))
+		entries, err := os.ReadDir(w.dir)
+		is.NotError(t, err)
+		for _, e := range entries {
+			t.Errorf("the file %v is left", e.Name())
+		}
+
+		// The start of a new instance makes a cache and replays the log into it.
+		again := w.serve(t, "a", core.Options{})
+		is.Equal(t, "t1(k*0): 1", read(t, again))
 	})
 
 	t.Run("should stop the instance for good when the cache cannot be opened for a reader, as for any local failure of the cache", func(t *testing.T) {

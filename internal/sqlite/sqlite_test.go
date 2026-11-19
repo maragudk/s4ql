@@ -107,6 +107,54 @@ func TestOpenVFS(t *testing.T) {
 	})
 }
 
+func TestOpenExistingVFS(t *testing.T) {
+	t.Run("should open a database file that exists, through the default VFS and through a VFS by its name", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "test.db")
+		c := open(t, path)
+		is.NotError(t, c.Exec("create table t1 (v1 int primary key) strict, without rowid"))
+		is.NotError(t, c.Exec("insert into t1 (v1) values (42)"))
+
+		for _, vfs := range []string{"", "unix"} {
+			e, err := sqlite.OpenExistingVFS(path, vfs)
+			is.NotError(t, err)
+			is.EqualSlice(t, []string{"integer:42"}, query(t, e, "select * from t1"))
+			is.NotError(t, e.Close())
+		}
+	})
+
+	t.Run("should fail with SQLITE_CANTOPEN for a file that does not exist, and not create it", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "test.db")
+		_, err := sqlite.OpenExistingVFS(path, "")
+		is.Equal(t, 14, code(t, err))
+		is.Equal(t, "unable to open database file", message(t, err))
+		_, err = os.Stat(path)
+		is.True(t, errors.Is(err, os.ErrNotExist))
+	})
+
+	t.Run("should fail for a file that was deleted while another connection holds it open", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "test.db")
+		c := open(t, path)
+		is.NotError(t, c.Exec("create table t1 (v1 int primary key) strict, without rowid"))
+		is.NotError(t, c.Exec("begin"))
+		is.EqualSlice(t, []string{"integer:0"}, query(t, c, "select count(*) from t1"))
+		is.NotError(t, os.Remove(path))
+
+		_, err := sqlite.OpenExistingVFS(path, "")
+		is.Equal(t, 14, code(t, err))
+		_, err = os.Stat(path)
+		is.True(t, errors.Is(err, os.ErrNotExist))
+		is.NotError(t, c.Exec("rollback"))
+	})
+
+	t.Run("should refuse a path or a name with a NUL byte", func(t *testing.T) {
+		dir := t.TempDir()
+		_, err := sqlite.OpenExistingVFS(filepath.Join(dir, "test.db")+"\x00.other", "")
+		is.Equal(t, "sqlite: path contains a NUL byte", errorString(t, err))
+		_, err = sqlite.OpenExistingVFS(filepath.Join(dir, "test.db"), "unix\x00")
+		is.Equal(t, "sqlite: VFS name contains a NUL byte", errorString(t, err))
+	})
+}
+
 func TestFindVFS(t *testing.T) {
 	t.Run("should find no VFS for a name that is not registered", func(t *testing.T) {
 		is.True(t, sqlite.FindVFS("s4ql-no-such-vfs") == nil)

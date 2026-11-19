@@ -127,6 +127,27 @@ func TestOpen_options(t *testing.T) {
 	})
 }
 
+func TestOpenExistingVFS(t *testing.T) {
+	t.Run("should open a database file that exists", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "a.db")
+		c := open(t, path)
+		is.NotError(t, c.Exec("create table t (k integer primary key) strict"))
+		is.NotError(t, c.Exec("insert into t values (1)"))
+		e, err := sqlite.OpenExistingVFS(path, "")
+		is.NotError(t, err)
+		is.Equal(t, int64(1), queryInt64(t, e, "select count(*) from t"))
+		is.NotError(t, e.Close())
+	})
+
+	t.Run("should fail with SQLITE_CANTOPEN for a file that does not exist, and not create it", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "a.db")
+		_, err := sqlite.OpenExistingVFS(path, "")
+		is.Equal(t, sqlite.ResultCode(14), code(t, err))
+		_, err = os.Stat(path)
+		is.True(t, errors.Is(err, os.ErrNotExist))
+	})
+}
+
 func TestOpen_readOnly(t *testing.T) {
 	t.Run("should open a file that may not be written read-only, as SQLite's unix VFS does", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "a.db")

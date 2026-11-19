@@ -64,12 +64,18 @@
 // [Open] sets a bound from the limit of open files of the process, as it says, and the application
 // can change it. The pool of a database of [Register] has no bound until the application sets one.
 //
-// A connection opens a connection to the cache of its own for its first read, which is two open
-// files, and closes it when database/sql closes the connection, so the other settings of the pool,
-// such as [database/sql.DB.SetMaxIdleConns] and [database/sql.DB.SetConnMaxIdleTime], decide how
-// long it is kept. A process that has no file descriptor left for it has a cache that cannot be
-// opened, which stops the instance as any failure of the cache does. The bound that [Open] sets
-// keeps the readers of one instance to half of the file descriptors of the process.
+// A connection opens a connection to the cache of its own for its first read, with two open files,
+// the cache and its write-ahead log, and closes it when database/sql closes the connection, so the
+// other settings of the pool, such as [database/sql.DB.SetMaxIdleConns] and
+// [database/sql.DB.SetConnMaxIdleTime], decide how long it is kept. The close gives back the file of
+// the write-ahead log, but not the file of the cache: SQLite keeps that open while another
+// connection to the cache holds a lock on it, which the instance's own connection for writes always
+// does, and reuses it for the next connection that opens. So the open files of the cache stay at
+// the most connections that have read at once, plus the one of the connection for writes, until the
+// database is closed, which closes them all. A process that has no file descriptor left for it has
+// a cache that cannot be opened, which stops the instance as any failure of the cache does. The
+// bound that [Open] sets keeps the readers of one instance to half of the file descriptors of the
+// process.
 //
 // The read of a query runs until its [database/sql.Rows] are read to the end or closed, so rows
 // that are neither hold their connection and its read, until the context of their query ends or
@@ -186,14 +192,13 @@ type Options struct {
 // write-ahead log, so the readers of the instance use at most half of the descriptors of the
 // process, and the rest are for the application and the other files of the instance. The bound is
 // for each instance: an application that opens several instances in one process lowers the bound
-// of each, so that their readers together keep to half. SQLite keeps the descriptor of the cache of
-// a reader that has closed until the instance closes, and gives it to the next reader that opens,
-// so the descriptors of the readers stay at the most readers that were open at once. Go raises the soft limit of a process when it starts, on most
-// systems to the hard limit, so it is what the process can use unless the application lowers it. A
-// process whose limit is unlimited or cannot be read, and one on a platform without the limit, such
-// as Windows, gets no bound, as database/sql gives none by default. The application can change the
-// bound with SetMaxOpenConns, as on any [database/sql.DB], and then makes sure itself that the
-// process has the descriptors for it: a reader that cannot be opened stops the instance.
+// of each, so that their readers together keep to half. Go raises the soft limit of a process when
+// it starts, on most systems to the hard limit, so it is what the process can use unless the
+// application lowers it. A process whose limit is unlimited or cannot be read, and one on a
+// platform without the limit, such as Windows, gets no bound, as database/sql gives none by
+// default. The application can change the bound with SetMaxOpenConns, as on any
+// [database/sql.DB], and then makes sure itself that the process has the descriptors for it: a
+// reader that cannot be opened stops the instance.
 //
 // A cache directory belongs to one database: the endpoint, the bucket, and the prefix of the
 // options, as they are given, and with nothing else of the options. A new cache records them, and
