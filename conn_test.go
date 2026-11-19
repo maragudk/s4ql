@@ -1,6 +1,7 @@
 package s4ql_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"database/sql/driver"
@@ -20,6 +21,7 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql"
+	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/sqlite/faultvfs"
 )
 
@@ -137,9 +139,13 @@ func TestExec(t *testing.T) {
 			is.Equal(t, "a text that holds no statement", notSupported(t, err))
 		}
 
-		// The text of a parameter is not supported, and SQLite's parser accepts it.
-		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (?)")
-		is.True(t, notSupported(t, err) != "")
+		// The text of a parameter of another form than ?, which SQLite's parser accepts.
+		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (?1)", 1)
+		is.Equal(t, "numbered parameter (at offset 28)", notSupported(t, err))
+		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (:v)", sql.Named("v", 1))
+		is.Equal(t, "named parameter (at offset 28)", notSupported(t, err))
+		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (-?)", 1)
+		is.Equal(t, "parameter after a sign (at offset 29)", notSupported(t, err))
 
 		// Transactions.
 		_, err = db.BeginTx(t.Context(), nil)
@@ -156,12 +162,6 @@ func TestExec(t *testing.T) {
 		w := newWorld(t)
 		db := w.serve(t, "a")
 		exec(t, db, t1)
-		insert, err := db.PrepareContext(t.Context(), insert1)
-		is.NotError(t, err)
-		defer func() { is.NotError(t, insert.Close()) }()
-		query, err := db.PrepareContext(t.Context(), select1)
-		is.NotError(t, err)
-		defer func() { is.NotError(t, query.Close()) }()
 
 		// Each call runs the text src with the arguments args, and gives its error.
 		calls := map[string]func(src string, args ...any) error{
@@ -181,16 +181,17 @@ func TestExec(t *testing.T) {
 			},
 		}
 		// Arguments of any kind and number, also where the text has no parameter.
-		argss := [][]any{{1}, {"1", 2}, {sql.Named("v", 1)}, {struct{}{}}, {nil}, {[]string{"a"}}}
+		argss := [][]any{{1}, {1, 2}, {"1", 2}, {sql.Named("v", 1)}, {struct{}{}}, {nil}, {[]string{"a"}}, {uint64(1 << 63)}}
 
 		for name, call := range calls {
 			for _, args := range argss {
 				// A syntax error gets SQLite's error, also in SQL that s4ql does not support.
 				for src, message := range map[string]string{
-					"drop table":                   "incomplete input",
-					"selec * from t1":              `near "selec": syntax error`,
-					"insert into t1 (v1) values (": "incomplete input",
-					"select v1 from t1 where":      "incomplete input",
+					"drop table":                       "incomplete input",
+					"selec * from t1":                  `near "selec": syntax error`,
+					"insert into t1 (v1) values (":     "incomplete input",
+					"insert into t1 (v1) values (? ?)": `near "?": syntax error`,
+					"select v1 from t1 where":          "incomplete input",
 				} {
 					err := call(src, args...)
 					sqlite, ok := errors.AsType[*s4ql.Error](failed(t, err))
@@ -199,35 +200,19 @@ func TestExec(t *testing.T) {
 				}
 
 				// A text that s4ql does not support gets the "not supported" that it gets without arguments.
-				for _, src := range []string{"select * from t1 where v1 = 1", "insert into t1 (v1) values (?)", "insert into t1 (v1) values (1), (2)", "begin", "", " ; -- nothing"} {
+				for _, src := range []string{"select * from t1 where v1 = ?", "insert into t1 (v1) values (?1)", "insert into t1 (v1) values (?), (?)", "begin", "", " ; -- nothing"} {
 					err := call(src, args...)
-					is.True(t, notSupported(t, err) != "parameters", name, src)
 					is.Equal(t, notSupported(t, call(src)), notSupported(t, err), name, src)
-				}
-
-				// A statement that s4ql supports gets "not supported: parameters", and is not run: neither
-				// an insert, nor a create table or a drop table, nor one that would fail if it ran.
-				for _, src := range []string{insert1, select1, "drop table t1", "create table t2 (v2 int primary key) strict, without rowid", t1, "insert into t9 (v1) values (1)"} {
-					is.Equal(t, "parameters", notSupported(t, call(src, args...)), name, src)
 				}
 			}
 		}
 
-		// A prepared statement checks its text when it is prepared, and gets "not supported: parameters"
-		// when it is run with an argument.
-		_, err = db.PrepareContext(t.Context(), "drop table")
-		is.Equal(t, "incomplete input", failed(t, err).Error())
-		_, err = db.PrepareContext(t.Context(), "select * from t1 where v1 = 1")
-		is.Equal(t, "WHERE clause (at offset 17)", notSupported(t, err))
-		for _, args := range argss {
-			_, err = insert.ExecContext(t.Context(), args...)
-			is.Equal(t, "parameters", notSupported(t, err))
-			_, err = insert.QueryContext(t.Context(), args...)
-			is.Equal(t, "parameters", notSupported(t, err))
-			_, err = query.QueryContext(t.Context(), args...)
-			is.Equal(t, "parameters", notSupported(t, err))
-			is.Equal(t, "parameters", notSupported(t, query.QueryRowContext(t.Context(), args...).Scan(new(int64))))
-		}
+		// A prepared statement checks its text when it is prepared, with SQLite's syntax error and
+		// "not supported", and its arguments when it is run.
+		_, err := db.PrepareContext(t.Context(), "insert into t1 (v1) values (? ?)")
+		is.Equal(t, `near "?": syntax error`, failed(t, err).Error())
+		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values (?1)")
+		is.Equal(t, "numbered parameter (at offset 28)", notSupported(t, err))
 
 		// Nothing was committed after the create table of t1, which still holds no row.
 		is.EqualSlice(t, []int64{}, values(t, db, select1))
@@ -392,9 +377,9 @@ func TestPrepare(t *testing.T) {
 		}
 
 		_, err = insert.ExecContext(t.Context(), 1)
-		is.Equal(t, "parameters", notSupported(t, err))
+		is.Equal(t, "s4ql: wrong number of arguments: 1 for a statement with 0 parameters", failed(t, err).Error())
 		_, err = query.QueryContext(t.Context(), "a", "b")
-		is.Equal(t, "parameters", notSupported(t, err))
+		is.Equal(t, "s4ql: wrong number of arguments: 2 for a statement with 0 parameters", failed(t, err).Error())
 		for _, s := range []*sql.Stmt{create, insert, query, drop} {
 			is.NotError(t, s.Close())
 		}
@@ -414,8 +399,8 @@ func TestPrepare(t *testing.T) {
 		is.Equal(t, s4ql.Error{Code: 1, ExtendedCode: 1, Message: `near "selec": syntax error`}, *sqlite)
 		_, err = db.PrepareContext(t.Context(), "select * from t1 where v1 = 1")
 		is.Equal(t, "WHERE clause (at offset 17)", notSupported(t, err))
-		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values (?)")
-		is.True(t, notSupported(t, err) != "")
+		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values ($v)")
+		is.Equal(t, "named parameter (at offset 28)", notSupported(t, err))
 
 		// A statement that is supported is prepared, and refused when it is run.
 		prepared, err := db.PrepareContext(t.Context(), insert1)
@@ -425,6 +410,285 @@ func TestPrepare(t *testing.T) {
 		is.Error(t, s4ql.ErrNotServing, failed(t, err))
 		_, err = prepared.QueryContext(t.Context())
 		is.Error(t, s4ql.ErrNotServing, failed(t, err))
+
+		// The arguments are judged before the instance, which refuses only what it would run.
+		withParameter, err := db.PrepareContext(t.Context(), "insert into t1 (v1) values (?)")
+		is.NotError(t, err)
+		defer func() { is.NotError(t, withParameter.Close()) }()
+		_, err = withParameter.ExecContext(t.Context())
+		is.Equal(t, "s4ql: wrong number of arguments: 0 for a statement with 1 parameter", failed(t, err).Error())
+		_, err = withParameter.ExecContext(t.Context(), "1")
+		is.Equal(t, "argument 1 of type string", notSupported(t, err))
+		_, err = withParameter.ExecContext(t.Context(), 1)
+		is.Error(t, s4ql.ErrNotServing, failed(t, err))
+	})
+}
+
+// insertParameter is the insert of slice 2, whose value is its one parameter.
+const insertParameter = "insert into t1 (v1) values (?)"
+
+// valuer is a [driver.Valuer] of an int64.
+type valuer int64
+
+func (v valuer) Value() (driver.Value, error) {
+	return int64(v), nil
+}
+
+// errNoValue is the error of a [failingValuer].
+var errNoValue = errors.New("no value for the secret 4815162342")
+
+// failingValuer is a [driver.Valuer] that fails.
+type failingValuer struct{}
+
+func (failingValuer) Value() (driver.Value, error) {
+	return nil, errNoValue
+}
+
+// annotations of the commit objects of the database "db" in the world's store, in the order of the
+// log: the text of each statement, and " with " and the value of each of its parameters.
+func annotations(t *testing.T, w *world) []string {
+	t.Helper()
+	data, _, ok := w.store.Object("db/manifest.json")
+	is.True(t, ok)
+	m, err := format.ParseManifest(data)
+	is.NotError(t, err)
+	var notes []string
+	for name := m.Head; name != format.EmptyLog; {
+		key := name.String()
+		data, _, ok := w.store.Object("db/commits/" + key[:2] + "/" + key)
+		is.True(t, ok, key)
+		r := format.NewCommitReader(bytes.NewReader(data), name)
+		h, err := r.Header()
+		is.NotError(t, err)
+		var commit []string
+		for {
+			_, a, err := r.Next()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			is.NotError(t, err)
+			if a != nil {
+				note := a.GetStatement().GetSql()
+				for _, p := range a.GetStatement().GetParameters() {
+					is.True(t, p.HasInteger(), note)
+					note += fmt.Sprint(" with ", p.GetInteger())
+				}
+				commit = append(commit, note)
+			}
+		}
+		notes = append(commit, notes...)
+		name, err = format.NameFromBytes(h.GetParent())
+		is.NotError(t, err)
+	}
+	return notes
+}
+
+func TestParameters(t *testing.T) {
+	t.Run("should insert the argument of a parameter, directly and through a prepared statement run several times", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, t1)
+
+		res, err := db.ExecContext(t.Context(), insertParameter, 1)
+		is.Equal(t, int64(1), affected(t, res, err))
+		rows, err := db.QueryContext(t.Context(), insertParameter, 2)
+		is.NotError(t, err)
+		is.True(t, !rows.Next())
+		is.NotError(t, rows.Close())
+
+		prepared, err := db.PrepareContext(t.Context(), "INSERT INTO T1 (V1) VALUES ( /* the value */ ? );")
+		is.NotError(t, err)
+		defer func() { is.NotError(t, prepared.Close()) }()
+		for _, v := range []int64{-9223372036854775808, 9223372036854775807, 0, -3} {
+			res, err := prepared.ExecContext(t.Context(), v)
+			is.Equal(t, int64(1), affected(t, res, err), v)
+		}
+		rows, err = prepared.QueryContext(t.Context(), 3)
+		is.NotError(t, err)
+		is.NotError(t, rows.Close())
+
+		is.EqualSlice(t, []int64{-9223372036854775808, -3, 0, 1, 2, 3, 9223372036854775807}, values(t, db, select1))
+		readersFree(t, db)
+	})
+
+	t.Run("should take an integer of any Go type that fits a signed 64-bit integer, as database/sql converts it", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, t1)
+		type id int16
+		args := []any{int(1), int8(-2), int16(3), int32(-4), int64(5), uint(6), uint8(7), uint16(8), uint32(9),
+			uint64(9223372036854775807), id(10), new(int64(11)), sql.NullInt64{Int64: 12, Valid: true}, valuer(13), new(uint(14)),
+			uint(9223372036854775806)}
+		for _, a := range args {
+			_, err := db.ExecContext(t.Context(), insertParameter, a)
+			is.NotError(t, err, fmt.Sprintf("%T", a))
+		}
+		is.EqualSlice(t, []int64{-4, -2, 1, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 9223372036854775806, 9223372036854775807}, values(t, db, select1))
+	})
+
+	t.Run("should give SQLite's errors for a parameter as for a literal", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, t1, insert1)
+		prepared, err := db.PrepareContext(t.Context(), insertParameter)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, prepared.Close()) }()
+
+		_, literal := db.ExecContext(t.Context(), insert1)
+		sqlite, ok := errors.AsType[*s4ql.Error](failed(t, literal))
+		is.True(t, ok)
+		is.Equal(t, s4ql.Error{Code: 19, ExtendedCode: 1555, Message: "UNIQUE constraint failed: t1.v1"}, *sqlite)
+		for _, call := range []func() error{
+			func() error { _, err := db.ExecContext(t.Context(), insertParameter, 1); return err },
+			func() error { _, err := db.QueryContext(t.Context(), insertParameter, 1); return err },
+			func() error { _, err := prepared.ExecContext(t.Context(), 1); return err },
+		} {
+			err := call()
+			got, ok := errors.AsType[*s4ql.Error](failed(t, err))
+			is.True(t, ok, err.Error())
+			is.Equal(t, *sqlite, *got)
+		}
+
+		for src, message := range map[string]string{
+			"insert into t2 (v1) values (?)": "no such table: t2",
+			"insert into t1 (v2) values (?)": "table t1 has no column named v2",
+		} {
+			_, err := db.ExecContext(t.Context(), src, 1)
+			got, ok := errors.AsType[*s4ql.Error](failed(t, err))
+			is.True(t, ok, err.Error())
+			is.Equal(t, s4ql.Error{Code: 1, ExtendedCode: 1, Message: message}, *got)
+		}
+		is.EqualSlice(t, []int64{1}, values(t, db, select1))
+	})
+
+	t.Run("should refuse another number of arguments than parameters, directly and prepared, and run nothing", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, t1)
+		cases := []struct {
+			src  string
+			args []any
+			want string
+		}{
+			{src: insertParameter, want: "s4ql: wrong number of arguments: 0 for a statement with 1 parameter"},
+			{src: insertParameter, args: []any{1, 2}, want: "s4ql: wrong number of arguments: 2 for a statement with 1 parameter"},
+			// The number is judged before what each argument is.
+			{src: insertParameter, args: []any{"1", 2.5}, want: "s4ql: wrong number of arguments: 2 for a statement with 1 parameter"},
+			{src: insert1, args: []any{1}, want: "s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
+			{src: select1, args: []any{1}, want: "s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
+			{src: select1, args: []any{"x"}, want: "s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
+			{src: "drop table t1", args: []any{1, 2}, want: "s4ql: wrong number of arguments: 2 for a statement with 0 parameters"},
+			{src: "create table t2 (v2 int primary key) strict, without rowid", args: []any{1, 2, 3}, want: "s4ql: wrong number of arguments: 3 for a statement with 0 parameters"},
+			// SQLite would give that the table does not exist; the arguments are judged first.
+			{src: "insert into t9 (v1) values (?)", want: "s4ql: wrong number of arguments: 0 for a statement with 1 parameter"},
+		}
+		for _, c := range cases {
+			prepared, err := db.PrepareContext(t.Context(), c.src)
+			is.NotError(t, err)
+			for name, call := range map[string]func() error{
+				"Exec":          func() error { _, err := db.ExecContext(t.Context(), c.src, c.args...); return err },
+				"Query":         func() error { _, err := db.QueryContext(t.Context(), c.src, c.args...); return err },
+				"QueryRow":      func() error { return db.QueryRowContext(t.Context(), c.src, c.args...).Scan(new(int64)) },
+				"prepared Exec": func() error { _, err := prepared.ExecContext(t.Context(), c.args...); return err },
+				"prepared Query": func() error {
+					_, err := prepared.QueryContext(t.Context(), c.args...)
+					return err
+				},
+				"prepared QueryRow": func() error { return prepared.QueryRowContext(t.Context(), c.args...).Scan(new(int64)) },
+			} {
+				err := call()
+				is.Equal(t, c.want, failed(t, err).Error(), name, c.src)
+				_, isSQLite := errors.AsType[*s4ql.Error](err)
+				is.True(t, !isSQLite, name, c.src)
+				for _, sentinel := range []error{s4ql.ErrNotSupported, s4ql.ErrNotServing, s4ql.ErrOutcomeUnknown, s4ql.ErrStopped} {
+					is.True(t, !errors.Is(err, sentinel), name, c.src)
+				}
+			}
+			is.NotError(t, prepared.Close())
+		}
+		// Nothing was committed after the create table of t1, which still holds no row.
+		is.EqualSlice(t, []int64{}, values(t, db, select1))
+		is.Equal(t, 1, len(commits(t, w)))
+	})
+
+	t.Run("should refuse an argument of another type, and a named argument, as not supported, and run nothing", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, t1)
+		prepared, err := db.PrepareContext(t.Context(), insertParameter)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, prepared.Close()) }()
+		cases := []struct {
+			arg  any
+			want string
+		}{
+			{arg: nil, want: "argument 1 of type nil"},
+			{arg: sql.NullInt64{}, want: "argument 1 of type nil"},
+			{arg: (*int64)(nil), want: "argument 1 of type nil"},
+			{arg: "1", want: "argument 1 of type string"},
+			{arg: 1.0, want: "argument 1 of type float64"},
+			{arg: float32(1), want: "argument 1 of type float64"},
+			{arg: true, want: "argument 1 of type bool"},
+			{arg: []byte{1}, want: "argument 1 of type []uint8"},
+			{arg: time.Time{}, want: "argument 1 of type time.Time"},
+			{arg: uint64(9223372036854775808), want: "argument 1 of type uint64, whose value does not fit a signed 64-bit integer"},
+			// database/sql's conversion would make these a negative int64.
+			{arg: uint(9223372036854775808), want: "argument 1 of type uint, whose value does not fit a signed 64-bit integer"},
+			{arg: new(uint(18446744073709551615)), want: "argument 1 of type *uint, whose value does not fit a signed 64-bit integer"},
+			{arg: uintptr(9223372036854775808), want: "argument 1 of type uintptr, whose value does not fit a signed 64-bit integer"},
+			{arg: struct{}{}, want: "argument 1 of type struct {}, which database/sql cannot convert"},
+			{arg: failingValuer{}, want: "argument 1 of type s4ql_test.failingValuer, which database/sql cannot convert"},
+			{arg: sql.Named("v", 1), want: `the named argument "v"`},
+		}
+		for _, c := range cases {
+			_, err := db.ExecContext(t.Context(), insertParameter, c.arg)
+			is.Equal(t, c.want, notSupported(t, err), fmt.Sprintf("%T", c.arg))
+			_, err = db.QueryContext(t.Context(), insertParameter, c.arg)
+			is.Equal(t, c.want, notSupported(t, err), fmt.Sprintf("%T", c.arg))
+			_, err = prepared.ExecContext(t.Context(), c.arg)
+			is.Equal(t, c.want, notSupported(t, err), fmt.Sprintf("%T", c.arg))
+		}
+
+		// The error of a driver.Valuer is the cause, and its text is not in the message.
+		_, err = db.ExecContext(t.Context(), insertParameter, failingValuer{})
+		is.Error(t, errNoValue, err)
+		is.Error(t, s4ql.ErrNotSupported, err)
+		is.True(t, !strings.Contains(err.Error(), "4815162342"), err.Error())
+		is.EqualSlice(t, []int64{}, values(t, db, select1))
+		is.Equal(t, 1, len(commits(t, w)))
+	})
+
+	t.Run("should keep the arguments in the annotation of the commit, and give the same rows from an empty cache after a restart", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, t1)
+		_, err := db.ExecContext(t.Context(), insertParameter, -9223372036854775808)
+		is.NotError(t, err)
+		prepared, err := db.PrepareContext(t.Context(), "insert into t1 (v1) values ( ? ) -- after")
+		is.NotError(t, err)
+		for _, v := range []int64{7, 9223372036854775807} {
+			_, err = prepared.ExecContext(t.Context(), v)
+			is.NotError(t, err)
+		}
+		_, err = prepared.ExecContext(t.Context(), 7)
+		is.Equal(t, "UNIQUE constraint failed: t1.v1", failed(t, err).Error())
+		is.NotError(t, prepared.Close())
+		exec(t, db, "insert into t1 (v1) values (1)")
+		is.EqualSlice(t, []string{
+			t1,
+			"insert into t1 (v1) values (?) with -9223372036854775808",
+			"insert into t1 (v1) values ( ? ) with 7",
+			"insert into t1 (v1) values ( ? ) with 9223372036854775807",
+			"insert into t1 (v1) values (1)",
+		}, annotations(t, w))
+		want := values(t, db, select1)
+		is.EqualSlice(t, []int64{-9223372036854775808, 1, 7, 9223372036854775807}, want)
+		is.NotError(t, db.Close())
+
+		db = w.serve(t, "b")
+		is.EqualSlice(t, want, values(t, db, select1))
+		_, err = db.ExecContext(t.Context(), insertParameter, 7)
+		is.Equal(t, "UNIQUE constraint failed: t1.v1", failed(t, err).Error())
 	})
 }
 
@@ -449,13 +713,22 @@ func TestConn_Raw(t *testing.T) {
 			res, err := insert.Exec(nil) //nolint:staticcheck // As above.
 			is.Equal(t, int64(1), affected(t, res, err))
 			_, err = insert.Exec([]driver.Value{int64(1)}) //nolint:staticcheck // As above.
-			is.Equal(t, "parameters", notSupported(t, err))
+			is.Equal(t, "s4ql: wrong number of arguments: 1 for a statement with 0 parameters", failed(t, err).Error())
 			is.NotError(t, insert.Close())
+
+			// The arguments go to the statement by position, with no name.
+			insertParameter, err := c.Prepare("insert into t1 (v1) values (?)")
+			is.NotError(t, err)
+			_, err = insertParameter.Exec([]driver.Value{int64(1)}) //nolint:staticcheck // As above.
+			is.Equal(t, "UNIQUE constraint failed: t1.v1", failed(t, err).Error())
+			_, err = insertParameter.Query([]driver.Value{"1"}) //nolint:staticcheck // As above.
+			is.Equal(t, "argument 1 of type string", notSupported(t, err))
+			is.NotError(t, insertParameter.Close())
 
 			query, err := c.Prepare(select1)
 			is.NotError(t, err)
 			_, err = query.Query([]driver.Value{int64(1)}) //nolint:staticcheck // As above.
-			is.Equal(t, "parameters", notSupported(t, err))
+			is.Equal(t, "s4ql: wrong number of arguments: 1 for a statement with 0 parameters", failed(t, err).Error())
 			rows, err := query.Query(nil) //nolint:staticcheck // As above.
 			is.NotError(t, err)
 			is.EqualSlice(t, []string{"v1"}, rows.Columns())
@@ -1043,6 +1316,17 @@ func TestStop(t *testing.T) {
 		again, err := db.PrepareContext(t.Context(), select1)
 		is.NotError(t, err)
 		_, err = again.QueryContext(t.Context())
+		stopped(err)
+
+		// What the text and the arguments decide does not either, and a statement with arguments that
+		// reaches the instance gets the stop.
+		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (? ?)", 1)
+		is.Equal(t, `near "?": syntax error`, failed(t, err).Error())
+		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (?)", 1, 2)
+		is.Equal(t, "s4ql: wrong number of arguments: 2 for a statement with 1 parameter", failed(t, err).Error())
+		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (?)", 1.5)
+		is.Equal(t, "argument 1 of type float64", notSupported(t, err))
+		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (?)", 6)
 		stopped(err)
 
 		// Recovery is a normal start: the application closes the database and opens it again, and

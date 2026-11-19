@@ -106,6 +106,11 @@ func publicError(err error) error {
 		// The message of the error itself, which starts with "s4ql: not supported: ".
 		return &failure{is: ErrNotSupported, message: ns.Error(), cause: err}
 	}
+	if errors.Is(err, stmt.ErrNotSupported) {
+		// An argument that the engine does not support, whose message starts with "s4ql: not
+		// supported: ".
+		return &failure{is: ErrNotSupported, message: err.Error(), cause: err}
+	}
 	if errors.Is(err, engine.ErrNoStatement) {
 		return &failure{is: ErrNotSupported, message: "s4ql: not supported: a text that holds no statement", cause: err}
 	}

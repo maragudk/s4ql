@@ -20,6 +20,7 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql"
+	"maragu.dev/s4ql/internal/engine"
 	sqloracle "maragu.dev/s4ql/internal/sql/oracle"
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
@@ -35,9 +36,10 @@ const (
 	callPrepareExec  call = "prepare, exec"
 	callPrepareQuery call = "prepare, query"
 	callQueryRow     call = "query row"
-	// callExecArgument is Exec with one argument, which s4ql does not support: a text gets SQLite's
-	// syntax error or the "not supported" of the text, as without the argument, and a statement that
-	// s4ql supports gets "not supported: parameters".
+	// callExecArgument is Exec with one argument, the integer 1: a text gets SQLite's syntax error or
+	// the "not supported" of the text, as without the argument, a statement that s4ql supports with
+	// no parameter gets s4ql's error of the wrong number of arguments, and one with one parameter
+	// runs.
 	callExecArgument call = "exec with an argument"
 	// callBegin is BeginTx, which runs no text, and which s4ql does not support.
 	callBegin call = "begin"
@@ -235,6 +237,16 @@ func s4qlText(tb testing.TB, err error) string {
 		}
 		return err.Error()
 	}
+	if strings.HasPrefix(err.Error(), wrongArguments) {
+		// Another number of arguments than the statement has parameters, which is an error of s4ql's
+		// own and matches none of its sentinels.
+		for _, sentinel := range []error{s4ql.ErrNotServing, s4ql.ErrOutcomeUnknown, s4ql.ErrStopped} {
+			if errors.Is(err, sentinel) {
+				tb.Fatalf("s4ql gives %q, which matches %v", err, sentinel)
+			}
+		}
+		return err.Error()
+	}
 	tb.Fatalf("s4ql gives %v", err)
 	return ""
 }
@@ -345,9 +357,13 @@ func (y tally) excused(kind string) {
 	}
 }
 
+// wrongArguments starts the message of s4ql's error of another number of arguments than the
+// statement has parameters.
+const wrongArguments = "s4ql: wrong number of arguments: "
+
 // messageKind of an error's text: its message without the names.
 func messageKind(err string) string {
-	for _, kind := range []string{"already exists", "no such table", "has no column named", "UNIQUE constraint failed", "syntax error", "incomplete input", "no rows"} {
+	for _, kind := range []string{"already exists", "no such table", "has no column named", "UNIQUE constraint failed", "syntax error", "incomplete input", "no rows", "wrong number of arguments"} {
 		if strings.Contains(err, kind) {
 			return kind
 		}
@@ -446,12 +462,18 @@ func (p *pair) compare(src string, c call, supported bool, got outcome) string {
 	if c == callBegin {
 		return fmt.Sprintf("%q: s4ql gives %v, and supports no %v", src, got, c)
 	}
+	if strings.HasPrefix(got.err, wrongArguments) {
+		return checkArguments(src, c, got)
+	}
 	if c == callExecArgument {
-		// What s4ql gives for a text with an argument, other than "not supported", is the syntax error
-		// of the text, which must be SQLite's for the text with the argument. Any other error, or
-		// none, would mean that s4ql ran the statement.
-		if m, ok := strings.CutPrefix(got.err, "1/1: "); !ok || got.failed != "exec" || !sqloracle.IsSyntaxMessage(m) {
-			return fmt.Sprintf("%q: s4ql gives %v, and supports no %v", src, got, c)
+		// What s4ql gives for a text with an argument, other than "not supported" and the error of
+		// the number of arguments, is the syntax error of the text, which must be SQLite's for the text
+		// with the argument, or the outcome of a statement with one parameter, which must be SQLite's
+		// too. Any other error, or none, would mean that s4ql ran a statement that it should not run.
+		s, err := stmt.Check(src)
+		withParameter := err == nil && s != nil && s.Parameters() == 1
+		if m, ok := strings.CutPrefix(got.err, "1/1: "); !withParameter && (!ok || got.failed != "exec" || !sqloracle.IsSyntaxMessage(m)) {
+			return fmt.Sprintf("%q: s4ql gives %v, and supports no %v of it", src, got, c)
 		}
 	}
 
@@ -500,10 +522,10 @@ func (p *pair) checkNotSupported(src string, c call, supported bool, got outcome
 		}
 		return ""
 	case callExecArgument:
-		// The text is judged before the argument: a statement that s4ql supports gets "not supported:
-		// parameters", and any other text the "not supported" that it gets without the argument.
+		// The text is judged before the argument: a text gets the "not supported" that it gets
+		// without the argument, and a statement that s4ql supports gets none.
 		s, err := stmt.Check(src)
-		want := "s4ql: not supported: parameters"
+		want := fmt.Sprintf("no \"not supported\" for the statement %T", s)
 		switch {
 		case err != nil:
 			want = err.Error()
@@ -539,6 +561,23 @@ func (p *pair) checkNotSupported(src string, c call, supported bool, got outcome
 		return ""
 	}
 	is.NotError(tb, s.Close())
+	return ""
+}
+
+// checkArguments of the outcome got of src through the call c, which is s4ql's error of another
+// number of arguments than the statement has parameters: an error of s4ql's own, where SQLite binds
+// NULL to a parameter without an argument and mattn refuses an argument too many itself. It must be
+// the error that [engine.Check] gives for the text with the arguments of c, and come when the
+// statement runs, since Prepare checks only the text.
+func checkArguments(src string, c call, got outcome) string {
+	n := 0
+	if c == callExecArgument {
+		n = 1
+	}
+	want := engine.Check(src, n)
+	if !errors.Is(want, engine.ErrArguments) || got.err != want.Error() || got.failed == "prepare" {
+		return fmt.Sprintf("%q: s4ql gives %v, where its check of the text with %v arguments gives %v", src, got, n, want)
+	}
 	return ""
 }
 
@@ -734,7 +773,7 @@ var sequences = map[string][]step{
 		{callExec, "insert into t1 (v1) values (1), (2)", ""},
 		{callExec, "insert into t1 (v1) values (9223372036854775808)", ""},
 		{callQuery, "select v1 from t1", ""},
-		{callExec, "insert into t1 (v1) values (?)", ""},
+		{callExec, "insert into t1 (v1) values (?)", "exec: exec failed with s4ql: wrong number of arguments: 0 for a statement with 1 parameter"},
 		{callExec, "begin", ""},
 		{callQuery, "select * from t1; select * from t1", ""},
 		{callExec, "create table t2 (v2 integer primary key) strict, without rowid", ""},
@@ -742,7 +781,10 @@ var sequences = map[string][]step{
 		{callPrepareExec, "drop table if exists t1", "prepare, exec: prepare failed with s4ql: not supported: IF EXISTS (at offset 11)"},
 		{callExec, "", "exec: exec failed with s4ql: not supported: a text that holds no statement"},
 		{callPrepareQuery, " ; -- nothing", "prepare, query: prepare failed with s4ql: not supported: a text that holds no statement"},
-		{callExecArgument, "insert into t1 (v1) values (1)", "exec with an argument: exec failed with s4ql: not supported: parameters"},
+		{callExecArgument, "insert into t1 (v1) values (1)", "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
+		{callExec, "insert into t1 (v1) values (?1)", "exec: exec failed with s4ql: not supported: numbered parameter (at offset 28)"},
+		{callExecArgument, "insert into t1 (v1) values (:v)", "exec with an argument: exec failed with s4ql: not supported: named parameter (at offset 28)"},
+		{callExecArgument, "insert into t1 (v1) values (-?)", "exec with an argument: exec failed with s4ql: not supported: parameter after a sign (at offset 29)"},
 		{callBegin, "", "begin: begin failed with s4ql: not supported: transactions"},
 		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows `},
 	},
@@ -753,17 +795,23 @@ var sequences = map[string][]step{
 		{callExecArgument, "selec", `exec with an argument: exec failed with 1/1: near "selec": syntax error`},
 		{callExecArgument, "select v1 from t1 where", "exec with an argument: exec failed with 1/1: incomplete input"},
 		{callExecArgument, "select * from t1 where v1 = 1", "exec with an argument: exec failed with s4ql: not supported: WHERE clause (at offset 17)"},
-		{callExecArgument, "insert into t1 (v1) values (?)", ""},
+		{callExecArgument, "insert into t1 (v1) values (? ?)", `exec with an argument: exec failed with 1/1: near "?": syntax error`},
+		{callExecArgument, "insert into t1 (v1) values (?)", "exec with an argument: exec failed with 1/1: no such table: t1"},
 		{callExecArgument, " ; -- nothing", "exec with an argument: exec failed with s4ql: not supported: a text that holds no statement"},
-		// A statement that s4ql supports is not run, also where it would fail.
-		{callExecArgument, t1, "exec with an argument: exec failed with s4ql: not supported: parameters"},
+		// A statement without a parameter that s4ql supports is not run, also where it would fail.
+		{callExecArgument, t1, "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
 		{callExec, t1, "exec: 0 affected, last insert id 0"},
-		{callExecArgument, "insert into t1 (v1) values (1)", "exec with an argument: exec failed with s4ql: not supported: parameters"},
-		{callExecArgument, "drop table t1", "exec with an argument: exec failed with s4ql: not supported: parameters"},
-		{callExecArgument, "insert into t9 (v1) values (1)", "exec with an argument: exec failed with s4ql: not supported: parameters"},
+		{callExecArgument, "insert into t1 (v1) values (1)", "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
+		{callExecArgument, "drop table t1", "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
+		{callExecArgument, "insert into t9 (v1) values (1)", "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
 		// SQLite gives `table t1 already exists`, and s4ql what SQLite gives on an empty database.
 		{callExecArgument, "create table t1 (v1 int primary key) strict without rowid", `exec with an argument: exec failed with 1/1: near "without": syntax error`},
 		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows `},
+		// A statement with a parameter runs with the argument.
+		{callExecArgument, "insert into t1 (v1) values (?)", "exec with an argument: 1 affected, last insert id 0"},
+		{callExecArgument, "insert into T1 (V1) values ( ? );", "exec with an argument: exec failed with 19/1555: UNIQUE constraint failed: t1.v1"},
+		{callExec, "insert into t1 (v1) values (?)", "exec: exec failed with s4ql: wrong number of arguments: 0 for a statement with 1 parameter"},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1`},
 	},
 	"a semicolon and a comment after the statement": {
 		{callExec, t1 + "; -- c", "exec: 0 affected, last insert id 0"},
@@ -877,7 +925,7 @@ func TestGenerated(t *testing.T) {
 
 	for _, kind := range []string{
 		"createtable ok", "createtable already exists", "createtable no rows",
-		"insert ok", "insert UNIQUE constraint failed", "insert has no column named", "insert no such table", "insert no rows", "insert not supported",
+		"insert ok", "insert UNIQUE constraint failed", "insert has no column named", "insert no such table", "insert no rows", "insert wrong number of arguments",
 		"select ok", "select ok with rows", "select no such table", "select no rows",
 		"droptable ok", "droptable no such table",
 		"other not supported", "other syntax error", "other incomplete input", "begin not supported",

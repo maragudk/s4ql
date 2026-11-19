@@ -97,10 +97,10 @@ func (x *memTx) upsert(_ context.Context, name string, row []*s4qlpb.Value) erro
 	return nil
 }
 
-func (x *memTx) position() format.Name                  { return format.EmptyLog }
-func (x *memTx) annotate(context.Context, string) error { return nil }
-func (x *memTx) rollback(context.Context) error         { return nil }
-func (x *memTx) end(context.Context) error              { return nil }
+func (x *memTx) position() format.Name                                   { return format.EmptyLog }
+func (x *memTx) annotate(context.Context, string, []*s4qlpb.Value) error { return nil }
+func (x *memTx) rollback(context.Context) error                          { return nil }
+func (x *memTx) end(context.Context) error                               { return nil }
 
 func (x *memTx) commit(context.Context) error {
 	x.m.tables = x.tables

@@ -23,7 +23,7 @@ type Node interface {
 	node()
 }
 
-// Expr is an expression that gives a value: an [*Integer].
+// Expr is an expression that gives a value: an [*Integer] or a [*Parameter].
 type Expr interface {
 	expr()
 }
@@ -82,6 +82,12 @@ type Integer struct {
 	Value int64
 }
 
+// Parameter is the argument that the statement is run with for its parameter of the number Number,
+// which counts from 1.
+type Parameter struct {
+	Number int
+}
+
 func (*CreateTable) plan() {}
 func (*DropTable) plan()   {}
 func (*Insert) plan()      {}
@@ -90,6 +96,7 @@ func (*Scan) node()        {}
 func (*Values) node()      {}
 func (*Project) node()     {}
 func (*Integer) expr()     {}
+func (*Parameter) expr()   {}
 
 // NewPlan of the statement s.
 func NewPlan(s stmt.Statement) Plan {
@@ -99,7 +106,11 @@ func NewPlan(s stmt.Statement) Plan {
 	case *stmt.DropTable:
 		return &DropTable{Table: s.Table}
 	case *stmt.Insert:
-		return &Insert{Table: s.Table, Columns: []stmt.Name{s.Column}, Source: &Values{Rows: [][]Expr{{&Integer{Value: s.Value}}}}}
+		var value Expr = &Integer{Value: s.Value}
+		if s.Parameter > 0 {
+			value = &Parameter{Number: s.Parameter}
+		}
+		return &Insert{Table: s.Table, Columns: []stmt.Name{s.Column}, Source: &Values{Rows: [][]Expr{{value}}}}
 	case *stmt.Select:
 		return &Query{Root: &Project{Source: &Scan{Table: s.Table}, Star: true}}
 	}
@@ -185,6 +196,8 @@ func formatExpr(e Expr) string {
 	switch e := e.(type) {
 	case *Integer:
 		return fmt.Sprint(e.Value)
+	case *Parameter:
+		return fmt.Sprint("?", e.Number)
 	}
 	panic(fmt.Sprintf("engine: an expression of type %T", e))
 }

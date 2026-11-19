@@ -227,8 +227,9 @@ func buildNode(ctx context.Context, r reader, n Node) (source, error) {
 	return nil, internalError("a query of a node of type %T", n)
 }
 
-// buildValues: the source of the rows of the node n of an insert, which is one row of one value.
-func buildValues(n Node) (rowSource, error) {
+// buildValues: the source of the rows of the node n of an insert, which is one row of one value, with
+// args for its parameters.
+func buildValues(n Node, args []*s4qlpb.Value) (rowSource, error) {
 	v, ok := n.(*Values)
 	if !ok {
 		return nil, internalError("an insert from a node of type %T", n)
@@ -239,23 +240,33 @@ func buildValues(n Node) (rowSource, error) {
 	if len(v.Rows[0]) != 1 {
 		return nil, internalError("an insert of %v values", len(v.Rows[0]))
 	}
-	return &values{data: [][]*s4qlpb.Value{{eval(v.Rows[0][0])}}}, nil
+	value, err := eval(v.Rows[0][0], args)
+	if err != nil {
+		return nil, err
+	}
+	return &values{data: [][]*s4qlpb.Value{{value}}}, nil
 }
 
-// eval the constant expression e.
-func eval(e Expr) *s4qlpb.Value {
+// eval the constant expression e, with args for its parameters, which the engine has counted.
+func eval(e Expr, args []*s4qlpb.Value) (*s4qlpb.Value, error) {
 	switch e := e.(type) {
 	case *Integer:
-		return s4qlpb.Value_builder{Integer: new(e.Value)}.Build()
+		return s4qlpb.Value_builder{Integer: new(e.Value)}.Build(), nil
+	case *Parameter:
+		if e.Number < 1 || e.Number > len(args) {
+			return nil, internalError("the parameter %v of a statement with %v arguments", e.Number, len(args))
+		}
+		return args[e.Number-1], nil
 	}
 	panic(fmt.Sprintf("engine: an expression of type %T", e))
 }
 
-// buildSink: the sink of the plan p, in the transaction of w, with the planted bugs of b. It makes the
-// checks that SQLite makes when it prepares the statement, in SQLite's order, and fails with SQLite's
-// error: for CREATE TABLE, a table of the name; for DROP TABLE, no table of the name; for INSERT, no
-// table of the name, and then a column that the table does not have.
-func buildSink(ctx context.Context, w writer, p Plan, b bugs) (sink, error) {
+// buildSink: the sink of the plan p, in the transaction of w, with args for the parameters of p, and
+// with the planted bugs of b. It makes the checks that SQLite makes when it prepares the statement,
+// in SQLite's order, and fails with SQLite's error: for CREATE TABLE, a table of the name; for DROP
+// TABLE, no table of the name; for INSERT, no table of the name, and then a column that the table
+// does not have.
+func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bugs) (sink, error) {
 	switch p := p.(type) {
 	case *CreateTable:
 		existing, err := w.table(ctx, p.Table.Value)
@@ -300,7 +311,7 @@ func buildSink(ctx context.Context, w writer, p Plan, b bugs) (sink, error) {
 		if len(p.Columns) != 1 || len(t.GetColumns()) != 1 || !slices.Equal(t.GetPrimaryKey(), []uint32{0}) {
 			return nil, internalError("an insert of %v columns into a table of %v columns with the key %v", len(p.Columns), len(t.GetColumns()), t.GetPrimaryKey())
 		}
-		src, err := buildValues(p.Source)
+		src, err := buildValues(p.Source, args)
 		if err != nil {
 			return nil, err
 		}
