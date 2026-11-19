@@ -219,6 +219,11 @@ type conn struct {
 	busy, waiting bool
 	shut          []*rows
 	turn          host.Semaphore
+	// held counts the rows of the connection that are not closed, and closeLater is set when the
+	// close of the connection was left to the close of the last of them; see [conn.Close]. mu
+	// guards both.
+	held       int
+	closeLater bool
 }
 
 // enter the connection of the engine for a call of the connection, with the context ctx of the
@@ -333,6 +338,9 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		_ = r.Close()
 		return nil, c.c.public(ctx, errClosed)
 	}
+	c.mu.Lock()
+	c.held++
+	c.mu.Unlock()
 	return held, nil
 }
 
@@ -473,14 +481,28 @@ func (c *conn) CheckNamedValue(nv *driver.NamedValue) error {
 }
 
 // Close the connection: its connection of the engine, and with it its reader, if it has opened
-// one, and its transaction, if one is open, which the close rolls back. database/sql closes a
-// connection after the rows of its queries are closed.
+// one, and its transaction, if one is open, which the close rolls back.
+//
+// database/sql closes a connection after the rows of its queries are closed. Through the driver's
+// own interfaces, rows of the connection that a loop reads can still be open, which the engine
+// does not close the connection beside: they hold the scan of their query, and the end of their
+// transaction, if it ended while they were read. Then the close is left to the close of the last of
+// those rows, and Close returns nil; see [rows.close].
 func (c *conn) Close() error {
 	// database/sql gives no context here.
 	ctx := context.Background()
 	c.enter(ctx)
 	defer c.leave(ctx)
-	return c.c.public(ctx, c.e.Close(ctx))
+	err := c.e.Close(ctx)
+	if errors.Is(err, core.ErrReaderInUse) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.held > 0 {
+			c.closeLater = true
+			return nil
+		}
+	}
+	return c.c.public(ctx, err)
 }
 
 // prepared is a prepared statement: a text that was checked, and that each run checks again, with

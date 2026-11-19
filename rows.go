@@ -224,6 +224,19 @@ func (r *rows) close() error {
 	if l := r.loop; l != nil && l.panic != nil {
 		err = fmt.Errorf("%w: the query panicked: %v", engine.ErrInternal, l.panic)
 	}
+	c := r.conn
+	c.mu.Lock()
+	c.held--
+	later := c.closeLater && c.held == 0
+	if later {
+		c.closeLater = false
+	}
+	c.mu.Unlock()
+	if later {
+		// database/sql closed the connection while these rows were read, and has let go of it; see
+		// [conn.Close]. So nothing else uses it, and nothing can get the error of its close.
+		_ = c.e.Close(context.WithoutCancel(r.ctx))
+	}
 	return err
 }
 

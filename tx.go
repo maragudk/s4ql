@@ -128,7 +128,13 @@ func (c *conn) ResetSession(context.Context) error {
 
 // IsValid reports whether the connection can go back to the pool: not while a transaction is open
 // on it, which database/sql then closes with the connection, and the close rolls the transaction
-// back.
+// back; and not while rows of the connection are open, which database/sql closes before it gives the
+// connection back, but the driver's own interfaces need not. Rows that a loop reads hold the end of
+// their transaction if it ended while they were read, and the next statement on the connection
+// would be refused until they end, so database/sql then closes the connection, which
+// [conn.Close] leaves to the rows.
 func (c *conn) IsValid() bool {
-	return c.tx == nil
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.tx == nil && c.held == 0
 }
