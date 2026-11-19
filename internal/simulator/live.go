@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"maragu.dev/s4ql/internal/sim"
+	"maragu.dev/s4ql/internal/simulator/handoff"
 )
 
 // Live is the answer to a command of a live session. Every answer has the events of the session
@@ -35,14 +36,13 @@ type Live struct {
 }
 
 // session of a live run. Its controller is the first task of the run, which does one command at a
-// time and answers it, and then waits for the next. Both channels are made outside the bubble of the
-// run, so that a wait on them is not durable: while the controller waits for a command, no other
+// time and answers it, and then waits for the next on the line. The line is made outside the bubble
+// of the run, so that a wait on it is not durable: while the controller waits for a command, no other
 // task runs, and fake time stands still, however long the wait.
 type session struct {
 	// instances of the run, for the check of an action.
 	instances int
-	commands  chan command
-	answers   chan answer
+	line      *handoff.Line[command, answer]
 }
 
 // command of a session, for its controller.
@@ -71,8 +71,8 @@ func startSession(t *testing.T, req Request) (*session, answer) {
 	if err != nil {
 		return nil, answer{body: marshal(Live{Error: "the disks of the instances cannot be made: " + err.Error()})}
 	}
-	s := &session{instances: req.Instances, commands: make(chan command), answers: make(chan answer)}
-	go func() {
+	s := &session{instances: req.Instances, line: handoff.New[command, answer]()}
+	first := s.line.Start(func() {
 		var last Live
 		synctest.Test(t, func(t *testing.T) {
 			world := sim.New(req.Seed, sim.Options{Jitter: 50 * time.Millisecond, Buggify: sim.Buggify{On: req.Buggify}, MaxSteps: math.MaxInt})
@@ -87,15 +87,14 @@ func startSession(t *testing.T, req Request) (*session, answer) {
 			}
 		})
 		putDisks(disks)
-		s.answers <- answer{body: marshal(last), final: true}
-	}()
-	return s, <-s.answers
+		s.line.Last(answer{body: marshal(last), final: true})
+	})
+	return s, first
 }
 
 // do the command c in the session, and return the answer.
 func (s *session) do(c command) answer {
-	s.commands <- c
-	return <-s.answers
+	return s.line.Ask(c)
 }
 
 // serve is the first task of a live session, its controller. It starts the instances, answers, and
@@ -108,12 +107,11 @@ func (r *run) serve(ctx context.Context) {
 	var state *State
 	var refusal string
 	for {
-		if refusal != "" {
-			s.answers <- answer{body: marshal(Live{Error: refusal})}
-		} else {
-			s.answers <- answer{body: marshal(Live{T: millis(r.world.Monotonic()), Events: nonNil(r.rec.take()), Steps: r.world.Steps(), State: state})}
+		a := answer{body: marshal(Live{Error: refusal})}
+		if refusal == "" {
+			a = answer{body: marshal(Live{T: millis(r.world.Monotonic()), Events: nonNil(r.rec.take()), Steps: r.world.Steps(), State: state})}
 		}
-		c := <-s.commands
+		c := s.line.Answer(a)
 		state, refusal = nil, ""
 		switch c.kind {
 		case "advance":
