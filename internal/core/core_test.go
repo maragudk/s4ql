@@ -1153,6 +1153,36 @@ func TestOpen_cache(t *testing.T) {
 		}
 	})
 
+	t.Run("should open a cache made before the other types, with its tables of int columns, and read and change them", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k", "v"), upsert("t1", 1, 10), upsert("t1", 2, nil))
+		head := w.manifest(t).Head
+		is.NotError(t, d.Close(t.Context()))
+
+		// The cache as the version before wrote it, statement by statement, at the position of the log.
+		c, err := sqlite.Open(filepath.Join(w.dir, "old.db"))
+		is.NotError(t, err)
+		for _, sql := range []string{
+			"pragma journal_mode = wal",
+			"create table main.s4ql_cache (id integer primary key check (id = 1), version integer not null, head text not null, database text not null) strict",
+			"insert into main.s4ql_cache (id, version, head, database) values (1, 1, '" + head.String() + "', '')",
+			`create table main."t1" ("k" int, "v" int, primary key ("k")) strict, without rowid`,
+			`insert or replace into main."t1" ("k", "v") values (1, 10)`,
+			`insert or replace into main."t1" ("k", "v") values (2, null)`,
+		} {
+			is.NotError(t, c.Exec(sql), sql)
+		}
+		is.NotError(t, c.Close())
+
+		old := w.serve(t, "old", core.Options{})
+		is.Equal(t, "t1(k*0,v): 1,10 | 2,null", read(t, old))
+		transact(t, old, upsert("t1", 3, 30), create("t2", 1, "k"), upsert("t2", 1))
+		is.Equal(t, "t1(k*0,v): 1,10 | 2,null | 3,30\nt2(k*0): 1", read(t, old))
+		is.NotError(t, old.Close(t.Context()))
+		is.Equal(t, "t1(k*0,v): 1,10 | 2,null | 3,30\nt2(k*0): 1", read(t, w.serve(t, "b", core.Options{})))
+	})
+
 	t.Run("should fail for a file that is not a database, and leave it as it is", func(t *testing.T) {
 		w := newWorld(t)
 		path := filepath.Join(w.dir, "a.db")
