@@ -279,7 +279,7 @@ func checkRow(columns int, values []*s4qlpb.Value) error {
 	if len(values) != columns {
 		return refuse(ErrMalformed, "has %v values for %v columns", len(values), columns)
 	}
-	return checkValues(values)
+	return checkStored(values)
 }
 
 // checkPrimaryKey has at least one value, as many as the first key of its batch, and each value is
@@ -291,32 +291,44 @@ func checkPrimaryKey(want int, values []*s4qlpb.Value) error {
 	if len(values) != want {
 		return refuse(ErrMalformed, "has %v values, and the first key of its batch has %v", len(values), want)
 	}
-	return checkValues(values)
+	return checkStored(values)
 }
 
-func checkValues(values []*s4qlpb.Value) error {
+// checkStored values of a row or a primary key: each is valid, and a real is not -0.0, which SQLite
+// stores in a column as 0.0, so that a commit object holds what a cache holds.
+func checkStored(values []*s4qlpb.Value) error {
 	for i, v := range values {
 		if err := checkValue(v); err != nil {
 			return inElement(err, "values", i)
+		}
+		if v.WhichKind() == s4qlpb.Value_Real_case && v.GetReal() == 0 && math.Signbit(v.GetReal()) {
+			return inElement(refuse(ErrMalformed, "is a real that is -0.0, which a column holds as 0.0"), "values", i)
 		}
 	}
 	return nil
 }
 
-// checkValue is one of SQLite's values: it has a known kind, a real is not NaN, which SQLite cannot
-// store, and text is valid UTF-8. The caller runs [checkKnown] on it first.
+// checkValue is one of the values that s4ql stores: it has a known kind, a real is neither NaN,
+// which SQLite stores as NULL, nor infinite, and text is valid UTF-8 and does not hold the character
+// NUL, at which SQLite's functions end text. The caller runs [checkKnown] on it first.
 func checkValue(v *s4qlpb.Value) error {
 	switch v.WhichKind() {
 	case s4qlpb.Value_Integer_case, s4qlpb.Value_Blob_case, s4qlpb.Value_Null_case:
 		return nil
 	case s4qlpb.Value_Real_case:
-		if math.IsNaN(v.GetReal()) {
+		switch r := v.GetReal(); {
+		case math.IsNaN(r):
 			return refuse(ErrMalformed, "is a real that is NaN")
+		case math.IsInf(r, 0):
+			return refuse(ErrMalformed, "is a real that is infinite")
 		}
 		return nil
 	case s4qlpb.Value_Text_case:
-		if !utf8.ValidString(v.GetText()) {
+		switch text := v.GetText(); {
+		case !utf8.ValidString(text):
 			return refuse(ErrMalformed, "is text that is not valid UTF-8")
+		case strings.IndexByte(text, 0) >= 0:
+			return refuse(ErrMalformed, "is text that holds the character NUL")
 		}
 		return nil
 	default:
