@@ -123,6 +123,13 @@ func (f *VFS) Failures() int {
 	return f.fault.Get("failed").Int()
 }
 
+// OpenFiles is the number of files that are open through the VFS now, of every kind. A connection
+// has the file of its database open from its open to its close.
+func (f *VFS) OpenFiles() int {
+	f.mustBeOpen()
+	return f.fault.Get("open").Int()
+}
+
 // Slept is how many times SQLite asked the VFS to sleep, as its busy handler does while it waits
 // for a lock, and for how long in all. The time is what SQLite asked for, not what passed.
 func (f *VFS) Slept() (int, time.Duration) {
