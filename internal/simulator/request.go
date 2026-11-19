@@ -25,8 +25,6 @@ type Request struct {
 	// Leases are the durations of the lease of the instances, one for each in turn, from a. A
 	// restarted instance keeps the duration of the one it replaces.
 	Leases []float64 `json:"leases"`
-	// Readers is the number of read connections of each instance.
-	Readers int `json:"readers"`
 	// Latency is the longest time that a request takes to the store, and again back.
 	Latency  float64  `json:"latency"`
 	Faults   Faults   `json:"faults"`
@@ -124,7 +122,6 @@ const (
 	maxEnd       = 30 * 60 * 1000
 	maxInstances = 5
 	maxCallers   = 8
-	maxReaders   = 8
 	maxSchedule  = 1000
 )
 
@@ -135,7 +132,6 @@ func defaultRequest() Request {
 		End:       120_000,
 		Instances: 3,
 		Leases:    []float64{30_000},
-		Readers:   2,
 		Latency:   50,
 		Workload:  Workload{On: true, Callers: 2, Think: 5_000, Writes: 40, Timeout: 30_000},
 	}
@@ -173,9 +169,6 @@ func (r Request) check() error {
 		if l < 1000 || l > 10*60*1000 || !finite(l) {
 			bad("a lease of %v must be from 1000 to 600000", l)
 		}
-	}
-	if r.Readers < 1 || r.Readers > maxReaders {
-		bad("readers is %v, and must be from 1 to %v", r.Readers, maxReaders)
 	}
 	if !nonNegative(r.Latency) || r.Latency > 60_000 {
 		bad("latency is %v, and must be from 0 to 60000", r.Latency)

@@ -45,7 +45,6 @@ Every time and duration is a number of milliseconds of fake time, which may have
 | `end` | 120000 | above 0, at most 1800000 | The time at which the run ends. |
 | `instances` | 3 | 1 to 5 | The number of instances, which stays the same for the run. |
 | `leases` | `[30000]` | at least one, each 1000 to 600000 | The durations of the leases. Instance number i, from 0, gets `leases[i mod length]`. A restarted instance keeps its duration. A list that is given replaces the default. |
-| `readers` | 2 | 1 to 8 | The read connections of each instance. |
 | `latency` | 50 | 0 to 60000 | The longest time that a request takes to the store, and again back. Each way takes a time from 0 to `latency`, from the seed. |
 | `faults` | all 0 | see [Faults](#faults) | The faults that happen at random. |
 | `buggify` | false | | Switches buggify of the storage core on for the run. Each point is then on with the probability 0.25, and a point that is on fires with the probability 0.25 each time the code reaches it. |

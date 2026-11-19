@@ -302,9 +302,8 @@ func (r *run) start(ctx context.Context, in *instance, path string) {
 // open the database of p, as a task of the scheduler or of p.
 func (r *run) open(ctx context.Context, p *process) {
 	options := core.Options{
-		Lease:   p.i.lease,
-		Readers: r.req.Readers,
-		Logger:  slog.New(coreHandler{r: r, p: p}),
+		Lease:  p.i.lease,
+		Logger: slog.New(coreHandler{r: r, p: p}),
 	}
 	d, err := core.Open(ctx, procHost{Instance: p.inst, r: r, p: p}, p.client, p.path, prefix, options)
 	if err != nil {
@@ -490,9 +489,15 @@ func (r *run) write(ctx context.Context, d *core.DB, value int64) (string, strin
 }
 
 // read the keys of the table of the workload in a read transaction on d, and say how the call
-// ended, its error, and what it saw.
+// ended, its error, and what it saw. The call opens a reader of its own for the transaction, and
+// closes it, as a connection that a pool opens for one query and then drops.
 func (r *run) read(ctx context.Context, d *core.DB) (string, string, []int64, format.Name) {
-	rtx, err := d.Read(ctx)
+	rd, err := d.Reader(ctx)
+	if err != nil {
+		return refusal(err), err.Error(), nil, format.Name{}
+	}
+	defer func() { _ = rd.Close(ctx) }()
+	rtx, err := rd.Read(ctx)
 	if err != nil {
 		return refusal(err), err.Error(), nil, format.Name{}
 	}
