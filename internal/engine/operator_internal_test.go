@@ -413,6 +413,33 @@ func TestInsert(t *testing.T) {
 		is.True(t, errors.Is(err, context.Canceled))
 	})
 
+	t.Run("should check the type of each value of every row, and fail with an internal error for rows that its expressions do not match", func(t *testing.T) {
+		f := newFake().with("t", []string{"v"})
+		ct := f.tables["t"].ct
+		one := []Expr{&Integer{Value: 1}}
+		is.NotError(t, (&insert{w: fakeTx{f}, table: ct, src: ints(1, 2), exprs: [][]Expr{one, one}}).check())
+
+		src := ints(1)
+		src.data = append(src.data, []*s4qlpb.Value{s4qlpb.Value_builder{Text: new("a")}.Build()})
+		err := (&insert{w: fakeTx{f}, table: ct, src: src, exprs: [][]Expr{one, {&Text{Value: "a"}}}}).check()
+		is.True(t, errors.Is(err, stmt.ErrNotSupported))
+		is.Equal(t, "s4ql: not supported: a string literal for the column t.v of type INT", err.Error())
+
+		for _, c := range []struct {
+			i    *insert
+			want string
+		}{
+			{i: &insert{table: ct, src: ints(1, 2), exprs: [][]Expr{one}}, want: "an insert of 2 rows from 1 rows of expressions"},
+			{i: &insert{table: ct, src: ints(1), exprs: [][]Expr{one, one}}, want: "an insert of 1 rows from 2 rows of expressions"},
+			{i: &insert{table: ct, src: ints(1), exprs: [][]Expr{{}}}, want: "an insert of 1 values from 0 expressions"},
+			{i: &insert{table: ct, src: ints(1), exprs: [][]Expr{{one[0], one[0]}}}, want: "an insert of 1 values from 2 expressions"},
+		} {
+			err := c.i.check()
+			is.True(t, errors.Is(err, ErrInternal), c.want)
+			is.Equal(t, "s4ql: internal error: "+c.want, err.Error())
+		}
+	})
+
 	t.Run("should write without the check with the planted bug", func(t *testing.T) {
 		f := newFake().with("t", []string{"v"}, []int64{1})
 		_, err := (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1), skipUnique: true}).run(t.Context())
