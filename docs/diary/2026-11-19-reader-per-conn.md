@@ -133,3 +133,165 @@ The order of the refusals in `Reader.Read`. The stop comes first, so that a read
 ### Future work
 
 `DB.acquireServing` has one caller left, `DB.Begin`.
+
+## Step 3: A connection of the engine, and the simulator
+
+**Author:** reader-per-conn builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "How the engine's API takes the reader is yours to design; keep it small and say why. [...] The engine and the core run under the deterministic simulation, where there is no `database/sql`; decide how the simulation, the engine's tests, and the differential tests get their readers (for example each simulated client owns one, as a connection does), and keep the simulation deterministic and its coverage at least what it is (it asserts minimum event counts and finds planted bugs; all of that must still pass, and the planted bugs must still be found)."
+**Interpretation:** The engine gets a type that stands for one connection, and its tests, its simulation, and the simulator use it or a reader of the core.
+**Inferred intent:** One way to read, from the driver down to the core, which the simulations exercise as the driver does.
+
+### What I did
+
+In `/internal/engine/engine.go`: `Engine.Conn()` gives a `*Conn`, with `Exec`, `Query`, and `Close`. `Engine.Exec` and `Engine.Query` are gone, and their bodies are methods of `Conn`. A `Conn` opens its reader in `Conn.read`, at its first statement that reads, and keeps it until `Conn.Close`. A statement on a closed `Conn` is an internal error. `Conn.Close` passes `core.ErrReaderInUse` on and stays open.
+
+In `/internal/engine/storage.go`: the interface `database` has `reader(ctx)` in place of `read(ctx)`, and a `readConn` has `read` and `close`. `coreReader` is the one of a `*core.Reader`. `fromCore` takes `core.ErrReaderClosed` for a fault of the engine. `core.ErrReaderBusy` passes through as it is: it is the error of a statement that reads while the rows of an earlier query of its connection are open, which is what the caller did and no fault of the engine.
+
+Why a `Conn`, and not a reader as an argument of `Exec` and `Query`: only the engine knows whether a statement reads, after it has parsed it, so the engine must be the one that opens the reader, or a connection that only writes would open one. And a connection is where the state of a connection will live when a transaction spans statements.
+
+The tests:
+
+- The fakes, `fake` in `/internal/engine/operator_internal_test.go` and `memory` in `/internal/engine/memory_internal_test.go`, are their own readers. `fake` counts the readers that are opened and closed.
+- `TestConn` in `/internal/engine/engine_internal_test.go`, on the fake: no reader for a connection that only writes, one from the first read on, and none after the close; a reader for each connection; a reader that cannot be opened, which fails the statement with one event, and the next statement, which opens one; the close while the reader is in use, and with another error; and the statements on a closed connection.
+- `TestConn` in `/internal/engine/engine_test.go`, on the core: twelve connections with a query each, each started after one more insert, each on its own state; a second query and a `select` through `Exec` on a connection whose rows are open, refused with `core.ErrReaderBusy` and not as an internal error, while an insert on it runs; and the rows and the statements of a connection whose instance is closed, and its close after that.
+- The `instance` of the tests, in `/internal/engine/differential_test.go`, has one connection, which it closes after its database, so every test closes a connection whose reader the close of the instance has closed. `noneOpen` requires that a write transaction begins and that a query on the connection gets its read transaction (`readFree`). `TestEngine_concurrent` gives each goroutine a connection.
+- The simulation, in `/internal/engine/simulation_test.go`: each caller is a `client` with a connection of its own, which it replaces when its node has opened its database again. `run.readsFree` replaces `run.takeReaders`: after the workload, every connection of the callers of a live instance must run a query of a table that does not exist. A connection with a read transaction left open fails it with `core.ErrReaderBusy`, which is a violation at once.
+
+In `/internal/simulator`: a read opens a reader and closes it. The setting `readers` of the request is gone, with its limit and its row in the README.
+
+In `/internal/sql/mutation/equivalent.txt`: the keys of the two equivalent mutants of `Engine.write` and `Engine.checkOutside` name `Conn.write` and `Conn.checkOutside`.
+
+### Why
+
+A connection of the engine maps onto a `driver.Conn` and onto a caller of a simulation in the same way, so the simulations run the path that the driver runs.
+
+### What worked
+
+Making the fakes their own readers kept the calls of the internal tests as they were, apart from the helpers, which now give a connection of a new engine.
+
+### What didn't work
+
+The first run of the engine's tests after the change failed in two tests that run a statement on an instance that they have closed, because the helper `instance.close` closed the connection first, and a statement on a closed connection is an internal error:
+
+```
+--- FAIL: TestEngine_errors/should_pass_an_error_of_the_core_through_as_it_is (0.00s)
+    engine_test.go:161: Not true
+--- FAIL: TestEngine_events/should_log_one_event_for_each_statement,_with_its_kind,_table,_outcome,_rows,_and_position,_and_the_text_at_Debug_only (0.00s)
+    engine_test.go:473: Expected "DEBUG", but got "ERROR" (type slog.Level)
+```
+
+`instance.close` now closes only the database, and the connection is closed after it, at the next open or at the end of the test.
+
+`TestSimulation_plantedBugs` matches each bug to the text of the violation that finds it, and the texts changed twice, once for each version of what a busy reader does:
+
+```
+simulation_test.go:1167: seed 3 finds the bug by another violation: [statement 15, " -- c\n; ;    sEleCt /* id 15 */   /**/\n*  froM -- c\n\"Desc\";;": the reader has a read transaction open [...] b2 has a connection of a caller with a read transaction left open after the end of the workload: the reader has a read transaction open]
+```
+
+`keepRead` is now found by "a read transaction left open after the end of the workload", and by the later queries of the same connection, which fail with "the reader has a read transaction open". Before, it was found only at the end, when an instance could not take all its read connections.
+
+`make test` failed in a package that this work did not touch:
+
+```
+--- FAIL: TestEquivalent/should_name_only_mutants_that_the_generator_makes (0.19s)
+    generate_test.go:203: no such mutant: internal/engine/engine.go Engine.write condition: err == nil => false
+```
+
+The list of equivalent mutants names each mutant by its function, and the two functions are methods of `Conn` now.
+
+### What I learned
+
+- The planted bug `keepRead` shows at the next query of its connection now, and no longer only when every read connection of the instance is taken. With a reader for each connection, a read transaction that is left open is the problem of one connection.
+- The engine is under mutation testing, and `/internal/sql/mutation/equivalent.txt` holds the names of its functions.
+
+### What was tricky
+
+The check after the workload in the simulation. An instance runs a query only while it holds the lease, so the check still closes each instance whose connections are free, to hand the lease to the next, and still waits ten minutes for one that does not serve. A connection that is busy will stay busy, so that instance is not asked again.
+
+### What warrants review
+
+- `Conn.Close` in `/internal/engine/engine.go`: after any error of the close of its reader but `core.ErrReaderInUse`, the connection counts as closed.
+- `run.readsFree` in `/internal/engine/simulation_test.go`.
+- The request of the simulator has lost a field. A request that still gives `readers` is refused, as any member that is no field is. Nothing under `/site` gives it.
+
+### Future work
+
+None.
+
+## Step 4: The driver
+
+**Author:** reader-per-conn builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "A connection of the driver (`driver.Conn`) owns one reader connection to the cache. It is opened when the connection first needs it (a connection that only writes never opens one), and closed when `database/sql` closes the connection, so that idle connections that the pool drops give their reader back, and the pool's settings (`SetMaxOpenConns`, `SetMaxIdleConns`, `SetConnMaxIdleTime`, `SetConnMaxLifetime`) govern the readers too. [...] At the root, through `database/sql`: more queries than the old fixed number run at once [...]; with `SetMaxOpenConns(k)` at most k reads run at once and the next waits and ends with its context; a connection that the pool closes gives its reader back [...]; `db.Close()` and a stop end every reader with rows open on several connections; nothing is left open after close".
+**Interpretation:** `conn` in `/conn.go` owns a `*engine.Conn` and closes it in `conn.Close`. The package documentation says what the pool decides. The tests go through `database/sql` and count what is open in SQLite.
+**Inferred intent:** The spec's sentence is true of the driver, and an application reads in the package documentation what that means for it.
+
+### What I did
+
+In `/conn.go`: `connector.Connect` gives a `conn` with a connection of the engine, and `conn.Close` closes it. In `/s4ql.go`: the production wiring passes `core.Options{}`, and the paragraph of the package documentation that said "up to four at once" now says that the pool sets how many reads run at once, that a connection opens its connection to the cache at its first read, that this is two open files, that a cache that cannot be opened for it stops the instance, and that a statement that reads on a connection whose rows are open is not supported. In `/errors.go`: `publicError` gives `core.ErrReaderBusy` as an error that matches `ErrNotSupported`, with the message "s4ql: not supported: a statement that reads on a connection whose rows of an earlier query are open". `go doc -all .` prints the same names as before.
+
+In `/internal/sqlite/faultvfs`: `VFS.OpenFiles()`, in the native build and in the browser's, with a test.
+
+The tests:
+
+- `TestReaders` in `/conn_test.go`, with the cache opened through a VFS of `faultvfs`: twenty pinned connections with a query each, each started after one more insert, each on its own state while a further insert commits, with two files more open for each; a connection that writes, pings, and prepares, which opens nothing, and then reads, which opens two files that stay open while the pool keeps the connection and close with `SetMaxIdleConns(0)`, and a pool with no and with one idle connection; and `db.Close()` with rows open on twelve connections and a connection held, after which no file is open, before the application has closed the rows or the connection.
+- `TestRows` in `/rows_test.go`: the test of the fifth query that waits is now the test of the pool, with `SetMaxOpenConns(4)`: a query, a `select` through `Exec`, and an insert each wait for a connection and end with their context, and a query that waits gets the connection that is freed. The test "should run several queries at once on one connection" is replaced by the refusal.
+- `TestStop` in `/conn_test.go`: rows on five connections fail at their next row after the stop, and no file is open after the close; and a new subtest for the stop when the cache cannot be opened for the reader of a connection.
+- `readersFree` in `/s4ql_test.go` bounds the pool to the connections that it has, takes them all, and runs a query on each, so it waits for the connections whose rows `database/sql` is still closing, and fails for a connection that is held or whose read was left open.
+- `/internal/store/s3store/s3store_test.go` opens readers in its two helpers that read. Those tests need a real store and were not run.
+
+The new and the changed tests ran 50 times with `-shuffle on`, and 50 times under `-race`, in the root package, the core, and the engine, and passed.
+
+### Why
+
+`database/sql` already closes a connection in each of the cases that the brief names, so the one thing the driver adds is that a connection has something to close.
+
+### What worked
+
+Counting files through the VFS. The counts are exact at every step: two for the write connection, two more for each reader that has read, and none after the close of the database.
+
+### What didn't work
+
+`TestConn_Raw` failed after 60 seconds with the new `readersFree`:
+
+```
+--- FAIL: TestConn_Raw/should_run_the_calls_of_the_driver's_interfaces_that_database/sql_makes_no_more,_as_it_runs_those_with_a_context (60.01s)
+    conn_test.go:468: Expected nil error, but got "context deadline exceeded" (type context.deadlineExceededError)
+    conn_test.go:468: a connection is held
+```
+
+The test called `readersFree` while it still held its `sql.Conn`, which the old check did not mind. It now closes the connection first, and the check then also covers the reader of that connection.
+
+The first version of the new subtest of `TestStop` expected the rows that were open at the stop to fail, and they ended without an error:
+
+```
+conn_test.go:1086: Not true
+conn_test.go:1086: no error
+```
+
+The table had one row, which the test had read. A scan that comes to its end after a stop ends without an error, as it did before this work; only a further row brings the stop. The table has two rows now.
+
+### What I learned
+
+- `database/sql` holds the mutex of a `driverConn` during `Rows.Next`, `Rows.Close`, and every statement, so a driver must never wait, inside a statement, for something that only a call on the same connection can end. That is what rules out a second query that waits for the rows of the first.
+- `DB.SetMaxIdleConns` closes the idle connections that are too many before it returns, and a connection that is released to a pool that is full of idle connections is closed in the call that releases it. Both let a test count without waiting.
+- A query of 100 rows took 212 µs on a connection that the pool kept and 434 µs on a new connection, whose reader is opened for it and closed after it, on the machine of the build while other tests ran (`testing.Benchmark` in a throwaway test, with the default of two idle connections and with none). `database/sql` keeps two idle connections by default, so an application that runs more than two queries at once opens and closes readers unless it raises `SetMaxIdleConns`.
+
+### What was tricky
+
+What `readersFree` should mean without a fixed number of readers. A read that is left open is now the problem of one connection of the pool, so the check has to reach every connection, and it has to wait for the rows that `database/sql` closes by itself after their context has ended.
+
+### What warrants review
+
+- The package documentation in `/s4ql.go`, which an application reads.
+- That a second query on one `sql.Conn` is now refused, where it ran before. An application that loops over the rows of a query on a `sql.Conn` and runs a query on the same `sql.Conn` inside the loop gets "not supported". On a `*sql.DB` nothing changes, because each query takes a connection of its own.
+- `SetConnMaxIdleTime` and `SetConnMaxLifetime` have no test of their own, because one would depend on time. They close a connection through the same `driver.Conn.Close` as `SetMaxIdleConns`.
+
+### Future work
+
+Whether `Open` should raise the number of idle connections that the pool keeps is a question for the lead: the default of two means that a third query at once pays for a new reader. Nothing was changed.
