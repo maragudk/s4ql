@@ -486,7 +486,8 @@ func after(commits map[string]*CommitState, from, to string, n int) string {
 	return way[len(way)-n]
 }
 
-// attrInt is an attribute of the core that is an integer: as the engine has it, or as a number of JSON. as the engine has it, or a number as JSON has it.
+// attrInt is an attribute of the core that is an integer: an int64 in the events of the engine, and a
+// float64 in events that went through JSON, as those that a test or a page folds.
 func attrInt(v any) int {
 	switch n := v.(type) {
 	case int64:

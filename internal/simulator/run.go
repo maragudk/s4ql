@@ -538,15 +538,19 @@ func (c *call) event(in *instance, p *process, what string) Event {
 	return e
 }
 
-// callEnded with the event e, which ends the call c: the checker learns how a write ended, and the
-// event is recorded.
+// callEnded with the event e, which ends the call c unless it has ended already: the checker learns
+// how a write ended, and the event is recorded.
 func (r *run) callEnded(ctx context.Context, c *call, e Event) {
+	r.mu.Lock()
+	ended := c.ended
+	c.ended = true
+	r.mu.Unlock()
+	if ended {
+		return
+	}
 	if c.write {
 		r.check.writeEnded(ctx, c.value, e.What)
 	}
-	r.mu.Lock()
-	c.ended = true
-	r.mu.Unlock()
 	r.rec.add(e)
 }
 
@@ -722,8 +726,9 @@ func (r *run) act(ctx context.Context, i int, a Action) {
 		e.On = new(a.On)
 	}
 	switch a.Do {
-	case "hangNetwork", "disconnectNetwork", "failDisk", "client":
-		// The faults belong to the instance, and the client calls an instance whatever runs it.
+	case "hangNetwork", "disconnectNetwork", "failDisk", "client", "loseAnswer", "failRequest":
+		// The faults belong to the instance, an armed fault only names the instance of its request,
+		// and the client calls an instance whatever runs it.
 	default:
 		if in != nil && p == nil {
 			ignore("the instance has not started")

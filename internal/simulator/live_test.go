@@ -247,9 +247,15 @@ func TestEngine_live(t *testing.T) {
 
 	// The client alone calls less than the four callers: shorter pauses give it about as many calls,
 	// and fewer rows to keep fill the table as early.
-	for _, settings := range []string{`{"seed": 10}`, `{"seed": 10, "workload": {"callers": 0, "think": 1000, "keep": 20}, "client": {"instance": "a"}, "standby": true}`} {
-		t.Run("should take as many steps and give as many events for a fake minute after an hour as at the start, with "+settings, func(t *testing.T) {
-			l := startLive(t, settings)
+	for _, test := range []struct {
+		settings string
+		log      int
+	}{
+		{settings: `{"seed": 10}`, log: 500},
+		{settings: `{"seed": 10, "workload": {"callers": 0, "think": 1000, "keep": 20}, "client": {"instance": "a"}, "standby": true}`, log: 300},
+	} {
+		t.Run("should take as many steps and give as many events for a fake minute after an hour as at the start, with "+test.settings, func(t *testing.T) {
+			l := startLive(t, test.settings)
 			type minute struct{ steps, events, bytes int }
 			var minutes []minute
 			steps := l.last.Steps
@@ -276,7 +282,7 @@ func TestEngine_live(t *testing.T) {
 			is.True(t, float64(late.events) < 1.15*float64(early.events), "events")
 			is.True(t, float64(late.bytes) < 1.15*float64(early.bytes), "bytes")
 			rows := l.do("now", "{}").State
-			is.True(t, len(rows.Bucket.Log) > 200, "a long log")
+			is.True(t, len(rows.Bucket.Log) > test.log, fmt.Sprint("a long log of ", len(rows.Bucket.Log)))
 		})
 	}
 

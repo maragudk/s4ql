@@ -81,15 +81,14 @@ func (r *run) clientCall(ctx context.Context, write bool) {
 		}
 		r.serveCall(ctx, p, c)
 	})
-	_ = task.Wait(ctx)
-	r.mu.Lock()
-	ended := c.ended
-	r.mu.Unlock()
-	if !ended {
-		e := c.event(in, p, "lost")
-		e.Error = "the process of the instance crashed during the call"
-		r.callEnded(ctx, c, e)
+	if task.Wait(ctx) != nil {
+		// The context of the client never ends, but if it did, the call would still be on its way.
+		return
 	}
+	// The task has returned, or its process has crashed. A call that the task ended keeps its end.
+	e := c.event(in, p, "lost")
+	e.Error = "the process of the instance crashed during the call"
+	r.callEnded(ctx, c, e)
 }
 
 // callDown ends the call c on the instance in, whose process is p or nil, with "down", for the

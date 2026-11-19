@@ -154,7 +154,7 @@ The connection between the client and its target has no faults. `hangNetwork` an
 
 A `client` action takes effect at once. A call that is on its way when the target changes ends on the instance it went to, and the next call goes to the new target. The action is ignored in a run without a client.
 
-With `standby`, `a` starts alone, and the client waits. A task of the run waits for the database of `a` to serve, by `Wait` of `core`, and then starts the other instances, which find the lease taken and stand by, and lets the client make its first call. It also starts them if `a` cannot serve: its process has crashed, its database is not open or stops, or the duration of its lease has passed on the time of the run. This is how s4ql is meant to run: one long-running instance per database, and a second that stands by to take over. Until an instance starts, it is in the state `waiting`, and an action on it is ignored, except `hangNetwork`, `disconnectNetwork`, `failDisk`, and `client`.
+With `standby`, `a` starts alone, and the client waits. A task of the run waits for the database of `a` to serve, by `Wait` of `core`, and then starts the other instances, which find the lease taken and stand by, and lets the client make its first call. It also starts them if `a` cannot serve: its process has crashed, its database is not open or stops, or the duration of its lease has passed on the time of the run. This is how s4ql is meant to run: one long-running instance per database, and a second that stands by to take over. Until an instance starts, it is in the state `waiting`, and an action on it is ignored, except `hangNetwork`, `disconnectNetwork`, `failDisk`, `loseAnswer`, `failRequest`, and `client`.
 
 A page that shows an application and one database, as the simulator page does, starts a session with the client on `a`, `standby`, and no callers in the processes, `workload.callers` at 0. The instance that the client does not call then gets no call.
 
@@ -192,7 +192,7 @@ A missing `on` is false, so an action without it switches off.
 
 An action that cannot be done is ignored. Its event says so, with the reason:
 
-- Every action for an instance that has not started yet, with `standby`, except `hangNetwork`, `disconnectNetwork`, `failDisk`, and `client`.
+- Every action for an instance that has not started yet, with `standby`, except `hangNetwork`, `disconnectNetwork`, `failDisk`, `loseAnswer`, `failRequest`, and `client`.
 - `write`, `read`, `crash`, `close`, `open`, `cutOff`, and the seven clock actions are ignored when the process of the instance has crashed.
 - `restart` is ignored when the process has not crashed.
 - `close` is ignored when the database is not open.

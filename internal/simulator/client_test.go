@@ -216,15 +216,22 @@ func TestRun_client(t *testing.T) {
 
 	t.Run("should ignore an action on an instance that has not started, except a fault of the instance", func(t *testing.T) {
 		res := run(t, &e, withClient(`, "end": 20000`, `{"at": 0, "do": "crash", "instance": "b"}, {"at": 0, "do": "failDisk", "instance": "b", "on": true},
-			{"at": 0, "do": "client", "instance": "b"}`))
+			{"at": 0, "do": "client", "instance": "b"}, {"at": 0, "do": "failRequest", "request": "read", "instance": "b"}`))
 		actions := find(res, func(e simulator.Event) bool { return e.Kind == "action" })
-		is.Equal(t, 3, len(actions))
+		is.Equal(t, 4, len(actions))
 		is.Equal(t, "ignored", actions[0].What)
 		is.Equal(t, "the instance has not started", actions[0].Text)
 		is.Equal(t, "done", actions[1].What)
 		is.Equal(t, "done", actions[2].What)
+		is.Equal(t, "done", actions[3].What)
 		is.True(t, simulator.StateAt(res, 10).Instances[1].DiskFailing, "the disk of b fails")
 		is.Equal(t, "waiting", simulator.StateAt(res, 10).Instances[1].State)
+
+		// An armed fault for b waits for the first read of b, once b has started.
+		res = run(t, &e, withClient(`, "end": 20000`, `{"at": 0, "do": "failRequest", "request": "read", "instance": "b"}`))
+		failed := find(res, func(e simulator.Event) bool { return e.Kind == "request" && e.What == "failed" })
+		is.Equal(t, 1, len(failed))
+		is.Equal(t, "b", failed[0].Instance)
 	})
 
 	t.Run("should ignore a switch of the client in a run without one", func(t *testing.T) {
