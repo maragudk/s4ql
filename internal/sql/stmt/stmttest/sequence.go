@@ -8,23 +8,31 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
-// Sequence of random statements of slices 1 and 2 that meet at a few tables and columns, each named
-// in several spellings that SQLite takes for one name and in some that it takes for others, with
-// values from a small set so that keys repeat, and with statements that are not supported and texts
-// that SQLite refuses mixed in. One insert in three has a plain ? with an int64 argument in place of
-// its value, and some calls, as [Sequence.Next] says, have arguments around those that s4ql
-// supports: none for a ?, one for a statement without one, two for a ?, one of a type that s4ql does
-// not support, one with a name, or an integer of another Go type.
+// Sequence of random statements of slices 1, 2, and 4 that meet at a few tables and columns, each
+// named in several spellings that SQLite takes for one name and in some that it takes for others,
+// with values from a small set so that keys repeat, and with statements that are not supported and
+// texts that SQLite refuses mixed in.
+//
+// Each name of a table has a type of the sequence's own, which most of its create tables declare,
+// and most values of an insert into a table of the name are of that type: the others are of another
+// type than the column, which s4ql refuses. The small sets hold keys that SQLite takes for one, such
+// as 0.0 and -0.0, so that every type meets a key that exists.
+//
+// One insert in three has a plain ? with its value as the argument, and some calls, as
+// [Sequence.Next] says, have arguments around those that s4ql supports: none for a ?, one for a
+// statement without one, two for a ?, one that no column holds, one with a name, or a value of
+// another Go type that s4ql supports.
 type Sequence struct {
 	r       Rand
 	g       *Generator
 	tables  []string
 	columns []string
+	// types of the tables by their names, folded as SQLite compares names.
+	types map[string]stmt.Type
 }
 
 // spellings of the name raw: itself, and other spellings in and without quotes, of which those that
@@ -103,7 +111,7 @@ func NewSequence(r Rand) (*Sequence, error) {
 	if err != nil {
 		return nil, err
 	}
-	q := &Sequence{r: r}
+	q := &Sequence{r: r, types: map[string]stmt.Type{}}
 	tableNames, columnNames := common[0], common[1]
 	for range 1 + r.IntN(2) {
 		q.tables = append(q.tables, spellings(r, tableNames[r.IntN(len(tableNames))])...)
@@ -117,26 +125,105 @@ func NewSequence(r Rand) (*Sequence, error) {
 	}
 	pools[CreateColumn], pools[InsertColumn] = q.columns, q.columns
 	q.g = NewGenerator(r, pools)
-	q.g.Value = q.Value
+	q.g.Type, q.g.Value = q.columnType, q.Value
 	q.g.Parameters = 3
 	return q, nil
 }
 
-// Value from the set of the sequence: mostly from a few small ones, so that keys repeat, and
-// otherwise at and around the limits of 64 bits.
-func (q *Sequence) Value() int64 {
-	if q.r.IntN(4) == 0 {
-		return Integer(q.r)
+// typeOf the tables of the name of table: the sequence's own, chosen at random the first time.
+func (q *Sequence) typeOf(table stmt.Name) stmt.Type {
+	name := table.Fold()
+	t, ok := q.types[name]
+	if !ok {
+		t = Types[q.r.IntN(len(Types))]
+		q.types[name] = t
 	}
-	return int64(q.r.IntN(5)) - 1
+	return t
 }
 
-// Others are texts that are not statements of slice 1, with %[1]v for a table, %[2]v for a column,
-// and %[3]v for a value: statements that the pass does not support, texts that SQLite refuses with a
-// syntax error, and texts without a statement, and a create table of a column of type INTEGER, which
-// s4ql supports since slice 4, so that a [Sequence] can make INTEGER tables too.
+// columnType of a create table of table: the type of its name, and one time in ten any type.
+func (q *Sequence) columnType(table stmt.Name) stmt.Type {
+	if q.r.IntN(10) == 0 {
+		return Types[q.r.IntN(len(Types))]
+	}
+	return q.typeOf(table)
+}
+
+// Value of an insert into table: of the type of its name, and one time in ten of another type.
+func (q *Sequence) Value(table stmt.Name) stmt.Value {
+	t := q.typeOf(table)
+	if q.r.IntN(10) == 0 {
+		t = Types[q.r.IntN(len(Types))]
+	}
+	return q.valueOf(t)
+}
+
+// valueOf the type t: mostly from a small set, so that keys repeat, and otherwise as [ValueOf]
+// gives it, with weight on its edges, or, for text and a blob, one time in 16 of about
+// [LengthLimit] bytes.
+func (q *Sequence) valueOf(t stmt.Type) stmt.Value {
+	r := q.r
+	if t == stmt.TypeText || t == stmt.TypeBlob {
+		if r.IntN(16) == 0 {
+			v := long(r, func(n int) string { return runes(r, n) })
+			if t == stmt.TypeBlob {
+				return stmt.Blob(v)
+			}
+			return stmt.Text(v)
+		}
+	}
+	if r.IntN(4) == 0 {
+		return ValueOf(r, t)
+	}
+	switch t {
+	case stmt.TypeReal:
+		return stmt.Real([]float64{0, math.Copysign(0, -1), 1, 2, 0.5, -1.5}[r.IntN(6)])
+	case stmt.TypeText:
+		return stmt.Text([]string{"", "a", "A", "it's", "é"}[r.IntN(5)])
+	case stmt.TypeBlob:
+		return stmt.Blob([][]byte{{}, {0}, {0, 0}, {'a'}}[r.IntN(4)])
+	}
+	return stmt.Integer(int64(r.IntN(5)) - 1)
+}
+
+// anyValue of a type at random, as an argument.
+func (q *Sequence) anyValue() any {
+	return Argument(q.valueOf(Types[q.r.IntN(len(Types))]))
+}
+
+// Like a, an argument: another value of the sequence of the same Go type, if a is an int64, a
+// float64, a string, or a []byte that is not nil, and otherwise a.
+func (q *Sequence) Like(a any) any {
+	switch v := a.(type) {
+	case int64:
+		return Argument(q.valueOf(stmt.TypeInt))
+	case float64:
+		return Argument(q.valueOf(stmt.TypeReal))
+	case string:
+		return Argument(q.valueOf(stmt.TypeText))
+	case []byte:
+		if v != nil {
+			return Argument(q.valueOf(stmt.TypeBlob))
+		}
+	}
+	return a
+}
+
+// Others are texts that are not statements of slices 1, 2, and 4, with %[1]v for a table, %[2]v
+// for a column, and %[3]v for a small integer: statements that the pass does not support, among them
+// literals that SQLite reads as an infinite real, as a real for an integer outside 64 bits, or as
+// NULL, texts that SQLite refuses with a syntax error, and texts without a statement.
 var Others = []string{
-	"create table %[1]v (%[2]v integer primary key) strict, without rowid",
+	"create table %[1]v (%[2]v any primary key) strict, without rowid",
+	"create table %[1]v (%[2]v varchar primary key) strict, without rowid",
+	"insert into %[1]v (%[2]v) values (1e999)",
+	"insert into %[1]v (%[2]v) values (-1e400)",
+	"insert into %[1]v (%[2]v) values (9223372036854775808)",
+	"insert into %[1]v (%[2]v) values (0x%[3]v)",
+	"insert into %[1]v (%[2]v) values (null)",
+	"insert into %[1]v (%[2]v) values (-'a')",
+	"insert into %[1]v (%[2]v) values (x'6')",
+	"insert into %[1]v (%[2]v) values ('a''b)",
 	"create table %[1]v (%[2]v int primary key) strict",
 	"create table if not exists %[1]v (%[2]v int primary key) strict, without rowid",
 	`create table "" (%[2]v int primary key) strict, without rowid`,
@@ -172,27 +259,14 @@ var Others = []string{
 // Call of a text: what an application gives to database/sql.
 type Call struct {
 	Src string
-	// Args of the call, by position: int64 for the arguments that s4ql supports, and other values,
-	// such as a [sql.NamedArg], for the cases around them.
+	// Args of the call, by position: an int64, a float64, a string, or a []byte that is not nil for
+	// the arguments that s4ql supports, as [Argument] gives them, and other values, such as a
+	// [sql.NamedArg], an int32, a float32, or one of [Unsupported], for the cases around them.
 	Args []any
 	// Query reports whether to run the call as a query.
 	Query bool
-	// Supported reports whether the text is a statement of slices 1 and 2, which s4ql supports.
+	// Supported reports whether the text is a statement of slices 1, 2, and 4, which s4ql supports.
 	Supported bool
-}
-
-// Runs reports whether s4ql must run the call: its text is supported, and it has an argument that
-// s4ql supports for each parameter, as [Integers] gives them.
-func (c Call) Runs() bool {
-	if !c.Supported {
-		return false
-	}
-	s, err := stmt.Check(c.Src)
-	if err != nil || s == nil {
-		return false
-	}
-	_, ok := Integers(c.Args)
-	return ok && len(c.Args) == s.Parameters()
 }
 
 // Integers of args, and true, if each is a Go integer without a name that fits a signed 64-bit
@@ -224,10 +298,6 @@ func integer(a any) (int64, bool) {
 	return 0, false
 }
 
-// Unsupported are arguments of types that s4ql does not support, one of which is an unsigned
-// integer that does not fit a signed 64-bit integer.
-var Unsupported = []any{nil, "1", 1.5, []byte("1"), true, time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC), uint64(math.MaxInt64) + 1}
-
 // Next call of the sequence. Its arguments are those of its parameters, and [Sequence.around]
 // changes them for one call in four of a statement with a parameter and for one in twenty of a
 // statement without one.
@@ -240,17 +310,18 @@ func (q *Sequence) Next() Call {
 }
 
 // around args, the arguments of a call, are arguments of the cases around them. For a statement
-// without a parameter, they are one argument, an integer or of a type that s4ql does not support.
-// For one with a parameter, the arguments lack the last, have one more, have one of a type that s4ql
-// does not support, have one with a name, or have an integer of another Go type than int64, which
-// s4ql supports.
+// without a parameter, they are one argument, a value or one that no column holds. For one with a
+// parameter, the arguments lack the last, have one more, have one that no column holds, have one
+// with a name, or have a value of another Go type that s4ql supports: an integer of another Go type
+// than int64, a float32 for a float64, and for text or a blob one that no column holds of the same
+// Go type.
 func (q *Sequence) around(args []any) []any {
 	r := q.r
 	if len(args) == 0 {
 		if r.IntN(2) == 0 {
 			return []any{Unsupported[r.IntN(len(Unsupported))]}
 		}
-		return []any{q.Value()}
+		return []any{q.anyValue()}
 	}
 	args = slices.Clone(args)
 	at := r.IntN(len(args))
@@ -258,26 +329,35 @@ func (q *Sequence) around(args []any) []any {
 	case 0:
 		return args[:len(args)-1]
 	case 1:
-		return append(args, q.Value())
+		return append(args, q.anyValue())
 	case 2:
 		args[at] = Unsupported[r.IntN(len(Unsupported))]
 	case 3:
 		args[at] = sql.Named("v", args[at])
 	default:
-		switch v := args[at].(int64); {
-		case v >= 0 && r.IntN(2) == 0:
-			args[at] = uint64(v)
-		case v >= math.MinInt32 && r.IntN(2) == 0:
-			args[at] = int32(v)
-		default:
-			args[at] = int(v)
+		switch v := args[at].(type) {
+		case int64:
+			switch {
+			case v >= 0 && r.IntN(2) == 0:
+				args[at] = uint64(v)
+			case v >= math.MinInt32 && r.IntN(2) == 0:
+				args[at] = int32(v)
+			default:
+				args[at] = int(v)
+			}
+		case float64:
+			args[at] = float32(v)
+		case string:
+			args[at] = []string{"a\x00b", "\xff", v + "\x00"}[r.IntN(3)]
+		case []byte:
+			args[at] = []byte(nil)
 		}
 	}
 	return args
 }
 
-// next call of the sequence, with an argument for each parameter of a statement of slices 1 and 2,
-// and for each ? of a text that is not.
+// next call of the sequence, with an argument for each parameter of a statement of slices 1, 2,
+// and 4, and for each ? of a text that is not.
 func (q *Sequence) next() Call {
 	r := q.r
 	if r.IntN(12) == 0 {
@@ -289,7 +369,7 @@ func (q *Sequence) next() Call {
 			c.Src = fmt.Sprintf(form, table, column, value)
 		}
 		for range strings.Count(c.Src, "?") {
-			c.Args = append(c.Args, q.Value())
+			c.Args = append(c.Args, q.anyValue())
 		}
 		return c
 	}

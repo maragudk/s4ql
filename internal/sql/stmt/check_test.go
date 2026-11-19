@@ -356,7 +356,7 @@ func FuzzCheck(f *testing.F) {
 	}
 	g := newGenerator(f, 1)
 	for range 200 {
-		src, _ := g.statement()
+		src, _ := g.Statement()
 		f.Add(src)
 	}
 	f.Fuzz(func(t *testing.T, src string) {

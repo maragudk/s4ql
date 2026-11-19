@@ -1,6 +1,7 @@
-// Package stmttest is a generator of random statements of slice 1, for tests: each statement is a
-// text with the typed form of [maragu.dev/s4ql/internal/sql/stmt] that it holds, with names from
-// pools, keywords in any case, and spaces and comments in every gap.
+// Package stmttest is a generator of random statements of slices 1, 2, and 4, for tests: each
+// statement is a text with the typed form of [maragu.dev/s4ql/internal/sql/stmt] that it holds, with
+// names from pools, keywords and types in any case, values of every type with weight on their edges,
+// and spaces and comments in every gap.
 //
 // The generator draws its random numbers from a [Rand] that the test gives it, so that a test
 // chooses its seed and its generator of numbers.
@@ -8,7 +9,6 @@ package stmttest
 
 import (
 	"fmt"
-	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -103,15 +103,19 @@ const (
 	KindDropTable
 )
 
-// Generator of random statements of slice 1.
+// Generator of random statements of slices 1, 2, and 4.
 type Generator struct {
 	r Rand
 	// pools of names, for each [Position].
 	pools [][]string
-	// Value gives the value of an insert, or nil for a value at random, at and around the limits.
-	Value func() int64
+	// Type gives the type of the column of a create table of the table, or is nil for a type at
+	// random.
+	Type func(table stmt.Name) stmt.Type
+	// Value gives the value of an insert into the table, or is nil for a value of a type at random,
+	// with weight on the edges of each type.
+	Value func(table stmt.Name) stmt.Value
 	// Parameters, if not 0, makes one insert in Parameters have a plain ? in place of its literal,
-	// with the value as its argument.
+	// with the value as its argument, as [Argument] gives it.
 	Parameters int
 	b          strings.Builder
 }
@@ -178,55 +182,32 @@ func (g *Generator) name(p Position) stmt.Name {
 	return n
 }
 
-// integer for a value: from [Generator.Value], or at random.
-func (g *Generator) integer() int64 {
+// value of an insert into the table: from [Generator.Value], or of a type at random.
+func (g *Generator) value(table stmt.Name) stmt.Value {
 	if g.Value != nil {
-		return g.Value()
+		return g.Value(table)
 	}
-	return Integer(g.r)
+	return ValueOf(g.r, Types[1+g.r.IntN(len(Types)-1)])
 }
 
-// value written as an integer of slice 1, with its span.
-func (g *Generator) value() (stmt.Integer, stmt.Span) {
-	v := g.integer()
+// columnType of a create table of the table: from [Generator.Type], or at random.
+func (g *Generator) columnType(table stmt.Name) stmt.Type {
+	if g.Type != nil {
+		return g.Type(table)
+	}
+	return Types[g.r.IntN(len(Types))]
+}
+
+// literal of the value v, with its span, and the value that SQLite gives it, as [Literal] writes
+// it.
+func (g *Generator) literal(v stmt.Value) (stmt.Value, stmt.Span) {
 	start := g.b.Len()
-	digits := fmt.Sprint(v)
-	if v < 0 || (v == 0 && g.r.IntN(4) == 0) {
-		g.b.WriteString("-")
-		g.gap(false)
-		digits = strings.TrimPrefix(digits, "-")
-	}
-	if g.r.IntN(4) == 0 {
-		digits = strings.Repeat("0", 1+g.r.IntN(30)) + digits
-	}
-	g.b.WriteString(digits)
-	return stmt.Integer(v), stmt.Span{Start: start, End: g.b.Len()}
+	text, value := Literal(g.r, v)
+	g.b.WriteString(text)
+	return value, stmt.Span{Start: start, End: g.b.Len()}
 }
 
-// Integer at random from r: at and around the limits of 64 bits, zero, powers of ten, any, and
-// small ones.
-func Integer(r Rand) int64 {
-	switch r.IntN(10) {
-	case 0:
-		return math.MaxInt64
-	case 1:
-		return math.MinInt64
-	case 2:
-		return math.MaxInt64 - int64(r.IntN(3))
-	case 3:
-		return math.MinInt64 + int64(r.IntN(3))
-	case 4:
-		return 0
-	case 5:
-		return int64(r.Uint64())
-	case 6:
-		return int64(math.Pow10(r.IntN(19))) - int64(r.IntN(2))
-	default:
-		return int64(r.IntN(2001)) - 1000
-	}
-}
-
-// Statement of slice 1 at random: its text and the statement that it holds. An insert with a
+// Statement at random: its text and the statement that it holds. An insert with a
 // parameter, which [Generator.Parameters] asks for, is written without its argument.
 func (g *Generator) Statement() (string, stmt.Statement) {
 	src, s, _ := g.statement(-1)
@@ -239,8 +220,8 @@ func (g *Generator) StatementOf(k Kind) (string, stmt.Statement) {
 	return src, s
 }
 
-// CallOf the kind: its text, the statement that it holds, and an int64 argument for each of its
-// parameters.
+// CallOf the kind: its text, the statement that it holds, and an argument for each of its
+// parameters, as [Argument] gives it.
 func (g *Generator) CallOf(k Kind) (string, stmt.Statement, []any) {
 	return g.statement(k)
 }
@@ -267,7 +248,7 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 	var args []any
 	switch k {
 	case KindCreateTable:
-		c := &stmt.CreateTable{Type: stmt.TypeInt}
+		c := &stmt.CreateTable{}
 		g.keyword("create")
 		g.gap(true)
 		g.keyword("table")
@@ -278,7 +259,8 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 		g.gap(false)
 		c.Column = g.name(CreateColumn)
 		g.gap(true)
-		g.keyword("int")
+		c.Type = g.columnType(c.Table)
+		g.keyword(strings.ToLower(c.Type.String()))
 		g.gap(true)
 		g.keyword("primary")
 		g.gap(true)
@@ -317,12 +299,13 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 		g.gap(false)
 		g.punct("(")
 		g.gap(false)
+		v := g.value(c.Table)
 		if g.Parameters > 0 && g.r.IntN(g.Parameters) == 0 {
 			c.Parameter, c.ValueSpan = 1, stmt.Span{Start: g.b.Len(), End: g.b.Len() + 1}
 			g.punct("?")
-			args = []any{g.integer()}
+			args = []any{Argument(v)}
 		} else {
-			c.Value, c.ValueSpan = g.value()
+			c.Value, c.ValueSpan = g.literal(v)
 		}
 		g.gap(false)
 		g.punct(")")

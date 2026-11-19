@@ -139,7 +139,7 @@ func TestAllowList(t *testing.T) {
 		n /= 10
 	}
 	for i := range n {
-		src, _ := g.statement()
+		src, _ := g.Statement()
 		sqls = append(sqls, src)
 		sqls = append(sqls, parsetest.Mutants(src, *seed+uint64(i), 5)...)
 	}

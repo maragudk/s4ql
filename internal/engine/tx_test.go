@@ -351,6 +351,7 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 		}
 		c := q.Next()
 		log = append(log, fmt.Sprintf("%v -- with %#v", c.Src, c.Args))
+		p.readOnly = open == "read only"
 		if failure := p.step(c); failure != "" {
 			fail("%v", failure)
 		}

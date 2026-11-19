@@ -278,10 +278,11 @@ func integers(vs []int64) []*s4qlpb.Value {
 }
 
 // values of the arguments args of a call of [stmttest.Sequence], as the engine gets them from the
-// driver: an integer for a Go integer that fits a signed 64-bit integer, which the driver converts,
-// the value of a [sql.NamedArg], whose name the driver refuses before the engine, and for every other
-// argument a value that is not an integer, which the driver never hands the engine: text, a real, a
-// blob, NULL, and a value of no kind for a type that has no value of the engine.
+// driver: an integer for a Go integer that fits a signed 64-bit integer, and a real for a float32,
+// which the driver converts, the value of a [sql.NamedArg], whose name the driver refuses before the
+// engine, text, a real, and a blob as they are, and for every other argument a value that the driver
+// never hands the engine: NULL for nil, and a value of no kind for a type that has no value of the
+// engine and for a nil []byte.
 func values(args []any) []*s4qlpb.Value {
 	var vs []*s4qlpb.Value
 	for _, a := range unnamed(args) {
@@ -290,7 +291,7 @@ func values(args []any) []*s4qlpb.Value {
 			continue
 		}
 		var b s4qlpb.Value_builder
-		switch a := a.(type) {
+		switch a := converted(a).(type) {
 		case string:
 			b.Text = new(a)
 		case float64:
@@ -303,6 +304,15 @@ func values(args []any) []*s4qlpb.Value {
 		vs = append(vs, b.Build())
 	}
 	return vs
+}
+
+// converted argument a, as the driver converts a float32 to a float64. Every other argument is as
+// the driver hands it to the engine, or one that it refuses by its type.
+func converted(a any) any {
+	if f, ok := a.(float32); ok {
+		return float64(f)
+	}
+	return a
 }
 
 // unnamed args: the value of each [sql.NamedArg] in its place.
@@ -630,6 +640,9 @@ const (
 	// excusedType is an insert of a value of another type than its column, which SQLite converts or
 	// refuses with an error of its own.
 	excusedType = "a value of another type than its column, checked against s4ql's rule"
+	// excusedLong is an insert of a literal that is longer than the length limit, which SQLite meets
+	// only with a limit below the length of its text, and then refuses later or turns into NULL.
+	excusedLong = "a literal longer than the length limit, checked against s4ql's rule"
 )
 
 // knownGap of the pass after the parser, as [stmttest.KnownGap] gives it, that the engine's answer
@@ -660,7 +673,7 @@ func startedTable(t testing.TB, empty *oracle, src string, got, want answer) boo
 
 // messageKind of an error's text: its message without the names.
 func messageKind(err string) string {
-	for _, kind := range []string{"already exists", "no such table", "has no column named", "UNIQUE constraint failed", "syntax error", "incomplete input"} {
+	for _, kind := range []string{"already exists", "no such table", "has no column named", "UNIQUE constraint failed", "syntax error", "incomplete input", "string or blob too big", "attempt to write a readonly database"} {
 		if strings.Contains(err, kind) {
 			return kind
 		}
@@ -671,12 +684,13 @@ func messageKind(err string) string {
 // differential runs the sequence of n statements from seed on the engine and on SQLite, and compares
 // after each statement what each gives, the count of changes, and the last insert rowid, and at the
 // end, and after each restart, every table. With restarts, the instance is closed and opened again
-// at random points, with an empty cache or with its cache.
-func differential(t testing.TB, seed uint64, n int, restarts bool, y tally) {
+// at random points, with an empty cache or with its cache. The cache and SQLite have the length
+// limit limit, or SQLite's default for 0.
+func differential(t testing.TB, seed uint64, n int, restarts bool, limit int, y tally) {
 	t.Helper()
 	// The instance closes at the end of the sequence, so that a test of many sequences does not keep
 	// the files of each open until it ends.
-	i := newInstance(t, engine.Options{})
+	i := newInstanceLimited(t, engine.Options{}, nil, limit)
 	defer i.close()
 	differentialOn(t, seed, n, restarts, y, i)
 }
@@ -723,14 +737,20 @@ type pair struct {
 	empty *oracle
 	// prev is SQLite's count of changes after the statement before.
 	prev int64
-	y    tally
+	// readOnly is set while the statements run in a read-only transaction.
+	readOnly bool
+	y        tally
 }
 
+// newPair of the instance i and SQLite, with the length limit of i.
 func newPair(t testing.TB, i *instance, y tally) *pair {
 	t.Helper()
 	p := &pair{t: t, i: i, o: newOracle(t), empty: newOracle(t), y: y}
 	t.Cleanup(p.o.close)
 	t.Cleanup(p.empty.close)
+	if i.limit > 0 {
+		is.NotError(t, p.o.c.SetLengthLimit(i.limit))
+	}
 	return p
 }
 
@@ -752,6 +772,7 @@ func (p *pair) step(c stmttest.Call) string {
 		got = i.execValues(src, values(c.Args))
 	}
 	p.y.add(src, got)
+	p.reach(c, got)
 	if kind, failure := checkArguments(c, got); kind != "" {
 		if failure == "" {
 			p.y.excused(kind)
@@ -764,6 +785,12 @@ func (p *pair) step(c stmttest.Call) string {
 	args := oracleArgs(c.Args)
 	if s, err := stmt.Check(src); err != nil || s == nil {
 		args = nil
+	}
+	if kind, failure := p.checkLength(c, got); kind != "" {
+		if failure == "" {
+			p.y.excused(kind)
+		}
+		return failure
 	}
 	if kind, failure := p.checkType(c, args, got); kind != "" {
 		if failure == "" {
@@ -802,14 +829,16 @@ func (p *pair) step(c stmttest.Call) string {
 		}
 	}
 	// SQLite's count of changes: the engine's result sets it, and a statement that fails keeps it,
-	// except one that fails while SQLite steps it, which sets it to 0: a broken constraint, and an
-	// insert in a read-only transaction.
+	// except one that fails while SQLite steps it, which sets it to 0: a broken constraint, an insert
+	// in a read-only transaction, and an insert of a row whose record is too long, while its value,
+	// which SQLite would refuse when it binds it, is not.
 	changes, rowid := o.changes(t)
 	p.prev = changes
+	recordTooBig := want.err == tooBig && isInsert(src) && !slices.ContainsFunc(args, func(a any) bool { return byteLength(a) > p.i.limit })
 	switch {
-	case strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeConstraint, "/")), strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeReadOnly, "/")) && isInsert(src):
+	case strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeConstraint, "/")), strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeReadOnly, "/")) && isInsert(src), recordTooBig:
 		if changes != 0 {
-			return fmt.Sprintf("%q: SQLite counts %v changes after a broken constraint or a refused insert", src, changes)
+			return fmt.Sprintf("%q: SQLite counts %v changes after a broken constraint, a refused insert, or a record that is too long", src, changes)
 		}
 	case want.err != "" && changes != before:
 		return fmt.Sprintf("%q: SQLite counts %v changes after its error, and %v before", src, changes, before)
@@ -821,6 +850,81 @@ func (p *pair) step(c stmttest.Call) string {
 		return fmt.Sprintf("%q: SQLite's last insert rowid is %v", src, rowid)
 	}
 	return ""
+}
+
+// reach counts in the tally what an insert, the call c, whose answer of the engine is got, reaches,
+// under "reached: ": each argument by its kind, as [stmttest.ArgumentKind] names it, a literal by
+// its kind, as [literalKind] names it, a text or a blob of more than 900 bytes, and, for an insert
+// that SQLite prepares, the outcome by the type of its column, and -0.0 that meets a key that exists.
+func (p *pair) reach(c stmttest.Call, got answer) {
+	t := p.t
+	t.Helper()
+	if p.y == nil {
+		return
+	}
+	s, _ := stmt.Check(c.Src)
+	insert, ok := s.(*stmt.Insert)
+	if !ok {
+		return
+	}
+	count := func(what string) { p.y["reached: "+what]++ }
+	var value any = insert.Value
+	if insert.Parameter > 0 {
+		for _, a := range c.Args {
+			count("argument " + stmttest.ArgumentKind(a))
+		}
+		if len(c.Args) == 1 {
+			value = converted(unnamed(c.Args)[0])
+		}
+	} else {
+		count("literal " + literalKind(insert.Value))
+	}
+	if byteLength(value) > 900 {
+		count("long value")
+	}
+	typ := insertType(t, p.o, c.Src)
+	if typ == "" {
+		return
+	}
+	outcome := "ok"
+	switch {
+	case got.err == "not supported" && strings.Contains(got.message, " for the column "):
+		outcome = "a value of another type"
+	case got.err != "":
+		outcome = messageKind(got.err)
+	}
+	count("insert into " + typ + " " + outcome)
+	if f, ok := value.(float64); ok && f == 0 && math.Signbit(f) && outcome == "UNIQUE constraint failed" {
+		count("-0.0 argument into " + typ + " " + outcome)
+	}
+	if f, ok := value.(stmt.Real); ok && f == 0 && math.Signbit(float64(f)) && outcome == "UNIQUE constraint failed" {
+		count("-0.0 literal into " + typ + " " + outcome)
+	}
+}
+
+// literalKind of the value of a literal, for a count of what a test reaches: its type, or an edge
+// of it: -0.0, the empty text, and the empty blob.
+func literalKind(v stmt.Value) string {
+	switch v := v.(type) {
+	case stmt.Integer:
+		return "integer"
+	case stmt.Real:
+		if v == 0 && math.Signbit(float64(v)) {
+			return "real -0.0"
+		}
+		return "real"
+	case stmt.Text:
+		if v == "" {
+			return "empty text"
+		}
+		return "text"
+	case stmt.Blob:
+		if len(v) == 0 {
+			return "empty blob"
+		}
+		return "blob"
+	}
+	return fmt.Sprintf("%T", v)
 }
 
 // checkArguments of the call c, whose answer of the engine is got, against s4ql's rule for the
@@ -865,7 +969,7 @@ func refusal(a any) string {
 	if _, ok := stmttest.Integers([]any{a}); ok {
 		return ""
 	}
-	switch a := a.(type) {
+	switch a := converted(a).(type) {
 	case float64:
 		switch {
 		case math.IsNaN(a):
@@ -892,73 +996,147 @@ func refusal(a any) string {
 	return "has no value"
 }
 
-// oracleArgs of the arguments args of a call, as SQLite binds them: each Go integer as an int64, and
-// every other argument as it is, with the names dropped.
+// oracleArgs of the arguments args of a call, as SQLite binds them: each Go integer as an int64, a
+// float32 as a float64, and every other argument as it is, with the names dropped.
 func oracleArgs(args []any) []any {
 	var as []any
 	for _, a := range unnamed(args) {
 		if v, ok := stmttest.Integers([]any{a}); ok {
 			a = v[0]
 		}
-		as = append(as, a)
+		as = append(as, converted(a))
 	}
 	return as
 }
 
 // checkType of the call c, with the arguments args as SQLite binds them, whose answer of the engine is
-// got, against s4ql's rule for the type of a value: an insert that SQLite prepares, whose value, a
-// literal or an argument, is of another type than its column, is "not supported", where SQLite would
-// convert the value or give an error of its own. It gives [excusedType] if the rule decides the call,
-// or "", and what differs from the rule, or "". An insert that SQLite does not prepare gets SQLite's
-// error, which the caller compares.
+// got, against s4ql's rule for the type of a value, as [typeRule] gives it. It gives [excusedType] if
+// the rule decides the call, or "", and what differs from the rule, or "". In a read-only
+// transaction the rule decides nothing: SQLite and the engine refuse the write before they look at
+// its value.
 func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failure string) {
 	t := p.t
 	t.Helper()
-	s, _ := stmt.Check(c.Src)
-	insert, ok := s.(*stmt.Insert)
-	if !ok || p.o.prepare(t, c.Src) != nil {
+	if p.readOnly || slices.ContainsFunc(args, func(a any) bool { return p.i.limit > 0 && byteLength(a) > p.i.limit }) {
+		// An argument that is too long gets SQLite's error when SQLite binds it, which the caller
+		// compares.
 		return "", ""
 	}
-	table, column, typ := p.o.column(t, insert.Table.Value)
-	var what, kind string
-	switch v := insert.Value.(type) {
-	case nil:
-		if len(args) != 1 {
-			return "", ""
-		}
-		var article string
-		switch args[0].(type) {
-		case int64:
-			kind, article = "integer", "an integer"
-		case float64:
-			kind, article = "real", "a real"
-		case string:
-			kind, article = "text", "text"
-		case []byte:
-			kind, article = "blob", "a blob"
-		default:
-			t.Fatalf("%q: an argument of type %T for SQLite", c.Src, args[0])
-		}
-		what = fmt.Sprintf("argument 1, which is %v,", article)
-	case stmt.Integer:
-		kind, what = "integer", "an integer literal"
-	case stmt.Real:
-		kind, what = "real", "a real literal"
-	case stmt.Text:
-		kind, what = "text", "a string literal"
-	case stmt.Blob:
-		kind, what = "blob", "a blob literal"
-	default:
-		t.Fatalf("%q: a value of type %T", c.Src, v)
-	}
-	if columnHolds[typ] == kind {
+	want := typeRule(t, p.o, c.Src, args)
+	if want == "" {
 		return "", ""
 	}
-	want := fmt.Sprintf("s4ql: not supported: %v for the column %v.%v of type %v", what, table, column, typ)
 	if got.err != "not supported" || got.message != want {
 		return excusedType, fmt.Sprintf("%q with the arguments %#v: the engine gives %v (%q), and the rule %q", c.Src, args, got, got.message, want)
 	}
 	return excusedType, ""
+}
+
+// checkLength of the call c, whose answer of the engine is got, against s4ql's rule for a literal
+// that is longer than the length limit: an insert that SQLite prepares fails with SQLite's `string or
+// blob too big`, after the names. SQLite meets such a literal only with a limit below the length of
+// the text that holds it, and then gives the error for a string literal only when it steps the
+// statement, and turns a blob literal into NULL, so the call is not run in SQLite. It gives
+// [excusedLong] if the rule decides the call, or "", and what differs from the rule, or "".
+func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string) {
+	t := p.t
+	t.Helper()
+	s, _ := stmt.Check(c.Src)
+	insert, ok := s.(*stmt.Insert)
+	if !ok || p.i.limit == 0 || p.o.prepare(t, c.Src) != nil {
+		return "", ""
+	}
+	n := byteLength(insert.Value)
+	if n <= p.i.limit {
+		return "", ""
+	}
+	if got.err != tooBig {
+		return excusedLong, fmt.Sprintf("%q with a literal of %v bytes: the engine gives %v, and the rule %q", c.Src, n, got, tooBig)
+	}
+	return excusedLong, ""
+}
+
+// tooBig is the err of an [answer] of SQLite's error of a text or a blob that is too long.
+const tooBig = "18/18: string or blob too big"
+
+// byteLength of a value, a literal or an argument, that is text or a blob, and 0 for any other.
+func byteLength(v any) int {
+	switch v := v.(type) {
+	case stmt.Text:
+		return len(v)
+	case stmt.Blob:
+		return len(v)
+	case string:
+		return len(v)
+	case []byte:
+		return len(v)
+	}
+	return 0
+}
+
+// typeRule of the insert of the text src, with the arguments args as SQLite binds them, on the
+// database of o: s4ql's "not supported" for a value, a literal or an argument, of another type than
+// its column, where SQLite would convert the value or give an error of its own, or "". It is "" for a
+// text that is not an insert, an insert that SQLite does not prepare, which gets SQLite's error, an
+// insert with another number of arguments than parameters, and an insert of a value of the type of
+// its column.
+func typeRule(t testing.TB, o *oracle, src string, args []any) string {
+	t.Helper()
+	s, _ := stmt.Check(src)
+	insert, ok := s.(*stmt.Insert)
+	if !ok || len(args) != insert.Parameters() || o.prepare(t, src) != nil {
+		return ""
+	}
+	table, column, typ := o.column(t, insert.Table.Value)
+	kind, what := valueKind(t, insert, args)
+	if columnHolds[typ] == kind {
+		return ""
+	}
+	return fmt.Sprintf("s4ql: not supported: %v for the column %v.%v of type %v", what, table, column, typ)
+}
+
+// valueKind of the value of the insert, a literal or the argument of args as SQLite binds it: the
+// kind that [columnHolds] names, and how s4ql's message names the value.
+func valueKind(t testing.TB, insert *stmt.Insert, args []any) (kind, what string) {
+	t.Helper()
+	switch v := insert.Value.(type) {
+	case nil:
+		switch args[0].(type) {
+		case int64:
+			return "integer", "argument 1, which is an integer,"
+		case float64:
+			return "real", "argument 1, which is a real,"
+		case string:
+			return "text", "argument 1, which is text,"
+		case []byte:
+			return "blob", "argument 1, which is a blob,"
+		}
+		t.Fatalf("an argument of type %T for SQLite", args[0])
+	case stmt.Integer:
+		return "integer", "an integer literal"
+	case stmt.Real:
+		return "real", "a real literal"
+	case stmt.Text:
+		return "text", "a string literal"
+	case stmt.Blob:
+		return "blob", "a blob literal"
+	default:
+		t.Fatalf("a value of type %T", v)
+	}
+	return "", ""
+}
+
+// insertType is the declared type of the column of the insert of the text src, on the database of
+// o, or "" if src is not an insert that SQLite prepares.
+func insertType(t testing.TB, o *oracle, src string) string {
+	t.Helper()
+	s, _ := stmt.Check(src)
+	insert, ok := s.(*stmt.Insert)
+	if !ok || o.prepare(t, src) != nil {
+		return ""
+	}
+	_, _, typ := o.column(t, insert.Table.Value)
+	return typ
 }
 
 // columnHolds is the kind of value that a column of each declared type holds.
@@ -1004,7 +1182,8 @@ func syntaxOfNotSupported(t testing.TB, empty *oracle, src string) string {
 
 // TestDifferential runs random sequences of statements on the engine and on SQLite, and requires
 // the same answers, the same count of changes, and the same tables and rows, half of them with
-// restarts of the instance, with an empty cache and with its own.
+// restarts of the instance, with an empty cache and with its own, and half of them with the length
+// limit lowered to [stmttest.LengthLimit].
 func TestDifferential(t *testing.T) {
 	n := *sequences
 	if slow() {
@@ -1012,9 +1191,24 @@ func TestDifferential(t *testing.T) {
 	}
 	y := tally{}
 	for s := range uint64(n) {
-		differential(t, *seed+s, *length, s%2 == 1, y)
+		differential(t, *seed+s, *length, s%2 == 1, map[bool]int{true: stmttest.LengthLimit}[s%4 >= 2], y)
 	}
 	t.Logf("%v sequences of %v statements: %v", n, *length, y)
+	if !slow() && atDefault("seed", "sequences", "length") {
+		// What the full run must reach, at least: each type as a key, with an insert that succeeds,
+		// meets a key that exists, and has a value of another type, also -0.0 after 0.0; each kind of
+		// literal and of argument, also those that no column holds; and a text or a blob that is too
+		// long, as a literal and as an argument. Each least number is about a third of what the run
+		// gave on 2026-11-19, so that a generator that stops reaching a case fails the test.
+		for kind, least := range reachedDifferential {
+			if y["reached: "+kind] < least {
+				t.Errorf("the run reaches %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y["reached: "+kind], least)
+			}
+		}
+		if y["excused: "+excusedLong] == 0 {
+			t.Errorf("no literal is longer than the length limit")
+		}
+	}
 	// The outcomes of a parameter that the run must reach: an insert through a parameter that
 	// succeeds, that meets a key that exists, and that the rule for arguments refuses, and an argument
 	// for a statement without a parameter.
@@ -1030,7 +1224,7 @@ func TestDifferential(t *testing.T) {
 	// such as each known gap, is pinned at 0. Of the calls that are excused because s4ql refuses
 	// their arguments by its rule, each is checked against the rule instead.
 	if !slow() && atDefault("seed", "sequences", "length") {
-		want := map[string]int{acceptedStartedTable: 24, excusedArguments: 632, excusedArgument: 50, excusedType: 10}
+		want := map[string]int{acceptedStartedTable: 21, excusedArguments: 644, excusedArgument: 141, excusedType: 363, excusedLong: 5}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
 			if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) {
@@ -1042,6 +1236,24 @@ func TestDifferential(t *testing.T) {
 			pinned(t, "texts excused from the comparison with SQLite as "+kind, want[kind], y["excused: "+kind])
 		}
 	}
+}
+
+// reachedDifferential is the least number of each kind of what [pair.reach] counts that the full run
+// of [TestDifferential] must reach.
+var reachedDifferential = map[string]int{
+	"insert into INT ok": 90, "insert into INTEGER ok": 100, "insert into REAL ok": 110, "insert into TEXT ok": 110, "insert into BLOB ok": 100,
+	"insert into INT UNIQUE constraint failed": 30, "insert into INTEGER UNIQUE constraint failed": 30, "insert into REAL UNIQUE constraint failed": 40,
+	"insert into TEXT UNIQUE constraint failed": 30, "insert into BLOB UNIQUE constraint failed": 40,
+	"-0.0 literal into REAL UNIQUE constraint failed": 8, "-0.0 argument into REAL UNIQUE constraint failed": 2,
+	"insert into INT a value of another type": 9, "insert into INTEGER a value of another type": 24, "insert into REAL a value of another type": 20,
+	"insert into TEXT a value of another type": 29, "insert into BLOB a value of another type": 37,
+	"insert into TEXT string or blob too big": 2, "insert into BLOB string or blob too big": 2, "long value": 50,
+	"literal integer": 480, "literal real": 230, "literal real -0.0": 30, "literal text": 200, "literal empty text": 40, "literal blob": 180, "literal empty blob": 50,
+	"argument int64": 200, "argument int": 3, "argument int32": 4, "argument uint64": 2, "argument float64": 100, "argument float64 -0.0": 15,
+	"argument float32": 6, "argument string": 90, "argument empty string": 20, "argument []uint8": 80, "argument empty []byte": 24,
+	"argument NaN": 4, "argument infinite float64": 5, "argument float32 that is not finite": 3, "argument string that is not valid UTF-8": 5,
+	"argument string with NUL": 8, "argument nil": 1, "argument nil []byte": 11, "argument bool": 3, "argument time.Time": 2,
+	"argument uint64 above int64": 2, "argument named": 30,
 }
 
 // FuzzDifferential runs the sequence of statements that its input chooses, the seed and the number of
@@ -1063,7 +1275,7 @@ func FuzzDifferential_core(f *testing.F) {
 	f.Add(uint64(0), uint8(40), false)
 	f.Add(uint64(1), uint8(40), true)
 	f.Fuzz(func(t *testing.T, seed uint64, n uint8, restarts bool) {
-		differential(t, seed, int(n%64), restarts, nil)
+		differential(t, seed, int(n%64), restarts, 0, nil)
 	})
 }
 
