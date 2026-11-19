@@ -154,7 +154,7 @@ function actionWords(e) {
     case "restart": return `You restart ${i}.`;
     case "close": return `You stop ${i}.`;
     case "open": return `You start ${i}.`;
-    case "hangNetwork": return e.on ? `You hang the requests of ${i} to S3.` : `The requests of ${i} to S3 no longer hang.`;
+    case "hangNetwork": return e.on ? `You hang the connection of ${i} to S3.` : `The connection of ${i} to S3 no longer hangs.`;
     case "disconnectNetwork": return e.on ? `You disconnect ${i} from S3.` : `You connect ${i} to S3 again.`;
     case "failDisk": return e.on ? `You make the disk of ${i} fail.` : `The disk of ${i} works again.`;
     case "shiftWall": return `You move the wall clock of ${i} ${e.by > 0 ? "forward" : "back"} ${Math.abs(e.by) / 1000} s.`;

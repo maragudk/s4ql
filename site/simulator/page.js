@@ -424,7 +424,7 @@ function drawControls() {
     const st = instanceState(c.name);
     const off = !ready || waiting || !st;
     const crashed = !!st && st.state === "crashed";
-    // An instance that has not started takes only the faults of its requests to S3 and of its disk.
+    // An instance that has not started takes only the faults of its connection to S3 and of its disk.
     const notStarted = !!st && st.state === "waiting";
     c.b.crash.disabled = off || notStarted;
     c.b.stop.disabled = off || !(st.state === "running" || startable(c.name, st));

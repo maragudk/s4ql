@@ -341,11 +341,11 @@ async function check() {
 
   // Each action on a, while paused: its effect in the state, and switched off again, gone.
   const a = () => p.instance("a");
-  // The engine names two of the faults by the network, but they act only on the requests of the
+  // The engine names two of the faults by the network, but they act only on the connection of the
   // instance to S3, and the page names them so.
   const logged = (text) => [...p.$("#log").children].some((li) => li.querySelector(".text")?.textContent === text);
   const toggles = [
-    ["hang", "networkHung", "Hang S3", "You hang the requests of a to S3.", "The requests of a to S3 no longer hang."],
+    ["hang", "networkHung", "Hang S3", "You hang the connection of a to S3.", "The connection of a to S3 no longer hangs."],
     ["disconnect", "networkDisconnected", "Disconnect S3", "You disconnect a from S3.", "You connect a to S3 again."],
     ["disk", "diskFailing", "Error disk", "You make the disk of a fail.", "The disk of a works again."],
   ];
@@ -495,6 +495,10 @@ async function check() {
 
   noProcess("after 11 min");
   noClient("after 11 min");
+  // On this page a request is one that reaches the app, never one of an instance to S3: every line
+  // of the log that says request is a line of the requests to the app.
+  const otherRequests = [...logTexts].filter((s) => /request/i.test(s) && !/^(A request gets |You send the requests to [ab]\.$)/.test(s));
+  expect(otherRequests.length === 0, `every line of the log that says request is about the requests to the app (${otherRequests.join(" | ") || logTexts.size + " lines of the log"})`);
   expect(cleanRequests(requestTexts), `the page's texts about the requests hold only what can be known from outside the app (${[...requestTexts].join(" | ")})`);
 
   expect(new URL(p.win.location.href).pathname === address && p.win.location.search === "" && p.win.location.hash === "", "the page writes nothing into its address");
