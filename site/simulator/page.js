@@ -1,19 +1,17 @@
-// The simulator page. It loads the engine of internal/simulator in a Worker, asks it for a run of two
-// instances with a random seed, and plays the trace back: the clock, the field, the log, and the counts
-// of calls come from the events of the run, and the instances and the bucket from the state at the
-// current time, which the engine folds from the same events.
+// The simulator page. It loads the engine of internal/simulator in a Worker, starts a live session of
+// two instances with a random seed, and waits for Play. While it plays, the page advances the
+// session's fake time by the real time that passed, or five times that with turbo, one step at a time,
+// and asks for the state after each step. An action of the visitor goes to the engine at once, paused
+// or playing, and happens at the session's fake time.
 //
-// A fault that the visitor adds goes into the schedule just after the current time, and the page asks
-// for the run again. The engine gives the same events before that time, so the run goes on from where
-// it was. Before the playback reaches the end of the run, the page asks for a longer run, which has
-// the same events up to the old end, so the run goes on, up to R.LIMIT.
+// The engine does not keep the events of a session, and neither does the page: it keeps the last
+// lines of the log, the counts of the calls, and the bars of the last WINDOW of fake time.
 
 import * as R from "./run.js";
 
 const $ = (id) => document.getElementById(id);
-const reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
-const plural = (n, one, many = one + "s") => `${n.toLocaleString("en")} ${n === 1 ? one : many}`;
+const count = (n) => n.toLocaleString("en");
 
 function set(node, text) {
   if (node.textContent !== text) node.textContent = text;
@@ -25,14 +23,21 @@ function html(node, text) {
   }
 }
 
-// Bar codes of commit names: one bar per bit of the SHA-256, as on the main page.
+// Bar codes of commit names: one bar per bit of the SHA-256, as on the main page. The page draws the
+// same few names again after each step, so it keeps the last of them.
+const codes = new Map();
 function barcodeSVG(name, cls) {
+  const key = cls + name;
+  if (codes.has(key)) return codes.get(key);
+  if (codes.size > 64) codes.clear();
   let d = "";
   for (let i = 0; i < 64; i++) {
     const nib = parseInt(name[i], 16);
     for (let b = 0; b < 4; b++) if (nib & (8 >> b)) d += "M" + (i * 4 + b) + " 0h0.72v40h-0.72z";
   }
-  return `<svg class="${cls}" viewBox="0 0 256 40" preserveAspectRatio="none" shape-rendering="crispEdges" aria-hidden="true"><path fill="currentColor" d="${d}"/></svg>`;
+  const svg = `<svg class="${cls}" viewBox="0 0 256 40" preserveAspectRatio="none" shape-rendering="crispEdges" aria-hidden="true"><path fill="currentColor" d="${d}"/></svg>`;
+  codes.set(key, svg);
+  return svg;
 }
 
 // The mark: the 32 bits of "s4ql" as bars.
@@ -44,331 +49,224 @@ function barcodeSVG(name, cls) {
   $("mark").innerHTML = `<path fill="currentColor" d="${d}"/>`;
 }
 
+const TURBO = 5; // the speed with turbo, in fake time for real time
+const FRAME = 100; // the most real time, in ms, that one animation frame counts, so a hidden tab does not jump ahead
+const STEP = 250; // the most real time, in ms, that one step of the session covers; more is dropped
+const MAX_ADVANCE = 1800000; // the most fake time that one command advance takes
+const COMMITS = 8; // the commit objects that the page asks for and shows
+const LINES = 100; // the lines of the log that the page keeps
+const WINDOW = 120000; // the fake time that the field shows
+const SLICES = 240; // the bars of the field
+const SLICE = WINDOW / SLICES;
+const JUMP = 60000; // a jump of a wall clock: longer than the lease of 30 s
+const MEMORY = 1 << 30; // SQLite's memory at which the page stops
+// The fake time at which the page stops. The engine's Go heap grows by about 12.5 MB a fake hour and
+// cannot be measured from the page, so a day of fake time, some 300 MB, stands in for it.
+const HOURS = 24 * 3600000;
+
 // What the page knows.
-let run = fresh(); // the run that the page wants: {seed, end, schedule}
-let shown = null; // {run, response} that the page shows
-let events = [];
-let words = []; // the words of each event, from R.story
-let logged = []; // indexes of the events in the log
-let calls = {}; // indexes of the calls that ended, by instance and by how
-let arms = []; // indexes of the lost answers that the visitor armed
-let uses = []; // indexes of the lost answers that a commit used
-let names = new Map(); // the process of each holder ID
-let cursor = 0;
-let playing = false;
-let last = 0;
 let engine = null;
-let runs = 0; // number of runs applied
-let state = null; // the state from the engine at stateFor
-let stateFor = null; // {runs, t}
-let wanted = null; // the newest wish for a run that waits
-let flying = null; // the wish whose run is in flight
-let stateBusy = false;
-let autoplay = false; // whether the page plays once the next run is shown
-let failed = false;
+let t = 0; // the fake time of the session
+let state = null; // the answer of the engine to now
+let playing = false;
+let turbo = false;
+let halted = false;
+let busy = false; // whether a command is on its way to the engine
+let acting = false; // whether that command is an action
+let debt = 0; // the real time in ms that playback has not yet advanced
+let last = 0; // the time of the last animation frame
+let lastStep = null; // {real, fake} of the last advance by playback
+const jobs = []; // commands that wait: {act} or {by}
+const tell = R.teller();
+const lines = []; // the last LINES lines of the log, newest first
+let linesTotal = 0;
+const calls = {}; // by instance: {w, r, x, why}
+const bars = new Map(); // events by slice of fake time
+const marks = []; // the times of the visitor's actions
+const starts = {}; // by instance: the t of the start of its process
+const names = new Map(); // the process of each holder ID
+const stopped = {}; // by instance: whether the visitor's Stop closed the database of its process
 
 // The page tells a check what it does through data attributes on <html>: data-engine is loading,
-// ready, or failed, data-runs counts the runs applied, data-busy is "true" while a run is in flight,
-// and data-hash is the hash of the run shown.
+// ready, or failed, data-busy is "true" while a command is on its way, data-t is the fake time in
+// whole ms, data-playing is "true" while it plays, data-lines counts the lines of the log so far, and
+// data-commits the commit objects. window.s4qlPage gives the check the state and a hook, skip, that
+// advances fake time at once; a visitor reaches it only through the console.
 const root = document.documentElement;
 root.dataset.engine = "loading";
 window.s4qlPage = {
-  get response() { return shown && shown.response; },
-  get cursor() { return cursor; },
+  get t() { return t; },
   get playing() { return playing; },
+  get turbo() { return turbo; },
+  get state() { return state; },
+  get lastStep() { return lastStep; },
+  skip(ms) {
+    for (let left = ms; left > 0; left -= MAX_ADVANCE) jobs.push({ by: Math.min(left, MAX_ADVANCE) });
+    pump();
+  },
 };
 
-function fresh() {
-  return { seed: R.newSeed(), end: R.CHUNK, schedule: [] };
-}
-
-function note(text) {
-  set($("note"), text);
-}
-
-// fail shows what went wrong and stops the page until the visitor starts over, which asks the engine
-// for a new run.
-function fail(title, text) {
-  failed = true;
-  autoplay = false;
+// halt the page for good, with one line on what happened. A reload starts over.
+function halt(title, text) {
+  halted = true;
   setPlaying(false);
-  if (!shown) set($("field-note"), title);
   root.dataset.engine = "failed";
   const f = $("failure");
-  f.innerHTML = `<strong>${esc(title)}</strong><p>${esc(text)}</p>`;
+  f.innerHTML = `<strong>${esc(title)}</strong>` + (text ? `<p>${esc(text)}</p>` : "");
   f.hidden = false;
-  set($("engine-status"), title);
+  set($("status"), "");
   drawControls();
 }
 
-// Running the engine. Only the newest wish is run, and the page shows a response only when no newer
-// wish waits. A wish that holds stops the playback until its run is shown: a fault, which changes the
-// run from the current time on, and a new run. A longer run changes nothing that the page shows, so
-// the playback goes on while the engine runs it.
-
-function rerun(why, hold) {
-  wanted = { run: structuredClone(run), why, hold: hold || !!(wanted && wanted.hold) || !!(flying && flying.hold) };
-  if (!flying) pump();
-}
-
-const holding = () => !!((wanted && wanted.hold) || (flying && flying.hold));
-
+// pump sends the next command to the engine, if none is on its way: an action, then a skip of the
+// check, then a step of playback. After each it asks for the state. Commands never pile up: a frame
+// that comes while one is on its way adds its time to the debt, and the next step covers it.
 async function pump() {
-  while (wanted) {
-    const w = wanted;
-    wanted = null;
-    flying = w;
-    setBusy();
-    const started = performance.now();
-    try {
-      const response = await engine.run(R.request(w.run));
-      if (wanted) continue;
-      apply(w, response, performance.now() - started);
-    } catch (e) {
-      if (wanted) continue;
-      // The page asks only for runs that the engine takes, so a refusal is a fault of the page or of
-      // the Worker, and the engine has forgotten the run shown.
-      flying = null;
-      setBusy();
-      fail("The engine refused the run.", `${e.message}. Start over to ask for a new run.`);
+  if (busy || halted || !engine) return;
+  let job = jobs.shift();
+  if (!job && playing && debt >= 1) {
+    const real = Math.min(debt, STEP);
+    debt = 0;
+    job = { by: real * (turbo ? TURBO : 1), real };
+  }
+  if (!job) return;
+  busy = true;
+  acting = !!job.act;
+  root.dataset.busy = "true";
+  let answer, now;
+  try {
+    answer = job.act ? await engine.act(job.act) : await engine.advance(job.by);
+    if (!answer.ended) now = await engine.now(COMMITS);
+  } catch (e) {
+    halt("The engine stopped.", `${e.message}. Reload to start over.`);
+    return;
+  } finally {
+    busy = false;
+    acting = false;
+    root.dataset.busy = "false";
+  }
+  try {
+    if (job.real) lastStep = { real: job.real, fake: job.by };
+    take(answer);
+    if (answer.ended) {
+      halt("The simulation stopped.", `${answer.schedulerError || "The session ended."} Reload to start over.`);
       return;
     }
+    state = now.state;
+    draw();
+  } catch (e) {
+    halt("The page failed.", `${e.message}. Reload to start over.`);
+    return;
   }
-  flying = null;
-  setBusy();
+  if (engine.memory > MEMORY || t >= HOURS) {
+    halt("The engine has used up its memory.", "Reload to start over.");
+    return;
+  }
+  if (jobs.length) pump();
 }
 
-// setBusy shows whether the playback waits for the engine: for a run that holds it, or at the end of
-// the run shown while a longer run is on its way.
-function setBusy() {
-  root.dataset.busy = flying ? "true" : "false";
-  const waits = holding() || !shown || (!!flying && cursor >= shown.run.end && !atLimit());
-  $("field").setAttribute("aria-busy", waits ? "true" : "false");
-  if (shown) drawControls();
-}
-
-function apply(w, response, ms) {
-  // A run that differs only in its end has the same events up to the end shown, and so the same
-  // state at every time shown.
-  const longer = shown && w.run.seed === shown.run.seed && JSON.stringify(w.run.schedule) === JSON.stringify(shown.run.schedule);
-  const other = !shown || w.run.seed !== shown.run.seed;
-  shown = { run: w.run, response };
-  events = response.events;
-  words = R.story(events, w.run.schedule);
-  logged = [];
-  calls = {};
-  arms = [];
-  uses = [];
-  names = new Map();
-  events.forEach((e, i) => {
-    if (words[i].tier) logged.push(i);
-    if (e.kind === "process" && e.what === "opened") names.set(e.holder, e.process);
-    if (e.kind === "action" && e.do === "loseAnswer") arms.push(i);
-    if (e.kind === "request" && e.what === "answer_lost") uses.push(i);
-    if (e.kind === "call" && (e.what === "committed" || e.what === "served" || e.what === "refused")) {
-      const c = (calls[e.instance] ||= { committed: [], served: [], refused: [] });
-      c[e.what].push(i);
+// take the events of an answer into what the page keeps.
+function take(answer) {
+  t = answer.t;
+  for (const e of answer.events) {
+    const w = tell(e);
+    const slice = Math.floor(e.t / SLICE);
+    bars.set(slice, (bars.get(slice) || 0) + 1);
+    if (w.tier) {
+      lines.unshift({ t: e.t, ...w });
+      linesTotal++;
     }
-  });
-  if (!longer) {
-    state = null;
-    stateFor = null;
+    switch (e.kind) {
+      case "action":
+        marks.push(e.t);
+        if (e.what === "done" && (e.do === "close" || e.do === "open")) stopped[e.instance] = e.do === "close";
+        break;
+      case "process":
+        if (e.what === "started") {
+          starts[e.instance] = e.t;
+          stopped[e.instance] = false;
+        }
+        if (e.what === "opened") names.set(e.holder, e.process);
+        break;
+      case "call": {
+        const c = (calls[e.instance] ||= { w: 0, r: 0, x: 0, why: "" });
+        if (e.what === "committed") c.w++;
+        else if (e.what === "served") c.r++;
+        else if (e.what === "refused") {
+          c.x++;
+          c.why = R.reason(e);
+        }
+        break;
+      }
+    }
   }
-  if (other) cursor = 0;
-  runs++;
-  root.dataset.runs = String(runs);
-  root.dataset.hash = response.hash;
-  set($("engine-status"), `The engine ran ${R.span(w.run.end)} of fake time in ${Math.round(ms)} ms.`);
-  note(w.why || "");
-  if (response.schedulerError) note("The scheduler failed: " + response.schedulerError);
-  $("failure").hidden = true;
-  root.dataset.engine = "ready";
-  drawStrip();
-  drawCursor();
-  drawState();
-  if (autoplay) {
-    autoplay = false;
-    setPlaying(true);
-  }
+  lines.length = Math.min(lines.length, LINES);
+  const first = Math.floor(t / SLICE) - SLICES;
+  for (const k of bars.keys()) if (k <= first) bars.delete(k);
+  while (marks.length && marks[0] < t - WINDOW) marks.shift();
 }
 
-// The time of the run.
-
-function upTo(t) {
-  // the number of events with t <= the time.
-  let lo = 0, hi = events.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (events[mid].t <= t) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
-}
-function countBelow(list, n) {
-  let lo = 0, hi = list.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (list[mid] < n) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
-}
-
-const atLimit = () => !!shown && cursor >= R.LIMIT;
+// Playback.
 
 function setPlaying(on) {
-  playing = on && !!shown && !failed && !atLimit();
-  const b = $("play");
-  b.setAttribute("aria-pressed", playing ? "true" : "false");
-  b.firstChild.textContent = playing ? "Pause " : "Play ";
-  last = performance.now();
+  playing = on && !!state && !halted;
+  debt = 0;
+  root.dataset.playing = String(playing);
+  set($("play-word"), playing ? "Pause" : "Play");
+}
+
+function setTurbo(on) {
+  turbo = on;
+  $("turbo").setAttribute("aria-pressed", String(on));
 }
 
 function frame(ts) {
-  if (playing && shown && !holding()) {
-    const dt = Math.min(100, Math.max(0, ts - last));
-    cursor = Math.min(shown.run.end, cursor + dt * Number($("speed").value));
-    if (atLimit()) setPlaying(false);
-  }
+  if (playing) debt += Math.min(FRAME, Math.max(0, ts - last));
   last = ts;
-  if (shown && !failed) {
-    // Ask for a longer run ahead of time, so that it is there before the playback needs it: at least
-    // R.LEAD of fake time ahead, and 2 s of true time at a high speed.
-    const lead = Math.max(R.LEAD, 2000 * Number($("speed").value));
-    if (run.seed === shown.run.seed && run.end < R.LIMIT && run.end - cursor <= lead) {
-      run.end = Math.min(R.LIMIT, run.end + R.CHUNK);
-      rerun("", false);
-    }
-    drawCursor();
-    fetchState(ts);
-  }
+  pump();
   requestAnimationFrame(frame);
 }
 
-// fetchState asks the engine for the state at the current time, at most every STATE_MS of true time
-// while the run plays, since the engine folds it from the first event on.
-const STATE_MS = 100;
-let stateAsked = -Infinity;
+// Drawing.
 
-async function fetchState(ts) {
-  if (stateBusy || flying || !shown || failed) return;
-  if (stateFor && stateFor.runs === runs && stateFor.t === cursor) return;
-  if (stateFor && stateFor.runs === runs && playing && ts - stateAsked < STATE_MS) return;
-  stateAsked = ts;
-  stateBusy = true;
-  const t = cursor, r = runs;
-  try {
-    const s = await engine.state(t);
-    if (r === runs) {
-      state = s;
-      stateFor = { runs: r, t };
-      drawState();
-    }
-  } catch (e) {
-    fail("The engine could not give the state of the run.", `${e.message}. Start over to ask for a new run.`);
-  } finally {
-    stateBusy = false;
-  }
-}
-
-// The field: one bar for each slice of fake time up to the limit, as high as the events in it, drawn
-// up to the current time. Marks above it are the visitor's faults.
-
-const SLICES = 240;
-
-function drawStrip() {
-  const slice = (t) => Math.min(SLICES - 1, Math.floor((t / R.LIMIT) * SLICES));
-  const all = new Array(SLICES).fill(0);
-  for (const e of events) all[slice(e.t)]++;
-  // A fixed scale, so that the bars keep their heights when the run grows.
-  const h = (n) => (n === 0 ? 0 : 3 + 17 * Math.min(1, Math.log(1 + n) / Math.log(1 + 400)));
-  let bars = "";
-  for (let i = 0; i < SLICES; i++) if (all[i]) bars += `M${i + 0.15} ${28 - h(all[i])}h0.7V28h-0.7z`;
-  let marks = "";
-  for (const a of shown.run.schedule) marks += `M${(a.at / R.LIMIT) * SLICES} 0h0.6v5h-0.6z`;
-  set($("field-note"), "");
-  $("strip").setAttribute("viewBox", `0 0 ${SLICES} 28`);
-  $("strip").innerHTML =
-    `<defs><clipPath id="past"><rect id="past-rect" x="0" y="0" width="0" height="28"/></clipPath></defs>` +
-    `<g clip-path="url(#past)"><path fill="currentColor" d="${bars}"/><path fill="currentColor" d="${marks}"/></g>` +
-    `<rect id="cursor-line" x="0" y="0" width="0.35" height="28" fill="currentColor"/>`;
-}
-
-let drawn = null; // the key of what drawCursor last drew
-
-function drawCursor() {
-  const key = runs + ":" + cursor;
-  if (key === drawn) return;
-  drawn = key;
-  const x = (cursor / R.LIMIT) * SLICES;
-  $("past-rect").setAttribute("width", String(x));
-  $("cursor-line").setAttribute("x", String(Math.min(SLICES - 0.35, x)));
-  set($("clock"), R.clock(cursor));
+function draw() {
+  root.dataset.t = String(Math.floor(t));
+  root.dataset.lines = String(linesTotal);
+  set($("clock"), R.clock(t));
+  drawField();
   drawLog();
-  drawCalls();
-  setBusy();
+  if (!state) return;
+  for (const c of cards) drawCard(c);
+  drawS3();
+  drawControls();
 }
 
-// The log.
+// The field: one bar for each slice of fake time, as high as the events in it, up to the present at
+// its right end once WINDOW has passed. Marks above the bars are the visitor's actions.
+function drawField() {
+  const now = Math.floor(t / SLICE);
+  const left = Math.max(0, now - SLICES + 1); // the slice at the left end
+  const h = (n) => (n === 0 ? 0 : 3 + 17 * Math.min(1, Math.log(1 + n) / Math.log(1 + 40)));
+  let d = "";
+  for (const [k, n] of bars) if (k >= left) d += `M${k - left + 0.15} ${28 - h(n)}h0.7V28h-0.7z`;
+  let m = "";
+  for (const at of marks) if (at / SLICE >= left) m += `M${at / SLICE - left} 0h0.6v5h-0.6z`;
+  const x = Math.min(SLICES, t / SLICE - left);
+  html($("strip"), `<path fill="currentColor" d="${d}${m}"/><rect x="${Math.min(SLICES - 0.35, x)}" y="0" width="0.35" height="28" fill="currentColor"/>`);
+}
+
+let logged = -1; // the lines that drawLog last drew
 
 function drawLog() {
-  const count = countBelow(logged, upTo(cursor));
-  const list = $("log");
-  const key = runs + ":" + count;
-  if (list.dataset.key === key) return;
-  list.dataset.key = key;
-  const out = [];
-  for (let k = count - 1; k >= 0 && out.length < 100; k--) {
-    const i = logged[k];
-    const e = events[i], w = words[i];
-    out.push(`<li class="${w.tier}"><span class="t">${R.clock(e.t)}</span><span class="text">${esc(w.text)}</span></li>`);
-  }
-  if (count > 100) out.push(`<li class="empty small">${plural(count - 100, "earlier line is", "earlier lines are")} not shown.</li>`);
-  if (out.length === 0) out.push(`<li class="empty small">Nothing has happened yet.</li>`);
-  list.innerHTML = out.join("");
+  if (logged === linesTotal) return;
+  logged = linesTotal;
+  const out = lines.map((l) => `<li class="${l.tier}"><span class="t">${R.clock(l.t)}</span><span class="text">${esc(l.text)}</span></li>`);
+  if (out.length === 0) out.push(`<li class="empty">Nothing yet.</li>`);
+  html($("log"), out.join(""));
+  set($("lines"), linesTotal > LINES ? `last ${LINES} of ${count(linesTotal)}` : "");
 }
 
-// The calls of each instance that ended up to the current time, from the events.
-
-function drawCalls() {
-  const n = upTo(cursor);
-  for (const c of cards) {
-    const k = calls[c.name] || { committed: [], served: [], refused: [] };
-    const w = countBelow(k.committed, n), r = countBelow(k.served, n), x = countBelow(k.refused, n);
-    let text = `${plural(w, "write")} and ${plural(r, "read")} served, ${x.toLocaleString("en")} refused`;
-    if (x) {
-      const reason = String(events[k.refused[x - 1]].error || "").split(": ").pop();
-      text += `, the last because ${R.REASONS[reason] || reason}`;
-    }
-    text += ".";
-    set(c.f.calls, text);
-  }
-}
-
-// The controls.
-
-function drawControls() {
-  const ready = !!shown && !failed;
-  const end = atLimit();
-  $("play").disabled = !ready || end;
-  $("again").disabled = !engine;
-  $("again").classList.toggle("call", end);
-  const lim = $("limit");
-  lim.hidden = !end;
-  set(lim, end ? `The run has reached ${R.span(R.LIMIT)} of fake time, as far as this page runs it. Start over for a new run.` : "");
-  // A fault goes in just after the current time, and needs the state to know which faults apply.
-  const off = !ready || holding() || !state || end || Math.floor(cursor) + 1 >= run.end;
-  $("outage").disabled = off;
-  $("lose").disabled = off;
-  for (const c of cards) {
-    const st = instanceState(c.name);
-    // A crashed process can only be restarted: the engine ignores every other action for it.
-    const crashed = !!st && st.state === "crashed";
-    for (const b of c.buttons) b.disabled = off || !st || (crashed && b.dataset.a !== "crash");
-  }
-}
-
-// Instances.
+// The instances.
 
 const cards = ["a", "b"].map((name) => {
   const el = document.querySelector(`[data-instance="${name}"]`);
@@ -377,183 +275,193 @@ const cards = ["a", "b"].map((name) => {
   const b = {};
   for (const node of el.querySelectorAll("[data-a]")) {
     b[node.dataset.a] = node;
-    node.addEventListener("click", () => instanceFault(name, node.dataset.a));
+    node.addEventListener("click", () => act(name, node.dataset.a));
   }
-  return { name, el, f, b, buttons: [...el.querySelectorAll("[data-a]")] };
+  return { name, el, f, b };
 });
 
-function instanceState(name) {
-  return state && state.instances ? state.instances.find((x) => x.instance === name) : null;
+const instanceState = (name) => (state && state.instances.find((x) => x.instance === name)) || null;
+const holderName = (id) => names.get(id) || R.short(id);
+
+// role of an instance: serves when it holds the lease and the manifest names it.
+function role(st) {
+  const m = state.bucket.manifest;
+  const named = !!(m && m.lease && st.holder && m.lease.holder === st.holder);
+  if (st.state !== "running") return st.state;
+  if (st.lease === "held") return named ? "serves" : "believes";
+  return "standby";
 }
 
-function instanceFault(name, a) {
-  const st = instanceState(name);
-  if (!st) return;
-  switch (a) {
-    case "crash": return add({ do: st.state === "crashed" ? "restart" : "crash", instance: name });
-    case "cutOff": return add({ do: "cutOff", instance: name, for: R.SPAN });
-    case "clock": return add({ do: st.monotonicStopped ? "startMonotonic" : "stopMonotonic", instance: name });
-  }
-}
-
-const STATES = {
+const WORDS = {
+  serves: "serves",
+  believes: "thinks it holds the lease",
+  standby: "stands by",
   starting: "starting",
-  closing: "closing its database",
-  closed: "database closed",
-  stopped: "stopped",
+  closing: "stopping",
+  closed: "stopped",
+  stopped: "core stopped",
   crashed: "crashed",
   failed: "cannot open its database",
 };
 
-function drawState() {
-  if (!state || !state.instances) {
-    for (const c of cards) set(c.f.word, "…");
-    set($("s3-word"), "…");
-    drawControls();
-    return;
-  }
-  const t = state.t;
+function drawCard(c) {
+  const st = instanceState(c.name);
+  if (!st) return;
+  const r = role(st);
   const m = state.bucket.manifest;
+  c.el.dataset.role = r;
+  c.el.dataset.state = st.state;
+  set(c.f.word, WORDS[r] || r);
+  set(c.f.process, st.process !== c.name ? st.process : "");
+
+  let lease = "none";
+  if (r === "serves") lease = "held";
+  else if (r === "believes") lease = `it thinks so; S3 names ${m && m.lease ? holderName(m.lease.holder) : "nobody"}`;
+  set(c.f.lease, lease);
+
   const log = state.bucket.log;
-  const holderName = (id) => names.get(id) || R.short(id);
+  const length = state.bucket.logLength || log.length;
+  let pos;
+  if (st.position === R.EMPTY_LOG) pos = length ? `empty, ${count(length)} behind` : "empty";
+  else {
+    const i = log.indexOf(st.position);
+    const behind = i < 0 ? -1 : log.length - 1 - i;
+    pos = R.short(st.position) + (i < 0 ? (length > log.length ? ", behind" : ", not in the log") : behind === 0 ? ", head" : `, ${count(behind)} behind`);
+  }
+  set(c.f.pos, pos);
+  if (c.f.code.dataset.pos !== st.position) {
+    c.f.code.dataset.pos = st.position;
+    c.f.code.innerHTML = st.position === R.EMPTY_LOG ? "" : barcodeSVG(st.position, "code");
+  }
+
+  let clocks;
+  if (st.state === "crashed") clocks = "none";
+  else {
+    const wall = st.wall - state.t;
+    const mono = st.monotonic - (state.t - (starts[c.name] || 0));
+    const parts = [];
+    if (st.wallStopped && st.monotonicStopped) parts.push("paused");
+    if (Math.round(wall / 1000)) parts.push("wall " + R.offset(wall));
+    if (Math.round(mono / 1000)) parts.push("monotonic " + R.offset(mono));
+    clocks = parts.join(", ") || "true time";
+  }
+  set(c.f.clocks, clocks);
+
+  const k = calls[c.name] || { w: 0, r: 0, x: 0, why: "" };
+  set(c.f.calls, `${count(k.w)} writes, ${count(k.r)} reads`);
+  set(c.f.refused, k.x ? `${count(k.x)}, last: ${R.REASONS[k.why] || k.why}` : "0");
+
+  set(c.b.crash, st.state === "crashed" ? "Restart" : "Crash");
+  set(c.b.stop, startable(c.name, st) ? "Start" : "Stop");
+  c.b.hang.setAttribute("aria-pressed", String(!!st.networkHung));
+  c.b.disconnect.setAttribute("aria-pressed", String(!!st.networkDisconnected));
+  c.b.disk.setAttribute("aria-pressed", String(!!st.diskFailing));
+  c.b.pause.setAttribute("aria-pressed", String(!!(st.wallStopped && st.monotonicStopped)));
+}
+
+// drawControls enables what makes sense now. Every action waits while another is on its way, so that a
+// toggle is always decided from the state after the one before.
+function drawControls() {
+  const ready = !!state && !halted;
+  $("play").disabled = !ready;
+  $("turbo").disabled = !ready;
+  const waiting = acting || jobs.some((j) => j.act);
   for (const c of cards) {
     const st = instanceState(c.name);
-    if (!st) continue;
-    const named = !!(m && m.lease && st.holder && m.lease.holder === st.holder);
-    const writer = st.lease === "held" && named;
-    c.el.classList.toggle("lit", writer);
-    c.el.classList.toggle("down", st.state === "crashed");
-    let word = STATES[st.state];
-    if (st.state === "running") word = writer ? "serves" : st.lease === "held" ? "believes it holds the lease" : "stands by";
-    set(c.f.word, word || st.state);
-    set(c.f.process, st.process !== c.name ? "process " + st.process : "");
-    set(c.f.cut, st.cutOffUntil > t ? "cut off" : "");
-    set(c.f.stopped, st.monotonicStopped ? "clock stopped" : "");
-    let lease;
-    if (st.state === "crashed") lease = "None. A crashed process holds nothing.";
-    else if (writer) lease = `Held. The manifest names it, renewed at ${R.clock(m.lease.renewed)} by its wall clock, for ${R.span(m.lease.duration)}.`;
-    else if (st.lease === "held") lease = `It took the lease and has not learned that it lost it. The manifest names ${m && m.lease ? holderName(m.lease.holder) : "no holder"}.`;
-    else lease = m && m.lease ? `None. The manifest names ${holderName(m.lease.holder)}.` : "None.";
-    set(c.f.lease, lease);
-    let pos;
-    if (st.position === R.EMPTY_LOG) pos = log.length ? `The empty log, ${plural(log.length, "commit")} behind the head.` : "The empty log, which is the head.";
-    else {
-      const i = log.indexOf(st.position);
-      pos = R.short(st.position) + (i < 0 ? ", which is not in the log." : i === log.length - 1 ? ", the head of the log." : `, ${plural(log.length - 1 - i, "commit")} behind the head.`);
-    }
-    set(c.f.pos, pos);
-    if (c.f.code.dataset.pos !== st.position) {
-      c.f.code.dataset.pos = st.position;
-      c.f.code.innerHTML = st.position === R.EMPTY_LOG ? "" : barcodeSVG(st.position, "code");
-    }
-    // The page offers no fault of the wall clock, so the card tells only whether the monotonic clock
-    // runs, and does not change with every frame.
-    let clocks = "Both run.";
-    if (st.state === "crashed") clocks = "None: the process crashed.";
-    else if (st.monotonicStopped) clocks = `The monotonic clock stands still at ${R.clock(st.monotonic)}, and with it every timer of the process.`;
-    set(c.f.clocks, clocks);
-    set(c.b.crash, st.state === "crashed" ? "Restart" : "Crash");
-    set(c.b.clock, st.monotonicStopped ? "Start its monotonic clock" : "Stop its monotonic clock");
+    const off = !ready || waiting || !st;
+    const crashed = !!st && st.state === "crashed";
+    c.b.crash.disabled = off;
+    c.b.stop.disabled = off || !(st.state === "running" || startable(c.name, st));
+    for (const a of ["hang", "disconnect", "disk"]) c.b[a].disabled = off;
+    for (const a of ["forward", "back", "pause"]) c.b[a].disabled = off || crashed;
   }
-  set($("s3-word"), state.outageUntil > t ? "unreachable" : "reachable");
-  drawBucket(holderName);
+}
+
+// startable says whether Start opens the database of the instance: after the visitor's Stop, and not
+// while its process closes and opens the database by itself after its core stopped.
+const startable = (name, st) => st.state === "closed" && !!stopped[name];
+
+function act(name, a) {
+  const st = instanceState(name);
+  if (!st || halted) return;
+  const i = { instance: name };
+  let action;
+  switch (a) {
+    case "crash": action = { do: st.state === "crashed" ? "restart" : "crash", ...i }; break;
+    case "stop": action = { do: startable(name, st) ? "open" : "close", ...i }; break;
+    case "hang": action = { do: "hangNetwork", ...i, on: !st.networkHung }; break;
+    case "disconnect": action = { do: "disconnectNetwork", ...i, on: !st.networkDisconnected }; break;
+    case "disk": action = { do: "failDisk", ...i, on: !st.diskFailing }; break;
+    case "forward": action = { do: "shiftWall", ...i, by: JUMP }; break;
+    case "back": action = { do: "shiftWall", ...i, by: -JUMP }; break;
+    case "pause": action = { do: st.wallStopped && st.monotonicStopped ? "resumeClocks" : "pauseClocks", ...i }; break;
+  }
+  jobs.push({ act: action });
   drawControls();
+  pump();
 }
 
-// armed counts the lost answers that the visitor armed up to the current time and that no commit has
-// used yet.
-function armed() {
-  const n = upTo(cursor);
-  return countBelow(arms, n) - countBelow(uses, n);
-}
+// S3: the manifest and the commit objects.
 
-function drawBucket(holderName) {
+function drawS3() {
   const b = state.bucket;
   const m = b.manifest;
-  const t = state.t;
-  const k = armed();
-  let rows = "";
-  if (m) {
-    rows += `<div><dt class="caps">Head</dt><dd><span class="hl">${esc(R.short(m.head))}</span>${m.head === R.EMPTY_LOG ? "" : `, ${plural(b.log.length, "commit")} in the log`}</dd></div>`;
-    rows += `<div><dt class="caps">Lease</dt><dd>${m.lease ? `${esc(holderName(m.lease.holder))}, renewed at ${R.clock(m.lease.renewed)} by its wall clock` : "Nobody holds it."}</dd></div>`;
-    rows += `<div><dt class="caps">Manifest</dt><dd>${plural(b.manifestWrites, "write")}, each a compare-and-swap on its version.</dd></div>`;
-  } else rows += `<div><dt class="caps">Manifest</dt><dd>Not written yet.</dd></div>`;
-  if (state.outageUntil > t) rows += `<div><dt class="caps">Outage</dt><dd>Unreachable for every process until ${R.clock(state.outageUntil)}.</dd></div>`;
-  if (k > 0) rows += `<div><dt class="caps">Armed</dt><dd>The answer to the next commit will be lost${k > 1 ? `, ${k} times` : ""}.</dd></div>`;
-  html($("manifest"), rows);
+  const length = b.logLength || b.log.length;
+  set($("s3-head"), m && m.head !== R.EMPTY_LOG ? `${R.short(m.head)}, ${count(length)} commits in the log` : "empty");
+  set($("s3-lease"), m && m.lease ? `${holderName(m.lease.holder)}, ${m.lease.duration / 1000} s` : "nobody");
+  set($("s3-writes"), count(b.manifestWrites));
+  const total = b.commitCount || b.commits.length;
+  root.dataset.commits = String(total);
+  set($("commit-count"), total ? count(total) : "");
 
   const head = m ? m.head : R.EMPTY_LOG;
-  const commits = b.commits.slice(-24).reverse();
-  let out = commits.map((c) => {
+  let out = b.commits.slice().reverse().map((c) => {
     const cls = c.name === head ? "head" : c.inLog ? "" : "orphan";
-    const tag = c.name === head ? "Head of the log" : c.inLog ? "In the log" : "Not in the log";
-    return `<li class="commit ${cls}">${barcodeSVG(c.name, "code")}<span class="name">${c.name}</span>` +
-      `<div class="meta"><span>Inserts ${R.keysText(c.keys)}. Written by ${esc(c.process)} at ${R.clock(c.at)}.</span><span><span class="caps">Parent</span> ${R.short(c.parent)}</span></div>` +
-      `<div class="meta"><span class="caps">${tag}</span></div></li>`;
+    const tag = c.name === head ? "head" : c.inLog ? "in the log" : "not in the log";
+    return `<li class="commit ${cls}">${barcodeSVG(c.name, "code")}` +
+      `<div class="meta"><span class="name">${R.short(c.name)}</span><span>${R.keysText(c.keys)}</span><span>${esc(c.process)}</span><span>${R.clock(c.at)}</span><span class="caps">${tag}</span></div></li>`;
   }).join("");
-  if (!out) out = `<li class="empty small">No commit objects yet. The log is empty, and its head is 64 zeros.</li>`;
-  if (b.commits.length > commits.length) out += `<li class="empty small">${plural(b.commits.length - commits.length, "older commit object is", "older commit objects are")} not shown.</li>`;
+  if (!out) out = `<li class="empty">None yet.</li>`;
+  if (total > b.commits.length) out += `<li class="empty">${count(total - b.commits.length)} older</li>`;
   html($("commits"), out);
-  set($("commit-count"), plural(b.commits.length, "object") + ", newest first.");
-}
-
-// Adding a fault.
-
-function add(action) {
-  if (!shown || holding() || failed) return;
-  const at = Math.floor(cursor) + 1;
-  if (at >= run.end) return;
-  const a = { at, ...action };
-  run.schedule = R.insert(run.schedule, a);
-  rerun("", true);
 }
 
 // Wiring.
 
 $("play").addEventListener("click", () => setPlaying(!playing));
-$("again").addEventListener("click", () => {
-  // A run that plays goes on playing. A run that stopped at the limit plays again, unless the visitor
-  // asks for reduced motion.
-  autoplay = playing || ((atLimit() || failed) && !reduce.matches);
-  setPlaying(false);
-  if (failed) {
-    failed = false;
-    $("failure").hidden = true;
-    root.dataset.engine = "ready";
-  }
-  run = fresh();
-  rerun("A new run.", true);
-});
-$("outage").addEventListener("click", () => add({ do: "outage", for: R.SPAN }));
-$("lose").addEventListener("click", () => add({ do: "loseAnswer", request: "commit" }));
+$("turbo").addEventListener("click", () => setTurbo(!turbo));
 
 // Start.
 
 async function start() {
-  requestAnimationFrame(frame);
-
   fetch("engine/build.json").then((r) => (r.ok ? r.json() : null)).then((b) => {
     if (b && /^[0-9a-f]{7,40}$/.test(b.commit || "")) {
-      $("build").innerHTML = `commit <a href="https://github.com/maragudk/s4ql/commit/${b.commit}"><code>${b.commit.slice(0, 7)}</code></a> of <code>maragudk/s4ql</code>.`;
+      $("build").innerHTML = `<a href="https://github.com/maragudk/s4ql/commit/${b.commit}"><code>${b.commit.slice(0, 7)}</code></a>`;
     }
   }).catch(() => {});
 
   if (typeof WebAssembly !== "object" || typeof Worker !== "function") {
-    fail("This browser cannot run the engine.", "The simulator runs the storage code as WebAssembly in a Web Worker, and this browser has no WebAssembly or no Web Workers. A current version of Chrome, Firefox, Safari, or Edge has both.");
+    halt("This browser cannot run the engine.", "It needs WebAssembly and Web Workers.");
     return;
   }
-  const began = performance.now();
-  set($("engine-status"), "Loading the engine: about 3.5 MB of WebAssembly, then SQLite starts in a Worker.");
+  set($("status"), "Loading the engine, about 3.5 MB.");
   try {
     const { Engine } = await import("./engine/simulator.js");
-    engine = await Engine.start();
+    const e = await Engine.start();
+    const answer = await e.start({ seed: R.newSeed() });
+    take(answer);
+    state = (await e.now(COMMITS)).state;
+    engine = e;
   } catch (e) {
-    fail("The engine did not load.", `The page could not start the storage code in a Worker: ${e.message}. Reloading the page may help; if it does not, the engine is missing from this build of the site.`);
+    halt("The engine did not load.", `${e.message}. Reload to try again.`);
     return;
   }
-  set($("engine-status"), `The engine is ready, ${((performance.now() - began) / 1000).toFixed(1)} s after the page asked for it.`);
-  autoplay = !reduce.matches;
-  rerun("", true);
+  set($("status"), "");
+  root.dataset.engine = "ready";
+  root.dataset.busy = "false";
+  setPlaying(false);
+  draw();
+  requestAnimationFrame(frame);
 }
 
 start();
