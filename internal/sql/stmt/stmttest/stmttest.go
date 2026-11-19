@@ -110,7 +110,10 @@ type Generator struct {
 	pools [][]string
 	// Value gives the value of an insert, or nil for a value at random, at and around the limits.
 	Value func() int64
-	b     strings.Builder
+	// Parameters, if not 0, makes one insert in Parameters have a plain ? in place of its literal,
+	// with the value as its argument.
+	Parameters int
+	b          strings.Builder
 }
 
 // NewGenerator with the random numbers of r and a pool of names for each [Position]. Each name of a
@@ -175,14 +178,17 @@ func (g *Generator) name(p Position) stmt.Name {
 	return n
 }
 
+// integer for a value: from [Generator.Value], or at random.
+func (g *Generator) integer() int64 {
+	if g.Value != nil {
+		return g.Value()
+	}
+	return Integer(g.r)
+}
+
 // value written as an integer of slice 1, with its span.
 func (g *Generator) value() (int64, stmt.Span) {
-	var v int64
-	if g.Value != nil {
-		v = g.Value()
-	} else {
-		v = Integer(g.r)
-	}
+	v := g.integer()
 	start := g.b.Len()
 	digits := fmt.Sprint(v)
 	if v < 0 || (v == 0 && g.r.IntN(4) == 0) {
@@ -220,18 +226,28 @@ func Integer(r Rand) int64 {
 	}
 }
 
-// Statement of slice 1 at random: its text and the statement that it holds.
+// Statement of slice 1 at random: its text and the statement that it holds. An insert with a
+// parameter, which [Generator.Parameters] asks for, is written without its argument.
 func (g *Generator) Statement() (string, stmt.Statement) {
-	return g.statement(-1)
+	src, s, _ := g.statement(-1)
+	return src, s
 }
 
-// StatementOf the kind: its text and the statement that it holds.
+// StatementOf the kind: its text and the statement that it holds, as [Generator.Statement] gives it.
 func (g *Generator) StatementOf(k Kind) (string, stmt.Statement) {
+	src, s, _ := g.statement(k)
+	return src, s
+}
+
+// CallOf the kind: its text, the statement that it holds, and an int64 argument for each of its
+// parameters.
+func (g *Generator) CallOf(k Kind) (string, stmt.Statement, []any) {
 	return g.statement(k)
 }
 
-// statement of the kind k, or of a kind at random if k is negative.
-func (g *Generator) statement(k Kind) (string, stmt.Statement) {
+// statement of the kind k, or of a kind at random if k is negative, with an argument for each of its
+// parameters.
+func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 	g.b.Reset()
 	switch g.r.IntN(4) {
 	case 1:
@@ -248,6 +264,7 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement) {
 	}
 	var s stmt.Statement
 	var span *stmt.Span
+	var args []any
 	switch k {
 	case KindCreateTable:
 		c := &stmt.CreateTable{}
@@ -300,7 +317,13 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement) {
 		g.gap(false)
 		g.punct("(")
 		g.gap(false)
-		c.Value, c.ValueSpan = g.value()
+		if g.Parameters > 0 && g.r.IntN(g.Parameters) == 0 {
+			c.Parameter, c.ValueSpan = 1, stmt.Span{Start: g.b.Len(), End: g.b.Len() + 1}
+			g.punct("?")
+			args = []any{g.integer()}
+		} else {
+			c.Value, c.ValueSpan = g.value()
+		}
 		g.gap(false)
 		g.punct(")")
 		s, span = c, &c.Span
@@ -338,5 +361,5 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement) {
 	} else if g.r.IntN(2) == 0 {
 		g.gap(true)
 	}
-	return g.b.String(), s
+	return g.b.String(), s, args
 }

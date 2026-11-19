@@ -308,9 +308,9 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 		case open != "" && r.IntN(8) == 0:
 			end()
 		}
-		src, query, supported := q.Next()
-		log = append(log, src)
-		if failure := p.step(src, query, supported); failure != "" {
+		c := q.Next()
+		log = append(log, fmt.Sprintf("%v -- with %#v", c.Src, c.Args))
+		if failure := p.step(c); failure != "" {
 			fail("%v", failure)
 		}
 	}

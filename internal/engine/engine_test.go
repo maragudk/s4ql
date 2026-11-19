@@ -676,15 +676,15 @@ func TestEngine_internal(t *testing.T) {
 }
 
 func TestEngine_noneOpen(t *testing.T) {
-	// run a statement of the sequence on i, and consume the rows of a query in the way mode says:
-	// to the end, a loop that stops at once, a close without a loop, or a loop that panics.
-	run := func(t *testing.T, i *instance, src string, mode int) {
+	// run a call of the sequence on i, with its arguments, and consume the rows of a query in the way
+	// mode says: to the end, a loop that stops at once, a close without a loop, or a loop that panics.
+	run := func(t *testing.T, i *instance, c stmttest.Call, mode int) {
 		t.Helper()
 		if mode == 0 {
-			_, _ = i.c.Exec(t.Context(), src)
+			_, _ = i.c.Exec(t.Context(), c.Src, values(c.Args)...)
 			return
 		}
-		rows, err := i.c.Query(t.Context(), src)
+		rows, err := i.c.Query(t.Context(), c.Src, values(c.Args)...)
 		if err != nil {
 			return
 		}
@@ -720,8 +720,7 @@ func TestEngine_noneOpen(t *testing.T) {
 		r := rand.New(rand.NewPCG(*seed, 0x0be))
 		q := newSequence(t, r)
 		for range n {
-			src, _, _ := q.Next()
-			run(t, i, src, r.IntN(5))
+			run(t, i, q.Next(), r.IntN(5))
 			noneOpen(t, i)
 		}
 	})

@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -65,8 +66,11 @@ func slow() bool {
 
 // answer of a statement: what is compared between the engine and SQLite.
 type answer struct {
-	// err is SQLite's error as "code/extended: message", "not supported", "no statement", or "".
+	// err is SQLite's error as "code/extended: message", "not supported", "no statement",
+	// [wrongArguments], or "".
 	err string
+	// message of the engine's error, which is not compared with SQLite.
+	message string
 	// columns of a query, each as its name and declared type, and its rows, each as its values.
 	columns string
 	rows    []string
@@ -225,9 +229,21 @@ func errText(t testing.TB, src string, err error) string {
 		return "not supported"
 	case errors.Is(err, engine.ErrNoStatement):
 		return "no statement"
+	case errors.Is(err, engine.ErrArguments):
+		return wrongArguments
 	}
 	t.Fatalf("%q: the engine gives %v", src, err)
 	return ""
+}
+
+// wrongArguments is the err of an [answer] of the engine's error of another number of arguments
+// than the statement has parameters.
+const wrongArguments = "wrong number of arguments"
+
+// errAnswer of an error of the engine, with its message.
+func errAnswer(t testing.TB, src string, err error) answer {
+	t.Helper()
+	return answer{err: errText(t, src, err), message: err.Error()}
 }
 
 // integers as values of the engine.
@@ -237,6 +253,46 @@ func integers(vs []int64) []*s4qlpb.Value {
 		values = append(values, s4qlpb.Value_builder{Integer: new(v)}.Build())
 	}
 	return values
+}
+
+// values of the arguments args of a call of [stmttest.Sequence], as the engine gets them from the
+// driver: an integer for a Go integer that fits a signed 64-bit integer, which the driver converts,
+// the value of a [sql.NamedArg], whose name the driver refuses before the engine, and for every other
+// argument a value that is not an integer, which the driver never hands the engine: text, a real, a
+// blob, NULL, and a value of no kind for a type that has no value of the engine.
+func values(args []any) []*s4qlpb.Value {
+	var vs []*s4qlpb.Value
+	for _, a := range unnamed(args) {
+		if v, ok := stmttest.Integers([]any{a}); ok {
+			vs = append(vs, s4qlpb.Value_builder{Integer: new(v[0])}.Build())
+			continue
+		}
+		var b s4qlpb.Value_builder
+		switch a := a.(type) {
+		case string:
+			b.Text = new(a)
+		case float64:
+			b.Real = new(a)
+		case []byte:
+			b.Blob = a
+		case nil:
+			b.Null = &s4qlpb.Null{}
+		}
+		vs = append(vs, b.Build())
+	}
+	return vs
+}
+
+// unnamed args: the value of each [sql.NamedArg] in its place.
+func unnamed(args []any) []any {
+	var as []any
+	for _, a := range args {
+		if n, ok := a.(sql.NamedArg); ok {
+			a = n.Value
+		}
+		as = append(as, a)
+	}
+	return as
 }
 
 // valueText of a value of the engine.
@@ -343,14 +399,20 @@ func (i *instance) restart(empty bool, options engine.Options) {
 // query src with args through [engine.Conn.Query].
 func (i *instance) query(src string, args ...int64) answer {
 	i.t.Helper()
-	rows, err := i.c.Query(i.t.Context(), src, integers(args)...)
+	return i.queryValues(src, integers(args))
+}
+
+// queryValues is [instance.query] with values of the engine.
+func (i *instance) queryValues(src string, args []*s4qlpb.Value) answer {
+	i.t.Helper()
+	rows, err := i.c.Query(i.t.Context(), src, args...)
 	if rows != nil {
 		if res := rows.Result(); res.SetsChanges {
 			i.changes = res.Changes
 		}
 	}
 	if err != nil {
-		return answer{err: errText(i.t, src, err)}
+		return errAnswer(i.t, src, err)
 	}
 	var a answer
 	var columns []string
@@ -375,12 +437,18 @@ func (i *instance) query(src string, args ...int64) answer {
 // says.
 func (i *instance) exec(src string, args ...int64) answer {
 	i.t.Helper()
-	res, err := i.c.Exec(i.t.Context(), src, integers(args)...)
+	return i.execValues(src, integers(args))
+}
+
+// execValues is [instance.exec] with values of the engine.
+func (i *instance) execValues(src string, args []*s4qlpb.Value) answer {
+	i.t.Helper()
+	res, err := i.c.Exec(i.t.Context(), src, args...)
 	if res.SetsChanges {
 		i.changes = res.Changes
 	}
 	if err != nil {
-		return answer{err: errText(i.t, src, err)}
+		return errAnswer(i.t, src, err)
 	}
 	return answer{}
 }
@@ -450,6 +518,9 @@ func (y tally) add(src string, a answer) {
 	kind := "other"
 	if s, _ := stmt.Check(src); s != nil {
 		kind = strings.ToLower(strings.TrimPrefix(fmt.Sprintf("%T", s), "*stmt."))
+		if s.Parameters() > 0 {
+			kind += " with a parameter"
+		}
 	}
 	switch {
 	case a.err == "":
@@ -474,6 +545,18 @@ func (y tally) excused(kind string) {
 const (
 	acceptedStartedTable = "already exists after the start of a table, accepted"
 	knownGapSuffix       = ", a known gap"
+)
+
+// The kinds of the calls that the tests do not run in SQLite, because s4ql refuses them by an
+// agreed rule where SQLite runs them, and whose answer they check against that rule instead, by
+// [checkArguments].
+const (
+	// excusedArguments is a call with another number of arguments than its statement has
+	// parameters: SQLite binds NULL to a parameter without an argument, and refuses an argument for
+	// a parameter that the statement does not have only when it is bound.
+	excusedArguments = "the wrong number of arguments, checked against s4ql's rule"
+	// excusedNotInteger is a call with an argument that is not an integer, which SQLite binds.
+	excusedNotInteger = "an argument that is not an integer, checked against s4ql's rule"
 )
 
 // knownGap of the pass after the parser, as [stmttest.KnownGap] gives it, that the engine's answer
@@ -546,9 +629,9 @@ func differentialOn(t testing.TB, seed uint64, n int, restarts bool, y tally, i 
 				fail("after the restart the engine holds\n%v\nand SQLite\n%v", got, want)
 			}
 		}
-		src, query, supported := q.Next()
-		log = append(log, src)
-		if failure := p.step(src, query, supported); failure != "" {
+		c := q.Next()
+		log = append(log, fmt.Sprintf("%v -- with %#v", c.Src, c.Args))
+		if failure := p.step(c); failure != "" {
 			fail("%v", failure)
 		}
 	}
@@ -578,35 +661,54 @@ func newPair(t testing.TB, i *instance, y tally) *pair {
 	return p
 }
 
-// step runs src on the engine, through Query if query and through Exec otherwise, and on SQLite,
-// and compares what each gives, the count of changes, and the last insert rowid. A text that the
-// engine does not support is not run in SQLite: it must not be a statement of slice 1, which
-// supported says it is, and SQLite must prepare it on an empty database without a syntax error. step
-// gives what differs, or "".
-func (p *pair) step(src string, query, supported bool) string {
+// step runs the call c on the engine, through Query if c.Query and through Exec otherwise, with the
+// values of its arguments, and on SQLite, and compares what each gives, the count of changes, and the
+// last insert rowid. A text that the engine does not support is not run in SQLite: it must not be a
+// statement of slices 1 and 2, which c.Supported says it is, and SQLite must prepare it on an empty
+// database without a syntax error. A call that the engine refuses for its arguments is not run in
+// SQLite either, and must be refused as s4ql's rule says, which [checkArguments] checks. step gives
+// what differs, or "".
+func (p *pair) step(c stmttest.Call) string {
 	t, i, o := p.t, p.i, p.o
 	t.Helper()
+	src := c.Src
 	var got answer
-	if query {
-		got = i.query(src)
+	if c.Query {
+		got = i.queryValues(src, values(c.Args))
 	} else {
-		got = i.exec(src)
+		got = i.execValues(src, values(c.Args))
 	}
 	p.y.add(src, got)
+	if kind, failure := checkArguments(c, got); kind != "" {
+		if failure == "" {
+			p.y.excused(kind)
+		}
+		return failure
+	}
 	if got.err == "not supported" {
-		// A statement of slice 1 is supported, and a text that is not supported is one that SQLite
-		// accepts: SQLite prepares it on an empty database without a syntax error.
-		if supported {
-			return fmt.Sprintf("%q: the engine does not support a statement of slice 1", src)
+		// A statement of slices 1 and 2 is supported, and a text that is not supported is one that
+		// SQLite accepts: SQLite prepares it on an empty database without a syntax error.
+		if c.Supported {
+			return fmt.Sprintf("%q: the engine does not support a statement of slice 1: %v", src, got.message)
 		}
 		if m := syntaxOfNotSupported(t, p.empty, src); m != "" {
 			return fmt.Sprintf("%q: the engine does not support it, and SQLite gives %v", src, m)
 		}
 		return ""
 	}
+	if got.err == wrongArguments {
+		return fmt.Sprintf("%q with %v arguments: the engine gives %q", src, len(c.Args), got.message)
+	}
 	before := p.prev
-	want := o.run(t, src)
-	if !query {
+	// What is left has an argument that the engine supports for each parameter, or a text that the
+	// engine refuses before its arguments, a syntax error or no statement, which SQLite refuses before
+	// it binds them, so that it runs in SQLite without them.
+	ints, _ := stmttest.Integers(unnamed(c.Args))
+	if s, err := stmt.Check(src); err != nil || s == nil {
+		ints = nil
+	}
+	want := o.run(t, src, ints...)
+	if !c.Query {
 		want.columns, want.rows = "", nil
 	}
 	if got.String() != want.String() {
@@ -617,7 +719,7 @@ func (p *pair) step(src string, query, supported bool) string {
 		case gap != "":
 			p.y.excused(gap + knownGapSuffix)
 		default:
-			return fmt.Sprintf("%q: the engine gives\n%v\nand SQLite\n%v", src, got, want)
+			return fmt.Sprintf("%q with the arguments %v: the engine gives\n%v\nand SQLite\n%v", src, ints, got, want)
 		}
 	}
 	// SQLite's count of changes: the engine's result sets it, and a statement that fails keeps it,
@@ -640,6 +742,41 @@ func (p *pair) step(src string, query, supported bool) string {
 		return fmt.Sprintf("%q: SQLite's last insert rowid is %v", src, rowid)
 	}
 	return ""
+}
+
+// checkArguments of the call c, whose answer of the engine is got, against s4ql's rule for the
+// arguments of a text that holds a statement that the engine supports: another number of arguments
+// than the statement has parameters is the error of [engine.ErrArguments], with both numbers, and
+// otherwise an argument that is not an integer, with the names dropped, is "not supported" for the
+// first such argument. It gives the kind of the excuse, [excusedArguments] or [excusedNotInteger],
+// if the rule decides the call, or "", and what differs from the rule, or "".
+func checkArguments(c stmttest.Call, got answer) (kind, failure string) {
+	s, err := stmt.Check(c.Src)
+	if err != nil || s == nil {
+		return "", ""
+	}
+	args := unnamed(c.Args)
+	if n := s.Parameters(); len(args) != n {
+		want := fmt.Sprintf("s4ql: wrong number of arguments: %v for a statement with %v parameter", len(args), n)
+		if n != 1 {
+			want += "s"
+		}
+		if got.err != wrongArguments || got.message != want {
+			return excusedArguments, fmt.Sprintf("%q with %v arguments: the engine gives %v (%q), and the rule %q", c.Src, len(args), got, got.message, want)
+		}
+		return excusedArguments, ""
+	}
+	for j, a := range args {
+		if _, ok := stmttest.Integers([]any{a}); ok {
+			continue
+		}
+		want := fmt.Sprintf("s4ql: not supported: argument %v, which is not an integer", j+1)
+		if got.err != "not supported" || got.message != want {
+			return excusedNotInteger, fmt.Sprintf("%q with the argument %#v: the engine gives %v (%q), and the rule %q", c.Src, a, got, got.message, want)
+		}
+		return excusedNotInteger, ""
+	}
+	return "", ""
 }
 
 // isInsert reports whether src is a supported insert.
@@ -677,10 +814,22 @@ func TestDifferential(t *testing.T) {
 		differential(t, *seed+s, *length, s%2 == 1, y)
 	}
 	t.Logf("%v sequences of %v statements: %v", n, *length, y)
+	// The outcomes of a parameter that the run must reach: an insert through a parameter that
+	// succeeds, that meets a key that exists, and that the rule for arguments refuses, and an argument
+	// for a statement without a parameter.
+	for _, kind := range []string{
+		"insert with a parameter ok", "insert with a parameter UNIQUE constraint failed", "insert with a parameter wrong number of arguments",
+		"insert with a parameter not supported", "insert wrong number of arguments", "select wrong number of arguments",
+	} {
+		if y[kind] == 0 {
+			t.Errorf("no statement has the outcome %q", kind)
+		}
+	}
 	// The texts that the full run excuses from the comparison with SQLite, by kind. Every other kind,
-	// such as each known gap, is pinned at 0.
+	// such as each known gap, is pinned at 0. Of the calls that are excused because s4ql refuses
+	// their arguments by its rule, each is checked against the rule instead.
 	if !slow() && atDefault("seed", "sequences", "length") {
-		want := map[string]int{acceptedStartedTable: 34}
+		want := map[string]int{acceptedStartedTable: 24, excusedArguments: 632, excusedNotInteger: 85}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
 			if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) {
@@ -747,8 +896,8 @@ func FuzzSQL_core(f *testing.F) {
 func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
 	q := newSequence(f, rand.New(rand.NewPCG(1, 2)))
 	for range 40 {
-		src, query, _ := q.Next()
-		f.Add(src, !query)
+		c := q.Next()
+		f.Add(c.Src, !c.Query)
 	}
 	for _, src := range slices.Concat(fuzzSetUp, stmttest.Others) {
 		if !strings.Contains(src, "%") {
@@ -767,11 +916,11 @@ func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
 		i := newInstance(t)
 		p := newPair(t, i, nil)
 		for _, s := range fuzzSetUp {
-			if failure := p.step(s, false, true); failure != "" {
+			if failure := p.step(stmttest.Call{Src: s, Supported: true}); failure != "" {
 				t.Fatalf("the set-up: %v", failure)
 			}
 		}
-		if failure := p.step(src, !exec, false); failure != "" {
+		if failure := p.step(stmttest.Call{Src: src, Query: !exec}); failure != "" {
 			t.Fatal(failure)
 		}
 		if got, want := i.state(), p.o.state(t); got != want {

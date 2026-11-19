@@ -17,6 +17,7 @@ var plantable = map[string]func(b *bugs){
 	"checkOutside": func(b *bugs) { b.checkOutside = true },
 	"keepOpen":     func(b *bugs) { b.keepOpen = true },
 	"keepRead":     func(b *bugs) { b.keepRead = true },
+	"annotateNext": func(b *bugs) { b.annotateNext = true },
 }
 
 // The names of the event and of its attributes, for the tests of the telemetry.

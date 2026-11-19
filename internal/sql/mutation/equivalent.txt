@@ -234,6 +234,12 @@ parser/parser.go parser.enter swap arguments: max(p.maxDepth, p.depth) => max(p.
 stmt/vocabulary.go childAt condition: s.Start <= offset => true
 	The children of an accepted node are in the order of the text, so the first child that ends after the token starts before it.
 
+# A parameter has one token, its name, which the recognizer takes right after it accepts the node,
+# or else describes the next token, which is not the name. So no token of the node is ever described
+# from inside it, where only an accepted node would name the field of the token.
+stmt/recognize.go recognizer.parameter remove statement: r.accept(v) =>
+	The only token of a parameter is taken at once, so describe never looks inside the node, and names it the same whether it was accepted or not.
+
 # The engine, internal/engine.
 
 # The planted bugs, which only the tests switch on.
@@ -241,6 +247,12 @@ internal/engine/engine.go Conn.write condition: err == nil => false
 	It differs only with the planted bug keepOpen, when an operator panics.
 internal/engine/engine.go Conn.checkOutside boolean: true => false
 	The planted bug checkOutside: its position is replaced by that of the write transaction, and the bug is found by a commit that fails in SQLite either way.
+internal/engine/engine.go Conn.write remove statement: annotated = nil =>
+	The planted bug annotateNext: the annotation holds the argument and the argument plus one, and the bug is found by the parameters of the commit either way.
+internal/engine/engine.go Conn.write operator: a.GetInteger() + 1 => a.GetInteger() - 1
+	The planted bug annotateNext: the annotation holds another wrong argument, and the bug is found by the parameters of the commit either way.
+internal/engine/engine.go Conn.write constant: a.GetInteger() + 1 => a.GetInteger() + 2
+	The planted bug annotateNext: the annotation holds another wrong argument, and the bug is found by the parameters of the commit either way.
 
 # Scheduling, which the production host ignores.
 internal/engine/engine.go Rows.read remove statement: r.report.e.host.Yield(r.ctx, "engine: between two rows of a query") =>
