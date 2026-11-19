@@ -273,3 +273,45 @@ The wording of both points.
 ### Future work
 
 The context for the engine, when a slice has an operator that can run long between two rows.
+
+## Step 7: `core.Options.VFS` is a field
+
+**Author:** driver-review-fixes builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "**Optional, your judgment:** `core.Options.UseVFS` is a setter; a plain field would match the other options. Change it only if it is small and clean; otherwise leave it."
+**Interpretation:** Replace the setter with an exported field if nothing else depends on the field being hidden.
+**Inferred intent:** The options of the core read alike.
+
+### What I did
+
+`core.Options` has a field `VFS` after `Logger`, and the setter `UseVFS` and the field `local.vfs` are gone; the connections to the cache open through `options.VFS`. The type `local` now holds only the wrapper of the spool files, which stays hidden behind `WrapSpools` in `/internal/core/export_test.go`, because its type is not exported. Four callers, two in the tests of the core and two in the tests of the driver, set the field. The point in `/docs/todo.md` names the field. `go test ./internal/core .` and `make lint`, which also lints the browser's build of the core, pass.
+
+### Why
+
+It is small: one field, four callers, and no behaviour. A setter was needed while the VFS was a seam of the core's tests; since the driver's tests use it, it is an option like the others.
+
+### What worked
+
+Nothing outside the tests used it.
+
+### What didn't work
+
+Nothing failed.
+
+### What I learned
+
+Nothing new.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+The comment of the field, and that the earlier diary of the driver still says `UseVFS`, as it was then.
+
+### Future work
+
+None.

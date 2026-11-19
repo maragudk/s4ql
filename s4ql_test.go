@@ -339,7 +339,7 @@ func TestOptions_Logger(t *testing.T) {
 		is.NotError(t, err)
 		t.Cleanup(func() { is.NotError(t, vfs.Close()) })
 		co := coreOptions()
-		co.UseVFS(vfs.Name())
+		co.VFS = vfs.Name()
 		var log lines
 		o := w.options("a")
 		o.Logger = slog.New(slog.NewTextHandler(&log, &slog.HandlerOptions{Level: slog.LevelDebug}))

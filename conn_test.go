@@ -697,7 +697,7 @@ func TestStop(t *testing.T) {
 		// The VFS is closed after the instance, whose cleanup is registered later.
 		t.Cleanup(func() { is.NotError(t, vfs.Close()) })
 		co := coreOptions()
-		co.UseVFS(vfs.Name())
+		co.VFS = vfs.Name()
 		db := w.openOn(t, "a", w.client(), co)
 		is.NotError(t, db.PingContext(t.Context()))
 		exec(t, db, t1, insert1, "insert into t1 (v1) values (2)")
