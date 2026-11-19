@@ -117,6 +117,22 @@ test:
 	cd $(CROSSCHECK) && go test -shuffle on ./...
 	cd $(SIMLINT) && go test -shuffle on ./...
 
+# test-s3 runs S3TESTS, every test that needs a real bucket, in S3PKGS under the race detector. It
+# fails if S4QL_S3_BUCKET is empty, and if one of S3TESTS did not run and pass, so that a run cannot
+# pass by skipping them. How to run it by hand is in the documentation of internal/store/s3test.
+S3TESTS := TestOpen_realBucket TestClient_conformance TestClient_realBucket TestClient_core TestDeleteOld_realBucket
+S3PKGS := . ./internal/store/s3store ./internal/store/s3test
+.PHONY: test-s3
+test-s3:
+	@[ -n "$$S4QL_S3_BUCKET" ] || { echo "test-s3: S4QL_S3_BUCKET is empty, so the tests against a real bucket would skip; see internal/store/s3test" >&2; exit 1; }
+	out=$$(mktemp) && \
+		go test -race -count 1 -shuffle on -v -run "^($$(echo $(S3TESTS) | tr ' ' '|'))\$$" $(S3PKGS) > $$out 2>&1; \
+		status=$$?; cat $$out; \
+		for test in $(S3TESTS); do \
+			grep -q "^--- PASS: $$test " $$out || { echo "test-s3: $$test did not run and pass" >&2; status=1; }; \
+		done; \
+		rm -f $$out; exit $$status
+
 # test-sql runs the tests of the SQL front end and of the engine without the race detector and the
 # address sanitizer, under which they compare with SQLite on a tenth of the corpus and of the generated
 # texts only, and leave out the checks that need all of them, such as the use of every rule of the
