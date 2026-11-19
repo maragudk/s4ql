@@ -252,7 +252,8 @@ func (noRows) Close() error {
 	return nil
 }
 
-// value of v for database/sql: an int64, a float64, a string, a []byte, or nil for NULL.
+// value of v for database/sql: an int64, a float64, a string, a []byte, or nil for NULL. A []byte is
+// a copy, which the application owns, and is not nil, also for the empty blob.
 func value(v *s4qlpb.Value) (driver.Value, error) {
 	switch v.WhichKind() {
 	case s4qlpb.Value_Integer_case:
@@ -262,7 +263,7 @@ func value(v *s4qlpb.Value) (driver.Value, error) {
 	case s4qlpb.Value_Text_case:
 		return v.GetText(), nil
 	case s4qlpb.Value_Blob_case:
-		return v.GetBlob(), nil
+		return append([]byte{}, v.GetBlob()...), nil
 	case s4qlpb.Value_Null_case:
 		return nil, nil
 	}
