@@ -107,3 +107,57 @@ The error of an argument that cannot be converted must still come after the erro
 ### Future work
 
 The generators `stmttest` and the sequences of `drivercheck` make no arguments; with them, the differential test would compare an insert of a parameter at random. A simulation workload with parameters, planted bugs, and mutation testing are for a later builder, as the brief says.
+
+## Step 3: Self-review, and a reinterpretation that the review's fix found
+
+**Author:** slice 2 builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the builder's instructions) "Once the implementation is done, self-review before handing back to the lead. [...] Use the code-review skill for the first phase [...] Address what you find, then report a summary of your review and any follow-up work back to the lead."
+**Interpretation:** Run the code-review skill over `main...slice-2-parameters`, judge each finding, fix what matters, and run `make test` and `make lint` again.
+**Inferred intent:** Hand the lead a branch whose weak spots are either fixed or named.
+
+### What I did
+
+The review (`code-review high main...slice-2-parameters`) found no important bug and six nits. I took four:
+
+- The error of a `driver.Valuer` was formatted into the message with `%v` and not kept as a cause, so `errors.Is` could not find the application's error, and its text, which can hold a value, was in the message. `argument` in `/conn.go` now builds the failure with the conversion's error as its cause and a message with the position and the type only: `argument 1 of type T, which database/sql cannot convert`.
+- Three comments were not re-wrapped (`/internal/engine/telemetry.go`, `buildSink` in `/internal/engine/operator.go`, and the package documentation in `/s4ql.go`).
+- The test of the wrong number of arguments had no prepared `QueryRow`; it has now.
+- The first half of the engine's subtest "should read the rows that parameters inserted" inserted with literals; I dropped it, since the second half binds every row.
+
+Two I left, and recorded in `/docs/todo.md`: no public sentinel for the wrong number of arguments (the brief asked for an ordinary error, and the lead is asked to confirm), and no event for a statement that the driver refuses for an argument that it cannot convert (the driver refuses it through `engine.Check`, which logs nothing, as a text refused by `Prepare` logs nothing).
+
+While I changed the message of an unsigned integer above the largest `int64`, a new case in the test failed: `uint(9223372036854775808)` was inserted. `driver.DefaultParameterConverter` refuses such a `uint64`, but turns a `uint` (and any named type of kind `uint`, `uint8` to `uint32` aside) into `int64(rv.Uint())`, a negative number. That breaks "reject, never reinterpret". `CheckNamedValue` now checks `overflows` first: an unsigned integer above `math.MaxInt64`, or a pointer to one, that is not a `driver.Valuer`, is kept as `unconverted` with `errOverflow`, and refused after the text as `argument 1 of type uint, whose value does not fit a signed 64-bit integer`. The tests have `uint`, `*uint`, and `uintptr` above the limit, and `uint` and `*uint` below it.
+
+### Why
+
+The Valuer's error is the application's; it should stay findable and must not carry a value into a message that an application may log. The overflow is a wrong value written to the database, which is the kind of fault the project exists to rule out.
+
+### What worked
+
+`make test` and `make lint` pass after the fixes. The new case of the test caught the overflow at once.
+
+### What didn't work
+
+`go test -count=1 -run 'TestParameters|...' .` failed after the change of messages with `conn_test.go:641: Not true` / `no error`, for the argument `uint(9223372036854775808)`: the insert succeeded. Reading `/usr/local/go/src/database/sql/driver/types.go` (`case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32: return int64(rv.Uint()), nil`) showed why.
+
+A `git commit` chained with `&&` to a `make` in a subshell was refused by the sandbox of the worktree ("this command names git in a form too complex to verify"); separate calls worked.
+
+### What I learned
+
+`database/sql` itself reinterprets a large `uint` for every driver that leaves the conversion to it, mattn's included. A differential test against mattn through `database/sql` cannot see that, since both sides get the same negative number.
+
+### What was tricky
+
+Keeping `overflows` in step with the converter: it must skip a `driver.Valuer` at each level of pointers, as `ConvertValue` does, or it would refuse a Valuer whose underlying kind is `uint`.
+
+### What warrants review
+
+- `overflows` and `CheckNamedValue` in `/conn.go`, against `driver.DefaultParameterConverter.ConvertValue`.
+- The two nits left, in `/docs/todo.md` under "Parameters".
+
+### Future work
+
+None beyond what the brief leaves to later builders.
