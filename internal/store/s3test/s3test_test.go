@@ -127,29 +127,6 @@ func (f *fake) sent() []string {
 	return slices.Clone(f.requests)
 }
 
-func TestLoad(t *testing.T) {
-	t.Run("should fail with ErrNoBucket without S4QL_S3_BUCKET, and on half a pair of credentials", func(t *testing.T) {
-		t.Setenv("S4QL_S3_BUCKET", "")
-		t.Setenv("AWS_ACCESS_KEY_ID", "")
-		t.Setenv("AWS_SECRET_ACCESS_KEY", "")
-		_, err := s3test.Load()
-		is.Error(t, s3test.ErrNoBucket, err)
-
-		t.Setenv("S4QL_S3_BUCKET", "bucket")
-		c, err := s3test.Load()
-		is.NotError(t, err)
-		is.Equal(t, "bucket", c.Bucket)
-
-		t.Setenv("AWS_ACCESS_KEY_ID", "key")
-		_, err = s3test.Load()
-		is.True(t, err != nil && !errors.Is(err, s3test.ErrNoBucket), fmt.Sprint(err))
-		t.Setenv("AWS_ACCESS_KEY_ID", "")
-		t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
-		_, err = s3test.Load()
-		is.True(t, err != nil && !errors.Is(err, s3test.ErrNoBucket), fmt.Sprint(err))
-	})
-}
-
 func TestDeletePrefix(t *testing.T) {
 	t.Run("should refuse a prefix that is not one of a test under s4ql-test/, and send nothing", func(t *testing.T) {
 		for _, prefix := range []string{
@@ -229,6 +206,18 @@ func TestDeleteOld(t *testing.T) {
 		}
 	})
 
+	t.Run("should take a prefix whose keys another process deleted after the listing as deleted", func(t *testing.T) {
+		const prefix = "s4ql-test/s3store/20200101T000000-ABCDEFGH/"
+		f, client := newFake(t)
+		// Every listing gives the keys, which are gone, as a listing that came before the other
+		// process's deletion does. The fake answers the deletion of a missing key as S3 does.
+		f.listing = []string{prefix + "k", prefix + "db/manifest.json"}
+		deleted, err := s3test.DeleteOld(t.Context(), client, "bucket", time.Now())
+		is.NotError(t, err)
+		is.EqualSlice(t, []string{prefix}, deleted)
+		is.EqualSlice(t, []string{"LIST s4ql-test/ /", "LIST s4ql-test/s3store/ /", "LIST " + prefix + " ", "DELETE " + prefix + "k", "DELETE " + prefix + "db/manifest.json"}, f.sent())
+	})
+
 	t.Run("should stop at a listing that gives a key outside a prefix, and delete none of it", func(t *testing.T) {
 		f, client := newFake(t, "s4ql-test/s3store/20200101T000000-ABCDEFGH/k")
 		// Every listing gives the same keys, whatever it asks for, so the listing of the prefix gives
@@ -272,11 +261,13 @@ func TestNewPrefix(t *testing.T) {
 	})
 }
 
-// TestDeleteOld_realBucket runs DeleteOld on a real bucket, with a prefix whose time is two days
-// ago, and one of now. Another run may delete the old prefix at the same time, which is the
-// outcome that the test checks anyway, and no run deletes the new one.
+// TestDeleteOld_realBucket runs DeleteOld twice at the same time on a real bucket, as two test
+// processes that sweep at once do, with a prefix whose time is two days ago, and one of now. Both
+// must succeed in whatever order their requests reach the bucket. Another run may delete the old
+// prefix at the same time too, which is the outcome that the test checks anyway, and no run deletes
+// the new one.
 func TestDeleteOld_realBucket(t *testing.T) {
-	c := s3test.FromEnv(t)
+	c := s3test.Load(t)
 	client, err := c.Client(t.Context())
 	is.NotError(t, err)
 
@@ -294,11 +285,21 @@ func TestDeleteOld_realBucket(t *testing.T) {
 		is.NotError(t, err, k)
 	}
 
-	deleted, err := s3test.DeleteOld(t.Context(), client, c.Bucket, time.Now().Add(-24*time.Hour))
-	is.NotError(t, err)
-	t.Log("deleted:", deleted)
-	for _, p := range deleted {
-		is.True(t, p != fresh, "the new prefix is deleted")
+	var wg sync.WaitGroup
+	results := make([][]string, 2)
+	errs := make([]error, 2)
+	for i := range 2 {
+		wg.Go(func() {
+			results[i], errs[i] = s3test.DeleteOld(t.Context(), client, c.Bucket, time.Now().Add(-24*time.Hour))
+		})
+	}
+	wg.Wait()
+	for i := range 2 {
+		is.NotError(t, errs[i])
+		t.Log("deleted:", results[i])
+		for _, p := range results[i] {
+			is.True(t, p != fresh, "the new prefix is deleted")
+		}
 	}
 	for _, k := range []string{old + "k", old + "db/manifest.json"} {
 		_, err := client.HeadObject(t.Context(), &s3.HeadObjectInput{Bucket: aws.String(c.Bucket), Key: aws.String(k)})

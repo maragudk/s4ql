@@ -643,9 +643,9 @@ func TestOpen_s3(t *testing.T) {
 }
 
 // TestOpen_realBucket is [s4ql.Open] and [s4ql.Register] as an application calls them, on a real
-// bucket, through database/sql and the public errors only. It is skipped unless S4QL_S3_BUCKET is
-// set; see internal/store/s3test. What the storage core does on the bucket below the driver is in
-// TestClient_core of internal/store/s3store.
+// bucket, through database/sql and the public errors only. It skips under -short, and fails without
+// the settings of the bucket; see internal/store/s3test. What the storage core does on the bucket
+// below the driver is in TestClient_core of internal/store/s3store.
 //
 // The lease and the watch of a spare have their defaults: a lease of 30 seconds, and a spare that
 // reads the manifest every 5 seconds. No subtest waits for a lease to run out, because a close
@@ -653,14 +653,11 @@ func TestOpen_s3(t *testing.T) {
 // close that cannot release the lease leaves it to run out, which makes the next instance wait for
 // it, but changes no answer.
 func TestOpen_realBucket(t *testing.T) {
-	c := s3test.FromEnv(t)
+	c := s3test.Load(t)
 	client, err := c.Client(t.Context())
 	is.NotError(t, err)
-	// The settings reach the store through the options only, so the test needs the credentials in
-	// the environment, and then leaves the SDK nothing else to take them from.
-	if c.AccessKeyID == "" {
-		t.Fatal("set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, which the test gives through the options")
-	}
+	// The settings reach the store through the options only, so the SDK is left nothing else to take
+	// them from.
 	isolate(t)
 	dir := t.TempDir()
 	// options of the database under the prefix, with the cache directory of the given name among

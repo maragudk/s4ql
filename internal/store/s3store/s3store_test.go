@@ -25,7 +25,6 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"maragu.dev/is"
@@ -921,16 +920,18 @@ func TestClient_events(t *testing.T) {
 	})
 }
 
-// realBucket gives the options of a real bucket from the environment, or skips the test. The
-// credentials come from the SDK's default chain.
+// realBucket gives the options of a real bucket from [s3test.Load], with its credentials. It skips
+// the test under -short, and fails it without the settings.
 func realBucket(t *testing.T) s3store.Options {
 	t.Helper()
-	c := s3test.FromEnv(t)
+	c := s3test.Load(t)
 	return s3store.Options{
-		Bucket:    c.Bucket,
-		Endpoint:  c.Endpoint,
-		Region:    c.Region,
-		PathStyle: c.PathStyle,
+		Bucket:          c.Bucket,
+		Endpoint:        c.Endpoint,
+		Region:          c.Region,
+		PathStyle:       c.PathStyle,
+		AccessKeyID:     c.AccessKeyID,
+		SecretAccessKey: c.SecretAccessKey,
 	}
 }
 
@@ -940,15 +941,13 @@ func realClient(t *testing.T, opts s3store.Options) (*s3store.Client, *s3.Client
 	t.Helper()
 	c, err := s3store.New(t.Context(), opts)
 	is.NotError(t, err)
-	cfg, err := config.LoadDefaultConfig(t.Context(), config.WithRegion(opts.Region))
-	is.NotError(t, err)
-	raw := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		if opts.Endpoint != "" {
-			o.BaseEndpoint = aws.String(opts.Endpoint)
-		}
-		o.UsePathStyle = opts.PathStyle
+	raw, err := s3test.Config{
+		Bucket: opts.Bucket, Endpoint: opts.Endpoint, Region: opts.Region, PathStyle: opts.PathStyle,
+		AccessKeyID: opts.AccessKeyID, SecretAccessKey: opts.SecretAccessKey,
+	}.Client(t.Context(), func(o *s3.Options) {
 		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
 	})
+	is.NotError(t, err)
 	return c, raw
 }
 
@@ -1016,7 +1015,7 @@ func TestClient_realBucket(t *testing.T) {
 		}
 	})
 
-	t.Run("should fail a read of an object whose stored checksum does not match its content", func(t *testing.T) {
+	t.Run("should fail a read of an object whose stored checksum does not match its content, unless the store refused to store it", func(t *testing.T) {
 		c, raw := realClient(t, opts)
 		k := newPrefix(t, raw, opts.Bucket) + "k"
 		// Written past the client, with a checksum header that does not match the content, which
@@ -1028,7 +1027,11 @@ func TestClient_realBucket(t *testing.T) {
 			ChecksumSHA256: aws.String(base64.StdEncoding.EncodeToString(sum("other")[:])),
 		})
 		if err != nil {
-			t.Skipf("the store refused a checksum header that does not match the content, as AWS documents: %v", err)
+			// The store refused the checksum header, as AWS documents, so the object is not there.
+			t.Log("the store refused a checksum header that does not match the content:", err)
+			_, _, err = c.Get(t.Context(), k)
+			is.True(t, errors.Is(err, store.ErrNotFound), fmt.Sprint(err))
+			return
 		}
 		body, _, err := c.Get(t.Context(), k)
 		is.NotError(t, err)

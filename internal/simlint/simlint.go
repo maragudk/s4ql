@@ -66,7 +66,6 @@ var exempt = map[string]string{
 	"maragu.dev/s4ql/internal/sqlite/update":         "it is a command that vendors SQLite, and never runs under the simulation",
 	"maragu.dev/s4ql/internal/store/s3store":         "it is the client of real S3, whose SDK and net/http start goroutines, read the clock, and wait on the network outside the host, so it never runs under the simulation",
 	"maragu.dev/s4ql/internal/store/s3test":          "it is what the tests against a real bucket share, on the SDK of S3 and the real clock, and never runs under the simulation",
-	"maragu.dev/s4ql/internal/store/s3test/cleanup":  "it is a command that deletes what killed tests left in a real bucket, and never runs under the simulation",
 }
 
 // exceptions for one package and one forbidden identifier each: by the import path of the package
