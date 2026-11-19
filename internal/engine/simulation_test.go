@@ -31,7 +31,6 @@ import (
 	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
-	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
 
@@ -153,6 +152,9 @@ type attempt struct {
 	acked int
 	// partial is set for a query whose rows were not read to their end.
 	partial bool
+	// typeRefused is set for an insert that the engine refused as "not supported" for a value of
+	// another type than its column.
+	typeRefused bool
 	// reason why a statement failed: no lease, stopped, timeout, or canceled.
 	reason string
 	// tx is the transaction that spans statements that the statement ran in, or nil for a statement
@@ -547,16 +549,11 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 		if a.write && tx == nil {
 			r.acked = append(r.acked, a.id)
 		}
-		// A call that the rule for arguments refuses must not succeed, nor one with a value of another
-		// type than its column.
+		// A call that the rule for arguments refuses must not succeed. One with a value of another
+		// type than its column must not either, which [run.verify] checks on the log.
 		if kind, failure := checkArguments(call, answer{}); kind != "" {
 			r.mu.Unlock()
 			r.violate(ctx, "the statement %v succeeded: %v", a.id, failure)
-			r.mu.Lock()
-		}
-		if _, ok := typeArgument(call); ok {
-			r.mu.Unlock()
-			r.violate(ctx, "the statement %v, %q, succeeded with the argument %#v for a column of type INT or INTEGER", a.id, a.src, call.Args[0])
 			r.mu.Lock()
 		}
 	case errors.As(err, &se):
@@ -572,14 +569,10 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 		// A call that s4ql refuses for its arguments must be refused by its rule, and a statement of
 		// slices 1 and 2 with the arguments that it takes must run.
 		kind, failure := checkArguments(call, a.answer)
-		if article, ok := typeArgument(call); ok && kind == "" {
-			// The insert found its table and its column, which is of type INT or INTEGER.
-			kind = excusedType
-			prefix := fmt.Sprintf("s4ql: not supported: argument 1, which is %v, for the column ", article)
-			integer := strings.HasSuffix(a.answer.message, " of type INT") || strings.HasSuffix(a.answer.message, " of type INTEGER")
-			if a.answer.err != "not supported" || !strings.HasPrefix(a.answer.message, prefix) || !integer {
-				failure = fmt.Sprintf("the statement %v, %q, with the argument %#v: %v", a.id, a.src, call.Args[0], err)
-			}
+		if kind == "" && call.Supported && isInsert(a.src) && a.answer.err == "not supported" && strings.Contains(a.answer.message, " for the column ") {
+			// The refusal of a value of another type than its column, after the insert found its table
+			// and its column, which [run.verify] checks against SQLite on the state that it saw.
+			kind, a.typeRefused = excusedType, true
 		}
 		if kind == "" && (call.Supported || a.answer.err == wrongArguments) {
 			failure = fmt.Sprintf("the statement %v, %q, with %v arguments: %v", a.id, a.src, len(call.Args), err)
@@ -783,7 +776,14 @@ func readRows(rows *engine.Rows) (answer, error) {
 		}
 		values := make([]string, len(row))
 		for j, v := range row {
-			values[j] = fmt.Sprint(v.GetInteger())
+			text, ok := valueString(v)
+			switch {
+			case !ok:
+				return answer{}, fmt.Errorf("the engine gives %v", text)
+			case v.HasBlob() && v.GetBlob() == nil:
+				return answer{}, errors.New("the engine gives a blob that is nil")
+			}
+			values[j] = text
 		}
 		a.rows = append(a.rows, strings.Join(values, ","))
 	}
@@ -1202,7 +1202,11 @@ type logCommit struct {
 //     twice. The parameters of each statement are exactly the arguments that the caller gave.
 //   - Every write that was acknowledged is in the log: a statement of its own when it succeeded,
 //     and the writes of a transaction when its commit succeeded.
-//   - The statements of the log, run in SQLite in their order with their parameters, each succeed.
+//   - The statements of the log, run in SQLite in their order with their parameters, each succeed,
+//     and the value of each insert has the type of its column there, which SQLite would convert or
+//     refuse otherwise, as [typeRule] says.
+//   - Each insert of its own that the engine refused for the type of its value is refused so by
+//     [typeRule] in SQLite on the state that it saw.
 //   - Each statement of its own that failed with SQLite's error gives that error in SQLite on the
 //     state that it saw, and each query that succeeded gives its rows there: the state after a
 //     commit of the log, which holds every write that was acknowledged before the statement
@@ -1295,12 +1299,22 @@ func (r *run) verify(ctx context.Context) {
 	}
 	// The observations of each state of the log: the statements of their own that saw it.
 	seen := map[int][]*attempt{}
+	// refused are the inserts of their own that the engine refused for the type of their value, by
+	// the state of the log that each saw.
+	refused := map[int][]*attempt{}
 	empty := newOracle(r.t)
 	defer empty.close()
 	for _, a := range r.order {
 		if a.state == skipped && a.answer.err == "not supported" {
 			if m := syntaxOfNotSupported(r.t, empty, a.src); m != "" {
 				r.violate(ctx, "the engine does not support the statement %v, %q, and SQLite gives %v", a.id, a.src, m)
+			}
+			if a.typeRefused && a.tx == nil {
+				if at, ok := index[a.position]; ok {
+					refused[at] = append(refused[at], a)
+				} else {
+					r.violate(ctx, "the statement %v, %q, is refused for the type of its value, and saw the state %q, which the log does not have", a.id, a.src, a.position)
+				}
 			}
 			continue
 		}
@@ -1342,8 +1356,18 @@ func (r *run) verify(ctx context.Context) {
 				r.violate(ctx, "the statement %v, %q, at commit %v gives %v, and in SQLite %v", a.id, a.src, k, got, want)
 			}
 		}
+		for _, a := range refused[k] {
+			if want := typeRule(r.t, o, a.src, oracleValues(a.args)); a.answer.message != want {
+				r.violate(ctx, "the statement %v, %q, at commit %v gives %q, and the rule for the type of a value %q", a.id, a.src, k, a.answer.message, want)
+			}
+		}
 		if k < len(log) {
 			for i, note := range log[k].notes {
+				// The value of an insert of the log has the type of its column, which SQLite would
+				// convert or refuse otherwise.
+				if want := typeRule(r.t, o, note, oracleValues(log[k].params[i])); want != "" {
+					r.violate(ctx, "commit %v, %q, stores a value of another type than its column: %v", k+1, note, want)
+				}
 				if a := o.run(r.t, note, oracleValues(log[k].params[i])...); a.err != "" {
 					r.violate(ctx, "commit %v, %q, fails in SQLite: %v", k+1, note, a.err)
 				}
@@ -1390,7 +1414,9 @@ func (r *run) verify(ctx context.Context) {
 // statement of the transaction that succeeded or failed with SQLite's error, in their order, and
 // must give what the engine gave: for a write transaction, the state of its beginning and its own
 // writes so far; for a read-only one, the state of its beginning, whatever committed meanwhile. A
-// statement that failed otherwise, or was refused, did nothing, and is not run.
+// statement that failed otherwise, or was refused, did nothing, and is not run; an insert refused for
+// the type of its value must be refused so by [typeRule] there, and never in a read-only
+// transaction, which refuses the write first.
 //
 // A write transaction whose net effect is nothing writes no commit object: one whose writes that
 // succeeded are all of tables that were not there when it began and are not there at its end. It
@@ -1435,8 +1461,23 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 		}
 		before := o.tables(r.t)
 		for _, a := range tx.stmts {
+			if a.typeRefused {
+				// A read-only transaction refuses an insert before it looks at its value.
+				var want string
+				if !tx.readOnly {
+					want = typeRule(r.t, o, a.src, oracleValues(a.args))
+				}
+				if a.answer.message != want {
+					r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v, gives %q, and the rule for the type of a value %q", a.id, a.src, tx.id, kind, at, a.answer.message, want)
+				}
+				continue
+			}
 			if a.position == "" || (a.state != succeeded && a.state != sqliteFailed) {
 				continue
+			}
+			if want := typeRule(r.t, o, a.src, oracleValues(a.args)); a.state == succeeded && want != "" {
+				// The check of the log does not see an insert of a transaction that did not commit.
+				r.violate(ctx, "the statement %v, %q, of the transaction %v (%v) succeeded, and stores a value of another type than its column: %v", a.id, a.src, tx.id, kind, want)
 			}
 			want := o.run(r.t, a.src, oracleValues(a.args)...)
 			if a.partial {
@@ -1609,28 +1650,6 @@ func stmtValue(v *s4qlpb.Value) any {
 	return nil
 }
 
-// typeArgument reports whether the call c is a supported insert with one parameter whose argument
-// is a value that a column holds and is not an integer, and gives how the engine's message names its
-// kind. The tables of [stmttest.Sequence] are of type INT, or INTEGER through [stmttest.Others], so
-// the engine refuses such an argument as "not supported" once it has found the table and the column.
-func typeArgument(c stmttest.Call) (string, bool) {
-	s, _ := stmt.Check(c.Src)
-	insert, ok := s.(*stmt.Insert)
-	args := unnamed(c.Args)
-	if !ok || insert.Parameters() != 1 || len(args) != 1 || refusal(args[0]) != "" {
-		return "", false
-	}
-	switch args[0].(type) {
-	case float64:
-		return "a real", true
-	case string:
-		return "text", true
-	case []byte:
-		return "a blob", true
-	}
-	return "", false
-}
-
 // oracleValues of vs, values of the engine that a column holds, as the oracle binds them.
 func oracleValues(vs []*s4qlpb.Value) []any {
 	var as []any
@@ -1678,7 +1697,10 @@ func coreState(ctx context.Context, d *core.DB) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			text, _ := valueString(row[0])
+			text, ok := valueString(row[0])
+			if !ok || row[0].HasBlob() && row[0].GetBlob() == nil {
+				return "", fmt.Errorf("the table %v holds %v, or a blob that is nil", ct.GetTable(), text)
+			}
 			rows = append(rows, text)
 		}
 		fmt.Fprintf(&b, "%v (%v): %v\n", ct.GetTable(), strings.Join(columns, ", "), strings.Join(rows, " "))
@@ -1752,7 +1774,8 @@ var storeFaults = map[string]string{
 var storeLine = regexp.MustCompile(`^\S+ store request \d+(, stuck)? store: `)
 
 // tallyOf the simulation s: its statements, by how they ended, its writes that were acknowledged,
-// its queries that were not read to their end, its commits and those of a statement with a
+// its queries that were not read to their end, its inserts refused for the type of their value, its
+// commits and those of a statement with a
 // parameter, the faults that the store injected, by kind, and its other events.
 func tallyOf(s simulation) map[string]int {
 	r := s.r
@@ -1775,6 +1798,9 @@ func tallyOf(s simulation) map[string]int {
 		}
 		if a.partial {
 			counts["query not read to its end"]++
+		}
+		if a.typeRefused {
+			counts["refused for the type"]++
 		}
 	}
 	counts["acknowledged writes"] = len(r.acked)
@@ -1831,7 +1857,7 @@ func TestSimulation(t *testing.T) {
 			"fault: slow way": 0.8, "fault: broken read": 0.25, "fault: cut-off": 0.1, "fault: outage": 0.04,
 			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.25, "fault: write applied after a crash": 0.05,
 			"statements in a transaction": 12, "read-only transactions": 0.9, "transactions committed": 2, "transactions rolled back": 0.8,
-			"transactions not committed": 0.08, "transactions unknown": 0.07, "commits of more than one statement": 0.4,
+			"transactions not committed": 0.08, "transactions unknown": 0.07, "commits of more than one statement": 0.4, "refused for the type": 0.5,
 		}, 0.15},
 		// A quarter of what the first 1,000 seeds gave on 2026-11-19, with the ends of transactions for
 		// the lease, which only this workload reaches.
@@ -1844,7 +1870,7 @@ func TestSimulation(t *testing.T) {
 			"fault: write applied after its caller gave up": 0.1, "fault: write stuck in the network": 4,
 			"statements in a transaction": 7, "read-only transactions": 0.7, "transactions committed": 0.7, "transactions rolled back": 0.7,
 			"transactions not committed": 0.04, "commits of more than one statement": 0.08,
-			"transactions ended for the lease": 0.33, "kept transactions ended for the lease": 0.33,
+			"transactions ended for the lease": 0.33, "kept transactions ended for the lease": 0.33, "refused for the type": 0.1,
 		}, 0.15},
 		{"hammer", hammerWorkload, map[string]float64{
 			"succeeded": 12, "SQLite's error": 17, "unknown": 0.4, "skipped": 2.5, "failed: no lease": 2,
@@ -1853,7 +1879,7 @@ func TestSimulation(t *testing.T) {
 			"fault: slow way": 0.5, "fault: broken read": 0.02, "fault: cut-off": 0.09, "fault: outage": 0.025,
 			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.7,
 			"statements in a transaction": 24, "read-only transactions": 1.8, "transactions committed": 4, "transactions rolled back": 1.5,
-			"transactions not committed": 0.17, "transactions unknown": 0.12, "commits of more than one statement": 0.6,
+			"transactions not committed": 0.17, "transactions unknown": 0.12, "commits of more than one statement": 0.6, "refused for the type": 1,
 		}, 0.12},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -1971,9 +1997,13 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// SQLite then fails.
 		{"keepFailed", defaultWorkload, "default", []string{"whose statements that succeeded and write are", "fails in SQLite"}},
 		// A read-only transaction that moves on to the newest state reads rows that were committed after
-		// its beginning, and its later statements report the newer state.
-		{"readNewest", hammerWorkload, "hammer", []string{"(read-only), which began at commit", "the statements of the read-only transaction"}},
+		// its beginning, and its later statements report the newer state. When its read of the newest
+		// state fails, the transaction keeps the read that the bug ended, whose end then fails.
+		{"readNewest", hammerWorkload, "hammer", []string{"(read-only), which began at commit", "the statements of the read-only transaction", "the transaction has ended"}},
 		{"rollbackKeeps", defaultWorkload, "default", []string{"and its caller rolled it back"}},
+		// SQLite converts the real of the log as the bug did, so the replay of the log agrees with the
+		// engine, and only the check of the type of each value of the log finds it.
+		{"convertReal", defaultWorkload, "default", []string{"stores a value of another type than its column"}},
 	}
 	for _, b := range bugs {
 		bug := b.name

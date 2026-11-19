@@ -11,6 +11,7 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/sql/stmt"
+	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 )
 
 // realText at random, the text of a real literal of SQLite without a sign, made to be hard to round:
@@ -137,12 +138,10 @@ func FuzzLiteral(f *testing.F) {
 	r := rand.New(rand.NewPCG(1, 0x5ea1))
 	for range 100 {
 		f.Add(realText(r))
-		text, _ := realLiteral(r)
-		f.Add(text)
-		text, _ = stringLiteral(r)
-		f.Add(text)
-		text, _ = blobLiteral(r)
-		f.Add(text)
+		for _, t := range stmttest.Types[1:] {
+			text, _ := stmttest.Literal(r, stmttest.ValueOf(r, t))
+			f.Add(text)
+		}
 	}
 	f.Fuzz(func(t *testing.T, lit string) {
 		src := "insert into t (v) values (" + lit + ")"

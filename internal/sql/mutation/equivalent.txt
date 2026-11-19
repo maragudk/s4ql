@@ -256,7 +256,7 @@ internal/engine/engine.go Conn.write constant: a.GetInteger() + 1 => a.GetIntege
 
 internal/engine/engine.go Conn.write condition: b.skipUnique => false
 	The planted bugs skipUnique and checkOutside: only checkOutside then plants the write without the check, and only the tests plant either.
-internal/engine/tx.go Conn.writeIn element: skipUnique: c.e.bugs.skipUnique =>
+internal/engine/tx.go Conn.writeIn element: skipUnique: c.e.bugs.skipUnique, =>
 	The planted bug skipUnique is then not planted in a write of a transaction that spans statements, and is found by the statements of their own.
 internal/engine/tx.go Conn.ready condition: err != nil => false #3
 	The planted bug readNewest: the end of the read transaction before the new one.

@@ -31,4 +31,8 @@ type bugs struct {
 	readNewest bool
 	// rollbackKeeps makes the roll back of a write transaction with one write commit it instead.
 	rollbackKeeps bool
+	// convertReal makes an insert of a real that is a whole number into an INT or INTEGER column
+	// store the integer, as SQLite converts it also in a STRICT table, where s4ql refuses a value of
+	// another type than its column.
+	convertReal bool
 }

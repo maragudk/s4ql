@@ -3,17 +3,14 @@ package stmt_test
 import (
 	"flag"
 	"fmt"
-	"math"
 	"math/rand/v2"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 
 	"maragu.dev/s4ql/internal/sql/parsetest"
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
-	"maragu.dev/s4ql/internal/sql/token"
 )
 
 // keywords of SQLite, in lower case.
@@ -34,211 +31,12 @@ func namePools(t testing.TB) [][]string {
 // positionTexts are those of [stmttest.PositionTexts].
 var positionTexts = stmttest.PositionTexts
 
-// generator of random statements of slices 1, 2, and 4: those of [stmttest], which writes the column
-// type INT and integer literals only, with the type of the column and the literal of an insert
-// replaced at random.
-type generator struct {
-	*stmttest.Generator
-	// r gives the random numbers of the replacements, apart from those of the statements.
-	r *rand.Rand
-	// types, if not 0, makes one CREATE TABLE in types have another type than INT, and one insert of a
-	// literal in types have a real, a string, or a blob.
-	types int
-}
-
-// newGenerator from seed, which writes a plain ? in place of the value of one insert in four, and
-// another type or literal in one statement of the others in two.
-func newGenerator(t testing.TB, seed uint64) generator {
+// newGenerator of [stmttest] from seed, which writes a plain ? in place of the value of one insert
+// in four, and columns and values of every type.
+func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g := stmttest.NewGenerator(rand.New(rand.NewPCG(seed, 0x511ce1)), namePools(t))
 	g.Parameters = 4
-	return generator{Generator: g, r: rand.New(rand.NewPCG(seed, 0x7e5)), types: 2}
-}
-
-// statement at random: its text and the statement that it holds.
-func (g generator) statement() (string, stmt.Statement) {
-	src, s := g.Statement()
-	if g.types == 0 || g.r.IntN(g.types) != 0 {
-		return src, s
-	}
-	switch s := s.(type) {
-	case *stmt.CreateTable:
-		// The type is the first token after the name of the column.
-		at := s.Column.Offset + len(s.Column.Raw)
-		for _, tk := range token.Tokens(src[at:]) {
-			if tk.Kind == token.Space || tk.Kind == token.Comment {
-				continue
-			}
-			types := []stmt.Type{stmt.TypeInteger, stmt.TypeReal, stmt.TypeText, stmt.TypeBlob}
-			s.Type = types[g.r.IntN(len(types))]
-			word := g.inCase(strings.ToLower(s.Type.String()))
-			start, end := at+tk.Offset, at+tk.Offset+tk.Len
-			src = src[:start] + word + src[end:]
-			s.Span.End += len(word) - (end - start)
-			break
-		}
-	case *stmt.Insert:
-		if s.Parameter > 0 {
-			break
-		}
-		text, v := g.literal()
-		src = src[:s.ValueSpan.Start] + text + src[s.ValueSpan.End:]
-		s.Span.End += len(text) - (s.ValueSpan.End - s.ValueSpan.Start)
-		s.Value, s.ValueSpan.End = v, s.ValueSpan.Start+len(text)
-	}
-	return src, s
-}
-
-// inCase gives the word w in lower case, upper case, or a mix, at random.
-func (g generator) inCase(w string) string {
-	switch g.r.IntN(3) {
-	case 0:
-		return w
-	case 1:
-		return strings.ToUpper(w)
-	}
-	b := []byte(w)
-	for i := range b {
-		if g.r.IntN(2) == 0 {
-			b[i] = strings.ToUpper(string(b[i]))[0]
-		}
-	}
-	return string(b)
-}
-
-// literal at random of a real, a string, or a blob: its text and its value.
-func (g generator) literal() (string, stmt.Value) {
-	switch g.r.IntN(5) {
-	case 0, 1:
-		return realLiteral(g.r)
-	case 2, 3:
-		return stringLiteral(g.r)
-	}
-	return blobLiteral(g.r)
-}
-
-// realLiteral at random: the text of a float64, which may have a sign, in one of the forms of a real
-// literal of SQLite, and the float64. The text has the digits of the float64 that strconv gives, which
-// round to it, so its value is the float64 if SQLite rounds those digits to the nearest float, which
-// the tests check.
-func realLiteral(r *rand.Rand) (string, stmt.Value) {
-	f := realValue(r)
-	digits := strconv.FormatFloat(math.Abs(f), 'e', -1, 64)
-	mantissa, exp, _ := strings.Cut(digits, "e")
-	var text string
-	switch r.IntN(6) {
-	case 0:
-		// As strconv writes it, such as 1.5e+00, or 5e-324.
-		text = digits
-	case 1:
-		// Without a fraction or a sign of the exponent, in upper case, such as 15E-1.
-		whole := strings.Replace(mantissa, ".", "", 1)
-		e, _ := strconv.Atoi(exp)
-		e -= len(whole) - 1
-		text = whole + "E" + strconv.Itoa(e)
-	case 2:
-		// Without an exponent, such as 0.0001 or 1e+300 written out.
-		text = strconv.FormatFloat(math.Abs(f), 'f', -1, 64)
-		if !strings.Contains(text, ".") {
-			text += "."
-		}
-	case 3:
-		// Without an exponent and without a zero before the point, such as .5, if it is below 1.
-		text = strconv.FormatFloat(math.Abs(f), 'f', -1, 64)
-		text = strings.TrimPrefix(text, "0")
-		if !strings.Contains(text, ".") {
-			text += ".0"
-		}
-	case 4:
-		// With leading and trailing zeros, which do not change the value.
-		text = strings.Repeat("0", r.IntN(5)) + strconv.FormatFloat(math.Abs(f), 'f', -1, 64)
-		if !strings.Contains(text, ".") {
-			text += "."
-		}
-		text += strings.Repeat("0", r.IntN(5))
-	default:
-		// In upper case, with the exponent's sign, such as 1.5E+03.
-		text = mantissa + "E" + exp
-	}
-	if math.Signbit(f) {
-		text = "-" + []string{"", " ", "/* c */", "\n"}[r.IntN(4)] + text
-	}
-	return text, stmt.Real(f)
-}
-
-// realValue at random, finite: small numbers, numbers with few digits, the limits of float64 and the
-// subnormal ones, zero and negative zero, and any.
-func realValue(r *rand.Rand) float64 {
-	sign := 1.0
-	if r.IntN(3) == 0 {
-		sign = -1
-	}
-	switch r.IntN(9) {
-	case 0:
-		return sign * 0
-	case 1:
-		return sign * float64(r.IntN(2001)) / 8
-	case 2:
-		return sign * float64(r.IntN(100000)) / math.Pow10(r.IntN(10))
-	case 3:
-		return sign * []float64{math.MaxFloat64, math.SmallestNonzeroFloat64, 0x1p-1022, 0x1p-1022 - 0x1p-1074,
-			math.Nextafter(math.MaxFloat64, 0), 0.1, 0.2, 0.3, 1e23, 9007199254740993, 2.2250738585072011e-308}[r.IntN(11)]
-	case 4:
-		// A subnormal one.
-		return sign * float64(1+r.IntN(1<<20)) * math.SmallestNonzeroFloat64
-	case 5:
-		return sign * math.Pow10(r.IntN(617)-308)
-	default:
-		for {
-			f := math.Float64frombits(r.Uint64())
-			if !math.IsInf(f, 0) && !math.IsNaN(f) {
-				return f
-			}
-		}
-	}
-}
-
-// stringPool holds the content of strings: empty, with quotes, with what looks like SQL, and with
-// letters of more than one byte.
-var stringPool = []string{"", "a", "'", "''", "a'b", "it's", `"`, "--", "/*", "*/", " ", "\t\n", "x'01'", "1",
-	"1.5", "null", "été", "ÆØÅ", "😀", "a b c", "\\", "?", ";", "select 1;", strings.Repeat("x", 300)}
-
-// stringLiteral at random: its text, and the string as its value.
-func stringLiteral(r *rand.Rand) (string, stmt.Value) {
-	var v string
-	if r.IntN(2) == 0 {
-		v = stringPool[r.IntN(len(stringPool))]
-	} else {
-		var b strings.Builder
-		for range r.IntN(12) {
-			// Any rune but NUL and the surrogates, which are not valid UTF-8, mostly from ASCII.
-			var c rune
-			if r.IntN(4) == 0 {
-				c = rune(1 + r.IntN(0x10ffff))
-			} else {
-				c = rune(1 + r.IntN(0x7f))
-			}
-			if 0xd800 <= c && c <= 0xdfff {
-				c = 'x'
-			}
-			b.WriteRune(c)
-		}
-		v = b.String()
-	}
-	return "'" + strings.ReplaceAll(v, "'", "''") + "'", stmt.Text(v)
-}
-
-// blobLiteral at random: its text, with an x in either case and hex digits in either case, and the
-// bytes as its value.
-func blobLiteral(r *rand.Rand) (string, stmt.Value) {
-	b := make([]byte, r.IntN(20))
-	for i := range b {
-		b[i] = byte(r.IntN(256))
-	}
-	digits := fmt.Sprintf("%x", b)
-	if r.IntN(2) == 0 {
-		digits = strings.ToUpper(digits)
-	}
-	return []string{"x", "X"}[r.IntN(2)] + "'" + digits + "'", stmt.Blob(b)
+	return g
 }
 
 var generatedCount = flag.Int("generated", 20000, "statements of the generator of slice 1")
@@ -252,7 +50,7 @@ func TestGenerate(t *testing.T) {
 	}
 	g := newGenerator(t, *seed)
 	for range n {
-		src, want := g.statement()
+		src, want := g.Statement()
 		s, err := stmt.Check(src)
 		if err != nil || fmt.Sprintf("%#v", s) != fmt.Sprintf("%#v", want) {
 			t.Fatalf("%q: gives %#v %v, want %#v", src, s, err, want)
@@ -279,7 +77,7 @@ func TestGenerate_mutants(t *testing.T) {
 	c := counts{}
 	kinds := map[string][]string{}
 	for i := range n {
-		src, want := g.statement()
+		src, want := g.Statement()
 		for _, m := range parsetest.Mutants(src, *seed+uint64(i), *mutantsEach) {
 			o, s := verify(t, m)
 			c[o]++
@@ -290,7 +88,7 @@ func TestGenerate_mutants(t *testing.T) {
 		}
 	}
 	t.Logf("%v mutants: %v", n**mutantsEach, c)
-	excused(t, c, 1, 367)
+	excused(t, c, 0, 343)
 	var names []string
 	for k := range kinds {
 		names = append(names, k)
@@ -359,7 +157,7 @@ func difference(a, b stmt.Statement) string {
 func FuzzGenerate(f *testing.F) {
 	f.Add(uint64(1), uint64(2))
 	f.Fuzz(func(t *testing.T, seed, mutant uint64) {
-		src, want := newGenerator(t, seed).statement()
+		src, want := newGenerator(t, seed).Statement()
 		s, err := stmt.Check(src)
 		if err != nil || fmt.Sprintf("%#v", s) != fmt.Sprintf("%#v", want) {
 			t.Fatalf("%q: gives %#v %v, want %#v", src, s, err, want)
@@ -540,7 +338,7 @@ func TestGenerate_nearMisses(t *testing.T) {
 	g.Parameters = 0
 	c := counts{}
 	for range n {
-		src, s := g.statement()
+		src, s := g.Statement()
 		var table, column, value, typ string
 		switch s := s.(type) {
 		case *stmt.CreateTable:
@@ -562,5 +360,5 @@ func TestGenerate_nearMisses(t *testing.T) {
 		}
 	}
 	t.Logf("%v near misses: %v", c[syntaxError]+c[notSupported]+c[syntaxNotSaid]+c[notSupportedNotSaid], c)
-	excused(t, c, 0, 985)
+	excused(t, c, 0, 956)
 }
