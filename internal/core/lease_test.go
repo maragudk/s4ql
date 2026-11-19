@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
+	"log/slog"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -15,6 +17,7 @@ import (
 
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/format"
+	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/store"
 	"maragu.dev/s4ql/internal/store/simstore"
@@ -853,6 +856,267 @@ func TestLease_waiting(t *testing.T) {
 			is.Equal(t, 1, len(waiter))
 			is.Error(t, core.ErrNoLease, <-waiter)
 			is.Error(t, core.ErrNoLease, tx.Commit(t.Context()))
+		})
+	})
+}
+
+// idleWhileLost has instance a, which serves the table t1 with the row 1, lose its lease to
+// instance b, which commits the row 2: a is cut off from the store until b serves and has committed.
+// The function during runs on a's side while a is cut off, before b begins. It returns a and b,
+// with the store of a cleared, and ends after a has had the time to find that it lost the lease.
+func idleWhileLost(t *testing.T, w *world, options core.Options, during func(a *core.DB)) (a, b *core.DB) {
+	t.Helper()
+	s := newScriptStore(w.client())
+	a = w.openOn(t, "a", s, options)
+	is.NotError(t, a.Wait(t.Context()))
+	write(t, a, func(tx *core.Tx) {
+		is.NotError(t, tx.CreateTable(t.Context(), tableOf("t1", 1, "k")))
+		is.NotError(t, tx.Upsert(t.Context(), "t1", row(1)))
+	})
+
+	s.on("swap", "", drop, -1)
+	s.on("get", "", drop, -1)
+	if during != nil {
+		during(a)
+	}
+	b = w.serve(t, "b", core.Options{})
+	write(t, b, func(tx *core.Tx) {
+		is.NotError(t, tx.Upsert(t.Context(), "t1", row(2)))
+	})
+	s.clear()
+	// a renews within a second of the end of its back-off, finds the manifest of b, and loses the
+	// lease.
+	time.Sleep(6 * time.Second)
+	return a, b
+}
+
+// waitServes waits until d serves, for a while that is long beside a takeover, and fails the test
+// if d does not serve by then.
+func waitServes(t *testing.T, d *core.DB) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
+	defer cancel()
+	start := time.Now()
+	is.NotError(t, d.Wait(ctx), "the instance does not serve again")
+	// The instance reads the manifest every five seconds while another holds it.
+	is.True(t, time.Since(start) <= 5*time.Second, fmt.Sprint(time.Since(start)))
+}
+
+// isLeaseEnded checks that err is the error of a write transaction that the instance ended because
+// it lost its lease.
+func isLeaseEnded(t *testing.T, err error) {
+	t.Helper()
+	is.Error(t, core.ErrNoLease, err)
+	is.Error(t, core.ErrTxLeaseLost, err)
+	is.True(t, strings.Contains(fmt.Sprint(err), "the transaction was ended because the instance lost its lease"), fmt.Sprint(err))
+}
+
+func TestLease_openTx(t *testing.T) {
+	t.Run("should end a write transaction that is open and idle when it loses the lease, and serve again when the other instance is closed, without the application", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			events := &recorder{}
+			var tx *core.Tx
+			var rtx *core.ReadTx
+			a, b := idleWhileLost(t, w, core.Options{Logger: events.logger()}, func(a *core.DB) {
+				var err error
+				tx, err = a.Begin(t.Context())
+				is.NotError(t, err)
+				is.NotError(t, tx.Upsert(t.Context(), "t1", row(3)))
+				is.NotError(t, tx.Annotate(t.Context(), "insert", nil))
+				is.NotError(t, tx.Savepoint(t.Context()))
+				// A read transaction holds no place of the writer, and stays as it was.
+				rtx, err = startRead(t, a)
+				is.NotError(t, err)
+			})
+
+			ended := events.named(core.EventTxEnded)
+			is.Equal(t, 1, len(ended))
+			is.Equal(t, slog.LevelInfo, levelOf(ended[0]))
+			is.Equal(t, "rolled_back", at(ended[0], core.AttrOutcome))
+			is.Equal(t, "not_holder", at(ended[0], core.AttrReason))
+			is.Equal(t, tx.Position().String(), at(ended[0], core.AttrParent))
+
+			is.NotError(t, b.Close(t.Context()))
+			waitServes(t, a)
+			is.Equal(t, "t1(k*0): 1 | 2", read(t, a))
+
+			// Every later call of the transaction gives the error, also once the instance serves.
+			isLeaseEnded(t, tx.Upsert(t.Context(), "t1", row(4)))
+			_, err := tx.Get(t.Context(), "t1", row(1))
+			isLeaseEnded(t, err)
+			for _, err := range tx.Scan(t.Context(), "t1") {
+				isLeaseEnded(t, err)
+			}
+			_, err = tx.Tables(t.Context())
+			isLeaseEnded(t, err)
+			isLeaseEnded(t, tx.Annotate(t.Context(), "insert", nil))
+			isLeaseEnded(t, tx.Serving(t.Context()))
+			isLeaseEnded(t, tx.Release(t.Context()))
+			isLeaseEnded(t, tx.RollbackTo(t.Context()))
+			isLeaseEnded(t, tx.Savepoint(t.Context()))
+			err = tx.Commit(t.Context())
+			isLeaseEnded(t, err)
+			is.True(t, !errors.Is(err, core.ErrOutcomeUnknown))
+			is.Error(t, core.ErrTxDone, tx.Rollback(t.Context()))
+
+			// The read transaction reads the state of its start, as before.
+			state, err := dump(t.Context(), rtx)
+			is.NotError(t, err)
+			is.Equal(t, "t1(k*0): 1", show(state))
+			is.NotError(t, rtx.Close(t.Context()))
+
+			// The next write transaction of the instance begins at once and commits.
+			write(t, a, func(tx *core.Tx) {
+				is.NotError(t, tx.Upsert(t.Context(), "t1", row(5)))
+			})
+			is.Equal(t, "t1(k*0): 1 | 2 | 5", read(t, a))
+			// The log holds the create, b's row, and a's last row, and nothing of the transaction that
+			// was ended.
+			is.Equal(t, "[[create t1(k*0) upsert t1 [0] 1] [upsert t1 [0] 2] [upsert t1 [0] 5]]", fmt.Sprint(w.commits(t)))
+		})
+	})
+
+	t.Run("should return nil from the rollback of a transaction that it ended", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			var tx *core.Tx
+			a, b := idleWhileLost(t, w, core.Options{}, func(a *core.DB) {
+				var err error
+				tx, err = a.Begin(t.Context())
+				is.NotError(t, err)
+				is.NotError(t, tx.Upsert(t.Context(), "t1", row(3)))
+			})
+			isLeaseEnded(t, tx.Serving(t.Context()))
+			is.NotError(t, tx.Rollback(t.Context()))
+			is.Error(t, core.ErrTxDone, tx.Rollback(t.Context()))
+			is.Error(t, core.ErrTxDone, tx.Commit(t.Context()))
+
+			is.NotError(t, b.Close(t.Context()))
+			waitServes(t, a)
+			write(t, a, func(tx *core.Tx) {
+				is.NotError(t, tx.Upsert(t.Context(), "t1", row(4)))
+			})
+			is.Equal(t, "t1(k*0): 1 | 2 | 4", read(t, a))
+		})
+	})
+
+	t.Run("should let a call of the transaction that runs when the lease is lost end first, and end the transaction when it leaves", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			var tx *core.Tx
+			var rows []string
+			var errs []error
+			resume := make(chan struct{})
+			scanned := make(chan struct{})
+			a, b := idleWhileLost(t, w, core.Options{}, func(a *core.DB) {
+				var err error
+				tx, err = a.Begin(t.Context())
+				is.NotError(t, err)
+				is.NotError(t, tx.Upsert(t.Context(), "t1", row(3)))
+				started := make(chan struct{})
+				go func() {
+					defer close(scanned)
+					first := true
+					// The body of the loop runs while the lease is lost: the scan is a call that runs.
+					for r, err := range tx.Scan(t.Context(), "t1") {
+						if err != nil {
+							errs = append(errs, err)
+							continue
+						}
+						rows = append(rows, text(r))
+						if first {
+							first = false
+							close(started)
+							<-resume
+							// A call inside the call that runs is refused.
+							_, err := tx.Get(t.Context(), "t1", row(1))
+							errs = append(errs, err)
+						}
+					}
+				}()
+				<-started
+			})
+
+			// The instance waits for the call, so it does not serve while the loop body runs.
+			is.NotError(t, b.Close(t.Context()))
+			time.Sleep(time.Minute)
+			is.True(t, !serves(t, a), "the instance serves while a call of the transaction that it ended runs")
+			close(resume)
+			<-scanned
+			// The scan gave its first row, and ended at its next one with the error.
+			is.EqualSlice(t, []string{"1"}, rows)
+			is.Equal(t, 2, len(errs))
+			isLeaseEnded(t, errs[0])
+			isLeaseEnded(t, errs[1])
+
+			waitServes(t, a)
+			isLeaseEnded(t, tx.Commit(t.Context()))
+			is.Equal(t, "t1(k*0): 1 | 2", read(t, a))
+			write(t, a, func(tx *core.Tx) {
+				is.NotError(t, tx.Upsert(t.Context(), "t1", row(4)))
+			})
+			is.Equal(t, "t1(k*0): 1 | 2 | 4", read(t, a))
+		})
+	})
+
+	t.Run("should end the transaction when rows of its scan that are open at the loss of the lease are read or stopped, and not before", func(t *testing.T) {
+		for _, how := range []string{"next", "stop"} {
+			t.Run(how, func(t *testing.T) {
+				bubble(t, func(t *testing.T, w *world) {
+					var tx *core.Tx
+					var next func() ([]*s4qlpb.Value, error, bool)
+					var stop func()
+					a, b := idleWhileLost(t, w, core.Options{}, func(a *core.DB) {
+						var err error
+						tx, err = a.Begin(t.Context())
+						is.NotError(t, err)
+						is.NotError(t, tx.Upsert(t.Context(), "t1", row(3)))
+						next, stop = iter.Pull2(tx.Scan(t.Context(), "t1"))
+						r, err, ok := next()
+						is.True(t, ok)
+						is.NotError(t, err)
+						is.Equal(t, "1", text(r))
+					})
+					defer stop()
+
+					is.NotError(t, b.Close(t.Context()))
+					time.Sleep(time.Minute)
+					is.True(t, !serves(t, a), "the instance serves while rows of a scan of the transaction that it ended are open")
+					switch how {
+					case "next":
+						_, err, ok := next()
+						is.True(t, ok)
+						isLeaseEnded(t, err)
+						_, _, ok = next()
+						is.True(t, !ok)
+					case "stop":
+						stop()
+					}
+
+					waitServes(t, a)
+					is.NotError(t, tx.Rollback(t.Context()))
+					write(t, a, func(tx *core.Tx) {
+						is.NotError(t, tx.Upsert(t.Context(), "t1", row(4)))
+					})
+					is.Equal(t, "t1(k*0): 1 | 2 | 4", read(t, a))
+				})
+			})
+		}
+	})
+
+	t.Run("should keep the transaction open under the planted bug, so that the instance does not serve again", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			var options core.Options
+			options.Plant("keepIdleTx")
+			var tx *core.Tx
+			a, b := idleWhileLost(t, w, options, func(a *core.DB) {
+				var err error
+				tx, err = a.Begin(t.Context())
+				is.NotError(t, err)
+			})
+			is.NotError(t, b.Close(t.Context()))
+			time.Sleep(time.Hour)
+			is.True(t, !serves(t, a))
+			is.NotError(t, tx.Rollback(t.Context()))
+			waitServes(t, a)
 		})
 	})
 }

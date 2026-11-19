@@ -778,6 +778,9 @@ func TestTx_Commit_unknownOutcome(t *testing.T) {
 			<-committed
 			is.Error(t, core.ErrNoLease, commitErr)
 			is.True(t, !errors.Is(commitErr, core.ErrOutcomeUnknown))
+			// The transaction was committing when the lease was lost, so the lease task left it alone,
+			// and the log decided.
+			is.True(t, !errors.Is(commitErr, core.ErrTxLeaseLost), fmt.Sprint(commitErr))
 			is.NotError(t, b.Close(t.Context()))
 			is.NotError(t, a.Wait(t.Context()))
 			is.Equal(t, "t1(k*0): \nt3(k*0): ", read(t, a))

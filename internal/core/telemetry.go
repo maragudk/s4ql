@@ -14,10 +14,12 @@ import (
 //
 //   - Debug: a commit that succeeded, also one of nothing; a renewal of the lease that succeeded;
 //     and a call that was refused for lack of a valid lease.
-//   - Info: a change of state: the lease taken, lost, or released, a catch-up, and a close.
+//   - Info: a change of state: the lease taken, lost, or released, a write transaction ended
+//     because the lease was lost, a catch-up, and a close.
 //   - Warn: a commit that failed or whose outcome is unknown, a commit whose cache then failed, a
 //     swap of unknown outcome and how it was settled, a renewal, a take, or a release of the lease
-//     that failed, a catch-up that failed, and "busy" of the cache after the busy timeout.
+//     that failed, a catch-up that failed, the roll back in the cache of a write transaction
+//     ended for the lease that failed, and "busy" of the cache after the busy timeout.
 //   - Error: a stop for good for any cause but a close, with the cause.
 //
 // An event of the call of a caller carries the caller's context. An event of the lease task
@@ -38,6 +40,9 @@ const (
 	eventBusy = "busy"
 	// eventStop is the stop of the instance for good.
 	eventStop = "stop"
+	// eventTxEnded is the end of a write transaction that the instance ended because it lost its
+	// lease, when the transaction is rolled back in the cache and the writer lock is free.
+	eventTxEnded = "transaction_ended"
 )
 
 // The names of the attributes: lowercase, with dots for namespaces and underscores inside words,
@@ -84,6 +89,10 @@ const (
 
 	// attrUnknownKind is what the swap with the unknown outcome was for: commit or renewal.
 	attrUnknownKind = "unknown.kind"
+
+	// attrTxWaited is whether the end of a write transaction for the lease waited for a call of the
+	// transaction that ran.
+	attrTxWaited = "transaction.waited_for_call"
 
 	// The durations of the phases of a unit of work, on the monotonic clock of the host.
 	attrDurationTotal  = "duration.total"

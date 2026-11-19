@@ -82,6 +82,14 @@ var (
 	// again. The instance goes on serving.
 	ErrTooLarge = errors.New("the commit object is too large for the store")
 
+	// ErrTxLeaseLost is wrapped by the error of every call of a write transaction that the instance
+	// ended because it lost its lease, except [Tx.Rollback], which returns nil. It wraps [ErrNoLease],
+	// so the error is temporary: the transaction is not committed and never will be, and the same
+	// work can succeed in a new transaction. An instance that has lost its lease ends the write
+	// transaction that is open and not committing, so that it can take the lease back: see
+	// [DB.endForLease].
+	ErrTxLeaseLost = fmt.Errorf("%w: the transaction was ended because the instance lost its lease", ErrNoLease)
+
 	// ErrTxDone is the error of a call on a transaction that was committed, rolled back, or closed.
 	ErrTxDone = errors.New("the transaction has ended")
 

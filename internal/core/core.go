@@ -173,7 +173,9 @@ type DB struct {
 	path        string
 
 	// writerLock is held for a whole write transaction, and by the lease task while it takes the
-	// lease and catches up. It guards w. It is acquired before manifestLock, never after.
+	// lease and catches up. It guards w. It is acquired before manifestLock, never after. A write
+	// transaction gives it back at its end, or when the lease task ends it because the instance has
+	// lost its lease.
 	writerLock host.Semaphore
 	// w is the write connection to the cache, which is opened first and stays open.
 	w *conn
@@ -217,6 +219,10 @@ type DB struct {
 	serving bool
 	// unresolved is whether a commit of the instance has an outcome that it does not know.
 	unresolved bool
+	// writing is the write transaction that holds the writer lock, from the end of [DB.Begin] to the
+	// end of the transaction, or nil. The lease task ends it when the instance has lost its lease:
+	// see [DB.endForLease].
+	writing *Tx
 	// sent is when the last renewal that is known to have happened was first sent.
 	sent sentAt
 	// waiters are the waits that a change of stopped, holder, or serving ends, and a lease that is
@@ -764,6 +770,11 @@ func (d *DB) releaseContext(ctx context.Context) (context.Context, context.Cance
 func (d *DB) use(c *conn) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	return d.useLocked(c)
+}
+
+// useLocked is [DB.use] with mu held.
+func (d *DB) useLocked(c *conn) error {
 	if c.closed {
 		if d.stopped != nil {
 			return d.stopped
