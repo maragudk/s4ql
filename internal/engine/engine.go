@@ -11,10 +11,15 @@
 //     runs the tree. Each operator hands its rows to the one above it through a push-style
 //     iterator.
 //
-// Each statement is its own transaction. A statement that changes the database runs in a write
-// transaction, which is annotated with the statement's text and committed, and rolled back on any
-// failure; a query runs in a read transaction, which ends when its rows are read to the end or
-// closed.
+// A statement is its own transaction, unless a transaction that spans statements is open on its
+// connection. A statement of its own that changes the database runs in a write transaction, which is
+// annotated with the statement's text and committed, and rolled back on any failure; a query runs in
+// a read transaction, which ends when its rows are read to the end or closed.
+//
+// A transaction that spans statements begins with [Conn.Begin], which takes the place of the
+// single writer as SQLite's `begin immediate` does, or with [Conn.BeginReadOnly], a read transaction
+// that waits for nothing, and ends with [Conn.Commit] or [Conn.Rollback]; see tx.go. A statement
+// that fails in it has no effect, and the transaction stays open, as in SQLite.
 //
 // A statement runs on a [Conn], a connection of the engine: it runs one statement at a time, and
 // it owns one reader of the storage core, on which its read transactions run. So the connections
@@ -30,6 +35,9 @@
 //   - [ErrNoStatement], for a text that holds no statement.
 //   - An error that matches [ErrArguments], for another number of arguments than the statement has
 //     parameters.
+//   - [ErrRowsOpen], [ErrTxOpen], [ErrNoTx], or [ErrTxDone], for what the state of the transaction
+//     of the connection does not allow, and an error that matches [ErrTooLarge] for a commit that
+//     the store cannot take.
 //   - An error of the storage core, which matches its sentinel in package core with [errors.Is], or
 //     an error of the context.
 //   - An internal error, which matches [ErrInternal]: a fault of s4ql.
@@ -105,6 +113,11 @@ type Result struct {
 // [core.ErrReaderBusy], and does not wait for them. A statement that changes the database needs no
 // reader, and runs.
 //
+// A transaction that spans statements is open on the connection from [Conn.Begin] or
+// [Conn.BeginReadOnly] to [Conn.Commit] or [Conn.Rollback], and every statement of the connection
+// runs in it meanwhile. While the rows of a query of the connection have not ended, no transaction
+// begins, and no statement runs in a transaction: each fails at once with [ErrRowsOpen].
+//
 // A reader that cannot be opened fails the statement that needed it, and the next statement that
 // reads tries again. If the cache cannot be opened, that is a local failure, which stops the
 // instance as any other.
@@ -127,9 +140,9 @@ func (e *Engine) Conn() *Conn {
 	return &Conn{e: e}
 }
 
-// Close the connection, and its reader, if it has one. It fails, with an error that matches
-// [core.ErrReaderInUse], and closes nothing, while a loop over the rows of a query of the
-// connection runs. Rows of the connection that have not ended must not be used after its close:
+// Close the connection, and its reader, if it has one, and roll back its transaction, if one is
+// open. It fails, with an error that matches [core.ErrReaderInUse], and closes nothing, while a loop
+// over the rows of a query of the connection runs. Rows of the connection that have not ended must not be used after its close:
 // their read transaction has ended with the reader, and what they give then is an internal error.
 // A statement on a connection that is closed fails with an internal error too. Closing a closed
 // connection does nothing.
@@ -182,6 +195,14 @@ func (c *Conn) begin(ctx context.Context) (writeTx, error) {
 //
 // The text is checked first, and then the arguments, as [Check] checks them, before the statement
 // needs the database: there must be one argument for each parameter, and each must be an integer.
+//
+// In a transaction that spans statements, the statement then fails with the error of ctx if ctx has
+// ended, with the refusal of a statement of its own if the instance does not serve now, and with
+// [ErrRowsOpen] while the rows of an earlier query of the connection are open. A statement that
+// fails in a write transaction has no effect, and what the statements before it did is kept; the
+// transaction stays open, unless the core lets it only roll back, as after a failure of the cache.
+// In a read-only transaction, a statement that would write fails with SQLite's error under `pragma
+// query_only = 1`, after SQLite's errors of the names that it gives when it prepares the statement.
 //
 // SQLite's last insert rowid is not changed by any statement of s4ql, because every table is WITHOUT
 // ROWID, and SQLite does not record an insert into such a table.

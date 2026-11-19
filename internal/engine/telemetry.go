@@ -131,8 +131,8 @@ type report struct {
 	position *format.Name
 	write    bool
 	// tx is the kind of the transaction that spans statements in which the statement runs, or empty.
-	tx string
-	rows     int64
+	tx   string
+	rows int64
 	// ended is set once the event is logged.
 	ended bool
 }
