@@ -75,6 +75,10 @@ type answer struct {
 	err string
 	// message of the engine's error, which is not compared with SQLite.
 	message string
+	// offset of SQLite's error, or of the engine's, as [sqlerr.Error] has it, and 0 for another
+	// error. It is not in the text of the answer: SQLite does not give the same offset on every
+	// connection, so only the tests that know it compare it.
+	offset int
 	// columns of a query, each as its name and declared type, and its rows, each as its values.
 	columns string
 	rows    []string
@@ -150,13 +154,24 @@ func sqliteText(t testing.TB, err error) string {
 	return fmt.Sprint(se.Code.Primary(), "/", int(se.Code), ": ", se.Message)
 }
 
+// sqliteAnswer of an error of the binding, with its offset.
+func sqliteAnswer(t testing.TB, err error) answer {
+	t.Helper()
+	a := answer{err: sqliteText(t, err)}
+	var se *sqlite.Error
+	if errors.As(err, &se) {
+		a.offset = se.Offset
+	}
+	return a
+}
+
 // run the statement of src, as sqlite3_prepare_v2 and sqlite3_step run it, with args bound to its
 // parameters by position: each an int64, a float64, a string, or a []byte.
 func (o *oracle) run(t testing.TB, src string, args ...any) answer {
 	t.Helper()
 	s, _, err := o.c.PrepareFirst(src)
 	if err != nil {
-		return answer{err: sqliteText(t, err)}
+		return sqliteAnswer(t, err)
 	}
 	if s == nil {
 		return answer{err: "no statement"}
@@ -177,7 +192,7 @@ func (o *oracle) run(t testing.TB, src string, args ...any) answer {
 			t.Fatalf("%q: an argument of type %T for SQLite", src, a)
 		}
 		if err != nil {
-			return answer{err: sqliteText(t, err)}
+			return sqliteAnswer(t, err)
 		}
 	}
 	var a answer
@@ -189,7 +204,7 @@ func (o *oracle) run(t testing.TB, src string, args ...any) answer {
 	for {
 		ok, err := s.Step()
 		if err != nil {
-			return answer{err: sqliteText(t, err)}
+			return sqliteAnswer(t, err)
 		}
 		if !ok {
 			return a
@@ -266,7 +281,12 @@ const wrongArguments = "wrong number of arguments"
 // errAnswer of an error of the engine, with its message.
 func errAnswer(t testing.TB, src string, err error) answer {
 	t.Helper()
-	return answer{err: errText(t, src, err), message: err.Error()}
+	a := answer{err: errText(t, src, err), message: err.Error()}
+	var se *sqlerr.Error
+	if errors.As(err, &se) {
+		a.offset = se.Offset
+	}
+	return a
 }
 
 // integers as values of the engine.
