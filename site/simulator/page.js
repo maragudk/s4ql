@@ -88,7 +88,7 @@ let tell = null; // the teller of run.js, which start makes
 const lines = []; // the last LINES lines of the log, newest first
 let linesTotal = 0;
 const calls = {}; // by instance: {w, r, x, why}
-const client = { w: 0, r: 0, x: 0, why: "", failing: false }; // what the client got
+const client = { w: 0, r: 0, x: 0, status: "", failing: false }; // what the client got, and its latest call
 const bars = new Map(); // events by slice of fake time
 const marks = []; // the times of the visitor's actions
 const starts = {}; // by instance: the t of the start of its process
@@ -99,8 +99,10 @@ const stopped = {}; // by instance: whether the visitor's Stop closed the databa
 // ready, or failed, data-busy is "true" while a command is on its way, data-t is the fake time in
 // whole ms, data-playing is "true" while it plays, data-lines counts the lines of the log so far, and
 // data-commits the commit objects. The element #client has data-target, the instance that the client
-// calls, and data-writes, data-reads, and data-failed, what its calls got. window.s4qlPage gives the check the state and a hook, skip, that
-// advances fake time at once; a visitor reaches it only through the console.
+// calls, and data-writes, data-reads, and data-failed, what its calls got. #client-status has
+// data-failing, "true" while the latest call of the client that ended failed. window.s4qlPage gives
+// the check the state and a hook, skip, that advances fake time at once; a visitor reaches it only
+// through the console.
 const root = document.documentElement;
 root.dataset.engine = "loading";
 window.s4qlPage = {
@@ -206,14 +208,12 @@ function take(answer) {
         break;
       case "call": {
         if (e.caller === "client" && e.what !== "started") {
-          const f = R.clientFailure(e);
+          const st = R.clientStatus(e);
           if (e.what === "committed") client.w++;
           else if (e.what === "served") client.r++;
-          else {
-            client.x++;
-            client.why = f.words;
-          }
-          client.failing = !!f;
+          else client.x++;
+          client.status = st.words;
+          client.failing = st.failing;
         }
         const c = (calls[e.instance] ||= { w: 0, r: 0, x: 0, why: "" });
         if (e.what === "committed") c.w++;
@@ -442,8 +442,8 @@ function drawClient() {
   set($("client-writes"), count(client.w));
   set($("client-reads"), count(client.r));
   set($("client-failed"), count(client.x));
-  set($("client-why"), client.why || "none");
-  $("client-last").dataset.failing = String(client.failing);
+  set($("client-status-words"), client.status || R.NO_CALLS);
+  $("client-status").dataset.failing = String(client.failing);
 }
 
 // startable says whether Start opens the database of the instance: after the visitor's Stop, and not

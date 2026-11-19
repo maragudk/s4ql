@@ -314,8 +314,8 @@ h2 {
 .client dl { margin: 0; display: contents; }
 .client dl > div { display: grid; align-content: center; gap: 2px; font-size: 13px; border-left: var(--rule); padding: 12px 20px; overflow-wrap: anywhere; min-width: 0; }
 .client dd { margin: 0; }
-.client dl > div.last[data-failing="true"] { background: var(--lumin); color: var(--void); }
-.client dl > div.last[data-failing="true"] ::selection { background: var(--void); color: var(--lumin); }
+.client dl > div.status[data-failing="true"] { background: var(--lumin); color: var(--void); }
+.client dl > div.status[data-failing="true"] ::selection { background: var(--void); color: var(--lumin); }
 
 /* The switch: one frame, two halves, and the half that is on is filled. */
 .switch { display: inline-flex; border: var(--rule); }
@@ -348,7 +348,7 @@ h2 {
   .client > div { padding: 12px 16px; }
   .client dl { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .client dl > div { padding: 8px 16px; }
-  .client dl > div.last { grid-column: 1 / -1; border-left: 0; border-top: var(--rule); }
+  .client dl > div.status { grid-column: 1 / -1; border-left: 0; border-top: var(--rule); }
   .wires { display: none; }
   .client + .wires + .cells { margin-top: 12px; }
   .cell[data-client="true"] .cell-head .tag { display: inline; }
@@ -567,7 +567,7 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
         <div><dt class="caps">Writes</dt><dd id="client-writes">0</dd></div>
         <div><dt class="caps">Reads</dt><dd id="client-reads">0</dd></div>
         <div><dt class="caps">Failed</dt><dd id="client-failed">0</dd></div>
-        <div class="last" id="client-last"><dt class="caps">Last failure</dt><dd id="client-why">none</dd></div>
+        <div class="status" id="client-status"><dt class="caps">Status</dt><dd id="client-status-words">no calls yet</dd></div>
       </dl>
     </section>
     <div class="wires" aria-hidden="true"><span data-wire="a"></span><span data-wire="b"></span></div>

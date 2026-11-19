@@ -89,8 +89,8 @@ function errorWords(e) {
 }
 
 // clientFailure of a call of the client that ended without being served, from its event: kind, which
-// stays the same over a run of failures of one kind, words for the last failure, and line for the
-// log. A call that was served or committed has none. A failure without a kind takes a line each: a
+// stays the same over a run of failures of one kind, words for the status of the client, and line for
+// the log. A call that was served or committed has none. A failure without a kind takes a line each: a
 // write that the instance answers with an unknown outcome or as not committed, so that the log
 // names its key.
 export function clientFailure(e) {
@@ -109,6 +109,17 @@ export function clientFailure(e) {
   const keyed = e.what === "unknown" || e.what === "not_committed";
   const line = e.what === "unknown" ? `write of key ${e.value}, outcome unknown` : e.what === "not_committed" ? `write of key ${e.value} not committed` : words;
   return { kind: keyed ? undefined : `error ${i} ${e.what} ${words}`, words: `error from ${i}: ${words}`, line: `The client gets an error from ${i}: ${line}.` };
+}
+
+// NO_CALLS is the status of the client before its first call has ended.
+export const NO_CALLS = "no calls yet";
+
+// clientStatus of the client after a call of it ended, from the event of its end: whether the call
+// failed, and words for what the client got. A call that was served or committed is ok, from the
+// instance that answered; a failure has the words of clientFailure.
+export function clientStatus(e) {
+  const f = clientFailure(e);
+  return f ? { failing: true, words: f.words } : { failing: false, words: `ok from ${e.instance}` };
 }
 
 const SWAPS = { take: "take of the lease", commit: "commit", renew: "renewal", release: "release" };

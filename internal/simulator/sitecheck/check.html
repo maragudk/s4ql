@@ -88,11 +88,14 @@ async function open(address) {
       while (!f()) await page.skip(1000);
       return win.s4qlPage.t - from;
     },
-    // client is what the page says of the client: its target, and the counts of what its calls got.
+    // client is what the page says of the client: its target, the counts of what its calls got, and
+    // its status, with whether the status is failing.
     client: () => {
       const d = $("#client").dataset;
       const c = { target: d.target, writes: Number(d.writes), reads: Number(d.reads), failed: Number(d.failed) };
       c.calls = c.writes + c.reads + c.failed;
+      c.status = $("#client-status-words").textContent;
+      c.failing = $("#client-status").dataset.failing === "true";
       return c;
     },
     // served and refused are what the card of the instance says that it served and refused.
@@ -154,7 +157,13 @@ async function unit() {
   const wantLines = ["The client gets no answer from a.", "The client gets an error from a: no lease.", "You point the client at b.", "The client gets an error from b: no lease.", "b serves a read: no rows.", "The client gets an error from b: no lease."];
   expect(JSON.stringify(clientLines) === JSON.stringify(wantLines), `a run of failures of the client takes one line, until it is served or switched (${clientLines.join(" | ")})`);
   const words = [call(1, "a", "down", "the process of the instance has crashed"), call(2, "b", "refused", "no valid lease: not_holder"), { ...call(3, "a", "lost", "crashed"), op: "write", value: 7 }].map((e) => R.clientFailure(e).words);
-  expect(JSON.stringify(words) === JSON.stringify(["no answer from a", "error from b: no lease", "no answer from a, write outcome unknown"]), `the last failure of the client in a few words (${words.join(" | ")})`);
+  expect(JSON.stringify(words) === JSON.stringify(["no answer from a", "error from b: no lease", "no answer from a, write outcome unknown"]), `a failure of the client in a few words (${words.join(" | ")})`);
+
+  // The status of the client is what its latest call that ended got: ok from the instance that
+  // served or committed it, or the words of its failure, which is the only state that is failing.
+  const statuses = [{ ...call(1, "a", "served"), keys: [1] }, { ...call(2, "b", "committed"), op: "write", value: 7 }, call(3, "a", "down", "the process of the instance has crashed"), call(4, "b", "refused", "no valid lease: not_holder")]
+    .map((e) => R.clientStatus(e)).map((st) => `${st.words} (${st.failing ? "failing" : "not failing"})`);
+  expect(JSON.stringify(statuses) === JSON.stringify(["ok from a (not failing)", "ok from b (not failing)", "no answer from a (failing)", "error from b: no lease (failing)"]), `the status of the client after a call (${statuses.join(" | ")})`);
 
   // The client sees only that no answer came, or the error that the instance gave. A call that its
   // target could not take and one that was on it when it crashed read the same, whatever the reason.
@@ -165,7 +174,7 @@ async function unit() {
 
   // Every outcome and error that the engine can give a call of the client has plain words, without
   // what only the instance knows.
-  const texts = new Set();
+  const texts = new Set([R.NO_CALLS]);
   const outcomes = [
     ["down", ""], ["lost", ""], ["unknown", "the outcome of the commit is unknown"], ["not_committed", "local I/O failure"],
     ["abandoned", "no such table"], ["busy", "the cache is busy"], ["timed_out", "context deadline exceeded"],
@@ -178,7 +187,7 @@ async function unit() {
   for (const [what, error] of outcomes) {
     for (const op of ["read", "write"]) {
       const f = R.clientFailure({ ...call(1, "a", what, error), op, value: 7 });
-      texts.add(f.words).add(f.line);
+      texts.add(f.words).add(f.line).add(R.clientStatus({ ...call(1, "a", what, error), op, value: 7 }).words);
     }
   }
   expect(cleanClient(texts), `every outcome of a call of the client has plain words that a client outside can know (${texts.size} texts)`);
@@ -207,10 +216,9 @@ async function check() {
   const play = p.$("#play"), turbo = p.$("#turbo");
   const clientTexts = new Set();
 
-  // Collect every text that the page shows about the client: its last failure, and its lines in
-  // the log.
+  // Collect every text that the page shows about the client: its status, and its lines in the log.
   const collect = () => {
-    clientTexts.add(p.$("#client-why").textContent);
+    clientTexts.add(p.$("#client-status-words").textContent);
     for (const li of p.$("#log").children) {
       const text = li.querySelector(".text");
       if (text && text.textContent.startsWith("The client")) clientTexts.add(text.textContent);
@@ -231,6 +239,7 @@ async function check() {
   expect(p.instance("a") && p.instance("b") && p.win.s4qlPage.state.instances.length === 2, "the session has the two instances a and b");
   const switchA = p.$('#client [data-target="a"]'), wireA = p.$('[data-wire="a"]');
   expect(p.client().target === "a" && switchA.getAttribute("aria-pressed") === "true" && wireA.dataset.on === "true", "the client calls a, its switch shows a on, and its wire goes to a");
+  expect(p.client().status === "no calls yet" && !p.client().failing, `before its first call, the status of the client is neutral (${p.client().status})`);
   const t0 = p.t;
   await p.frames(30);
   expect(p.t === t0 && p.idle(), `fake time stays at ${t0} ms for 30 frames without Play`);
@@ -254,6 +263,8 @@ async function check() {
   expect(turbo.getAttribute("aria-pressed") === "false", "turbo is off again");
   await until(() => p.client().writes + p.client().reads > 0);
   expect(p.served("b") === "0 writes, 0 reads; refused 0", `the client is served by a from the start (${JSON.stringify(p.client())}), and b gets no call (${p.served("b")})`);
+  await until(() => p.client().status === "ok from a");
+  expect(!p.client().failing, "while a serves the client, its status is ok from a, and not failing");
 
   // Pause holds fake time.
   play.click();
@@ -289,8 +300,8 @@ async function check() {
   await p.press("a", "crash");
   await p.skipUntil(() => p.client().failed > beforeCrash.failed + 2);
   const down = p.client();
-  expect(down.target === "a" && /^no answer from a(, write outcome unknown)?$/.test(p.$("#client-why").textContent) && p.$("#client-last").dataset.failing === "true",
-    `the client keeps calling a while a is crashed (${down.failed - beforeCrash.failed} calls failed), and says that no answer came (${p.$("#client-why").textContent})`);
+  expect(down.target === "a" && /^no answer from a(, write outcome unknown)?$/.test(down.status) && down.failing,
+    `the client keeps calling a while a is crashed (${down.failed - beforeCrash.failed} calls failed), and its status says that no answer came, failing (${down.status})`);
   expect([...p.$("#log").children].filter((li) => li.textContent.includes("The client gets no answer from a")).length === 1, "the log says once that the client gets no answer from a");
   const crashed = a().state === "crashed" && p.button("a", "crash").textContent === "Restart" && p.button("a", "pause").disabled && p.button("a", "stop").disabled && !p.button("a", "hang").disabled;
   expect(crashed, "Crash crashes a: Crash becomes Restart, the clock and Stop are off, the network and the disk stay on");
@@ -301,6 +312,17 @@ async function check() {
   const restarted = p.client().calls;
   await p.skipUntil(() => p.client().calls > restarted + 2);
   expect(p.client().target === "a", `the client keeps calling a after the restart (${p.client().calls - restarted} calls)`);
+
+  // Once an instance serves again, the next call that it serves makes the status ok, and not failing.
+  // a2 and b both wait for the lease of a1 to run out, and either can take it: if b does, the client
+  // goes to b for this, and back to a after.
+  await p.skipUntil(() => p.$('[data-role="serves"]'));
+  const serving = p.$('[data-role="serves"]').dataset.instance;
+  if (serving !== "a") await p.point(serving);
+  const servedBefore = p.client().writes + p.client().reads;
+  await p.skipUntil(() => p.client().writes + p.client().reads > servedBefore && p.client().status === `ok from ${serving}`);
+  expect(!p.client().failing, `after the restart, ${serving} serves the client, and its status is ${p.client().status} again, not failing`);
+  if (serving !== "a") await p.point("a");
 
   // A switch of the client moves its calls to b, and a gets none of them.
   const aBefore = p.served("a"), bBefore = p.served("b"), switched = p.client().calls;
@@ -313,6 +335,9 @@ async function check() {
   const aMid = p.served("a");
   await p.skipUntil(() => p.served("b") !== bBefore && p.client().calls > switched + 6);
   expect(p.served("a") === aMid && p.served("b") !== bBefore, `after the switch, b gets the calls (${bBefore} to ${p.served("b")}), and a none (${aBefore}, ${p.served("a")})`);
+  // The client calls one at a time, so once b has answered a call, the status is of a call on b.
+  const onB = p.client();
+  expect(/ from b\b/.test(onB.status) && onB.failing === !onB.status.startsWith("ok "), `the status of the client is of its calls on b, and failing only for a failure (${onB.status})`);
   // If b refused a call, the log said so in the client's words.
   const refusedB = (s) => s.split("; refused ")[1].split(",")[0];
   if (refusedB(p.served("b")) !== refusedB(bBefore)) {
