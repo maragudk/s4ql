@@ -31,7 +31,7 @@ Rejected for now, to be decided later: upserts, and join variants such as comma 
 
 A milestone is a goal that several slices lead to. It helps to choose which slice comes next.
 
-- **The first application on s4ql: [glue](https://www.maragu.dev/glue).** `maragu.dev/glue` runs on s4ql in place of SQLite. Markus on 2026-11-19: "a nice second milestone: get maragu.dev/glue working on this storage instead of SQLite." The SQL that it needs and s4ql does not have yet is in [the research note on glue](research/glue-on-s4ql.md). Slices 5 to 7 lead to it. After slice 7, the candidates are `update` and `delete`, and then the rest of what glue needs.
+- **The first application on s4ql: [glue](https://www.maragu.dev/glue).** `maragu.dev/glue` runs on s4ql in place of SQLite. Markus on 2026-11-19: "a nice second milestone: get maragu.dev/glue working on this storage instead of SQLite." The SQL that it needs and s4ql does not have yet is in [the research note on glue](research/glue-on-s4ql.md). Slices 5 to 8 lead to it. After slice 8 comes the rest of what glue needs, which is not agreed as slices yet.
 
 ## Slices
 
@@ -178,7 +178,7 @@ db.ExecContext(ctx, "insert into t1 (v1, v2, v3) values (?, ?, ?)", 3, "c", 3.5)
 Included:
 
 - A table with one or more columns, each of one of the five types of slice 4. Exactly one column is the primary key. It is declared on the column, and it can be at any position. Every table is still `strict, without rowid`.
-- Every column that is not the primary key is declared `not null`.
+- Every column that is not the primary key is declared `not null`. The primary-key column can also say `not null`. SQLite accepts it, and it changes nothing.
 - `insert into t1 values (...)` gives one value for each column, in the order of the table. `insert into t1 (v2, v1) values (...)` names the columns in any order. Each value is a literal or a `?`, with the exact type of its column, as in slice 4.
 - A column that is left out of the list of an `insert` has no value. It gets SQLite's error `NOT NULL constraint failed: t1.v2`.
 - The other errors of these statements match SQLite's: a wrong number of values, an unknown column, a column named twice in a table, and more columns than SQLite allows.
@@ -190,6 +190,7 @@ Included:
 Rejected as not supported, where SQLite would accept it:
 
 - A column that is not the primary key and is not declared `not null`. `null` comes in slice 6.
+- A column named twice in the column list of an `insert`, such as `insert into t1 (v1, v2, v2)`. SQLite accepts it and uses the first value.
 - `null` as a value.
 - A default value for a column.
 - A table constraint, such as `primary key (v1, v2)`, and a primary key of several columns.
@@ -250,7 +251,7 @@ db.QueryContext(ctx, "select * from t1 where v2 = ?", "a")
 Included:
 
 - `select ... from t1 where <condition>`.
-- A condition compares a column with a literal or a `?`, with `=`, `==`, `!=`, `<>`, `<`, `<=`, `>`, or `>=`.
+- A condition compares a column with a literal or a `?`, with `=`, `==`, `!=`, `<>`, `<`, `<=`, `>`, or `>=`. The column is on the left.
 - The conditions `v2 is null` and `v2 is not null`.
 - Conditions joined with `and`.
 - Exact types. The value has the type of its column, as in slice 4. A value of another type is rejected as not supported. This holds also where SQLite converts the value, such as the text `'1'` for an `int` column and the integer `1` for a `real` column.
@@ -263,9 +264,53 @@ Further details are decided when the slice is built, and recorded here.
 
 Rejected as not supported, where SQLite would accept it:
 
-- `update` and `delete`, with or without `where`. They are the candidates for the slice after this one.
+- `update` and `delete`, with or without `where`. They come in slice 8.
+- A literal or a `?` on the left of a comparison, such as `1 = v1`.
 - `or`, `not`, and parentheses.
 - A column compared with another column.
 - Expressions and functions, such as `v1 + 1 = 2` and `lower(v2) = 'a'`.
 - `in`, `between`, and `like`.
 - `order by` and `limit`.
+
+### Slice 8: `update` and `delete`
+
+Status: agreed on 2026-11-19, not built.
+
+```sql
+create table t1 (v1 int primary key, v2 text, v3 real not null) strict, without rowid;
+
+update t1 set v2 = 'b', v3 = 2.5 where v1 = 1;
+
+update t1 set v2 = null;
+
+delete from t1 where v1 >= 10;
+
+delete from t1;
+```
+
+```go
+res, err := db.ExecContext(ctx, "update t1 set v2 = ? where v1 = ?", "c", 2)
+n, err := res.RowsAffected()
+```
+
+Included:
+
+- `update t1 set v2 = <value>, v3 = <value>` and `delete from t1`, each with or without the `where` of slice 7.
+- A value in `set` is a literal, `null`, or a `?`. A value that is not null has the exact type of its column, as in slice 4.
+- `null` only for a column that takes null. For any other column, it gets SQLite's error `NOT NULL constraint failed: t1.v2`.
+- An `update` can change the primary key, as in SQLite. If a key then exists twice, the statement gets SQLite's error of a key that exists, and it changes nothing.
+- An unknown column in `set` gets SQLite's error.
+- `RowsAffected` gives the number of rows that SQLite reports as changed. That is every row that the `where` matches, also when an `update` sets a value that the row already has.
+- The commit format does not change: it already has rows to write and keys to delete.
+- Everything of slices 1 to 7 with `update` and `delete`: arguments, prepared statements, transactions, and a restart with an empty cache.
+
+Further details are decided when the slice is built, and recorded here.
+
+Rejected as not supported, where SQLite would accept it:
+
+- An expression in `set`, such as `v1 = v1 + 1`.
+- `returning`.
+- `update ... from`.
+- `set (v2, v3) = (...)`.
+- `or replace` and the other conflict clauses.
+- `limit` and `order by` on `update` and `delete`.
