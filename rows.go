@@ -201,18 +201,27 @@ func (r *rows) shut() {
 	}
 	c.busy = true
 	c.mu.Unlock()
+	// The connection is freed also if the close panics, and the panic goes on.
+	defer func() {
+		c.mu.Lock()
+		c.freeLocked(r.ctx)
+	}()
 	_ = r.close()
-	c.mu.Lock()
-	c.freeLocked(r.ctx)
 }
 
 // close the rows, unless they are closed, with mu held. It gives the error of the end of the
 // transaction, and an internal error if the loop panicked in the turn that it gives the task.
-func (r *rows) close() error {
+func (r *rows) close() (err error) {
 	if r.closed {
 		return nil
 	}
 	r.closed = true
+	// The rows count as closed for their connection also if the close panics, and the panic goes on.
+	defer func() {
+		if closeErr := r.conn.release(r.ctx); err == nil {
+			err = closeErr
+		}
+	}()
 	if l := r.loop; l != nil && !l.ended {
 		// The task waits for its turn, and holds the transaction until the loop ends.
 		ctx := context.WithoutCancel(r.ctx)
@@ -221,25 +230,9 @@ func (r *rows) close() error {
 		_ = l.given.Acquire(ctx)
 	}
 	r.c.release(r)
-	err := r.rows.Close()
+	err = r.rows.Close()
 	if l := r.loop; l != nil && l.panic != nil {
 		err = fmt.Errorf("%w: the query panicked: %v", engine.ErrInternal, l.panic)
-	}
-	c := r.conn
-	c.mu.Lock()
-	c.held--
-	later := c.closeLater && c.held == 0
-	if later {
-		c.closeLater = false
-	}
-	c.mu.Unlock()
-	if later {
-		// database/sql closed the connection while these rows were read, and has let go of it; see
-		// [conn.Close]. So nothing else uses it, and the error of its close, such as that of the roll
-		// back of its transaction, is the rows', unless they have one.
-		if closeErr := c.e.Close(context.WithoutCancel(r.ctx)); err == nil {
-			err = closeErr
-		}
 	}
 	return err
 }

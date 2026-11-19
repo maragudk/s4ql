@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -22,6 +23,8 @@ import (
 
 	"maragu.dev/s4ql"
 	"maragu.dev/s4ql/internal/format"
+	"maragu.dev/s4ql/internal/host"
+	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sqlite/faultvfs"
 )
 
@@ -1272,6 +1275,147 @@ func TestClose(t *testing.T) {
 			return rows, statement, conn.Close
 		})
 	})
+
+	t.Run("should hand the connection to a statement that comes while the close of the database closes rows of the connection, and answer it as closed", func(t *testing.T) {
+		w := newWorld(t)
+		log := &panickyLog{}
+		h := &turnHost{Free: w.host}
+		db := openLogged(t, w, h, log)
+		exec(t, db, t1, insert1, "insert into t1 (v1) values (2)")
+		conn, err := db.Conn(t.Context())
+		is.NotError(t, err)
+		rows, err := conn.QueryContext(t.Context(), select1)
+		is.NotError(t, err)
+		is.True(t, rows.Next())
+
+		// The close of the rows ends the loop over them, whose task logs the event of the query
+		// while the close holds the connection: the log holds the close there until the statement
+		// waits for the connection.
+		held, release := make(chan struct{}), make(chan struct{})
+		log.at(func() {
+			log.at(nil)
+			close(held)
+			<-release
+		})
+		closedDB := make(chan error, 1)
+		go func() { closedDB <- db.Close() }()
+		<-held
+
+		waits := make(chan struct{})
+		h.at(func() {
+			h.at(nil)
+			close(waits)
+		})
+		answered := make(chan error, 1)
+		go func() {
+			var v int64
+			answered <- conn.QueryRowContext(t.Context(), select1).Scan(&v)
+		}()
+		<-waits
+		close(release)
+
+		// The close of the rows hands the connection to the statement, which then runs on an
+		// instance that is closing.
+		err = <-answered
+		is.Error(t, s4ql.ErrStopped, failed(t, err))
+		is.Equal(t, "s4ql: the instance has stopped: closed", err.Error())
+		is.NotError(t, <-closedDB)
+		is.True(t, !rows.Next())
+		is.Error(t, s4ql.ErrStopped, failed(t, rows.Err()))
+		is.NotError(t, rows.Close())
+		is.NotError(t, conn.Close())
+	})
+
+	t.Run("should free the connection when the close of rows that the close of the database left to a statement panics, and raise the panic", func(t *testing.T) {
+		w := newWorld(t)
+		log := &panickyLog{}
+		db := openLogged(t, w, w.host, log)
+		exec(t, db, t1, insert1)
+		conn, err := db.Conn(t.Context())
+		is.NotError(t, err)
+		// No loop reads the rows, so their close logs the event of the query on the goroutine that
+		// closes them.
+		rows, err := conn.QueryContext(t.Context(), select1)
+		is.NotError(t, err)
+
+		// The log holds the insert at its event, while it holds the connection, so that the close
+		// of the database leaves the close of the rows to it. The close of the rows panics.
+		held, release := make(chan struct{}), make(chan struct{})
+		log.at(func() {
+			log.at(nil)
+			log.arm(true)
+			close(held)
+			<-release
+		})
+		raised := make(chan any, 1)
+		go func() {
+			defer func() { raised <- recover() }()
+			_, _ = conn.ExecContext(t.Context(), "insert into t1 (v1) values (2)")
+		}()
+		<-held
+		is.NotError(t, db.Close())
+		close(release)
+		is.Equal(t, any(errPanic), <-raised)
+		log.arm(false)
+
+		// Neither the rows nor the connection are held.
+		is.True(t, !rows.Next())
+		is.Error(t, s4ql.ErrStopped, failed(t, rows.Err()))
+		is.NotError(t, rows.Close())
+		is.NotError(t, conn.Close())
+		is.EqualSlice(t, []int64{1, 2}, values(t, w.serve(t, "b"), select1))
+	})
+}
+
+// openLogged opens an instance of the world w on the host h with the cache directory "a", which
+// logs to log, and waits until it serves.
+func openLogged(t *testing.T, w *world, h host.Host, log *panickyLog) *sql.DB {
+	t.Helper()
+	o := w.options("a")
+	o.Logger = slog.New(log.handler())
+	db, err := s4ql.OpenStore(t.Context(), h, w.client(), o, coreOptions())
+	is.NotError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	is.NotError(t, db.PingContext(t.Context()))
+	return db
+}
+
+// turnHost is the host of the world, which calls a function of the test when a connection of the
+// driver waits for its turn, while one is set.
+type turnHost struct {
+	*sim.Free
+	waits atomic.Pointer[func()]
+}
+
+// at a wait for the turn of a connection, call f from now on, or nothing if f is nil. f can set the
+// next.
+func (h *turnHost) at(f func()) {
+	if f == nil {
+		h.waits.Store(nil)
+		return
+	}
+	h.waits.Store(&f)
+}
+
+func (h *turnHost) NewSemaphore(name string, n int) host.Semaphore {
+	s := h.Free.NewSemaphore(name, n)
+	if name != "turn of the connection" {
+		return s
+	}
+	return &turnSemaphore{Semaphore: s, h: h}
+}
+
+// turnSemaphore is the semaphore of the turn of a connection on a [turnHost].
+type turnSemaphore struct {
+	host.Semaphore
+	h *turnHost
+}
+
+func (s *turnSemaphore) Acquire(ctx context.Context) error {
+	if f := s.h.waits.Load(); f != nil {
+		(*f)()
+	}
+	return s.Semaphore.Acquire(ctx)
 }
 
 // closeBeside closes a database many times over, each time a new one that holds t1 with three rows,
