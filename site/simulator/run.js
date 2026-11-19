@@ -30,6 +30,12 @@ export function offset(ms) {
 
 export const short = (name) => (name === EMPTY_LOG ? "empty" : name ? name.slice(0, 8) : "?");
 
+// instanceOf a process, which the page shows instead of the process: to a visitor, the process that
+// a restart starts is still the instance, restarted. The engine names the first process of an
+// instance by the instance, and the one that its nth restart starts by the instance and n+1, such as
+// a2.
+export const instanceOf = (process) => String(process || "").replace(/[0-9]+$/, "");
+
 export function keysText(keys) {
   if (!keys || keys.length === 0) return "no rows";
   if (keys.length <= 3) return (keys.length === 1 ? "key " : "keys ") + keys.join(", ");
@@ -89,8 +95,8 @@ function errorWords(e) {
 }
 
 // clientFailure of a call of the client that ended without being served, from its event: kind, which
-// stays the same over a run of failures of one kind, words for the last failure, and line for the
-// log. A call that was served or committed has none. A failure without a kind takes a line each: a
+// stays the same over a run of failures of one kind, words for the status of the client, and line for
+// the log. A call that was served or committed has none. A failure without a kind takes a line each: a
 // write that the instance answers with an unknown outcome or as not committed, so that the log
 // names its key.
 export function clientFailure(e) {
@@ -111,7 +117,31 @@ export function clientFailure(e) {
   return { kind: keyed ? undefined : `error ${i} ${e.what} ${words}`, words: `error from ${i}: ${words}`, line: `The client gets an error from ${i}: ${line}.` };
 }
 
+// NO_CALLS is the status of the client before its first call has ended.
+export const NO_CALLS = "no calls yet";
+
+// clientStatus of the client after a call of it ended, from the event of its end: whether the call
+// failed, and words for what the client got. A call that was served or committed is ok, from the
+// instance that answered; a failure has the words of clientFailure.
+export function clientStatus(e) {
+  const f = clientFailure(e);
+  return f ? { failing: true, words: f.words } : { failing: false, words: `ok from ${e.instance}` };
+}
+
 const SWAPS = { take: "take of the lease", commit: "commit", renew: "renewal", release: "release" };
+
+// resetWords of the visitor's reset of the clocks of the instance, which the page composes of actions
+// of the engine.
+export const resetWords = (i) => `You reset the clocks of ${i}.`;
+
+// resetLine of the action event of a step of the visitor's reset of the clocks, in place of the line
+// of the step: the first step that is done says the reset, the others none, and a step that fails or
+// is ignored says so of the reset.
+export function resetLine(e, first) {
+  const words = resetWords(e.instance);
+  if (e.what === "done") return first ? { text: words, tier: "you" } : { text: "", tier: null };
+  return { text: `${words} ${e.what === "failed" ? "It fails" : "Ignored"}: ${e.text}.`, tier: "you" };
+}
 
 // actionWords of an action event of a session, as the visitor's own words.
 function actionWords(e) {
@@ -121,10 +151,14 @@ function actionWords(e) {
     case "restart": return `You restart ${i}.`;
     case "close": return `You stop ${i}.`;
     case "open": return `You start ${i}.`;
-    case "hangNetwork": return e.on ? `You hang the network of ${i}.` : `The network of ${i} no longer hangs.`;
-    case "disconnectNetwork": return e.on ? `You disconnect ${i}.` : `You connect ${i} again.`;
+    case "hangNetwork": return e.on ? `You hang the requests of ${i} to S3.` : `The requests of ${i} to S3 no longer hang.`;
+    case "disconnectNetwork": return e.on ? `You disconnect ${i} from S3.` : `You connect ${i} to S3 again.`;
     case "failDisk": return e.on ? `You make the disk of ${i} fail.` : `The disk of ${i} works again.`;
     case "shiftWall": return `You move the wall clock of ${i} ${e.by > 0 ? "forward" : "back"} ${Math.abs(e.by) / 1000} s.`;
+    case "stopWall": return `You pause the wall clock of ${i}.`;
+    case "startWall": return `You start the wall clock of ${i} again.`;
+    case "stopMonotonic": return `You pause the monotonic clock of ${i}.`;
+    case "startMonotonic": return `You start the monotonic clock of ${i} again.`;
     case "pauseClocks": return `You pause the clocks of ${i}.`;
     case "client": return `You point the client at ${i}.`;
     case "resumeClocks": return `You resume the clocks of ${i}.`;
@@ -148,14 +182,15 @@ function actionWords(e) {
 // client is in the log when it begins a run of failures of its kind, which a call that is served, or
 // a switch of the client, ends.
 export function teller() {
-  const names = new Map(); // holder IDs, by the process that opened them
+  const names = new Map(); // the instances of holder IDs, by the process that opened them
+  const current = new Map(); // the holder ID of each process's latest open
   const keys = new Map(); // the keys of each commit object, by its name
   const opened = new Set(); // processes that have opened their database once
   const spells = new Map(); // the kinds of line that each instance has said in its spells, by group
   const holder = (id) => (id ? names.get(id) || short(id) : "nobody");
   let clientRun = null; // the kind of the run of failures of the client, or null
   return (e) => {
-    const who = e.process || e.instance || "";
+    const who = e.instance || instanceOf(e.process);
     let w = { text: "", tier: null };
     const say = (text, tier = "story") => (w = { text, tier });
     // once says the line only if the instance has not said the same kind of line in the spell of its
@@ -176,11 +211,12 @@ export function teller() {
         switch (e.what) {
           case "started":
             calm();
-            if (e.process !== e.instance) say(`${who} starts on the cache that the crashed process left.`);
+            if (e.process !== e.instance) say(`${who} starts again, on the cache that it left when it crashed.`);
             break;
           case "opened":
             calm("process");
-            names.set(e.holder, e.process);
+            names.set(e.holder, who);
+            current.set(e.process, e.holder);
             if (opened.has(e.process)) say(`${who} opens its database.`);
             opened.add(e.process);
             break;
@@ -198,7 +234,10 @@ export function teller() {
               case "taken":
                 if (a.outcome === "taken") {
                   calm("lease");
-                  say(a["lease.previous_holder"] ? `${who} takes the lease over from ${holder(a["lease.previous_holder"])}.` : `${who} takes the lease.`);
+                  // A process that takes the lease over from an earlier process of its instance
+                  // takes it again.
+                  const from = a["lease.previous_holder"] ? holder(a["lease.previous_holder"]) : "";
+                  say(!from ? `${who} takes the lease.` : from === who ? `${who} takes the lease again.` : `${who} takes the lease over from ${from}.`);
                 }
                 break;
               case "renewed":
@@ -207,7 +246,15 @@ export function teller() {
                 else if (a.outcome === "conflict") say(`S3 refuses the renewal of ${who}.`);
                 else once("lease:failed", `${who} fails to renew the lease.`);
                 break;
-              case "lost": calm("lease"); say(`${who} learns that ${holder(a["lease.holder"])} holds the lease.`); break;
+              case "lost": {
+                calm("lease");
+                // The manifest can name the process itself, with another salt or head, or an
+                // earlier holder of its instance: a process before a restart, or before a Stop.
+                const id = a["lease.holder"], by = holder(id);
+                if (id && id === current.get(e.process)) say(`${who} learns that it lost the lease.`);
+                else say(by === who ? `${who} learns that its lease from before has not run out yet.` : `${who} learns that ${by} holds the lease.`);
+                break;
+              }
               case "released": if (a.outcome === "released") say(`${who} releases the lease.`); break;
             }
             break;
@@ -287,9 +334,10 @@ export function teller() {
         else say(`${actionWords(e)} ${e.what === "failed" ? "It fails" : "Ignored"}: ${e.text}.`, "you");
         break;
       case "check":
-        // The design accepts a stale read on a process whose clocks stood still, and the checker
-        // excuses it: the log says so once a spell, in the words of the story.
-        if (e.excused && e.invariant === "fresh") once("lease:stale", `${who} serves a stale read after its clocks stood still, which the spec allows.`);
+        // The design accepts a stale read on a process whose two clocks both went wrong, its
+        // monotonic clock stopped and its wall clock stopped or moved back, and the checker excuses
+        // it: the log says so once a spell, in the words of the story.
+        if (e.excused && e.invariant === "fresh") once("lease:stale", `${who} serves a stale read after both of its clocks went wrong, which the spec allows.`);
         else say(`The checker finds a violation of ${e.invariant}: ${e.text}.`, "alarm");
         break;
       case "buggify":

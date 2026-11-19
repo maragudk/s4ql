@@ -215,6 +215,26 @@ func (r *ReadTx) Position() format.Name {
 	return r.position
 }
 
+// Serving returns nil if the instance serves now, as [Reader.Read] requires it before it starts a
+// read transaction: it holds the lease, its cache is caught up, and the lease is valid by both
+// clocks. Otherwise it returns the error of the stop, or one that wraps [ErrNoLease]. It is the
+// check before each statement of a read transaction that spans statements, so that such a
+// statement is refused as a read of its own would be, and still sees the state that the transaction
+// fixed when it started. The other calls of a read transaction do not look at the clocks. It fails
+// with [ErrTxDone] on a transaction that has ended.
+func (r *ReadTx) Serving(ctx context.Context) error {
+	if r.done {
+		return ErrTxDone
+	}
+	r.d.mu.Lock()
+	err := r.d.servingLocked()
+	r.d.mu.Unlock()
+	if err != nil {
+		return r.d.refused(ctx, "read", err)
+	}
+	return nil
+}
+
 // check that the transaction can go on, and use its connection for the call, which gives it back
 // with [ReadTx.leave].
 func (r *ReadTx) check() error {

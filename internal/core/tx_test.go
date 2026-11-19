@@ -1502,3 +1502,170 @@ func TestTx_CreateTable_names(t *testing.T) {
 		is.Equal(t, "", strings.TrimPrefix(read(t, d), describe(tableOf("t1", 250, manyColumns(251)...))+": "))
 	})
 }
+
+func TestTx_Savepoint(t *testing.T) {
+	// own is the state that the transaction tx sees.
+	own := func(t *testing.T, tx *core.Tx) string {
+		t.Helper()
+		state, err := dump(t.Context(), tx)
+		is.NotError(t, err)
+		return show(state)
+	}
+
+	t.Run("should undo everything since the savepoint, in the cache and in the commit object, and keep what came before", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k", "v"), upsert("t1", 1, 10), upsert("t1", 2, 20), create("t2", 1, "k"))
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		upsert("t1", 3, 30)(t, tx)
+		note("insert 3")(t, tx)
+		is.NotError(t, tx.Savepoint(t.Context()))
+		upsert("t1", 4, 40)(t, tx)
+		upsert("t1", 1, 11)(t, tx)
+		remove("t1", true, 2)(t, tx)
+		create("t3", 1, "k")(t, tx)
+		upsert("t3", 1)(t, tx)
+		dropTable("t2")(t, tx)
+		is.NotError(t, tx.RollbackTo(t.Context()))
+		is.Equal(t, "t1(k*0,v): 1,10 | 2,20 | 3,30\nt2(k*0): ", own(t, tx))
+
+		// The transaction goes on from the savepoint: the table that it created there is gone, and the
+		// one that it dropped there is back.
+		create("t3", 1, "k")(t, tx)
+		upsert("t2", 5)(t, tx)
+		is.NotError(t, tx.Commit(t.Context()))
+		want := "t1(k*0,v): 1,10 | 2,20 | 3,30\nt2(k*0): 5\nt3(k*0): "
+		is.Equal(t, want, read(t, d))
+		is.EqualSlice(t, []string{"upsert t1 [0 1] 3,30", "create t3(k*0)", "upsert t2 [0] 5", "note insert 3 []"}, w.commits(t)[1])
+
+		// A replay of the log into an empty cache gives the same state.
+		is.NotError(t, d.Close(t.Context()))
+		is.Equal(t, want, read(t, w.serve(t, "b", core.Options{})))
+	})
+
+	t.Run("should keep everything since the savepoint at a release", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k"), upsert("t1", 1))
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		is.NotError(t, tx.Savepoint(t.Context()))
+		upsert("t1", 2)(t, tx)
+		remove("t1", true, 1)(t, tx)
+		note("insert 2")(t, tx)
+		is.NotError(t, tx.Release(t.Context()))
+		is.NotError(t, tx.Savepoint(t.Context()))
+		create("t2", 1, "k")(t, tx)
+		is.NotError(t, tx.Release(t.Context()))
+		is.NotError(t, tx.Commit(t.Context()))
+		is.Equal(t, "t1(k*0): 2\nt2(k*0): ", read(t, d))
+		is.EqualSlice(t, []string{"upsert t1 [0] 2", "delete t1 1", "create t2(k*0)", "note insert 2 []"}, w.commits(t)[1])
+	})
+
+	t.Run("should keep the record of a row that was changed before the savepoint, and make the record anew for a table changed only after it", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k", "v"), upsert("t1", 1, 10), create("t2", 1, "k", "v"), upsert("t2", 1, 10))
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		// t1 has its record of changed rows before the savepoint, and t2 gets one only after it.
+		upsert("t1", 2, 20)(t, tx)
+		is.NotError(t, tx.Savepoint(t.Context()))
+		remove("t1", true, 1)(t, tx)
+		remove("t2", true, 1)(t, tx)
+		is.NotError(t, tx.RollbackTo(t.Context()))
+		upsert("t2", 2, 20)(t, tx)
+		// A drop removes the record of the table, and the rollback to the savepoint brings it back.
+		is.NotError(t, tx.Savepoint(t.Context()))
+		dropTable("t1")(t, tx)
+		is.NotError(t, tx.RollbackTo(t.Context()))
+		upsert("t1", 3, 30)(t, tx)
+		is.NotError(t, tx.Commit(t.Context()))
+		is.Equal(t, "t1(k*0,v): 1,10 | 2,20 | 3,30\nt2(k*0,v): 1,10 | 2,20", read(t, d))
+		is.EqualSlice(t, []string{"upsert t1 [0 1] 2,20", "upsert t1 [0 1] 3,30", "upsert t2 [0 1] 2,20"}, w.commits(t)[1])
+	})
+
+	t.Run("should refuse a second savepoint, a release and a rollback to without one, and a commit while one is open", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k"))
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		is.Error(t, core.ErrInvalid, tx.Release(t.Context()))
+		is.Error(t, core.ErrInvalid, tx.RollbackTo(t.Context()))
+		is.NotError(t, tx.Savepoint(t.Context()))
+		is.Error(t, core.ErrInvalid, tx.Savepoint(t.Context()))
+		upsert("t1", 1)(t, tx)
+		is.Error(t, core.ErrInvalid, tx.Commit(t.Context()))
+		is.Equal(t, 1, len(w.commits(t)))
+		is.Equal(t, "t1(k*0): ", read(t, d))
+		is.Error(t, core.ErrTxDone, tx.Savepoint(t.Context()))
+		is.Error(t, core.ErrTxDone, tx.Release(t.Context()))
+		is.Error(t, core.ErrTxDone, tx.RollbackTo(t.Context()))
+		is.Error(t, core.ErrTxDone, tx.Serving(t.Context()))
+		transact(t, d, upsert("t1", 2))
+	})
+
+	t.Run("should fail the transaction at a rollback to a savepoint before an annotation", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k"))
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		is.NotError(t, tx.Savepoint(t.Context()))
+		upsert("t1", 1)(t, tx)
+		note("insert 1")(t, tx)
+		is.Error(t, core.ErrInvalid, tx.RollbackTo(t.Context()))
+		is.Error(t, core.ErrInvalid, tx.Upsert(t.Context(), "t1", row(2)))
+		is.Error(t, core.ErrInvalid, tx.Serving(t.Context()))
+		is.Error(t, core.ErrInvalid, tx.Commit(t.Context()))
+		is.Equal(t, 1, len(w.commits(t)))
+		is.Equal(t, "t1(k*0): ", read(t, d))
+	})
+
+	t.Run("should take, release, and roll back to a savepoint while the lease is not valid by the clocks, which Serving refuses", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s := newScriptStore(w.client())
+			d := w.openOn(t, "a", s, core.Options{})
+			is.NotError(t, d.Wait(t.Context()))
+			transact(t, d, create("t1", 1, "k"))
+
+			tx, err := d.Begin(t.Context())
+			is.NotError(t, err)
+			is.NotError(t, tx.Serving(t.Context()))
+			is.NotError(t, tx.Savepoint(t.Context()))
+			upsert("t1", 1)(t, tx)
+			s.on("swap", "", drop, -1)
+			s.on("get", "", drop, -1)
+			time.Sleep(31 * time.Second)
+
+			is.Error(t, core.ErrNoLease, tx.Serving(t.Context()))
+			is.NotError(t, tx.RollbackTo(t.Context()))
+			is.NotError(t, tx.Savepoint(t.Context()))
+			is.NotError(t, tx.Release(t.Context()))
+			is.NotError(t, tx.Rollback(t.Context()))
+		})
+	})
+
+	t.Run("should refuse a savepoint, and give the stop at a release and a rollback to, on an instance that has stopped", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k"))
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		is.NotError(t, tx.Savepoint(t.Context()))
+		is.NotError(t, d.Close(t.Context()))
+		is.Error(t, core.ErrStopped, tx.Serving(t.Context()))
+		is.Error(t, core.ErrStopped, tx.RollbackTo(t.Context()))
+		is.Error(t, core.ErrStopped, tx.Release(t.Context()))
+		is.Error(t, core.ErrStopped, tx.Savepoint(t.Context()))
+		is.NotError(t, tx.Rollback(t.Context()))
+	})
+}

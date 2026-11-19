@@ -61,6 +61,8 @@ How the cache handles SQLite's "busy" was chosen by maragubot on 2026-11-11, aft
 - **An error of the cache in a call of a transaction leaves the transaction fit only for a rollback.** One way to get there is to drop a table while a scan of the transaction is running, which SQLite refuses.
 - **`DB.Begin` looks at the clocks, and `Tx.Commit` does not.** `DB.Begin` refuses at once when the lease has run out by a clock, as the spec says. In `Tx.Commit` the manifest swap decides, and a swap that is applied also renews the lease. This is a choice of the build too.
 - **A write transaction has no maximum duration, for now.** A writer that waits for the writer lock gives up when its own context ends.
+- **A savepoint lets one statement of a transaction fail without an effect.** `Tx.Savepoint` runs SQLite's `savepoint s4ql_statement` and copies what the transaction has recorded of each table for its commit object; `Tx.RollbackTo` restores both, and `Tx.Release` keeps what came since. One savepoint is open at a time. The spool of annotations only grows, so a rollback to a savepoint before an annotation leaves the transaction fit only for a rollback, and a commit with a savepoint open is refused as not committed. The engine runs each write of a transaction that spans statements between a savepoint and its release, as SQLite runs a statement.
+- **`Tx.Serving` and `ReadTx.Serving` look at the clocks, as `DB.Begin` and `Reader.Read` do.** The engine calls them before each statement of a transaction that spans statements, so that such a statement is refused as a statement of its own would be. The other calls of an open transaction do not look at the clocks. maragubot chose this on 2026-11-19, for slice 3.
 
 ## The commit
 

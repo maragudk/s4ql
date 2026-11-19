@@ -24,9 +24,10 @@ import (
 //   - Debug: a statement that succeeded; one that failed with SQLite's error, which is an answer to
 //     the application and nothing that went wrong; one that is not supported, which includes one
 //     that reads on a connection whose rows of an earlier query are open; a text without a
-//     statement; one with another number of arguments than it has parameters; one that the core
-//     refused for lack of a valid lease or because the instance has stopped, which the core logs
-//     itself; and one whose context ended.
+//     statement; one with another number of arguments than it has parameters; one that the state of
+//     the transaction of its connection does not allow; a commit that is too large; one that the
+//     core refused for lack of a valid lease or because the instance has stopped, which the core
+//     logs itself; and one whose context ended.
 //   - Warn: one that failed with another error of the core, such as a commit of unknown outcome.
 //   - Error: one that failed with an internal error, a fault of s4ql.
 //
@@ -60,7 +61,31 @@ const (
 	// attrDuration is the duration of the statement on the monotonic clock of the host, from the call
 	// to its end.
 	attrDuration = "duration.total"
+
+	// attrTxKind is the kind of the transaction that spans statements: write or read_only. A statement
+	// in such a transaction has it too.
+	attrTxKind = "transaction.kind"
+	// attrTxEnd is how the transaction ended: commit or rollback.
+	attrTxEnd = "transaction.end"
+	// attrTxStatements is the number of statements that the connection was given while the
+	// transaction was open, also those that failed.
+	attrTxStatements = "transaction.statements"
+	// attrTxWrites is the number of statements that changed the database in the transaction and
+	// succeeded, each of which it annotated. A commit object holds their annotations only if the
+	// transaction is committed and changed something in the end.
+	attrTxWrites = "transaction.writes"
+	// attrTxPosition is the last commit object of the state that the transaction began from.
+	attrTxPosition = "transaction.position"
 )
+
+// The engine logs one event for each transaction that spans statements, when it ends, by a commit
+// or a roll back, in the style of the event of a statement, with the level of [outcomeOf] for the
+// error of its end. A commit that succeeded and every roll back that succeeded are at Debug. Its
+// attributes are [attrTxKind], [attrTxEnd], [attrTxStatements], [attrTxWrites], [attrTxPosition],
+// and for a write transaction [attrParent], which joins it to the core's event of its commit, and
+// then [attrOutcome], [attrError], and [attrDuration], from the begin to the end. It has no SQL text
+// and no value.
+const eventTransaction = "transaction"
 
 // outcomeOf a statement that ended with err, in a word, and the level of its event.
 func outcomeOf(err error) (string, slog.Level) {
@@ -70,9 +95,15 @@ func outcomeOf(err error) (string, slog.Level) {
 		return "ok", slog.LevelDebug
 	case errors.As(err, &se):
 		return "sqlite_error", slog.LevelDebug
-	case errors.Is(err, stmt.ErrNotSupported), errors.Is(err, core.ErrReaderBusy):
+	case errors.Is(err, stmt.ErrNotSupported), errors.Is(err, core.ErrReaderBusy), errors.Is(err, ErrRowsOpen):
 		// A connection runs one read at a time, and a second one is what the caller asked for.
 		return "not_supported", slog.LevelDebug
+	case errors.Is(err, ErrTxOpen), errors.Is(err, ErrNoTx), errors.Is(err, ErrTxDone):
+		// The caller ran something that the transaction of the connection does not allow.
+		return "tx_state", slog.LevelDebug
+	case errors.Is(err, ErrTooLarge):
+		// It is the application's transaction that is too large, and nothing that went wrong.
+		return "too_large", slog.LevelDebug
 	case errors.Is(err, ErrNoStatement):
 		return "no_statement", slog.LevelDebug
 	case errors.Is(err, ErrArguments):
@@ -100,7 +131,9 @@ type report struct {
 	// position is set once the statement has a transaction, and write once it is a write.
 	position *format.Name
 	write    bool
-	rows     int64
+	// tx is the kind of the transaction that spans statements in which the statement runs, or empty.
+	tx   string
+	rows int64
 	// ended is set once the event is logged.
 	ended bool
 }
@@ -151,6 +184,9 @@ func (r *report) end(ctx context.Context, err error) {
 	}
 	if level == slog.LevelDebug {
 		attrs = append(attrs, slog.String(attrSQL, r.sql))
+	}
+	if r.tx != "" {
+		attrs = append(attrs, slog.String(attrTxKind, r.tx))
 	}
 	if r.position != nil {
 		attrs = append(attrs, slog.String(attrPosition, r.position.String()))

@@ -66,6 +66,7 @@ const WINDOW = 120000; // the fake time that the field shows
 const SLICES = 240; // the bars of the field
 const SLICE = WINDOW / SLICES;
 const JUMP = 60000; // a jump of a wall clock: longer than the lease of 30 s
+const NS = 1e-6; // a nanosecond in ms, the unit in which the engine keeps its clocks
 const MEMORY = 1 << 30; // SQLite's memory at which the page stops
 // The fake time at which the page stops. The engine's Go heap grows by about 12.5 MB a fake hour and
 // cannot be measured from the page, so a day of fake time, some 300 MB, stands in for it.
@@ -88,10 +89,9 @@ let tell = null; // the teller of run.js, which start makes
 const lines = []; // the last LINES lines of the log, newest first
 let linesTotal = 0;
 const calls = {}; // by instance: {w, r, x, why}
-const client = { w: 0, r: 0, x: 0, why: "", failing: false }; // what the client got
+const client = { w: 0, r: 0, x: 0, status: "", failing: false }; // what the client got, and its latest call
 const bars = new Map(); // events by slice of fake time
 const marks = []; // the times of the visitor's actions
-const starts = {}; // by instance: the t of the start of its process
 const names = new Map(); // the process of each holder ID
 const stopped = {}; // by instance: whether the visitor's Stop closed the database of its process
 
@@ -99,8 +99,10 @@ const stopped = {}; // by instance: whether the visitor's Stop closed the databa
 // ready, or failed, data-busy is "true" while a command is on its way, data-t is the fake time in
 // whole ms, data-playing is "true" while it plays, data-lines counts the lines of the log so far, and
 // data-commits the commit objects. The element #client has data-target, the instance that the client
-// calls, and data-writes, data-reads, and data-failed, what its calls got. window.s4qlPage gives the check the state and a hook, skip, that
-// advances fake time at once; a visitor reaches it only through the console.
+// calls, and data-writes, data-reads, and data-failed, what its calls got. #client-status has
+// data-failing, "true" while the latest call of the client that ended failed. window.s4qlPage gives
+// the check the state and a hook, skip, that advances fake time at once; a visitor reaches it only
+// through the console.
 const root = document.documentElement;
 root.dataset.engine = "loading";
 window.s4qlPage = {
@@ -146,12 +148,19 @@ async function pump() {
     job = { by: real * (turbo ? TURBO : 1), real };
   }
   if (!job) return;
+  // A step of a composed action is decided when its turn comes, from the state after the step before,
+  // and is left out if there is nothing to do.
+  const action = typeof job.act === "function" ? job.act() : job.act;
+  if (job.act && !action) {
+    drawControls();
+    return pump();
+  }
   busy = true;
-  acting = !!job.act;
+  acting = !!action;
   root.dataset.busy = "true";
   let answer, now;
   try {
-    answer = job.act ? await engine.act(job.act) : await engine.advance(job.by);
+    answer = action ? await engine.act(action) : await engine.advance(job.by);
     if (!answer.ended) now = await engine.now(COMMITS);
   } catch (e) {
     halt("The engine stopped.", `${e.message}. Reload to start over.`);
@@ -163,7 +172,7 @@ async function pump() {
   }
   try {
     if (job.real) lastStep = { real: job.real, fake: job.by };
-    take(answer);
+    take(answer, job);
     if (answer.ended) {
       halt("The simulation stopped.", `${answer.schedulerError || "The session ended."} Reload to start over.`);
       return;
@@ -181,11 +190,13 @@ async function pump() {
   if (jobs.length) pump();
 }
 
-// take the events of an answer into what the page keeps.
-function take(answer) {
+// take the events of an answer to the job, if any, into what the page keeps. The steps of a reset of
+// the clocks take one line in the log and one mark on the field, at the first.
+function take(answer, job = {}) {
   t = answer.t;
   for (const e of answer.events) {
-    const w = tell(e);
+    let w = tell(e);
+    if (job.reset && e.kind === "action") w = R.resetLine(e, job.reset.first);
     const slice = Math.floor(e.t / SLICE);
     bars.set(slice, (bars.get(slice) || 0) + 1);
     if (w.tier) {
@@ -194,26 +205,21 @@ function take(answer) {
     }
     switch (e.kind) {
       case "action":
-        marks.push(e.t);
+        if (!job.reset || job.reset.first) marks.push(e.t);
         if (e.what === "done" && (e.do === "close" || e.do === "open")) stopped[e.instance] = e.do === "close";
         break;
       case "process":
-        if (e.what === "started") {
-          starts[e.instance] = e.t;
-          stopped[e.instance] = false;
-        }
+        if (e.what === "started") stopped[e.instance] = false;
         if (e.what === "opened") names.set(e.holder, e.process);
         break;
       case "call": {
         if (e.caller === "client" && e.what !== "started") {
-          const f = R.clientFailure(e);
+          const st = R.clientStatus(e);
           if (e.what === "committed") client.w++;
           else if (e.what === "served") client.r++;
-          else {
-            client.x++;
-            client.why = f.words;
-          }
-          client.failing = !!f;
+          else client.x++;
+          client.status = st.words;
+          client.failing = st.failing;
         }
         const c = (calls[e.instance] ||= { w: 0, r: 0, x: 0, why: "" });
         if (e.what === "committed") c.w++;
@@ -316,7 +322,14 @@ function wire() {
 }
 
 const instanceState = (name) => (state && state.instances.find((x) => x.instance === name)) || null;
-const holderName = (id) => names.get(id) || R.short(id);
+// holderName of a holder ID: its instance, and whether the process that held it is gone, because the
+// page names no process, and a lease of a crashed process can stand in S3 until it runs out.
+function holderName(id) {
+  const p = names.get(id);
+  if (!p) return R.short(id);
+  const name = R.instanceOf(p), st = instanceState(name);
+  return st && st.process !== p ? `${name} before its restart` : name;
+}
 
 // role of an instance: serves when it holds the lease and the manifest names it.
 function role(st) {
@@ -348,11 +361,13 @@ function drawCard(c) {
   c.el.dataset.role = r;
   c.el.dataset.state = st.state;
   set(c.f.word, WORDS[r] || r);
-  set(c.f.process, st.process !== c.name ? st.process : "");
 
   let lease = "none";
   if (r === "serves") lease = "held";
-  else if (r === "believes") lease = `it thinks so; S3 names ${m && m.lease ? holderName(m.lease.holder) : "nobody"}`;
+  else if (r === "believes") {
+    const named = m && m.lease ? holderName(m.lease.holder) : "nobody";
+    lease = `it thinks so; S3 names ${named === c.name ? "its lease from before" : named}`;
+  }
   set(c.f.lease, lease);
 
   const log = state.bucket.log;
@@ -373,13 +388,12 @@ function drawCard(c) {
   let clocks;
   if (st.state === "crashed" || st.state === "waiting") clocks = "none";
   else {
-    const wall = st.wall - state.t;
-    const mono = st.monotonic - (state.t - (starts[c.name] || 0));
-    const parts = [];
-    if (st.wallStopped && st.monotonicStopped) parts.push("paused");
-    if (Math.round(wall / 1000)) parts.push("wall " + R.offset(wall));
-    if (Math.round(mono / 1000)) parts.push("monotonic " + R.offset(mono));
-    clocks = parts.join(", ") || "true time";
+    // Each clock where it differs from true time. The monotonic clock cannot jump, so after a pause
+    // it stays behind true time for good. The core uses it only for durations, so the card says only
+    // whether it runs.
+    const wall = wallOffset(st);
+    const w = [st.wallStopped ? "paused" : "", Math.round(wall / 1000) ? R.offset(wall) : ""].filter(Boolean).join(", ");
+    clocks = [w ? "wall " + w : "", st.monotonicStopped ? "monotonic paused" : ""].filter(Boolean).join("; ") || "true time";
   }
   set(c.f.clocks, clocks);
 
@@ -393,7 +407,8 @@ function drawCard(c) {
   c.b.hang.setAttribute("aria-pressed", String(!!st.networkHung));
   c.b.disconnect.setAttribute("aria-pressed", String(!!st.networkDisconnected));
   c.b.disk.setAttribute("aria-pressed", String(!!st.diskFailing));
-  c.b.pause.setAttribute("aria-pressed", String(!!(st.wallStopped && st.monotonicStopped)));
+  c.b.wall.setAttribute("aria-pressed", String(!!st.wallStopped));
+  c.b.monotonic.setAttribute("aria-pressed", String(!!st.monotonicStopped));
 }
 
 // drawControls enables what makes sense now. Every action waits while another is on its way, so that a
@@ -407,12 +422,13 @@ function drawControls() {
     const st = instanceState(c.name);
     const off = !ready || waiting || !st;
     const crashed = !!st && st.state === "crashed";
-    // An instance that has not started takes only the faults of its network and its disk.
+    // An instance that has not started takes only the faults of its requests to S3 and of its disk.
     const notStarted = !!st && st.state === "waiting";
     c.b.crash.disabled = off || notStarted;
     c.b.stop.disabled = off || !(st.state === "running" || startable(c.name, st));
     for (const a of ["hang", "disconnect", "disk"]) c.b[a].disabled = off;
-    for (const a of ["forward", "back", "pause"]) c.b[a].disabled = off || crashed || notStarted;
+    for (const a of ["forward", "back", "wall", "monotonic"]) c.b[a].disabled = off || crashed || notStarted;
+    c.b.reset.disabled = off || crashed || notStarted || !touched(st);
   }
   for (const b of document.querySelectorAll("#client [data-target]")) b.disabled = !ready || waiting;
 }
@@ -442,8 +458,8 @@ function drawClient() {
   set($("client-writes"), count(client.w));
   set($("client-reads"), count(client.r));
   set($("client-failed"), count(client.x));
-  set($("client-why"), client.why || "none");
-  $("client-last").dataset.failing = String(client.failing);
+  set($("client-status-words"), client.status || R.NO_CALLS);
+  $("client-status").dataset.failing = String(client.failing);
 }
 
 // startable says whether Start opens the database of the instance: after the visitor's Stop, and not
@@ -463,9 +479,38 @@ function act(name, a) {
     case "disk": action = { do: "failDisk", ...i, on: !st.diskFailing }; break;
     case "forward": action = { do: "shiftWall", ...i, by: JUMP }; break;
     case "back": action = { do: "shiftWall", ...i, by: -JUMP }; break;
-    case "pause": action = { do: st.wallStopped && st.monotonicStopped ? "resumeClocks" : "pauseClocks", ...i }; break;
+    case "wall": action = { do: st.wallStopped ? "startWall" : "stopWall", ...i }; break;
+    case "monotonic": action = { do: st.monotonicStopped ? "startMonotonic" : "stopMonotonic", ...i }; break;
+    case "reset": return resetClocks(name, st);
   }
   jobs.push({ act: action });
+  drawControls();
+  pump();
+}
+
+// wallOffset of the wall clock of an instance from true time, in ms.
+const wallOffset = (st) => st.wall - state.t;
+
+// touched says whether the visitor has moved the clocks of the instance: whether one stands still,
+// or the wall clock is off true time. A monotonic clock that a pause left behind is not touched.
+const touched = (st) => st.wallStopped || st.monotonicStopped || Math.abs(wallOffset(st)) >= NS;
+
+// resetClocks of the instance: its clocks run again, and its wall clock reads true time. The engine
+// has no action for it, so the page sends startWall and startMonotonic for a clock that stands still,
+// and then shiftWall by the offset of the wall clock after that, because a pause leaves the wall
+// clock behind. The
+// engine keeps its clocks in whole nanoseconds, and rounds the shift to them, so the wall clock lands
+// on true time.
+function resetClocks(name, st) {
+  const steps = [];
+  if (st.wallStopped) steps.push(() => ({ do: "startWall", instance: name }));
+  if (st.monotonicStopped) steps.push(() => ({ do: "startMonotonic", instance: name }));
+  steps.push(() => {
+    const now = instanceState(name);
+    const off = now ? wallOffset(now) : 0;
+    return Math.abs(off) >= NS ? { do: "shiftWall", instance: name, by: -off } : null;
+  });
+  steps.forEach((f, k) => jobs.push({ act: f, reset: { instance: name, first: k === 0 } }));
   drawControls();
   pump();
 }
@@ -488,7 +533,7 @@ function drawS3() {
     const cls = c.name === head ? "head" : c.inLog ? "" : "orphan";
     const tag = c.name === head ? "head" : c.inLog ? "in the log" : "not in the log";
     return `<li class="commit ${cls}">${barcodeSVG(c.name, "code")}` +
-      `<div class="meta"><span class="name">${R.short(c.name)}</span><span>${R.keysText(c.keys)}</span><span>${esc(c.process)}</span><span>${R.clock(c.at)}</span><span class="caps">${tag}</span></div></li>`;
+      `<div class="meta"><span class="name">${R.short(c.name)}</span><span>${R.keysText(c.keys)}</span><span>${esc(R.instanceOf(c.process))}</span><span>${R.clock(c.at)}</span><span class="caps">${tag}</span></div></li>`;
   }).join("");
   if (!out) out = `<li class="empty">None yet.</li>`;
   if (total > b.commits.length) out += `<li class="empty">${count(total - b.commits.length)} older</li>`;
