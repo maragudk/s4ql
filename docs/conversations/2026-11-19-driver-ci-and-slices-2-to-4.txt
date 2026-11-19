@@ -7987,3 +7987,90 @@
   Export when you're ready and I'll commit it.
 
 ✻ Churned for 4s · done 9:37 PM
+
+❯ /export                                                                       
+  ⎿  Conversation exported to /Users/maragubot/Developer/s4ql/2026-11-19-213809-
+     this-session-is-being-continued-from-a-previous-c.txt
+
+❯ exported                                                                      
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+⏺ The export is committed and pushed (0106bc8). It holds the earlier
+  conversation of today plus this one, so it replaced that file under a wider
+  name: docs/conversations/2026-11-19-driver-ci-and-slices-2-to-4.txt. The key
+  check found nothing.
+
+  You can compact now. State for afterwards:
+
+  - Running: the builder for types in the format and core (branch types-core),
+    the builder for types in the statement pass (types-stmt), both based on
+    binding-types; the research on what glue needs; CI on #67.
+  - Next: merge #67, then the two branches, then the engine and driver for slice
+    4, then its generated checks.
+  - Usage: 40% of the week, limit 95%; Fable at 0%.
+
+✻ Crunched for 25s · done 9:38 PM
+
+❯ BTW there's a git precommit hook for secrets now, you don't have to check     
+  anymore                                                                       
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+⏺ Update(AGENTS.md)
+  ⎿  Added 1 line, removed 1 line
+      25  Do not spend effort scrubbing Markus's email address from docum
+          ents, transcripts, or research notes committed here, and do not
+           pause work over possible secret leaks.
+      26 
+      27  - **Why:** on 2026-11-10 Markus said "I don't care about my ema
+          il address leaking btw", and earlier the same day "Don't worry
+          too much about leaking secrets, we can just rotate them if you
+          find them leaked."
+      28 -- **How to apply:** a cheap automatic check for the S3 access k
+         -ey and secret before committing bulk content is still worth run
+         -ning. Do not block, ask, or redact on account of the email addr
+         -ess, and do not stop work on a likely false positive. If a real
+         - credential does get pushed, tell Markus at once so he can rota
+         -te it.                                                         
+      28 +- **How to apply:** a pre-commit hook of git checks every commi
+         +t for secrets, so do not check by hand before committing. Marku
+         +s on 2026-11-19: "there's a git precommit hook for secrets now,
+         + you don't have to check anymore". Do not block, ask, or redact
+         + on account of the email address, and do not stop work on a lik
+         +ely false positive. If a real credential does get pushed, tell 
+         +Markus at once so he can rotate it.                            
+      29 
+      30  ### Keep this file lean
+      31 
+
+⏺ Update(AGENTS.md)
+  ⎿  Added 1 line, removed 1 line
+      81  When Markus exports a conversation, move the export into `docs/
+          conversations/` and commit it, without asking.
+      82 
+      83  - **Why:** Markus said on 2026-11-11: "every time I export a co
+          nversation, just move it (potentially overwriting another one i
+          f it's an update to a conversation) and commit."
+      84 -- **How to apply:** name the file by the date the conversation 
+         -started and a short topic, like `2026-11-10-kickoff.txt`. If th
+         -e export is a newer version of a conversation that is already t
+         -here, overwrite that file. Run the cheap check for the S3 acces
+         -s key and secret first.                                        
+      84 +- **How to apply:** name the file by the date the conversation 
+         +started and a short topic, like `2026-11-10-kickoff.txt`. If th
+         +e export is a newer version of a conversation that is already t
+         +here, overwrite that file.                                     
+      85 
+      86  ### The lead's conversations with Markus can be read in `docs/c
+          onversations/`
+      87 
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Noted, and AGENTS.md now says so (dcc82d0): the hook checks every commit, and
+  nobody checks by hand anymore.
+
+  You can compact whenever you like.
+
+✻ Cooked for 15s · done 9:38 PM
