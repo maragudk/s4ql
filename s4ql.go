@@ -1,0 +1,221 @@
+// Package s4ql is a SQL database whose data is in S3, or in an object store that is compatible with
+// it, used through [database/sql]. The name is short for "simple storage service + structured query
+// language".
+//
+// [Open] gives a [database/sql.DB] for one database, which is a key prefix in a bucket:
+//
+//	db, err := s4ql.Open(ctx, s4ql.Options{Bucket: "bucket", Prefix: "app", CacheDir: "/var/lib/app/cache"})
+//	if err != nil {
+//		return err
+//	}
+//	defer db.Close()
+//	if err := db.PingContext(ctx); err != nil {
+//		return err
+//	}
+//	_, err = db.ExecContext(ctx, "create table t1 (v1 int primary key) strict, without rowid")
+//
+// The package has no API of its own next to database/sql: it holds the [Options], the errors, [Open],
+// and [Register].
+//
+// # Instances and the lease
+//
+// Each [database/sql.DB] from this package is one instance of the database, with a local cache of
+// its own. An instance reads and writes only while it holds the lease of the database, which one
+// instance at a time holds. [Open] does not wait for the lease, and fails only on local problems.
+// [database/sql.DB.PingContext] waits until the instance serves, or until its context ends;
+// [database/sql.DB.Ping] has no context, and waits without an end. Until the instance serves, and
+// whenever it has lost the lease, a statement fails at once with an error that matches
+// [ErrNotServing], and the instance keeps trying to get the lease. An instance that starts while
+// another one holds the lease is a spare, which is a normal state: it serves when the other one has
+// closed, or when the lease of the other one has run out.
+//
+// [database/sql.DB.Close] closes the instance and releases the lease, within
+// [Options.CloseTimeout], so that the next instance serves without waiting. If it is not called,
+// or the release fails, the lease runs out by itself, as after a crash, and the next instance waits
+// for that. That is correct, only slower.
+//
+// An instance stops for good when its cache fails or when it meets something in the object store
+// that it cannot read. Every statement and every ping then fails with an error that matches
+// [ErrStopped] and carries the cause. Nothing brings the instance back: the application closes the
+// [database/sql.DB] and opens the database again.
+//
+// # Statements
+//
+// The SQL is a strict subset of SQLite's, and what a statement returns is what SQLite returns for
+// it. Each statement is a transaction of its own, which is committed when the statement returns
+// without an error. A statement is bounded by the context that it is given, and so is its commit.
+// Parameters, [database/sql.DB.BeginTx], and several statements in one text are not supported.
+// [database/sql.DB.PrepareContext] checks the text of the statement, and neither the tables that it
+// names nor whether the instance serves.
+//
+// [database/sql.Result.RowsAffected] is SQLite's count of changes on the connection: an insert sets
+// it, and a statement that sets none, such as CREATE TABLE, gives the count of the statement before
+// it on the same connection. database/sql takes any connection of its pool for a statement, so the
+// count of such a statement means something only on a [database/sql.Conn].
+// [database/sql.Result.LastInsertId] is always 0, because no table has a rowid.
+//
+// One write runs at a time, and a second one waits for the first. Reads run in parallel, each on
+// one consistent state of the database, up to four at once; a further one waits until one has
+// ended, or until its context ends. The read of a query runs until its [database/sql.Rows] are read
+// to the end or closed, so rows that are neither hold one of the four reads for good.
+//
+// # Errors
+//
+// The error of a statement is one of these:
+//
+//   - SQLite's error, as an [*Error], with SQLite's result code, extended result code, and message.
+//   - An error that matches [ErrNotSupported], for SQL that SQLite accepts and s4ql does not support.
+//     It carries no result code, and its message starts with "s4ql: not supported: ".
+//   - An error that matches [ErrNotServing], [ErrOutcomeUnknown], or [ErrStopped], for the state of
+//     the instance.
+//   - Another error, whose message starts with "s4ql: ", such as one that wraps the error of a
+//     context that ended.
+//
+// Every error but one that matches [ErrOutcomeUnknown] means that the statement is not committed.
+// The driver never returns [database/sql/driver.ErrBadConn], so database/sql never runs a statement
+// a second time by itself.
+package s4ql
+
+import (
+	"context"
+	"database/sql"
+	"database/sql/driver"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/host"
+	"maragu.dev/s4ql/internal/store/s3store"
+)
+
+// Options of a database, for [Open] and [Register]. The zero value of an option that is not
+// required means its default.
+type Options struct {
+	// Bucket that holds the database. It is required.
+	Bucket string
+
+	// Prefix of the keys of the database in the bucket. Each prefix is a database of its own, so one
+	// bucket can hold many. An empty prefix means that the keys have none.
+	Prefix string
+
+	// Endpoint of the object store, an http or https URL such as https://t3.storage.dev for Tigris.
+	// If it is empty, it comes from the environment variable AWS_ENDPOINT_URL_S3 or the shared AWS
+	// configuration, and is otherwise Amazon S3 in the region.
+	Endpoint string
+
+	// Region of the bucket, such as eu-north-1, or auto for Tigris. If it is empty, it comes from
+	// the environment variable AWS_REGION or the shared AWS configuration, and one of them must
+	// give it.
+	Region string
+
+	// AccessKeyID and SecretAccessKey are the credentials for the object store. If both are empty,
+	// they come from the default chain of the AWS SDK: the environment variables AWS_ACCESS_KEY_ID
+	// and AWS_SECRET_ACCESS_KEY, the shared AWS configuration, or the role of the machine.
+	AccessKeyID     string
+	SecretAccessKey string
+
+	// PathStyle puts the bucket into the path of each request instead of into the host name, which
+	// some object stores need.
+	PathStyle bool
+
+	// CacheDir is the directory of the local cache of the database, which is created if it does not
+	// exist. It is required. It belongs to one database and to one instance at a time: see [Open].
+	// The cache is kept when the instance closes, and the next instance catches it up from where it
+	// stands. A cache that is lost is built again from the object store.
+	CacheDir string
+
+	// CloseTimeout is how long [database/sql.DB.Close] waits for the instance to close and to
+	// release the lease. The default is 10 seconds.
+	CloseTimeout time.Duration
+
+	// Logger of the events of the instance. The default discards them. A healthy instance logs
+	// nothing above the level Debug after it has started serving, and the SQL text of a statement
+	// is logged at Debug only.
+	Logger *slog.Logger
+}
+
+// Open the database of the options, and give a [database/sql.DB] for it, which is one instance of
+// the database.
+//
+// It fails only on local problems: options that make no sense, and a cache that cannot be opened.
+// The context bounds only that local work. Open does not contact the object store and does not
+// wait for the lease: [database/sql.DB.PingContext] waits until the instance serves.
+//
+// A cache directory belongs to one database. An instance that finds the cache of another database
+// in it stops, with an error that matches [ErrStopped], as soon as the other database has a commit;
+// two databases that are both new can mix their tables in it. A second instance of the same
+// database on the same cache directory, in the same process or in another, is a spare, and serves
+// from the same cache when it gets the lease.
+func Open(ctx context.Context, options Options) (*sql.DB, error) {
+	d := &opener{connect: options.connector}
+	c, err := d.connect(ctx, d)
+	if err != nil {
+		return nil, err
+	}
+	return sql.OpenDB(c), nil
+}
+
+// Register a driver for database/sql under the name, which opens the database of the options. It is
+// for code that needs [database/sql.Open] with the name of a driver, such as a migration tool;
+// other code uses [Open]. The package registers no driver by itself.
+//
+// Each call of [database/sql.Open] with the name opens one instance of the database, as [Open]
+// does, and fails on the same local problems. Its data source name must be empty, because the
+// options name the database.
+//
+// Register panics if a driver is registered under the name already, as [database/sql.Register]
+// does.
+func Register(name string, options Options) {
+	sql.Register(name, &opener{connect: options.connector})
+}
+
+// connector of a new instance of the database of the options, on the production host and on S3,
+// for the driver d.
+func (o Options) connector(ctx context.Context, d driver.Driver) (*connector, error) {
+	if o.Bucket == "" {
+		return nil, errors.New("s4ql: open: the options name no bucket")
+	}
+	s, err := s3store.New(ctx, s3store.Options{
+		Bucket:          o.Bucket,
+		Endpoint:        o.Endpoint,
+		Region:          o.Region,
+		AccessKeyID:     o.AccessKeyID,
+		SecretAccessKey: o.SecretAccessKey,
+		PathStyle:       o.PathStyle,
+		Logger:          o.Logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("s4ql: open: %w", err)
+	}
+	return newConnector(ctx, host.New(), s, o, core.Options{}, d)
+}
+
+// opener is the [driver.Driver] of this package: it opens an instance with connect for each
+// connector that it is asked for.
+type opener struct {
+	// connect gives the connector of a new instance, for the driver d.
+	connect func(ctx context.Context, d driver.Driver) (*connector, error)
+}
+
+var _ driver.DriverContext = (*opener)(nil)
+
+// Open is not how database/sql opens a connection of this driver: it asks for a connector, because
+// the driver is a [driver.DriverContext]. A connection alone would be an instance of its own.
+func (d *opener) Open(string) (driver.Conn, error) {
+	return nil, errors.New("s4ql: the driver opens a database through its connector, as sql.Open does, and not a single connection")
+}
+
+// OpenConnector of a new instance. The data source name must be empty.
+func (d *opener) OpenConnector(name string) (driver.Connector, error) {
+	if name != "" {
+		return nil, errors.New("s4ql: open: the data source name must be empty, because the options given to Register name the database")
+	}
+	// database/sql gives no context here.
+	c, err := d.connect(context.Background(), d)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
