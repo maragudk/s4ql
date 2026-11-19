@@ -930,7 +930,8 @@ var plantedBugs = []plantedBug{
 		bug:      "blobCut",
 		name:     "a commit object that cuts a blob at its first zero byte",
 		workload: plant(calm(singleWorkload), "blobCut"),
-		symptoms: []string{"with the changes", "a read saw at commit", "the cache of", "the replay of the whole log"},
+		// Two keys that the cut makes one, such as x'0000' and x'00', are a key listed twice.
+		symptoms: []string{"with the changes", "a read saw at commit", "the cache of", "the replay of the whole log", "is no net effect"},
 	},
 	{
 		bug:      "forgetDelete",

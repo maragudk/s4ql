@@ -359,6 +359,7 @@ The planted bugs, each over 1000 seeds. The control is the same workload without
 | A replay that commits before the reader reported the end | 219 | 0 | 0 |
 | A commit object that lists a key twice | 1000 | no control | 0 |
 | A commit object that forgets a delete | 918 | no control | 0 |
+| A commit object that cuts a blob at its first zero byte (counted on 2026-11-19) | 716 | no control | 0 |
 | A catch-up that skips a commit object that it cannot read | 562 | 0 | 0 |
 | A renewal that waits for the writer lock | 870 | 0 | 0 |
 | A take of the lease that is sent again with the same bytes | 387 | 0 | 0 |

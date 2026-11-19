@@ -124,3 +124,62 @@ The length limit counts the whole record of a row, header included, so the bound
 ### Future work
 
 None yet; the property test and the simulation come next.
+
+## Step 3: the property test, the simulation, a planted bug, and the older cache
+
+**Author:** builder (types-core)
+
+### Prompt Context
+
+**Verbatim prompt:** see step 1.
+**Interpretation:** the property tests and the workloads of the simulation create tables of every type with values at the edges, a replay gives the same bytes, the pinned minimums stay meaningful, one planted bug for types is found, and an older cache still opens.
+**Inferred intent:** the same as step 1.
+
+### What I did
+
+`TestTx_Savepoint_random` in `/internal/core/tx_test.go` creates tables with a key and a value of random types, takes the keys of a seed from four of the `edges` of each type, makes one upsert in sixteen a row that the table cannot hold (a value of another kind, or a text or blob above the limit, which the test lowers to 1000), and at the end of each seed compares the cache of the instance and the cache of the replay bit for bit with `cacheDump`. New pinned minimums count the refused upserts, the keys -0.0, and text and blob keys in tables that existed before the transaction.
+
+The simulation in `/internal/core/simulation_test.go` has four new shapes of table, with columns of the other types and a key of two columns of a blob and a real. `simKeys` holds the few keys of each type that callers meet at, with 0.0 and -0.0 among the first three reals; the other columns take `edges`. Markers of the trace in `/internal/core/workloads_test.go` count the upserts and deletes of text keys, blob keys, and -0.0, and `singleReaches`, `fullReaches`, and `hammerReaches` pin a quarter of what the default seeds reached.
+
+The planted bug `blobCut` (`/internal/core/bugs.go`, at `Tx.committed`) cuts each blob of an upserted row of the commit object at its first zero byte. It is in `plantedBugs`, on the calm workload with one instance.
+
+`TestOpen_cache` in `/internal/core/core_test.go` builds a cache statement by statement as the version before wrote it, at the position of a log, and opens, reads, and changes it.
+
+The README of `/internal/core` has new points on exact types, -0.0, `ErrTooBig`, the two temporary tables, and why the version of the cache stays 1, and the paragraphs on the harness and the property test say what changed. `/docs/todo.md`: the open question on `integer` as a second value of `Type` is gone (it is one), the question on NUL in text is marked decided by the roadmap, and the decisions of detail are recorded under the storage core and the storage formats.
+
+### Why
+
+The property test is where a wrong net effect shows first, and the simulation is where faults meet the new values; both compare with the model, which now orders and stores every type as SQLite does.
+
+### What worked
+
+`blobCut` failed 84 of the 400 seeds of the property test when I planted it there by hand, and the simulation found it in each of the first four seeds, with every symptom it lists ("a read saw at commit", "the cache of", "with the changes"), and nothing without it.
+
+Run times, on this machine with other work running: `go test -count=1 -run '^TestSimulation' ./internal/core/` took 44 s before the change and 40 s after; `TestTx_Savepoint_random` 2.0 s before and 2.5 s after; `go test -short ./internal/core/` 56 s before and 60 s after. The old minimums of the simulation all still hold.
+
+### What didn't work
+
+Nothing failed in this step, beyond one mistake of my own in `TestTx_types`: a get of the key -0.0 after the delete of 0.0 found no row, which is right, and the test had expected one:
+
+```
+panic: runtime error: slice bounds out of range [:1] with capacity 0 [recovered, repanicked]
+```
+
+The test now asks the model what the row is.
+
+### What I learned
+
+The markers of the trace are plain substrings of its lines, so a count of keys of a type needs the text of the value to start the line in a way that only that type does: `upsert "` for text, `upsert x'` for a blob, `upsert r-0,` for -0.0.
+
+### What was tricky
+
+Keeping callers meeting at the same rows: a key of two columns takes one of the first three keys of each type, so the first three of each `simKeys` list are the ones that matter most.
+
+### What warrants review
+
+- The new shapes and `randomRow` in `/internal/core/simulation_test.go`, and whether the minimums in `/internal/core/workloads_test.go` are the right ones to pin.
+- `TestOpen_cache`'s cache of the version before, which repeats the statements that `conn.make` and `table.createSQL` write for an `int` table.
+
+### Future work
+
+The planted bug's row in the table of 1000 seeds in the README of the core is filled from the count below in step 4.
