@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"math"
 	"slices"
 
 	"maragu.dev/s4ql/internal/s4qlpb"
@@ -153,6 +154,9 @@ type insert struct {
 	exprs [][]Expr
 	// skipUnique is the planted bug that writes a row without the check of its key.
 	skipUnique bool
+	// convertReal is the planted bug that stores a real that is a whole number in an INT or INTEGER
+	// column as the integer.
+	convertReal bool
 }
 
 func (i *insert) check() error {
@@ -164,6 +168,14 @@ func (i *insert) check() error {
 			return internalError("an insert of %v values from %v expressions", len(row), len(i.exprs[n]))
 		}
 		for position, v := range row {
+			typ := i.table.GetColumns()[position].GetType()
+			if f := v.GetReal(); i.convertReal && v.HasReal() && (typ == s4qlpb.Type_TYPE_INT || typ == s4qlpb.Type_TYPE_INTEGER) &&
+				f == math.Trunc(f) && math.Abs(f) < 1<<63 {
+				// The planted bug: the real becomes the integer, as SQLite converts it for a column that
+				// is not STRICT.
+				v = s4qlpb.Value_builder{Integer: new(int64(f))}.Build()
+				row[position] = v
+			}
 			if err := checkType(i.table, position, v, i.exprs[n][position]); err != nil {
 				return err
 			}
@@ -362,7 +374,7 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 				}
 			}
 		}
-		return &insert{w: w, table: t, src: src, exprs: p.Source.(*Values).Rows, skipUnique: b.skipUnique}, nil
+		return &insert{w: w, table: t, src: src, exprs: p.Source.(*Values).Rows, skipUnique: b.skipUnique, convertReal: b.convertReal}, nil
 	}
 	return nil, internalError("a plan of type %T", p)
 }

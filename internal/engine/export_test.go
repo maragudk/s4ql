@@ -21,6 +21,7 @@ var plantable = map[string]func(b *bugs){
 	"keepFailed":    func(b *bugs) { b.keepFailed = true },
 	"readNewest":    func(b *bugs) { b.readNewest = true },
 	"rollbackKeeps": func(b *bugs) { b.rollbackKeeps = true },
+	"convertReal":   func(b *bugs) { b.convertReal = true },
 }
 
 // The names of the event and of its attributes, for the tests of the telemetry.

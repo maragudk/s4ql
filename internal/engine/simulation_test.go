@@ -31,7 +31,6 @@ import (
 	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
-	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
 
@@ -153,6 +152,9 @@ type attempt struct {
 	acked int
 	// partial is set for a query whose rows were not read to their end.
 	partial bool
+	// typeRefused is set for an insert that the engine refused as "not supported" for a value of
+	// another type than its column.
+	typeRefused bool
 	// reason why a statement failed: no lease, stopped, timeout, or canceled.
 	reason string
 	// tx is the transaction that spans statements that the statement ran in, or nil for a statement
@@ -547,16 +549,11 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 		if a.write && tx == nil {
 			r.acked = append(r.acked, a.id)
 		}
-		// A call that the rule for arguments refuses must not succeed, nor one with a value of another
-		// type than its column.
+		// A call that the rule for arguments refuses must not succeed. One with a value of another
+		// type than its column must not either, which [run.verify] checks on the log.
 		if kind, failure := checkArguments(call, answer{}); kind != "" {
 			r.mu.Unlock()
 			r.violate(ctx, "the statement %v succeeded: %v", a.id, failure)
-			r.mu.Lock()
-		}
-		if _, ok := typeArgument(call); ok {
-			r.mu.Unlock()
-			r.violate(ctx, "the statement %v, %q, succeeded with the argument %#v for a column of type INT or INTEGER", a.id, a.src, call.Args[0])
 			r.mu.Lock()
 		}
 	case errors.As(err, &se):
@@ -572,14 +569,10 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 		// A call that s4ql refuses for its arguments must be refused by its rule, and a statement of
 		// slices 1 and 2 with the arguments that it takes must run.
 		kind, failure := checkArguments(call, a.answer)
-		if article, ok := typeArgument(call); ok && kind == "" {
-			// The insert found its table and its column, which is of type INT or INTEGER.
-			kind = excusedType
-			prefix := fmt.Sprintf("s4ql: not supported: argument 1, which is %v, for the column ", article)
-			integer := strings.HasSuffix(a.answer.message, " of type INT") || strings.HasSuffix(a.answer.message, " of type INTEGER")
-			if a.answer.err != "not supported" || !strings.HasPrefix(a.answer.message, prefix) || !integer {
-				failure = fmt.Sprintf("the statement %v, %q, with the argument %#v: %v", a.id, a.src, call.Args[0], err)
-			}
+		if kind == "" && call.Supported && isInsert(a.src) && a.answer.err == "not supported" && strings.Contains(a.answer.message, " for the column ") {
+			// The refusal of a value of another type than its column, after the insert found its table
+			// and its column, which [run.verify] checks against SQLite on the state that it saw.
+			kind, a.typeRefused = excusedType, true
 		}
 		if kind == "" && (call.Supported || a.answer.err == wrongArguments) {
 			failure = fmt.Sprintf("the statement %v, %q, with %v arguments: %v", a.id, a.src, len(call.Args), err)
@@ -783,7 +776,11 @@ func readRows(rows *engine.Rows) (answer, error) {
 		}
 		values := make([]string, len(row))
 		for j, v := range row {
-			values[j] = fmt.Sprint(v.GetInteger())
+			text, ok := valueString(v)
+			if !ok || v.HasBlob() && v.GetBlob() == nil {
+				return answer{}, fmt.Errorf("the engine gives %v", text)
+			}
+			values[j] = text
 		}
 		a.rows = append(a.rows, strings.Join(values, ","))
 	}
@@ -1295,12 +1292,22 @@ func (r *run) verify(ctx context.Context) {
 	}
 	// The observations of each state of the log: the statements of their own that saw it.
 	seen := map[int][]*attempt{}
+	// refused are the inserts of their own that the engine refused for the type of their value, by
+	// the state of the log that each saw.
+	refused := map[int][]*attempt{}
 	empty := newOracle(r.t)
 	defer empty.close()
 	for _, a := range r.order {
 		if a.state == skipped && a.answer.err == "not supported" {
 			if m := syntaxOfNotSupported(r.t, empty, a.src); m != "" {
 				r.violate(ctx, "the engine does not support the statement %v, %q, and SQLite gives %v", a.id, a.src, m)
+			}
+			if a.typeRefused && a.tx == nil {
+				if at, ok := index[a.position]; ok {
+					refused[at] = append(refused[at], a)
+				} else {
+					r.violate(ctx, "the statement %v, %q, is refused for the type of its value, and saw the state %q, which the log does not have", a.id, a.src, a.position)
+				}
 			}
 			continue
 		}
@@ -1342,8 +1349,18 @@ func (r *run) verify(ctx context.Context) {
 				r.violate(ctx, "the statement %v, %q, at commit %v gives %v, and in SQLite %v", a.id, a.src, k, got, want)
 			}
 		}
+		for _, a := range refused[k] {
+			if want := typeRule(r.t, o, a.src, oracleValues(a.args)); a.answer.message != want {
+				r.violate(ctx, "the statement %v, %q, at commit %v gives %q, and the rule for the type of a value %q", a.id, a.src, k, a.answer.message, want)
+			}
+		}
 		if k < len(log) {
 			for i, note := range log[k].notes {
+				// The value of an insert of the log has the type of its column, which SQLite would
+				// convert or refuse otherwise.
+				if want := typeRule(r.t, o, note, oracleValues(log[k].params[i])); want != "" {
+					r.violate(ctx, "commit %v, %q, stores a value of another type than its column: %v", k+1, note, want)
+				}
 				if a := o.run(r.t, note, oracleValues(log[k].params[i])...); a.err != "" {
 					r.violate(ctx, "commit %v, %q, fails in SQLite: %v", k+1, note, a.err)
 				}
@@ -1435,6 +1452,17 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 		}
 		before := o.tables(r.t)
 		for _, a := range tx.stmts {
+			if a.typeRefused {
+				// A read-only transaction refuses an insert before it looks at its value.
+				var want string
+				if !tx.readOnly {
+					want = typeRule(r.t, o, a.src, oracleValues(a.args))
+				}
+				if a.answer.message != want {
+					r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v, gives %q, and the rule for the type of a value %q", a.id, a.src, tx.id, kind, at, a.answer.message, want)
+				}
+				continue
+			}
 			if a.position == "" || (a.state != succeeded && a.state != sqliteFailed) {
 				continue
 			}
@@ -1607,28 +1635,6 @@ func stmtValue(v *s4qlpb.Value) any {
 		return fmt.Sprintf("%x", v.GetBlob())
 	}
 	return nil
-}
-
-// typeArgument reports whether the call c is a supported insert with one parameter whose argument
-// is a value that a column holds and is not an integer, and gives how the engine's message names its
-// kind. The tables of [stmttest.Sequence] are of type INT, or INTEGER through [stmttest.Others], so
-// the engine refuses such an argument as "not supported" once it has found the table and the column.
-func typeArgument(c stmttest.Call) (string, bool) {
-	s, _ := stmt.Check(c.Src)
-	insert, ok := s.(*stmt.Insert)
-	args := unnamed(c.Args)
-	if !ok || insert.Parameters() != 1 || len(args) != 1 || refusal(args[0]) != "" {
-		return "", false
-	}
-	switch args[0].(type) {
-	case float64:
-		return "a real", true
-	case string:
-		return "text", true
-	case []byte:
-		return "a blob", true
-	}
-	return "", false
 }
 
 // oracleValues of vs, values of the engine that a column holds, as the oracle binds them.
@@ -1974,6 +1980,9 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// its beginning, and its later statements report the newer state.
 		{"readNewest", hammerWorkload, "hammer", []string{"(read-only), which began at commit", "the statements of the read-only transaction"}},
 		{"rollbackKeeps", defaultWorkload, "default", []string{"and its caller rolled it back"}},
+		// SQLite converts the real of the log as the bug did, so the replay of the log agrees with the
+		// engine, and only the check of the type of each value of the log finds it.
+		{"convertReal", defaultWorkload, "default", []string{"stores a value of another type than its column"}},
 	}
 	for _, b := range bugs {
 		bug := b.name

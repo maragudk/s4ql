@@ -335,7 +335,7 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 			_ = w.rollbackTo(ctx)
 		}
 	}()
-	s, err := buildSink(ctx, w, p, args, bugs{skipUnique: c.e.bugs.skipUnique}, c.e.db.lengthLimit())
+	s, err := buildSink(ctx, w, p, args, bugs{skipUnique: c.e.bugs.skipUnique, convertReal: c.e.bugs.convertReal}, c.e.db.lengthLimit())
 	if err != nil {
 		return Result{}, err
 	}
