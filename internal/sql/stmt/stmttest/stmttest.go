@@ -308,7 +308,9 @@ func (g *Generator) columns(table stmt.Name) []stmt.Column {
 }
 
 // columnList of an insert of slice 5, with the gaps around it, before VALUES: none one time in three,
-// and otherwise n names from the pool of [InsertColumn], of which no two are one name to SQLite.
+// and otherwise n names from the pool of [InsertColumn], of which no two are one name to SQLite. If
+// the pool runs out of other names, the list is shorter, and the insert has more values than columns,
+// which SQLite refuses once it has found the table.
 func (g *Generator) columnList(n int) []stmt.Name {
 	if g.r.IntN(3) == 0 {
 		g.gap(true)

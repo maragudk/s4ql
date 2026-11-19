@@ -308,13 +308,15 @@ func (r *recognizer) insert(c *ast.Insert) *Insert {
 	row := values.Rows[0]
 	r.accept(row)
 	r.take(row.LParen)
+	parameters := 0
 	for i, e := range row.Exprs {
 		if i > 0 {
 			r.take(row.Commas[i-1])
 		}
 		var v Term
 		if p, ok := e.(*ast.Variable); ok {
-			v.Parameter, v.Span = r.parameter(p, s.Parameters())
+			v.Parameter, v.Span = r.parameter(p, parameters)
+			parameters = v.Parameter
 		} else {
 			v.Value, v.Span = r.literal(e)
 		}
@@ -328,10 +330,9 @@ func (r *recognizer) insert(c *ast.Insert) *Insert {
 // internal/sqlite keeps at its default.
 const maxParameters = 32766
 
-// parameter v: a plain ?, after before parameters of the statement, which must be fewer than
-// [maxParameters]. SQLite numbers a ? one more than
-// the largest number before it, and each parameter before it is a plain ? too, so its number is one
-// more than their number.
+// parameter v: a plain ?, after before parameters of the statement. SQLite numbers a ? one more than
+// the largest number before it, and each parameter before it is a plain ? too, so its number is
+// before+1. After [maxParameters] parameters, it is `parameter beyond SQLite's limit`.
 func (r *recognizer) parameter(v *ast.Variable, before int) (int, Span) {
 	if r.isNext(v.Name) && v.Name.Text != "?" {
 		if v.Name.Text[0] == '?' {
