@@ -61,3 +61,49 @@ The first full run of `TestDifferential` over typed sequences passed apart from 
 
 - Mutation testing of the new code and fuzz targets of the types, for a fresh builder.
 - The driver's generated test does not reach `string or blob too big`: `s4ql.Options` has no length limit, and the driver's `TestTypes` in `/conn_test.go` covers it by hand.
+
+## Step 2: The long runs, the self-review, and the checks
+
+**Author:** types-checks builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the brief) "Run `make test`, `make lint`, and `make check-browser`. [...] run new tests with `-count=20`, also under `-race`. [...] Review your own work with the code-review skill before you report, and fix what it finds."
+**Interpretation:** Run the long and the repeated runs, document the checks in the engine's README, review the branch, fix the findings, and run the checks of the brief.
+**Inferred intent:** Hand the lead a branch that is checked, documented, and reviewed.
+
+### What I did
+
+`S4QL_ENGINE_SIM_SEEDS=1000 go test ./internal/engine/ -run 'TestSimulation$'` passed for the three workloads, and `S4QL_ENGINE_SIM_SEEDS=200` for `TestSimulation_plantedBugs` found every bug, `convertReal` in 14 of 200 seeds, each by its own violation, and none without the bug. `TestSimulation` counts "refused for the type" now, with least numbers of 0.5, 0.1, and 1 for each seed in the default, idle, and hammer workloads (the first 200 seeds gave 505, 112, and 980). A writer brought the facts into `/internal/engine/README.md`; its report noted that SQLite converts a whole real for a STRICT INTEGER column too, so the comments of `convertReal` said "for a column that is not STRICT" wrongly, and that a tenth value takes any of the five types, not always another; both are fixed.
+
+The review (`code-review high`, against `origin/types-engine`) found one important issue and five nits. The important one: an insert of the wrong type that the engine accepted in a transaction that did not commit never reaches the log, so the new check of the log does not see it, and SQLite converts it in `verifyTxs` and agrees. `verifyTxs` now checks every insert of a transaction that succeeded with `typeRule`. Of the nits I fixed: `around` gave a float32 that overflowed to an infinity, which the generator meant as a value (now only where it stays finite, which moved the pin of `TestDifferential` for arguments that no column holds from 141 to 140); `readRows` named a nil blob as `x''`; `coreState` let a nil blob or a value of no kind pass; gofmt had turned `''` in the comment of `Literal` into a typographic quote; the comment of `Sequence.Value`. I left one: the real literals of 17 to 40 digits take their value from the pass itself in `TestGenerate`, which `verify`'s check of the meaning in SQLite, `TestCheck_reals`, and `FuzzLiteral` cover against SQLite.
+
+`make test` failed once in `/internal/sql/mutation`: `no such mutant: internal/engine/tx.go Conn.writeIn element: skipUnique: c.e.bugs.skipUnique =>`, since the line now names `convertReal` too. The key in `/internal/sql/mutation/equivalent.txt` is `skipUnique: c.e.bugs.skipUnique, =>` now.
+
+### Why
+
+A check of a planted bug is only as strong as the paths where it looks; the transaction that never commits was the one path left.
+
+### What worked
+
+The repeated runs: `-count=20` of `TestDifferential`, `TestConn_differential`, `TestSimulation`, and `TestSimulation_plantedBugs`, also under `-race`, of the generator's tests in `stmt` under `-race`, and of `TestGenerated` and `TestTypes` of the driver (`-count=5` under `-race`) all passed, and `-count=5` again after the fixes of the review. `make test`, `make lint`, and `make check-browser` pass.
+
+### What didn't work
+
+The failure of `make test` above, and nothing else.
+
+### What I learned
+
+A renamed line renames its mutants; `TestEquivalent` in `internal/sql/mutation` catches the stale key.
+
+### What was tricky
+
+Nothing more.
+
+### What warrants review
+
+The new check in `verifyTxs`, and the least numbers of the simulation for "refused for the type".
+
+### Future work
+
+As in step 1.
