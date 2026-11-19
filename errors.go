@@ -122,8 +122,9 @@ func publicError(err error) error {
 	}
 	if errors.Is(err, engine.ErrRowsOpen) {
 		// A statement in a transaction runs on the connection of the transaction, where the rows hold
-		// a statement of the cache.
-		return &failure{is: ErrNotSupported, message: "s4ql: not supported: a statement in a transaction while the rows of an earlier query of the transaction are open; close the rows first", cause: err}
+		// a statement of the cache, as do the rows of a transaction whose end waits for a loop over
+		// them, which only the driver's own interfaces leave.
+		return &failure{is: ErrNotSupported, message: "s4ql: not supported: a statement while the rows of a query of a transaction on its connection are open; close the rows first", cause: err}
 	}
 	if errors.Is(err, core.ErrReaderBusy) {
 		// A connection runs one read at a time, on its one reader.

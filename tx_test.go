@@ -285,7 +285,7 @@ func TestTx(t *testing.T) {
 			rows, err := tx.QueryContext(t.Context(), select1)
 			is.NotError(t, err)
 			is.True(t, rows.Next())
-			const what = "a statement in a transaction while the rows of an earlier query of the transaction are open; close the rows first"
+			const what = "a statement while the rows of a query of a transaction on its connection are open; close the rows first"
 			_, err = tx.ExecContext(t.Context(), "insert into t1 (v1) values (3)")
 			is.Equal(t, what, notSupported(t, err))
 			_, err = tx.QueryContext(t.Context(), select1)

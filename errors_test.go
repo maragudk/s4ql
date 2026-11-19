@@ -10,6 +10,7 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql"
+	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/engine"
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
@@ -51,7 +52,7 @@ func TestError(t *testing.T) {
 				is.True(t, ok, c.name+", "+how+": "+err.Error())
 				is.Equal(t, c.want, *got, c.name+", "+how)
 				is.Equal(t, c.want.Message, err.Error(), c.name+", "+how)
-				for _, sentinel := range []error{s4ql.ErrNotSupported, s4ql.ErrNotServing, s4ql.ErrOutcomeUnknown, s4ql.ErrStopped} {
+				for _, sentinel := range []error{s4ql.ErrNotSupported, s4ql.ErrNotServing, s4ql.ErrOutcomeUnknown, s4ql.ErrStopped, s4ql.ErrTooLarge} {
 					is.True(t, !errors.Is(err, sentinel), c.name+", "+how+": "+sentinel.Error())
 				}
 			}
@@ -92,7 +93,7 @@ func TestError(t *testing.T) {
 		}
 		err = failed(t, rows.Err())
 		is.Error(t, context.Canceled, err)
-		for _, sentinel := range []error{s4ql.ErrNotSupported, s4ql.ErrNotServing, s4ql.ErrOutcomeUnknown, s4ql.ErrStopped, sql.ErrNoRows} {
+		for _, sentinel := range []error{s4ql.ErrNotSupported, s4ql.ErrNotServing, s4ql.ErrOutcomeUnknown, s4ql.ErrStopped, s4ql.ErrTooLarge, sql.ErrNoRows} {
 			is.True(t, !errors.Is(err, sentinel), sentinel.Error())
 		}
 		readersFree(t, db)
@@ -102,12 +103,26 @@ func TestError(t *testing.T) {
 		for _, n := range []int{0, 2} {
 			err := s4ql.PublicError(engine.Check("insert into t1 (v1) values (?)", n))
 			is.Equal(t, engine.Check("insert into t1 (v1) values (?)", n).Error(), err.Error())
-			for _, sentinel := range []error{s4ql.ErrNotSupported, s4ql.ErrNotServing, s4ql.ErrOutcomeUnknown, s4ql.ErrStopped} {
+			for _, sentinel := range []error{s4ql.ErrNotSupported, s4ql.ErrNotServing, s4ql.ErrOutcomeUnknown, s4ql.ErrStopped, s4ql.ErrTooLarge} {
 				is.True(t, !errors.Is(err, sentinel), sentinel.Error())
 			}
 		}
 		err := s4ql.PublicError(fmt.Errorf("%w: argument 1, which is not an integer", stmt.ErrNotSupported))
 		is.Error(t, s4ql.ErrNotSupported, err)
 		is.Equal(t, "s4ql: not supported: argument 1, which is not an integer", err.Error())
+	})
+
+	t.Run("should give a commit object that is too large and rows that are open in a transaction their public errors", func(t *testing.T) {
+		tooLarge := fmt.Errorf("%w: %w", engine.ErrTooLarge, fmt.Errorf("commit: %w", core.ErrTooLarge))
+		err := s4ql.PublicError(tooLarge)
+		is.Error(t, s4ql.ErrTooLarge, err)
+		is.Equal(t, "s4ql: the transaction is too large to commit: commit: the commit object is too large for the store", err.Error())
+		for _, sentinel := range []error{s4ql.ErrNotSupported, s4ql.ErrNotServing, s4ql.ErrOutcomeUnknown, s4ql.ErrStopped} {
+			is.True(t, !errors.Is(err, sentinel), sentinel.Error())
+		}
+
+		err = s4ql.PublicError(engine.ErrRowsOpen)
+		is.Equal(t, "a statement while the rows of a query of a transaction on its connection are open; close the rows first", notSupported(t, err))
+		is.True(t, !errors.Is(err, s4ql.ErrTooLarge))
 	})
 }

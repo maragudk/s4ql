@@ -1279,7 +1279,7 @@ func TestStop(t *testing.T) {
 			is.True(t, strings.Contains(err.Error(), "the instance has stopped: local I/O failure"), err.Error())
 			_, isSQLite := errors.AsType[*s4ql.Error](err)
 			is.True(t, !isSQLite, err.Error())
-			is.True(t, !errors.Is(err, s4ql.ErrNotServing) && !errors.Is(err, s4ql.ErrOutcomeUnknown) && !errors.Is(err, s4ql.ErrNotSupported), err.Error())
+			is.True(t, !errors.Is(err, s4ql.ErrNotServing) && !errors.Is(err, s4ql.ErrOutcomeUnknown) && !errors.Is(err, s4ql.ErrNotSupported) && !errors.Is(err, s4ql.ErrTooLarge), err.Error())
 		}
 		if insertErr != nil {
 			stopped(insertErr)

@@ -48,8 +48,8 @@
 // it. Each statement is a transaction of its own, which is committed when the statement returns
 // without an error, unless it runs in a transaction that spans statements: see Transactions below. A
 // statement is bounded by the context that it is given, and so is its commit. Several statements in
-// one text are not supported. [database/sql.DB.PrepareContext] checks the text of the statement, and neither the tables that it
-// names nor whether the instance serves.
+// one text are not supported. [database/sql.DB.PrepareContext] checks the text of the statement,
+// and neither the tables that it names nor whether the instance serves.
 //
 // A parameter is a plain ?, and its argument is given by position:
 //

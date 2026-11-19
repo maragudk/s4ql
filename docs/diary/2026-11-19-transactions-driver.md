@@ -49,3 +49,51 @@ A `sql.Conn` lets an application call `BeginTx` twice and run the statements of 
 ### Future work
 
 The roadmap's section on slice 3, and the decisions in `/docs/todo.md`.
+
+## Step 2: Documentation, checks, and self-review
+
+**Author:** driver transactions builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "`docs/roadmap.md` gets a section \"Slice 3: transactions\" after slice 2, in the style of the others [...] `docs/todo.md`: update the lines that say `BeginTx` is not supported, and record every decision of detail you made. [...] Every existing test passes; `make test` and `make lint` pass; the repository builds, also with the tag `s4ql_browser`"
+**Interpretation:** Hand the roadmap and the todo to a writer with the list of decisions, check its diff against the code, run every check, and review the branch.
+**Inferred intent:** A reader of the docs learns what slice 3 is without the branch's history, and the lead gets a branch that passes CI.
+
+### What I did
+
+A writer sub-agent wrote the section "Slice 3: transactions" of `/docs/roadmap.md`, the history in slice 1's status line, and the changes to `/docs/todo.md` from twelve numbered decisions. It narrowed two facts against the code: the context of a commit gives `ErrOutcomeUnknown` only when it ends before the instance knows, and the engine's tests do run generated sequences in transactions. It also wrote down the open question of an idle write transaction and the lease, which no document had; I checked its claim that the lease task takes the core's `writerLock` (`/internal/core/core.go`, lines 175 and 841).
+
+A probe, deleted afterwards, tried to reach a roll back whose own roll back in the cache fails: 300 inserts in a transaction, then each `faultvfs` operation failing on the cache and its log, then the roll back of the driver with the swallowing turned off. Every roll back gave nil and no operation failed, so the branch of `tx.Rollback` that turns a stop into nil after a failed roll back is reached by no test.
+
+`/code-review high tx-driver` found five nits and no bug that `database/sql` can reach. Fixed: `ErrTooLarge` is in every list of sentinels that a test requires an error not to match, and `TestError` has a case for the mappings of `core.ErrTooLarge` and `engine.ErrRowsOpen`; the message of `ErrRowsOpen` no longer says that a transaction is open, because the engine also gives it after a transaction whose end waits for a loop: `s4ql: not supported: a statement while the rows of a query of a transaction on its connection are open; close the rows first`; a paragraph of the package documentation is wrapped again. Left, and written in `/docs/todo.md`: through `sql.Conn.Raw`, a commit or roll back while a loop reads leaves `IsValid` true while the engine still holds the writer's place, and the engine's `Conn.Close` gives `ErrReaderInUse` then and rolls nothing back.
+
+Commands: `make test` (exit 0), `make lint` (0 issues), `make check-browser`, `go build -tags s4ql_browser ./...`; `go test -short -count=20` and `-race -count=20` of `TestTx`, `TestStop`, `TestConn_Raw`, `TestExec`, `TestError`; `-count=50` of the transaction tests with and without `-race`, two runs at once for load; `go test ./drivercheck` in `/internal/sqlite/crosscheck`, with and without `-short`.
+
+### Why
+
+The review's findings 1 to 3 need the driver's own interfaces; `database/sql` closes rows before it ends a transaction or closes a connection, which `TestTx_databaseSQL` shows.
+
+### What worked
+
+Giving the writer the decisions as a numbered list and asking it to check each against the code.
+
+### What didn't work
+
+`make fmt` rewrote the imports of `/internal/core/errors_test.go`, a file outside this task; I restored it before the commit was final (`git checkout HEAD~1 -- internal/core/errors_test.go` and `--amend`).
+
+### What I learned
+
+Nothing beyond the above.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+The section "Slice 3: transactions" of `/docs/roadmap.md` and the driver's list in the section "Transactions" of `/docs/todo.md`, against `/tx.go`.
+
+### Future work
+
+Generated comparisons of transactions through `database/sql` (`stmttest`, `drivercheck`), a simulation workload with transactions, and the open question of an idle write transaction and the lease.
