@@ -92,11 +92,11 @@ func (o outcome) String() string {
 	b.WriteString(string(o.call))
 	if o.failed != "" {
 		fmt.Fprintf(&b, ": %v failed with %v", o.failed, o.err)
-	}
-	if o.affected != "" || o.lastID != "" {
+	} else if o.affected != "" || o.lastID != "" {
 		fmt.Fprintf(&b, ": %v affected, last insert id %v", o.affected, o.lastID)
 	}
 	switch {
+	case o.failed != "":
 	case o.columns != "" || o.types != "":
 		fmt.Fprintf(&b, ": columns %q of types %q, rows %v", o.columns, o.types, strings.Join(o.rows, " "))
 	case len(o.rows) > 0:
@@ -1105,7 +1105,7 @@ func TestGenerated(t *testing.T) {
 	// The texts that each kind of excuse lets through, by kind: those that the comparison accepts
 	// where SQLite and s4ql differ, and the calls that s4ql refuses for their arguments by its rule,
 	// which are checked against the rule instead of SQLite. Every other kind is pinned at 0.
-	want := map[string]int{excusedPrepare: 1127, excusedStartedTable: 11, excusedArguments: 410, excusedArgument: 100}
+	want := map[string]int{excusedPrepare: 1120, excusedStartedTable: 13, excusedArguments: 412, excusedArgument: 103}
 	kinds := slices.Collect(maps.Keys(want))
 	for name := range y {
 		if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) {

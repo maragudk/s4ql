@@ -17,9 +17,9 @@ import (
 // in several spellings that SQLite takes for one name and in some that it takes for others, with
 // values from a small set so that keys repeat, and with statements that are not supported and texts
 // that SQLite refuses mixed in. One insert in three has a plain ? with an int64 argument in place of
-// its value, and one call in ten has arguments around those that s4ql supports: none for a ?, one
-// for a statement without one, two for a ?, one of a type that s4ql does not support, one with a
-// name, or an integer of another Go type.
+// its value, and some calls, as [Sequence.Next] says, have arguments around those that s4ql
+// supports: none for a ?, one for a statement without one, two for a ?, one of a type that s4ql does
+// not support, one with a name, or an integer of another Go type.
 type Sequence struct {
 	r       Rand
 	g       *Generator
@@ -264,12 +264,12 @@ func (q *Sequence) around(args []any) []any {
 		args[at] = sql.Named("v", args[at])
 	default:
 		switch v := args[at].(int64); {
-		case r.IntN(2) == 0:
-			args[at] = int(v)
-		case v >= 0:
+		case v >= 0 && r.IntN(2) == 0:
 			args[at] = uint64(v)
-		case v >= math.MinInt32:
+		case v >= math.MinInt32 && r.IntN(2) == 0:
 			args[at] = int32(v)
+		default:
+			args[at] = int(v)
 		}
 	}
 	return args

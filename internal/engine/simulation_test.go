@@ -394,6 +394,12 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, q *sequenc
 		if a.write {
 			r.acked = append(r.acked, a.id)
 		}
+		// A call that the rule for arguments refuses must not succeed.
+		if kind, failure := checkArguments(call, answer{}); kind != "" {
+			r.mu.Unlock()
+			r.violate(ctx, "the statement %v succeeded: %v", a.id, failure)
+			r.mu.Lock()
+		}
 	case errors.As(err, &se):
 		a.state, a.answer = sqliteFailed, answer{err: fmt.Sprint(se.Code, "/", se.ExtendedCode, ": ", se.Message)}
 	case errors.Is(err, stmt.ErrNotSupported), errors.Is(err, engine.ErrNoStatement), errors.Is(err, engine.ErrArguments):

@@ -184,3 +184,105 @@ Nothing.
 ### Future work
 
 None.
+
+## Step 5: Mutation testing of the code of slice 2
+
+**Author:** parameters-checks builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Use the project's existing way of mutation testing (see `internal/sql/mutation` and the READMEs of the engine and the core for how earlier rounds were done and recorded) on the code that slice 2 added: `parameter` and the `*ast.Variable` case in `internal/sql/stmt/recognize.go`, `prepare`, `Check`, `checkArguments`, `countArguments` in `internal/engine`, and `arguments`, `argument`, `CheckNamedValue`, `overflows` in `conn.go`. Add a test for every mutant that survives and matters; list in the README where such lists are kept any that survive because no test can reach them."
+**Interpretation:** Run `internal/sql/mutation` with `-run` on those functions, plus the other code of slice 2 that is small (the methods `Parameters`, the parameter of `NewPlan` and of `eval`), and close every gap.
+**Inferred intent:** Every decision of the new code is pinned by a test.
+
+### What I did
+
+The regular expression of `-run` selected 206 mutants of `internal/sql/stmt`, `internal/engine`, and `.`. The first run showed that the runner planned no stage for the package at the root: `testPackages` lists only `./internal/...`, so all 80 mutants of `/conn.go` "survived" at the moment the plan ended (`1/206 1m3s: survived conn.go:312 [...]`). `/internal/sql/mutation/run.go` now plans, for `-pkgs .`, the root's own tests, without `TestOpen_realBucket` (`outside`), with the binary `root.test`; `TestRunner_run` in `/internal/sql/mutation/run_test.go` has a package at the root with such a test. The default packages are unchanged, so earlier results stay comparable.
+
+Results: `stmt` 49 mutants, 8 not compiled, 39 killed, 2 survived; the engine 77, 12 not compiled, 65 killed; the root 80, 23 not compiled, 54 killed, 2 timed out, 1 survived. Every kill was by the hand-written tests. The survivors:
+
+- `stmt/recognize.go recognizer.parameter condition: r.isNext(v.Name) => true`: a gap, reachable only by a tree that no text gives. `TestRecognize` in `/internal/sql/stmt/recognize_internal_test.go` now parses `insert into t (v) values ( :a)` and moves the parameter's name one byte back: the answer is `parameter (at offset 27)`, and the mutant would give `named parameter`.
+- `stmt/recognize.go recognizer.parameter remove statement: r.accept(v) =>`: equivalent, since the one token of the node is taken at once; listed in `/internal/sql/mutation/equivalent.txt`.
+- `conn.go overflows remove statement: return false =>`: a gap. A `driver.Valuer` whose own kind is `uint` and whose value is above the largest `int64` must give its `Value`. `TestParameters` in `/conn_test.go` now inserts `bigValuer(9223372036854775808)`, whose `Value` is 15.
+
+Reruns of those functions left nothing unexplained. A run of the planted bug's lines in `Conn.write` left three equivalent mutants (another wrong annotation), listed too. The results are in `/internal/sql/mutation/README.md` ("The parameters of slice 2"), with a pointer from `/internal/engine/README.md`.
+
+### Why
+
+The runner is the project's way of mutation testing, and the driver is code that it could not mutate.
+
+### What worked
+
+The engine's hand-written tests of slice 2 killed every mutant of the engine.
+
+### What didn't work
+
+The first run of the root, before the change of the runner, gave 80 false survivors, as above. The two timeouts of `overflows` (`v = rv.Elem().Interface()` removed, and the last `return false` removed) loop for good on a pointer, which is the expected kill by time.
+
+### What I learned
+
+The differential test of the driver is in another module, so it cannot kill a mutant of `/conn.go`; the root's own tests do it alone.
+
+### What was tricky
+
+Keeping the run's view of the files fixed: the runner reads the mutated files while it runs, so the fixes waited for the run to end; tests of other packages and the documents did not.
+
+### What warrants review
+
+- `testPackages` and `outside` in `/internal/sql/mutation/run.go`.
+- The equivalent entries in `/internal/sql/mutation/equivalent.txt`.
+
+### Future work
+
+A stage that runs the differential test of the driver, in the module `internal/sqlite/crosscheck`, on a mutant of the root.
+
+## Step 6: Self-review
+
+**Author:** parameters-checks builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the builder's instructions) "Once the implementation is done, self-review before handing back to the lead. [...] Use the code-review skill for the first phase [...] Address what you find, then report a summary of your review and any follow-up work back to the lead."
+**Interpretation:** Run `code-review medium main...parameters-checks`, judge each finding, fix what matters, and run the checks again.
+**Inferred intent:** Hand over a branch whose weak spots are fixed or named.
+
+### What I did
+
+The review gave one important finding and five nits. I took four:
+
+- The simulation checked the rule for arguments only when the engine gave an error, so an engine that ran a call that the rule refuses would have been seen only by later checks of the replay. `run.statement` in `/internal/engine/simulation_test.go` now calls `checkArguments` on success too, and reports a violation if the rule refuses the call.
+- `outcome.String` in the driver's test printed the counts and rows of a failed outcome; it no longer does, as before, while it still prints the later runs.
+- The doc comment of `Sequence` gave a rate of one in ten; it now points to `Next`.
+- `around` kept an `int64` below the smallest `int32` half the time in its case of another Go type; it now falls back to `int`.
+
+The last change moved the random stream, so the pins are now 24, 632, and 85 in the engine's test and 1,120, 13, 412, and 103 in the driver's, and the roadmap and the engine's README say so.
+
+Two I left: the seeds of `FuzzSQL` keep only the texts of the sequence, so those with a `?` meet the error of the number. `FuzzSQL` takes any text and no arguments by design, and a new argument of the target would make its corpus of inputs unreadable; `FuzzDifferential` runs the sequence with its arguments. And `uint(9223372036854775808)` does not compile on 32 bits, as the existing `uint(9223372036854775806)` in `/conn_test.go` did not before.
+
+### Why
+
+The important finding is a check that the brief asks for in part 4 in spirit: the simulation must see a refusal that does not happen.
+
+### What worked
+
+The pins were the only tests that moved.
+
+### What didn't work
+
+Nothing failed.
+
+### What I learned
+
+Nothing new.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+- The new case of the success path in `run.statement`.
+
+### Future work
+
+None.
