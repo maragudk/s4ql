@@ -410,10 +410,18 @@ h2 {
   gap: 8px;
 }
 .actions div { display: flex; flex-wrap: wrap; gap: 8px; }
+/* A row of the actions on one clock starts with the name of the clock. Reset clocks acts on both,
+   and stands apart at the end of the last row. */
+.actions .clock { align-items: center; }
+.actions .clock .caps { min-width: 9.5em; }
+.actions .clock .reset { margin-left: auto; }
 @media (max-width: 520px) {
   .cell-head, .facts, .actions { padding-left: 16px; padding-right: 16px; }
   .actions div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .actions .btn { white-space: normal; text-align: left; justify-content: flex-start; }
+  .actions .clock .caps { grid-column: 1 / -1; min-width: 0; }
+  .actions .clock.wall { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .actions .clock .reset { margin-left: 0; grid-column: 1 / -1; }
 }
 
 /* S3, the log, and the commit objects */
@@ -590,11 +598,16 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
             <button class="btn" type="button" data-a="disconnect" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Disconnect S3</button>
             <button class="btn" type="button" data-a="disk" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Error disk</button>
           </div>
-          <div>
-            <button class="btn" type="button" data-a="forward" aria-label="Move the wall clock of a forward 60 s" disabled>Clock +60 s</button>
-            <button class="btn" type="button" data-a="back" aria-label="Move the wall clock of a back 60 s" disabled>Clock −60 s</button>
-            <button class="btn" type="button" data-a="pause" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Pause clocks</button>
-            <button class="btn" type="button" data-a="reset" disabled>Reset clocks</button>
+          <div class="clock wall" role="group" aria-labelledby="wall-a">
+            <span class="caps" id="wall-a">Wall clock</span>
+            <button class="btn" type="button" data-a="forward" aria-label="Move the wall clock of a forward 60 s" disabled>+60 s</button>
+            <button class="btn" type="button" data-a="back" aria-label="Move the wall clock of a back 60 s" disabled>−60 s</button>
+            <button class="btn" type="button" data-a="wall" aria-pressed="false" aria-label="Pause the wall clock of a" disabled><span class="led" aria-hidden="true"></span>Pause</button>
+          </div>
+          <div class="clock" role="group" aria-labelledby="mono-a">
+            <span class="caps" id="mono-a">Monotonic clock</span>
+            <button class="btn" type="button" data-a="monotonic" aria-pressed="false" aria-label="Pause the monotonic clock of a" disabled><span class="led" aria-hidden="true"></span>Pause</button>
+            <button class="btn reset" type="button" data-a="reset" disabled>Reset clocks</button>
           </div>
         </div>
       </article>
@@ -617,11 +630,16 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
             <button class="btn" type="button" data-a="disconnect" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Disconnect S3</button>
             <button class="btn" type="button" data-a="disk" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Error disk</button>
           </div>
-          <div>
-            <button class="btn" type="button" data-a="forward" aria-label="Move the wall clock of b forward 60 s" disabled>Clock +60 s</button>
-            <button class="btn" type="button" data-a="back" aria-label="Move the wall clock of b back 60 s" disabled>Clock −60 s</button>
-            <button class="btn" type="button" data-a="pause" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Pause clocks</button>
-            <button class="btn" type="button" data-a="reset" disabled>Reset clocks</button>
+          <div class="clock wall" role="group" aria-labelledby="wall-b">
+            <span class="caps" id="wall-b">Wall clock</span>
+            <button class="btn" type="button" data-a="forward" aria-label="Move the wall clock of b forward 60 s" disabled>+60 s</button>
+            <button class="btn" type="button" data-a="back" aria-label="Move the wall clock of b back 60 s" disabled>−60 s</button>
+            <button class="btn" type="button" data-a="wall" aria-pressed="false" aria-label="Pause the wall clock of b" disabled><span class="led" aria-hidden="true"></span>Pause</button>
+          </div>
+          <div class="clock" role="group" aria-labelledby="mono-b">
+            <span class="caps" id="mono-b">Monotonic clock</span>
+            <button class="btn" type="button" data-a="monotonic" aria-pressed="false" aria-label="Pause the monotonic clock of b" disabled><span class="led" aria-hidden="true"></span>Pause</button>
+            <button class="btn reset" type="button" data-a="reset" disabled>Reset clocks</button>
           </div>
         </div>
       </article>

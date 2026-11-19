@@ -378,15 +378,12 @@ function drawCard(c) {
   let clocks;
   if (st.state === "crashed" || st.state === "waiting") clocks = "none";
   else {
-    // The monotonic clock cannot jump, so after a pause it stays behind true time for good. The core
-    // uses it only for durations, so the card says only whether it runs.
+    // Each clock where it differs from true time. The monotonic clock cannot jump, so after a pause
+    // it stays behind true time for good. The core uses it only for durations, so the card says only
+    // whether it runs.
     const wall = wallOffset(st);
-    const parts = [];
-    if (st.wallStopped && st.monotonicStopped) parts.push("paused");
-    else if (st.wallStopped) parts.push("wall stopped");
-    else if (st.monotonicStopped) parts.push("monotonic stopped");
-    if (Math.round(wall / 1000)) parts.push("wall " + R.offset(wall));
-    clocks = parts.join(", ") || "true time";
+    const w = [st.wallStopped ? "paused" : "", Math.round(wall / 1000) ? R.offset(wall) : ""].filter(Boolean).join(", ");
+    clocks = [w ? "wall " + w : "", st.monotonicStopped ? "monotonic paused" : ""].filter(Boolean).join("; ") || "true time";
   }
   set(c.f.clocks, clocks);
 
@@ -400,7 +397,8 @@ function drawCard(c) {
   c.b.hang.setAttribute("aria-pressed", String(!!st.networkHung));
   c.b.disconnect.setAttribute("aria-pressed", String(!!st.networkDisconnected));
   c.b.disk.setAttribute("aria-pressed", String(!!st.diskFailing));
-  c.b.pause.setAttribute("aria-pressed", String(!!(st.wallStopped && st.monotonicStopped)));
+  c.b.wall.setAttribute("aria-pressed", String(!!st.wallStopped));
+  c.b.monotonic.setAttribute("aria-pressed", String(!!st.monotonicStopped));
 }
 
 // drawControls enables what makes sense now. Every action waits while another is on its way, so that a
@@ -419,7 +417,7 @@ function drawControls() {
     c.b.crash.disabled = off || notStarted;
     c.b.stop.disabled = off || !(st.state === "running" || startable(c.name, st));
     for (const a of ["hang", "disconnect", "disk"]) c.b[a].disabled = off;
-    for (const a of ["forward", "back", "pause"]) c.b[a].disabled = off || crashed || notStarted;
+    for (const a of ["forward", "back", "wall", "monotonic"]) c.b[a].disabled = off || crashed || notStarted;
     c.b.reset.disabled = off || crashed || notStarted || !touched(st);
   }
   for (const b of document.querySelectorAll("#client [data-target]")) b.disabled = !ready || waiting;
@@ -471,7 +469,8 @@ function act(name, a) {
     case "disk": action = { do: "failDisk", ...i, on: !st.diskFailing }; break;
     case "forward": action = { do: "shiftWall", ...i, by: JUMP }; break;
     case "back": action = { do: "shiftWall", ...i, by: -JUMP }; break;
-    case "pause": action = { do: st.wallStopped && st.monotonicStopped ? "resumeClocks" : "pauseClocks", ...i }; break;
+    case "wall": action = { do: st.wallStopped ? "startWall" : "stopWall", ...i }; break;
+    case "monotonic": action = { do: st.monotonicStopped ? "startMonotonic" : "stopMonotonic", ...i }; break;
     case "reset": return resetClocks(name, st);
   }
   jobs.push({ act: action });
@@ -487,13 +486,15 @@ const wallOffset = (st) => st.wall - state.t;
 const touched = (st) => st.wallStopped || st.monotonicStopped || Math.abs(wallOffset(st)) >= NS;
 
 // resetClocks of the instance: its clocks run again, and its wall clock reads true time. The engine
-// has no action for it, so the page sends resumeClocks if a clock stands still, and then shiftWall by
-// the offset of the wall clock after the resume, because a pause leaves the wall clock behind. The
+// has no action for it, so the page sends startWall and startMonotonic for a clock that stands still,
+// and then shiftWall by the offset of the wall clock after that, because a pause leaves the wall
+// clock behind. The
 // engine keeps its clocks in whole nanoseconds, and rounds the shift to them, so the wall clock lands
 // on true time.
 function resetClocks(name, st) {
   const steps = [];
-  if (st.wallStopped || st.monotonicStopped) steps.push(() => ({ do: "resumeClocks", instance: name }));
+  if (st.wallStopped) steps.push(() => ({ do: "startWall", instance: name }));
+  if (st.monotonicStopped) steps.push(() => ({ do: "startMonotonic", instance: name }));
   steps.push(() => {
     const now = instanceState(name);
     const off = now ? wallOffset(now) : 0;
