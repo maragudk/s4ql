@@ -103,8 +103,6 @@ func (rd *Reader) Read(ctx context.Context) (_ *ReadTx, err error) {
 	err = d.servingLocked()
 	switch {
 	case err != nil:
-	case rd.closed:
-		err = ErrReaderClosed
 	case rd.tx != nil:
 		err = ErrReaderBusy
 	default:
@@ -119,6 +117,7 @@ func (rd *Reader) Read(ctx context.Context) (_ *ReadTx, err error) {
 			_ = r.end(ctx)
 		}
 	}()
+	// A connection that is closed refuses the read: with the stop, or with [ErrReaderClosed].
 	if err := d.use(c); err != nil {
 		return nil, err
 	}

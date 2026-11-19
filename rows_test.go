@@ -187,6 +187,9 @@ func TestRows(t *testing.T) {
 		is.NotError(t, err)
 		first, err := conn.QueryContext(t.Context(), select1)
 		is.NotError(t, err)
+		// The rows are closed before the connection also when the test fails, or the close of the
+		// connection would wait for them.
+		defer func() { _ = first.Close() }()
 		is.True(t, first.Next())
 
 		const want = "a statement that reads on a connection whose rows of an earlier query are open"
