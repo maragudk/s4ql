@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -1172,6 +1173,190 @@ func TestOpen_cache(t *testing.T) {
 		}
 		is.EqualSlice(t, []string{"", "one/", "one/two/", "smørrebrød/🥪/"}, manifests)
 		is.EqualSlice(t, []string{"", "one/", "one/two/", "smørrebrød/🥪/"}, commits)
+	})
+}
+
+// cacheIdentity is the identity of the database that the cache at path records.
+func cacheIdentity(t *testing.T, path string) string {
+	t.Helper()
+	c, err := sqlite.Open(path)
+	is.NotError(t, err)
+	defer func() { is.NotError(t, c.Close()) }()
+	s, err := c.Prepare("select database from s4ql_cache")
+	is.NotError(t, err)
+	ok, err := s.Step()
+	is.NotError(t, err)
+	is.True(t, ok, "the cache records no identity")
+	identity := s.ColumnText(0)
+	is.NotError(t, s.Finalize())
+	return identity
+}
+
+func TestOpen_identity(t *testing.T) {
+	// hasRow1 reports whether the table t1 of the cache at path has the row with the key 1, without
+	// changing the cache.
+	hasRow1 := func(t *testing.T, path string) bool {
+		t.Helper()
+		c, err := sqlite.Open(path)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, c.Close()) }()
+		s, err := c.Prepare("select 1 from t1 where k = 1")
+		is.NotError(t, err)
+		ok, err := s.Step()
+		is.NotError(t, err)
+		is.NotError(t, s.Finalize())
+		return ok
+	}
+
+	t.Run("should record the identity of its database in a new cache, also the empty one", func(t *testing.T) {
+		w := newWorld(t)
+		for cache, identity := range map[string]string{"a": "the database of a", "b": ""} {
+			is.NotError(t, w.serve(t, cache, core.Options{Identity: identity}).Close(t.Context()))
+			is.Equal(t, identity, cacheIdentity(t, filepath.Join(w.dir, cache+".db")))
+		}
+	})
+
+	t.Run("should serve again from a cache that records the identity of its database", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{Identity: "one"})
+		transact(t, d, create("t1", 1, "k"), upsert("t1", 1))
+		is.NotError(t, d.Close(t.Context()))
+
+		d = w.serve(t, "a", core.Options{Identity: "one"})
+		is.Equal(t, "t1(k*0): 1", read(t, d))
+		transact(t, d, upsert("t1", 2))
+		is.Equal(t, "t1(k*0): 1 | 2", read(t, d))
+	})
+
+	t.Run("should refuse a cache that records another identity, name both and what to do, and leave the cache as it is", func(t *testing.T) {
+		w := newWorld(t)
+		path := filepath.Join(w.dir, "a.db")
+		d := w.serve(t, "a", core.Options{Identity: "one"})
+		transact(t, d, create("t1", 1, "k"), upsert("t1", 1))
+		is.NotError(t, d.Close(t.Context()))
+
+		for _, other := range []string{"two", "", "one ", "One"} {
+			_, err := core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{Identity: other})
+			is.Error(t, core.ErrCacheDatabase, err, other)
+			is.True(t, !errors.Is(err, core.ErrLocal), "a local I/O failure")
+			is.Equal(t, fmt.Sprintf(`open the cache: the cache belongs to another database: it records the database "one", and this instance opens the database %q; open each database with a cache of its own, or delete the cache, with its files -wal and -shm, if the database has moved`, other), err.Error())
+		}
+
+		is.Equal(t, "one", cacheIdentity(t, path))
+		is.True(t, hasRow1(t, path), "the row is gone")
+		d = w.serve(t, "a", core.Options{Identity: "one"})
+		is.Equal(t, "t1(k*0): 1", read(t, d))
+	})
+
+	t.Run("should refuse a cache of version 0, which records no identity, and leave it as it is", func(t *testing.T) {
+		w := newWorld(t)
+		path := filepath.Join(w.dir, "a.db")
+		c, err := sqlite.Open(path)
+		is.NotError(t, err)
+		for _, s := range []string{
+			"pragma journal_mode = wal",
+			"create table s4ql_cache (id integer primary key check (id = 1), version integer not null, head text not null) strict",
+			"insert into s4ql_cache (id, version, head) values (1, 0, '" + format.EmptyLog.String() + "')",
+			"create table t1 (k int, primary key (k)) strict, without rowid",
+			"insert into t1 (k) values (1)",
+		} {
+			is.NotError(t, c.Exec(s), s)
+		}
+		is.NotError(t, c.Close())
+
+		_, err = core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{Identity: "one"})
+		is.Error(t, core.ErrCacheVersion, err)
+		is.Equal(t, "open the cache: the cache is not one that this version of s4ql reads: it has version 0, and this version of s4ql reads version 1", err.Error())
+		is.True(t, hasRow1(t, path), "the row is gone")
+		position, _, err := cacheDump(path)
+		is.NotError(t, err)
+		is.Equal(t, format.EmptyLog, position)
+	})
+
+	t.Run("should let exactly one of two instances of two databases that open one new cache at once have it, and refuse the other, many times", func(t *testing.T) {
+		w := newWorld(t)
+		for i := range 50 {
+			path := filepath.Join(w.dir, fmt.Sprint(i, ".db"))
+			// A slow machine must not make the cache busy.
+			options := core.Options{BusyTimeout: time.Hour}
+			identities := []string{"one", "two"}
+			dbs := make([]*core.DB, len(identities))
+			errs := make([]error, len(identities))
+			start := make(chan struct{})
+			var wg sync.WaitGroup
+			for j, identity := range identities {
+				o := options
+				o.Identity = identity
+				s := w.client()
+				wg.Go(func() {
+					<-start
+					dbs[j], errs[j] = core.Open(t.Context(), w.host, s, path, "db", o)
+				})
+			}
+			close(start)
+			wg.Wait()
+
+			winner := -1
+			for j := range identities {
+				if errs[j] == nil {
+					is.True(t, winner < 0, "both instances opened the cache")
+					winner = j
+					continue
+				}
+				is.Error(t, core.ErrCacheDatabase, errs[j], fmt.Sprint(i))
+			}
+			is.True(t, winner >= 0, fmt.Sprint("neither instance opened the cache: ", errs))
+			loser := 1 - winner
+			is.True(t, strings.Contains(errs[loser].Error(), fmt.Sprintf("it records the database %q, and this instance opens the database %q", identities[winner], identities[loser])), errs[loser].Error())
+			is.Equal(t, identities[winner], cacheIdentity(t, path))
+
+			d := dbs[winner]
+			is.NotError(t, d.Wait(t.Context()))
+			is.NotError(t, d.Close(t.Context()))
+		}
+	})
+
+	t.Run("should let two instances of one database that open one new cache at once both have it, one serving and the other a spare", func(t *testing.T) {
+		w := newWorld(t)
+		for i := range 20 {
+			path := filepath.Join(w.dir, fmt.Sprint(i, ".db"))
+			// A slow machine must not make the cache busy, nor the lease run out, and the spare looks
+			// often for a lease that was released.
+			options := core.Options{BusyTimeout: time.Hour, Lease: time.Hour, Watch: 10 * time.Millisecond, Identity: "one"}
+			dbs := make([]*core.DB, 2)
+			errs := make([]error, 2)
+			start := make(chan struct{})
+			var wg sync.WaitGroup
+			for j := range dbs {
+				s := w.client()
+				wg.Go(func() {
+					<-start
+					dbs[j], errs[j] = core.Open(t.Context(), w.host, s, path, fmt.Sprint("db", i), options)
+				})
+			}
+			close(start)
+			wg.Wait()
+			is.NotError(t, errors.Join(errs...))
+
+			// One of them gets the lease, and the other serves once the first has closed.
+			type wait struct {
+				j   int
+				err error
+			}
+			served := make(chan wait, len(dbs))
+			for j, d := range dbs {
+				go func() { served <- wait{j: j, err: d.Wait(t.Context())} }()
+			}
+			first := <-served
+			is.NotError(t, first.err)
+			transact(t, dbs[first.j], create("t1", 1, "k"), upsert("t1", 1))
+			is.NotError(t, dbs[first.j].Close(t.Context()))
+			second := <-served
+			is.NotError(t, second.err)
+			is.True(t, first.j != second.j)
+			is.Equal(t, "t1(k*0): 1", read(t, dbs[second.j]))
+			is.NotError(t, dbs[second.j].Close(t.Context()))
+		}
 	})
 }
 

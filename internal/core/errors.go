@@ -49,6 +49,12 @@ var (
 	// the cause of the stop wraps it under [ErrLocal].
 	ErrCacheVersion = errors.New("the cache is not one that this version of s4ql reads")
 
+	// ErrCacheDatabase is wrapped by the error of [Open] for a cache that records the identity of
+	// another database than [Options.Identity]. Nothing rebuilds or adopts it: a person or the
+	// application chooses another cache for the database, or deletes the cache if the database has
+	// moved and so has a new identity.
+	ErrCacheDatabase = errors.New("the cache belongs to another database")
+
 	// ErrBusy is wrapped by the error of a call for which SQLite reported that the cache is locked,
 	// after waiting for the busy timeout. Another process has the cache open, or s4ql has a bug. It
 	// is not a local I/O failure, and the instance goes on.

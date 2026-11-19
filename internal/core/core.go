@@ -66,6 +66,10 @@ type Options struct {
 	// VFS is the name under which the SQLite VFS is registered that the instance opens its cache
 	// through. The default is SQLite's default VFS.
 	VFS string
+	// Identity of the database, which a new cache records and which [Open] compares with the one
+	// that a cache records. It is only compared: two databases must have two identities, and every
+	// instance of one database the same. The empty string is an identity as any other.
+	Identity string
 
 	// syncOff stops SQLite from syncing the cache to disk, for tests.
 	syncOff bool
@@ -257,10 +261,15 @@ func (d *DB) now() sentAt {
 // Open the database under the key prefix in the store s, with the cache in the SQLite database at
 // path, which it creates if there is none. An empty prefix means that the keys have none.
 //
+// A cache that it creates records [Options.Identity]. A cache that records another identity is
+// refused, also while an instance of the other database uses it, so that two databases never
+// share one cache.
+//
 // It fails only on local problems: options that make no sense, a prefix that cannot be part of a
-// key, and a cache that cannot be opened or that this version did not make, with an error that
-// wraps [ErrLocal] or [ErrCacheVersion]. It does not contact the store and does not wait for the
-// lease: [DB.Wait] does. Nothing rebuilds a cache that cannot be opened.
+// key, a cache that cannot be opened or that this version did not make, and a cache of another
+// database, with an error that wraps [ErrLocal], [ErrCacheVersion], or [ErrCacheDatabase]. It does
+// not contact the store and does not wait for the lease: [DB.Wait] does. Nothing rebuilds or adopts
+// a cache that it refuses.
 func Open(ctx context.Context, h host.Host, s store.Store, path, prefix string, options Options) (_ *DB, err error) {
 	options, err = options.withDefaults()
 	if err != nil {
@@ -303,7 +312,7 @@ func Open(ctx context.Context, h host.Host, s store.Store, path, prefix string, 
 	if d.w, err = openConn(path, options.VFS, busy); err != nil {
 		return nil, openError(err)
 	}
-	if err := d.w.setUp(options.syncOff); err != nil {
+	if err := d.w.setUp(options.syncOff, options.Identity); err != nil {
 		return nil, openError(err)
 	}
 	for range options.Readers {
@@ -325,7 +334,7 @@ func Open(ctx context.Context, h host.Host, s store.Store, path, prefix string, 
 
 // openError of the cache.
 func openError(err error) error {
-	if errors.Is(err, ErrCacheVersion) {
+	if errors.Is(err, ErrCacheVersion) || errors.Is(err, ErrCacheDatabase) {
 		return fmt.Errorf("open the cache: %w", err)
 	}
 	return fmt.Errorf("open the cache: %w: %w", ErrLocal, err)
