@@ -238,3 +238,45 @@ The changed manifest in `TestLease_waiting`.
 ### Future work
 
 The mutation testing of the change, which the brief leaves to a later task.
+
+## Step 6: the fixes after the independent review
+
+**Author:** builder (lease-ends-tx-fixes)
+
+### Prompt Context
+
+**Verbatim prompt:** "An independent review found it sound and left three things. Do them on a branch `lease-ends-tx-fixes` created from `origin/lease-ends-tx`" (1. a test that lost its point, 2. pin what happens when the lease only runs out by the clocks, 3. documents).
+**Interpretation:** give the subtest of `TestLease_waiting` its point back with the planted bug `keepIdleTx`; add permanent tests in the core and the engine of an open write transaction across a lease that only runs out by the clocks and is renewed; record the known gap of unread rows and what the new tests pin.
+**Inferred intent:** keep the checks honest, so that each test fails for the bug it is about, and pin a wanted behaviour that no test held.
+
+### What I did
+
+In `/internal/core/lease_test.go`, the subtest "should fail a call that waits when the instance finds that it has lost the lease" plants `keepIdleTx` and is back to `l.publish()`, with a comment on why. A new subtest of `TestLease_openTx` drops every swap and get for 45 seconds, and checks at 35 seconds that the instance does not serve, that `Tx.Serving` gives `ErrNoLease` with `lease_expired`, and that `Tx.Upsert` still works (it does not look at the clocks); after the store comes back, the instance serves within five seconds, the transaction was never ended (`Tx.Lost` is nil), it commits, and the log holds one commit with the three upserts. In `/internal/engine/tx_test.go`, a new subtest of `TestConn_leaseLost` cuts the client off for 45 seconds with no other instance: at 35 seconds an insert and a select of the open transaction fail with `no valid lease: lease_expired_monotonic`, which matches `core.ErrNoLease` and not `core.ErrTxLeaseLost`; after the renewal the transaction sees only its first insert, a second insert works, the commit succeeds, and `logAnnotations` gives `[[create table t1 ...] [insert ... (1) insert ... (2)]]`. `/docs/todo.md` and `/internal/core/README.md` say both.
+
+### Why
+
+With the manifest of the branch the waiter failed because `endForLease` freed the writer lock, so the wake in `lose` was untested. The clocks-only case was shown by the reviewer but not kept as a test.
+
+### What worked
+
+The check both ways: with `d.wakeLocked()` removed from `lose`, the subtest fails with `lease_test.go:862: Expected "1", but got "0" (type int)`; with the code as it is, it passes. The engine behaves as the brief wanted, so no code changed. `make test` and `make lint` pass; the new tests pass with `-count=20`, also under `-race`.
+
+### What didn't work
+
+Nothing failed.
+
+### What I learned
+
+In the core only `Tx.Serving` and the begin look at the clocks; the other calls of an open transaction go on, and the engine refuses a statement through `Tx.Serving`, so a refused statement never reaches the cache.
+
+### What was tricky
+
+Nothing much; the deadline of `d.Wait` after the renewal is fake time inside the bubble, so it does not depend on the machine.
+
+### What warrants review
+
+The doc sentence in `/docs/todo.md` under "When" that describes the engine's behaviour during the lapse.
+
+### Future work
+
+The scan that holds no statement between rows, recorded as not built in `/docs/todo.md`.
