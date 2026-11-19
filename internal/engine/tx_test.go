@@ -973,6 +973,57 @@ func TestConn_leaseLost(t *testing.T) {
 		})
 	}
 
+	t.Run("should fail the statements of an open write transaction while its lease has run out by the clocks, keep the transaction, and commit it after the renewal", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			h := sim.NewFree(sim.Buggify{})
+			s := simstore.New(h, simstore.Options{})
+			ca := s.Client("a", nil)
+			start := time.Now()
+			d, err := core.Open(t.Context(), h, ca, filepath.Join(t.TempDir(), "a.db"), "db", core.Options{})
+			is.NotError(t, err)
+			c := engine.New(d, h, engine.Options{}).Conn()
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), time.Minute)
+				defer cancel()
+				_ = d.Close(ctx)
+				is.NotError(t, c.Close(ctx))
+			})
+			is.NotError(t, d.Wait(t.Context()))
+			is.Equal(t, "", do(t, c, t1))
+			is.NotError(t, c.Begin(t.Context()))
+			is.Equal(t, "", do(t, c, insert1))
+
+			// The instance cannot reach the store for 45 seconds, and no other instance takes the lease,
+			// which lasts 30 seconds.
+			ca.CutOff(t.Context(), 45*time.Second)
+			time.Sleep(time.Until(start.Add(35 * time.Second)))
+
+			_, err = c.Exec(t.Context(), "insert into t1 (v1) values (3)")
+			is.Error(t, core.ErrNoLease, err)
+			is.True(t, !errors.Is(err, core.ErrTxLeaseLost), fmt.Sprint(err))
+			is.True(t, strings.Contains(fmt.Sprint(err), "lease_expired"), fmt.Sprint(err))
+			is.Equal(t, "no lease", do(t, c, selectT))
+			is.Equal(t, "no lease", do(t, c, "insert into t1 (v1) values (4)"))
+
+			// The store comes back, and the instance renews the lease.
+			time.Sleep(time.Until(start.Add(45 * time.Second)))
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			is.NotError(t, d.Wait(ctx))
+
+			// The transaction is still open, with what it did before, and nothing of the statements
+			// that failed.
+			is.Equal(t, "rows 1", do(t, c, selectT))
+			is.Equal(t, "", do(t, c, insert2))
+			is.NotError(t, c.Commit(t.Context()))
+			is.Equal(t, "rows 1 2", do(t, c, selectT))
+			is.Equal(t, fmt.Sprint([][]string{
+				{t1},
+				{insert1, insert2},
+			}), fmt.Sprint(logAnnotations(t, s)))
+		})
+	})
+
 	t.Run("should end the rows of a query of the transaction that a loop reads when the lease is lost at their next row, and serve again only then", func(t *testing.T) {
 		leaseLost(t, func(t *testing.T, ca *simstore.Client, openA, openB func() (*core.DB, *engine.Conn), h *events) {
 			a, c := openA()
