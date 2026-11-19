@@ -38,6 +38,7 @@ var plantable = map[string]func(b *bugs){
 	"skipUnreadable":       func(b *bugs) { b.skipUnreadable = true },
 	"resendTake":           func(b *bugs) { b.resendTake = true },
 	"renewWaitsForWriter":  func(b *bugs) { b.renewWaitsForWriter = true },
+	"keepIdleTx":           func(b *bugs) { b.keepIdleTx = true },
 	"unlockedCounter":      func(b *bugs) { b.unlockedCounter = true },
 }
 
@@ -127,6 +128,7 @@ const (
 	EventUnknown = eventUnknown
 	EventBusy    = eventBusy
 	EventStop    = eventStop
+	EventTxEnded = eventTxEnded
 
 	AttrOutcome     = attrOutcome
 	AttrTransition  = attrTransition
@@ -137,6 +139,8 @@ const (
 	AttrCommit      = attrCommit
 	AttrBytes       = attrBytes
 	AttrUnknownKind = attrUnknownKind
+	AttrParent      = attrParent
+	AttrTxWaited    = attrTxWaited
 )
 
 // CacheVersion that this package makes.

@@ -219,6 +219,54 @@ var (
 		"writes stuck":                               50,
 	}
 
+	// idleReaches is what the 20 seeds of the default run of [idling] must reach: a quarter of what
+	// they reached on 2026-11-19, with the write transactions that an instance ended because it lost its
+	// lease, which only this workload reaches often.
+	idleReaches = map[string]int64{
+		"broken reads":                                    7,
+		"callers that gave up":                            126,
+		"calls with no answer":                            94,
+		"commits":                                         70,
+		"commits of nothing":                              11,
+		"commits of unknown outcome":                      1,
+		"conflicts":                                       10,
+		"cut-offs":                                        47,
+		"event catch_up/caught_up":                        10,
+		"event catch_up/failed":                           1,
+		"event commit/committed":                          70,
+		"event commit/empty":                              11,
+		"event commit/not_committed":                      2,
+		"event commit/unknown":                            1,
+		"event lease/lost/lost":                           9,
+		"event lease/released/released":                   12,
+		"event lease/renewed/conflict":                    2,
+		"event lease/renewed/renewed":                     88,
+		"event lease/renewed/unknown":                     220,
+		"event lease/taken/taken":                         22,
+		"event refusal/refused":                           551,
+		"event stop/closed":                               15,
+		"event transaction_ended/rolled_back":             5,
+		"event unknown_outcome/commit/not_committed":      1,
+		"event unknown_outcome/renewal/lease_lost":        9,
+		"event unknown_outcome/renewal/renewed":           9,
+		"failed commits":                                  2,
+		"idle transactions ended for the lease":           5,
+		"idle transactions left open ended for the lease": 5,
+		"lost requests":                                   17,
+		"lost responses":                                  11,
+		"outages":                                         1,
+		"reads":                                           230,
+		"reads overtaken by a commit":                     5,
+		"reads refused by a clock":                        92,
+		"refused reads":                                   310,
+		"rollbacks":                                       10,
+		"slow ways":                                       37,
+		"timeouts that expired":                           458,
+		"transactions refused at start":                   272,
+		"writes applied late":                             4,
+		"writes stuck":                                    133,
+	}
+
 	// lateReaches is what the 10 seeds of the default run of [lateWrites] must reach.
 	lateReaches = map[string]int64{
 		"broken reads":                             14,
@@ -270,6 +318,7 @@ var (
 // tally of what happened in the runs of a workload.
 type tally struct {
 	runs, steps                                                                                           int
+	endedTxs, keptEnded                                                                                   int64
 	commits, emptyCommits, failedCommits, unknownCommits, cutCommits, rollbacks, abandoned, refusedWrites int64
 	reads, refusedReads, expiredReads, overtakenReads, statements, stops, restarts, reopens               int64
 	recoveries, recoveredFrames, mostFrames                                                               int64
@@ -328,6 +377,8 @@ func (y *tally) add(seed uint64, s simulation) {
 	y.stops += o.stops.Load()
 	y.restarts += o.restarts.Load()
 	y.reopens += o.reopens.Load()
+	y.endedTxs += o.endedTxs.Load()
+	y.keptEnded += o.keptEnded.Load()
 	y.recoveries += o.recoveries.Load()
 	y.recoveredFrames += o.recoveredFrames.Load()
 	y.mostFrames = max(y.mostFrames, o.mostFrames.Load())
@@ -353,22 +404,24 @@ func (y *tally) add(seed uint64, s simulation) {
 // their kind.
 func (y *tally) reached() map[string]int64 {
 	counts := map[string]int64{
-		"commits":                          y.commits,
-		"commits of nothing":               y.emptyCommits,
-		"failed commits":                   y.failedCommits,
-		"commits of unknown outcome":       y.unknownCommits,
-		"commits cut off by a crash":       y.cutCommits,
-		"rollbacks":                        y.rollbacks,
-		"transactions abandoned":           y.abandoned,
-		"transactions refused at start":    y.refusedWrites,
-		"reads":                            y.reads,
-		"refused reads":                    y.refusedReads,
-		"reads refused by a clock":         y.expiredReads,
-		"reads overtaken by a commit":      y.overtakenReads,
-		"stops":                            y.stops,
-		"restarts after a crash":           y.restarts,
-		"instances closed and opened":      y.reopens,
-		"restarts that recovered from WAL": y.recoveries,
+		"commits":                                         y.commits,
+		"commits of nothing":                              y.emptyCommits,
+		"failed commits":                                  y.failedCommits,
+		"commits of unknown outcome":                      y.unknownCommits,
+		"commits cut off by a crash":                      y.cutCommits,
+		"rollbacks":                                       y.rollbacks,
+		"transactions abandoned":                          y.abandoned,
+		"transactions refused at start":                   y.refusedWrites,
+		"reads":                                           y.reads,
+		"refused reads":                                   y.refusedReads,
+		"reads refused by a clock":                        y.expiredReads,
+		"reads overtaken by a commit":                     y.overtakenReads,
+		"stops":                                           y.stops,
+		"restarts after a crash":                          y.restarts,
+		"instances closed and opened":                     y.reopens,
+		"restarts that recovered from WAL":                y.recoveries,
+		"idle transactions ended for the lease":           y.endedTxs,
+		"idle transactions left open ended for the lease": y.keptEnded,
 	}
 	for name, n := range y.trace {
 		counts[name] = int64(n)
@@ -410,7 +463,7 @@ func (y *tally) log(t *testing.T, w workload) {
 // [TestTx_Savepoint_random], which reads only -replay.
 var (
 	replay         = flag.String("replay", "", "replay this one seed in TestSimulation and TestTx_Savepoint_random, and nothing else, and log its trace or its steps")
-	replayWorkload = flag.String("workload", "single", "workload of the replay: single, full, hammer, or late")
+	replayWorkload = flag.String("workload", "single", "workload of the replay: single, full, hammer, late, or idle")
 	replayBug      = flag.String("bug", "", "planted bug whose workload the replay runs")
 	replayControl  = flag.Bool("control", false, "replay the control of the bug")
 	replayClean    = flag.Bool("clean", false, "replay the workload of the bug without the bug")
@@ -439,6 +492,7 @@ func TestSimulation(t *testing.T) {
 		{name: "should give the same trace when a seed is run twice, and no violations, with instances that compete, clocks that move, crashes, and buggify", workload: fullWorkload, replay: "full", seeds: 30, reaches: fullReaches},
 		{name: "should give the same trace when a seed is run twice, and no violations, with callers that never pause", workload: hammerWorkload, replay: "hammer", seeds: 30, reaches: hammerReaches},
 		{name: "should give the same trace when a seed is run twice, and no violations, with writes that land long after they were sent", workload: lateWrites(func(w *workload) {}), replay: "late", seeds: 10, reaches: lateReaches},
+		{name: "should give the same trace when a seed is run twice, and no violations, with write transactions that sit idle while their instance is cut off", workload: idling(func(w *workload) {}), replay: "idle", seeds: 20, reaches: idleReaches},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -528,6 +582,8 @@ func replaySeed(t *testing.T) {
 		w = hammerWorkload
 	case "late":
 		w = lateWrites(func(*workload) {})
+	case "idle":
+		w = idling(func(*workload) {})
 	default:
 		t.Fatalf("no workload is named %v", *replayWorkload)
 	}
@@ -601,6 +657,15 @@ func competing(change func(w *workload)) workload {
 // unknownOutcomes is a workload aimed at the rules of a manifest swap whose outcome is unknown:
 // one instance whose callers give up before a request to the store times out, and a store that
 // loses many requests and answers, and delivers most of the writes that it lost later.
+// idling is the workload of instances that compete for the lease, with an idler on each, whose
+// write transactions sit idle while the instance is cut off from the store: see [run.idler].
+func idling(change func(w *workload)) workload {
+	w := competing(func(w *workload) {})
+	w.idlers, w.idle = 1, time.Minute
+	change(&w)
+	return w
+}
+
 func unknownOutcomes(change func(w *workload)) workload {
 	w := singleWorkload
 	w.ops, w.think, w.timeout = 30, 5*time.Second, 4*time.Second
@@ -887,6 +952,15 @@ var plantedBugs = []plantedBug{
 			return w
 		}(), "renewWaitsForWriter")),
 		symptoms: []string{"the lease had run out by a clock"},
+	},
+	{
+		bug:      "keepIdleTx",
+		name:     "a lease task that leaves an idle write transaction open when the instance has lost its lease",
+		workload: plant(idling(func(w *workload) {}), "keepIdleTx"),
+		control: new(plant(idling(func(w *workload) {
+			w.instances = 1
+		}), "keepIdleTx")),
+		symptoms: []string{"is open and idle, does not serve"},
 	},
 }
 

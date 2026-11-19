@@ -58,6 +58,9 @@ type bugs struct {
 	// renewWaitsForWriter makes the renewal wait for the writer lock, so that the lease is not
 	// renewed while a write transaction is open.
 	renewWaitsForWriter bool
+	// keepIdleTx makes the lease task leave a write transaction that is open and idle alone when the
+	// instance has lost its lease, and wait for its end before it takes the lease again.
+	keepIdleTx bool
 	// unlockedCounter makes every read add to a counter without synchronisation, which is a data
 	// race.
 	unlockedCounter bool

@@ -227,6 +227,7 @@ func (x fakeTx) serving(context.Context) error    { return nil }
 func (x fakeTx) savepoint(context.Context) error  { return nil }
 func (x fakeTx) release(context.Context) error    { return nil }
 func (x fakeTx) rollbackTo(context.Context) error { return nil }
+func (x fakeTx) lost() error                      { return nil }
 
 func (x fakeTx) end(context.Context) error {
 	x.f.calls = append(x.f.calls, "end")

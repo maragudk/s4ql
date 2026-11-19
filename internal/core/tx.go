@@ -8,6 +8,7 @@ import (
 	"iter"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -24,8 +25,11 @@ import (
 // [Tx.Commit] or [Tx.Rollback], and must end with one of them.
 //
 // A transaction is not safe for concurrent use. If the instance stops serving while a transaction
-// is open, every call of the transaction fails, and it is not committed. After a call fails with an
-// error of the cache, the transaction can only be rolled back.
+// is open, every call of the transaction fails, and it is not committed. If the instance has lost
+// its lease, it ends the transaction unless it is committing, so that it can take the lease back:
+// every later call then fails with an error that wraps [ErrTxLeaseLost], and Rollback returns nil.
+// See [DB.endForLease]. After a call fails with an error of the cache, the transaction can only be
+// rolled back.
 type Tx struct {
 	d *DB
 	c *conn
@@ -49,6 +53,28 @@ type Tx struct {
 	// failed is the error after which the transaction can only be rolled back.
 	failed error
 	done   bool
+
+	// ending is set when [Tx.Commit] or [Tx.Rollback] begins, after which the lease task leaves the
+	// transaction alone, and lease when the lease task has ended it. Both are guarded by [DB.mu].
+	ending bool
+	lease  *leaseEnd
+	// marked is set when lease is, so that a scan looks at each row without the mutex.
+	marked atomic.Bool
+}
+
+// leaseEnd is the end of a write transaction by the lease task, because the instance lost its
+// lease: see [DB.endForLease]. It is guarded by [DB.mu].
+type leaseEnd struct {
+	// err is the error of every later call of the transaction, and reason why the instance did not
+	// serve, in a word.
+	err    error
+	reason string
+	// at is when the lease task ended the transaction, by the monotonic clock.
+	at time.Duration
+	// waited is whether a call of the transaction ran then, which ends the transaction when it
+	// leaves, and done whether the end is under way or over: the roll back of the transaction of
+	// the cache, and the release of the writer lock.
+	waited, done bool
 }
 
 // savepoint is what [Tx.RollbackTo] restores of a transaction, beside the cache, which SQLite's
@@ -88,18 +114,37 @@ func (d *DB) Begin(ctx context.Context) (*Tx, error) {
 		d.writerLock.Release(ctx)
 		return nil, err
 	}
-	defer d.unuse(d.w)
 	if err := d.w.c.Exec("begin immediate"); err != nil {
+		d.unuse(d.w)
 		d.writerLock.Release(ctx)
 		return nil, d.cacheError(ctx, "begin", err)
 	}
 	parent, err := d.w.position()
 	if err != nil {
 		_ = d.w.c.Exec("rollback")
+		d.unuse(d.w)
 		d.writerLock.Release(ctx)
 		return nil, d.cacheError(ctx, "begin", err)
 	}
-	return &Tx{d: d, c: d.w, parent: parent, tables: map[string]*txTable{}}, nil
+
+	// The transaction is recorded, and the connection given back, in the critical section that finds
+	// the instance serving, so that the lease task, which ends the transaction when the instance has
+	// lost its lease, either finds it or finds no transaction that can still begin.
+	tx := &Tx{d: d, c: d.w, parent: parent, tables: map[string]*txTable{}}
+	d.mu.Lock()
+	err = d.usableLocked()
+	if err == nil {
+		d.writing = tx
+		d.w.users--
+	}
+	d.mu.Unlock()
+	if err != nil {
+		_ = d.w.c.Exec("rollback")
+		d.unuse(d.w)
+		d.writerLock.Release(ctx)
+		return nil, d.refused(ctx, "begin", err)
+	}
+	return tx, nil
 }
 
 // Position of the cache when the transaction began: the name of the commit object whose state the
@@ -111,21 +156,102 @@ func (tx *Tx) Position() format.Name {
 // check that the transaction can go on with the given operation, and use its connection for the
 // call, which gives it back with [Tx.leave].
 func (tx *Tx) check(ctx context.Context, operation string) error {
-	switch {
-	case tx.done:
-		return ErrTxDone
-	case tx.failed != nil:
-		return tx.failed
+	if err := tx.state(); err != nil {
+		return err
 	}
 	if err := tx.d.usable(); err != nil {
 		return tx.d.refused(ctx, operation, err)
 	}
-	return tx.d.use(tx.c)
+	return tx.use()
 }
 
-// leave a call of the transaction, which [Tx.check] began.
-func (tx *Tx) leave() {
-	tx.d.unuse(tx.c)
+// state of the transaction: [ErrTxDone] if it has ended, the error of the end by the lease task, the
+// error after which it can only be rolled back, or nil.
+func (tx *Tx) state() error {
+	if tx.done {
+		return ErrTxDone
+	}
+	if err := tx.Lost(); err != nil {
+		return err
+	}
+	return tx.failed
+}
+
+// Lost is nil unless the instance ended the transaction because it lost its lease. It is then the
+// error that every call of the transaction gives until Commit or Rollback, which wraps
+// [ErrTxLeaseLost], and Lost goes on giving it after them.
+func (tx *Tx) Lost() error {
+	tx.d.mu.Lock()
+	defer tx.d.mu.Unlock()
+	if tx.lease == nil {
+		return nil
+	}
+	return tx.lease.err
+}
+
+// use the connection of the transaction for a call, unless the lease task has ended the
+// transaction, in the same critical section in which the lease task looks whether a call uses it.
+func (tx *Tx) use() error {
+	tx.d.mu.Lock()
+	defer tx.d.mu.Unlock()
+	if tx.lease != nil {
+		return tx.lease.err
+	}
+	return tx.d.useLocked(tx.c)
+}
+
+// useToEnd is [Tx.use] for [Tx.Commit] and [Tx.Rollback], which marks the transaction as ending
+// first, so that the lease task does not end it under them. It fails with the error of the end by
+// the lease task, before it marks anything, if there was one.
+func (tx *Tx) useToEnd() error {
+	tx.d.mu.Lock()
+	defer tx.d.mu.Unlock()
+	if tx.lease != nil {
+		return tx.lease.err
+	}
+	tx.ending = true
+	return tx.d.useLocked(tx.c)
+}
+
+// leave a call of the transaction, which [Tx.check] began. If the lease task has ended the
+// transaction while the call ran, the last call to leave rolls it back in the cache and gives back
+// the writer lock.
+func (tx *Tx) leave(ctx context.Context) {
+	d := tx.d
+	d.mu.Lock()
+	last := tx.lease != nil && !tx.lease.done && tx.c.users == 1
+	if last {
+		tx.lease.done = true
+	}
+	d.mu.Unlock()
+	if last {
+		tx.endForLease(ctx)
+		return
+	}
+	d.unuse(tx.c)
+}
+
+// endForLease rolls back the transaction of the cache, gives back its connection, and frees the
+// writer lock, for a transaction that the lease task has ended: see [DB.endForLease]. The caller
+// uses the connection, as the only one, and has set [leaseEnd.done].
+func (tx *Tx) endForLease(ctx context.Context) {
+	d := tx.d
+	tx.c.forget()
+	err := d.cacheError(ctx, "rollback", tx.c.c.Exec("rollback"))
+	d.mu.Lock()
+	d.writing = nil
+	e := *tx.lease
+	d.mu.Unlock()
+	d.unuse(tx.c)
+	d.writerLock.Release(ctx)
+
+	outcome, level := "rolled_back", slog.LevelInfo
+	if err != nil {
+		outcome, level = "failed", slog.LevelWarn
+	}
+	d.event(ctx, level, eventTxEnded, slog.String(attrOutcome, outcome), slog.String(attrReason, e.reason),
+		slog.String(attrParent, tx.parent.String()), slog.Bool(attrTxWaited, e.waited),
+		slog.Duration(attrDurationTotal, d.host.Monotonic()-e.at), errAttr(err))
 }
 
 // Serving returns nil if the instance serves now, as [DB.Begin] requires it: it holds the lease, its
@@ -136,11 +262,8 @@ func (tx *Tx) leave() {
 // manifest swap. It also fails with [ErrTxDone] on a transaction that has ended, and with the error
 // after which the transaction can only be rolled back.
 func (tx *Tx) Serving(ctx context.Context) error {
-	switch {
-	case tx.done:
-		return ErrTxDone
-	case tx.failed != nil:
-		return tx.failed
+	if err := tx.state(); err != nil {
+		return err
 	}
 	tx.d.mu.Lock()
 	err := tx.d.servingLocked()
@@ -160,7 +283,7 @@ func (tx *Tx) Savepoint(ctx context.Context) error {
 	if err := tx.check(ctx, operation); err != nil {
 		return err
 	}
-	defer tx.leave()
+	defer tx.leave(ctx)
 	if tx.saved != nil {
 		return invalidf("a savepoint while one is open")
 	}
@@ -186,7 +309,7 @@ func (tx *Tx) Release(ctx context.Context) error {
 	if err := tx.checkOpen(); err != nil {
 		return err
 	}
-	defer tx.leave()
+	defer tx.leave(ctx)
 	if tx.saved == nil {
 		return invalidf("a release without a savepoint")
 	}
@@ -204,7 +327,7 @@ func (tx *Tx) RollbackTo(ctx context.Context) error {
 	if err := tx.checkOpen(); err != nil {
 		return err
 	}
-	defer tx.leave()
+	defer tx.leave(ctx)
 	sp := tx.saved
 	if sp == nil {
 		return invalidf("a rollback to no savepoint")
@@ -234,13 +357,10 @@ func (tx *Tx) RollbackTo(ctx context.Context) error {
 
 // checkOpen is [Tx.check] for a call that needs only the connection, and not the instance to serve.
 func (tx *Tx) checkOpen() error {
-	switch {
-	case tx.done:
-		return ErrTxDone
-	case tx.failed != nil:
-		return tx.failed
+	if err := tx.state(); err != nil {
+		return err
 	}
-	return tx.d.use(tx.c)
+	return tx.use()
 }
 
 // fail the transaction for an error of the cache during the given operation: it can then only be
@@ -322,7 +442,7 @@ func (tx *Tx) CreateTable(ctx context.Context, ct *s4qlpb.CreateTable) error {
 	if err := tx.check(ctx, operation); err != nil {
 		return err
 	}
-	defer tx.leave()
+	defer tx.leave(ctx)
 	if err := checkCreateTable(ct, tx.d.host.Wall()); err != nil {
 		return err
 	}
@@ -347,7 +467,7 @@ func (tx *Tx) DropTable(ctx context.Context, name string) error {
 	if err := tx.check(ctx, operation); err != nil {
 		return err
 	}
-	defer tx.leave()
+	defer tx.leave(ctx)
 	t, err := tx.table(ctx, operation, name)
 	if err != nil {
 		return err
@@ -425,7 +545,7 @@ func (tx *Tx) Upsert(ctx context.Context, name string, row []*s4qlpb.Value) erro
 	if err := tx.check(ctx, operation); err != nil {
 		return err
 	}
-	defer tx.leave()
+	defer tx.leave(ctx)
 	t, err := tx.table(ctx, operation, name)
 	if err != nil {
 		return err
@@ -448,7 +568,7 @@ func (tx *Tx) Delete(ctx context.Context, name string, key []*s4qlpb.Value) (boo
 	if err := tx.check(ctx, operation); err != nil {
 		return false, err
 	}
-	defer tx.leave()
+	defer tx.leave(ctx)
 	t, err := tx.table(ctx, operation, name)
 	if err != nil {
 		return false, err
@@ -472,7 +592,7 @@ func (tx *Tx) Annotate(ctx context.Context, sql string, parameters []*s4qlpb.Val
 	if err := tx.check(ctx, operation); err != nil {
 		return err
 	}
-	defer tx.leave()
+	defer tx.leave(ctx)
 	a := s4qlpb.Annotation_builder{Statement: s4qlpb.Statement_builder{Sql: new(sql), Parameters: parameters}.Build()}.Build()
 	// The writer of commit objects knows what a valid annotation is.
 	w, err := format.NewCommitWriter(io.Discard, format.EmptyLog, tx.d.host.Wall())
@@ -510,7 +630,7 @@ func (tx *Tx) Table(ctx context.Context, name string) (*s4qlpb.CreateTable, erro
 	if err := tx.check(ctx, operation); err != nil {
 		return nil, err
 	}
-	defer tx.leave()
+	defer tx.leave(ctx)
 	t, err := tx.table(ctx, operation, name)
 	if err != nil {
 		return nil, err
@@ -524,7 +644,7 @@ func (tx *Tx) Tables(ctx context.Context) ([]*s4qlpb.CreateTable, error) {
 	if err := tx.check(ctx, operation); err != nil {
 		return nil, err
 	}
-	defer tx.leave()
+	defer tx.leave(ctx)
 	tables, err := tx.c.list()
 	if err != nil {
 		return nil, tx.fail(ctx, operation, err)
@@ -547,7 +667,7 @@ func (tx *Tx) Get(ctx context.Context, name string, key []*s4qlpb.Value) ([]*s4q
 	if err := tx.check(ctx, operation); err != nil {
 		return nil, err
 	}
-	defer tx.leave()
+	defer tx.leave(ctx)
 	t, err := tx.table(ctx, operation, name)
 	if err != nil {
 		return nil, err
@@ -570,7 +690,7 @@ func (tx *Tx) Scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Value, 
 			yield(nil, err)
 			return
 		}
-		defer tx.leave()
+		defer tx.leave(ctx)
 		t, err := tx.table(ctx, operation, name)
 		if err != nil {
 			yield(nil, err)
@@ -581,6 +701,12 @@ func (tx *Tx) Scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Value, 
 				yield(nil, tx.fail(ctx, operation, err))
 				return
 			}
+			// A scan is a call that the caller can keep running for long, so it looks at each row
+			// whether the lease task has ended the transaction.
+			if tx.marked.Load() {
+				yield(nil, tx.Lost())
+				return
+			}
 			if !yield(row, nil) {
 				return
 			}
@@ -588,17 +714,22 @@ func (tx *Tx) Scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Value, 
 	}
 }
 
-// Rollback the transaction: nothing of it is kept.
+// Rollback the transaction: nothing of it is kept. It returns nil on a transaction that the
+// instance ended because it lost its lease, and on one whose connection [DB.Close] closed. On a
+// transaction that the instance ended while a scan of it runs, such as from the body of a loop over
+// the scan, the writer lock is given back only when the scan ends, so a [DB.Begin] in that body waits
+// for itself.
 func (tx *Tx) Rollback(ctx context.Context) error {
 	if tx.done {
 		return ErrTxDone
 	}
 	defer tx.end(ctx)
-	if tx.d.use(tx.c) != nil {
-		// [DB.Close] closed the connection, which rolled the transaction of the cache back.
+	if tx.useToEnd() != nil {
+		// The lease task ended the transaction, or [DB.Close] closed the connection, which rolled the
+		// transaction of the cache back.
 		return nil
 	}
-	defer tx.leave()
+	defer tx.leave(ctx)
 	return tx.rollback(ctx)
 }
 
@@ -614,12 +745,24 @@ func (tx *Tx) end(ctx context.Context) {
 		return
 	}
 	tx.done = true
-	if tx.d.use(tx.c) == nil {
-		tx.c.forget()
-		tx.leave()
-	}
 	tx.notes.close()
-	tx.d.writerLock.Release(ctx)
+	d := tx.d
+	d.mu.Lock()
+	lost := tx.lease != nil
+	if !lost {
+		d.writing = nil
+	}
+	d.mu.Unlock()
+	if lost {
+		// The end by the lease task gives back the connection and the writer lock, now or when the
+		// last call that runs leaves.
+		return
+	}
+	if d.use(tx.c) == nil {
+		tx.c.forget()
+		d.unuse(tx.c)
+	}
+	d.writerLock.Release(ctx)
 }
 
 // spooled is the commit object of a transaction in its spool file.
@@ -850,11 +993,12 @@ func (tx *Tx) Commit(ctx context.Context) (err error) {
 	}()
 
 	// The commit uses the connection until it knows its outcome, also while it finds that out after
-	// a stop, because it then commits or rolls back the transaction of the cache.
-	if err := d.use(tx.c); err != nil {
+	// a stop, because it then commits or rolls back the transaction of the cache. From here on, the
+	// lease task does not end the transaction for the lease: the manifest swap decides.
+	if err := tx.useToEnd(); err != nil {
 		return err
 	}
-	defer tx.leave()
+	defer tx.leave(ctx)
 	if tx.failed != nil {
 		_ = tx.rollback(ctx)
 		return tx.failed

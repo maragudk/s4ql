@@ -284,8 +284,8 @@ internal/engine/tx.go Conn.leaveEnd boolean: true => false
 	Conn.leaveEnd sets the cut and closing together, and Rows.read tests the cut first and returns after it.
 internal/engine/tx.go Conn.leaveEnd condition: r.done => false
 	On rows that are done, Rows.end does nothing and gives nil, and a loop does not read them, so the function still reports false.
-internal/engine/tx.go ending.end swap arguments: first(e.err, err) => first(err, e.err)
-	No test can reach it: both errors are there only when a commit is refused while a loop reads, and the roll back of the cache then fails, which needs a local failure in a roll back, which no file system that the tests have can make.
+internal/engine/tx.go ending.end swap arguments: first(e.err, e.t.ended(err)) => first(e.t.ended(err), e.err)
+	Both errors are there only when a commit is refused while a loop reads, and the roll back of the cache then fails, which needs a local failure in a roll back, which no file system that the tests have can make, or the instance has ended the transaction for its lease, where only the event differs. The mutation testing of the end for the lease, a later task, is to decide whether a test pins that event.
 
 # The order of errors that are joined.
 internal/engine/engine.go Conn.Close swap arguments: errors.Join(err, closeErr) => errors.Join(closeErr, err)

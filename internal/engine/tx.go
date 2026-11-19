@@ -67,6 +67,16 @@ func (t *transaction) end(ctx context.Context) error {
 	return t.read.end(ctx)
 }
 
+// ended is the error of the event of a transaction that ended without a commit with err: err, or
+// for a write transaction that the instance ended because it lost its lease, whose roll back
+// returns nil, the error of that end, so that the event says how the transaction ended.
+func (t *transaction) ended(err error) error {
+	if err == nil && t.write != nil {
+		return t.write.lost()
+	}
+	return err
+}
+
 // log the event of the transaction, which ended by how with err.
 func (t *transaction) log(ctx context.Context, how string, err error) {
 	outcome, level := outcomeOf(err)
@@ -235,7 +245,7 @@ func (c *Conn) Rollback(ctx context.Context) error {
 		return nil
 	}
 	err := t.end(ctx)
-	t.log(ctx, "rollback", err)
+	t.log(ctx, "rollback", t.ended(err))
 	return err
 }
 
@@ -272,7 +282,7 @@ type ending struct {
 
 func (e ending) end(ctx context.Context) error {
 	err := e.t.end(ctx)
-	e.t.log(ctx, e.how, first(e.err, err))
+	e.t.log(ctx, e.how, first(e.err, e.t.ended(err)))
 	return err
 }
 

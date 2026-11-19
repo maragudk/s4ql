@@ -320,6 +320,7 @@ func (d *DB) leaseLoop(ctx context.Context) {
 func (d *DB) acquire(ctx context.Context) time.Duration {
 	held := locks{d: d}
 	defer held.release(ctx)
+	d.endForLease(ctx)
 	if held.acquireWriter(ctx) != nil || held.acquireManifest(ctx) != nil {
 		return 0
 	}
@@ -424,11 +425,61 @@ func (d *DB) acquire(ctx context.Context) time.Duration {
 	return d.resumeLocked(ctx)
 }
 
+// endForLease ends the write transaction that is open, unless it is committing or rolling back,
+// so that the lease task can take the writer lock, which the transaction holds until its end, to take
+// the lease and to catch up. It is for an instance that does not serve because it has lost its lease
+// or does not know whether a commit of it is in the log, which is when the lease task needs that
+// lock. Such a transaction can never commit: its commit is refused while the instance does not hold
+// the lease or does not serve, and the instance does not get either back while the transaction holds
+// the lock. A transaction that is committing goes on, and its manifest swap decides.
+//
+// The end rolls back the transaction of the cache and gives back the writer lock, and every later
+// call of the transaction fails with an error that wraps [ErrTxLeaseLost], except [Tx.Rollback],
+// which returns nil. Nothing of the transaction is in the log.
+//
+// A call of the transaction that runs at that moment is not cut: it runs to its end, and the end of
+// the transaction comes when the last call that runs leaves the connection ([Tx.leave]), so no two
+// goroutines use the connection at once. A call that starts after that moment fails, and a scan
+// fails at its next row, so that rows of a scan that the caller reads slowly do not hold the lock for
+// long. Rows of a scan that the caller does not read at all hold it until the caller reads the next
+// row or stops the scan: the scan holds a statement of SQLite on the connection, which cannot be
+// ended from another goroutine. The lease task then waits for the writer lock meanwhile, as it waits
+// for a transaction that commits.
+//
+// A transaction that begins after this has looked is refused, because [DB.Begin] checks under mu
+// that the instance serves when it records its transaction, and the instance does not serve when
+// the lease task calls this.
+func (d *DB) endForLease(ctx context.Context) {
+	d.mu.Lock()
+	tx := d.writing
+	if tx == nil || tx.ending || tx.lease != nil || d.stopped != nil || d.bugs.keepIdleTx {
+		// (With keepIdleTx, the planted bug.)
+		d.mu.Unlock()
+		return
+	}
+	reason := d.refusalLocked()
+	tx.lease = &leaseEnd{err: fmt.Errorf("%w: %v", ErrTxLeaseLost, reason), reason: reason, at: d.host.Monotonic()}
+	tx.marked.Store(true)
+	idle := tx.c.users == 0
+	if idle {
+		// The lease task uses the connection for the roll back.
+		tx.lease.done = true
+		tx.c.users++
+	} else {
+		tx.lease.waited = true
+	}
+	d.mu.Unlock()
+	if idle {
+		tx.endForLease(ctx)
+	}
+}
+
 // resume is what an instance does that holds the lease and does not serve: see
 // [DB.resumeLocked]. It returns how long to wait before the next try.
 func (d *DB) resume(ctx context.Context) time.Duration {
 	held := locks{d: d}
 	defer held.release(ctx)
+	d.endForLease(ctx)
 	if held.acquireWriter(ctx) != nil || held.acquireManifest(ctx) != nil {
 		return 0
 	}

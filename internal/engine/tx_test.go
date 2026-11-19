@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"log/slog"
 	"math/rand/v2"
 	"path/filepath"
@@ -878,6 +879,192 @@ func TestConn_stop(t *testing.T) {
 			})
 		})
 	}
+}
+
+// leaseLost runs f in a bubble of synctest with two instances of one database, a and b, each with a
+// connection of an engine. The table t1 exists, and the engine of a logs to the events h.
+func leaseLost(t *testing.T, f func(t *testing.T, ca *simstore.Client, a, b func() (*core.DB, *engine.Conn), h *events)) {
+	t.Helper()
+	synctest.Test(t, func(t *testing.T) {
+		h := sim.NewFree(sim.Buggify{})
+		s := simstore.New(h, simstore.Options{})
+		dir := t.TempDir()
+		logged := &events{}
+		open := func(name string, client *simstore.Client, log *events) func() (*core.DB, *engine.Conn) {
+			return func() (*core.DB, *engine.Conn) {
+				d, err := core.Open(t.Context(), h, client, filepath.Join(dir, name+".db"), "db", core.Options{})
+				is.NotError(t, err)
+				options := engine.Options{}
+				if log != nil {
+					options.Logger = slog.New(log)
+				}
+				c := engine.New(d, h, options).Conn()
+				t.Cleanup(func() {
+					ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), time.Minute)
+					defer cancel()
+					_ = d.Close(ctx)
+					_ = c.Close(ctx)
+				})
+				is.NotError(t, d.Wait(t.Context()))
+				return d, c
+			}
+		}
+		ca := s.Client("a", nil)
+		f(t, ca, open("a", ca, logged), open("b", s.Client("b", nil), nil), logged)
+	})
+}
+
+// isLeaseLost checks that err is the error of a write transaction that the instance ended because it
+// lost its lease.
+func isLeaseLost(t *testing.T, err error) {
+	t.Helper()
+	is.Error(t, core.ErrTxLeaseLost, err)
+	is.Equal(t, "no lease", txErr(err))
+}
+
+func TestConn_leaseLost(t *testing.T) {
+	for _, end := range []string{"commit", "rollback"} {
+		t.Run("should serve again without the application when its open write transaction is idle as it loses the lease, fail the statements and the commit of that transaction, return nil from its "+end+", and be usable after it", func(t *testing.T) {
+			leaseLost(t, func(t *testing.T, ca *simstore.Client, openA, openB func() (*core.DB, *engine.Conn), h *events) {
+				a, c := openA()
+				is.Equal(t, "", do(t, c, t1))
+				is.NotError(t, c.Begin(t.Context()))
+				is.Equal(t, "", do(t, c, insert1))
+
+				// The instance a cannot reach the store, and b takes the lease, commits, and is closed.
+				ca.CutOff(t.Context(), 5*time.Minute)
+				b, cb := openB()
+				is.Equal(t, "", do(t, cb, insert2))
+				time.Sleep(10 * time.Minute)
+				is.NotError(t, b.Close(t.Context()))
+
+				// a takes the lease back, though the transaction is still open on its connection.
+				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+				defer cancel()
+				is.NotError(t, a.Wait(ctx))
+
+				_, err := c.Exec(t.Context(), "insert into t1 (v1) values (3)")
+				isLeaseLost(t, err)
+				_, err = c.Query(t.Context(), selectT)
+				isLeaseLost(t, err)
+				is.Equal(t, `1/1: near "selec": syntax error`, do(t, c, "selec"))
+				if end == "commit" {
+					err := c.Commit(t.Context())
+					isLeaseLost(t, err)
+					is.True(t, !errors.Is(err, core.ErrOutcomeUnknown))
+				} else {
+					is.NotError(t, c.Rollback(t.Context()))
+				}
+				e, level := h.last(t)
+				is.Equal(t, slog.LevelDebug, level)
+				is.Equal(t, engine.EventTransaction, e["msg"])
+				is.Equal(t, end, e[engine.AttrTxEnd])
+				is.Equal(t, "lease_lost", e[engine.AttrOutcome])
+				is.True(t, strings.Contains(e[engine.AttrError], "the transaction was ended because the instance lost its lease"), e[engine.AttrError])
+				is.Error(t, engine.ErrNoTx, c.Rollback(t.Context()))
+
+				// The connection works, and nothing of the transaction that was ended is in the database.
+				is.Equal(t, "rows 2", do(t, c, selectT))
+				is.NotError(t, c.Begin(t.Context()))
+				is.Equal(t, "", do(t, c, "insert into t1 (v1) values (4)"))
+				is.NotError(t, c.Commit(t.Context()))
+				is.Equal(t, "rows 2 4", do(t, c, selectT))
+			})
+		})
+	}
+
+	t.Run("should fail the statements of an open write transaction while its lease has run out by the clocks, keep the transaction, and commit it after the renewal", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			h := sim.NewFree(sim.Buggify{})
+			s := simstore.New(h, simstore.Options{})
+			ca := s.Client("a", nil)
+			start := time.Now()
+			d, err := core.Open(t.Context(), h, ca, filepath.Join(t.TempDir(), "a.db"), "db", core.Options{})
+			is.NotError(t, err)
+			c := engine.New(d, h, engine.Options{}).Conn()
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), time.Minute)
+				defer cancel()
+				_ = d.Close(ctx)
+				is.NotError(t, c.Close(ctx))
+			})
+			is.NotError(t, d.Wait(t.Context()))
+			is.Equal(t, "", do(t, c, t1))
+			is.NotError(t, c.Begin(t.Context()))
+			is.Equal(t, "", do(t, c, insert1))
+
+			// The instance cannot reach the store for 45 seconds, and no other instance takes the lease,
+			// which lasts 30 seconds.
+			ca.CutOff(t.Context(), 45*time.Second)
+			time.Sleep(time.Until(start.Add(35 * time.Second)))
+
+			_, err = c.Exec(t.Context(), "insert into t1 (v1) values (3)")
+			is.Error(t, core.ErrNoLease, err)
+			is.True(t, !errors.Is(err, core.ErrTxLeaseLost), fmt.Sprint(err))
+			is.True(t, strings.Contains(fmt.Sprint(err), "lease_expired"), fmt.Sprint(err))
+			is.Equal(t, "no lease", do(t, c, selectT))
+			is.Equal(t, "no lease", do(t, c, "insert into t1 (v1) values (4)"))
+
+			// The store comes back, and the instance renews the lease.
+			time.Sleep(time.Until(start.Add(45 * time.Second)))
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			is.NotError(t, d.Wait(ctx))
+
+			// The transaction is still open, with what it did before, and nothing of the statements
+			// that failed.
+			is.Equal(t, "rows 1", do(t, c, selectT))
+			is.Equal(t, "", do(t, c, insert2))
+			is.NotError(t, c.Commit(t.Context()))
+			is.Equal(t, "rows 1 2", do(t, c, selectT))
+			is.Equal(t, fmt.Sprint([][]string{
+				{t1},
+				{insert1, insert2},
+			}), fmt.Sprint(logAnnotations(t, s)))
+		})
+	})
+
+	t.Run("should end the rows of a query of the transaction that a loop reads when the lease is lost at their next row, and serve again only then", func(t *testing.T) {
+		leaseLost(t, func(t *testing.T, ca *simstore.Client, openA, openB func() (*core.DB, *engine.Conn), h *events) {
+			a, c := openA()
+			is.Equal(t, "", do(t, c, t1))
+			is.Equal(t, "", do(t, c, insert1))
+			is.Equal(t, "", do(t, c, "insert into t1 (v1) values (3)"))
+			is.NotError(t, c.Begin(t.Context()))
+			rows, err := c.Query(t.Context(), selectT)
+			is.NotError(t, err)
+			next, stop := iter.Pull2(rows.All())
+			defer stop()
+			row, err, ok := next()
+			is.True(t, ok)
+			is.NotError(t, err)
+			is.Equal(t, int64(1), row[0].GetInteger())
+
+			ca.CutOff(t.Context(), 5*time.Minute)
+			b, cb := openB()
+			is.Equal(t, "", do(t, cb, insert2))
+			time.Sleep(10 * time.Minute)
+			is.NotError(t, b.Close(t.Context()))
+			// The scan holds a statement of SQLite on the connection of the transaction, so the instance
+			// waits for the loop.
+			time.Sleep(time.Hour)
+			waitCtx, cancel := context.WithCancel(t.Context())
+			cancel()
+			is.Error(t, context.Canceled, a.Wait(waitCtx))
+
+			_, err, ok = next()
+			is.True(t, ok)
+			isLeaseLost(t, err)
+			_, _, ok = next()
+			is.True(t, !ok)
+			is.NotError(t, rows.Close())
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			is.NotError(t, a.Wait(ctx))
+			is.NotError(t, c.Rollback(t.Context()))
+			is.Equal(t, "rows 1 2 3", do(t, c, selectT))
+		})
+	})
 }
 
 func TestConn_events(t *testing.T) {
