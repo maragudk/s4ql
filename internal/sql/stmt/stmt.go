@@ -14,8 +14,9 @@
 //   - No statement, for a text of only spaces, comments, and semicolons, which SQLite prepares into no
 //     statement and no error.
 //
-// The supported statements are those of slices 1, 2, and 4 of docs/roadmap.md. The README next to this file
-// defines them token for token, and lists the names that a "not supported" error gives.
+// The supported statements are those of slices 1 and 2 of docs/roadmap.md, with the column types and
+// the literals of slice 4. The README next to this file defines them token for token, and lists the
+// names that a "not supported" error gives.
 //
 // A statement is built only from what the pass has recognized. The pass reads the syntax tree of
 // internal/sql/parser in the order of the text and takes each token that the supported form expects

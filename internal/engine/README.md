@@ -251,6 +251,7 @@ The order of the errors is SQLite's:
 The errors that are not SQLite's:
 
 - **"Not supported"** is the `*stmt.NotSupportedError` of the pass, unchanged. It matches `stmt.ErrNotSupported`.
+- **A column type or a literal of slice 4 is "not supported" for now.** The pass supports the column types `integer`, `real`, `text`, and `blob`, and real, string, and blob literals, which the engine does not hold yet. It refuses them after the text's own errors and before the arguments, also in `Check`, with `s4ql: not supported: column type REAL` and `s4ql: not supported: a real literal, which is not an integer`, and the same for the other types, in errors that match `stmt.ErrNotSupported`. `NewPlan` panics for such a statement.
 - **A text without a statement** gives `ErrNoStatement`.
 - **The state of the transaction of a connection has four errors:** `ErrTxOpen`, `ErrNoTx`, `ErrRowsOpen`, and `ErrTxDone`. Each is returned as it is, but for the commit of a write transaction while a loop reads its rows, whose error wraps `ErrRowsOpen`. See [Transactions](#transactions).
 - **A commit that is too large gives an error that matches `ErrTooLarge`,** and that wraps the error of the core, which matches `core.ErrTooLarge`.
