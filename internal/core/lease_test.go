@@ -1108,6 +1108,49 @@ func TestLease_openTx(t *testing.T) {
 		}
 	})
 
+	t.Run("should keep an open write transaction when the lease only runs out by the clocks, and commit it after the renewal", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s := newScriptStore(w.client())
+			start := time.Now()
+			a := w.openOn(t, "a", s, core.Options{})
+			is.NotError(t, a.Wait(t.Context()))
+			write(t, a, func(tx *core.Tx) {
+				is.NotError(t, tx.CreateTable(t.Context(), tableOf("t1", 1, "k")))
+			})
+			tx, err := a.Begin(t.Context())
+			is.NotError(t, err)
+			is.NotError(t, tx.Upsert(t.Context(), "t1", row(1)))
+
+			// The store hears nothing of the instance for 45 seconds, and no other instance takes the
+			// lease, which lasts 30 seconds.
+			s.on("swap", "", drop, -1)
+			s.on("get", "", drop, -1)
+			time.Sleep(time.Until(start.Add(35 * time.Second)))
+			is.True(t, !serves(t, a))
+			err = tx.Serving(t.Context())
+			is.Error(t, core.ErrNoLease, err)
+			is.True(t, strings.Contains(fmt.Sprint(err), "lease_expired"), fmt.Sprint(err))
+			// The calls that change the transaction leave the judgment to the manifest swap of the
+			// commit, so they still work.
+			is.NotError(t, tx.Upsert(t.Context(), "t1", row(2)))
+			time.Sleep(time.Until(start.Add(45 * time.Second)))
+			is.True(t, tx.Lost() == nil, "the transaction was ended")
+
+			// The store comes back, and the instance renews the lease without the writer lock.
+			s.clear()
+			waitServes(t, a)
+			is.True(t, tx.Lost() == nil, "the transaction was ended")
+			is.NotError(t, tx.Serving(t.Context()))
+			is.NotError(t, tx.Upsert(t.Context(), "t1", row(3)))
+			is.NotError(t, tx.Commit(t.Context()))
+
+			is.Equal(t, "t1(k*0): 1 | 2 | 3", read(t, a))
+			commits := w.commits(t)
+			is.Equal(t, 2, len(commits))
+			is.Equal(t, "upsert t1 [0] 1, upsert t1 [0] 2, upsert t1 [0] 3", strings.Join(commits[1], ", "))
+		})
+	})
+
 	t.Run("should keep the transaction open under the planted bug, so that the instance does not serve again", func(t *testing.T) {
 		bubble(t, func(t *testing.T, w *world) {
 			var options core.Options
