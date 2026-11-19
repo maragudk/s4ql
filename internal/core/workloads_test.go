@@ -20,7 +20,6 @@ import (
 // options of the instances of a workload, with the bugs of the given names planted.
 func options(bugs ...string) core.Options {
 	o := core.Options{
-		Readers: 2,
 		// A caller that waits for a lock of the cache with the scheduler off is a moment from getting
 		// it, unless the machine is very slow.
 		BusyTimeout: time.Minute,
@@ -81,11 +80,7 @@ var hammerWorkload = workload{
 	ops:       30,
 	writes:    40,
 	timeout:   30 * time.Second,
-	options: func() core.Options {
-		o := options()
-		o.Readers = 4
-		return o
-	}(),
+	options:   options(),
 	durations: []time.Duration{30 * time.Second},
 	latency:   50 * time.Millisecond,
 	faults:    simstore.AllFaults(),

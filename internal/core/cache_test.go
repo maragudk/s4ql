@@ -59,16 +59,23 @@ func TestScan(t *testing.T) {
 
 	t.Run("should give back the statement of a read's scan that a panic ends, so that a later read sees a later commit and the instance closes", func(t *testing.T) {
 		w := newWorld(t)
-		d := w.serve(t, "a", core.Options{Readers: 1})
+		d := w.serve(t, "a", core.Options{})
 		transact(t, d, create("t1", 1, "k"), upsert("t1", 1))
 
-		r, err := d.Read(t.Context())
+		rd := newReader(t, d)
+		r, err := rd.Read(t.Context())
 		is.NotError(t, err)
 		unwind(t, r.Scan(t.Context(), "t1"))
 		is.NotError(t, r.Close(t.Context()))
 
+		// The next read of the same reader, on the same connection.
 		transact(t, d, upsert("t1", 2))
-		is.Equal(t, "t1(k*0): 1 | 2", read(t, d))
+		r, err = rd.Read(t.Context())
+		is.NotError(t, err)
+		state, err := dump(t.Context(), r)
+		is.NotError(t, err)
+		is.Equal(t, "t1(k*0): 1 | 2", show(state))
+		is.NotError(t, r.Close(t.Context()))
 		is.NotError(t, d.Close(t.Context()))
 	})
 

@@ -59,3 +59,77 @@ The three decisions above, and above all the first: a `sql.Conn` runs one read a
 ### Future work
 
 None yet.
+
+## Step 2: The core hands out readers
+
+**Author:** reader-per-conn builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "The core hands out such readers and keeps track of them: a stop of the instance and a close end every reader, also one that a read transaction is using, exactly as they end the reads of today, and a reader that is given back after that is handled cleanly. A read through a reader keeps every check that `DB.Read` has today (the lease and the clocks before a read, the catch-up before serving, the refusal on an instance that does not serve, the stop). Do not weaken any of them, and show with tests that each still holds on the new path."
+**Interpretation:** A type `Reader` in `/internal/core/read.go`, with its life cycle and the checks of a read, and no pool next to it.
+**Inferred intent:** The owner of a reader, and nothing in the core, decides how many there are, and the core still ends every one of them itself.
+
+### What I did
+
+In `/internal/core/read.go`:
+
+- `DB.Reader(ctx)` opens a connection to the cache, sets `pragma query_only = on`, and puts the connection on the list `DB.readers`, under `DB.mu`, unless the instance has stopped meanwhile. It refuses on a stopped instance, and does not need the instance to serve. A failure of the open goes through `DB.cacheError`.
+- `Reader.Read(ctx)` is the body of the old `DB.Read`. It checks the context, yields at a new site, "core: a read before it starts", and then, in one critical section, refuses for the stop or for an instance that does not serve by `DB.servingLocked`, for a reader that is closed (`ErrReaderClosed`), and for a reader whose read transaction is open (`ErrReaderBusy`). The rest is unchanged: `begin`, the yield, the position, which fixes the state, the yield, and the second `servingLocked`.
+- `Reader.Close(ctx)` ends the read transaction that is open, closes the connection under `DB.mu`, and takes it off the list. After `DB.Close` it finds the connection closed and only takes it off. While a call of the read transaction runs, it returns `ErrReaderInUse` and changes nothing. A second close does nothing.
+- `ReadTx.end` clears `Reader.tx`.
+
+In `/internal/core/core.go`: `Options.Readers`, the semaphore `readerPool`, and the list `idle` are gone, `Open` opens only the write connection, and `DB.use` gives `ErrReaderClosed` for a connection that a reader closed while the instance runs. `DB.closeIdleLocked`, `DB.waitClosed`, and `DB.closeCache` go over `DB.readers` as before, which now grows and shrinks.
+
+In `/internal/core/export_test.go`: `DB.Readers()`, the length of the list, for the tests.
+
+The tests, in `/internal/core/read_test.go` unless another file is named:
+
+- `TestReader_Read`: twenty readers with a read transaction each, each started after one more commit, each on its own state while a further write commits; a second read on a reader refused at once, and started after the first has ended; a context that is done; a reader on a spare, refused with `ErrNoLease`, which reads the holder's commits at the head of the log once the spare has the lease and has caught up; and the two that were there, one state under a commit, and the lease that runs out after the state is fixed.
+- `TestDB_Reader`: no reader on an instance that is closed; and the stop when the cache cannot be opened, through `faultvfs`, with the read transaction of another reader ended by that stop.
+- `TestReader_Close`: the close with a read transaction open; `ErrReaderInUse` inside a scan, and the close after it; nothing left to close after `DB.Close` with eight readers, four of them in a read transaction, and the write-ahead log gone; and six readers in read transactions on an instance that stops for a failed write of the write-ahead log, where every call fails with the stop, three readers are closed before the close of the instance and three after.
+- `TestLease_clocks` in `/internal/core/lease_test.go` starts its reads through `startErr`, so the check of each clock is on the new path, as is every use of `readErr` in the tests of the lease.
+- The simulation, in `/internal/core/simulation_test.go`: each caller is a `caller`, which opens a reader at its first read of a database and closes it when the node has opened its database again or when the caller ends. A close of a reader that fails is a violation. The callers of an instance that crashes never close theirs, and `DB.CloseCache` closes them after the run.
+
+`go test -shuffle on ./internal/core/` passes, with the minimums of `TestSimulation` and every planted bug found, unchanged.
+
+### Why
+
+A reader is one SQLite connection, and its owner is the only one that knows when it is needed. The checks of a read are those of `DB.servingLocked`, at the same two places.
+
+### What worked
+
+Keeping the count of users of a connection (`DB.use`) as the one thing that decides when a connection may close: `Reader.Close` refuses while it is above zero, and `DB.Close` waits for it.
+
+### What didn't work
+
+The first version made a second read on a reader wait, with a semaphore of one permit for each reader, and went through `DB.acquireServing`, as step 1 planned. It worked in the core. It cannot work in the driver: `database/sql` holds the mutex of a connection during every call of the driver on it, also during `Rows.Close` and `Rows.Next`. A second query on a `sql.Conn` that waited inside the driver for the rows of the first would hold that mutex, so nothing could close or read those rows, and the wait could only end with its context. With `context.Background()` it would never end. So a read on a reader that is busy fails at once, with `ErrReaderBusy`, and the semaphore is gone.
+
+The test of the simulator "should list a call from its start until its end" failed after the change:
+
+```
+--- FAIL: TestStateAt/should_list_a_call_from_its_start_until_its_end (0.01s)
+    state_test.go:117: Not true
+    state_test.go:117: listed at its start
+```
+
+It took the fourth call of a run and assumed that it lasts. The run is another one now, and its fourth call, a read that was served, starts and ends at the same simulated time, because each of its three yields drew no jitter. The test now takes the first call that ends later than it starts.
+
+### What I learned
+
+- A read no longer parks at a semaphore, where the scheduler of the simulation could switch tasks. The yield before the read stands in for the acquire. Nothing stands in for the release: the caller's next step is a call of the host anyway.
+- `Reader.Close` must close the SQLite connection under `DB.mu`. If it released the mutex first, `DB.Close` could take the connection for closed and return while SQLite was still closing it, and a test that looks for the write-ahead log right after the close could find it.
+
+### What was tricky
+
+The order of the refusals in `Reader.Read`. The stop comes first, so that a reader whose read transaction a stop has ended, and whose owner has not closed that transaction yet, answers with the stop and not with `ErrReaderBusy`.
+
+### What warrants review
+
+- `/internal/core/read.go`, all of it.
+- That `DB.Reader` opens the connection without `DB.mu` and looks at `stopped` again before it puts the connection on the list. A connection that it then closes itself has read nothing, so it holds no lock and no write-ahead log.
+- The tree does not build between this commit and the one of the driver, because the engine, the simulator, and the driver still call `DB.Read`.
+
+### Future work
+
+`DB.acquireServing` has one caller left, `DB.Begin`.

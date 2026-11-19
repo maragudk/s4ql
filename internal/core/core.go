@@ -6,12 +6,14 @@
 // A [DB] is one instance of one database. [Open] opens its cache and starts the one goroutine of
 // the package, which takes the lease, catches the cache up from the log, renews the lease, and
 // finds out what became of a manifest swap whose outcome is unknown. [DB.Begin] starts a write
-// transaction, of which one runs at a time, and [DB.Read] a read transaction, of which several
-// run in parallel. A transaction changes and reads tables and rows; the package knows no SQL but
-// what it writes itself for the cache.
+// transaction, of which one runs at a time. [DB.Reader] opens a [Reader], a connection to the cache
+// that runs one read transaction at a time, and the read transactions of the readers run in
+// parallel. A transaction changes and reads tables and rows; the package knows no SQL but what it
+// writes itself for the cache.
 //
 // The rules that the package follows are in docs/spec.md under "Concurrency" and "Constraints".
-// What it does in each case is in the doc comments of [DB], [Tx.Commit], and [DB.Read].
+// What it does in each case is in the doc comments of [DB], [Tx.Commit], [Reader], and
+// [Reader.Read].
 //
 // The package waits, reads the time, and draws random numbers only through the [host.Host] that
 // [Open] is given, with two exceptions that decide nothing: log/slog stamps each event with the
@@ -45,9 +47,6 @@ type Options struct {
 	// has renewed it. It is shorter than Lease, and the time between the two is what a renewal has to
 	// succeed in. The default is two thirds of Lease.
 	RenewAfter time.Duration
-	// Readers is the number of connections for read transactions, and so the number of read
-	// transactions that run at once. The default is 4.
-	Readers int
 	// BusyTimeout is how long SQLite waits for a lock on the cache before it reports "busy". The
 	// default is one second.
 	BusyTimeout time.Duration
@@ -95,9 +94,6 @@ func (o Options) withDefaults() (Options, error) {
 	if o.RenewAfter == 0 {
 		o.RenewAfter = o.Lease / 3 * 2
 	}
-	if o.Readers == 0 {
-		o.Readers = 4
-	}
 	if o.BusyTimeout == 0 {
 		o.BusyTimeout = time.Second
 	}
@@ -119,8 +115,6 @@ func (o Options) withDefaults() (Options, error) {
 		return o, fmt.Errorf("the lease lasts %v, which is more than a year", o.Lease)
 	case o.Lease < 0 || o.RenewAfter < 0 || o.RenewAfter >= o.Lease:
 		return o, fmt.Errorf("the lease lasts %v and is renewed after %v, which must be above zero and shorter", o.Lease, o.RenewAfter)
-	case o.Readers < 0:
-		return o, fmt.Errorf("%v read connections", o.Readers)
 	case o.BusyTimeout < 0 || o.StoreTimeout < 0 || o.ObjectTimeout < 0 || o.Watch < 0:
 		return o, errors.New("a timeout or an interval below zero")
 	}
@@ -204,15 +198,11 @@ type DB struct {
 	lastTake     *flight
 	lastTakeFrom store.Version
 
-	// readerPool has one permit for every read connection.
-	readerPool host.Semaphore
-	// readers are all the read connections, idle or not. It does not change after Open.
-	readers []*conn
-
 	// mu guards the fields below. It is never held while waiting.
 	mu sync.Mutex
-	// idle read connections.
-	idle []*conn
+	// readers are the read connections of the [Reader] values that are not closed, in the order in
+	// which they were opened, and those that [DB.Close] closed before their reader was.
+	readers []*conn
 	// stopped is the error of every call once the instance has stopped for good, and done is closed
 	// then.
 	stopped error
@@ -297,7 +287,6 @@ func Open(ctx context.Context, h host.Host, s store.Store, path, prefix string, 
 	d.log = options.Logger.With(attrPrefix, prefix, attrInstance, d.id)
 	d.writerLock = h.NewSemaphore("writer", 1)
 	d.manifestLock = h.NewSemaphore("manifest", 1)
-	d.readerPool = h.NewSemaphore("readers", options.Readers)
 
 	defer func() {
 		if err != nil {
@@ -307,24 +296,12 @@ func Open(ctx context.Context, h host.Host, s store.Store, path, prefix string, 
 
 	// The write connection opens first and runs the first statement, so that recovering the
 	// write-ahead log after a crash, which reports "busy" to every other connection, is over before
-	// a read connection exists.
-	busy := options.BusyTimeout.Milliseconds()
-	if d.w, err = openConn(path, options.VFS, busy); err != nil {
+	// a read connection exists: [DB.Reader] opens one only on an instance that Open has returned.
+	if d.w, err = openConn(path, options.VFS, options.BusyTimeout.Milliseconds()); err != nil {
 		return nil, openError(err)
 	}
 	if err := d.w.setUp(options.syncOff, options.Identity); err != nil {
 		return nil, openError(err)
-	}
-	for range options.Readers {
-		c, err := openConn(path, options.VFS, busy)
-		if err != nil {
-			return nil, openError(err)
-		}
-		d.idle = append(d.idle, c)
-		d.readers = append(d.readers, c)
-		if err := c.exec("pragma query_only = on"); err != nil {
-			return nil, openError(err)
-		}
 	}
 
 	// The task outlives the context of this call, and ends when the instance stops.
@@ -392,7 +369,6 @@ func (d *DB) closeCache() {
 	for _, c := range d.readers {
 		_ = c.close()
 	}
-	d.idle = nil
 	if d.w != nil {
 		_ = d.w.close()
 	}
@@ -704,9 +680,10 @@ func (d *DB) Wait(ctx context.Context) error {
 // manifest then has no lease entry and the next instance does not wait.
 //
 // The cache is closed whatever the store does. Every connection that no call uses is closed at
-// once, also the one of a transaction that is open, whose every call fails from then on: a write
-// transaction is then rolled back, and its Rollback returns nil. A connection that a call uses is
-// closed when the call ends. After the stop, every call fails at its next check, except a
+// once, also the one of every [Reader] and the one of a transaction that is open, whose every call
+// fails from then on: a write transaction is then rolled back, and its Rollback returns nil. A
+// connection that a call uses is closed when the call ends. A reader is still closed by its owner,
+// with [Reader.Close], which then has nothing left to close. After the stop, every call fails at its next check, except a
 // [Tx.Commit] whose swap may be applied, which goes on finding out, and a request to the store that
 // is on its way ends at its answer or its timeout. Close waits for those calls until ctx is done,
 // and returns an error if one still runs.
@@ -778,12 +755,15 @@ func (d *DB) releaseContext(ctx context.Context) (context.Context, context.Cance
 }
 
 // use the connection c for a call, which gives it back with [DB.unuse]. It fails with the error of
-// the stop if [DB.Close] has closed c.
+// the stop if [DB.Close] has closed c, and with [ErrReaderClosed] if [Reader.Close] has.
 func (d *DB) use(c *conn) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if c.closed {
-		return d.stopped
+		if d.stopped != nil {
+			return d.stopped
+		}
+		return ErrReaderClosed
 	}
 	c.users++
 	return nil
