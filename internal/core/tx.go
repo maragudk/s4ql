@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -95,11 +96,13 @@ type txTable struct {
 	dropped string
 	// created is the table that exists now, if the transaction created it. All its rows are new.
 	created *s4qlpb.CreateTable
-	// touched is the name of the temporary table that holds the primary keys of the rows that the
-	// transaction upserted or deleted in a table that existed when it began, each with whether the
-	// row existed then. It is empty if there is none. The keys are in the cache, not in memory, so
-	// that a transaction can change any number of rows.
-	touched string
+	// existed and added are the names of the two temporary tables that hold the primary keys of the
+	// rows that the transaction upserted or deleted in a table that existed when it began: existed
+	// those of the rows that existed then, and added those of the rows that did not. Both are empty
+	// if there are none. The keys are in the cache, not in memory, so that a transaction can change
+	// any number of rows. A temporary table holds a key and nothing else, so that SQLite never
+	// refuses a key there as too big when it took the row in the table: see [Tx.touch].
+	existed, added string
 }
 
 // Begin a write transaction, waiting until no other is open. It fails at once, and whenever the
@@ -476,11 +479,8 @@ func (tx *Tx) DropTable(ctx context.Context, name string) error {
 	if err := tx.c.drop(t); err != nil {
 		return tx.fail(ctx, operation, err)
 	}
-	if e.touched != "" {
-		if err := tx.c.c.Exec(fmt.Sprint("drop table temp.", quote(e.touched))); err != nil {
-			return tx.fail(ctx, operation, err)
-		}
-		e.touched = ""
+	if err := tx.dropTouched(e); err != nil {
+		return tx.fail(ctx, operation, err)
 	}
 	if e.created != nil {
 		// The transaction created the table, so dropping it leaves what was there before: nothing,
@@ -492,39 +492,88 @@ func (tx *Tx) DropTable(ctx context.Context, name string) error {
 	return nil
 }
 
-// touch the row of the table t with the given primary key, before the transaction changes it: if
-// the table existed when the transaction began, the key is recorded, with whether the row exists.
-// The first record of a key stays, so it says whether the row existed when the transaction began.
-func (tx *Tx) touch(t *table, key []*s4qlpb.Value) error {
+// recording reports whether the transaction records the keys that it touches in the table t, which
+// it does for a table that existed when it began.
+func (tx *Tx) recording(t *table) bool {
+	e, ok := tx.tables[fold(t.name)]
+	return !ok || e.created == nil
+}
+
+// touch the row of the table t with the given primary key, after the transaction upserted or
+// deleted it, if the table existed when the transaction began: the key is recorded in the
+// temporary table of the keys of rows that existed before the change, or in the one of the keys of
+// rows that did not, unless one of the two holds it already. The first record of a key stays, so
+// it says whether the row existed when the transaction began.
+//
+// A key is recorded after the change, and only when SQLite took the change, so that a change that
+// SQLite refuses leaves no record. A temporary table holds the key alone, and SQLite's record of a
+// key is never larger than the record of a row with that key, so SQLite takes the key whenever it
+// took the change, and does not refuse it as too big where a row of SQLite's own table would fit.
+func (tx *Tx) touch(t *table, key []*s4qlpb.Value, existed bool) error {
 	e := tx.changed(t.name)
 	if e.created != nil {
 		return nil
 	}
-	if e.touched == "" {
+	if e.existed == "" {
 		tx.temps++
-		name := fmt.Sprint("s4ql_touched_", tx.temps)
-		var b strings.Builder
-		b.WriteString("create table temp.")
-		b.WriteString(quote(name))
-		b.WriteString(" (")
-		for i, position := range t.key {
-			typ, err := typeSQL(t.columns[position].typ)
-			if err != nil {
+		names := []string{fmt.Sprint("s4ql_existed_", tx.temps), fmt.Sprint("s4ql_added_", tx.temps)}
+		for _, name := range names {
+			var b strings.Builder
+			b.WriteString("create table temp.")
+			b.WriteString(quote(name))
+			b.WriteString(" (")
+			for i, position := range t.key {
+				typ, err := typeSQL(t.columns[position].typ)
+				if err != nil {
+					return err
+				}
+				fmt.Fprint(&b, "k", i, " ", typ, ", ")
+			}
+			b.WriteString("primary key (")
+			b.WriteString(keyColumns("", len(t.key)))
+			b.WriteString(")) strict, without rowid")
+			if err := tx.c.c.Exec(b.String()); err != nil {
 				return err
 			}
-			fmt.Fprint(&b, "k", i, " ", typ, ", ")
 		}
-		b.WriteString("existed int not null, primary key (")
-		b.WriteString(keyColumns("", len(t.key)))
-		b.WriteString(")) strict, without rowid")
-		if err := tx.c.c.Exec(b.String()); err != nil {
+		e.existed, e.added = names[0], names[1]
+	}
+	into, other := e.added, e.existed
+	if existed {
+		into, other = e.existed, e.added
+	}
+	terms := make([]string, len(t.key))
+	for i := range terms {
+		terms[i] = fmt.Sprint("k.k", i, " = ?", i+1)
+	}
+	sql := fmt.Sprint("insert or ignore into temp.", quote(into), " select ", placeholders(len(t.key)),
+		" where not exists (select 1 from temp.", quote(other), " as k where ", strings.Join(terms, " and "), ")")
+	return tx.c.exec(sql, values(key)...)
+}
+
+// dropTouched drops the temporary tables of the keys that the transaction touched in the table of
+// e, if there are any.
+func (tx *Tx) dropTouched(e *txTable) error {
+	if e.existed == "" {
+		return nil
+	}
+	for _, name := range []string{e.existed, e.added} {
+		if err := tx.c.c.Exec(fmt.Sprint("drop table temp.", quote(name))); err != nil {
 			return err
 		}
-		e.touched = name
 	}
-	sql := fmt.Sprint("insert or ignore into temp.", quote(e.touched), " values (", placeholders(len(t.key)),
-		", exists (select 1 from main.", quote(t.name), " as t where ", t.keyCondition("t"), "))")
-	return tx.c.exec(sql, values(key)...)
+	e.existed, e.added = "", ""
+	return nil
+}
+
+// tooBig is the error of a write that SQLite refused with err, which wraps [ErrTooBig] if SQLite
+// refused it as too big, and nil otherwise. SQLite refuses such a statement before it changes
+// anything, so the transaction can go on.
+func tooBig(err error) error {
+	if isTooBig(err) {
+		return fmt.Errorf("%w: %v", ErrTooBig, err)
+	}
+	return nil
 }
 
 // keyColumns of a temporary table of touched keys: k0, k1, and so on, each after the prefix.
@@ -537,9 +586,11 @@ func keyColumns(prefix string, n int) string {
 }
 
 // Upsert a row into the table with the given name: insert it, or replace the row with the same
-// primary key. The row has a value for each column of the table, in their order. It fails with an
-// error that wraps [ErrNoTable] if there is no such table, and with [ErrInvalid] for a row that the
-// table cannot hold.
+// primary key. The row has a value for each column of the table, in their order, and a real that
+// is -0.0 is stored as 0.0, as SQLite stores it. It fails with an error that wraps [ErrNoTable] if
+// there is no such table, with [ErrInvalid] for a row that the table cannot hold, and with
+// [ErrTooBig] for a text or a blob, or a row, that is larger than SQLite takes, after which the
+// transaction goes on without the row.
 func (tx *Tx) Upsert(ctx context.Context, name string, row []*s4qlpb.Value) error {
 	const operation = "upsert"
 	if err := tx.check(ctx, operation); err != nil {
@@ -550,19 +601,30 @@ func (tx *Tx) Upsert(ctx context.Context, name string, row []*s4qlpb.Value) erro
 	if err != nil {
 		return err
 	}
-	if err := t.checkRow(row); err != nil {
+	if err := t.checkRow(row, tx.c.limit); err != nil {
 		return err
 	}
-	if err := tx.touch(t, t.keyOf(row)); err != nil {
+	key := t.keyOf(row)
+	var existed bool
+	if tx.recording(t) {
+		if existed, err = tx.c.exists(t, key); err != nil {
+			return tx.fail(ctx, operation, err)
+		}
+	}
+	if err := tx.c.upsert(t, row); err != nil {
+		if refused := tooBig(err); refused != nil {
+			return refused
+		}
 		return tx.fail(ctx, operation, err)
 	}
-	return tx.fail(ctx, operation, tx.c.upsert(t, row))
+	return tx.fail(ctx, operation, tx.touch(t, key, existed))
 }
 
 // Delete the row with the given primary key from the table with the given name, and report
 // whether there was one. The key has a value for each primary-key column, in key order. It fails
-// with an error that wraps [ErrNoTable] if there is no such table, and with [ErrInvalid] for a key
-// that is not one of the table.
+// with an error that wraps [ErrNoTable] if there is no such table, with [ErrInvalid] for a key that
+// is not one of the table, and with [ErrTooBig] for a text or a blob that is longer than SQLite
+// takes, after which the transaction goes on.
 func (tx *Tx) Delete(ctx context.Context, name string, key []*s4qlpb.Value) (bool, error) {
 	const operation = "delete"
 	if err := tx.check(ctx, operation); err != nil {
@@ -573,14 +635,23 @@ func (tx *Tx) Delete(ctx context.Context, name string, key []*s4qlpb.Value) (boo
 	if err != nil {
 		return false, err
 	}
-	if err := t.checkKey(key); err != nil {
+	if err := t.checkKey(key, tx.c.limit); err != nil {
 		return false, err
 	}
-	if err := tx.touch(t, key); err != nil {
+	found, err := tx.c.delete(t, key)
+	if err != nil {
 		return false, tx.fail(ctx, operation, err)
 	}
-	found, err := tx.c.delete(t, key)
-	return found, tx.fail(ctx, operation, err)
+	// The delete of a row that is not there changes no row, so no key is recorded. It still counts
+	// as a change of the table, for the order of the tables in the commit object.
+	if !found {
+		tx.changed(t.name)
+		return false, nil
+	}
+	if err := tx.touch(t, key, true); err != nil {
+		return false, tx.fail(ctx, operation, err)
+	}
+	return true, nil
 }
 
 // Annotate the transaction with a statement that it ran: its SQL text and its parameters. The
@@ -672,7 +743,7 @@ func (tx *Tx) Get(ctx context.Context, name string, key []*s4qlpb.Value) ([]*s4q
 	if err != nil {
 		return nil, err
 	}
-	if err := t.checkKey(key); err != nil {
+	if err := t.checkKey(key, tx.c.limit); err != nil {
 		return nil, err
 	}
 	row, err := tx.c.get(t, key)
@@ -837,13 +908,13 @@ func (tx *Tx) spoolCommit(ctx context.Context) (_ *spooled, err error) {
 				if err != nil {
 					return nil, fail(err)
 				}
-				if err := w.UpsertRow(t.name, columns, row); err != nil {
+				if err := w.UpsertRow(t.name, columns, tx.committed(row)); err != nil {
 					return nil, fail(err)
 				}
 				out.changes++
 			}
 
-		case e.touched != "":
+		case e.existed != "":
 			n, err := tx.spoolTouched(w, e)
 			if err != nil {
 				return nil, fail(err)
@@ -898,12 +969,15 @@ func (tx *Tx) spoolTouched(w *format.CommitWriter, e *txTable) (int, error) {
 	columns := positions(len(t.columns))
 
 	var changes int
-	upserts := fmt.Sprint("select t.* from temp.", quote(e.touched), " as k join main.", quote(t.name), " as t on ", match, " order by ", order)
+	// The two temporary tables hold no key twice.
+	upserts := fmt.Sprint("select t.* from (select * from temp.", quote(e.existed), " union all select * from temp.", quote(e.added),
+		") as k join main.", quote(t.name), " as t on ", match, " order by ", order)
 	if err := tx.c.query(upserts, func(s *sqlite.Stmt) error {
 		row, err := readRow(s, 0, len(t.columns))
 		if err != nil {
 			return err
 		}
+		row = tx.committed(row)
 		changes++
 		if d.bugs.keyTwice {
 			// The planted bug.
@@ -920,7 +994,7 @@ func (tx *Tx) spoolTouched(w *format.CommitWriter, e *txTable) (int, error) {
 		// The planted bug.
 		return changes, nil
 	}
-	deletes := fmt.Sprint("select ", order, " from temp.", quote(e.touched), " as k where k.existed = 1 and not exists (select 1 from main.",
+	deletes := fmt.Sprint("select ", order, " from temp.", quote(e.existed), " as k where not exists (select 1 from main.",
 		quote(t.name), " as t where ", match, ") order by ", order)
 	if err := tx.c.query(deletes, func(s *sqlite.Stmt) error {
 		key, err := readRow(s, 0, len(t.key))
@@ -939,15 +1013,30 @@ func (tx *Tx) spoolTouched(w *format.CommitWriter, e *txTable) (int, error) {
 func (tx *Tx) dropTemps() error {
 	tx.c.forget()
 	for _, e := range tx.order {
-		if e.touched == "" {
-			continue
-		}
-		if err := tx.c.c.Exec(fmt.Sprint("drop table temp.", quote(e.touched))); err != nil {
+		if err := tx.dropTouched(e); err != nil {
 			return err
 		}
-		e.touched = ""
 	}
 	return nil
+}
+
+// committed is the row as the commit object holds it: as the cache holds it.
+func (tx *Tx) committed(row []*s4qlpb.Value) []*s4qlpb.Value {
+	if !tx.d.bugs.blobCut {
+		return row
+	}
+	// The planted bug: a blob is cut at its first zero byte, as by code that takes it for a string
+	// of C.
+	cut := make([]*s4qlpb.Value, len(row))
+	for i, v := range row {
+		cut[i] = v
+		if v.WhichKind() == s4qlpb.Value_Blob_case {
+			if j := bytes.IndexByte(v.GetBlob(), 0); j >= 0 {
+				cut[i] = s4qlpb.Value_builder{Blob: v.GetBlob()[:j:j]}.Build()
+			}
+		}
+	}
+	return cut
 }
 
 // Commit the transaction. It returns nil if and only if the transaction is known to be committed.

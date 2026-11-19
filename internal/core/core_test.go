@@ -143,13 +143,22 @@ func row(vs ...any) []*s4qlpb.Value {
 	return values
 }
 
-// text of a row: its values joined by commas.
+// text of a row: its values joined by commas, each exactly, so that two values have the same text
+// only if they are the same, bit for bit: an integer in decimal, a real as "r" and the shortest
+// decimal that reads back to its bits, with the sign of -0, text quoted as Go quotes it, a blob as
+// x'' with its bytes in hexadecimal, and null.
 func text(values []*s4qlpb.Value) string {
 	parts := make([]string, len(values))
 	for i, v := range values {
 		switch v.WhichKind() {
 		case s4qlpb.Value_Integer_case:
 			parts[i] = fmt.Sprint(v.GetInteger())
+		case s4qlpb.Value_Real_case:
+			parts[i] = fmt.Sprint("r", v.GetReal())
+		case s4qlpb.Value_Text_case:
+			parts[i] = fmt.Sprintf("%q", v.GetText())
+		case s4qlpb.Value_Blob_case:
+			parts[i] = fmt.Sprintf("x'%x'", v.GetBlob())
 		case s4qlpb.Value_Null_case:
 			parts[i] = "null"
 		default:
@@ -171,6 +180,34 @@ func tableOf(name string, keys int, columns ...string) *s4qlpb.CreateTable {
 	return ct.Build()
 }
 
+// typeNames are SQLite's names of the types of a column, in lowercase, by their type in a commit
+// object.
+var typeNames = map[s4qlpb.Type]string{
+	s4qlpb.Type_TYPE_INT:     "int",
+	s4qlpb.Type_TYPE_INTEGER: "integer",
+	s4qlpb.Type_TYPE_REAL:    "real",
+	s4qlpb.Type_TYPE_TEXT:    "text",
+	s4qlpb.Type_TYPE_BLOB:    "blob",
+}
+
+// typeName of the type of a column, as SQLite names it, in lowercase.
+func typeName(typ s4qlpb.Type) string {
+	if name, ok := typeNames[typ]; ok {
+		return name
+	}
+	return fmt.Sprint("?", typ)
+}
+
+// typedTable of the given name, with one column of each of the given types, named c0, c1, and so
+// on, of which the first is the primary key.
+func typedTable(name string, types ...s4qlpb.Type) *s4qlpb.CreateTable {
+	ct := s4qlpb.CreateTable_builder{Table: new(name), PrimaryKey: []uint32{0}}
+	for i, typ := range types {
+		ct.Columns = append(ct.Columns, s4qlpb.Column_builder{Name: new(fmt.Sprint("c", i)), Type: new(typ)}.Build())
+	}
+	return ct.Build()
+}
+
 // reader is what a write transaction and a read transaction both read with.
 type reader interface {
 	Tables(ctx context.Context) ([]*s4qlpb.CreateTable, error)
@@ -179,7 +216,7 @@ type reader interface {
 }
 
 // describe a table: its name, its columns, each with a star if it is in the primary key and the
-// position there, as in "t1(a*0,b)".
+// position there, and with its type after a colon unless it is int, as in "t1(a*0,b:text)".
 func describe(ct *s4qlpb.CreateTable) string {
 	columns := make([]string, len(ct.GetColumns()))
 	for i, c := range ct.GetColumns() {
@@ -188,6 +225,9 @@ func describe(ct *s4qlpb.CreateTable) string {
 			if int(key) == i {
 				columns[i] += fmt.Sprint("*", position)
 			}
+		}
+		if c.GetType() != s4qlpb.Type_TYPE_INT {
+			columns[i] += ":" + typeName(c.GetType())
 		}
 	}
 	return fmt.Sprint(ct.GetTable(), "(", strings.Join(columns, ","), ")")
@@ -814,7 +854,8 @@ func TestDB_stop_cache(t *testing.T) {
 
 	t.Run("should stop for good when another process adds to the cache a table that s4ql did not make", func(t *testing.T) {
 		for _, table := range []string{
-			"t9 (k text primary key) strict, without rowid",
+			"t9 (k any primary key) strict, without rowid",
+			"t9 (k int primary key, v any) strict, without rowid",
 			"t9 (k int) strict",
 		} {
 			w := newWorld(t)

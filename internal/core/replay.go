@@ -186,7 +186,7 @@ func apply(c *conn, change *s4qlpb.Change) (int, error) {
 			return 0, err
 		}
 		for i, key := range dr.GetPrimaryKeys() {
-			if err := t.checkKey(key.GetValues()); err != nil {
+			if err := t.checkKey(key.GetValues(), c.limit); err != nil {
 				return 0, brokenf("key %v that it deletes: %v", i, err)
 			}
 			found, err := c.delete(t, key.GetValues())
@@ -262,7 +262,7 @@ func applyUpsertRows(c *conn, ur *s4qlpb.UpsertRows) (int, error) {
 
 	for i, row := range ur.GetRows() {
 		for j, v := range row.GetValues() {
-			if err := t.checkValue(positions[j], v); err != nil {
+			if err := t.checkValue(positions[j], v, c.limit); err != nil {
 				return 0, brokenf("row %v that it upserts: %v", i, err)
 			}
 		}

@@ -52,7 +52,7 @@ func (d *DB) Reader(ctx context.Context) (*Reader, error) {
 	// connection that nothing knows of. A reader opens the cache that the write connection made and
 	// never makes one: a cache whose file is gone, such as one deleted under the instance, is a file
 	// that cannot be opened, and not a new empty cache without the tables.
-	c, err := openConn(sqlite.OpenExistingVFS, d.path, d.options.VFS, d.options.BusyTimeout.Milliseconds())
+	c, err := openConn(sqlite.OpenExistingVFS, d.path, d.options)
 	if err == nil {
 		if err = c.exec("pragma query_only = on"); err != nil {
 			_ = c.close()
@@ -304,7 +304,7 @@ func (r *ReadTx) Get(ctx context.Context, name string, key []*s4qlpb.Value) ([]*
 	if err != nil {
 		return nil, err
 	}
-	if err := t.checkKey(key); err != nil {
+	if err := t.checkKey(key, r.c.limit); err != nil {
 		return nil, err
 	}
 	row, err := r.c.get(t, key)

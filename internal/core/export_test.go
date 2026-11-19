@@ -35,6 +35,7 @@ var plantable = map[string]func(b *bugs){
 	"replayCommitsEarly":   func(b *bugs) { b.replayCommitsEarly = true },
 	"keyTwice":             func(b *bugs) { b.keyTwice = true },
 	"forgetDelete":         func(b *bugs) { b.forgetDelete = true },
+	"blobCut":              func(b *bugs) { b.blobCut = true },
 	"skipUnreadable":       func(b *bugs) { b.skipUnreadable = true },
 	"resendTake":           func(b *bugs) { b.resendTake = true },
 	"renewWaitsForWriter":  func(b *bugs) { b.renewWaitsForWriter = true },
@@ -56,6 +57,12 @@ func (o Options) Unplanted() Options {
 // SyncOff stops SQLite from syncing the cache to disk.
 func (o *Options) SyncOff() {
 	o.syncOff = true
+}
+
+// SetLengthLimit is the largest text or blob, and the largest row, in bytes, that the cache of the
+// instance holds. SQLite raises a limit below 30 to 30.
+func (o *Options) SetLengthLimit(n int) {
+	o.lengthLimit = n
 }
 
 // SpoolFile is the file of a spool, which [Options.WrapSpools] wraps.

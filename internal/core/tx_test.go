@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"io"
 	"log/slog"
 	"math/rand/v2"
@@ -246,12 +247,12 @@ func TestTx_Commit(t *testing.T) {
 			steps: []step{
 				note("insert into t1 (k, v) values (?, ?)", 3, 30), upsert("t1", 3, 30),
 				note("delete from t1 where k = ?", 1), remove("t1", true, 1),
-				note("select ?, ?, ?, ?", "text", 1.5, nil, []byte{1}),
+				note("select ?, ?, ?, ?, ?", "text", 1.5, nil, []byte{1}, math.Copysign(0, -1)),
 			},
 			commit: []string{
 				"upsert t1 [0 1] 3,30", "delete t1 1",
 				"note insert into t1 (k, v) values (?, ?) [3,30]", "note delete from t1 where k = ? [1]",
-				fmt.Sprint("note select ?, ?, ?, ? [?", s4qlpb.Value_Text_case, ",?", s4qlpb.Value_Real_case, ",null,?", s4qlpb.Value_Blob_case, "]"),
+				`note select ?, ?, ?, ?, ? ["text",r1.5,null,x'01',r-0]`,
 			},
 			state: "t1(k*0,v): 2,20 | 3,30\nt2(a*0,b*1,c): 1,1,100",
 		},

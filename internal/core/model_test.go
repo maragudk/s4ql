@@ -1,6 +1,7 @@
 package core_test
 
 import (
+	"bytes"
 	"cmp"
 	"errors"
 	"fmt"
@@ -45,14 +46,41 @@ func (t *mtable) sorted() [][]*s4qlpb.Value {
 	return rows
 }
 
-// compareKeys of integers, as SQLite orders them.
+// compareKeys as SQLite orders the keys of a table, whose columns each hold values of one kind:
+// integers and reals by their number, with -0.0 the same as 0.0, and text and blobs byte by byte, as
+// the collation BINARY compares text.
 func compareKeys(a, b []*s4qlpb.Value) int {
 	for i := range a {
-		if c := cmp.Compare(a[i].GetInteger(), b[i].GetInteger()); c != 0 {
+		var c int
+		switch a[i].WhichKind() {
+		case s4qlpb.Value_Integer_case:
+			c = cmp.Compare(a[i].GetInteger(), b[i].GetInteger())
+		case s4qlpb.Value_Real_case:
+			c = cmp.Compare(a[i].GetReal(), b[i].GetReal())
+		case s4qlpb.Value_Text_case:
+			c = strings.Compare(a[i].GetText(), b[i].GetText())
+		case s4qlpb.Value_Blob_case:
+			c = bytes.Compare(a[i].GetBlob(), b[i].GetBlob())
+		default:
+			panic(fmt.Sprint("a key of kind ", a[i].WhichKind()))
+		}
+		if c != 0 {
 			return c
 		}
 	}
 	return 0
+}
+
+// stored values as a column of SQLite holds them: a real that is -0.0 as 0.0. The values that are
+// not changed are shared.
+func stored(values []*s4qlpb.Value) []*s4qlpb.Value {
+	out := slices.Clone(values)
+	for i, v := range out {
+		if v.WhichKind() == s4qlpb.Value_Real_case && v.GetReal() == 0 {
+			out[i] = s4qlpb.Value_builder{Real: new(0.0)}.Build()
+		}
+	}
+	return out
 }
 
 // mstate is a state of the database in the model: its tables, by their folded names.
@@ -303,12 +331,13 @@ func (m *mtx) drop(name string) bool {
 	return true
 }
 
-// upsert the row, and report whether the table is there.
+// upsert the row, as a column holds it, and report whether the table is there.
 func (m *mtx) upsert(name string, row []*s4qlpb.Value) bool {
 	t := m.now.tables[foldName(name)]
 	if t == nil {
 		return false
 	}
+	row = stored(row)
 	key := t.key(row)
 	if c := m.change(name); !c.created {
 		c.touched[text(key)] = key
@@ -323,6 +352,7 @@ func (m *mtx) remove(name string, key []*s4qlpb.Value) (table, found bool) {
 	if t == nil {
 		return false, false
 	}
+	key = stored(key)
 	if c := m.change(name); !c.created {
 		c.touched[text(key)] = key
 	}
@@ -574,10 +604,17 @@ func cacheDump(path string) (position format.Name, state map[string][]string, er
 			if pk := s.ColumnInt64(2); pk > 0 {
 				keyed[pk] = uint32(len(ct.Columns))
 			}
-			if s.ColumnText(1) != "INT" {
+			// SQLite reports the type of a column of a strict table in capitals.
+			typ := s4qlpb.Type_TYPE_UNSPECIFIED
+			for t, n := range typeNames {
+				if strings.ToUpper(n) == s.ColumnText(1) {
+					typ = t
+				}
+			}
+			if typ == s4qlpb.Type_TYPE_UNSPECIFIED {
 				err = fmt.Errorf("the column %v of the table %v has the type %v", s.ColumnText(0), name, s.ColumnText(1))
 			}
-			ct.Columns = append(ct.Columns, s4qlpb.Column_builder{Name: new(s.ColumnText(0)), Type: new(s4qlpb.Type_TYPE_INT)}.Build())
+			ct.Columns = append(ct.Columns, s4qlpb.Column_builder{Name: new(s.ColumnText(0)), Type: new(typ)}.Build())
 		}); err != nil {
 			return format.Name{}, nil, err
 		}
@@ -588,18 +625,22 @@ func cacheDump(path string) (position format.Name, state map[string][]string, er
 		}
 		rows := []string{}
 		if err := query("select * from "+quoted(name)+" order by "+strings.Join(order, ", "), func(s *sqlite.Stmt) {
-			values := make([]string, s.ColumnCount())
+			values := make([]*s4qlpb.Value, s.ColumnCount())
 			for i := range values {
 				switch s.ColumnType(i) {
 				case sqlite.TypeInteger:
-					values[i] = fmt.Sprint(s.ColumnInt64(i))
-				case sqlite.TypeNull:
-					values[i] = "null"
+					values[i] = s4qlpb.Value_builder{Integer: new(s.ColumnInt64(i))}.Build()
+				case sqlite.TypeFloat:
+					values[i] = s4qlpb.Value_builder{Real: new(s.ColumnDouble(i))}.Build()
+				case sqlite.TypeText:
+					values[i] = s4qlpb.Value_builder{Text: new(s.ColumnText(i))}.Build()
+				case sqlite.TypeBlob:
+					values[i] = s4qlpb.Value_builder{Blob: s.ColumnBlob(i)}.Build()
 				default:
-					values[i] = fmt.Sprint("?", s.ColumnType(i))
+					values[i] = s4qlpb.Value_builder{Null: &s4qlpb.Null{}}.Build()
 				}
 			}
-			rows = append(rows, strings.Join(values, ","))
+			rows = append(rows, text(values))
 		}); err != nil {
 			return format.Name{}, nil, err
 		}

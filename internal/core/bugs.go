@@ -50,6 +50,9 @@ type bugs struct {
 	keyTwice bool
 	// forgetDelete makes a commit object leave out the rows that the transaction deleted.
 	forgetDelete bool
+	// blobCut makes a commit object cut each blob of a row that it upserts at the blob's first zero
+	// byte, while the cache keeps the whole blob.
+	blobCut bool
 	// skipUnreadable makes a catch-up skip a commit object whose bytes do not match its name.
 	skipUnreadable bool
 	// resendTake makes an instance send a take of the lease that got no answer again with the same

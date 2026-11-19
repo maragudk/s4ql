@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"math"
 	"strings"
+	"unicode/utf8"
 
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/s4qlpb"
@@ -15,6 +17,10 @@ import (
 // table s4ql_cache, and one table for each table of the database.
 const cacheVersion = 1
 
+// maxLength is SQLite's default limit for the length of a text, a blob, and a row, in bytes, which
+// is also the largest that SQLite takes: SQLITE_MAX_LENGTH.
+const maxLength = 1_000_000_000
+
 // conn is a connection to the cache, with the prepared statements and the tables that the
 // transaction that uses it has looked up. It is used by one goroutine at a time.
 type conn struct {
@@ -23,6 +29,8 @@ type conn struct {
 	stmts map[string]*sqlite.Stmt
 	// tables that were looked up, by their folded name. A nil table does not exist.
 	tables map[string]*table
+	// limit is SQLite's limit on the connection for the length of a text, a blob, and a row.
+	limit int
 
 	// users is the number of calls that use the connection now, and closed whether [DB.Close] or
 	// [Reader.Close] has closed it. [DB.mu] guards both.
@@ -31,15 +39,19 @@ type conn struct {
 }
 
 // openConn to the cache at path with open, [sqlite.OpenVFS] or [sqlite.OpenExistingVFS], through
-// the SQLite VFS of the given name, or SQLite's default VFS if it is empty, with the busy timeout in
-// milliseconds, after which SQLite reports a lock that it waited for as "busy".
-func openConn(open func(path, vfs string) (*sqlite.Conn, error), path, vfs string, busyTimeout int64) (*conn, error) {
-	c, err := open(path, vfs)
+// the SQLite VFS of [Options.VFS], with the busy timeout of [Options.BusyTimeout], after which
+// SQLite reports a lock that it waited for as "busy", and the length limit of the options.
+func openConn(open func(path, vfs string) (*sqlite.Conn, error), path string, options Options) (*conn, error) {
+	c, err := open(path, options.VFS)
 	if err != nil {
 		return nil, err
 	}
-	cn := &conn{c: c, stmts: map[string]*sqlite.Stmt{}, tables: map[string]*table{}}
-	if err := cn.exec(fmt.Sprint("pragma busy_timeout = ", busyTimeout)); err != nil {
+	cn := &conn{c: c, stmts: map[string]*sqlite.Stmt{}, tables: map[string]*table{}, limit: options.lengthLimit}
+	if err := c.SetLengthLimit(cn.limit); err != nil {
+		_ = c.Close()
+		return nil, err
+	}
+	if err := cn.exec(fmt.Sprint("pragma busy_timeout = ", options.BusyTimeout.Milliseconds())); err != nil {
 		_ = c.Close()
 		return nil, err
 	}
@@ -88,7 +100,8 @@ func (c *conn) close() error {
 }
 
 // bind args to the parameters of s, from the first on: an int64, a string, a [*s4qlpb.Value], or
-// nil for NULL.
+// nil for NULL. A real that is -0.0 is bound as 0.0, which is what a column of the cache holds for
+// it, so that no row, no key, and no temporary table of a transaction holds the sign.
 func bind(s *sqlite.Stmt, args ...any) error {
 	for i, arg := range args {
 		var err error
@@ -103,6 +116,17 @@ func bind(s *sqlite.Stmt, args ...any) error {
 			switch arg.WhichKind() {
 			case s4qlpb.Value_Integer_case:
 				err = s.BindInt64(i+1, arg.GetInteger())
+			case s4qlpb.Value_Real_case:
+				r := arg.GetReal()
+				if r == 0 {
+					// -0.0 becomes 0.0.
+					r = 0
+				}
+				err = s.BindDouble(i+1, r)
+			case s4qlpb.Value_Text_case:
+				err = s.BindText(i+1, arg.GetText())
+			case s4qlpb.Value_Blob_case:
+				err = s.BindBlob(i+1, arg.GetBlob())
 			case s4qlpb.Value_Null_case:
 				err = s.BindNull(i + 1)
 			default:
@@ -412,11 +436,31 @@ func reserved(name string) bool {
 
 // typeSQL is the declared type of a column in the cache.
 func typeSQL(typ s4qlpb.Type) (string, error) {
-	switch typ {
-	case s4qlpb.Type_TYPE_INT:
-		return "int", nil
+	if name, ok := typeNames[typ]; ok {
+		return name, nil
 	}
 	return "", invalidf("a column of type %v", typ)
+}
+
+// typeNames are the declared types of the columns of the cache, by their type in a commit object:
+// the types of a strict table of SQLite but ANY, with both spellings of SQLite's integer type.
+var typeNames = map[s4qlpb.Type]string{
+	s4qlpb.Type_TYPE_INT:     "int",
+	s4qlpb.Type_TYPE_INTEGER: "integer",
+	s4qlpb.Type_TYPE_REAL:    "real",
+	s4qlpb.Type_TYPE_TEXT:    "text",
+	s4qlpb.Type_TYPE_BLOB:    "blob",
+}
+
+// typeOf a column whose declared type SQLite reports as declared, which it compares without regard
+// to the case of the letters, or false if it is none of [typeNames].
+func typeOf(declared string) (s4qlpb.Type, bool) {
+	for typ, name := range typeNames {
+		if fold(declared) == name {
+			return typ, true
+		}
+	}
+	return s4qlpb.Type_TYPE_UNSPECIFIED, false
 }
 
 // createSQL is the statement that creates the table t in the cache: a strict table without a
@@ -480,44 +524,68 @@ func placeholders(n int) string {
 }
 
 // checkValue v for the column at position of the table: its storage class is the one of the
-// column's type, or it is NULL in a column outside the primary key. A strict table of SQLite does
-// not refuse every other value: it converts the text '1' and the real 1.0 to an integer.
-func (t *table) checkValue(position int, v *s4qlpb.Value) error {
+// column's type, or it is NULL in a column outside the primary key; a real is neither NaN nor
+// infinite, and text is valid UTF-8 without the character NUL, which s4ql never stores; and a text
+// or a blob is not longer than limit, SQLite's limit for the length of one, for which the error
+// wraps [ErrTooBig]. A strict table of SQLite does not refuse every value of another storage class:
+// it converts the text '1' and the real 1.0 to an integer, and the integer 1 to a real.
+func (t *table) checkValue(position int, v *s4qlpb.Value, limit int) error {
 	c := t.columns[position]
-	switch v.WhichKind() {
-	case s4qlpb.Value_Integer_case:
-		if c.typ == s4qlpb.Type_TYPE_INT {
-			return nil
+	var n int
+	switch kind := v.WhichKind(); {
+	case kind == s4qlpb.Value_Integer_case && (c.typ == s4qlpb.Type_TYPE_INT || c.typ == s4qlpb.Type_TYPE_INTEGER):
+		return nil
+	case kind == s4qlpb.Value_Real_case && c.typ == s4qlpb.Type_TYPE_REAL:
+		if r := v.GetReal(); math.IsNaN(r) || math.IsInf(r, 0) {
+			return invalidf("the real %v in the column %q of the table %q", r, c.name, t.name)
 		}
-	case s4qlpb.Value_Null_case:
+		return nil
+	case kind == s4qlpb.Value_Text_case && c.typ == s4qlpb.Type_TYPE_TEXT:
+		text := v.GetText()
+		if !utf8.ValidString(text) {
+			return invalidf("text that is not valid UTF-8 in the column %q of the table %q", c.name, t.name)
+		}
+		if strings.IndexByte(text, 0) >= 0 {
+			return invalidf("text that holds the character NUL in the column %q of the table %q", c.name, t.name)
+		}
+		n = len(text)
+	case kind == s4qlpb.Value_Blob_case && c.typ == s4qlpb.Type_TYPE_BLOB:
+		n = len(v.GetBlob())
+	case kind == s4qlpb.Value_Null_case:
 		if !t.inKey[position] {
 			return nil
 		}
 		return invalidf("NULL in the primary-key column %q of the table %q", c.name, t.name)
+	default:
+		return invalidf("a value of kind %v in the column %q of the table %q, whose type is %v", kind, c.name, t.name, c.typ)
 	}
-	return invalidf("a value of kind %v in the column %q of the table %q, whose type is %v", v.WhichKind(), c.name, t.name, c.typ)
+	if n > limit {
+		return fmt.Errorf("%w: a value of %v bytes in the column %q of the table %q, where the limit is %v", ErrTooBig, n, c.name, t.name, limit)
+	}
+	return nil
 }
 
-// checkRow has a valid value for each column of the table.
-func (t *table) checkRow(row []*s4qlpb.Value) error {
+// checkRow has a valid value for each column of the table, as [table.checkValue] checks it.
+func (t *table) checkRow(row []*s4qlpb.Value, limit int) error {
 	if len(row) != len(t.columns) {
 		return invalidf("a row of %v values for the table %q, which has %v columns", len(row), t.name, len(t.columns))
 	}
 	for position, v := range row {
-		if err := t.checkValue(position, v); err != nil {
+		if err := t.checkValue(position, v, limit); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// checkKey has a valid value for each primary-key column of the table, in key order.
-func (t *table) checkKey(key []*s4qlpb.Value) error {
+// checkKey has a valid value for each primary-key column of the table, in key order, as
+// [table.checkValue] checks it.
+func (t *table) checkKey(key []*s4qlpb.Value, limit int) error {
 	if len(key) != len(t.key) {
 		return invalidf("a key of %v values for the table %q, whose primary key has %v columns", len(key), t.name, len(t.key))
 	}
 	for i, v := range key {
-		if err := t.checkValue(t.key[i], v); err != nil {
+		if err := t.checkValue(t.key[i], v, limit); err != nil {
 			return err
 		}
 	}
@@ -549,6 +617,14 @@ func readRow(s *sqlite.Stmt, first, n int) ([]*s4qlpb.Value, error) {
 		switch typ := s.ColumnType(first + i); typ {
 		case sqlite.TypeInteger:
 			row[i] = s4qlpb.Value_builder{Integer: new(s.ColumnInt64(first + i))}.Build()
+		case sqlite.TypeFloat:
+			row[i] = s4qlpb.Value_builder{Real: new(s.ColumnDouble(first + i))}.Build()
+		case sqlite.TypeText:
+			row[i] = s4qlpb.Value_builder{Text: new(s.ColumnText(first + i))}.Build()
+		case sqlite.TypeBlob:
+			// ColumnBlob gives an empty blob as an empty slice, which the builder takes for a blob;
+			// nil would be no value.
+			row[i] = s4qlpb.Value_builder{Blob: s.ColumnBlob(first + i)}.Build()
 		case sqlite.TypeNull:
 			row[i] = s4qlpb.Value_builder{Null: &s4qlpb.Null{}}.Build()
 		default:
@@ -593,13 +669,14 @@ func (c *conn) load(name string) (*table, error) {
 	// The position of a column in the primary key, from 1, with its position in the table.
 	keyed := map[int64]int{}
 	if err := c.query("select name, type, pk from pragma_table_info(?, 'main') order by cid", func(s *sqlite.Stmt) error {
-		if typ := s.ColumnText(1); fold(typ) != "int" {
-			return fmt.Errorf("%w: the column %q of its table %q has the type %q", ErrCacheVersion, s.ColumnText(0), t.name, typ)
+		typ, ok := typeOf(s.ColumnText(1))
+		if !ok {
+			return fmt.Errorf("%w: the column %q of its table %q has the type %q", ErrCacheVersion, s.ColumnText(0), t.name, s.ColumnText(1))
 		}
 		if pk := s.ColumnInt64(2); pk > 0 {
 			keyed[pk] = len(t.columns)
 		}
-		t.columns = append(t.columns, column{name: s.ColumnText(0), typ: s4qlpb.Type_TYPE_INT})
+		t.columns = append(t.columns, column{name: s.ColumnText(0), typ: typ})
 		return nil
 	}, t.name); err != nil {
 		return nil, err
@@ -655,6 +732,13 @@ func (c *conn) get(t *table, key []*s4qlpb.Value) ([]*s4qlpb.Value, error) {
 		return err
 	}, values(key)...)
 	return row, err
+}
+
+// exists reports whether the table has a row with the given primary key, which [table.checkKey]
+// has accepted.
+func (c *conn) exists(t *table, key []*s4qlpb.Value) (bool, error) {
+	n, err := c.count(fmt.Sprint("select 1 from main.", quote(t.name), " as t where ", t.keyCondition("t")), values(key)...)
+	return n > 0, err
 }
 
 // scan the rows of the table in the order of its primary key. The statement is given back also when
