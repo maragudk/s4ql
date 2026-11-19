@@ -23,14 +23,21 @@ function html(node, text) {
   }
 }
 
-// Bar codes of commit names: one bar per bit of the SHA-256, as on the main page.
+// Bar codes of commit names: one bar per bit of the SHA-256, as on the main page. The page draws the
+// same few names again after each step, so it keeps the last of them.
+const codes = new Map();
 function barcodeSVG(name, cls) {
+  const key = cls + name;
+  if (codes.has(key)) return codes.get(key);
+  if (codes.size > 64) codes.clear();
   let d = "";
   for (let i = 0; i < 64; i++) {
     const nib = parseInt(name[i], 16);
     for (let b = 0; b < 4; b++) if (nib & (8 >> b)) d += "M" + (i * 4 + b) + " 0h0.72v40h-0.72z";
   }
-  return `<svg class="${cls}" viewBox="0 0 256 40" preserveAspectRatio="none" shape-rendering="crispEdges" aria-hidden="true"><path fill="currentColor" d="${d}"/></svg>`;
+  const svg = `<svg class="${cls}" viewBox="0 0 256 40" preserveAspectRatio="none" shape-rendering="crispEdges" aria-hidden="true"><path fill="currentColor" d="${d}"/></svg>`;
+  codes.set(key, svg);
+  return svg;
 }
 
 // The mark: the 32 bits of "s4ql" as bars.
@@ -53,6 +60,9 @@ const SLICES = 240; // the bars of the field
 const SLICE = WINDOW / SLICES;
 const JUMP = 60000; // a jump of a wall clock: longer than the lease of 30 s
 const MEMORY = 1 << 30; // SQLite's memory at which the page stops
+// The fake time at which the page stops. The engine's Go heap grows by about 12.5 MB a fake hour and
+// cannot be measured from the page, so a day of fake time, some 300 MB, stands in for it.
+const HOURS = 24 * 3600000;
 
 // What the page knows.
 let engine = null;
@@ -75,6 +85,7 @@ const bars = new Map(); // events by slice of fake time
 const marks = []; // the times of the visitor's actions
 const starts = {}; // by instance: the t of the start of its process
 const names = new Map(); // the process of each holder ID
+const stopped = {}; // by instance: whether the visitor's Stop closed the database of its process
 
 // The page tells a check what it does through data attributes on <html>: data-engine is loading,
 // ready, or failed, data-busy is "true" while a command is on its way, data-t is the fake time in
@@ -122,15 +133,10 @@ async function pump() {
   busy = true;
   acting = !!job.act;
   root.dataset.busy = "true";
+  let answer, now;
   try {
-    const answer = job.act ? await engine.act(job.act) : await engine.advance(job.by);
-    if (job.real) lastStep = { real: job.real, fake: job.by };
-    take(answer);
-    if (answer.ended) {
-      halt("The simulation stopped.", `${answer.schedulerError || "The session ended."} Reload to start over.`);
-      return;
-    }
-    state = (await engine.now(COMMITS)).state;
+    answer = job.act ? await engine.act(job.act) : await engine.advance(job.by);
+    if (!answer.ended) now = await engine.now(COMMITS);
   } catch (e) {
     halt("The engine stopped.", `${e.message}. Reload to start over.`);
     return;
@@ -139,11 +145,23 @@ async function pump() {
     acting = false;
     root.dataset.busy = "false";
   }
-  if (engine.memory > MEMORY) {
+  try {
+    if (job.real) lastStep = { real: job.real, fake: job.by };
+    take(answer);
+    if (answer.ended) {
+      halt("The simulation stopped.", `${answer.schedulerError || "The session ended."} Reload to start over.`);
+      return;
+    }
+    state = now.state;
+    draw();
+  } catch (e) {
+    halt("The page failed.", `${e.message}. Reload to start over.`);
+    return;
+  }
+  if (engine.memory > MEMORY || t >= HOURS) {
     halt("The engine has used up its memory.", "Reload to start over.");
     return;
   }
-  draw();
   if (jobs.length) pump();
 }
 
@@ -159,9 +177,15 @@ function take(answer) {
       linesTotal++;
     }
     switch (e.kind) {
-      case "action": marks.push(e.t); break;
+      case "action":
+        marks.push(e.t);
+        if (e.what === "done" && (e.do === "close" || e.do === "open")) stopped[e.instance] = e.do === "close";
+        break;
       case "process":
-        if (e.what === "started") starts[e.instance] = e.t;
+        if (e.what === "started") {
+          starts[e.instance] = e.t;
+          stopped[e.instance] = false;
+        }
         if (e.what === "opened") names.set(e.holder, e.process);
         break;
       case "call": {
@@ -231,7 +255,11 @@ function drawField() {
   html($("strip"), `<path fill="currentColor" d="${d}${m}"/><rect x="${Math.min(SLICES - 0.35, x)}" y="0" width="0.35" height="28" fill="currentColor"/>`);
 }
 
+let logged = -1; // the lines that drawLog last drew
+
 function drawLog() {
+  if (logged === linesTotal) return;
+  logged = linesTotal;
   const out = lines.map((l) => `<li class="${l.tier}"><span class="t">${R.clock(l.t)}</span><span class="text">${esc(l.text)}</span></li>`);
   if (out.length === 0) out.push(`<li class="empty">Nothing yet.</li>`);
   html($("log"), out.join(""));
@@ -324,7 +352,7 @@ function drawCard(c) {
   set(c.f.refused, k.x ? `${count(k.x)}, last: ${R.REASONS[k.why] || k.why}` : "0");
 
   set(c.b.crash, st.state === "crashed" ? "Restart" : "Crash");
-  set(c.b.stop, st.state === "closed" ? "Start" : "Stop");
+  set(c.b.stop, startable(c.name, st) ? "Start" : "Stop");
   c.b.hang.setAttribute("aria-pressed", String(!!st.networkHung));
   c.b.disconnect.setAttribute("aria-pressed", String(!!st.networkDisconnected));
   c.b.disk.setAttribute("aria-pressed", String(!!st.diskFailing));
@@ -343,11 +371,15 @@ function drawControls() {
     const off = !ready || waiting || !st;
     const crashed = !!st && st.state === "crashed";
     c.b.crash.disabled = off;
-    c.b.stop.disabled = off || !(st.state === "running" || st.state === "closed");
+    c.b.stop.disabled = off || !(st.state === "running" || startable(c.name, st));
     for (const a of ["hang", "disconnect", "disk"]) c.b[a].disabled = off;
     for (const a of ["forward", "back", "pause"]) c.b[a].disabled = off || crashed;
   }
 }
+
+// startable says whether Start opens the database of the instance: after the visitor's Stop, and not
+// while its process closes and opens the database by itself after its core stopped.
+const startable = (name, st) => st.state === "closed" && !!stopped[name];
 
 function act(name, a) {
   const st = instanceState(name);
@@ -356,7 +388,7 @@ function act(name, a) {
   let action;
   switch (a) {
     case "crash": action = { do: st.state === "crashed" ? "restart" : "crash", ...i }; break;
-    case "stop": action = { do: st.state === "closed" ? "open" : "close", ...i }; break;
+    case "stop": action = { do: startable(name, st) ? "open" : "close", ...i }; break;
     case "hang": action = { do: "hangNetwork", ...i, on: !st.networkHung }; break;
     case "disconnect": action = { do: "disconnectNetwork", ...i, on: !st.networkDisconnected }; break;
     case "disk": action = { do: "failDisk", ...i, on: !st.diskFailing }; break;

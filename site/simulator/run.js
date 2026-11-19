@@ -112,6 +112,7 @@ export function teller() {
             if (e.process !== e.instance) say(`${who} starts on the cache that the crashed process left.`);
             break;
           case "opened":
+            calm("process");
             names.set(e.holder, e.process);
             if (opened.has(e.process)) say(`${who} opens its database.`);
             opened.add(e.process);
@@ -168,7 +169,7 @@ export function teller() {
             break;
           }
           case "busy": once("core:busy", `The cache of ${who} is busy.`); break;
-          case "stop": if (a.outcome !== "closed") say(`The core of ${who} stops: ${a.outcome.replaceAll("_", " ")}.`); break;
+          case "stop": if (a.outcome !== "closed") say(`The core of ${who} stops: ${String(a.outcome).replaceAll("_", " ")}.`); break;
         }
         break;
       }
@@ -206,7 +207,7 @@ export function teller() {
         break;
       case "action":
         if (e.what === "done") say(actionWords(e), "you");
-        else say(`${actionWords(e)} Ignored: ${e.text}.`, "you");
+        else say(`${actionWords(e)} ${e.what === "failed" ? "It fails" : "Ignored"}: ${e.text}.`, "you");
         break;
       case "check":
         // The design accepts a stale read on a process whose clocks stood still, and the checker

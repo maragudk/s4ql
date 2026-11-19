@@ -66,6 +66,13 @@ async function open(address) {
       win.s4qlPage.skip(ms);
       await until(() => Number(html.dataset.t) >= to && html.dataset.busy === "false");
     },
+    // skipUntil skips fake time a second at a time until f holds, for a change that the code makes in
+    // its own time, and gives the fake time it took.
+    skipUntil: async (f) => {
+      const from = win.s4qlPage.t;
+      while (!f()) await page.skip(1000);
+      return win.s4qlPage.t - from;
+    },
     // press the action's button of the instance once it is enabled, and wait until the page has the
     // state after it: an action always adds its line to the log.
     press: async (name, a) => {
@@ -98,6 +105,12 @@ async function unit() {
   let tell = R.teller();
   const shown = events.filter((e) => tell(e).tier).map((e) => e.t);
   expect(JSON.stringify(shown) === JSON.stringify([1, 4, 6, 7, 8]), `a spell of refusals takes one line for each reason, until the instance serves (lines at ${shown.join(", ")})`);
+
+  // Opens that fail take one line until the database opens, and again when they fail after that.
+  tell = R.teller();
+  const proc = (t, what) => ({ t, kind: "process", what, instance: "a", process: "a", holder: "h" + t });
+  const opens = [proc(1, "open_failed"), proc(2, "open_failed"), proc(3, "opened"), proc(4, "open_failed")].map((e) => tell(e).tier);
+  expect(JSON.stringify(opens) === JSON.stringify(["story", null, null, "story"]), `a spell of failed opens ends when the database opens (${opens.join(", ")})`);
 
   // A stale read after paused clocks takes one plain line a spell; a violation that is not excused is
   // an alarm on every event.
@@ -177,22 +190,21 @@ async function check() {
   await p.press("a", "crash");
   expect(a().state !== "crashed" && a().process === "a2" && p.button("a", "crash").textContent === "Crash", `Restart starts process ${a().process}, in the state ${a().state}`);
 
-  await until(() => a().state === "running" && p.idle());
+  await p.skipUntil(() => a().state === "running");
   await p.press("a", "stop");
   const stopping = ["closing", "closed"].includes(a().state);
-  await p.skip(10000);
-  const closed = a().state === "closed" && p.button("a", "stop").textContent === "Start";
+  await p.skipUntil(() => a().state === "closed");
+  const start = p.button("a", "stop").textContent === "Start" && !p.button("a", "stop").disabled;
   await p.press("a", "stop");
-  await p.skip(5000);
-  expect(stopping && closed && a().state === "running" && p.button("a", "stop").textContent === "Stop", "Stop closes the database of a, Stop becomes Start, and Start opens it again");
+  await p.skipUntil(() => a().state === "running");
+  expect(stopping && start && p.button("a", "stop").textContent === "Stop", "Stop closes the database of a, Stop becomes Start, and Start opens it again");
 
   // A crash of the instance that serves: the other takes the lease over.
-  await p.skip(40000);
-  const serving = await until(() => p.$('[data-role="serves"]'));
-  const holder = serving.dataset.instance, other = holder === "a" ? "b" : "a";
+  await p.skipUntil(() => p.$('[data-role="serves"]'));
+  const holder = p.$('[data-role="serves"]').dataset.instance, other = holder === "a" ? "b" : "a";
   await p.press(holder, "crash");
-  await p.skip(60000);
-  expect(p.card(other).dataset.role === "serves" && p.card(holder).dataset.state === "crashed", `after a crash of ${holder}, ${other} serves`);
+  const took = await p.skipUntil(() => p.card(other).dataset.role === "serves");
+  expect(p.card(holder).dataset.state === "crashed", `after a crash of ${holder}, ${other} serves, ${took / 1000} s of fake time later`);
   await p.press(holder, "crash");
 
   // No limit: fake time goes past 10 minutes, and the log and the commits grow.
