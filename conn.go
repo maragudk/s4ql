@@ -81,12 +81,13 @@ func newConnector(ctx context.Context, h host.Host, s store.Store, o Options, co
 	}
 	path := filepath.Join(o.CacheDir, "cache.db")
 	co.Logger = o.Logger
+	co.Identity = o.identity()
 	db, err := core.Open(ctx, h, s, path, o.Prefix, co)
 	if err != nil {
 		return nil, fmt.Errorf("s4ql: %w", err)
 	}
 	log = log.With("db.prefix", o.Prefix)
-	log.InfoContext(ctx, "open", "cache.path", path)
+	log.InfoContext(ctx, "open", "cache.path", path, "db.identity", co.Identity)
 	return &connector{
 		host:         h,
 		db:           db,

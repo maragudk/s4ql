@@ -113,3 +113,53 @@ Keeping the spare: a `begin immediate` at every open would make a second instanc
 ### Future work
 
 The public half.
+
+## Step 3: The public package builds the identity, and `Open` refuses a cache directory of another database
+
+**Author:** cache-identity builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the brief, as in step 1) "The identity of a database is where it lives: the store's endpoint, the bucket, and the prefix, as the public options give them. The public package builds one identity value from them and hands it to the core as an option [...] Changing the endpoint string for the same bucket therefore asks for a new cache directory. Document that at the options. [...] Add the recorded identity to that event if it fits the present style."
+**Interpretation:** `Options.identity` in `/s4ql.go`, set into `core.Options.Identity` in `newConnector` in `/conn.go`, the documentation of `Open`, `Options.Endpoint`, and `Options.CacheDir`, the attribute in the event `open`, the tests through `database/sql`, and `/docs/todo.md`.
+**Inferred intent:** An operator who points two databases at one directory gets an `Open` that fails and says which two, and one who moves a database is told what to do.
+
+### What I did
+
+The identity is `s3://` and the bucket, a slash, and the prefix, each of its segments escaped with `url.PathEscape`, followed by ` at ` and the endpoint if `Options.Endpoint` is not empty: `s3://bucket/app at https://t3.storage.dev`. It is injective: `url.PathEscape` escapes the slash, the space, the question mark, and the percent sign, so the bucket ends at the first slash, the prefix at the first space, and what follows ` at ` is the endpoint as given. I chose that form over JSON or Go's `%q` for each part because the core prints both identities with `%q`, and a form without quotes reads well there.
+
+`newConnector` sets `co.Identity`, which replaces whatever a test passed in `core.Options`; the comment of `OpenStore` in `/export_test.go` says so. The event `open` gets `db.identity`. The documentation of `Open` says that a cache directory belongs to one database, what the error starts with, what to do, and that of two databases that open one new directory at once one opens; that of `Options.Endpoint` says that another text for the same store is another database to the cache, and that the environment is not seen; that of `Options.CacheDir` says that it belongs to one database.
+
+`TestOpen_cacheDir` in `/s4ql_test.go`: the record for four sets of options, among them an empty prefix, a prefix with a space, a non-ASCII letter, and a question mark; a refusal at `Open` for another prefix, bucket, endpoint, and no endpoint, while the first instance runs and after it has closed, each with the exact text and not `ErrStopped`, after which the cache records its own database and serves its row; and 20 rounds of two prefixes that open one new directory at once, of which exactly one opens and the other's error names both. The test that an instance of another database stops with `ErrCacheNotInLog` is gone: that case is now refused at `Open`. `TestOptions_Logger` has the new attribute. In `/docs/todo.md` the open point is replaced by the decision and its details, and the comment of `core.ErrCacheNotInLog` no longer says that the cache belongs to another database.
+
+No other test opens two databases on one directory: the engine, the simulator, and the core's own tests call `core.Open` with the empty identity, and `internal/sqlite/crosscheck/drivercheck` is not in this tree.
+
+Committed as "Build the identity of the database in `s4ql` from the endpoint, the bucket, and the prefix, so that `Open` refuses a cache directory of another database".
+
+### Why
+
+The core knows nothing of S3, and the public options are the one place where the endpoint, the bucket, and the prefix are together.
+
+### What worked
+
+The tests were red for the right reasons first: no record, both opens succeeded, `Open` gave no error.
+
+### What didn't work
+
+The first run of the race test in the root package failed with `table t1 already exists` at `s4ql_test.go:399`: each round used the prefixes "one" and "two" in one store, so the second round's winner found the first round's table. Each round now has prefixes of its own.
+
+### What I learned
+
+`OpenStore` takes the options that name the store and used none of them; the identity is the first use of `Bucket` and `Endpoint` in the tests on the in-memory store.
+
+### What was tricky
+
+The text for the operator: the core does not know the cache directory, so its advice is to delete "the cache, with its files -wal and -shm"; a cache file deleted without its write-ahead log could bring old pages back.
+
+### What warrants review
+
+The form of the identity, and the documentation of `Open` and of `Options.Endpoint` in `/s4ql.go`.
+
+### Future work
+
+None from this step.

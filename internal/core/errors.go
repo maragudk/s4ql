@@ -34,8 +34,9 @@ var (
 	ErrLocal = errors.New("local I/O failure")
 
 	// ErrCacheNotInLog is wrapped by the cause of the stop of an instance whose cache records a
-	// position that is not in the log that the manifest points to. The cache belongs to another
-	// database, or to a log that is gone. Nothing rebuilds it: a person or the application chooses
+	// position that is not in the log that the manifest points to. The cache belongs to a log that is
+	// gone, such as that of a database that was deleted and made again, or to another database that
+	// was opened with the same [Options.Identity]. Nothing rebuilds it: a person or the application chooses
 	// that, for example by opening the database with an empty cache.
 	ErrCacheNotInLog = errors.New("the position of the cache is not in the log")
 

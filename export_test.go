@@ -11,7 +11,8 @@ import (
 )
 
 // OpenStore is [Open] on the store s and the host h, with the options co of the storage core. Of
-// the options o it uses what does not name the store.
+// the options o it uses what does not name the store, and the endpoint, the bucket, and the prefix
+// for the identity of the database, in place of co.Identity.
 func OpenStore(ctx context.Context, h host.Host, s store.Store, o Options, co core.Options) (*sql.DB, error) {
 	d := storeOpener(h, s, o, co)
 	c, err := d.connect(ctx, d)
