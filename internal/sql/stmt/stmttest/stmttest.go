@@ -260,8 +260,8 @@ func (g *Generator) columnType(table stmt.Name) stmt.Type {
 }
 
 // columns of a create table of the table, of slice 5: from 1 to [Generator.Columns] of them, with
-// the primary key at any position, which says NOT NULL too one time in three, before or after
-// PRIMARY KEY, and every other column NOT NULL. Their names are from the pool of [CreateColumn], so
+// the primary key at any position, which says NOT NULL too before PRIMARY KEY one time in three and
+// after it one time in three, and every other column NOT NULL. Their names are from the pool of [CreateColumn], so
 // that two of them can have one name, which SQLite refuses.
 func (g *Generator) columns(table stmt.Name) []stmt.Column {
 	n := 1 + g.r.IntN(g.Columns)

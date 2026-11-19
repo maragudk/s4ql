@@ -888,6 +888,28 @@ func TestCheck(t *testing.T) {
 		t.Logf("%v keywords are names after FROM: %v", len(names), names)
 	})
 
+	t.Run("should take as many parameters as SQLite allows, and not one more", func(t *testing.T) {
+		values := func(n int) string {
+			return "insert into t values (" + strings.TrimSuffix(strings.Repeat("?, ", n), ", ") + ")"
+		}
+		// The meaning of so many values is not checked in SQLite, since no table has that many
+		// columns: the text parses, and SQLite counts its parameters.
+		src := values(32766)
+		s, err := stmt.Check(src)
+		is.NotError(t, err)
+		is.Equal(t, 32766, s.Parameters())
+		is.Equal(t, 32766, s.(*stmt.Insert).Values[32765].Parameter)
+		is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
+
+		src = values(32767)
+		_, err = stmt.Check(src)
+		is.Equal(t, fmt.Sprintf("s4ql: not supported: parameter beyond SQLite's limit (at offset %v)", len(src)-2), err.Error())
+		v := oracle.Judge(src)
+		is.Equal(t, "too many SQL variables", v.Message)
+		o, _ := verify(t, src)
+		is.Equal(t, notSupportedNotSaid, o)
+	})
+
 	t.Run("should take every keyword of SQLite that SQLite reads as the name of a column in the select list, and no other", func(t *testing.T) {
 		// SQLite reads a keyword as the name of a column if it gives `no such column` for it on a table
 		// without a column of that name. It reads others as a value, such as NULL and CURRENT_TIME.

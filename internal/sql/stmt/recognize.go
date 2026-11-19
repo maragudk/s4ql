@@ -324,7 +324,12 @@ func (r *recognizer) insert(c *ast.Insert) *Insert {
 	return s
 }
 
-// parameter v: a plain ?, after before parameters of the statement. SQLite numbers a ? one more than
+// maxParameters of a statement in SQLite, SQLITE_MAX_VARIABLE_NUMBER, which the binding in
+// internal/sqlite keeps at its default.
+const maxParameters = 32766
+
+// parameter v: a plain ?, after before parameters of the statement, which must be fewer than
+// [maxParameters]. SQLite numbers a ? one more than
 // the largest number before it, and each parameter before it is a plain ? too, so its number is one
 // more than their number.
 func (r *recognizer) parameter(v *ast.Variable, before int) (int, Span) {
@@ -333,6 +338,10 @@ func (r *recognizer) parameter(v *ast.Variable, before int) (int, Span) {
 			r.reject("numbered parameter")
 		}
 		r.reject("named parameter")
+	}
+	if before == maxParameters && r.isNext(v.Name) {
+		// SQLite gives `too many SQL variables` while it parses, whatever the database holds.
+		r.reject("parameter beyond SQLite's limit")
 	}
 	r.accept(v)
 	r.take(v.Name)
