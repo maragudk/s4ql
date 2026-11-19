@@ -1199,7 +1199,11 @@ type logCommit struct {
 //     twice. The parameters of each statement are exactly the arguments that the caller gave.
 //   - Every write that was acknowledged is in the log: a statement of its own when it succeeded,
 //     and the writes of a transaction when its commit succeeded.
-//   - The statements of the log, run in SQLite in their order with their parameters, each succeed.
+//   - The statements of the log, run in SQLite in their order with their parameters, each succeed,
+//     and the value of each insert has the type of its column there, which SQLite would convert or
+//     refuse otherwise, as [typeRule] says.
+//   - Each insert of its own that the engine refused for the type of its value is refused so by
+//     [typeRule] in SQLite on the state that it saw.
 //   - Each statement of its own that failed with SQLite's error gives that error in SQLite on the
 //     state that it saw, and each query that succeeded gives its rows there: the state after a
 //     commit of the log, which holds every write that was acknowledged before the statement
@@ -1407,7 +1411,9 @@ func (r *run) verify(ctx context.Context) {
 // statement of the transaction that succeeded or failed with SQLite's error, in their order, and
 // must give what the engine gave: for a write transaction, the state of its beginning and its own
 // writes so far; for a read-only one, the state of its beginning, whatever committed meanwhile. A
-// statement that failed otherwise, or was refused, did nothing, and is not run.
+// statement that failed otherwise, or was refused, did nothing, and is not run; an insert refused for
+// the type of its value must be refused so by [typeRule] there, and never in a read-only
+// transaction, which refuses the write first.
 //
 // A write transaction whose net effect is nothing writes no commit object: one whose writes that
 // succeeded are all of tables that were not there when it began and are not there at its end. It
@@ -1758,7 +1764,8 @@ var storeFaults = map[string]string{
 var storeLine = regexp.MustCompile(`^\S+ store request \d+(, stuck)? store: `)
 
 // tallyOf the simulation s: its statements, by how they ended, its writes that were acknowledged,
-// its queries that were not read to their end, its commits and those of a statement with a
+// its queries that were not read to their end, its inserts refused for the type of their value, its
+// commits and those of a statement with a
 // parameter, the faults that the store injected, by kind, and its other events.
 func tallyOf(s simulation) map[string]int {
 	r := s.r
@@ -1781,6 +1788,9 @@ func tallyOf(s simulation) map[string]int {
 		}
 		if a.partial {
 			counts["query not read to its end"]++
+		}
+		if a.typeRefused {
+			counts["refused for the type"]++
 		}
 	}
 	counts["acknowledged writes"] = len(r.acked)
@@ -1837,7 +1847,7 @@ func TestSimulation(t *testing.T) {
 			"fault: slow way": 0.8, "fault: broken read": 0.25, "fault: cut-off": 0.1, "fault: outage": 0.04,
 			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.25, "fault: write applied after a crash": 0.05,
 			"statements in a transaction": 12, "read-only transactions": 0.9, "transactions committed": 2, "transactions rolled back": 0.8,
-			"transactions not committed": 0.08, "transactions unknown": 0.07, "commits of more than one statement": 0.4,
+			"transactions not committed": 0.08, "transactions unknown": 0.07, "commits of more than one statement": 0.4, "refused for the type": 0.5,
 		}, 0.15},
 		// A quarter of what the first 1,000 seeds gave on 2026-11-19, with the ends of transactions for
 		// the lease, which only this workload reaches.
@@ -1850,7 +1860,7 @@ func TestSimulation(t *testing.T) {
 			"fault: write applied after its caller gave up": 0.1, "fault: write stuck in the network": 4,
 			"statements in a transaction": 7, "read-only transactions": 0.7, "transactions committed": 0.7, "transactions rolled back": 0.7,
 			"transactions not committed": 0.04, "commits of more than one statement": 0.08,
-			"transactions ended for the lease": 0.33, "kept transactions ended for the lease": 0.33,
+			"transactions ended for the lease": 0.33, "kept transactions ended for the lease": 0.33, "refused for the type": 0.1,
 		}, 0.15},
 		{"hammer", hammerWorkload, map[string]float64{
 			"succeeded": 12, "SQLite's error": 17, "unknown": 0.4, "skipped": 2.5, "failed: no lease": 2,
@@ -1859,7 +1869,7 @@ func TestSimulation(t *testing.T) {
 			"fault: slow way": 0.5, "fault: broken read": 0.02, "fault: cut-off": 0.09, "fault: outage": 0.025,
 			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.7,
 			"statements in a transaction": 24, "read-only transactions": 1.8, "transactions committed": 4, "transactions rolled back": 1.5,
-			"transactions not committed": 0.17, "transactions unknown": 0.12, "commits of more than one statement": 0.6,
+			"transactions not committed": 0.17, "transactions unknown": 0.12, "commits of more than one statement": 0.6, "refused for the type": 1,
 		}, 0.12},
 	} {
 		t.Run(c.name, func(t *testing.T) {
