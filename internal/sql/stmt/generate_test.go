@@ -132,7 +132,10 @@ func difference(a, b stmt.Statement) string {
 		if a.Column.Value != b.Column.Value {
 			diffs = append(diffs, "column name")
 		}
-		if a.Value != b.Value {
+		switch {
+		case a.Parameter != b.Parameter:
+			diffs = append(diffs, "parameter")
+		case a.Value != b.Value:
 			diffs = append(diffs, "value")
 		}
 	case *stmt.Select:
@@ -236,7 +239,10 @@ var nearMisses = map[string][]string{
 		"insert into %[1]v (%[2]v) values (- (%[3]v))",
 		"insert into %[1]v (%[2]v) values (%[3]v collate binary)",
 		"insert into %[1]v (%[2]v) values (cast(%[3]v as int))",
-		"insert into %[1]v (%[2]v) values (?)",
+		"insert into %[1]v (%[2]v) values (?1)",
+		"insert into %[1]v (%[2]v) values (:a)",
+		"insert into %[1]v (%[2]v) values (-?)",
+		"insert into %[1]v (%[2]v) values (?, ?)",
 		"insert into %[1]v (%[2]v) select %[3]v",
 		"insert into %[1]v (%[2]v) values (%[3]v) union select 1",
 		"insert into %[1]v (%[2]v) values (%[3]v) returning *",

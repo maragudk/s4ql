@@ -12,7 +12,7 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
-// allowed node types and fields of slice 1, as the README defines it: a type by its name, and a field
+// allowed node types and fields of slices 1 and 2, as the README defines them: a type by its name, and a field
 // by the name of its type and its path, as "CreateTable.Name.Name". A field is present when its token
 // is, when its node is not nil, or when its list is not empty.
 var allowed = map[string]bool{
@@ -35,6 +35,7 @@ var allowed = map[string]bool{
 	"ValuesRow": true, "ValuesRow.LParen": true, "ValuesRow.Exprs": true, "ValuesRow.RParen": true,
 	"Unary": true, "Unary.Op": true, "Unary.X": true,
 	"Literal": true, "Literal.Value": true,
+	"Variable": true, "Variable.Name": true,
 
 	"SelectCmd": true, "SelectCmd.Select": true,
 	"SimpleSelect": true, "SimpleSelect.Select": true, "SimpleSelect.Columns": true, "SimpleSelect.From": true,

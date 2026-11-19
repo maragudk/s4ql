@@ -1,6 +1,6 @@
 # The engine
 
-`internal/engine` runs one statement of [slice 1](../../docs/roadmap.md#slice-1-one-integer-column) on a database of the [storage core](../core/README.md), a `*core.DB`, and gives SQLite's results and SQLite's errors. What a statement of slice 1 is, token for token, is in [the README of `stmt`](../sql/stmt/README.md#slice-1).
+`internal/engine` runs one statement of [slice 1](../../docs/roadmap.md#slice-1-one-integer-column), with the parameter of [slice 2](../../docs/roadmap.md#slice-2-parameters), on a database of the [storage core](../core/README.md), a `*core.DB`, and gives SQLite's results and SQLite's errors. What a statement of slice 1 is, token for token, is in [the README of `stmt`](../sql/stmt/README.md#slice-1).
 
 The interface:
 
@@ -8,8 +8,8 @@ The interface:
 | --- | --- |
 | `New(d, host, Options)` | Gives an `*Engine` for the database `d`. The engine reads the monotonic clock of the host, for the duration in its events. `Options.Logger` takes the events, and the default discards them. |
 | `Engine.Conn()` | Gives a `*Conn`, a connection of the engine, which holds nothing until it runs a statement. See [Connections](#connections). |
-| `Conn.Exec(ctx, src) (Result, error)` | Runs the statement of the text `src`. A query is run to its end, and its rows are dropped. The result comes with an error too. |
-| `Conn.Query(ctx, src) (*Rows, error)` | Runs the statement and gives its rows. A statement that is not a query is run as `Exec` runs it. Its rows have no columns and no rows, and `Rows.Result` gives its result; Query gives these rows also with its error. |
+| `Conn.Exec(ctx, src, args...) (Result, error)` | Runs the statement of the text `src`, with the arguments `args`, each an `*s4qlpb.Value`, for its parameters by position. A query is run to its end, and its rows are dropped. The result comes with an error too. See [Parameters](#parameters). |
+| `Conn.Query(ctx, src, args...) (*Rows, error)` | Runs the statement with its arguments and gives its rows. A statement that is not a query is run as `Exec` runs it. Its rows have no columns and no rows, and `Rows.Result` gives its result; Query gives these rows also with its error. |
 | `Conn.Close(ctx) error` | Closes the connection, and its reader, if it has one. |
 | `Rows.Columns()` | The columns of each row, each a `Column` with the name as the table stores it and the declared type, `INT`. |
 | `Rows.All()` | The rows in order, as an `iter.Seq2[[]*s4qlpb.Value, error]`. The sequence ends at the first error, and can be used once. |
@@ -17,6 +17,8 @@ The interface:
 | `Rows.Result()` | The result of a statement that is not a query. |
 | `Result{Changes, SetsChanges}` | See [Changes and the last insert rowid](#changes-and-the-last-insert-rowid). |
 | `ErrNoStatement` | The error of a text that is empty or holds only spaces, comments, and semicolons. SQLite prepares such a text into no statement and gives no error. |
+| `ErrArguments` | Matched by the error of a statement that is given another number of arguments than it has parameters. |
+| `Check(src, n) error` | The errors of the text `src` and of the number `n` of its arguments, as `Exec` gives them, without the database and without an event. |
 | `ErrInternal` | Matched by the error of a fault of s4ql. See [Errors](#errors). |
 
 An `Engine` is safe for concurrent use. A `Conn` is not, and `Rows` are not.
@@ -80,7 +82,7 @@ query
     scan été
 ```
 
-A plan is a `*CreateTable`, a `*DropTable`, an `*Insert`, or a `*Query`. An insert and a query read their rows from a tree of nodes: `*Scan`, `*Values`, and `*Project`. The one expression is `*Integer`.
+A plan is a `*CreateTable`, a `*DropTable`, an `*Insert`, or a `*Query`. An insert and a query read their rows from a tree of nodes: `*Scan`, `*Values`, and `*Project`. The expressions are `*Integer` and `*Parameter`, which `Format` prints as `?1` by its number.
 
 **Why a tree of iterators, and not a bytecode machine like SQLite's.** The lead recommended it on 2026-11-18, and Markus left the choice to the lead: "I'll trust your recommendation." Each operator is tested alone, a plan is data that tests can read, and the oracle stays rows and errors compared with SQLite, which does not change between SQLite's releases. A bytecode machine that mirrors SQLite's would give `EXPLAIN` as a second oracle and SQLite's order of checks more cheaply, but it ties the engine to an instruction set that SQLite says is not an interface. Where SQLite's order of checks or of errors is visible, the engine reproduces it on purpose, and the differential tests find the places. The plan is the seam: an executor of another kind can replace the operators behind it without touching the parser or the pass after it. The trade-offs are in [research/sql-front-end.md](../../docs/research/sql-front-end.md) §6.3.
 
@@ -189,9 +191,19 @@ Its last insert rowid is always 0.
 
 - **Each write that is committed carries one annotation: the text of its statement,** from its first token to its end. The end is that of its semicolon, if it has one.
 - **Comments and semicolons before the statement, and the text after it, are left out.** A comment inside the statement stays. `  /* before */ create table t1 (v1 int primary key) strict, without rowid; -- after` is annotated as `create table t1 (v1 int primary key) strict, without rowid;`.
-- **An annotation has no parameters.** Slice 1 has none.
+- **An annotation holds the arguments of the statement,** by position, in `Statement.parameters` of the commit object: one for an insert of a parameter, and none otherwise.
 - **A statement that fails commits nothing,** and leaves no annotation. A query leaves none either.
 - **Every write of slice 1 that succeeds changes something.** The core writes no commit object for a transaction that changed nothing, and would then store its annotation nowhere. No statement of slice 1 meets that case: a create, an insert of a new key, and a drop each change the database.
+
+## Parameters
+
+Slice 2 adds the plain `?` as the value of an insert; [the README of `stmt`](../sql/stmt/README.md#insert) defines it, and `Statement.Parameters()` gives how many a statement has.
+
+- **The text is checked first, then the arguments,** in `prepare`, before the statement needs a transaction: a syntax error, "not supported", or `ErrNoStatement` comes whatever the arguments are, and the errors of the arguments come on a stopped instance and with a context that has ended too.
+- **Another number of arguments than parameters** fails with an error that matches `ErrArguments`, such as `s4ql: wrong number of arguments: 2 for a statement with 1 parameter`. SQLite binds NULL to a parameter without an argument; the engine refuses it.
+- **An argument that is not an integer** is "not supported": `s4ql: not supported: argument 1, which is not an integer`, an error that matches `stmt.ErrNotSupported`.
+- **The insert binds the argument through `*Parameter`** of the plan, which `eval` reads from the arguments. A parameter without its argument is an internal error, which the check of the number rules out.
+- **No value of an argument is in an error or an event.**
 
 ## Events
 
@@ -218,6 +230,7 @@ The level follows the conventions of the core, so a healthy instance logs nothin
 | Debug | `sqlite_error` | It failed with SQLite's error, which is an answer to the application. |
 | Debug | `not_supported` | It is not supported. So is a statement that reads on a connection whose rows of an earlier query are open, which the core refuses with `ErrReaderBusy`: it is what the caller asked for, and nothing that went wrong. |
 | Debug | `no_statement` | The text holds no statement. |
+| Debug | `wrong_arguments` | It was given another number of arguments than it has parameters. |
 | Debug | `refused` | The core refused it with `ErrNoLease` or `ErrStopped`. The core logs that itself. |
 | Debug | `canceled` | Its context ended. |
 | Warn | `core_error` | It failed with another error of the core, such as a commit of unknown outcome. |

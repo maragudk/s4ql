@@ -4,11 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql"
+	"maragu.dev/s4ql/internal/engine"
+	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
 func TestError(t *testing.T) {
@@ -93,5 +96,18 @@ func TestError(t *testing.T) {
 			is.True(t, !errors.Is(err, sentinel), sentinel.Error())
 		}
 		readersFree(t, db)
+	})
+
+	t.Run("should give the engine's errors of arguments with their messages, an argument it does not support as not supported", func(t *testing.T) {
+		for _, n := range []int{0, 2} {
+			err := s4ql.PublicError(engine.Check("insert into t1 (v1) values (?)", n))
+			is.Equal(t, engine.Check("insert into t1 (v1) values (?)", n).Error(), err.Error())
+			for _, sentinel := range []error{s4ql.ErrNotSupported, s4ql.ErrNotServing, s4ql.ErrOutcomeUnknown, s4ql.ErrStopped} {
+				is.True(t, !errors.Is(err, sentinel), sentinel.Error())
+			}
+		}
+		err := s4ql.PublicError(fmt.Errorf("%w: argument 1, which is not an integer", stmt.ErrNotSupported))
+		is.Error(t, s4ql.ErrNotSupported, err)
+		is.Equal(t, "s4ql: not supported: argument 1, which is not an integer", err.Error())
 	})
 }

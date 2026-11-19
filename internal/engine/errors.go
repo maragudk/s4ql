@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 
+	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
+	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
 var (
@@ -18,10 +20,44 @@ var (
 	// is never SQLite's error.
 	ErrInternal = errors.New("s4ql: internal error")
 
+	// ErrArguments is matched by the error of a statement that is given another number of arguments
+	// than it has parameters. Its message says both numbers. SQLite binds NULL to a parameter that is
+	// given no argument, and refuses an argument for a parameter that the statement does not have;
+	// s4ql refuses both, and runs nothing. It is not SQLite's error, and not "not supported".
+	ErrArguments = errors.New("s4ql: wrong number of arguments")
+
 	// errPanicked is the error in the event of a statement that panicked in the engine. The panic goes
 	// on to the caller, and the error is only in the event.
 	errPanicked = fmt.Errorf("%w: the statement panicked", ErrInternal)
 )
+
+// checkArguments of a statement with the given number of parameters: the error of [countArguments],
+// and then "not supported" for the first argument that is not an integer. No value of an argument
+// is in an error.
+func checkArguments(parameters int, args []*s4qlpb.Value) error {
+	if err := countArguments(parameters, len(args)); err != nil {
+		return err
+	}
+	for i, a := range args {
+		if !a.HasInteger() {
+			return fmt.Errorf("%w: argument %v, which is not an integer", stmt.ErrNotSupported, i+1)
+		}
+	}
+	return nil
+}
+
+// countArguments: [ErrArguments] if n arguments are not one for each of the given number of
+// parameters, with both numbers in its message, and nil otherwise.
+func countArguments(parameters, n int) error {
+	if n == parameters {
+		return nil
+	}
+	noun := "parameters"
+	if parameters == 1 {
+		noun = "parameter"
+	}
+	return fmt.Errorf("%w: %v for a statement with %v %v", ErrArguments, n, parameters, noun)
+}
 
 // internalError that matches [ErrInternal], and wraps nothing else.
 func internalError(format string, args ...any) error {

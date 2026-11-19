@@ -3,7 +3,7 @@
 `internal/sql/stmt` takes SQL text and gives one of four answers:
 
 1. **SQLite's syntax error**, as a `*sqlerr.Error` of [`internal/sql/sqlerr`](../sqlerr/sqlerr.go), the one type of SQLite's errors that s4ql gives, which the engine gives too: the message of SQLite's parser, with the result code 1 and the extended result code 1, when the text is a syntax error in SQLite. This holds also when the text is SQL that s4ql does not support. Only the checks before parsing come first: a text longer than SQLite's limit, with a NUL byte, or with bytes that are not UTF-8 is not supported, whatever else it holds. The byte offset is kept as extra information; it is not part of the promise.
-2. **"Not supported"**, as a `*stmt.NotSupportedError`, when SQLite's parser accepts the text and the text is not, token for token, a statement of [slice 1](#slice-1). The error matches `stmt.ErrNotSupported` with `errors.Is`, its message starts with `s4ql: not supported: `, and it carries no result code of SQLite.
+2. **"Not supported"**, as a `*stmt.NotSupportedError`, when SQLite's parser accepts the text and the text is not, token for token, a statement of [slice 1](#slice-1), with the parameter of slice 2. The error matches `stmt.ErrNotSupported` with `errors.Is`, its message starts with `s4ql: not supported: `, and it carries no result code of SQLite.
 3. **No statement and no error**, for a text that is empty or holds only spaces, comments, and semicolons. SQLite prepares such a text into no statement and no error.
 4. **A supported statement**: a `*stmt.CreateTable`, `*stmt.Insert`, `*stmt.Select`, or `*stmt.DropTable`.
 
@@ -16,7 +16,7 @@ A supported statement is one of four types. The engine is built on them and neve
 | Type | Fields | Meaning |
 | --- | --- | --- |
 | `CreateTable` | `Table`, `Column` | Create a table with one column of type INT, which is its primary key. The table is STRICT and WITHOUT ROWID. |
-| `Insert` | `Table`, `Column`, `Value int64`, `ValueSpan` | Insert one row with one value into the one column that is named. |
+| `Insert` | `Table`, `Column`, `Value int64`, `Parameter int`, `ValueSpan` | Insert one row with one value into the one column that is named: the literal `Value`, or the argument of the parameter `Parameter` if it is not 0. |
 | `Select` | `Table` | Read every column and every row of one table. |
 | `DropTable` | `Table` | Drop one table. |
 
@@ -56,7 +56,7 @@ By the parser's ownership rule, which its tests check on every statement, these 
 
 ## Slice 1
 
-A statement is supported if it is one of the four forms below, token for token. The tables give the tokens in order. A gap between two tokens may hold any spaces and comments. A keyword may be in any case of its letters.
+A statement is supported if it is one of the four forms below, token for token. Slice 2 of the roadmap adds one form of the value of INSERT, a parameter, and this section defines it under [INSERT](#insert). The tables give the tokens in order. A gap between two tokens may hold any spaces and comments. A keyword may be in any case of its letters.
 
 The roadmap's restrictions and slice 1 define these forms. Where the roadmap leaves the form open, the rule is: when in doubt, it is not supported. A form is supported only if a test against SQLite shows that SQLite treats it exactly as the plain form, or the roadmap names it.
 
@@ -87,7 +87,11 @@ INSERT INTO table ( column ) VALUES ( value )
 
 A value is a decimal integer literal that fits a signed 64-bit integer, with at most one `-` in front, and any spaces and comments between the sign and the digits. `-9223372036854775808` is in. Leading zeros are allowed: they are part of a decimal integer literal, and SQLite stores `00012` as 12 and `-0` as 0. SQLite stores every value of this form as the integer it names, with any number of leading zeros, which the tests check against SQLite for each value.
 
-Not supported: REPLACE, INSERT OR, WITH, an alias, no column list, DEFAULT VALUES, a second column, a second value, a second row, SELECT, a compound, an upsert, RETURNING; as the value, a `+` sign, a second sign, `~`, NOT, a hex literal, a digit separator, a number outside 64 bits, a real, a string, a blob, NULL, CURRENT_TIME and its kind, parentheses, a parameter, a name, and any other expression.
+A value can also be a parameter, a plain `?`, which is slice 2. The statement then has one parameter, number 1: SQLite gives a `?` the number after the largest one before it, and there is none. `Insert.Parameter` is 1, `Insert.Value` is 0, and `ValueSpan` is the span of the `?`. `Parameters()` of every statement gives the number of its parameters, as `sqlite3_bind_parameter_count` gives it: 1 for an insert of a parameter, and 0 otherwise. Which argument binds to the parameter, and what an argument may be, is for the engine and the driver to check; the pass sees only the text.
+
+Not supported: REPLACE, INSERT OR, WITH, an alias, no column list, DEFAULT VALUES, a second column, a second value, a second row, SELECT, a compound, an upsert, RETURNING; as the value, a `+` sign, a second sign, `~`, NOT, a hex literal, a digit separator, a number outside 64 bits, a real, a string, a blob, NULL, CURRENT_TIME and its kind, parentheses, a parameter with a number or a name, a parameter after a sign, a name, and any other expression. A parameter anywhere else is not supported for what holds it: a WHERE clause, a LIMIT clause, a result column, a DEFAULT, and so on.
+
+SQLite's own errors of a parameter are not reproduced, because every such parameter is not supported: `?0` and `?32767` give `variable number must be between ?1 and ?32766` in SQLite, and the pass gives `numbered parameter`. A `#` and a digit, as in `#1`, and two parameters without a comma between them, as in `(? ?)`, are syntax errors, which the pass gives as SQLite gives them.
 
 ### SELECT
 
@@ -131,13 +135,14 @@ A column name is never reserved: `sqlite_v` is a column name like any other.
 
 ### The errors that SQLite raises in grammar actions
 
-The parser accepts every statement whose only fault is an error that one of SQLite's grammar actions raises, such as `unknown table option`. Its README lists them. None can occur for a statement of slice 1:
+The parser accepts every statement whose only fault is an error that one of SQLite's grammar actions raises, such as `unknown table option`. Its README lists them. None can occur for a statement of slice 1 or slice 2:
 
 - `unknown table option` needs an option other than `strict` or `without rowid`, as bare words.
 - `object name reserved for internal use` needs a name that starts with `sqlite_`, which is reserved.
 - `unknown database` and `temporary table name must be unqualified` need a schema name or TEMP.
 - `duplicate column name`, `table "t" has more than one primary key`, and `too many columns` need a second column or constraint.
 - A misplaced digit separator and a variable `#N` are syntax errors, which the parser gives.
+- `variable number must be between ?1 and ?%d` needs a numbered parameter, such as `?0`, and `too many SQL variables` more than 32,766 parameters. Slice 2 has one plain `?`.
 - The rest need clauses, expressions, or commands that slice 1 does not have.
 
 So every statement with such an error is not supported, and SQLite's message for it is not reproduced. A text in which such an error comes before a syntax error is a case of its own: SQLite stops at the action's error, and the oracle does not say whether the text parses, while the parser goes on and gives the later syntax error. The pass then gives that syntax error, which is not SQLite's message; see [Known gaps](#known-gaps).
@@ -196,6 +201,9 @@ A test checks that every name the pass gives in any test is in these tables.
 | `blob` | The value is a blob. |
 | `NULL` | The value is NULL. |
 | `current date or time` | The value is CURRENT_DATE, CURRENT_TIME, or CURRENT_TIMESTAMP. |
+| `numbered parameter` | The value is a parameter with a number, such as `?1`. |
+| `named parameter` | The value is a parameter with a name: `:name`, `@name`, `$name`, or `#name`. |
+| `parameter after a sign` | The value is a parameter after its `-`. |
 | `result column other than *` | SELECT has a result column that is not `*`. |
 | `SELECT without FROM` | SELECT has no FROM. |
 | `DROP VIEW` | The statement is DROP VIEW. |
@@ -368,6 +376,7 @@ SQLite is the judge, through the oracle in [`internal/sql/oracle`](../oracle/REA
   - SELECT: on a table created with the case swapped, beside another table, the text reads the rows of the named table in key order, as the canonical statement does; without the table it gives `no such table: <Value>`.
   - DROP TABLE: the text drops the named table and leaves the other, as the canonical statement does; without the table it gives `no such table: <Value>`.
   - The canonical statement is supported and gives the same statement, the raw text of each name is at its offset, and the span ends where SQLite's prepare ends the statement.
+  - For every statement, `Parameters()` is SQLite's count of its parameters, which the test reads as the largest index that `sqlite3_bind_int64` takes on the prepared statement. An INSERT of a parameter runs with the parameter bound to a value at or near the limits of 64 bits, which the length of the text picks, and the checks above hold for that value.
 
 The layers:
 
@@ -390,12 +399,12 @@ On the code as it is now, with the default flags:
 | Corpus, and the parts before a byte rejected before parsing | 183,694 | 44,460 | 52,938 | 62 | 78,833 | 237 | 6,437 | 727 |
 | One mutant of each corpus entry, and the parts before such a byte | 168,292 | 29,535 | 120,774 | 78 | 11,695 | 178 | 5,995 | 37 |
 | 20,000 sentences of the grammar and a mutant of each | 40,000 | 0 | 12,996 | 2,356 | 20,250 | 1,479 | 2,895 | 24 |
-| Five mutants of each of 20,000 statements of the generator | 100,000 | 0 | 80,607 | 2 | 7,689 | 375 | 0 | 11,327 |
-| Near misses of 2,000 statements of the generator | 53,916 | 0 | 49 | 0 | 52,821 | 1,046 | 0 | 0 |
+| Five mutants of each of 20,000 statements of the generator | 100,000 | 0 | 80,607 | 2 | 7,688 | 375 | 0 | 11,328 |
+| Near misses of 2,000 statements of the generator | 55,380 | 0 | 49 | 0 | 54,285 | 1,046 | 0 | 0 |
 
 The two columns "where SQLite does not say" are the texts that the oracle excuses from the comparison with SQLite: SQLite stopped before the end of the statement for a reason that is not the grammar, so nothing holds the pass's answer to SQLite's there. With the default flags and all the texts, the tests require the numbers of both columns exactly, each on its own (`excused` in `check_test.go`). A change of the oracle or of the pass that excuses more texts, or that moves a text from one column to the other, fails them, and the numbers may be changed only on purpose, with the reason.
 
-The 727 supported texts of the corpus are 3 CREATE TABLE, 191 DROP TABLE, 183 INSERT, and 350 SELECT, each checked in SQLite; the two that were supported before the empty name was rejected are `DROP TABLE ""` and `INSERT INTO ""("") VALUES(1)`. The supported mutants of the generator are the same statement with a semicolon or a comment changed, or the same form with another name, a keyword from the pool of the mutants, or with the sign of the value dropped; none is another kind of statement. `TestGenerate` checks 20,000 statements of the generator, each as the statement it wrote.
+The 727 supported texts of the corpus are 3 CREATE TABLE, 191 DROP TABLE, 183 INSERT, and 350 SELECT, each checked in SQLite; the two that were supported before the empty name was rejected are `DROP TABLE ""` and `INSERT INTO ""("") VALUES(1)`. The supported mutants of the generator are the same statement with a semicolon or a comment changed, or the same form with another name, a keyword from the pool of the mutants, or with the sign of the value dropped, and one with the value replaced by a `?`; none is another kind of statement. `TestGenerate` checks 20,000 statements of the generator, each as the statement it wrote.
 
 Fuzzing: `FuzzCheck` made 202,673,795 executions in 40 minutes on 6 workers, and on the code after the review 87,983,456 in 30 minutes on 4 workers. `FuzzGenerate` made 11,418,100 executions in 15 minutes on 4 workers; each checks a statement of the generator and its mutant in SQLite. None of the runs found anything.
 

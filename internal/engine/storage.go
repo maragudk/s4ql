@@ -61,8 +61,9 @@ type writeTx interface {
 	writer
 	// position of the state that the transaction began from: the parent of its commit object.
 	position() format.Name
-	// annotate the transaction with the SQL text of a statement that it ran.
-	annotate(ctx context.Context, sql string) error
+	// annotate the transaction with a statement that it ran: its SQL text, and the arguments of its
+	// parameters, by position.
+	annotate(ctx context.Context, sql string, args []*s4qlpb.Value) error
 	commit(ctx context.Context) error
 	rollback(ctx context.Context) error
 }
@@ -199,8 +200,8 @@ func (c coreTx) position() format.Name {
 	return c.tx.Position()
 }
 
-func (c coreTx) annotate(ctx context.Context, sql string) error {
-	return fromCore(c.tx.Annotate(ctx, sql, nil))
+func (c coreTx) annotate(ctx context.Context, sql string, args []*s4qlpb.Value) error {
+	return fromCore(c.tx.Annotate(ctx, sql, args))
 }
 
 // commit gives the error of the core as it is: [core.ErrInvalid] there is a commit time that the

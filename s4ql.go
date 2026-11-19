@@ -37,18 +37,33 @@
 //
 // An instance stops for good when its cache fails or when it meets something in the object store
 // that it cannot read. Every statement that reaches the instance, and every ping, then fails with
-// an error that matches [ErrStopped] and carries the cause. What the text of a statement alone
-// decides, a syntax error or "not supported", is answered as before. Nothing brings the instance
-// back: the application closes the [database/sql.DB] and opens the database again.
+// an error that matches [ErrStopped] and carries the cause. What the text of a statement and its
+// arguments alone decide, a syntax error, "not supported", or the wrong number of arguments, is
+// answered as before. Nothing brings the instance back: the application closes the
+// [database/sql.DB] and opens the database again.
 //
 // # Statements
 //
 // The SQL is a strict subset of SQLite's, and what a statement returns is what SQLite returns for
 // it. Each statement is a transaction of its own, which is committed when the statement returns
 // without an error. A statement is bounded by the context that it is given, and so is its commit.
-// Parameters, [database/sql.DB.BeginTx], and several statements in one text are not supported.
+// [database/sql.DB.BeginTx] and several statements in one text are not supported.
 // [database/sql.DB.PrepareContext] checks the text of the statement, and neither the tables that it
 // names nor whether the instance serves.
+//
+// A parameter is a plain ?, and its argument is given by position:
+//
+//	_, err = db.ExecContext(ctx, "insert into t1 (v1) values (?)", 1)
+//
+// An argument is a Go integer that fits a signed 64-bit integer, after database/sql's conversion,
+// which also takes the value of a [database/sql/driver.Valuer]. A statement is given exactly one
+// argument for each parameter, and another number fails with an error that says both numbers, which
+// is not SQLite's error: SQLite would take a missing argument for NULL. Another form of a parameter,
+// such as ?1 or :name, an argument of another type, and a named argument of [database/sql.Named] are
+// not supported. The text of a statement is judged before its arguments, and both before the
+// instance, so a syntax error is SQLite's whatever the arguments are, and an error of the arguments
+// does not depend on whether the instance serves. A statement with an error of its text or of its
+// arguments does not run.
 //
 // [database/sql.Result.RowsAffected] is SQLite's count of changes on the connection: an insert sets
 // it, and a statement that sets none, such as CREATE TABLE, gives the count of the statement before

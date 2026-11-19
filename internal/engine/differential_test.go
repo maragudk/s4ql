@@ -142,8 +142,9 @@ func sqliteText(t testing.TB, err error) string {
 	return fmt.Sprint(se.Code.Primary(), "/", int(se.Code), ": ", se.Message)
 }
 
-// run the statement of src, as sqlite3_prepare_v2 and sqlite3_step run it.
-func (o *oracle) run(t testing.TB, src string) answer {
+// run the statement of src, as sqlite3_prepare_v2 and sqlite3_step run it, with args bound to its
+// parameters by position.
+func (o *oracle) run(t testing.TB, src string, args ...int64) answer {
 	t.Helper()
 	s, _, err := o.c.PrepareFirst(src)
 	if err != nil {
@@ -153,6 +154,11 @@ func (o *oracle) run(t testing.TB, src string) answer {
 		return answer{err: "no statement"}
 	}
 	defer func() { _ = s.Finalize() }()
+	for j, a := range args {
+		if err := s.BindInt64(j+1, a); err != nil {
+			return answer{err: sqliteText(t, err)}
+		}
+	}
 	var a answer
 	var columns []string
 	for i := range s.ColumnCount() {
@@ -222,6 +228,15 @@ func errText(t testing.TB, src string, err error) string {
 	}
 	t.Fatalf("%q: the engine gives %v", src, err)
 	return ""
+}
+
+// integers as values of the engine.
+func integers(vs []int64) []*s4qlpb.Value {
+	var values []*s4qlpb.Value
+	for _, v := range vs {
+		values = append(values, s4qlpb.Value_builder{Integer: new(v)}.Build())
+	}
+	return values
 }
 
 // valueText of a value of the engine.
@@ -325,10 +340,10 @@ func (i *instance) restart(empty bool, options engine.Options) {
 	i.open(empty, options)
 }
 
-// query src through [engine.Conn.Query].
-func (i *instance) query(src string) answer {
+// query src with args through [engine.Conn.Query].
+func (i *instance) query(src string, args ...int64) answer {
 	i.t.Helper()
-	rows, err := i.c.Query(i.t.Context(), src)
+	rows, err := i.c.Query(i.t.Context(), src, integers(args)...)
 	if rows != nil {
 		if res := rows.Result(); res.SetsChanges {
 			i.changes = res.Changes
@@ -356,10 +371,11 @@ func (i *instance) query(src string) answer {
 	return a
 }
 
-// exec src through [engine.Conn.Exec], and keep SQLite's count of changes as its result says.
-func (i *instance) exec(src string) answer {
+// exec src with args through [engine.Conn.Exec], and keep SQLite's count of changes as its result
+// says.
+func (i *instance) exec(src string, args ...int64) answer {
 	i.t.Helper()
-	res, err := i.c.Exec(i.t.Context(), src)
+	res, err := i.c.Exec(i.t.Context(), src, integers(args)...)
 	if res.SetsChanges {
 		i.changes = res.Changes
 	}
