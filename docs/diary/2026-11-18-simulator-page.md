@@ -404,3 +404,50 @@ By eye before it goes live: the copy of the intro and of the log lines; the word
 ### Future work
 
 - If the Go heap ever becomes measurable from the page, replace the day of fake time with it.
+
+## Step 8: A preview image of its own
+
+**Author:** builder (simulator preview image)
+
+### Prompt Context
+
+**Verbatim prompt:** (the brief from the lead, abridged) "The simulator page reuses the front page's `og.png`, so its link preview shows the front page's headline under the simulator's title. Markus asked for a dedicated preview image for the simulator. Make `site/simulator/og.png`: 1200 by 630 pixels, PNG, in the same visual world as `site/og.png` [...] the name s4ql, the page's headline "The storage code, under faults", and one short second line that says what it is, in the page's own words [...] hint at what the page shows (two instances, one serves and one stands by, a stream of commits as barcodes) if that can be done while staying legible [...] Then, in `site/simulator/index.html`, point the `og:image` tag at `https://www.s4ql.com/simulator/og.png` [...] and write the alt text for the new image. Change nothing else in that file."
+
+**Interpretation:** one new raster in the front page's world, and two changed lines in the head of the simulator's page.
+
+**Inferred intent:** a link to the simulator says what the simulator is, at the sizes at which previews are shown.
+
+### What I did
+
+`site/simulator/og.png`, 1200 by 630, 60,479 bytes (the front page's is 68,232). On the left, as on the front page's card, text knocked out on black over the front page's field of bars from the seed `0x7334716c`: the mark and "s4ql", the headline "The storage code, under faults" in two lines at 64 px bold, the line "The real Go code, in your browser, with S3 and time simulated." at 34 px, and "www.s4ql.com/simulator" at the bottom. On the right, a framed panel in the page's own forms: "a serves" inverted, "b stands by" framed, and three commit objects as bar codes of their SHA-256 (one bar per bit, as on the page) with their short names, the first inverted and marked "head". The hashes are SHA-256 of fixed strings, not of real commits; the image shows the form of the page, not a run.
+
+The alt text: "s4ql. The storage code, under faults. The real Go code, in your browser, with S3 and time simulated. Beside the text, a panel shows instance a serving, instance b standing by, and three commit objects as bar codes. Black and white, on a field of bars."
+
+How to make it again:
+
+1. Write a card page of exactly 1200 by 630 with the two Commit Mono files from `site/fonts/` next to it, outside `site/`. It copies the front page's `rng` and `layout` (density 1.1) to paint the field on a canvas, the front page's mark (the 32 bits of "s4ql"), and draws the bar codes on canvases on whole pixels, so that bars hold only black and white (an SVG with `crispEdges` still gave four greys in the screenshot).
+2. Serve that directory over HTTP (`playwright-cli` refuses `file:` URLs), open a session with `playwright-cli -s=ogcard open`, and capture with `run-code`: `setViewportSize({width: 1200, height: 630})`, `goto`, wait for `document.fonts.ready`, and `screenshot({clip: {x: 0, y: 0, width: 1200, height: 630}, scale: "css"})`. The session belongs to the working directory it was opened from: a script that `cd`s elsewhere gets "The browser 'ogcard' is not open".
+3. Check with `file` that it is 1200 by 630, look at it, and look at it scaled to 600 and 300 wide.
+4. Embed the provenance: `impeccable embed-prompt site/simulator/og.png --prompt "Not generated. Origin: [...]"`, then `impeccable embed-prompt --scan site` (it said "3 rasters, 0 missing").
+
+### What worked
+
+- At 600 wide every word reads, the hashes and "HEAD" included. At 300 wide the headline reads clearly, the second line reads with effort, "a serves" and "b stands by" are just legible, and the bar codes read as bar codes.
+- `make site-check` passed. The local server answers `/simulator/og.png` with `image/png`, and the Pages workflow uploads all of `site/`.
+
+### What didn't work
+
+- The harness refused a Bash command with a heredoc and a `cd` into the scratch directory ("too complex to verify that it stays inside the worktree"); scratch files went through the Write tool.
+- `make site-serve` failed with "bind: address already in use" on 127.0.0.1:8093; the server ran on another port.
+
+### What was tricky
+
+- The second line had to fit beside the panel at a size that still reads at 300 wide. "The Go code itself runs in your browser. S3 and time are simulated." needed three lines with a poor break; "The real Go code, in your browser, with S3 and time simulated." fits two. "Real" stands for the page's "the Go code itself, unchanged".
+
+### What warrants review
+
+Self-review with the code-review skill at low found nothing: the new URL points at the added file. By eye: the words "The real Go code" on the card, and a card extractor on the live page after the deploy, as `AGENTS.md` asks.
+
+### Future work
+
+- The card page that makes the image is not in the repository, nor is the front page's. If preview images are made again, a small directory of card pages and a script to capture them would make them reproducible.
