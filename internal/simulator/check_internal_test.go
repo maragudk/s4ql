@@ -23,7 +23,7 @@ func TestChecker(t *testing.T) {
 		var events []Event
 		synctest.Test(t, func(t *testing.T) {
 			world := sim.New(1, sim.Options{})
-			r := &run{world: world, rec: &recorder{world: world, end: 1 << 62}}
+			r := &run{world: world, rec: newRecorder(world, 1<<62, false)}
 			r.check = newChecker(r)
 			p := &process{i: &instance{name: "a"}, name: "a"}
 			f(r.check, p)
@@ -99,6 +99,16 @@ func TestChecker(t *testing.T) {
 			log(c)
 			c.readEnded(t.Context(), p, c.readStarted(), []int64{1, 3}, position(2))
 		}},
+		{name: "a read that saw a row twice", invariant: invariantState, f: func(c *checker, p *process) {
+			log(c)
+			c.readEnded(t.Context(), p, c.readStarted(), []int64{1, 1}, position(2))
+		}},
+		{name: "a read that saw a row that a commit up to its position deleted", invariant: invariantState, f: func(c *checker, p *process) {
+			log(c)
+			c.commit(&CommitObject{Name: name(4), Parent: name(3), Keys: []int64{4}, Deletes: []int64{1}})
+			c.manifest(t.Context(), &ManifestObject{Head: name(4)})
+			c.readEnded(t.Context(), p, c.readStarted(), []int64{1, 2, 3, 4}, position(4))
+		}},
 		{name: "a read that missed an acknowledged write", invariant: invariantFresh, f: func(c *checker, p *process) {
 			log(c)
 			c.writeEnded(t.Context(), 3, "committed")
@@ -117,6 +127,26 @@ func TestChecker(t *testing.T) {
 			c.final(t.Context())
 		}},
 	}
+	t.Run("should not count a row that a later commit deleted as missed, and stay fast after a violation of a read", func(t *testing.T) {
+		var fast bool
+		events := withChecker(t, func(c *checker, p *process) {
+			log(c)
+			c.writeEnded(t.Context(), 1, "committed")
+			c.commit(&CommitObject{Name: name(4), Parent: name(3), Keys: []int64{4}, Deletes: []int64{1}})
+			c.manifest(t.Context(), &ManifestObject{Head: name(4)})
+			c.writeEnded(t.Context(), 4, "committed")
+			c.readEnded(t.Context(), p, c.readStarted(), []int64{2, 3, 4}, position(4))
+			// A read that missed the write of 4 is a violation, and the next read is still checked fast.
+			c.readEnded(t.Context(), p, c.readStarted(), []int64{1, 2, 3}, position(3))
+			c.readEnded(t.Context(), p, c.readStarted(), []int64{2, 3, 4}, position(4))
+			fast = c.fast && c.reads[2].fast
+			c.final(t.Context())
+		})
+		is.Equal(t, 1, len(events))
+		is.Equal(t, invariantFresh, events[0].Invariant)
+		is.True(t, fast, "fast after a violation of a read")
+	})
+
 	for _, test := range tests {
 		t.Run("should find "+test.name, func(t *testing.T) {
 			events := withChecker(t, test.f)

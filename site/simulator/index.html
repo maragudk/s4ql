@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>s4ql simulator: the storage code under faults, in your browser</title>
-<meta name="description" content="The storage code of s4ql, compiled to WebAssembly, runs in your browser on the official SQLite WebAssembly build, with a simulated S3 and simulated time. One instance holds the lease and serves, a second takes over when it fails. Crash it, cut it off, stop its clock, or take S3 away, and watch what the code does.">
+<meta name="description" content="The storage code of s4ql, compiled to WebAssembly, runs in your browser on the official SQLite WebAssembly build, with a simulated S3 and simulated time. One instance serves, a second stands by to take over. Crash or stop either, hang or disconnect its network, fail its disk, or move its clocks, and watch what the code does.">
 <meta name="theme-color" content="#000000">
 <link rel="canonical" href="https://www.s4ql.com/simulator/">
 <link rel="icon" href="../favicon.svg" type="image/svg+xml">
@@ -13,7 +13,7 @@
 <meta property="og:site_name" content="s4ql">
 <meta property="og:url" content="https://www.s4ql.com/simulator/">
 <meta property="og:title" content="s4ql simulator: the storage code under faults, in your browser">
-<meta property="og:description" content="The storage code of s4ql runs in your browser as WebAssembly, with a simulated S3 and simulated time. One instance serves, a second takes over when it fails. Add a fault and watch what the code does.">
+<meta property="og:description" content="The storage code of s4ql runs in your browser as WebAssembly, with a simulated S3 and simulated time. One instance serves, a second stands by to take over. Crash it, cut its network, fail its disk, or move its clocks, and watch what the code does.">
 <meta property="og:image" content="https://www.s4ql.com/og.png">
 <meta property="og:image:type" content="image/png">
 <meta property="og:image:width" content="1200">
@@ -78,7 +78,7 @@ body {
 }
 
 ::selection { background: var(--lumin); color: var(--void); }
-.cell.lit .cell-head ::selection, .alarm ::selection, .commit.head ::selection, .hl::selection, li.you ::selection, li.alarm ::selection { background: var(--void); color: var(--lumin); }
+.cell[data-role="serves"] .cell-head ::selection, .alarm ::selection, .commit.head ::selection, .btn[aria-pressed="true"] ::selection, li.you ::selection, li.alarm ::selection { background: var(--void); color: var(--lumin); }
 
 a {
   color: inherit;
@@ -173,15 +173,17 @@ code { font-family: inherit; }
   .top nav .sec { display: none; }
 }
 
-/* Buttons and the select */
+/* Buttons. An action is a framed box; a toggle has a square that fills when it is on, and the whole
+   button inverts. Hover doubles the frame, so it never looks like on. */
 
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: 10px;
+  min-height: 36px;
   border: var(--rule);
-  padding: 8px 12px;
+  padding: 7px 12px;
   text-decoration: none;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -192,65 +194,54 @@ code { font-family: inherit; }
   font-family: inherit;
   cursor: pointer;
   border-radius: 0;
+  white-space: nowrap;
   transition: background-color 120ms steps(1), color 120ms steps(1);
 }
+.btn:hover { box-shadow: inset 0 0 0 1px currentColor; }
+.btn:focus-visible { outline: 2px solid var(--lumin); outline-offset: 2px; }
+.btn[aria-pressed="true"] { background: var(--lumin); color: var(--void); }
+.btn:disabled { cursor: not-allowed; border-style: dashed; box-shadow: none; }
+.btn:disabled .led { border-style: dashed; }
+.btn .led {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border: 1px solid currentColor;
+  flex: none;
+}
+.btn[aria-pressed="true"] .led { background: currentColor; }
 .btn .bars {
   display: block;
-  width: 20px;
-  height: 12px;
+  width: 32px;
+  height: 16px;
   background:
     repeating-linear-gradient(90deg,
       currentColor 0 1px, transparent 1px 3px,
       currentColor 3px 5px, transparent 5px 6px,
       currentColor 6px 7px, transparent 7px 10px);
 }
-.btn:hover, .btn:focus-visible, .btn[aria-pressed="true"], .btn.call { background: var(--lumin); color: var(--void); text-decoration: none; }
-.btn[aria-pressed="true"]:hover, .btn.call:hover { background: var(--void); color: var(--lumin); }
-.btn:disabled { cursor: not-allowed; border-style: dashed; }
-.btn:disabled:hover { background: var(--void); color: var(--lumin); }
-.btn.big { padding: 12px 16px 12px 20px; font-size: 14px; gap: 20px; }
-.btn.big .bars { width: 32px; height: 16px; }
-
-select {
-  font: inherit;
-  font-size: 13px;
-  color: var(--lumin);
-  background: var(--void);
-  border: var(--rule);
-  border-radius: 0;
-  padding: 6px 24px 6px 8px;
-  appearance: none;
-  background-image: linear-gradient(45deg, transparent 50%, var(--lumin) 50%), linear-gradient(135deg, var(--lumin) 50%, transparent 50%);
-  background-position: calc(100% - 13px) 55%, calc(100% - 8px) 55%;
-  background-size: 5px 5px;
-  background-repeat: no-repeat;
-}
-label { display: inline-flex; align-items: center; gap: 8px; }
+.btn.big { min-height: 44px; padding: 10px 16px; font-size: 14px; gap: 16px; }
+.btn.play { min-width: 9.5em; justify-content: space-between; }
 
 /* Intro */
 
-.intro {
-  border-bottom: var(--rule);
-  padding: 28px 0 24px;
-}
-.intro-grid {
+.intro { border-bottom: var(--rule); padding: 20px 0; }
+.intro .wrap {
   display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-  gap: 16px 56px;
+  grid-template-columns: minmax(0, 4fr) minmax(0, 7fr);
+  gap: 12px 56px;
   align-items: start;
 }
 h1 {
-  font-size: clamp(28px, 2.8vw, 40px);
+  font-size: clamp(26px, 2.4vw, 36px);
   line-height: 1.06;
   letter-spacing: -0.035em;
   font-weight: 700;
   margin: 0;
   text-wrap: balance;
 }
-.intro p { max-width: 72ch; margin: 0 0 8px; font-size: 14px; }
-.intro p:last-child { margin-bottom: 0; }
-.intro p.lede { font-size: 16px; }
-.intro p.built { font-size: 13px; margin: 14px 0 0; }
+.intro p { max-width: 74ch; margin: 0 0 6px; font-size: 14px; line-height: 1.55; }
+.intro p.built { font-size: 13px; margin: 10px 0 0; }
 h2 {
   font-size: 14px;
   font-weight: 700;
@@ -259,37 +250,10 @@ h2 {
   margin: 0;
 }
 @media (max-width: 960px) {
-  /* One column, with the line on the build after the text. */
-  .intro-grid { display: flex; flex-direction: column; }
-  .intro-grid > div:first-child { display: contents; }
-  .intro p.built { order: 1; margin: 0; }
+  .intro .wrap { grid-template-columns: minmax(0, 1fr); }
 }
 
-.tries { margin-top: 24px; }
-.tries ul {
-  margin: 10px 0 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  border-top: var(--rule);
-  border-left: var(--rule);
-}
-.tries li {
-  padding: 12px 16px 14px;
-  border-right: var(--rule);
-  border-bottom: var(--rule);
-  font-size: 13px;
-  line-height: 1.5;
-}
-@media (max-width: 1100px) {
-  .tries ul { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width: 720px) {
-  .tries ul { grid-template-columns: minmax(0, 1fr); }
-}
-
-/* The bar: playback, the clock, and the field of the run so far */
+/* The bar: playback, the clock, and the field of the last two fake minutes */
 
 .bar {
   position: sticky;
@@ -302,20 +266,13 @@ h2 {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px 16px;
+  gap: 10px 12px;
   padding-top: 12px;
   padding-bottom: 12px;
 }
-.bar .clock {
-  font-weight: 700;
-  font-size: 18px;
-  white-space: nowrap;
-}
-.bar .clock .of { font-weight: 400; font-size: 13px; }
-.bar .group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
-.bar .grow { flex: 1 1 auto; }
-.bar .status { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; min-width: 0; }
-.bar .status span:empty { display: none; }
+.bar .clock { font-weight: 700; font-size: 20px; white-space: nowrap; margin-left: 8px; }
+.bar .clock .caps { font-weight: 400; margin-left: 8px; }
+.bar .status { margin: 0; flex: 1 1 auto; min-width: 0; font-size: 13px; text-align: right; }
 .field {
   flex-basis: 100%;
   position: relative;
@@ -323,38 +280,34 @@ h2 {
   border: var(--rule);
 }
 .field svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-.field[aria-busy="true"] { border-style: dashed; }
-.field-note { position: absolute; inset: 0; display: flex; align-items: center; padding: 0 12px; margin: 0; font-size: 13px; }
-.field-note:empty { display: none; }
-.limit { flex-basis: 100%; margin: 0; font-weight: 700; }
-.limit[hidden] { display: none; }
 @media (max-width: 720px) {
-  .bar .wrap { gap: 8px 12px; padding-top: 10px; padding-bottom: 10px; }
-  .bar .clock { font-size: 16px; }
-  .bar .speed-label, .bar .clock .of, #engine-status { display: none; }
-  .bar .btn.big { padding: 8px 12px; font-size: 12px; gap: 12px; }
+  .bar .wrap { gap: 8px; padding-top: 10px; padding-bottom: 10px; }
+  .bar .clock { font-size: 17px; margin-left: 4px; }
+  .bar .clock .caps { display: none; }
+  .btn.big { min-height: 40px; padding: 8px 12px; font-size: 12px; gap: 12px; }
+  .btn.play { min-width: 8em; }
+  .btn.play .bars { width: 24px; height: 12px; }
   .field { height: 20px; }
 }
 
 .alarm {
   border: var(--rule);
   padding: 16px 20px;
-  margin: 24px 0 0;
+  margin: 20px 0 0;
   background: var(--lumin);
   color: var(--void);
 }
 .alarm[hidden] { display: none; }
-.alarm strong { display: block; font-size: 18px; margin-bottom: 4px; }
-.alarm p { margin: 0 0 8px; max-width: 72ch; }
-.alarm p:last-child { margin: 0; }
+.alarm strong { display: block; font-size: 18px; }
+.alarm p { margin: 4px 0 0; max-width: 72ch; }
 
-/* Cells that share hairlines: the two instances and S3 */
+/* The two instances, side by side on hairlines */
 
-.panel { border-bottom: var(--rule); padding: 24px 0 28px; }
+.panel { padding: 20px 0 0; }
 
 .cells {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   border-top: var(--rule);
   border-left: var(--rule);
 }
@@ -363,10 +316,6 @@ h2 {
   border-right: var(--rule);
   border-bottom: var(--rule);
 }
-@media (max-width: 1100px) {
-  .cells { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .cells > .s3 { grid-column: 1 / -1; }
-}
 @media (max-width: 720px) {
   .cells { grid-template-columns: minmax(0, 1fr); }
 }
@@ -374,27 +323,23 @@ h2 {
 .cell { display: flex; flex-direction: column; }
 .cell-head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 20px;
+  align-items: baseline;
+  gap: 14px;
+  padding: 12px 20px;
   border-bottom: var(--rule);
 }
-.cell-head .who { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
 .cell-head .letter { font-size: 32px; font-weight: 700; line-height: 1; margin: 0; }
-.cell-head .word { font-weight: 700; }
-.cell.lit .cell-head { background: var(--lumin); color: var(--void); }
-.cell.down .cell-head .letter { text-decoration: line-through; text-decoration-thickness: 3px; }
-.cell .tags { display: flex; flex-wrap: wrap; justify-content: flex-end; }
-.cell .tags span { border: var(--rule); padding: 0 8px; margin: 0 -1px 0 0; }
-.cell.lit .cell-head .tags span { border-color: var(--void); }
-.cell .tags span:empty { display: none; }
-.facts { margin: 0; padding: 0 20px; }
+.cell-head .word { font-weight: 700; flex: 1 1 auto; min-width: 0; }
+.cell-head .process:empty { display: none; }
+.cell[data-role="serves"] .cell-head { background: var(--lumin); color: var(--void); }
+.cell[data-state="crashed"] .cell-head .letter { text-decoration: line-through; text-decoration-thickness: 3px; }
+
+.facts { margin: 0; padding: 4px 20px; }
 .facts > div {
   display: grid;
   grid-template-columns: 9ch minmax(0, 1fr);
   gap: 12px;
-  padding: 8px 0;
+  padding: 6px 0;
   border-bottom: var(--rule);
   font-size: 13px;
   line-height: 1.5;
@@ -402,60 +347,80 @@ h2 {
 .facts > div:last-child { border-bottom: 0; }
 .facts dt { margin: 0; }
 .facts dd { margin: 0; overflow-wrap: anywhere; }
-.facts .code { display: block; width: 100%; height: 16px; margin-top: 4px; }
-.facts .hl { background: var(--lumin); color: var(--void); padding: 0 4px; }
-.faults {
+.facts .code { display: block; width: 100%; height: 14px; margin-top: 4px; }
+
+.actions {
   margin-top: auto;
   border-top: var(--rule);
-  padding: 14px 20px 18px;
+  padding: 14px 20px 16px;
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 8px;
 }
-.faults .caps { flex-basis: 100%; }
-.faults .btn { padding: 5px 9px; font-size: 11px; }
+.actions div { display: flex; flex-wrap: wrap; gap: 8px; }
+@media (max-width: 520px) {
+  .cell-head, .facts, .actions { padding-left: 16px; padding-right: 16px; }
+  .actions div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .actions .btn { white-space: normal; text-align: left; justify-content: flex-start; }
+}
 
-/* The log and the commit objects */
+/* S3, the log, and the commit objects */
 
-.logs { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); border: var(--rule); }
+.s3 {
+  display: grid;
+  grid-template-columns: auto repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+  border: var(--rule);
+  border-top: 0;
+}
+.s3 > div { padding: 12px 20px; min-width: 0; }
+.s3 .letter { font-size: 32px; font-weight: 700; line-height: 1; margin: 0; letter-spacing: 0; text-transform: none; }
+.s3 dl { margin: 0; display: contents; }
+.s3 dl > div { display: grid; align-content: start; gap: 2px; font-size: 13px; border-left: var(--rule); padding: 12px 20px; overflow-wrap: anywhere; min-width: 0; }
+.s3 dd { margin: 0; }
+@media (max-width: 720px) {
+  .s3 { grid-template-columns: minmax(0, 1fr); }
+  .s3 dl > div { border-left: 0; border-top: var(--rule); grid-template-columns: 9ch minmax(0, 1fr); gap: 12px; padding: 8px 16px; }
+  .s3 > div:first-child { padding: 12px 16px; }
+}
+
+.logs { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); border: var(--rule); border-top: 0; margin-bottom: 40px; }
 .logs > section { min-width: 0; }
 .logs > section + section { border-left: var(--rule); }
-.log-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px 16px; padding: 14px 20px; border-bottom: var(--rule); }
-.log-head p { margin: 0; }
-.scroll { max-height: 560px; overflow-y: auto; scrollbar-width: thin; }
+.log-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px 16px; padding: 12px 20px; border-bottom: var(--rule); }
+.log-head span { font-size: 13px; }
+.scroll { height: 480px; overflow-y: auto; scrollbar-width: thin; }
 .entries { list-style: none; margin: 0; padding: 0; }
 .entries li {
   display: grid;
-  grid-template-columns: 9ch minmax(0, 1fr);
+  grid-template-columns: 8ch minmax(0, 1fr);
   gap: 12px;
-  padding: 5px 20px;
+  padding: 4px 20px;
   border-bottom: var(--rule);
   font-size: 13px;
   line-height: 1.5;
 }
-.entries li:last-child { border-bottom: 0; }
 .entries .text { overflow-wrap: anywhere; }
 .entries li.story .text { font-weight: 700; }
 .entries li.you, .entries li.alarm { background: var(--lumin); color: var(--void); }
 .entries li.alarm { font-weight: 700; }
-.entries li.empty { display: block; padding: 14px 20px; }
+.entries li.empty, .commits li.empty { display: block; padding: 12px 20px; font-size: 13px; }
 .commits { list-style: none; margin: 0; padding: 0; }
-.commit { padding: 12px 20px; border-bottom: var(--rule); display: grid; gap: 6px; }
-.commit:last-child { border-bottom: 0; }
-.commit .code { display: block; width: 100%; height: 24px; }
-.commit .meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 16px; font-size: 13px; }
-.commit .name { font-weight: 700; word-break: break-all; font-size: 12px; }
+.commit { padding: 10px 20px; border-bottom: var(--rule); display: grid; gap: 6px; }
+.commit .code { display: block; width: 100%; height: 20px; }
+.commit .meta { display: flex; flex-wrap: wrap; gap: 2px 16px; font-size: 13px; }
+.commit .meta .caps { margin-left: auto; }
+.commit .name { font-weight: 700; }
 .commit.head { background: var(--lumin); color: var(--void); }
-.commit.orphan { outline: 1px dashed var(--lumin); outline-offset: -6px; }
-.commits .empty { padding: 14px 20px; margin: 0; }
-.leaves { margin: 16px 0 0; max-width: 96ch; }
+.commit.orphan { outline: 1px dashed var(--lumin); outline-offset: -5px; }
 @media (max-width: 960px) {
   .logs { grid-template-columns: minmax(0, 1fr); }
   .logs > section + section { border-left: 0; border-top: var(--rule); }
-  .scroll { max-height: 420px; }
+  .scroll { height: 360px; }
 }
 @media (max-width: 520px) {
-  .entries li { gap: 10px; padding: 5px 16px; }
+  .entries li { gap: 10px; padding: 4px 16px; }
+  .log-head, .commit, .entries li.empty, .commits li.empty { padding-left: 16px; padding-right: 16px; }
 }
 
 footer { padding: 40px 0 56px; }
@@ -506,14 +471,12 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
 <main id="main">
 
 <section class="intro" aria-labelledby="intro-h">
-  <div class="wrap intro-grid">
+  <div class="wrap">
+    <h1 id="intro-h">The storage code, under faults</h1>
     <div>
-      <h1 id="intro-h">The storage code, under faults</h1>
-      <p class="built small"><span class="caps">Built from</span> <span id="build">a commit that is not known for this build.</span> The code is <a href="https://github.com/maragudk/s4ql/tree/main/internal/core"><code>internal/core</code></a>, run by <a href="https://github.com/maragudk/s4ql/blob/main/internal/simulator/README.md"><code>internal/simulator</code></a>.</p>
-    </div>
-    <div>
-      <p class="lede">The storage code of s4ql runs in this page: the Go code itself, unchanged, compiled to WebAssembly, with its cache on the official SQLite WebAssembly build. S3 and time are simulated.</p>
-      <p>s4ql is built for one long-running instance per database. Here that instance holds the lease and serves a stream of reads and writes, and a second instance stands by to take over when it fails. Add a fault, and watch what the code does.</p>
+      <p>The storage code of s4ql runs in this page: the Go code itself, unchanged, compiled to WebAssembly, with its cache on the official SQLite WebAssembly build. S3 and time are simulated.</p>
+      <p>s4ql is built for one long-running instance per database. Here one instance serves a stream of reads and writes, and a second stands by to take over.</p>
+      <p class="built"><span class="caps">Built from</span> <span id="build">an unknown commit</span> of <a href="https://github.com/maragudk/s4ql/tree/main/internal/core"><code>internal/core</code></a>, run by <a href="https://github.com/maragudk/s4ql/blob/main/internal/simulator/README.md"><code>internal/simulator</code></a>.</p>
     </div>
   </div>
 </section>
@@ -522,25 +485,13 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
 
 <div class="bar" role="region" aria-label="Playback">
   <div class="wrap">
-    <div class="group">
-      <button class="btn big" type="button" id="play" aria-pressed="false" disabled>Play <span class="bars" aria-hidden="true"></span></button>
-      <label class="caps" for="speed"><span class="speed-label">Speed</span>
-        <select id="speed">
-          <option value="1">1×</option>
-          <option value="4" selected>4×</option>
-          <option value="16">16×</option>
-          <option value="64">64×</option>
-        </select>
-      </label>
-      <div class="clock" aria-live="off"><span id="clock">0:00.000</span> <span class="of">of fake time</span></div>
+    <button class="btn big play" type="button" id="play" disabled><span id="play-word">Play</span> <span class="bars" aria-hidden="true"></span></button>
+    <button class="btn big" type="button" id="turbo" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Turbo 5×</button>
+    <div class="clock"><span id="clock">0:00.0</span><span class="caps">fake time</span></div>
+    <p class="status" id="status" role="status">Starting.</p>
+    <div class="field" aria-hidden="true">
+      <svg id="strip" viewBox="0 0 240 28" preserveAspectRatio="none" shape-rendering="crispEdges"></svg>
     </div>
-    <p class="status small grow" role="status"><span id="engine-status">Starting.</span><span id="note"></span></p>
-    <button class="btn" type="button" id="again" disabled>Start over</button>
-    <div class="field" id="field" aria-busy="true">
-      <svg id="strip" preserveAspectRatio="none" shape-rendering="crispEdges" aria-hidden="true"></svg>
-      <p class="field-note" id="field-note">Loading the engine.</p>
-    </div>
-    <p class="limit" id="limit" role="status" hidden></p>
   </div>
 </div>
 
@@ -553,90 +504,80 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
     <h2 class="vh" id="cells-h">The instances and S3</h2>
     <div class="cells">
       <article class="cell" data-instance="a" aria-labelledby="inst-a">
-        <div class="cell-head">
-          <div class="who"><h3 class="letter" id="inst-a">a</h3><span class="word" data-f="word">…</span></div>
-          <div class="tags caps"><span data-f="process"></span><span data-f="cut"></span><span data-f="stopped"></span></div>
-        </div>
+        <div class="cell-head"><h3 class="letter" id="inst-a">a</h3><span class="word" data-f="word">…</span><span class="process caps" data-f="process"></span></div>
         <dl class="facts">
-          <div><dt class="caps">Lease</dt><dd data-f="lease"></dd></div>
-          <div><dt class="caps">Cache</dt><dd><span data-f="pos"></span><span data-f="code"></span></dd></div>
-          <div><dt class="caps">Clocks</dt><dd data-f="clocks"></dd></div>
-          <div><dt class="caps">Calls</dt><dd data-f="calls"></dd></div>
+          <div><dt class="caps">Lease</dt><dd data-f="lease">…</dd></div>
+          <div><dt class="caps">Cache</dt><dd><span data-f="pos">…</span><span data-f="code"></span></dd></div>
+          <div><dt class="caps">Clocks</dt><dd data-f="clocks">…</dd></div>
+          <div><dt class="caps">Served</dt><dd data-f="calls">…</dd></div>
+          <div><dt class="caps">Refused</dt><dd data-f="refused">…</dd></div>
         </dl>
-        <div class="faults">
-          <span class="caps">Faults</span>
-          <button class="btn" type="button" data-a="crash" disabled>Crash</button>
-          <button class="btn" type="button" data-a="cutOff" disabled>Cut off from S3 for 40 s</button>
-          <button class="btn" type="button" data-a="clock" disabled>Stop its monotonic clock</button>
+        <div class="actions" role="group" aria-label="Actions on a">
+          <div>
+            <button class="btn" type="button" data-a="crash" disabled>Crash</button>
+            <button class="btn" type="button" data-a="stop" disabled>Stop</button>
+          </div>
+          <div>
+            <button class="btn" type="button" data-a="hang" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Hang network</button>
+            <button class="btn" type="button" data-a="disconnect" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Disconnect network</button>
+            <button class="btn" type="button" data-a="disk" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Error disk</button>
+          </div>
+          <div>
+            <button class="btn" type="button" data-a="forward" aria-label="Move the wall clock of a forward 60 s" disabled>Clock +60 s</button>
+            <button class="btn" type="button" data-a="back" aria-label="Move the wall clock of a back 60 s" disabled>Clock −60 s</button>
+            <button class="btn" type="button" data-a="pause" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Pause clocks</button>
+          </div>
         </div>
       </article>
       <article class="cell" data-instance="b" aria-labelledby="inst-b">
-        <div class="cell-head">
-          <div class="who"><h3 class="letter" id="inst-b">b</h3><span class="word" data-f="word">…</span></div>
-          <div class="tags caps"><span data-f="process"></span><span data-f="cut"></span><span data-f="stopped"></span></div>
-        </div>
+        <div class="cell-head"><h3 class="letter" id="inst-b">b</h3><span class="word" data-f="word">…</span><span class="process caps" data-f="process"></span></div>
         <dl class="facts">
-          <div><dt class="caps">Lease</dt><dd data-f="lease"></dd></div>
-          <div><dt class="caps">Cache</dt><dd><span data-f="pos"></span><span data-f="code"></span></dd></div>
-          <div><dt class="caps">Clocks</dt><dd data-f="clocks"></dd></div>
-          <div><dt class="caps">Calls</dt><dd data-f="calls"></dd></div>
+          <div><dt class="caps">Lease</dt><dd data-f="lease">…</dd></div>
+          <div><dt class="caps">Cache</dt><dd><span data-f="pos">…</span><span data-f="code"></span></dd></div>
+          <div><dt class="caps">Clocks</dt><dd data-f="clocks">…</dd></div>
+          <div><dt class="caps">Served</dt><dd data-f="calls">…</dd></div>
+          <div><dt class="caps">Refused</dt><dd data-f="refused">…</dd></div>
         </dl>
-        <div class="faults">
-          <span class="caps">Faults</span>
-          <button class="btn" type="button" data-a="crash" disabled>Crash</button>
-          <button class="btn" type="button" data-a="cutOff" disabled>Cut off from S3 for 40 s</button>
-          <button class="btn" type="button" data-a="clock" disabled>Stop its monotonic clock</button>
-        </div>
-      </article>
-      <article class="cell s3" aria-labelledby="s3-h">
-        <div class="cell-head">
-          <div class="who"><h3 class="letter" id="s3-h">S3</h3><span class="word" id="s3-word">…</span></div>
-        </div>
-        <dl class="facts" id="manifest">
-          <div><dt class="caps">Manifest</dt><dd>Not written yet.</dd></div>
-        </dl>
-        <div class="faults">
-          <span class="caps">Faults</span>
-          <button class="btn" type="button" id="outage" disabled>Make S3 unreachable for 40 s</button>
-          <button class="btn" type="button" id="lose" disabled>Lose the answer to the next commit</button>
+        <div class="actions" role="group" aria-label="Actions on b">
+          <div>
+            <button class="btn" type="button" data-a="crash" disabled>Crash</button>
+            <button class="btn" type="button" data-a="stop" disabled>Stop</button>
+          </div>
+          <div>
+            <button class="btn" type="button" data-a="hang" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Hang network</button>
+            <button class="btn" type="button" data-a="disconnect" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Disconnect network</button>
+            <button class="btn" type="button" data-a="disk" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Error disk</button>
+          </div>
+          <div>
+            <button class="btn" type="button" data-a="forward" aria-label="Move the wall clock of b forward 60 s" disabled>Clock +60 s</button>
+            <button class="btn" type="button" data-a="back" aria-label="Move the wall clock of b back 60 s" disabled>Clock −60 s</button>
+            <button class="btn" type="button" data-a="pause" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Pause clocks</button>
+          </div>
         </div>
       </article>
     </div>
-    <section class="tries" aria-labelledby="tries-h">
-      <h2 id="tries-h">Things to try</h2>
-      <ul>
-        <li>Crash the instance with the lease, or cut it off from S3. Once its lease has run out, the other instance takes it over and catches up from the log in S3.</li>
-        <li>Stop the monotonic clock of the instance with the lease, and start it again a minute later. Its timers stop with the clock, so the other instance takes the lease over. When the clock runs again, it refuses calls and learns that it lost the lease.</li>
-        <li>Make S3 unreachable. The instance with the lease refuses calls once its lease runs out, and asks S3 how its last renewal went when S3 is back.</li>
-        <li>Lose the answer to the next commit. S3 has the commit, and the instance cannot tell. Watch it find out before it acknowledges the write.</li>
-      </ul>
+    <section class="s3" aria-labelledby="s3-h">
+      <div><h3 class="letter" id="s3-h">S3</h3></div>
+      <dl>
+        <div><dt class="caps">Head</dt><dd id="s3-head">…</dd></div>
+        <div><dt class="caps">Lease</dt><dd id="s3-lease">…</dd></div>
+        <div><dt class="caps">Manifest writes</dt><dd id="s3-writes">…</dd></div>
+      </dl>
     </section>
-  </div>
-</section>
-
-<section class="panel" aria-label="What happened">
-  <div class="wrap">
     <div class="logs">
       <section aria-labelledby="log-h">
-        <div class="log-head">
-          <h2 id="log-h">What happens</h2>
-          <p class="small">Newest first, in fake time from the start of the run.</p>
-        </div>
-        <div class="scroll" tabindex="0" aria-label="What happens">
-          <ol class="entries" id="log"></ol>
+        <div class="log-head"><h2 id="log-h">Log</h2><span id="lines"></span></div>
+        <div class="scroll" tabindex="0" aria-label="Log, newest first">
+          <ol class="entries" id="log"><li class="empty">Nothing yet.</li></ol>
         </div>
       </section>
       <section aria-labelledby="commits-h">
-        <div class="log-head">
-          <h2 id="commits-h">Commit objects in S3</h2>
-          <p class="small" id="commit-count"></p>
-        </div>
+        <div class="log-head"><h2 id="commits-h">Commit objects</h2><span id="commit-count"></span></div>
         <div class="scroll" tabindex="0" aria-label="Commit objects, newest first">
-          <ol class="commits" id="commits"><li class="empty small">No commit objects yet.</li></ol>
+          <ol class="commits" id="commits"><li class="empty">None yet.</li></ol>
         </div>
       </section>
     </div>
-    <p class="leaves small">A write inserts one row with a key of its own, and a read reads every row. A commit object is named by its SHA-256, and the manifest names the head of the log. Left out: faults of the local disk, which the tests of the core reach and this page cannot, and the random faults of S3 that the tests run with.</p>
   </div>
 </section>
 

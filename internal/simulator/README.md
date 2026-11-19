@@ -1,8 +1,11 @@
 # The engine of the simulator
 
-`internal/simulator` runs the storage core of s4ql under the simulation, one request at a time, and returns what happened as a structured trace. A request is a seed, settings, and a schedule of actions and faults at fake times.
+`internal/simulator` runs the storage core of s4ql under the simulation, and returns what happened as a structured trace. It runs the code in two ways:
 
-It exists for the simulator on the project's site, which is to show how the current code reacts to faults of its environment. The page must therefore run the code, and `site/simulator/` runs this engine in place of the JavaScript model of the design that it ran before. This file is the specification for the page: the request, the response, the events, the state at a time, the invariants, and how a page loads the engine.
+- A batch run takes a request, which is a seed, settings, and a schedule of actions and faults at fake times, runs it to its end, and returns the whole trace.
+- A live session takes a seed and settings, and has no end. The page advances its fake time, acts at the time of the session, and asks for the state now, one command at a time. Each answer has the events since the answer before.
+
+It exists for the simulator on the project's site, which is to show how the current code reacts to faults of its environment. The page must therefore run the code, and `site/simulator/` runs this engine in place of the JavaScript model of the design that it ran before. The page drives one live session, and `make site-check` checks it. This file is the specification for the page: the messages, the request, the response, the live session, the events, the state at a time, the invariants, what the code does under each action, and how a page loads the engine.
 
 - The package builds only with the tag `s4ql_browser`. With the tag it builds natively and for a browser, with `GOOS=js GOARCH=wasm`, where it runs on the SQLite binding of [internal/sqlite/browser](../sqlite/browser/README.md).
 - `internal/core`, `internal/sim`, and `internal/store/simstore` are used unchanged, through their exported API.
@@ -10,12 +13,26 @@ It exists for the simulator on the project's site, which is to show how the curr
 
 ## How a run works
 
-`Engine.Handle` takes a request as JSON and returns the response as JSON. One request is one run, and the run goes to its end before the engine answers:
+`Engine.Handle` takes a message, which is a kind and a body as JSON, and returns the answer as JSON. The kinds `run` and `state` are those of a batch run. The other five are the commands of a live session.
+
+| Kind | Body | Answer |
+| --- | --- | --- |
+| `run` | A request: see [The request](#the-request). | The response: see [The response](#the-response). The run goes to its end before the engine answers. |
+| `state` | `{"t": T}` | The state of the last batch run at the time T: see [The state at a time](#the-state-at-a-time). |
+| `start` | The settings of a session: see [The settings](#the-settings). | Starts a session, and answers with its first events. A session that runs is ended first. |
+| `advance` | `{"by": D}` or `{"to": T}` | Moves the fake time of the session on by D, or to the time T, and answers with the events of the stretch. |
+| `act` | An action as in a schedule, without `at`. | Does the action at the time of the session. |
+| `now` | `{}` or `{"commits": N}` | The state of the session now. |
+| `end` | `{}` | Ends the session, with the last checks of the invariants, the summary, and the hash. |
+
+The five commands of a session answer in one form: see [The answer](#the-answer). A message of another kind gets an answer with only `error`, which lists the kinds. A batch run and a session do not touch each other: `run` does not end a session, and `state` is always that of the last batch run.
+
+A batch run and a session run the same code in the same way:
 
 1. The engine starts a scheduler of `internal/sim` with the seed, in a `testing/synctest` bubble of its own, and a simulated store of `simstore`.
 2. It starts the instances, named `a`, `b`, `c`, and so on. A process runs each instance: a simulated machine with its own clocks, its cache in a file, its callers, and its client of the store. The first process of an instance has the name of the instance, and a restart starts the next: `a2`, `a3`, and so on.
-3. The first task of the run does the actions of the schedule at their times, and then sleeps until the end.
-4. At the end it runs the last checks of the invariants and stops recording.
+3. In a batch run, the first task of the run does the actions of the schedule at their times, and then sleeps until the end. In a session, the first task does the commands of the page as they come: see [A live session](#a-live-session).
+4. At the end it runs the last checks of the invariants and stops recording. The end of a session is its command `end`.
 
 The trace holds the events before `end`, and those at `end` that happen before the recording stops. After that the engine lets the run finish, and none of it is in the trace: every process that has not crashed closes its database, every monotonic clock that stands still starts again, because the sleeps of a process stand still with its clock, and the requests that are on their way end.
 
@@ -24,16 +41,19 @@ The trace holds the events before `end`, and those at `end` that happen before t
 - The same request gives the same response, byte for byte, every time and on every engine.
 - Two requests that differ only in their schedules give the same events before a time T, if the schedules agree before T: the actions with `at` below T are the same, at the same indexes. "Before" is strict. Events at exactly T can differ.
 - Two requests that differ only in `end` give the same events before the earlier end.
+- A session that gets the actions of a request's schedule at their times gives the same events and the same hash as the batch run: see [A session and a batch run](#a-session-and-a-batch-run).
 
-The request is the whole input of a run, so a page can share a run as its request.
+The request is the whole input of a batch run, so a page can share a batch run as its request.
 
 ### A fault while the run plays
 
-The engine has no live run. A page plays a trace back at its own speed. When the visitor acts at the fake time T, the page adds the action to the schedule at T and asks for the run again. The events before T are the same, so the visitor sees the run go on from where it was.
+A page has two ways to let a visitor act while a run plays.
 
-Events at exactly T can change. A page that must keep everything it has shown gives the new action a time after the last event shown.
+The first is the batch run again. The page plays a trace back at its own speed. When the visitor acts at the fake time T, the page adds the action to the schedule at T and asks for the run again. The events before T are the same, so the visitor sees the run go on from where it was. Events at exactly T can change. A page that must keep everything it has shown gives the new action a time after the last event shown.
 
-A live loop, in which the run waits for the visitor, does not work in a bubble. A goroutine of the bubble that waits for the visitor is durably blocked, so fake time would run on without the visitor. The JavaScript callback that brings the visitor's message runs outside the bubble.
+The second is the live session, in which the run itself waits for the visitor. The page sends `act` when the visitor acts, and the action happens at the time of the session.
+
+An earlier version of this file said that a run cannot wait for the visitor in a bubble: a goroutine of the bubble that waits is durably blocked, so fake time would run on without the visitor. That holds for a wait on something made inside the bubble. The session waits on a channel made outside it, and such a wait is not durable, so fake time stands still: see [A live session](#a-live-session).
 
 ## The request
 
@@ -54,7 +74,7 @@ Every time and duration is a number of milliseconds of fake time, which may have
 
 The other options of the core keep their defaults. An instance renews its lease after two thirds of its duration. A request for the manifest times out after 5 s, and an upload or a download of a commit object after 5 min. An instance that does not hold the lease reads the manifest every 5 s. SQLite waits 1 s for a lock on the cache.
 
-The scheduler delays half of all task starts, yields, and releases by up to 50 ms, and fails a run after 5,000,000 steps.
+The scheduler delays half of all task starts, yields, and releases by up to 50 ms, and fails a batch run after 5,000,000 steps. A session has no limit of steps.
 
 A page that goes through `simulator.js` sends the seed as a JavaScript number, so a seed above 2^53 - 1 loses precision.
 
@@ -105,17 +125,20 @@ Each process runs callers, as an application would.
 | `think` | 5000 | 0 to 1800000 | The longest pause of a caller before a call. |
 | `writes` | 40 | 0 to 100 | The share of calls that are writes, in percent. The others are reads. |
 | `timeout` | 30000 | above 0, at most 1800000 | The timeout of each call, on the monotonic clock of its process. |
+| `keep` | 0 | 0 to 10000 | The number of rows that the writes keep in the table. 0 keeps every row. |
 
 A caller repeats two steps. It pauses for 1 ms and a time from 0 to `think`, from the seed. Then it makes one call, a write or a read by `writes`. While the workload is off it makes no call, and looks again after a second.
 
-- A write is one write transaction. It creates the table `t`, with the one integer column `k` as its primary key, if the database does not have it. It inserts one row and commits. The key of the row is the next value of a counter of the run, which starts at 1. Every write takes a value when it starts, also one that is then refused, so a key belongs to one call, and the keys tell the transactions apart.
+- A write is one write transaction. It creates the table `t`, with the one integer column `k` as its primary key, if the database does not have it. It inserts one row, trims the table by `keep`, and commits. The key of the row is the next value of a counter of the run, which starts at 1. Every write takes a value when it starts, also one that is then refused, so a key belongs to one call, and the keys tell the transactions apart.
 - A read is one read transaction that scans `t`. It reports the keys that it saw and its position: the name of the last commit object in the state that it saw.
 
 The actions `write` and `read` make the same calls, with the caller `visitor`.
 
+With `keep` above 0, a write deletes rows in its transaction, after its insert: the other rows with the smallest keys, until the table has `keep` rows. The table then stops growing, and a read costs the same however long the run. The commit object of the write carries the keys that it deletes, in `deletes`. The new row counts as one of the `keep`, and a write never deletes its own row, also when its key is smaller than those of the other rows, so that every commit holds the key it was written for. A write reads the whole table, at most `keep` rows and its own, to find the rows to delete. With `keep` at 0, the default of a request, no write deletes a row, and a batch run is as it was before `keep`. A session has the default 100.
+
 ### Schedule
 
-An action has the time `at`, from 0 to before `end`, the name `do`, and the parameters of its kind. Actions at the same time happen in the order of the schedule. `instance` is the name of an instance of the run.
+An action has the time `at`, from 0 to before `end`, the name `do`, and the parameters of its kind. Actions at the same time happen in the order of the schedule. `instance` is the name of an instance of the run. Every action also works in a session, as the body of the command `act`, without `at`.
 
 | `do` | Parameters | Effect |
 | --- | --- | --- |
@@ -133,25 +156,57 @@ An action has the time `at`, from 0 to before `end`, the name `do`, and the para
 | `startWall` | `instance` | The wall clock goes on from where it stood, so it stays behind by the time it stood still. |
 | `stopMonotonic` | `instance` | The monotonic clock stands still, and with it every sleep and timeout of the process: the pauses of its callers, the renewals of its lease, and the timeouts of its calls and requests. |
 | `startMonotonic` | `instance` | The monotonic clock goes on from where it stood. |
+| `pauseClocks` | `instance` | Both clocks of the process stand still, as after `stopWall` and `stopMonotonic`. |
+| `resumeClocks` | `instance` | Both clocks go on from where they stood, as after `startWall` and `startMonotonic`. |
+| `hangNetwork` | `instance`, `on` | Switches a hang of the network of the instance on or off. While it hangs, no request of the instance is sent, no answer reaches it, and each caller waits until it gives up. |
+| `disconnectNetwork` | `instance`, `on` | Switches a disconnect of the network of the instance on or off. While it is disconnected, each request of the instance fails at once and is not sent. |
+| `failDisk` | `instance`, `on` | Switches a failure of the disk of the instance on or off. While the disk fails, every file operation on the cache of the instance fails. |
 | `loseAnswer` | `request`, optional `instance` | Arms a fault. The next matching request is sent, the store handles it, and its answer is lost on the way to the caller, which gets an error. |
 | `failRequest` | `request`, optional `instance` | Arms a fault. The next matching request fails before it is sent. |
-| `workload` | `on` | Switches the callers on or off. A missing `on` is false. |
+| `workload` | `on` | Switches the callers on or off. |
+
+A missing `on` is false, so an action without it switches off.
 
 An action that cannot be done is ignored. Its event says so, with the reason:
 
-- `write`, `read`, `crash`, `close`, `open`, `cutOff`, and the five clock actions are ignored when the process of the instance has crashed.
+- `write`, `read`, `crash`, `close`, `open`, `cutOff`, and the seven clock actions are ignored when the process of the instance has crashed.
 - `restart` is ignored when the process has not crashed.
 - `close` is ignored when the database is not open.
 - `open` is ignored while the database is open, also while a database that has stopped waits for its process to open it again.
 
+`hangNetwork`, `disconnectNetwork`, and `failDisk` are done whether the process has crashed or not, because the fault belongs to the instance, whichever process runs it.
+
 Where the actions come from:
 
-- `crash` and the clock actions are those of `sim`. Buggify is `sim`'s too.
+- `crash` and the clock actions are those of `sim`. `pauseClocks` and `resumeClocks` are its two stops and its two starts together. Buggify is `sim`'s too.
 - `restart` starts a new instance of `sim` on the copied files. `close` and `open` call the core as an application does.
 - `cutOff`, `outage`, and `calm` are those of `simstore`.
-- `loseAnswer`, `failRequest`, and the random `damaged` are the engine's own, in the client that wraps the client of `simstore`. They are faults of the network that the contract of the store allows.
+- `loseAnswer`, `failRequest`, `hangNetwork`, `disconnectNetwork`, and the random `damaged` are the engine's own, in the client that wraps the client of `simstore`. They are faults of the network that the contract of the store allows.
+- `failDisk` is a fault of `internal/sqlite/faultvfs`, an SQLite VFS that makes file operations fail. The core opens the cache through it by the field `VFS` of `core.Options`.
 
 `loseAnswer` and `failRequest` are one-shot. An armed fault waits, without a time limit, for the first request that matches, and is then used up. A request matches if its purpose is `request`, or `request` is `any`, and if it comes from `instance`, where one is given. `request` is one of `any`, `read`, `take`, `commit`, `renew`, `release`, `upload`, and `download`: see [the purposes](#request). One request trips at most one fault, the one armed first. The caller gets an error that does not say whether the store applied the request, as after a real loss.
+
+### The network and the disk of an instance
+
+`hangNetwork`, `disconnectNetwork`, and `failDisk` each switch one fault of one instance. The fault belongs to the machine of the instance. It holds across a crash and a restart, until an action switches it off. The state shows the three: see [The state at a time](#the-state-at-a-time).
+
+While the network of an instance hangs:
+
+- A request of the instance is not sent. Its caller waits until its own context ends, and then gets an error. The context ends by a timeout of the core, which is 5 s for the manifest and 5 min for a commit object, or by the timeout of the call, whichever comes first. The events are `request` with `hung`, without the number of a request, and `request` with `returned` and the error, when the caller gives up.
+- A request that was on its way when the hang started still reaches the store, as `simstore` carries it. If its answer comes back while the network hangs, the answer is lost, and the caller waits until it gives up. The events are `hung`, with the number of the request, and then `returned` with the error.
+- A request that started while the network hung gets no answer when the hang is switched off. Its caller still waits until it gives up.
+
+While the network of an instance is disconnected:
+
+- A request of the instance fails at once and is not sent. Its one event is `request` with `disconnected`, without the number of a request.
+- A request that is on its way when the disconnect is switched on loses its caller at once, which the store shows as `gave_up`. The caller gets the error of the network. The event is `disconnected`, with the number of the request, in place of `returned`. The request goes on as one whose caller gave up, so the store can still apply a write: see [the life of a request](#request).
+- The content of a download that the instance is reading when the disconnect is switched on breaks off with the same error.
+
+If both are on, the disconnect wins. Neither error says whether the store applied the request, so the core counts a renewal of the lease that fails this way as one of unknown outcome. A request that is not sent does not use up an armed `loseAnswer` or `failRequest`.
+
+While the disk of an instance fails, every operation on the files of its cache fails with an I/O error: open, read, write, truncate, sync, size, and lock. Every process of the instance opens its cache through one VFS of `faultvfs`, which makes the operations fail. With `on` as false, no operation fails. The spool files of the commits do not go through the VFS, so they do not fail. The engine keeps the VFSes in a pool across runs: a crashed process leaves its files open, and a VFS cannot be closed while a file that was opened through it is open.
+
+No action makes a disk hang: see [A disk that hangs](#a-disk-that-hangs).
 
 ## The response
 
@@ -176,9 +231,90 @@ The summary:
 | `violations` | The events of the kind `check`. |
 | `excused` | Those of them that are excused. |
 
+## A live session
+
+A session is one run without an end, which the page drives one command at a time:
+
+1. `start` starts it, with a seed and settings.
+2. `advance` moves its fake time on, and answers with the events of the stretch.
+3. `act` does an action at its fake time.
+4. `now` answers with its state.
+5. `end` ends it.
+
+Between two commands fake time stands still, however long the page waits. No task runs, and the scheduler takes no step.
+
+The first task of the run is the controller of the session. It does one command, answers it, and waits for the next. It waits on a channel that is made outside the `testing/synctest` bubble of the run, and a wait on such a channel is not durable. The loop of the scheduler calls `synctest.Wait` before each step, which returns only once every goroutine of the bubble is durably blocked. So while the controller waits for the page, the scheduler starts no task and does not move fake time. For an advance, the controller sleeps through the scheduler, as the first task of a batch run sleeps until its next action, and the other tasks run until it wakes.
+
+The engine does not keep the trace of a session. It folds each event into the state of the session as it comes, and forgets an event once an answer has brought it. A page that needs an event later keeps it.
+
+An engine has one session at most. A command without a session gets an answer with the error `there is no session: start one`.
+
+### The settings
+
+The body of `start` is an object with the fields of a request that hold for a whole run: `seed`, `instances`, `leases`, `readers`, `latency`, `faults`, `buggify`, and `workload`. Each has the meaning and the limits that [The request](#the-request) gives it. A session has no `end`, no `schedule`, and no `lines`: each of them is an error, as any other member is.
+
+A field that is missing has the default of a request, with two exceptions:
+
+| Field | Default in a session | Default in a request |
+| --- | --- | --- |
+| `instances` | 2 | 3 |
+| `workload.keep` | 100 | 0 |
+
+The default of `seed` is 1. A page that wants another run each time picks the seed itself.
+
+`start` ends the session that runs, if there is one, and drops its last answer. A page that wants the last checks and the hash of a session sends `end` first. A `start` whose settings are refused leaves the session that runs as it is.
+
+### The commands
+
+`advance` takes exactly one of `by` and `to`, in milliseconds of fake time:
+
+| Field | Limits | Meaning |
+| --- | --- | --- |
+| `by` | 0 to 1800000 | How far fake time moves on. |
+| `to` | 0 or above, and at most 1800000 after the time of the session | The time that fake time moves on to. A time that is not after the time of the session does nothing: the answer has the same `t` and no events. |
+
+The answer to an advance to the time T has the events up to the moment at which the controller wakes at T. Other tasks can have events at exactly T that come after that moment. They are in the answer to the next advance that moves fake time on.
+
+`act` takes an action as [Schedule](#schedule) describes it, without `at`. The action happens at the time of the session. The answer has what the action does at once: its event `action`, and for some actions an effect, such as `crashed` before the event of a `crash`, and `started` and `opened` after that of a `restart`. What other tasks then do, such as the call of a `write`, comes with the next advance. The index `action` of the event counts the actions of the session from 0.
+
+`now` takes `{}`, or `{"commits": N}` with N at 0 or above. Its answer has the state of the session in `state`: see [The state at a time](#the-state-at-a-time). It runs no task, so `t` and `steps` are those of the answer before, and `events` is empty.
+
+`end` takes `{}`. The engine runs the last checks of the invariants, stops recording, and lets the run finish, as at the end of a batch run. Its answer is the last of the session.
+
+A command that the engine refuses gets an answer with `error`, and the session goes on as if the command had not come. The engine refuses a body that is not JSON of the command, a member that the command does not have, a value outside its limits, and an action that a schedule could not hold, such as one for an instance that the session does not have.
+
+### The answer
+
+Every command of a session answers with an object of these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `error` | Why the command was refused. It is the only field then. |
+| `t` | The fake time of the session when the command was done. |
+| `events` | The events since the answer before, in the order in which they happened. |
+| `steps` | The steps of the scheduler so far. |
+| `state` | The state of the session, in the answer to `now`. |
+| `ended` | True on the last answer of the session: the answer to `end`, or to the command during which the scheduler failed. |
+| `summary`, `hash` | Those of [The response](#the-response), on the last answer. |
+| `schedulerError` | The failure of the scheduler itself, on the last answer, if it failed. `t` is then the time at which it failed. |
+
+The events of all answers of a session, one after the other, are the whole trace of the session, each event once and in order. On the last answer, `events` has the violations that the last checks found, if any, and `steps` counts the whole run, also the steps after the end.
+
+The answer to `start` has the first events of the session: the process of each instance has started and opened its database. Its `t` can be above 0, because the scheduler delays the start of the first task of a run, as it delays half of all task starts. With the seed 1 a session starts at 1.537405, and so does a batch run. An advance by 1000 from there ends at 1001.537405, and an advance to 1000 at 1000.
+
+### A session and a batch run
+
+Take a batch request whose schedule lists its actions in the order of their times, and a session with the same seed and the same settings. The session advances with `to` to the time of each action of the schedule, does the action, advances to the `end` of the request, and ends. It then gives the same events, steps, summary, and hash as the batch run. `live_test.go` tests this for three seeds, with every action, every fault, and buggify. For a schedule in another order, only the index `action` of the action events differs.
+
+They are the same because the controller does what the first task of a batch run does, in the same order. The scheduler therefore takes the same steps and draws the same numbers from the seed.
+
+An advance that ends at a time without an action wakes the controller once more than a batch run wakes its first task. That is one more step of the scheduler and one more number drawn from the seed. From that time on, the session takes another turn than the batch run with the same seed, and its turn is as valid.
+
+The state that `now` gives is the fold of the events that the answers have brought so far, at the time of the session. A page that folds the events itself, by the rules of [The state at a time](#the-state-at-a-time), has the same state. The same test checks this after each action.
+
 ## The events
 
-Every event has `t`, its fake time, and `kind`. Most have `what`, which says what happened in a word. A field that does not apply is left out, and so is a number that is 0, a boolean that is false, and an empty text. `wall`, `monotonic`, and `action` are the exception: they are there when they apply, also at 0.
+Every event has `t`, its fake time, and `kind`. Most have `what`, which says what happened in a word. A field that does not apply is left out, and so is a number that is 0, a boolean that is false, and an empty text. `wall`, `monotonic`, `action`, and `on` are the exception: they are there when they apply, also at 0 and at false.
 
 | Field | Meaning |
 | --- | --- |
@@ -197,14 +333,14 @@ The life of a process and of its database.
 | --- | --- | --- |
 | `started` | `wall`, `monotonic` | A process starts: at the start of the run, and at a `restart`. |
 | `opened` | `holder` | It opened its database. `holder` is the ID under which this database holds the lease. Every open gives a new one. |
-| `open_failed` | `error` | It could not open its database. The core opens only local files here, so this is a local failure. |
+| `open_failed` | `error` | It could not open its database. The core opens only local files here, so this is a local failure. The process opens the database again every 2 s on its monotonic clock, until an open succeeds or an action closes the database. |
 | `stopped` | `error` | The core has stopped for good, with the cause. Each process checks this every 2 s on its monotonic clock, as an application would, then closes the database and opens it again. |
 | `closed` | `error`, if the close failed | The close of the database has ended, after a `close`, or after `stopped`. |
 | `crashed` | | The process crashed. |
 
 ### clock
 
-One event for each clock action that is done, with `what` the name of the action: `shiftWall`, `stopWall`, `startWall`, `stopMonotonic`, or `startMonotonic`.
+One event for each clock action that is done, with `what` the name of the action: `shiftWall`, `stopWall`, `startWall`, `stopMonotonic`, `startMonotonic`, `pauseClocks`, or `resumeClocks`.
 
 | Field | Meaning |
 | --- | --- |
@@ -268,7 +404,7 @@ A request to the store. Every event of one request has the same `request`, the n
 | `method` | `get`, `create`, or `swap`. |
 | `key` | The key of the object. |
 | `purpose` | What the request is for: see below. |
-| `bytes` | The size of what a write sends, on `sent` and `failed`. |
+| `bytes` | The size of what a write sends, on `sent` and `failed`, and on `hung` and `disconnected` of a write that is not sent. |
 | `version` | The version of the object after a write, on `applied`. The version that a read got, on `read`. The version that the caller gets, on `returned`. |
 | `write` | The number of the write among those that the store applied, from 1, on `applied`. |
 | `object` | What an applied write wrote: see below. |
@@ -306,6 +442,8 @@ The caller's side runs beside it:
 - `damaged`: one byte of a download changed on its way. It comes before `returned`.
 - `answer_lost`: an armed `loseAnswer` took the answer. It comes in place of `returned`.
 - `failed`: an armed `failRequest` ended the request before it was sent. It has no `request`, and is the only event.
+- `hung`: the network of the instance hangs. Without `request`, the request is not sent. With `request`, the answer of a request that was on its way is lost. Either way the caller waits until it gives up, and `returned` follows then, with the error.
+- `disconnected`: the network of the instance is disconnected. Without `request`, the request fails at once and is not sent, and this is its only event. With `request`, the disconnect came while the request was on its way: the caller gets an error, and the event comes in place of `returned`, after `gave_up`.
 - `too_large`: a write above the size limit of the store is not sent. The engine sets no limit, so this does not happen.
 
 A request of a process that crashes gets no `returned`.
@@ -313,7 +451,7 @@ A request of a process that crashes gets no `returned`.
 `object` on `applied` has one of three members:
 
 - `manifest`: `head`, the name of the newest commit object, and `lease`, which is null or has `holder`, `duration`, `renewed`, and `salt`. `renewed` is the wall clock of the holder at the renewal, in milliseconds from the start of the run. `salt` is in hexadecimal.
-- `commit`: `name`, `parent`, `keys`, the keys of the rows that it inserts into `t`, `tables`, the tables that it creates, and `changes`, the number of its changes.
+- `commit`: `name`, `parent`, `keys`, the keys of the rows that it inserts into `t`, `deletes`, the keys of the rows that it deletes from `t`, `tables`, the tables that it creates, and `changes`, the number of its changes. `keys`, `deletes`, and `tables` are left out when they are empty.
 - `error`: why the object could not be read.
 
 ### store
@@ -330,17 +468,18 @@ A line of the store that the engine does not know becomes an event of this kind 
 
 ### action
 
-One event for each action of the schedule, at its time.
+One event for each action of the schedule, at its time, and one for each `act` of a session, at the time of the session.
 
 | Field | Meaning |
 | --- | --- |
-| `action` | The index of the action in the schedule, from 0. |
+| `action` | The index of the action in the schedule, from 0. In a session, the number of the action among those of the session, from 0. |
 | `do` | The name of the action. |
 | `what` | `done`, `ignored`, or `failed` for a `restart` whose cache could not be copied. |
 | `text` | `done`, or why the action was ignored or failed. |
 | `instance`, `process`, `for`, `by` | Those of the action. `process` is the process of the instance when the action came, so the crashed one for a `restart`. It is missing on an action that was ignored for a crashed process. |
+| `on` | What the action switched to, true or false, on `workload`, `hangNetwork`, `disconnectNetwork`, and `failDisk`. |
 
-The effect has events of its own: `process` with `crashed` just before the action event of a `crash`, `process` with `started` just after that of a `restart`, and `clock` just before that of a clock action. A `close` and an `open` run in a task, and their `process` events come when they end.
+The effect has events of its own: `process` with `crashed` just before the action event of a `crash`, `process` with `started` just after that of a `restart`, and `clock` just before that of a clock action. A `close` and an `open` run in a task, and their `process` events come when they end. `hangNetwork`, `disconnectNetwork`, and `failDisk` have no event besides the action event. Their effect shows in the requests and in the core's events that follow.
 
 ### check
 
@@ -352,11 +491,13 @@ A point of buggify fired. `what` is `fired`, and `site` is the name of the point
 
 ## The state at a time
 
-The message `state`, with the body `{"t": T}`, answers with the state of the last run at the time T. The state is a fold of the events up to and including T, by `StateAt` in `state.go`. It reads nothing else, so a page can fold the events itself. The engine takes no snapshot during a run, because reading a cache or waking a task for one would change the run.
+The message `state`, with the body `{"t": T}`, answers with the state of the last batch run at the time T. The state is a fold of the events up to and including T, by `StateAt` in `state.go`. It reads nothing else, so a page can fold the events itself. The engine takes no snapshot during a run, because reading a cache or waking a task for one would change the run.
+
+The command `now` of a session answers with the state of the session at its time, in the field `state` of the answer. It is the same fold, of every event of the session so far, which the engine keeps as the session goes. With `{"commits": N}` and N above 0, `bucket.commits` lists only the last N commit objects and `bucket.log` only the last N names, and `bucket.commitCount` and `bucket.logLength` give the numbers of all of them. Without `commits`, or with 0, the two lists are whole and the two counts are missing.
 
 | Field | Meaning |
 | --- | --- |
-| `error` | Why there is no state: no run yet, or a body that is not `{"t": T}`. It is the only field then. |
+| `error` | Why there is no state: no run yet, or a body that is not `{"t": T}`. The other fields are zero or empty then. |
 | `t` | The time. |
 | `bucket` | The manifest and the commit objects. |
 | `instances` | The instances, in the order of their first events. |
@@ -366,7 +507,7 @@ The message `state`, with the body `{"t": T}`, answers with the state of the las
 | `calm` | Whether an event `store` with `calm` has come. |
 | `violations`, `excused` | The events `check` so far, and those of them that are excused. |
 
-As in the events, a field that is zero can be missing: `outageUntil`, `calm`, `holder`, `cutOffUntil`, the two flags of the clocks, and the `value` of a call.
+As in the events, a field that is zero can be missing: `outageUntil`, `calm`, `holder`, `cutOffUntil`, the two flags of the clocks, the three flags of the faults of an instance, the two counts of the bucket, and the `value` of a call.
 
 `bucket`, from the events `request` with `applied`:
 
@@ -375,8 +516,9 @@ As in the events, a field that is zero can be missing: `outageUntil`, `calm`, `h
 | `manifest` | The `object.manifest` of the last one, or null. |
 | `manifestVersion` | Its `version`. |
 | `manifestWrites` | The number of them. |
-| `commits` | Each `object.commit`, once, in the order written, with its `name`, `parent`, `keys`, `tables`, and `changes`, the `process` that wrote it, the time `at`, and `inLog`. |
+| `commits` | Each `object.commit`, once, in the order written, with its `name`, `parent`, `keys`, `deletes`, `tables`, and `changes`, the `process` that wrote it, the time `at`, and `inLog`. |
 | `log` | The names of the commit objects of the log, from the first to the head: from `manifest.head`, follow `parent` through `commits` to the empty log. `inLog` says whether a commit object is among them. |
+| `commitCount`, `logLength` | The numbers of all commit objects and of all names of the log, in a state of `now` that lists only the last of each. |
 
 An instance:
 
@@ -390,6 +532,7 @@ An instance:
 | `wall`, `monotonic` | The clocks at T: see below. |
 | `wallStopped`, `monotonicStopped` | Those of the last event `clock`. False for a new process. |
 | `cutOffUntil` | The latest end of a cut-off of the process: the largest `t` + `for` of its events `store` with `cut_off`. It can lie in the past. A new process starts without one. |
+| `networkHung`, `networkDisconnected`, `diskFailing` | The `on` of the last event `action` that is `done`, of `hangNetwork`, `disconnectNetwork`, and `failDisk` for the instance. A new process keeps them, because the faults belong to the instance. |
 
 Events `core` of a process that is no longer the process of its instance are left out of the fold.
 
@@ -416,8 +559,10 @@ A request in flight has `request`, `instance`, `process`, `method`, `key`, and `
 | --- | --- |
 | `sent` | The `t` of `sent`. |
 | `phase` | `to_store` from `sent` and from `arrived`. `held` from `held`. `stuck` from `stuck`. `to_caller` from `applied`, `refused`, `read`, `read_broken`, and `not_found`, unless the request was stuck: then `done`. `done` from `answered`, `no_caller`, `response_lost`, `lost`, and `never_applied`. |
-| `waiting` | True from `sent`. False from `returned` and `answer_lost`. |
+| `waiting` | True from `sent`. False from `returned`, `answer_lost`, and `disconnected`. |
 | `happened` | The `what` of its events after `sent`, in order. |
+
+A request that is not sent, by `failRequest`, a hang, or a disconnect, has no number and is never listed.
 
 A request is listed while `waiting` is true or `phase` is not `done`. So a write that the store holds back stays listed after its caller gave up, and a request without an answer stays listed, as `done`, while its caller waits.
 
@@ -427,9 +572,9 @@ A crash ends the calls of its process in the fold, and every wait of the process
 
 ## The invariants
 
-The engine checks six invariants during the run and at its end. A violation is an event of the kind `check`. The checker sees what an application and the store see: how each call ends, what each read returns, and the objects that the store applies. Each write has a key of its own, so the keys tell the transactions apart.
+The engine checks six invariants during the run and at its end. The end of a session is its command `end`, so a session that is not ended gets only the checks during the run. A violation is an event of the kind `check`. The checker sees what an application and the store see: how each call ends, what each read returns, and the objects that the store applies. Each write has a key of its own, so the keys tell the transactions apart.
 
-"The log" is the chain of commit objects from the head of the manifest back to the empty log.
+"The log" is the chain of commit objects from the head of the manifest back to the empty log. The rows of the log up to a position are the keys that its commit objects up to there insert, without those that the same or a later one of them deletes.
 
 | `invariant` | Checked | Meaning |
 | --- | --- | --- |
@@ -437,10 +582,10 @@ The engine checks six invariants during the run and at its end. A violation is a
 | `acknowledged` | When a write ends with `committed`, and at the end. | A commit that was acknowledged is in the log: once when it is acknowledged, and still at the end. |
 | `not_committed` | At the end. | A write that ended with `not_committed` is not in the log. |
 | `once` | At the end. | No key is in the log twice. |
-| `state` | When a read is served. | The read saw a state that the log had: its position is the empty log or a commit object of the log, and its keys are those of the log up to that position. |
-| `fresh` | When a read is served, and at the end. | The read saw every write that was acknowledged before the read started. It also saw every write that returned with an unknown outcome before the read started and that the log holds at the end. A read gets at most one violation in each of the two checks. |
+| `state` | When a read is served. | The read saw a state that the log had: its position is the empty log or a commit object of the log, and its keys are the rows of the log up to that position. |
+| `fresh` | When a read is served, and at the end. | The read saw every write that was acknowledged before the read started. It also saw every write that returned with an unknown outcome before the read started and that the log holds at the end. A read need not see a write whose row a commit object up to the read's position deleted, as the writes do with `workload.keep`. A read gets at most one violation in each of the two checks. |
 
-Only `fresh` can be excused. The design accepts a read that misses a commit on a process whose two clocks both went wrong in the direction that keeps a lease alive too long. A violation of `fresh` is excused if, by the time of the check, the monotonic clock of the read's process has been stopped, and its wall clock has been stopped or shifted backward.
+Only `fresh` can be excused. The design accepts a read that misses a commit on a process whose two clocks both went wrong in the direction that keeps a lease alive too long. A violation of `fresh` is excused if, by the time of the check, the monotonic clock of the read's process has been stopped, and its wall clock has been stopped or shifted backward. `pauseClocks` stops both.
 
 What the checker cannot see, and how far it is tested:
 
@@ -448,23 +593,54 @@ What the checker cannot see, and how far it is tested:
 - It checks reads that were served. For a write that ended in another way than `committed`, `unknown`, or `not_committed`, such as `abandoned`, it does not check that the log lacks it.
 - It can be tested only on input made for it, in `check_internal_test.go`. The core cannot be made to break an invariant from outside its package, and planted bugs are left out of the simulator on purpose. The tests of the runs expect no violation that is not excused.
 
+## What the code does under each action
+
+These are observations of the code as it is on 2026-11-19. Each is from a batch run with the seed 1, two instances, the other defaults of a request, and an `end` of 150000. `a` takes the lease at the start, and `b` is the spare, whose calls the core refuses with `not_holder`. The action comes at 30 s, on `a` unless the line says otherwise, and the action that undoes it at 90 s. Another seed gives other times, and a change to the code can change the course. `run_test.go` checks the course under `close`, `hangNetwork`, `disconnectNetwork`, `failDisk` on the holder, and `pauseClocks`, without the times.
+
+Where a line says that a run has the same events as one without the action, the other run has an action without effect at the same time: `workload` with `on` as true. Any action wakes the first task of the run at its time, which gives the run another turn from there, whatever the action does.
+
+- **`crash`, then `restart`.** Nothing releases the lease. `b` takes it at 64.1 s, once the lease of 30 s has run out by its clocks. The new process `a2` opens its database at once, at 90 s, and is the spare.
+- **`close`.** The core stops at 30 s: the event `stop` has the outcome `closed`. It releases the lease at 30.1 s, in an event `lease` whose transition and outcome are `released`, and the process is `closed`. `b` takes the lease at 31.1 s. The calls of `a` end with `stopped` from then on. So a page tells a stop from a crash by the release, and by how soon the other instance takes over.
+- **`hangNetwork`.** The upload of a write that starts at 31.9 s is not sent, and neither is the renewal of the lease at 47.7 s. The renewal ends at 52.7 s with the outcome `unknown`, at its timeout of 5 s, and so does each renewal after it. At 57.7 s the lease of `a` ends by its own monotonic clock, and the core refuses its calls with `lease_expired_monotonic`. The write ends with `not_committed` at 61.9 s, at the timeout of its call. `b` takes the lease at 64.1 s. After the hang ends at 90 s, the renewal that started under it still times out, at 94.7 s. At 99.9 s `a` learns that it lost the lease, and is the spare from then on. No invariant is violated.
+- **`disconnectNetwork`.** The course is the same, with an error at once where the hang has a wait. The upload of the write fails at once, and the core tries it again until the write ends with `not_committed` at 61.9 s, at the timeout of its call. Each renewal, from 47.7 s on, fails at once with the outcome `unknown`, and the core tries again after 1 s, 2 s, 4 s, and then every 5 s. The lease of `a` ends by its monotonic clock at 57.7 s. `b` takes it at 64.2 s. After the reconnect at 90 s, `a` learns at 94.8 s that it lost the lease. No invariant is violated.
+- **`failDisk` on the holder.** Nothing shows until the next commit. At 32.0 s a commit has swapped the manifest, and its step in the cache fails. The core stops with the outcome `local_failure` and the error `local I/O failure: the commit of the cache after the manifest swap: sqlite: disk I/O error (code 778)`. The commit has the outcome `committed_and_stopped`, and its write ends with `committed`: it is in the log. The core releases the lease at 32.1 s. At 34.0 s the process finds the database stopped, closes it, and opens it again, which fails with `open the cache: local I/O failure: sqlite: unable to open database file (code 14)`, and fails again every 2 s. The state of `a` is `failed`, and its calls end with `stopped`. `b` takes the lease at 36.2 s. The disk works again at 90 s, the next open succeeds at 90.3 s, and `a` is the spare.
+- **`failDisk` on the spare.** Nothing shows: the run has the same events as one without the action. A spare reads only the manifest. It does not touch its cache until it takes the lease or catches up for a read, and the core refuses its calls before that, because it does not hold the lease.
+- **`pauseClocks`, then `resumeClocks`.** `a` has no event at all while its clocks stand still, no call and no request, because every sleep and timeout of the process stands still with its monotonic clock. `b` takes the lease at 64.1 s. After `resumeClocks` at 90 s, both clocks of `a` are 60 s behind, and `a` still believes in its lease. It serves three reads, at 92.0 s, 92.6 s, and 94.8 s, that miss a write that was acknowledged while `a` stood still. Then a commit of `a` has its swap of the manifest refused, `a` reads the manifest, and learns at 95.3 s that it lost the lease. The three reads are violations of `fresh`, and all three are excused: the design accepts them for a process whose two clocks both stood still.
+- **`shiftWall` by an hour.** Forward on the holder, the core refuses the calls of `a` with `lease_expired_wall`, 18 of them from 31.9 s on, until `a` renews its lease at 47.8 s. Then `a` goes on as the holder, and `b` never takes the lease. Backward on the holder, the run has the same events at the same times as one without the action. Only the names of the commit objects, the versions, and the `renewed` of the lease differ, because a commit object and the manifest hold the wall clock of the holder. Forward or backward on the spare, the run has the same events as one without the action. So a jump of the wall clock shows only on a holder, and only forward, which is what the builder of the page saw earlier.
+
+## A disk that hangs
+
+No action makes a file operation of a cache hang, in either build. It is not built, for these reasons.
+
+In a browser, SQLite runs on the one thread of its Worker, and a call into it is synchronous. For a file operation to hang while the rest of the simulation goes on, the task inside the call would have to park in the scheduler from inside the VFS, through a call back into Go, as `xSleep` of the VFS calls `s4qlYield`. The frame of SQLite then stays on the JavaScript stack. While it does, no file operation of Go's `os` package can finish, because `fs.js` calls back only from the microtask queue, once the JavaScript stack is empty: see the README of [internal/sqlite/browser](../sqlite/browser/README.md). Every commit of the core creates and removes a spool file with `os.CreateTemp` and `os.Remove`, in [internal/core/spool.go](../core/spool.go). So the first commit of any instance during the hang would block outside the scheduler, which fails the run. The official SQLite build also has `SQLITE_THREADSAFE=0`, and SQLite does not support a call into it by one task while another task is suspended in the middle of a call.
+
+Natively, with cgo, it could be built. The C VFS of `faultvfs` would call an exported Go function that parks the calling task through `sim`, which finds the task by its goroutine. SQLite is thread-safe there. A connection that meets a lock that the hung connection holds would then wait in SQLite's busy handler, in real time.
+
+In a browser it would take one of two things:
+
+- Spool files that do not go through `os`, and calls into SQLite that can be suspended. The first needs an option of `core`, which has one only for its tests, `WrapSpools`. The official build does not offer the second.
+- A hang in the Go binding, before a call enters SQLite. That is another fault than a file operation that hangs.
+
+A page must not show a hang of a disk that the code never saw.
+
 ## The old page and the engine
 
-The page in `site/simulator/` ran a JavaScript model of the design before it ran this engine. What the model offered that the real code cannot:
+The page in `site/simulator/` ran a JavaScript model of the design before it ran this engine. What the model offered that the real code cannot, or can only in another form:
 
-- **Stall and resume.** The model pauses a process while its clocks run. `sim` cannot pause the tasks of a process. `stopMonotonic` holds its sleeps and timeouts, and the clock stands still with them, which is a different fault.
+- **Stall and resume.** The model pauses a process while its clocks run. `sim` cannot pause the tasks of a process. `pauseClocks` comes close: it stops both clocks, so every sleep and timeout of the process stands still with them, which is what a stopped process looks like to its own code. The difference is that the clocks of the process stay behind after `resumeClocks`, by the time that they stood still.
 - **Clock rates.** The model has a monotonic clock that runs at twice the rate, and both clocks at half the rate. A clock of `sim` is shifted, stopped, and started, and runs at the true rate.
 - **A clock set true again.** No action does it. A page can shift a wall clock by the difference that the state shows. A monotonic clock that stood still stays behind for the life of its process.
-- **A failing disk.** `faultvfs` cannot be reached. `core.Options` has no exported option for a VFS, and `core.Open` refuses a path that starts with `file:`.
 - **Planted bugs.** They are left out on purpose. The page shows the code as it is.
-- **Heal all, as one action.** A page composes it: `calm`, a `restart` of each crashed instance, `open` for each closed database, the two start actions for the clocks, and a `shiftWall` back. A cut-off or an outage that runs still goes on to its end.
-- **Random faults of processes.** The model's chaos crashes, shuts down, and stalls instances at random, and moves their clocks. The engine draws only the faults of the store. A page draws the others from the seed and puts them into the schedule.
-- **Reconnect.** A cut-off or an outage has its duration from the start, and no action ends it early.
+- **Heal all, as one action.** A page composes it: `calm`, a `restart` of each crashed instance, `open` for each closed database, `resumeClocks` or the two start actions for the clocks, a `shiftWall` back, and `hangNetwork`, `disconnectNetwork`, and `failDisk` with `on` as false. A cut-off or an outage that runs still goes on to its end.
+- **Random faults of processes.** The model's chaos crashes, shuts down, and stalls instances at random, and moves their clocks. The engine draws only the faults of the store. A page draws the others from the seed and puts them into the schedule, or sends them to a session.
+- **Reconnect.** A cut-off or an outage has its duration from the start, and no action ends it early. A hang and a disconnect of the network of an instance have no duration: `hangNetwork` and `disconnectNetwork` with `on` as false end them when the page says so.
 - **Slow S3, switched at a time.** The store takes its faults when the run starts. `slow` holds for the whole run, until a `calm`.
 - **Buggify, switched at a time.** It is on or off for the run.
-- **The rows of a cache and the state of its disk.** The state has the position of a cache. A read that is served shows the keys.
+- **The rows of a cache and the state of its disk.** The state has the position of a cache, and whether an action makes its disk fail. A read that is served shows the keys.
 - **Unknown outcomes in flight.** The state has no field for them. The events have them: `call` with `unknown`, `core` with `unknown_outcome`, and refusals with the reason `outcome_unknown`.
 - **Checks inside the caches.** The model checks that no cache is ahead of the manifest and that replaying the log gives the rows of every cache. The engine's checker sees a cache only through reads, with `state`.
+
+An earlier version of this list had a failing disk in it. The engine has one now, as the action `failDisk`.
 
 What the engine offers that the model did not:
 
@@ -524,25 +700,43 @@ const response = await engine.run({ seed: 1, end: 120000, schedule: [] });
 const state = await engine.state(60000);
 ```
 
+A live session on the same engine:
+
+```js
+await engine.start({ seed: 7 });
+const { t, events } = await engine.advance(100);
+await engine.act({ do: 'crash', instance: 'a' });
+const { state } = await engine.now(5);
+const { summary, hash } = await engine.end();
+```
+
 | Member | Meaning |
 | --- | --- |
 | `Engine.start(base)` | Starts a Worker and resolves with an engine once it takes messages. `base` is the URL of the directory with the files, by default the directory of `simulator.js`. |
 | `run(request)` | Runs the request, an object, and resolves with the response as an object. It rejects with an `Error` that has the response's `error` if the engine refuses the request. |
-| `state(t)` | Resolves with the state of the last run at `t`. It rejects if there is no run yet. |
+| `state(t)` | Resolves with the state of the last batch run at `t`. It rejects if there is no run yet. |
+| `start(session)` | Starts a session with the settings, an object, by default `{}`, and resolves with the answer to `start`. It ends the session that runs. |
+| `advance(ms)` | Sends `advance` with `by`: moves the fake time of the session on by `ms`. |
+| `advanceTo(t)` | Sends `advance` with `to`: moves the fake time of the session on to `t`. |
+| `act(action)` | Does the action, an object without `at`, at the time of the session. |
+| `now(commits)` | Resolves with the answer to `now`, whose `state` is the state of the session. With `commits` above 0, the bucket lists only that many of the last commit objects. |
+| `end()` | Ends the session, and resolves with its last answer. |
 | `timings` | `ready`: the milliseconds from the start of the Worker until the engine took messages. `run`: the milliseconds that the engine took for the last message, without the transfer and the parsing of the answer. |
 | `memory` | The size of SQLite's WebAssembly memory after the last answer, in bytes. |
 | `terminate()` | Ends the Worker. |
-| `Engine.recycleBytes` | The memory above which `run` starts a fresh Worker first. The default is 64 MiB. |
+| `Engine.recycleBytes` | The memory above which `run` and `start` start a fresh Worker first. The default is 64 MiB. |
+
+The static `Engine.start(base)` makes the engine, and `start(session)` on the engine starts a session. Each of the five calls of a session resolves with the answer of [The answer](#the-answer), as an object. It rejects with an `Error` that has the answer's `error` if the engine refuses the command, and the session goes on.
 
 Calls wait for one another: the engine takes one message at a time. If the Worker fails or the program exits, every call that waits rejects. What the program writes to standard output and standard error goes to the console.
 
-SQLite's memory grows from run to run. A run whose processes crash leaves their SQLite connections open, as a crashed process does, and nothing closes them. The Worker reports the size of SQLite's WebAssembly memory, which never shrinks, because the official build does not export `sqlite3_memory_used`. Before a run, `run` ends the Worker and starts a new one if the memory is above `recycleBytes` and no call waits. That costs one start of the engine.
+SQLite's memory grows from run to run, and in a session with every crash. A process that crashes leaves its SQLite connections open, as a crashed process does, and nothing closes them. The Worker reports the size of SQLite's WebAssembly memory, which never shrinks, because the official build does not export `sqlite3_memory_used`. Before a batch run and before the start of a session, the module ends the Worker and starts a new one if the memory is above `recycleBytes`. That costs one start of the engine, and it ends the session that runs, also when the call is `run`. The other calls of a session never start a new Worker.
 
 ### The Worker
 
 A page that does not use the module talks to `worker.js` itself. The Worker loads the scripts in the order that the README of `internal/sqlite/browser` gives, and runs `engine.wasm` with the argument `-test.run=^TestEngine$`.
 
-The page posts `{id, kind, body}`. `kind` is `run` or `state`, and `body` is the message as JSON text or as an object. The Worker posts:
+The page posts `{id, kind, body}`. `kind` is `run` or `state` for a batch run, or `start`, `advance`, `act`, `now`, or `end` for a session, and `body` is the message as JSON text or as an object. The Worker posts:
 
 | Message | Meaning |
 | --- | --- |
@@ -562,6 +756,16 @@ make simulator-demo
 
 Then open http://127.0.0.1:8080/. The target writes the files, as `make simulator` does, and serves them with the two headers above and without caching, on `SIMULATORADDR`. The page runs one request three times when it loads, and again on "Run". It shows the time of each run, the summary, the state at the end, and the first 300 events. The request is in a text field and can be changed.
 
+Below that the page has a live session:
+
+- "Start" starts a session with the settings in a text field, which are `{"seed": 7}` at first.
+- "Advance" moves fake time on by the step, which is in a field in milliseconds and is 1000 at first.
+- "Play" advances by the step every 100 ms of real time, until "Pause". It skips a turn while the answer before has not come.
+- "Act" does the action in a field, which is `{"do": "hangNetwork", "instance": "a", "on": true}` at first.
+- "End" ends the session.
+
+After each answer the page asks for `now` with `commits` at 5. It shows the fake time, the steps, the time that the last answer took, SQLite's memory, the instances now, and the last 200 events of the session.
+
 ## Tests
 
 The tests of `internal/simulator` run natively and in Chromium. They show:
@@ -570,6 +774,8 @@ The tests of `internal/simulator` run natively and in Chromium. They show:
 - **Determinism** (`simulator_test.go`): the same bytes for the same request twice, and on a second engine. The same hash and events twice for ten seeds with every fault and buggify, with no violation that is not excused. The same events before the time from which two schedules differ, at 40000 and at 61234.5. The same events before the earlier of two ends.
 - **Messages** (`simulator_test.go`): a malformed request and an unknown kind get an error, and the engine goes on. A state before any run, and a malformed state, get an error.
 - **Actions** (`run_test.go`): the effect of each action, and which actions are ignored.
+- **Actions on the holder of the lease** (`run_test.go`), in runs of two instances. Under a hang and under a disconnect of its network, no request of the holder is sent, its renewals end with an unknown outcome, and the other instance takes the lease. A disconnect ends the wait for a request that is on its way. A failing disk stops the core, the opens fail again and again, and the first open after the disk works succeeds. Paused clocks stop the calls and the requests of the process, and every violation after the resume is excused. A close releases the lease, and the other instance takes it within 5 s. A fault of an instance is switched also when its process has crashed, and `pauseClocks` is ignored then.
+- **A live session** (`live_test.go`): the same events, steps, summary, and hash as a batch run with the same actions at the same times, for three seeds, with every action, every fault, and buggify, and the state of `now` after each action against the fold of the events so far. Fake time does not move between commands: `t` and `steps` stay the same over 50 commands `now`, with `runtime.Gosched` between them. The events of an advance lie in its stretch. A malformed command is refused, and the session goes on. A command without a session gets an error, also after `end`. A new `start` ends the session that runs. `now` with `commits` lists only the last commit objects, with the two counts. The steps, the events, and the bytes of the events of a fake minute, as the mean of minutes 50 to 60 of a session, are less than 15% above those of minutes 10 to 20.
 - **Faults** (`run_test.go`): each fault of the store, damaged downloads, and buggify show their events, with no violation. Under every fault at once, the engine knows every line of the store.
 - **The state** (`state_test.go`): the position of each cache, folded from the events of the core alone, against what each read saw. The log. A request and a call in flight, from their start to their end.
 - **The checker** (`check_internal_test.go`): each invariant on input made to break it, and the excuse of `fresh`.
@@ -611,7 +817,7 @@ The time of one run, the mean of five after two to warm up, in the runner of `in
 | 10 min, the preset | 425 ms | 1,559,583 bytes |
 | 30 min, 5 instances, the preset, buggify | 1,467 ms | 6,628,991 bytes |
 
-The page of the site runs two instances, the default workload, and no random faults, and asks for a longer run every 2 min of fake time, up to 10 min. Its runs, the mean of five with a crash and a restart, in headless Chrome driven by `playwright-cli` on the same machine: 2 min 70 ms, 4 min 146 ms, 6 min 222 ms, 8 min 300 ms, 10 min 375 ms, 12 min 457 ms, and 15 min 632 ms, of which the transfer and parse of the answer took 1 to 4 ms. A fault that the visitor adds holds the playback for one run, so the page stops at 10 min.
+Before it moved to a live session, the page of the site ran two instances, the default workload, and no random faults, and asked for a longer run every 2 min of fake time, up to 10 min. Its runs, the mean of five with a crash and a restart, in headless Chrome driven by `playwright-cli` on the same machine: 2 min 70 ms, 4 min 146 ms, 6 min 222 ms, 8 min 300 ms, 10 min 375 ms, 12 min 457 ms, and 15 min 632 ms, of which the transfer and parse of the answer took 1 to 4 ms. A fault that the visitor added held the playback for one run, so the page stopped at 10 min. It now advances a session by the real time that passed, or five times that with turbo, one step for each animation frame, so a step is a few hundred milliseconds of fake time at most.
 
 In the demo page, the request of the demo, 2 min with the preset and six actions, took 166 to 186 ms the first time and 88 to 110 ms after that, of which the transfer and parse of the answer took 1 to 8 ms. Natively the same run takes about 40 ms, so the browser is about 2.3 times slower.
 
@@ -620,3 +826,29 @@ The time grows with the steps of the scheduler, which grow with fake time, insta
 The size of SQLite's WebAssembly memory, after 60 runs of 1 min with two crashes each: 8 MiB before, 30 MiB after 20 runs, 53 MiB after 40, 76 MiB after 60, so about 0.55 MB for each crashed process. Sixty runs without crashes after them grew it once, to 91 MiB, and then no more. The Go heap after a collection stayed under 1 MB between runs.
 
 The hashes of two requests, the demo's and one with a crash and a restart, are the same natively, in the runner, and in the demo page: `95308c33cd30a785...` and `b82b8ab6e0336832...`. No test compares them across the two builds.
+
+### A long session
+
+Measured on 2026-11-19 on the same machine, with Go 1.27.4, and in the browser with headless Chrome through the runner of `internal/sqlite/browser`.
+
+The time of one fake minute in Chromium, as one `advance`:
+
+| Session | Minutes 1 to 5 | Minutes 56 to 60 |
+| --- | --- | --- |
+| The defaults: two instances, the workload, `keep` at 100, no faults | 115, 68, 39, 43, and 44 ms | 51, 30, 42, 51, and 54 ms |
+| The defaults with the preset of faults | 35, 53, 44, 24, and 29 ms | 28, 27, 40, 39, and 31 ms |
+
+Natively, in `TestEngine_live`, a fake minute of a default session takes 611 steps and gives 442 events in 120,319 bytes of JSON, as the mean of minutes 10 to 20. As the mean of minutes 50 to 60 it takes 626 steps and gives 458 events in 128,781 bytes. The bytes grow a little because the keys and the numbers gain digits.
+
+So a fake minute costs the same after an hour as at the start. Four things still grow with a session:
+
+- **The Go heap**, natively by about 12.5 MB for each fake hour: 7.97 MB after 30 min, 14.3 MB after 60, 20.1 MB after 90, and 26.9 MB after 120, in a session of two instances with 2229 commit objects after 120 min. Most of it is the text trace of `sim`, which keeps every line for the hash and cannot be switched off without a change to `internal/sim`. The rest is what `simstore` keeps, which is every applied write with its content and a handle of every task that carried a request, the commit objects of the bucket in the engine's fold and in its checker, the checker's record of every read that was served and of every write that ended, and a map of the manifests by their versions.
+- **SQLite's WebAssembly memory**, with every crash. Without crashes it does not grow: it is 8 MiB after an hour. With crashes it grows by about 0.47 MB for each crashed process: from 8.4 MB to 12.1, 25.3, and 36.5 MB after 20, 40, and 60 crashes and restarts in one session. Nothing closes the connections of a crashed process. Closing them needs `CloseCache` of `core` as a normal method, where only its tests have it now, and that is a change to `core`.
+- **The time of a step**, with every crash. A crashed process leaves its tasks parked in the scheduler until the run ends, and the scheduler sorts the names of all parked tasks at every step. After 60 crashes a fake minute took 89 ms in Chromium, against about 45 ms without them.
+- **The state that `now` returns**, which lists every commit object unless `commits` limits it.
+
+What a page should do about them:
+
+- Limit `now` with `commits`.
+- Fold the events itself, or keep only the events that it shows.
+- Start a new session, or a new Worker, when the memory or the number of crashes has grown large, for example after a few fake hours. A new session starts with an empty trace and no parked tasks. Only a new Worker gives SQLite's memory back. `simulator.js` starts a new Worker before a `start` once SQLite's memory is above `recycleBytes`, and does not look at the Go heap.

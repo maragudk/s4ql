@@ -7,12 +7,21 @@
 //   const state = await engine.state(60000);
 //
 // run resolves with the response of internal/simulator as an object, and state with the state of
-// the last run at a time. Both reject with an Error for a request that the engine refuses. The
-// engine takes one message at a time, and later calls wait for earlier ones.
+// the last run at a time. A live session has no end and keeps its fake time still between calls:
+//
+//   await engine.start({ seed: 7 });
+//   const { t, events } = await engine.advance(100);
+//   await engine.act({ do: 'crash', instance: 'a' });
+//   const { state } = await engine.now();
+//   const { hash } = await engine.end();
+//
+// Every call rejects with an Error for a message that the engine refuses, and a session goes on after
+// one. The engine takes one message at a time, and later calls wait for earlier ones.
 //
 // A run whose processes crash leaves their SQLite connections open, as a crashed process does, so
-// SQLite's memory grows from run to run. Before a run, the module starts a new Worker once the
-// memory has passed recycleBytes, which costs one start of the engine.
+// SQLite's memory grows from run to run, and in a session with every crash. Before a run or the start
+// of a session, the module starts a new Worker once the memory has passed recycleBytes, which costs
+// one start of the engine and ends the session that runs.
 export class Engine {
   static recycleBytes = 64 << 20;
 
@@ -122,6 +131,45 @@ export class Engine {
   // state of the last run at the time t, in milliseconds.
   state(t) {
     return this.#serial(() => this.#send('state', { t }));
+  }
+
+  // start a live session with the settings, an object, which ends the session that runs, and resolve
+  // with the answer, which has the events up to the first wait of the session's controller.
+  start(session = {}) {
+    return this.#serial(async () => {
+      await this.#ready;
+      if (this.#memory > Engine.recycleBytes) {
+        this.#worker.terminate();
+        await this.#start();
+      }
+      return this.#send('start', session);
+    });
+  }
+
+  // advance the session's fake time by ms milliseconds, and resolve with the events of the stretch.
+  advance(ms) {
+    return this.#serial(() => this.#send('advance', { by: ms }));
+  }
+
+  // advanceTo the fake time t of the session, in milliseconds.
+  advanceTo(t) {
+    return this.#serial(() => this.#send('advance', { to: t }));
+  }
+
+  // act on the session at its fake time: action is an action of a schedule without at.
+  act(action) {
+    return this.#serial(() => this.#send('act', action));
+  }
+
+  // now resolves with the answer that has the state of the session now, in state. With commits, the
+  // bucket lists at most that many of the last commit objects.
+  now(commits) {
+    return this.#serial(() => this.#send('now', commits ? { commits } : {}));
+  }
+
+  // end the session, with the last checks of its invariants, and resolve with its summary and hash.
+  end() {
+    return this.#serial(() => this.#send('end', {}));
   }
 
   terminate() {
