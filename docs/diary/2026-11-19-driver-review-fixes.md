@@ -188,3 +188,45 @@ The test fails only after a minute when the check is gone, by design.
 ### Future work
 
 None.
+
+## Step 5: The ping of `TestOpen` reaches the driver
+
+**Author:** driver-review-fixes builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "**Comments that overstate.** In `s4ql_test.go`, near the ping with a cancelled context and the ping with a context of one millisecond: `database/sql` answers an ended context itself and the call may never reach the driver. Make the test reach the driver (as `conn_test.go` does through `conn.Raw`) or make the comment say what is tested. Remove any assertion that cannot fail."
+**Interpretation:** Replace both pings through `database/sql` with one ping of the driver itself.
+**Inferred intent:** The test shows that the driver's ping waits for the instance and ends with its context, and nothing that `database/sql` answers alone.
+
+### What I did
+
+In the first subtest of `TestOpen` in `/s4ql_test.go`, the ping with a context that was cancelled before the call is gone: `database/sql` answers it in `DB.conn` before it reaches the driver, so its assertion could not fail. The ping with a context of one millisecond is now a call of `driver.Pinger.Ping` through `conn.Raw`, with a context of 50 ms that has not ended when the call starts, on the instance whose store is down: it must end with `context.DeadlineExceeded`. A ping with a context that has ended already, through the driver, is in `TestExec`, so it is not repeated. The comment says why the driver is asked directly.
+
+### Why
+
+A ping through `database/sql` with a context of one millisecond reaches the driver only if `database/sql` gets a connection within that millisecond; on a slow machine it answers by itself, and the test passes without testing the driver.
+
+### What worked
+
+`conn.Raw`, as in `TestExec`.
+
+### What didn't work
+
+Nothing failed. The subtest takes 1.01 s, as it did before the change: the instance takes the lease about a second after the store is up again.
+
+### What I learned
+
+Nothing new.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+The spare's ping in the last subtest of `TestOpen`, with a context of 50 ms through `database/sql`, has the same weakness in principle: a slow machine makes `database/sql` answer it. It stays, because its assertion is about the spare not serving, which a `database/sql` answer does not contradict, and the brief names only the two pings.
+
+### Future work
+
+None.

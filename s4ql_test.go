@@ -187,15 +187,18 @@ func TestOpen(t *testing.T) {
 		_, err = db.QueryContext(t.Context(), select1)
 		is.Error(t, s4ql.ErrNotServing, failed(t, err))
 
-		// A ping waits for the instance to serve, and ends with its context.
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		err = failed(t, db.PingContext(ctx))
-		is.Error(t, context.Canceled, err)
-		ctx, cancel = context.WithTimeout(t.Context(), time.Millisecond)
-		defer cancel()
-		err = failed(t, db.PingContext(ctx))
-		is.Error(t, context.DeadlineExceeded, err)
+		// A ping waits for the instance to serve, and ends with its context. database/sql answers a
+		// context that has ended by itself, also one that ends before database/sql has called the
+		// driver, so the driver is asked directly, with a context that has not ended.
+		conn, err := db.Conn(t.Context())
+		is.NotError(t, err)
+		defer func() { is.NotError(t, conn.Close()) }()
+		is.NotError(t, conn.Raw(func(driverConn any) error {
+			ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+			defer cancel()
+			is.Error(t, context.DeadlineExceeded, failed(t, driverConn.(driver.Pinger).Ping(ctx)))
+			return nil
+		}))
 
 		s.down(false)
 		is.NotError(t, db.PingContext(t.Context()))
