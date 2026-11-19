@@ -59,50 +59,59 @@ paths 'a list without a final line feed' "docs/todo.md${nl}site/index.html" fals
 paths 'an empty list' "" true true
 paths 'a list of empty lines' "${nl}${nl}" true true
 
-# A temporary repository with a history to diff, and runs of the decision for an event in it.
+# A temporary repository with a history to diff, and runs of the decision for an event in it. The
+# git configuration of the machine, such as hooks or a template, stays out of it.
+GIT_CONFIG_GLOBAL=/dev/null
+GIT_CONFIG_NOSYSTEM=1
+export GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM
 repo=$(mktemp -d)
 trap 'rm -rf "$repo"' EXIT
-g() { git -C "$repo" -c user.name=test -c user.email=test@example.com -c commit.gpgsign=false "$@"; }
+g() { git -C "$repo" -c user.name=test -c user.email=test@example.com -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"; }
 commit() { g add -A && g commit -q -m "$1" && g rev-parse HEAD; }
+die() {
+	echo 'changes_test: cannot make the temporary repository' >&2
+	exit 1
+}
 
-g init -q
+g init -q --template= || die
 mkdir -p "$repo/docs" "$repo/internal/a" "$repo/site"
 echo a >"$repo/docs/a.md"
 echo 'package a' >"$repo/internal/a/a.go"
 echo b >"$repo/internal/a/b.go"
 printf 'line %s\n' 1 2 3 4 5 6 7 8 >"$repo/internal/a/notes.txt"
 echo s >"$repo/site/index.html"
-c0=$(commit 'the start')
+c0=$(commit 'the start') || die
 
 echo b >>"$repo/docs/a.md"
-c1=$(commit 'a document')
+c1=$(commit 'a document') || die
 
 echo s >>"$repo/site/index.html"
-c2=$(commit 'the site')
-
-g mv internal/a/a.go docs/a.go
-c3=$(commit 'a Go file renamed into docs')
+c2=$(commit 'the site') || die
 
 # A file of a Go package that is not a Go file, renamed into docs, which git diff sees as a rename
-# unless it is told not to.
+# unless it is told not to. It comes before any Go file is in docs, which would make it code anyway.
 g mv internal/a/notes.txt docs/notes.txt
-r1=$(commit 'a text file of a Go package renamed into docs')
+r1=$(commit 'a text file of a Go package renamed into docs') || die
+
+g mv internal/a/a.go docs/a.go
+c3=$(commit 'a Go file renamed into docs') || die
 
 g mv docs/a.md internal/a/a.md
-c4=$(commit 'a document renamed into a Go package')
+c4=$(commit 'a document renamed into a Go package') || die
 
-g rm -q internal/a/b.go
-c5=$(commit 'a Go file deleted')
+# The Go file in docs goes too, so that the commits after this one have no Go file under docs.
+g rm -q internal/a/b.go docs/a.go
+c5=$(commit 'two Go files deleted') || die
 
 echo n >"$repo/docs/a note.md"
-c6=$(commit 'a document with a space in its name')
+c6=$(commit 'a document with a space in its name') || die
 
-g commit -q --allow-empty -m 'nothing'
-c7=$(g rev-parse HEAD)
+g commit -q --allow-empty -m 'nothing' || die
+c7=$(g rev-parse HEAD) || die
 
 # A name that git quotes unless core.quotePath is false.
 echo u >"$repo/docs/über.md"
-c8=$(commit 'a document with a letter outside ASCII in its name')
+c8=$(commit 'a document with a letter outside ASCII in its name') || die
 
 zeros=0000000000000000000000000000000000000000
 
@@ -116,9 +125,9 @@ event() {
 event 'a push of a document' "EVENT=push BEFORE=$c0 HEAD=$c1 FORCED=false" false false
 event 'a push of the site' "EVENT=push BEFORE=$c1 HEAD=$c2 FORCED=false" false true
 event 'a push of two commits, documents and the site' "EVENT=push BEFORE=$c0 HEAD=$c2 FORCED=false" false true
-event 'a push of a Go file renamed into docs' "EVENT=push BEFORE=$c2 HEAD=$c3 FORCED=false" true true
-event 'a push of a text file of a Go package renamed into docs' "EVENT=push BEFORE=$c3 HEAD=$r1 FORCED=false" true true
-event 'a push of a document renamed into a Go package' "EVENT=push BEFORE=$r1 HEAD=$c4 FORCED=false" true true
+event 'a push of a text file of a Go package renamed into docs' "EVENT=push BEFORE=$c2 HEAD=$r1 FORCED=false" true true
+event 'a push of a Go file renamed into docs' "EVENT=push BEFORE=$r1 HEAD=$c3 FORCED=false" true true
+event 'a push of a document renamed into a Go package' "EVENT=push BEFORE=$c3 HEAD=$c4 FORCED=false" true true
 event 'a push of a deleted Go file' "EVENT=push BEFORE=$c4 HEAD=$c5 FORCED=false" true true
 event 'a push of a document with a space' "EVENT=push BEFORE=$c5 HEAD=$c6 FORCED=false" false false
 event 'a push of many commits, the last a document' "EVENT=push BEFORE=$c2 HEAD=$c6 FORCED=false" true true
@@ -145,6 +154,29 @@ git clone -q --depth 1 "file://$repo" "$shallow/clone" 2>/dev/null
 got=$(cd "$shallow/clone" && env EVENT=push BEFORE="$c7" HEAD="$c8" FORCED=false $SH "$script" event 2>/dev/null)
 want=$(printf 'code=true\nsite=true')
 check 'event: a shallow checkout that lacks the previous commit'
+
+# A Go package under site, and a change to a file of it that is not a Go file, such as one that it
+# embeds. While a listed directory holds a Go package, every change is code.
+mkdir -p "$repo/site/tool"
+echo 'module tool' >"$repo/site/tool/go.mod"
+echo 'package main' >"$repo/site/tool/main.go"
+echo t >"$repo/site/tool/page.html"
+p1=$(commit 'a Go package under site') || die
+echo t >>"$repo/site/tool/page.html"
+p2=$(commit 'a file that the Go package under site embeds') || die
+echo c >>"$repo/docs/a note.md"
+p3=$(commit 'a document, while site holds a Go package') || die
+mkdir -p "$repo/docs/pkg"
+g rm -q -r site/tool
+echo 'package pkg' >"$repo/docs/pkg/pkg.go"
+p4=$(commit 'the Go package under site removed, and one under docs') || die
+echo c >>"$repo/docs/a note.md"
+p5=$(commit 'a document, while docs holds a Go package') || die
+
+event 'a push of a Go package under site' "EVENT=push BEFORE=$c8 HEAD=$p1 FORCED=false" true true
+event 'a push of a file of a Go package under site' "EVENT=push BEFORE=$p1 HEAD=$p2 FORCED=false" true true
+event 'a push of a document, while site holds a Go package' "EVENT=push BEFORE=$p2 HEAD=$p3 FORCED=false" true true
+event 'a push of a document, while docs holds a Go package' "EVENT=push BEFORE=$p4 HEAD=$p5 FORCED=false" true true
 
 # A mode that the script does not know prints no decision and fails, so that the job changes fails,
 # and every job runs.

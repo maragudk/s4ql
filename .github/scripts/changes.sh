@@ -17,7 +17,9 @@
 # Any other path is code: everything under .github/ and internal/, the Makefile, go.mod, .env.test,
 # and every file that nobody thought of. A Markdown file inside a Go package is code, as tests read
 # some of them, such as internal/sql/stmt/README.md. A Go file, a go.mod, a go.sum, or a go.work is
-# code wherever it is, even under docs/ or site/, since the Go tools would see it there. The check of
+# code wherever it is, even under docs/ or site/, since the Go tools would see it there. While a
+# listed directory holds any of those at all, the mode event makes every change code, since the other
+# files of such a package, such as those it embeds, cannot be told from documents. The check of
 # the site, make site-check, reads site/ and builds the engine from the Go code. Add a path to the
 # list only after checking that no job reads it.
 #
@@ -106,6 +108,14 @@ event() {
 	esac
 	commit "$base" || everything "the base '$base' is not a commit in the checkout"
 	commit "${HEAD:-}" || everything "the head '${HEAD:-}' is not a commit in the checkout"
+	# A Go package in a listed directory would have files that are not Go files, such as those it
+	# embeds, which the list cannot tell from documents. The names are split at NUL, so that git
+	# does not quote them, and a name with a line feed in it can only add a line that matches.
+	git ls-tree -r --name-only "$HEAD" -- docs site .impeccable >/dev/null ||
+		everything 'git ls-tree failed'
+	gocode=$(git ls-tree -r -z --name-only "$HEAD" -- docs site .impeccable | tr '\0' '\n' |
+		grep -E '(\.go|(^|/)go\.(mod|work))$' | head -n 1)
+	[ -z "$gocode" ] || everything "a listed directory holds Go code: $gocode"
 	echo "changes: comparing $base with $HEAD" >&2
 	# core.quotePath=false prints names with spaces and other letters as they are; a name that git
 	# must still quote, such as one with a tab, starts with a quote and is not listed.

@@ -8,8 +8,11 @@ on:
     branches:
       - main
 
+# Each push to main has a group of its own. The job changes compares a push with the commit before it
+# only, so a run that a later push cancelled while it waited would leave the commits of its push
+# untested. A pull request is compared with its base, so a new run of it may cancel the old one.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref_name }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref_name }}
   cancel-in-progress: ${{ github.ref_name != 'main' }}
 
 permissions:
