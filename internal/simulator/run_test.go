@@ -273,6 +273,28 @@ func TestRun_actions(t *testing.T) {
 			func(r simulator.RequestState) bool { return r.Request == cut[0].Request && r.Waiting }), "the caller waits for it before")
 	})
 
+	t.Run("should trim the table to the rows that the writes keep, and keep the row of each write", func(t *testing.T) {
+		res := run(t, &e, `{"seed": 2, "end": 120000, "instances": 1, "workload": {"callers": 6, "think": 500, "writes": 70, "keep": 2}}`)
+		inserted := map[int64]bool{}
+		deletes := 0
+		for _, ev := range find(res, func(e simulator.Event) bool { return e.What == "applied" && e.Object != nil && e.Object.Commit != nil }) {
+			for _, k := range ev.Object.Commit.Keys {
+				inserted[k] = true
+			}
+			deletes += len(ev.Object.Commit.Deletes)
+		}
+		committed := find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.What == "committed" })
+		is.True(t, len(committed) > 50, "many writes")
+		is.True(t, deletes > 50, "many deletes")
+		for _, c := range committed {
+			is.True(t, inserted[c.Value], fmt.Sprint("the commit of ", c.Value, " inserts it"))
+		}
+		for _, r := range find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.What == "served" }) {
+			is.True(t, len(r.Keys) <= 2, fmt.Sprint("a read of ", len(r.Keys), " rows"))
+		}
+		is.Equal(t, 0, res.Summary.Violations)
+	})
+
 	t.Run("should end the waits of an instance whose network hangs when its network is disconnected", func(t *testing.T) {
 		res := run(t, &e, `{"seed": 1, "end": 60000, "instances": 2, "schedule": [{"at": 30000, "do": "hangNetwork", "instance": "a", "on": true},
 			{"at": 40000, "do": "disconnectNetwork", "instance": "a", "on": true}]}`)

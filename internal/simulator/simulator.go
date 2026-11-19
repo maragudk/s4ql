@@ -40,7 +40,7 @@ type Engine struct {
 //   - "run" takes a [Request] and answers with a [Response].
 //   - "state" takes {"t": T} and answers with the [State] of the last run at the time T.
 //   - "start" takes a [Session], ends the session that runs, if any, starts a new one, and answers
-//     with a [Live] of its events at time 0.
+//     with a [Live] of the events up to the first wait of its controller.
 //   - "advance" takes {"by": D} and moves the session's fake time on by D milliseconds.
 //   - "act" takes an [Action] without "at" and does it at the session's time.
 //   - "now" takes {} or {"commits": N} and answers with the [State] of the session now.
@@ -74,7 +74,7 @@ func (e *Engine) Handle(t *testing.T, kind string, body []byte) []byte {
 	case "start":
 		req, err := ParseSession(body)
 		if err != nil {
-			return marshal(Live{Error: err.Error()})
+			return refused(err.Error())
 		}
 		e.Close()
 		s, a := startSession(t, req)
@@ -84,11 +84,11 @@ func (e *Engine) Handle(t *testing.T, kind string, body []byte) []byte {
 		return a.body
 	case "advance", "act", "now", "end":
 		if e.live == nil {
-			return marshal(Live{Error: "there is no session: start one"})
+			return refused("there is no session: start one")
 		}
 		c, err := e.live.parseCommand(kind, body)
 		if err != nil {
-			return marshal(Live{Error: err.Error()})
+			return refused(err.Error())
 		}
 		a := e.live.do(c)
 		if a.final {
@@ -106,6 +106,13 @@ func (e *Engine) Close() {
 		e.live.do(command{kind: "end"})
 		e.live = nil
 	}
+}
+
+// refused is the answer to a command of a session that the engine refuses: only the error.
+func refused(why string) []byte {
+	return marshal(struct {
+		Error string `json:"error"`
+	}{why})
 }
 
 // marshal v as JSON, the same bytes for the same value.

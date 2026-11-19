@@ -134,7 +134,7 @@ export class Engine {
   }
 
   // start a live session with the settings, an object, which ends the session that runs, and resolve
-  // with the answer, which has the events at fake time 0.
+  // with the answer, which has the events up to the first wait of the session's controller.
   start(session = {}) {
     return this.#serial(async () => {
       await this.#ready;

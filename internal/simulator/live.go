@@ -64,12 +64,13 @@ type answer struct {
 }
 
 // startSession with the settings in req, and return it with the answer to its start, which has the
-// events at fake time 0 up to the first wait of the controller. A goroutine of its own runs the
+// events up to the first wait of the controller, which first runs after the delay that the
+// scheduler gives the start of a task. A goroutine of its own runs the
 // session in a bubble until it ends.
 func startSession(t *testing.T, req Request) (*session, answer) {
 	disks, err := takeDisks(req.Instances)
 	if err != nil {
-		return nil, answer{body: marshal(Live{Error: "the disks of the instances cannot be made: " + err.Error()})}
+		return nil, answer{body: refused("the disks of the instances cannot be made: " + err.Error())}
 	}
 	s := &session{instances: req.Instances, line: handoff.New[command, answer]()}
 	first := s.line.Start(func() {
@@ -107,7 +108,7 @@ func (r *run) serve(ctx context.Context) {
 	var state *State
 	var refusal string
 	for {
-		a := answer{body: marshal(Live{Error: refusal})}
+		a := answer{body: refused(refusal)}
 		if refusal == "" {
 			a = answer{body: marshal(Live{T: millis(r.world.Monotonic()), Events: nonNil(r.rec.take()), Steps: r.world.Steps(), State: state})}
 		}

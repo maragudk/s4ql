@@ -74,10 +74,10 @@ type Workload struct {
 	Writes int `json:"writes"`
 	// Timeout of each call.
 	Timeout float64 `json:"timeout"`
-	// Keep is the number of rows that the writes keep in the table: each write also deletes the rows
-	// with the smallest keys, until the table has Keep rows besides the one it inserts, so that the
-	// table, and with it the cost of a read, stops growing. A write reads the whole table to find
-	// them. Zero keeps every row.
+	// Keep is the number of rows that the writes keep in the table: each write also deletes the other
+	// rows with the smallest keys, until the table has at most Keep rows, so that the table, and with
+	// it the cost of a read, stops growing. A write never deletes its own row, and reads the whole
+	// table to find the others. Zero keeps every row.
 	Keep int `json:"keep"`
 }
 
