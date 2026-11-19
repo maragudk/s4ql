@@ -41,7 +41,7 @@ const (
 	// without the argument, a statement that s4ql supports with no parameter gets s4ql's error of the
 	// wrong number of arguments, and one with one parameter runs.
 	callExecArgument call = "exec with an argument"
-	// callBegin is BeginTx, which runs no text, and which s4ql does not support.
+	// callBegin is BeginTx, which runs no text, and whose transaction is rolled back at once.
 	callBegin call = "begin"
 	// callQueryArgument is Query with one argument, the integer 1, as [callExecArgument] is Exec.
 	callQueryArgument call = "query with an argument"
@@ -536,11 +536,15 @@ func (p *pair) stepRuns(src string, c call, supported bool, runs [][]any) (outco
 func (p *pair) compare(src string, c call, supported bool, runs [][]any, got outcome) string {
 	tb := p.tb
 	tb.Helper()
+	if c == callBegin {
+		// Both sides begin a transaction, and roll it back.
+		if want := run(tb, p.o, c, src, runs, mattnText); got.failed != "" || got.String() != want.String() {
+			return fmt.Sprintf("s4ql gives\n%v\nand SQLite\n%v", got, want)
+		}
+		return ""
+	}
 	if got.notSupported() {
 		return p.checkNotSupported(src, c, supported, runs, got)
-	}
-	if c == callBegin {
-		return fmt.Sprintf("%q: s4ql gives %v, and supports no %v", src, got, c)
 	}
 	if strings.HasPrefix(got.err, wrongArguments) {
 		return p.checkArguments(src, runs, got)
@@ -603,12 +607,6 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 func (p *pair) checkNotSupported(src string, c call, supported bool, runs [][]any, got outcome) string {
 	tb := p.tb
 	tb.Helper()
-	if c == callBegin {
-		if got.err != "s4ql: not supported: transactions" {
-			return fmt.Sprintf("s4ql gives %v", got)
-		}
-		return ""
-	}
 	s, err := stmt.Check(src)
 	if err == nil && s != nil {
 		return p.checkArgumentRefused(src, s, runs, got)
@@ -911,7 +909,7 @@ var sequences = map[string][]step{
 		{callExec, "insert into t1 (v1) values (?1)", "exec: exec failed with s4ql: not supported: numbered parameter (at offset 28)"},
 		{callExecArgument, "insert into t1 (v1) values (:v)", "exec with an argument: exec failed with s4ql: not supported: named parameter (at offset 28)"},
 		{callExecArgument, "insert into t1 (v1) values (-?)", "exec with an argument: exec failed with s4ql: not supported: parameter after a sign (at offset 29)"},
-		{callBegin, "", "begin: begin failed with s4ql: not supported: transactions"},
+		{callBegin, "", "begin"},
 		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows `},
 	},
 	"texts with an argument, each of which is judged before the argument": {
@@ -985,8 +983,8 @@ func TestSequences(t *testing.T) {
 }
 
 // pick the call of a text of a sequence, which is a query if query, from r: now and then BeginTx,
-// which s4ql does not support, and otherwise a call for a query or for a statement that is no query,
-// of which one in eight is a prepared statement that runs several times.
+// and otherwise a call for a query or for a statement that is no query, of which one in eight is a
+// prepared statement that runs several times.
 func pick(r stmttest.Rand, query bool) call {
 	if r.IntN(48) == 0 {
 		return callBegin
@@ -1090,7 +1088,7 @@ func TestGenerated(t *testing.T) {
 		"insert with a parameter wrong number of arguments", "insert with a parameter argument of a type not supported", "insert with a parameter named argument",
 		"select ok", "select ok with rows", "select no such table", "select no rows", "select wrong number of arguments",
 		"droptable ok", "droptable no such table",
-		"other not supported", "other syntax error", "other incomplete input", "begin not supported",
+		"other not supported", "other syntax error", "other incomplete input", "begin ok",
 		"call " + string(callExec), "call " + string(callQuery), "call " + string(callPrepareExec), "call " + string(callPrepareQuery),
 		"call " + string(callQueryRow), "call " + string(callBegin), "call " + string(callPrepareExecRuns),
 		"call " + string(callExec) + " with arguments", "call " + string(callQuery) + " with arguments",
