@@ -104,6 +104,13 @@ Split the work so that no builder comes near the limit of its context.
 - **Why:** on 2026-11-18 the builder of the engine for slice 1 had used 700,000 of its 1,000,000 tokens before it was done. Its brief held the code and every kind of test at once: differential tests, simulation with planted bugs, mutation testing, and fuzzing. Markus: "It might make sense to split work up more in the future?"
 - **How to apply:** the first builder writes the code and the tests that show it works, and its branch is merged. Each heavy check after that, such as simulation with planted bugs, mutation testing, or a long fuzz run, goes to a fresh builder that starts from the merged code. Where two pieces of code do not depend on each other, give them to two builders. Tell every builder to commit and to write its diary step as it goes, so that a fresh builder can take over if it runs out.
 
+### A pull request is merged only after its checks have run and passed
+
+Before merging, confirm that the pull request has checks and that every one of them passed. Confirm after merging that it is merged, and only then clean up.
+
+- **Why:** on 2026-11-19 the lead merged pull request #41 before its CI had run. The watch on its checks returned at once with "no checks reported", because GitHub had not registered them yet, and a pipe in the merge command hid the exit code that should have stopped it. CI passed afterwards. On 2026-11-18 a merge that the API refused was followed by a cleanup that deleted the branch and closed the pull request. `main` has no required status checks, because they would also block direct pushes; Markus: "I just want to avoid too much friction while still supporting correctness."
+- **How to apply:** count the checks with `gh pr checks <n> --json bucket`, and merge only if there are as many as CI has jobs and none is in another bucket than `pass`. Put no pipe between a check and the command that depends on it. An empty list of checks means "not run yet", never "passed". After `gh pr merge`, read the state with `gh pr view <n> --json state` before removing the branch or the worktree. A pull request that changes a workflow file is merged locally and pushed, because the API refuses it.
+
 ### A test must not depend on timing
 
 A test passes or fails for the same reason on every machine, however slow or loaded.
