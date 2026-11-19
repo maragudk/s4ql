@@ -406,21 +406,28 @@ func (y *tally) log(t *testing.T, w workload) {
 }
 
 // TestSimulation runs each workload in a parallel subtest, every seed twice. The hash of all its
-// traces that each subtest logs is the same with -parallel 1.
+// traces that each subtest logs is the same with -parallel 1. With the environment variable
+// S4QL_SIM_SEED set, it replays that one seed instead: see [replaySeed].
 func TestSimulation(t *testing.T) {
 	t.Parallel()
+	if v := os.Getenv("S4QL_SIM_SEED"); v != "" {
+		replaySeed(t, v)
+		return
+	}
 	for _, test := range []struct {
 		name     string
 		workload workload
+		// replay is the name of the workload for S4QL_SIM_WORKLOAD.
+		replay string
 		// seeds of the default run.
 		seeds int
 		// reaches is what the seeds of the default run must reach at least.
 		reaches map[string]int64
 	}{
-		{name: "should give the same trace when a seed is run twice, and no violations, with one instance", workload: singleWorkload, seeds: 40, reaches: singleReaches},
-		{name: "should give the same trace when a seed is run twice, and no violations, with instances that compete, clocks that move, crashes, and buggify", workload: fullWorkload, seeds: 30, reaches: fullReaches},
-		{name: "should give the same trace when a seed is run twice, and no violations, with callers that never pause", workload: hammerWorkload, seeds: 30, reaches: hammerReaches},
-		{name: "should give the same trace when a seed is run twice, and no violations, with writes that land long after they were sent", workload: lateWrites(func(w *workload) {}), seeds: 10, reaches: lateReaches},
+		{name: "should give the same trace when a seed is run twice, and no violations, with one instance", workload: singleWorkload, replay: "single", seeds: 40, reaches: singleReaches},
+		{name: "should give the same trace when a seed is run twice, and no violations, with instances that compete, clocks that move, crashes, and buggify", workload: fullWorkload, replay: "full", seeds: 30, reaches: fullReaches},
+		{name: "should give the same trace when a seed is run twice, and no violations, with callers that never pause", workload: hammerWorkload, replay: "hammer", seeds: 30, reaches: hammerReaches},
+		{name: "should give the same trace when a seed is run twice, and no violations, with writes that land long after they were sent", workload: lateWrites(func(w *workload) {}), replay: "late", seeds: 10, reaches: lateReaches},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -437,7 +444,7 @@ func TestSimulation(t *testing.T) {
 					t.Errorf("seed %v gave two different traces, at %v", seed, firstDifference(first.lines, second.lines))
 				}
 				if v := first.violations(); len(v) > 0 {
-					t.Errorf("seed %v: %v", seed, strings.Join(v, "; "))
+					t.Errorf("seed %v: %v\nreplay it with: %v", seed, strings.Join(v, "; "), replayCommand(seed, "S4QL_SIM_WORKLOAD="+test.replay))
 				}
 				hashes[first.hash()] = true
 				all.Write([]byte(first.hash()))
@@ -492,16 +499,13 @@ func TestSimulation(t *testing.T) {
 	}
 }
 
-// TestSimulationSeed runs the one seed that the environment variable S4QL_SIM_SEED names, with the
-// workload that S4QL_SIM_WORKLOAD names (single, the default, full, hammer, or late), and logs its whole
+// replaySeed runs the one seed v, from the environment variable S4QL_SIM_SEED, with the workload
+// that S4QL_SIM_WORKLOAD names (single, the default, full, hammer, or late), and logs its whole
 // trace. The environment variable S4QL_SIM_BUG can name a planted bug by its name in
 // [plantedBugs], to run its workload instead, with S4QL_SIM_CONTROL to run the control of that
-// bug, or S4QL_SIM_CLEAN to run the workload without the bug.
-func TestSimulationSeed(t *testing.T) {
-	v := os.Getenv("S4QL_SIM_SEED")
-	if v == "" {
-		t.Skip("S4QL_SIM_SEED is not set")
-	}
+// bug, or S4QL_SIM_CLEAN to run the workload without the bug. [replayCommand] gives the command.
+func replaySeed(t *testing.T, v string) {
+	t.Helper()
 	seed, err := strconv.ParseUint(v, 10, 64)
 	is.NotError(t, err)
 
@@ -532,6 +536,13 @@ func TestSimulationSeed(t *testing.T) {
 	s := simulate(t, seed, w)
 	t.Logf("seed %v: %v steps, hash %v, trace:\n%v", seed, s.steps, s.hash(), strings.Join(s.lines, "\n"))
 	is.EqualSlice(t, nil, s.violations())
+}
+
+// replayCommand is the command that replays the seed with [replaySeed], with the environment
+// variables vars that choose the workload, such as "S4QL_SIM_WORKLOAD=full".
+func replayCommand(seed uint64, vars ...string) string {
+	return strings.Join(append([]string{fmt.Sprint("S4QL_SIM_SEED=", seed)}, vars...), " ") +
+		" go test -run '^TestSimulation$' -v ./internal/core/"
 }
 
 // plantedBug that the checks must find.
@@ -900,7 +911,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 						known = true
 					}
 				}
-				is.True(t, known, fmt.Sprintf("seed %v found something else: %v", seed, first.violations()))
+				is.True(t, known, fmt.Sprintf("seed %v found something else: %v\nreplay it with: %v", seed, first.violations(), replayCommand(seed, "S4QL_SIM_BUG="+bug.bug)))
 				if len(found) > 2 {
 					continue
 				}
@@ -926,7 +937,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 				for seed := range n {
 					if v := simulate(t, seed, *bug.control).violations(); len(v) > 0 {
 						controlFound++
-						t.Errorf("seed %v found the bug without what it needs: %v", seed, v)
+						t.Errorf("seed %v found the bug without what it needs: %v\nreplay it with: %v", seed, v, replayCommand(seed, "S4QL_SIM_BUG="+bug.bug, "S4QL_SIM_CONTROL=1"))
 					}
 				}
 				t.Logf("%v of %v seeds found the bug without what it needs", controlFound, n)
@@ -950,7 +961,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 			for _, seed := range cleanSeeds {
 				if v := simulate(t, seed, clean).violations(); len(v) > 0 {
 					cleanFound++
-					t.Errorf("seed %v found something without the bug: %v", seed, v)
+					t.Errorf("seed %v found something without the bug: %v\nreplay it with: %v", seed, v, replayCommand(seed, "S4QL_SIM_BUG="+bug.bug, "S4QL_SIM_CLEAN=1"))
 				}
 			}
 			t.Logf("%v of %v seeds found something without the bug: the first %v, and every other seed that found the bug", cleanFound, len(cleanSeeds), n)

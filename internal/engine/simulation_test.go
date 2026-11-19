@@ -1045,8 +1045,13 @@ func tallyOf(s simulation) map[string]int {
 // stops happening, and not by chance. And at most the share noLease of the statements may be refused
 // for want of the lease, about twice what the first 1,000 seeds give, so that the test fails when
 // most statements no longer reach a transaction. The seeds are the same in every run, so the counts
-// are too.
+// are too. With the environment variable S4QL_ENGINE_SIM_SEED set, it replays that one seed
+// instead: see [replaySeed].
 func TestSimulation(t *testing.T) {
+	if v := os.Getenv("S4QL_ENGINE_SIM_SEED"); v != "" {
+		replaySeed(t, v)
+		return
+	}
 	n := simSeeds(t, 50)
 	if slow() {
 		n = max(n/10, 2)
@@ -1081,7 +1086,7 @@ func TestSimulation(t *testing.T) {
 			for seed := range n {
 				s := simulate(t, seed, c.w)
 				if v := s.violations(); len(v) > 0 {
-					t.Fatalf("seed %v: %v", seed, strings.Join(v, "\n"))
+					t.Fatalf("seed %v: %v\nreplay it with: %v", seed, strings.Join(v, "\n"), replayCommand(seed, "S4QL_ENGINE_SIM_WORKLOAD="+c.name))
 				}
 				for k, v := range tallyOf(s) {
 					counts[k] += v
@@ -1108,16 +1113,21 @@ func TestSimulation(t *testing.T) {
 	}
 }
 
-// TestSimulationSeed runs the seed of the environment variable S4QL_ENGINE_SIM_SEED, with the bug
-// of S4QL_ENGINE_SIM_BUG, and logs its trace.
-func TestSimulationSeed(t *testing.T) {
-	v := os.Getenv("S4QL_ENGINE_SIM_SEED")
-	if v == "" {
-		t.Skip("S4QL_ENGINE_SIM_SEED is not set")
-	}
+// replaySeed runs the seed v, from the environment variable S4QL_ENGINE_SIM_SEED, of the workload
+// that S4QL_ENGINE_SIM_WORKLOAD names (default, the default, or hammer), with the bug of
+// S4QL_ENGINE_SIM_BUG, and logs its trace. [replayCommand] gives the command.
+func replaySeed(t *testing.T, v string) {
+	t.Helper()
 	seed, err := strconv.ParseUint(v, 10, 64)
 	is.NotError(t, err)
 	w := defaultWorkload
+	switch name := os.Getenv("S4QL_ENGINE_SIM_WORKLOAD"); name {
+	case "", "default":
+	case "hammer":
+		w = hammerWorkload
+	default:
+		t.Fatalf("no workload is named %v", name)
+	}
 	if bug := os.Getenv("S4QL_ENGINE_SIM_BUG"); bug != "" {
 		w.bugs = []string{bug}
 	}
@@ -1130,6 +1140,13 @@ func TestSimulationSeed(t *testing.T) {
 	}
 }
 
+// replayCommand is the command that replays the seed with [replaySeed], with the environment
+// variables vars that choose the workload and the bug, such as "S4QL_ENGINE_SIM_WORKLOAD=hammer".
+func replayCommand(seed uint64, vars ...string) string {
+	return strings.Join(append([]string{fmt.Sprint("S4QL_ENGINE_SIM_SEED=", seed)}, vars...), " ") +
+		" go test -run '^TestSimulation$' -v ./internal/engine/"
+}
+
 // TestSimulation_plantedBugs runs the workload with each planted bug until it finds the bug by its own
 // violation in two seeds, and the same seeds without the bug, which find nothing.
 func TestSimulation_plantedBugs(t *testing.T) {
@@ -1139,19 +1156,21 @@ func TestSimulation_plantedBugs(t *testing.T) {
 	bugs := []struct {
 		name string
 		w    workload
+		// replay is the name of the workload for S4QL_ENGINE_SIM_WORKLOAD.
+		replay string
 		// finds holds a part of each violation that the bug causes, its own violation first, which the
 		// bug must cause in two seeds at least.
 		finds []string
 	}{
-		{"skipUnique", defaultWorkload, []string{"fails in SQLite: 19/1555: UNIQUE constraint failed"}},
-		{"ackUnknown", defaultWorkload, []string{"is not in the log"}},
-		{"checkOutside", hammerWorkload, []string{"fails in SQLite: 19/1555: UNIQUE constraint failed"}},
+		{"skipUnique", defaultWorkload, "default", []string{"fails in SQLite: 19/1555: UNIQUE constraint failed"}},
+		{"ackUnknown", defaultWorkload, "default", []string{"is not in the log"}},
+		{"checkOutside", hammerWorkload, "hammer", []string{"fails in SQLite: 19/1555: UNIQUE constraint failed"}},
 		// A write transaction left open keeps the instance from a write, and from a close that
 		// releases the lease, so the next instance never runs the queries of its connections.
-		{"keepOpen", defaultWorkload, []string{"no instance runs a write", "a query on each connection of its callers ten minutes after the end of the workload"}},
+		{"keepOpen", defaultWorkload, "default", []string{"no instance runs a write", "a query on each connection of its callers ten minutes after the end of the workload"}},
 		// A read transaction left open fails every later query of its connection, and the check of
 		// the connections after the workload.
-		{"keepRead", defaultWorkload, []string{"a read transaction left open after the end of the workload", "the reader has a read transaction open"}},
+		{"keepRead", defaultWorkload, "default", []string{"a read transaction left open after the end of the workload", "the reader has a read transaction open"}},
 	}
 	for _, b := range bugs {
 		bug := b.name
@@ -1166,7 +1185,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 					if !slices.ContainsFunc(v, func(v string) bool {
 						return slices.ContainsFunc(b.finds, func(f string) bool { return strings.Contains(v, f) })
 					}) {
-						t.Fatalf("seed %v finds the bug by another violation: %v", seed, v)
+						t.Fatalf("seed %v finds the bug by another violation: %v\nreplay it with: %v", seed, v, replayCommand(seed, "S4QL_ENGINE_SIM_WORKLOAD="+b.replay, "S4QL_ENGINE_SIM_BUG="+bug))
 					}
 					if found == 0 {
 						t.Logf("seed %v finds: %v", seed, v[0])
@@ -1176,7 +1195,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 						own++
 					}
 					if v := simulate(t, seed, b.w).violations(); len(v) > 0 {
-						t.Fatalf("seed %v finds something without the bug: %v", seed, v)
+						t.Fatalf("seed %v finds something without the bug: %v\nreplay it with: %v", seed, v, replayCommand(seed, "S4QL_ENGINE_SIM_WORKLOAD="+b.replay))
 					}
 				}
 			}

@@ -286,8 +286,10 @@ The flags of the test binary:
 The environment variables:
 
 - `S4QL_ENGINE_SIM_SEEDS` sets the number of seeds of each workload of `TestSimulation`, 50 by default. For `TestSimulation_plantedBugs` it sets the limit, 100 by default, and makes the test run every seed up to it, to count how many find each bug.
-- `S4QL_ENGINE_SIM_SEED` makes `TestSimulationSeed` run that one seed of the default workload and log its whole trace.
-- `S4QL_ENGINE_SIM_BUG` plants the bug of that name in the run of `TestSimulationSeed`.
+- `S4QL_ENGINE_SIM_SEED` makes `TestSimulation` replay that one seed, and nothing else, and log its whole trace. `S4QL_ENGINE_SIM_WORKLOAD` chooses the workload: `default` or `hammer`.
+- `S4QL_ENGINE_SIM_BUG` plants the bug of that name in the replay.
+
+A seed that fails in `TestSimulation` or `TestSimulation_plantedBugs` prints the command that replays it.
 
 Examples of larger runs:
 
@@ -297,7 +299,7 @@ go test ./internal/engine/ -run '^$' -fuzz '^FuzzDifferential$' -fuzztime 10m
 go test ./internal/engine/ -run '^$' -fuzz '^FuzzDifferential_core$' -fuzztime 10m
 S4QL_ENGINE_SIM_SEEDS=1000 go test ./internal/engine/ -run '^TestSimulation$'
 S4QL_ENGINE_SIM_SEEDS=1000 go test ./internal/engine/ -run '^TestSimulation_plantedBugs$'
-S4QL_ENGINE_SIM_SEED=7 S4QL_ENGINE_SIM_BUG=skipUnique go test ./internal/engine/ -run '^TestSimulationSeed$' -v
+S4QL_ENGINE_SIM_SEED=7 S4QL_ENGINE_SIM_BUG=skipUnique go test -run '^TestSimulation$' -v ./internal/engine/
 ```
 
 ## Results
