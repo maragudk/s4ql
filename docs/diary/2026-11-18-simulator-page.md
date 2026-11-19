@@ -334,3 +334,73 @@ Nothing yet.
 ### Future work
 
 See the later steps.
+
+## Step 7: The page on a live session, its check, and self-review
+
+**Author:** builder (live simulator page)
+
+### Prompt Context
+
+**Verbatim prompt:** (continues from Step 6)
+
+**Interpretation:** build what Step 6 planned, check it in `sitecheck`, look at it at three widths, and review it.
+
+**Inferred intent:** the lead can merge, and the live page waits for Play and then runs for as long as the visitor stays.
+
+### What I did
+
+- `/site/simulator/page.js`: rewritten around one live session. `pump` sends one command at a time (an action, a skip of the check, or a step of playback) and then `now` with 8 commit objects. Each animation frame adds its real time, at most 100 ms, to a debt; a step takes the debt, at most 250 ms, and advances by it, or five times it with turbo, so calls never pile up and a hidden tab does not jump ahead. The page keeps the last 100 lines of the log, the counts of the calls, and the bars of the last 2 fake minutes.
+- `/site/simulator/run.js`: `teller`, which gives the line of one event at a time, in shorter words; `clock` with tenths and hours; `offset` for the clocks. The request, `insert`, and the limits are gone.
+- `/site/simulator/index.html`: the intro (two sentences and the build line), the bar (Play, Turbo 5×, the clock, the field), two columns for a and b with their facts and actions, and below them S3 (head, lease, manifest writes), the log, and the commit objects. Gone: the speed selection, "Start over", the limit, the S3 card and its faults, "Things to try", the line on what the page leaves out, and the section intros. The `<head>` names the new actions.
+- `/internal/simulator/sitecheck/`: `check.html` checks the new page; `main.go` says what it checks.
+- `/internal/simulator/README.md`: the page drives a live session; the measurements of its batch runs are in the past tense.
+
+### Why
+
+- **The actions.** Crash becomes Restart, and Stop becomes Start, because each is one action and its undo. Hang network, Disconnect network, Error disk, and Pause clocks are toggles with `aria-pressed`: a square that fills, and the whole button inverts. Hover doubles the frame instead of inverting, so it never looks like on. Play is framed like the rest, so that Turbo, when on, is the only inverted button in the bar.
+- **What is offered when.** Network and disk act on the instance also when its process has crashed, as the engine does them. The clock and Stop are off for a crashed process. Stop is off while the database is not open (the engine ignores `close` then), and Start is offered only after the visitor's Stop, since a process whose core stopped closes and opens its database by itself. All actions wait while another is on its way, so a toggle is decided from the state after the one before.
+- **An action while paused** goes to the engine at once and takes effect at the session's time; the card and the log show it before Play.
+- **The jumps are 60 s**, twice the lease, so a jump forward on the holder makes the core refuse calls by its wall clock until it renews.
+- **A stale read** after paused clocks is one plain line a spell: "a serves a stale read after its clocks stood still, which the spec allows." A violation that the design does not excuse stays an inverted alarm line.
+- **The stop for memory.** The page halts with "Reload to start over" when SQLite's memory passes 1 GiB, and after 24 h of fake time, which stands in for the Go heap (about 300 MB by the README's 12.5 MB a fake hour) that the page cannot measure. At 1× that is a day of real time.
+- **The hook** is `s4qlPage.skip(ms)`, queued in the same pump as playback.
+
+### What worked
+
+- `make site-check` passed; the built `sitecheck` passed 15 times in a row and 24 times in three batches of eight at once, after the last changes. A check takes about 5 s.
+- `make lint`, `make test`, and `make check-browser` passed. No Go that runs in the browser changed, so `make test-browser` was not run.
+- By eye with `playwright-cli` at 1440, 1280, and 390: paused at zero, playing, turbo, each action on, a takeover, and after 5 fake minutes. The first viewport at 1280 by 800 shows Play and both instances with their actions. `scrollWidth` is 390 at 390. In one session, pausing the clocks of the holder for 60 s and resuming them gave the stale-read line and then "b learns that a holds the lease."
+
+### What didn't work
+
+- The harness refused a Bash command with heredocs ("too complex to verify that it stays inside the worktree"), as in Step 2. Scratch files went through the Write tool and edits through Python scripts.
+- The first screenshot with Turbo on showed it as framed, not inverted; the computed style said inverted. A second screenshot, with the mouse moved away, showed it inverted.
+
+### What I learned
+
+- With the engine at about 45 ms a fake minute, 5× costs the engine a few ms a second; most of a step is the two messages to the Worker.
+- After a crash of the holder, the other instance served 33 to 38 s of fake time later in the checks: the 30 s lease and the time to notice.
+
+### What was tricky
+
+- `press` in the check first waited for its button to be enabled again, which never happens for Stop while the database closes. It now waits for the action's line in the log, which every action adds, done or ignored.
+
+### What warrants review
+
+Self-review with the code-review skill at medium found nine things:
+
+- Fixed: a spell of "cannot open its database" was ended only by a new process, so a second failing disk on the same process said nothing. It ends at `opened` now, with a unit check.
+- Fixed: an action that `failed` (a restart whose cache could not be copied) was written as "Ignored".
+- Fixed: the Stop button read the state, so it offered Start while a process closed and opened its database by itself after its core stopped. Start is offered only after the visitor's Stop.
+- Fixed: an error in the page's own code was reported as "The engine stopped", and an error in drawing repeated on every frame. Engine calls and page code have their own `try` now.
+- Fixed: only SQLite's memory was guarded; a day of fake time now stands in for the Go heap.
+- Fixed: the log was rebuilt on every step, and the bar codes on every draw. The log is drawn when it has a new line, and the bar codes are cached.
+- Fixed: three waits of the check depended on a change at the same fake time (a restarted process running, an instance serving, a close ending). They skip fake time until the change comes.
+- Not changed: Stop stays off while the database cannot be opened. The reviewer read the README as saying that `close` ends the open loop, but `run.go` ignores `close` when no database is open.
+- Not changed: `page.js` keeps its own map of holder IDs beside the one in `teller`. They are filled from the same events.
+
+By eye before it goes live: the copy of the intro and of the log lines; the word "thinks it holds the lease" in a card head after paused clocks; the 2-minute window of the field; 1× as real time, which makes a takeover take about 35 real seconds without turbo.
+
+### Future work
+
+- If the Go heap ever becomes measurable from the page, replace the day of fake time with it.
