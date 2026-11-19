@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -404,7 +405,8 @@ type run struct {
 }
 
 // The tables that the callers of a workload use: three names, each in two spellings that SQLite
-// takes for one, with characters that an identifier must be quoted for, and four shapes.
+// takes for one, with characters that an identifier must be quoted for, and eight shapes, with
+// columns of every type and keys of one and of two columns.
 var (
 	tableNames = [][2]string{{"t0", "T0"}, {`q"t'1`, `Q"T'1`}, {"tbl 2;--", "TBL 2;--"}}
 	shapes     = []func(name string) *s4qlpb.CreateTable{
@@ -417,23 +419,54 @@ var (
 			ct.SetPrimaryKey([]uint32{2, 1})
 			return ct
 		},
+		func(name string) *s4qlpb.CreateTable {
+			return typedTable(name, s4qlpb.Type_TYPE_REAL, s4qlpb.Type_TYPE_TEXT)
+		},
+		func(name string) *s4qlpb.CreateTable {
+			return typedTable(name, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_BLOB, s4qlpb.Type_TYPE_REAL)
+		},
+		func(name string) *s4qlpb.CreateTable {
+			return typedTable(name, s4qlpb.Type_TYPE_BLOB, s4qlpb.Type_TYPE_INTEGER)
+		},
+		func(name string) *s4qlpb.CreateTable {
+			// A key of a blob and a real, after a text and an integer.
+			ct := typedTable(name, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_INTEGER, s4qlpb.Type_TYPE_BLOB, s4qlpb.Type_TYPE_REAL)
+			ct.SetPrimaryKey([]uint32{2, 3})
+			return ct
+		},
+	}
+	// simKeys are the keys of each type, of which a key of one column takes one of the first six,
+	// and a column of a key of two one of the first three, so that callers meet at the same rows.
+	// They hold the edges that matter most to a key: 0.0 and -0.0, which are one key, among the
+	// first three reals, the empty text and blob, and text and blobs that differ in a later byte or
+	// are a prefix of another.
+	simKeys = map[s4qlpb.Type][]*s4qlpb.Value{
+		s4qlpb.Type_TYPE_INT:     row(0, 1, -1, math.MinInt64, math.MaxInt64, 2),
+		s4qlpb.Type_TYPE_INTEGER: row(0, math.MaxInt64, math.MinInt64, -1, 1, 2),
+		s4qlpb.Type_TYPE_REAL:    row(0.0, math.Copysign(0, -1), -1.5, math.SmallestNonzeroFloat64, -math.MaxFloat64, 1e300),
+		s4qlpb.Type_TYPE_TEXT:    row("", "é", "è", "a", "a\x01", "日本語"),
+		s4qlpb.Type_TYPE_BLOB:    row([]byte{0}, []byte{}, []byte{0, 1}, []byte{0, 0}, []byte{0xff}, []byte("ab")),
 	}
 )
 
-// randomRow for the table, with small keys, so that callers meet at the same rows.
+// randomRow for the table, with small keys, so that callers meet at the same rows, and values of
+// the [edges] of their type in the other columns.
 func randomRow(h host.Host, ct *s4qlpb.CreateTable) []*s4qlpb.Value {
-	values := make([]any, len(ct.GetColumns()))
-	for i := range values {
+	values := make([]*s4qlpb.Value, len(ct.GetColumns()))
+	for i, c := range ct.GetColumns() {
 		switch {
 		case slices.Contains(ct.GetPrimaryKey(), uint32(i)):
-			values[i] = intn(h, 6/len(ct.GetPrimaryKey()))
+			values[i] = simKeys[c.GetType()][intn(h, 6/len(ct.GetPrimaryKey()))]
 		case intn(h, 5) == 0:
-			values[i] = nil
+			values[i] = row(nil)[0]
+		case c.GetType() == s4qlpb.Type_TYPE_INT:
+			values[i] = row(intn(h, 100) - 50)[0]
 		default:
-			values[i] = intn(h, 100) - 50
+			pool := edges[c.GetType()]
+			values[i] = pool[intn(h, len(pool))]
 		}
 	}
-	return row(values...)
+	return values
 }
 
 // errAbandon is the error of a statement after which a caller gives its transaction up, because the
@@ -531,7 +564,7 @@ func (r *run) statement(ctx context.Context, n *node, tx *core.Tx, m *mtx) error
 			if err != nil {
 				return refused("get", err)
 			}
-			if want := t.rows[text(key)]; (got == nil) != (want == nil) || text(got) != text(want) {
+			if want := t.rows[text(stored(key))]; (got == nil) != (want == nil) || text(got) != text(want) {
 				r.o.violate(ctx, r.c.world, "a transaction read the row %v of %q as %v, and its own writes make it %v", text(key), name, text(got), text(want))
 			}
 

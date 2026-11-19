@@ -146,7 +146,7 @@ func row(vs ...any) []*s4qlpb.Value {
 // text of a row: its values joined by commas, each exactly, so that two values have the same text
 // only if they are the same, bit for bit: an integer in decimal, a real as "r" and the shortest
 // decimal that reads back to its bits, with the sign of -0, text quoted as Go quotes it, a blob as
-// x'' with its bytes in hexadecimal, and null.
+// x” with its bytes in hexadecimal, and null.
 func text(values []*s4qlpb.Value) string {
 	parts := make([]string, len(values))
 	for i, v := range values {

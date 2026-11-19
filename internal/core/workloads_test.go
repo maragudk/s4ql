@@ -92,7 +92,10 @@ var hammerWorkload = workload{
 // what the seeds reached on 2026-11-18, for each kind that they reached four times at least. A run
 // depends only on the code and its seed, so a minimum fails only when the code or the workload
 // changes, never by chance, and a quarter leaves room for a change that moves faults between seeds.
-// A kind of fault or event that a change switches off falls to zero, and fails.
+// A kind of fault or event that a change switches off falls to zero, and fails. The upserts and
+// deletes of keys of the other types, and of -0.0, are a quarter of what the seeds reached on
+// 2026-11-19, when the tables got those types; the other minimums stayed as they were, and the
+// seeds still reach them.
 var (
 	// singleReaches is what the 40 seeds of the default run of [singleWorkload] must reach. It also
 	// has one failed commit, of the two that they reached, which the rule leaves out.
@@ -103,6 +106,9 @@ var (
 		"commits of nothing":            25,
 		"conflicts":                     3,
 		"cut-offs":                      3,
+		"deletes of a blob key":         22,
+		"deletes of a text key":         10,
+		"deletes of the key -0.0":       3,
 		"event catch_up/caught_up":      10,
 		"event commit/committed":        149,
 		"event commit/empty":            25,
@@ -123,6 +129,9 @@ var (
 		"slow ways":                     16,
 		"timeouts that expired":         27,
 		"transactions refused at start": 4,
+		"upserts with a blob key":       35,
+		"upserts with a text key":       37,
+		"upserts with the key -0.0":     7,
 		"writes applied late":           3,
 		"writes stuck":                  21,
 	}
@@ -139,6 +148,9 @@ var (
 		"crashes":                                  7,
 		"cut-offs":                                 8,
 		"damaged downloads":                        1,
+		"deletes of a blob key":                    16,
+		"deletes of a text key":                    2,
+		"deletes of the key -0.0":                  2,
 		"event catch_up/caught_up":                 17,
 		"event commit/committed":                   71,
 		"event commit/committed_and_stopped":       4,
@@ -171,6 +183,9 @@ var (
 		"timeouts that expired":                    362,
 		"transactions abandoned":                   1,
 		"transactions refused at start":            244,
+		"upserts with a blob key":                  22,
+		"upserts with a text key":                  26,
+		"upserts with the key -0.0":                2,
 		"writes applied late":                      3,
 		"writes stuck":                             13,
 	}
@@ -190,6 +205,9 @@ var (
 		"commits of unknown outcome":                 2,
 		"conflicts":                                  38,
 		"cut-offs":                                   7,
+		"deletes of a blob key":                      85,
+		"deletes of a text key":                      26,
+		"deletes of the key -0.0":                    9,
 		"event catch_up/caught_up":                   8,
 		"event commit/committed":                     485,
 		"event commit/empty":                         90,
@@ -215,6 +233,9 @@ var (
 		"slow ways":                                  47,
 		"timeouts that expired":                      117,
 		"transactions refused at start":              96,
+		"upserts with a blob key":                    87,
+		"upserts with a text key":                    143,
+		"upserts with the key -0.0":                  22,
 		"writes applied late":                        9,
 		"writes stuck":                               50,
 	}
@@ -334,8 +355,15 @@ type tally struct {
 	slowest    uint64
 }
 
-// markers of the trace that are counted: the faults of the store, and what the harness did.
+// markers of the trace that are counted: the faults of the store, what the harness did, and the
+// keys of the other types that matter most.
 var markers = map[string]string{
+	"upserts with the key -0.0": "upsert r-0,",
+	"deletes of the key -0.0":   "delete r-0 from",
+	"upserts with a text key":   `upsert "`,
+	"upserts with a blob key":   "upsert x'",
+	"deletes of a text key":     `delete "`,
+	"deletes of a blob key":     "delete x'",
 	"lost requests":             "was lost on its way to the store",
 	"lost responses":            "was lost on its way back",
 	"calls with no answer":      "no answer comes",
@@ -897,6 +925,12 @@ var plantedBugs = []plantedBug{
 		name:     "a commit object that lists a key twice",
 		workload: plant(calm(singleWorkload), "keyTwice"),
 		symptoms: []string{"is no net effect"},
+	},
+	{
+		bug:      "blobCut",
+		name:     "a commit object that cuts a blob at its first zero byte",
+		workload: plant(calm(singleWorkload), "blobCut"),
+		symptoms: []string{"with the changes", "a read saw at commit", "the cache of", "the replay of the whole log"},
 	},
 	{
 		bug:      "forgetDelete",
