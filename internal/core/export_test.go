@@ -66,11 +66,6 @@ func (o *Options) WrapSpools(wrap func(kind string, f *os.File) SpoolFile) {
 	o.local.spool = &wrap
 }
 
-// UseVFS makes the instance open its cache through the SQLite VFS registered under the name.
-func (o *Options) UseVFS(name string) {
-	o.local.vfs = name
-}
-
 // ID under which the instance holds the lease.
 func (d *DB) ID() string {
 	return d.id
