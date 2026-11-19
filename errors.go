@@ -51,15 +51,15 @@ var (
 	// ErrOutcomeUnknown is matched by the error of a statement whose context ended before the
 	// instance knew whether its commit was applied, and of one whose commit the instance has to look
 	// for in a log that it cannot read. The statement may be committed, may not be, and may still
-	// become committed. It is the one error of a statement that does not mean "not
-	// committed", so a statement that is run again after it can be applied twice. The instance
-	// serves nothing until it has found out.
+	// become committed. It is the one error of a statement that does not mean "not committed", so a
+	// statement that is run again after it can be applied twice. The instance serves nothing until
+	// it has found out.
 	ErrOutcomeUnknown = errors.New("s4ql: the outcome of the commit is unknown")
 
 	// ErrStopped is matched by the error of every statement that reaches an instance that has
 	// stopped for good, and of every ping of it: its cache failed, it met something in the object
-	// store that it cannot read, or it was closed. The message carries the cause. Nothing brings the instance back: the
-	// application closes the [database/sql.DB] and opens the database again.
+	// store that it cannot read, or it was closed. The message carries the cause. Nothing brings the
+	// instance back: the application closes the [database/sql.DB] and opens the database again.
 	ErrStopped = errors.New("s4ql: the instance has stopped")
 )
 
