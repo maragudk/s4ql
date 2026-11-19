@@ -63,6 +63,9 @@ type Options struct {
 	// Logger of the events of the instance: one event for each unit of work. The default discards
 	// them.
 	Logger *slog.Logger
+	// VFS is the name under which the SQLite VFS is registered that the instance opens its cache
+	// through. The default is SQLite's default VFS.
+	VFS string
 
 	// syncOff stops SQLite from syncing the cache to disk, for tests.
 	syncOff bool
@@ -72,22 +75,12 @@ type Options struct {
 	local local
 }
 
-// local is how an instance reaches its local files: its spool files and the files of its cache.
-// The zero value is the files of the operating system and SQLite's default VFS. A value is a field
-// of [Options] that is not exported. [Options.UseVFS] sets its VFS.
+// local is how an instance reaches its spool files. The zero value is the files of the operating
+// system. A value is a field of [Options] that is not exported.
 type local struct {
-	// vfs is the name of the SQLite VFS that the connections to the cache open the cache through,
-	// or empty for the default.
-	vfs string
 	// spool wraps each spool file of the given kind, "commit" or "annotations", when it is
 	// created, if it is not nil. It is a pointer, so that [Options] stays comparable.
 	spool *func(kind string, f *os.File) spoolFile
-}
-
-// UseVFS makes the instance open its cache through the SQLite VFS registered under the name, and
-// not through SQLite's default VFS.
-func (o *Options) UseVFS(name string) {
-	o.local.vfs = name
 }
 
 // withDefaults sets the options that are zero to their defaults, and checks the others.
@@ -307,14 +300,14 @@ func Open(ctx context.Context, h host.Host, s store.Store, path, prefix string, 
 	// write-ahead log after a crash, which reports "busy" to every other connection, is over before
 	// a read connection exists.
 	busy := options.BusyTimeout.Milliseconds()
-	if d.w, err = openConn(path, options.local.vfs, busy); err != nil {
+	if d.w, err = openConn(path, options.VFS, busy); err != nil {
 		return nil, openError(err)
 	}
 	if err := d.w.setUp(options.syncOff); err != nil {
 		return nil, openError(err)
 	}
 	for range options.Readers {
-		c, err := openConn(path, options.local.vfs, busy)
+		c, err := openConn(path, options.VFS, busy)
 		if err != nil {
 			return nil, openError(err)
 		}

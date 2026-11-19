@@ -1,0 +1,367 @@
+# Diary: The follow-ups of the review of the driver
+
+The driver of package `s4ql` was merged in `66f8463` after an independent review that judged it sound and named follow-ups. This task is those follow-ups and nothing more. The work is on the branch `driver-review-fixes`, which starts from `main` at `66f8463`.
+
+## Step 1: The brief, and a plan
+
+**Author:** driver-review-fixes builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "The driver was merged after an independent review that judged it sound and named follow-ups. Your task is those follow-ups, and nothing more: 1. **A panic in the loop over a query's rows ends the whole process.** In `rows.go`, `rows.start` runs the loop over `engine.Rows.All` in a task of the host (`host.Go`). A panic there unwinds a goroutine that is not the caller's, so an application that recovers panics (as `net/http` does) cannot catch it, and the lease is not released. [...] Fix: recover in the task, hand the value over through the loop, and raise it again on the goroutine that calls `Next` or `Close` (decide what the connector's own close does with it, so that `db.Close()` still closes everything; document it). [...] 2. **Tests of closing the database while statements run.** [...] 3. **The refusal in the connector's `hold` is untested** [...] Write a test that reaches it deterministically if that is possible without a test-only change to production code beyond what `export_test.go` can give; if it is not, say so in a comment at the check and in your report, and do not bend the code. 4. **Comments that overstate.** In `s4ql_test.go`, near the ping with a cancelled context and the ping with a context of one millisecond [...] 5. **Record in `docs/todo.md`**, under the driver: the first phase of the connector's close [...] waits for a running `Next` and is not under `CloseTimeout` [...] 6. **Optional, your judgment:** `core.Options.UseVFS` is a setter; a plain field would match the other options."
+**Interpretation:** Six small units: a fix in `/rows.go` with a test that fails before it, tests of a close that runs beside statements, a test of the refusal in `connector.hold` or a comment that says why there is none, honest comments in the test of `Open`, a point in `/docs/todo.md`, and maybe a field in place of `core.Options.UseVFS`.
+**Inferred intent:** The driver never kills the process of an application that recovers panics, and the behaviour of the close under concurrency is pinned by tests that do not depend on timing.
+
+### What I did
+
+Reset the worktree to `origin/main` at `66f8463` and created the branch `driver-review-fixes`. Read `/AGENTS.md`, `/s4ql.go`, `/conn.go`, `/rows.go`, `/errors.go`, `/export_test.go`, the tests of the root package, steps 4 and 5 of `/docs/diary/2026-11-19-driver.md`, the driver's section of `/docs/todo.md`, the reviewer's scratch tests, `engine.Rows.All` in `/internal/engine/engine.go`, and `/internal/host/host.go`.
+
+What the engine does with a panic inside its loop: `Rows.All` has a deferred function that sees that the panic came neither from the body of the loop nor after the loop returned, logs the statement's event with `errPanicked` (an `ErrInternal`, outcome `internal_error`), and ends the read transaction. It does not recover: the panic goes on into the caller of `All`, which in the driver is the task of the host. So the read transaction has ended when the panic reaches the task, and what escapes is the panic itself, on a goroutine that no application can recover on.
+
+The plan:
+
+1. The task recovers, records the value in the `loop`, and hands over as at the end of the loop. `rows.Next` sees it, closes the rows (the engine's rows are done, so the close only releases them from the connector), and panics with the value on its own goroutine. `rows.Close` from the application raises it too, if `Next` has not. The close by the connector raises nothing, so that `db.Close()` closes the rest and the instance.
+2. The reviewer's tests, made free of timing, in `/rows_test.go` and `/s4ql_test.go`.
+3. See whether anything that `export_test.go` can give reaches the window between `closed = true` and the core's stop.
+4. Steps 4 to 6 as the brief says.
+
+### Why
+
+The brief names the units; the order puts the fault first.
+
+### What worked
+
+The reviewer's scratch file was still in the scratchpad.
+
+### What didn't work
+
+Nothing tried yet.
+
+### What I learned
+
+The engine already ends the transaction and logs on a panic in its own loop, so the driver's fix is only about where the panic is raised.
+
+### What was tricky
+
+Nothing yet.
+
+### What warrants review
+
+The plan for the connector's close: it swallows the panic of rows that it closes.
+
+### Future work
+
+The steps of the plan.
+
+## Step 2: A panic in the loop over the rows is raised on the goroutine of the reader
+
+**Author:** driver-review-fixes builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "Fix: recover in the task, hand the value over through the loop, and raise it again on the goroutine that calls `Next` or `Close` (decide what the connector's own close does with it, so that `db.Close()` still closes everything; document it). The read transaction must have ended, and the rows must be closed and released, when the panic reaches the caller. [...] write a test in that way that fails before the fix and passes after, and that asserts that a `recover` around the caller's `rows.Next()` catches it, that the reader is free afterwards, and that the database still serves and closes cleanly."
+**Interpretation:** Recover in the task of `rows.start`, put the value into the `loop`, and let whoever waits for that turn raise it.
+**Inferred intent:** A fault in s4ql can be recovered by an application, as a panic on its own goroutine can, and does not take the lease and the cache down with the process.
+
+### What I did
+
+- Wrote the test first, in `/rows_test.go`: a host `panicky`, which is the world's `sim.Free` with a `Yield` that panics at `engine: between two rows of a query` while it is armed, as the reviewer's scratch test had it. Before the fix, `go test -run 'TestRows/should_raise' .` ended the process with `panic: a panic of the test`, from `maragu.dev/s4ql.(*rows).start.func1` down through `engine.(*Rows).All.1`.
+- `/rows.go`: the task has a deferred function that recovers, logs the event `panic` at Error with the value and `debug.Stack()`, stores the value in `loop.panic`, and then does what the end of the loop did before: sets `ended` and gives the turn back. `rows.Next` takes the value after its wait, marks the rows as `panicked`, closes them (which releases them from the connector), and panics with it. A later `Next` gives `s4ql: internal error: the query panicked`. `rows.Close` raises a value that its own turn met, after the close. `rows.shut`, the close by the connector, drops it, so that `db.Close()` closes the rest and the instance, and no later call raises it. The documentation of `rows`, `connector`, and `connector.Close` says so.
+- Two more tests reach the other two turns through the logger of the options: a `slog.Handler` that panics at the event `statement` while armed. The engine logs that event when its rows end, which after an early stop is in the turn that the close gives the task. One test recovers the panic around `rows.Close()` and checks the event `panic` with its stack; the other closes the database with the rows open and checks that the close succeeds, logs one `panic` and an Info `close`, and that the rows raise nothing afterwards.
+- Planted five faults in `/rows.go` with a script, one at a time: `Next` keeps the value (caught), `shut` keeps it (caught, the next `Close` panicked), `Close` drops it (caught), no internal error after the panic (caught), and `Next` raises before it closes the rows (not caught; see below).
+
+### Why
+
+The panic now arrives where an application can recover it, and the lease and the cache are released by the close as for any other rows.
+
+### What worked
+
+The engine already does the work that matters for the transaction: its `Rows.All` ends the read transaction and logs `internal_error` when it panics, so `readersFree` passes right after the recover.
+
+### What didn't work
+
+- The first draft of the helper `closeRows` returned only `any` and was used as an error: `rows_test.go:283:18: cannot use closeRows(rows) (value of interface type any) as error value in argument to is.NotError`. It returns the value of the panic and the error now.
+- `golangci-lint run .` then said `rows_test.go:276:6: ineffectual assignment to err (ineffassign)`; the error of a close that panicked is dropped with `_`.
+
+### What I learned
+
+- A panic in `driver.Rows.Close` leaves `database/sql`'s connection unreleased, because `sql.Rows.close` calls `releaseConn` after the driver's `Close`. The connection of this driver holds nothing, so that costs nothing here.
+- The panic in `Next` reaches the application through `sql.Rows.Next`, whose locks are released by deferred calls, so the `sql.Rows` can be used and closed afterwards.
+
+### What was tricky
+
+Which call raises a panic of the turn that the connector's close gave: `shut` must drop it, or the application's next `rows.Close()`, often in a `defer` after `db.Close()`, panics during shutdown.
+
+### What warrants review
+
+- That `Next` closes the rows before it raises is not shown by a test: the only difference is that the rows are released from the connector's set at once instead of at the application's `Close`, which `database/sql` makes when the context ends anyway. Nothing outside the package can see the set.
+- The new event `panic` at Error, which keeps the stack of the original panic, since the panic that is raised again carries the stack of `Next` or `Close`.
+
+### Future work
+
+None.
+
+## Step 3: Tests of a close of the database while statements run
+
+**Author:** driver-review-fixes builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "**Tests of closing the database while statements run.** The reviewer wrote scratch tests that pass and assert no timing. [...] writers and readers in several goroutines with `db.Close()` in the middle, asserting that an insert is in the database after a reopen if and only if it was acknowledged; `Next` in several goroutines during `Close`; `Close` while a commit waits in the store, in both orders. Bring them into the package's tests in the style of the tests that are there (names, helpers, `t.Run` descriptions), without duplicating what a present test already shows."
+**Interpretation:** Three subtests of `TestClose` in `/conn_test.go`, one run each, since `-count` repeats them.
+**Inferred intent:** The close of the database under concurrency is pinned, so that a later change cannot lose an acknowledged insert or end rows early in silence.
+
+### What I did
+
+- Ran the reviewer's `TestReviewCloseConcurrent`, `TestReviewNextDuringClose`, and `TestReviewCloseDuringCommit` from a copy in the worktree first. All three passed. The last one logged what the two orders give: `late=false exec: s4ql: commit: not committed: the instance has stopped: closed`, and `late=true close: s4ql: close: a call still uses the cache, which is closed when the call ends: context deadline exceeded`.
+- `TestClose` has three new subtests:
+  - Four writers and eight queriers in goroutines until their first error, with `db.Close()` once five inserts are acknowledged (or once every writer has returned, so that a fault fails the test instead of hanging it). Every error must be that of a closed database, the instance's or `database/sql`'s, and the values after a reopen on another cache must be exactly the acknowledged ones. A helper `closedError` says what "closed" is.
+  - Four goroutines read 50 rows each while `db.Close()` runs; each must end at its last row or with `ErrStopped`.
+  - A commit that waits in the store's `Create` while the database closes, in both orders, inside `testing/synctest`: in the first, the close runs in a goroutine, `synctest.Wait()` returns once it has stopped the instance and waits for the call, and the commit then goes on; in the second, the close times out on the fake clock, and the commit goes on after it. The insert fails with `ErrStopped` and not `ErrOutcomeUnknown` in both, and is not in the database.
+- Planted two faults with a script: rows that the connector closed end with `io.EOF` (caught by the second test), and an insert that failed is acknowledged (caught by the first and the third).
+
+### Why
+
+The reviewer's test of the two orders used `time.Sleep(20 * time.Millisecond)` before the commit went on, against a close timeout of 300 ms, and the order where the close times out needs the release of the lease to succeed within half of the timeout, or the next instance waits an hour for the lease. Both are bounds from the side that a slow machine breaks. Fake clocks remove both: the close times out only when every goroutine of the bubble is blocked, and `synctest.Wait` says when the close waits for the call without polling.
+
+### What worked
+
+`testing/synctest` with the real core, engine, SQLite cache, `database/sql`, and the store in memory, as `/internal/core/tx_test.go` does it for the core. The second order takes a fake minute and no real time.
+
+### What didn't work
+
+The first draft named the counter of the inserts `values`, which shadows the helper `values` of the tests; it is `count`.
+
+### What I learned
+
+A commit that waits before its manifest swap when the instance stops is refused as "not committed" whether it goes on during the close or after it: the stop is checked before the swap, and the lease is released by then anyway.
+
+### What was tricky
+
+Not letting a fault hang the test: the wait for five acknowledged inserts also ends when every writer has returned.
+
+### What warrants review
+
+That the third test's assertions are the outcomes the core promises and not only what it does today: an insert that fails on a closed instance must not be `ErrOutcomeUnknown`, since the commit had not reached its swap.
+
+### Future work
+
+None.
+
+## Step 4: A test of the refusal in `connector.hold`
+
+**Author:** driver-review-fixes builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "**The refusal in the connector's `hold` is untested** (`conn.go`, the check of `closed` when rows are registered; with it removed, all tests pass). It guards the window between `closed = true` and the core's stop. Write a test that reaches it deterministically if that is possible without a test-only change to production code beyond what `export_test.go` can give; if it is not, say so in a comment at the check and in your report, and do not bend the code."
+**Interpretation:** Hold the close of the connector inside its first phase, with nothing but what a test can give the driver: its host, its store, and its options.
+**Inferred intent:** The guard is pinned, so that removing it fails a test.
+
+### What I did
+
+- The test host of step 2 is now `rowHost`, which calls a function of the test at the yield between two rows, while one is set. The test of the panic sets one that panics.
+- A new subtest of `TestClose` sets one that waits on a channel. A `Next` that waits there holds the mutex of its rows, so `connector.Close`, which has set `closed` and then closes the rows that are open, waits for it, and the instance does not stop. The test then queries on a `sql.Conn` that it holds, in a loop: queries succeed until the close has set `closed`, and the first one after is refused by `hold` with `s4ql: the instance has stopped: closed`. A ping on the same connection then succeeds, which shows that the instance still serves and the refusal is the connector's. The test then lets the `Next` go on, and the close succeeds.
+- With the check of `closed` removed from `hold`, the test fails: `conn_test.go:614: Expected "s4ql: the instance has stopped" (type *errors.errorString), but got "s4ql: context deadline exceeded" (type *s4ql.failure)`, after the loop's bound of a minute.
+- The comment of `hold` says what the window is and what a query in it would do.
+
+### Why
+
+The yield between two rows is a point that the host already offers, so no production code changed. The loop has no bound of time that a slow machine can break: it ends at the first refusal, and the minute is only there so that a fault fails the test.
+
+### What worked
+
+The ping as the proof that the instance has not stopped.
+
+### What didn't work
+
+Nothing failed.
+
+### What I learned
+
+The first phase of the close is held up by any `Next` that runs, which is also the point of the brief's item 5.
+
+### What warrants review
+
+The test fails only after a minute when the check is gone, by design.
+
+### Future work
+
+None.
+
+## Step 5: The ping of `TestOpen` reaches the driver
+
+**Author:** driver-review-fixes builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "**Comments that overstate.** In `s4ql_test.go`, near the ping with a cancelled context and the ping with a context of one millisecond: `database/sql` answers an ended context itself and the call may never reach the driver. Make the test reach the driver (as `conn_test.go` does through `conn.Raw`) or make the comment say what is tested. Remove any assertion that cannot fail."
+**Interpretation:** Replace both pings through `database/sql` with one ping of the driver itself.
+**Inferred intent:** The test shows that the driver's ping waits for the instance and ends with its context, and nothing that `database/sql` answers alone.
+
+### What I did
+
+In the first subtest of `TestOpen` in `/s4ql_test.go`, the ping with a context that was cancelled before the call is gone: `database/sql` answers it in `DB.conn` before it reaches the driver, so its assertion could not fail. The ping with a context of one millisecond is now a call of `driver.Pinger.Ping` through `conn.Raw`, with a context of 50 ms that has not ended when the call starts, on the instance whose store is down: it must end with `context.DeadlineExceeded`. A ping with a context that has ended already, through the driver, is in `TestExec`, so it is not repeated. The comment says why the driver is asked directly.
+
+### Why
+
+A ping through `database/sql` with a context of one millisecond reaches the driver only if `database/sql` gets a connection within that millisecond; on a slow machine it answers by itself, and the test passes without testing the driver.
+
+### What worked
+
+`conn.Raw`, as in `TestExec`.
+
+### What didn't work
+
+Nothing failed. The subtest takes 1.01 s, as it did before the change: the instance takes the lease about a second after the store is up again.
+
+### What I learned
+
+Nothing new.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+The spare's ping in the last subtest of `TestOpen`, with a context of 50 ms through `database/sql`, has the same weakness in principle: a slow machine makes `database/sql` answer it. It stays, because its assertion is about the spare not serving, which a `database/sql` answer does not contradict, and the brief names only the two pings.
+
+### Future work
+
+None.
+
+## Step 6: Two points in the todo of the driver
+
+**Author:** driver-review-fixes builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "**Record in `docs/todo.md`**, under the driver: the first phase of the connector's close (closing the rows that are left open) waits for a running `Next` and is not under `CloseTimeout`; in slice 1 a row comes at once, and it becomes a fault when an operator can run long between two rows, where the fix is a context for the engine that the connector cancels at close. Not built."
+**Interpretation:** One point marked "Not built" in the section "The public package and the driver" of `/docs/todo.md`.
+**Inferred intent:** The bound that is missing is found before a slice adds an operator that can make it matter.
+
+### What I did
+
+- Added the point after the one on rows that are left open.
+- Added the decision of step 2 to the list "Decided by the builder on 2026-11-19, for the lead to confirm": where a panic of the loop over the rows is raised, that the close of the database drops it, and the event `panic`.
+
+### Why
+
+The todo is where decisions below Markus's level and work not built are kept, by `/AGENTS.md`.
+
+### What worked
+
+Step 4 showed the wait of item 5 at work: the test of `hold` holds the close in exactly that phase with a `Next` that waits.
+
+### What didn't work
+
+Nothing failed.
+
+### What I learned
+
+Nothing new.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+The wording of both points.
+
+### Future work
+
+The context for the engine, when a slice has an operator that can run long between two rows.
+
+## Step 7: `core.Options.VFS` is a field
+
+**Author:** driver-review-fixes builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "**Optional, your judgment:** `core.Options.UseVFS` is a setter; a plain field would match the other options. Change it only if it is small and clean; otherwise leave it."
+**Interpretation:** Replace the setter with an exported field if nothing else depends on the field being hidden.
+**Inferred intent:** The options of the core read alike.
+
+### What I did
+
+`core.Options` has a field `VFS` after `Logger`, and the setter `UseVFS` and the field `local.vfs` are gone; the connections to the cache open through `options.VFS`. The type `local` now holds only the wrapper of the spool files, which stays hidden behind `WrapSpools` in `/internal/core/export_test.go`, because its type is not exported. Four callers, two in the tests of the core and two in the tests of the driver, set the field. The point in `/docs/todo.md` names the field. `go test ./internal/core .` and `make lint`, which also lints the browser's build of the core, pass.
+
+### Why
+
+It is small: one field, four callers, and no behaviour. A setter was needed while the VFS was a seam of the core's tests; since the driver's tests use it, it is an option like the others.
+
+### What worked
+
+Nothing outside the tests used it.
+
+### What didn't work
+
+Nothing failed.
+
+### What I learned
+
+Nothing new.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+The comment of the field, and that the earlier diary of the driver still says `UseVFS`, as it was then.
+
+### Future work
+
+None.
+
+## Step 8: The review, and what it changed
+
+**Author:** driver-review-fixes builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the builder's instructions) "Once the implementation is done, self-review before handing back to the lead. [...] Use the code-review skill for the first phase -- invoke it rather than reviewing inline; it dispatches competing reviewers over your diff. Address what you find, then report a summary of your review and any follow-up work back to the lead."
+**Interpretation:** Run the code-review skill over `main...driver-review-fixes`, check each finding, and fix what holds.
+**Inferred intent:** The lead gets a branch whose faults are found before it is merged.
+
+### What I did
+
+The review gave four findings.
+
+1. **Important, and true: a panic raised from `driver.Rows.Close` leaks `database/sql`'s connection.** `sql.Rows.close` sets `rs.closed` before it calls the driver's `Close`, and calls `rs.cancel()` and `rs.releaseConn(err)` after it, so a panic skips both, and every later `rows.Close()` returns at once.
+2. **Important, and true: `database/sql` calls `driver.Rows.Close` from its own goroutine `awaitDone` when the context of the query ends.** A panic raised there ends the process, which is the fault that step 2 set out to remove, on another path. So `rows.Close` raises nothing now: a panic in the turn that a close gives the task is the error `s4ql: internal error: the query panicked: ` with the value, from `rows.close`, which `rows.Close` gives and `rows.shut` drops. Only `Next`, which only the application calls, raises a panic. This departs from the brief, which asked for a raise in `Close` too. The test of `Close` now expects the error, and a new subtest of `TestRows` leaves rows open between two rows, arms the panicking logger, cancels the context of the query, waits for the event `panic` (with a bound of a minute, which a slow machine cannot reach), and checks that the read is free, the rows say `context.Canceled`, and the instance serves. With `rows.close` raising the panic, that test ends the process with `panic: a panic of the test`.
+3. **Nit, left: a logger that panics also on the event `panic`** would panic in the deferred function of the task before it gives the turn back. The process ends on the task's goroutine then, whatever the order, because nothing can recover that panic but the task itself; giving the turn back first would only make the log come after `Next` has returned, which the tests read at once.
+4. **Nit, true: in the test of a close beside many writers and queriers, two queriers left open rows on every pass,** so after a few passes all four reads were held and the other queriers only waited. Each of them now closes the rows it left before its next query, so it holds one read at the most.
+
+The clear of `loop.panic` in `rows.close` was dead after the change, because a closed rows never looks at it again, and a planted fault without it passed; it is gone. `/docs/todo.md` says where a panic goes now.
+
+### Why
+
+A panic that ends the process from `database/sql`'s goroutine is worse than an error that the application can read, and the error carries the value.
+
+### What worked
+
+Asking whoever reviews to read `database/sql`'s `Rows.close` against the driver: both important findings come from its order of calls.
+
+### What didn't work
+
+My first version of step 2 raised the panic in `Close`, as the brief asked, without reading who calls `Close`.
+
+### What I learned
+
+`driver.Rows.Close` is called by `database/sql` from the application's goroutine and from its own, and nothing tells the driver which; `driver.Rows.Next` is called only from the application's.
+
+### What was tricky
+
+The test of the close from `awaitDone` has nothing to wait on but the log, so it polls the log with a bound that only a fault reaches.
+
+### What warrants review
+
+- The departure from the brief: `Close` gives an internal error and does not raise.
+- That a panic in `Next` leaves `sql.Rows` open until the application closes it or the context ends; `database/sql` releases its locks by deferred calls, so it can be closed afterwards.
+
+### Future work
+
+None.

@@ -1205,7 +1205,7 @@ func sleepCounter(t *testing.T, o core.Options) (*faultvfs.VFS, core.Options) {
 	vfs, err := faultvfs.New()
 	is.NotError(t, err)
 	t.Cleanup(func() { is.NotError(t, vfs.Close()) })
-	o.UseVFS(vfs.Name())
+	o.VFS = vfs.Name()
 	return vfs, o
 }
 
