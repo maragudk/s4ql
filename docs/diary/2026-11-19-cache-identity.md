@@ -163,3 +163,62 @@ The form of the identity, and the documentation of `Open` and of `Options.Endpoi
 ### Future work
 
 None from this step.
+
+## Step 4: Self-review, and the runs
+
+**Author:** cache-identity builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the brief) "Run new tests with `-count=50 -shuffle on` and with `-race`, then `make test`, `make lint`, the simulation target, and `make test-asan FUZZTIME=5s`. [...] Review your own diff once more before you report."
+**Interpretation:** A review of the branch by the code-review skill, fixes where its findings hold, and the runs.
+**Inferred intent:** The branch is ready for the lead to review without surprises.
+
+### What I did
+
+Ran the code-review skill at the level medium on the branch. It gave one finding it called important and four nits:
+
+1. "`Open` of a new cache can fail with busy while another connection only reads the cache": `begin immediate` is not blocked by a reader's shared lock, so `conn.wal` would spend its five tries at once. I checked this with a scratch test (since deleted): one connection holds a read transaction on a new cache in the rollback journal mode for 300 ms, and another, with a busy timeout of 5 s, runs `pragma journal_mode = wal`. The pragma returned no error after 360 ms: SQLite waits for readers, because the upgrade to a write lock is not blocked by a shared lock, and the commit waits for the exclusive lock with the busy handler. So the finding does not hold. I made the comment of `conn.wal` say exactly what SQLite waits for and what it does not.
+2. The comment of `newConnector` did not name the options it now uses for the identity. Fixed.
+3. The error for a cache of version 0 did not say what to do. Fixed: it now ends with "; open the database with a new cache, or delete this one, with its files -wal and -shm", also for a newer version.
+4. With an empty endpoint, two processes whose environments name two stores give one identity. That is what the brief asks for ("as the public options give them"), and the documentation of `Options.Endpoint` says it; left for the lead.
+5. `ErrCacheDatabase` has no public sentinel. The brief asks for none; left for the lead.
+
+Committed as "Say what to do in the error of a cache of another version in `core`, and name the options that `newConnector` of `s4ql` uses for the identity".
+
+The runs, all on this branch:
+
+- `go test -count=50 -shuffle on -run TestOpen_identity ./internal/core`: ok, 22.7 s. `go test -count=50 -shuffle on -run TestOpen_cacheDir .`: ok, 5.0 s.
+- `-race -count=10` of `TestOpen_identity|TestOpen_cache` in the core and `TestOpen` at the root: ok. Then `-race -count=50` of `TestOpen_identity` and of `TestOpen_cacheDir|TestOptions_Logger`, both at once while `make test-asan` ran in Docker: ok, 28.4 s and 11.9 s.
+- `make test`: every package ok.
+- `make lint`: exit 0, "0 issues." in each part.
+- `make test-asan FUZZTIME=5s`: exit 0; `internal/core` ok in 312 s.
+- The simulation: there is no target of its own; `TestSimulation` in `internal/core` runs in `make test`. With `S4QL_SIM_SEEDS=100 go test -timeout 60m -run TestSimulation ./internal/core`: ok, 327 s.
+
+### Why
+
+The brief asks for these runs, and the race is the part that a single run proves least.
+
+### What worked
+
+The 50 rounds of the race in the core, 50 times over, under the race detector and under load, never gave "busy", never opened both, and never opened neither.
+
+### What didn't work
+
+A first run of the simulations with `S4QL_SIM_SEEDS=300 go test -count=1 -run TestSimulation ./internal/core ./internal/engine` ended with `FAIL maragu.dev/s4ql/internal/core 600.221s` after a dump of goroutines: that is Go's default timeout of 10 minutes, not a failure of a seed. `internal/engine` was ok in the same run. The rerun with 100 seeds and `-timeout 60m` passed.
+
+### What I learned
+
+A shared lock does not stop the change to wal; only another connection's write lock does, which is the case of two instances that make one new cache.
+
+### What was tricky
+
+Telling a finding that is true on paper from one that SQLite's code bears out; the scratch test settled it.
+
+### What warrants review
+
+The two findings left for the lead: the endpoint that the environment gives is not part of the identity, and there is no public sentinel for a cache of another database.
+
+### Future work
+
+If the lead wants it, a public sentinel for a cache of another database, and a decision on whether the identity should use the endpoint that the SDK resolves.
