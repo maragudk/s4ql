@@ -68,7 +68,8 @@ var unmarshalOptions = proto.UnmarshalOptions{RecursionLimit: 100, NoLazyDecodin
 //   - a delete rows with no table name, no keys, a key with no values, or keys with different
 //     numbers of values
 //   - the name of a table or a column that holds the character NUL
-//   - text that is not valid UTF-8, anywhere, and a real that is NaN
+//   - text that is not valid UTF-8, anywhere, and, in a row or a primary key, text that holds the
+//     character NUL and a real that is NaN, infinite, or -0.0
 //   - a record larger than [MaxRecordSize], and bytes that are not Protocol Buffers
 //
 // It skips an annotation of a kind it does not know. It does not refuse a field it does not know

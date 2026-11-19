@@ -78,8 +78,13 @@ func TestCommitReader(t *testing.T) {
 		is.Equal(t, large, items[0].change.GetUpsertRows().GetRows()[0].GetValues()[0].GetText())
 	})
 
-	t.Run("should read empty text, an empty blob, zero, negative zero, and infinities as values", func(t *testing.T) {
-		values := []*s4qlpb.Value{text(""), blob(nil), integer(0), realValue(0), realValue(math.Copysign(0, -1)), realValue(math.Inf(1)), realValue(math.Inf(-1)), integer(math.MinInt64), null()}
+	t.Run("should read empty text, an empty blob, zero, the extremes of a real and an integer, and text with every byte but NUL as values", func(t *testing.T) {
+		var all []byte
+		for b := 1; b < 0x80; b++ {
+			all = append(all, byte(b))
+		}
+		values := []*s4qlpb.Value{text(""), blob(nil), integer(0), realValue(0), realValue(math.MaxFloat64), realValue(-math.MaxFloat64),
+			realValue(math.SmallestNonzeroFloat64), integer(math.MinInt64), integer(math.MaxInt64), text(string(all) + "ü😀"), blob([]byte{0, 0, 0xff}), null()}
 		columns := make([]uint32, len(values))
 		for i := range columns {
 			columns[i] = uint32(i)
@@ -91,7 +96,16 @@ func TestCommitReader(t *testing.T) {
 		for i := range values {
 			is.True(t, proto.Equal(values[i], got[i]), values[i].String())
 		}
-		is.True(t, math.Signbit(got[4].GetReal()), "negative zero lost its sign")
+	})
+
+	t.Run("should hand out a statement with the parameters -0.0, an infinity, and text with NUL as they are", func(t *testing.T) {
+		b := join(record(1, testHeader()), record(3, statement("select ?, ?, ?", realValue(math.Copysign(0, -1)), realValue(math.Inf(1)), text("a\x00b"))))
+		_, items, err := readAll(b, nameOf(b))
+		is.NotError(t, err)
+		parameters := items[0].annotation.GetStatement().GetParameters()
+		is.True(t, math.Signbit(parameters[0].GetReal()), "negative zero lost its sign")
+		is.True(t, math.IsInf(parameters[1].GetReal(), 1), "not an infinity")
+		is.Equal(t, "a\x00b", parameters[2].GetText())
 	})
 
 	t.Run("should report a mismatch with the name at the end, after handing out what it read", func(t *testing.T) {
@@ -241,7 +255,7 @@ func TestCommitReader(t *testing.T) {
 		}())},
 		{name: "should refuse a type it does not know as newer", b: changeRecord(func() *s4qlpb.Change {
 			c := createTable("t", []string{"a"}, []uint32{0})
-			c.GetCreateTable().GetColumns()[0].SetType(s4qlpb.Type(2))
+			c.GetCreateTable().GetColumns()[0].SetType(s4qlpb.Type(6))
 			return c
 		}())},
 		{name: "should refuse a field it does not know in drop table as newer", b: changeRecord(func() *s4qlpb.Change {
@@ -371,12 +385,19 @@ func TestCommitReader(t *testing.T) {
 				protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType),
 					protowire.AppendBytes(protowire.AppendTag(nil, 3, protowire.BytesType), []byte("\xc0\x80")))),
 		)))},
+		{name: "should refuse a real that is infinite in a row", b: changeRecord(upsertRows("t", []uint32{0}, []*s4qlpb.Value{realValue(math.Inf(1))}))},
+		{name: "should refuse a real that is negative and infinite in a row", b: changeRecord(upsertRows("t", []uint32{0}, []*s4qlpb.Value{realValue(math.Inf(-1))}))},
+		{name: "should refuse a real that is -0.0 in a row", b: changeRecord(upsertRows("t", []uint32{0}, []*s4qlpb.Value{realValue(math.Copysign(0, -1))}))},
+		{name: "should refuse text with the character NUL in a row", b: changeRecord(upsertRows("t", []uint32{0}, []*s4qlpb.Value{text("a\x00")}))},
 		{name: "should refuse a delete rows without a table name", b: changeRecord(deleteRows("", []*s4qlpb.Value{integer(1)}))},
 		{name: "should refuse a delete rows without keys", b: changeRecord(deleteRows("t"))},
 		{name: "should refuse a primary key without values", b: changeRecord(deleteRows("t", []*s4qlpb.Value{}))},
 		{name: "should refuse primary keys with different numbers of values", b: changeRecord(deleteRows("t", []*s4qlpb.Value{integer(1)}, []*s4qlpb.Value{integer(1), integer(2)}))},
 		{name: "should refuse a value without a kind in a primary key", b: changeRecord(deleteRows("t", []*s4qlpb.Value{{}}))},
 		{name: "should refuse a real that is NaN in a primary key", b: changeRecord(deleteRows("t", []*s4qlpb.Value{realValue(math.NaN())}))},
+		{name: "should refuse a real that is infinite in a primary key", b: changeRecord(deleteRows("t", []*s4qlpb.Value{realValue(math.Inf(-1))}))},
+		{name: "should refuse a real that is -0.0 in a primary key", b: changeRecord(deleteRows("t", []*s4qlpb.Value{realValue(math.Copysign(0, -1))}))},
+		{name: "should refuse text with the character NUL in a primary key", b: changeRecord(deleteRows("t", []*s4qlpb.Value{text("\x00")}))},
 		{name: "should refuse an annotation that is not Protocol Buffers", b: join(record(1, testHeader()), protowire.AppendBytes([]byte{0x1a}, []byte{0x0a, 0x05}))},
 		{name: "should refuse SQL text that is not valid UTF-8", b: join(record(1, testHeader()), protowire.AppendBytes([]byte{0x1a},
 			protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType),
@@ -532,9 +553,18 @@ func header(version uint32, parent []byte, commitTime time.Time) *s4qlpb.Header 
 }
 
 func createTable(table string, columns []string, primaryKey []uint32) *s4qlpb.Change {
+	types := make([]s4qlpb.Type, len(columns))
+	for i := range types {
+		types[i] = s4qlpb.Type_TYPE_INT
+	}
+	return createTypedTable(table, columns, types, primaryKey)
+}
+
+// createTypedTable with the columns of the given names and types.
+func createTypedTable(table string, columns []string, types []s4qlpb.Type, primaryKey []uint32) *s4qlpb.Change {
 	var cs []*s4qlpb.Column
-	for _, name := range columns {
-		cs = append(cs, s4qlpb.Column_builder{Name: &name, Type: new(s4qlpb.Type_TYPE_INT)}.Build())
+	for i, name := range columns {
+		cs = append(cs, s4qlpb.Column_builder{Name: &name, Type: new(types[i])}.Build())
 	}
 	return s4qlpb.Change_builder{CreateTable: s4qlpb.CreateTable_builder{Table: &table, Columns: cs, PrimaryKey: primaryKey}.Build()}.Build()
 }
@@ -648,8 +678,13 @@ func commitSamples() []commitSample {
 					w.DeleteRow("kv", []*s4qlpb.Value{text("x"), integer(9)}),
 					w.DeleteRow("kv", []*s4qlpb.Value{text(""), integer(8)}),
 					w.DropTable("users"),
+					w.CreateTable(everyType().GetCreateTable()),
+					w.UpsertRow("every", []uint32{0, 1, 2, 3, 4}, []*s4qlpb.Value{integer(math.MinInt64), integer(math.MaxInt64), realValue(-math.MaxFloat64), text("é😀"), blob([]byte{})}),
+					w.UpsertRow("every", []uint32{0, 1, 2, 3, 4}, []*s4qlpb.Value{integer(0), integer(-1), realValue(0), text(""), blob([]byte{0})}),
+					w.DeleteRow("every", []*s4qlpb.Value{integer(1)}),
 					w.Annotate(statement("update kv set c = ? where a = ?", null(), integer(-7))),
 					w.Annotate(statement("select ?, ?, ?, ?, ?", integer(math.MaxInt64), realValue(-0.5), text("t"), blob([]byte("b")), null())),
+					w.Annotate(statement("insert into every (c) values (?)", realValue(math.Copysign(0, -1)))),
 				)
 			},
 			want: []item{
@@ -661,11 +696,23 @@ func commitSamples() []commitSample {
 				{change: upsertRows("kv", []uint32{0, 1}, []*s4qlpb.Value{integer(-7), text("ü")})},
 				{change: deleteRows("kv", []*s4qlpb.Value{text("x"), integer(9)}, []*s4qlpb.Value{text(""), integer(8)})},
 				{change: dropTable("users")},
+				{change: everyType()},
+				{change: upsertRows("every", []uint32{0, 1, 2, 3, 4},
+					[]*s4qlpb.Value{integer(math.MinInt64), integer(math.MaxInt64), realValue(-math.MaxFloat64), text("é😀"), blob([]byte{})},
+					[]*s4qlpb.Value{integer(0), integer(-1), realValue(0), text(""), blob([]byte{0})})},
+				{change: deleteRows("every", []*s4qlpb.Value{integer(1)})},
 				{annotation: statement("update kv set c = ? where a = ?", null(), integer(-7))},
 				{annotation: statement("select ?, ?, ?, ?, ?", integer(math.MaxInt64), realValue(-0.5), text("t"), blob([]byte("b")), null())},
+				{annotation: statement("insert into every (c) values (?)", realValue(math.Copysign(0, -1)))},
 			},
 		},
 	}
+}
+
+// everyType is the create table of a table with a column of every type.
+func everyType() *s4qlpb.Change {
+	return createTypedTable("every", []string{"a", "b", "c", "d", "e"},
+		[]s4qlpb.Type{s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INTEGER, s4qlpb.Type_TYPE_REAL, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_BLOB}, []uint32{0})
 }
 
 // TestCommitSamples reads the sample commit objects in testdata, and checks that they are what the
@@ -717,6 +764,52 @@ func TestCommitSamples(t *testing.T) {
 				is.True(t, seen[name], "no sample holds "+string(name))
 			}
 		}
+	})
+
+	t.Run("should cover every value of every enum in the schema but the unspecified one", func(t *testing.T) {
+		seen := map[protoreflect.FullName]bool{}
+		for _, sample := range commitSamples() {
+			stored, err := os.ReadFile(filepath.Join("testdata", sample.file))
+			is.NotError(t, err)
+			var whole s4qlpb.CommitObject
+			is.NotError(t, proto.Unmarshal(stored, &whole))
+			markEnums(whole.ProtoReflect(), seen)
+		}
+
+		enums := s4qlpb.File_s4ql_v1_commit_proto.Enums()
+		for i := range enums.Len() {
+			values := enums.Get(i).Values()
+			for j := range values.Len() {
+				if values.Get(j).Number() == 0 {
+					continue
+				}
+				name := values.Get(j).FullName()
+				is.True(t, seen[name], "no sample holds "+string(name))
+			}
+		}
+	})
+}
+
+// markEnums in seen the full name of every enum value that is set in m, at any depth.
+func markEnums(m protoreflect.Message, seen map[protoreflect.FullName]bool) {
+	m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+		var values []protoreflect.Value
+		if fd.IsList() {
+			for i := range v.List().Len() {
+				values = append(values, v.List().Get(i))
+			}
+		} else {
+			values = append(values, v)
+		}
+		for _, v := range values {
+			switch {
+			case fd.Enum() != nil:
+				seen[fd.Enum().Values().ByNumber(v.Enum()).FullName()] = true
+			case fd.Message() != nil:
+				markEnums(v.Message(), seen)
+			}
+		}
+		return true
 	})
 }
 

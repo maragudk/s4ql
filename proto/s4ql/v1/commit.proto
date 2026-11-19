@@ -90,13 +90,23 @@ message Column {
   Type type = 2;
 }
 
-// The declared type of a column. More are added as the roadmap grows.
-// A reader refuses a value it does not know.
+// The declared type of a column, as the column was declared: INT and
+// INTEGER are the same type in SQLite, and stay apart here, so that replay
+// declares a column as it was declared. More are added as the roadmap
+// grows. A reader refuses a value it does not know.
 enum Type {
   // Never written. A reader refuses it.
   TYPE_UNSPECIFIED = 0;
   // The STRICT type INT.
   TYPE_INT = 1;
+  // The STRICT type INTEGER.
+  TYPE_INTEGER = 2;
+  // The STRICT type REAL.
+  TYPE_REAL = 3;
+  // The STRICT type TEXT.
+  TYPE_TEXT = 4;
+  // The STRICT type BLOB.
+  TYPE_BLOB = 5;
 }
 
 // Drops a table and all its rows.
@@ -157,9 +167,11 @@ message Value {
   oneof kind {
     // A 64-bit signed integer.
     sint64 integer = 1;
-    // A 64-bit IEEE 754 floating-point number.
+    // A 64-bit IEEE 754 floating-point number. It is never NaN and never
+    // infinite. In a row or a primary key it is never -0.0, which SQLite
+    // stores as 0.0; a parameter holds -0.0 as the statement got it.
     double real = 2;
-    // Text. It is always valid UTF-8.
+    // Text. It is always valid UTF-8, and never holds the character NUL.
     string text = 3;
     // A blob.
     bytes blob = 4;

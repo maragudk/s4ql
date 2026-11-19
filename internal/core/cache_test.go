@@ -3,6 +3,8 @@ package core_test
 import (
 	"fmt"
 	"iter"
+	"math/rand/v2"
+	"slices"
 	"strings"
 	"testing"
 
@@ -92,5 +94,72 @@ func TestScan(t *testing.T) {
 		transact(t, d, upsert("t1", 2))
 		is.Equal(t, "t1(k*0): 1 | 2", read(t, d))
 		is.NotError(t, d.Close(t.Context()))
+	})
+}
+
+func TestScan_order(t *testing.T) {
+	t.Run("should give the rows of a table of each type in the order in which SQLite orders the same keys in a table of its own, which is the order of the model", func(t *testing.T) {
+		for _, typ := range types {
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+			keys := slices.Clone(edges[typ])
+			rand.New(rand.NewPCG(uint64(typ), 1)).Shuffle(len(keys), func(i, j int) { keys[i], keys[j] = keys[j], keys[i] })
+			write(t, d, func(tx *core.Tx) {
+				is.NotError(t, tx.CreateTable(t.Context(), typedTable("t", typ)))
+				for _, k := range keys {
+					is.NotError(t, tx.Upsert(t.Context(), "t", []*s4qlpb.Value{k}), text([]*s4qlpb.Value{k}))
+				}
+			})
+			r, err := startRead(t, d)
+			is.NotError(t, err)
+			var scanned []string
+			for row, err := range r.Scan(t.Context(), "t") {
+				is.NotError(t, err)
+				scanned = append(scanned, text(row))
+			}
+			is.NotError(t, r.Close(t.Context()))
+
+			// SQLite's own table of the same type, with the same keys, in the same order.
+			c, err := sqlite.Open(":memory:")
+			is.NotError(t, err)
+			is.NotError(t, c.Exec("create table t (k "+typeName(typ)+" primary key) strict, without rowid"))
+			s, err := c.Prepare("insert or replace into t (k) values (?)")
+			is.NotError(t, err)
+			for _, k := range keys {
+				is.NotError(t, bindValue(s, 1, k))
+				_, err := s.Step()
+				is.NotError(t, err)
+				is.NotError(t, s.Reset())
+			}
+			is.NotError(t, s.Finalize())
+			var ordered []string
+			s, err = c.Prepare("select k from t order by k")
+			is.NotError(t, err)
+			for {
+				ok, err := s.Step()
+				is.NotError(t, err)
+				if !ok {
+					break
+				}
+				ordered = append(ordered, text([]*s4qlpb.Value{columnValue(s, 0)}))
+			}
+			is.NotError(t, s.Finalize())
+			is.NotError(t, c.Close())
+
+			// The model's order of the keys as a column holds them, each once.
+			var model []string
+			sorted := slices.Clone(keys)
+			slices.SortStableFunc(sorted, func(a, b *s4qlpb.Value) int { return compareKeys([]*s4qlpb.Value{a}, []*s4qlpb.Value{b}) })
+			for _, k := range sorted {
+				if k := text(stored([]*s4qlpb.Value{k})); len(model) == 0 || model[len(model)-1] != k {
+					model = append(model, k)
+				}
+			}
+
+			is.Equal(t, len(edges[typ])-strings.Count(text(edges[typ]), "r-0"), len(ordered), "the keys of "+typeName(typ)+" are not all distinct")
+			is.EqualSlice(t, ordered, scanned, typeName(typ))
+			is.EqualSlice(t, ordered, model, typeName(typ))
+			is.NotError(t, d.Close(t.Context()))
+		}
 	})
 }

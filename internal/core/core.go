@@ -73,6 +73,9 @@ type Options struct {
 
 	// syncOff stops SQLite from syncing the cache to disk, for tests.
 	syncOff bool
+	// lengthLimit is the largest text or blob, and the largest row, in bytes, that the cache holds:
+	// SQLite's SQLITE_LIMIT_LENGTH of every connection. The default is [maxLength]; tests lower it.
+	lengthLimit int
 	// bugs that tests plant.
 	bugs bugs
 	// local is how the instance reaches its local files, which tests change to make them fail.
@@ -109,6 +112,9 @@ func (o Options) withDefaults() (Options, error) {
 	}
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.DiscardHandler)
+	}
+	if o.lengthLimit == 0 {
+		o.lengthLimit = maxLength
 	}
 	switch {
 	case o.Lease > 365*24*time.Hour:
@@ -307,7 +313,7 @@ func Open(ctx context.Context, h host.Host, s store.Store, path, prefix string, 
 	// write-ahead log after a crash, which reports "busy" to every other connection, is over before
 	// a read connection exists: [DB.Reader] opens one only on an instance that Open has returned.
 	// It is the one connection that makes the cache if there is none.
-	if d.w, err = openConn(sqlite.OpenVFS, path, options.VFS, options.BusyTimeout.Milliseconds()); err != nil {
+	if d.w, err = openConn(sqlite.OpenVFS, path, options); err != nil {
 		return nil, openError(err)
 	}
 	if err := d.w.setUp(options.syncOff, options.Identity); err != nil {
