@@ -315,3 +315,53 @@ The comment of the field, and that the earlier diary of the driver still says `U
 ### Future work
 
 None.
+
+## Step 8: The review, and what it changed
+
+**Author:** driver-review-fixes builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the builder's instructions) "Once the implementation is done, self-review before handing back to the lead. [...] Use the code-review skill for the first phase -- invoke it rather than reviewing inline; it dispatches competing reviewers over your diff. Address what you find, then report a summary of your review and any follow-up work back to the lead."
+**Interpretation:** Run the code-review skill over `main...driver-review-fixes`, check each finding, and fix what holds.
+**Inferred intent:** The lead gets a branch whose faults are found before it is merged.
+
+### What I did
+
+The review gave four findings.
+
+1. **Important, and true: a panic raised from `driver.Rows.Close` leaks `database/sql`'s connection.** `sql.Rows.close` sets `rs.closed` before it calls the driver's `Close`, and calls `rs.cancel()` and `rs.releaseConn(err)` after it, so a panic skips both, and every later `rows.Close()` returns at once.
+2. **Important, and true: `database/sql` calls `driver.Rows.Close` from its own goroutine `awaitDone` when the context of the query ends.** A panic raised there ends the process, which is the fault that step 2 set out to remove, on another path. So `rows.Close` raises nothing now: a panic in the turn that a close gives the task is the error `s4ql: internal error: the query panicked: ` with the value, from `rows.close`, which `rows.Close` gives and `rows.shut` drops. Only `Next`, which only the application calls, raises a panic. This departs from the brief, which asked for a raise in `Close` too. The test of `Close` now expects the error, and a new subtest of `TestRows` leaves rows open between two rows, arms the panicking logger, cancels the context of the query, waits for the event `panic` (with a bound of a minute, which a slow machine cannot reach), and checks that the read is free, the rows say `context.Canceled`, and the instance serves. With `rows.close` raising the panic, that test ends the process with `panic: a panic of the test`.
+3. **Nit, left: a logger that panics also on the event `panic`** would panic in the deferred function of the task before it gives the turn back. The process ends on the task's goroutine then, whatever the order, because nothing can recover that panic but the task itself; giving the turn back first would only make the log come after `Next` has returned, which the tests read at once.
+4. **Nit, true: in the test of a close beside many writers and queriers, two queriers left open rows on every pass,** so after a few passes all four reads were held and the other queriers only waited. Each of them now closes the rows it left before its next query, so it holds one read at the most.
+
+The clear of `loop.panic` in `rows.close` was dead after the change, because a closed rows never looks at it again, and a planted fault without it passed; it is gone. `/docs/todo.md` says where a panic goes now.
+
+### Why
+
+A panic that ends the process from `database/sql`'s goroutine is worse than an error that the application can read, and the error carries the value.
+
+### What worked
+
+Asking whoever reviews to read `database/sql`'s `Rows.close` against the driver: both important findings come from its order of calls.
+
+### What didn't work
+
+My first version of step 2 raised the panic in `Close`, as the brief asked, without reading who calls `Close`.
+
+### What I learned
+
+`driver.Rows.Close` is called by `database/sql` from the application's goroutine and from its own, and nothing tells the driver which; `driver.Rows.Next` is called only from the application's.
+
+### What was tricky
+
+The test of the close from `awaitDone` has nothing to wait on but the log, so it polls the log with a bound that only a fault reaches.
+
+### What warrants review
+
+- The departure from the brief: `Close` gives an internal error and does not raise.
+- That a panic in `Next` leaves `sql.Rows` open until the application closes it or the context ends; `database/sql` releases its locks by deferred calls, so it can be closed afterwards.
+
+### Future work
+
+None.

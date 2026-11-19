@@ -261,7 +261,7 @@ func TestRows(t *testing.T) {
 		is.EqualSlice(t, []int64{1, 2, 3}, values(t, w.serve(t, "b"), select1))
 	})
 
-	t.Run("should raise a panic at the end of the loop on the goroutine that calls Close, and log it with its stack", func(t *testing.T) {
+	t.Run("should give a panic at the end of the loop as an internal error of Close, and log it with its stack", func(t *testing.T) {
 		w := newWorld(t)
 		log := &panickyLog{}
 		db := openLogged(t, w, log)
@@ -273,21 +273,49 @@ func TestRows(t *testing.T) {
 		is.NotError(t, err)
 		is.True(t, rows.Next())
 		log.arm(true)
-		v, _ := closeRows(rows)
-		is.Equal(t, any(errPanic), v)
+		v, err := closeRows(rows)
 		log.arm(false)
+		is.True(t, v == nil, fmt.Sprint(v))
+		is.Equal(t, "s4ql: internal error: the query panicked: a panic of the test", failed(t, err).Error())
 		panics := log.lines.of("panic")
 		is.Equal(t, 1, len(panics))
 		is.True(t, strings.HasPrefix(panics[0], `level=ERROR msg=panic db.prefix=db panic="a panic of the test" stack="goroutine `), panics[0])
 
-		// The rows are closed, and raise it no more.
 		is.True(t, !rows.Next())
-		is.NotError(t, rows.Err())
 		is.NotError(t, rows.Close())
 		readersFree(t, db)
 		exec(t, db, "insert into t1 (v1) values (3)")
 		is.NotError(t, db.Close())
 		is.EqualSlice(t, []int64{1, 2, 3}, values(t, w.serve(t, "b"), select1))
+	})
+
+	t.Run("should not raise a panic at the end of the loop when database/sql closes the rows from its own goroutine, as the context of the query ends", func(t *testing.T) {
+		w := newWorld(t)
+		log := &panickyLog{}
+		db := openLogged(t, w, log)
+		exec(t, db, t1, insert1, "insert into t1 (v1) values (2)")
+
+		ctx, cancel := context.WithCancel(t.Context())
+		rows, err := db.QueryContext(ctx, select1)
+		is.NotError(t, err)
+		is.True(t, rows.Next())
+		log.arm(true)
+		cancel()
+		// The task logs the panic before the close ends. The bound is far above what the close needs.
+		waited, stop := context.WithTimeout(t.Context(), time.Minute)
+		defer stop()
+		for len(log.lines.of("panic")) == 0 && waited.Err() == nil {
+			time.Sleep(time.Millisecond)
+		}
+		log.arm(false)
+		is.Equal(t, 1, len(log.lines.of("panic")))
+
+		readersFree(t, db)
+		is.True(t, !rows.Next())
+		is.Error(t, context.Canceled, failed(t, rows.Err()))
+		is.NotError(t, rows.Close())
+		exec(t, db, "insert into t1 (v1) values (3)")
+		is.EqualSlice(t, []int64{1, 2, 3}, values(t, db, select1))
 	})
 
 	t.Run("should not raise a panic at the end of the loop when the close of the database closes the rows, and log it", func(t *testing.T) {
@@ -305,7 +333,7 @@ func TestRows(t *testing.T) {
 		is.Equal(t, 1, len(log.lines.of("panic")))
 		is.EqualSlice(t, []string{"level=INFO msg=close db.prefix=db"}, log.lines.of("close"))
 
-		// No later call raises it.
+		// No later call gives it.
 		is.True(t, !rows.Next())
 		is.Error(t, s4ql.ErrStopped, failed(t, rows.Err()))
 		is.NotError(t, rows.Close())

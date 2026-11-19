@@ -477,7 +477,17 @@ func TestClose(t *testing.T) {
 		})
 		for g := range queriers {
 			all.Go(func() {
+				// left are the rows that the goroutine has left open, which it closes before its next
+				// query, so that it holds one read at the most.
+				var left *sql.Rows
 				for {
+					if left != nil {
+						if err := left.Close(); err != nil {
+							errs <- fmt.Errorf("the rows of a query: %w", err)
+							return
+						}
+						left = nil
+					}
 					rows, err := db.QueryContext(t.Context(), select1)
 					if err != nil {
 						if !closedError(err) {
@@ -493,14 +503,16 @@ func TestClose(t *testing.T) {
 							return
 						}
 						last = v
-						// Every other goroutine closes its rows early.
+						// Every other goroutine stops early.
 						if g%2 == 0 && n == 2 {
 							break
 						}
 					}
 					err = rows.Err()
-					// Every third leaves its rows open, for the close of the database.
-					if g%3 != 0 {
+					// Every third leaves its rows open, for the close of the database if it comes now.
+					if g%3 == 0 {
+						left = rows
+					} else {
 						err = errors.Join(err, rows.Close())
 					}
 					if err != nil {
