@@ -908,6 +908,29 @@ func TestTx_instance(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("should close the rows of a transaction while the database is closed, beside statements of the transaction, and end the transaction", func(t *testing.T) {
+		for _, kind := range []*sql.TxOptions{nil, readOnly} {
+			closeBeside(t, func(t *testing.T, db *sql.DB) (*sql.Rows, func() (bool, error), func() error) {
+				tx := begin(t, db, kind)
+				rows, err := tx.QueryContext(t.Context(), select1)
+				is.NotError(t, err)
+				statement := func() (bool, error) {
+					_, err := tx.ExecContext(t.Context(), "insert into t1 (v1) values (4)")
+					switch {
+					case err == nil, closedError(err):
+						return false, nil
+					case errors.Is(err, s4ql.ErrNotSupported) && strings.Contains(err.Error(), "close the rows first"):
+						return true, nil
+					case kind != nil && strings.Contains(err.Error(), "attempt to write a readonly database"):
+						return false, nil
+					}
+					return false, err
+				}
+				return rows, statement, tx.Rollback
+			})
+		}
+	})
 }
 
 // TestTx_raw checks what the driver gives for calls of its own interfaces that database/sql does
@@ -939,4 +962,64 @@ func TestTx_raw(t *testing.T) {
 		}))
 		is.EqualSlice(t, []int64{}, values(t, db, select1))
 	})
+
+	// The rows of the driver's interface that a loop reads end their transaction when they end, so a
+	// connection that is given back while they are open must not go back to the pool, whose next user
+	// would meet their refusal, and its close must not leave its transaction and its reader to no one.
+	for _, end := range []string{"commit", "rollback", "none"} {
+		t.Run("should keep a connection out of the pool while rows of its that a loop reads are open, and close it when they end, after the end of their transaction: "+end, func(t *testing.T) {
+			w := newWorld(t)
+			db := w.serve(t, "a")
+			exec(t, db, t1, insert1)
+			conn, err := db.Conn(t.Context())
+			is.NotError(t, err)
+			open := db.Stats().OpenConnections
+
+			var rows driver.Rows
+			dest := make([]driver.Value, 1)
+			is.NotError(t, conn.Raw(func(driverConn any) error {
+				tx, err := driverConn.(driver.ConnBeginTx).BeginTx(t.Context(), driver.TxOptions{})
+				is.NotError(t, err)
+				_, err = driverConn.(driver.ExecerContext).ExecContext(t.Context(), "insert into t1 (v1) values (2)", nil)
+				is.NotError(t, err)
+				rows, err = driverConn.(driver.QueryerContext).QueryContext(t.Context(), select1, nil)
+				is.NotError(t, err)
+				is.NotError(t, rows.Next(dest))
+				switch end {
+				case "commit":
+					is.True(t, tx.Commit() != nil)
+				case "rollback":
+					is.NotError(t, tx.Rollback())
+				}
+				is.True(t, !driverConn.(driver.Validator).IsValid())
+				return nil
+			}))
+			// database/sql closes the connection, which the engine closes when the rows end.
+			is.NotError(t, conn.Close())
+			is.Equal(t, open-1, db.Stats().OpenConnections)
+
+			// The rows hold the place of the writer until they end, and the transaction with it, which
+			// the close of the connection then rolls back, if it is still open. After the end of the
+			// transaction, the next row is its end.
+			n := 1
+			for rows.Next(dest) == nil {
+				n++
+			}
+			want := 1
+			if end == "none" {
+				want = 2
+			}
+			is.Equal(t, want, n)
+			is.NotError(t, rows.Close())
+
+			// The bound is far above what the begin needs, and keeps a fault from hanging the test.
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			tx, err := db.BeginTx(ctx, nil)
+			is.NotError(t, err)
+			is.EqualSlice(t, []int64{1}, values(t, tx, select1))
+			is.NotError(t, tx.Commit())
+			readersFree(t, db)
+		})
+	}
 }

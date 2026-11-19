@@ -52,6 +52,8 @@ func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 	if opts.ReadOnly {
 		begin = c.e.BeginReadOnly
 	}
+	c.enter(ctx)
+	defer c.leave(ctx)
 	if err := begin(ctx); err != nil {
 		if errors.Is(err, engine.ErrRowsOpen) {
 			return nil, &failure{is: ErrNotSupported, message: "s4ql: not supported: a transaction that begins on a connection whose rows of an earlier query are open; close the rows first", cause: err}
@@ -84,6 +86,8 @@ func (t *tx) Commit() error {
 		return publicError(errTxEnded)
 	}
 	c.tx = nil
+	c.enter(t.ctx)
+	defer c.leave(t.ctx)
 	err := c.e.Commit(t.ctx)
 	if errors.Is(err, engine.ErrRowsOpen) {
 		// database/sql closes the rows of a transaction before its commit, so only a call of the
@@ -106,6 +110,8 @@ func (t *tx) Rollback() error {
 	c.tx = nil
 	// database/sql rolls the transaction back when the context of its begin ends.
 	ctx := context.WithoutCancel(t.ctx)
+	c.enter(ctx)
+	defer c.leave(ctx)
 	err := c.e.Rollback(ctx)
 	if errors.Is(err, core.ErrStopped) || errors.Is(err, core.ErrNoLease) {
 		return nil
@@ -122,7 +128,13 @@ func (c *conn) ResetSession(context.Context) error {
 
 // IsValid reports whether the connection can go back to the pool: not while a transaction is open
 // on it, which database/sql then closes with the connection, and the close rolls the transaction
-// back.
+// back; and not while rows of the connection are open, which database/sql closes before it gives the
+// connection back, but the driver's own interfaces need not. Rows that a loop reads hold the end of
+// their transaction if it ended while they were read, and the next statement on the connection
+// would be refused until they end, so database/sql then closes the connection, which
+// [conn.Close] leaves to the rows.
 func (c *conn) IsValid() bool {
-	return c.tx == nil
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.tx == nil && c.held == 0
 }
