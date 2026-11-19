@@ -187,7 +187,7 @@ func (g *Generator) integer() int64 {
 }
 
 // value written as an integer of slice 1, with its span.
-func (g *Generator) value() (int64, stmt.Span) {
+func (g *Generator) value() (stmt.Integer, stmt.Span) {
 	v := g.integer()
 	start := g.b.Len()
 	digits := fmt.Sprint(v)
@@ -200,7 +200,7 @@ func (g *Generator) value() (int64, stmt.Span) {
 		digits = strings.Repeat("0", 1+g.r.IntN(30)) + digits
 	}
 	g.b.WriteString(digits)
-	return v, stmt.Span{Start: start, End: g.b.Len()}
+	return stmt.Integer(v), stmt.Span{Start: start, End: g.b.Len()}
 }
 
 // Integer at random from r: at and around the limits of 64 bits, zero, powers of ten, any, and
@@ -267,7 +267,7 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 	var args []any
 	switch k {
 	case KindCreateTable:
-		c := &stmt.CreateTable{}
+		c := &stmt.CreateTable{Type: stmt.TypeInt}
 		g.keyword("create")
 		g.gap(true)
 		g.keyword("table")

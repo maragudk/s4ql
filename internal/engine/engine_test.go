@@ -157,6 +157,29 @@ func TestEngine_errors(t *testing.T) {
 		is.True(t, errors.Is(err, engine.ErrNoStatement))
 	})
 
+	t.Run("should refuse a column of another type than INT and a literal that is not an integer as not supported, which it holds none of yet", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(t1).err)
+		for src, want := range map[string]string{
+			"create table t2 (v2 integer primary key) strict, without rowid": "s4ql: not supported: column type INTEGER",
+			"create table t2 (v2 REAL primary key) strict, without rowid":    "s4ql: not supported: column type REAL",
+			"create table t2 (v2 text primary key) strict, without rowid":    "s4ql: not supported: column type TEXT",
+			"create table t2 (v2 blob primary key) strict, without rowid":    "s4ql: not supported: column type BLOB",
+			"insert into t1 (v1) values (-0.0)":                              "s4ql: not supported: a real literal, which is not an integer",
+			"insert into t1 (v1) values ('')":                                "s4ql: not supported: a string literal, which is not an integer",
+			"insert into t1 (v1) values (x'')":                               "s4ql: not supported: a blob literal, which is not an integer",
+		} {
+			_, err := i.c.Exec(t.Context(), src)
+			is.True(t, errors.Is(err, stmt.ErrNotSupported), src)
+			var se *sqlerr.Error
+			is.True(t, !errors.As(err, &se), src)
+			is.Equal(t, want, fmt.Sprint(err), src)
+			_, err = i.c.Query(t.Context(), src)
+			is.Equal(t, want, fmt.Sprint(err), src)
+		}
+		is.Equal(t, "t1 (v1 INT): \n", i.state())
+	})
+
 	t.Run("should pass an error of the core through as it is", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
 		i.close()
@@ -277,6 +300,11 @@ func TestEngine_parameters(t *testing.T) {
 			"insert into t1 (v1) values (?1)":  "s4ql: not supported: numbered parameter (at offset 28)",
 			"select * from t1 where v1 = ?":    "s4ql: not supported: WHERE clause (at offset 17)",
 			" ; ":                              "s4ql: the text holds no statement",
+			// The pass supports the other types, and the engine refuses them until it holds them.
+			"create table t2 (v2 integer primary key) strict, without rowid": "s4ql: not supported: column type INTEGER",
+			"insert into t1 (v1) values (1.5)":                               "s4ql: not supported: a real literal, which is not an integer",
+			"insert into t1 (v1) values ('1')":                               "s4ql: not supported: a string literal, which is not an integer",
+			"insert into t1 (v1) values (x'01')":                             "s4ql: not supported: a blob literal, which is not an integer",
 		}
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()

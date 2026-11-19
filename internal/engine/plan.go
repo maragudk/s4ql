@@ -98,17 +98,26 @@ func (*Project) node()     {}
 func (*Integer) expr()     {}
 func (*Parameter) expr()   {}
 
-// NewPlan of the statement s.
+// NewPlan of the statement s, which [Check] supports: its column is of type INT, and its value, if it
+// has one, an integer. It panics for another.
 func NewPlan(s stmt.Statement) Plan {
 	switch s := s.(type) {
 	case *stmt.CreateTable:
+		if s.Type != stmt.TypeInt {
+			panic(fmt.Sprintf("engine: a column of type %v", s.Type))
+		}
 		return &CreateTable{Table: s.Table, Columns: []ColumnDef{{Name: s.Column, Type: s4qlpb.Type_TYPE_INT}}, PrimaryKey: []int{0}}
 	case *stmt.DropTable:
 		return &DropTable{Table: s.Table}
 	case *stmt.Insert:
-		var value Expr = &Integer{Value: s.Value}
-		if s.Parameter > 0 {
+		var value Expr
+		switch v := s.Value.(type) {
+		case stmt.Integer:
+			value = &Integer{Value: int64(v)}
+		case nil:
 			value = &Parameter{Number: s.Parameter}
+		default:
+			panic(fmt.Sprintf("engine: a value of type %T", v))
 		}
 		return &Insert{Table: s.Table, Columns: []stmt.Name{s.Column}, Source: &Values{Rows: [][]Expr{{value}}}}
 	case *stmt.Select:

@@ -52,6 +52,29 @@ var (
 	errPanicked = fmt.Errorf("%w: the statement panicked", ErrInternal)
 )
 
+// checkTypes of the statement s, which [stmt.Check] supports: "not supported" for a column of
+// another type than INT, and for a literal that is not an integer. The engine holds integers only,
+// so far. No value of a literal is in an error.
+func checkTypes(s stmt.Statement) error {
+	switch s := s.(type) {
+	case *stmt.CreateTable:
+		if s.Type != stmt.TypeInt {
+			return fmt.Errorf("%w: column type %v", stmt.ErrNotSupported, s.Type)
+		}
+	case *stmt.Insert:
+		switch s.Value.(type) {
+		case stmt.Integer, nil:
+		case stmt.Real:
+			return fmt.Errorf("%w: a real literal, which is not an integer", stmt.ErrNotSupported)
+		case stmt.Text:
+			return fmt.Errorf("%w: a string literal, which is not an integer", stmt.ErrNotSupported)
+		case stmt.Blob:
+			return fmt.Errorf("%w: a blob literal, which is not an integer", stmt.ErrNotSupported)
+		}
+	}
+	return nil
+}
+
 // checkArguments of a statement with the given number of parameters: the error of [countArguments],
 // and then "not supported" for the first argument that is not an integer. No value of an argument
 // is in an error.

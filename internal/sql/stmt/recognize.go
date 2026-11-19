@@ -1,6 +1,9 @@
 package stmt
 
 import (
+	"encoding/hex"
+	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -121,7 +124,7 @@ func (r *recognizer) statement() Statement {
 	return s
 }
 
-// createTable: CREATE TABLE name (column INT PRIMARY KEY) and the options STRICT and WITHOUT ROWID,
+// createTable: CREATE TABLE name (column type PRIMARY KEY) and the options STRICT and WITHOUT ROWID,
 // in either order, separated by a comma.
 func (r *recognizer) createTable(c *ast.CreateTable) *CreateTable {
 	r.accept(c)
@@ -129,7 +132,7 @@ func (r *recognizer) createTable(c *ast.CreateTable) *CreateTable {
 	r.take(c.Table)
 	table := r.tableName(c.Name)
 	r.take(c.LParen)
-	column := r.column(c.Columns[0])
+	column, typ := r.column(c.Columns[0])
 	if len(c.Commas) > 0 && r.isNext(c.Commas[0]) {
 		// The comma after the column: a second column or a table constraint follows it.
 		if len(c.Columns) > 1 {
@@ -139,22 +142,30 @@ func (r *recognizer) createTable(c *ast.CreateTable) *CreateTable {
 	}
 	r.take(c.RParen)
 	r.tableOptions(c)
-	return &CreateTable{Table: table, Column: column}
+	return &CreateTable{Table: table, Column: column, Type: typ}
 }
 
-// column: name INT PRIMARY KEY.
-func (r *recognizer) column(d *ast.ColumnDef) Name {
+// columnTypes are the types of a column, by their bare word in lower case.
+var columnTypes = map[string]Type{"int": TypeInt, "integer": TypeInteger, "real": TypeReal, "text": TypeText, "blob": TypeBlob}
+
+// otherType is the name of a reject for a column type that is not one of [columnTypes].
+const otherType = "column type other than INT, INTEGER, REAL, TEXT, or BLOB"
+
+// column: name type PRIMARY KEY, where the type is one bare word of [columnTypes], in any case.
+func (r *recognizer) column(d *ast.ColumnDef) (Name, Type) {
 	r.accept(d)
 	name := r.name(d.Name)
 	if d.Type == nil {
 		r.reject("column without a type")
 	}
-	if !isWord(d.Type.Names[0], "int") {
-		r.reject("column type other than INT")
+	// A word in quotes has its quotes in its text, so it is none of the types.
+	typ, ok := columnTypes[asciiLower(d.Type.Names[0].Text)]
+	if !ok {
+		r.reject(otherType)
 	}
 	r.take(d.Type.Names[0])
 	if len(d.Type.Names) > 1 || d.Type.LParen.Present() {
-		r.reject("column type other than INT")
+		r.reject(otherType)
 	}
 	if len(d.Constraints) == 0 {
 		r.reject("column without PRIMARY KEY")
@@ -166,7 +177,7 @@ func (r *recognizer) column(d *ast.ColumnDef) Name {
 	r.accept(pk)
 	r.take(pk.Primary)
 	r.take(pk.Key)
-	return name
+	return name, typ
 }
 
 // tableOptions: STRICT and WITHOUT ROWID, each once, in either order, with a comma between them.
@@ -255,7 +266,7 @@ func (r *recognizer) insert(c *ast.Insert) *Insert {
 	if v, ok := row.Exprs[0].(*ast.Variable); ok {
 		s.Parameter, s.ValueSpan = r.parameter(v)
 	} else {
-		s.Value, s.ValueSpan = r.integer(row.Exprs[0])
+		s.Value, s.ValueSpan = r.literal(row.Exprs[0])
 	}
 	r.take(row.RParen)
 	return s
@@ -275,8 +286,9 @@ func (r *recognizer) parameter(v *ast.Variable) (int, Span) {
 	return 1, Span{Start: v.Name.Offset, End: v.Name.End()}
 }
 
-// integer value: a decimal integer literal that fits in 64 bits, with at most one - before it.
-func (r *recognizer) integer(e ast.Expr) (int64, Span) {
+// literal value: a decimal integer literal that fits in 64 bits or a real literal, with at most one
+// - before either; a string; or a blob.
+func (r *recognizer) literal(e ast.Expr) (Value, Span) {
 	start := r.at()
 	negative := false
 	if u, ok := e.(*ast.Unary); ok {
@@ -297,41 +309,68 @@ func (r *recognizer) integer(e ast.Expr) (int64, Span) {
 		negative = true
 		e = u.X
 	}
+	if c, ok := e.(*ast.ColumnRef); ok && r.isNext(c.Column) && !c.Table.Present() &&
+		(isWord(c.Column, "true") || isWord(c.Column, "false")) {
+		// SQLite reads a bare TRUE or FALSE where no column of that name is, as in VALUES, as 1 or 0.
+		r.reject("TRUE or FALSE")
+	}
 	l, ok := e.(*ast.Literal)
 	if !ok {
 		r.unexpected()
 	}
-	if what := literalName(l.Value); what != "" {
-		r.reject(what)
-	}
-	digits := l.Value.Text
-	if negative {
-		digits = "-" + digits
-	}
-	v, err := strconv.ParseInt(digits, 10, 64)
-	if err != nil {
-		r.reject("integer outside 64 bits")
-	}
-	r.take(l.Value)
-	return v, Span{Start: start, End: l.Value.End()}
-}
-
-// literalName of the value of a literal that is not a decimal integer, or "" for a decimal integer.
-func literalName(t ast.Token) string {
+	t := l.Value
+	var v Value
 	switch t.Kind {
 	case token.Integer:
 		if strings.HasPrefix(t.Text, "0x") || strings.HasPrefix(t.Text, "0X") {
-			return "hex literal"
+			r.reject("hex literal")
 		}
-		return ""
+		digits := t.Text
+		if negative {
+			digits = "-" + digits
+		}
+		i, err := strconv.ParseInt(digits, 10, 64)
+		if err != nil {
+			r.reject("integer outside 64 bits")
+		}
+		v = Integer(i)
 	case token.Float:
-		return "real number"
+		// SQLite reads the literal after the sign, and negates the result.
+		f := atof(t.Text)
+		if math.IsInf(f, 0) {
+			r.reject("infinite real number")
+		}
+		if negative {
+			f = -f
+		}
+		v = Real(f)
+	case token.String:
+		if negative {
+			r.reject("string after a sign")
+		}
+		v = Text(strings.ReplaceAll(t.Text[1:len(t.Text)-1], "''", "'"))
+	case token.Blob:
+		if negative {
+			r.reject("blob after a sign")
+		}
+		b, err := hex.DecodeString(t.Text[2 : len(t.Text)-1])
+		if err != nil {
+			// The tokenizer gives a blob only for an even number of hex digits.
+			panic(fmt.Sprintf("stmt: the blob literal %q: %v", t.Text, err))
+		}
+		v = Blob(b)
+	default:
+		r.reject(literalName(t))
+	}
+	r.take(t)
+	return v, Span{Start: start, End: t.End()}
+}
+
+// literalName of the value of a literal that is not supported.
+func literalName(t ast.Token) string {
+	switch t.Kind {
 	case token.QNumber:
 		return "number with a digit separator"
-	case token.String:
-		return "string"
-	case token.Blob:
-		return "blob"
 	case token.Null:
 		return "NULL"
 	case token.CTimeKw:

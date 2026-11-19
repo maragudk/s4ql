@@ -204,7 +204,7 @@ var nodeNames = map[string]string{
 	"CreateTable":          "CREATE TABLE",
 	"TableOption":          "table option",
 	"ColumnDef":            "column",
-	"TypeName":             "column type other than INT",
+	"TypeName":             otherType,
 	"SignedNumber":         "number",
 	"ConstraintName":       "CONSTRAINT name",
 	"DefaultConstraint":    "DEFAULT",

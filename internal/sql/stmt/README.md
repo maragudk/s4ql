@@ -180,7 +180,7 @@ A test checks that every name the pass gives in any test is in these tables.
 | `second column` | CREATE TABLE has a second column, or INSERT names a second column. |
 | `table constraint` | CREATE TABLE has a table constraint. |
 | `column without a type` | The column has no type. |
-| `column type other than INT` | The column's type is not the bare word `int`. |
+| `column type other than INT, INTEGER, REAL, TEXT, or BLOB` | The column's type is not one of the bare words `int`, `integer`, `real`, `text`, and `blob`. |
 | `column without PRIMARY KEY` | The column's first constraint is missing. |
 | `table option` | An option is not STRICT or WITHOUT ROWID, or comes again, or is a third. |
 | `table without STRICT and WITHOUT ROWID` | CREATE TABLE has no options. |
@@ -196,9 +196,10 @@ A test checks that every name the pass gives in any test is in these tables.
 | `hex literal` | The value is a hex literal. |
 | `number with a digit separator` | The value has a digit separator. |
 | `integer outside 64 bits` | The value does not fit a signed 64-bit integer. |
-| `real number` | The value is a real number. |
-| `string` | The value is a string. |
-| `blob` | The value is a blob. |
+| `infinite real number` | The value is a real number that SQLite reads as an infinity, such as `1e999`. |
+| `string after a sign` | The value is a string after its `-`. |
+| `blob after a sign` | The value is a blob after its `-`. |
+| `TRUE or FALSE` | The value is the bare word TRUE or FALSE, which SQLite reads as 1 or 0. |
 | `NULL` | The value is NULL. |
 | `current date or time` | The value is CURRENT_DATE, CURRENT_TIME, or CURRENT_TIMESTAMP. |
 | `numbered parameter` | The value is a parameter with a number, such as `?1`. |
@@ -312,7 +313,7 @@ Any other field of an accepted node has the name of the node's type.
 | `CREATE TABLE` | `CreateTable` |
 | `table option` | `TableOption` |
 | `column` | `ColumnDef` |
-| `column type other than INT` | `TypeName` |
+| `column type other than INT, INTEGER, REAL, TEXT, or BLOB` | `TypeName` |
 | `number` | `SignedNumber` |
 | `CONSTRAINT name` | `ConstraintName` |
 | `DEFAULT` | `DefaultConstraint` |
