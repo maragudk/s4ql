@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"math/rand/v2"
 	"slices"
 	"strings"
@@ -32,7 +33,7 @@ const t1 = "create table t1 (v1 int primary key) strict, without rowid"
 // the engine and on SQLite, and requires the same answer of both, and the answer want: an error as
 // "code/extended: message", or "columns ...; rows ..." for a query, or "" for a statement that
 // changes the database. After a statement that is no query, the state of both must be the same.
-func pin(t *testing.T, setup []string, src, want string, args ...int64) {
+func pin(t *testing.T, setup []string, src, want string, args ...any) {
 	t.Helper()
 	i := newInstance(t, engine.Options{})
 	o := newOracle(t)
@@ -43,11 +44,11 @@ func pin(t *testing.T, setup []string, src, want string, args ...int64) {
 	query := strings.Contains(strings.ToLower(src), "select")
 	var got answer
 	if query {
-		got = i.query(src, args...)
+		got = i.queryValues(src, values(args))
 	} else {
-		got = i.exec(src, args...)
+		got = i.execValues(src, values(args))
 	}
-	sqlite := o.run(t, src, args...)
+	sqlite := o.run(t, src, oracleArgs(args)...)
 	if !query {
 		sqlite.columns, sqlite.rows = "", nil
 		is.Equal(t, o.state(t), i.state(), "SQLite and the engine")
@@ -157,27 +158,33 @@ func TestEngine_errors(t *testing.T) {
 		is.True(t, errors.Is(err, engine.ErrNoStatement))
 	})
 
-	t.Run("should refuse a column of another type than INT and a literal that is not an integer as not supported, which it holds none of yet", func(t *testing.T) {
+	t.Run("should refuse a literal of another type than its column as not supported, after SQLite's errors of the names", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
-		is.Equal(t, "", i.exec(t1).err)
-		for src, want := range map[string]string{
-			"create table t2 (v2 integer primary key) strict, without rowid": "s4ql: not supported: column type INTEGER",
-			"create table t2 (v2 REAL primary key) strict, without rowid":    "s4ql: not supported: column type REAL",
-			"create table t2 (v2 text primary key) strict, without rowid":    "s4ql: not supported: column type TEXT",
-			"create table t2 (v2 blob primary key) strict, without rowid":    "s4ql: not supported: column type BLOB",
-			"insert into t1 (v1) values (-0.0)":                              "s4ql: not supported: a real literal, which is not an integer",
-			"insert into t1 (v1) values ('')":                                "s4ql: not supported: a string literal, which is not an integer",
-			"insert into t1 (v1) values (x'')":                               "s4ql: not supported: a blob literal, which is not an integer",
-		} {
-			_, err := i.c.Exec(t.Context(), src)
-			is.True(t, errors.Is(err, stmt.ErrNotSupported), src)
-			var se *sqlerr.Error
-			is.True(t, !errors.As(err, &se), src)
-			is.Equal(t, want, fmt.Sprint(err), src)
-			_, err = i.c.Query(t.Context(), src)
-			is.Equal(t, want, fmt.Sprint(err), src)
+		for _, typ := range []string{"int", "integer", "real", "text", "blob"} {
+			is.Equal(t, "", i.exec("create table "+typ+"s (v "+typ+" primary key) strict, without rowid").err)
 		}
-		is.Equal(t, "t1 (v1 INT): \n", i.state())
+		literals := map[string]string{"1": "an integer literal", "-0.0": "a real literal", "1.0": "a real literal", "'1'": "a string literal", "''": "a string literal", "x'31'": "a blob literal"}
+		holds := map[string]string{"int": "1", "integer": "1", "real": "1.0", "text": "'1'", "blob": "x'31'"}
+		for _, typ := range []string{"int", "integer", "real", "text", "blob"} {
+			for literal, what := range literals {
+				src := fmt.Sprint("insert into ", strings.ToUpper(typ), "S (V) values (", literal, ")")
+				if literal == holds[typ] || (typ == "real" && literal == "-0.0") || (typ == "text" && literal == "''") {
+					continue
+				}
+				want := fmt.Sprintf("s4ql: not supported: %v for the column %vs.v of type %v", what, typ, strings.ToUpper(typ))
+				i.changes = 7
+				for _, run := range []func(src string, args ...int64) answer{i.exec, i.query} {
+					got := run(src)
+					is.Equal(t, "not supported", got.err, src)
+					is.Equal(t, want, got.message, src)
+				}
+				is.Equal(t, int64(7), i.changes, "the count of changes after "+src)
+				is.Equal(t, "1/1: no such table: nosuch", i.exec("insert into nosuch (v) values ("+literal+")").err)
+				is.Equal(t, "1/1: table "+typ+"s has no column named w", i.exec("insert into "+typ+"s (w) values ("+literal+")").err)
+			}
+		}
+		is.Equal(t, "blobs (v BLOB): \nintegers (v INTEGER): \nints (v INT): \nreals (v REAL): \ntexts (v TEXT): \n", i.state())
+		is.Equal(t, 5, len(logAnnotations(t, i.store)))
 	})
 
 	t.Run("should pass an error of the core through as it is", func(t *testing.T) {
@@ -205,26 +212,26 @@ func TestEngine_parameters(t *testing.T) {
 		name  string
 		setup []string
 		src   string
-		args  []int64
+		args  []any
 		want  string
 	}{
 		{name: "should insert the argument of the parameter", setup: []string{t1},
-			src: "insert into t1 (v1) values (?)", args: []int64{42}, want: ""},
+			src: "insert into t1 (v1) values (?)", args: []any{42}, want: ""},
 		{name: "should insert the smallest integer", setup: []string{t1},
-			src: "insert into t1 (v1) values (?)", args: []int64{-9223372036854775808}, want: ""},
+			src: "insert into t1 (v1) values (?)", args: []any{-9223372036854775808}, want: ""},
 		{name: "should insert the largest integer, with comments around the parameter", setup: []string{t1},
-			src: "insert into T1 (V1) values (/* a */ ? -- b\n);", args: []int64{9223372036854775807}, want: ""},
+			src: "insert into T1 (V1) values (/* a */ ? -- b\n);", args: []any{9223372036854775807}, want: ""},
 		{name: "should give that a key exists, inserted before through a literal", setup: []string{t1, "insert into t1 (v1) values (-7)"},
-			src: "insert into t1 (v1) values (?)", args: []int64{-7}, want: "19/1555: UNIQUE constraint failed: t1.v1"},
+			src: "insert into t1 (v1) values (?)", args: []any{-7}, want: "19/1555: UNIQUE constraint failed: t1.v1"},
 		{name: "should give that a key exists, with the names as the table stores them",
 			setup: []string{`create table "Foo" ("Bar" int primary key) strict, without rowid`, "insert into foo (bar) values (0)"},
-			src:   "insert into FOO (BAR) values (?)", args: []int64{0}, want: "19/1555: UNIQUE constraint failed: Foo.Bar"},
+			src:   "insert into FOO (BAR) values (?)", args: []any{0}, want: "19/1555: UNIQUE constraint failed: Foo.Bar"},
 		{name: "should give that there is no table to write",
-			src: "insert into t2 (v1) values (?)", args: []int64{1}, want: "1/1: no such table: t2"},
+			src: "insert into t2 (v1) values (?)", args: []any{1}, want: "1/1: no such table: t2"},
 		{name: "should give that there is no column", setup: []string{t1},
-			src: "insert into t1 (v2) values (?)", args: []int64{1}, want: "1/1: table t1 has no column named v2"},
+			src: "insert into t1 (v2) values (?)", args: []any{1}, want: "1/1: table t1 has no column named v2"},
 		{name: "should give the syntax error of SQLite, whatever the arguments",
-			src: "insert into t1 (v1) values (? ?)", args: []int64{1, 2}, want: `1/1: near "?": syntax error`},
+			src: "insert into t1 (v1) values (? ?)", args: []any{1, 2}, want: `1/1: near "?": syntax error`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -274,22 +281,68 @@ func TestEngine_parameters(t *testing.T) {
 		is.Equal(t, 0, len(logAnnotations(t, i.store)[1:]))
 	})
 
-	t.Run("should refuse an argument that is not an integer as not supported", func(t *testing.T) {
+	t.Run("should refuse an argument that no column holds as not supported, before the instance", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
-		is.Equal(t, "", i.exec(t1).err)
-		for _, v := range []*s4qlpb.Value{
-			s4qlpb.Value_builder{Text: new("1")}.Build(),
-			s4qlpb.Value_builder{Real: new(1.0)}.Build(),
-			s4qlpb.Value_builder{Blob: []byte{1}}.Build(),
-			s4qlpb.Value_builder{Null: &s4qlpb.Null{}}.Build(),
-			{},
-			nil,
-		} {
-			_, err := i.c.Exec(t.Context(), "insert into t1 (v1) values (?)", v)
-			is.True(t, errors.Is(err, stmt.ErrNotSupported))
-			is.Equal(t, "s4ql: not supported: argument 1, which is not an integer", fmt.Sprint(err))
+		is.Equal(t, "", i.exec("create table t1 (v1 text primary key) strict, without rowid").err)
+		is.Equal(t, "", i.exec("create table t2 (v2 real primary key) strict, without rowid").err)
+		refused := map[*s4qlpb.Value]string{
+			s4qlpb.Value_builder{Real: new(math.NaN())}.Build():     "is a real that is not a number",
+			s4qlpb.Value_builder{Real: new(math.Inf(1))}.Build():    "is an infinite real",
+			s4qlpb.Value_builder{Real: new(math.Inf(-1))}.Build():   "is an infinite real",
+			s4qlpb.Value_builder{Text: new("a\x00b")}.Build():       "is text that holds the character NUL",
+			s4qlpb.Value_builder{Text: new("\x00")}.Build():         "is text that holds the character NUL",
+			s4qlpb.Value_builder{Text: new("a\xffb")}.Build():       "is text that is not valid UTF-8",
+			s4qlpb.Value_builder{Text: new("\xed\xa0\x80")}.Build(): "is text that is not valid UTF-8",
+			s4qlpb.Value_builder{Null: &s4qlpb.Null{}}.Build():      "is NULL",
+			s4qlpb.Value_builder{Blob: nil}.Build():                 "has no value",
+			nil:                                                     "has no value",
 		}
-		is.Equal(t, "t1 (v1 INT): \n", i.state())
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		for v, which := range refused {
+			want := "s4ql: not supported: argument 1, which " + which
+			for _, src := range []string{"insert into t1 (v1) values (?)", "insert into t2 (v2) values (?)", "insert into nosuch (v) values (?)"} {
+				for _, ctx := range []context.Context{t.Context(), ctx} {
+					_, err := i.c.Exec(ctx, src, v)
+					is.True(t, errors.Is(err, stmt.ErrNotSupported), src)
+					var se *sqlerr.Error
+					is.True(t, !errors.As(err, &se), src)
+					is.Equal(t, want, fmt.Sprint(err), src)
+					_, err = i.c.Query(ctx, src, v)
+					is.Equal(t, want, fmt.Sprint(err), src)
+				}
+			}
+		}
+		is.Equal(t, "t1 (v1 TEXT): \nt2 (v2 REAL): \n", i.state())
+		is.Equal(t, 2, len(logAnnotations(t, i.store)))
+	})
+
+	t.Run("should refuse an argument of another type than its column as not supported, after SQLite's errors of the names", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		args := map[string]*s4qlpb.Value{
+			"an integer": s4qlpb.Value_builder{Integer: new(int64(1))}.Build(),
+			"a real":     s4qlpb.Value_builder{Real: new(1.0)}.Build(),
+			"text":       s4qlpb.Value_builder{Text: new("1")}.Build(),
+			"a blob":     s4qlpb.Value_builder{Blob: []byte("1")}.Build(),
+		}
+		holds := map[string]string{"int": "an integer", "integer": "an integer", "real": "a real", "text": "text", "blob": "a blob"}
+		for typ, held := range holds {
+			is.Equal(t, "", i.exec(fmt.Sprintf("create table %vs (v %v primary key) strict, without rowid", typ, typ)).err)
+			for what, v := range args {
+				if what == held {
+					continue
+				}
+				src := fmt.Sprintf(`insert into "%vS" (V) values (?)`, strings.ToUpper(typ))
+				want := fmt.Sprintf("s4ql: not supported: argument 1, which is %v, for the column %vs.v of type %v", what, typ, strings.ToUpper(typ))
+				i.changes = 7
+				is.Equal(t, want, i.execValues(src, []*s4qlpb.Value{v}).message, src)
+				is.Equal(t, want, i.queryValues(src, []*s4qlpb.Value{v}).message, src)
+				is.Equal(t, int64(7), i.changes, "the count of changes after "+src)
+				is.Equal(t, "1/1: no such table: nosuch", i.execValues("insert into nosuch (v) values (?)", []*s4qlpb.Value{v}).err)
+				is.Equal(t, "1/1: table "+typ+"s has no column named w", i.execValues("insert into "+typ+"s (w) values (?)", []*s4qlpb.Value{v}).err)
+			}
+		}
+		is.Equal(t, "blobs (v BLOB): \nintegers (v INTEGER): \nints (v INT): \nreals (v REAL): \ntexts (v TEXT): \n", i.state())
 	})
 
 	t.Run("should judge the text before the arguments, and the arguments before the instance", func(t *testing.T) {
@@ -300,11 +353,6 @@ func TestEngine_parameters(t *testing.T) {
 			"insert into t1 (v1) values (?1)":  "s4ql: not supported: numbered parameter (at offset 28)",
 			"select * from t1 where v1 = ?":    "s4ql: not supported: WHERE clause (at offset 17)",
 			" ; ":                              "s4ql: the text holds no statement",
-			// The pass supports the other types, and the engine refuses them until it holds them.
-			"create table t2 (v2 integer primary key) strict, without rowid": "s4ql: not supported: column type INTEGER",
-			"insert into t1 (v1) values (1.5)":                               "s4ql: not supported: a real literal, which is not an integer",
-			"insert into t1 (v1) values ('1')":                               "s4ql: not supported: a string literal, which is not an integer",
-			"insert into t1 (v1) values (x'01')":                             "s4ql: not supported: a blob literal, which is not an integer",
 		}
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
@@ -321,7 +369,9 @@ func TestEngine_parameters(t *testing.T) {
 			}
 			_, err := i.c.Exec(ctx, "insert into t1 (v1) values (?)")
 			is.True(t, errors.Is(err, engine.ErrArguments))
-			_, err = i.c.Exec(ctx, "insert into t1 (v1) values (?)", s4qlpb.Value_builder{Text: new("1")}.Build())
+			_, err = i.c.Exec(ctx, "insert into t1 (v1) values (?)", s4qlpb.Value_builder{Text: new("1\x00")}.Build())
+			is.True(t, errors.Is(err, stmt.ErrNotSupported))
+			_, err = i.c.Exec(ctx, "insert into t1 (v1) values (?)", s4qlpb.Value_builder{Real: new(math.NaN())}.Build())
 			is.True(t, errors.Is(err, stmt.ErrNotSupported))
 		}
 		check(ctx)

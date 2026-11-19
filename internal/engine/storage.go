@@ -38,6 +38,8 @@ type database interface {
 	begin(ctx context.Context) (writeTx, error)
 	// reader of the database, which its owner closes.
 	reader(ctx context.Context) (readConn, error)
+	// lengthLimit is the largest text or blob, in bytes, that the database holds.
+	lengthLimit() int
 }
 
 // readConn is a reader of the database: a connection that runs one read transaction at a time.
@@ -104,6 +106,10 @@ func (c coreDB) reader(ctx context.Context) (readConn, error) {
 	return coreReader{r: r}, nil
 }
 
+func (c coreDB) lengthLimit() int {
+	return c.d.LengthLimit()
+}
+
 // coreReader is the [readConn] of a [*core.Reader].
 type coreReader struct {
 	r *core.Reader
@@ -121,12 +127,17 @@ func (c coreReader) close(ctx context.Context) error {
 	return c.r.Close(ctx)
 }
 
-// fromCore is err of a call of the core, with a refusal of the core as an internal error, and every
-// other error as it is. The engine checks for each refusal before it calls the core, and gives
-// SQLite's error for it, so one that the core still gives is a fault of the engine or of the pass
-// after the parser; so is a call on a transaction that has ended, and a read on a reader that is
-// closed.
+// fromCore is err of a call of the core, with a refusal of the core as an internal error,
+// [core.ErrTooBig] as SQLite's `string or blob too big`, and every other error as it is. The engine
+// checks for each refusal before it calls the core, and gives SQLite's error for it, so one that the
+// core still gives is a fault of the engine or of the pass after the parser; so is a call on a
+// transaction that has ended, and a read on a reader that is closed. The core gives ErrTooBig also
+// for a row whose record is longer than the limit, which only SQLite's write of the row finds, and
+// the transaction goes on after it.
 func fromCore(err error) error {
+	if errors.Is(err, core.ErrTooBig) {
+		return tooBig()
+	}
 	for _, r := range []error{core.ErrTableExists, core.ErrNoTable, core.ErrReservedName, core.ErrInvalid, core.ErrTxDone, core.ErrReaderClosed} {
 		if errors.Is(err, r) {
 			return internalError("the storage core refused a call that the engine had checked: %v", err)

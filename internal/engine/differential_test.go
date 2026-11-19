@@ -3,14 +3,17 @@ package engine_test
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"maps"
+	"math"
 	"math/rand/v2"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -147,8 +150,8 @@ func sqliteText(t testing.TB, err error) string {
 }
 
 // run the statement of src, as sqlite3_prepare_v2 and sqlite3_step run it, with args bound to its
-// parameters by position.
-func (o *oracle) run(t testing.TB, src string, args ...int64) answer {
+// parameters by position: each an int64, a float64, a string, or a []byte.
+func (o *oracle) run(t testing.TB, src string, args ...any) answer {
 	t.Helper()
 	s, _, err := o.c.PrepareFirst(src)
 	if err != nil {
@@ -159,7 +162,20 @@ func (o *oracle) run(t testing.TB, src string, args ...int64) answer {
 	}
 	defer func() { _ = s.Finalize() }()
 	for j, a := range args {
-		if err := s.BindInt64(j+1, a); err != nil {
+		var err error
+		switch a := a.(type) {
+		case int64:
+			err = s.BindInt64(j+1, a)
+		case float64:
+			err = s.BindDouble(j+1, a)
+		case string:
+			err = s.BindText(j+1, a)
+		case []byte:
+			err = s.BindBlob(j+1, a)
+		default:
+			t.Fatalf("%q: an argument of type %T for SQLite", src, a)
+		}
+		if err != nil {
 			return answer{err: sqliteText(t, err)}
 		}
 	}
@@ -182,6 +198,12 @@ func (o *oracle) run(t testing.TB, src string, args ...int64) answer {
 			switch typ := s.ColumnType(i); typ {
 			case sqlite.TypeInteger:
 				values[i] = fmt.Sprint(s.ColumnInt64(i))
+			case sqlite.TypeFloat:
+				values[i] = realText(s.ColumnDouble(i))
+			case sqlite.TypeText:
+				values[i] = strconv.Quote(s.ColumnText(i))
+			case sqlite.TypeBlob:
+				values[i] = blobText(s.ColumnBlob(i))
 			case sqlite.TypeNull:
 				values[i] = "null"
 			default:
@@ -295,17 +317,54 @@ func unnamed(args []any) []any {
 	return as
 }
 
-// valueText of a value of the engine.
+// valueText of a value of the engine, as [oracle.run] writes SQLite's. It fails the test for a blob
+// that is nil and for a value of no kind.
 func valueText(t testing.TB, v *s4qlpb.Value) string {
 	t.Helper()
+	if v.HasBlob() && v.GetBlob() == nil {
+		t.Fatal("the engine gives a blob that is nil")
+	}
+	text, ok := valueString(v)
+	if !ok {
+		t.Fatalf("the engine gives a value of kind %v", v.WhichKind())
+	}
+	return text
+}
+
+// valueString of a value of the engine, as [oracle.run] writes SQLite's, and whether it has a kind.
+func valueString(v *s4qlpb.Value) (string, bool) {
 	switch v.WhichKind() {
 	case s4qlpb.Value_Integer_case:
-		return fmt.Sprint(v.GetInteger())
+		return fmt.Sprint(v.GetInteger()), true
+	case s4qlpb.Value_Real_case:
+		return realText(v.GetReal()), true
+	case s4qlpb.Value_Text_case:
+		return strconv.Quote(v.GetText()), true
+	case s4qlpb.Value_Blob_case:
+		return blobText(v.GetBlob()), true
 	case s4qlpb.Value_Null_case:
-		return "null"
+		return "null", true
 	}
-	t.Fatalf("the engine gives a value of kind %v", v.WhichKind())
-	return ""
+	return fmt.Sprint("a value of kind ", v.WhichKind()), false
+}
+
+// realText of a real: "real " and the shortest digits that give it, so that two reals have the same
+// text only if they have the same bits, and -0.0 is "real -0".
+func realText(r float64) string {
+	return "real " + strconv.FormatFloat(r, 'g', -1, 64)
+}
+
+// blobText of a blob, as a blob literal.
+func blobText(b []byte) string {
+	return "x'" + hex.EncodeToString(b) + "'"
+}
+
+// declType of a column of the type t, as SQLite reports it.
+func declType(t s4qlpb.Type) string {
+	return map[s4qlpb.Type]string{
+		s4qlpb.Type_TYPE_INT: "INT", s4qlpb.Type_TYPE_INTEGER: "INTEGER", s4qlpb.Type_TYPE_REAL: "REAL",
+		s4qlpb.Type_TYPE_TEXT: "TEXT", s4qlpb.Type_TYPE_BLOB: "BLOB",
+	}[t]
 }
 
 // instance of the engine on a database of the storage core: a store in memory, and an instance on
@@ -324,8 +383,9 @@ type instance struct {
 	c *engine.Conn
 	// changes is SQLite's count of changes on the connection, as the results of the engine give it.
 	changes int64
-	// memory is the state of an engine on a database in memory, which has no core, or nil.
-	memory func() string
+	// memory is the state of an engine on a database in memory, which has no core, with each value
+	// as its argument writes it, or nil.
+	memory func(text func(*s4qlpb.Value) string) string
 	// coreLog is the logger of the core, or nil.
 	coreLog *slog.Logger
 }
@@ -457,7 +517,7 @@ func (i *instance) execValues(src string, args []*s4qlpb.Value) answer {
 func (i *instance) state() string {
 	i.t.Helper()
 	if i.memory != nil {
-		return i.memory()
+		return i.memory(func(v *s4qlpb.Value) string { return valueText(i.t, v) })
 	}
 	ctx := i.t.Context()
 	rd, err := i.d.Reader(ctx)
@@ -472,7 +532,7 @@ func (i *instance) state() string {
 	for _, ct := range tables {
 		var columns []string
 		for _, c := range ct.GetColumns() {
-			columns = append(columns, c.GetName()+" INT")
+			columns = append(columns, c.GetName()+" "+declType(c.GetType()))
 		}
 		var rows []string
 		for row, err := range r.Scan(ctx, ct.GetTable()) {
@@ -555,8 +615,12 @@ const (
 	// parameters: SQLite binds NULL to a parameter without an argument, and refuses an argument for
 	// a parameter that the statement does not have only when it is bound.
 	excusedArguments = "the wrong number of arguments, checked against s4ql's rule"
-	// excusedNotInteger is a call with an argument that is not an integer, which SQLite binds.
-	excusedNotInteger = "an argument that is not an integer, checked against s4ql's rule"
+	// excusedArgument is a call with an argument that no column holds, which SQLite binds: NULL, and
+	// a value of no kind, for a Go type that the driver does not convert.
+	excusedArgument = "an argument that no column holds, checked against s4ql's rule"
+	// excusedType is an insert of a value of another type than its column, which SQLite converts or
+	// refuses with an error of its own.
+	excusedType = "a value of another type than its column, checked against s4ql's rule"
 )
 
 // knownGap of the pass after the parser, as [stmttest.KnownGap] gives it, that the engine's answer
@@ -685,6 +749,19 @@ func (p *pair) step(c stmttest.Call) string {
 		}
 		return failure
 	}
+	// What is left has a value that a column can hold for each parameter, or a text that the engine
+	// refuses before its arguments, a syntax error or no statement, which SQLite refuses before it
+	// binds them, so that it runs in SQLite without them.
+	args := oracleArgs(c.Args)
+	if s, err := stmt.Check(src); err != nil || s == nil {
+		args = nil
+	}
+	if kind, failure := p.checkType(c, args, got); kind != "" {
+		if failure == "" {
+			p.y.excused(kind)
+		}
+		return failure
+	}
 	if got.err == "not supported" {
 		// A statement of slices 1 and 2 is supported, and a text that is not supported is one that
 		// SQLite accepts: SQLite prepares it on an empty database without a syntax error.
@@ -700,14 +777,7 @@ func (p *pair) step(c stmttest.Call) string {
 		return fmt.Sprintf("%q with %v arguments: the engine gives %q", src, len(c.Args), got.message)
 	}
 	before := p.prev
-	// What is left has an argument that the engine supports for each parameter, or a text that the
-	// engine refuses before its arguments, a syntax error or no statement, which SQLite refuses before
-	// it binds them, so that it runs in SQLite without them.
-	ints, _ := stmttest.Integers(unnamed(c.Args))
-	if s, err := stmt.Check(src); err != nil || s == nil {
-		ints = nil
-	}
-	want := o.run(t, src, ints...)
+	want := o.run(t, src, args...)
 	if !c.Query {
 		want.columns, want.rows = "", nil
 	}
@@ -719,7 +789,7 @@ func (p *pair) step(c stmttest.Call) string {
 		case gap != "":
 			p.y.excused(gap + knownGapSuffix)
 		default:
-			return fmt.Sprintf("%q with the arguments %v: the engine gives\n%v\nand SQLite\n%v", src, ints, got, want)
+			return fmt.Sprintf("%q with the arguments %v: the engine gives\n%v\nand SQLite\n%v", src, args, got, want)
 		}
 	}
 	// SQLite's count of changes: the engine's result sets it, and a statement that fails keeps it,
@@ -747,9 +817,9 @@ func (p *pair) step(c stmttest.Call) string {
 // checkArguments of the call c, whose answer of the engine is got, against s4ql's rule for the
 // arguments of a text that holds a statement that the engine supports: another number of arguments
 // than the statement has parameters is the error of [engine.ErrArguments], with both numbers, and
-// otherwise an argument that is not an integer, with the names dropped, is "not supported" for the
-// first such argument. It gives the kind of the excuse, [excusedArguments] or [excusedNotInteger],
-// if the rule decides the call, or "", and what differs from the rule, or "".
+// otherwise an argument that no column holds, with the names dropped, is "not supported" for the
+// first such argument, as [refusal] says. It gives the kind of the excuse, [excusedArguments] or
+// [excusedArgument], if the rule decides the call, or "", and what differs from the rule, or "".
 func checkArguments(c stmttest.Call, got answer) (kind, failure string) {
 	s, err := stmt.Check(c.Src)
 	if err != nil || s == nil {
@@ -767,16 +837,138 @@ func checkArguments(c stmttest.Call, got answer) (kind, failure string) {
 		return excusedArguments, ""
 	}
 	for j, a := range args {
-		if _, ok := stmttest.Integers([]any{a}); ok {
+		which := refusal(a)
+		if which == "" {
 			continue
 		}
-		want := fmt.Sprintf("s4ql: not supported: argument %v, which is not an integer", j+1)
+		want := fmt.Sprintf("s4ql: not supported: argument %v, which %v", j+1, which)
 		if got.err != "not supported" || got.message != want {
-			return excusedNotInteger, fmt.Sprintf("%q with the argument %#v: the engine gives %v (%q), and the rule %q", c.Src, a, got, got.message, want)
+			return excusedArgument, fmt.Sprintf("%q with the argument %#v: the engine gives %v (%q), and the rule %q", c.Src, a, got, got.message, want)
 		}
-		return excusedNotInteger, ""
+		return excusedArgument, ""
 	}
 	return "", ""
+}
+
+// refusal of the argument a, as [values] gives it to the engine: how the engine's message says why
+// no column holds it, or "" for a value that a column holds.
+func refusal(a any) string {
+	if _, ok := stmttest.Integers([]any{a}); ok {
+		return ""
+	}
+	switch a := a.(type) {
+	case float64:
+		switch {
+		case math.IsNaN(a):
+			return "is a real that is not a number"
+		case math.IsInf(a, 0):
+			return "is an infinite real"
+		}
+		return ""
+	case string:
+		switch {
+		case !utf8.ValidString(a):
+			return "is text that is not valid UTF-8"
+		case strings.ContainsRune(a, 0):
+			return "is text that holds the character NUL"
+		}
+		return ""
+	case []byte:
+		if a != nil {
+			return ""
+		}
+	case nil:
+		return "is NULL"
+	}
+	return "has no value"
+}
+
+// oracleArgs of the arguments args of a call, as SQLite binds them: each Go integer as an int64, and
+// every other argument as it is, with the names dropped.
+func oracleArgs(args []any) []any {
+	var as []any
+	for _, a := range unnamed(args) {
+		if v, ok := stmttest.Integers([]any{a}); ok {
+			a = v[0]
+		}
+		as = append(as, a)
+	}
+	return as
+}
+
+// checkType of the call c, with the arguments args as SQLite binds them, whose answer of the engine is
+// got, against s4ql's rule for the type of a value: an insert that SQLite prepares, whose value, a
+// literal or an argument, is of another type than its column, is "not supported", where SQLite would
+// convert the value or give an error of its own. It gives [excusedType] if the rule decides the call,
+// or "", and what differs from the rule, or "". An insert that SQLite does not prepare gets SQLite's
+// error, which the caller compares.
+func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failure string) {
+	t := p.t
+	t.Helper()
+	s, _ := stmt.Check(c.Src)
+	insert, ok := s.(*stmt.Insert)
+	if !ok || p.o.prepare(t, c.Src) != nil {
+		return "", ""
+	}
+	table, column, typ := p.o.column(t, insert.Table.Value)
+	var what, kind string
+	switch v := insert.Value.(type) {
+	case nil:
+		if len(args) != 1 {
+			return "", ""
+		}
+		var article string
+		switch args[0].(type) {
+		case int64:
+			kind, article = "integer", "an integer"
+		case float64:
+			kind, article = "real", "a real"
+		case string:
+			kind, article = "text", "text"
+		case []byte:
+			kind, article = "blob", "a blob"
+		default:
+			t.Fatalf("%q: an argument of type %T for SQLite", c.Src, args[0])
+		}
+		what = fmt.Sprintf("argument 1, which is %v,", article)
+	case stmt.Integer:
+		kind, what = "integer", "an integer literal"
+	case stmt.Real:
+		kind, what = "real", "a real literal"
+	case stmt.Text:
+		kind, what = "text", "a string literal"
+	case stmt.Blob:
+		kind, what = "blob", "a blob literal"
+	default:
+		t.Fatalf("%q: a value of type %T", c.Src, v)
+	}
+	if columnHolds[typ] == kind {
+		return "", ""
+	}
+	want := fmt.Sprintf("s4ql: not supported: %v for the column %v.%v of type %v", what, table, column, typ)
+	if got.err != "not supported" || got.message != want {
+		return excusedType, fmt.Sprintf("%q with the arguments %#v: the engine gives %v (%q), and the rule %q", c.Src, args, got, got.message, want)
+	}
+	return excusedType, ""
+}
+
+// columnHolds is the kind of value that a column of each declared type holds.
+var columnHolds = map[string]string{"INT": "integer", "INTEGER": "integer", "REAL": "real", "TEXT": "text", "BLOB": "blob"}
+
+// column of the table with the name, as SQLite compares names, in SQLite: the names of the table and
+// of its primary-key column as the table stores them, and its declared type. The table must exist.
+func (o *oracle) column(t testing.TB, name string) (table, column, typ string) {
+	t.Helper()
+	s, err := o.c.Prepare("select m.name, p.name, p.type from sqlite_schema m, pragma_table_info(m.name) p where m.type = 'table' and m.name = ?1 collate nocase and p.pk = 1")
+	is.NotError(t, err)
+	defer func() { is.NotError(t, s.Finalize()) }()
+	is.NotError(t, s.BindText(1, name))
+	ok, err := s.Step()
+	is.NotError(t, err)
+	if !ok {
+		t.Fatalf("SQLite has no table %q", name)
+	}
+	return s.ColumnText(0), s.ColumnText(1), s.ColumnText(2)
 }
 
 // isInsert reports whether src is a supported insert.
@@ -829,7 +1021,7 @@ func TestDifferential(t *testing.T) {
 	// such as each known gap, is pinned at 0. Of the calls that are excused because s4ql refuses
 	// their arguments by its rule, each is checked against the rule instead.
 	if !slow() && atDefault("seed", "sequences", "length") {
-		want := map[string]int{acceptedStartedTable: 24, excusedArguments: 632, excusedNotInteger: 85}
+		want := map[string]int{acceptedStartedTable: 24, excusedArguments: 632, excusedArgument: 50, excusedType: 10}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
 			if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) {

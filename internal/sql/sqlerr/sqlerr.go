@@ -20,6 +20,9 @@ const (
 	// CodeReadOnly is SQLITE_READONLY, the code of a write that the connection may not make, such as
 	// one under `pragma query_only`.
 	CodeReadOnly = 8
+	// CodeTooBig is SQLITE_TOOBIG, the code of a text or a blob, or a row, that is longer than SQLite's
+	// limit.
+	CodeTooBig = 18
 )
 
 // Error of SQLite, with its result codes.
