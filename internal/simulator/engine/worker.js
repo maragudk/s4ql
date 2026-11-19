@@ -4,8 +4,9 @@
 // and runs the program engine.wasm, the test binary of internal/simulator/engine, which serves the
 // messages of the page through the object s4qlEngine below.
 //
-// The page posts {id, kind, body}, where kind is "run" or "state" and body is the JSON of the
-// message. The Worker posts:
+// The page posts {id, kind, body}, where kind is "run" or "state" for a batch run, or "start",
+// "advance", "act", "now", or "end" for a live session, and body is the JSON of the message. The
+// Worker posts:
 //
 //   - {type: "ready", ms} once the engine takes messages, with the milliseconds since the Worker
 //     started;
