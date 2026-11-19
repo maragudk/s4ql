@@ -1005,7 +1005,11 @@ func TestTx_raw(t *testing.T) {
 			for rows.Next(dest) == nil {
 				n++
 			}
-			is.True(t, n == 2 && end == "none" || n == 1, fmt.Sprint(n, " rows"))
+			want := 1
+			if end == "none" {
+				want = 2
+			}
+			is.Equal(t, want, n)
 			is.NotError(t, rows.Close())
 
 			// The bound is far above what the begin needs, and keeps a fault from hanging the test.

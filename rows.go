@@ -170,7 +170,8 @@ func (r *rows) Next(dest []driver.Value) error {
 
 // Close the rows, and end the read transaction of the query, unless it has ended. It gives the
 // error of the end of the transaction, and an internal error if the loop over the rows panicked in
-// that end.
+// that end, or else the error of the close of the connection, if that was left to the rows; see
+// [conn.Close].
 func (r *rows) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -234,8 +235,11 @@ func (r *rows) close() error {
 	c.mu.Unlock()
 	if later {
 		// database/sql closed the connection while these rows were read, and has let go of it; see
-		// [conn.Close]. So nothing else uses it, and nothing can get the error of its close.
-		_ = c.e.Close(context.WithoutCancel(r.ctx))
+		// [conn.Close]. So nothing else uses it, and the error of its close, such as that of the roll
+		// back of its transaction, is the rows', unless they have one.
+		if closeErr := c.e.Close(context.WithoutCancel(r.ctx)); err == nil {
+			err = closeErr
+		}
 	}
 	return err
 }
