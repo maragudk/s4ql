@@ -3,9 +3,10 @@ CROSSCHECK := internal/sqlite/crosscheck
 SIMLINT := internal/simlint
 FUZZTIME ?= 30s
 
+# benchmark passes -short, as test does, so that it needs no credentials.
 .PHONY: benchmark
 benchmark:
-	go test -bench . ./...
+	go test -short -bench . ./...
 
 .PHONY: cover
 cover:

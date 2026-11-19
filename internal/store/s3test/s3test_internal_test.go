@@ -105,6 +105,16 @@ func TestLoad(t *testing.T) {
 		is.Equal(t, Config{Bucket: "bucket", Region: "'a", AccessKeyID: "id", SecretAccessKey: "se=cret"}, c)
 	})
 
+	t.Run("should drop a comment after an unquoted value, and take export with any space after it", func(t *testing.T) {
+		dir := root(t, map[string]string{
+			".env.test": "S4QL_S3_BUCKET=bucket # The bucket.\nAWS_REGION=a#b\nAWS_ENDPOINT_URL_S3=\"https://x # y\"\n",
+			".env":      "export\tAWS_ACCESS_KEY_ID=id\t# The key.\nexport  AWS_SECRET_ACCESS_KEY=secret\n",
+		})
+		c, err := load(lookup(nil), dir)
+		is.NotError(t, err)
+		is.Equal(t, Config{Bucket: "bucket", Region: "a#b", Endpoint: "https://x # y", AccessKeyID: "id", SecretAccessKey: "secret"}, c)
+	})
+
 	t.Run("should fail on a file that it cannot read, other than a missing one", func(t *testing.T) {
 		dir := root(t, map[string]string{".env.test": envTest})
 		is.NotError(t, os.Mkdir(filepath.Join(dir, ".env"), 0o700))

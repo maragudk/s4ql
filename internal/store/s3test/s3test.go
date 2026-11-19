@@ -16,8 +16,9 @@
 // at the root of the module, which is committed and names the bucket that development uses. The
 // credentials, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, are the only secrets. They come as a pair
 // from the environment if it sets one of them, and otherwise from the file .env at the root of the
-// module, which is never committed. The files are read for these names only, as lines NAME=value,
-// with an optional export in front and matching quotes around the value. No value is ever printed.
+// module, which is never committed. The files are read for these names only, as lines NAME=value
+// as a shell reads plain values: with an optional export in front, quotes around the value, and a
+// comment after it. No value is ever printed.
 //
 // # Running the tests against a real bucket
 //
@@ -109,11 +110,15 @@ func Load(t testing.TB) Config {
 		t.Fatal(err)
 	}
 	err = sweeping.do(func() error {
-		client, err := c.Client(t.Context())
+		// Bounded, so that a store that hangs fails the sweep, instead of holding every other test of
+		// the process that waits for it until go test's timeout.
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+		defer cancel()
+		client, err := c.Client(ctx)
 		if err != nil {
 			return err
 		}
-		_, err = DeleteOld(t.Context(), client, c.Bucket, time.Now().Add(-24*time.Hour))
+		_, err = DeleteOld(ctx, client, c.Bucket, time.Now().Add(-24*time.Hour))
 		return err
 	})
 	if err != nil {
@@ -179,9 +184,9 @@ func load(lookup func(string) (string, bool), dir string) (Config, error) {
 }
 
 // readEnvFile gives the values of the names in the file at path, which has lines NAME=value. A line
-// may have export in front, and its value matching single or double quotes around it, which are
-// removed. Every other line is passed over, and the last line of a name wins. A missing file has no
-// values. An error never holds a value.
+// may have export in front. A value in single or double quotes is what is between them; any other
+// value ends before a # that follows a space, which starts a comment. Every other line is passed
+// over, and the last line of a name wins. A missing file has no values. An error never holds a value.
 func readEnvFile(path string, names ...string) (map[string]string, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -192,14 +197,27 @@ func readEnvFile(path string, names ...string) (map[string]string, error) {
 	}
 	values := map[string]string{}
 	for line := range strings.Lines(string(b)) {
-		line = strings.TrimPrefix(strings.TrimSpace(line), "export ")
+		line = strings.TrimSpace(line)
+		if rest, ok := strings.CutPrefix(line, "export"); ok && rest != "" && (rest[0] == ' ' || rest[0] == '\t') {
+			line = rest
+		}
 		name, value, ok := strings.Cut(line, "=")
 		name, value = strings.TrimSpace(name), strings.TrimSpace(value)
 		if !ok || !slices.Contains(names, name) {
 			continue
 		}
-		if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
-			value = value[1 : len(value)-1]
+		if value != "" && (value[0] == '"' || value[0] == '\'') {
+			if end := strings.IndexByte(value[1:], value[0]); end >= 0 {
+				value = value[1 : end+1]
+			}
+		} else {
+			// A comment after the value starts with a # after a space, as in a shell.
+			for i := 1; i < len(value); i++ {
+				if value[i] == '#' && (value[i-1] == ' ' || value[i-1] == '\t') {
+					value = strings.TrimSpace(value[:i])
+					break
+				}
+			}
 		}
 		values[name] = value
 	}
