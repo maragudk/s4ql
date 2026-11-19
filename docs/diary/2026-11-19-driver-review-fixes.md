@@ -147,3 +147,44 @@ That the third test's assertions are the outcomes the core promises and not only
 ### Future work
 
 None.
+
+## Step 4: A test of the refusal in `connector.hold`
+
+**Author:** driver-review-fixes builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "**The refusal in the connector's `hold` is untested** (`conn.go`, the check of `closed` when rows are registered; with it removed, all tests pass). It guards the window between `closed = true` and the core's stop. Write a test that reaches it deterministically if that is possible without a test-only change to production code beyond what `export_test.go` can give; if it is not, say so in a comment at the check and in your report, and do not bend the code."
+**Interpretation:** Hold the close of the connector inside its first phase, with nothing but what a test can give the driver: its host, its store, and its options.
+**Inferred intent:** The guard is pinned, so that removing it fails a test.
+
+### What I did
+
+- The test host of step 2 is now `rowHost`, which calls a function of the test at the yield between two rows, while one is set. The test of the panic sets one that panics.
+- A new subtest of `TestClose` sets one that waits on a channel. A `Next` that waits there holds the mutex of its rows, so `connector.Close`, which has set `closed` and then closes the rows that are open, waits for it, and the instance does not stop. The test then queries on a `sql.Conn` that it holds, in a loop: queries succeed until the close has set `closed`, and the first one after is refused by `hold` with `s4ql: the instance has stopped: closed`. A ping on the same connection then succeeds, which shows that the instance still serves and the refusal is the connector's. The test then lets the `Next` go on, and the close succeeds.
+- With the check of `closed` removed from `hold`, the test fails: `conn_test.go:614: Expected "s4ql: the instance has stopped" (type *errors.errorString), but got "s4ql: context deadline exceeded" (type *s4ql.failure)`, after the loop's bound of a minute.
+- The comment of `hold` says what the window is and what a query in it would do.
+
+### Why
+
+The yield between two rows is a point that the host already offers, so no production code changed. The loop has no bound of time that a slow machine can break: it ends at the first refusal, and the minute is only there so that a fault fails the test.
+
+### What worked
+
+The ping as the proof that the instance has not stopped.
+
+### What didn't work
+
+Nothing failed.
+
+### What I learned
+
+The first phase of the close is held up by any `Next` that runs, which is also the point of the brief's item 5.
+
+### What warrants review
+
+The test fails only after a minute when the check is gone, by design.
+
+### Future work
+
+None.

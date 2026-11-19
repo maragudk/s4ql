@@ -228,7 +228,7 @@ func TestRows(t *testing.T) {
 
 	t.Run("should raise a panic of the engine between two rows on the goroutine that calls Next, with the read freed, and go on serving", func(t *testing.T) {
 		w := newWorld(t)
-		h := &panicky{Free: w.host}
+		h := &rowHost{Free: w.host}
 		db, err := s4ql.OpenStore(t.Context(), h, w.client(), w.options("a"), coreOptions())
 		is.NotError(t, err)
 		t.Cleanup(func() { _ = db.Close() })
@@ -237,7 +237,7 @@ func TestRows(t *testing.T) {
 
 		rows, err := db.QueryContext(t.Context(), select1)
 		is.NotError(t, err)
-		h.armed.Store(true)
+		h.at(func() { panic(errPanic) })
 		// The engine yields after it has given a row, so the first row comes, and the panic comes at
 		// the second.
 		ok, v := next(rows)
@@ -245,7 +245,7 @@ func TestRows(t *testing.T) {
 		ok, v = next(rows)
 		is.True(t, !ok)
 		is.Equal(t, any(errPanic), v)
-		h.armed.Store(false)
+		h.at(nil)
 
 		// The rows are closed, and say so.
 		ok, v = next(rows)
@@ -371,18 +371,27 @@ func (h *panickyHandler) WithGroup(name string) slog.Handler {
 // errPanic is the value of the panics that the tests plant.
 var errPanic = errors.New("a panic of the test")
 
-// panicky is the host of the world, whose yield between two rows of a query panics with [errPanic]
-// while it is armed.
-type panicky struct {
+// rowHost is the host of the world, which calls a function of the test at the yield between two
+// rows of a query, while one is set.
+type rowHost struct {
 	*sim.Free
-	armed atomic.Bool
+	between atomic.Pointer[func()]
 }
 
-func (p *panicky) Yield(ctx context.Context, site string) {
-	if p.armed.Load() && site == "engine: between two rows of a query" {
-		panic(errPanic)
+// at the yield between two rows, call f from now on, or nothing if f is nil.
+func (h *rowHost) at(f func()) {
+	if f == nil {
+		h.between.Store(nil)
+		return
 	}
-	p.Free.Yield(ctx, site)
+	h.between.Store(&f)
+}
+
+func (h *rowHost) Yield(ctx context.Context, site string) {
+	if f := h.between.Load(); f != nil && site == "engine: between two rows of a query" {
+		(*f)()
+	}
+	h.Free.Yield(ctx, site)
 }
 
 // next is [sql.Rows.Next] of rows, and the value of a panic in it, if it panicked, as an application

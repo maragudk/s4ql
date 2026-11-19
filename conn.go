@@ -141,7 +141,9 @@ func (c *connector) Close() error {
 }
 
 // hold the rows r until they are closed, and report whether the connector is open. The rows of a
-// connector that is closed are not held, and their query fails.
+// connector that is closed are not held, and their query fails: a query that comes after the close
+// has taken the rows that it closes, and before the instance has stopped, would hold a read that
+// the close of the instance then waits for.
 func (c *connector) hold(r *rows) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()

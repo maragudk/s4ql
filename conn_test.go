@@ -571,6 +571,63 @@ func TestClose(t *testing.T) {
 		}
 	})
 
+	t.Run("should refuse a query that comes while the close closes the rows that are open, before the instance has stopped", func(t *testing.T) {
+		w := newWorld(t)
+		h := &rowHost{Free: w.host}
+		db, err := s4ql.OpenStore(t.Context(), h, w.client(), w.options("a"), coreOptions())
+		is.NotError(t, err)
+		t.Cleanup(func() { _ = db.Close() })
+		is.NotError(t, db.PingContext(t.Context()))
+		exec(t, db, t1, insert1, "insert into t1 (v1) values (2)")
+		conn, err := db.Conn(t.Context())
+		is.NotError(t, err)
+		defer func() { is.NotError(t, conn.Close()) }()
+
+		// A Next that waits between two rows, which the close waits for before it closes the rows,
+		// and so before it closes the instance.
+		rows, err := db.QueryContext(t.Context(), select1)
+		is.NotError(t, err)
+		is.True(t, rows.Next())
+		reached, gate := make(chan struct{}), make(chan struct{})
+		h.at(func() {
+			h.at(nil)
+			close(reached)
+			<-gate
+		})
+		read := make(chan error, 1)
+		go func() {
+			for rows.Next() {
+			}
+			read <- errors.Join(rows.Err(), rows.Close())
+		}()
+		<-reached
+		closed := make(chan error, 1)
+		go func() { closed <- db.Close() }()
+
+		// Queries on the connection that the application holds succeed until the close has begun,
+		// and are refused from then on. The bound is far above what the close needs to begin.
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		for {
+			r, err := conn.QueryContext(ctx, select1)
+			if err != nil {
+				is.Error(t, s4ql.ErrStopped, failed(t, err))
+				is.Equal(t, "s4ql: the instance has stopped: closed", err.Error())
+				break
+			}
+			is.NotError(t, r.Close())
+		}
+		// The instance has not stopped: the refusal is the connector's.
+		is.NotError(t, conn.PingContext(t.Context()))
+
+		close(gate)
+		is.NotError(t, <-closed)
+		if err := <-read; err != nil {
+			is.Error(t, s4ql.ErrStopped, failed(t, err))
+		}
+		is.Error(t, s4ql.ErrStopped, failed(t, conn.PingContext(t.Context())))
+	})
+
 	t.Run("should commit no insert whose commit waits in the store while the database closes, whether it goes on during the close or after the close has timed out", func(t *testing.T) {
 		for _, after := range []bool{false, true} {
 			// The clocks are fake, so the close times out only when nothing else can happen.
