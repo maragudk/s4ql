@@ -381,3 +381,52 @@ Where `DB.Reader` may yield. A yield between the open and the list would let a c
 
 - A default for `SetMaxOpenConns`, and perhaps for `SetMaxIdleConns`, in `Open`: for the lead and Markus.
 - A reader that opens without `SQLITE_OPEN_CREATE`.
+
+## Step 6: Bring the branch up to date with `main`
+
+**Author:** merge builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "Resolve the conflict so that both intents hold: everything that `main` added to the simulator stays and works, and it uses the new way to read (a reader for each read) with no reference to what the branch removed. Also look beyond the textual conflict: code that `main` added anywhere and that still uses `DB.Read`, `Options.Readers`, the request field `readers`, or anything else the branch removed will merge without a conflict and then not compile, also under the build tag `s4ql_browser` and for `GOOS=js GOARCH=wasm`."
+**Interpretation:** Merge `origin/main`, keep the live session and the new actions of the simulator from `main`, and remove every trace of the read pool that `main` brought back.
+**Inferred intent:** The branch can be reviewed and merged on top of what `main` is now, with CI green.
+
+### What I did
+
+`git merge origin/main` conflicted in one place, the `core.Options` in `run.open` of `/internal/simulator/run.go`: `main` had added `VFS: p.i.disk.name()` (the disk that can fail) next to `Readers: r.req.Readers`, and the branch had removed `Readers`. The resolution keeps `Lease`, `Logger`, and `VFS`, and drops `Readers`. The new `run.trim` from `main` and the branch's `run.read`, which opens a reader for each read, merged side by side without a conflict.
+
+Beyond the conflict, `main` had added `Session` in `/internal/simulator/request.go`, the settings of a live session, with a field `Readers` (`json:"readers"`) copied into `Request`. It merged cleanly and did not compile under the tag. A follow-up commit drops the field from `Session` and `defaultSession` and `ParseSession`, and drops `readers` from the list of the fields of `start` in `/internal/simulator/README.md`. A session that sends `readers` is now refused as an unknown member, as a request already was on the branch. Nothing in `/site/` or in `/internal/simulator/engine/` and `/internal/simulator/sitecheck/` sends `readers` or shows a control for it, so nothing there needed tolerance.
+
+### Why
+
+The simulator has no setting for the number of readers any more: each read opens one.
+
+### What worked
+
+`go build ./...`, `go vet ./...`, `make test`, `make lint`, `make check-browser`, `make test-sql`, and `go test -race -tags s4ql_browser -shuffle on ./internal/simulator/...` as CI runs it, all pass.
+
+### What didn't work
+
+The native `go build ./...` and `go vet ./...` passed right after the merge, because every file of the simulator has the tag `s4ql_browser`. Only `go vet -tags s4ql_browser ./internal/simulator/...` showed the break:
+
+```
+internal/simulator/request.go:337:74: r.Readers undefined (type Request has no field or method Readers)
+internal/simulator/request.go:348:84: unknown field Readers in struct literal of type Request
+```
+
+### What I learned
+
+A check of the simulator needs the tag; a plain build of the module says nothing about it.
+
+### What was tricky
+
+The merge commit alone does not compile under the tag, since the fix is its own commit, as the brief asked.
+
+### What warrants review
+
+`run.open` and `Session` in `/internal/simulator`. `make test-browser` and `make site-check` need Chromium and were left to CI.
+
+### Future work
+
+None from the merge.
