@@ -135,13 +135,14 @@ A column name is never reserved: `sqlite_v` is a column name like any other.
 
 ### The errors that SQLite raises in grammar actions
 
-The parser accepts every statement whose only fault is an error that one of SQLite's grammar actions raises, such as `unknown table option`. Its README lists them. None can occur for a statement of slice 1:
+The parser accepts every statement whose only fault is an error that one of SQLite's grammar actions raises, such as `unknown table option`. Its README lists them. None can occur for a statement of slice 1 or slice 2:
 
 - `unknown table option` needs an option other than `strict` or `without rowid`, as bare words.
 - `object name reserved for internal use` needs a name that starts with `sqlite_`, which is reserved.
 - `unknown database` and `temporary table name must be unqualified` need a schema name or TEMP.
 - `duplicate column name`, `table "t" has more than one primary key`, and `too many columns` need a second column or constraint.
 - A misplaced digit separator and a variable `#N` are syntax errors, which the parser gives.
+- `variable number must be between ?1 and ?%d` needs a numbered parameter, such as `?0`, and `too many SQL variables` more than 32,766 parameters. Slice 2 has one plain `?`.
 - The rest need clauses, expressions, or commands that slice 1 does not have.
 
 So every statement with such an error is not supported, and SQLite's message for it is not reproduced. A text in which such an error comes before a syntax error is a case of its own: SQLite stops at the action's error, and the oracle does not say whether the text parses, while the parser goes on and gives the later syntax error. The pass then gives that syntax error, which is not SQLite's message; see [Known gaps](#known-gaps).

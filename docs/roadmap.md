@@ -54,3 +54,29 @@ Included, without adding syntax:
 - Surviving a restart: with an empty cache, replaying the log from S3 gives the same answers.
 
 Everything else is rejected, including a second column, `integer` spelled out, `where`, `begin`, and `drop table if exists`.
+
+### Slice 2: parameters
+
+Status: built. The statement pass and the engine are checked against SQLite, and the `database/sql` driver runs an insert with an argument, directly and through a prepared statement. The generators of the differential tests do not make arguments yet.
+
+```go
+db.ExecContext(ctx, "insert into t1 (v1) values (?)", 1)
+```
+
+Included, without adding syntax:
+
+- A plain `?` in the place where slice 1 has the integer literal of an `insert`. Nowhere else: the other statements of slice 1 have no value.
+- An argument that is a Go integer and fits a signed 64-bit integer: what `database/sql` turns into an `int64`.
+- Both directly, with `db.ExecContext` and its arguments, and through a prepared statement, with `db.PrepareContext` and then `stmt.ExecContext`, any number of times with different arguments.
+- The number of arguments must equal the number of `?` in the text. Any other number is an error, the same for a direct call and a prepared one, and the statement does not run. This also holds for a text with no `?` that is given an argument. SQLite would bind NULL for a missing one; s4ql does not. The error is an ordinary error of s4ql's, whose message starts with `s4ql: ` and says both numbers, and not "not supported".
+- The commit object keeps the arguments in the annotation of the statement, by position, next to its text.
+- The errors of slice 1, matching SQLite's: a key inserted twice through a parameter gives the same error as with a literal.
+- Surviving a restart: with an empty cache, replaying the log gives the same rows for rows inserted through parameters.
+
+Rejected as not supported, where SQLite would accept it:
+
+- The other forms of a parameter: `?1`, `:name`, `@name`, `$name`, and an argument made with `sql.Named`.
+- An argument of any other type: nil, a string, a float, a bool, a `[]byte`, a `time.Time`. The message says which type.
+- A parameter inside an expression, such as `values (-?)`, or in any other place.
+
+The text is judged first, then the arguments, then the instance: a syntax error is SQLite's whatever the arguments are, and an error of the arguments does not depend on whether the instance serves.
