@@ -1690,7 +1690,15 @@ type savepointCounts struct {
 	dropInSavepoint int
 	// emptyRollbackTo counts the rollbacks to a savepoint in which nothing changed.
 	emptyRollbackTo int
+	// refused counts the upserts of a row that the table cannot hold.
+	refused int
+	// negativeZero counts the upserts and deletes given -0.0 as the key, and textKeys and blobKeys
+	// those of a text key and of a blob key in a table that existed when the transaction began.
+	negativeZero, textKeys, blobKeys int
 }
+
+// savepointLimit is the length limit of the cache in [TestTx_Savepoint_random].
+const savepointLimit = 1000
 
 func (c *savepointCounts) add(o savepointCounts) {
 	c.transactions += o.transactions
@@ -1704,17 +1712,23 @@ func (c *savepointCounts) add(o savepointCounts) {
 	c.firstTouchUndone += o.firstTouchUndone
 	c.dropInSavepoint += o.dropInSavepoint
 	c.emptyRollbackTo += o.emptyRollbackTo
+	c.refused += o.refused
+	c.negativeZero += o.negativeZero
+	c.textKeys += o.textKeys
+	c.blobKeys += o.blobKeys
 }
 
 // TestTx_Savepoint_random runs random write transactions of random steps on one instance: creates
-// and drops of a few tables in two spellings each, upserts and deletes of a few keys, annotations,
-// and savepoints, releases, and rollbacks to a savepoint in random places, also where they are
-// refused. A savepoint that is open at the end is rolled back to. Then the transaction commits or
-// rolls back. After each step, what the transaction reads must be what the model of [newTx] gives
-// for the same steps; after each end, the commit object must be the model's net effect, and what
-// the instance serves the model's state. At the end of each seed, a strict replay of the log in the
-// model and a replay into an empty cache must give the same state. The flag -replay runs that one
-// seed, and logs its steps.
+// and drops of a few tables in two spellings each, with a key and a value of random types, upserts
+// and deletes of a few keys of the type of the table's key, drawn from [edges], upserts of a value
+// of another kind or one that is too big, annotations, and savepoints, releases, and rollbacks to a
+// savepoint in random places, also where they are refused. A savepoint that is open at the end is
+// rolled back to. Then the transaction commits or rolls back. After each step, what the
+// transaction reads must be what the model of [newTx] gives for the same steps; after each end,
+// the commit object must be the model's net effect, and what the instance serves the model's
+// state. At the end of each seed, a strict replay of the log in the model and a replay into an
+// empty cache must give the same state, and the cache of the replay must hold the same values as
+// the instance's, bit for bit. The flag -replay runs that one seed, and logs its steps.
 func TestTx_Savepoint_random(t *testing.T) {
 	first, n := uint64(0), uint64(400)
 	if testing.Short() || raceEnabled || asanEnabled {
@@ -1762,6 +1776,11 @@ func TestTx_Savepoint_random(t *testing.T) {
 		{"first touches of a key undone by a rollback to a savepoint", all.firstTouchUndone, 42},
 		{"drops in a savepoint of a table that existed before it", all.dropInSavepoint, 65},
 		{"rollbacks to a savepoint in which nothing changed", all.emptyRollbackTo, 145},
+		// A quarter of what the 400 seeds reached on 2026-11-19 with the types of slice 4.
+		{"upserts of a row that the table cannot hold", all.refused, 68},
+		{"upserts and deletes given -0.0 as the key", all.negativeZero, 18},
+		{"upserts and deletes of a text key in a table that existed before", all.textKeys, 125},
+		{"upserts and deletes of a blob key in a table that existed before", all.blobKeys, 91},
 	} {
 		if c.got < c.atLeast {
 			t.Errorf("the transactions reached %q %v times, and must reach it %v times at least", c.name, c.got, c.atLeast)
@@ -1782,10 +1801,29 @@ func randomSavepoints(t *testing.T, seed uint64, verbose bool) savepointCounts {
 	}
 	var c savepointCounts
 	w := newWorld(t)
-	d := w.serve(t, "a", core.Options{})
-	// Three tables, each in two spellings that SQLite takes for the same name, and two shapes.
+	options := core.Options{}
+	options.SetLengthLimit(savepointLimit)
+	d := w.serve(t, "a", options)
+	// Three tables, each in two spellings that SQLite takes for the same name, and two shapes, with
+	// a key and a value of any type.
 	names := []string{"t1", "T1", "t2", "T2", "tX", "Tx"}
 	committed := newState()
+	// keys of each type for this seed: four of its edges, so that a transaction touches a key more
+	// than once.
+	keys := map[s4qlpb.Type][]*s4qlpb.Value{}
+	for _, typ := range types {
+		pool := slices.Clone(edges[typ])
+		r.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
+		keys[typ] = pool[:4]
+	}
+	// keyOf the table with the folded name, as the transaction sees it, at index i of the keys of its
+	// type: of the type of its key, or an integer if there is no such table.
+	keyOf := func(m *mtx, folded string, i int) []*s4qlpb.Value {
+		if tb := m.now.tables[folded]; tb != nil {
+			return []*s4qlpb.Value{keys[tb.create.GetColumns()[0].GetType()][i]}
+		}
+		return row(1 + i)
+	}
 
 	for i := range 2 + r.IntN(5) {
 		c.transactions++
@@ -1810,7 +1848,7 @@ func randomSavepoints(t *testing.T, seed uint64, verbose bool) savepointCounts {
 				return false
 			}
 			ch, ok := m.changed[folded]
-			return !ok || (!ch.created && ch.touched[text(key)] == nil)
+			return !ok || (!ch.created && ch.touched[text(stored(key))] == nil)
 		}
 		rollbackTo := func() {
 			is.NotError(t, tx.RollbackTo(ctx))
@@ -1826,16 +1864,31 @@ func randomSavepoints(t *testing.T, seed uint64, verbose bool) savepointCounts {
 			}
 			m, saved = saved, nil
 		}
+		// count the upsert or delete of the key in the table with the folded name, which is there.
+		count := func(folded string, key []*s4qlpb.Value) {
+			if v := key[0]; v.WhichKind() == s4qlpb.Value_Real_case && v.GetReal() == 0 && math.Signbit(v.GetReal()) {
+				c.negativeZero++
+			}
+			if ch := m.changed[folded]; ch == nil || ch.created {
+				return
+			}
+			switch key[0].WhichKind() {
+			case s4qlpb.Value_Text_case:
+				c.textKeys++
+			case s4qlpb.Value_Blob_case:
+				c.blobKeys++
+			}
+		}
 
 		for range 1 + r.IntN(30) {
 			name := names[r.IntN(len(names))]
 			folded := foldName(name)
-			key := 1 + r.IntN(4)
+			key := keyOf(m, folded, r.IntN(4))
 			switch k := r.IntN(100); {
 			case k < 12:
-				ct := tableOf(name, 1, "k", "v")
+				ct := typedTable(name, types[r.IntN(len(types))], types[r.IntN(len(types))])
 				if r.IntN(2) == 0 {
-					ct = tableOf(name, 1, "k")
+					ct = typedTable(name, types[r.IntN(len(types))])
 				}
 				logf("create %v", describe(ct))
 				err := tx.CreateTable(ctx, ct)
@@ -1866,15 +1919,17 @@ func randomSavepoints(t *testing.T, seed uint64, verbose bool) savepointCounts {
 					is.Error(t, core.ErrNoTable, err)
 				}
 
-			case k < 52:
-				values := []any{key, r.IntN(10)}
-				if tb := m.now.tables[folded]; tb != nil {
-					values = values[:len(tb.create.GetColumns())]
+			case k < 49:
+				values := slices.Clone(key)
+				if tb := m.now.tables[folded]; tb != nil && len(tb.create.GetColumns()) == 2 {
+					pool := edges[tb.create.GetColumns()[1].GetType()]
+					values = append(values, pool[r.IntN(len(pool))])
 				}
-				logf("upsert %v %v", name, values)
-				firstTouch := first(folded, row(key))
-				err := tx.Upsert(ctx, name, row(values...))
-				if m.upsert(name, row(values...)) {
+				logf("upsert %v %v", name, text(values))
+				firstTouch := first(folded, key)
+				err := tx.Upsert(ctx, name, values)
+				if m.upsert(name, values) {
+					count(folded, key)
 					is.NotError(t, err)
 					changedSince = true
 					touchedFirst = touchedFirst || (saved != nil && firstTouch)
@@ -1882,12 +1937,39 @@ func randomSavepoints(t *testing.T, seed uint64, verbose bool) savepointCounts {
 					is.Error(t, core.ErrNoTable, err)
 				}
 
+			case k < 52:
+				// A row that the table cannot hold, which changes nothing.
+				tb := m.now.tables[folded]
+				if tb == nil {
+					break
+				}
+				values := slices.Clone(key)
+				if len(tb.create.GetColumns()) == 2 {
+					values = append(values, edges[tb.create.GetColumns()[1].GetType()][0])
+				}
+				position := r.IntN(len(values))
+				want := core.ErrInvalid
+				switch typ := tb.create.GetColumns()[position].GetType(); {
+				case r.IntN(2) == 0 && typ == s4qlpb.Type_TYPE_TEXT:
+					values[position], want = row(strings.Repeat("x", savepointLimit+1))[0], core.ErrTooBig
+				case r.IntN(2) == 0 && typ == s4qlpb.Type_TYPE_BLOB:
+					values[position], want = row(make([]byte, savepointLimit+1))[0], core.ErrTooBig
+				default:
+					// A value of the type two places on, which is always of another kind.
+					next := types[(slices.Index(types, typ)+2)%len(types)]
+					values[position] = edges[next][0]
+				}
+				logf("upsert %v of a value that it refuses at %v", name, position)
+				c.refused++
+				is.Error(t, want, tx.Upsert(ctx, name, values))
+
 			case k < 70:
-				logf("delete %v %v", name, key)
-				firstTouch := first(folded, row(key))
-				found, err := tx.Delete(ctx, name, row(key))
-				table, want := m.remove(name, row(key))
+				logf("delete %v %v", name, text(key))
+				firstTouch := first(folded, key)
+				found, err := tx.Delete(ctx, name, key)
+				table, want := m.remove(name, key)
 				if table {
+					count(folded, key)
 					is.NotError(t, err)
 					is.Equal(t, want, found)
 					changedSince = changedSince || want
@@ -1980,12 +2062,20 @@ func randomSavepoints(t *testing.T, seed uint64, verbose bool) savepointCounts {
 	}
 
 	// A strict replay of the log in the model, and a replay into an empty cache, give the state of
-	// the instance that committed.
+	// the instance that committed, and the two caches hold the same values, bit for bit.
 	mdl := newModel(w.store, "db")
 	is.NotError(t, mdl.sync())
 	is.Equal(t, committed.text(), mdl.states[len(mdl.states)-1].text(), "a strict replay of the log")
 	is.NotError(t, d.Close(ctx))
-	is.Equal(t, committed.text(), read(t, w.serve(t, "b", core.Options{})), "a replay of the log into an empty cache")
+	replayed := w.serve(t, "b", options)
+	is.Equal(t, committed.text(), read(t, replayed), "a replay of the log into an empty cache")
+	is.NotError(t, replayed.Close(ctx))
+	_, before, err := cacheDump(filepath.Join(w.dir, "a.db"))
+	is.NotError(t, err)
+	_, after, err := cacheDump(filepath.Join(w.dir, "b.db"))
+	is.NotError(t, err)
+	is.Equal(t, committed.text(), show(before), "the cache of the instance that committed")
+	is.Equal(t, show(before), show(after), "the cache that the log was replayed into")
 	return c
 }
 
