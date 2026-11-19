@@ -272,3 +272,65 @@ See the later steps.
 ### Future work
 
 - A second Worker for the longer runs, if the held cards are noticed.
+
+## Step 6: The brief to move the page to a live session
+
+**Author:** builder (live simulator page)
+
+### Prompt Context
+
+**Verbatim prompt:** (the brief from the lead, abridged to its requirements)
+
+> The engine now has live sessions (#44). Markus looked at the page and asked for these changes:
+>
+> 1. "Don't auto-start, make the user hit play." The page loads paused at time zero.
+> 2. "Make the speed a 'turbo' button, which makes it go from 1x to 5x, not toggled on startup."
+> 3. "Why is there a time limit at all? Just keep going. Refreshing the page means starting over." No limit and no "Start over": the page uses a live session and advances it as it plays.
+> 4. "Just have instances a and b in the columns, drop s3. I'd rather have s3 info below." No actions on S3.
+> 5. "Drop the whole 'things to try' section, that should be obvious from the fault buttons."
+> 6. "Faults should maybe just be 'actions'? And make it clearer that they are buttons." Crash and restart, Stop and start, Hang network, Disconnect network, Error disk, and Clock: jump forward, jump backward, pause and resume. No "Hang disk", which the engine cannot do in a browser, and no mention of it.
+> 7. "Also, cut down on the text. The simulator should be pretty self-explanatory, apart from the introduction text." Labels and short values; the event log in short plain lines.
+>
+> The lead's details: advance in small steps tied to animation frames, never pile up calls, do not jump ahead after a hidden tab; an action only where it makes sense, with the other state of a toggle shown in place of a disabled button; the standby's refusals as one line a spell and a count; a stale read after paused clocks said in one plain line; only the shown events kept, `now` with a bounded number of commits; a one-line stop for memory if ever needed; real loading and failure states.
+>
+> Delete what the page no longer uses. The engine stays as it is. Rewrite `sitecheck` for the new page, with fake time past the old 10 minutes without minutes of real time, through a hook that only the check uses; wait on states and `data-*` attributes, never on durations.
+
+**Interpretation:** replace the batch playback with a pump that drives one live session: advance by the real time that passed, times the speed, then ask for `now`; send an action at once, paused or playing. Two instance columns with their actions as plain toggle buttons, S3 and the log below, and an intro of two sentences.
+
+**Inferred intent:** a visitor presses Play, watches one instance serve and the other stand by for as long as they like, and breaks the environment of either with buttons whose state is obvious, without reading anything but the intro.
+
+### What I did
+
+Read `AGENTS.md`, the README of `internal/simulator` (the live session, the actions, and what the code does under each), `simulator.js` and the demo, the two diaries, the page, `sitecheck`, `PRODUCT.md`, and the surface brief of the site. Loaded the `impeccable` skill for `distill`. It had no way to ask Markus from a sub-agent, so the direction comes from the brief.
+
+### Why
+
+The plan:
+
+- **1× is real time.** A fake second for a real second, and 5× with turbo. A fake minute costs about 45 ms in Chromium, so 5× costs the engine a few ms a second.
+- **The field becomes a window.** With no end there is no fixed scale, so the bar field shows the last 2 min of fake time, with the present at its right edge.
+- **The hook for the check** is `window.s4qlPage.skip(ms)`, a method on the object that the page already exposes to the check. It goes through the same pump as playback. A visitor reaches it only through the console.
+
+### What worked
+
+Nothing to run yet.
+
+### What didn't work
+
+Nothing yet.
+
+### What I learned
+
+Nothing yet.
+
+### What was tricky
+
+Nothing yet.
+
+### What warrants review
+
+Nothing yet.
+
+### Future work
+
+See the later steps.
