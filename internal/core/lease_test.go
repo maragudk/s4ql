@@ -844,18 +844,20 @@ func TestLease_waiting(t *testing.T) {
 	t.Run("should fail a call that waits when the instance finds that it has lost the lease", func(t *testing.T) {
 		bubble(t, func(t *testing.T, w *world) {
 			s := newScriptStore(w.client())
-			a := w.openOn(t, "a", s, core.Options{Lease: 10 * time.Minute, RenewAfter: 10 * time.Second})
+			// The planted bug keepIdleTx leaves the idle transaction open when the instance loses the
+			// lease. Without it, the end of the transaction would give the writer lock to the waiter,
+			// which would then fail anyway, and the test would pass also if the news of the loss did
+			// not wake the waiter.
+			options := core.Options{Lease: 10 * time.Minute, RenewAfter: 10 * time.Second}
+			options.Plant("keepIdleTx")
+			a := w.openOn(t, "a", s, options)
 			is.NotError(t, a.Wait(t.Context()))
 			// The lease lasts ten minutes by the clocks, so only the news of its loss ends the wait.
 			tx, waiter := waiting(t, a)
 
-			// Another instance writes the manifest, as one does that has taken the lease. It holds the
-			// lease, because the instance ends its idle transaction and would take a free lease back
-			// at once, and the waiter could then begin.
+			// Another instance writes the manifest, as one does that has taken the lease.
 			l := newHandLog(t, w)
-			data, err := format.Manifest{Lease: &format.Lease{Holder: "another", Duration: time.Hour, Renewed: time.Now(), Salt: 1}}.Marshal()
-			is.NotError(t, err)
-			l.publishBytes(data)
+			l.publish()
 			time.Sleep(15 * time.Second)
 			is.Equal(t, 1, len(waiter))
 			is.Error(t, core.ErrNoLease, <-waiter)
