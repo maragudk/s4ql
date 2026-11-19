@@ -237,9 +237,9 @@ stmt/vocabulary.go childAt condition: s.Start <= offset => true
 # The engine, internal/engine.
 
 # The planted bugs, which only the tests switch on.
-internal/engine/engine.go Engine.write condition: err == nil => false
+internal/engine/engine.go Conn.write condition: err == nil => false
 	It differs only with the planted bug keepOpen, when an operator panics.
-internal/engine/engine.go Engine.checkOutside boolean: true => false
+internal/engine/engine.go Conn.checkOutside boolean: true => false
 	The planted bug checkOutside: its position is replaced by that of the write transaction, and the bug is found by a commit that fails in SQLite either way.
 
 # Scheduling, which the production host ignores.

@@ -16,6 +16,11 @@
 // failure; a query runs in a read transaction, which ends when its rows are read to the end or
 // closed.
 //
+// A statement runs on a [Conn], a connection of the engine: it runs one statement at a time, and
+// it owns one reader of the storage core, on which its read transactions run. So the connections
+// that are open are the queries that can run at once, and nothing in the engine or in the core
+// limits their number.
+//
 // An error of a statement is one of these:
 //
 //   - SQLite's error, as a [*sqlerr.Error], with SQLite's result code, extended result code, and
@@ -51,9 +56,9 @@ type Options struct {
 	bugs bugs
 }
 
-// Engine runs statements on one database. It is safe for concurrent use: each statement is its own
-// transaction of the database, and the database runs one write transaction at a time and read
-// transactions in parallel.
+// Engine runs statements on one database, each on a [Conn] of the engine. It is safe for concurrent
+// use, and a Conn is not: each statement is its own transaction of the database, and the database
+// runs one write transaction at a time, and the read transactions of the connections in parallel.
 type Engine struct {
 	db   database
 	host host.Host
@@ -89,28 +94,95 @@ type Result struct {
 	SetsChanges bool
 }
 
+// Conn is a connection of an [Engine]: it runs the statements that it is given, one at a time. It
+// owns one reader of the database, which it opens for its first statement that reads, so a
+// connection that only writes has none, and closes in [Conn.Close]. Every read transaction of the
+// connection runs on that reader, one at a time: a statement that reads while the rows of an
+// earlier query of the connection have not ended fails at once, with an error that matches
+// [core.ErrReaderBusy], and does not wait for them. A statement that changes the database needs no
+// reader, and runs.
+//
+// A reader that cannot be opened fails the statement that needed it, and the next statement that
+// reads tries again. If the cache cannot be opened, that is a local failure, which stops the
+// instance as any other.
+//
+// A Conn is not safe for concurrent use. It must be closed, and only after the rows of its queries
+// have ended.
+type Conn struct {
+	e *Engine
+	// rd is the reader of the connection, from its first read on.
+	rd     readConn
+	closed bool
+}
+
+// Conn gives a new connection of the engine, which holds nothing until it runs a statement.
+func (e *Engine) Conn() *Conn {
+	return &Conn{e: e}
+}
+
+// Close the connection, and its reader, if it has one. It fails, with an error that matches
+// [core.ErrReaderInUse], and closes nothing, while a loop over the rows of a query of the
+// connection runs. Rows of the connection that have not ended must not be used after its close:
+// their read transaction has ended with the reader, and what they give then is an internal error.
+// A statement on a connection that is closed fails with an internal error too. Closing a closed
+// connection does nothing.
+func (c *Conn) Close(ctx context.Context) error {
+	var err error
+	if c.rd != nil {
+		if err = c.rd.close(ctx); errors.Is(err, core.ErrReaderInUse) {
+			return err
+		}
+	}
+	c.closed, c.rd = true, nil
+	return err
+}
+
+// read starts a read transaction on the reader of the connection, which it opens if the connection
+// has none.
+func (c *Conn) read(ctx context.Context) (readTx, error) {
+	if c.closed {
+		return nil, internalError("a statement on a connection that is closed")
+	}
+	if c.rd == nil {
+		rd, err := c.e.db.reader(ctx)
+		if err != nil {
+			return nil, err
+		}
+		c.rd = rd
+	}
+	return c.rd.read(ctx)
+}
+
+// begin a write transaction of the database.
+func (c *Conn) begin(ctx context.Context) (writeTx, error) {
+	if c.closed {
+		return nil, internalError("a statement on a connection that is closed")
+	}
+	return c.e.db.begin(ctx)
+}
+
 // Exec runs the statement of the text src, and gives its result. A query is run to its end, in its
 // read transaction, and its rows are dropped. The result is given with an error too: a failed
 // insert sets the count of changes.
 //
 // SQLite's last insert rowid is not changed by any statement of s4ql, because every table is WITHOUT
 // ROWID, and SQLite does not record an insert into such a table.
-func (e *Engine) Exec(ctx context.Context, src string) (Result, error) {
-	r := e.newReport(src)
+func (c *Conn) Exec(ctx context.Context, src string) (Result, error) {
+	r := c.e.newReport(src)
 	// Every statement of Exec has logged its event when exec returns, so one without is a panic.
 	defer r.panicked(ctx)
-	return e.exec(ctx, r, src)
+	return c.exec(ctx, r, src)
 }
 
-// exec is [Engine.Exec] of src for the report r.
-func (e *Engine) exec(ctx context.Context, r *report, src string) (Result, error) {
+// exec is [Conn.Exec] of src for the report r.
+func (c *Conn) exec(ctx context.Context, r *report, src string) (Result, error) {
 	p, text, err := prepare(r, src)
 	if err != nil {
 		r.end(ctx, err)
 		return Result{}, err
 	}
 	if q, ok := p.(*Query); ok {
-		rows, err := e.query(ctx, r, q)
+		rows, err := c.query(ctx, r, q)
 		if err != nil {
 			return Result{}, err
 		}
@@ -121,41 +193,42 @@ func (e *Engine) exec(ctx context.Context, r *report, src string) (Result, error
 		}
 		return Result{}, nil
 	}
-	res, err := e.write(ctx, r, p, text)
+	res, err := c.write(ctx, r, p, text)
 	r.end(ctx, err)
 	return res, err
 }
 
 // Query runs the statement of the text src, and gives its rows. A statement that is not a query is
-// run as [Engine.Exec] runs it, and gives rows with no columns and no rows, and its result in
+// run as [Conn.Exec] runs it, and gives rows with no columns and no rows, and its result in
 // [Rows.Result], also when it fails: Query then gives those rows with the error.
 //
 // The rows of a query are read in its read transaction, which is open until the rows end; see
-// [Rows].
-func (e *Engine) Query(ctx context.Context, src string) (*Rows, error) {
-	r := e.newReport(src)
+// [Rows]. Until then, the reader of the connection is taken, and a statement of the connection that
+// reads fails.
+func (c *Conn) Query(ctx context.Context, src string) (*Rows, error) {
+	r := c.e.newReport(src)
 	returned := false
 	defer func() {
 		if !returned {
 			r.panicked(ctx)
 		}
 	}()
-	rows, err := e.queryText(ctx, r, src)
+	rows, err := c.queryText(ctx, r, src)
 	returned = true
 	return rows, err
 }
 
-// queryText is [Engine.Query] of src for the report r.
-func (e *Engine) queryText(ctx context.Context, r *report, src string) (*Rows, error) {
+// queryText is [Conn.Query] of src for the report r.
+func (c *Conn) queryText(ctx context.Context, r *report, src string) (*Rows, error) {
 	p, text, err := prepare(r, src)
 	if err != nil {
 		r.end(ctx, err)
 		return nil, err
 	}
 	if q, ok := p.(*Query); ok {
-		return e.query(ctx, r, q)
+		return c.query(ctx, r, q)
 	}
-	res, err := e.write(ctx, r, p, text)
+	res, err := c.write(ctx, r, p, text)
 	r.end(ctx, err)
 	return &Rows{done: true, result: res}, err
 }
@@ -179,15 +252,16 @@ func prepare(r *report, src string) (Plan, string, error) {
 // write runs the plan p of a statement that changes the database, whose text is sql, in a write
 // transaction of its own, and gives its result. The transaction is committed if the statement
 // succeeds, and rolled back otherwise, also when an operator panics.
-func (e *Engine) write(ctx context.Context, r *report, p Plan, sql string) (_ Result, err error) {
+func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string) (_ Result, err error) {
+	e := c.e
 	_, insert := p.(*Insert)
 	if insert && e.bugs.checkOutside {
 		// The planted bug: the checks of the insert, in a read transaction of their own.
-		if err := e.checkOutside(ctx, r, p); err != nil {
+		if err := c.checkOutside(ctx, r, p); err != nil {
 			return Result{}, err
 		}
 	}
-	tx, err := e.db.begin(ctx)
+	tx, err := c.begin(ctx)
 	if err != nil {
 		return Result{}, err
 	}
@@ -230,8 +304,8 @@ func (e *Engine) write(ctx context.Context, r *report, p Plan, sql string) (_ Re
 
 // checkOutside is the planted bug that checks an insert in a read transaction before its write
 // transaction: the table, the column, and the key, without a write.
-func (e *Engine) checkOutside(ctx context.Context, r *report, p Plan) error {
-	rt, err := e.db.read(ctx)
+func (c *Conn) checkOutside(ctx context.Context, r *report, p Plan) error {
+	rt, err := c.read(ctx)
 	if err != nil {
 		return err
 	}
@@ -256,9 +330,9 @@ func (readOnly) upsert(context.Context, string, []*s4qlpb.Value) error  { return
 
 // query runs the plan q in a read transaction of its own, and gives its rows, which hold the
 // transaction until they end. The transaction ends if the rows cannot be built, also when that
-// panics; the event of a panic is then left to [Engine.Exec] and [Engine.Query].
-func (e *Engine) query(ctx context.Context, r *report, q *Query) (_ *Rows, err error) {
-	tx, err := e.db.read(ctx)
+// panics; the event of a panic is then left to [Conn.Exec] and [Conn.Query].
+func (c *Conn) query(ctx context.Context, r *report, q *Query) (_ *Rows, err error) {
+	tx, err := c.read(ctx)
 	if err != nil {
 		r.end(ctx, err)
 		return nil, err
@@ -309,7 +383,7 @@ type Rows struct {
 	result Result
 }
 
-// Result of the statement, if it is not a query, as [Engine.Exec] gives it. A query sets no count of
+// Result of the statement, if it is not a query, as [Conn.Exec] gives it. A query sets no count of
 // changes.
 func (r *Rows) Result() Result {
 	return r.result

@@ -84,6 +84,17 @@ var (
 
 	// ErrTxDone is the error of a call on a transaction that was committed, rolled back, or closed.
 	ErrTxDone = errors.New("the transaction has ended")
+
+	// ErrReaderClosed is the error of [Reader.Read] on a reader that [Reader.Close] has closed.
+	ErrReaderClosed = errors.New("the reader is closed")
+
+	// ErrReaderBusy is the error of [Reader.Read] on a reader whose read transaction is open: a
+	// reader runs one at a time.
+	ErrReaderBusy = errors.New("the reader has a read transaction open")
+
+	// ErrReaderInUse is the error of [Reader.Close] while a call of the read transaction of the
+	// reader runs. Nothing is closed then.
+	ErrReaderInUse = errors.New("a call uses the reader")
 )
 
 // errLeaseLost is the reason for [ErrNoLease] when another instance has taken the lease.

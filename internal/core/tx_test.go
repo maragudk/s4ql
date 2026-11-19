@@ -1004,7 +1004,7 @@ func TestTx_Commit_large(t *testing.T) {
 			is.True(t, grown < replayLimit, fmt.Sprintf("the heap grew by %v bytes for a commit object of %v bytes", grown, info.Size()))
 		}
 
-		r, err := replayed.Read(t.Context())
+		r, err := startRead(t, replayed)
 		is.NotError(t, err)
 		for _, table := range []string{"old", "new"} {
 			var n int64

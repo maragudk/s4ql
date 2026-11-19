@@ -2,30 +2,103 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
+	"slices"
 
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/s4qlpb"
 )
 
+// Reader is a connection to the cache that runs read transactions, one at a time. [DB.Reader]
+// opens it, and its owner closes it with [Reader.Close]. The read transactions of different readers
+// run in parallel, so the readers that are open are the read transactions that can run at once, and
+// nothing but their owners limits their number.
+//
+// A reader is not safe for concurrent use. A stop of the instance ends the read transaction of
+// every reader, and [DB.Close] closes the connection of every reader, also one whose read
+// transaction is open; [Reader.Close] of such a reader then has nothing left to close.
+type Reader struct {
+	d *DB
+	c *conn
+	// tx is the read transaction that is open, and closed whether [Reader.Close] has closed the
+	// reader. [DB.mu] guards both.
+	tx     *ReadTx
+	closed bool
+}
+
+// Reader opens a connection to the cache for read transactions. It does not need the instance to
+// serve, which [Reader.Read] does. It fails with the error of the stop on an instance that has
+// stopped.
+//
+// A cache that cannot be opened is an error of the cache as any other while the instance runs: a
+// local I/O failure, which includes a file that cannot be opened for want of a file descriptor,
+// stops the instance, and the error wraps [ErrStopped] and [ErrLocal].
+func (d *DB) Reader(ctx context.Context) (*Reader, error) {
+	// The connection opens without the mutex, which nothing holds across a call that can take
+	// long. The count of the readers that are opening is what [DB.Close] waits for meanwhile.
+	d.mu.Lock()
+	if err := d.stopped; err != nil {
+		d.mu.Unlock()
+		return nil, err
+	}
+	d.opening++
+	d.mu.Unlock()
+	d.host.Yield(ctx, "core: a reader before its open")
+
+	// Nothing waits between the open and the list, so that no task is ended between them with a
+	// connection that nothing knows of.
+	c, err := openConn(d.path, d.options.VFS, d.options.BusyTimeout.Milliseconds())
+	if err == nil {
+		if err = c.exec("pragma query_only = on"); err != nil {
+			_ = c.close()
+		}
+	}
+
+	d.mu.Lock()
+	stopped := d.stopped
+	switch {
+	case err != nil:
+	case stopped != nil:
+		// The instance stopped meanwhile, and its close does not know the connection: it is closed
+		// here, before the count lets that close return.
+		_ = c.close()
+	default:
+		d.readers = append(d.readers, c)
+	}
+	d.opening--
+	if d.closing && d.opening == 0 {
+		d.wakeLocked()
+	}
+	d.mu.Unlock()
+	switch {
+	case err != nil:
+		return nil, d.cacheError(ctx, "open a reader", err)
+	case stopped != nil:
+		return nil, stopped
+	}
+	return &Reader{d: d, c: c}, nil
+}
+
 // ReadTx is a read transaction. It sees one consistent state of the cache: the state after one
-// commit object, whatever is committed while it is open. Read transactions run in parallel, as
-// many at once as the instance has read connections. It ends with [ReadTx.Close], and must end
-// with it.
+// commit object, whatever is committed while it is open. Read transactions run in parallel, one
+// on each [Reader]. It ends with [ReadTx.Close], and must end with it.
 //
 // A read transaction is not safe for concurrent use. If the instance stops for good while a read
 // transaction is open, every call of the transaction fails.
 type ReadTx struct {
 	d        *DB
+	rd       *Reader
 	c        *conn
 	position format.Name
 	done     bool
 }
 
-// Read starts a read transaction, waiting until a read connection is free. It fails at once, and
-// whenever the instance stops serving while it waits, with an error that wraps [ErrNoLease] or
-// [ErrStopped], with the error of the wait if ctx is done first, and with one that wraps [ErrBusy]
+// Read starts a read transaction on the reader. It does not wait: it fails at once with an error
+// that wraps [ErrNoLease] or [ErrStopped] on an instance that does not serve, with the error of ctx
+// if ctx is done, with [ErrReaderBusy] while the read transaction that the reader started before is
+// open, with [ErrReaderClosed] on a reader that is closed, and with an error that wraps [ErrBusy]
 // if the cache is locked.
 //
 // Before the state that the transaction sees is fixed, the lease is checked against both clocks of
@@ -36,21 +109,33 @@ type ReadTx struct {
 // state is fixed would not do alone: an instance that fixed the state while it did not hold the
 // lease can take the lease and catch up before the check. The lease is checked once more then, so
 // that a read on an instance that has stopped serving meanwhile is refused and not served late.
-func (d *DB) Read(ctx context.Context) (_ *ReadTx, err error) {
+func (rd *Reader) Read(ctx context.Context) (_ *ReadTx, err error) {
 	const operation = "read"
-	if err := d.acquireServing(ctx, d.readerPool); err != nil {
+	d, c := rd.d, rd.c
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	d.host.Yield(ctx, "core: a read before it starts")
+	r := &ReadTx{d: d, rd: rd, c: c}
+	d.mu.Lock()
+	err = d.servingLocked()
+	switch {
+	case err != nil:
+	case rd.tx != nil:
+		err = ErrReaderBusy
+	default:
+		rd.tx = r
+	}
+	d.mu.Unlock()
+	if err != nil {
 		return nil, d.refused(ctx, operation, err)
 	}
-	d.mu.Lock()
-	c := d.idle[len(d.idle)-1]
-	d.idle = d.idle[:len(d.idle)-1]
-	d.mu.Unlock()
-	r := &ReadTx{d: d, c: c}
 	defer func() {
 		if err != nil {
 			_ = r.end(ctx)
 		}
 	}()
+	// A connection that is closed refuses the read: with the stop, or with [ErrReaderClosed].
 	if err := d.use(c); err != nil {
 		return nil, err
 	}
@@ -77,6 +162,44 @@ func (d *DB) Read(ctx context.Context) (_ *ReadTx, err error) {
 		return nil, d.refused(ctx, operation, err)
 	}
 	return r, nil
+}
+
+// Close the reader: end its read transaction, if one is open, and close its connection to the
+// cache. It gives the error of the end of that transaction, and of the close of the connection.
+// After [DB.Close], which has closed the connection, it has nothing left to close. It fails with
+// [ErrReaderInUse], and closes nothing, while a call of the read transaction of the reader runs,
+// such as a loop over [ReadTx.Scan]. Closing a closed reader does nothing.
+func (rd *Reader) Close(ctx context.Context) error {
+	d, c := rd.d, rd.c
+	d.mu.Lock()
+	switch {
+	case rd.closed:
+		d.mu.Unlock()
+		return nil
+	case c.users > 0:
+		d.mu.Unlock()
+		return ErrReaderInUse
+	}
+	rd.closed = true
+	tx := rd.tx
+	d.mu.Unlock()
+
+	var endErr error
+	if tx != nil {
+		endErr = tx.end(ctx)
+	}
+
+	// The connection closes under the mutex, as in [DB.closeIdleLocked], so that [DB.Close] does not
+	// return while a read connection that it takes for closed is still closing.
+	d.mu.Lock()
+	d.readers = slices.DeleteFunc(d.readers, func(other *conn) bool { return other == c })
+	var closeErr error
+	if !c.closed {
+		c.closed = true
+		closeErr = c.close()
+	}
+	d.mu.Unlock()
+	return errors.Join(endErr, d.cacheError(ctx, "close a reader", closeErr))
 }
 
 // Position of the cache in the state that the transaction sees: the name of the last commit object
@@ -192,7 +315,7 @@ func (r *ReadTx) Scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Valu
 	}
 }
 
-// Close the transaction, and give its connection back.
+// Close the transaction, so that its reader can start the next.
 func (r *ReadTx) Close(ctx context.Context) error {
 	if r.done {
 		return ErrTxDone
@@ -200,7 +323,7 @@ func (r *ReadTx) Close(ctx context.Context) error {
 	return r.end(ctx)
 }
 
-// end the transaction: give back its connection and its permit.
+// end the transaction, and free its reader for the next.
 func (r *ReadTx) end(ctx context.Context) error {
 	if r.done {
 		return nil
@@ -221,8 +344,7 @@ func (r *ReadTx) end(ctx context.Context) error {
 		r.leave()
 	}
 	r.d.mu.Lock()
-	r.d.idle = append(r.d.idle, r.c)
+	r.rd.tx = nil
 	r.d.mu.Unlock()
-	r.d.readerPool.Release(ctx)
 	return err
 }

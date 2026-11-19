@@ -650,13 +650,53 @@ func short(name format.Name) string {
 	return name.String()[:8]
 }
 
-// read runs one read transaction of a caller of n on d, and compares what it sees with the log.
-// It reports whether the read was served.
-func (r *run) read(ctx context.Context, n *node, d *core.DB) bool {
+// caller of a node: it owns one reader, as a connection of a pool does. It opens the reader at
+// its first read of a database, and closes it when the node has opened its database again, which
+// is after the close of the database that the reader is of, and when the caller ends.
+type caller struct {
+	d  *core.DB
+	rd *core.Reader
+}
+
+// reader of the caller for d.
+func (c *caller) reader(ctx context.Context, r *run, d *core.DB) (*core.Reader, error) {
+	if c.d != d {
+		c.close(ctx, r)
+		c.d = d
+	}
+	if c.rd == nil {
+		rd, err := d.Reader(ctx)
+		if err != nil {
+			return nil, err
+		}
+		c.rd = rd
+	}
+	return c.rd, nil
+}
+
+// close the reader of the caller, if it has one. No read transaction of it is open, so the close
+// fails for nothing, whether the database of the reader is open, stopped, or closed.
+func (c *caller) close(ctx context.Context, r *run) {
+	if c.rd == nil {
+		return
+	}
+	if err := c.rd.Close(ctx); err != nil {
+		r.o.violate(ctx, r.c.world, "close of a reader: %v", err)
+	}
+	c.rd = nil
+}
+
+// read runs one read transaction of the caller c of n on d, and compares what it sees with the
+// log. It reports whether the read was served.
+func (r *run) read(ctx context.Context, n *node, c *caller, d *core.DB) bool {
 	o, world := r.o, r.c.world
 	before := o.acked.Load()
 	started := o.count.Add(1)
-	rd, err := d.Read(ctx)
+	reader, err := c.reader(ctx, r, d)
+	var rd *core.ReadTx
+	if err == nil {
+		rd, err = reader.Read(ctx)
+	}
 	if err != nil {
 		o.refusedReads.Add(1)
 		if errors.Is(err, core.ErrNoLease) && strings.Contains(err.Error(), "lease_expired") {
@@ -804,6 +844,9 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 	for i := range w.callers {
 		tasks = append(tasks, n.host.Go(ctx, fmt.Sprint("caller-", i), func(ctx context.Context) {
 			defer n.callers.Add(-1)
+			// A caller of an instance that crashes never comes to the close of its reader, which the
+			// crashed instance keeps open as it keeps its other connections.
+			c := &caller{}
 			for range w.ops {
 				if w.think > 0 {
 					_ = n.host.Sleep(ctx, time.Duration(intn(n.host, int(w.think/time.Millisecond)))*time.Millisecond)
@@ -814,10 +857,11 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 				if intn(n.host, 100) < w.writes {
 					r.write(ctx, n, d)
 				} else {
-					r.read(ctx, n, d)
+					r.read(ctx, n, c, d)
 				}
 				cancel()
 			}
+			c.close(ctx, r)
 		}))
 	}
 	tasks = append(tasks, n.host.Go(ctx, "supervisor", func(ctx context.Context) {
@@ -1002,9 +1046,11 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 				if d := n.current(); isStopped(d) {
 					r.stopped(ctx, n, d)
 				}
+				c := &caller{}
+				defer c.close(ctx, r)
 				ctx, cancel := n.host.WithTimeout(ctx, w.timeout)
 				defer cancel()
-				if r.read(ctx, n, n.current()) {
+				if r.read(ctx, n, c, n.current()) {
 					served = true
 				}
 			})
@@ -1311,17 +1357,23 @@ func (r *run) verifyReplay(ctx context.Context) {
 		if err != nil {
 			o.violate(ctx, c.world, "the replay of the whole log into an empty cache: %v %v", err, d.Err())
 		} else {
-			rd, err := d.Read(ctx)
+			reader := &caller{}
+			rd, err := reader.reader(ctx, r, d)
+			var tx *core.ReadTx
+			if err == nil {
+				tx, err = rd.Read(ctx)
+			}
 			if err != nil {
 				o.violate(ctx, c.world, "read after the replay: %v", err)
 			} else {
-				state, err := dump(ctx, rd)
-				_ = rd.Close(ctx)
-				commit, want, ok := m.at(rd.Position())
+				state, err := dump(ctx, tx)
+				_ = tx.Close(ctx)
+				commit, want, ok := m.at(tx.Position())
 				if err != nil || !ok || commit != m.head() || show(state) != want.text() {
 					o.violate(ctx, c.world, "the replay of the whole log into an empty cache gave at commit %v of %v the state %q, and the log has %q: %v", commit, m.head(), show(state), want.text(), err)
 				}
 			}
+			reader.close(ctx, r)
 		}
 		r.close(ctx, n, d)
 	})

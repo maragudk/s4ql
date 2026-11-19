@@ -12,6 +12,7 @@ import (
 
 	"maragu.dev/is"
 
+	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
@@ -19,7 +20,9 @@ import (
 )
 
 // fake storage: tables in memory, with names compared as SQLite compares them, and failures on
-// demand. It is a [database], and each of its transactions sees and changes the same tables.
+// demand. It is a [database], and each of its transactions sees and changes the same tables. It is
+// the [readConn] of each of its readers too, which it only counts: a read on it does not fail while
+// the one before it is open.
 type fake struct {
 	tables map[string]*fakeTable
 	// scanFails makes a scan fail before the row of that index, if it is not negative.
@@ -37,6 +40,10 @@ type fake struct {
 	endFails    error
 	// scans counts the scans that have started and not ended, and open the transactions.
 	scans, open int
+	// readers counts the readers that are open, and opened those that were ever opened. readerFails
+	// is the error of opening one, and closeFails of closing one.
+	readers, opened         int
+	readerFails, closeFails error
 	// calls of the transactions, in order.
 	calls []string
 }
@@ -75,6 +82,23 @@ func (f *fake) begin(context.Context) (writeTx, error) {
 	}
 	f.open++
 	return fakeTx{f}, nil
+}
+
+func (f *fake) reader(context.Context) (readConn, error) {
+	if f.readerFails != nil {
+		return nil, f.readerFails
+	}
+	f.readers++
+	f.opened++
+	return f, nil
+}
+
+func (f *fake) close(context.Context) error {
+	if errors.Is(f.closeFails, core.ErrReaderInUse) {
+		return f.closeFails
+	}
+	f.readers--
+	return f.closeFails
 }
 
 func (f *fake) read(context.Context) (readTx, error) {

@@ -125,41 +125,41 @@ func TestEngine_errors(t *testing.T) {
 		cancel()
 		for _, src := range []string{"create table t1 (v1 int primary key) strict without rowid", "selec * from t1", "insert into t1 (v1) values ("} {
 			want := newOracle(t).run(t, src).err
-			_, err := i.e.Exec(ctx, src)
+			_, err := i.c.Exec(ctx, src)
 			is.Equal(t, want, errText(t, src, err), src)
-			_, err = i.e.Query(ctx, src)
+			_, err = i.c.Query(ctx, src)
 			is.Equal(t, want, errText(t, src, err), src)
 		}
 		i.close()
 		for _, src := range []string{"create table T1 (", "selec * from t1"} {
 			want := newOracle(t).run(t, src).err
-			_, err := i.e.Exec(t.Context(), src)
+			_, err := i.c.Exec(t.Context(), src)
 			is.Equal(t, want, errText(t, src, err), src)
-			_, err = i.e.Query(ctx, src)
+			_, err = i.c.Query(ctx, src)
 			is.Equal(t, want, errText(t, src, err), src)
 		}
 	})
 
 	t.Run("should give not supported, and no statement, as errors of their own", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
-		_, err := i.e.Exec(t.Context(), "select * from t1 where v1 = 1")
+		_, err := i.c.Exec(t.Context(), "select * from t1 where v1 = 1")
 		is.True(t, errors.Is(err, stmt.ErrNotSupported))
 		var se *sqlerr.Error
 		is.True(t, !errors.As(err, &se))
-		_, err = i.e.Exec(t.Context(), `create table "" (v int primary key) strict, without rowid`)
+		_, err = i.c.Exec(t.Context(), `create table "" (v int primary key) strict, without rowid`)
 		is.True(t, errors.Is(err, stmt.ErrNotSupported))
-		_, err = i.e.Query(t.Context(), " ; -- nothing")
+		_, err = i.c.Query(t.Context(), " ; -- nothing")
 		is.True(t, errors.Is(err, engine.ErrNoStatement))
-		_, err = i.e.Exec(t.Context(), "")
+		_, err = i.c.Exec(t.Context(), "")
 		is.True(t, errors.Is(err, engine.ErrNoStatement))
 	})
 
 	t.Run("should pass an error of the core through as it is", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
 		i.close()
-		_, err := i.e.Exec(t.Context(), t1)
+		_, err := i.c.Exec(t.Context(), t1)
 		is.True(t, errors.Is(err, core.ErrStopped))
-		_, err = i.e.Query(t.Context(), "select * from t1")
+		_, err = i.c.Query(t.Context(), "select * from t1")
 		is.True(t, errors.Is(err, core.ErrStopped))
 		var se *sqlerr.Error
 		is.True(t, !errors.As(err, &se))
@@ -169,7 +169,7 @@ func TestEngine_errors(t *testing.T) {
 		i := newInstance(t, engine.Options{})
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		_, err := i.e.Exec(ctx, t1)
+		_, err := i.c.Exec(ctx, t1)
 		is.True(t, errors.Is(err, context.Canceled))
 	})
 }
@@ -178,23 +178,23 @@ func TestEngine_Exec(t *testing.T) {
 	t.Run("should count one change for an insert, and none set by a create table, a drop table, or a query", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
 		ctx := t.Context()
-		res, err := i.e.Exec(ctx, t1)
+		res, err := i.c.Exec(ctx, t1)
 		is.NotError(t, err)
 		is.Equal(t, engine.Result{}, res)
-		res, err = i.e.Exec(ctx, "insert into t1 (v1) values (1)")
+		res, err = i.c.Exec(ctx, "insert into t1 (v1) values (1)")
 		is.NotError(t, err)
 		is.Equal(t, engine.Result{Changes: 1, SetsChanges: true}, res)
-		res, err = i.e.Exec(ctx, "select * from t1")
+		res, err = i.c.Exec(ctx, "select * from t1")
 		is.NotError(t, err)
 		is.Equal(t, engine.Result{}, res)
-		res, err = i.e.Exec(ctx, "drop table t1")
+		res, err = i.c.Exec(ctx, "drop table t1")
 		is.NotError(t, err)
 		is.Equal(t, engine.Result{}, res)
 	})
 
 	t.Run("should run a query to its end and give its error", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
-		_, err := i.e.Exec(t.Context(), "select * from t1")
+		_, err := i.c.Exec(t.Context(), "select * from t1")
 		is.Equal(t, "no such table: t1", err.Error())
 	})
 }
@@ -203,9 +203,9 @@ func TestEngine_Query(t *testing.T) {
 	t.Run("should run a statement that is not a query, with its result and no rows", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
 		ctx := t.Context()
-		_, err := i.e.Exec(ctx, t1)
+		_, err := i.c.Exec(ctx, t1)
 		is.NotError(t, err)
-		rows, err := i.e.Query(ctx, "insert into t1 (v1) values (7)")
+		rows, err := i.c.Query(ctx, "insert into t1 (v1) values (7)")
 		is.NotError(t, err)
 		is.Equal(t, engine.Result{Changes: 1, SetsChanges: true}, rows.Result())
 		is.Equal(t, 0, len(rows.Columns()))
@@ -220,16 +220,16 @@ func TestEngine_Query(t *testing.T) {
 	t.Run("should end the read transaction when the loop stops early, at Close, and at Close during the loop", func(t *testing.T) {
 		i := newInstance(t, engine.Options{Logger: slog.New(slog.DiscardHandler)})
 		ctx := t.Context()
-		_, err := i.e.Exec(ctx, t1)
+		_, err := i.c.Exec(ctx, t1)
 		is.NotError(t, err)
 		for v := range 10 {
-			_, err := i.e.Exec(ctx, fmt.Sprint("insert into t1 (v1) values (", v, ")"))
+			_, err := i.c.Exec(ctx, fmt.Sprint("insert into t1 (v1) values (", v, ")"))
 			is.NotError(t, err)
 		}
-		// The instance has [readers] read connections, so a read transaction that
-		// is left open shows after a few queries: the next one waits for a connection.
+		// A read transaction that is left open shows at the next query of the connection, which
+		// fails.
 		for range 10 {
-			rows, err := i.e.Query(ctx, "select * from t1")
+			rows, err := i.c.Query(ctx, "select * from t1")
 			is.NotError(t, err)
 			for _, err := range rows.All() {
 				_ = err
@@ -237,7 +237,7 @@ func TestEngine_Query(t *testing.T) {
 			}
 			is.NotError(t, rows.Close())
 
-			rows, err = i.e.Query(ctx, "select * from t1")
+			rows, err = i.c.Query(ctx, "select * from t1")
 			is.NotError(t, err)
 			is.NotError(t, rows.Close())
 			for _, err := range rows.All() {
@@ -245,7 +245,7 @@ func TestEngine_Query(t *testing.T) {
 				t.Fatal("a row after Close")
 			}
 
-			rows, err = i.e.Query(ctx, "select * from t1")
+			rows, err = i.c.Query(ctx, "select * from t1")
 			is.NotError(t, err)
 			n := 0
 			for _, err := range rows.All() {
@@ -261,12 +261,12 @@ func TestEngine_Query(t *testing.T) {
 	t.Run("should end the read transaction when the loop panics", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
 		ctx := t.Context()
-		_, err := i.e.Exec(ctx, t1)
+		_, err := i.c.Exec(ctx, t1)
 		is.NotError(t, err)
-		_, err = i.e.Exec(ctx, "insert into t1 (v1) values (1)")
+		_, err = i.c.Exec(ctx, "insert into t1 (v1) values (1)")
 		is.NotError(t, err)
 		for range 10 {
-			rows, err := i.e.Query(ctx, "select * from t1")
+			rows, err := i.c.Query(ctx, "select * from t1")
 			is.NotError(t, err)
 			func() {
 				defer func() { is.Equal(t, "the consumer", recover()) }()
@@ -280,23 +280,27 @@ func TestEngine_Query(t *testing.T) {
 	})
 }
 
-// noneOpen requires that the instance i holds no transaction: a write and every read connection can
-// begin. A transaction that is left open makes it wait until the test times out.
+// noneOpen requires that the instance i holds no transaction: a write transaction can begin, and so
+// can a read transaction on the connection of i. A write transaction that is left open makes it wait
+// until the test times out, and a read transaction that is left open makes it fail.
 func noneOpen(t *testing.T, i *instance) {
 	t.Helper()
 	ctx := t.Context()
 	tx, err := i.d.Begin(ctx)
 	is.NotError(t, err)
-	var reads []*core.ReadTx
-	for range readers {
-		r, err := i.d.Read(ctx)
-		is.NotError(t, err)
-		reads = append(reads, r)
-	}
-	for _, r := range reads {
-		is.NotError(t, r.Close(ctx))
-	}
+	readFree(t, i.c)
 	is.NotError(t, tx.Rollback(ctx))
+}
+
+// readFree requires that no read transaction is open on the connection c: a query of a table that
+// does not exist gets its read transaction, in which it finds that out. A read transaction that is
+// left open makes it fail with another error.
+func readFree(t *testing.T, c *engine.Conn) {
+	t.Helper()
+	_, err := c.Query(t.Context(), `select * from "no such table"`)
+	var se *sqlerr.Error
+	is.True(t, errors.As(err, &se), fmt.Sprint(err))
+	is.Equal(t, `no such table: no such table`, se.Message)
 }
 
 // logAnnotations of the database in the store s, in the order of the log, each commit object as its
@@ -349,7 +353,7 @@ func TestEngine_annotations(t *testing.T) {
 			";drop table T1;;",
 		}
 		for _, src := range texts {
-			_, _ = i.e.Exec(t.Context(), src)
+			_, _ = i.c.Exec(t.Context(), src)
 		}
 		is.Equal(t, fmt.Sprint([][]string{
 			{"create table t1 (v1 int primary key) strict, without rowid;"},
@@ -399,7 +403,7 @@ func TestEngine_events(t *testing.T) {
 		i := newInstanceLogged(t, engine.Options{Logger: slog.New(h)}, slog.New(ch))
 		ctx := t.Context()
 
-		_, err := i.e.Exec(ctx, t1)
+		_, err := i.c.Exec(ctx, t1)
 		is.NotError(t, err)
 		e, level := h.last(t)
 		is.Equal(t, slog.LevelDebug, level)
@@ -414,7 +418,7 @@ func TestEngine_events(t *testing.T) {
 		_, ok := e[engine.AttrDuration]
 		is.True(t, ok)
 
-		_, err = i.e.Exec(ctx, "insert into T1 (v1) values (5)")
+		_, err = i.c.Exec(ctx, "insert into T1 (v1) values (5)")
 		is.NotError(t, err)
 		e, _ = h.last(t)
 		is.Equal(t, "insert", e[engine.AttrKind])
@@ -427,7 +431,7 @@ func TestEngine_events(t *testing.T) {
 		is.Equal(t, parent, commit[engine.AttrParent])
 		is.Equal(t, "committed", commit[engine.AttrOutcome])
 
-		_, err = i.e.Exec(ctx, "insert into t1 (v1) values (5)")
+		_, err = i.c.Exec(ctx, "insert into t1 (v1) values (5)")
 		is.True(t, err != nil)
 		e, level = h.last(t)
 		is.Equal(t, slog.LevelDebug, level)
@@ -438,7 +442,7 @@ func TestEngine_events(t *testing.T) {
 		is.Equal(t, "0", e[engine.AttrRows])
 		is.True(t, e[engine.AttrParent] != parent, "the parent of the insert after a commit")
 
-		rows, err := i.e.Query(ctx, "select * from t1")
+		rows, err := i.c.Query(ctx, "select * from t1")
 		is.NotError(t, err)
 		for _, err := range rows.All() {
 			is.NotError(t, err)
@@ -450,20 +454,20 @@ func TestEngine_events(t *testing.T) {
 		is.True(t, !ok, "a query has no parent")
 		is.Equal(t, e[engine.AttrPosition] != "", true)
 
-		_, err = i.e.Exec(ctx, "select * from t1 where 1")
+		_, err = i.c.Exec(ctx, "select * from t1 where 1")
 		is.True(t, err != nil)
 		e, _ = h.last(t)
 		is.Equal(t, "not_supported", e[engine.AttrOutcome])
 		_, ok = e[engine.AttrKind]
 		is.True(t, !ok, "not supported has no kind")
 
-		_, err = i.e.Exec(ctx, "")
+		_, err = i.c.Exec(ctx, "")
 		is.True(t, err != nil)
 		e, _ = h.last(t)
 		is.Equal(t, "no_statement", e[engine.AttrOutcome])
 
 		i.close()
-		_, err = i.e.Exec(ctx, "insert into t1 (v1) values (6)")
+		_, err = i.c.Exec(ctx, "insert into t1 (v1) values (6)")
 		is.True(t, err != nil)
 		e, level = h.last(t)
 		is.Equal(t, slog.LevelDebug, level)
@@ -474,7 +478,7 @@ func TestEngine_events(t *testing.T) {
 		var b strings.Builder
 		i := newInstance(t, engine.Options{Logger: slog.New(slog.NewTextHandler(&b, nil))})
 		for _, src := range []string{t1, "insert into t1 (v1) values (1)", "insert into t1 (v1) values (1)", "select * from t1", "selec"} {
-			_, _ = i.e.Exec(t.Context(), src)
+			_, _ = i.c.Exec(t.Context(), src)
 		}
 		is.Equal(t, "", b.String())
 	})
@@ -498,10 +502,10 @@ func TestEngine_noneOpen(t *testing.T) {
 	run := func(t *testing.T, i *instance, src string, mode int) {
 		t.Helper()
 		if mode == 0 {
-			_, _ = i.e.Exec(t.Context(), src)
+			_, _ = i.c.Exec(t.Context(), src)
 			return
 		}
-		rows, err := i.e.Query(t.Context(), src)
+		rows, err := i.c.Query(t.Context(), src)
 		if err != nil {
 			return
 		}
@@ -547,7 +551,7 @@ func TestEngine_noneOpen(t *testing.T) {
 		var options engine.Options
 		options.Plant("keepOpen")
 		i := newInstance(t, options)
-		_, err := i.e.Exec(t.Context(), "drop table t")
+		_, err := i.c.Exec(t.Context(), "drop table t")
 		is.True(t, err != nil)
 		// The transaction is open, so no machine is slow enough for the begin to succeed.
 		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
@@ -598,20 +602,131 @@ func TestEngine_namesOfTheCore(t *testing.T) {
 	})
 }
 
+func TestConn(t *testing.T) {
+	const query = "select * from t1"
+	// count the rows on their way to the end.
+	count := func(t *testing.T, rows *engine.Rows) int {
+		t.Helper()
+		var n int
+		for _, err := range rows.All() {
+			is.NotError(t, err)
+			n++
+		}
+		return n
+	}
+
+	t.Run("should run the queries of twelve connections at once, each on the state of its start, and refuse a second query of a connection while the rows of its first are open", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		ctx := t.Context()
+		_, err := i.c.Exec(ctx, t1)
+		is.NotError(t, err)
+
+		// Each connection starts its query after one more insert than the connection before it.
+		const n = 12
+		var conns []*engine.Conn
+		var open []*engine.Rows
+		for k := range n {
+			_, err := i.c.Exec(ctx, fmt.Sprint("insert into t1 (v1) values (", k, ")"))
+			is.NotError(t, err)
+			c := i.e.Conn()
+			rows, err := c.Query(ctx, query)
+			is.NotError(t, err)
+			conns, open = append(conns, c), append(open, rows)
+		}
+
+		// The rows of a connection hold its reader, so its next statement that reads fails at once. A
+		// write needs no reader.
+		_, err = conns[0].Query(ctx, query)
+		is.True(t, errors.Is(err, core.ErrReaderBusy), fmt.Sprint(err))
+		_, err = conns[0].Exec(ctx, query)
+		is.True(t, errors.Is(err, core.ErrReaderBusy), fmt.Sprint(err))
+		is.True(t, !errors.Is(err, engine.ErrInternal), fmt.Sprint(err))
+		_, err = conns[0].Exec(ctx, fmt.Sprint("insert into t1 (v1) values (", n, ")"))
+		is.NotError(t, err)
+
+		for k, rows := range open {
+			is.Equal(t, k+1, count(t, rows))
+		}
+		// The rows have ended, and each connection reads again, what is committed now.
+		for _, c := range conns {
+			rows, err := c.Query(ctx, query)
+			is.NotError(t, err)
+			is.Equal(t, n+1, count(t, rows))
+			readFree(t, c)
+			is.NotError(t, c.Close(ctx))
+		}
+		noneOpen(t, i)
+	})
+
+	t.Run("should not close a connection inside the loop over the rows of its query, and close it after the loop", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		ctx := t.Context()
+		_, err := i.c.Exec(ctx, t1)
+		is.NotError(t, err)
+		for v := range 3 {
+			_, err := i.c.Exec(ctx, fmt.Sprint("insert into t1 (v1) values (", v, ")"))
+			is.NotError(t, err)
+		}
+		c := i.e.Conn()
+		rows, err := c.Query(ctx, query)
+		is.NotError(t, err)
+		var n int
+		for _, err := range rows.All() {
+			is.NotError(t, err)
+			n++
+			is.True(t, errors.Is(c.Close(ctx), core.ErrReaderInUse))
+		}
+		is.Equal(t, 3, n)
+		// The refusals closed nothing: the connection reads again.
+		readFree(t, c)
+		is.NotError(t, c.Close(ctx))
+		_, err = c.Query(ctx, query)
+		is.True(t, errors.Is(err, engine.ErrInternal), fmt.Sprint(err))
+	})
+
+	t.Run("should close the reader of a connection after the close of its instance, and refuse its statements with the stop", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		ctx := t.Context()
+		_, err := i.c.Exec(ctx, t1)
+		is.NotError(t, err)
+		c := i.e.Conn()
+		rows, err := c.Query(ctx, query)
+		is.NotError(t, err)
+
+		// The close of the instance does not wait for rows that no loop reads.
+		i.close()
+		var failed int
+		for _, err := range rows.All() {
+			is.True(t, errors.Is(err, core.ErrStopped), fmt.Sprint(err))
+			failed++
+		}
+		is.Equal(t, 1, failed)
+		_, err = c.Query(ctx, query)
+		is.True(t, errors.Is(err, core.ErrStopped), fmt.Sprint(err))
+		is.NotError(t, c.Close(ctx))
+		is.NotError(t, c.Close(ctx))
+	})
+}
+
 func TestEngine_concurrent(t *testing.T) {
 	t.Run("should run statements from several goroutines at once, for the race detector", func(t *testing.T) {
 		i := newInstance(t, engine.Options{Logger: slog.New(&events{})})
-		_, err := i.e.Exec(t.Context(), t1)
+		_, err := i.c.Exec(t.Context(), t1)
 		is.NotError(t, err)
+		// Each goroutine has a connection of its own, as each has in a pool.
+		conns := make([]*engine.Conn, 8)
+		for g := range conns {
+			conns[g] = i.e.Conn()
+		}
 		var wg sync.WaitGroup
-		for g := range 8 {
+		for g, c := range conns {
 			wg.Go(func() {
 				for v := range 20 {
 					src := fmt.Sprint("insert into t1 (v1) values (", v%5, ")")
 					if v%2 == 1 {
 						src = "select * from t1"
 					}
-					rows, err := i.e.Query(t.Context(), src)
+					rows, err := c.Query(t.Context(), src)
 					var se *sqlerr.Error
 					if err != nil && !errors.As(err, &se) {
 						t.Errorf("goroutine %v: %v", g, err)
@@ -630,5 +745,9 @@ func TestEngine_concurrent(t *testing.T) {
 		wg.Wait()
 		is.Equal(t, `columns "v1 INT", rows ["0" "1" "2" "3" "4"]`, i.query("select * from t1").String())
 		noneOpen(t, i)
+		for _, c := range conns {
+			readFree(t, c)
+			is.NotError(t, c.Close(t.Context()))
+		}
 	})
 }

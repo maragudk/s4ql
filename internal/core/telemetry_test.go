@@ -296,8 +296,7 @@ func TestEvents(t *testing.T) {
 			d, err := core.Open(opened, w.host, s, filepath.Join(w.dir, "a.db"), "db", core.Options{Logger: events.logger()})
 			is.NotError(t, err)
 
-			_, err = d.Read(context.WithValue(t.Context(), callerKey{}, "read"))
-			is.Error(t, core.ErrNoLease, err)
+			is.Error(t, core.ErrNoLease, startErr(context.WithValue(t.Context(), callerKey{}, "read"), d))
 			_, err = d.Begin(context.WithValue(t.Context(), callerKey{}, "begin"))
 			is.Error(t, core.ErrNoLease, err)
 			refusals := events.named(core.EventRefusal)

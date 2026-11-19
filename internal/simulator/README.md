@@ -65,7 +65,6 @@ Every time and duration is a number of milliseconds of fake time, which may have
 | `end` | 120000 | above 0, at most 1800000 | The time at which the run ends. |
 | `instances` | 3 | 1 to 5 | The number of instances, which stays the same for the run. |
 | `leases` | `[30000]` | at least one, each 1000 to 600000 | The durations of the leases. Instance number i, from 0, gets `leases[i mod length]`. A restarted instance keeps its duration. A list that is given replaces the default. |
-| `readers` | 2 | 1 to 8 | The read connections of each instance. |
 | `latency` | 50 | 0 to 60000 | The longest time that a request takes to the store, and again back. Each way takes a time from 0 to `latency`, from the seed. |
 | `faults` | all 0 | see [Faults](#faults) | The faults that happen at random. |
 | `buggify` | false | | Switches buggify of the storage core on for the run. Each point is then on with the probability 0.25, and a point that is on fires with the probability 0.25 each time the code reaches it. |
@@ -252,7 +251,7 @@ An engine has one session at most. A command without a session gets an answer wi
 
 ### The settings
 
-The body of `start` is an object with the fields of a request that hold for a whole run: `seed`, `instances`, `leases`, `readers`, `latency`, `faults`, `buggify`, and `workload`. Each has the meaning and the limits that [The request](#the-request) gives it. A session has no `end`, no `schedule`, and no `lines`: each of them is an error, as any other member is.
+The body of `start` is an object with the fields of a request that hold for a whole run: `seed`, `instances`, `leases`, `latency`, `faults`, `buggify`, and `workload`. Each has the meaning and the limits that [The request](#the-request) gives it. A session has no `end`, no `schedule`, and no `lines`: each of them is an error, as any other member is.
 
 A field that is missing has the default of a request, with two exceptions:
 
@@ -652,7 +651,7 @@ What the engine offers that the model did not:
 - The core's own points of buggify.
 - Every fault of the store with a probability of its own, set in the request. Outages and broken reads are new. Conflicts, requests held in the network, and damaged downloads are in the model only as points of its buggify, at fixed rates. Here a conflict comes only while another write is in flight, as S3 documents it. A write whose caller gave up, or whose sender crashed, can land up to 30 minutes late.
 - 1 to 5 instances, where the model has 2 or 3, with a lease duration for each.
-- Settings for the latency, the read connections, and the workload.
+- Settings for the latency and the workload.
 - Runs that match the native build. The response has the hash that the tests of the core compute, and the same request gives the same hash natively and in Chromium.
 
 ## Using it from a page

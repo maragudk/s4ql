@@ -71,6 +71,14 @@ func (d *DB) ID() string {
 	return d.id
 }
 
+// Readers is the number of read connections that the instance keeps track of: those of the readers
+// that are not closed.
+func (d *DB) Readers() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.readers)
+}
+
 // CloseCache closes the connections of an instance that a test has crashed, as the operating system
 // closes the files of a process that has died.
 func (d *DB) CloseCache() {

@@ -39,6 +39,16 @@ func (m *memory) begin(context.Context) (writeTx, error) {
 	return &memTx{m: m, tables: m.clone()}, nil
 }
 
+// reader of the memory, which is the memory itself: it runs any number of read transactions at
+// once.
+func (m *memory) reader(context.Context) (readConn, error) {
+	return m, nil
+}
+
+func (m *memory) close(context.Context) error {
+	return nil
+}
+
 func (m *memory) read(context.Context) (readTx, error) {
 	return &memTx{m: m, tables: m.tables}, nil
 }

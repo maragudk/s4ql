@@ -57,10 +57,27 @@
 // [database/sql.Result.LastInsertId] is always 0, because no table has a rowid.
 //
 // One write runs at a time, and a second one waits for the first. Reads run in parallel, each on
-// one consistent state of the database, up to four at once; a further one waits until one has
-// ended, or until its context ends. The read of a query runs until its [database/sql.Rows] are read
-// to the end or closed, so rows that are neither hold one of the four reads, until the context of
-// their query ends or the database is closed.
+// one consistent state of the database, and the pool of database/sql sets how many run at once:
+// each connection of the pool runs one read at a time. [database/sql.DB.SetMaxOpenConns] therefore
+// bounds the reads that run at once, and a further statement then waits for a connection, until one
+// is free or its context ends: also one that writes, because the bound is on every statement.
+// Without it the pool has no bound, and neither have the reads.
+//
+// A connection opens a connection to the cache of its own for its first read, which is two open
+// files, and closes it when database/sql closes the connection, so the other settings of the pool,
+// such as [database/sql.DB.SetMaxIdleConns] and [database/sql.DB.SetConnMaxIdleTime], decide how
+// long it is kept. A process that has no file descriptor left for it has a cache that cannot be
+// opened, which stops the instance as any failure of the cache does: an application that can run
+// more queries at once than it has file descriptors for bounds the pool.
+//
+// The read of a query runs until its [database/sql.Rows] are read to the end or closed, so rows
+// that are neither hold their connection and its read, until the context of their query ends or
+// the database is closed. A connection runs one read at a time: on a [database/sql.Conn], a
+// statement that reads while the rows of an earlier query of that connection are open is not
+// supported, and fails at once with an error that matches [ErrNotSupported]. A statement that
+// changes the database runs there all the same. database/sql closes the rows of a query whose
+// context has ended by itself, some time after, so the next statement on that connection is sure
+// to find them closed only after [database/sql.Rows.Close].
 //
 // # Errors
 //
@@ -213,8 +230,7 @@ func (o Options) connector(ctx context.Context, d driver.Driver) (*connector, er
 	if err != nil {
 		return nil, fmt.Errorf("s4ql: open: %w", err)
 	}
-	// Four reads at once, as the documentation of the package says.
-	return newConnector(ctx, host.New(), s, o, core.Options{Readers: 4}, d)
+	return newConnector(ctx, host.New(), s, o, core.Options{}, d)
 }
 
 // identity of the database of the options, which the cache records: an s3 URL of the bucket and the

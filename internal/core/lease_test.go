@@ -20,14 +20,11 @@ import (
 	"maragu.dev/s4ql/internal/store/simstore"
 )
 
-// readErr is the error of starting a read transaction on d, which is closed again if it starts.
+// readErr is the error of starting a read transaction on a reader of d of its own, as [startErr]
+// gives it.
 func readErr(t *testing.T, d *core.DB) error {
 	t.Helper()
-	r, err := d.Read(t.Context())
-	if err != nil {
-		return err
-	}
-	return r.Close(t.Context())
+	return startErr(t.Context(), d)
 }
 
 // beginErr is the error of beginning a write transaction on d, which is rolled back if it begins.
@@ -486,13 +483,7 @@ func clocked(t *testing.T, f func(ctx context.Context, s *sim.Scheduler, inst *s
 
 func TestLease_clocks(t *testing.T) {
 	// started reports the error of starting a read on d.
-	started := func(ctx context.Context, d *core.DB) error {
-		r, err := d.Read(ctx)
-		if err != nil {
-			return err
-		}
-		return r.Close(ctx)
-	}
+	started := startErr
 
 	t.Run("should refuse a read by the monotonic clock when the wall clock stands still or was set backward", func(t *testing.T) {
 		for name, move := range map[string]func(inst *sim.Instance){
