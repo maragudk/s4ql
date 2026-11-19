@@ -27,6 +27,12 @@ These hold for every slice unless this document says otherwise.
 
 Rejected for now, to be decided later: upserts, and join variants such as comma joins and `NATURAL JOIN`.
 
+## Milestones
+
+A milestone is a goal that several slices lead to. It helps to choose which slice comes next.
+
+- **The first application on s4ql: [glue](https://www.maragu.dev/glue).** `maragu.dev/glue` runs on s4ql in place of SQLite. Markus on 2026-11-19: "a nice second milestone: get maragu.dev/glue working on this storage instead of SQLite." Which SQL it needs that s4ql does not have yet is not listed here yet.
+
 ## Slices
 
 ### Slice 1: one integer column
