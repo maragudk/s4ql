@@ -100,3 +100,92 @@ That `lease_lost` as an outcome of the engine's events, at Debug, is the right w
 ### Future work
 
 None beyond the mutation testing.
+
+## Step 3: the simulations
+
+**Author:** builder (lease-ends-tx)
+
+### Prompt Context
+
+**Verbatim prompt (excerpt of the brief):** "Add callers that keep a write transaction open and idle across faults, in the engine's simulation and, if its workload has transactions that hold, the core's. Add a check that would have caught the problem: an instance that could get the lease again does get it, in bounded simulated time, while a transaction sits idle. Plant one bug for it in the way the existing planted bugs are done (the lease task not ending the idle transaction), and show that the simulation finds it within its seeds by a violation of its own. Pin the minimum of transactions ended for the lease that each workload must reach."
+**Interpretation:** idlers in both simulations, a check at the end of the workload where "could get the lease" is certain (the store is calm and the other instances are closed), and the planted bug in the core.
+**Inferred intent:** the simulations must have caught the bug that the review found by hand.
+
+### What I did
+
+- `/internal/engine/simulation_test.go`: the workload `idleWorkload` ("idle"), the default workload with `idlers: 1` and `idle: time.Minute`. `run.idler` runs two write transactions through `run.transactionOf`: after their statements they sit idle while `n.client.CutOff` cuts the instance off, half of the time for 30 to 60 s; the second is cut off for 2 minutes always, sleeps 3 minutes, and is kept open (`node.kept`). The write of the end runs in the kept transaction (`run.endKept`), which rolls it back when the instance ended it; `run.readsFree` calls `endKept` first and gives the violation "<node>, where the write transaction <id> is open and idle, does not serve ten minutes after the end of the workload" for a node that still has it. The core of each engine gets a logger (`coreHandler`) that records the tick of each `transaction_ended`, and `run.verifyOverlaps` ends the place of a write transaction there. Counts: "transactions ended for the lease" and "kept transactions ended for the lease", pinned at 0.33 per seed each, with the other minimums of the idle workload at about a quarter of the first 1,000 seeds.
+- `/internal/core/simulation_test.go`, `/internal/core/workloads_test.go`: the workload `idling` ("idle"), `competing` with `idlers: 1`; `run.idler` as in the engine, with `node.cut`, the simulated client under the wrapper; `run.verifyIdle` closes every other live node and requires the node of the first kept transaction to serve within `workload.liveness`, then rolls every kept transaction back. The planted bug `keepIdleTx`, with the control `instances = 1`, and the symptom "is open and idle, does not serve". `idleReaches` from the minimums that the 20 default seeds printed.
+
+### Why
+
+During the workload, "the instance could get the lease again" is hard to tell: another holder may be alive, the store faulty. At the end of the workload it is certain once the other instances are closed, which is what the review's sequence does too. So the kept transaction carries the check past the end, where the existing checks already close instances in turn.
+
+### What worked
+
+- Engine: 1,000 seeds of the idle workload passed in 31 s, with 1,348 transactions ended for the lease, 1,317 of them kept. With `DB.endForLease` made to return at once (by hand, then restored), 89 of the first 100 seeds failed, all by the new violation.
+- Core: `keepIdleTx` was found in 97 of 200 seeds, 0 of 200 of the control, 0 without the bug (`S4QL_SIM_SEEDS=200 go test -run 'TestSimulation_plantedBugs/.*idle_write' ./internal/core/`). The 20 default seeds of `idling` passed, deterministically.
+- Run times, each binary built from `74a7ac8` and from the branch, run in turns at a load of 12 to 19: the engine's `TestSimulation` 3.84 s and 3.49 s before, 5.45 s and 5.17 s after; the core's `TestSimulation` with `TestSimulation_plantedBugs` 41.04 s and 40.65 s before, 43.64 s and 43.08 s after.
+- The new tests passed with `-count=20`, and with `-race -count=20`; the engine's simulation passed under `-race`.
+
+### What didn't work
+
+The first try put the idlers into the engine's default workload. It passed with no violation, but four minimums failed: `50 seeds give 5 of "unknown", and at least 7 were expected`, `0 of "fault: write applied after a crash"`, `120 of "commits"` against 125, and `2 of "transactions unknown"` against 3. The idlers' cut-offs and the writer place that their transactions hold change the default workload, so they got a workload of their own and the default one is as it was.
+
+### What I learned
+
+The engine's simulation cannot plant a bug of the core: `core.Options.bugs` is set only through the core's `export_test.go`. So the planted bug lives in the core's simulation, and the engine's check was shown by a hand-made mutant.
+
+### What was tricky
+
+`run.verifyOverlaps` of the engine would have reported every transaction that the core ended for the lease, since the core frees the place before the caller calls its roll back. Only one write transaction of an engine is open at a time, so the first `transaction_ended` of that engine after the begin is the end of that transaction's place.
+
+### What warrants review
+
+- The cut-off of the kept transaction is aimed: the idler cuts its own instance off for two minutes. That makes the case common; whether the reviewer thinks it is a fault of the harness like a crash or a close, or too scripted.
+- `run.verifyIdle` in the core closes the other live nodes earlier than before; the final close loop skips them.
+
+### Future work
+
+None beyond the mutation testing.
+
+## Step 4: the documents
+
+**Author:** builder (lease-ends-tx)
+
+### Prompt Context
+
+**Verbatim prompt (excerpt of the brief):** "`docs/todo.md`: the open question on this in \"Transactions\" becomes the decision (Markus agreed on 2026-11-19 that the instance fails the transaction at once so that it can take the lease back), with your decisions of detail. The READMEs of the core and the engine describe the behaviour where they describe the lease and transactions."
+**Interpretation:** the todo records the decision and the details; each README says what its package does and how it is tested.
+**Inferred intent:** a reader finds the behaviour where the lease and the transactions are described.
+
+### What I did
+
+`/docs/todo.md`: the item "Open, with the product owner" became the decision, with the details of when, what the transaction gives, the order with a call that runs, the rows that nobody reads, the record in `DB.Begin`, the events, and the tests. `/internal/core/README.md`: two bullets under "A write transaction", the paragraph on `idling` with its numbers, the count of planted bugs, the seeds of the default run. `/internal/engine/README.md`: a bullet under "The commit and the roll back", the paragraph on the idle workload, and the run times.
+
+### Why
+
+The brief asks for it, and `docs/spec.md` is left to the lead and Markus.
+
+### What worked
+
+Nothing to report beyond the edits.
+
+### What didn't work
+
+Nothing failed.
+
+### What I learned
+
+Nothing new.
+
+### What was tricky
+
+The 23 ends in the 20 default seeds of the core's `idling` are what the event counted; that at least 20 were of kept transactions follows from the minimum of 5 that the run printed, a quarter rounded down, so the README says "at least 20" and not a number I did not measure.
+
+### What warrants review
+
+The spec still says "A write transaction that is already open commits only if its manifest swap still succeeds", which the lead rewords with Markus.
+
+### Future work
+
+The reworded sentence of the spec, by the lead.

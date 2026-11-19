@@ -849,9 +849,13 @@ func TestLease_waiting(t *testing.T) {
 			// The lease lasts ten minutes by the clocks, so only the news of its loss ends the wait.
 			tx, waiter := waiting(t, a)
 
-			// Another instance writes the manifest, as one does that has taken the lease.
+			// Another instance writes the manifest, as one does that has taken the lease. It holds the
+			// lease, because the instance ends its idle transaction and would take a free lease back
+			// at once, and the waiter could then begin.
 			l := newHandLog(t, w)
-			l.publish()
+			data, err := format.Manifest{Lease: &format.Lease{Holder: "another", Duration: time.Hour, Renewed: time.Now(), Salt: 1}}.Marshal()
+			is.NotError(t, err)
+			l.publishBytes(data)
 			time.Sleep(15 * time.Second)
 			is.Equal(t, 1, len(waiter))
 			is.Error(t, core.ErrNoLease, <-waiter)
