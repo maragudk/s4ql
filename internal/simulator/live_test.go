@@ -212,6 +212,37 @@ func TestEngine_live(t *testing.T) {
 		is.Equal(t, 1_000.0, l.advanceTo(1000).T)
 	})
 
+	t.Run("should take as many steps and give as many events for a fake minute after an hour as at the start", func(t *testing.T) {
+		l := startLive(t, `{"seed": 10}`)
+		type minute struct{ steps, events, bytes int }
+		var minutes []minute
+		steps := l.last.Steps
+		for range 60 {
+			a := l.advance(60_000)
+			b, err := json.Marshal(a.Events)
+			is.NotError(t, err)
+			minutes = append(minutes, minute{steps: a.Steps - steps, events: len(a.Events), bytes: len(b)})
+			steps = a.Steps
+			l.events = nil
+		}
+		mean := func(ms []minute) minute {
+			var sum minute
+			for _, m := range ms {
+				sum.steps, sum.events, sum.bytes = sum.steps+m.steps, sum.events+m.events, sum.bytes+m.bytes
+			}
+			return minute{sum.steps / len(ms), sum.events / len(ms), sum.bytes / len(ms)}
+		}
+		// The table holds at most 100 rows from about the eighth minute on, so a read costs the same
+		// from then on.
+		early, late := mean(minutes[10:20]), mean(minutes[50:60])
+		t.Logf("steps, events, and bytes of events in a fake minute: %+v in minutes 10 to 20, %+v in minutes 50 to 60", early, late)
+		is.True(t, float64(late.steps) < 1.15*float64(early.steps), "steps")
+		is.True(t, float64(late.events) < 1.15*float64(early.events), "events")
+		is.True(t, float64(late.bytes) < 1.15*float64(early.bytes), "bytes")
+		rows := l.do("now", "{}").State
+		is.True(t, len(rows.Bucket.Log) > 500, "a long log")
+	})
+
 	t.Run("should list only the last commit objects of the bucket if asked", func(t *testing.T) {
 		l := startLive(t, `{"seed": 9}`)
 		l.advance(60_000)

@@ -537,11 +537,9 @@ func (r *run) write(ctx context.Context, d *core.DB, value int64) (string, strin
 		_ = tx.Rollback(ctx)
 		return "abandoned", err.Error()
 	}
-	if keep := int64(r.req.Workload.Keep); keep > 0 && value > keep {
-		if _, err := tx.Delete(ctx, tableName, []*s4qlpb.Value{s4qlpb.Value_builder{Integer: new(value - keep)}.Build()}); err != nil {
-			_ = tx.Rollback(ctx)
-			return "abandoned", err.Error()
-		}
+	if err := r.trim(ctx, tx); err != nil {
+		_ = tx.Rollback(ctx)
+		return "abandoned", err.Error()
 	}
 	switch err := tx.Commit(ctx); {
 	case err == nil:
@@ -551,6 +549,30 @@ func (r *run) write(ctx context.Context, d *core.DB, value int64) (string, strin
 	default:
 		return "not_committed", err.Error()
 	}
+}
+
+// trim the table of the workload in tx to the rows that [Workload.Keep] keeps: delete the rows with
+// the smallest keys, the oldest, until it has no more. A table that is trimmed has at most Keep rows
+// and the one inserted, so a trim reads at most that many.
+func (r *run) trim(ctx context.Context, tx *core.Tx) error {
+	keep := r.req.Workload.Keep
+	if keep == 0 {
+		return nil
+	}
+	var keys []int64
+	for row, err := range tx.Scan(ctx, tableName) {
+		if err != nil {
+			return err
+		}
+		keys = append(keys, row[0].GetInteger())
+	}
+	slices.Sort(keys)
+	for _, k := range keys[:max(0, len(keys)-keep)] {
+		if _, err := tx.Delete(ctx, tableName, []*s4qlpb.Value{s4qlpb.Value_builder{Integer: new(k)}.Build()}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // read the keys of the table of the workload in a read transaction on d, and say how the call
