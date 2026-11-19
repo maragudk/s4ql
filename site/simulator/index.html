@@ -535,7 +535,7 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
     <h1 id="intro-h">The storage code, under faults</h1>
     <div>
       <p>The storage code of s4ql runs in this page: the Go code itself, unchanged, compiled to WebAssembly, with its cache on the official SQLite WebAssembly build. S3 and time are simulated.</p>
-      <p>s4ql is built for one long-running instance per database, an app with s4ql embedded. Here the requests go to one instance, and a second stands by to take over.</p>
+      <p>s4ql is built for one long-running instance per database, an app with s4ql embedded. Here requests to the app go to one instance, and a second stands by to take over.</p>
       <p class="built"><span class="caps">Built from</span> <span id="build">an unknown commit</span> of <a href="https://github.com/maragudk/s4ql/tree/main/internal/core"><code>internal/core</code></a>, run by <a href="https://github.com/maragudk/s4ql/blob/main/internal/simulator/README.md"><code>internal/simulator</code></a>.</p>
     </div>
   </div>
