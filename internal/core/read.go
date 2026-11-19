@@ -9,6 +9,7 @@ import (
 
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/s4qlpb"
+	"maragu.dev/s4ql/internal/sqlite"
 )
 
 // Reader is a connection to the cache that runs read transactions, one at a time. [DB.Reader]
@@ -33,8 +34,8 @@ type Reader struct {
 // stopped.
 //
 // A cache that cannot be opened is an error of the cache as any other while the instance runs: a
-// local I/O failure, which includes a file that cannot be opened for want of a file descriptor,
-// stops the instance, and the error wraps [ErrStopped] and [ErrLocal].
+// local I/O failure, which includes a file that cannot be opened for want of a file descriptor and
+// a file that is gone, stops the instance, and the error wraps [ErrStopped] and [ErrLocal].
 func (d *DB) Reader(ctx context.Context) (*Reader, error) {
 	// The connection opens without the mutex, which nothing holds across a call that can take
 	// long. The count of the readers that are opening is what [DB.Close] waits for meanwhile.
@@ -48,8 +49,10 @@ func (d *DB) Reader(ctx context.Context) (*Reader, error) {
 	d.host.Yield(ctx, "core: a reader before its open")
 
 	// Nothing waits between the open and the list, so that no task is ended between them with a
-	// connection that nothing knows of.
-	c, err := openConn(d.path, d.options.VFS, d.options.BusyTimeout.Milliseconds())
+	// connection that nothing knows of. A reader opens the cache that the write connection made and
+	// never makes one: a cache whose file is gone, such as one deleted under the instance, is a file
+	// that cannot be opened, and not a new empty cache without the tables.
+	c, err := openConn(sqlite.OpenExistingVFS, d.path, d.options.VFS, d.options.BusyTimeout.Milliseconds())
 	if err == nil {
 		if err = c.exec("pragma query_only = on"); err != nil {
 			_ = c.close()

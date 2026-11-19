@@ -203,6 +203,17 @@ func Open(path string) (*Conn, error) {
 // OpenVFS is [Open] through the VFS registered under the name vfs, or through SQLite's default VFS
 // if vfs is empty.
 func OpenVFS(path, vfs string) (*Conn, error) {
+	return open(path, vfs, C.SQLITE_OPEN_READWRITE|C.SQLITE_OPEN_CREATE|C.SQLITE_OPEN_EXRESCODE)
+}
+
+// OpenExistingVFS is [OpenVFS] of a database file that exists: it does not create the file, and
+// fails with SQLITE_CANTOPEN if there is none.
+func OpenExistingVFS(path, vfs string) (*Conn, error) {
+	return open(path, vfs, C.SQLITE_OPEN_READWRITE|C.SQLITE_OPEN_EXRESCODE)
+}
+
+// open the database file at path through the VFS vfs with the flags of sqlite3_open_v2.
+func open(path, vfs string, flags C.int) (*Conn, error) {
 	if strings.IndexByte(path, 0) >= 0 {
 		return nil, errors.New("sqlite: path contains a NUL byte")
 	}
@@ -219,7 +230,7 @@ func OpenVFS(path, vfs string) (*Conn, error) {
 	}
 
 	var db *C.sqlite3
-	rc := C.sqlite3_open_v2(cpath, &db, C.SQLITE_OPEN_READWRITE|C.SQLITE_OPEN_CREATE|C.SQLITE_OPEN_EXRESCODE, cvfs)
+	rc := C.sqlite3_open_v2(cpath, &db, flags, cvfs)
 	if rc == C.SQLITE_OK && asan {
 		// The lookaside allocator reuses memory that the address sanitizer cannot see, so it would
 		// hide a statement used after it is finalized.

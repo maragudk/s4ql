@@ -35,6 +35,7 @@ import (
 
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/host"
+	"maragu.dev/s4ql/internal/sqlite"
 	"maragu.dev/s4ql/internal/store"
 )
 
@@ -299,7 +300,8 @@ func Open(ctx context.Context, h host.Host, s store.Store, path, prefix string, 
 	// The write connection opens first and runs the first statement, so that recovering the
 	// write-ahead log after a crash, which reports "busy" to every other connection, is over before
 	// a read connection exists: [DB.Reader] opens one only on an instance that Open has returned.
-	if d.w, err = openConn(path, options.VFS, options.BusyTimeout.Milliseconds()); err != nil {
+	// It is the one connection that makes the cache if there is none.
+	if d.w, err = openConn(sqlite.OpenVFS, path, options.VFS, options.BusyTimeout.Milliseconds()); err != nil {
 		return nil, openError(err)
 	}
 	if err := d.w.setUp(options.syncOff, options.Identity); err != nil {
