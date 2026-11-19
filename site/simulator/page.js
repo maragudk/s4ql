@@ -15,7 +15,7 @@ const version = new URL(import.meta.url).search;
 
 let R = null; // the module run.js, which start loads
 
-const $ =(id) => document.getElementById(id);
+const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const count = (n) => n.toLocaleString("en");
 
@@ -451,9 +451,9 @@ function drawS3() {
 // start the page: load run.js, connect the page, and start the engine. An error on the way ends in
 // the failure box.
 async function start() {
+  drawMark();
   R = await import("./run.js" + version);
   tell = R.teller();
-  drawMark();
   wire();
 
   fetch("engine/build.json" + version).then((r) => (r.ok ? r.json() : null)).then((b) => {

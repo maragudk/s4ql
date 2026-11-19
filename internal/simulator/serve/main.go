@@ -24,9 +24,11 @@
 // query of its own URL on to every file that it loads, and the engine does the same, so every file
 // of a deploy is fetched at the version of that deploy, and a cache cannot pair the HTML of one
 // deploy with the scripts or the WebAssembly of another. Without them the page loads its files
-// without a query, as it is in git:
+// without a query, as it is in git. The page is written before anything is built, and a page that is
+// stamped already is refused. With -page alone, serve only writes the page:
 //
 //	go run -tags s4ql_browser ./internal/simulator/serve -out site/simulator/engine -demo=false -page site/simulator/index.html -version "$(git rev-parse HEAD)"
+//	go run -tags s4ql_browser ./internal/simulator/serve -page /tmp/site/simulator/index.html -version 3f6fbfd1
 package main
 
 import (
@@ -68,8 +70,8 @@ type options struct {
 }
 
 func run(o options) error {
-	if o.out == "" && o.addr == "" {
-		return errors.New("give -out, -addr, or both")
+	if o.out == "" && o.addr == "" && o.page == "" {
+		return errors.New("give -out, -addr, or -page")
 	}
 	if o.root != "" && o.addr == "" {
 		return errors.New("-root needs -addr")
@@ -77,7 +79,12 @@ func run(o options) error {
 	if (o.page == "") != (o.version == "") {
 		return errors.New("-page and -version go together")
 	}
-	if o.out == "" && o.root == "" {
+	if o.page != "" {
+		if err := stampFile(o.page, o.version); err != nil {
+			return err
+		}
+	}
+	if o.out == "" && o.root == "" && o.addr != "" {
 		dir, err := os.MkdirTemp("", "s4ql-simulator-")
 		if err != nil {
 			return err
@@ -93,11 +100,6 @@ func run(o options) error {
 			if err := writeBuild(o.out, o.commit); err != nil {
 				return err
 			}
-		}
-	}
-	if o.page != "" {
-		if err := stampFile(o.page, o.version); err != nil {
-			return err
 		}
 	}
 	if o.addr == "" {
@@ -157,7 +159,7 @@ func stampFile(path, version string) error {
 var (
 	// pageFiles matches the attributes of the page that name page.js or run.js, the two modules that
 	// the HTML loads itself.
-	pageFiles = regexp.MustCompile(`\b(src|href)="(page|run)\.js"`)
+	pageFiles = regexp.MustCompile(`(\s)(src|href)="(page|run)\.js"`)
 	// versionChars of a version, which goes into a URL and into HTML as it is.
 	versionChars = regexp.MustCompile(`^[0-9A-Za-z._-]+$`)
 )
@@ -168,10 +170,10 @@ func stamp(page []byte, version string) ([]byte, error) {
 	if !versionChars.MatchString(version) {
 		return nil, fmt.Errorf("the version %q must be letters, digits, '.', '_', and '-'", version)
 	}
-	if !strings.Contains(string(page), `src="page.js"`) {
-		return nil, errors.New(`the page has no src="page.js"`)
+	if !strings.Contains(string(page), ` src="page.js"`) {
+		return nil, errors.New(`the page has no src="page.js", or is stamped already`)
 	}
-	return pageFiles.ReplaceAll(page, []byte(`${1}="${2}.js?v=`+version+`"`)), nil
+	return pageFiles.ReplaceAll(page, []byte(`${1}${2}="${3}.js?v=`+version+`"`)), nil
 }
 
 // bundle the files of the simulator into dir: the program, the JavaScript of the engine and of the

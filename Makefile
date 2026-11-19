@@ -234,11 +234,13 @@ simulator-demo:
 # from. With SITEVERSION, it also writes that version into the simulator's page, in place, so that
 # the page loads every file of the simulator at that version, and a cache cannot pair files of two
 # deploys: see internal/simulator/serve. The Pages workflow runs it on its checkout, with the commit
-# as SITEVERSION, before it uploads site/. Without SITEVERSION the page stays as it is in git, and
-# loads its files without a version. site-serve builds it and serves SITEDIR on SITEADDR, without
-# the headers of cross-origin isolation, as GitHub Pages serves it. site-check builds it and checks
-# the simulator's page in headless Chromium, once in SITEDIR, and once in a copy that it builds as
-# the Pages workflow does, with SITECOMMIT as the version: see internal/simulator/sitecheck.
+# as SITEVERSION, before it uploads site/. That changes a file in git, so a local run is for a copy
+# of the site only. Without SITEVERSION the page stays as it is in git, and loads its files without
+# a version. site-serve builds it and serves SITEDIR on SITEADDR, without the headers of cross-origin
+# isolation, as GitHub Pages serves it. site-check builds it without a version and checks the
+# simulator's page in headless Chromium twice: in SITEDIR, and in a copy whose page it stamps as the
+# Pages workflow does, with SITEVERSION, or SITECOMMIT if that is empty, as the version. See
+# internal/simulator/sitecheck.
 SITEDIR ?= site
 SITECOMMIT ?= $(shell git rev-parse HEAD)
 SITEVERSION ?=
@@ -255,11 +257,12 @@ site-serve: site
 	go run -tags s4ql_browser ./internal/simulator/serve -root $(SITEDIR) -isolated=false -addr $(SITEADDR)
 
 .PHONY: site-check
-site-check: site
-	$(SITECHECK) -root $(SITEDIR) $(if $(SITEVERSION),-version $(SITEVERSION))
+site-check:
+	$(MAKE) site SITEVERSION=
+	$(SITECHECK) -root $(SITEDIR)
 	dir=$$(mktemp -d) && cp -R $(SITEDIR) $$dir/site && \
-		$(MAKE) site SITEDIR=$$dir/site SITEVERSION=$(SITECOMMIT) && \
-		$(SITECHECK) -root $$dir/site -version $(SITECOMMIT); \
+		go run -tags s4ql_browser ./internal/simulator/serve -page $$dir/site/simulator/index.html -version $(or $(SITEVERSION),$(SITECOMMIT)) && \
+		$(SITECHECK) -root $$dir/site -version $(or $(SITEVERSION),$(SITECOMMIT)); \
 		status=$$?; rm -rf $$dir; exit $$status
 
 # LINKSC, run in the directory of a module with package patterns after it, lists the packages and
