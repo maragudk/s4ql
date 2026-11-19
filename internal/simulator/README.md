@@ -683,7 +683,7 @@ GOOS=js GOARCH=wasm go test -c -tags s4ql_browser -o dir/engine.wasm ./internal/
 
 The program is a test binary because a run needs a `testing.T` for its `testing/synctest` bubble, and a test binary is the supported way to get one. Its one test, `TestEngine`, serves the messages of the page for as long as the Worker lives.
 
-For the project's site, `make site` writes the files into `site/simulator/engine/`, which `.gitignore` covers, without the demo page, and with `build.json`, `{"commit":"..."}`, which names the commit that the engine is built from. The Pages workflow runs it before it uploads `site/`. `make site-serve` serves the site on `SITEADDR` without the two headers below, as GitHub Pages serves it, and `make site-check` checks the page in headless Chromium with `sitecheck`: see its package comment.
+For the project's site, `make site` writes the files into `site/simulator/engine/`, which `.gitignore` covers, without the demo page, and with `build.json`, `{"commit":"..."}`, which names the commit that the engine is built from. The Pages workflow runs it before it uploads `site/`, with `SITEVERSION` set to the commit, which writes the version into the page in place on its checkout: the page then loads `page.js` and `run.js` with the query `?v=<commit>`, and passes the query of its own URL on to `simulator.js`, which passes it on to the Worker, which puts it on every file that it loads, also `sqlite3.wasm`. So the HTML of one deploy never runs files of another, whatever a cache holds. Without `SITEVERSION` the page stays as it is in git and loads every file without a query. `make site-serve` serves the site on `SITEADDR` without the two headers below, as GitHub Pages serves it, and `make site-check` checks the page in headless Chromium with `sitecheck`: see its package comment.
 
 The Worker instantiates `engine.wasm` while it streams, so the server must send it with the content type `application/wasm`.
 
@@ -735,7 +735,7 @@ SQLite's memory grows from run to run, and in a session with every crash. A proc
 
 ### The Worker
 
-A page that does not use the module talks to `worker.js` itself. The Worker loads the scripts in the order that the README of `internal/sqlite/browser` gives, and runs `engine.wasm` with the argument `-test.run=^TestEngine$`.
+A page that does not use the module talks to `worker.js` itself. The Worker loads the scripts in the order that the README of `internal/sqlite/browser` gives, and runs `engine.wasm` with the argument `-test.run=^TestEngine$`. It puts the query of its own URL, if any, on the URL of every file that it loads.
 
 The page posts `{id, kind, body}`. `kind` is `run` or `state` for a batch run, or `start`, `advance`, `act`, `now`, or `end` for a session, and `body` is the message as JSON text or as an object. The Worker posts:
 
