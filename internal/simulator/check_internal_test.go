@@ -23,7 +23,7 @@ func TestChecker(t *testing.T) {
 		var events []Event
 		synctest.Test(t, func(t *testing.T) {
 			world := sim.New(1, sim.Options{})
-			r := &run{world: world, rec: &recorder{world: world, end: 1 << 62}}
+			r := &run{world: world, rec: newRecorder(world, 1<<62, false)}
 			r.check = newChecker(r)
 			p := &process{i: &instance{name: "a"}, name: "a"}
 			f(r.check, p)

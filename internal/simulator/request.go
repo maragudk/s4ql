@@ -74,6 +74,10 @@ type Workload struct {
 	Writes int `json:"writes"`
 	// Timeout of each call.
 	Timeout float64 `json:"timeout"`
+	// Keep is the number of rows that the writes keep in the table: a write of the key k also
+	// deletes the key k - Keep, so that the table, and with it the cost of a read, stops growing.
+	// Zero keeps every row.
+	Keep int `json:"keep"`
 }
 
 // Action of the schedule.
@@ -90,7 +94,8 @@ type Action struct {
 	By float64 `json:"by,omitzero"`
 	// Request is the kind of request that a lost answer or a failed request is for: see [purposes].
 	Request string `json:"request,omitzero"`
-	// On is whether the action "workload" switches the callers on or off.
+	// On is whether the action "workload" switches the callers on or off, and whether a fault that
+	// the visitor switches, such as "hangNetwork", is on or off.
 	On bool `json:"on,omitzero"`
 }
 
@@ -108,11 +113,17 @@ var actions = map[string]bool{
 	"startWall":      true,
 	"stopMonotonic":  true,
 	"startMonotonic": true,
-	"loseAnswer":     false,
-	"failRequest":    false,
-	"outage":         false,
-	"calm":           false,
-	"workload":       false,
+	"pauseClocks":    true,
+	"resumeClocks":   true,
+	// The faults that the visitor switches on and off, each for one instance.
+	"hangNetwork":       true,
+	"disconnectNetwork": true,
+	"failDisk":          true,
+	"loseAnswer":        false,
+	"failRequest":       false,
+	"outage":            false,
+	"calm":              false,
+	"workload":          false,
 }
 
 // purposes of a request to the store, as the trace names them, which a lost answer or a failed
@@ -126,6 +137,8 @@ const (
 	maxCallers   = 8
 	maxReaders   = 8
 	maxSchedule  = 1000
+	// maxKeep rows that the writes keep in the table.
+	maxKeep = 100_000
 )
 
 // defaultRequest has the default of every field.
@@ -203,30 +216,36 @@ func (r Request) check() error {
 	if !positive(w.Timeout) || w.Timeout > maxEnd {
 		bad("workload.timeout is %v, and must be above 0 and at most %v", w.Timeout, maxEnd)
 	}
+	if w.Keep < 0 || w.Keep > maxKeep {
+		bad("workload.keep is %v, and must be from 0 to %v", w.Keep, maxKeep)
+	}
 	if len(r.Schedule) > maxSchedule {
 		bad("the schedule has %v actions, and may have at most %v", len(r.Schedule), maxSchedule)
 	}
 	for i, a := range r.Schedule {
-		if err := a.check(r); err != nil {
+		if !nonNegative(a.At) || a.At >= r.End {
+			bad("schedule[%v]: %v at %v, which is not from 0 to before the end at %v", i, a.Do, a.At, r.End)
+			continue
+		}
+		if err := a.check(r.Instances); err != nil {
 			bad("schedule[%v]: %w", i, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func (a Action) check(r Request) error {
+// check the action for a run with the given number of instances, apart from its time.
+func (a Action) check(instances int) error {
 	needsInstance, ok := actions[a.Do]
 	switch {
 	case !ok:
 		return fmt.Errorf("no action is called %q", a.Do)
-	case !nonNegative(a.At) || a.At >= r.End:
-		return fmt.Errorf("%v at %v, which is not from 0 to before the end at %v", a.Do, a.At, r.End)
-	case needsInstance && !validInstance(a.Instance, r.Instances):
-		return fmt.Errorf("%v needs an instance from a to %v, and has %q", a.Do, instanceName(r.Instances-1), a.Instance)
+	case needsInstance && !validInstance(a.Instance, instances):
+		return fmt.Errorf("%v needs an instance from a to %v, and has %q", a.Do, instanceName(instances-1), a.Instance)
 	case !needsInstance && a.Instance != "" && a.Do != "loseAnswer" && a.Do != "failRequest":
 		return fmt.Errorf("%v is for no instance, and has %q", a.Do, a.Instance)
-	case a.Instance != "" && !validInstance(a.Instance, r.Instances):
-		return fmt.Errorf("%v is for an instance from a to %v, and has %q", a.Do, instanceName(r.Instances-1), a.Instance)
+	case a.Instance != "" && !validInstance(a.Instance, instances):
+		return fmt.Errorf("%v is for an instance from a to %v, and has %q", a.Do, instanceName(instances-1), a.Instance)
 	}
 	switch a.Do {
 	case "cutOff", "outage":
@@ -300,4 +319,43 @@ func duration(ms float64) time.Duration {
 // millis of d, the unit of every time and duration of a request and its trace.
 func millis(d time.Duration) float64 {
 	return float64(d) / 1e6
+}
+
+// Session is what a live session is started with: the fields of a [Request] that hold for the
+// whole run. A session has no end and no schedule, and sends no text trace of the scheduler. A field
+// that is missing has the default that [defaultSession] gives it.
+type Session struct {
+	Seed      uint64    `json:"seed"`
+	Instances int       `json:"instances"`
+	Leases    []float64 `json:"leases"`
+	Readers   int       `json:"readers"`
+	Latency   float64   `json:"latency"`
+	Faults    Faults    `json:"faults"`
+	Buggify   bool      `json:"buggify"`
+	Workload  Workload  `json:"workload"`
+}
+
+// defaultSession has the default of every field: those of [defaultRequest], but two instances, and
+// writes that keep the last 100 rows, so that a read costs the same however long the session runs.
+func defaultSession() Session {
+	r := defaultRequest()
+	r.Workload.Keep = 100
+	return Session{Seed: r.Seed, Instances: 2, Leases: r.Leases, Readers: r.Readers, Latency: r.Latency, Workload: r.Workload}
+}
+
+// ParseSession from its JSON, with the defaults for missing fields, and check it, as
+// [ParseRequest] does. It returns the settings as a request whose end is infinite and whose schedule
+// is empty.
+func ParseSession(b []byte) (Request, error) {
+	s := defaultSession()
+	if err := json.Unmarshal(b, &s, json.RejectUnknownMembers(true)); err != nil {
+		return Request{}, fmt.Errorf("the session is not JSON of a session: %w", err)
+	}
+	r := Request{Seed: s.Seed, End: maxEnd, Instances: s.Instances, Leases: s.Leases, Readers: s.Readers,
+		Latency: s.Latency, Faults: s.Faults, Buggify: s.Buggify, Workload: s.Workload}
+	if err := r.check(); err != nil {
+		return Request{}, err
+	}
+	r.End = math.Inf(1)
+	return r, nil
 }

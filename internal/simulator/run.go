@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -78,31 +79,47 @@ const prefix = "db"
 // request's seed, in a temporary directory that t removes afterwards.
 func simulate(t *testing.T, req Request) Response {
 	var res Response
+	disks, err := takeDisks(req.Instances)
+	if err != nil {
+		return Response{Error: "the disks of the instances cannot be made: " + err.Error()}
+	}
+	defer putDisks(disks)
 	synctest.Test(t, func(t *testing.T) {
 		world := sim.New(req.Seed, sim.Options{Jitter: 50 * time.Millisecond, Buggify: sim.Buggify{On: req.Buggify}, MaxSteps: 5_000_000})
-		r := &run{
-			req:       req,
-			world:     world,
-			rec:       &recorder{world: world, end: duration(req.End)},
-			dir:       t.TempDir(),
-			auto:      req.Workload.On,
-			manifests: map[store.Version]*ManifestObject{},
-		}
-		r.check = newChecker(r)
-		if err := world.Run(r.main); err != nil {
-			res.SchedulerError = err.Error()
-		}
-		lines := world.Lines()
-		sum := sha256.Sum256([]byte(strings.Join(lines, "\n") + fmt.Sprint("\n", world.Uint64())))
-		res.Hash, res.Steps = hex.EncodeToString(sum[:]), world.Steps()
+		r := newRun(t, req, world, duration(req.End), disks, false)
+		r.ends(world.Run(r.main), &res)
 		if req.Lines {
-			res.Lines = lines
+			res.Lines = world.Lines()
 		}
 		res.Events = r.rec.events
-		res.Summary = summarize(r)
 	})
 	res.Request = &req
 	return res
+}
+
+func newRun(t *testing.T, req Request, world *sim.Scheduler, end time.Duration, disks []disk, live bool) *run {
+	r := &run{
+		req:       req,
+		world:     world,
+		rec:       newRecorder(world, end, live),
+		dir:       t.TempDir(),
+		auto:      req.Workload.On,
+		manifests: map[store.Version]*ManifestObject{},
+		disks:     disks,
+	}
+	r.check = newChecker(r)
+	return r
+}
+
+// ends the run, whose scheduler returned err, with what res says of a run that has ended: the
+// failure of the scheduler, the hash of its trace, its steps, and the summary.
+func (r *run) ends(err error, res *Response) {
+	if err != nil {
+		res.SchedulerError = err.Error()
+	}
+	sum := sha256.Sum256([]byte(strings.Join(r.world.Lines(), "\n") + fmt.Sprint("\n", r.world.Uint64())))
+	res.Hash, res.Steps = hex.EncodeToString(sum[:]), r.world.Steps()
+	res.Summary = r.summarize()
 }
 
 // run is one run: what its tasks share.
@@ -126,6 +143,13 @@ type run struct {
 	calm      bool
 	armed     []Action
 	manifests map[store.Version]*ManifestObject
+	// disks of the instances, in their order.
+	disks []disk
+	// actions is the number of actions so far, which a live session gives as their indexes.
+	actions int
+	// session of a live run, or nil for a batch run, and endedAt the time at which the session ended.
+	session *session
+	endedAt time.Duration
 }
 
 // instance is one instance of the database, by its name, which a process after process runs.
@@ -135,6 +159,15 @@ type instance struct {
 	// restarts of the instance after a crash, which name its processes.
 	restarts int
 	p        *process
+	// disk through which its processes open their caches.
+	disk disk
+
+	// The faults of its network that actions switch, guarded by the mutex of the run. hung is set
+	// while no request of the instance gets an answer, and disconnected while each fails at once.
+	// inFlight holds the requests of the instance that are on their way, with the cancel of the
+	// context of each, which a disconnect calls.
+	hung, disconnected bool
+	inFlight           map[*pending]context.CancelFunc
 }
 
 // process that runs an instance: a simulated machine with its clocks, its cache, and its callers.
@@ -153,8 +186,8 @@ type process struct {
 	shut   *core.DB
 	holder string
 	// closed is set while the database is closed by an action, and final once it is closed for the
-	// end of the run.
-	closed, final bool
+	// end of the run. failed is set while the last open of the database failed.
+	closed, final, failed bool
 	// The clocks as the actions left them, and whether they ever had faults that the design does not
 	// survive together: see [checker.read].
 	wallStopped, monotonicStopped, wallStoppedEver, monotonicStoppedEver, wallBackEver bool
@@ -211,19 +244,10 @@ func (h storeHost) Trace(ctx context.Context, format string, args ...any) {
 	h.r.storeEvent(ctx, format, args)
 }
 
-// main is the first task of the run. It starts the instances, does the actions of the schedule at
-// their times, and at the end runs the last checks and lets every process close its database.
+// main is the first task of a batch run. It starts the instances, does the actions of the schedule
+// at their times, and at the end runs the last checks and lets every process close its database.
 func (r *run) main(ctx context.Context) {
-	r.store = simstore.New(storeHost{Scheduler: r.world, r: r}, simstore.Options{
-		Latency: duration(r.req.Latency),
-		Faults:  r.req.Faults.store(),
-	})
-	for i := range r.req.Instances {
-		in := &instance{name: instanceName(i), lease: duration(r.req.Leases[i%len(r.req.Leases)])}
-		r.instances = append(r.instances, in)
-		r.start(ctx, in, filepath.Join(r.dir, in.name+".db"))
-	}
-
+	r.setUp(ctx)
 	schedule := slices.Clone(r.req.Schedule)
 	order := make([]int, len(schedule))
 	for i := range order {
@@ -243,7 +267,24 @@ func (r *run) main(ctx context.Context) {
 		r.act(ctx, i, schedule[i])
 	}
 	r.sleepUntil(ctx, duration(r.req.End))
+	r.end(ctx)
+}
 
+// setUp the store and the instances, each with its first process.
+func (r *run) setUp(ctx context.Context) {
+	r.store = simstore.New(storeHost{Scheduler: r.world, r: r}, simstore.Options{
+		Latency: duration(r.req.Latency),
+		Faults:  r.req.Faults.store(),
+	})
+	for i := range r.req.Instances {
+		in := &instance{name: instanceName(i), lease: duration(r.req.Leases[i%len(r.req.Leases)]), disk: r.disks[i], inFlight: map[*pending]context.CancelFunc{}}
+		r.instances = append(r.instances, in)
+		r.start(ctx, in, filepath.Join(r.dir, in.name+".db"))
+	}
+}
+
+// end the run: run the last checks, and let every process close its database.
+func (r *run) end(ctx context.Context) {
 	r.check.final(ctx)
 	r.mu.Lock()
 	r.ending = true
@@ -305,14 +346,18 @@ func (r *run) open(ctx context.Context, p *process) {
 		Lease:   p.i.lease,
 		Readers: r.req.Readers,
 		Logger:  slog.New(coreHandler{r: r, p: p}),
+		VFS:     p.i.disk.name(),
 	}
 	d, err := core.Open(ctx, procHost{Instance: p.inst, r: r, p: p}, p.client, p.path, prefix, options)
 	if err != nil {
+		p.mu.Lock()
+		p.failed = true
+		p.mu.Unlock()
 		r.rec.add(Event{Kind: "process", What: "open_failed", Instance: p.i.name, Process: p.name, Error: err.Error()})
 		return
 	}
 	p.mu.Lock()
-	p.db = d
+	p.db, p.failed = d, false
 	holder := p.holder
 	p.mu.Unlock()
 	r.rec.add(Event{Kind: "process", What: "opened", Instance: p.i.name, Process: p.name, Holder: holder})
@@ -345,15 +390,20 @@ func (r *run) closeDB(ctx context.Context, p *process, d *core.DB) {
 }
 
 // supervise the database of p as an application does: when it has stopped for good, close it and
-// open it again. At the end of the run it closes the database for good.
+// open it again, and when it could not be opened, open it again. At the end of the run it closes the
+// database for good.
 func (r *run) supervise(ctx context.Context, p *process) {
 	for !r.isEnding() {
-		if r.mustReopen(p) && p.lifecycle.Acquire(ctx) == nil {
-			// An action may have closed the database while the supervisor waited.
-			if r.mustReopen(p) && !r.isEnding() {
+		if (r.mustReopen(p) || r.mustRetry(p)) && p.lifecycle.Acquire(ctx) == nil {
+			// An action may have closed or opened the database while the supervisor waited.
+			switch {
+			case r.isEnding():
+			case r.mustReopen(p):
 				d := p.current()
 				r.rec.add(Event{Kind: "process", What: "stopped", Instance: p.i.name, Process: p.name, Error: errText(d.Err())})
 				r.closeDB(ctx, p, d)
+				r.open(ctx, p)
+			case r.mustRetry(p):
 				r.open(ctx, p)
 			}
 			p.lifecycle.Release(ctx)
@@ -377,6 +427,14 @@ func (r *run) mustReopen(p *process) bool {
 	d, shut, closed := p.db, p.shut, p.closed
 	p.mu.Unlock()
 	return d != nil && d != shut && !closed && stopped(d)
+}
+
+// mustRetry reports whether the last open of the database of p failed, and no action has closed it
+// since.
+func (r *run) mustRetry(p *process) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.failed && !p.closed
 }
 
 // stopped reports whether d has stopped for good, by its channel.
@@ -479,6 +537,12 @@ func (r *run) write(ctx context.Context, d *core.DB, value int64) (string, strin
 		_ = tx.Rollback(ctx)
 		return "abandoned", err.Error()
 	}
+	if keep := int64(r.req.Workload.Keep); keep > 0 && value > keep {
+		if _, err := tx.Delete(ctx, tableName, []*s4qlpb.Value{s4qlpb.Value_builder{Integer: new(value - keep)}.Build()}); err != nil {
+			_ = tx.Rollback(ctx)
+			return "abandoned", err.Error()
+		}
+	}
 	switch err := tx.Commit(ctx); {
 	case err == nil:
 		return "committed", ""
@@ -551,7 +615,12 @@ func (r *run) act(ctx context.Context, i int, a Action) {
 	}
 	crashed := p != nil && p.inst.Crashed()
 	needsLive := map[string]bool{"write": true, "read": true, "crash": true, "close": true, "open": true, "cutOff": true,
-		"shiftWall": true, "stopWall": true, "startWall": true, "stopMonotonic": true, "startMonotonic": true}
+		"shiftWall": true, "stopWall": true, "startWall": true, "stopMonotonic": true, "startMonotonic": true,
+		"pauseClocks": true, "resumeClocks": true}
+	switch a.Do {
+	case "workload", "hangNetwork", "disconnectNetwork", "failDisk":
+		e.On = new(a.On)
+	}
 	if needsLive[a.Do] && crashed {
 		ignore("the process of the instance has crashed")
 		r.rec.add(e)
@@ -640,8 +709,12 @@ func (r *run) act(ctx context.Context, i int, a Action) {
 		r.mu.Lock()
 		r.calm = true
 		r.mu.Unlock()
-	case "shiftWall", "stopWall", "startWall", "stopMonotonic", "startMonotonic":
+	case "shiftWall", "stopWall", "startWall", "stopMonotonic", "startMonotonic", "pauseClocks", "resumeClocks":
 		r.clock(p, a)
+	case "hangNetwork", "disconnectNetwork":
+		r.network(in, a)
+	case "failDisk":
+		in.disk.fail(a.On)
 	case "loseAnswer", "failRequest":
 		r.mu.Lock()
 		r.armed = append(r.armed, a)
@@ -675,6 +748,14 @@ func (r *run) clock(p *process, a Action) {
 	case "startMonotonic":
 		p.inst.StartMonotonic()
 		p.monotonicStopped = false
+	case "pauseClocks":
+		p.inst.StopWall()
+		p.inst.StopMonotonic()
+		p.wallStopped, p.wallStoppedEver, p.monotonicStopped, p.monotonicStoppedEver = true, true, true, true
+	case "resumeClocks":
+		p.inst.StartWall()
+		p.inst.StartMonotonic()
+		p.wallStopped, p.monotonicStopped = false, false
 	}
 	wallStopped, monotonicStopped := p.wallStopped, p.monotonicStopped
 	p.mu.Unlock()
@@ -718,6 +799,9 @@ type pending struct {
 	key     string
 	purpose string
 	bytes   int
+	// cut is set when the network of the instance is disconnected while the request is on its way. It
+	// is guarded by the mutex of the run.
+	cut bool
 }
 
 type pendingKey struct{}
@@ -728,11 +812,28 @@ func (c *client) Get(ctx context.Context, key string) (io.ReadCloser, store.Vers
 		k.purpose = "download"
 	}
 	ctx = context.WithValue(ctx, pendingKey{}, k)
+	if err := c.blocked(ctx, k); err != nil {
+		return nil, "", err
+	}
 	fault := c.r.trip(k)
 	if fault == "failRequest" {
 		return nil, "", c.r.failed(k)
 	}
-	body, version, err := c.inner.Get(ctx, key)
+	sendCtx, arrived, done := c.away(ctx, k)
+	body, version, err := c.inner.Get(sendCtx, key)
+	if netErr := arrived(ctx); netErr != nil {
+		if err == nil {
+			_ = body.Close()
+		}
+		done()
+		return nil, "", netErr
+	}
+	if err != nil {
+		done()
+	} else {
+		// The content comes over the network after the answer, so a disconnect breaks it off.
+		body = &content{ReadCloser: body, r: c.r, k: k, done: done}
+	}
 	if err == nil && k.purpose == "download" && c.r.req.Faults.Damaged > 0 && !c.r.isCalm() && c.r.chance(c.r.req.Faults.Damaged) {
 		body = c.damage(k, body)
 	}
@@ -789,16 +890,141 @@ func (c *client) write(ctx context.Context, method, key string, from store.Versi
 	}
 	k := &pending{p: c.p, method: method, key: key, bytes: len(data), purpose: c.r.purpose(key, from, data)}
 	ctx = context.WithValue(ctx, pendingKey{}, k)
+	if err := c.blocked(ctx, k); err != nil {
+		return "", err
+	}
 	fault := c.r.trip(k)
 	if fault == "failRequest" {
 		return "", c.r.failed(k)
 	}
-	version, err := send(ctx)
+	sendCtx, arrived, done := c.away(ctx, k)
+	version, err := send(sendCtx)
+	netErr := arrived(ctx)
+	done()
+	if netErr != nil {
+		return "", netErr
+	}
 	if fault == "loseAnswer" {
 		return "", c.r.lostAnswer(k)
 	}
 	c.r.returned(k, version, err)
 	return version, err
+}
+
+// errDisconnected is the error of a call to the store while the network of its instance is
+// disconnected. It tells the caller nothing about whether the store applied the request.
+var errDisconnected = fmt.Errorf("simulator: the network of the instance is disconnected: %w", simstore.ErrFault)
+
+// blocked returns an error if the network of the instance keeps the call k from being sent: at once
+// while it is disconnected, and while it hangs once the caller gives up, after waiting for an answer
+// that does not come.
+func (c *client) blocked(ctx context.Context, k *pending) error {
+	r, in := c.r, c.p.i
+	r.mu.Lock()
+	hung, disconnected := in.hung, in.disconnected
+	r.mu.Unlock()
+	switch {
+	case disconnected:
+		r.rec.add(Event{Kind: "request", What: "disconnected", Instance: in.name, Process: c.p.name, Method: k.method, Key: k.key,
+			Purpose: k.purpose, Bytes: k.bytes, Text: "the network of the instance is disconnected, so the request fails at once, and is not sent"})
+		return errDisconnected
+	case hung:
+		r.rec.add(Event{Kind: "request", What: "hung", Instance: in.name, Process: c.p.name, Method: k.method, Key: k.key,
+			Purpose: k.purpose, Bytes: k.bytes, Text: "the network of the instance hangs, so the request is not sent, and its caller waits for an answer until it gives up"})
+		return c.hang(ctx, k)
+	}
+	return nil
+}
+
+// hang the call k until its caller gives up, and return why it gave up.
+func (c *client) hang(ctx context.Context, k *pending) error {
+	err := fmt.Errorf("simulator: no answer came while the network of the instance hung: %w", c.p.inst.Sleep(ctx, math.MaxInt64))
+	c.r.returned(k, "", err)
+	return err
+}
+
+// away is the context with which the call k is sent, which a disconnect of the network of the
+// instance ends, and two functions. arrived returns the error that the network gives the caller in
+// place of the answer, if any: after a disconnect, an error, and while the network hangs, none
+// until the caller gives up, because the answer is lost. done ends the call's time on the network,
+// which for a get is when its content is closed.
+func (c *client) away(ctx context.Context, k *pending) (sendCtx context.Context, arrived func(ctx context.Context) error, done func()) {
+	r, in := c.r, c.p.i
+	sendCtx, cancel := context.WithCancel(ctx)
+	r.mu.Lock()
+	in.inFlight[k] = cancel
+	r.mu.Unlock()
+	done = func() {
+		r.mu.Lock()
+		delete(in.inFlight, k)
+		r.mu.Unlock()
+		cancel()
+	}
+	return sendCtx, func(ctx context.Context) error {
+		r.mu.Lock()
+		cut, hung := k.cut, in.hung
+		r.mu.Unlock()
+		switch {
+		case cut:
+			r.rec.add(Event{Kind: "request", What: "disconnected", Request: k.request, Instance: in.name, Process: c.p.name, Method: k.method,
+				Key: k.key, Purpose: k.purpose, Text: "the network of the instance was disconnected while the request was on its way, and its caller gets an error"})
+			return errDisconnected
+		case hung:
+			r.rec.add(Event{Kind: "request", What: "hung", Request: k.request, Instance: in.name, Process: c.p.name, Method: k.method,
+				Key: k.key, Purpose: k.purpose, Text: "the answer is lost, because the network of the instance hangs, and the caller waits until it gives up"})
+			return c.hang(ctx, k)
+		}
+		return nil
+	}, done
+}
+
+// content of a get as it comes over the network: a disconnect breaks it off.
+type content struct {
+	io.ReadCloser
+	r    *run
+	k    *pending
+	done func()
+}
+
+func (c *content) Read(p []byte) (int, error) {
+	n, err := c.ReadCloser.Read(p)
+	c.r.mu.Lock()
+	cut := c.k.cut
+	c.r.mu.Unlock()
+	if err != nil && cut {
+		err = errDisconnected
+	}
+	return n, err
+}
+
+func (c *content) Close() error {
+	err := c.ReadCloser.Close()
+	c.done()
+	return err
+}
+
+// network switches the fault of the action a, hangNetwork or disconnectNetwork, on the instance in. A
+// disconnect ends the calls of the instance that are on their way.
+func (r *run) network(in *instance, a Action) {
+	r.mu.Lock()
+	var cancels []context.CancelFunc
+	switch a.Do {
+	case "hangNetwork":
+		in.hung = a.On
+	case "disconnectNetwork":
+		in.disconnected = a.On
+		if a.On {
+			for k, cancel := range in.inFlight {
+				k.cut = true
+				cancels = append(cancels, cancel)
+			}
+		}
+	}
+	r.mu.Unlock()
+	// The order does not matter: a cancel only makes a task that waits for its context able to run.
+	for _, cancel := range cancels {
+		cancel()
+	}
 }
 
 // peek at the content of a write, from its current offset to its end, and leave the offset where it
@@ -996,25 +1222,21 @@ func readCommit(content []byte, name format.Name) (*CommitObject, error) {
 				}
 			}
 		}
-	}
-}
-
-// summarize the run from its events.
-func summarize(r *run) *Summary {
-	s := &Summary{Calls: map[string]int{}, Requests: map[string]int{}}
-	for _, e := range r.rec.events {
-		switch {
-		case e.Kind == "call" && e.What != "started":
-			s.Calls[e.Op+" "+e.What]++
-		case e.Kind == "request":
-			s.Requests[e.What]++
-		case e.Kind == "check":
-			s.Violations++
-			if e.Excused {
-				s.Excused++
+		if d := change.GetDeleteRows(); d != nil && d.GetTable() == tableName {
+			for _, key := range d.GetPrimaryKeys() {
+				if v := key.GetValues(); len(v) > 0 {
+					c.Deletes = append(c.Deletes, v[0].GetInteger())
+				}
 			}
 		}
 	}
+}
+
+// summarize the run from the counts of its events.
+func (r *run) summarize() *Summary {
+	r.rec.mu.Lock()
+	s := r.rec.summary
+	r.rec.mu.Unlock()
 	s.Log = r.check.logAtEnd
-	return s
+	return &s
 }
