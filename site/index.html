@@ -855,17 +855,17 @@ footer ul {
               <li>The SQL engine for slice 1: <code>create table</code>, <code>insert</code>, <code>select *</code>, and <code>drop table</code> for one integer column. It is checked against SQLite statement by statement, in a simulation with faults, and by fuzzing.</li>
               <li>The <code>database/sql</code> driver, in the package <code>maragu.dev/s4ql</code>. With it, an application can run the statements of slice 1 on a bucket. It is checked against SQLite through <code>database/sql</code>, in 200 generated sequences of 40 statements and by fuzzing. A cache belongs to one database, and another database refuses it.</li>
               <li>Slice 2, parameters: an <code>insert</code> takes an integer argument for a plain <code>?</code> through <code>database/sql</code>, directly and through a prepared statement. It is checked against SQLite by generated tests in the engine and through <code>database/sql</code> (the engine's compares 12,000 statements), in a simulation, and by mutation testing.</li>
-              <li>Slice 3, transactions: <code>db.BeginTx</code> gives a transaction that is the single writer from its beginning until it commits or rolls back. <code>sql.TxOptions{ReadOnly: true}</code> gives a read-only transaction on one state that holds no one up.</li>
+              <li>Slice 3, transactions: <code>db.BeginTx</code> gives a transaction that is the single writer from its beginning until it commits or rolls back. <code>sql.TxOptions{ReadOnly: true}</code> gives a read-only transaction on one state that holds no one up. It is checked against SQLite by generated tests in the engine and through <code>database/sql</code> (499 generated transactions), in a simulation with faults, and by mutation testing (628 mutants of the engine).</li>
             </ul>
           </td>
         </tr>
         <tr>
           <th scope="row" class="caps">Not built</th>
-          <td><p>Generated comparisons with SQLite through <code>database/sql</code> and a simulation with transactions. Also more than one column, <code>where</code>, and other types.</p></td>
+          <td><p>More than one column, <code>where</code>, other types than integer, and a statement while rows of the same transaction are open.</p></td>
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
-          <td><p>The generated checks and the simulation of transactions.</p></td>
+          <td><p>Define slice 4 of the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
         </tr>
       </tbody>
     </table>
