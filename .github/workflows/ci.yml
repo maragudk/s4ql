@@ -120,6 +120,11 @@ jobs:
       - name: Run the free-running mode under the race detector
         run: go test -race -shuffle on -run '^TestFree' ./internal/sim/ ./internal/core/
 
+      # make sim-speed and make sim-hang build tests with tags of their own, which no other job
+      # compiles. They are tools for a person, so they are vetted here and not run.
+      - name: Vet the tests that only a person runs
+        run: go vet -tags s4ql_speed ./internal/sim/ && go vet -tags s4ql_hang ./internal/sim/
+
   # Most tests of the SQL front end compare with SQLite on a tenth of the corpus and of the generated
   # texts under the race detector, which the reusable test workflow uses, and under the address
   # sanitizer, and leave out the checks that need all of them. This job runs them without either.
