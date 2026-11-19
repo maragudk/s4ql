@@ -67,6 +67,11 @@ type workload struct {
 	// txs makes one turn of a caller in txs a transaction that spans statements instead of a
 	// statement of its own, if it is more than 0: see [run.transaction].
 	txs int
+	// idlers is the number of callers of each instance that hold a write transaction open and idle
+	// across a cut-off of their instance from the store, for up to idle, and leave the last one open
+	// after the end of the workload: see [run.idler].
+	idlers int
+	idle   time.Duration
 }
 
 // hammerWorkload has one instance whose callers hardly wait between their statements, so that two
@@ -96,6 +101,14 @@ var defaultWorkload = workload{
 	closes:    1,
 	txs:       4,
 }
+
+// idleWorkload is the default workload with an idler on each instance, whose write transactions sit
+// idle while the instance is cut off from the store: see [run.idler].
+var idleWorkload = func() workload {
+	w := defaultWorkload
+	w.idlers, w.idle = 1, time.Minute
+	return w
+}()
 
 // attemptState of a statement, as its caller saw it.
 type attemptState int
@@ -166,6 +179,8 @@ type txRecord struct {
 	start, began, ending, stop uint64
 	// commit is true if the caller called the commit, and not the roll back.
 	commit bool
+	// lost is set when a call of the transaction failed because its instance ended it for the lease.
+	lost bool
 	// end of the transaction: "" while it is open or its end did not return, because its instance
 	// crashed, and otherwise "not begun", "committed", "unknown", "not committed", or "rolled back".
 	end string
@@ -216,6 +231,16 @@ type node struct {
 	gen int
 	// clients are the callers of the node, each with its connection.
 	clients []*client
+	// kept is the write transaction that an idler left open at its end, or nil: see [run.idler].
+	kept *keptTx
+}
+
+// keptTx is a write transaction that an idler left open and idle at the end of the workload, on the
+// connection c of the engine of the generation gen.
+type keptTx struct {
+	tx  *txRecord
+	c   *engine.Conn
+	gen int
 }
 
 func (n *node) current() (*core.DB, *engine.Engine) {
@@ -305,6 +330,40 @@ type run struct {
 	crashed []*core.DB
 	// events of the run that are not statements: crashes, closes, and restarts, by kind.
 	events map[string]int
+	// endedForLease are the numbers of the run's clock of events at which an instance ended a write
+	// transaction because it lost its lease, by the node and the generation of its engine, as the
+	// event of the storage core says: see [run.verifyOverlaps].
+	endedForLease map[string][]uint64
+}
+
+// coreHandler of the events of the storage core of one engine, of the node and the generation that
+// key names: it records the ends of write transactions for the lease, and writes them into the
+// trace. The other events of the core are left out, as before it had a logger.
+type coreHandler struct {
+	r   *run
+	key string
+}
+
+func (h coreHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= slog.LevelInfo
+}
+func (h coreHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h coreHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h coreHandler) Handle(ctx context.Context, rec slog.Record) error {
+	if rec.Message != "transaction_ended" {
+		return nil
+	}
+	h.r.mu.Lock()
+	h.r.endedForLease[h.key] = append(h.r.endedForLease[h.key], h.r.tick())
+	h.r.mu.Unlock()
+	var b strings.Builder
+	rec.Attrs(func(a slog.Attr) bool {
+		fmt.Fprint(&b, " ", a.Key, "=", a.Value)
+		return true
+	})
+	h.r.world.Trace(ctx, "core %v:%v", rec.Message, b.String())
+	return nil
 }
 
 // tick the run's clock of events, and give its new number. The caller holds r.mu.
@@ -361,10 +420,14 @@ func (h handler) Handle(ctx context.Context, rec slog.Record) error {
 
 // open the database of n on its cache, with its engine.
 func (r *run) open(ctx context.Context, n *node) error {
+	n.mu.Lock()
+	key := fmt.Sprint(n.name, "/", n.gen+1)
+	n.mu.Unlock()
 	d, err := core.Open(ctx, n.inst, n.client, n.path, "db", core.Options{
 		BusyTimeout:   time.Minute,
 		ObjectTimeout: 10 * time.Second,
 		Lease:         n.lease,
+		Logger:        slog.New(coreHandler{r: r, key: key}),
 	})
 	if err != nil {
 		return err
@@ -519,6 +582,9 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 		}
 	case errors.Is(err, core.ErrNoLease):
 		a.state, a.reason = failed, "no lease"
+		if tx != nil && errors.Is(err, core.ErrTxLeaseLost) {
+			tx.lost = true
+		}
 	case errors.Is(err, core.ErrStopped):
 		a.state, a.reason = failed, "stopped"
 	case errors.Is(err, context.DeadlineExceeded):
@@ -558,15 +624,22 @@ func reasonOf(err error) string {
 // four is read-only.
 // It has two to six statements of the sequence of the run, a short wait before each, and each call
 // has a timeout of up to the workload's. It ends with a commit, or one time in four with a roll
-// back, and with a roll back after a refusal, so that it never stays open: an open write
-// transaction would keep its instance from taking back a lease that it lost.
+// back, and with a roll back after a refusal. A transaction of an idler is a write transaction that
+// then sits idle, maybe while its instance is cut off from the store, and runs one more statement,
+// or stays open if keep is set: see [run.idler].
 func (r *run) transaction(ctx context.Context, n *node, c *engine.Conn, gen int, rnd hostRand) string {
+	return r.transactionOf(ctx, n, c, gen, rnd, false, false)
+}
+
+// transactionOf is [run.transaction], for an idler if idle is set, which leaves the transaction
+// open if keep is set too.
+func (r *run) transactionOf(ctx context.Context, n *node, c *engine.Conn, gen int, rnd hostRand, idle, keep bool) string {
 	timeout := func() (context.Context, context.CancelFunc) {
 		return n.inst.WithTimeout(ctx, time.Duration(1+rnd.IntN(int(r.w.timeout/time.Millisecond)))*time.Millisecond)
 	}
 	r.mu.Lock()
 	r.nextTx++
-	tx := &txRecord{id: r.nextTx, node: n.name, gen: gen, readOnly: rnd.IntN(4) == 0, acked: len(r.acked), start: r.tick()}
+	tx := &txRecord{id: r.nextTx, node: n.name, gen: gen, readOnly: !idle && rnd.IntN(4) == 0, acked: len(r.acked), start: r.tick()}
 	r.txs = append(r.txs, tx)
 	r.mu.Unlock()
 	kind := map[bool]string{false: "write", true: "read-only"}[tx.readOnly]
@@ -606,6 +679,32 @@ func (r *run) transaction(ctx context.Context, n *node, c *engine.Conn, gen int,
 			break
 		}
 	}
+	if idle && reason == "" {
+		// The transaction sits idle, and the instance is cut off from the store meanwhile, for long
+		// enough that another instance can take the lease, always before a transaction that is kept.
+		if keep || rnd.IntN(2) == 0 {
+			cut := time.Duration(30_000+rnd.IntN(30_000)) * time.Millisecond
+			if keep {
+				cut = 2 * time.Minute
+			}
+			r.world.Trace(ctx, "%v is cut off for %v while the transaction %v sits idle", n.name, cut, tx.id)
+			n.client.CutOff(ctx, cut)
+		}
+		if keep {
+			_ = n.inst.Sleep(ctx, 3*time.Minute)
+			r.world.Trace(ctx, "the transaction %v stays open", tx.id)
+			n.mu.Lock()
+			n.kept = &keptTx{tx: tx, c: c, gen: gen}
+			n.mu.Unlock()
+			return ""
+		}
+		_ = n.inst.Sleep(ctx, time.Duration(rnd.IntN(int(r.w.idle/time.Millisecond)))*time.Millisecond)
+		sctx, cancel := timeout()
+		if a := r.statement(sctx, n, c, gen, r.q, tx); a.reason == "no lease" || a.reason == "stopped" {
+			reason = a.reason
+		}
+		cancel()
+	}
 
 	r.mu.Lock()
 	tx.commit = reason == "" && rnd.IntN(4) != 0
@@ -640,6 +739,10 @@ func (r *run) transaction(ctx context.Context, n *node, c *engine.Conn, gen int,
 			reason = reasonOf(err)
 		}
 		unexpected = reasonOf(err) == ""
+		tx.lost = tx.lost || errors.Is(err, core.ErrTxLeaseLost)
+	}
+	if tx.lost {
+		r.events["transactions ended for the lease"]++
 	}
 	r.world.Trace(ctx, "transaction %v ends as %v: %v", tx.id, tx.end, err)
 	if unexpected {
@@ -740,6 +843,14 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 			}
 		}))
 	}
+	for i := range r.w.idlers {
+		c := n.newClient()
+		n.callers.Add(1)
+		tasks = append(tasks, inst.Go(ctx, fmt.Sprint("idler-", i), func(ctx context.Context) {
+			defer n.callers.Add(-1)
+			r.idler(ctx, n, c, rnd)
+		}))
+	}
 	tasks = append(tasks, inst.Go(ctx, "supervisor", func(ctx context.Context) {
 		for n.callers.Load() > 0 {
 			d, _ := n.current()
@@ -782,6 +893,69 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 		}))
 	}
 	return n, tasks
+}
+
+// idler is a caller of n that runs two write transactions on the connection of the client c, each of
+// which sits idle after its statements, while n is cut off from the store for long enough, often,
+// that another instance can take the lease: see [run.transactionOf]. The second is cut off always,
+// and stays open after the end of the workload, so that the end of the workload checks that n
+// serves again while it sits idle: see [run.endKept] and [run.readsFree]. An instance that has lost
+// its lease ends such a transaction, so that it can take the lease back.
+func (r *run) idler(ctx context.Context, n *node, c *client, rnd hostRand) {
+	for i := range 2 {
+		_ = n.inst.Sleep(ctx, time.Duration(rnd.IntN(int(r.w.think/time.Millisecond)))*time.Millisecond)
+		_, e := n.current()
+		if e == nil || (i == 1 && !r.waitServing(ctx, n)) {
+			return
+		}
+		_, e = n.current()
+		r.transactionOf(ctx, n, c.conn(ctx, r, e), n.generation(e), rnd, true, i == 1)
+	}
+}
+
+// endKept is the write of the end of the workload on n, on the connection of the transaction that an
+// idler kept open, if it is on the engine e of n. It reports whether the write ran, which it does if
+// the transaction is open and n serves, and it ends the transaction if n has ended it for the lease,
+// or if it is of an engine before e. ok is false if n has no such transaction.
+func (r *run) endKept(ctx context.Context, n *node, e *engine.Engine) (served, ok bool) {
+	n.mu.Lock()
+	k := n.kept
+	n.mu.Unlock()
+	if k == nil {
+		return false, false
+	}
+	var err error
+	if n.generation(e) == k.gen {
+		_, err = k.c.Exec(ctx, `drop table "no such table"`)
+		if se := (*sqlerr.Error)(nil); errors.As(err, &se) {
+			return true, true
+		}
+		if !errors.Is(err, core.ErrTxLeaseLost) {
+			// The instance does not serve now, and has not ended the transaction.
+			return false, true
+		}
+	}
+	// The transaction ended: for the lease, or with the close of its engine.
+	r.mu.Lock()
+	k.tx.ending = r.tick()
+	k.tx.lost = k.tx.lost || errors.Is(err, core.ErrTxLeaseLost)
+	r.mu.Unlock()
+	rollbackErr := k.c.Rollback(ctx)
+	r.mu.Lock()
+	k.tx.stop, k.tx.end = r.tick(), "rolled back"
+	if k.tx.lost {
+		r.events["transactions ended for the lease"]++
+		r.events["kept transactions ended for the lease"]++
+	}
+	r.mu.Unlock()
+	r.world.Trace(ctx, "the transaction %v that was kept open ends as rolled back: %v, after: %v", k.tx.id, rollbackErr, err)
+	if rollbackErr != nil {
+		r.violate(ctx, "the roll back of the transaction %v that was kept open: %v", k.tx.id, rollbackErr)
+	}
+	n.mu.Lock()
+	n.kept = nil
+	n.mu.Unlock()
+	return false, true
 }
 
 // crash a random live node, and start a new node on a copy of what its cache left on disk, or on an
@@ -855,7 +1029,7 @@ func copyCache(from, to string) error {
 
 // do the workload, and check what happened: see [run.verify].
 func (w workload) do(ctx context.Context, world *sim.Scheduler, dir string, t testing.TB) *run {
-	r := &run{t: t, w: w, world: world, dir: dir, attempts: map[uint64]*attempt{}, events: map[string]int{},
+	r := &run{t: t, w: w, world: world, dir: dir, attempts: map[uint64]*attempt{}, events: map[string]int{}, endedForLease: map[string][]uint64{},
 		store: simstore.New(world, simstore.Options{Latency: 50 * time.Millisecond, Faults: w.faults}), q: newSequenceFrom(hostRand{world})}
 	var tasks []host.Task
 	for i := range w.instances {
@@ -895,6 +1069,12 @@ func (w workload) do(ctx context.Context, world *sim.Scheduler, dir string, t te
 				ctx, cancel := n.inst.WithTimeout(ctx, w.timeout)
 				defer cancel()
 				_, e := n.current()
+				// The transaction that an idler kept open holds the place of the writer while it is
+				// open, so the write runs in it.
+				if ran, ok := r.endKept(ctx, n, e); ok {
+					served = served || ran
+					return
+				}
 				// A connection that only writes has no reader to close.
 				var se *sqlerr.Error
 				if _, err := e.Conn().Exec(ctx, `drop table "no such table"`); errors.As(err, &se) {
@@ -932,6 +1112,9 @@ func (r *run) readsFree(ctx context.Context, live []*node) {
 			free := false
 			n.do(ctx, "reads", func(ctx context.Context) {
 				_, e := n.current()
+				// A transaction kept open that the instance has ended since is rolled back, so that its
+				// connection runs the query outside it.
+				_, _ = r.endKept(ctx, n, e)
 				n.mu.Lock()
 				clients := slices.Clone(n.clients)
 				n.mu.Unlock()
@@ -970,7 +1153,15 @@ func (r *run) readsFree(ctx context.Context, live []*node) {
 		}
 	}
 	for _, n := range live {
-		r.violate(ctx, "%v does not run a query on each connection of its callers ten minutes after the end of the workload: %v", n.name, errs[n])
+		n.mu.Lock()
+		k := n.kept
+		n.mu.Unlock()
+		if k != nil {
+			// The other instances are closed, so n could take the lease.
+			r.violate(ctx, "%v, where the write transaction %v is open and idle, does not serve ten minutes after the end of the workload: %v", n.name, k.tx.id, errs[n])
+		} else {
+			r.violate(ctx, "%v does not run a query on each connection of its callers ten minutes after the end of the workload: %v", n.name, errs[n])
+		}
 		n.do(ctx, "closer", func(ctx context.Context) { r.close(ctx, n) })
 	}
 }
@@ -1312,6 +1503,14 @@ func (r *run) verifyOverlaps(ctx context.Context) {
 		if end == 0 {
 			end = math.MaxUint64
 		}
+		// An instance that lost its lease ends the write transaction that holds the place, and frees
+		// the place, before the caller ends it.
+		for _, at := range r.endedForLease[fmt.Sprint(a.node, "/", a.gen)] {
+			if a.began < at && at < end {
+				end = at
+				break
+			}
+		}
 		for _, b := range r.txs {
 			if b != a && !b.readOnly && b.began != 0 && b.node == a.node && b.gen == a.gen && a.began < b.began && b.began < end {
 				r.violate(ctx, "the write transaction %v began on %v while the write transaction %v was open there", b.id, a.node, a.id)
@@ -1549,7 +1748,7 @@ func tallyOf(s simulation) map[string]int {
 	return counts
 }
 
-// TestSimulation runs the default workload and the hammer workload for many seeds each, and twice
+// TestSimulation runs the default workload, the idle workload, and the hammer workload for many seeds each, and twice
 // for some, whose traces must be the same. In a run of at least 50 seeds, every kind of outcome, of
 // fault of the store, and of event must occur at least as often as reached says, for each seed:
 // from a fifth to a third of what the first 1,000 seeds give, so that the test fails when a kind
@@ -1583,6 +1782,19 @@ func TestSimulation(t *testing.T) {
 			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.25, "fault: write applied after a crash": 0.05,
 			"statements in a transaction": 12, "read-only transactions": 0.9, "transactions committed": 2, "transactions rolled back": 0.8,
 			"transactions not committed": 0.08, "transactions unknown": 0.07, "commits of more than one statement": 0.4,
+		}, 0.15},
+		// A quarter of what the first 1,000 seeds gave on 2026-11-19, with the ends of transactions for
+		// the lease, which only this workload reaches.
+		{"idle", idleWorkload, map[string]float64{
+			"succeeded": 2.5, "SQLite's error": 6, "pending": 0.15, "skipped": 2, "failed: no lease": 1.5,
+			"failed: stopped": 0.6, "failed: timeout": 2.5, "query not read to its end": 0.25, "acknowledged writes": 0.6,
+			"commits": 0.5, "commits with a parameter": 0.1, "crash, then an empty cache": 0.1, "crash, then a copy of the cache": 0.1, "close and open": 0.3,
+			"fault: lost request": 0.3, "fault: lost response": 0.3, "fault: no answer": 2.5, "fault: conflict": 0.1,
+			"fault: slow way": 0.9, "fault: broken read": 0.2, "fault: cut-off": 0.15, "fault: outage": 0.05,
+			"fault: write applied after its caller gave up": 0.1, "fault: write stuck in the network": 4,
+			"statements in a transaction": 7, "read-only transactions": 0.7, "transactions committed": 0.7, "transactions rolled back": 0.7,
+			"transactions not committed": 0.04, "commits of more than one statement": 0.08,
+			"transactions ended for the lease": 0.33, "kept transactions ended for the lease": 0.33,
 		}, 0.15},
 		{"hammer", hammerWorkload, map[string]float64{
 			"succeeded": 12, "SQLite's error": 17, "unknown": 0.4, "skipped": 2.5, "failed: no lease": 2,
@@ -1629,7 +1841,7 @@ func TestSimulation(t *testing.T) {
 // The flags of the test binary that replay one seed of [TestSimulation]: see [replaySeed].
 var (
 	replay         = flag.String("replay", "", "replay this one seed in TestSimulation, and nothing else, and log its trace")
-	replayWorkload = flag.String("workload", "default", "workload of the replay: default or hammer")
+	replayWorkload = flag.String("workload", "default", "workload of the replay: default, hammer, or idle")
 	replayBug      = flag.String("bug", "", "planted bug of the replay")
 )
 
@@ -1644,6 +1856,8 @@ func replaySeed(t *testing.T) {
 	case "default":
 	case "hammer":
 		w = hammerWorkload
+	case "idle":
+		w = idleWorkload
 	default:
 		t.Fatalf("no workload is named %v", *replayWorkload)
 	}
