@@ -249,6 +249,8 @@ type instance struct {
 	path   string
 	d      *core.DB
 	e      *engine.Engine
+	// c is the connection of the engine that the statements of the instance run on.
+	c *engine.Conn
 	// changes is SQLite's count of changes on the connection, as the results of the engine give it.
 	changes int64
 	// memory is the state of an engine on a database in memory, which has no core, or nil.
@@ -257,13 +259,10 @@ type instance struct {
 	coreLog *slog.Logger
 }
 
-// readers is the number of read connections of an instance.
-const readers = 4
-
 // newMemoryInstance of the engine on a database in memory.
 func newMemoryInstance(t testing.TB) *instance {
 	e, state := engine.NewMemory(sim.NewFree(sim.Buggify{}))
-	return &instance{t: t, e: e, memory: state}
+	return &instance{t: t, e: e, c: e.Conn(), memory: state}
 }
 
 func newInstance(t testing.TB, options engine.Options) *instance {
@@ -277,7 +276,10 @@ func newInstanceLogged(t testing.TB, options engine.Options, coreLog *slog.Logge
 	h := sim.NewFree(sim.Buggify{})
 	i := &instance{t: t, host: h, store: simstore.New(h, simstore.Options{}), dir: t.TempDir(), coreLog: coreLog}
 	i.open(true, options)
-	t.Cleanup(func() { i.close() })
+	t.Cleanup(func() {
+		i.close()
+		is.NotError(t, i.c.Close(context.WithoutCancel(t.Context())))
+	})
 	return i
 }
 
@@ -291,14 +293,21 @@ func (i *instance) open(empty bool, options engine.Options) {
 	ctx := context.WithoutCancel(i.t.Context())
 	// A slow machine must not make the cache busy or the lease run out: the waits for both are far
 	// longer than any statement takes.
-	coreOptions := core.Options{Readers: readers, BusyTimeout: time.Minute, Lease: time.Hour, Logger: i.coreLog}
+	coreOptions := core.Options{BusyTimeout: time.Minute, Lease: time.Hour, Logger: i.coreLog}
 	d, err := core.Open(ctx, i.host, i.store.Client(fmt.Sprint("client-", i.host.Uint64()), nil), i.path, "db", coreOptions)
 	is.NotError(i.t, err)
 	is.NotError(i.t, d.Wait(ctx))
+	// The connection of the instance that was closed before, if there was one, is closed after its
+	// instance, which has closed the reader of the connection.
+	if i.c != nil {
+		is.NotError(i.t, i.c.Close(ctx))
+	}
 	i.d, i.e = d, engine.New(d, i.host, options)
+	i.c = i.e.Conn()
 }
 
-// close the instance, which releases the lease.
+// close the instance, which releases the lease. Its connection stays, for the statements that a
+// test runs on an instance that is closed.
 func (i *instance) close() {
 	if i.d == nil {
 		return
@@ -316,10 +325,10 @@ func (i *instance) restart(empty bool, options engine.Options) {
 	i.open(empty, options)
 }
 
-// query src through [engine.Engine.Query].
+// query src through [engine.Conn.Query].
 func (i *instance) query(src string) answer {
 	i.t.Helper()
-	rows, err := i.e.Query(i.t.Context(), src)
+	rows, err := i.c.Query(i.t.Context(), src)
 	if rows != nil {
 		if res := rows.Result(); res.SetsChanges {
 			i.changes = res.Changes
@@ -347,10 +356,10 @@ func (i *instance) query(src string) answer {
 	return a
 }
 
-// exec src through [engine.Engine.Exec], and keep SQLite's count of changes as its result says.
+// exec src through [engine.Conn.Exec], and keep SQLite's count of changes as its result says.
 func (i *instance) exec(src string) answer {
 	i.t.Helper()
-	res, err := i.e.Exec(i.t.Context(), src)
+	res, err := i.c.Exec(i.t.Context(), src)
 	if res.SetsChanges {
 		i.changes = res.Changes
 	}
@@ -367,7 +376,10 @@ func (i *instance) state() string {
 		return i.memory()
 	}
 	ctx := i.t.Context()
-	r, err := i.d.Read(ctx)
+	rd, err := i.d.Reader(ctx)
+	is.NotError(i.t, err)
+	defer func() { is.NotError(i.t, rd.Close(ctx)) }()
+	r, err := rd.Read(ctx)
 	is.NotError(i.t, err)
 	defer func() { is.NotError(i.t, r.Close(ctx)) }()
 	tables, err := r.Tables(ctx)

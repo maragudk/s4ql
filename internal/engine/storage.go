@@ -33,10 +33,19 @@ type writer interface {
 	upsert(ctx context.Context, name string, row []*s4qlpb.Value) error
 }
 
-// database is what the engine needs of the storage core: transactions.
+// database is what the engine needs of the storage core: write transactions, and readers.
 type database interface {
 	begin(ctx context.Context) (writeTx, error)
+	// reader of the database, which its owner closes.
+	reader(ctx context.Context) (readConn, error)
+}
+
+// readConn is a reader of the database: a connection that runs one read transaction at a time.
+type readConn interface {
+	// read starts a read transaction. It fails while the one before it on the reader is open.
 	read(ctx context.Context) (readTx, error)
+	// close the reader, and end the read transaction that is open.
+	close(ctx context.Context) error
 }
 
 // readTx is a read transaction.
@@ -71,20 +80,38 @@ func (c coreDB) begin(ctx context.Context) (writeTx, error) {
 	return coreTx{tx: tx}, nil
 }
 
-func (c coreDB) read(ctx context.Context) (readTx, error) {
-	r, err := c.d.Read(ctx)
+func (c coreDB) reader(ctx context.Context) (readConn, error) {
+	r, err := c.d.Reader(ctx)
 	if err != nil {
 		return nil, err
 	}
+	return coreReader{r: r}, nil
+}
+
+// coreReader is the [readConn] of a [*core.Reader].
+type coreReader struct {
+	r *core.Reader
+}
+
+func (c coreReader) read(ctx context.Context) (readTx, error) {
+	r, err := c.r.Read(ctx)
+	if err != nil {
+		return nil, fromCore(err)
+	}
 	return coreReadTx{r: r}, nil
+}
+
+func (c coreReader) close(ctx context.Context) error {
+	return c.r.Close(ctx)
 }
 
 // fromCore is err of a call of the core, with a refusal of the core as an internal error, and every
 // other error as it is. The engine checks for each refusal before it calls the core, and gives
 // SQLite's error for it, so one that the core still gives is a fault of the engine or of the pass
-// after the parser; so is a call on a transaction that has ended.
+// after the parser; so is a call on a transaction that has ended, and a read on a reader that is
+// closed.
 func fromCore(err error) error {
-	for _, r := range []error{core.ErrTableExists, core.ErrNoTable, core.ErrReservedName, core.ErrInvalid, core.ErrTxDone} {
+	for _, r := range []error{core.ErrTableExists, core.ErrNoTable, core.ErrReservedName, core.ErrInvalid, core.ErrTxDone, core.ErrReaderClosed} {
 		if errors.Is(err, r) {
 			return internalError("the storage core refused a call that the engine had checked: %v", err)
 		}

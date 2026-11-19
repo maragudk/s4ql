@@ -150,12 +150,52 @@ type node struct {
 	mu sync.Mutex
 	d  *core.DB
 	e  *engine.Engine
+	// clients are the callers of the node, each with its connection.
+	clients []*client
 }
 
 func (n *node) current() (*core.DB, *engine.Engine) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.d, n.e
+}
+
+// client is a caller of a node, which owns one connection of the engine, as a connection of a pool
+// is one: every statement of the caller runs on it. When the node has opened its database again,
+// the client closes the connection, whose database is closed, and takes one of the new engine.
+type client struct {
+	e *engine.Engine
+	c *engine.Conn
+}
+
+// newClient of the node.
+func (n *node) newClient() *client {
+	c := &client{}
+	n.mu.Lock()
+	n.clients = append(n.clients, c)
+	n.mu.Unlock()
+	return c
+}
+
+// conn of the client on the engine e.
+func (c *client) conn(ctx context.Context, r *run, e *engine.Engine) *engine.Conn {
+	if c.e != e {
+		c.close(ctx, r)
+		c.e, c.c = e, e.Conn()
+	}
+	return c.c
+}
+
+// close the connection of the client, if it has one. No loop over its rows runs, so the close fails
+// for nothing.
+func (c *client) close(ctx context.Context, r *run) {
+	if c.c == nil {
+		return
+	}
+	if err := c.c.Close(ctx); err != nil {
+		r.violate(ctx, "close of a connection: %v", err)
+	}
+	c.e, c.c = nil, nil
 }
 
 // do f as a task of the node's instance, and wait until it has returned.
@@ -233,13 +273,9 @@ func (h handler) Handle(ctx context.Context, rec slog.Record) error {
 	return nil
 }
 
-// simReaders is the number of read connections of an instance of the simulation.
-const simReaders = 2
-
 // open the database of n on its cache, with its engine.
 func (r *run) open(ctx context.Context, n *node) error {
 	d, err := core.Open(ctx, n.inst, n.client, n.path, "db", core.Options{
-		Readers:       simReaders,
 		BusyTimeout:   time.Minute,
 		ObjectTimeout: 10 * time.Second,
 		Lease:         n.lease,
@@ -288,8 +324,9 @@ func withID(src string, id uint64) string {
 	return src[:at] + fmt.Sprint(" /* id ", id, " */ ") + src[at:]
 }
 
-// statement runs one statement of the sequence q on the engine e of n, records it, and gives it.
-func (r *run) statement(ctx context.Context, n *node, e *engine.Engine, q *sequence) *attempt {
+// statement runs one statement of the sequence q on the connection c of a caller of n, records it,
+// and gives it.
+func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, q *sequence) *attempt {
 	src, query, supported := q.Next()
 	r.mu.Lock()
 	r.nextID++
@@ -310,7 +347,7 @@ func (r *run) statement(ctx context.Context, n *node, e *engine.Engine, q *seque
 	var err error
 	if query {
 		var rows *engine.Rows
-		rows, err = e.Query(ctx, a.src)
+		rows, err = c.Query(ctx, a.src)
 		if err == nil {
 			// One query in four is not read to its end: its loop stops at the first row, it is closed
 			// unread, or its consumer panics. Its rows are then not compared.
@@ -338,7 +375,7 @@ func (r *run) statement(ctx context.Context, n *node, e *engine.Engine, q *seque
 			}
 		}
 	} else {
-		_, err = e.Exec(ctx, a.src)
+		_, err = c.Exec(ctx, a.src)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -442,6 +479,9 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 	var tasks []host.Task
 	n.callers.Store(int64(r.w.callers))
 	for i := range r.w.callers {
+		// The connection of a caller stays open when the caller ends, for the check that no statement
+		// left a read transaction open on it: see [run.readsFree].
+		c := n.newClient()
 		tasks = append(tasks, inst.Go(ctx, fmt.Sprint("caller-", i), func(ctx context.Context) {
 			defer n.callers.Add(-1)
 			for range r.w.ops {
@@ -453,7 +493,7 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 				// Every statement has a timeout, as a request of an application has, of up to timeout, so
 				// that a commit can end with its outcome unknown.
 				sctx, cancel := inst.WithTimeout(ctx, time.Duration(1+rnd.IntN(int(r.w.timeout/time.Millisecond)))*time.Millisecond)
-				a := r.statement(sctx, n, e, r.q)
+				a := r.statement(sctx, n, c.conn(ctx, r, e), r.q)
 				cancel()
 				if a.reason == "no lease" && !r.waitServing(ctx, n) {
 					return
@@ -616,8 +656,9 @@ func (w workload) do(ctx context.Context, world *sim.Scheduler, dir string, t te
 				ctx, cancel := n.inst.WithTimeout(ctx, w.timeout)
 				defer cancel()
 				_, e := n.current()
+				// A connection that only writes has no reader to close.
 				var se *sqlerr.Error
-				if _, err := e.Exec(ctx, `drop table "no such table"`); errors.As(err, &se) {
+				if _, err := e.Conn().Exec(ctx, `drop table "no such table"`); errors.As(err, &se) {
 					served = true
 				}
 			})
@@ -629,7 +670,7 @@ func (w workload) do(ctx context.Context, world *sim.Scheduler, dir string, t te
 	if !served && len(live) > 0 {
 		r.violate(ctx, "no instance runs a write ten minutes after the end of the workload")
 	}
-	r.takeReaders(ctx, live)
+	r.readsFree(ctx, live)
 	if err := r.store.Wait(ctx); err != nil {
 		r.violate(ctx, "wait for the store: %v", err)
 	}
@@ -637,39 +678,52 @@ func (w workload) do(ctx context.Context, world *sim.Scheduler, dir string, t te
 	return r
 }
 
-// takeReaders of each live instance, and close it: no statement of the workload may leave a read
-// transaction open. An instance takes all its read connections at once only while it holds the lease,
-// so each instance that has taken them is closed, which releases the lease for the next. An instance
-// that has not taken them within ten minutes is a violation.
-func (r *run) takeReaders(ctx context.Context, live []*node) {
+// readsFree requires of each live instance that no statement of the workload left a read
+// transaction open, and closes it: every connection of its callers that is on its engine must run
+// a query, which fails on a connection whose read transaction is open. The query is of a table that
+// does not exist, which SQLite's error says once the query has its read transaction. An instance
+// runs a query only while it holds the lease, so each instance whose connections have all run
+// theirs is closed, which releases the lease for the next. An instance that has not run them
+// within ten minutes is a violation.
+func (r *run) readsFree(ctx context.Context, live []*node) {
 	errs := map[*node]error{}
 	for start := r.world.Monotonic(); len(live) > 0 && r.world.Monotonic()-start < 10*time.Minute; {
 		var left []*node
 		for _, n := range live {
-			taken := false
-			n.do(ctx, "readers", func(ctx context.Context) {
-				wait, cancel := n.inst.WithTimeout(ctx, r.w.timeout)
-				defer cancel()
-				d, _ := n.current()
-				var txs []*core.ReadTx
-				for range simReaders {
-					tx, err := d.Read(wait)
-					if err != nil {
-						errs[n] = err
-						break
+			free := false
+			n.do(ctx, "reads", func(ctx context.Context) {
+				_, e := n.current()
+				n.mu.Lock()
+				clients := slices.Clone(n.clients)
+				n.mu.Unlock()
+				for _, c := range clients {
+					// The connection of a caller that ran its last statement before the node opened its
+					// database again is of a database that is closed.
+					if c.e != e {
+						continue
 					}
-					txs = append(txs, tx)
+					wait, cancel := n.inst.WithTimeout(ctx, r.w.timeout)
+					_, err := c.c.Query(wait, `select * from "no such table"`)
+					cancel()
+					if se, ok := errors.AsType[*sqlerr.Error](err); !ok || se.Message != "no such table: no such table" {
+						errs[n] = err
+						return
+					}
 				}
-				for _, tx := range txs {
-					_ = tx.Close(ctx)
+				free = true
+				for _, c := range clients {
+					c.close(ctx, r)
 				}
-				if len(txs) == simReaders {
-					taken = true
-					r.close(ctx, n)
-				}
+				r.close(ctx, n)
 			})
-			if !taken {
+			// A read transaction that is left open stays open, so the instance is not asked again.
+			if !free && !errors.Is(errs[n], core.ErrReaderBusy) {
 				left = append(left, n)
+				continue
+			}
+			if !free {
+				r.violate(ctx, "%v has a connection of a caller with a read transaction left open after the end of the workload: %v", n.name, errs[n])
+				n.do(ctx, "closer", func(ctx context.Context) { r.close(ctx, n) })
 			}
 		}
 		if live = left; len(live) > 0 {
@@ -677,7 +731,7 @@ func (r *run) takeReaders(ctx context.Context, live []*node) {
 		}
 	}
 	for _, n := range live {
-		r.violate(ctx, "%v does not take its %v read connections ten minutes after the end of the workload: %v", n.name, simReaders, errs[n])
+		r.violate(ctx, "%v does not run a query on each connection of its callers ten minutes after the end of the workload: %v", n.name, errs[n])
 		n.do(ctx, "closer", func(ctx context.Context) { r.close(ctx, n) })
 	}
 }
@@ -856,7 +910,12 @@ func readLog(s *simstore.Store) []logCommit {
 
 // coreState of the database d, as [oracle.state] gives it.
 func coreState(ctx context.Context, d *core.DB) (string, error) {
-	r, err := d.Read(ctx)
+	rd, err := d.Reader(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rd.Close(ctx) }()
+	r, err := rd.Read(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -1088,9 +1147,11 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		{"ackUnknown", defaultWorkload, []string{"is not in the log"}},
 		{"checkOutside", hammerWorkload, []string{"fails in SQLite: 19/1555: UNIQUE constraint failed"}},
 		// A write transaction left open keeps the instance from a write, and from a close that
-		// releases the lease, so the next instance never takes its read connections.
-		{"keepOpen", defaultWorkload, []string{"no instance runs a write", "read connections ten minutes after the end of the workload"}},
-		{"keepRead", defaultWorkload, []string{"read connections ten minutes after the end of the workload"}},
+		// releases the lease, so the next instance never runs the queries of its connections.
+		{"keepOpen", defaultWorkload, []string{"no instance runs a write", "a query on each connection of its callers ten minutes after the end of the workload"}},
+		// A read transaction left open fails every later query of its connection, and the check of
+		// the connections after the workload.
+		{"keepRead", defaultWorkload, []string{"a read transaction left open after the end of the workload", "the reader has a read transaction open"}},
 	}
 	for _, b := range bugs {
 		bug := b.name
