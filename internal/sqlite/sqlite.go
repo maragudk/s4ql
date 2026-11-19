@@ -2,8 +2,8 @@
 // built with the compile options in options.h.
 //
 // It is deliberately small: opening and closing a database, through a VFS by its name if need be,
-// finding and registering a VFS, preparing one statement, binding and reading integers, text, and
-// NULL, stepping, resetting, and finalizing, and reading how much memory SQLite uses. Each statement
+// finding and registering a VFS, preparing one statement, binding and reading integers, reals, text,
+// blobs, and NULL, stepping, resetting, and finalizing, and reading how much memory SQLite uses. Each statement
 // runs in its own transaction, as SQLite does outside BEGIN and COMMIT.
 //
 // SQLite's C code is compiled into this package with file-local symbols, so this package can share a
@@ -123,6 +123,16 @@ static int s4ql_bind_text(sqlite3_stmt *stmt, int i, const char *text, sqlite3_u
 		text = "";
 	}
 	return sqlite3_bind_text64(stmt, i, text, n, SQLITE_TRANSIENT, SQLITE_UTF8);
+}
+
+// s4ql_bind_blob binds the n bytes at blob to parameter i as a blob. SQLite copies the bytes before it
+// returns. A NULL pointer with n of zero binds the empty blob, where sqlite3_bind_blob64 would bind
+// NULL.
+static int s4ql_bind_blob(sqlite3_stmt *stmt, int i, const void *blob, sqlite3_uint64 n) {
+	if (blob == 0) {
+		blob = "";
+	}
+	return sqlite3_bind_blob64(stmt, i, blob, n, SQLITE_TRANSIENT);
 }
 
 // s4ql_disable_lookaside on the connection, so that every allocation goes through malloc and free.
@@ -388,7 +398,8 @@ func (c *Conn) AddTestFunctions() error {
 
 // SetLengthLimit of the connection, SQLITE_LIMIT_LENGTH: the largest string or blob, in bytes, that
 // it makes. A larger one fails with SQLITE_TOOBIG and "string or blob too big". SQLite lowers a
-// limit above its compile-time default, 1,000,000,000, to that default. n must be positive.
+// limit above its compile-time default, 1,000,000,000, to that default, and one below 30 to 30. n
+// must be positive.
 func (c *Conn) SetLengthLimit(n int) error {
 	if c.db == nil || n <= 0 {
 		return errorFromConn(nil, C.SQLITE_MISUSE)
@@ -459,6 +470,41 @@ func (s *Stmt) BindText(i int, v string) error {
 	}
 	// SQLite copies the bytes before the call returns, so it keeps no pointer into Go memory.
 	rc := C.s4ql_bind_text(s.stmt, C.int(i), (*C.char)(unsafe.Pointer(unsafe.StringData(v))), C.sqlite3_uint64(len(v)))
+	if rc != C.SQLITE_OK {
+		return s.error(rc)
+	}
+	return nil
+}
+
+// BindDouble to the parameter at index i, which counts from 1. The value is bound as SQLite binds a
+// double: with its bits as they are, also -0.0 and the infinities, except that a NaN is bound as
+// NULL. It fails as [Stmt.BindInt64] does.
+func (s *Stmt) BindDouble(i int, v float64) error {
+	if s.stmt == nil {
+		return errorFromConn(nil, C.SQLITE_MISUSE)
+	}
+	if i < 1 || i > math.MaxInt32 {
+		return errorFromConn(nil, C.SQLITE_RANGE)
+	}
+	if rc := C.sqlite3_bind_double(s.stmt, C.int(i), C.double(v)); rc != C.SQLITE_OK {
+		return s.error(rc)
+	}
+	return nil
+}
+
+// BindBlob to the parameter at index i, which counts from 1. The blob is bound as its bytes, and the
+// empty blob is not NULL. A nil slice binds the empty blob too, so that BindBlob always binds a blob,
+// and [Stmt.BindNull] binds NULL. It fails as [Stmt.BindInt64] does, and with SQLITE_TOOBIG for a blob
+// longer than the length limit of the connection.
+func (s *Stmt) BindBlob(i int, v []byte) error {
+	if s.stmt == nil {
+		return errorFromConn(nil, C.SQLITE_MISUSE)
+	}
+	if i < 1 || i > math.MaxInt32 {
+		return errorFromConn(nil, C.SQLITE_RANGE)
+	}
+	// SQLite copies the bytes before the call returns, so it keeps no pointer into Go memory.
+	rc := C.s4ql_bind_blob(s.stmt, C.int(i), unsafe.Pointer(unsafe.SliceData(v)), C.sqlite3_uint64(len(v)))
 	if rc != C.SQLITE_OK {
 		return s.error(rc)
 	}
@@ -558,9 +604,9 @@ func (t Type) String() string {
 }
 
 // ColumnType of the value at index i of the current row, which counts from 0. Call it before
-// [Stmt.ColumnInt64], because reading a value as an integer can convert it, and then its type is
-// undefined. It panics without a current row, which exists only while the most recent call to
-// [Stmt.Step] returned true, and for an index out of range.
+// [Stmt.ColumnInt64] and the other functions that read a value, because reading a value as another
+// type can convert it, and then its type is undefined. It panics without a current row, which exists
+// only while the most recent call to [Stmt.Step] returned true, and for an index out of range.
 func (s *Stmt) ColumnType(i int) Type {
 	s.mustHaveRow(i)
 	return Type(C.sqlite3_column_type(s.stmt, C.int(i)))
@@ -590,6 +636,38 @@ func (s *Stmt) ColumnText(i int) string {
 		return ""
 	}
 	return C.GoStringN((*C.char)(unsafe.Pointer(text)), n)
+}
+
+// ColumnDouble reads the value at index i of the current row, which counts from 0, as a real: the
+// bits of a real value as they are, also -0.0 and the infinities. SQLite converts a value of another
+// type, and NULL reads as 0, so check [Stmt.ColumnType] first. It panics without a current row and
+// for an index out of range, as [Stmt.ColumnType] does.
+func (s *Stmt) ColumnDouble(i int) float64 {
+	s.mustHaveRow(i)
+	return float64(C.sqlite3_column_double(s.stmt, C.int(i)))
+}
+
+// ColumnBlob reads the value at index i of the current row, which counts from 0, as a blob: a copy of
+// its bytes, which stays valid after the next step. The empty blob reads as an empty slice that is
+// not nil, and NULL as nil. A text reads as its bytes, and SQLite converts a value of another type to
+// text first, so check [Stmt.ColumnType] first. It panics without a current row and for an index out
+// of range, as [Stmt.ColumnType] does.
+func (s *Stmt) ColumnBlob(i int) []byte {
+	s.mustHaveRow(i)
+	if C.sqlite3_column_type(s.stmt, C.int(i)) == C.SQLITE_NULL {
+		return nil
+	}
+	// The length is read after the bytes, because reading them can convert the value.
+	blob := C.sqlite3_column_blob(s.stmt, C.int(i))
+	n := C.sqlite3_column_bytes(s.stmt, C.int(i))
+	if blob == nil {
+		// SQLite gives no pointer for a value of no bytes, and none when memory runs out.
+		if C.sqlite3_errcode(C.sqlite3_db_handle(s.stmt)) == C.SQLITE_NOMEM {
+			panic("sqlite: out of memory")
+		}
+		return []byte{}
+	}
+	return C.GoBytes(blob, n)
 }
 
 func (s *Stmt) mustNotBeFinalized() {
