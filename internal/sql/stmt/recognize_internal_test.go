@@ -6,6 +6,7 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/sql/ast"
+	"maragu.dev/s4ql/internal/sql/parser"
 	"maragu.dev/s4ql/internal/sql/token"
 )
 
@@ -53,6 +54,33 @@ func TestRecognize(t *testing.T) {
 		s, err := recognize(src, tree)
 		is.True(t, s == nil)
 		is.Equal(t, "s4ql: not supported: DROP (at offset 12)", err.Error())
+	})
+
+	t.Run("should not support a parameter whose name is not the next token, before it looks at the name", func(t *testing.T) {
+		// INSERT INTO t (v) VALUES ( :a), where the tree holds the name :a at an offset where the text
+		// has a space, so that the parameter that the text has is a token that the recognizer did not
+		// take, and not a named parameter.
+		src := "insert into t (v) values ( :a)"
+		tree, _, err := parser.Parse(src)
+		is.NotError(t, err)
+		var find func(n ast.Node) *ast.Variable
+		find = func(n ast.Node) *ast.Variable {
+			if v, ok := n.(*ast.Variable); ok {
+				return v
+			}
+			for _, c := range ast.Children(n) {
+				if v := find(c); v != nil {
+					return v
+				}
+			}
+			return nil
+		}
+		v := find(tree)
+		is.True(t, v != nil)
+		v.Name.Offset--
+		s, nse := recognize(src, tree)
+		is.True(t, s == nil)
+		is.Equal(t, "s4ql: not supported: parameter (at offset 27)", nse.Error())
 	})
 
 	t.Run("should pass on a panic that is not its own", func(t *testing.T) {

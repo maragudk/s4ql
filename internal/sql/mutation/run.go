@@ -130,13 +130,18 @@ type runner struct {
 }
 
 // testPackages of the module under internal whose test binaries depend on the package in pkg, as
-// directories relative to the root, sorted.
+// directories relative to the root, sorted. For the package at the root, ".", which no package under
+// internal depends on, they are the root itself.
 func (r *runner) testPackages(pkg string) ([]string, error) {
-	out, err := r.goCmd(context.Background(), "list", "-test", "-f", "{{.ImportPath}}\t{{join .Deps \" \"}}", "./internal/...")
+	patterns := []string{"./internal/..."}
+	target := module + "/" + pkg
+	if pkg == "." {
+		patterns, target = []string{"."}, module
+	}
+	out, err := r.goCmd(context.Background(), append([]string{"list", "-test", "-f", "{{.ImportPath}}\t{{join .Deps \" \"}}"}, patterns...)...)
 	if err != nil {
 		return nil, err
 	}
-	target := module + "/" + pkg
 	var dirs []string
 	for line := range strings.Lines(string(out)) {
 		path, deps, _ := strings.Cut(strings.TrimSpace(line), "\t")
@@ -154,7 +159,11 @@ func (r *runner) testPackages(pkg string) ([]string, error) {
 			}
 		}
 		if depends {
-			dirs = append(dirs, strings.TrimPrefix(path, module+"/"))
+			dir := strings.TrimPrefix(path, module+"/")
+			if path == module {
+				dir = "."
+			}
+			dirs = append(dirs, dir)
 		}
 	}
 	slices.Sort(dirs)
@@ -188,7 +197,7 @@ func (r *runner) plan(pkgs []string) error {
 					return fmt.Errorf("listing the tests of %v: %w", tp, err)
 				}
 				for _, t := range strings.Fields(string(out)) {
-					if strings.HasPrefix(t, "Test") || strings.HasPrefix(t, "Fuzz") {
+					if (strings.HasPrefix(t, "Test") || strings.HasPrefix(t, "Fuzz")) && !outside[t] {
 						tests = append(tests, t)
 					}
 				}
@@ -254,8 +263,15 @@ func (r *runner) plan(pkgs []string) error {
 	return nil
 }
 
+// outside are the tests that need something from outside the machine, which a run of the mutants
+// does not have: a real bucket and its credentials.
+var outside = map[string]bool{"TestOpen_realBucket": true}
+
 // binName of the test binary of the package in pkg.
 func binName(pkg string) string {
+	if pkg == "." {
+		return "root.test"
+	}
 	return strings.ReplaceAll(pkg, "/", "_") + ".test"
 }
 
