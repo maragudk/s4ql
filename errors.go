@@ -109,6 +109,10 @@ func publicError(err error) error {
 	if errors.Is(err, engine.ErrNoStatement) {
 		return &failure{is: ErrNotSupported, message: "s4ql: not supported: a text that holds no statement", cause: err}
 	}
+	if errors.Is(err, core.ErrReaderBusy) {
+		// A connection runs one read at a time, on its one reader.
+		return &failure{is: ErrNotSupported, message: "s4ql: not supported: a statement that reads on a connection whose rows of an earlier query are open", cause: err}
+	}
 
 	f := &failure{message: err.Error(), cause: err}
 	if !strings.HasPrefix(f.message, "s4ql: ") {

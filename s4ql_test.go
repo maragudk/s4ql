@@ -36,8 +36,8 @@ const (
 	select1 = "select * from t1"
 )
 
-// readers is the number of reads that an instance runs at once, as the documentation of the package
-// gives it.
+// readers is the number of queries that a test holds open at once, each on a connection of its
+// own, and the bound of the pool of a test that fills its pool.
 const readers = 4
 
 // world is a store in memory and a host with real goroutines, on which the tests open instances
@@ -75,7 +75,7 @@ func newWorld(t *testing.T) *world {
 // has the lease keeps it until it closes. A spare looks often for a lease that was released, so that
 // no test waits long for it.
 func coreOptions() core.Options {
-	return core.Options{Readers: readers, BusyTimeout: time.Minute, Lease: time.Hour, Watch: 10 * time.Millisecond}
+	return core.Options{BusyTimeout: time.Minute, Lease: time.Hour, Watch: 10 * time.Millisecond}
 }
 
 // client of the world's store, with a name of its own.
@@ -159,18 +159,29 @@ func query(ctx context.Context, db *sql.DB, src string) ([]int64, error) {
 	return vs, errors.Join(rows.Err(), rows.Close())
 }
 
-// readersFree requires that no query of db holds a read: it holds as many queries open at once as
-// the instance has readers, which would wait for good if one were held, and closes them.
+// readersFree requires that no connection of the pool of db is held, and that none is left with a
+// read: it takes every connection that the pool has, all at once, and runs a query on each. For
+// that it bounds the pool to the connections that it has, so that taking them waits for those that
+// database/sql is still closing the rows of, and would wait for good for one that is held. A
+// connection whose read was left open fails the query.
 func readersFree(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
-	for range readers {
-		rows, err := db.QueryContext(ctx, select1)
+	stats := db.Stats()
+	// Two at the least, so that the bound does not lower the number of idle connections that the
+	// pool keeps.
+	n := max(2, stats.OpenConnections)
+	db.SetMaxOpenConns(n)
+	defer db.SetMaxOpenConns(stats.MaxOpenConnections)
+	for range n {
+		conn, err := db.Conn(ctx)
+		is.NotError(t, err, "a connection is held")
+		defer func() { is.NotError(t, conn.Close()) }()
+		rows, err := conn.QueryContext(ctx, select1)
 		is.NotError(t, err, "a read is held")
-		defer func() { is.NotError(t, rows.Close()) }()
-		// The read transaction of a query starts with the query, and is held until the rows are closed.
 		is.True(t, rows.Next() || rows.Err() == nil)
+		is.NotError(t, rows.Close())
 	}
 }
 

@@ -27,8 +27,8 @@ func three(t *testing.T) (*world, *sql.DB) {
 	return w, db
 }
 
-// held opens as many queries on db as the instance has readers, each with the context that ctx
-// gives it, and reads one row of each, so that every read of the instance is held.
+// held opens [readers] queries on db, each with the context that ctx gives it, and reads one row of
+// each, so that each holds a connection of the pool and the read of that connection.
 func held(t *testing.T, db *sql.DB, ctx func() context.Context) []*sql.Rows {
 	t.Helper()
 	var all []*sql.Rows
@@ -88,25 +88,31 @@ func TestRows(t *testing.T) {
 		}
 	})
 
-	t.Run("should make a query wait while every read is held, until one is free or its context ends", func(t *testing.T) {
+	t.Run("should run as many reads at once as the pool has connections, and make a further statement wait until a connection is free or its context ends", func(t *testing.T) {
 		_, db := three(t)
+		db.SetMaxOpenConns(readers)
 		all := held(t, db, t.Context)
+		is.Equal(t, readers, db.Stats().InUse)
 
 		// A slower machine ends the context all the same.
-		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-		defer cancel()
-		_, err := db.QueryContext(ctx, select1)
-		is.Error(t, context.DeadlineExceeded, failed(t, err))
-		// A query that is run to its end by Exec needs a read too.
-		ctx, cancel = context.WithTimeout(t.Context(), 50*time.Millisecond)
-		defer cancel()
-		_, err = db.ExecContext(ctx, select1)
-		is.Error(t, context.DeadlineExceeded, failed(t, err))
+		for _, run := range []func(ctx context.Context) error{
+			func(ctx context.Context) error { _, err := db.QueryContext(ctx, select1); return err },
+			// A query that is run to its end by Exec needs a connection too, and so does a write, which
+			// is then not run.
+			func(ctx context.Context) error { _, err := db.ExecContext(ctx, select1); return err },
+			func(ctx context.Context) error {
+				_, err := db.ExecContext(ctx, "insert into t1 (v1) values (9)")
+				return err
+			},
+		} {
+			ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+			err := run(ctx)
+			cancel()
+			is.Error(t, context.DeadlineExceeded, failed(t, err))
+		}
+		is.Equal(t, readers, db.Stats().OpenConnections)
 
-		// A write needs none.
-		exec(t, db, "insert into t1 (v1) values (4)")
-
-		// A query that waits gets the read that is freed, and sees what is committed then.
+		// A query that waits gets the connection that is freed.
 		type answer struct {
 			values []int64
 			err    error
@@ -120,7 +126,11 @@ func TestRows(t *testing.T) {
 		is.NotError(t, all[0].Close())
 		a := <-got
 		is.NotError(t, a.err)
-		is.EqualSlice(t, []int64{1, 2, 3, 4}, a.values)
+		is.EqualSlice(t, []int64{1, 2, 3}, a.values)
+
+		// A write commits on that connection, and the next query on it sees the write.
+		exec(t, db, "insert into t1 (v1) values (4)")
+		is.EqualSlice(t, []int64{1, 2, 3, 4}, values(t, db, select1))
 
 		// The reads that are still held see the state of their start.
 		for _, rows := range all[1:] {
@@ -168,24 +178,50 @@ func TestRows(t *testing.T) {
 		is.NotError(t, db.Close())
 	})
 
-	t.Run("should run several queries at once on one connection", func(t *testing.T) {
+	t.Run("should refuse a statement that reads on a connection whose rows are open as not supported, at once, and run it after the rows are closed", func(t *testing.T) {
 		_, db := three(t)
 		conn, err := db.Conn(t.Context())
 		is.NotError(t, err)
 		defer func() { is.NotError(t, conn.Close()) }()
+		prepared, err := conn.PrepareContext(t.Context(), select1)
+		is.NotError(t, err)
 		first, err := conn.QueryContext(t.Context(), select1)
 		is.NotError(t, err)
 		is.True(t, first.Next())
+
+		const want = "a statement that reads on a connection whose rows of an earlier query are open"
+		_, err = conn.QueryContext(t.Context(), select1)
+		is.Equal(t, want, notSupported(t, err))
+		_, err = conn.ExecContext(t.Context(), select1)
+		is.Equal(t, want, notSupported(t, err))
+		_, err = prepared.QueryContext(t.Context())
+		is.Equal(t, want, notSupported(t, err))
+		is.Equal(t, want, notSupported(t, conn.QueryRowContext(t.Context(), select1).Scan(new(int64))))
+
+		// A write needs no read, and the rows that are open do not see it. Another connection is not
+		// refused.
+		_, err = conn.ExecContext(t.Context(), "insert into t1 (v1) values (4)")
+		is.NotError(t, err)
+		is.EqualSlice(t, []int64{1, 2, 3, 4}, values(t, db, select1))
+		rest := []int64{1}
+		for first.Next() {
+			var v int64
+			is.NotError(t, first.Scan(&v))
+			rest = append(rest, v)
+		}
+		is.NotError(t, first.Err())
+		is.EqualSlice(t, []int64{1, 2, 3}, rest)
+
+		// The rows have ended, and the connection reads again.
 		second, err := conn.QueryContext(t.Context(), select1)
 		is.NotError(t, err)
-		for _, rows := range []*sql.Rows{second, first} {
-			var v int64
-			for rows.Next() {
-				is.NotError(t, rows.Scan(&v))
-			}
-			is.Equal(t, int64(3), v)
-			is.NotError(t, rows.Err())
+		var n int
+		for second.Next() {
+			n++
 		}
+		is.NotError(t, second.Err())
+		is.Equal(t, 4, n)
+		is.NotError(t, prepared.Close())
 	})
 
 	t.Run("should close the rows that are left open when the database is closed, and fail them", func(t *testing.T) {

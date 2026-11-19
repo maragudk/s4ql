@@ -1155,7 +1155,10 @@ func TestClient_core(t *testing.T) {
 		})
 
 		// While a holds the lease, b is a spare and serves nothing.
-		_, err := b.Read(t.Context())
+		rd, err := b.Reader(t.Context())
+		is.NotError(t, err)
+		defer func() { is.NotError(t, rd.Close(context.WithoutCancel(t.Context()))) }()
+		_, err = rd.Read(t.Context())
 		is.Error(t, core.ErrNoLease, err)
 		_, err = b.Begin(t.Context())
 		is.Error(t, core.ErrNoLease, err)
@@ -1373,7 +1376,10 @@ func values(vs ...int64) []*s4qlpb.Value {
 // "t: 1,10 | 2,20", one table to a line.
 func rows(t *testing.T, d *core.DB) string {
 	t.Helper()
-	r, err := d.Read(t.Context())
+	rd, err := d.Reader(t.Context())
+	is.NotError(t, err)
+	defer func() { is.NotError(t, rd.Close(t.Context())) }()
+	r, err := rd.Read(t.Context())
 	is.NotError(t, err)
 	defer func() { is.NotError(t, r.Close(t.Context())) }()
 	tables, err := r.Tables(t.Context())
