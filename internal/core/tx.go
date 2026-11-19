@@ -96,13 +96,13 @@ type txTable struct {
 	dropped string
 	// created is the table that exists now, if the transaction created it. All its rows are new.
 	created *s4qlpb.CreateTable
-	// existed and added are the names of the two temporary tables that hold the primary keys of the
-	// rows that the transaction upserted or deleted in a table that existed when it began: existed
-	// those of the rows that existed then, and added those of the rows that did not. Both are empty
-	// if there are none. The keys are in the cache, not in memory, so that a transaction can change
-	// any number of rows. A temporary table holds a key and nothing else, so that SQLite never
-	// refuses a key there as too big when it took the row in the table: see [Tx.touch].
-	existed, added string
+	// touched and existed are the names of the two temporary tables that hold primary keys of the
+	// rows that the transaction upserted or deleted in a table that existed when it began: touched
+	// all of them, and existed those of the rows that existed then. Both are empty if there are
+	// none. The keys are in the cache, not in memory, so that a transaction can change any number of
+	// rows. A temporary table holds a key and nothing else, so that SQLite never refuses a key there
+	// as too big when it took the row in the table: see [Tx.touch].
+	touched, existed string
 }
 
 // Begin a write transaction, waiting until no other is open. It fails at once, and whenever the
@@ -500,10 +500,10 @@ func (tx *Tx) recording(t *table) bool {
 }
 
 // touch the row of the table t with the given primary key, after the transaction upserted or
-// deleted it, if the table existed when the transaction began: the key is recorded in the
-// temporary table of the keys of rows that existed before the change, or in the one of the keys of
-// rows that did not, unless one of the two holds it already. The first record of a key stays, so
-// it says whether the row existed when the transaction began.
+// deleted it, if the table existed when the transaction began: the key is recorded as touched,
+// unless it is already, and, the first time, also as one of a row that existed, if the row existed
+// before the change. The first record of a key stays, so it says whether the row existed when the
+// transaction began.
 //
 // A key is recorded after the change, and only when SQLite took the change, so that a change that
 // SQLite refuses leaves no record. A temporary table holds the key alone, and SQLite's record of a
@@ -514,9 +514,9 @@ func (tx *Tx) touch(t *table, key []*s4qlpb.Value, existed bool) error {
 	if e.created != nil {
 		return nil
 	}
-	if e.existed == "" {
+	if e.touched == "" {
 		tx.temps++
-		names := []string{fmt.Sprint("s4ql_existed_", tx.temps), fmt.Sprint("s4ql_added_", tx.temps)}
+		names := []string{fmt.Sprint("s4ql_touched_", tx.temps), fmt.Sprint("s4ql_existed_", tx.temps)}
 		for _, name := range names {
 			var b strings.Builder
 			b.WriteString("create table temp.")
@@ -536,33 +536,27 @@ func (tx *Tx) touch(t *table, key []*s4qlpb.Value, existed bool) error {
 				return err
 			}
 		}
-		e.existed, e.added = names[0], names[1]
+		e.touched, e.existed = names[0], names[1]
 	}
-	into, other := e.added, e.existed
-	if existed {
-		into, other = e.existed, e.added
+	first, err := tx.c.count(fmt.Sprint("insert or ignore into temp.", quote(e.touched), " values (", placeholders(len(t.key)), ") returning 1"), values(key)...)
+	if err != nil || first == 0 || !existed {
+		return err
 	}
-	terms := make([]string, len(t.key))
-	for i := range terms {
-		terms[i] = fmt.Sprint("k.k", i, " = ?", i+1)
-	}
-	sql := fmt.Sprint("insert or ignore into temp.", quote(into), " select ", placeholders(len(t.key)),
-		" where not exists (select 1 from temp.", quote(other), " as k where ", strings.Join(terms, " and "), ")")
-	return tx.c.exec(sql, values(key)...)
+	return tx.c.exec(fmt.Sprint("insert into temp.", quote(e.existed), " values (", placeholders(len(t.key)), ")"), values(key)...)
 }
 
 // dropTouched drops the temporary tables of the keys that the transaction touched in the table of
 // e, if there are any.
 func (tx *Tx) dropTouched(e *txTable) error {
-	if e.existed == "" {
+	if e.touched == "" {
 		return nil
 	}
-	for _, name := range []string{e.existed, e.added} {
+	for _, name := range []string{e.touched, e.existed} {
 		if err := tx.c.c.Exec(fmt.Sprint("drop table temp.", quote(name))); err != nil {
 			return err
 		}
 	}
-	e.existed, e.added = "", ""
+	e.touched, e.existed = "", ""
 	return nil
 }
 
@@ -914,7 +908,7 @@ func (tx *Tx) spoolCommit(ctx context.Context) (_ *spooled, err error) {
 				out.changes++
 			}
 
-		case e.existed != "":
+		case e.touched != "":
 			n, err := tx.spoolTouched(w, e)
 			if err != nil {
 				return nil, fail(err)
@@ -969,9 +963,10 @@ func (tx *Tx) spoolTouched(w *format.CommitWriter, e *txTable) (int, error) {
 	columns := positions(len(t.columns))
 
 	var changes int
-	// The two temporary tables hold no key twice.
-	upserts := fmt.Sprint("select t.* from (select * from temp.", quote(e.existed), " union all select * from temp.", quote(e.added),
-		") as k join main.", quote(t.name), " as t on ", match, " order by ", order)
+	// The cross join makes the temporary table the outer loop, read in the order of its primary key,
+	// so that SQLite sorts nothing: a sorter would hold the key and the row in one record, which
+	// SQLite refuses as too big for a row near the length limit.
+	upserts := fmt.Sprint("select t.* from temp.", quote(e.touched), " as k cross join main.", quote(t.name), " as t where ", match, " order by ", order)
 	if err := tx.c.query(upserts, func(s *sqlite.Stmt) error {
 		row, err := readRow(s, 0, len(t.columns))
 		if err != nil {

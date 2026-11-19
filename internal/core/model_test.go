@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -627,18 +628,7 @@ func cacheDump(path string) (position format.Name, state map[string][]string, er
 		if err := query("select * from "+quoted(name)+" order by "+strings.Join(order, ", "), func(s *sqlite.Stmt) {
 			values := make([]*s4qlpb.Value, s.ColumnCount())
 			for i := range values {
-				switch s.ColumnType(i) {
-				case sqlite.TypeInteger:
-					values[i] = s4qlpb.Value_builder{Integer: new(s.ColumnInt64(i))}.Build()
-				case sqlite.TypeFloat:
-					values[i] = s4qlpb.Value_builder{Real: new(s.ColumnDouble(i))}.Build()
-				case sqlite.TypeText:
-					values[i] = s4qlpb.Value_builder{Text: new(s.ColumnText(i))}.Build()
-				case sqlite.TypeBlob:
-					values[i] = s4qlpb.Value_builder{Blob: s.ColumnBlob(i)}.Build()
-				default:
-					values[i] = s4qlpb.Value_builder{Null: &s4qlpb.Null{}}.Build()
-				}
+				values[i] = columnValue(s, i)
 			}
 			rows = append(rows, text(values))
 		}); err != nil {
@@ -647,4 +637,56 @@ func cacheDump(path string) (position format.Name, state map[string][]string, er
 		state[describe(ct.Build())] = rows
 	}
 	return position, state, err
+}
+
+// types of a column, in the order of their values in the commit object.
+var types = []s4qlpb.Type{s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INTEGER, s4qlpb.Type_TYPE_REAL, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_BLOB}
+
+// edges are values of each type of column, in no order, that exercise the edges of SQLite's order
+// and of the encodings: integers at the limits of 64 bits; reals that are negative, tiny, huge,
+// below the smallest normal number, 0.0, and -0.0, which is the same key as 0.0; the empty text,
+// text with multi-byte characters, text that differs from other text only in a later byte, and text
+// that is a prefix of other text; and the empty blob, blobs with zero bytes, and blobs that are a
+// prefix of other blobs.
+var edges = map[s4qlpb.Type][]*s4qlpb.Value{
+	s4qlpb.Type_TYPE_INT:     row(math.MinInt64, math.MinInt64+1, -1, 0, 1, 1<<53+1, math.MaxInt64-1, math.MaxInt64),
+	s4qlpb.Type_TYPE_INTEGER: row(math.MaxInt64, -(1 << 31), 1<<31, 0, math.MinInt64, 255, 256),
+	s4qlpb.Type_TYPE_REAL: row(-math.MaxFloat64, -1e300, -1.5, -math.SmallestNonzeroFloat64, 0.0, math.Copysign(0, -1),
+		math.SmallestNonzeroFloat64, 2.2250738585072009e-308, 0.1, 1.0, 1.5, 1<<53+2.0, 1e300, math.MaxFloat64),
+	s4qlpb.Type_TYPE_TEXT: row("", "a", "aa", "ab", "A", "Z", "~", "a\x01", "a\x7f", "é", "è", "é", "aé", "aè", "日本", "日本語",
+		"🥪", "\U0010ffff", "ÿ", strings.Repeat("x", 300), strings.Repeat("x", 300)+"y"),
+	s4qlpb.Type_TYPE_BLOB: row([]byte{}, []byte{0}, []byte{0, 0}, []byte{0, 1}, []byte{1}, []byte{0xff}, []byte{0xff, 0},
+		[]byte("ab"), []byte("abc"), []byte("abd"), []byte{'a', 0, 'b'}, []byte{'a', 0, 'c'}),
+}
+
+// columnValue i of the current row of s.
+func columnValue(s *sqlite.Stmt, i int) *s4qlpb.Value {
+	switch s.ColumnType(i) {
+	case sqlite.TypeInteger:
+		return s4qlpb.Value_builder{Integer: new(s.ColumnInt64(i))}.Build()
+	case sqlite.TypeFloat:
+		return s4qlpb.Value_builder{Real: new(s.ColumnDouble(i))}.Build()
+	case sqlite.TypeText:
+		return s4qlpb.Value_builder{Text: new(s.ColumnText(i))}.Build()
+	case sqlite.TypeBlob:
+		return s4qlpb.Value_builder{Blob: s.ColumnBlob(i)}.Build()
+	default:
+		return s4qlpb.Value_builder{Null: &s4qlpb.Null{}}.Build()
+	}
+}
+
+// bindValue v to the parameter i of s, as it is.
+func bindValue(s *sqlite.Stmt, i int, v *s4qlpb.Value) error {
+	switch v.WhichKind() {
+	case s4qlpb.Value_Integer_case:
+		return s.BindInt64(i, v.GetInteger())
+	case s4qlpb.Value_Real_case:
+		return s.BindDouble(i, v.GetReal())
+	case s4qlpb.Value_Text_case:
+		return s.BindText(i, v.GetText())
+	case s4qlpb.Value_Blob_case:
+		return s.BindBlob(i, v.GetBlob())
+	default:
+		return s.BindNull(i)
+	}
 }
