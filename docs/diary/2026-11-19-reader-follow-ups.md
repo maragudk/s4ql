@@ -216,7 +216,7 @@ The first version of the test expected three open files before the close, and go
 
 ### What I learned
 
-The new yield did not move the minimums of `TestSimulation`, unlike the yield of `DB.Reader` on the branch before: the callers close their readers only when a node has opened its database again or when they end.
+With the new yield, every minimum of `TestSimulation` still holds, unlike after the yield of `DB.Reader` on the branch before; the callers of the simulation close their readers only when a node has opened its database again or when they end, so the yield is rare there. I did not count how far the counts moved.
 
 ### What was tricky
 
@@ -229,3 +229,47 @@ Where the yield may stand. Before the mark, a close of the instance at the yield
 ### Future work
 
 `DB.closeIdleLocked` still closes connections under `DB.mu`, in `DB.Close` and in `DB.unuse` while the instance is closing. That is the close of the instance, where nothing else is left to hold up but the lease task's end, and the brief named only `Reader.Close`.
+
+## Step 5: The minimums of the simulation, and two points for the todo
+
+**Author:** reader-follow-ups builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "4. **The core's README contradicts itself** about the minimums of `TestSimulation`: one place says the change \"left the minimums ... passing as they were\", and a later paragraph says the minimums of one workload were derived again (30 seeds; \"reads refused by a clock\" is 4 where it was 5 over 10 seeds). The second is true. The review measured why, over 300 seeds: at the commit before the change that workload reached 129 such reads, which is 4.3 for each 10 seeds, below the old minimum of 5, so the old ten seeds were lucky. Correct the text and add that measurement. 5. **Record in `docs/todo.md`**, under the driver: (a) a second query on one pinned `sql.Conn` whose rows are still open is refused as \"not supported\" [...]; to look at again with transactions [...]; the review measured that a query right after cancelling the context of the one before it, without `Rows.Close`, was refused 1928 of 2000 times. (b) Open, for Markus: with the pool unbounded by default, running out of file descriptors stops the instance for good [...]; the choices are a default bound on the pool in `Open`, or failing only the statement when a reader cannot be opened for want of descriptors (which needs `sqlite3_system_errno` in the binding to tell `EMFILE` from a missing cache). Do not build either."
+**Interpretation:** Two edits of documentation, with the reviewer's numbers as they were given.
+**Inferred intent:** The README says one true thing about the minimums, and the two questions are where the lead and Markus look for open points.
+
+### What I did
+
+In `/internal/core/README.md`, the paragraph on the harness now says that every planted bug was still found and that the minimums held but for those of the workload whose callers never pause, which were derived again, and points to the paragraph on its seeds. That paragraph has the review's measurement over 300 seeds, and says that each new minimum is at least the old one except that of the reads refused by a clock, 4 over 30 seeds where it was 5 over 10.
+
+In `/docs/todo.md`, under the driver, after the open point on rows that are neither read nor closed: a point to look at again with transactions, on the refusal of a second query on a pinned connection, with the 1928 of 2000; and an open point for Markus on running out of file descriptors, with the reproduction at a limit of 64 and the two choices. The second says that a cache that is gone must still stop the instance, which is why the binding would need `sqlite3_system_errno`: since step 2 both give `CANTOPEN`.
+
+### Why
+
+The brief asked for both, and for nothing to be built for point 5.
+
+### What worked
+
+The numbers are the reviewer's, as the brief gives them; I did not measure them again.
+
+### What didn't work
+
+Nothing.
+
+### What I learned
+
+Since step 2 a missing cache and a process without descriptors give a reader the same `CANTOPEN`, which makes choice (b) of point 5 depend on telling them apart.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+The two new points of `/docs/todo.md`, which are for the lead and Markus.
+
+### Future work
+
+Point 5 (b) is Markus's decision.
