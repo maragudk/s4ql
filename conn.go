@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,10 +30,10 @@ import (
 // It logs what the driver decides itself, through the logger of the options: the event "open" when
 // the instance is opened, at Info; "close" when it is closed, at Info, and at Warn if the close
 // failed, which includes a lease that is not released; "stop_seen" the first time that it answers
-// a call with [ErrStopped], at Warn; and "panic" for a panic in the loop over the rows of a query,
-// at Error, with its value as "panic" and the stack where it came as "stack" (see [rows]). Each
-// event has the prefix of the database as "db.prefix", and one of a failure has it as "error". The
-// event "open" has the bound of the pool that the instance opens with as "pool.max_open_conns", 0
+// a call with [ErrStopped], at Warn; and "panic" for a panic in the loop over the rows of a query
+// (see [rows]) and for one in the close of rows by Close, at Error, with its value as "panic" and
+// the stack where it came as "stack". Each event has the prefix of the database as "db.prefix", and
+// one of a failure has it as "error". The event "open" has the bound of the pool that the instance opens with as "pool.max_open_conns", 0
 // for none, as [database/sql.DBStats.MaxOpenConnections] has it.
 type connector struct {
 	host   host.Host
@@ -127,7 +128,9 @@ func (c *connector) Driver() driver.Driver {
 // It first closes the rows that are open. The loop over the rows of a query is a call on the
 // instance, which the close of the instance waits for. The next row of such rows is then the error
 // of an instance that was closed. A panic of a loop that it ends is logged and not raised, so that
-// the close goes on.
+// the close goes on. So is a panic of the close of rows itself, which then fails as an internal
+// error with the value of the panic, unless the close of the instance fails, whose error it then
+// gives.
 //
 // The close of the instance closes the reader of every connection, also of one that database/sql
 // has not closed yet, such as one that an application holds. The close of such a connection then
@@ -140,11 +143,14 @@ func (c *connector) Close() error {
 		open = append(open, r)
 	}
 	c.mu.Unlock()
+	// database/sql gives no context here.
+	var panicked error
 	for _, r := range open {
-		r.shut()
+		if err := c.shut(context.Background(), r); err != nil && panicked == nil {
+			panicked = err
+		}
 	}
 
-	// database/sql gives no context here.
 	ctx, cancel := c.host.WithTimeout(context.Background(), c.closeTimeout)
 	defer cancel()
 	if err := c.db.Close(ctx); err != nil {
@@ -152,6 +158,19 @@ func (c *connector) Close() error {
 		return publicError(err)
 	}
 	c.log.InfoContext(ctx, "close")
+	return publicError(panicked)
+}
+
+// shut the rows r with [rows.shut], with the context ctx, and recover a panic of their close, which
+// it logs as the event "panic" and gives as an internal error, so that the close goes on.
+func (c *connector) shut(ctx context.Context, r *rows) (err error) {
+	defer func() {
+		if v := recover(); v != nil {
+			c.log.ErrorContext(ctx, "panic", "panic", fmt.Sprint(v), "stack", string(debug.Stack()))
+			err = fmt.Errorf("%w: the query panicked: %v", engine.ErrInternal, v)
+		}
+	}()
+	r.shut()
 	return nil
 }
 
@@ -253,12 +272,31 @@ func (c *conn) leave(ctx context.Context) {
 			return
 		}
 		c.mu.Unlock()
-		for _, r := range shut {
+		c.closeShut(ctx, shut)
+	}
+}
+
+// closeShut closes the rows shut, which the close of the connector left to a call, with the context
+// ctx of the call. If a close panics, the panic goes on, and the connection of the engine is freed
+// first, with the rows after those that panicked left to the next call, so that neither waits for
+// the connection for good.
+func (c *conn) closeShut(ctx context.Context, shut []*rows) {
+	i := 0
+	defer func() {
+		if i == len(shut) {
+			return
+		}
+		c.mu.Lock()
+		c.shut = append(c.shut, shut[i+1:]...)
+		c.freeLocked(ctx)
+	}()
+	for ; i < len(shut); i++ {
+		func(r *rows) {
 			r.mu.Lock()
+			defer r.mu.Unlock()
 			// As in [rows.shut], the error is dropped.
 			_ = r.close()
-			r.mu.Unlock()
-		}
+		}(shut[i])
 	}
 }
 
@@ -273,6 +311,26 @@ func (c *conn) freeLocked(ctx context.Context) {
 	}
 	c.busy = false
 	c.mu.Unlock()
+}
+
+// release one of the rows of the connection, which are closed, with the context ctx of their query,
+// and close the connection if its close was left to them and they were the last; see [conn.Close].
+// It gives the error of that close.
+func (c *conn) release(ctx context.Context) error {
+	c.mu.Lock()
+	c.held--
+	later := c.closeLater && c.held == 0
+	if later {
+		c.closeLater = false
+	}
+	c.mu.Unlock()
+	if !later {
+		return nil
+	}
+	// database/sql closed the connection while these rows were read, and has let go of it. So
+	// nothing else uses it, and the error of its close, such as that of the roll back of its
+	// transaction, is the rows', unless they have one.
+	return c.e.Close(context.WithoutCancel(ctx))
 }
 
 var (

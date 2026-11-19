@@ -3,6 +3,7 @@ package s4ql_test
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -303,7 +304,7 @@ func TestRows(t *testing.T) {
 	t.Run("should give a panic at the end of the loop as an internal error of Close, and log it with its stack", func(t *testing.T) {
 		w := newWorld(t)
 		log := &panickyLog{}
-		db := openLogged(t, w, log)
+		db := openLogged(t, w, w.host, log)
 		exec(t, db, t1, insert1, "insert into t1 (v1) values (2)")
 
 		// The engine logs the event of the query when the loop over its rows has ended, in the turn
@@ -331,7 +332,7 @@ func TestRows(t *testing.T) {
 	t.Run("should not raise a panic at the end of the loop when database/sql closes the rows from its own goroutine, as the context of the query ends", func(t *testing.T) {
 		w := newWorld(t)
 		log := &panickyLog{}
-		db := openLogged(t, w, log)
+		db := openLogged(t, w, w.host, log)
 		exec(t, db, t1, insert1, "insert into t1 (v1) values (2)")
 
 		ctx, cancel := context.WithCancel(t.Context())
@@ -357,10 +358,38 @@ func TestRows(t *testing.T) {
 		is.EqualSlice(t, []int64{1, 2, 3}, values(t, db, select1))
 	})
 
+	t.Run("should count rows whose close panics as closed, so that their connection can go back to the pool", func(t *testing.T) {
+		w := newWorld(t)
+		log := &panickyLog{}
+		db := openLogged(t, w, w.host, log)
+		exec(t, db, t1, insert1)
+		conn, err := db.Conn(t.Context())
+		is.NotError(t, err)
+
+		is.NotError(t, conn.Raw(func(driverConn any) error {
+			// No loop reads the rows, so their close logs the event of the query, and panics there.
+			rows, err := driverConn.(driver.QueryerContext).QueryContext(t.Context(), select1, nil)
+			is.NotError(t, err)
+			is.True(t, !driverConn.(driver.Validator).IsValid())
+			log.arm(true)
+			v := func() (v any) {
+				defer func() { v = recover() }()
+				_ = rows.Close()
+				return nil
+			}()
+			log.arm(false)
+			is.Equal(t, any(errPanic), v)
+			is.True(t, driverConn.(driver.Validator).IsValid())
+			return nil
+		}))
+		is.NotError(t, conn.Close())
+		is.EqualSlice(t, []int64{1}, values(t, db, select1))
+	})
+
 	t.Run("should not raise a panic at the end of the loop when the close of the database closes the rows, and log it", func(t *testing.T) {
 		w := newWorld(t)
 		log := &panickyLog{}
-		db := openLogged(t, w, log)
+		db := openLogged(t, w, w.host, log)
 		exec(t, db, t1, insert1, "insert into t1 (v1) values (2)")
 
 		rows, err := db.QueryContext(t.Context(), select1)
@@ -380,19 +409,6 @@ func TestRows(t *testing.T) {
 	})
 }
 
-// openLogged opens an instance of the world with the cache directory "a", which logs to log, and
-// waits until it serves.
-func openLogged(t *testing.T, w *world, log *panickyLog) *sql.DB {
-	t.Helper()
-	o := w.options("a")
-	o.Logger = slog.New(log.handler())
-	db, err := s4ql.OpenStore(t.Context(), w.host, w.client(), o, coreOptions())
-	is.NotError(t, err)
-	t.Cleanup(func() { _ = db.Close() })
-	is.NotError(t, db.PingContext(t.Context()))
-	return db
-}
-
 // closeRows is [sql.Rows.Close] of rows, with the value of a panic in it, if it panicked.
 func closeRows(rows *sql.Rows) (v any, err error) {
 	defer func() { v = recover() }()
@@ -400,15 +416,26 @@ func closeRows(rows *sql.Rows) (v any, err error) {
 }
 
 // panickyLog is a log in the text format of log/slog, whose handler panics with [errPanic] at the
-// event of a statement while it is armed.
+// event of a statement while it is armed, and else calls a function of the test there while one is
+// set.
 type panickyLog struct {
 	lines lines
 	armed atomic.Bool
+	on    atomic.Pointer[func()]
 }
 
 // arm the log, or disarm it.
 func (p *panickyLog) arm(armed bool) {
 	p.armed.Store(armed)
+}
+
+// at the event of a statement, call f from now on, or nothing if f is nil. f can set the next.
+func (p *panickyLog) at(f func()) {
+	if f == nil {
+		p.on.Store(nil)
+		return
+	}
+	p.on.Store(&f)
 }
 
 func (p *panickyLog) handler() slog.Handler {
@@ -421,8 +448,13 @@ type panickyHandler struct {
 }
 
 func (h *panickyHandler) Handle(ctx context.Context, r slog.Record) error {
-	if h.log.armed.Load() && r.Message == "statement" {
-		panic(errPanic)
+	if r.Message == "statement" {
+		if h.log.armed.Load() {
+			panic(errPanic)
+		}
+		if f := h.log.on.Load(); f != nil {
+			(*f)()
+		}
 	}
 	return h.Handler.Handle(ctx, r)
 }
