@@ -336,7 +336,7 @@ func FuzzJudge(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, src string) {
 		if len(src) > 10_000 {
-			t.Skip()
+			return
 		}
 		v := oracle.Judge(src)
 		equal(t, v, oracle.Judge(src))

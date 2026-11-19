@@ -307,7 +307,7 @@ func FuzzMutants(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, src string, seed uint64) {
 		if len(src) > 1_000 {
-			t.Skip()
+			return
 		}
 		mutants := parsetest.Mutants(src, seed, 3)
 		is.EqualSlice(t, mutants, parsetest.Mutants(src, seed, 3))
