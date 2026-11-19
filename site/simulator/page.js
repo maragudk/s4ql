@@ -385,7 +385,7 @@ function drawCard(c) {
 
   const k = calls[c.name] || { w: 0, r: 0, x: 0, why: "" };
   set(c.f.calls, `${count(k.w)} writes, ${count(k.r)} reads`);
-  set(c.f.refused, k.x ? `${count(k.x)}, last: ${R.REASONS[k.why] || k.why}` : "0");
+  set(c.f.refused, k.x ? `${count(k.x)}, last: ${R.reasonWords(k.why)}` : "0");
 
   c.el.dataset.client = String(target() === c.name);
   set(c.b.crash, st.state === "crashed" ? "Restart" : "Crash");

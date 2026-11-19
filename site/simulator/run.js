@@ -48,53 +48,67 @@ export const REASONS = {
 // reason of a refused call, from its error, which ends with the reason of the core.
 export const reason = (e) => String(e.error || "").split(": ").pop();
 
-// DOWN says why the target of the client could not take a call, from the error of the call, in words.
-const DOWN = [
-  ["has not started", "not started"],
-  ["has crashed", "crashed"],
-  ["could not be opened", "cannot open its database"],
-  ["is not open", "starting"],
-  ["is closed", "stopped"],
-  ["has stopped", "core stopped"],
+// reasonWords of a reason of the core, in words, also for a reason that the page does not know.
+export const reasonWords = (r) => REASONS[r] || String(r || "").replaceAll("_", " ") || "refused";
+
+// The client stands outside the instances, so its words hold only what it can see: that it got no
+// answer, or the error that the instance answered with. Why an instance did not answer, such as a
+// crash or a stop, is for the cards of the instances to say. A call that did not reach the process,
+// "down", and one that was on it when it crashed, "lost", look the same to the client: for a write,
+// it does not know whether the write happened.
+
+// CAUSES of an instance that answers that it has stopped for good, from the cause in its error, in
+// words. The cause comes first after the error of the stop, and wraps the errors below it.
+const STOP = "the instance has stopped: ";
+const CAUSES = [
+  ["closed", "database closed"],
+  ["local I/O failure", "local failure"],
+  ["the position of the cache is not in the log", "cache not in the log"],
+  ["the log is broken", "log broken"],
 ];
+
+// errorWords of a call of the client that the instance answered with an error, in a few words.
+function errorWords(e) {
+  const text = String(e.error || "");
+  switch (e.what) {
+    case "refused": return reasonWords(reason(e));
+    case "unknown": return "write outcome unknown";
+    case "not_committed": return "write not committed";
+    case "abandoned": return "write rolled back";
+    case "busy": return "cache busy";
+    case "timed_out": return "timed out";
+    case "stopped": {
+      const cause = text.includes(STOP) ? text.slice(text.indexOf(STOP) + STOP.length) : "";
+      const found = CAUSES.find(([t]) => cause.startsWith(t));
+      return found ? found[1] : "out of service";
+    }
+  }
+  if (text.includes("no database open")) return "no database open";
+  if (text.includes("local I/O failure")) return "local failure";
+  return "call failed";
+}
 
 // clientFailure of a call of the client that ended without being served, from its event: kind, which
 // stays the same over a run of failures of one kind, words for the last failure, and line for the
-// log. A call that was served or committed has none.
+// log. A call that was served or committed has none. A failure without a kind takes a line each: a
+// write that the instance answers with an unknown outcome or as not committed, so that the log
+// names its key.
 export function clientFailure(e) {
   const i = e.instance;
-  const write = e.op === "write";
   switch (e.what) {
     case "committed":
     case "served":
       return null;
     case "down":
-    case "stopped": {
-      const found = DOWN.find(([text]) => String(e.error || "").includes(text));
-      const why = e.what === "stopped" ? "core stopped" : found ? found[1] : "down";
-      return { kind: "down " + i, words: `${i} is down: ${why}`, line: `Client: ${i} is down.` };
-    }
-    case "refused": {
-      const r = reason(e);
-      const why = REASONS[r] || r;
-      return { kind: "refused " + i + " " + r, words: `${i} refuses: ${why}`, line: `Client: ${i} refuses, ${why}.` };
-    }
     case "lost":
-      return write
-        ? { words: `${i} crashed during a write, outcome unknown`, line: `Client: ${i} crashed during the write of key ${e.value}, outcome unknown.` }
-        : { words: `${i} crashed during a read`, line: `Client: ${i} crashed during a read.` };
-    case "unknown":
-      return { words: `write on ${i}, outcome unknown`, line: `Client: the write of key ${e.value} on ${i} ends without an answer.` };
-    case "not_committed":
-      return { words: `write on ${i} not committed`, line: `Client: the write of key ${e.value} on ${i} is not committed.` };
-    case "abandoned":
-      return { kind: "abandoned " + i, words: `write on ${i} rolled back`, line: `Client: a write on ${i} is rolled back before its commit.` };
-    case "busy":
-      return { kind: "busy " + i, words: `cache of ${i} busy`, line: `Client: the cache of ${i} is busy.` };
-    case "timed_out":
-      return { kind: "timed_out " + i, words: `call on ${i} timed out`, line: `Client: calls on ${i} time out.` };
+      return e.op === "write"
+        ? { kind: "no answer " + i, words: `no answer from ${i}, write outcome unknown`, line: `The client gets no answer from ${i} to the write of key ${e.value}: outcome unknown.` }
+        : { kind: "no answer " + i, words: `no answer from ${i}`, line: `The client gets no answer from ${i}.` };
   }
-  return { kind: "failed " + i, words: `call on ${i} failed`, line: `Client: a call on ${i} fails.` };
+  const words = errorWords(e);
+  const keyed = e.what === "unknown" || e.what === "not_committed";
+  const line = e.what === "unknown" ? `write of key ${e.value}, outcome unknown` : e.what === "not_committed" ? `write of key ${e.value} not committed` : words;
+  return { kind: keyed ? undefined : `error ${i} ${e.what} ${words}`, words: `error from ${i}: ${words}`, line: `The client gets an error from ${i}: ${line}.` };
 }
 
 const SWAPS = { take: "take of the lease", commit: "commit", renew: "renewal", release: "release" };
@@ -248,7 +262,7 @@ export function teller() {
             break;
           case "refused": {
             const r = reason(e);
-            once("call:refused:" + r, `${who} refuses calls: ${REASONS[r] || r}.`);
+            once("call:refused:" + r, `${who} refuses calls: ${reasonWords(r)}.`);
             break;
           }
           case "unknown": say(`The write of key ${e.value} on ${who} ends without an answer.`); break;

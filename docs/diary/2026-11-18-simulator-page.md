@@ -668,3 +668,50 @@ To check by eye: the wire (3 px, left 28 px) lands on the letter of the column a
 ### Future work
 
 - The client could get a timeout of its own on the time of the run, with `lost` when it gives up, if a page should show a client that gives up on a frozen server. That needs care so that the process cannot end the call a second time.
+
+## Step 12: The client in its own voice
+
+**Author:** builder (client voice)
+
+### Prompt Context
+
+**Verbatim prompt:** Markus: "The client says: a is down/crashed. But from the outside, it can't know that. Write the client status from the client perspective: unknown if no answer, any error reported by the instance, etc." The lead's brief: reword everything the page says about the client so that it holds only what the client can observe. No answer (`down` and `lost`, whatever the reason) says only that, and for a write that its outcome is unknown. An error from the instance is given in a few words, for every outcome and error the engine can give. Served stays as it is. The instance cards, the instances' own log lines, and the visitor's lines stay. No Go changes, no change to the `<head>` of `index.html`. Assert in `check.html` that the client's texts never say "down", "crashed", or "stopped".
+
+**Interpretation:** a change of words in `run.js`, with the check to match.
+
+**Inferred intent:** the page should not let the client know more than a real client would, so that a visitor learns what an application behind s4ql actually sees.
+
+### What I did
+
+- `run.js`: `clientFailure` now has two voices. `down` and `lost` give "no answer from a" (a read) or "no answer from a, write outcome unknown" (a write), and one kind, `no answer a`, so a run of them takes one line. Every other outcome is "error from a: ..." with `errorWords`: the refusal's reason, "write outcome unknown", "write not committed", "write rolled back", "cache busy", "timed out", the first cause of a stop ("database closed", "local failure", "cache not in the log", "log broken", else "out of service"), "no database open", "local failure", and "call failed" for anything else. The log lines are "The client gets no answer from a.", "The client gets no answer from a to the write of key 7: outcome unknown.", and "The client gets an error from a: no lease.". `DOWN` is gone. A new `reasonWords` turns a reason into words, also one the page does not know, and the card and the instance's log line use it too.
+- "Failed" stays one count, and "Last failure" keeps its label. The CSS of the strip, in the `<head>`, has a grid for three counts and the last failure, so a fourth cell would need the `<head>`.
+- `check.html`: the old words replaced. New unit checks: no answer reads the same for all six reasons of `down` and for `lost`, once for a read and once for a write. Every outcome, with every reason of `REASONS`, an unknown reason, and an unknown outcome, gives words without "down", "crashed", "stopped", "undefined", or "null". A stop's first cause is the one named. On the page, MutationObservers collect the last failure and every client line of the log for the whole check, and the check asserts the same of them. After the switch to `b`, if `b` refused calls, the log said so in the client's words.
+
+### What worked
+
+- `playwright-cli run-code` with a driver script at 1280 and 390, one fresh page per state: served ("none"); crash of `a` ("no answer from a"); stop of `a` ("no answer from a, write outcome unknown", the card says "stopped"); pointed at `b` ("error from b: no lease"); a write held by a hang when `a` crashes ("The client gets no answer from a to the write of key 2: outcome unknown."); a failing disk ("error from a: local failure", then "no answer from a" once the core stopped); a hung network ("error from a: write of key 4 not committed", then "error from a: lease ran out by its monotonic clock" while the card says "thinks it holds the lease").
+- `make site-check` passed 8 times in a row before the review fixes and 7 after. `make lint` passed.
+
+### What didn't work
+
+- The harness refused a Python heredoc whose JS held `split("; refused ")`, and `playwright-cli eval`. The edits went through the Edit tool and a script file, and the page was driven with a shell script that passes the driver to `run-code`.
+- The first try at the in-flight write hung `a`'s network for 1.5 s before the crash, and no write was on `a` yet. 9 s was enough.
+
+### What was tricky
+
+- A run of failures takes one line, so a lost write inside a run of no answers gets no line of its own. Before, every `lost` call took a line. Kept: to the client it is the same failure, and a kind per read and write would flood the log as they alternate. The last failure cell still says "write outcome unknown".
+
+### What warrants review
+
+Self-review with the code-review skill at medium found nine things:
+
+- Fixed: `CAUSES` matched `: closed` anywhere in the error, so a local failure whose text ends in "closed" read "database closed". Now only the first cause after "the instance has stopped: " counts (tested).
+- Fixed: an unknown reason read with spaces for the client and with underscores on the card and in the instance's line. `reasonWords` is now used in all three.
+- Fixed: the kind of a run was built from the words alone. It now has the outcome too.
+- Fixed: `errorWords` returned pairs of the same string. It returns one string.
+- Fixed: the collected texts were one module-level set for the unit checks and the page check. Each has its own.
+- Fixed: the unit checks listed the reasons by hand. They take `Object.keys(R.REASONS)`.
+- Not changed: the lost write inside a run of no answers, above.
+- Not changed: "the observer sees only what was drawn, and lines can leave the 100 kept between draws". The page draws after each command, and the check advances 1 s of fake time per command, far below 100 lines. The exhaustive unit check covers the words of every outcome.
+
+To check by eye: the strip at 390 and 1280 with the longest value, "error from a: lease ran out by its monotonic clock", which wraps in the last failure cell.
