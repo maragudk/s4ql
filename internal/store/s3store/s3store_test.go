@@ -674,6 +674,31 @@ func TestClient_requests(t *testing.T) {
 		is.Equal(t, 0, len(f.requests), fmt.Sprint(f.requests))
 	})
 
+	t.Run("should sign with the access key of the options, and with that of the SDK's default chain without one", func(t *testing.T) {
+		f := newFake(t)
+		var signed []string
+		f.hook = func(w http.ResponseWriter, r *http.Request, f *fake) bool {
+			signed = append(signed, r.Header.Get("Authorization"))
+			return false
+		}
+		_, err := f.client(t).Create(t.Context(), "a", strings.NewReader("data"), nil)
+		is.NotError(t, err)
+		c := f.client(t, func(o *s3store.Options) { o.AccessKeyID, o.SecretAccessKey = "AKIDOFOPTIONS", "secret" })
+		_, err = c.Create(t.Context(), "b", strings.NewReader("data"), nil)
+		is.NotError(t, err)
+		is.Equal(t, 2, len(signed))
+		is.True(t, strings.Contains(signed[0], "Credential=test/"), signed[0])
+		is.True(t, strings.Contains(signed[1], "Credential=AKIDOFOPTIONS/"), signed[1])
+	})
+
+	t.Run("should refuse an access key without a secret, and a secret without an access key", func(t *testing.T) {
+		isolate(t)
+		_, err := s3store.New(t.Context(), s3store.Options{Bucket: "bucket", Region: "us-east-1", AccessKeyID: "id"})
+		is.True(t, err != nil)
+		_, err = s3store.New(t.Context(), s3store.Options{Bucket: "bucket", Region: "us-east-1", SecretAccessKey: "secret"})
+		is.True(t, err != nil)
+	})
+
 	t.Run("should take a key of 1024 bytes", func(t *testing.T) {
 		f := newFake(t)
 		k := strings.Repeat("k", 1024)

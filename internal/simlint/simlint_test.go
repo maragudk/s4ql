@@ -12,4 +12,8 @@ func TestAnalyzer(t *testing.T) {
 	t.Run("should report every planted violation in library code, and nothing in its tests or in an exempt package", func(t *testing.T) {
 		analysistest.Run(t, analysistest.TestData(), simlint.Analyzer, "library", "maragu.dev/s4ql/internal/wiring", "maragu.dev/s4ql/internal/host")
 	})
+
+	t.Run("should allow a package its exceptions, each for one identifier, and report everything else in it", func(t *testing.T) {
+		analysistest.Run(t, analysistest.TestData(), simlint.Analyzer, "maragu.dev/s4ql")
+	})
 }

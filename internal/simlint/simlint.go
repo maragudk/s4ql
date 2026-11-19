@@ -28,8 +28,9 @@
 //   - host.New, because it makes the production host, and library code runs on the host it is
 //     given, so that a simulation can give it another.
 //
-// The packages that implement the host, and others that never run under a simulation, are exempt.
-// Their list is in this file.
+// The packages that implement the host, and others that never run under a simulation, are exempt
+// from every rule. A package that needs one forbidden identifier, and keeps every other rule, has
+// an exception for that identifier alone. Both lists are in this file.
 package simlint
 
 import (
@@ -63,6 +64,16 @@ var exempt = map[string]string{
 	"maragu.dev/s4ql/internal/sqlite/browser/update": "it is a command that vendors the SQLite WebAssembly build, and never runs under the simulation",
 	"maragu.dev/s4ql/internal/sqlite/update":         "it is a command that vendors SQLite, and never runs under the simulation",
 	"maragu.dev/s4ql/internal/store/s3store":         "it is the client of real S3, whose SDK and net/http start goroutines, read the clock, and wait on the network outside the host, so it never runs under the simulation",
+}
+
+// exceptions for one package and one forbidden identifier each: by the import path of the package
+// that may use the identifier, and then by the import path of the identifier's package, a dot, and
+// its name, with the reason. Every other rule holds in the package.
+var exceptions = map[string]map[string]string{
+	"maragu.dev/s4ql": {
+		"maragu.dev/s4ql/internal/host.New": "it is the public package, which wires the production host to the instance that it opens",
+		"context.Background":                "database/sql/driver has calls without a context: to open a connector by name, to close one, and to run a prepared statement",
+	},
 }
 
 // forbidden identifiers, by the import path of their package and their name, with what to use
@@ -111,10 +122,9 @@ var forbidden = map[string]map[string]string{
 	"google.golang.org/protobuf/types/known/timestamppb": {
 		"Now": "reads the real clock; use timestamppb.New with host.Host.Wall",
 	},
-	// The packages that make the production host today are exempt from every rule: the host itself,
-	// and the simulation's free-running mode. A package that must make it and keep the other rules,
-	// such as one that runs a real instance, needs an exception for this rule alone, which the lint
-	// does not have yet.
+	// The host itself and the simulation's free-running mode make the production host, and are
+	// exempt from every rule. A package that must make it and keep the other rules has an exception
+	// for this rule alone, in exceptions.
 	"maragu.dev/s4ql/internal/host": {
 		"New": "makes the production host; run on the host.Host that the code is given",
 	},
@@ -194,6 +204,9 @@ func run(pass *analysis.Pass) (any, error) {
 					return true
 				}
 				if why, ok := forbidden[obj.Pkg().Path()][obj.Name()]; ok {
+					if _, ok := exceptions[pass.Pkg.Path()][obj.Pkg().Path()+"."+obj.Name()]; ok {
+						return true
+					}
 					pass.Reportf(n.Pos(), "%v.%v %v", obj.Pkg().Name(), obj.Name(), why)
 				}
 			}

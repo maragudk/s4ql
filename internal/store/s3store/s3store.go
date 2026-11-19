@@ -45,6 +45,7 @@ import (
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
@@ -74,6 +75,12 @@ type Options struct {
 	// default chain gives it, from AWS_REGION or the shared configuration.
 	Region string
 
+	// AccessKeyID and SecretAccessKey are the credentials that sign each request. If both are
+	// empty, the SDK's default chain gives the credentials: the environment, the shared
+	// configuration, or the role of the machine. One without the other makes [New] fail.
+	AccessKeyID     string
+	SecretAccessKey string
+
 	// PathStyle puts the bucket into the path of each request instead of into the host name, which
 	// some stores need.
 	PathStyle bool
@@ -87,8 +94,7 @@ type Options struct {
 	Logger *slog.Logger
 }
 
-// Client of one bucket. Its credentials come from the SDK's default chain. It is safe for
-// concurrent use.
+// Client of one bucket. It is safe for concurrent use.
 type Client struct {
 	s3     *s3.Client
 	bucket string
@@ -103,6 +109,9 @@ var _ store.Store = (*Client)(nil)
 func New(ctx context.Context, opts Options) (*Client, error) {
 	if opts.Bucket == "" {
 		return nil, errors.New("s3store: no bucket")
+	}
+	if (opts.AccessKeyID == "") != (opts.SecretAccessKey == "") {
+		return nil, errors.New("s3store: an access key ID and a secret access key go together, and one is missing")
 	}
 	if opts.Endpoint != "" {
 		u, err := url.Parse(opts.Endpoint)
@@ -137,6 +146,9 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 	}
 	if opts.Region != "" {
 		loads = append(loads, config.WithRegion(opts.Region))
+	}
+	if opts.AccessKeyID != "" {
+		loads = append(loads, config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(opts.AccessKeyID, opts.SecretAccessKey, "")))
 	}
 	cfg, err := config.LoadDefaultConfig(ctx, loads...)
 	if err != nil {
