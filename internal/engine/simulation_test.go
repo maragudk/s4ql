@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -63,6 +64,9 @@ type workload struct {
 	closes int
 	// bugs planted in the engine.
 	bugs []string
+	// txs makes one turn of a caller in txs a transaction that spans statements instead of a
+	// statement of its own, if it is more than 0: see [run.transaction].
+	txs int
 }
 
 // hammerWorkload has one instance whose callers hardly wait between their statements, so that two
@@ -75,6 +79,7 @@ var hammerWorkload = workload{
 	timeout:   5 * time.Second,
 	durations: []time.Duration{30 * time.Second},
 	faults:    simstore.AllFaults(),
+	txs:       4,
 }
 
 // defaultWorkload has two instances that compete for the lease, two callers on each, a crash and a
@@ -89,6 +94,7 @@ var defaultWorkload = workload{
 	faults:    simstore.AllFaults(),
 	crashes:   1,
 	closes:    1,
+	txs:       4,
 }
 
 // attemptState of a statement, as its caller saw it.
@@ -135,6 +141,56 @@ type attempt struct {
 	partial bool
 	// reason why a statement failed: no lease, stopped, timeout, or canceled.
 	reason string
+	// tx is the transaction that spans statements that the statement ran in, or nil for a statement
+	// of its own.
+	tx *txRecord
+	// gen is the generation of the engine of the node that ran the statement, and start and stop
+	// the numbers of the run's clock of events when its call began and returned.
+	gen         int
+	start, stop uint64
+}
+
+// txRecord is a transaction that spans statements, as its caller saw it.
+type txRecord struct {
+	id       uint64
+	node     string
+	gen      int
+	readOnly bool
+	// stmts of the transaction, in their order.
+	stmts []*attempt
+	// acked is the number of writes that were acknowledged when the begin was called.
+	acked int
+	// start, began, ending, and stop are the numbers of the run's clock of events when the begin was
+	// called, the begin returned, the commit or roll back was called, and it returned; 0 for what did
+	// not happen.
+	start, began, ending, stop uint64
+	// commit is true if the caller called the commit, and not the roll back.
+	commit bool
+	// end of the transaction: "" while it is open or its end did not return, because its instance
+	// crashed, and otherwise "not begun", "committed", "unknown", "not committed", or "rolled back".
+	end string
+}
+
+// writes of the transaction that succeeded, which its commit object must hold, in order.
+func (t *txRecord) writes() []*attempt {
+	var ws []*attempt
+	for _, a := range t.stmts {
+		if a.write && a.state == succeeded {
+			ws = append(ws, a)
+		}
+	}
+	return ws
+}
+
+// position of the state that the statements of the transaction saw, from the first of them that
+// saw one, or "" if none did.
+func (t *txRecord) position() string {
+	for _, a := range t.stmts {
+		if a.position != "" {
+			return a.position
+		}
+	}
+	return ""
 }
 
 // idKey is the key of the context of a statement that holds its attempt.
@@ -156,6 +212,8 @@ type node struct {
 	mu sync.Mutex
 	d  *core.DB
 	e  *engine.Engine
+	// gen counts the opens of the node's database, so that it tells its engines apart.
+	gen int
 	// clients are the callers of the node, each with its connection.
 	clients []*client
 }
@@ -164,6 +222,16 @@ func (n *node) current() (*core.DB, *engine.Engine) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.d, n.e
+}
+
+// generation of the engine e of the node, or -1 if it is not the current one.
+func (n *node) generation(e *engine.Engine) int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.e != e {
+		return -1
+	}
+	return n.gen
 }
 
 // client is a caller of a node, which owns one connection of the engine, as a connection of a pool
@@ -224,6 +292,12 @@ type run struct {
 	acked      []uint64
 	violations []string
 	nextID     uint64
+	// txs are the transactions that span statements, in the order of their begins.
+	txs    []*txRecord
+	nextTx uint64
+	// clock of events of the run, which numbers the begins and ends of calls, so that their order
+	// can be compared.
+	clock uint64
 	// q is the sequence of statements that every caller takes its next statement from, so that
 	// they meet at the same tables.
 	q *sequence
@@ -231,6 +305,12 @@ type run struct {
 	crashed []*core.DB
 	// events of the run that are not statements: crashes, closes, and restarts, by kind.
 	events map[string]int
+}
+
+// tick the run's clock of events, and give its new number. The caller holds r.mu.
+func (r *run) tick() uint64 {
+	r.clock++
+	return r.clock
 }
 
 // event of the run of the kind, which [run.events] counts.
@@ -296,6 +376,7 @@ func (r *run) open(ctx context.Context, n *node) error {
 	options.Logger = slog.New(handler{r})
 	n.mu.Lock()
 	n.d, n.e = d, engine.New(d, n.inst, options)
+	n.gen++
 	n.mu.Unlock()
 	return nil
 }
@@ -330,14 +411,20 @@ func withID(src string, id uint64) string {
 	return src[:at] + fmt.Sprint(" /* id ", id, " */ ") + src[at:]
 }
 
-// statement runs one statement of the sequence q on the connection c of a caller of n, records it,
-// and gives it.
-func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, q *sequence) *attempt {
+// statement runs one statement of the sequence q on the connection c of a caller of n, whose engine
+// has the generation gen, records it, and gives it. It runs in the transaction tx that spans
+// statements, or on its own if tx is nil.
+func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q *sequence, tx *txRecord) *attempt {
 	call := q.Next()
 	query := call.Query
 	r.mu.Lock()
 	r.nextID++
-	a := &attempt{id: r.nextID, node: n.name, query: query, acked: len(r.acked), args: values(call.Args)}
+	a := &attempt{id: r.nextID, node: n.name, query: query, acked: len(r.acked), args: values(call.Args), tx: tx, gen: gen, start: r.tick()}
+	if tx != nil {
+		// A statement of a transaction must see what was acknowledged before the transaction began.
+		a.acked = tx.acked
+		tx.stmts = append(tx.stmts, a)
+	}
 	a.src = withID(call.Src, a.id)
 	call.Src = a.src
 	if s, _ := stmt.Check(a.src); s != nil {
@@ -387,11 +474,13 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, q *sequenc
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	a.stop = r.tick()
 	var se *sqlerr.Error
 	switch {
 	case err == nil:
 		a.state, a.answer = succeeded, got
-		if a.write {
+		// A write of a transaction is acknowledged by its commit.
+		if a.write && tx == nil {
 			r.acked = append(r.acked, a.id)
 		}
 		// A call that the rule for arguments refuses must not succeed.
@@ -423,6 +512,11 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, q *sequenc
 		}
 	case errors.Is(err, core.ErrOutcomeUnknown):
 		a.state = unknown
+		if tx != nil {
+			r.mu.Unlock()
+			r.violate(ctx, "the statement %v of the transaction %v has an unknown outcome, and commits nothing", a.id, tx.id)
+			r.mu.Lock()
+		}
 	case errors.Is(err, core.ErrNoLease):
 		a.state, a.reason = failed, "no lease"
 	case errors.Is(err, core.ErrStopped):
@@ -439,6 +533,119 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, q *sequenc
 	}
 	r.world.Trace(ctx, "statement %v ends as %v: %v", a.id, a.state, err)
 	return a
+}
+
+// reasonOf an error that means that a call did nothing: no lease, stopped, timeout, or canceled, and
+// "" for another error.
+func reasonOf(err error) string {
+	switch {
+	case errors.Is(err, core.ErrNoLease):
+		return "no lease"
+	case errors.Is(err, core.ErrStopped):
+		return "stopped"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	}
+	return ""
+}
+
+// transaction runs a transaction that spans statements on the connection c of a caller of n, whose
+// engine has the generation gen, records it, and gives the reason why it ended early: "no lease" or
+// "stopped" if a call of it was refused so, and otherwise "". One transaction in four is read-only.
+// It has two to six statements of the sequence of the run, a short wait before each, and each call
+// has a timeout of up to the workload's. It ends with a commit, or one time in four with a roll
+// back, and with a roll back after a refusal, so that it never stays open: an open write
+// transaction would keep its instance from taking back a lease that it lost.
+func (r *run) transaction(ctx context.Context, n *node, c *engine.Conn, gen int, rnd hostRand) string {
+	timeout := func() (context.Context, context.CancelFunc) {
+		return n.inst.WithTimeout(ctx, time.Duration(1+rnd.IntN(int(r.w.timeout/time.Millisecond)))*time.Millisecond)
+	}
+	r.mu.Lock()
+	r.nextTx++
+	tx := &txRecord{id: r.nextTx, node: n.name, gen: gen, readOnly: rnd.IntN(4) == 0, acked: len(r.acked), start: r.tick()}
+	r.txs = append(r.txs, tx)
+	r.mu.Unlock()
+	kind := map[bool]string{false: "write", true: "read-only"}[tx.readOnly]
+	r.world.Trace(ctx, "%v transaction %v begins", kind, tx.id)
+
+	bctx, cancel := timeout()
+	var err error
+	if tx.readOnly {
+		err = c.BeginReadOnly(bctx)
+	} else {
+		err = c.Begin(bctx)
+	}
+	cancel()
+	r.mu.Lock()
+	tx.began = r.tick()
+	if err != nil {
+		tx.began, tx.end = 0, "not begun"
+	}
+	r.mu.Unlock()
+	if err != nil {
+		r.world.Trace(ctx, "transaction %v does not begin: %v", tx.id, err)
+		reason := reasonOf(err)
+		if reason == "" {
+			r.violate(ctx, "the begin of the transaction %v: %v", tx.id, err)
+		}
+		return reason
+	}
+
+	var reason string
+	for range 2 + rnd.IntN(5) {
+		_ = n.inst.Sleep(ctx, time.Duration(rnd.IntN(500))*time.Millisecond)
+		sctx, cancel := timeout()
+		a := r.statement(sctx, n, c, gen, r.q, tx)
+		cancel()
+		if a.reason == "no lease" || a.reason == "stopped" {
+			reason = a.reason
+			break
+		}
+	}
+
+	r.mu.Lock()
+	tx.commit = reason == "" && rnd.IntN(4) != 0
+	tx.ending = r.tick()
+	r.mu.Unlock()
+	cctx, cancel := timeout()
+	if tx.commit {
+		err = c.Commit(cctx)
+	} else {
+		err = c.Rollback(cctx)
+	}
+	cancel()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	tx.stop = r.tick()
+	var unexpected bool
+	switch {
+	case !tx.commit:
+		tx.end = "rolled back"
+		// A roll back on an instance that lost its lease or was closed returns nil too.
+		unexpected = err != nil
+	case err == nil:
+		tx.end = "committed"
+		for _, a := range tx.writes() {
+			r.acked = append(r.acked, a.id)
+		}
+	case errors.Is(err, core.ErrOutcomeUnknown):
+		tx.end = "unknown"
+	default:
+		tx.end = "not committed"
+		if reason == "" {
+			reason = reasonOf(err)
+		}
+		unexpected = reasonOf(err) == ""
+	}
+	r.world.Trace(ctx, "transaction %v ends as %v: %v", tx.id, tx.end, err)
+	if unexpected {
+		r.mu.Unlock()
+		r.violate(ctx, "the end of the transaction %v: %v", tx.id, err)
+		r.mu.Lock()
+	}
+	return reason
 }
 
 // readRows of a query to their end.
@@ -515,10 +722,17 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 				}
 				// Every statement has a timeout, as a request of an application has, of up to timeout, so
 				// that a commit can end with its outcome unknown.
-				sctx, cancel := inst.WithTimeout(ctx, time.Duration(1+rnd.IntN(int(r.w.timeout/time.Millisecond)))*time.Millisecond)
-				a := r.statement(sctx, n, c.conn(ctx, r, e), r.q)
-				cancel()
-				if a.reason == "no lease" && !r.waitServing(ctx, n) {
+				conn := c.conn(ctx, r, e)
+				gen := n.generation(e)
+				var reason string
+				if r.w.txs > 0 && rnd.IntN(r.w.txs) == 0 {
+					reason = r.transaction(ctx, n, conn, gen, rnd)
+				} else {
+					sctx, cancel := inst.WithTimeout(ctx, time.Duration(1+rnd.IntN(int(r.w.timeout/time.Millisecond)))*time.Millisecond)
+					reason = r.statement(sctx, n, conn, gen, r.q, nil).reason
+					cancel()
+				}
+				if reason == "no lease" && !r.waitServing(ctx, n) {
 					return
 				}
 			}
@@ -769,14 +983,28 @@ type logCommit struct {
 
 // verify what happened in the run against SQLite and the log:
 //
-//   - Every commit object of the log holds one statement, of an attempt that succeeded, whose
-//     outcome is unknown, or whose instance crashed while it ran, and no attempt is in it twice. Its
-//     parameters are exactly the arguments that the caller gave.
-//   - Every write that was acknowledged is in the log.
+//   - Every commit object of the log holds the statements of one call. A statement of its own is
+//     of an attempt that succeeded, whose outcome is unknown, or whose instance crashed while it
+//     ran. A transaction that spans statements is a write transaction whose caller called its
+//     commit, and whose commit succeeded, had an unknown outcome, or did not return because its
+//     instance crashed; the commit object holds exactly the statements of the transaction that
+//     succeeded and that write, in order, and its parent is the state that the transaction began
+//     from, so no commit landed while it was open. No attempt and no transaction is in the log
+//     twice. The parameters of each statement are exactly the arguments that the caller gave.
+//   - Every write that was acknowledged is in the log: a statement of its own when it succeeded,
+//     and the writes of a transaction when its commit succeeded.
 //   - The statements of the log, run in SQLite in their order with their parameters, each succeed.
-//   - Each statement that failed with SQLite's error gives that error in SQLite on the state that
-//     it saw, and each query that succeeded gives its rows there: the state after a commit of the
-//     log, which holds every write that was acknowledged before the statement started.
+//   - Each statement of its own that failed with SQLite's error gives that error in SQLite on the
+//     state that it saw, and each query that succeeded gives its rows there: the state after a
+//     commit of the log, which holds every write that was acknowledged before the statement
+//     started.
+//   - Each statement of a transaction that spans statements gives in SQLite what it gave, on the
+//     state that the transaction began from, which holds every write that was acknowledged before
+//     the begin, after the statements of the transaction before it, and under `pragma query_only =
+//     1` for a read-only transaction: see [run.verifyTxs]. So no statement sees a write that is
+//     not committed, of its own transaction excepted.
+//   - Two write transactions on one engine are never open at once, and no statement of its own
+//     commits on it while one is: see [run.verifyOverlaps].
 //   - Each text that the engine does not support is one that SQLite prepares on an empty database
 //     without a syntax error, as in [pair.step].
 //   - A new instance with an empty cache replays the log to the state that SQLite has after it.
@@ -784,38 +1012,79 @@ func (r *run) verify(ctx context.Context) {
 	log := readLog(r.store)
 	index := map[string]int{format.EmptyLog.String(): 0}
 	inLog := map[uint64]int{}
+	txInLog := map[uint64]int{}
 	for k, c := range log {
 		index[c.name.String()] = k + 1
-		if len(c.notes) != 1 {
-			r.violate(ctx, "commit %v holds %v statements", k+1, len(c.notes))
+		var ids []uint64
+		for _, note := range c.notes {
+			m := idPattern.FindStringSubmatch(note)
+			if m == nil {
+				r.violate(ctx, "commit %v holds the statement %q, of no attempt", k+1, note)
+				ids = nil
+				break
+			}
+			id, _ := strconv.ParseUint(m[1], 10, 64)
+			if r.attempts[id] == nil {
+				r.violate(ctx, "commit %v holds the statement %v, of no attempt", k+1, id)
+				ids = nil
+				break
+			}
+			ids = append(ids, id)
+		}
+		if len(ids) == 0 {
+			if len(c.notes) == 0 {
+				r.violate(ctx, "commit %v holds no statement", k+1)
+			}
 			continue
 		}
-		m := idPattern.FindStringSubmatch(c.notes[0])
-		if m == nil {
-			r.violate(ctx, "commit %v holds the statement %q, of no attempt", k+1, c.notes[0])
-			continue
+		first := r.attempts[ids[0]]
+		if tx := first.tx; tx == nil {
+			a := first
+			switch {
+			case len(ids) != 1:
+				r.violate(ctx, "commit %v holds %v statements, and the first, %v, is a statement of its own", k+1, len(ids), a.id)
+			case a.state != succeeded && a.state != unknown && a.state != pending:
+				r.violate(ctx, "the statement %v is in commit %v, and its caller was told %v", a.id, k+1, a.state)
+			}
+		} else {
+			var want []uint64
+			for _, a := range tx.writes() {
+				want = append(want, a.id)
+			}
+			parent := format.EmptyLog.String()
+			if k > 0 {
+				parent = log[k-1].name.String()
+			}
+			switch {
+			case slices.ContainsFunc(ids, func(id uint64) bool { return r.attempts[id].tx != tx }):
+				r.violate(ctx, "commit %v holds the statements %v, which are not all of the transaction %v", k+1, ids, tx.id)
+			case txInLog[tx.id] > 0:
+				r.violate(ctx, "the transaction %v is in commit %v and commit %v", tx.id, txInLog[tx.id], k+1)
+			case tx.readOnly:
+				r.violate(ctx, "commit %v holds the read-only transaction %v", k+1, tx.id)
+			case !tx.commit:
+				r.violate(ctx, "the transaction %v is in commit %v, and its caller rolled it back", tx.id, k+1)
+			case tx.end != "committed" && tx.end != "unknown" && tx.end != "":
+				r.violate(ctx, "the transaction %v is in commit %v, and its caller was told %v", tx.id, k+1, tx.end)
+			case !slices.Equal(ids, want):
+				r.violate(ctx, "commit %v holds the statements %v of the transaction %v, whose statements that succeeded and write are %v", k+1, ids, tx.id, want)
+			case tx.position() != parent:
+				r.violate(ctx, "the transaction %v began at %q, and its commit %v follows %q: another commit landed while it was open", tx.id, tx.position(), k+1, parent)
+			}
+			txInLog[tx.id] = k + 1
 		}
-		id, _ := strconv.ParseUint(m[1], 10, 64)
-		a, ok := r.attempts[id]
-		switch {
-		case !ok:
-			r.violate(ctx, "commit %v holds the statement %v, of no attempt", k+1, id)
-		case inLog[id] > 0:
-			r.violate(ctx, "the statement %v is in commit %v and commit %v", id, inLog[id], k+1)
-		case a.state != succeeded && a.state != unknown && a.state != pending:
-			r.violate(ctx, "the statement %v is in commit %v, and its caller was told %v", id, k+1, a.state)
-		case valuesText(c.params[0]) != valuesText(a.args):
-			r.violate(ctx, "commit %v holds the parameters %v of the statement %v, %q, and its caller gave the arguments %v", k+1, valuesText(c.params[0]), id, a.src, valuesText(a.args))
+		for i, id := range ids {
+			a := r.attempts[id]
+			if inLog[id] > 0 {
+				r.violate(ctx, "the statement %v is in commit %v and commit %v", id, inLog[id], k+1)
+			}
+			if valuesText(c.params[i]) != valuesText(a.args) {
+				r.violate(ctx, "commit %v holds the parameters %v of the statement %v, %q, and its caller gave the arguments %v", k+1, valuesText(c.params[i]), id, a.src, valuesText(a.args))
+			}
+			inLog[id] = k + 1
 		}
-		inLog[id] = k + 1
 	}
-	for _, id := range r.acked {
-		if inLog[id] == 0 {
-			r.violate(ctx, "the acknowledged statement %v, %q, is not in the log", id, r.attempts[id].src)
-		}
-	}
-
-	// The observations of each state of the log: the statements that saw it.
+	// The observations of each state of the log: the statements of their own that saw it.
 	seen := map[int][]*attempt{}
 	empty := newOracle(r.t)
 	defer empty.close()
@@ -835,6 +1104,10 @@ func (r *run) verify(ctx context.Context) {
 			if want := empty.run(r.t, a.src); a.answer.err == "" || a.answer.String() != want.String() {
 				r.violate(ctx, "the statement %v, %q, saw no state, and gives %v, and SQLite on an empty database %v", a.id, a.src, a.answer, want)
 			}
+			continue
+		}
+		if a.tx != nil {
+			// See [run.verifyTxs].
 			continue
 		}
 		at, ok := index[a.position]
@@ -860,12 +1133,21 @@ func (r *run) verify(ctx context.Context) {
 				r.violate(ctx, "the statement %v, %q, at commit %v gives %v, and in SQLite %v", a.id, a.src, k, got, want)
 			}
 		}
-		if k < len(log) && len(log[k].notes) == 1 {
-			if a := o.run(r.t, log[k].notes[0], integerValues(log[k].params[0])...); a.err != "" {
-				r.violate(ctx, "commit %v, %q, fails in SQLite: %v", k+1, log[k].notes[0], a.err)
+		if k < len(log) {
+			for i, note := range log[k].notes {
+				if a := o.run(r.t, note, integerValues(log[k].params[i])...); a.err != "" {
+					r.violate(ctx, "commit %v, %q, fails in SQLite: %v", k+1, note, a.err)
+				}
 			}
 		}
 	}
+	nothing := r.verifyTxs(ctx, log, index, inLog)
+	for _, id := range r.acked {
+		if inLog[id] == 0 && !nothing[id] {
+			r.violate(ctx, "the acknowledged statement %v, %q, is not in the log", id, r.attempts[id].src)
+		}
+	}
+	r.verifyOverlaps(ctx)
 
 	// A new instance replays the whole log into an empty cache.
 	n := &node{name: "replay", inst: r.world.NewInstance("replay"), path: filepath.Join(r.dir, "replay.db"), lease: time.Minute}
@@ -890,6 +1172,155 @@ func (r *run) verify(ctx context.Context) {
 			r.violate(ctx, "the replay of the log holds\n%v\nand SQLite\n%v", got, want)
 		}
 	})
+}
+
+// verifyTxs checks what each statement of a transaction that spans statements gave. The statements
+// of a transaction must all have seen one state, the one that it began from, which must be a state
+// of the log that holds every write that was acknowledged before the begin. SQLite then runs the
+// log up to that state, under `pragma query_only = 1` for a read-only transaction, and each
+// statement of the transaction that succeeded or failed with SQLite's error, in their order, and
+// must give what the engine gave: for a write transaction, the state of its beginning and its own
+// writes so far; for a read-only one, the state of its beginning, whatever committed meanwhile. A
+// statement that failed otherwise, or was refused, did nothing, and is not run.
+//
+// A write transaction whose net effect is nothing writes no commit object: one whose writes that
+// succeeded are all of tables that were not there when it began and are not there at its end. It
+// gives the IDs of the writes of such transactions, which are acknowledged and must not be in the
+// log.
+func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]int, inLog map[uint64]int) (nothing map[uint64]bool) {
+	nothing = map[uint64]bool{}
+	for _, tx := range r.txs {
+		position := tx.position()
+		if position == "" {
+			continue
+		}
+		kind := map[bool]string{false: "write", true: "read-only"}[tx.readOnly]
+		var states []string
+		for _, a := range tx.stmts {
+			if a.position != "" && !slices.Contains(states, a.position) {
+				states = append(states, a.position)
+			}
+		}
+		if len(states) > 1 {
+			// The statements are still compared with SQLite on the state of the first.
+			r.violate(ctx, "the statements of the %v transaction %v saw the states %q", kind, tx.id, states)
+		}
+		at, ok := index[position]
+		if !ok {
+			r.violate(ctx, "the transaction %v saw the state %q, which the log does not have", tx.id, position)
+			continue
+		}
+		for _, id := range r.acked[:tx.acked] {
+			if inLog[id] > at {
+				r.violate(ctx, "the transaction %v saw commit %v, and the statement %v, in commit %v, was acknowledged before it began", tx.id, at, id, inLog[id])
+			}
+		}
+		o := newOracle(r.t)
+		for _, c := range log[:at] {
+			for i, note := range c.notes {
+				o.run(r.t, note, integerValues(c.params[i])...)
+			}
+		}
+		if tx.readOnly {
+			o.run(r.t, "pragma query_only = 1")
+		}
+		before := o.tables(r.t)
+		for _, a := range tx.stmts {
+			if a.position == "" || (a.state != succeeded && a.state != sqliteFailed) {
+				continue
+			}
+			want := o.run(r.t, a.src, integerValues(a.args)...)
+			if a.partial {
+				continue
+			}
+			if !a.query {
+				want.columns, want.rows = "", nil
+			}
+			if got := a.answer.String(); got != want.String() {
+				r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v, gives %v, and in SQLite %v", a.id, a.src, tx.id, kind, at, got, want)
+			}
+		}
+		after := o.tables(r.t)
+		o.close()
+		writes := tx.writes()
+		if tx.readOnly || len(writes) == 0 || slices.ContainsFunc(writes, func(a *attempt) bool {
+			name := tableOf(a.src)
+			return before[name] || after[name]
+		}) {
+			continue
+		}
+		for _, a := range writes {
+			nothing[a.id] = true
+			if inLog[a.id] > 0 {
+				r.violate(ctx, "the statement %v of the transaction %v, whose net effect is nothing, is in commit %v", a.id, tx.id, inLog[a.id])
+			}
+		}
+	}
+	return nothing
+}
+
+// tableOf the statement of src, which is of slice 1, folded as SQLite compares names.
+func tableOf(src string) string {
+	s, err := stmt.Check(src)
+	if err != nil {
+		panic(err)
+	}
+	switch s := s.(type) {
+	case *stmt.CreateTable:
+		return s.Table.Fold()
+	case *stmt.Insert:
+		return s.Table.Fold()
+	case *stmt.DropTable:
+		return s.Table.Fold()
+	case *stmt.Select:
+		return s.Table.Fold()
+	}
+	panic(fmt.Sprintf("a statement of type %T", s))
+}
+
+// tables of the database of the oracle, by their names folded as SQLite compares names.
+func (o *oracle) tables(t testing.TB) map[string]bool {
+	t.Helper()
+	s, err := o.c.Prepare("select name from sqlite_schema where type = 'table'")
+	is.NotError(t, err)
+	names := map[string]bool{}
+	for {
+		ok, err := s.Step()
+		is.NotError(t, err)
+		if !ok {
+			break
+		}
+		names[stmt.Name{Value: s.ColumnText(0)}.Fold()] = true
+	}
+	is.NotError(t, s.Finalize())
+	return names
+}
+
+// verifyOverlaps checks that the write transactions of one engine never overlap. A write
+// transaction holds the place of the writer from the return of its begin to its commit or roll back,
+// so no other write transaction of the engine may begin in that time, and no statement of its own
+// that writes may both start and commit in it. An engine is one node's between two opens of its
+// database.
+func (r *run) verifyOverlaps(ctx context.Context) {
+	for _, a := range r.txs {
+		if a.readOnly || a.began == 0 {
+			continue
+		}
+		end := a.ending
+		if end == 0 {
+			end = math.MaxUint64
+		}
+		for _, b := range r.txs {
+			if b != a && !b.readOnly && b.began != 0 && b.node == a.node && b.gen == a.gen && a.began < b.began && b.began < end {
+				r.violate(ctx, "the write transaction %v began on %v while the write transaction %v was open there", b.id, a.node, a.id)
+			}
+		}
+		for _, s := range r.order {
+			if s.tx == nil && s.write && s.state == succeeded && s.node == a.node && s.gen == a.gen && a.began < s.start && s.stop < end {
+				r.violate(ctx, "the statement %v committed on %v while the write transaction %v was open there", s.id, a.node, a.id)
+			}
+		}
+	}
 }
 
 // readLog of the database in the store s, oldest first.
@@ -1096,11 +1527,21 @@ func tallyOf(s simulation) map[string]int {
 		}
 	}
 	counts["acknowledged writes"] = len(r.acked)
+	for _, tx := range r.txs {
+		counts[map[bool]string{false: "write transactions", true: "read-only transactions"}[tx.readOnly]]++
+		if tx.end != "" {
+			counts["transactions "+tx.end]++
+		}
+		counts["statements in a transaction"] += len(tx.stmts)
+	}
 	log := readLog(r.store)
 	counts["commits"] = len(log)
 	for _, c := range log {
-		if len(c.params) == 1 && len(c.params[0]) > 0 {
+		if slices.ContainsFunc(c.params, func(ps []*s4qlpb.Value) bool { return len(ps) > 0 }) {
 			counts["commits with a parameter"]++
+		}
+		if len(c.notes) > 1 {
+			counts["commits of more than one statement"]++
 		}
 	}
 	return counts
@@ -1139,6 +1580,8 @@ func TestSimulation(t *testing.T) {
 			"fault: slow way": 0.8, "fault: broken read": 0.25, "fault: cut-off": 0.1, "fault: outage": 0.04,
 			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.25,
 			"fault: write applied after a crash": 0.05,
+			"statements in a transaction": 12, "read-only transactions": 0.9, "transactions committed": 2, "transactions rolled back": 0.8,
+			"transactions not committed": 0.08, "transactions unknown": 0.07, "commits of more than one statement": 0.4,
 		}, 0.15},
 		{"hammer", hammerWorkload, map[string]float64{
 			"succeeded": 12, "SQLite's error": 17, "unknown": 0.4, "skipped": 2.5, "failed: no lease": 2,
@@ -1146,6 +1589,8 @@ func TestSimulation(t *testing.T) {
 			"fault: lost request": 0.25, "fault: lost response": 0.2, "fault: no answer": 0.35, "fault: conflict": 0.2,
 			"fault: slow way": 0.5, "fault: broken read": 0.02, "fault: cut-off": 0.09, "fault: outage": 0.025,
 			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.7,
+			"statements in a transaction": 24, "read-only transactions": 1.8, "transactions committed": 4, "transactions rolled back": 1.5,
+			"transactions not committed": 0.17, "transactions unknown": 0.12, "commits of more than one statement": 0.6,
 		}, 0.12},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -1242,7 +1687,8 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// bug must cause in two seeds at least.
 		finds []string
 	}{
-		{"skipUnique", defaultWorkload, "default", []string{"fails in SQLite: 19/1555: UNIQUE constraint failed"}},
+		// An insert of a write transaction that replaces a row succeeds, where SQLite fails.
+		{"skipUnique", defaultWorkload, "default", []string{"fails in SQLite: 19/1555: UNIQUE constraint failed", "(write), which began at commit"}},
 		{"ackUnknown", defaultWorkload, "default", []string{"is not in the log"}},
 		{"checkOutside", hammerWorkload, "hammer", []string{"fails in SQLite: 19/1555: UNIQUE constraint failed"}},
 		// A write transaction left open keeps the instance from a write, and from a close that
@@ -1250,10 +1696,19 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		{"keepOpen", defaultWorkload, "default", []string{"no instance runs a write", "a query on each connection of its callers ten minutes after the end of the workload"}},
 		// A read transaction left open fails every later query of its connection, and the check of
 		// the connections after the workload.
-		{"keepRead", defaultWorkload, "default", []string{"a read transaction left open after the end of the workload", "the reader has a read transaction open"}},
+		// In a transaction, the rows of the query stay open, which refuses every later statement of the
+		// connection.
+		{"keepRead", defaultWorkload, "default", []string{"a read transaction left open after the end of the workload", "the reader has a read transaction open", "the rows of an earlier query of the connection are open"}},
 		// An annotation with the wrong parameters gives a log that, replayed, inserts other rows than
 		// the callers did, and maybe one that a later insert of the log meets.
 		{"annotateNext", defaultWorkload, "default", []string{"and its caller gave the arguments", "the replay of the log holds", "fails in SQLite: 19/1555: UNIQUE constraint failed"}},
+		// A failed statement that is kept is in the commit object of its transaction, whose replay in
+		// SQLite then fails.
+		{"keepFailed", defaultWorkload, "default", []string{"whose statements that succeeded and write are", "fails in SQLite"}},
+		// A read-only transaction that moves on to the newest state reads rows that were committed after
+		// its beginning, and its later statements report the newer state.
+		{"readNewest", hammerWorkload, "hammer", []string{"(read-only), which began at commit", "the statements of the read-only transaction"}},
+		{"rollbackKeeps", defaultWorkload, "default", []string{"and its caller rolled it back"}},
 	}
 	for _, b := range bugs {
 		bug := b.name
