@@ -16,6 +16,11 @@
 // The page picks a random seed, and every check holds for any seed. Fake time goes on through the
 // page's hook s4qlPage.skip, which advances the session at once, so the check does not wait minutes
 // of real time.
+//
+// The address of this page has the version that the site was built with, if any, as version. The
+// check loads run.js at that version, as the page does, and sitecheck checks the page's requests.
+const version = new URLSearchParams(location.search).get("version") || "";
+const query = version ? "?v=" + encodeURIComponent(version) : "";
 const lines = [];
 const say = (s) => lines.push(s);
 let ok = true;
@@ -33,10 +38,10 @@ const until = async (f) => {
   }
 };
 
-// open the simulator page in a frame, and wait until its engine is ready, or failed. The frame lies
-// inside the window of Chromium, which sitecheck opens larger than it, because Chromium does not run
-// the animation frames of a frame that is out of sight, and the page plays in them.
-async function open(address) {
+// load the page at the address in a frame, and wait until its engine is ready, or failed. The frame
+// lies inside the window of Chromium, which sitecheck opens larger than it, because Chromium does not
+// run the animation frames of a frame that is out of sight, and the page plays in them.
+async function load(address) {
   const frame = document.createElement("iframe");
   frame.style.cssText = "position: fixed; top: 0; left: 0; width: 1280px; height: 900px; border: 0;";
   frame.src = address;
@@ -45,6 +50,12 @@ async function open(address) {
   const win = frame.contentWindow;
   const html = win.document.documentElement;
   await until(() => html.dataset.engine === "failed" || html.dataset.engine === "ready");
+  return { frame, win, html };
+}
+
+// open the simulator page at the address, and fail unless its engine becomes ready.
+async function open(address) {
+  const { win, html } = await load(address);
   if (html.dataset.engine === "failed") throw new Error("the page failed: " + win.document.getElementById("failure").textContent);
   const $ = (sel) => win.document.querySelector(sel);
   const page = {
@@ -88,7 +99,7 @@ async function open(address) {
 
 // unit checks of run.js: the seed, the clock, and the lines of the log.
 async function unit() {
-  const R = await import("/simulator/run.js");
+  const R = await import("/simulator/run.js" + query);
   const seeds = Array.from({ length: 1000 }, () => R.newSeed());
   expect(seeds.every((s) => Number.isSafeInteger(s) && s >= 0), "a new seed is a whole number below 2^53");
   const clocks = [R.clock(0), R.clock(61234), R.clock(3723400), R.offset(60000), R.offset(-45200)];
@@ -126,6 +137,10 @@ async function check() {
   const address = "/simulator/";
   const p = await open(address);
   const play = p.$("#play"), turbo = p.$("#turbo");
+
+  // The page names the commit that the engine is built from, which it reads from build.json.
+  const built = await until(() => p.$("#build a code"));
+  expect(/^[0-9a-f]{7}$/.test(built.textContent), `the page names the commit it is built from (${built.textContent})`);
 
   // The page waits at zero until Play.
   expect(p.t < 1000 && !p.win.s4qlPage.playing && p.html.dataset.playing === "false", `the page starts paused at ${p.t} ms`);
@@ -220,6 +235,20 @@ async function check() {
   expect(p.win.s4qlPage.playing, "Play goes on after 10 min");
 
   expect(new URL(p.win.location.href).pathname === address && p.win.location.search === "" && p.win.location.hash === "", "the page writes nothing into its address");
+
+  await broken();
+}
+
+// broken checks that a fault at start-up ends in the page's failure box, which asks for a reload:
+// the page without run.js, and the page without its Play button, as a page.js of one deploy would
+// find the HTML of another. sitecheck serves the site with each fault under /__check/broken/.
+async function broken() {
+  for (const [how, what] of [["no-run", "run.js is not found"], ["no-play", "the page has no Play button"]]) {
+    const { frame, win, html } = await load(`/__check/broken/${how}/simulator/`);
+    const box = win.document.getElementById("failure");
+    expect(html.dataset.engine === "failed" && !box.hidden && box.textContent.includes("Reload to try again"), `when ${what}, the page shows its failure box (${box.textContent})`);
+    frame.remove();
+  }
 }
 
 try {

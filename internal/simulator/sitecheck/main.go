@@ -11,9 +11,18 @@
 // fake time by the real time, turbo by five times it, and the log and the commit objects grow; Pause
 // holds fake time; each action on an instance has its effect in the state, and an action switched off
 // again takes it away; a crash of the instance that serves lets the other take over; fake time goes
-// past 10 minutes; and the page writes nothing into its address. It also checks the words of run.js.
-// It writes what it saw, and exits with 0 if the check passed, 1 if it failed, and 2 if it could not
-// run.
+// past 10 minutes; and the page writes nothing into its address. It also checks the words of run.js,
+// and that a fault at start-up ends in the page's failure box: the page without run.js, and the page
+// without its Play button, as a page.js of one deploy would find the HTML of another. It writes what
+// it saw, and exits with 0 if the check passed, 1 if it failed, and 2 if it could not run.
+//
+// -version is the version that the site's page was built with, as the Pages workflow builds it with
+// make site SITEVERSION: see the package comment of internal/simulator/serve. The server records the
+// requests of the page, and the check fails unless the page asked for every file of the simulator,
+// and every request for a script, the Worker, WebAssembly, or build.json carries the query
+// ?v=<version>, or no query without -version.
+//
+//	go run -tags s4ql_browser ./internal/simulator/sitecheck -root /tmp/site -version 3f6fbfd1
 //
 // The page picks a random seed for each visit, and every step of the check holds for any seed. To go
 // on in fake time without waiting real minutes, the check calls the page's hook s4qlPage.skip, which
@@ -26,6 +35,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json/v2"
@@ -35,11 +45,14 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -48,9 +61,10 @@ var checkHTML []byte
 
 func main() {
 	root := flag.String("root", "site", "the directory of the site, with the engine built into it")
+	version := flag.String("version", "", "the version that the site's page was built with, if any")
 	timeout := flag.Duration("timeout", 10*time.Minute, "the time after which a check that hangs is stopped")
 	flag.Parse()
-	ok, err := run(*root, *timeout)
+	ok, err := run(*root, *version, *timeout)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sitecheck:", err)
 		os.Exit(2)
@@ -68,7 +82,7 @@ type result struct {
 	Lines []string `json:"lines"`
 }
 
-func run(root string, timeout time.Duration) (bool, error) {
+func run(root, version string, timeout time.Duration) (bool, error) {
 	if _, err := os.Stat(filepath.Join(root, "simulator", "engine", "engine.wasm")); err != nil {
 		return false, fmt.Errorf("the site in %v has no engine; run make site first: %w", root, err)
 	}
@@ -97,8 +111,16 @@ func run(root string, timeout time.Duration) (bool, error) {
 		default:
 		}
 	})
+	mux.Handle("GET /__check/broken/{how}/{path...}", broken(root))
 	files := http.FileServer(http.Dir(root))
+	var (
+		mu       sync.Mutex
+		requests []url.URL // of the site, outside /__check/
+	)
 	mux.Handle("GET /", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests = append(requests, *r.URL)
+		mu.Unlock()
 		w.Header().Set("Cache-Control", "no-store")
 		files.ServeHTTP(w, r)
 	}))
@@ -128,7 +150,7 @@ func run(root string, timeout time.Duration) (bool, error) {
 		"--window-size=1600,1200",
 	}
 	flags = append(flags, strings.Fields(os.Getenv("S4QL_CHROMIUM_FLAGS"))...)
-	flags = append(flags, "http://"+listener.Addr().String()+"/__check/")
+	flags = append(flags, "http://"+listener.Addr().String()+"/__check/?"+url.Values{"version": {version}}.Encode())
 	cmd := exec.CommandContext(ctx, chromium, flags...)
 	var log strings.Builder
 	cmd.Stdout = &log
@@ -148,10 +170,13 @@ func run(root string, timeout time.Duration) (bool, error) {
 	case res := <-results:
 		cancel()
 		<-stopped
-		for _, l := range res.Lines {
+		mu.Lock()
+		ok, lines := checkRequests(requests, version)
+		mu.Unlock()
+		for _, l := range append(res.Lines, lines...) {
 			fmt.Println(l)
 		}
-		return res.OK, nil
+		return res.OK && ok, nil
 	case <-stopped:
 		return false, fmt.Errorf("chromium stopped before the check ended: %v\n%s", waitErr, tail(log.String()))
 	case <-time.After(timeout):
@@ -159,6 +184,97 @@ func run(root string, timeout time.Duration) (bool, error) {
 		<-stopped
 		return false, fmt.Errorf("the check did not end within %v", timeout)
 	}
+}
+
+// simulatorFiles that the page loads: page.js and run.js, which its HTML names, and the files of
+// the engine, which page.js, simulator.js, and the Worker load.
+var simulatorFiles = []string{
+	"/simulator/page.js",
+	"/simulator/run.js",
+	"/simulator/engine/build.json",
+	"/simulator/engine/simulator.js",
+	"/simulator/engine/worker.js",
+	"/simulator/engine/sqlite3.js",
+	"/simulator/engine/vfs.js",
+	"/simulator/engine/bridge.js",
+	"/simulator/engine/fs.js",
+	"/simulator/engine/wasm_exec.js",
+	"/simulator/engine/sqlite3.wasm",
+	"/simulator/engine/engine.wasm",
+}
+
+// checkRequests says whether the requests of the site load the simulator at the version: every
+// request under /simulator/ for a script, WebAssembly, or JSON has the query v=<version>, or no
+// query if the version is empty, and each of [simulatorFiles] was asked for. It gives the lines of
+// what it found, in the form of those of check.html.
+func checkRequests(requests []url.URL, version string) (bool, []string) {
+	query := ""
+	if version != "" {
+		query = url.Values{"v": {version}}.Encode()
+	}
+	asked := map[string]bool{}
+	var wrong []string
+	for _, u := range requests {
+		if !strings.HasPrefix(u.Path, "/simulator/") {
+			continue
+		}
+		switch path.Ext(u.Path) {
+		case ".js", ".wasm", ".json":
+		default:
+			continue
+		}
+		asked[u.Path] = true
+		if u.RawQuery != query {
+			wrong = append(wrong, u.String())
+		}
+	}
+	var missing []string
+	for _, f := range simulatorFiles {
+		if !asked[f] {
+			missing = append(missing, f)
+		}
+	}
+
+	var lines []string
+	if len(wrong) == 0 {
+		lines = append(lines, fmt.Sprintf("ok   every request for a file of the simulator has the query %q", query))
+	} else {
+		lines = append(lines, fmt.Sprintf("FAIL requests for files of the simulator without the query %q: %v", query, strings.Join(wrong, ", ")))
+	}
+	if len(missing) == 0 {
+		lines = append(lines, fmt.Sprintf("ok   the page asks for each of the %v files of the simulator", len(simulatorFiles)))
+	} else {
+		lines = append(lines, "FAIL the page does not ask for "+strings.Join(missing, ", "))
+	}
+	return len(wrong) == 0 && len(missing) == 0, lines
+}
+
+// broken serves the site under /__check/broken/<how>/, with a fault that makes the page fail at
+// start-up: with how "no-run", run.js is not found, and with "no-play", the page's Play button has
+// lost its ID.
+func broken(root string) http.Handler {
+	files := http.FileServer(http.Dir(root))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		how, p := r.PathValue("how"), "/"+r.PathValue("path")
+		w.Header().Set("Cache-Control", "no-store")
+		switch {
+		case how != "no-run" && how != "no-play", how == "no-run" && p == "/simulator/run.js":
+			http.NotFound(w, r)
+			return
+		case how == "no-play" && p == "/simulator/":
+			b, err := os.ReadFile(filepath.Join(root, "simulator", "index.html"))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write(bytes.Replace(b, []byte(`id="play"`), []byte(`id="no-play"`), 1))
+			return
+		}
+		r = r.Clone(r.Context())
+		r.URL.Path, r.URL.RawPath = p, ""
+		files.ServeHTTP(w, r)
+	})
 }
 
 // tail of the output of Chromium, its last 64 KiB.

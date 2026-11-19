@@ -6,8 +6,14 @@
 //
 // The engine does not keep the events of a session, and neither does the page: it keeps the last
 // lines of the log, the counts of the calls, and the bars of the last WINDOW of fake time.
+//
+// The page loads every file at the version of its deploy: the HTML of a deploy loads this module
+// with the query ?v=<version>, see internal/simulator/serve, and the module loads run.js and the
+// engine with the same query, which the engine passes on to its Worker and everything that the
+// Worker loads. So a cache never pairs files of two deploys. From a local build the query is empty.
+const version = new URL(import.meta.url).search;
 
-import * as R from "./run.js";
+let R = null; // the module run.js, which start loads
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -40,8 +46,8 @@ function barcodeSVG(name, cls) {
   return svg;
 }
 
-// The mark: the 32 bits of "s4ql" as bars.
-{
+// drawMark draws the mark: the 32 bits of "s4ql" as bars.
+function drawMark() {
   let d = "";
   [0x73, 0x34, 0x71, 0x6c].forEach((byte, i) => {
     for (let b = 0; b < 8; b++) if (byte & (128 >> b)) d += "M" + (i * 8 + b) + " 0h1v22h-1z";
@@ -77,7 +83,7 @@ let debt = 0; // the real time in ms that playback has not yet advanced
 let last = 0; // the time of the last animation frame
 let lastStep = null; // {real, fake} of the last advance by playback
 const jobs = []; // commands that wait: {act} or {by}
-const tell = R.teller();
+let tell = null; // the teller of run.js, which start makes
 const lines = []; // the last LINES lines of the log, newest first
 let linesTotal = 0;
 const calls = {}; // by instance: {w, r, x, why}
@@ -106,16 +112,23 @@ window.s4qlPage = {
   },
 };
 
-// halt the page for good, with one line on what happened. A reload starts over.
+// halt the page for good, with one line on what happened. A reload starts over. It shows the failure
+// first, because the rest needs controls that a page which failed at start-up may lack.
 function halt(title, text) {
   halted = true;
-  setPlaying(false);
   root.dataset.engine = "failed";
   const f = $("failure");
-  f.innerHTML = `<strong>${esc(title)}</strong>` + (text ? `<p>${esc(text)}</p>` : "");
-  f.hidden = false;
-  set($("status"), "");
-  drawControls();
+  if (f) {
+    f.innerHTML = `<strong>${esc(title)}</strong>` + (text ? `<p>${esc(text)}</p>` : "");
+    f.hidden = false;
+  }
+  try {
+    setPlaying(false);
+    set($("status"), "");
+    drawControls();
+  } catch {
+    // The failure is shown, and the page does nothing more.
+  }
 }
 
 // pump sends the next command to the engine, if none is on its way: an action, then a skip of the
@@ -268,17 +281,24 @@ function drawLog() {
 
 // The instances.
 
-const cards = ["a", "b"].map((name) => {
-  const el = document.querySelector(`[data-instance="${name}"]`);
-  const f = {};
-  for (const node of el.querySelectorAll("[data-f]")) f[node.dataset.f] = node;
-  const b = {};
-  for (const node of el.querySelectorAll("[data-a]")) {
-    b[node.dataset.a] = node;
-    node.addEventListener("click", () => act(name, node.dataset.a));
-  }
-  return { name, el, f, b };
-});
+let cards = []; // the cards of a and b, which wire finds
+
+// wire finds the cards of the instances, and connects the buttons of the page.
+function wire() {
+  cards = ["a", "b"].map((name) => {
+    const el = document.querySelector(`[data-instance="${name}"]`);
+    const f = {};
+    for (const node of el.querySelectorAll("[data-f]")) f[node.dataset.f] = node;
+    const b = {};
+    for (const node of el.querySelectorAll("[data-a]")) {
+      b[node.dataset.a] = node;
+      node.addEventListener("click", () => act(name, node.dataset.a));
+    }
+    return { name, el, f, b };
+  });
+  $("play").addEventListener("click", () => setPlaying(!playing));
+  $("turbo").addEventListener("click", () => setTurbo(!turbo));
+}
 
 const instanceState = (name) => (state && state.instances.find((x) => x.instance === name)) || null;
 const holderName = (id) => names.get(id) || R.short(id);
@@ -426,15 +446,17 @@ function drawS3() {
   html($("commits"), out);
 }
 
-// Wiring.
-
-$("play").addEventListener("click", () => setPlaying(!playing));
-$("turbo").addEventListener("click", () => setTurbo(!turbo));
-
 // Start.
 
+// start the page: load run.js, connect the page, and start the engine. An error on the way ends in
+// the failure box.
 async function start() {
-  fetch("engine/build.json").then((r) => (r.ok ? r.json() : null)).then((b) => {
+  drawMark();
+  R = await import("./run.js" + version);
+  tell = R.teller();
+  wire();
+
+  fetch("engine/build.json" + version).then((r) => (r.ok ? r.json() : null)).then((b) => {
     if (b && /^[0-9a-f]{7,40}$/.test(b.commit || "")) {
       $("build").innerHTML = `<a href="https://github.com/maragudk/s4ql/commit/${b.commit}"><code>${b.commit.slice(0, 7)}</code></a>`;
     }
@@ -446,7 +468,7 @@ async function start() {
   }
   set($("status"), "Loading the engine, about 3.5 MB.");
   try {
-    const { Engine } = await import("./engine/simulator.js");
+    const { Engine } = await import("./engine/simulator.js" + version);
     const e = await Engine.start();
     const answer = await e.start({ seed: R.newSeed() });
     take(answer);
@@ -464,4 +486,4 @@ async function start() {
   requestAnimationFrame(frame);
 }
 
-start();
+start().catch((e) => halt("The page did not start.", `${(e && e.message) || e}. Reload to try again.`));
