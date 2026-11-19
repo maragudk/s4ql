@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"maragu.dev/s4ql/internal/core"
@@ -19,29 +20,14 @@ import (
 	"maragu.dev/s4ql/internal/store"
 )
 
-// The driver logs what it decides itself, through the logger of the options, which the storage core
-// and the engine log through too: one event when an instance is opened, one when it is closed, and
-// one the first time that it answers a call with the stop of the instance. The engine logs each
-// statement, and the core the lease and the stop itself.
-const (
-	// eventOpen is an instance that [newConnector] opened, at Info.
-	eventOpen = "open"
-	// eventClose is one close of a connector: at Info, and at Warn if it failed, which includes a
-	// lease that is not released.
-	eventClose = "close"
-	// eventStopSeen is the first call that the driver answered with [ErrStopped], at Warn.
-	eventStopSeen = "stop_seen"
-)
-
-// The names of the attributes, in the conventions of the core.
-const (
-	attrPrefix = "db.prefix"
-	attrCache  = "cache.path"
-	attrError  = "error"
-)
-
 // connector of one instance of a database: every connection that it gives runs its statements on
 // that instance. Its Close closes the instance.
+//
+// It logs what the driver decides itself, through the logger of the options: the event "open" when
+// the instance is opened, at Info; "close" when it is closed, at Info, and at Warn if the close
+// failed, which includes a lease that is not released; and "stop_seen" the first time that it
+// answers a call with [ErrStopped], at Warn. Each event has the prefix of the database as
+// "db.prefix", and one of a failure has it as "error".
 type connector struct {
 	host   host.Host
 	db     *core.DB
@@ -52,6 +38,8 @@ type connector struct {
 	closeTimeout time.Duration
 	// stopSeen logs the first answer of a stop.
 	stopSeen sync.Once
+	// queries counts the queries whose rows were read, for the names of their tasks.
+	queries atomic.Uint64
 
 	mu sync.Mutex
 	// closed is set when Close starts.
@@ -60,7 +48,7 @@ type connector struct {
 	open map[*rows]struct{}
 }
 
-// errClosed is the error of a call on an instance that was closed, as the storage core gives it.
+// errClosed is the error of a call on an instance that was closed: a stop whose cause is the close.
 var errClosed = fmt.Errorf("%w: %w", core.ErrStopped, core.ErrClosed)
 
 var (
@@ -96,8 +84,8 @@ func newConnector(ctx context.Context, h host.Host, s store.Store, o Options, co
 	if err != nil {
 		return nil, fmt.Errorf("s4ql: %w", err)
 	}
-	log = log.With(attrPrefix, o.Prefix)
-	log.InfoContext(ctx, eventOpen, attrCache, path)
+	log = log.With("db.prefix", o.Prefix)
+	log.InfoContext(ctx, "open", "cache.path", path)
 	return &connector{
 		host:         h,
 		db:           db,
@@ -121,14 +109,12 @@ func (c *connector) Driver() driver.Driver {
 	return c.driver
 }
 
-// Close the instance, and release the lease, within the close timeout. database/sql calls it when
-// the [database/sql.DB] is closed, after it has closed the connections that no call uses. It fails
-// if the instance did not close in that time or if the lease is not released, which then runs out
-// by itself.
+// Close the instance, and release the lease, within the close timeout. It fails if the instance did
+// not close in that time or if the lease is not released, which then runs out by itself.
 //
-// database/sql does not close the rows that the application has left open, and the instance cannot
-// close while a read is held, so Close closes them first. Their next row is then the error of an
-// instance that was closed.
+// It first closes the rows that are open. The loop over the rows of a query is a call on the
+// instance, which the close of the instance waits for. The next row of such rows is then the error
+// of an instance that was closed.
 func (c *connector) Close() error {
 	c.mu.Lock()
 	c.closed = true
@@ -145,10 +131,10 @@ func (c *connector) Close() error {
 	ctx, cancel := c.host.WithTimeout(context.Background(), c.closeTimeout)
 	defer cancel()
 	if err := c.db.Close(ctx); err != nil {
-		c.log.WarnContext(ctx, eventClose, attrError, err)
-		return publicError(fmt.Errorf("close: %w", err))
+		c.log.WarnContext(ctx, "close", "error", err)
+		return publicError(err)
 	}
-	c.log.InfoContext(ctx, eventClose)
+	c.log.InfoContext(ctx, "close")
 	return nil
 }
 
@@ -171,20 +157,20 @@ func (c *connector) release(r *rows) {
 	delete(c.open, r)
 }
 
-// error of the driver for err, an error of the engine or of the core, or nil: see [publicError].
-func (c *connector) error(ctx context.Context, err error) error {
+// public error for err, an error of the engine or of the core, or nil: see [publicError].
+func (c *connector) public(ctx context.Context, err error) error {
 	err = publicError(err)
 	// An instance that was closed has stopped too, which is nothing to report.
 	if errors.Is(err, ErrStopped) && !errors.Is(err, core.ErrClosed) {
 		c.stopSeen.Do(func() {
-			c.log.WarnContext(ctx, eventStopSeen, attrError, err)
+			c.log.WarnContext(ctx, "stop_seen", "error", err)
 		})
 	}
 	return err
 }
 
-// conn is a connection: a count of changes, on the instance of its connector. database/sql uses a
-// connection, with its statements and its rows, from one goroutine at a time.
+// conn is a connection: a count of changes, on the instance of its connector. It is not safe for
+// concurrent use, as [driver.Conn] says.
 type conn struct {
 	c *connector
 	// changes is SQLite's count of changes on the connection: what the last statement that set it
@@ -205,7 +191,7 @@ var (
 // Ping waits until the instance serves, or until ctx ends. It fails with the stop of an instance
 // that has stopped.
 func (c *conn) Ping(ctx context.Context) error {
-	return c.c.error(ctx, c.c.db.Wait(ctx))
+	return c.c.public(ctx, c.c.db.Wait(ctx))
 }
 
 // ExecContext runs the statement of the text query. It is not supported with arguments.
@@ -217,7 +203,7 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	// The engine gives the result with an error too: an insert that fails sets the count to 0.
 	c.count(res)
 	if err != nil {
-		return nil, c.c.error(ctx, err)
+		return nil, c.c.public(ctx, err)
 	}
 	return result{changes: c.changes}, nil
 }
@@ -233,14 +219,18 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		c.count(r.Result())
 	}
 	if err != nil {
-		return nil, c.c.error(ctx, err)
+		return nil, c.c.public(ctx, err)
 	}
-	rows := &rows{ctx: ctx, c: c.c, rows: r}
-	if !c.c.hold(rows) {
+	if len(r.Columns()) == 0 {
+		// A statement that is no query has run to its end, and holds nothing.
+		return noRows{}, nil
+	}
+	held := &rows{ctx: ctx, c: c.c, rows: r}
+	if !c.c.hold(held) {
 		_ = r.Close()
-		return nil, c.c.error(ctx, errClosed)
+		return nil, c.c.public(ctx, errClosed)
 	}
-	return rows, nil
+	return held, nil
 }
 
 // count the changes of a statement with the result res, if it sets the count.
@@ -254,6 +244,11 @@ func (c *conn) count(res engine.Result) {
 // syntax error and with "not supported", which the text alone decides: the check reads no table,
 // and does not need the instance to serve.
 func (c *conn) PrepareContext(_ context.Context, query string) (driver.Stmt, error) {
+	return c.Prepare(query)
+}
+
+// Prepare is [conn.PrepareContext] without a context, which it does not need.
+func (c *conn) Prepare(query string) (driver.Stmt, error) {
 	s, err := stmt.Check(query)
 	if err == nil && s == nil {
 		err = engine.ErrNoStatement
@@ -264,30 +259,23 @@ func (c *conn) PrepareContext(_ context.Context, query string) (driver.Stmt, err
 	return &prepared{conn: c, query: query}, nil
 }
 
-// Prepare is [conn.PrepareContext], which database/sql calls instead.
-func (c *conn) Prepare(query string) (driver.Stmt, error) {
-	return c.PrepareContext(context.Background(), query)
-}
-
 // BeginTx is not supported: each statement is a transaction of its own.
 func (c *conn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
 	return nil, notSupported("transactions")
 }
 
-// Begin is [conn.BeginTx], which database/sql calls instead.
+// Begin is not supported, as [conn.BeginTx] is not.
 func (c *conn) Begin() (driver.Tx, error) {
-	return c.BeginTx(context.Background(), driver.TxOptions{})
+	return nil, notSupported("transactions")
 }
 
-// CheckNamedValue takes every argument as it is, so that a statement with any argument at all
-// reaches the driver, which answers that parameters are not supported. Without it, database/sql
-// would refuse some arguments itself, with an error of its own.
+// CheckNamedValue takes every argument as it is, so that a statement with an argument of any type
+// is answered with "not supported", and not with an error about the type of the argument.
 func (c *conn) CheckNamedValue(*driver.NamedValue) error {
 	return nil
 }
 
-// Close does nothing: a connection holds nothing. The rows of its queries hold their reads, and
-// database/sql closes them first.
+// Close does nothing: a connection holds nothing. The rows of its queries hold their reads.
 func (c *conn) Close() error {
 	return nil
 }
@@ -319,12 +307,12 @@ func (p *prepared) QueryContext(ctx context.Context, args []driver.NamedValue) (
 	return p.conn.QueryContext(ctx, p.query, args)
 }
 
-// Exec is [prepared.ExecContext], which database/sql calls instead.
+// Exec is [prepared.ExecContext] without a context.
 func (p *prepared) Exec(args []driver.Value) (driver.Result, error) {
 	return p.ExecContext(context.Background(), make([]driver.NamedValue, len(args)))
 }
 
-// Query is [prepared.QueryContext], which database/sql calls instead.
+// Query is [prepared.QueryContext] without a context.
 func (p *prepared) Query(args []driver.Value) (driver.Rows, error) {
 	return p.QueryContext(context.Background(), make([]driver.NamedValue, len(args)))
 }

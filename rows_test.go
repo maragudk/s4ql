@@ -3,6 +3,7 @@ package s4ql_test
 import (
 	"context"
 	"database/sql"
+	"runtime"
 	"testing"
 	"time"
 
@@ -100,10 +101,20 @@ func TestRows(t *testing.T) {
 		exec(t, db, "insert into t1 (v1) values (4)")
 
 		// A query that waits gets the read that is freed, and sees what is committed then.
-		got := make(chan []int64)
-		go func() { got <- values(t, db, select1) }()
+		type answer struct {
+			values []int64
+			err    error
+		}
+		got := make(chan answer, 1)
+		go func() {
+			var a answer
+			a.values, a.err = query(t.Context(), db, select1)
+			got <- a
+		}()
 		is.NotError(t, all[0].Close())
-		is.EqualSlice(t, []int64{1, 2, 3, 4}, <-got)
+		a := <-got
+		is.NotError(t, a.err)
+		is.EqualSlice(t, []int64{1, 2, 3, 4}, a.values)
 
 		// The reads that are still held see the state of their start.
 		for _, rows := range all[1:] {
@@ -117,6 +128,38 @@ func TestRows(t *testing.T) {
 			is.EqualSlice(t, []int64{2, 3}, rest)
 		}
 		readersFree(t, db)
+	})
+
+	t.Run("should read and close rows from a goroutine that is locked to its thread, and from others", func(t *testing.T) {
+		_, db := three(t)
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+
+		// database/sql closes the rows from a goroutine of its own when the context ends.
+		ctx, cancel := context.WithCancel(t.Context())
+		rows, err := db.QueryContext(ctx, select1)
+		is.NotError(t, err)
+		is.True(t, rows.Next())
+		cancel()
+		readersFree(t, db)
+
+		// Rows that another goroutine has started to read.
+		started := make(chan *sql.Rows, 1)
+		go func() {
+			rows, err := db.QueryContext(t.Context(), select1)
+			if err == nil {
+				rows.Next()
+			}
+			started <- rows
+		}()
+		rows = <-started
+		is.True(t, rows != nil)
+		is.True(t, rows.Next())
+		is.NotError(t, rows.Close())
+
+		// Rows that the close of the database closes, from this goroutine.
+		held(t, db, t.Context)
+		is.NotError(t, db.Close())
 	})
 
 	t.Run("should run several queries at once on one connection", func(t *testing.T) {
@@ -155,11 +198,15 @@ func TestRows(t *testing.T) {
 			is.Error(t, s4ql.ErrStopped, failed(t, err))
 			is.Equal(t, "s4ql: the instance has stopped: closed", err.Error())
 		}
-		for _, rows := range append(all, unread) {
+		for _, rows := range all {
 			is.True(t, !rows.Next())
 			closed(rows.Err())
 			is.NotError(t, rows.Close())
 		}
+		// The insert is committed, and its rows, which hold nothing, do not say otherwise.
+		is.True(t, !unread.Next())
+		is.NotError(t, unread.Err())
+		is.NotError(t, unread.Close())
 
 		// A connection that the application holds still reaches the instance, which is closed.
 		_, err = conn.ExecContext(t.Context(), insert1)

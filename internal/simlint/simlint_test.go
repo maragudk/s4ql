@@ -16,8 +16,4 @@ func TestAnalyzer(t *testing.T) {
 	t.Run("should allow a package its exceptions, each for one identifier, and report everything else in it", func(t *testing.T) {
 		analysistest.Run(t, analysistest.TestData(), simlint.Analyzer, "maragu.dev/s4ql")
 	})
-
-	t.Run("should allow a package its exceptions, each for one identifier, and report everything else in it", func(t *testing.T) {
-		analysistest.Run(t, analysistest.TestData(), simlint.Analyzer, "maragu.dev/s4ql")
-	})
 }

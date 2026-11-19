@@ -1,5 +1,5 @@
 // Package s4ql is the public package of the module: the database/sql driver, which makes the
-// production host and bridges rows to database/sql, and keeps every other rule.
+// production host and a context of its own, and keeps every other rule.
 package s4ql
 
 import (
@@ -10,13 +10,10 @@ import (
 	"maragu.dev/s4ql/internal/host"
 )
 
-func allowed(seq2 iter.Seq2[int, error]) {
+func allowed() {
 	// The exceptions of the package, each for one identifier.
 	_ = host.New()
 	_ = context.Background()
-	next, stop := iter.Pull2(seq2)
-	_, _, _ = next()
-	stop()
 }
 
 func forbidden(seq iter.Seq[int], ctx context.Context, c chan int) {

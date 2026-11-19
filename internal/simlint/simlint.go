@@ -72,8 +72,7 @@ var exempt = map[string]string{
 var exceptions = map[string]map[string]string{
 	"maragu.dev/s4ql": {
 		"maragu.dev/s4ql/internal/host.New": "it is the public package, which wires the production host to the instance that it opens",
-		"context.Background":                "database/sql gives a driver no context when it opens a connector by name and when it closes one",
-		"iter.Pull2":                        "database/sql pulls the rows of a query one at a time, in goroutines of its own, so the driver never runs under the simulation",
+		"context.Background":                "database/sql/driver has calls without a context: to open a connector by name, to close one, and to run a prepared statement",
 	},
 }
 
