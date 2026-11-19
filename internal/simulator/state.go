@@ -39,6 +39,10 @@ type Bucket struct {
 	Commits []CommitState `json:"commits"`
 	// Log is the names of the commit objects of the log, from the first to the head.
 	Log []string `json:"log"`
+	// CommitCount and LogLength are the numbers of commit objects in the bucket and in the log, in a
+	// state that lists only the last of each.
+	CommitCount int `json:"commitCount,omitzero"`
+	LogLength   int `json:"logLength,omitzero"`
 }
 
 // CommitState is a commit object in the bucket: what it holds, who wrote it and when, and whether
@@ -71,6 +75,12 @@ type InstanceState struct {
 	MonotonicStopped bool    `json:"monotonicStopped,omitzero"`
 	// CutOffUntil is when the last cut-off of the process from the store ends.
 	CutOffUntil float64 `json:"cutOffUntil,omitzero"`
+	// NetworkHung, NetworkDisconnected, and DiskFailing are the faults of the instance that an
+	// action switched on and no action has switched off. They hold for the instance across a
+	// restart.
+	NetworkHung         bool `json:"networkHung,omitzero"`
+	NetworkDisconnected bool `json:"networkDisconnected,omitzero"`
+	DiskFailing         bool `json:"diskFailing,omitzero"`
 }
 
 // RequestState is a request to the store that is in flight.
@@ -105,181 +115,307 @@ type CallState struct {
 
 // StateAt the time t of the run res, from the events up to and including t.
 func StateAt(res Response, t float64) State {
-	s := State{T: t, Instances: []InstanceState{}, Requests: []RequestState{}, Calls: []CallState{}, Bucket: Bucket{Commits: []CommitState{}, Log: []string{}}}
-	// clocks of each instance at its last event about them.
-	type clocks struct{ t, wall, monotonic float64 }
-	base := map[string]clocks{}
-	instance := map[string]int{}
-	requests := map[int]*RequestState{}
-	var order []int
-	arrived := map[int]bool{}
-	commits := map[string]*CommitState{}
-	calls := map[int]CallState{}
-	empty := format.EmptyLog.String()
-
-	at := func(e Event) *InstanceState {
-		i, ok := instance[e.Instance]
-		if !ok {
-			i = len(s.Instances)
-			instance[e.Instance] = i
-			s.Instances = append(s.Instances, InstanceState{Instance: e.Instance, Lease: "none", Position: empty})
-		}
-		return &s.Instances[i]
-	}
-
+	f := newFold()
 	for _, e := range res.Events {
 		if e.T > t {
 			break
 		}
-		switch e.Kind {
-		case "process":
-			in := at(e)
-			switch e.What {
-			case "started":
-				in.Process, in.State, in.Holder, in.Lease, in.CutOffUntil = e.Process, "starting", "", "none", 0
-				in.WallStopped, in.MonotonicStopped = false, false
-				base[e.Instance] = clocks{t: e.T, wall: deref(e.Wall), monotonic: deref(e.Monotonic)}
-			case "opened":
-				in.State, in.Holder = "running", e.Holder
-			case "open_failed":
-				in.State = "failed"
-			case "closed":
-				in.State, in.Lease = "closed", "none"
-			case "stopped":
-				in.State, in.Lease = "stopped", "none"
-			case "crashed":
-				in.State, in.Lease = "crashed", "none"
-				// The calls of the process end with it, and nothing waits for its requests, which the
-				// network can still carry.
-				for id, c := range calls {
-					if c.Process == e.Process {
-						delete(calls, id)
-					}
-				}
-				for _, rs := range requests {
-					if rs.Process == e.Process {
-						rs.Waiting = false
-					}
-				}
-			}
-		case "clock":
-			in := at(e)
-			in.WallStopped, in.MonotonicStopped = e.WallStopped, e.MonotonicStopped
-			base[e.Instance] = clocks{t: e.T, wall: deref(e.Wall), monotonic: deref(e.Monotonic)}
-		case "core":
-			in := at(e)
-			if in.Process != e.Process {
-				break
-			}
-			outcome, _ := e.Attrs["outcome"].(string)
-			switch e.Event {
-			case "lease":
-				switch transition, _ := e.Attrs["lease.transition"].(string); {
-				case transition == "taken" && outcome == "taken":
-					in.Lease = "held"
-				case transition == "lost", transition == "released" && outcome == "released":
-					in.Lease = "none"
-				}
-			case "commit":
-				if name, ok := e.Attrs["commit.name"].(string); ok && (outcome == "committed" || outcome == "committed_and_stopped") {
-					in.Position = name
-				}
-			case "catch_up":
-				to, _ := e.Attrs["catch_up.to"].(string)
-				from, _ := e.Attrs["catch_up.from"].(string)
-				applied, _ := e.Attrs["catch_up.commits"].(int64)
-				switch {
-				case outcome == "caught_up":
-					in.Position = to
-				case applied > 0:
-					in.Position = after(commits, from, to, int(applied))
-				}
-			case "stop":
-				if outcome != "closed" {
-					in.State = "stopped"
-				}
-				in.Lease = "none"
-			}
-		case "call":
-			if e.What == "started" {
-				calls[e.Call] = CallState{Call: e.Call, Instance: e.Instance, Process: e.Process, Caller: e.Caller, Op: e.Op, Started: e.T, Value: e.Value}
-				break
-			}
-			delete(calls, e.Call)
-			if in := at(e); e.What == "served" && in.Process == e.Process {
-				in.Position = e.Position
-			}
-		case "store":
-			switch e.What {
-			case "cut_off":
-				in := at(e)
-				in.CutOffUntil = max(in.CutOffUntil, e.T+e.For)
-			case "outage":
-				s.OutageUntil = max(s.OutageUntil, e.T+e.For)
-			case "calm":
-				s.Calm = true
-			}
-		case "action":
-			if e.Do == "close" && e.What == "done" {
-				at(e).State = "closing"
-			}
-		case "check":
-			s.Violations++
-			if e.Excused {
-				s.Excused++
-			}
-		case "request":
-			if e.What == "applied" && e.Object != nil {
-				switch o := e.Object; {
-				case o.Manifest != nil:
-					s.Bucket.Manifest, s.Bucket.ManifestVersion = o.Manifest, e.Version
-					s.Bucket.ManifestWrites++
-				case o.Commit != nil:
-					if commits[o.Commit.Name] == nil {
-						c := &CommitState{CommitObject: *o.Commit, Process: e.Process, At: e.T}
-						commits[o.Commit.Name] = c
-						s.Bucket.Commits = append(s.Bucket.Commits, *c)
-					}
+		f.add(e)
+	}
+	return f.state(t, 0)
+}
+
+// fold of the events of a run into its state, one event at a time, so that a live session keeps its
+// state and not its events. It forgets what no state can show any more: a request once its caller
+// does not wait for it and the store side has ended, and a call once it has ended.
+type fold struct {
+	s State
+	// base holds the clocks of each instance at its last event about them.
+	base     map[string]clocks
+	instance map[string]int
+	requests map[int]*RequestState
+	// order of the requests in requests, by their numbers, in the order sent. It also holds numbers
+	// of requests that are forgotten, until it is compacted.
+	order   []int
+	arrived map[int]bool
+	commits map[string]*CommitState
+	calls   map[int]CallState
+
+	// log is the chain of commit objects from the first to head, as far as the commit objects are
+	// known, and inLog its names. It is whole when it reaches the empty log, and then grows by one
+	// when the head moves on to a child of the head. Otherwise follow is set, and the next state
+	// follows the chain again from the head.
+	log    []string
+	inLog  map[string]bool
+	head   string
+	whole  bool
+	follow bool
+}
+
+// clocks of an instance at an event: its time, and the readings of the two clocks.
+type clocks struct{ t, wall, monotonic float64 }
+
+func newFold() *fold {
+	return &fold{
+		s:        State{Instances: []InstanceState{}, Bucket: Bucket{Commits: []CommitState{}}},
+		base:     map[string]clocks{},
+		instance: map[string]int{},
+		requests: map[int]*RequestState{},
+		arrived:  map[int]bool{},
+		commits:  map[string]*CommitState{},
+		calls:    map[int]CallState{},
+		inLog:    map[string]bool{},
+		head:     format.EmptyLog.String(),
+		whole:    true,
+	}
+}
+
+// of is the state of the instance of e, which starts as a new one the first time.
+func (f *fold) of(e Event) *InstanceState {
+	i, ok := f.instance[e.Instance]
+	if !ok {
+		i = len(f.s.Instances)
+		f.instance[e.Instance] = i
+		f.s.Instances = append(f.s.Instances, InstanceState{Instance: e.Instance, Lease: "none", Position: format.EmptyLog.String()})
+	}
+	return &f.s.Instances[i]
+}
+
+// add the event e, the next of the run.
+func (f *fold) add(e Event) {
+	s := &f.s
+	switch e.Kind {
+	case "process":
+		in := f.of(e)
+		switch e.What {
+		case "started":
+			in.Process, in.State, in.Holder, in.Lease, in.CutOffUntil = e.Process, "starting", "", "none", 0
+			in.WallStopped, in.MonotonicStopped = false, false
+			f.base[e.Instance] = clocks{t: e.T, wall: deref(e.Wall), monotonic: deref(e.Monotonic)}
+		case "opened":
+			in.State, in.Holder = "running", e.Holder
+		case "open_failed":
+			in.State = "failed"
+		case "closed":
+			in.State, in.Lease = "closed", "none"
+		case "stopped":
+			in.State, in.Lease = "stopped", "none"
+		case "crashed":
+			in.State, in.Lease = "crashed", "none"
+			// The calls of the process end with it, and nothing waits for its requests, which the
+			// network can still carry.
+			for id, c := range f.calls {
+				if c.Process == e.Process {
+					delete(f.calls, id)
 				}
 			}
-			if e.Request == 0 {
-				break
-			}
-			rs := requests[e.Request]
-			if e.What == "sent" {
-				rs = &RequestState{Request: e.Request, Instance: e.Instance, Process: e.Process, Method: e.Method, Key: e.Key, Purpose: e.Purpose,
-					Sent: e.T, Phase: "to_store", Waiting: true, Happened: []string{}}
-				requests[e.Request] = rs
-				order = append(order, e.Request)
-				break
-			}
-			if rs == nil {
-				break
-			}
-			rs.Happened = append(rs.Happened, e.What)
-			switch e.What {
-			case "returned", "answer_lost":
-				rs.Waiting = false
-			case "held":
-				rs.Phase = "held"
-			case "stuck":
-				rs.Phase = "stuck"
-			case "arrived":
-				rs.Phase, arrived[e.Request] = "to_store", true
-			case "applied", "refused", "read", "read_broken", "not_found":
-				rs.Phase = "to_caller"
-				if arrived[e.Request] {
-					rs.Phase = "done"
+			for id, rs := range f.requests {
+				if rs.Process == e.Process {
+					rs.Waiting = false
+					f.forget(id)
 				}
-			case "answered", "no_caller", "response_lost", "lost", "never_applied":
-				rs.Phase = "done"
+			}
+		}
+	case "clock":
+		in := f.of(e)
+		in.WallStopped, in.MonotonicStopped = e.WallStopped, e.MonotonicStopped
+		f.base[e.Instance] = clocks{t: e.T, wall: deref(e.Wall), monotonic: deref(e.Monotonic)}
+	case "core":
+		f.core(e)
+	case "call":
+		if e.What == "started" {
+			f.calls[e.Call] = CallState{Call: e.Call, Instance: e.Instance, Process: e.Process, Caller: e.Caller, Op: e.Op, Started: e.T, Value: e.Value}
+			break
+		}
+		delete(f.calls, e.Call)
+		if in := f.of(e); e.What == "served" && in.Process == e.Process {
+			in.Position = e.Position
+		}
+	case "store":
+		switch e.What {
+		case "cut_off":
+			in := f.of(e)
+			in.CutOffUntil = max(in.CutOffUntil, e.T+e.For)
+		case "outage":
+			s.OutageUntil = max(s.OutageUntil, e.T+e.For)
+		case "calm":
+			s.Calm = true
+		}
+	case "action":
+		if e.What != "done" {
+			break
+		}
+		switch e.Do {
+		case "close":
+			f.of(e).State = "closing"
+		case "hangNetwork":
+			f.of(e).NetworkHung = deref(e.On)
+		case "disconnectNetwork":
+			f.of(e).NetworkDisconnected = deref(e.On)
+		case "failDisk":
+			f.of(e).DiskFailing = deref(e.On)
+		}
+	case "check":
+		s.Violations++
+		if e.Excused {
+			s.Excused++
+		}
+	case "request":
+		f.request(e)
+	}
+}
+
+// core event e, of the storage core of a process.
+func (f *fold) core(e Event) {
+	in := f.of(e)
+	if in.Process != e.Process {
+		return
+	}
+	outcome, _ := e.Attrs["outcome"].(string)
+	switch e.Event {
+	case "lease":
+		switch transition, _ := e.Attrs["lease.transition"].(string); {
+		case transition == "taken" && outcome == "taken":
+			in.Lease = "held"
+		case transition == "lost", transition == "released" && outcome == "released":
+			in.Lease = "none"
+		}
+	case "commit":
+		if name, ok := e.Attrs["commit.name"].(string); ok && (outcome == "committed" || outcome == "committed_and_stopped") {
+			in.Position = name
+		}
+	case "catch_up":
+		to, _ := e.Attrs["catch_up.to"].(string)
+		from, _ := e.Attrs["catch_up.from"].(string)
+		applied, _ := e.Attrs["catch_up.commits"].(int64)
+		switch {
+		case outcome == "caught_up":
+			in.Position = to
+		case applied > 0:
+			in.Position = after(f.commits, from, to, int(applied))
+		}
+	case "stop":
+		if outcome != "closed" {
+			in.State = "stopped"
+		}
+		in.Lease = "none"
+	}
+}
+
+// request event e.
+func (f *fold) request(e Event) {
+	if e.What == "applied" && e.Object != nil {
+		switch o := e.Object; {
+		case o.Manifest != nil:
+			f.s.Bucket.Manifest, f.s.Bucket.ManifestVersion = o.Manifest, e.Version
+			f.s.Bucket.ManifestWrites++
+			f.moveHead(o.Manifest.Head)
+		case o.Commit != nil:
+			if f.commits[o.Commit.Name] == nil {
+				c := &CommitState{CommitObject: *o.Commit, Process: e.Process, At: e.T}
+				f.commits[o.Commit.Name] = c
+				f.s.Bucket.Commits = append(f.s.Bucket.Commits, *c)
+				// The commit object can be one that the log lacks.
+				f.follow = f.follow || !f.whole
 			}
 		}
 	}
+	if e.Request == 0 {
+		return
+	}
+	rs := f.requests[e.Request]
+	if e.What == "sent" {
+		rs = &RequestState{Request: e.Request, Instance: e.Instance, Process: e.Process, Method: e.Method, Key: e.Key, Purpose: e.Purpose,
+			Sent: e.T, Phase: "to_store", Waiting: true, Happened: []string{}}
+		f.requests[e.Request] = rs
+		f.order = append(f.order, e.Request)
+		return
+	}
+	if rs == nil {
+		return
+	}
+	rs.Happened = append(rs.Happened, e.What)
+	switch e.What {
+	case "returned", "answer_lost", "disconnected":
+		rs.Waiting = false
+	case "held":
+		rs.Phase = "held"
+	case "stuck":
+		rs.Phase = "stuck"
+	case "arrived":
+		rs.Phase, f.arrived[e.Request] = "to_store", true
+	case "applied", "refused", "read", "read_broken", "not_found":
+		rs.Phase = "to_caller"
+		if f.arrived[e.Request] {
+			rs.Phase = "done"
+		}
+	case "answered", "no_caller", "response_lost", "lost", "never_applied":
+		rs.Phase = "done"
+	}
+	f.forget(e.Request)
+}
 
+// forget the request with the number id once no state can list it: its caller does not wait for it,
+// and its phase is done. No event of a request after that lists it again: the events that move a
+// phase away from done, "stuck" and "arrived", come before the store side of a request ends.
+func (f *fold) forget(id int) {
+	rs := f.requests[id]
+	if rs == nil || rs.Waiting || rs.Phase != "done" {
+		return
+	}
+	delete(f.requests, id)
+	delete(f.arrived, id)
+	if len(f.order) > 2*len(f.requests)+64 {
+		f.order = slices.DeleteFunc(f.order, func(id int) bool { return f.requests[id] == nil })
+	}
+}
+
+// moveHead of the log to the commit object of the given name.
+func (f *fold) moveHead(head string) {
+	if head == f.head {
+		return
+	}
+	if c := f.commits[head]; f.whole && !f.follow && c != nil && c.Parent == f.head {
+		f.log = append(f.log, head)
+		f.inLog[head] = true
+	} else {
+		f.follow = true
+	}
+	f.head = head
+}
+
+// followLog from the head through the parents of the commit objects towards the empty log, as far as
+// the commit objects are known.
+func (f *fold) followLog() {
+	empty := format.EmptyLog.String()
+	f.log, f.inLog, f.follow = nil, map[string]bool{}, false
+	name := f.head
+	for name != empty && len(f.log) <= len(f.commits) {
+		c := f.commits[name]
+		if c == nil {
+			break
+		}
+		f.log = append(f.log, name)
+		f.inLog[name] = true
+		name = c.Parent
+	}
+	f.whole = name == empty
+	slices.Reverse(f.log)
+}
+
+// state at the time t, which is no earlier than the last event added. If commits is above 0, the
+// bucket lists only the last that many commit objects and the last that many names of the log, and
+// says how many it has of each in all.
+func (f *fold) state(t float64, commits int) State {
+	if f.follow {
+		f.followLog()
+	}
+	s := f.s
+	s.T = t
+	s.Instances = slices.Clone(f.s.Instances)
 	for i := range s.Instances {
 		in := &s.Instances[i]
-		b := base[in.Instance]
+		b := f.base[in.Instance]
 		in.Wall, in.Monotonic = b.wall, b.monotonic
 		if !in.WallStopped {
 			in.Wall += t - b.t
@@ -288,26 +424,27 @@ func StateAt(res Response, t float64) State {
 			in.Monotonic += t - b.t
 		}
 	}
-	if m := s.Bucket.Manifest; m != nil {
-		for name := m.Head; name != empty && len(s.Bucket.Log) <= len(commits); {
-			c := commits[name]
-			if c == nil {
-				break
-			}
-			s.Bucket.Log = append(s.Bucket.Log, name)
-			name = c.Parent
+	all, log := f.s.Bucket.Commits, f.log
+	if commits > 0 {
+		s.Bucket.CommitCount, s.Bucket.LogLength = len(all), len(log)
+		all, log = all[max(0, len(all)-commits):], log[max(0, len(log)-commits):]
+	}
+	s.Bucket.Commits = make([]CommitState, len(all))
+	for i, c := range all {
+		c.InLog = f.inLog[c.Name]
+		s.Bucket.Commits[i] = c
+	}
+	s.Bucket.Log = append([]string{}, log...)
+	s.Requests = []RequestState{}
+	for _, id := range f.order {
+		if rs := f.requests[id]; rs != nil {
+			c := *rs
+			c.Happened = slices.Clone(rs.Happened)
+			s.Requests = append(s.Requests, c)
 		}
-		slices.Reverse(s.Bucket.Log)
 	}
-	for i := range s.Bucket.Commits {
-		s.Bucket.Commits[i].InLog = slices.Contains(s.Bucket.Log, s.Bucket.Commits[i].Name)
-	}
-	for _, id := range order {
-		if rs := requests[id]; rs.Waiting || rs.Phase != "done" {
-			s.Requests = append(s.Requests, *rs)
-		}
-	}
-	for _, c := range calls {
+	s.Calls = []CallState{}
+	for _, c := range f.calls {
 		s.Calls = append(s.Calls, c)
 	}
 	slices.SortFunc(s.Calls, func(a, b CallState) int { return a.Call - b.Call })
@@ -332,9 +469,10 @@ func after(commits map[string]*CommitState, from, to string, n int) string {
 	return way[len(way)-n]
 }
 
-func deref(f *float64) float64 {
-	if f == nil {
-		return 0
+func deref[T any](p *T) T {
+	var zero T
+	if p == nil {
+		return zero
 	}
-	return *f
+	return *p
 }
