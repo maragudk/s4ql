@@ -376,3 +376,7 @@ internal/core/tx.go Tx.RollbackTo condition: err != nil => false #3
 	No test can reach it: the RELEASE after a ROLLBACK TO of the same savepoint does no I/O inside the open transaction.
 internal/core/tx.go Tx.RollbackTo remove statement: return tx.fail(ctx, operation, err) => #2
 	No test can reach it: the RELEASE after a ROLLBACK TO of the same savepoint does no I/O inside the open transaction.
+
+# The storage formats, internal/format: the checks of the values of slice 4.
+internal/format/check.go checkStored condition: v.WhichKind() == s4qlpb.Value_Real_case => true
+	GetReal gives 0.0 for a value that is not a real, and its sign is not set, so the check of -0.0 holds only for a real either way.
