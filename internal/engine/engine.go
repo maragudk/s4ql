@@ -116,6 +116,10 @@ type Conn struct {
 	// rd is the reader of the connection, from its first read on.
 	rd     readConn
 	closed bool
+	// tx is the transaction that spans statements and is open on the connection, or nil.
+	tx *transaction
+	// rows of the last query of the connection, which may not have ended.
+	rows *Rows
 }
 
 // Conn gives a new connection of the engine, which holds nothing until it runs a statement.
@@ -130,11 +134,19 @@ func (e *Engine) Conn() *Conn {
 // A statement on a connection that is closed fails with an internal error too. Closing a closed
 // connection does nothing.
 func (c *Conn) Close(ctx context.Context) error {
+	if c.rows != nil && c.rows.reading {
+		return core.ErrReaderInUse
+	}
 	var err error
+	if c.tx != nil {
+		err = c.Rollback(ctx)
+	}
 	if c.rd != nil {
-		if err = c.rd.close(ctx); errors.Is(err, core.ErrReaderInUse) {
-			return err
+		closeErr := c.rd.close(ctx)
+		if errors.Is(closeErr, core.ErrReaderInUse) {
+			return closeErr
 		}
+		err = errors.Join(err, closeErr)
 	}
 	c.closed, c.rd = true, nil
 	return err
@@ -174,7 +186,7 @@ func (c *Conn) begin(ctx context.Context) (writeTx, error) {
 // SQLite's last insert rowid is not changed by any statement of s4ql, because every table is WITHOUT
 // ROWID, and SQLite does not record an insert into such a table.
 func (c *Conn) Exec(ctx context.Context, src string, args ...*s4qlpb.Value) (Result, error) {
-	r := c.e.newReport(src)
+	r := c.newReport(src)
 	// Every statement of Exec has logged its event when exec returns, so one without is a panic.
 	defer r.panicked(ctx)
 	return c.exec(ctx, r, src, args)
@@ -213,7 +225,7 @@ func (c *Conn) exec(ctx context.Context, r *report, src string, args []*s4qlpb.V
 // [Rows]. Until then, the reader of the connection is taken, and a statement of the connection that
 // reads fails.
 func (c *Conn) Query(ctx context.Context, src string, args ...*s4qlpb.Value) (*Rows, error) {
-	r := c.e.newReport(src)
+	r := c.newReport(src)
 	returned := false
 	defer func() {
 		if !returned {
@@ -238,6 +250,17 @@ func (c *Conn) queryText(ctx context.Context, r *report, src string, args []*s4q
 	res, err := c.write(ctx, r, p, text, args)
 	r.end(ctx, err)
 	return &Rows{done: true, result: res}, err
+}
+
+// newReport of a statement of the text src on the connection, which counts it in the transaction of
+// the connection, if one is open.
+func (c *Conn) newReport(src string) *report {
+	r := c.e.newReport(src)
+	if c.tx != nil {
+		c.tx.statements++
+		r.tx = c.tx.kind()
+	}
+	return r
 }
 
 // Check the text src, as [Conn.Exec] and [Conn.Query] check it, for a run with n arguments, without
@@ -286,6 +309,12 @@ func prepare(r *report, src string, args []*s4qlpb.Value) (Plan, string, error) 
 // annotated with the text and the arguments, and committed if the statement succeeds, and rolled
 // back otherwise, also when an operator panics.
 func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []*s4qlpb.Value) (_ Result, err error) {
+	if c.tx != nil {
+		return c.writeIn(ctx, r, p, sql, args)
+	}
+	if c.pending() {
+		return Result{}, ErrRowsOpen
+	}
 	e := c.e
 	_, insert := p.(*Insert)
 	if insert && e.bugs.checkOutside {
@@ -323,7 +352,7 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	}
 	// The transaction ends with its commit, whatever the commit gives.
 	ended = true
-	if err := tx.commit(ctx); err != nil {
+	if err := commitError(tx.commit(ctx)); err != nil {
 		if e.bugs.ackUnknown && errors.Is(err, core.ErrOutcomeUnknown) {
 			// The planted bug: a commit whose outcome is unknown counts as committed.
 			r.rows = n
@@ -365,6 +394,13 @@ func (readOnly) upsert(context.Context, string, []*s4qlpb.Value) error  { return
 // transaction until they end. The transaction ends if the rows cannot be built, also when that
 // panics; the event of a panic is then left to [Conn.Exec] and [Conn.Query].
 func (c *Conn) query(ctx context.Context, r *report, q *Query) (_ *Rows, err error) {
+	if c.tx != nil {
+		return c.queryIn(ctx, r, q)
+	}
+	if c.pending() {
+		r.end(ctx, ErrRowsOpen)
+		return nil, ErrRowsOpen
+	}
 	tx, err := c.read(ctx)
 	if err != nil {
 		r.end(ctx, err)
@@ -389,6 +425,7 @@ func (c *Conn) query(ctx context.Context, r *report, q *Query) (_ *Rows, err err
 	}
 	rows := &Rows{ctx: ctx, tx: tx, src: src, columns: src.columns(), report: r}
 	built = true
+	c.rows = rows
 	return rows, nil
 }
 
@@ -401,8 +438,13 @@ func (c *Conn) query(ctx context.Context, r *report, q *Query) (_ *Rows, err err
 // transaction ends then. An iterator that is suspended must be resumed, or stopped, for the
 // transaction to end.
 type Rows struct {
-	ctx     context.Context
-	tx      readTx
+	ctx context.Context
+	// tx is what the end of the rows ends: the read transaction of a query of its own, nothing for a
+	// query in a transaction that spans statements, or that transaction, once it has ended while a
+	// loop over the rows ran.
+	tx interface {
+		end(ctx context.Context) error
+	}
 	src     source
 	columns []Column
 	report  *report
@@ -412,6 +454,9 @@ type Rows struct {
 	// endErr is the error of the end of the read transaction after an early end of the loop, which
 	// Close gives.
 	endErr error
+	// cut is the error that a loop over All ends with at its next row, because the transaction of the
+	// rows has ended, or nil.
+	cut error
 	// result of a statement that is not a query.
 	result Result
 }
@@ -472,7 +517,15 @@ func (r *Rows) read(yield func([]*s4qlpb.Value, error) bool, failed *error) {
 			return
 		}
 		r.report.rows++
-		if !yield(row, nil) || r.closing {
+		if !yield(row, nil) {
+			return
+		}
+		if r.cut != nil {
+			*failed = r.cut
+			yield(nil, r.cut)
+			return
+		}
+		if r.closing {
 			return
 		}
 		r.report.e.host.Yield(r.ctx, "engine: between two rows of a query")
@@ -511,6 +564,13 @@ func (r *Rows) end(err error) error {
 	endErr := r.tx.end(r.ctx)
 	r.report.end(r.ctx, first(err, endErr))
 	return endErr
+}
+
+// pending reports whether the rows of the last query of the connection hold the end of a
+// transaction that has ended, which then waits for a loop over the rows to end: no statement runs on
+// the connection until it has.
+func (c *Conn) pending() bool {
+	return c.rowsOpen() && c.rows.cut != nil
 }
 
 // first of the errors that is not nil, or nil.

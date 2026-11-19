@@ -222,6 +222,12 @@ func (x fakeTx) rollback(context.Context) error {
 	return nil
 }
 
+// The calls of a transaction that spans statements, which no statement of its own makes.
+func (x fakeTx) serving(context.Context) error    { return nil }
+func (x fakeTx) savepoint(context.Context) error  { return nil }
+func (x fakeTx) release(context.Context) error    { return nil }
+func (x fakeTx) rollbackTo(context.Context) error { return nil }
+
 func (x fakeTx) end(context.Context) error {
 	x.f.calls = append(x.f.calls, "end")
 	x.f.open--

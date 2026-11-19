@@ -26,6 +26,27 @@ var (
 	// s4ql refuses both, and runs nothing. It is not SQLite's error, and not "not supported".
 	ErrArguments = errors.New("s4ql: wrong number of arguments")
 
+	// ErrTooLarge is matched by the error of a commit whose commit object is larger than the store
+	// takes in one write. Nothing of the transaction is committed, and the same changes would give a
+	// commit object of the same size again. The error also matches [core.ErrTooLarge].
+	ErrTooLarge = errors.New("s4ql: the transaction is too large to commit")
+
+	// ErrRowsOpen is the error of a statement in a transaction that spans statements, and of a begin
+	// of such a transaction, on a connection whose rows of an earlier query have not ended; and of a
+	// commit of a write transaction while a loop over the rows of one of its queries runs, which then
+	// rolls the transaction back. A connection runs one query at a time.
+	ErrRowsOpen = errors.New("s4ql: the rows of an earlier query of the connection are open")
+
+	// ErrTxOpen is the error of a begin on a connection whose transaction is open.
+	ErrTxOpen = errors.New("s4ql: a transaction is open on the connection")
+
+	// ErrNoTx is the error of a commit or a roll back on a connection without a transaction.
+	ErrNoTx = errors.New("s4ql: no transaction is open on the connection")
+
+	// ErrTxDone is the last error of rows whose transaction ended while a loop over them ran: the
+	// loop ends at its next row with it, and reads nothing more.
+	ErrTxDone = errors.New("s4ql: the transaction of the rows has ended")
+
 	// errPanicked is the error in the event of a statement that panicked in the engine. The panic goes
 	// on to the caller, and the error is only in the event.
 	errPanicked = fmt.Errorf("%w: the statement panicked", ErrInternal)
@@ -90,4 +111,10 @@ func noSuchColumn(table, column string) error {
 func uniqueFailed(table, column string) error {
 	return &sqlerr.Error{Code: sqlerr.CodeConstraint, ExtendedCode: sqlerr.CodeConstraintPrimaryKey,
 		Message: "UNIQUE constraint failed: " + table + "." + column, Offset: -1}
+}
+
+// readOnlyDatabase is `attempt to write a readonly database`, which SQLite gives for a statement that
+// would write on a connection under `pragma query_only = 1`, when it steps the statement.
+func readOnlyDatabase() error {
+	return &sqlerr.Error{Code: sqlerr.CodeReadOnly, ExtendedCode: sqlerr.CodeReadOnly, Message: "attempt to write a readonly database", Offset: -1}
 }
