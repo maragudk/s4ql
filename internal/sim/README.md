@@ -73,7 +73,7 @@ The toy is in the diaries [2026-11-12-simulation-harness.md](../../docs/diary/20
 
 - **Determinism.** The spike ran 10000 seeds twice with no differing pair, and each seed gave a different interleaving. The toy's workloads then ran twice for each seed, 10000 seeds of the workload with one instance and of the workload with two instances, clocks that move, a crash and a restart, and buggify, and 2500 of the workload whose callers never pause. No pair of traces differed.
 - **Buggify keeps its two probabilities.** Over 200 seeds it switched on 207 of 800 points, and a point that was on fired in 5196 of 20700 visits, which is a quarter of each.
-- **Speed.** In the spike, the scheduler alone took 1217657 steps per second with tasks that only yield, and 253130 once each task checked the ID of its goroutine. `TestSimulationSpeed` logs the number on the machine at hand.
+- **Speed.** In the spike, the scheduler alone took 1217657 steps per second with tasks that only yield, and 253130 once each task checked the ID of its goroutine. `make sim-speed` logs the number on the machine at hand.
 
 ## Conditions for keeping the design
 
@@ -114,4 +114,4 @@ Three tests are canaries for Go upgrades. They record what `testing/synctest` do
 
 On a Mac with 10 cores and a load of 12 to 18 from other work, the package took 12 seconds, and 22 seconds under the race detector. With the toy, it took 57 and 83 seconds, and 172 seconds under the address sanitizer in a Docker container with four CPUs.
 
-Two tests run only when an environment variable is set. `S4QL_SIM_SPEED` makes `TestSimulationSpeed` log how fast the scheduler is. `S4QL_SIM_HANG` makes `TestScheduler_mutexHeldAcrossWait` show a run that hangs, and needs a short `-timeout`.
+Two tests are built only with a tag of their own, because they are not checks. `make sim-speed` runs `TestSimulationSpeed` in `speed_test.go`, with the tag `s4ql_speed`, which logs how fast the scheduler is. `make sim-hang` runs `TestScheduler_mutexHeldAcrossWait` in `hang_test.go`, with the tag `s4ql_hang`, which shows that a `sync.Mutex` held while its holder waits hangs the run until the timeout of `go test`; the target succeeds only if the run timed out with a goroutine waiting for the mutex. `make lint` lints both files.

@@ -226,7 +226,7 @@ The reason for planted bugs is in [Conditions for keeping the design](../sim/REA
 
 Over 1000 seeds of `lateWrites` on 2026-11-13, each run twice, no seed violated an invariant and no pair of traces differed. 28596 commits were acknowledged, and 1396 had an unknown outcome. Of 17691 swaps of the manifest that landed late, 17570 were refused, and the 121 that were applied all landed before another holder had written. In 887 seeds such a swap landed after another node had taken the lease, and in 643 after other nodes had taken it twice. Of 4283 creates of commit objects that landed late, 2050 were refused because the object was there, and 2233 created an object that no manifest names. In 628 seeds such a create landed after another node had taken the lease, and in 411 after two. The run took 14 minutes on the machine of the build, beside other runs. When the store was changed to apply a late swap without its condition once it was 70 seconds old, the checks found it in each of the first five seeds, and `run.verifyLandings` was the one that found it in two of them.
 
-`free_test.go` runs the workloads on real goroutines, for the race detector. `TestFreeRunning_plantedDataRace` runs the test binary again, and requires the race detector to report a planted data race with the scheduler off.
+`free_test.go` runs the workloads on real goroutines, for the race detector. `TestFreeRunning_plantedDataRace`, in `race_test.go`, is built only with the race detector. It runs the test binary again, and requires the race detector to report a planted data race with the scheduler off, and nothing under the scheduler.
 
 A buggify point sits between the manifest swap and the commit to the cache (`Tx.commitCache`), with two variants: the commit to the cache is rolled back and reports an error, or it goes through and still reports an error. The second variant is not distrust of SQLite, which can legitimately return an I/O error from `COMMIT` after the transaction became durable. It catches a bug of ours: recovery that assumes that an error means that the cache did not get the transaction, and so applies the commit object twice.
 
@@ -247,9 +247,20 @@ By default, `TestSimulation` runs 40 seeds of the workload with one instance, 30
 The environment variables:
 
 - `S4QL_SIM_SEEDS` sets the number of seeds for every workload and every bug, and the number of free runs, 1 or more. The workload of each bug then runs all of them, to count how many find the bug. With fewer seeds than the default run, what a workload reached is not checked, and with fewer than 200, whether a bug is found is not checked; the test logs a line that starts with "NOT CHECKED" for each.
-- `S4QL_SIM_SEED` makes `TestSimulationSeed` run one seed and log its whole trace. `S4QL_SIM_WORKLOAD` chooses the workload: `single`, `full`, `hammer`, or `late`.
-- `S4QL_SIM_BUG` makes `TestSimulationSeed` run the workload of the planted bug that it names. `S4QL_SIM_CONTROL` then runs the control of that bug, and `S4QL_SIM_CLEAN` runs the workload without the bug.
 - `S4QL_CORE_ROWS` sets the number of rows of `TestTx_Commit_large`.
+
+The flags of the test binary replay one seed:
+
+- `-replay` makes `TestSimulation` replay that one seed, and nothing else, and log its whole trace. `-workload` chooses the workload: `single`, the default, `full`, `hammer`, or `late`.
+- `-bug` makes the replay run the workload of the planted bug that it names. `-control` then runs the control of that bug, and `-clean` runs the workload without the bug.
+
+A seed that fails in `TestSimulation` or `TestSimulation_plantedBugs` prints the command that replays it, with `-race` or `-asan` if the run that failed had one, such as:
+
+```sh
+go test -run '^TestSimulation$' -v ./internal/core/ -replay 7 -workload full
+```
+
+They are flags and not environment variables so that a variable left in the shell cannot turn the full simulation into one seed unseen.
 
 The large runs, as they were made for the numbers below:
 

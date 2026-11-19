@@ -105,21 +105,25 @@ fuzz:
 generate:
 	$(BUF) generate
 
-# lint also runs lint-proto, the lint for code that runs under the simulation, from
-# internal/simlint, both lints over the browser's build of BROWSERPKGS, whose files a native run does
-# not see, and both lints over the native build of SIMULATORPKGS with the tag s4ql_browser.
-# The simulation's lint is a module of its own, so that its dependencies stay out of the library's,
-# and is built there and run here.
+# lint also runs lint-proto, the lints of internal/simlint, for code that runs under the simulation
+# and for tests that skip themselves, both lints over the browser's build of BROWSERPKGS, whose files
+# a native run does not see, and both lints over the native build of SIMULATORPKGS with the tag
+# s4ql_browser. The lints of internal/simlint are a module of their own, so that their dependencies
+# stay out of the library's, and are built there and run here. The lint for skips also runs over
+# the other two modules. golangci-lint also runs over the tests that sim-speed and sim-hang build
+# with tags of their own, so that they cannot drift unseen.
 .PHONY: lint
 lint:
 	golangci-lint run
 	GOOS=js GOARCH=wasm golangci-lint run --build-tags s4ql_browser $(BROWSERPKGS)
 	golangci-lint run --build-tags s4ql_browser $(SIMULATORPKGS)
+	golangci-lint run --build-tags s4ql_speed,s4ql_hang ./internal/sim/
 	cd $(CROSSCHECK) && golangci-lint run
 	cd $(SIMLINT) && golangci-lint run
 	dir=$$(mktemp -d) && (cd $(SIMLINT) && go build -o $$dir/simlint ./cmd/simlint) && $$dir/simlint ./... && \
 		GOFLAGS=-tags=s4ql_browser $$dir/simlint $(SIMULATORPKGS) && \
-		GOOS=js GOARCH=wasm GOFLAGS=-tags=s4ql_browser $$dir/simlint $(BROWSERPKGS); \
+		GOOS=js GOARCH=wasm GOFLAGS=-tags=s4ql_browser $$dir/simlint $(BROWSERPKGS) && \
+		(cd $(CROSSCHECK) && $$dir/simlint -skiplint ./...) && (cd $(SIMLINT) && $$dir/simlint -skiplint ./...); \
 		status=$$?; rm -rf $$dir; exit $$status
 	$(MAKE) lint-proto
 
@@ -137,6 +141,24 @@ MUTATIONDIR ?= $(or $(TMPDIR),/tmp)/s4ql-mutation
 .PHONY: mutation
 mutation:
 	go run ./internal/sql/mutation -out $(MUTATIONDIR) $(MUTATIONFLAGS)
+
+# sim-hang shows that a sync.Mutex held while its holder waits hangs a run of the simulation's
+# scheduler until the timeout of go test: TestScheduler_mutexHeldAcrossWait in internal/sim, which
+# is built only with the tag s4ql_hang, because it cannot pass. It prints the output of the run, and
+# succeeds only if the run timed out with a goroutine waiting for a sync.Mutex.
+.PHONY: sim-hang
+sim-hang:
+	out=$$(go test -tags s4ql_hang -count 1 -run '^TestScheduler_mutexHeldAcrossWait$$' -timeout 5s ./internal/sim/ 2>&1); \
+		echo "$$out"; \
+		echo "$$out" | grep -q '^panic: test timed out' && echo "$$out" | grep -q '^sync\.(\*Mutex)\.Lock' || \
+			{ echo "sim-hang: the run did not hang on a sync.Mutex until the timeout" >&2; exit 1; }
+
+# sim-speed logs how fast the simulation's scheduler is on this machine: TestSimulationSpeed in
+# internal/sim, which is built only with the tag s4ql_speed, because it asserts nothing that the
+# other tests do not.
+.PHONY: sim-speed
+sim-speed:
+	go test -tags s4ql_speed -count 1 -run '^TestSimulationSpeed$$' -v ./internal/sim/
 
 # sqlite-update vendors the SQLite amalgamation of VERSION, such as make sqlite-update VERSION=3.54.1.
 .PHONY: sqlite-update

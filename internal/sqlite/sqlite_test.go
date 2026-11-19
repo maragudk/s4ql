@@ -1440,10 +1440,10 @@ func FuzzConn_Prepare(f *testing.F) {
 	f.Fuzz(func(t *testing.T, sql string) {
 		// Statements are prepared and inspected, not stepped, so that fuzzed SQL cannot run for long.
 		// Some PRAGMAs act when prepared, so each input gets a new connection, and the PRAGMAs that
-		// change settings for the whole process are skipped.
+		// change settings for the whole process are left out.
 		lower := strings.ToLower(sql)
 		if strings.Contains(lower, "heap_limit") || strings.Contains(lower, "directory") {
-			t.Skip()
+			return
 		}
 
 		c := memory(t)

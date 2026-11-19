@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1045,8 +1046,12 @@ func tallyOf(s simulation) map[string]int {
 // stops happening, and not by chance. And at most the share noLease of the statements may be refused
 // for want of the lease, about twice what the first 1,000 seeds give, so that the test fails when
 // most statements no longer reach a transaction. The seeds are the same in every run, so the counts
-// are too.
+// are too. With the flag -replay, it replays that one seed instead: see [replaySeed].
 func TestSimulation(t *testing.T) {
+	if *replay != "" {
+		replaySeed(t)
+		return
+	}
 	n := simSeeds(t, 50)
 	if slow() {
 		n = max(n/10, 2)
@@ -1081,7 +1086,7 @@ func TestSimulation(t *testing.T) {
 			for seed := range n {
 				s := simulate(t, seed, c.w)
 				if v := s.violations(); len(v) > 0 {
-					t.Fatalf("seed %v: %v", seed, strings.Join(v, "\n"))
+					t.Fatalf("seed %v: %v\nreplay it with: %v", seed, strings.Join(v, "\n"), replayCommand(seed, "-workload", c.name))
 				}
 				for k, v := range tallyOf(s) {
 					counts[k] += v
@@ -1089,7 +1094,7 @@ func TestSimulation(t *testing.T) {
 				counts["trace lines"] += len(s.lines)
 				if seed < 3 {
 					again := simulate(t, seed, c.w)
-					is.True(t, slices.Equal(s.lines, again.lines), fmt.Sprint("seed ", seed, " gives two traces"))
+					is.True(t, slices.Equal(s.lines, again.lines), fmt.Sprint("seed ", seed, " gives two traces; replay it with: ", replayCommand(seed, "-workload", c.name)))
 				}
 			}
 			t.Logf("%v seeds: %v", n, counts)
@@ -1108,18 +1113,29 @@ func TestSimulation(t *testing.T) {
 	}
 }
 
-// TestSimulationSeed runs the seed of the environment variable S4QL_ENGINE_SIM_SEED, with the bug
-// of S4QL_ENGINE_SIM_BUG, and logs its trace.
-func TestSimulationSeed(t *testing.T) {
-	v := os.Getenv("S4QL_ENGINE_SIM_SEED")
-	if v == "" {
-		t.Skip("S4QL_ENGINE_SIM_SEED is not set")
-	}
-	seed, err := strconv.ParseUint(v, 10, 64)
+// The flags of the test binary that replay one seed of [TestSimulation]: see [replaySeed].
+var (
+	replay         = flag.String("replay", "", "replay this one seed in TestSimulation, and nothing else, and log its trace")
+	replayWorkload = flag.String("workload", "default", "workload of the replay: default or hammer")
+	replayBug      = flag.String("bug", "", "planted bug of the replay")
+)
+
+// replaySeed runs the seed of the flag -replay, of the workload of the flag -workload, with the bug
+// of the flag -bug, and logs its trace. [replayCommand] gives the command.
+func replaySeed(t *testing.T) {
+	t.Helper()
+	seed, err := strconv.ParseUint(*replay, 10, 64)
 	is.NotError(t, err)
 	w := defaultWorkload
-	if bug := os.Getenv("S4QL_ENGINE_SIM_BUG"); bug != "" {
-		w.bugs = []string{bug}
+	switch *replayWorkload {
+	case "default":
+	case "hammer":
+		w = hammerWorkload
+	default:
+		t.Fatalf("no workload is named %v", *replayWorkload)
+	}
+	if *replayBug != "" {
+		w.bugs = []string{*replayBug}
 	}
 	s := simulate(t, seed, w)
 	for _, line := range s.lines {
@@ -1128,6 +1144,20 @@ func TestSimulationSeed(t *testing.T) {
 	for _, v := range s.violations() {
 		t.Error(v)
 	}
+}
+
+// replayCommand is the command that replays the seed with [replaySeed], with the flags that choose
+// the workload and the bug, such as "-workload", "hammer", and the race detector or the address
+// sanitizer if the test binary has one, which change what a run does.
+func replayCommand(seed uint64, flags ...string) string {
+	var mode string
+	if raceEnabled {
+		mode = "-race "
+	}
+	if asanEnabled {
+		mode = "-asan "
+	}
+	return "go test " + mode + "-run '^TestSimulation$' -v ./internal/engine/ -replay " + fmt.Sprint(seed) + " " + strings.Join(flags, " ")
 }
 
 // TestSimulation_plantedBugs runs the workload with each planted bug until it finds the bug by its own
@@ -1139,19 +1169,21 @@ func TestSimulation_plantedBugs(t *testing.T) {
 	bugs := []struct {
 		name string
 		w    workload
+		// replay is the name of the workload for the flag -workload.
+		replay string
 		// finds holds a part of each violation that the bug causes, its own violation first, which the
 		// bug must cause in two seeds at least.
 		finds []string
 	}{
-		{"skipUnique", defaultWorkload, []string{"fails in SQLite: 19/1555: UNIQUE constraint failed"}},
-		{"ackUnknown", defaultWorkload, []string{"is not in the log"}},
-		{"checkOutside", hammerWorkload, []string{"fails in SQLite: 19/1555: UNIQUE constraint failed"}},
+		{"skipUnique", defaultWorkload, "default", []string{"fails in SQLite: 19/1555: UNIQUE constraint failed"}},
+		{"ackUnknown", defaultWorkload, "default", []string{"is not in the log"}},
+		{"checkOutside", hammerWorkload, "hammer", []string{"fails in SQLite: 19/1555: UNIQUE constraint failed"}},
 		// A write transaction left open keeps the instance from a write, and from a close that
 		// releases the lease, so the next instance never runs the queries of its connections.
-		{"keepOpen", defaultWorkload, []string{"no instance runs a write", "a query on each connection of its callers ten minutes after the end of the workload"}},
+		{"keepOpen", defaultWorkload, "default", []string{"no instance runs a write", "a query on each connection of its callers ten minutes after the end of the workload"}},
 		// A read transaction left open fails every later query of its connection, and the check of
 		// the connections after the workload.
-		{"keepRead", defaultWorkload, []string{"a read transaction left open after the end of the workload", "the reader has a read transaction open"}},
+		{"keepRead", defaultWorkload, "default", []string{"a read transaction left open after the end of the workload", "the reader has a read transaction open"}},
 	}
 	for _, b := range bugs {
 		bug := b.name
@@ -1166,7 +1198,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 					if !slices.ContainsFunc(v, func(v string) bool {
 						return slices.ContainsFunc(b.finds, func(f string) bool { return strings.Contains(v, f) })
 					}) {
-						t.Fatalf("seed %v finds the bug by another violation: %v", seed, v)
+						t.Fatalf("seed %v finds the bug by another violation: %v\nreplay it with: %v", seed, v, replayCommand(seed, "-workload", b.replay, "-bug", bug))
 					}
 					if found == 0 {
 						t.Logf("seed %v finds: %v", seed, v[0])
@@ -1176,7 +1208,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 						own++
 					}
 					if v := simulate(t, seed, b.w).violations(); len(v) > 0 {
-						t.Fatalf("seed %v finds something without the bug: %v", seed, v)
+						t.Fatalf("seed %v finds something without the bug: %v\nreplay it with: %v", seed, v, replayCommand(seed, "-workload", b.replay))
 					}
 				}
 			}
