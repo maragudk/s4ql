@@ -57,11 +57,14 @@ export const reason = (e) => String(e.error || "").split(": ").pop();
 // reasonWords of a reason of the core, in words, also for a reason that the page does not know.
 export const reasonWords = (r) => REASONS[r] || String(r || "").replaceAll("_", " ") || "refused";
 
-// The client stands outside the instances, so its words hold only what it can see: that it got no
-// answer, or the error that the instance answered with. Why an instance did not answer, such as a
-// crash or a stop, is for the cards of the instances to say. A call that did not reach the process,
-// "down", and one that was on it when it crashed, "lost", look the same to the client: for a write,
-// it does not know whether the write happened.
+// The requests are those that reach the app, which embeds s4ql in each instance, such as requests
+// over HTTP from browsers. The engine's client stands for them: each of its calls is a request, which
+// a task of the instance's process handles, so it ends with the process if the app crashes. The words
+// of the requests hold only what is seen from outside the app: that a request got no answer, or the
+// error that the instance answered with. Why an instance did not answer, such as a crash or a stop, is
+// for the cards of the instances to say. A request that did not reach the process, "down", and one
+// that was on it when it crashed, "lost", look the same from outside: for a write, nobody outside
+// knows whether the write happened.
 
 // CAUSES of an instance that answers that it has stopped for good, from the cause in its error, in
 // words. The cause comes first after the error of the stop, and wraps the errors below it.
@@ -73,7 +76,7 @@ const CAUSES = [
   ["the log is broken", "log broken"],
 ];
 
-// errorWords of a call of the client that the instance answered with an error, in a few words.
+// errorWords of a request that the instance answered with an error, in a few words.
 function errorWords(e) {
   const text = String(e.error || "");
   switch (e.what) {
@@ -94,12 +97,12 @@ function errorWords(e) {
   return "call failed";
 }
 
-// clientFailure of a call of the client that ended without being served, from its event: kind, which
-// stays the same over a run of failures of one kind, words for the status of the client, and line for
-// the log. A call that was served or committed has none. A failure without a kind takes a line each: a
-// write that the instance answers with an unknown outcome or as not committed, so that the log
-// names its key.
-export function clientFailure(e) {
+// requestFailure of a request that ended without being served, from the event of the engine's call
+// of the client: kind, which stays the same over a run of failures of one kind, words for the status
+// of the requests, and line for the log. A request that was served or committed has none. A failure
+// without a kind takes a line each: a write that the instance answers with an unknown outcome or as
+// not committed, so that the log names its key.
+export function requestFailure(e) {
   const i = e.instance;
   switch (e.what) {
     case "committed":
@@ -108,23 +111,23 @@ export function clientFailure(e) {
     case "down":
     case "lost":
       return e.op === "write"
-        ? { kind: "no answer " + i, words: `no answer from ${i}, write outcome unknown`, line: `The client gets no answer from ${i} to the write of key ${e.value}: outcome unknown.` }
-        : { kind: "no answer " + i, words: `no answer from ${i}`, line: `The client gets no answer from ${i}.` };
+        ? { kind: "no answer " + i, words: `no answer from ${i}, write outcome unknown`, line: `A request gets no answer from ${i}: write of key ${e.value}, outcome unknown.` }
+        : { kind: "no answer " + i, words: `no answer from ${i}`, line: `A request gets no answer from ${i}.` };
   }
   const words = errorWords(e);
   const keyed = e.what === "unknown" || e.what === "not_committed";
   const line = e.what === "unknown" ? `write of key ${e.value}, outcome unknown` : e.what === "not_committed" ? `write of key ${e.value} not committed` : words;
-  return { kind: keyed ? undefined : `error ${i} ${e.what} ${words}`, words: `error from ${i}: ${words}`, line: `The client gets an error from ${i}: ${line}.` };
+  return { kind: keyed ? undefined : `error ${i} ${e.what} ${words}`, words: `error from ${i}: ${words}`, line: `A request gets an error from ${i}: ${line}.` };
 }
 
-// NO_CALLS is the status of the client before its first call has ended.
-export const NO_CALLS = "no calls yet";
+// NO_REQUESTS is the status of the requests before the first has ended.
+export const NO_REQUESTS = "no requests yet";
 
-// clientStatus of the client after a call of it ended, from the event of its end: whether the call
-// failed, and words for what the client got. A call that was served or committed is ok, from the
-// instance that answered; a failure has the words of clientFailure.
-export function clientStatus(e) {
-  const f = clientFailure(e);
+// requestStatus of the requests after one ended, from the event of its end: whether it failed, and
+// words for what it got. A request that was served or committed is ok, from the instance that
+// answered; a failure has the words of requestFailure.
+export function requestStatus(e) {
+  const f = requestFailure(e);
   return f ? { failing: true, words: f.words } : { failing: false, words: `ok from ${e.instance}` };
 }
 
@@ -160,7 +163,7 @@ function actionWords(e) {
     case "stopMonotonic": return `You pause the monotonic clock of ${i}.`;
     case "startMonotonic": return `You start the monotonic clock of ${i} again.`;
     case "pauseClocks": return `You pause the clocks of ${i}.`;
-    case "client": return `You point the client at ${i}.`;
+    case "client": return `You send the requests to ${i}.`;
     case "resumeClocks": return `You resume the clocks of ${i}.`;
   }
   return `You: ${e.do}.`;
@@ -178,9 +181,9 @@ function actionWords(e) {
 // A refusal of a call is in the log only when it starts a spell of refusals of its instance, or has
 // another reason than the one before it, so that the instance without the lease, which refuses every
 // call of its application, takes one line. A spell ends when the instance serves a call. Other lines
-// that repeat while an action lasts are kept to one line in the same way. A failure of a call of the
-// client is in the log when it begins a run of failures of its kind, which a call that is served, or
-// a switch of the client, ends.
+// that repeat while an action lasts are kept to one line in the same way. A failure of a request is in
+// the log when it begins a run of failures of its kind, which a request that is served, or sending the
+// requests to the other instance, ends.
 export function teller() {
   const names = new Map(); // the instances of holder IDs, by the process that opened them
   const current = new Map(); // the holder ID of each process's latest open
@@ -188,7 +191,7 @@ export function teller() {
   const opened = new Set(); // processes that have opened their database once
   const spells = new Map(); // the kinds of line that each instance has said in its spells, by group
   const holder = (id) => (id ? names.get(id) || short(id) : "nobody");
-  let clientRun = null; // the kind of the run of failures of the client, or null
+  let failures = null; // the kind of the run of failures of the requests, or null
   return (e) => {
     const who = e.instance || instanceOf(e.process);
     let w = { text: "", tier: null };
@@ -289,10 +292,10 @@ export function teller() {
       }
       case "call":
         if (e.caller === "client" && e.what !== "started") {
-          const f = clientFailure(e);
-          if (!f) clientRun = null;
-          else if (!f.kind || f.kind !== clientRun) {
-            clientRun = f.kind || null;
+          const f = requestFailure(e);
+          if (!f) failures = null;
+          else if (!f.kind || f.kind !== failures) {
+            failures = f.kind || null;
             say(f.line);
             break;
           } else break;
@@ -329,7 +332,7 @@ export function teller() {
         if (!e.what) say(e.text || "S3 does something the page does not know.");
         break;
       case "action":
-        if (e.do === "client" && e.what === "done") clientRun = null;
+        if (e.do === "client" && e.what === "done") failures = null;
         if (e.what === "done") say(actionWords(e), "you");
         else say(`${actionWords(e)} ${e.what === "failed" ? "It fails" : "Ignored"}: ${e.text}.`, "you");
         break;
