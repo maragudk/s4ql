@@ -854,7 +854,7 @@ func (p *pair) step(c stmttest.Call) string {
 
 // reach counts in the tally what an insert, the call c, whose answer of the engine is got, reaches,
 // under "reached: ": each argument by its kind, as [stmttest.ArgumentKind] names it, a literal by
-// its kind, as [literalKind] names it, a text or a blob of more than 900 bytes, and, for an insert
+// its kind, as [stmttest.LiteralKind] names it, a text or a blob of more than 900 bytes, and, for an insert
 // that SQLite prepares, the outcome by the type of its column, and -0.0 that meets a key that exists.
 func (p *pair) reach(c stmttest.Call, got answer) {
 	t := p.t
@@ -877,7 +877,7 @@ func (p *pair) reach(c stmttest.Call, got answer) {
 			value = converted(unnamed(c.Args)[0])
 		}
 	} else {
-		count("literal " + literalKind(insert.Value))
+		count("literal " + stmttest.LiteralKind(insert.Value))
 	}
 	if byteLength(value) > 900 {
 		count("long value")
@@ -900,31 +900,6 @@ func (p *pair) reach(c stmttest.Call, got answer) {
 	if f, ok := value.(stmt.Real); ok && f == 0 && math.Signbit(float64(f)) && outcome == "UNIQUE constraint failed" {
 		count("-0.0 literal into " + typ + " " + outcome)
 	}
-}
-
-// literalKind of the value of a literal, for a count of what a test reaches: its type, or an edge
-// of it: -0.0, the empty text, and the empty blob.
-func literalKind(v stmt.Value) string {
-	switch v := v.(type) {
-	case stmt.Integer:
-		return "integer"
-	case stmt.Real:
-		if v == 0 && math.Signbit(float64(v)) {
-			return "real -0.0"
-		}
-		return "real"
-	case stmt.Text:
-		if v == "" {
-			return "empty text"
-		}
-		return "text"
-	case stmt.Blob:
-		if len(v) == 0 {
-			return "empty blob"
-		}
-		return "blob"
-	}
-	return fmt.Sprintf("%T", v)
 }
 
 // checkArguments of the call c, whose answer of the engine is got, against s4ql's rule for the

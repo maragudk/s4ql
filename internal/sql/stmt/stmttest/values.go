@@ -306,6 +306,31 @@ func readReal(text string) (float64, bool) {
 var Unsupported = []any{nil, true, time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC), uint64(math.MaxInt64) + 1,
 	math.NaN(), math.Inf(1), math.Inf(-1), float32(math.Inf(-1)), "a\x00b", "\x00", "\xff", "a\xc3", []byte(nil)}
 
+// LiteralKind of the value of a literal, for a count of what a test reaches: its type, or an edge of
+// it: -0.0, the empty text, and the empty blob.
+func LiteralKind(v stmt.Value) string {
+	switch v := v.(type) {
+	case stmt.Integer:
+		return "integer"
+	case stmt.Real:
+		if v == 0 && math.Signbit(float64(v)) {
+			return "real -0.0"
+		}
+		return "real"
+	case stmt.Text:
+		if v == "" {
+			return "empty text"
+		}
+		return "text"
+	case stmt.Blob:
+		if len(v) == 0 {
+			return "empty blob"
+		}
+		return "blob"
+	}
+	return fmt.Sprintf("%T", v)
+}
+
 // ArgumentKind of the argument a, for a count of what a test reaches: its Go type, or what makes s4ql
 // refuse it, and "named" for a [database/sql.NamedArg].
 func ArgumentKind(a any) string {

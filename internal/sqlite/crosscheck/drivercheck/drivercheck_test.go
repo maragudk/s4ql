@@ -488,6 +488,65 @@ func statementKind(src string) string {
 	return kind
 }
 
+// reach counts in the tally what an insert, the text src with the arguments of each run, whose
+// outcome of s4ql is got, reaches, under "reached: ": each argument by its kind, as
+// [stmttest.ArgumentKind] names it, a literal by its kind, as [stmttest.LiteralKind] names it, and,
+// for an insert into a table that SQLite has where the call runs, the outcome of each run by the
+// type of its column.
+func (p *pair) reach(src string, runs [][]any, got outcome) {
+	tb := p.tb
+	tb.Helper()
+	if p.y == nil {
+		return
+	}
+	s, _ := stmt.Check(src)
+	insert, ok := s.(*stmt.Insert)
+	if !ok {
+		return
+	}
+	count := func(what string) { p.y["reached: "+what]++ }
+	if insert.Parameter > 0 {
+		for _, args := range runs {
+			for _, a := range args {
+				count("argument " + stmttest.ArgumentKind(a))
+			}
+		}
+	} else {
+		count("literal " + stmttest.LiteralKind(insert.Value))
+	}
+	typ := p.columnType(insert)
+	if typ == "" {
+		return
+	}
+	for _, o := range got.runs() {
+		kind := "ok"
+		switch {
+		case strings.HasPrefix(o.err, "s4ql: not supported: ") && strings.Contains(o.err, " for the column "):
+			kind = "a value of another type"
+		case o.notSupported():
+			kind = "not supported"
+		case o.failed != "":
+			kind = messageKind(o.err)
+		}
+		count("insert into " + typ + " " + kind)
+	}
+}
+
+// columnType of the table of the insert in SQLite, where a call runs, or "" if SQLite has no such
+// table there.
+func (p *pair) columnType(insert *stmt.Insert) string {
+	tb := p.tb
+	tb.Helper()
+	_, o, _ := p.where(callExec, "")
+	var typ string
+	err := o.QueryRowContext(tb.Context(), "select p.type from sqlite_schema m, pragma_table_info(m.name) p where m.type = 'table' and m.name = ? collate nocase and p.pk = 1", insert.Table.Value).Scan(&typ)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ""
+	}
+	is.NotError(tb, err)
+	return typ
+}
+
 // excused counts a text of the kind that the comparison excuses.
 func (y tally) excused(kind string) {
 	if y != nil {
@@ -672,6 +731,7 @@ func (p *pair) stepRuns(src string, c call, supported bool, runs [][]any) (outco
 	}
 	got := run(tb, s, c, src, runs, s4qlText)
 	p.y.add(scope, src, got, runs)
+	p.reach(src, runs, got)
 	failure := p.compare(src, c, supported, runs, got, o)
 	if failure == "" && p.tx != nil && scope == p.tx.kind() {
 		p.note(src, got)
@@ -1014,8 +1074,21 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 	}
 
 	first := firstStatement(src)
-	want := run(tb, o, c, first, mattnRuns, mattnText)
-	if t, ok := o.(inTx); ok && !p.pinned && (c == callStmtExec || c == callStmtQuery) && want.failed == "prepare" &&
+	var want outcome
+	_, isSelect := s.(*stmt.Select)
+	if _, ok := o.(inTx); ok && c == callStmtExec && isSelect {
+		// mattn's Exec of a query steps it once and does not reset it, and the statement that
+		// [sql.Tx.StmtContext] gives for one prepared outside the transaction stays open until the
+		// transaction ends, so that a later drop table of the query's table in the transaction would
+		// fail with SQLite's `database table is locked`. On SQLite's side the query is prepared in the
+		// transaction instead, and closed after its run. Its names are those of the transaction either
+		// way, as below.
+		want = run(tb, o, callPrepareExec, first, mattnRuns, mattnText)
+		want.call = c
+	} else {
+		want = run(tb, o, c, first, mattnRuns, mattnText)
+	}
+	if t, ok := o.(inTx); ok && !p.pinned && (c == callStmtExec && !isSelect || c == callStmtQuery) && want.failed == "prepare" &&
 		slices.Contains([]string{"no such table", "already exists", "has no column named"}, messageKind(want.err)) {
 		// Through the pool, mattn's Prepare on the sql.DB ran outside the transaction, on another
 		// connection, and failed on the names of the state there, before database/sql prepared the
@@ -1819,15 +1892,13 @@ func pickLevel(r stmttest.Rand) string {
 	return ""
 }
 
-// again are the arguments args of a call of q for another run of its prepared statement: each int64
-// replaced by another value of q, and every other argument as it is, so that the run has the same
-// number and the same types of arguments.
+// again are the arguments args of a call of q for another run of its prepared statement: each value
+// replaced by another value of q of the same Go type, as [stmttest.Sequence.Like] gives it, so that
+// the run has the same number and the same types of arguments.
 func again(q *stmttest.Sequence, args []any) []any {
 	next := slices.Clone(args)
 	for i, a := range next {
-		if _, ok := a.(int64); ok {
-			next[i] = q.Value()
-		}
+		next[i] = q.Like(a)
 	}
 	return next
 }
@@ -1964,6 +2035,31 @@ func TestGenerated(t *testing.T) {
 		}
 	}
 
+	// What the run must reach, at least: each type as a key, with an insert that succeeds, meets a key
+	// that exists, has a value of another type, and is refused in a read-only transaction; each kind of
+	// literal and of argument, also those that no column holds. Each least number is about a third of
+	// what the run gave on 2026-11-19, so that a generator that stops reaching a case fails the test.
+	for kind, least := range map[string]int{
+		"insert into INT ok": 50, "insert into INTEGER ok": 50, "insert into REAL ok": 50, "insert into TEXT ok": 50, "insert into BLOB ok": 50,
+		"insert into INT UNIQUE constraint failed": 20, "insert into INTEGER UNIQUE constraint failed": 30, "insert into REAL UNIQUE constraint failed": 30,
+		"insert into TEXT UNIQUE constraint failed": 24, "insert into BLOB UNIQUE constraint failed": 26,
+		"insert into INT a value of another type": 8, "insert into INTEGER a value of another type": 20, "insert into REAL a value of another type": 15,
+		"insert into TEXT a value of another type": 12, "insert into BLOB a value of another type": 12,
+		"insert into INT attempt to write a readonly database": 10, "insert into INTEGER attempt to write a readonly database": 12,
+		"insert into REAL attempt to write a readonly database": 6, "insert into TEXT attempt to write a readonly database": 13,
+		"insert into BLOB attempt to write a readonly database": 14,
+		"literal integer": 270, "literal real": 120, "literal real -0.0": 20, "literal text": 120, "literal empty text": 20, "literal blob": 100, "literal empty blob": 25,
+		"argument int64": 150, "argument int": 1, "argument int32": 3, "argument uint64": 5, "argument float64": 70, "argument float64 -0.0": 10,
+		"argument float32": 5, "argument string": 60, "argument empty string": 9, "argument []uint8": 50, "argument empty []byte": 12,
+		"argument NaN": 2, "argument infinite float64": 2, "argument float32 that is not finite": 1, "argument string that is not valid UTF-8": 3,
+		"argument string with NUL": 4, "argument nil": 1, "argument nil []byte": 6, "argument bool": 2, "argument time.Time": 2,
+		"argument uint64 above int64": 1, "argument named": 23,
+	} {
+		if y["reached: "+kind] < least {
+			t.Errorf("the run reaches %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y["reached: "+kind], least)
+		}
+	}
+
 	// The texts that each kind of excuse lets through, by kind: those that the comparison accepts
 	// where SQLite and s4ql differ, and the calls that s4ql refuses by its rule, which are checked
 	// against the rule instead of SQLite. Every other kind is pinned at 0. Each number counts calls:
@@ -1977,8 +2073,8 @@ func TestGenerated(t *testing.T) {
 	// a statement prepared outside a transaction through the pool, whose names only the transaction
 	// has ([excusedOutside]).
 	want := map[string]int{
-		excusedPrepare: 1064, excusedStartedTable: 12, excusedArguments: 364, excusedArgument: 85, excusedType: 8,
-		excusedLevel: 67, excusedRowsOpen: 45, excusedTxOpen: 28, excusedOutside: 46,
+		excusedPrepare: 1010, excusedStartedTable: 12, excusedArguments: 395, excusedArgument: 126, excusedType: 173,
+		excusedLevel: 78, excusedRowsOpen: 37, excusedTxOpen: 22, excusedOutside: 48,
 	}
 	kinds := slices.Collect(maps.Keys(want))
 	for name := range y {

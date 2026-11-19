@@ -1977,8 +1977,9 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// SQLite then fails.
 		{"keepFailed", defaultWorkload, "default", []string{"whose statements that succeeded and write are", "fails in SQLite"}},
 		// A read-only transaction that moves on to the newest state reads rows that were committed after
-		// its beginning, and its later statements report the newer state.
-		{"readNewest", hammerWorkload, "hammer", []string{"(read-only), which began at commit", "the statements of the read-only transaction"}},
+		// its beginning, and its later statements report the newer state. When its read of the newest
+		// state fails, the transaction keeps the read that the bug ended, whose end then fails.
+		{"readNewest", hammerWorkload, "hammer", []string{"(read-only), which began at commit", "the statements of the read-only transaction", "the transaction has ended"}},
 		{"rollbackKeeps", defaultWorkload, "default", []string{"and its caller rolled it back"}},
 		// SQLite converts the real of the log as the bug did, so the replay of the log agrees with the
 		// engine, and only the check of the type of each value of the log finds it.

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
@@ -191,14 +192,20 @@ func (q *Sequence) anyValue() any {
 	return Argument(q.valueOf(Types[q.r.IntN(len(Types))]))
 }
 
-// Like a, an argument: another value of the sequence of the same Go type, if a is an int64, a
-// float64, a string, or a []byte that is not nil, and otherwise a.
+// Like a, an argument: another value of the sequence of the same Go type, if a is a value that a
+// column holds of type int64, float64, string, or []byte, and otherwise a, so that an argument that
+// no column holds stays one.
 func (q *Sequence) Like(a any) any {
+	if s, ok := a.(string); ok && (!utf8.ValidString(s) || strings.ContainsRune(s, 0)) {
+		return a
+	}
 	switch v := a.(type) {
 	case int64:
 		return Argument(q.valueOf(stmt.TypeInt))
 	case float64:
-		return Argument(q.valueOf(stmt.TypeReal))
+		if !math.IsNaN(v) && !math.IsInf(v, 0) {
+			return Argument(q.valueOf(stmt.TypeReal))
+		}
 	case string:
 		return Argument(q.valueOf(stmt.TypeText))
 	case []byte:
