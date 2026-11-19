@@ -681,15 +681,18 @@ func (s *Stmt) ColumnDouble(i int) float64 {
 func (s *Stmt) ColumnBlob(i int) []byte {
 	s.mustHaveRow(i)
 	l := lib()
-	if call(l.columnType, s.stmt, i) == int(TypeNull) {
+	typ := Type(call(l.columnType, s.stmt, i))
+	if typ == TypeNull {
 		return nil
 	}
 	// The length is read after the bytes, because reading them can convert the value.
 	blob := call(l.columnBlob, s.stmt, i)
 	n := call(l.columnBytes, s.stmt, i)
 	if blob == 0 {
-		// SQLite gives no pointer for a value of no bytes, and none when memory runs out.
-		if call(l.extendedErrcode, call(l.dbHandle, s.stmt))&0xff == codeNoMem {
+		// SQLite gives no pointer for a value of no bytes, and none when memory runs out. A number
+		// is never the empty text, so it has no bytes only when memory ran out. The error code of
+		// the connection cannot tell, because another call may have set it since the step.
+		if n > 0 || typ == TypeInteger || typ == TypeFloat {
 			panic("sqlite: out of memory")
 		}
 		return []byte{}
