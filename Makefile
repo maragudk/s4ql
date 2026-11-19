@@ -104,12 +104,13 @@ fuzz:
 generate:
 	$(BUF) generate
 
-# lint also runs lint-proto, the lint for code that runs under the simulation, from
-# internal/simlint, both lints over the browser's build of BROWSERPKGS, whose files a native run does
-# not see, and both lints over the native build of SIMULATORPKGS with the tag s4ql_browser.
-# The simulation's lint is a module of its own, so that its dependencies stay out of the library's,
-# and is built there and run here. It also runs golangci-lint over the tests that sim-speed and
-# sim-hang build with tags of their own, so that they cannot drift unseen.
+# lint also runs lint-proto, the lints of internal/simlint, for code that runs under the simulation
+# and for tests that skip themselves, both lints over the browser's build of BROWSERPKGS, whose files
+# a native run does not see, and both lints over the native build of SIMULATORPKGS with the tag
+# s4ql_browser. The lints of internal/simlint are a module of their own, so that their dependencies
+# stay out of the library's, and are built there and run here. Over the tests that sim-speed and
+# sim-hang build with tags of their own, so that they cannot drift unseen, it runs golangci-lint and
+# the lint for skips, and over the other two modules the lint for skips too.
 .PHONY: lint
 lint:
 	golangci-lint run
@@ -120,7 +121,9 @@ lint:
 	cd $(SIMLINT) && golangci-lint run
 	dir=$$(mktemp -d) && (cd $(SIMLINT) && go build -o $$dir/simlint ./cmd/simlint) && $$dir/simlint ./... && \
 		GOFLAGS=-tags=s4ql_browser $$dir/simlint $(SIMULATORPKGS) && \
-		GOOS=js GOARCH=wasm GOFLAGS=-tags=s4ql_browser $$dir/simlint $(BROWSERPKGS); \
+		GOOS=js GOARCH=wasm GOFLAGS=-tags=s4ql_browser $$dir/simlint $(BROWSERPKGS) && \
+		GOFLAGS=-tags=s4ql_speed,s4ql_hang $$dir/simlint -skiplint ./internal/sim/ && \
+		(cd $(CROSSCHECK) && $$dir/simlint -skiplint ./...) && (cd $(SIMLINT) && $$dir/simlint -skiplint ./...); \
 		status=$$?; rm -rf $$dir; exit $$status
 	$(MAKE) lint-proto
 
