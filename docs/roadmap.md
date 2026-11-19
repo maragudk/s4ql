@@ -120,7 +120,7 @@ Rejected as not supported, where SQLite would accept it:
 
 ### Slice 4: the other types
 
-Status: agreed on 2026-11-19, not built.
+Status: built. The statement pass, the engine, and the `database/sql` driver hold all five types, with literals, arguments, and exact types. The pass reads a real literal by a port of SQLite's own conversion, and agrees with SQLite bit for bit on 100,000 texts that are hard to round (81,351 reals and 18,649 infinities), on 6,998 of which Go's `strconv.ParseFloat` gives another float. The generated tests make tables of all five types, with literals and arguments of every kind, weighted to the edges, values of another type than their column, and arguments that no column holds. The engine's differential test compares 12,000 statements with SQLite, half of its sequences with the length limit lowered to 1,000 bytes, and checks 1,152 of them against s4ql's rule (644 with the wrong number of arguments, 140 with an argument that no column holds, 363 with a value of another type than its column, and 5 with a literal longer than the limit); the driver's compares 8,000 calls with mattn/go-sqlite3 and checks 694 against the rule. Both pin how often each case is reached. The simulation runs with typed tables and checks that every insert in the log holds a value of the type of its column, and it finds a planted bug, `convertReal`, which stores a whole real in an `int` column as an integer, in 16 of 200 seeds; no comparison with SQLite can see that bug, since SQLite converts the value in the same way. Mutation testing of the new code and fuzz targets of the types are still to come.
 
 ```sql
 create table t1 (v1 text primary key) strict, without rowid;
