@@ -61,6 +61,12 @@ var (
 	// store that it cannot read, or it was closed. The message carries the cause. Nothing brings the
 	// instance back: the application closes the [database/sql.DB] and opens the database again.
 	ErrStopped = errors.New("s4ql: the instance has stopped")
+
+	// ErrTooLarge is matched by the error of a commit whose commit object is larger than the object
+	// store takes in one write: the commit of a transaction, or of a statement of its own. Nothing is
+	// committed, and the same changes fail in the same way again. The limit is 5 GiB, or less on a
+	// store that takes less. The message starts with "s4ql: the transaction is too large to commit: ".
+	ErrTooLarge = errors.New("s4ql: the transaction is too large to commit")
 )
 
 // failure is an error of s4ql's own: one that matches is with [errors.Is], if is is not nil, and
@@ -114,6 +120,11 @@ func publicError(err error) error {
 	if errors.Is(err, engine.ErrNoStatement) {
 		return &failure{is: ErrNotSupported, message: "s4ql: not supported: a text that holds no statement", cause: err}
 	}
+	if errors.Is(err, engine.ErrRowsOpen) {
+		// A statement in a transaction runs on the connection of the transaction, where the rows hold
+		// a statement of the cache.
+		return &failure{is: ErrNotSupported, message: "s4ql: not supported: a statement in a transaction while the rows of an earlier query of the transaction are open; close the rows first", cause: err}
+	}
 	if errors.Is(err, core.ErrReaderBusy) {
 		// A connection runs one read at a time, on its one reader.
 		return &failure{is: ErrNotSupported, message: "s4ql: not supported: a statement that reads on a connection whose rows of an earlier query are open", cause: err}
@@ -130,6 +141,8 @@ func publicError(err error) error {
 		f.is = ErrStopped
 	case errors.Is(err, core.ErrNoLease):
 		f.is = ErrNotServing
+	case errors.Is(err, core.ErrTooLarge):
+		f.is = ErrTooLarge
 	}
 	return f
 }

@@ -200,6 +200,8 @@ type conn struct {
 	// changes is SQLite's count of changes on the connection: what the last statement that set it
 	// set it to.
 	changes int64
+	// tx is the transaction that is open on the connection, or nil; see [conn.BeginTx].
+	tx *tx
 }
 
 var (
@@ -210,6 +212,8 @@ var (
 	_ driver.QueryerContext     = (*conn)(nil)
 	_ driver.Pinger             = (*conn)(nil)
 	_ driver.NamedValueChecker  = (*conn)(nil)
+	_ driver.SessionResetter    = (*conn)(nil)
+	_ driver.Validator          = (*conn)(nil)
 )
 
 // Ping waits until the instance serves, or until ctx ends. It fails with the stop of an instance
@@ -377,16 +381,6 @@ func overflows(v any) bool {
 	}
 }
 
-// BeginTx is not supported: each statement is a transaction of its own.
-func (c *conn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
-	return nil, notSupported("transactions")
-}
-
-// Begin is not supported, as [conn.BeginTx] is not.
-func (c *conn) Begin() (driver.Tx, error) {
-	return nil, notSupported("transactions")
-}
-
 // CheckNamedValue converts the argument nv as database/sql converts one for a driver without this
 // method, with [driver.DefaultParameterConverter]: an integer of any size and a type whose kind is an
 // integer become an int64, a [driver.Valuer] gives its value, and a pointer gives what it points
@@ -409,7 +403,8 @@ func (c *conn) CheckNamedValue(nv *driver.NamedValue) error {
 }
 
 // Close the connection: its connection of the engine, and with it its reader, if it has opened
-// one. database/sql closes a connection after the rows of its queries are closed.
+// one, and its transaction, if one is open, which the close rolls back. database/sql closes a
+// connection after the rows of its queries are closed.
 func (c *conn) Close() error {
 	// database/sql gives no context here.
 	ctx := context.Background()

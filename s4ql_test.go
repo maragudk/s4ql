@@ -135,8 +135,13 @@ func exec(t *testing.T, db *sql.DB, statements ...string) {
 	}
 }
 
+// querier is where a query runs: a [sql.DB], a [sql.Conn], or a [sql.Tx].
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 // values of the one column of the rows of the query src on db, which must succeed.
-func values(t *testing.T, db *sql.DB, src string) []int64 {
+func values(t *testing.T, db querier, src string) []int64 {
 	t.Helper()
 	vs, err := query(t.Context(), db, src)
 	is.NotError(t, err)
@@ -145,7 +150,7 @@ func values(t *testing.T, db *sql.DB, src string) []int64 {
 
 // query db for the values of the one column of the rows of src. It fails no test, so that a
 // goroutine that is not the test's can call it.
-func query(ctx context.Context, db *sql.DB, src string) ([]int64, error) {
+func query(ctx context.Context, db querier, src string) ([]int64, error) {
 	rows, err := db.QueryContext(ctx, src)
 	if err != nil {
 		return nil, err

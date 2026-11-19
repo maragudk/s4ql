@@ -147,13 +147,21 @@ func TestExec(t *testing.T) {
 		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (-?)", 1)
 		is.Equal(t, "parameter after a sign (at offset 29)", notSupported(t, err))
 
-		// Transactions.
-		_, err = db.BeginTx(t.Context(), nil)
-		is.Equal(t, "transactions", notSupported(t, err))
-		_, err = db.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelSerializable})
-		is.Equal(t, "transactions", notSupported(t, err))
-		_, err = db.Begin()
-		is.Equal(t, "transactions", notSupported(t, err))
+		// Transactions as SQL text, also in a transaction, which stays open.
+		texts := []string{"begin", "begin immediate", "commit", "end", "rollback", "savepoint s1", "release s1"}
+		for _, src := range texts {
+			_, err = db.ExecContext(t.Context(), src)
+			is.True(t, notSupported(t, err) != "", src)
+		}
+		tx, err := db.Begin()
+		is.NotError(t, err)
+		_, err = tx.ExecContext(t.Context(), insert1)
+		is.NotError(t, err)
+		for _, src := range texts {
+			_, err = tx.ExecContext(t.Context(), src)
+			is.True(t, notSupported(t, err) != "", src)
+		}
+		is.NotError(t, tx.Rollback())
 
 		is.EqualSlice(t, []int64{}, values(t, db, select1))
 	})
@@ -702,8 +710,9 @@ func TestConn_Raw(t *testing.T) {
 
 		is.NotError(t, conn.Raw(func(driverConn any) error {
 			c := driverConn.(driver.Conn)
-			_, err := c.Begin() //nolint:staticcheck // The call is deprecated, and the driver has it.
-			is.Equal(t, "transactions", notSupported(t, err))
+			tx, err := c.Begin() //nolint:staticcheck // The call is deprecated, and the driver has it.
+			is.NotError(t, err)
+			is.NotError(t, tx.Rollback())
 			_, err = c.Prepare("selec")
 			is.Equal(t, `near "selec": syntax error`, failed(t, err).Error())
 
@@ -1298,6 +1307,10 @@ func TestStop(t *testing.T) {
 			stopped(conn.PingContext(t.Context()))
 			stopped(db.PingContext(t.Context()))
 			stopped(db.Ping())
+			_, err = db.BeginTx(t.Context(), nil)
+			stopped(err)
+			_, err = conn.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+			stopped(err)
 		}
 		// The rows that were open fail at their next row, on every connection.
 		for _, rows := range append(more, rows) {
@@ -1310,8 +1323,6 @@ func TestStop(t *testing.T) {
 		_, err = db.ExecContext(t.Context(), "selec")
 		is.Equal(t, `near "selec": syntax error`, failed(t, err).Error())
 		_, err = db.ExecContext(t.Context(), "")
-		notSupported(t, err)
-		_, err = db.BeginTx(t.Context(), nil)
 		notSupported(t, err)
 		again, err := db.PrepareContext(t.Context(), select1)
 		is.NotError(t, err)

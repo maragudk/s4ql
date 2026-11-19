@@ -46,9 +46,9 @@
 //
 // The SQL is a strict subset of SQLite's, and what a statement returns is what SQLite returns for
 // it. Each statement is a transaction of its own, which is committed when the statement returns
-// without an error. A statement is bounded by the context that it is given, and so is its commit.
-// [database/sql.DB.BeginTx] and several statements in one text are not supported.
-// [database/sql.DB.PrepareContext] checks the text of the statement, and neither the tables that it
+// without an error, unless it runs in a transaction that spans statements: see Transactions below. A
+// statement is bounded by the context that it is given, and so is its commit. Several statements in
+// one text are not supported. [database/sql.DB.PrepareContext] checks the text of the statement, and neither the tables that it
 // names nor whether the instance serves.
 //
 // A parameter is a plain ?, and its argument is given by position:
@@ -101,6 +101,60 @@
 // context has ended by itself, some time after, so the next statement on that connection is sure
 // to find them closed only after [database/sql.Rows.Close].
 //
+// # Transactions
+//
+// [database/sql.DB.BeginTx] begins a transaction that spans statements. [database/sql.Tx.Commit]
+// commits all of its changes at once, and [database/sql.Tx.Rollback] keeps none of them:
+//
+//	tx, err := db.BeginTx(ctx, nil)
+//	if err != nil {
+//		return err
+//	}
+//	defer tx.Rollback()
+//	if _, err := tx.ExecContext(ctx, "insert into t1 (v1) values (?)", 1); err != nil {
+//		return err
+//	}
+//	if _, err := tx.ExecContext(ctx, "insert into t1 (v1) values (?)", 2); err != nil {
+//		return err
+//	}
+//	return tx.Commit()
+//
+// A transaction is the one writer of the instance from BeginTx on, as with SQLite's BEGIN IMMEDIATE.
+// BeginTx waits while another transaction writes, until that one ends or the context of BeginTx
+// ends. While a transaction is open, every other write of the instance waits for it, also a
+// statement of its own, and reads outside it go on and do not see its changes. So keep a transaction
+// short, and give BeginTx a context that ends. A goroutine that has a transaction open and writes
+// through the [database/sql.DB] instead of the [database/sql.Tx] waits for itself, until the context
+// of that write ends.
+//
+// A statement in a transaction sees the newest state that is committed and the changes of the
+// transaction. A statement that fails changes nothing, and the transaction stays open with the
+// changes of the statements before it, as in SQLite. CREATE TABLE and DROP TABLE are part of the
+// transaction. A transaction that changes nothing writes nothing to the object store. The context
+// given to BeginTx bounds the commit, and database/sql rolls the transaction back when that context
+// ends.
+//
+// A transaction with [database/sql.TxOptions.ReadOnly] set reads the state of its beginning,
+// whatever commits meanwhile, and holds up no one, so it is the way to read one consistent state
+// with several queries. A statement in it that would write fails with SQLite's error "attempt to
+// write a readonly database". Both kinds accept the isolation levels [database/sql.LevelDefault] and
+// [database/sql.LevelSerializable], which is what they give. Every other level is not supported.
+//
+// A transaction runs on one connection, which runs one statement at a time. While the rows of a
+// query of the transaction are open, a further statement in it is not supported, and fails at once
+// with an error that matches [ErrNotSupported]: close the rows first. For now, this rules out a write
+// inside a loop over the rows of a query. On a [database/sql.Conn] with a transaction open, the
+// statements of the Conn run in the transaction, and a second BeginTx fails. BEGIN, COMMIT,
+// ROLLBACK, SAVEPOINT, and RELEASE as SQL text are not supported.
+//
+// A commit fails with an error that matches [ErrNotServing] or [ErrStopped] if the instance lost its
+// lease or stopped while the transaction was open, with one that matches [ErrOutcomeUnknown] if its
+// context ended before the instance knew whether the commit was applied, and with one that matches
+// [ErrTooLarge] if the changes are more than the object store takes in one write. Every error of a
+// commit but one that matches ErrOutcomeUnknown means that nothing is committed. A roll back returns
+// nil also on an instance that has lost its lease or stopped, where nothing is committed. The commit
+// of a read-only transaction returns nil.
+//
 // # Errors
 //
 // The error of the driver for a statement is one of these:
@@ -110,6 +164,7 @@
 //     It carries no result code, and its message starts with "s4ql: not supported: ".
 //   - An error that matches [ErrNotServing], [ErrOutcomeUnknown], or [ErrStopped], for the state of
 //     the instance.
+//   - An error that matches [ErrTooLarge], for a commit that is larger than the object store takes.
 //   - Another error, whose message starts with "s4ql: ", such as one that wraps the error of a
 //     context that ended.
 //
