@@ -301,6 +301,59 @@ h2 {
 .alarm strong { display: block; font-size: 18px; }
 .alarm p { margin: 4px 0 0; max-width: 72ch; }
 
+/* The client, above the instances: a switch between a and b, what it got, and a wire down to the
+   instance it calls */
+
+.client {
+  display: grid;
+  grid-template-columns: auto auto repeat(3, minmax(0, 1fr)) minmax(0, 2.6fr);
+  border: var(--rule);
+}
+.client > div { display: flex; align-items: center; gap: 12px; padding: 12px 20px; min-width: 0; }
+.client .letter { font-size: 32px; font-weight: 700; line-height: 1; margin: 0; letter-spacing: -0.02em; }
+.client dl { margin: 0; display: contents; }
+.client dl > div { display: grid; align-content: center; gap: 2px; font-size: 13px; border-left: var(--rule); padding: 12px 20px; overflow-wrap: anywhere; min-width: 0; }
+.client dd { margin: 0; }
+.client dl > div.last[data-failing="true"] { background: var(--lumin); color: var(--void); }
+.client dl > div.last[data-failing="true"] ::selection { background: var(--void); color: var(--lumin); }
+
+/* The switch: one frame, two halves, and the half that is on is filled. */
+.switch { display: inline-flex; border: var(--rule); }
+.switch .btn { border: 0; min-width: 52px; min-height: 40px; font-size: 16px; font-weight: 700; text-transform: none; letter-spacing: 0; }
+.switch .btn + .btn { border-left: var(--rule); }
+.switch .btn:focus-visible { outline-offset: 3px; }
+.switch .btn:disabled { border-style: solid; opacity: 1; }
+.switch:has(.btn:disabled) { border-style: dashed; }
+
+.wires { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); height: 24px; }
+.wires span { position: relative; }
+.wires span[data-on="true"]::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 28px;
+  width: 3px;
+  background: var(--lumin);
+}
+.cell-head .tag { display: none; }
+
+@media (max-width: 1100px) {
+  .client { grid-template-columns: auto minmax(0, 1fr); }
+  .client > div:nth-child(2) { justify-content: flex-end; }
+  .client dl { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 2.4fr); border-top: var(--rule); }
+  .client dl > div:first-child { border-left: 0; }
+}
+@media (max-width: 720px) {
+  .client > div { padding: 12px 16px; }
+  .client dl { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .client dl > div { padding: 8px 16px; }
+  .client dl > div.last { grid-column: 1 / -1; border-left: 0; border-top: var(--rule); }
+  .wires { display: none; }
+  .client + .wires + .cells { margin-top: 12px; }
+  .cell[data-client="true"] .cell-head .tag { display: inline; }
+}
+
 /* The two instances, side by side on hairlines */
 
 .panel { padding: 20px 0 0; }
@@ -475,7 +528,7 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
     <h1 id="intro-h">The storage code, under faults</h1>
     <div>
       <p>The storage code of s4ql runs in this page: the Go code itself, unchanged, compiled to WebAssembly, with its cache on the official SQLite WebAssembly build. S3 and time are simulated.</p>
-      <p>s4ql is built for one long-running instance per database. Here one instance serves a stream of reads and writes, and a second stands by to take over.</p>
+      <p>s4ql is built for one long-running instance per database. Here one instance serves the reads and writes of a client, and a second stands by to take over.</p>
       <p class="built"><span class="caps">Built from</span> <span id="build">an unknown commit</span> of <a href="https://github.com/maragudk/s4ql/tree/main/internal/core"><code>internal/core</code></a>, run by <a href="https://github.com/maragudk/s4ql/blob/main/internal/simulator/README.md"><code>internal/simulator</code></a>.</p>
     </div>
   </div>
@@ -501,10 +554,26 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
 
 <section class="panel" aria-labelledby="cells-h">
   <div class="wrap">
-    <h2 class="vh" id="cells-h">The instances and S3</h2>
+    <h2 class="vh" id="cells-h">The client, the instances, and S3</h2>
+    <section class="client" id="client" aria-labelledby="client-h">
+      <div><h3 class="letter" id="client-h">Client</h3></div>
+      <div>
+        <span class="caps" id="client-calls">Calls</span>
+        <div class="switch" role="group" aria-labelledby="client-calls">
+          <button class="btn" type="button" data-target="a" aria-pressed="true" aria-label="Instance a" disabled>a</button><button class="btn" type="button" data-target="b" aria-pressed="false" aria-label="Instance b" disabled>b</button>
+        </div>
+      </div>
+      <dl>
+        <div><dt class="caps">Writes</dt><dd id="client-writes">0</dd></div>
+        <div><dt class="caps">Reads</dt><dd id="client-reads">0</dd></div>
+        <div><dt class="caps">Failed</dt><dd id="client-failed">0</dd></div>
+        <div class="last" id="client-last"><dt class="caps">Last failure</dt><dd id="client-why">none</dd></div>
+      </dl>
+    </section>
+    <div class="wires" aria-hidden="true"><span data-wire="a"></span><span data-wire="b"></span></div>
     <div class="cells">
       <article class="cell" data-instance="a" aria-labelledby="inst-a">
-        <div class="cell-head"><h3 class="letter" id="inst-a">a</h3><span class="word" data-f="word">…</span><span class="process caps" data-f="process"></span></div>
+        <div class="cell-head"><h3 class="letter" id="inst-a">a</h3><span class="word" data-f="word">…</span><span class="process caps" data-f="process"></span><span class="tag caps">client</span></div>
         <dl class="facts">
           <div><dt class="caps">Lease</dt><dd data-f="lease">…</dd></div>
           <div><dt class="caps">Cache</dt><dd><span data-f="pos">…</span><span data-f="code"></span></dd></div>
@@ -530,7 +599,7 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
         </div>
       </article>
       <article class="cell" data-instance="b" aria-labelledby="inst-b">
-        <div class="cell-head"><h3 class="letter" id="inst-b">b</h3><span class="word" data-f="word">…</span><span class="process caps" data-f="process"></span></div>
+        <div class="cell-head"><h3 class="letter" id="inst-b">b</h3><span class="word" data-f="word">…</span><span class="process caps" data-f="process"></span><span class="tag caps">client</span></div>
         <dl class="facts">
           <div><dt class="caps">Lease</dt><dd data-f="lease">…</dd></div>
           <div><dt class="caps">Cache</dt><dd><span data-f="pos">…</span><span data-f="code"></span></dd></div>

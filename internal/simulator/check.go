@@ -254,15 +254,17 @@ func count(chain []*CommitObject, value int64) int {
 	return n
 }
 
-// writeEnded with the value, which the call that ended in the given way wrote.
+// writeEnded with the value, which the call that ended in the given way wrote. A write of the client
+// that was lost at a crash of its process has an outcome that the client does not know, and one that
+// found its instance down was never made.
 func (c *checker) writeEnded(_ context.Context, value int64, how string) {
 	c.mu.Lock()
 	switch how {
 	case "committed":
 		c.acked = append(c.acked, value)
-	case "unknown":
+	case "unknown", "lost":
 		c.unknown = append(c.unknown, value)
-	case "not_committed":
+	case "not_committed", "down":
 		c.failed = append(c.failed, value)
 	}
 	fast := c.fast

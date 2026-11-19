@@ -150,6 +150,8 @@ type run struct {
 	// session of a live run, or nil for a batch run, and endedAt the time at which the session ended.
 	session *session
 	endedAt time.Duration
+	// target is the instance that the client calls now, or nil in a run without a client.
+	target *instance
 }
 
 // instance is one instance of the database, by its name, which a process after process runs.
@@ -270,7 +272,9 @@ func (r *run) main(ctx context.Context) {
 	r.end(ctx)
 }
 
-// setUp the store and the instances, each with its first process.
+// setUp the store, the instances, each with its first process, and the client. With
+// [Request.Standby], only the first instance starts here, and a task starts the others once it
+// serves.
 func (r *run) setUp(ctx context.Context) {
 	r.store = simstore.New(storeHost{Scheduler: r.world, r: r}, simstore.Options{
 		Latency: duration(r.req.Latency),
@@ -279,8 +283,26 @@ func (r *run) setUp(ctx context.Context) {
 	for i := range r.req.Instances {
 		in := &instance{name: instanceName(i), lease: duration(r.req.Leases[i%len(r.req.Leases)]), disk: r.disks[i], inFlight: map[*pending]context.CancelFunc{}}
 		r.instances = append(r.instances, in)
-		r.start(ctx, in, filepath.Join(r.dir, in.name+".db"))
+		if i > 0 && r.req.Standby {
+			r.rec.add(Event{Kind: "process", What: "waiting", Instance: in.name, Text: "the instance starts once a serves"})
+			continue
+		}
+		r.start(ctx, in, cachePath(r.dir, in))
 	}
+	var gate host.Task
+	if r.req.Standby && len(r.instances) > 1 {
+		gate = r.world.Go(ctx, "standby", r.standby)
+	}
+	if name := r.req.Client.Instance; name != "" {
+		r.target = r.instances[name[0]-'a']
+		r.rec.add(Event{Kind: "client", What: "started", Instance: name})
+		r.world.Go(ctx, "client", func(ctx context.Context) { r.client(ctx, gate) })
+	}
+}
+
+// cachePath of the first process of the instance in, in the directory dir.
+func cachePath(dir string, in *instance) string {
+	return filepath.Join(dir, in.name+".db")
 }
 
 // end the run: run the last checks, and let every process close its database.
@@ -294,7 +316,9 @@ func (r *run) end(ctx context.Context) {
 	// the sleeps of its process for good.
 	r.rec.stop()
 	for _, in := range r.instances {
-		in.p.inst.StartMonotonic()
+		if in.p != nil {
+			in.p.inst.StartMonotonic()
+		}
 	}
 }
 
@@ -471,37 +495,86 @@ func (r *run) caller(ctx context.Context, p *process, name string) {
 	}
 }
 
-// call of the application: one write or read transaction on the database of p, with the timeout of
-// the workload.
-func (r *run) call(ctx context.Context, p *process, caller string, write bool) {
+// call of the application, by its caller: its number, whether it writes, the key that a write
+// inserts, and when it started.
+type call struct {
+	n       int
+	caller  string
+	write   bool
+	value   int64
+	started time.Duration
+	// ended is set once the event that ends the call is in the trace. It is guarded by the mutex of
+	// the run.
+	ended bool
+}
+
+// newCall of the caller, which starts now. A write takes the next key.
+func (r *run) newCall(caller string, write bool) *call {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.calls++
-	call := r.calls
-	var value int64
+	c := &call{n: r.calls, caller: caller, write: write, started: r.world.Monotonic()}
 	if write {
 		r.values++
-		value = r.values
+		c.value = r.values
 	}
-	r.mu.Unlock()
+	return c
+}
+
+// event of the call c on the instance in, whose process is p or nil, that says what happened. An
+// event that ends the call has the time at which it started.
+func (c *call) event(in *instance, p *process, what string) Event {
 	op := "read"
-	if write {
+	if c.write {
 		op = "write"
 	}
-	started := r.world.Monotonic()
-	r.rec.add(Event{Kind: "call", What: "started", Instance: p.i.name, Process: p.name, Call: call, Caller: caller, Op: op, Value: value})
-	e := Event{Kind: "call", Instance: p.i.name, Process: p.name, Call: call, Caller: caller, Op: op, Value: value, Started: new(millis(started))}
+	e := Event{Kind: "call", What: what, Instance: in.name, Call: c.n, Caller: c.caller, Op: op, Value: c.value}
+	if p != nil {
+		e.Process = p.name
+	}
+	if what != "started" {
+		e.Started = new(millis(c.started))
+	}
+	return e
+}
 
+// callEnded with the event e, which ends the call c unless it has ended already: the checker learns
+// how a write ended, and the event is recorded.
+func (r *run) callEnded(ctx context.Context, c *call, e Event) {
+	r.mu.Lock()
+	ended := c.ended
+	c.ended = true
+	r.mu.Unlock()
+	if ended {
+		return
+	}
+	if c.write {
+		r.check.writeEnded(ctx, c.value, e.What)
+	}
+	r.rec.add(e)
+}
+
+// call of the application on p, which starts now, in a task of p.
+func (r *run) call(ctx context.Context, p *process, caller string, write bool) {
+	c := r.newCall(caller, write)
+	r.rec.add(c.event(p.i, p, "started"))
+	r.serveCall(ctx, p, c)
+}
+
+// serveCall c in a task of p: one write or read transaction on the database of p, with the timeout of
+// the workload, and the event that ends the call.
+func (r *run) serveCall(ctx context.Context, p *process, c *call) {
+	e := c.event(p.i, p, "")
 	ctx, cancel := p.inst.WithTimeout(ctx, duration(r.req.Workload.Timeout))
 	defer cancel()
 	d := p.current()
 	if d == nil {
 		e.What, e.Error = "failed", "the instance has no database open"
-		r.rec.add(e)
+		r.callEnded(ctx, c, e)
 		return
 	}
-	if write {
-		e.What, e.Error = r.write(ctx, d, value)
-		r.check.writeEnded(ctx, value, e.What)
+	if c.write {
+		e.What, e.Error = r.write(ctx, d, c.value)
 	} else {
 		before := r.check.readStarted()
 		var keys []int64
@@ -512,7 +585,7 @@ func (r *run) call(ctx context.Context, p *process, caller string, write bool) {
 			r.check.readEnded(ctx, p, before, keys, position)
 		}
 	}
-	r.rec.add(e)
+	r.callEnded(ctx, c, e)
 }
 
 // write one row with the key value in a write transaction on d, and say how the call ended, and its
@@ -652,6 +725,17 @@ func (r *run) act(ctx context.Context, i int, a Action) {
 	case "workload", "hangNetwork", "disconnectNetwork", "failDisk":
 		e.On = new(a.On)
 	}
+	switch a.Do {
+	case "hangNetwork", "disconnectNetwork", "failDisk", "client", "loseAnswer", "failRequest":
+		// The faults belong to the instance, an armed fault only names the instance of its request,
+		// and the client calls an instance whatever runs it.
+	default:
+		if in != nil && p == nil {
+			ignore("the instance has not started")
+			r.rec.add(e)
+			return
+		}
+	}
 	if needsLive[a.Do] && crashed {
 		ignore("the process of the instance has crashed")
 		r.rec.add(e)
@@ -762,6 +846,17 @@ func (r *run) act(ctx context.Context, i int, a Action) {
 		r.mu.Lock()
 		r.auto = a.On
 		r.mu.Unlock()
+	case "client":
+		// A call that is on its way stays on the instance it went to.
+		r.mu.Lock()
+		hasClient := r.target != nil
+		if hasClient {
+			r.target = in
+		}
+		r.mu.Unlock()
+		if !hasClient {
+			ignore("the run has no client")
+		}
 	}
 	r.rec.add(e)
 }

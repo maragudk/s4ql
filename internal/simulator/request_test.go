@@ -24,6 +24,15 @@ func TestParseRequest(t *testing.T) {
 		is.Equal(t, 2, r.Workload.Callers)
 		is.Equal(t, 40, r.Workload.Writes)
 		is.Equal(t, 0.0, r.Faults.LostRequest)
+		is.Equal(t, "", r.Client.Instance)
+		is.True(t, !r.Standby, "no standby")
+	})
+
+	t.Run("should take a client and a standby", func(t *testing.T) {
+		r, err := simulator.ParseRequest([]byte(`{"instances": 2, "client": {"instance": "b"}, "standby": true, "schedule": [{"at": 1, "do": "client", "instance": "a"}]}`))
+		is.NotError(t, err)
+		is.Equal(t, "b", r.Client.Instance)
+		is.True(t, r.Standby, "standby")
 	})
 
 	t.Run("should keep the defaults of the fields of an object that is given in part", func(t *testing.T) {
@@ -62,6 +71,8 @@ func TestParseRequest(t *testing.T) {
 		{"should refuse an instance for an action of the store", `{"schedule": [{"at": 1, "do": "calm", "instance": "a"}]}`, `calm is for no instance`},
 		{"should refuse a cut-off without its duration", `{"schedule": [{"at": 1, "do": "cutOff", "instance": "a"}]}`, "cutOff needs for"},
 		{"should refuse a shift of the wall clock by nothing", `{"schedule": [{"at": 1, "do": "shiftWall", "instance": "a"}]}`, "shiftWall needs by"},
+		{"should refuse a client of an instance that the run does not have", `{"instances": 2, "client": {"instance": "c"}}`, `client.instance is "c", and must be empty or an instance from a to b`},
+		{"should refuse a switch of the client without its instance", `{"client": {"instance": "a"}, "schedule": [{"at": 1, "do": "client"}]}`, `client needs an instance from a to c, and has ""`},
 		{"should refuse a lost answer for an unknown request", `{"schedule": [{"at": 1, "do": "loseAnswer", "request": "all"}]}`, `loseAnswer needs request`},
 	}
 	for _, test := range tests {

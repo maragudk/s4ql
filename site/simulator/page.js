@@ -1,5 +1,6 @@
 // The simulator page. It loads the engine of internal/simulator in a Worker, starts a live session of
-// two instances with a random seed, and waits for Play. While it plays, the page advances the
+// two instances with a random seed, and waits for Play. In the session, a starts alone and b stands by
+// once a serves, and the engine's client calls a, with no other calls in the processes. While it plays, the page advances the
 // session's fake time by the real time that passed, or five times that with turbo, one step at a time,
 // and asks for the state after each step. An action of the visitor goes to the engine at once, paused
 // or playing, and happens at the session's fake time.
@@ -87,6 +88,7 @@ let tell = null; // the teller of run.js, which start makes
 const lines = []; // the last LINES lines of the log, newest first
 let linesTotal = 0;
 const calls = {}; // by instance: {w, r, x, why}
+const client = { w: 0, r: 0, x: 0, why: "", failing: false }; // what the client got
 const bars = new Map(); // events by slice of fake time
 const marks = []; // the times of the visitor's actions
 const starts = {}; // by instance: the t of the start of its process
@@ -96,7 +98,8 @@ const stopped = {}; // by instance: whether the visitor's Stop closed the databa
 // The page tells a check what it does through data attributes on <html>: data-engine is loading,
 // ready, or failed, data-busy is "true" while a command is on its way, data-t is the fake time in
 // whole ms, data-playing is "true" while it plays, data-lines counts the lines of the log so far, and
-// data-commits the commit objects. window.s4qlPage gives the check the state and a hook, skip, that
+// data-commits the commit objects. The element #client has data-target, the instance that the client
+// calls, and data-writes, data-reads, and data-failed, what its calls got. window.s4qlPage gives the check the state and a hook, skip, that
 // advances fake time at once; a visitor reaches it only through the console.
 const root = document.documentElement;
 root.dataset.engine = "loading";
@@ -202,6 +205,16 @@ function take(answer) {
         if (e.what === "opened") names.set(e.holder, e.process);
         break;
       case "call": {
+        if (e.caller === "client" && e.what !== "started") {
+          const f = R.clientFailure(e);
+          if (e.what === "committed") client.w++;
+          else if (e.what === "served") client.r++;
+          else {
+            client.x++;
+            client.why = f.words;
+          }
+          client.failing = !!f;
+        }
         const c = (calls[e.instance] ||= { w: 0, r: 0, x: 0, why: "" });
         if (e.what === "committed") c.w++;
         else if (e.what === "served") c.r++;
@@ -249,6 +262,7 @@ function draw() {
   drawField();
   drawLog();
   if (!state) return;
+  drawClient();
   for (const c of cards) drawCard(c);
   drawS3();
   drawControls();
@@ -296,6 +310,7 @@ function wire() {
     }
     return { name, el, f, b };
   });
+  for (const b of document.querySelectorAll("#client [data-target]")) b.addEventListener("click", () => point(b.dataset.target));
   $("play").addEventListener("click", () => setPlaying(!playing));
   $("turbo").addEventListener("click", () => setTurbo(!turbo));
 }
@@ -313,6 +328,7 @@ function role(st) {
 }
 
 const WORDS = {
+  waiting: "not started",
   serves: "serves",
   believes: "thinks it holds the lease",
   standby: "stands by",
@@ -355,7 +371,7 @@ function drawCard(c) {
   }
 
   let clocks;
-  if (st.state === "crashed") clocks = "none";
+  if (st.state === "crashed" || st.state === "waiting") clocks = "none";
   else {
     const wall = st.wall - state.t;
     const mono = st.monotonic - (state.t - (starts[c.name] || 0));
@@ -371,6 +387,7 @@ function drawCard(c) {
   set(c.f.calls, `${count(k.w)} writes, ${count(k.r)} reads`);
   set(c.f.refused, k.x ? `${count(k.x)}, last: ${R.REASONS[k.why] || k.why}` : "0");
 
+  c.el.dataset.client = String(target() === c.name);
   set(c.b.crash, st.state === "crashed" ? "Restart" : "Crash");
   set(c.b.stop, startable(c.name, st) ? "Start" : "Stop");
   c.b.hang.setAttribute("aria-pressed", String(!!st.networkHung));
@@ -390,11 +407,43 @@ function drawControls() {
     const st = instanceState(c.name);
     const off = !ready || waiting || !st;
     const crashed = !!st && st.state === "crashed";
-    c.b.crash.disabled = off;
+    // An instance that has not started takes only the faults of its network and its disk.
+    const notStarted = !!st && st.state === "waiting";
+    c.b.crash.disabled = off || notStarted;
     c.b.stop.disabled = off || !(st.state === "running" || startable(c.name, st));
     for (const a of ["hang", "disconnect", "disk"]) c.b[a].disabled = off;
-    for (const a of ["forward", "back", "pause"]) c.b[a].disabled = off || crashed;
+    for (const a of ["forward", "back", "pause"]) c.b[a].disabled = off || crashed || notStarted;
   }
+  for (const b of document.querySelectorAll("#client [data-target]")) b.disabled = !ready || waiting;
+}
+
+// The client.
+
+// target is the instance that the client calls now.
+const target = () => (state && state.client ? state.client.instance : "");
+
+// point the client at the instance, unless it calls it already.
+function point(name) {
+  if (!state || halted || target() === name) return;
+  jobs.push({ act: { do: "client", instance: name } });
+  drawControls();
+  pump();
+}
+
+function drawClient() {
+  const to = target();
+  const el = $("client");
+  el.dataset.target = to;
+  el.dataset.writes = String(client.w);
+  el.dataset.reads = String(client.r);
+  el.dataset.failed = String(client.x);
+  for (const b of el.querySelectorAll("[data-target]")) b.setAttribute("aria-pressed", String(b.dataset.target === to));
+  for (const w of document.querySelectorAll("[data-wire]")) w.dataset.on = String(w.dataset.wire === to);
+  set($("client-writes"), count(client.w));
+  set($("client-reads"), count(client.r));
+  set($("client-failed"), count(client.x));
+  set($("client-why"), client.why || "none");
+  $("client-last").dataset.failing = String(client.failing);
 }
 
 // startable says whether Start opens the database of the instance: after the visitor's Stop, and not
@@ -470,7 +519,7 @@ async function start() {
   try {
     const { Engine } = await import("./engine/simulator.js" + version);
     const e = await Engine.start();
-    const answer = await e.start({ seed: R.newSeed() });
+    const answer = await e.start({ seed: R.newSeed(), workload: { callers: 0 }, client: { instance: "a" }, standby: true });
     take(answer);
     state = (await e.now(COMMITS)).state;
     engine = e;

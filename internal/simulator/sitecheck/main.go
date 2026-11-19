@@ -9,8 +9,10 @@
 //
 // The check passes if the engine becomes ready and the page waits at zero until Play; Play advances
 // fake time by the real time, turbo by five times it, and the log and the commit objects grow; Pause
-// holds fake time; each action on an instance has its effect in the state, and an action switched off
-// again takes it away; a crash of the instance that serves lets the other take over; fake time goes
+// holds fake time; the client calls a from the start, and b gets no call; each action on an instance
+// has its effect in the state, and an action switched off again takes it away; the client keeps
+// calling a while a is crashed and after its restart, and its switch moves its calls to b and back; a
+// crash of the instance that serves lets the other take over; fake time goes
 // past 10 minutes; and the page writes nothing into its address. It also checks the words of run.js,
 // and that a fault at start-up ends in the page's failure box: the page without run.js, and the page
 // without its Play button, as a page.js of one deploy would find the HTML of another. It writes what

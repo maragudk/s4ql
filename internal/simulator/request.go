@@ -30,6 +30,11 @@ type Request struct {
 	Faults   Faults   `json:"faults"`
 	Buggify  bool     `json:"buggify"`
 	Workload Workload `json:"workload"`
+	// Client that calls one instance from outside the instances.
+	Client Client `json:"client"`
+	// Standby starts the instances after the first only once the first serves, so that they stand
+	// by, and holds the first call of the client until then.
+	Standby bool `json:"standby"`
 	// Schedule of the actions and faults, each at its time. Actions at the same time happen in the
 	// order of the schedule.
 	Schedule []Action `json:"schedule"`
@@ -79,13 +84,23 @@ type Workload struct {
 	Keep int `json:"keep"`
 }
 
+// Client of the run: one source of calls that stands outside the instances, as the user of an
+// application does, and that no crash or stop of an instance ends. Its pauses, its share of writes,
+// its timeout, and the rows that its writes keep are those of the [Workload], which does not switch
+// it. The action "client" points it at another instance.
+type Client struct {
+	// Instance that the client calls from the start, by its name, or empty for no client.
+	Instance string `json:"instance"`
+}
+
 // Action of the schedule.
 type Action struct {
 	// At is the time of the action.
 	At float64 `json:"at"`
 	// Do is what to do: see [actions].
 	Do string `json:"do"`
-	// Instance that the action is for, by its name, where the action is for one.
+	// Instance that the action is for, by its name, where the action is for one. For "client" it is
+	// the instance that the client calls from then on.
 	Instance string `json:"instance,omitzero"`
 	// For is how long a cut-off or an outage lasts.
 	For float64 `json:"for,omitzero"`
@@ -123,6 +138,8 @@ var actions = map[string]bool{
 	"outage":            false,
 	"calm":              false,
 	"workload":          false,
+	// The client calls the instance from then on.
+	"client": true,
 }
 
 // purposes of a request to the store, as the trace names them, which a lost answer or a failed
@@ -212,6 +229,9 @@ func (r Request) check() error {
 	}
 	if w.Keep < 0 || w.Keep > maxKeep {
 		bad("workload.keep is %v, and must be from 0 to %v", w.Keep, maxKeep)
+	}
+	if c := r.Client.Instance; c != "" && !validInstance(c, r.Instances) {
+		bad("client.instance is %q, and must be empty or an instance from a to %v", c, instanceName(max(0, r.Instances-1)))
 	}
 	if len(r.Schedule) > maxSchedule {
 		bad("the schedule has %v actions, and may have at most %v", len(r.Schedule), maxSchedule)
@@ -326,6 +346,8 @@ type Session struct {
 	Faults    Faults    `json:"faults"`
 	Buggify   bool      `json:"buggify"`
 	Workload  Workload  `json:"workload"`
+	Client    Client    `json:"client"`
+	Standby   bool      `json:"standby"`
 }
 
 // defaultSession has the default of every field: those of [defaultRequest], but two instances, and
@@ -345,7 +367,7 @@ func ParseSession(b []byte) (Request, error) {
 		return Request{}, fmt.Errorf("the session is not JSON of a session: %w", err)
 	}
 	r := Request{Seed: s.Seed, End: maxEnd, Instances: s.Instances, Leases: s.Leases,
-		Latency: s.Latency, Faults: s.Faults, Buggify: s.Buggify, Workload: s.Workload}
+		Latency: s.Latency, Faults: s.Faults, Buggify: s.Buggify, Workload: s.Workload, Client: s.Client, Standby: s.Standby}
 	if err := r.check(); err != nil {
 		return Request{}, err
 	}

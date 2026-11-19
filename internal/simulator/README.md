@@ -30,7 +30,7 @@ The five commands of a session answer in one form: see [The answer](#the-answer)
 A batch run and a session run the same code in the same way:
 
 1. The engine starts a scheduler of `internal/sim` with the seed, in a `testing/synctest` bubble of its own, and a simulated store of `simstore`.
-2. It starts the instances, named `a`, `b`, `c`, and so on. A process runs each instance: a simulated machine with its own clocks, its cache in a file, its callers, and its client of the store. The first process of an instance has the name of the instance, and a restart starts the next: `a2`, `a3`, and so on.
+2. It starts the instances, named `a`, `b`, `c`, and so on. A process runs each instance: a simulated machine with its own clocks, its cache in a file, its callers, and its client of the store. The first process of an instance has the name of the instance, and a restart starts the next: `a2`, `a3`, and so on. With `standby`, only `a` starts here, and the others once it serves. If the request has a client, it starts too: see [Client](#client).
 3. In a batch run, the first task of the run does the actions of the schedule at their times, and then sleeps until the end. In a session, the first task does the commands of the page as they come: see [A live session](#a-live-session).
 4. At the end it runs the last checks of the invariants and stops recording. The end of a session is its command `end`.
 
@@ -69,6 +69,8 @@ Every time and duration is a number of milliseconds of fake time, which may have
 | `faults` | all 0 | see [Faults](#faults) | The faults that happen at random. |
 | `buggify` | false | | Switches buggify of the storage core on for the run. Each point is then on with the probability 0.25, and a point that is on fires with the probability 0.25 each time the code reaches it. |
 | `workload` | see [Workload](#workload) | | The callers that each instance runs. |
+| `client` | `{"instance": ""}` | an instance of the run, or empty | The client, which calls one instance from outside the instances: see [Client](#client). Empty is no client. |
+| `standby` | false | | Starts the instances after `a` only once `a` serves: see [Client](#client). |
 | `schedule` | `[]` | at most 1000 actions | The actions, each at its time: see [Schedule](#schedule). |
 | `lines` | false | | Asks for the text trace of the scheduler in the response. |
 
@@ -136,6 +138,26 @@ The actions `write` and `read` make the same calls, with the caller `visitor`.
 
 With `keep` above 0, a write deletes rows in its transaction, after its insert: the other rows with the smallest keys, until the table has `keep` rows. The table then stops growing, and a read costs the same however long the run. The commit object of the write carries the keys that it deletes, in `deletes`. The new row counts as one of the `keep`, and a write never deletes its own row, also when its key is smaller than those of the other rows, so that every commit holds the key it was written for. A write reads the whole table, at most `keep` rows and its own, to find the rows to delete. With `keep` at 0, the default of a request, no write deletes a row, and a batch run is as it was before `keep`. A session has the default 100.
 
+### Client
+
+The client is one source of calls that stands outside the instances, as the user of an application does. `client.instance` is the instance that it calls first, its target, and the action `client` points it at another. It is a task of the run, not of a process, so no crash, stop, or fault of an instance ends it. A batch run and a session have no client unless the request names one.
+
+It repeats two steps, as a caller does: a pause of 1 ms and a time from 0 to `workload.think`, from the seed, on the time of the run, and then one call on its target, a write or a read by `workload.writes`. Its calls are those of [Workload](#workload), with the caller `client`, the timeout `workload.timeout` on the monotonic clock of the target's process, and the rows that `workload.keep` keeps. `workload.on` and the action `workload` do not switch it.
+
+Each call goes to the process that runs the target when the call starts:
+
+- If the target cannot take it, the call ends at once with `down`: the instance has not started, its process has crashed, or its database is not open, because it is starting, could not be opened, is closed, or has stopped. `error` says which.
+- Otherwise a task of the process makes the call, as the application in the process serves a request that comes over its network, and the client waits for it. The call ends as any call does: an instance that does not hold the lease refuses it with `refused`.
+- If the process crashes while the call is on it, the call ends with `lost`, at the crash: the client gets no answer. For a write, the outcome is unknown, as after `unknown`: what the process sent before the crash is still on its way, and the write can be in the log.
+
+The connection between the client and its target has no faults. `hangNetwork` and `disconnectNetwork` are faults of the network between an instance and the store.
+
+A `client` action takes effect at once. A call that is on its way when the target changes ends on the instance it went to, and the next call goes to the new target. The action is ignored in a run without a client.
+
+With `standby`, `a` starts alone, and the client waits. A task of the run waits for the database of `a` to serve, by `Wait` of `core`, and then starts the other instances, which find the lease taken and stand by, and lets the client make its first call. It also starts them if `a` cannot serve: its process has crashed, its database is not open or stops, or the duration of its lease has passed on the time of the run. This is how s4ql is meant to run: one long-running instance per database, and a second that stands by to take over. Until an instance starts, it is in the state `waiting`, and an action on it is ignored, except `hangNetwork`, `disconnectNetwork`, `failDisk`, `loseAnswer`, `failRequest`, and `client`.
+
+A page that shows an application and one database, as the simulator page does, starts a session with the client on `a`, `standby`, and no callers in the processes, `workload.callers` at 0. The instance that the client does not call then gets no call.
+
 ### Schedule
 
 An action has the time `at`, from 0 to before `end`, the name `do`, and the parameters of its kind. Actions at the same time happen in the order of the schedule. `instance` is the name of an instance of the run. Every action also works in a session, as the body of the command `act`, without `at`.
@@ -164,15 +186,18 @@ An action has the time `at`, from 0 to before `end`, the name `do`, and the para
 | `loseAnswer` | `request`, optional `instance` | Arms a fault. The next matching request is sent, the store handles it, and its answer is lost on the way to the caller, which gets an error. |
 | `failRequest` | `request`, optional `instance` | Arms a fault. The next matching request fails before it is sent. |
 | `workload` | `on` | Switches the callers on or off. |
+| `client` | `instance` | Points the client at the instance: see [Client](#client). |
 
 A missing `on` is false, so an action without it switches off.
 
 An action that cannot be done is ignored. Its event says so, with the reason:
 
+- Every action for an instance that has not started yet, with `standby`, except `hangNetwork`, `disconnectNetwork`, `failDisk`, `loseAnswer`, `failRequest`, and `client`.
 - `write`, `read`, `crash`, `close`, `open`, `cutOff`, and the seven clock actions are ignored when the process of the instance has crashed.
 - `restart` is ignored when the process has not crashed.
 - `close` is ignored when the database is not open.
 - `open` is ignored while the database is open, also while a database that has stopped waits for its process to open it again.
+- `client` is ignored in a run without a client.
 
 `hangNetwork`, `disconnectNetwork`, and `failDisk` are done whether the process has crashed or not, because the fault belongs to the instance, whichever process runs it.
 
@@ -251,7 +276,7 @@ An engine has one session at most. A command without a session gets an answer wi
 
 ### The settings
 
-The body of `start` is an object with the fields of a request that hold for a whole run: `seed`, `instances`, `leases`, `latency`, `faults`, `buggify`, and `workload`. Each has the meaning and the limits that [The request](#the-request) gives it. A session has no `end`, no `schedule`, and no `lines`: each of them is an error, as any other member is.
+The body of `start` is an object with the fields of a request that hold for a whole run: `seed`, `instances`, `leases`, `latency`, `faults`, `buggify`, `workload`, `client`, and `standby`. Each has the meaning and the limits that [The request](#the-request) gives it. A session has no `end`, no `schedule`, and no `lines`: each of them is an error, as any other member is.
 
 A field that is missing has the default of a request, with two exceptions:
 
@@ -331,7 +356,8 @@ The life of a process and of its database.
 
 | `what` | Fields | Meaning |
 | --- | --- | --- |
-| `started` | `wall`, `monotonic` | A process starts: at the start of the run, and at a `restart`. |
+| `waiting` | | With `standby`, at the start of the run: the instance starts once `a` serves. It has no `process`. |
+| `started` | `wall`, `monotonic` | A process starts: at the start of the run, at a `restart`, and with `standby` when the instance starts. |
 | `opened` | `holder` | It opened its database. `holder` is the ID under which this database holds the lease. Every open gives a new one. |
 | `open_failed` | `error` | It could not open its database. The core opens only local files here, so this is a local failure. The process opens the database again every 2 s on its monotonic clock, until an open succeeds or an action closes the database. |
 | `stopped` | `error` | The core has stopped for good, with the cause. Each process checks this every 2 s on its monotonic clock, as an application would, then closes the database and opens it again. |
@@ -374,7 +400,7 @@ A call of the application: one write or read transaction.
 | Field | Meaning |
 | --- | --- |
 | `call` | The number of the call, from 1, in the order in which the calls started. |
-| `caller` | `caller-0`, `caller-1`, and so on for the workload, and `visitor` for an action. |
+| `caller` | `caller-0`, `caller-1`, and so on for the workload, `visitor` for an action, and `client` for the client. |
 | `op` | `write` or `read`. |
 | `value` | The key that a write inserts. |
 | `started` | When the call started. It is on the event that ends the call. |
@@ -394,6 +420,12 @@ Every call has the event `started`, and one event when it ends:
 | `busy` | The cache was busy. |
 | `timed_out` | The timeout of the call ended before the transaction started. |
 | `failed` | Any other error, also that the process has no database open. |
+| `down` | A call of the client that its target could not take. `error` says why: see [Client](#client). |
+| `lost` | A call of the client that was on its target when the process crashed. For a write the outcome is unknown. |
+
+`instance` and `process` of every event of a call are where the call went. The event that starts a call of the client is at the time it was sent. Its call is then made in a task of the process, which can start up to 50 ms later. A call of the client to an instance that has not started has no `process`.
+
+A call of a caller or of a visitor that is on its way when its process crashes has no event that ends it. One of the client ends with `lost`.
 
 ### request
 
@@ -479,7 +511,13 @@ One event for each action of the schedule, at its time, and one for each `act` o
 | `instance`, `process`, `for`, `by` | Those of the action. `process` is the process of the instance when the action came, so the crashed one for a `restart`. It is missing on an action that was ignored for a crashed process. |
 | `on` | What the action switched to, true or false, on `workload`, `hangNetwork`, `disconnectNetwork`, and `failDisk`. |
 
+`process` is also missing on an action for an instance that has not started.
+
 The effect has events of its own: `process` with `crashed` just before the action event of a `crash`, `process` with `started` just after that of a `restart`, and `clock` just before that of a clock action. A `close` and an `open` run in a task, and their `process` events come when they end. `hangNetwork`, `disconnectNetwork`, and `failDisk` have no event besides the action event. Their effect shows in the requests and in the core's events that follow.
+
+### client
+
+The client of the run starts: `what` is `started`, at the start of the run, and `instance` is its first target. The action `client` gives the later targets, in its event `action`.
 
 ### check
 
@@ -503,6 +541,7 @@ The command `now` of a session answers with the state of the session at its time
 | `instances` | The instances, in the order of their first events. |
 | `requests` | The requests in flight, in the order sent. |
 | `calls` | The calls that have started and not ended, by their numbers. |
+| `client` | `{"instance": T}`, with T the instance that the client calls now, from the event `client` and the events `action` of `client` that are `done`. Missing in a run without a client. |
 | `outageUntil` | The latest end of an outage: the largest `t` + `for` of the events `store` with `outage`. It can lie in the past. |
 | `calm` | Whether an event `store` with `calm` has come. |
 | `violations`, `excused` | The events `check` so far, and those of them that are excused. |
@@ -525,7 +564,7 @@ An instance:
 | Field | Folded from |
 | --- | --- |
 | `instance`, `process` | The last event `process` with `started`. |
-| `state` | `starting` from `started`. `running` from `opened`. `failed` from `open_failed`. `closing` from the event `action` of a `close` that is `done`. `stopped` from `stopped`, and from an event `core` with `stop` whose outcome is not `closed`. `closed` from `closed`. `crashed` from `crashed`. |
+| `state` | `waiting` from `waiting`. `starting` from `started`. `running` from `opened`. `failed` from `open_failed`. `closing` from the event `action` of a `close` that is `done`. `stopped` from `stopped`, and from an event `core` with `stop` whose outcome is not `closed`. `closed` from `closed`. `crashed` from `crashed`. |
 | `holder` | The `holder` of the last `opened`. A new process starts without one. |
 | `lease` | `held` from the event `core` with `lease`, the transition `taken`, and the outcome `taken`. `none` from the transition `lost`, from `released` with the outcome `released`, from the event `core` with `stop`, from `closed`, `stopped`, and `crashed`, and for a new process. |
 | `position` | The name of the last commit object in the cache: see below. |
@@ -580,17 +619,17 @@ The engine checks six invariants during the run and at its end. The end of a ses
 | --- | --- | --- |
 | `chain` | At every write of the manifest that the store applies. | The manifest moves its head only to a commit object that is in the store and whose parent is the head before. So the log is one chain. |
 | `acknowledged` | When a write ends with `committed`, and at the end. | A commit that was acknowledged is in the log: once when it is acknowledged, and still at the end. |
-| `not_committed` | At the end. | A write that ended with `not_committed` is not in the log. |
+| `not_committed` | At the end. | A write that ended with `not_committed` is not in the log, and neither is a write of the client that ended with `down`, which was never made. |
 | `once` | At the end. | No key is in the log twice. |
 | `state` | When a read is served. | The read saw a state that the log had: its position is the empty log or a commit object of the log, and its keys are the rows of the log up to that position. |
-| `fresh` | When a read is served, and at the end. | The read saw every write that was acknowledged before the read started. It also saw every write that returned with an unknown outcome before the read started and that the log holds at the end. A read need not see a write whose row a commit object up to the read's position deleted, as the writes do with `workload.keep`. A read gets at most one violation in each of the two checks. |
+| `fresh` | When a read is served, and at the end. | The read saw every write that was acknowledged before the read started. It also saw every write that returned with an unknown outcome before the read started and that the log holds at the end, which includes a write of the client that ended with `lost`. A read need not see a write whose row a commit object up to the read's position deleted, as the writes do with `workload.keep`. A read gets at most one violation in each of the two checks. |
 
 Only `fresh` can be excused. The design accepts a read that misses a commit on a process whose two clocks both went wrong in the direction that keeps a lease alive too long. A violation of `fresh` is excused if, by the time of the check, the monotonic clock of the read's process has been stopped, and its wall clock has been stopped or shifted backward. `pauseClocks` stops both.
 
 What the checker cannot see, and how far it is tested:
 
 - It sees nothing inside the core: no cache except through the reads, and nothing of what an instance believes about its lease.
-- It checks reads that were served. For a write that ended in another way than `committed`, `unknown`, or `not_committed`, such as `abandoned`, it does not check that the log lacks it.
+- It checks reads that were served. For a write that ended in another way than `committed`, `unknown`, `lost`, `not_committed`, or `down`, such as `abandoned`, it does not check that the log lacks it.
 - It can be tested only on input made for it, in `check_internal_test.go`. The core cannot be made to break an invariant from outside its package, and planted bugs are left out of the simulator on purpose. The tests of the runs expect no violation that is not excused.
 
 ## What the code does under each action
@@ -775,10 +814,11 @@ The tests of `internal/simulator` run natively and in Chromium. They show:
 - **Messages** (`simulator_test.go`): a malformed request and an unknown kind get an error, and the engine goes on. A state before any run, and a malformed state, get an error.
 - **Actions** (`run_test.go`): the effect of each action, and which actions are ignored.
 - **Actions on the holder of the lease** (`run_test.go`), in runs of two instances. Under a hang and under a disconnect of its network, no request of the holder is sent, its renewals end with an unknown outcome, and the other instance takes the lease. A disconnect ends the wait for a request that is on its way. A failing disk stops the core, the opens fail again and again, and the first open after the disk works succeeds. Paused clocks stop the calls and the requests of the process, and every violation after the resume is excused. A close releases the lease, and the other instance takes it within 5 s. A fault of an instance is switched also when its process has crashed, and `pauseClocks` is ignored then.
-- **A live session** (`live_test.go`): the same events, steps, summary, and hash as a batch run with the same actions at the same times, for three seeds, with every action, every fault, and buggify, and the state of `now` after each action against the fold of the events so far. Fake time does not move between commands: `t` and `steps` stay the same over 50 commands `now`, with `runtime.Gosched` between them. The events of an advance lie in its stretch. A malformed command is refused, and the session goes on. A command without a session gets an error, also after `end`. A new `start` ends the session that runs. `now` with `commits` lists only the last commit objects, with the two counts. The steps, the events, and the bytes of the events of a fake minute, as the mean of minutes 50 to 60 of a session, are less than 15% above those of minutes 10 to 20.
+- **A live session** (`live_test.go`): the same events, steps, summary, and hash as a batch run with the same actions at the same times, for three seeds, with every action, every fault, and buggify, and the state of `now` after each action against the fold of the events so far. The same for three seeds with the client, `standby`, and switches of the client, also before the other instances have started. Fake time does not move between commands: `t` and `steps` stay the same over 50 commands `now`, with `runtime.Gosched` between them. The events of an advance lie in its stretch. A malformed command is refused, and the session goes on. A command without a session gets an error, also after `end`. A new `start` ends the session that runs. `now` with `commits` lists only the last commit objects, with the two counts. The steps, the events, and the bytes of the events of a fake minute, as the mean of minutes 50 to 60 of a session, are less than 15% above those of minutes 10 to 20, with the defaults and with the client, `standby`, and no callers.
+- **The client** (`client_test.go`), with `standby` and no callers. `a` takes the lease before `b` starts, and the first call of the client comes after that. The client keeps calling `a` through a crash and a restart, a close and an open, and a failing disk: `down` while `a` cannot take its calls, and `refused` once `a` stands by. A switch moves its calls to `b`, and a call that was on `a` at the switch ends on `a`. The instance that the client does not call gets no call. A write that a hang holds on `a` when `a` crashes ends with `lost` at the crash. Actions on an instance that has not started are ignored, except the faults of the instance. Over 24 seeds with every fault, crashes, closes, and switches, every call ends once on the instance and process it started on, and no violation is not excused. Writes are lost at crashes in those runs, and some of them are in the log at the end: with `lost` counted as `not_committed`, the same runs have violations of `not_committed`.
 - **Faults** (`run_test.go`): each fault of the store, damaged downloads, and buggify show their events, with no violation. Under every fault at once, the engine knows every line of the store.
 - **The state** (`state_test.go`): the position of each cache, folded from the events of the core alone, against what each read saw. The log. A request and a call in flight, from their start to their end.
-- **The checker** (`check_internal_test.go`): each invariant on input made to break it, and the excuse of `fresh`.
+- **The checker** (`check_internal_test.go`): each invariant on input made to break it, also by a write of the client that ended with `down` or `lost`, and the excuse of `fresh`.
 
 `TestEngine` in `internal/simulator/engine` serves a page when one drives it: it looks for the object `s4qlEngine`, which `worker.js` sets. Without the object, as in `make test-browser`, it plays the page with an object of its own: it shows that `submit` refuses a second message while the first waits and a message without its three arguments, and that the answers that `done` gets to a run and to a state of that run are those of an engine called directly, so that one engine serves every message. The whole path through `worker.js` is what `make site-check` checks.
 

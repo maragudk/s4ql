@@ -20,6 +20,8 @@ type State struct {
 	Requests []RequestState `json:"requests"`
 	// Calls of the application that have started and not ended.
 	Calls []CallState `json:"calls"`
+	// Client of the run, if it has one.
+	Client ClientState `json:"client,omitzero"`
 	// OutageUntil is when the last outage of the store ends, and Calm whether the store makes no new
 	// fault happen.
 	OutageUntil float64 `json:"outageUntil,omitzero"`
@@ -58,8 +60,9 @@ type CommitState struct {
 type InstanceState struct {
 	Instance string `json:"instance"`
 	Process  string `json:"process"`
-	// State is "starting", "running", "closing" from a close of an action until its end, "closed",
-	// "stopped", "crashed", or "failed" for a database that could not be opened.
+	// State is "waiting" for an instance that has not started yet, "starting", "running", "closing"
+	// from a close of an action until its end, "closed", "stopped", "crashed", or "failed" for a
+	// database that could not be opened.
 	State string `json:"state"`
 	// Holder is the ID under which the process holds the lease.
 	Holder string `json:"holder,omitzero"`
@@ -111,6 +114,12 @@ type CallState struct {
 	Op       string  `json:"op"`
 	Started  float64 `json:"started"`
 	Value    int64   `json:"value,omitzero"`
+}
+
+// ClientState is the client of a run.
+type ClientState struct {
+	// Instance that the client calls now.
+	Instance string `json:"instance"`
 }
 
 // StateAt the time t of the run res, from the events up to and including t.
@@ -188,6 +197,8 @@ func (f *fold) add(e Event) {
 	case "process":
 		in := f.of(e)
 		switch e.What {
+		case "waiting":
+			in.State = "waiting"
 		case "started":
 			in.Process, in.State, in.Holder, in.Lease, in.CutOffUntil = e.Process, "starting", "", "none", 0
 			in.WallStopped, in.MonotonicStopped = false, false
@@ -254,6 +265,12 @@ func (f *fold) add(e Event) {
 			f.of(e).NetworkDisconnected = deref(e.On)
 		case "failDisk":
 			f.of(e).DiskFailing = deref(e.On)
+		case "client":
+			s.Client.Instance = e.Instance
+		}
+	case "client":
+		if e.What == "started" {
+			s.Client.Instance = e.Instance
 		}
 	case "check":
 		s.Violations++
@@ -287,12 +304,12 @@ func (f *fold) core(e Event) {
 	case "catch_up":
 		to, _ := e.Attrs["catch_up.to"].(string)
 		from, _ := e.Attrs["catch_up.from"].(string)
-		applied, _ := e.Attrs["catch_up.commits"].(int64)
+		applied := attrInt(e.Attrs["catch_up.commits"])
 		switch {
 		case outcome == "caught_up":
 			in.Position = to
 		case applied > 0:
-			in.Position = after(f.commits, from, to, int(applied))
+			in.Position = after(f.commits, from, to, applied)
 		}
 	case "stop":
 		if outcome != "closed" {
@@ -467,6 +484,18 @@ func after(commits map[string]*CommitState, from, to string, n int) string {
 		return to
 	}
 	return way[len(way)-n]
+}
+
+// attrInt is an attribute of the core that is an integer: an int64 in the events of the engine, and a
+// float64 in events that went through JSON, as those that a test or a page folds.
+func attrInt(v any) int {
+	switch n := v.(type) {
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	}
+	return 0
 }
 
 func deref[T any](p *T) T {
