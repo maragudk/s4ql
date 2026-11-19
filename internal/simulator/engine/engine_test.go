@@ -6,20 +6,65 @@ import (
 	"syscall/js"
 	"testing"
 
+	"maragu.dev/is"
+
 	"maragu.dev/s4ql/internal/simulator"
 )
 
 // TestEngine serves the messages of the page for as long as the program runs. The Worker of
 // worker.js sets the object s4qlEngine, with the functions ready and done, before the program
-// starts. The test sets s4qlEngine.submit(id, kind, body), which takes one message at a time and
-// returns false while the engine is busy, calls ready() when it can take the first, and calls
-// done(id, answer) with the answer to each, as JSON. A run needs no JavaScript stack below it, so the
-// test handles the messages on its own goroutine and not in the callback of submit.
+// starts, and [serve] serves it. Without the object, as in a run of the tests, the test serves an
+// object of its own, which plays the page.
 func TestEngine(t *testing.T) {
-	hook := js.Global().Get("s4qlEngine")
-	if hook.Type() != js.TypeObject {
-		t.Skip("no page drives the engine: s4qlEngine is not set")
+	if hook := js.Global().Get("s4qlEngine"); hook.Type() == js.TypeObject {
+		serve(t, hook)
+		return
 	}
+
+	t.Run("should take one message at a time, refuse a malformed one, and answer each as the engine does", func(t *testing.T) {
+		state, now := []byte(`{"t":0}`), []byte(`{}`)
+		var e simulator.Engine
+		want := []string{string(e.Handle(t, "state", state)), string(e.Handle(t, "now", now))}
+
+		hook := js.Global().Get("Object").New()
+		var accepted []bool
+		var ids []int
+		var answers []string
+		ready := js.FuncOf(func(js.Value, []js.Value) any {
+			submit := hook.Get("submit")
+			// The first message waits for the engine, so the second is refused while it does.
+			accepted = append(accepted, submit.Invoke(1, "state", string(state)).Bool(), submit.Invoke(2, "now", string(now)).Bool(),
+				submit.Invoke(2, "now").Bool())
+			return nil
+		})
+		defer ready.Release()
+		done := js.FuncOf(func(_ js.Value, args []js.Value) any {
+			ids = append(ids, args[0].Int())
+			answers = append(answers, args[1].String())
+			if len(answers) == 1 {
+				accepted = append(accepted, hook.Get("submit").Invoke(2, "now", string(now)).Bool())
+				return false
+			}
+			return true
+		})
+		defer done.Release()
+		hook.Set("ready", ready)
+		hook.Set("done", done)
+
+		serve(t, hook)
+		is.EqualSlice(t, []bool{true, false, false, true}, accepted)
+		is.EqualSlice(t, []int{1, 2}, ids)
+		is.EqualSlice(t, want, answers)
+	})
+}
+
+// serve the messages of hook until its function done returns true, which worker.js never does. serve
+// sets hook.submit(id, kind, body), which takes one message at a time and returns false while the
+// engine is busy, calls hook.ready() when it can take the first, and calls hook.done(id, answer)
+// with the answer to each, as JSON. A run needs no JavaScript stack below it, so serve handles the
+// messages on its own goroutine and not in the callback of submit.
+func serve(t *testing.T, hook js.Value) {
+	t.Helper()
 	type message struct {
 		id   int
 		kind string
@@ -44,6 +89,8 @@ func TestEngine(t *testing.T) {
 
 	var e simulator.Engine
 	for m := range messages {
-		hook.Call("done", m.id, string(e.Handle(t, m.kind, m.body)))
+		if hook.Call("done", m.id, string(e.Handle(t, m.kind, m.body))).Truthy() {
+			return
+		}
 	}
 }

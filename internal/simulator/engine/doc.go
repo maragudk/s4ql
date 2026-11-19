@@ -3,8 +3,8 @@
 // Package engine is the program of the simulator in a browser. The program is the test binary of
 // this package, built with GOOS=js GOARCH=wasm and the tag s4ql_browser, because a run of
 // maragu.dev/s4ql/internal/simulator needs a testing.T, and a test binary is the supported way to
-// get one. Its one test, TestEngine, serves the messages that worker.js passes to it, and skips when
-// no page drives it.
+// get one. Its one test, TestEngine, serves the messages that worker.js passes to it. When no page
+// drives it, as in a run of the tests, it plays the page itself, and checks the answers.
 //
 // The files next to this one are what a page needs besides the program and the files of
 // internal/sqlite/browser: worker.js, the Worker that runs the program; simulator.js, the module

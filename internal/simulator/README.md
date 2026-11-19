@@ -780,7 +780,7 @@ The tests of `internal/simulator` run natively and in Chromium. They show:
 - **The state** (`state_test.go`): the position of each cache, folded from the events of the core alone, against what each read saw. The log. A request and a call in flight, from their start to their end.
 - **The checker** (`check_internal_test.go`): each invariant on input made to break it, and the excuse of `fresh`.
 
-`TestEngine` in `internal/simulator/engine` skips unless a page drives it: it looks for the object `s4qlEngine`, which `worker.js` sets.
+`TestEngine` in `internal/simulator/engine` serves a page when one drives it: it looks for the object `s4qlEngine`, which `worker.js` sets. Without the object, as in `make test-browser`, it plays the page with an object of its own: it shows that `submit` refuses a second message while the first waits and a message without its three arguments, and that the answers that `done` gets are those of an engine called directly. The whole path through `worker.js` is what `make site-check` checks.
 
 Natively, which `make test` does too:
 
