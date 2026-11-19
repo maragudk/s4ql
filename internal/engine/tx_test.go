@@ -944,6 +944,33 @@ func TestConn_events(t *testing.T) {
 		is.True(t, !strings.Contains(all, "4815162342"), all)
 	})
 
+	t.Run("should log the event of a transaction whose end waits for a loop over its rows when the loop ends, with the error of its commit", func(t *testing.T) {
+		h := &events{}
+		i := newInstanceLogged(t, engine.Options{Logger: slog.New(h)}, nil)
+		is.Equal(t, "", i.exec(t1).err)
+		is.Equal(t, "", i.exec(insert1).err)
+		is.NotError(t, i.c.Begin(t.Context()))
+		rows, err := i.c.Query(t.Context(), selectT)
+		is.NotError(t, err)
+		for _, err := range rows.All() {
+			if err != nil {
+				break
+			}
+			is.Error(t, engine.ErrRowsOpen, i.c.Commit(t.Context()))
+			e, _ := h.last(t)
+			is.Equal(t, engine.EventStatement, e["msg"])
+		}
+		// The end of the rows ends the transaction, and then logs the event of the query.
+		h.mu.Lock()
+		e, level := h.records[len(h.records)-2], h.levels[len(h.levels)-2]
+		h.mu.Unlock()
+		is.Equal(t, slog.LevelDebug, level)
+		is.Equal(t, engine.EventTransaction, e["msg"])
+		is.Equal(t, "commit", e[engine.AttrTxEnd])
+		is.Equal(t, "not_supported", e[engine.AttrOutcome])
+		is.True(t, strings.HasSuffix(e[engine.AttrError], "so the transaction is rolled back and not committed"), e[engine.AttrError])
+	})
+
 	t.Run("should log a commit that is too large at Debug", func(t *testing.T) {
 		h := &events{}
 		hi := newInstanceOn(t, simstore.Options{MaxSize: 4 << 10})

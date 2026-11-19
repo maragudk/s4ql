@@ -102,11 +102,12 @@ func (c *Conn) Begin(ctx context.Context) error {
 	if err := c.canBegin(); err != nil {
 		return err
 	}
+	start := c.e.host.Monotonic()
 	w, err := c.begin(ctx)
 	if err != nil {
 		return err
 	}
-	c.tx = &transaction{e: c.e, write: w, start: c.e.host.Monotonic()}
+	c.tx = &transaction{e: c.e, write: w, start: start}
 	return nil
 }
 
@@ -121,11 +122,12 @@ func (c *Conn) BeginReadOnly(ctx context.Context) error {
 	if err := c.canBegin(); err != nil {
 		return err
 	}
+	start := c.e.host.Monotonic()
 	rt, err := c.read(ctx)
 	if err != nil {
 		return err
 	}
-	c.tx = &transaction{e: c.e, read: rt, start: c.e.host.Monotonic()}
+	c.tx = &transaction{e: c.e, read: rt, start: start}
 	return nil
 }
 
@@ -186,10 +188,12 @@ func (c *Conn) Commit(ctx context.Context) error {
 	c.tx = nil
 	var err error
 	switch {
-	case c.leaveEnd(t):
-		if t.write != nil {
-			err = fmt.Errorf("%w, so the transaction is rolled back and not committed", ErrRowsOpen)
-		}
+	case t.write != nil && c.rowsRead():
+		err = fmt.Errorf("%w, so the transaction is rolled back and not committed", ErrRowsOpen)
+		c.leaveEnd(t, "commit", err)
+		return err
+	case c.leaveEnd(t, "commit", nil):
+		return nil
 	case t.write != nil:
 		err = commitError(t.write.commit(ctx))
 	default:
@@ -200,8 +204,9 @@ func (c *Conn) Commit(ctx context.Context) error {
 }
 
 // Rollback the transaction of the connection: nothing that it did is kept. It ends the transaction
-// whatever it returns, and returns nil also on an instance that has stopped or lost its lease, so
-// that it always frees the place of the writer. It treats rows of the transaction as [Conn.Commit]
+// and frees the place of the writer whatever it returns. It returns nil on an instance that has lost
+// its lease or has been closed; on an instance that a local failure has stopped, it can give the
+// error of the roll back in the cache. It treats rows of the transaction as [Conn.Commit]
 // does, and a transaction whose rows a loop reads ends at the next row of the loop. It fails with
 // [ErrNoTx] on a connection without a transaction.
 func (c *Conn) Rollback(ctx context.Context) error {
@@ -210,19 +215,25 @@ func (c *Conn) Rollback(ctx context.Context) error {
 		return ErrNoTx
 	}
 	c.tx = nil
-	var err error
-	if !c.leaveEnd(t) {
-		err = t.end(ctx)
+	if c.leaveEnd(t, "rollback", nil) {
+		return nil
 	}
+	err := t.end(ctx)
 	t.log(ctx, "rollback", err)
 	return err
 }
 
-// leaveEnd ends the rows of the transaction t, which ends, and reports whether it left the end of t
-// to them. Rows that no loop reads end now. Rows that a loop reads hold the scan of a statement of t
-// until the loop ends, so the end of t is theirs: they end at the next row of the loop with
-// [ErrTxDone], and end t after the scan has ended.
-func (c *Conn) leaveEnd(t *transaction) bool {
+// rowsRead reports whether a loop over the rows of the last query of the connection runs.
+func (c *Conn) rowsRead() bool {
+	return c.rowsOpen() && c.rows.reading
+}
+
+// leaveEnd ends the rows of the transaction t, which ends by how, and reports whether it left the
+// end of t to them. Rows that no loop reads end now. Rows that a loop reads hold the scan of a
+// statement of t until the loop ends, so the end of t is theirs: they end at the next row of the
+// loop with [ErrTxDone], and end t after the scan has ended, and log its event then, with err, or
+// with the error of that end.
+func (c *Conn) leaveEnd(t *transaction, how string, err error) bool {
 	r := c.rows
 	if r == nil || r.done {
 		return false
@@ -231,8 +242,22 @@ func (c *Conn) leaveEnd(t *transaction) bool {
 		_ = r.end(nil)
 		return false
 	}
-	r.closing, r.cut, r.tx = true, ErrTxDone, t
+	r.closing, r.cut, r.tx = true, ErrTxDone, ending{t: t, how: how, err: err}
 	return true
+}
+
+// ending is the end of the transaction t, which ended by how with err while a loop over its rows
+// ran, and which those rows run when the loop ends.
+type ending struct {
+	t   *transaction
+	how string
+	err error
+}
+
+func (e ending) end(ctx context.Context) error {
+	err := e.t.end(ctx)
+	e.t.log(ctx, e.how, first(e.err, err))
+	return err
 }
 
 // commitError is the error of a commit, with [ErrTooLarge] for a commit object that the store

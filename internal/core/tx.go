@@ -178,8 +178,9 @@ func (tx *Tx) Savepoint(ctx context.Context) error {
 // Release the savepoint that is open: the transaction keeps what it did since. It does not need the
 // instance to serve, because nothing is read or written then. It fails with an error that wraps
 // [ErrInvalid] if no savepoint is open, with [ErrTxDone] on a transaction that has ended, with the
-// error after which the transaction can only be rolled back, and with the error of the stop on an
-// instance that has stopped; after an error of the cache, the transaction can only be rolled back.
+// error after which the transaction can only be rolled back, and with the error of the stop once
+// [DB.Close] has closed the connection; on an instance that has stopped and is not closed, it still
+// runs. After an error of the cache, the transaction can only be rolled back.
 func (tx *Tx) Release(ctx context.Context) error {
 	const operation = "release"
 	if err := tx.checkOpen(); err != nil {

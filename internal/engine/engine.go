@@ -402,7 +402,8 @@ func (c *Conn) checkOutside(ctx context.Context, r *report, p Plan, args []*s4ql
 	return err
 }
 
-// readOnly is a [writer] of a read transaction that writes nothing, for the planted bug checkOutside.
+// readOnly is a [writer] of a read transaction that writes nothing: for the planted bug checkOutside,
+// and for the lookups of a write in a read-only transaction, which then refuses the write.
 type readOnly struct {
 	readTx
 }

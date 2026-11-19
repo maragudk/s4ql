@@ -626,7 +626,7 @@ func (p *pair) step(src string, query, supported bool) string {
 	changes, rowid := o.changes(t)
 	p.prev = changes
 	switch {
-	case strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeConstraint, "/")), strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeReadOnly, "/")) && strings.Contains(strings.ToLower(src), "insert"):
+	case strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeConstraint, "/")), strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeReadOnly, "/")) && isInsert(src):
 		if changes != 0 {
 			return fmt.Sprintf("%q: SQLite counts %v changes after a broken constraint or a refused insert", src, changes)
 		}
@@ -640,6 +640,13 @@ func (p *pair) step(src string, query, supported bool) string {
 		return fmt.Sprintf("%q: SQLite's last insert rowid is %v", src, rowid)
 	}
 	return ""
+}
+
+// isInsert reports whether src is a supported insert.
+func isInsert(src string) bool {
+	s, _ := stmt.Check(src)
+	_, ok := s.(*stmt.Insert)
+	return ok
 }
 
 // syntaxOfNotSupported gives the message of the syntax error that SQLite gives when it prepares src, a

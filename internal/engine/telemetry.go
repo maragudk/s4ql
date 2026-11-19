@@ -70,8 +70,9 @@ const (
 	// attrTxStatements is the number of statements that the connection was given while the
 	// transaction was open, also those that failed.
 	attrTxStatements = "transaction.statements"
-	// attrTxWrites is the number of statements whose changes the transaction kept: those that its
-	// commit object annotates.
+	// attrTxWrites is the number of statements that changed the database in the transaction and
+	// succeeded, each of which it annotated. A commit object holds their annotations only if the
+	// transaction is committed and changed something in the end.
 	attrTxWrites = "transaction.writes"
 	// attrTxPosition is the last commit object of the state that the transaction began from.
 	attrTxPosition = "transaction.position"
