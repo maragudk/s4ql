@@ -84,6 +84,24 @@ async function open(address) {
       while (!f()) await page.skip(1000);
       return win.s4qlPage.t - from;
     },
+    // client is what the page says of the client: its target, and the counts of what its calls got.
+    client: () => {
+      const d = $("#client").dataset;
+      const c = { target: d.target, writes: Number(d.writes), reads: Number(d.reads), failed: Number(d.failed) };
+      c.calls = c.writes + c.reads + c.failed;
+      return c;
+    },
+    // served and refused are what the card of the instance says that it served and refused.
+    served: (name) => $(`[data-instance="${name}"] [data-f="calls"]`).textContent + "; refused " + $(`[data-instance="${name}"] [data-f="refused"]`).textContent,
+    // point the client at the instance with its switch, and wait until the page has the state after
+    // it.
+    point: async (name) => {
+      const b = $(`#client [data-target="${name}"]`);
+      await until(() => !b.disabled && html.dataset.busy === "false");
+      const before = page.lines;
+      b.click();
+      await until(() => page.lines > before && html.dataset.busy === "false");
+    },
     // press the action's button of the instance once it is enabled, and wait until the page has the
     // state after it: an action always adds its line to the log.
     press: async (name, a) => {
@@ -117,6 +135,23 @@ async function unit() {
   const shown = events.filter((e) => tell(e).tier).map((e) => e.t);
   expect(JSON.stringify(shown) === JSON.stringify([1, 4, 6, 7, 8]), `a spell of refusals takes one line for each reason, until the instance serves (lines at ${shown.join(", ")})`);
 
+  // A run of failures of the client of one kind takes one line when it begins. A call that is served,
+  // and a switch of the client, end the run.
+  tell = R.teller();
+  const call = (t, inst, what, error) => ({ t, kind: "call", caller: "client", what, instance: inst, process: inst, op: "read", error });
+  const clientEvents = [
+    call(1, "a", "down", "the process of the instance has crashed"), call(2, "a", "down", "the process of the instance has crashed"),
+    call(3, "a", "refused", "no valid lease: not_holder"), call(4, "a", "refused", "no valid lease: not_holder"),
+    { t: 5, kind: "action", what: "done", do: "client", instance: "b" },
+    call(6, "b", "refused", "no valid lease: not_holder"), call(7, "b", "refused", "no valid lease: not_holder"),
+    call(8, "b", "served", ""), call(9, "b", "refused", "no valid lease: not_holder"),
+  ];
+  const clientLines = clientEvents.map((e) => tell(e)).filter((w) => w.tier).map((w) => w.text);
+  const wantLines = ["Client: a is down.", "Client: a refuses, no lease.", "You point the client at b.", "Client: b refuses, no lease.", "b serves a read: no rows.", "Client: b refuses, no lease."];
+  expect(JSON.stringify(clientLines) === JSON.stringify(wantLines), `a run of failures of the client takes one line, until it is served or switched (${clientLines.join(" | ")})`);
+  const words = [call(1, "a", "down", "the process of the instance has crashed"), call(2, "b", "refused", "no valid lease: not_holder"), { ...call(3, "a", "lost", "crashed"), op: "write", value: 7 }].map((e) => R.clientFailure(e).words);
+  expect(JSON.stringify(words) === JSON.stringify(["a is down: crashed", "b refuses: no lease", "a crashed during a write, outcome unknown"]), `the last failure of the client in a few words (${words.join(" | ")})`);
+
   // Opens that fail take one line until the database opens, and again when they fail after that.
   tell = R.teller();
   const proc = (t, what) => ({ t, kind: "process", what, instance: "a", process: "a", holder: "h" + t });
@@ -147,6 +182,8 @@ async function check() {
   expect(!play.disabled && play.textContent.trim() === "Play", "Play is offered");
   expect(turbo.getAttribute("aria-pressed") === "false" && !p.win.s4qlPage.turbo, "turbo is off");
   expect(p.instance("a") && p.instance("b") && p.win.s4qlPage.state.instances.length === 2, "the session has the two instances a and b");
+  const switchA = p.$('#client [data-target="a"]'), wireA = p.$('[data-wire="a"]');
+  expect(p.client().target === "a" && switchA.getAttribute("aria-pressed") === "true" && wireA.dataset.on === "true", "the client calls a, its switch shows a on, and its wire goes to a");
   const t0 = p.t;
   await p.frames(30);
   expect(p.t === t0 && p.idle(), `fake time stays at ${t0} ms for 30 frames without Play`);
@@ -168,6 +205,8 @@ async function check() {
   expect(true, `playing gives lines in the log (${p.lines}) and commit objects (${p.commits})`);
   turbo.click();
   expect(turbo.getAttribute("aria-pressed") === "false", "turbo is off again");
+  await until(() => p.client().writes + p.client().reads > 0);
+  expect(p.served("b") === "0 writes, 0 reads; refused 0", `the client is served by a from the start (${JSON.stringify(p.client())}), and b gets no call (${p.served("b")})`);
 
   // Pause holds fake time.
   play.click();
@@ -199,13 +238,37 @@ async function check() {
   const resumed = !a().wallStopped && !a().monotonicStopped && p.button("a", "pause").getAttribute("aria-pressed") === "false";
   expect(paused && resumed && Math.abs(behind + 5000) < 50, `Pause clocks stops both clocks of a (${behind.toFixed(0)} ms behind after 5 s), and resumes them`);
 
+  const beforeCrash = p.client();
   await p.press("a", "crash");
+  await p.skipUntil(() => p.client().failed > beforeCrash.failed + 2);
+  const down = p.client();
+  expect(down.target === "a" && /^a is down/.test(p.$("#client-why").textContent) && p.$("#client-last").dataset.failing === "true",
+    `the client keeps calling a while a is crashed (${down.failed - beforeCrash.failed} calls failed), and says why (${p.$("#client-why").textContent})`);
+  expect([...p.$("#log").children].filter((li) => li.textContent.includes("Client: a is down.")).length === 1, "the log says once that a is down");
   const crashed = a().state === "crashed" && p.button("a", "crash").textContent === "Restart" && p.button("a", "pause").disabled && p.button("a", "stop").disabled && !p.button("a", "hang").disabled;
   expect(crashed, "Crash crashes a: Crash becomes Restart, the clock and Stop are off, the network and the disk stay on");
   await p.press("a", "crash");
   expect(a().state !== "crashed" && a().process === "a2" && p.button("a", "crash").textContent === "Crash", `Restart starts process ${a().process}, in the state ${a().state}`);
 
   await p.skipUntil(() => a().state === "running");
+  const restarted = p.client().calls;
+  await p.skipUntil(() => p.client().calls > restarted + 2);
+  expect(p.client().target === "a", `the client keeps calling a after the restart (${p.client().calls - restarted} calls)`);
+
+  // A switch of the client moves its calls to b, and a gets none of them.
+  const aBefore = p.served("a"), bBefore = p.served("b"), switched = p.client().calls;
+  await p.point("b");
+  const switchB = p.$('#client [data-target="b"]');
+  expect(p.client().target === "b" && switchB.getAttribute("aria-pressed") === "true" && switchA.getAttribute("aria-pressed") === "false" && p.$('[data-wire="b"]').dataset.on === "true",
+    "the switch points the client at b, and shows b on");
+  await p.skipUntil(() => p.client().calls > switched + 3);
+  // A call that was on a at the switch can still end there; the ones after it go to b.
+  const aMid = p.served("a");
+  await p.skipUntil(() => p.served("b") !== bBefore && p.client().calls > switched + 6);
+  expect(p.served("a") === aMid && p.served("b") !== bBefore, `after the switch, b gets the calls (${bBefore} to ${p.served("b")}), and a none (${aBefore}, ${p.served("a")})`);
+  await p.point("a");
+  expect(p.client().target === "a", "the switch points the client back at a");
+
   await p.press("a", "stop");
   const stopping = ["closing", "closed"].includes(a().state);
   await p.skipUntil(() => a().state === "closed");

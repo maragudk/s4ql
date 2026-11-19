@@ -48,6 +48,55 @@ export const REASONS = {
 // reason of a refused call, from its error, which ends with the reason of the core.
 export const reason = (e) => String(e.error || "").split(": ").pop();
 
+// DOWN says why the target of the client could not take a call, from the error of the call, in words.
+const DOWN = [
+  ["has not started", "not started"],
+  ["has crashed", "crashed"],
+  ["could not be opened", "cannot open its database"],
+  ["is not open", "starting"],
+  ["is closed", "stopped"],
+  ["has stopped", "core stopped"],
+];
+
+// clientFailure of a call of the client that ended without being served, from its event: kind, which
+// stays the same over a run of failures of one kind, words for the last failure, and line for the
+// log. A call that was served or committed has none.
+export function clientFailure(e) {
+  const i = e.instance;
+  const write = e.op === "write";
+  switch (e.what) {
+    case "committed":
+    case "served":
+      return null;
+    case "down":
+    case "stopped": {
+      const found = DOWN.find(([text]) => String(e.error || "").includes(text));
+      const why = e.what === "stopped" ? "core stopped" : found ? found[1] : "down";
+      return { kind: "down " + i, words: `${i} is down: ${why}`, line: `Client: ${i} is down.` };
+    }
+    case "refused": {
+      const r = reason(e);
+      const why = REASONS[r] || r;
+      return { kind: "refused " + i + " " + r, words: `${i} refuses: ${why}`, line: `Client: ${i} refuses, ${why}.` };
+    }
+    case "lost":
+      return write
+        ? { words: `${i} crashed during a write, outcome unknown`, line: `Client: ${i} crashed during the write of key ${e.value}, outcome unknown.` }
+        : { words: `${i} crashed during a read`, line: `Client: ${i} crashed during a read.` };
+    case "unknown":
+      return { words: `write on ${i}, outcome unknown`, line: `Client: the write of key ${e.value} on ${i} ends without an answer.` };
+    case "not_committed":
+      return { words: `write on ${i} not committed`, line: `Client: the write of key ${e.value} on ${i} is not committed.` };
+    case "abandoned":
+      return { kind: "abandoned " + i, words: `write on ${i} rolled back`, line: `Client: a write on ${i} is rolled back before its commit.` };
+    case "busy":
+      return { kind: "busy " + i, words: `cache of ${i} busy`, line: `Client: the cache of ${i} is busy.` };
+    case "timed_out":
+      return { kind: "timed_out " + i, words: `call on ${i} timed out`, line: `Client: calls on ${i} time out.` };
+  }
+  return { kind: "failed " + i, words: `call on ${i} failed`, line: `Client: a call on ${i} fails.` };
+}
+
 const SWAPS = { take: "take of the lease", commit: "commit", renew: "renewal", release: "release" };
 
 // actionWords of an action event of a session, as the visitor's own words.
@@ -63,6 +112,7 @@ function actionWords(e) {
     case "failDisk": return e.on ? `You make the disk of ${i} fail.` : `The disk of ${i} works again.`;
     case "shiftWall": return `You move the wall clock of ${i} ${e.by > 0 ? "forward" : "back"} ${Math.abs(e.by) / 1000} s.`;
     case "pauseClocks": return `You pause the clocks of ${i}.`;
+    case "client": return `You point the client at ${i}.`;
     case "resumeClocks": return `You resume the clocks of ${i}.`;
   }
   return `You: ${e.do}.`;
@@ -80,13 +130,16 @@ function actionWords(e) {
 // A refusal of a call is in the log only when it starts a spell of refusals of its instance, or has
 // another reason than the one before it, so that the instance without the lease, which refuses every
 // call of its application, takes one line. A spell ends when the instance serves a call. Other lines
-// that repeat while an action lasts are kept to one line in the same way.
+// that repeat while an action lasts are kept to one line in the same way. A failure of a call of the
+// client is in the log when it begins a run of failures of its kind, which a call that is served, or
+// a switch of the client, ends.
 export function teller() {
   const names = new Map(); // holder IDs, by the process that opened them
   const keys = new Map(); // the keys of each commit object, by its name
   const opened = new Set(); // processes that have opened their database once
   const spells = new Map(); // the kinds of line that each instance has said in its spells, by group
   const holder = (id) => (id ? names.get(id) || short(id) : "nobody");
+  let clientRun = null; // the kind of the run of failures of the client, or null
   return (e) => {
     const who = e.process || e.instance || "";
     let w = { text: "", tier: null };
@@ -174,6 +227,15 @@ export function teller() {
         break;
       }
       case "call":
+        if (e.caller === "client" && e.what !== "started") {
+          const f = clientFailure(e);
+          if (!f) clientRun = null;
+          else if (!f.kind || f.kind !== clientRun) {
+            clientRun = f.kind || null;
+            say(f.line);
+            break;
+          } else break;
+        }
         switch (e.what) {
           case "committed": // in the log as the commit of the core
             calm("call");
@@ -206,6 +268,7 @@ export function teller() {
         if (!e.what) say(e.text || "S3 does something the page does not know.");
         break;
       case "action":
+        if (e.do === "client" && e.what === "done") clientRun = null;
         if (e.what === "done") say(actionWords(e), "you");
         else say(`${actionWords(e)} ${e.what === "failed" ? "It fails" : "Ignored"}: ${e.text}.`, "you");
         break;
