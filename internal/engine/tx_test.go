@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"math"
 	"math/rand/v2"
 	"path/filepath"
 	"strings"
@@ -135,6 +136,9 @@ const (
 	insert2 = "insert into t1 (v1) values (2)"
 	insertP = "insert into t1 (v1) values (?)"
 	selectT = "select * from t1"
+	textT   = "create table tt (v text primary key) strict, without rowid"
+	realT   = "create table rt (v real primary key) strict, without rowid"
+	blobT   = "create table bt (v blob primary key) strict, without rowid"
 )
 
 func TestConn_Begin(t *testing.T) {
@@ -227,6 +231,42 @@ func TestConn_Begin(t *testing.T) {
 		{name: "should write nothing at the roll back of a read-only transaction", setup: []string{t1, insert1}, readOnly: true,
 			steps: []txStep{{src: selectT, want: "rows 1"}, {src: insert2, want: "8/8: attempt to write a readonly database"}},
 			want:  "t1 (v1 INT): 1\n"},
+		{name: "should commit values of every type, through literals and arguments, and keep the transaction open after a value of another type",
+			setup: []string{textT, realT, blobT}, commit: true,
+			steps: []txStep{
+				{src: "insert into tt (v) values ('b')"},
+				{src: "insert into tt (v) values (?)", args: []any{"a"}},
+				{src: "insert into tt (v) values (?)", args: []any{"a"}, want: `19/1555: UNIQUE constraint failed: tt.v`},
+				{src: "insert into tt (v) values (1)", want: "not supported"},
+				{src: "insert into tt (v) values (?)", args: []any{[]byte("c")}, want: "not supported"},
+				{src: "insert into rt (v) values (?)", args: []any{math.Copysign(0, -1)}},
+				{src: "insert into rt (v) values (0.0)", want: `19/1555: UNIQUE constraint failed: rt.v`},
+				{src: "insert into rt (v) values (-1.5e-310)"},
+				{src: "insert into bt (v) values (x'')"},
+				{src: "insert into bt (v) values (?)", args: []any{[]byte{0}}},
+				{src: "insert into bt (v) values ('')", want: "not supported"},
+				{src: "select * from tt", want: `rows "a" "b"`},
+				{src: "select * from rt", want: `rows real -1.5e-310 real 0`},
+				{src: "select * from bt", want: `rows x'' x'00'`},
+			},
+			want: "bt (v BLOB): x'' x'00'\nrt (v REAL): real -1.5e-310 real 0\ntt (v TEXT): \"a\" \"b\"\n"},
+		{name: "should undo values of every type at a roll back", setup: []string{textT, realT, blobT, "insert into tt (v) values ('a')"},
+			steps: []txStep{
+				{src: "insert into tt (v) values (?)", args: []any{"b"}}, {src: "insert into rt (v) values (1.5)"}, {src: "insert into bt (v) values (?)", args: []any{[]byte("b")}},
+				{src: "select * from tt", want: `rows "a" "b"`},
+			},
+			want: "bt (v BLOB): \nrt (v REAL): \ntt (v TEXT): \"a\"\n"},
+		{name: "should refuse a write of every type in a read-only transaction with SQLite's error, before the type of the value",
+			setup: []string{textT, "insert into tt (v) values ('a')"}, readOnly: true, commit: true,
+			steps: []txStep{
+				{src: "insert into tt (v) values ('b')", want: "8/8: attempt to write a readonly database"},
+				{src: "insert into tt (v) values (?)", args: []any{"a"}, want: "8/8: attempt to write a readonly database"},
+				{src: "insert into tt (v) values (1)", want: "8/8: attempt to write a readonly database"},
+				{src: "insert into tt (v) values (?)", args: []any{1.5}, want: "8/8: attempt to write a readonly database"},
+				{src: "insert into tt (x) values ('b')", want: "1/1: table tt has no column named x"},
+				{src: "select * from tt", want: `rows "a"`},
+			},
+			want: "tt (v TEXT): \"a\"\n"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

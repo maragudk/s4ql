@@ -397,6 +397,228 @@ func TestEngine_parameters(t *testing.T) {
 	})
 }
 
+// edge is a value at an edge of its type, as a literal and as an argument.
+type edge struct {
+	literal string
+	arg     any
+}
+
+// edges of each type of a column, in an order that is not the order of the keys.
+var edges = map[string][]edge{
+	"int": {
+		{"0", 0}, {"9223372036854775807", int64(math.MaxInt64)}, {"-9223372036854775808", int64(math.MinInt64)},
+		{"-1", -1}, {"1", 1}, {"9223372036854775806", int64(math.MaxInt64 - 1)}, {"-9223372036854775807", int64(math.MinInt64 + 1)},
+	},
+	"real": {
+		{"0.0", 0.0}, {"-0.0", math.Copysign(0, -1)}, {"5e-324", math.SmallestNonzeroFloat64}, {"-5e-324", -math.SmallestNonzeroFloat64},
+		{"1.7976931348623157e308", math.MaxFloat64}, {"-1.7976931348623157e308", -math.MaxFloat64},
+		{"2.2250738585072014e-308", 0x1p-1022}, {"2.225073858507201e-308", 0x1p-1022 - math.SmallestNonzeroFloat64},
+		{"1.0", 1.0}, {"-1.5", -1.5}, {"9223372036854775807.0", 0x1p63}, {"0.1", 0.1},
+	},
+	"text": {
+		{"''", ""}, {"'a'", "a"}, {"'A'", "A"}, {"'é'", "é"}, {"'日本語'", "日本語"}, {"'🙂'", "🙂"}, {"'it''s'", "it's"},
+		{"' '", " "}, {"'a '", "a "}, {"'\u007f'", "\u007f"}, {"'\U0010ffff'", "\U0010ffff"}, {"'é'", "é"},
+	},
+	"blob": {
+		{"x''", []byte{}}, {"x'00'", []byte{0}}, {"x'0000'", []byte{0, 0}}, {"x'ff'", []byte{0xff}}, {"x'0001'", []byte{0, 1}},
+		{"x'6162'", []byte("ab")}, {"x'61'", []byte("a")}, {"x'fffe00'", []byte{0xff, 0xfe, 0}},
+	},
+}
+
+func init() {
+	edges["integer"] = edges["int"]
+}
+
+// newOracleLimited is [newOracle] with SQLite's length limit limit.
+func newOracleLimited(t testing.TB, limit int) *oracle {
+	t.Helper()
+	o := newOracle(t)
+	is.NotError(t, o.c.SetLengthLimit(limit))
+	return o
+}
+
+func TestEngine_types(t *testing.T) {
+	t.Run("should insert and read the edges of each type as SQLite does, through literals and arguments, refuse each again, and replay them", func(t *testing.T) {
+		for typ, es := range edges {
+			for _, through := range []string{"literal", "argument"} {
+				t.Run(typ+" "+through, func(t *testing.T) {
+					i := newInstance(t, engine.Options{})
+					o := newOracle(t)
+					create := fmt.Sprintf("create table t (v %v primary key) strict, without rowid", typ)
+					is.Equal(t, "", i.exec(create).err)
+					is.Equal(t, "", o.run(t, create).err)
+					// Each value twice: the second time it, or -0.0 after 0.0, is a key that exists.
+					for _, e := range slices.Concat(es, es) {
+						src, args := "insert into t (v) values ("+e.literal+")", []any(nil)
+						if through == "argument" {
+							src, args = "insert into t (v) values (?)", []any{e.arg}
+						}
+						want := o.run(t, src, oracleArgs(args)...)
+						got := i.execValues(src, values(args))
+						is.Equal(t, want.String(), got.String(), e.literal)
+						changes, _ := o.changes(t)
+						is.Equal(t, changes, i.changes, e.literal)
+					}
+					want := o.run(t, "select * from t")
+					is.Equal(t, want.String(), i.query("select * from t").String())
+					is.Equal(t, len(es)-map[bool]int{true: 1}[typ == "real"], len(want.rows))
+					state := o.state(t)
+					is.Equal(t, state, i.state())
+					i.restart(true, engine.Options{})
+					is.Equal(t, state, i.state(), "after a replay of the log into an empty cache")
+					is.Equal(t, want.String(), i.query("select * from t").String())
+				})
+			}
+		}
+	})
+
+	t.Run("should keep INT and INTEGER apart, also after a replay of the log", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec("create table a (v INT primary key) strict, without rowid").err)
+		is.Equal(t, "", i.exec("create table b (v integer primary key) strict, without rowid").err)
+		is.Equal(t, "", i.exec("insert into b (v) values (1)").err)
+		want := "a (v INT): \nb (v INTEGER): 1\n"
+		is.Equal(t, want, i.state())
+		is.Equal(t, `columns "v INTEGER", rows ["1"]`, i.query("select * from B").String())
+		i.restart(true, engine.Options{})
+		is.Equal(t, want, i.state())
+		is.Equal(t, `columns "v INT", rows []`, i.query("select * from a").String())
+	})
+
+	t.Run("should store -0.0 as 0.0, take it for the key 0.0, and annotate the argument as given", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec("create table t (v real primary key) strict, without rowid").err)
+		negative := []*s4qlpb.Value{s4qlpb.Value_builder{Real: new(math.Copysign(0, -1))}.Build()}
+		is.Equal(t, "", i.execValues("insert into t (v) values (?)", negative).err)
+		is.Equal(t, `columns "v REAL", rows ["real 0"]`, i.query("select * from t").String())
+		is.Equal(t, "19/1555: UNIQUE constraint failed: t.v", i.exec("insert into t (v) values (0.0)").err)
+		is.Equal(t, "19/1555: UNIQUE constraint failed: t.v", i.exec("insert into t (v) values (-0.0)").err)
+		is.Equal(t, "insert into t (v) values (?) with real -0", logAnnotations(t, i.store)[1][0])
+		i.restart(true, engine.Options{})
+		is.Equal(t, "t (v REAL): real 0\n", i.state())
+	})
+
+	t.Run("should give a []byte of the rows of its own, and a blob that is empty and not nil", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec("create table t (v blob primary key) strict, without rowid").err)
+		arg := []byte("ab")
+		is.Equal(t, "", i.execValues("insert into t (v) values (?)", values([]any{arg})).err)
+		arg[0] = 'x'
+		is.Equal(t, "", i.exec("insert into t (v) values (x'')").err)
+		rows, err := i.c.Query(t.Context(), "select * from t")
+		is.NotError(t, err)
+		var got [][]byte
+		for row, err := range rows.All() {
+			is.NotError(t, err)
+			got = append(got, row[0].GetBlob())
+		}
+		is.Equal(t, 2, len(got))
+		is.True(t, got[0] != nil && len(got[0]) == 0, "the empty blob")
+		is.Equal(t, "ab", string(got[1]))
+	})
+}
+
+func TestEngine_tooBig(t *testing.T) {
+	// limit is the length limit of the cache and of SQLite in these tests.
+	const limit = 1000
+
+	t.Run("should give SQLite's error for an argument or a row that is too long, with SQLite's count of changes", func(t *testing.T) {
+		for _, typ := range []string{"text", "blob"} {
+			i := newInstanceLimited(t, engine.Options{}, nil, limit)
+			o := newOracleLimited(t, limit)
+			create := fmt.Sprintf("create table t (v %v primary key) strict, without rowid", typ)
+			is.Equal(t, "", i.exec(create).err)
+			is.Equal(t, "", o.run(t, create).err)
+			var outcomes []string
+			for n := limit - 12; n <= limit+2; n++ {
+				var arg any = strings.Repeat("a", n)
+				if typ == "blob" {
+					arg = bytes.Repeat([]byte{0}, n)
+				}
+				src := "insert into t (v) values (?)"
+				want := o.run(t, src, arg)
+				got := i.execValues(src, values([]any{arg}))
+				is.Equal(t, want.String(), got.String(), n)
+				changes, _ := o.changes(t)
+				is.Equal(t, changes, i.changes, n)
+				outcomes = append(outcomes, want.err)
+			}
+			is.Equal(t, o.state(t), i.state())
+			// Both a row whose value fits and whose record does not, and a value that does not fit.
+			is.True(t, outcomes[0] == "" && outcomes[len(outcomes)-1] == "18/18: string or blob too big", fmt.Sprint(outcomes))
+			is.True(t, slices.Index(outcomes, "18/18: string or blob too big") < len(outcomes)-3, fmt.Sprint(outcomes))
+		}
+	})
+
+	t.Run("should give SQLite's error for a literal whose row is too long, and for one that is too long", func(t *testing.T) {
+		i := newInstanceLimited(t, engine.Options{}, nil, limit)
+		o := newOracleLimited(t, limit)
+		create := "create table t (v text primary key) strict, without rowid"
+		is.Equal(t, "", i.exec(create).err)
+		is.Equal(t, "", o.run(t, create).err)
+		for n := limit - 12; n <= limit; n++ {
+			src := "insert into t (v) values ('" + strings.Repeat("a", n) + "')"
+			want := o.run(t, src)
+			is.Equal(t, want.String(), i.exec(src).String(), n)
+			changes, _ := o.changes(t)
+			is.Equal(t, changes, i.changes, n)
+		}
+		// SQLite reads a literal of the text only up to its limit for a text, which is the same
+		// limit unless a test lowers this one alone, so it is not compared.
+		for _, src := range []string{"insert into t (v) values ('" + strings.Repeat("a", limit+1) + "')", "insert into t (v) values (x'" + strings.Repeat("00", limit+1) + "')"} {
+			is.Equal(t, "18/18: string or blob too big", i.exec(src).err)
+		}
+		is.Equal(t, o.state(t), i.state())
+	})
+
+	t.Run("should give SQLite's errors of the names first, then the error of an argument that is too long, also before a read-only transaction and the type of the column", func(t *testing.T) {
+		i := newInstanceLimited(t, engine.Options{}, nil, limit)
+		o := newOracleLimited(t, limit)
+		for _, s := range []string{"create table t (v text primary key) strict, without rowid", "create table n (v int primary key) strict, without rowid"} {
+			is.Equal(t, "", i.exec(s).err)
+			is.Equal(t, "", o.run(t, s).err)
+		}
+		long := strings.Repeat("a", limit+1)
+		run := func(src string, arg any, want string) {
+			t.Helper()
+			is.Equal(t, want, o.run(t, src, arg).err, "SQLite: "+src)
+			is.Equal(t, want, i.execValues(src, values([]any{arg})).err, src)
+		}
+		run("insert into nosuch (v) values (?)", long, "1/1: no such table: nosuch")
+		run("insert into t (w) values (?)", long, "1/1: table t has no column named w")
+		run("insert into t (v) values (?)", long, "18/18: string or blob too big")
+		run("insert into n (v) values (?)", long, "18/18: string or blob too big")
+		is.NotError(t, i.c.BeginReadOnly(t.Context()))
+		for _, s := range oracleBegin(true) {
+			is.Equal(t, "", o.run(t, s).err, s)
+		}
+		run("insert into nosuch (v) values (?)", long, "1/1: no such table: nosuch")
+		run("insert into t (v) values (?)", long, "18/18: string or blob too big")
+		run("insert into n (v) values (?)", long, "18/18: string or blob too big")
+		run("insert into t (v) values (?)", "a", "8/8: attempt to write a readonly database")
+		// SQLite refuses the write before it looks at the type of the value.
+		run("insert into n (v) values (?)", "a", "8/8: attempt to write a readonly database")
+		is.NotError(t, i.c.Rollback(t.Context()))
+	})
+
+	t.Run("should keep a transaction usable after a value that is too long", func(t *testing.T) {
+		i := newInstanceLimited(t, engine.Options{}, nil, limit)
+		is.Equal(t, "", i.exec("create table t (v blob primary key) strict, without rowid").err)
+		is.NotError(t, i.c.Begin(t.Context()))
+		is.Equal(t, "", i.exec("insert into t (v) values (x'01')").err)
+		for _, n := range []int{limit + 1, limit} {
+			got := i.execValues("insert into t (v) values (?)", values([]any{make([]byte, n)}))
+			is.Equal(t, "18/18: string or blob too big", got.err, n)
+		}
+		is.Equal(t, "", i.exec("insert into t (v) values (x'02')").err)
+		is.NotError(t, i.c.Commit(t.Context()))
+		want := "t (v BLOB): x'01' x'02'\n"
+		is.Equal(t, want, i.state())
+		i.restart(true, engine.Options{})
+		is.Equal(t, want, i.state())
+	})
+}
+
 func TestEngine_Exec(t *testing.T) {
 	t.Run("should count one change for an insert, and none set by a create table, a drop table, or a query", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})

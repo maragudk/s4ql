@@ -388,6 +388,8 @@ type instance struct {
 	memory func(text func(*s4qlpb.Value) string) string
 	// coreLog is the logger of the core, or nil.
 	coreLog *slog.Logger
+	// limit is the length limit of the cache, 0 for SQLite's default.
+	limit int
 }
 
 // newMemoryInstance of the engine on a database in memory.
@@ -404,8 +406,15 @@ func newInstance(t testing.TB, options engine.Options) *instance {
 // newInstanceLogged is [newInstance] with a logger of the core.
 func newInstanceLogged(t testing.TB, options engine.Options, coreLog *slog.Logger) *instance {
 	t.Helper()
+	return newInstanceLimited(t, options, coreLog, 0)
+}
+
+// newInstanceLimited is [newInstanceLogged] with the length limit of the cache limit, 0 for SQLite's
+// default.
+func newInstanceLimited(t testing.TB, options engine.Options, coreLog *slog.Logger, limit int) *instance {
+	t.Helper()
 	h := sim.NewFree(sim.Buggify{})
-	i := &instance{t: t, host: h, store: simstore.New(h, simstore.Options{}), dir: t.TempDir(), coreLog: coreLog}
+	i := &instance{t: t, host: h, store: simstore.New(h, simstore.Options{}), dir: t.TempDir(), coreLog: coreLog, limit: limit}
 	i.open(true, options)
 	t.Cleanup(func() {
 		i.close()
@@ -424,7 +433,7 @@ func (i *instance) open(empty bool, options engine.Options) {
 	ctx := context.WithoutCancel(i.t.Context())
 	// A slow machine must not make the cache busy or the lease run out: the waits for both are far
 	// longer than any statement takes.
-	coreOptions := core.Options{BusyTimeout: time.Minute, Lease: time.Hour, Logger: i.coreLog}
+	coreOptions := core.Options{BusyTimeout: time.Minute, Lease: time.Hour, Logger: i.coreLog, LengthLimit: i.limit}
 	d, err := core.Open(ctx, i.host, i.store.Client(fmt.Sprint("client-", i.host.Uint64()), nil), i.path, "db", coreOptions)
 	is.NotError(i.t, err)
 	is.NotError(i.t, d.Wait(ctx))
