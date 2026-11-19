@@ -434,11 +434,14 @@ func (v valuer) Value() (driver.Value, error) {
 	return int64(v), nil
 }
 
+// errNoValue is the error of a [failingValuer].
+var errNoValue = errors.New("no value for the secret 4815162342")
+
 // failingValuer is a [driver.Valuer] that fails.
 type failingValuer struct{}
 
 func (failingValuer) Value() (driver.Value, error) {
-	return nil, errors.New("no value")
+	return nil, errNoValue
 }
 
 // annotations of the commit objects of the database "db" in the world's store, in the order of the
@@ -514,12 +517,13 @@ func TestParameters(t *testing.T) {
 		exec(t, db, t1)
 		type id int16
 		args := []any{int(1), int8(-2), int16(3), int32(-4), int64(5), uint(6), uint8(7), uint16(8), uint32(9),
-			uint64(9223372036854775807), id(10), new(int64(11)), sql.NullInt64{Int64: 12, Valid: true}, valuer(13)}
+			uint64(9223372036854775807), id(10), new(int64(11)), sql.NullInt64{Int64: 12, Valid: true}, valuer(13), new(uint(14)),
+			uint(9223372036854775806)}
 		for _, a := range args {
 			_, err := db.ExecContext(t.Context(), insertParameter, a)
 			is.NotError(t, err, fmt.Sprintf("%T", a))
 		}
-		is.EqualSlice(t, []int64{-4, -2, 1, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 9223372036854775807}, values(t, db, select1))
+		is.EqualSlice(t, []int64{-4, -2, 1, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 9223372036854775806, 9223372036854775807}, values(t, db, select1))
 	})
 
 	t.Run("should give SQLite's errors for a parameter as for a literal", func(t *testing.T) {
@@ -590,6 +594,7 @@ func TestParameters(t *testing.T) {
 					_, err := prepared.QueryContext(t.Context(), c.args...)
 					return err
 				},
+				"prepared QueryRow": func() error { return prepared.QueryRowContext(t.Context(), c.args...).Scan(new(int64)) },
 			} {
 				err := call()
 				is.Equal(t, c.want, failed(t, err).Error(), name, c.src)
@@ -626,9 +631,13 @@ func TestParameters(t *testing.T) {
 			{arg: true, want: "argument 1 of type bool"},
 			{arg: []byte{1}, want: "argument 1 of type []uint8"},
 			{arg: time.Time{}, want: "argument 1 of type time.Time"},
-			{arg: uint64(9223372036854775808), want: "argument 1 of type uint64: uint64 values with high bit set are not supported"},
-			{arg: struct{}{}, want: "argument 1 of type struct {}: unsupported type struct {}, a struct"},
-			{arg: failingValuer{}, want: "argument 1 of type s4ql_test.failingValuer: no value"},
+			{arg: uint64(9223372036854775808), want: "argument 1 of type uint64, whose value does not fit a signed 64-bit integer"},
+			// database/sql's conversion would make these a negative int64.
+			{arg: uint(9223372036854775808), want: "argument 1 of type uint, whose value does not fit a signed 64-bit integer"},
+			{arg: new(uint(18446744073709551615)), want: "argument 1 of type *uint, whose value does not fit a signed 64-bit integer"},
+			{arg: uintptr(9223372036854775808), want: "argument 1 of type uintptr, whose value does not fit a signed 64-bit integer"},
+			{arg: struct{}{}, want: "argument 1 of type struct {}, which database/sql cannot convert"},
+			{arg: failingValuer{}, want: "argument 1 of type s4ql_test.failingValuer, which database/sql cannot convert"},
 			{arg: sql.Named("v", 1), want: `the named argument "v"`},
 		}
 		for _, c := range cases {
@@ -639,6 +648,12 @@ func TestParameters(t *testing.T) {
 			_, err = prepared.ExecContext(t.Context(), c.arg)
 			is.Equal(t, c.want, notSupported(t, err), fmt.Sprintf("%T", c.arg))
 		}
+
+		// The error of a driver.Valuer is the cause, and its text is not in the message.
+		_, err = db.ExecContext(t.Context(), insertParameter, failingValuer{})
+		is.Error(t, errNoValue, err)
+		is.Error(t, s4ql.ErrNotSupported, err)
+		is.True(t, !strings.Contains(err.Error(), "4815162342"), err.Error())
 		is.EqualSlice(t, []int64{}, values(t, db, select1))
 		is.Equal(t, 1, len(commits(t, w)))
 	})

@@ -262,10 +262,10 @@ func eval(e Expr, args []*s4qlpb.Value) (*s4qlpb.Value, error) {
 }
 
 // buildSink: the sink of the plan p, in the transaction of w, with args for the parameters of p, and
-// with the planted bugs of b. It makes the
-// checks that SQLite makes when it prepares the statement, in SQLite's order, and fails with SQLite's
-// error: for CREATE TABLE, a table of the name; for DROP TABLE, no table of the name; for INSERT, no
-// table of the name, and then a column that the table does not have.
+// with the planted bugs of b. It makes the checks that SQLite makes when it prepares the statement,
+// in SQLite's order, and fails with SQLite's error: for CREATE TABLE, a table of the name; for DROP
+// TABLE, no table of the name; for INSERT, no table of the name, and then a column that the table
+// does not have.
 func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bugs) (sink, error) {
 	switch p := p.(type) {
 	case *CreateTable:

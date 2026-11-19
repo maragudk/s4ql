@@ -24,8 +24,9 @@ import (
 //   - Debug: a statement that succeeded; one that failed with SQLite's error, which is an answer to
 //     the application and nothing that went wrong; one that is not supported, which includes one
 //     that reads on a connection whose rows of an earlier query are open; a text without a
-//     statement; one with another number of arguments than it has parameters; one that the core refused for lack of a valid lease or because the instance has
-//     stopped, which the core logs itself; and one whose context ended.
+//     statement; one with another number of arguments than it has parameters; one that the core
+//     refused for lack of a valid lease or because the instance has stopped, which the core logs
+//     itself; and one whose context ended.
 //   - Warn: one that failed with another error of the core, such as a commit of unknown outcome.
 //   - Error: one that failed with an internal error, a fault of s4ql.
 //

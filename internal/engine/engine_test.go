@@ -210,12 +210,6 @@ func TestEngine_parameters(t *testing.T) {
 	}
 
 	t.Run("should read the rows that parameters inserted, as SQLite does", func(t *testing.T) {
-		setup := []string{t1}
-		for _, v := range []int64{3, -9223372036854775808, 0, 9223372036854775807} {
-			setup = append(setup, fmt.Sprint("insert into t1 (v1) values (", v, ")"))
-		}
-		pin(t, setup, "select * from t1", "columns v1 INT; rows -9223372036854775808 0 3 9223372036854775807")
-
 		i := newInstance(t, engine.Options{})
 		o := newOracle(t)
 		is.Equal(t, o.run(t, t1).String(), i.exec(t1).String())

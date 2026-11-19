@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -330,17 +332,49 @@ func argument(a driver.NamedValue) (*s4qlpb.Value, error) {
 	case nil:
 		return nil, notSupported(fmt.Sprintf("argument %v of type nil", a.Ordinal))
 	case unconverted:
-		return nil, notSupported(fmt.Sprintf("argument %v of type %T: %v", a.Ordinal, v.value, v.err))
+		// The error of the conversion is the cause, and not in the message: the error of a
+		// [driver.Valuer] is the application's, and can hold a value.
+		what := fmt.Sprintf("argument %v of type %T, which database/sql cannot convert", a.Ordinal, v.value)
+		if v.err == errOverflow {
+			what = fmt.Sprintf("argument %v of type %T, whose value does not fit a signed 64-bit integer", a.Ordinal, v.value)
+		}
+		return nil, &failure{is: ErrNotSupported, message: "s4ql: not supported: " + what, cause: v.err}
 	default:
 		return nil, notSupported(fmt.Sprintf("argument %v of type %T", a.Ordinal, v))
 	}
 }
 
 // unconverted is an argument that database/sql's default conversion refused, with its error, which
-// [argument] reports after the text is judged.
+// [argument] reports after the text is judged, as the cause of its "not supported".
 type unconverted struct {
 	value any
 	err   error
+}
+
+// errOverflow is the error of an unsigned integer above the largest int64.
+var errOverflow = errors.New("s4ql: an unsigned integer that does not fit a signed 64-bit integer")
+
+// overflows reports whether v is an unsigned integer above the largest int64, or a pointer to one,
+// which [driver.DefaultParameterConverter] would turn into a negative int64 for every unsigned kind
+// but uint64. A [driver.Valuer] gives its own value, and is not one.
+func overflows(v any) bool {
+	for {
+		if _, ok := v.(driver.Valuer); ok {
+			return false
+		}
+		rv := reflect.ValueOf(v)
+		switch rv.Kind() {
+		case reflect.Pointer:
+			if rv.IsNil() {
+				return false
+			}
+			v = rv.Elem().Interface()
+		case reflect.Uint, reflect.Uint64, reflect.Uintptr:
+			return rv.Uint() > math.MaxInt64
+		default:
+			return false
+		}
+	}
 }
 
 // BeginTx is not supported: each statement is a transaction of its own.
@@ -358,8 +392,13 @@ func (c *conn) Begin() (driver.Tx, error) {
 // integer become an int64, a [driver.Valuer] gives its value, and a pointer gives what it points
 // to. It never fails, because database/sql gives its error before the driver judges the text. An
 // argument that the conversion refuses is kept with the error, which [arguments] gives after the
-// text, as "not supported".
+// text, as the cause of a "not supported". So is an unsigned integer above the largest int64, which
+// the conversion takes for a negative int64 when its type is not uint64, as uint(1<<63) is.
 func (c *conn) CheckNamedValue(nv *driver.NamedValue) error {
+	if overflows(nv.Value) {
+		nv.Value = unconverted{value: nv.Value, err: errOverflow}
+		return nil
+	}
 	v, err := driver.DefaultParameterConverter.ConvertValue(nv.Value)
 	if err != nil {
 		nv.Value = unconverted{value: nv.Value, err: err}

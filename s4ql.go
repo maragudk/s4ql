@@ -39,8 +39,8 @@
 // that it cannot read. Every statement that reaches the instance, and every ping, then fails with
 // an error that matches [ErrStopped] and carries the cause. What the text of a statement and its
 // arguments alone decide, a syntax error, "not supported", or the wrong number of arguments, is
-// answered as before. Nothing brings the instance
-// back: the application closes the [database/sql.DB] and opens the database again.
+// answered as before. Nothing brings the instance back: the application closes the
+// [database/sql.DB] and opens the database again.
 //
 // # Statements
 //
