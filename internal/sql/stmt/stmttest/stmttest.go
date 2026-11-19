@@ -120,7 +120,7 @@ func Quote(value string) string {
 	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 }
 
-// Kind of a statement of slice 1.
+// Kind of a statement of the slices.
 type Kind int
 
 const (
@@ -130,7 +130,7 @@ const (
 	KindDropTable
 )
 
-// Generator of random statements of slices 1, 2, and 4.
+// Generator of random statements of slices 1, 2, 4, and 5.
 type Generator struct {
 	r Rand
 	// pools of names, for each [Position].

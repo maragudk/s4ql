@@ -92,7 +92,7 @@ func nodeName(n ast.Node) string {
 	return nodeNames[reflect.TypeOf(n).Elem().Name()]
 }
 
-// fieldNames of the tokens of accepted nodes that slice 1 does not support, by the keys of
+// fieldNames of the tokens of accepted nodes that no slice supports, by the keys of
 // [fieldKeys].
 var fieldNames = map[string]string{
 	"Statement.Explain":                  "EXPLAIN",

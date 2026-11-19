@@ -15,8 +15,12 @@
 //     statement and no error.
 //
 // The supported statements are those of slices 1 and 2 of docs/roadmap.md, with the column types and
-// the literals of slice 4. The README next to this file defines them token for token, and lists the
-// names that a "not supported" error gives.
+// the literals of slice 4 and the columns of slice 5. The README next to this file defines them token
+// for token, and lists the names that a "not supported" error gives.
+//
+// Names compare as SQLite compares them, by [Name.Fold]. What a statement means for a table, such as
+// whether its columns exist or its values are as many as the columns, is not decided here, since it
+// depends on the database.
 //
 // A statement is built only from what the pass has recognized. The pass reads the syntax tree of
 // internal/sql/parser in the order of the text and takes each token that the supported form expects

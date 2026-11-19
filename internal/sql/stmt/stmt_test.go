@@ -759,3 +759,18 @@ func TestName_Fold(t *testing.T) {
 		sqliteError(t, "", d.exec("create table T1 (v int primary key) strict, without rowid"), 1, "table T1 already exists")
 	})
 }
+
+func TestCreateTable_Key(t *testing.T) {
+	t.Run("should give the index of the primary key", func(t *testing.T) {
+		s := &stmt.CreateTable{Columns: []stmt.Column{{NotNull: true}, {PrimaryKey: true}, {NotNull: true}}}
+		is.Equal(t, 1, s.Key())
+	})
+
+	t.Run("should panic for a table without a primary key, which the pass never gives", func(t *testing.T) {
+		defer func() {
+			is.True(t, recover() != nil)
+		}()
+		(&stmt.CreateTable{Columns: []stmt.Column{{NotNull: true}}}).Key()
+		t.Fatal("no panic")
+	})
+}
