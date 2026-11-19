@@ -19,6 +19,9 @@ var FileLimit = fileLimit
 // PublicError is [publicError].
 var PublicError = publicError
 
+// Value is [value].
+var Value = value
+
 // OpenStore is [Open] on the store s and the host h, with the options co of the storage core. Of
 // the options o it uses what does not name the store, and the endpoint, the bucket, and the prefix
 // for the identity of the database, in place of co.Identity.
