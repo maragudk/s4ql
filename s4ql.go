@@ -69,7 +69,7 @@
 // such as [database/sql.DB.SetMaxIdleConns] and [database/sql.DB.SetConnMaxIdleTime], decide how
 // long it is kept. A process that has no file descriptor left for it has a cache that cannot be
 // opened, which stops the instance as any failure of the cache does. The bound that [Open] sets
-// keeps the readers to half of the file descriptors of the process.
+// keeps the readers of one instance to half of the file descriptors of the process.
 //
 // The read of a query runs until its [database/sql.Rows] are read to the end or closed, so rows
 // that are neither hold their connection and its read, until the context of their query ends or
@@ -181,10 +181,12 @@ type Options struct {
 //
 // The pool of the [database/sql.DB] has a bound, which [database/sql.DB.SetMaxOpenConns] sets: a
 // quarter of the soft limit of open files of the process, RLIMIT_NOFILE, as Open reads it, and at
-// least 1. Each connection of the pool has a reader, a connection to the cache, which holds up to two
-// file descriptors, for the cache and its write-ahead log, so the readers use at most half of the
-// descriptors of the process, and the rest are for the application and the other files of the
-// instance. SQLite keeps the descriptor of the cache of a reader that has closed until the instance
+// least 1. A later change of the limit does not change the bound. Each connection of the pool has a
+// reader, a connection to the cache, which holds up to two file descriptors, for the cache and its
+// write-ahead log, so the readers of the instance use at most half of the descriptors of the
+// process, and the rest are for the application and the other files of the instance. The bound is
+// for each instance: a process that opens several instances lowers the bound of each, so that their
+// readers together keep to half. SQLite keeps the descriptor of the cache of a reader that has closed until the instance
 // closes, and gives it to the next reader that opens, so the descriptors of the readers stay at the
 // most readers that were open at once. Go raises the soft limit of a process when it starts, on most
 // systems to the hard limit, so it is what the process can use unless the application lowers it. A

@@ -59,3 +59,59 @@ That the build constraints cover every platform the root package builds for: `un
 ### Future work
 
 None yet.
+
+## Step 2: The bound, its tests, and the self-review
+
+**Author:** pool-limit builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Through `database/sql`: after `Open`, `db.Stats().MaxOpenConnections` is what the function gives for the limit that the test process has at that moment; an application's `SetMaxOpenConns` afterwards wins [...] Do not lower the descriptor limit of the test process itself, because other tests in the same process would be hit [...] Checks before you report: your new and changed tests with `-count=50 -shuffle on` and with `-race`; `make test`; `make lint`; `make check-browser`."
+**Interpretation:** Build the plan of step 1 test first, run the checks of the brief, and review the diff with the code-review skill.
+**Inferred intent:** The bound is shown through the public API, on the real core and cache, without a test that depends on the machine's limit being low.
+
+### What I did
+
+Wrote the tests first in `/s4ql_test.go` and `/filelimit_unix_test.go`, with `MaxOpenConns` and `FileLimit` exported in `/export_test.go`, and saw them fail to build. Then wrote `maxOpenConns` and `opener.openDB` in `/s4ql.go`, which `Open` and the tests' `OpenStore` share, `fileLimit` in `/filelimit_unix.go` and `/filelimit_other.go`, and the field `pool.max_open_conns` of the event `open` in `/conn.go`. `opener.connect`, `Options.connector`, and `newConnector` take the bound, which `OpenConnector` passes as 0. The documentation of the package, `Open`, `Register`, `OpenConnector`, and `connector` says what the bound is. Then the point in `/docs/todo.md`; this tree had no open point on file descriptors, so it is a new point.
+
+The tests: `TestMaxOpenConns` is the table (no limit, 0 to 8, 11, 1024, 61440, 1048576, and `math.MaxUint64`); `TestFileLimit` compares `fileLimit` with `syscall.Getrlimit`; a subtest of `TestOpen` checks `Stats().MaxOpenConnections` after `OpenStore` and that `SetMaxOpenConns(4)` and `SetMaxOpenConns(0)` win, with queries after each; `TestOpen_s3` checks the bound of the real `Open` and that `Register` has none; a subtest of `TestRegister` checks the pool without a bound and `pool.max_open_conns=0` in its log; `TestOptions_Logger` has the new field in the line of `open`. A further statement that waits for a connection until its context ends is already in `TestRows`, so it is not repeated.
+
+Vetted copies of the two platform files for 27 platforms, and ran the probe of step 1 in `golang:1.27` containers.
+
+Checks: the changed tests with `-count=50 -shuffle on`, and with `-race -count=50 -shuffle on` while `make test` ran beside them, both passed; `make test`, `make lint`, and `make check-browser` passed.
+
+The code-review skill found six points. I fixed three: the documentation said that the readers use at most half of the descriptors, which holds only for one instance in a process, so it now says that the bound is for each instance; it now says that a later change of the limit is not seen; and `TestFileLimit` required a finite limit, so it now accepts an unlimited one too, with no bound. I left three: an unlimited limit on a BSD whose kernel caps the descriptors of a process gets no bound, as the brief asks; a small limit gives a small bound that writes wait behind, as the brief's "at least 1" gives; and a temporary file of SQLite would be a third descriptor of a reader, which I did not check. All three are in `/docs/todo.md`.
+
+### Why
+
+`Open` is the one place that holds the `*sql.DB`, and the connector logs the event `open`, so the bound is computed in `openDB` and handed to the connector.
+
+### What worked
+
+Sharing `openDB` between `Open` and `OpenStore` makes every test that opens through `OpenStore` run with the default bound, so the whole suite runs as an application would. `TestOpen_s3` covers the real `Open`, which the other tests do not reach.
+
+### What didn't work
+
+The first form of `rlimInfinity`, `int64(syscall.RLIM_INFINITY)`, passed for 26 platforms and failed on `linux/loong64`, where the constant is `1<<64-1`:
+
+```
+linux/loong64: vet: ./filelimit_unix.go:18:20: constant 18446744073709551615 overflows int64
+```
+
+`uint64(syscall.RLIM_INFINITY & math.MaxUint64)` compiles for all of them: constant arithmetic on untyped integers is exact, and the mask gives the two's complement of a negative constant.
+
+### What I learned
+
+In a Linux container with a soft limit of 1024 and a hard limit of 65536, Go raised the soft limit to 65535 and not to 65536, so the number that the process sees is not always the hard limit. With Docker's default of 1048576 it is 1048576. The root package does not build with `CGO_ENABLED=0` on any platform, because `internal/core` needs the cgo binding, so the platform files were vetted as copies in a package of their own.
+
+### What was tricky
+
+That the log field had to be on the connector while the bound is set on the `*sql.DB`: `Register` goes through `OpenConnector`, which never sees a `*sql.DB`, so it logs 0, which is what `DBStats.MaxOpenConnections` calls no bound.
+
+### What warrants review
+
+The point "for the lead to confirm" in `/docs/todo.md`: the bound is for each instance, and two instances in one process can use every descriptor. A shared budget would be a second mechanism. Also the wording of the documentation of `Open` in `/s4ql.go`.
+
+### Future work
+
+If an application opens several instances in one process, a budget that they share; and a check whether a read of the engine can make SQLite open a temporary file.
