@@ -161,11 +161,17 @@ sqlite-verify:
 	go run ./internal/sqlite/update -verify
 
 .PHONY: test
-test:
+test: test-changes
 	go test -coverprofile cover.out -shuffle on ./...
 	go test -tags s4ql_browser -shuffle on $(SIMULATORPKGS)
 	cd $(CROSSCHECK) && go test -shuffle on ./...
 	cd $(SIMLINT) && go test -shuffle on ./...
+
+# test-changes runs the tests of the rule by which CI's job changes decides which jobs a change
+# needs, in .github/scripts. SH is the shell that runs the script, such as SH=dash, the sh of CI.
+.PHONY: test-changes
+test-changes:
+	sh .github/scripts/changes_test.sh
 
 # test-sql runs the tests of the SQL front end and of the engine without the race detector and the
 # address sanitizer, under which they compare with SQLite on a tenth of the corpus and of the generated
