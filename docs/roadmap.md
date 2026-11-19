@@ -31,7 +31,7 @@ Rejected for now, to be decided later: upserts, and join variants such as comma 
 
 ### Slice 1: one integer column
 
-Status: the engine is built and checked against SQLite. The `database/sql` driver is not built yet.
+Status: built. The engine is checked against SQLite, and the `database/sql` driver runs these statements, without parameters and without `db.BeginTx`.
 
 ```sql
 create table t1 (v1 int primary key) strict, without rowid;

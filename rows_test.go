@@ -3,7 +3,6 @@ package s4ql_test
 import (
 	"context"
 	"database/sql"
-	"strings"
 	"testing"
 	"time"
 
@@ -145,17 +144,30 @@ func TestRows(t *testing.T) {
 		all := held(t, db, t.Context)
 		unread, err := db.QueryContext(t.Context(), "insert into t1 (v1) values (4)")
 		is.NotError(t, err)
+		conn, err := db.Conn(t.Context())
+		is.NotError(t, err)
 
 		// The instance cannot close while a read is held, so the close would fail after its timeout
 		// if the rows were left.
 		is.NotError(t, db.Close())
+		closed := func(err error) {
+			t.Helper()
+			is.Error(t, s4ql.ErrStopped, failed(t, err))
+			is.Equal(t, "s4ql: the instance has stopped: closed", err.Error())
+		}
 		for _, rows := range append(all, unread) {
 			is.True(t, !rows.Next())
-			err := failed(t, rows.Err())
-			is.Error(t, s4ql.ErrStopped, err)
-			is.True(t, strings.HasSuffix(err.Error(), "the instance has stopped: closed"), err.Error())
+			closed(rows.Err())
 			is.NotError(t, rows.Close())
 		}
+
+		// A connection that the application holds still reaches the instance, which is closed.
+		_, err = conn.ExecContext(t.Context(), insert1)
+		closed(err)
+		_, err = conn.QueryContext(t.Context(), select1)
+		closed(err)
+		closed(conn.PingContext(t.Context()))
+		is.NotError(t, conn.Close())
 
 		// The lease is released, and the cache is closed, which the world checks when the test ends.
 		is.EqualSlice(t, []int64{1, 2, 3, 4}, values(t, w.serve(t, "b"), select1))

@@ -483,7 +483,7 @@ func TestOpen_s3(t *testing.T) {
 	options := func() s4ql.Options {
 		return s4ql.Options{
 			Bucket: "bucket", Prefix: "app/db", Endpoint: srv.URL, Region: "eu-north-1", AccessKeyID: "AKIDOFOPTIONS", SecretAccessKey: "secret",
-			PathStyle: true, CacheDir: t.TempDir(), CloseTimeout: time.Minute,
+			PathStyle: true, CacheDir: t.TempDir(),
 		}
 	}
 

@@ -192,7 +192,7 @@ The reason for planted bugs is in [Conditions for keeping the design](../sim/REA
 - **A commit whose cache fails after the manifest swap is Warn,** though `Tx.Commit` returns nil for it, because something went wrong. The stop that follows is Error.
 - **An event at Debug costs almost nothing while Debug is off.** The core asks the logger whether it takes the level, with the context, before it builds attributes that cost anything to build: the event of a commit keeps plain values until then (`commitReport`), and the events of a renewal and of a refusal are not built at all.
 - **Every event is logged with a context, through `slog.Logger.LogAttrs`,** so that tracing can later add a span to it through the context. Markus on 2026-11-13: "make sure to use their context-aware log function counterparts, so we can add tracing context (span ID etc.) later through the context". An event of a call carries the context of its caller. The lease task has no caller: its events carry the context that `Open` was given, without its cancellation, because the task outlives the call of `Open`. The events of `DB.Close` carry the context of `Close`. `TestEvents` checks the contexts of a commit, of a read and a `Begin` that are refused, of the lease task, and of a close.
-- **There is no OpenTelemetry, no trace, and no metric yet.** The todo holds them, to be decided with the public driver.
+- **There is no OpenTelemetry, no trace, and no metric yet.** The todo holds them.
 
 ## What the package does not do, and what to know
 
