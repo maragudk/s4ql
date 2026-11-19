@@ -866,7 +866,7 @@ func TestDB_stop_cache(t *testing.T) {
 			vfs.Fail(faultvfs.Fault{Ops: faultvfs.Write, Files: faultvfs.WAL})
 			events := &recorder{}
 			o := core.Options{Logger: events.logger()}
-			o.UseVFS(vfs.Name())
+			o.VFS = vfs.Name()
 			d := w.open(t, "a", o)
 
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)

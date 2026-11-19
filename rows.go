@@ -5,6 +5,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"io"
+	"runtime/debug"
 	"sync"
 
 	"maragu.dev/s4ql/internal/engine"
@@ -18,6 +19,14 @@ import (
 // The engine gives its rows by pushing them into a loop, and [rows.Next] is asked for one row at a
 // time, so the loop runs in a task of its own, which waits between two rows; see [loop]. The read
 // transaction ends when the loop does, so the close ends the loop.
+//
+// A panic in the loop, in a turn that Next gave the task, is raised again on the goroutine that
+// calls Next, so that an application that recovers panics can recover it. The rows are closed then,
+// and the read transaction has ended. A panic in a turn that a close gave the task, at the end of
+// the loop, is not raised, because database/sql closes rows also from a goroutine of its own, when
+// the context of their query ends, where a panic would end the process: Close gives it as an
+// internal error, and the close by the connector drops it. The task logs every panic that it
+// recovers, with the stack where it came, as the event "panic" at Error.
 type rows struct {
 	// ctx of the query.
 	ctx  context.Context
@@ -28,8 +37,8 @@ type rows struct {
 	mu sync.Mutex
 	// loop over the rows, from the first call of Next on.
 	loop *loop
-	// closed is set once the rows are closed.
-	closed bool
+	// closed is set once the rows are closed, and panicked if Next raised a panic of the loop.
+	closed, panicked bool
 }
 
 var (
@@ -57,6 +66,8 @@ type loop struct {
 	ended bool
 	// stop tells the task to end the loop at its turn.
 	stop bool
+	// panic is the value of a panic in the loop, which ended it, if it panicked.
+	panic any
 }
 
 // start the loop over the rows.
@@ -67,6 +78,16 @@ func (r *rows) start(ctx context.Context) *loop {
 	_ = l.turn.Acquire(ctx)
 	_ = l.given.Acquire(ctx)
 	h.Go(ctx, fmt.Sprint("rows of query ", r.c.queries.Add(1)), func(ctx context.Context) {
+		// The loop ends here also when it panics, and the panic goes to the one whose turn it is.
+		// The engine has ended the read transaction then.
+		defer func() {
+			if v := recover(); v != nil {
+				r.c.log.ErrorContext(ctx, "panic", "panic", fmt.Sprint(v), "stack", string(debug.Stack()))
+				l.panic = v
+			}
+			l.row, l.err, l.ended = nil, nil, true
+			l.given.Release(ctx)
+		}()
 		for row, err := range r.rows.All() {
 			l.row, l.err = row, err
 			l.given.Release(ctx)
@@ -75,8 +96,6 @@ func (r *rows) start(ctx context.Context) *loop {
 				break
 			}
 		}
-		l.row, l.err, l.ended = nil, nil, true
-		l.given.Release(ctx)
 	})
 	return l
 }
@@ -98,10 +117,14 @@ func (r *rows) ColumnTypeDatabaseTypeName(index int) string {
 }
 
 // Next row into dest, or [io.EOF] after the last. On rows that the connector has closed, it gives
-// the error of an instance that was closed, and never the end of the rows.
+// the error of an instance that was closed, and never the end of the rows. It raises a panic of the
+// loop over the rows, after it has closed them, and gives an internal error after that.
 func (r *rows) Next(dest []driver.Value) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.panicked {
+		return r.c.public(r.ctx, fmt.Errorf("%w: the query panicked", engine.ErrInternal))
+	}
 	if r.closed {
 		return r.c.public(r.ctx, errClosed)
 	}
@@ -118,6 +141,13 @@ func (r *rows) Next(dest []driver.Value) error {
 	}
 	_ = r.loop.given.Acquire(ctx)
 
+	if v := r.loop.panic; v != nil {
+		r.loop.panic = nil
+		r.panicked = true
+		// The loop has ended, so the close only closes the rows of the engine, which have ended too.
+		_ = r.close()
+		panic(v)
+	}
 	row, err := r.loop.row, r.loop.err
 	if r.loop.ended {
 		return io.EOF
@@ -137,21 +167,24 @@ func (r *rows) Next(dest []driver.Value) error {
 }
 
 // Close the rows, and end the read transaction of the query, unless it has ended. It gives the
-// error of the end of the transaction.
+// error of the end of the transaction, and an internal error if the loop over the rows panicked in
+// that end.
 func (r *rows) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.c.public(r.ctx, r.close())
 }
 
-// shut is the close of the rows by the connector.
+// shut is the close of the rows by the connector. It drops the error of the close: the task has
+// logged a panic.
 func (r *rows) shut() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	_ = r.close()
 }
 
-// close the rows, unless they are closed, with mu held.
+// close the rows, unless they are closed, with mu held. It gives the error of the end of the
+// transaction, and an internal error if the loop panicked in the turn that it gives the task.
 func (r *rows) close() error {
 	if r.closed {
 		return nil
@@ -165,7 +198,11 @@ func (r *rows) close() error {
 		_ = l.given.Acquire(ctx)
 	}
 	r.c.release(r)
-	return r.rows.Close()
+	err := r.rows.Close()
+	if l := r.loop; l != nil && l.panic != nil {
+		err = fmt.Errorf("%w: the query panicked: %v", engine.ErrInternal, l.panic)
+	}
+	return err
 }
 
 // noRows are the rows of a statement that is no query: no columns and no rows. They hold nothing.
