@@ -104,7 +104,6 @@ function halt(title, text) {
   f.innerHTML = `<strong>${esc(title)}</strong>` + (text ? `<p>${esc(text)}</p>` : "");
   f.hidden = false;
   set($("status"), "");
-  set($("field-note"), "");
   drawControls();
 }
 
@@ -426,7 +425,6 @@ async function start() {
     return;
   }
   set($("status"), "");
-  set($("field-note"), "");
   root.dataset.engine = "ready";
   root.dataset.busy = "false";
   setPlaying(false);

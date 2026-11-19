@@ -280,8 +280,6 @@ h2 {
   border: var(--rule);
 }
 .field svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-.field-note { position: absolute; inset: 0; display: flex; align-items: center; padding: 0 12px; margin: 0; font-size: 13px; }
-.field-note:empty { display: none; }
 @media (max-width: 720px) {
   .bar .wrap { gap: 8px; padding-top: 10px; padding-bottom: 10px; }
   .bar .clock { font-size: 17px; margin-left: 4px; }
@@ -493,7 +491,6 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
     <p class="status" id="status" role="status">Starting.</p>
     <div class="field" aria-hidden="true">
       <svg id="strip" viewBox="0 0 240 28" preserveAspectRatio="none" shape-rendering="crispEdges"></svg>
-      <p class="field-note" id="field-note">Loading the engine.</p>
     </div>
   </div>
 </div>
