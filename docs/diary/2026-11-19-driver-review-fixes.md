@@ -230,3 +230,46 @@ The spare's ping in the last subtest of `TestOpen`, with a context of 50 ms thro
 ### Future work
 
 None.
+
+## Step 6: Two points in the todo of the driver
+
+**Author:** driver-review-fixes builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "**Record in `docs/todo.md`**, under the driver: the first phase of the connector's close (closing the rows that are left open) waits for a running `Next` and is not under `CloseTimeout`; in slice 1 a row comes at once, and it becomes a fault when an operator can run long between two rows, where the fix is a context for the engine that the connector cancels at close. Not built."
+**Interpretation:** One point marked "Not built" in the section "The public package and the driver" of `/docs/todo.md`.
+**Inferred intent:** The bound that is missing is found before a slice adds an operator that can make it matter.
+
+### What I did
+
+- Added the point after the one on rows that are left open.
+- Added the decision of step 2 to the list "Decided by the builder on 2026-11-19, for the lead to confirm": where a panic of the loop over the rows is raised, that the close of the database drops it, and the event `panic`.
+
+### Why
+
+The todo is where decisions below Markus's level and work not built are kept, by `/AGENTS.md`.
+
+### What worked
+
+Step 4 showed the wait of item 5 at work: the test of `hold` holds the close in exactly that phase with a `Next` that waits.
+
+### What didn't work
+
+Nothing failed.
+
+### What I learned
+
+Nothing new.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+The wording of both points.
+
+### Future work
+
+The context for the engine, when a slice has an operator that can run long between two rows.
