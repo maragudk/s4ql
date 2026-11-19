@@ -126,6 +126,11 @@ type workload struct {
 	// steady says that nothing in the workload can keep an instance from renewing its lease in
 	// time, so that a read that is refused because the lease has run out by a clock is a violation.
 	steady bool
+	// idlers is the number of callers of each instance that hold a write transaction open and idle
+	// while the instance is cut off from the store, for up to idle, and leave the last one open after
+	// the end of the workload: see [run.idler].
+	idlers int
+	idle   time.Duration
 }
 
 // liveness is how long after the end of the workload some instance must serve. The store is calm
@@ -183,6 +188,9 @@ type seen struct {
 type outcome struct {
 	commits, emptyCommits, failedCommits, unknownCommits, rollbacks, reads, refusedReads, expiredReads, overtakenReads atomic.Int64
 	refusedWrites, abandonedWrites, statements                                                                         atomic.Int64
+	// endedTxs are the write transactions of idlers whose instance ended them because it lost its
+	// lease, and keptEnded those of them that were left open after the end of the workload.
+	endedTxs, keptEnded atomic.Int64
 	// cutCommits are commits whose caller's instance crashed before Commit returned.
 	cutCommits atomic.Int64
 	// stops of an instance, restarts after a crash, and instances that were closed and opened again
@@ -343,7 +351,9 @@ type node struct {
 	name   string
 	host   tracer
 	client store.Store
-	path   string
+	// cut is the client of the store under client, which the idlers cut off.
+	cut  *simstore.Client
+	path string
 	// options that the node opens its database with.
 	options core.Options
 	// callers that have not returned.
@@ -356,6 +366,9 @@ type node struct {
 
 	mu sync.Mutex
 	db *core.DB
+	// kept is the write transaction that an idler left open, on the database keptOn, or nil.
+	kept   *core.Tx
+	keptOn *core.DB
 }
 
 func (n *node) current() *core.DB {
@@ -826,7 +839,8 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 		sender = inst
 	}
 	n := &node{name: name, host: h, path: path, options: w.options}
-	n.client = r.store.Client(name, sender)
+	n.cut = r.store.Client(name, sender)
+	n.client = n.cut
 	if w.damaged > 0 {
 		n.client = damagingStore{Store: n.client, h: c.world, share: w.damaged, damaged: map[string]int{}, twice: &n.damagedTwice}
 	}
@@ -862,6 +876,13 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 				cancel()
 			}
 			c.close(ctx, r)
+		}))
+	}
+	for i := range w.idlers {
+		n.callers.Add(1)
+		tasks = append(tasks, n.host.Go(ctx, fmt.Sprint("idler-", i), func(ctx context.Context) {
+			defer n.callers.Add(-1)
+			r.idler(ctx, n)
 		}))
 	}
 	tasks = append(tasks, n.host.Go(ctx, "supervisor", func(ctx context.Context) {
@@ -912,6 +933,8 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 //   - An instance stops only for a reason that the faults explain, and a call fails only with an
 //     error that they explain.
 //   - Some instance serves again soon after the end of the workload: see [workload.liveness].
+//   - An instance where a write transaction of an idler is open and idle serves again soon once the
+//     other instances are closed, while the transaction is still open: see [run.verifyIdle].
 //   - The cache of every instance, also of one that crashed, holds what the log says up to the
 //     position that it records.
 //   - A new instance with an empty cache replays the whole log to the same tables and rows.
@@ -1064,7 +1087,11 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 		o.violate(ctx, c.world, "no instance serves %v after the end of the workload", bound)
 	}
 
+	closed := r.verifyIdle(ctx, live)
 	for _, n := range live {
+		if closed[n] {
+			continue
+		}
 		n.do(ctx, "closer", func(ctx context.Context) {
 			r.close(ctx, n, n.current())
 		})
@@ -1075,6 +1102,125 @@ func (w workload) run(ctx context.Context, c cluster, o *outcome) {
 	}
 	r.verifyLandings(ctx)
 	r.verify(ctx, live, crashed)
+}
+
+// idler is a caller of n that runs two write transactions, each of which makes one change and then
+// sits idle, while n is cut off from the store, often for long enough that another instance takes
+// the lease. The first runs one more statement after its idle time, and is rolled back. The second is
+// cut off always, and stays open after the end of the workload: see [run.verifyIdle]. An instance
+// that has lost its lease ends such a transaction, so that it can take the lease back.
+func (r *run) idler(ctx context.Context, n *node) {
+	o, world := r.o, r.c.world
+	for i := range 2 {
+		keep := i == 1
+		_ = n.host.Sleep(ctx, time.Duration(intn(n.host, int(r.w.think/time.Millisecond)))*time.Millisecond)
+		d := n.current()
+		// As an application that waits for the database.
+		wctx, cancel := n.host.WithTimeout(ctx, 2*time.Minute)
+		err := d.Wait(wctx)
+		cancel()
+		if err != nil {
+			continue
+		}
+		bctx, cancel := n.host.WithTimeout(ctx, r.w.timeout)
+		tx, err := d.Begin(bctx)
+		cancel()
+		if err != nil {
+			if !expected(err) {
+				o.violate(ctx, world, "begin: %v", err)
+			}
+			continue
+		}
+		rollback := func() {
+			if err := tx.Rollback(ctx); err != nil && !expected(err) {
+				o.violate(ctx, world, "rollback: %v", err)
+			}
+		}
+		_, before, ok := r.model.at(tx.Position())
+		if !ok {
+			o.violate(ctx, world, "a write transaction began at the position %v, which the log does not hold", tx.Position())
+			rollback()
+			continue
+		}
+		m := newTx(before)
+		if err := r.statement(ctx, n, tx, m); err != nil {
+			rollback()
+			continue
+		}
+		if keep || intn(n.host, 2) == 0 {
+			cut := time.Duration(30_000+intn(n.host, 30_000)) * time.Millisecond
+			if keep {
+				cut = 2 * time.Minute
+			}
+			world.Trace(ctx, "%v is cut off for %v while a write transaction sits idle", n.name, cut)
+			n.cut.CutOff(ctx, cut)
+		}
+		if keep {
+			_ = n.host.Sleep(ctx, 3*time.Minute)
+			world.Trace(ctx, "the write transaction of %v at %v stays open", n.name, short(tx.Position()))
+			n.mu.Lock()
+			n.kept, n.keptOn = tx, d
+			n.mu.Unlock()
+			return
+		}
+		_ = n.host.Sleep(ctx, time.Duration(intn(n.host, int(r.w.idle/time.Millisecond)))*time.Millisecond)
+		err = r.statement(ctx, n, tx, m)
+		if errors.Is(err, core.ErrTxLeaseLost) {
+			o.endedTxs.Add(1)
+		}
+		rollback()
+	}
+}
+
+// verifyIdle requires of the first of the live nodes whose idler left a write transaction open on
+// the database that the node has now that it serves soon after the other live nodes are closed,
+// while that transaction is still open: if the node lost its lease while the transaction sat idle,
+// it must have ended the transaction, which holds the writer lock that taking the lease back needs.
+// It then rolls back every transaction that an idler left open, and gives the nodes that it closed.
+func (r *run) verifyIdle(ctx context.Context, live []*node) map[*node]bool {
+	closed := map[*node]bool{}
+	checked := false
+	for _, n := range live {
+		n.mu.Lock()
+		tx, on := n.kept, n.keptOn
+		n.kept, n.keptOn = nil, nil
+		n.mu.Unlock()
+		if tx == nil {
+			continue
+		}
+		if on == n.current() && !checked {
+			checked = true
+			for _, other := range live {
+				if other != n && !closed[other] {
+					other.do(ctx, "closer", func(ctx context.Context) {
+						r.close(ctx, other, other.current())
+					})
+					closed[other] = true
+				}
+			}
+			bound := r.w.liveness()
+			var err error
+			n.do(ctx, "idle", func(ctx context.Context) {
+				wctx, cancel := n.host.WithTimeout(ctx, bound)
+				defer cancel()
+				err = on.Wait(wctx)
+			})
+			if err != nil {
+				r.o.violate(ctx, r.c.world, "%v, where a write transaction is open and idle, does not serve %v after the other instances were closed: %v", n.name, bound, err)
+			}
+		}
+		lost := tx.Lost() != nil
+		n.do(ctx, "rollback", func(ctx context.Context) {
+			if err := tx.Rollback(ctx); err != nil && !expected(err) {
+				r.o.violate(ctx, r.c.world, "the rollback of the write transaction that was left open: %v", err)
+			}
+		})
+		if lost {
+			r.o.endedTxs.Add(1)
+			r.o.keptEnded.Add(1)
+		}
+	}
+	return closed
 }
 
 // moveClocks of inst by a few faults that the seed picks from those of w, at times that the seed
