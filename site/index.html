@@ -865,7 +865,7 @@ footer ul {
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
-          <td><p>Define slice 4 of the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
+          <td><p>Slice 4 of the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a> (the other types) is being built. Slices 5 to 7 (several columns, <code>null</code>, and <code>where</code>) are agreed.</p></td>
         </tr>
       </tbody>
     </table>
@@ -928,6 +928,26 @@ footer ul {
         <span class="glyph" aria-hidden="true"></span>
         <div><h3>Slice 3: transactions</h3><p><code>db.BeginTx</code> begins a write transaction, which holds the place of the single writer until it commits or rolls back, or a read-only one with <code>sql.TxOptions{ReadOnly: true}</code>, which reads the state of its beginning and holds up no one. A transaction writes one commit object.</p></div>
         <span class="where caps">Built</span>
+      </li>
+      <li class="agreed">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Slice 4: the other types</h3><p>The column types <code>int</code>, <code>integer</code>, <code>real</code>, <code>text</code>, and <code>blob</code>, with their literals and Go arguments. A value must have the exact type of its column.</p></div>
+        <span class="where caps">Agreed</span>
+      </li>
+      <li class="agreed">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Slice 5: several columns</h3><p>A table with several columns: one primary key, and the others <code>not null</code>. An <code>insert</code> gives the columns in the table's order or names them in any order, and a <code>select</code> names the columns it returns.</p></div>
+        <span class="where caps">Agreed</span>
+      </li>
+      <li class="agreed">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Slice 6: <code>null</code></h3><p>Columns that take null: the literal <code>null</code>, a nil argument, and a column left out of an <code>insert</code>. A null comes back as nil.</p></div>
+        <span class="where caps">Agreed</span>
+      </li>
+      <li class="agreed">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Slice 7: <code>where</code> on <code>select</code></h3><p>A column compared with a literal or a <code>?</code>, <code>is null</code>, and <code>is not null</code>, joined with <code>and</code>.</p></div>
+        <span class="where caps">Agreed</span>
       </li>
       <li class="open">
         <span class="glyph" aria-hidden="true"></span>

@@ -22,6 +22,6 @@ As of 2026-11-19:
 - **Built: slice 2, parameters.** An `insert` takes an integer argument for a plain `?` through `database/sql`, directly and through a prepared statement. It is checked against SQLite by generated tests in the engine and through `database/sql` (the engine's compares 12,000 statements), in a simulation, and by mutation testing.
 - **Built: slice 3, transactions.** `db.BeginTx` gives a transaction that is the single writer from its beginning until it commits or rolls back. `sql.TxOptions{ReadOnly: true}` gives a read-only transaction on one state that holds no one up. It is checked against SQLite by generated tests in the engine and through `database/sql` (499 generated transactions), in a simulation with faults, and by mutation testing (628 mutants of the engine).
 - **Not built:** more than one column, `where`, other types than integer, and a statement while rows of the same transaction are open.
-- **Next:** define slice 4 of the [roadmap](docs/roadmap.md).
+- **Next:** slice 4 of the [roadmap](docs/roadmap.md) (the other types) is being built. Slices 5 to 7 (several columns, `null`, and `where`) are agreed.
 
 What is open in detail is in [docs/todo.md](docs/todo.md).
