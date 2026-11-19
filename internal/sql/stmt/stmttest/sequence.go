@@ -132,8 +132,9 @@ func (q *Sequence) Value() int64 {
 }
 
 // Others are texts that are not statements of slice 1, with %[1]v for a table, %[2]v for a column,
-// and %[3]v for a value: statements that the pass does not support, texts that SQLite refuses with a
-// syntax error, and texts without a statement.
+// and %[3]v for a value: statements that the pass does not support, or that the engine does not
+// support yet, such as a column of type INTEGER, texts that SQLite refuses with a syntax error, and
+// texts without a statement.
 var Others = []string{
 	"create table %[1]v (%[2]v integer primary key) strict, without rowid",
 	"create table %[1]v (%[2]v int primary key) strict",

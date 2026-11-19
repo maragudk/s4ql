@@ -1061,7 +1061,10 @@ func (p *pair) checkNotSupported(src string, c call, supported bool, runs [][]an
 	tb.Helper()
 	s, err := stmt.Check(src)
 	if err == nil && s != nil {
-		return p.checkArgumentRefused(src, s, runs, got)
+		// A column type or a literal that the engine does not hold yet is refused by the text too.
+		if err = engine.Check(src, s.Parameters()); err == nil {
+			return p.checkArgumentRefused(src, s, runs, got)
+		}
 	}
 	// The text alone decides "not supported", before the arguments, with the "not supported" of its
 	// check, and Prepare checks the text.
@@ -1358,7 +1361,8 @@ var sequences = map[string][]step{
 		{callExec, "insert into t1 (v1) values (?)", "exec: exec failed with s4ql: wrong number of arguments: 0 for a statement with 1 parameter"},
 		{callExec, "begin", ""},
 		{callQuery, "select * from t1; select * from t1", ""},
-		{callExec, "create table t2 (v2 integer primary key) strict, without rowid", ""},
+		{callExec, "create table t2 (v2 integer primary key) strict, without rowid", "exec: exec failed with s4ql: not supported: column type INTEGER"},
+		{callPrepareExec, "insert into t1 (v1) values (1.5)", "prepare, exec: prepare failed with s4ql: not supported: a real literal, which is not an integer"},
 		{callExec, `insert into t1 (v1) values ("x")`, ""},
 		{callPrepareExec, "drop table if exists t1", "prepare, exec: prepare failed with s4ql: not supported: IF EXISTS (at offset 11)"},
 		{callExec, "", "exec: exec failed with s4ql: not supported: a text that holds no statement"},

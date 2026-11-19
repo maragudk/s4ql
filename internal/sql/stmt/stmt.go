@@ -14,8 +14,9 @@
 //   - No statement, for a text of only spaces, comments, and semicolons, which SQLite prepares into no
 //     statement and no error.
 //
-// The supported statements are those of slices 1 and 2 of docs/roadmap.md. The README next to this file
-// defines them token for token, and lists the names that a "not supported" error gives.
+// The supported statements are those of slices 1 and 2 of docs/roadmap.md, with the column types and
+// the literals of slice 4. The README next to this file defines them token for token, and lists the
+// names that a "not supported" error gives.
 //
 // A statement is built only from what the pass has recognized. The pass reads the syntax tree of
 // internal/sql/parser in the order of the text and takes each token that the supported form expects
@@ -105,22 +106,80 @@ type Statement interface {
 	setSpan(Span)
 }
 
-// CreateTable of one table, with one column of type INT that is its primary key. The table is STRICT
-// and WITHOUT ROWID.
+// CreateTable of one table, with one column of the type Type that is its primary key. The table is
+// STRICT and WITHOUT ROWID.
 type CreateTable struct {
 	Span   Span
 	Table  Name
 	Column Name
+	// Type of the column as it is declared: INT and INTEGER are two types here, as SQLite records
+	// them, though they behave the same.
+	Type Type
 }
 
-// Insert of one row with one value, into the one column that it names. The value is the integer
-// literal Value, or the argument of a parameter if Parameter is not 0.
+// Type of a column, as a STRICT table of SQLite declares it.
+type Type int
+
+// The types of a column. The zero value is no type.
+const (
+	TypeInt Type = iota + 1
+	TypeInteger
+	TypeReal
+	TypeText
+	TypeBlob
+)
+
+// String of the type as SQLite records it, in upper case, such as INT, or "" for no type.
+func (t Type) String() string {
+	switch t {
+	case TypeInt:
+		return "INT"
+	case TypeInteger:
+		return "INTEGER"
+	case TypeReal:
+		return "REAL"
+	case TypeText:
+		return "TEXT"
+	case TypeBlob:
+		return "BLOB"
+	}
+	return ""
+}
+
+// Value of a literal: an [Integer], a [Real], a [Text], or a [Blob], each with the value that SQLite
+// gives the literal.
+type Value interface {
+	isValue()
+}
+
+// Integer value, of a decimal integer literal that fits a signed 64-bit integer.
+type Integer int64
+
+// Real value, of a real literal, as SQLite reads it: bit for bit the same 64-bit float, negative zero
+// included. It is never infinite and never NaN.
+type Real float64
+
+// Text value, of a string literal: the bytes between its quotes, with two quotes read as one. It is
+// valid UTF-8 without a NUL byte, as the text of every statement is.
+type Text string
+
+// Blob value, of a blob literal: the bytes that its hex digits give. It is never nil, also when it is
+// empty.
+type Blob []byte
+
+func (Integer) isValue() {}
+func (Real) isValue()    {}
+func (Text) isValue()    {}
+func (Blob) isValue()    {}
+
+// Insert of one row with one value, into the one column that it names. The value is the literal
+// Value, or the argument of a parameter if Parameter is not 0.
 type Insert struct {
 	Span   Span
 	Table  Name
 	Column Name
-	// Value of the integer literal, and 0 for a parameter.
-	Value int64
+	// Value of the literal, and nil for a parameter.
+	Value Value
 	// Parameter is the number of the parameter that gives the value, from 1 as SQLite counts them, or
 	// 0 if the value is a literal.
 	Parameter int

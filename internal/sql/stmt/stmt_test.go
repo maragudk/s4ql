@@ -1,9 +1,11 @@
 package stmt_test
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -183,18 +185,99 @@ func swapCase(s string) string {
 
 // createFor a table named table with a column named column, as slice 1 creates it.
 func createFor(table, column string) string {
-	return fmt.Sprintf("create table %v (%v int primary key) strict, without rowid", quote(table), quote(column))
+	return createTyped(table, column, stmt.TypeInt)
+}
+
+// createTyped a table named table with a column named column of the type typ.
+func createTyped(table, column string, typ stmt.Type) string {
+	return fmt.Sprintf("create table %v (%v %v primary key) strict, without rowid", quote(table), quote(column), typ)
+}
+
+// typeFor the value v: the type of a column that holds it as it is. A parameter, nil, is bound to an
+// integer.
+func typeFor(v stmt.Value) stmt.Type {
+	switch v.(type) {
+	case stmt.Real:
+		return stmt.TypeReal
+	case stmt.Text:
+		return stmt.TypeText
+	case stmt.Blob:
+		return stmt.TypeBlob
+	}
+	return stmt.TypeInt
+}
+
+// literal of the value v, in a canonical form: an integer in decimal, a real with an exponent and the
+// fewest digits that give it back when they are rounded to the nearest float, a string in single
+// quotes, and a blob in hex.
+func literal(v stmt.Value) string {
+	switch v := v.(type) {
+	case stmt.Integer:
+		return fmt.Sprint(int64(v))
+	case stmt.Real:
+		return strconv.FormatFloat(float64(v), 'e', -1, 64)
+	case stmt.Text:
+		return "'" + strings.ReplaceAll(string(v), "'", "''") + "'"
+	case stmt.Blob:
+		return "x'" + hex.EncodeToString(v) + "'"
+	}
+	panic(fmt.Sprintf("%T", v))
+}
+
+// show the value v with its type, exactly: a real by its 64 bits, so that two values show the same
+// only if they are the same value of the same type.
+func show(v stmt.Value) string {
+	switch v := v.(type) {
+	case stmt.Integer:
+		return fmt.Sprintf("integer %v", int64(v))
+	case stmt.Real:
+		return fmt.Sprintf("real %v (%#016x)", float64(v), math.Float64bits(float64(v)))
+	case stmt.Text:
+		return fmt.Sprintf("text %q", string(v))
+	case stmt.Blob:
+		if v == nil {
+			return "nil blob"
+		}
+		return fmt.Sprintf("blob %x", []byte(v))
+	}
+	return fmt.Sprintf("%T", v)
+}
+
+// value of the first column of the first row of sql, as the type that SQLite gives it, or nil for
+// NULL.
+func (d *db) value(sql string) stmt.Value {
+	d.t.Helper()
+	s, _, err := d.c.PrepareFirst(sql)
+	if err != nil {
+		d.t.Fatalf("%q: %v", sql, err)
+	}
+	defer func() { _ = s.Finalize() }()
+	ok, err := s.Step()
+	if err != nil || !ok {
+		d.t.Fatalf("%q: no row: %v", sql, err)
+	}
+	switch s.ColumnType(0) {
+	case sqlite.TypeInteger:
+		return stmt.Integer(s.ColumnInt64(0))
+	case sqlite.TypeFloat:
+		return stmt.Real(s.ColumnDouble(0))
+	case sqlite.TypeText:
+		return stmt.Text(s.ColumnText(0))
+	case sqlite.TypeBlob:
+		return stmt.Blob(s.ColumnBlob(0))
+	}
+	return nil
 }
 
 // canonical text of the statement s: the plain form, with every name in double quotes.
 func canonical(s stmt.Statement) string {
 	switch s := s.(type) {
 	case *stmt.CreateTable:
-		return createFor(s.Table.Value, s.Column.Value)
+		return createTyped(s.Table.Value, s.Column.Value, s.Type)
 	case *stmt.Insert:
-		value := fmt.Sprint(s.Value)
-		if s.Parameter > 0 {
-			value = "?"
+		value := "?"
+		if s.Parameter == 0 {
+			value = literal(s.Value)
 		}
 		return fmt.Sprintf("insert into %v (%v) values (%v)", quote(s.Table.Value), quote(s.Column.Value), value)
 	case *stmt.Select:
@@ -257,37 +340,50 @@ func checkMeaning(t testing.TB, src string, s stmt.Statement) {
 		_, list := d.query("select * from pragma_table_list where schema = 'main' and name <> 'sqlite_schema'")
 		is.Equal(t, fmt.Sprint([][]string{{"text:main", "text:" + s.Table.Value, "text:table", "integer:1", "integer:1", "integer:1"}}), fmt.Sprint(list), src)
 		_, columns := d.query("select * from pragma_table_xinfo(?)", s.Table.Value)
-		is.Equal(t, fmt.Sprint([][]string{{"integer:0", "text:" + s.Column.Value, "text:INT", "integer:1", "null:", "integer:1", "integer:0"}}), fmt.Sprint(columns), src)
+		is.Equal(t, fmt.Sprint([][]string{{"integer:0", "text:" + s.Column.Value, "text:" + s.Type.String(), "integer:1", "null:", "integer:1", "integer:0"}}), fmt.Sprint(columns), src)
 		sqliteError(t, src, d.exec(src), 1, "table "+s.Table.Raw+" already exists")
 
 	case *stmt.Insert:
+		// The value of a literal is the value that SQLite gives the text of the literal, exactly.
+		if s.Parameter == 0 {
+			lit := src[s.ValueSpan.Start:s.ValueSpan.End]
+			if got, want := show(open(t).value("select "+lit)), show(s.Value); got != want {
+				t.Fatalf("%q: the value is %v, SQLite gives %v for %q", src, want, got, lit)
+			}
+		}
 		// The table is created with the case of its ASCII letters swapped, which SQLite takes for the
-		// same names, and the error of a second insert prints the names as the table stores them.
+		// same names, and the error of a second insert prints the names as the table stores them. Its
+		// column has the type of the value.
 		table, column := swapCase(s.Table.Value), swapCase(s.Column.Value)
-		read := "select " + quote(column) + ", typeof(" + quote(column) + ") from " + quote(table)
+		typ := typeFor(s.Value)
+		read := "select " + quote(column) + " from " + quote(table)
 		// A parameter is bound to a value at or near the limits, which the length of the text picks.
 		value, args := s.Value, []int64(nil)
 		if s.Parameter > 0 {
-			value = []int64{math.MinInt64, -1, 0, 1, math.MaxInt64}[len(src)%5]
-			args = []int64{value}
+			v := []int64{math.MinInt64, -1, 0, 1, math.MaxInt64}[len(src)%5]
+			value, args = stmt.Integer(v), []int64{v}
 		}
 		d := open(t)
-		d.must(createFor(table, column))
+		d.must(createTyped(table, column, typ))
 		is.Equal(t, d.parameters(src), s.Parameters(), src)
 		d.must(src, args...)
-		_, rows := d.query(read)
-		is.Equal(t, fmt.Sprint([][]string{{fmt.Sprintf("integer:%v", value), "text:integer"}}), fmt.Sprint(rows), src)
+		stored := d.value(read)
+		// SQLite stores a real of a REAL column that has an integer value as an integer, which it reads
+		// back as a real, so -0.0 comes back as 0.0: the stored value is equal as a number.
+		if r, ok := value.(stmt.Real); ok && r == 0 {
+			value = stmt.Real(0)
+		}
+		is.Equal(t, show(value), show(stored), src)
 		sqliteError(t, src, d.exec(src, args...), 1555, "UNIQUE constraint failed: "+table+"."+column)
 
 		want := open(t)
-		want.must(createFor(table, column))
+		want.must(createTyped(table, column, typ))
 		want.must(canonical(s), args...)
-		_, wantRows := want.query(read)
-		is.Equal(t, fmt.Sprint(wantRows), fmt.Sprint(rows), src)
+		is.Equal(t, show(want.value(read)), show(stored), src)
 
 		sqliteError(t, src, open(t).exec(src, args...), 1, "no such table: "+s.Table.Value)
 		other := open(t)
-		other.must(createFor(s.Table.Value, s.Column.Value+"_other"))
+		other.must(createTyped(s.Table.Value, s.Column.Value+"_other", typ))
 		sqliteError(t, src, other.exec(src, args...), 1, "table "+s.Table.Value+" has no column named "+s.Column.Value)
 
 	case *stmt.Select:
@@ -348,13 +444,12 @@ func checkPositions(t testing.TB, src string, s stmt.Statement) {
 		if v.Start < b.Start || v.End > b.End || v.Start >= v.End {
 			t.Fatalf("%q: value %v at %v", src, s.Value, v)
 		}
-		switch {
-		case s.Parameter > 0:
-			if s.Value != 0 || src[v.Start:v.End] != "?" {
-				t.Fatalf("%q: parameter %v with the value %v at %v", src, s.Parameter, s.Value, v)
-			}
-		case !strings.HasSuffix(src[v.Start:v.End], strings.TrimPrefix(fmt.Sprint(s.Value), "-")):
-			t.Fatalf("%q: value %v at %v", src, s.Value, v)
+		// The value of a literal at its span is checked against SQLite in checkMeaning.
+		if s.Parameter > 0 && (s.Value != nil || src[v.Start:v.End] != "?") {
+			t.Fatalf("%q: parameter %v with the value %v at %v", src, s.Parameter, s.Value, v)
+		}
+		if s.Parameter == 0 && s.Value == nil {
+			t.Fatalf("%q: no value and no parameter", src)
 		}
 	case *stmt.Select:
 		names = []stmt.Name{s.Table}

@@ -31,7 +31,9 @@
 //   - SQLite's error, as a [*sqlerr.Error], with SQLite's result code, extended result code, and
 //     message: a syntax error, or an error about the tables, the columns, or a primary key.
 //   - "Not supported", as a [*stmt.NotSupportedError] that matches [stmt.ErrNotSupported], or, for
-//     an argument that is not an integer, an error that matches stmt.ErrNotSupported.
+//     an argument that is not an integer, and for a column type other than INT or a literal that is
+//     not an integer, which the pass supports and the engine does not hold yet, an error that matches
+//     stmt.ErrNotSupported.
 //   - [ErrNoStatement], for a text that holds no statement.
 //   - An error that matches [ErrArguments], for another number of arguments than the statement has
 //     parameters.
@@ -293,6 +295,9 @@ func Check(src string, n int) error {
 	if err != nil {
 		return err
 	}
+	if err := checkTypes(s); err != nil {
+		return err
+	}
 	return countArguments(s.Parameters(), n)
 }
 
@@ -318,6 +323,9 @@ func prepare(r *report, src string, args []*s4qlpb.Value) (Plan, string, error) 
 		return nil, "", err
 	}
 	r.of(s)
+	if err := checkTypes(s); err != nil {
+		return nil, "", err
+	}
 	if err := checkArguments(s.Parameters(), args); err != nil {
 		return nil, "", err
 	}

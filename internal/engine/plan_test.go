@@ -40,6 +40,22 @@ func TestNewPlan(t *testing.T) {
 		is.EqualSlice(t, []int{0}, p.PrimaryKey)
 	})
 
+	t.Run("should panic for a column of another type than INT and a literal that is not an integer, which the engine refuses before", func(t *testing.T) {
+		for _, src := range []string{
+			"create table t (v integer primary key) strict, without rowid",
+			"insert into t (v) values (1.5)",
+			"insert into t (v) values ('a')",
+			"insert into t (v) values (x'61')",
+		} {
+			s, err := stmt.Check(src)
+			is.NotError(t, err)
+			func() {
+				defer func() { is.True(t, recover() != nil, src) }()
+				engine.NewPlan(s)
+			}()
+		}
+	})
+
 	t.Run("should format a plan with several columns and rows", func(t *testing.T) {
 		p := &engine.Insert{
 			Table:   stmt.Name{Raw: "t"},

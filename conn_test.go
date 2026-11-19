@@ -412,6 +412,11 @@ func TestPrepare(t *testing.T) {
 		is.Equal(t, "WHERE clause (at offset 17)", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values ($v)")
 		is.Equal(t, "named parameter (at offset 28)", notSupported(t, err))
+		// The engine does not hold the column types and the literals of slice 4 yet.
+		_, err = db.PrepareContext(t.Context(), "create table t2 (v2 real primary key) strict, without rowid")
+		is.Equal(t, "column type REAL", notSupported(t, err))
+		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values ('a')")
+		is.Equal(t, "a string literal, which is not an integer", notSupported(t, err))
 
 		// A statement that is supported is prepared, and refused when it is run.
 		prepared, err := db.PrepareContext(t.Context(), insert1)
