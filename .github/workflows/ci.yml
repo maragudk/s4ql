@@ -63,10 +63,18 @@ jobs:
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     uses: maragudk/workflows/.github/workflows/lint.yml@main
 
+  # go test ./..., without -short, so the tests against a real bucket run too, and fail without their
+  # credentials: the bucket is named in .env.test, and the two secrets below are exported into the
+  # test run. Each test writes under a prefix of its own, and each test process first deletes the old
+  # prefixes that killed runs left: see internal/store/s3test. GitHub gives no Actions secrets to a
+  # pull request from a fork or from Dependabot, so the tests against the bucket fail there.
   test:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     uses: maragudk/workflows/.github/workflows/test.yml@main
+    secrets: inherit
+    with:
+      secret-env: AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 
   # Library code must follow the rules of the simulation, which golangci-lint does not know. The lint
   # is a separate module, which the reusable workflows above do not see. The free-running mode of the
