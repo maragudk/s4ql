@@ -189,3 +189,52 @@ The spec still says "A write transaction that is already open commits only if it
 ### Future work
 
 The reworded sentence of the spec, by the lead.
+
+## Step 5: self-review and the checks
+
+**Author:** builder (lease-ends-tx)
+
+### Prompt Context
+
+**Verbatim prompt (excerpt of the brief):** "Every existing test passes; `make test` and `make lint` pass; the repository builds, also with the tag `s4ql_browser`."
+**Interpretation:** run every check, and review the diff with the code-review skill.
+**Inferred intent:** the branch is ready for the lead's review.
+
+### What I did
+
+Ran `make test` and `make lint` in the background, and the code-review skill at medium over `main...HEAD`. Fixed what both found.
+
+### Why
+
+The brief and the builder's rules ask for it.
+
+### What worked
+
+`make lint` passed at once. After the fix below, `make test` passed (exit 0). The review found no bug that blocks: it checked the mark while a call holds the connection, the record in `Begin`, the order of `Rollback` and `Commit` against `Tx.end`, and `Close` during a roll back for the lease. Its five nits are all fixed: the documents of `ErrTxLeaseLost` and `Tx.Lost` now say that a call after Commit or Rollback gives `ErrTxDone`; `Tx.Rollback` says that from inside a loop over a scan the writer lock comes back only when the scan ends, so a `DB.Begin` there waits for itself (the engine never does this, `leaveEnd`); the driver's documentation says "every later statement of that transaction that reaches the instance", because a syntax error still comes first; the comment of the events says whose context the event `transaction_ended` carries; and a scan looks at an `atomic.Bool`, `Tx.marked`, set with `Tx.lease`, instead of taking `DB.mu` for each row.
+
+### What didn't work
+
+The first `make test` failed in an existing test:
+
+```
+--- FAIL: TestLease_waiting/should_fail_a_call_that_waits_when_the_instance_finds_that_it_has_lost_the_lease (0.00s)
+    lease_test.go:857: Expected "no valid lease" (type *errors.errorString), but got "<nil>" (type <nil>)
+```
+
+The test's hand-made "other instance" writes a manifest without a lease entry. Before, the idle transaction kept the instance from taking that free lease back; now the lease task ends the transaction and takes the lease at once, and the waiting `Begin`, woken by the loss, can find the instance serving again and begin. Both orders are legal now, so the test failed only in some schedules (it had passed in my earlier runs of the package). The manifest of the test now names another holder with a lease of an hour, which keeps the point of the test: the waiter fails at once. It passed 50 times shuffled and 20 times under `-race`.
+
+### What I learned
+
+A test that held a transaction open across a loss of the lease relied, without saying so, on the bug.
+
+### What was tricky
+
+Nothing beyond the above.
+
+### What warrants review
+
+The changed manifest in `TestLease_waiting`.
+
+### Future work
+
+The mutation testing of the change, which the brief leaves to a later task.

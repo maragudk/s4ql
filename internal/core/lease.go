@@ -459,6 +459,7 @@ func (d *DB) endForLease(ctx context.Context) {
 	}
 	reason := d.refusalLocked()
 	tx.lease = &leaseEnd{err: fmt.Errorf("%w: %v", ErrTxLeaseLost, reason), reason: reason, at: d.host.Monotonic()}
+	tx.marked.Store(true)
 	idle := tx.c.users == 0
 	if idle {
 		// The lease task uses the connection for the roll back.

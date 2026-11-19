@@ -156,9 +156,9 @@
 // of a read-only transaction returns nil.
 //
 // An instance that has lost its lease ends a write transaction that is open and not committing, so
-// that it can take the lease back without waiting for the application: every later statement and
-// the commit of that transaction fail with an error that matches [ErrNotServing], and its roll back
-// returns nil. The rows of a query of the transaction that are open then end at their next row.
+// that it can take the lease back without waiting for the application: every later statement of
+// that transaction that reaches the instance, and its commit, fail with an error that matches
+// [ErrNotServing], and its roll back returns nil. The rows of a query of the transaction that are open then end at their next row.
 //
 // # Errors
 //

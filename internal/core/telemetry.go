@@ -24,7 +24,9 @@ import (
 //
 // An event of the call of a caller carries the caller's context. An event of the lease task
 // carries the context that [Open] was given, without its cancellation, and an event of [DB.Close]
-// the context of Close.
+// the context of Close. The event of a write transaction that the instance ended for its lease
+// carries the context of the one that ended it: the lease task, or the call of the transaction that
+// ran at that moment and ended it when it left.
 const (
 	// eventCommit is one call of [Tx.Commit].
 	eventCommit = "commit"

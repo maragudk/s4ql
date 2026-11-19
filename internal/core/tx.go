@@ -8,6 +8,7 @@ import (
 	"iter"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -57,6 +58,8 @@ type Tx struct {
 	// transaction alone, and lease when the lease task has ended it. Both are guarded by [DB.mu].
 	ending bool
 	lease  *leaseEnd
+	// marked is set when lease is, so that a scan looks at each row without the mutex.
+	marked atomic.Bool
 }
 
 // leaseEnd is the end of a write transaction by the lease task, because the instance lost its
@@ -175,8 +178,8 @@ func (tx *Tx) state() error {
 }
 
 // Lost is nil unless the instance ended the transaction because it lost its lease. It is then the
-// error that every call of the transaction gives, which wraps [ErrTxLeaseLost], whether the
-// transaction has ended since or not.
+// error that every call of the transaction gives until Commit or Rollback, which wraps
+// [ErrTxLeaseLost], and Lost goes on giving it after them.
 func (tx *Tx) Lost() error {
 	tx.d.mu.Lock()
 	defer tx.d.mu.Unlock()
@@ -700,8 +703,8 @@ func (tx *Tx) Scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Value, 
 			}
 			// A scan is a call that the caller can keep running for long, so it looks at each row
 			// whether the lease task has ended the transaction.
-			if err := tx.Lost(); err != nil {
-				yield(nil, err)
+			if tx.marked.Load() {
+				yield(nil, tx.Lost())
 				return
 			}
 			if !yield(row, nil) {
@@ -712,7 +715,10 @@ func (tx *Tx) Scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Value, 
 }
 
 // Rollback the transaction: nothing of it is kept. It returns nil on a transaction that the
-// instance ended because it lost its lease, and on one whose connection [DB.Close] closed.
+// instance ended because it lost its lease, and on one whose connection [DB.Close] closed. On a
+// transaction that the instance ended while a scan of it runs, such as from the body of a loop over
+// the scan, the writer lock is given back only when the scan ends, so a [DB.Begin] in that body waits
+// for itself.
 func (tx *Tx) Rollback(ctx context.Context) error {
 	if tx.done {
 		return ErrTxDone
