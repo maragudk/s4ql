@@ -475,7 +475,7 @@ What the engine offers that the model did not:
 - The core's own points of buggify.
 - Every fault of the store with a probability of its own, set in the request. Outages and broken reads are new. Conflicts, requests held in the network, and damaged downloads are in the model only as points of its buggify, at fixed rates. Here a conflict comes only while another write is in flight, as S3 documents it. A write whose caller gave up, or whose sender crashed, can land up to 30 minutes late.
 - 1 to 5 instances, where the model has 2 or 3, with a lease duration for each.
-- Settings for the latency, the read connections, and the workload.
+- Settings for the latency and the workload.
 - Runs that match the native build. The response has the hash that the tests of the core compute, and the same request gives the same hash natively and in Chromium.
 
 ## Using it from a page
