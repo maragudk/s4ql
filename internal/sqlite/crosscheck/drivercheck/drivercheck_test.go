@@ -41,7 +41,9 @@ const (
 	// without the argument, a statement that s4ql supports with no parameter gets s4ql's error of the
 	// wrong number of arguments, and one with one parameter runs.
 	callExecArgument call = "exec with an argument"
-	// callBegin is BeginTx, which runs no text, and whose transaction is rolled back at once.
+	// callBegin is BeginTx of a write transaction, which stays open: the calls after it run in it,
+	// until [callCommit] or [callRollback]. Its text is the name of its isolation level, as
+	// [sql.IsolationLevel.String] gives it, or "" for the default; see [pair.begin].
 	callBegin call = "begin"
 	// callQueryArgument is Query with one argument, the integer 1, as [callExecArgument] is Exec.
 	callQueryArgument call = "query with an argument"
@@ -49,10 +51,46 @@ const (
 	// in the sequences written by hand and in the fuzz target, the integers 1, 2, and 1, so that the
 	// third run meets the key of the first.
 	callPrepareExecRuns call = "prepare, exec several times"
+	// callBeginReadOnly is [callBegin] of a read-only transaction.
+	callBeginReadOnly call = "begin read-only"
+	// callCommit and callRollback end the open transaction, and do nothing without one.
+	callCommit   call = "commit"
+	callRollback call = "rollback"
+	// callStmtExec and callStmtQuery are Prepare where the transaction began, on the [sql.DB] or the
+	// [sql.Conn], and Exec or Query of the statement in the transaction through [sql.Tx.StmtContext].
+	// Without a transaction they are [callPrepareExec] and [callPrepareQuery].
+	callStmtExec  call = "prepare outside, exec in the transaction"
+	callStmtQuery call = "prepare outside, query in the transaction"
+	// callQueryOpen is Query, and in a transaction, after the comparison, the query runs again on both
+	// sides, reads its first row, and leaves its rows open for the next call; see [pair.openRows].
+	callQueryOpen call = "query, rows left open"
+	// callBeside is Query where the transaction began: on a pinned [sql.Conn], whose statements run
+	// in its transaction, and through the pool on the [sql.DB], outside the transaction, so that it
+	// must not see the transaction's changes. Through the pool it runs outside only a select, and any
+	// other text in the transaction, because a write beside a write transaction waits for it.
+	callBeside call = "query beside the transaction"
 )
 
 // calls in the order of the bytes of the fuzz target.
-var calls = []call{callExec, callQuery, callPrepareExec, callPrepareQuery, callQueryRow, callExecArgument, callBegin, callQueryArgument, callPrepareExecRuns}
+var calls = []call{
+	callExec, callQuery, callPrepareExec, callPrepareQuery, callQueryRow, callExecArgument, callBegin, callQueryArgument, callPrepareExecRuns,
+	callBeginReadOnly, callCommit, callRollback, callStmtExec, callStmtQuery, callQueryOpen, callBeside,
+}
+
+// levels that [callBegin] and [callBeginReadOnly] name by their texts in the fuzz target: the
+// default, which is "", and every level that [sql.IsolationLevel] names, and one that it does not.
+var levels = []sql.IsolationLevel{
+	sql.LevelDefault, sql.LevelReadUncommitted, sql.LevelReadCommitted, sql.LevelWriteCommitted, sql.LevelRepeatableRead,
+	sql.LevelSnapshot, sql.LevelSerializable, sql.LevelLinearizable, sql.IsolationLevel(99),
+}
+
+// levelName of l, as the text of a begin: "" for the default.
+func levelName(l sql.IsolationLevel) string {
+	if l == sql.LevelDefault {
+		return ""
+	}
+	return l.String()
+}
 
 // fixedRuns are the arguments of each run of the call c in the sequences written by hand and in the
 // fuzz target: one run with the integer 1 for a call with an argument, the runs of
@@ -70,8 +108,8 @@ func fixedRuns(c call) [][]any {
 // outcome of a text through a call: what an application sees.
 type outcome struct {
 	call call
-	// failed is the step of the call that failed: "prepare", "exec", "query", "rows", "scan", or
-	// "begin", or "" if none failed.
+	// failed is the step of the call that failed: "prepare", "exec", "query", "rows", "scan",
+	// "begin", "commit", or "rollback", or "" if none failed.
 	failed string
 	// err is the error of the failed step: "code/extended: message" for SQLite's, "no rows" for
 	// [sql.ErrNoRows], and the message for s4ql's own errors.
@@ -119,19 +157,30 @@ func (o outcome) notSupported() bool {
 	return strings.HasPrefix(o.err, "s4ql: not supported: ")
 }
 
-// queryer is what [sql.DB] and [sql.Conn] have in common: where a text runs.
-type queryer interface {
+// runner is what [sql.DB], [sql.Conn], and [sql.Tx] have in common: where a text runs.
+type runner interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 	PrepareContext(ctx context.Context, query string) (*sql.Stmt, error)
+}
+
+// queryer is a [runner] that begins transactions: a [sql.DB] or a [sql.Conn].
+type queryer interface {
+	runner
 	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
 }
 
-// run src through the call c on q, with the arguments of each run, and with errText for the text of
-// an error. Every call but [callPrepareExecRuns] makes one run, with the arguments of the first, and
-// [callBegin] none.
-func run(tb testing.TB, q queryer, c call, src string, runs [][]any, errText func(testing.TB, error) string) outcome {
+// inTx is a transaction, as a [runner], with the queryer that it began on, where [callStmtExec] and
+// [callStmtQuery] prepare their statements.
+type inTx struct {
+	*sql.Tx
+	outer queryer
+}
+
+// run src through the call c on r, with the arguments of each run, and with errText for the text of
+// an error. Every call but [callPrepareExecRuns] makes one run, with the arguments of the first.
+func run(tb testing.TB, r runner, c call, src string, runs [][]any, errText func(testing.TB, error) string) outcome {
 	tb.Helper()
 	ctx := tb.Context()
 	o := outcome{call: c}
@@ -145,25 +194,39 @@ func run(tb testing.TB, q queryer, c call, src string, runs [][]any, errText fun
 	}
 	switch c {
 	case callExec, callExecArgument:
-		res, err := q.ExecContext(ctx, src, args...)
+		res, err := r.ExecContext(ctx, src, args...)
 		if err != nil {
 			return failed("exec", err)
 		}
 		return result(tb, o, res)
-	case callQuery, callQueryArgument:
-		rows, err := q.QueryContext(ctx, src, args...)
+	case callQuery, callQueryArgument, callQueryOpen, callBeside:
+		rows, err := r.QueryContext(ctx, src, args...)
 		if err != nil {
 			return failed("query", err)
 		}
 		return read(tb, o, rows, errText)
-	case callPrepareExec, callPrepareQuery, callPrepareExecRuns:
-		s, err := q.PrepareContext(ctx, src)
+	case callPrepareExec, callPrepareQuery, callPrepareExecRuns, callStmtExec, callStmtQuery:
+		// A statement prepared where its transaction began runs in the transaction through
+		// [sql.Tx.StmtContext], which database/sql closes when the transaction ends.
+		where := r
+		t, outside := r.(inTx)
+		outside = outside && (c == callStmtExec || c == callStmtQuery)
+		if outside {
+			where = t.outer
+		}
+		prepared, err := where.PrepareContext(ctx, src)
 		if err != nil {
 			return failed("prepare", err)
 		}
-		defer func() { is.NotError(tb, s.Close()) }()
+		defer func() { is.NotError(tb, prepared.Close()) }()
+		s := prepared
+		if outside {
+			// Its Close gives the error of a prepare in the transaction that failed, which its run gives
+			// too, and the end of the transaction closes it.
+			s = t.StmtContext(ctx, prepared)
+		}
 		switch c {
-		case callPrepareExec:
+		case callPrepareExec, callStmtExec:
 			res, err := s.ExecContext(ctx, args...)
 			if err != nil {
 				return failed("exec", err)
@@ -195,17 +258,10 @@ func run(tb testing.TB, q queryer, c call, src string, runs [][]any, errText fun
 		// database/sql gives the error of the query at Scan, and one destination is enough for slice
 		// 1, whose queries have one column.
 		var v any
-		if err := q.QueryRowContext(ctx, src, args...).Scan(&v); err != nil {
+		if err := r.QueryRowContext(ctx, src, args...).Scan(&v); err != nil {
 			return failed("scan", err)
 		}
 		o.rows = []string{valueText(v)}
-		return o
-	case callBegin:
-		tx, err := q.BeginTx(ctx, nil)
-		if err != nil {
-			return failed("begin", err)
-		}
-		is.NotError(tb, tx.Rollback())
 		return o
 	}
 	tb.Fatalf("no call %q", c)
@@ -287,15 +343,21 @@ func s4qlText(tb testing.TB, err error) string {
 	if strings.HasPrefix(err.Error(), wrongArguments) {
 		// Another number of arguments than the statement has parameters, which is an error of s4ql's
 		// own and matches none of its sentinels.
-		for _, sentinel := range []error{s4ql.ErrNotServing, s4ql.ErrOutcomeUnknown, s4ql.ErrStopped} {
-			if errors.Is(err, sentinel) {
-				tb.Fatalf("s4ql gives %q, which matches %v", err, sentinel)
-			}
-		}
+		noSentinel(tb, err)
 		return err.Error()
 	}
 	tb.Fatalf("s4ql gives %v", err)
 	return ""
+}
+
+// noSentinel fails the test if err, an error of s4ql's own, matches one of s4ql's sentinels.
+func noSentinel(tb testing.TB, err error) {
+	tb.Helper()
+	for _, sentinel := range []error{s4ql.ErrNotSupported, s4ql.ErrNotServing, s4ql.ErrOutcomeUnknown, s4ql.ErrStopped, s4ql.ErrTooLarge} {
+		if errors.Is(err, sentinel) {
+			tb.Fatalf("s4ql gives %q, which matches %v", err, sentinel)
+		}
+	}
 }
 
 // mattnText of an error of mattn's driver, or of database/sql around it: SQLite's error, or
@@ -373,42 +435,56 @@ type tally map[string]int
 
 // add the outcome got of s4ql for src through its call with the arguments of each run: the call, with
 // arguments if a run has any, and the outcome of each run, by the kind of the statement, with a
-// parameter if it has one.
-func (y tally) add(src string, got outcome, runs [][]any) {
+// parameter if it has one. Each is counted once by itself, and once more after scope and a colon if
+// scope is not "", such as "write transaction" for a call in one.
+func (y tally) add(scope, src string, got outcome, runs [][]any) {
 	if y == nil {
 		return
 	}
-	kind := "other"
-	if s, _ := stmt.Check(src); s != nil && got.call != callBegin {
-		kind = strings.ToLower(strings.TrimPrefix(fmt.Sprintf("%T", s), "*stmt."))
-		if s.Parameters() > 0 {
-			kind += " with a parameter"
+	count := func(name string) {
+		y[name]++
+		if scope != "" {
+			y[scope+": "+name]++
 		}
 	}
-	if got.call == callBegin {
-		kind = "begin"
+	count("call " + string(got.call))
+	if slices.ContainsFunc(runs, func(args []any) bool { return len(args) > 0 }) {
+		count("call " + string(got.call) + " with arguments")
 	}
-	y["call "+string(got.call)]++
-	if slices.ContainsFunc(runs, func(args []any) bool { return len(args) > 0 }) && got.call != callBegin {
-		y["call "+string(got.call)+" with arguments"]++
-	}
+	kind := statementKind(src)
 	for _, o := range got.runs() {
 		switch {
 		case o.failed == "":
-			y[kind+" ok"]++
+			count(kind + " ok")
 			if len(o.rows) > 0 && o.columns != "" {
-				y[kind+" ok with rows"]++
+				count(kind + " ok with rows")
 			}
 		case strings.HasPrefix(o.err, "s4ql: not supported: the named argument "):
-			y[kind+" named argument"]++
+			count(kind + " named argument")
 		case strings.HasPrefix(o.err, "s4ql: not supported: argument "):
-			y[kind+" argument of a type not supported"]++
+			count(kind + " argument of a type not supported")
+		case o.err == rowsOpen:
+			count(kind + " while rows are open")
 		case o.notSupported():
-			y[kind+" not supported"]++
+			count(kind + " not supported")
 		default:
-			y[kind+" "+messageKind(o.err)]++
+			count(kind + " " + messageKind(o.err))
 		}
 	}
+}
+
+// statementKind of src: the kind of the statement of slices 1 and 2 that it is, in lower case and
+// with a parameter if it has one, or "other".
+func statementKind(src string) string {
+	s, _ := stmt.Check(src)
+	if s == nil {
+		return "other"
+	}
+	kind := strings.ToLower(strings.TrimPrefix(fmt.Sprintf("%T", s), "*stmt."))
+	if s.Parameters() > 0 {
+		kind += " with a parameter"
+	}
+	return kind
 }
 
 // excused counts a text of the kind that the comparison excuses.
@@ -424,7 +500,7 @@ const wrongArguments = "s4ql: wrong number of arguments: "
 
 // messageKind of an error's text: its message without the names.
 func messageKind(err string) string {
-	for _, kind := range []string{"already exists", "no such table", "has no column named", "UNIQUE constraint failed", "syntax error", "incomplete input", "no rows", "wrong number of arguments"} {
+	for _, kind := range []string{"already exists", "no such table", "has no column named", "UNIQUE constraint failed", "syntax error", "incomplete input", "no rows", "wrong number of arguments", "attempt to write a readonly database"} {
 		if strings.Contains(err, kind) {
 			return kind
 		}
@@ -452,7 +528,31 @@ const (
 	// another type, which SQLite binds: it is checked against s4ql's rule by
 	// [pair.checkArgumentRefused], and not run in SQLite.
 	excusedArgument = "an argument that s4ql does not support, checked against s4ql's rule"
+	// excusedLevel is a begin with another isolation level than the default and serializable, which
+	// s4ql refuses by its rule, where mattn ignores the level: it is checked against the rule by
+	// [pair.begin], and nothing is begun in SQLite.
+	excusedLevel = "an isolation level that s4ql does not support, checked against s4ql's rule"
+	// excusedRowsOpen is a call in a transaction while the rows of a query of the transaction are
+	// open, of a statement that s4ql would run, which s4ql refuses by its rule, where SQLite runs it:
+	// it is checked against the rule by [pair.whileRowsOpen], and not run in SQLite.
+	excusedRowsOpen = "a statement while the rows of the transaction are open, checked against s4ql's rule"
+	// excusedTxOpen is a begin on a pinned connection whose transaction is open, which s4ql refuses
+	// with an error of its own, and SQLite with `cannot start a transaction within a transaction`:
+	// [pair.beginAgain] requires both.
+	excusedTxOpen = "a begin on a connection whose transaction is open, refused by both with their own errors"
+	// excusedOutside is [callStmtExec] or [callStmtQuery] through the pool, whose text mattn's Prepare
+	// on the [sql.DB] refuses with an error of the names of the state outside the transaction, where
+	// s4ql's Prepare checks only the text: the statement is compared with mattn's prepared in the
+	// transaction, which database/sql prepares it in, by [pair.compare].
+	excusedOutside = "a statement prepared outside the transaction, whose names only the transaction has, compared as prepared in it"
 )
+
+// rowsOpen is the error of s4ql for a statement in a transaction while the rows of a query of the
+// transaction are open.
+const rowsOpen = "s4ql: not supported: a statement while the rows of a query of a transaction on its connection are open; close the rows first"
+
+// txOpen is the error of s4ql for a begin on a connection whose transaction is open.
+const txOpen = "s4ql: a transaction is open on the connection"
 
 // pair of a database of s4ql and one of SQLite through mattn, which run the same texts, on a
 // connection of each that is pinned, or through the pool of each.
@@ -473,6 +573,28 @@ type pair struct {
 	// comparison of the tables also asks for those that SQLite no longer has.
 	created map[string]bool
 	y       tally
+	// tx is the transaction that is open on both sides, or nil.
+	tx *transaction
+}
+
+// transaction that is open on both sides of a pair, which the calls run in.
+type transaction struct {
+	// s and o are s4ql's and SQLite's.
+	s, o     *sql.Tx
+	readOnly bool
+	// sRows and oRows are the rows that [callQueryOpen] left open, or nil.
+	sRows, oRows *sql.Rows
+	// wrote is set once an insert succeeded in the transaction, failed once a call failed in it, and
+	// created and dropped once a create table or a drop table succeeded in it.
+	wrote, failed, created, dropped bool
+}
+
+// kind of the transaction, as the tally names it.
+func (t *transaction) kind() string {
+	if t.readOnly {
+		return "read-only transaction"
+	}
+	return "write transaction"
 }
 
 // newPair on a new database of the world w, on a pinned connection of each side if pinned, with the
@@ -482,8 +604,11 @@ func newPair(tb testing.TB, w *world, pinned bool, y tally) *pair {
 	p := &pair{tb: tb, w: w, prefix: fmt.Sprint("db", w.prefixes.Add(1)), cache: filepath.Join(tb.TempDir(), "cache"), pinned: pinned, created: map[string]bool{}, y: y}
 	p.s4ql = open(tb, w.options(p.prefix, p.cache))
 	var err error
-	// A file, so that every connection of the pool reaches the same database.
-	p.sqlite, err = sql.Open("sqlite3", filepath.Join(tb.TempDir(), "oracle.db"))
+	// A file, so that every connection of the pool reaches the same database. Its transactions begin
+	// with `begin immediate`, so that they take the place of the writer when they begin, as those of
+	// s4ql do; mattn's BeginTx ignores ReadOnly, and [pair.begin] sets `pragma query_only` instead.
+	// The name is no URI, whose path would end at a '#' of the name of the test.
+	p.sqlite, err = sql.Open("sqlite3", filepath.Join(tb.TempDir(), "oracle.db")+"?_txlock=immediate")
 	is.NotError(tb, err)
 	tb.Cleanup(func() { is.NotError(tb, p.sqlite.Close()) })
 	p.empty, err = sql.Open("sqlite3", ":memory:")
@@ -523,26 +648,345 @@ func (p *pair) step(src string, c call, supported bool) (outcome, string) {
 // without a syntax error. A call that s4ql refuses for its arguments by its rule is not run in SQLite
 // either, and must be refused as the rule says. stepRuns gives s4ql's outcome, and what differs, or
 // "".
+//
+// A begin, a commit, and a roll back are those of [pair.begin] and [pair.end]. In a transaction, the
+// calls run in it on both sides, but [callBeside], and while rows of the transaction are open, as
+// [pair.whileRowsOpen] says.
 func (p *pair) stepRuns(src string, c call, supported bool, runs [][]any) (outcome, string) {
 	tb := p.tb
 	tb.Helper()
-	got := run(tb, p.s, c, src, runs, s4qlText)
-	p.y.add(src, got, runs)
-	return got, p.compare(src, c, supported, runs, got)
+	switch c {
+	case callBegin, callBeginReadOnly:
+		return p.begin(src, c)
+	case callCommit, callRollback:
+		return p.end(c)
+	}
+	s, o, scope := p.where(c, src)
+	if p.tx != nil && p.tx.sRows != nil {
+		return p.whileRowsOpen(src, c, supported, runs, s, o, scope)
+	}
+	got := run(tb, s, c, src, runs, s4qlText)
+	p.y.add(scope, src, got, runs)
+	failure := p.compare(src, c, supported, runs, got, o)
+	if failure == "" && p.tx != nil && scope == p.tx.kind() {
+		p.note(src, got)
+		if c == callQueryOpen && got.failed == "" && got.columns != "" {
+			failure = p.openRows(src, runs[0])
+		}
+	}
+	return got, failure
+}
+
+// where the call c of src runs: s4ql's and SQLite's, and the scope that the tally counts it in. It is
+// in the open transaction, if there is one, but for [callBeside].
+func (p *pair) where(c call, src string) (runner, runner, string) {
+	t := p.tx
+	switch {
+	case t == nil:
+		return p.s, p.o, ""
+	case c != callBeside:
+		return inTx{Tx: t.s, outer: p.s}, inTx{Tx: t.o, outer: p.o}, t.kind()
+	case p.pinned:
+		// The statements of a sql.Conn run in its transaction.
+		return p.s, p.o, t.kind()
+	}
+	if s, _ := stmt.Check(src); s != nil {
+		if _, ok := s.(*stmt.Select); ok {
+			return p.s, p.o, "beside a " + t.kind()
+		}
+	}
+	return inTx{Tx: t.s, outer: p.s}, inTx{Tx: t.o, outer: p.o}, t.kind()
+}
+
+// note what the outcome got of src in the open transaction did, for the tally: a write, a failure,
+// a create table, a drop table, and a query that reads rows after a write of the transaction.
+func (p *pair) note(src string, got outcome) {
+	t := p.tx
+	kind := statementKind(src)
+	for _, o := range got.runs() {
+		switch {
+		case o.failed != "":
+			t.failed = true
+		case strings.HasPrefix(kind, "insert"):
+			t.wrote = true
+		case kind == "createtable":
+			t.created = true
+		case kind == "droptable":
+			t.dropped = true
+		case kind == "select" && t.wrote && len(o.rows) > 0 && p.y != nil:
+			p.y[t.kind()+": select ok with rows after a write of the transaction"]++
+		}
+	}
+}
+
+// openRows runs the query src, with args, again in the open transaction on both sides, after its
+// outcome was compared, reads the first row of each, and leaves the rows open for the next call.
+func (p *pair) openRows(src string, args []any) string {
+	tb := p.tb
+	tb.Helper()
+	t := p.tx
+	var err error
+	t.sRows, err = t.s.QueryContext(tb.Context(), src, args...)
+	is.NotError(tb, err)
+	t.oRows, err = t.o.QueryContext(tb.Context(), firstStatement(src), args...)
+	is.NotError(tb, err)
+	got, want := firstRow(tb, t.sRows), firstRow(tb, t.oRows)
+	if got != want {
+		return fmt.Sprintf("%q: the first row of s4ql's rows that are left open is %v, and of SQLite's %v", src, got, want)
+	}
+	if got == "none" {
+		// database/sql closes rows whose Next found no row.
+		p.closeRows()
+		return ""
+	}
+	if p.y != nil {
+		p.y[t.kind()+": rows left open"]++
+	}
+	return ""
+}
+
+// firstRow of rows, with its values as [valueText] gives them, or "none".
+func firstRow(tb testing.TB, rows *sql.Rows) string {
+	tb.Helper()
+	if !rows.Next() {
+		is.NotError(tb, rows.Err())
+		return "none"
+	}
+	columns, err := rows.Columns()
+	is.NotError(tb, err)
+	values := make([]any, len(columns))
+	dest := make([]any, len(columns))
+	for i := range values {
+		dest[i] = &values[i]
+	}
+	is.NotError(tb, rows.Scan(dest...))
+	var texts []string
+	for _, v := range values {
+		texts = append(texts, valueText(v))
+	}
+	return strings.Join(texts, ",")
+}
+
+// closeRows that [callQueryOpen] left open in the open transaction, on both sides.
+func (p *pair) closeRows() {
+	tb := p.tb
+	tb.Helper()
+	if t := p.tx; t != nil && t.sRows != nil {
+		is.NotError(tb, t.sRows.Close())
+		is.NotError(tb, t.oRows.Close())
+		t.sRows, t.oRows = nil, nil
+	}
+}
+
+// whileRowsOpen is [pair.stepRuns] of src through the call c, with the arguments of each run, on s
+// and o, while rows of the open transaction are open, which it closes after the call. Where s4ql
+// would run the statement in every run, it must refuse each with [rowsOpen] when the statement runs,
+// and the call is not run in SQLite, which would run it. The open rows come after the checks of the
+// text and of the arguments, so every other call is compared as without them; so is a query beside
+// the transaction through the pool, which runs on another connection.
+func (p *pair) whileRowsOpen(src string, c call, supported bool, runs [][]any, s, o runner, scope string) (outcome, string) {
+	tb := p.tb
+	tb.Helper()
+	defer p.closeRows()
+	got := run(tb, s, c, src, runs, s4qlText)
+	p.y.add(scope, src, got, runs)
+	runsAll := !slices.ContainsFunc(runs, func(args []any) bool {
+		return !(stmttest.Call{Src: src, Args: args, Supported: true}).Runs()
+	})
+	if !runsAll || scope != p.tx.kind() {
+		return got, p.compare(src, c, supported, runs, got, o)
+	}
+	if len(got.runs()) != len(runs) {
+		return got, fmt.Sprintf("%q with %v runs while rows are open: s4ql gives %v", src, len(runs), got)
+	}
+	for _, r := range got.runs() {
+		if r.failed == "" || r.failed == "prepare" || r.err != rowsOpen {
+			return got, fmt.Sprintf("%q with the arguments %#v while rows of the transaction are open: s4ql gives %v, where the rule gives %q", src, runs, got, rowsOpen)
+		}
+	}
+	p.y.excused(excusedRowsOpen)
+	return got, ""
+}
+
+// begin a transaction on both sides, by the call c, with the isolation level that src names, as
+// [levelName] gives it. A level that s4ql does not support must be refused as its rule says, and
+// nothing is begun on either side. A read-only transaction of SQLite runs under `pragma query_only`,
+// which [pair.end] resets. On a pinned connection whose transaction is open, the begin is
+// [pair.beginAgain]; through the pool, the open transaction commits first, because s4ql's second
+// write transaction would wait for the first.
+func (p *pair) begin(src string, c call) (outcome, string) {
+	tb := p.tb
+	tb.Helper()
+	ctx := tb.Context()
+	i := slices.IndexFunc(levels, func(l sql.IsolationLevel) bool { return levelName(l) == src })
+	if i < 0 {
+		tb.Fatalf("no isolation level is named %q", src)
+	}
+	level := levels[i]
+	opts := &sql.TxOptions{Isolation: level, ReadOnly: c == callBeginReadOnly}
+	got := outcome{call: c}
+	if p.tx != nil && p.pinned {
+		return p.beginAgain(c, opts)
+	}
+	if p.tx != nil {
+		if _, failure := p.end(callCommit); failure != "" {
+			return got, failure
+		}
+	}
+	if p.y != nil {
+		p.y["call "+string(c)]++
+	}
+
+	sTx, err := p.s.BeginTx(ctx, opts)
+	if level != sql.LevelDefault && level != sql.LevelSerializable {
+		// mattn ignores the level, and is not asked.
+		if want := "s4ql: not supported: the isolation level " + level.String(); err == nil || err.Error() != want || !errors.Is(err, s4ql.ErrNotSupported) {
+			if err == nil {
+				_ = sTx.Rollback()
+			}
+			return got, fmt.Sprintf("BeginTx with %+v: s4ql gives %v, where the rule gives %q", opts, err, want)
+		}
+		got.failed, got.err = "begin", err.Error()
+		p.y.excused(excusedLevel)
+		return got, ""
+	}
+	if err != nil {
+		return got, fmt.Sprintf("BeginTx with %+v: s4ql gives %v, and SQLite begins", opts, err)
+	}
+	oTx, err := p.o.BeginTx(ctx, opts)
+	is.NotError(tb, err)
+	if opts.ReadOnly {
+		_, err := oTx.ExecContext(ctx, "pragma query_only = 1")
+		is.NotError(tb, err)
+	}
+	p.tx = &transaction{s: sTx, o: oTx, readOnly: opts.ReadOnly}
+	if p.y != nil {
+		p.y[p.tx.kind()+" begin ok"]++
+		p.y["begin ok"]++
+	}
+	return got, ""
+}
+
+// beginAgain is [pair.begin] on a pinned connection whose transaction is open, with opts: s4ql must
+// refuse an isolation level that it does not support as without the transaction, and otherwise give
+// [txOpen], which matches none of its sentinels, and SQLite must refuse it as a transaction within a
+// transaction. The open transaction stays open on both sides, and rows that it left open are closed
+// first.
+func (p *pair) beginAgain(c call, opts *sql.TxOptions) (outcome, string) {
+	tb := p.tb
+	tb.Helper()
+	ctx := tb.Context()
+	p.closeRows()
+	got := outcome{call: c}
+	if p.y != nil {
+		p.y["call "+string(c)+" in a transaction"]++
+	}
+	_, err := p.s.BeginTx(ctx, opts)
+	if err == nil {
+		return got, fmt.Sprintf("BeginTx with %+v in a transaction: s4ql begins", opts)
+	}
+	got.failed, got.err = "begin", err.Error()
+	if opts.Isolation != sql.LevelDefault && opts.Isolation != sql.LevelSerializable {
+		if want := "s4ql: not supported: the isolation level " + opts.Isolation.String(); err.Error() != want || !errors.Is(err, s4ql.ErrNotSupported) {
+			return got, fmt.Sprintf("BeginTx with %+v in a transaction: s4ql gives %v, where the rule gives %q", opts, err, want)
+		}
+		p.y.excused(excusedLevel)
+		return got, ""
+	}
+	if err.Error() != txOpen {
+		return got, fmt.Sprintf("BeginTx with %+v in a transaction: s4ql gives %v, where the rule gives %q", opts, err, txOpen)
+	}
+	noSentinel(tb, err)
+	if _, ok := errors.AsType[*s4ql.Error](err); ok {
+		return got, fmt.Sprintf("BeginTx with %+v in a transaction: s4ql gives SQLite's error %v", opts, got.err)
+	}
+	// Under `pragma query_only`, which a read-only transaction of SQLite runs under, `begin immediate`
+	// is refused as a write first.
+	want := "cannot start a transaction within a transaction"
+	if p.tx.readOnly {
+		want = "attempt to write a readonly database"
+	}
+	if _, err := p.o.BeginTx(ctx, opts); err == nil || err.Error() != want {
+		return got, fmt.Sprintf("BeginTx with %+v in a transaction: SQLite gives %v, and the test expects %q", opts, err, want)
+	}
+	p.y.excused(excusedTxOpen)
+	return got, ""
+}
+
+// end the open transaction on both sides, by the call c, a commit or a roll back, and compare what
+// each gives, and then every table. Rows that the transaction left open stay open on s4ql's side,
+// which database/sql closes before the end. Without a transaction it does nothing.
+func (p *pair) end(c call) (outcome, string) {
+	tb := p.tb
+	tb.Helper()
+	got, want := outcome{call: c}, outcome{call: c}
+	t := p.tx
+	if t == nil {
+		return got, ""
+	}
+	p.tx = nil
+	open := t.sRows != nil
+	if open {
+		is.NotError(tb, t.oRows.Close())
+	}
+	if t.readOnly {
+		_, err := t.o.ExecContext(tb.Context(), "pragma query_only = 0")
+		is.NotError(tb, err)
+	}
+	step, sEnd, oEnd := "commit", t.s.Commit, t.o.Commit
+	if c == callRollback {
+		step, sEnd, oEnd = "rollback", t.s.Rollback, t.o.Rollback
+	}
+	if err := sEnd(); err != nil {
+		got.failed, got.err = step, s4qlText(tb, err)
+	}
+	if err := oEnd(); err != nil {
+		want.failed, want.err = step, mattnText(tb, err)
+	}
+	if open {
+		is.NotError(tb, t.sRows.Close())
+	}
+	if got.String() != want.String() {
+		return got, fmt.Sprintf("the %v of the %v: s4ql gives\n%v\nand SQLite\n%v", step, t.kind(), got, want)
+	}
+	if y := p.y; y != nil {
+		y["call "+string(c)]++
+		name := t.kind() + " " + step
+		if got.failed == "" {
+			name += " ok"
+		} else {
+			name += " " + messageKind(got.err)
+		}
+		y[name]++
+		where := " through the pool"
+		if p.pinned {
+			where = " on a pinned connection"
+		}
+		y[name+where]++
+		for _, with := range []struct {
+			ok   bool
+			what string
+		}{{t.failed, "after a failed call"}, {t.wrote, "after an insert"}, {t.created, "after a create table"}, {t.dropped, "after a drop table"}, {open, "while rows are open"}} {
+			if with.ok {
+				y[name+" "+with.what]++
+			}
+		}
+	}
+	return got, p.compareTables()
+}
+
+// finish the open transaction by a commit, if there is one, and compare.
+func (p *pair) finish() string {
+	p.tb.Helper()
+	_, failure := p.end(callCommit)
+	return failure
 }
 
 // compare s4ql's outcome got of src through the call c, with the arguments of each run, with
-// SQLite's, as [pair.stepRuns] describes.
-func (p *pair) compare(src string, c call, supported bool, runs [][]any, got outcome) string {
+// SQLite's on o, as [pair.stepRuns] describes.
+func (p *pair) compare(src string, c call, supported bool, runs [][]any, got outcome, o runner) string {
 	tb := p.tb
 	tb.Helper()
-	if c == callBegin {
-		// Both sides begin a transaction, and roll it back.
-		if want := run(tb, p.o, c, src, runs, mattnText); got.failed != "" || got.String() != want.String() {
-			return fmt.Sprintf("s4ql gives\n%v\nand SQLite\n%v", got, want)
-		}
-		return ""
-	}
 	if got.notSupported() {
 		return p.checkNotSupported(src, c, supported, runs, got)
 	}
@@ -567,7 +1011,15 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 	}
 
 	first := firstStatement(src)
-	want := run(tb, p.o, c, first, mattnRuns, mattnText)
+	want := run(tb, o, c, first, mattnRuns, mattnText)
+	if t, ok := o.(inTx); ok && !p.pinned && (c == callStmtExec || c == callStmtQuery) && want.failed == "prepare" &&
+		slices.Contains([]string{"no such table", "already exists", "has no column named"}, messageKind(want.err)) {
+		// Through the pool, mattn's Prepare on the sql.DB ran outside the transaction, on another
+		// connection, and failed on the names of the state there, before database/sql prepared the
+		// statement again in the transaction. s4ql's Prepare checks only the text.
+		want = run(tb, t.Tx, c, first, mattnRuns, mattnText)
+		p.y.excused(excusedOutside)
+	}
 	if !p.pinned {
 		// Through the pool, the count of changes is that of the connection that database/sql takes,
 		// so it is compared only for a statement that sets it. In slice 1 that is an insert.
@@ -585,7 +1037,7 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 	}
 
 	switch {
-	case (c == callPrepareExec || c == callPrepareExecRuns) && got.failed == "exec" || c == callPrepareQuery && got.failed == "query":
+	case (c == callPrepareExec || c == callPrepareExecRuns || c == callStmtExec) && got.failed == "exec" || (c == callPrepareQuery || c == callStmtQuery) && got.failed == "query":
 		// SQLite gives the error when it prepares the text, and s4ql in each run of the statement.
 		if want.failed == "prepare" && slices.Contains([]string{"no such table", "already exists", "has no column named"}, messageKind(got.err)) &&
 			!slices.ContainsFunc(got.runs(), func(o outcome) bool { return o.failed != got.failed || o.err != want.err }) {
@@ -620,7 +1072,7 @@ func (p *pair) checkNotSupported(src string, c call, supported bool, runs [][]an
 	if got.err != want {
 		return fmt.Sprintf("%q: s4ql gives %v, where its check of the text gives %v", src, got, want)
 	}
-	if (c == callPrepareExec || c == callPrepareQuery || c == callPrepareExecRuns) && got.failed != "prepare" {
+	if (c == callPrepareExec || c == callPrepareQuery || c == callPrepareExecRuns || c == callStmtExec || c == callStmtQuery) && got.failed != "prepare" {
 		return fmt.Sprintf("%q: s4ql gives %v, after the statement was prepared", src, got)
 	}
 	if supported {
@@ -775,6 +1227,9 @@ func (p *pair) compareTables() string {
 func (p *pair) restart(empty bool) {
 	tb := p.tb
 	tb.Helper()
+	if p.tx != nil {
+		tb.Fatal("a transaction is open")
+	}
 	if c, ok := p.s.(*sql.Conn); ok {
 		is.NotError(tb, c.Close())
 	}
@@ -797,6 +1252,9 @@ func (p *pair) restart(empty bool) {
 func (p *pair) close() {
 	tb := p.tb
 	tb.Helper()
+	if p.tx != nil {
+		tb.Fatal("a transaction is open")
+	}
 	if c, ok := p.s.(*sql.Conn); ok {
 		is.NotError(tb, c.Close())
 	}
@@ -956,6 +1414,121 @@ var sequences = map[string][]step{
 		{callExec, "insert into t1 (v1) values (2); /* c */", "exec: 1 affected, last insert id 0"},
 		{callQuery, "select * from t1 ; -- c", `query: columns "v1" of types "INT", rows int64:1 int64:2`},
 	},
+	"a write transaction that commits, with arguments and prepared statements": {
+		{callExec, t1, "exec: 0 affected, last insert id 0"},
+		{callCommit, "", "commit"},
+		{callBegin, "", "begin"},
+		{callExec, "insert into t1 (v1) values (1)", "exec: 1 affected, last insert id 0"},
+		{callExecArgument, "insert into t1 (v1) values (?)", "exec with an argument: exec failed with 19/1555: UNIQUE constraint failed: t1.v1"},
+		{callPrepareExecRuns, "insert into t1 (v1) values (?)", "prepare, exec several times: exec failed with 19/1555: UNIQUE constraint failed: t1.v1; then: 1 affected, last insert id 0; then: exec failed with 19/1555: UNIQUE constraint failed: t1.v1"},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1 int64:2`},
+		{callQueryRow, "select * from t1", "query row: row int64:1"},
+		{callExec, "create table t2 (v2 int primary key) strict, without rowid", "exec: 0 affected, last insert id 0"},
+		// Through the pool, mattn's Prepare outside the transaction does not find t2.
+		{callStmtExec, "insert into t2 (v2) values (5)", "prepare outside, exec in the transaction: 1 affected, last insert id 0"},
+		{callStmtQuery, "select * from t2", `prepare outside, query in the transaction: columns "v2" of types "INT", rows int64:5`},
+		{callStmtExec, "insert into t2 (v2) values (?)", "prepare outside, exec in the transaction: exec failed with s4ql: wrong number of arguments: 0 for a statement with 1 parameter"},
+		{callPrepareQuery, "select * from t2", `prepare, query: columns "v2" of types "INT", rows int64:5`},
+		{callCommit, "", "commit"},
+		{callQuery, "select * from t2", `query: columns "v2" of types "INT", rows int64:5`},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1 int64:2`},
+	},
+	"a write transaction that rolls back, with create table and drop table": {
+		{callExec, t1, "exec: 0 affected, last insert id 0"},
+		{callExec, "insert into t1 (v1) values (1)", "exec: 1 affected, last insert id 0"},
+		{callBegin, "", "begin"},
+		{callExec, "insert into t1 (v1) values (2)", "exec: 1 affected, last insert id 0"},
+		{callExec, "create table t2 (v2 int primary key) strict, without rowid", "exec: 1 affected, last insert id 0"},
+		{callExec, "drop table t1", "exec: 1 affected, last insert id 0"},
+		{callQuery, "select * from t1", "query: query failed with 1/1: no such table: t1"},
+		{callStmtExec, "insert into t1 (v1) values (3)", "prepare outside, exec in the transaction: exec failed with 1/1: no such table: t1"},
+		{callExec, "insert into t2 (v2) values (3)", "exec: 1 affected, last insert id 0"},
+		{callRollback, "", "rollback"},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1`},
+		{callQuery, "select * from t2", "query: query failed with 1/1: no such table: t2"},
+	},
+	"a read-only transaction": {
+		{callExec, t1, "exec: 0 affected, last insert id 0"},
+		{callExec, "insert into t1 (v1) values (1)", "exec: 1 affected, last insert id 0"},
+		{callBeginReadOnly, "", "begin read-only"},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1`},
+		{callExec, "insert into t1 (v1) values (2)", "exec: exec failed with 8/8: attempt to write a readonly database"},
+		{callExec, "create table t2 (v2 int primary key) strict, without rowid", "exec: exec failed with 8/8: attempt to write a readonly database"},
+		{callExec, "drop table t1", "exec: exec failed with 8/8: attempt to write a readonly database"},
+		{callExec, "insert into t9 (v1) values (1)", "exec: exec failed with 1/1: no such table: t9"},
+		{callExec, t1, "exec: exec failed with 1/1: table t1 already exists"},
+		{callExecArgument, "insert into t1 (v1) values (?)", "exec with an argument: exec failed with 8/8: attempt to write a readonly database"},
+		{callPrepareExecRuns, "insert into t1 (v1) values (?)", "prepare, exec several times: exec failed with 8/8: attempt to write a readonly database; then: exec failed with 8/8: attempt to write a readonly database; then: exec failed with 8/8: attempt to write a readonly database"},
+		{callStmtQuery, "select * from t1", `prepare outside, query in the transaction: columns "v1" of types "INT", rows int64:1`},
+		{callQueryRow, "select * from t1", "query row: row int64:1"},
+		{callCommit, "", "commit"},
+		{callExec, "insert into t1 (v1) values (2)", "exec: 1 affected, last insert id 0"},
+		{callBeginReadOnly, "Serializable", "begin read-only"},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1 int64:2`},
+		{callRollback, "", "rollback"},
+	},
+	"rows of a transaction left open": {
+		{callExec, t1, "exec: 0 affected, last insert id 0"},
+		{callExec, "insert into t1 (v1) values (1)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t1 (v1) values (2)", "exec: 1 affected, last insert id 0"},
+		{callBegin, "", "begin"},
+		{callQueryOpen, "select * from t1", `query, rows left open: columns "v1" of types "INT", rows int64:1 int64:2`},
+		{callExec, "insert into t1 (v1) values (3)", "exec: exec failed with " + rowsOpen},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1 int64:2`},
+		{callQueryOpen, "select * from t1", ""},
+		{callExec, "insert into t9 (v1) values (3)", "exec: exec failed with " + rowsOpen},
+		{callQueryOpen, "select * from t1", ""},
+		{callPrepareExecRuns, "insert into t1 (v1) values (?)", "prepare, exec several times: exec failed with " + rowsOpen + "; then: exec failed with " + rowsOpen + "; then: exec failed with " + rowsOpen},
+		{callQueryOpen, "select * from t1", ""},
+		{callQueryRow, "select * from t1", "query row: scan failed with " + rowsOpen},
+		// The checks of the text and of the arguments come first.
+		{callQueryOpen, "select * from t1", ""},
+		{callExec, "selec", `exec: exec failed with 1/1: near "selec": syntax error`},
+		{callQueryOpen, "select * from t1", ""},
+		{callExecArgument, "insert into t1 (v1) values (1)", "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
+		{callQueryOpen, "select * from t1", ""},
+		{callExec, "insert into t1 (v1) values (1), (2)", ""},
+		{callQueryOpen, "select * from t1", ""},
+		{callCommit, "", "commit"},
+		{callBeginReadOnly, "", "begin read-only"},
+		{callQueryOpen, "select * from t1", `query, rows left open: columns "v1" of types "INT", rows int64:1 int64:2`},
+		{callExec, "insert into t1 (v1) values (3)", "exec: exec failed with " + rowsOpen},
+		{callQueryOpen, "select * from t1", ""},
+		{callRollback, "", "rollback"},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1 int64:2`},
+	},
+	"isolation levels, and a begin in a transaction": {
+		{callBegin, "Serializable", "begin"},
+		{callExec, t1, "exec: 0 affected, last insert id 0"},
+		{callCommit, "", "commit"},
+		{callBegin, "Read Committed", "begin: begin failed with s4ql: not supported: the isolation level Read Committed"},
+		{callExec, "insert into t1 (v1) values (1)", "exec: 1 affected, last insert id 0"},
+		{callBeginReadOnly, "Linearizable", "begin read-only: begin failed with s4ql: not supported: the isolation level Linearizable"},
+		{callBeginReadOnly, "IsolationLevel(99)", "begin read-only: begin failed with s4ql: not supported: the isolation level IsolationLevel(99)"},
+		{callBegin, "", "begin"},
+		{callExec, "insert into t1 (v1) values (2)", "exec: 1 affected, last insert id 0"},
+		// On a pinned connection, s4ql and SQLite refuse a second begin, each with an error of its own;
+		// through the pool, the transaction commits first.
+		{callBegin, "", "begin: begin failed with " + txOpen},
+		{callBeginReadOnly, "Snapshot", "begin read-only: begin failed with s4ql: not supported: the isolation level Snapshot"},
+		{callQuery, "select * from t1", ""},
+		{callRollback, "", "rollback"},
+		{callRollback, "", "rollback"},
+		{callQuery, "select * from t1", ""},
+	},
+	"a query beside the transaction": {
+		{callExec, t1, "exec: 0 affected, last insert id 0"},
+		{callExec, "insert into t1 (v1) values (1)", "exec: 1 affected, last insert id 0"},
+		{callBegin, "", "begin"},
+		{callExec, "insert into t1 (v1) values (2)", "exec: 1 affected, last insert id 0"},
+		// On a pinned connection in the transaction, and through the pool outside it.
+		{callBeside, "select * from t1", `query beside the transaction: columns "v1" of types "INT", rows int64:1 int64:2`},
+		{callBeside, "insert into t1 (v1) values (3)", "query beside the transaction"},
+		{callQueryOpen, "select * from t1", ""},
+		{callBeside, "select * from t1", ""},
+		{callRollback, "", "rollback"},
+		{callBeside, "select * from t1", `query beside the transaction: columns "v1" of types "INT", rows int64:1`},
+	},
 }
 
 func TestSequences(t *testing.T) {
@@ -975,6 +1548,7 @@ func TestSequences(t *testing.T) {
 						is.Equal(t, s.want, got.String(), s.src)
 					}
 				}
+				is.Equal(t, "", p.finish())
 				is.Equal(t, "", p.compareTables())
 				p.close()
 			})
@@ -982,12 +1556,47 @@ func TestSequences(t *testing.T) {
 	}
 }
 
-// pick the call of a text of a sequence, which is a query if query, from r: now and then BeginTx,
-// and otherwise a call for a query or for a statement that is no query, of which one in eight is a
-// prepared statement that runs several times.
-func pick(r stmttest.Rand, query bool) call {
-	if r.IntN(48) == 0 {
+func TestPair(t *testing.T) {
+	t.Run("should begin a write transaction of SQLite as the writer, as s4ql does", func(t *testing.T) {
+		p := newPair(t, newWorld(t), false, nil)
+		_, err := p.sqlite.ExecContext(t.Context(), t1)
+		is.NotError(t, err)
+		tx, err := p.o.BeginTx(t.Context(), nil)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, tx.Rollback()) }()
+		// The connection waits for no lock, and fails at once.
+		c, err := p.sqlite.Conn(t.Context())
+		is.NotError(t, err)
+		defer func() { is.NotError(t, c.Close()) }()
+		_, err = c.ExecContext(t.Context(), "pragma busy_timeout = 0")
+		is.NotError(t, err)
+		_, err = c.ExecContext(t.Context(), "insert into t1 (v1) values (1)")
+		is.Equal(t, "5/5: database is locked", mattnText(t, err))
+		p.close()
+	})
+}
+
+// pick the call of a text of a sequence, which is a query if query, from r, in a transaction if inTx:
+// now and then a begin, of a read-only transaction one time in three, or in a transaction an end, a
+// commit two times in three, and otherwise a call for a query or for a statement that is no query,
+// of which one in eight is a prepared statement that runs several times. In a transaction, a call
+// also prepares its statement outside the transaction, leaves the rows of its query open, or queries
+// beside the transaction, and one call in forty is a begin.
+func pick(r stmttest.Rand, query, inTx bool) call {
+	switch {
+	case !inTx && r.IntN(10) == 0, inTx && r.IntN(40) == 0:
+		if r.IntN(3) == 0 {
+			return callBeginReadOnly
+		}
 		return callBegin
+	case inTx && r.IntN(7) == 0:
+		if r.IntN(3) == 0 {
+			return callRollback
+		}
+		return callCommit
+	}
+	if query && inTx {
+		return []call{callPrepareQuery, callQueryRow, callStmtQuery, callQueryOpen, callQueryOpen, callQueryOpen, callBeside, callQuery}[r.IntN(8)]
 	}
 	if query {
 		switch r.IntN(4) {
@@ -1003,8 +1612,27 @@ func pick(r stmttest.Rand, query bool) call {
 		return callPrepareExec
 	case 2:
 		return callPrepareExecRuns
+	case 3:
+		if inTx {
+			return callStmtExec
+		}
 	}
 	return callExec
+}
+
+// pickLevel of a begin from r: mostly the default, one time in eight serializable, and one time in
+// eight another level, which s4ql does not support.
+func pickLevel(r stmttest.Rand) string {
+	switch r.IntN(8) {
+	case 0:
+		return levelName(sql.LevelSerializable)
+	case 1:
+		others := slices.DeleteFunc(slices.Clone(levels), func(l sql.IsolationLevel) bool {
+			return l == sql.LevelDefault || l == sql.LevelSerializable
+		})
+		return levelName(others[r.IntN(len(others))])
+	}
+	return ""
 }
 
 // again are the arguments args of a call of q for another run of its prepared statement: each int64
@@ -1022,7 +1650,9 @@ func again(q *stmttest.Sequence, args []any) []any {
 
 // generated runs the sequence of n texts from seed on a new pair in the world w, each with its
 // arguments, and compares what each side gives for each, and at the end every table. A prepared
-// statement that runs several times runs one to three more times, with other values. Every second
+// statement that runs several times runs one to three more times, with other values. Transactions
+// begin and end within the sequence, as [pick] chooses, the calls between run in them, and every
+// table is compared after each; one that is open at the end commits or rolls back. Every second
 // sequence runs on pinned connections, and every other one through the pool. Half of the sequences
 // then restart the instance of s4ql, with an empty cache or with its own, and compare every table
 // again.
@@ -1039,10 +1669,12 @@ func generated(t *testing.T, w *world, seed uint64, n int, y tally) {
 	}
 	for range n {
 		next := q.Next()
-		c := pick(r, next.Query)
+		c := pick(r, next.Query, p.tx != nil)
 		src, supported, runs := next.Src, next.Supported, [][]any{next.Args}
 		switch c {
-		case callBegin:
+		case callBegin, callBeginReadOnly:
+			src, supported, runs = pickLevel(r), false, nil
+		case callCommit, callRollback:
 			src, supported, runs = "", false, nil
 		case callPrepareExecRuns:
 			for range 1 + r.IntN(3) {
@@ -1051,6 +1683,16 @@ func generated(t *testing.T, w *world, seed uint64, n int, y tally) {
 		}
 		log = append(log, fmt.Sprintf("%v: %v -- with %#v", c, src, runs))
 		if _, failure := p.stepRuns(src, c, supported, runs); failure != "" {
+			fail(failure)
+		}
+	}
+	if p.tx != nil {
+		c := callCommit
+		if r.IntN(3) == 0 {
+			c = callRollback
+		}
+		log = append(log, string(c))
+		if _, failure := p.end(c); failure != "" {
 			fail(failure)
 		}
 	}
@@ -1094,6 +1736,44 @@ func TestGenerated(t *testing.T) {
 		"call " + string(callExec) + " with arguments", "call " + string(callQuery) + " with arguments",
 		"call " + string(callPrepareExec) + " with arguments", "call " + string(callPrepareQuery) + " with arguments",
 		"call " + string(callQueryRow) + " with arguments", "call " + string(callPrepareExecRuns) + " with arguments",
+
+		// Write transactions that commit and that roll back, on a pinned connection and through the
+		// pool, after a failed call, an insert, a create table, and a drop table, and while rows of
+		// theirs are open.
+		"write transaction begin ok", "call " + string(callBegin) + " in a transaction",
+		"write transaction commit ok on a pinned connection", "write transaction commit ok through the pool",
+		"write transaction rollback ok on a pinned connection", "write transaction rollback ok through the pool",
+		"write transaction commit ok after a failed call", "write transaction rollback ok after a failed call",
+		"write transaction commit ok after an insert", "write transaction rollback ok after an insert",
+		"write transaction commit ok after a create table", "write transaction rollback ok after a create table",
+		"write transaction commit ok after a drop table", "write transaction rollback ok after a drop table",
+		"write transaction commit ok while rows are open", "write transaction rollback ok while rows are open",
+		// Each call in a write transaction, with arguments, and what it gives.
+		"write transaction: call " + string(callExec) + " with arguments", "write transaction: call " + string(callQuery) + " with arguments",
+		"write transaction: call " + string(callQueryRow) + " with arguments", "write transaction: call " + string(callPrepareExec) + " with arguments",
+		"write transaction: call " + string(callPrepareQuery) + " with arguments", "write transaction: call " + string(callPrepareExecRuns) + " with arguments",
+		"write transaction: call " + string(callStmtExec) + " with arguments", "write transaction: call " + string(callStmtQuery) + " with arguments",
+		"write transaction: call " + string(callQueryOpen), "write transaction: call " + string(callBeside),
+		"write transaction: insert ok", "write transaction: insert with a parameter ok", "write transaction: insert UNIQUE constraint failed",
+		"write transaction: insert no such table", "write transaction: createtable ok", "write transaction: createtable already exists",
+		"write transaction: droptable ok", "write transaction: droptable no such table", "write transaction: other syntax error",
+		"write transaction: insert with a parameter wrong number of arguments", "write transaction: insert with a parameter argument of a type not supported",
+		"write transaction: select ok with rows after a write of the transaction", "write transaction: rows left open",
+		"write transaction: insert while rows are open", "write transaction: select while rows are open",
+		// Through the pool, a query outside a write transaction, which must not see its changes.
+		"beside a write transaction: select ok with rows",
+		// Read-only transactions: their queries, and their writes, which are refused.
+		"read-only transaction begin ok",
+		"read-only transaction commit ok on a pinned connection", "read-only transaction commit ok through the pool",
+		"read-only transaction rollback ok on a pinned connection", "read-only transaction rollback ok through the pool",
+		"read-only transaction: select ok with rows", "read-only transaction: rows left open",
+		"read-only transaction: insert attempt to write a readonly database", "read-only transaction: insert with a parameter attempt to write a readonly database",
+		"read-only transaction: createtable attempt to write a readonly database", "read-only transaction: droptable attempt to write a readonly database",
+		"read-only transaction: insert no such table", "read-only transaction: createtable already exists",
+		"read-only transaction: call " + string(callStmtExec), "read-only transaction: call " + string(callStmtQuery),
+		"read-only transaction: call " + string(callPrepareExecRuns) + " with arguments",
+		"read-only transaction: insert with a parameter while rows are open",
+		"call " + string(callBeginReadOnly) + " in a transaction",
 	} {
 		if y[kind] == 0 {
 			t.Errorf("no text has the outcome %q", kind)
@@ -1101,9 +1781,20 @@ func TestGenerated(t *testing.T) {
 	}
 
 	// The texts that each kind of excuse lets through, by kind: those that the comparison accepts
-	// where SQLite and s4ql differ, and the calls that s4ql refuses for their arguments by its rule,
-	// which are checked against the rule instead of SQLite. Every other kind is pinned at 0.
-	want := map[string]int{excusedPrepare: 1120, excusedStartedTable: 13, excusedArguments: 412, excusedArgument: 103}
+	// where SQLite and s4ql differ, and the calls that s4ql refuses by its rule, which are checked
+	// against the rule instead of SQLite. Every other kind is pinned at 0. Each number counts calls:
+	// a text that SQLite refuses at its prepare and s4ql when it runs ([excusedPrepare]); a create
+	// table that SQLite finds started ([excusedStartedTable]); a call with another number of
+	// arguments than parameters ([excusedArguments]), or with an argument that s4ql does not support
+	// ([excusedArgument]); a begin with an isolation level that s4ql refuses ([excusedLevel]); a
+	// statement while rows of its transaction are open, which s4ql refuses ([excusedRowsOpen]); a
+	// begin on a pinned connection whose transaction is open, which both refuse ([excusedTxOpen]); and
+	// a statement prepared outside a transaction through the pool, whose names only the transaction
+	// has ([excusedOutside]).
+	want := map[string]int{
+		excusedPrepare: 1051, excusedStartedTable: 12, excusedArguments: 364, excusedArgument: 109,
+		excusedLevel: 67, excusedRowsOpen: 44, excusedTxOpen: 28, excusedOutside: 43,
+	}
 	kinds := slices.Collect(maps.Keys(want))
 	for name := range y {
 		if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) {
@@ -1124,7 +1815,9 @@ const fuzzSeparator = "\x1e"
 
 // FuzzSequence runs the texts of its input, each through the call that a byte of calls chooses, with
 // the arguments of that call in [fixedRuns], on a new pair, pinned if pinned, and compares as
-// [TestGenerated] does. Its seeds are the sequences of
+// [TestGenerated] does. A begin takes the isolation level that its text names, or, if it names none,
+// the level of [levels] at the length of the text, and a transaction that is open at the end
+// commits. Its seeds are the sequences of
 // [TestSequences], and each text of [stmttest.Others].
 func FuzzSequence(f *testing.F) {
 	for _, name := range slices.Sorted(maps.Keys(sequences)) {
@@ -1151,12 +1844,15 @@ func FuzzSequence(f *testing.F) {
 			if len(cs) > 0 {
 				c = calls[int(cs[i%len(cs)])%len(calls)]
 			}
-			if c == callBegin {
-				src = ""
+			if (c == callBegin || c == callBeginReadOnly) && !slices.ContainsFunc(levels, func(l sql.IsolationLevel) bool { return levelName(l) == src }) {
+				src = levelName(levels[len(src)%len(levels)])
 			}
 			if _, failure := p.step(src, c, false); failure != "" {
 				t.Fatal(failure)
 			}
+		}
+		if failure := p.finish(); failure != "" {
+			t.Fatal(failure)
 		}
 		if failure := p.compareTables(); failure != "" {
 			t.Fatal(failure)

@@ -109,8 +109,11 @@ func newConnector(ctx context.Context, h host.Host, s store.Store, o Options, co
 // Connect gives a connection, which runs its statements on the one instance, through a connection
 // of the engine of its own. It never fails, opens nothing, and does not wait for the instance to
 // serve, which a ping does.
-func (c *connector) Connect(context.Context) (driver.Conn, error) {
-	return &conn{c: c, e: c.engine.Conn()}, nil
+func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
+	turn := c.host.NewSemaphore("turn of the connection", 1)
+	// The permit is free, so the wait cannot fail.
+	_ = turn.Acquire(context.WithoutCancel(ctx))
+	return &conn{c: c, e: c.engine.Conn(), turn: turn}, nil
 }
 
 // Driver of the connector, which opens a further instance of the same database for each connector.
@@ -202,6 +205,74 @@ type conn struct {
 	changes int64
 	// tx is the transaction that is open on the connection, or nil; see [conn.BeginTx].
 	tx *tx
+
+	// The connection of the engine is not safe for concurrent use. database/sql makes one call of
+	// the connection and its rows at a time, but the close of the connector closes rows from a
+	// goroutine of its own. So a call of the connection that reaches the engine holds it from
+	// [conn.enter] to [conn.leave], and so does the close of rows by the connector in [rows.shut].
+	// mu guards busy, which is set while one of them holds the connection, waiting, which a call
+	// sets while it waits for the close of rows to end, and shut, the rows that the close of the
+	// connector found open while a call held the connection, which that call closes when it ends,
+	// so that the close of the connector never waits for a call. turn hands the connection to a call
+	// that waits; its one permit is taken when the connection is made.
+	mu            sync.Mutex
+	busy, waiting bool
+	shut          []*rows
+	turn          host.Semaphore
+	// held counts the rows of the connection that are not closed, and closeLater is set when the
+	// close of the connection was left to the close of the last of them; see [conn.Close]. mu
+	// guards both.
+	held       int
+	closeLater bool
+}
+
+// enter the connection of the engine for a call of the connection, with the context ctx of the
+// call, once the close of rows of the connection by the connector, if one runs, has ended.
+func (c *conn) enter(ctx context.Context) {
+	c.mu.Lock()
+	if !c.busy {
+		c.busy = true
+		c.mu.Unlock()
+		return
+	}
+	c.waiting = true
+	c.mu.Unlock()
+	// The wait cannot fail: the context cannot end.
+	_ = c.turn.Acquire(context.WithoutCancel(ctx))
+}
+
+// leave the connection of the engine after a call, with the context ctx of the call, and first
+// close the rows that the close of the connector found open meanwhile.
+func (c *conn) leave(ctx context.Context) {
+	for {
+		c.mu.Lock()
+		shut := c.shut
+		c.shut = nil
+		if len(shut) == 0 {
+			c.freeLocked(ctx)
+			return
+		}
+		c.mu.Unlock()
+		for _, r := range shut {
+			r.mu.Lock()
+			// As in [rows.shut], the error is dropped.
+			_ = r.close()
+			r.mu.Unlock()
+		}
+	}
+}
+
+// freeLocked frees the connection of the engine, with mu held, which it unlocks: it hands it to a
+// call that waits, or else leaves it free.
+func (c *conn) freeLocked(ctx context.Context) {
+	if c.waiting {
+		c.waiting = false
+		c.mu.Unlock()
+		c.turn.Release(ctx)
+		return
+	}
+	c.busy = false
+	c.mu.Unlock()
 }
 
 var (
@@ -230,6 +301,8 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	if err != nil {
 		return nil, err
 	}
+	c.enter(ctx)
+	defer c.leave(ctx)
 	res, err := c.e.Exec(ctx, query, values...)
 	// The engine gives the result with an error too: an insert that fails sets the count to 0.
 	c.count(res)
@@ -247,6 +320,8 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	if err != nil {
 		return nil, err
 	}
+	c.enter(ctx)
+	defer c.leave(ctx)
 	r, err := c.e.Query(ctx, query, values...)
 	if r != nil {
 		c.count(r.Result())
@@ -258,11 +333,14 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		// A statement that is no query has run to its end, and holds nothing.
 		return noRows{}, nil
 	}
-	held := &rows{ctx: ctx, c: c.c, rows: r}
+	held := &rows{ctx: ctx, c: c.c, conn: c, rows: r}
 	if !c.c.hold(held) {
 		_ = r.Close()
 		return nil, c.c.public(ctx, errClosed)
 	}
+	c.mu.Lock()
+	c.held++
+	c.mu.Unlock()
 	return held, nil
 }
 
@@ -403,12 +481,28 @@ func (c *conn) CheckNamedValue(nv *driver.NamedValue) error {
 }
 
 // Close the connection: its connection of the engine, and with it its reader, if it has opened
-// one, and its transaction, if one is open, which the close rolls back. database/sql closes a
-// connection after the rows of its queries are closed.
+// one, and its transaction, if one is open, which the close rolls back.
+//
+// database/sql closes a connection after the rows of its queries are closed. Through the driver's
+// own interfaces, rows of the connection that a loop reads can still be open, which the engine
+// does not close the connection beside: they hold the scan of their query, and the end of their
+// transaction, if it ended while they were read. Then the close is left to the close of the last of
+// those rows, and Close returns nil; see [rows.close].
 func (c *conn) Close() error {
 	// database/sql gives no context here.
 	ctx := context.Background()
-	return c.c.public(ctx, c.e.Close(ctx))
+	c.enter(ctx)
+	defer c.leave(ctx)
+	err := c.e.Close(ctx)
+	if errors.Is(err, core.ErrReaderInUse) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.held > 0 {
+			c.closeLater = true
+			return nil
+		}
+	}
+	return c.c.public(ctx, err)
 }
 
 // prepared is a prepared statement: a text that was checked, and that each run checks again, with
