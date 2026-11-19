@@ -226,7 +226,7 @@ func isWord(t ast.Token, w string) bool {
 	return asciiLower(t.Text) == w
 }
 
-// insert: INSERT INTO table (column) VALUES (value), where the value is an integer or a parameter.
+// insert: INSERT INTO table (column) VALUES (value), where the value is a literal or a parameter.
 func (r *recognizer) insert(c *ast.Insert) *Insert {
 	r.accept(c)
 	if r.isNext(c.Insert) && c.Insert.Kind == token.Replace {

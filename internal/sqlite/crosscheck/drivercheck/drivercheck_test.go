@@ -528,11 +528,6 @@ const (
 	// another type, which SQLite binds: it is checked against s4ql's rule by
 	// [pair.checkArgumentRefused], and not run in SQLite.
 	excusedArgument = "an argument that s4ql does not support, checked against s4ql's rule"
-	// excusedTypes is a statement that the pass after the parser supports, with a column of another
-	// type than INT or a literal that is not an integer, which the engine refuses as not supported
-	// when it runs, since it holds integers only so far: it is checked against the engine's rule by
-	// [pair.checkTypesRefused], and not run in SQLite.
-	excusedTypes = "a column type or a literal that the engine does not support yet, checked against its rule"
 	// excusedLevel is a begin with another isolation level than the default and serializable, which
 	// s4ql refuses by its rule, where mattn ignores the level: it is checked against the rule by
 	// [pair.begin], and nothing is begun in SQLite.
@@ -1066,10 +1061,10 @@ func (p *pair) checkNotSupported(src string, c call, supported bool, runs [][]an
 	tb.Helper()
 	s, err := stmt.Check(src)
 	if err == nil && s != nil {
-		if err := engine.Check(src, s.Parameters()); err != nil {
-			return p.checkTypesRefused(src, err, runs, got)
+		// A column type or a literal that the engine does not hold yet is refused by the text too.
+		if err = engine.Check(src, s.Parameters()); err == nil {
+			return p.checkArgumentRefused(src, s, runs, got)
 		}
-		return p.checkArgumentRefused(src, s, runs, got)
 	}
 	// The text alone decides "not supported", before the arguments, with the "not supported" of its
 	// check, and Prepare checks the text.
@@ -1118,23 +1113,6 @@ func (p *pair) checkArgumentRefused(src string, s stmt.Statement, runs [][]any, 
 		return fmt.Sprintf("%q with %v runs: s4ql gives %v", src, len(runs), got)
 	}
 	p.y.excused(excusedArgument)
-	return ""
-}
-
-// checkTypesRefused is [pair.checkNotSupported] of the text src, whose statement the pass after the
-// parser supports and the engine refuses, with err, for a column type or a literal that it does not
-// hold yet. Every run must fail when the statement runs, since Prepare checks only the text with the
-// pass, with err, whatever the arguments.
-func (p *pair) checkTypesRefused(src string, err error, runs [][]any, got outcome) string {
-	for _, o := range got.runs() {
-		if o.failed == "prepare" || o.failed == "" || o.err != err.Error() {
-			return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v, where the rule of the engine gives %q", src, runs, got, err)
-		}
-	}
-	if len(got.runs()) != len(runs) {
-		return fmt.Sprintf("%q with %v runs: s4ql gives %v", src, len(runs), got)
-	}
-	p.y.excused(excusedTypes)
 	return ""
 }
 
@@ -1384,7 +1362,7 @@ var sequences = map[string][]step{
 		{callExec, "begin", ""},
 		{callQuery, "select * from t1; select * from t1", ""},
 		{callExec, "create table t2 (v2 integer primary key) strict, without rowid", "exec: exec failed with s4ql: not supported: column type INTEGER"},
-		{callPrepareExec, "insert into t1 (v1) values (1.5)", "prepare, exec: exec failed with s4ql: not supported: a real literal, which is not an integer"},
+		{callPrepareExec, "insert into t1 (v1) values (1.5)", "prepare, exec: prepare failed with s4ql: not supported: a real literal, which is not an integer"},
 		{callExec, `insert into t1 (v1) values ("x")`, ""},
 		{callPrepareExec, "drop table if exists t1", "prepare, exec: prepare failed with s4ql: not supported: IF EXISTS (at offset 11)"},
 		{callExec, "", "exec: exec failed with s4ql: not supported: a text that holds no statement"},
@@ -1814,14 +1792,12 @@ func TestGenerated(t *testing.T) {
 	// arguments than parameters ([excusedArguments]), or with an argument that s4ql does not support
 	// ([excusedArgument]); a begin with an isolation level that s4ql refuses ([excusedLevel]); a
 	// statement while rows of its transaction are open, which s4ql refuses ([excusedRowsOpen]); a
-	// begin on a pinned connection whose transaction is open, which both refuse ([excusedTxOpen]); a
-	// statement prepared outside a transaction through the pool, whose names only the transaction
-	// has ([excusedOutside]); and a create table of a column of type INTEGER from
-	// [stmttest.Others], which the pass supports and the engine refuses as not supported until it
-	// holds the other types ([excusedTypes]).
+	// begin on a pinned connection whose transaction is open, which both refuse ([excusedTxOpen]); and
+	// a statement prepared outside a transaction through the pool, whose names only the transaction
+	// has ([excusedOutside]).
 	want := map[string]int{
 		excusedPrepare: 1051, excusedStartedTable: 12, excusedArguments: 364, excusedArgument: 109,
-		excusedLevel: 67, excusedRowsOpen: 44, excusedTxOpen: 28, excusedOutside: 43, excusedTypes: 29,
+		excusedLevel: 67, excusedRowsOpen: 44, excusedTxOpen: 28, excusedOutside: 43,
 	}
 	kinds := slices.Collect(maps.Keys(want))
 	for name := range y {

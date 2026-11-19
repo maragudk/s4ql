@@ -63,3 +63,53 @@ A port of the same integer arithmetic gives SQLite's bits for every literal, als
 - The engine, the core, and the driver for the other types; then the driver's `Prepare` refuses nothing of slice 4.
 - Mutation testing of the new code; `internal/sql/mutation` puts `TestCheck_reals` and `FuzzLiteral` in the layer `hand-written` until its lists name them.
 - Arguments of the other types, and the refusal of a text argument with a NUL byte.
+
+## Step 2: The documents, and the fixes after the self-review
+
+**Author:** types-stmt builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the builder's instructions) "Once the implementation is done, self-review before handing back to the lead. [...] Use the code-review skill for the first phase [...] Address what you find, then report a summary of your review and any follow-up work back to the lead."
+**Interpretation:** Have a writer update the README of the pass and the todo, review the branch with the code-review skill, fix what matters, and run `make test` and `make lint`.
+**Inferred intent:** Hand the lead a branch whose documents match the code and whose weak spots are fixed or named.
+
+### What I did
+
+A writer sub-agent updated `/internal/sql/stmt/README.md` (the typed form, CREATE TABLE, INSERT, the port, the tests, the results, the reasons the pinned numbers moved) and `/docs/todo.md` (the status, the NUL item, the decisions of detail). I reworded step 6 of "How to add the next slice", which still said to extend `stmttest`.
+
+The review (`code-review high origin/binding-types...types-stmt`) checked the port line by line against SQLite's source and found it the same, and reported one important finding and four nits. I took all five:
+
+- The driver's `Prepare` checked the text with `stmt.Check` alone, so a statement of a type that the engine refuses prepared and failed only when it ran, where it failed at `Prepare` before slice 4. `check` in `/conn.go` now also calls `engine.Check(query, s.Parameters())` for a supported statement. The differential test of the driver then treats such a text as one that the text alone refuses, as before; `checkTypesRefused` and `excusedTypes` are gone, and its pinned numbers are those of before the branch. `TestPrepare` in `/conn_test.go` checks two such texts.
+- The package documentation of `/internal/engine/engine.go` names the new refusals among the errors.
+- The event of a refused statement lost its kind and table, since the refusal came before `r.of(s)`; `prepare` now calls `checkTypes` after it, and `Check` calls it after `check`.
+- The comment of `insert` in `/internal/sql/stmt/recognize.go` said "an integer or a parameter".
+- The todo's wording on real literals read as a departure from the roadmap's "rejects a literal for which that is not sure"; it now says that with the port the rule rejects none.
+
+### Why
+
+`Prepare` checks the text, and a text that the engine refuses for its text should be refused there, as it was before slice 4.
+
+### What worked
+
+`cd internal/sqlite/crosscheck && go test -count=1 ./...` passed with the pinned numbers of `main`.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+The driver's `Prepare` and the engine share no check of the text beyond `stmt.Check`; a refusal that lives in the engine has to be called from the driver too, or `Prepare` and the run disagree.
+
+### What was tricky
+
+Nothing beyond the above.
+
+### What warrants review
+
+`check` in `/conn.go`, which parses the text twice for a supported statement at `Prepare`, once in `stmt.Check` and once in `engine.Check`, until the engine holds the types.
+
+### Future work
+
+As in step 1.
