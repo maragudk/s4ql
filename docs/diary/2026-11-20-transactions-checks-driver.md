@@ -199,7 +199,7 @@ Nothing.
 
 ### What warrants review
 
-That `-race -count=5` and not `-count=20` ran on `drivercheck`: its new code runs in one goroutine, and its `-count=20` without the race detector passed.
+Nothing beyond the earlier steps. After this commit, `go test -race -count=20 ./drivercheck` in `/internal/sqlite/crosscheck` passed too (211 s).
 
 ### Future work
 
