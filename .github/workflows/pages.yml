@@ -4,6 +4,11 @@ name: Pages
 # simulator's engine: make site builds the storage core into site/simulator/engine/ from this commit,
 # with build.json, which names the commit for the page. The workflow therefore also runs when the code
 # that the engine is built from changes, so that the simulator always runs the current code.
+#
+# make site also writes this commit as the version into the simulator's page on the checkout, so
+# that the page loads every file of the simulator with the query ?v=<commit>. The CDN in front of
+# GitHub Pages lets a browser keep scripts for hours and HTML for minutes, so without the version
+# the HTML of one deploy could run the scripts of another.
 
 on:
   push:
@@ -48,10 +53,10 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
-      - name: Build the simulator's engine into the site
+      - name: Build the simulator's engine into the site, and write the version into its page
         env:
           SITECOMMIT: ${{ github.sha }}
-        run: make site SITECOMMIT="$SITECOMMIT"
+        run: make site SITECOMMIT="$SITECOMMIT" SITEVERSION="$SITECOMMIT"
 
       - uses: actions/configure-pages@v6
 

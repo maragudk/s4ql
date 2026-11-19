@@ -17,6 +17,9 @@
 //   - {type: "exit", code} if the program ends, and {type: "error", message} if the Worker fails.
 //
 // Messages wait in a queue, and the engine takes one at a time.
+//
+// The query of the Worker's URL, such as ?v=<version>, goes on the URL of every file that the Worker
+// loads, so that they all come from the deploy of the Worker itself, whatever a cache holds.
 (() => {
   const started = performance.now();
   const queue = [];
@@ -68,13 +71,16 @@
   self.addEventListener('unhandledrejection', (e) => fail(e.reason));
 
   (async () => {
-    importScripts('sqlite3.js', 'vfs.js', 'bridge.js', 'fs.js', 'wasm_exec.js');
-    await s4qlInitSQLite();
+    const version = self.location.search;
+    importScripts(...['sqlite3.js', 'vfs.js', 'bridge.js', 'fs.js', 'wasm_exec.js'].map((f) => f + version));
+    // sqlite3.js fetches sqlite3.wasm by itself, from the URL that locateFile gives; prefix is the
+    // directory of the Worker.
+    await s4qlInitSQLite({ locateFile: (file, prefix) => prefix + file + version });
     const go = new Go();
     go.argv = ['engine.wasm', '-test.run=^TestEngine$'];
     go.env = {};
     go.exit = (code) => postMessage({ type: 'exit', code });
-    const { instance } = await WebAssembly.instantiateStreaming(fetch('engine.wasm'), go.importObject);
+    const { instance } = await WebAssembly.instantiateStreaming(fetch('engine.wasm' + version), go.importObject);
     await go.run(instance);
   })().catch(fail);
 })();

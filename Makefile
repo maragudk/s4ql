@@ -3,9 +3,10 @@ CROSSCHECK := internal/sqlite/crosscheck
 SIMLINT := internal/simlint
 FUZZTIME ?= 30s
 
+# benchmark passes -short, as test does, so that it needs no credentials.
 .PHONY: benchmark
 benchmark:
-	go test -bench . ./...
+	go test -short -bench . ./...
 
 .PHONY: cover
 cover:
@@ -183,9 +184,15 @@ sqlite-browser-verify:
 sqlite-verify:
 	go run ./internal/sqlite/update -verify
 
+# test runs the tests with -short, so that it needs no credentials. Here -short does two things: the
+# tests against a real bucket skip, which otherwise fail without their settings (see
+# internal/store/s3test), and the tests of the SQL front end and of the engine compare with SQLite on
+# a tenth of the corpus and of the generated texts, as under the race detector. test-s3 runs the
+# first and test-sql the second without it. CI's job test runs go test ./... without -short, with the
+# credentials, and its job sql runs test-sql.
 .PHONY: test
 test: test-changes
-	go test -coverprofile cover.out -shuffle on ./...
+	go test -short -coverprofile cover.out -shuffle on ./...
 	go test -tags s4ql_browser -shuffle on $(SIMULATORPKGS)
 	cd $(CROSSCHECK) && go test -shuffle on ./...
 	cd $(SIMLINT) && go test -shuffle on ./...
@@ -195,6 +202,15 @@ test: test-changes
 .PHONY: test-changes
 test-changes:
 	sh .github/scripts/changes_test.sh
+
+# test-s3 runs the tests of S3PKGS, the packages that hold the tests against a real bucket, under the
+# race detector and without -short, as CI's job test does. Those tests fail without the settings of
+# the bucket, which come from .env.test and the credentials from .env or the environment: see
+# internal/store/s3test.
+S3PKGS := . ./internal/store/s3store ./internal/store/s3test
+.PHONY: test-s3
+test-s3:
+	go test -race -count 1 -shuffle on $(S3PKGS)
 
 # test-sql runs the tests of the SQL front end and of the engine without the race detector and the
 # address sanitizer, under which they compare with SQLite on a tenth of the corpus and of the generated
@@ -252,26 +268,41 @@ simulator:
 simulator-demo:
 	go run -tags s4ql_browser ./internal/simulator/serve -out $(SIMULATORDIR) -addr $(SIMULATORADDR)
 
-# site builds the simulator's engine into the project site, in SITEENGINE, which .gitignore covers,
-# with build.json for the page, which names SITECOMMIT as the commit it is built from. The Pages
-# workflow runs it before it uploads site/. site-serve builds it and serves site/ on SITEADDR, without
-# the headers of cross-origin isolation, as GitHub Pages serves it. site-check builds it and checks
-# the simulator's page in headless Chromium: see internal/simulator/sitecheck.
-SITEENGINE := site/simulator/engine
+# site builds the simulator's engine into the project site in SITEDIR, in simulator/engine/, which
+# .gitignore covers, with build.json for the page, which names SITECOMMIT as the commit it is built
+# from. With SITEVERSION, it also writes that version into the simulator's page, in place, so that
+# the page loads every file of the simulator at that version, and a cache cannot pair files of two
+# deploys: see internal/simulator/serve. The Pages workflow runs it on its checkout, with the commit
+# as SITEVERSION, before it uploads site/. That changes a file in git, so a local run is for a copy
+# of the site only. Without SITEVERSION the page stays as it is in git, and loads its files without
+# a version. site-serve builds it and serves SITEDIR on SITEADDR, without the headers of cross-origin
+# isolation, as GitHub Pages serves it. site-check builds it without a version and checks the
+# simulator's page in headless Chromium twice: in SITEDIR, and in a copy whose page it stamps as the
+# Pages workflow does, with SITEVERSION, or SITECOMMIT if that is empty, as the version. See
+# internal/simulator/sitecheck.
+SITEDIR ?= site
 SITECOMMIT ?= $(shell git rev-parse HEAD)
+SITEVERSION ?=
 SITEADDR ?= 127.0.0.1:8081
+SITECHECK := go run -tags s4ql_browser ./internal/simulator/sitecheck
 .PHONY: site
 site:
-	rm -rf $(SITEENGINE)
-	go run -tags s4ql_browser ./internal/simulator/serve -out $(SITEENGINE) -demo=false -commit $(SITECOMMIT)
+	rm -rf $(SITEDIR)/simulator/engine
+	go run -tags s4ql_browser ./internal/simulator/serve -out $(SITEDIR)/simulator/engine -demo=false -commit $(SITECOMMIT) \
+		$(if $(SITEVERSION),-page $(SITEDIR)/simulator/index.html -version $(SITEVERSION))
 
 .PHONY: site-serve
 site-serve: site
-	go run -tags s4ql_browser ./internal/simulator/serve -root site -isolated=false -addr $(SITEADDR)
+	go run -tags s4ql_browser ./internal/simulator/serve -root $(SITEDIR) -isolated=false -addr $(SITEADDR)
 
 .PHONY: site-check
-site-check: site
-	go run -tags s4ql_browser ./internal/simulator/sitecheck -root site
+site-check:
+	$(MAKE) site SITEVERSION=
+	$(SITECHECK) -root $(SITEDIR)
+	dir=$$(mktemp -d) && cp -R $(SITEDIR) $$dir/site && \
+		go run -tags s4ql_browser ./internal/simulator/serve -page $$dir/site/simulator/index.html -version $(or $(SITEVERSION),$(SITECOMMIT)) && \
+		$(SITECHECK) -root $$dir/site -version $(or $(SITEVERSION),$(SITECOMMIT)); \
+		status=$$?; rm -rf $$dir; exit $$status
 
 # LINKSC, run in the directory of a module with package patterns after it, lists the packages and
 # their dependencies for LINKSCAWK, which prints a line for each of those packages that has tests:
@@ -288,7 +319,9 @@ LINKSCAWK = '$$1 == "cgo" { c[$$2] = 1 } $$1 ~ /\.test$$/ { n++; t[n] = $$0 } \
 # asan-test runs the tests of the packages of both modules whose test binaries link C under the C
 # address sanitizer (Linux only). The other packages have nothing for the sanitizer to check, and
 # make test and CI's job test run them. It fails if it cannot list the packages of a module, or if
-# none links C.
+# none links C. It passes -short, so that the tests against a real bucket skip, since it has no
+# credentials, and the job test runs those. Under the sanitizer, the tests of the SQL front end and
+# of the engine use a tenth of the corpus whether or not -short is given, so it changes nothing else.
 .PHONY: asan-test
 asan-test:
 	for dir in . $(CROSSCHECK); do \
@@ -298,7 +331,7 @@ asan-test:
 		echo "asan-test: in $$dir, without C, so not under the sanitizer:" $${others:-none}; \
 		pkgs=$$(echo "$$sides" | sed -n 's/^c //p'); \
 		[ -n "$$pkgs" ] || { echo "asan-test: no package in $$dir links C" >&2; exit 1; }; \
-		(cd $$dir && go test -asan -shuffle on $$pkgs) || exit 1; \
+		(cd $$dir && go test -asan -short -shuffle on $$pkgs) || exit 1; \
 	done
 
 # test-asan runs what CI's jobs for the address sanitizer run together: asan-test, the fuzz tests
