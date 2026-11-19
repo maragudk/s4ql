@@ -56,3 +56,54 @@ Where the count belongs. The driver must give the error of the text before that 
 ### Future work
 
 The generators `stmttest` and the differential test of the driver do not make arguments yet; the lead gives that to a later builder.
+
+## Step 2: The driver, the differential test of the driver, and the documents
+
+**Author:** slice 2 builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Tests of the public driver through `database/sql`: direct and prepared, the wrong number of arguments (too few, too many, on a text without `?`), each rejected type, `sql.Named`, the order of errors (syntax error before argument errors), and a restart with an empty cache. [...] A test that reads the commit object and finds the arguments in the statement's annotation. [...] Tests that pinned \"any argument is not supported\" are changed to the new behaviour, not deleted. The differential test in `internal/sqlite/crosscheck/drivercheck` must still agree with its oracle; adjust it only as far as needed for that. [...] `docs/roadmap.md` gets a section \"Slice 2: parameters\" after slice 1 [...] `docs/todo.md`: update the lines that say parameters are not supported, and record every decision of detail you made"
+**Interpretation:** Wire the arguments through the driver in `/conn.go`, with the order text, then arguments, then instance; change the tests that pinned "not supported: parameters"; adapt the differential test of the driver; write the roadmap's section and the decisions in the to-do list.
+**Inferred intent:** An application can use `?` through `database/sql` with integers, and gets an error of s4ql's for everything else before anything runs.
+
+### What I did
+
+`/conn.go`: `ExecContext` and `QueryContext` call `arguments(query, args)`, which converts each argument with `argument` and, only when one cannot be converted, asks `engine.Check(query, len(args))` first, so that the error of the text and then of the number win over the error of the argument. `CheckNamedValue` now runs `driver.DefaultParameterConverter` and keeps a value that it refuses as `unconverted{value, err}`, which `argument` reports after the text. `prepared` passes its arguments through, and `NumInput` stays -1. The legacy `Exec` and `Query` of a prepared statement built `make([]driver.NamedValue, len(args))`, which dropped the values; they now keep them by position (`named`). `withArguments` is gone. `/errors.go` maps an error that wraps `stmt.ErrNotSupported` without being a `*stmt.NotSupportedError` to `ErrNotSupported`, for the engine's refusal of a value that is not an integer. The package documentation in `/s4ql.go` describes parameters.
+
+Tests in `/conn_test.go`: `TestParameters` (direct and prepared, several runs; every integer type and a `driver.Valuer`; SQLite's errors through a parameter equal to those of a literal; the wrong number of arguments through five calls, without a sentinel; each refused type and `sql.Named` with its exact message; the annotations of the commit objects read from the store with `format.NewCommitReader`, and a restart on an empty cache). The subtest of `TestExec` that pinned "not supported: parameters" now checks that the text is judged first for eight kinds of arguments, also `(? ?)`. `TestPrepare`, `TestConn_Raw`, and `TestStop` pin the new errors; `TestStop` checks that a stopped instance gives the errors of the text and of the arguments and the stop for an insert with a right argument. `/errors_test.go` checks the mapping of the engine's errors of arguments through an export of `publicError`.
+
+`/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go`: the call "exec with an argument" passes `int64(1)` as before. A statement without a parameter now gets the driver's error of the number, which `checkArguments` checks against `engine.Check` and does not compare with mattn; a statement with one parameter runs and is compared with mattn. The pinned sequences have the new errors, and a few new texts: `(?1)`, `(:v)`, `(-?)`, `(? ?)`, and an insert of a parameter that succeeds and then meets its key. `TestGenerated` required the kind `insert not supported`, which only an argument gave; it now requires `insert wrong number of arguments`. The pinned counts of excused texts (816 and 14) did not move.
+
+Documents: `/docs/roadmap.md` has "Slice 2: parameters"; `/docs/todo.md` has a section "Parameters" with every decision of detail, and the line of the driver points there; the READMEs of `/internal/engine` and `/internal/sql/stmt` describe parameters.
+
+### Why
+
+The driver is where Go values become values of the engine, and where `database/sql`'s own checks (`NumInput`, `CheckNamedValue`) would otherwise answer first with errors that are not s4ql's.
+
+### What worked
+
+`TestParameters` passed on its first run, with every exact message. `go test . -run 'TestParameters|TestExec|TestPrepare|TestConn_Raw|TestStop' -race -count=20` passed. `make test` and `make lint` passed, as did `go build -tags s4ql_browser ./...` and `make check-browser`.
+
+### What didn't work
+
+`go test .` without `-short` fails in `TestOpen_realBucket`: `s3test: the tests against a real bucket cannot run: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are set neither in the environment nor in .../.env`. The worktree has no credentials, and the brief keeps me inside it, so I ran the package with `-skip TestOpen_realBucket`; `make test` runs with `-short`. CI's job with the credentials runs it.
+
+`GOOS=js GOARCH=wasm go build -tags s4ql_browser ./...` fails in `internal/sql/oracle` with `c.DenyProcessPragmas undefined`; that package is not one of the packages built for the browser (`BROWSERPKGS` in `/Makefile`), and it fails the same way without this change. `make check-browser` passes.
+
+### What I learned
+
+`database/sql` hands the driver's `CheckNamedValue` the raw value, and does not call a `driver.Valuer` first when the driver has that method; without the default conversion inside it, an `int` would reach the driver as `int`, not `int64`.
+
+### What was tricky
+
+The error of an argument that cannot be converted must still come after the error of the text, while `database/sql` asks the driver about each argument before the driver sees the text. Keeping the refused value with its error, and reporting it later, solved it without failing in `CheckNamedValue`.
+
+### What warrants review
+
+- `arguments`, `argument`, and `CheckNamedValue` in `/conn.go`: the order of the errors, and the choice to report a failing `driver.Valuer` as "not supported" with its error, which `/docs/todo.md` flags for the lead.
+- `checkArguments` and the changed block of `compare` in `/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go`: that nothing that s4ql runs escapes the comparison with mattn.
+
+### Future work
+
+The generators `stmttest` and the sequences of `drivercheck` make no arguments; with them, the differential test would compare an insert of a parameter at random. A simulation workload with parameters, planted bugs, and mutation testing are for a later builder, as the brief says.
