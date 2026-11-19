@@ -1801,8 +1801,7 @@ func randomSavepoints(t *testing.T, seed uint64, verbose bool) savepointCounts {
 	}
 	var c savepointCounts
 	w := newWorld(t)
-	options := core.Options{}
-	options.SetLengthLimit(savepointLimit)
+	options := core.Options{LengthLimit: savepointLimit}
 	d := w.serve(t, "a", options)
 	// Three tables, each in two spellings that SQLite takes for the same name, and two shapes, with
 	// a key and a value of any type.
@@ -2242,8 +2241,7 @@ func TestTx_types(t *testing.T) {
 func TestTx_tooBig(t *testing.T) {
 	// limit is the length limit of the cache in these tests, which SQLite does not raise.
 	const limit = 1000
-	options := core.Options{}
-	options.SetLengthLimit(limit)
+	options := core.Options{LengthLimit: limit}
 
 	// sqliteTakes reports whether SQLite's own table of the same shape, under the same limit,
 	// takes the row, and fails the test for any other error than "string or blob too big".

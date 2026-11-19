@@ -59,12 +59,6 @@ func (o *Options) SyncOff() {
 	o.syncOff = true
 }
 
-// SetLengthLimit is the largest text or blob, and the largest row, in bytes, that the cache of the
-// instance holds. SQLite raises a limit below 30 to 30.
-func (o *Options) SetLengthLimit(n int) {
-	o.lengthLimit = n
-}
-
 // SpoolFile is the file of a spool, which [Options.WrapSpools] wraps.
 type SpoolFile = spoolFile
 
