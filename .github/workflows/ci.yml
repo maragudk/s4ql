@@ -135,9 +135,55 @@ jobs:
           version: latest
           working-directory: internal/sqlite/crosscheck
 
-  # The SQLite binding is memory-unsafe code, so its tests and a short fuzz run also go under the C
-  # address sanitizer.
+  # The SQLite binding is memory-unsafe code, so the tests of both modules also go under the C address
+  # sanitizer. It finds faults in C code only, so make asan-test runs the packages whose test binaries
+  # link C, and the job test alone runs the others. The jobs asan, asan-fuzz, and fuzz together run
+  # what make test-asan runs, and fuzz also checks the heap of a large transaction.
   asan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Test under the address sanitizer
+        run: make asan-test
+
+  # A short fuzz run of the fuzz tests whose test binaries link C, under the address sanitizer, in
+  # shards that run at the same time. make fuzz puts each fuzz test in exactly one shard.
+  asan-fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Fuzz under the address sanitizer
+        run: make fuzz FUZZGROUP=c FUZZFLAGS=-asan FUZZSHARD=${{ matrix.shard }}/${{ strategy.job-total }} FUZZTIME=30s
+
+      - name: Show the inputs that made a fuzz test fail
+        if: failure()
+        run: find . -path '*/testdata/fuzz/*' -type f -print -exec cat {} \;
+
+  # A short fuzz run of the fuzz tests whose test binaries link no C, without the sanitizer, which
+  # has nothing to check in them.
+  fuzz:
     runs-on: ubuntu-latest
 
     steps:
@@ -156,8 +202,8 @@ jobs:
       - name: Check the heap of a large transaction
         run: go test -run '^TestTx_Commit_large$' ./internal/core/
 
-      - name: Test and fuzz under the address sanitizer
-        run: make test-asan FUZZTIME=30s
+      - name: Fuzz
+        run: make fuzz FUZZGROUP=go FUZZTIME=30s
 
       - name: Show the inputs that made a fuzz test fail
         if: failure()
