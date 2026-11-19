@@ -853,16 +853,17 @@ footer ul {
               <li>The SQL tokenizer, the parser, and the pass after the parser.</li>
               <li>The parser agrees with SQLite on all 138,926 statements on which SQLite gives a clear verdict, of a corpus of 139,234.</li>
               <li>The SQL engine for slice 1: <code>create table</code>, <code>insert</code>, <code>select *</code>, and <code>drop table</code> for one integer column. It is checked against SQLite statement by statement, in a simulation with faults, and by fuzzing.</li>
+              <li>The <code>database/sql</code> driver, in the package <code>maragu.dev/s4ql</code>. With it, an application can run the statements of slice 1 on a bucket.</li>
             </ul>
           </td>
         </tr>
         <tr>
           <th scope="row" class="caps">Not built</th>
-          <td><p>The public API, the <code>database/sql</code> driver. Until it exists, an application cannot use the database.</p></td>
+          <td><p>Parameters and transactions in the driver. The driver has no differential test against SQLite at the level of <code>database/sql</code>, no fuzzing, and no test against a real bucket.</p></td>
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
-          <td><p>The driver. It completes slice 1.</p></td>
+          <td><p>Slice 2 of the roadmap.</p></td>
         </tr>
       </tbody>
     </table>
@@ -906,15 +907,15 @@ footer ul {
         <div><h3>The pass after the parser</h3><p>It rejects whatever the roadmap does not list, and it raises the errors that SQLite's grammar actions raise while they parse.</p></div>
         <span class="where caps">Built</span>
       </li>
-      <li class="agreed">
+      <li class="built">
         <span class="glyph" aria-hidden="true"></span>
         <div><h3>Slice 1: one integer column</h3><p><code>create table</code>, <code>insert</code>, <code>select *</code>, and <code>drop table</code> on a strict table with one <code>int primary key</code>. The answers must survive a restart with an empty cache.</p></div>
-        <span class="where caps">Engine built, driver not</span>
+        <span class="where caps">Built</span>
       </li>
-      <li class="agreed">
+      <li class="built">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>The driver</h3><p>A <code>database/sql</code> driver as the main interface.</p></div>
-        <span class="where caps">Agreed, not built</span>
+        <div><h3>The driver</h3><p>A <code>database/sql</code> driver as the main interface. It has no parameters and no transactions yet.</p></div>
+        <span class="where caps">Built</span>
       </li>
       <li class="open">
         <span class="glyph" aria-hidden="true"></span>
