@@ -848,22 +848,22 @@ footer ul {
           <td>
             <ul>
               <li>The storage core. A database is a log of commits in S3 with a local SQLite cache, and one instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work.</li>
-              <li>The tests behind it: a deterministic simulation. The storage core is also run by hand against a real S3-compatible bucket.</li>
+              <li>The tests behind it: a deterministic simulation, and tests against a real S3-compatible bucket, which run in CI on every pull request.</li>
               <li>The S3 client, which passes the conformance suite on Tigris.</li>
               <li>The SQL tokenizer, the parser, and the pass after the parser.</li>
               <li>The parser agrees with SQLite on all 138,926 statements on which SQLite gives a clear verdict, of a corpus of 139,234.</li>
               <li>The SQL engine for slice 1: <code>create table</code>, <code>insert</code>, <code>select *</code>, and <code>drop table</code> for one integer column. It is checked against SQLite statement by statement, in a simulation with faults, and by fuzzing.</li>
-              <li>The <code>database/sql</code> driver, in the package <code>maragu.dev/s4ql</code>. With it, an application can run the statements of slice 1 on a bucket.</li>
+              <li>The <code>database/sql</code> driver, in the package <code>maragu.dev/s4ql</code>. With it, an application can run the statements of slice 1 on a bucket. It is checked against SQLite through <code>database/sql</code>, in 200 generated sequences of 40 statements and by fuzzing. A cache belongs to one database, and another database refuses it.</li>
             </ul>
           </td>
         </tr>
         <tr>
           <th scope="row" class="caps">Not built</th>
-          <td><p>Parameters and transactions in the driver. The driver has no differential test against SQLite at the level of <code>database/sql</code>, no fuzzing, and no test against a real bucket.</p></td>
+          <td><p>Parameters and transactions in the driver.</p></td>
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
-          <td><p>Slice 2 of the roadmap.</p></td>
+          <td><p>Define slice 2 of the roadmap.</p></td>
         </tr>
       </tbody>
     </table>

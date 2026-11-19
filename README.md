@@ -18,8 +18,8 @@ Made with ✨sparkles✨ by [maragu](https://www.maragu.dev/): independent softw
 
 As of 2026-11-19:
 
-- **Built: slice 1, end to end.** A database is a log of commits in S3, with a local SQLite cache. One instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work. They are tested in a deterministic simulation, and also run by hand against a real S3-compatible bucket. The engine runs `create table`, `insert`, `select *`, and `drop table` for one integer column. It is checked against SQLite statement by statement, in a simulation with faults, and by fuzzing. The SQL parser agrees with SQLite on all 138,926 statements on which SQLite gives a clear verdict, of a corpus of 139,234. The package `maragu.dev/s4ql` is a `database/sql` driver, so an application can run these statements on a bucket.
-- **Not built:** parameters and transactions in the driver. The driver has no differential test against SQLite at the level of `database/sql`, no fuzzing, and no test against a real bucket.
-- **Next:** slice 2 of the [roadmap](docs/roadmap.md).
+- **Built: slice 1, end to end.** A database is a log of commits in S3, with a local SQLite cache. One instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work. They are tested in a deterministic simulation, and in tests against a real S3-compatible bucket, which run in CI on every pull request. The engine runs `create table`, `insert`, `select *`, and `drop table` for one integer column. It is checked against SQLite statement by statement, in a simulation with faults, and by fuzzing. The SQL parser agrees with SQLite on all 138,926 statements on which SQLite gives a clear verdict, of a corpus of 139,234. The package `maragu.dev/s4ql` is a `database/sql` driver, so an application can run these statements on a bucket. It is checked against SQLite through `database/sql`, in 200 generated sequences of 40 statements and by fuzzing. A cache belongs to one database, and another database refuses it.
+- **Not built:** parameters and transactions in the driver.
+- **Next:** define slice 2 of the [roadmap](docs/roadmap.md).
 
 What is open in detail is in [docs/todo.md](docs/todo.md).
