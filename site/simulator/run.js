@@ -134,6 +134,15 @@ const SWAPS = { take: "take of the lease", commit: "commit", renew: "renewal", r
 // of the engine.
 export const resetWords = (i) => `You reset the clocks of ${i}.`;
 
+// resetLine of the action event of a step of the visitor's reset of the clocks, in place of the line
+// of the step: the first step that is done says the reset, the others none, and a step that fails or
+// is ignored says so of the reset.
+export function resetLine(e, first) {
+  const words = resetWords(e.instance);
+  if (e.what === "done") return first ? { text: words, tier: "you" } : { text: "", tier: null };
+  return { text: `${words} ${e.what === "failed" ? "It fails" : "Ignored"}: ${e.text}.`, tier: "you" };
+}
+
 // actionWords of an action event of a session, as the visitor's own words.
 function actionWords(e) {
   const i = e.instance;
@@ -174,6 +183,7 @@ function actionWords(e) {
 // a switch of the client, ends.
 export function teller() {
   const names = new Map(); // the instances of holder IDs, by the process that opened them
+  const current = new Map(); // the holder ID of each process's latest open
   const keys = new Map(); // the keys of each commit object, by its name
   const opened = new Set(); // processes that have opened their database once
   const spells = new Map(); // the kinds of line that each instance has said in its spells, by group
@@ -206,6 +216,7 @@ export function teller() {
           case "opened":
             calm("process");
             names.set(e.holder, who);
+            current.set(e.process, e.holder);
             if (opened.has(e.process)) say(`${who} opens its database.`);
             opened.add(e.process);
             break;
@@ -237,8 +248,11 @@ export function teller() {
                 break;
               case "lost": {
                 calm("lease");
-                const by = holder(a["lease.holder"]);
-                say(by === who ? `${who} learns that its lease from before has not run out yet.` : `${who} learns that ${by} holds the lease.`);
+                // The manifest can name the process itself, with another salt or head, or an
+                // earlier holder of its instance: a process before a restart, or before a Stop.
+                const id = a["lease.holder"], by = holder(id);
+                if (id && id === current.get(e.process)) say(`${who} learns that it lost the lease.`);
+                else say(by === who ? `${who} learns that its lease from before has not run out yet.` : `${who} learns that ${by} holds the lease.`);
                 break;
               }
               case "released": if (a.outcome === "released") say(`${who} releases the lease.`); break;

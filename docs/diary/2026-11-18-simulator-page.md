@@ -715,3 +715,62 @@ Self-review with the code-review skill at medium found nine things:
 - Not changed: "the observer sees only what was drawn, and lines can leave the 100 kept between draws". The page draws after each command, and the check advances 1 s of fake time per command, far below 100 lines. The exhaustive unit check covers the words of every outcome.
 
 To check by eye: the strip at 390 and 1280 with the longest value, "error from a: lease ran out by its monotonic clock", which wraps in the last failure cell.
+
+## Step 13: Status, S3, instances, and two clocks
+
+**Author:** builder (client status)
+
+### Prompt Context
+
+**Verbatim prompt:** Markus: "Maybe 'Last failure' should be status? I keep getting confused by it, thinking that there's an error when actually it's okay again. We can still see the last errors in the log." Four more requests from Markus arrived through the lead while the builder worked, for the same branch: "hang/disconnect network is misnamed now that the client is there. It looks like it's hang/disconnect s3?"; "Why is there sometimes a and sometimes a2?"; "We should also have a 'reset clocks' button."; and "Should we distinguish between the two types of clocks? So there's a 'pause monotonic clock', and the other one can jump back and forth and pause?"
+
+**Interpretation:** five changes of the page's words and controls, each with its checks in `check.html`, and no Go code.
+
+**Inferred intent:** the page should never make a visitor believe something that is not so: an error that is over, a network that is not the one the button acts on, a second instance that is the first one restarted, a clock fault that a reset has removed.
+
+### What I did
+
+- Status (`cb99125`): the cell "Last failure" is "Status", the result of the client's latest call that ended. `clientStatus` in `run.js` gives "ok from a" for a served or committed call, and the words of `clientFailure` for a failure, unchanged. `NO_CALLS` is "no calls yet". The cell inverts only while the status is a failure. Ids: `#client-status` (with `data-failing`) and `#client-status-words`; the class `.last` is `.status`.
+- S3 (`9c6025f`): "Hang network" and "Disconnect network" are "Hang S3" and "Disconnect S3". The log said "You hang the network of a." / "The network of a no longer hangs." / "You disconnect a." / "You connect a again.", and now says "You hang the requests of a to S3." / "The requests of a to S3 no longer hang." / "You disconnect a from S3." / "You connect a to S3 again.". In the `<head>`, "hang or disconnect its network" became "hang or cut its connection to S3", and "cut its network" became "cut it off from S3".
+- Instances (`9c6025f`): the page shows the instance wherever it showed a process. `instanceOf` in `run.js` strips the number that the engine gives the process of a restart. The card head no longer has the process span, and its CSS rule is gone. The commit objects' writer, the S3 lease holder, and the log use the instance. "a2 starts on the cache that the crashed process left." is now "a starts again, on the cache that it left when it crashed." A line about two processes of one instance would have read "a takes the lease over from a." and "a learns that a holds the lease."; they read "a takes the lease again." and "a learns that its lease from before has not run out yet.". On the card, "it thinks so; S3 names a" for its own earlier lease reads "S3 names its lease from before".
+- Reset clocks (`e015520`, then `4f5afb2`): `resetClocks` in `page.js` queues `startWall` and `startMonotonic` for a clock that stands still, then `shiftWall` by the wall clock's offset. A job's `act` can now be a function that `pump` calls when the job's turn comes, so the shift is computed from the state after the starts, and a step with nothing to do is left out. `take` gets the job and gives the steps of a reset one log line, "You reset the clocks of a.". The button is off while the clocks are untouched (`touched`: a clock stands still, or the wall clock is off by a nanosecond or more).
+- Two clocks (`4f5afb2`): the card's clock actions are two labelled rows, "Wall clock" with +60 s, −60 s, and Pause, and "Monotonic clock" with Pause, and Reset clocks apart at the right of the second row (at 390 px: the wall row in three columns, Reset clocks on a row of its own). The card's clocks say each clock only where it differs: "wall +60 s", "wall paused, −5 s", "monotonic paused", joined by "; ", else "true time". The monotonic offset is no longer shown, only whether it runs, so after a reset the card reads "true time". New log lines: "You pause the wall clock of a.", "You start the wall clock of a again.", and the same for the monotonic clock. The stale read reads "a serves a stale read after both of its clocks went wrong, which the spec allows.".
+- `check.html`: the status at zero ("no calls yet"), while `a` serves ("ok from a"), while `a` is crashed (the no-answer words, failing), after the restart (once an instance serves, the client is pointed at it, and the status is "ok from" it, not failing), and after the switch to `b` (a status from `b`, failing only for a failure). Unit checks of `clientStatus`, of the restart lines, and of `instanceOf`. The labels and log lines of Hang S3, Disconnect S3, and Error disk. A check that no text of the page, and no line the log has had, matches `/\b[a-e][2-9]\b/`, after the crash and restart of `a`, after the crash and restart of the holder, and at 11 min. Each clock action, its opposite, and Reset clocks after +60 s and both pauses: both clocks run, the wall clock is off by 0 ms, the card says "true time", neither Pause is pressed, Reset clocks is off, and the log has one line for the reset.
+
+### What worked
+
+- `make site-check` passed after each change. The wall clock lands on true time exactly: the check reports "off by 0 ms". The engine keeps clocks in nanoseconds, `duration` rounds a shift to them, and the offset in the state is a whole number of nanoseconds in a float64 of milliseconds.
+- `playwright-cli run-code` with the driver inline in single quotes, at 1280 and 390: the strip at zero, served, `a` crashed, served again after the restart, and pointed at the standby, and the card's clock rows.
+
+### What didn't work
+
+- The harness refused `playwright-cli eval`, a `run-code` that read its driver with `$(cat flow.js)`, and a `mkdir` chained with them. Passing the driver inline in single quotes worked.
+- Port 8093 was taken; the site was served on 8197.
+- The first card screenshot showed a pressed Pause not inverted: the button's 120 ms colour transition was still running. A short wait before the screenshot fixed it; the page is right.
+
+### What was tricky
+
+- After `a` crashes and restarts, `a2` and `b` both wait for `a1`'s lease to run out, and either can take it (seen both ways). So the check cannot wait for "ok from a" after the restart. It waits for an instance to serve, points the client at it, waits for "ok from" it, and points the client back at `a`.
+- The three clock cases on the holder, 60 s of fake time each, from the page. With the client on the holder, nothing happens in any of them except the card's clocks: each write of the client commits, and a commit renews the lease, so the holder keeps the lease. The log shows only the visitor's two lines, the card "serves" throughout, and the status "ok from a". With the client pointed at the standby during the pause and back at the holder after:
+  1. Monotonic paused 0:20.0 to 1:20.0: `b` takes the lease over from `a` at 0:48.5, the card of `a` says "thinks it holds the lease" while paused, and after the start the client gets "error from a: lease ran out by its wall clock" at 1:21.6; at 1:34.4 `a` learns that `b` holds the lease.
+  2. Wall paused 0:20.0 to 1:20.0: nothing but the card ("wall paused, −60 s", then "wall −60 s"); `a` keeps renewing by its monotonic clock and serves.
+  3. Both paused 0:20.0 to 1:20.0: `b` takes the lease over at 0:53.5; after the start, S3 refuses a commit of `a` at 1:20.8, `a` learns that `b` holds the lease at 1:20.9, and the client gets "write of key 9 not committed". In this seed the client's first call after the start was a write, so no stale read showed.
+  No stale read appeared in cases 1 and 2.
+
+### What warrants review
+
+Self-review with the code-review skill at medium found eight things:
+
+- Fixed: a reset whose shift had nothing to do (only the monotonic clock paused) dropped the step without drawing, so every control stayed off until Play. `pump` now calls `drawControls` when it drops a step, and the check covers that reset.
+- Fixed: "a learns that its lease from before has not run out yet" also when the manifest named the process's own current holder ID (the core's `lose` when salt or head differ). The teller keeps each process's latest holder ID and says "a learns that it lost the lease." then (unit-checked).
+- Fixed: a step of a reset that failed or was ignored logged as an action the visitor did not take. `resetLine` in `run.js` says "You reset the clocks of a. Ignored: ..." (unit-checked).
+- Fixed: each step of a reset put a mark on the field. Only the first does.
+- Fixed: after a crash and restart, the S3 row said "a, 30 s" for the lease of the crashed process while the card of `a` said it stands by. `holderName` now says "a before its restart" when the process that held the lease is not the instance's current one.
+- Fixed: the check's process pattern missed `a10` and up. It is `/\b[a-e]([2-9]|[1-9][0-9]{1,2})\b/`; three digits at most, because the first try, with any number of digits, matched the short name of a commit object, "b8828120".
+- Not changed: `actionWords` still words `pauseClocks` and `resumeClocks`, which the engine accepts though the page no longer sends them.
+- Not changed: "no calls yet" is in the HTML and in `NO_CALLS`; the HTML needs it before the script runs, and the check asserts the text at zero.
+
+`make site-check` passed 10 times in a row before the review fixes and 6 after (5 runs of `sitecheck` on `site/`, and one full `make site-check`). `make lint` passed.
+
+- The `<head>` changed for this step: the two descriptions (one phrase each) and CSS for the status cell, the clock rows, and the removed process span.
+- Clock faults on the holder show nothing while the client calls the holder, because its writes renew the lease. A visitor who pauses a clock of the serving instance sees no story unless the client calls the other one. This is a question for the lead and Markus, not something the page can fix by its words.

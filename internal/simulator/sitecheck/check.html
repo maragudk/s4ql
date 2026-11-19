@@ -214,9 +214,13 @@ async function unit() {
     opened(6, "b", "b", "h3"),
     lease(7, "b", "b", { "lease.transition": "taken", outcome: "taken", "lease.previous_holder": "h2" }),
     { t: 8, kind: "core", event: "commit", instance: "a", process: "a3", attrs: { outcome: "unknown", "commit.name": "0123456789abcdef" } },
+    lease(9, "a", "a2", { "lease.transition": "lost", "lease.holder": "h2" }),
   ].map((e) => tell(e)).filter((w) => w.tier).map((w) => w.text);
-  const wantRestart = ["a starts again, on the cache that it left when it crashed.", "a learns that its lease from before has not run out yet.", "a takes the lease again.", "b takes the lease over from a.", "a does not know whether its commit 01234567 went through."];
+  const wantRestart = ["a starts again, on the cache that it left when it crashed.", "a learns that its lease from before has not run out yet.", "a takes the lease again.", "b takes the lease over from a.", "a does not know whether its commit 01234567 went through.", "a learns that it lost the lease."];
   expect(JSON.stringify(restartLines) === JSON.stringify(wantRestart), `the log names the instance of a process after a restart (${restartLines.join(" | ")})`);
+  const resets = [[{ what: "done" }, true], [{ what: "done" }, false], [{ what: "ignored", text: "the process of the instance has crashed" }, false]]
+    .map(([e, first]) => R.resetLine({ kind: "action", instance: "a", ...e }, first).text);
+  expect(JSON.stringify(resets) === JSON.stringify(["You reset the clocks of a.", "", "You reset the clocks of a. Ignored: the process of the instance has crashed."]), `the steps of a reset of the clocks say the reset once, and a step that does not happen (${resets.join(" | ")})`);
   expect(JSON.stringify(["a", "a2", "b13", ""].map(R.instanceOf)) === JSON.stringify(["a", "a", "b", ""]), "the instance of a process is its name without the number of its restart");
 
   // A stale read after both clocks went wrong takes one plain line a spell; a violation that is not excused is
@@ -252,7 +256,9 @@ async function check() {
 
   // noProcess checks that the page shows no name of a process, such as a2, but the instance: in the
   // text of the page now, and in every line that the log has had.
-  const processName = /\b[a-e][2-9]\b/;
+  // A process of a restart is the instance and a number from 2; at most three digits, so that the
+  // short name of a commit object, eight hexadecimal digits, does not match.
+  const processName = /\b[a-e]([2-9]|[1-9][0-9]{1,2})\b/;
   const noProcess = (when) => {
     const now = p.win.document.body.innerText.split("\n").filter((s) => processName.test(s));
     const logged = [...logTexts].filter((s) => processName.test(s));
@@ -366,6 +372,12 @@ async function check() {
   expect(!pressed("wall") && !pressed("monotonic") && p.button("a", "reset").disabled && !p.button("a", "wall").disabled,
     "after Reset clocks, neither Pause is pressed, and Reset clocks is off");
   expect(JSON.stringify(added) === JSON.stringify(["You reset the clocks of a."]), `the log has one line for Reset clocks (${added.join(" | ")})`);
+  // A reset whose shift has nothing to do, after a pause of the monotonic clock alone, leaves the
+  // controls on.
+  await p.press("a", "monotonic");
+  await p.press("a", "reset");
+  expect(!a().monotonicStopped && clocks() === "true time" && !p.button("a", "monotonic").disabled && !p.button("a", "crash").disabled && p.button("a", "reset").disabled,
+    `Reset clocks after a pause of the monotonic clock alone runs it again (${clocks()}), and leaves the controls on`);
 
   const beforeCrash = p.client();
   await p.press("a", "crash");

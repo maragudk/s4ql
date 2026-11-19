@@ -92,7 +92,7 @@ const calls = {}; // by instance: {w, r, x, why}
 const client = { w: 0, r: 0, x: 0, status: "", failing: false }; // what the client got, and its latest call
 const bars = new Map(); // events by slice of fake time
 const marks = []; // the times of the visitor's actions
-const names = new Map(); // the instance of each holder ID
+const names = new Map(); // the process of each holder ID
 const stopped = {}; // by instance: whether the visitor's Stop closed the database of its process
 
 // The page tells a check what it does through data attributes on <html>: data-engine is loading,
@@ -151,7 +151,10 @@ async function pump() {
   // A step of a composed action is decided when its turn comes, from the state after the step before,
   // and is left out if there is nothing to do.
   const action = typeof job.act === "function" ? job.act() : job.act;
-  if (job.act && !action) return pump();
+  if (job.act && !action) {
+    drawControls();
+    return pump();
+  }
   busy = true;
   acting = !!action;
   root.dataset.busy = "true";
@@ -188,12 +191,12 @@ async function pump() {
 }
 
 // take the events of an answer to the job, if any, into what the page keeps. The steps of a reset of
-// the clocks take one line in the log, at the first.
+// the clocks take one line in the log and one mark on the field, at the first.
 function take(answer, job = {}) {
   t = answer.t;
   for (const e of answer.events) {
     let w = tell(e);
-    if (job.reset && e.kind === "action" && e.what === "done") w = job.reset.first ? { text: R.resetWords(job.reset.instance), tier: "you" } : { text: "", tier: null };
+    if (job.reset && e.kind === "action") w = R.resetLine(e, job.reset.first);
     const slice = Math.floor(e.t / SLICE);
     bars.set(slice, (bars.get(slice) || 0) + 1);
     if (w.tier) {
@@ -202,12 +205,12 @@ function take(answer, job = {}) {
     }
     switch (e.kind) {
       case "action":
-        marks.push(e.t);
+        if (!job.reset || job.reset.first) marks.push(e.t);
         if (e.what === "done" && (e.do === "close" || e.do === "open")) stopped[e.instance] = e.do === "close";
         break;
       case "process":
         if (e.what === "started") stopped[e.instance] = false;
-        if (e.what === "opened") names.set(e.holder, e.instance);
+        if (e.what === "opened") names.set(e.holder, e.process);
         break;
       case "call": {
         if (e.caller === "client" && e.what !== "started") {
@@ -319,7 +322,14 @@ function wire() {
 }
 
 const instanceState = (name) => (state && state.instances.find((x) => x.instance === name)) || null;
-const holderName = (id) => names.get(id) || R.short(id);
+// holderName of a holder ID: its instance, and whether the process that held it is gone, because the
+// page names no process, and a lease of a crashed process can stand in S3 until it runs out.
+function holderName(id) {
+  const p = names.get(id);
+  if (!p) return R.short(id);
+  const name = R.instanceOf(p), st = instanceState(name);
+  return st && st.process !== p ? `${name} before its restart` : name;
+}
 
 // role of an instance: serves when it holds the lease and the manifest names it.
 function role(st) {
