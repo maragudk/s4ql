@@ -21,7 +21,6 @@ import (
 
 	"maragu.dev/s4ql"
 	sqloracle "maragu.dev/s4ql/internal/sql/oracle"
-	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 	"maragu.dev/s4ql/internal/sql/token"
@@ -36,7 +35,9 @@ const (
 	callPrepareExec  call = "prepare, exec"
 	callPrepareQuery call = "prepare, query"
 	callQueryRow     call = "query row"
-	// callExecArgument is Exec with one argument, which s4ql does not support.
+	// callExecArgument is Exec with one argument, which s4ql does not support: a text gets SQLite's
+	// syntax error or the "not supported" of the text, as without the argument, and a statement that
+	// s4ql supports gets "not supported: parameters".
 	callExecArgument call = "exec with an argument"
 	// callBegin is BeginTx, which runs no text, and which s4ql does not support.
 	callBegin call = "begin"
@@ -363,11 +364,6 @@ const (
 	// excusedStartedTable is the one difference from SQLite that the engine's tests accept too; see
 	// [stmttest.ExistsAfterStart].
 	excusedStartedTable = "already exists after the start of a table, accepted"
-	// excusedArgumentSyntax is a text with a syntax error that runs with an argument: SQLite gives
-	// the syntax error, and s4ql "not supported: parameters", which breaks the spec's rule that a
-	// text with a syntax error gets SQLite's error. It is a difference that this test found, and
-	// that [TestExecArgument] pins; see docs/todo.md.
-	excusedArgumentSyntax = "a syntax error with an argument, which s4ql answers with not supported, a known difference"
 	// knownGapSuffix ends the kind of a text of a [stmttest.KnownGap], after the gap.
 	knownGapSuffix = ", a known gap"
 )
@@ -447,8 +443,16 @@ func (p *pair) compare(src string, c call, supported bool, got outcome) string {
 	if got.notSupported() {
 		return p.checkNotSupported(src, c, supported, got)
 	}
-	if c == callExecArgument || c == callBegin {
+	if c == callBegin {
 		return fmt.Sprintf("%q: s4ql gives %v, and supports no %v", src, got, c)
+	}
+	if c == callExecArgument {
+		// What s4ql gives for a text with an argument, other than "not supported", is the syntax error
+		// of the text, which must be SQLite's for the text with the argument. Any other error, or
+		// none, would mean that s4ql ran the statement.
+		if m, ok := strings.CutPrefix(got.err, "1/1: "); !ok || got.failed != "exec" || !sqloracle.IsSyntaxMessage(m) {
+			return fmt.Sprintf("%q: s4ql gives %v, and supports no %v", src, got, c)
+		}
 	}
 
 	first := firstStatement(src)
@@ -496,17 +500,21 @@ func (p *pair) checkNotSupported(src string, c call, supported bool, got outcome
 		}
 		return ""
 	case callExecArgument:
-		if got.err != "s4ql: not supported: parameters" {
-			return fmt.Sprintf("%q: s4ql gives %v", src, got)
+		// The text is judged before the argument: a statement that s4ql supports gets "not supported:
+		// parameters", and any other text the "not supported" that it gets without the argument.
+		s, err := stmt.Check(src)
+		want := "s4ql: not supported: parameters"
+		switch {
+		case err != nil:
+			want = err.Error()
+		case s == nil:
+			want = "s4ql: not supported: a text that holds no statement"
 		}
-		if _, err := stmt.Check(src); errors.As(err, new(*sqlerr.Error)) {
-			// SQLite must give the same syntax error for the text on an empty database.
-			want := run(tb, p.empty, c, firstStatement(src), mattnText)
-			if se := new(*sqlerr.Error); !errors.As(err, se) || want.err != fmt.Sprint((*se).Code, "/", (*se).ExtendedCode, ": ", (*se).Message) {
-				return fmt.Sprintf("%q: s4ql gives %v, and SQLite %v", src, got, want)
-			}
-			p.y.excused(excusedArgumentSyntax)
-			return ""
+		if got.failed != "exec" || got.err != want {
+			return fmt.Sprintf("%q: s4ql gives %v, where its check of the text gives %v", src, got, want)
+		}
+		if supported && s == nil {
+			return fmt.Sprintf("%q: s4ql does not support a statement of slice 1: %v", src, got)
 		}
 	case callPrepareExec, callPrepareQuery:
 		// The text alone decides "not supported", and Prepare checks the text.
@@ -738,6 +746,25 @@ var sequences = map[string][]step{
 		{callBegin, "", "begin: begin failed with s4ql: not supported: transactions"},
 		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows `},
 	},
+	"texts with an argument, each of which is judged before the argument": {
+		// The spec: "Errors match SQLite's [...] for text that is a syntax error in SQLite, also when it
+		// is SQL that s4ql does not support."
+		{callExecArgument, "drop table", "exec with an argument: exec failed with 1/1: incomplete input"},
+		{callExecArgument, "selec", `exec with an argument: exec failed with 1/1: near "selec": syntax error`},
+		{callExecArgument, "select v1 from t1 where", "exec with an argument: exec failed with 1/1: incomplete input"},
+		{callExecArgument, "select * from t1 where v1 = 1", "exec with an argument: exec failed with s4ql: not supported: WHERE clause (at offset 17)"},
+		{callExecArgument, "insert into t1 (v1) values (?)", ""},
+		{callExecArgument, " ; -- nothing", "exec with an argument: exec failed with s4ql: not supported: a text that holds no statement"},
+		// A statement that s4ql supports is not run, also where it would fail.
+		{callExecArgument, t1, "exec with an argument: exec failed with s4ql: not supported: parameters"},
+		{callExec, t1, "exec: 0 affected, last insert id 0"},
+		{callExecArgument, "insert into t1 (v1) values (1)", "exec with an argument: exec failed with s4ql: not supported: parameters"},
+		{callExecArgument, "drop table t1", "exec with an argument: exec failed with s4ql: not supported: parameters"},
+		{callExecArgument, "insert into t9 (v1) values (1)", "exec with an argument: exec failed with s4ql: not supported: parameters"},
+		// SQLite gives `table t1 already exists`, and s4ql what SQLite gives on an empty database.
+		{callExecArgument, "create table t1 (v1 int primary key) strict without rowid", `exec with an argument: exec failed with 1/1: near "without": syntax error`},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows `},
+	},
 	"a semicolon and a comment after the statement": {
 		{callExec, t1 + "; -- c", "exec: 0 affected, last insert id 0"},
 		{callExec, "insert into t1 (v1) values (1);;", "exec: 1 affected, last insert id 0"},
@@ -862,7 +889,7 @@ func TestGenerated(t *testing.T) {
 		}
 	}
 
-	want := map[string]int{excusedPrepare: 816, excusedStartedTable: 12, excusedArgumentSyntax: 3}
+	want := map[string]int{excusedPrepare: 816, excusedStartedTable: 14}
 	kinds := slices.Collect(maps.Keys(want))
 	for name := range y {
 		if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) {
@@ -918,23 +945,6 @@ func FuzzSequence(f *testing.F) {
 		}
 		if failure := p.compareTables(); failure != "" {
 			t.Fatal(failure)
-		}
-		p.close()
-	})
-}
-
-// TestExecArgument pins a difference from SQLite that [TestGenerated] found, which docs/todo.md
-// records: a text with a syntax error, run with an argument, gets "not supported: parameters" from
-// s4ql, and the syntax error from SQLite. The spec: "Where SQLite gives an error, s4ql gives the
-// same result code, extended result code, and message. This holds [...] for text that is a syntax
-// error in SQLite, also when it is SQL that s4ql does not support." When the driver checks the text
-// before the arguments, this test fails, and the excuse of [excusedArgumentSyntax] goes.
-func TestExecArgument(t *testing.T) {
-	t.Run("should give not supported for a syntax error with an argument, where SQLite gives the syntax error", func(t *testing.T) {
-		p := newPair(t, newWorld(t), true, nil)
-		for src, want := range map[string]string{"drop table": "1/1: incomplete input", "selec": `1/1: near "selec": syntax error`} {
-			is.Equal(t, "exec with an argument: exec failed with s4ql: not supported: parameters", run(t, p.s, callExecArgument, src, s4qlText).String())
-			is.Equal(t, "exec with an argument: exec failed with "+want, run(t, p.o, callExecArgument, src, mattnText).String())
 		}
 		p.close()
 	})
