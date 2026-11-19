@@ -184,3 +184,57 @@ In `/internal/sqlite/README.md`, the section on memory safety says which package
 ### Future work
 
 - If CI shows shard 3 as the slowest fuzzing job, weight a directory by its compile as well as its count.
+
+## Step 4: Self-review
+
+**Author:** faster-asan builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the brief) "Check the `Makefile` targets for real: run the new targets locally (the sanitizer ones in the Linux container), run `make test` and `make lint`, and show that a fuzz directory with no target, and a target in no group, still fail. [...] Review your own diff once more before you report."
+**Interpretation:** A review of the diff by the code-review skill, a decision on each finding, and the checks of the brief.
+**Inferred intent:** Hand in a branch whose claims are checked.
+
+### What I did
+
+Ran the code-review skill at medium over the working tree. It reported six findings, all nits, and found that the grouping, the checks of the variables, and `make fuzz FUZZGROUP=go` work. While it ran, I had already fixed what it first noticed, that every shard built every directory's test binary to list it (step 3). The findings, and what I did:
+
+1. `/AGENTS.md` says to run `make test-asan` for anything that waits, because the slow sanitizer job found five tests that depended on timing. The pure-Go packages, among them `internal/store/simstore` with 131 s under the sanitizer, no longer run there. Not fixed here: the agreed direction takes them out, and they still run under the race detector in the job `test`. The rule is the lead's to reword; it is in my report.
+2. The plan uses the default build tags and the check uses those of `FUZZFLAGS` (`-asan` sets the tag `asan`). Left: no fuzz test is in a tagged file, and if one were, the check fails loudly.
+3. A shard that gets no directory fails. Kept, since it stops a matrix larger than the group from passing with nothing to do; the comment of `fuzz` now says that n must not be more than the directories of the group.
+4. The shards are balanced by count, not by compile, so mattn's amalgamation can land in two shards. Left, in "Future work" of step 3.
+5. `make asan-test` has no Docker fallback on macOS. Left: its comment says Linux only, and `make test-asan` is the local target.
+6. The comment in `/.github/workflows/ci.yml` said that the three jobs run what `make test-asan` runs, but `fuzz` also checks the heap. Fixed.
+
+Then: `make test` passed (1 min 49 s), `make lint` reported "0 issues." five times and nothing from the simulation lint or Buf, and `make fuzz FUZZFLAGS=-nosuchflag` printed a plan of all 11 directories and 23 fuzz tests before it failed on the flag, so `make fuzz` without the new variables still runs every fuzz test.
+
+`/docs/todo.md` says nothing of the sanitizer job's time, so I left it unchanged.
+
+### Why
+
+The review gives a view of the diff that is not mine. Each finding gets a decision by whether it matters in practice.
+
+### What worked
+
+The review agreed on the classification and confirmed by its own run that the variables are checked.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+The sanitizer job served two ends: memory checks of C, and a slow runner for timing faults. The agreed split keeps the first and moves the second to the race detector for the pure-Go packages.
+
+### What was tricky
+
+Nothing beyond the findings.
+
+### What warrants review
+
+- The new jobs can only be checked by CI: the estimates in my report rest on the logs of step 2.
+- The rule in `/AGENTS.md` on `make test-asan` for waiting tests.
+
+### Future work
+
+- After the first CI run, compare each new job's time with the estimates, and move to weights by compile if shard 3 is the slowest.
