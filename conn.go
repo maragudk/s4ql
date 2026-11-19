@@ -25,9 +25,10 @@ import (
 //
 // It logs what the driver decides itself, through the logger of the options: the event "open" when
 // the instance is opened, at Info; "close" when it is closed, at Info, and at Warn if the close
-// failed, which includes a lease that is not released; and "stop_seen" the first time that it
-// answers a call with [ErrStopped], at Warn. Each event has the prefix of the database as
-// "db.prefix", and one of a failure has it as "error".
+// failed, which includes a lease that is not released; "stop_seen" the first time that it answers
+// a call with [ErrStopped], at Warn; and "panic" for a panic in the loop over the rows of a query,
+// at Error, with its value as "panic" and the stack where it came as "stack" (see [rows]). Each
+// event has the prefix of the database as "db.prefix", and one of a failure has it as "error".
 type connector struct {
 	host   host.Host
 	db     *core.DB
@@ -114,7 +115,8 @@ func (c *connector) Driver() driver.Driver {
 //
 // It first closes the rows that are open. The loop over the rows of a query is a call on the
 // instance, which the close of the instance waits for. The next row of such rows is then the error
-// of an instance that was closed.
+// of an instance that was closed. A panic of a loop that it ends is logged and not raised, so that
+// the close goes on.
 func (c *connector) Close() error {
 	c.mu.Lock()
 	c.closed = true

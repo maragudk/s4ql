@@ -3,13 +3,19 @@ package s4ql_test
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
+	"log/slog"
 	"runtime"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql"
+	"maragu.dev/s4ql/internal/sim"
 )
 
 // three rows in t1 on a new instance.
@@ -219,4 +225,169 @@ func TestRows(t *testing.T) {
 		// The lease is released, and the cache is closed, which the world checks when the test ends.
 		is.EqualSlice(t, []int64{1, 2, 3, 4}, values(t, w.serve(t, "b"), select1))
 	})
+
+	t.Run("should raise a panic of the engine between two rows on the goroutine that calls Next, with the read freed, and go on serving", func(t *testing.T) {
+		w := newWorld(t)
+		h := &panicky{Free: w.host}
+		db, err := s4ql.OpenStore(t.Context(), h, w.client(), w.options("a"), coreOptions())
+		is.NotError(t, err)
+		t.Cleanup(func() { _ = db.Close() })
+		is.NotError(t, db.PingContext(t.Context()))
+		exec(t, db, t1, insert1, "insert into t1 (v1) values (2)")
+
+		rows, err := db.QueryContext(t.Context(), select1)
+		is.NotError(t, err)
+		h.armed.Store(true)
+		// The engine yields after it has given a row, so the first row comes, and the panic comes at
+		// the second.
+		ok, v := next(rows)
+		is.True(t, ok && v == nil, fmt.Sprint(v))
+		ok, v = next(rows)
+		is.True(t, !ok)
+		is.Equal(t, any(errPanic), v)
+		h.armed.Store(false)
+
+		// The rows are closed, and say so.
+		ok, v = next(rows)
+		is.True(t, !ok && v == nil, fmt.Sprint(v))
+		is.Equal(t, "s4ql: internal error: the query panicked", failed(t, rows.Err()).Error())
+		is.NotError(t, rows.Close())
+
+		// The read is free, the instance serves, and it closes in time and releases the lease.
+		readersFree(t, db)
+		exec(t, db, "insert into t1 (v1) values (3)")
+		is.EqualSlice(t, []int64{1, 2, 3}, values(t, db, select1))
+		is.NotError(t, db.Close())
+		is.EqualSlice(t, []int64{1, 2, 3}, values(t, w.serve(t, "b"), select1))
+	})
+
+	t.Run("should raise a panic at the end of the loop on the goroutine that calls Close, and log it with its stack", func(t *testing.T) {
+		w := newWorld(t)
+		log := &panickyLog{}
+		db := openLogged(t, w, log)
+		exec(t, db, t1, insert1, "insert into t1 (v1) values (2)")
+
+		// The engine logs the event of the query when the loop over its rows has ended, in the turn
+		// that the close gives the task.
+		rows, err := db.QueryContext(t.Context(), select1)
+		is.NotError(t, err)
+		is.True(t, rows.Next())
+		log.arm(true)
+		v, _ := closeRows(rows)
+		is.Equal(t, any(errPanic), v)
+		log.arm(false)
+		panics := log.lines.of("panic")
+		is.Equal(t, 1, len(panics))
+		is.True(t, strings.HasPrefix(panics[0], `level=ERROR msg=panic db.prefix=db panic="a panic of the test" stack="goroutine `), panics[0])
+
+		// The rows are closed, and raise it no more.
+		is.True(t, !rows.Next())
+		is.NotError(t, rows.Err())
+		is.NotError(t, rows.Close())
+		readersFree(t, db)
+		exec(t, db, "insert into t1 (v1) values (3)")
+		is.NotError(t, db.Close())
+		is.EqualSlice(t, []int64{1, 2, 3}, values(t, w.serve(t, "b"), select1))
+	})
+
+	t.Run("should not raise a panic at the end of the loop when the close of the database closes the rows, and log it", func(t *testing.T) {
+		w := newWorld(t)
+		log := &panickyLog{}
+		db := openLogged(t, w, log)
+		exec(t, db, t1, insert1, "insert into t1 (v1) values (2)")
+
+		rows, err := db.QueryContext(t.Context(), select1)
+		is.NotError(t, err)
+		is.True(t, rows.Next())
+		log.arm(true)
+		is.NotError(t, db.Close())
+		log.arm(false)
+		is.Equal(t, 1, len(log.lines.of("panic")))
+		is.EqualSlice(t, []string{"level=INFO msg=close db.prefix=db"}, log.lines.of("close"))
+
+		// No later call raises it.
+		is.True(t, !rows.Next())
+		is.Error(t, s4ql.ErrStopped, failed(t, rows.Err()))
+		is.NotError(t, rows.Close())
+		is.EqualSlice(t, []int64{1, 2}, values(t, w.serve(t, "b"), select1))
+	})
+}
+
+// openLogged opens an instance of the world with the cache directory "a", which logs to log, and
+// waits until it serves.
+func openLogged(t *testing.T, w *world, log *panickyLog) *sql.DB {
+	t.Helper()
+	o := w.options("a")
+	o.Logger = slog.New(log.handler())
+	db, err := s4ql.OpenStore(t.Context(), w.host, w.client(), o, coreOptions())
+	is.NotError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	is.NotError(t, db.PingContext(t.Context()))
+	return db
+}
+
+// closeRows is [sql.Rows.Close] of rows, with the value of a panic in it, if it panicked.
+func closeRows(rows *sql.Rows) (v any, err error) {
+	defer func() { v = recover() }()
+	return nil, rows.Close()
+}
+
+// panickyLog is a log in the text format of log/slog, whose handler panics with [errPanic] at the
+// event of a statement while it is armed.
+type panickyLog struct {
+	lines lines
+	armed atomic.Bool
+}
+
+// arm the log, or disarm it.
+func (p *panickyLog) arm(armed bool) {
+	p.armed.Store(armed)
+}
+
+func (p *panickyLog) handler() slog.Handler {
+	return &panickyHandler{log: p, Handler: slog.NewTextHandler(&p.lines, &slog.HandlerOptions{Level: slog.LevelDebug})}
+}
+
+type panickyHandler struct {
+	log *panickyLog
+	slog.Handler
+}
+
+func (h *panickyHandler) Handle(ctx context.Context, r slog.Record) error {
+	if h.log.armed.Load() && r.Message == "statement" {
+		panic(errPanic)
+	}
+	return h.Handler.Handle(ctx, r)
+}
+
+func (h *panickyHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &panickyHandler{log: h.log, Handler: h.Handler.WithAttrs(attrs)}
+}
+
+func (h *panickyHandler) WithGroup(name string) slog.Handler {
+	return &panickyHandler{log: h.log, Handler: h.Handler.WithGroup(name)}
+}
+
+// errPanic is the value of the panics that the tests plant.
+var errPanic = errors.New("a panic of the test")
+
+// panicky is the host of the world, whose yield between two rows of a query panics with [errPanic]
+// while it is armed.
+type panicky struct {
+	*sim.Free
+	armed atomic.Bool
+}
+
+func (p *panicky) Yield(ctx context.Context, site string) {
+	if p.armed.Load() && site == "engine: between two rows of a query" {
+		panic(errPanic)
+	}
+	p.Free.Yield(ctx, site)
+}
+
+// next is [sql.Rows.Next] of rows, and the value of a panic in it, if it panicked, as an application
+// that recovers panics sees it.
+func next(rows *sql.Rows) (ok bool, v any) {
+	defer func() { v = recover() }()
+	return rows.Next(), nil
 }
