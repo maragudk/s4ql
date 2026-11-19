@@ -239,12 +239,14 @@ func (c *conn) setUp(syncOff bool, identity string) error {
 
 // wal puts the cache into the journal mode wal, or finds it there.
 //
-// A new cache is in another journal mode, and the change to wal is a write that SQLite does not
-// wait for when another connection holds a lock on the cache, as one does that makes the same
-// change at the same time: it reports "busy" at once. So after "busy" it waits, with the busy
-// timeout, for the write lock, which the other connection holds until its change is done, and
-// asks again; the cache is then in wal already. Each try ends in "busy" only while another
-// connection changes the journal mode back and forth, so it gives up after a few.
+// A new cache is in another journal mode, and the change to wal is a read that becomes a write.
+// SQLite waits, with the busy timeout, for the readers of the cache, but not for another
+// connection that holds the write lock, as one does that makes the same change at the same time:
+// it reports "busy" at once (sqlite3BtreeBeginTrans calls the busy handler only from no
+// transaction). So after "busy" it waits, with the busy timeout, for the write lock, and asks
+// again; the cache is then in wal already, if the other connection made the same change. A try
+// ends in "busy" again only if another connection took the write lock in between, so it gives up
+// after five.
 func (c *conn) wal() error {
 	for try := 1; ; try++ {
 		var mode string
@@ -312,7 +314,7 @@ func (c *conn) position() (format.Name, error) {
 	err := c.query("select version, head from main.s4ql_cache", func(s *sqlite.Stmt) error {
 		rows++
 		if version := s.ColumnInt64(0); version != cacheVersion {
-			return fmt.Errorf("%w: it has version %v, and this version of s4ql reads version %v", ErrCacheVersion, version, cacheVersion)
+			return fmt.Errorf("%w: it has version %v, and this version of s4ql reads version %v; open the database with a new cache, or delete this one, with its files -wal and -shm", ErrCacheVersion, version, cacheVersion)
 		}
 		var err error
 		if name, err = format.ParseName(s.ColumnText(1)); err != nil {

@@ -1266,7 +1266,7 @@ func TestOpen_identity(t *testing.T) {
 
 		_, err = core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{Identity: "one"})
 		is.Error(t, core.ErrCacheVersion, err)
-		is.Equal(t, "open the cache: the cache is not one that this version of s4ql reads: it has version 0, and this version of s4ql reads version 1", err.Error())
+		is.Equal(t, "open the cache: the cache is not one that this version of s4ql reads: it has version 0, and this version of s4ql reads version 1; open the database with a new cache, or delete this one, with its files -wal and -shm", err.Error())
 		is.True(t, hasRow1(t, path), "the row is gone")
 		position, _, err := cacheDump(path)
 		is.NotError(t, err)
