@@ -158,17 +158,58 @@ func TestExec(t *testing.T) {
 		is.EqualSlice(t, []int64{}, values(t, db, select1))
 	})
 
-	t.Run("should end with its context", func(t *testing.T) {
+	t.Run("should end with its context, also in its commit, with an error that is none of the instance", func(t *testing.T) {
 		w := newWorld(t)
-		db := w.serve(t, "a")
+		s := &faulty{Store: w.client()}
+		db := w.openOn(t, "a", s, coreOptions())
+		is.NotError(t, db.PingContext(t.Context()))
 		exec(t, db, t1)
+		ended := func(err error) {
+			t.Helper()
+			is.Error(t, context.Canceled, failed(t, err))
+			is.True(t, strings.HasPrefix(err.Error(), "s4ql: "), err.Error())
+			for _, sentinel := range []error{s4ql.ErrNotSupported, s4ql.ErrNotServing, s4ql.ErrOutcomeUnknown, s4ql.ErrStopped} {
+				is.True(t, !errors.Is(err, sentinel), sentinel.Error())
+			}
+		}
+
+		// The context ends while the commit uploads its commit object, before the manifest swap, so
+		// the statement is known not to be committed.
 		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
+		defer cancel()
+		s.beforeCreate(cancel)
 		_, err := db.ExecContext(ctx, insert1)
-		is.Error(t, context.Canceled, failed(t, err))
-		_, err = db.QueryContext(ctx, select1)
-		is.Error(t, context.Canceled, failed(t, err))
+		ended(err)
+		is.True(t, ctx.Err() != nil, "the commit did not reach the store")
+
+		// database/sql answers a context that has ended already by itself, so the driver is asked
+		// directly.
+		conn, err := db.Conn(t.Context())
+		is.NotError(t, err)
+		defer func() { is.NotError(t, conn.Close()) }()
+		is.NotError(t, conn.Raw(func(driverConn any) error {
+			_, err := driverConn.(driver.ExecerContext).ExecContext(ctx, insert1, nil)
+			ended(err)
+			_, err = driverConn.(driver.QueryerContext).QueryContext(ctx, select1, nil)
+			ended(err)
+			// A ping has nothing to wait for on an instance that serves.
+			return driverConn.(driver.Pinger).Ping(ctx)
+		}))
+
+		// A ping of an instance that does not serve ends with its context, and with that error only.
+		down := &faulty{Store: w.client()}
+		down.down(true)
+		spare, err := w.openOn(t, "b", down, coreOptions()).Conn(t.Context())
+		is.NotError(t, err)
+		defer func() { is.NotError(t, spare.Close()) }()
+		is.NotError(t, spare.Raw(func(driverConn any) error {
+			ended(driverConn.(driver.Pinger).Ping(ctx))
+			return nil
+		}))
+
+		is.NotError(t, db.PingContext(t.Context()))
 		is.EqualSlice(t, []int64{}, values(t, db, select1))
+		is.Equal(t, 1, len(commits(t, w)))
 	})
 }
 
@@ -381,7 +422,7 @@ func TestClose(t *testing.T) {
 
 		s.down(true)
 		err = failed(t, db.Close())
-		is.True(t, strings.HasPrefix(err.Error(), "s4ql: close: "), err.Error())
+		is.True(t, strings.HasPrefix(err.Error(), "s4ql: close: the lease is not released"), err.Error())
 		is.True(t, !errors.Is(err, s4ql.ErrStopped) && !errors.Is(err, s4ql.ErrNotServing), err.Error())
 
 		// The database is closed all the same.
@@ -525,6 +566,24 @@ func TestOutcomeUnknown(t *testing.T) {
 	})
 }
 
+// some values of t1 on db: the first limit of them, with the rows closed after those, or all of them
+// if limit is negative.
+func some(ctx context.Context, db *sql.DB, limit int) ([]int64, error) {
+	rows, err := db.QueryContext(ctx, select1)
+	if err != nil {
+		return nil, err
+	}
+	var got []int64
+	for len(got) != limit && rows.Next() {
+		var v int64
+		if err := rows.Scan(&v); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		got = append(got, v)
+	}
+	return got, errors.Join(rows.Err(), rows.Close())
+}
+
 // commits of the database "db" in the store of w: the keys of its commit objects.
 func commits(t *testing.T, w *world) []string {
 	t.Helper()
@@ -538,14 +597,15 @@ func commits(t *testing.T, w *world) []string {
 }
 
 func TestConcurrent(t *testing.T) {
-	t.Run("should run writes and queries from many goroutines, each write once and each query on one state", func(t *testing.T) {
+	t.Run("should run writes and queries from many goroutines, each write once and each query with its rows in the order of the key", func(t *testing.T) {
 		w := newWorld(t)
 		db := w.serve(t, "a")
 		exec(t, db, t1)
 
 		const writers, each = 6, 15
 		var wg sync.WaitGroup
-		errs := make(chan error, 4*writers)
+		// Each goroutine sends one error at the most.
+		errs := make(chan error, 2*writers)
 		for g := range writers {
 			wg.Go(func() {
 				for i := range each {
@@ -558,24 +618,13 @@ func TestConcurrent(t *testing.T) {
 			// More queries at once than the instance has readers.
 			wg.Go(func() {
 				for range each {
-					rows, err := db.QueryContext(t.Context(), select1)
+					// Every other goroutine closes its rows early.
+					limit := -1
+					if g%2 == 0 {
+						limit = 3
+					}
+					got, err := some(t.Context(), db, limit)
 					if err != nil {
-						errs <- err
-						return
-					}
-					// The rows of one state are in the order of the key, without a key twice.
-					var got []int64
-					for rows.Next() {
-						var v int64
-						if err := rows.Scan(&v); err != nil {
-							errs <- err
-						}
-						got = append(got, v)
-						if g%2 == 0 && len(got) == 3 {
-							break
-						}
-					}
-					if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 						errs <- err
 						return
 					}

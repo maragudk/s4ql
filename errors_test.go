@@ -21,6 +21,8 @@ func TestError(t *testing.T) {
 			name string
 			src  string
 			want s4ql.Error
+			// atPrepare is set for an error that comes when the statement is prepared.
+			atPrepare bool
 		}{
 			{name: "a key that exists", src: insert1,
 				want: s4ql.Error{Code: 19, ExtendedCode: 1555, Message: "UNIQUE constraint failed: t1.v1"}},
@@ -34,9 +36,9 @@ func TestError(t *testing.T) {
 				want: s4ql.Error{Code: 1, ExtendedCode: 1, Message: "no such table: t2"}},
 			{name: "no column", src: "insert into t1 (v2) values (1)",
 				want: s4ql.Error{Code: 1, ExtendedCode: 1, Message: "table t1 has no column named v2"}},
-			{name: "a syntax error", src: "select * frm t1",
+			{name: "a syntax error", src: "select * frm t1", atPrepare: true,
 				want: s4ql.Error{Code: 1, ExtendedCode: 1, Message: `near "frm": syntax error`}},
-			{name: "a syntax error in SQL that is not supported", src: "select * from t1 where",
+			{name: "a syntax error in SQL that is not supported", src: "select * from t1 where", atPrepare: true,
 				want: s4ql.Error{Code: 1, ExtendedCode: 1, Message: "incomplete input"}},
 		}
 		for _, c := range cases {
@@ -58,11 +60,11 @@ func TestError(t *testing.T) {
 
 			// A syntax error comes when the statement is prepared, and every other error when it is run.
 			prepared, err := db.PrepareContext(t.Context(), c.src)
-			if err != nil {
-				is.Equal(t, 1, c.want.Code, c.name)
+			if c.atPrepare {
 				check("Prepare", err)
 				continue
 			}
+			is.NotError(t, err, c.name)
 			_, err = prepared.ExecContext(t.Context())
 			check("Stmt.Exec", err)
 			_, err = prepared.QueryContext(t.Context())

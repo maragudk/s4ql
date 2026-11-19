@@ -30,14 +30,16 @@
 // closed, or when the lease of the other one has run out.
 //
 // [database/sql.DB.Close] closes the instance and releases the lease, within
-// [Options.CloseTimeout], so that the next instance serves without waiting. If it is not called,
-// or the release fails, the lease runs out by itself, as after a crash, and the next instance waits
-// for that. That is correct, only slower.
+// [Options.CloseTimeout], so that the next instance serves without waiting. If the process ends
+// without it, or the release fails, the lease runs out by itself, as after a crash, and the next
+// instance waits for that. That is correct, only slower. An instance that is not closed keeps the
+// lease for as long as its process runs.
 //
 // An instance stops for good when its cache fails or when it meets something in the object store
-// that it cannot read. Every statement and every ping then fails with an error that matches
-// [ErrStopped] and carries the cause. Nothing brings the instance back: the application closes the
-// [database/sql.DB] and opens the database again.
+// that it cannot read. Every statement that reaches the instance, and every ping, then fails with
+// an error that matches [ErrStopped] and carries the cause. What the text of a statement alone
+// decides, a syntax error or "not supported", is answered as before. Nothing brings the instance
+// back: the application closes the [database/sql.DB] and opens the database again.
 //
 // # Statements
 //
@@ -57,11 +59,12 @@
 // One write runs at a time, and a second one waits for the first. Reads run in parallel, each on
 // one consistent state of the database, up to four at once; a further one waits until one has
 // ended, or until its context ends. The read of a query runs until its [database/sql.Rows] are read
-// to the end or closed, so rows that are neither hold one of the four reads for good.
+// to the end or closed, so rows that are neither hold one of the four reads, until the context of
+// their query ends or the database is closed.
 //
 // # Errors
 //
-// The error of a statement is one of these:
+// The error of the driver for a statement is one of these:
 //
 //   - SQLite's error, as an [*Error], with SQLite's result code, extended result code, and message.
 //   - An error that matches [ErrNotSupported], for SQL that SQLite accepts and s4ql does not support.
@@ -71,9 +74,14 @@
 //   - Another error, whose message starts with "s4ql: ", such as one that wraps the error of a
 //     context that ended.
 //
-// Every error but one that matches [ErrOutcomeUnknown] means that the statement is not committed.
-// The driver never returns [database/sql/driver.ErrBadConn], so database/sql never runs a statement
-// a second time by itself.
+// Every one of them but one that matches [ErrOutcomeUnknown] means that the statement is not
+// committed. The driver never returns [database/sql/driver.ErrBadConn], so database/sql never runs a
+// statement a second time by itself.
+//
+// database/sql has errors of its own, which say nothing about a commit: the error of a context that
+// has ended before the statement starts, as it is, that of a database that is closed, and
+// [database/sql.ErrNoRows] from [database/sql.Row.Scan], also for a statement that is no query and
+// is committed.
 package s4ql
 
 import (
@@ -131,8 +139,8 @@ type Options struct {
 	CloseTimeout time.Duration
 
 	// Logger of the events of the instance. The default discards them. A healthy instance logs
-	// nothing above the level Debug after it has started serving, and the SQL text of a statement
-	// is logged at Debug only.
+	// nothing above the level Debug while it serves, and its start and its close at Info. The SQL
+	// text of a statement is logged at Debug only.
 	Logger *slog.Logger
 }
 
@@ -192,7 +200,8 @@ func (o Options) connector(ctx context.Context, d driver.Driver) (*connector, er
 	if err != nil {
 		return nil, fmt.Errorf("s4ql: open: %w", err)
 	}
-	return newConnector(ctx, host.New(), s, o, core.Options{}, d)
+	// Four reads at once, as the documentation of the package says.
+	return newConnector(ctx, host.New(), s, o, core.Options{Readers: 4}, d)
 }
 
 // opener is the [driver.Driver] of this package: it opens an instance with connect for each

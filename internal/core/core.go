@@ -74,8 +74,7 @@ type Options struct {
 
 // local is how an instance reaches its local files: its spool files and the files of its cache.
 // The zero value is the files of the operating system and SQLite's default VFS. A value is a field
-// of [Options] that is not exported, and nothing in this package sets it but its tests and
-// [Options.UseVFS], which is for tests too.
+// of [Options] that is not exported. [Options.UseVFS] sets its VFS.
 type local struct {
 	// vfs is the name of the SQLite VFS that the connections to the cache open the cache through,
 	// or empty for the default.
@@ -86,8 +85,7 @@ type local struct {
 }
 
 // UseVFS makes the instance open its cache through the SQLite VFS registered under the name, and
-// not through SQLite's default VFS. It is for tests, which make the files of the cache fail through
-// a VFS of their own.
+// not through SQLite's default VFS.
 func (o *Options) UseVFS(name string) {
 	o.local.vfs = name
 }

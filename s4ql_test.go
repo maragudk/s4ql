@@ -35,8 +35,8 @@ const (
 	select1 = "select * from t1"
 )
 
-// readers is the number of reads that an instance of the tests runs at once, which is the default
-// of the storage core.
+// readers is the number of reads that an instance runs at once, as the documentation of the package
+// gives it.
 const readers = 4
 
 // world is a store in memory and a host with real goroutines, on which the tests open instances
@@ -132,20 +132,30 @@ func exec(t *testing.T, db *sql.DB, statements ...string) {
 	}
 }
 
-// values of the one column of the rows of the query on db, which must succeed.
-func values(t *testing.T, db *sql.DB, query string) []int64 {
+// values of the one column of the rows of the query src on db, which must succeed.
+func values(t *testing.T, db *sql.DB, src string) []int64 {
 	t.Helper()
-	rows, err := db.QueryContext(t.Context(), query)
+	vs, err := query(t.Context(), db, src)
 	is.NotError(t, err)
-	defer func() { is.NotError(t, rows.Close()) }()
+	return vs
+}
+
+// query db for the values of the one column of the rows of src. It fails no test, so that a
+// goroutine that is not the test's can call it.
+func query(ctx context.Context, db *sql.DB, src string) ([]int64, error) {
+	rows, err := db.QueryContext(ctx, src)
+	if err != nil {
+		return nil, err
+	}
 	vs := []int64{}
 	for rows.Next() {
 		var v int64
-		is.NotError(t, rows.Scan(&v))
+		if err := rows.Scan(&v); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
 		vs = append(vs, v)
 	}
-	is.NotError(t, rows.Err())
-	return vs
+	return vs, errors.Join(rows.Err(), rows.Close())
 }
 
 // readersFree requires that no query of db holds a read: it holds as many queries open at once as
@@ -368,12 +378,18 @@ func TestOptions_Logger(t *testing.T) {
 		db, err := s4ql.OpenStore(t.Context(), w.host, s, o, coreOptions())
 		is.NotError(t, err)
 		is.NotError(t, db.PingContext(t.Context()))
+		conn, err := db.Conn(t.Context())
+		is.NotError(t, err)
 		s.down(true)
 		_ = failed(t, db.Close())
 		closes := log.of("close")
 		is.Equal(t, 1, len(closes))
 		is.True(t, strings.HasPrefix(closes[0], "level=WARN msg=close db.prefix=db error="), closes[0])
-		// A statement on a closed instance is no stop to report.
+
+		// A statement on a closed instance is answered with a stop, which is no stop to report.
+		_, err = conn.ExecContext(t.Context(), t1)
+		is.Error(t, s4ql.ErrStopped, failed(t, err))
+		is.NotError(t, conn.Close())
 		is.Equal(t, 0, len(log.of("stop_seen")))
 	})
 }
@@ -480,15 +496,15 @@ func TestOpen_s3(t *testing.T) {
 		http.Error(w, "down", http.StatusServiceUnavailable)
 	}))
 	defer srv.Close()
-	options := func() s4ql.Options {
+	options := func(prefix string) s4ql.Options {
 		return s4ql.Options{
-			Bucket: "bucket", Prefix: "app/db", Endpoint: srv.URL, Region: "eu-north-1", AccessKeyID: "AKIDOFOPTIONS", SecretAccessKey: "secret",
+			Bucket: "bucket", Prefix: prefix, Endpoint: srv.URL, Region: "eu-north-1", AccessKeyID: "AKIDOFOPTIONS", SecretAccessKey: "secret",
 			PathStyle: true, CacheDir: t.TempDir(),
 		}
 	}
 
 	t.Run("should open on a store that fails, as a spare, and ask the store for the manifest of the database with the credentials of the options", func(t *testing.T) {
-		for _, open := range []func(o s4ql.Options) (*sql.DB, error){
+		for i, open := range []func(o s4ql.Options) (*sql.DB, error){
 			func(o s4ql.Options) (*sql.DB, error) { return s4ql.Open(t.Context(), o) },
 			func(o s4ql.Options) (*sql.DB, error) {
 				name := driverName()
@@ -496,7 +512,10 @@ func TestOpen_s3(t *testing.T) {
 				return sql.Open(name, "")
 			},
 		} {
-			db, err := open(options())
+			// A prefix of its own for each instance, so that no request of the other one is taken for
+			// one of this.
+			prefix := fmt.Sprint("app/db", i)
+			db, err := open(options(prefix))
 			is.NotError(t, err)
 			_, err = db.ExecContext(t.Context(), t1)
 			is.Error(t, s4ql.ErrNotServing, failed(t, err))
@@ -506,12 +525,9 @@ func TestOpen_s3(t *testing.T) {
 			// The instance reads the manifest as soon as it has started. No request of an instance
 			// that was closed is left, because the close waits for the instance's requests.
 			first := <-requests
-			is.True(t, strings.HasPrefix(first, "GET /bucket/app/db/manifest.json AWS4-HMAC-SHA256 Credential=AKIDOFOPTIONS/"), first)
+			is.True(t, strings.HasPrefix(first, "GET /bucket/"+prefix+"/manifest.json AWS4-HMAC-SHA256 Credential=AKIDOFOPTIONS/"), first)
 			is.True(t, strings.Contains(first, "/eu-north-1/s3/aws4_request"), first)
 			is.NotError(t, db.Close())
-			for len(requests) > 0 {
-				<-requests
-			}
 		}
 	})
 
@@ -528,7 +544,7 @@ func TestOpen_s3(t *testing.T) {
 			{name: "no cache directory", change: func(o *s4ql.Options) { o.CacheDir = "" }, want: "s4ql: open: the options name no cache directory"},
 		}
 		for _, c := range cases {
-			o := options()
+			o := options("app/db")
 			c.change(&o)
 			_, err := s4ql.Open(t.Context(), o)
 			is.True(t, strings.HasPrefix(failed(t, err).Error(), c.want), fmt.Sprint(c.name, ": ", err))
@@ -563,6 +579,8 @@ type faulty struct {
 	// lose, if it is not nil, is called when the next swap has been applied, whose answer is then
 	// lost, and the store is down from then on.
 	lose func()
+	// create, if it is not nil, is called before the next create is sent.
+	create func()
 }
 
 var errFault = errors.New("fault of the test")
@@ -579,6 +597,13 @@ func (f *faulty) loseNext(then func()) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lose = then
+}
+
+// beforeCreate makes the store call then before it sends the next create.
+func (f *faulty) beforeCreate(then func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.create = then
 }
 
 func (f *faulty) check() error {
@@ -600,6 +625,13 @@ func (f *faulty) Get(ctx context.Context, key string) (io.ReadCloser, store.Vers
 func (f *faulty) Create(ctx context.Context, key string, content io.ReadSeeker, checksum *store.Checksum) (store.Version, error) {
 	if err := f.check(); err != nil {
 		return "", err
+	}
+	f.mu.Lock()
+	then := f.create
+	f.create = nil
+	f.mu.Unlock()
+	if then != nil {
+		then()
 	}
 	return f.Store.Create(ctx, key, content, checksum)
 }

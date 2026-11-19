@@ -43,21 +43,22 @@ var (
 
 	// ErrNotServing is matched by the error of a statement that the instance refused because it
 	// does not hold a valid lease of the database now: it has just started, another instance holds
-	// the lease, or the object store cannot be reached. The statement was not run. The error is
+	// the lease, or the object store cannot be reached. The statement is not committed. The error is
 	// temporary: the instance keeps trying to get the lease, and [database/sql.DB.PingContext] waits
 	// until it serves.
 	ErrNotServing = errors.New("s4ql: the instance does not serve now")
 
 	// ErrOutcomeUnknown is matched by the error of a statement whose context ended before the
-	// instance knew whether its commit was applied. The statement may be committed, may not be, and
-	// may still become committed. It is the one error of a statement that does not mean "not
+	// instance knew whether its commit was applied, and of one whose commit the instance has to look
+	// for in a log that it cannot read. The statement may be committed, may not be, and may still
+	// become committed. It is the one error of a statement that does not mean "not
 	// committed", so a statement that is run again after it can be applied twice. The instance
 	// serves nothing until it has found out.
 	ErrOutcomeUnknown = errors.New("s4ql: the outcome of the commit is unknown")
 
-	// ErrStopped is matched by every error of an instance that has stopped for good, also by that of
-	// [database/sql.DB.PingContext]: its cache failed, or it met something in the object store that
-	// it cannot read. The message carries the cause. Nothing brings the instance back: the
+	// ErrStopped is matched by the error of every statement that reaches an instance that has
+	// stopped for good, and of every ping of it: its cache failed, it met something in the object
+	// store that it cannot read, or it was closed. The message carries the cause. Nothing brings the instance back: the
 	// application closes the [database/sql.DB] and opens the database again.
 	ErrStopped = errors.New("s4ql: the instance has stopped")
 )
