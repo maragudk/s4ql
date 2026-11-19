@@ -124,8 +124,40 @@ func TestShort(t *testing.T) {
 	}
 }
 
-func TestShortInParentheses(t *testing.T) {
-	if (testing.Short()) {
+// skipper is an interface of its own that a *testing.T satisfies.
+type skipper interface {
+	Skip(args ...any)
+	Skipf(format string, args ...any)
+}
+
+func skipVia(s skipper) {
+	s.Skip()         // want `Skip skips the test`
+	s.Skipf("%v", 1) // want `Skipf skips the test`
+}
+
+func skipNowOf[T interface{ SkipNow() }](t T) {
+	t.SkipNow() // want `SkipNow skips the test`
+}
+
+func TestOtherInterfaces(t *testing.T) {
+	skipVia(t)
+	skipNowOf(t)
+}
+
+// other has methods with the names of the skips and other parameters, which a *testing.T does not
+// have.
+type other interface {
+	Skip(n int)
+	SkipNow() error
+}
+
+func useOther(o other) {
+	o.Skip(1)
+	_ = o.SkipNow()
+}
+
+func TestShortAfterAnotherStatement(t *testing.T) {
+	if testing.Short() {
 		t.Log("short")
 		t.Skipf("needs %v", "a bucket")
 	}
