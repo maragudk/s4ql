@@ -14,16 +14,107 @@ import (
 )
 
 func TestRun(t *testing.T) {
-	t.Run("should refuse to run without -out or -addr", func(t *testing.T) {
+	t.Run("should refuse to run without -out, -addr, or -page", func(t *testing.T) {
 		err := run(options{})
 		is.True(t, err != nil)
-		is.Equal(t, "give -out, -addr, or both", err.Error())
+		is.Equal(t, "give -out, -addr, or -page", err.Error())
 	})
 
 	t.Run("should refuse -root without -addr", func(t *testing.T) {
 		err := run(options{out: t.TempDir(), root: t.TempDir()})
 		is.True(t, err != nil)
 		is.Equal(t, "-root needs -addr", err.Error())
+	})
+
+	t.Run("should refuse -version without -page, and -page without -version", func(t *testing.T) {
+		err := run(options{out: t.TempDir(), version: "abc"})
+		is.True(t, err != nil)
+		is.Equal(t, "-page and -version go together", err.Error())
+
+		err = run(options{out: t.TempDir(), page: "index.html"})
+		is.True(t, err != nil)
+		is.Equal(t, "-page and -version go together", err.Error())
+	})
+
+	t.Run("should only write the page with -page alone", func(t *testing.T) {
+		dir := t.TempDir()
+		page := filepath.Join(dir, "index.html")
+		is.NotError(t, os.WriteFile(page, []byte(`<script type="module" src="page.js"></script>`), 0o644))
+
+		is.NotError(t, run(options{page: page, version: "3f6fbfd1"}))
+
+		b, err := os.ReadFile(page)
+		is.NotError(t, err)
+		is.Equal(t, `<script type="module" src="page.js?v=3f6fbfd1"></script>`, string(b))
+		entries, err := os.ReadDir(dir)
+		is.NotError(t, err)
+		is.Equal(t, 1, len(entries))
+	})
+
+	t.Run("should refuse a bad version before it builds anything", func(t *testing.T) {
+		dir := t.TempDir()
+		out := filepath.Join(dir, "engine")
+		page := filepath.Join(dir, "index.html")
+		is.NotError(t, os.WriteFile(page, []byte(`<script type="module" src="page.js"></script>`), 0o644))
+
+		err := run(options{out: out, page: page, version: "a/b"})
+		is.True(t, err != nil)
+		_, err = os.Stat(out)
+		is.True(t, os.IsNotExist(err))
+	})
+}
+
+func TestStamp(t *testing.T) {
+	t.Run("should load page.js and run.js at the version, and nothing else", func(t *testing.T) {
+		page := `<link rel="modulepreload" href="run.js">
+<link rel="modulepreload" href="page.js">
+<link rel="icon" href="../favicon.svg">
+<a href="../">Back</a>
+<p>page.js and run.js</p>
+<div data-src="page.js"></div>
+<script type="module" src="page.js"></script>
+`
+		stamped, err := stamp([]byte(page), "3f6fbfd1")
+		is.NotError(t, err)
+		is.Equal(t, `<link rel="modulepreload" href="run.js?v=3f6fbfd1">
+<link rel="modulepreload" href="page.js?v=3f6fbfd1">
+<link rel="icon" href="../favicon.svg">
+<a href="../">Back</a>
+<p>page.js and run.js</p>
+<div data-src="page.js"></div>
+<script type="module" src="page.js?v=3f6fbfd1"></script>
+`, string(stamped))
+	})
+
+	t.Run("should refuse a page without the script page.js", func(t *testing.T) {
+		_, err := stamp([]byte(`<script type="module" src="other.js"></script>`), "3f6fbfd1")
+		is.True(t, err != nil)
+		is.Equal(t, `the page has no src="page.js", or is stamped already`, err.Error())
+	})
+
+	t.Run("should refuse a page that is stamped already", func(t *testing.T) {
+		_, err := stamp([]byte(`<script type="module" src="page.js?v=3f6fbfd1"></script>`), "3f6fbfd1")
+		is.True(t, err != nil)
+	})
+
+	t.Run("should refuse a version that does not go into a URL as it is", func(t *testing.T) {
+		for _, version := range []string{"", "a b", "a&b", `a"b`, "a/b", "ä"} {
+			_, err := stamp([]byte(`<script type="module" src="page.js"></script>`), version)
+			is.True(t, err != nil, version)
+		}
+	})
+}
+
+func TestStampFile(t *testing.T) {
+	t.Run("should write the stamped page in place", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "index.html")
+		is.NotError(t, os.WriteFile(path, []byte(`<script type="module" src="page.js"></script>`), 0o644))
+
+		is.NotError(t, stampFile(path, "3f6fbfd1"))
+
+		b, err := os.ReadFile(path)
+		is.NotError(t, err)
+		is.Equal(t, `<script type="module" src="page.js?v=3f6fbfd1"></script>`, string(b))
 	})
 }
 
