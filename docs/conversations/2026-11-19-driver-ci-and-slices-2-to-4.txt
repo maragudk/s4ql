@@ -8300,3 +8300,32 @@
   afterwards.
 
 ✻ Sautéed for 9s · done 9:40 PM
+
+❯ /export                                                                       
+  ⎿  Conversation exported to /Users/maragubot/Developer/s4ql/2026-11-19-214129-
+     this-session-is-being-continued-from-a-previous-c.txt
+
+⏺ Background command "Wait until CI has finished on pull request 67, then list
+  its checks" completed (exit code 0)
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+⏺ The binding is merged (#67, 17 of 17 checks passed), and the newest export is
+  committed over the same conversation file (67a490d).
+
+  State for the compaction:
+
+  - Running: two builders for slice 4, on branches types-core (format and
+    storage core) and types-stmt (statement pass). Both started from
+    binding-types, which is now in main.
+  - Next: review and merge those two, then the engine and driver for slice 4,
+    then its generated checks, then the status update.
+  - Left to tidy: the remote branch binding-types, which I keep until both
+    builders are done.
+  - After slice 4: propose the order of slices toward the glue milestone, from
+    docs/research/glue-on-s4ql.md.
+  - Usage: 40% of the week, limit 95%.
+
+  You can compact now.
+
+✻ Cooked for 29s · done 9:42 PM
