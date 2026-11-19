@@ -19,4 +19,7 @@ type bugs struct {
 	keepOpen bool
 	// keepRead makes [Rows.Close] of rows that no loop has read leave the read transaction open.
 	keepRead bool
+	// annotateNext makes a statement annotate its transaction with each integer argument plus one,
+	// while it runs with the argument.
+	annotateNext bool
 }

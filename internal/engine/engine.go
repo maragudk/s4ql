@@ -318,7 +318,15 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	if err != nil {
 		return failed, err
 	}
-	if err := tx.annotate(ctx, sql, args); err != nil {
+	annotated := args
+	if e.bugs.annotateNext {
+		// The planted bug: the annotation holds each argument plus one.
+		annotated = nil
+		for _, a := range args {
+			annotated = append(annotated, s4qlpb.Value_builder{Integer: new(a.GetInteger() + 1)}.Build())
+		}
+	}
+	if err := tx.annotate(ctx, sql, annotated); err != nil {
 		return failed, err
 	}
 	// The transaction ends with its commit, whatever the commit gives.

@@ -886,7 +886,8 @@ func generated(t *testing.T, w *world, seed uint64, n int, y tally) {
 		t.Fatalf("seed %v, pinned %v, after\n%v\n%v", seed, p.pinned, strings.Join(log, "\n"), failure)
 	}
 	for range n {
-		src, query, supported := q.Next()
+		next := q.Next()
+		src, query, supported := next.Src, next.Query, next.Supported
 		c := pick(r, query)
 		if c == callBegin {
 			src, supported = "", false

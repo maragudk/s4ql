@@ -26,6 +26,7 @@ import (
 	"maragu.dev/s4ql/internal/engine"
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/host"
+	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
@@ -106,21 +107,25 @@ const (
 	failed
 	// unknown is a write whose commit had an unknown outcome.
 	unknown
-	// skipped is a text that is not supported or holds no statement.
+	// skipped is a text that is not supported or holds no statement, or a call whose arguments the
+	// engine refuses.
 	skipped
 )
 
 // attempt of a statement.
 type attempt struct {
-	id    uint64
-	node  string
-	src   string
+	id   uint64
+	node string
+	src  string
+	// args are the arguments that the caller gave, as values of the engine.
+	args  []*s4qlpb.Value
 	query bool
 	// write is true for a statement that changes the database if it succeeds.
 	write bool
 	state attemptState
-	// answer of the statement: SQLite's error of a statement that failed with it, "not supported" or
-	// "no statement" for one that was skipped, and the rows of a query that succeeded.
+	// answer of the statement: SQLite's error of a statement that failed with it, "not supported",
+	// "no statement", or [wrongArguments] for one that was skipped, and the rows of a query that
+	// succeeded.
 	answer answer
 	// position is the state that the statement saw, from its event.
 	position string
@@ -328,11 +333,13 @@ func withID(src string, id uint64) string {
 // statement runs one statement of the sequence q on the connection c of a caller of n, records it,
 // and gives it.
 func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, q *sequence) *attempt {
-	src, query, supported := q.Next()
+	call := q.Next()
+	query := call.Query
 	r.mu.Lock()
 	r.nextID++
-	a := &attempt{id: r.nextID, node: n.name, query: query, acked: len(r.acked)}
-	a.src = withID(src, a.id)
+	a := &attempt{id: r.nextID, node: n.name, query: query, acked: len(r.acked), args: values(call.Args)}
+	a.src = withID(call.Src, a.id)
+	call.Src = a.src
 	if s, _ := stmt.Check(a.src); s != nil {
 		_, isSelect := s.(*stmt.Select)
 		a.write = !isSelect
@@ -348,7 +355,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, q *sequenc
 	var err error
 	if query {
 		var rows *engine.Rows
-		rows, err = c.Query(ctx, a.src)
+		rows, err = c.Query(ctx, a.src, a.args...)
 		if err == nil {
 			// One query in four is not read to its end: its loop stops at the first row, it is closed
 			// unread, or its consumer panics. Its rows are then not compared.
@@ -376,7 +383,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, q *sequenc
 			}
 		}
 	} else {
-		_, err = c.Exec(ctx, a.src)
+		_, err = c.Exec(ctx, a.src, a.args...)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -389,14 +396,23 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, q *sequenc
 		}
 	case errors.As(err, &se):
 		a.state, a.answer = sqliteFailed, answer{err: fmt.Sprint(se.Code, "/", se.ExtendedCode, ": ", se.Message)}
-	case errors.Is(err, stmt.ErrNotSupported), errors.Is(err, engine.ErrNoStatement):
-		a.state, a.answer = skipped, answer{err: "not supported"}
-		if errors.Is(err, engine.ErrNoStatement) {
+	case errors.Is(err, stmt.ErrNotSupported), errors.Is(err, engine.ErrNoStatement), errors.Is(err, engine.ErrArguments):
+		a.state, a.answer = skipped, answer{err: "not supported", message: err.Error()}
+		switch {
+		case errors.Is(err, engine.ErrNoStatement):
 			a.answer.err = "no statement"
+		case errors.Is(err, engine.ErrArguments):
+			a.answer.err = wrongArguments
 		}
-		if supported {
+		// A call that s4ql refuses for its arguments must be refused by its rule, and a statement of
+		// slices 1 and 2 with the arguments that it takes must run.
+		kind, failure := checkArguments(call, a.answer)
+		if kind == "" && (call.Supported || a.answer.err == wrongArguments) {
+			failure = fmt.Sprintf("the statement %v, %q, with %v arguments: %v", a.id, a.src, len(call.Args), err)
+		}
+		if failure != "" {
 			r.mu.Unlock()
-			r.violate(ctx, "statement %v, %q, of slice 1: %v", a.id, a.src, err)
+			r.violate(ctx, "%v", failure)
 			r.mu.Lock()
 		}
 	case errors.Is(err, core.ErrOutcomeUnknown):
@@ -737,18 +753,21 @@ func (r *run) readsFree(ctx context.Context, live []*node) {
 	}
 }
 
-// logCommit is a commit object of the log: its name and the texts of its annotations.
+// logCommit is a commit object of the log: its name, and the texts of its annotations and their
+// parameters.
 type logCommit struct {
-	name  format.Name
-	notes []string
+	name   format.Name
+	notes  []string
+	params [][]*s4qlpb.Value
 }
 
 // verify what happened in the run against SQLite and the log:
 //
 //   - Every commit object of the log holds one statement, of an attempt that succeeded, whose
-//     outcome is unknown, or whose instance crashed while it ran, and no attempt is in it twice.
+//     outcome is unknown, or whose instance crashed while it ran, and no attempt is in it twice. Its
+//     parameters are exactly the arguments that the caller gave.
 //   - Every write that was acknowledged is in the log.
-//   - The statements of the log, run in SQLite in their order, each succeed.
+//   - The statements of the log, run in SQLite in their order with their parameters, each succeed.
 //   - Each statement that failed with SQLite's error gives that error in SQLite on the state that
 //     it saw, and each query that succeeded gives its rows there: the state after a commit of the
 //     log, which holds every write that was acknowledged before the statement started.
@@ -779,6 +798,8 @@ func (r *run) verify(ctx context.Context) {
 			r.violate(ctx, "the statement %v is in commit %v and commit %v", id, inLog[id], k+1)
 		case a.state != succeeded && a.state != unknown && a.state != pending:
 			r.violate(ctx, "the statement %v is in commit %v, and its caller was told %v", id, k+1, a.state)
+		case valuesText(c.params[0]) != valuesText(a.args):
+			r.violate(ctx, "commit %v holds the parameters %v of the statement %v, %q, and its caller gave the arguments %v", k+1, valuesText(c.params[0]), id, a.src, valuesText(a.args))
 		}
 		inLog[id] = k + 1
 	}
@@ -825,7 +846,7 @@ func (r *run) verify(ctx context.Context) {
 	o := newOracle(r.t)
 	for k := 0; k <= len(log); k++ {
 		for _, a := range seen[k] {
-			want := o.run(r.t, a.src)
+			want := o.run(r.t, a.src, integerValues(a.args)...)
 			if !a.query {
 				want.columns, want.rows = "", nil
 			}
@@ -834,7 +855,7 @@ func (r *run) verify(ctx context.Context) {
 			}
 		}
 		if k < len(log) && len(log[k].notes) == 1 {
-			if a := o.run(r.t, log[k].notes[0]); a.err != "" {
+			if a := o.run(r.t, log[k].notes[0], integerValues(log[k].params[0])...); a.err != "" {
 				r.violate(ctx, "commit %v, %q, fails in SQLite: %v", k+1, log[k].notes[0], a.err)
 			}
 		}
@@ -898,6 +919,7 @@ func readLog(s *simstore.Store) []logCommit {
 			}
 			if a != nil {
 				c.notes = append(c.notes, a.GetStatement().GetSql())
+				c.params = append(c.params, a.GetStatement().GetParameters())
 			}
 		}
 		log = append(log, c)
@@ -907,6 +929,39 @@ func readLog(s *simstore.Store) []logCommit {
 	}
 	slices.Reverse(log)
 	return log
+}
+
+// valuesText of the values vs of the engine: the kind and the value of each, by position.
+func valuesText(vs []*s4qlpb.Value) string {
+	var texts []string
+	for _, v := range vs {
+		texts = append(texts, fmt.Sprintf("%v:%v", v.WhichKind(), stmtValue(v)))
+	}
+	return "[" + strings.Join(texts, " ") + "]"
+}
+
+// stmtValue of the value v of the engine, whatever its kind.
+func stmtValue(v *s4qlpb.Value) any {
+	switch v.WhichKind() {
+	case s4qlpb.Value_Integer_case:
+		return v.GetInteger()
+	case s4qlpb.Value_Real_case:
+		return v.GetReal()
+	case s4qlpb.Value_Text_case:
+		return fmt.Sprintf("%q", v.GetText())
+	case s4qlpb.Value_Blob_case:
+		return fmt.Sprintf("%x", v.GetBlob())
+	}
+	return nil
+}
+
+// integerValues of vs, values of the engine that are integers, as the oracle binds them.
+func integerValues(vs []*s4qlpb.Value) []int64 {
+	var ints []int64
+	for _, v := range vs {
+		ints = append(ints, v.GetInteger())
+	}
+	return ints
 }
 
 // coreState of the database d, as [oracle.state] gives it.
@@ -1009,8 +1064,8 @@ var storeFaults = map[string]string{
 var storeLine = regexp.MustCompile(`^\S+ store request \d+(, stuck)? store: `)
 
 // tallyOf the simulation s: its statements, by how they ended, its writes that were acknowledged,
-// its queries that were not read to their end, its commits, the faults that the store injected, by
-// kind, and its other events.
+// its queries that were not read to their end, its commits and those of a statement with a
+// parameter, the faults that the store injected, by kind, and its other events.
 func tallyOf(s simulation) map[string]int {
 	r := s.r
 	counts := maps.Clone(r.events)
@@ -1035,7 +1090,13 @@ func tallyOf(s simulation) map[string]int {
 		}
 	}
 	counts["acknowledged writes"] = len(r.acked)
-	counts["commits"] = len(readLog(r.store))
+	log := readLog(r.store)
+	counts["commits"] = len(log)
+	for _, c := range log {
+		if len(c.params) == 1 && len(c.params[0]) > 0 {
+			counts["commits with a parameter"]++
+		}
+	}
 	return counts
 }
 
@@ -1067,7 +1128,7 @@ func TestSimulation(t *testing.T) {
 		{"default", defaultWorkload, map[string]float64{
 			"succeeded": 4, "SQLite's error": 6, "unknown": 0.15, "pending": 0.25, "skipped": 1, "failed: no lease": 1.5,
 			"failed: stopped": 0.04, "failed: timeout": 0.25, "query not read to its end": 0.5, "acknowledged writes": 2.5,
-			"commits": 2.5, "crash, then an empty cache": 0.12, "crash, then a copy of the cache": 0.12, "close and open": 0.4,
+			"commits": 2.5, "commits with a parameter": 0.5, "crash, then an empty cache": 0.12, "crash, then a copy of the cache": 0.12, "close and open": 0.4,
 			"fault: lost request": 0.4, "fault: lost response": 0.4, "fault: no answer": 0.35, "fault: conflict": 0.06,
 			"fault: slow way": 0.8, "fault: broken read": 0.25, "fault: cut-off": 0.1, "fault: outage": 0.04,
 			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.25,
@@ -1075,7 +1136,7 @@ func TestSimulation(t *testing.T) {
 		}, 0.15},
 		{"hammer", hammerWorkload, map[string]float64{
 			"succeeded": 12, "SQLite's error": 17, "unknown": 0.4, "skipped": 2.5, "failed: no lease": 2,
-			"failed: timeout": 3, "query not read to its end": 1.5, "acknowledged writes": 6, "commits": 6,
+			"failed: timeout": 3, "query not read to its end": 1.5, "acknowledged writes": 6, "commits": 6, "commits with a parameter": 1,
 			"fault: lost request": 0.25, "fault: lost response": 0.2, "fault: no answer": 0.35, "fault: conflict": 0.2,
 			"fault: slow way": 0.5, "fault: broken read": 0.02, "fault: cut-off": 0.09, "fault: outage": 0.025,
 			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.7,
@@ -1184,6 +1245,9 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// A read transaction left open fails every later query of its connection, and the check of
 		// the connections after the workload.
 		{"keepRead", defaultWorkload, "default", []string{"a read transaction left open after the end of the workload", "the reader has a read transaction open"}},
+		// An annotation with the wrong parameters gives a log that, replayed, inserts other rows than
+		// the callers did, and maybe one that a later insert of the log meets.
+		{"annotateNext", defaultWorkload, "default", []string{"and its caller gave the arguments", "the replay of the log holds", "fails in SQLite: 19/1555: UNIQUE constraint failed"}},
 	}
 	for _, b := range bugs {
 		bug := b.name

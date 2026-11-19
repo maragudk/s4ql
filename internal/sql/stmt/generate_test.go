@@ -36,8 +36,11 @@ type generator struct {
 	*stmttest.Generator
 }
 
+// newGenerator from seed, which writes a plain ? in place of the value of one insert in four.
 func newGenerator(t testing.TB, seed uint64) generator {
-	return generator{stmttest.NewGenerator(rand.New(rand.NewPCG(seed, 0x511ce1)), namePools(t))}
+	g := stmttest.NewGenerator(rand.New(rand.NewPCG(seed, 0x511ce1)), namePools(t))
+	g.Parameters = 4
+	return generator{g}
 }
 
 // statement of slice 1 at random: its text and the statement that it holds.
@@ -94,7 +97,7 @@ func TestGenerate_mutants(t *testing.T) {
 		}
 	}
 	t.Logf("%v mutants: %v", n**mutantsEach, c)
-	excused(t, c, 2, 375)
+	excused(t, c, 3, 360)
 	var names []string
 	for k := range kinds {
 		names = append(names, k)
@@ -301,7 +304,10 @@ func TestGenerate_nearMisses(t *testing.T) {
 	if slow() {
 		n /= 10
 	}
+	// The forms of the near misses write the value of an insert themselves, so the generator writes no
+	// parameter.
 	g := newGenerator(t, *seed+3)
+	g.Parameters = 0
 	c := counts{}
 	for range n {
 		_, s := g.statement()
