@@ -185,10 +185,10 @@ type Options struct {
 // reader, a connection to the cache, which holds up to two file descriptors, for the cache and its
 // write-ahead log, so the readers of the instance use at most half of the descriptors of the
 // process, and the rest are for the application and the other files of the instance. The bound is
-// for each instance: a process that opens several instances lowers the bound of each, so that their
-// readers together keep to half. SQLite keeps the descriptor of the cache of a reader that has closed until the instance
-// closes, and gives it to the next reader that opens, so the descriptors of the readers stay at the
-// most readers that were open at once. Go raises the soft limit of a process when it starts, on most
+// for each instance: an application that opens several instances in one process lowers the bound
+// of each, so that their readers together keep to half. SQLite keeps the descriptor of the cache of
+// a reader that has closed until the instance closes, and gives it to the next reader that opens,
+// so the descriptors of the readers stay at the most readers that were open at once. Go raises the soft limit of a process when it starts, on most
 // systems to the hard limit, so it is what the process can use unless the application lowers it. A
 // process whose limit is unlimited or cannot be read, and one on a platform without the limit, such
 // as Windows, gets no bound, as database/sql gives none by default. The application can change the
