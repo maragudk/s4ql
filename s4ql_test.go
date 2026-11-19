@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -271,6 +272,21 @@ func TestOpen(t *testing.T) {
 		is.True(t, strings.HasPrefix(failed(t, err).Error(), "s4ql: open the cache: "), err.Error())
 	})
 
+	t.Run("should bound the pool by a quarter of the process's limit of open files, which the application can change", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		is.Equal(t, s4ql.MaxOpenConns(s4ql.FileLimit()), db.Stats().MaxOpenConnections)
+
+		db.SetMaxOpenConns(readers)
+		is.Equal(t, readers, db.Stats().MaxOpenConnections)
+		exec(t, db, t1, insert1)
+		is.EqualSlice(t, []int64{1}, values(t, db, select1))
+
+		db.SetMaxOpenConns(0)
+		is.Equal(t, 0, db.Stats().MaxOpenConnections)
+		is.EqualSlice(t, []int64{1}, values(t, db, select1))
+	})
+
 	t.Run("should come up as a spare while another instance holds the lease, and serve with its commits after it has closed", func(t *testing.T) {
 		w := newWorld(t)
 		first := w.serve(t, "a")
@@ -298,6 +314,37 @@ func TestOpen(t *testing.T) {
 		is.Equal(t, 4, len(values(t, second, select1)))
 		exec(t, second, "insert into t1 (v1) values (2)")
 	})
+}
+
+func TestMaxOpenConns(t *testing.T) {
+	tests := []struct {
+		name    string
+		limit   uint64
+		limited bool
+		want    int
+	}{
+		{name: "should give no bound for no limit", limit: 0, limited: false, want: 0},
+		{name: "should give no bound for no limit, whatever the number", limit: 1024, limited: false, want: 0},
+		{name: "should give 1 for a limit of 0", limit: 0, limited: true, want: 1},
+		{name: "should give 1 for a limit of 1", limit: 1, limited: true, want: 1},
+		{name: "should give 1 for a limit of 2", limit: 2, limited: true, want: 1},
+		{name: "should give 1 for a limit of 3", limit: 3, limited: true, want: 1},
+		{name: "should give 1 for a limit of 4", limit: 4, limited: true, want: 1},
+		{name: "should give 1 for a limit of 5", limit: 5, limited: true, want: 1},
+		{name: "should give 1 for a limit of 6", limit: 6, limited: true, want: 1},
+		{name: "should give 1 for a limit of 7", limit: 7, limited: true, want: 1},
+		{name: "should give 2 for a limit of 8", limit: 8, limited: true, want: 2},
+		{name: "should give 2 for a limit of 11", limit: 11, limited: true, want: 2},
+		{name: "should give a quarter of a limit of 1024", limit: 1024, limited: true, want: 256},
+		{name: "should give a quarter of a limit of 61440", limit: 61440, limited: true, want: 15360},
+		{name: "should give a quarter of a limit of 1048576", limit: 1048576, limited: true, want: 262144},
+		{name: "should give a quarter of a very large limit, at most the largest int", limit: math.MaxUint64, limited: true, want: min(math.MaxUint64/4, math.MaxInt)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			is.Equal(t, test.want, s4ql.MaxOpenConns(test.limit, test.limited))
+		})
+	}
 }
 
 func TestOpen_cacheDir(t *testing.T) {
@@ -444,7 +491,7 @@ func TestOptions_Logger(t *testing.T) {
 		is.NotError(t, err)
 		defer func() { _ = db.Close() }()
 
-		is.EqualSlice(t, []string{"level=INFO msg=open db.prefix=db cache.path=" + filepath.Join(o.CacheDir, "cache.db") + " db.identity=s3:///db"}, log.of("open"))
+		is.EqualSlice(t, []string{fmt.Sprint("level=INFO msg=open db.prefix=db cache.path=", filepath.Join(o.CacheDir, "cache.db"), " db.identity=s3:///db pool.max_open_conns=", s4ql.MaxOpenConns(s4ql.FileLimit()))}, log.of("open"))
 		is.NotError(t, db.PingContext(t.Context()))
 		exec(t, db, t1)
 		is.Equal(t, 1, len(log.of("statement")))
@@ -557,6 +604,23 @@ func TestRegister(t *testing.T) {
 		is.True(t, strings.HasPrefix(failed(t, err).Error(), "s4ql: "), err.Error())
 	})
 
+	t.Run("should leave the pool without a bound, which database/sql sets, and log that", func(t *testing.T) {
+		w := newWorld(t)
+		name := driverName()
+		var log lines
+		o := w.options("a")
+		o.Logger = slog.New(slog.NewTextHandler(&log, nil))
+		s4ql.RegisterStore(name, w.host, w.client(), o, coreOptions())
+
+		db, err := sql.Open(name, "")
+		is.NotError(t, err)
+		defer func() { is.NotError(t, db.Close()) }()
+		is.Equal(t, 0, db.Stats().MaxOpenConnections)
+		opens := log.of("open")
+		is.Equal(t, 1, len(opens))
+		is.True(t, strings.HasSuffix(opens[0], " pool.max_open_conns=0"), opens[0])
+	})
+
 	t.Run("should fail on a local problem at sql.Open", func(t *testing.T) {
 		name := driverName()
 		s4ql.Register(name, s4ql.Options{CacheDir: t.TempDir()})
@@ -604,19 +668,24 @@ func TestOpen_s3(t *testing.T) {
 	}
 
 	t.Run("should open on a store that fails, as a spare, and ask the store for the manifest of the database with the credentials of the options", func(t *testing.T) {
-		for i, open := range []func(o s4ql.Options) (*sql.DB, error){
-			func(o s4ql.Options) (*sql.DB, error) { return s4ql.Open(t.Context(), o) },
-			func(o s4ql.Options) (*sql.DB, error) {
+		for i, c := range []struct {
+			open func(o s4ql.Options) (*sql.DB, error)
+			// maxOpen is the bound of the pool that the instance comes with.
+			maxOpen int
+		}{
+			{open: func(o s4ql.Options) (*sql.DB, error) { return s4ql.Open(t.Context(), o) }, maxOpen: s4ql.MaxOpenConns(s4ql.FileLimit())},
+			{open: func(o s4ql.Options) (*sql.DB, error) {
 				name := driverName()
 				s4ql.Register(name, o)
 				return sql.Open(name, "")
-			},
+			}, maxOpen: 0},
 		} {
 			// A prefix of its own for each instance, so that no request of the other one is taken for
 			// one of this.
 			prefix := fmt.Sprint("app/db", i)
-			db, err := open(options(prefix))
+			db, err := c.open(options(prefix))
 			is.NotError(t, err)
+			is.Equal(t, c.maxOpen, db.Stats().MaxOpenConnections)
 			_, err = db.ExecContext(t.Context(), t1)
 			is.Error(t, s4ql.ErrNotServing, failed(t, err))
 			_, err = db.ExecContext(t.Context(), "selec")

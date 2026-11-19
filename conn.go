@@ -28,7 +28,9 @@ import (
 // failed, which includes a lease that is not released; "stop_seen" the first time that it answers
 // a call with [ErrStopped], at Warn; and "panic" for a panic in the loop over the rows of a query,
 // at Error, with its value as "panic" and the stack where it came as "stack" (see [rows]). Each
-// event has the prefix of the database as "db.prefix", and one of a failure has it as "error".
+// event has the prefix of the database as "db.prefix", and one of a failure has it as "error". The
+// event "open" has the bound of the pool that the instance opens with as "pool.max_open_conns", 0
+// for none, as [database/sql.DBStats.MaxOpenConnections] has it.
 type connector struct {
 	host   host.Host
 	db     *core.DB
@@ -61,8 +63,9 @@ var (
 // which runs on the host h, with the cache in the cache directory of o, for the driver d. Of o it
 // uses the prefix, the cache directory, the timeout of a close, the logger, and the endpoint, the
 // bucket, and the prefix for the identity of the database; co are the options of the storage core,
-// whose logger and identity it sets. It fails only on local problems.
-func newConnector(ctx context.Context, h host.Host, s store.Store, o Options, co core.Options, d driver.Driver) (*connector, error) {
+// whose logger and identity it sets. maxOpen is the bound of the pool that the instance opens with,
+// 0 for none, which it logs. It fails only on local problems.
+func newConnector(ctx context.Context, h host.Host, s store.Store, o Options, co core.Options, d driver.Driver, maxOpen int) (*connector, error) {
 	if o.CacheDir == "" {
 		return nil, errors.New("s4ql: open: the options name no cache directory")
 	}
@@ -88,7 +91,7 @@ func newConnector(ctx context.Context, h host.Host, s store.Store, o Options, co
 		return nil, fmt.Errorf("s4ql: %w", err)
 	}
 	log = log.With("db.prefix", o.Prefix)
-	log.InfoContext(ctx, "open", "cache.path", path, "db.identity", co.Identity)
+	log.InfoContext(ctx, "open", "cache.path", path, "db.identity", co.Identity, "pool.max_open_conns", maxOpen)
 	return &connector{
 		host:         h,
 		db:           db,
