@@ -30,6 +30,7 @@ import (
 // Result codes from https://sqlite.org/rescode.html that several tests use.
 const (
 	codeError             = 1
+	codeTooBig            = 18
 	codeMisuse            = 21
 	codeAuth              = 23
 	codeRange             = 25
@@ -648,6 +649,245 @@ func TestStmt_BindNull(t *testing.T) {
 		}
 		is.NotError(t, s.Finalize())
 		is.Equal(t, codeMisuse, code(t, s.BindNull(1)))
+	})
+}
+
+func TestStmt_BindDouble(t *testing.T) {
+	for _, v := range []float64{0, 1.5, -2.25, 0.1, 1e300, -1e-300, math.MaxFloat64, -math.MaxFloat64, math.SmallestNonzeroFloat64, 1 << 53, math.Inf(1), math.Inf(-1), math.Copysign(0, -1)} {
+		t.Run(fmt.Sprintf("should bind %v and read back the same bits as a real", v), func(t *testing.T) {
+			c := memory(t)
+			s := prepare(t, c, "select ?, typeof(?1)")
+
+			is.NotError(t, s.BindDouble(1, v))
+			ok, err := s.Step()
+			is.NotError(t, err)
+			is.True(t, ok)
+			is.Equal(t, sqlite.TypeFloat, s.ColumnType(0))
+			is.Equal(t, math.Float64bits(v), math.Float64bits(s.ColumnDouble(0)))
+			is.Equal(t, "real", s.ColumnText(1))
+		})
+	}
+
+	t.Run("should bind a NaN as NULL, as SQLite does", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select ?, typeof(?1)")
+
+		is.NotError(t, s.BindDouble(1, math.NaN()))
+		is.EqualSlice(t, []string{`null:,text:"null"`}, rows(t, s))
+	})
+
+	t.Run("should store bound reals in a strict table and read the same bits back, but -0.0 as 0.0 and a NaN as NULL", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.Exec("create table t1 (k1 int primary key, v1 real) strict"))
+		insert := prepare(t, c, "insert into t1 (k1, v1) values (?, ?)")
+		values := []float64{1.5, 3, math.MaxFloat64, math.SmallestNonzeroFloat64, math.Inf(1), math.Inf(-1), math.Copysign(0, -1), math.NaN()}
+		for k, v := range values {
+			is.NotError(t, insert.BindInt64(1, int64(k)))
+			is.NotError(t, insert.BindDouble(2, v))
+			is.EqualSlice(t, nil, rows(t, insert))
+			is.NotError(t, insert.Reset())
+		}
+
+		// SQLite stores a real without a fraction as an integer in the record, and reads it back as a
+		// real, so the sign of -0.0 does not survive. And a NaN is NULL before it is stored.
+		is.EqualSlice(t, []string{
+			`float:1.5,text:"real"`,
+			`float:3,text:"real"`,
+			`float:1.7976931348623157e+308,text:"real"`,
+			`float:5e-324,text:"real"`,
+			`float:+Inf,text:"real"`,
+			`float:-Inf,text:"real"`,
+			`float:0,text:"real"`,
+			`null:,text:"null"`,
+		}, query(t, c, "select v1, typeof(v1) from t1 order by k1"))
+
+		s := prepare(t, c, "select count(*) from t1 where v1 = ?")
+		is.NotError(t, s.BindDouble(1, math.MaxFloat64))
+		is.EqualSlice(t, []string{"integer:1"}, rows(t, s))
+	})
+
+	t.Run("should fail with SQLITE_RANGE for a parameter index out of range, and with SQLITE_MISUSE when finalized", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select ?")
+
+		for _, i := range []int{0, -1, 2, 1<<32 + 1, math.MinInt} {
+			is.Equal(t, codeRange, code(t, s.BindDouble(i, 1)), fmt.Sprint(i))
+		}
+		is.NotError(t, s.Finalize())
+		is.Equal(t, codeMisuse, code(t, s.BindDouble(1, 1)))
+	})
+}
+
+func TestStmt_BindBlob(t *testing.T) {
+	large := make([]byte, 4<<20)
+	for i := range large {
+		large[i] = byte(i * 7)
+	}
+	for _, v := range [][]byte{{}, {0}, {0, 0, 0}, []byte("a\x00b"), {0xff, 0xfe}, large} {
+		t.Run(fmt.Sprintf("should bind a blob of %v bytes and read the same bytes back as a blob", len(v)), func(t *testing.T) {
+			c := memory(t)
+			s := prepare(t, c, "select ?, typeof(?1), length(?1)")
+
+			is.NotError(t, s.BindBlob(1, v))
+			ok, err := s.Step()
+			is.NotError(t, err)
+			is.True(t, ok)
+			is.Equal(t, sqlite.TypeBlob, s.ColumnType(0))
+			got := s.ColumnBlob(0)
+			is.True(t, got != nil, "the blob is nil")
+			is.True(t, bytes.Equal(v, got), "the blob is not what was bound")
+			is.Equal(t, "blob", s.ColumnText(1))
+			is.Equal(t, int64(len(v)), s.ColumnInt64(2))
+		})
+	}
+
+	t.Run("should bind a nil slice as the empty blob, not as NULL", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select ?, typeof(?1), length(?1)")
+
+		is.NotError(t, s.BindBlob(1, nil))
+		is.EqualSlice(t, []string{`blob:,text:"blob",integer:0`}, rows(t, s))
+	})
+
+	t.Run("should copy the bytes when binding, so that a later change to the slice changes nothing", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select ?")
+
+		v := []byte("abc")
+		is.NotError(t, s.BindBlob(1, v))
+		v[0] = 'x'
+		is.EqualSlice(t, []string{"blob:616263"}, rows(t, s))
+	})
+
+	t.Run("should store bound blobs in a strict table and find them again by a bound blob", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.Exec("create table t1 (v1 blob primary key) strict, without rowid"))
+		insert := prepare(t, c, "insert into t1 (v1) values (?)")
+		for _, v := range [][]byte{{}, {0}, []byte("a\x00b"), large} {
+			is.NotError(t, insert.BindBlob(1, v))
+			is.EqualSlice(t, nil, rows(t, insert))
+			is.NotError(t, insert.Reset())
+		}
+		is.EqualSlice(t, []string{`blob:,text:"blob"`, `blob:00,text:"blob"`, `blob:610062,text:"blob"`}, query(t, c, "select v1, typeof(v1) from t1 where length(v1) < 10 order by v1"))
+
+		s := prepare(t, c, "select v1 from t1 where v1 = ?")
+		is.NotError(t, s.BindBlob(1, large))
+		ok, err := s.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+		is.True(t, bytes.Equal(large, s.ColumnBlob(0)), "the large blob is not what was stored")
+	})
+
+	t.Run("should fail with SQLITE_TOOBIG for a blob longer than the length limit", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.SetLengthLimit(1000))
+		s := prepare(t, c, "select ?")
+
+		err := s.BindBlob(1, make([]byte, 1001))
+		is.Equal(t, codeTooBig, code(t, err))
+		is.Equal(t, "string or blob too big", message(t, err))
+		is.EqualSlice(t, []string{"null:"}, rows(t, s))
+		is.NotError(t, s.Reset())
+		is.NotError(t, s.BindBlob(1, make([]byte, 1000)))
+	})
+
+	t.Run("should fail with SQLITE_RANGE for a parameter index out of range, and with SQLITE_MISUSE when finalized", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select ?")
+
+		for _, i := range []int{0, -1, 2, 1<<32 + 1, math.MinInt} {
+			is.Equal(t, codeRange, code(t, s.BindBlob(i, []byte("a"))), fmt.Sprint(i))
+		}
+		is.NotError(t, s.Finalize())
+		is.Equal(t, codeMisuse, code(t, s.BindBlob(1, []byte("a"))))
+	})
+}
+
+func TestStmt_ColumnDouble(t *testing.T) {
+	t.Run("should convert a value of another type as SQLite does, and read NULL as 0", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select 3, '2.5', '2.5abc', x'31', null, 9223372036854775807")
+
+		ok, err := s.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+
+		is.Equal(t, 3.0, s.ColumnDouble(0))
+		is.Equal(t, 2.5, s.ColumnDouble(1))
+		is.Equal(t, 2.5, s.ColumnDouble(2))
+		is.Equal(t, 1.0, s.ColumnDouble(3))
+		is.Equal(t, sqlite.TypeNull, s.ColumnType(4))
+		is.Equal(t, uint64(0), math.Float64bits(s.ColumnDouble(4)))
+		is.Equal(t, 9223372036854775807.0, s.ColumnDouble(5))
+	})
+
+	t.Run("should read reals that SQL makes, with the sign of -0.0 and the infinities", func(t *testing.T) {
+		c := memory(t)
+		is.EqualSlice(t, []string{"float:-0,float:+Inf,float:-Inf,float:0.1,null:"}, query(t, c, "select -0.0, 1e999, -1e999, 0.1, 1e999 - 1e999"))
+	})
+
+	t.Run("should panic without a current row, for an index out of range, and on a finalized statement", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select 1.5")
+
+		is.Equal(t, "sqlite: no current row", panicMessage(t, func() { s.ColumnDouble(0) }))
+		ok, err := s.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+		is.Equal(t, "sqlite: column index 1 out of range for 1 columns", panicMessage(t, func() { s.ColumnDouble(1) }))
+		is.NotError(t, s.Finalize())
+		is.Equal(t, "sqlite: statement is finalized", panicMessage(t, func() { s.ColumnDouble(0) }))
+	})
+}
+
+func TestStmt_ColumnBlob(t *testing.T) {
+	t.Run("should read the bytes of a value of another type, an empty blob as an empty slice, and NULL as nil", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select 'a' || char(0) || 'b', 12, 2.5, x'', null, ''")
+
+		ok, err := s.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+
+		is.Equal(t, "a\x00b", string(s.ColumnBlob(0)))
+		is.Equal(t, "12", string(s.ColumnBlob(1)))
+		is.Equal(t, "2.5", string(s.ColumnBlob(2)))
+		is.Equal(t, sqlite.TypeBlob, s.ColumnType(3))
+		empty := s.ColumnBlob(3)
+		is.True(t, empty != nil && len(empty) == 0, "the empty blob is not an empty slice")
+		is.True(t, s.ColumnBlob(4) == nil, "NULL is not nil")
+		is.True(t, s.ColumnBlob(5) != nil && len(s.ColumnBlob(5)) == 0, "the empty text is not an empty slice")
+	})
+
+	t.Run("should give a copy that keeps its bytes after the next step and after finalizing", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select * from (values (x'0102'), (x'0304'))")
+
+		ok, err := s.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+		first := s.ColumnBlob(0)
+		ok, err = s.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+		second := s.ColumnBlob(0)
+		is.NotError(t, s.Finalize())
+
+		is.EqualSlice(t, []byte{1, 2}, first)
+		is.EqualSlice(t, []byte{3, 4}, second)
+	})
+
+	t.Run("should panic without a current row, for an index out of range, and on a finalized statement", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select x'00'")
+
+		is.Equal(t, "sqlite: no current row", panicMessage(t, func() { s.ColumnBlob(0) }))
+		ok, err := s.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+		is.Equal(t, "sqlite: column index 1 out of range for 1 columns", panicMessage(t, func() { s.ColumnBlob(1) }))
+		is.NotError(t, s.Finalize())
+		is.Equal(t, "sqlite: statement is finalized", panicMessage(t, func() { s.ColumnBlob(0) }))
 	})
 }
 
@@ -1425,6 +1665,89 @@ func FuzzStmt_BindText(f *testing.F) {
 	})
 }
 
+func FuzzStmt_BindDouble(f *testing.F) {
+	f.Add(0.0)
+	f.Add(math.Copysign(0, -1))
+	f.Add(1.5)
+	f.Add(math.Inf(1))
+	f.Add(math.NaN())
+	f.Add(math.MaxFloat64)
+	f.Add(math.SmallestNonzeroFloat64)
+
+	f.Fuzz(func(t *testing.T, v float64) {
+		c := memory(t)
+
+		// A parameter passes the value through as it is, and a NaN as NULL.
+		s := prepare(t, c, "select ?")
+		is.NotError(t, s.BindDouble(1, v))
+		ok, err := s.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+		if math.IsNaN(v) {
+			is.Equal(t, sqlite.TypeNull, s.ColumnType(0))
+			return
+		}
+		is.Equal(t, sqlite.TypeFloat, s.ColumnType(0))
+		is.Equal(t, math.Float64bits(v), math.Float64bits(s.ColumnDouble(0)))
+
+		// Store the value and read it back, so it is not only passed through. Only the sign of -0.0 is
+		// lost there.
+		is.NotError(t, c.Exec("create table t1 (v1 real) strict"))
+		insert := prepare(t, c, "insert into t1 (v1) values (?)")
+		is.NotError(t, insert.BindDouble(1, v))
+		ok, err = insert.Step()
+		is.NotError(t, err)
+		is.True(t, !ok)
+
+		sel := prepare(t, c, "select v1, typeof(v1) = 'real' from t1 where v1 = ?")
+		is.NotError(t, sel.BindDouble(1, v))
+		ok, err = sel.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+		is.Equal(t, sqlite.TypeFloat, sel.ColumnType(0))
+		expected := v
+		if v == 0 {
+			expected = 0
+		}
+		is.Equal(t, math.Float64bits(expected), math.Float64bits(sel.ColumnDouble(0)))
+		is.Equal(t, int64(1), sel.ColumnInt64(1))
+	})
+}
+
+func FuzzStmt_BindBlob(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{0})
+	f.Add([]byte("a\x00b"))
+	f.Add([]byte{0xff})
+
+	f.Fuzz(func(t *testing.T, v []byte) {
+		c := memory(t)
+		is.NotError(t, c.Exec("create table t1 (v1 blob primary key) strict, without rowid"))
+
+		// Store the value and read it back, so it is not only passed through.
+		insert := prepare(t, c, "insert into t1 (v1) values (?)")
+		is.NotError(t, insert.BindBlob(1, v))
+		ok, err := insert.Step()
+		is.NotError(t, err)
+		is.True(t, !ok)
+
+		sel := prepare(t, c, "select v1, length(v1) from t1 where v1 = ?")
+		is.NotError(t, sel.BindBlob(1, v))
+		ok, err = sel.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+		is.Equal(t, sqlite.TypeBlob, sel.ColumnType(0))
+		got := sel.ColumnBlob(0)
+		is.True(t, got != nil, "the blob is nil")
+		is.True(t, bytes.Equal(v, got), "the blob is not what was bound")
+		is.Equal(t, int64(len(v)), sel.ColumnInt64(1))
+
+		ok, err = sel.Step()
+		is.NotError(t, err)
+		is.True(t, !ok)
+	})
+}
+
 func FuzzConn_Prepare(f *testing.F) {
 	f.Add("select 1")
 	f.Add("select ?, :a, @b, $c, ?5")
@@ -1504,8 +1827,8 @@ func query(t *testing.T, c *sqlite.Conn, sql string) []string {
 }
 
 // rows of a statement, stepped to the end, each encoded as its values joined by commas, and each value
-// as its type and, for an integer, its decimal value. A value of any other type than integer or NULL
-// fails the test, because the tests that use it read only integers.
+// as its type and its value: an integer in decimal, a real as the shortest decimal that reads back as
+// the same bits, so -0.0 as -0, a text quoted by Go, and a blob in hexadecimal.
 func rows(t *testing.T, s *sqlite.Stmt) []string {
 	t.Helper()
 	var rows []string
@@ -1520,10 +1843,16 @@ func rows(t *testing.T, s *sqlite.Stmt) []string {
 			switch typ := s.ColumnType(i); typ {
 			case sqlite.TypeInteger:
 				values = append(values, fmt.Sprint("integer:", s.ColumnInt64(i)))
+			case sqlite.TypeFloat:
+				values = append(values, "float:"+strconv.FormatFloat(s.ColumnDouble(i), 'g', -1, 64))
+			case sqlite.TypeText:
+				values = append(values, fmt.Sprintf("text:%q", s.ColumnText(i)))
+			case sqlite.TypeBlob:
+				values = append(values, fmt.Sprintf("blob:%x", s.ColumnBlob(i)))
 			case sqlite.TypeNull:
 				values = append(values, "null:")
 			default:
-				t.Fatalf("value of type %v in column %v, which the binding cannot read", typ, i)
+				t.Fatalf("value of type %v in column %v", typ, i)
 			}
 		}
 		rows = append(rows, strings.Join(values, ","))

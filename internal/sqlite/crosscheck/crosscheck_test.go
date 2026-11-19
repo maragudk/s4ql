@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -227,6 +228,115 @@ func compareBindText(t *testing.T, v string) {
 	is.NotError(t, err)
 	is.EqualSlice(t, expected, mattnRows(t, rows))
 	is.EqualSlice(t, []string{fmt.Sprintf("text:%q,integer:1,integer:%v", v, len(v))}, expected)
+}
+
+func TestBindDouble(t *testing.T) {
+	for _, v := range []float64{0, math.Copysign(0, -1), 1.5, -2.25, 0.1, 3, 1 << 53, math.MaxFloat64, -math.MaxFloat64, math.SmallestNonzeroFloat64, math.Inf(1), math.Inf(-1), math.NaN()} {
+		t.Run(fmt.Sprintf("should bind and read %v as mattn/go-sqlite3 does", v), func(t *testing.T) {
+			compareBindDouble(t, v)
+		})
+	}
+
+	t.Run("should read reals from SQL as mattn/go-sqlite3 does", func(t *testing.T) {
+		compareScript(t, []string{"select 1.5, -0.0, 1e999, -1e999, 1e999 - 1e999, 0.1 + 0.2, cast(3 as real), 1 / 3.0"})
+	})
+
+	t.Run("should store reals in a strict table and read them back as mattn/go-sqlite3 does", func(t *testing.T) {
+		compareScript(t, []string{
+			"create table t1 (k1 int primary key, v1 real) strict",
+			"insert into t1 (k1, v1) values (1, 1.5), (2, -0.0), (3, 1e999), (4, 4), (5, 1e308 * 10 - 1e308 * 10)",
+			"select v1, typeof(v1) from t1 order by k1",
+		})
+	})
+}
+
+func FuzzBindDouble(f *testing.F) {
+	f.Add(0.0)
+	f.Add(math.Copysign(0, -1))
+	f.Add(math.Inf(1))
+	f.Add(math.NaN())
+	f.Add(math.MaxFloat64)
+
+	f.Fuzz(func(t *testing.T, v float64) {
+		compareBindDouble(t, v)
+	})
+}
+
+// compareBindDouble binds v as a parameter in both bindings and compares what they read back.
+func compareBindDouble(t *testing.T, v float64) {
+	t.Helper()
+	query := "select ?1, typeof(?1)"
+
+	c := binding(t)
+	s, err := c.Prepare(query)
+	is.NotError(t, err)
+	t.Cleanup(func() { is.NotError(t, s.Finalize()) })
+	is.NotError(t, s.BindDouble(1, v))
+	expected := bindingRows(t, s)
+
+	m := mattn(t)
+	rows, err := m.QueryContext(t.Context(), query, v)
+	is.NotError(t, err)
+	is.EqualSlice(t, expected, mattnRows(t, rows))
+	if math.IsNaN(v) {
+		is.EqualSlice(t, []string{`null:,text:"null"`}, expected)
+		return
+	}
+	is.EqualSlice(t, []string{fmt.Sprintf(`float:%v,text:"real"`, encodeFloat(v))}, expected)
+}
+
+func TestBindBlob(t *testing.T) {
+	for _, v := range [][]byte{{}, {0}, []byte("a\x00b"), {0xff, 0xfe}, bytes.Repeat([]byte{1, 0, 2}, 1<<20)} {
+		t.Run(fmt.Sprintf("should bind and read a blob of %v bytes as mattn/go-sqlite3 does", len(v)), func(t *testing.T) {
+			compareBindBlob(t, v)
+		})
+	}
+
+	t.Run("should read blobs from SQL as mattn/go-sqlite3 does", func(t *testing.T) {
+		compareScript(t, []string{"select x'', x'00', x'610062', cast('a' as blob), zeroblob(3)"})
+	})
+
+	t.Run("should store blobs in a strict table and read them back as mattn/go-sqlite3 does", func(t *testing.T) {
+		compareScript(t, []string{
+			"create table t1 (v1 blob primary key) strict, without rowid",
+			"insert into t1 (v1) values (x''), (x'00'), (x'0000'), (x'ff')",
+			"select v1, typeof(v1), length(v1) from t1",
+		})
+	})
+}
+
+func FuzzBindBlob(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte("a\x00b"))
+	f.Add([]byte{0xff})
+
+	f.Fuzz(func(t *testing.T, v []byte) {
+		// mattn/go-sqlite3 binds a nil slice as NULL, and the binding as the empty blob.
+		if v == nil {
+			v = []byte{}
+		}
+		compareBindBlob(t, v)
+	})
+}
+
+// compareBindBlob binds v, which is not nil, as a parameter in both bindings and compares what they
+// read back.
+func compareBindBlob(t *testing.T, v []byte) {
+	t.Helper()
+	query := "select ?1, typeof(?1), length(?1)"
+
+	c := binding(t)
+	s, err := c.Prepare(query)
+	is.NotError(t, err)
+	t.Cleanup(func() { is.NotError(t, s.Finalize()) })
+	is.NotError(t, s.BindBlob(1, v))
+	expected := bindingRows(t, s)
+
+	m := mattn(t)
+	rows, err := m.QueryContext(t.Context(), query, v)
+	is.NotError(t, err)
+	is.EqualSlice(t, expected, mattnRows(t, rows))
+	is.EqualSlice(t, []string{fmt.Sprintf(`blob:%x,text:"blob",integer:%v`, v, len(v))}, expected)
 }
 
 func TestSlice1(t *testing.T) {
@@ -491,9 +601,9 @@ func bindingRows(t *testing.T, s *sqlite.Stmt) []string {
 	}
 }
 
-// bindingRow encodes the current row as its values joined by commas, each as its type and, for an
-// integer, its decimal value, and for a text, its bytes quoted by Go. The binding reads no other types
-// yet.
+// bindingRow encodes the current row as its values joined by commas, each as its type and its value:
+// an integer in decimal, a real by [encodeFloat], a text as its bytes quoted by Go, and a blob in
+// hexadecimal.
 func bindingRow(t *testing.T, s *sqlite.Stmt) string {
 	t.Helper()
 	var values []string
@@ -501,12 +611,16 @@ func bindingRow(t *testing.T, s *sqlite.Stmt) string {
 		switch typ := s.ColumnType(i); typ {
 		case sqlite.TypeInteger:
 			values = append(values, fmt.Sprint("integer:", s.ColumnInt64(i)))
+		case sqlite.TypeFloat:
+			values = append(values, "float:"+encodeFloat(s.ColumnDouble(i)))
 		case sqlite.TypeText:
 			values = append(values, fmt.Sprintf("text:%q", s.ColumnText(i)))
+		case sqlite.TypeBlob:
+			values = append(values, fmt.Sprintf("blob:%x", s.ColumnBlob(i)))
 		case sqlite.TypeNull:
 			values = append(values, "null:")
 		default:
-			t.Fatalf("value of type %v in column %v, which the binding cannot read", typ, i)
+			t.Fatalf("value of type %v in column %v", typ, i)
 		}
 	}
 	return strings.Join(values, ",")
@@ -535,16 +649,26 @@ func mattnRows(t *testing.T, rows *sql.Rows) []string {
 			switch v := v.(type) {
 			case int64:
 				encoded = append(encoded, fmt.Sprint("integer:", v))
+			case float64:
+				encoded = append(encoded, "float:"+encodeFloat(v))
 			case string:
 				encoded = append(encoded, fmt.Sprintf("text:%q", v))
+			case []byte:
+				encoded = append(encoded, fmt.Sprintf("blob:%x", v))
 			case nil:
 				encoded = append(encoded, "null:")
 			default:
-				t.Fatalf("value of Go type %T in column %v, which the binding cannot read", v, i)
+				t.Fatalf("value of Go type %T in column %v", v, i)
 			}
 		}
 		out = append(out, strings.Join(encoded, ","))
 	}
 	is.NotError(t, rows.Err())
 	return out
+}
+
+// encodeFloat as the shortest decimal that reads back as the same bits, so -0.0 as -0, and with the
+// bits in hexadecimal, so that two encodings are equal only for the same bits.
+func encodeFloat(v float64) string {
+	return strconv.FormatFloat(v, 'g', -1, 64) + "/" + strconv.FormatUint(math.Float64bits(v), 16)
 }
