@@ -229,26 +229,38 @@ simulator:
 simulator-demo:
 	go run -tags s4ql_browser ./internal/simulator/serve -out $(SIMULATORDIR) -addr $(SIMULATORADDR)
 
-# site builds the simulator's engine into the project site, in SITEENGINE, which .gitignore covers,
-# with build.json for the page, which names SITECOMMIT as the commit it is built from. The Pages
-# workflow runs it before it uploads site/. site-serve builds it and serves site/ on SITEADDR, without
+# site builds the simulator's engine into the project site in SITEDIR, in simulator/engine/, which
+# .gitignore covers, with build.json for the page, which names SITECOMMIT as the commit it is built
+# from. With SITEVERSION, it also writes that version into the simulator's page, in place, so that
+# the page loads every file of the simulator at that version, and a cache cannot pair files of two
+# deploys: see internal/simulator/serve. The Pages workflow runs it on its checkout, with the commit
+# as SITEVERSION, before it uploads site/. Without SITEVERSION the page stays as it is in git, and
+# loads its files without a version. site-serve builds it and serves SITEDIR on SITEADDR, without
 # the headers of cross-origin isolation, as GitHub Pages serves it. site-check builds it and checks
-# the simulator's page in headless Chromium: see internal/simulator/sitecheck.
-SITEENGINE := site/simulator/engine
+# the simulator's page in headless Chromium, once in SITEDIR, and once in a copy that it builds as
+# the Pages workflow does, with SITECOMMIT as the version: see internal/simulator/sitecheck.
+SITEDIR ?= site
 SITECOMMIT ?= $(shell git rev-parse HEAD)
+SITEVERSION ?=
 SITEADDR ?= 127.0.0.1:8081
+SITECHECK := go run -tags s4ql_browser ./internal/simulator/sitecheck
 .PHONY: site
 site:
-	rm -rf $(SITEENGINE)
-	go run -tags s4ql_browser ./internal/simulator/serve -out $(SITEENGINE) -demo=false -commit $(SITECOMMIT)
+	rm -rf $(SITEDIR)/simulator/engine
+	go run -tags s4ql_browser ./internal/simulator/serve -out $(SITEDIR)/simulator/engine -demo=false -commit $(SITECOMMIT) \
+		$(if $(SITEVERSION),-page $(SITEDIR)/simulator/index.html -version $(SITEVERSION))
 
 .PHONY: site-serve
 site-serve: site
-	go run -tags s4ql_browser ./internal/simulator/serve -root site -isolated=false -addr $(SITEADDR)
+	go run -tags s4ql_browser ./internal/simulator/serve -root $(SITEDIR) -isolated=false -addr $(SITEADDR)
 
 .PHONY: site-check
 site-check: site
-	go run -tags s4ql_browser ./internal/simulator/sitecheck -root site
+	$(SITECHECK) -root $(SITEDIR) $(if $(SITEVERSION),-version $(SITEVERSION))
+	dir=$$(mktemp -d) && cp -R $(SITEDIR) $$dir/site && \
+		$(MAKE) site SITEDIR=$$dir/site SITEVERSION=$(SITECOMMIT) && \
+		$(SITECHECK) -root $$dir/site -version $(SITECOMMIT); \
+		status=$$?; rm -rf $$dir; exit $$status
 
 # LINKSC, run in the directory of a module with package patterns after it, lists the packages and
 # their dependencies for LINKSCAWK, which prints a line for each of those packages that has tests:
