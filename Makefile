@@ -160,9 +160,15 @@ sqlite-browser-verify:
 sqlite-verify:
 	go run ./internal/sqlite/update -verify
 
+# test runs the tests with -short, so that it needs no credentials. Here -short does two things: the
+# tests against a real bucket skip, which otherwise fail without their settings (see
+# internal/store/s3test), and the tests of the SQL front end and of the engine compare with SQLite on
+# a tenth of the corpus and of the generated texts, as under the race detector. test-s3 runs the
+# first and test-sql the second without it. CI's job test runs go test ./... without -short, with the
+# credentials, and its job sql runs test-sql.
 .PHONY: test
 test: test-changes
-	go test -coverprofile cover.out -shuffle on ./...
+	go test -short -coverprofile cover.out -shuffle on ./...
 	go test -tags s4ql_browser -shuffle on $(SIMULATORPKGS)
 	cd $(CROSSCHECK) && go test -shuffle on ./...
 	cd $(SIMLINT) && go test -shuffle on ./...
@@ -173,22 +179,14 @@ test: test-changes
 test-changes:
 	sh .github/scripts/changes_test.sh
 
-# test-s3 runs S3TESTS, every test that needs a real bucket, in S3PKGS under the race detector. It
-# fails if S4QL_S3_BUCKET is empty, and if one of S3TESTS did not run and pass, so that a run cannot
-# pass by skipping them. A new test that calls s3test.FromEnv goes into S3TESTS, or test-s3 does not
-# run it. How to run it by hand is in the documentation of internal/store/s3test.
-S3TESTS := TestOpen_realBucket TestClient_conformance TestClient_realBucket TestClient_core TestDeleteOld_realBucket
+# test-s3 runs the tests of S3PKGS, the packages that hold the tests against a real bucket, under the
+# race detector and without -short, as CI's job test does. Those tests fail without the settings of
+# the bucket, which come from .env.test and the credentials from .env or the environment: see
+# internal/store/s3test.
 S3PKGS := . ./internal/store/s3store ./internal/store/s3test
 .PHONY: test-s3
 test-s3:
-	@[ -n "$$S4QL_S3_BUCKET" ] || { echo "test-s3: S4QL_S3_BUCKET is empty, so the tests against a real bucket would skip; see internal/store/s3test" >&2; exit 1; }
-	out=$$(mktemp) && \
-		go test -race -count 1 -shuffle on -v -run "^($$(echo $(S3TESTS) | tr ' ' '|'))\$$" $(S3PKGS) > $$out 2>&1; \
-		status=$$?; cat $$out; \
-		for test in $(S3TESTS); do \
-			grep -q "^--- PASS: $$test " $$out || { echo "test-s3: $$test did not run and pass" >&2; status=1; }; \
-		done; \
-		rm -f $$out; exit $$status
+	go test -race -count 1 -shuffle on $(S3PKGS)
 
 # test-sql runs the tests of the SQL front end and of the engine without the race detector and the
 # address sanitizer, under which they compare with SQLite on a tenth of the corpus and of the generated
@@ -282,7 +280,9 @@ LINKSCAWK = '$$1 == "cgo" { c[$$2] = 1 } $$1 ~ /\.test$$/ { n++; t[n] = $$0 } \
 # asan-test runs the tests of the packages of both modules whose test binaries link C under the C
 # address sanitizer (Linux only). The other packages have nothing for the sanitizer to check, and
 # make test and CI's job test run them. It fails if it cannot list the packages of a module, or if
-# none links C.
+# none links C. It passes -short, so that the tests against a real bucket skip, since it has no
+# credentials, and the job test runs those. Under the sanitizer, the tests of the SQL front end and
+# of the engine use a tenth of the corpus whether or not -short is given, so it changes nothing else.
 .PHONY: asan-test
 asan-test:
 	for dir in . $(CROSSCHECK); do \
@@ -292,7 +292,7 @@ asan-test:
 		echo "asan-test: in $$dir, without C, so not under the sanitizer:" $${others:-none}; \
 		pkgs=$$(echo "$$sides" | sed -n 's/^c //p'); \
 		[ -n "$$pkgs" ] || { echo "asan-test: no package in $$dir links C" >&2; exit 1; }; \
-		(cd $$dir && go test -asan -shuffle on $$pkgs) || exit 1; \
+		(cd $$dir && go test -asan -short -shuffle on $$pkgs) || exit 1; \
 	done
 
 # test-asan runs what CI's jobs for the address sanitizer run together: asan-test, the fuzz tests
