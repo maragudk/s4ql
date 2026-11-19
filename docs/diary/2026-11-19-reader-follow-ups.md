@@ -117,3 +117,65 @@ What a start does with a missing cache. The spec says "If the cache cannot be op
 ### Future work
 
 None from this step.
+
+## Step 3: The truth about the file descriptors of the readers
+
+**Author:** reader-follow-ups builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "2. **Say the truth about file descriptors.** SQLite's unix VFS keeps the descriptor of the main database file while another connection of the process holds a lock on it, which the write connection always does, and reuses it for the next reader. So when the pool closes a connection, the reader's SQLite connection is closed and its descriptor of the write-ahead log is given back, but the descriptor of `cache.db` stays until the instance closes: descriptors stay at the high-water mark of readers that were open at once. Measured by the reviewer with `lsof`: 50 queries open gave 51 and 51; after the pool had closed every connection, 51 and 1; after `db.Close()`, 0 and 0. Correct the claims in the root package's documentation (near \"closes it when database/sql closes the connection\") and in `docs/todo.md`, and say it in the core's README. Verify the behaviour yourself first with a small experiment and put the numbers in the diary. Add no test that depends on `lsof`."
+**Interpretation:** Reproduce the reviewer's numbers, then correct three documents. No test.
+**Inferred intent:** Nobody reads in the documentation that closing connections of the pool gives every descriptor back, when it does not.
+
+### What I did
+
+A throwaway test in the root package, `zz_fd_experiment_test.go`, deleted after the run and never committed, opened an instance through `w.serve`, created `t1` with one row, and counted the lines of `lsof -p <pid>` that end in `cache.db` and in `cache.db-wal` at each stage (`go test -count=1 -run TestZZFDExperiment -v .`):
+
+```
+serving, after one write: cache.db 1, cache.db-wal 1
+50 queries open: cache.db 51, cache.db-wal 51
+rows closed, pool keeps idle: cache.db 51, cache.db-wal 3
+pool closed every connection: cache.db 51, cache.db-wal 1
+20 queries open again: cache.db 51, cache.db-wal 21
+pool closed every connection again: cache.db 51, cache.db-wal 1
+after db.Close: cache.db 0, cache.db-wal 0
+```
+
+"Rows closed" is with the pool's default of two idle connections, so three logs: the write connection's and two readers'. "Pool closed every connection" is after `db.SetMaxIdleConns(0)`. The fifth line is new against the reviewer's numbers: 20 new readers after the close of the 50 opened no new descriptor of the cache, so SQLite reuses the ones it kept, and the count stays at the high-water mark and does not grow.
+
+The root package's documentation in `/s4ql.go`, the driver's point of the reader of each connection in `/docs/todo.md`, and a new bullet in `/internal/core/README.md` after the one on one read transaction at a time, now say this with the numbers. The todo also says that `faultvfs.VFS.OpenFiles`, which `TestReaders` counts, counts the files that SQLite opens through the VFS and not the descriptors of the process, so the tests' "closed" is true at that level.
+
+### Why
+
+The documentation said that the pool's settings decide how long a reader's files are kept, which is true of the log and not of the cache.
+
+### What worked
+
+The experiment gave the reviewer's numbers exactly.
+
+### What didn't work
+
+The first build of the experiment failed, because the root package's tests have a helper `exec`:
+
+```
+./s4ql_test.go:128:6: exec already declared through import of package exec ("os/exec")
+```
+
+I imported `os/exec` under another name.
+
+### What I learned
+
+The descriptors are reused, so the cost of a burst of readers is paid once, not again at each burst.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+The new paragraph of the package documentation in `/s4ql.go`, as `go doc .` shows it.
+
+### Future work
+
+None from this step. Whether to bound the pool by default is point 5 (b).

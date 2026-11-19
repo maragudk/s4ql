@@ -63,10 +63,15 @@
 // is free or its context ends: also one that writes, because the bound is on every statement.
 // Without it the pool has no bound, and neither have the reads.
 //
-// A connection opens a connection to the cache of its own for its first read, which is two open
-// files, and closes it when database/sql closes the connection, so the other settings of the pool,
-// such as [database/sql.DB.SetMaxIdleConns] and [database/sql.DB.SetConnMaxIdleTime], decide how
-// long it is kept. A process that has no file descriptor left for it has a cache that cannot be
+// A connection opens a connection to the cache of its own for its first read, with two open files,
+// the cache and its write-ahead log, and closes it when database/sql closes the connection, so the
+// other settings of the pool, such as [database/sql.DB.SetMaxIdleConns] and
+// [database/sql.DB.SetConnMaxIdleTime], decide how long it is kept. The close gives back the file of
+// the write-ahead log, but not the file of the cache: SQLite keeps that open while another
+// connection to the cache holds a lock on it, which the instance's own connection for writes always
+// does, and reuses it for the next connection that opens. So the open files of the cache stay at
+// the most connections that have read at once, until the database is closed, which closes them
+// all. A process that has no file descriptor left for it has a cache that cannot be
 // opened, which stops the instance as any failure of the cache does: an application that can run
 // more queries at once than it has file descriptors for bounds the pool.
 //
