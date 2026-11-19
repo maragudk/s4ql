@@ -241,6 +241,43 @@ func TestReader_Read(t *testing.T) {
 	})
 }
 
+func TestReadTx_Serving(t *testing.T) {
+	t.Run("should refuse once the lease has run out by the clocks, while the calls of the transaction go on in the state that it fixed", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s := newScriptStore(w.client())
+			d := w.openOn(t, "a", s, core.Options{})
+			is.NotError(t, d.Wait(t.Context()))
+			transact(t, d, create("t1", 1, "k"), upsert("t1", 1))
+
+			r, err := startRead(t, d)
+			is.NotError(t, err)
+			is.NotError(t, r.Serving(t.Context()))
+			transact(t, d, upsert("t1", 2))
+			is.NotError(t, r.Serving(t.Context()))
+			s.on("swap", "", drop, -1)
+			s.on("get", "", drop, -1)
+			time.Sleep(31 * time.Second)
+
+			is.Error(t, core.ErrNoLease, r.Serving(t.Context()))
+			state, err := dump(t.Context(), r)
+			is.NotError(t, err)
+			is.Equal(t, "t1(k*0): 1", show(state))
+			is.NotError(t, r.Close(t.Context()))
+			is.Error(t, core.ErrTxDone, r.Serving(t.Context()))
+		})
+	})
+
+	t.Run("should give the stop on an instance that has stopped", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		is.NotError(t, d.Close(t.Context()))
+		is.Error(t, core.ErrStopped, r.Serving(t.Context()))
+		is.NotError(t, r.Close(t.Context()))
+	})
+}
+
 func TestDB_Reader(t *testing.T) {
 	t.Run("should refuse to open a reader on an instance that is closed, with the stop and its cause", func(t *testing.T) {
 		w := newWorld(t)
