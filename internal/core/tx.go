@@ -43,9 +43,20 @@ type Tx struct {
 	notes       *spool
 	annotations int
 
+	// saved is the state at the savepoint that is open, or nil.
+	saved *savepoint
+
 	// failed is the error after which the transaction can only be rolled back.
 	failed error
 	done   bool
+}
+
+// savepoint is what [Tx.RollbackTo] restores of a transaction, beside the cache, which SQLite's
+// savepoint restores: what it had done to each table, and the number of its annotations.
+type savepoint struct {
+	// tables are copies of the entries of [Tx.order], in their order.
+	tables      []txTable
+	annotations int
 }
 
 // txTable is what a transaction has done to the table of one name, which is all that it needs to
@@ -115,6 +126,121 @@ func (tx *Tx) check(ctx context.Context, operation string) error {
 // leave a call of the transaction, which [Tx.check] began.
 func (tx *Tx) leave() {
 	tx.d.unuse(tx.c)
+}
+
+// Serving returns nil if the instance serves now, as [DB.Begin] requires it: it holds the lease, its
+// cache is caught up, and the lease is valid by both clocks. Otherwise it returns the error of the
+// stop, or one that wraps [ErrNoLease]. It is the check before each statement of a transaction that
+// spans statements, so that such a statement is refused as a statement of its own would be. The other
+// calls of a transaction that is open do not look at the clocks, because its commit is judged by its
+// manifest swap. It also fails with [ErrTxDone] on a transaction that has ended, and with the error
+// after which the transaction can only be rolled back.
+func (tx *Tx) Serving(ctx context.Context) error {
+	switch {
+	case tx.done:
+		return ErrTxDone
+	case tx.failed != nil:
+		return tx.failed
+	}
+	tx.d.mu.Lock()
+	err := tx.d.servingLocked()
+	tx.d.mu.Unlock()
+	if err != nil {
+		return tx.d.refused(ctx, "statement", err)
+	}
+	return nil
+}
+
+// Savepoint marks the state of the transaction, which [Tx.RollbackTo] restores and [Tx.Release]
+// keeps, so that a statement in a transaction of several statements can fail without an effect, as
+// SQLite's statement does. One savepoint is open at a time. It fails as the calls that change the
+// transaction do, and with an error that wraps [ErrInvalid] while a savepoint is open.
+func (tx *Tx) Savepoint(ctx context.Context) error {
+	const operation = "savepoint"
+	if err := tx.check(ctx, operation); err != nil {
+		return err
+	}
+	defer tx.leave()
+	if tx.saved != nil {
+		return invalidf("a savepoint while one is open")
+	}
+	if err := tx.c.c.Exec("savepoint s4ql_statement"); err != nil {
+		return tx.fail(ctx, operation, err)
+	}
+	sp := &savepoint{annotations: tx.annotations}
+	for _, e := range tx.order {
+		sp.tables = append(sp.tables, *e)
+	}
+	tx.saved = sp
+	return nil
+}
+
+// Release the savepoint that is open: the transaction keeps what it did since. It does not need the
+// instance to serve, because nothing is read or written then. It fails with an error that wraps
+// [ErrInvalid] if no savepoint is open, with [ErrTxDone] on a transaction that has ended, with the
+// error after which the transaction can only be rolled back, and with the error of the stop once
+// [DB.Close] has closed the connection; on an instance that has stopped and is not closed, it still
+// runs. After an error of the cache, the transaction can only be rolled back.
+func (tx *Tx) Release(ctx context.Context) error {
+	const operation = "release"
+	if err := tx.checkOpen(); err != nil {
+		return err
+	}
+	defer tx.leave()
+	if tx.saved == nil {
+		return invalidf("a release without a savepoint")
+	}
+	tx.saved = nil
+	return tx.fail(ctx, operation, tx.c.c.Exec("release s4ql_statement"))
+}
+
+// RollbackTo the savepoint that is open, and end it: the transaction is as it was at
+// [Tx.Savepoint], in the cache and in what it commits. It does not need the instance to serve. It
+// fails as [Tx.Release] does. An annotation cannot be taken back, so a rollback to a savepoint
+// before which the transaction had fewer annotations fails the transaction, which can then only be
+// rolled back.
+func (tx *Tx) RollbackTo(ctx context.Context) error {
+	const operation = "rollback to"
+	if err := tx.checkOpen(); err != nil {
+		return err
+	}
+	defer tx.leave()
+	sp := tx.saved
+	if sp == nil {
+		return invalidf("a rollback to no savepoint")
+	}
+	tx.saved = nil
+	if tx.annotations != sp.annotations {
+		tx.failed = fmt.Errorf("the transaction can only be rolled back, after: %w", invalidf("a rollback to a savepoint before an annotation"))
+		return tx.failed
+	}
+	// The schema of the cache may change back, so nothing that was looked up or prepared stays.
+	tx.c.forget()
+	if err := tx.c.c.Exec("rollback to s4ql_statement"); err != nil {
+		return tx.fail(ctx, operation, err)
+	}
+	if err := tx.c.c.Exec("release s4ql_statement"); err != nil {
+		return tx.fail(ctx, operation, err)
+	}
+	tx.c.forget()
+	tx.tables = make(map[string]*txTable, len(sp.tables))
+	tx.order = make([]*txTable, len(sp.tables))
+	for i := range sp.tables {
+		e := sp.tables[i]
+		tx.tables[e.folded], tx.order[i] = &e, &e
+	}
+	return nil
+}
+
+// checkOpen is [Tx.check] for a call that needs only the connection, and not the instance to serve.
+func (tx *Tx) checkOpen() error {
+	switch {
+	case tx.done:
+		return ErrTxDone
+	case tx.failed != nil:
+		return tx.failed
+	}
+	return tx.d.use(tx.c)
 }
 
 // fail the transaction for an error of the cache during the given operation: it can then only be
@@ -732,6 +858,10 @@ func (tx *Tx) Commit(ctx context.Context) (err error) {
 	if tx.failed != nil {
 		_ = tx.rollback(ctx)
 		return tx.failed
+	}
+	if tx.saved != nil {
+		_ = tx.rollback(ctx)
+		return fmt.Errorf("commit: not committed: %w", invalidf("a commit while a savepoint is open"))
 	}
 	if err := d.usable(); err != nil {
 		_ = tx.rollback(ctx)

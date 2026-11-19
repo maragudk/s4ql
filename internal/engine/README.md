@@ -1,6 +1,6 @@
 # The engine
 
-`internal/engine` runs one statement of [slice 1](../../docs/roadmap.md#slice-1-one-integer-column), with the parameter of [slice 2](../../docs/roadmap.md#slice-2-parameters), on a database of the [storage core](../core/README.md), a `*core.DB`, and gives SQLite's results and SQLite's errors. What a statement of slice 1 is, token for token, is in [the README of `stmt`](../sql/stmt/README.md#slice-1).
+`internal/engine` runs one statement of [slice 1](../../docs/roadmap.md#slice-1-one-integer-column), with the parameter of [slice 2](../../docs/roadmap.md#slice-2-parameters), on a database of the [storage core](../core/README.md), a `*core.DB`, and gives SQLite's results and SQLite's errors. A statement is its own transaction, unless a transaction that spans statements is open on its connection; see [Transactions](#transactions). What a statement of slice 1 is, token for token, is in [the README of `stmt`](../sql/stmt/README.md#slice-1).
 
 The interface:
 
@@ -10,7 +10,11 @@ The interface:
 | `Engine.Conn()` | Gives a `*Conn`, a connection of the engine, which holds nothing until it runs a statement. See [Connections](#connections). |
 | `Conn.Exec(ctx, src, args...) (Result, error)` | Runs the statement of the text `src`, with the arguments `args`, each an `*s4qlpb.Value`, for its parameters by position. A query is run to its end, and its rows are dropped. The result comes with an error too. See [Parameters](#parameters). |
 | `Conn.Query(ctx, src, args...) (*Rows, error)` | Runs the statement with its arguments and gives its rows. A statement that is not a query is run as `Exec` runs it. Its rows have no columns and no rows, and `Rows.Result` gives its result; Query gives these rows also with its error. |
-| `Conn.Close(ctx) error` | Closes the connection, and its reader, if it has one. |
+| `Conn.Begin(ctx) error` | Begins a write transaction on the connection. It waits for the place of the single writer as long as `ctx` allows. See [Transactions](#transactions). |
+| `Conn.BeginReadOnly(ctx) error` | Begins a read-only transaction on the connection, which sees the state of its beginning. It waits for nothing. |
+| `Conn.Commit(ctx) error` | Commits the transaction of the connection. The transaction is over when `Commit` returns, also with an error. |
+| `Conn.Rollback(ctx) error` | Rolls the transaction of the connection back: nothing that it did is kept. |
+| `Conn.Close(ctx) error` | Closes the connection, and its reader, if it has one. It rolls back a transaction that is open on the connection. |
 | `Rows.Columns()` | The columns of each row, each a `Column` with the name as the table stores it and the declared type, `INT`. |
 | `Rows.All()` | The rows in order, as an `iter.Seq2[[]*s4qlpb.Value, error]`. The sequence ends at the first error, and can be used once. |
 | `Rows.Close()` | Ends the rows. |
@@ -19,6 +23,11 @@ The interface:
 | `ErrNoStatement` | The error of a text that is empty or holds only spaces, comments, and semicolons. SQLite prepares such a text into no statement and gives no error. |
 | `ErrArguments` | Matched by the error of a statement that is given another number of arguments than it has parameters. |
 | `Check(src, n) error` | The errors of the text `src` and of the number `n` of its arguments, as `Exec` gives them, without the database and without an event. |
+| `ErrTooLarge` | Matched by the error of a commit whose commit object the store refuses as too large. The error also matches `core.ErrTooLarge`. |
+| `ErrRowsOpen` | The error of a begin, and of a statement in a transaction, while the rows of an earlier query of the connection have not ended. Matched by the error of a commit of a write transaction while a loop reads its rows. |
+| `ErrTxOpen` | The error of a begin on a connection whose transaction is open. |
+| `ErrNoTx` | The error of a commit or a roll back on a connection without a transaction. |
+| `ErrTxDone` | The last error of rows whose transaction ended while a loop over them ran. |
 | `ErrInternal` | Matched by the error of a fault of s4ql. See [Errors](#errors). |
 
 An `Engine` is safe for concurrent use. A `Conn` is not, and `Rows` are not.
@@ -28,14 +37,15 @@ An `Engine` is safe for concurrent use. A `Conn` is not, and `Rows` are not.
 A statement runs on a `Conn`, which is to the engine what a connection of a pool is to its database: it runs one statement at a time. The driver gives each connection of `database/sql` a `Conn` of its own.
 
 - **A `Conn` owns one reader of the core,** a `*core.Reader`, on which every read transaction of the connection runs. It opens the reader for its first statement that reads, so a connection that only writes has none, and closes it in `Conn.Close`. So the connections that are open are the queries that can run at once, and nothing in the engine or in the core limits their number.
-- **A connection runs one read at a time.** A statement that reads while the rows of an earlier query of the same connection have not ended fails at once, with an error that matches `core.ErrReaderBusy`. It does not wait for the rows, and [the README of the core](../core/README.md#concurrency) says why. A statement that changes the database needs no reader, and runs.
+- **A connection runs one read at a time.** A statement that reads while the rows of an earlier query of the same connection have not ended fails at once, with an error that matches `core.ErrReaderBusy`. It does not wait for the rows, and [the README of the core](../core/README.md#concurrency) says why. A statement that changes the database needs no reader, and runs. This is the rule for a statement of its own. In a transaction, open rows refuse every statement; see [Rows in a transaction](#rows-in-a-transaction).
 - **A reader that cannot be opened fails the statement that needed it,** and the next statement that reads tries again. If the cache cannot be opened, that is a local failure, which stops the instance as any other.
-- **`Conn.Close` returns `core.ErrReaderInUse`, and closes nothing, while a loop over the rows of a query of the connection runs.** Rows of the connection that have not ended must not be used after its close: their read transaction has ended with the reader, and what they give then is an internal error. A statement on a closed `Conn` is an internal error, and closing a closed `Conn` does nothing.
-- **Why a `Conn`, and not a reader that is passed to each call.** A statement decides whether it reads only after it is parsed, so the engine must be the one to open the reader. A connection is also where the state of a connection will belong, such as a transaction that spans statements. maragubot chose the `Conn` on 2026-11-19, after Markus had agreed that each connection of the pool has a reader of its own. `Engine.Exec` and `Engine.Query` are gone.
+- **`Conn.Close` returns `core.ErrReaderInUse`, and closes nothing, while a loop over the rows of a query of the connection runs.** Rows of the connection that have not ended must not be used after its close: their read transaction has ended with the reader, and what they give then is an internal error. A statement on a closed `Conn` is an internal error, and so is a begin. Closing a closed `Conn` does nothing.
+- **`Conn.Close` rolls back a transaction that is open on the connection,** which frees the place of the writer.
+- **Why a `Conn`, and not a reader that is passed to each call.** A statement decides whether it reads only after it is parsed, so the engine must be the one to open the reader. A connection is also where the state of a connection belongs, such as a transaction that spans statements. maragubot chose the `Conn` on 2026-11-19, after Markus had agreed that each connection of the pool has a reader of its own. `Engine.Exec` and `Engine.Query` are gone.
 
 ## One statement, one transaction
 
-Each statement is its own transaction of the core.
+A statement is its own transaction of the core, unless a transaction is open on its connection. This section is about a statement of its own. [Transactions](#transactions) is about a statement in a transaction that spans statements.
 
 - **A statement that changes the database runs between `DB.Begin` and `Tx.Commit`.** The engine annotates the transaction with the text of the statement before the commit; see [Annotations](#annotations). Any failure rolls the transaction back, and so does a panic of an operator. A commit ends the transaction whatever it gives.
 - **A query runs in a read transaction of the reader of its connection,** which `Reader.Read` starts. Its `Rows` hold the read transaction, and with it the reader, until they end. They end when `Rows.All` has given the last row or an error, when the loop over it stops early, when the loop panics, or at `Rows.Close`. One of these must happen.
@@ -44,6 +54,69 @@ Each statement is its own transaction of the core.
 - **A panic while a query is built ends its read transaction too.**
 - **`Rows.All` yields to the host between two rows,** so that under the simulation other tasks run while a query is open.
 - **A failure of the end of the read transaction after the last row is the last error of `Rows.All`.**
+
+## Transactions
+
+A transaction that spans statements is open on a `Conn` from `Conn.Begin` or `Conn.BeginReadOnly` to `Conn.Commit` or `Conn.Rollback`. Every statement of the connection runs in it meanwhile. The code is in `tx.go`.
+
+The product owner decided the design:
+
+- **A write transaction takes the place of the single writer when it begins,** as SQLite's `begin immediate` does, and holds it until its commit or its roll back. It sees the newest state that is committed, and its own writes. Nothing outside sees its writes before its commit.
+- **A read-only transaction is a read transaction.** It sees the state of its beginning, never writes, takes no place of a writer, and blocks no one.
+
+The builder decided the details below.
+
+### The begin
+
+- **`Begin` waits for the place of the writer as long as its context allows.** It has no deadline of its own. If the context ends first, `Begin` gives the error of the context. On an instance that does not serve, it fails as a write of its own does, with an error that matches `core.ErrNoLease` or `core.ErrStopped`.
+- **`BeginReadOnly` waits for nothing.** It starts a read transaction on the reader of the connection, and fails as a query does.
+- **Both fail with `ErrTxOpen` while a transaction is open on the connection.**
+- **Both fail with `ErrRowsOpen` while the rows of an earlier query of the connection have not ended,** also the rows of a statement of its own.
+- **When a begin fails, nothing has begun,** and the engine logs no event for it.
+
+### A statement in a transaction
+
+- **The text and the arguments are checked first,** as everywhere. Three checks follow, in this order (`Conn.ready`):
+  1. The context has not ended. If it has, the statement fails with the error of the context.
+  2. The instance serves now, by the clocks, as a statement of its own needs it. The engine asks `Tx.Serving` or `ReadTx.Serving` of the core. If the instance does not serve, the error matches `core.ErrNoLease` or `core.ErrStopped`.
+  3. No rows of an earlier query of the connection are open. If some are, the statement fails with `ErrRowsOpen`.
+- **Only `Serving` looks at the clocks.** The other calls of an open transaction of the core do not, because the commit of a write transaction is judged by its manifest swap.
+- **In a write transaction, a statement that changes the database runs between a savepoint and its release:** `Tx.Savepoint` and `Tx.Release` of the core, on SQLite's `savepoint s4ql_statement`. The engine annotates the statement before the release. A query takes no savepoint.
+- **A statement that fails has no effect, and the transaction stays open.** When the statement fails, or an operator panics, the engine calls `Tx.RollbackTo`. That call restores the cache, and what the transaction had recorded of each table for its commit object, which is its net effect. The work of the statements before it is kept, as in SQLite.
+- **The engine annotates last, because an annotation cannot be taken back** from its spool file. A roll back to a savepoint before an annotation makes the core fail the transaction. The engine never makes such a roll back.
+- **After an error of the cache, the core lets the transaction only roll back.** Every later statement fails, the commit fails, and the roll back works.
+- **`create table` and `drop table` are transactional.** The later statements of the transaction see them, and a roll back undoes them.
+- **The texts `begin`, `commit`, `end`, `rollback`, `savepoint`, and `release` stay "not supported",** also inside a transaction, and the transaction stays open.
+
+### A read-only transaction
+
+- **Every statement sees the state of the beginning,** whatever commits meanwhile.
+- **A statement that would write fails with SQLite's `attempt to write a readonly database`,** with the code 8 and the extended code 8, as in SQLite under `pragma query_only = 1`. SQLite's errors of the names come first: `no such table`, `has no column named`, and `already exists`. SQLite gives them when it prepares the statement, and refuses the write when it steps it. The engine looks the names up in the state of the transaction.
+- **The transaction stays usable after such an error.**
+- **`Commit` and `Rollback` end it, and write nothing.** On an instance that has stopped they return nil, because there is nothing to commit.
+
+### The commit and the roll back
+
+- **A write transaction commits as a statement of its own does.** All its changes are one commit object, and every read that starts after `Commit` has returned nil sees them.
+- **The transaction is over when `Commit` returns,** with or without an error. `Rollback` ends it too, whatever it returns.
+- **`Commit` and `Rollback` on a connection without a transaction give `ErrNoTx`.**
+- **A transaction that changes nothing in the end writes no commit object, and its commit succeeds.** This is the core's rule. Examples are a create and a drop of the same table, a transaction whose statements all failed, and one that only read.
+- **The commit object holds, in order, the statements of the transaction that succeeded and that write,** each with its arguments. It holds no statement that failed and no query. See [Annotations](#annotations).
+- **A commit object that the store refuses as too large gives an error that matches `ErrTooLarge`.** The error also matches `core.ErrTooLarge`, and its message starts with `s4ql: the transaction is too large to commit: `. Nothing is committed. A statement of its own gets the same error. The tests set the limit of the store to 4 KiB with `simstore.Options.MaxSize`, which the commit object of 100 inserts exceeds.
+- **On an instance that has lost its lease or has stopped, the commit fails and the roll back works.** The statements fail as said above. `Commit` gives the error of the core. One that matches `core.ErrNoLease` or `core.ErrStopped` means that nothing is committed. One that matches `core.ErrOutcomeUnknown` means what it means for a statement of its own. `Rollback` frees the place of the writer, and returns nil, except after a stop by a local failure, where the roll back in the cache can give its error. The spec: "A write transaction that is already open commits only if its manifest swap still succeeds."
+
+### Rows in a transaction
+
+The rows of a query in a transaction read the state of the transaction. Their end does not end the transaction.
+
+- **While the rows of a query of the transaction are open, every statement of the connection fails with `ErrRowsOpen`,** also a write. The scan holds a statement of SQLite on the connection of the transaction.
+- **`Commit` and `Rollback` first end the rows that no loop reads.** A later `Rows.All` on them gives nothing.
+- **Rows that a loop over `Rows.All` reads cannot be ended from outside.** A loop reads them while its body runs, and while its iterator is suspended. `Commit` and `Rollback` mark such rows. The loop then ends at its next row with `ErrTxDone`, and reads nothing more.
+- **The end of the transaction runs when that loop ends,** after the scan of the core has ended. It is the roll back of a write transaction, or the end of a read transaction. `Rows.Close` after the loop gives the error of that end, which is nil when the end worked.
+- **Until the loop ends, a write transaction keeps the place of the writer.** Every statement and every begin of the connection fail with `ErrRowsOpen`, and `Conn.Close` gives `core.ErrReaderInUse`.
+- **A `Commit` of a write transaction does not commit in that case.** It rolls the transaction back, and fails with an error that matches `ErrRowsOpen` and ends with `so the transaction is rolled back and not committed`. A `Commit` of a read-only transaction ends it, and returns nil.
+- **Why the end is left to the loop.** SQLite cannot commit while a statement of the connection reads: the commit of the core drops temporary tables, and SQLite refuses that then. A roll back can run then, but it aborts the statement, and the loop would finish the aborted statement later, on the write connection, while the transaction of the next writer runs there. So the roll back waits for the loop. A commit cannot be left to the loop in the same way, because the transaction is over when `Commit` returns: the transaction is rolled back, and the error of `Commit` says so.
+- **A driver whose `Rows.Close` ends the loop does not meet this case.** `database/sql` closes the rows of a `sql.Tx` before it calls `Commit` or `Rollback` of the driver.
 
 ## The stages
 
@@ -96,8 +169,10 @@ The operators and the engine do not call the core. They call six interfaces in `
 | `writer` | A `reader`, with `createTable`, `dropTable`, and `upsert`. It reads its own writes. |
 | `database` | `begin`, which gives a write transaction, and `reader`, which gives a reader that its owner closes. |
 | `readConn` | A reader of the database: `read`, which gives a read transaction and fails while the one before it on the reader is open, and `close`. |
-| `readTx` | A `reader`, with `position` and `end`. |
-| `writeTx` | A `writer`, with `position`, `annotate`, `commit`, and `rollback`. |
+| `readTx` | A `reader`, with `position`, `serving`, and `end`. |
+| `writeTx` | A `writer`, with `position`, `annotate`, `serving`, `savepoint`, `release`, `rollbackTo`, `commit`, and `rollback`. One savepoint is open at a time. |
+
+Only a transaction that spans statements calls `serving`, `savepoint`, `release`, and `rollbackTo`; see [A statement in a transaction](#a-statement-in-a-transaction).
 
 A name of a table is compared as SQLite compares names: without regard to the case of the ASCII letters, and every other character exactly.
 
@@ -108,10 +183,12 @@ The adapters `coreDB`, `coreTx`, `coreReader`, and `coreReadTx` put the interfac
 
 Every other error of the core passes through as it is.
 
+The adapters pass `serving`, `savepoint`, `release`, and `rollbackTo` of a write transaction to `Tx.Serving`, `Tx.Savepoint`, `Tx.Release`, and `Tx.RollbackTo` of the core, and `serving` of a read transaction to `ReadTx.Serving`. Each goes through `fromCore`. So a refusal of a savepoint, such as a second one while the first is open, is an internal error.
+
 The interfaces exist for the tests:
 
-- **The operators are tested alone, against a fake.** `fake` in `operator_internal_test.go` keeps tables in memory, records every call, and fails or panics on demand.
-- **The fuzz tests run on a database in memory too.** `memory` in `memory_internal_test.go` is fast enough for many more texts and sequences than the core is.
+- **The operators are tested alone, against a fake.** `fake` in `operator_internal_test.go` keeps tables in memory, records every call, and fails or panics on demand. Its four calls of a transaction that spans statements do nothing and record nothing. `spanning` in `tx_internal_test.go` wraps it, records them, and fails them on demand.
+- **The fuzz tests run on a database in memory too.** `memory` in `memory_internal_test.go` is fast enough for many more texts and sequences than the core is. Its savepoint is a copy of its tables.
 
 ## The operators
 
@@ -137,7 +214,7 @@ Operators are of two kinds. A source gives rows to the operator above it. A sink
 2. Add a plan node to `plan.go`, with a case in `NewPlan` and in `Format`.
 3. Add an operator to `operator.go`, and build it in `buildNode`, `buildValues`, or `buildSink`. Make the lookups there in the order in which SQLite gives their errors. Replace the internal error of each shape of a plan that the slice adds.
 4. Add a constructor to `errors.go` for each new error of SQLite, and pin its codes, its message, and the form of each name against SQLite in `TestEngine_errors`.
-5. Add the kind of the statement to `report.of` in `telemetry.go`. If the statement sets SQLite's count of changes, set `SetsChanges` for it in `Exec` and `Query`.
+5. Add the kind of the statement to `report.of` in `telemetry.go`. If the statement sets SQLite's count of changes, set `SetsChanges` for it in `write` of `engine.go`, which runs a statement of its own, and in `writeIn` of `tx.go`, which runs a statement in a transaction.
 6. Extend the generator in [`stmttest`](../sql/stmt/stmttest/stmttest.go), and `Sequence` in [`stmttest`](../sql/stmt/stmttest/sequence.go), which the differential tests of the engine and of the driver share: the mix of statements in `Next`, and the near misses in `Others`.
 7. Extend `fake` and `memory` to what the new operator calls.
 8. Update this README.
@@ -152,7 +229,10 @@ SQLite's errors have one type, `*sqlerr.Error` of [`internal/sql/sqlerr`](../sql
 | `no such table: %s` | 1 | 1 | `Name.Value` of the statement: the name without its quotes. |
 | `table %s has no column named %s` | 1 | 1 | `Name.Value` of the statement, for both. |
 | `UNIQUE constraint failed: %s.%s` | 19 | 1555, `SQLITE_CONSTRAINT_PRIMARYKEY` | The names as the table stores them, which are those of its CREATE TABLE. |
+| `attempt to write a readonly database` | 8, `SQLITE_READONLY` | 8 | None. |
 | A syntax error, such as `near "frm": syntax error` | 1 | 1 | From the pass. |
+
+The code 8 is the constant `sqlerr.CodeReadOnly`. The engine gives this error for a statement that would write in a read-only transaction, and `TestConn_Begin` pins it against SQLite under `pragma query_only = 1`.
 
 Examples, each pinned against SQLite in `TestEngine_errors`:
 
@@ -164,13 +244,16 @@ Examples, each pinned against SQLite in `TestEngine_errors`:
 The order of the errors is SQLite's:
 
 - **A table that does not exist comes before a column that does not exist.** `insert into t2 (v2) values (1)` without `t2` gives `no such table: t2`.
+- **In a read-only transaction, an error of a name comes before `attempt to write a readonly database`.** There, `insert into t2 (v1) values (1)` without `t2` gives `no such table: t2`, and `create table t1 …` with `t1` gives `table t1 already exists`. An insert of a key that exists gives `attempt to write a readonly database` there, and not `UNIQUE constraint failed`, as in SQLite.
 - **A syntax error never depends on the database.** The spec: "Text with a syntax error gets the error that SQLite gives for it on an empty database." So `stmt.Check` alone decides it, before the engine begins a transaction, and a text with a syntax error gives its syntax error also on a closed instance, without the lease, and with a context that has ended. SQLite differs on a database that is not empty: it starts to create a table as soon as it has read `CREATE TABLE`, the name, and the `(` or `AS` after it, and if a table of the name exists, it gives `table %s already exists` and never meets the syntax error. With a table `t1`, SQLite gives `table t1 already exists` for `create table t1 (v1 int primary key) strict without rowid`, and the engine gives `near "without": syntax error`, as SQLite does on an empty database. This is the one difference from SQLite that the tests accept: `stmttest.ExistsAfterStart`, which the differential tests of the engine and of the driver share, accepts it where `stmttest.StartedTable` gives the name of the table that the text starts, SQLite gives that the table exists with the name as written, and the engine gives what SQLite gives on an empty database. The other texts where SQLite gives an error that is not the syntax error are in [the known gaps of `stmt`](../sql/stmt/README.md#known-gaps).
 
 The errors that are not SQLite's:
 
 - **"Not supported"** is the `*stmt.NotSupportedError` of the pass, unchanged. It matches `stmt.ErrNotSupported`.
 - **A text without a statement** gives `ErrNoStatement`.
-- **An error of the core passes through unchanged,** so that `errors.Is` finds its sentinel, such as `core.ErrStopped`, `core.ErrOutcomeUnknown`, or `core.ErrReaderBusy`. So does an error of the context. Neither is ever given as a `*sqlerr.Error`.
+- **The state of the transaction of a connection has four errors:** `ErrTxOpen`, `ErrNoTx`, `ErrRowsOpen`, and `ErrTxDone`. Each is returned as it is, but for the commit of a write transaction while a loop reads its rows, whose error wraps `ErrRowsOpen`. See [Transactions](#transactions).
+- **A commit that is too large gives an error that matches `ErrTooLarge`,** and that wraps the error of the core, which matches `core.ErrTooLarge`.
+- **Every other error of the core passes through unchanged,** so that `errors.Is` finds its sentinel, such as `core.ErrStopped`, `core.ErrOutcomeUnknown`, or `core.ErrReaderBusy`. So does an error of the context. Neither is ever given as a `*sqlerr.Error`.
 - **A refusal of the core becomes an error that matches `ErrInternal`** and wraps nothing else; see [The storage interface](#the-storage-interface). It is a fault of s4ql, and never SQLite's error.
 
 ## Changes and the last insert rowid
@@ -179,7 +262,8 @@ The engine gives what is needed to report `sqlite3_changes` and `sqlite3_last_in
 
 - **An insert that succeeds sets the count of changes to 1.** Its result has `Changes` 1 and `SetsChanges` true.
 - **CREATE TABLE, DROP TABLE, and SELECT leave the count as the statement before left it.** Their result has `SetsChanges` false.
-- **An insert that fails with `UNIQUE constraint failed` sets the count to 0.** SQLite gives this error when it steps the statement. The engine gives `Result{SetsChanges: true}` with the error of an insert that fails after its checks: in its operator, in its annotation, or in its commit.
+- **An insert that fails with `UNIQUE constraint failed` sets the count to 0.** SQLite gives this error when it steps the statement. The engine gives `Result{SetsChanges: true}` with the error of an insert that fails after its checks: in its operator, in its annotation, or in its commit. For an insert in a write transaction, the release of its savepoint takes the place of the commit.
+- **An insert that a read-only transaction refuses sets the count to 0,** as SQLite does under `pragma query_only = 1`. Its result is `Result{SetsChanges: true}`. `TestConn_Begin` measured it against SQLite. A create or a drop that is refused there leaves the count.
 - **An error that SQLite gives when it prepares the statement leaves the count:** `no such table`, `has no column named`, `already exists`, and a syntax error. A text without a statement leaves it too.
 - **The last insert rowid never changes.** Every table is WITHOUT ROWID, and SQLite does not record an insert into such a table. The value is 0 on a new connection, and stays 0.
 
@@ -190,10 +274,12 @@ Its last insert rowid is always 0.
 ## Annotations
 
 - **Each write that is committed carries one annotation: the text of its statement,** from its first token to its end. The end is that of its semicolon, if it has one.
+- **The commit object of a transaction that spans statements holds one annotation for each of its statements that succeeded and that write,** in their order. `TestConn_Commit` reads them from the log.
 - **Comments and semicolons before the statement, and the text after it, are left out.** A comment inside the statement stays. `  /* before */ create table t1 (v1 int primary key) strict, without rowid; -- after` is annotated as `create table t1 (v1 int primary key) strict, without rowid;`.
 - **An annotation holds the arguments of the statement,** by position, in `Statement.parameters` of the commit object: one for an insert of a parameter, and none otherwise.
 - **A statement that fails commits nothing,** and leaves no annotation. A query leaves none either.
-- **Every write of slice 1 that succeeds changes something.** The core writes no commit object for a transaction that changed nothing, and would then store its annotation nowhere. No statement of slice 1 meets that case: a create, an insert of a new key, and a drop each change the database.
+- **Every write of slice 1 that succeeds changes something.** The core writes no commit object for a transaction that changed nothing, and would then store its annotation nowhere. No statement of its own meets that case: a create, an insert of a new key, and a drop each change the database.
+- **A transaction that spans statements can meet that case.** A create and a drop of the same table succeed and change nothing in the end. The transaction then writes no commit object, and its annotations are stored nowhere.
 
 ## Parameters
 
@@ -207,15 +293,16 @@ Slice 2 adds the plain `?` as the value of an insert; [the README of `stmt`](../
 
 ## Events
 
-The engine logs one event for each statement, named `statement`, when the statement ends. For a query, that is when its rows end. The names are in `telemetry.go`.
+The engine logs one event for each statement, named `statement`, when the statement ends. For a query, that is when its rows end. It logs one event for each transaction that spans statements, named `transaction`, when the transaction ends; see [The event of a transaction](#the-event-of-a-transaction). The names are in `telemetry.go`.
 
 | Attribute | Value | Present |
 | --- | --- | --- |
 | `statement.kind` | `create_table`, `drop_table`, `insert`, or `select`. | When the text is a supported statement. |
 | `statement.table` | The name of the table, as its value. | When the text is a supported statement. |
 | `statement.sql` | The text that the call was given. | When the level of the event is Debug. |
-| `statement.position` | The last commit object of the state that the statement saw: the position of its read transaction, or the parent of its write transaction. | Once the statement has a transaction. |
-| `commit.parent` | The same value, under the core's name. | For a statement in a write transaction. |
+| `transaction.kind` | The kind of the transaction that spans statements: `write` or `read_only`. | For a statement that the connection is given while such a transaction is open. |
+| `statement.position` | The last commit object of the state that the statement saw: the position of its read transaction, or the parent of its write transaction. In a transaction that spans statements, it is the state that the transaction began from. | Once the statement has a transaction. |
+| `commit.parent` | The same value, under the core's name. | For a statement in a write transaction, also a query in a write transaction that spans statements. |
 | `statement.rows` | The number of rows that the statement returned or changed. | Always. |
 | `outcome` | How the statement ended, in a word; see below. | Always. |
 | `sqlite.code`, `sqlite.extended_code` | The result codes. | For SQLite's error. |
@@ -228,7 +315,9 @@ The level follows the conventions of the core, so a healthy instance logs nothin
 | --- | --- | --- |
 | Debug | `ok` | The statement succeeded. |
 | Debug | `sqlite_error` | It failed with SQLite's error, which is an answer to the application. |
-| Debug | `not_supported` | It is not supported. So is a statement that reads on a connection whose rows of an earlier query are open, which the core refuses with `ErrReaderBusy`: it is what the caller asked for, and nothing that went wrong. |
+| Debug | `not_supported` | It is not supported. So is a statement that reads on a connection whose rows of an earlier query are open, which the core refuses with `ErrReaderBusy`: it is what the caller asked for, and nothing that went wrong. An error that matches `ErrRowsOpen` has this outcome too. |
+| Debug | `tx_state` | It failed with `ErrTxOpen`, `ErrNoTx`, or `ErrTxDone`: the state of the transaction of the connection does not allow it. |
+| Debug | `too_large` | Its commit failed with an error that matches `ErrTooLarge`. It is the application's transaction that is too large, and nothing that went wrong. |
 | Debug | `no_statement` | The text holds no statement. |
 | Debug | `wrong_arguments` | It was given another number of arguments than it has parameters. |
 | Debug | `refused` | The core refused it with `ErrNoLease` or `ErrStopped`. The core logs that itself. |
@@ -240,6 +329,28 @@ The level follows the conventions of the core, so a healthy instance logs nothin
 - **The event of a write statement joins the core's event of its commit** by `commit.parent`, which is the same in both, and by the context, which both are logged with.
 - **The SQL text is only in an event at Debug,** because it can hold the application's data. An event at Warn or Error has no text.
 - **No value of a row is in any event.**
+- **Of the three errors of `tx_state`, only `ErrTxDone` reaches an event now:** the event of a query whose loop the end of its transaction cut. A begin logs no event, and a commit or a roll back without a transaction logs none.
+
+### The event of a transaction
+
+The event `transaction` has the style of the event of a statement. Its level and its `outcome` follow the table of levels above, for the error of the commit or the roll back. A commit that succeeds and a roll back that succeeds are at Debug.
+
+| Attribute | Value | Present |
+| --- | --- | --- |
+| `transaction.kind` | `write` or `read_only`. | Always. |
+| `transaction.end` | `commit` or `rollback`. A close of the connection is a roll back. | Always. |
+| `transaction.statements` | The number of statements that the connection was given while the transaction was open, also those that failed. | Always. |
+| `transaction.writes` | The number of statements that changed the database and succeeded, each of which the transaction annotated. A commit object holds them only if the transaction commits and changes something in the end. | Always. |
+| `transaction.position` | The last commit object of the state that the transaction began from. | Always. |
+| `commit.parent` | The same value, under the core's name. | For a write transaction. |
+| `outcome` | How the commit or the roll back ended, in a word. | Always. |
+| `error` | The text of the error. | When the commit or the roll back failed. |
+| `duration.total` | The duration from the call of the begin to the end, on the monotonic clock of the host. The wait of `Begin` for the place of the writer is in it. | Always. |
+
+- **The event of a write transaction joins the core's event of its commit** by `commit.parent`, as the event of a write statement does.
+- **The event of a statement of the transaction has the position of the transaction:** its `statement.position` is the `transaction.position`.
+- **The event has no SQL text and no value.**
+- **The event is logged when the transaction has ended.** That is when `Commit` or `Rollback` returns, or, if a loop reads rows of the transaction then, when the loop ends and the transaction ends with it. The event then has the error that `Commit` gave, or else the error of that later end, and its duration goes to that end.
 
 ## How it is tested
 
@@ -247,7 +358,7 @@ SQLite is the judge. `oracle` in `differential_test.go` runs each text on a data
 
 The layers:
 
-1. **The differential test.** `TestDifferential` runs random sequences of statements on SQLite and on the engine, which runs on the real core with a simulated store. After each statement it compares the answer: the error as code, extended code, and message, or the columns and the rows. It also compares the count of changes, and requires a last insert rowid of 0. The generator marks each statement that is of slice 1, and the engine must support every one of them. A text that the engine does not support is not run in SQLite, which would change its database; SQLite prepares it on an empty database, and must give no syntax error, since a text that is not supported is one that SQLite accepts. The one difference from SQLite that the test accepts is that of [a syntax error after the start of a table that exists](#errors). A run with the default flags, and without `-short`, the race detector, or the address sanitizer, pins how many texts it excuses from the comparison, by kind: 34 such texts, and none of the known gaps of `stmt`. Every second sequence restarts the instance at random points, with an empty cache, which replays the log, or with its own cache. After each restart and at the end, the test compares every table and every row.
+1. **The differential test.** `TestDifferential` runs random sequences of statements on SQLite and on the engine, which runs on the real core with a simulated store. After each statement it compares the answer: the error as code, extended code, and message, or the columns and the rows. It also compares the count of changes, and requires a last insert rowid of 0. A statement that fails must leave SQLite's count as it was, with two exceptions that `pair.step` accepts, each of which sets the count to 0: a broken constraint, and an insert that a read-only transaction refuses. The second occurs only in `TestConn_differential`, which runs the same step in transactions. The generator marks each statement that is of slice 1, and the engine must support every one of them. A text that the engine does not support is not run in SQLite, which would change its database; SQLite prepares it on an empty database, and must give no syntax error, since a text that is not supported is one that SQLite accepts. The one difference from SQLite that the test accepts is that of [a syntax error after the start of a table that exists](#errors). A run with the default flags, and without `-short`, the race detector, or the address sanitizer, pins how many texts it excuses from the comparison, by kind: 34 such texts, and none of the known gaps of `stmt`. Every second sequence restarts the instance at random points, with an empty cache, which replays the log, or with its own cache. After each restart and at the end, the test compares every table and every row.
 
    A sequence comes from `stmttest.Sequence`. Its statements meet at one or two tables and columns, each in several spellings: some that SQLite takes for the same name, and some that it takes for another. The values come from a small set, so keys repeat. One statement in twelve is a text that is not supported, a syntax error, or no statement. Some queries run through `Exec`, and some other statements through `Query`.
 2. **Fuzzing.** `FuzzSQL` gives the engine any SQL text, on a database with a fixed set-up of tables, some with rows, with names in different cases and in quotes (`fuzzSetUp`), and gives SQLite the same text on the same tables. It compares them as the differential test does: the error as code, extended code, and message, or the columns and the rows; the count of changes; and the tables after the text. It runs on the database in memory, and `FuzzSQL_core` runs the same on the core, which is about 45 times slower. Their seeds are statements of the sequence of the differential test, the texts of `stmttest.Others`, and every 500th text of the corpus. Beside the difference of a table that exists, they excuse the known gaps of `stmt` as its tests do, and count them apart: a syntax error where an error of a grammar action of SQLite came first, and a syntax error where SQLite gives an error about the database first, such as `no such table: main.X` for a trigger.
@@ -272,6 +383,8 @@ The layers:
    `run.readsFree` makes the last two checks. Every connection of the callers of a live instance must run a query of a table that does not exist, which gives SQLite's `no such table` once the query has its read transaction. A connection whose read transaction was left open fails the query with `core.ErrReaderBusy`, and that is a violation at once: "… has a connection of a caller with a read transaction left open after the end of the workload". An instance that has not run the queries within ten minutes is a violation too: "… does not run a query on each connection of its callers ten minutes after the end of the workload". Only the instance that holds the lease can read, so each instance whose connections have all run their query is closed, which hands the lease to the next.
 4. **Planted bugs.** `TestSimulation_plantedBugs` plants each of five bugs in the engine, and runs seeds until two have found it by its own violation. A seed finds a bug only with a violation that the bug causes: a commit that fails in SQLite for `skipUnique` and `checkOutside`, an acknowledged statement that is not in the log for `ackUnknown`, no write after the workload, or an instance that does not run a query on each connection of its callers then, for `keepOpen`, whose open write transaction also keeps its instance from releasing the lease, and for `keepRead` a connection with a read transaction left open after the workload, or a later query of the same connection that fails with "the reader has a read transaction open". The first of these for each bug is its own, and two seeds must find the bug by it: `keepOpen` by no write after the workload, and `keepRead` by the read transaction left open after the workload. Each seed that finds a bug runs again without it, and must find nothing. The bugs are fields of `bugs` in `bugs.go`, which only the test files can set, through `Options.Plant` in `export_test.go`.
 
+   The bugs are of statements of their own, and no workload of the simulation begins a transaction that spans statements. Of the bugs, a write in such a transaction (`writeIn`) plants only `skipUnique`. `ackUnknown`, `checkOutside`, and `keepOpen` are in `write`, which runs a statement of its own. `keepRead` is in `Rows.Close`, so it also leaves open the rows of a query in a transaction.
+
    | Bug | The wrong decision | Workload |
    | --- | --- | --- |
    | `skipUnique` | An insert writes its row without the check of its key, so the row replaces one. | Default |
@@ -284,9 +397,23 @@ The layers:
 7. **No transaction left open.** `TestEngine_noneOpen` runs statements of a sequence, each through `Exec` or through `Query`. It consumes the rows of `Query` in one of four ways: to the end, with a loop that stops at once, with a close and no loop, or with a loop that panics. After each statement, a write transaction must begin, and a query on the connection of the instance must get its read transaction (`readFree`): it is a query of a table that does not exist, which gives SQLite's `no such table` once it has the transaction, and another error if a read transaction was left open. A second case plants `keepOpen`, and shows that a begin then waits.
 8. **The names of the core.** `TestEngine_namesOfTheCore` runs the four statements on every name of the generator's pools and on random names in double quotes, of every kind of character. Wherever the pass supports the name, the core must take it, and the answer must be SQLite's.
 9. **Concurrency.** `TestEngine_concurrent` runs inserts and queries from eight goroutines at once, each on a connection of its own, for the race detector. `TestConn` in `engine_test.go` runs the queries of twelve connections at once on the real core, each on the state of its start, and shows that a second query of a connection is refused while the rows of its first are open, that a write on that connection runs, and that a connection does not close inside the loop over the rows of its query.
-10. **Mutation testing.** [`internal/sql/mutation`](../sql/mutation/README.md) mutates this package too, and runs the simulation as a layer of its own.
+10. **Transactions.** `tx_test.go` runs transactions that span statements on the real core with a simulated store, and `tx_internal_test.go` against a fake.
 
-Under `-short`, the race detector, or the address sanitizer, `TestDifferential`, `TestSimulation`, `TestEngine_noneOpen`, and `TestEngine_namesOfTheCore` run a tenth of their sequences, seeds, statements, and names, and the simulation at least two seeds.
+    | Test | What it shows |
+    | --- | --- |
+    | `TestConn_Begin` | Pinned sequences of statements in one transaction, on the engine and in SQLite. SQLite runs a write transaction between `begin immediate` and `commit` or `rollback`, and a read-only one under `pragma query_only = 1`, after `begin`. The test compares the answer and the count of changes after each statement, and the tables after the end. It compares the tables again after a replay of the log into an empty cache. |
+    | `TestConn_differential` | 60 random sequences of 60 statements of the generator of the differential test, from seed 9,000,000. The statements run in write transactions, in read-only ones, and on their own, and each transaction ends with a commit or a roll back, at random. `pair.step` compares each statement as in `TestDifferential`. The test compares the tables after the end of each transaction, and after a replay of the log. |
+    | `TestConn_isolation` | Two or more connections. No other connection sees the writes of a transaction before its commit, and every read that starts after the commit sees them. A read-only transaction keeps the state of its beginning while others commit rows and tables. A read-only transaction and a write transaction run at once, and neither waits. A second write transaction begins only after the first has ended. A begin whose context ends while it waits gives the error of the context, and begins nothing. |
+    | `TestConn_Commit` | The commit object of a transaction and its annotations, as the log holds them. No commit object for a transaction that changes nothing. A commit that is too large. |
+    | `TestConn_rows` | The rules of [Rows in a transaction](#rows-in-a-transaction), for both kinds of transaction. Also `ErrTxOpen`, `ErrNoTx`, a begin on a closed connection, and the roll back at the close of a connection. |
+    | `TestConn_stop` | The statements, the commit, and the roll back of a transaction that is open on a closed instance, and on an instance that has lost its lease. The lease is lost for real: the test cuts the store client of the instance off with `simstore.Client.CutOff`, and another instance takes the lease and commits. |
+    | `TestConn_events` | The event of a transaction, the attribute `transaction.kind` of its statements, a commit that the instance refuses, a commit that is too large, and no value of an argument in any event. |
+    | `TestConn_writeIn`, in `tx_internal_test.go` | The order of the calls `serving`, `savepoint`, `release`, and `rollbackTo` against a fake: for a write that succeeds, one that fails in its operator, one that fails in its annotation, and one that panics. A statement that is refused before its savepoint, or by it, which leaves the transaction open. A commit of unknown outcome, which ends the transaction and is logged at Warn. |
+
+    A test of a wait does not depend on real time. It runs in a bubble of `testing/synctest`, whose clock moves only while every goroutine of the bubble waits. So a second writer that has not begun after `time.Sleep(time.Hour)` is waiting, and a clock that has not moved shows that no call waited.
+11. **Mutation testing.** [`internal/sql/mutation`](../sql/mutation/README.md) mutates this package too, and runs the simulation as a layer of its own.
+
+Under `-short`, the race detector, or the address sanitizer, `TestDifferential`, `TestSimulation`, `TestEngine_noneOpen`, `TestEngine_namesOfTheCore`, and `TestConn_differential` run a tenth of their sequences, seeds, statements, and names, and the simulation at least two seeds.
 
 **The simulation runs no crashes under the address sanitizer.** A crashed database stays open until the test binary ends, because only the core's own tests can close the cache of a crashed instance. The sanitizer reports what is left open.
 
@@ -330,6 +457,8 @@ On the code as it is now, on 2026-11-18:
 | `TestEngine_namesOfTheCore` | 2,832 names | 11,328 statements compared with SQLite, none that differ, and no internal error |
 
 `FuzzDifferential` was not run at length on this code. Its executions are seeds of the generator, not SQL text.
+
+Transactions, on 2026-11-19: `TestConn_differential` runs 60 sequences of 60 statements, 3,600 statements, and none differs from SQLite but the 9 accepted. By kind and outcome: CREATE TABLE 159 ok, 438 `already exists`, and 59 `attempt to write a readonly database`; INSERT 485 ok, 251 `UNIQUE constraint failed`, 190 `has no column named`, 537 `no such table`, and 160 `attempt to write a readonly database`; SELECT 567 ok and 254 `no such table`; DROP TABLE 70 ok, 50 `no such table`, and 24 `attempt to write a readonly database`; and of the other texts 271 not supported, 30 `syntax error`, 26 `incomplete input`, and 29 without a statement. The counts are of statements in a write transaction, in a read-only one, and on their own together. No simulation, planted bug, fuzz test, or mutation run covers transactions yet; see [the todo](../../docs/todo.md#transactions).
 
 The planted bugs:
 
