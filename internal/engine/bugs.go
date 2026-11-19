@@ -22,4 +22,13 @@ type bugs struct {
 	// annotateNext makes a statement annotate its transaction with each integer argument plus one,
 	// while it runs with the argument.
 	annotateNext bool
+	// keepFailed makes a statement that fails in a write transaction after its savepoint annotate
+	// the transaction and release the savepoint, so that the statement is kept as if it had
+	// succeeded.
+	keepFailed bool
+	// readNewest makes each statement of a read-only transaction read the newest state that is
+	// committed, and not the state of the beginning of the transaction.
+	readNewest bool
+	// rollbackKeeps makes the roll back of a write transaction with one write commit it instead.
+	rollbackKeeps bool
 }

@@ -8,7 +8,7 @@ A copy of the code with one change is a mutant. The tests kill a mutant when one
 - It is in code that nothing needs. That code is removed.
 - It shows a gap in the tests. A new test closes the gap.
 
-Only code that is not a test is changed. The tests are those that `make test` runs: the tests of every package under `internal` that depend on the changed package. They run on the whole corpus. The package at the root, the driver, is not mutated by default; with `-pkgs .` it is, and its tests are its own, without `TestOpen_realBucket`, which needs a real bucket. The differential test of the driver is in another module, and does not run on its mutants.
+Only code that is not a test is changed. The tests are those that `make test` runs: the tests of every package under `internal` that depend on the changed package. They run on the whole corpus. The package at the root, the driver, is not mutated by default; with `-pkgs .` it is, and its tests are its own, without `TestOpen_realBucket`, which needs a real bucket. The tests of `internal/store/s3store` and `internal/store/s3test` that need a real bucket are left out too, which matters for `-pkgs internal/core`: `TestClient_conformance`, `TestClient_realBucket`, `TestClient_core`, and `TestDeleteOld_realBucket`. The differential test of the driver is in another module, and does not run on its mutants.
 
 ## How to run
 
@@ -216,6 +216,26 @@ On 2026-11-19, the code that slice 2 added was mutated: `recognizer.parameter`, 
 | `.` | 80 | 23 | 55 | 2 | 0 | 0 |
 
 The hand-written tests killed every killed mutant first. Two survived the first run and were gaps in the tests, which new tests close: the guard that the name of a parameter is the next token, which only a tree that no text gives can reach (`TestRecognize`), and a `driver.Valuer` whose own value is an unsigned integer above the largest `int64`, which must give the value of its `Value` (`TestParameters`). The one equivalent mutant is the acceptance of a parameter's node, whose one token is taken at once. The two that time out loop for good on a pointer in `overflows`. The planted bug `annotateNext` of the engine has three equivalent mutants, each another wrong annotation.
+
+### The transactions of slice 3
+
+On 2026-11-19, the code of transactions was mutated: all of `tx.go` in the engine, the methods `serving`, `savepoint`, `release`, and `rollbackTo` of `coreTx` and `coreReadTx` in `storage.go`, and `Conn.Close`, `Conn.newReport`, `Conn.write`, `Conn.query`, `Conn.pending`, and `Rows.read` in `engine.go`, which the transactions changed; and `Tx.Savepoint`, `Tx.Release`, `Tx.RollbackTo`, `Tx.Serving`, and `ReadTx.Serving` in the core, with `-pkgs internal/core`, which no earlier run of this tool mutated. The runs had 8 workers, while other work loaded the machine:
+
+```
+go run ./internal/sql/mutation -out DIR -j 8 -pkgs internal/engine -run '^internal/engine/(tx\.go |storage\.go (coreTx|coreReadTx)\.(serving|savepoint|release|rollbackTo) |engine\.go (Conn\.(Close|newReport|write|query|pending) |Rows\.read ))'
+go run ./internal/sql/mutation -out DIR -j 8 -pkgs internal/core -run '^internal/core/(tx\.go Tx\.(Savepoint|Release|RollbackTo|Serving) |read\.go ReadTx\.Serving )'
+```
+
+| Package | Generated | Not compiled | Killed | Timed out | Equivalent | Unexplained |
+| --- | --- | --- | --- | --- | --- | --- |
+| `engine` | 628 | 128 | 469 | 8 | 23 | 0 |
+| `core` | 101 | 24 | 63 | 4 | 10 | 0 |
+
+The run of the engine took 19 min, and that of the core 36 min, of which a mutant that times out took half: each mutant of the core runs all the tests of the core, 85 s on the code as it is, and the time limit is 20 times that. In the engine, the hand-written tests killed 428 mutants first and the simulation 27; in the core, the hand-written tests killed all 63: `TestTx_Savepoint` first for 54, `TestReadTx_Serving` for 7, and the runtime for 2, whose mutants unlock a mutex that they did not lock. The 4 timeouts of the core remove the unlock of `DB.mu` in a `Serving` or the `defer tx.leave()` of `Tx.Savepoint` and `Tx.RollbackTo`, so a later call waits for good; the 8 of the engine leave a transaction open, so a later begin waits for good.
+
+The first run of the engine left 32 survivors that were not listed. Fourteen were gaps in the tests, which new tests close, and a run of their lines killed each of them: the events of a statement in a transaction (the rows of a write, the parent of a write in a write transaction and none in a read-only one, the refusal of a query before and at its start, and the refusal of a query while rows hold the end of a transaction), the duration of the event of a transaction, a single event for a read-only commit inside a loop over its rows and the cut of the loop in the event of its query, the words of the refusal of a begin on a closed connection, a statement of a transaction whose context has ended, which a create does not check itself, and a release that fails (`TestConn_events`, `TestConn_rows`, `TestConn_writeIn`). The other 18 are in `equivalent.txt`: 11 in the planted bugs, the order of two joined errors, the check of the level of an event that `log/slog` makes again, and four in the end of a transaction that its rows hold, where `Conn.leaveEnd` sets two flags that `Rows.read` tests one after the other, and where one order of two errors is reached only after a local failure in a roll back. All 10 survivors of the core are in `equivalent.txt`: `DB.refused` gives back nil for nil, the two calls of `forget` in `Tx.RollbackTo` each do what the other does, and six checks of an error of SQLite's `SAVEPOINT`, `ROLLBACK TO`, and `RELEASE` inside an open transaction, which no test can make fail.
+
+The run of the core needed three changes of the tool. The tests of `internal/store/s3store` and `internal/store/s3test` that need a real bucket are now left out, as `TestOpen_realBucket` is, because their packages depend on the core and the planning of the first run failed on `TestClient_conformance`. `oneLine` now cuts at the start of a character and replaces bytes that are not UTF-8, because a run stopped with `mutation: jsontext: invalid UTF-8 within "/Detail" after offset 438` when the message of a failed test was cut inside a character; `TestOneLine` shows both. And the list of equivalent mutants may name mutants of the core, which `TestEquivalent` and the report now know (`listedPkgs`).
 
 ### What the first run of the parser found
 

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // mutant of one file: one small change of its code, made of one or more edits of its text.
@@ -188,11 +189,17 @@ func (g *generator) off(p token.Pos) int {
 	return g.fset.Position(p).Offset
 }
 
-// oneLine collapses the spaces of s into single spaces, and cuts it if it is long.
+// oneLine collapses the spaces of s into single spaces, replaces what is not UTF-8, and cuts it if
+// it is long, at the start of a character.
 func oneLine(s string) string {
-	s = strings.Join(strings.Fields(s), " ")
+	// The results are JSON, which must be valid UTF-8, and the output of a test can hold any bytes.
+	s = strings.ToValidUTF8(strings.Join(strings.Fields(s), " "), "�")
 	if len(s) > 160 {
-		s = s[:157] + "..."
+		cut := 157
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut] + "..."
 	}
 	return s
 }

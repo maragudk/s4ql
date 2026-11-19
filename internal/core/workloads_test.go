@@ -406,9 +406,10 @@ func (y *tally) log(t *testing.T, w workload) {
 	t.Logf("an instance served at most %v after the end of the workload, in seed %v, where %v is the bound", y.serveAfter, y.slowest, w.liveness())
 }
 
-// The flags of the test binary that replay one seed of [TestSimulation]: see [replaySeed].
+// The flags of the test binary that replay one seed of [TestSimulation], see [replaySeed], and of
+// [TestTx_Savepoint_random], which reads only -replay.
 var (
-	replay         = flag.String("replay", "", "replay this one seed in TestSimulation, and nothing else, and log its trace")
+	replay         = flag.String("replay", "", "replay this one seed in TestSimulation and TestTx_Savepoint_random, and nothing else, and log its trace or its steps")
 	replayWorkload = flag.String("workload", "single", "workload of the replay: single, full, hammer, or late")
 	replayBug      = flag.String("bug", "", "planted bug whose workload the replay runs")
 	replayControl  = flag.Bool("control", false, "replay the control of the bug")

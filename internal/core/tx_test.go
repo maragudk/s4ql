@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1668,4 +1669,317 @@ func TestTx_Savepoint(t *testing.T) {
 		is.Error(t, core.ErrStopped, tx.Savepoint(t.Context()))
 		is.NotError(t, tx.Rollback(t.Context()))
 	})
+}
+
+// savepointCounts are what the random transactions of [TestTx_Savepoint_random] reached.
+type savepointCounts struct {
+	transactions, commits, rollbacks, savepoints, releases, rollbacksTo, openAtEnd int
+	// dropThenCreate counts the creates of a name after a drop of it in the same transaction, with
+	// a rollback to a savepoint between the two.
+	dropThenCreate int
+	// firstTouchUndone counts the rollbacks to a savepoint in which the transaction touched a key
+	// of a table that existed when it began for the first time.
+	firstTouchUndone int
+	// dropInSavepoint counts the drops, inside a savepoint, of a table that existed when the
+	// savepoint was taken.
+	dropInSavepoint int
+	// emptyRollbackTo counts the rollbacks to a savepoint in which nothing changed.
+	emptyRollbackTo int
+}
+
+func (c *savepointCounts) add(o savepointCounts) {
+	c.transactions += o.transactions
+	c.commits += o.commits
+	c.rollbacks += o.rollbacks
+	c.savepoints += o.savepoints
+	c.releases += o.releases
+	c.rollbacksTo += o.rollbacksTo
+	c.openAtEnd += o.openAtEnd
+	c.dropThenCreate += o.dropThenCreate
+	c.firstTouchUndone += o.firstTouchUndone
+	c.dropInSavepoint += o.dropInSavepoint
+	c.emptyRollbackTo += o.emptyRollbackTo
+}
+
+// TestTx_Savepoint_random runs random write transactions of random steps on one instance: creates
+// and drops of a few tables in two spellings each, upserts and deletes of a few keys, annotations,
+// and savepoints, releases, and rollbacks to a savepoint in random places, also where they are
+// refused. A savepoint that is open at the end is rolled back to. Then the transaction commits or
+// rolls back. After each step, what the transaction reads must be what the model of [newTx] gives
+// for the same steps; after each end, the commit object must be the model's net effect, and what
+// the instance serves the model's state. At the end of each seed, a strict replay of the log in the
+// model and a replay into an empty cache must give the same state. The flag -replay runs that one
+// seed, and logs its steps.
+func TestTx_Savepoint_random(t *testing.T) {
+	first, n := uint64(0), uint64(400)
+	if testing.Short() || raceEnabled || asanEnabled {
+		n = 40
+	}
+	if *replay != "" {
+		seed, err := strconv.ParseUint(*replay, 10, 64)
+		is.NotError(t, err)
+		first, n = seed, 1
+	}
+	var all savepointCounts
+	for seed := first; seed < first+n; seed++ {
+		t.Run(fmt.Sprint("seed ", seed), func(t *testing.T) {
+			defer func() {
+				if t.Failed() {
+					var mode string
+					if raceEnabled {
+						mode = "-race "
+					}
+					if asanEnabled {
+						mode = "-asan "
+					}
+					t.Logf("replay it with: go test %v-run '^TestTx_Savepoint_random$' -v ./internal/core/ -replay %v", mode, seed)
+				}
+			}()
+			all.add(randomSavepoints(t, seed, *replay != ""))
+		})
+	}
+	t.Logf("%v seeds: %+v", n, all)
+	if n < 400 {
+		t.Logf("NOT CHECKED: what the transactions reached, because %v seeds are fewer than the 400 of the default run", n)
+		return
+	}
+	// A quarter of what the 400 seeds reached on 2026-11-19, so that the test fails when a case
+	// stops happening.
+	for _, c := range []struct {
+		name         string
+		got, atLeast int
+	}{
+		{"commits", all.commits, 294},
+		{"rollbacks", all.rollbacks, 104},
+		{"rollbacks to a savepoint", all.rollbacksTo, 286},
+		{"savepoints open at the end", all.openAtEnd, 138},
+		{"creates after a drop of the name, with a rollback to a savepoint between", all.dropThenCreate, 7},
+		{"first touches of a key undone by a rollback to a savepoint", all.firstTouchUndone, 42},
+		{"drops in a savepoint of a table that existed before it", all.dropInSavepoint, 65},
+		{"rollbacks to a savepoint in which nothing changed", all.emptyRollbackTo, 145},
+	} {
+		if c.got < c.atLeast {
+			t.Errorf("the transactions reached %q %v times, and must reach it %v times at least", c.name, c.got, c.atLeast)
+		}
+	}
+}
+
+// randomSavepoints runs the transactions of one seed of [TestTx_Savepoint_random], and returns what
+// they reached.
+func randomSavepoints(t *testing.T, seed uint64, verbose bool) savepointCounts {
+	t.Helper()
+	ctx := t.Context()
+	r := rand.New(rand.NewPCG(seed, 0x5a7e9014))
+	logf := func(format string, args ...any) {
+		if verbose {
+			t.Logf(format, args...)
+		}
+	}
+	var c savepointCounts
+	w := newWorld(t)
+	d := w.serve(t, "a", core.Options{})
+	// Three tables, each in two spellings that SQLite takes for the same name, and two shapes.
+	names := []string{"t1", "T1", "t2", "T2", "tX", "Tx"}
+	committed := newState()
+
+	for i := range 2 + r.IntN(5) {
+		c.transactions++
+		tx, err := d.Begin(ctx)
+		is.NotError(t, err)
+		m := newTx(committed)
+		// saved is the model at the savepoint that is open, or nil.
+		var saved *mtx
+		// changedSince and touchedFirst say whether anything changed, and whether a key of a table
+		// that existed when the transaction began was touched for the first time, since the savepoint.
+		var changedSince, touchedFirst bool
+		// dropped are the folded names that the transaction dropped, true once a rollback to a
+		// savepoint came after the drop.
+		dropped := map[string]bool{}
+		var notes []string
+		logf("transaction %v", i)
+
+		// first is whether a change of the key of the table is the transaction's first touch of it, in
+		// a table that existed when the transaction began.
+		first := func(folded string, key []*s4qlpb.Value) bool {
+			if m.now.tables[folded] == nil {
+				return false
+			}
+			ch, ok := m.changed[folded]
+			return !ok || (!ch.created && ch.touched[text(key)] == nil)
+		}
+		rollbackTo := func() {
+			is.NotError(t, tx.RollbackTo(ctx))
+			c.rollbacksTo++
+			if !changedSince {
+				c.emptyRollbackTo++
+			}
+			if touchedFirst {
+				c.firstTouchUndone++
+			}
+			for folded := range dropped {
+				dropped[folded] = true
+			}
+			m, saved = saved, nil
+		}
+
+		for range 1 + r.IntN(30) {
+			name := names[r.IntN(len(names))]
+			folded := foldName(name)
+			key := 1 + r.IntN(4)
+			switch k := r.IntN(100); {
+			case k < 12:
+				ct := tableOf(name, 1, "k", "v")
+				if r.IntN(2) == 0 {
+					ct = tableOf(name, 1, "k")
+				}
+				logf("create %v", describe(ct))
+				err := tx.CreateTable(ctx, ct)
+				if m.create(ct) {
+					is.NotError(t, err)
+					changedSince = true
+					if dropped[folded] {
+						c.dropThenCreate++
+					}
+				} else {
+					is.Error(t, core.ErrTableExists, err)
+				}
+
+			case k < 22:
+				logf("drop %v", name)
+				existed := saved != nil && saved.now.tables[folded] != nil
+				err := tx.DropTable(ctx, name)
+				if m.drop(name) {
+					is.NotError(t, err)
+					changedSince = true
+					if _, ok := dropped[folded]; !ok {
+						dropped[folded] = false
+					}
+					if existed {
+						c.dropInSavepoint++
+					}
+				} else {
+					is.Error(t, core.ErrNoTable, err)
+				}
+
+			case k < 52:
+				values := []any{key, r.IntN(10)}
+				if tb := m.now.tables[folded]; tb != nil {
+					values = values[:len(tb.create.GetColumns())]
+				}
+				logf("upsert %v %v", name, values)
+				firstTouch := first(folded, row(key))
+				err := tx.Upsert(ctx, name, row(values...))
+				if m.upsert(name, row(values...)) {
+					is.NotError(t, err)
+					changedSince = true
+					touchedFirst = touchedFirst || (saved != nil && firstTouch)
+				} else {
+					is.Error(t, core.ErrNoTable, err)
+				}
+
+			case k < 70:
+				logf("delete %v %v", name, key)
+				firstTouch := first(folded, row(key))
+				found, err := tx.Delete(ctx, name, row(key))
+				table, want := m.remove(name, row(key))
+				if table {
+					is.NotError(t, err)
+					is.Equal(t, want, found)
+					changedSince = changedSince || want
+					touchedFirst = touchedFirst || (saved != nil && firstTouch)
+				} else {
+					is.Error(t, core.ErrNoTable, err)
+				}
+
+			case k < 80:
+				logf("savepoint")
+				err := tx.Savepoint(ctx)
+				if saved != nil {
+					is.Error(t, core.ErrInvalid, err)
+					break
+				}
+				is.NotError(t, err)
+				c.savepoints++
+				saved, changedSince, touchedFirst = m.clone(), false, false
+
+			case k < 88:
+				logf("release")
+				err := tx.Release(ctx)
+				if saved == nil {
+					is.Error(t, core.ErrInvalid, err)
+					break
+				}
+				is.NotError(t, err)
+				c.releases++
+				saved = nil
+
+			case k < 96:
+				logf("rollback to")
+				if saved == nil {
+					is.Error(t, core.ErrInvalid, tx.RollbackTo(ctx))
+					break
+				}
+				rollbackTo()
+
+			default:
+				// An annotation inside a savepoint fails the transaction at the rollback to it, which
+				// the engine never makes, so the steps annotate only outside one.
+				if saved != nil {
+					break
+				}
+				sql := fmt.Sprint("statement ", len(notes))
+				logf("annotate %q", sql)
+				is.NotError(t, tx.Annotate(ctx, sql, nil))
+				notes = append(notes, "note "+sql+" []")
+			}
+			own, err := dump(ctx, tx)
+			is.NotError(t, err)
+			is.Equal(t, m.now.text(), show(own), "what the transaction reads")
+		}
+		if saved != nil {
+			logf("rollback to, at the end")
+			c.openAtEnd++
+			rollbackTo()
+			own, err := dump(ctx, tx)
+			is.NotError(t, err)
+			is.Equal(t, m.now.text(), show(own), "what the transaction reads")
+		}
+		// Nothing of the transaction is seen outside before its end.
+		is.Equal(t, committed.text(), read(t, d), "what the instance serves while a transaction is open")
+
+		head := w.manifest(t).Head
+		if r.IntN(4) == 0 {
+			logf("rollback")
+			c.rollbacks++
+			is.NotError(t, tx.Rollback(ctx))
+			is.Equal(t, head, w.manifest(t).Head)
+		} else {
+			logf("commit")
+			c.commits++
+			is.NotError(t, tx.Commit(ctx))
+			effect := m.effect()
+			if len(effect) == 0 {
+				is.Equal(t, head, w.manifest(t).Head, "a transaction that changed nothing writes no commit object")
+			} else {
+				name := w.manifest(t).Head
+				data, _, ok := w.store.Object(commitKey("db", name))
+				is.True(t, ok, "the log names a commit object that the store does not have")
+				parent, lines, err := changes(name, data)
+				is.NotError(t, err)
+				is.Equal(t, head, parent)
+				is.Equal(t, strings.Join(append(effect, notes...), "\n"), strings.Join(lines, "\n"), "the commit object")
+			}
+			committed = m.now
+		}
+		is.Equal(t, committed.text(), read(t, d), "what the instance serves after the end of a transaction")
+	}
+
+	// A strict replay of the log in the model, and a replay into an empty cache, give the state of
+	// the instance that committed.
+	mdl := newModel(w.store, "db")
+	is.NotError(t, mdl.sync())
+	is.Equal(t, committed.text(), mdl.states[len(mdl.states)-1].text(), "a strict replay of the log")
+	is.NotError(t, d.Close(ctx))
+	is.Equal(t, committed.text(), read(t, w.serve(t, "b", core.Options{})), "a replay of the log into an empty cache")
+	return c
 }

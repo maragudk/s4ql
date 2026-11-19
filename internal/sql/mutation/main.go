@@ -49,6 +49,10 @@ func main() {
 // allPkgs are the packages that the command mutates by default.
 var allPkgs = []string{"internal/sql/token", "internal/sql/ast", "internal/sql/parser", "internal/sql/stmt", "internal/engine"}
 
+// listedPkgs are the packages whose mutants the list of equivalent mutants names: those of
+// [allPkgs], and the core, which a run mutates only when -pkgs names it.
+var listedPkgs = append(slices.Clone(allPkgs), "internal/core")
+
 func start() error {
 	pkgs := flag.String("pkgs", strings.Join(allPkgs, ","), "packages to mutate, separated by commas")
 	out := flag.String("out", "", "directory of the results (required, unless -list)")
@@ -69,7 +73,7 @@ func start() error {
 		return err
 	}
 	dirs := strings.Split(*pkgs, ",")
-	u, err := newUniverse(root, append(slices.Clone(allPkgs), dirs...))
+	u, err := newUniverse(root, append(slices.Clone(listedPkgs), dirs...))
 	if err != nil {
 		return err
 	}
@@ -83,7 +87,7 @@ func start() error {
 	// the list of equivalent mutants that names no mutant from one outside the selection.
 	var mutants []mutant
 	all := map[string]bool{}
-	for _, d := range slices.Compact(slices.Sorted(slices.Values(append(slices.Clone(allPkgs), dirs...)))) {
+	for _, d := range slices.Compact(slices.Sorted(slices.Values(append(slices.Clone(listedPkgs), dirs...)))) {
 		selected := slices.Contains(dirs, d)
 		files, err := goFiles(filepath.Join(root, d))
 		if err != nil {

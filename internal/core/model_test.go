@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -252,6 +253,16 @@ type mchanged struct {
 
 func newTx(before *mstate) *mtx {
 	return &mtx{before: before, now: before.clone(), changed: map[string]*mchanged{}}
+}
+
+// clone the transaction, as a savepoint keeps it. The state before is shared, because nothing
+// changes it.
+func (m *mtx) clone() *mtx {
+	c := &mtx{before: m.before, now: m.now.clone(), order: slices.Clone(m.order), changed: make(map[string]*mchanged, len(m.changed))}
+	for folded, ch := range m.changed {
+		c.changed[folded] = &mchanged{dropped: ch.dropped, created: ch.created, touched: maps.Clone(ch.touched)}
+	}
+	return c
 }
 
 func (m *mtx) change(name string) *mchanged {

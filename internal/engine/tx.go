@@ -162,6 +162,17 @@ func (c *Conn) ready(ctx context.Context) error {
 	if c.rowsOpen() {
 		return ErrRowsOpen
 	}
+	if c.e.bugs.readNewest && c.tx.write == nil {
+		// The planted bug: the read-only transaction moves on to the newest state.
+		if err := c.tx.read.end(ctx); err != nil {
+			return err
+		}
+		rt, err := c.read(ctx)
+		if err != nil {
+			return err
+		}
+		c.tx.read = rt
+	}
 	return nil
 }
 
@@ -216,6 +227,11 @@ func (c *Conn) Rollback(ctx context.Context) error {
 	}
 	c.tx = nil
 	if c.leaveEnd(t, "rollback", nil) {
+		return nil
+	}
+	if c.e.bugs.rollbackKeeps && t.write != nil && t.writes == 1 {
+		// The planted bug: the roll back commits, whatever the commit gives.
+		t.log(ctx, "rollback", commitError(t.write.commit(ctx)))
 		return nil
 	}
 	err := t.end(ctx)
@@ -299,7 +315,13 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 	defer func() {
 		// Also when an operator panics. A rollback to the savepoint that fails leaves a transaction
 		// that the core lets only roll back.
-		if !kept {
+		switch {
+		case kept:
+		case c.e.bugs.keepFailed:
+			// The planted bug: the statement is kept as if it had succeeded.
+			_ = w.annotate(ctx, sql, args)
+			_ = w.release(ctx)
+		default:
 			_ = w.rollbackTo(ctx)
 		}
 	}()
