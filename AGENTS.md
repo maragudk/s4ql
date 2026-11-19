@@ -55,6 +55,13 @@ Do not update the public site in `site/` (served at www.s4ql.com) as a side effe
 - **Why:** Markus said on 2026-11-16: "you don't need to keep the public site updated automatically, I'll do that once in a while", and then: "feel free to update the Status section on the site, but only that", "and the roadmap."
 - **How to apply:** when a piece of the project is merged, update the "Status" section of `README.md`, the section with the id `status` in `site/index.html`, and `docs/todo.md`. Keep the site's status as short as the README's. When `docs/roadmap.md` changes or a slice of it is built, update the section with the id `roadmap` in `site/index.html` to match. Leave everything else in `site/` alone unless Markus asks. Neither the lead nor the builder makes these updates: the lead spawns a small sub-agent for them after the work is merged, so that the lead's context stays clean and the builder concentrates on the code. Markus: "I want to keep your context clean. Delegate", and: "A small subagent after the work is done sounds better to me."
 
+### A new page on the site gets a preview image of its own
+
+A page added to the public site in `site/` gets its own image for link previews, with its own headline, and does not reuse the image of another page.
+
+- **Why:** the simulator's page went live with the front page's `og.png`, so its preview showed the front page's headline under the simulator's title. Markus said on 2026-11-19: "The simulator has no OpenGraph images etc. like the front page, it should have", and then: "make a memory note that new pages on the site need new images."
+- **How to apply:** when a page is added, make an image of 1200 by 630 pixels in the style of `site/og.png`, with the page's own headline, and point the page's `og:image` tags and their alt text at it, beside the title, description, `twitter:card`, favicon, and touch icon that every page has. Check the result with a card extractor after the deploy. When a page's headline changes, its image changes with it.
+
 ### maragubot posts project updates on Bluesky without asking
 
 maragubot reports interesting updates in this project on Bluesky, as @maragubot.com, and decides itself when to post.
