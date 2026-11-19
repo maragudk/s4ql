@@ -496,3 +496,55 @@ On the live site after the deploy: the page source names `page.js?v=<merge commi
 
 - If the gap above ever shows, `page.js` could compare a version stamped into its own content with the one in its URL, and halt with "Reload to try again" when they differ.
 - The `rm -rf` of the engine in `make site` runs before `serve` refuses a page stamped already; moving the stamp into its own step before the `rm` would keep the engine.
+
+## Step 9: The brief for a client outside the instances
+
+**Author:** builder (simulator client)
+
+### Prompt Context
+
+**Verbatim prompt:** (the brief from the lead, abridged to its requirements)
+
+> Markus asked: "It would be nice to add a client to the simulator, switchable manually between reading/writing to a or b, that keeps trying to read write, so that doesn't stop when the instances stop."
+>
+> In the engine: a client, one source of calls that stands outside the instances. It has a target, a or b, and repeats a pause from the seed and one call, a write or a read, on the target. It never ends: a target without an open database fails the call at once with an outcome that says so; a target without the lease refuses it as today; a call in flight when the target's process dies ends with what an outside caller knows, for a write that its outcome is unknown. An action switches the target at the current fake time, and a call in flight finishes on the old target. It is a setting and an action of a run and of a session, and the equivalence of a session and a batch run holds and is tested with it. Its calls show in the trace as the client's, with the instance they went to. With the client on, a page session has no callers inside the processes. At the start of a page session the client meets an instance that serves: preferably a starts and takes the lease, and b starts a moment later as the standby, with the client on a. No change to `internal/core`, `internal/sim`, `internal/store/simstore`, or `docs/spec.md`.
+>
+> Tests natively and in Chromium: the client keeps calling through a crash and restart, a stop and start, and a failed disk of its target; a switch moves its calls; the other instance receives no calls; a call in flight at a crash ends with the defined outcome, and the checker stays right over many seeds and still catches a real violation on synthetic input; live and batch equivalence with the client and its switch. No test depends on timing; the cost of a fake minute does not grow with the age of the session.
+>
+> On the page: the client as its own small element above the two instance columns, with a switch between a and b that reads as a switch and shows which one is on, and what the client got: writes and reads served, what failed, and the reason of the last failure in a few words. The log tells the client's story without flooding: a run of failures of one kind is one line when it begins ("Client: a is down", "Client: b refuses, no lease"). Little text. The page must not read as a distributed database: the refusal of the standby is part of what it shows. Within the page's visual world; `impeccable` for the refinement; screenshots at 1440, 1280, and 390 with `playwright-cli`. Do not touch the `<head>` beyond a changed description, nor the lines that load `page.js` and `run.js`. `sitecheck` for the client, waiting on states and `data-*` attributes.
+
+**Interpretation:** a task of the scheduler, outside every process, that hands each call to a task of its target's process and waits for it, so that a crash of the process ends the wait and not the client. Plus a setting that starts the other instances only once the first serves.
+
+**Inferred intent:** the visitor sees one application talking to one database instance, and sees plainly what that application gets when the instance dies, stops, or is the wrong one.
+
+### What I did
+
+Read `AGENTS.md`, the README of `internal/simulator`, `run.go`, `live.go`, `request.go`, `state.go`, `check.go`, the page, `sitecheck`, and the two diaries; and `go doc` of `internal/sim` and `internal/host` for what a task outside an instance may wait on.
+
+### Why
+
+`sim` lets a task wait only through the host of its own instance or through the scheduler, so the core's waits must run in a task of the process. A task of the scheduler may wait for a task of an instance, and that wait ends when the instance crashes. So the client is a task of the scheduler, and each call is a task of the target's process that the client waits for.
+
+### What worked
+
+Nothing to run yet.
+
+### What didn't work
+
+Nothing yet.
+
+### What I learned
+
+Nothing yet.
+
+### What was tricky
+
+Nothing yet.
+
+### What warrants review
+
+Nothing yet.
+
+### Future work
+
+See the later steps.
