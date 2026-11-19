@@ -192,30 +192,16 @@ func (rd *Reader) Close(ctx context.Context) error {
 		endErr = tx.end(ctx)
 	}
 
-	// The connection closes without the mutex, which nothing holds across a call that can take long.
-	// It is marked closed first, so that [DB.Close] does not close it too, and the count of the
-	// readers that are closing is what that close waits for meanwhile. The connection stays on the
-	// list until it is closed, so that no task is ended with a connection that nothing knows of.
-	d.mu.Lock()
-	mine := !c.closed
-	if mine {
-		c.closed = true
-		d.closingReaders++
-	}
-	d.mu.Unlock()
-	var closeErr error
-	if mine {
-		d.host.Yield(ctx, "core: a reader before its close")
-		closeErr = c.close()
-	}
-
+	// The connection closes under the mutex, as in [DB.closeIdleLocked], so that [DB.Close] does not
+	// return while a read connection that it takes for closed is still closing, and so that no two
+	// connections to the cache close at once: the close of the last one deletes the write-ahead log
+	// only if it can lock the cache alone, and two closes at once can keep each other from it.
 	d.mu.Lock()
 	d.readers = slices.DeleteFunc(d.readers, func(other *conn) bool { return other == c })
-	if mine {
-		d.closingReaders--
-		if d.closing && d.closingReaders == 0 {
-			d.wakeLocked()
-		}
+	var closeErr error
+	if !c.closed {
+		c.closed = true
+		closeErr = c.close()
 	}
 	d.mu.Unlock()
 	return errors.Join(endErr, d.cacheError(ctx, "close a reader", closeErr))

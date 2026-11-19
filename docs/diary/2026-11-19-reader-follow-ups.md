@@ -273,3 +273,70 @@ The two new points of `/docs/todo.md`, which are for the lead and Markus.
 ### Future work
 
 Point 5 (b) is Markus's decision.
+
+## Step 6: The close of a reader goes back under `DB.mu`
+
+**Author:** reader-follow-ups builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the lead's brief) "Only if it stays simple and you can show with the present life-cycle tests under `-race`, plus one new test for the new waiting, that nothing broke; if it does not stay simple, leave the code and record it in `docs/todo.md` as known and why."
+**Interpretation:** The checks of the whole branch broke on step 4, so the condition of the brief decides.
+**Inferred intent:** No change to the life cycle that makes the cache less tidy or the tests flaky.
+
+### What I did
+
+The checks of the whole branch found two failures, both from step 4.
+
+`make test` failed in the simulator, in the run with the tag `s4ql_browser`:
+
+```
+--- FAIL: TestRun_faults (0.97s)
+    --- FAIL: TestRun_faults/should_show_writes_held_back_after_a_crash (0.01s)
+        run_test.go:409: Not true
+        run_test.go:409: an event request/held
+```
+
+The case runs seed 5 alone, and the new yield moved the schedule. Over seeds 1 to 40, with a throwaway test, the event came in 24 seeds with the yield and in 19 without it, so it is a coin toss for each seed and seed 5 landed on the other side. I gave that case seed 7, which has the event either way, before the second failure made it moot.
+
+The run under the address sanitizer of the packages that this branch touches, in Docker (`go test -asan -shuffle on ./internal/sqlite/ ./internal/core/ .` in `golang:1.26`), failed in the root package:
+
+```
+--- FAIL: TestClose (0.25s)
+    --- FAIL: TestClose/should_refuse_a_query_that_comes_while_the_close_closes_the_rows_that_are_open,_before_the_instance_has_stopped (0.01s)
+        s4ql_test.go:65: a connection to the cache /tmp/TestCloseshould_refuse_a_query_that_comes_while_the_close_close2838741886/001/a/cache.db-wal is still open
+```
+
+Natively, `go test -count=300 -run 'TestClose/should_refuse_a_query_that_comes_while' .` found the log left 21 times, and 3 of 100 under `-race`; with `read.go` and `core.go` of the commit before step 4, 0 of 300. In that test `database/sql` closes its idle connections, and with them their readers, while the connector closes the instance. With the close of a reader out of the mutex, it runs at the same time as the closes of `DB.closeIdleLocked`. SQLite deletes the write-ahead log at the close of the last connection only after it locks the database file exclusively, and two closes at once can each find the other's shared lock, so neither deletes it. Before, every close of a connection was under `DB.mu`, one at a time, so the last one always could.
+
+A log that is left loses nothing: the next start recovers from it. But it makes the tests that take a log that is left for a connection that is left flaky, and a fix would need a lock of its own for the closes, which `DB.closeIdleLocked` would wait for while it holds `DB.mu`. That is not simple, so I took back the code of step 4: `read.go`, `core.go`, and `read_test.go` of `/internal/core` are as before it, the seed of the simulator's case is 5 again, and the three sentences of step 4 in `/internal/core/README.md` are gone. The comment in `Reader.Close` now gives the second reason for the close under the mutex, and the README's bullet on the life cycle of a reader points to a new point in `/docs/todo.md`, under the storage core, which records the close under the mutex as known, with what was tried and the measurements.
+
+After it: 0 of 300 runs of that test leave a log, and `TestRun_faults` passes on seed 5.
+
+### Why
+
+The brief made the change conditional on its staying simple and breaking nothing.
+
+### What worked
+
+Running the sanitizer on the touched packages, which the brief asked for because of the binding, is what found it; the native `make test` passed that test on its one run.
+
+### What didn't work
+
+Step 4, as above.
+
+### What I learned
+
+The lifecycle tests and the simulation cannot see two closes at once: in the simulation one task runs at a time, and the life-cycle tests close the readers before the instance. Only the root package's tests, where `database/sql` closes from goroutines of its own, put two closes side by side.
+
+### What was tricky
+
+That a close under the mutex was doing a second job, which nothing said.
+
+### What warrants review
+
+The new point in `/docs/todo.md` under the storage core, and the comment in `Reader.Close`.
+
+### Future work
+
+The point in the todo, if a slow close ever matters.
