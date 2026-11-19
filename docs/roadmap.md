@@ -31,7 +31,7 @@ Rejected for now, to be decided later: upserts, and join variants such as comma 
 
 ### Slice 1: one integer column
 
-Status: built. The engine is checked against SQLite, and the `database/sql` driver runs these statements, without parameters and without `db.BeginTx`.
+Status: built. The engine is checked against SQLite, and the `database/sql` driver runs these statements, without parameters, which slice 2 added, and without `db.BeginTx`, which slice 3 added.
 
 ```sql
 create table t1 (v1 int primary key) strict, without rowid;
@@ -80,3 +80,34 @@ Rejected as not supported, where SQLite would accept it:
 - A parameter inside an expression, such as `values (-?)`, or in any other place.
 
 The text is judged first, then the arguments, then the instance: a syntax error is SQLite's whatever the arguments are, and an error of the arguments does not depend on whether the instance serves.
+
+### Slice 3: transactions
+
+Status: built. The engine is checked against SQLite: pinned and generated sequences of statements run in transactions on both sides, SQLite's between `begin immediate` and `commit` or `rollback`, or under `pragma query_only`. The `database/sql` driver runs transactions, tested through `database/sql`. The generated comparisons through `database/sql` do not make transactions yet: the differential test of the driver, `internal/sqlite/crosscheck/drivercheck`, only begins a transaction and rolls it back, on both sides, and the generator `internal/sql/stmt/stmttest` makes none. No workload of the simulation begins one.
+
+```go
+tx, err := db.BeginTx(ctx, nil)
+tx.ExecContext(ctx, "insert into t1 (v1) values (?)", 1)
+tx.ExecContext(ctx, "insert into t1 (v1) values (?)", 2)
+err = tx.Commit()
+```
+
+Included, without adding syntax:
+
+- `db.BeginTx(ctx, nil)` and `db.Begin()` begin a write transaction. It takes the place of the single writer when it begins, as SQLite's `begin immediate` does, and holds it until its commit or its roll back. `BeginTx` waits for that place as long as its context allows.
+- `db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})` begins a read-only transaction. It reads the state of its beginning, whatever commits meanwhile, and holds up no one.
+- The isolation levels `sql.LevelDefault` and `sql.LevelSerializable`, for both kinds of transaction. They are what the transactions give: writers run one after another, and a read-only transaction reads one committed state.
+- Everything of slices 1 and 2 inside a transaction: `tx.ExecContext`, `tx.QueryContext`, `tx.QueryRowContext`, `tx.PrepareContext`, and `tx.StmtContext` with a statement prepared on the `db`, with the arguments of slice 2. `tx.Commit` and `tx.Rollback` end the transaction. `conn.BeginTx` on a `sql.Conn` works the same way.
+- A write transaction reads its own changes, and nothing outside it sees them before its commit.
+- A statement that fails leaves the transaction usable, with the effects of the statements before it, as in SQLite.
+- `create table` and `drop table` are transactional: the later statements of the transaction see them, and a roll back undoes them.
+- One commit object for each transaction. It holds the statements of the transaction that write and that succeeded, in order, each with its arguments. A transaction that changes nothing writes none.
+- A write in a read-only transaction gets SQLite's error `attempt to write a readonly database`, with the code 8 and the extended code 8.
+- A commit object that is too large for the store fails the commit with an error that matches the new `s4ql.ErrTooLarge`, and nothing is committed.
+- Surviving a restart: with an empty cache, replaying the log gives the same rows and tables for what transactions committed.
+
+Rejected as not supported, where SQLite would accept it:
+
+- The SQL texts `begin`, `commit`, `end`, `rollback`, `savepoint`, and `release`, also inside a transaction, which stays open.
+- Every other isolation level, such as `sql.LevelReadCommitted`. Nothing is begun.
+- A statement in a transaction while the rows of an earlier query of the transaction are open. For now, this rules out a write inside a loop over the rows of a query: close the rows first.
