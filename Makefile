@@ -30,12 +30,12 @@ corpus:
 corpus-verify:
 	go run ./internal/sql/corpus/update -check
 
-# fuzz runs each fuzz test in the SQLite binding, its cross-checks, the storage formats, the SQL
+# fuzz runs each fuzz test in the SQLite binding, its cross-checks, the differential test of the driver, the storage formats, the SQL
 # tokenizer, SQLite's verdicts on SQL, the SQL parser, the check of the shape of its tree, the pass
 # after the parser, and the engine for FUZZTIME. Pass FUZZFLAGS=-asan to fuzz under the address
 # sanitizer (Linux only). It fails if it cannot list the fuzz tests of a directory, or if a directory
 # has none, so that no directory is skipped in silence.
-FUZZDIRS ?= internal/sqlite $(CROSSCHECK) internal/format internal/sql/token internal/sql/oracle internal/sql/parsetest \
+FUZZDIRS ?= internal/sqlite $(CROSSCHECK) $(CROSSCHECK)/drivercheck internal/format internal/sql/token internal/sql/oracle internal/sql/parsetest \
 	internal/sql/parser internal/sql/shapetest internal/sql/stmt internal/engine
 .PHONY: fuzz
 fuzz:

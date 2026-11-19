@@ -537,7 +537,7 @@ func TestEngine_noneOpen(t *testing.T) {
 		r := rand.New(rand.NewPCG(*seed, 0x0be))
 		q := newSequence(t, r)
 		for range n {
-			src, _, _ := q.next()
+			src, _, _ := q.Next()
 			run(t, i, src, r.IntN(5))
 			noneOpen(t, i)
 		}

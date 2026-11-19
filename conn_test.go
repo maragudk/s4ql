@@ -135,17 +135,7 @@ func TestExec(t *testing.T) {
 			is.Equal(t, "a text that holds no statement", notSupported(t, err))
 		}
 
-		// Parameters, of any kind and number, also where the text has none.
-		for _, args := range [][]any{{1}, {"1", 2}, {sql.Named("v", 1)}, {struct{}{}}, {nil}, {[]string{"a"}}} {
-			_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (?)", args...)
-			is.Equal(t, "parameters", notSupported(t, err))
-			_, err = db.ExecContext(t.Context(), insert1, args...)
-			is.Equal(t, "parameters", notSupported(t, err))
-			_, err = db.QueryContext(t.Context(), select1, args...)
-			is.Equal(t, "parameters", notSupported(t, err))
-			is.Equal(t, "parameters", notSupported(t, db.QueryRowContext(t.Context(), select1, args...).Scan(new(int64))))
-		}
-		// The text of a parameter is not supported either, and SQLite's parser accepts it.
+		// The text of a parameter is not supported, and SQLite's parser accepts it.
 		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (?)")
 		is.True(t, notSupported(t, err) != "")
 
@@ -158,6 +148,88 @@ func TestExec(t *testing.T) {
 		is.Equal(t, "transactions", notSupported(t, err))
 
 		is.EqualSlice(t, []int64{}, values(t, db, select1))
+	})
+
+	t.Run("should judge the text before its arguments, through Exec, Query, and a prepared statement, and run none of it", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, t1)
+		insert, err := db.PrepareContext(t.Context(), insert1)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, insert.Close()) }()
+		query, err := db.PrepareContext(t.Context(), select1)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, query.Close()) }()
+
+		// Each call runs the text src with the arguments args, and gives its error.
+		calls := map[string]func(src string, args ...any) error{
+			"Exec": func(src string, args ...any) error {
+				_, err := db.ExecContext(t.Context(), src, args...)
+				return err
+			},
+			"Query": func(src string, args ...any) error {
+				rows, err := db.QueryContext(t.Context(), src, args...)
+				if err == nil {
+					is.NotError(t, rows.Close())
+				}
+				return err
+			},
+			"QueryRow": func(src string, args ...any) error {
+				return db.QueryRowContext(t.Context(), src, args...).Scan(new(int64))
+			},
+		}
+		// Arguments of any kind and number, also where the text has no parameter.
+		argss := [][]any{{1}, {"1", 2}, {sql.Named("v", 1)}, {struct{}{}}, {nil}, {[]string{"a"}}}
+
+		for name, call := range calls {
+			for _, args := range argss {
+				// A syntax error gets SQLite's error, also in SQL that s4ql does not support.
+				for src, message := range map[string]string{
+					"drop table":                   "incomplete input",
+					"selec * from t1":              `near "selec": syntax error`,
+					"insert into t1 (v1) values (": "incomplete input",
+					"select v1 from t1 where":      "incomplete input",
+				} {
+					err := call(src, args...)
+					sqlite, ok := errors.AsType[*s4ql.Error](failed(t, err))
+					is.True(t, ok, name, src, err.Error())
+					is.Equal(t, s4ql.Error{Code: 1, ExtendedCode: 1, Message: message}, *sqlite, name, src)
+				}
+
+				// A text that s4ql does not support gets the "not supported" that it gets without arguments.
+				for _, src := range []string{"select * from t1 where v1 = 1", "insert into t1 (v1) values (?)", "insert into t1 (v1) values (1), (2)", "begin", "", " ; -- nothing"} {
+					err := call(src, args...)
+					is.True(t, notSupported(t, err) != "parameters", name, src)
+					is.Equal(t, notSupported(t, call(src)), notSupported(t, err), name, src)
+				}
+
+				// A statement that s4ql supports gets "not supported: parameters", and is not run: neither
+				// an insert, nor a create table or a drop table, nor one that would fail if it ran.
+				for _, src := range []string{insert1, select1, "drop table t1", "create table t2 (v2 int primary key) strict, without rowid", t1, "insert into t9 (v1) values (1)"} {
+					is.Equal(t, "parameters", notSupported(t, call(src, args...)), name, src)
+				}
+			}
+		}
+
+		// A prepared statement checks its text when it is prepared, and gets "not supported: parameters"
+		// when it is run with an argument.
+		_, err = db.PrepareContext(t.Context(), "drop table")
+		is.Equal(t, "incomplete input", failed(t, err).Error())
+		_, err = db.PrepareContext(t.Context(), "select * from t1 where v1 = 1")
+		is.Equal(t, "WHERE clause (at offset 17)", notSupported(t, err))
+		for _, args := range argss {
+			_, err = insert.ExecContext(t.Context(), args...)
+			is.Equal(t, "parameters", notSupported(t, err))
+			_, err = insert.QueryContext(t.Context(), args...)
+			is.Equal(t, "parameters", notSupported(t, err))
+			_, err = query.QueryContext(t.Context(), args...)
+			is.Equal(t, "parameters", notSupported(t, err))
+			is.Equal(t, "parameters", notSupported(t, query.QueryRowContext(t.Context(), args...).Scan(new(int64))))
+		}
+
+		// Nothing was committed after the create table of t1, which still holds no row.
+		is.EqualSlice(t, []int64{}, values(t, db, select1))
+		is.Equal(t, 1, len(commits(t, w)))
 	})
 
 	t.Run("should end with its context, also in its commit, with an error that is none of the instance", func(t *testing.T) {

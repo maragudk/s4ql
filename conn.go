@@ -198,10 +198,11 @@ func (c *conn) Ping(ctx context.Context) error {
 	return c.c.public(ctx, c.c.db.Wait(ctx))
 }
 
-// ExecContext runs the statement of the text query. It is not supported with arguments.
+// ExecContext runs the statement of the text query. With arguments it runs nothing, and fails with
+// the error of [withArguments].
 func (c *conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
 	if len(args) > 0 {
-		return nil, notSupported("parameters")
+		return nil, withArguments(query)
 	}
 	res, err := c.c.engine.Exec(ctx, query)
 	// The engine gives the result with an error too: an insert that fails sets the count to 0.
@@ -212,11 +213,12 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	return result{changes: c.changes}, nil
 }
 
-// QueryContext runs the statement of the text query, and gives its rows. It is not supported with
-// arguments. A statement that is no query gives no columns and no rows.
+// QueryContext runs the statement of the text query, and gives its rows. With arguments it runs
+// nothing, and fails with the error of [withArguments]. A statement that is no query gives no
+// columns and no rows.
 func (c *conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	if len(args) > 0 {
-		return nil, notSupported("parameters")
+		return nil, withArguments(query)
 	}
 	r, err := c.c.engine.Query(ctx, query)
 	if r != nil {
@@ -253,14 +255,31 @@ func (c *conn) PrepareContext(_ context.Context, query string) (driver.Stmt, err
 
 // Prepare is [conn.PrepareContext] without a context, which it does not need.
 func (c *conn) Prepare(query string) (driver.Stmt, error) {
+	if err := check(query); err != nil {
+		return nil, err
+	}
+	return &prepared{conn: c, query: query}, nil
+}
+
+// check the text query with [stmt.Check]: SQLite's syntax error, "not supported", or nil for a
+// statement that s4ql supports. The text alone decides, so the check reads no table, and does not
+// need the instance to serve.
+func check(query string) error {
 	s, err := stmt.Check(query)
 	if err == nil && s == nil {
 		err = engine.ErrNoStatement
 	}
-	if err != nil {
-		return nil, publicError(err)
+	return publicError(err)
+}
+
+// withArguments is the error of the text query run with arguments: the error of [check] for a text
+// that has one, so that a syntax error gets SQLite's error with arguments too, and "not supported:
+// parameters" for a statement that s4ql supports.
+func withArguments(query string) error {
+	if err := check(query); err != nil {
+		return err
 	}
-	return &prepared{conn: c, query: query}, nil
+	return notSupported("parameters")
 }
 
 // BeginTx is not supported: each statement is a transaction of its own.
@@ -274,7 +293,7 @@ func (c *conn) Begin() (driver.Tx, error) {
 }
 
 // CheckNamedValue takes every argument as it is, so that a statement with an argument of any type
-// is answered with "not supported", and not with an error about the type of the argument.
+// is answered as [withArguments] answers it, and not with an error about the type of the argument.
 func (c *conn) CheckNamedValue(*driver.NamedValue) error {
 	return nil
 }
@@ -303,12 +322,21 @@ func (p *prepared) NumInput() int {
 	return -1
 }
 
+// ExecContext runs the statement. With arguments it runs nothing, and fails with "not supported:
+// parameters": its text passed [check] when it was prepared.
 func (p *prepared) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
-	return p.conn.ExecContext(ctx, p.query, args)
+	if len(args) > 0 {
+		return nil, notSupported("parameters")
+	}
+	return p.conn.ExecContext(ctx, p.query, nil)
 }
 
+// QueryContext runs the statement, and gives its rows, as [prepared.ExecContext] runs it.
 func (p *prepared) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
-	return p.conn.QueryContext(ctx, p.query, args)
+	if len(args) > 0 {
+		return nil, notSupported("parameters")
+	}
+	return p.conn.QueryContext(ctx, p.query, nil)
 }
 
 // Exec is [prepared.ExecContext] without a context.

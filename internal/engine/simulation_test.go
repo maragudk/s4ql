@@ -290,7 +290,7 @@ func withID(src string, id uint64) string {
 
 // statement runs one statement of the sequence q on the engine e of n, records it, and gives it.
 func (r *run) statement(ctx context.Context, n *node, e *engine.Engine, q *sequence) *attempt {
-	src, query, supported := q.next()
+	src, query, supported := q.Next()
 	r.mu.Lock()
 	r.nextID++
 	a := &attempt{id: r.nextID, node: n.name, query: query, acked: len(r.acked)}

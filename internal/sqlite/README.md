@@ -45,7 +45,7 @@ The API fits the engine, not `database/sql`, and stays small. It can change shap
 - `sqlite.go` is the binding. All C calls are in this one file. `asan.go` and `noasan.go` tell it whether it is built with `-asan`.
 - `update/` is the tool that vendors and verifies the amalgamation.
 - `faultvfs/` is a VFS for tests, which wraps the default VFS and makes file operations fail on demand. Its C code uses only the types of `sqlite3.h` and the function pointers of the default VFS and its files, and calls no function of SQLite by its symbol, so it holds no second copy of SQLite, and the rules under "Symbols" below hold. It registers itself through `RegisterVFS`. A rule of `depguard` in `.golangci.yml` lets only test files import it.
-- `crosscheck/` is a separate Go module with the tests against `github.com/mattn/go-sqlite3`.
+- `crosscheck/` is a separate Go module with the tests against `github.com/mattn/go-sqlite3`, and in `crosscheck/drivercheck` the differential test of the `database/sql` driver against it.
 
 ## Symbols
 
