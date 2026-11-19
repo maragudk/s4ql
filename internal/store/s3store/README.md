@@ -16,16 +16,10 @@ This file holds how to run the tests against a real bucket, what was measured on
 `TestClient_conformance` runs the conformance suite, `storetest.Test`, against a real bucket. `TestClient_realBucket` runs checks of its own against the same bucket. `TestClient_core` runs the storage core of `internal/core` on the client against the same bucket: it commits rows and replays them into an empty cache, hands the lease from an instance that closes to one that waits, and has a commit fail whose manifest swap the store refuses because another instance committed first. The core depends on the client only in this test. All three are skipped, with a message, unless `S4QL_S3_BUCKET` is set.
 
 - **The settings come from the environment.** `S4QL_S3_BUCKET` names the bucket. The tests also read `AWS_REGION` and `AWS_ENDPOINT_URL_S3`, and `S4QL_S3_PATH_STYLE=true` if the store needs the bucket in the path. The credentials come from the SDK's default chain, for example from `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
-- **The repository's `.env` holds the settings of the project's Tigris bucket,** as `BUCKET` and the `AWS_*` variables. It is never committed. From the root of the repository:
-
-  ```sh
-  set -a; . ./.env; set +a; S4QL_S3_BUCKET=$BUCKET go test ./internal/store/s3store/
-  ```
-
-- **Each test writes under a new prefix,** `s4ql-test/s3store/<UTC time>-<8 random characters>/`, and deletes everything under it at its end. The cleanup calls `ListObjectsV2` and `DeleteObject` of the SDK directly, because `store.Store` has no delete.
+- **`make test-s3` runs them,** with the other tests that need a bucket, and fails unless every one of them ran and passed. How to run it by hand, with the settings of the project's Tigris bucket in the repository's `.env`, is in the documentation of [`internal/store/s3test`](../s3test/s3test.go). CI runs it in the job `s3`.
+- **Each test writes under a new prefix,** `s4ql-test/s3store/<UTC time>-<8 random characters>/`, which `s3test.NewPrefix` gives, and deletes everything under it at its end. The cleanup calls `ListObjectsV2` and `DeleteObject` of the SDK directly, because `store.Store` has no delete.
 - **The credentials need four permissions:** `s3:GetObject`, `s3:PutObject`, and `s3:ListBucket` for the client, and `s3:DeleteObject` for the cleanup.
-- **A run takes about 20 to 25 seconds** against Tigris from Denmark.
-- **CI does not run these tests.** It would need a bucket for CI, and that bucket's credentials as secrets of the repository, passed in as the variables above. That is not set up.
+- **A run of this package's tests takes about 50 seconds** against Tigris from Denmark under the race detector, as `make test-s3` runs them; measured on 2026-11-19.
 
 ## The checksum of a write
 
