@@ -81,7 +81,7 @@ The proofs, each planted, run, and reverted:
 - Point 5: 63/236 for the corpus failed on both numbers, where the sum alone would have passed.
 - Point 6: `prepare` in `/internal/engine/engine.go` made to turn a syntax error into `stmt.ErrNotSupported`. `TestSimulation` failed in both workloads, such as `the engine does not support the statement 39, "select * frm outer", and SQLite gives near "frm": syntax error`.
 
-`S4QL_ENGINE_SIM_SEEDS` at 50, 100, 200, and 1,000 passes `TestSimulation`; 200 passes `TestSimulation_plantedBugs`.
+`S4QL_ENGINE_SIM_SEEDS` at 50, 100, 200, and 1,000 passes `TestSimulation`; 200 passes `TestSimulation_plantedBugs`. `make test`, `make lint`, `make test-sql`, and `make test-asan` pass, and the changed tests pass with `-count=20` and with `-race -count=3`.
 
 ### What didn't work
 
