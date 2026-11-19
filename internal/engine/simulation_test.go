@@ -552,8 +552,10 @@ func reasonOf(err error) string {
 }
 
 // transaction runs a transaction that spans statements on the connection c of a caller of n, whose
-// engine has the generation gen, records it, and gives the reason why it ended early: "no lease" or
-// "stopped" if a call of it was refused so, and otherwise "". One transaction in four is read-only.
+// engine has the generation gen, records it, and gives the reason of [reasonOf] why it did not begin,
+// ended early, or did not commit: "no lease" or "stopped" if a call of it was refused so, "timeout"
+// or "canceled" if its begin or its commit ran out of time, and otherwise "". One transaction in
+// four is read-only.
 // It has two to six statements of the sequence of the run, a short wait before each, and each call
 // has a timeout of up to the workload's. It ends with a commit, or one time in four with a roll
 // back, and with a roll back after a refusal, so that it never stays open: an open write
@@ -1578,8 +1580,7 @@ func TestSimulation(t *testing.T) {
 			"commits": 2.5, "commits with a parameter": 0.5, "crash, then an empty cache": 0.12, "crash, then a copy of the cache": 0.12, "close and open": 0.4,
 			"fault: lost request": 0.4, "fault: lost response": 0.4, "fault: no answer": 0.35, "fault: conflict": 0.06,
 			"fault: slow way": 0.8, "fault: broken read": 0.25, "fault: cut-off": 0.1, "fault: outage": 0.04,
-			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.25,
-			"fault: write applied after a crash": 0.05,
+			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.25, "fault: write applied after a crash": 0.05,
 			"statements in a transaction": 12, "read-only transactions": 0.9, "transactions committed": 2, "transactions rolled back": 0.8,
 			"transactions not committed": 0.08, "transactions unknown": 0.07, "commits of more than one statement": 0.4,
 		}, 0.15},

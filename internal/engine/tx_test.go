@@ -771,8 +771,10 @@ func TestConn_rows(t *testing.T) {
 		is.Error(t, engine.ErrTxOpen, c.Begin(t.Context()))
 		// The close of a connection rolls its transaction back.
 		is.NotError(t, c.Close(t.Context()))
-		is.Error(t, engine.ErrInternal, c.Begin(t.Context()))
-		is.Error(t, engine.ErrInternal, c.BeginReadOnly(t.Context()))
+		for _, err := range []error{c.Begin(t.Context()), c.BeginReadOnly(t.Context())} {
+			is.Error(t, engine.ErrInternal, err)
+			is.True(t, strings.Contains(err.Error(), "a transaction on a connection that is closed"), err.Error())
+		}
 		noneOpen(t, i)
 	})
 
@@ -986,5 +988,101 @@ func TestConn_events(t *testing.T) {
 		is.Equal(t, slog.LevelDebug, level)
 		is.Equal(t, "too_large", e[engine.AttrOutcome])
 		is.Equal(t, "100", e[engine.AttrTxWrites])
+	})
+
+	t.Run("should log each statement of a transaction, with its rows, the parent of a write transaction, and the refusals before and at the start of a query", func(t *testing.T) {
+		h := &events{}
+		i := newInstanceLogged(t, engine.Options{Logger: slog.New(h)}, nil)
+		is.Equal(t, "", i.exec(t1).err)
+
+		is.NotError(t, i.c.Begin(t.Context()))
+		is.Equal(t, "", do(t, i.c, insert1))
+		e, _ := h.last(t)
+		is.Equal(t, engine.EventStatement, e["msg"])
+		is.Equal(t, "1", e[engine.AttrRows])
+		is.True(t, e[engine.AttrPosition] != "", "the insert has its position")
+		is.Equal(t, e[engine.AttrPosition], e[engine.AttrParent])
+
+		is.Equal(t, "1/1: no such table: t2", do(t, i.c, "select * from t2"))
+		e, _ = h.last(t)
+		is.Equal(t, engine.EventStatement, e["msg"])
+		is.Equal(t, "1", e[engine.AttrCode])
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		_, err := i.c.Query(ctx, selectT)
+		is.Error(t, context.Canceled, err)
+		e, _ = h.last(t)
+		is.Equal(t, engine.EventStatement, e["msg"])
+		is.True(t, strings.Contains(e[engine.AttrError], "context canceled"), e[engine.AttrError])
+		// A create checks no context of its own, so the refusal is the transaction's.
+		_, err = i.c.Exec(ctx, "create table t2 (v int primary key) strict, without rowid")
+		is.Error(t, context.Canceled, err)
+		is.NotError(t, i.c.Commit(t.Context()))
+		is.Equal(t, "1/1: no such table: t2", i.query("select * from t2").err)
+
+		is.NotError(t, i.c.BeginReadOnly(t.Context()))
+		is.Equal(t, "8/8: attempt to write a readonly database", do(t, i.c, insert2))
+		e, _ = h.last(t)
+		is.Equal(t, engine.EventStatement, e["msg"])
+		is.True(t, e[engine.AttrPosition] != "", "the insert has its position")
+		_, ok := e[engine.AttrParent]
+		is.True(t, !ok, "a statement of a read-only transaction has no parent")
+		is.NotError(t, i.c.Rollback(t.Context()))
+	})
+
+	t.Run("should log the duration of a transaction from its begin", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			h := &events{}
+			i := newInstanceLogged(t, engine.Options{Logger: slog.New(h)}, nil)
+			// The begin is an hour after the start, so that a duration from the start of the clock
+			// would show.
+			time.Sleep(time.Hour)
+			is.NotError(t, i.c.BeginReadOnly(t.Context()))
+			time.Sleep(time.Minute)
+			is.NotError(t, i.c.Commit(t.Context()))
+			e, _ := h.last(t)
+			is.Equal(t, engine.EventTransaction, e["msg"])
+			is.Equal(t, "1m0s", e[engine.AttrDuration])
+		})
+	})
+
+	t.Run("should log the event of a read-only transaction whose commit comes inside a loop over its rows once, when the loop ends, and the cut of the loop in the event of its query", func(t *testing.T) {
+		h := &events{}
+		i := newInstanceLogged(t, engine.Options{Logger: slog.New(h)}, nil)
+		is.Equal(t, "", i.exec(t1).err)
+		is.Equal(t, "", i.exec(insert1).err)
+		is.Equal(t, "", i.exec(insert2).err)
+		is.NotError(t, i.c.BeginReadOnly(t.Context()))
+		rows, err := i.c.Query(t.Context(), selectT)
+		is.NotError(t, err)
+		var cut error
+		for _, err := range rows.All() {
+			if err != nil {
+				cut = err
+				break
+			}
+			is.NotError(t, i.c.Commit(t.Context()))
+			// No statement runs on the connection while the rows hold the end of the transaction, and
+			// the refusal has its event.
+			_, err := i.c.Query(t.Context(), selectT)
+			is.Error(t, engine.ErrRowsOpen, err)
+			e, _ := h.last(t)
+			is.Equal(t, engine.EventStatement, e["msg"])
+			is.Equal(t, "not_supported", e[engine.AttrOutcome])
+		}
+		is.Error(t, engine.ErrTxDone, cut)
+		h.mu.Lock()
+		var ends int
+		for _, r := range h.records {
+			if r["msg"] == engine.EventTransaction {
+				ends++
+			}
+		}
+		last := h.records[len(h.records)-1]
+		h.mu.Unlock()
+		is.Equal(t, 1, ends)
+		is.Equal(t, engine.EventStatement, last["msg"])
+		is.Equal(t, "tx_state", last[engine.AttrOutcome])
 	})
 }

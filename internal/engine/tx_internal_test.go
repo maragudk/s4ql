@@ -18,8 +18,8 @@ import (
 // statements, and fail them on demand.
 type spanning struct {
 	*fake
-	// servingFails and savepointFails are the errors of those calls.
-	servingFails, savepointFails error
+	// servingFails, savepointFails, and releaseFails are the errors of those calls.
+	servingFails, savepointFails, releaseFails error
 }
 
 func (s *spanning) begin(ctx context.Context) (writeTx, error) {
@@ -47,7 +47,7 @@ func (x spanningTx) savepoint(context.Context) error {
 
 func (x spanningTx) release(context.Context) error {
 	x.f.calls = append(x.f.calls, "release")
-	return nil
+	return x.s.releaseFails
 }
 
 func (x spanningTx) rollbackTo(context.Context) error {
@@ -106,6 +106,21 @@ func TestConn_writeIn(t *testing.T) {
 		is.Error(t, core.ErrStopped, err)
 		is.NotError(t, c.Rollback(t.Context()))
 		is.Equal(t, "serving serving serving savepoint rollback", strings.Join(s.calls, " "))
+	})
+
+	t.Run("should fail a statement whose release fails, without a rollback to the savepoint, and not count it as a write", func(t *testing.T) {
+		s := &spanning{fake: newFake().with("t1", []string{"v1"})}
+		h := &recorder{}
+		c := newConn(s, h)
+		is.NotError(t, c.Begin(t.Context()))
+		s.releaseFails = errors.New("the release fails")
+		_, err := c.Exec(t.Context(), "insert into t1 (v1) values (2)")
+		is.Error(t, s.releaseFails, err)
+		is.NotError(t, c.Rollback(t.Context()))
+		is.Equal(t, "serving savepoint table t1 get t1 2 upsert t1 2 annotate insert into t1 (v1) values (2) release rollback", strings.Join(s.calls, " "))
+		e := h.events[len(h.events)-1]
+		is.Equal(t, eventTransaction, e["msg"])
+		is.Equal(t, "0", e[attrTxWrites])
 	})
 
 	t.Run("should end the transaction with a commit of unknown outcome, and log it at Warn", func(t *testing.T) {

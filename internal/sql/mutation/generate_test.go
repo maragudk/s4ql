@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"maragu.dev/is"
 )
@@ -182,7 +183,7 @@ func TestEquivalent(t *testing.T) {
 		is.NotError(t, err)
 		eq, err := readEquivalent(filepath.Join(root, "internal/sql/mutation/equivalent.txt"))
 		is.NotError(t, err)
-		dirs := allPkgs
+		dirs := listedPkgs
 		u, err := newUniverse(root, dirs)
 		is.NotError(t, err)
 		keys := map[string]bool{}
@@ -214,5 +215,19 @@ func TestEquivalent(t *testing.T) {
 		is.NotError(t, os.WriteFile(path, []byte("parser/p.go f operator: a < b => a <= b\n"), 0o644))
 		_, err = readEquivalent(path)
 		is.True(t, err != nil)
+	})
+}
+
+func TestOneLine(t *testing.T) {
+	t.Run("should cut a long line at the start of a character, and give valid UTF-8", func(t *testing.T) {
+		got := oneLine(strings.Repeat("a", 156) + strings.Repeat("é", 10))
+		is.True(t, utf8.ValidString(got), got)
+		is.Equal(t, strings.Repeat("a", 156)+"...", got)
+	})
+
+	t.Run("should replace bytes that are not UTF-8, which the output of a test can hold", func(t *testing.T) {
+		got := oneLine("a\xffb")
+		is.True(t, utf8.ValidString(got), got)
+		is.Equal(t, "a�b", got)
 	})
 }

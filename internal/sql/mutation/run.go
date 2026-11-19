@@ -264,8 +264,15 @@ func (r *runner) plan(pkgs []string) error {
 }
 
 // outside are the tests that need something from outside the machine, which a run of the mutants
-// does not have: a real bucket and its credentials.
-var outside = map[string]bool{"TestOpen_realBucket": true}
+// does not have: a real bucket and its credentials. They are of the root, of internal/store/s3store,
+// and of internal/store/s3test, which test a package that depends on internal/core.
+var outside = map[string]bool{
+	"TestOpen_realBucket":      true,
+	"TestClient_conformance":   true,
+	"TestClient_realBucket":    true,
+	"TestClient_core":          true,
+	"TestDeleteOld_realBucket": true,
+}
 
 // binName of the test binary of the package in pkg.
 func binName(pkg string) string {

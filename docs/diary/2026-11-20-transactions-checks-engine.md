@@ -18,7 +18,7 @@ Slice 3 was merged as `0818823` with hand-written tests of transactions and a di
 
 `/internal/core/tx_test.go`: `TestTx_Savepoint_random` and `randomSavepoints`. Each seed opens one instance on a simulated store and runs two to six write transactions of 1 to 30 steps: creates (two shapes) and drops of `t1`/`T1`, `t2`/`T2`, `tX`/`Tx`, upserts and deletes of keys 1 to 4, annotations outside a savepoint, and savepoints, releases, and rollbacks to, also where the core must refuse them with `ErrInvalid`. Every result is checked against the model (`ErrTableExists`, `ErrNoTable`, the `found` of a delete). After each step, a dump of what the transaction reads must equal the model's state. Before the end, the instance must serve the committed state. A savepoint open at the end is rolled back to; then one transaction in four rolls back, and the rest commit. After a commit, the head's commit object must be the model's `effect()` followed by the annotations, and its parent the old head; a transaction whose effect is empty must leave the head. At the end of the seed, the model's strict replay of the log (`newModel(...).sync()`, `mstate.apply`) and a new instance on an empty cache must give the committed state.
 
-The counts: the four cases of the brief, plus commits, rollbacks, rollbacks to, and savepoints open at the end. 400 seeds take about 2 s; under `-short`, `-race`, or the address sanitizer 40 seeds, without the minimums, as `TestSimulation` does it ("NOT CHECKED"). On 2026-11-20 the 400 seeds reached: 1,598 transactions, 1,179 commits, 419 rollbacks, 1,772 savepoints, 625 releases, 1,147 rollbacks to, 552 open at the end, 28 creates after a drop with a rollback to between, 168 rollbacks that undid a first touch of a key, 263 drops in a savepoint of a table that existed before it, 580 rollbacks to a savepoint in which nothing changed. The minimums are a quarter of those.
+The counts: the four cases of the brief, plus commits, rollbacks, rollbacks to, and savepoints open at the end. 400 seeds take about 2 s; under `-short`, `-race`, or the address sanitizer 40 seeds, without the minimums, as `TestSimulation` does it ("NOT CHECKED"). On 2026-11-19 the 400 seeds reached: 1,598 transactions, 1,179 commits, 419 rollbacks, 1,772 savepoints, 625 releases, 1,147 rollbacks to, 552 open at the end, 28 creates after a drop with a rollback to between, 168 rollbacks that undid a first touch of a key, 263 drops in a savepoint of a table that existed before it, 580 rollbacks to a savepoint in which nothing changed. The minimums are a quarter of those.
 
 The replay uses the core's flag `-replay`, whose doc in `/internal/core/workloads_test.go` now names this test too; with it, the test runs that one seed and logs its steps. A failed seed prints `go test -run '^TestTx_Savepoint_random$' -v ./internal/core/ -replay N`, with `-race` or `-asan` as `replayCommand` does.
 
@@ -163,3 +163,95 @@ Keeping the messages of the violations apart, so that "own" means one thing: the
 ### Future work
 
 Plant `skipRollbackTo` again when a statement can fail after a write, such as an insert of several rows.
+
+## Step 4: Mutation testing of the code of transactions
+
+**Author:** tx-checks-engine builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "**Mutation testing of the code of transactions**, with the project's runner (`internal/sql/mutation`), on `internal/engine/tx.go`, the changes of the transactions work in `internal/engine/engine.go` and `storage.go`, and `Savepoint`, `Release`, `RollbackTo`, `Tx.Serving`, and `ReadTx.Serving` in `internal/core`. Add a test for every mutant that survives and matters; record equivalent mutants and those that no test can reach where such lists are kept, with the reason."
+**Interpretation:** Select the mutants by key with `-run`: all of `tx.go`, the four methods of the storage interface, and the functions of `engine.go` that the diff of slice 3 touched (`git diff 429dd5c 0818823 -- internal/engine/engine.go`); and run `-pkgs internal/core` on the five functions.
+**Inferred intent:** Every decision of the code of transactions is pinned by a test, or explained.
+
+### What I did
+
+The runs and their commands are in `/internal/sql/mutation/README.md`, "The transactions of slice 3". Engine: 628 mutants, 128 not compiled, 455 killed, 8 timed out, 37 survived, of which 5 were listed already. Core: 101 mutants, 24 not compiled, 63 killed, 4 timed out, 10 survived. 19 min and 36 min with 8 workers.
+
+Of the 32 new survivors of the engine, 14 were gaps, closed by tests in `/internal/engine/tx_test.go` (three new subtests of `TestConn_events`, and words of the refusal in `TestConn_rows`) and `/internal/engine/tx_internal_test.go` (a release that fails, through `spanning.releaseFails`). A rerun of their lines killed all 14. The other 18, and the 10 of the core, are in `/internal/sql/mutation/equivalent.txt` with their reasons.
+
+The runner itself needed three changes in `/internal/sql/mutation`: `outside` leaves out the four tests of `s3store` and `s3test` that need a real bucket; `oneLine` cuts at a rune boundary and replaces bytes that are not UTF-8 (`TestOneLine`, written red first); `listedPkgs` lets the list of equivalent mutants name mutants of the core, in the report and in `TestEquivalent`.
+
+### Why
+
+The core's earlier mutation testing was by hand with `go test -overlay`; the runner had never been pointed at it, so its planning and its report met packages it did not expect.
+
+### What worked
+
+The hand-written tests of the core killed every killed mutant: `TestTx_Savepoint` 54, `TestReadTx_Serving` 7, and 2 by the runtime (`fatal error: sync: unlock of unlocked mutex`). The simulation was the first to kill 27 mutants of the engine.
+
+### What didn't work
+
+- The first run reused an `-out` directory in the scratchpad that an earlier session had left: `mutation: the results in .../scratchpad/mut-engine are of other code or another SQLite or Go; remove the directory or use another -out`. Later runs used names starting with `tx20-`.
+- The first plan of the core failed: `mutation: the tests of other packages in internal/store/s3store fail on the code as it is: killed TestClient_conformance: ... tls: bad certificate`. The test needs a real bucket; fixed by `outside`.
+- The rerun of the engine's survivors stopped at 72 of 99: `mutation: jsontext: invalid UTF-8 within "/Detail" after offset 438`. `oneLine` cut a message at byte 157 inside a character; `encoding/json/v2` refuses the result. Fixed, and the rerun continued from its results.
+- The report of the engine's rerun listed the 10 new entries of the core as entries that "match no surviving mutant", because the report's universe held only the default packages; fixed by `listedPkgs`.
+
+### What I learned
+
+A mutant of the core costs about as much as the core's whole suite (85 s on the code as it is), and one that hangs costs 20 times that, so the four timeouts were half of the core's run.
+
+### What was tricky
+
+`Conn.leaveEnd` sets `closing` and `cut` together, and `Rows.read` tests `cut`, then returns, then tests `closing`: each of the two mutants that drop one of them alone is equivalent, which takes reading both functions to see.
+
+### What warrants review
+
+- The entries in `/internal/sql/mutation/equivalent.txt`, above all the claims that no test can reach an error of `SAVEPOINT`, `ROLLBACK TO`, or `RELEASE` inside an open transaction.
+- `outside` and `listedPkgs` in `/internal/sql/mutation`.
+
+### Future work
+
+None.
+
+## Step 5: Self-review
+
+**Author:** tx-checks-engine builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the builder's instructions) "Once the implementation is done, self-review before handing back to the lead. [...] Use the code-review skill for the first phase [...] Address what you find, then report a summary of your review and any follow-up work back to the lead."
+**Interpretation:** Run `code-review high main...tx-checks-engine` after parts 1 to 3, judge each finding, and fix what matters.
+**Inferred intent:** Hand over a branch whose weak spots are fixed or named.
+
+### What I did
+
+The review found no bug in the checks, and five nits. Fixed: the dates, which said 2026-11-20 for work of 2026-11-19 (the diary keeps the file name that the brief gave); the shares of statements refused for want of the lease in the engine's README, which were of the workloads before transactions; the README's and the todo's claim that `writeIn` plants only `skipUnique`, which now holds only for the bugs of statements of their own; and the doc comment of `run.transaction`, which did not name "timeout" and "canceled". Left: `readNewest` ends the read transaction before it starts the next, so a failure of the new read would leave an ended one that the roll back then refuses. The connection's reader holds one read transaction at a time, so the order cannot be swapped; the check of serving runs just before with no yield between, and 200 seeds never met it.
+
+### Why
+
+Each finding was true, and none changed what a check finds.
+
+### What worked
+
+The review read the planted bugs through to the core, which is where the one theoretical hole was.
+
+### What didn't work
+
+Nothing failed.
+
+### What I learned
+
+Nothing new.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+Nothing beyond the earlier steps.
+
+### Future work
+
+None.

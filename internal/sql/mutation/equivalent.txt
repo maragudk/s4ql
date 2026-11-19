@@ -254,6 +254,43 @@ internal/engine/engine.go Conn.write operator: a.GetInteger() + 1 => a.GetIntege
 internal/engine/engine.go Conn.write constant: a.GetInteger() + 1 => a.GetInteger() + 2
 	The planted bug annotateNext: the annotation holds another wrong argument, and the bug is found by the parameters of the commit either way.
 
+internal/engine/engine.go Conn.write condition: b.skipUnique => false
+	The planted bugs skipUnique and checkOutside: only checkOutside then plants the write without the check, and only the tests plant either.
+internal/engine/tx.go Conn.writeIn element: skipUnique: c.e.bugs.skipUnique =>
+	The planted bug skipUnique is then not planted in a write of a transaction that spans statements, and is found by the statements of their own.
+internal/engine/tx.go Conn.ready condition: err != nil => false #3
+	The planted bug readNewest: the end of the read transaction before the new one.
+internal/engine/tx.go Conn.ready remove statement: return err => #3
+	The planted bug readNewest: the end of the read transaction before the new one.
+internal/engine/tx.go Conn.ready condition: err != nil => false #4
+	The planted bug readNewest: the new read transaction.
+internal/engine/tx.go Conn.ready remove statement: return err => #4
+	The planted bug readNewest: the new read transaction.
+internal/engine/tx.go Conn.Rollback condition: t.writes == 1 => true
+	The planted bug rollbackKeeps: its condition after c.e.bugs.rollbackKeeps, which only the tests set.
+internal/engine/tx.go Conn.Rollback condition: t.write != nil => true
+	The planted bug rollbackKeeps: its condition after c.e.bugs.rollbackKeeps, which only the tests set.
+internal/engine/tx.go Conn.Rollback operator: t.writes == 1 => t.writes != 1
+	The planted bug rollbackKeeps: its condition after c.e.bugs.rollbackKeeps, which only the tests set.
+internal/engine/tx.go Conn.Rollback constant: t.writes == 1 => t.writes == 2
+	The planted bug rollbackKeeps: its condition after c.e.bugs.rollbackKeeps, which only the tests set.
+internal/engine/tx.go Conn.Rollback remove statement: return nil => #2
+	The planted bug rollbackKeeps: the roll back after its commit then fails, as it would.
+
+# The end of a transaction that rows hold.
+internal/engine/engine.go Rows.read remove statement: return => #3
+	Conn.leaveEnd sets the cut and closing together, so the loop returns at the test of closing that follows.
+internal/engine/tx.go Conn.leaveEnd boolean: true => false
+	Conn.leaveEnd sets the cut and closing together, and Rows.read tests the cut first and returns after it.
+internal/engine/tx.go Conn.leaveEnd condition: r.done => false
+	On rows that are done, Rows.end does nothing and gives nil, and a loop does not read them, so the function still reports false.
+internal/engine/tx.go ending.end swap arguments: first(e.err, err) => first(err, e.err)
+	No test can reach it: both errors are there only when a commit is refused while a loop reads, and the roll back of the cache then fails, which needs a local failure in a roll back, which no file system that the tests have can make.
+
+# The order of errors that are joined.
+internal/engine/engine.go Conn.Close swap arguments: errors.Join(err, closeErr) => errors.Join(closeErr, err)
+	The order of the two errors in the joined error; errors.Is and errors.As find both either way.
+
 # Scheduling, which the production host ignores.
 internal/engine/engine.go Rows.read remove statement: r.report.e.host.Yield(r.ctx, "engine: between two rows of a query") =>
 	A yield only lets other tasks of the simulation run between two rows; the answers of the engine do not depend on it.
@@ -275,9 +312,35 @@ internal/engine/telemetry.go report.end condition: !r.e.log.Enabled(ctx, level) 
 	It saves the building of the attributes only: slog.Logger.LogAttrs asks the handler whether it takes the level again.
 internal/engine/telemetry.go report.end remove statement: return =>
 	It saves the building of the attributes only: slog.Logger.LogAttrs asks the handler whether it takes the level again.
+internal/engine/tx.go transaction.log condition: !t.e.log.Enabled(ctx, level) => false
+	It saves the building of the attributes only: slog.Logger.LogAttrs asks the handler whether it takes the level again.
+internal/engine/tx.go transaction.log remove statement: return =>
+	It saves the building of the attributes only: slog.Logger.LogAttrs asks the handler whether it takes the level again.
 internal/engine/telemetry.go report.end swap arguments: append(attrs, slog.String(attrKind, r.kind), slog.String(attrTable, r.table)) => append(attrs, slog.String(attrTable, r.table), slog.String(attrKind, r.kind))
 	The attributes of an event are named, and their order means nothing.
 internal/engine/telemetry.go report.end swap arguments: append(attrs, slog.Int64(attrRows, r.rows), slog.String(attrOutcome, outcome)) => append(attrs, slog.String(attrOutcome, outcome), slog.Int64(attrRows, r.rows))
 	The attributes of an event are named, and their order means nothing.
 internal/engine/telemetry.go report.end swap arguments: append(attrs, slog.Int(attrCode, se.Code), slog.Int(attrExtendedCode, se.ExtendedCode)) => append(attrs, slog.Int(attrExtendedCode, se.ExtendedCode), slog.Int(attrCode, se.Code))
 	The attributes of an event are named, and their order means nothing.
+
+# The storage core, internal/core: the savepoints and the checks of serving, which slice 3 added.
+internal/core/read.go ReadTx.Serving condition: err != nil => true
+	DB.refused gives back the error that it is given, so it gives nil for nil, and logs a refusal only for an error that wraps ErrNoLease.
+internal/core/tx.go Tx.Serving condition: err != nil => true
+	DB.refused gives back the error that it is given, so it gives nil for nil, and logs a refusal only for an error that wraps ErrNoLease.
+internal/core/tx.go Tx.RollbackTo remove statement: tx.c.forget() =>
+	The forget after the rollback and the release does the same, nothing looks up or prepares between the two, and the statements that the connection keeps are reset after each use, so none of them holds up the rollback to the savepoint.
+internal/core/tx.go Tx.RollbackTo remove statement: tx.c.forget() => #2
+	The forget before the rollback does the same, and nothing looks up or prepares between the two.
+internal/core/tx.go Tx.Savepoint condition: err != nil => false #2
+	No test can reach it: SQLite's SAVEPOINT inside an open write transaction does no I/O, so it fails only for a failure of SQLite itself, such as one of memory.
+internal/core/tx.go Tx.Savepoint remove statement: return tx.fail(ctx, operation, err) =>
+	No test can reach it: SQLite's SAVEPOINT inside an open write transaction does no I/O, so it fails only for a failure of SQLite itself, such as one of memory.
+internal/core/tx.go Tx.RollbackTo condition: err != nil => false #2
+	No test can reach it: the ROLLBACK TO of a savepoint that is open fails only for a local failure while SQLite restores the pages, which no file system of the tests makes within one statement.
+internal/core/tx.go Tx.RollbackTo remove statement: return tx.fail(ctx, operation, err) =>
+	No test can reach it: the ROLLBACK TO of a savepoint that is open fails only for a local failure while SQLite restores the pages, which no file system of the tests makes within one statement.
+internal/core/tx.go Tx.RollbackTo condition: err != nil => false #3
+	No test can reach it: the RELEASE after a ROLLBACK TO of the same savepoint does no I/O inside the open transaction.
+internal/core/tx.go Tx.RollbackTo remove statement: return tx.fail(ctx, operation, err) => #2
+	No test can reach it: the RELEASE after a ROLLBACK TO of the same savepoint does no I/O inside the open transaction.

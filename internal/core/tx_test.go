@@ -1743,7 +1743,7 @@ func TestTx_Savepoint_random(t *testing.T) {
 		t.Logf("NOT CHECKED: what the transactions reached, because %v seeds are fewer than the 400 of the default run", n)
 		return
 	}
-	// A quarter of what the 400 seeds reached on 2026-11-20, so that the test fails when a case
+	// A quarter of what the 400 seeds reached on 2026-11-19, so that the test fails when a case
 	// stops happening.
 	for _, c := range []struct {
 		name         string
