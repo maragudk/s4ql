@@ -292,8 +292,8 @@ func (r *ReadTx) Tables(ctx context.Context) ([]*s4qlpb.CreateTable, error) {
 
 // Get the row with the given primary key from the table with the given name, or nil if there is
 // none. The key has a value for each primary-key column, in key order. It fails with an error that
-// wraps [ErrNoTable] if there is no such table, and with [ErrInvalid] for a key that is not one of
-// the table.
+// wraps [ErrNoTable] if there is no such table, with [ErrInvalid] for a key that is not one of the
+// table, and with [ErrTooBig] for a text or a blob that is longer than SQLite takes.
 func (r *ReadTx) Get(ctx context.Context, name string, key []*s4qlpb.Value) ([]*s4qlpb.Value, error) {
 	const operation = "get"
 	if err := r.check(); err != nil {

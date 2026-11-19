@@ -183,3 +183,56 @@ Keeping callers meeting at the same rows: a key of two columns takes one of the 
 ### Future work
 
 The planted bug's row in the table of 1000 seeds in the README of the core is filled from the count below in step 4.
+
+## Step 4: the count of the planted bug, the checks, and the self-review
+
+**Author:** builder (types-core)
+
+### Prompt Context
+
+**Verbatim prompt:** see step 1.
+**Interpretation:** count the new planted bug over 1000 seeds as the README's table does, run the checks of the acceptance, and review the branch.
+**Inferred intent:** hand the lead a branch that is checked and whose numbers are in the docs.
+
+### What I did
+
+Counted `blobCut` with `S4QL_SIM_SEEDS=1000 go test -count=1 -run 'TestSimulation_plantedBugs/.*cuts_a_blob' -v ./internal/core/`: 716 of 1000 seeds found it, and none found anything without it. The row is in the table of `/internal/core/README.md`.
+
+Ran `make test`, `make lint`, `make check-browser`, the new tests with `-count=20` with and without `-race`, the tests of the format with `-count=20`, and `go test -race -short ./internal/core/`. All pass.
+
+Ran the code-review skill at medium effort over `origin/binding-types...types-core`. It found no bug, and one nit: the doc comments of `Tx.Annotate` and `ReadTx.Get` did not list the new refusals. Both are fixed.
+
+### Why
+
+The README's table counts every planted bug over 1000 seeds, and the acceptance asks for the checks.
+
+### What worked
+
+The review traced the paths I was least sure of (a refused upsert leaves no record, a delete that finds its row cannot fail on the record of its key, the savepoints with two temporary tables) and found them sound.
+
+### What didn't work
+
+The first count over 1000 seeds failed on seed 10:
+
+```
+workloads_test.go:1040: seed 10 found something else: [the commit of transaction 9959823391233997598 was acknowledged, and the log does not have it [...] the log: commit 2, b8810b90..., is no net effect: it lists the key x'',r-1.5 of the table "tbl 2;--" twice]
+```
+
+The bug cuts blobs of keys too, so `x'00'` and `x'0000'` both become `x''`, and the commit object lists one key twice. That is the bug's doing, and "is no net effect" is now one of its symptoms.
+
+### What I learned
+
+A planted bug that changes values changes keys too, so its symptoms include those of a broken net effect.
+
+### What was tricky
+
+Nothing more.
+
+### What warrants review
+
+The run times on this machine, which had other work on it: `TestSimulation*` 44 s before, 40 s and 53 s in two runs after (the second while the review ran beside it); `TestTx_Savepoint_random` 2.0 s before, 2.5 to 3.0 s after; `go test -short ./internal/core/` 56 s before, 58 to 60 s after.
+
+### Future work
+
+- The engine has to turn `core.ErrTooBig` into SQLite's "string or blob too big", with its result code 18, and must refuse the values that the core refuses before it calls the core, since `fromCore` reports `ErrInvalid` as an internal fault.
+- A mutation run over the new code of the core, as the brief leaves for a later task.

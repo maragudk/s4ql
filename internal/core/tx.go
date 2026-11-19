@@ -651,7 +651,8 @@ func (tx *Tx) Delete(ctx context.Context, name string, key []*s4qlpb.Value) (boo
 // Annotate the transaction with a statement that it ran: its SQL text and its parameters. The
 // annotations go into the commit object after its changes, in the order in which they were made.
 // Replay never uses them. It fails with an error that wraps [ErrInvalid] for text that is not
-// valid UTF-8 and for a parameter that is no value.
+// valid UTF-8, and for a parameter that is no value, a real that is NaN or infinite, or text that
+// is not valid UTF-8 or holds the character NUL. A parameter that is -0.0 keeps its sign.
 func (tx *Tx) Annotate(ctx context.Context, sql string, parameters []*s4qlpb.Value) error {
 	const operation = "annotate"
 	if err := tx.check(ctx, operation); err != nil {
