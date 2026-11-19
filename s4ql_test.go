@@ -570,10 +570,12 @@ func TestOpen_realBucket(t *testing.T) {
 	c := s3test.FromEnv(t)
 	client, err := c.Client(t.Context())
 	is.NotError(t, err)
-	// The settings reach the store through the options only.
-	for _, name := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_ENDPOINT_URL_S3", "AWS_REGION"} {
-		t.Setenv(name, "")
+	// The settings reach the store through the options only, so the test needs the credentials in
+	// the environment, and then leaves the SDK nothing else to take them from.
+	if c.AccessKeyID == "" {
+		t.Fatal("set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, which the test gives through the options")
 	}
+	isolate(t)
 	dir := t.TempDir()
 	// options of the database under the prefix, with the cache directory of the given name among
 	// those of the database, since a cache directory is for one database. The close timeout is long,

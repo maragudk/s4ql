@@ -11,8 +11,10 @@
 //
 // The tests that need a bucket are skipped unless S4QL_S3_BUCKET names one. They read AWS_REGION and
 // AWS_ENDPOINT_URL_S3, and S4QL_S3_PATH_STYLE=true for a store that needs the bucket in the path,
-// and the credentials come from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or from the default
-// chain of the AWS SDK. make test-s3 runs all of them, under the race detector, and fails if
+// and the credentials come from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. The tests of
+// internal/store/s3store also take them from the default chain of the AWS SDK, such as a profile;
+// the test of the public package gives them through its options, which take a long-lived key and no
+// session token, and fails without them. make test-s3 runs all of them, under the race detector, and fails if
 // S4QL_S3_BUCKET is empty or if one of them did not run and pass. CI runs it in the job s3. With the
 // settings of the project's bucket in the file .env of the repository's root, which is never
 // committed:
@@ -72,7 +74,8 @@ type Config struct {
 }
 
 // Load the configuration of the bucket from the environment. It fails with [ErrNoBucket] if
-// S4QL_S3_BUCKET is empty.
+// S4QL_S3_BUCKET is empty, and if one of AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY is set
+// without the other.
 func Load() (Config, error) {
 	c := Config{
 		Bucket:          os.Getenv("S4QL_S3_BUCKET"),
@@ -84,6 +87,9 @@ func Load() (Config, error) {
 	}
 	if c.Bucket == "" {
 		return Config{}, ErrNoBucket
+	}
+	if (c.AccessKeyID == "") != (c.SecretAccessKey == "") {
+		return Config{}, errors.New("s3test: one of AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY is set without the other")
 	}
 	return c, nil
 }

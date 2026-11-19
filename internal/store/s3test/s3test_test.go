@@ -127,6 +127,29 @@ func (f *fake) sent() []string {
 	return slices.Clone(f.requests)
 }
 
+func TestLoad(t *testing.T) {
+	t.Run("should fail with ErrNoBucket without S4QL_S3_BUCKET, and on half a pair of credentials", func(t *testing.T) {
+		t.Setenv("S4QL_S3_BUCKET", "")
+		t.Setenv("AWS_ACCESS_KEY_ID", "")
+		t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+		_, err := s3test.Load()
+		is.Error(t, s3test.ErrNoBucket, err)
+
+		t.Setenv("S4QL_S3_BUCKET", "bucket")
+		c, err := s3test.Load()
+		is.NotError(t, err)
+		is.Equal(t, "bucket", c.Bucket)
+
+		t.Setenv("AWS_ACCESS_KEY_ID", "key")
+		_, err = s3test.Load()
+		is.True(t, err != nil && !errors.Is(err, s3test.ErrNoBucket), fmt.Sprint(err))
+		t.Setenv("AWS_ACCESS_KEY_ID", "")
+		t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
+		_, err = s3test.Load()
+		is.True(t, err != nil && !errors.Is(err, s3test.ErrNoBucket), fmt.Sprint(err))
+	})
+}
+
 func TestDeletePrefix(t *testing.T) {
 	t.Run("should refuse a prefix that is not one of a test under s4ql-test/, and send nothing", func(t *testing.T) {
 		for _, prefix := range []string{

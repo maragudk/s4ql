@@ -119,7 +119,8 @@ test:
 
 # test-s3 runs S3TESTS, every test that needs a real bucket, in S3PKGS under the race detector. It
 # fails if S4QL_S3_BUCKET is empty, and if one of S3TESTS did not run and pass, so that a run cannot
-# pass by skipping them. How to run it by hand is in the documentation of internal/store/s3test.
+# pass by skipping them. A new test that calls s3test.FromEnv goes into S3TESTS, or test-s3 does not
+# run it. How to run it by hand is in the documentation of internal/store/s3test.
 S3TESTS := TestOpen_realBucket TestClient_conformance TestClient_realBucket TestClient_core TestDeleteOld_realBucket
 S3PKGS := . ./internal/store/s3store ./internal/store/s3test
 .PHONY: test-s3
