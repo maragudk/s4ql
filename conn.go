@@ -16,6 +16,7 @@ import (
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/engine"
 	"maragu.dev/s4ql/internal/host"
+	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/store"
 )
@@ -215,13 +216,15 @@ func (c *conn) Ping(ctx context.Context) error {
 	return c.c.public(ctx, c.c.db.Wait(ctx))
 }
 
-// ExecContext runs the statement of the text query. With arguments it runs nothing, and fails with
-// the error of [withArguments].
+// ExecContext runs the statement of the text query, with args for its parameters, by position. The
+// text is judged first, then the arguments, as [arguments] says, and then the instance runs the
+// statement. A statement with an error of its text or of its arguments does not run.
 func (c *conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	if len(args) > 0 {
-		return nil, withArguments(query)
+	values, err := arguments(query, args)
+	if err != nil {
+		return nil, err
 	}
-	res, err := c.e.Exec(ctx, query)
+	res, err := c.e.Exec(ctx, query, values...)
 	// The engine gives the result with an error too: an insert that fails sets the count to 0.
 	c.count(res)
 	if err != nil {
@@ -230,14 +233,15 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	return result{changes: c.changes}, nil
 }
 
-// QueryContext runs the statement of the text query, and gives its rows. With arguments it runs
-// nothing, and fails with the error of [withArguments]. A statement that is no query gives no
-// columns and no rows.
+// QueryContext runs the statement of the text query, with args for its parameters, and gives its
+// rows. The text and the arguments are judged as [conn.ExecContext] judges them. A statement that is
+// no query gives no columns and no rows.
 func (c *conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	if len(args) > 0 {
-		return nil, withArguments(query)
+	values, err := arguments(query, args)
+	if err != nil {
+		return nil, err
 	}
-	r, err := c.e.Query(ctx, query)
+	r, err := c.e.Query(ctx, query, values...)
 	if r != nil {
 		c.count(r.Result())
 	}
@@ -289,14 +293,54 @@ func check(query string) error {
 	return publicError(err)
 }
 
-// withArguments is the error of the text query run with arguments: the error of [check] for a text
-// that has one, so that a syntax error gets SQLite's error with arguments too, and "not supported:
-// parameters" for a statement that s4ql supports.
-func withArguments(query string) error {
-	if err := check(query); err != nil {
-		return err
+// arguments of a statement of the text query: the value of each of args, in order. An argument is
+// supported if it is an integer that fits a signed 64-bit integer, after the conversion of
+// [conn.CheckNamedValue], and if it has no name.
+//
+// The errors come in this order, the first that holds, so that an error of the text never depends on
+// the arguments: the error of the text, as [check] gives it; another number of arguments than the
+// statement has parameters, an error that says both numbers; and "not supported" for the first
+// argument with a name or of another type, which says which type. The engine makes the first two
+// checks again when it runs the statement, so they are made here only for arguments that are not
+// supported, and the text is parsed once on the path where every argument is.
+func arguments(query string, args []driver.NamedValue) ([]*s4qlpb.Value, error) {
+	values := make([]*s4qlpb.Value, 0, len(args))
+	for _, a := range args {
+		v, err := argument(a)
+		if err != nil {
+			if err := publicError(engine.Check(query, len(args))); err != nil {
+				return nil, err
+			}
+			return nil, err
+		}
+		values = append(values, v)
 	}
-	return notSupported("parameters")
+	return values, nil
+}
+
+// argument a as a value, or "not supported" for an argument with a name, and for one of another type
+// than int64. The message names the argument by its position, and the type, never the value.
+func argument(a driver.NamedValue) (*s4qlpb.Value, error) {
+	if a.Name != "" {
+		return nil, notSupported(fmt.Sprintf("the named argument %q", a.Name))
+	}
+	switch v := a.Value.(type) {
+	case int64:
+		return s4qlpb.Value_builder{Integer: new(v)}.Build(), nil
+	case nil:
+		return nil, notSupported(fmt.Sprintf("argument %v of type nil", a.Ordinal))
+	case unconverted:
+		return nil, notSupported(fmt.Sprintf("argument %v of type %T: %v", a.Ordinal, v.value, v.err))
+	default:
+		return nil, notSupported(fmt.Sprintf("argument %v of type %T", a.Ordinal, v))
+	}
+}
+
+// unconverted is an argument that database/sql's default conversion refused, with its error, which
+// [argument] reports after the text is judged.
+type unconverted struct {
+	value any
+	err   error
 }
 
 // BeginTx is not supported: each statement is a transaction of its own.
@@ -309,9 +353,19 @@ func (c *conn) Begin() (driver.Tx, error) {
 	return nil, notSupported("transactions")
 }
 
-// CheckNamedValue takes every argument as it is, so that a statement with an argument of any type
-// is answered as [withArguments] answers it, and not with an error about the type of the argument.
-func (c *conn) CheckNamedValue(*driver.NamedValue) error {
+// CheckNamedValue converts the argument nv as database/sql converts one for a driver without this
+// method, with [driver.DefaultParameterConverter]: an integer of any size and a type whose kind is an
+// integer become an int64, a [driver.Valuer] gives its value, and a pointer gives what it points
+// to. It never fails, because database/sql gives its error before the driver judges the text. An
+// argument that the conversion refuses is kept with the error, which [arguments] gives after the
+// text, as "not supported".
+func (c *conn) CheckNamedValue(nv *driver.NamedValue) error {
+	v, err := driver.DefaultParameterConverter.ConvertValue(nv.Value)
+	if err != nil {
+		nv.Value = unconverted{value: nv.Value, err: err}
+		return nil
+	}
+	nv.Value = v
 	return nil
 }
 
@@ -323,8 +377,8 @@ func (c *conn) Close() error {
 	return c.c.public(ctx, c.e.Close(ctx))
 }
 
-// prepared is a prepared statement: a text that was checked, and that each run checks again and
-// runs.
+// prepared is a prepared statement: a text that was checked, and that each run checks again, with
+// its arguments, and runs.
 type prepared struct {
 	conn  *conn
 	query string
@@ -336,37 +390,39 @@ var (
 	_ driver.StmtQueryContext = (*prepared)(nil)
 )
 
-// NumInput is -1, so that database/sql does not count the arguments, and the driver answers any
-// argument with "not supported".
+// NumInput is -1, so that database/sql does not count the arguments itself: the driver counts them,
+// with the same error for a prepared statement as for a direct call.
 func (p *prepared) NumInput() int {
 	return -1
 }
 
-// ExecContext runs the statement. With arguments it runs nothing, and fails with "not supported:
-// parameters": its text passed [check] when it was prepared.
+// ExecContext runs the statement with args, as [conn.ExecContext] runs its text.
 func (p *prepared) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
-	if len(args) > 0 {
-		return nil, notSupported("parameters")
-	}
-	return p.conn.ExecContext(ctx, p.query, nil)
+	return p.conn.ExecContext(ctx, p.query, args)
 }
 
-// QueryContext runs the statement, and gives its rows, as [prepared.ExecContext] runs it.
+// QueryContext runs the statement with args, and gives its rows, as [conn.QueryContext] runs its text.
 func (p *prepared) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
-	if len(args) > 0 {
-		return nil, notSupported("parameters")
-	}
-	return p.conn.QueryContext(ctx, p.query, nil)
+	return p.conn.QueryContext(ctx, p.query, args)
 }
 
 // Exec is [prepared.ExecContext] without a context.
 func (p *prepared) Exec(args []driver.Value) (driver.Result, error) {
-	return p.ExecContext(context.Background(), make([]driver.NamedValue, len(args)))
+	return p.ExecContext(context.Background(), named(args))
 }
 
 // Query is [prepared.QueryContext] without a context.
 func (p *prepared) Query(args []driver.Value) (driver.Rows, error) {
-	return p.QueryContext(context.Background(), make([]driver.NamedValue, len(args)))
+	return p.QueryContext(context.Background(), named(args))
+}
+
+// named arguments of args, by position, without names.
+func named(args []driver.Value) []driver.NamedValue {
+	nv := make([]driver.NamedValue, len(args))
+	for i, v := range args {
+		nv[i] = driver.NamedValue{Ordinal: i + 1, Value: v}
+	}
+	return nv
 }
 
 // Close does nothing: a prepared statement holds nothing.
