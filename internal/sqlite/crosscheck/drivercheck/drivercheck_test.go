@@ -387,14 +387,17 @@ type pair struct {
 	pinned bool
 	// empty is SQLite on an empty database, on which a text that s4ql does not support is prepared.
 	empty *sql.DB
-	y     tally
+	// created are the names of the tables that a text created, as their values, so that the
+	// comparison of the tables also asks for those that SQLite no longer has.
+	created map[string]bool
+	y       tally
 }
 
 // newPair on a new database of the world w, on a pinned connection of each side if pinned, with the
 // outcomes counted in y.
 func newPair(tb testing.TB, w *world, pinned bool, y tally) *pair {
 	tb.Helper()
-	p := &pair{tb: tb, w: w, prefix: fmt.Sprint("db", w.prefixes.Add(1)), cache: filepath.Join(tb.TempDir(), "cache"), pinned: pinned, y: y}
+	p := &pair{tb: tb, w: w, prefix: fmt.Sprint("db", w.prefixes.Add(1)), cache: filepath.Join(tb.TempDir(), "cache"), pinned: pinned, created: map[string]bool{}, y: y}
 	p.s4ql = open(tb, w.options(p.prefix, p.cache))
 	var err error
 	// A file, so that every connection of the pool reaches the same database.
@@ -421,7 +424,7 @@ func (p *pair) pin() {
 	tb.Cleanup(func() { _ = s.Close() })
 	o, err := p.sqlite.Conn(tb.Context())
 	is.NotError(tb, err)
-	tb.Cleanup(func() { is.NotError(tb, o.Close()) })
+	tb.Cleanup(func() { _ = o.Close() })
 	p.s, p.o = s, o
 }
 
@@ -458,11 +461,17 @@ func (p *pair) compare(src string, c call, supported bool, got outcome) string {
 		}
 	}
 	if got.String() == want.String() {
+		if s, _ := stmt.Check(src); s != nil && got.failed == "" {
+			if ct, ok := s.(*stmt.CreateTable); ok {
+				p.created[ct.Table.Value] = true
+			}
+		}
 		return ""
 	}
 
 	switch {
-	case got.failed != "prepare" && want.failed == "prepare" && (c == callPrepareExec || c == callPrepareQuery) && got.err == want.err:
+	case (c == callPrepareExec && got.failed == "exec" || c == callPrepareQuery && got.failed == "query") && want.failed == "prepare" &&
+		got.err == want.err && slices.Contains([]string{"no such table", "already exists", "has no column named"}, messageKind(got.err)):
 		p.y.excused(excusedPrepare)
 		return ""
 	case p.startedTable(src, c, got, want):
@@ -491,6 +500,11 @@ func (p *pair) checkNotSupported(src string, c call, supported bool, got outcome
 			return fmt.Sprintf("%q: s4ql gives %v", src, got)
 		}
 		if _, err := stmt.Check(src); errors.As(err, new(*sqlerr.Error)) {
+			// SQLite must give the same syntax error for the text on an empty database.
+			want := run(tb, p.empty, c, firstStatement(src), mattnText)
+			if se := new(*sqlerr.Error); !errors.As(err, se) || want.err != fmt.Sprint((*se).Code, "/", (*se).ExtendedCode, ": ", (*se).Message) {
+				return fmt.Sprintf("%q: s4ql gives %v, and SQLite %v", src, got, want)
+			}
 			p.y.excused(excusedArgumentSyntax)
 			return ""
 		}
@@ -563,12 +577,19 @@ func (p *pair) tables() []string {
 	return names
 }
 
-// compareTables of SQLite through a query of each on both sides, through the pool. It gives what
-// differs, or "".
+// compareTables of SQLite, and the tables that a text created, through a query of each on both
+// sides, through the pool, so that a table that only s4ql has is found too. It gives what differs,
+// or "".
 func (p *pair) compareTables() string {
 	tb := p.tb
 	tb.Helper()
-	for _, name := range p.tables() {
+	names := p.tables()
+	for name := range p.created {
+		if !slices.ContainsFunc(names, func(n string) bool { return stmt.Name{Value: n}.Fold() == stmt.Name{Value: name}.Fold() }) {
+			names = append(names, name)
+		}
+	}
+	for _, name := range names {
 		src := "select * from " + stmttest.Quote(name)
 		got, want := run(tb, p.s4ql, callQuery, src, s4qlText), run(tb, p.sqlite, callQuery, src, mattnText)
 		if got.String() != want.String() {
@@ -593,10 +614,11 @@ func (p *pair) restart(empty bool) {
 	p.s4ql = open(tb, p.w.options(p.prefix, p.cache))
 	p.s = p.s4ql
 	if p.pinned {
-		s, err := p.s4ql.Conn(tb.Context())
-		is.NotError(tb, err)
-		tb.Cleanup(func() { _ = s.Close() })
-		p.s = s
+		// SQLite's connection is pinned again too, so that both counts of changes start at 0.
+		if c, ok := p.o.(*sql.Conn); ok {
+			is.NotError(tb, c.Close())
+		}
+		p.pin()
 	}
 }
 
