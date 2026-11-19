@@ -73,8 +73,15 @@ var (
 
 	// ErrInvalid is wrapped by the error of a call whose table, row, key, or annotation is not one
 	// that the database can hold: a table without columns, a row with the wrong number of values, a
-	// value of the wrong storage class for its column, or NULL in a primary key.
+	// value of another storage class than its column's type, a real that is NaN or infinite, text
+	// that is not valid UTF-8 or holds the character NUL, or NULL in a primary key.
 	ErrInvalid = errors.New("invalid")
+
+	// ErrTooBig is wrapped by the error of a call whose text or blob is longer than the cache's
+	// limit for one value, 1,000,000,000 bytes, and of a write whose row is larger than that limit,
+	// as SQLite counts the bytes of a row: SQLite refuses both with SQLITE_TOOBIG, "string or blob
+	// too big". The call changes nothing, and the transaction can go on.
+	ErrTooBig = errors.New("string or blob too big")
 
 	// ErrTooLarge is wrapped by the error of [Tx.Commit] when the store refuses the commit object of
 	// the transaction because it is larger than the store takes in one write. The transaction is not
@@ -149,6 +156,12 @@ func classify(err error) errorKind {
 		return kindLocal
 	}
 	return kindOther
+}
+
+// isTooBig reports whether err is SQLite's SQLITE_TOOBIG, "string or blob too big".
+func isTooBig(err error) bool {
+	var sqliteErr *sqlite.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.Code.Primary() == 18
 }
 
 // invalidf is an error that wraps [ErrInvalid].

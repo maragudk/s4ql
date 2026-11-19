@@ -189,6 +189,22 @@ func TestCommitWriter(t *testing.T) {
 		is.True(t, proto.Equal(upsertRows("t", []uint32{1}, []*s4qlpb.Value{integer(3)}), items[1].change), "the second change differs")
 	})
 
+	t.Run("should write a parameter that is -0.0 with its sign, where a change must hold 0.0", func(t *testing.T) {
+		var b bytes.Buffer
+		w, err := format.NewCommitWriter(&b, format.EmptyLog, testCommitTime)
+		is.NotError(t, err)
+		is.NotError(t, w.UpsertRow("t", []uint32{0}, []*s4qlpb.Value{realValue(0)}))
+		is.NotError(t, w.Annotate(statement("insert into t values (?)", realValue(math.Copysign(0, -1)))))
+		name, err := w.Close()
+		is.NotError(t, err)
+
+		_, items, err := readAll(b.Bytes(), name)
+		is.NotError(t, err)
+		is.Equal(t, 2, len(items))
+		is.True(t, !math.Signbit(items[0].change.GetUpsertRows().GetRows()[0].GetValues()[0].GetReal()), "the row holds -0.0")
+		is.True(t, math.Signbit(items[1].annotation.GetStatement().GetParameters()[0].GetReal()), "the parameter lost its sign")
+	})
+
 	t.Run("should make one call of Write for the header and for each change and annotation", func(t *testing.T) {
 		var cw countingWriter
 		writeExample(t, &cw)
@@ -268,7 +284,7 @@ func TestCommitWriter(t *testing.T) {
 		}},
 		{name: "should refuse a column of a type it does not know", write: func(w *format.CommitWriter) error {
 			ct := createTable("t", []string{"a"}, []uint32{0}).GetCreateTable()
-			ct.GetColumns()[0].SetType(s4qlpb.Type(2))
+			ct.GetColumns()[0].SetType(s4qlpb.Type(6))
 			return w.CreateTable(ct)
 		}},
 		{name: "should refuse a create table with a field it does not know", write: func(w *format.CommitWriter) error {
@@ -310,6 +326,21 @@ func TestCommitWriter(t *testing.T) {
 		{name: "should refuse an upsert with text that is not valid UTF-8", write: func(w *format.CommitWriter) error {
 			return w.UpsertRow("t", []uint32{0}, []*s4qlpb.Value{text("\xff")})
 		}},
+		{name: "should refuse an upsert with a real that is infinite", write: func(w *format.CommitWriter) error {
+			return w.UpsertRow("t", []uint32{0}, []*s4qlpb.Value{realValue(math.Inf(1))})
+		}},
+		{name: "should refuse an upsert with a real that is -0.0", write: func(w *format.CommitWriter) error {
+			return w.UpsertRow("t", []uint32{0}, []*s4qlpb.Value{realValue(math.Copysign(0, -1))})
+		}},
+		{name: "should refuse an upsert with text that holds the character NUL", write: func(w *format.CommitWriter) error {
+			return w.UpsertRow("t", []uint32{0}, []*s4qlpb.Value{text("a\x00b")})
+		}},
+		{name: "should refuse a delete with a real that is -0.0", write: func(w *format.CommitWriter) error {
+			return w.DeleteRow("t", []*s4qlpb.Value{realValue(math.Copysign(0, -1))})
+		}},
+		{name: "should refuse a delete with text that holds the character NUL", write: func(w *format.CommitWriter) error {
+			return w.DeleteRow("t", []*s4qlpb.Value{text("\x00")})
+		}},
 		{name: "should refuse a delete without a table name", write: func(w *format.CommitWriter) error {
 			return w.DeleteRow("", []*s4qlpb.Value{integer(1)})
 		}},
@@ -347,6 +378,12 @@ func TestCommitWriter(t *testing.T) {
 		}},
 		{name: "should refuse a statement with a parameter that is NaN", write: func(w *format.CommitWriter) error {
 			return w.Annotate(statement("select ?", realValue(math.NaN())))
+		}},
+		{name: "should refuse a statement with a parameter that is infinite", write: func(w *format.CommitWriter) error {
+			return w.Annotate(statement("select ?", realValue(math.Inf(-1))))
+		}},
+		{name: "should refuse a statement with a parameter that is text with the character NUL", write: func(w *format.CommitWriter) error {
+			return w.Annotate(statement("select ?", text("\x00")))
 		}},
 	}
 	for _, test := range refused {
@@ -546,19 +583,23 @@ func (in *fuzzInput) string() string {
 	return s
 }
 
-// value of any kind, with a real that is NaN made null, which the writer refuses.
+// value of any kind, with what the writer refuses in a change made valid: a real that is NaN or
+// infinite made null, -0.0 made 0.0, and text made valid UTF-8 without the character NUL.
 func (in *fuzzInput) value() *s4qlpb.Value {
 	switch in.byte() % 5 {
 	case 0:
 		return integer(int64(in.uint64()))
 	case 1:
 		f := math.Float64frombits(in.uint64())
-		if math.IsNaN(f) {
+		if math.IsNaN(f) || math.IsInf(f, 0) {
 			return null()
+		}
+		if f == 0 {
+			f = 0
 		}
 		return realValue(f)
 	case 2:
-		return text(strings.ToValidUTF8(in.string(), "?"))
+		return text(strings.ReplaceAll(strings.ToValidUTF8(in.string(), "?"), "\x00", "?"))
 	case 3:
 		return blob([]byte(in.string()))
 	default:

@@ -42,7 +42,9 @@ var marshalOptions = proto.MarshalOptions{Deterministic: true}
 // does not belong to it, when it is full, and on [CommitWriter.Annotate] and [CommitWriter.Close].
 //
 // It refuses what [CommitReader] refuses, so it never writes a commit object that s4ql cannot read.
-// It refuses a change after an annotation, so the bytes are those of the whole message. After an
+// In an annotation, it also refuses a parameter with no known kind, a real that is NaN or infinite,
+// and text that holds the character NUL, which s4ql never stores; it keeps a parameter that is -0.0
+// as it is. It refuses a change after an annotation, so the bytes are those of the whole message. After an
 // error, nothing more is written, every call returns the same error, and what was written is not a
 // valid commit object.
 //

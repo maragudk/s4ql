@@ -32,8 +32,10 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// The declared type of a column. More are added as the roadmap grows.
-// A reader refuses a value it does not know.
+// The declared type of a column, as the column was declared: INT and
+// INTEGER are the same type in SQLite, and stay apart here, so that replay
+// declares a column as it was declared. More are added as the roadmap
+// grows. A reader refuses a value it does not know.
 type Type int32
 
 const (
@@ -41,6 +43,14 @@ const (
 	Type_TYPE_UNSPECIFIED Type = 0
 	// The STRICT type INT.
 	Type_TYPE_INT Type = 1
+	// The STRICT type INTEGER.
+	Type_TYPE_INTEGER Type = 2
+	// The STRICT type REAL.
+	Type_TYPE_REAL Type = 3
+	// The STRICT type TEXT.
+	Type_TYPE_TEXT Type = 4
+	// The STRICT type BLOB.
+	Type_TYPE_BLOB Type = 5
 )
 
 // Enum value maps for Type.
@@ -48,10 +58,18 @@ var (
 	Type_name = map[int32]string{
 		0: "TYPE_UNSPECIFIED",
 		1: "TYPE_INT",
+		2: "TYPE_INTEGER",
+		3: "TYPE_REAL",
+		4: "TYPE_TEXT",
+		5: "TYPE_BLOB",
 	}
 	Type_value = map[string]int32{
 		"TYPE_UNSPECIFIED": 0,
 		"TYPE_INT":         1,
+		"TYPE_INTEGER":     2,
+		"TYPE_REAL":        3,
+		"TYPE_TEXT":        4,
+		"TYPE_BLOB":        5,
 	}
 )
 
@@ -1482,9 +1500,11 @@ type Value_builder struct {
 	// Fields of oneof xxx_hidden_Kind:
 	// A 64-bit signed integer.
 	Integer *int64
-	// A 64-bit IEEE 754 floating-point number.
+	// A 64-bit IEEE 754 floating-point number. It is never NaN and never
+	// infinite. In a row or a primary key it is never -0.0, which SQLite
+	// stores as 0.0; a parameter holds -0.0 as the statement got it.
 	Real *float64
-	// Text. It is always valid UTF-8.
+	// Text. It is always valid UTF-8, and never holds the character NUL.
 	Text *string
 	// A blob.
 	Blob []byte
@@ -1535,12 +1555,14 @@ type value_Integer struct {
 }
 
 type value_Real struct {
-	// A 64-bit IEEE 754 floating-point number.
+	// A 64-bit IEEE 754 floating-point number. It is never NaN and never
+	// infinite. In a row or a primary key it is never -0.0, which SQLite
+	// stores as 0.0; a parameter holds -0.0 as the statement got it.
 	Real float64 `protobuf:"fixed64,2,opt,name=real,oneof"`
 }
 
 type value_Text struct {
-	// Text. It is always valid UTF-8.
+	// Text. It is always valid UTF-8, and never holds the character NUL.
 	Text string `protobuf:"bytes,3,opt,name=text,oneof"`
 }
 
@@ -1902,10 +1924,14 @@ const file_s4ql_v1_commit_proto_rawDesc = "" +
 	"\x03sql\x18\x01 \x01(\tR\x03sql\x12.\n" +
 	"\n" +
 	"parameters\x18\x02 \x03(\v2\x0e.s4ql.v1.ValueR\n" +
-	"parameters**\n" +
+	"parameters*i\n" +
 	"\x04Type\x12\x14\n" +
 	"\x10TYPE_UNSPECIFIED\x10\x00\x12\f\n" +
-	"\bTYPE_INT\x10\x01B!Z\x1fmaragu.dev/s4ql/internal/s4qlpbb\beditionsp\xe9\a"
+	"\bTYPE_INT\x10\x01\x12\x10\n" +
+	"\fTYPE_INTEGER\x10\x02\x12\r\n" +
+	"\tTYPE_REAL\x10\x03\x12\r\n" +
+	"\tTYPE_TEXT\x10\x04\x12\r\n" +
+	"\tTYPE_BLOB\x10\x05B!Z\x1fmaragu.dev/s4ql/internal/s4qlpbb\beditionsp\xe9\a"
 
 var file_s4ql_v1_commit_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_s4ql_v1_commit_proto_msgTypes = make([]protoimpl.MessageInfo, 14)

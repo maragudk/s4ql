@@ -25,7 +25,7 @@ Do not use human-team effort or duration ("years of work", comparisons with how 
 Do not spend effort scrubbing Markus's email address from documents, transcripts, or research notes committed here, and do not pause work over possible secret leaks.
 
 - **Why:** on 2026-11-10 Markus said "I don't care about my email address leaking btw", and earlier the same day "Don't worry too much about leaking secrets, we can just rotate them if you find them leaked."
-- **How to apply:** a cheap automatic check for the S3 access key and secret before committing bulk content is still worth running. Do not block, ask, or redact on account of the email address, and do not stop work on a likely false positive. If a real credential does get pushed, tell Markus at once so he can rotate it.
+- **How to apply:** a pre-commit hook of git checks every commit for secrets, so do not check by hand before committing. Markus on 2026-11-19: "there's a git precommit hook for secrets now, you don't have to check anymore". Do not block, ask, or redact on account of the email address, and do not stop work on a likely false positive. If a real credential does get pushed, tell Markus at once so he can rotate it.
 
 ### Keep this file lean
 
@@ -81,7 +81,7 @@ The second-opinion skill may be used whenever an independent view helps.
 When Markus exports a conversation, move the export into `docs/conversations/` and commit it, without asking.
 
 - **Why:** Markus said on 2026-11-11: "every time I export a conversation, just move it (potentially overwriting another one if it's an update to a conversation) and commit."
-- **How to apply:** name the file by the date the conversation started and a short topic, like `2026-11-10-kickoff.txt`. If the export is a newer version of a conversation that is already there, overwrite that file. Run the cheap check for the S3 access key and secret first.
+- **How to apply:** name the file by the date the conversation started and a short topic, like `2026-11-10-kickoff.txt`. If the export is a newer version of a conversation that is already there, overwrite that file.
 
 ### The lead's conversations with Markus can be read in `docs/conversations/`
 
