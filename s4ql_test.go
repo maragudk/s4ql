@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"maragu.dev/s4ql/internal/sqlite"
 	"maragu.dev/s4ql/internal/sqlite/faultvfs"
 	"maragu.dev/s4ql/internal/store"
+	"maragu.dev/s4ql/internal/store/s3test"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
 
@@ -36,8 +38,8 @@ const (
 	select1 = "select * from t1"
 )
 
-// readers is the number of reads that an instance runs at once, as the documentation of the package
-// gives it.
+// readers is the number of queries that a test holds open at once, each on a connection of its
+// own, and the bound of the pool of a test that fills its pool.
 const readers = 4
 
 // world is a store in memory and a host with real goroutines, on which the tests open instances
@@ -75,7 +77,7 @@ func newWorld(t *testing.T) *world {
 // has the lease keeps it until it closes. A spare looks often for a lease that was released, so that
 // no test waits long for it.
 func coreOptions() core.Options {
-	return core.Options{Readers: readers, BusyTimeout: time.Minute, Lease: time.Hour, Watch: 10 * time.Millisecond}
+	return core.Options{BusyTimeout: time.Minute, Lease: time.Hour, Watch: 10 * time.Millisecond}
 }
 
 // client of the world's store, with a name of its own.
@@ -159,18 +161,29 @@ func query(ctx context.Context, db *sql.DB, src string) ([]int64, error) {
 	return vs, errors.Join(rows.Err(), rows.Close())
 }
 
-// readersFree requires that no query of db holds a read: it holds as many queries open at once as
-// the instance has readers, which would wait for good if one were held, and closes them.
+// readersFree requires that no connection of the pool of db is held, and that none is left with a
+// read: it takes every connection that the pool has, all at once, and runs a query on each. For
+// that it bounds the pool to the connections that it has, so that taking them waits for those that
+// database/sql is still closing the rows of, and would wait for good for one that is held. A
+// connection whose read was left open fails the query.
 func readersFree(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
-	for range readers {
-		rows, err := db.QueryContext(ctx, select1)
+	stats := db.Stats()
+	// Two at the least, so that the bound does not lower the number of idle connections that the
+	// pool keeps.
+	n := max(2, stats.OpenConnections)
+	db.SetMaxOpenConns(n)
+	defer db.SetMaxOpenConns(stats.MaxOpenConnections)
+	for range n {
+		conn, err := db.Conn(ctx)
+		is.NotError(t, err, "a connection is held")
+		defer func() { is.NotError(t, conn.Close()) }()
+		rows, err := conn.QueryContext(ctx, select1)
 		is.NotError(t, err, "a read is held")
-		defer func() { is.NotError(t, rows.Close()) }()
-		// The read transaction of a query starts with the query, and is held until the rows are closed.
 		is.True(t, rows.Next() || rows.Err() == nil)
+		is.NotError(t, rows.Close())
 	}
 }
 
@@ -260,6 +273,21 @@ func TestOpen(t *testing.T) {
 		is.True(t, strings.HasPrefix(failed(t, err).Error(), "s4ql: open the cache: "), err.Error())
 	})
 
+	t.Run("should bound the pool by a quarter of the process's limit of open files, which the application can change", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		is.Equal(t, s4ql.MaxOpenConns(s4ql.FileLimit()), db.Stats().MaxOpenConnections)
+
+		db.SetMaxOpenConns(readers)
+		is.Equal(t, readers, db.Stats().MaxOpenConnections)
+		exec(t, db, t1, insert1)
+		is.EqualSlice(t, []int64{1}, values(t, db, select1))
+
+		db.SetMaxOpenConns(0)
+		is.Equal(t, 0, db.Stats().MaxOpenConnections)
+		is.EqualSlice(t, []int64{1}, values(t, db, select1))
+	})
+
 	t.Run("should come up as a spare while another instance holds the lease, and serve with its commits after it has closed", func(t *testing.T) {
 		w := newWorld(t)
 		first := w.serve(t, "a")
@@ -287,6 +315,37 @@ func TestOpen(t *testing.T) {
 		is.Equal(t, 4, len(values(t, second, select1)))
 		exec(t, second, "insert into t1 (v1) values (2)")
 	})
+}
+
+func TestMaxOpenConns(t *testing.T) {
+	tests := []struct {
+		name    string
+		limit   uint64
+		limited bool
+		want    int
+	}{
+		{name: "should give no bound for no limit", limit: 0, limited: false, want: 0},
+		{name: "should give no bound for no limit, whatever the number", limit: 1024, limited: false, want: 0},
+		{name: "should give 1 for a limit of 0", limit: 0, limited: true, want: 1},
+		{name: "should give 1 for a limit of 1", limit: 1, limited: true, want: 1},
+		{name: "should give 1 for a limit of 2", limit: 2, limited: true, want: 1},
+		{name: "should give 1 for a limit of 3", limit: 3, limited: true, want: 1},
+		{name: "should give 1 for a limit of 4", limit: 4, limited: true, want: 1},
+		{name: "should give 1 for a limit of 5", limit: 5, limited: true, want: 1},
+		{name: "should give 1 for a limit of 6", limit: 6, limited: true, want: 1},
+		{name: "should give 1 for a limit of 7", limit: 7, limited: true, want: 1},
+		{name: "should give 2 for a limit of 8", limit: 8, limited: true, want: 2},
+		{name: "should give 2 for a limit of 11", limit: 11, limited: true, want: 2},
+		{name: "should give a quarter of a limit of 1024", limit: 1024, limited: true, want: 256},
+		{name: "should give a quarter of a limit of 61440", limit: 61440, limited: true, want: 15360},
+		{name: "should give a quarter of a limit of 1048576", limit: 1048576, limited: true, want: 262144},
+		{name: "should give a quarter of a very large limit, at most the largest int", limit: math.MaxUint64, limited: true, want: min(math.MaxUint64/4, math.MaxInt)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			is.Equal(t, test.want, s4ql.MaxOpenConns(test.limit, test.limited))
+		})
+	}
 }
 
 func TestOpen_cacheDir(t *testing.T) {
@@ -433,7 +492,7 @@ func TestOptions_Logger(t *testing.T) {
 		is.NotError(t, err)
 		defer func() { _ = db.Close() }()
 
-		is.EqualSlice(t, []string{"level=INFO msg=open db.prefix=db cache.path=" + filepath.Join(o.CacheDir, "cache.db") + " db.identity=s3:///db"}, log.of("open"))
+		is.EqualSlice(t, []string{fmt.Sprint("level=INFO msg=open db.prefix=db cache.path=", filepath.Join(o.CacheDir, "cache.db"), " db.identity=s3:///db pool.max_open_conns=", s4ql.MaxOpenConns(s4ql.FileLimit()))}, log.of("open"))
 		is.NotError(t, db.PingContext(t.Context()))
 		exec(t, db, t1)
 		is.Equal(t, 1, len(log.of("statement")))
@@ -546,6 +605,23 @@ func TestRegister(t *testing.T) {
 		is.True(t, strings.HasPrefix(failed(t, err).Error(), "s4ql: "), err.Error())
 	})
 
+	t.Run("should leave the pool without a bound, which database/sql sets, and log that", func(t *testing.T) {
+		w := newWorld(t)
+		name := driverName()
+		var log lines
+		o := w.options("a")
+		o.Logger = slog.New(slog.NewTextHandler(&log, nil))
+		s4ql.RegisterStore(name, w.host, w.client(), o, coreOptions())
+
+		db, err := sql.Open(name, "")
+		is.NotError(t, err)
+		defer func() { is.NotError(t, db.Close()) }()
+		is.Equal(t, 0, db.Stats().MaxOpenConnections)
+		opens := log.of("open")
+		is.Equal(t, 1, len(opens))
+		is.True(t, strings.HasSuffix(opens[0], " pool.max_open_conns=0"), opens[0])
+	})
+
 	t.Run("should fail on a local problem at sql.Open", func(t *testing.T) {
 		name := driverName()
 		s4ql.Register(name, s4ql.Options{CacheDir: t.TempDir()})
@@ -593,19 +669,24 @@ func TestOpen_s3(t *testing.T) {
 	}
 
 	t.Run("should open on a store that fails, as a spare, and ask the store for the manifest of the database with the credentials of the options", func(t *testing.T) {
-		for i, open := range []func(o s4ql.Options) (*sql.DB, error){
-			func(o s4ql.Options) (*sql.DB, error) { return s4ql.Open(t.Context(), o) },
-			func(o s4ql.Options) (*sql.DB, error) {
+		for i, c := range []struct {
+			open func(o s4ql.Options) (*sql.DB, error)
+			// maxOpen is the bound of the pool that the instance comes with.
+			maxOpen int
+		}{
+			{open: func(o s4ql.Options) (*sql.DB, error) { return s4ql.Open(t.Context(), o) }, maxOpen: s4ql.MaxOpenConns(s4ql.FileLimit())},
+			{open: func(o s4ql.Options) (*sql.DB, error) {
 				name := driverName()
 				s4ql.Register(name, o)
 				return sql.Open(name, "")
-			},
+			}, maxOpen: 0},
 		} {
 			// A prefix of its own for each instance, so that no request of the other one is taken for
 			// one of this.
 			prefix := fmt.Sprint("app/db", i)
-			db, err := open(options(prefix))
+			db, err := c.open(options(prefix))
 			is.NotError(t, err)
+			is.Equal(t, c.maxOpen, db.Stats().MaxOpenConnections)
 			_, err = db.ExecContext(t.Context(), t1)
 			is.Error(t, s4ql.ErrNotServing, failed(t, err))
 			_, err = db.ExecContext(t.Context(), "selec")
@@ -638,6 +719,153 @@ func TestOpen_s3(t *testing.T) {
 			_, err := s4ql.Open(t.Context(), o)
 			is.True(t, strings.HasPrefix(failed(t, err).Error(), c.want), fmt.Sprint(c.name, ": ", err))
 		}
+	})
+}
+
+// TestOpen_realBucket is [s4ql.Open] and [s4ql.Register] as an application calls them, on a real
+// bucket, through database/sql and the public errors only. It skips under -short, and fails without
+// the settings of the bucket; see internal/store/s3test. What the storage core does on the bucket
+// below the driver is in TestClient_core of internal/store/s3store.
+//
+// The lease and the watch of a spare have their defaults: a lease of 30 seconds, and a spare that
+// reads the manifest every 5 seconds. No subtest waits for a lease to run out, because a close
+// releases the lease, so a spare serves at its next read of the manifest after the holder closed. A
+// close that cannot release the lease leaves it to run out, which makes the next instance wait for
+// it, but changes no answer.
+func TestOpen_realBucket(t *testing.T) {
+	c := s3test.Load(t)
+	client, err := c.Client(t.Context())
+	is.NotError(t, err)
+	// The settings reach the store through the options only, so the SDK is left nothing else to take
+	// them from.
+	isolate(t)
+	dir := t.TempDir()
+	// options of the database under the prefix, with the cache directory of the given name among
+	// those of the database, since a cache directory is for one database. The close timeout is long,
+	// so that a slow network does not make the release of the lease fail.
+	options := func(prefix, cache string) s4ql.Options {
+		return s4ql.Options{
+			Bucket: c.Bucket, Prefix: prefix, Endpoint: c.Endpoint, Region: c.Region, AccessKeyID: c.AccessKeyID,
+			SecretAccessKey: c.SecretAccessKey, PathStyle: c.PathStyle, CacheDir: filepath.Join(dir, filepath.FromSlash(prefix), cache),
+			CloseTimeout: time.Minute,
+		}
+	}
+	// open an instance, which is closed when the test ends.
+	open := func(t *testing.T, prefix, cache string) *sql.DB {
+		t.Helper()
+		db, err := s4ql.Open(t.Context(), options(prefix, cache))
+		is.NotError(t, err)
+		t.Cleanup(func() { _ = db.Close() })
+		return db
+	}
+	// sqliteError requires that err is SQLite's error with the codes and the message.
+	sqliteError := func(t *testing.T, code, extended int, message string, err error) {
+		t.Helper()
+		e, ok := errors.AsType[*s4ql.Error](failed(t, err))
+		is.True(t, ok, fmt.Sprint("not SQLite's error: ", err))
+		is.Equal(t, s4ql.Error{Code: code, ExtendedCode: extended, Message: message}, *e)
+	}
+
+	t.Run("should commit every statement of slice 1 to the bucket, and give the same answers from an empty cache after a restart", func(t *testing.T) {
+		prefix := s3test.NewPrefix(t, client, c.Bucket, "s4ql") + "db"
+		db := open(t, prefix, "a")
+		is.NotError(t, db.PingContext(t.Context()))
+
+		exec(t, db, t1, "create table t2 (k int primary key) strict, without rowid")
+		for _, v := range []string{"1", "-9223372036854775808", "9223372036854775807", "-2"} {
+			res, err := db.ExecContext(t.Context(), "insert into t1 (v1) values ("+v+")")
+			is.NotError(t, err, v)
+			n, err := res.RowsAffected()
+			is.NotError(t, err)
+			is.Equal(t, int64(1), n, v)
+		}
+		exec(t, db, "insert into t2 (k) values (7)", "drop table t2")
+
+		// check the answers of the database after the statements above, and the errors of SQLite for
+		// the statements that fail on that state, none of which is committed.
+		check := func(t *testing.T, db *sql.DB) {
+			t.Helper()
+			is.EqualSlice(t, []int64{-9223372036854775808, -2, 1, 9223372036854775807}, values(t, db, select1))
+			_, err := db.ExecContext(t.Context(), insert1)
+			sqliteError(t, 19, 1555, "UNIQUE constraint failed: t1.v1", err)
+			_, err = db.ExecContext(t.Context(), t1)
+			sqliteError(t, 1, 1, "table t1 already exists", err)
+			_, err = db.QueryContext(t.Context(), "select * from t2")
+			sqliteError(t, 1, 1, "no such table: t2", err)
+			_, err = db.ExecContext(t.Context(), "insert into t2 (k) values (8)")
+			sqliteError(t, 1, 1, "no such table: t2", err)
+			_, err = db.ExecContext(t.Context(), "drop table t2")
+			sqliteError(t, 1, 1, "no such table: t2", err)
+			_, err = db.ExecContext(t.Context(), "insert into t1 (v2) values (3)")
+			sqliteError(t, 1, 1, "table t1 has no column named v2", err)
+		}
+		check(t, db)
+		is.NotError(t, db.Close())
+
+		// An empty cache directory replays the log from the bucket.
+		db = open(t, prefix, "b")
+		is.NotError(t, db.PingContext(t.Context()))
+		check(t, db)
+		exec(t, db, "drop table t1")
+		_, err := db.QueryContext(t.Context(), select1)
+		sqliteError(t, 1, 1, "no such table: t1", err)
+		is.NotError(t, db.Close())
+
+		// The first cache directory catches up with the drop.
+		db = open(t, prefix, "a")
+		is.NotError(t, db.PingContext(t.Context()))
+		_, err = db.QueryContext(t.Context(), select1)
+		sqliteError(t, 1, 1, "no such table: t1", err)
+	})
+
+	t.Run("should make a second instance a spare while the first serves, and serve the first's rows after the first has closed", func(t *testing.T) {
+		prefix := s3test.NewPrefix(t, client, c.Bucket, "s4ql") + "db"
+		first := open(t, prefix, "a")
+		is.NotError(t, first.PingContext(t.Context()))
+		exec(t, first, t1, insert1)
+
+		second := open(t, prefix, "b")
+		// Nothing tells the test when the spare has read the manifest, so it checks only what holds
+		// at any time while the first serves: the spare does not serve.
+		for i := range 3 {
+			_, err := second.ExecContext(t.Context(), "insert into t1 (v1) values (2)")
+			is.Error(t, s4ql.ErrNotServing, failed(t, err))
+			_, err = second.QueryContext(t.Context(), select1)
+			is.Error(t, s4ql.ErrNotServing, failed(t, err))
+			exec(t, first, fmt.Sprint("insert into t1 (v1) values (", 10+i, ")"))
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		is.Error(t, context.DeadlineExceeded, failed(t, second.PingContext(ctx)))
+
+		is.NotError(t, first.Close())
+		is.NotError(t, second.PingContext(t.Context()))
+		is.EqualSlice(t, []int64{1, 10, 11, 12}, values(t, second, select1))
+		exec(t, second, "insert into t1 (v1) values (2)")
+		is.EqualSlice(t, []int64{1, 2, 10, 11, 12}, values(t, second, select1))
+	})
+
+	t.Run("should open an instance through Register and sql.Open by name, which serves after a ping", func(t *testing.T) {
+		prefix := s3test.NewPrefix(t, client, c.Bucket, "s4ql") + "db"
+		name := driverName()
+		s4ql.Register(name, options(prefix, "a"))
+		byName := func() *sql.DB {
+			t.Helper()
+			db, err := sql.Open(name, "")
+			is.NotError(t, err)
+			t.Cleanup(func() { _ = db.Close() })
+			return db
+		}
+		db := byName()
+		is.NotError(t, db.PingContext(t.Context()))
+		exec(t, db, t1, insert1)
+		is.EqualSlice(t, []int64{1}, values(t, db, select1))
+		is.NotError(t, db.Close())
+
+		// The next instance of the name starts on the cache that the first left.
+		db = byName()
+		is.NotError(t, db.PingContext(t.Context()))
+		is.EqualSlice(t, []int64{1}, values(t, db, select1))
 	})
 }
 

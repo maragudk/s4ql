@@ -25,8 +25,6 @@ type Request struct {
 	// Leases are the durations of the lease of the instances, one for each in turn, from a. A
 	// restarted instance keeps the duration of the one it replaces.
 	Leases []float64 `json:"leases"`
-	// Readers is the number of read connections of each instance.
-	Readers int `json:"readers"`
 	// Latency is the longest time that a request takes to the store, and again back.
 	Latency  float64  `json:"latency"`
 	Faults   Faults   `json:"faults"`
@@ -136,7 +134,6 @@ const (
 	maxEnd       = 30 * 60 * 1000
 	maxInstances = 5
 	maxCallers   = 8
-	maxReaders   = 8
 	maxSchedule  = 1000
 	// maxKeep rows that the writes keep in the table.
 	maxKeep = 10_000
@@ -149,7 +146,6 @@ func defaultRequest() Request {
 		End:       120_000,
 		Instances: 3,
 		Leases:    []float64{30_000},
-		Readers:   2,
 		Latency:   50,
 		Workload:  Workload{On: true, Callers: 2, Think: 5_000, Writes: 40, Timeout: 30_000},
 	}
@@ -187,9 +183,6 @@ func (r Request) check() error {
 		if l < 1000 || l > 10*60*1000 || !finite(l) {
 			bad("a lease of %v must be from 1000 to 600000", l)
 		}
-	}
-	if r.Readers < 1 || r.Readers > maxReaders {
-		bad("readers is %v, and must be from 1 to %v", r.Readers, maxReaders)
 	}
 	if !nonNegative(r.Latency) || r.Latency > 60_000 {
 		bad("latency is %v, and must be from 0 to 60000", r.Latency)
@@ -329,7 +322,6 @@ type Session struct {
 	Seed      uint64    `json:"seed"`
 	Instances int       `json:"instances"`
 	Leases    []float64 `json:"leases"`
-	Readers   int       `json:"readers"`
 	Latency   float64   `json:"latency"`
 	Faults    Faults    `json:"faults"`
 	Buggify   bool      `json:"buggify"`
@@ -341,7 +333,7 @@ type Session struct {
 func defaultSession() Session {
 	r := defaultRequest()
 	r.Workload.Keep = 100
-	return Session{Seed: r.Seed, Instances: 2, Leases: r.Leases, Readers: r.Readers, Latency: r.Latency, Workload: r.Workload}
+	return Session{Seed: r.Seed, Instances: 2, Leases: r.Leases, Latency: r.Latency, Workload: r.Workload}
 }
 
 // ParseSession from its JSON, with the defaults for missing fields, and check it, as
@@ -352,7 +344,7 @@ func ParseSession(b []byte) (Request, error) {
 	if err := json.Unmarshal(b, &s, json.RejectUnknownMembers(true)); err != nil {
 		return Request{}, fmt.Errorf("the session is not JSON of a session: %w", err)
 	}
-	r := Request{Seed: s.Seed, End: maxEnd, Instances: s.Instances, Leases: s.Leases, Readers: s.Readers,
+	r := Request{Seed: s.Seed, End: maxEnd, Instances: s.Instances, Leases: s.Leases,
 		Latency: s.Latency, Faults: s.Faults, Buggify: s.Buggify, Workload: s.Workload}
 	if err := r.check(); err != nil {
 		return Request{}, err

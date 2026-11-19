@@ -269,6 +269,22 @@ func TestVFS(t *testing.T) {
 		is.Equal(t, int64(0), count(t, c))
 	})
 
+	t.Run("should count the files that are open through it, from the open of a connection to its close", func(t *testing.T) {
+		v := newVFS(t)
+		is.Equal(t, 0, v.OpenFiles())
+		path := filepath.Join(t.TempDir(), "test.db")
+		first, err := sqlite.OpenVFS(path, v.Name())
+		is.NotError(t, err)
+		is.Equal(t, 1, v.OpenFiles())
+		second, err := sqlite.OpenVFS(path, v.Name())
+		is.NotError(t, err)
+		is.Equal(t, 2, v.OpenFiles())
+		is.NotError(t, second.Close())
+		is.Equal(t, 1, v.OpenFiles())
+		is.NotError(t, first.Close())
+		is.Equal(t, 0, v.OpenFiles())
+	})
+
 	t.Run("should refuse to close while a file opened through it is open", func(t *testing.T) {
 		v, err := faultvfs.New()
 		is.NotError(t, err)

@@ -109,8 +109,16 @@ func TestStateAt(t *testing.T) {
 
 	t.Run("should list a call from its start until its end", func(t *testing.T) {
 		res := run(t, &e, `{"end": 30000, "instances": 1}`)
-		started := find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.What == "started" })[3]
-		ended := find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.What != "started" && e.Call == started.Call })[0]
+		// A call that takes a while: one can also end at the time of its start.
+		var started, ended simulator.Event
+		for _, s := range find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.What == "started" }) {
+			e := find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.What != "started" && e.Call == s.Call })[0]
+			if e.T > s.T {
+				started, ended = s, e
+				break
+			}
+		}
+		is.True(t, ended.T > started.T, "a call that takes a while")
 		has := func(at float64) bool {
 			return slices.ContainsFunc(simulator.StateAt(res, at).Calls, func(c simulator.CallState) bool { return c.Call == started.Call })
 		}

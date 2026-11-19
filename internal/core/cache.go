@@ -24,8 +24,8 @@ type conn struct {
 	// tables that were looked up, by their folded name. A nil table does not exist.
 	tables map[string]*table
 
-	// users is the number of calls that use the connection now, and closed whether [DB.Close] has
-	// closed it. [DB.mu] guards both.
+	// users is the number of calls that use the connection now, and closed whether [DB.Close] or
+	// [Reader.Close] has closed it. [DB.mu] guards both.
 	users  int
 	closed bool
 }

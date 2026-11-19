@@ -28,7 +28,9 @@ import (
 // failed, which includes a lease that is not released; "stop_seen" the first time that it answers
 // a call with [ErrStopped], at Warn; and "panic" for a panic in the loop over the rows of a query,
 // at Error, with its value as "panic" and the stack where it came as "stack" (see [rows]). Each
-// event has the prefix of the database as "db.prefix", and one of a failure has it as "error".
+// event has the prefix of the database as "db.prefix", and one of a failure has it as "error". The
+// event "open" has the bound of the pool that the instance opens with as "pool.max_open_conns", 0
+// for none, as [database/sql.DBStats.MaxOpenConnections] has it.
 type connector struct {
 	host   host.Host
 	db     *core.DB
@@ -61,8 +63,9 @@ var (
 // which runs on the host h, with the cache in the cache directory of o, for the driver d. Of o it
 // uses the prefix, the cache directory, the timeout of a close, the logger, and the endpoint, the
 // bucket, and the prefix for the identity of the database; co are the options of the storage core,
-// whose logger and identity it sets. It fails only on local problems.
-func newConnector(ctx context.Context, h host.Host, s store.Store, o Options, co core.Options, d driver.Driver) (*connector, error) {
+// whose logger and identity it sets. maxOpen is the bound of the pool that the instance opens with,
+// 0 for none, which it logs. It fails only on local problems.
+func newConnector(ctx context.Context, h host.Host, s store.Store, o Options, co core.Options, d driver.Driver, maxOpen int) (*connector, error) {
 	if o.CacheDir == "" {
 		return nil, errors.New("s4ql: open: the options name no cache directory")
 	}
@@ -88,7 +91,7 @@ func newConnector(ctx context.Context, h host.Host, s store.Store, o Options, co
 		return nil, fmt.Errorf("s4ql: %w", err)
 	}
 	log = log.With("db.prefix", o.Prefix)
-	log.InfoContext(ctx, "open", "cache.path", path, "db.identity", co.Identity)
+	log.InfoContext(ctx, "open", "cache.path", path, "db.identity", co.Identity, "pool.max_open_conns", maxOpen)
 	return &connector{
 		host:         h,
 		db:           db,
@@ -100,11 +103,11 @@ func newConnector(ctx context.Context, h host.Host, s store.Store, o Options, co
 	}, nil
 }
 
-// Connect gives a connection, which is no more than a count of changes of its own: every
-// connection runs its statements on the one instance. It never fails, and does not wait for the
-// instance to serve, which a ping does.
+// Connect gives a connection, which runs its statements on the one instance, through a connection
+// of the engine of its own. It never fails, opens nothing, and does not wait for the instance to
+// serve, which a ping does.
 func (c *connector) Connect(context.Context) (driver.Conn, error) {
-	return &conn{c: c}, nil
+	return &conn{c: c, e: c.engine.Conn()}, nil
 }
 
 // Driver of the connector, which opens a further instance of the same database for each connector.
@@ -119,6 +122,10 @@ func (c *connector) Driver() driver.Driver {
 // instance, which the close of the instance waits for. The next row of such rows is then the error
 // of an instance that was closed. A panic of a loop that it ends is logged and not raised, so that
 // the close goes on.
+//
+// The close of the instance closes the reader of every connection, also of one that database/sql
+// has not closed yet, such as one that an application holds. The close of such a connection then
+// finds its reader closed.
 func (c *connector) Close() error {
 	c.mu.Lock()
 	c.closed = true
@@ -175,10 +182,18 @@ func (c *connector) public(ctx context.Context, err error) error {
 	return err
 }
 
-// conn is a connection: a count of changes, on the instance of its connector. It is not safe for
-// concurrent use, as [driver.Conn] says.
+// conn is a connection: a connection of the engine and a count of changes, on the instance of its
+// connector. It is not safe for concurrent use, as [driver.Conn] says.
+//
+// The connection of the engine owns the reader of the connection: a connection to the cache, on
+// which the read transactions of the connection run, one at a time. It is opened for the first
+// statement of the connection that reads, and closed with the connection, when database/sql closes
+// it. So the connections that database/sql keeps open are the reads that run at once, and the
+// settings of its pool are the settings of the readers.
 type conn struct {
 	c *connector
+	// e is the connection of the engine that the statements run on.
+	e *engine.Conn
 	// changes is SQLite's count of changes on the connection: what the last statement that set it
 	// set it to.
 	changes int64
@@ -206,7 +221,7 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	if len(args) > 0 {
 		return nil, withArguments(query)
 	}
-	res, err := c.c.engine.Exec(ctx, query)
+	res, err := c.e.Exec(ctx, query)
 	// The engine gives the result with an error too: an insert that fails sets the count to 0.
 	c.count(res)
 	if err != nil {
@@ -222,7 +237,7 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	if len(args) > 0 {
 		return nil, withArguments(query)
 	}
-	r, err := c.c.engine.Query(ctx, query)
+	r, err := c.e.Query(ctx, query)
 	if r != nil {
 		c.count(r.Result())
 	}
@@ -300,9 +315,12 @@ func (c *conn) CheckNamedValue(*driver.NamedValue) error {
 	return nil
 }
 
-// Close does nothing: a connection holds nothing. The rows of its queries hold their reads.
+// Close the connection: its connection of the engine, and with it its reader, if it has opened
+// one. database/sql closes a connection after the rows of its queries are closed.
 func (c *conn) Close() error {
-	return nil
+	// database/sql gives no context here.
+	ctx := context.Background()
+	return c.c.public(ctx, c.e.Close(ctx))
 }
 
 // prepared is a prepared statement: a text that was checked, and that each run checks again and

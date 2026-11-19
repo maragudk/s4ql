@@ -20,7 +20,6 @@ import (
 // options of the instances of a workload, with the bugs of the given names planted.
 func options(bugs ...string) core.Options {
 	o := core.Options{
-		Readers: 2,
 		// A caller that waits for a lock of the cache with the scheduler off is a moment from getting
 		// it, unless the machine is very slow.
 		BusyTimeout: time.Minute,
@@ -81,11 +80,7 @@ var hammerWorkload = workload{
 	ops:       30,
 	writes:    40,
 	timeout:   30 * time.Second,
-	options: func() core.Options {
-		o := options()
-		o.Readers = 4
-		return o
-	}(),
+	options:   options(),
 	durations: []time.Duration{30 * time.Second},
 	latency:   50 * time.Millisecond,
 	faults:    simstore.AllFaults(),
@@ -179,37 +174,48 @@ var (
 		"writes stuck":                             13,
 	}
 
-	// hammerReaches is what the 10 seeds of the default run of [hammerWorkload] must reach.
+	// hammerReaches is what the 30 seeds of the default run of [hammerWorkload] must reach: a quarter
+	// of what they reached on 2026-11-19. Until then the default run had 10 seeds, which reached 20
+	// reads refused by a clock on 2026-11-18, 8 after each caller got a reader of its own, and none
+	// after [core.DB.Reader] got its yield. That is chance and no change of the code: over 200 seeds
+	// the workload reached 88 of them before the readers and 80 after, about 4 in 10 seeds, which is
+	// less than the minimum of 5 that the 10 seeds had.
 	hammerReaches = map[string]int64{
-		"callers that gave up":          17,
-		"calls with no answer":          6,
-		"commits":                       161,
-		"commits of nothing":            30,
-		"conflicts":                     6,
-		"cut-offs":                      1,
-		"event catch_up/caught_up":      2,
-		"event commit/committed":        161,
-		"event commit/empty":            30,
-		"event commit/not_committed":    1,
-		"event lease/released/released": 5,
-		"event lease/renewed/renewed":   1,
-		"event lease/renewed/unknown":   2,
-		"event lease/taken/taken":       5,
-		"event refusal/refused":         53,
-		"event stop/closed":             5,
-		"failed commits":                1,
-		"lost requests":                 7,
-		"lost responses":                5,
-		"reads":                         330,
-		"reads overtaken by a commit":   63,
-		"reads refused by a clock":      5,
-		"refused reads":                 32,
-		"rollbacks":                     22,
-		"slow ways":                     13,
-		"timeouts that expired":         31,
-		"transactions refused at start": 24,
-		"writes applied late":           1,
-		"writes stuck":                  11,
+		"broken reads":                               1,
+		"callers that gave up":                       71,
+		"calls with no answer":                       28,
+		"commits":                                    485,
+		"commits of nothing":                         90,
+		"commits of unknown outcome":                 2,
+		"conflicts":                                  38,
+		"cut-offs":                                   7,
+		"event catch_up/caught_up":                   8,
+		"event commit/committed":                     485,
+		"event commit/empty":                         90,
+		"event commit/not_committed":                 3,
+		"event commit/unknown":                       2,
+		"event lease/released/released":              15,
+		"event lease/renewed/renewed":                6,
+		"event lease/renewed/unknown":                6,
+		"event lease/taken/taken":                    15,
+		"event refusal/refused":                      171,
+		"event stop/closed":                          15,
+		"event unknown_outcome/commit/not_committed": 1,
+		"event unknown_outcome/renewal/renewed":      1,
+		"failed commits":                             3,
+		"lost requests":                              24,
+		"lost responses":                             20,
+		"outages":                                    3,
+		"reads":                                      971,
+		"reads overtaken by a commit":                169,
+		"reads refused by a clock":                   4,
+		"refused reads":                              91,
+		"rollbacks":                                  66,
+		"slow ways":                                  47,
+		"timeouts that expired":                      117,
+		"transactions refused at start":              96,
+		"writes applied late":                        9,
+		"writes stuck":                               50,
 	}
 
 	// lateReaches is what the 10 seeds of the default run of [lateWrites] must reach.
@@ -413,7 +419,7 @@ func TestSimulation(t *testing.T) {
 	}{
 		{name: "should give the same trace when a seed is run twice, and no violations, with one instance", workload: singleWorkload, seeds: 40, reaches: singleReaches},
 		{name: "should give the same trace when a seed is run twice, and no violations, with instances that compete, clocks that move, crashes, and buggify", workload: fullWorkload, seeds: 30, reaches: fullReaches},
-		{name: "should give the same trace when a seed is run twice, and no violations, with callers that never pause", workload: hammerWorkload, seeds: 10, reaches: hammerReaches},
+		{name: "should give the same trace when a seed is run twice, and no violations, with callers that never pause", workload: hammerWorkload, seeds: 30, reaches: hammerReaches},
 		{name: "should give the same trace when a seed is run twice, and no violations, with writes that land long after they were sent", workload: lateWrites(func(w *workload) {}), seeds: 10, reaches: lateReaches},
 	} {
 		t.Run(test.name, func(t *testing.T) {

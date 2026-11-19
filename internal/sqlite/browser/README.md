@@ -52,7 +52,7 @@ These differences remain:
 A Go program built with the tag runs in a Worker. The Worker does the following, in this order:
 
 1. Load `sqlite3.js`, `vfs.js`, `bridge.js`, `fs.js`, and Go's own `lib/wasm/wasm_exec.js`, with `importScripts`. The `wasm_exec.js` must come from the GOROOT of the Go that built the program. `fs.js` comes before it, because `wasm_exec.js` keeps a `globalThis.fs` that is already there.
-2. Await `s4qlInitSQLite()`. It loads the build, registers the VFS, and sets `globalThis.s4qlSQLite`, which the Go binding reads. The binding panics if it is not set.
+2. Await `s4qlInitSQLite()`. It loads the build, registers the VFS, and sets `globalThis.s4qlSQLite`, which the Go binding reads. The binding panics if it is not set. An object as its argument goes to the build's `sqlite3InitModule` as well, such as `{locateFile: (file, prefix) => prefix + file + '?v=1'}` to fetch `sqlite3.wasm` from another URL.
 3. Instantiate the Go module with the `importObject` of a `new Go()`, and run it.
 
 `sqlite3.wasm` is served next to `sqlite3.js`.

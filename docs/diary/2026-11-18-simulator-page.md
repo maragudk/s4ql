@@ -405,7 +405,99 @@ By eye before it goes live: the copy of the intro and of the log lines; the word
 
 - If the Go heap ever becomes measurable from the page, replace the day of fake time with it.
 
-## Step 8: A preview image of its own
+## Step 8: Every file of the simulator at the version of its deploy
+
+**Author:** builder (simulator cache fix)
+
+### Prompt Context
+
+**Verbatim prompt:** (the brief from the lead, abridged to the bug, the measurement, and the requirements)
+
+> The simulator page at https://www.s4ql.com/simulator/ breaks for returning visitors after a deploy. Markus saw "BUILT FROM an unknown commit" and, in Safari's console, `TypeError: null is not an object (evaluating '$("again").addEventListener')`. `again` is a button that an older `page.js` used and the current `index.html` no longer has: his browser ran a cached old `page.js` against the new HTML.
+>
+> Measured on the live site (GitHub Pages behind Cloudflare): the HTML is served with `cache-control: max-age=600`, but `page.js`, `run.js`, `engine/simulator.js`, and `engine/worker.js` come with `cache-control: max-age=14400` (Cloudflare's browser cache time for scripts), and `engine/engine.wasm` with `max-age=600`. So for up to four hours after a deploy, a browser can pair new HTML with old scripts, or scripts of one deploy with an engine of another. The site deploys on every merge that touches `internal/**`, which is often.
+>
+> Make every file of the simulator that a page load fetches come from a URL that carries the version of the deploy, so that HTML of one deploy never runs scripts, Worker code, or WebAssembly of another, whatever the caches hold. The version is the commit that the Pages workflow builds from.
+>
+> - The version is fixed in the HTML that the deploy uploads, not fetched at run time. A query string (`page.js?v=<commit>`) is enough.
+> - It must reach every fetch: the module script, the modules it imports, the Worker's script, everything the Worker loads (`sqlite3.js`, `vfs.js`, `bridge.js`, `fs.js`, `wasm_exec.js`, `engine.wasm`, and `sqlite3.wasm`, which `sqlite3.js` may fetch by itself), and `build.json` if the page still fetches it.
+> - The files in git stay clean. A local `make site` and `make site-serve` must leave `git status` clean and still work, with a development version. Keep `internal/simulator/engine/` usable by its demo page and by `make simulator-demo` without a version.
+> - `internal/simulator/sitecheck` gets a check that fails if this breaks: build the site as the workflow does, with a version, and assert that every request the page makes for a file of the simulator carries that version, and that the page works. Also keep the unversioned local path working. No check may depend on timing.
+> - When `page.js` fails at start-up for any reason, the visitor today sees a page that silently does nothing. Check that an error during start-up ends in the page's existing failure box ("Reload to try again"), and fix it if it does not. Do not build more than that.
+
+**Interpretation:** stamp the version into the HTML only, in the Pages workflow's build, and let each file pass the query of its own URL on to every file it loads, so that one stamp reaches all twelve files. Make start-up of `page.js` a function whose errors all end in `halt`.
+
+**Inferred intent:** a deploy can never again break the page for a visitor whose browser cached files of the deploy before, and the check in CI says so on every change.
+
+### What I did
+
+- `/internal/simulator/serve/main.go`: flags `-page` and `-version`, which go together. `stamp` appends `?v=<version>` to each ` src="page.js"`, ` href="page.js"`, and ` href="run.js"` of the page (the script tag and the two `modulepreload` links), refuses a version outside `[0-9A-Za-z._-]`, and refuses a page without ` src="page.js"`, which includes one stamped already. The page is stamped before anything is built, and `-page` alone only stamps.
+- `/site/simulator/page.js`: `version` is `new URL(import.meta.url).search`. `run.js` is now a dynamic `import("./run.js" + version)` inside `start`, as is `engine/simulator.js`, and `build.json` is fetched at the version too. The mark, the cards, and the wiring of Play and Turbo moved from the top level of the module into `start` (`drawMark`, `wire`), and `start().catch` calls `halt("The page did not start.", "... Reload to try again.")`. `halt` shows the failure box first and puts the rest (`setPlaying`, the status, `drawControls`) in a `try`, because a page that failed at start-up may lack the controls.
+- `/internal/simulator/engine/simulator.js`: the Worker is `new Worker(new URL('worker.js' + version, base))`, with `version` from the module's own URL.
+- `/internal/simulator/engine/worker.js`: `version` is `self.location.search`, and goes on every `importScripts`, on `fetch('engine.wasm')`, and on `sqlite3.wasm` through `s4qlInitSQLite({ locateFile: (file, prefix) => prefix + file + version })`.
+- `/internal/sqlite/browser/bridge.js`: `s4qlInitSQLite(options)` passes the options on to `sqlite3InitModule`. Without an argument it behaves as before, so the test runner's Worker is unchanged.
+- `/Makefile`: `SITEDIR` (default `site`) and `SITEVERSION` (default empty). `make site SITEVERSION=x` also stamps `$(SITEDIR)/simulator/index.html`. `site-check` builds without a version, checks `site/`, then copies it to a temporary directory, stamps the copy with `serve -page` at `SITEVERSION` or `SITECOMMIT`, and checks the copy with `-version`.
+- `/.github/workflows/pages.yml`: `make site SITECOMMIT="$SITECOMMIT" SITEVERSION="$SITECOMMIT"`, with a comment on why.
+- `/internal/simulator/sitecheck/`: `-version`; the server records every request outside `/__check/`, and `checkRequests` fails the check unless every request under `/simulator/` for `.js`, `.wasm`, or `.json` has exactly the query `v=<version>` (or none without a version) and each of the 12 files was asked for. `/__check/broken/no-run/` serves the site without `run.js`, and `/__check/broken/no-play/` serves the page with its Play button's ID renamed, as a `page.js` of one deploy would find the HTML of another. `check.html` checks that both end in the failure box with "Reload to try again", waits for the page to name its commit (so `build.json` was served before the check ends), and loads `run.js` for its unit checks at the version.
+- `/internal/simulator/README.md` and `/internal/sqlite/browser/README.md`: a few sentences on the version and on the argument of `s4qlInitSQLite`.
+
+### Why
+
+- **The query chain.** Only the HTML is stamped. Each module reads the query of its own URL and passes it on, so a stamp in one file reaches all twelve, and a file that gets the version wrong shows up in the check by its URL. Stamping each JavaScript file in the build would have needed more replacements in more files, and an import map would not reach the classic Worker.
+- **`build.json` stays.** The page could read the commit from the version, but a local build has no version and would then say "an unknown commit". Fetched at the version, it is as safe as the rest, and what the page shows does not change.
+- **`sqlite3.wasm`.** `sqlite3.js` fetches it by itself, in `Module.instantiateWasm`, from `Module.locateFile(wasmFilename, scriptDirectory)`. Its wrapper of `sqlite3InitModule` takes a `locateFile` in the module argument and calls it first. In a Worker, `scriptDirectory` is the directory of the Worker's script, without its query, so without help the file was fetched without the version. Passing `locateFile` through `s4qlInitSQLite` uses that supported hook; setting `sqlite3InitModuleState.wasmFilename` from the Worker would also have worked, through an internal of the build. The OPFS proxy Worker of the build only starts when the page is cross-origin isolated, which the site is not; the check would see it otherwise.
+- **The failure box.** Before, any error at the top level of `page.js` (a missing element, as in Markus's case, or a module that does not load) ended the module silently. Now the top level only declares, and everything that can throw runs in `start`.
+
+### What worked
+
+- Red first: with the new `check.html` and the old JavaScript, `sitecheck -root site -timeout 60s` ended in `sitecheck: the check did not end within 1m0s`, because neither broken page ever left `data-engine="loading"`.
+- With the fix, `make site-check` prints, for the stamped copy, `ok   every request for a file of the simulator has the query "v=<commit>"`, `ok   the page asks for each of the 12 files of the simulator`, and both failure boxes, such as `The page did not start.Cannot read properties of null (reading 'addEventListener'). Reload to try again.`
+- Mutations: on a stamped copy, removing the version from each of the nine places in turn (the two `modulepreload` links, the import of `run.js`, `build.json`, the import of `simulator.js`, the Worker's URL, `importScripts`, `locateFile`, and `engine.wasm`) made the check fail every time, naming the files without the version.
+- `make site-check` passed 15 times in a row, before the review fixes and again after them, and 12 checks at once (6 unversioned, 6 stamped) all passed. `git status` was clean after each `make site`.
+- `make lint`, `make test`, and `make check-browser` passed. `make test-browser BROWSERPKGS=./internal/sqlite/faultvfs` passed with the changed `bridge.js`. `make simulator-demo` ran its three runs in Chromium without a version.
+
+### What didn't work
+
+- The harness refused Bash commands with heredocs that held `\\b` or template strings ("this command is too complex to verify that it stays inside the worktree"), and a `for` loop around `make site-check` with `git status` after it. Edits went through the Edit tool and a Python script in the scratchpad, and the loops through shell scripts there.
+- The Edit tool dropped the space in `const $ = (id)` once, which the review caught.
+
+### What I learned
+
+- Chromium's request for `page.js?v=x` from `<script src>` and from `<link rel="modulepreload">` is one request, and so is the dynamic import of `./run.js?v=x` after its preload, so the version costs no extra fetch.
+- `sqlite3.js` reads `urlParams` from the Worker's own URL (`sqlite3.dir`, `sqlite3.wasm`, `opfs-disable`), so a query on the Worker's URL is visible to it. `v` is not one of its names.
+
+### What was tricky
+
+- `make site SITEVERSION` changes a file in git by design, since the workflow stamps its own checkout. The check therefore stamps a copy, and `site-check` builds `site` with `SITEVERSION=` explicitly, so that passing `SITEVERSION` to it only picks the version of the copy.
+- A check that waits for `data-engine` to leave `loading` hangs until `-timeout` when start-up fails silently. That is how the old code fails the new check, which is the same way every other step of `check.html` fails.
+
+### What warrants review
+
+Self-review with the code-review skill at medium found ten things:
+
+- Fixed: `make site-check SITEVERSION=x` stamped `site/` and then failed to stamp the copy again. `site-check` now builds `site` without a version and uses `SITEVERSION` only for the copy.
+- Fixed: the copy was built a second time with a full build of the engine only to stamp its page. `serve -page` alone now only stamps, and the copy reuses the engine.
+- Fixed: a bad version was refused only after the engine was built. The page is stamped, and the version checked, before anything is built.
+- Fixed: `\b(src|href)=` also matched `data-src=`. It now needs a space before the attribute.
+- Fixed: the mark was drawn only after `run.js` loaded. It is drawn first.
+- Fixed: the missing space in `const $ = (id)`.
+- Not changed: running `make site SITEVERSION=x` locally leaves `index.html` changed; the Makefile says that it is for the workflow's checkout or a copy. A second run is refused with "the page has no src=\"page.js\", or is stamped already", after the recipe has removed the engine.
+- Not changed: the step that waits for the page to name its commit hangs, as every step does, if `build.json` is missing. `make site` always writes it.
+- Not changed: `halt` shows nothing if the HTML has no `#failure`. With the version, the HTML and `page.js` of two deploys no longer meet.
+- Not changed: the review said that changing `site/simulator/page.js` breaks the rule on `site/`. The brief asked for this change.
+
+To validate: `make site-check`, and read its two blocks of output; `make site && git status`.
+
+What a visitor sees after the deploy of this change: a visitor whose browser holds HTML of the previous deploy (up to 10 minutes) still asks for `page.js` without a version, and can still get the old mismatch until that HTML expires. After that, every HTML asks for its own version, and a file cached for four hours under one version is only used by HTML of that version. A remaining gap: HTML of deploy 1, cached for up to 10 minutes after deploy 2, asks for `?v=1`, and a browser or edge cache without that URL gets the files of deploy 2 from GitHub Pages under the name of version 1. That needs a cache that holds some files of deploy 1 and not others; a reload revalidates the HTML and fixes it.
+
+On the live site after the deploy: the page source names `page.js?v=<merge commit>` in the script tag and both `modulepreload` links; the network panel shows every file of the simulator with that query, including the Worker's `sqlite3.wasm` and `engine.wasm`; "Built from" shows the merge commit; and `curl -sI 'https://www.s4ql.com/simulator/page.js?v=x1'` followed by the same with `x2` gives `cf-cache-status: MISS` for each new query, which shows that Cloudflare's cache key includes the query string.
+
+### Future work
+
+- If the gap above ever shows, `page.js` could compare a version stamped into its own content with the one in its URL, and halt with "Reload to try again" when they differ.
+- The `rm -rf` of the engine in `make site` runs before `serve` refuses a page stamped already; moving the stamp into its own step before the `rm` would keep the engine.
+
+## Step 9: A preview image of its own
 
 **Author:** builder (simulator preview image)
 

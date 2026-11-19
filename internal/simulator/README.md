@@ -65,7 +65,6 @@ Every time and duration is a number of milliseconds of fake time, which may have
 | `end` | 120000 | above 0, at most 1800000 | The time at which the run ends. |
 | `instances` | 3 | 1 to 5 | The number of instances, which stays the same for the run. |
 | `leases` | `[30000]` | at least one, each 1000 to 600000 | The durations of the leases. Instance number i, from 0, gets `leases[i mod length]`. A restarted instance keeps its duration. A list that is given replaces the default. |
-| `readers` | 2 | 1 to 8 | The read connections of each instance. |
 | `latency` | 50 | 0 to 60000 | The longest time that a request takes to the store, and again back. Each way takes a time from 0 to `latency`, from the seed. |
 | `faults` | all 0 | see [Faults](#faults) | The faults that happen at random. |
 | `buggify` | false | | Switches buggify of the storage core on for the run. Each point is then on with the probability 0.25, and a point that is on fires with the probability 0.25 each time the code reaches it. |
@@ -252,7 +251,7 @@ An engine has one session at most. A command without a session gets an answer wi
 
 ### The settings
 
-The body of `start` is an object with the fields of a request that hold for a whole run: `seed`, `instances`, `leases`, `readers`, `latency`, `faults`, `buggify`, and `workload`. Each has the meaning and the limits that [The request](#the-request) gives it. A session has no `end`, no `schedule`, and no `lines`: each of them is an error, as any other member is.
+The body of `start` is an object with the fields of a request that hold for a whole run: `seed`, `instances`, `leases`, `latency`, `faults`, `buggify`, and `workload`. Each has the meaning and the limits that [The request](#the-request) gives it. A session has no `end`, no `schedule`, and no `lines`: each of them is an error, as any other member is.
 
 A field that is missing has the default of a request, with two exceptions:
 
@@ -652,7 +651,7 @@ What the engine offers that the model did not:
 - The core's own points of buggify.
 - Every fault of the store with a probability of its own, set in the request. Outages and broken reads are new. Conflicts, requests held in the network, and damaged downloads are in the model only as points of its buggify, at fixed rates. Here a conflict comes only while another write is in flight, as S3 documents it. A write whose caller gave up, or whose sender crashed, can land up to 30 minutes late.
 - 1 to 5 instances, where the model has 2 or 3, with a lease duration for each.
-- Settings for the latency, the read connections, and the workload.
+- Settings for the latency and the workload.
 - Runs that match the native build. The response has the hash that the tests of the core compute, and the same request gives the same hash natively and in Chromium.
 
 ## Using it from a page
@@ -683,7 +682,7 @@ GOOS=js GOARCH=wasm go test -c -tags s4ql_browser -o dir/engine.wasm ./internal/
 
 The program is a test binary because a run needs a `testing.T` for its `testing/synctest` bubble, and a test binary is the supported way to get one. Its one test, `TestEngine`, serves the messages of the page for as long as the Worker lives.
 
-For the project's site, `make site` writes the files into `site/simulator/engine/`, which `.gitignore` covers, without the demo page, and with `build.json`, `{"commit":"..."}`, which names the commit that the engine is built from. The Pages workflow runs it before it uploads `site/`. `make site-serve` serves the site on `SITEADDR` without the two headers below, as GitHub Pages serves it, and `make site-check` checks the page in headless Chromium with `sitecheck`: see its package comment.
+For the project's site, `make site` writes the files into `site/simulator/engine/`, which `.gitignore` covers, without the demo page, and with `build.json`, `{"commit":"..."}`, which names the commit that the engine is built from. The Pages workflow runs it before it uploads `site/`, with `SITEVERSION` set to the commit, which writes the version into the page in place on its checkout: the page then loads `page.js` and `run.js` with the query `?v=<commit>`, and passes the query of its own URL on to `simulator.js`, which passes it on to the Worker, which puts it on every file that it loads, also `sqlite3.wasm`. So the HTML of one deploy never runs files of another, whatever a cache holds. Without `SITEVERSION` the page stays as it is in git and loads every file without a query. `make site-serve` serves the site on `SITEADDR` without the two headers below, as GitHub Pages serves it, and `make site-check` checks the page in headless Chromium with `sitecheck`: see its package comment.
 
 The Worker instantiates `engine.wasm` while it streams, so the server must send it with the content type `application/wasm`.
 
@@ -735,7 +734,7 @@ SQLite's memory grows from run to run, and in a session with every crash. A proc
 
 ### The Worker
 
-A page that does not use the module talks to `worker.js` itself. The Worker loads the scripts in the order that the README of `internal/sqlite/browser` gives, and runs `engine.wasm` with the argument `-test.run=^TestEngine$`.
+A page that does not use the module talks to `worker.js` itself. The Worker loads the scripts in the order that the README of `internal/sqlite/browser` gives, and runs `engine.wasm` with the argument `-test.run=^TestEngine$`. It puts the query of its own URL, if any, on the URL of every file that it loads.
 
 The page posts `{id, kind, body}`. `kind` is `run` or `state` for a batch run, or `start`, `advance`, `act`, `now`, or `end` for a session, and `body` is the message as JSON text or as an object. The Worker posts:
 

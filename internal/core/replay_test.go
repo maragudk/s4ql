@@ -565,7 +565,7 @@ func TestReplay(t *testing.T) {
 
 			s.clear()
 			is.NotError(t, d.Wait(t.Context()))
-			r, err := d.Read(t.Context())
+			r, err := startRead(t, d)
 			is.NotError(t, err)
 			var rows int
 			for _, err := range r.Scan(t.Context(), "t1") {

@@ -223,10 +223,42 @@ func show(state map[string][]string) string {
 	return strings.Join(tables, "\n")
 }
 
+// newReader of d, which is closed when the test ends, before the instance is.
+func newReader(t *testing.T, d *core.DB) *core.Reader {
+	t.Helper()
+	rd, err := d.Reader(t.Context())
+	is.NotError(t, err)
+	t.Cleanup(func() { _ = rd.Close(context.WithoutCancel(t.Context())) })
+	return rd
+}
+
+// startRead starts a read transaction on a reader of its own, as [newReader] gives it.
+func startRead(t *testing.T, d *core.DB) (*core.ReadTx, error) {
+	t.Helper()
+	return newReader(t, d).Read(t.Context())
+}
+
+// startErr is the error of opening a reader of d and starting a read transaction on it. The
+// transaction is closed again if it starts, and so is the reader.
+func startErr(ctx context.Context, d *core.DB) error {
+	rd, err := d.Reader(ctx)
+	if err != nil {
+		return err
+	}
+	r, err := rd.Read(ctx)
+	if err == nil {
+		err = r.Close(ctx)
+	}
+	if closeErr := rd.Close(ctx); err == nil {
+		err = closeErr
+	}
+	return err
+}
+
 // read what the instance serves now.
 func read(t *testing.T, d *core.DB) string {
 	t.Helper()
-	r, err := d.Read(t.Context())
+	r, err := startRead(t, d)
 	is.NotError(t, err)
 	state, err := dump(t.Context(), r)
 	is.NotError(t, err)
@@ -316,21 +348,21 @@ func TestDB_Close(t *testing.T) {
 		is.NotError(t, c.Close())
 	})
 
-	t.Run("should make calls that wait fail, close the cache under the transactions that are open, and fail their every call", func(t *testing.T) {
+	t.Run("should make a call that waits fail, close the cache under the transactions that are open, and fail their every call", func(t *testing.T) {
 		bubble(t, func(t *testing.T, w *world) {
-			d := w.serve(t, "a", core.Options{Readers: 1})
+			d := w.serve(t, "a", core.Options{})
 			transact(t, d, create("t1", 1, "k"), upsert("t1", 1))
 
 			tx, err := d.Begin(t.Context())
 			is.NotError(t, err)
 			upsert("t1", 2)(t, tx)
-			r, err := d.Read(t.Context())
+			rd := newReader(t, d)
+			r, err := rd.Read(t.Context())
 			is.NotError(t, err)
 
-			// A writer waits for the write transaction, and a reader for the one read connection.
-			waiting := make(chan error, 2)
+			// A writer waits for the write transaction. A read never waits.
+			waiting := make(chan error, 1)
 			go func() { waiting <- beginErr(t, d) }()
-			go func() { waiting <- readErr(t, d) }()
 			time.Sleep(time.Second)
 			is.Equal(t, 0, len(waiting))
 
@@ -342,9 +374,10 @@ func TestDB_Close(t *testing.T) {
 			is.True(t, w.manifest(t).Lease == nil, "the lease is not released")
 			cacheClosed(t, w.dir)
 
-			// The calls that waited have failed, and the transactions that are open fail from now on.
+			// The call that waited has failed, and the transactions that are open fail from now on.
 			is.Error(t, core.ErrStopped, <-waiting)
-			is.Error(t, core.ErrStopped, <-waiting)
+			_, err = rd.Read(t.Context())
+			is.Error(t, core.ErrStopped, err)
 			_, err = r.Get(t.Context(), "t1", row(1))
 			is.Error(t, core.ErrStopped, err)
 			for _, err := range r.Scan(t.Context(), "t1") {
@@ -500,8 +533,7 @@ func fail(t *testing.T, seed uint64) failing {
 					is.Error(t, core.ErrStopped, err, name)
 					is.Error(t, core.ErrLocal, err, name)
 				}
-				_, err = d.Read(ctx)
-				is.Error(t, core.ErrLocal, err)
+				is.Error(t, core.ErrLocal, startErr(ctx, d))
 				_, err = d.Begin(ctx)
 				is.Error(t, core.ErrLocal, err)
 
@@ -535,13 +567,16 @@ func fail(t *testing.T, seed uint64) failing {
 				again, err := core.Open(ctx, inst, st.Client("again", inst), path, "db", options())
 				is.NotError(t, err)
 				is.NotError(t, again.Wait(ctx))
-				r, err := again.Read(ctx)
+				rd, err := again.Reader(ctx)
+				is.NotError(t, err)
+				r, err := rd.Read(ctx)
 				is.NotError(t, err)
 				state, err = dump(ctx, r)
 				is.NotError(t, err)
 				is.Equal(t, "t1(k*0): 1", show(state))
 				is.Equal(t, man.Head, r.Position())
 				is.NotError(t, r.Close(ctx))
+				is.NotError(t, rd.Close(ctx))
 				// Under buggify the next commit stops the instance again, so it is closed as it is.
 				is.NotError(t, again.Close(ctx))
 			}).Wait(ctx)
@@ -710,7 +745,7 @@ func TestMargin(t *testing.T) {
 func TestDB_stop_cache(t *testing.T) {
 	t.Run("should stop for good when SQLite reports that the cache is corrupt, and fail the read that met it", func(t *testing.T) {
 		w := newWorld(t)
-		d := w.serve(t, "a", core.Options{Readers: 2})
+		d := w.serve(t, "a", core.Options{})
 		transact(t, d, create("t1", 1, "k", "v"))
 		tx, err := d.Begin(t.Context())
 		is.NotError(t, err)
@@ -735,7 +770,7 @@ func TestDB_stop_cache(t *testing.T) {
 		is.NotError(t, f.Close())
 
 		// A read connection that has read none of the table's pages meets the damage.
-		r, err := d.Read(t.Context())
+		r, err := startRead(t, d)
 		is.NotError(t, err)
 		var failed error
 		for _, err := range r.Scan(t.Context(), "t1") {
@@ -790,7 +825,7 @@ func TestDB_stop_cache(t *testing.T) {
 			is.NotError(t, c.Exec("create table "+table))
 			is.NotError(t, c.Close())
 
-			r, err := d.Read(t.Context())
+			r, err := startRead(t, d)
 			is.NotError(t, err)
 			_, err = r.Table(t.Context(), "t9")
 			is.Error(t, core.ErrLocal, err, table)
@@ -898,7 +933,7 @@ func TestDB_stop_cache(t *testing.T) {
 			is.Equal(t, format.EmptyLog, position)
 			is.Equal(t, 0, len(state))
 			again := w.serve(t, "a", core.Options{})
-			r, err := again.Read(t.Context())
+			r, err := startRead(t, again)
 			is.NotError(t, err)
 			is.Equal(t, head, r.Position())
 			rows, err := r.Get(t.Context(), "t1", row(int64(1)<<50))
@@ -960,7 +995,7 @@ func TestDB_Close_waiting(t *testing.T) {
 		bubble(t, func(t *testing.T, w *world) {
 			d := w.serve(t, "a", core.Options{})
 			transact(t, d, create("t1", 1, "k"))
-			r, err := d.Read(t.Context())
+			r, err := startRead(t, d)
 			is.NotError(t, err)
 			_, err = r.Tables(t.Context())
 			is.NotError(t, err)
@@ -977,7 +1012,7 @@ func TestDB_Close_waiting(t *testing.T) {
 		bubble(t, func(t *testing.T, w *world) {
 			d := w.serve(t, "a", core.Options{})
 			transact(t, d, create("t1", 1, "k"), upsert("t1", 1), upsert("t1", 2))
-			r, err := d.Read(t.Context())
+			r, err := startRead(t, d)
 			is.NotError(t, err)
 
 			closed := make(chan error, 1)
@@ -1011,7 +1046,7 @@ func TestDB_Close_waiting(t *testing.T) {
 		bubble(t, func(t *testing.T, w *world) {
 			d := w.serve(t, "a", core.Options{})
 			transact(t, d, create("t1", 1, "k"), upsert("t1", 1))
-			r, err := d.Read(t.Context())
+			r, err := startRead(t, d)
 			is.NotError(t, err)
 
 			next, stop := iter.Pull2(r.Scan(t.Context(), "t1"))
@@ -1070,7 +1105,7 @@ func TestOpen_cache(t *testing.T) {
 			is.NotError(t, err)
 			is.Equal(t, position, tx.Position())
 			is.NotError(t, tx.Rollback(t.Context()))
-			r, err := d.Read(t.Context())
+			r, err := startRead(t, d)
 			is.NotError(t, err)
 			is.Equal(t, position, r.Position())
 			is.NotError(t, r.Close(t.Context()))
@@ -1130,7 +1165,6 @@ func TestOpen_cache(t *testing.T) {
 		for name, options := range map[string]core.Options{
 			"a renewal after the lease is over": {Lease: 10 * time.Second, RenewAfter: 10 * time.Second},
 			"a lease below zero":                {Lease: -time.Second},
-			"readers below zero":                {Readers: -1},
 			"a timeout below zero":              {StoreTimeout: -time.Second},
 			"a busy timeout below zero":         {BusyTimeout: -time.Second},
 			"an object timeout below zero":      {ObjectTimeout: -time.Second},

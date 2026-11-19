@@ -8,8 +8,13 @@
 // registers the VFS of vfs.js as SQLite's default VFS under the name "s4ql", and sets
 // globalThis.s4qlSQLite, which the Go binding reads. Call it, and await it, before the Go program
 // starts. Load fs.js before it, so that the VFS keeps its files where Go's os package sees them.
-globalThis.s4qlInitSQLite = async function () {
-  const sqlite3 = await sqlite3InitModule({ print: (...a) => console.log(...a), printErr: (...a) => console.error(...a) });
+//
+// s4qlInitSQLite(options) also passes the options, an object, to sqlite3InitModule, such as
+// locateFile(file, prefix), which gives the URL to fetch sqlite3.wasm from, for the file
+// "sqlite3.wasm" and as prefix the directory that the build takes as its own: in a Worker, that of
+// the Worker's script. Without it, sqlite3.wasm comes from that directory.
+globalThis.s4qlInitSQLite = async function (options = {}) {
+  const sqlite3 = await sqlite3InitModule({ print: (...a) => console.log(...a), printErr: (...a) => console.error(...a), ...options });
   const { wasm } = sqlite3;
   const x = wasm.exports;
   s4qlInstallVFS(sqlite3, 's4ql', true);

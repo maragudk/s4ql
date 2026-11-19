@@ -19,7 +19,6 @@ func TestParseRequest(t *testing.T) {
 		is.Equal(t, 120_000.0, r.End)
 		is.Equal(t, 3, r.Instances)
 		is.EqualSlice(t, []float64{30_000}, r.Leases)
-		is.Equal(t, 2, r.Readers)
 		is.Equal(t, 50.0, r.Latency)
 		is.True(t, r.Workload.On)
 		is.Equal(t, 2, r.Workload.Callers)
@@ -74,8 +73,8 @@ func TestParseRequest(t *testing.T) {
 	}
 
 	t.Run("should list every problem of a request", func(t *testing.T) {
-		_, err := simulator.ParseRequest([]byte(`{"instances": 0, "readers": 0}`))
+		_, err := simulator.ParseRequest([]byte(`{"instances": 0, "latency": -1}`))
 		is.True(t, err != nil, "an error")
-		is.True(t, strings.Contains(err.Error(), "instances is 0") && strings.Contains(err.Error(), "readers is 0"), err.Error())
+		is.True(t, strings.Contains(err.Error(), "instances is 0") && strings.Contains(err.Error(), "latency is -1"), err.Error())
 	})
 }

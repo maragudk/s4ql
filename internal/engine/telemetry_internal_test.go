@@ -22,6 +22,7 @@ func TestOutcomeOf(t *testing.T) {
 		{nil, "ok", slog.LevelDebug},
 		{noSuchTable("t"), "sqlite_error", slog.LevelDebug},
 		{fmt.Errorf("x: %w", &stmt.NotSupportedError{What: "WHERE clause"}), "not_supported", slog.LevelDebug},
+		{fmt.Errorf("x: %w", core.ErrReaderBusy), "not_supported", slog.LevelDebug},
 		{fmt.Errorf("x: %w", ErrNoStatement), "no_statement", slog.LevelDebug},
 		{internalError("x"), "internal_error", slog.LevelError},
 		{fmt.Errorf("%w: %w", core.ErrOutcomeUnknown, context.DeadlineExceeded), "core_error", slog.LevelWarn},

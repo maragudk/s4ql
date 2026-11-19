@@ -22,7 +22,8 @@ import (
 // default level, Info:
 //
 //   - Debug: a statement that succeeded; one that failed with SQLite's error, which is an answer to
-//     the application and nothing that went wrong; one that is not supported; a text without a
+//     the application and nothing that went wrong; one that is not supported, which includes one
+//     that reads on a connection whose rows of an earlier query are open; a text without a
 //     statement; one that the core refused for lack of a valid lease or because the instance has
 //     stopped, which the core logs itself; and one whose context ended.
 //   - Warn: one that failed with another error of the core, such as a commit of unknown outcome.
@@ -68,7 +69,8 @@ func outcomeOf(err error) (string, slog.Level) {
 		return "ok", slog.LevelDebug
 	case errors.As(err, &se):
 		return "sqlite_error", slog.LevelDebug
-	case errors.Is(err, stmt.ErrNotSupported):
+	case errors.Is(err, stmt.ErrNotSupported), errors.Is(err, core.ErrReaderBusy):
+		// A connection runs one read at a time, and a second one is what the caller asked for.
 		return "not_supported", slog.LevelDebug
 	case errors.Is(err, ErrNoStatement):
 		return "no_statement", slog.LevelDebug

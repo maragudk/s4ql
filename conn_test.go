@@ -433,7 +433,6 @@ func TestConn_Raw(t *testing.T) {
 		exec(t, db, t1)
 		conn, err := db.Conn(t.Context())
 		is.NotError(t, err)
-		defer func() { is.NotError(t, conn.Close()) }()
 
 		is.NotError(t, conn.Raw(func(driverConn any) error {
 			c := driverConn.(driver.Conn)
@@ -465,7 +464,192 @@ func TestConn_Raw(t *testing.T) {
 			is.NotError(t, rows.Close())
 			return query.Close()
 		}))
+		// The connection goes back to the pool, where its read must be free.
+		is.NotError(t, conn.Close())
 		readersFree(t, db)
+	})
+}
+
+// counted opens an instance on a new world, with its cache opened through a VFS that counts the
+// files that are open through it, and waits until it serves. A connection to the cache that has
+// read it has two files open, the cache and its write-ahead log: the write connection of the
+// instance, from its start on, and each reader that has read.
+func counted(t *testing.T) (*world, *sql.DB, *faultvfs.VFS) {
+	t.Helper()
+	w := newWorld(t)
+	vfs, err := faultvfs.New()
+	is.NotError(t, err)
+	// The VFS is closed after the instance, whose cleanup is registered later.
+	t.Cleanup(func() { is.NotError(t, vfs.Close()) })
+	co := coreOptions()
+	co.VFS = vfs.Name()
+	db := w.openOn(t, "a", w.client(), co)
+	is.NotError(t, db.PingContext(t.Context()))
+	return w, db, vfs
+}
+
+// rest of the values of the one column of rows, to their end.
+func rest(t *testing.T, rows *sql.Rows) []int64 {
+	t.Helper()
+	vs := []int64{}
+	for rows.Next() {
+		var v int64
+		is.NotError(t, rows.Scan(&v))
+		vs = append(vs, v)
+	}
+	is.NotError(t, rows.Err())
+	return vs
+}
+
+func TestReaders(t *testing.T) {
+	t.Run("should run a query on each of twenty connections at once, each with a reader of its own and on the state of its start, while writes commit", func(t *testing.T) {
+		_, db, vfs := counted(t)
+		exec(t, db, t1)
+		is.Equal(t, 2, vfs.OpenFiles())
+
+		// Each connection starts its query after one more insert than the connection before it, and
+		// has run that insert itself, which opened no reader.
+		const n = 20
+		var conns []*sql.Conn
+		var open []*sql.Rows
+		var want []int64
+		for k := range n {
+			exec(t, db, fmt.Sprint("insert into t1 (v1) values (", k, ")"))
+			want = append(want, int64(k))
+			is.Equal(t, 2+2*k, vfs.OpenFiles())
+			conn, err := db.Conn(t.Context())
+			is.NotError(t, err)
+			rows, err := conn.QueryContext(t.Context(), select1)
+			is.NotError(t, err)
+			conns, open = append(conns, conn), append(open, rows)
+			is.Equal(t, 2+2*(k+1), vfs.OpenFiles())
+		}
+		is.Equal(t, n, db.Stats().InUse)
+
+		// A write commits while the twenty reads are open, on one more connection, which opens no
+		// reader for it.
+		exec(t, db, fmt.Sprint("insert into t1 (v1) values (", n, ")"))
+		is.Equal(t, 2+2*n, vfs.OpenFiles())
+
+		for k, rows := range open {
+			is.EqualSlice(t, want[:k+1], rest(t, rows))
+			is.NotError(t, rows.Close())
+		}
+		// The rows have ended, and each connection reads again, on the reader that it has, what is
+		// committed now.
+		want = append(want, n)
+		for _, conn := range conns {
+			rows, err := conn.QueryContext(t.Context(), select1)
+			is.NotError(t, err)
+			is.EqualSlice(t, want, rest(t, rows))
+			is.NotError(t, rows.Close())
+		}
+		is.Equal(t, 2+2*n, vfs.OpenFiles())
+		for _, conn := range conns {
+			is.NotError(t, conn.Close())
+		}
+		readersFree(t, db)
+	})
+
+	t.Run("should open the reader of a connection at its first read, keep it while the pool keeps the connection, and close it when the pool closes the connection", func(t *testing.T) {
+		_, db, vfs := counted(t)
+		exec(t, db, t1, insert1)
+		is.Equal(t, 2, vfs.OpenFiles())
+
+		// A connection that writes, pings, and prepares opens no reader.
+		conn, err := db.Conn(t.Context())
+		is.NotError(t, err)
+		_, err = conn.ExecContext(t.Context(), "insert into t1 (v1) values (2)")
+		is.NotError(t, err)
+		is.NotError(t, conn.PingContext(t.Context()))
+		prepared, err := conn.PrepareContext(t.Context(), select1)
+		is.NotError(t, err)
+		_, err = conn.ExecContext(t.Context(), "selec")
+		is.True(t, err != nil)
+		is.Equal(t, 2, vfs.OpenFiles())
+
+		// Its first read opens one, which it keeps for its later reads.
+		for range 3 {
+			rows, err := prepared.QueryContext(t.Context())
+			is.NotError(t, err)
+			is.Equal(t, 4, vfs.OpenFiles())
+			is.EqualSlice(t, []int64{1, 2}, rest(t, rows))
+			is.NotError(t, rows.Close())
+			_, err = conn.ExecContext(t.Context(), select1)
+			is.NotError(t, err)
+			is.Equal(t, 4, vfs.OpenFiles())
+		}
+		is.NotError(t, prepared.Close())
+
+		// The pool keeps the connection, and the connection its reader.
+		is.NotError(t, conn.Close())
+		is.Equal(t, 4, vfs.OpenFiles())
+		is.EqualSlice(t, []int64{1, 2}, values(t, db, select1))
+		is.Equal(t, 4, vfs.OpenFiles())
+
+		// The pool closes its idle connections, and the reader closes with its connection.
+		db.SetMaxIdleConns(0)
+		is.Equal(t, 0, db.Stats().OpenConnections)
+		is.Equal(t, 2, vfs.OpenFiles())
+
+		// A pool that keeps no idle connection closes each connection after its statement.
+		rows, err := db.QueryContext(t.Context(), select1)
+		is.NotError(t, err)
+		is.Equal(t, 4, vfs.OpenFiles())
+		is.EqualSlice(t, []int64{1, 2}, rest(t, rows))
+		is.NotError(t, rows.Close())
+		is.Equal(t, 2, vfs.OpenFiles())
+
+		// A pool that keeps one idle connection keeps one reader of those of its connections.
+		db.SetMaxIdleConns(1)
+		all := held(t, db, t.Context)
+		is.Equal(t, 2+2*readers, vfs.OpenFiles())
+		for _, rows := range all {
+			is.NotError(t, rows.Close())
+		}
+		is.Equal(t, 1, db.Stats().OpenConnections)
+		is.Equal(t, 4, vfs.OpenFiles())
+		readersFree(t, db)
+
+		is.NotError(t, db.Close())
+		is.Equal(t, 0, vfs.OpenFiles())
+	})
+
+	t.Run("should close the reader of every connection when the database is closed, under the rows that are open and the connections that are held", func(t *testing.T) {
+		w, db, vfs := counted(t)
+		exec(t, db, t1, insert1, "insert into t1 (v1) values (2)")
+
+		// Rows that are open on twelve connections, and a connection that is held with its reader.
+		const n = 12
+		var open []*sql.Rows
+		for range n {
+			rows, err := db.QueryContext(t.Context(), select1)
+			is.NotError(t, err)
+			is.True(t, rows.Next())
+			open = append(open, rows)
+		}
+		conn, err := db.Conn(t.Context())
+		is.NotError(t, err)
+		_, err = conn.ExecContext(t.Context(), select1)
+		is.NotError(t, err)
+		is.Equal(t, 2+2*(n+1), vfs.OpenFiles())
+
+		// The close of the database leaves no connection to the cache, before the application has
+		// closed the rows and the connection.
+		is.NotError(t, db.Close())
+		is.Equal(t, 0, vfs.OpenFiles())
+		for _, rows := range open {
+			is.True(t, !rows.Next())
+			is.True(t, closedError(failed(t, rows.Err())), rows.Err().Error())
+			is.NotError(t, rows.Close())
+		}
+		_, err = conn.QueryContext(t.Context(), select1)
+		is.True(t, closedError(failed(t, err)), err.Error())
+		is.NotError(t, conn.Close())
+		is.Equal(t, 0, vfs.OpenFiles())
+
+		// The lease is released, and the next instance serves from the cache.
+		is.EqualSlice(t, []int64{1, 2}, values(t, w.serve(t, "a"), select1))
 	})
 }
 
@@ -786,11 +970,12 @@ func TestStop(t *testing.T) {
 		is.NotError(t, db.PingContext(t.Context()))
 		exec(t, db, t1, insert1, "insert into t1 (v1) values (2)")
 
-		// What is open when the instance stops: the rows of a query, a connection, and a prepared
-		// statement.
+		// What is open when the instance stops: the rows of a query, the rows of further queries on
+		// connections of their own, a connection, and a prepared statement.
 		rows, err := db.QueryContext(t.Context(), select1)
 		is.NotError(t, err)
 		is.True(t, rows.Next())
+		more := held(t, db, t.Context)
 		conn, err := db.Conn(t.Context())
 		is.NotError(t, err)
 		prepared, err := db.PrepareContext(t.Context(), "insert into t1 (v1) values (4)")
@@ -839,10 +1024,12 @@ func TestStop(t *testing.T) {
 			stopped(db.PingContext(t.Context()))
 			stopped(db.Ping())
 		}
-		// The rows that were open fail at their next row.
-		is.True(t, !rows.Next())
-		stopped(rows.Err())
-		_ = rows.Close()
+		// The rows that were open fail at their next row, on every connection.
+		for _, rows := range append(more, rows) {
+			is.True(t, !rows.Next())
+			stopped(rows.Err())
+			_ = rows.Close()
+		}
 
 		// What the text alone decides does not depend on the instance.
 		_, err = db.ExecContext(t.Context(), "selec")
@@ -860,12 +1047,51 @@ func TestStop(t *testing.T) {
 		// the insert is there if and only if it was acknowledged.
 		is.NotError(t, conn.Close())
 		_ = db.Close()
+		// The close has closed the cache, with the reader of every connection.
+		is.Equal(t, 0, vfs.OpenFiles())
 		vfs.Fail(faultvfs.Fault{})
 		want := []int64{1, 2}
 		if insertErr == nil {
 			want = append(want, 3)
 		}
 		is.EqualSlice(t, want, values(t, w.serve(t, "a"), select1))
+	})
+
+	t.Run("should stop the instance when the cache cannot be opened for the reader of a connection, as after any local failure of the cache", func(t *testing.T) {
+		w, db, vfs := counted(t)
+		exec(t, db, t1, insert1, "insert into t1 (v1) values (2)")
+		rows, err := db.QueryContext(t.Context(), select1)
+		is.NotError(t, err)
+		is.True(t, rows.Next())
+
+		// The next open of the file of the cache fails, as it does for a process that has no file
+		// descriptor left: the first read of a new connection.
+		vfs.Fail(faultvfs.Fault{Ops: faultvfs.Open, Files: faultvfs.MainDB, Times: 1})
+		stopped := func(err error) {
+			t.Helper()
+			is.Error(t, s4ql.ErrStopped, failed(t, err))
+			is.True(t, strings.HasPrefix(err.Error(), "s4ql: the instance has stopped: local I/O failure: open a reader: "), err.Error())
+		}
+		_, err = db.QueryContext(t.Context(), select1)
+		stopped(err)
+		is.Equal(t, 1, vfs.Failures())
+
+		// The stop is for good, for every connection, though the cache opens again.
+		_, err = db.QueryContext(t.Context(), select1)
+		stopped(err)
+		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (3)")
+		stopped(err)
+		stopped(db.PingContext(t.Context()))
+		// The rows that were open fail at their next row.
+		is.True(t, !rows.Next())
+		stopped(rows.Err())
+		is.NotError(t, rows.Close())
+		is.Equal(t, 1, vfs.Failures())
+
+		// Recovery is a normal start.
+		is.NotError(t, db.Close())
+		is.Equal(t, 0, vfs.OpenFiles())
+		is.EqualSlice(t, []int64{1, 2}, values(t, w.serve(t, "a"), select1))
 	})
 }
 
@@ -956,7 +1182,7 @@ func TestConcurrent(t *testing.T) {
 					}
 				}
 			})
-			// More queries at once than the instance has readers.
+			// As many queries at once as writes, each on a connection of the pool.
 			wg.Go(func() {
 				for range each {
 					// Every other goroutine closes its rows early.

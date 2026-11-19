@@ -22,6 +22,12 @@
 // SQLite's memory grows from run to run, and in a session with every crash. Before a run or the start
 // of a session, the module starts a new Worker once the memory has passed recycleBytes, which costs
 // one start of the engine and ends the session that runs.
+//
+// The query of this module's URL, such as ?v=<version>, goes on the URL of the Worker, which puts it
+// on every file that it loads, so that a page which loads the module at the version of its deploy
+// gets every file of the engine at that version too. Without a query, the files have none.
+const version = new URL(import.meta.url).search;
+
 export class Engine {
   static recycleBytes = 64 << 20;
 
@@ -51,7 +57,7 @@ export class Engine {
   }
 
   #start() {
-    const worker = new Worker(new URL('worker.js', this.#base));
+    const worker = new Worker(new URL('worker.js' + version, this.#base));
     this.#worker = worker;
     this.#memory = 0;
     this.#ready = new Promise((resolve, reject) => {
