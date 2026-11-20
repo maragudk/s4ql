@@ -31,7 +31,7 @@ Rejected for now, to be decided later: upserts, and join variants such as comma 
 
 A milestone is a goal that several slices lead to. It helps to choose which slice comes next.
 
-- **The first application on s4ql: [glue](https://www.maragu.dev/glue).** `maragu.dev/glue` runs on s4ql in place of SQLite. Markus on 2026-11-19: "a nice second milestone: get maragu.dev/glue working on this storage instead of SQLite." The SQL that it needs and s4ql does not have yet is in [the research note on glue](research/glue-on-s4ql.md). Slices 5 to 12 lead to it. After slice 12 comes the rest of what glue needs, which is not agreed as slices yet.
+- **The first application on s4ql: [glue](https://www.maragu.dev/glue).** `maragu.dev/glue` runs on s4ql in place of SQLite. Markus on 2026-11-19: "a nice second milestone: get maragu.dev/glue working on this storage instead of SQLite." The SQL that it needs and s4ql does not have yet is in [the research note on glue](research/glue-on-s4ql.md). Slices 5 to 13 lead to it. After slice 13 comes the rest of what glue needs, which is not agreed as slices yet.
 
 ## Slices
 
@@ -332,7 +332,63 @@ Rejected as not supported, where SQLite would accept it (except the last item):
 - `or replace` and the other conflict clauses.
 - `limit` and `order by` on `update` and `delete`. The pinned SQLite build gives a syntax error for them, and so does s4ql.
 
-### Slice 9: `if not exists` and `if exists`
+### Slice 9: indexes
+
+Status: agreed on 2026-11-20, not built.
+
+```sql
+create table t1 (v1 int primary key, v2 text not null, v3 real) strict, without rowid;
+
+create index t1_v2_v3 on t1 (v2, v3 desc);
+
+select v1 from t1 where v2 = 'a' and v3 > 1.5;
+
+drop index t1_v2_v3;
+```
+
+Included:
+
+- `create index i on t1 (v2, v3 desc)`: an index on one or more columns of the table, each `asc` or `desc`. When neither is written, it is `asc`. An index is not unique.
+- `drop index i`.
+- The log holds only the definition of an index. A commit says that a table has an index of a name on its columns with their directions, or that the index is dropped. No index entries go to S3. The commit format changes for this.
+- The cache holds a real SQLite index, which SQLite keeps up to date on every write. Each instance builds it when it replays the commit that defines it. The cache's layout version rises to 3, and an older cache is refused, with no upgrade, because nothing uses s4ql yet.
+- s4ql's engine picks the index by fixed rules, with no statistics and no `analyze`, and the cache's SQLite then scans exactly that index. The choice depends only on the statement and the schema, so it is the same on every instance. Markus on 2026-11-20: "Agree, and we can revisit later". The rules can change later without a change of format, because results cannot show the choice.
+- The rules, for the `where` of slice 7. The key of an index is its columns followed by the columns of the primary key, as SQLite stores an index of a `without rowid` table. A column is pinned by `=` or by `is null`.
+  - A `where` that pins the whole primary key with `=` uses the primary key.
+  - Otherwise the index, or the primary key, that has the most leading columns of its key pinned wins. With as many pinned, one with a range on the next column wins.
+  - A tie goes to the primary key, then to the index created first.
+  - When nothing fits, the engine scans the whole table.
+  - The rules for `order by` with `limit` come with slice 13.
+- The rule on row order of [the spec](spec.md) is built in this slice. From here on the order of rows without `order by` depends on the index used, so each query runs its scan forward or backward, chosen at random. Tests and the simulation give the engine a seed, so a failure can be replayed. The checks against SQLite compare such rows as a set. Any order of such rows is one SQLite could give too.
+- A column named twice in an index, the name of an index that is the name of a table, what `drop table` does to the indexes of the table, and `create index` in a transaction that rolls back are decided when the slice is built, by SQLite's behaviour, and recorded in [the todo](todo.md).
+- Everything of slices 1 to 8 with indexes: arguments, prepared statements, transactions, and a restart with an empty cache.
+- The reason: glue has two indexes, goqite's on `(queue, priority desc, created)` and the sessions table's on `(expiry)`, and this slice covers both.
+
+Further details are decided when the slice is built, and recorded here.
+
+Rejected as not supported, where SQLite would accept it:
+
+- `create unique index`. Unique indexes come later, in a slice of their own.
+- A partial index, with `where`.
+- An index on an expression.
+- `collate` in an index.
+- `create index if not exists` and `drop index if exists`. They come with slice 10.
+- `reindex` and `analyze`.
+- In the application's SQL: `indexed by`, `not indexed`, and `explain query plan`.
+
+How it is checked:
+
+- Every generated query runs through every path that can serve it: the full scan, the primary key, and each index, forward and backward. Each path must give the rows that SQLite gives.
+- The chosen path is checked against a small model of the rules, because no comparison of rows can see it.
+- The statement that the engine sends to the cache is checked with `explain query plan`: it must use the index and the bounds that s4ql asked for. An `indexed by` with an index that does not fit makes SQLite scan the whole index without an error, so the rows alone do not show it.
+- The simulation finds planted bugs: a bound turned around on a `desc` column, and an index key without the columns of its primary key.
+- `pragma integrity_check` runs on the cache after replay and after crashes. It checks every index against its table.
+- The plans of pinned queries, goqite's receive among them, are kept as golden files, so a change of the rules shows as a diff.
+- Counts that are exact are pinned in tests and fail on a regression: the rows read from the cache per query, for the pinned queries, goqite's receive among them, with and without the index. So the gain of an index shows as a number that does not depend on the machine or on timing.
+
+Background: [the research note on how engines pick an index](research/index-selection.md).
+
+### Slice 10: `if not exists` and `if exists`
 
 Status: agreed on 2026-11-20, not built.
 
@@ -346,10 +402,11 @@ Included:
 
 - `create table if not exists t1 (...)`: when no table `t1` exists, it does what `create table` does. When a table `t1` exists, the statement does nothing and gives no error, whatever the columns of the existing table are, as in SQLite.
 - `drop table if exists t1`: when no table `t1` exists, nothing happens and there is no error. When it exists, it does what `drop table` does.
+- The two forms also hold for indexes: `create index if not exists i on t1 (...)` and `drop index if exists i`.
 - A statement that does nothing writes nothing to the log.
 - An error that the declaration would give is still given by SQLite's rules when the table exists, for example a syntax error in the column list. What SQLite does with a declaration that is valid in syntax but not supported by s4ql, when the table exists, is decided when the slice is built, by SQLite's behaviour and the rule of the statement pass, and recorded in [the todo](todo.md).
 - The commit format does not change.
-- Everything of slices 1 to 8 with the two forms: transactions, prepared statements, and a restart with an empty cache.
+- Everything of slices 1 to 9 with the two forms: transactions, prepared statements, and a restart with an empty cache.
 - The reason: the migration tool of glue creates its migrations table with `create table if not exists`.
 
 Further details are decided when the slice is built, and recorded here.
@@ -358,9 +415,9 @@ Rejected as not supported, where SQLite would accept it:
 
 - `create temp table`.
 - `create table ... as select`.
-- Everything else that slices 1 to 8 reject in a declaration.
+- Everything else that slices 1 to 9 reject in a declaration.
 
-### Slice 10: `default` with a literal
+### Slice 11: `default` with a literal
 
 Status: agreed on 2026-11-20, not built.
 
@@ -374,9 +431,9 @@ Included:
 
 - A column declaration may carry `default <literal>`, where the literal is one of the literals that `insert` takes, or `null`.
 - An `insert` with a column list that leaves the column out stores the default. Until now such a column gets `null` if it takes null, and the statement is refused if it is `not null`.
-- The commit format changes: a column carries its default. The cache's layout version rises to 3, and an older cache is refused, with no upgrade, because nothing uses s4ql yet.
+- The commit format changes: a column carries its default. The cache's layout version rises to 4, and an older cache is refused, with no upgrade, because nothing uses s4ql yet.
 - A default whose type is not the column's type, a default on the primary key column, `not null default null`, signed numbers, and `true` and `false` are decided when the slice is built, by SQLite's behaviour and the rule of exact types, and recorded in [the todo](todo.md).
-- Everything of slices 1 to 9 with a default: transactions, prepared statements, and a restart with an empty cache.
+- Everything of slices 1 to 10 with a default: transactions, prepared statements, and a restart with an empty cache.
 - The reason: the schema of goqite, the queue that glue uses, declares two columns with `default 0`.
 
 Further details are decided when the slice is built, and recorded here.
@@ -387,7 +444,7 @@ Rejected as not supported, where SQLite would accept it:
 - `current_time`, `current_date`, and `current_timestamp`.
 - `insert ... default values`.
 
-### Slice 11: a value on the left of a comparison
+### Slice 12: a value on the left of a comparison
 
 Status: agreed on 2026-11-20, not built.
 
@@ -400,9 +457,9 @@ select v1 from t1 where ? >= v2;
 Included:
 
 - In a `where`, a comparison may have the literal or `?` on the left and the column on the right, such as `? >= timeout` and `5 < a`. Slice 7 allows only the column on the left.
-- It means what SQLite says it means. The rule of exact types holds as for the other order, and the primary key is used for lookups and ranges as in slice 7: `5 < a` bounds `a` from below.
+- It means what SQLite says it means. The rule of exact types holds as for the other order, and the primary key is used for lookups and ranges as in slice 7, and an index by the rules of slice 9: `5 < a` bounds `a` from below.
 - The commit format does not change.
-- Everything of slices 1 to 10 with the new order: arguments, prepared statements, transactions, and a restart with an empty cache.
+- Everything of slices 1 to 11 with the new order: arguments, prepared statements, transactions, and a restart with an empty cache.
 - The reason: goqite, the queue that glue uses, writes its receive query both ways round, `? >= timeout` and `received < ?`.
 
 Further details are decided when the slice is built, and recorded here.
@@ -413,7 +470,7 @@ Rejected as not supported, where SQLite would accept it:
 - A value on both sides of a comparison.
 - `is null` and `is not null` with anything but a column on the left.
 
-### Slice 12: `order by` and `limit` on `select`
+### Slice 13: `order by` and `limit` on `select`
 
 Status: agreed on 2026-11-20, not built.
 
@@ -427,11 +484,12 @@ Included:
 
 - `order by` takes one or more column names, each with `asc` or `desc`. When neither is written, it is `asc`.
 - `limit` takes a number or `?`.
-- Rows that tie under `order by`, and the rows of a `select` without `order by`, come in an order that varies from one query to the next, by the rule in [the spec](spec.md). Each query runs unordered scans and ties forward or backward by key, chosen at random, so rows still stream and nothing is held in memory for a shuffle. Tests and the simulation give the engine a seed, so a failure can be replayed. The checks against SQLite compare unordered and tied rows as a set. Any order of such rows is one SQLite could give too.
+- Rows that tie under `order by` follow the rule on row order of [the spec](spec.md), which slice 9 builds.
+- Two rules for picking an index come with this slice. With the same leading columns pinned and a `limit`, an index that gives the order beats one that only narrows a range. On goqite's receive query with 100,000 rows, that is about 400 times faster when all messages are ready, as [the research note](research/index-selection.md) measured. With nothing pinned, an index that gives the order beats a full scan with a sort.
 - `null` sorts where SQLite sorts it: first in `asc`, last in `desc`.
 - The commit format does not change.
 - A negative `limit`, `limit 0`, a `limit` argument that is not an integer, a column named twice in `order by`, and a column in `order by` that is not in the list of selected columns are decided when the slice is built, by SQLite's behaviour, and recorded in [the todo](todo.md).
-- Everything of slices 1 to 11 with `order by` and `limit`: arguments, prepared statements, transactions, and a restart with an empty cache.
+- Everything of slices 1 to 12 with `order by` and `limit`: arguments, prepared statements, transactions, and a restart with an empty cache.
 - The reason: goqite picks the next message with `order by priority desc, created limit 1`.
 
 Further details are decided when the slice is built, and recorded here.
