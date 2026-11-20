@@ -42,6 +42,9 @@ export function keysText(keys) {
   return keys.length + " rows";
 }
 
+// rowsText of the keys that a read gave: how many rows it found.
+const rowsText = (keys) => ((keys || []).length === 1 ? "1 row" : `${(keys || []).length} rows`);
+
 // literal of an argument of a statement in SQL: a number as itself, text in single quotes, and null.
 const literal = (v) => (v === null || v === undefined ? "null" : typeof v === "string" ? `'${v.replaceAll("'", "''")}'` : String(v));
 
@@ -324,7 +327,7 @@ export function teller() {
           case "served":
             calm("call");
             calm("core");
-            say(`${who} serves ${callText(e)}: ${e.error || keysText(e.keys)}.`, "stream");
+            say(`${who} serves ${callText(e)}: ${e.error || rowsText(e.keys)}.`, "stream");
             break;
           case "refused": {
             const r = reason(e);

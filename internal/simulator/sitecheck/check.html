@@ -150,9 +150,9 @@ async function unit() {
   // served, and sending the requests to the other instance, end the run. The events are those of the
   // engine's client.
   tell = R.teller();
-  const call = (t, inst, what, error) => ({ t, kind: "call", caller: "client", what, instance: inst, process: inst, op: "read", sql: "select id from barcodes where id > ?", args: [0], error });
+  const call = (t, inst, what, error) => ({ t, kind: "call", caller: "client", what, instance: inst, process: inst, op: "read", sql: "select code from barcodes where code = ?", args: [5712345678903], error });
   // write of the key 7, in place of the read of a call.
-  const write = (e) => ({ ...e, op: "write", value: 7, sql: "insert into barcodes (id) values (?)", args: [7] });
+  const write = (e) => ({ ...e, op: "write", value: 7, sql: "insert into barcodes (code) values (?)", args: [7] });
   const clientEvents = [
     call(1, "a", "down", "the process of the instance has crashed"), call(2, "a", "down", "the process of the instance has crashed"),
     call(3, "a", "refused", "no valid lease: not_holder"), call(4, "a", "refused", "no valid lease: not_holder"),
@@ -161,12 +161,12 @@ async function unit() {
     call(8, "b", "served", ""), call(9, "b", "refused", "no valid lease: not_holder"),
   ];
   const clientLines = clientEvents.map((e) => tell(e)).filter((w) => w.tier).map((w) => w.text);
-  const wantLines = ["A request gets no answer from a.", "A request gets an error from a: no lease.", "You send the requests to b.", "A request gets an error from b: no lease.", "b serves select id from barcodes where id > 0: no rows.", "A request gets an error from b: no lease."];
+  const wantLines = ["A request gets no answer from a.", "A request gets an error from a: no lease.", "You send the requests to b.", "A request gets an error from b: no lease.", "b serves select code from barcodes where code = 5712345678903: 0 rows.", "A request gets an error from b: no lease."];
   expect(JSON.stringify(clientLines) === JSON.stringify(wantLines), `a run of failures of the requests takes one line, until one is served or they go to the other instance (${clientLines.join(" | ")})`);
   const failures = [call(1, "a", "down", "the process of the instance has crashed"), call(2, "b", "refused", "no valid lease: not_holder"), write(call(3, "a", "lost", "crashed"))].map((e) => R.requestFailure(e));
   const words = failures.map((f) => f.words);
   expect(JSON.stringify(words) === JSON.stringify(["no answer from a", "error from b: no lease", "no answer from a, write outcome unknown"]), `a failure of a request in a few words (${words.join(" | ")})`);
-  expect(failures[2].line === "A request gets no answer from a: insert into barcodes (id) values (7), outcome unknown.", `a write that gets no answer names its statement in the log (${failures[2].line})`);
+  expect(failures[2].line === "A request gets no answer from a: insert into barcodes (code) values (7), outcome unknown.", `a write that gets no answer names its statement in the log (${failures[2].line})`);
 
   // The log shows the statement of a request with its arguments in place of its parameters, and a
   // commit with the statements of its commit object.
@@ -174,13 +174,13 @@ async function unit() {
   tell = R.teller();
   const name = "0123456789abcdef".repeat(4);
   const stream = [
-    { t: 1, kind: "request", what: "applied", purpose: "upload", object: { commit: { name, keys: [1], statements: [{ sql: "create table barcodes (id integer primary key) strict, without rowid" }, { sql: "insert into barcodes (id) values (?)", args: [1] }] } } },
+    { t: 1, kind: "request", what: "applied", purpose: "upload", object: { commit: { name, keys: [1], statements: [{ sql: "create table barcodes (code integer primary key) strict, without rowid" }, { sql: "insert into barcodes (code) values (?)", args: [1] }] } } },
     { t: 2, kind: "core", event: "commit", instance: "a", process: "a", attrs: { outcome: "committed", "commit.name": name } },
-    { ...call(3, "a", "served", ""), keys: [1] },
+    { ...call(3, "a", "served", ""), keys: [5712345678903] },
     { ...call(4, "a", "served", "no such table: barcodes"), keys: [] },
   ].map((e) => tell(e)).filter((w) => w.tier).map((w) => w.text);
-  const wantStream = ["a commits create table barcodes (id integer primary key) strict, without rowid; insert into barcodes (id) values (1) as 01234567.",
-    "a serves select id from barcodes where id > 0: key 1.", "a serves select id from barcodes where id > 0: no such table: barcodes."];
+  const wantStream = ["a commits create table barcodes (code integer primary key) strict, without rowid; insert into barcodes (code) values (1) as 01234567.",
+    "a serves select code from barcodes where code = 5712345678903: 1 row.", "a serves select code from barcodes where code = 5712345678903: no such table: barcodes."];
   expect(JSON.stringify(stream) === JSON.stringify(wantStream), `the log shows the SQL of commits and reads (${stream.join(" | ")})`);
 
   // The status of the requests is what the latest that ended got: ok from the instance that served
@@ -341,19 +341,19 @@ async function unit() {
   expect(errors <= 3 / S.ERROR_SPACING + 1, `a long run of failing requests gives ${errors} error tones in 3 s`);
 
   // Each request that ends ticks: an insert that commits scans at the note of its key, a select at
-  // the note of the newest key that it gives, or low without rows, and a failure gives the error
-  // tone. The same key always has the same note, and keys in a row wander over the notes.
+  // the note of the key that it selects, lower and shorter if it finds no row, and a failure gives
+  // the error tone. The same key always has the same note, and keys in a row wander over the notes.
   const ticked = [
     { ...call(1, "a", "started"), op: "write", value: 7 },
-    write(call(2, "a", "committed")), { ...call(3, "a", "served"), keys: [3, 7] }, { ...call(4, "a", "served"), keys: [] },
+    write(call(2, "a", "committed")), { ...call(3, "a", "served"), args: [7], keys: [7] }, { ...call(4, "a", "served"), args: [7], keys: [] },
     call(5, "a", "refused", "no valid lease: not_holder"), call(6, "a", "down", "crashed"),
   ].map((e) => S.tickOf(e)).filter(Boolean);
   const kindsTicked = ticked.map((k) => k.kind).join(", ");
-  expect(kindsTicked === "scan, select, select, error, error", `each request that ends ticks (${kindsTicked})`);
+  expect(kindsTicked === "scan, select, miss, error, error", `each request that ends ticks (${kindsTicked})`);
   const run = Array.from({ length: 12 }, (_, i) => S.SCANS.indexOf(S.keyNote(i + 1)));
-  expect(ticked[0].hz === S.keyNote(7) && ticked[1].hz === S.keyNote(7) && ticked[2].hz === 0 && S.keyNote(7) === S.keyNote(7)
+  expect(ticked[0].hz === S.keyNote(7) && ticked[1].hz === S.keyNote(7) && ticked[2].hz === S.keyNote(7) / 2 && S.keyNote(7) === S.keyNote(7)
     && run.every((i) => i >= 0) && new Set(run).size >= 4 && run.some((x, i) => i > 0 && x < run[i - 1]) && S.SCANS.every((hz) => hz >= 1200 && hz <= 3000),
-    `an insert and the selects that see its key take its note, and the keys 1 to 12 wander over the notes (${run.join(" ")})`);
+    `an insert and the selects of its key take its note, an octave down for a select that finds no row, and the keys 1 to 12 wander over the notes (${run.join(" ")})`);
 }
 
 async function check() {

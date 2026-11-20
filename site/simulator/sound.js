@@ -20,10 +20,8 @@
 // that commits is a barcode being scanned, with the beep of a checkout scanner: one short hard note
 // high up. Its pitch is the note of its key, which one mix of the key picks, so that the same key
 // always sounds the same and the beeps wander. A select that is served is a much smaller, quieter
-// tick in the background, at the note of the newest key that it gives, so that the reads after a
-// write echo it until the next, and a read that is behind sounds like an older key; a select without
-// rows ticks low. A request
-// that fails, is refused, or gets no answer is the scanner's error tone, a low double buzz.
+// tick in the background, at the note of the key that it selects, so that a barcode sounds the same
+// when it is read; one that finds no row ticks an octave lower and shorter. A request that fails, is refused, or gets no answer is the scanner's error tone, a low double buzz.
 //
 // Every figure goes through one master gain. One figure is one voice, and at most VOICES sound at
 // once. The site check renders a burst through player offline and holds its peak to at most 0.06,
@@ -91,12 +89,14 @@ export function keyNote(key) {
   return SCANS[((x ^ (x >>> 16)) >>> 0) % SCANS.length];
 }
 
-// TICKS by kind, as FIGURES; a scan and a select with rows take the note of their key. The scan's
-// level puts its peak just below that of a figure. The select is about −42 dBFS, and 20 ms, so that
-// its note is heard; without a key it is the low A4. The error tone is two short low notes.
+// TICKS by kind, as FIGURES; a scan, a select, and a miss, a select that finds no row, take the note
+// of their key, the miss an octave down. The scan's level puts its peak just below that of a figure.
+// The select is about −42 dBFS, and 20 ms, so that its note is heard. The error tone is two short low
+// notes.
 export const TICKS = {
   scan: { level: 0.85, notes: [[SCANS[0], 80]] },
-  select: { level: 0.44, notes: [[A4, 20]] },
+  select: { level: 0.44, notes: [[A6, 20]] },
+  miss: { level: 0.44, notes: [[A5, 12]] },
   error: { level: 0.5, notes: [[330, 45], [330, 45]], gap: 0.035 },
 };
 
@@ -282,7 +282,11 @@ export function tickOf(e) {
   if (e.kind !== "call" || e.caller !== "client" || e.what === "started") return null;
   switch (e.what) {
     case "committed": return { kind: "scan", hz: keyNote(e.value) };
-    case "served": return { kind: "select", hz: e.keys && e.keys.length ? keyNote(Math.max(...e.keys)) : 0 };
+    case "served": {
+      const key = (e.args || [])[0];
+      if ((e.keys || []).includes(key)) return { kind: "select", hz: keyNote(key) };
+      return { kind: "miss", hz: key === undefined ? 0 : keyNote(key) / 2 };
+    }
   }
   return { kind: "error", hz: 0 };
 }

@@ -127,18 +127,19 @@ Each process runs callers, as an application would.
 | `think` | 5000 | 0 to 1800000 | The longest pause of a caller before a call. |
 | `writes` | 40 | 0 to 100 | The share of calls that are writes, in percent. The others are reads. |
 | `timeout` | 30000 | above 0, at most 1800000 | The timeout of each call, on the monotonic clock of its process. |
-| `window` | 100 | 1 to 10000 | The number of the newest keys that a read selects at most. |
 
 A caller repeats two steps. It pauses for 1 ms and a time from 0 to `think`, from the seed. Then it makes one call, a write or a read by `writes`. While the workload is off it makes no call, and looks again after a second.
 
 Each call is SQL, on a connection of its own, `engine.Conn`, of the engine of its process. Each process has an engine, `engine.New` on its database and its host, which it makes when it opens its database. The table is `barcodes`:
 
 ```sql
-create table barcodes (id integer primary key) strict, without rowid
+create table barcodes (code integer primary key) strict, without rowid
 ```
 
-- A write is one write transaction: `Conn.Begin`, the insert `insert into barcodes (id) values (?)`, and `Conn.Commit`. The argument is the key of the row, the next value of a counter of the run, which starts at 1. Every write takes a value when it starts, also one that is then refused, so a key belongs to one call, and the keys tell the transactions apart. If the insert fails with `no such table: barcodes`, the transaction runs the `create table` above and the insert again, so the first write of a run commits both statements. A statement that fails in a transaction has no effect there, and the transaction stays open.
-- A read is one select, `select id from barcodes where id > ?`. Its argument is its bound: the last key that a write had taken when the read started, less `window`, and at least 0. So a read selects the rows of at most the last `window` writes, however many rows the table has, and the bound is the same in every build, because it comes from the counter. The engine reads the rows by the key, with a scan of the range above the bound. The read reports the keys that it saw, in order, and its position: the name of the last commit object in the state that it saw, which the engine gives as `statement.position` in its event of the statement. A select on a database without the table is served with no rows and the error `no such table: barcodes`, because it saw a state too.
+- A write is one write transaction: `Conn.Begin`, the insert `insert into barcodes (code) values (?)`, and `Conn.Commit`. The argument is the key of the row, the barcode of the next value of a counter of the run, which starts at 1. Every write takes a value when it starts, also one that is then refused, so a key belongs to one call, and the keys tell the transactions apart. If the insert fails with `no such table: barcodes`, the transaction runs the `create table` above and the insert again, so the first write of a run commits both statements. A statement that fails in a transaction has no effect there, and the transaction stays open.
+- A read is one select of one key, `select code from barcodes where code = ?`, which the engine runs as a lookup of the key. It picks the key when it starts, by a number from the seed: half of the reads the key of the newest write acknowledged so far, whose row a read that is not stale gives, and the others the key of one of the last 50 values taken, also of a write that failed or is still on its way, for which no row is a right answer. So the key is the same in every build. The read reports the key that it saw, if it found the row, and its position: the name of the last commit object in the state that it saw, which the engine gives as `statement.position` in its event of the statement. A select on a database without the table is served with no rows and the error `no such table: barcodes`, because it saw a state too.
+
+The barcode of the value n is a number of 13 digits in the form of an EAN-13 barcode: the prefix `57`, ten digits that a bijection of n modulo 10^10 gives, and the check digit of EAN-13, which weighs the twelve digits before it by 1 and 3 in turn from the left. The bijection is four rounds of a Feistel network on the two halves of five digits each, which maps (hi, lo) to (lo, hi + f(lo)) modulo 10^5 with `f(lo) = (31337 lo² + 7919 lo + 104729 r + 12345) mod 10^5` in the round r from 0. So the keys of a run are distinct and do not rise with n, and each fits an integer of 64 bits, also in JavaScript.
 
 No call deletes a row: the table grows for the whole run. The actions `write` and `read` make the same calls, with the caller `visitor`.
 
@@ -148,7 +149,7 @@ How a call ends comes from the calls of the engine, which passes every error of 
 
 The client is one source of calls that stands outside the instances, as the user of an application does. `client.instance` is the instance that it calls first, its target, and the action `client` points it at another. It is a task of the run, not of a process, so no crash, stop, or fault of an instance ends it. A batch run and a session have no client unless the request names one.
 
-It repeats two steps, as a caller does: a pause of 1 ms and a time from 0 to `workload.think`, from the seed, on the time of the run, and then one call on its target, a write or a read by `workload.writes`. Its calls are those of [Workload](#workload), with the caller `client`, the timeout `workload.timeout` on the monotonic clock of the target's process, and the window `workload.window` of its reads. `workload.on` and the action `workload` do not switch it.
+It repeats two steps, as a caller does: a pause of 1 ms and a time from 0 to `workload.think`, from the seed, on the time of the run, and then one call on its target, a write or a read by `workload.writes`. Its calls are those of [Workload](#workload), with the caller `client`, the timeout `workload.timeout` on the monotonic clock of the target's process. `workload.on` and the action `workload` do not switch it.
 
 Each call goes to the process that runs the target when the call starts:
 
@@ -403,10 +404,10 @@ A call of the application: one write or read transaction.
 | `call` | The number of the call, from 1, in the order in which the calls started. |
 | `caller` | `caller-0`, `caller-1`, and so on for the workload, `visitor` for an action, and `client` for the client. |
 | `op` | `write` or `read`. |
-| `value` | The key that a write inserts. |
-| `sql`, `args` | The statement of the call, `insert into barcodes (id) values (?)` or `select id from barcodes where id > ?`, and its argument in a list: the key of a write, and the bound of a read. They are on every event of the call. |
+| `value` | The key that a write inserts, a barcode of 13 digits. |
+| `sql`, `args` | The statement of the call, `insert into barcodes (code) values (?)` or `select code from barcodes where code = ?`, and its argument in a list: the key that a write inserts or that a read selects. They are on every event of the call. |
 | `started` | When the call started. It is on the event that ends the call. |
-| `keys`, `position` | What a read that was served saw: the keys above its bound, in order, and its position. |
+| `keys`, `position` | What a read that was served saw: its key if it found the row, and its position. |
 
 Every call has the event `started`, and one event when it ends:
 
@@ -615,7 +616,7 @@ A crash ends the calls of its process in the fold, and every wait of the process
 
 The engine checks six invariants during the run and at its end. The end of a session is its command `end`, so a session that is not ended gets only the checks during the run. A violation is an event of the kind `check`. The checker sees what an application and the store see: how each call ends, what each read returns, and the objects that the store applies. Each write has a key of its own, so the keys tell the transactions apart.
 
-"The log" is the chain of commit objects from the head of the manifest back to the empty log. The rows of the log up to a position are the keys that its commit objects up to there insert. A read selects the keys above its bound, so what it gives are the rows above its bound; its position says which rows its state has at or below it.
+"The log" is the chain of commit objects from the head of the manifest back to the empty log. The rows of the log up to a position are the keys that its commit objects up to there insert. A read selects the row of one key; its position says which rows its state has besides.
 
 | `invariant` | Checked | Meaning |
 | --- | --- | --- |
@@ -623,14 +624,16 @@ The engine checks six invariants during the run and at its end. The end of a ses
 | `acknowledged` | When a write ends with `committed`, and at the end. | A commit that was acknowledged is in the log: once when it is acknowledged, and still at the end. |
 | `not_committed` | At the end. | A write that ended with `not_committed` is not in the log, and neither is a write of the client that ended with `down`, which was never made. |
 | `once` | At the end. | No key is in the log twice. |
-| `state` | When a read is served. | The read saw a state that the log had: its position is the empty log or a commit object of the log, and its keys are the rows of the log above its bound up to that position, each once. A read that misses such a row, or gives a key at or below its bound, violates it. |
-| `fresh` | When a read is served, and at the end. | The read saw every write that was acknowledged before the read started. It also saw every write that returned with an unknown outcome before the read started and that the log holds at the end, which includes a write of the client that ended with `lost`. It saw a write above its bound if it gave its key, and one at or below its bound if the state at its position holds the key: the commit object of the position, or one of its ancestors, inserts it. A read gets at most one violation in each of the two checks. |
+| `state` | When a read is served. | The read saw a state that the log had: its position is the empty log or a commit object of the log, and it gives the row of its key, once, if the log up to that position has it, and no row otherwise. |
+| `fresh` | When a read is served, and at the end. | The read saw every write that was acknowledged before the read started. It also saw every write that returned with an unknown outcome before the read started and that the log holds at the end, which includes a write of the client that ended with `lost`. It saw the write of its own key if it gave its row, and any other if the state at its position holds the key: the commit object of the position, or one of its ancestors, inserts it. Half of the reads select the newest acknowledged key, so a stale state shows in their rows too. A read gets at most one violation in each of the two checks. |
 
-The checker checks a read in a time that does not grow with the log while the log is one chain: it keeps the index in the log of the commit object of each key, and counts the rows above the bound from the bound to the largest key of the log, which is the window and the keys taken since the read started. A read that this fast check does not pass is checked again against the chain from the head, which decides. `check_internal_test.go` checks every read of four keys at every position and above every bound both ways: both find the same violations, and the fast check passes every read without one.
+The checker checks a read in a time that does not grow with the log while the log is one chain: it keeps the index in the log of the commit object of each key, and of the latest acknowledged write. A read that this fast check does not pass is checked again against the chain from the head, which decides. `check_internal_test.go` checks every read of the keys 0 to 4, giving every set of four keys, at every position both ways: both find the same violations, and the fast check passes every read without one.
 
 Only `fresh` can be excused. The design accepts a read that misses a commit on a process whose two clocks both went wrong in the direction that keeps a lease alive too long. A violation of `fresh` is excused if, by the time of the check, the monotonic clock of the read's process has been stopped, and its wall clock has been stopped or shifted backward. `pauseClocks` stops both.
 
 What the checker cannot see, and how far it is tested:
+
+- A read shows one row of its state. `state` checks that row against the log at the read's position, and `fresh` checks the other writes by the position. A read that gives the right row of its key and the right position, from a state whose other rows are wrong, is not caught; a read of a range showed many rows of its state at once.
 
 - It sees nothing inside the core: no cache except through the reads, and nothing of what an instance believes about its lease.
 - It checks reads that were served. For a write that ended in another way than `committed`, `unknown`, `lost`, `not_committed`, or `down`, such as `abandoned`, it does not check that the log lacks it.
@@ -822,8 +825,8 @@ The tests of `internal/simulator` run natively and in Chromium. They show:
 - **The client** (`client_test.go`), with `standby` and no callers. `a` takes the lease before `b` starts, and the first call of the client comes after that. The client keeps calling `a` through a crash and a restart, a close and an open, and a failing disk: `down` while `a` cannot take its calls, and `refused` once `a` stands by. A switch moves its calls to `b`, and a call that was on `a` at the switch ends on `a`. The instance that the client does not call gets no call. A write that a hang holds on `a` when `a` crashes ends with `lost` at the crash. Actions on an instance that has not started are ignored, except the faults of the instance. Over 24 seeds with every fault, crashes, closes, and switches, every call ends once on the instance and process it started on, and no violation is not excused. Writes are lost at crashes in those runs, and some of them are in the log at the end: with `lost` counted as `not_committed`, the same runs have violations of `not_committed`.
 - **Faults** (`run_test.go`): each fault of the store, damaged downloads, and buggify show their events, with no violation. Under every fault at once, the engine knows every line of the store.
 - **The state** (`state_test.go`): the position of each cache, folded from the events of the core alone, against what each read saw. The log. A request and a call in flight, from their start to their end.
-- **The checker** (`check_internal_test.go`): each invariant on input made to break it, also by a write of the client that ended with `down` or `lost`, by a read that misses a row above its bound, by one that gives a row at or below it, and by one at a state without a write at or below its bound, and the excuse of `fresh`. The fast check and the slow one find the same violations for every read of four keys.
-- **The SQL** (`run_test.go`): the first commit object holds the `create table` and the insert, each later one an insert of its key, and every read gives only keys above its bound, in order.
+- **The checker** (`check_internal_test.go`): each invariant on input made to break it, also by a write of the client that ended with `down` or `lost`, by a read that misses its row, gives another or gives it twice, by one that misses the write of its key, and by one at a state without the write of another key, and the excuse of `fresh`. The fast check and the slow one find the same violations for every read of five keys.
+- **The SQL** (`run_test.go`): the first commit object holds the `create table` and the insert, each later one an insert of its key, with its key as argument. The keys are barcodes of EAN-13, distinct and not rising, and every read gives the row of its key or none; most find it.
 
 `TestEngine` in `internal/simulator/engine` serves a page when one drives it: it looks for the object `s4qlEngine`, which `worker.js` sets. Without the object, as in `make test-browser`, it plays the page with an object of its own: it shows that `submit` refuses a second message while the first waits and a message without its three arguments, and that the answers that `done` gets to a run and to a state of that run are those of an engine called directly, so that one engine serves every message. The whole path through `worker.js` is what `make site-check` checks.
 
