@@ -1530,7 +1530,13 @@ func (p *pair) count(kind string) {
 func (p *pair) reach(c stmttest.Call, got answer) {
 	p.t.Helper()
 	if p.y != nil {
-		reach(p.t, p.o, c, got, p.i.changes, func(what string) { p.y["reached: "+what]++ })
+		reach(p.t, p.o, c, got, p.i.changes, func(what string) {
+			p.y["reached: "+what]++
+			// The statements of slice 10 count again by the transaction that they ran in.
+			if p.inTx && slices.ContainsFunc([]string{"create table if not exists ", "drop table if exists ", "create index if not exists ", "drop index if exists "}, func(k string) bool { return strings.HasPrefix(what, k) }) {
+				p.y["reached: "+what+map[bool]string{true: " in a read-only transaction", false: " in a write transaction"}[p.readOnly]]++
+			}
+		})
 		if p.longCondition(c.Src) {
 			p.y["reached: WHERE with a literal longer than the length limit"]++
 		}
@@ -1570,6 +1576,9 @@ func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, changes int64, 
 		outcome = messageKind(got.err)
 	}
 	s, _ := checkText(c.Src)
+	if reachExists(t, o, s, c, got, count) {
+		return
+	}
 	switch s := s.(type) {
 	case *stmt.Insert:
 		reachInsert(t, o, s, c, outcome, count)
@@ -1789,15 +1798,7 @@ func reachIndex(t testing.TB, o *oracle, s stmt.Statement, c stmttest.Call, got 
 	if len(c.Args) > 0 {
 		return
 	}
-	tables := map[string][]stmttest.TableColumn{}
-	for _, quoted := range o.run(t, "select name from sqlite_schema where type = 'table'").rows {
-		name := unquoted(t, quoted)
-		_, tables[fold(name)] = o.columns(t, name)
-	}
-	indexes := map[string]bool{}
-	for _, quoted := range o.run(t, "select name from sqlite_schema where type = 'index' and sql is not null").rows {
-		indexes[fold(unquoted(t, quoted))] = true
-	}
+	tables, indexes := o.schema(t)
 	rule := stmttest.IndexRule(tables, indexes, s)
 	kind := "drop index"
 	if _, ok := s.(*stmt.CreateIndex); ok {
@@ -1841,6 +1842,77 @@ func reachIndex(t testing.TB, o *oracle, s stmt.Statement, c stmttest.Call, got 
 			count("create index of a descending column ok")
 		}
 	}
+}
+
+// schema of the database of o, as the rules of [stmttest] take it: the columns of its tables, by the
+// folds of their names, and the folds of the names of its indexes. It is read from SQLite before
+// each statement, so it follows a roll back, and a drop table that took the indexes of its table
+// along.
+func (o *oracle) schema(t testing.TB) (map[string][]stmttest.TableColumn, map[string]bool) {
+	t.Helper()
+	tables := map[string][]stmttest.TableColumn{}
+	for _, quoted := range o.run(t, "select name from sqlite_schema where type = 'table'").rows {
+		name := unquoted(t, quoted)
+		_, tables[fold(name)] = o.columns(t, name)
+	}
+	indexes := map[string]bool{}
+	for _, quoted := range o.run(t, "select name from sqlite_schema where type = 'index' and sql is not null").rows {
+		indexes[fold(unquoted(t, quoted))] = true
+	}
+	return tables, indexes
+}
+
+// existsKinds are the kinds of SQLite's errors of a statement of IF NOT EXISTS or IF EXISTS that
+// [reachExists] counts, without the names in them.
+var existsKinds = []string{
+	"there is already an index named", "there is already a table named", "no such table", "no such column", "duplicate column name",
+	"too many columns on", "string or blob too big", "attempt to write a readonly database",
+}
+
+// reachExists counts what the statement s of IF NOT EXISTS or IF EXISTS of slice 10 of the call c,
+// whose answer of the engine is got, reaches on the database of o, before the call, and checks it
+// against [stmttest.ExistsRule]: where the rule says that SQLite does nothing, the engine must
+// succeed, and the statement counts by its kind, such as "drop table if exists", and the rule's
+// reason; otherwise it counts as "did its work" if it succeeded, and else by the kind of its error, of
+// [existsKinds], or "not supported". It reports whether the statement did nothing by the rule. It
+// counts nothing and reports false for a statement without the clause, and for a call with
+// arguments, which the rule of arguments decides.
+func reachExists(t testing.TB, o *oracle, s stmt.Statement, c stmttest.Call, got answer, count func(string)) bool {
+	t.Helper()
+	var kind string
+	switch s := s.(type) {
+	case *stmt.CreateTable:
+		kind = map[bool]string{true: "create table if not exists"}[s.IfNotExists]
+	case *stmt.DropTable:
+		kind = map[bool]string{true: "drop table if exists"}[s.IfExists]
+	case *stmt.CreateIndex:
+		kind = map[bool]string{true: "create index if not exists"}[s.IfNotExists]
+	case *stmt.DropIndex:
+		kind = map[bool]string{true: "drop index if exists"}[s.IfExists]
+	}
+	if kind == "" || len(c.Args) > 0 {
+		return false
+	}
+	tables, indexes := o.schema(t)
+	if rule := stmttest.ExistsRule(tables, indexes, s); rule != "" {
+		if got.err != "" {
+			t.Errorf("%q: the engine gives %v, and the rule does nothing: %v", c.Src, got, rule)
+		}
+		count(kind + " did nothing: " + rule)
+		return true
+	}
+	outcome := got.err
+	switch got.err {
+	case "":
+		outcome = "did its work"
+	case "not supported":
+	default:
+		if i := slices.IndexFunc(existsKinds, func(k string) bool { return strings.Contains(got.err, k) }); i >= 0 {
+			outcome = existsKinds[i]
+		}
+	}
+	count(kind + " " + outcome)
+	return false
 }
 
 // accessOf the access a of the engine, in the terms of [stmttest.ChosenAccess].
@@ -2078,9 +2150,8 @@ func refusal(a any) string {
 }
 
 // checkText src as the engine checks a text before it runs it: as [stmt.Check] does, and with the
-// "not supported" of [engine.Check] for a statement with IF NOT EXISTS or IF EXISTS of slice 10 that
-// the pass supports and the engine does not run yet, which the tests take for a text that is not
-// supported.
+// "not supported" of [engine.Check] for a statement with DEFAULT of slice 11 that the pass supports
+// and the engine does not run yet, which the tests take for a text that is not supported.
 func checkText(src string) (stmt.Statement, error) {
 	s, err := stmt.Check(src)
 	if err == nil && s != nil {
@@ -2516,8 +2587,16 @@ func TestDifferential(t *testing.T) {
 		// random numbers, which moves each of them, and its longer sequences took the second and the
 		// third up; the create indexes and drop indexes, which have no values, take turns of the
 		// inserts, the updates, and the deletes, which took the fourth down, and a third of the
-		// sequences write more of them.
-		want := map[string]int{acceptedStartedTable: 14, excusedArguments: 822, excusedArgument: 326, excusedType: 477, excusedLong: 1, excusedLongChange: 2}
+		// sequences write more of them. When one create and drop in three of the sequence said IF NOT
+		// EXISTS or IF EXISTS, they went from 14, 822, 326, 477, 1, and 2 to 16, 836, 326, 528, 1, and
+		// 3, and [excusedLongCondition] went from 0 to 1: the generator draws a number for each create
+		// and drop, which moves the statements after it, and none of these kinds is of a statement of
+		// the clauses. The one select with a literal in a condition longer than the length limit for
+		// which SQLite gives rows is excused by its rule. When the sequence pinned a column of an index
+		// that takes NULL by IS NULL one time in three, where it was one time in eight, they went from 16,
+		// 836, 326, 528, 1, and 3 to 15, 862, 324, 524, 1, and 2: the generator draws other random numbers
+		// after the first such pin, which moves each of them, and none of these kinds is of the pin.
+		want := map[string]int{acceptedStartedTable: 15, excusedArguments: 862, excusedArgument: 324, excusedType: 524, excusedLong: 1, excusedLongChange: 2, excusedLongCondition: 1}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
 			// The count of [excusedRecordSlip] depends on the allocator of the platform.
@@ -2539,7 +2618,7 @@ var reachedDifferential = map[string]int{
 	"insert into INT UNIQUE constraint failed": 14, "insert into INTEGER UNIQUE constraint failed": 26, "insert into REAL UNIQUE constraint failed": 34,
 	"insert into TEXT UNIQUE constraint failed": 26, "insert into BLOB UNIQUE constraint failed": 42,
 	"-0.0 literal into REAL UNIQUE constraint failed": 2, "-0.0 argument into REAL UNIQUE constraint failed": 2,
-	"insert into INT a value of another type": 20, "insert into INTEGER a value of another type": 20, "insert into REAL a value of another type": 24,
+	"insert into INT a value of another type": 20, "insert into INTEGER a value of another type": 20, "insert into REAL a value of another type": 7,
 	"insert into TEXT a value of another type": 24, "insert into BLOB a value of another type": 24,
 	"insert into TEXT string or blob too big": 7, "insert into BLOB string or blob too big": 5, "long value": 90,
 	"literal integer": 950, "literal real": 390, "literal real -0.0": 68, "literal text": 400, "literal empty text": 76, "literal blob": 390, "literal empty blob": 100,
@@ -2582,7 +2661,7 @@ var reachedDifferential = map[string]int{
 	"NULL literal into the key NOT NULL constraint failed": 35, "NULL argument into the key NOT NULL constraint failed": 14,
 	"NULL literal into a column that does not take NULL NOT NULL constraint failed": 10, "NULL argument into a column that does not take NULL NOT NULL constraint failed": 4,
 	"insert that leaves out a column that takes NULL ok": 60, "insert that leaves out a column that takes NULL UNIQUE constraint failed": 16,
-	"insert that leaves out a column that takes NULL a value of another type": 11, "insert that leaves out a column that takes NULL NOT NULL constraint failed": 13,
+	"insert that leaves out a column that takes NULL a value of another type": 2, "insert that leaves out a column that takes NULL NOT NULL constraint failed": 13,
 	"insert with NULL in the key: NOT NULL constraint failed": 17, "insert with NULL in a column that does not take it: NOT NULL constraint failed": 11,
 	"insert of NULL beside a value of another type NOT NULL constraint failed": 4, "insert of NULL beside a value of another type a value of another type": 6,
 	"select * with NULL ok": 12, "select of names with NULL ok": 7,
@@ -2632,9 +2711,18 @@ var reachedDifferential = map[string]int{
 	// reads the rows; and every update and delete with WHERE changed both ways. The sequence writes
 	// fewer inserts and selects since then, so the least numbers of "-0.0 literal into REAL UNIQUE
 	// constraint failed" and "select of names with NULL ok" are a third of what the run gives now, 2
-	// and 7, where they were 6 and 25; and no select of the run has a column that the table does not
-	// have under IS NULL or IS NOT NULL alone, so the run requires it of a delete, whose WHERE is read
-	// by the same conditions.
+	// and 7, where they were 6 and 25. A column that the table does not have under IS NULL or IS NOT
+	// NULL alone is required of a select or of a delete, whichever the run reaches, since the WHERE of
+	// both is read by the same conditions: of a select since 2026-11-20, when the sequence wrote the
+	// clauses of slice 10 and drew other random numbers. They also took "update of a row whose record
+	// is too long" from 1 to 0, which [TestPair_recordSlips] pins by hand, and "delete WHERE with
+	// contradicting conditions ok, no row found", "insert into REAL a value of another type", "insert
+	// that leaves out a column that takes NULL a value of another type", and "path with a pin of NULL"
+	// to 9, 23, 7, and 2, of which the least numbers are a third, or 1. When the sequence pinned a
+	// column of an index that takes NULL by IS NULL one time in three, where it was one time in eight,
+	// "path with a pin of NULL" went from 2 to 11, and its least number is 3, and the other random
+	// numbers that the generator drew after such a pin took "delete WHERE that reads a scan between two
+	// bounds that hold no key ok, no row found" from 9 to 8, of which the least number is now a third.
 	"update with WHERE ok, rows changed": 17, "update with WHERE ok, no row found": 76, "update without WHERE ok, rows changed": 20, "update without WHERE ok, no row found": 17,
 	"delete with WHERE ok, rows changed": 32, "delete with WHERE ok, no row found": 77, "delete without WHERE ok, rows changed": 23, "delete without WHERE ok, no row found": 12,
 	"update that changes every row of a table with rows": 27, "update that changes some rows of a table": 10, "update that changes no row of a table with rows": 42,
@@ -2649,7 +2737,7 @@ var reachedDifferential = map[string]int{
 	"SET with argument []uint8 ok, no row found": 5, "SET with argument nil ok, rows changed": 1,
 	"update with WHERE no such column": 34, "update WHERE with a column in double quotes that the table does not have no such column": 11,
 	"update WHERE with a value of another type a value of another type": 24, "update with WHERE NOT NULL constraint failed": 4, "update without WHERE NOT NULL constraint failed": 5,
-	"update with WHERE UNIQUE constraint failed": 6, "update without WHERE UNIQUE constraint failed": 12, "update of a row whose record is too long": 1,
+	"update with WHERE UNIQUE constraint failed": 6, "update without WHERE UNIQUE constraint failed": 12,
 	"update with arguments that s4ql refuses not supported": 10, "update with arguments that s4ql refuses wrong number of arguments": 22,
 	"update with a literal longer than the length limit in SET": 1,
 	"update WHERE that reads no row ok, no row found":           13, "update WHERE that reads a get of one key ok, rows changed": 10, "update WHERE that reads a scan from a lower bound ok, rows changed": 1,
@@ -2661,9 +2749,9 @@ var reachedDifferential = map[string]int{
 	"delete with arguments that s4ql refuses wrong number of arguments": 11, "delete WHERE that reads no row ok, no row found": 12,
 	"delete WHERE that reads a get of one key ok, rows changed": 15, "delete WHERE that reads a scan from a lower bound ok, rows changed": 3,
 	"delete WHERE that reads a scan to an upper bound ok, rows changed": 2, "delete WHERE that reads a scan between two bounds ok, rows changed": 4,
-	"delete WHERE that reads a scan between two bounds that hold no key ok, no row found": 9, "delete WHERE that reads a scan of every row ok, rows changed": 7,
-	"delete WHERE that tests a column more than once ok, rows changed": 7, "delete WHERE with contradicting conditions ok, no row found": 12,
-	"delete WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column": 1, "changed both ways": 576,
+	"delete WHERE that reads a scan between two bounds that hold no key ok, no row found": 2, "delete WHERE that reads a scan of every row ok, rows changed": 7,
+	"delete WHERE that tests a column more than once ok, rows changed": 7, "delete WHERE with contradicting conditions ok, no row found": 3,
+	"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column": 2, "changed both ways": 576,
 	// The create indexes and drop indexes of slice 9, by outcome and by their columns, as [reachIndex]
 	// counts them; the choices of the rules, as [checkChoice] counts them; the paths that
 	// [pair.everyPath] runs, by their kinds, as [pathKinds] gives them, and the plans of the cache
@@ -2687,6 +2775,21 @@ var reachedDifferential = map[string]int{
 	"path of an index with 3 pinned": 1, "path of an index of a descending column": 111, "path with a range on a descending column": 12,
 	"path with a pin of NULL": 3, "path of an index that holds every column": 204, "plan of the cache checked": 380,
 	"replay of indexes into an empty cache": 33, "restart with indexes in the cache": 33,
+
+	// Slice 10, a third of what the run gave on 2026-11-20 when one create and drop in three of the
+	// sequence said IF NOT EXISTS or IF EXISTS: each of the four statements that does its work, that
+	// does nothing for each reason of [stmttest.ExistsRule], and that gives each error that SQLite gives
+	// it before or after it looks for its object, as [reachExists] counts them.
+	"create table if not exists did its work": 80, "create table if not exists did nothing: a table of the name exists": 93,
+	"create table if not exists there is already an index named": 6, "create table if not exists duplicate column name": 4,
+	"drop table if exists did its work": 32, "drop table if exists did nothing: no table of the name exists": 23,
+	"drop table if exists did nothing: no table of the name exists, and an index has it": 2,
+	"create index if not exists did its work":                                            32, "create index if not exists did nothing: an index of the name exists": 29,
+	"create index if not exists did nothing: an index of the name exists, and the table lacks a column of the statement": 5,
+	"create index if not exists no such table": 67, "create index if not exists there is already a table named": 31,
+	"create index if not exists no such column": 7,
+	"drop index if exists did its work":         9, "drop index if exists did nothing: no index of the name exists": 28,
+	"drop index if exists did nothing: no index of the name exists, and a table has it": 11,
 }
 
 // TestDifferential_plantedBugs runs the first sequences of [TestDifferential] with each planted bug
@@ -3433,7 +3536,8 @@ func whereLiteral(v any) string {
 
 // FuzzIndexes runs, on the engine on a database in memory, a test double of the core, and on SQLite,
 // a table of one to three columns with one to three indexes, and inserts, updates, deletes, selects,
-// drops of an index, and creates of one on it, all of which the bytes of its input choose as
+// drops of an index, and creates of one on it, also with IF EXISTS and IF NOT EXISTS of slice 10, and
+// of the table, all of which the bytes of its input choose as
 // [indexesCalls] says, and compares what each gives, as [TestDifferential] does. Each WHERE runs by
 // every path that can serve it, and the engine's choice of a path must be that of
 // [stmttest.ChosenAccess]: see [pair.everyPath] and [checkChoice]. Then it compares the tables and
@@ -3533,6 +3637,13 @@ type indexesIndex struct {
 // index a modulo the indexes, or of i0 if there are none; and for 6, a create of an index: again of
 // the last that was dropped, for an odd a where one was, and otherwise of a new one that
 // [fuzzBytes.index] reads, named i3 and on.
+//
+// The bits 4, 8, and 16 of a turn a drop and a create into the statements of slice 10. With 4, the
+// statement says IF EXISTS or IF NOT EXISTS. With 16, a drop is of the table, and a create is of
+// the table again, of its columns, which takes the rows and the indexes along, or does nothing. With
+// 8, a drop of an index names one that is not there, i9, or the table for an odd a, and a drop of the
+// table names an index that is there, or i9; and a create of an index names an index that is there,
+// the one of a modulo the indexes, with new columns.
 func indexesCalls(data []byte) []stmttest.Call {
 	r := &fuzzBytes{data: data}
 	shape := r.next()
@@ -3572,6 +3683,8 @@ func indexesCalls(data []byte) []stmttest.Call {
 		return stmttest.Call{Src: "create index " + ix.name + " on " + table + " (" + strings.Join(cs, ", ") + ")", Supported: true}
 	}
 	var live, dropped, after []indexesIndex
+	// gone is set while the table is dropped.
+	gone := false
 	for j := range int(r.next())%3 + 1 {
 		ix, later := r.index(fmt.Sprint("i", j), n)
 		if later {
@@ -3633,24 +3746,52 @@ func indexesCalls(data []byte) []stmttest.Call {
 			where, c.Args = r.typedConditions(names, types, a%2+1, nil)
 			c.Src = "delete from " + table + " where " + where
 		case 5:
-			if len(live) == 0 {
-				c.Src = "drop index i0"
+			clause := map[bool]string{true: "if exists "}[a&4 != 0]
+			switch {
+			case a&16 != 0 && a&8 != 0:
+				name := "i9"
+				if len(live) > 0 {
+					name = live[a%len(live)].name
+				}
+				c.Src = "drop table " + clause + name
+			case a&16 != 0:
+				c.Src = "drop table " + clause + table
+				if !gone {
+					gone, dropped, live = true, append(dropped, live...), nil
+				}
+			case a&8 != 0:
+				c.Src = "drop index " + clause + map[bool]string{false: "i9", true: table}[a%2 == 1]
+			case len(live) == 0:
+				c.Src = "drop index " + clause + "i0"
+			default:
+				j := a % len(live)
+				c.Src = "drop index " + clause + live[j].name
+				dropped = append(dropped, live[j])
+				live = slices.Delete(live, j, j+1)
+			}
+		case 6:
+			clause := map[bool]string{true: "if not exists "}[a&4 != 0]
+			if a&16 != 0 {
+				c.Src = "create table " + clause + table + " (" + strings.Join(columns, ", ") + ") strict, without rowid"
+				gone = false
 				break
 			}
-			j := a % len(live)
-			c.Src = "drop index " + live[j].name
-			dropped = append(dropped, live[j])
-			live = slices.Delete(live, j, j+1)
-		case 6:
 			var ix indexesIndex
-			if a%2 == 1 && len(dropped) > 0 {
+			there := a&8 != 0 && len(live) > 0
+			switch {
+			case there:
+				ix, _ = r.index(live[a%len(live)].name, n)
+			case a%2 == 1 && len(dropped) > 0:
 				ix, dropped = dropped[len(dropped)-1], dropped[:len(dropped)-1]
-			} else {
+			default:
 				ix, _ = r.index(fmt.Sprint("i", next), n)
 				next++
 			}
 			c = create(ix)
-			live = append(live, ix)
+			c.Src = strings.Replace(c.Src, "create index ", "create index "+clause, 1)
+			if !there && !gone {
+				live = append(live, ix)
+			}
 		}
 		calls = append(calls, c)
 	}
@@ -3765,6 +3906,26 @@ func indexesSeeds() [][]byte {
 			8, 1, 7, 0, 2, 2, 4, 0, 5,
 			1, 1, 0, 3, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
 			1, 1, 0, 2, 0},
+		// t (c0 int primary key, c1 text) with i0 (c1): the statements of slice 10, as [indexesCalls]
+		// writes them: create index if not exists i0 (c0), which does nothing; create index if not
+		// exists i3 (c1), which creates it; drop index if exists i0, which drops it; drop index if exists
+		// i9 and t, which do nothing; drop table if exists i3, which does nothing; create table if not
+		// exists t, which does nothing; drop table if exists t, which drops it and i3, and does nothing
+		// the second time; create index if not exists i4 (c1), which finds no table; create table if not
+		// exists t, which creates it again; an insert; and a select of the rows.
+		{1, 0, 9, 0, 0, 1,
+			102, 0, 0,
+			38, 0, 1,
+			37,
+			101,
+			109,
+			229,
+			166,
+			165,
+			165,
+			38, 0, 1,
+			166,
+			2, 0, 0, 0, 1},
 	}
 	for typ := range byte(len(whereTypes)) {
 		// t (c0 primary key) with i0 (c0 desc): a pin; a range; an insert of a key that exists; a
@@ -3806,6 +3967,13 @@ func TestFuzzIndexes_seeds(t *testing.T) {
 			"chosen an index with 2 pinned and a range of a table of several indexes", "chosen a get of a table of several indexes",
 			"create index that holds the primary key ok", "create index of a descending column ok", "create index of 3 columns ok",
 			"drop index ok", "create index ok", "delete with WHERE ok, rows changed", "update with WHERE ok, rows changed",
+			// The statements of slice 10, as [reachExists] counts them.
+			"create table if not exists did its work", "create table if not exists did nothing: a table of the name exists",
+			"drop table if exists did its work", "drop table if exists did nothing: no table of the name exists",
+			"drop table if exists did nothing: no table of the name exists, and an index has it",
+			"create index if not exists did its work", "create index if not exists did nothing: an index of the name exists",
+			"create index if not exists no such table", "drop index if exists did its work",
+			"drop index if exists did nothing: no index of the name exists", "drop index if exists did nothing: no index of the name exists, and a table has it",
 		} {
 			is.True(t, y["reached: "+kind] > 0, kind)
 		}
