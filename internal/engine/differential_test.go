@@ -1266,12 +1266,15 @@ func FuzzDifferential(f *testing.F) {
 }
 
 // FuzzDifferential_core runs the sequence of statements that its input chooses, the seed, the number
-// of statements, and whether the instance restarts, as [TestDifferential] does.
+// of statements, whether the instance restarts, and whether the cache and SQLite have the lowered
+// length limit [stmttest.LengthLimit], as [TestDifferential] does.
 func FuzzDifferential_core(f *testing.F) {
-	f.Add(uint64(0), uint8(40), false)
-	f.Add(uint64(1), uint8(40), true)
-	f.Fuzz(func(t *testing.T, seed uint64, n uint8, restarts bool) {
-		differential(t, seed, int(n%64), restarts, 0, nil)
+	f.Add(uint64(0), uint8(40), false, false)
+	f.Add(uint64(1), uint8(40), true, false)
+	f.Add(uint64(2), uint8(40), false, true)
+	f.Add(uint64(3), uint8(40), true, true)
+	f.Fuzz(func(t *testing.T, seed uint64, n uint8, restarts, limited bool) {
+		differential(t, seed, int(n%64), restarts, map[bool]int{true: stmttest.LengthLimit}[limited], nil)
 	})
 }
 
