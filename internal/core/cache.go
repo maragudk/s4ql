@@ -569,11 +569,12 @@ func placeholders(n int) string {
 }
 
 // checkValue v for the column at position of the table: its storage class is the one of the
-// column's type, or it is NULL in a column that takes NULL, which no primary-key column does; a real is neither NaN nor
-// infinite, and text is valid UTF-8 without the character NUL, which s4ql never stores; and a text
-// or a blob is not longer than limit, SQLite's limit for the length of one, for which the error
-// wraps [ErrTooBig]. A strict table of SQLite does not refuse every value of another storage class:
-// it converts the text '1' and the real 1.0 to an integer, and the integer 1 to a real.
+// column's type, or it is NULL in a column that takes NULL, which no primary-key column does; a
+// real is neither NaN nor infinite, and text is valid UTF-8 without the character NUL, which s4ql
+// never stores; and a text or a blob is not longer than limit, SQLite's limit for the length of
+// one, for which the error wraps [ErrTooBig]. A strict table of SQLite does not refuse every value
+// of another storage class: it converts the text '1' and the real 1.0 to an integer, and the
+// integer 1 to a real.
 func (t *table) checkValue(position int, v *s4qlpb.Value, limit int) error {
 	c := t.columns[position]
 	var n int
