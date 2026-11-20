@@ -61,3 +61,54 @@ The brief's list of what stays not supported, each under a name of its own; the 
 
 - The README of the pass, `docs/todo.md`, and the roadmap's slice 7: step 2.
 - The engine and the driver for slice 7, which remove `checkWhere`, the call in the driver's `check`, and the `checkText` wrappers.
+
+## Step 2: The documents, the checks, and the review
+
+**Author:** where-stmt builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Run `make test`, `make lint`, and `make check-browser`. [...] Decisions of detail are yours: decide by SQLite's behaviour, the spec, and the roadmap, and record each in `docs/todo.md` (or in slice 7's section of the roadmap where it refines the slice). [...] Review your own work with the code-review skill before you report, and fix what it finds."
+**Interpretation:** Bring the README of the pass, `docs/todo.md`, the roadmap's slice 7, and the engine's README up to date, pin the numbers that moved, run every check, review the branch, and fix what matters.
+**Inferred intent:** A branch whose code, numbers, and documents agree, ready for the lead.
+
+### What I did
+
+The pinned numbers of the pass moved, because the generator draws other numbers with `Conditions` on: `TestGenerate_mutants` 77 to 54 and 305 to 284, `TestGenerate_nearMisses` 2,942 to 3,003. A throwaway test grouped the excused texts by SQLite's message: no new kind, none of a select with WHERE; the near misses moved because 515 of the 2,000 statements are CREATE TABLE where 502 were. The corpus's supported texts went from 13,454 to 14,692 (1,238 SELECT with WHERE). The pinned numbers of the engine's `TestDifferential` and of `drivercheck` did not move.
+
+A writer sub-agent updated `/internal/sql/stmt/README.md`, `/docs/todo.md`, `/docs/roadmap.md` (refinements under slice 7, status line untouched), and one bullet of `/internal/engine/README.md`. I read the diff; it counted 93 SELECT near misses where my brief said 92, and it was right (61 + 32). I reworded one phrase of the todo.
+
+While it wrote, I saw that a reject in the conditions before an OR was named `binary operator` for the OR, which was not accepted: `conditions` now accepts the ORs too, and two cases pin `function call` there. `TestOperator_String` covers the zero operator.
+
+The review (`code-review high 8a6dae5...where-stmt`) found no bug and five nits. Fixed: the doc comment of `stmttest.Others` now says its two texts with WHERE are supported by the pass; a value of a condition no longer goes through the insert hook `Generator.Value` (same draws, as the hook is nil in every test); `TestGenerator_Where` in `/internal/sql/stmt/stmttest/stmttest_test.go` runs the hook `Generator.Where`, which nothing ran; the check of rows in `TestGenerate` applies from 100 selects with WHERE, so a short replay does not fail. Left: `Prepare` parses a supported text twice, in `stmt.Check` and `engine.Check`, until the engine runs slice 7, as in slice 6.
+
+### Why
+
+The rule of the project: a moved pinned number needs its reason; and the review's nits were cheap and real.
+
+### What worked
+
+`make test`, `make lint`, and `make check-browser` passed. `-count=20` of `TestCheck`, `TestOperator_String`, `TestAllowList`, `TestRecognize`, `TestVocabulary`, and `TestGenerator_Where` passed, and under `-race` with `-count=20` `TestCheck`, `TestEngine_where`, `TestEngine_parameters`, `TestPrepare`, `TestExec`, and `TestTx`. `FuzzLiteral` ran 30 s, `FuzzGenerate` and `FuzzCheck` 45 s each, and found nothing. The test of `/internal/sql/mutation` passed; no key of `equivalent.txt` moved. Coverage under `-short` is 99.4%.
+
+### What didn't work
+
+`sleep 240; cat ...` was refused by the harness: "Blocked: sleep 240 followed by: cat ... To wait for a condition, use Monitor with an until-loop". An until-loop in a background Bash worked.
+
+### What I learned
+
+Nothing beyond step 1.
+
+### What was tricky
+
+The generator's condition must draw exactly what `Generator.value` draws without the hook, so that the pinned numbers stay; with the hook nil in every test, the change drew the same, and the numbers did not move.
+
+### What warrants review
+
+- The decisions under "Decided by the builder of the pass for slice 7" in `/docs/todo.md`, for the lead to confirm, and the refinements of slice 7 in `/docs/roadmap.md`.
+- The sections SELECT, the errors of grammar actions, "How it is tested", and "Results" of `/internal/sql/stmt/README.md`.
+
+### Future work
+
+- The engine and the driver for slice 7.
+- Mutation testing and long fuzz runs of the code of slice 7 in the pass.
+- The roadmap changed, so the `roadmap` section of `site/index.html` needs its sub-agent after the merge.
