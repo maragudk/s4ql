@@ -3,6 +3,8 @@ package stmttest
 import (
 	"fmt"
 	"reflect"
+	"slices"
+	"strings"
 
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
@@ -161,12 +163,13 @@ func ValueKind(term stmt.Term, args []any) (kind, what string) {
 // Faults of the insert into the table of the columns, with the arguments args as for [TypeRule], by
 // kind, in the order in which SQLite and s4ql look for them: each name of the list that the table
 // does not have, "a column that the table does not have"; another number of values, "the wrong
-// number of values"; each column that the list leaves out and that does not take NULL, "a column without a
-// value"; each NULL that the insert gives for a column that does not take it, "NULL in a column that
-// does not take it"; and each value of another type than its column, "a value of another type in
-// the key" or "a value of another type in another column", which NULL never is. A column that takes
-// NULL and that the list leaves out gets NULL, which is no fault. A wrong number of values, and a
-// name that the table does not have, leave out the faults of the values.
+// number of values"; each column that the list leaves out and that does not take NULL, "a column
+// without a value"; each NULL that the insert gives for the key, "NULL in the key", or for another
+// column that does not take it, "NULL in a column that does not take it"; and each value of another
+// type than its column, "a value of another type in the key" or "a value of another type in another
+// column", which NULL never is. A column that takes NULL and that the list leaves out gets NULL,
+// which is no fault. A wrong number of values, and a name that the table does not have, leave out
+// the faults of the values.
 func Faults(columns []TableColumn, insert *stmt.Insert, args []any) []string {
 	var faults []string
 	for _, name := range insert.Columns {
@@ -192,7 +195,7 @@ func Faults(columns []TableColumn, insert *stmt.Insert, args []any) []string {
 	}
 	for i, position := range positions {
 		if c := columns[position]; !takesNull(c) && isNull(insert.Values[i], args) {
-			faults = append(faults, "NULL in a column that does not take it")
+			faults = append(faults, map[bool]string{true: "NULL in the key", false: "NULL in a column that does not take it"}[c.PrimaryKey])
 		}
 	}
 	for i, position := range positions {
@@ -202,4 +205,44 @@ func Faults(columns []TableColumn, insert *stmt.Insert, args []any) []string {
 		}
 	}
 	return faults
+}
+
+// NullCases of the insert into the table of the columns, with the arguments args as for [TypeRule],
+// for a count of what a test reaches of NULL: each NULL that the insert gives, in the order of its
+// values, as "NULL literal into" or "NULL argument into" and "the key", "a column that takes NULL",
+// or "a column that does not take NULL"; "insert that leaves out a column that takes NULL" if its
+// list leaves one out; and "insert of NULL beside a value of another type" if it gives NULL and a
+// value of another type than its column, as [Faults] finds it. It is nil for an insert that SQLite
+// refuses for its names or its number of values, and for another number of arguments than
+// parameters.
+func NullCases(columns []TableColumn, insert *stmt.Insert, args []any) []string {
+	positions, ok := Positions(columns, insert)
+	if !ok || len(args) != insert.Parameters() {
+		return nil
+	}
+	var cases []string
+	for i, position := range positions {
+		if !isNull(insert.Values[i], args) {
+			continue
+		}
+		into := "a column that takes NULL"
+		switch c := columns[position]; {
+		case c.PrimaryKey:
+			into = "the key"
+		case !takesNull(c):
+			into = "a column that does not take NULL"
+		}
+		cases = append(cases, fmt.Sprint("NULL ", map[bool]string{true: "argument", false: "literal"}[insert.Values[i].Parameter > 0], " into ", into))
+	}
+	given := len(cases) > 0
+	for position, i := range valuesOf(columns, positions) {
+		if i < 0 && takesNull(columns[position]) {
+			cases = append(cases, "insert that leaves out a column that takes NULL")
+			break
+		}
+	}
+	if given && slices.ContainsFunc(Faults(columns, insert, args), func(f string) bool { return strings.HasPrefix(f, "a value of another type") }) {
+		cases = append(cases, "insert of NULL beside a value of another type")
+	}
+	return cases
 }

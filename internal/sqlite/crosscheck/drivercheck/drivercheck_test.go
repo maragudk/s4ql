@@ -123,6 +123,12 @@ type outcome struct {
 	// each value as its Go type and its value.
 	columns, types string
 	rows           []string
+	// scans of the rows of a query, each the values of a row as a scan into a sql.Null* value and into
+	// a pointer gives them, which [outcome.full] has and its String does not.
+	scans []string
+	// null reports whether a value of the rows is NULL. It is not in the text of the outcome, which
+	// holds each NULL.
+	null bool
 	// next are the outcomes of the runs after the first of [callPrepareExecRuns], without a call.
 	next []outcome
 }
@@ -147,6 +153,15 @@ func (o outcome) String() string {
 		fmt.Fprintf(&b, "; then%v", n)
 	}
 	return b.String()
+}
+
+// full text of the outcome: its String, and the scans of its rows into sql.Null* values and
+// pointers, which a comparison of two outcomes compares too.
+func (o outcome) full() string {
+	if len(o.scans) == 0 {
+		return o.String()
+	}
+	return o.String() + "; scanned into sql.Null* values and pointers " + strings.Join(o.scans, " ")
 }
 
 // runs of the outcome: itself, and the outcomes of its later runs.
@@ -280,6 +295,7 @@ func run(tb testing.TB, r runner, c call, src string, runs [][]any, errText func
 		var texts []string
 		for _, v := range values {
 			texts = append(texts, valueText(v))
+			o.null = o.null || v == nil
 		}
 		o.rows = []string{strings.Join(texts, ",")}
 		return o
@@ -322,12 +338,30 @@ func read(tb testing.TB, o outcome, rows *sql.Rows, errText func(testing.TB, err
 		var texts []string
 		for _, v := range values {
 			texts = append(texts, valueText(v))
+			o.null = o.null || v == nil
 		}
 		o.rows = append(o.rows, strings.Join(texts, ","))
+		// The row again into a sql.Null* value for each column, and into a pointer, so that the scan
+		// of NULL into each is compared too.
+		texts = nil
+		for _, pointer := range []bool{false, true} {
+			typed := make([]any, len(columns))
+			for i, v := range values {
+				typed[i] = typedDest(v, names[i], pointer)
+			}
+			if err := rows.Scan(typed...); err != nil {
+				texts = append(texts, "scan: "+err.Error())
+				continue
+			}
+			for _, d := range typed {
+				texts = append(texts, typedText(d))
+			}
+		}
+		o.scans = append(o.scans, strings.Join(texts, ","))
 	}
 	if err := rows.Err(); err != nil {
 		o.failed, o.err = "rows", errText(tb, err)
-		o.columns, o.types, o.rows = "", "", nil
+		o.columns, o.types, o.rows, o.scans = "", "", nil, nil
 	}
 	return o
 }
@@ -335,6 +369,58 @@ func read(tb testing.TB, o outcome, rows *sql.Rows, errText func(testing.TB, err
 // valueText of a value that database/sql scanned into an any: its Go type and its value.
 func valueText(v any) string {
 	return fmt.Sprintf("%T:%v", v, v)
+}
+
+// typedDest is a destination of a scan for the value v that database/sql scanned into an any, of a
+// column of the type of the database typ: a pointer to a pointer if pointer, and otherwise a pointer
+// to a sql.Null* value, of the Go type of v, or for NULL of the Go type that a value of typ has.
+func typedDest(v any, typ string, pointer bool) any {
+	switch v.(type) {
+	case nil:
+		switch typ {
+		case "INT", "INTEGER":
+			v = int64(0)
+		case "REAL":
+			v = float64(0)
+		case "BLOB":
+			v = []byte{}
+		default:
+			v = ""
+		}
+		return typedDest(v, typ, pointer)
+	case int64:
+		if pointer {
+			return new(*int64)
+		}
+		return new(sql.NullInt64)
+	case float64:
+		if pointer {
+			return new(*float64)
+		}
+		return new(sql.NullFloat64)
+	case []byte:
+		if pointer {
+			return new(*[]byte)
+		}
+		return new(sql.Null[[]byte])
+	}
+	if pointer {
+		return new(*string)
+	}
+	return new(sql.NullString)
+}
+
+// typedText of a destination of [typedDest] after a scan: its Go type and its value, or nil for a
+// pointer that is nil.
+func typedText(d any) string {
+	v := reflect.ValueOf(d).Elem()
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return fmt.Sprintf("%v:nil", v.Type())
+		}
+		return fmt.Sprintf("%v:%v", v.Type(), v.Elem().Interface())
+	}
+	return fmt.Sprintf("%T:%+v", v.Interface(), v.Interface())
 }
 
 // s4qlText of an error of s4ql's driver, or of database/sql around it. Any error that is not
@@ -509,12 +595,14 @@ func statementKind(src string) string {
 
 // reach counts in the tally what the text src with the arguments of each run, whose outcome of s4ql
 // is got, reaches, under "reached: ", on the tables that SQLite has on o, where the call runs,
-// before it runs there. For an insert: each argument by its kind, as [stmttest.ArgumentKind] names it, each
+// before it runs there. For an insert: each argument by its kind, as [argumentKind] names it, each
 // literal by its kind, as [stmttest.LiteralKind] names it, and, for an insert into a table that
-// SQLite has, the outcome of each run by the type of the key column, and for a table of several
+// SQLite has, the outcome of each run by the type of the key column; of each run that reaches the
+// instance, by what it reaches of NULL, as [stmttest.NullCases] gives it; and for a table of several
 // columns by the form of the insert, without a list or with one, and by its faults, as
 // [stmttest.Faults] gives them, one or two. For a select of a table that SQLite has, the outcome of
-// each run by its form: * by the number of columns, names, and a name that the table does not have.
+// each run by its form: * by the number of columns, names, and a name that the table does not have;
+// and of * and of names with NULL among the values of its rows.
 func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 	tb := p.tb
 	tb.Helper()
@@ -540,6 +628,9 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 			return
 		}
 		for _, o := range got.runs() {
+			if o.null {
+				count(map[bool]string{true: "select * with NULL ", false: "select of names with NULL "}[sel.Columns == nil] + kind(o))
+			}
 			switch {
 			case sel.Columns == nil:
 				count(fmt.Sprint("select * of ", len(columns), " columns ", kind(o)))
@@ -558,7 +649,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 	if insert.Parameters() > 0 {
 		for _, args := range runs {
 			for _, a := range args {
-				count("argument " + stmttest.ArgumentKind(a))
+				count("argument " + argumentKind(a))
 			}
 		}
 	}
@@ -579,7 +670,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 	}
 	for i, o := range got.runs() {
 		count("insert into " + typ + " " + kind(o))
-		if len(columns) < 2 || i >= len(runs) || !reaches(src, runs[i]) {
+		if i >= len(runs) || !reaches(src, runs[i]) {
 			continue
 		}
 		var bound []any
@@ -588,6 +679,12 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 				a = v[0]
 			}
 			bound = append(bound, converted(a))
+		}
+		for _, what := range stmttest.NullCases(columns, insert, bound) {
+			count(what + " " + kind(o))
+		}
+		if len(columns) < 2 {
+			continue
 		}
 		form := "insert without a list"
 		if insert.Columns != nil {
@@ -602,6 +699,25 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 			count("insert with two faults: " + kind(o))
 		}
 	}
+}
+
+// argumentKind of the argument a, for a count of what a test reaches, as [stmttest.ArgumentKind]
+// names it, and for a kind of nil that database/sql hands the driver as nil, or as a nil []byte,
+// "NULL as" or "nil []byte as" and its Go type.
+func argumentKind(a any) string {
+	if a == nil {
+		return stmttest.ArgumentKind(a)
+	}
+	c := converted(a)
+	if c == nil {
+		return fmt.Sprintf("NULL as %T", a)
+	}
+	if b, ok := c.([]byte); ok && b == nil {
+		if _, ok := a.([]byte); !ok {
+			return fmt.Sprintf("nil []byte as %T", a)
+		}
+	}
+	return stmttest.ArgumentKind(a)
 }
 
 // excused counts a text of the kind that the comparison excuses.
@@ -879,7 +995,8 @@ func (p *pair) openRows(src string, args []any) string {
 	return ""
 }
 
-// firstRow of rows, with its values as [valueText] gives them, or "none".
+// firstRow of rows, with its values as [valueText] gives them and as a scan into sql.Null* values
+// and into pointers gives them, or "none".
 func firstRow(tb testing.TB, rows *sql.Rows) string {
 	tb.Helper()
 	if !rows.Next() {
@@ -897,6 +1014,22 @@ func firstRow(tb testing.TB, rows *sql.Rows) string {
 	var texts []string
 	for _, v := range values {
 		texts = append(texts, valueText(v))
+	}
+	// The row again into a sql.Null* value for each column, and into a pointer, as [read] does.
+	types, err := rows.ColumnTypes()
+	is.NotError(tb, err)
+	for _, pointer := range []bool{false, true} {
+		typed := make([]any, len(columns))
+		for i, v := range values {
+			typed[i] = typedDest(v, types[i].DatabaseTypeName(), pointer)
+		}
+		if err := rows.Scan(typed...); err != nil {
+			texts = append(texts, "scan: "+err.Error())
+			continue
+		}
+		for _, d := range typed {
+			texts = append(texts, typedText(d))
+		}
 	}
 	return strings.Join(texts, ",")
 }
@@ -1176,7 +1309,7 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 			got.affected, want.affected = "", ""
 		}
 	}
-	if got.String() == want.String() {
+	if got.full() == want.full() {
 		if s, _ := stmt.Check(src); s != nil && got.failed == "" {
 			if ct, ok := s.(*stmt.CreateTable); ok {
 				p.created[ct.Table.Value] = true
@@ -1201,7 +1334,7 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 		p.y.excused(gap + knownGapSuffix)
 		return ""
 	}
-	return fmt.Sprintf("%q with the arguments %#v: s4ql gives\n%v\nand SQLite\n%v", src, runs, got, want)
+	return fmt.Sprintf("%q with the arguments %#v: s4ql gives\n%v\nand SQLite\n%v", src, runs, got.full(), want.full())
 }
 
 // checkQuoted s4ql's outcome got of src, which holds the statement s, run where SQLite runs on o,
@@ -1521,8 +1654,8 @@ func (p *pair) compareTables() string {
 	for _, name := range names {
 		src := "select * from " + stmttest.Quote(name)
 		got, want := run(tb, p.s4ql, callQuery, src, nil, s4qlText), run(tb, p.sqlite, callQuery, src, nil, mattnText)
-		if got.String() != want.String() {
-			return fmt.Sprintf("the table %q: s4ql holds\n%v\nand SQLite\n%v", name, got, want)
+		if got.full() != want.full() {
+			return fmt.Sprintf("the table %q: s4ql holds\n%v\nand SQLite\n%v", name, got.full(), want.full())
 		}
 	}
 	return ""
@@ -2318,6 +2451,30 @@ func again(q *stmttest.Sequence, args []any) []any {
 	return next
 }
 
+// nils are kinds of nil that database/sql hands the driver as nil, which is NULL: nil, a nil
+// pointer, also one to a [driver.Valuer] with a value receiver, and a sql.Null* value that is not
+// valid.
+var nils = []any{nil, (*int64)(nil), (*float64)(nil), (*string)(nil), (*[]byte)(nil), (*sql.NullString)(nil),
+	sql.NullInt64{}, sql.NullFloat64{}, sql.NullString{}, sql.Null[[]byte]{}}
+
+// nilBytes are kinds of a nil []byte, which database/sql hands the driver as a nil []byte, and s4ql
+// refuses: one given directly, a pointer to one, and a valid sql.Null[[]byte] whose value is nil.
+var nilBytes = []any{[]byte(nil), new([]byte), sql.Null[[]byte]{Valid: true}}
+
+// withNils are the arguments args of a call with each nil one of [nils] and each nil []byte one of
+// [nilBytes], at random from r.
+func withNils(r stmttest.Rand, args []any) []any {
+	args = slices.Clone(args)
+	for i, a := range args {
+		if b, ok := a.([]byte); ok && b == nil {
+			args[i] = nilBytes[r.IntN(len(nilBytes))]
+		} else if a == nil {
+			args[i] = nils[r.IntN(len(nils))]
+		}
+	}
+	return args
+}
+
 // generated runs the sequence of n texts from seed on a new pair in the world w, each with its
 // arguments, and compares what each side gives for each, and at the end every table. A prepared
 // statement that runs several times runs one to three more times, with other values. Transactions
@@ -2350,6 +2507,9 @@ func generated(t *testing.T, w *world, seed uint64, n int, y tally) {
 			for range 1 + r.IntN(3) {
 				runs = append(runs, again(q, next.Args))
 			}
+		}
+		for i := range runs {
+			runs[i] = withNils(r, runs[i])
 		}
 		log = append(log, fmt.Sprintf("%v: %v -- with %#v", c, src, runs))
 		if _, failure := p.stepRuns(src, c, supported, runs); failure != "" {
@@ -2467,7 +2627,7 @@ func TestGenerated(t *testing.T) {
 		"argument int64": 150, "argument int": 1, "argument int32": 3, "argument uint64": 5, "argument float64": 70, "argument float64 -0.0": 10,
 		"argument float32": 5, "argument string": 60, "argument empty string": 9, "argument []uint8": 50, "argument empty []byte": 12,
 		"argument NaN": 2, "argument infinite float64": 2, "argument float32 that is not finite": 1, "argument string that is not valid UTF-8": 3,
-		"argument string with NUL": 4, "argument nil": 1, "argument nil []byte": 6, "argument bool": 2, "argument time.Time": 2,
+		"argument string with NUL": 4, "argument nil": 4, "argument nil []byte": 5, "argument bool": 2, "argument time.Time": 2,
 		"argument uint64 above int64": 1, "argument named": 23,
 
 		// Slice 5, as the run gave it on 2026-11-20: inserts into tables of several columns, without a
@@ -2482,6 +2642,28 @@ func TestGenerated(t *testing.T) {
 		"insert with a column without a value: attempt to write a readonly database": 2,
 		"select * of 1 columns ok": 49, "select * of 2 columns ok": 52, "select * of 3 columns ok": 40, "select of names ok": 130,
 		"select of a name that the table does not have no such column": 24,
+
+		// Slice 6, a third of what the run gave on 2026-11-20 when the sequence wrote NULL: NULL as a
+		// literal and as each kind of nil that database/sql hands the driver as nil, in a column that
+		// takes it, also beside a key that exists and in a read-only transaction, and in the key and in
+		// a column that does not take it; each kind of a nil []byte, which s4ql refuses; a column that
+		// takes NULL left out of a list; NULL beside a value of another type in another column; and a
+		// select of * and of names with NULL among its values, which each run reads into an any, a
+		// sql.Null* value, and a pointer.
+		"literal null": 110, "argument NULL as *int64": 8, "argument NULL as *float64": 7, "argument NULL as *string": 8,
+		"argument NULL as *[]uint8": 4, "argument NULL as *sql.NullString": 9, "argument NULL as sql.NullInt64": 5,
+		"argument NULL as sql.NullFloat64": 6, "argument NULL as sql.NullString": 4, "argument NULL as sql.Null[[]uint8]": 5,
+		"argument nil []byte as *[]uint8": 5, "argument nil []byte as sql.Null[[]uint8]": 4,
+		"NULL literal into a column that takes NULL ok": 20, "NULL argument into a column that takes NULL ok": 8,
+		"NULL literal into a column that takes NULL UNIQUE constraint failed": 7, "NULL argument into a column that takes NULL UNIQUE constraint failed": 4,
+		"NULL literal into a column that takes NULL attempt to write a readonly database": 4, "NULL literal into a column that takes NULL a value of another type": 3,
+		"NULL literal into the key NOT NULL constraint failed": 17, "NULL argument into the key NOT NULL constraint failed": 7,
+		"NULL literal into a column that does not take NULL NOT NULL constraint failed": 4, "NULL argument into a column that does not take NULL NOT NULL constraint failed": 2,
+		"insert that leaves out a column that takes NULL ok": 28, "insert that leaves out a column that takes NULL UNIQUE constraint failed": 8,
+		"insert that leaves out a column that takes NULL a value of another type": 7, "insert that leaves out a column that takes NULL NOT NULL constraint failed": 7,
+		"insert with NULL in the key: NOT NULL constraint failed": 9, "insert with NULL in a column that does not take it: NOT NULL constraint failed": 5,
+		"insert of NULL beside a value of another type NOT NULL constraint failed": 2, "insert of NULL beside a value of another type a value of another type": 3,
+		"select * with NULL ok": 25, "select of names with NULL ok": 15,
 	} {
 		if y["reached: "+kind] < least {
 			t.Errorf("the run reaches %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y["reached: "+kind], least)
@@ -2511,10 +2693,15 @@ func TestGenerated(t *testing.T) {
 	// 1075 and excusedArgument from 189 to 184, with the generator drawing as before: a nil argument
 	// is NULL, which s4ql takes, so 5 calls with one are no longer refused for it, and one of them
 	// meets SQLite's error of a name at prepare; and two inserts of the literal NULL of
-	// [stmttest.Others], which s4ql refused as not supported, meet such an error too.
+	// [stmttest.Others], which s4ql refused as not supported, meet such an error too. When the
+	// sequence wrote NULL, and the test made each nil argument one of [nils] and each nil []byte one
+	// of [nilBytes], the counts went from 1075, 9, 396, 184, 161, 70, 29, 30, 68, and 32 to 1060, 10,
+	// 426, 200, 161, 74, 46, 29, 53, and 45: both draw other random numbers, which moves every count,
+	// the calls and the transactions too; and of their own, a call around a NULL argument has a nil
+	// []byte in its place, which took excusedArgument up.
 	want := map[string]int{
-		excusedPrepare: 1075, excusedStartedTable: 9, excusedArguments: 396, excusedArgument: 184, excusedType: 161,
-		excusedLevel: 70, excusedRowsOpen: 29, excusedTxOpen: 30, excusedOutside: 68, excusedQuoted: 32,
+		excusedPrepare: 1060, excusedStartedTable: 10, excusedArguments: 426, excusedArgument: 200, excusedType: 161,
+		excusedLevel: 74, excusedRowsOpen: 46, excusedTxOpen: 29, excusedOutside: 53, excusedQuoted: 45,
 	}
 	kinds := slices.Collect(maps.Keys(want))
 	for name := range y {

@@ -305,10 +305,11 @@ func readReal(text string) (float64, bool) {
 	return float64(v), ok
 }
 
-// Unsupported are arguments that no column holds, which s4ql refuses: nil, a bool, a time.Time, an
+// Unsupported are arguments that no column holds, which s4ql refuses: a bool, a time.Time, an
 // unsigned integer that does not fit a signed 64-bit integer, a real that is not a number or is
-// infinite, text that holds NUL or is not valid UTF-8, and a nil []byte.
-var Unsupported = []any{nil, true, time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC), uint64(math.MaxInt64) + 1,
+// infinite, text that holds NUL or is not valid UTF-8, and a nil []byte. A nil is NULL, which a
+// column that takes NULL holds.
+var Unsupported = []any{true, time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC), uint64(math.MaxInt64) + 1,
 	math.NaN(), math.Inf(1), math.Inf(-1), float32(math.Inf(-1)), "a\x00b", "\x00", "\xff", "a\xc3", []byte(nil)}
 
 // LiteralKind of the value of a literal, for a count of what a test reaches: its type, or an edge of

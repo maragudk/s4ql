@@ -82,6 +82,9 @@ type answer struct {
 	// columns of a query, each as its name and declared type, and its rows, each as its values.
 	columns string
 	rows    []string
+	// null reports whether a value of the rows is NULL. It is not in the text of the answer, which
+	// holds each NULL.
+	null bool
 }
 
 func (a answer) String() string {
@@ -223,7 +226,7 @@ func (o *oracle) run(t testing.TB, src string, args ...any) answer {
 			case sqlite.TypeBlob:
 				values[i] = blobText(s.ColumnBlob(i))
 			case sqlite.TypeNull:
-				values[i] = "null"
+				values[i], a.null = "null", true
 			default:
 				t.Fatalf("SQLite gives a value of type %v", typ)
 			}
@@ -543,6 +546,7 @@ func (i *instance) queryValues(src string, args []*s4qlpb.Value) answer {
 		values := make([]string, len(row))
 		for j, v := range row {
 			values[j] = valueText(i.t, v)
+			a.null = a.null || v.HasNull()
 		}
 		a.rows = append(a.rows, strings.Join(values, ","))
 	}
@@ -908,13 +912,16 @@ func (p *pair) reach(c stmttest.Call, got answer) {
 // database of o. For an insert: each argument by its kind, as [stmttest.ArgumentKind] names it, each
 // literal by its kind, as [stmttest.LiteralKind] names it, a text or a blob of more than 900 bytes,
 // and, for an insert into a table that SQLite has, the outcome: for one that SQLite prepares by the
-// type of the key column, also for -0.0 in the key that meets a key that exists; and for a table of
-// several columns by the form of the insert, without a list or with a list in the order of the table
-// or in another, and by its faults, as [stmttest.Faults] gives them, one or two. For a create table
-// that SQLite prepares, the outcome by its number of columns, by the position of its key, and for one
-// with two columns of a type and one of mixed types. For a select of a table that SQLite has, the
-// outcome by its form: * by the number of columns, names, names in another order than the table's, a
-// name twice, and a name that the table does not have, as written and in double quotes.
+// type of the key column, also for -0.0 in the key that meets a key that exists; what it reaches of
+// NULL, as [stmttest.NullCases] gives it; and for a table of several columns by the form of the insert, without
+// a list or with a list in the order of the table or in another, and by its faults, as
+// [stmttest.Faults] gives them, one or two. For a create table that SQLite prepares, the outcome by
+// its number of columns, by the position of its key, for one with two columns of a type and one of
+// mixed types, and for one of several columns by whether none, all, or some of the columns outside
+// the key take NULL. For a select of a table that SQLite has, the outcome by its form: * by the
+// number of columns, names, names in another order than the table's, a name twice, and a name that
+// the table does not have, as written and in double quotes; and of * and of names with NULL among
+// the values of its rows.
 func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, count func(string)) {
 	t.Helper()
 	outcome := "ok"
@@ -944,10 +951,29 @@ func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, count func(stri
 		if slices.ContainsFunc(slices.Collect(maps.Values(kinds)), func(n int) bool { return n > 1 }) {
 			count("create table with two columns of a type " + outcome)
 		}
+		if len(s.Columns) > 1 {
+			nullable := 0
+			for _, col := range s.Columns {
+				if !col.PrimaryKey && !col.NotNull {
+					nullable++
+				}
+			}
+			switch nullable {
+			case 0:
+				count("create table of which no column takes NULL " + outcome)
+			case len(s.Columns) - 1:
+				count("create table of which every column outside the key takes NULL " + outcome)
+			default:
+				count("create table of which some columns outside the key take NULL " + outcome)
+			}
+		}
 	case *stmt.Select:
 		_, columns := o.columns(t, s.Table.Value)
 		if columns == nil {
 			return
+		}
+		if got.null {
+			count(map[bool]string{true: "select * with NULL ", false: "select of names with NULL "}[s.Columns == nil] + outcome)
 		}
 		if s.Columns == nil {
 			count(fmt.Sprint("select * of ", len(columns), " columns ", outcome))
@@ -1027,6 +1053,11 @@ func reachInsert(t testing.TB, o *oracle, s *stmt.Insert, c stmttest.Call, outco
 					}
 				}
 			}
+		}
+	}
+	if !refused {
+		for _, what := range stmttest.NullCases(columns, s, args) {
+			count(what + " " + outcome)
 		}
 	}
 	if len(columns) < 2 || refused {
@@ -1297,9 +1328,9 @@ func TestDifferential(t *testing.T) {
 		// What the full run must reach, at least: each type as a key, with an insert that succeeds,
 		// meets a key that exists, and has a value of another type, also -0.0 after 0.0; each kind of
 		// literal and of argument, also those that no column holds; and a text or a blob that is too
-		// long, as a literal and as an argument; and the forms and the faults of slice 5. Each least
-		// number is about a third of what the run gave on 2026-11-20, so that a generator that stops
-		// reaching a case fails the test.
+		// long, as a literal and as an argument; and the forms and the faults of slices 5 and 6. Each
+		// least number is about a third of what the run gave on 2026-11-20, so that a generator that
+		// stops reaching a case fails the test.
 		for kind, least := range reachedDifferential {
 			if y["reached: "+kind] < least {
 				t.Errorf("the run reaches %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y["reached: "+kind], least)
@@ -1332,8 +1363,12 @@ func TestDifferential(t *testing.T) {
 		// where one value in ten had, which took the fourth down; and the sequence draws other random
 		// numbers, which moved the first and the last. The engine of slice 6 took the third from 197 to
 		// 184: a nil argument is NULL, which the engine takes, and the 13 calls with one run in SQLite
-		// now. The generator draws as before.
-		want := map[string]int{acceptedStartedTable: 17, excusedArguments: 718, excusedArgument: 184, excusedType: 336, excusedLong: 3}
+		// now. The generator drew as before then. When the sequence wrote NULL, they went from 17, 718,
+		// 184, 336, and 3 to 18, 703, 220, 339, and 8: the sequence draws other random numbers, which
+		// moves each of them, and of its own a call around a NULL argument has a nil []byte in its
+		// place, which took the third up: the arguments that are a nil []byte went from 26 to 54. Nil is
+		// no longer among [stmttest.Unsupported].
+		want := map[string]int{acceptedStartedTable: 18, excusedArguments: 703, excusedArgument: 220, excusedType: 339, excusedLong: 8}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
 			if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) {
@@ -1361,7 +1396,7 @@ var reachedDifferential = map[string]int{
 	"argument int64": 440, "argument int": 7, "argument int32": 4, "argument uint64": 7, "argument float64": 200, "argument float64 -0.0": 26,
 	"argument float32": 9, "argument string": 170, "argument empty string": 34, "argument []uint8": 170, "argument empty []byte": 45,
 	"argument NaN": 4, "argument infinite float64": 7, "argument float32 that is not finite": 5, "argument string that is not valid UTF-8": 12,
-	"argument string with NUL": 14, "argument nil": 4, "argument nil []byte": 9, "argument bool": 3, "argument time.Time": 4,
+	"argument string with NUL": 14, "argument nil": 88, "argument nil []byte": 18, "argument bool": 3, "argument time.Time": 4,
 	"argument uint64 above int64": 4, "argument named": 40,
 
 	// Slice 5: tables of one to three columns, of mixed types and with two columns of a type, with
@@ -1381,6 +1416,26 @@ var reachedDifferential = map[string]int{
 	"select * of 1 columns ok": 86, "select * of 2 columns ok": 100, "select * of 3 columns ok": 90, "select of names ok": 250,
 	"select of names in another order ok": 55, "select of a name twice ok": 170,
 	"select of a name that the table does not have no such column": 17, "select of a name in double quotes that the table does not have no such column": 24,
+
+	// Slice 6, a third of what the run gave on 2026-11-20 when the sequence wrote NULL: tables of
+	// which no column, every column, and some columns outside the key take NULL; NULL as a literal
+	// and as an argument in a column that takes it, also beside a key that exists and a value of
+	// another type, and in the key and in a column that does not take it; a column that takes NULL
+	// left out of a list; NULL beside a value of another type in another column, which gets NOT NULL
+	// or the refusal of the type by where the NULL is; and a select of * and of names with NULL among
+	// its values.
+	"create table of which no column takes NULL ok": 70, "create table of which every column outside the key takes NULL ok": 70,
+	"create table of which some columns outside the key take NULL ok": 16, "literal null": 220,
+	"NULL literal into a column that takes NULL ok": 34, "NULL argument into a column that takes NULL ok": 16,
+	"NULL literal into a column that takes NULL UNIQUE constraint failed": 11, "NULL argument into a column that takes NULL UNIQUE constraint failed": 5,
+	"NULL literal into a column that takes NULL a value of another type": 5, "NULL argument into a column that takes NULL a value of another type": 2,
+	"NULL literal into the key NOT NULL constraint failed": 35, "NULL argument into the key NOT NULL constraint failed": 14,
+	"NULL literal into a column that does not take NULL NOT NULL constraint failed": 10, "NULL argument into a column that does not take NULL NOT NULL constraint failed": 4,
+	"insert that leaves out a column that takes NULL ok": 60, "insert that leaves out a column that takes NULL UNIQUE constraint failed": 16,
+	"insert that leaves out a column that takes NULL a value of another type": 11, "insert that leaves out a column that takes NULL NOT NULL constraint failed": 13,
+	"insert with NULL in the key: NOT NULL constraint failed": 17, "insert with NULL in a column that does not take it: NOT NULL constraint failed": 11,
+	"insert of NULL beside a value of another type NOT NULL constraint failed": 4, "insert of NULL beside a value of another type a value of another type": 6,
+	"select * with NULL ok": 45, "select of names with NULL ok": 25,
 }
 
 // FuzzDifferential runs the sequence of statements that its input chooses, the seed and the number of
@@ -1473,8 +1528,9 @@ func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
 }
 
 // typesSetUp is the database that [FuzzTypes] runs on, with names in other cases than the inserts
-// use: for each of the five types a table whose one column, the key, is of the type, and a table
-// whose first column is of the type and whose second, the key, is an INT.
+// use: for each of the five types a table whose one column, the key, is of the type, a table whose
+// first column is of the type and whose second, the key, is an INT, and a table of the same two
+// columns whose first takes NULL.
 var typesSetUp = []string{
 	"create table T_int (v int primary key) strict, without rowid",
 	"create table t_INTEGER (v integer primary key) strict, without rowid",
@@ -1486,21 +1542,33 @@ var typesSetUp = []string{
 	"create table t_real_k (V real not null, k int primary key) strict, without rowid",
 	"create table t_text_k (v text not null, k int primary key) without rowid, strict",
 	"create table t_blob_k (v BLOB not null, k int primary key) strict, without rowid",
+	"create table T_int_n (v int, k int primary key) strict, without rowid",
+	"create table t_INTEGER_n (v integer, K int primary key) strict, without rowid",
+	"create table t_real_n (V real, k int primary key) strict, without rowid",
+	"create table t_text_n (v text, k int primary key) without rowid, strict",
+	"create table t_blob_n (v BLOB, k int primary key) strict, without rowid",
 }
 
 // typesTables are the names of the tables of [typesSetUp], as the inserts of [FuzzTypes] name them.
-// A name that ends in _k is of a table of two columns.
-var typesTables = []string{"t_int", "t_integer", "t_real", "t_text", "t_blob", "t_int_k", "t_integer_k", "t_real_k", "t_text_k", "t_blob_k"}
+// A name that ends in _k or _n is of a table of two columns, and one that ends in _n of a table whose
+// first column takes NULL.
+var typesTables = []string{
+	"t_int", "t_integer", "t_real", "t_text", "t_blob", "t_int_k", "t_integer_k", "t_real_k", "t_text_k", "t_blob_k",
+	"t_int_n", "t_integer_n", "t_real_n", "t_text_n", "t_blob_n",
+}
 
 // FuzzTypes gives the engine, on a database in memory, the bytes of its input as the value of an
 // insert into a table of each of the five types, in the form that its input chooses: as a text
 // argument, a blob argument, a string literal, a blob literal, the bits of a real argument or of an
-// integer argument, or SQL text in the place of the value. The value is the key of a table of one
-// column, and the first column of a table of two, whose key the insert sets to 1 and names first in
-// its list. Each insert runs twice, so that the second meets the key of the first, and a query reads
+// integer argument, or SQL text in the place of the value; or, in place of the bytes, NULL, by the
+// length of the bytes as the literal, as a nil argument, or as the first column left out of the list
+// of a table of two. The value is the key of a table of one column, and the first column of a table
+// of two, which takes NULL in one of them, whose key the insert sets to 1 and names first in its
+// list. Each insert runs twice, so that the second meets the key of the first, and a query reads
 // the table. It compares each answer with SQLite's,
 // as [TestDifferential] does, by s4ql's rules where they differ from SQLite: a value of another type
-// than its column, NaN, an infinity, and text that holds NUL or is not valid UTF-8 are refused. Then
+// than its column, NaN, an infinity, and text that holds NUL or is not valid UTF-8 are refused, and
+// NULL is refused by SQLite's NOT NULL in the key and in a column that does not take it. Then
 // it compares the tables. [FuzzTypes_core] runs the same on the storage core. The database in memory
 // has no length limit, so the input of the limit that [FuzzTypes_core] reads changes nothing here.
 func FuzzTypes(f *testing.F) {
@@ -1522,16 +1590,20 @@ const (
 	formBlobLiteral
 	formRealArgument
 	formIntegerArgument
+	formNull
 	formSQL
 	forms
 )
 
 // typesCall is the insert of the bytes data into the table in the form, which [FuzzTypes] runs.
 // The form is form % [forms], and an odd form / [forms] writes the hex digits of a blob literal and its
-// x in upper case.
+// x in upper case. The form [formNull] gives NULL by the length of data: as a nil argument for a
+// length of 1 modulo 3, by leaving the first column out of the list of a table of two for 2, and
+// otherwise as the literal.
 func typesCall(table string, data []byte, form uint8) stmttest.Call {
 	insert, end := "insert into "+table+" (v) values (", ")"
-	if strings.HasSuffix(table, "_k") {
+	two := strings.HasSuffix(table, "_k") || strings.HasSuffix(table, "_n")
+	if two {
 		insert = "insert into " + table + " (k, v) values (1, "
 	}
 	bits := func() uint64 {
@@ -1559,6 +1631,14 @@ func typesCall(table string, data []byte, form uint8) stmttest.Call {
 		return stmttest.Call{Src: insert + "?" + end, Args: []any{math.Float64frombits(bits())}, Supported: true}
 	case formIntegerArgument:
 		return stmttest.Call{Src: insert + "?" + end, Args: []any{int64(bits())}, Supported: true}
+	case formNull:
+		switch {
+		case len(data)%3 == 1:
+			return stmttest.Call{Src: insert + "?" + end, Args: []any{nil}, Supported: true}
+		case len(data)%3 == 2 && two:
+			return stmttest.Call{Src: "insert into " + table + " (k) values (1)", Supported: true}
+		}
+		return stmttest.Call{Src: insert + "null" + end, Supported: true}
 	default:
 		return stmttest.Call{Src: insert + string(data) + end}
 	}

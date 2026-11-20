@@ -13,28 +13,31 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
-// Sequence of random statements of slices 1, 2, 4, and 5 that meet at a few tables and columns, each
+// Sequence of random statements of slices 1, 2, 4, 5, and 6 that meet at a few tables and columns, each
 // named in several spellings that SQLite takes for one name and in some that it takes for others,
 // with values from a small set so that keys repeat, and with statements that are not supported and
 // texts that SQLite refuses mixed in.
 //
 // Each name of a table has a shape of the sequence's own: from one to [sequenceColumns] columns,
-// each with a name and one of the five types, of which two often have the same type, and the primary
-// key at any position. Nine create tables of the name in ten declare that shape, its names in any of
-// their spellings, and one of these in ten gives one column any type; the tenth has columns at
-// random, whose names can repeat, which SQLite refuses. An insert into a table of the name names the
-// columns of the shape in a list in any order, or one time in three without a list, in the order of
-// the shape, with a value of the type of each column. Now and then it leaves a column out of its
-// list, names a column that the shape may not have, has a value more or less, or has a value of any
-// type, which is mostly another than its column, for one column or for two; so some inserts have two
-// faults. A select names * or columns of the shape in any order, also one twice, and now and then a
-// name that the shape may not have. The small sets of values hold keys that SQLite takes for one,
-// such as 0.0 and -0.0, so that every type meets a key that exists.
+// each with a name and one of the five types, of which two often have the same type, the primary
+// key at any position, and of the other columns none, all, or some that take NULL. Nine create
+// tables of the name in ten declare that shape, its names in any of their spellings, and one of
+// these in ten gives one column any type, and one in ten turns whether one column takes NULL; the
+// tenth has columns at random, whose names can repeat, which SQLite refuses. An insert into a table
+// of the name names the columns of the shape in a list in any order, or one time in three without a
+// list, in the order of the shape, with a value of the type of each column, or NULL now and then for
+// a column that takes NULL, which a list also leaves out now and then. Now and then it leaves any
+// column out of its list, names a column that the shape may not have, has a value more or less, has
+// a value of any type, which is mostly another than its column, for one column or for two, or has
+// NULL for any column, also the key; so some inserts have two faults. A select names * or columns
+// of the shape in any order, also one twice, and now and then a name that the shape may not have.
+// The small sets of values hold keys that SQLite takes for one, such as 0.0 and -0.0, so that every
+// type meets a key that exists.
 //
-// One value in three of an insert is a plain ? with the value as its argument, and some calls, as
-// [Sequence.Next] says, have arguments around those that s4ql supports: none for a ?, one for a
-// statement without one, two for a ?, one that no column holds, one with a name, or a value of
-// another Go type that s4ql supports.
+// One value in three of an insert is a plain ? with the value as its argument, nil for NULL, and
+// some calls, as [Sequence.Next] says, have arguments around those that s4ql supports: none for a
+// ?, one for a statement without one, two for a ?, one that no column holds, one with a name, or a
+// value of another Go type that s4ql supports.
 type Sequence struct {
 	r      Rand
 	g      *Generator
@@ -177,6 +180,11 @@ func (q *Sequence) shapeOf(table stmt.Name) []stmt.Column {
 		}
 		shape = append(shape, stmt.Column{Name: stmt.Name{Value: folds[i]}, Type: typ, PrimaryKey: i == key})
 	}
+	// Of the columns outside the key, none takes NULL, every one does, or each one time in two.
+	nulls := r.IntN(3)
+	for i := range shape {
+		shape[i].NotNull = !shape[i].PrimaryKey && (nulls == 0 || nulls == 2 && r.IntN(2) == 0)
+	}
 	q.shapes[name] = shape
 	return shape
 }
@@ -193,8 +201,10 @@ func (q *Sequence) anyType() stmt.Type {
 }
 
 // create gives the columns of a create table of table, as [Generator.Create] does: those of its
-// shape, in any of their spellings, and one time in ten with one column of any type, or one time in
-// ten columns at random, whose names can repeat.
+// shape, in any of their spellings, and one time in ten with one column of any type, and one time
+// in ten with one column that takes NULL where the shape's does not or the other way round, which
+// is no change for the key; or one time in ten columns at random, whose names can repeat, of which
+// each outside the key takes NULL one time in two.
 func (q *Sequence) create(table stmt.Name) []stmt.Column {
 	r := q.r
 	shape := q.shapeOf(table)
@@ -203,19 +213,25 @@ func (q *Sequence) create(table stmt.Name) []stmt.Column {
 		key := r.IntN(n)
 		columns := make([]stmt.Column, n)
 		for i := range columns {
-			columns[i] = stmt.Column{Name: stmt.Name{Raw: q.columns[r.IntN(len(q.columns))]}, Type: q.anyType(), PrimaryKey: i == key}
+			columns[i] = stmt.Column{Name: stmt.Name{Raw: q.columns[r.IntN(len(q.columns))]}, Type: q.anyType(), PrimaryKey: i == key, NotNull: r.IntN(2) == 0}
 		}
 		return columns
 	}
-	retyped := -1
+	retyped, renulled := -1, -1
 	if r.IntN(10) == 0 {
 		retyped = r.IntN(len(shape))
+	}
+	if r.IntN(10) == 0 {
+		renulled = r.IntN(len(shape))
 	}
 	var columns []stmt.Column
 	for i, c := range shape {
 		c.Name = stmt.Name{Raw: q.spell(c.Name.Value)}
 		if i == retyped {
 			c.Type = q.anyType()
+		}
+		if i == renulled {
+			c.NotNull = !c.NotNull
 		}
 		columns = append(columns, c)
 	}
@@ -224,9 +240,11 @@ func (q *Sequence) create(table stmt.Name) []stmt.Column {
 
 // insert gives the list of columns and the values of an insert into table, as [Generator.Insert]
 // does: the columns of its shape, in a list in any order or without a list, with a value of the type
-// of each. One list in eight leaves a column out, one in twelve has a name in place of one of its
-// own that is no other of the list, one insert in sixteen has a value more and one a value less,
-// and one in ten has a value of any type, and one in three of these a second.
+// of each, or NULL one time in four for a column that takes NULL, which a list also leaves out one
+// time in three. One list in eight leaves a column out, one in twelve has a name in place of one of
+// its own that is no other of the list, one insert in sixteen has a value more and one a value less,
+// one in ten has a value of any type, and one in three of these a second, and one in twelve has NULL
+// for any column, also the key.
 func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 	r := q.r
 	shape := q.shapeOf(table)
@@ -242,6 +260,11 @@ func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 				order[i], order[j] = order[j], order[i]
 			}
 		}
+		// A column that takes NULL is left out one time in three, and gets NULL.
+		order = slices.DeleteFunc(order, func(position int) bool {
+			c := shape[position]
+			return !c.PrimaryKey && !c.NotNull && r.IntN(3) == 0
+		})
 		if len(order) > 1 && r.IntN(8) == 0 {
 			at := r.IntN(len(order))
 			order = slices.Delete(order, at, at+1)
@@ -253,6 +276,10 @@ func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 		c := shape[position]
 		if withList {
 			list = append(list, q.spell(c.Name.Value))
+		}
+		if !c.PrimaryKey && !c.NotNull && r.IntN(4) == 0 {
+			values = append(values, stmt.Null{})
+			continue
 		}
 		values = append(values, q.valueOf(c.Type))
 	}
@@ -275,6 +302,10 @@ func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 		if r.IntN(3) == 0 {
 			values[r.IntN(len(values))] = q.valueOf(q.anyType())
 		}
+	}
+	if r.IntN(12) == 0 {
+		// NULL for any column: the key, one that does not take NULL, or one that does.
+		values[r.IntN(len(values))] = stmt.Null{}
 	}
 	switch r.IntN(16) {
 	case 0:
@@ -367,13 +398,13 @@ func (q *Sequence) Like(a any) any {
 	return a
 }
 
-// Others are texts that are not statements of slices 1, 2, and 4, with %[1]v for a table, %[2]v
-// for a column, and %[3]v for a small integer: statements that the pass does not support, among them
-// literals that SQLite reads as an infinite real or as a real for an integer outside 64 bits, texts
-// that SQLite refuses with a syntax error, and texts without a statement. Two are statements of slice
-// 5, an insert without a list of columns and a select of a column, which s4ql supports and a sequence
-// does not mark as supported yet. One is of slice 6, an insert of NULL, which s4ql supports and a
-// sequence does not mark as supported yet either.
+// Others are texts other than the statements that the generator of a sequence writes, with %[1]v for
+// a table, %[2]v for a column, and %[3]v for a small integer: statements that the pass does not
+// support, among them literals that SQLite reads as an infinite real or as a real for an integer
+// outside 64 bits, texts that SQLite refuses with a syntax error, and texts without a statement.
+// Three are statements that s4ql supports, which a sequence does not mark as [Call.Supported], as it
+// marks none of the texts of Others: an insert without a list of columns and a select of a column, of
+// slice 5, and an insert of NULL, of slice 6.
 var Others = []string{
 	"create table %[1]v (%[2]v any primary key) strict, without rowid",
 	"create table %[1]v (%[2]v varchar primary key) strict, without rowid",
@@ -420,13 +451,14 @@ var Others = []string{
 // Call of a text: what an application gives to database/sql.
 type Call struct {
 	Src string
-	// Args of the call, by position: an int64, a float64, a string, or a []byte that is not nil for
-	// the arguments that s4ql supports, as [Argument] gives them, and other values, such as a
-	// [sql.NamedArg], an int32, a float32, or one of [Unsupported], for the cases around them.
+	// Args of the call, by position: an int64, a float64, a string, a []byte that is not nil, or nil
+	// for NULL for the arguments that s4ql supports, as [Argument] gives them, and other values, such
+	// as a [sql.NamedArg], an int32, a float32, or one of [Unsupported], for the cases around them.
 	Args []any
 	// Query reports whether to run the call as a query.
 	Query bool
-	// Supported reports whether the text is a statement of slices 1, 2, and 4, which s4ql supports.
+	// Supported reports whether the text is a statement of the slices that a [Sequence] writes, which
+	// s4ql supports.
 	Supported bool
 }
 
@@ -475,7 +507,7 @@ func (q *Sequence) Next() Call {
 // parameter, the arguments lack the last, have one more, have one that no column holds, have one
 // with a name, or have a value of another Go type that s4ql supports: an integer of another Go type
 // than int64, a float32 for a float64, and for text or a blob one that no column holds of the same
-// Go type.
+// Go type, and for NULL a nil []byte, which no column holds either.
 func (q *Sequence) around(args []any) []any {
 	r := q.r
 	if len(args) == 0 {
@@ -513,15 +545,16 @@ func (q *Sequence) around(args []any) []any {
 			}
 		case string:
 			args[at] = []string{"a\x00b", "\xff", v + "\x00"}[r.IntN(3)]
-		case []byte:
+		case []byte, nil:
+			// A nil []byte, which does not say whether it is NULL or the empty blob.
 			args[at] = []byte(nil)
 		}
 	}
 	return args
 }
 
-// next call of the sequence, with an argument for each parameter of a statement of slices 1, 2,
-// and 4, and for each ? of a text that is not.
+// next call of the sequence, with an argument for each parameter of a statement of the
+// slices that a sequence writes, and for each ? of a text that is not.
 func (q *Sequence) next() Call {
 	r := q.r
 	if r.IntN(12) == 0 {
