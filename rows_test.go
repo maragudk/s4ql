@@ -157,16 +157,9 @@ func TestRows(t *testing.T) {
 		exec(t, db, "insert into t1 (v1) values (4)")
 		is.EqualSlice(t, []int64{1, 2, 3, 4}, values(t, db, select1))
 
-		// The reads that are still held see the state of their start.
+		// The reads that are still held see the state of their start, from the row that each is at.
 		for _, rows := range all[1:] {
-			var rest []int64
-			for rows.Next() {
-				var v int64
-				is.NotError(t, rows.Scan(&v))
-				rest = append(rest, v)
-			}
-			is.NotError(t, rows.Err())
-			is.EqualSlice(t, []int64{2, 3}, rest)
+			is.EqualSlice(t, []int64{1, 2, 3}, from(t, rows))
 		}
 		readersFree(t, db)
 	})
@@ -231,14 +224,7 @@ func TestRows(t *testing.T) {
 		_, err = conn.ExecContext(t.Context(), "insert into t1 (v1) values (4)")
 		is.NotError(t, err)
 		is.EqualSlice(t, []int64{1, 2, 3, 4}, values(t, db, select1))
-		rest := []int64{1}
-		for first.Next() {
-			var v int64
-			is.NotError(t, first.Scan(&v))
-			rest = append(rest, v)
-		}
-		is.NotError(t, first.Err())
-		is.EqualSlice(t, []int64{1, 2, 3}, rest)
+		is.EqualSlice(t, []int64{1, 2, 3}, from(t, first))
 
 		// The rows have ended, and the connection reads again.
 		second, err := conn.QueryContext(t.Context(), select1)

@@ -43,13 +43,24 @@ func manyColumns(n int) string {
 	return strings.Join(cs, ", ")
 }
 
+// forward is the options of an engine whose queries all read forward, which is the order of the key
+// for a query that reads by the primary key: for a test that writes its rows out by hand in that
+// order, since the engine otherwise draws for each query whether it reads forward or backward.
+func forward() engine.Options {
+	var options engine.Options
+	options.Path(engine.Path{Forward: true})
+	return options
+}
+
 // pin runs the statements of setup and then src, with args for its parameters, on a new instance of
-// the engine and on SQLite, and requires the same answer of both, and the answer want: an error as
-// "code/extended: message", or "columns ...; rows ..." for a query, or "" for a statement that
-// changes the database. After a statement that is no query, the state of both must be the same.
+// the engine and on SQLite, and requires the same answer of both, with the rows as a multiset, and
+// the answer want: an error as "code/extended: message", or "columns ...; rows ..." for a query, with
+// the rows in the order of the key, or "" for a statement that changes the database. After a
+// statement that is no query, the state of both must be the same.
 func pin(t *testing.T, setup []string, src, want string, args ...any) {
 	t.Helper()
-	i := newInstance(t, engine.Options{})
+	// The rows of want are written out in the order of the key, which is forward.
+	i := newInstance(t, forward())
 	o := newOracle(t)
 	for _, s := range setup {
 		is.Equal(t, "", i.exec(s).err, s)
@@ -553,7 +564,8 @@ func TestEngine_types(t *testing.T) {
 	})
 
 	t.Run("should give a []byte of the rows of its own, and a blob that is empty and not nil", func(t *testing.T) {
-		i := newInstance(t, engine.Options{})
+		// Forward, so that the empty blob, the smallest key, is the first row and "ab" the second.
+		i := newInstance(t, forward())
 		is.Equal(t, "", i.exec("create table t (v blob primary key) strict, without rowid").err)
 		arg := []byte("ab")
 		is.Equal(t, "", i.execValues("insert into t (v) values (?)", values([]any{arg})).err)
@@ -1967,7 +1979,8 @@ func TestEngine_nulls(t *testing.T) {
 			changes, _ := o.changes(t)
 			is.Equal(t, changes, i.changes, c.src)
 		}
-		is.Equal(t, `columns "a TEXT, k INT, b REAL, c BLOB", rows ["null,1,real 1.5,null" "null,2,real 2.5,null" "null,3,real 3.5,null" "null,4,real 4.5,x''" "\"\",5,real 5.5,null"]`, i.query("select * from t").String())
+		// The text of an answer holds its rows in the order of their texts, so the row of the key 5 is first.
+		is.Equal(t, `columns "a TEXT, k INT, b REAL, c BLOB", rows ["\"\",5,real 5.5,null" "null,1,real 1.5,null" "null,2,real 2.5,null" "null,3,real 3.5,null" "null,4,real 4.5,x''"]`, i.query("select * from t").String())
 		rows, err := i.c.Query(t.Context(), "select a from t")
 		is.NotError(t, err)
 		for row, err := range rows.All() {

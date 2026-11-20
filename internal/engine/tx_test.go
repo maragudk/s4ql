@@ -62,32 +62,36 @@ func oracleEnd(readOnly, commit bool) []string {
 }
 
 // runIn runs the statement of the step on the connection of i, and gives its answer as the step
-// writes it, and keeps SQLite's count of changes as its result says.
-func runIn(t *testing.T, i *instance, s txStep) string {
+// writes it, with the rows of a query in the order in which they came, and the answer itself, and
+// keeps SQLite's count of changes as its result says.
+func runIn(t *testing.T, i *instance, s txStep) (string, answer) {
 	t.Helper()
 	if s.want == "wrong arguments" {
 		_, err := i.c.Exec(t.Context(), s.src, values(s.args)...)
 		is.True(t, errors.Is(err, engine.ErrArguments), fmt.Sprint(err))
-		return s.want
+		return s.want, answer{err: wrongArguments}
 	}
 	if strings.Contains(strings.ToLower(s.src), "select") {
 		a := i.queryValues(s.src, values(s.args))
 		if a.err != "" {
-			return a.err
+			return a.err, a
 		}
-		return strings.TrimSpace("rows " + strings.Join(a.rows, " "))
+		return strings.TrimSpace("rows " + strings.Join(a.rows, " ")), a
 	}
-	return i.execValues(s.src, values(s.args)).err
+	a := i.execValues(s.src, values(s.args))
+	return a.err, a
 }
 
 // pinTx runs the statements of setup, each a transaction of its own, and then the steps in one
 // transaction, read-only if readOnly, which ends with a commit if commit and with a roll back
-// otherwise, on the engine and in SQLite. Each step must give its answer and the same count of changes
-// in both, and after the end, both must hold the state want, also after a replay of the log into an
-// empty cache. It gives the instance.
+// otherwise, on the engine and in SQLite. Each step must give its answer, with the rows of a query in
+// the order of the key, and the same answer, with the rows as a multiset, and the same count of
+// changes in both, and after the end, both must hold the state want, also after a replay of the log
+// into an empty cache. It gives the instance.
 func pinTx(t *testing.T, setup []string, readOnly bool, steps []txStep, commit bool, want string) *instance {
 	t.Helper()
-	i := newInstance(t, engine.Options{})
+	// The rows of the steps are written out in the order of the key, which is forward.
+	i := newInstance(t, forward())
 	o := newOracle(t)
 	for _, s := range setup {
 		is.Equal(t, "", i.exec(s).err, s)
@@ -102,17 +106,13 @@ func pinTx(t *testing.T, setup []string, readOnly bool, steps []txStep, commit b
 		is.Equal(t, "", o.run(t, s).err, s)
 	}
 	for _, s := range steps {
-		got := runIn(t, i, s)
-		is.Equal(t, s.want, got, s.src)
+		text, got := runIn(t, i, s)
+		is.Equal(t, s.want, text, s.src)
 		if s.own() {
 			continue
 		}
-		a := o.run(t, s.src, oracleArgs(s.args)...)
-		sqlite := a.err
-		if sqlite == "" && strings.Contains(strings.ToLower(s.src), "select") {
-			sqlite = strings.TrimSpace("rows " + strings.Join(a.rows, " "))
-		}
-		is.Equal(t, sqlite, got, "SQLite and the engine: "+s.src)
+		// SQLite leaves the order of the rows unspecified, so they are compared as a multiset.
+		is.Equal(t, o.run(t, s.src, oracleArgs(s.args)...).String(), got.String(), "SQLite and the engine: "+s.src)
 		changes, _ := o.changes(t)
 		is.Equal(t, changes, i.changes, "the count of changes after "+s.src)
 	}
@@ -126,7 +126,7 @@ func pinTx(t *testing.T, setup []string, readOnly bool, steps []txStep, commit b
 	}
 	is.Equal(t, want, o.state(t), "SQLite")
 	is.Equal(t, want, i.state(), "the engine")
-	i.restart(true, engine.Options{})
+	i.restart(true, forward())
 	is.Equal(t, want, i.state(), "the engine after a replay of the log")
 	return i
 }
@@ -720,13 +720,17 @@ func TestConn_isolation(t *testing.T) {
 	for _, end := range []string{"commit", "rollback"} {
 		t.Run("should begin a second write transaction only after the first has ended, by a "+end+", and let it see what the first committed", func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				i := newInstance(t, engine.Options{})
+				// Forward, so that the last select gives the two rows in the order of the key.
+				i := newInstance(t, forward())
 				is.Equal(t, "", i.exec(t1).err)
 				first, second := conn(t, i), conn(t, i)
 				is.NotError(t, first.Begin(t.Context()))
 				is.Equal(t, "", do(t, first, insert1))
 
-				began := make(chan error)
+				// The channel holds the answer of the begin, so that its goroutine ends also when a check
+				// before the receive fails the test, and the bubble does not end in a deadlock that hides
+				// the failure.
+				began := make(chan error, 1)
 				go func() {
 					began <- second.Begin(t.Context())
 				}()
@@ -793,7 +797,8 @@ func TestConn_Commit(t *testing.T) {
 			{src: "drop table t2"},
 			{src: "create table t3 (v int primary key) strict, without rowid"},
 		} {
-			is.Equal(t, s.want, runIn(t, i, s), s.src)
+			got, _ := runIn(t, i, s)
+			is.Equal(t, s.want, got, s.src)
 		}
 		is.NotError(t, i.c.Commit(t.Context()))
 		is.Equal(t, fmt.Sprint([][]string{
@@ -917,7 +922,8 @@ func TestConn_rows(t *testing.T) {
 		})
 
 		t.Run("should end a loop over the rows of a "+k.name+" transaction at its next row with ErrTxDone when the transaction rolls back", func(t *testing.T) {
-			i := newInstance(t, engine.Options{})
+			// Forward, so that the first row of the loop is that of the key 1.
+			i := newInstance(t, forward())
 			is.Equal(t, "", i.exec(t1).err)
 			is.Equal(t, "", i.exec(insert1).err)
 			is.Equal(t, "", i.exec(insert2).err)
@@ -947,13 +953,17 @@ func TestConn_rows(t *testing.T) {
 
 	t.Run("should roll a write transaction back and fail its commit while a loop over its rows runs, and free the place of the writer when the loop ends", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
-			i := newInstance(t, engine.Options{})
+			// Forward, so that the first row of the loop is that of the key 1.
+			i := newInstance(t, forward())
 			is.Equal(t, "", i.exec(t1).err)
 			is.NotError(t, i.c.Begin(t.Context()))
 			is.Equal(t, "", do(t, i.c, insert1))
 			is.Equal(t, "", do(t, i.c, insert2))
 			other := conn(t, i)
-			began := make(chan error)
+			// The channel holds the answer of the begin, so that its goroutine ends also when a check
+			// before the receive fails the test, and the bubble does not end in a deadlock that hides
+			// the failure.
+			began := make(chan error, 1)
 			rows, err := i.c.Query(t.Context(), selectT)
 			is.NotError(t, err)
 			var got []string
@@ -985,7 +995,8 @@ func TestConn_rows(t *testing.T) {
 	})
 
 	t.Run("should end a read-only transaction at a commit while a loop over its rows runs, which ends at its next row", func(t *testing.T) {
-		i := newInstance(t, engine.Options{})
+		// Forward, so that the first row of the loop is that of the key 1.
+		i := newInstance(t, forward())
 		is.Equal(t, "", i.exec(t1).err)
 		is.Equal(t, "", i.exec(insert1).err)
 		is.Equal(t, "", i.exec(insert2).err)
@@ -1142,7 +1153,8 @@ func TestConn_stop(t *testing.T) {
 }
 
 // leaseLost runs f in a bubble of synctest with two instances of one database, a and b, each with a
-// connection of an engine. The table t1 exists, and the engine of a logs to the events h.
+// connection of an engine, whose queries read forward, so that f writes the rows that it expects in
+// the order of the key. The table t1 exists, and the engine of a logs to the events h.
 func leaseLost(t *testing.T, f func(t *testing.T, ca *simstore.Client, a, b func() (*core.DB, *engine.Conn), h *events)) {
 	t.Helper()
 	synctest.Test(t, func(t *testing.T) {
@@ -1154,7 +1166,7 @@ func leaseLost(t *testing.T, f func(t *testing.T, ca *simstore.Client, a, b func
 			return func() (*core.DB, *engine.Conn) {
 				d, err := core.Open(t.Context(), h, client, filepath.Join(dir, name+".db"), "db", core.Options{})
 				is.NotError(t, err)
-				options := engine.Options{}
+				options := forward()
 				if log != nil {
 					options.Logger = slog.New(log)
 				}
@@ -1241,7 +1253,8 @@ func TestConn_leaseLost(t *testing.T) {
 			start := time.Now()
 			d, err := core.Open(t.Context(), h, ca, filepath.Join(t.TempDir(), "a.db"), "db", core.Options{})
 			is.NotError(t, err)
-			c := engine.New(d, h, engine.Options{}).Conn()
+			// Forward, so that the last select gives the two rows in the order of the key.
+			c := engine.New(d, h, forward()).Conn()
 			t.Cleanup(func() {
 				ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), time.Minute)
 				defer cancel()
