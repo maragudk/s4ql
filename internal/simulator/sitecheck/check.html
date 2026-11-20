@@ -239,8 +239,10 @@ async function unit() {
   // an alarm on every event.
   tell = R.teller();
   const check = (t, excused) => ({ t, kind: "check", what: "violated", invariant: "fresh", excused, instance: "a", process: "a", text: "missed" });
-  const tiers = [check(1, true), check(2, true), check(3, false), check(4, false)].map((e) => tell(e).tier);
+  const told = [check(1, true), check(2, true), check(3, false), check(4, false)].map((e) => tell(e));
+  const tiers = told.map((w) => w.tier);
   expect(JSON.stringify(tiers) === JSON.stringify(["story", null, "alarm", "alarm"]), `a stale read that the design excuses takes one line, and a violation is an alarm (${tiers.join(", ")})`);
+  expect(told[0].text === "a serves a stale read after its clocks were paused, which the spec allows.", `the line of a stale read names the pause of the clocks (${told[0].text})`);
 }
 
 async function check() {
@@ -357,56 +359,53 @@ async function check() {
     expect(on && off && p.button("a", name).textContent === label, `${label} switches ${flag} of a on, shows the button pressed, says "${onLine}", and switches it off again ("${offLine}")`);
   }
   // The clock actions: each has its effect in the state, its opposite or Reset clocks undoes it, and
-  // the card says how each clock differs from true time.
+  // the card says how the clocks differ from normal.
   const wall = () => a().wall - p.win.s4qlPage.state.t;
   const clocks = () => p.card("a").querySelector('[data-f="clocks"]').textContent;
   const pressed = (name) => p.button("a", name).getAttribute("aria-pressed") === "true";
-  expect(clocks() === "true time" && p.button("a", "reset").disabled, `untouched, the clocks of a read ${clocks()}, and Reset clocks is off`);
+  const bothPaused = () => a().wallStopped && a().monotonicStopped && pressed("pause");
+  const bothRun = () => !a().wallStopped && !a().monotonicStopped && !pressed("pause");
+  expect(clocks() === "normal" && bothRun() && p.button("a", "reset").disabled, `untouched, the clocks of a read ${clocks()}, Pause is not pressed, and Reset clocks is off`);
   await p.press("a", "forward");
   const ahead = wall(), aheadText = clocks();
   await p.press("a", "back");
   const back = wall();
-  expect(Math.abs(ahead - 60000) < 1 && aheadText === "wall +60 s" && Math.abs(back) < 1 && clocks() === "true time"
-    && logged("You move the wall clock of a forward 60 s.") && logged("You move the wall clock of a back 60 s."),
-    `+60 s and −60 s move the wall clock of a forward (${ahead.toFixed(3)}, ${aheadText}) and back (${back.toFixed(3)}, ${clocks()})`);
-  await p.press("a", "wall");
-  const wallPaused = a().wallStopped && !a().monotonicStopped && pressed("wall") && !pressed("monotonic") && clocks() === "wall paused";
+  expect(Math.abs(ahead - 5000) < 1 && aheadText === "wall +5 s" && Math.abs(back) < 1 && clocks() === "normal"
+    && logged("You move the wall clock of a forward 5 s.") && logged("You move the wall clock of a back 5 s."),
+    `Wall +5 s and Wall −5 s move the wall clock of a forward (${ahead.toFixed(3)}, ${aheadText}) and back (${back.toFixed(3)}, ${clocks()})`);
+
+  // A pause after a jump: both clocks stand still, so the wall clock falls behind by the fake time
+  // that passes, and Pause pressed again starts both.
+  await p.press("a", "back");
+  await p.press("a", "pause");
+  const pausedText = clocks(), pausedBoth = bothPaused();
   await p.skip(5000);
   const behind = wall(), behindText = clocks();
-  await p.press("a", "wall");
-  expect(wallPaused && !a().wallStopped && !pressed("wall") && Math.abs(behind + 5000) < 50 && behindText === "wall paused, −5 s" && clocks() === "wall −5 s"
-    && logged("You pause the wall clock of a.") && logged("You start the wall clock of a again."),
-    `Pause of the wall clock stops only the wall clock of a (${behind.toFixed(0)} ms behind after 5 s, ${behindText}), and starts it again (${clocks()})`);
-  await p.press("a", "monotonic");
-  const monoPaused = a().monotonicStopped && !a().wallStopped && pressed("monotonic") && !pressed("wall") && clocks() === "wall −5 s; monotonic paused";
-  const monoText = clocks();
-  await p.press("a", "monotonic");
-  expect(monoPaused && !a().monotonicStopped && !pressed("monotonic") && clocks() === "wall −5 s"
-    && logged("You pause the monotonic clock of a.") && logged("You start the monotonic clock of a again."),
-    `Pause of the monotonic clock stops only the monotonic clock of a (${monoText}), and starts it again (${clocks()})`);
+  await p.press("a", "pause");
+  expect(pausedBoth && pausedText === "paused, wall −5 s" && Math.abs(behind + 10000) < 50 && behindText === "paused, wall −10 s"
+    && bothRun() && clocks() === "wall −10 s" && logged("You pause the clocks of a.") && logged("You start the clocks of a again."),
+    `Pause after Wall −5 s stops both clocks of a (${pausedText}, then ${behind.toFixed(0)} ms behind after 5 s, ${behindText}), and Pause again starts both (${clocks()})`);
 
-  // Reset clocks, after a jump and a pause of both clocks: the clocks of a run again, the wall clock
-  // at true time, and the card reads as for clocks that nobody touched. The log has one line for it.
+  // Reset clocks, after a jump and a pause: the clocks of a run again, the wall clock at true time,
+  // and the card reads as for clocks that nobody touched. The log has one line for it.
   await p.press("a", "forward");
-  await p.press("a", "wall");
-  await p.press("a", "monotonic");
-  await p.skip(5000);
+  await p.press("a", "pause");
+  await p.skip(2000);
   const clocksBefore = clocks();
-  const touched = !p.button("a", "reset").disabled && a().wallStopped && a().monotonicStopped && clocksBefore === "wall paused, +50 s; monotonic paused";
+  const touched = !p.button("a", "reset").disabled && bothPaused() && clocksBefore === "paused, wall −7 s";
   const linesBefore = p.lines;
   await p.press("a", "reset");
   const added = [...p.$("#log").children].slice(0, p.lines - linesBefore).filter((li) => li.classList.contains("you")).map((li) => li.querySelector(".text").textContent);
-  expect(touched && !a().wallStopped && !a().monotonicStopped && Math.abs(wall()) < 1e-3 && clocks() === "true time",
+  expect(touched && bothRun() && Math.abs(wall()) < 1e-3 && clocks() === "normal",
     `Reset clocks runs the clocks of a again (${clocksBefore} before), with the wall clock at true time (off by ${wall()} ms), and the card says ${clocks()}`);
-  expect(!pressed("wall") && !pressed("monotonic") && p.button("a", "reset").disabled && !p.button("a", "wall").disabled,
-    "after Reset clocks, neither Pause is pressed, and Reset clocks is off");
+  expect(p.button("a", "reset").disabled && !p.button("a", "pause").disabled, "after Reset clocks, Pause is not pressed and is on, and Reset clocks is off");
   expect(JSON.stringify(added) === JSON.stringify(["You reset the clocks of a."]), `the log has one line for Reset clocks (${added.join(" | ")})`);
-  // A reset whose shift has nothing to do, after a pause of the monotonic clock alone, leaves the
-  // controls on.
-  await p.press("a", "monotonic");
+  // A reset whose shift has nothing to do, after a pause alone in which no fake time passed, leaves
+  // the controls on.
+  await p.press("a", "pause");
   await p.press("a", "reset");
-  expect(!a().monotonicStopped && clocks() === "true time" && !p.button("a", "monotonic").disabled && !p.button("a", "crash").disabled && p.button("a", "reset").disabled,
-    `Reset clocks after a pause of the monotonic clock alone runs it again (${clocks()}), and leaves the controls on`);
+  expect(bothRun() && clocks() === "normal" && !p.button("a", "pause").disabled && !p.button("a", "crash").disabled && p.button("a", "reset").disabled,
+    `Reset clocks after a pause alone runs the clocks again (${clocks()}), and leaves the controls on`);
 
   const beforeCrash = p.requests();
   await p.press("a", "crash");
@@ -416,7 +415,7 @@ async function check() {
     `the requests keep going to a while a is crashed (${down.failed - beforeCrash.failed} failed), and their status says that no answer came, failing (${down.status})`);
   expect([...p.$("#log").children].filter((li) => li.textContent.includes("A request gets no answer from a")).length === 1, "the log says once that a request gets no answer from a");
   noClient("while a is crashed");
-  const crashed = a().state === "crashed" && p.button("a", "crash").textContent === "Restart" && p.button("a", "wall").disabled && p.button("a", "monotonic").disabled && p.button("a", "reset").disabled && p.button("a", "stop").disabled && !p.button("a", "hang").disabled;
+  const crashed = a().state === "crashed" && p.button("a", "crash").textContent === "Restart" && p.button("a", "forward").disabled && p.button("a", "back").disabled && p.button("a", "pause").disabled && p.button("a", "reset").disabled && p.button("a", "stop").disabled && !p.button("a", "hang").disabled;
   expect(crashed, "Crash crashes a: Crash becomes Restart, the clocks and Stop are off, Hang S3, Disconnect S3, and the disk stay on");
   await p.press("a", "crash");
   expect(a().state !== "crashed" && a().process === "a2" && p.button("a", "crash").textContent === "Crash", `Restart starts process ${a().process} of a, in the state ${a().state}`);
