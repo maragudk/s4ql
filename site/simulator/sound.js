@@ -16,6 +16,13 @@
 //	           sound on
 //	alarm      the checker finds a violation that the design does not excuse
 //
+// Each request makes a tick besides, so that the page sounds alive between the figures. An insert
+// that commits is a barcode being scanned, with the beep of a checkout scanner: one short hard note
+// high up. Its pitch is the note of its key, which one mix of the key picks, so that the same key
+// always sounds the same and the beeps wander. A select that is served is a much smaller, quieter
+// tick in the background, at the note of the key that it selects, so that a barcode sounds the same
+// when it is read; one that finds no row ticks an octave lower and shorter. A request that fails, is refused, or gets no answer is the scanner's error tone, a low double buzz.
+//
 // Every figure goes through one master gain. One figure is one voice, and at most VOICES sound at
 // once. The site check renders a burst through player offline and holds its peak to at most 0.06,
 // or −24 dBFS, and with the alarm, which is louder, to at most 0.1, or −20 dBFS. A figure of a kind
@@ -31,6 +38,12 @@
 // and who holds the lease when sound is turned on. A fault in the sound turns it off for good, and
 // never reaches the page.
 //
+// The ticks have a budget of their own. At most TICK_VOICES sound at once, a tick is dropped within
+// TICK_SPACING of the one before it and an error tone within ERROR_SPACING of the one before, so that
+// turbo sounds busy and a long outage is not a constant buzz. Ticks never take the place of a figure:
+// a tick is dropped while TICK_ROOM or more figures sound, and a figure that starts then fades the
+// ticks out, so that the limits of the mix hold with ticks under a burst of figures.
+//
 // player plays into any BaseAudioContext, so a check can render the figures into an
 // OfflineAudioContext with the code path of the page.
 
@@ -43,6 +56,11 @@ const LEAD = 0.01; // s, how far ahead of the context's time a figure starts, so
 const ATTACK = 0.003; // s
 const RELEASE = 0.004; // s
 const GAP = 0.015; // s, the silence between two notes of a figure
+
+export const TICK_VOICES = 1; // the ticks that sound at once
+export const TICK_SPACING = 0.04; // s, the least time between two ticks
+export const ERROR_SPACING = 1.5; // s, the least time between two error tones
+export const TICK_ROOM = 2; // the figures that sounding together drop and fade the ticks
 
 const A4 = 440, C5 = 523.25, E5 = 659.26;
 const A5 = 880, C6 = 1046.5, D6 = 1174.66, E6 = 1318.51, G6 = 1567.98, A6 = 1760;
@@ -59,10 +77,33 @@ export const FIGURES = {
   alarm: { level: 2.75, notes: [[G6, 90], [D6, 90], [G6, 90]] },
 };
 
+// SCANS are the notes of the keys: the scale of the figures, A minor pentatonic, from E6 to E7, in
+// the register of a scanner's piezo.
+export const SCANS = [1318.51, 1567.98, 1760, 2093, 2349.32, 2637.02];
+
+// keyNote of a key, from SCANS, by a mix of its bits, so that keys in a row wander over the notes.
+export function keyNote(key) {
+  let x = Math.abs(Math.trunc(Number(key) || 0)) >>> 0;
+  x = Math.imul(x ^ (x >>> 16), 0x45d9f3b) >>> 0;
+  x = Math.imul(x ^ (x >>> 16), 0x45d9f3b) >>> 0;
+  return SCANS[((x ^ (x >>> 16)) >>> 0) % SCANS.length];
+}
+
+// TICKS by kind, as FIGURES; a scan, a select, and a miss, a select that finds no row, take the note
+// of their key, the miss an octave down. The scan's level puts its peak just below that of a figure.
+// The select is about −42 dBFS, and 20 ms, so that its note is heard. The error tone is two short low
+// notes.
+export const TICKS = {
+  scan: { level: 0.85, notes: [[SCANS[0], 80]] },
+  select: { level: 0.44, notes: [[A6, 20]] },
+  miss: { level: 0.44, notes: [[A5, 12]] },
+  error: { level: 0.5, notes: [[330, 45], [330, 45]], gap: 0.035 },
+};
+
 // figure schedules the figure of the kind on one oscillator into dest, from the time at, and gives
-// the voice: its nodes and its end.
-function figure(ctx, dest, kind, at) {
-  const f = FIGURES[kind];
+// the voice: its nodes and its end. A tick is a figure of TICKS.
+function figure(ctx, dest, kind, at, figures = FIGURES, hz = 0) {
+  const f = hz ? { ...figures[kind], notes: figures[kind].notes.map(([, ms]) => [hz, ms]) } : figures[kind];
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
   osc.type = "square";
@@ -76,7 +117,7 @@ function figure(ctx, dest, kind, at) {
     gain.gain.linearRampToValueAtTime(f.level, t + ATTACK);
     gain.gain.setValueAtTime(f.level, end - RELEASE);
     gain.gain.linearRampToValueAtTime(0, end);
-    t = end + GAP;
+    t = end + (f.gap || GAP);
   }
   osc.connect(gain);
   gain.connect(dest);
@@ -118,7 +159,21 @@ export function player(ctx, dest) {
   const last = new Map(); // the start of the last figure of each kind
   const starts = []; // the starts of the figures in the last second, but the alarm
   let latest = -Infinity; // the start of the last figure
+  const ticks = []; // the ticks that sound
+  let lastTick = -Infinity, lastError = -Infinity; // the starts of the last tick and error tone
   return {
+    // tick gives whether it plays the tick of the kind, within the budget of the ticks, at the pitch
+    // hz, or that of the kind.
+    tick(kind, hz = 0, at = ctx.currentTime + LEAD) {
+      if (!TICKS[kind]) return false;
+      for (let i = ticks.length - 1; i >= 0; i--) if (ticks[i].end <= at) ticks.splice(i, 1);
+      if (voices.filter((v) => v.end > at).length >= TICK_ROOM || ticks.length >= TICK_VOICES) return false;
+      if (at - lastTick < TICK_SPACING || (kind === "error" && at - lastError < ERROR_SPACING)) return false;
+      ticks.push(figure(ctx, dest, kind, at, TICKS, hz));
+      lastTick = at;
+      if (kind === "error") lastError = at;
+      return true;
+    },
     play(kind, at = ctx.currentTime + LEAD) {
       if (!FIGURES[kind]) return false;
       at = Math.max(at, latest + STAGGER);
@@ -130,6 +185,10 @@ export function player(ctx, dest) {
       // The alarm takes the place of the oldest voice.
       while (voices.length >= VOICES) fade(voices.shift(), at);
       voices.push(figure(ctx, dest, kind, at));
+      if (voices.length >= TICK_ROOM) {
+        for (const v of ticks) fade(v, at);
+        ticks.length = 0;
+      }
       last.set(kind, at);
       if (!alarm) starts.push(at);
       latest = at;
@@ -138,8 +197,10 @@ export function player(ctx, dest) {
     // silence forgets the figures too, so that the next figure plays whatever was cut.
     silence() {
       const at = ctx.currentTime;
-      for (const v of voices) fade(v, at);
+      for (const v of [...voices, ...ticks]) fade(v, at);
       voices.length = 0;
+      ticks.length = 0;
+      lastTick = lastError = -Infinity;
       last.clear();
       starts.length = 0;
       latest = -Infinity;
@@ -215,10 +276,25 @@ export function listener() {
   };
 }
 
+// tickOf an event: its tick, {kind, hz}, or null, with hz 0 for the pitch of the kind. Each request
+// that ends has one: the calls of the engine's client, as the page shows them.
+export function tickOf(e) {
+  if (e.kind !== "call" || e.caller !== "client" || e.what === "started") return null;
+  switch (e.what) {
+    case "committed": return { kind: "scan", hz: keyNote(e.value) };
+    case "served": {
+      const key = (e.args || [])[0];
+      if ((e.keys || []).includes(key)) return { kind: "select", hz: keyNote(key) };
+      return { kind: "miss", hz: key === undefined ? 0 : keyNote(key) / 2 };
+    }
+  }
+  return { kind: "error", hz: 0 };
+}
+
 // What the page's sound has done, for a check: the figures played and dropped by kind, and the
 // latest figures played, each with its kind and the context's time when it was asked for, which
 // can be up to some STAGGER before it starts.
-export const stats = { played: {}, dropped: {}, recent: [] };
+export const stats = { played: {}, dropped: {}, recent: [], ticks: {}, ticksDropped: {} };
 
 let ctx = null;
 let out = null; // the player of the page
@@ -231,6 +307,11 @@ export function hear(e, live) {
   try {
     const kind = classify(e);
     if (kind && on && live && out) play(kind);
+    const tk = tickOf(e);
+    if (tk && on && live && out) {
+      const n = out.tick(tk.kind, tk.hz) ? stats.ticks : stats.ticksDropped;
+      n[tk.kind] = (n[tk.kind] || 0) + 1;
+    }
   } catch {
     broken();
   }
