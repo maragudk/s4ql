@@ -1,0 +1,29 @@
+# The plans of the queries on the schema glue_sessions, which TestAccessOf_golden in access_test.go checks.
+# Rewrite with: go test ./internal/engine -run TestAccessOf_golden -update
+
+create table sessions (token text primary key, data blob not null, expiry real not null) strict, without rowid
+create index sessions_expiry_idx on sessions (expiry)
+
+## delete expired
+delete from sessions where expiry < ?
+args: 1763640000.5
+access: index sessions_expiry_idx (expiry, token), bounds expiry < 1763640000.5
+
+## by token
+select data, expiry from sessions where token = ?
+args: 'abc'
+access: get, token = 'abc'
+
+## by token and expiry
+select data from sessions where token = ? and expiry > ?
+args: 'abc', 1763640000.5
+access: get, token = 'abc'
+
+## a range of expiries
+select token from sessions where expiry >= 1763640000.0 and expiry <= 1763650000.0
+access: index sessions_expiry_idx (expiry, token), bounds 1763640000.0 <= expiry <= 1763650000.0
+
+## update by token
+update sessions set expiry = ? where token = ?
+args: 1763650000.5, 'abc'
+access: get, token = 'abc'
