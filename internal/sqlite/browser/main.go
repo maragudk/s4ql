@@ -17,10 +17,11 @@
 // or Chromium in /Applications on macOS. S4QL_CHROMIUM_FLAGS adds flags, separated by spaces, such as
 // --no-sandbox where Chromium's sandbox cannot start.
 //
-// A Chromium that stops, or has not started the program a minute after it was started, before the
-// program started, is started again, with a new profile, up to three times in all; no code of the
-// program has run by then. Each time, the runner writes to its standard error which steps of the
-// start it saw, and the end of Chromium's output.
+// A Chromium that has not fetched the program a minute after it was started, or that stops before
+// the program started, is started again, with a new profile, up to three times in all; no code of
+// the program has run by then. Each time, the runner writes to its standard error which steps of the
+// start it saw, and the end of Chromium's output. On a runner of GitHub Actions, the first Chromium
+// sometimes never loads the page, and one started after it does.
 //
 // With -test.timeout among the arguments, as go test passes it, the runner stops Chromium 30 seconds
 // after that timeout, in case the program cannot stop itself, which it cannot while SQLite holds the
@@ -51,6 +52,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -70,8 +72,8 @@ func main() {
 	os.Exit(code)
 }
 
-// runner of a program in Chromium. A Chromium that stops, or has not started the program within
-// startup, before the program started, is started again until it has been started attempts times.
+// runner of a program in Chromium. A Chromium that has not fetched the program within startup, or
+// that stops before the program started, is started again until it has been started attempts times.
 // Chromium is stopped grace after the -test.timeout of the program.
 type runner struct {
 	stdout, stderr io.Writer
@@ -79,10 +81,11 @@ type runner struct {
 	attempts       int
 }
 
-// errNotStarted is the error of an attempt in which Chromium did not start the program in time.
+// errNotStarted is the error of an attempt in which Chromium did not start the program.
 var errNotStarted = errors.New("chromium did not start the program")
 
 func (r runner) run(ctx context.Context, args []string) (int, error) {
+	start := time.Now()
 	if len(args) == 0 {
 		return 0, errors.New("usage: browser PROGRAM.wasm [ARGUMENT...]")
 	}
@@ -107,14 +110,14 @@ func (r runner) run(ctx context.Context, args []string) (int, error) {
 	// The deadline counts from the start of the runner, as the timeout of go test does.
 	var deadline <-chan time.Time
 	if timeout, ok := testTimeout(programArgs); ok {
-		deadline = time.After(timeout + r.grace)
+		deadline = time.After(time.Until(start.Add(timeout + r.grace)))
 	}
 	for attempt := 1; ; attempt++ {
 		code, err := r.attempt(ctx, chromium, program, wasmExec, config, deadline)
 		if !errors.Is(err, errNotStarted) {
 			return code, err
 		}
-		if attempt == r.attempts || ctx.Err() != nil {
+		if attempt >= r.attempts || ctx.Err() != nil {
 			return 0, fmt.Errorf("attempt %d of %d: %w", attempt, r.attempts, err)
 		}
 		_, _ = fmt.Fprintf(r.stderr, "browser: attempt %d of %d: %v\nbrowser: starting Chromium again\n", attempt, r.attempts, err)
@@ -127,8 +130,9 @@ func (r runner) attempt(ctx context.Context, chromium, program string, wasmExec,
 	exited := make(chan int, 1)
 	var exitOnce sync.Once
 	exit := func(code int) { exitOnce.Do(func() { exited <- code }) }
-	started := make(chan struct{})
-	var startOnce sync.Once
+	// fetched is set when the Worker fetches the program, which ends the start of Chromium, and
+	// began when the program starts, after which it is never started again.
+	var fetched, began atomic.Bool
 
 	var output sync.Mutex
 	mux := http.NewServeMux()
@@ -138,7 +142,9 @@ func (r runner) attempt(ctx context.Context, chromium, program string, wasmExec,
 		_, _ = w.Write(config)
 	})
 	mux.HandleFunc("GET /program.wasm", func(w http.ResponseWriter, req *http.Request) {
-		p.mark("the Worker fetched the program")
+		if !fetched.Swap(true) {
+			p.mark("the Worker fetched the program")
+		}
 		w.Header().Set("Content-Type", "application/wasm")
 		http.ServeFile(w, req, program)
 	})
@@ -147,18 +153,17 @@ func (r runner) attempt(ctx context.Context, chromium, program string, wasmExec,
 		_, _ = w.Write(wasmExec)
 	})
 	mux.HandleFunc("POST /started", func(w http.ResponseWriter, req *http.Request) {
-		startOnce.Do(func() {
+		if !began.Swap(true) {
 			p.mark("the program started")
-			close(started)
-		})
+		}
 	})
 	mux.HandleFunc("POST /output", func(w http.ResponseWriter, req *http.Request) {
-		out := r.stdout
+		fd, out := 1, r.stdout
 		if req.URL.Query().Get("fd") == "2" {
-			out = r.stderr
+			fd, out = 2, r.stderr
 		}
 		b, _ := io.ReadAll(req.Body)
-		p.output(b)
+		p.output(fd, b)
 		output.Lock()
 		_, _ = out.Write(b)
 		output.Unlock()
@@ -221,6 +226,8 @@ func (r runner) attempt(ctx context.Context, chromium, program string, wasmExec,
 	var log logBuffer
 	cmd.Stdout = &log
 	cmd.Stderr = &log
+	// The processes that Chromium starts inherit its output, and may outlive it.
+	cmd.WaitDelay = 5 * time.Second
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
@@ -239,25 +246,35 @@ func (r runner) attempt(ctx context.Context, chromium, program string, wasmExec,
 		return p.report(time.Now()) + "\nthe end of Chromium's output:\n" + log.String()
 	}
 
+	done := func(code int) (int, error) {
+		cancel()
+		<-stopped
+		if os.Getenv("S4QL_CHROMIUM_STEPS") != "" {
+			_, _ = fmt.Fprintln(r.stderr, "browser:", p.report(time.Now()))
+		}
+		return code, nil
+	}
+
 	startup := time.NewTimer(r.startup)
 	defer startup.Stop()
 	for {
 		select {
 		case code := <-exited:
-			cancel()
-			<-stopped
-			if os.Getenv("S4QL_CHROMIUM_STEPS") != "" {
-				_, _ = fmt.Fprintln(r.stderr, "browser:", p.report(time.Now()))
-			}
-			return code, nil
-		case <-started:
-			started = nil
-			startup.Stop()
+			return done(code)
 		case <-startup.C:
-			return 0, fmt.Errorf("%w within %v:\n%s", errNotStarted, r.startup, stop())
+			if fetched.Load() {
+				continue
+			}
+			return 0, fmt.Errorf("%w: chromium did not fetch it within %v:\n%s", errNotStarted, r.startup, stop())
 		case <-stopped:
+			// The program may have exited just before Chromium stopped.
+			select {
+			case code := <-exited:
+				return done(code)
+			default:
+			}
 			err := fmt.Errorf("chromium stopped before the program exited: %v\n%s", waitErr, stop())
-			if started != nil {
+			if !began.Load() {
 				err = fmt.Errorf("%w: %w", errNotStarted, err)
 			}
 			return 0, err
@@ -344,7 +361,7 @@ type progress struct {
 	start       time.Time
 	steps       []string
 	first, last time.Time
-	line        []byte
+	lines       [3][]byte // the line that has not ended yet, by file descriptor
 	tests       []string
 }
 
@@ -360,40 +377,46 @@ func (p *progress) markAt(step string, at time.Time) {
 	p.steps = append(p.steps, step+" after "+since(p.start, at))
 }
 
-// output of the program, written now.
-func (p *progress) output(b []byte) {
-	p.outputAt(b, time.Now())
+// output of the program to the file descriptor fd, 1 or 2, written now.
+func (p *progress) output(fd int, b []byte) {
+	p.outputAt(fd, b, time.Now())
 }
 
-// outputAt takes output of the program, written at the given time.
-func (p *progress) outputAt(b []byte, at time.Time) {
+// outputAt takes output of the program to fd, written at the given time.
+func (p *progress) outputAt(fd int, b []byte, at time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if len(b) == 0 {
+	if len(b) == 0 || fd < 1 || fd > 2 {
 		return
 	}
 	if p.first.IsZero() {
 		p.first = at
 	}
 	p.last = at
-	p.line = append(p.line, b...)
+	line := append(p.lines[fd], b...)
 	for {
-		i := bytes.IndexByte(p.line, '\n')
+		i := bytes.IndexByte(line, '\n')
 		if i < 0 {
 			break
 		}
-		p.take(string(p.line[:i]))
-		p.line = p.line[i+1:]
+		p.take(string(line[:i]))
+		line = line[i+1:]
 	}
+	// Only the start of a line can say that a test started or ended.
+	if len(line) > 1024 {
+		line = line[:1024]
+	}
+	p.lines[fd] = line
 }
 
-// take a whole line of output.
+// take a whole line of output. Under go test -json, the binary starts the lines of go test -v with
+// the byte 0x16.
 func (p *progress) take(line string) {
+	line = strings.TrimPrefix(strings.TrimLeft(line, " "), "\x16")
 	if name, ok := strings.CutPrefix(line, "=== RUN   "); ok {
 		p.tests = append(p.tests, strings.TrimSpace(name))
 		return
 	}
-	line = strings.TrimLeft(line, " ")
 	for _, prefix := range []string{"--- PASS: ", "--- FAIL: ", "--- SKIP: "} {
 		if rest, ok := strings.CutPrefix(line, prefix); ok {
 			name, _, _ := strings.Cut(rest, " ")
