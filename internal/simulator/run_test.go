@@ -436,7 +436,7 @@ func TestRun_faults(t *testing.T) {
 		name, faults, schedule string
 		kind, what, text       string
 		// seed of the run, 5 if it is 0. A fault that needs a write on its way at a crash shows
-		// only with some seeds.
+		// only with some seeds, and so does a point of buggify, which is on for a run by its seed.
 		seed int
 	}{
 		{name: "lost requests", faults: `{"lostRequest": 0.2}`, kind: "request", what: "lost", text: "was lost on its way to the store"},
@@ -455,7 +455,7 @@ func TestRun_faults(t *testing.T) {
 			kind:     "request", what: "held", text: "the sender crashed"},
 		{name: "damaged downloads", faults: `{"damaged": 1}`, schedule: `{"at": 20000, "do": "crash", "instance": "a"}, {"at": 20000, "do": "crash", "instance": "b"}`,
 			kind: "request", what: "damaged"},
-		{name: "points of buggify", faults: `{}`, kind: "buggify", what: "fired"},
+		{name: "points of buggify", faults: `{}`, seed: 4, kind: "buggify", what: "fired"},
 	}
 	for _, test := range tests {
 		t.Run("should show "+test.name, func(t *testing.T) {

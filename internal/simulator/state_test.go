@@ -53,10 +53,16 @@ func TestStateAt(t *testing.T) {
 			}
 		}
 		is.Equal(t, len(s.Bucket.Log), inLog)
-		// The log holds every acknowledged write, and those of unknown outcome that landed.
+		// The log holds every acknowledged write, and those that landed of the writes of unknown outcome
+		// and of the writes whose call has not ended when the run ends: each write has one event for
+		// its start, and one for its end if it ends.
 		committed := find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.What == "committed" })
 		unknown := find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.What == "unknown" })
-		is.True(t, len(committed) <= len(s.Bucket.Log) && len(s.Bucket.Log) <= len(committed)+len(unknown), "the log holds the commits")
+		started := find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.Op == "write" && e.What == "started" })
+		ended := find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.Op == "write" && e.What != "started" })
+		open := len(started) - len(ended)
+		is.True(t, len(committed) <= len(s.Bucket.Log) && len(s.Bucket.Log) <= len(committed)+len(unknown)+open,
+			fmt.Sprint("the log holds the commits: ", len(s.Bucket.Log), " commits for ", len(committed), " writes acknowledged, ", len(unknown), " of unknown outcome, and ", open, " that have not ended"))
 	})
 
 	t.Run("should list a request in flight from when it is sent until it has ended for both sides", func(t *testing.T) {
