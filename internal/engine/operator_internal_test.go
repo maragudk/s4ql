@@ -994,6 +994,52 @@ func TestChangeRows(t *testing.T) {
 		is.Equal(t, "[keys t add 1 add 2 add 3 add 4 key 1 change 1 key 2]", fmt.Sprint(f.calls))
 	})
 
+	t.Run("should change nothing and count no row of an update and a delete with the planted bug changeNothing, and keep the row of the old key with keepOldKey", func(t *testing.T) {
+		for _, c := range []struct {
+			src   string
+			bugs  bugs
+			n     int64
+			calls string
+		}{
+			{src: "update t set w = 5 where k = 2", bugs: bugs{changeNothing: true}, calls: "[table t]"},
+			{src: "delete from t", bugs: bugs{changeNothing: true}, calls: "[table t]"},
+			{src: "update t set k = 5 where k = 2", bugs: bugs{keepOldKey: true}, n: 1, calls: "[table t keys t get t 2 add 2 key 2 get t 2 insert t 20,5]"},
+		} {
+			f := newTable()
+			s, err := stmt.Check(c.src)
+			is.NotError(t, err)
+			k, err := buildSink(t.Context(), fakeTx{f}, NewPlan(s), nil, c.bugs, 1_000_000_000, false)
+			is.NotError(t, err)
+			is.NotError(t, k.check(t.Context()))
+			n, err := k.run(t.Context())
+			is.NotError(t, err)
+			is.Equal(t, c.n, n, c.src)
+			is.Equal(t, c.calls, fmt.Sprint(f.calls), c.src)
+		}
+	})
+
+	t.Run("should give an internal error for a plan of a change that no statement gives", func(t *testing.T) {
+		name := stmt.Name{Raw: "t", Value: "t"}
+		for _, c := range []struct {
+			plan Plan
+			key  []uint32
+			want string
+		}{
+			{plan: &Delete{Table: name, Source: &Values{}}, key: []uint32{1}, want: "a change of the rows of a node of type *engine.Values"},
+			{plan: &Delete{Table: name, Source: &Filter{Source: &Values{}}}, key: []uint32{1}, want: "a change of the rows of a node of type *engine.Values"},
+			{plan: &Delete{Table: name, Source: &Scan{Table: name}}, key: []uint32{0, 1}, want: "a change of a table of 2 columns with the key [0 1]"},
+			{plan: &Delete{Table: name, Source: &Scan{Table: name}}, key: []uint32{2}, want: "a change of a table of 2 columns with the key [2]"},
+			{plan: &Update{Table: name, Set: []Assignment{{Column: stmt.Name{Raw: "w", Value: "w"}, Value: &Integer{Value: 1}}, {Column: stmt.Name{Raw: "W", Value: "W"}, Value: &Integer{Value: 2}}},
+				Source: &Scan{Table: name}}, key: []uint32{1}, want: "an update that sets the column w twice"},
+		} {
+			f := newTable()
+			f.tables["t"].ct.SetPrimaryKey(c.key)
+			_, err := buildSink(t.Context(), fakeTx{f}, c.plan, nil, bugs{}, 1_000_000_000, false)
+			is.True(t, errors.Is(err, ErrInternal), fmt.Sprint(err))
+			is.Equal(t, "s4ql: internal error: "+c.want, err.Error())
+		}
+	})
+
 	t.Run("should give an internal error for a key that the statement found and whose row is gone", func(t *testing.T) {
 		// A source that gives the row of the key 9, from a table of another fake, which the table of the
 		// statement does not have.
