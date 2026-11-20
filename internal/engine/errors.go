@@ -301,8 +301,27 @@ func tooBig() error {
 	return &sqlerr.Error{Code: sqlerr.CodeTooBig, ExtendedCode: sqlerr.CodeTooBig, Message: "string or blob too big", Offset: -1}
 }
 
+// schemaTooBig reports whether SQLite refuses the create table of the table with the name, which
+// keeps the text sql, as too big under the length limit. SQLite writes the table into its schema
+// with an UPDATE of sqlite_schema whose text it formats under the limit, with the name twice and
+// sql, each in single quotes and with every single quote doubled, and it gives `string or blob too
+// big` when it prepares the statement if that text is limit bytes or longer. The register numbers
+// in the text, #2 and #1, are those of every create table that s4ql supports.
+func schemaTooBig(name, sql string, limit int) bool {
+	quoted := func(s string) int { return len(s) + strings.Count(s, "'") + 2 }
+	const rest = len("UPDATE 'main'.sqlite_master SET type='table', name=, tbl_name=, rootpage=#2, sql= WHERE rowid=#1")
+	return rest+2*quoted(name)+quoted(sql) >= limit
+}
+
 // readOnlyDatabase is `attempt to write a readonly database`, which SQLite gives for a statement that
 // would write on a connection under `pragma query_only = 1`, when it steps the statement.
 func readOnlyDatabase() error {
 	return &sqlerr.Error{Code: sqlerr.CodeReadOnly, ExtendedCode: sqlerr.CodeReadOnly, Message: "attempt to write a readonly database", Offset: -1}
+}
+
+// noSuchSetColumn is `no such column: %s`, for a column of the SET of an update that the table does
+// not have, with the value of the name, also for a name in double quotes: SQLite's update gives it
+// itself, and not its resolver of names, which adds the question about quotes.
+func noSuchSetColumn(name stmt.Name) error {
+	return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: "no such column: " + name.Value, Offset: -1}
 }

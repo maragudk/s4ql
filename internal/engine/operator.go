@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"iter"
 	"math"
+	"slices"
 	"strings"
 
 	"maragu.dev/s4ql/internal/s4qlpb"
@@ -49,7 +50,7 @@ type source interface {
 type sink interface {
 	// check what the statement would write, before it writes anything: "not supported" for what
 	// s4ql does not support, where SQLite would run the statement or fail it while it steps it.
-	check() error
+	check(ctx context.Context) error
 	// run the statement, and give the number of rows that it changed.
 	run(ctx context.Context) (int64, error)
 }
@@ -368,7 +369,7 @@ type insert struct {
 // of the table, the key among them, and then the type of each column, in the order of the table,
 // where SQLite has its OP_TypeCheck, which comes before the check of the key. A NULL that the
 // statement gives and one of a column that it leaves out are the same to both checks.
-func (i *insert) check() error {
+func (i *insert) check(context.Context) error {
 	if len(i.src.data) != len(i.exprs) {
 		return internalError("an insert of %v rows from %v rows of expressions", len(i.src.data), len(i.exprs))
 	}
@@ -438,7 +439,7 @@ type createTable struct {
 	ct *s4qlpb.CreateTable
 }
 
-func (c *createTable) check() error { return nil }
+func (c *createTable) check(context.Context) error { return nil }
 
 func (c *createTable) run(ctx context.Context) (int64, error) {
 	return 0, c.w.createTable(ctx, c.ct)
@@ -450,10 +451,169 @@ type dropTable struct {
 	name string
 }
 
-func (d *dropTable) check() error { return nil }
+func (d *dropTable) check(context.Context) error { return nil }
 
 func (d *dropTable) run(ctx context.Context) (int64, error) {
 	return 0, d.w.dropTable(ctx, d.name)
+}
+
+// update sets columns of each row of its source: the rows that the statement finds, by a scan of a
+// table whose primary key is one column, below a filter if the statement has a WHERE. It changes them
+// as [changeRows] says, in the order of the key, and fails, as SQLite fails the row that it changes,
+// with `string or blob too big` for a row whose record is too long, and with SQLite's error of a key
+// that exists for a row whose new key another row has, also one that an earlier row of the statement
+// wrote.
+type update struct {
+	w     writer
+	table *s4qlpb.CreateTable
+	// key is the position of the column of the primary key of the table.
+	key int
+	src source
+	// positions of the columns that the statement sets, in the order of the text, and the value of
+	// each, and the expression that it comes from, for the messages of the errors of the check.
+	positions []int
+	values    []*s4qlpb.Value
+	exprs     []Expr
+}
+
+// check the values that the update sets as SQLite's constraint checks do, and as [insert.check]
+// checks a row: first the NOT NULL of each column that the update sets, in the order of the table,
+// the key among them, and then the type of each, in the order of the table. SQLite checks NOT NULL
+// on each row that it changes, so NULL for a column that does not take it fails only an update that
+// finds a row, as check reads it from the source. The type is s4ql's rule of the text, which holds
+// whether the update finds a row or not.
+func (u *update) check(ctx context.Context) error {
+	columns := u.table.GetColumns()
+	order := make([]int, len(u.positions))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortFunc(order, func(a, b int) int { return cmp.Compare(u.positions[a], u.positions[b]) })
+	for _, i := range order {
+		position := u.positions[i]
+		if !u.values[i].HasNull() || position != u.key && columns[position].GetNullable() {
+			continue
+		}
+		found, err := finds(ctx, u.src)
+		if err != nil {
+			return err
+		}
+		if found {
+			return notNullFailed(u.table.GetTable(), columns[position].GetName())
+		}
+		break
+	}
+	for _, i := range order {
+		if err := checkType(u.table, u.positions[i], u.values[i], u.exprs[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (u *update) run(ctx context.Context) (int64, error) {
+	name := u.table.GetTable()
+	return changeRows(ctx, u.w, name, u.key, u.src, func(key []*s4qlpb.Value) error {
+		old, err := u.w.get(ctx, name, key)
+		if err != nil {
+			return err
+		}
+		if old == nil {
+			return internalError("the row of a key that an update found is gone")
+		}
+		row := slices.Clone(old)
+		for i, position := range u.positions {
+			row[position] = u.values[i]
+		}
+		same, err := compare(row[u.key], old[u.key])
+		if err != nil {
+			return err
+		}
+		if same == 0 {
+			return u.w.upsert(ctx, name, row)
+		}
+		// A row under a new key is the old row deleted and the new one inserted, which the statement's
+		// savepoint takes back if it fails. The storage measures the record of the new row before it
+		// looks for its key, as SQLite does.
+		if _, err := u.w.delete(ctx, name, key); err != nil {
+			return err
+		}
+		inserted, err := u.w.insertNew(ctx, name, row)
+		if err != nil {
+			return err
+		}
+		if !inserted {
+			return uniqueFailed(name, u.table.GetColumns()[u.key].GetName())
+		}
+		return nil
+	})
+}
+
+// remove deletes each row of its source, the rows that the statement finds, as for an [update], as
+// [changeRows] says.
+type remove struct {
+	w     writer
+	table *s4qlpb.CreateTable
+	// key is the position of the column of the primary key of the table.
+	key int
+	src source
+}
+
+func (r *remove) check(context.Context) error { return nil }
+
+func (r *remove) run(ctx context.Context) (int64, error) {
+	name := r.table.GetTable()
+	return changeRows(ctx, r.w, name, r.key, r.src, func(key []*s4qlpb.Value) error {
+		found, err := r.w.delete(ctx, name, key)
+		if err == nil && !found {
+			return internalError("the row of a key that a delete found is gone")
+		}
+		return err
+	})
+}
+
+// finds reports whether src gives a row, which it reads no further than the first.
+func finds(ctx context.Context, src source) (bool, error) {
+	for _, err := range src.rows(ctx) {
+		return err == nil, err
+	}
+	return false, nil
+}
+
+// changeRows calls change with the primary key of each row of src, the rows that a statement finds
+// in the table with the name, whose key is the column at the position key, in the order of the key,
+// and gives the number of rows. It adds the key of each row that src gives to a [keySet] first, and
+// then calls change for each key of the set. So no cursor is open on the table while change changes
+// it, which SQLite leaves undefined, and a row that change writes, also under a new key, is not in
+// the set: each row that src gives is changed once, as SQLite changes each row that it finds once,
+// also when change writes the columns that the conditions of src read. The set is in the storage,
+// so a statement changes any number of rows without holding them in memory.
+func changeRows(ctx context.Context, w writer, name string, key int, src source, change func(key []*s4qlpb.Value) error) (int64, error) {
+	var n int64
+	err := w.keys(ctx, name, func(k keySet) error {
+		for row, err := range src.rows(ctx) {
+			if err != nil {
+				return err
+			}
+			if err := k.add(ctx, []*s4qlpb.Value{row[key]}); err != nil {
+				return err
+			}
+		}
+		for key, err := range k.all(ctx) {
+			if err == nil {
+				err = ctx.Err()
+			}
+			if err != nil {
+				return err
+			}
+			if err := change(key); err != nil {
+				return err
+			}
+			n++
+		}
+		return nil
+	})
+	return n, err
 }
 
 // buildQuery: the source of the rows of the plan q, in the transaction of r, with args for the
@@ -540,19 +700,26 @@ func (b build) node(ctx context.Context, n Node) (source, error) {
 	return nil, internalError("a query of a node of type %T", n)
 }
 
-// filter of the rows of src, a scan, by the conditions of f. It looks the columns of the conditions
-// up in the order of the text, as SQLite does: the first comparison of a column that the table does
-// not have fails with `no such column`. A test for NULL of such a column does not stop SQLite, which
-// goes on to the next condition with the error of that column: a later test for NULL of a column
-// that the table does not have replaces the error, and the next comparison ends the walk with it,
-// before SQLite looks its own column up. Then it evaluates each value, and gives SQLite's error for
-// one that is longer than the limit, and then "not supported" for the first value, in the order of
-// the text, that is of another type than its column. Last, unless scanAll, it gives the scan the
-// access by the key that the conditions allow, as [keyAccess] gives it.
+// filter of the rows of src, a scan, by the conditions of f: the names of [build.conditions], and
+// then the values of [build.bind].
 func (b build) filter(f *Filter, src source) (source, error) {
+	s, conditions, err := b.conditions(f, src)
+	if err != nil {
+		return nil, err
+	}
+	return b.bind(f, s, conditions)
+}
+
+// conditions of the filter f of the rows of src, a scan, with the position of the column of each, and
+// no value yet. It looks the columns of the conditions up in the order of the text, as SQLite does:
+// the first comparison of a column that the table does not have fails with `no such column`. A test
+// for NULL of such a column does not stop SQLite, which goes on to the next condition with the error
+// of that column: a later test for NULL of a column that the table does not have replaces the error,
+// and the next comparison ends the walk with it, before SQLite looks its own column up.
+func (b build) conditions(f *Filter, src source) (*scan, []condition, error) {
 	s, ok := src.(*scan)
 	if !ok {
-		return nil, internalError("a filter of a node of type %T", src)
+		return nil, nil, internalError("a filter of a node of type %T", src)
 	}
 	var names []string
 	for _, c := range s.table.GetColumns() {
@@ -568,29 +735,38 @@ func (b build) filter(f *Filter, src source) (source, error) {
 		switch c.Operator {
 		case stmt.OpIsNull, stmt.OpIsNotNull:
 			if c.Value != nil {
-				return nil, internalError("a test for NULL with a value")
+				return nil, nil, internalError("a test for NULL with a value")
 			}
 			if !ok {
 				missing = &f.Conditions[i].Column
 			}
 		case stmt.OpEqual, stmt.OpNotEqual, stmt.OpLess, stmt.OpLessOrEqual, stmt.OpGreater, stmt.OpGreaterOrEqual:
 			if c.Value == nil {
-				return nil, internalError("a comparison without a value")
+				return nil, nil, internalError("a comparison without a value")
 			}
 			if missing != nil {
-				return nil, noSuchResultColumn(*missing)
+				return nil, nil, noSuchResultColumn(*missing)
 			}
 			if !ok {
-				return nil, noSuchResultColumn(c.Column)
+				return nil, nil, noSuchResultColumn(c.Column)
 			}
 		default:
-			return nil, internalError("a condition with the operator %v", int(c.Operator))
+			return nil, nil, internalError("a condition with the operator %v", int(c.Operator))
 		}
 		conditions[i] = condition{position: position, op: c.Operator}
 	}
 	if missing != nil {
-		return nil, noSuchResultColumn(*missing)
+		return nil, nil, noSuchResultColumn(*missing)
 	}
+	return s, conditions, nil
+}
+
+// bind the values of the conditions of the filter f to conditions, which [build.conditions] gave for
+// the scan s, and give the filter of the rows of s. It evaluates each value, and gives SQLite's error
+// for one that is longer than the limit, and then "not supported" for the first value, in the order
+// of the text, that is of another type than its column. Last, unless scanAll, it gives the scan the
+// access by the key that the conditions allow, as [keyAccess] gives it.
+func (b build) bind(f *Filter, s *scan, conditions []condition) (source, error) {
 	for i, c := range f.Conditions {
 		if c.Value == nil {
 			continue
@@ -685,15 +861,21 @@ func null() *s4qlpb.Value {
 // buildSink: the sink of the plan p, in the transaction of w, with args for the parameters of p, and
 // with the planted bugs of b. It makes the checks that SQLite makes when it prepares the statement,
 // in SQLite's order, and fails with SQLite's error: for CREATE TABLE, a table of the name, and then
-// a column named twice or more columns than SQLite allows, as [stmt.CreateTable.ColumnsError] says;
+// a column named twice or more columns than SQLite allows, as [stmt.CreateTable.ColumnsError] says,
+// and then a table that SQLite cannot write into its schema under limit, as [schemaTooBig] says;
 // for DROP TABLE, no table of the name; for INSERT, no table of the name, then a column of its list
 // that the table does not have, in the order of the list, and then another number of values than
 // the columns of its list, or than the columns of the table if it has no list. For INSERT it then
 // makes the check that SQLite makes when it binds the arguments: a text or a blob that is longer
 // than limit bytes gets SQLite's `string or blob too big`. It checks a literal so too, which SQLite
-// meets in its text only with a limit below the length of the text: see the README.
-func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bugs, limit int) (sink, error) {
+// meets in its text only with a limit below the length of the text: see the README. For UPDATE and
+// DELETE, see [buildChange]; their scan reads by the key unless scanAll.
+func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bugs, limit int, scanAll bool) (sink, error) {
 	switch p := p.(type) {
+	case *Update:
+		return build{r: w, args: args, limit: limit, scanAll: scanAll}.change(ctx, w, p.Source, p.Set, true)
+	case *Delete:
+		return build{r: w, args: args, limit: limit, scanAll: scanAll}.change(ctx, w, p.Source, nil, false)
 	case *CreateTable:
 		existing, err := w.table(ctx, p.Table.Value)
 		if err != nil {
@@ -704,6 +886,9 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 		}
 		if err := columnsError(p); err != nil {
 			return nil, err
+		}
+		if schemaTooBig(p.Table.Value, p.SQL, limit) {
+			return nil, tooBig()
 		}
 		if len(p.PrimaryKey) != 1 || p.PrimaryKey[0] < 0 || p.PrimaryKey[0] >= len(p.Columns) {
 			return nil, internalError("a table of %v columns with the key %v", len(p.Columns), p.PrimaryKey)
@@ -812,6 +997,84 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 		return &insert{w: w, table: t, key: int(t.GetPrimaryKey()[0]), src: src, exprs: exprs, skipUnique: b.skipUnique, convertReal: b.convertReal}, nil
 	}
 	return nil, internalError("a plan of type %T", p)
+}
+
+// change is the sink of an UPDATE, if isUpdate, with the assignments set, or of a DELETE, that
+// changes the rows of source, a [*Scan], or a [*Filter] of one, in the transaction of w. It fails with
+// SQLite's errors in SQLite's order: for a table that does not exist; for a column of the SET that
+// the table does not have, the first in the order of the text, with the value of its name and
+// nothing about quotes, as SQLite's update itself gives it; for a column of the WHERE, as
+// [build.conditions] says; and for a value of the SET and then of the WHERE that is longer than
+// the limit, as SQLite gives it when it binds an argument, the first in the order of the text, which
+// is the order of the parameters too. Then it fails with "not supported" for a value of the WHERE of
+// another type than its column, as a select does, and gives the scan its access by the key, as
+// [build.bind] says.
+func (b build) change(ctx context.Context, w writer, source Node, set []Assignment, isUpdate bool) (sink, error) {
+	f, filtered := source.(*Filter)
+	inner := source
+	if filtered {
+		inner = f.Source
+	}
+	if _, ok := inner.(*Scan); !ok {
+		return nil, internalError("a change of the rows of a node of type %T", inner)
+	}
+	src, err := b.node(ctx, inner)
+	if err != nil {
+		return nil, err
+	}
+	s := src.(*scan)
+	t := s.table
+	key := t.GetPrimaryKey()
+	if len(key) != 1 || int(key[0]) >= len(t.GetColumns()) {
+		return nil, internalError("a change of a table of %v columns with the key %v", len(t.GetColumns()), key)
+	}
+	var names []string
+	for _, c := range t.GetColumns() {
+		names = append(names, c.GetName())
+	}
+	of := positionsOf(names)
+	positions := make([]int, len(set))
+	named := make([]bool, len(names))
+	for i, a := range set {
+		position, ok := of[a.Column.Fold()]
+		if !ok {
+			return nil, noSuchSetColumn(a.Column)
+		}
+		if named[position] {
+			return nil, internalError("an update that sets the column %v twice", names[position])
+		}
+		positions[i], named[position] = position, true
+	}
+	var conditions []condition
+	if filtered {
+		if _, conditions, err = b.conditions(f, s); err != nil {
+			return nil, err
+		}
+	}
+	values := make([]*s4qlpb.Value, len(set))
+	exprs := make([]Expr, len(set))
+	for i, a := range set {
+		v, err := eval(a.Value, b.args)
+		if err != nil {
+			return nil, err
+		}
+		if err := checkLength(v, b.limit); err != nil {
+			return nil, err
+		}
+		values[i], exprs[i] = v, a.Value
+	}
+	if filtered {
+		if src, err = b.bind(f, s, conditions); err != nil {
+			return nil, err
+		}
+	}
+	if !isUpdate {
+		return &remove{w: w, table: t, key: int(key[0]), src: src}, nil
+	}
+	if len(set) == 0 {
+		return nil, internalError("an update that sets no column")
+	}
+	return &update{w: w, table: t, key: int(key[0]), src: src, positions: positions, values: values, exprs: exprs}, nil
 }
 
 // columnsError of the plan p of a table that does not exist: SQLite's error for a column named twice

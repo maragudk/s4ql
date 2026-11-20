@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -456,6 +457,10 @@ func (tx *Tx) CreateTable(ctx context.Context, ct *s4qlpb.CreateTable) error {
 	}
 	t := newTable(ct)
 	if err := tx.c.create(t); err != nil {
+		if errors.Is(err, ErrInvalid) {
+			// The cache refused the table before it changed anything.
+			return err
+		}
 		return tx.fail(ctx, operation, err)
 	}
 	// The commit object holds the table as the cache gives it back, without a field that is set to
@@ -519,21 +524,7 @@ func (tx *Tx) touch(t *table, key []*s4qlpb.Value, existed bool) error {
 		tx.temps++
 		names := []string{fmt.Sprint("s4ql_touched_", tx.temps), fmt.Sprint("s4ql_existed_", tx.temps)}
 		for _, name := range names {
-			var b strings.Builder
-			b.WriteString("create table temp.")
-			b.WriteString(quote(name))
-			b.WriteString(" (")
-			for i, position := range t.key {
-				typ, err := typeSQL(t.columns[position].typ)
-				if err != nil {
-					return err
-				}
-				fmt.Fprint(&b, "k", i, " ", typ, ", ")
-			}
-			b.WriteString("primary key (")
-			b.WriteString(keyColumns("", len(t.key)))
-			b.WriteString(")) strict, without rowid")
-			if err := tx.c.c.Exec(b.String()); err != nil {
+			if err := tx.createKeyTable(t, name); err != nil {
 				return err
 			}
 		}
@@ -544,6 +535,27 @@ func (tx *Tx) touch(t *table, key []*s4qlpb.Value, existed bool) error {
 		return err
 	}
 	return tx.c.exec(fmt.Sprint("insert into temp.", quote(e.existed), " values (", placeholders(len(t.key)), ")"), values(key)...)
+}
+
+// createKeyTable makes the temporary table of the given name that holds primary keys of the table
+// t, and nothing else: a column k0, k1, and so on, of the type of each column of the key, in key
+// order, which are its primary key.
+func (tx *Tx) createKeyTable(t *table, name string) error {
+	var b strings.Builder
+	b.WriteString("create table temp.")
+	b.WriteString(quote(name))
+	b.WriteString(" (")
+	for i, position := range t.key {
+		typ, err := typeSQL(t.columns[position].typ)
+		if err != nil {
+			return err
+		}
+		fmt.Fprint(&b, "k", i, " ", typ, ", ")
+	}
+	b.WriteString("primary key (")
+	b.WriteString(keyColumns("", len(t.key)))
+	b.WriteString(")) strict, without rowid")
+	return tx.c.c.Exec(b.String())
 }
 
 // dropTouched drops the temporary tables of the keys that the transaction touched in the table of
@@ -681,6 +693,158 @@ func (tx *Tx) Delete(ctx context.Context, name string, key []*s4qlpb.Value) (boo
 		return false, tx.fail(ctx, operation, err)
 	}
 	return true, nil
+}
+
+// KeySet is a set of primary keys of one table, which a write transaction holds in a temporary table
+// of the cache, so that it can hold any number of keys. It lasts for the call of [Tx.Keys] that
+// gives it.
+type KeySet struct {
+	tx *Tx
+	t  *table
+	// add, first, and next are the statements of [KeySet.Add] and [KeySet.All], each on the
+	// temporary table of the set.
+	add, first, next string
+	// gone is set when the call of [Tx.Keys] ends, which drops the set.
+	gone bool
+}
+
+// Keys runs f with an empty set of primary keys of the table with the given name, and drops the set
+// when f returns. It gives the error of f, and otherwise the error of the drop. It fails before f
+// with an error that wraps [ErrNoTable] if there is no such table, and as the calls that change the
+// transaction do. f must not end the transaction, nor roll it back to a savepoint.
+//
+// The set is for a statement that changes the rows that it finds, as SQLite's UPDATE and DELETE do:
+// the statement adds the keys of the rows that it finds while it scans the table, and then reads
+// them back from the set and changes the row of each. SQLite leaves undefined what a cursor gives
+// when its table changes under it, and this way no cursor is open on a table that changes: while
+// the scan runs, only the set changes, which the scan does not read, and [KeySet.All] reads each key
+// with a statement that has ended before the row of the key changes. The set is in the cache, so
+// neither holds rows in memory, and the rows that the statement writes never come back to it.
+func (tx *Tx) Keys(ctx context.Context, name string, f func(*KeySet) error) error {
+	const operation = "keys"
+	if err := tx.check(ctx, operation); err != nil {
+		return err
+	}
+	t, err := tx.table(ctx, operation, name)
+	if err != nil {
+		tx.leave(ctx)
+		return err
+	}
+	tx.temps++
+	temp := fmt.Sprint("s4ql_keys_", tx.temps)
+	if err := tx.createKeyTable(t, temp); err != nil {
+		tx.leave(ctx)
+		return tx.fail(ctx, operation, err)
+	}
+	tx.leave(ctx)
+
+	columns := keyColumns("", len(t.key))
+	from := fmt.Sprint(" from temp.", quote(temp))
+	k := &KeySet{
+		tx:    tx,
+		t:     t,
+		add:   fmt.Sprint("insert or ignore into temp.", quote(temp), " values (", placeholders(len(t.key)), ")"),
+		first: fmt.Sprint("select ", columns, from, " order by ", columns, " limit 1"),
+		next:  fmt.Sprint("select ", columns, from, " where (", columns, ") > (", placeholders(len(t.key)), ") order by ", columns, " limit 1"),
+	}
+	err = f(k)
+	k.gone = true
+	return cmp.Or(err, tx.dropKeys(ctx, temp, k))
+}
+
+// dropKeys drops the temporary table temp of the set k, and the statements on it that are at rest,
+// unless the transaction can only be rolled back, which drops it then.
+func (tx *Tx) dropKeys(ctx context.Context, temp string, k *KeySet) error {
+	const operation = "drop keys"
+	if err := tx.checkOpen(); err != nil {
+		if tx.state() != nil {
+			return nil
+		}
+		return err
+	}
+	defer tx.leave(ctx)
+	for _, sql := range []string{k.add, k.first, k.next} {
+		if s, ok := tx.c.stmts[sql]; ok {
+			delete(tx.c.stmts, sql)
+			if err := s.Finalize(); err != nil {
+				return tx.fail(ctx, operation, err)
+			}
+		}
+	}
+	return tx.fail(ctx, operation, tx.c.c.Exec(fmt.Sprint("drop table temp.", quote(temp))))
+}
+
+// Add the key to the set, unless the set has it. The key has a value for each primary-key column of
+// the table, in key order. It fails as [Tx.Delete] does, and with an error that wraps [ErrInvalid]
+// once the call of [Tx.Keys] has ended.
+func (k *KeySet) Add(ctx context.Context, key []*s4qlpb.Value) error {
+	const operation = "add key"
+	if k.gone {
+		return invalidf("a key added to a set that is gone")
+	}
+	tx := k.tx
+	if err := tx.check(ctx, operation); err != nil {
+		return err
+	}
+	defer tx.leave(ctx)
+	if err := k.t.checkKey(key, tx.c.limit); err != nil {
+		return err
+	}
+	if err := tx.c.exec(k.add, values(key)...); err != nil {
+		if refused := tooBig(err); refused != nil {
+			return refused
+		}
+		return tx.fail(ctx, operation, err)
+	}
+	return nil
+}
+
+// All keys of the set, in the order of the primary key, as SQLite compares keys. Each is read by a
+// statement of its own, which has ended when All gives the key: the least key of the set that is
+// greater than the one before it. So the transaction can change any table, the set among them,
+// between two keys, and All gives a key that is added then if it is greater than the last. The
+// sequence ends with an error if a read fails, and with one that wraps [ErrInvalid] once the call of
+// [Tx.Keys] has ended.
+func (k *KeySet) All(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
+	return func(yield func([]*s4qlpb.Value, error) bool) {
+		var last []*s4qlpb.Value
+		for {
+			key, err := k.after(ctx, last)
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			if key == nil || !yield(key, nil) {
+				return
+			}
+			last = key
+		}
+	}
+}
+
+// after gives the least key of the set that is greater than last, or the least key if last is nil,
+// or nil if there is none.
+func (k *KeySet) after(ctx context.Context, last []*s4qlpb.Value) ([]*s4qlpb.Value, error) {
+	const operation = "read keys"
+	if k.gone {
+		return nil, invalidf("keys read from a set that is gone")
+	}
+	tx := k.tx
+	if err := tx.check(ctx, operation); err != nil {
+		return nil, err
+	}
+	defer tx.leave(ctx)
+	sql, args := k.first, []any(nil)
+	if last != nil {
+		sql, args = k.next, values(last)
+	}
+	var key []*s4qlpb.Value
+	err := tx.c.query(sql, func(s *sqlite.Stmt) error {
+		var err error
+		key, err = readRow(s, 0, len(k.t.key))
+		return err
+	}, args...)
+	return key, tx.fail(ctx, operation, err)
 }
 
 // Annotate the transaction with a statement that it ran: its SQL text and its parameters. The

@@ -22,6 +22,7 @@ import (
 // A check of a token's content, such as whether a name is reserved, runs when the token is the next
 // one, so that a reject names the token at the offset it gives.
 type recognizer struct {
+	src  string
 	tree *ast.Statement
 	// tokens of the statement, every one that the parser read for it, in the order of the text, from
 	// the tokenizer. By the ownership rule of the tree they are the tokens of [ast.AllTokens]; since
@@ -42,7 +43,7 @@ type stop struct {
 
 // recognize the statement of tree, which the parser read from src, or say why it is not supported.
 func recognize(src string, tree *ast.Statement) (s Statement, err *NotSupportedError) {
-	r := &recognizer{tree: tree, tokens: parser.Tokens(src, tree), accepted: map[ast.Node]bool{}}
+	r := &recognizer{src: src, tree: tree, tokens: parser.Tokens(src, tree), accepted: map[ast.Node]bool{}}
 	defer func() {
 		if v := recover(); v != nil {
 			st, ok := v.(stop)
@@ -166,6 +167,14 @@ func (r *recognizer) createTable(c *ast.CreateTable) *CreateTable {
 	}
 	r.take(c.RParen)
 	r.tableOptions(c)
+	// SQLite keeps the text up to its last token when the table has no options; with them, which
+	// it always has here, up to the token that ends the statement: the semicolon, or the end of the
+	// text.
+	end := len(r.src)
+	if r.tree.Semi.Present() {
+		end = r.tree.Semi.Offset
+	}
+	s.SQL = "CREATE TABLE " + r.src[table.Offset:end]
 	return s
 }
 

@@ -189,6 +189,47 @@ func (x *memTx) insertNew(ctx context.Context, name string, row []*s4qlpb.Value)
 	return true, x.upsert(ctx, name, row)
 }
 
+func (x *memTx) delete(_ context.Context, name string, key []*s4qlpb.Value) (bool, error) {
+	t := x.tables[fold(name)]
+	k := memKey(key[0])
+	_, ok := t.rows[k]
+	delete(t.rows, k)
+	return ok, nil
+}
+
+// keys runs f with a set of keys in memory, whose all gives the least key above the one before, each
+// time it looks.
+func (x *memTx) keys(_ context.Context, _ string, f func(keySet) error) error {
+	return f(&memKeys{keys: map[string]*s4qlpb.Value{}})
+}
+
+type memKeys struct {
+	keys map[string]*s4qlpb.Value
+}
+
+func (k *memKeys) add(_ context.Context, key []*s4qlpb.Value) error {
+	k.keys[memKey(key[0])] = key[0]
+	return nil
+}
+
+func (k *memKeys) all(context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
+	return func(yield func([]*s4qlpb.Value, error) bool) {
+		var last *s4qlpb.Value
+		for {
+			var next *s4qlpb.Value
+			for _, key := range k.keys {
+				if (last == nil || compareValues(key, last) > 0) && (next == nil || compareValues(key, next) < 0) {
+					next = key
+				}
+			}
+			if next == nil || !yield([]*s4qlpb.Value{next}, nil) {
+				return
+			}
+			last = next
+		}
+	}
+}
+
 func (x *memTx) position() format.Name                                   { return format.EmptyLog }
 func (x *memTx) annotate(context.Context, string, []*s4qlpb.Value) error { return nil }
 func (x *memTx) rollback(context.Context) error                          { return nil }

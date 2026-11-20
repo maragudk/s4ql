@@ -33,13 +33,32 @@ type writer interface {
 	createTable(ctx context.Context, ct *s4qlpb.CreateTable) error
 	// dropTable with the name, which exists.
 	dropTable(ctx context.Context, name string) error
-	// upsert the row into the table with the name: insert it, or replace the row with its key. Only
-	// the planted bug skipUnique writes so.
+	// upsert the row into the table with the name: insert it, or replace the row with its key. It
+	// fails with SQLite's `string or blob too big` for a row whose record is too long.
 	upsert(ctx context.Context, name string, row []*s4qlpb.Value) error
 	// insertNew the row into the table with the name if the table has no row with its key, and report
 	// whether it did. It fails with SQLite's `string or blob too big` for a row whose record is too
 	// long also when the key exists, as SQLite does.
 	insertNew(ctx context.Context, name string, row []*s4qlpb.Value) (bool, error)
+	// delete the row with the primary key from the table with the name, and report whether there was
+	// one.
+	delete(ctx context.Context, name string, key []*s4qlpb.Value) (bool, error)
+	// keys runs f with an empty set of primary keys of the table with the name, which lasts for the
+	// call of f, and gives the error of f: see [keySet].
+	keys(ctx context.Context, name string, f func(keySet) error) error
+}
+
+// keySet is a set of primary keys of a table, of any size, for a statement that changes the rows
+// that it finds: it adds the key of each row that it finds while it scans the table, and then
+// changes the row of each key that all gives. The scan reads no table that changes while it runs,
+// because only the set changes, and all reads each key before the statement changes its row, so the
+// statement changes each row that it found once, and none that it wrote, as [core.Tx.Keys] says.
+type keySet interface {
+	// add the key to the set, unless the set has it.
+	add(ctx context.Context, key []*s4qlpb.Value) error
+	// all keys of the set, in the order of the key, as SQLite compares keys. The table and the set can
+	// change between two keys, and all gives the least key of the set above the one before.
+	all(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error]
 }
 
 // database is what the engine needs of the storage core: write transactions, and readers.
@@ -258,6 +277,28 @@ func (c coreTx) upsert(ctx context.Context, name string, row []*s4qlpb.Value) er
 func (c coreTx) insertNew(ctx context.Context, name string, row []*s4qlpb.Value) (bool, error) {
 	inserted, err := c.tx.Insert(ctx, name, row)
 	return inserted, fromCore(err)
+}
+
+func (c coreTx) delete(ctx context.Context, name string, key []*s4qlpb.Value) (bool, error) {
+	found, err := c.tx.Delete(ctx, name, key)
+	return found, fromCore(err)
+}
+
+func (c coreTx) keys(ctx context.Context, name string, f func(keySet) error) error {
+	return fromCore(c.tx.Keys(ctx, name, func(k *core.KeySet) error { return f(coreKeys{k: k}) }))
+}
+
+// coreKeys is the [keySet] of a [*core.KeySet].
+type coreKeys struct {
+	k *core.KeySet
+}
+
+func (c coreKeys) add(ctx context.Context, key []*s4qlpb.Value) error {
+	return fromCore(c.k.Add(ctx, key))
+}
+
+func (c coreKeys) all(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
+	return fromCoreSeq(c.k.All(ctx))
 }
 
 func (c coreTx) position() format.Name {

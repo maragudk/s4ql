@@ -79,10 +79,12 @@
 // scans into a value of [database/sql.Null], a pointer, or an any. A real that is -0.0 is stored, and
 // given back, as 0.0, as SQLite stores it.
 //
-// [database/sql.Result.RowsAffected] is SQLite's count of changes on the connection: an insert sets
-// it, and a statement that sets none, such as CREATE TABLE, gives the count of the statement before
-// it on the same connection. database/sql takes any connection of its pool for a statement, so the
-// count of such a statement means something only on a [database/sql.Conn].
+// [database/sql.Result.RowsAffected] is SQLite's count of changes on the connection: an insert, an
+// update, and a delete set it, an update and a delete to every row that they find, also one whose
+// values an update does not change, and a statement that sets none, such as CREATE TABLE, gives the
+// count of the statement before it on the same connection. database/sql takes any connection of its
+// pool for a statement, so the count of such a statement means something only on a
+// [database/sql.Conn].
 // [database/sql.Result.LastInsertId] is always 0, because no table has a rowid.
 //
 // One write runs at a time, and a second one waits for the first. Reads run in parallel, each on
