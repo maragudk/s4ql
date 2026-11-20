@@ -853,10 +853,10 @@ func TestDB_stop_cache(t *testing.T) {
 	})
 
 	t.Run("should stop for good when another process adds to the cache a table that s4ql did not make", func(t *testing.T) {
-		for _, table := range []string{
-			"t9 (k any primary key) strict, without rowid",
-			"t9 (k int primary key, v any) strict, without rowid",
-			"t9 (k int) strict",
+		for table, why := range map[string]string{
+			"t9 (k any primary key) strict, without rowid":        `the column "k" of its table "t9" has the type "ANY"`,
+			"t9 (k int primary key, v any) strict, without rowid": `the column "v" of its table "t9" has the type "ANY"`,
+			"t9 (k int) strict": "",
 		} {
 			w := newWorld(t)
 			d := w.serve(t, "a", core.Options{})
@@ -871,6 +871,7 @@ func TestDB_stop_cache(t *testing.T) {
 			_, err = r.Table(t.Context(), "t9")
 			is.Error(t, core.ErrLocal, err, table)
 			is.Error(t, core.ErrCacheVersion, err, table)
+			is.True(t, strings.Contains(err.Error(), why), err.Error())
 			_ = r.Close(t.Context())
 			is.True(t, isDone(d), table)
 		}

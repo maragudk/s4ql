@@ -2255,6 +2255,33 @@ func TestTx_types(t *testing.T) {
 		// Only the creates and the good rows.
 		is.Equal(t, 2*len(types), len(w.commits(t)[0]))
 	})
+
+	t.Run("should refuse a row of another number of values than columns, and a key whose later value is not of its column", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		ctx := t.Context()
+		tx, err := d.Begin(ctx)
+		is.NotError(t, err)
+		// A table whose primary key is its two columns, a text and a real.
+		ct := typedTable("two", s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_REAL)
+		ct.SetPrimaryKey([]uint32{0, 1})
+		is.NotError(t, tx.CreateTable(ctx, ct))
+
+		err = tx.Upsert(ctx, "two", row("a"))
+		is.Error(t, core.ErrInvalid, err)
+		is.True(t, strings.Contains(err.Error(), `a row of 1 values for the table "two", which has 2 columns`), err.Error())
+		err = tx.Upsert(ctx, "two", row("a", 1.5, 2.5))
+		is.True(t, strings.Contains(err.Error(), `a row of 3 values for the table "two", which has 2 columns`), err.Error())
+
+		for _, key := range [][]*s4qlpb.Value{row("a", "b"), row("a", math.NaN())} {
+			_, err = tx.Delete(ctx, "two", key)
+			is.Error(t, core.ErrInvalid, err, text(key))
+			is.True(t, strings.Contains(err.Error(), `in the column "c1" of the table "two"`), err.Error())
+			_, err = tx.Get(ctx, "two", key)
+			is.Error(t, core.ErrInvalid, err, text(key))
+		}
+		is.NotError(t, tx.Rollback(ctx))
+	})
 }
 
 func TestTx_tooBig(t *testing.T) {
@@ -2359,6 +2386,8 @@ func TestTx_tooBig(t *testing.T) {
 				if long != nil {
 					_, err := tx.Get(ctx, "t", long)
 					is.Error(t, core.ErrTooBig, err)
+					want := fmt.Sprintf(`a value of %v bytes in the column "c0" of the table "t", where the limit is %v`, limit+1, limit)
+					is.True(t, strings.Contains(err.Error(), want), err.Error())
 					_, err = tx.Delete(ctx, "t", long)
 					is.Error(t, core.ErrTooBig, err)
 				}
