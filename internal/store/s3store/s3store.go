@@ -216,7 +216,11 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 // which takes them out of the transport's pool under the transport's own lock, so that a request
 // that starts at the same time never gets a connection that is being closed. A connection in use
 // is closed by the transport when its request ends without a complete answer, or is idle when the
-// last request ends and closed then.
+// last request ends and closed then: net/http puts it back in the pool before a read of the answer
+// returns its end, and the content of a read ends its request after the body is closed. A
+// connection that becomes idle later, such as one whose dial ends after the request that it was
+// for, is closed by the transport itself, which closes each connection that becomes idle after
+// CloseIdleConnections until a request asks for one.
 func (c *Client) Close() error {
 	c.mu.Lock()
 	c.closed = true

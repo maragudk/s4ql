@@ -109,3 +109,57 @@ Nothing.
 ### Future work
 
 None.
+
+## Step 3: Close only idle connections, through the transport
+
+**Author:** s3store-close fix builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "when the client is closed and a request ends with no other request in flight, `leave` takes the map of connections, unlocks, and closes the sockets directly. Those sockets are still in the transport's idle pool, so a request that starts at that moment can take one from the pool and have it closed under it while it writes or reads. [...] Decide whether the map of dialed connections and the direct close are then still needed at all [...] keep the smallest mechanism that passes every test." And: "Optional, do it if small: a connector test with a fake `io.Closer` store that checks the store is closed exactly once, after `db.Close`, also when that close fails, and when `newConnector` fails halfway."
+**Interpretation:** Replace the close of the dialed sockets with `http.Transport.CloseIdleConnections`, drop the map if no test needs it, add the reviewer's stress scenario as a test, and pin the connector's close of the store.
+**Inferred intent:** The close of the connections must never change the outcome of a call.
+
+### What I did
+
+`Client.leave` now calls `CloseIdleConnections` of the client's transport when the client is closed and no request is in flight, and `Client.Close` calls it as before. The map of dialed connections, the client's `DialContext`, the type `conn`, and `errClosed` are gone. The tests see the sockets through a dialer of the test, which `serverClient` puts on the transport after `New`.
+
+The map is not needed. The diary of step 2 said it was, for the open read: that subtest closes the content of a read before its end, and net/http then closes the connection in a goroutine of its own, so it is not closed when `Close` of the content returns. It is closed shortly after, without the client. The subtest now waits for it with `waitClosed`, bounded at 30 seconds, far above what a slow machine needs and far below the 90-second idle timeout after which a leak would be closed too.
+
+The check of a dial that ends after the close, which called `c.dial` directly, is now a subtest through the transport: a Get whose dial is held is cancelled, so the last request ends and closes the idle connections, and then the dial is let go; the transport closes the connection as it becomes idle, because `CloseIdleConnections` sets `closeIdle` and no request has asked for a connection since.
+
+New subtest "should not break calls that run at once after the close": after `Close`, one goroutine runs 8,000 Gets and one 8,000 Creates against an `httptest` server, and no call may fail. Two goroutines leave the client with no request in flight most often.
+
+Optional job: the close of an owned store moves from `Options.connector` into `ownedConnector` in `conn.go`, which `OpenOwnedStore` of `export_test.go` reaches with a store of the test. Two subtests of `TestClose`, on `closing`, a `faulty` that counts its closes: the store is closed 0 times before `db.Close` and once after it, also when the close fails because the store is down, and a second `db.Close` does not close it again; and a connector that cannot be made (no cache directory) closes it once.
+
+### Why
+
+`CloseIdleConnections` takes the connections out of the pool under the transport's lock, so no request can be handed one that is being closed. A connection in use is either idle by the time its request ends, since net/http puts it back in the pool before a read of the body returns `io.EOF`, or closed by net/http itself.
+
+### What worked
+
+Before the fix, with the new subtest on the old client (its own dialer in place), the subtest failed in 40 of 40 runs without `-race` and 40 of 40 with it, each with `outcome unknown: ... write tcp ...: use of closed network connection` or `read tcp ...`. After the fix, 0 of 20 runs failed, with and without `-race`. A run of the subtest takes about 1.2 seconds, and about 5 under `-race`.
+
+With the call in `leave` taken out, "should send a call after the close" and the held dial failed. The first because the Create asks the pool for a connection, which turns `closeIdle` off. With the close of the store taken out of `connector.Close` and of `ownedConnector`, both new subtests of `TestClose` failed.
+
+### What didn't work
+
+Smaller counts were not reliable: with 2,000 calls in each of 4 goroutines the subtest failed in 6 of 20 runs before the fix, and with 4,000 in each of 2, in 13 of 20 without `-race`.
+
+The permission system refused a Bash command that compiled test binaries and ran them in a loop in one line ("too complex to verify that it stays inside the worktree"), and another with a Python here-doc. I put both in scripts in the scratchpad.
+
+### What I learned
+
+net/http closes the connection of a body that is closed before its end in its read loop, after `Close` of the body returns.
+
+### What was tricky
+
+A test dialer on `c.transport.DialContext` made the old client's map useless, so the count of failures before the fix was taken with the old client and its own dialer.
+
+### What warrants review
+
+- The close of a connection whose dial ends after the last request rests on `closeIdle`, which the documentation of net/http does not describe. The held-dial subtest pins it.
+
+### Future work
+
+None.
