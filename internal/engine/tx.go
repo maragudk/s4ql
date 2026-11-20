@@ -307,14 +307,13 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 	if err := c.ready(ctx); err != nil {
 		return Result{}, err
 	}
-	_, insert := p.(*Insert)
 	if t.write == nil {
 		// SQLite looks the names up when it prepares the statement, and refuses the write when it
 		// steps it.
-		if _, err := buildSink(ctx, readOnly{t.read}, p, args, bugs{}, c.e.db.lengthLimit()); err != nil {
+		if _, err := buildSink(ctx, readOnly{t.read}, p, args, bugs{}, c.e.db.lengthLimit(), c.e.scanAll); err != nil {
 			return Result{}, err
 		}
-		return Result{SetsChanges: insert}, readOnlyDatabase()
+		return Result{SetsChanges: setsChanges(p)}, readOnlyDatabase()
 	}
 
 	w := t.write
@@ -335,12 +334,12 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 			_ = w.rollbackTo(ctx)
 		}
 	}()
-	s, err := buildSink(ctx, w, p, args, bugs{skipUnique: c.e.bugs.skipUnique, convertReal: c.e.bugs.convertReal}, c.e.db.lengthLimit())
+	s, err := buildSink(ctx, w, p, args, bugs{skipUnique: c.e.bugs.skipUnique, convertReal: c.e.bugs.convertReal}, c.e.db.lengthLimit(), c.e.scanAll)
 	if err != nil {
 		return Result{}, err
 	}
-	failed := Result{SetsChanges: insert}
-	if err := s.check(); err != nil {
+	failed := Result{SetsChanges: setsChanges(p)}
+	if err := s.check(ctx); err != nil {
 		return checked(failed, err), err
 	}
 	n, err := s.run(ctx)
@@ -358,7 +357,7 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 	}
 	t.writes++
 	r.rows = n
-	return Result{Changes: n, SetsChanges: insert}, nil
+	return Result{Changes: n, SetsChanges: setsChanges(p)}, nil
 }
 
 // queryIn runs the plan q, with args for its parameters, in the transaction of the connection, and

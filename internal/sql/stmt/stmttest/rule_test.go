@@ -135,6 +135,76 @@ func TestConditionRule(t *testing.T) {
 	}
 }
 
+func TestUpdateRule(t *testing.T) {
+	// The table t (a text, k int primary key, b real not null, c blob), as SQLite has it.
+	columns := []stmttest.TableColumn{
+		{Name: "a", Type: "TEXT", Nullable: true},
+		{Name: "k", Type: "INT", PrimaryKey: true},
+		{Name: "b", Type: "REAL"},
+		{Name: "c", Type: "BLOB", Nullable: true},
+	}
+	cases := []struct {
+		src   string
+		args  []any
+		found bool
+		want  string
+		// asked reports whether the rule asks whether the update finds a row.
+		asked bool
+	}{
+		{src: "update t set a = 'x', b = 1.5, c = ?, k = 1 where k > 1", args: []any{nil}},
+		{src: "update t set b = 1", want: "s4ql: not supported: an integer literal for the column t.b of type REAL"},
+		// The first column of SET in the order of the table, and the conditions first.
+		{src: "update t set c = 'x', a = 1", want: "s4ql: not supported: an integer literal for the column t.a of type TEXT"},
+		{src: "update t set a = ? where k = ?", args: []any{int64(1), "x"}, want: "s4ql: not supported: argument 2, which is text, compared with the column t.k of type INT"},
+		{src: "update t set a = ? where k = ?", args: []any{int64(1), int64(2)}, want: "s4ql: not supported: argument 1, which is an integer, for the column t.a of type TEXT"},
+		// NULL in a column that does not take it comes first, if the update finds a row.
+		{src: "update t set b = null, a = 1 where k = 1", found: true, asked: true},
+		{src: "update t set b = null, a = 1 where k = 1", asked: true, want: "s4ql: not supported: an integer literal for the column t.a of type TEXT"},
+		{src: "update t set k = ?, a = 1", args: []any{nil}, found: true, asked: true},
+		{src: "update t set a = null, c = 1", want: "s4ql: not supported: an integer literal for the column t.c of type BLOB"},
+		{src: "update t set b = null where k = 'x'", want: "s4ql: not supported: a string literal compared with the column t.k of type INT"},
+		// SQLite's errors of the names come first, those of SET before those of WHERE, and another
+		// number of arguments.
+		{src: "update t set x = 1, a = 1"},
+		{src: "update t set a = 1 where x = 1"},
+		{src: "update t set a = 1 where k = 'x' and x = 1"},
+		{src: "update t set a = ?", args: []any{int64(1), int64(2)}},
+	}
+	for _, c := range cases {
+		t.Run(c.src, func(t *testing.T) {
+			s, err := stmt.Check(c.src)
+			is.NotError(t, err)
+			var asked bool
+			is.Equal(t, c.want, stmttest.UpdateRule("t", columns, s.(*stmt.Update), c.args, func() bool { asked = true; return c.found }))
+			is.Equal(t, c.asked, asked)
+		})
+	}
+
+	t.Run("should give the rule of a delete as of a select with its WHERE", func(t *testing.T) {
+		for src, want := range map[string]string{
+			"delete from t":                         "",
+			"delete from t where k = 1 and a = 1":   "s4ql: not supported: an integer literal compared with the column t.a of type TEXT",
+			"delete from t where k = 1.5 and x = 1": "",
+		} {
+			s, err := stmt.Check(src)
+			is.NotError(t, err)
+			is.Equal(t, want, stmttest.DeleteRule("t", columns, s.(*stmt.Delete), nil), src)
+		}
+	})
+
+	t.Run("should give a query of the conditions, with the literals and the arguments bound in order", func(t *testing.T) {
+		s, err := stmt.Check(`update t set a = ? where k >= ? and "A""b" is not null and b < 1.5 and c = x'01' and a != 'x' and a = null and k <= ?`)
+		is.NotError(t, err)
+		u := s.(*stmt.Update)
+		src, bound := stmttest.FoundQuery(u.Table, u.Where, []any{"s", int64(1), int64(9)})
+		is.Equal(t, `select 1 from "t" where "k" >= ? and "A""b" IS NOT NULL and "b" < ? and "c" = ? and "a" != ? and "a" = ? and "k" <= ? limit 1`, src)
+		is.Equal(t, `[1 1.5 [1] x <nil> 9]`, fmt.Sprint(bound))
+		src, bound = stmttest.FoundQuery(u.Table, nil, nil)
+		is.Equal(t, `select 1 from "t" limit 1`, src)
+		is.Equal(t, 0, len(bound))
+	})
+}
+
 func TestWhereCases(t *testing.T) {
 	// The table t (a text, k int primary key, b real not null), as SQLite has it.
 	columns := []stmttest.TableColumn{
