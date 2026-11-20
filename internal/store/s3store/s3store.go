@@ -12,6 +12,12 @@
 // [context.DeadlineExceeded] that ended it, so that no error from the content, the transport, or
 // the SDK can make it look like one of the errors that mean that the write was not applied.
 //
+// A call whose context has ended by the time the client has its answer takes the answer if it shows
+// what happened: a success, or one of the errors of [store.Store]. Any other answer, or none, fails
+// the call with an error that wraps the [context.Canceled] or [context.DeadlineExceeded] of the
+// context, since the end of the context may be what broke the answer. So does a read of the content
+// that fails after the end of the context.
+//
 // A write with a checksum is checked by the store: the request is signed with the checksum as the
 // SHA-256 of its payload, which the store compares with the bytes it receives before it stores
 // anything, and the checksum also goes with the object as its x-amz-checksum-sha256.
@@ -199,18 +205,24 @@ func (c *Client) Get(ctx context.Context, key string) (io.ReadCloser, store.Vers
 		if r.status == http.StatusNotFound && r.code == "NoSuchKey" {
 			return nil, "", r.end(outcomeNotFound, fail(store.ErrNotFound))
 		}
-		return nil, "", r.end(outcomeFailed, fail(err))
+		return nil, "", r.end(outcomeFailed, fail(ended(ctx, err)))
 	}
 	r.succeeded(out.ResultMetadata)
 
 	version := store.Version(aws.ToString(out.ETag))
+	var unexpected error
 	switch {
 	case version == "":
-		_ = out.Body.Close()
-		return nil, "", r.end(outcomeUnexpected, fail(errors.New("the answer has no ETag")))
+		unexpected = errors.New("the answer has no ETag")
 	case out.ContentLength == nil || *out.ContentLength < 0:
+		unexpected = errors.New("the answer has no content length")
+	}
+	if unexpected != nil {
 		_ = out.Body.Close()
-		return nil, "", r.end(outcomeUnexpected, fail(errors.New("the answer has no content length")))
+		if ctx.Err() != nil {
+			return nil, "", r.end(outcomeFailed, fail(ended(ctx, unexpected)))
+		}
+		return nil, "", r.end(outcomeUnexpected, fail(unexpected))
 	}
 	return &body{r: r, body: out.Body, size: *out.ContentLength}, version, nil
 }
@@ -272,17 +284,31 @@ func (c *Client) put(ctx context.Context, op, key string, from store.Version, co
 		r.failed(err)
 		outcome, refusal := r.refusal()
 		if refusal == nil {
-			return "", r.end(outcomeUnknown, fail(unknown(err)))
+			return "", r.end(outcomeUnknown, fail(unknown(ended(ctx, err))))
 		}
 		return "", r.end(outcome, fail(refusal))
 	}
 	r.succeeded(out.ResultMetadata)
 	version := store.Version(aws.ToString(out.ETag))
 	if version == "" {
+		if ctx.Err() != nil {
+			return "", r.end(outcomeUnknown, fail(unknown(ended(ctx, errors.New("the answer has no ETag")))))
+		}
 		return "", r.end(outcomeUnexpected, fail(errors.New("outcome unknown: the answer has no ETag")))
 	}
 	_ = r.end(outcomeOK, nil)
 	return version, nil
+}
+
+// ended is err, the failure of a call with the context ctx, and if ctx has ended, also the error of
+// its end, which err may not wrap: net/http takes an answer that comes in as the context ends, and
+// the end may be what made the answer one that the client cannot use, so the call is reported as one
+// whose context ended, and not as one that the store failed alone.
+func ended(ctx context.Context, err error) error {
+	if done := ctx.Err(); done != nil && !errors.Is(err, done) {
+		return fmt.Errorf("%w, after the context ended: %w", err, done)
+	}
+	return err
 }
 
 // unknown is the error of a write whose outcome is unknown because of err. It has the text of err,
@@ -291,10 +317,24 @@ func (c *Client) put(ctx context.Context, op, key string, from store.Version, co
 func unknown(err error) error {
 	for _, done := range []error{context.Canceled, context.DeadlineExceeded} {
 		if errors.Is(err, done) {
-			return fmt.Errorf("outcome unknown: %v: %w", err, done)
+			return fmt.Errorf("outcome unknown: %w", textOf{text: err.Error(), err: done})
 		}
 	}
 	return fmt.Errorf("outcome unknown: %v", err)
+}
+
+// textOf one error, which wraps another error alone.
+type textOf struct {
+	text string
+	err  error
+}
+
+func (e textOf) Error() string {
+	return e.text
+}
+
+func (e textOf) Unwrap() error {
+	return e.err
 }
 
 // refusal that the answer to a failed write of r shows, with its outcome, or a nil error if the

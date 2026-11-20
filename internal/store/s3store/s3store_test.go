@@ -424,6 +424,101 @@ func TestClient_connections(t *testing.T) {
 		_ = body.Close()
 		is.True(t, errors.Is(err, context.Canceled), fmt.Sprint(err))
 	})
+
+	t.Run("should wrap the error of a context that ended before the answer came in, unless the answer shows what happened", func(t *testing.T) {
+		f := newFake(t)
+		var ctx *ending
+		f.hook = func(w http.ResponseWriter, r *http.Request, f *fake) bool {
+			_, _ = io.Copy(io.Discard, r.Body)
+			// The context ends after the request reached the store and before its answer.
+			ctx.end()
+			switch key(r) {
+			case "broken":
+				fail(w, http.StatusInternalServerError, "InternalError")
+			case "applied":
+				w.Header().Set("ETag", `"v"`)
+				w.WriteHeader(http.StatusOK)
+			case "exists":
+				fail(w, http.StatusPreconditionFailed, "PreconditionFailed")
+			case "missing":
+				fail(w, http.StatusNotFound, "NoSuchKey")
+			case "cut-body":
+				w.Header().Set("ETag", `"v"`)
+				w.Header().Set("Content-Length", "100")
+				_, _ = w.Write([]byte("part"))
+				_ = http.NewResponseController(w).Flush()
+				cut(w)
+			default:
+				// An answer without headers, as a store or a proxy may give to a request that it
+				// sees end.
+				w.WriteHeader(http.StatusOK)
+			}
+			return true
+		}
+		c := f.client(t)
+
+		for _, k := range []string{"no-etag", "broken"} {
+			ctx = newEnding(t)
+			_, _, err := c.Get(ctx, k)
+			is.True(t, errors.Is(err, context.DeadlineExceeded), k, fmt.Sprint(err))
+
+			ctx = newEnding(t)
+			_, err = c.Create(ctx, k, strings.NewReader("data"), nil)
+			is.True(t, isUnknown(err) && errors.Is(err, context.DeadlineExceeded), k, fmt.Sprint(err))
+			is.Equal(t, 1, strings.Count(err.Error(), context.DeadlineExceeded.Error()), err.Error())
+		}
+
+		// The content of a read that fails after the end of the context.
+		ctx = newEnding(t)
+		body, _, err := c.Get(ctx, "cut-body")
+		is.NotError(t, err)
+		_, err = io.ReadAll(body)
+		_ = body.Close()
+		is.True(t, errors.Is(err, io.ErrUnexpectedEOF) && errors.Is(err, context.DeadlineExceeded), fmt.Sprint(err))
+
+		// An answer that shows what happened is the outcome, also after the end of the context.
+		ctx = newEnding(t)
+		version, err := c.Create(ctx, "applied", strings.NewReader("data"), nil)
+		is.NotError(t, err)
+		is.Equal(t, store.Version(`"v"`), version)
+
+		ctx = newEnding(t)
+		_, err = c.Create(ctx, "exists", strings.NewReader("data"), nil)
+		is.True(t, errors.Is(err, store.ErrExists), fmt.Sprint(err))
+
+		ctx = newEnding(t)
+		_, err = c.Swap(ctx, "exists", `"v"`, strings.NewReader("data"), nil)
+		is.True(t, errors.Is(err, store.ErrChanged), fmt.Sprint(err))
+
+		ctx = newEnding(t)
+		_, _, err = c.Get(ctx, "missing")
+		is.True(t, errors.Is(err, store.ErrNotFound), fmt.Sprint(err))
+	})
+}
+
+// ending context, whose Err reports [context.DeadlineExceeded] from the moment that end is called,
+// while its Done is the one of the test's context, which stays open. It is the moment after a
+// deadline has passed, and before the transport has seen it, which a real deadline makes as short
+// as it can: an answer that comes in then is taken by the transport, and the client finds the
+// context ended. With it a test forces that order, which a real deadline leaves to a race.
+type ending struct {
+	context.Context
+	ended atomic.Bool
+}
+
+func newEnding(t *testing.T) *ending {
+	return &ending{Context: t.Context()}
+}
+
+func (e *ending) end() {
+	e.ended.Store(true)
+}
+
+func (e *ending) Err() error {
+	if e.ended.Load() {
+		return context.DeadlineExceeded
+	}
+	return e.Context.Err()
 }
 
 // failing content, which ends with err instead of io.EOF.

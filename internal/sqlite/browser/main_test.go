@@ -27,11 +27,13 @@ func TestMain(m *testing.M) {
 
 // fakeChromium in the given mode:
 //   - hang: never speak to the runner;
-//   - exit: start the program, which writes "hello" and exits with code 7;
+//   - exit: fetch the program and start it, and it writes "hello" and exits with code 7, and the fake
+//     exits right after, so that the runner sees the exit and Chromium's stop at about the same time;
 //   - crash-once: exit with code 1 at once if the file in S4QL_CHROMIUM_FAKE_MARK is not there, and
 //     create it, and else do as exit;
-//   - run-and-hang: start the program, which writes that TestA and TestB started and TestA ended,
-//     and then hangs.
+//   - fetch-and-hang: fetch the program, and never start it;
+//   - run-and-hang: fetch the program and start it, and it writes that TestA and TestB started and
+//     TestA ended, and then hangs.
 func fakeChromium(mode, url string) {
 	post := func(path, body string) {
 		res, err := http.Post(url+path, "text/plain", strings.NewReader(body))
@@ -39,6 +41,15 @@ func fakeChromium(mode, url string) {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
+		_ = res.Body.Close()
+	}
+	fetch := func(url string) {
+		res, err := http.Get(url)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		_, _ = io.Copy(io.Discard, res.Body)
 		_ = res.Body.Close()
 	}
 	if mode == "crash-once" {
@@ -60,11 +71,16 @@ func fakeChromium(mode, url string) {
 		}
 		_, _ = io.Copy(io.Discard, res.Body)
 		_ = res.Body.Close()
+		fetch(url + "program.wasm")
 		post("started", "")
 		post("output?fd=1", "hello\n")
 		post("exit?code=7", "")
 		os.Exit(0)
+	case "fetch-and-hang":
+		fetch(url + "program.wasm")
+		time.Sleep(time.Hour)
 	case "run-and-hang":
+		fetch(url + "program.wasm")
 		post("started", "")
 		post("output?fd=1", "=== RUN   TestA\n=== RUN   TestB\n--- PASS: TestA (0.00s)\n")
 		time.Sleep(time.Hour)
@@ -99,6 +115,7 @@ func fake(t *testing.T, mode string) string {
 	is.NotError(t, err)
 	t.Setenv("S4QL_CHROMIUM", exe)
 	t.Setenv("S4QL_CHROMIUM_FLAGS", "")
+	t.Setenv("S4QL_CHROMIUM_STEPS", "")
 	t.Setenv("S4QL_CHROMIUM_FAKE", mode)
 	t.Setenv("S4QL_CHROMIUM_FAKE_MARK", filepath.Join(t.TempDir(), "mark"))
 	program := filepath.Join(t.TempDir(), "program.wasm")
@@ -134,24 +151,50 @@ func TestRunner_run(t *testing.T) {
 		is.NotError(t, err)
 		is.Equal(t, 7, code)
 		is.Equal(t, "hello\n", stdout.String())
+		is.Equal(t, "", stderr.String())
+	})
+
+	t.Run("should write what it saw when the program exited, with S4QL_CHROMIUM_STEPS", func(t *testing.T) {
+		program := fake(t, "exit")
+		t.Setenv("S4QL_CHROMIUM_STEPS", "1")
+		var stdout, stderr syncBuilder
+		r := runner{stdout: &stdout, stderr: &stderr, startup: time.Minute, grace: time.Minute, attempts: 1}
+
+		code, err := r.run(t.Context(), []string{program})
+		is.NotError(t, err)
+		is.Equal(t, 7, code)
+		is.True(t, strings.Contains(stderr.String(), "browser: what the runner saw: chromium started after"), stderr.String())
+		is.True(t, strings.Contains(stderr.String(), "the Worker fetched its configuration after"), stderr.String())
+		is.True(t, strings.Contains(stderr.String(), "the program started after"), stderr.String())
 	})
 
 	t.Run("should start Chromium again when it did not start the program in time, and fail after the last attempt", func(t *testing.T) {
 		program := fake(t, "hang")
 		var stdout, stderr syncBuilder
-		r := runner{stdout: &stdout, stderr: &stderr, startup: 10 * time.Millisecond, grace: time.Minute, attempts: 2}
+		r := runner{stdout: &stdout, stderr: &stderr, startup: 10 * time.Millisecond, restartup: 20 * time.Millisecond, grace: time.Minute, attempts: 2}
 
 		_, err := r.run(t.Context(), []string{program})
 		is.True(t, errors.Is(err, errNotStarted), err)
-		is.True(t, strings.Contains(err.Error(), "attempt 2 of 2: chromium did not start the program within 10ms"), err)
-		is.True(t, strings.Contains(stderr.String(), "attempt 1 of 2: chromium did not start the program within 10ms"), stderr.String())
+		is.True(t, strings.Contains(err.Error(), "attempt 2 of 2: chromium did not start the program: chromium did not fetch it within 20ms"), err)
+		is.True(t, strings.Contains(stderr.String(), "attempt 1 of 2: chromium did not start the program: chromium did not fetch it within 10ms"), stderr.String())
 		is.True(t, strings.Contains(stderr.String(), "what the runner saw: chromium started after"), stderr.String())
+	})
+
+	t.Run("should start Chromium again when the Worker fetched the program and did not start it in time", func(t *testing.T) {
+		program := fake(t, "fetch-and-hang")
+		var stdout, stderr syncBuilder
+		r := runner{stdout: &stdout, stderr: &stderr, startup: time.Hour, restartup: time.Hour, compile: 10 * time.Millisecond, grace: time.Minute, attempts: 2}
+
+		_, err := r.run(t.Context(), []string{program})
+		is.True(t, errors.Is(err, errNotStarted), err)
+		is.True(t, strings.Contains(err.Error(), "attempt 2 of 2: chromium did not start the program: the Worker fetched it, and did not start it within 10ms after"), err)
+		is.True(t, strings.Contains(stderr.String(), "the Worker fetched the program after"), stderr.String())
 	})
 
 	t.Run("should start Chromium again when it stopped before it started the program", func(t *testing.T) {
 		program := fake(t, "crash-once")
 		var stdout, stderr syncBuilder
-		r := runner{stdout: &stdout, stderr: &stderr, startup: time.Minute, grace: time.Minute, attempts: 2}
+		r := runner{stdout: &stdout, stderr: &stderr, startup: time.Minute, restartup: time.Minute, grace: time.Minute, attempts: 2}
 
 		code, err := r.run(t.Context(), []string{program})
 		is.NotError(t, err)
@@ -194,26 +237,43 @@ func TestRunner_run(t *testing.T) {
 func TestProgress(t *testing.T) {
 	t.Run("should name the tests that started and did not end, from the output of go test -v", func(t *testing.T) {
 		var p progress
-		p.output([]byte("=== RUN   TestA\n--- PASS: TestA (0.00s)\n=== RUN   TestB\n=== PAUSE TestB\n=== RUN   TestC\n"))
-		p.output([]byte("=== RUN   TestC/sub_one\n    --- PASS: TestC/sub_one (0.01s)\n=== RUN   TestC/sub_"))
-		p.output([]byte("two\n=== CONT  TestB\n"))
+		p.output(1, []byte("=== RUN   TestA\n--- PASS: TestA (0.00s)\n=== RUN   TestB\n=== PAUSE TestB\n=== RUN   TestC\n"))
+		p.output(1, []byte("=== RUN   TestC/sub_one\n    --- PASS: TestC/sub_one (0.01s)\n=== RUN   TestC/sub_"))
+		p.output(1, []byte("two\n=== CONT  TestB\n"))
 
 		is.EqualSlice(t, []string{"TestB", "TestC", "TestC/sub_two"}, p.running())
 	})
 
 	t.Run("should take a test as ended when it failed or skipped", func(t *testing.T) {
 		var p progress
-		p.output([]byte("=== RUN   TestA\n=== RUN   TestB\n=== RUN   TestC\n--- FAIL: TestA (1.00s)\n--- SKIP: TestB (0.00s)\n"))
+		p.output(1, []byte("=== RUN   TestA\n=== RUN   TestB\n=== RUN   TestC\n--- FAIL: TestA (1.00s)\n--- SKIP: TestB (0.00s)\n"))
 
 		is.EqualSlice(t, []string{"TestC"}, p.running())
 	})
 
+	t.Run("should keep the lines of standard output and standard error apart", func(t *testing.T) {
+		var p progress
+		p.output(1, []byte("=== RUN   TestA\n=== RUN   TestB\n"))
+		p.output(2, []byte("progress: 50%"))
+		p.output(1, []byte("--- PASS: TestA (0.01s)\n"))
+		p.output(2, []byte("\n"))
+
+		is.EqualSlice(t, []string{"TestB"}, p.running())
+	})
+
+	t.Run("should read the lines that go test -json makes the binary write", func(t *testing.T) {
+		var p progress
+		p.output(1, []byte("\x16=== RUN   TestA\n\x16=== RUN   TestA/sub\n    \x16--- PASS: TestA/sub (0.00s)\n"))
+
+		is.EqualSlice(t, []string{"TestA"}, p.running())
+	})
+
 	t.Run("should take a line only once it has ended", func(t *testing.T) {
 		var p progress
-		p.output([]byte("=== RUN   TestA"))
+		p.output(1, []byte("=== RUN   TestA"))
 		is.Equal(t, 0, len(p.running()))
 
-		p.output([]byte("\n"))
+		p.output(1, []byte("\n"))
 		is.EqualSlice(t, []string{"TestA"}, p.running())
 	})
 
@@ -222,8 +282,8 @@ func TestProgress(t *testing.T) {
 		p := progress{start: start}
 		p.markAt("chromium started", start.Add(100*time.Millisecond))
 		p.markAt("the page loaded", start.Add(1500*time.Millisecond))
-		p.outputAt([]byte("=== RUN   TestA\n"), start.Add(2*time.Second))
-		p.outputAt([]byte("=== RUN   TestB\n"), start.Add(3*time.Second))
+		p.outputAt(1, []byte("=== RUN   TestA\n"), start.Add(2*time.Second))
+		p.outputAt(1, []byte("=== RUN   TestB\n"), start.Add(3*time.Second))
 
 		report := p.report(start.Add(63 * time.Second))
 		is.True(t, strings.Contains(report, "chromium started after 100ms, the page loaded after 1.5s"), report)

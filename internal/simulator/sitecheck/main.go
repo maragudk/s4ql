@@ -13,7 +13,12 @@
 // has its effect in the state, and an action switched off again takes it away; the client keeps
 // calling a while a is crashed and after its restart, and its switch moves its calls to b and back; a
 // crash of the instance that serves lets the other take over; fake time goes
-// past 10 minutes; and the page writes nothing into its address. It also checks the words of run.js,
+// past 10 minutes; and the page writes nothing into its address. Then S3: a reload keeps the tab's
+// database, its name, and the time, and a catches up from it before it serves; a stored database that
+// is damaged or of another version is dropped; a write to sessionStorage that fails leaves nothing
+// half-written; Reset empties the database and keeps its name; the page stops at the cap of commit
+// objects, and Reset starts over from there; a tab without storage runs in memory; and a tab with an
+// empty sessionStorage, as a new tab has, gets a database of its own. It also checks the words of run.js,
 // and that a fault at start-up ends in the page's failure box: the page without run.js, and the page
 // without its Play button, as a page.js of one deploy would find the HTML of another. It writes what
 // it saw, and exits with 0 if the check passed, 1 if it failed, and 2 if it could not run.
@@ -34,7 +39,12 @@
 // the stacks of its goroutines, the requests of the page so far, and the output of Chromium.
 //
 // Chromium is found as the runner in internal/sqlite/browser finds it: S4QL_CHROMIUM, or the PATH, or
-// /Applications on macOS. S4QL_CHROMIUM_FLAGS adds flags, such as --no-sandbox.
+// /Applications on macOS. S4QL_CHROMIUM_FLAGS adds flags, such as --no-sandbox. As that runner does,
+// it starts Chromium again, with a new profile, up to six times in all, when Chromium has not loaded
+// the check's page a minute after its start, or 30 seconds after a later start, or stops before it
+// did. On a fresh runner of GitHub Actions, a Chromium sometimes never loads its page, at times
+// several in a row over the first minutes, while a later one does. -timeout counts from the load of
+// the check's page.
 package main
 
 import (
@@ -60,6 +70,13 @@ import (
 	"time"
 )
 
+// starts of Chromium: the time that the first has to load the check's page, the time that each later
+// one has, and how many there are at most.
+type starts struct {
+	first, later time.Duration
+	attempts     int
+}
+
 //go:embed check.html
 var checkHTML []byte
 
@@ -68,7 +85,7 @@ func main() {
 	version := flag.String("version", "", "the version that the site's page was built with, if any")
 	timeout := flag.Duration("timeout", 3*time.Minute, "the time after which a check that hangs is stopped")
 	flag.Parse()
-	ok, err := run(*root, *version, *timeout)
+	ok, err := run(*root, *version, *timeout, starts{first: time.Minute, later: 30 * time.Second, attempts: 6}, os.Stderr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sitecheck:", err)
 		os.Exit(2)
@@ -86,7 +103,8 @@ type result struct {
 	Lines []string `json:"lines"`
 }
 
-func run(root, version string, timeout time.Duration) (bool, error) {
+// run the check, and write about each start of Chromium that failed to stderr.
+func run(root, version string, timeout time.Duration, s starts, stderr io.Writer) (bool, error) {
 	if _, err := os.Stat(filepath.Join(root, "simulator", "engine", "engine.wasm")); err != nil {
 		return false, fmt.Errorf("the site in %v has no engine; run make site first: %w", root, err)
 	}
@@ -96,8 +114,19 @@ func run(root, version string, timeout time.Duration) (bool, error) {
 	}
 
 	results := make(chan result, 1)
+	var (
+		mu       sync.Mutex
+		requests []url.URL     // of the site, outside /__check/, by the Chromium of this start
+		loaded   chan struct{} // closed when the Chromium of this start asks for the check's page
+	)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /__check/", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if loaded != nil {
+			close(loaded)
+			loaded = nil
+		}
+		mu.Unlock()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(checkHTML)
 	})
@@ -117,10 +146,6 @@ func run(root, version string, timeout time.Duration) (bool, error) {
 	})
 	mux.Handle("GET /__check/broken/{how}/{path...}", broken(root))
 	files := http.FileServer(http.Dir(root))
-	var (
-		mu       sync.Mutex
-		requests []url.URL // of the site, outside /__check/
-	)
 	mux.Handle("GET /", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		requests = append(requests, *r.URL)
@@ -137,14 +162,97 @@ func run(root, version string, timeout time.Duration) (bool, error) {
 	go func() { _ = server.Serve(listener) }()
 	defer func() { _ = server.Close() }()
 
+	page := "http://" + listener.Addr().String() + "/__check/?" + url.Values{"version": {version}}.Encode()
+	var c *browser
+	for attempt := 1; ; attempt++ {
+		limit := s.first
+		if attempt > 1 {
+			limit = s.later
+		}
+		ch := make(chan struct{})
+		mu.Lock()
+		requests, loaded = nil, ch
+		mu.Unlock()
+		c, err = startBrowser(chromium, page)
+		if err != nil {
+			return false, err
+		}
+		defer c.stop()
+		var why string
+		select {
+		case <-ch:
+		case <-c.stopped:
+			why = fmt.Sprintf("chromium stopped before it loaded the check's page: %v", c.waitErr)
+			// It may have asked for the page just before it stopped.
+			select {
+			case <-ch:
+				why = ""
+			default:
+			}
+		case <-time.After(limit):
+			why = fmt.Sprintf("chromium did not load the check's page within %v", limit)
+		}
+		if why == "" {
+			break
+		}
+		c.stop()
+		msg := fmt.Sprintf("attempt %d of %d: %v; chromium started after %v:\nthe end of Chromium's output:\n%v",
+			attempt, s.attempts, why, c.startedAfter, tail(c.log.String()))
+		if attempt >= s.attempts {
+			return false, errors.New(msg)
+		}
+		_, _ = fmt.Fprintf(stderr, "sitecheck: %v\nsitecheck: starting Chromium again\n", msg)
+	}
+
+	select {
+	case res := <-results:
+		c.stop()
+		mu.Lock()
+		ok, lines := checkRequests(requests, version)
+		mu.Unlock()
+		for _, l := range append(res.Lines, lines...) {
+			fmt.Println(l)
+		}
+		return res.OK && ok, nil
+	case <-c.stopped:
+		return false, fmt.Errorf("chromium stopped before the check ended: %v\n%s", c.waitErr, tail(c.log.String()))
+	case <-time.After(timeout):
+		// For a hang: the stacks of this program's goroutines, taken before Chromium is stopped, the
+		// requests of the page so far, and the output of Chromium.
+		var stacks strings.Builder
+		_ = pprof.Lookup("goroutine").WriteTo(&stacks, 2)
+		c.stop()
+		mu.Lock()
+		var asked strings.Builder
+		for _, u := range requests {
+			fmt.Fprintln(&asked, u.String())
+		}
+		mu.Unlock()
+		return false, fmt.Errorf("the check did not end within %v\n\nthe goroutines of sitecheck:\n%v\nthe requests of the page, in order:\n%v\nthe output of Chromium:\n%v",
+			timeout, stacks.String(), asked.String(), tail(c.log.String()))
+	}
+}
+
+// browser is a Chromium that runs on a page, with a profile of its own.
+type browser struct {
+	cancel       context.CancelFunc
+	profile      string
+	log          strings.Builder
+	startedAfter time.Duration
+	stopped      chan struct{} // closed when Chromium has stopped, with the error of its stop in waitErr
+	waitErr      error
+	once         sync.Once
+}
+
+// startBrowser starts the Chromium at the path on the page, with a new profile.
+func startBrowser(chromium, page string) (*browser, error) {
+	start := time.Now()
 	profile, err := os.MkdirTemp("", "s4ql-sitecheck-")
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	defer func() { _ = os.RemoveAll(profile) }()
-
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	b := &browser{cancel: cancel, profile: profile, stopped: make(chan struct{})}
 	flags := []string{
 		"--headless", "--no-first-run", "--no-default-browser-check", "--disable-extensions",
 		"--disable-background-timer-throttling", "--disable-renderer-backgrounding",
@@ -154,51 +262,45 @@ func run(root, version string, timeout time.Duration) (bool, error) {
 		"--window-size=1600,1200",
 	}
 	flags = append(flags, strings.Fields(os.Getenv("S4QL_CHROMIUM_FLAGS"))...)
-	flags = append(flags, "http://"+listener.Addr().String()+"/__check/?"+url.Values{"version": {version}}.Encode())
+	flags = append(flags, page)
 	cmd := exec.CommandContext(ctx, chromium, flags...)
-	var log strings.Builder
-	cmd.Stdout = &log
-	cmd.Stderr = &log
+	w := &syncWriter{w: &b.log}
+	cmd.Stdout = w
+	cmd.Stderr = w
+	// The processes that Chromium starts inherit its output, and may outlive it.
+	cmd.WaitDelay = 5 * time.Second
 	if err := cmd.Start(); err != nil {
-		return false, err
+		cancel()
+		_ = os.RemoveAll(profile)
+		return nil, err
 	}
-	// stopped is closed when Chromium has stopped, with the error of its stop in waitErr.
-	stopped := make(chan struct{})
-	var waitErr error
+	b.startedAfter = time.Since(start).Round(time.Millisecond)
 	go func() {
-		waitErr = cmd.Wait()
-		close(stopped)
+		b.waitErr = cmd.Wait()
+		close(b.stopped)
 	}()
+	return b, nil
+}
 
-	select {
-	case res := <-results:
-		cancel()
-		<-stopped
-		mu.Lock()
-		ok, lines := checkRequests(requests, version)
-		mu.Unlock()
-		for _, l := range append(res.Lines, lines...) {
-			fmt.Println(l)
-		}
-		return res.OK && ok, nil
-	case <-stopped:
-		return false, fmt.Errorf("chromium stopped before the check ended: %v\n%s", waitErr, tail(log.String()))
-	case <-time.After(timeout):
-		// For a hang: the stacks of this program's goroutines, taken before Chromium is stopped, the
-		// requests of the page so far, and the output of Chromium.
-		var stacks strings.Builder
-		_ = pprof.Lookup("goroutine").WriteTo(&stacks, 2)
-		cancel()
-		<-stopped
-		mu.Lock()
-		var asked strings.Builder
-		for _, u := range requests {
-			fmt.Fprintln(&asked, u.String())
-		}
-		mu.Unlock()
-		return false, fmt.Errorf("the check did not end within %v\n\nthe goroutines of sitecheck:\n%v\nthe requests of the page, in order:\n%v\nthe output of Chromium:\n%v",
-			timeout, stacks.String(), asked.String(), tail(log.String()))
-	}
+// stop Chromium, wait until it has stopped, and remove its profile. Calls after the first do nothing.
+func (b *browser) stop() {
+	b.once.Do(func() {
+		b.cancel()
+		<-b.stopped
+		_ = os.RemoveAll(b.profile)
+	})
+}
+
+// syncWriter writes to w under a lock, for the output of Chromium, which two pipes copy.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
 }
 
 // simulatorFiles that the page loads: page.js, which its HTML names, run.js and sound.js, which
@@ -207,6 +309,7 @@ var simulatorFiles = []string{
 	"/simulator/page.js",
 	"/simulator/run.js",
 	"/simulator/sound.js",
+	"/simulator/bucket.js",
 	"/simulator/engine/build.json",
 	"/simulator/engine/simulator.js",
 	"/simulator/engine/worker.js",
@@ -265,16 +368,16 @@ func checkRequests(requests []url.URL, version string) (bool, []string) {
 	return len(wrong) == 0 && len(missing) == 0, lines
 }
 
-// broken serves the site under /__check/broken/<how>/, with a fault that makes the page fail at
-// start-up: with how "no-run", run.js is not found, and with "no-play", the page's Play button has
-// lost its ID.
+// broken serves the site under /__check/broken/<how>/, with a fault: with how "no-run", run.js is not
+// found, and with "no-play", the page's Play button has lost its ID, which make the page fail at
+// start-up; with "no-storage", the page's sessionStorage throws, as the browser blocks it.
 func broken(root string) http.Handler {
 	files := http.FileServer(http.Dir(root))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		how, p := r.PathValue("how"), "/"+r.PathValue("path")
 		w.Header().Set("Cache-Control", "no-store")
 		switch {
-		case how != "no-run" && how != "no-play", how == "no-run" && p == "/simulator/run.js":
+		case how != "no-run" && how != "no-play" && how != "no-storage", how == "no-run" && p == "/simulator/run.js":
 			http.NotFound(w, r)
 			return
 		case how == "no-play" && p == "/simulator/":
@@ -285,6 +388,15 @@ func broken(root string) http.Handler {
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			_, _ = w.Write(bytes.Replace(b, []byte(`id="play"`), []byte(`id="no-play"`), 1))
+			return
+		case how == "no-storage" && p == "/simulator/":
+			b, err := os.ReadFile(filepath.Join(root, "simulator", "index.html"))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write(bytes.Replace(b, []byte(`<head>`), []byte(`<head><script>Object.defineProperty(window, "sessionStorage", { get() { throw new DOMException("The storage is blocked.", "SecurityError"); } });</script>`), 1))
 			return
 		}
 		r = r.Clone(r.Context())

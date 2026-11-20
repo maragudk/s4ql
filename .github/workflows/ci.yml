@@ -484,12 +484,13 @@ jobs:
   # The storage core also runs in a web browser, on the official SQLite WebAssembly build, through a
   # second implementation of the binding behind the tag s4ql_browser. A native build does not see its
   # files, so this job builds, vets, and lints them, and compiles the tests of every package that runs
-  # in a browser, which fails on any drift from the API of the cgo binding. It then runs the tests in
-  # headless Chrome, which the runner image has. The job site checks the simulator's page.
+  # in a browser, which fails on any drift from the API of the cgo binding. The job browser-test runs
+  # the tests in headless Chrome, and the job site checks the simulator's page.
   browser:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v7
@@ -535,12 +536,38 @@ jobs:
           GOFLAGS: -tags=s4ql_browser
         run: '"$RUNNER_TEMP/simlint" ./internal/sqlite ./internal/sqlite/faultvfs ./internal/core ./internal/sim ./internal/store/simstore ./internal/simulator ./internal/simulator/engine'
 
+  # The tests of the packages that run in a browser, in headless Chrome, which the runner image has,
+  # in shards that run at the same time: make test-browser puts each test in exactly one shard. The
+  # slowest shard's tests take about 3 minutes on a slow runner, and a Chromium that does not start
+  # can cost the runner of internal/sqlite/browser up to 3.5 more, so a test binary has 7 minutes,
+  # and the runner stops it 30 seconds after. Under -v, the runner then names the tests that ran.
+  browser-test:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
       # Chrome's sandbox needs user namespaces, which the runner may not allow, and the page runs only
       # the project's own code from 127.0.0.1.
       - name: Test in headless Chrome
         env:
           S4QL_CHROMIUM_FLAGS: --no-sandbox
-        run: make test-browser
+          S4QL_CHROMIUM_STEPS: 1
+        run: make test-browser BROWSERSHARD=${{ matrix.shard }}/${{ strategy.job-total }} BROWSERTIMEOUT=7m BROWSERFLAGS=-v
 
   # Builds the engine into the site, as the Pages workflow does, and checks the simulator's page in
   # headless Chrome: see internal/simulator/sitecheck. It reads site/ and the Go code, so it runs for

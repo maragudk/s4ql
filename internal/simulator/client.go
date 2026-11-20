@@ -38,7 +38,7 @@ func (r *run) standby(ctx context.Context) {
 }
 
 // client of the run, as a task of the run, which no crash ends: until the end of the run, it pauses
-// and then makes a call, a write or a read, on its target, the instance that it calls now. It first
+// and then makes a call, a write, a delete, or a read, on its target, the instance that it calls now. It first
 // waits for the task gate, if any, which starts the instances that stand by.
 func (r *run) client(ctx context.Context, gate host.Task) {
 	if gate != nil {
@@ -54,7 +54,7 @@ func (r *run) client(ctx context.Context, gate host.Task) {
 		if r.isEnding() {
 			return
 		}
-		r.clientCall(ctx, int(r.world.Uint64()%100) < w.Writes)
+		r.clientCall(ctx, opOf(r.world.Uint64(), w))
 	}
 }
 
@@ -62,12 +62,12 @@ func (r *run) client(ctx context.Context, gate host.Task) {
 // target cannot take it. Otherwise a task of the process of the target makes it, as the application
 // in the process serves a request, and the client waits for that task. If the process crashes first,
 // the call ends with "lost": the client gets no answer, so the outcome of a write is unknown.
-func (r *run) clientCall(ctx context.Context, write bool) {
+func (r *run) clientCall(ctx context.Context, op string) {
 	r.mu.Lock()
 	in := r.target
 	r.mu.Unlock()
 	p := in.p
-	c := r.newCall("client", write)
+	c := r.newCall("client", op)
 	r.rec.add(c.event(in, p, "started"))
 	if why := down(p); why != "" {
 		r.callDown(ctx, c, in, p, why)

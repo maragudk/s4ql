@@ -105,7 +105,8 @@ func TestRun_client(t *testing.T) {
 		calls := eachCall(t, res)
 		is.True(t, len(calls) > 5, "the client calls")
 		is.True(t, calls[0].T >= startedB[0].T, "the first call of the client comes once b has started")
-		is.Equal(t, "served", ended(res, 0, 60_000)[0].What)
+		// The application knows no key before its first insert, so its first call is one.
+		is.Equal(t, "committed", ended(res, 0, 60_000)[0].What)
 		// The processes have no callers, and the client calls only a, so b gets no call.
 		is.Equal(t, 0, len(find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.Instance == "b" })))
 		is.Equal(t, 0, len(find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.Caller != "client" })))

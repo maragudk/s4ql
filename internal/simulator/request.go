@@ -40,6 +40,14 @@ type Request struct {
 	Schedule []Action `json:"schedule"`
 	// Lines asks for the text trace of the scheduler in the response.
 	Lines bool `json:"lines"`
+	// Prefix of the database in the store: the key of each of its objects starts with it and a
+	// slash.
+	Prefix string `json:"prefix"`
+	// Bucket that the store holds under the prefix when the run starts, or nil for an empty store.
+	Bucket *StoredBucket `json:"bucket,omitzero"`
+
+	// seed is the bucket, checked and read.
+	seed *seed
 }
 
 // Faults of the store that happen at random, from the seed, each with its probability for one
@@ -75,6 +83,9 @@ type Workload struct {
 	Think float64 `json:"think"`
 	// Writes is the share of calls that are write transactions, in percent. The others are reads.
 	Writes int `json:"writes"`
+	// Deletes is the share of the write transactions that delete a row, in percent. The others
+	// insert one.
+	Deletes int `json:"deletes"`
 	// Timeout of each call.
 	Timeout float64 `json:"timeout"`
 }
@@ -157,7 +168,8 @@ func defaultRequest() Request {
 		Instances: 3,
 		Leases:    []float64{30_000},
 		Latency:   50,
-		Workload:  Workload{On: true, Callers: 2, Think: 5_000, Writes: 40, Timeout: 30_000},
+		Workload:  Workload{On: true, Callers: 2, Think: 5_000, Writes: 40, Deletes: 25, Timeout: 30_000},
+		Prefix:    "db",
 	}
 }
 
@@ -173,6 +185,11 @@ func ParseRequest(b []byte) (Request, error) {
 	if err := r.check(); err != nil {
 		return Request{}, err
 	}
+	seed, err := parseBucket(r.Bucket, r.Prefix)
+	if err != nil {
+		return Request{}, fmt.Errorf("the bucket is refused: %w", err)
+	}
+	r.seed = seed
 	return r, nil
 }
 
@@ -217,11 +234,17 @@ func (r Request) check() error {
 	if w.Writes < 0 || w.Writes > 100 {
 		bad("workload.writes is %v, and must be from 0 to 100", w.Writes)
 	}
+	if w.Deletes < 0 || w.Deletes > 100 {
+		bad("workload.deletes is %v, and must be from 0 to 100", w.Deletes)
+	}
 	if !positive(w.Timeout) || w.Timeout > maxEnd {
 		bad("workload.timeout is %v, and must be above 0 and at most %v", w.Timeout, maxEnd)
 	}
 	if c := r.Client.Instance; c != "" && !validInstance(c, r.Instances) {
 		bad("client.instance is %q, and must be empty or an instance from a to %v", c, instanceName(max(0, r.Instances-1)))
+	}
+	if !prefixPattern.MatchString(r.Prefix) {
+		bad("prefix is %q, and must be 1 to 32 of a to z, 0 to 9, and -, not starting with -", r.Prefix)
 	}
 	if len(r.Schedule) > maxSchedule {
 		bad("the schedule has %v actions, and may have at most %v", len(r.Schedule), maxSchedule)
@@ -338,12 +361,15 @@ type Session struct {
 	Workload  Workload  `json:"workload"`
 	Client    Client    `json:"client"`
 	Standby   bool      `json:"standby"`
+	// Prefix and Bucket are those of a [Request].
+	Prefix string        `json:"prefix"`
+	Bucket *StoredBucket `json:"bucket,omitzero"`
 }
 
 // defaultSession has the default of every field: those of [defaultRequest], but two instances.
 func defaultSession() Session {
 	r := defaultRequest()
-	return Session{Seed: r.Seed, Instances: 2, Leases: r.Leases, Latency: r.Latency, Workload: r.Workload}
+	return Session{Seed: r.Seed, Instances: 2, Leases: r.Leases, Latency: r.Latency, Workload: r.Workload, Prefix: r.Prefix}
 }
 
 // ParseSession from its JSON, with the defaults for missing fields, and check it, as
@@ -355,10 +381,16 @@ func ParseSession(b []byte) (Request, error) {
 		return Request{}, fmt.Errorf("the session is not JSON of a session: %w", err)
 	}
 	r := Request{Seed: s.Seed, End: maxEnd, Instances: s.Instances, Leases: s.Leases,
-		Latency: s.Latency, Faults: s.Faults, Buggify: s.Buggify, Workload: s.Workload, Client: s.Client, Standby: s.Standby}
+		Latency: s.Latency, Faults: s.Faults, Buggify: s.Buggify, Workload: s.Workload, Client: s.Client, Standby: s.Standby,
+		Prefix: s.Prefix, Bucket: s.Bucket}
 	if err := r.check(); err != nil {
 		return Request{}, err
 	}
+	seed, err := parseBucket(r.Bucket, r.Prefix)
+	if err != nil {
+		return Request{}, fmt.Errorf("the bucket is refused: %w", err)
+	}
+	r.seed = seed
 	r.End = math.Inf(1)
 	return r, nil
 }
