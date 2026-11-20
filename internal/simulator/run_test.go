@@ -274,6 +274,18 @@ func TestRun_actions(t *testing.T) {
 			func(r simulator.RequestState) bool { return r.Request == cut[0].Request && r.Waiting }), "the caller waits for it before")
 	})
 
+	t.Run("should only insert while no insert has been acknowledged", func(t *testing.T) {
+		res := run(t, &e, withClient(`, "end": 60000, "workload": {"callers": 0, "think": 500, "writes": 10}`,
+			`{"at": 0, "do": "disconnectNetwork", "instance": "a", "on": true}, {"at": 0, "do": "read", "instance": "a"}`))
+		calls := find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.What == "started" })
+		is.True(t, len(calls) > 20, "the client calls")
+		for _, c := range calls {
+			is.Equal(t, "write", c.Op, fmt.Sprint("call ", c.Call))
+		}
+		is.Equal(t, 0, len(find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.What == "committed" })))
+		is.Equal(t, 0, res.Summary.Violations)
+	})
+
 	t.Run("should write barcodes with an insert, read one with a select, and annotate each commit object with its statements", func(t *testing.T) {
 		res := run(t, &e, `{"seed": 2, "end": 120000, "instances": 1, "workload": {"callers": 6, "think": 500, "writes": 70}}`)
 		// arg of a statement as text: JSON gives a number as a float64, which holds 13 digits exactly.
@@ -331,8 +343,8 @@ func TestRun_actions(t *testing.T) {
 				is.True(t, inserted[c.Value], fmt.Sprint("the commit of ", c.Value, " inserts it"))
 			}
 		}
-		// A read selects one key: half of them the newest acknowledged, whose row it finds, and the
-		// others one of the recent keys, also of writes that are not committed.
+		// A read selects one key that the application knows is in the store: half of them the newest
+		// acknowledged, and the others one of the recent ones. A read that is not stale finds its row.
 		served := find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.What == "served" })
 		is.True(t, len(served) > 20, "many reads")
 		found, missing := 0, 0
@@ -346,7 +358,7 @@ func TestRun_actions(t *testing.T) {
 				missing++
 			}
 		}
-		is.True(t, found > len(served)/2 && missing > 0, fmt.Sprint(found, " reads found their row, and ", missing, " did not"))
+		is.True(t, found == len(served) && missing == 0, fmt.Sprint(found, " reads found their row, and ", missing, " did not"))
 		is.Equal(t, 0, res.Summary.Violations)
 	})
 
@@ -450,7 +462,7 @@ func TestRun_faults(t *testing.T) {
 		{name: "writes stuck in the network", faults: `{"lostRequest": 0.3, "late": 1, "lateBy": 20000}`, kind: "request", what: "stuck"},
 		{name: "stuck writes that arrive", faults: `{"lostRequest": 0.3, "late": 1, "lateBy": 20000}`, kind: "request", what: "arrived"},
 		{name: "writes held back after the caller gave up", faults: `{"slow": 0.3, "slowBy": 20000, "late": 1, "lateBy": 20000}`, kind: "request", what: "held", text: "the caller gave up"},
-		{name: "writes held back after a crash", faults: `{"slow": 0.5, "slowBy": 20000, "afterCrash": 1, "lateBy": 20000}`, seed: 4,
+		{name: "writes held back after a crash", faults: `{"slow": 0.5, "slowBy": 20000, "afterCrash": 1, "lateBy": 20000}`, seed: 1,
 			schedule: `{"at": 20000, "do": "crash", "instance": "a"}, {"at": 20000, "do": "crash", "instance": "b"}, {"at": 20000, "do": "crash", "instance": "c"}`,
 			kind:     "request", what: "held", text: "the sender crashed"},
 		{name: "damaged downloads", faults: `{"damaged": 1}`, schedule: `{"at": 20000, "do": "crash", "instance": "a"}, {"at": 20000, "do": "crash", "instance": "b"}`,

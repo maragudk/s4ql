@@ -143,12 +143,18 @@ func (c *checker) commit(o *CommitObject) {
 
 // seed the checker with the log of a bucket that the store holds from before the run, from the first
 // commit object to the head, which [checker.commit] has given it. The bucket was checked as the
-// invariants check a log, so the log is one chain with each key once.
+// invariants check a log, so the log is one chain with each key once. Its writes count as
+// acknowledged before the run, in the order of the log: S3 held them, so every read of the run must
+// see them, and the application knows their keys.
 func (c *checker) seed(log []*CommitObject, head string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, o := range log {
+	for i, o := range log {
 		c.extend(o)
+		for _, k := range o.Keys {
+			c.acked = append(c.acked, k)
+			c.ackedAt = append(c.ackedAt, i)
+		}
 	}
 	c.head = head
 }
@@ -310,14 +316,29 @@ func last[T any](s []T) *T {
 	return &s[len(s)-1]
 }
 
-// lastAcked gives the key of the write that was acknowledged last, if any.
-func (c *checker) lastAcked() (int64, bool) {
+// recentKeys is the number of the newest known keys among which a read picks the one it selects,
+// when it does not select the newest.
+const recentKeys = 50
+
+// knows reports whether the application knows a key that is in the store.
+func (c *checker) knows() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.acked) == 0 {
-		return 0, false
+	return len(c.acked) > 0
+}
+
+// pick the key that a read selects, by the number u, among the keys that the application knows are
+// in the store: those of the acknowledged writes, which include the log of the bucket that the run
+// started on. Half of the reads select the newest, whose row a read that is not stale gives, and the
+// others one of the [recentKeys] newest. It requires that the application knows a key.
+func (c *checker) pick(u uint64) int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	i := len(c.acked) - 1
+	if u%2 != 0 {
+		i -= int(u / 2 % uint64(min(recentKeys, len(c.acked))))
 	}
-	return c.acked[len(c.acked)-1], true
+	return c.acked[i]
 }
 
 // readStarted returns what a read that starts now must see.

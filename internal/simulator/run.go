@@ -547,32 +547,23 @@ type call struct {
 	ended bool
 }
 
-// recentKeys is the number of the last keys taken among which a read picks the one it selects, when
-// it does not select the newest acknowledged key.
-const recentKeys = 50
-
 // newCall of the caller, which starts now. A write takes the key of the next value of the counter of
-// the run. A read picks the key that it selects, by a number from the seed: half of the reads the key
-// of the newest write acknowledged so far, whose row a read that is not stale gives, and the others
-// the key of one of the last [recentKeys] values taken, also of a write that failed or is still on
-// its way, whose row a read need not find.
+// the run. A read selects a key that the application knows is in the store, which [checker.pick]
+// picks by a number from the seed. While the application knows none, the call is a write.
 func (r *run) newCall(caller string, write bool) *call {
-	acked, ok := r.check.lastAcked()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls++
 	c := &call{n: r.calls, caller: caller, write: write, started: r.world.Monotonic()}
-	if write {
-		r.values++
-		c.value = barcode(r.values)
-		return c
+	if !write {
+		if r.check.knows() {
+			c.key = r.check.pick(r.world.Uint64())
+			return c
+		}
+		c.write = true
 	}
-	u := r.world.Uint64()
-	if ok && u%2 == 0 {
-		c.key = acked
-	} else {
-		c.key = barcode(max(1, r.values-int64(u/2%recentKeys)))
-	}
+	r.values++
+	c.value = barcode(r.values)
 	return c
 }
 
