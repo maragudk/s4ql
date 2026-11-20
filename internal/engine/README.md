@@ -350,7 +350,7 @@ Slice 9 adds `create index` and `drop index`. With an index, a statement with a 
 
 `chooseAccess(t, indexes, conditions)` is one pure function of the table, its indexes in the order in which they were created, and the conditions of the WHERE. It has no statistics and reads no row. So the choice is the same on every instance and for every state of the rows.
 
-A candidate is the primary key or an index. The key of the primary key is its columns. The key of an index is its columns and then the columns of the primary key that it does not hold, as SQLite stores an index of a WITHOUT ROWID table (`indexKey`). The rules take a primary key of any number of columns. A table that a statement creates has a primary key of one column.
+A candidate is the primary key or an index. The key of the primary key is its columns. The key of an index is its columns and then the columns of the primary key that it does not hold, as SQLite stores an index of a WITHOUT ROWID table (`core.IndexKey`, the one definition, which the core scans by too). The rules take a primary key of any number of columns. A table that a statement creates has a primary key of one column.
 
 The rules, in the order in which `chooseAccess` tries them:
 
@@ -606,6 +606,7 @@ The engine logs one event for each statement, named `statement`, when the statem
 | `commit.parent` | The same value, under the core's name. | For a statement in a write transaction, also a query in a write transaction that spans statements. |
 | `statement.access` | How a select, an update, or a delete reads the rows of its table: `none` for no row, `primary_key` for a get or a scan by the primary key, `index` for a scan by an index, or `full_scan`. | Once the access is chosen. A statement that fails before that has neither this attribute nor `statement.rows_read`. |
 | `statement.index` | The name of the index of an access by an index, as the index was created. For a create index and a drop index, the name of the index that the statement names, as its value. | For an access by an index, and for a create index and a drop index. |
+| `statement.direction` | The direction that the engine drew for the scan or the get of a query, `forward` or `backward`, so that a failure that depends on the order of the rows of a query can be told from its event, also where the run has no seed. | For a query, with `statement.access`. An update and a delete read forward and draw nothing, and have none. |
 | `statement.rows_read` | The number of rows that the statement read from the cache after the choice of its access, by its scans and its gets, whether or not its conditions held for them. For a query, these are the rows of its scan or its get. An update reads each row that it changes a second time, to write it, and one row more when it checks a NULL for a column that does not take it. | With `statement.access`. |
 | `statement.rows` | The number of rows that the statement returned or changed. | Always. |
 | `outcome` | How the statement ended, in a word; see below. | Always. |

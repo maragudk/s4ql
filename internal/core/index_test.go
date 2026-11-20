@@ -108,6 +108,43 @@ func scanBy(t *testing.T, r interface {
 	return rows
 }
 
+func TestIndexKey(t *testing.T) {
+	// keyed is a table of the integer columns a, b, c, and d, with the primary key on the columns at
+	// the given positions, in that order.
+	keyed := func(primaryKey ...uint32) *s4qlpb.CreateTable {
+		ct := s4qlpb.CreateTable_builder{Table: new("t"), PrimaryKey: primaryKey}
+		for _, c := range []string{"a", "b", "c", "d"} {
+			ct.Columns = append(ct.Columns, s4qlpb.Column_builder{Name: new(c), Type: new(s4qlpb.Type_TYPE_INT)}.Build())
+		}
+		return ct.Build()
+	}
+	asc := func(position int) core.KeyColumn { return core.KeyColumn{Position: position} }
+	dsc := func(position int) core.KeyColumn { return core.KeyColumn{Position: position, Descending: true} }
+
+	tests := []struct {
+		name     string
+		table    *s4qlpb.CreateTable
+		index    *s4qlpb.CreateIndex
+		expected []core.KeyColumn
+	}{
+		{name: "should be the primary key for no index", table: keyed(0), index: nil, expected: []core.KeyColumn{asc(0)}},
+		{name: "should be the primary key of several columns in key order for no index", table: keyed(2, 0), index: nil, expected: []core.KeyColumn{asc(2), asc(0)}},
+		{name: "should be the column of the index and then the primary key first in the table", table: keyed(0), index: indexOf("i", "t", 2), expected: []core.KeyColumn{asc(2), asc(0)}},
+		{name: "should be the column of the index and then the primary key last in the table", table: keyed(3), index: indexOf("i", "t", 1), expected: []core.KeyColumn{asc(1), asc(3)}},
+		{name: "should keep the order and the directions of several columns of the index", table: keyed(0), index: indexOf("i", "t", desc(3), 1, desc(2)), expected: []core.KeyColumn{dsc(3), asc(1), dsc(2), asc(0)}},
+		{name: "should not repeat the primary key that the index holds", table: keyed(0), index: indexOf("i", "t", 2, 0), expected: []core.KeyColumn{asc(2), asc(0)}},
+		{name: "should keep the direction of the primary key that the index holds in descending order", table: keyed(1), index: indexOf("i", "t", desc(1), 3), expected: []core.KeyColumn{dsc(1), asc(3)}},
+		{name: "should add only the columns of a primary key of several that the index does not hold, in key order and ascending", table: keyed(3, 0, 1), index: indexOf("i", "t", desc(0), 2), expected: []core.KeyColumn{dsc(0), asc(2), asc(3), asc(1)}},
+		{name: "should add nothing to an index that holds every column of the primary key", table: keyed(1, 2), index: indexOf("i", "t", 2, desc(1)), expected: []core.KeyColumn{asc(2), dsc(1)}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			is.EqualSlice(t, test.expected, core.IndexKey(test.table, test.index))
+		})
+	}
+}
+
 func TestTx_CreateIndex(t *testing.T) {
 	// Each test starts from two tables: t1 with the rows 1,10 and 2,20 and 3,10, and t2 with the row
 	// 1,1,100, and from the index i1 on the column v of t1.

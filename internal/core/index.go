@@ -28,35 +28,53 @@ type index struct {
 	// name as the index was created.
 	name string
 	// columns of the index, in the order of the index.
-	columns []keyColumn
+	columns []KeyColumn
 }
 
-// keyColumn is one column of the key of an index or of a primary key: the position of the column in
+// KeyColumn is one column of the key of an index or of a primary key: the position of the column in
 // the table, and whether the key holds it in descending order.
-type keyColumn struct {
-	position   int
-	descending bool
+type KeyColumn struct {
+	Position   int
+	Descending bool
 }
 
-// scanKey is the key that a scan by the index ix of the table reads in the order of, as SQLite
-// stores an index of a table without a rowid: the columns of the index, and then the primary-key
-// columns that the index does not hold, in key order and ascending. The key of no index is the
-// primary key.
-func (t *table) scanKey(ix *index) []keyColumn {
-	var key []keyColumn
-	held := make([]bool, len(t.columns))
-	if ix != nil {
-		for _, c := range ix.columns {
-			key = append(key, c)
-			held[c.position] = true
-		}
+// IndexKey is the key that a scan by the index ix of the table t reads in the order of, as SQLite
+// stores an index of a table without a rowid: the columns of the index, each in its direction, and
+// then the primary-key columns that the index does not hold, in key order and ascending. The key of
+// no index, a nil ix, is the primary key. It is the one definition of the key of an index: a scan
+// pins and bounds the columns of this key, in this order. It takes a table and an index that
+// [Tx.CreateTable] and [Tx.CreateIndex] accept.
+func IndexKey(t *s4qlpb.CreateTable, ix *s4qlpb.CreateIndex) []KeyColumn {
+	var columns []KeyColumn
+	for _, c := range ix.GetColumns() {
+		columns = append(columns, KeyColumn{Position: int(c.GetColumn()), Descending: c.GetDescending()})
 	}
-	for _, position := range t.key {
-		if !held[position] {
-			key = append(key, keyColumn{position: position})
+	primaryKey := make([]int, len(t.GetPrimaryKey()))
+	for i, position := range t.GetPrimaryKey() {
+		primaryKey[i] = int(position)
+	}
+	return indexKey(primaryKey, columns)
+}
+
+// indexKey of the index on the columns of a table whose primary key has the columns at the
+// positions primaryKey, as [IndexKey] says.
+func indexKey(primaryKey []int, columns []KeyColumn) []KeyColumn {
+	key := slices.Clone(columns)
+	for _, position := range primaryKey {
+		if !slices.ContainsFunc(columns, func(c KeyColumn) bool { return c.Position == position }) {
+			key = append(key, KeyColumn{Position: position})
 		}
 	}
 	return key
+}
+
+// scanKey is the key that a scan by the index ix of the table reads in the order of, as
+// [IndexKey] says. The key of no index is the primary key.
+func (t *table) scanKey(ix *index) []KeyColumn {
+	if ix == nil {
+		return indexKey(t.key, nil)
+	}
+	return indexKey(t.key, ix.columns)
 }
 
 // index of the table with the given name, compared as SQLite compares names, or nil if the table
@@ -79,8 +97,8 @@ func (t *table) index(name string) (*index, error) {
 func (t *table) createIndex(ix *index) *s4qlpb.CreateIndex {
 	ci := s4qlpb.CreateIndex_builder{Index: new(ix.name), Table: new(t.name)}
 	for _, c := range ix.columns {
-		column := s4qlpb.IndexColumn_builder{Column: new(uint32(c.position))}
-		if c.descending {
+		column := s4qlpb.IndexColumn_builder{Column: new(uint32(c.Position))}
+		if c.Descending {
 			column.Descending = new(true)
 		}
 		ci.Columns = append(ci.Columns, column.Build())
@@ -110,7 +128,7 @@ func (t *table) newIndex(ci *s4qlpb.CreateIndex) (*index, error) {
 		if c.GetColumn() >= uint32(len(t.columns)) {
 			return nil, fmt.Errorf("column %v of the table %q, which has %v columns", c.GetColumn(), t.name, len(t.columns))
 		}
-		ix.columns = append(ix.columns, keyColumn{position: int(c.GetColumn()), descending: c.GetDescending()})
+		ix.columns = append(ix.columns, KeyColumn{Position: int(c.GetColumn()), Descending: c.GetDescending()})
 	}
 	return ix, nil
 }
@@ -121,8 +139,8 @@ func (t *table) newIndex(ci *s4qlpb.CreateIndex) (*index, error) {
 func (t *table) createIndexSQL(ix *index) string {
 	terms := make([]string, len(ix.columns))
 	for i, c := range ix.columns {
-		terms[i] = quote(t.columns[c.position].name)
-		if c.descending {
+		terms[i] = quote(t.columns[c.Position].name)
+		if c.Descending {
 			terms[i] += " desc"
 		}
 	}
@@ -190,7 +208,7 @@ func (c *conn) loadIndexes(t *table) error {
 				return fmt.Errorf("%w: the index %q of its table %q holds the column %q twice", ErrCacheVersion, name, t.name, t.columns[position].name)
 			}
 			held[position] = true
-			ix.columns = append(ix.columns, keyColumn{position: int(position), descending: s.ColumnInt64(1) != 0})
+			ix.columns = append(ix.columns, KeyColumn{Position: int(position), Descending: s.ColumnInt64(1) != 0})
 			return nil
 		}, name); err != nil {
 			return err
@@ -578,12 +596,12 @@ type IndexScan struct {
 // valid value for each, as [table.checkValue] checks it, so NULL only for a column that takes it;
 // and a bound is on a column of the key, and its value is valid for it and not NULL, which no value
 // is above or below.
-func (t *table) checkScan(key []keyColumn, scan IndexScan, limit int) error {
+func (t *table) checkScan(key []KeyColumn, scan IndexScan, limit int) error {
 	if len(scan.Equal) > len(key) {
 		return invalidf("a scan that pins %v columns of a key of the table %q, which has %v", len(scan.Equal), t.name, len(key))
 	}
 	for i, v := range scan.Equal {
-		if err := t.checkValue(key[i].position, v, limit); err != nil {
+		if err := t.checkValue(key[i].Position, v, limit); err != nil {
 			return err
 		}
 	}
@@ -594,9 +612,9 @@ func (t *table) checkScan(key []keyColumn, scan IndexScan, limit int) error {
 		case len(scan.Equal) == len(key):
 			return invalidf("a scan with a bound after the last of the %v columns of a key of the table %q", len(key), t.name)
 		case b.Value.WhichKind() == s4qlpb.Value_Null_case:
-			return invalidf("a scan with a bound that is NULL, on the column %q of the table %q", t.columns[key[len(scan.Equal)].position].name, t.name)
+			return invalidf("a scan with a bound that is NULL, on the column %q of the table %q", t.columns[key[len(scan.Equal)].Position].name, t.name)
 		}
-		if err := t.checkValue(key[len(scan.Equal)].position, b.Value, limit); err != nil {
+		if err := t.checkValue(key[len(scan.Equal)].Position, b.Value, limit); err != nil {
 			return err
 		}
 	}
@@ -654,7 +672,7 @@ func (t *table) scanSQL(ix *index, scan IndexScan) (string, []any, error) {
 	key := t.scanKey(ix)
 	names := make([]string, len(key))
 	for i, c := range key {
-		names[i] = quote(t.columns[c.position].name)
+		names[i] = quote(t.columns[c.Position].name)
 	}
 	by := t.primary
 	if ix != nil {
@@ -668,7 +686,7 @@ func (t *table) scanSQL(ix *index, scan IndexScan) (string, []any, error) {
 	var order []string
 	for i := len(scan.Equal); i < len(key); i++ {
 		term := names[i]
-		if key[i].descending != scan.Backward {
+		if key[i].Descending != scan.Backward {
 			term += " desc"
 		}
 		order = append(order, term)
