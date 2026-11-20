@@ -31,6 +31,10 @@ type writer interface {
 	dropTable(ctx context.Context, name string) error
 	// upsert the row into the table with the name: insert it, or replace the row with its key.
 	upsert(ctx context.Context, name string, row []*s4qlpb.Value) error
+	// insertNew the row into the table with the name if the table has no row with its key, and report
+	// whether it did. It fails with SQLite's `string or blob too big` for a row whose record is too
+	// long also when the key exists, as SQLite does.
+	insertNew(ctx context.Context, name string, row []*s4qlpb.Value) (bool, error)
 }
 
 // database is what the engine needs of the storage core: write transactions, and readers.
@@ -224,6 +228,11 @@ func (c coreTx) dropTable(ctx context.Context, name string) error {
 
 func (c coreTx) upsert(ctx context.Context, name string, row []*s4qlpb.Value) error {
 	return fromCore(c.tx.Upsert(ctx, name, row))
+}
+
+func (c coreTx) insertNew(ctx context.Context, name string, row []*s4qlpb.Value) (bool, error) {
+	inserted, err := c.tx.Insert(ctx, name, row)
+	return inserted, fromCore(err)
 }
 
 func (c coreTx) position() format.Name {

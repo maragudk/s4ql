@@ -673,6 +673,50 @@ func TestEngine_tooBig(t *testing.T) {
 		is.Equal(t, o.state(t), i.state())
 	})
 
+	t.Run("should give that a row is too long before that its key exists, where its values fit and its record does not, as SQLite builds the record first", func(t *testing.T) {
+		for _, tx := range []bool{false, true} {
+			i := newInstanceLimited(t, engine.Options{}, nil, limit)
+			o := newOracleLimited(t, limit)
+			for _, s := range []string{"create table m (k int primary key, a text not null, b blob not null) strict, without rowid", "insert into m values (1, 'x', x'01')"} {
+				is.Equal(t, "", i.exec(s).err)
+				is.Equal(t, "", o.run(t, s).err)
+			}
+			if tx {
+				is.NotError(t, i.c.Begin(t.Context()))
+				for _, s := range oracleBegin(false) {
+					is.Equal(t, "", o.run(t, s).err, s)
+				}
+			}
+			var outcomes []string
+			// A text and a blob of n bytes each fit the limit, and their record does not from a length
+			// between.
+			for n := 480; n <= 520; n += 4 {
+				text, blob := strings.Repeat("a", n), bytes.Repeat([]byte{2}, n)
+				for _, c := range []struct {
+					src  string
+					args []any
+				}{
+					{"insert into m values (?, ?, ?)", []any{int64(1), text, blob}},
+					{"insert into m (b, k, a) values (?, ?, ?)", []any{blob, int64(1), text}},
+					{"insert into m values (?, ?, ?)", []any{int64(n), text, blob}},
+				} {
+					want := o.run(t, c.src, c.args...)
+					is.Equal(t, want.String(), i.execValues(c.src, values(c.args)).String(), fmt.Sprint(c.src, " with ", n, " bytes, in a transaction: ", tx))
+					changes, _ := o.changes(t)
+					is.Equal(t, changes, i.changes, fmt.Sprint("the count of changes after ", c.src, " with ", n, " bytes"))
+					outcomes = append(outcomes, want.err)
+				}
+			}
+			// Both a key that exists and a row that is too long, in the lengths that were tried.
+			is.True(t, slices.Contains(outcomes, "19/1555: UNIQUE constraint failed: m.k") && slices.Contains(outcomes, "18/18: string or blob too big"), fmt.Sprint(outcomes))
+			if tx {
+				is.NotError(t, i.c.Commit(t.Context()))
+				is.Equal(t, "", o.run(t, "commit").err)
+			}
+			is.Equal(t, o.state(t), i.state())
+		}
+	})
+
 	t.Run("should keep a transaction usable after a value that is too long", func(t *testing.T) {
 		i := newInstanceLimited(t, engine.Options{}, nil, limit)
 		is.Equal(t, "", i.exec("create table t (v blob primary key) strict, without rowid").err)

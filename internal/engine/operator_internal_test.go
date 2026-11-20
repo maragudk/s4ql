@@ -37,6 +37,8 @@ type fake struct {
 	// error of the end of a read transaction.
 	tablePanics bool
 	tableFails  error
+	// insertNewFails is the error of an insert of a row whose key the table has.
+	insertNewFails error
 	endFails    error
 	// scans counts the scans that have started and not ended, and open the transactions.
 	scans, open int
@@ -203,6 +205,20 @@ func (x fakeTx) upsert(_ context.Context, name string, row []*s4qlpb.Value) erro
 	t.rows = slices.DeleteFunc(t.rows, func(r []*s4qlpb.Value) bool { return r[k].GetInteger() == row[k].GetInteger() })
 	t.rows = append(t.rows, row)
 	return nil
+}
+
+// insertNew inserts the row if the table has no row with its key, and does not measure the row.
+func (x fakeTx) insertNew(ctx context.Context, name string, row []*s4qlpb.Value) (bool, error) {
+	t := x.f.tables[fold(name)]
+	k := t.ct.GetPrimaryKey()[0]
+	x.f.calls = append(x.f.calls, fmt.Sprint("insert new ", name, " ", row[k].GetInteger()))
+	if x.f.insertNewFails != nil {
+		return false, x.f.insertNewFails
+	}
+	if slices.ContainsFunc(t.rows, func(r []*s4qlpb.Value) bool { return r[k].GetInteger() == row[k].GetInteger() }) {
+		return false, nil
+	}
+	return true, x.upsert(ctx, name, row)
 }
 
 func (x fakeTx) position() format.Name {
@@ -414,6 +430,16 @@ func TestInsert(t *testing.T) {
 		cancel()
 		_, err = (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1)}).run(ctx)
 		is.True(t, errors.Is(err, context.Canceled))
+	})
+
+	t.Run("should ask the storage to measure a row whose key the table has before it fails, and pass on its error", func(t *testing.T) {
+		f := newFake().with("t", []string{"v"}, []int64{1})
+		_, err := (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1)}).run(t.Context())
+		is.Equal(t, "UNIQUE constraint failed: t.v", err.Error())
+		is.Equal(t, "[get t 1 insert new t 1]", fmt.Sprint(f.calls))
+		f.insertNewFails = errors.New("string or blob too big")
+		_, err = (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1)}).run(t.Context())
+		is.Equal(t, "string or blob too big", err.Error())
 	})
 
 	t.Run("should write without the check with the planted bug", func(t *testing.T) {

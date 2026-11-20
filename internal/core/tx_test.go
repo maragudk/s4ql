@@ -2358,6 +2358,64 @@ func TestTx_tooBig(t *testing.T) {
 		}
 	})
 
+	t.Run("should insert a row of a new key, insert nothing for a key that exists, and refuse a row exactly where SQLite refuses it as too big, also for a key that exists", func(t *testing.T) {
+		create := "create table t (c0 int primary key, c1 text, c2 blob) strict, without rowid"
+		table := typedTable("t", s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_BLOB)
+		big := func(key int64, n int) []*s4qlpb.Value {
+			return row(key, strings.Repeat("x", n/2), bytes.Repeat([]byte{1}, n-n/2))
+		}
+		w := newWorld(t)
+		d := w.serve(t, "a", options)
+		ctx := t.Context()
+		m := newTx(newState())
+		transact(t, d, func(t *testing.T, tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(ctx, table))
+			inserted, err := tx.Insert(ctx, "t", row(1, "a", []byte{1}))
+			is.NotError(t, err)
+			is.True(t, inserted)
+		})
+		m.create(table)
+		m.upsert("t", row(1, "a", []byte{1}))
+		committed := m.now
+
+		// In a table that existed before the transaction, where the transaction records the keys that
+		// it touches.
+		m = newTx(committed)
+		tx, err := d.Begin(ctx)
+		is.NotError(t, err)
+		var took, refused int
+		for n := limit - 20; n <= limit+2; n++ {
+			inserted, err := tx.Insert(ctx, "t", big(1, n))
+			if sqliteTakes(t, create, big(1, n)) {
+				is.NotError(t, err, fmt.Sprint(n, " bytes, a key that exists"))
+				is.True(t, !inserted, fmt.Sprint(n, " bytes, a key that exists"))
+				took++
+			} else {
+				is.Error(t, core.ErrTooBig, err, fmt.Sprint(n, " bytes, a key that exists"))
+				is.True(t, !inserted)
+				refused++
+			}
+			key := int64(n + 10)
+			inserted, err = tx.Insert(ctx, "t", big(key, n))
+			if sqliteTakes(t, create, big(key, n)) {
+				is.NotError(t, err, fmt.Sprint(n, " bytes, a new key"))
+				is.True(t, inserted, fmt.Sprint(n, " bytes, a new key"))
+				m.upsert("t", big(key, n))
+			} else {
+				is.Error(t, core.ErrTooBig, err, fmt.Sprint(n, " bytes, a new key"))
+				is.True(t, !inserted)
+			}
+		}
+		is.True(t, took > 0 && refused > 2, fmt.Sprint("took ", took, ", refused ", refused))
+		own, err := dump(ctx, tx)
+		is.NotError(t, err)
+		is.Equal(t, m.now.text(), show(own))
+		is.NotError(t, tx.Commit(ctx))
+		is.Equal(t, m.now.text(), read(t, d))
+		log := w.commits(t)
+		is.Equal(t, strings.Join(m.effect(), "\n"), strings.Join(log[len(log)-1], "\n"))
+	})
+
 	t.Run("should refuse a key longer than the limit in a read", func(t *testing.T) {
 		w := newWorld(t)
 		d := w.serve(t, "a", options)

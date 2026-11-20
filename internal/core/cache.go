@@ -795,6 +795,15 @@ func (c *conn) upsert(t *table, row []*s4qlpb.Value) error {
 	return c.exec(sql, values(row)...)
 }
 
+// insert the row into the table if the table has no row with the same primary key, and report
+// whether it did. SQLite gives "string or blob too big" for a row that it cannot hold also when the
+// key exists, since it builds the record of the row first.
+func (c *conn) insert(t *table, row []*s4qlpb.Value) (bool, error) {
+	sql := fmt.Sprint("insert or ignore into main.", quote(t.name), " (", t.columnList(t.all()), ") values (", placeholders(len(t.columns)), ") returning 1")
+	n, err := c.count(sql, values(row)...)
+	return n > 0, err
+}
+
 // delete the row of the table with the given primary key, and report whether there was one.
 func (c *conn) delete(t *table, key []*s4qlpb.Value) (bool, error) {
 	sql := fmt.Sprint("delete from main.", quote(t.name), " as t where ", t.keyCondition("t"), " returning 1")

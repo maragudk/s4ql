@@ -209,6 +209,16 @@ func (i *insert) run(ctx context.Context) (int64, error) {
 				return n, err
 			}
 			if existing != nil {
+				// SQLite builds the record of the row before it looks for its key, so a row whose
+				// record is too long gets `string or blob too big` before `UNIQUE constraint failed`.
+				// The core measures the row as SQLite does, and inserts nothing for a key that exists.
+				inserted, err := i.w.insertNew(ctx, name, row)
+				if err != nil {
+					return n, err
+				}
+				if inserted {
+					return n, internalError("a row of a key that the table has was inserted into %v", name)
+				}
 				return n, uniqueFailed(name, i.table.GetColumns()[key].GetName())
 			}
 		}
