@@ -19,9 +19,12 @@
 // Each request makes a tick besides, so that the page sounds alive between the figures. An insert
 // that commits is a barcode being scanned, with the beep of a checkout scanner: one short hard note
 // high up. Its pitch is the note of its key, which one mix of the key picks, so that the same key
-// always sounds the same and the beeps wander. A select that is served is a much smaller, quieter
-// tick in the background, at the note of the key that it selects, so that a barcode sounds the same
-// when it is read; one that finds no row ticks an octave lower and shorter. A request that fails, is refused, or gets no answer is the scanner's error tone, a low double buzz.
+// always sounds the same and the beeps wander. A delete that commits is the scanner voiding an item:
+// the note of its key, then a quick drop an octave down, a little quieter than the beep. A select that
+// is served is a much smaller, quieter tick in the background, at the note of the key that it selects,
+// so that a barcode sounds the same when it is read; one that finds no row ticks an octave lower and
+// shorter. A request that fails, is refused, or gets no answer is the scanner's error tone, a low
+// double buzz.
 //
 // Every figure goes through one master gain. One figure is one voice, and at most VOICES sound at
 // once. The site check renders a burst through player offline and holds its peak to at most 0.06,
@@ -89,21 +92,25 @@ export function keyNote(key) {
   return SCANS[((x ^ (x >>> 16)) >>> 0) % SCANS.length];
 }
 
-// TICKS by kind, as FIGURES; a scan, a select, and a miss, a select that finds no row, take the note
-// of their key, the miss an octave down. The scan's level puts its peak just below that of a figure.
-// The select is about −42 dBFS, and 20 ms, so that its note is heard. The error tone is two short low
-// notes.
+// TICKS by kind, as FIGURES; a scan, a void, a select, and a miss, a select that finds no row, take
+// the note of their key, the miss an octave down, and the void its first note, with its second note
+// in the same ratio to it. The scan's level puts its peak just below that of a figure, and the void's
+// below that of the scan. The select is about −42 dBFS, and 20 ms, so that its note is heard. The
+// error tone is two short low notes.
 export const TICKS = {
   scan: { level: 0.85, notes: [[SCANS[0], 80]] },
+  void: { level: 0.7, notes: [[SCANS[0], 35], [SCANS[0] / 2, 30]], gap: 0.006 },
   select: { level: 0.44, notes: [[A6, 20]] },
   miss: { level: 0.44, notes: [[A5, 12]] },
   error: { level: 0.5, notes: [[330, 45], [330, 45]], gap: 0.035 },
 };
 
 // figure schedules the figure of the kind on one oscillator into dest, from the time at, and gives
-// the voice: its nodes and its end. A tick is a figure of TICKS.
+// the voice: its nodes and its end. A tick is a figure of TICKS. With hz, the first note of the figure
+// is at hz, and the others keep their ratios to it.
 function figure(ctx, dest, kind, at, figures = FIGURES, hz = 0) {
-  const f = hz ? { ...figures[kind], notes: figures[kind].notes.map(([, ms]) => [hz, ms]) } : figures[kind];
+  const base = figures[kind];
+  const f = hz ? { ...base, notes: base.notes.map(([p, ms]) => [(p * hz) / base.notes[0][0], ms]) } : base;
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
   osc.type = "square";
@@ -281,7 +288,7 @@ export function listener() {
 export function tickOf(e) {
   if (e.kind !== "call" || e.caller !== "client" || e.what === "started") return null;
   switch (e.what) {
-    case "committed": return { kind: "scan", hz: keyNote(e.value) };
+    case "committed": return e.op === "delete" ? { kind: "void", hz: keyNote((e.args || [])[0]) } : { kind: "scan", hz: keyNote(e.value) };
     case "served": {
       const key = (e.args || [])[0];
       if ((e.keys || []).includes(key)) return { kind: "select", hz: keyNote(key) };
@@ -312,6 +319,15 @@ export function hear(e, live) {
       const n = out.tick(tk.kind, tk.hz) ? stats.ticks : stats.ticksDropped;
       n[tk.kind] = (n[tk.kind] || 0) + 1;
     }
+  } catch {
+    broken();
+  }
+}
+
+// blip plays the neutral blip of a control, if sound is on.
+export function blip() {
+  try {
+    if (on && out) play("blip");
   } catch {
     broken();
   }
