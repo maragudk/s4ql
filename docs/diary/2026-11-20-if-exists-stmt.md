@@ -63,3 +63,50 @@ The pinned numbers. `TestGenerate_mutants` went from 39 to 29 syntax errors and 
 
 - The README of the pass and the review: step 2.
 - The engine and the driver for slice 10, which remove `existsRefusal`, the wrappers, and the call of `engine.Check` in the driver's `check`.
+
+## Step 2: The documents, the review, and the checks
+
+**Author:** if-exists-stmt builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "6. Decisions on details the agreement does not settle: by SQLite's behaviour and the rule above; record each in `docs/todo.md` [...] Finish: `make test`, `make lint`, `make check-browser`, `make fuzz-shards` pass; `make test-asan` only for the packages whose fuzz tests you changed. Self-review against these requirements."
+**Interpretation:** Record the decisions and SQLite's facts in the todo, bring the README of the pass up to date, review the branch with the code-review skill, fix what matters, and run every check.
+**Inferred intent:** A branch whose code, numbers, and documents agree, ready for the lead and for the builder of the engine.
+
+### What I did
+
+`/docs/todo.md`: the groups "Decisions of the statement pass of slice 10", "Facts of SQLite for the builder of the engine of slice 10", "Known differences from SQLite of slice 10", what the engine's builder removes, and an item for mutation testing and long fuzz runs. A writer sub-agent updated `/internal/sql/stmt/README.md`: the typed form, the grammar and the facts of the four statements, "How it is tested", and "Results", with the numbers of a run of its own (the corpus has 113 more supported texts, 92 of them DROP TABLE IF EXISTS). I read its diff. It found that I had the order of SQLite wrong in the doc comment of `CreateTable.IfNotExists` and in the todo: `sqlite3StartTable` looks for the table first and for an index of the name after it, so `there is already an index named t` is an error of the plain statement when no table has the name, not one before the lookup. I fixed both from the source.
+
+The review (`code-review high origin/main...HEAD`) found no bug and four nits, all fixed: the README still said the clauses of the index statements were not supported (the writer's work was not done yet); `existsRefusal`'s comment and the todo claimed every text with a clause gets the old error, which holds only for the texts that the pass supports, so a refused text with a clause now gets the error of its later token (`column type other than ...` at 32 for an unknown type, where it was `IF NOT EXISTS` at 13), which the todo now says; the comment of `stmttest.Others` counted six texts that the pass supports, eight now; and the two throwaway tests of the dump and of the counts, which return when their flag is missing, were deleted before any commit.
+
+### Why
+
+The decisions are the lead's to confirm, and a moved number or a changed message needs its reason written down.
+
+### What worked
+
+`make test` (with the crosscheck module), `make lint` (0 issues), `make check-browser`, and `make fuzz-shards FUZZGROUP=c FUZZSHARDS=4` and `FUZZGROUP=go FUZZSHARDS=2` passed. `make asan-test ASANPKGS="maragu.dev/s4ql/internal/sql/stmt maragu.dev/s4ql/internal/sql/stmt/stmttest"` in the `golang` image passed: the seeds of `FuzzCheck` and `FuzzGenerate` changed with the cases and the generator, though their code did not. `go test ./internal/sql/stmt/...` without `-short` passed in about 80 s; the engine's `TestDifferential` and `TestSimulation` without `-short`, and the crosscheck module, passed. `-race -count=20` of `TestGenerator_*` passed. The dump of the generator with `Exists` at 0 was also compared with one written by the code of `origin/main` (checked out into the worktree for the run and restored): 64,440 lines, byte for byte the same once the new `IfNotExists:false` and `IfExists:false` fields of `%#v` are stripped.
+
+### What didn't work
+
+`make asan-test ASANPKGS=./internal/sql/stmt/...` failed with `asan-test: ./internal/sql/stmt/... is not a package that links C`; it takes import paths. `make fuzz-shards` alone fails with `FUZZSHARDS is a number of shards, such as 4, not ''`; CI passes the group and the number.
+
+### What I learned
+
+The writer's reading of `sqlite3StartTable` was right where my summary was not: a measured behaviour ("the index error stays") can be described with the wrong cause ("it comes before the lookup"), and the source settles it.
+
+### What was tricky
+
+Nothing beyond step 1.
+
+### What warrants review
+
+- The groups of slice 10 in `/docs/todo.md`, above all the refusal of the bare name IF and the known differences, which keep "not supported" for texts where SQLite would do nothing.
+- The sections of the four statements and "Results" in `/internal/sql/stmt/README.md`.
+
+### Future work
+
+- The engine and the driver for slice 10; the todo has what to remove.
+- Mutation testing and long fuzz runs of the code of slice 10 in the pass.
+- The status of the README, the site, and the roadmap are for the lead's sub-agent after the merge.

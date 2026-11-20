@@ -123,8 +123,9 @@ type CreateTable struct {
 	Span Span
 	// IfNotExists reports whether the statement says IF NOT EXISTS. With it, SQLite does nothing and
 	// gives no error when a table of the name exists, whatever its columns are: not the error of
-	// [CreateTable.ColumnsError] either. The errors that come before SQLite looks for the table,
-	// such as `there is already an index named t1`, stay.
+	// [CreateTable.ColumnsError] either. The errors that come before SQLite looks for the table, such
+	// as `object name reserved for internal use`, stay, and so does every error of the plain
+	// statement when no table has the name, such as `there is already an index named t1`.
 	IfNotExists bool
 	Table       Name
 	// Columns of the table, in the order of the text. Two of them may have one name, as
