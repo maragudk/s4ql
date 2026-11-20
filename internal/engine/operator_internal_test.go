@@ -37,9 +37,9 @@ type fake struct {
 	// error of the end of a read transaction.
 	tablePanics bool
 	tableFails  error
+	endFails    error
 	// insertNewFails is the error of an insert of a row whose key the table has.
 	insertNewFails error
-	endFails    error
 	// scans counts the scans that have started and not ended, and open the transactions.
 	scans, open int
 	// readers counts the readers that are open, and opened those that were ever opened. readerFails

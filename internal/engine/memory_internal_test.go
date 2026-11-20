@@ -167,7 +167,7 @@ func (x *memTx) insertNew(ctx context.Context, name string, row []*s4qlpb.Value)
 	return true, x.upsert(ctx, name, row)
 }
 
-func (x *memTx) position() format.Name                                  { return format.EmptyLog }
+func (x *memTx) position() format.Name                                   { return format.EmptyLog }
 func (x *memTx) annotate(context.Context, string, []*s4qlpb.Value) error { return nil }
 func (x *memTx) rollback(context.Context) error                          { return nil }
 func (x *memTx) end(context.Context) error                               { return nil }

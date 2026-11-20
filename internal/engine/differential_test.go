@@ -1330,7 +1330,7 @@ var reachedDifferential = map[string]int{
 	"create table with the key at 0 ok": 140, "create table with the key at 1 ok": 68, "create table with the key at 2 ok": 26,
 	"insert without a list ok": 130, "insert with a list in the order of the table ok": 120, "insert with a list in another order ok": 86,
 	"insert with a list in another order UNIQUE constraint failed": 26, "insert with a list in another order a value of another type": 17,
-	"insert with a list in another order NOT NULL constraint failed": 8,
+	"insert with a list in another order NOT NULL constraint failed":         8,
 	"insert with a column that the table does not have: has no column named": 29, "insert with a column without a value: NOT NULL constraint failed": 43,
 	"insert with the wrong number of values: values were supplied": 37, "insert with the wrong number of values:  values for ": 44,
 	"insert with a value of another type in the key: a value of another type": 31, "insert with a value of another type in another column: a value of another type": 33,
