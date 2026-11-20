@@ -494,11 +494,11 @@ internal/core/tx.go Tx.touch swap arguments: fmt.Sprint("s4ql_touched_", tx.temp
 	The names of the temporary tables need only differ from each other, which they still do.
 internal/core/tx.go Tx.touch swap arguments: fmt.Sprint("s4ql_existed_", tx.temps) => fmt.Sprint(tx.temps, "s4ql_existed_")
 	The names of the temporary tables need only differ from each other, which they still do.
-internal/core/tx.go Tx.touch condition: err != nil => false
+internal/core/tx.go Tx.createKeyTable condition: err != nil => false
 	No test can reach it: typeSQL fails only for a type that the table, which the core checked when it was created or loaded, cannot have.
-internal/core/tx.go Tx.touch remove statement: return err =>
+internal/core/tx.go Tx.createKeyTable remove statement: return err =>
 	No test can reach it: typeSQL fails only for a type that the table, which the core checked when it was created or loaded, cannot have.
-internal/core/tx.go Tx.touch condition: err != nil => false #3
+internal/core/tx.go Tx.touch condition: err != nil => false #2
 	count gives 0 with its error, so the test of first that follows gives back the error.
 internal/core/tx.go Tx.spoolTouched condition: err != nil => false
 	No test can reach it: the transaction has read the table, so lookUp finds it in the map of the connection and reads nothing.

@@ -223,6 +223,18 @@ func (c *Conn) begin(ctx context.Context) (writeTx, error) {
 // its column. It gives the rows of the table for which every condition is true, in the order of the
 // key, with SQLite's comparisons; a comparison with NULL is never true.
 //
+// An update and a delete change the rows that a select with their WHERE would give, each once, in
+// the order of the key, and count each, also a row whose values an update does not change. They
+// fail, in this order, with SQLite's `no such table`, with `no such column` for a column of SET, the
+// first in the order of the text, and then for one of WHERE, as for a select, with `string or blob
+// too big` for a value of SET and then of WHERE that is longer than the limit, with "not supported"
+// for a value of WHERE of another type than its column, with SQLite's error of a read-only
+// transaction, with SQLite's `NOT NULL constraint failed` for the first column of SET, in the order
+// of the table, that does not take NULL and gets it, if the update finds a row, with "not supported"
+// for the first value of SET, in the order of the table, of another type than its column, and then,
+// row by row, with `string or blob too big` for a row that is longer than the limit and with
+// SQLite's error of a key that exists, for an update that gives a row the key of another.
+//
 // In a transaction that spans statements, the statement then fails with the error of ctx if ctx has
 // ended, with the refusal of a statement of its own if the instance does not serve now, and with
 // [ErrRowsOpen] while the rows of an earlier query of the connection are open. A statement that
