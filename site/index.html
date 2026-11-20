@@ -155,10 +155,7 @@ a:hover { text-decoration-thickness: 3px; }
   padding: 8px 12px;
   text-decoration: none;
 }
-.top nav a:hover { background: var(--lumin); color: var(--void); }
-@media (max-width: 860px) {
-  .top nav .sec { display: none; }
-}
+.top nav a:hover, .top nav a[aria-current="page"] { background: var(--lumin); color: var(--void); }
 
 /* Buttons */
 
@@ -677,16 +674,10 @@ footer ul {
       <svg id="mark" width="32" height="22" viewBox="0 0 32 22" aria-hidden="true" shape-rendering="crispEdges"></svg>
       <span>s4ql</span>
     </a>
-    <nav aria-label="Sections">
+    <nav aria-label="Pages">
       <ul>
-        <li class="sec"><a href="#why">Why</a></li>
-        <li class="sec"><a href="#product">Product</a></li>
-        <li class="sec"><a href="#process">Process</a></li>
-        <li class="sec"><a href="#status">Status</a></li>
-        <li class="sec"><a href="#roadmap">Roadmap</a></li>
-        <li class="sec"><a href="#inspiration">Inspiration</a></li>
+        <li><a href="./" aria-current="page">Home</a></li>
         <li><a href="simulator/">Simulator</a></li>
-        <li><a href="https://github.com/maragudk/s4ql">GitHub</a></li>
       </ul>
     </nav>
   </div>

@@ -169,9 +169,6 @@ code { font-family: inherit; }
   text-decoration: none;
 }
 .top nav a:hover, .top nav a[aria-current="page"] { background: var(--lumin); color: var(--void); }
-@media (max-width: 860px) {
-  .top nav .sec { display: none; }
-}
 
 /* Buttons. An action is a framed box; a toggle has a square that fills when it is on, and the whole
    button inverts. Hover doubles the frame, so it never looks like on. */
@@ -509,15 +506,10 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
       <svg id="mark" width="32" height="22" viewBox="0 0 32 22" aria-hidden="true" shape-rendering="crispEdges"></svg>
       <span>s4ql</span>
     </a>
-    <nav aria-label="Sections">
+    <nav aria-label="Pages">
       <ul>
-        <li class="sec"><a href="../#why">Why</a></li>
-        <li class="sec"><a href="../#product">Product</a></li>
-        <li class="sec"><a href="../#process">Process</a></li>
-        <li class="sec"><a href="../#status">Status</a></li>
-        <li class="sec"><a href="../#roadmap">Roadmap</a></li>
+        <li><a href="../">Home</a></li>
         <li><a href="./" aria-current="page">Simulator</a></li>
-        <li><a href="https://github.com/maragudk/s4ql">GitHub</a></li>
       </ul>
     </nav>
   </div>
