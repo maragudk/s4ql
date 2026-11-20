@@ -17,8 +17,9 @@
 //
 // The supported statements are those of slices 1 and 2 of docs/roadmap.md, with the column types and
 // the literals of slice 4, the columns of slice 5, the NULL of slice 6, the WHERE of slice 7, the
-// UPDATE and DELETE of slice 8, and the CREATE INDEX and DROP INDEX of slice 9. The README next to
-// this file defines them token for token, and lists the names that a "not supported" error gives.
+// UPDATE and DELETE of slice 8, the CREATE INDEX and DROP INDEX of slice 9, and the IF NOT EXISTS and
+// IF EXISTS of slice 10. The README next to this file defines them token for token, and lists the
+// names that a "not supported" error gives.
 //
 // Names compare as SQLite compares them, by [Name.Fold]. What a statement means for a table, such as
 // whether its columns exist, its values are as many as the columns, or a value has the type of its
@@ -119,8 +120,13 @@ type Statement interface {
 // table is STRICT and WITHOUT ROWID. A column that is not the primary key takes NULL unless it is
 // declared NOT NULL.
 type CreateTable struct {
-	Span  Span
-	Table Name
+	Span Span
+	// IfNotExists reports whether the statement says IF NOT EXISTS. With it, SQLite does nothing and
+	// gives no error when a table of the name exists, whatever its columns are: not the error of
+	// [CreateTable.ColumnsError] either. The errors that come before SQLite looks for the table,
+	// such as `there is already an index named t1`, stay.
+	IfNotExists bool
+	Table       Name
 	// Columns of the table, in the order of the text. Two of them may have one name, as
 	// [Name.Fold] compares names, and there may be more than SQLite allows: SQLite refuses both
 	// once it has found that no table of the name exists, with the error of
@@ -128,7 +134,8 @@ type CreateTable struct {
 	Columns []Column
 	// SQL is the text that SQLite keeps for the table in sqlite_schema: "CREATE TABLE ", and the
 	// text from the name of the table up to the semicolon of the statement, or to the end of the
-	// text if it has none, with its spaces and comments.
+	// text if it has none, with its spaces and comments. It never holds IF NOT EXISTS, which comes
+	// before the name.
 	SQL string
 }
 
@@ -369,13 +376,21 @@ type Delete struct {
 
 // DropTable of one table.
 type DropTable struct {
-	Span  Span
-	Table Name
+	Span Span
+	// IfExists reports whether the statement says IF EXISTS. With it, SQLite does nothing and gives
+	// no error when no table of the name exists, also when an index has the name.
+	IfExists bool
+	Table    Name
 }
 
 // CreateIndex of one index, which is not unique, on one table, by one or more of its columns.
 type CreateIndex struct {
 	Span Span
+	// IfNotExists reports whether the statement says IF NOT EXISTS. With it, SQLite does nothing and
+	// gives no error when an index of the name exists, on any table, whatever its columns are: not
+	// `no such column` either. The errors that come before SQLite looks for the index stay: `no such
+	// table` and `there is already a table named i`.
+	IfNotExists bool
 	// Index is the name of the index.
 	Index Name
 	// Table is the name of the table, after ON.
@@ -386,7 +401,8 @@ type CreateIndex struct {
 	Columns []IndexColumn
 	// SQL is the text that SQLite keeps for the index in sqlite_schema: "CREATE INDEX ", and the
 	// text from the name of the index up to the semicolon of the statement, or to the end of the
-	// text if it has none, with its spaces and comments.
+	// text if it has none, with its spaces and comments. It never holds IF NOT EXISTS, which comes
+	// before the name.
 	SQL string
 }
 
@@ -401,8 +417,11 @@ type IndexColumn struct {
 
 // DropIndex of one index.
 type DropIndex struct {
-	Span  Span
-	Index Name
+	Span Span
+	// IfExists reports whether the statement says IF EXISTS. With it, SQLite does nothing and gives
+	// no error when no index of the name exists, also when a table has the name.
+	IfExists bool
+	Index    Name
 }
 
 // Bounds of the statement in the text.

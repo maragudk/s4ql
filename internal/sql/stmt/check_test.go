@@ -449,7 +449,7 @@ var checkCases = []checkCase{
 	{name: "second statement", src: "select * from t; select * from t", err: "s4ql: not supported: second statement (at offset 17)"},
 	{name: "second statement with a syntax error", src: "drop table t;selec", err: "s4ql: not supported: second statement (at offset 13)"},
 	{name: "second statement after comments", src: "drop table t; -- x\n/* y */ ; begin", err: "s4ql: not supported: second statement (at offset 29)"},
-	{name: "first statement not supported before a second one", src: "drop table if exists t; drop table t", err: "s4ql: not supported: IF EXISTS (at offset 11)"},
+	{name: "first statement not supported before a second one", src: "drop table main.t; drop table t", err: "s4ql: not supported: schema name (at offset 11)"},
 	{name: "first statement a syntax error before a second one", src: "drop tabl t; drop table t", err: `near "tabl": syntax error`},
 	{name: "the two tokens of /* at the end", src: "drop table t; /*", err: "s4ql: not supported: second statement (at offset 14)"},
 
@@ -490,7 +490,6 @@ var checkCases = []checkCase{
 
 	// CREATE TABLE.
 	{name: "temp", src: "create temp table t (v int primary key) strict, without rowid", err: "s4ql: not supported: TEMP (at offset 7)"},
-	{name: "if not exists", src: "create table if not exists t (v int primary key) strict, without rowid", err: "s4ql: not supported: IF NOT EXISTS (at offset 13)"},
 	{name: "as select", src: "create table t as select 1", err: "s4ql: not supported: CREATE TABLE AS (at offset 15)"},
 	{name: "no options", src: "create table t (v int primary key)", err: "s4ql: not supported: table without STRICT and WITHOUT ROWID (at offset 34)"},
 	{name: "strict alone", src: "create table t (v int primary key) strict;", err: "s4ql: not supported: table without WITHOUT ROWID (at offset 41)"},
@@ -701,7 +700,6 @@ var checkCases = []checkCase{
 	{name: "on after the table", src: "select * from t on 1", err: "s4ql: not supported: ON clause (at offset 16)"},
 
 	// DROP.
-	{name: "if exists", src: "drop table if exists t", err: "s4ql: not supported: IF EXISTS (at offset 11)"},
 	{name: "drop view", src: "drop view t", err: "s4ql: not supported: DROP VIEW (at offset 5)"},
 	{name: "drop index", src: "DROP Index t", want: &stmt.DropIndex{Span: stmt.Span{Start: 0, End: 12}, Index: name("t", "t", 11)}},
 	{name: "drop trigger", src: "drop trigger t", err: "s4ql: not supported: DROP TRIGGER (at offset 5)"},
@@ -1196,7 +1194,6 @@ var checkCases = []checkCase{
 	{name: "drop index of the name of a virtual table of SQLite", src: "drop index pragma_table_list",
 		want: &stmt.DropIndex{Span: stmt.Span{Start: 0, End: 28}, Index: name("pragma_table_list", "pragma_table_list", 11)}},
 	{name: "create unique index", src: "create unique index i on t (a)", err: "s4ql: not supported: UNIQUE INDEX (at offset 7)"},
-	{name: "create index if not exists", src: "create index if not exists i on t (a)", err: "s4ql: not supported: IF NOT EXISTS (at offset 13)"},
 	{name: "create index of an index in main", src: "create index main.i on t (a)", err: "s4ql: not supported: schema name (at offset 13)"},
 	{name: "create index of an index in temp, which SQLite refuses for a table that is not TEMP", src: "create index temp.i on t (a)", err: "s4ql: not supported: schema name (at offset 13)"},
 	{name: "a partial index", src: "create index i on t (a) where a > 0", err: "s4ql: not supported: partial index (at offset 24)"},
@@ -1232,7 +1229,6 @@ var checkCases = []checkCase{
 	{name: "an index on a table in brackets", src: "create index i on [t] (a)", err: "s4ql: not supported: name in brackets (at offset 18)"},
 	{name: "an index on a single-quoted table", src: "create index i on 't' (a)", err: "s4ql: not supported: single-quoted name (at offset 18)"},
 	{name: "an index of a single-quoted name", src: "create index 'i' on t (a)", err: "s4ql: not supported: single-quoted name (at offset 13)"},
-	{name: "drop index if exists", src: "drop index if exists i", err: "s4ql: not supported: IF EXISTS (at offset 11)"},
 	{name: "drop index of an index in main", src: "drop index main.i", err: "s4ql: not supported: schema name (at offset 11)"},
 	{name: "drop index of an index in temp", src: "drop index temp.i", err: "s4ql: not supported: schema name (at offset 11)"},
 	{name: "drop index of the index of a primary key", src: "drop index sqlite_autoindex_t_1", err: "s4ql: not supported: reserved index name (at offset 11)"},
@@ -1264,6 +1260,121 @@ var checkCases = []checkCase{
 	{name: "drop index without a name", src: "drop index", err: "incomplete input"},
 	{name: "drop index of two indexes", src: "drop index i, j", err: `near ",": syntax error`},
 	{name: "drop index on a table", src: "drop index i on t", err: `near "on": syntax error`},
+
+	// Slice 10: IF NOT EXISTS and IF EXISTS.
+	{name: "create table if not exists, as the roadmap writes it", src: "create table if not exists t1 (v1 int primary key, v2 text) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 81}, IfNotExists: true, Table: name("t1", "t1", 27),
+			Columns: []stmt.Column{column("v1", "v1", 31, stmt.TypeInt, true, false), column("v2", "v2", 51, stmt.TypeText, false, false)}}},
+	{name: "drop table if exists, as the roadmap writes it", src: "drop table if exists t1",
+		want: &stmt.DropTable{Span: stmt.Span{Start: 0, End: 23}, IfExists: true, Table: name("t1", "t1", 21)}},
+	{name: "create index if not exists, as the roadmap writes it", src: "create index if not exists i on t1 (v1)",
+		want: &stmt.CreateIndex{Span: stmt.Span{Start: 0, End: 39}, IfNotExists: true, Index: name("i", "i", 27), Table: name("t1", "t1", 32),
+			Columns: []stmt.IndexColumn{ixc(name("v1", "v1", 36), false)}}},
+	{name: "drop index if exists, as the roadmap writes it", src: "drop index if exists i",
+		want: &stmt.DropIndex{Span: stmt.Span{Start: 0, End: 22}, IfExists: true, Index: name("i", "i", 21)}},
+	{name: "create table if not exists in upper case with comments in every gap and a semicolon",
+		src: "CREATE/*a*/TABLE/*b*/IF/*c*/NOT--d\nEXISTS\t\"T\"(V INT PRIMARY KEY)WITHOUT ROWID,STRICT;",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 85}, IfNotExists: true, Table: name(`"T"`, "T", 42),
+			Columns: []stmt.Column{column("V", "V", 46, stmt.TypeInt, true, false)}}},
+	{name: "create table if not exists in mixed case, whose kept text does not have the clause",
+		src: "create table If Not Exists t (v int primary key) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 70}, IfNotExists: true, Table: name("t", "t", 27),
+			Columns: []stmt.Column{column("v", "v", 30, stmt.TypeInt, true, false)},
+			SQL:     "CREATE TABLE t (v int primary key) strict, without rowid"}},
+	{name: "create index if not exists in upper case with comments, whose kept text does not have the clause",
+		src: "CREATE INDEX IF/**/NOT EXISTS/* x */I ON T (A DESC);",
+		want: &stmt.CreateIndex{Span: stmt.Span{Start: 0, End: 52}, IfNotExists: true, Index: name("I", "I", 36), Table: name("T", "T", 41),
+			Columns: []stmt.IndexColumn{ixc(name("A", "A", 44), true)}, SQL: "CREATE INDEX I ON T (A DESC)"}},
+	{name: "drop table if exists with comments after empty statements", src: " ; DROP TABLE/**/IF--x\nEXISTS \"a b\";",
+		want: &stmt.DropTable{Span: stmt.Span{Start: 3, End: 36}, IfExists: true, Table: name(`"a b"`, "a b", 30)}},
+	{name: "drop index if exists in mixed case", src: "Drop Index iF eXiStS i",
+		want: &stmt.DropIndex{Span: stmt.Span{Start: 0, End: 22}, IfExists: true, Index: name("i", "i", 21)}},
+	{name: "create table if not exists of several columns with a column named twice, which SQLite refuses for a table that does not exist",
+		src: "create table if not exists t (a int primary key, A text) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 78}, IfNotExists: true, Table: name("t", "t", 27),
+			Columns: []stmt.Column{column("a", "a", 30, stmt.TypeInt, true, false), column("A", "A", 49, stmt.TypeText, false, false)}}},
+	{name: "create table if not exists of a table named by keywords", src: "create table if not exists exists_ (not_ int primary key) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 79}, IfNotExists: true, Table: name("exists_", "exists_", 27),
+			Columns: []stmt.Column{column("not_", "not_", 36, stmt.TypeInt, true, false)}}},
+	{name: "create table if not exists of a table named if in double quotes", src: `create table if not exists "if" (if int primary key) strict, without rowid`,
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 74}, IfNotExists: true, Table: name(`"if"`, "if", 27),
+			Columns: []stmt.Column{column("if", "if", 33, stmt.TypeInt, true, false)}}},
+	{name: "create index if not exists of an index named if in double quotes on a table and a column named if", src: `create index if not exists "IF" on if (if)`,
+		want: &stmt.CreateIndex{Span: stmt.Span{Start: 0, End: 42}, IfNotExists: true, Index: name(`"IF"`, "IF", 27), Table: name("if", "if", 35),
+			Columns: []stmt.IndexColumn{ixc(name("if", "if", 39), false)}}},
+	{name: "drop table if exists of a table named if", src: "drop table if exists if",
+		want: &stmt.DropTable{Span: stmt.Span{Start: 0, End: 23}, IfExists: true, Table: name("if", "if", 21)}},
+	{name: "drop index if exists of an index named IF", src: "drop index if exists IF",
+		want: &stmt.DropIndex{Span: stmt.Span{Start: 0, End: 23}, IfExists: true, Index: name("IF", "IF", 21)}},
+	{name: "create table if not exists of a table named if, which SQLite cannot read again from its schema",
+		src: "create table if not exists if (v int primary key) strict, without rowid", err: "s4ql: not supported: bare name IF after IF NOT EXISTS (at offset 27)"},
+	{name: "create table if not exists of a table named IF in upper case",
+		src: "create table if not exists IF (v int primary key) strict, without rowid", err: "s4ql: not supported: bare name IF after IF NOT EXISTS (at offset 27)"},
+	{name: "create index if not exists of an index named if, which SQLite cannot read again from its schema",
+		src: "create index if not exists iF on t (v)", err: "s4ql: not supported: bare name IF after IF NOT EXISTS (at offset 27)"},
+	{name: "create table if not exists of a table in main", src: "create table if not exists main.t (v int primary key) strict, without rowid", err: "s4ql: not supported: schema name (at offset 27)"},
+	{name: "create table if not exists of a table named if in main", src: "create table if not exists main.if (v int primary key) strict, without rowid", err: "s4ql: not supported: schema name (at offset 27)"},
+	{name: "create temp table if not exists", src: "create temp table if not exists t (v int primary key) strict, without rowid", err: "s4ql: not supported: TEMP (at offset 7)"},
+	{name: "create temporary table if not exists", src: "create temporary table if not exists t (v int primary key) strict, without rowid", err: "s4ql: not supported: TEMP (at offset 7)"},
+	{name: "create table if not exists as select", src: "create table if not exists t as select 1", err: "s4ql: not supported: CREATE TABLE AS (at offset 29)"},
+	{name: "create table if not exists of a table that is not strict", src: "create table if not exists t (v int primary key) without rowid", err: "s4ql: not supported: table without STRICT (at offset 62)"},
+	{name: "create table if not exists with an unknown type", src: "create table if not exists t (v foo primary key) strict, without rowid", err: "s4ql: not supported: column type other than INT, INTEGER, REAL, TEXT, or BLOB (at offset 32)"},
+	{name: "create table if not exists with a second primary key", src: "create table if not exists t (v int primary key, w int primary key) strict, without rowid", err: "s4ql: not supported: second PRIMARY KEY (at offset 55)"},
+	{name: "create table if not exists of a reserved name", src: "create table if not exists sqlite_x (v int primary key) strict, without rowid", err: "s4ql: not supported: reserved table name (at offset 27)"},
+	{name: "create table if not exists of the name of a virtual table of SQLite", src: "create table if not exists json_each (v int primary key) strict, without rowid", err: "s4ql: not supported: name of a virtual table of SQLite (at offset 27)"},
+	{name: "drop table if exists of a table in main", src: "drop table if exists main.t", err: "s4ql: not supported: schema name (at offset 21)"},
+	{name: "drop table if exists of a table in a database that does not exist, which SQLite accepts", src: "drop table if exists nosuch.t", err: "s4ql: not supported: schema name (at offset 21)"},
+	{name: "drop table if exists of sqlite_schema", src: "drop table if exists sqlite_schema", err: "s4ql: not supported: reserved table name (at offset 21)"},
+	{name: "drop table if exists of the name of a virtual table of SQLite", src: "drop table if exists pragma_table_list", err: "s4ql: not supported: name of a virtual table of SQLite (at offset 21)"},
+	{name: "drop table if exists of an empty name", src: `drop table if exists ""`, err: "s4ql: not supported: empty name (at offset 21)"},
+	{name: "drop table if exists of a name in brackets", src: "drop table if exists [t]", err: "s4ql: not supported: name in brackets (at offset 21)"},
+	{name: "create unique index if not exists", src: "create unique index if not exists i on t (v)", err: "s4ql: not supported: UNIQUE INDEX (at offset 7)"},
+	{name: "create index if not exists of an index in main", src: "create index if not exists main.i on t (v)", err: "s4ql: not supported: schema name (at offset 27)"},
+	{name: "create index if not exists of a reserved name", src: "create index if not exists sqlite_autoindex_t_1 on t (v)", err: "s4ql: not supported: reserved index name (at offset 27)"},
+	{name: "create index if not exists with a collation", src: "create index if not exists i on t (v collate nocase)", err: "s4ql: not supported: COLLATE (at offset 35)"},
+	{name: "create index if not exists, partial", src: "create index if not exists i on t (v) where v > 0", err: "s4ql: not supported: partial index (at offset 38)"},
+	{name: "create index if not exists of a column twice", src: "create index if not exists i on t (v, v)", err: "s4ql: not supported: column named twice (at offset 38)"},
+	{name: "drop index if exists of an index in main", src: "drop index if exists main.i", err: "s4ql: not supported: schema name (at offset 21)"},
+	{name: "drop index if exists of the index of a primary key", src: "drop index if exists sqlite_autoindex_t_1", err: "s4ql: not supported: reserved index name (at offset 21)"},
+	{name: "explain create table if not exists", src: "explain create table if not exists t (v int primary key) strict, without rowid", err: "s4ql: not supported: EXPLAIN (at offset 0)"},
+	{name: "explain query plan drop table if exists", src: "explain query plan drop table if exists t", err: "s4ql: not supported: EXPLAIN QUERY PLAN (at offset 0)"},
+	{name: "drop view if exists", src: "drop view if exists v", err: "s4ql: not supported: DROP VIEW (at offset 5)"},
+	{name: "drop trigger if exists", src: "drop trigger if exists r", err: "s4ql: not supported: DROP TRIGGER (at offset 5)"},
+	{name: "create view if not exists", src: "create view if not exists v as select 1", err: "s4ql: not supported: CREATE VIEW (at offset 0)"},
+	{name: "create virtual table if not exists", src: "create virtual table if not exists v using fts5 (a)", err: "s4ql: not supported: CREATE VIRTUAL TABLE (at offset 0)"},
+	{name: "create trigger if not exists", src: "create trigger if not exists r after insert on t begin select 1; end", err: "s4ql: not supported: CREATE TRIGGER (at offset 0)"},
+	{name: "a second statement after create table if not exists", src: "create table if not exists t (v int primary key) strict, without rowid; drop table if exists t", err: "s4ql: not supported: second statement (at offset 72)"},
+	{name: "create if not exists table", src: "create if not exists table t (v int primary key) strict, without rowid", err: `near "if": syntax error`},
+	{name: "drop table with if exists after the name", src: "drop table t if exists", err: `near "if": syntax error`},
+	{name: "create table if exists", src: "create table if exists t (v int primary key) strict, without rowid", err: `near "exists": syntax error`},
+	{name: "drop table if not exists", src: "drop table if not exists t", err: `near "not": syntax error`},
+	{name: "create table if not without exists", src: "create table if not t (v int primary key) strict, without rowid", err: `near "t": syntax error`},
+	{name: "create table if without not exists", src: "create table if t (v int primary key) strict, without rowid", err: `near "t": syntax error`},
+	{name: "create table of a table named if", src: "create table if (v int primary key) strict, without rowid", err: `near "(": syntax error`},
+	{name: "create table if not exists twice", src: "create table if not exists if not exists t (v int primary key) strict, without rowid", err: `near "not": syntax error`},
+	{name: "create table if not exists of a table named not", src: "create table if not exists not (v int primary key) strict, without rowid", err: `near "not": syntax error`},
+	{name: "create table if not exists of a table named exists", src: "create table if not exists exists (v int primary key) strict, without rowid", err: `near "exists": syntax error`},
+	{name: "create table if not exists without a name", src: "create table if not exists (v int primary key) strict, without rowid", err: `near "(": syntax error`},
+	{name: "create table if not exists at the end", src: "create table if not exists", err: "incomplete input"},
+	{name: "create table if at the end", src: "create table if", err: "incomplete input"},
+	{name: "drop table if without exists", src: "drop table if t", err: `near "t": syntax error`},
+	{name: "drop table of a table named if", src: "drop table if", err: "incomplete input"},
+	{name: "drop table if exists twice", src: "drop table if exists if exists t", err: `near "exists": syntax error`},
+	{name: "drop table if exists of a table named exists", src: "drop table if exists exists", err: `near "exists": syntax error`},
+	{name: "drop table if exists without a name", src: "drop table if exists", err: "incomplete input"},
+	{name: "drop table if exists of two tables", src: "drop table if exists t, u", err: `near ",": syntax error`},
+	{name: "create if not exists index", src: "create if not exists index i on t (v)", err: `near "if": syntax error`},
+	{name: "create index if exists", src: "create index if exists i on t (v)", err: `near "exists": syntax error`},
+	{name: "create index if not without exists", src: "create index if not i on t (v)", err: `near "i": syntax error`},
+	{name: "create index if without not exists", src: "create index if i on t (v)", err: `near "i": syntax error`},
+	{name: "create index of an index named if", src: "create index if on t (v)", err: `near "on": syntax error`},
+	{name: "create index if not exists twice", src: "create index if not exists if not exists i on t (v)", err: `near "not": syntax error`},
+	{name: "create index if not exists after on", src: "create index i on if not exists t (v)", err: `near "not": syntax error`},
+	{name: "drop index if not exists", src: "drop index if not exists i", err: `near "not": syntax error`},
+	{name: "drop index if without exists", src: "drop index if i", err: `near "i": syntax error`},
+	{name: "drop index with if exists after the name", src: "drop index i if exists", err: `near "if": syntax error`},
+	{name: "drop index if exists twice", src: "drop index if exists if exists i", err: `near "exists": syntax error`},
+	{name: "drop index if exists of an index named exists", src: "drop index if exists exists", err: `near "exists": syntax error`},
 }
 
 // ixc is a column of a CREATE INDEX.
@@ -1536,6 +1647,150 @@ func TestCheck(t *testing.T) {
 			is.True(t, len(names) > 80, "too few keywords are names")
 			slices.Sort(names)
 			t.Logf("%v keywords are names in %q: %v", len(names), c.form, names)
+		}
+	})
+
+	t.Run("should take every keyword of SQLite that SQLite reads as the name of a table or an index after IF NOT EXISTS or IF EXISTS, and no other", func(t *testing.T) {
+		// SQLite reads a keyword as a name there if the statement creates or drops the object of that
+		// name: on a database without it for IF NOT EXISTS, and on one with it, created with the name in
+		// double quotes, for IF EXISTS. The names are those of the plain statement, and IF too after IF
+		// EXISTS, which starts the clause in the plain statement. After IF NOT EXISTS SQLite cannot read
+		// IF again from its schema, and creates nothing.
+		pools := namePools(t)
+		for _, c := range []struct {
+			form, setup, objects string
+			pool                 stmttest.Position
+			created              bool
+		}{
+			{"create table if not exists %v (x int primary key) strict, without rowid", "", "table", stmttest.CreateTable, true},
+			{"drop table if exists %v", "create table %v (x int primary key) strict, without rowid", "table", stmttest.DropTable, false},
+			{"create index if not exists %v on t (x)", "", "index", stmttest.IndexName, true},
+			{"drop index if exists %v", "create index %v on t (x)", "index", stmttest.DropIndex, false},
+		} {
+			var names []string
+			for _, kw := range keywords(t) {
+				src := fmt.Sprintf(c.form, kw)
+				if oracle.Judge(src).Kind != oracle.Parses {
+					continue
+				}
+				d := open(t)
+				d.must("create table t (x int primary key) strict, without rowid")
+				if c.setup != "" {
+					d.must(fmt.Sprintf(c.setup, quote(kw)))
+				}
+				name := false
+				if d.exec(src) == nil {
+					_, rows := d.query("select count(*) from sqlite_schema where type = ? and name = ?", c.objects, kw)
+					name = fmt.Sprint(rows) == fmt.Sprint([][]string{{map[bool]string{true: "integer:1", false: "integer:0"}[c.created]}})
+				}
+				if name {
+					names = append(names, kw)
+				}
+				o, _ := verify(t, src)
+				is.Equal(t, name, o == supported, src)
+				is.Equal(t, name, slices.Contains(pools[c.pool], kw) || kw == "if" && !c.created, src)
+			}
+			is.True(t, len(names) > 80, "too few keywords are names")
+			is.True(t, slices.Contains(names, "if") != c.created, c.form)
+			t.Logf("%v keywords are names in %q", len(names), c.form)
+		}
+	})
+
+	t.Run("should answer for IF NOT EXISTS and IF EXISTS what SQLite does on a database with the object or without it", func(t *testing.T) {
+		// What SQLite does with the clauses where the pass's answer and SQLite's differ, or where the
+		// engine needs the fact: the database has the table t of the columns v and w, the index i on
+		// it, and one row, which sets SQLite's count of changes to 1. Each text runs on a database of
+		// its own, under `pragma query_only` too, as s4ql's read-only transaction runs; want is SQLite's
+		// error, or "" for none, and with no error the schema stays the same, but for the texts of
+		// created, which create their object. pass is the pass's answer: "" for supported, or the name
+		// of "not supported".
+		many := make([]string, 2001)
+		for i := range many {
+			many[i] = fmt.Sprint("c", i, " int")
+		}
+		manyColumns := strings.Replace(strings.Join(many, ", "), "c0 int", "c0 int primary key", 1)
+		for _, c := range []struct {
+			src, want, readOnly, pass string
+			created                   bool
+		}{
+			// With the table, SQLite reads no more of the declaration than the parser needs.
+			{"create table if not exists t (v int primary key) strict, without rowid", "", "", "", false},
+			{"create table if not exists T (a text primary key) strict, without rowid", "", "", "", false},
+			{"create table if not exists t (a int primary key, a int) strict, without rowid", "", "", "", false},
+			{"create table if not exists t (" + manyColumns + ") strict, without rowid", "", "", "", false},
+			{"create table if not exists u (a int primary key, a int) strict, without rowid", "duplicate column name: a", "duplicate column name: a", "", false},
+			{"create table if not exists u (" + manyColumns + ") strict, without rowid", "too many columns on u", "too many columns on u", "", false},
+			{"create table if not exists u (v int primary key) strict, without rowid", "", "attempt to write a readonly database", "", true},
+			{"create table if not exists t (a foo primary key) strict, without rowid", "", "", "column type other than INT, INTEGER, REAL, TEXT, or BLOB", false},
+			{"create table if not exists t (a int primary key, b int primary key) strict, without rowid", "", "", "second PRIMARY KEY", false},
+			{"create table if not exists t (a int) strict, without rowid", "", "", "table without PRIMARY KEY", false},
+			{"create table if not exists t (a int primary key)", "", "", "table without STRICT and WITHOUT ROWID", false},
+			{"create table if not exists t (a int primary key autoincrement) strict, without rowid", "", "", "AUTOINCREMENT", false},
+			{"create table if not exists t (a int primary key collate nosuch) strict, without rowid", "", "", "COLLATE", false},
+			{"create table if not exists t as select 1", "", "", "CREATE TABLE AS", false},
+			{"create table if not exists t (a int primary key) strict, without rowid, foo", "unknown table option: foo", "unknown table option: foo", "table option", false},
+			{"create table if not exists i (a int primary key) strict, without rowid", "there is already an index named i", "there is already an index named i", "", false},
+			{"create table if not exists if (a int primary key) strict, without rowid", `malformed database schema (if) - near "(": syntax error`, "attempt to write a readonly database", "bare name IF after IF NOT EXISTS", false},
+			{"create table if not exists sqlite_x (a int primary key) strict, without rowid", "object name reserved for internal use: sqlite_x", "object name reserved for internal use: sqlite_x", "reserved table name", false},
+			// With the index, SQLite looks for the table and for a table of the name of the index first.
+			{"create index if not exists i on t (v)", "", "", "", false},
+			{"create index if not exists I on t (nosuch)", "", "", "", false},
+			{"create index if not exists i on nosuch (v)", "no such table: main.nosuch", "no such table: main.nosuch", "", false},
+			{"create index if not exists t on t (v)", "there is already a table named t", "there is already a table named t", "", false},
+			{"create index if not exists j on t (nosuch)", "no such column: nosuch", "no such column: nosuch", "", false},
+			{"create index if not exists j on t (w)", "", "attempt to write a readonly database", "", true},
+			{"create index if not exists i on t (v, v)", "", "", "column named twice", false},
+			{"create index if not exists i on t (v collate nosuch)", "", "", "COLLATE", false},
+			{"create index if not exists i on t (v) where nosuch > 0", "", "", "partial index", false},
+			{"create unique index if not exists i on t (v)", "", "", "UNIQUE INDEX", false},
+			{"create index if not exists i on t (v nulls first)", "unsupported use of NULLS FIRST", "unsupported use of NULLS FIRST", "NULLS FIRST or NULLS LAST", false},
+			{"create index if not exists if on t (v)", `malformed database schema (if) - near "on": syntax error`, "attempt to write a readonly database", "bare name IF after IF NOT EXISTS", false},
+			{"create index if not exists sqlite_x on t (v)", "object name reserved for internal use: sqlite_x", "object name reserved for internal use: sqlite_x", "reserved index name", false},
+			// Without the object, IF EXISTS does nothing, also for an object of the other kind.
+			{"drop table if exists nosuch", "", "", "", false},
+			{"drop table if exists i", "", "", "", false},
+			{"drop index if exists nosuch", "", "", "", false},
+			{"drop index if exists t", "", "", "", false},
+			{"drop table if exists sqlite_x", "", "", "reserved table name", false},
+			{"drop table if exists sqlite_schema", "table sqlite_master may not be dropped", "table sqlite_master may not be dropped", "reserved table name", false},
+			{"drop table if exists nosuch.t", "", "", "schema name", false},
+			{"drop index if exists sqlite_autoindex_t_1", "index associated with UNIQUE or PRIMARY KEY constraint cannot be dropped", "index associated with UNIQUE or PRIMARY KEY constraint cannot be dropped", "reserved index name", false},
+			{"drop table if exists t", "", "attempt to write a readonly database", "", true},
+			{"drop index if exists i", "", "attempt to write a readonly database", "", true},
+		} {
+			for _, readOnly := range []bool{false, true} {
+				d := open(t)
+				d.must("create table t (v int primary key, w int) strict, without rowid")
+				d.must("create index i on t (v)")
+				d.must("insert into t values (1, 2)")
+				want := c.want
+				if readOnly {
+					d.must("pragma query_only = 1")
+					want = c.readOnly
+				}
+				before := d.snapshot()
+				err := d.exec(c.src)
+				if want == "" {
+					is.NotError(t, err, c.src)
+					is.Equal(t, !c.created || readOnly, d.snapshot() == before, c.src)
+				} else {
+					var e *sqlite.Error
+					is.True(t, errors.As(err, &e), c.src)
+					is.Equal(t, want, e.Message, c.src)
+					is.Equal(t, before, d.snapshot(), c.src)
+				}
+				// No statement of the clauses sets the count of changes.
+				is.Equal[stmt.Value](t, stmt.Integer(1), d.value("select changes()"), c.src)
+			}
+			_, err := stmt.Check(c.src)
+			if c.pass == "" {
+				is.NotError(t, err, c.src)
+			} else {
+				var ne *stmt.NotSupportedError
+				is.True(t, errors.As(err, &ne), c.src)
+				is.Equal(t, c.pass, ne.What, c.src)
+			}
+			verify(t, c.src)
 		}
 	})
 

@@ -161,6 +161,25 @@ func (d *db) schema() string {
 	return b.String()
 }
 
+// snapshot of the database: its [db.schema] and the text that sqlite_schema keeps of each object, so
+// that two snapshots are the same only if a statement between them changed nothing.
+func (d *db) snapshot() string {
+	d.t.Helper()
+	_, kept := d.query("select type, name, sql from sqlite_schema order by name")
+	return d.schema() + fmt.Sprintln("kept", kept)
+}
+
+// nothing requires that src runs on d without an error and changes nothing of its schema, as SQLite
+// does for IF NOT EXISTS when the object exists and for IF EXISTS when it does not.
+func (d *db) nothing(src string) {
+	d.t.Helper()
+	before := d.snapshot()
+	d.must(src)
+	if after := d.snapshot(); after != before {
+		d.t.Fatalf("%q: SQLite changes\n%v\nto\n%v", src, before, after)
+	}
+}
+
 // tables of the database: the names of the tables in sqlite_schema, in order.
 func (d *db) tables() []string {
 	d.t.Helper()
@@ -315,10 +334,14 @@ func (d *db) valueAt(sql string, i int) stmt.Value {
 	return nil
 }
 
-// canonical text of the statement s: the plain form, with every name in double quotes.
+// canonical text of the statement s: the plain form, with every name in double quotes, and IF NOT
+// EXISTS or IF EXISTS if s says it.
 func canonical(s stmt.Statement) string {
 	switch s := s.(type) {
 	case *stmt.CreateTable:
+		if s.IfNotExists {
+			return strings.Replace(createColumns(s.Table.Value, s.Columns), "create table ", "create table if not exists ", 1)
+		}
 		return createColumns(s.Table.Value, s.Columns)
 	case *stmt.Insert:
 		var values []string
@@ -349,6 +372,9 @@ func canonical(s stmt.Statement) string {
 	case *stmt.Delete:
 		return fmt.Sprintf("delete from %v%v", quote(s.Table.Value), canonicalWhere(s.Where))
 	case *stmt.DropTable:
+		if s.IfExists {
+			return "drop table if exists " + quote(s.Table.Value)
+		}
 		return "drop table " + quote(s.Table.Value)
 	case *stmt.CreateIndex:
 		var columns []string
@@ -359,8 +385,15 @@ func canonical(s stmt.Statement) string {
 			}
 			columns = append(columns, column)
 		}
-		return fmt.Sprintf("create index %v on %v (%v)", quote(s.Index.Value), quote(s.Table.Value), strings.Join(columns, ", "))
+		clause := ""
+		if s.IfNotExists {
+			clause = "if not exists "
+		}
+		return fmt.Sprintf("create index %v%v on %v (%v)", clause, quote(s.Index.Value), quote(s.Table.Value), strings.Join(columns, ", "))
 	case *stmt.DropIndex:
+		if s.IfExists {
+			return "drop index if exists " + quote(s.Index.Value)
+		}
 		return "drop index " + quote(s.Index.Value)
 	}
 	panic(fmt.Sprintf("%T", s))
@@ -452,7 +485,16 @@ func checkMeaning(t testing.TB, src string, s stmt.Statement) {
 		got := drop(src)
 		is.Equal(t, fmt.Sprint([]string{"other_" + s.Table.Value}), fmt.Sprint(got), src)
 		is.Equal(t, fmt.Sprint(drop(canonical(s))), fmt.Sprint(got), src)
-		sqliteError(t, src, open(t).exec(src), 1, "no such table: "+s.Table.Value)
+		if !s.IfExists {
+			sqliteError(t, src, open(t).exec(src), 1, "no such table: "+s.Table.Value)
+			break
+		}
+		// Without the table, IF EXISTS does nothing, also when an index has the name.
+		open(t).nothing(src)
+		d := open(t)
+		d.must(createFor("s4ql t", "v"))
+		d.must(`create index ` + quote(swapCase(s.Table.Value)) + ` on "s4ql t" ("v")`)
+		d.nothing(src)
 	case *stmt.CreateIndex:
 		checkCreateIndex(t, open, src, s)
 	case *stmt.DropIndex:
@@ -489,6 +531,8 @@ func noSuchColumn(n stmt.Name) string {
 // which the table of src is when the two names are one name; and `no such column` for the first and
 // the last column of s on a table without it, and for the first on a table without any of them, but
 // for the error of an index of the name, which comes first. SQLite looks the names up in this order.
+// With IF NOT EXISTS, SQLite does nothing where it gives `index <Value> already exists` without it,
+// also when the table lacks the columns, and gives every other error as without it.
 func checkCreateIndex(t testing.TB, open func(testing.TB) *db, src string, s *stmt.CreateIndex) {
 	t.Helper()
 	is.Equal(t, 0, s.Parameters(), src)
@@ -543,12 +587,21 @@ func checkCreateIndex(t testing.TB, open func(testing.TB) *db, src string, s *st
 		key = append(key, []string{"text:s4ql key", "integer:0", "text:BINARY", "integer:0"})
 		_, xinfo := d.query("select name, desc, coll, key from pragma_index_xinfo(?)", s.Index.Value)
 		is.Equal(t, fmt.Sprint(key), fmt.Sprint(xinfo), src)
-		sqliteError(t, src, d.exec(src), 1, alreadyIndex)
+		// already gives SQLite's answer for an index of the name on d: `index <Value> already exists`,
+		// or nothing with IF NOT EXISTS.
+		already := func(d *db) {
+			if s.IfNotExists {
+				d.nothing(src)
+			} else {
+				sqliteError(t, src, d.exec(src), 1, alreadyIndex)
+			}
+		}
+		already(d)
 
 		other := with(all)
 		other.must(createFor("s4ql other", "v"))
 		other.must(`create index ` + quote(swapCase(s.Index.Value)) + ` on "s4ql other" ("v")`)
-		sqliteError(t, src, other.exec(src), 1, alreadyIndex)
+		already(other)
 		named := with(all)
 		named.must(createFor(swapCase(s.Index.Value), "v"))
 		sqliteError(t, src, named.exec(src), 1, alreadyTable)
@@ -572,7 +625,7 @@ func checkCreateIndex(t testing.TB, open func(testing.TB) *db, src string, s *st
 // checkDropIndex is [checkMeaning] of a DROP INDEX: on a table with an index of the name of s, with
 // the case swapped, and another index, src drops the index of the name and leaves the other, as the
 // canonical text does. SQLite gives `no such index: <Value>` without the index, also with a table of
-// the name of the index.
+// the name of the index. With IF EXISTS, SQLite does nothing there.
 func checkDropIndex(t testing.TB, open func(testing.TB) *db, src string, s *stmt.DropIndex) {
 	t.Helper()
 	other := "other_" + s.Index.Value
@@ -588,21 +641,43 @@ func checkDropIndex(t testing.TB, open func(testing.TB) *db, src string, s *stmt
 	got := drop(src)
 	is.Equal(t, fmt.Sprint([][]string{{"text:" + other, "text:s4ql t"}}), fmt.Sprint(got), src)
 	is.Equal(t, fmt.Sprint(drop(canonical(s))), fmt.Sprint(got), src)
-	missing := "no such index: " + s.Index.Value
-	sqliteError(t, src, open(t).exec(src), 1, missing)
+	missing := func(d *db) {
+		if s.IfExists {
+			d.nothing(src)
+		} else {
+			sqliteError(t, src, d.exec(src), 1, "no such index: "+s.Index.Value)
+		}
+	}
+	missing(open(t))
 	d := open(t)
 	d.must(createFor(swapCase(s.Index.Value), "v"))
-	sqliteError(t, src, d.exec(src), 1, missing)
+	missing(d)
 }
 
 // checkCreateTable is [checkMeaning] of a CREATE TABLE: the schema that SQLite records for src is
 // that of the canonical text, with the names, the types, the primary key, and the options of s; a
 // second run gives `table <Raw> already exists`. For a statement with an error of its columns, SQLite
 // gives that error on a database without the table, for src and for the canonical text, and `table
-// <Raw> already exists` on a database with it.
+// <Raw> already exists` on a database with it. With IF NOT EXISTS, SQLite does nothing where it gives
+// `already exists` without it, also on a table of the name with other columns, and gives `there is
+// already an index named <Value>` on a database with an index of the name.
 func checkCreateTable(t testing.TB, open func(testing.TB) *db, src string, s *stmt.CreateTable) {
 	t.Helper()
 	is.Equal(t, 0, s.Parameters(), src)
+	// already gives SQLite's answer for a table of the name on d.
+	already := func(d *db) {
+		if s.IfNotExists {
+			d.nothing(src)
+		} else {
+			sqliteError(t, src, d.exec(src), 1, "table "+s.Table.Raw+" already exists")
+		}
+	}
+	if s.IfNotExists {
+		d := open(t)
+		d.must(createFor("s4ql t", "v"))
+		d.must(`create index ` + quote(swapCase(s.Table.Value)) + ` on "s4ql t" ("v")`)
+		sqliteError(t, src, d.exec(src), 1, "there is already an index named "+s.Table.Value)
+	}
 	if e := s.ColumnsError(); e != nil {
 		is.Equal(t, sqlerr.CodeError, e.Code, src)
 		is.Equal(t, sqlerr.CodeError, e.ExtendedCode, src)
@@ -614,7 +689,7 @@ func checkCreateTable(t testing.TB, open func(testing.TB) *db, src string, s *st
 		sqliteError(t, src, open(t).exec(canonical(s)), 1, e.Message)
 		d := open(t)
 		d.must(createFor(swapCase(s.Table.Value), "v"))
-		sqliteError(t, src, d.exec(src), 1, "table "+s.Table.Raw+" already exists")
+		already(d)
 		return
 	}
 	d := open(t)
@@ -645,7 +720,12 @@ func checkCreateTable(t testing.TB, open func(testing.TB) *db, src string, s *st
 	}
 	_, got2 := d.query("select * from pragma_table_xinfo(?)", s.Table.Value)
 	is.Equal(t, fmt.Sprint(columns), fmt.Sprint(got2), src)
-	sqliteError(t, src, d.exec(src), 1, "table "+s.Table.Raw+" already exists")
+	already(d)
+	if s.IfNotExists {
+		other := open(t)
+		other.must(createFor(swapCase(s.Table.Value), "s4ql other"))
+		already(other)
+	}
 }
 
 // checkInsert is [checkMeaning] of an INSERT: the value of each literal is the one that SQLite gives

@@ -136,16 +136,20 @@ func (r *recognizer) statement() Statement {
 	return s
 }
 
-// createTable: CREATE TABLE name (columns) and the options STRICT and WITHOUT ROWID, in either
-// order, separated by a comma. The columns are one or more, separated by commas, and exactly one is
-// the primary key.
+// createTable: CREATE TABLE, an optional IF NOT EXISTS, name (columns) and the options STRICT and
+// WITHOUT ROWID, in either order, separated by a comma. The columns are one or more, separated by
+// commas, and exactly one is the primary key.
 func (r *recognizer) createTable(c *ast.CreateTable) *CreateTable {
 	r.accept(c)
 	r.take(c.Create)
 	r.take(c.Table)
+	ifNotExists := r.ifExists(c.IfNotExists)
+	if ifNotExists {
+		r.notIf(c.Name)
+	}
 	table := r.tableName(c.Name)
 	r.take(c.LParen)
-	s := &CreateTable{Table: table}
+	s := &CreateTable{IfNotExists: ifNotExists, Table: table}
 	key := false
 	for i, d := range c.Columns {
 		if i > 0 {
@@ -797,29 +801,35 @@ func (r *recognizer) resultColumn(rc *ast.ResultColumn, n int, before []Name) []
 	return append(before, r.name(ref.Column))
 }
 
-// drop: DROP TABLE table, or DROP INDEX index.
+// drop: DROP TABLE table, or DROP INDEX index, each with an optional IF EXISTS.
 func (r *recognizer) drop(c *ast.Drop) Statement {
 	r.accept(c)
 	r.take(c.Drop)
 	switch c.Object.Kind {
 	case token.Table:
 		r.take(c.Object)
-		return &DropTable{Table: r.tableName(c.Name)}
+		ifExists := r.ifExists(c.IfExists)
+		return &DropTable{IfExists: ifExists, Table: r.tableName(c.Name)}
 	case token.Index:
 		r.take(c.Object)
-		return &DropIndex{Index: r.indexName(c.Name)}
+		ifExists := r.ifExists(c.IfExists)
+		return &DropIndex{IfExists: ifExists, Index: r.indexName(c.Name)}
 	}
 	r.reject("DROP " + strings.ToUpper(c.Object.Text))
 	return nil
 }
 
-// createIndex: CREATE INDEX index ON table and, in parentheses, one or more columns of the index,
-// separated by commas.
+// createIndex: CREATE INDEX, an optional IF NOT EXISTS, index ON table and, in parentheses, one or
+// more columns of the index, separated by commas.
 func (r *recognizer) createIndex(c *ast.CreateIndex) *CreateIndex {
 	r.accept(c)
 	r.take(c.Create)
 	r.take(c.Index)
-	s := &CreateIndex{Index: r.indexName(c.Name)}
+	ifNotExists := r.ifExists(c.IfNotExists)
+	if ifNotExists {
+		r.notIf(c.Name)
+	}
+	s := &CreateIndex{IfNotExists: ifNotExists, Index: r.indexName(c.Name)}
 	r.take(c.On)
 	// The grammar takes one name after ON, without a schema.
 	s.Table = r.tableName(ast.QualifiedName{Name: c.Table})
@@ -891,6 +901,32 @@ func (r *recognizer) indexColumn(o *ast.OrderingTerm, seen map[string]bool) Inde
 		c.Descending = o.Order.Kind == token.Desc
 	}
 	return c
+}
+
+// ifExists takes IF NOT EXISTS or IF EXISTS, i, if the statement has it, and reports whether it has.
+// The parser gives i only in the place of the clause, and only whole: IF and EXISTS, with NOT for
+// IF NOT EXISTS, and without it for IF EXISTS.
+func (r *recognizer) ifExists(i ast.IfNotExists) bool {
+	if !i.If.Present() {
+		return false
+	}
+	r.take(i.If)
+	if i.Not.Present() {
+		r.take(i.Not)
+	}
+	r.take(i.Exists)
+	return true
+}
+
+// notIf rejects the name of a table or an index after IF NOT EXISTS, q, if it is the bare word IF,
+// in any case of its letters. SQLite keeps the text of the statement from the name on in
+// sqlite_schema, as CREATE TABLE IF ... or CREATE INDEX IF ..., which it cannot parse again: it
+// gives `malformed database schema (if) - near "(": syntax error`, or near "on" for an index, and
+// creates nothing. Without the clause, IF there starts the clause, so the name is a syntax error.
+func (r *recognizer) notIf(q ast.QualifiedName) {
+	if r.isNext(q.Name) && isWord(q.Name, "if") {
+		r.reject("bare name IF after IF NOT EXISTS")
+	}
 }
 
 // indexName: the name of an index, which must not be reserved, without a schema.

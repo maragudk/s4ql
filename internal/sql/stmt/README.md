@@ -545,6 +545,7 @@ A test checks that every name the pass gives in any test is in these tables.
 | `empty name` | A name is `""`. |
 | `reserved table name` | A table name starts with `sqlite_` or `s4ql_`. |
 | `name of a virtual table of SQLite` | A table name is that of an eponymous virtual table. |
+| `bare name IF after IF NOT EXISTS` | CREATE TABLE IF NOT EXISTS or CREATE INDEX IF NOT EXISTS names the table or the index `if`, bare, in any case of its letters. SQLite keeps the text from the name on, `CREATE TABLE if (...`, which it cannot parse again: it gives `malformed database schema (if) - near "(": syntax error`, or near `"on"` for an index, and creates nothing. The offset is that of the name. |
 | `reserved index name` | An index name starts with `sqlite_` or `s4ql_`. SQLite gives `object name reserved for internal use` for `sqlite_` in CREATE INDEX, and `index associated with UNIQUE or PRIMARY KEY constraint cannot be dropped` for the index of a primary key in DROP INDEX. |
 | `table constraint` | CREATE TABLE has a table constraint. |
 | `column without a type` | The column has no type. |
@@ -603,12 +604,10 @@ These are the tokens of a node that the recognizer accepted, in a field that no 
 | `EXPLAIN` | `Statement.Explain`, for EXPLAIN without QUERY PLAN |
 | `schema name` | `QualifiedName.Schema`, in any node |
 | `TEMP` | `CreateTable.Temp` |
-| `IF NOT EXISTS` | `CreateTable.IfNotExists`, `CreateIndex.IfNotExists` |
 | `empty table option` | `CreateTable.OptionCommas`, for a comma before the first option |
 | `CREATE TABLE AS` | `CreateTable.As` |
 | `ASC or DESC` | `PrimaryKeyConstraint.Order` |
 | `AUTOINCREMENT` | `PrimaryKeyConstraint.Autoincrement` |
-| `IF EXISTS` | `Drop.IfExists`, for DROP TABLE and DROP INDEX |
 | `UNIQUE INDEX` | `CreateIndex.Unique` |
 | `NULLS FIRST or NULLS LAST` | `OrderingTerm.Nulls`, in a column of CREATE INDEX |
 | `INSERT OR` | `Insert.Or` |
