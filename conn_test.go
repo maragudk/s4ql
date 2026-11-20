@@ -436,6 +436,11 @@ func TestPrepare(t *testing.T) {
 		is.Equal(t, "NULL after a sign (at offset 29)", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1, V1) values (1, 2)")
 		is.Equal(t, "column named twice (at offset 20)", notSupported(t, err))
+		// The pass supports an index, and the engine refuses it until it runs one, from the text alone.
+		_, err = db.PrepareContext(t.Context(), "create index i on t1 (v1)")
+		is.Equal(t, "CREATE INDEX (at offset 0)", notSupported(t, err))
+		_, err = db.PrepareContext(t.Context(), "drop index i")
+		is.Equal(t, "DROP INDEX (at offset 5)", notSupported(t, err))
 		// The type of a column is looked up when the statement runs, and so are the columns.
 		for _, src := range []string{
 			"create table t2 (v2 real primary key) strict, without rowid", "insert into t1 (v1) values ('a')", "insert into t1 (v1) values (x'')",

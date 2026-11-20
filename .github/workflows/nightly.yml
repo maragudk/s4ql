@@ -1,0 +1,168 @@
+name: Nightly
+
+# The long runs that a pull request has no time for: every fuzz test for FUZZTIME, ten times the 30
+# seconds of CI's jobs asan-fuzz and fuzz, those that link C under the address sanitizer, and the
+# planted bugs of the simulations of the core and of the engine on many more seeds than CI's jobs
+# run, without a stop at the first seeds that find a bug. Under the sanitizer, a heavy fuzz test such
+# as FuzzDifferential_core of the engine makes about 70 executions in 30 seconds, so it needs
+# minutes to do real work. A failure opens an issue with the label nightly, or comments on the one
+# that is open; it is never closed by a later run that passes, since a fuzz test may not find the
+# same input again. A fuzz test that fails prints the input that made it fail, as the file under
+# testdata/fuzz that reproduces it with go test and can be committed there. A seed that fails prints
+# the command that replays it.
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: The time of each fuzz test, such as 5m; the timeout of the job asan-fuzz holds up to about 15m.
+        default: 5m
+      seeds:
+        description: The seeds of each planted bug, its control, and its run without the bug.
+        default: "1000"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FUZZTIME: ${{ inputs.fuzztime || '5m' }}
+  SEEDS: ${{ inputs.seeds || '1000' }}
+
+jobs:
+  # The fuzz tests that link C, under the address sanitizer, in shards, as CI's job asan-fuzz runs
+  # them for 30 seconds each. Each shard takes about its fuzz tests times FUZZTIME.
+  asan-fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The shards of CI's job asan-fuzz all build SQLite under the sanitizer for fuzzing, which is
+      # what takes long; their caches are saved on main, and this restores the first one's.
+      - uses: ./.github/actions/go
+        with:
+          cache: asan-fuzz-1
+
+      - name: Check that the shards hold every fuzz test once
+        run: make fuzz-shards FUZZGROUP=c FUZZSHARDS=${{ strategy.job-total }}
+
+      - name: Fuzz under the address sanitizer
+        run: make fuzz FUZZGROUP=c FUZZFLAGS=-asan FUZZSHARD=${{ matrix.shard }}/${{ strategy.job-total }} FUZZTIME="$FUZZTIME"
+
+      - name: Show the inputs that made a fuzz test fail
+        if: failure()
+        run: sh .github/scripts/fuzz-failures.sh
+
+  # The fuzz tests that link no C, without the sanitizer.
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/go
+        with:
+          cache: fuzz
+
+      - name: Fuzz
+        run: make fuzz FUZZGROUP=go FUZZTIME="$FUZZTIME"
+
+      - name: Show the inputs that made a fuzz test fail
+        if: failure()
+        run: sh .github/scripts/fuzz-failures.sh
+
+  # TestSimulation_plantedBugs of the core with S4QL_SIM_SEEDS, under which each planted bug runs all
+  # the seeds and counts how many find it, where CI stops at the fourth of at most 200, and its
+  # control and its run without the bug run all the seeds too, where CI runs 10. Without the race
+  # detector and the sanitizer, which slow the simulation down and change nothing in its trace, in
+  # shards by internal/testshard.
+  simulation-core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/go
+        with:
+          cache: sql
+
+      - name: Run the planted bugs of the core on many seeds
+        env:
+          S4QL_SIM_SEEDS: ${{ env.SEEDS }}
+          S4QL_TEST_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+        run: go test -count=1 -run '^TestSimulation_plantedBugs$' -timeout 150m -v ./internal/core/
+
+  # TestSimulation_plantedBugs of the engine with S4QL_ENGINE_SIM_SEEDS, under which each planted bug
+  # runs all the seeds, where CI stops at the second of at most 100 that finds it by its own
+  # violation, and each seed that finds it runs again without the bug.
+  simulation-engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/go
+        with:
+          cache: sql
+
+      - name: Run the planted bugs of the engine on many seeds
+        env:
+          S4QL_ENGINE_SIM_SEEDS: ${{ env.SEEDS }}
+          S4QL_TEST_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+        run: go test -count=1 -run '^TestSimulation_plantedBugs$' -timeout 150m -v ./internal/engine/
+
+  # Opens an issue when a job above failed, or comments on the open one, so that a failure at night
+  # is seen in the morning.
+  report:
+    needs: [asan-fuzz, fuzz, simulation-core, simulation-engine]
+    # A job that runs past its timeout-minutes can end as cancelled rather than failed, so both count.
+    if: ${{ always() && github.ref == 'refs/heads/main' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+
+    steps:
+      - name: Open or comment on the issue of the nightly run
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create nightly --color B60205 --description "The nightly workflow failed" || true
+          body="The nightly run failed: $RUN_URL. The log of a failed fuzz test holds the input under testdata/fuzz that reproduces it, and that of a failed seed the command that replays it."
+          existing="$(gh issue list --label nightly --state open --limit 1 --json number --jq '.[].number')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "The nightly run failed" --label nightly --body "$body"
+          fi
