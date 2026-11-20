@@ -36,8 +36,8 @@ import (
 // the inserts gave its columns, their neighbours, and the edges of each type. The small sets of
 // values hold keys that SQLite takes for one, such as 0.0 and -0.0, so that every type meets a key
 // that exists. An update sets some columns of the shape, as [Sequence.update] draws it, and an
-// update and a delete have a WHERE as a select has one, an update three times in four and a delete
-// four times in five.
+// update three times in four and a delete four times in five have a WHERE, as [Sequence.changeConditions]
+// draws one: mostly as a select has one, and one time in three the key equal to a value of an insert.
 //
 // One value in three of an insert is a plain ? with the value as its argument, nil for NULL, and
 // some calls, as [Sequence.Next] says, have arguments around those that s4ql supports: none for a
@@ -509,7 +509,7 @@ func (q *Sequence) missing(shape []stmt.Column) string {
 // [Sequence.conditionValue] draws a value for a condition on its column: mostly a value that an
 // insert gave the column, a neighbour of one, or an edge of its type, now and then one of another
 // type, and as an insert gets one otherwise, so that a change of the key meets a key that exists and
-// also one that does not. Three updates in four have a WHERE, as [Sequence.where] draws one. The
+// also one that does not. Three updates in four have a WHERE, as [Sequence.changeConditions] draws one. The
 // values of the assignments are kept, as [Sequence.store] keeps those of an insert.
 func (q *Sequence) update(table stmt.Name) ([]stmt.Assignment, []stmt.Condition) {
 	r := q.r

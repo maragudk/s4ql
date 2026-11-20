@@ -510,6 +510,7 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 	r := rand.New(rand.NewPCG(seed, 0x7e))
 	q := newSequence(t, r)
 	p := newPair(t, i, y)
+	defer p.other.close()
 	var log []string
 	fail := func(format string, args ...any) {
 		t.Helper()

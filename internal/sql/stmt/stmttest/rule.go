@@ -238,13 +238,14 @@ func boundValue(term stmt.Term, args []any) any {
 }
 
 // RowQueries of the update u of a table whose key is the column with the name key, with the
-// arguments args as SQLite binds them: a select of the number of rows that the WHERE of u finds, and
-// the arguments of its parameters; and an update of one of those rows with the SET of u, the row at
-// an offset in the order of the key, and the arguments of its parameters but the last, which is the
-// offset. Each update of one row measures the record of its row afresh, as a statement that changes
-// many rows does not in every build of SQLite: see the known difference of a record that is too long
-// in docs/todo.md.
-func RowQueries(u *stmt.Update, key string, args []any) (count string, countArgs []any, one string, oneArgs []any) {
+// arguments args as SQLite binds them: a create of the temporary table s4ql_found of the keys of the
+// rows that the WHERE of u finds, in the order of the key, and the arguments of its parameters; and
+// an update with the SET of u of the row whose key is the one at an offset of s4ql_found, and the
+// arguments of its parameters but the last, which is the offset. The updates of one row each, in the
+// order of the offsets, change the rows as u changes them, one at a time in the order of the key,
+// and each measures the record of its row afresh, as a statement that changes many rows does not in
+// every build of SQLite: see the known difference of a record that is too long in docs/todo.md.
+func RowQueries(u *stmt.Update, key string, args []any) (found string, foundArgs []any, one string, oneArgs []any) {
 	conditions, bound := whereText(u.Where, args)
 	table := Quote(u.Table.Value)
 	var sets []string
@@ -252,9 +253,9 @@ func RowQueries(u *stmt.Update, key string, args []any) (count string, countArgs
 		sets = append(sets, Quote(a.Column.Value)+" = ?")
 		oneArgs = append(oneArgs, boundValue(a.Value, args))
 	}
-	one = "update " + table + " set " + strings.Join(sets, ", ") + " where " + Quote(key) + " = (select " + Quote(key) + " from " + table + conditions +
-		" order by " + Quote(key) + " limit 1 offset ?)"
-	return "select count(*) from " + table + conditions, bound, one, append(oneArgs, bound...)
+	found = "create temp table s4ql_found as select " + Quote(key) + " as k from " + table + conditions + " order by " + Quote(key)
+	one = "update " + table + " set " + strings.Join(sets, ", ") + " where " + Quote(key) + " = (select k from temp.s4ql_found order by rowid limit 1 offset ?)"
+	return found, bound, one, oneArgs
 }
 
 // WhereRule of the conditions of a WHERE of the table of the name and the columns, which the table
