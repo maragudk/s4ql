@@ -685,6 +685,11 @@ const (
 	// excusedLong is an insert of a literal that is longer than the length limit, which SQLite meets
 	// only with a limit below the length of its text, and then refuses later or turns into NULL.
 	excusedLong = "a literal longer than the length limit, checked against s4ql's rule"
+	// excusedLongCondition is a select with a literal in a condition that is longer than the length
+	// limit, which s4ql refuses with SQLite's `string or blob too big`, and for which SQLite gives
+	// rows: no rows for a blob literal, which it turns into NULL, and for a string literal on the
+	// upper bound of the key whose search reaches no row. See [pair.longCondition].
+	excusedLongCondition = "a literal in a condition longer than the length limit, for which SQLite gives rows, checked against s4ql's rule"
 )
 
 // knownGap of the pass after the parser, as [stmttest.KnownGap] gives it, that the engine's answer
@@ -829,6 +834,9 @@ func (p *pair) step(c stmttest.Call) string {
 	}
 	p.y.add(src, got)
 	p.reach(c, got)
+	if failure := p.bothWays(c, got); failure != "" {
+		return failure
+	}
 	if kind, failure := checkArguments(c, got); kind != "" {
 		if failure == "" {
 			p.y.excused(kind)
@@ -880,6 +888,8 @@ func (p *pair) step(c stmttest.Call) string {
 		switch {
 		case startedTable(t, p.empty, src, got, want):
 			p.y.excused(acceptedStartedTable)
+		case want.err == "" && got.err == tooBig && p.longCondition(src):
+			p.y.excused(excusedLongCondition)
 		case gap != "":
 			p.y.excused(gap + knownGapSuffix)
 		default:
@@ -906,6 +916,39 @@ func (p *pair) step(c stmttest.Call) string {
 	}
 	if rowid != 0 {
 		return fmt.Sprintf("%q: SQLite's last insert rowid is %v", src, rowid)
+	}
+	return ""
+}
+
+// bothWays runs the call c again if it holds a select with WHERE, through the same method, on the
+// engine of the instance with every row of the table read, as [engine.Engine.SetScanAll] makes it,
+// where the first run read the rows by the key, as the plan does unless -scanall. The two must give
+// the same answer, message, and count of changes, so that each test that compares the first with
+// SQLite compares both ways of reading rows, also in transactions. It counts the call in the tally
+// under "reached: read both ways", and gives what differs, or "".
+func (p *pair) bothWays(c stmttest.Call, got answer) string {
+	if *scanAll {
+		return ""
+	}
+	s, _ := stmt.Check(c.Src)
+	if sel, ok := s.(*stmt.Select); !ok || sel.Where == nil {
+		return ""
+	}
+	i := p.i
+	changes := i.changes
+	i.e.SetScanAll(true)
+	var all answer
+	if c.Query {
+		all = i.queryValues(c.Src, values(c.Args))
+	} else {
+		all = i.execValues(c.Src, values(c.Args))
+	}
+	i.e.SetScanAll(false)
+	if p.y != nil {
+		p.y["reached: read both ways"]++
+	}
+	if all.String() != got.String() || all.message != got.message || i.changes != changes {
+		return fmt.Sprintf("%q with %#v: the engine gives\n%v (%q, %v changes)\nby the key, and\n%v (%q, %v changes)\nwith every row read", c.Src, c.Args, got, got.message, changes, all, all.message, i.changes)
 	}
 	return ""
 }
@@ -979,10 +1022,11 @@ func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, count func(stri
 			}
 		}
 	case *stmt.Select:
-		_, columns := o.columns(t, s.Table.Value)
+		table, columns := o.columns(t, s.Table.Value)
 		if columns == nil {
 			return
 		}
+		reachWhere(t, o, s, c, got, outcome, table, columns, count)
 		if got.null {
 			count(map[bool]string{true: "select * with NULL ", false: "select of names with NULL "}[s.Columns == nil] + outcome)
 		}
@@ -1007,6 +1051,70 @@ func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, count func(stri
 			count("select of a name twice " + outcome)
 		}
 	}
+}
+
+// reachWhere counts what the select s of the call c, whose answer of the engine is got and whose
+// outcome in the engine is outcome, reaches of WHERE on the database of o, where its table has the
+// name table and the columns, as [reach] says: for a select with WHERE, one whose arguments the
+// engine refuses, for their number or for one that no column holds; and otherwise each case of
+// [stmttest.WhereCases], and for a query that succeeds on a table with rows, whether it gives none,
+// some, or all of them.
+func reachWhere(t testing.TB, o *oracle, s *stmt.Select, c stmttest.Call, got answer, outcome, table string, columns []stmttest.TableColumn, count func(string)) {
+	t.Helper()
+	if s.Where == nil {
+		return
+	}
+	args := oracleArgs(c.Args)
+	switch {
+	case len(args) != s.Parameters():
+		count("WHERE with the wrong number of arguments " + outcome)
+		return
+	case slices.ContainsFunc(args, func(a any) bool { return refusal(a) != "" }):
+		count("WHERE with an argument that no column holds " + outcome)
+		return
+	}
+	for _, what := range stmttest.WhereCases(columns, s, args) {
+		count(what + " " + outcome)
+	}
+	// The plan reads the rows by the key as the rule says, which the comparison of the rows cannot see
+	// where it reads more rows than it needs.
+	if want := stmttest.KeyAccess(columns, s, args); want != "" && got.err != tooBig {
+		want = strings.TrimSuffix(want, " that hold no key")
+		if access := engine.AccessOf(c.Src, createTableOf(table, columns), values(c.Args)); access != want {
+			t.Errorf("%q with %#v: the plan reads %q, and the rule %q", c.Src, c.Args, access, want)
+		}
+	}
+	if !c.Query || got.err != "" {
+		return
+	}
+	n, err := strconv.Atoi(o.run(t, "select count(*) from "+stmttest.Quote(table)).rows[0])
+	is.NotError(t, err)
+	switch {
+	case n == 0:
+	case len(got.rows) == 0:
+		count("WHERE that gives no row of a table with rows")
+	case len(got.rows) == n:
+		count("WHERE that gives every row of a table with rows")
+	default:
+		count("WHERE that gives some rows of a table")
+	}
+}
+
+// createTableOf the table of the name and the columns, as SQLite has them, in the engine's terms.
+func createTableOf(name string, columns []stmttest.TableColumn) *s4qlpb.CreateTable {
+	ct := s4qlpb.CreateTable_builder{Table: new(name)}
+	for i, c := range columns {
+		typ := map[string]s4qlpb.Type{"INT": s4qlpb.Type_TYPE_INT, "INTEGER": s4qlpb.Type_TYPE_INTEGER, "REAL": s4qlpb.Type_TYPE_REAL, "TEXT": s4qlpb.Type_TYPE_TEXT, "BLOB": s4qlpb.Type_TYPE_BLOB}[c.Type]
+		column := s4qlpb.Column_builder{Name: new(c.Name), Type: new(typ)}
+		if c.Nullable {
+			column.Nullable = new(true)
+		}
+		ct.Columns = append(ct.Columns, column.Build())
+		if c.PrimaryKey {
+			ct.PrimaryKey = []uint32{uint32(i)}
+		}
+	}
+	return ct.Build()
 }
 
 // reachInsert counts what the insert s of the call c, whose outcome in the engine is outcome,
@@ -1182,9 +1290,10 @@ func oracleArgs(args []any) []any {
 func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failure string) {
 	t := p.t
 	t.Helper()
-	if p.readOnly && isInsert(c.Src) || slices.ContainsFunc(args, func(a any) bool { return p.i.limit > 0 && byteLength(a) > p.i.limit }) {
+	if p.readOnly && isInsert(c.Src) || slices.ContainsFunc(args, func(a any) bool { return p.i.limit > 0 && byteLength(a) > p.i.limit }) || p.longCondition(c.Src) {
 		// An argument that is too long gets SQLite's error when SQLite binds it, which the caller
-		// compares.
+		// compares, and so does a literal of a condition that is too long, which s4ql refuses before the
+		// type of a value, and SQLite mostly too.
 		return "", ""
 	}
 	want := typeRule(t, p.o, c.Src, args)
@@ -1222,6 +1331,19 @@ func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string)
 		return excusedLong, fmt.Sprintf("%q with a literal of %v bytes: the engine gives %v, and the rule %q", c.Src, n, got, tooBig)
 	}
 	return excusedLong, ""
+}
+
+// longCondition reports whether src holds a select with a literal in a condition that is longer than
+// the length limit of the pair. By s4ql's rule such a select, whose names the table has and whose
+// arguments s4ql takes, fails with SQLite's `string or blob too big` before the type of a value is
+// checked, as an insert does. SQLite gives the same for a string literal, which it evaluates once
+// before it reads a row, but for one on the upper bound of the key whose search reaches no row, and
+// turns a blob literal into NULL, so that the select gives no rows: the known difference of
+// docs/todo.md.
+func (p *pair) longCondition(src string) bool {
+	s, _ := stmt.Check(src)
+	sel, ok := s.(*stmt.Select)
+	return ok && p.i.limit > 0 && slices.ContainsFunc(sel.Where, func(c stmt.Condition) bool { return byteLength(c.Value.Value) > p.i.limit })
 }
 
 // tooBig is the err of an [answer] of SQLite's error of a text or a blob that is too long.

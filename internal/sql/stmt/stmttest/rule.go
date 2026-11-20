@@ -1,6 +1,8 @@
 package stmttest
 
 import (
+	"bytes"
+	"cmp"
 	"fmt"
 	"reflect"
 	"slices"
@@ -300,4 +302,196 @@ func NullCases(columns []TableColumn, insert *stmt.Insert, args []any) []string 
 		cases = append(cases, "insert of NULL beside a value of another type")
 	}
 	return cases
+}
+
+// WhereCases of the select s with WHERE of the table of the columns, in the order of the table, with
+// the arguments args as for [TypeRule], for a count of what a test reaches of slice 7. For a column of
+// a condition that the table does not have, where the select list has every column that it names:
+// "WHERE with a column that the table does not have", in a comparison or under IS NULL or IS NOT
+// NULL, and alone, before other conditions, or after them, and "WHERE with a column in double quotes
+// that the table does not have" for one in double quotes; and nothing more, since SQLite gives its
+// error first. Otherwise, with as many arguments as parameters: the operator of each condition on
+// the key or on another column, such as "<= on the key"; the value of each comparison, a literal by
+// its kind, as [LiteralKind] names it, or an argument, as [ArgumentKind] names it; "WHERE with a
+// value of another type" if [ConditionRule] refuses the select, and nothing more; "WHERE that tests
+// a column more than once"; "WHERE with contradicting conditions" if two conditions on one column
+// are IS NULL and IS NOT NULL, or compare with one value by inverse operators, such as < and >=; and
+// how s4ql reads the rows, as [KeyAccess] gives it, after "WHERE that reads ". It is nil for a
+// select without WHERE, one of a column of the select list that the table does not have, and one
+// with another number of arguments than parameters.
+func WhereCases(columns []TableColumn, s *stmt.Select, args []any) []string {
+	if s.Where == nil || slices.ContainsFunc(s.Columns, func(n stmt.Name) bool { return ColumnOf(columns, n) < 0 }) {
+		return nil
+	}
+	var cases []string
+	for i, c := range s.Where {
+		if ColumnOf(columns, c.Column) >= 0 {
+			continue
+		}
+		in := "in a comparison"
+		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull {
+			in = "under IS NULL or IS NOT NULL"
+		}
+		at := "after other conditions"
+		switch {
+		case len(s.Where) == 1:
+			at = "alone"
+		case i < len(s.Where)-1:
+			at = "before other conditions"
+		}
+		cases = append(cases, fmt.Sprint("WHERE with a column that the table does not have ", in, ", ", at))
+		if c.Column.Raw[0] == '"' {
+			cases = append(cases, "WHERE with a column in double quotes that the table does not have")
+		}
+	}
+	if cases != nil || len(args) != s.Parameters() {
+		return cases
+	}
+	for _, c := range s.Where {
+		on := "on another column"
+		if columns[ColumnOf(columns, c.Column)].PrimaryKey {
+			on = "on the key"
+		}
+		cases = append(cases, fmt.Sprint(c.Operator, " ", on))
+		switch {
+		case c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull:
+		case c.Value.Parameter > 0:
+			cases = append(cases, "comparison with argument "+ArgumentKind(args[c.Value.Parameter-1]))
+		default:
+			cases = append(cases, "comparison with literal "+LiteralKind(c.Value.Value))
+		}
+	}
+	if ConditionRule("t", columns, s, args) != "" {
+		return append(cases, "WHERE with a value of another type")
+	}
+	tested := map[int]bool{}
+	twice, contradicts := false, false
+	for i, c := range s.Where {
+		position := ColumnOf(columns, c.Column)
+		twice = twice || tested[position]
+		tested[position] = true
+		for _, d := range s.Where[:i] {
+			if ColumnOf(columns, d.Column) != position || inverses[d.Operator] != c.Operator {
+				continue
+			}
+			a, b := termValue(c.Value, args), termValue(d.Value, args)
+			if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull || a != nil && b != nil && compareValues(a, b) == 0 {
+				contradicts = true
+			}
+		}
+	}
+	if twice {
+		cases = append(cases, "WHERE that tests a column more than once")
+	}
+	if contradicts {
+		cases = append(cases, "WHERE with contradicting conditions")
+	}
+	return append(cases, "WHERE that reads "+KeyAccess(columns, s, args))
+}
+
+// KeyAccess of the select s with WHERE of the table of the columns, with the arguments args as for
+// [TypeRule], by the roadmap's rule of slice 7 as the README of the engine details it: "no row" if a
+// comparison is with NULL or the key is tested with IS NULL, which is never true of a row; "a get of
+// one key" for a condition key = value; "a scan from a lower bound", "a scan to an upper bound", or
+// "a scan between two bounds" for the tightest bounds of the conditions on the key with <, <=, >,
+// and >=, where of two bounds at one value the open one is the tighter, and "a scan between two
+// bounds that hold no key" if no key is within them; and otherwise "a scan of every row". It is ""
+// for a select that SQLite or s4ql refuses: for a column that the table does not have, another
+// number of arguments than parameters, or a value of another type than its column, as
+// [ConditionRule] gives it.
+func KeyAccess(columns []TableColumn, s *stmt.Select, args []any) string {
+	if _, missing := MissingColumn(columns, s); missing || len(args) != s.Parameters() || ConditionRule("t", columns, s, args) != "" {
+		return ""
+	}
+	type bound struct {
+		value any
+		open  bool
+	}
+	// tighter of the bound a, which may be nil, and b, upper bounds if upper.
+	tighter := func(a *bound, b bound, upper bool) *bound {
+		if a == nil {
+			return &b
+		}
+		n := compareValues(b.value, a.value)
+		if upper {
+			n = -n
+		}
+		if n > 0 || n == 0 && b.open {
+			return &b
+		}
+		return a
+	}
+	var lower, upper *bound
+	get := false
+	for _, c := range s.Where {
+		isNull := c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull
+		if !isNull && termValue(c.Value, args) == nil {
+			return "no row"
+		}
+		if !columns[ColumnOf(columns, c.Column)].PrimaryKey {
+			continue
+		}
+		v := termValue(c.Value, args)
+		switch c.Operator {
+		case stmt.OpIsNull:
+			return "no row"
+		case stmt.OpEqual:
+			get = true
+		case stmt.OpLess, stmt.OpLessOrEqual:
+			upper = tighter(upper, bound{value: v, open: c.Operator == stmt.OpLess}, true)
+		case stmt.OpGreater, stmt.OpGreaterOrEqual:
+			lower = tighter(lower, bound{value: v, open: c.Operator == stmt.OpGreater}, false)
+		}
+	}
+	switch {
+	case get:
+		return "a get of one key"
+	case lower != nil && upper != nil:
+		if n := compareValues(lower.value, upper.value); n > 0 || n == 0 && (lower.open || upper.open) {
+			return "a scan between two bounds that hold no key"
+		}
+		return "a scan between two bounds"
+	case lower != nil:
+		return "a scan from a lower bound"
+	case upper != nil:
+		return "a scan to an upper bound"
+	}
+	return "a scan of every row"
+}
+
+// termValue of a term of a condition, a literal or the argument of args for its parameter, as SQLite
+// binds it: an int64, a float64, a string, a []byte, or nil for NULL and for the zero term of a test
+// for NULL.
+func termValue(term stmt.Term, args []any) any {
+	if term.Parameter > 0 {
+		return args[term.Parameter-1]
+	}
+	switch v := term.Value.(type) {
+	case stmt.Integer:
+		return int64(v)
+	case stmt.Real:
+		return float64(v)
+	case stmt.Text:
+		return string(v)
+	case stmt.Blob:
+		return []byte(v)
+	}
+	return nil
+}
+
+// compareValues a and b, of one kind of [termValue] and not NULL, as SQLite compares them: numbers by
+// their value, so that 0.0 is -0.0, and text and blobs by their bytes. It panics for values of two
+// kinds.
+func compareValues(a, b any) int {
+	switch a := a.(type) {
+	case int64:
+		return cmp.Compare(a, b.(int64))
+	case float64:
+		return cmp.Compare(a, b.(float64))
+	case string:
+		return strings.Compare(a, b.(string))
+	case []byte:
+		return bytes.Compare(a, b.([]byte))
+	}
+	panic(fmt.Sprintf("stmttest: a comparison of %T with %T", a, b))
 }
