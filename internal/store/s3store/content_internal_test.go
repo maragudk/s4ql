@@ -61,21 +61,21 @@ func TestBody(t *testing.T) {
 	c := &Client{log: discard()}
 
 	t.Run("should fail content that ends before the length of the answer", func(t *testing.T) {
-		b := &body{r: &request{c: c, key: "k"}, body: io.NopCloser(strings.NewReader("short")), size: 10}
+		b := &body{r: &request{c: c, ctx: t.Context(), key: "k"}, body: io.NopCloser(strings.NewReader("short")), size: 10}
 		_, err := io.ReadAll(b)
 		is.True(t, errors.Is(err, io.ErrUnexpectedEOF), err.Error())
 		is.NotError(t, b.Close())
 	})
 
 	t.Run("should fail content that is longer than the length of the answer", func(t *testing.T) {
-		b := &body{r: &request{c: c, key: "k"}, body: io.NopCloser(strings.NewReader("longer than five")), size: 5}
+		b := &body{r: &request{c: c, ctx: t.Context(), key: "k"}, body: io.NopCloser(strings.NewReader("longer than five")), size: 5}
 		_, err := io.ReadAll(b)
 		is.True(t, err != nil)
 		is.NotError(t, b.Close())
 	})
 
 	t.Run("should end with io.EOF after content of the length of the answer", func(t *testing.T) {
-		b := &body{r: &request{c: c, key: "k"}, body: io.NopCloser(strings.NewReader("exact")), size: 5}
+		b := &body{r: &request{c: c, ctx: t.Context(), key: "k"}, body: io.NopCloser(strings.NewReader("exact")), size: 5}
 		data, err := io.ReadAll(b)
 		is.NotError(t, err)
 		is.Equal(t, "exact", string(data))

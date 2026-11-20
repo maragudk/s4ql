@@ -12,10 +12,11 @@
 // [context.DeadlineExceeded] that ended it, so that no error from the content, the transport, or
 // the SDK can make it look like one of the errors that mean that the write was not applied.
 //
-// A call whose context has ended when its answer comes in takes the answer if it shows what
-// happened: a success, or one of the errors of [store.Store]. Any other answer, or none, fails the
-// call with an error that wraps the [context.Canceled] or [context.DeadlineExceeded] of the context,
-// since the end of the context may be what broke the answer.
+// A call whose context has ended by the time the client has its answer takes the answer if it shows
+// what happened: a success, or one of the errors of [store.Store]. Any other answer, or none, fails
+// the call with an error that wraps the [context.Canceled] or [context.DeadlineExceeded] of the
+// context, since the end of the context may be what broke the answer. So does a read of the content
+// that fails after the end of the context.
 //
 // A write with a checksum is checked by the store: the request is signed with the checksum as the
 // SHA-256 of its payload, which the store compares with the bytes it receives before it stores
@@ -316,10 +317,24 @@ func ended(ctx context.Context, err error) error {
 func unknown(err error) error {
 	for _, done := range []error{context.Canceled, context.DeadlineExceeded} {
 		if errors.Is(err, done) {
-			return fmt.Errorf("outcome unknown: %v: %w", err, done)
+			return fmt.Errorf("outcome unknown: %w", textOf{text: err.Error(), err: done})
 		}
 	}
 	return fmt.Errorf("outcome unknown: %v", err)
+}
+
+// textOf one error, which wraps another error alone.
+type textOf struct {
+	text string
+	err  error
+}
+
+func (e textOf) Error() string {
+	return e.text
+}
+
+func (e textOf) Unwrap() error {
+	return e.err
 }
 
 // refusal that the answer to a failed write of r shows, with its outcome, or a nil error if the

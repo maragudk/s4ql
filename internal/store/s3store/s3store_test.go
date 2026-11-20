@@ -442,6 +442,12 @@ func TestClient_connections(t *testing.T) {
 				fail(w, http.StatusPreconditionFailed, "PreconditionFailed")
 			case "missing":
 				fail(w, http.StatusNotFound, "NoSuchKey")
+			case "cut-body":
+				w.Header().Set("ETag", `"v"`)
+				w.Header().Set("Content-Length", "100")
+				_, _ = w.Write([]byte("part"))
+				_ = http.NewResponseController(w).Flush()
+				cut(w)
 			default:
 				// An answer without headers, as a store or a proxy may give to a request that it
 				// sees end.
@@ -459,7 +465,16 @@ func TestClient_connections(t *testing.T) {
 			ctx = newEnding(t)
 			_, err = c.Create(ctx, k, strings.NewReader("data"), nil)
 			is.True(t, isUnknown(err) && errors.Is(err, context.DeadlineExceeded), k, fmt.Sprint(err))
+			is.Equal(t, 1, strings.Count(err.Error(), context.DeadlineExceeded.Error()), err.Error())
 		}
+
+		// The content of a read that fails after the end of the context.
+		ctx = newEnding(t)
+		body, _, err := c.Get(ctx, "cut-body")
+		is.NotError(t, err)
+		_, err = io.ReadAll(body)
+		_ = body.Close()
+		is.True(t, errors.Is(err, io.ErrUnexpectedEOF) && errors.Is(err, context.DeadlineExceeded), fmt.Sprint(err))
 
 		// An answer that shows what happened is the outcome, also after the end of the context.
 		ctx = newEnding(t)
@@ -470,6 +485,10 @@ func TestClient_connections(t *testing.T) {
 		ctx = newEnding(t)
 		_, err = c.Create(ctx, "exists", strings.NewReader("data"), nil)
 		is.True(t, errors.Is(err, store.ErrExists), fmt.Sprint(err))
+
+		ctx = newEnding(t)
+		_, err = c.Swap(ctx, "exists", `"v"`, strings.NewReader("data"), nil)
+		is.True(t, errors.Is(err, store.ErrChanged), fmt.Sprint(err))
 
 		ctx = newEnding(t)
 		_, _, err = c.Get(ctx, "missing")
