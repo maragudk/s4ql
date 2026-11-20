@@ -95,7 +95,9 @@ var hammerWorkload = workload{
 // A kind of fault or event that a change switches off falls to zero, and fails. The upserts and
 // deletes of keys of the other types, and of -0.0, are a quarter of what the seeds reached on
 // 2026-11-19, when the tables got those types; the other minimums stayed as they were, and the
-// seeds still reach them.
+// seeds still reach them. The upserts of rows with NULL, and the upserts of NULL into a column that
+// does not take it, which the core refuses, are a quarter of what the seeds reached on 2026-11-20,
+// when the tables got columns that take NULL.
 var (
 	// singleReaches is what the 40 seeds of the default run of [singleWorkload] must reach. It also
 	// has one failed commit, of the two that they reached, which the rule leaves out.
@@ -125,10 +127,12 @@ var (
 		"reads overtaken by a commit":   5,
 		"reads refused by a clock":      1,
 		"refused reads":                 2,
+		"refused upserts of NULL":       5,
 		"rollbacks":                     20,
 		"slow ways":                     16,
 		"timeouts that expired":         27,
 		"transactions refused at start": 4,
+		"upserts with NULL":             52,
 		"upserts with a blob key":       35,
 		"upserts with a text key":       37,
 		"upserts with the key -0.0":     7,
@@ -177,12 +181,14 @@ var (
 		"refused reads":                            394,
 		"restarts after a crash":                   7,
 		"restarts that recovered from WAL":         5,
+		"refused upserts of NULL":                  6,
 		"rollbacks":                                12,
 		"slow ways":                                69,
 		"stops":                                    4,
 		"timeouts that expired":                    362,
 		"transactions abandoned":                   1,
 		"transactions refused at start":            244,
+		"upserts with NULL":                        29,
 		"upserts with a blob key":                  22,
 		"upserts with a text key":                  26,
 		"upserts with the key -0.0":                2,
@@ -229,10 +235,12 @@ var (
 		"reads overtaken by a commit":                169,
 		"reads refused by a clock":                   4,
 		"refused reads":                              91,
+		"refused upserts of NULL":                    23,
 		"rollbacks":                                  66,
 		"slow ways":                                  47,
 		"timeouts that expired":                      117,
 		"transactions refused at start":              96,
+		"upserts with NULL":                          145,
 		"upserts with a blob key":                    87,
 		"upserts with a text key":                    143,
 		"upserts with the key -0.0":                  22,
@@ -280,10 +288,12 @@ var (
 		"reads overtaken by a commit":                     5,
 		"reads refused by a clock":                        92,
 		"refused reads":                                   310,
+		"refused upserts of NULL":                         6,
 		"rollbacks":                                       10,
 		"slow ways":                                       37,
 		"timeouts that expired":                           458,
 		"transactions refused at start":                   272,
+		"upserts with NULL":                               16,
 		"writes applied late":                             4,
 		"writes stuck":                                    133,
 	}
@@ -327,10 +337,12 @@ var (
 		"refused reads":                            410,
 		"restarts after a crash":                   5,
 		"restarts that recovered from WAL":         2,
+		"refused upserts of NULL":                  3,
 		"rollbacks":                                12,
 		"slow ways":                                132,
 		"timeouts that expired":                    509,
 		"transactions refused at start":            263,
+		"upserts with NULL":                        26,
 		"writes applied late":                      11,
 		"writes stuck":                             73,
 	}
@@ -364,6 +376,8 @@ var markers = map[string]string{
 	"upserts with a blob key":   "upsert x'",
 	"deletes of a text key":     `delete "`,
 	"deletes of a blob key":     "delete x'",
+	"upserts with NULL":         "with NULL: <nil>",
+	"refused upserts of NULL":   "takes none: invalid",
 	"lost requests":             "was lost on its way to the store",
 	"lost responses":            "was lost on its way back",
 	"calls with no answer":      "no answer comes",
@@ -932,6 +946,12 @@ var plantedBugs = []plantedBug{
 		workload: plant(calm(singleWorkload), "blobCut"),
 		// Two keys that the cut makes one, such as x'0000' and x'00', are a key listed twice.
 		symptoms: []string{"with the changes", "a read saw at commit", "the cache of", "the replay of the whole log", "is no net effect"},
+	},
+	{
+		bug:      "nullZero",
+		name:     "a commit object that writes a NULL as the zero value of its column's type",
+		workload: plant(calm(singleWorkload), "nullZero"),
+		symptoms: []string{"with the changes", "a read saw at commit", "the cache of"},
 	},
 	{
 		bug:      "forgetDelete",

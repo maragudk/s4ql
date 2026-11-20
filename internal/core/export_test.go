@@ -38,6 +38,7 @@ var plantable = map[string]func(b *bugs){
 	"keyTwice":             func(b *bugs) { b.keyTwice = true },
 	"forgetDelete":         func(b *bugs) { b.forgetDelete = true },
 	"blobCut":              func(b *bugs) { b.blobCut = true },
+	"nullZero":             func(b *bugs) { b.nullZero = true },
 	"skipUnreadable":       func(b *bugs) { b.skipUnreadable = true },
 	"resendTake":           func(b *bugs) { b.resendTake = true },
 	"renewWaitsForWriter":  func(b *bugs) { b.renewWaitsForWriter = true },
@@ -59,6 +60,12 @@ func (o Options) Unplanted() Options {
 // SyncOff stops SQLite from syncing the cache to disk.
 func (o *Options) SyncOff() {
 	o.syncOff = true
+}
+
+// OnVersionRead makes the instance call f with the version that it reads from its cache when it
+// opens, before it upgrades a cache of an older version.
+func (o *Options) OnVersionRead(f func(version int64)) {
+	o.versionRead = &f
 }
 
 // SpoolFile is the file of a spool, which [Options.WrapSpools] wraps.

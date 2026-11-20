@@ -84,6 +84,10 @@ type Options struct {
 	bugs bugs
 	// local is how the instance reaches its local files, which tests change to make them fail.
 	local local
+	// versionRead is called, if it is not nil, with the version that [conn.setUp] has read from the
+	// cache, before it checks the cache and upgrades one of an older version, so that tests can
+	// change the cache in between. It is a pointer, so that [Options] stays comparable.
+	versionRead *func(version int64)
 }
 
 // local is how an instance reaches its spool files. The zero value is the files of the operating
@@ -322,7 +326,7 @@ func Open(ctx context.Context, h host.Host, s store.Store, path, prefix string, 
 	if d.w, err = openConn(sqlite.OpenVFS, path, options); err != nil {
 		return nil, openError(err)
 	}
-	if err := d.w.setUp(options.syncOff, options.Identity); err != nil {
+	if err := d.w.setUp(options); err != nil {
 		return nil, openError(err)
 	}
 

@@ -226,7 +226,7 @@ Included:
 - A null for a column that is declared `not null` gets SQLite's error `NOT NULL constraint failed: t1.v2`.
 - A null goes into a column of any type. The exact types of slice 4 hold for every value that is not null.
 - A null comes back as nil. It scans into a `sql.Null*` value, a pointer, and an `any`.
-- The commit format does not change: it already has a null value.
+- The commit format gets the field `nullable` on a column, which says that the column takes null. It already has a null value.
 - Everything of slices 1 to 5 with null: arguments, prepared statements, transactions, and a restart with an empty cache.
 
 Rejected as not supported, where SQLite would accept it:

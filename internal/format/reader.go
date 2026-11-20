@@ -62,11 +62,12 @@ var unmarshalOptions = proto.UnmarshalOptions{RecursionLimit: 100, NoLazyDecodin
 //   - a field or an enum value it does not know, anywhere outside the annotations
 //   - a change or a value with no known kind, and a column with no type
 //   - a create table with no name, no columns, columns without names, two columns with the same
-//     name, or a primary key that is empty, lists a column twice, or points outside its columns
+//     name, or a primary key that is empty, lists a column twice, points outside its columns, or
+//     holds a column that takes NULL
 //   - an upsert rows with no table name, no columns, a column listed twice, no rows, or a row with
 //     a number of values that differs from the number of its columns
-//   - a delete rows with no table name, no keys, a key with no values, or keys with different
-//     numbers of values
+//   - a delete rows with no table name, no keys, a key with no values or with a NULL, or keys
+//     with different numbers of values
 //   - the name of a table or a column that holds the character NUL
 //   - text that is not valid UTF-8, anywhere, and, in a row or a primary key, text that holds the
 //     character NUL and a real that is NaN, infinite, or -0.0

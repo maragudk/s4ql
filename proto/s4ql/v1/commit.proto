@@ -88,6 +88,10 @@ message Column {
   string name = 1;
   // The declared type of the column.
   Type type = 2;
+  // Whether the column takes NULL. It is never true for a primary-key
+  // column, and a reader refuses a create table where it is. A column
+  // without it does not take NULL.
+  bool nullable = 3;
 }
 
 // The declared type of a column, as the column was declared: INT and

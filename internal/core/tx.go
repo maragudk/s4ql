@@ -12,8 +12,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"google.golang.org/protobuf/proto"
-
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sqlite"
@@ -456,10 +454,13 @@ func (tx *Tx) CreateTable(ctx context.Context, ct *s4qlpb.CreateTable) error {
 	if existing != nil {
 		return fmt.Errorf("%w: %q", ErrTableExists, existing.name)
 	}
-	if err := tx.c.create(newTable(ct)); err != nil {
+	t := newTable(ct)
+	if err := tx.c.create(t); err != nil {
 		return tx.fail(ctx, operation, err)
 	}
-	tx.changed(ct.GetTable()).created = proto.CloneOf(ct)
+	// The commit object holds the table as the cache gives it back, without a field that is set to
+	// its default, such as a nullable of false.
+	tx.changed(ct.GetTable()).created = t.createTable()
 	return nil
 }
 
@@ -580,8 +581,9 @@ func keyColumns(prefix string, n int) string {
 }
 
 // Upsert a row into the table with the given name: insert it, or replace the row with the same
-// primary key. The row has a value for each column of the table, in their order, and a real that
-// is -0.0 is stored as 0.0, as SQLite stores it. It fails with an error that wraps [ErrNoTable] if
+// primary key. The row has a value for each column of the table, in their order: a value of the
+// column's type, or NULL for a column that takes NULL. A real that is -0.0 is stored as 0.0, as
+// SQLite stores it. It fails with an error that wraps [ErrNoTable] if
 // there is no such table, with [ErrInvalid] for a row that the table cannot hold, and with
 // [ErrTooBig] for a text or a blob, or a row, that is larger than SQLite takes, after which the
 // transaction goes on without the row.
@@ -936,7 +938,7 @@ func (tx *Tx) spoolCommit(ctx context.Context) (_ *spooled, err error) {
 				if err != nil {
 					return nil, fail(err)
 				}
-				if err := w.UpsertRow(t.name, columns, tx.committed(row)); err != nil {
+				if err := w.UpsertRow(t.name, columns, tx.committed(t, row)); err != nil {
 					return nil, fail(err)
 				}
 				out.changes++
@@ -1006,7 +1008,7 @@ func (tx *Tx) spoolTouched(w *format.CommitWriter, e *txTable) (int, error) {
 		if err != nil {
 			return err
 		}
-		row = tx.committed(row)
+		row = tx.committed(t, row)
 		changes++
 		if d.bugs.keyTwice {
 			// The planted bug.
@@ -1049,23 +1051,43 @@ func (tx *Tx) dropTemps() error {
 	return nil
 }
 
-// committed is the row as the commit object holds it: as the cache holds it.
-func (tx *Tx) committed(row []*s4qlpb.Value) []*s4qlpb.Value {
-	if !tx.d.bugs.blobCut {
+// committed is the row of the table t as the commit object holds it: as the cache holds it.
+func (tx *Tx) committed(t *table, row []*s4qlpb.Value) []*s4qlpb.Value {
+	bugs := tx.d.bugs
+	if !bugs.blobCut && !bugs.nullZero {
 		return row
 	}
-	// The planted bug: a blob is cut at its first zero byte, as by code that takes it for a string
-	// of C.
-	cut := make([]*s4qlpb.Value, len(row))
+	changed := make([]*s4qlpb.Value, len(row))
 	for i, v := range row {
-		cut[i] = v
-		if v.WhichKind() == s4qlpb.Value_Blob_case {
+		changed[i] = v
+		switch {
+		case bugs.blobCut && v.WhichKind() == s4qlpb.Value_Blob_case:
+			// The planted bug: a blob is cut at its first zero byte, as by code that takes it for a
+			// string of C.
 			if j := bytes.IndexByte(v.GetBlob(), 0); j >= 0 {
-				cut[i] = s4qlpb.Value_builder{Blob: v.GetBlob()[:j:j]}.Build()
+				changed[i] = s4qlpb.Value_builder{Blob: v.GetBlob()[:j:j]}.Build()
 			}
+		case bugs.nullZero && v.WhichKind() == s4qlpb.Value_Null_case:
+			// The planted bug: a NULL is written as the zero value of the column's type, as by code
+			// that reads a column into a value of Go without asking whether it is NULL.
+			changed[i] = zeroValue(t.columns[i].typ)
 		}
 	}
-	return cut
+	return changed
+}
+
+// zeroValue of the given type of a column: 0, 0.0, the empty text, or the empty blob.
+func zeroValue(typ s4qlpb.Type) *s4qlpb.Value {
+	switch typ {
+	case s4qlpb.Type_TYPE_REAL:
+		return s4qlpb.Value_builder{Real: new(0.0)}.Build()
+	case s4qlpb.Type_TYPE_TEXT:
+		return s4qlpb.Value_builder{Text: new("")}.Build()
+	case s4qlpb.Type_TYPE_BLOB:
+		return s4qlpb.Value_builder{Blob: []byte{}}.Build()
+	default:
+		return s4qlpb.Value_builder{Integer: new(int64(0))}.Build()
+	}
 }
 
 // Commit the transaction. It returns nil if and only if the transaction is known to be committed.

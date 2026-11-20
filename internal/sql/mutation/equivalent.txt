@@ -464,6 +464,20 @@ internal/core/cache.go table.checkValue remove statement: return nil => #2
 	Without the return the switch ends with n at 0, and the check of the length gives nil.
 internal/core/cache.go table.checkValue remove statement: return nil => #3
 	Without the return the switch ends with n at 0, and the check of the length gives nil.
+internal/core/cache.go table.checkValue remove statement: return nil => #4
+	Without the return the switch ends with n at 0, and the check of the length gives nil.
+internal/core/cache.go conn.upgrade remove statement: return err =>
+	The begin of the upgrade fails only for busy, while another connection holds the write lock: the upgrade then runs without a transaction of its own, and its update fails with the same busy.
+internal/core/cache.go conn.upgrade remove statement: _ = c.c.Exec("rollback") =>
+	Open closes the write connection after setUp fails, and the close rolls the transaction back.
+internal/core/cache.go conn.upgrade remove statement: c.forget() => #2
+	Open closes the write connection after setUp fails, and the close finalizes the statements that it keeps.
+internal/core/cache.go conn.upgrade remove statement: c.forget() =>
+	The statements that the connection keeps are reset after each use, so none of them holds up the commit.
+internal/core/cache.go conn.upgrade condition: err != nil => true #3
+	After a commit that succeeds, the rollback finds no transaction and the error is nil.
+internal/core/cache.go conn.upgrade remove statement: _ = c.c.Exec("rollback") => #2
+	Open closes the write connection after setUp fails, and the close rolls back what the failed commit left.
 internal/core/cache.go readRow remove statement: return nil, fmt.Errorf("%w: the cache holds a value of type %v", ErrCacheVersion, typ) =>
 	sqlite3_column_type gives one of SQLite's five fundamental types, which each have a case.
 internal/core/cache.go readRow swap arguments: fmt.Errorf("%w: the cache holds a value of type %v", ErrCacheVersion, typ) => fmt.Errorf("%w: the cache holds a value of type %v", typ, ErrCacheVersion)
@@ -518,10 +532,10 @@ internal/core/tx.go Tx.spoolTouched remove statement: return 0, err => #3
 	SQLite rolls the transaction back when a read fails in it, so the commit fails at a later step with a local failure either way and writes no commit object.
 internal/core/tx.go Tx.spoolTouched constant: return 0, err => return 1, err #3
 	The number of changes is not used with an error.
-internal/core/tx.go Tx.spoolTouched remove statement: row = tx.committed(row) =>
-	The planted bug blobCut is then planted only in the rows of the tables that the transaction created, and is found by those.
+internal/core/tx.go Tx.spoolTouched remove statement: row = tx.committed(t, row) =>
+	The planted bugs blobCut and nullZero are then planted only in the rows of the tables that the transaction created, and are found by those.
 internal/core/tx.go Tx.committed condition: v.WhichKind() == s4qlpb.Value_Blob_case => true
-	GetBlob of a value that is not a blob is nil, which holds no zero byte, so the planted bug blobCut leaves it as it is.
+	GetBlob of a value that is not a blob is nil, which holds no zero byte, so the planted bug blobCut leaves it as it is; no test plants blobCut beside nullZero, whose case it would then hide.
 internal/core/tx.go Tx.committed constant: bytes.IndexByte(v.GetBlob(), 0) => bytes.IndexByte(v.GetBlob(), 1)
 	The planted bug blobCut: it cuts a blob at another byte, and is found either way.
 internal/core/tx.go Tx.committed operator: j >= 0 => j > 0

@@ -14,8 +14,10 @@ import (
 )
 
 // cacheVersion is the version of the layout of the cache that this package makes and reads: the
-// table s4ql_cache, and one table for each table of the database.
-const cacheVersion = 1
+// table s4ql_cache, and one table for each table of the database, in which a column that takes NULL
+// is declared with "default null". A cache of version 1 has no column that takes NULL, so it holds
+// what version 2 means, and [conn.setUp] raises its version in place.
+const cacheVersion = 2
 
 // maxLength is SQLite's default limit for the length of a text, a blob, and a row, in bytes, which
 // is also the largest that SQLite takes: SQLITE_MAX_LENGTH.
@@ -206,7 +208,8 @@ func (c *conn) query(sql string, row func(s *sqlite.Stmt) error, args ...any) er
 // loss the cache can then lack its last commits, and is never corrupt
 // (https://sqlite.org/pragma.html#pragma_synchronous). A cache that is behind is what catching up
 // from the log is for, so the sync at every commit that synchronous = full adds buys nothing.
-func (c *conn) setUp(syncOff bool, identity string) error {
+func (c *conn) setUp(options Options) error {
+	syncOff, identity := options.syncOff, options.Identity
 	if err := c.wal(); err != nil {
 		return err
 	}
@@ -243,18 +246,21 @@ func (c *conn) setUp(syncOff bool, identity string) error {
 		}
 	}
 
-	if _, err := c.position(); err != nil {
+	// A cache of version 1 is checked as one of its version, and raised to version 2 only after every
+	// check, so that a cache that is refused is left as it is. Another instance can raise it after
+	// these reads, so the upgrade decides on what it reads again in its own transaction.
+	r, err := c.record()
+	if err != nil {
 		return err
 	}
-	var recorded string
-	if err := c.query("select database from main.s4ql_cache", func(s *sqlite.Stmt) error {
-		recorded = s.ColumnText(0)
-		return nil
-	}); err != nil {
+	if options.versionRead != nil {
+		(*options.versionRead)(r.version)
+	}
+	if err := r.check(identity); err != nil {
 		return err
 	}
-	if recorded != identity {
-		return fmt.Errorf("%w: it records the database %q, and this instance opens the database %q; open each database with a cache of its own, or delete the cache, with its files -wal and -shm, if the database has moved", ErrCacheDatabase, recorded, identity)
+	if r.version != cacheVersion {
+		return c.upgrade(identity)
 	}
 	return nil
 }
@@ -328,27 +334,157 @@ func (c *conn) make(identity string) error {
 	return c.exec("insert into main.s4ql_cache (id, version, head, database) values (1, ?, ?, ?)", int64(cacheVersion), format.EmptyLog.String(), identity)
 }
 
+// upgrade a cache of version 1 to version 2 in place, in a transaction that holds the write lock. A
+// table of a cache of version 1 is declared as a table of version 2 whose columns do not take NULL,
+// and the engine before version 2 put no NULL into one, so only the version changes. The core did
+// take a NULL in any column outside the primary key then, so upgrade refuses a cache that holds
+// one, with [ErrCacheVersion], and leaves it as it is. A version of s4ql that reads version 1 then
+// refuses the cache, and does not take a column that takes NULL for one that does not.
+//
+// Another instance can upgrade the cache between the read of [conn.setUp] and this transaction, so
+// upgrade reads the record of the cache again inside the transaction and checks it as setUp does,
+// for the given identity, and decides on that: a cache that is of version 2 by then is left as it
+// is, as one that the instance opens. The other instance can also hold the write lock by then, for
+// a write of its own, so when the transaction cannot begin, upgrade looks at the version again, and
+// opens a cache of version 2 without the lock.
+func (c *conn) upgrade(identity string) error {
+	if err := c.c.Exec("begin immediate"); err != nil {
+		if r, herr := c.head(); herr == nil && r.version == cacheVersion {
+			return nil
+		}
+		return err
+	}
+	r, err := c.record()
+	if err == nil {
+		err = r.check(identity)
+	}
+	if err == nil && r.version != cacheVersion {
+		err = c.checkNoNull()
+		if err == nil {
+			err = c.exec("update main.s4ql_cache set version = ? where id = 1", int64(cacheVersion))
+		}
+	}
+	if err != nil {
+		_ = c.c.Exec("rollback")
+		c.forget()
+		return err
+	}
+	c.forget()
+	if err := c.c.Exec("commit"); err != nil {
+		_ = c.c.Exec("rollback")
+		return err
+	}
+	return nil
+}
+
+// checkNoNull finds no NULL in a column of the cache that does not take NULL.
+func (c *conn) checkNoNull() error {
+	tables, err := c.list()
+	if err != nil {
+		return err
+	}
+	for _, t := range tables {
+		for position, column := range t.columns {
+			if t.inKey[position] || column.nullable {
+				continue
+			}
+			n, err := c.count(fmt.Sprint("select 1 from main.", quote(t.name), " where ", quote(column.name), " is null limit 1"))
+			if err != nil {
+				return err
+			}
+			if n > 0 {
+				return fmt.Errorf("%w: its table %q holds NULL in the column %q, which does not take NULL; open the database with a new cache, or delete this one, with its files -wal and -shm", ErrCacheVersion, t.name, column.name)
+			}
+		}
+	}
+	return nil
+}
+
 // position that the cache records: the name of the last commit object that it has applied, or
-// [format.EmptyLog].
+// [format.EmptyLog]. It refuses a cache of another version than this code makes with
+// [ErrCacheVersion].
 func (c *conn) position() (format.Name, error) {
-	var name format.Name
-	var rows int
-	err := c.query("select version, head from main.s4ql_cache", func(s *sqlite.Stmt) error {
-		rows++
-		if version := s.ColumnInt64(0); version != cacheVersion {
-			return fmt.Errorf("%w: it has version %v, and this version of s4ql reads version %v; open the database with a new cache, or delete this one, with its files -wal and -shm", ErrCacheVersion, version, cacheVersion)
-		}
-		var err error
-		if name, err = format.ParseName(s.ColumnText(1)); err != nil {
-			return fmt.Errorf("%w: its position: %v", ErrCacheVersion, err)
-		}
-		return nil
-	})
+	r, err := c.head()
 	if err != nil {
 		return format.Name{}, err
 	}
+	if r.version != cacheVersion {
+		return format.Name{}, r.versionError()
+	}
+	return r.position()
+}
+
+// record of the cache, the one row of its table s4ql_cache.
+type record struct {
+	version  int64
+	head     string
+	database string
+}
+
+// record of the cache, with the identity of its database if it is of a version that this code
+// opens: a cache of version 0 has no column for it. It reads the identity in a statement of its
+// own, so outside a transaction the identity can be of a later state of the row than the version;
+// no instance changes the identity of a cache.
+func (c *conn) record() (record, error) {
+	r, err := c.head()
+	if err != nil {
+		return record{}, err
+	}
+	if r.version != 1 && r.version != cacheVersion {
+		return r, nil
+	}
+	err = c.query("select database from main.s4ql_cache", func(s *sqlite.Stmt) error {
+		r.database = s.ColumnText(0)
+		return nil
+	})
+	return r, err
+}
+
+// head is the record of the cache without the identity of its database: its version and its
+// position. It refuses a cache that records no row, or more than one, with [ErrCacheVersion].
+func (c *conn) head() (record, error) {
+	var r record
+	var rows int
+	if err := c.query("select version, head from main.s4ql_cache", func(s *sqlite.Stmt) error {
+		rows++
+		r = record{version: s.ColumnInt64(0), head: s.ColumnText(1)}
+		return nil
+	}); err != nil {
+		return record{}, err
+	}
 	if rows != 1 {
-		return format.Name{}, fmt.Errorf("%w: it records %v positions", ErrCacheVersion, rows)
+		return record{}, fmt.Errorf("%w: it records %v positions", ErrCacheVersion, rows)
+	}
+	return r, nil
+}
+
+// check that the record is of a cache that this code opens for the database with the given
+// identity: of version 1, which [conn.upgrade] raises, or of [cacheVersion], with a position that
+// is a name, and of that database. It refuses another version, and a position that is no name, with
+// [ErrCacheVersion], and another database with [ErrCacheDatabase].
+func (r record) check(identity string) error {
+	if r.version != 1 && r.version != cacheVersion {
+		return r.versionError()
+	}
+	if _, err := r.position(); err != nil {
+		return err
+	}
+	if r.database != identity {
+		return fmt.Errorf("%w: it records the database %q, and this instance opens the database %q; open each database with a cache of its own, or delete the cache, with its files -wal and -shm, if the database has moved", ErrCacheDatabase, r.database, identity)
+	}
+	return nil
+}
+
+// versionError of a cache whose version this code does not read.
+func (r record) versionError() error {
+	return fmt.Errorf("%w: it has version %v, and this version of s4ql reads version %v; open the database with a new cache, or delete this one, with its files -wal and -shm", ErrCacheVersion, r.version, cacheVersion)
+}
+
+// position that the record holds, which is [ErrCacheVersion] if it is not a name.
+func (r record) position() (format.Name, error) {
+	name, err := format.ParseName(r.head)
+	if err != nil {
+		return format.Name{}, fmt.Errorf("%w: its position: %v", ErrCacheVersion, err)
 	}
 	return name, nil
 }
@@ -379,13 +515,19 @@ type table struct {
 type column struct {
 	name string
 	typ  s4qlpb.Type
+	// nullable is whether the column takes NULL. A primary-key column never does.
+	nullable bool
 }
 
 // createTable that describes t.
 func (t *table) createTable() *s4qlpb.CreateTable {
 	ct := s4qlpb.CreateTable_builder{Table: new(t.name)}
 	for _, c := range t.columns {
-		ct.Columns = append(ct.Columns, s4qlpb.Column_builder{Name: new(c.name), Type: new(c.typ)}.Build())
+		column := s4qlpb.Column_builder{Name: new(c.name), Type: new(c.typ)}
+		if c.nullable {
+			column.Nullable = new(true)
+		}
+		ct.Columns = append(ct.Columns, column.Build())
 	}
 	for _, position := range t.key {
 		ct.PrimaryKey = append(ct.PrimaryKey, uint32(position))
@@ -397,7 +539,7 @@ func (t *table) createTable() *s4qlpb.CreateTable {
 func newTable(ct *s4qlpb.CreateTable) *table {
 	t := &table{name: ct.GetTable(), inKey: make([]bool, len(ct.GetColumns()))}
 	for _, c := range ct.GetColumns() {
-		t.columns = append(t.columns, column{name: c.GetName(), typ: c.GetType()})
+		t.columns = append(t.columns, column{name: c.GetName(), typ: c.GetType(), nullable: c.GetNullable()})
 	}
 	for _, position := range ct.GetPrimaryKey() {
 		t.key = append(t.key, int(position))
@@ -462,13 +604,16 @@ func typeOf(declared string) (s4qlpb.Type, bool) {
 }
 
 // createSQL is the statement that creates the table t in the cache: a strict table without a
-// rowid, with the names and the columns of the database's table.
+// rowid, with the names and the columns of the database's table. A column that takes NULL is
+// declared "default null", which is how [conn.load] tells it, and every other column outside the
+// primary key "not null", so that SQLite refuses a NULL there too; a primary-key column of a table
+// without a rowid never takes NULL.
 func (t *table) createSQL() (string, error) {
 	var b strings.Builder
 	b.WriteString("create table main.")
 	b.WriteString(quote(t.name))
 	b.WriteString(" (")
-	for _, c := range t.columns {
+	for i, c := range t.columns {
 		typ, err := typeSQL(c.typ)
 		if err != nil {
 			return "", err
@@ -476,6 +621,12 @@ func (t *table) createSQL() (string, error) {
 		b.WriteString(quote(c.name))
 		b.WriteString(" ")
 		b.WriteString(typ)
+		switch {
+		case c.nullable:
+			b.WriteString(" default null")
+		case !t.inKey[i]:
+			b.WriteString(" not null")
+		}
 		b.WriteString(", ")
 	}
 	b.WriteString("primary key (")
@@ -522,11 +673,12 @@ func placeholders(n int) string {
 }
 
 // checkValue v for the column at position of the table: its storage class is the one of the
-// column's type, or it is NULL in a column outside the primary key; a real is neither NaN nor
-// infinite, and text is valid UTF-8 without the character NUL, which s4ql never stores; and a text
-// or a blob is not longer than limit, SQLite's limit for the length of one, for which the error
-// wraps [ErrTooBig]. A strict table of SQLite does not refuse every value of another storage class:
-// it converts the text '1' and the real 1.0 to an integer, and the integer 1 to a real.
+// column's type, or it is NULL in a column that takes NULL, which no primary-key column does; a
+// real is neither NaN nor infinite, and text is valid UTF-8 without the character NUL, which s4ql
+// never stores; and a text or a blob is not longer than limit, SQLite's limit for the length of
+// one, for which the error wraps [ErrTooBig]. A strict table of SQLite does not refuse every value
+// of another storage class: it converts the text '1' and the real 1.0 to an integer, and the
+// integer 1 to a real.
 func (t *table) checkValue(position int, v *s4qlpb.Value, limit int) error {
 	c := t.columns[position]
 	var n int
@@ -550,10 +702,13 @@ func (t *table) checkValue(position int, v *s4qlpb.Value, limit int) error {
 	case kind == s4qlpb.Value_Blob_case && c.typ == s4qlpb.Type_TYPE_BLOB:
 		n = len(v.GetBlob())
 	case kind == s4qlpb.Value_Null_case:
-		if !t.inKey[position] {
-			return nil
+		switch {
+		case t.inKey[position]:
+			return invalidf("NULL in the primary-key column %q of the table %q", c.name, t.name)
+		case !c.nullable:
+			return invalidf("NULL in the column %q of the table %q, which does not take NULL", c.name, t.name)
 		}
-		return invalidf("NULL in the primary-key column %q of the table %q", c.name, t.name)
+		return nil
 	default:
 		return invalidf("a value of kind %v in the column %q of the table %q, whose type is %v", kind, c.name, t.name, c.typ)
 	}
@@ -666,15 +821,25 @@ func (c *conn) load(name string) (*table, error) {
 
 	// The position of a column in the primary key, from 1, with its position in the table.
 	keyed := map[int64]int{}
-	if err := c.query("select name, type, pk from pragma_table_info(?, 'main') order by cid", func(s *sqlite.Stmt) error {
+	// A column takes NULL if it is declared "default null", and has no other default: SQLite reports
+	// the text of a default as it was declared, and no default as NULL.
+	if err := c.query(`select name, type, pk, "notnull", dflt_value from pragma_table_info(?, 'main') order by cid`, func(s *sqlite.Stmt) error {
 		typ, ok := typeOf(s.ColumnText(1))
 		if !ok {
 			return fmt.Errorf("%w: the column %q of its table %q has the type %q", ErrCacheVersion, s.ColumnText(0), t.name, s.ColumnText(1))
 		}
-		if pk := s.ColumnInt64(2); pk > 0 {
+		pk := s.ColumnInt64(2)
+		var nullable bool
+		if s.ColumnType(4) != sqlite.TypeNull {
+			if fold(s.ColumnText(4)) != "null" || pk > 0 || s.ColumnInt64(3) != 0 {
+				return fmt.Errorf("%w: the column %q of its table %q has the default %q", ErrCacheVersion, s.ColumnText(0), t.name, s.ColumnText(4))
+			}
+			nullable = true
+		}
+		if pk > 0 {
 			keyed[pk] = len(t.columns)
 		}
-		t.columns = append(t.columns, column{name: s.ColumnText(0), typ: typ})
+		t.columns = append(t.columns, column{name: s.ColumnText(0), typ: typ, nullable: nullable})
 		return nil
 	}, t.name); err != nil {
 		return nil, err
@@ -797,7 +962,9 @@ func (c *conn) upsert(t *table, row []*s4qlpb.Value) error {
 // whether it did. SQLite gives "string or blob too big" for a row that it cannot hold also when the
 // key exists, since it builds the record of the row first.
 func (c *conn) insert(t *table, row []*s4qlpb.Value) (bool, error) {
-	sql := fmt.Sprint("insert or ignore into main.", quote(t.name), " (", t.columnList(t.all()), ") values (", placeholders(len(t.columns)), ") returning 1")
+	// "on conflict do nothing" skips the row only for its primary key, and a NULL in a column that is
+	// declared "not null" still fails, where "insert or ignore" would skip that row too.
+	sql := fmt.Sprint("insert into main.", quote(t.name), " (", t.columnList(t.all()), ") values (", placeholders(len(t.columns)), ") on conflict do nothing returning 1")
 	n, err := c.count(sql, values(row)...)
 	return n > 0, err
 }
