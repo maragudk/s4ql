@@ -183,6 +183,26 @@ async function unit() {
     "a serves select code from barcodes where code = 5712345678903: 1 row.", "a serves select code from barcodes where code = 5712345678903: no such table: barcodes."];
   expect(JSON.stringify(stream) === JSON.stringify(wantStream), `the log shows the SQL of commits and reads (${stream.join(" | ")})`);
 
+  // A delete is in the log as its commit, and a read of a deleted row that finds none says so. A
+  // commit object of a delete names the key that it deletes. A delete that gets no answer has an
+  // unknown outcome, as a write has.
+  tell = R.teller();
+  const gone = 5737330940083;
+  const deleteName = "fedcba9876543210".repeat(4);
+  const deletes = [
+    { t: 1, kind: "request", what: "applied", purpose: "upload", object: { commit: { name: deleteName, deletes: [gone], statements: [{ sql: "delete from barcodes where code = ?", args: [gone] }] } } },
+    { t: 2, kind: "core", event: "commit", instance: "a", process: "a", attrs: { outcome: "committed", "commit.name": deleteName } },
+    { ...call(3, "a", "served", ""), args: [gone], expect: "none", keys: [] },
+    { ...call(4, "a", "served", ""), args: [gone], expect: "row", keys: [] },
+  ].map((e) => tell(e)).filter((w) => w.tier).map((w) => w.text);
+  const wantDeletes = [`a commits delete from barcodes where code = ${gone} as fedcba98.`,
+    `a serves select code from barcodes where code = ${gone}: 0 rows, as deleted.`, `a serves select code from barcodes where code = ${gone}: 0 rows.`];
+  expect(JSON.stringify(deletes) === JSON.stringify(wantDeletes), `the log shows a delete and a read of its row (${deletes.join(" | ")})`);
+  const labels = [R.commitKeysText({ deletes: [gone] }), R.commitKeysText({ keys: [7] }), R.commitKeysText({})];
+  expect(JSON.stringify(labels) === JSON.stringify([`delete ${gone}`, "key 7", "no rows"]), `a commit object says what it deletes (${labels.join(" | ")})`);
+  const lostDelete = R.requestFailure({ ...call(5, "a", "lost", "crashed"), op: "delete", sql: "delete from barcodes where code = ?", args: [gone] });
+  expect(lostDelete.words === "no answer from a, write outcome unknown" && lostDelete.line === `A request gets no answer from a: delete from barcodes where code = ${gone}, outcome unknown.`, `a delete that gets no answer has an unknown outcome (${lostDelete.line})`);
+
   // The status of the requests is what the latest that ended got: ok from the instance that served
   // or committed it, or the words of its failure, which is the only state that is failing.
   const statuses = [{ ...call(1, "a", "served"), keys: [1] }, { ...call(2, "b", "committed"), op: "write", value: 7 }, call(3, "a", "down", "the process of the instance has crashed"), call(4, "b", "refused", "no valid lease: not_holder")]
@@ -301,8 +321,9 @@ async function unit() {
     const player = S.player(ctx, master);
     let played = 0, ticked = 0;
     for (let i = 0; i < 300; i++) {
-      // The ticks of every kind every 10 ms, the scan at each of its pitches, under the figures.
-      for (const k of ticks) if (player.tick(k, k === "scan" ? S.SCANS[i % S.SCANS.length] : 0, i / 100)) ticked++;
+      // The ticks of every kind every 10 ms, the scan and the void at each of their pitches, under
+      // the figures.
+      for (const k of ticks) if (player.tick(k, k === "scan" || k === "void" ? S.SCANS[i % S.SCANS.length] : 0, i / 100)) ticked++;
       for (const k of kinds) if (player.play(k, i / 100)) played++;
     }
     let peak = 0;
@@ -318,9 +339,9 @@ async function unit() {
   expect(calm.peak > 0 && calm.peak <= 0.06 && calm.played <= 4 * 3 && calm.ticked > 0 && calm.ticked <= 3 / S.TICK_SPACING, `a burst of sounds with ticks under them peaks at ${dB(calm.peak)} (${dB(quiet.peak)} without the ticks), and plays ${calm.played} sounds and ${calm.ticked} ticks in 3 s`);
   expect(alarmed.peak > 0 && alarmed.peak <= 0.1, `a burst of sounds with the alarm and ticks peaks at ${dB(alarmed.peak)} (${dB(quietAlarmed.peak)} without the ticks)`);
 
-  // Each tick alone: the scan, at every pitch, at most at the level of a figure, the select in the
-  // background, and the error tone. Ticks come at most every TICK_SPACING, and the error tone at most
-  // every ERROR_SPACING.
+  // Each tick alone: the scan, at every pitch, at most at the level of a figure, the void below the
+  // scan, the select in the background, and the error tone. Ticks come at most every TICK_SPACING, and
+  // the error tone at most every ERROR_SPACING.
   const alone = async (kind, hz) => {
     const ctx = new OfflineAudioContext(1, 48000 * 0.5, 48000);
     const master = ctx.createGain();
@@ -332,9 +353,12 @@ async function unit() {
     return peak;
   };
   const scans = await Promise.all(S.SCANS.map((hz) => alone("scan", hz)));
+  const voids = await Promise.all(S.SCANS.map((hz) => alone("void", hz)));
   const [select, error] = [Math.max(await alone("select"), ...(await Promise.all(S.SCANS.map((hz) => alone("select", hz))))), await alone("error")];
   expect(Math.max(...scans) <= S.MASTER && Math.min(...scans) > 0 && select < Math.min(...scans) / 1.5 && error > 0 && error < S.MASTER,
     `a scan peaks at ${dB(Math.max(...scans))}, a select at ${dB(select)}, and an error tone at ${dB(error)}, against ${dB(S.MASTER)} for a figure`);
+  expect(Math.max(...voids) < Math.min(...scans) && Math.min(...voids) > select && S.TICKS.void.notes.length === 2 && S.TICKS.void.notes[1][0] < S.TICKS.void.notes[0][0],
+    `a void, a note and a drop, peaks at ${dB(Math.max(...voids))}, below a scan and above a select`);
   const rateCtx = new OfflineAudioContext(1, 4800, 48000);
   const rate = S.player(rateCtx, rateCtx.destination);
   const errors = Array.from({ length: 300 }, (_, i) => rate.tick("error", 0, i / 100)).filter(Boolean).length;
@@ -347,9 +371,10 @@ async function unit() {
     { ...call(1, "a", "started"), op: "write", value: 7 },
     write(call(2, "a", "committed")), { ...call(3, "a", "served"), args: [7], keys: [7] }, { ...call(4, "a", "served"), args: [7], keys: [] },
     call(5, "a", "refused", "no valid lease: not_holder"), call(6, "a", "down", "crashed"),
+    { ...call(7, "a", "committed"), op: "delete", sql: "delete from barcodes where code = ?", args: [7] },
   ].map((e) => S.tickOf(e)).filter(Boolean);
   const kindsTicked = ticked.map((k) => k.kind).join(", ");
-  expect(kindsTicked === "scan, select, miss, error, error", `each request that ends ticks (${kindsTicked})`);
+  expect(kindsTicked === "scan, select, miss, error, error, void" && ticked[5].hz === S.keyNote(7), `each request that ends ticks, a delete that commits at the note of its key (${kindsTicked})`);
   const run = Array.from({ length: 12 }, (_, i) => S.SCANS.indexOf(S.keyNote(i + 1)));
   expect(ticked[0].hz === S.keyNote(7) && ticked[1].hz === S.keyNote(7) && ticked[2].hz === S.keyNote(7) / 2 && S.keyNote(7) === S.keyNote(7)
     && run.every((i) => i >= 0) && new Set(run).size >= 4 && run.some((x, i) => i > 0 && x < run[i - 1]) && S.SCANS.every((hz) => hz >= 1200 && hz <= 3000),
@@ -459,7 +484,7 @@ async function check() {
   turbo.click();
   expect(turbo.getAttribute("aria-pressed") === "false", "turbo is off again");
   await until(() => p.requests().writes + p.requests().reads > 0);
-  expect(p.served("b") === "0 inserts, 0 selects; refused 0", `the requests are served by a from the start (${JSON.stringify(p.requests())}), and b gets no call (${p.served("b")})`);
+  expect(p.served("b") === "0 inserts, 0 deletes, 0 selects; refused 0", `the requests are served by a from the start (${JSON.stringify(p.requests())}), and b gets no call (${p.served("b")})`);
   await until(() => p.requests().status === "ok from a");
   expect(!p.requests().failing, "while a serves the requests, their status is ok from a, and not failing");
 

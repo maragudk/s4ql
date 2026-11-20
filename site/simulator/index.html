@@ -320,7 +320,7 @@ h2 {
 
 .requests {
   display: grid;
-  grid-template-columns: auto auto repeat(3, minmax(0, 1fr)) minmax(0, 2.6fr);
+  grid-template-columns: auto auto repeat(4, minmax(0, 1fr)) minmax(0, 2.6fr);
   border: var(--rule);
 }
 .requests > div { display: flex; align-items: center; gap: 12px; padding: 12px 20px; min-width: 0; }
@@ -342,14 +342,20 @@ h2 {
 @media (max-width: 1139px) {
   .requests { grid-template-columns: auto minmax(0, 1fr); }
   .requests > div:nth-child(2) { justify-content: flex-end; }
-  .requests dl { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 2.4fr); border-top: var(--rule); }
+  .requests dl { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(0, 2.4fr); border-top: var(--rule); }
   .requests dl > div:first-child { border-left: 0; }
 }
 @media (max-width: 720px) {
   .requests > div { padding: 12px 16px; }
-  .requests dl { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .requests dl > div { padding: 8px 16px; }
+  .requests dl { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .requests dl > div { padding: 8px 10px; }
+  .requests dl > div:first-child, .requests dl > div.status { padding-left: 16px; }
   .requests dl > div.status { grid-column: 1 / -1; border-left: 0; border-top: var(--rule); }
+}
+@media (max-width: 379px) {
+  .requests dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .requests dl > div:nth-child(3) { border-left: 0; padding-left: 16px; }
+  .requests dl > div:nth-child(3), .requests dl > div:nth-child(4) { border-top: var(--rule); }
 }
 
 /* The edge of the requests, from the middle of their strip down into the instance that they go to.
@@ -706,6 +712,7 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
       </div>
       <dl>
         <div><dt class="caps">Inserts</dt><dd id="requests-writes">0</dd></div>
+        <div><dt class="caps">Deletes</dt><dd id="requests-deletes">0</dd></div>
         <div><dt class="caps">Selects</dt><dd id="requests-reads">0</dd></div>
         <div><dt class="caps">Failed</dt><dd id="requests-failed">0</dd></div>
         <div class="status" id="requests-status"><dt class="caps">Status</dt><dd id="requests-status-words">no requests yet</dd></div>

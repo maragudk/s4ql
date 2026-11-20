@@ -104,7 +104,7 @@ let tell = null; // the teller of run.js, which start makes
 const lines = []; // the last LINES lines of the log, newest first
 let linesTotal = 0;
 const calls = {}; // by instance: {w, r, x, why}
-const requests = { w: 0, r: 0, x: 0, status: "", failing: false }; // what the requests got, and the latest
+const requests = { w: 0, d: 0, r: 0, x: 0, status: "", failing: false }; // what the requests got, and the latest
 const bars = new Map(); // events by slice of fake time
 const marks = []; // the times of the visitor's actions
 const names = new Map(); // the process of each holder ID
@@ -114,7 +114,7 @@ const stopped = {}; // by instance: whether the visitor's Stop closed the databa
 // ready, or failed, data-busy is "true" while a command is on its way, data-t is the fake time of the session in
 // whole ms, data-playing is "true" while it plays, data-lines counts the lines of the log so far, and
 // data-commits the commit objects. The element #requests has data-target, the instance that the
-// requests go to, and data-writes, data-reads, and data-failed, what they got. #requests-status has
+// requests go to, and data-writes, data-deletes, data-reads, and data-failed, what they got. #requests-status has
 // data-failing, "true" while the latest request that ended failed. The edge of the requests to each
 // instance, [data-wire], has data-on, "true" for the instance that they go to, and so has the
 // instance, [data-instance], in data-requests. The edge of each instance to S3, [data-edge="s3"],
@@ -243,14 +243,14 @@ function take(answer, job = {}) {
       case "call": {
         if (e.caller === "client" && e.what !== "started") {
           const st = R.requestStatus(e);
-          if (e.what === "committed") requests.w++;
+          if (e.what === "committed") requests[e.op === "delete" ? "d" : "w"]++;
           else if (e.what === "served") requests.r++;
           else requests.x++;
           requests.status = st.words;
           requests.failing = st.failing;
         }
-        const c = (calls[e.instance] ||= { w: 0, r: 0, x: 0, why: "" });
-        if (e.what === "committed") c.w++;
+        const c = (calls[e.instance] ||= { w: 0, d: 0, r: 0, x: 0, why: "" });
+        if (e.what === "committed") c[e.op === "delete" ? "d" : "w"]++;
         else if (e.what === "served") c.r++;
         else if (e.what === "refused") {
           c.x++;
@@ -452,8 +452,8 @@ function drawNode(c) {
   c.f.hand.style.visibility = clocks === "none" ? "hidden" : "";
   c.clocks.dataset.paused = String(clocks !== "none" && paused(st));
 
-  const k = calls[c.name] || { w: 0, r: 0, x: 0, why: "" };
-  set(c.f.calls, `${count(k.w)} inserts, ${count(k.r)} selects`);
+  const k = calls[c.name] || { w: 0, d: 0, r: 0, x: 0, why: "" };
+  set(c.f.calls, `${count(k.w)} inserts, ${count(k.d)} deletes, ${count(k.r)} selects`);
   set(c.f.refused, k.x ? `${count(k.x)}, last: ${R.reasonWords(k.why)}` : "0");
 
   c.el.dataset.requests = String(target() === c.name);
@@ -512,11 +512,13 @@ function drawRequests() {
   const el = $("requests");
   el.dataset.target = to;
   el.dataset.writes = String(requests.w);
+  el.dataset.deletes = String(requests.d);
   el.dataset.reads = String(requests.r);
   el.dataset.failed = String(requests.x);
   for (const b of el.querySelectorAll("[data-target]")) b.setAttribute("aria-pressed", String(b.dataset.target === to));
   for (const w of document.querySelectorAll("[data-wire]")) w.dataset.on = String(w.dataset.wire === to);
   set($("requests-writes"), count(requests.w));
+  set($("requests-deletes"), count(requests.d));
   set($("requests-reads"), count(requests.r));
   set($("requests-failed"), count(requests.x));
   set($("requests-status-words"), requests.status || R.NO_REQUESTS);
@@ -604,7 +606,7 @@ function drawS3() {
     const sql = (c.statements || []).map((s) => `<li><code>${esc(s.sql)}</code>` +
       ((s.args || []).length ? ` <span class="caps">args</span> ${esc(s.args.map((a) => JSON.stringify(a)).join(", "))}` : "") + `</li>`).join("");
     return `<li class="commit ${cls}">${barcodeSVG(c.name, "code")}` +
-      `<div class="meta"><span class="name">${R.short(c.name)}</span><span>${R.keysText(c.keys)}</span><span>${esc(R.instanceOf(c.process))}</span><span>${R.clock(base + c.at)}</span><span class="caps">${tag}</span></div>` +
+      `<div class="meta"><span class="name">${R.short(c.name)}</span><span>${R.commitKeysText(c)}</span><span>${esc(R.instanceOf(c.process))}</span><span>${R.clock(base + c.at)}</span><span class="caps">${tag}</span></div>` +
       (sql ? `<ul class="sql">${sql}</ul>` : "") + `</li>`;
   }).join("");
   if (!out) out = `<li class="empty">None yet.</li>`;
@@ -661,7 +663,7 @@ async function reset() {
   linesTotal = 0;
   logged = -1;
   for (const k of Object.keys(calls)) delete calls[k];
-  Object.assign(requests, { w: 0, r: 0, x: 0, status: "", failing: false });
+  Object.assign(requests, { w: 0, d: 0, r: 0, x: 0, status: "", failing: false });
   bars.clear();
   marks.length = 0;
   names.clear();
