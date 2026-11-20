@@ -3,17 +3,18 @@ package stmttest
 import (
 	"fmt"
 	"reflect"
-	"slices"
 
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
 // TableColumn of a table as SQLite has it: its name as the table stores it, its declared type, such
-// as INT, and whether it is the primary key.
+// as INT, whether it is the primary key, and whether it takes NULL, which the primary key never
+// does.
 type TableColumn struct {
 	Name       string
 	Type       string
 	PrimaryKey bool
+	Nullable   bool
 }
 
 // Positions of the values of the insert in the table of the columns, in the order of the values:
@@ -56,18 +57,40 @@ func ColumnOf(columns []TableColumn, name stmt.Name) int {
 }
 
 // TypeRule of the insert into the table of the name, as the table stores it, and of the columns, in
-// the order of the table, with the arguments args, each an int64, a float64, a string, or a []byte,
-// as SQLite binds them: s4ql's "not supported" for the first column, in the order of the table,
-// whose value, a literal or an argument, is of another type than the column, where SQLite would
-// convert the value or give an error of its own. It is "" where every value has the type of its
-// column, and where SQLite gives its own error first: for a name of the list that the table does not
-// have, for another number of values, and for a column without a value, which gets SQLite's `NOT NULL
-// constraint failed` before SQLite looks at a type.
+// the order of the table, with the arguments args, each an int64, a float64, a string, a []byte, or
+// nil for NULL, as SQLite binds them: s4ql's "not supported" for the first column, in the order of
+// the table, whose value, a literal or an argument, is of another type than the column, where SQLite
+// would convert the value or give an error of its own. NULL has no type, so it is of no other type
+// than any column. The rule is "" where every value has the type of its column, and where SQLite
+// gives its own error first: for a name of the list that the table does not have, for another number
+// of values, and for NULL, given or for a column that the list leaves out, in a column that does not
+// take it, which gets SQLite's `NOT NULL constraint failed` before SQLite looks at a type.
 func TypeRule(table string, columns []TableColumn, insert *stmt.Insert, args []any) string {
 	positions, ok := Positions(columns, insert)
 	if !ok || len(args) != insert.Parameters() {
 		return ""
 	}
+	values := valuesOf(columns, positions)
+	for position, i := range values {
+		if c := columns[position]; !takesNull(c) && (i < 0 || isNull(insert.Values[i], args)) {
+			return ""
+		}
+	}
+	for position, i := range values {
+		if i < 0 {
+			continue
+		}
+		kind, what := ValueKind(insert.Values[i], args)
+		if c := columns[position]; kind != "null" && columnHolds[c.Type] != kind {
+			return fmt.Sprintf("s4ql: not supported: %v for the column %v.%v of type %v", what, table, c.Name, c.Type)
+		}
+	}
+	return ""
+}
+
+// valuesOf the columns: for each column, in the order of the table, the index of its value among
+// the values of an insert at the positions, or -1 for a column that the insert leaves out.
+func valuesOf(columns []TableColumn, positions []int) []int {
 	values := make([]int, len(columns))
 	for i := range values {
 		values[i] = -1
@@ -75,16 +98,19 @@ func TypeRule(table string, columns []TableColumn, insert *stmt.Insert, args []a
 	for i, position := range positions {
 		values[position] = i
 	}
-	if slices.Contains(values, -1) {
-		return ""
-	}
-	for position, i := range values {
-		kind, what := ValueKind(insert.Values[i], args)
-		if c := columns[position]; columnHolds[c.Type] != kind {
-			return fmt.Sprintf("s4ql: not supported: %v for the column %v.%v of type %v", what, table, c.Name, c.Type)
-		}
-	}
-	return ""
+	return values
+}
+
+// takesNull reports whether the column c takes NULL: never the primary key.
+func takesNull(c TableColumn) bool {
+	return c.Nullable && !c.PrimaryKey
+}
+
+// isNull reports whether the value of the term, a literal or the argument of args for its parameter,
+// is NULL.
+func isNull(term stmt.Term, args []any) bool {
+	kind, _ := ValueKind(term, args)
+	return kind == "null"
 }
 
 // columnHolds is the kind of value, as [ValueKind] names it, that a column of each declared type
@@ -92,10 +118,10 @@ func TypeRule(table string, columns []TableColumn, insert *stmt.Insert, args []a
 var columnHolds = map[string]string{"INT": "integer", "INTEGER": "integer", "REAL": "real", "TEXT": "text", "BLOB": "blob"}
 
 // ValueKind of the value of a term of an insert, a literal or the argument of args for its
-// parameter, as SQLite binds it: "integer", "real", "text", or "blob", and how s4ql's message of a
-// value of another type than its column names the value. It panics for an argument of another type
-// than int64, float64, string, and []byte, nil among them, and for a literal of no kind, [stmt.Null]
-// among them: the rule does not know NULL yet, which [Generator.Nulls] gives.
+// parameter, as SQLite binds it: "integer", "real", "text", "blob", or "null", and how s4ql's message
+// of a value of another type than its column names the value, which no message does for NULL. An
+// argument is NULL if it is nil, and a []byte that is nil is a blob. It panics for an argument of
+// another type than int64, float64, string, and []byte, and for a literal of no kind.
 func ValueKind(term stmt.Term, args []any) (kind, what string) {
 	if term.Parameter > 0 {
 		a := args[term.Parameter-1]
@@ -108,6 +134,8 @@ func ValueKind(term stmt.Term, args []any) (kind, what string) {
 			kind = "text"
 		case []byte:
 			kind = "blob"
+		case nil:
+			return "null", fmt.Sprintf("argument %v, which is NULL,", term.Parameter)
 		default:
 			panic(fmt.Sprintf("stmttest: an argument of type %v for SQLite", reflect.TypeOf(a)))
 		}
@@ -123,6 +151,8 @@ func ValueKind(term stmt.Term, args []any) (kind, what string) {
 		return "text", "a string literal"
 	case stmt.Blob:
 		return "blob", "a blob literal"
+	case stmt.Null:
+		return "null", "a NULL literal"
 	default:
 		panic(fmt.Sprintf("stmttest: a literal of type %T", v))
 	}
@@ -130,11 +160,13 @@ func ValueKind(term stmt.Term, args []any) (kind, what string) {
 
 // Faults of the insert into the table of the columns, with the arguments args as for [TypeRule], by
 // kind, in the order in which SQLite and s4ql look for them: each name of the list that the table
-// does not have, "a column that the table does not have"; another number of values, "the wrong number of
-// values"; each column without a value, "a column without a value"; and each value of another type
-// than its column, "a value of another type in the key" or "a value of another type in another
-// column". A wrong number of values, and a name that the table does not have, leave out the faults of
-// the values.
+// does not have, "a column that the table does not have"; another number of values, "the wrong
+// number of values"; each column that the list leaves out and that does not take NULL, "a column without a
+// value"; each NULL that the insert gives for a column that does not take it, "NULL in a column that
+// does not take it"; and each value of another type than its column, "a value of another type in
+// the key" or "a value of another type in another column", which NULL never is. A column that takes
+// NULL and that the list leaves out gets NULL, which is no fault. A wrong number of values, and a
+// name that the table does not have, leave out the faults of the values.
 func Faults(columns []TableColumn, insert *stmt.Insert, args []any) []string {
 	var faults []string
 	for _, name := range insert.Columns {
@@ -153,18 +185,19 @@ func Faults(columns []TableColumn, insert *stmt.Insert, args []any) []string {
 	if !ok || len(args) != insert.Parameters() {
 		return faults
 	}
-	named := make([]bool, len(columns))
-	for _, position := range positions {
-		named[position] = true
-	}
-	for _, n := range named {
-		if !n {
+	for position, i := range valuesOf(columns, positions) {
+		if c := columns[position]; i < 0 && !takesNull(c) {
 			faults = append(faults, "a column without a value")
 		}
 	}
 	for i, position := range positions {
+		if c := columns[position]; !takesNull(c) && isNull(insert.Values[i], args) {
+			faults = append(faults, "NULL in a column that does not take it")
+		}
+	}
+	for i, position := range positions {
 		kind, _ := ValueKind(insert.Values[i], args)
-		if c := columns[position]; columnHolds[c.Type] != kind {
+		if c := columns[position]; kind != "null" && columnHolds[c.Type] != kind {
 			faults = append(faults, map[bool]string{true: "a value of another type in the key", false: "a value of another type in another column"}[c.PrimaryKey])
 		}
 	}

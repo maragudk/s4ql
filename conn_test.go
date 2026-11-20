@@ -420,18 +420,16 @@ func TestPrepare(t *testing.T) {
 		is.Equal(t, "infinite real number (at offset 28)", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "create table t2 (v1 int primary key, v2 text null) strict, without rowid")
 		is.Equal(t, "NULL constraint (at offset 45)", notSupported(t, err))
-		// The pass supports a column that takes NULL and the literal NULL, and the engine does not run
-		// them yet.
-		_, err = db.PrepareContext(t.Context(), "create table t2 (v1 int primary key, v2 text) strict, without rowid")
-		is.Equal(t, "a column that takes NULL, which the engine does not run yet", notSupported(t, err))
-		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values (null)")
-		is.Equal(t, "NULL as a value, which the engine does not run yet", notSupported(t, err))
+		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values (-null)")
+		is.Equal(t, "NULL after a sign (at offset 29)", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1, V1) values (1, 2)")
 		is.Equal(t, "column named twice (at offset 20)", notSupported(t, err))
 		// The type of a column is looked up when the statement runs, and so are the columns.
 		for _, src := range []string{
 			"create table t2 (v2 real primary key) strict, without rowid", "insert into t1 (v1) values ('a')", "insert into t1 (v1) values (x'')",
 			"create table t2 (v1 int primary key, v1 text not null) strict, without rowid", "insert into t1 values (1, 2, 3)", "select v2, v2 from t1",
+			// NULL too, which the text alone does not refuse.
+			"create table t2 (v1 int primary key, v2 text) strict, without rowid", "insert into t1 (v1) values (null)", "insert into t1 values (?, NULL)",
 		} {
 			prepared, err := db.PrepareContext(t.Context(), src)
 			is.NotError(t, err, src)
@@ -528,6 +526,8 @@ func annotations(t *testing.T, w *world) []string {
 						note += " with " + strconv.Quote(p.GetText())
 					case p.HasBlob():
 						note += fmt.Sprintf(" with x'%x'", p.GetBlob())
+					case p.HasNull():
+						note += " with null"
 					default:
 						t.Fatalf("%q: a parameter of kind %v", note, p.WhichKind())
 					}
@@ -682,11 +682,12 @@ func TestParameters(t *testing.T) {
 			arg  any
 			want string
 		}{
-			{arg: nil, want: "argument 1 of type nil"},
-			{arg: sql.NullInt64{}, want: "argument 1 of type nil"},
-			{arg: sql.NullString{}, want: "argument 1 of type nil"},
-			{arg: (*int64)(nil), want: "argument 1 of type nil"},
+			// A nil []byte does not say whether it means NULL or the empty blob. database/sql hands the
+			// driver one also for a pointer to one, and for a valid sql.Null of one.
 			{arg: []byte(nil), want: "argument 1 of type []byte, which is nil"},
+			{arg: new([]byte), want: "argument 1 of type []byte, which is nil"},
+			{arg: sql.Null[[]byte]{Valid: true}, want: "argument 1 of type []byte, which is nil"},
+			{arg: sql.RawBytes(nil), want: "argument 1 of type []byte, which is nil"},
 			{arg: true, want: "argument 1 of type bool"},
 			{arg: flag(true), want: "argument 1 of type bool"},
 			{arg: time.Time{}, want: "argument 1 of type time.Time"},
@@ -1122,6 +1123,141 @@ func TestColumns(t *testing.T) {
 		is.Equal(t, "v2 TEXT: a", rowsText(t, ro, "select v2 from t3"))
 		is.NotError(t, ro.Commit())
 	})
+}
+
+func TestNulls(t *testing.T) {
+	const create = "create table n (k int primary key, t text, i integer, r real, b blob, s text not null) strict, without rowid"
+
+	t.Run("should take every kind of nil that database/sql hands the driver as NULL, in a column of any type, directly and prepared, and annotate it as NULL", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, create)
+		type valuer struct{ sql.NullString }
+		var nilValuer *nullValuer
+		nils := []any{nil, (*int64)(nil), (*string)(nil), (*[]byte)(nil), sql.NullString{}, sql.NullInt64{}, sql.NullFloat64{}, sql.Null[[]byte]{}, sql.Null[string]{}, valuer{}, nullValuer{}, nilValuer}
+		src := "insert into n (k, t, i, r, b, s) values (?, ?, ?, ?, ?, ?)"
+		prepared, err := db.PrepareContext(t.Context(), src)
+		is.NotError(t, err)
+		for k, v := range nils {
+			_, err := db.ExecContext(t.Context(), src, 2*k, v, v, v, v, "x")
+			is.NotError(t, err, fmt.Sprintf("%T", v))
+			_, err = prepared.ExecContext(t.Context(), 2*k+1, v, v, v, v, "x")
+			is.NotError(t, err, fmt.Sprintf("%T", v))
+		}
+		is.NotError(t, prepared.Close())
+		var rows []string
+		for range 2 * len(nils) {
+			rows = append(rows, "<nil> <nil> <nil> <nil> x")
+		}
+		is.Equal(t, "t TEXT, i INTEGER, r REAL, b BLOB, s TEXT: "+strings.Join(rows, "; "), rowsText(t, db, "select t, i, r, b, s from n"))
+		is.Equal(t, `insert into n (k, t, i, r, b, s) values (?, ?, ?, ?, ?, ?) with 0 with null with null with null with null with "x"`, annotations(t, w)[1])
+		is.NotError(t, db.Close())
+		is.Equal(t, int64(2*len(nils)), rowCount(t, w.serve(t, "b"), "select k from n"))
+	})
+
+	t.Run("should take the literal NULL, and give NULL to a column that the list leaves out, and give NULL back as nil, which scans into a sql.Null, a pointer, and an any", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, create, "insert into n values (1, null, NULL, null, null, 'x')", "insert into n (s, k) values ('y', 2)", "insert into n (k, t, i, r, b, s) values (3, 'a', 4, 1.5, x'01', 'z')")
+		is.Equal(t, "k INT, t TEXT, i INTEGER, r REAL, b BLOB, s TEXT: 1 <nil> <nil> <nil> <nil> x; 2 <nil> <nil> <nil> <nil> y; 3 a 4 1.5 [1] z", rowsText(t, db, "select * from n"))
+
+		var (
+			ns       sql.NullString
+			ni       sql.NullInt64
+			nf       sql.NullFloat64
+			nb       sql.Null[[]byte]
+			ps       *string
+			pi       *int64
+			anyValue any = "not nil"
+		)
+		// The first row is that of the key 1.
+		is.NotError(t, db.QueryRowContext(t.Context(), "select t, i, r, b, t, i, t from n").Scan(&ns, &ni, &nf, &nb, &ps, &pi, &anyValue))
+		is.True(t, !ns.Valid && !ni.Valid && !nf.Valid && !nb.Valid, "a sql.Null of NULL is not valid")
+		is.True(t, ps == nil && pi == nil, "a pointer of NULL is nil")
+		is.True(t, anyValue == nil, "an any of NULL is nil")
+
+		// A scan of NULL into a plain value is database/sql's own error.
+		var s string
+		var i int64
+		err := db.QueryRowContext(t.Context(), "select t from n").Scan(&s)
+		is.True(t, err != nil && strings.Contains(err.Error(), "converting NULL to string is unsupported"), fmt.Sprint(err))
+		err = db.QueryRowContext(t.Context(), "select i from n").Scan(&i)
+		is.True(t, err != nil && strings.Contains(err.Error(), "converting NULL to int64 is unsupported"), fmt.Sprint(err))
+		_, ok := errors.AsType[*s4ql.Error](err)
+		is.True(t, !ok, "the driver reports nothing wrong itself")
+
+		is.NotError(t, db.Close())
+		is.Equal(t, "k INT, t TEXT, i INTEGER, r REAL, b BLOB, s TEXT: 1 <nil> <nil> <nil> <nil> x; 2 <nil> <nil> <nil> <nil> y; 3 a 4 1.5 [1] z", rowsText(t, w.serve(t, "b"), "select * from n"))
+	})
+
+	t.Run("should give SQLite's NOT NULL constraint failed for a nil argument or NULL in the key or a column that does not take NULL, for the first in the order of the table, and set the count of changes to 0", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, create)
+		conn, err := db.Conn(t.Context())
+		is.NotError(t, err)
+		defer func() { is.NotError(t, conn.Close()) }()
+		cases := []struct {
+			src     string
+			args    []any
+			message string
+		}{
+			{"insert into n (k, s) values (?, ?)", []any{nil, "x"}, "NOT NULL constraint failed: n.k"},
+			{"insert into n (k, s) values (?, ?)", []any{sql.NullInt64{}, nil}, "NOT NULL constraint failed: n.k"},
+			{"insert into n (k, s) values (?, ?)", []any{1, (*string)(nil)}, "NOT NULL constraint failed: n.s"},
+			{"insert into n (k, t) values (?, ?)", []any{1, "x"}, "NOT NULL constraint failed: n.s"},
+			{"insert into n (t, s) values (?, null)", []any{"x"}, "NOT NULL constraint failed: n.k"},
+			{"insert into n (s, i) values (null, ?)", []any{"not an integer"}, "NOT NULL constraint failed: n.k"},
+		}
+		for j, c := range cases {
+			_, err := conn.ExecContext(t.Context(), fmt.Sprint("insert into n (k, s) values (", 100+j, ", 'x')"))
+			is.NotError(t, err)
+			_, err = conn.ExecContext(t.Context(), c.src, c.args...)
+			sqliteError(t, 19, 1299, c.message, err)
+			res, err := conn.ExecContext(t.Context(), "select * from n")
+			is.Equal(t, int64(0), affected(t, res, err), c.src)
+		}
+	})
+
+	t.Run("should take NULL in transactions, also after a statement that failed, and refuse the write in a read-only one", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, create)
+		tx := begin(t, db, nil)
+		_, err := tx.ExecContext(t.Context(), "insert into n (k, t, s) values (?, ?, ?)", 1, nil, "x")
+		is.NotError(t, err)
+		_, err = tx.ExecContext(t.Context(), "insert into n (k, t, s) values (?, ?, ?)", 2, "a", nil)
+		sqliteError(t, 19, 1299, "NOT NULL constraint failed: n.s", err)
+		is.Equal(t, "k INT, t TEXT: 1 <nil>", rowsText(t, tx, "select k, t from n"))
+		is.NotError(t, tx.Rollback())
+		is.Equal(t, "k INT: ", rowsText(t, db, "select k from n"))
+
+		tx = begin(t, db, nil)
+		_, err = tx.ExecContext(t.Context(), "insert into n (k, t, s) values (?, ?, ?)", 1, nil, "x")
+		is.NotError(t, err)
+		is.NotError(t, tx.Commit())
+		ro := begin(t, db, &sql.TxOptions{ReadOnly: true})
+		_, err = ro.ExecContext(t.Context(), "insert into n (k, s) values (?, ?)", 2, nil)
+		sqliteError(t, 8, 8, "attempt to write a readonly database", err)
+		is.Equal(t, "t TEXT: <nil>", rowsText(t, ro, "select t from n"))
+		is.NotError(t, ro.Commit())
+		is.NotError(t, db.Close())
+		is.Equal(t, "k INT, t TEXT, s TEXT: 1 <nil> x", rowsText(t, w.serve(t, "b"), "select k, t, s from n"))
+	})
+}
+
+// nullValuer is a [driver.Valuer] that gives nil. database/sql takes a nil pointer to it for nil
+// too, without a call.
+type nullValuer struct{}
+
+func (nullValuer) Value() (driver.Value, error) {
+	return nil, nil
+}
+
+// rowCount of the query src on db.
+func rowCount(t *testing.T, db querier, src string) int64 {
+	t.Helper()
+	return int64(len(rowsOf(t, db, src)))
 }
 
 func TestConn_Raw(t *testing.T) {

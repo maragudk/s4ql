@@ -469,7 +469,7 @@ var idPattern = regexp.MustCompile(`/\* id (\d+) \*/`)
 // withID puts the comment of the ID into the text of a statement that the pass supports, after its
 // first token, where the annotation keeps it.
 func withID(src string, id uint64) string {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err != nil || s == nil {
 		return src
 	}
@@ -496,7 +496,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 	}
 	a.src = withID(call.Src, a.id)
 	call.Src = a.src
-	if s, _ := checkText(a.src); s != nil {
+	if s, _ := stmt.Check(a.src); s != nil {
 		_, isSelect := s.(*stmt.Select)
 		a.write = !isSelect
 	}
@@ -573,7 +573,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 		// the generator, and every other that the pass supports, with the arguments that it takes must
 		// run.
 		kind, failure := checkArguments(call, a.answer)
-		s, _ := checkText(a.src)
+		s, _ := stmt.Check(a.src)
 		supported := call.Supported || s != nil
 		if kind == "" && supported && isInsert(a.src) && a.answer.err == "not supported" && strings.Contains(a.answer.message, " for the column ") {
 			// The refusal of a value of another type than its column, after the insert found its table
@@ -1199,7 +1199,8 @@ type logCommit struct {
 
 // verifyRows checks the rows of the changes of the log against the tables of the log before them:
 // each row that a commit upserts is of a table that exists there, has a value for every column of
-// the table, in the order of the table, and each value has the type of its column. The replay of the
+// the table, in the order of the table, and each value has the type of its column, or is NULL in a
+// column that takes NULL. The replay of the
 // log in SQLite runs its statements, and not its rows, so it does not see a row that holds the
 // values of a statement in other columns. It gives the number of rows of tables of several columns.
 func (r *run) verifyRows(ctx context.Context, log []logCommit) (wide int) {
@@ -1237,6 +1238,14 @@ func (r *run) verifyRows(ctx context.Context, log []logCommit) (wide int) {
 						wide++
 					}
 					for i, v := range values {
+						if v.HasNull() {
+							// NULL has no type. The core refuses it for a column that does not take
+							// it, so this finds a fault of the engine and of the core together.
+							if !columns[i].GetNullable() {
+								r.violate(ctx, "commit %v holds a row of the table %v with NULL in the column %v, which does not take NULL", k+1, t.GetTable(), columns[i].GetName())
+							}
+							continue
+						}
 						if !holds(columns[i].GetType(), v) {
 							r.violate(ctx, "commit %v holds a row of the table %v whose value %v of the column %v is of another type than its column, %v", k+1, t.GetTable(), valuesText([]*s4qlpb.Value{v}), columns[i].GetName(), declType(columns[i].GetType()))
 						}
@@ -1591,7 +1600,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 
 // tableOf the statement of src, which the pass supports, folded as SQLite compares names.
 func tableOf(src string) string {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err != nil {
 		panic(err)
 	}
@@ -1746,6 +1755,8 @@ func oracleValues(vs []*s4qlpb.Value) []any {
 			as = append(as, v.GetText())
 		case s4qlpb.Value_Blob_case:
 			as = append(as, v.GetBlob())
+		case s4qlpb.Value_Null_case:
+			as = append(as, nil)
 		default:
 			panic(fmt.Sprintf("a value of kind %v for the oracle", v.WhichKind()))
 		}
@@ -1773,7 +1784,7 @@ func coreState(ctx context.Context, d *core.DB) (string, error) {
 	for _, ct := range tables {
 		var columns []string
 		for _, c := range ct.GetColumns() {
-			columns = append(columns, c.GetName()+" "+declType(c.GetType()))
+			columns = append(columns, columnText(c.GetName(), declType(c.GetType()), c.GetNullable()))
 		}
 		var rows []string
 		for row, err := range r.Scan(ctx, ct.GetTable()) {

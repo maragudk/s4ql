@@ -55,34 +55,6 @@ var (
 	errPanicked = fmt.Errorf("%w: the statement panicked", ErrInternal)
 )
 
-// checkNulls of the statement s, which [stmt.Check] supports: "not supported" for the forms of
-// slice 6 that the engine does not run yet. They are a column that takes NULL, which is a column
-// that is not the primary key and does not say NOT NULL, and the literal NULL as a value of an
-// insert.
-func checkNulls(s stmt.Statement) error {
-	var what string
-	switch s := s.(type) {
-	case *stmt.CreateTable:
-		for _, c := range s.Columns {
-			if !c.PrimaryKey && !c.NotNull {
-				what = "a column that takes NULL"
-				break
-			}
-		}
-	case *stmt.Insert:
-		for _, v := range s.Values {
-			if _, ok := v.Value.(stmt.Null); ok {
-				what = "NULL as a value"
-				break
-			}
-		}
-	}
-	if what == "" {
-		return nil
-	}
-	return fmt.Errorf("%w: %v, which the engine does not run yet", stmt.ErrNotSupported, what)
-}
-
 // checkArguments of a statement with the given number of parameters: the error of [countArguments],
 // and then "not supported" for the first argument that is not a value that a column can hold, as
 // [checkArgument] says. Whether it is of the type of its column is checked when the statement runs,
@@ -99,15 +71,14 @@ func checkArguments(parameters int, args []*s4qlpb.Value) error {
 	return nil
 }
 
-// checkArgument a, the argument of the given number: "not supported" for NULL and for a value of no
-// kind, which no column holds yet, for a real that is not a number or is infinite, which SQLite
-// stores as NULL or as itself, and for text that is not valid UTF-8 or holds the character NUL,
-// which s4ql never stores. An integer, a blob, and every other real and text are values that a
-// column can hold.
+// checkArgument a, the argument of the given number: "not supported" for a value of no kind, which
+// no column holds, for a real that is not a number or is infinite, which SQLite stores as NULL or as
+// itself, and for text that is not valid UTF-8 or holds the character NUL, which s4ql never stores.
+// An integer, a blob, NULL, and every other real and text are values that a column can hold.
 func checkArgument(number int, a *s4qlpb.Value) error {
 	var which string
 	switch a.WhichKind() {
-	case s4qlpb.Value_Integer_case, s4qlpb.Value_Blob_case:
+	case s4qlpb.Value_Integer_case, s4qlpb.Value_Blob_case, s4qlpb.Value_Null_case:
 		return nil
 	case s4qlpb.Value_Real_case:
 		switch r := a.GetReal(); {
@@ -127,8 +98,6 @@ func checkArgument(number int, a *s4qlpb.Value) error {
 		default:
 			return nil
 		}
-	case s4qlpb.Value_Null_case:
-		which = "is NULL"
 	default:
 		which = "has no value"
 	}
@@ -153,8 +122,9 @@ func checkLength(v *s4qlpb.Value, limit int) error {
 
 // checkType of the value v for the column at position of the table t: "not supported" unless the
 // value has the type of the column, an integer for INT and INTEGER, a real for REAL, text for TEXT,
-// and a blob for BLOB, also where SQLite would convert it or give an error of its own. The value
-// comes from the expression e, an argument or a literal, which the message names.
+// and a blob for BLOB, also where SQLite would convert it or give an error of its own. NULL has no
+// type, and every column holds it here: the NOT NULL of a column is checked before. The value comes
+// from the expression e, an argument or a literal, which the message names.
 func checkType(t *s4qlpb.CreateTable, position int, v *s4qlpb.Value, e Expr) error {
 	c := t.GetColumns()[position]
 	var holds bool
@@ -170,7 +140,7 @@ func checkType(t *s4qlpb.CreateTable, position int, v *s4qlpb.Value, e Expr) err
 	default:
 		return internalError("a column of type %v", c.GetType())
 	}
-	if holds {
+	if holds || v.HasNull() {
 		return nil
 	}
 	var what string
@@ -271,8 +241,8 @@ func valuesForColumns(values, columns int) error {
 		Message: fmt.Sprintf("%v values for %v columns", values, columns), Offset: -1}
 }
 
-// notNullFailed is `NOT NULL constraint failed: %s.%s`, for a column that an insert leaves without a
-// value, with the names as the table stores them.
+// notNullFailed is `NOT NULL constraint failed: %s.%s`, for a column that does not take NULL and that
+// an insert gives NULL or leaves out, with the names as the table stores them.
 func notNullFailed(table, column string) error {
 	return &sqlerr.Error{Code: sqlerr.CodeConstraint, ExtendedCode: sqlerr.CodeConstraintNotNull,
 		Message: "NOT NULL constraint failed: " + table + "." + column, Offset: -1}

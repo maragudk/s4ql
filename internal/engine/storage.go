@@ -29,7 +29,8 @@ type writer interface {
 	createTable(ctx context.Context, ct *s4qlpb.CreateTable) error
 	// dropTable with the name, which exists.
 	dropTable(ctx context.Context, name string) error
-	// upsert the row into the table with the name: insert it, or replace the row with its key.
+	// upsert the row into the table with the name: insert it, or replace the row with its key. Only
+	// the planted bug skipUnique writes so.
 	upsert(ctx context.Context, name string, row []*s4qlpb.Value) error
 	// insertNew the row into the table with the name if the table has no row with its key, and report
 	// whether it did. It fails with SQLite's `string or blob too big` for a row whose record is too

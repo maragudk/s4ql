@@ -25,8 +25,8 @@ type Node interface {
 	node()
 }
 
-// Expr is an expression that gives a value: an [*Integer], a [*Real], a [*Text], a [*Blob], or a
-// [*Parameter].
+// Expr is an expression that gives a value: an [*Integer], a [*Real], a [*Text], a [*Blob], a
+// [*Null], or a [*Parameter].
 type Expr interface {
 	expr()
 }
@@ -39,10 +39,12 @@ type CreateTable struct {
 	PrimaryKey []int
 }
 
-// ColumnDef is a column of a [CreateTable].
+// ColumnDef is a column of a [CreateTable]. A column is NOT NULL unless it is Nullable, which a
+// column of the primary key never is.
 type ColumnDef struct {
-	Name stmt.Name
-	Type s4qlpb.Type
+	Name     stmt.Name
+	Type     s4qlpb.Type
+	Nullable bool
 }
 
 // DropTable drops a table, which must exist.
@@ -102,6 +104,9 @@ type Blob struct {
 	Value []byte
 }
 
+// Null is the literal NULL.
+type Null struct{}
+
 // Parameter is the argument that the statement is run with for its parameter of the number Number,
 // which counts from 1.
 type Parameter struct {
@@ -119,21 +124,19 @@ func (*Integer) expr()     {}
 func (*Real) expr()        {}
 func (*Text) expr()        {}
 func (*Blob) expr()        {}
+func (*Null) expr()        {}
 func (*Parameter) expr()   {}
 
-// NewPlan of the statement s, which [stmt.Check] gives and the engine runs: it is not of a form that
-// [checkNulls] refuses. It panics for a statement of another type or of such a form. The NOT NULL of
-// a column is not in the plan: every column of a table is NOT NULL, the primary key also when it does
-// not say so, as in SQLite's WITHOUT ROWID tables.
+// NewPlan of the statement s, which [stmt.Check] gives. It panics for a statement of another type. A
+// column that is not the primary key and does not say NOT NULL is Nullable. The primary key is NOT
+// NULL also when it does not say so, as in SQLite's WITHOUT ROWID tables, so a key with NOT NULL and
+// one without have the same plan.
 func NewPlan(s stmt.Statement) Plan {
-	if err := checkNulls(s); err != nil {
-		panic(fmt.Sprintf("engine: %v", err))
-	}
 	switch s := s.(type) {
 	case *stmt.CreateTable:
 		p := &CreateTable{Table: s.Table, PrimaryKey: []int{s.Key()}}
 		for _, c := range s.Columns {
-			p.Columns = append(p.Columns, ColumnDef{Name: c.Name, Type: columnType(c.Type)})
+			p.Columns = append(p.Columns, ColumnDef{Name: c.Name, Type: columnType(c.Type), Nullable: !c.PrimaryKey && !c.NotNull})
 		}
 		return p
 	case *stmt.DropTable:
@@ -150,7 +153,7 @@ func NewPlan(s stmt.Statement) Plan {
 	panic(fmt.Sprintf("engine: a statement of type %T", s))
 }
 
-// term of a row of an insert, as an expression: its literal, or its parameter.
+// term of a row of an insert, as an expression: its literal, NULL among them, or its parameter.
 func term(t stmt.Term) Expr {
 	switch v := t.Value.(type) {
 	case stmt.Integer:
@@ -161,6 +164,8 @@ func term(t stmt.Term) Expr {
 		return &Text{Value: string(v)}
 	case stmt.Blob:
 		return &Blob{Value: []byte(v)}
+	case stmt.Null:
+		return &Null{}
 	case nil:
 		return &Parameter{Number: t.Parameter}
 	}
@@ -168,7 +173,8 @@ func term(t stmt.Term) Expr {
 }
 
 // Format the plan p as text: a line for each statement and node, with the nodes that a node reads
-// from indented under it, and every name as the statement writes it.
+// from indented under it, and every name as the statement writes it. A column of a table that takes
+// NULL has NULL after its type, and every other column is NOT NULL.
 func Format(p Plan) string {
 	var b strings.Builder
 	switch p := p.(type) {
@@ -179,6 +185,9 @@ func Format(p Plan) string {
 				b.WriteString(", ")
 			}
 			fmt.Fprint(&b, c.Name.Raw, " ", typeName(c.Type))
+			if c.Nullable {
+				b.WriteString(" NULL")
+			}
 		}
 		b.WriteString(", primary key (")
 		for i, position := range p.PrimaryKey {
@@ -267,6 +276,8 @@ func formatExpr(e Expr) string {
 		return "'" + strings.ReplaceAll(e.Value, "'", "''") + "'"
 	case *Blob:
 		return "x'" + hex.EncodeToString(e.Value) + "'"
+	case *Null:
+		return "null"
 	case *Parameter:
 		return fmt.Sprint("?", e.Number)
 	}

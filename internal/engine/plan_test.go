@@ -36,6 +36,8 @@ func TestNewPlan(t *testing.T) {
 		{src: "insert into t1 values (1, 'a', ?)", want: "insert into t1\n  values (1, 'a', ?1)\n"},
 		{src: `insert into t1 (v3, "V1", v2) values (?, 2.5, ?)`, want: "insert into t1 (v3, \"V1\", v2)\n  values (?1, 2.5, ?2)\n"},
 		{src: `select v2, "V1", v2 from t1`, want: "query\n  project v2, \"V1\", v2\n    scan t1\n"},
+		{src: "create table t1 (v1 int, v2 text primary key, v3 real not null, v4 blob) strict, without rowid", want: "create table t1 (v1 INT NULL, v2 TEXT, v3 REAL, v4 BLOB NULL, primary key (v2))\n"},
+		{src: "insert into t1 values (NULL, ?, null)", want: "insert into t1\n  values (null, ?1, null)\n"},
 	}
 	for _, c := range cases {
 		t.Run(c.src, func(t *testing.T) {
@@ -65,9 +67,25 @@ func TestNewPlan(t *testing.T) {
 		is.Equal(t, 3, len(p.Columns))
 		for i, want := range []string{"a", "b", "c"} {
 			is.Equal(t, want, p.Columns[i].Name.Value)
+			is.True(t, !p.Columns[i].Nullable, want)
 		}
 		is.EqualSlice(t, []int{1}, p.PrimaryKey)
 		is.Equal(t, engine.Format(p), engine.Format(engine.NewPlan(without)))
+	})
+
+	t.Run("should hold a column that is not the key and does not say NOT NULL as one that takes NULL, of any type and at any position, and the literal NULL as its own expression", func(t *testing.T) {
+		s, err := stmt.Check("create table t (a text, b int not null, c blob primary key, d real, e integer) strict, without rowid")
+		is.NotError(t, err)
+		p := engine.NewPlan(s).(*engine.CreateTable)
+		var nullable []bool
+		for _, c := range p.Columns {
+			nullable = append(nullable, c.Nullable)
+		}
+		is.EqualSlice(t, []bool{true, false, false, true, true}, nullable)
+		s, err = stmt.Check("insert into t (a) values (null)")
+		is.NotError(t, err)
+		_, ok := engine.NewPlan(s).(*engine.Insert).Source.(*engine.Values).Rows[0][0].(*engine.Null)
+		is.True(t, ok)
 	})
 
 	t.Run("should hold the columns of an insert as nil without a list, and of a select as nil for *", func(t *testing.T) {

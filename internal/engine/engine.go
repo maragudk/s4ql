@@ -32,9 +32,8 @@
 //     message: a syntax error, an error about the tables, the columns, or a primary key, or a text
 //     or a blob that is too long.
 //   - "Not supported", as a [*stmt.NotSupportedError] that matches [stmt.ErrNotSupported], or, for
-//     an argument that no column holds, for a value of another type than its column, and for a
-//     statement with NULL that the pass supports and the engine does not run yet, an error that
-//     matches stmt.ErrNotSupported.
+//     an argument that no column holds and for a value of another type than its column, an error
+//     that matches stmt.ErrNotSupported.
 //   - [ErrNoStatement], for a text that holds no statement.
 //   - An error that matches [ErrArguments], for another number of arguments than the statement has
 //     parameters.
@@ -200,16 +199,17 @@ func (c *Conn) begin(ctx context.Context) (writeTx, error) {
 // The text is checked first, and then the arguments, before the statement needs the database: there
 // must be one argument for each parameter, as [Check] checks it, and each must be a value that a
 // column can hold: an integer, a real that is a finite number, valid UTF-8 text without the
-// character NUL, or a blob.
+// character NUL, a blob, or NULL.
 //
 // An insert then fails, in this order, with SQLite's errors of the names and of the number of its
 // values, with SQLite's `string or blob too big` for a text or a blob that is longer than the limit
 // of the database, which SQLite gives when it binds such an argument, with SQLite's error of a
-// read-only transaction, with SQLite's `NOT NULL constraint failed` for a column that it leaves out,
-// with "not supported" for a value of another type than its column, with `string or blob too big`
-// for a row that is longer than the limit, also when its key exists, and with SQLite's error of a
-// key that exists. A real that is -0.0 is stored as 0.0, as SQLite stores it, and its key is the
-// key of 0.0.
+// read-only transaction, with SQLite's `NOT NULL constraint failed` for the first column in the
+// order of the table, the key among them, that does not take NULL and that it gives NULL or leaves
+// out, with "not supported" for a value other than NULL of another type than its column, with
+// `string or blob too big` for a row that is longer than the limit, also when its key exists, and
+// with SQLite's error of a key that exists. A real that is -0.0 is stored as 0.0, as SQLite stores
+// it, and its key is the key of 0.0.
 //
 // In a transaction that spans statements, the statement then fails with the error of ctx if ctx has
 // ended, with the refusal of a statement of its own if the instance does not serve now, and with
@@ -301,15 +301,11 @@ func (c *Conn) newReport(src string) *report {
 
 // Check the text src, as [Conn.Exec] and [Conn.Query] check it, for a run with n arguments, without
 // the database and without an event: the text's error, as [stmt.Check] gives it, [ErrNoStatement],
-// "not supported" for a statement of slice 6 that the engine does not run yet, as [checkNulls] gives
-// it, or the error of [ErrArguments] for another number of arguments than the statement has
+// or the error of [ErrArguments] for another number of arguments than the statement has
 // parameters; otherwise nil. It does not check what the arguments are.
 func Check(src string, n int) error {
 	s, err := check(src)
 	if err != nil {
-		return err
-	}
-	if err := checkNulls(s); err != nil {
 		return err
 	}
 	return countArguments(s.Parameters(), n)
@@ -337,9 +333,6 @@ func prepare(r *report, src string, args []*s4qlpb.Value) (Plan, string, error) 
 		return nil, "", err
 	}
 	r.of(s)
-	if err := checkNulls(s); err != nil {
-		return nil, "", err
-	}
 	if err := checkArguments(s.Parameters(), args); err != nil {
 		return nil, "", err
 	}
@@ -446,12 +439,26 @@ func (c *Conn) checkOutside(ctx context.Context, r *report, p Plan, args []*s4ql
 	if err := s.check(); err != nil {
 		return err
 	}
-	_, err = s.run(ctx)
-	return err
+	i, ok := s.(*insert)
+	if !ok {
+		return internalError("the checks outside of a sink of type %T", s)
+	}
+	name, key := i.table.GetTable(), i.key
+	for _, row := range i.src.data {
+		existing, err := rt.get(ctx, name, []*s4qlpb.Value{row[key]})
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			return uniqueFailed(name, i.table.GetColumns()[key].GetName())
+		}
+	}
+	return nil
 }
 
-// readOnly is a [writer] of a read transaction that writes nothing: for the planted bug checkOutside,
-// and for the lookups of a write in a read-only transaction, which then refuses the write.
+// readOnly is a [writer] of a read transaction that writes nothing, for the sinks that are built and
+// not run: for the planted bug checkOutside, and for the lookups of a write in a read-only
+// transaction, which then refuses the write.
 type readOnly struct {
 	readTx
 }

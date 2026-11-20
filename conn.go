@@ -426,15 +426,11 @@ func (c *conn) Prepare(query string) (driver.Stmt, error) {
 
 // check the text query with [stmt.Check]: SQLite's syntax error, "not supported", or nil for a
 // statement that s4ql supports. The text alone decides, so the check reads no table, and does not
-// need the instance to serve. A statement that the pass supports is checked with [engine.Check] too,
-// for a statement with NULL that the engine does not run yet.
+// need the instance to serve.
 func check(query string) error {
 	s, err := stmt.Check(query)
-	switch {
-	case err == nil && s == nil:
+	if err == nil && s == nil {
 		err = engine.ErrNoStatement
-	case err == nil:
-		err = engine.Check(query, s.Parameters())
 	}
 	return publicError(err)
 }
@@ -465,11 +461,13 @@ func arguments(query string, args []driver.NamedValue) ([]*s4qlpb.Value, error) 
 	return values, nil
 }
 
-// argument a as a value: an int64 as an integer, a float64 as a real, a string as text, and a
-// []byte that is not nil as a blob, which an empty one is too. It gives "not supported" for an
-// argument with a name, for nil, for a []byte that is nil, and for one of another type, such as a
-// bool or a time.Time. The message names the argument by its position, and the type, never the
-// value.
+// argument a as a value: an int64 as an integer, a float64 as a real, a string as text, a []byte
+// that is not nil as a blob, which an empty one is too, and nil as NULL. nil is what
+// [conn.CheckNamedValue] gives for a nil pointer and for a [driver.Valuer] that gives nil, such as
+// a [database/sql.NullString] that is not valid. It gives "not supported" for an argument with a
+// name, for a []byte that is nil, which does not say whether it means NULL or the empty blob, and
+// for one of another type, such as a bool or a time.Time. The message names the argument by its
+// position, and the type, never the value.
 func argument(a driver.NamedValue) (*s4qlpb.Value, error) {
 	if a.Name != "" {
 		return nil, notSupported(fmt.Sprintf("the named argument %q", a.Name))
@@ -487,7 +485,7 @@ func argument(a driver.NamedValue) (*s4qlpb.Value, error) {
 		}
 		return s4qlpb.Value_builder{Blob: v}.Build(), nil
 	case nil:
-		return nil, notSupported(fmt.Sprintf("argument %v of type nil", a.Ordinal))
+		return s4qlpb.Value_builder{Null: &s4qlpb.Null{}}.Build(), nil
 	case unconverted:
 		// The error of the conversion is the cause, and not in the message: the error of a
 		// [driver.Valuer] is the application's, and can hold a value.

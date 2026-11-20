@@ -188,6 +188,8 @@ func (o *oracle) run(t testing.TB, src string, args ...any) answer {
 			err = s.BindText(j+1, a)
 		case []byte:
 			err = s.BindBlob(j+1, a)
+		case nil:
+			err = s.BindNull(j + 1)
 		default:
 			t.Fatalf("%q: an argument of type %T for SQLite", src, a)
 		}
@@ -231,7 +233,7 @@ func (o *oracle) run(t testing.TB, src string, args ...any) answer {
 }
 
 // state of the database in SQLite: each table, in the order of the names as bytes, with its
-// columns and its rows in the order of select *.
+// columns, as [columnText] gives them, and its rows in the order of select *.
 func (o *oracle) state(t testing.TB) string {
 	t.Helper()
 	s, err := o.c.Prepare("select name from sqlite_schema where type = 'table' order by name collate binary")
@@ -249,9 +251,23 @@ func (o *oracle) state(t testing.TB) string {
 	var b strings.Builder
 	for _, name := range names {
 		a := o.run(t, "select * from "+stmttest.Quote(name))
-		fmt.Fprintf(&b, "%v (%v): %v\n", name, a.columns, strings.Join(a.rows, " "))
+		_, columns := o.columns(t, name)
+		var cs []string
+		for _, c := range columns {
+			cs = append(cs, columnText(c.Name, c.Type, c.Nullable))
+		}
+		fmt.Fprintf(&b, "%v (%v): %v\n", name, strings.Join(cs, ", "), strings.Join(a.rows, " "))
 	}
 	return b.String()
+}
+
+// columnText of a column of a table in the text of a state: its name and its declared type, and
+// NULL after them if it takes NULL.
+func columnText(name, typ string, nullable bool) string {
+	if nullable {
+		return name + " " + typ + " NULL"
+	}
+	return name + " " + typ
 }
 
 // errText of an error of the engine, as [answer] has it. Any other error fails the test.
@@ -572,7 +588,7 @@ func (i *instance) state() string {
 	for _, ct := range tables {
 		var columns []string
 		for _, c := range ct.GetColumns() {
-			columns = append(columns, c.GetName()+" "+declType(c.GetType()))
+			columns = append(columns, columnText(c.GetName(), declType(c.GetType()), c.GetNullable()))
 		}
 		var rows []string
 		for row, err := range r.Scan(ctx, ct.GetTable()) {
@@ -616,7 +632,7 @@ func (y tally) add(src string, a answer) {
 		return
 	}
 	kind := "other"
-	if s, _ := checkText(src); s != nil {
+	if s, _ := stmt.Check(src); s != nil {
 		kind = strings.ToLower(strings.TrimPrefix(fmt.Sprintf("%T", s), "*stmt."))
 		if s.Parameters() > 0 {
 			kind += " with a parameter"
@@ -808,7 +824,7 @@ func (p *pair) step(c stmttest.Call) string {
 	// refuses before its arguments, a syntax error or no statement, which SQLite refuses before it
 	// binds them, so that it runs in SQLite without them.
 	args := oracleArgs(c.Args)
-	if s, err := checkText(src); err != nil || s == nil {
+	if s, err := stmt.Check(src); err != nil || s == nil {
 		args = nil
 	}
 	if kind, failure := p.checkLength(c, got); kind != "" {
@@ -828,7 +844,7 @@ func (p *pair) step(c stmttest.Call) string {
 		// for the refusals of their arguments and of the types of their values, which are checked
 		// above, and a text that is not supported is one that SQLite accepts: SQLite prepares it on an
 		// empty database without a syntax error.
-		if s, err := checkText(src); c.Supported || err == nil && s != nil {
+		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil {
 			return fmt.Sprintf("%q: the engine does not support a statement that the pass supports: %v", src, got.message)
 		}
 		if m := syntaxOfNotSupported(t, p.empty, src); m != "" {
@@ -908,7 +924,7 @@ func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, count func(stri
 	case got.err != "":
 		outcome = messageKind(got.err)
 	}
-	s, _ := checkText(c.Src)
+	s, _ := stmt.Check(c.Src)
 	switch s := s.(type) {
 	case *stmt.Insert:
 		reachInsert(t, o, s, c, outcome, count)
@@ -1040,7 +1056,7 @@ func reachInsert(t testing.TB, o *oracle, s *stmt.Insert, c stmttest.Call, outco
 // first such argument, as [refusal] says. It gives the kind of the excuse, [excusedArguments] or
 // [excusedArgument], if the rule decides the call, or "", and what differs from the rule, or "".
 func checkArguments(c stmttest.Call, got answer) (kind, failure string) {
-	s, err := checkText(c.Src)
+	s, err := stmt.Check(c.Src)
 	if err != nil || s == nil {
 		return "", ""
 	}
@@ -1097,7 +1113,8 @@ func refusal(a any) string {
 			return ""
 		}
 	case nil:
-		return "is NULL"
+		// NULL, which a column that takes NULL holds, and SQLite's NOT NULL refuses for any other.
+		return ""
 	}
 	return "has no value"
 }
@@ -1147,7 +1164,7 @@ func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failu
 func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string) {
 	t := p.t
 	t.Helper()
-	s, _ := checkText(c.Src)
+	s, _ := stmt.Check(c.Src)
 	insert, ok := s.(*stmt.Insert)
 	if !ok || p.i.limit == 0 || p.o.prepare(t, c.Src) != nil {
 		return "", ""
@@ -1193,7 +1210,7 @@ func byteLength(v any) int {
 // type of its column.
 func typeRule(t testing.TB, o *oracle, src string, args []any) string {
 	t.Helper()
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	insert, ok := s.(*stmt.Insert)
 	if !ok || len(args) != insert.Parameters() || o.prepare(t, src) != nil {
 		return ""
@@ -1220,7 +1237,7 @@ func keyType(t testing.TB, o *oracle, insert *stmt.Insert) string {
 // table.
 func (o *oracle) columns(t testing.TB, name string) (string, []stmttest.TableColumn) {
 	t.Helper()
-	s, err := o.c.Prepare("select m.name, p.name, p.type, p.pk from sqlite_schema m, pragma_table_info(m.name) p where m.type = 'table' and m.name = ?1 collate nocase order by p.cid")
+	s, err := o.c.Prepare(`select m.name, p.name, p.type, p.pk, p."notnull" from sqlite_schema m, pragma_table_info(m.name) p where m.type = 'table' and m.name = ?1 collate nocase order by p.cid`)
 	is.NotError(t, err)
 	defer func() { is.NotError(t, s.Finalize()) }()
 	is.NotError(t, s.BindText(1, name))
@@ -1233,26 +1250,16 @@ func (o *oracle) columns(t testing.TB, name string) (string, []stmttest.TableCol
 			return table, columns
 		}
 		table = s.ColumnText(0)
-		columns = append(columns, stmttest.TableColumn{Name: s.ColumnText(1), Type: s.ColumnText(2), PrimaryKey: s.ColumnInt64(3) == 1})
+		// The key of a table WITHOUT ROWID never takes NULL, also when SQLite reports it without NOT
+		// NULL.
+		key := s.ColumnInt64(3) == 1
+		columns = append(columns, stmttest.TableColumn{Name: s.ColumnText(1), Type: s.ColumnText(2), PrimaryKey: key, Nullable: !key && s.ColumnInt64(4) == 0})
 	}
-}
-
-// checkText src as the engine checks a text before it runs it: as [stmt.Check] does, and with the
-// "not supported" of [engine.Check] for a statement with NULL of slice 6 that the pass supports and
-// the engine does not run yet, which the tests take for a text that is not supported.
-func checkText(src string) (stmt.Statement, error) {
-	s, err := stmt.Check(src)
-	if err == nil && s != nil {
-		if err := engine.Check(src, s.Parameters()); errors.Is(err, stmt.ErrNotSupported) {
-			return nil, err
-		}
-	}
-	return s, err
 }
 
 // isInsert reports whether src is a supported insert.
 func isInsert(src string) bool {
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	_, ok := s.(*stmt.Insert)
 	return ok
 }
@@ -1323,8 +1330,10 @@ func TestDifferential(t *testing.T) {
 		// 5. Its inserts have up to four values, and so more parameters and more arguments around
 		// them, which took the second and the third up; one insert in ten has a value of any type,
 		// where one value in ten had, which took the fourth down; and the sequence draws other random
-		// numbers, which moved the first and the last.
-		want := map[string]int{acceptedStartedTable: 17, excusedArguments: 718, excusedArgument: 197, excusedType: 336, excusedLong: 3}
+		// numbers, which moved the first and the last. The engine of slice 6 took the third from 197 to
+		// 184: a nil argument is NULL, which the engine takes, and the 13 calls with one run in SQLite
+		// now. The generator draws as before.
+		want := map[string]int{acceptedStartedTable: 17, excusedArguments: 718, excusedArgument: 184, excusedType: 336, excusedLong: 3}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
 			if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) {

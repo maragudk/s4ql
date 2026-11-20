@@ -221,9 +221,9 @@ Included:
 - A column that is not the primary key can be declared without `not null`. It then takes null.
 - The primary-key column is never null, because the table is `without rowid`. A null for it gets SQLite's error `NOT NULL constraint failed: t1.v1`.
 - The literal `null` as a value in an `insert`.
-- A nil argument: a Go `nil`, and whatever `database/sql` turns into nil before it reaches the driver, such as a nil pointer and a `sql.Null*` value that is not valid.
+- A nil argument: a Go `nil`, and whatever `database/sql` turns into nil before it reaches the driver, such as a nil pointer and a `sql.Null*` value that is not valid. `database/sql` hands the driver nil for a nil pointer of any type, also `(*[]byte)(nil)`, for a `driver.Valuer` that gives nil, such as a `sql.NullString` or a `sql.Null[T]` that is not valid, and for a nil pointer to a `Valuer` with a value receiver; it hands a nil `[]byte`, which stays rejected, for `[]byte(nil)`, a pointer to one, a valid `sql.Null[[]byte]` whose value is nil, and `sql.RawBytes(nil)`.
 - A column that is left out of the list of an `insert` gets null if it takes null.
-- A null for a column that is declared `not null` gets SQLite's error `NOT NULL constraint failed: t1.v2`.
+- A null for a column that is declared `not null` gets SQLite's error `NOT NULL constraint failed: t1.v2`. The error names the first column, in the order of the table, that does not take null and gets one. A null that the `insert` gives and a column that it leaves out are one case there. The error comes before the refusal of a value of another type, and before the error of a key that exists.
 - A null goes into a column of any type. The exact types of slice 4 hold for every value that is not null.
 - A null comes back as nil. It scans into a `sql.Null*` value, a pointer, and an `any`.
 - The commit format gets the field `nullable` on a column, which says that the column takes null. It already has a null value.

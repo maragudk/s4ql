@@ -72,20 +72,20 @@ func TestConn_writeIn(t *testing.T) {
 		_, err = c.Exec(t.Context(), "insert into t1 (v1) values (3)")
 		is.Error(t, s.annotateFails, err)
 		s.annotateFails = nil
-		s.upsertPanics = true
+		s.insertPanics = true
 		func() {
 			defer func() { is.True(t, recover() != nil, "the insert did not panic") }()
 			_, _ = c.Exec(t.Context(), "insert into t1 (v1) values (4)")
 		}()
-		s.upsertPanics = false
+		s.insertPanics = false
 		_, err = c.Exec(t.Context(), "drop table t1")
 		is.NotError(t, err)
 		is.NotError(t, c.Commit(t.Context()))
 		is.Equal(t, strings.Join([]string{
-			"serving", "savepoint", "table t1", "get t1 2", "upsert t1 2", "annotate insert into t1 (v1) values (2)", "release",
-			"serving", "savepoint", "table t1", "get t1 2", "insert new t1 2", "rollback to",
-			"serving", "savepoint", "table t1", "get t1 3", "upsert t1 3", "annotate insert into t1 (v1) values (3)", "rollback to",
-			"serving", "savepoint", "table t1", "get t1 4", "rollback to",
+			"serving", "savepoint", "table t1", "insert t1 2", "annotate insert into t1 (v1) values (2)", "release",
+			"serving", "savepoint", "table t1", "insert t1 2", "rollback to",
+			"serving", "savepoint", "table t1", "insert t1 3", "annotate insert into t1 (v1) values (3)", "rollback to",
+			"serving", "savepoint", "table t1", "rollback to",
 			"serving", "savepoint", "table t1", "drop t1", "annotate drop table t1", "release",
 			"commit",
 		}, "\n"), strings.Join(s.calls, "\n"))
@@ -117,7 +117,7 @@ func TestConn_writeIn(t *testing.T) {
 		_, err := c.Exec(t.Context(), "insert into t1 (v1) values (2)")
 		is.Error(t, s.releaseFails, err)
 		is.NotError(t, c.Rollback(t.Context()))
-		is.Equal(t, "serving savepoint table t1 get t1 2 upsert t1 2 annotate insert into t1 (v1) values (2) release rollback", strings.Join(s.calls, " "))
+		is.Equal(t, "serving savepoint table t1 insert t1 2 annotate insert into t1 (v1) values (2) release rollback", strings.Join(s.calls, " "))
 		e := h.events[len(h.events)-1]
 		is.Equal(t, eventTransaction, e["msg"])
 		is.Equal(t, "0", e[attrTxWrites])

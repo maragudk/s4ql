@@ -143,10 +143,11 @@ func (p *project) rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
 // insert writes each row of its source into a table whose primary key is one column, as a new row,
 // and fails with SQLite's error for a row whose key the table has, also one that an earlier row of
 // the source wrote. Each row of the source has a value for each column of the table, in the order
-// of the table, and nil for a column that the statement leaves out.
+// of the table, and NULL for a column that the statement leaves out.
 //
-// Its check fails, in SQLite's order, with SQLite's error for a column without a value, every column
-// being NOT NULL, and then with "not supported" for a value of another type than its column.
+// Its check fails, in SQLite's order, with SQLite's error for NULL in a column that does not take
+// it, the key among them, and then with "not supported" for a value of another type than its
+// column.
 type insert struct {
 	w     writer
 	table *s4qlpb.CreateTable
@@ -154,9 +155,11 @@ type insert struct {
 	key int
 	src *values
 	// exprs are the expressions that the values of each row of the source come from, in the order of
-	// the table, with nil for a column without a value, for the messages of the errors of the check.
+	// the table, with nil for a column that the statement leaves out, for the messages of the errors
+	// of the check.
 	exprs [][]Expr
-	// skipUnique is the planted bug that writes a row without the check of its key.
+	// skipUnique is the planted bug that writes a row without the check of its key, so that it
+	// replaces the row with its key.
 	skipUnique bool
 	// convertReal is the planted bug that stores a real that is a whole number in an INT or INTEGER
 	// column as the integer.
@@ -164,8 +167,9 @@ type insert struct {
 }
 
 // check each row as SQLite's constraint checks do: first the NOT NULL of each column, in the order
-// of the table, and then the type of each column, in the order of the table, where SQLite has its
-// OP_TypeCheck, which comes before the check of the key.
+// of the table, the key among them, and then the type of each column, in the order of the table,
+// where SQLite has its OP_TypeCheck, which comes before the check of the key. A NULL that the
+// statement gives and one of a column that it leaves out are the same to both checks.
 func (i *insert) check() error {
 	if len(i.src.data) != len(i.exprs) {
 		return internalError("an insert of %v rows from %v rows of expressions", len(i.src.data), len(i.exprs))
@@ -177,6 +181,9 @@ func (i *insert) check() error {
 		}
 		for position, v := range row {
 			if v == nil {
+				return internalError("an insert without a value for the column %v", columns[position].GetName())
+			}
+			if v.HasNull() && (position == i.key || !columns[position].GetNullable()) {
 				return notNullFailed(i.table.GetTable(), columns[position].GetName())
 			}
 		}
@@ -203,27 +210,24 @@ func (i *insert) run(ctx context.Context) (int64, error) {
 		if err != nil {
 			return n, err
 		}
-		if !i.skipUnique {
-			existing, err := i.w.get(ctx, name, []*s4qlpb.Value{row[key]})
-			if err != nil {
+		if i.skipUnique {
+			// The planted bug: the row replaces the row with its key.
+			if err := i.w.upsert(ctx, name, row); err != nil {
 				return n, err
 			}
-			if existing != nil {
-				// SQLite builds the record of the row before it looks for its key, so a row whose
-				// record is too long gets `string or blob too big` before `UNIQUE constraint failed`.
-				// The core measures the row as SQLite does, and inserts nothing for a key that exists.
-				inserted, err := i.w.insertNew(ctx, name, row)
-				if err != nil {
-					return n, err
-				}
-				if inserted {
-					return n, internalError("a row of a key that the table has was inserted into %v", name)
-				}
-				return n, uniqueFailed(name, i.table.GetColumns()[key].GetName())
-			}
+			n++
+			continue
 		}
-		if err := i.w.upsert(ctx, name, row); err != nil {
+		// SQLite builds the record of the row before it looks for its key, so a row whose record is
+		// too long gets `string or blob too big` before `UNIQUE constraint failed`. The storage
+		// measures the row as SQLite does, and inserts nothing for a key that the table has, also one
+		// that an earlier row of the source wrote.
+		inserted, err := i.w.insertNew(ctx, name, row)
+		if err != nil {
 			return n, err
+		}
+		if !inserted {
+			return n, uniqueFailed(name, i.table.GetColumns()[key].GetName())
 		}
 		n++
 	}
@@ -309,7 +313,8 @@ func buildNode(ctx context.Context, r reader, n Node) (source, error) {
 // buildValues: the source of the rows of v, with args for their parameters, and the expressions of
 // each row. The value at the index i of a row of v is for the column at positions[i] of a table of
 // width columns, and each row that it gives has a value for each column of the table, in the order
-// of the table, with nil for a column that positions do not name, as do the expressions.
+// of the table, with NULL for a column that positions do not name, as SQLite gives a column that an
+// insert leaves out, whose default is NULL. Its expression is nil.
 func buildValues(v *Values, args []*s4qlpb.Value, positions []int, width int) (*values, [][]Expr, error) {
 	src := &values{}
 	var exprs [][]Expr
@@ -324,6 +329,11 @@ func buildValues(v *Values, args []*s4qlpb.Value, positions []int, width int) (*
 				return nil, nil, err
 			}
 			data[positions[i]], es[positions[i]] = value, e
+		}
+		for position, value := range data {
+			if value == nil {
+				data[position] = null()
+			}
 		}
 		src.data, exprs = append(src.data, data), append(exprs, es)
 	}
@@ -344,6 +354,8 @@ func eval(e Expr, args []*s4qlpb.Value) (*s4qlpb.Value, error) {
 			return nil, internalError("a blob literal of no bytes that is nil")
 		}
 		return s4qlpb.Value_builder{Blob: e.Value}.Build(), nil
+	case *Null:
+		return null(), nil
 	case *Parameter:
 		if e.Number < 1 || e.Number > len(args) {
 			return nil, internalError("the parameter %v of a statement with %v arguments", e.Number, len(args))
@@ -351,6 +363,11 @@ func eval(e Expr, args []*s4qlpb.Value) (*s4qlpb.Value, error) {
 		return args[e.Number-1], nil
 	}
 	panic(fmt.Sprintf("engine: an expression of type %T", e))
+}
+
+// null is the value NULL.
+func null() *s4qlpb.Value {
+	return s4qlpb.Value_builder{Null: &s4qlpb.Null{}}.Build()
 }
 
 // buildSink: the sink of the plan p, in the transaction of w, with args for the parameters of p, and
@@ -379,9 +396,17 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 		if len(p.PrimaryKey) != 1 || p.PrimaryKey[0] < 0 || p.PrimaryKey[0] >= len(p.Columns) {
 			return nil, internalError("a table of %v columns with the key %v", len(p.Columns), p.PrimaryKey)
 		}
+		if p.Columns[p.PrimaryKey[0]].Nullable {
+			return nil, internalError("a table whose key %v takes NULL", p.Columns[p.PrimaryKey[0]].Name.Value)
+		}
 		ct := s4qlpb.CreateTable_builder{Table: new(p.Table.Value), PrimaryKey: []uint32{uint32(p.PrimaryKey[0])}}
 		for _, c := range p.Columns {
-			ct.Columns = append(ct.Columns, s4qlpb.Column_builder{Name: new(c.Name.Value), Type: new(c.Type)}.Build())
+			column := s4qlpb.Column_builder{Name: new(c.Name.Value), Type: new(c.Type)}
+			if c.Nullable {
+				// Only when it is true, as the storage gives the table back.
+				column.Nullable = new(true)
+			}
+			ct.Columns = append(ct.Columns, column.Build())
 		}
 		return &createTable{w: w, ct: ct.Build()}, nil
 	case *DropTable:

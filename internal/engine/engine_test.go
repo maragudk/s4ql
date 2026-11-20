@@ -342,7 +342,6 @@ func TestEngine_parameters(t *testing.T) {
 			s4qlpb.Value_builder{Text: new("\x00")}.Build():         "is text that holds the character NUL",
 			s4qlpb.Value_builder{Text: new("a\xffb")}.Build():       "is text that is not valid UTF-8",
 			s4qlpb.Value_builder{Text: new("\xed\xa0\x80")}.Build(): "is text that is not valid UTF-8",
-			s4qlpb.Value_builder{Null: &s4qlpb.Null{}}.Build():      "is NULL",
 			s4qlpb.Value_builder{Blob: nil}.Build():                 "has no value",
 			nil:                                                     "has no value",
 		}
@@ -717,6 +716,67 @@ func TestEngine_tooBig(t *testing.T) {
 				is.Equal(t, "", o.run(t, "commit").err)
 			}
 			is.Equal(t, o.state(t), i.state())
+		}
+	})
+
+	t.Run("should find the length at which a row with NULL is too long as SQLite does, where a NULL takes no bytes of its own, also before its key exists and after NOT NULL", func(t *testing.T) {
+		for _, tx := range []bool{false, true} {
+			i := newInstanceLimited(t, engine.Options{}, nil, limit)
+			o := newOracleLimited(t, limit)
+			for _, s := range []string{
+				"create table m (k int primary key, a text, b blob, c real, d int not null) strict, without rowid",
+				"insert into m values (1, 'x', x'01', 1.5, 1)",
+			} {
+				is.Equal(t, "", i.exec(s).err)
+				is.Equal(t, "", o.run(t, s).err)
+			}
+			if tx {
+				is.NotError(t, i.c.Begin(t.Context()))
+				for _, s := range oracleBegin(false) {
+					is.Equal(t, "", o.run(t, s).err, s)
+				}
+			}
+			var outcomes []string
+			// moved counts the lengths at which a row with NULL fits and the same row with a real in
+			// its place does not.
+			moved := 0
+			for n := 488; n <= 512; n++ {
+				text, blob := strings.Repeat("a", n), bytes.Repeat([]byte{2}, n)
+				var got []string
+				for _, c := range []struct {
+					src  string
+					args []any
+				}{
+					{"insert into m values (?, ?, ?, ?, ?)", []any{int64(n), text, blob, nil, int64(1)}},
+					{"insert into m values (?, ?, ?, ?, ?)", []any{int64(1000 + n), text, blob, 2.5, int64(1)}},
+					{"insert into m values (?, ?, ?, null, ?)", []any{int64(1), text, blob, int64(1)}},
+					{"insert into m (b, k, a, d) values (?, ?, ?, ?)", []any{blob, int64(2000 + n), text, int64(1)}},
+					{"insert into m values (?, ?, ?, ?, ?)", []any{int64(3000 + n), text, blob, nil, nil}},
+					{"insert into m values (?, null, ?, null, ?)", []any{int64(4000 + n), append(slices.Clone(blob), blob...), int64(1)}},
+				} {
+					want := o.run(t, c.src, c.args...)
+					is.Equal(t, want.String(), i.execValues(c.src, values(c.args)).String(), fmt.Sprint(c.src, " with ", n, " bytes, in a transaction: ", tx))
+					changes, _ := o.changes(t)
+					is.Equal(t, changes, i.changes, fmt.Sprint("the count of changes after ", c.src, " with ", n, " bytes"))
+					got = append(got, want.err)
+				}
+				if got[0] == "" && got[1] == "18/18: string or blob too big" {
+					moved++
+				}
+				outcomes = append(outcomes, got...)
+			}
+			is.True(t, moved > 0, "no length at which NULL fits and a real does not")
+			for _, want := range []string{"", "19/1555: UNIQUE constraint failed: m.k", "18/18: string or blob too big", "19/1299: NOT NULL constraint failed: m.d"} {
+				is.True(t, slices.Contains(outcomes, want), want)
+			}
+			if tx {
+				is.NotError(t, i.c.Commit(t.Context()))
+				is.Equal(t, "", o.run(t, "commit").err)
+			}
+			want := o.state(t)
+			is.Equal(t, want, i.state())
+			i.restart(true, engine.Options{})
+			is.Equal(t, want, i.state(), "after a replay of the log")
 		}
 	})
 
@@ -1366,19 +1426,39 @@ func TestEngine_concurrent(t *testing.T) {
 	})
 }
 
-// shape of a table of several columns: the type of each column, in order, and the position of the
-// column of its primary key.
+// shape of a table of several columns: the type of each column, in order, the position of the
+// column of its primary key, and whether each column takes NULL, which the key never does.
 type shape struct {
-	types []string
-	key   int
+	types    []string
+	key      int
+	nullable []bool
 }
 
-// shapes of tables of two and three columns of mixed types, with the key at each position.
+// shapes of tables of two and three columns of mixed types, with the key at each position. Each
+// has every column NOT NULL, every column but the key taking NULL, and, for three columns, each
+// column but the key taking NULL alone, so that a column that takes NULL is of each type at each
+// position, beside one that does not.
 func shapes() []shape {
 	var ss []shape
 	for _, types := range [][]string{{"int", "text"}, {"blob", "real"}, {"text", "integer", "real"}, {"real", "blob", "int"}, {"integer", "text", "blob"}} {
 		for key := range types {
-			ss = append(ss, shape{types: types, key: key})
+			n := len(types)
+			ss = append(ss, shape{types: types, key: key, nullable: make([]bool, n)})
+			all := make([]bool, n)
+			for i := range all {
+				all[i] = i != key
+			}
+			ss = append(ss, shape{types: types, key: key, nullable: all})
+			if n < 3 {
+				continue
+			}
+			for i := range n {
+				if i != key {
+					one := make([]bool, n)
+					one[i] = true
+					ss = append(ss, shape{types: types, key: key, nullable: one})
+				}
+			}
 		}
 	}
 	return ss
@@ -1393,7 +1473,13 @@ var (
 )
 
 func (s shape) String() string {
-	return fmt.Sprintf("%v with the key at %v", strings.Join(s.types, ", "), s.key)
+	var nullable []int
+	for i, n := range s.nullable {
+		if n {
+			nullable = append(nullable, i)
+		}
+	}
+	return fmt.Sprintf("%v with the key at %v and NULL at %v", strings.Join(s.types, ", "), s.key, nullable)
 }
 
 // create table of the shape, with the name table.
@@ -1401,12 +1487,28 @@ func (s shape) create(table string) string {
 	var cs []string
 	for i, typ := range s.types {
 		c := columnNames[i] + " " + typ + " not null"
-		if i == s.key {
+		switch {
+		case i == s.key:
 			c = columnNames[i] + " " + typ + " primary key"
+		case s.nullable[i]:
+			c = columnNames[i] + " " + typ
 		}
 		cs = append(cs, c)
 	}
 	return "create table " + table + " (" + strings.Join(cs, ", ") + ") strict, without rowid"
+}
+
+// own is the refusal of a value of another type than its column at the position wrong by s4ql's own
+// rule, for an insert that gives NULL to the columns at the positions nulls or leaves them out: ""
+// if one of them does not take NULL, since SQLite's `NOT NULL constraint failed` comes first, and
+// refusal(wrong) otherwise.
+func (s shape) own(nulls []int, wrong int, refusal func(int) string) string {
+	for _, i := range nulls {
+		if !s.nullable[i] {
+			return ""
+		}
+	}
+	return refusal(wrong)
 }
 
 // literal of the type typ for the number k: k as an integer, k and a half as a real, k as text, and
@@ -1475,18 +1577,25 @@ func (s shape) steps() []columnsStep {
 		}
 		return strings.Join(ns, ", ")
 	}
-	// row of literals for the number k, for the columns in order, with the literal replaced for the
-	// column at the position wrong, if it is not -1, by one of another type.
-	row := func(order []int, k, wrong int) string {
+	// rowAt of literals for the number k, for the columns in order, with the literal replaced for the
+	// column at the position wrong, if it is not -1, by one of another type, and for the column at
+	// the position p, if it is not -1, by put.
+	rowAt := func(order []int, k, wrong, p int, put string) string {
 		var vs []string
 		for _, i := range order {
 			v := literal(s.types[i], k)
-			if i == wrong {
+			switch i {
+			case wrong:
 				v, _ = otherLiteral(s.types[i])
+			case p:
+				v = put
 			}
 			vs = append(vs, v)
 		}
 		return strings.Join(vs, ", ")
+	}
+	row := func(order []int, k, wrong int) string {
+		return rowAt(order, k, wrong, -1, "")
 	}
 	insert := func(order []int, k, wrong int) string {
 		return fmt.Sprintf("insert into t (%v) values (%v)", list(spelledNames, order), row(order, k, wrong))
@@ -1550,9 +1659,31 @@ func (s shape) steps() []columnsStep {
 			// where SQLite has its OP_TypeCheck.
 			columnsStep{src: insertAll(7, left), own: refusal(left)},
 			columnsStep{src: insertAll(1, left), own: refusal(left)},
-			// A value of another type, with another column left out: NOT NULL first, as in SQLite.
-			columnsStep{src: insert(without(other), 8, left)},
+			// A value of another type, with another column left out: NOT NULL first, as in SQLite,
+			// unless the column takes NULL.
+			columnsStep{src: insert(without(other), 8, left), own: s.own([]int{other}, left, refusal)},
 		)
+	}
+	// NULL for each column: as a literal, in either case, and as a nil argument, in a list in the
+	// order of the table and in another. It goes into a column that takes NULL, of any type, and gets
+	// SQLite's `NOT NULL constraint failed` in any other column and in the key, also when the key
+	// exists, and before a value of another type in another column.
+	for p := range n {
+		other, k := (p+1)%n, 20+10*p
+		steps = append(steps,
+			columnsStep{src: fmt.Sprintf("insert into t values (%v)", rowAt(inOrder, k, -1, p, "NULL"))},
+			columnsStep{src: fmt.Sprintf("insert into t values (%v)", rowAt(inOrder, 1, -1, p, "null"))},
+			columnsStep{src: fmt.Sprintf("insert into t values (%v)", rowAt(inOrder, k+1, other, p, "null")), own: s.own([]int{p}, other, refusal)},
+			columnsStep{src: fmt.Sprintf("insert into T (%v) values (%v)", list(spelledNames, reversed), rowAt(reversed, k+2, -1, p, "?")), args: []any{nil}},
+			columnsStep{src: fmt.Sprintf("insert into t (%v) values (%v)", list(columnNames, inOrder), rowAt(inOrder, k+3, other, p, "?")), args: []any{nil}, own: s.own([]int{p}, other, refusal)},
+		)
+		// NULL for one column and another left out: one case, for the first column in the order of
+		// the table that does not take NULL.
+		for q := range n {
+			if q != p {
+				steps = append(steps, columnsStep{src: fmt.Sprintf("insert into t (%v) values (%v)", list(spelledNames, without(q)), rowAt(without(q), k+4+q, -1, p, "null"))})
+			}
+		}
 	}
 	// Two values of another type: the first in the order of the table, whatever the list's order.
 	steps = append(steps, columnsStep{src: fmt.Sprintf("insert into t (%v) values (%v)", list(spelledNames, reversed),
@@ -1654,28 +1785,191 @@ func TestEngine_columns(t *testing.T) {
 }
 
 func TestEngine_nulls(t *testing.T) {
-	t.Run("should refuse a statement with NULL that the pass supports as not supported, before anything runs", func(t *testing.T) {
+	const create = "create table t (a text, k int primary key, b real not null, c blob) strict, without rowid"
+
+	t.Run("should create a table whose columns take NULL, with nullable in the commit object for those columns only, and the same table after a replay", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
-		is.Equal(t, "", i.exec(t1).err)
+		o := newOracle(t)
+		for _, src := range []string{create, "create table u (k int not null primary key, v text not null) strict, without rowid"} {
+			is.Equal(t, "", i.exec(src).err, src)
+			is.Equal(t, "", o.run(t, src).err, src)
+		}
+		var nullable []string
+		for _, c := range readLog(i.store) {
+			for _, ch := range c.changes {
+				for _, column := range ch.GetCreateTable().GetColumns() {
+					nullable = append(nullable, fmt.Sprint(ch.GetCreateTable().GetTable(), ".", column.GetName(), " ", column.HasNullable(), " ", column.GetNullable()))
+				}
+			}
+		}
+		is.Equal(t, "[t.a true true t.k false false t.b false false t.c true true u.k false false u.v false false]", fmt.Sprint(nullable))
+		want := "t (a TEXT NULL, k INT, b REAL, c BLOB NULL): \nu (k INT, v TEXT): \n"
+		is.Equal(t, want, o.state(t))
+		is.Equal(t, want, i.state())
+		i.restart(true, engine.Options{})
+		is.Equal(t, want, i.state(), "after a replay of the log")
+		// The replayed table still takes NULL where it did, and refuses it elsewhere.
+		for _, src := range []string{"insert into t (k, b) values (1, 1.5)", "insert into t (k, a) values (2, 'x')"} {
+			is.Equal(t, o.run(t, src).String(), i.exec(src).String(), src)
+		}
+		is.Equal(t, o.state(t), i.state())
+	})
+
+	t.Run("should take NULL as a literal, as a nil argument, and for a column that the list leaves out, give it back as NULL, and annotate the nil argument as NULL", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		o := newOracle(t)
 		cases := []struct {
 			src  string
-			args []int64
-			want string
+			args []any
 		}{
-			{src: "create table t2 (v1 int primary key, v2 text) strict, without rowid", want: "s4ql: not supported: a column that takes NULL, which the engine does not run yet"},
-			{src: "create table t2 (v1 text, v2 int primary key) strict, without rowid", want: "s4ql: not supported: a column that takes NULL, which the engine does not run yet"},
-			{src: "insert into t1 (v1) values (null)", want: "s4ql: not supported: NULL as a value, which the engine does not run yet"},
-			{src: "insert into t1 values (?, NULL)", args: []int64{1}, want: "s4ql: not supported: NULL as a value, which the engine does not run yet"},
+			{src: create},
+			{src: "insert into t values (null, 1, 1.5, NULL)"},
+			{src: "insert into t values (?, 2, 2.5, ?)", args: []any{nil, nil}},
+			{src: "insert into t (b, k) values (3.5, 3)"},
+			{src: "insert into t (c, k, b) values (?, ?, ?)", args: []any{[]byte{}, int64(4), 4.5}},
+			{src: "insert into t (k, a, b) values (?, ?, ?)", args: []any{int64(5), "", 5.5}},
+			{src: "select * from t"},
+			{src: "select c, a, k, c from t"},
 		}
 		for _, c := range cases {
-			_, err := i.c.Exec(t.Context(), c.src, integers(c.args)...)
-			is.True(t, errors.Is(err, stmt.ErrNotSupported), c.src)
-			is.Equal(t, c.want, fmt.Sprint(err), c.src)
-			is.Equal(t, c.want, fmt.Sprint(engine.Check(c.src, len(c.args))), c.src)
-			_, err = i.c.Query(t.Context(), c.src, integers(c.args)...)
-			is.Equal(t, c.want, fmt.Sprint(err), c.src)
+			want := o.run(t, c.src, oracleArgs(c.args)...)
+			var got answer
+			if strings.HasPrefix(c.src, "select") {
+				got = i.queryValues(c.src, values(c.args))
+			} else {
+				want.columns, want.rows = "", nil
+				got = i.execValues(c.src, values(c.args))
+			}
+			is.Equal(t, want.String(), got.String(), c.src)
+			changes, _ := o.changes(t)
+			is.Equal(t, changes, i.changes, c.src)
 		}
-		is.Equal(t, "t1 (v1 INT): \n", i.state())
-		is.Equal(t, 0, len(logAnnotations(t, i.store)[1:]))
+		is.Equal(t, `columns "a TEXT, k INT, b REAL, c BLOB", rows ["null,1,real 1.5,null" "null,2,real 2.5,null" "null,3,real 3.5,null" "null,4,real 4.5,x''" "\"\",5,real 5.5,null"]`, i.query("select * from t").String())
+		rows, err := i.c.Query(t.Context(), "select a from t")
+		is.NotError(t, err)
+		for row, err := range rows.All() {
+			is.NotError(t, err)
+			is.True(t, row[0].HasNull() || row[0].GetText() == "", fmt.Sprint(row[0]))
+		}
+		is.Equal(t, fmt.Sprint([]string{"insert into t values (?, 2, 2.5, ?) with null with null"}), fmt.Sprint(logAnnotations(t, i.store)[2]))
+		var params []string
+		for _, c := range readLog(i.store) {
+			for _, ps := range c.params {
+				for _, p := range ps {
+					params = append(params, fmt.Sprint(p.WhichKind()))
+				}
+			}
+		}
+		is.Equal(t, "[null null blob integer real integer text real]", fmt.Sprint(params))
+		want := o.state(t)
+		is.Equal(t, want, i.state())
+		i.restart(true, engine.Options{})
+		is.Equal(t, want, i.state(), "after a replay of the log")
+	})
+
+	t.Run("should give SQLite's NOT NULL constraint failed for NULL in the key or in a column that does not take it, given or left out, for the first such column in the order of the table, before the type of a value and a key that exists", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		o := newOracle(t)
+		for _, src := range []string{create, "insert into t values ('a', 1, 1.5, x'01')"} {
+			is.Equal(t, "", i.exec(src).err)
+			is.Equal(t, "", o.run(t, src).err)
+		}
+		cases := []struct {
+			src  string
+			args []any
+			want string
+		}{
+			{src: "insert into t values ('a', null, 1.5, x'01')", want: "NOT NULL constraint failed: t.k"},
+			{src: "insert into t values ('a', ?, 1.5, x'01')", args: []any{nil}, want: "NOT NULL constraint failed: t.k"},
+			{src: "insert into t (a, b) values ('a', 1.5)", want: "NOT NULL constraint failed: t.k"},
+			{src: "insert into t (k, a) values (2, 'a')", want: "NOT NULL constraint failed: t.b"},
+			{src: "insert into t values (null, 2, null, null)", want: "NOT NULL constraint failed: t.b"},
+			{src: "insert into t values (null, 2, ?, null)", args: []any{nil}, want: "NOT NULL constraint failed: t.b"},
+			// A given NULL and a column left out are one case, in the order of the table.
+			{src: "insert into t (b, a) values (null, 'a')", want: "NOT NULL constraint failed: t.k"},
+			{src: "insert into t (k, a) values (null, 'a')", want: "NOT NULL constraint failed: t.k"},
+			{src: "insert into t (c, b, a) values (?, ?, ?)", args: []any{nil, nil, nil}, want: "NOT NULL constraint failed: t.k"},
+			// Before a value of another type, also in a column before it.
+			{src: "insert into t values (1, 2, null, null)", want: "NOT NULL constraint failed: t.b"},
+			{src: "insert into t (a, c, k) values (?, ?, 2)", args: []any{int64(1), "x"}, want: "NOT NULL constraint failed: t.b"},
+			// Before a key that exists.
+			{src: "insert into t values ('a', 1, null, x'01')", want: "NOT NULL constraint failed: t.b"},
+			{src: "insert into t (k, c) values (1, null)", want: "NOT NULL constraint failed: t.b"},
+		}
+		for n, c := range cases {
+			// An insert that succeeds before each, so that the error shows that it sets the count of
+			// changes to 0.
+			before := fmt.Sprintf("insert into t values ('x', %v, 1.5, null)", 100+n)
+			is.Equal(t, "", o.run(t, before).err)
+			is.Equal(t, "", i.exec(before).err)
+			want := o.run(t, c.src, oracleArgs(c.args)...)
+			is.Equal(t, "19/1299: "+c.want, want.err, "SQLite: "+c.src)
+			got := i.execValues(c.src, values(c.args))
+			is.Equal(t, want.String(), got.String(), c.src)
+			changes, _ := o.changes(t)
+			is.Equal(t, int64(0), changes, c.src)
+			is.Equal(t, changes, i.changes, c.src)
+			_, err := i.c.Exec(t.Context(), c.src, values(c.args)...)
+			se, ok := errors.AsType[*sqlerr.Error](err)
+			is.True(t, ok, c.src)
+			is.Equal(t, sqlerr.Error{Code: 19, ExtendedCode: 1299, Message: c.want, Offset: -1}, *se)
+		}
+		is.Equal(t, o.state(t), i.state())
+	})
+
+	t.Run("should take NULL in a column of any type and give it no type: a value of another type in another column is refused by s4ql's rule, and NULL in its own is not", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(create).err)
+		for _, c := range []struct {
+			src  string
+			args []any
+			want string
+		}{
+			{src: "insert into t values (null, 1, 1.5, 'x')", want: "s4ql: not supported: a string literal for the column t.c of type BLOB"},
+			{src: "insert into t values (?, 1, 1, null)", args: []any{nil}, want: "s4ql: not supported: an integer literal for the column t.b of type REAL"},
+			{src: "insert into t (k, b, a) values (1, 1.5, ?)", args: []any{int64(1)}, want: "s4ql: not supported: argument 1, which is an integer, for the column t.a of type TEXT"},
+		} {
+			got := i.execValues(c.src, values(c.args))
+			is.Equal(t, "not supported", got.err, c.src)
+			is.Equal(t, c.want, got.message, c.src)
+		}
+		is.Equal(t, "t (a TEXT NULL, k INT, b REAL, c BLOB NULL): \n", i.state())
+	})
+
+	t.Run("should take NULL in a transaction, also after a roll back to the savepoint of a statement that failed, and refuse it in a read-only one", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(create).err)
+		is.NotError(t, i.c.Begin(t.Context()))
+		is.Equal(t, "", i.execValues("insert into t values (?, ?, ?, ?)", values([]any{nil, int64(1), 1.5, nil})).err)
+		is.Equal(t, "19/1299: NOT NULL constraint failed: t.b", i.execValues("insert into t values (?, ?, ?, ?)", values([]any{nil, int64(2), nil, nil})).err)
+		is.Equal(t, "19/1555: UNIQUE constraint failed: t.k", i.execValues("insert into t values (?, ?, ?, ?)", values([]any{nil, int64(1), 1.5, nil})).err)
+		is.Equal(t, "", i.execValues("insert into t (k, b) values (?, ?)", values([]any{int64(2), 2.5})).err)
+		is.NotError(t, i.c.Rollback(t.Context()))
+		is.Equal(t, "t (a TEXT NULL, k INT, b REAL, c BLOB NULL): \n", i.state())
+		is.NotError(t, i.c.Begin(t.Context()))
+		is.Equal(t, "", i.execValues("insert into t values (?, ?, ?, ?)", values([]any{"a", int64(1), 1.5, nil})).err)
+		is.Equal(t, "19/1299: NOT NULL constraint failed: t.b", i.exec("insert into t (k) values (2)").err)
+		is.Equal(t, "", i.exec("insert into t (k, b) values (2, 2.5)").err)
+		is.NotError(t, i.c.Commit(t.Context()))
+		is.NotError(t, i.c.BeginReadOnly(t.Context()))
+		is.Equal(t, "8/8: attempt to write a readonly database", i.exec("insert into t (k, b) values (3, null)").err)
+		is.Equal(t, `columns "a TEXT, c BLOB", rows ["\"a\",null" "null,null"]`, i.query("select a, c from t").String())
+		is.NotError(t, i.c.Commit(t.Context()))
+		want := "t (a TEXT NULL, k INT, b REAL, c BLOB NULL): \"a\",1,real 1.5,null null,2,real 2.5,null\n"
+		is.Equal(t, want, i.state())
+		is.Equal(t, fmt.Sprint([][]string{
+			{create},
+			{`insert into t values (?, ?, ?, ?) with "a" with 1 with real 1.5 with null`, "insert into t (k, b) values (2, 2.5)"},
+		}), fmt.Sprint(logAnnotations(t, i.store)))
+		i.restart(true, engine.Options{})
+		is.Equal(t, want, i.state(), "after a replay of the log")
+	})
+
+	t.Run("should check a text with NULL at once, without the database", func(t *testing.T) {
+		for _, src := range []string{create, "insert into t values (null, ?, null, null)"} {
+			s, err := stmt.Check(src)
+			is.NotError(t, err)
+			is.NotError(t, engine.Check(src, s.Parameters()), src)
+		}
 	})
 }
