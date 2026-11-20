@@ -1575,9 +1575,11 @@ func (r *run) verify(ctx context.Context) {
 // transaction, which refuses the write first.
 //
 // A write transaction whose net effect is nothing writes no commit object: one whose writes that
-// succeeded are all of tables that were not there when it began and are not there at its end. It
-// gives the IDs of the writes of such transactions, which are acknowledged and must not be in the
-// log.
+// succeeded are all of tables that were not there when it began and are not there at its end, whose
+// writes must not be in the log. One whose rows SQLite has at its end as at its beginning may write
+// none either, as one that inserted a row and deleted it. The count of changes of each update and
+// delete that succeeded must be SQLite's. verifyTxs gives the IDs of the writes of such
+// transactions, which are acknowledged and need not be in the log.
 func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]int, inLog map[uint64]int) (nothing map[uint64]bool) {
 	nothing = map[uint64]bool{}
 	for _, tx := range r.txs {
@@ -2094,6 +2096,15 @@ func TestSimulation(t *testing.T) {
 			"selects with WHERE of their own that give rows, compared with SQLite": 0.08, "selects with WHERE in a transaction compared with SQLite": 1.06,
 			"selects with WHERE in a transaction compared with SQLite, on an engine that reads every row": 0.37,
 			"selects with WHERE in a transaction that give rows, compared with SQLite":                    0.11,
+			// The updates and deletes, of which the first 1,000 seeds gave 18,084, 1,575 that succeeded
+			// and changed rows, 8,481 with SQLite's error, 1,845 of their own that changed no row and that
+			// the checks run in SQLite, and 717 of their own and 2,587 in a transaction whose count of
+			// changes the checks compare with SQLite's, in this workload; 12,853, 326, 4,609, 356, 91, and
+			// 975 in the idle one; and 36,081, 3,412, 14,982, 3,433, 1,545, and 5,002 in the hammer one, on
+			// 2026-11-20, when the sequence wrote updates and deletes: a quarter of that in each.
+			"updates and deletes": 4.5, "updates and deletes that succeeded and changed rows": 0.39, "updates and deletes with SQLite's error": 2.1,
+			"updates and deletes that change no row, compared with SQLite": 0.46, "updates and deletes of their own whose count of changes is compared with SQLite": 0.18,
+			"updates and deletes in a transaction whose count of changes is compared with SQLite": 0.64,
 		}, 0.15},
 		// A quarter of what the first 1,000 seeds gave on 2026-11-19, with the ends of transactions for
 		// the lease, which only this workload reaches.
@@ -2112,6 +2123,9 @@ func TestSimulation(t *testing.T) {
 			"selects with WHERE of their own that give rows, compared with SQLite": 0.02, "selects with WHERE in a transaction compared with SQLite": 0.71,
 			"selects with WHERE in a transaction compared with SQLite, on an engine that reads every row": 0.22,
 			"selects with WHERE in a transaction that give rows, compared with SQLite":                    0.02,
+			"updates and deletes": 3.2, "updates and deletes that succeeded and changed rows": 0.08, "updates and deletes with SQLite's error": 1.15,
+			"updates and deletes that change no row, compared with SQLite": 0.089, "updates and deletes of their own whose count of changes is compared with SQLite": 0.02,
+			"updates and deletes in a transaction whose count of changes is compared with SQLite": 0.24,
 		}, 0.15},
 		{"hammer", hammerWorkload, map[string]float64{
 			"succeeded": 12, "SQLite's error": 17, "unknown": 0.4, "skipped": 2.5, "failed: no lease": 2,
@@ -2124,6 +2138,9 @@ func TestSimulation(t *testing.T) {
 			"rows of several columns": 2, "NULL values in the log": 0.67,
 			"selects with WHERE of their own compared with SQLite": 1.74, "selects with WHERE of their own that give rows, compared with SQLite": 0.21,
 			"selects with WHERE in a transaction compared with SQLite": 2, "selects with WHERE in a transaction that give rows, compared with SQLite": 0.26,
+			"updates and deletes": 9, "updates and deletes that succeeded and changed rows": 0.85, "updates and deletes with SQLite's error": 3.7,
+			"updates and deletes that change no row, compared with SQLite": 0.85, "updates and deletes of their own whose count of changes is compared with SQLite": 0.38,
+			"updates and deletes in a transaction whose count of changes is compared with SQLite": 1.25,
 		}, 0.12},
 	} {
 		t.Run(c.name, func(t *testing.T) {
