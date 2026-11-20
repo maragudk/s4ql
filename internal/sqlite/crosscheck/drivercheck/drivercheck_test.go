@@ -10,6 +10,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -1349,11 +1350,20 @@ func argumentRefusal(args []any) string {
 	return ""
 }
 
-// converted argument a, as database/sql converts a float32 to a float64 for the driver. Every other
-// argument of the tests is as database/sql hands it, or is refused by its type.
+// converted argument a, as database/sql converts a float32 to a float64 for the driver, a
+// [driver.Valuer] to its value, and a nil pointer to nil. Every other argument of the tests is as
+// database/sql hands it, or is refused by its type.
 func converted(a any) any {
 	if f, ok := a.(float32); ok {
 		return float64(f)
+	}
+	if v, ok := a.(driver.Valuer); ok {
+		if value, err := v.Value(); err == nil {
+			return converted(value)
+		}
+	}
+	if rv := reflect.ValueOf(a); rv.Kind() == reflect.Pointer && rv.IsNil() {
+		return nil
 	}
 	return a
 }
@@ -1991,118 +2001,200 @@ func TestColumns(t *testing.T) {
 	created, spelled := []string{"a", `"B b"`, "C"}, []string{"A", `"b B"`, "c"}
 	for _, types := range [][]string{{"int", "text"}, {"blob", "real"}, {"text", "integer", "real"}, {"real", "blob", "int"}, {"integer", "text", "blob"}} {
 		for key := range types {
-			for _, pinned := range []bool{true, false} {
-				t.Run(fmt.Sprintf("should give what SQLite gives for a table of %v with the key at %v, on a pinned connection: %v", strings.Join(types, ", "), key, pinned), func(t *testing.T) {
-					n := len(types)
-					p := newPair(t, w, pinned, nil)
-					step := func(src string, c call, runs ...[]any) {
-						t.Helper()
-						if len(runs) == 0 {
-							runs = [][]any{nil}
-						}
-						if _, failure := p.stepRuns(src, c, true, runs); failure != "" {
-							t.Fatal(failure)
-						}
-					}
-					var columns []string
-					for i, typ := range types {
-						c := created[i] + " " + typ + " not null"
-						if i == key {
-							c = created[i] + " " + typ + " primary key"
-						}
-						columns = append(columns, c)
-					}
-					create := "create table t (" + strings.Join(columns, ", ") + ") strict, without rowid"
-					// insert of the number k into the columns at the positions, through literals, or
-					// through parameters with the arguments of the run.
-					insert := func(positions []int, k int, parameters bool) (string, []any) {
-						var names, vs []string
-						var args []any
-						for _, i := range positions {
-							l, a := literal(types[i], k)
-							names = append(names, spelled[i])
-							if parameters {
-								l = "?"
-								args = append(args, a)
-							}
-							vs = append(vs, l)
-						}
-						return fmt.Sprintf("insert into t (%v) values (%v)", strings.Join(names, ", "), strings.Join(vs, ", ")), args
-					}
-					all, reversed := make([]int, n), make([]int, n)
-					for i := range n {
-						all[i], reversed[i] = i, n-1-i
-					}
-
-					step(create, callExec)
-					step(create, callPrepareExec)
-					src, _ := insert(all, 4, false)
-					step(src, callExec)
-					src, _ = insert(reversed, 1, false)
-					step(src, callPrepareExec)
-					src, args := insert(reversed, 3, true)
-					var runs [][]any
-					for _, k := range []int{2, 5, 2} {
-						_, a := insert(reversed, k, true)
-						runs = append(runs, a)
-					}
-					step(src, callExec, args)
-					step(src, callPrepareExecRuns, runs...)
-					step("select * from t", callQuery)
-					step(fmt.Sprintf("select %v, %v, %v from T", spelled[n-1], created[0], created[n-1]), callPrepareQuery)
-					step(fmt.Sprintf("select %v from t", spelled[key]), callQueryRow)
-					step("select x from t", callQuery)
-					step("select x from t", callPrepareQuery)
-					step("insert into t values (1)", callExec)
-					step("insert into t values (1)", callPrepareExec)
-					src, _ = insert(all[1:], 6, false)
-					step(strings.Replace(src, ") values (", ", "+spelled[0]+") values (", 1), callPrepareExec)
-					step(strings.Replace(src, "insert into t (", "insert into t ("+spelled[0]+", ", 1), callExec)
-					for left := range n {
-						src, _ := insert(slices.DeleteFunc(slices.Clone(all), func(i int) bool { return i == left }), 7, false)
-						step(src, callExec)
-						step(src, callPrepareExec)
-					}
-					src, _ = insert(all, 1, false)
-					step(src, callQuery)
-
-					// In a transaction, a statement that fails changes nothing, also with a roll back of
-					// the transaction after it.
-					for _, end := range []call{callCommit, callRollback} {
-						step("", callBegin)
-						src, _ = insert(all, 8, false)
-						step(src, callExec)
-						src, _ = insert(all[:n-1], 9, false)
-						step(src, callExec)
-						src, _ = insert(all, 8, false)
-						step(src, callExec)
-						step("select * from t", callQuery)
-						step("", end)
-					}
-					step("", callBeginReadOnly)
-					src, _ = insert(all, 10, false)
-					step(src, callExec)
-					src, _ = insert(all[:n-1], 10, false)
-					step(src, callExec)
-					step("insert into t values (1)", callExec)
-					step("", callRollback)
-
-					is.Equal(t, "", p.finish())
-					is.Equal(t, "", p.compareTables())
-					p.restart(true)
-					is.Equal(t, "", p.compareTables())
-					step(fmt.Sprintf("select %v from t", strings.Join(slices.Collect(func(yield func(string) bool) {
-						for _, i := range reversed {
-							if !yield(spelled[i]) {
-								return
-							}
-						}
-					}), ", ")), callQuery)
-					p.close()
-				})
+			// Every column NOT NULL, every column but the key taking NULL, and for three columns the
+			// column after the key alone, so that a column that takes NULL is of each type at each
+			// position, beside one that does not.
+			nullables := [][]int{nil, slices.DeleteFunc([]int{0, 1, 2}[:len(types)], func(i int) bool { return i == key })}
+			if len(types) == 3 {
+				nullables = append(nullables, []int{(key + 1) % 3})
+			}
+			for _, nullable := range nullables {
+				for _, pinned := range []bool{true, false} {
+					t.Run(fmt.Sprintf("should give what SQLite gives for a table of %v with the key at %v and NULL at %v, on a pinned connection: %v", strings.Join(types, ", "), key, nullable, pinned), func(t *testing.T) {
+						columnsSteps(t, w, types, key, nullable, pinned, created, spelled)
+					})
+				}
 			}
 		}
 	}
+}
+
+// columnsSteps runs the steps of [TestColumns] for a table of the types, with the key at the position
+// key, the columns at the positions nullable taking NULL, and the names created and spelled.
+func columnsSteps(t *testing.T, w *world, types []string, key int, nullable []int, pinned bool, created, spelled []string) {
+	t.Helper()
+	n := len(types)
+	p := newPair(t, w, pinned, nil)
+	step := func(src string, c call, runs ...[]any) {
+		t.Helper()
+		if len(runs) == 0 {
+			runs = [][]any{nil}
+		}
+		if _, failure := p.stepRuns(src, c, true, runs); failure != "" {
+			t.Fatal(failure)
+		}
+	}
+	var columns []string
+	for i, typ := range types {
+		c := created[i] + " " + typ + " not null"
+		switch {
+		case i == key:
+			c = created[i] + " " + typ + " primary key"
+		case slices.Contains(nullable, i):
+			c = created[i] + " " + typ
+		}
+		columns = append(columns, c)
+	}
+	create := "create table t (" + strings.Join(columns, ", ") + ") strict, without rowid"
+	// insert of the number k into the columns at the positions, through literals, or
+	// through parameters with the arguments of the run.
+	insert := func(positions []int, k int, parameters bool) (string, []any) {
+		var names, vs []string
+		var args []any
+		for _, i := range positions {
+			l, a := literal(types[i], k)
+			names = append(names, spelled[i])
+			if parameters {
+				l = "?"
+				args = append(args, a)
+			}
+			vs = append(vs, l)
+		}
+		return fmt.Sprintf("insert into t (%v) values (%v)", strings.Join(names, ", "), strings.Join(vs, ", ")), args
+	}
+	// insertNull is insert with NULL for the column at the position at, as the literal NULL or as the
+	// argument null, and a value of another type than its column for the column at the position
+	// wrong, if it is not -1.
+	insertNull := func(positions []int, k, at, wrong int, null any, parameters bool) (string, []any) {
+		var names, vs []string
+		var args []any
+		for _, i := range positions {
+			l, a := literal(types[i], k)
+			switch {
+			case i == at:
+				l, a = "NULL", null
+			case i == wrong && types[i] == "text":
+				l, a = literal("int", k)
+			case i == wrong:
+				l, a = literal("text", k)
+			}
+			names = append(names, spelled[i])
+			if parameters {
+				l = "?"
+				args = append(args, a)
+			}
+			vs = append(vs, l)
+		}
+		return fmt.Sprintf("insert into t (%v) values (%v)", strings.Join(names, ", "), strings.Join(vs, ", ")), args
+	}
+	all, reversed := make([]int, n), make([]int, n)
+	for i := range n {
+		all[i], reversed[i] = i, n-1-i
+	}
+	// nulls inserts NULL into each column: as a literal and as the kinds of nil that database/sql
+	// hands the driver, in the order of the table and in another, into a column that takes NULL or
+	// one that does not, also with a key that exists, beside a value of another type, and beside a
+	// column left out. Every k from base on is for a new key.
+	nulls := func(base int) {
+		for at := range n {
+			k, other := base+10*at, (at+1)%n
+			src, _ := insertNull(all, k, at, -1, nil, false)
+			step(src, callExec)
+			src, _ = insertNull(all, 1, at, -1, nil, false)
+			step(src, callExec)
+			src, _ = insertNull(all, k+1, at, other, nil, false)
+			step(src, callPrepareExec)
+			var runs [][]any
+			for j, null := range []any{nil, sql.NullString{}, (*int64)(nil)} {
+				_, args := insertNull(reversed, k+2+j, at, -1, null, true)
+				runs = append(runs, args)
+			}
+			src, _ = insertNull(reversed, 0, at, -1, nil, true)
+			step(src, callPrepareExecRuns, runs...)
+			src, args := insertNull(all, k+5, at, other, sql.Null[[]byte]{}, true)
+			step(src, callExecArgument, args)
+			for q := range n {
+				if q != at {
+					src, _ := insertNull(slices.DeleteFunc(slices.Clone(all), func(i int) bool { return i == q }), k+6+q, at, -1, nil, false)
+					step(src, callExec)
+				}
+			}
+		}
+	}
+
+	step(create, callExec)
+	step(create, callPrepareExec)
+	src, _ := insert(all, 4, false)
+	step(src, callExec)
+	src, _ = insert(reversed, 1, false)
+	step(src, callPrepareExec)
+	src, args := insert(reversed, 3, true)
+	var runs [][]any
+	for _, k := range []int{2, 5, 2} {
+		_, a := insert(reversed, k, true)
+		runs = append(runs, a)
+	}
+	step(src, callExec, args)
+	step(src, callPrepareExecRuns, runs...)
+	step("select * from t", callQuery)
+	step(fmt.Sprintf("select %v, %v, %v from T", spelled[n-1], created[0], created[n-1]), callPrepareQuery)
+	step(fmt.Sprintf("select %v from t", spelled[key]), callQueryRow)
+	step("select x from t", callQuery)
+	step("select x from t", callPrepareQuery)
+	step("insert into t values (1)", callExec)
+	step("insert into t values (1)", callPrepareExec)
+	src, _ = insert(all[1:], 6, false)
+	step(strings.Replace(src, ") values (", ", "+spelled[0]+") values (", 1), callPrepareExec)
+	step(strings.Replace(src, "insert into t (", "insert into t ("+spelled[0]+", ", 1), callExec)
+	for left := range n {
+		src, _ := insert(slices.DeleteFunc(slices.Clone(all), func(i int) bool { return i == left }), 7, false)
+		step(src, callExec)
+		step(src, callPrepareExec)
+	}
+	src, _ = insert(all, 1, false)
+	step(src, callQuery)
+	nulls(20)
+	step("select * from t", callQuery)
+
+	// In a transaction, a statement that fails changes nothing, also with a roll back of
+	// the transaction after it.
+	for _, end := range []call{callCommit, callRollback} {
+		step("", callBegin)
+		src, _ = insert(all, 8, false)
+		step(src, callExec)
+		src, _ = insert(all[:n-1], 9, false)
+		step(src, callExec)
+		src, _ = insert(all, 8, false)
+		step(src, callExec)
+		src, _ = insertNull(all, 60, n-1, -1, nil, false)
+		step(src, callExec)
+		step("select * from t", callQuery)
+		step("", end)
+	}
+	step("", callBeginReadOnly)
+	src, _ = insert(all, 10, false)
+	step(src, callExec)
+	src, _ = insert(all[:n-1], 10, false)
+	step(src, callExec)
+	step("insert into t values (1)", callExec)
+	step("", callRollback)
+
+	is.Equal(t, "", p.finish())
+	is.Equal(t, "", p.compareTables())
+	p.restart(true)
+	is.Equal(t, "", p.compareTables())
+	step(fmt.Sprintf("select %v from t", strings.Join(slices.Collect(func(yield func(string) bool) {
+		for _, i := range reversed {
+			if !yield(spelled[i]) {
+				return
+			}
+		}
+	}), ", ")), callQuery)
+	// The table of the replay takes NULL where the table did, and nowhere else.
+	nulls(120)
+	step("select * from t", callQuery)
+	is.Equal(t, "", p.compareTables())
+	p.close()
 }
 
 func TestSequences(t *testing.T) {
