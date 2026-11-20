@@ -323,14 +323,14 @@ Included:
 
 Further details are decided when the slice is built, and recorded here.
 
-Rejected as not supported, where SQLite would accept it:
+Rejected as not supported, where SQLite would accept it (except the last item):
 
 - An expression in `set`, such as `v1 = v1 + 1`.
 - `returning`.
 - `update ... from`.
 - `set (v2, v3) = (...)`.
 - `or replace` and the other conflict clauses.
-- `limit` and `order by` on `update` and `delete`.
+- `limit` and `order by` on `update` and `delete`. The pinned SQLite build gives a syntax error for them, and so does s4ql.
 
 ### Slice 9: `if not exists` and `if exists`
 
@@ -442,4 +442,4 @@ Rejected as not supported, where SQLite would accept it:
 - Ordering by an expression or by position, such as `order by 1`.
 - `nulls first` and `nulls last`.
 - `collate`.
-- `order by` and `limit` on `update` and `delete`.
+- `order by` and `limit` on `update` and `delete`. The pinned SQLite build gives a syntax error for them, and so does s4ql.
