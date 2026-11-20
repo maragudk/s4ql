@@ -14,8 +14,8 @@ import (
 // the statement writes them, and nothing of the catalogue: the operators look the names up in the
 // transaction that runs the plan, which is where SQLite's errors about names come from.
 //
-// A plan is a [*CreateTable], a [*DropTable], an [*Insert], or a [*Query]. An insert and a query
-// read their rows from a tree of [Node]s.
+// A plan is a [*CreateTable], a [*DropTable], an [*Insert], an [*Update], a [*Delete], or a
+// [*Query]. An insert, an update, a delete, and a query read their rows from a tree of [Node]s.
 type Plan interface {
 	plan()
 }
@@ -59,6 +59,27 @@ type Insert struct {
 	Table   stmt.Name
 	Columns []stmt.Name
 	Source  Node
+}
+
+// Update sets the columns of Set in each row of Source, a [*Scan] of the table, or a [*Filter] of
+// one if the statement has a WHERE.
+type Update struct {
+	Table  stmt.Name
+	Set    []Assignment
+	Source Node
+}
+
+// Assignment of an [Update]: the column of the name, as the statement writes it, gets Value.
+type Assignment struct {
+	Column stmt.Name
+	Value  Expr
+}
+
+// Delete deletes each row of Source, a [*Scan] of the table, or a [*Filter] of one if the statement
+// has a WHERE.
+type Delete struct {
+	Table  stmt.Name
+	Source Node
 }
 
 // Query gives the rows of Root.
@@ -132,6 +153,8 @@ type Parameter struct {
 func (*CreateTable) plan() {}
 func (*DropTable) plan()   {}
 func (*Insert) plan()      {}
+func (*Update) plan()      {}
+func (*Delete) plan()      {}
 func (*Query) plan()       {}
 func (*Scan) node()        {}
 func (*Filter) node()      {}
@@ -147,8 +170,8 @@ func (*Parameter) expr()   {}
 // NewPlan of the statement s, which [stmt.Check] gives. It panics for a statement of another type. A
 // column that is not the primary key and does not say NOT NULL is Nullable. The primary key is NOT
 // NULL also when it does not say so, as in SQLite's WITHOUT ROWID tables, so a key with NOT NULL and
-// one without have the same plan. A select with WHERE reads its rows through a [*Filter] of its
-// conditions, in the order of the text.
+// one without have the same plan. A select, an update, and a delete with WHERE read their rows
+// through a [*Filter] of the conditions, in the order of the text.
 func NewPlan(s stmt.Statement) Plan {
 	switch s := s.(type) {
 	case *stmt.CreateTable:
@@ -165,25 +188,39 @@ func NewPlan(s stmt.Statement) Plan {
 			row[i] = term(t)
 		}
 		return &Insert{Table: s.Table, Columns: s.Columns, Source: &Values{Rows: [][]Expr{row}}}
-	case *stmt.Select:
-		var source Node = &Scan{Table: s.Table}
-		if s.Where != nil {
-			f := &Filter{Source: source}
-			for _, c := range s.Where {
-				condition := Condition{Column: c.Column, Operator: c.Operator}
-				if c.Operator != stmt.OpIsNull && c.Operator != stmt.OpIsNotNull {
-					condition.Value = term(c.Value)
-				}
-				f.Conditions = append(f.Conditions, condition)
-			}
-			source = f
+	case *stmt.Update:
+		p := &Update{Table: s.Table, Source: rowsOf(s.Table, s.Where)}
+		for _, a := range s.Set {
+			p.Set = append(p.Set, Assignment{Column: a.Column, Value: term(a.Value)})
 		}
-		return &Query{Root: &Project{Source: source, Star: s.Columns == nil, Columns: s.Columns}}
+		return p
+	case *stmt.Delete:
+		return &Delete{Table: s.Table, Source: rowsOf(s.Table, s.Where)}
+	case *stmt.Select:
+		return &Query{Root: &Project{Source: rowsOf(s.Table, s.Where), Star: s.Columns == nil, Columns: s.Columns}}
 	}
 	panic(fmt.Sprintf("engine: a statement of type %T", s))
 }
 
-// term of a row of an insert, or of a condition, as an expression: its literal, NULL among them, or its parameter.
+// rowsOf the table that the conditions of a WHERE hold for: a [*Scan] of the table, or a [*Filter]
+// of the conditions over it, if where is not nil.
+func rowsOf(table stmt.Name, where []stmt.Condition) Node {
+	var source Node = &Scan{Table: table}
+	if where == nil {
+		return source
+	}
+	f := &Filter{Source: source}
+	for _, c := range where {
+		condition := Condition{Column: c.Column, Operator: c.Operator}
+		if c.Operator != stmt.OpIsNull && c.Operator != stmt.OpIsNotNull {
+			condition.Value = term(c.Value)
+		}
+		f.Conditions = append(f.Conditions, condition)
+	}
+	return f
+}
+
+// term of a row of an insert, of an assignment, or of a condition, as an expression: its literal, NULL among them, or its parameter.
 func term(t stmt.Term) Expr {
 	switch v := t.Value.(type) {
 	case stmt.Integer:
@@ -235,6 +272,19 @@ func Format(p Plan) string {
 			fmt.Fprint(&b, " (", names(p.Columns), ")")
 		}
 		b.WriteString("\n")
+		formatNode(&b, p.Source, 1)
+	case *Update:
+		fmt.Fprint(&b, "update ", p.Table.Raw, " set ")
+		for i, a := range p.Set {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprint(&b, a.Column.Raw, " = ", formatExpr(a.Value))
+		}
+		b.WriteString("\n")
+		formatNode(&b, p.Source, 1)
+	case *Delete:
+		fmt.Fprint(&b, "delete from ", p.Table.Raw, "\n")
 		formatNode(&b, p.Source, 1)
 	case *Query:
 		b.WriteString("query\n")
