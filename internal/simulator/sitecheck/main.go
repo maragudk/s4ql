@@ -13,7 +13,12 @@
 // has its effect in the state, and an action switched off again takes it away; the client keeps
 // calling a while a is crashed and after its restart, and its switch moves its calls to b and back; a
 // crash of the instance that serves lets the other take over; fake time goes
-// past 10 minutes; and the page writes nothing into its address. It also checks the words of run.js,
+// past 10 minutes; and the page writes nothing into its address. Then S3: a reload keeps the tab's
+// database, its name, and the time, and a catches up from it before it serves; a stored database that
+// is damaged or of another version is dropped; a write to sessionStorage that fails leaves nothing
+// half-written; Reset empties the database and keeps its name; the page stops at the cap of commit
+// objects, and Reset starts over from there; a tab without storage runs in memory; and a tab with an
+// empty sessionStorage, as a new tab has, gets a database of its own. It also checks the words of run.js,
 // and that a fault at start-up ends in the page's failure box: the page without run.js, and the page
 // without its Play button, as a page.js of one deploy would find the HTML of another. It writes what
 // it saw, and exits with 0 if the check passed, 1 if it failed, and 2 if it could not run.
@@ -194,6 +199,7 @@ var simulatorFiles = []string{
 	"/simulator/page.js",
 	"/simulator/run.js",
 	"/simulator/sound.js",
+	"/simulator/bucket.js",
 	"/simulator/engine/build.json",
 	"/simulator/engine/simulator.js",
 	"/simulator/engine/worker.js",
@@ -252,16 +258,16 @@ func checkRequests(requests []url.URL, version string) (bool, []string) {
 	return len(wrong) == 0 && len(missing) == 0, lines
 }
 
-// broken serves the site under /__check/broken/<how>/, with a fault that makes the page fail at
-// start-up: with how "no-run", run.js is not found, and with "no-play", the page's Play button has
-// lost its ID.
+// broken serves the site under /__check/broken/<how>/, with a fault: with how "no-run", run.js is not
+// found, and with "no-play", the page's Play button has lost its ID, which make the page fail at
+// start-up; with "no-storage", the page's sessionStorage throws, as the browser blocks it.
 func broken(root string) http.Handler {
 	files := http.FileServer(http.Dir(root))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		how, p := r.PathValue("how"), "/"+r.PathValue("path")
 		w.Header().Set("Cache-Control", "no-store")
 		switch {
-		case how != "no-run" && how != "no-play", how == "no-run" && p == "/simulator/run.js":
+		case how != "no-run" && how != "no-play" && how != "no-storage", how == "no-run" && p == "/simulator/run.js":
 			http.NotFound(w, r)
 			return
 		case how == "no-play" && p == "/simulator/":
@@ -272,6 +278,15 @@ func broken(root string) http.Handler {
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			_, _ = w.Write(bytes.Replace(b, []byte(`id="play"`), []byte(`id="no-play"`), 1))
+			return
+		case how == "no-storage" && p == "/simulator/":
+			b, err := os.ReadFile(filepath.Join(root, "simulator", "index.html"))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write(bytes.Replace(b, []byte(`<head>`), []byte(`<head><script>Object.defineProperty(window, "sessionStorage", { get() { throw new DOMException("The storage is blocked.", "SecurityError"); } });</script>`), 1))
 			return
 		}
 		r = r.Clone(r.Context())

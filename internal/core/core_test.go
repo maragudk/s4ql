@@ -219,6 +219,7 @@ func nullableTable(ct *s4qlpb.CreateTable, positions ...int) *s4qlpb.CreateTable
 // reader is what a write transaction and a read transaction both read with.
 type reader interface {
 	Tables(ctx context.Context) ([]*s4qlpb.CreateTable, error)
+	Indexes(ctx context.Context, table string) ([]*s4qlpb.CreateIndex, error)
 	Get(ctx context.Context, table string, key []*s4qlpb.Value) ([]*s4qlpb.Value, error)
 	Scan(ctx context.Context, table string) iter.Seq2[[]*s4qlpb.Value, error]
 }
@@ -245,7 +246,37 @@ func describe(ct *s4qlpb.CreateTable) string {
 	return fmt.Sprint(ct.GetTable(), "(", strings.Join(columns, ","), ")")
 }
 
-// dump the tables that r sees, each as its description and its rows in the order of a scan.
+// describeIndex describes an index: its name, its table, and its columns as positions in the
+// columns of the table, each with "desc" if the index holds it in descending order, as in
+// "i on t1(1,0 desc)".
+func describeIndex(ci *s4qlpb.CreateIndex) string {
+	return fmt.Sprint(ci.GetIndex(), " on ", ci.GetTable(), "(", indexColumns(ci), ")")
+}
+
+// indexColumns of an index, as [describeIndex] gives them.
+func indexColumns(ci *s4qlpb.CreateIndex) string {
+	columns := make([]string, len(ci.GetColumns()))
+	for i, c := range ci.GetColumns() {
+		columns[i] = fmt.Sprint(c.GetColumn())
+		if c.GetDescending() {
+			columns[i] += " desc"
+		}
+	}
+	return strings.Join(columns, ",")
+}
+
+// describeIndexes of a table, in their order, as the description of the table in a dump ends: each
+// with a plus sign, its name, and its columns, as in " +i(1,0 desc) +j(0)", and nothing for none.
+func describeIndexes(indexes []*s4qlpb.CreateIndex) string {
+	var b strings.Builder
+	for _, ci := range indexes {
+		fmt.Fprint(&b, " +", ci.GetIndex(), "(", indexColumns(ci), ")")
+	}
+	return b.String()
+}
+
+// dump the tables that r sees, each as its description, with its indexes in the order in which r
+// lists them, and its rows in the order of a scan.
 func dump(ctx context.Context, r reader) (map[string][]string, error) {
 	tables, err := r.Tables(ctx)
 	if err != nil {
@@ -260,7 +291,11 @@ func dump(ctx context.Context, r reader) (map[string][]string, error) {
 			}
 			rows = append(rows, text(row))
 		}
-		state[describe(ct)] = rows
+		indexes, err := r.Indexes(ctx, ct.GetTable())
+		if err != nil {
+			return nil, err
+		}
+		state[describe(ct)+describeIndexes(indexes)] = rows
 	}
 	return state, nil
 }
@@ -1550,7 +1585,7 @@ func TestOpen_identity(t *testing.T) {
 
 		_, err = core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{Identity: "one"})
 		is.Error(t, core.ErrCacheVersion, err)
-		is.Equal(t, "open the cache: the cache is not one that this version of s4ql reads: it has version 0, and this version of s4ql reads version 2; open the database with a new cache, or delete this one, with its files -wal and -shm", err.Error())
+		is.Equal(t, "open the cache: the cache is not one that this version of s4ql reads: it has version 0, and this version of s4ql reads version 3; open the database with a new cache, or delete this one, with its files -wal and -shm", err.Error())
 		is.True(t, hasRow1(t, path), "the row is gone")
 		position, _, err := cacheDump(path)
 		is.NotError(t, err)

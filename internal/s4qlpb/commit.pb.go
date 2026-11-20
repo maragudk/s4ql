@@ -425,6 +425,24 @@ func (x *Change) GetDeleteRows() *DeleteRows {
 	return nil
 }
 
+func (x *Change) GetCreateIndex() *CreateIndex {
+	if x != nil {
+		if x, ok := x.xxx_hidden_Kind.(*change_CreateIndex); ok {
+			return x.CreateIndex
+		}
+	}
+	return nil
+}
+
+func (x *Change) GetDropIndex() *DropIndex {
+	if x != nil {
+		if x, ok := x.xxx_hidden_Kind.(*change_DropIndex); ok {
+			return x.DropIndex
+		}
+	}
+	return nil
+}
+
 func (x *Change) SetCreateTable(v *CreateTable) {
 	if v == nil {
 		x.xxx_hidden_Kind = nil
@@ -455,6 +473,22 @@ func (x *Change) SetDeleteRows(v *DeleteRows) {
 		return
 	}
 	x.xxx_hidden_Kind = &change_DeleteRows{v}
+}
+
+func (x *Change) SetCreateIndex(v *CreateIndex) {
+	if v == nil {
+		x.xxx_hidden_Kind = nil
+		return
+	}
+	x.xxx_hidden_Kind = &change_CreateIndex{v}
+}
+
+func (x *Change) SetDropIndex(v *DropIndex) {
+	if v == nil {
+		x.xxx_hidden_Kind = nil
+		return
+	}
+	x.xxx_hidden_Kind = &change_DropIndex{v}
 }
 
 func (x *Change) HasKind() bool {
@@ -496,6 +530,22 @@ func (x *Change) HasDeleteRows() bool {
 	return ok
 }
 
+func (x *Change) HasCreateIndex() bool {
+	if x == nil {
+		return false
+	}
+	_, ok := x.xxx_hidden_Kind.(*change_CreateIndex)
+	return ok
+}
+
+func (x *Change) HasDropIndex() bool {
+	if x == nil {
+		return false
+	}
+	_, ok := x.xxx_hidden_Kind.(*change_DropIndex)
+	return ok
+}
+
 func (x *Change) ClearKind() {
 	x.xxx_hidden_Kind = nil
 }
@@ -524,11 +574,25 @@ func (x *Change) ClearDeleteRows() {
 	}
 }
 
+func (x *Change) ClearCreateIndex() {
+	if _, ok := x.xxx_hidden_Kind.(*change_CreateIndex); ok {
+		x.xxx_hidden_Kind = nil
+	}
+}
+
+func (x *Change) ClearDropIndex() {
+	if _, ok := x.xxx_hidden_Kind.(*change_DropIndex); ok {
+		x.xxx_hidden_Kind = nil
+	}
+}
+
 const Change_Kind_not_set_case case_Change_Kind = 0
 const Change_CreateTable_case case_Change_Kind = 1
 const Change_DropTable_case case_Change_Kind = 2
 const Change_UpsertRows_case case_Change_Kind = 3
 const Change_DeleteRows_case case_Change_Kind = 4
+const Change_CreateIndex_case case_Change_Kind = 5
+const Change_DropIndex_case case_Change_Kind = 6
 
 func (x *Change) WhichKind() case_Change_Kind {
 	if x == nil {
@@ -543,6 +607,10 @@ func (x *Change) WhichKind() case_Change_Kind {
 		return Change_UpsertRows_case
 	case *change_DeleteRows:
 		return Change_DeleteRows_case
+	case *change_CreateIndex:
+		return Change_CreateIndex_case
+	case *change_DropIndex:
+		return Change_DropIndex_case
 	default:
 		return Change_Kind_not_set_case
 	}
@@ -556,12 +624,16 @@ type Change_builder struct {
 	// Fields of oneof xxx_hidden_Kind:
 	// Creates a table.
 	CreateTable *CreateTable
-	// Drops a table and all its rows.
+	// Drops a table, all its rows, and all its indexes.
 	DropTable *DropTable
 	// Inserts rows into a table, or changes rows that are there.
 	UpsertRows *UpsertRows
 	// Deletes rows from a table.
 	DeleteRows *DeleteRows
+	// Creates an index on a table.
+	CreateIndex *CreateIndex
+	// Drops an index.
+	DropIndex *DropIndex
 	// -- end of xxx_hidden_Kind
 }
 
@@ -580,6 +652,12 @@ func (b0 Change_builder) Build() *Change {
 	}
 	if b.DeleteRows != nil {
 		x.xxx_hidden_Kind = &change_DeleteRows{b.DeleteRows}
+	}
+	if b.CreateIndex != nil {
+		x.xxx_hidden_Kind = &change_CreateIndex{b.CreateIndex}
+	}
+	if b.DropIndex != nil {
+		x.xxx_hidden_Kind = &change_DropIndex{b.DropIndex}
 	}
 	return m0
 }
@@ -604,7 +682,7 @@ type change_CreateTable struct {
 }
 
 type change_DropTable struct {
-	// Drops a table and all its rows.
+	// Drops a table, all its rows, and all its indexes.
 	DropTable *DropTable `protobuf:"bytes,2,opt,name=drop_table,json=dropTable,oneof"`
 }
 
@@ -618,6 +696,16 @@ type change_DeleteRows struct {
 	DeleteRows *DeleteRows `protobuf:"bytes,4,opt,name=delete_rows,json=deleteRows,oneof"`
 }
 
+type change_CreateIndex struct {
+	// Creates an index on a table.
+	CreateIndex *CreateIndex `protobuf:"bytes,5,opt,name=create_index,json=createIndex,oneof"`
+}
+
+type change_DropIndex struct {
+	// Drops an index.
+	DropIndex *DropIndex `protobuf:"bytes,6,opt,name=drop_index,json=dropIndex,oneof"`
+}
+
 func (*change_CreateTable) isChange_Kind() {}
 
 func (*change_DropTable) isChange_Kind() {}
@@ -625,6 +713,10 @@ func (*change_DropTable) isChange_Kind() {}
 func (*change_UpsertRows) isChange_Kind() {}
 
 func (*change_DeleteRows) isChange_Kind() {}
+
+func (*change_CreateIndex) isChange_Kind() {}
+
+func (*change_DropIndex) isChange_Kind() {}
 
 // Creates a table.
 type CreateTable struct {
@@ -885,7 +977,8 @@ func (b0 Column_builder) Build() *Column {
 	return m0
 }
 
-// Drops a table and all its rows.
+// Drops a table, all its rows, and all its indexes. A commit object does not
+// list the indexes of the table as dropped.
 type DropTable struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Table       *string                `protobuf:"bytes,1,opt,name=table"`
@@ -965,6 +1058,332 @@ func (b0 DropTable_builder) Build() *DropTable {
 	return m0
 }
 
+// Creates an index on a table that is there. The commit object holds the
+// definition of the index and none of its entries: replay builds the index
+// from the rows of the table, and keeps it up to date from then on.
+//
+// An index is not unique. The indexes of a table are in the order in which
+// their CreateIndex changes were applied.
+type CreateIndex struct {
+	state                  protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Index       *string                `protobuf:"bytes,1,opt,name=index"`
+	xxx_hidden_Table       *string                `protobuf:"bytes,2,opt,name=table"`
+	xxx_hidden_Columns     *[]*IndexColumn        `protobuf:"bytes,3,rep,name=columns"`
+	XXX_raceDetectHookData protoimpl.RaceDetectHookData
+	XXX_presence           [1]uint32
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *CreateIndex) Reset() {
+	*x = CreateIndex{}
+	mi := &file_s4ql_v1_commit_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateIndex) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateIndex) ProtoMessage() {}
+
+func (x *CreateIndex) ProtoReflect() protoreflect.Message {
+	mi := &file_s4ql_v1_commit_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *CreateIndex) GetIndex() string {
+	if x != nil {
+		if x.xxx_hidden_Index != nil {
+			return *x.xxx_hidden_Index
+		}
+		return ""
+	}
+	return ""
+}
+
+func (x *CreateIndex) GetTable() string {
+	if x != nil {
+		if x.xxx_hidden_Table != nil {
+			return *x.xxx_hidden_Table
+		}
+		return ""
+	}
+	return ""
+}
+
+func (x *CreateIndex) GetColumns() []*IndexColumn {
+	if x != nil {
+		if x.xxx_hidden_Columns != nil {
+			return *x.xxx_hidden_Columns
+		}
+	}
+	return nil
+}
+
+func (x *CreateIndex) SetIndex(v string) {
+	x.xxx_hidden_Index = &v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 3)
+}
+
+func (x *CreateIndex) SetTable(v string) {
+	x.xxx_hidden_Table = &v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 3)
+}
+
+func (x *CreateIndex) SetColumns(v []*IndexColumn) {
+	x.xxx_hidden_Columns = &v
+}
+
+func (x *CreateIndex) HasIndex() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 0)
+}
+
+func (x *CreateIndex) HasTable() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 1)
+}
+
+func (x *CreateIndex) ClearIndex() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
+	x.xxx_hidden_Index = nil
+}
+
+func (x *CreateIndex) ClearTable() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 1)
+	x.xxx_hidden_Table = nil
+}
+
+type CreateIndex_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	// The name of the index. No table and no other index has it.
+	Index *string
+	// The name of the table.
+	Table *string
+	// The columns of the index, in the order of the index: at least one, and
+	// none twice.
+	Columns []*IndexColumn
+}
+
+func (b0 CreateIndex_builder) Build() *CreateIndex {
+	m0 := &CreateIndex{}
+	b, x := &b0, m0
+	_, _ = b, x
+	if b.Index != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 3)
+		x.xxx_hidden_Index = b.Index
+	}
+	if b.Table != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 3)
+		x.xxx_hidden_Table = b.Table
+	}
+	x.xxx_hidden_Columns = &b.Columns
+	return m0
+}
+
+// One column of an index.
+type IndexColumn struct {
+	state                  protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Column      uint32                 `protobuf:"varint,1,opt,name=column"`
+	xxx_hidden_Descending  bool                   `protobuf:"varint,2,opt,name=descending"`
+	XXX_raceDetectHookData protoimpl.RaceDetectHookData
+	XXX_presence           [1]uint32
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *IndexColumn) Reset() {
+	*x = IndexColumn{}
+	mi := &file_s4ql_v1_commit_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IndexColumn) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IndexColumn) ProtoMessage() {}
+
+func (x *IndexColumn) ProtoReflect() protoreflect.Message {
+	mi := &file_s4ql_v1_commit_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *IndexColumn) GetColumn() uint32 {
+	if x != nil {
+		return x.xxx_hidden_Column
+	}
+	return 0
+}
+
+func (x *IndexColumn) GetDescending() bool {
+	if x != nil {
+		return x.xxx_hidden_Descending
+	}
+	return false
+}
+
+func (x *IndexColumn) SetColumn(v uint32) {
+	x.xxx_hidden_Column = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 2)
+}
+
+func (x *IndexColumn) SetDescending(v bool) {
+	x.xxx_hidden_Descending = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 2)
+}
+
+func (x *IndexColumn) HasColumn() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 0)
+}
+
+func (x *IndexColumn) HasDescending() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 1)
+}
+
+func (x *IndexColumn) ClearColumn() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
+	x.xxx_hidden_Column = 0
+}
+
+func (x *IndexColumn) ClearDescending() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 1)
+	x.xxx_hidden_Descending = false
+}
+
+type IndexColumn_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	// The column, as a position in the table's columns, starting at 0.
+	Column *uint32
+	// Whether the index holds the column in descending order. A column
+	// without it is in ascending order.
+	Descending *bool
+}
+
+func (b0 IndexColumn_builder) Build() *IndexColumn {
+	m0 := &IndexColumn{}
+	b, x := &b0, m0
+	_, _ = b, x
+	if b.Column != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 2)
+		x.xxx_hidden_Column = *b.Column
+	}
+	if b.Descending != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 2)
+		x.xxx_hidden_Descending = *b.Descending
+	}
+	return m0
+}
+
+// Drops an index. The table and its rows stay.
+type DropIndex struct {
+	state                  protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Index       *string                `protobuf:"bytes,1,opt,name=index"`
+	XXX_raceDetectHookData protoimpl.RaceDetectHookData
+	XXX_presence           [1]uint32
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *DropIndex) Reset() {
+	*x = DropIndex{}
+	mi := &file_s4ql_v1_commit_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DropIndex) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DropIndex) ProtoMessage() {}
+
+func (x *DropIndex) ProtoReflect() protoreflect.Message {
+	mi := &file_s4ql_v1_commit_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *DropIndex) GetIndex() string {
+	if x != nil {
+		if x.xxx_hidden_Index != nil {
+			return *x.xxx_hidden_Index
+		}
+		return ""
+	}
+	return ""
+}
+
+func (x *DropIndex) SetIndex(v string) {
+	x.xxx_hidden_Index = &v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 1)
+}
+
+func (x *DropIndex) HasIndex() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 0)
+}
+
+func (x *DropIndex) ClearIndex() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
+	x.xxx_hidden_Index = nil
+}
+
+type DropIndex_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	// The name of the index.
+	Index *string
+}
+
+func (b0 DropIndex_builder) Build() *DropIndex {
+	m0 := &DropIndex{}
+	b, x := &b0, m0
+	_, _ = b, x
+	if b.Index != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 1)
+		x.xxx_hidden_Index = b.Index
+	}
+	return m0
+}
+
 // Inserts rows into a table, or changes rows that are there.
 //
 // If `columns` lists every column of the table, each row is inserted, or
@@ -987,7 +1406,7 @@ type UpsertRows struct {
 
 func (x *UpsertRows) Reset() {
 	*x = UpsertRows{}
-	mi := &file_s4ql_v1_commit_proto_msgTypes[6]
+	mi := &file_s4ql_v1_commit_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -999,7 +1418,7 @@ func (x *UpsertRows) String() string {
 func (*UpsertRows) ProtoMessage() {}
 
 func (x *UpsertRows) ProtoReflect() protoreflect.Message {
-	mi := &file_s4ql_v1_commit_proto_msgTypes[6]
+	mi := &file_s4ql_v1_commit_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1102,7 +1521,7 @@ type DeleteRows struct {
 
 func (x *DeleteRows) Reset() {
 	*x = DeleteRows{}
-	mi := &file_s4ql_v1_commit_proto_msgTypes[7]
+	mi := &file_s4ql_v1_commit_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1114,7 +1533,7 @@ func (x *DeleteRows) String() string {
 func (*DeleteRows) ProtoMessage() {}
 
 func (x *DeleteRows) ProtoReflect() protoreflect.Message {
-	mi := &file_s4ql_v1_commit_proto_msgTypes[7]
+	mi := &file_s4ql_v1_commit_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1197,7 +1616,7 @@ type Row struct {
 
 func (x *Row) Reset() {
 	*x = Row{}
-	mi := &file_s4ql_v1_commit_proto_msgTypes[8]
+	mi := &file_s4ql_v1_commit_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1209,7 +1628,7 @@ func (x *Row) String() string {
 func (*Row) ProtoMessage() {}
 
 func (x *Row) ProtoReflect() protoreflect.Message {
-	mi := &file_s4ql_v1_commit_proto_msgTypes[8]
+	mi := &file_s4ql_v1_commit_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1258,7 +1677,7 @@ type PrimaryKey struct {
 
 func (x *PrimaryKey) Reset() {
 	*x = PrimaryKey{}
-	mi := &file_s4ql_v1_commit_proto_msgTypes[9]
+	mi := &file_s4ql_v1_commit_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1270,7 +1689,7 @@ func (x *PrimaryKey) String() string {
 func (*PrimaryKey) ProtoMessage() {}
 
 func (x *PrimaryKey) ProtoReflect() protoreflect.Message {
-	mi := &file_s4ql_v1_commit_proto_msgTypes[9]
+	mi := &file_s4ql_v1_commit_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1322,7 +1741,7 @@ type Value struct {
 
 func (x *Value) Reset() {
 	*x = Value{}
-	mi := &file_s4ql_v1_commit_proto_msgTypes[10]
+	mi := &file_s4ql_v1_commit_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1334,7 +1753,7 @@ func (x *Value) String() string {
 func (*Value) ProtoMessage() {}
 
 func (x *Value) ProtoReflect() protoreflect.Message {
-	mi := &file_s4ql_v1_commit_proto_msgTypes[10]
+	mi := &file_s4ql_v1_commit_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1571,7 +1990,7 @@ func (b0 Value_builder) Build() *Value {
 type case_Value_Kind protoreflect.FieldNumber
 
 func (x case_Value_Kind) String() string {
-	md := file_s4ql_v1_commit_proto_msgTypes[10].Descriptor()
+	md := file_s4ql_v1_commit_proto_msgTypes[13].Descriptor()
 	if x == 0 {
 		return "not set"
 	}
@@ -1628,7 +2047,7 @@ type Null struct {
 
 func (x *Null) Reset() {
 	*x = Null{}
-	mi := &file_s4ql_v1_commit_proto_msgTypes[11]
+	mi := &file_s4ql_v1_commit_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1640,7 +2059,7 @@ func (x *Null) String() string {
 func (*Null) ProtoMessage() {}
 
 func (x *Null) ProtoReflect() protoreflect.Message {
-	mi := &file_s4ql_v1_commit_proto_msgTypes[11]
+	mi := &file_s4ql_v1_commit_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1675,7 +2094,7 @@ type Annotation struct {
 
 func (x *Annotation) Reset() {
 	*x = Annotation{}
-	mi := &file_s4ql_v1_commit_proto_msgTypes[12]
+	mi := &file_s4ql_v1_commit_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1687,7 +2106,7 @@ func (x *Annotation) String() string {
 func (*Annotation) ProtoMessage() {}
 
 func (x *Annotation) ProtoReflect() protoreflect.Message {
-	mi := &file_s4ql_v1_commit_proto_msgTypes[12]
+	mi := &file_s4ql_v1_commit_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1779,7 +2198,7 @@ func (b0 Annotation_builder) Build() *Annotation {
 type case_Annotation_Kind protoreflect.FieldNumber
 
 func (x case_Annotation_Kind) String() string {
-	md := file_s4ql_v1_commit_proto_msgTypes[12].Descriptor()
+	md := file_s4ql_v1_commit_proto_msgTypes[15].Descriptor()
 	if x == 0 {
 		return "not set"
 	}
@@ -1810,7 +2229,7 @@ type Statement struct {
 
 func (x *Statement) Reset() {
 	*x = Statement{}
-	mi := &file_s4ql_v1_commit_proto_msgTypes[13]
+	mi := &file_s4ql_v1_commit_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1822,7 +2241,7 @@ func (x *Statement) String() string {
 func (*Statement) ProtoMessage() {}
 
 func (x *Statement) ProtoReflect() protoreflect.Message {
-	mi := &file_s4ql_v1_commit_proto_msgTypes[13]
+	mi := &file_s4ql_v1_commit_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1907,7 +2326,7 @@ const file_s4ql_v1_commit_proto_rawDesc = "" +
 	"\aversion\x18\x01 \x01(\rR\aversion\x12\x16\n" +
 	"\x06parent\x18\x02 \x01(\fR\x06parent\x12;\n" +
 	"\vcommit_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"commitTime\"\xf0\x01\n" +
+	"commitTime\"\xe0\x02\n" +
 	"\x06Change\x129\n" +
 	"\fcreate_table\x18\x01 \x01(\v2\x14.s4ql.v1.CreateTableH\x00R\vcreateTable\x123\n" +
 	"\n" +
@@ -1915,7 +2334,10 @@ const file_s4ql_v1_commit_proto_rawDesc = "" +
 	"\vupsert_rows\x18\x03 \x01(\v2\x13.s4ql.v1.UpsertRowsH\x00R\n" +
 	"upsertRows\x126\n" +
 	"\vdelete_rows\x18\x04 \x01(\v2\x13.s4ql.v1.DeleteRowsH\x00R\n" +
-	"deleteRowsB\x06\n" +
+	"deleteRows\x129\n" +
+	"\fcreate_index\x18\x05 \x01(\v2\x14.s4ql.v1.CreateIndexH\x00R\vcreateIndex\x123\n" +
+	"\n" +
+	"drop_index\x18\x06 \x01(\v2\x12.s4ql.v1.DropIndexH\x00R\tdropIndexB\x06\n" +
 	"\x04kind\"o\n" +
 	"\vCreateTable\x12\x14\n" +
 	"\x05table\x18\x01 \x01(\tR\x05table\x12)\n" +
@@ -1927,7 +2349,18 @@ const file_s4ql_v1_commit_proto_rawDesc = "" +
 	"\x04type\x18\x02 \x01(\x0e2\r.s4ql.v1.TypeR\x04type\x12\x1a\n" +
 	"\bnullable\x18\x03 \x01(\bR\bnullable\"!\n" +
 	"\tDropTable\x12\x14\n" +
-	"\x05table\x18\x01 \x01(\tR\x05table\"^\n" +
+	"\x05table\x18\x01 \x01(\tR\x05table\"i\n" +
+	"\vCreateIndex\x12\x14\n" +
+	"\x05index\x18\x01 \x01(\tR\x05index\x12\x14\n" +
+	"\x05table\x18\x02 \x01(\tR\x05table\x12.\n" +
+	"\acolumns\x18\x03 \x03(\v2\x14.s4ql.v1.IndexColumnR\acolumns\"E\n" +
+	"\vIndexColumn\x12\x16\n" +
+	"\x06column\x18\x01 \x01(\rR\x06column\x12\x1e\n" +
+	"\n" +
+	"descending\x18\x02 \x01(\bR\n" +
+	"descending\"!\n" +
+	"\tDropIndex\x12\x14\n" +
+	"\x05index\x18\x01 \x01(\tR\x05index\"^\n" +
 	"\n" +
 	"UpsertRows\x12\x14\n" +
 	"\x05table\x18\x01 \x01(\tR\x05table\x12\x18\n" +
@@ -1968,7 +2401,7 @@ const file_s4ql_v1_commit_proto_rawDesc = "" +
 	"\tTYPE_BLOB\x10\x05B!Z\x1fmaragu.dev/s4ql/internal/s4qlpbb\beditionsp\xe9\a"
 
 var file_s4ql_v1_commit_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_s4ql_v1_commit_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_s4ql_v1_commit_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_s4ql_v1_commit_proto_goTypes = []any{
 	(Type)(0),                     // 0: s4ql.v1.Type
 	(*CommitObject)(nil),          // 1: s4ql.v1.CommitObject
@@ -1977,39 +2410,45 @@ var file_s4ql_v1_commit_proto_goTypes = []any{
 	(*CreateTable)(nil),           // 4: s4ql.v1.CreateTable
 	(*Column)(nil),                // 5: s4ql.v1.Column
 	(*DropTable)(nil),             // 6: s4ql.v1.DropTable
-	(*UpsertRows)(nil),            // 7: s4ql.v1.UpsertRows
-	(*DeleteRows)(nil),            // 8: s4ql.v1.DeleteRows
-	(*Row)(nil),                   // 9: s4ql.v1.Row
-	(*PrimaryKey)(nil),            // 10: s4ql.v1.PrimaryKey
-	(*Value)(nil),                 // 11: s4ql.v1.Value
-	(*Null)(nil),                  // 12: s4ql.v1.Null
-	(*Annotation)(nil),            // 13: s4ql.v1.Annotation
-	(*Statement)(nil),             // 14: s4ql.v1.Statement
-	(*timestamppb.Timestamp)(nil), // 15: google.protobuf.Timestamp
+	(*CreateIndex)(nil),           // 7: s4ql.v1.CreateIndex
+	(*IndexColumn)(nil),           // 8: s4ql.v1.IndexColumn
+	(*DropIndex)(nil),             // 9: s4ql.v1.DropIndex
+	(*UpsertRows)(nil),            // 10: s4ql.v1.UpsertRows
+	(*DeleteRows)(nil),            // 11: s4ql.v1.DeleteRows
+	(*Row)(nil),                   // 12: s4ql.v1.Row
+	(*PrimaryKey)(nil),            // 13: s4ql.v1.PrimaryKey
+	(*Value)(nil),                 // 14: s4ql.v1.Value
+	(*Null)(nil),                  // 15: s4ql.v1.Null
+	(*Annotation)(nil),            // 16: s4ql.v1.Annotation
+	(*Statement)(nil),             // 17: s4ql.v1.Statement
+	(*timestamppb.Timestamp)(nil), // 18: google.protobuf.Timestamp
 }
 var file_s4ql_v1_commit_proto_depIdxs = []int32{
 	2,  // 0: s4ql.v1.CommitObject.header:type_name -> s4ql.v1.Header
 	3,  // 1: s4ql.v1.CommitObject.changes:type_name -> s4ql.v1.Change
-	13, // 2: s4ql.v1.CommitObject.annotations:type_name -> s4ql.v1.Annotation
-	15, // 3: s4ql.v1.Header.commit_time:type_name -> google.protobuf.Timestamp
+	16, // 2: s4ql.v1.CommitObject.annotations:type_name -> s4ql.v1.Annotation
+	18, // 3: s4ql.v1.Header.commit_time:type_name -> google.protobuf.Timestamp
 	4,  // 4: s4ql.v1.Change.create_table:type_name -> s4ql.v1.CreateTable
 	6,  // 5: s4ql.v1.Change.drop_table:type_name -> s4ql.v1.DropTable
-	7,  // 6: s4ql.v1.Change.upsert_rows:type_name -> s4ql.v1.UpsertRows
-	8,  // 7: s4ql.v1.Change.delete_rows:type_name -> s4ql.v1.DeleteRows
-	5,  // 8: s4ql.v1.CreateTable.columns:type_name -> s4ql.v1.Column
-	0,  // 9: s4ql.v1.Column.type:type_name -> s4ql.v1.Type
-	9,  // 10: s4ql.v1.UpsertRows.rows:type_name -> s4ql.v1.Row
-	10, // 11: s4ql.v1.DeleteRows.primary_keys:type_name -> s4ql.v1.PrimaryKey
-	11, // 12: s4ql.v1.Row.values:type_name -> s4ql.v1.Value
-	11, // 13: s4ql.v1.PrimaryKey.values:type_name -> s4ql.v1.Value
-	12, // 14: s4ql.v1.Value.null:type_name -> s4ql.v1.Null
-	14, // 15: s4ql.v1.Annotation.statement:type_name -> s4ql.v1.Statement
-	11, // 16: s4ql.v1.Statement.parameters:type_name -> s4ql.v1.Value
-	17, // [17:17] is the sub-list for method output_type
-	17, // [17:17] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	10, // 6: s4ql.v1.Change.upsert_rows:type_name -> s4ql.v1.UpsertRows
+	11, // 7: s4ql.v1.Change.delete_rows:type_name -> s4ql.v1.DeleteRows
+	7,  // 8: s4ql.v1.Change.create_index:type_name -> s4ql.v1.CreateIndex
+	9,  // 9: s4ql.v1.Change.drop_index:type_name -> s4ql.v1.DropIndex
+	5,  // 10: s4ql.v1.CreateTable.columns:type_name -> s4ql.v1.Column
+	0,  // 11: s4ql.v1.Column.type:type_name -> s4ql.v1.Type
+	8,  // 12: s4ql.v1.CreateIndex.columns:type_name -> s4ql.v1.IndexColumn
+	12, // 13: s4ql.v1.UpsertRows.rows:type_name -> s4ql.v1.Row
+	13, // 14: s4ql.v1.DeleteRows.primary_keys:type_name -> s4ql.v1.PrimaryKey
+	14, // 15: s4ql.v1.Row.values:type_name -> s4ql.v1.Value
+	14, // 16: s4ql.v1.PrimaryKey.values:type_name -> s4ql.v1.Value
+	15, // 17: s4ql.v1.Value.null:type_name -> s4ql.v1.Null
+	17, // 18: s4ql.v1.Annotation.statement:type_name -> s4ql.v1.Statement
+	14, // 19: s4ql.v1.Statement.parameters:type_name -> s4ql.v1.Value
+	20, // [20:20] is the sub-list for method output_type
+	20, // [20:20] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_s4ql_v1_commit_proto_init() }
@@ -2022,15 +2461,17 @@ func file_s4ql_v1_commit_proto_init() {
 		(*change_DropTable)(nil),
 		(*change_UpsertRows)(nil),
 		(*change_DeleteRows)(nil),
+		(*change_CreateIndex)(nil),
+		(*change_DropIndex)(nil),
 	}
-	file_s4ql_v1_commit_proto_msgTypes[10].OneofWrappers = []any{
+	file_s4ql_v1_commit_proto_msgTypes[13].OneofWrappers = []any{
 		(*value_Integer)(nil),
 		(*value_Real)(nil),
 		(*value_Text)(nil),
 		(*value_Blob)(nil),
 		(*value_Null)(nil),
 	}
-	file_s4ql_v1_commit_proto_msgTypes[12].OneofWrappers = []any{
+	file_s4ql_v1_commit_proto_msgTypes[15].OneofWrappers = []any{
 		(*annotation_Statement)(nil),
 	}
 	type x struct{}
@@ -2039,7 +2480,7 @@ func file_s4ql_v1_commit_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_s4ql_v1_commit_proto_rawDesc), len(file_s4ql_v1_commit_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   14,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

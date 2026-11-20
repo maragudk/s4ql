@@ -29,17 +29,20 @@ type Event struct {
 	Holder   string `json:"holder,omitzero"`
 
 	// Call is the number of a call of the application, Caller who made it, Op whether it is a
-	// write or a read, and Started when it started.
+	// write, a delete, or a read, and Started when it started.
 	Call    int      `json:"call,omitzero"`
 	Caller  string   `json:"caller,omitzero"`
 	Op      string   `json:"op,omitzero"`
 	Started *float64 `json:"started,omitzero"`
 	// Value is the key of the row that a write inserts, and Keys those that a read saw. SQL is the
-	// statement of a call, and Args its arguments by position.
-	Value int64   `json:"value,omitzero"`
-	SQL   string  `json:"sql,omitzero"`
-	Args  []any   `json:"args,omitzero"`
-	Keys  []int64 `json:"keys,omitzero"`
+	// statement of a call, and Args its arguments by position. Expect is what a read expects: "row"
+	// for a key that the application knows is in the store, and "none" for one whose delete it knows
+	// was committed.
+	Value  int64   `json:"value,omitzero"`
+	SQL    string  `json:"sql,omitzero"`
+	Args   []any   `json:"args,omitzero"`
+	Expect string  `json:"expect,omitzero"`
+	Keys   []int64 `json:"keys,omitzero"`
 	// Position is the name of the last commit object in the state that a call saw.
 	Position string `json:"position,omitzero"`
 
@@ -119,12 +122,13 @@ type Lease struct {
 }
 
 // CommitObject is what a commit object holds: its name, the name of its parent, the keys of the
-// rows that it inserts into the table of the workload, the tables that it creates, the number of
-// its changes, and the statements that its annotations hold.
+// rows that it inserts into the table of the workload and of those that it deletes from it, the
+// tables that it creates, the number of its changes, and the statements that its annotations hold.
 type CommitObject struct {
 	Name       string      `json:"name"`
 	Parent     string      `json:"parent"`
 	Keys       []int64     `json:"keys,omitzero"`
+	Deletes    []int64     `json:"deletes,omitzero"`
 	Tables     []string    `json:"tables,omitzero"`
 	Changes    int         `json:"changes"`
 	Statements []Statement `json:"statements,omitzero"`
