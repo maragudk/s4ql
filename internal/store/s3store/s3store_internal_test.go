@@ -232,8 +232,10 @@ func TestClient_Close(t *testing.T) {
 		data, err := io.ReadAll(body)
 		is.NotError(t, err)
 		is.Equal(t, "data", string(data))
+		// net/http may hand the connection back in a goroutine of its own after the body is closed,
+		// and then closes it, so it may still be open when the close of the content returns.
 		is.NotError(t, body.Close())
-		is.True(t, isClosed(conns[0]))
+		waitClosed(t, conns[0])
 		is.Equal(t, 0, len(d.open()))
 	})
 

@@ -146,6 +146,10 @@ With the call in `leave` taken out, "should send a call after the close" and the
 
 Smaller counts were not reliable: with 2,000 calls in each of 4 goroutines the subtest failed in 6 of 20 runs before the fix, and with 4,000 in each of 2, in 13 of 20 without `-race`.
 
+The first `-count=200` of `TestClient_Close` failed once, in "should close the connection of a read whose content is open when the content is closed": the connection of a read that was read to its end was still open when the close of the content returned (`s3store_internal_test.go:236: Not true`). net/http can hand the connection back in a goroutine of its own, so that subtest waits for the close with `waitClosed` too, and passed 300 runs after.
+
+The code review (low, over the first commit) found that `leave` could run before net/http hands the connection back, which would then join the pool after the close. The content of a read ends its request after it has closed the body, and a connection that joins the pool after `CloseIdleConnections` is closed by the transport, as the held-dial subtest shows; I said so in the comment of `Client.Close` and changed nothing else.
+
 The permission system refused a Bash command that compiled test binaries and ran them in a loop in one line ("too complex to verify that it stays inside the worktree"), and another with a Python here-doc. I put both in scripts in the scratchpad.
 
 ### What I learned
