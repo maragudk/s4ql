@@ -1865,3 +1865,185 @@ func fuzzTypes(f *testing.F, newInstance func(t testing.TB, limit int) *instance
 		}
 	})
 }
+
+// whereTypes are the types of the tables of [FuzzWhere], and whereRows the keys of the rows of the
+// table of each type, at the edges of the type: for a real -0.0 is the key 0.0, which SQLite stores
+// for it.
+var (
+	whereTypes = []string{"int", "integer", "real", "text", "blob"}
+	whereRows  = map[string][]any{
+		"int":     {int64(math.MinInt64), int64(-1), int64(0), int64(1), int64(2), int64(math.MaxInt64)},
+		"integer": {int64(math.MinInt64), int64(math.MinInt64 + 1), int64(0), int64(7), int64(math.MaxInt64 - 1), int64(math.MaxInt64)},
+		"real":    {-math.MaxFloat64, -1.5, 0.0, math.SmallestNonzeroFloat64, 1.0, 1.5, math.MaxFloat64},
+		"text":    {"", "\x01", "a", "a\x01", "ab", "b", "é", "\U0010ffff"},
+		"blob":    {[]byte{}, []byte{0}, []byte{0, 0}, []byte{0, 1}, []byte("a"), []byte{0xff}, []byte{0xff, 0}},
+	}
+)
+
+// FuzzWhere runs a select with a WHERE that the bytes of its input build on the engine, on a
+// database in memory, a test double of the core, and on SQLite, and compares what each gives, as
+// [TestDifferential] does, also with every row read: see [pair.bothWays]. The table, chosen by the
+// first byte, has a key and a column v of one of the five types, which takes NULL, and rows whose
+// keys are at the edges of the type, of which one in three has v NULL and the others v as the key.
+// The input builds the conditions as [whereOf] says. [FuzzWhere_core] runs the same on the storage
+// core.
+func FuzzWhere(f *testing.F) {
+	fuzzWhere(f, newMemoryInstance)
+}
+
+// FuzzWhere_core is [FuzzWhere] on the storage core, with a store in memory.
+func FuzzWhere_core(f *testing.F) {
+	fuzzWhere(f, func(t testing.TB) *instance { return newInstance(t, engine.Options{}) })
+}
+
+// fuzzWhere is [FuzzWhere] on the instances of newInstance. Its seeds have every operator on the key
+// and on v, with a value of a row, of the bytes, NULL, and of another type, as a literal and as an
+// argument, a column that the table does not have, and several conditions.
+func fuzzWhere(f *testing.F, newInstance func(t testing.TB) *instance) {
+	for table := range byte(len(whereTypes)) {
+		for op := range byte(10) {
+			for form := range byte(8) {
+				if (op+form)%3 == 0 {
+					f.Add([]byte{table, form / 2 % 3, op, form, 2, 1, 0})
+				}
+			}
+		}
+		f.Add([]byte{table, 0, 4, 0, 1, 0, 2, 0, 3, 3, 0, 2, 5})
+		f.Add([]byte{table, 2, 0, 0, 0, 0, 6, 1, 0, 5, 9})
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) == 0 {
+			return
+		}
+		typ := whereTypes[int(data[0])%len(whereTypes)]
+		i := newInstance(t)
+		p := newPair(t, i, nil)
+		table := "w_" + typ
+		setUp := []stmttest.Call{{Src: "create table " + table + " (k " + typ + " primary key, v " + typ + ") strict, without rowid", Supported: true}}
+		for j, key := range whereRows[typ] {
+			v := key
+			if j%3 == 1 {
+				v = nil
+			}
+			setUp = append(setUp, stmttest.Call{Src: "insert into " + table + " values (?, ?)", Args: []any{key, v}, Supported: true})
+		}
+		for _, c := range setUp {
+			if failure := p.step(c); failure != "" {
+				t.Fatalf("the set-up: %v", failure)
+			}
+		}
+		c := whereOf(table, typ, data[1:])
+		if failure := p.step(c); failure != "" {
+			t.Fatal(failure)
+		}
+	})
+}
+
+// whereOf the bytes data: a select of * from the table, whose key k and column v are of the type
+// typ, with a WHERE of up to eight conditions, each of which takes bytes from data while it has
+// them, and zero bytes after them: its column, k, v, or x, which the table does not have, in double
+// quotes for a byte above 127; its operator, one of the eight of slice 7; and for a comparison its
+// value, by a byte whose lowest bits choose a key of a row of the table, a value of typ from the
+// bytes that follow, NULL, or a value of another type from the bytes that follow, and whose next bit
+// chooses a literal or an argument.
+func whereOf(table, typ string, data []byte) stmttest.Call {
+	next := func() byte {
+		if len(data) == 0 {
+			return 0
+		}
+		b := data[0]
+		data = data[1:]
+		return b
+	}
+	// take n bytes from data, or what it has.
+	take := func(n int) []byte {
+		n = min(n, len(data))
+		b := data[:n]
+		data = data[n:]
+		return b
+	}
+	ops := []string{"=", "==", "!=", "<>", "<", "<=", ">", ">=", "is null", "is not null"}
+	var b strings.Builder
+	b.WriteString("select * from " + table + " where ")
+	c := stmttest.Call{Query: true, Supported: true}
+	for n := range 8 {
+		if n > 0 {
+			if len(data) == 0 {
+				break
+			}
+			b.WriteString(" and ")
+		}
+		col := next()
+		name := []string{"k", "v", "x"}[int(col&0x7f)%3]
+		if col > 127 {
+			name = `"` + name + `"`
+		}
+		op := ops[int(next())%len(ops)]
+		b.WriteString(name + " " + op)
+		if strings.HasPrefix(op, "is") {
+			continue
+		}
+		form := next()
+		var value any
+		switch form % 4 {
+		case 0:
+			keys := whereRows[typ]
+			value = keys[int(next())%len(keys)]
+		case 1:
+			value = whereValue(typ, take)
+		case 3:
+			value = whereValue(whereTypes[(slices.Index(whereTypes, typ)+1+int(next())%4)%len(whereTypes)], take)
+		}
+		if form/4%2 == 1 {
+			b.WriteString(" ?")
+			c.Args = append(c.Args, value)
+			continue
+		}
+		b.WriteString(" " + whereLiteral(value))
+	}
+	c.Src = b.String()
+	return c
+}
+
+// whereValue of the type typ from the bytes that take gives: an integer or the bits of a real of up
+// to eight bytes, and text, valid UTF-8 without NUL, or a blob, of as many bytes as the first byte
+// says, up to 15. A real is finite.
+func whereValue(typ string, take func(n int) []byte) any {
+	switch typ {
+	case "int", "integer", "real":
+		var bits [8]byte
+		copy(bits[:], take(8))
+		v := binary.LittleEndian.Uint64(bits[:])
+		if typ != "real" {
+			return int64(v)
+		}
+		if f := math.Float64frombits(v); !math.IsNaN(f) && !math.IsInf(f, 0) {
+			return f
+		}
+		return float64(int64(v))
+	}
+	n := 0
+	if b := take(1); len(b) > 0 {
+		n = int(b[0] % 16)
+	}
+	data := slices.Clone(take(n))
+	if typ == "blob" {
+		return data
+	}
+	return strings.ReplaceAll(strings.ToValidUTF8(string(data), "?"), "\x00", "0")
+}
+
+// whereLiteral of the value v of [whereValue], as SQL writes it, or NULL for nil.
+func whereLiteral(v any) string {
+	switch v := v.(type) {
+	case int64:
+		return fmt.Sprint(v)
+	case float64:
+		return strconv.FormatFloat(v, 'e', -1, 64)
+	case string:
+		return "'" + strings.ReplaceAll(v, "'", "''") + "'"
+	case []byte:
+		return "x'" + hex.EncodeToString(v) + "'"
+	}
+	return "null"
+}

@@ -627,6 +627,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 		if columns == nil {
 			return
 		}
+		p.reachWhere(sel, runs, got, o, kind, columns, count)
 		for _, o := range got.runs() {
 			if o.null {
 				count(map[bool]string{true: "select * with NULL ", false: "select of names with NULL "}[sel.Columns == nil] + kind(o))
@@ -699,6 +700,60 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 			count("insert with two faults: " + kind(o))
 		}
 	}
+}
+
+// reachWhere counts what the select sel with the arguments of each run, whose outcome of s4ql is got,
+// reaches of WHERE, on its table with the columns on o, as [pair.reach] says, with the kind of each
+// outcome as kind gives it: for each run that s4ql takes to the instance, each case of
+// [stmttest.WhereCases], and for a query that reads its rows to their end and succeeds on a table
+// with rows, whether it gives none, some, or all of them; and for any other run, one with an argument
+// that s4ql does not support or with another number of arguments than parameters.
+func (p *pair) reachWhere(sel *stmt.Select, runs [][]any, got outcome, o runner, kind func(outcome) string, columns []stmttest.TableColumn, count func(string)) {
+	tb := p.tb
+	tb.Helper()
+	if sel.Where == nil {
+		return
+	}
+	for i, out := range got.runs() {
+		if i >= len(runs) {
+			break
+		}
+		if !reachesSelect(sel, runs[i]) {
+			count("WHERE with arguments that s4ql refuses " + kind(out))
+			continue
+		}
+		var bound []any
+		for _, a := range runs[i] {
+			if v, ok := stmttest.Integers([]any{a}); ok {
+				a = v[0]
+			}
+			bound = append(bound, converted(a))
+		}
+		for _, what := range stmttest.WhereCases(columns, sel, bound) {
+			count(what + " " + kind(out))
+		}
+		if out.failed != "" || got.call != callQuery && got.call != callPrepareQuery && got.call != callStmtQuery {
+			continue
+		}
+		table, _ := p.columnsIn(o, sel.Table.Value)
+		var n int
+		is.NotError(tb, o.QueryRowContext(tb.Context(), "select count(*) from "+stmttest.Quote(table)).Scan(&n))
+		switch {
+		case n == 0:
+		case len(out.rows) == 0:
+			count("WHERE that gives no row of a table with rows")
+		case len(out.rows) == n:
+			count("WHERE that gives every row of a table with rows")
+		default:
+			count("WHERE that gives some rows of a table")
+		}
+	}
+}
+
+// reachesSelect reports whether s4ql takes the select sel with args to the instance: with one
+// argument for each parameter, each one that s4ql supports.
+func reachesSelect(sel *stmt.Select, args []any) bool {
+	return len(args) == sel.Parameters() && argumentRefusal(args) == ""
 }
 
 // argumentKind of the argument a, for a count of what a test reaches, as [stmttest.ArgumentKind]
