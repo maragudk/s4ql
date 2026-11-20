@@ -874,20 +874,24 @@ The hashes of two requests, the demo's and one with a crash and a restart, are t
 
 ### A long session
 
-Measured on 2026-11-19 on the same machine, with Go 1.27.4, and in the browser with headless Chrome through the runner of `internal/sqlite/browser`.
+Measured on 2026-11-20 on the same machine, with Go 1.27.4, natively and in headless Chrome through the runner of `internal/sqlite/browser`, with the workload as SQL. A session with the seed 7 advanced in steps of 30 fake minutes, and at each age five advances of one fake minute were timed. The page's settings are `{"workload": {"callers": 0}, "client": {"instance": "a"}, "standby": true}`; the defaults are two instances, two callers each, and a window of 100.
 
-The time of one fake minute in Chromium, as one `advance`:
+The mean time of one fake minute, as one `advance`, at the age of the session:
 
-| Session | Minutes 1 to 5 | Minutes 56 to 60 |
-| --- | --- | --- |
-| The defaults: two instances, the workload, `keep` at 100, no faults | 115, 68, 39, 43, and 44 ms | 51, 30, 42, 51, and 54 ms |
-| The defaults with the preset of faults | 35, 53, 44, 24, and 29 ms | 28, 27, 40, 39, and 31 ms |
+| Session | Where | 0 h | 1 h | 6 h | 24 h |
+| --- | --- | --- | --- | --- | --- |
+| The page's settings | natively | 16 ms | 29 ms | 27 ms | 35 ms |
+| The page's settings | Chromium | 85 ms | 103 ms | 141 ms | 73 ms |
+| The defaults | natively | 77 ms | 40 ms | 36 ms | 110 ms |
+| The defaults | Chromium | 108 ms | 145 ms | 153 ms | 129 ms |
 
-Natively, in `TestEngine_live`, a fake minute of a default session takes 611 steps and gives 442 events in 120,319 bytes of JSON, as the mean of minutes 10 to 20. As the mean of minutes 50 to 60 it takes 626 steps and gives 458 events in 128,781 bytes. The bytes grow a little because the keys and the numbers gain digits.
+A fake minute of the page's settings takes about 1,440 steps at every age, and the steps were the same natively and in Chromium, to the step. A read with the page's settings gives 100 rows after an hour and after 24 hours, when the table has about 14,000 rows: the engine reads them by the key, above the bound. Before the workload was SQL, a fake minute of the page's settings took about 417 steps, and 25 to 52 ms in Chromium. The difference is the rows of the queries: the engine yields to the host between two rows of a query, which is a step of the scheduler each, so a read of 100 rows takes about 100 steps.
+
+`TestEngine_live` also checks that the steps, the events, and the bytes of a fake minute, as the mean of minutes 50 to 60, are less than 15% above those of minutes 10 to 20.
 
 So a fake minute costs the same after an hour as at the start. Four things still grow with a session:
 
-- **The Go heap**, natively by about 12.5 MB for each fake hour: 7.97 MB after 30 min, 14.3 MB after 60, 20.1 MB after 90, and 26.9 MB after 120, in a session of two instances with 2229 commit objects after 120 min. Most of it is the text trace of `sim`, which keeps every line for the hash and cannot be switched off without a change to `internal/sim`. The rest is what `simstore` keeps, which is every applied write with its content and a handle of every task that carried a request, the commit objects of the bucket in the engine's fold and in its checker, the checker's record of every read that was served and of every write that ended, and a map of the manifests by their versions.
+- **The Go heap**, natively by about 13 MB for each fake hour with the page's settings: 13.2 MB after an hour, 73.4 MB after 6, and 306.7 MB after 24, and 388.0 MB after 24 with the defaults. Before the workload was SQL it was half that, 151.1 MB after 24 hours with the page's settings. Most of it is the text trace of `sim`, which has a line for each step, also for each row of a query, and keeps every line for the hash, which cannot be switched off without a change to `internal/sim`. The rest is what `simstore` keeps, which is every applied write with its content and a handle of every task that carried a request, the commit objects of the bucket in the engine's fold and in its checker, the checker's record of every read that was served and of every write that ended, and a map of the manifests by their versions.
 - **SQLite's WebAssembly memory**, with every crash. Without crashes it does not grow: it is 8 MiB after an hour. With crashes it grows by about 0.47 MB for each crashed process: from 8.4 MB to 12.1, 25.3, and 36.5 MB after 20, 40, and 60 crashes and restarts in one session. Nothing closes the connections of a crashed process. Closing them needs `CloseCache` of `core` as a normal method, where only its tests have it now, and that is a change to `core`.
 - **The time of a step**, with every crash. A crashed process leaves its tasks parked in the scheduler until the run ends, and the scheduler sorts the names of all parked tasks at every step. After 60 crashes a fake minute took 89 ms in Chromium, against about 45 ms without them.
 - **The state that `now` returns**, which lists every commit object unless `commits` limits it.
