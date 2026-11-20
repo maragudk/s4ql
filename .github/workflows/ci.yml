@@ -29,7 +29,8 @@ env:
 # to 2026-11-20, and at least 5. A job whose go test has a -timeout of its own gets more, so that
 # the timeout of go test, which prints the stacks of the goroutines, comes first. Each job that
 # builds Go code sets up Go with the action go, which restores a build cache of its own, and saves
-# it with the action go-save on main: see .github/actions/go.
+# it with the action go-save on main: see .github/actions/go. The job browser is the exception to
+# both for now, with setup-go's cache and no timeout-minutes, while its hang is looked into apart.
 jobs:
   # Decides what the change touches, so that the other jobs run only where it needs them: with code,
   # every job runs; with documents only, none; with the site and documents only, the job site alone.
@@ -302,12 +303,13 @@ jobs:
   # each runs its share of the planted bugs of TestSimulation_plantedBugs, which internal/testshard
   # gives out by their index, and the first also every other test of the package. The number of
   # shards is the size of the matrix, so a shard cannot go missing. internal/core took 591 s at the
-  # most in the job asan, beside the other packages.
+  # most in the job asan, beside the other packages. The first shard runs go test twice, each with
+  # the timeout of 15 minutes, so the job's timeout is above both.
   asan-core:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -323,7 +325,7 @@ jobs:
           cache: asan-core
 
       - name: Test the storage core under the address sanitizer
-        run: make asan-test ASANPKGS="$ASAN_CORE" ASANSHARD=${{ matrix.shard }}/${{ strategy.job-total }} ASANTIMEOUT=20m
+        run: make asan-test ASANPKGS="$ASAN_CORE" ASANSHARD=${{ matrix.shard }}/${{ strategy.job-total }} ASANTIMEOUT=15m
 
       # The shards build the same, so the first saves for all.
       - uses: ./.github/actions/go-save
@@ -337,7 +339,7 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -353,7 +355,7 @@ jobs:
           cache: asan-engine
 
       - name: Test the engine under the address sanitizer
-        run: make asan-test ASANPKGS="$ASAN_ENGINE" ASANSHARD=${{ matrix.shard }}/${{ strategy.job-total }} ASANTIMEOUT=20m
+        run: make asan-test ASANPKGS="$ASAN_ENGINE" ASANSHARD=${{ matrix.shard }}/${{ strategy.job-total }} ASANTIMEOUT=15m
 
       - uses: ./.github/actions/go-save
         if: ${{ !cancelled() }}

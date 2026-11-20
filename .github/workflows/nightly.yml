@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       fuzztime:
-        description: The time of each fuzz test, such as 5m.
+        description: The time of each fuzz test, such as 5m; the timeout of the job asan-fuzz holds up to about 15m.
         default: 5m
       seeds:
         description: The seeds of each planted bug, its control, and its run without the bug.
@@ -144,7 +144,8 @@ jobs:
   # is seen in the morning.
   report:
     needs: [asan-fuzz, fuzz, simulation-core, simulation-engine]
-    if: ${{ failure() && github.ref == 'refs/heads/main' }}
+    # A job that runs past its timeout-minutes can end as cancelled rather than failed, so both count.
+    if: ${{ always() && github.ref == 'refs/heads/main' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
