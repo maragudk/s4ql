@@ -252,7 +252,7 @@ The runs had 2 to 4 workers each, two or three runs at once, while other work he
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `stmt` | 781 | 62 | 671 | 8 | 40 | 0 | 63 |
 | `engine` | 1,010 | 262 | 721 | 2 | 25 | 0 | 20 |
-| `core` | CORE_ROW |
+| `core` | 628 | 128 | 451 | 4 | 45, 6 of them reachable | 0 | 48 |
 | `format` | 90 | 24 | 65 | 0 | 1 | 0 | 4 |
 | `.` | 118 | 37 | 79 | 2 | 0 | 0 | 2 |
 
