@@ -604,10 +604,6 @@ internal/core/cache.go conn.setUp condition: err != nil => false #2
 	pragma synchronous only sets a flag of the connection and reads and writes no file, so it fails only for want of memory, which no test makes.
 internal/core/cache.go conn.setUp remove statement: return err => #2
 	pragma synchronous only sets a flag of the connection and reads and writes no file, so it fails only for want of memory, which no test makes.
-internal/core/cache.go conn.setUp condition: err != nil => false #3
-	The pragma of wal before it has read the schema, which the connection keeps, so the query of sqlite_schema reads no page and fails only for want of memory; a failed read of the file in it then would make the open go on to make, whose own query of the same table fails or finds it.
-internal/core/cache.go conn.setUp remove statement: return err => #3
-	The pragma of wal before it has read the schema, which the connection keeps, so the query of sqlite_schema reads no page and fails only for want of memory; a failed read of the file in it then would make the open go on to make, whose own query of the same table fails or finds it.
 internal/core/cache.go conn.setUp remove statement: c.forget() =>
 	The statements that the connection keeps are reset after each use, so none of them holds up the commit, SQLite prepares a kept statement again after the change of the schema, and make looks up no table.
 internal/core/cache.go conn.setUp condition: err != nil => false #4
