@@ -123,9 +123,11 @@ func checkLength(v *s4qlpb.Value, limit int) error {
 // checkType of the value v for the column at position of the table t: "not supported" unless the
 // value has the type of the column, an integer for INT and INTEGER, a real for REAL, text for TEXT,
 // and a blob for BLOB, also where SQLite would convert it or give an error of its own. NULL has no
-// type, and every column holds it here: the NOT NULL of a column is checked before. The value comes
-// from the expression e, an argument or a literal, which the message names.
-func checkType(t *s4qlpb.CreateTable, position int, v *s4qlpb.Value, e Expr) error {
+// type, and is never refused: an insert checks the NOT NULL of a column before, and a comparison
+// with NULL is neither true nor false. The value comes from the expression e, an argument or a
+// literal, which the message names, and use says in the message how the value meets the column:
+// "for" for a value of an insert, and "compared with" for one that a condition compares with it.
+func checkType(t *s4qlpb.CreateTable, position int, v *s4qlpb.Value, e Expr, use string) error {
 	c := t.GetColumns()[position]
 	var holds bool
 	switch c.GetType() {
@@ -158,47 +160,7 @@ func checkType(t *s4qlpb.CreateTable, position int, v *s4qlpb.Value, e Expr) err
 	default:
 		return internalError("a value of an expression of type %T", e)
 	}
-	return fmt.Errorf("%w: %v for the column %v.%v of type %v", stmt.ErrNotSupported, what, t.GetTable(), c.GetName(), typeName(c.GetType()))
-}
-
-// checkCompared value v, of the expression e, an argument or a literal, which a condition compares
-// with the column at position of the table t: "not supported" unless the value has the type of the
-// column, as [checkType] says for a value of an insert, also where SQLite would convert it. NULL has
-// no type, and a comparison with it is neither true nor false.
-func checkCompared(t *s4qlpb.CreateTable, position int, v *s4qlpb.Value, e Expr) error {
-	c := t.GetColumns()[position]
-	var holds bool
-	switch c.GetType() {
-	case s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INTEGER:
-		holds = v.HasInteger()
-	case s4qlpb.Type_TYPE_REAL:
-		holds = v.HasReal()
-	case s4qlpb.Type_TYPE_TEXT:
-		holds = v.HasText()
-	case s4qlpb.Type_TYPE_BLOB:
-		holds = v.HasBlob()
-	default:
-		return internalError("a column of type %v", c.GetType())
-	}
-	if holds || v.HasNull() {
-		return nil
-	}
-	var what string
-	switch e := e.(type) {
-	case *Parameter:
-		what = fmt.Sprintf("argument %v, which is %v,", e.Number, kindName(v))
-	case *Integer:
-		what = "an integer literal"
-	case *Real:
-		what = "a real literal"
-	case *Text:
-		what = "a string literal"
-	case *Blob:
-		what = "a blob literal"
-	default:
-		return internalError("a value of an expression of type %T", e)
-	}
-	return fmt.Errorf("%w: %v compared with the column %v.%v of type %v", stmt.ErrNotSupported, what, t.GetTable(), c.GetName(), typeName(c.GetType()))
+	return fmt.Errorf("%w: %v %v the column %v.%v of type %v", stmt.ErrNotSupported, what, use, t.GetTable(), c.GetName(), typeName(c.GetType()))
 }
 
 // kindName of the kind of the value v, in a sentence: "an integer", "a real", "text", or "a blob".
@@ -299,6 +261,18 @@ func uniqueFailed(table, column string) error {
 // longer than its limit.
 func tooBig() error {
 	return &sqlerr.Error{Code: sqlerr.CodeTooBig, ExtendedCode: sqlerr.CodeTooBig, Message: "string or blob too big", Offset: -1}
+}
+
+// schemaTooBig reports whether SQLite refuses the create table of the table with the name, which
+// keeps the text sql, as too big under the length limit. SQLite writes the table into its schema
+// with an UPDATE of sqlite_schema whose text it formats under the limit, with the name twice and
+// sql, each in single quotes and with every single quote doubled, and it gives `string or blob too
+// big` when it prepares the statement if that text is limit bytes or longer. The register numbers
+// in the text, #2 and #1, are those of every create table that s4ql supports.
+func schemaTooBig(name, sql string, limit int) bool {
+	quoted := func(s string) int { return len(s) + strings.Count(s, "'") + 2 }
+	const rest = len("UPDATE 'main'.sqlite_master SET type='table', name=, tbl_name=, rootpage=#2, sql= WHERE rowid=#1")
+	return rest+2*quoted(name)+quoted(sql) >= limit
 }
 
 // readOnlyDatabase is `attempt to write a readonly database`, which SQLite gives for a statement that

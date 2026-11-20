@@ -37,6 +37,9 @@ type CreateTable struct {
 	Columns []ColumnDef
 	// PrimaryKey holds the positions in Columns of the columns of the primary key, in key order.
 	PrimaryKey []int
+	// SQL is the text that SQLite keeps for the table, as [stmt.CreateTable] gives it, which
+	// decides whether SQLite refuses the statement as too big. [Format] does not print it.
+	SQL string
 }
 
 // ColumnDef is a column of a [CreateTable]. A column is NOT NULL unless it is Nullable, which a
@@ -175,7 +178,7 @@ func (*Parameter) expr()   {}
 func NewPlan(s stmt.Statement) Plan {
 	switch s := s.(type) {
 	case *stmt.CreateTable:
-		p := &CreateTable{Table: s.Table, PrimaryKey: []int{s.Key()}}
+		p := &CreateTable{Table: s.Table, PrimaryKey: []int{s.Key()}, SQL: s.SQL}
 		for _, c := range s.Columns {
 			p.Columns = append(p.Columns, ColumnDef{Name: c.Name, Type: columnType(c.Type), Nullable: !c.PrimaryKey && !c.NotNull})
 		}

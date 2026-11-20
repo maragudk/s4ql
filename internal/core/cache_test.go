@@ -15,6 +15,7 @@ import (
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sqlite"
+	"maragu.dev/s4ql/internal/sqlite/faultvfs"
 )
 
 // hostile names of tables and columns: everything that an identifier has to be quoted for, and
@@ -317,7 +318,9 @@ func TestScanRange(t *testing.T) {
 					return tx.ScanRange(t.Context(), c.table, lower, upper)
 				},
 			} {
-				for _, bounds := range [][2]core.Bound{{c.b, {}}, {{}, c.b}} {
+				// The bound is refused alone, and next to a bound that is a key of t1, on either side.
+				valid := core.Bound{Value: row(1)[0]}
+				for _, bounds := range [][2]core.Bound{{c.b, {}}, {{}, c.b}, {valid, c.b}, {c.b, valid}} {
 					n := 0
 					for row, err := range scan(bounds[0], bounds[1]) {
 						n++
@@ -351,8 +354,77 @@ func TestScanRange(t *testing.T) {
 			}
 			is.Equal(t, 1, n)
 		}
+		// Of two bounds that are refused, the lower one is named.
+		invalid := core.Bound{Value: &s4qlpb.Value{}}
+		for _, c := range []struct {
+			lower, upper core.Bound
+			want         error
+		}{{invalid, long, core.ErrInvalid}, {long, invalid, core.ErrTooBig}} {
+			for _, scan := range []iter.Seq2[[]*s4qlpb.Value, error]{
+				r.ScanRange(t.Context(), "t4", c.lower, c.upper),
+				tx.ScanRange(t.Context(), "t4", c.lower, c.upper),
+			} {
+				n := 0
+				for row, err := range scan {
+					n++
+					is.True(t, row == nil)
+					is.True(t, errors.Is(err, c.want), fmt.Sprint(err))
+				}
+				is.Equal(t, 1, n)
+			}
+		}
 		is.NotError(t, tx.Rollback(t.Context()))
 		is.NotError(t, r.Close(t.Context()))
 		is.NotError(t, d.Close(t.Context()))
+	})
+
+	t.Run("should end with a local failure when SQLite cannot read the rows of the scan", func(t *testing.T) {
+		vfs, err := faultvfs.New()
+		is.NotError(t, err)
+		w := newWorld(t)
+		o := core.Options{}
+		o.VFS = vfs.Name()
+		d := w.serve(t, "a", o)
+		transact(t, d, create("t1", 1, "k"), upsert("t1", 1), upsert("t1", 2), upsert("t1", 3))
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		// The look-up of the table reads the schema, and the new connection of the reader has read no
+		// page of the table yet, so the scan reads them from the file, and every read of it fails.
+		_, err = r.Table(t.Context(), "t1")
+		is.NotError(t, err)
+		vfs.Fail(faultvfs.Fault{Ops: faultvfs.Read, Files: faultvfs.MainDB | faultvfs.WAL})
+		n := 0
+		for row, err := range r.ScanRange(t.Context(), "t1", core.Bound{Value: row(2)[0]}, core.Bound{}) {
+			n++
+			is.True(t, row == nil)
+			is.True(t, errors.Is(err, core.ErrLocal), fmt.Sprint(err))
+		}
+		is.Equal(t, 1, n)
+		is.True(t, vfs.Failures() > 0, "no read failed")
+		vfs.Fail(faultvfs.Fault{})
+		_ = r.Close(t.Context())
+		_ = d.Close(t.Context())
+
+		// A new instance on the cache has a new connection for writes, which has read no page of the
+		// table yet either.
+		d = w.serve(t, "a", o)
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		_, err = tx.Table(t.Context(), "t1")
+		is.NotError(t, err)
+		failed := vfs.Failures()
+		vfs.Fail(faultvfs.Fault{Ops: faultvfs.Read, Files: faultvfs.MainDB | faultvfs.WAL})
+		n = 0
+		for row, err := range tx.ScanRange(t.Context(), "t1", core.Bound{}, core.Bound{Value: row(2)[0]}) {
+			n++
+			is.True(t, row == nil)
+			is.True(t, errors.Is(err, core.ErrLocal), fmt.Sprint(err))
+		}
+		is.Equal(t, 1, n)
+		is.True(t, vfs.Failures() > failed, "no read failed")
+		vfs.Fail(faultvfs.Fault{})
+		_ = tx.Rollback(t.Context())
+		_ = d.Close(t.Context())
+		is.NotError(t, vfs.Close())
 	})
 }

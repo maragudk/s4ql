@@ -203,3 +203,72 @@ func TestGenerator_Changes(t *testing.T) {
 		is.True(t, with["delete with WHERE"] < with["*stmt.Delete"], fmt.Sprint(with))
 	})
 }
+
+func TestGenerator_CreateIndex(t *testing.T) {
+	t.Run("should write the columns that the hook gives, with ASC, DESC, or neither", func(t *testing.T) {
+		pools, err := stmttest.NamePools()
+		is.NotError(t, err)
+		g := stmttest.NewGenerator(rand.New(rand.NewPCG(9, 10)), pools)
+		var names []string
+		g.CreateIndex = func(index, table stmt.Name) []stmt.IndexColumn {
+			names = append(names, index.Raw+" on "+table.Raw)
+			return []stmt.IndexColumn{{Name: stmt.Name{Raw: `"c0"`}}, {Name: stmt.Name{Raw: "c1"}, Descending: true}, {Name: stmt.Name{Raw: "C2"}}}
+		}
+		asc := 0
+		for range 100 {
+			src, s, args := g.CallOf(stmttest.KindCreateIndex)
+			got, err := stmt.Check(src)
+			is.NotError(t, err, src)
+			is.Equal(t, fmt.Sprintf("%#v", s), fmt.Sprintf("%#v", got), src)
+			is.Equal(t, 0, len(args), src)
+			c := s.(*stmt.CreateIndex)
+			is.Equal(t, names[len(names)-1], c.Index.Raw+" on "+c.Table.Raw, src)
+			is.Equal(t, 3, len(c.Columns), src)
+			for i, raw := range []string{`"c0"`, "c1", "C2"} {
+				is.Equal(t, raw, c.Columns[i].Name.Raw, src)
+				is.Equal(t, i == 1, c.Columns[i].Descending, src)
+			}
+			if strings.Count(strings.ToLower(src), "asc") > strings.Count(strings.ToLower(c.Index.Raw+c.Table.Raw), "asc") {
+				asc++
+			}
+		}
+		is.Equal(t, 100, len(names))
+		is.True(t, asc > 20 && asc < 100, fmt.Sprint(asc))
+	})
+}
+
+func TestGenerator_Indexes(t *testing.T) {
+	t.Run("should write create indexes and drop indexes among statements of a kind at random only with Indexes", func(t *testing.T) {
+		pools, err := stmttest.NamePools()
+		is.NotError(t, err)
+		count := func(indexes int) map[string]int {
+			g := stmttest.NewGenerator(rand.New(rand.NewPCG(11, 12)), pools)
+			g.Indexes = indexes
+			g.Columns = 3
+			kinds := map[string]int{}
+			for range 600 {
+				src, s := g.Statement()
+				got, err := stmt.Check(src)
+				is.NotError(t, err, src)
+				is.Equal(t, fmt.Sprintf("%#v", s), fmt.Sprintf("%#v", got), src)
+				kinds[fmt.Sprintf("%T", s)]++
+				if c, ok := s.(*stmt.CreateIndex); ok {
+					kinds[fmt.Sprint("create index of ", len(c.Columns))]++
+					for _, column := range c.Columns {
+						if column.Descending {
+							kinds["descending"]++
+						}
+					}
+				}
+			}
+			return kinds
+		}
+		without := count(0)
+		is.Equal(t, 0, without["*stmt.CreateIndex"]+without["*stmt.DropIndex"])
+		with := count(3)
+		for _, k := range []string{"*stmt.CreateIndex", "*stmt.DropIndex", "create index of 1", "create index of 2", "create index of 3", "descending"} {
+			is.True(t, with[k] > 10, fmt.Sprint(k, with))
+		}
+		is.Equal(t, 0, with["create index of 4"], fmt.Sprint(with))
+	})
+}

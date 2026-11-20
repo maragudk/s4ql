@@ -19,14 +19,14 @@ func TestCheckType(t *testing.T) {
 	text := s4qlpb.Value_builder{Text: new("a")}.Build()
 
 	t.Run("should give an internal error for a column of a type that no plan gives", func(t *testing.T) {
-		err := checkType(table(s4qlpb.Type_TYPE_UNSPECIFIED), 0, text, &Text{Value: "a"})
+		err := checkType(table(s4qlpb.Type_TYPE_UNSPECIFIED), 0, text, &Text{Value: "a"}, "for")
 		is.True(t, errors.Is(err, ErrInternal), err.Error())
 		is.True(t, !errors.Is(err, stmt.ErrNotSupported), err.Error())
 		is.Equal(t, "s4ql: internal error: a column of type TYPE_UNSPECIFIED", err.Error())
 	})
 
 	t.Run("should give an internal error for a value of another type from an expression that no plan gives", func(t *testing.T) {
-		err := checkType(table(s4qlpb.Type_TYPE_INT), 0, text, nil)
+		err := checkType(table(s4qlpb.Type_TYPE_INT), 0, text, nil, "compared with")
 		is.True(t, errors.Is(err, ErrInternal), err.Error())
 		is.True(t, !errors.Is(err, stmt.ErrNotSupported), err.Error())
 		is.Equal(t, "s4ql: internal error: a value of an expression of type <nil>", err.Error())

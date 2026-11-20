@@ -22,6 +22,7 @@ import (
 // A check of a token's content, such as whether a name is reserved, runs when the token is the next
 // one, so that a reject names the token at the offset it gives.
 type recognizer struct {
+	src  string
 	tree *ast.Statement
 	// tokens of the statement, every one that the parser read for it, in the order of the text, from
 	// the tokenizer. By the ownership rule of the tree they are the tokens of [ast.AllTokens]; since
@@ -42,7 +43,7 @@ type stop struct {
 
 // recognize the statement of tree, which the parser read from src, or say why it is not supported.
 func recognize(src string, tree *ast.Statement) (s Statement, err *NotSupportedError) {
-	r := &recognizer{tree: tree, tokens: parser.Tokens(src, tree), accepted: map[ast.Node]bool{}}
+	r := &recognizer{src: src, tree: tree, tokens: parser.Tokens(src, tree), accepted: map[ast.Node]bool{}}
 	defer func() {
 		if v := recover(); v != nil {
 			st, ok := v.(stop)
@@ -107,6 +108,11 @@ func (r *recognizer) unexpected() {
 
 // statement of the tree, or nil for a command of another kind.
 func (r *recognizer) statement() Statement {
+	if r.tree.Query.Present() {
+		// EXPLAIN QUERY PLAN, whose EXPLAIN is the first token of the statement. EXPLAIN alone is named
+		// by its field.
+		r.reject("EXPLAIN QUERY PLAN")
+	}
 	var s Statement
 	switch c := r.tree.Cmd.(type) {
 	case *ast.CreateTable:
@@ -121,6 +127,8 @@ func (r *recognizer) statement() Statement {
 		s = r.delete(c)
 	case *ast.Drop:
 		s = r.drop(c)
+	case *ast.CreateIndex:
+		s = r.createIndex(c)
 	}
 	if r.tree.Semi.Present() {
 		r.take(r.tree.Semi)
@@ -159,6 +167,14 @@ func (r *recognizer) createTable(c *ast.CreateTable) *CreateTable {
 	}
 	r.take(c.RParen)
 	r.tableOptions(c)
+	// SQLite keeps the text up to its last token when the table has no options; with them, which
+	// it always has here, up to the token that ends the statement: the semicolon, or the end of the
+	// text.
+	end := len(r.src)
+	if r.tree.Semi.Present() {
+		end = r.tree.Semi.Offset
+	}
+	s.SQL = "CREATE TABLE " + r.src[table.Offset:end]
 	return s
 }
 
@@ -781,15 +797,104 @@ func (r *recognizer) resultColumn(rc *ast.ResultColumn, n int, before []Name) []
 	return append(before, r.name(ref.Column))
 }
 
-// drop: DROP TABLE table.
-func (r *recognizer) drop(c *ast.Drop) *DropTable {
+// drop: DROP TABLE table, or DROP INDEX index.
+func (r *recognizer) drop(c *ast.Drop) Statement {
 	r.accept(c)
 	r.take(c.Drop)
-	if c.Object.Kind != token.Table {
-		r.reject("DROP " + strings.ToUpper(c.Object.Text))
+	switch c.Object.Kind {
+	case token.Table:
+		r.take(c.Object)
+		return &DropTable{Table: r.tableName(c.Name)}
+	case token.Index:
+		r.take(c.Object)
+		return &DropIndex{Index: r.indexName(c.Name)}
 	}
-	r.take(c.Object)
-	return &DropTable{Table: r.tableName(c.Name)}
+	r.reject("DROP " + strings.ToUpper(c.Object.Text))
+	return nil
+}
+
+// createIndex: CREATE INDEX index ON table and, in parentheses, one or more columns of the index,
+// separated by commas.
+func (r *recognizer) createIndex(c *ast.CreateIndex) *CreateIndex {
+	r.accept(c)
+	r.take(c.Create)
+	r.take(c.Index)
+	s := &CreateIndex{Index: r.indexName(c.Name)}
+	r.take(c.On)
+	// The grammar takes one name after ON, without a schema.
+	s.Table = r.tableName(ast.QualifiedName{Name: c.Table})
+	r.take(c.LParen)
+	seen := map[string]bool{}
+	for i, o := range c.Columns {
+		if i > 0 {
+			r.take(c.Commas[i-1])
+		}
+		if i == maxColumns {
+			// SQLite gives `too many columns in index` once it has found the table, before it looks for
+			// the columns.
+			r.reject("index beyond SQLite's limit")
+		}
+		column := r.indexColumn(o, seen)
+		seen[column.Name.Fold()] = true
+		s.Columns = append(s.Columns, column)
+	}
+	r.take(c.RParen)
+	if c.Where != nil && r.isNext(c.Where.Where) {
+		r.reject("partial index")
+	}
+	return s
+}
+
+// indexColumn o of a CREATE INDEX, after the columns of seen, by their folds: the bare name of a
+// column, or one in double quotes, that seen does not have, and ASC, DESC, or neither. SQLite reads
+// a string in single quotes there as a name too, and parentheses around a name as the name; the pass
+// supports neither. Anything else is an expression, or a name with a COLLATE or with the name of its
+// table, which SQLite refuses.
+func (r *recognizer) indexColumn(o *ast.OrderingTerm, seen map[string]bool) IndexColumn {
+	r.accept(o)
+	switch x := o.X.(type) {
+	case *ast.ColumnRef:
+		switch {
+		case x.Table.Present():
+			// SQLite gives `the "." operator prohibited in index expressions`.
+			r.reject("column with the name of a table")
+		case isTrueOrFalse(x):
+			// SQLite reads a bare TRUE or FALSE as 1 or 0 where the table has no column of that name.
+			r.reject("TRUE or FALSE")
+		case r.isNext(x.Column) && seen[asciiLower(dequote(x.Column))]:
+			// SQLite makes an index of the column twice.
+			r.reject("column named twice")
+		}
+		r.accept(x)
+	case *ast.Literal:
+		if x.Value.Kind == token.String {
+			r.reject("single-quoted name")
+		}
+		r.reject("index on an expression")
+	case *ast.Collate:
+		r.reject("COLLATE")
+	case *ast.Paren:
+		r.reject("parentheses")
+	default:
+		r.reject("index on an expression")
+	}
+	c := IndexColumn{Name: r.name(o.X.(*ast.ColumnRef).Column)}
+	if o.Order.Present() {
+		r.take(o.Order)
+		c.Descending = o.Order.Kind == token.Desc
+	}
+	return c
+}
+
+// indexName: the name of an index, which must not be reserved, without a schema.
+func (r *recognizer) indexName(q ast.QualifiedName) Name {
+	if r.isNext(q.Name) && reservedPrefix(dequote(q.Name)) {
+		// SQLite gives `object name reserved for internal use` for sqlite_ in CREATE INDEX, once it has
+		// found the table, and `index associated with UNIQUE or PRIMARY KEY constraint cannot be
+		// dropped` for the index of a primary key in DROP INDEX.
+		r.reject("reserved index name")
+	}
+	return r.name(q.Name)
 }
 
 // tableName: the name of a table, which must not be reserved, without a schema.

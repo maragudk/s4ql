@@ -421,6 +421,46 @@ func TestConn_SetLengthLimit(t *testing.T) {
 		is.Equal(t, "string or blob too big", message(t, err))
 	})
 
+	t.Run("should refuse a create table whose update of sqlite_schema is as long as the limit, on every host", func(t *testing.T) {
+		// SQLite writes the table with "UPDATE 'main'.sqlite_master SET type='table', name=%Q,
+		// tbl_name=%Q, rootpage=#2, sql=%Q WHERE rowid=#1", which it formats under the limit: 96
+		// bytes, the name twice, and the text that it keeps, each in quotes. Without
+		// SQLITE_WITHOUT_ZONEMALLOC, Apple's allocator lets it take a text some bytes longer.
+		for _, shape := range []struct {
+			name   string
+			create func(n int) string
+			length func(n int) int
+		}{
+			{"a long table name", func(n int) string {
+				return "create table " + strings.Repeat("x", n) + " (v int primary key) strict, without rowid"
+			}, func(n int) int {
+				return 96 + 2*(n+2) + 2 + len("CREATE TABLE ") + n + len(" (v int primary key) strict, without rowid")
+			}},
+			{"a long column name", func(n int) string {
+				return "create table t (" + strings.Repeat("x", n) + " int primary key) strict, without rowid"
+			}, func(n int) int {
+				return 96 + 2*3 + 2 + len("CREATE TABLE t (") + n + len(" int primary key) strict, without rowid")
+			}},
+			{"quotes in the table name", func(n int) string {
+				return `create table "` + strings.Repeat("'", n) + `" (v int primary key) strict, without rowid`
+			}, func(n int) int {
+				return 96 + 2*(2*n+2) + 2 + len(`CREATE TABLE ""`) + 2*n + len(" (v int primary key) strict, without rowid")
+			}},
+		} {
+			c := memory(t)
+			is.NotError(t, c.SetLengthLimit(1000))
+			for n := 1; n < 1000; n++ {
+				s, err := c.Prepare(shape.create(n))
+				if shape.length(n) < 1000 {
+					is.NotError(t, err, shape.name, n)
+					is.NotError(t, s.Finalize())
+					continue
+				}
+				is.Equal(t, 18, code(t, err), shape.name, n)
+			}
+		}
+	})
+
 	t.Run("should refuse a limit that is not positive, and a closed connection", func(t *testing.T) {
 		c := memory(t)
 		is.Equal(t, codeMisuse, code(t, c.SetLengthLimit(0)))
@@ -1259,6 +1299,10 @@ func TestCompileOptions(t *testing.T) {
 		options := sqlite.CompileOptions()
 		for _, d := range defines {
 			name, value := string(d[1]), string(d[2])
+			if name == "WITHOUT_ZONEMALLOC" {
+				// SQLite does not report it; TestConn_SetLengthLimit checks what it does.
+				continue
+			}
 			// SQLite reports some options with their value, and some on/off options by name only.
 			ok := slices.Contains(options, name+"="+value) || (value == "1" && slices.Contains(options, name))
 			is.True(t, ok, fmt.Sprintf("SQLITE_%v %v not reported", name, value))

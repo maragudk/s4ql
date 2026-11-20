@@ -785,6 +785,65 @@ func TestEngine_tooBig(t *testing.T) {
 		}
 	})
 
+	t.Run("should give SQLite's error for a create table that SQLite cannot write into its schema under the limit, after the check of the table and of its columns, and keep the tables that it can", func(t *testing.T) {
+		// SQLite writes the table into sqlite_schema with a statement of 96 bytes, the name of the
+		// table twice, and the text from the name to the semicolon or the end, each in quotes, with
+		// a single quote doubled; it refuses the table if that statement is limit bytes or longer.
+		x := func(n int) string { return strings.Repeat("x", n) }
+		var srcs []string
+		for n := 270; n <= 300; n++ {
+			srcs = append(srcs, "create table "+x(n)+" (v int primary key) strict, without rowid")
+		}
+		for n := 830; n <= 860; n++ {
+			srcs = append(srcs, "create table t (\n"+x(n)+" int primary key) strict, without rowid  ; -- c")
+		}
+		for n := 130; n <= 150; n++ {
+			srcs = append(srcs, `create table "`+strings.Repeat("'", n)+`" (v int primary key) strict, without rowid /* c */ `)
+		}
+		// The fuzz input of FuzzDifferential_core/188a29aaa6925c1d, which SQLite takes, and two that
+		// it does not.
+		srcs = append(srcs, "/* c */CREATE/* c */table/* a\nb */\r\n\"X"+x(199)+"\"\t( T1\finteger,\t\""+x(200)+"\"\n--\nInt -- c\nPRIMARY/**/KEY)\r\nstrict /*-*/ /**/,  without\nROWId",
+			"create table "+x(400)+" (v int primary key, v int) strict, without rowid", "create table t1 ("+x(990)+" int primary key) strict, without rowid")
+		i := newInstanceLimited(t, engine.Options{}, nil, limit)
+		o := newOracleLimited(t, limit)
+		for _, src := range []string{"create table t1 (v int primary key) strict, without rowid"} {
+			is.Equal(t, "", i.exec(src).err, src)
+			is.Equal(t, "", o.run(t, src).err, src)
+		}
+		var outcomes []string
+		for _, src := range srcs {
+			want := o.run(t, src)
+			got := i.exec(src)
+			is.Equal(t, want.String(), got.String(), src)
+			outcomes = append(outcomes, want.err)
+			if want.err == "" {
+				drop := `drop table "X` + x(199) + `"`
+				if !strings.HasPrefix(src, "/*") {
+					drop = "drop table " + src[len("create table "):strings.Index(src, " (")]
+				}
+				is.Equal(t, "", i.exec(drop).err, drop)
+				is.Equal(t, "", o.run(t, drop).err, drop)
+			}
+		}
+		is.True(t, slices.Contains(outcomes, "") && slices.Contains(outcomes, "18/18: string or blob too big"), fmt.Sprint(outcomes))
+		// The error of the table comes first, then that of the columns.
+		is.Equal(t, "1/1: duplicate column name: v", i.exec("create table "+x(400)+" (v int primary key, v int) strict, without rowid").err)
+		is.Equal(t, "1/1: table t1 already exists", i.exec("create table t1 ("+x(990)+" int primary key) strict, without rowid").err)
+
+		// The longest table that SQLite takes, which the cache keeps after a restart and a replay.
+		long := "create table " + x(280) + " (v int primary key) strict, without rowid"
+		for _, src := range []string{long, "insert into " + x(280) + " values (1)"} {
+			is.Equal(t, "", i.exec(src).err, src)
+			is.Equal(t, "", o.run(t, src).err, src)
+		}
+		want := o.state(t)
+		is.Equal(t, want, i.state())
+		i.restart(false, engine.Options{})
+		is.Equal(t, want, i.state(), "after a restart")
+		i.restart(true, engine.Options{})
+		is.Equal(t, want, i.state(), "after a replay of the log")
+	})
+
 	t.Run("should keep a transaction usable after a value that is too long", func(t *testing.T) {
 		i := newInstanceLimited(t, engine.Options{}, nil, limit)
 		is.Equal(t, "", i.exec("create table t (v blob primary key) strict, without rowid").err)
@@ -2051,6 +2110,10 @@ func newWhereTrio(t *testing.T, setup ...string) *whereTrio {
 	var all engine.Options
 	all.ScanAll()
 	w := &whereTrio{t: t, byKey: newInstance(t, engine.Options{}), all: newInstance(t, all), o: newOracle(t)}
+	// The comparison of rows cannot tell the two engines apart, so the option of the one that reads
+	// every row must reach its engine.
+	is.True(t, w.all.e.ScansAll(), "the engine of options with ScanAll reads every row")
+	is.True(t, !w.byKey.e.ScansAll(), "the engine of options without ScanAll reads by the key")
 	for _, src := range setup {
 		w.exec(src)
 	}

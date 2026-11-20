@@ -457,7 +457,7 @@ var checkCases = []checkCase{
 	{name: "begin", src: "begin", err: "s4ql: not supported: BEGIN (at offset 0)"},
 	{name: "create view", src: "create view v as select 1", err: "s4ql: not supported: CREATE VIEW (at offset 0)"},
 	{name: "explain", src: "explain select * from t", err: "s4ql: not supported: EXPLAIN (at offset 0)"},
-	{name: "explain query plan", src: "explain query plan select * from t", err: "s4ql: not supported: EXPLAIN (at offset 0)"},
+	{name: "explain query plan", src: "explain query plan select * from t", err: "s4ql: not supported: EXPLAIN QUERY PLAN (at offset 0)"},
 	{name: "a statement after spaces nested deeper than the parser's limit", src: " ;\nselect " + strings.Repeat("(", 2500) + "1" + strings.Repeat(")", 2500),
 		err: "s4ql: not supported: statement beyond a limit of the parser (at offset 3)"},
 	{name: "a statement nested deeper than the parser's limit", src: "select " + strings.Repeat("(", 2500) + "1" + strings.Repeat(")", 2500),
@@ -690,7 +690,8 @@ var checkCases = []checkCase{
 	{name: "a join", src: "select * from t, u", err: "s4ql: not supported: join (at offset 15)"},
 	{name: "an alias with as", src: "select * from t as u", err: "s4ql: not supported: alias (at offset 16)"},
 	{name: "an alias", src: "select * from t u", err: "s4ql: not supported: alias (at offset 16)"},
-	{name: "indexed by", src: "select * from t indexed by i", err: "s4ql: not supported: INDEXED BY or NOT INDEXED (at offset 16)"},
+	{name: "indexed by", src: "select * from t indexed by i", err: "s4ql: not supported: INDEXED BY (at offset 16)"},
+	{name: "not indexed", src: "select * from t not indexed", err: "s4ql: not supported: NOT INDEXED (at offset 16)"},
 	{name: "a table in parentheses", src: "select * from (t)", err: "s4ql: not supported: join in parentheses (at offset 14)"},
 	{name: "a subquery", src: "select * from (select 1)", err: "s4ql: not supported: subquery in FROM (at offset 14)"},
 	{name: "a table-valued function", src: "select * from json_each('[]')", err: "s4ql: not supported: table-valued function (at offset 14)"},
@@ -702,7 +703,7 @@ var checkCases = []checkCase{
 	// DROP.
 	{name: "if exists", src: "drop table if exists t", err: "s4ql: not supported: IF EXISTS (at offset 11)"},
 	{name: "drop view", src: "drop view t", err: "s4ql: not supported: DROP VIEW (at offset 5)"},
-	{name: "drop index", src: "DROP Index t", err: "s4ql: not supported: DROP INDEX (at offset 5)"},
+	{name: "drop index", src: "DROP Index t", want: &stmt.DropIndex{Span: stmt.Span{Start: 0, End: 12}, Index: name("t", "t", 11)}},
 	{name: "drop trigger", src: "drop trigger t", err: "s4ql: not supported: DROP TRIGGER (at offset 5)"},
 	{name: "a schema", src: "drop table temp.t", err: "s4ql: not supported: schema name (at offset 11)"},
 
@@ -917,6 +918,9 @@ var checkCases = []checkCase{
 	{name: "a literal on the left", src: "select * from t where 1 = v", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
 	{name: "a parameter on the left", src: "select * from t where ? = v", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
 	{name: "a negative number on the left", src: "select * from t where -1 < v", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
+	{name: "a positive number on the left", src: "select * from t where +1 < v", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
+	// Only a sign makes a value of a literal: ~ is an operator of its own.
+	{name: "a bitwise not of a number on the left", src: "select * from t where ~1 < v", err: "s4ql: not supported: unary operator (at offset 22)"},
 	{name: "a string on the left", src: "select * from t where 'v' = 1", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
 	{name: "null is null", src: "select * from t where null is null", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
 	{name: "a blob is not null", src: "select * from t where x'00' is not null", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
@@ -965,9 +969,14 @@ var checkCases = []checkCase{
 	{name: "a column alone", src: "select * from t where v", err: "s4ql: not supported: column reference (at offset 22)"},
 	{name: "a literal alone", src: "select * from t where 1", err: "s4ql: not supported: literal (at offset 22)"},
 	{name: "a parameter alone", src: "select * from t where ?", err: "s4ql: not supported: parameter (at offset 22)"},
+	{name: "a column after a sign alone", src: "select * from t where -v", err: "s4ql: not supported: unary operator (at offset 22)"},
+	{name: "a bitwise not of a column alone", src: "select * from t where ~v", err: "s4ql: not supported: unary operator (at offset 22)"},
 	{name: "true alone", src: "select * from t where true", err: "s4ql: not supported: TRUE or FALSE (at offset 22)"},
 	{name: "true on the left", src: "select * from t where true = v", err: "s4ql: not supported: TRUE or FALSE (at offset 22)"},
 	{name: "true on the right", src: "select * from t where v = true", err: "s4ql: not supported: TRUE or FALSE (at offset 26)"},
+	// With the name of a table, true and false are names of columns, as in SQLite.
+	{name: "a column named true with its table alone", src: "select * from t where t.true", err: "s4ql: not supported: column reference (at offset 22)"},
+	{name: "a column named false with its table on the right", src: "select * from t where v = t.false", err: "s4ql: not supported: column compared with a column (at offset 26)"},
 	{name: "false after and", src: "select * from t where v = 1 and false", err: "s4ql: not supported: TRUE or FALSE (at offset 32)"},
 	{name: "a literal after and", src: "select * from t where v = 1 and 1", err: "s4ql: not supported: literal (at offset 32)"},
 	{name: "a column after and", src: "select * from t where v = 1 and w", err: "s4ql: not supported: column reference (at offset 32)"},
@@ -1008,7 +1017,7 @@ var checkCases = []checkCase{
 	{name: "two operators", src: "select * from t where v == == 1", err: `near "==": syntax error`},
 	{name: "a join before where", src: "select * from t, u where v = 1", err: "s4ql: not supported: join (at offset 15)"},
 	{name: "an alias before where", src: "select * from t as u where u.v = 1", err: "s4ql: not supported: alias (at offset 16)"},
-	{name: "indexed by before where", src: "select * from t indexed by i where v = 1", err: "s4ql: not supported: INDEXED BY or NOT INDEXED (at offset 16)"},
+	{name: "indexed by before where", src: "select * from t indexed by i where v = 1", err: "s4ql: not supported: INDEXED BY (at offset 16)"},
 	{name: "a where in a subquery in FROM", src: "select * from (select * from u where v = 1)", err: "s4ql: not supported: subquery in FROM (at offset 14)"},
 	{name: "a where in an insert", src: "insert into t select * from u where v = 1", err: "s4ql: not supported: INSERT with SELECT (at offset 14)"},
 	{name: "a where in create table as", src: "create table t as select * from u where v = 1", err: "s4ql: not supported: CREATE TABLE AS (at offset 15)"},
@@ -1110,13 +1119,14 @@ var checkCases = []checkCase{
 	{name: "update or fail", src: "update or fail t set v = 1", err: "s4ql: not supported: UPDATE OR (at offset 7)"},
 	{name: "an alias in an update", src: "update t as u set v = 1", err: "s4ql: not supported: alias (at offset 9)"},
 	{name: "an alias in a delete", src: "delete from t as u where u.v = 1", err: "s4ql: not supported: alias (at offset 14)"},
-	{name: "indexed by in an update", src: "update t indexed by i set v = 1", err: "s4ql: not supported: INDEXED BY or NOT INDEXED (at offset 9)"},
-	{name: "not indexed in an update", src: "update t not indexed set v = 1", err: "s4ql: not supported: INDEXED BY or NOT INDEXED (at offset 9)"},
-	{name: "indexed by in a delete", src: "delete from t indexed by i where v = 1", err: "s4ql: not supported: INDEXED BY or NOT INDEXED (at offset 14)"},
+	{name: "indexed by in an update", src: "update t indexed by i set v = 1", err: "s4ql: not supported: INDEXED BY (at offset 9)"},
+	{name: "not indexed in an update", src: "update t not indexed set v = 1", err: "s4ql: not supported: NOT INDEXED (at offset 9)"},
+	{name: "indexed by in a delete", src: "delete from t indexed by i where v = 1", err: "s4ql: not supported: INDEXED BY (at offset 14)"},
+	{name: "not indexed in a delete", src: "delete from t not indexed where v = 1", err: "s4ql: not supported: NOT INDEXED (at offset 14)"},
 	{name: "with before an update", src: "with x as (select 1) update t set v = 1", err: "s4ql: not supported: WITH clause (at offset 0)"},
 	{name: "with before a delete", src: "with x as (select 1) delete from t", err: "s4ql: not supported: WITH clause (at offset 0)"},
 	{name: "explain update", src: "explain update t set v = 1", err: "s4ql: not supported: EXPLAIN (at offset 0)"},
-	{name: "explain delete", src: "explain query plan delete from t", err: "s4ql: not supported: EXPLAIN (at offset 0)"},
+	{name: "explain delete", src: "explain query plan delete from t", err: "s4ql: not supported: EXPLAIN QUERY PLAN (at offset 0)"},
 	{name: "a schema in an update", src: "update main.t set v = 1", err: "s4ql: not supported: schema name (at offset 7)"},
 	{name: "a schema in a delete", src: "delete from main.t", err: "s4ql: not supported: schema name (at offset 12)"},
 	{name: "the temp schema in a delete", src: "delete from temp.t where v = 1", err: "s4ql: not supported: schema name (at offset 12)"},
@@ -1151,6 +1161,114 @@ var checkCases = []checkCase{
 	{name: "update of a column with its table", src: "update t set t.v = 1", err: `near ".": syntax error`},
 	{name: "delete without from", src: "delete t", err: `near "t": syntax error`},
 	{name: "delete of two tables", src: "delete from t, u", err: `near ",": syntax error`},
+
+	// Slice 9: CREATE INDEX and DROP INDEX.
+	{name: "create index, as the roadmap writes it", src: "create index i on t (a, b desc)",
+		want: &stmt.CreateIndex{Span: stmt.Span{Start: 0, End: 31}, Index: name("i", "i", 13), Table: name("t", "t", 18),
+			Columns: []stmt.IndexColumn{ixc(name("a", "a", 21), false), ixc(name("b", "b", 24), true)}}},
+	{name: "drop index, as the roadmap writes it", src: "drop index i",
+		want: &stmt.DropIndex{Span: stmt.Span{Start: 0, End: 12}, Index: name("i", "i", 11)}},
+	{name: "create index with asc, desc, and neither, in upper case, and a semicolon", src: "CREATE INDEX I ON T (A ASC, B DESC, C);",
+		want: &stmt.CreateIndex{Span: stmt.Span{Start: 0, End: 39}, Index: name("I", "I", 13), Table: name("T", "T", 18),
+			Columns: []stmt.IndexColumn{ixc(name("A", "A", 21), false), ixc(name("B", "B", 28), true), ixc(name("C", "C", 36), false)}}},
+	{name: "create index with comments in every gap", src: "/*a*/create/*b*/index/*c*/i/*d*/on/*e*/t/*f*/(/*g*/a/*h*/desc/*i*/,/*j*/b/*k*/)/*l*/;--m",
+		want: &stmt.CreateIndex{Span: stmt.Span{Start: 5, End: 85}, Index: name("i", "i", 26), Table: name("t", "t", 39),
+			Columns: []stmt.IndexColumn{ixc(name("a", "a", 51), true), ixc(name("b", "b", 72), false)}}},
+	{name: "create index of an index, a table, and a column named by keywords", src: "create index abort on action (key)",
+		want: &stmt.CreateIndex{Span: stmt.Span{Start: 0, End: 34}, Index: name("abort", "abort", 13), Table: name("action", "action", 22),
+			Columns: []stmt.IndexColumn{ixc(name("key", "key", 30), false)}}},
+	{name: "create index with names in double quotes", src: `create index "i""x" on "a b" ("x""y" desc)`,
+		want: &stmt.CreateIndex{Span: stmt.Span{Start: 0, End: 42}, Index: name(`"i""x"`, `i"x`, 13), Table: name(`"a b"`, "a b", 23),
+			Columns: []stmt.IndexColumn{ixc(name(`"x""y"`, `x"y`, 30), true)}}},
+	{name: "create index of the name of its table, which SQLite refuses for the database", src: "create index t on t (a)",
+		want: &stmt.CreateIndex{Span: stmt.Span{Start: 0, End: 23}, Index: name("t", "t", 13), Table: name("t", "t", 18),
+			Columns: []stmt.IndexColumn{ixc(name("a", "a", 21), false)}}},
+	{name: "create index of columns named rowid, oid, and _rowid_", src: "create index i on t (rowid, oid, _rowid_)",
+		want: &stmt.CreateIndex{Span: stmt.Span{Start: 0, End: 41}, Index: name("i", "i", 13), Table: name("t", "t", 18),
+			Columns: []stmt.IndexColumn{ixc(name("rowid", "rowid", 21), false), ixc(name("oid", "oid", 28), false), ixc(name("_rowid_", "_rowid_", 33), false)}}},
+	{name: "create index of the name of a virtual table of SQLite", src: "create index json_each on t (a)",
+		want: &stmt.CreateIndex{Span: stmt.Span{Start: 0, End: 31}, Index: name("json_each", "json_each", 13), Table: name("t", "t", 26),
+			Columns: []stmt.IndexColumn{ixc(name("a", "a", 29), false)}}},
+	{name: "drop index of a name in double quotes after empty statements", src: ` ;; drop index "x""y";`,
+		want: &stmt.DropIndex{Span: stmt.Span{Start: 4, End: 22}, Index: name(`"x""y"`, `x"y`, 15)}},
+	{name: "drop index of a keyword with comments", src: "drop/**/index/*c*/abort",
+		want: &stmt.DropIndex{Span: stmt.Span{Start: 0, End: 23}, Index: name("abort", "abort", 18)}},
+	{name: "drop index of the name of a virtual table of SQLite", src: "drop index pragma_table_list",
+		want: &stmt.DropIndex{Span: stmt.Span{Start: 0, End: 28}, Index: name("pragma_table_list", "pragma_table_list", 11)}},
+	{name: "create unique index", src: "create unique index i on t (a)", err: "s4ql: not supported: UNIQUE INDEX (at offset 7)"},
+	{name: "create index if not exists", src: "create index if not exists i on t (a)", err: "s4ql: not supported: IF NOT EXISTS (at offset 13)"},
+	{name: "create index of an index in main", src: "create index main.i on t (a)", err: "s4ql: not supported: schema name (at offset 13)"},
+	{name: "create index of an index in temp, which SQLite refuses for a table that is not TEMP", src: "create index temp.i on t (a)", err: "s4ql: not supported: schema name (at offset 13)"},
+	{name: "a partial index", src: "create index i on t (a) where a > 0", err: "s4ql: not supported: partial index (at offset 24)"},
+	{name: "an index on a sum", src: "create index i on t (a + 1)", err: "s4ql: not supported: index on an expression (at offset 21)"},
+	{name: "an index on a function", src: "create index i on t (lower(a))", err: "s4ql: not supported: index on an expression (at offset 21)"},
+	{name: "an index on a negated column", src: "create index i on t (-a)", err: "s4ql: not supported: index on an expression (at offset 21)"},
+	{name: "an index on null", src: "create index i on t (null)", err: "s4ql: not supported: index on an expression (at offset 21)"},
+	{name: "an index on a number", src: "create index i on t (1)", err: "s4ql: not supported: index on an expression (at offset 21)"},
+	{name: "an index on a parameter", src: "create index i on t (?)", err: "s4ql: not supported: index on an expression (at offset 21)"},
+	{name: "an index on the current time", src: "create index i on t (current_time)", err: "s4ql: not supported: index on an expression (at offset 21)"},
+	{name: "an index on a column in parentheses, which SQLite reads as the column", src: "create index i on t ((a))", err: "s4ql: not supported: parentheses (at offset 21)"},
+	{name: "an index with a collation", src: "create index i on t (a collate nocase)", err: "s4ql: not supported: COLLATE (at offset 21)"},
+	{name: "an index on a single-quoted name, which SQLite reads as a name", src: "create index i on t ('a')", err: "s4ql: not supported: single-quoted name (at offset 21)"},
+	{name: "an index on a name in brackets", src: "create index i on t ([a])", err: "s4ql: not supported: name in brackets (at offset 21)"},
+	{name: "an index on a name in backticks", src: "create index i on t (`a`)", err: "s4ql: not supported: name in backticks (at offset 21)"},
+	{name: "an index on an empty name", src: `create index i on t ("")`, err: "s4ql: not supported: empty name (at offset 21)"},
+	{name: "an index of an empty name", src: `create index "" on t (a)`, err: "s4ql: not supported: empty name (at offset 13)"},
+	{name: "an index on a column with its table", src: "create index i on t (t.a)", err: "s4ql: not supported: column with the name of a table (at offset 21)"},
+	{name: "an index on a column with its schema and table", src: "create index i on t (main.t.a)", err: "s4ql: not supported: column with the name of a table (at offset 21)"},
+	{name: "an index on true", src: "create index i on t (true)", err: "s4ql: not supported: TRUE or FALSE (at offset 21)"},
+	{name: "an index on false after a column", src: "create index i on t (a, false)", err: "s4ql: not supported: TRUE or FALSE (at offset 24)"},
+	{name: "an index on a column twice", src: "create index i on t (a, a)", err: "s4ql: not supported: column named twice (at offset 24)"},
+	{name: "an index on a column twice, in another case and order", src: "create index i on t (a, b, A desc)", err: "s4ql: not supported: column named twice (at offset 27)"},
+	{name: "an index on a column twice, once in double quotes", src: `create index i on t ("a", a)`, err: "s4ql: not supported: column named twice (at offset 26)"},
+	{name: "an index on a column twice, once named by a keyword", src: `create index i on t (text desc, "Text")`, err: "s4ql: not supported: column named twice (at offset 32)"},
+	{name: "an index with nulls first", src: "create index i on t (a nulls first)", err: "s4ql: not supported: NULLS FIRST or NULLS LAST (at offset 23)"},
+	{name: "an index with desc and nulls last", src: "create index i on t (a desc nulls last)", err: "s4ql: not supported: NULLS FIRST or NULLS LAST (at offset 28)"},
+	{name: "an index of a name that starts with sqlite_", src: "create index sqlite_i on t (a)", err: "s4ql: not supported: reserved index name (at offset 13)"},
+	{name: "an index of a name that starts with s4ql_", src: "create index S4QL_i on t (a)", err: "s4ql: not supported: reserved index name (at offset 13)"},
+	{name: "an index of the name of the index of a primary key", src: `create index "sqlite_autoindex_t_1" on t (a)`, err: "s4ql: not supported: reserved index name (at offset 13)"},
+	{name: "an index on a reserved table", src: "create index i on sqlite_schema (a)", err: "s4ql: not supported: reserved table name (at offset 18)"},
+	{name: "an index on a virtual table of SQLite", src: "create index i on json_each (a)", err: "s4ql: not supported: name of a virtual table of SQLite (at offset 18)"},
+	{name: "an index on a table in brackets", src: "create index i on [t] (a)", err: "s4ql: not supported: name in brackets (at offset 18)"},
+	{name: "an index on a single-quoted table", src: "create index i on 't' (a)", err: "s4ql: not supported: single-quoted name (at offset 18)"},
+	{name: "an index of a single-quoted name", src: "create index 'i' on t (a)", err: "s4ql: not supported: single-quoted name (at offset 13)"},
+	{name: "drop index if exists", src: "drop index if exists i", err: "s4ql: not supported: IF EXISTS (at offset 11)"},
+	{name: "drop index of an index in main", src: "drop index main.i", err: "s4ql: not supported: schema name (at offset 11)"},
+	{name: "drop index of an index in temp", src: "drop index temp.i", err: "s4ql: not supported: schema name (at offset 11)"},
+	{name: "drop index of the index of a primary key", src: "drop index sqlite_autoindex_t_1", err: "s4ql: not supported: reserved index name (at offset 11)"},
+	{name: "drop index of a name that starts with s4ql_", src: "drop index s4ql_x", err: "s4ql: not supported: reserved index name (at offset 11)"},
+	{name: "drop index of an empty name", src: `drop index ""`, err: "s4ql: not supported: empty name (at offset 11)"},
+	{name: "drop index of a name in brackets", src: "drop index [i]", err: "s4ql: not supported: name in brackets (at offset 11)"},
+	{name: "drop index of a single-quoted name", src: "drop index 'i'", err: "s4ql: not supported: single-quoted name (at offset 11)"},
+	{name: "reindex", src: "reindex", err: "s4ql: not supported: REINDEX (at offset 0)"},
+	{name: "reindex of an index", src: "reindex i", err: "s4ql: not supported: REINDEX (at offset 0)"},
+	{name: "analyze", src: "analyze", err: "s4ql: not supported: ANALYZE (at offset 0)"},
+	{name: "analyze of a table", src: "analyze t", err: "s4ql: not supported: ANALYZE (at offset 0)"},
+	{name: "explain create index", src: "explain create index i on t (a)", err: "s4ql: not supported: EXPLAIN (at offset 0)"},
+	{name: "explain query plan create index", src: "explain query plan create index i on t (a)", err: "s4ql: not supported: EXPLAIN QUERY PLAN (at offset 0)"},
+	{name: "explain drop index", src: "explain drop index i", err: "s4ql: not supported: EXPLAIN (at offset 0)"},
+	{name: "explain query plan drop index", src: "explain query plan drop index i", err: "s4ql: not supported: EXPLAIN QUERY PLAN (at offset 0)"},
+	{name: "a second statement after create index", src: "create index i on t (a); select 1", err: "s4ql: not supported: second statement (at offset 25)"},
+	{name: "with before create index", src: "with c as (select 1) create index i on t (a)", err: `near "create": syntax error`},
+	{name: "create index of no columns", src: "create index i on t ()", err: `near ")": syntax error`},
+	{name: "create index on a table in main", src: "create index i on main.t (a)", err: `near ".": syntax error`},
+	{name: "create temp index", src: "create temp index i on t (a)", err: `near "index": syntax error`},
+	{name: "create index without columns", src: "create index i on t", err: "incomplete input"},
+	{name: "create index with a comma after the last column", src: "create index i on t (a,)", err: `near ")": syntax error`},
+	{name: "create index with desc after the columns", src: "create index i on t (a) desc", err: `near "desc": syntax error`},
+	{name: "create index with asc and desc", src: "create index i on t (a asc desc)", err: `near "desc": syntax error`},
+	{name: "create index without a name", src: "create index on t (a)", err: `near "on": syntax error`},
+	{name: "create index without on", src: "create index i (a)", err: `near "(": syntax error`},
+	{name: "create index with where and nothing after it", src: "create index i on t (a) where", err: "incomplete input"},
+	{name: "create index of two names without a comma", src: "create index i on t (a b)", err: `near "b": syntax error`},
+	{name: "drop index without a name", src: "drop index", err: "incomplete input"},
+	{name: "drop index of two indexes", src: "drop index i, j", err: `near ",": syntax error`},
+	{name: "drop index on a table", src: "drop index i on t", err: `near "on": syntax error`},
+}
+
+// ixc is a column of a CREATE INDEX.
+func ixc(n stmt.Name, descending bool) stmt.IndexColumn {
+	return stmt.IndexColumn{Name: n, Descending: descending}
 }
 
 // cond is a condition of a WHERE on the column, with the operator op and the value v.
@@ -1216,7 +1334,14 @@ func TestCheck(t *testing.T) {
 			} else {
 				is.NotError(t, err)
 			}
-			is.Equal(t, fmt.Sprintf("%#v", c.want), fmt.Sprintf("%#v", s))
+			want := c.want
+			if ct, ok := want.(*stmt.CreateTable); ok && ct.SQL == "" {
+				// verify checks the text that SQLite keeps against SQLite.
+				copied := *ct
+				copied.SQL = s.(*stmt.CreateTable).SQL
+				want = &copied
+			}
+			is.Equal(t, fmt.Sprintf("%#v", want), fmt.Sprintf("%#v", s))
 			verify(t, c.src)
 		})
 	}
@@ -1363,6 +1488,83 @@ func TestCheck(t *testing.T) {
 			is.True(t, len(names) > 80, "too few keywords are names")
 			t.Logf("%v keywords are names in %q", len(names), c.form)
 		}
+	})
+
+	t.Run("should take every keyword of SQLite that SQLite reads as the name of an index, a table, or a column of a create index or a drop index, and no other", func(t *testing.T) {
+		// SQLite reads a keyword as a name if it gives an error that names it on a database without an
+		// object of that name: `no such table` for the table, `no such column` for a column, and `no
+		// such index` for DROP INDEX. The name of a new index is always a name of the grammar, so
+		// SQLite reads a keyword there as a name if the text parses, and gives `no such table` for the
+		// table after it.
+		pools := namePools(t)
+		for _, c := range []struct {
+			form    string
+			message func(kw string) string
+			pool    stmttest.Position
+		}{
+			{"create index %v on u (x)", func(string) string { return "no such table: main.u" }, stmttest.IndexName},
+			{"create index i on %v (x)", func(kw string) string { return "no such table: main." + kw }, stmttest.IndexTable},
+			{"create index i on t (%v)", func(kw string) string { return "no such column: " + kw }, stmttest.IndexColumn},
+			{"create index i on t (x, %v desc)", func(kw string) string { return "no such column: " + kw }, stmttest.IndexColumn},
+			{"drop index %v", func(kw string) string { return "no such index: " + kw }, stmttest.DropIndex},
+		} {
+			var names []string
+			for _, kw := range keywords(t) {
+				src := fmt.Sprintf(c.form, kw)
+				if oracle.Judge(src).Kind != oracle.Parses {
+					continue
+				}
+				// A database of its own for each text, since SQLite creates an index on an expression.
+				d := open(t)
+				d.must("create table t (x int primary key) strict, without rowid")
+				name := false
+				var e *sqlite.Error
+				if err := d.exec(src); errors.As(err, &e) && e.Message == c.message(kw) {
+					name = true
+					names = append(names, kw)
+				}
+				o, _ := verify(t, src)
+				is.Equal(t, name, o == supported, src)
+				is.Equal(t, name, slices.Contains(pools[c.pool], kw), src)
+			}
+			is.True(t, len(names) > 80, "too few keywords are names")
+			slices.Sort(names)
+			t.Logf("%v keywords are names in %q: %v", len(names), c.form, names)
+		}
+	})
+
+	t.Run("should take as many columns of an index as SQLite allows, and not one more", func(t *testing.T) {
+		index := func(n int) string {
+			var names []string
+			for i := range n {
+				names = append(names, fmt.Sprint("c", i))
+			}
+			return "create index i on t (" + strings.Join(names, ", ") + ")"
+		}
+		// The meaning of so many columns is checked in SQLite on a table of as many columns, the most
+		// that SQLite allows, without the check of checkMeaning, whose table has a key of its own.
+		var columns []stmt.Column
+		for i := range 2000 {
+			columns = append(columns, stmt.Column{Name: stmt.Name{Value: fmt.Sprint("c", i)}, Type: stmt.TypeInt, PrimaryKey: i == 0})
+		}
+		src := index(2000)
+		s, err := stmt.Check(src)
+		is.NotError(t, err)
+		is.Equal(t, 2000, len(s.(*stmt.CreateIndex).Columns))
+		is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
+		d := open(t)
+		d.must(createColumns("t", columns))
+		d.must(src)
+		_, n := d.query("select count(*) from pragma_index_xinfo('i') where key")
+		is.Equal(t, "[[integer:2000]]", fmt.Sprint(n))
+
+		src = index(2001)
+		_, err = stmt.Check(src)
+		is.Equal(t, fmt.Sprintf("s4ql: not supported: index beyond SQLite's limit (at offset %v)", strings.LastIndex(src, "c2000")), err.Error())
+		d = open(t)
+		d.must(createColumns("t", columns))
+		sqliteError(t, src, d.exec(src), 1, "too many columns in index")
+		verify(t, src)
 	})
 
 	t.Run("should take as many assignments as SQLite allows, and not one more", func(t *testing.T) {
