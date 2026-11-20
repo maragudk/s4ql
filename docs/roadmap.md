@@ -427,7 +427,7 @@ Included:
 
 - `order by` takes one or more column names, each with `asc` or `desc`. When neither is written, it is `asc`.
 - `limit` takes a number or `?`.
-- Rows that tie under `order by` come in the order of the primary key. SQLite promises no order for ties, and s4ql defines one, so the same query on the same data gives the same rows in the same order every time, also with `limit`. The checks against SQLite compare tied rows as a set. Markus on 2026-11-20: "great to keep things deterministic by default instead of undefined, I like that restriction."
+- Rows that tie under `order by`, and the rows of a `select` without `order by`, come in an order that varies from one query to the next, by the rule in [the spec](spec.md). Each query runs unordered scans and ties forward or backward by key, chosen at random, so rows still stream and nothing is held in memory for a shuffle. Tests and the simulation give the engine a seed, so a failure can be replayed. The checks against SQLite compare unordered and tied rows as a set. Any order of such rows is one SQLite could give too.
 - `null` sorts where SQLite sorts it: first in `asc`, last in `desc`.
 - The commit format does not change.
 - A negative `limit`, `limit 0`, a `limit` argument that is not an integer, a column named twice in `order by`, and a column in `order by` that is not in the list of selected columns are decided when the slice is built, by SQLite's behaviour, and recorded in [the todo](todo.md).

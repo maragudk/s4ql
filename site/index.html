@@ -978,7 +978,7 @@ footer ul {
       </li>
       <li class="agreed">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 12: <code>order by</code> and <code>limit</code></h3><p><code>select</code> takes <code>order by</code> with one or more columns, each <code>asc</code> or <code>desc</code>, and <code>limit</code> with a number or <code>?</code>. Rows that tie come in the order of the primary key, so the same query gives the same rows every time. No change to the commit format.</p></div>
+        <div><h3>Slice 12: <code>order by</code> and <code>limit</code></h3><p><code>select</code> takes <code>order by</code> with one or more columns, each <code>asc</code> or <code>desc</code>, and <code>limit</code> with a number or <code>?</code>. Rows that tie, and rows without <code>order by</code>, come in an order that varies from query to query. No change to the commit format.</p></div>
         <span class="where caps">Agreed</span>
       </li>
       <li class="open">
