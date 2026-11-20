@@ -1995,6 +1995,16 @@ func TestSimulation(t *testing.T) {
 			// The NULL values in the log, of which the first 1,000 seeds gave 1,581, 316, and 2,694 in the
 			// three workloads on 2026-11-20, when the sequence wrote NULL: a quarter of that in each.
 			"NULL values in the log": 0.4,
+			// The selects with WHERE that the checks compare with SQLite, of their own and in a
+			// transaction, those on an engine that reads every row, and those that give rows, of which
+			// the first 1,000 seeds gave 3,078, 1,107, 324, 4,254, 1,507, and 468 in this workload, 2,449,
+			// 786, 58, 2,875, 892, and 78 in the idle one, and 6,968, 857, 8,052, and 1,041 in the hammer
+			// one on 2026-11-20, when the sequence wrote WHERE: a quarter of that in each, and one in
+			// fifty seeds for the fewest.
+			"selects with WHERE of their own compared with SQLite": 0.77, "selects with WHERE of their own compared with SQLite, on an engine that reads every row": 0.27,
+			"selects with WHERE of their own that give rows, compared with SQLite": 0.08, "selects with WHERE in a transaction compared with SQLite": 1.06,
+			"selects with WHERE in a transaction compared with SQLite, on an engine that reads every row": 0.37,
+			"selects with WHERE in a transaction that give rows, compared with SQLite": 0.11,
 		}, 0.15},
 		// A quarter of what the first 1,000 seeds gave on 2026-11-19, with the ends of transactions for
 		// the lease, which only this workload reaches.
@@ -2009,6 +2019,10 @@ func TestSimulation(t *testing.T) {
 			"transactions not committed": 0.04, "commits of more than one statement": 0.08,
 			"transactions ended for the lease": 0.33, "kept transactions ended for the lease": 0.33, "refused for the type": 0.1,
 			"rows of several columns": 0.17, "NULL values in the log": 0.08,
+			"selects with WHERE of their own compared with SQLite": 0.61, "selects with WHERE of their own compared with SQLite, on an engine that reads every row": 0.19,
+			"selects with WHERE of their own that give rows, compared with SQLite": 0.02, "selects with WHERE in a transaction compared with SQLite": 0.71,
+			"selects with WHERE in a transaction compared with SQLite, on an engine that reads every row": 0.22,
+			"selects with WHERE in a transaction that give rows, compared with SQLite": 0.02,
 		}, 0.15},
 		{"hammer", hammerWorkload, map[string]float64{
 			"succeeded": 12, "SQLite's error": 17, "unknown": 0.4, "skipped": 2.5, "failed: no lease": 2,
@@ -2019,6 +2033,8 @@ func TestSimulation(t *testing.T) {
 			"statements in a transaction": 24, "read-only transactions": 1.8, "transactions committed": 4, "transactions rolled back": 1.5,
 			"transactions not committed": 0.17, "transactions unknown": 0.12, "commits of more than one statement": 0.6, "refused for the type": 1,
 			"rows of several columns": 2, "NULL values in the log": 0.67,
+			"selects with WHERE of their own compared with SQLite": 1.74, "selects with WHERE of their own that give rows, compared with SQLite": 0.21,
+			"selects with WHERE in a transaction compared with SQLite": 2, "selects with WHERE in a transaction that give rows, compared with SQLite": 0.26,
 		}, 0.12},
 	} {
 		t.Run(c.name, func(t *testing.T) {
