@@ -495,7 +495,7 @@ var idPattern = regexp.MustCompile(`/\* id (\d+) \*/`)
 // withID puts the comment of the ID into the text of a statement that the pass supports, after its
 // first token, where the annotation keeps it.
 func withID(src string, id uint64) string {
-	s, err := stmt.Check(src)
+	s, err := checkText(src)
 	if err != nil || s == nil {
 		return src
 	}
@@ -522,7 +522,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 	}
 	a.src = withID(call.Src, a.id)
 	call.Src = a.src
-	if s, _ := stmt.Check(a.src); s != nil {
+	if s, _ := checkText(a.src); s != nil {
 		_, isSelect := s.(*stmt.Select)
 		a.write = !isSelect
 	}
@@ -578,7 +578,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 	switch {
 	case err == nil:
 		a.state, a.answer = succeeded, got
-		if s, _ := stmt.Check(a.src); res.SetsChanges && isChange(s) {
+		if s, _ := checkText(a.src); res.SetsChanges && isChange(s) {
 			a.changes, a.unchanged = res.Changes, res.Changes == 0
 		}
 		// A write of a transaction is acknowledged by its commit.
@@ -606,7 +606,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 		// the generator, and every other that the pass supports, with the arguments that it takes must
 		// run.
 		kind, failure := checkArguments(call, a.answer)
-		s, _ := stmt.Check(a.src)
+		s, _ := checkText(a.src)
 		supported := call.Supported || s != nil
 		if kind == "" && supported && a.answer.err == "not supported" && typeRefusal(a.src, a.answer.message) {
 			// The refusal of a value of another type than its column, after the insert or the select
@@ -1530,7 +1530,7 @@ func (r *run) verify(ctx context.Context) {
 				if m := idPattern.FindStringSubmatch(note); m != nil {
 					id, _ := strconv.ParseUint(m[1], 10, 64)
 					if a := r.attempts[id]; a != nil && a.tx == nil && a.state == succeeded && a.write {
-						if s, _ := stmt.Check(a.src); isChange(s) {
+						if s, _ := checkText(a.src); isChange(s) {
 							if a.changes != changes {
 								r.violate(ctx, "commit %v, %q, changes %v rows in SQLite, and its caller was told %v", k+1, note, changes, a.changes)
 							}
@@ -1662,7 +1662,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 			if got := a.answer.String(); got != want.String() {
 				r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v, gives %v, and in SQLite %v", a.id, a.src, tx.id, kind, at, got, want)
 			}
-			if s, _ := stmt.Check(a.src); a.state == succeeded && isChange(s) {
+			if s, _ := checkText(a.src); a.state == succeeded && isChange(s) {
 				if want.err == "" && a.changes != changes {
 					r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v, changes %v rows in SQLite, and its caller was told %v", a.id, a.src, tx.id, kind, at, changes, a.changes)
 				}
@@ -1703,7 +1703,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 // event of the run if it is a select with WHERE: by where it ran, of their own or in a transaction,
 // and, for a query that succeeded, by whether it gave rows.
 func (r *run) countWhere(a *attempt, where string) {
-	s, _ := stmt.Check(a.src)
+	s, _ := checkText(a.src)
 	if sel, ok := s.(*stmt.Select); !ok || sel.Where == nil {
 		return
 	}
@@ -1719,7 +1719,7 @@ func (r *run) countWhere(a *attempt, where string) {
 
 // tableOf the statement of src, which the pass supports, folded as SQLite compares names.
 func tableOf(src string) string {
-	s, err := stmt.Check(src)
+	s, err := checkText(src)
 	if err != nil {
 		panic(err)
 	}
@@ -2024,7 +2024,7 @@ func tallyOf(s simulation) map[string]int {
 		if a.typeRefused {
 			counts["refused for the type"]++
 		}
-		if s, _ := stmt.Check(a.src); isChange(s) {
+		if s, _ := checkText(a.src); isChange(s) {
 			counts["updates and deletes"]++
 			switch {
 			case a.state == succeeded && a.unchanged:

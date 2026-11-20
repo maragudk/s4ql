@@ -272,3 +272,42 @@ func TestGenerator_Indexes(t *testing.T) {
 		is.Equal(t, 0, with["create index of 4"], fmt.Sprint(with))
 	})
 }
+
+func TestGenerator_Exists(t *testing.T) {
+	t.Run("should write IF NOT EXISTS and IF EXISTS in creates and drops only with Exists", func(t *testing.T) {
+		pools, err := stmttest.NamePools()
+		is.NotError(t, err)
+		count := func(exists int) map[string]int {
+			g := stmttest.NewGenerator(rand.New(rand.NewPCG(13, 14)), pools)
+			g.Exists = exists
+			g.Indexes = 2
+			kinds := map[string]int{}
+			for range 800 {
+				src, s := g.Statement()
+				got, err := stmt.Check(src)
+				is.NotError(t, err, src)
+				is.Equal(t, fmt.Sprintf("%#v", s), fmt.Sprintf("%#v", got), src)
+				clause := false
+				switch s := s.(type) {
+				case *stmt.CreateTable:
+					clause = s.IfNotExists
+				case *stmt.CreateIndex:
+					clause = s.IfNotExists
+				case *stmt.DropTable:
+					clause = s.IfExists
+				case *stmt.DropIndex:
+					clause = s.IfExists
+				}
+				kinds[fmt.Sprintf("%T %v", s, clause)]++
+			}
+			return kinds
+		}
+		without := count(0)
+		with := count(2)
+		for _, k := range []string{"*stmt.CreateTable", "*stmt.CreateIndex", "*stmt.DropTable", "*stmt.DropIndex"} {
+			is.Equal(t, 0, without[k+" true"], fmt.Sprint(k, without))
+			is.True(t, with[k+" true"] > 20, fmt.Sprint(k, with))
+			is.True(t, with[k+" false"] > 20, fmt.Sprint(k, with))
+		}
+	})
+}
