@@ -299,17 +299,61 @@ async function unit() {
     master.gain.value = S.MASTER;
     master.connect(ctx.destination);
     const player = S.player(ctx, master);
-    let played = 0;
-    for (let i = 0; i < 300; i++) for (const k of kinds) if (player.play(k, i / 100)) played++;
+    let played = 0, ticked = 0;
+    for (let i = 0; i < 300; i++) {
+      // The ticks of every kind every 10 ms, the scan at each of its pitches, under the figures.
+      for (const k of ticks) if (player.tick(k, k === "scan" ? S.SCANS[i % S.SCANS.length] : 0, i / 100)) ticked++;
+      for (const k of kinds) if (player.play(k, i / 100)) played++;
+    }
     let peak = 0;
     for (const v of (await ctx.startRendering()).getChannelData(0)) peak = Math.max(peak, Math.abs(v));
-    return { played, peak };
+    return { played, ticked, peak };
   };
   const kinds = Object.keys(S.FIGURES);
+  let ticks = [];
+  const [quiet, quietAlarmed] = [await burst(kinds.filter((k) => k !== "alarm")), await burst(kinds)];
+  ticks = Object.keys(S.TICKS);
   const [calm, alarmed] = [await burst(kinds.filter((k) => k !== "alarm")), await burst(kinds)];
   const dB = (x) => (20 * Math.log10(x)).toFixed(1) + " dBFS";
-  expect(calm.peak > 0 && calm.peak <= 0.06 && calm.played <= 4 * 3, `a burst of sounds peaks at ${dB(calm.peak)}, and plays ${calm.played} sounds in 3 s`);
-  expect(alarmed.peak > 0 && alarmed.peak <= 0.1, `a burst of sounds with the alarm peaks at ${dB(alarmed.peak)}`);
+  expect(calm.peak > 0 && calm.peak <= 0.06 && calm.played <= 4 * 3 && calm.ticked > 0 && calm.ticked <= 3 / S.TICK_SPACING, `a burst of sounds with ticks under them peaks at ${dB(calm.peak)} (${dB(quiet.peak)} without the ticks), and plays ${calm.played} sounds and ${calm.ticked} ticks in 3 s`);
+  expect(alarmed.peak > 0 && alarmed.peak <= 0.1, `a burst of sounds with the alarm and ticks peaks at ${dB(alarmed.peak)} (${dB(quietAlarmed.peak)} without the ticks)`);
+
+  // Each tick alone: the scan, at every pitch, at most at the level of a figure, the select in the
+  // background, and the error tone. Ticks come at most every TICK_SPACING, and the error tone at most
+  // every ERROR_SPACING.
+  const alone = async (kind, hz) => {
+    const ctx = new OfflineAudioContext(1, 48000 * 0.5, 48000);
+    const master = ctx.createGain();
+    master.gain.value = S.MASTER;
+    master.connect(ctx.destination);
+    S.player(ctx, master).tick(kind, hz, 0.01);
+    let peak = 0;
+    for (const v of (await ctx.startRendering()).getChannelData(0)) peak = Math.max(peak, Math.abs(v));
+    return peak;
+  };
+  const scans = await Promise.all(S.SCANS.map((hz) => alone("scan", hz)));
+  const [select, error] = [Math.max(await alone("select"), ...(await Promise.all(S.SCANS.map((hz) => alone("select", hz))))), await alone("error")];
+  expect(Math.max(...scans) <= S.MASTER && Math.min(...scans) > 0 && select < Math.min(...scans) / 1.5 && error > 0 && error < S.MASTER,
+    `a scan peaks at ${dB(Math.max(...scans))}, a select at ${dB(select)}, and an error tone at ${dB(error)}, against ${dB(S.MASTER)} for a figure`);
+  const rateCtx = new OfflineAudioContext(1, 4800, 48000);
+  const rate = S.player(rateCtx, rateCtx.destination);
+  const errors = Array.from({ length: 300 }, (_, i) => rate.tick("error", 0, i / 100)).filter(Boolean).length;
+  expect(errors <= 3 / S.ERROR_SPACING + 1, `a long run of failing requests gives ${errors} error tones in 3 s`);
+
+  // Each request that ends ticks: an insert that commits scans at the note of its key, a select at
+  // the note of the newest key that it gives, or low without rows, and a failure gives the error
+  // tone. The same key always has the same note, and keys in a row wander over the notes.
+  const ticked = [
+    { ...call(1, "a", "started"), op: "write", value: 7 },
+    write(call(2, "a", "committed")), { ...call(3, "a", "served"), keys: [3, 7] }, { ...call(4, "a", "served"), keys: [] },
+    call(5, "a", "refused", "no valid lease: not_holder"), call(6, "a", "down", "crashed"),
+  ].map((e) => S.tickOf(e)).filter(Boolean);
+  const kindsTicked = ticked.map((k) => k.kind).join(", ");
+  expect(kindsTicked === "scan, select, select, error, error", `each request that ends ticks (${kindsTicked})`);
+  const run = Array.from({ length: 12 }, (_, i) => S.SCANS.indexOf(S.keyNote(i + 1)));
+  expect(ticked[0].hz === S.keyNote(7) && ticked[1].hz === S.keyNote(7) && ticked[2].hz === 0 && S.keyNote(7) === S.keyNote(7)
+    && run.every((i) => i >= 0) && new Set(run).size >= 4 && run.some((x, i) => i > 0 && x < run[i - 1]) && S.SCANS.every((hz) => hz >= 1200 && hz <= 3000),
+    `an insert and the selects that see its key take its note, and the keys 1 to 12 wander over the notes (${run.join(" ")})`);
 }
 
 async function check() {
