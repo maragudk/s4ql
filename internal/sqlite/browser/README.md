@@ -72,10 +72,13 @@ The program's working directory is the root of the file system of `fs.js`, which
 
 `make test-browser` runs the tests of `BROWSERPKGS` in headless Chromium. It builds the runner and passes it to `go test` as the `-exec` program. Its variables:
 
-- `BROWSERPKGS` are the packages, by default `./internal/sqlite`, `./internal/sqlite/faultvfs`, `./internal/core`, `./internal/sim`, and `./internal/store/simstore`.
+- `BROWSERPKGS` are the packages, by default `./internal/sqlite`, `./internal/sqlite/faultvfs`, `./internal/core`, `./internal/sim`, `./internal/store/simstore`, `./internal/simulator`, and `./internal/simulator/engine`.
 - `BROWSERFLAGS` go to `go test`, such as `BROWSERFLAGS='-run TestSimulation -v'`.
 - `BROWSERTIMEOUT` is the timeout of each test binary, by default `30m`.
 - `BROWSERSKIP` are the tests to skip, described below.
+- `BROWSERSHARD=i/6` runs the i-th of six shards, so that CI can run them at the same time. Every test is in exactly one shard. `BROWSERFLAGS` must then hold no `-run` or `-skip`.
+
+Shards 1 to 4 split the tests of `internal/core` by name, and shard 4 runs every test that the first three leave. Shards 4 to 6 share the other packages, and shard 6 takes every package that no other shard names, so a new package lands there. The comment above `test-browser` in the Makefile lists what each shard runs.
 
 To run one package by hand:
 
@@ -84,20 +87,27 @@ go build -o /tmp/s4ql-browser ./internal/sqlite/browser
 GOOS=js GOARCH=wasm go test -tags s4ql_browser -exec /tmp/s4ql-browser ./internal/core
 ```
 
-The runner serves the page, the program, and the JavaScript on a port of 127.0.0.1, starts Chromium on the page, writes the program's output to its own, and exits with the program's exit code, or with 3 if the page fails. With `-test.timeout` among the arguments, it stops Chromium a minute after that timeout, because the program cannot stop itself while SQLite holds the only thread.
+The runner serves the page, the program, and the JavaScript on a port of 127.0.0.1, starts Chromium on the page, writes the program's output to its own, and exits with the program's exit code, or with 3 if the page fails.
 
-Two environment variables choose the browser:
+With `-test.timeout` among the arguments, the runner stops Chromium 30 seconds after that timeout, because the program cannot stop itself while SQLite holds the only thread. That is before `go test` stops the runner, a minute after the timeout. The runner also stops Chromium on SIGINT, SIGTERM, and SIGQUIT.
+
+A Chromium that has not fetched the program a minute after its start, or that stops before the program started, is started again with a new profile, up to three times in all. No code of the program has run by then. The reason: on a fresh runner of GitHub Actions the first Chromium sometimes never loads the page, and one started after it does. That happened on 5 of 48 fresh runners on 2026-11-20, and a first start that works loads the page there after 7 to 32 seconds.
+
+Each time it stops Chromium or starts it again, the runner writes to its standard error which steps of the start it saw, when the program last wrote, the tests that had started and not ended if the program ran with `-test.v`, and the end of Chromium's output.
+
+Three environment variables are for the runner:
 
 - `S4QL_CHROMIUM` is the path of Chromium. Without it, the runner takes the first of `chromium`, `chromium-browser`, `google-chrome`, `google-chrome-stable`, and `chrome` on the PATH, and on macOS then Google Chrome or Chromium in `/Applications`.
 - `S4QL_CHROMIUM_FLAGS` adds flags, separated by spaces, such as `--no-sandbox` where Chromium's sandbox cannot start.
+- `S4QL_CHROMIUM_STEPS`, when set, makes the runner also write what it saw when the program exits.
 
-The program gets the runner's other environment variables whose names start with `S4QL_`, and `GODEBUG` and `GOTRACEBACK`. It gets no others.
+Variables whose names start with `S4QL_CHROMIUM` stay with the runner. The program gets the runner's other environment variables whose names start with `S4QL_`, and `GODEBUG` and `GOTRACEBACK`. It gets no others.
 
 `BROWSERSKIP` defaults to `TestSynctestWithCgo/among_parallel_readers`, which matches two canaries in `internal/sim/cgo_test.go`. Each runs eight goroutines that read in a loop that never blocks, beside a writer. Go's js/wasm port has one thread and no preemption, so the first such goroutine runs alone for good and the test hangs. A canary about calls into C and real parallelism has nothing to measure there. A run of `./internal/sim` by hand needs the same `-skip`.
 
 `make lint` also runs `golangci-lint` over the browser's build of `BROWSERPKGS`, whose files a native run does not see.
 
-CI's job `browser` runs `make check-browser`, lints the browser's build, and runs `make test-browser` in the headless Chrome of the runner image, with `S4QL_CHROMIUM_FLAGS=--no-sandbox`.
+CI's job `browser` runs `make check-browser` and lints the browser's build. Its job `browser-test` runs `make test-browser` in the headless Chrome of the runner image, in six shards at the same time, with `BROWSERTIMEOUT=6m`, `BROWSERFLAGS=-v`, `S4QL_CHROMIUM_FLAGS=--no-sandbox`, and `S4QL_CHROMIUM_STEPS=1`.
 
 ## Measurements
 

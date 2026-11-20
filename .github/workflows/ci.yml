@@ -370,6 +370,40 @@ jobs:
           S4QL_CHROMIUM_STEPS: 1
         run: make test-browser BROWSERSHARD=${{ matrix.shard }}/${{ strategy.job-total }} BROWSERTIMEOUT=6m BROWSERFLAGS=-v
 
+  # TEMPORARY: the first Chromium of a fresh runner, with and without a D-Bus system bus.
+  browser-dbus:
+    needs: changes
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        bus: ['', 'unix:path=/nonexistent/s4ql']
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Run
+        env:
+          S4QL_CHROMIUM_FLAGS: --no-sandbox
+          S4QL_CHROMIUM_STEPS: 1
+          BUS: ${{ matrix.bus }}
+        run: |
+          [ -z "$BUS" ] || export DBUS_SYSTEM_BUS_ADDRESS="$BUS"
+          echo "uptime: $(cut -d ' ' -f 1 /proc/uptime)"
+          go build -o "$RUNNER_TEMP/browser" ./internal/sqlite/browser
+          GOOS=js GOARCH=wasm go test -count 1 -tags s4ql_browser -exec "$RUNNER_TEMP/browser" -timeout 10m ./internal/sqlite > "$RUNNER_TEMP/out.log" 2>&1; status=$?
+          grep -E 'browser:|ok|FAIL' "$RUNNER_TEMP/out.log" | cut -c1-400
+          echo "restarts: $(grep -c 'starting Chromium again' "$RUNNER_TEMP/out.log")"
+          exit $status
+
   # Builds the engine into the site, as the Pages workflow does, and checks the simulator's page in
   # headless Chrome: see internal/simulator/sitecheck. It reads site/ and the Go code, so it runs for
   # a change to either, also when no other job but changes runs.
