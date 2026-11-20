@@ -507,14 +507,14 @@ func statementKind(src string) string {
 }
 
 // reach counts in the tally what the text src with the arguments of each run, whose outcome of s4ql
-// is got, reaches, under "reached: ", on the tables that SQLite has where the call runs, before it
-// runs there. For an insert: each argument by its kind, as [stmttest.ArgumentKind] names it, each
+// is got, reaches, under "reached: ", on the tables that SQLite has on o, where the call runs,
+// before it runs there. For an insert: each argument by its kind, as [stmttest.ArgumentKind] names it, each
 // literal by its kind, as [stmttest.LiteralKind] names it, and, for an insert into a table that
 // SQLite has, the outcome of each run by the type of the key column, and for a table of several
 // columns by the form of the insert, without a list or with one, and by its faults, as
 // [stmttest.Faults] gives them, one or two. For a select of a table that SQLite has, the outcome of
 // each run by its form: * by the number of columns, names, and a name that the table does not have.
-func (p *pair) reach(src string, runs [][]any, got outcome) {
+func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 	tb := p.tb
 	tb.Helper()
 	if p.y == nil {
@@ -534,7 +534,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome) {
 	}
 	s, _ := stmt.Check(src)
 	if sel, ok := s.(*stmt.Select); ok {
-		_, columns := p.columns(sel.Table.Value)
+		_, columns := p.columnsIn(o, sel.Table.Value)
 		if columns == nil {
 			return
 		}
@@ -566,7 +566,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome) {
 			count("literal " + stmttest.LiteralKind(v.Value))
 		}
 	}
-	_, columns := p.columns(insert.Table.Value)
+	_, columns := p.columnsIn(o, insert.Table.Value)
 	var typ string
 	for _, c := range columns {
 		if c.PrimaryKey {
@@ -799,7 +799,7 @@ func (p *pair) stepRuns(src string, c call, supported bool, runs [][]any) (outco
 	}
 	got := run(tb, s, c, src, runs, s4qlText)
 	p.y.add(scope, src, got, runs)
-	p.reach(src, runs, got)
+	p.reach(src, runs, got, o)
 	failure := p.compare(src, c, supported, runs, got, o)
 	if failure == "" && p.tx != nil && scope == p.tx.kind() {
 		p.note(src, got)
