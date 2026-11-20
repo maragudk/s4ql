@@ -1779,6 +1779,41 @@ func TestClose(t *testing.T) {
 		is.NotError(t, db.Close())
 	})
 
+	t.Run("should close a store that it owns once, after the instance, also when the close fails", func(t *testing.T) {
+		for _, fails := range []bool{false, true} {
+			w := newWorld(t)
+			s := &closing{faulty: faulty{Store: w.client()}}
+			o := w.options("a")
+			if fails {
+				// The close fails at the timeout, which a slower machine cannot change.
+				o.CloseTimeout = 100 * time.Millisecond
+			}
+			db, err := s4ql.OpenOwnedStore(t.Context(), w.host, s, o, coreOptions())
+			is.NotError(t, err)
+			is.NotError(t, db.PingContext(t.Context()))
+			exec(t, db, t1)
+			is.Equal(t, int32(0), s.closes.Load())
+
+			// A store that is down makes the release of the lease fail, and so the close.
+			s.down(fails)
+			err = db.Close()
+			is.Equal(t, fails, err != nil, fmt.Sprint(err))
+			is.Equal(t, int32(1), s.closes.Load())
+			is.NotError(t, db.Close())
+			is.Equal(t, int32(1), s.closes.Load())
+		}
+	})
+
+	t.Run("should close a store that it owns when the instance cannot be opened", func(t *testing.T) {
+		w := newWorld(t)
+		s := &closing{faulty: faulty{Store: w.client()}}
+		o := w.options("a")
+		o.CacheDir = ""
+		_, err := s4ql.OpenOwnedStore(t.Context(), w.host, s, o, coreOptions())
+		is.True(t, err != nil)
+		is.Equal(t, int32(1), s.closes.Load())
+	})
+
 	t.Run("should commit an insert if and only if it was acknowledged, when the database is closed while writes and queries run in many goroutines", func(t *testing.T) {
 		w := newWorld(t)
 		db := w.serve(t, "a")

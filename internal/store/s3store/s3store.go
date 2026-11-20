@@ -41,7 +41,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -121,17 +120,12 @@ type Client struct {
 	// active is the number of requests that have started and not ended. A read ends when its
 	// content is closed.
 	active int
-	// conns of the transport that are open.
-	conns map[*conn]struct{}
 }
 
 var (
 	_ store.Store = (*Client)(nil)
 	_ io.Closer   = (*Client)(nil)
 )
-
-// errClosed is the error of a dial of a client that was closed while no request is in flight.
-var errClosed = errors.New("the client is closed")
 
 // New client with the given options. It sends no request to the store. It needs the permissions
 // s3:GetObject, s3:PutObject, and s3:ListBucket on the bucket: without s3:ListBucket, S3 answers a
@@ -154,11 +148,10 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 	// error of a write but those that mean "not applied" means that its outcome is unknown anyway.
 	// It speaks HTTP/1.1 only, so that the retries of net/http that can happen are those of
 	// HTTP/1.1, and goes through no proxy, which could send a request again.
-	c := &Client{bucket: opts.Bucket, conns: map[*conn]struct{}{}}
+	c := &Client{bucket: opts.Bucket}
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
 	c.transport = &http.Transport{
-		DialContext:           c.dial,
 		Protocols:             protocols,
 		TLSClientConfig:       &tls.Config{RootCAs: opts.RootCAs, MinVersion: tls.VersionTLS12},
 		MaxIdleConnsPerHost:   16,
@@ -216,15 +209,18 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 // Close the client. It does not wait for the requests that are in flight, which end as they would
 // have, and it refuses no request: a call after it, such as one of a close of the instance that
 // timed out, still goes to the store. Close closes the idle connections of the transport that the
-// client made at once, and every connection of it, also one in use, whenever no request is in
-// flight after it: at once, or when the last request in flight ends. A read is in flight until its
-// content is closed. It never fails.
+// client made at once, and again whenever no request is in flight after it: at once, or when the
+// last request in flight ends. A read is in flight until its content is closed. It never fails.
+//
+// The client closes only connections that are idle, through [http.Transport.CloseIdleConnections],
+// which takes them out of the transport's pool under the transport's own lock, so that a request
+// that starts at the same time never gets a connection that is being closed. A connection in use
+// is closed by the transport when its request ends without a complete answer, or is idle when the
+// last request ends and closed then.
 func (c *Client) Close() error {
 	c.mu.Lock()
 	c.closed = true
-	conns := c.unusedLocked()
 	c.mu.Unlock()
-	c.shut(conns)
 	if c.transport != nil {
 		c.transport.CloseIdleConnections()
 	}
@@ -238,70 +234,16 @@ func (c *Client) enter() {
 	c.active++
 }
 
-// leave the client at the end of a request, and close the connections if it was the last request in
-// flight of a closed client.
+// leave the client at the end of a request, and close the idle connections if it was the last
+// request in flight of a closed client.
 func (c *Client) leave() {
 	c.mu.Lock()
 	c.active--
-	conns := c.unusedLocked()
+	last := c.closed && c.active == 0
 	c.mu.Unlock()
-	c.shut(conns)
-}
-
-// unusedLocked are the connections to close: all of them, and the map is emptied, if the client is
-// closed and no request is in flight, and none otherwise. It needs c.mu.
-func (c *Client) unusedLocked() []*conn {
-	if !c.closed || c.active > 0 {
-		return nil
+	if last && c.transport != nil {
+		c.transport.CloseIdleConnections()
 	}
-	conns := make([]*conn, 0, len(c.conns))
-	for cn := range c.conns {
-		conns = append(conns, cn)
-	}
-	clear(c.conns)
-	return conns
-}
-
-// shut the connections, without c.mu, because the close of a connection takes it.
-func (c *Client) shut(conns []*conn) {
-	for _, cn := range conns {
-		_ = cn.Conn.Close()
-	}
-}
-
-// dial a connection of the transport, as the transport of net/http does by default, and keep it,
-// so that Close can close it. A connection that the transport dials for a request that has ended
-// after the close of the client, which net/http may finish and keep as an idle one, is closed at
-// once.
-func (c *Client) dial(ctx context.Context, network, address string) (net.Conn, error) {
-	var d net.Dialer
-	nc, err := d.DialContext(ctx, network, address)
-	if err != nil {
-		return nil, err
-	}
-	cn := &conn{Conn: nc, c: c}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed && c.active == 0 {
-		_ = nc.Close()
-		return nil, fmt.Errorf("s3store: %w", errClosed)
-	}
-	c.conns[cn] = struct{}{}
-	return cn, nil
-}
-
-// conn of the transport, which the client forgets when it is closed.
-type conn struct {
-	net.Conn
-	c *Client
-}
-
-func (cn *conn) Close() error {
-	err := cn.Conn.Close()
-	cn.c.mu.Lock()
-	defer cn.c.mu.Unlock()
-	delete(cn.c.conns, cn)
-	return err
 }
 
 // Get as [store.Store] describes. Content whose checksum the store holds is compared with it as it

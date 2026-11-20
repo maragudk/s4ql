@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/http/httptrace"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -69,8 +70,8 @@ func TestRequest_refusal(t *testing.T) {
 }
 
 // serverClient is a client of [New] of an HTTP server with the handler h, in a test that is isolated
-// from the machine's AWS configuration.
-func serverClient(t *testing.T, h http.HandlerFunc) *Client {
+// from the machine's AWS configuration, and the dialer of its transport, which keeps the connections.
+func serverClient(t *testing.T, h http.HandlerFunc) (*Client, *dialer) {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
@@ -85,24 +86,70 @@ func serverClient(t *testing.T, h http.HandlerFunc) *Client {
 		AccessKeyID: "test", SecretAccessKey: "test",
 	})
 	is.NotError(t, err)
-	return c
+	d := &dialer{}
+	c.transport.DialContext = d.dial
+	return c, d
 }
 
-// conns of c that are open now.
-func (c *Client) openConns() []*conn {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	conns := make([]*conn, 0, len(c.conns))
-	for cn := range c.conns {
-		conns = append(conns, cn)
+// dialer of a transport in a test, which keeps every connection that it dials.
+type dialer struct {
+	mu    sync.Mutex
+	conns []net.Conn
+	// hold, if it is not nil, is waited for by a dial, after the dial has been counted in dialing.
+	hold    chan struct{}
+	dialing sync.WaitGroup
+}
+
+func (d *dialer) dial(ctx context.Context, network, address string) (net.Conn, error) {
+	d.mu.Lock()
+	hold := d.hold
+	d.mu.Unlock()
+	if hold != nil {
+		d.dialing.Done()
+		<-hold
 	}
-	return conns
+	var nd net.Dialer
+	nc, err := nd.DialContext(context.WithoutCancel(ctx), network, address)
+	if err != nil {
+		return nil, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.conns = append(d.conns, nc)
+	return nc, nil
 }
 
-// isClosed reports whether the socket of cn is closed. It does not block: a deadline is set on a
+// open connections of d now.
+func (d *dialer) open() []net.Conn {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var open []net.Conn
+	for _, nc := range d.conns {
+		if !isClosed(nc) {
+			open = append(open, nc)
+		}
+	}
+	return open
+}
+
+// isClosed reports whether the socket nc is closed. It does not block: a deadline is set on a
 // socket that is open, and refused on one that is closed.
-func isClosed(cn *conn) bool {
-	return errors.Is(cn.SetReadDeadline(time.Time{}), net.ErrClosed)
+func isClosed(nc net.Conn) bool {
+	return errors.Is(nc.SetReadDeadline(time.Time{}), net.ErrClosed)
+}
+
+// waitClosed until nc is closed, which net/http does in a goroutine of its own for some connections,
+// or fail the test. The bound is far above the time that the close takes on a slow machine, and far
+// below the idle timeout of the transport, after which a leaked connection would be closed too.
+func waitClosed(t *testing.T, nc net.Conn) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for !isClosed(nc) {
+		if time.Now().After(deadline) {
+			t.Fatal("the connection is still open after 30 seconds")
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func TestClient_Close(t *testing.T) {
@@ -110,7 +157,7 @@ func TestClient_Close(t *testing.T) {
 		// Both writes are in the handler at once, so that they go over two connections.
 		var arrived sync.WaitGroup
 		arrived.Add(2)
-		c := serverClient(t, func(w http.ResponseWriter, r *http.Request) {
+		c, d := serverClient(t, func(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.Copy(io.Discard, r.Body)
 			arrived.Done()
 			arrived.Wait()
@@ -125,7 +172,7 @@ func TestClient_Close(t *testing.T) {
 			})
 		}
 		wg.Wait()
-		conns := c.openConns()
+		conns := d.open()
 		is.Equal(t, 2, len(conns))
 		for _, cn := range conns {
 			is.True(t, !isClosed(cn))
@@ -135,14 +182,14 @@ func TestClient_Close(t *testing.T) {
 		for _, cn := range conns {
 			is.True(t, isClosed(cn))
 		}
-		is.Equal(t, 0, len(c.openConns()))
+		is.Equal(t, 0, len(d.open()))
 		is.NotError(t, c.Close())
 	})
 
 	t.Run("should return at once from a close during a write, which succeeds, and close its connection when it has ended", func(t *testing.T) {
 		arrived := make(chan struct{})
 		release := make(chan struct{})
-		c := serverClient(t, func(w http.ResponseWriter, r *http.Request) {
+		c, d := serverClient(t, func(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.Copy(io.Discard, r.Body)
 			close(arrived)
 			<-release
@@ -158,7 +205,7 @@ func TestClient_Close(t *testing.T) {
 		}()
 		<-arrived
 		is.NotError(t, c.Close())
-		conns := c.openConns()
+		conns := d.open()
 		is.Equal(t, 1, len(conns))
 		is.True(t, !isClosed(conns[0]))
 
@@ -166,11 +213,11 @@ func TestClient_Close(t *testing.T) {
 		is.NotError(t, <-done)
 		is.Equal(t, store.Version(`"v"`), version)
 		is.True(t, isClosed(conns[0]))
-		is.Equal(t, 0, len(c.openConns()))
+		is.Equal(t, 0, len(d.open()))
 	})
 
 	t.Run("should close the connection of a read whose content is open when the content is closed", func(t *testing.T) {
-		c := serverClient(t, func(w http.ResponseWriter, r *http.Request) {
+		c, d := serverClient(t, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("ETag", `"v"`)
 			_, _ = w.Write([]byte("data"))
 		})
@@ -178,7 +225,7 @@ func TestClient_Close(t *testing.T) {
 		body, _, err := c.Get(t.Context(), "k")
 		is.NotError(t, err)
 		is.NotError(t, c.Close())
-		conns := c.openConns()
+		conns := d.open()
 		is.Equal(t, 1, len(conns))
 		is.True(t, !isClosed(conns[0]))
 
@@ -187,14 +234,14 @@ func TestClient_Close(t *testing.T) {
 		is.Equal(t, "data", string(data))
 		is.NotError(t, body.Close())
 		is.True(t, isClosed(conns[0]))
-		is.Equal(t, 0, len(c.openConns()))
+		is.Equal(t, 0, len(d.open()))
 	})
 
 	t.Run("should close the idle connections at once while the content of a read is open", func(t *testing.T) {
 		// Both writes are in the handler at once, so that they go over two connections.
 		var arrived sync.WaitGroup
 		arrived.Add(2)
-		c := serverClient(t, func(w http.ResponseWriter, r *http.Request) {
+		c, d := serverClient(t, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("ETag", `"v"`)
 			if r.Method == http.MethodGet {
 				_, _ = w.Write([]byte("data"))
@@ -212,29 +259,26 @@ func TestClient_Close(t *testing.T) {
 			})
 		}
 		wg.Wait()
-		conns := c.openConns()
+		conns := d.open()
 		is.Equal(t, 2, len(conns))
 
 		// The read takes one of the two connections, and the other stays idle.
 		body, _, err := c.Get(t.Context(), "k")
 		is.NotError(t, err)
 		is.NotError(t, c.Close())
-		var open []*conn
-		for _, cn := range conns {
-			if !isClosed(cn) {
-				open = append(open, cn)
-			}
-		}
+		open := d.open()
 		is.Equal(t, 1, len(open))
 
+		// The content is closed before its end, so net/http does not reuse the connection, and
+		// closes it in a goroutine of its own.
 		is.NotError(t, body.Close())
-		is.True(t, isClosed(open[0]))
-		is.Equal(t, 0, len(c.openConns()))
+		waitClosed(t, open[0])
+		is.Equal(t, 0, len(d.open()))
 	})
 
 	t.Run("should send a call after the close, and close its connection when it has ended", func(t *testing.T) {
 		var requests atomic.Int32
-		c := serverClient(t, func(w http.ResponseWriter, r *http.Request) {
+		c, d := serverClient(t, func(w http.ResponseWriter, r *http.Request) {
 			requests.Add(1)
 			_, _ = io.Copy(io.Discard, r.Body)
 			w.Header().Set("ETag", `"v"`)
@@ -245,13 +289,93 @@ func TestClient_Close(t *testing.T) {
 		is.NotError(t, err)
 		is.Equal(t, store.Version(`"v"`), version)
 		is.Equal(t, int32(1), requests.Load())
-		is.Equal(t, 0, len(c.openConns()))
+		is.Equal(t, 0, len(d.open()))
+	})
 
-		// A dial that the transport finishes after the close while no request is in flight, as it
-		// may for a request that has ended, keeps no connection.
-		_, err = c.dial(t.Context(), "tcp", strings.TrimPrefix(aws.ToString(c.s3.Options().BaseEndpoint), "http://"))
-		is.True(t, errors.Is(err, errClosed), fmt.Sprint(err))
-		is.Equal(t, 0, len(c.openConns()))
+	t.Run("should keep no connection whose dial ends after the close and after the call that it was for", func(t *testing.T) {
+		c, d := serverClient(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("ETag", `"v"`)
+		})
+		hold := make(chan struct{})
+		d.hold = hold
+		d.dialing.Add(1)
+		is.NotError(t, c.Close())
+
+		// The call ends while its dial is held, and net/http finishes the dial after it, and would
+		// keep the connection as an idle one.
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() {
+			_, _, err := c.Get(ctx, "k")
+			done <- err
+		}()
+		d.dialing.Wait()
+		cancel()
+		is.True(t, errors.Is(<-done, context.Canceled))
+		close(hold)
+
+		// The dial ends in a goroutine of net/http, so the connection shows up some time after.
+		deadline := time.Now().Add(30 * time.Second)
+		var conns []net.Conn
+		for len(conns) == 0 {
+			if time.Now().After(deadline) {
+				t.Fatal("the dial has not ended after 30 seconds")
+			}
+			time.Sleep(time.Millisecond)
+			d.mu.Lock()
+			conns = slices.Clone(d.conns)
+			d.mu.Unlock()
+		}
+		is.Equal(t, 1, len(conns))
+		waitClosed(t, conns[0])
+	})
+
+	t.Run("should not break calls that run at once after the close", func(t *testing.T) {
+		// Each call that ends while no other is in flight closes the idle connections. A call that
+		// starts at that moment must not get a connection that is being closed, which would make
+		// the outcome of a write unknown.
+		c, _ := serverClient(t, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.Header().Set("ETag", `"v"`)
+			if r.Method == http.MethodGet {
+				_, _ = w.Write([]byte("data"))
+			}
+		})
+		is.NotError(t, c.Close())
+
+		// Two calls at a time end often with no other in flight. The counts made a run fail nearly
+		// every time when the client closed the sockets of the pool itself.
+		calls := map[string]func(i int) error{
+			"get": func(int) error {
+				body, _, err := c.Get(t.Context(), "k")
+				if err != nil {
+					return err
+				}
+				_, err = io.Copy(io.Discard, body)
+				return errors.Join(err, body.Close())
+			},
+			"create": func(i int) error {
+				_, err := c.Create(t.Context(), fmt.Sprint("k", i), strings.NewReader("data"), nil)
+				return err
+			},
+		}
+		var wg sync.WaitGroup
+		errs := make(chan error, len(calls))
+		for _, call := range calls {
+			wg.Go(func() {
+				for i := range 8000 {
+					if err := call(i); err != nil {
+						errs <- err
+						return
+					}
+				}
+			})
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			is.NotError(t, err)
+		}
 	})
 
 	t.Run("should leave alone an HTTP client that it did not make", func(t *testing.T) {

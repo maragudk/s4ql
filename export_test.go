@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"io"
 
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/host"
@@ -27,6 +28,17 @@ var Value = value
 // for the identity of the database, in place of co.Identity.
 func OpenStore(ctx context.Context, h host.Host, s store.Store, o Options, co core.Options) (*sql.DB, error) {
 	return storeOpener(h, s, o, co).openDB(ctx)
+}
+
+// OpenOwnedStore is [OpenStore] on a store that the instance owns, and closes, as it does the store
+// that [Open] makes.
+func OpenOwnedStore(ctx context.Context, h host.Host, s interface {
+	store.Store
+	io.Closer
+}, o Options, co core.Options) (*sql.DB, error) {
+	return (&opener{connect: func(ctx context.Context, d driver.Driver, maxOpen int) (*connector, error) {
+		return ownedConnector(ctx, h, s, o, co, d, maxOpen)
+	}}).openDB(ctx)
 }
 
 // RegisterStore is [Register] on the store s and the host h, with the options co of the storage

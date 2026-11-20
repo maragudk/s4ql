@@ -356,13 +356,7 @@ func (o Options) connector(ctx context.Context, d driver.Driver, maxOpen int) (*
 	if err != nil {
 		return nil, fmt.Errorf("s4ql: open: %w", err)
 	}
-	c, err := newConnector(ctx, host.New(), s, o, core.Options{}, d, maxOpen)
-	if err != nil {
-		_ = s.Close()
-		return nil, err
-	}
-	c.store = s
-	return c, nil
+	return ownedConnector(ctx, host.New(), s, o, core.Options{}, d, maxOpen)
 }
 
 // identity of the database of the options, which the cache records: an s3 URL of the bucket and the

@@ -952,6 +952,17 @@ type faulty struct {
 
 var errFault = errors.New("fault of the test")
 
+// closing is a [faulty] store that counts its closes.
+type closing struct {
+	faulty
+	closes atomic.Int32
+}
+
+func (c *closing) Close() error {
+	c.closes.Add(1)
+	return nil
+}
+
 // down sets whether every request fails.
 func (f *faulty) down(down bool) {
 	f.mu.Lock()

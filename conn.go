@@ -110,6 +110,24 @@ func newConnector(ctx context.Context, h host.Host, s store.Store, o Options, co
 	}, nil
 }
 
+// ownedStore is a store that the connector that is made on it owns.
+type ownedStore interface {
+	store.Store
+	io.Closer
+}
+
+// ownedConnector is [newConnector] on a store that the connector owns: the close of the connector
+// closes s after the instance, and s is closed at once if the connector cannot be made.
+func ownedConnector(ctx context.Context, h host.Host, s ownedStore, o Options, co core.Options, d driver.Driver, maxOpen int) (*connector, error) {
+	c, err := newConnector(ctx, h, s, o, co, d, maxOpen)
+	if err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	c.store = s
+	return c, nil
+}
+
 // Connect gives a connection, which runs its statements on the one instance, through a connection
 // of the engine of its own. It never fails, opens nothing, and does not wait for the instance to
 // serve, which a ping does.
