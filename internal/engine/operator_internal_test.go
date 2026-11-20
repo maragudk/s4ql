@@ -46,6 +46,9 @@ type fake struct {
 	// a delete.
 	scanned               int
 	getFails, deleteFails error
+	// addFails is the error of an add of a key to a set, and readKeysFails of the read of the keys of
+	// a set, before its first key.
+	addFails, readKeysFails error
 	// readers counts the readers that are open, and opened those that were ever opened. readerFails
 	// is the error of opening one, and closeFails of closing one.
 	readers, opened         int
@@ -274,6 +277,9 @@ type fakeKeys struct {
 
 func (k *fakeKeys) add(_ context.Context, key []*s4qlpb.Value) error {
 	k.f.calls = append(k.f.calls, fmt.Sprint("add ", key[0].GetInteger()))
+	if k.f.addFails != nil {
+		return k.f.addFails
+	}
 	if !slices.Contains(k.keys, key[0].GetInteger()) {
 		k.keys = append(k.keys, key[0].GetInteger())
 	}
@@ -282,6 +288,10 @@ func (k *fakeKeys) add(_ context.Context, key []*s4qlpb.Value) error {
 
 func (k *fakeKeys) all(context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
 	return func(yield func([]*s4qlpb.Value, error) bool) {
+		if k.f.readKeysFails != nil {
+			yield(nil, k.f.readKeysFails)
+			return
+		}
 		var last *int64
 		for {
 			var next *int64
@@ -950,6 +960,38 @@ func TestChangeRows(t *testing.T) {
 				is.Equal(t, want, calls, fmt.Sprint(src, ", scan all: ", scanAll))
 			}
 		}
+	})
+
+	t.Run("should give the error of the set of keys, of an add and of a read, and change nothing", func(t *testing.T) {
+		for _, scanAll := range []bool{false, true} {
+			f := newTable()
+			f.addFails = errors.New("the add fails")
+			err, n, calls := change(t, f, "delete from t where w >= 20", scanAll)
+			is.Equal(t, "the add fails", err)
+			is.Equal(t, int64(0), n)
+			is.Equal(t, "[table t keys t add 2]", calls, fmt.Sprint("scan all: ", scanAll))
+
+			f = newTable()
+			f.readKeysFails = errors.New("the read of the keys fails")
+			err, n, calls = change(t, f, "delete from t where w >= 20", scanAll)
+			is.Equal(t, "the read of the keys fails", err)
+			is.Equal(t, int64(0), n)
+			is.Equal(t, "[table t keys t add 2 add 3 add 4]", calls, fmt.Sprint("scan all: ", scanAll))
+		}
+	})
+
+	t.Run("should stop at the next key once the context ends, before it changes the row of the key", func(t *testing.T) {
+		f := newTable()
+		ctx, cancel := context.WithCancel(t.Context())
+		src := &scan{r: fakeTx{f}, table: f.tables["t"].ct}
+		n, err := changeRows(ctx, fakeTx{f}, "t", 1, src, bugs{}, func(key []*s4qlpb.Value) error {
+			f.calls = append(f.calls, fmt.Sprint("change ", key[0].GetInteger()))
+			cancel()
+			return nil
+		})
+		is.True(t, errors.Is(err, context.Canceled), fmt.Sprint(err))
+		is.Equal(t, int64(1), n)
+		is.Equal(t, "[keys t add 1 add 2 add 3 add 4 key 1 change 1 key 2]", fmt.Sprint(f.calls))
 	})
 
 	t.Run("should give an internal error for a key that the statement found and whose row is gone", func(t *testing.T) {
