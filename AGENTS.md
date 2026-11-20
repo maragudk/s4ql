@@ -20,6 +20,13 @@ Do not use human-team effort or duration ("years of work", comparisons with how 
 - **Why:** Markus said on 2026-11-10, after being told that writing our own SQL engine would be "years of work": "You are an AI. What you can do now wasn't possible a year ago, and progress is accelerating. I'm counting on 'years of work' not being true because of exponential AI progress. I want us to be ambitious for this project. My main concerns are trust in correctness, so that's what we're aiming for."
 - **How to apply:** argue from correctness, verifiability, and risk, not from how much code or calendar time a human team would need. Relay findings about other projects' effort as facts about those projects, not as estimates for this one. Scope cuts are still fine when they improve trust or remove something that does not need to exist. Do not give unmeasured time estimates.
 
+### Nothing is in use yet, so formats break freely
+
+Do not build an upgrade or a migration for the commit format, the manifest, or the cache while s4ql is used only in its own tests.
+
+- **Why:** on 2026-11-20 a builder had written an upgrade in place of an old cache to a new layout, and a review found a concurrency bug in it. Markus: "none of this is used outside our tests yet, so breaking changes to the commit object format are fine", and on the upgrade: "Yes, remove it."
+- **How to apply:** when a format or the cache's layout changes, change it, raise the version where one exists, and let the old one be refused with the error that is there for it. Tell builders so in their briefs. This ends when something outside the tests uses s4ql, or at version 1 of the formats, whichever comes first.
+
 ### Low ceremony on email address and secrets
 
 Do not spend effort scrubbing Markus's email address from documents, transcripts, or research notes committed here, and do not pause work over possible secret leaks.
