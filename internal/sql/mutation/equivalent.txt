@@ -271,6 +271,8 @@ stmt/recognize.go recognizer.column remove statement: r.unexpected() => #2
 	A constraint of another kind then stays untaken, and the next take, or the check at the end, stops at its first token, as unexpected does.
 stmt/recognize.go recognizer.insert remove statement: r.accept(c.Columns) =>
 	Every token of the column list is taken in the order of the text, or the statement stops at it with a reject of its own, so describe never looks inside the list.
+stmt/recognize.go recognizer.resultColumn remove statement: r.accept(ref) =>
+	A column reference without a table name has one token, its column, which the recognizer takes at once, or the statement stops at it with a reject of its own, so describe never looks inside the reference.
 
 # The port of SQLite's conversion of a real literal, stmt/real.go. The text that atof reads is that
 # of a real token of the tokenizer: digits, at most one point, and an exponent of e or E, a sign, and
