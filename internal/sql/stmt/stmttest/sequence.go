@@ -41,9 +41,9 @@ import (
 // A create index names an index from a few names in several spellings, or now and then a name of a
 // table, on a table of the sequence, and the columns of its shape, as [Sequence.createIndex] draws
 // them; a drop index names one of those names, or now and then a name of a table; and a create table
-// and a drop table name one of the names of an index now and then. One WHERE in three of a table on
-// which the sequence drew a create index, and one in three of an update or a delete, pins leading columns of the index, as
-// [Sequence.indexConditions] draws them.
+// and a drop table name one of the names of an index now and then. One WHERE of a select in two of a
+// table on which the sequence drew a create index, and one of an update or a delete in three, pins
+// leading columns of the index, as [Sequence.indexConditions] draws them.
 //
 // One value in three of an insert is a plain ? with the value as its argument, nil for NULL, and
 // some calls, as [Sequence.Next] says, have arguments around those that s4ql supports: none for a

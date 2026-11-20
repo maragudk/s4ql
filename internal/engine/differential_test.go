@@ -3260,6 +3260,7 @@ func fuzzChanges(f *testing.F, newInstance func(t testing.TB) *instance) {
 				is.Equal(t, "", p.o.run(t, s).err, s)
 			}
 		}
+		p.inTx = inTx
 		for _, c := range changesOf(table, typ, data[2:]) {
 			log = append(log, fmt.Sprintf("%v -- with %#v", c.Src, c.Args))
 			if failure := p.step(c); failure != "" {

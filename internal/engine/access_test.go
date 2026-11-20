@@ -399,6 +399,7 @@ func checkPlanOf(t *testing.T, i *instance, src string, args []any) {
 	ctx := t.Context()
 	rd, err := i.d.Reader(ctx)
 	is.NotError(t, err)
+	defer func() { is.NotError(t, rd.Close(ctx)) }()
 	r, err := rd.Read(ctx)
 	is.NotError(t, err)
 	var ct *s4qlpb.CreateTable
@@ -409,10 +410,10 @@ func checkPlanOf(t *testing.T, i *instance, src string, args []any) {
 			ct = table
 		}
 	}
+	is.True(t, ct != nil, "no table of "+src)
 	cis, err := r.Indexes(ctx, ct.GetTable())
 	is.NotError(t, err)
 	is.NotError(t, r.Close(ctx))
-	is.NotError(t, rd.Close(ctx))
 	a, ok := engine.AccessOf(src, ct, cis, values(args))
 	is.True(t, ok, src)
 	if a.None || a.Point != nil {
