@@ -966,6 +966,11 @@ footer ul {
         <div><h3>Slice 9: <code>if not exists</code> and <code>if exists</code></h3><p><code>create table if not exists</code> does nothing when the table exists, and <code>drop table if exists</code> does nothing when it does not. A statement that does nothing writes nothing to the log.</p></div>
         <span class="where caps">Agreed</span>
       </li>
+      <li class="agreed">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Slice 10: <code>default</code> with a literal</h3><p>A column may carry <code>default</code> with a literal or <code>null</code>, and an <code>insert</code> that leaves the column out stores it. The commit format changes: a column carries its default.</p></div>
+        <span class="where caps">Agreed</span>
+      </li>
       <li class="open">
         <span class="glyph" aria-hidden="true"></span>
         <div><h3>More SQL, slice by slice</h3><p>Each slice is agreed before it is built. Every table is strict and without rowid, foreign keys are always enforced, and a name is never empty.</p></div>

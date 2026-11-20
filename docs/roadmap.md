@@ -31,7 +31,7 @@ Rejected for now, to be decided later: upserts, and join variants such as comma 
 
 A milestone is a goal that several slices lead to. It helps to choose which slice comes next.
 
-- **The first application on s4ql: [glue](https://www.maragu.dev/glue).** `maragu.dev/glue` runs on s4ql in place of SQLite. Markus on 2026-11-19: "a nice second milestone: get maragu.dev/glue working on this storage instead of SQLite." The SQL that it needs and s4ql does not have yet is in [the research note on glue](research/glue-on-s4ql.md). Slices 5 to 9 lead to it. After slice 9 comes the rest of what glue needs, which is not agreed as slices yet.
+- **The first application on s4ql: [glue](https://www.maragu.dev/glue).** `maragu.dev/glue` runs on s4ql in place of SQLite. Markus on 2026-11-19: "a nice second milestone: get maragu.dev/glue working on this storage instead of SQLite." The SQL that it needs and s4ql does not have yet is in [the research note on glue](research/glue-on-s4ql.md). Slices 5 to 10 lead to it. After slice 10 comes the rest of what glue needs, which is not agreed as slices yet.
 
 ## Slices
 
@@ -359,3 +359,30 @@ Rejected as not supported, where SQLite would accept it:
 - `create temp table`.
 - `create table ... as select`.
 - Everything else that slices 1 to 8 reject in a declaration.
+
+### Slice 10: `default` with a literal
+
+Status: agreed on 2026-11-20, not built.
+
+```sql
+create table t1 (v1 int primary key, v2 int not null default 0, v3 text default 'a') strict, without rowid;
+
+insert into t1 (v1) values (1);
+```
+
+Included:
+
+- A column declaration may carry `default <literal>`, where the literal is one of the literals that `insert` takes, or `null`.
+- An `insert` with a column list that leaves the column out stores the default. Until now such a column gets `null` if it takes null, and the statement is refused if it is `not null`.
+- The commit format changes: a column carries its default. The cache's layout version rises to 3, and an older cache is refused, with no upgrade, because nothing uses s4ql yet.
+- A default whose type is not the column's type, a default on the primary key column, `not null default null`, signed numbers, and `true` and `false` are decided when the slice is built, by SQLite's behaviour and the rule of exact types, and recorded in [the todo](todo.md).
+- Everything of slices 1 to 9 with a default: transactions, prepared statements, and a restart with an empty cache.
+- The reason: the schema of goqite, the queue that glue uses, declares two columns with `default 0`.
+
+Further details are decided when the slice is built, and recorded here.
+
+Rejected as not supported, where SQLite would accept it:
+
+- A default that is an expression, such as `default (1 + 1)`.
+- `current_time`, `current_date`, and `current_timestamp`.
+- `insert ... default values`.
