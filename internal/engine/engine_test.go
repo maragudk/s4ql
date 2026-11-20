@@ -2427,9 +2427,9 @@ func newChangeTrio(t *testing.T, limit int, setup ...string) *changeTrio {
 	return w
 }
 
-// run src, a statement that is no query, with args on each, and require SQLite's answer, SQLite's
-// count of changes, and SQLite's state of each instance of the engine afterwards. It gives SQLite's
-// answer.
+// run src, a statement that is no query, with args on each, and require SQLite's answer, with the
+// offset of its error, SQLite's count of changes, and SQLite's state of each instance of the engine
+// afterwards. It gives SQLite's answer.
 func (w *changeTrio) run(src string, args ...any) answer {
 	w.t.Helper()
 	want := w.o.run(w.t, src, oracleArgs(args)...)
@@ -2438,7 +2438,9 @@ func (w *changeTrio) run(src string, args ...any) answer {
 	state := w.o.state(w.t)
 	what := fmt.Sprintf("%v with %#v", src, args)
 	for _, i := range []*instance{w.byKey, w.all} {
-		is.Equal(w.t, want.String(), i.execValues(src, values(args)).String(), "SQLite and the engine: "+what)
+		got := i.execValues(src, values(args))
+		is.Equal(w.t, want.String(), got.String(), "SQLite and the engine: "+what)
+		is.Equal(w.t, want.offset, got.offset, "the offset of SQLite's error and of the engine's: "+what)
 		is.Equal(w.t, changes, i.changes, "the count of changes after "+what)
 		is.Equal(w.t, state, i.state(), "the state after "+what)
 	}
