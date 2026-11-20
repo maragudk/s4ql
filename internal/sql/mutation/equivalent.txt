@@ -595,6 +595,62 @@ internal/core/tx.go Tx.committed constant: j >= 0 => j >= 1
 internal/core/tx.go Tx.dropTemps remove statement: tx.c.forget() =>
 	The statements that the connection keeps are reset after each use, so none of them holds up the drop of a temporary table.
 
+# The storage core, internal/core: the several columns and the NULL of slices 5 and 6.
+internal/core/cache.go conn.setUp condition: syncOff => !syncOff
+	How hard SQLite syncs the cache shows only after a power loss, which no test makes: synchronous off and normal give the same cache otherwise.
+internal/core/cache.go conn.setUp remove statement: synchronous = "pragma synchronous = off" =>
+	How hard SQLite syncs the cache shows only after a power loss, which no test makes: synchronous off and normal give the same cache otherwise.
+internal/core/cache.go conn.setUp condition: err != nil => false #2
+	pragma synchronous only sets a flag of the connection and reads and writes no file, so it fails only for want of memory, which no test makes.
+internal/core/cache.go conn.setUp remove statement: return err => #2
+	pragma synchronous only sets a flag of the connection and reads and writes no file, so it fails only for want of memory, which no test makes.
+internal/core/cache.go conn.setUp condition: err != nil => false #3
+	The pragma of wal before it has read the schema, which the connection keeps, so the query of sqlite_schema reads no page and fails only for want of memory; a failed read of the file in it then would make the open go on to make, whose own query of the same table fails or finds it.
+internal/core/cache.go conn.setUp remove statement: return err => #3
+	The pragma of wal before it has read the schema, which the connection keeps, so the query of sqlite_schema reads no page and fails only for want of memory; a failed read of the file in it then would make the open go on to make, whose own query of the same table fails or finds it.
+internal/core/cache.go conn.setUp remove statement: c.forget() =>
+	The statements that the connection keeps are reset after each use, so none of them holds up the commit, SQLite prepares a kept statement again after the change of the schema, and make looks up no table.
+internal/core/cache.go conn.setUp condition: err != nil => false #4
+	In the journal mode wal, begin immediate touches no file that a fault fails, and fails only with busy, when another connection holds the write lock; the first write of make then waits for the same lock and fails with busy too.
+internal/core/cache.go conn.setUp remove statement: return err => #4
+	In the journal mode wal, begin immediate touches no file that a fault fails, and fails only with busy, when another connection holds the write lock; the first write of make then waits for the same lock and fails with busy too.
+internal/core/cache.go conn.setUp remove statement: _ = c.c.Exec("rollback") =>
+	Open closes the write connection after setUp fails, and the close rolls back the transaction that is open.
+internal/core/cache.go conn.setUp remove statement: _ = c.c.Exec("rollback") => #2
+	Open closes the write connection after setUp fails, and the close rolls back the transaction that is open.
+internal/core/cache.go conn.setUp remove statement: c.forget() => #2
+	Open closes the write connection after setUp fails, and the close finalizes the statements that it keeps.
+internal/core/cache.go newTable remove statement: t.inKey[position] = true =>
+	The table of newTable serves only to declare the table in the cache and to give it back: its key columns are then declared not null, which a primary key of a table without rowid is anyway, and the core reads the key from the schema when it looks the table up.
+internal/core/cache.go newTable boolean: true => false
+	The table of newTable serves only to declare the table in the cache and to give it back: its key columns are then declared not null, which a primary key of a table without rowid is anyway, and the core reads the key from the schema when it looks the table up.
+internal/core/cache.go table.createSQL remove statement: b.WriteString(" ") =>
+	The name of the column is in double quotes, and SQLite's tokenizer ends it at its closing quote, so the type after it needs no space.
+internal/core/cache.go table.createSQL condition: err != nil => false
+	No test can reach it: typeSQL fails only for a type that the table, which the core checked when it was created or loaded, cannot have.
+internal/core/cache.go table.createSQL remove statement: return "", err =>
+	No test can reach it: typeSQL fails only for a type that the table, which the core checked when it was created or loaded, cannot have.
+internal/core/tx.go Tx.spoolCommit condition: err != nil => false #8
+	The commit writer keeps its first error and gives it again at Close, which fails the commit with the same error.
+internal/core/tx.go Tx.committed condition: !bugs.blobCut && !bugs.nullZero => false
+	Without the planted bugs, the loop copies each value as it is, so the row is the same; the return only saves the copy.
+internal/core/tx.go Tx.committed condition: !bugs.blobCut => false
+	Without the planted bug nullZero, the loop copies each value as it is, or cuts a blob for the planted bug blobCut, so the row is the same; the return only saves the copy.
+internal/core/tx.go Tx.committed condition: !bugs.nullZero => false
+	Without the planted bug blobCut, the loop copies each value as it is, or gives a NULL the zero value for the planted bug nullZero, so the row is the same; the return only saves the copy.
+internal/core/tx.go Tx.committed remove statement: return row =>
+	Without the planted bugs, the loop copies each value as it is, so the row is the same; the return only saves the copy.
+internal/core/tx.go Tx.committed condition: bugs.nullZero => true
+	The loop runs only with a planted bug: with blobCut alone it then also gives a NULL the zero value, and the simulation finds blobCut either way.
+internal/core/tx.go zeroValue element: Real: new(0.0) =>
+	The planted bug nullZero: it then writes a value of no kind for a NULL in a REAL column, which the writer refuses, and the bug is found by its other columns either way.
+internal/core/tx.go zeroValue element: Text: new("") =>
+	The planted bug nullZero: it then writes a value of no kind for a NULL in a TEXT column, which the writer refuses, and the bug is found by its other columns either way.
+internal/core/tx.go zeroValue element: Blob: []byte{} =>
+	The planted bug nullZero: it then writes a value of no kind for a NULL in a BLOB column, which the writer refuses, and the bug is found by its other columns either way.
+internal/core/tx.go zeroValue constant: int64(0) => int64(1)
+	The planted bug nullZero: it then writes 1 for a NULL in an INT or INTEGER column, which is as wrong as 0, and the bug is found either way.
+
 # The storage formats, internal/format: the checks of the values of slice 4.
 internal/format/check.go checkStored condition: v.WhichKind() == s4qlpb.Value_Real_case => true
 	GetReal gives 0.0 for a value that is not a real, and its sign is not set, so the check of -0.0 holds only for a real either way.
