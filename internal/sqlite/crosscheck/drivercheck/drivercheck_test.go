@@ -641,7 +641,7 @@ func (y tally) add(scope, src string, got outcome, runs [][]any) {
 // statementKind of src: the kind of the statement of slices 1 and 2 that it is, in lower case and
 // with a parameter if it has one, or "other".
 func statementKind(src string) string {
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	if s == nil {
 		return "other"
 	}
@@ -681,7 +681,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 		}
 		return "ok"
 	}
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	switch s.(type) {
 	case *stmt.Update, *stmt.Delete:
 		p.reachChange(s, runs, got, o, kind, count)
@@ -1138,7 +1138,7 @@ func (p *pair) where(c call, src string) (runner, runner, string) {
 		// The statements of a sql.Conn run in its transaction.
 		return p.s, p.o, t.kind()
 	}
-	if s, _ := checkText(src); s != nil {
+	if s, _ := stmt.Check(src); s != nil {
 		if _, ok := s.(*stmt.Select); ok {
 			return p.s, p.o, "beside a " + t.kind()
 		}
@@ -1488,7 +1488,7 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 	// gives before it binds the arguments, so that it runs there without them, or the outcome of a
 	// statement that s4ql ran, which must have had an argument that s4ql supports for each
 	// parameter in each run, and which runs there with them.
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	byText := err != nil || s == nil
 	mattnRuns := runs
 	if byText {
@@ -1639,7 +1639,7 @@ func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) 
 func (p *pair) checkNotSupported(src string, c call, supported bool, runs [][]any, got outcome) string {
 	tb := p.tb
 	tb.Helper()
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err == nil && s != nil {
 		return p.checkRefused(src, s, runs, got)
 	}
@@ -1773,24 +1773,10 @@ func converted(a any) any {
 	return a
 }
 
-// checkText src as the driver checks a text at Prepare: as [stmt.Check] does, and with the "not
-// supported" of [engine.Check] for a statement with IF NOT EXISTS or IF EXISTS of slice 10 that the
-// pass supports and the engine does not run yet, which the tests take for a text that is not
-// supported.
-func checkText(src string) (stmt.Statement, error) {
-	s, err := stmt.Check(src)
-	if err == nil && s != nil {
-		if err := engine.Check(src, s.Parameters()); errors.Is(err, stmt.ErrNotSupported) {
-			return nil, err
-		}
-	}
-	return s, err
-}
-
 // reaches reports whether s4ql takes src with args to the instance: the text holds a statement that
 // s4ql supports, with one argument for each parameter, each one that s4ql supports.
 func reaches(src string, args []any) bool {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	return err == nil && s != nil && len(args) == s.Parameters() && argumentRefusal(args) == ""
 }
 
@@ -1966,7 +1952,7 @@ func (p *pair) compareChanged(src string, s, o runner) string {
 	tb := p.tb
 	tb.Helper()
 	var table stmt.Name
-	switch st, _ := checkText(src); st := st.(type) {
+	switch st, _ := stmt.Check(src); st := st.(type) {
 	case *stmt.Update:
 		table = st.Table
 	case *stmt.Delete:
@@ -2164,7 +2150,7 @@ var sequences = map[string][]step{
 		{callExec, "insert into t2 (v2) values ('1')", "exec: exec failed with s4ql: not supported: a string literal for the column t2.v2 of type INTEGER"},
 		{callExec, "insert into t2 (v2) values (1e999)", "exec: exec failed with s4ql: not supported: infinite real number (at offset 28)"},
 		{callExec, `insert into t1 (v1) values ("x")`, ""},
-		{callPrepareExec, "drop table if exists t1", "prepare, exec: prepare failed with s4ql: not supported: IF EXISTS (at offset 11)"},
+		{callPrepareExec, "drop view if exists t1", "prepare, exec: prepare failed with s4ql: not supported: DROP VIEW (at offset 5)"},
 		{callExec, "", "exec: exec failed with s4ql: not supported: a text that holds no statement"},
 		{callPrepareQuery, " ; -- nothing", "prepare, query: prepare failed with s4ql: not supported: a text that holds no statement"},
 		{callExecArgument, "insert into t1 (v1) values (1)", "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
@@ -2488,10 +2474,14 @@ var sequences = map[string][]step{
 		{callExec, "drop table i1", "exec: exec failed with 1/1: no such table: i1"},
 		{callExecArgument, "create index i2 on t4 (v2)", "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
 		{callExecArgument, "drop index i1", "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
+		// The clauses of slice 10, which do nothing here and leave the count of changes as it was.
+		{callExec, "create index if not exists i1 on t4 (v2)", "exec: 1 affected, last insert id 0"},
+		{callExec, "create index if not exists I1 on t4 (x)", "exec: 1 affected, last insert id 0"},
+		{callExec, "drop index if exists i9", "exec: 1 affected, last insert id 0"},
+		{callExec, "drop index if exists t4", "exec: 1 affected, last insert id 0"},
+		{callExec, "create index if not exists i1 on t9 (v2)", "exec: exec failed with 1/1: no such table: main.t9"},
 		// What slice 9 does not support.
 		{callExec, "create unique index i2 on t4 (v2)", "exec: exec failed with s4ql: not supported: UNIQUE INDEX (at offset 7)"},
-		{callExec, "create index if not exists i1 on t4 (v2)", "exec: exec failed with s4ql: not supported: IF NOT EXISTS (at offset 13)"},
-		{callExec, "drop index if exists i9", "exec: exec failed with s4ql: not supported: IF EXISTS (at offset 11)"},
 		{callExec, "create index i2 on t4 (v2) where v2 is not null", "exec: exec failed with s4ql: not supported: partial index (at offset 27)"},
 		{callExec, "create index i2 on t4 (v2, V2)", "exec: exec failed with s4ql: not supported: column named twice (at offset 27)"},
 		{callExec, "create index i2 on t4 ()", `exec: exec failed with 1/1: near ")": syntax error`},

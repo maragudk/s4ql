@@ -315,6 +315,11 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 			return Result{}, err
 		}
 		r.reads(t.read, s)
+		if r.doesNothing(s) {
+			// SQLite only reads the schema for a statement that does nothing, which a read-only
+			// transaction allows.
+			return Result{}, nil
+		}
 		return Result{SetsChanges: setsChanges(p)}, readOnlyDatabase()
 	}
 
@@ -336,11 +341,19 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 			_ = w.rollbackTo(ctx)
 		}
 	}()
-	s, err := buildSink(ctx, w, p, args, bugs{skipUnique: c.e.bugs.skipUnique, convertReal: c.e.bugs.convertReal, changeNothing: c.e.bugs.changeNothing, keepOldKey: c.e.bugs.keepOldKey}, c.e.db.lengthLimit(), c.e.reading(false))
+	planted := bugs{skipUnique: c.e.bugs.skipUnique, convertReal: c.e.bugs.convertReal, changeNothing: c.e.bugs.changeNothing, keepOldKey: c.e.bugs.keepOldKey}
+	planted.replaceExisting = c.e.bugs.replaceExisting
+	s, err := buildSink(ctx, w, p, args, planted, c.e.db.lengthLimit(), c.e.reading(false))
 	if err != nil {
 		return Result{}, err
 	}
 	r.reads(w, s)
+	if r.doesNothing(s) {
+		// The statement does nothing, and is not annotated, so that the commit object of the
+		// transaction, if it has one, does not hold it. Its savepoint holds nothing to keep.
+		kept = true
+		return Result{}, w.release(ctx)
+	}
 	failed := Result{SetsChanges: setsChanges(p)}
 	if err := s.check(ctx); err != nil {
 		return checked(failed, err), err

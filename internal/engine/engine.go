@@ -377,8 +377,8 @@ func Check(src string, n int) error {
 	return countArguments(s.Parameters(), n)
 }
 
-// check the text src: its statement, or its error, as [stmt.Check] gives it, or [ErrNoStatement],
-// or the "not supported" of [existsRefusal] for a statement of slice 10.
+// check the text src, as [Conn.Exec], [Conn.Query], and [Check] check it: its statement, or its
+// error, as [stmt.Check] gives it, or [ErrNoStatement].
 func check(src string) (stmt.Statement, error) {
 	s, err := stmt.Check(src)
 	if err != nil {
@@ -386,9 +386,6 @@ func check(src string) (stmt.Statement, error) {
 	}
 	if s == nil {
 		return nil, ErrNoStatement
-	}
-	if err := existsRefusal(src, s); err != nil {
-		return nil, err
 	}
 	return s, nil
 }
@@ -458,6 +455,11 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 		return Result{}, err
 	}
 	r.reads(tx, s)
+	if r.doesNothing(s) {
+		// The statement does nothing, so the transaction is rolled back above, and nothing of it is in
+		// the log.
+		return Result{}, nil
+	}
 	// From here on, a failed insert, update, or delete sets the count of changes to 0, but for "not
 	// supported".
 	failed := Result{SetsChanges: setsChanges(p)}
