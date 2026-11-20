@@ -37,7 +37,8 @@ const (
 	outcomeIncomplete = "incomplete"
 )
 
-// end r with the given outcome and error, which it returns, and log its event, store_request. A
+// end r with the given outcome and error, which it returns, log its event, store_request, and leave
+// the client. It is called once for each request. A
 // request that succeeded, or was refused as part of normal work, is logged at Debug. A checksum
 // that does not match, content that is too large, a call that was not sent, an unknown outcome, an unexpected answer, and a
 // failed read are logged at Warn. The attempts are the number of times that the HTTP transport
@@ -62,5 +63,6 @@ func (r *request) end(outcome string, err error) error {
 		attrs = append(attrs, slog.String("error", err.Error()))
 	}
 	r.c.log.LogAttrs(r.ctx, level, "store_request", attrs...)
+	r.c.leave()
 	return err
 }

@@ -43,6 +43,9 @@ type connector struct {
 	log    *slog.Logger
 	// closeTimeout bounds Close.
 	closeTimeout time.Duration
+	// store that the connector made, and so closes after the instance, or nil for a store of
+	// someone else.
+	store io.Closer
 	// stopSeen logs the first answer of a stop.
 	stopSeen sync.Once
 	// queries counts the queries whose rows were read, for the names of their tasks.
@@ -107,6 +110,24 @@ func newConnector(ctx context.Context, h host.Host, s store.Store, o Options, co
 	}, nil
 }
 
+// ownedStore is a store that the connector that is made on it owns.
+type ownedStore interface {
+	store.Store
+	io.Closer
+}
+
+// ownedConnector is [newConnector] on a store that the connector owns: the close of the connector
+// closes s after the instance, and s is closed at once if the connector cannot be made.
+func ownedConnector(ctx context.Context, h host.Host, s ownedStore, o Options, co core.Options, d driver.Driver, maxOpen int) (*connector, error) {
+	c, err := newConnector(ctx, h, s, o, co, d, maxOpen)
+	if err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	c.store = s
+	return c, nil
+}
+
 // Connect gives a connection, which runs its statements on the one instance, through a connection
 // of the engine of its own. It never fails, opens nothing, and does not wait for the instance to
 // serve, which a ping does.
@@ -135,6 +156,9 @@ func (c *connector) Driver() driver.Driver {
 // The close of the instance closes the reader of every connection, also of one that database/sql
 // has not closed yet, such as one that an application holds. The close of such a connection then
 // finds its reader closed.
+//
+// Last, it closes the store that it made, which closes the connections to the store once the last
+// request of the instance has ended, also after a close that failed.
 func (c *connector) Close() error {
 	c.mu.Lock()
 	c.closed = true
@@ -153,7 +177,13 @@ func (c *connector) Close() error {
 
 	ctx, cancel := c.host.WithTimeout(context.Background(), c.closeTimeout)
 	defer cancel()
-	if err := c.db.Close(ctx); err != nil {
+	err := c.db.Close(ctx)
+	if c.store != nil {
+		// The close of the store does not wait for a request that the instance left in flight, and
+		// never fails.
+		_ = c.store.Close()
+	}
+	if err != nil {
 		c.log.WarnContext(ctx, "close", "error", err)
 		return publicError(err)
 	}

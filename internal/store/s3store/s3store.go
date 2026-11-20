@@ -26,6 +26,9 @@
 //
 // A read asks the store for the checksum that it holds, and the SDK compares it with the content
 // as the content is read, so that content that does not match it fails at its end.
+//
+// The client owns the HTTP transport that [New] makes for it, and [Client.Close] closes every
+// connection of that transport once the last request of the client has ended.
 package s3store
 
 import (
@@ -42,6 +45,7 @@ import (
 	"net/http/httptrace"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -105,9 +109,23 @@ type Client struct {
 	s3     *s3.Client
 	bucket string
 	log    *slog.Logger
+
+	// transport that the client made, and so owns, whose connections it closes. It is nil for a
+	// client on an HTTP client of someone else, whose connections the client leaves alone.
+	transport *http.Transport
+
+	mu sync.Mutex
+	// closed is set by Close.
+	closed bool
+	// active is the number of requests that have started and not ended. A read ends when its
+	// content is closed.
+	active int
 }
 
-var _ store.Store = (*Client)(nil)
+var (
+	_ store.Store = (*Client)(nil)
+	_ io.Closer   = (*Client)(nil)
+)
 
 // New client with the given options. It sends no request to the store. It needs the permissions
 // s3:GetObject, s3:PutObject, and s3:ListBucket on the bucket: without s3:ListBucket, S3 answers a
@@ -130,9 +148,10 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 	// error of a write but those that mean "not applied" means that its outcome is unknown anyway.
 	// It speaks HTTP/1.1 only, so that the retries of net/http that can happen are those of
 	// HTTP/1.1, and goes through no proxy, which could send a request again.
+	c := &Client{bucket: opts.Bucket}
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
-	transport := &http.Transport{
+	c.transport = &http.Transport{
 		Protocols:             protocols,
 		TLSClientConfig:       &tls.Config{RootCAs: opts.RootCAs, MinVersion: tls.VersionTLS12},
 		MaxIdleConnsPerHost:   16,
@@ -140,7 +159,7 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 		ExpectContinueTimeout: time.Second,
 	}
 	httpClient := &http.Client{
-		Transport: transport,
+		Transport: c.transport,
 		// A redirect is answered as it is, as an error, and not followed with a second request.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
@@ -164,7 +183,7 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 		return nil, errors.New("s3store: no region, in the options or from the SDK's default chain")
 	}
 
-	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+	c.s3 = s3.NewFromConfig(cfg, func(o *s3.Options) {
 		if opts.Endpoint != "" {
 			o.BaseEndpoint = aws.String(opts.Endpoint)
 		}
@@ -180,11 +199,55 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 		o.DisableLogOutputChecksumValidationSkipped = true
 	})
 
-	log := opts.Logger
-	if log == nil {
-		log = slog.New(slog.DiscardHandler)
+	c.log = opts.Logger
+	if c.log == nil {
+		c.log = slog.New(slog.DiscardHandler)
 	}
-	return &Client{s3: client, bucket: opts.Bucket, log: log}, nil
+	return c, nil
+}
+
+// Close the client. It does not wait for the requests that are in flight, which end as they would
+// have, and it refuses no request: a call after it, such as one of a close of the instance that
+// timed out, still goes to the store. Close closes the idle connections of the transport that the
+// client made at once, and again whenever no request is in flight after it: at once, or when the
+// last request in flight ends. A read is in flight until its content is closed. It never fails.
+//
+// The client closes only connections that are idle, through [http.Transport.CloseIdleConnections],
+// which takes them out of the transport's pool under the transport's own lock, so that a request
+// that starts at the same time never gets a connection that is being closed. A connection in use
+// is closed by the transport when its request ends without a complete answer, or is idle when the
+// last request ends and closed then: net/http puts it back in the pool before a read of the answer
+// returns its end, and the content of a read ends its request after the body is closed. A
+// connection that becomes idle later, such as one whose dial ends after the request that it was
+// for, is closed by the transport itself, which closes each connection that becomes idle after
+// CloseIdleConnections until a request asks for one.
+func (c *Client) Close() error {
+	c.mu.Lock()
+	c.closed = true
+	c.mu.Unlock()
+	if c.transport != nil {
+		c.transport.CloseIdleConnections()
+	}
+	return nil
+}
+
+// enter the client for a request, which leaves it with leave, once.
+func (c *Client) enter() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.active++
+}
+
+// leave the client at the end of a request, and close the idle connections if it was the last
+// request in flight of a closed client.
+func (c *Client) leave() {
+	c.mu.Lock()
+	c.active--
+	last := c.closed && c.active == 0
+	c.mu.Unlock()
+	if last && c.transport != nil {
+		c.transport.CloseIdleConnections()
+	}
 }
 
 // Get as [store.Store] describes. Content whose checksum the store holds is compared with it as it
@@ -429,8 +492,9 @@ type request struct {
 	requestID string
 }
 
-// start a request from a call with the context ctx.
+// start a request from a call with the context ctx. It enters the client.
 func (c *Client) start(ctx context.Context, op, key string) *request {
+	c.enter()
 	return &request{c: c, ctx: ctx, op: op, key: key, start: time.Now()}
 }
 
