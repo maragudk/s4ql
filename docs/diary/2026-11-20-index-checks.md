@@ -105,3 +105,54 @@ Nothing yet.
 ### Future work
 
 - The simulation's integrity checks, tallies, and recounted minimums, the core's bounded scans and its two planted bugs, the fuzz targets, and the driver check's pins: sub-agents, merged in the next step.
+
+## Step 3: The work of the sub-agents, the reviews, the merges, and the checks
+
+**Author:** index-checks builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "5. Planted bugs. [...] (b) the key of an index without its primary key columns (in the one `core.IndexKey` once it is there); (c) in core, a bound turned around on a descending column [...] 7. `pragma integrity_check` on the cache after replay and after crashes in the engine's simulation [...] 8. Fuzz. `FuzzIndexes` and `FuzzIndexes_core` [...] Finish: `make test`, `make lint`, `make check-browser`, `make fuzz-shards` pass; `make test-asan` for the packages whose fuzz tests you changed. Self-review against these requirements."
+**Interpretation:** Merge the branches of the four sub-agents, take in the reviews, merge `index-engine` and `main`, and run the checks.
+**Inferred intent:** A branch that a reviewer can read as one piece of work.
+
+### What I did
+
+- Merged, from sub-agents in worktrees of their own: the golden plans; the core's simulation, which scans by an index or the primary key with pins and bounds against the model's own filter (`mtable.keyOf`, `mtable.scanned`), with the planted bugs `turnDescBound` (in `scanConditions`, which takes the key) and `shortKey`; the driver check's pins at 48 statements; the fuzz targets `FuzzIndexes` and `FuzzIndexes_core`, with `pair.allPaths` and `TestFuzzIndexes_seeds`; and the engine's simulation, with `run.checkCache` (`pragma integrity_check` on a copy of a cache after each crash, of each live node at the end, and of the replay of `run.verify`), the tallies of slice 9, `run.dropUnder` (an index dropped on another connection while rows that read by it are open), `pinByPlace` with its own violation, every odd seed's sequence `Indexed`, and the least numbers recounted from 1,000 seeds.
+- Merged `origin/index-engine` twice (the second time with `core.IndexKey` and the direction in the event; conflicts in `access.go`, the field of `reading`, and `simulation_test.go`, the entry of `openBound`) and `origin/main` (#105, #104).
+- Moved `shortKey` into `core.indexKey`, the one definition of the key, which `core.IndexKey` calls without the bugs and `table.scanKey` with them.
+- From the reviews: `FuzzChanges` sets `pair.inTx`; `checkPlanOf` requires its table and closes its reader in a defer; `Sequence.IndexNames` gives the values of the names without quotes, since a path compares values, so that the forced index paths of the simulation read by their index; `TestDifferential_plantedBugs` runs each finding sequence again without the bug; a guard of `pinByPlace` that always held is gone; the docs of the shares of `Sequence`.
+
+### Why
+
+- `shortKey` in `indexKey` and not in `IndexKey`: the core's planted bugs are a field of its connection, and `IndexKey` is a pure function of the engine's too, which must stay right so that the engine asks for a scan of the right key and the core's wrong key shows.
+- The core's bugs are found by the core's simulation, since only the core's tests can plant them.
+
+### What worked
+
+- `make test`, `make lint`, `make check-browser`, and `make fuzz-shards` for the groups c (4 and 6 shards, 37 fuzz tests) and go pass.
+- The counted shares: `pinByPlace` by 7 of the first 60 sequences of `TestDifferential_plantedBugs`, and by 19 of 200 seeds of the engine's simulation, all by its own violation, "the storage core refused a call that the engine had checked"; `turnDescBound` by 33 and `shortKey` by 29 of 200 seeds of the core's simulation; none by a seed without its bug.
+- `go test -race -count=50` of the new tests of `stmttest`, and `-count=10` of `TestDifferential_plantedBugs` and `TestEngine_rowsRead`.
+
+### What didn't work
+
+- The review of the fuzz targets found that `Sequence.IndexNames` gave spellings in double quotes, so about 40% of the engines of the simulation that should read by an index did not; the simulation's sub-agent recounted after the fix.
+- `TestSimulation_plantedBugs/pinByPlace` failed at seed 26 of the default workload with `seed 26 finds the bug by another violation: [statement 11, "...UPDATE ... GROUPS SET ..." : s4ql: internal error: the storage core refused a call that the engine had checked: invalid: a value of kind ...`: the bug pins a column to a value of another column's type. That is now the bug's own violation.
+- A forked review over the whole branch reported findings in the code of others, which the sub-agents relayed; each is taken in above or noted below.
+
+### What I learned
+
+- An engine that a node opens for the fourth time is rare in the simulation, so a choice by the number of the engine left the forced index paths unrun; the simulation draws it from the engine's seed.
+
+### What was tricky
+
+- Three sub-agents changed `differential_test.go`, `simulation_test.go`, and the README of the engine at once; the merges needed only the README by hand.
+
+### What warrants review
+
+- `core.ReadTx.ScanPlan` is exported in the code of the core for tests, and caches the prepared `explain query plan` of each distinct scan on the connection as every statement of the cache is; a review called it a nit, and it stays.
+- `reachIndex` counts a "not supported" of a create index without checking why; `pair.step` already fails a statement of the generator that the engine does not support.
+
+### Future work
+
+- The mutation testing of the code of slice 9 in the engine and the core, in the todo.
