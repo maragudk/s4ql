@@ -205,3 +205,47 @@ As in step 3.
 ### Future work
 
 As in step 3.
+
+## Step 5: The merge of `main`, with slices 5 and 6
+
+**Author:** merge builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the brief) "In your worktree: `git fetch origin`, `git checkout -B types-mutation-merged origin/types-mutation`, then merge `origin/main` into it with a merge commit. [...] No diary step is needed beyond one short step appended to `docs/diary/2026-11-20-types-mutation.md` with the diary skill, saying what the merge had to change."
+**Interpretation:** Merge slice 5 (several columns) and the pass of slice 6 (`null`) into this branch, resolve the conflicts so that both sides' tests and notes stay true, and keep the fuzz targets and the lower bound of the length limit working.
+**Inferred intent:** A branch that the lead can merge into `main` without losing the mutation testing of slice 4.
+
+### What I did
+
+Three files conflicted. In `/docs/todo.md`, the status of the SQL front end is `main`'s, with the branch's sentence on the mutation testing and `FuzzTypes` in place of "mutation testing and fuzzing of the types are not built yet"; the entry "Not built: mutation testing and fuzz targets of the types of slice 4" is gone, as the branch had it, and `main`'s entries for slices 5 and 6 are kept. In `/internal/engine/operator_internal_test.go`, both new subtests of `TestInsert` are kept; the branch's exact messages of the internal errors of `insert.check` became `main`'s "an insert of 1 values from 0 expressions into 1 columns", and a fifth case, a row of two values into a table of one column, reaches the other half of `main`'s condition. In `/internal/sql/mutation/equivalent.txt`, a list of every key that the generator makes over `listedPkgs` showed four entries that match no mutant: `columnPosition` and the two `slices.Equal` of `buildSink` (gone in `main`, which had removed the entries too) and the panic of `NewPlan` for a value (now at the end of `term`, where removing it does not compile). They are removed. `checkArguments condition: err != nil => true #2` still names a mutant, but its reason, at most one parameter, is false since slice 5: run alone, `TestConn_differential` kills it. It is removed. The other entries whose code `main` touched (`insert.check` with `convertReal`, `Conn.write`, `Conn.writeIn`, `recognizer.literal`, `Tx.touch` that `Tx.Insert` now also calls) were read against the new code and hold.
+
+After the merge, `FuzzTypes` also inserts into a table of two columns for each type, `(v <type> not null, k int primary key)`, with `insert into t (k, v) values (1, ...)`, so that the value is not the key and the second insert meets the key at position 1. A throwaway count showed these inserts reach ok, `UNIQUE constraint failed: t_int_k.k`, every refusal of the type, and `string or blob too big`. The slice 5 entry of `/docs/todo.md` now says that `FuzzDifferential_core` has the lowered limit among its inputs.
+
+### Why
+
+The status and the open entries of `todo.md` must describe the merged code, and an entry of `equivalent.txt` with a false reason hides a gap in the tests.
+
+### What worked
+
+Comparing `equivalent.txt` with `go run ./internal/sql/mutation -list -pkgs <all listed packages>` finds every stale key at once, where `TestEquivalent` stops at the first one. `-run` on one key checks one mutant in about a minute.
+
+### What didn't work
+
+`TestEquivalent` reported only `no such mutant: internal/engine/operator.go buildSink swap arguments: ...`, the first of four. A first run of the mutant into the scratchpad's `mut` directory refused: "the results in .../scratchpad/mut are of other code or another SQLite or Go"; another run had used the name, so I used a new directory.
+
+### What I learned
+
+A key that still matches is not enough: the reason can go stale when a later slice changes what reaches the code, as one parameter per statement did.
+
+### What was tricky
+
+Nothing more.
+
+### What warrants review
+
+The rewritten cases of `TestInsert`, the five entries removed from `equivalent.txt`, and the tables of two columns in `FuzzTypes`. `make test`, `make lint`, and `make check-browser` pass; `FuzzTypes` ran 22,817 executions in 30 s and `FuzzTypes_core` 3,583 in 30 s on 2 workers, with nothing found.
+
+### Future work
+
+The mutation testing of slices 4 and 5 together, which the next builder runs, will tell whether the entries kept here still survive.
