@@ -23,11 +23,11 @@ func (r *ReadTx) ScanPlan(ctx context.Context, name string, scan IndexScan) (str
 	if err != nil {
 		return "", nil, err
 	}
-	ix, err := scanned(t, scan, r.c.limit)
+	ix, err := scanned(t, scan, r.c.limit, r.c.bugs)
 	if err != nil {
 		return "", nil, err
 	}
-	sql, _, err := t.scanSQL(ix, scan)
+	sql, _, err := t.scanSQL(ix, scan, r.c.bugs)
 	if err != nil {
 		return "", nil, err
 	}
@@ -64,7 +64,7 @@ func TestTable_checkIndexed(t *testing.T) {
 				return (&Tx{}).forgetIndexes(tb)
 			},
 			"scan statement": func() error {
-				_, _, err := tb.scanSQL(nil, IndexScan{})
+				_, _, err := tb.scanSQL(nil, IndexScan{}, bugs{})
 				return err
 			},
 			"scan": func() error {
@@ -98,7 +98,7 @@ func TestTable_checkIndexed(t *testing.T) {
 		cis, err := tb.createIndexes()
 		is.NotError(t, err)
 		is.Equal(t, 0, len(cis))
-		sql, _, err := tb.scanSQL(nil, IndexScan{})
+		sql, _, err := tb.scanSQL(nil, IndexScan{}, bugs{})
 		is.NotError(t, err)
 		is.Equal(t, `select * from main."t1" indexed by "sqlite_autoindex_t1_1" order by "k"`, sql)
 	})

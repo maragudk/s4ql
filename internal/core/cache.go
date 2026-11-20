@@ -32,6 +32,8 @@ type conn struct {
 	tables map[string]*table
 	// limit is SQLite's limit on the connection for the length of a text, a blob, and a row.
 	limit int
+	// bugs planted in the instance of the connection, from [Options].
+	bugs bugs
 	// schemaReads counts the statements with which [conn.load] and [conn.loadIndexes] have read
 	// tables and their indexes from the schema of the cache, so that a test can pin what a call
 	// reads of it.
@@ -51,7 +53,7 @@ func openConn(open func(path, vfs string) (*sqlite.Conn, error), path string, op
 	if err != nil {
 		return nil, err
 	}
-	cn := &conn{c: c, stmts: map[string]*sqlite.Stmt{}, tables: map[string]*table{}, limit: options.LengthLimit}
+	cn := &conn{c: c, stmts: map[string]*sqlite.Stmt{}, tables: map[string]*table{}, limit: options.LengthLimit, bugs: options.bugs}
 	if err := c.SetLengthLimit(cn.limit); err != nil {
 		_ = c.Close()
 		return nil, err
