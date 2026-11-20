@@ -297,10 +297,9 @@ A test checks that every name the pass gives in any test is in these tables.
 | `table constraint` | CREATE TABLE has a table constraint. |
 | `column without a type` | The column has no type. |
 | `column type other than INT, INTEGER, REAL, TEXT, or BLOB` | The column's type is not one of the bare words `int`, `integer`, `real`, `text`, and `blob`. |
-| `column without PRIMARY KEY or NOT NULL` | A column has neither PRIMARY KEY nor NOT NULL, and no column before it is the primary key. |
-| `column without NOT NULL` | A column after the primary key has no NOT NULL. A column that may hold NULL comes in slice 6. |
+| `NULL constraint` | A column says NULL, without NOT before it. SQLite reads it as no constraint. |
 | `second PRIMARY KEY` | A column says PRIMARY KEY after an earlier one did, or says it twice. SQLite gives `table "t" has more than one primary key`. |
-| `table without PRIMARY KEY` | Every column says NOT NULL, and none PRIMARY KEY. SQLite gives `PRIMARY KEY missing on table t` after it has parsed the statement. |
+| `table without PRIMARY KEY` | No column says PRIMARY KEY. SQLite gives `PRIMARY KEY missing on table t` after it has parsed the statement. |
 | `table option` | An option is not STRICT or WITHOUT ROWID, or comes again, or is a third. |
 | `table without STRICT and WITHOUT ROWID` | CREATE TABLE has no options. |
 | `table without STRICT` | CREATE TABLE has WITHOUT ROWID only. |
@@ -319,7 +318,7 @@ A test checks that every name the pass gives in any test is in these tables.
 | `string after a sign` | The value is a string after its `-`. |
 | `blob after a sign` | The value is a blob after its `-`. |
 | `TRUE or FALSE` | The value of INSERT, or a result column of SELECT, is the bare word TRUE or FALSE, which SQLite reads as 1 or 0. |
-| `NULL` | The value is NULL. |
+| `NULL after a sign` | The value is NULL after a `-` or a `+`, which SQLite reads as NULL. |
 | `current date or time` | The value is CURRENT_DATE, CURRENT_TIME, or CURRENT_TIMESTAMP. |
 | `numbered parameter` | The value is a parameter with a number, such as `?1`. |
 | `named parameter` | The value is a parameter with a name: `:name`, `@name`, `$name`, or `#name`. |

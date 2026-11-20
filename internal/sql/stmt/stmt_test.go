@@ -15,6 +15,7 @@ import (
 	"maragu.dev/s4ql/internal/sql/oracle"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
+	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 	"maragu.dev/s4ql/internal/sqlite"
 )
 
@@ -222,7 +223,7 @@ func quoteNames(names []stmt.Name) string {
 }
 
 // typeFor the value v: the type of a column that holds it as it is. A parameter, nil, is bound to an
-// integer.
+// integer, and a column of every type holds a NULL.
 func typeFor(v stmt.Value) stmt.Type {
 	switch v.(type) {
 	case stmt.Real:
@@ -248,6 +249,8 @@ func literal(v stmt.Value) string {
 		return "'" + strings.ReplaceAll(string(v), "'", "''") + "'"
 	case stmt.Blob:
 		return "x'" + hex.EncodeToString(v) + "'"
+	case stmt.Null:
+		return "NULL"
 	}
 	panic(fmt.Sprintf("%T", v))
 }
@@ -267,12 +270,14 @@ func show(v stmt.Value) string {
 			return "nil blob"
 		}
 		return fmt.Sprintf("blob %x", []byte(v))
+	case stmt.Null:
+		return "null"
 	}
 	return fmt.Sprintf("%T", v)
 }
 
-// value of the first column of the first row of sql, as the type that SQLite gives it, or nil for
-// NULL.
+// value of the first column of the first row of sql, as the type that SQLite gives it, NULL as
+// [stmt.Null].
 func (d *db) value(sql string) stmt.Value {
 	d.t.Helper()
 	return d.valueAt(sql, 0)
@@ -299,7 +304,10 @@ func (d *db) valueAt(sql string, i int) stmt.Value {
 		return stmt.Text(s.ColumnText(i))
 	case sqlite.TypeBlob:
 		return stmt.Blob(s.ColumnBlob(i))
+	case sqlite.TypeNull:
+		return stmt.Null{}
 	}
+	d.t.Fatalf("%q: a value of the type %v", sql, s.ColumnType(i))
 	return nil
 }
 
@@ -423,14 +431,18 @@ func checkCreateTable(t testing.TB, open func(testing.TB) *db, src string, s *st
 	}
 	_, list := d.query("select * from pragma_table_list where schema = 'main' and name <> 'sqlite_schema'")
 	is.Equal(t, fmt.Sprint([][]string{{"text:main", "text:" + s.Table.Value, "text:table", fmt.Sprint("integer:", len(s.Columns)), "integer:1", "integer:1"}}), fmt.Sprint(list), src)
-	// Every column is NOT NULL: the primary key of a WITHOUT ROWID table is, whether it says so or not.
+	// A column is NOT NULL if it says so, and the primary key of a WITHOUT ROWID table is whether it
+	// says so or not.
 	var columns [][]string
 	for i, c := range s.Columns {
-		pk := "integer:0"
+		pk, notNull := "integer:0", "integer:0"
 		if c.PrimaryKey {
 			pk = "integer:1"
 		}
-		columns = append(columns, []string{fmt.Sprint("integer:", i), "text:" + c.Name.Value, "text:" + c.Type.String(), "integer:1", "null:", pk, "integer:0"})
+		if c.PrimaryKey || c.NotNull {
+			notNull = "integer:1"
+		}
+		columns = append(columns, []string{fmt.Sprint("integer:", i), "text:" + c.Name.Value, "text:" + c.Type.String(), notNull, "null:", pk, "integer:0"})
 	}
 	_, got2 := d.query("select * from pragma_table_xinfo(?)", s.Table.Value)
 	is.Equal(t, fmt.Sprint(columns), fmt.Sprint(got2), src)
@@ -440,9 +452,11 @@ func checkCreateTable(t testing.TB, open func(testing.TB) *db, src string, s *st
 // checkInsert is [checkMeaning] of an INSERT: the value of each literal is the one that SQLite gives
 // its text; on a table of the columns that src names, created with the case of the names swapped and
 // in another order, src stores its values in the columns that it names, as the canonical text does; a
-// second run gives `UNIQUE constraint failed` with the names as the table stores them; and SQLite
-// gives `no such table`, `has no column named`, a wrong number of values, or `values for` with the
-// names and the numbers of s.
+// second run gives `UNIQUE constraint failed` with the names as the table stores them; with a NULL,
+// a table whose columns say NOT NULL gives `NOT NULL constraint failed`, as [checkNotNull] says; and
+// SQLite gives `no such table`, `has no column named`, a wrong number of values, or `values for` with
+// the names and the numbers of s. When every value is NULL, no column can be the primary key of a
+// table that holds them, and only the errors are checked.
 func checkInsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.Insert) {
 	t.Helper()
 	// The value of a literal is the value that SQLite gives the text of the literal, exactly.
@@ -479,10 +493,12 @@ func checkInsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.In
 	}
 
 	// The values, with a parameter bound to an integer, and the columns of the table, of the type of
-	// their value, with the primary key on the first value's.
+	// their value, with the primary key on the first value that is not NULL. A column of a NULL is of
+	// any type, and takes NULL; every other column says NOT NULL.
 	values, args := s.Values, parameterArgs(src, s)
 	stored := make([]stmt.Value, n)
 	columns := make([]stmt.Column, n)
+	key := -1
 	a := 0
 	for i, v := range values {
 		stored[i] = v.Value
@@ -490,7 +506,14 @@ func checkInsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.In
 			stored[i] = stmt.Integer(args[a])
 			a++
 		}
-		columns[i] = stmt.Column{Name: stmt.Name{Value: names[i]}, Type: typeFor(v.Value), PrimaryKey: i == 0, NotNull: i > 0}
+		_, null := stored[i].(stmt.Null)
+		columns[i] = stmt.Column{Name: stmt.Name{Value: names[i]}, Type: typeFor(v.Value), NotNull: !null}
+		if null {
+			columns[i].Type = stmttest.Types[(len(src)+i)%len(stmttest.Types)]
+		} else if key < 0 {
+			key = i
+			columns[i].PrimaryKey, columns[i].NotNull = true, false
+		}
 		// SQLite stores a real of a REAL column that has an integer value as an integer, which it
 		// reads back as a real, so -0.0 comes back as 0.0: the stored value is equal as a number.
 		if r, ok := stored[i].(stmt.Real); ok && r == 0 {
@@ -502,6 +525,17 @@ func checkInsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.In
 	if s.Columns != nil {
 		tableColumns = slices.Clone(columns)
 		slices.Reverse(tableColumns)
+	}
+	nulls := map[string]bool{}
+	for i, v := range stored {
+		if _, ok := v.(stmt.Null); ok {
+			nulls[names[i]] = true
+		}
+	}
+	checkNotNull(t, open, src, table, tableColumns, nulls, args)
+	if key < 0 {
+		// Every value is NULL, and no column of the table can be its primary key.
+		return
 	}
 	read := "select " + strings.Join(quoted(names), ", ") + " from " + quote(table)
 	run := func(sql string) *db {
@@ -523,7 +557,7 @@ func checkInsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.In
 	}
 	is.Equal(t, fmt.Sprint(want), fmt.Sprint(got), src)
 	is.Equal(t, 1, len(rows), src)
-	sqliteError(t, src, d.exec(src, args...), 1555, "UNIQUE constraint failed: "+table+"."+names[0])
+	sqliteError(t, src, d.exec(src, args...), 1555, "UNIQUE constraint failed: "+table+"."+names[key])
 	c := run(canonical(s))
 	for i := range n {
 		is.Equal(t, got[i], show(c.valueAt(read, i)), src)
@@ -542,6 +576,32 @@ func checkInsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.In
 	// find, in the order of the list.
 	other.must(createColumns(table, intColumns(append([]string{"s4ql other"}, names[1:]...), 0)))
 	sqliteError(t, src, other.exec(src, args...), 1, "table "+s.Table.Value+" has no column named "+s.Columns[0].Value)
+}
+
+// checkNotNull of the insert src, with args, whose values give NULL to the columns of nulls, by the
+// values of their names: on a table of the columns, in their order, where each column says NOT NULL
+// or is the primary key, the first column if none of them is, SQLite refuses src with `NOT NULL
+// constraint failed` for the first column in the order of the table that gets a NULL, with the names
+// as the table stores them.
+func checkNotNull(t testing.TB, open func(testing.TB) *db, src, table string, columns []stmt.Column, nulls map[string]bool, args []int64) {
+	t.Helper()
+	columns = slices.Clone(columns)
+	if !slices.ContainsFunc(columns, func(c stmt.Column) bool { return c.PrimaryKey }) {
+		columns[0].PrimaryKey = true
+	}
+	first := ""
+	for i, c := range columns {
+		columns[i].NotNull = !c.PrimaryKey
+		if first == "" && nulls[c.Name.Value] {
+			first = c.Name.Value
+		}
+	}
+	if first == "" {
+		return
+	}
+	d := open(t)
+	d.must(createColumns(table, columns))
+	sqliteError(t, src, d.exec(src, args...), 1299, "NOT NULL constraint failed: "+table+"."+first)
 }
 
 // checkSelect is [checkMeaning] of a SELECT: on a table created with the case of its names swapped,
@@ -692,9 +752,6 @@ func checkPositions(t testing.TB, src string, s stmt.Statement) {
 			names = append(names, c.Name)
 			if c.PrimaryKey {
 				keys++
-			}
-			if !c.PrimaryKey && !c.NotNull {
-				t.Fatalf("%q: the column %q is neither the primary key nor NOT NULL", src, c.Name.Raw)
 			}
 		}
 		if keys != 1 {

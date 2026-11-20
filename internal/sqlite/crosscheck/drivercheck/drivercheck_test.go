@@ -495,7 +495,7 @@ func (y tally) add(scope, src string, got outcome, runs [][]any) {
 // statementKind of src: the kind of the statement of slices 1 and 2 that it is, in lower case and
 // with a parameter if it has one, or "other".
 func statementKind(src string) string {
-	s, _ := stmt.Check(src)
+	s, _ := checkText(src)
 	if s == nil {
 		return "other"
 	}
@@ -532,7 +532,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 		}
 		return "ok"
 	}
-	s, _ := stmt.Check(src)
+	s, _ := checkText(src)
 	if sel, ok := s.(*stmt.Select); ok {
 		_, columns := p.columnsIn(o, sel.Table.Value)
 		if columns == nil {
@@ -823,7 +823,7 @@ func (p *pair) where(c call, src string) (runner, runner, string) {
 		// The statements of a sql.Conn run in its transaction.
 		return p.s, p.o, t.kind()
 	}
-	if s, _ := stmt.Check(src); s != nil {
+	if s, _ := checkText(src); s != nil {
 		if _, ok := s.(*stmt.Select); ok {
 			return p.s, p.o, "beside a " + t.kind()
 		}
@@ -1128,7 +1128,7 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 	// gives before it binds the arguments, so that it runs there without them, or the outcome of a
 	// statement that s4ql ran, which must have had an argument that s4ql supports for each
 	// parameter in each run, and which runs there with them.
-	s, err := stmt.Check(src)
+	s, err := checkText(src)
 	byText := err != nil || s == nil
 	mattnRuns := runs
 	if byText {
@@ -1171,12 +1171,12 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 	if !p.pinned {
 		// Through the pool, the count of changes is that of the connection that database/sql takes,
 		// so it is compared only for a statement that sets it. In slice 1 that is an insert.
-		if s, _ := stmt.Check(src); s == nil || fmt.Sprintf("%T", s) != "*stmt.Insert" {
+		if s, _ := checkText(src); s == nil || fmt.Sprintf("%T", s) != "*stmt.Insert" {
 			got.affected, want.affected = "", ""
 		}
 	}
 	if got.String() == want.String() {
-		if s, _ := stmt.Check(src); s != nil && got.failed == "" {
+		if s, _ := checkText(src); s != nil && got.failed == "" {
 			if ct, ok := s.(*stmt.CreateTable); ok {
 				p.created[ct.Table.Value] = true
 			}
@@ -1239,7 +1239,7 @@ func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) 
 func (p *pair) checkNotSupported(src string, c call, supported bool, runs [][]any, got outcome) string {
 	tb := p.tb
 	tb.Helper()
-	s, err := stmt.Check(src)
+	s, err := checkText(src)
 	if err == nil && s != nil {
 		return p.checkRefused(src, s, runs, got)
 	}
@@ -1358,10 +1358,23 @@ func converted(a any) any {
 	return a
 }
 
+// checkText src as the driver checks a text at Prepare: as [stmt.Check] does, and with the "not
+// supported" of [engine.Check] for a statement with NULL of slice 6 that the pass supports and the
+// engine does not run yet, which the tests take for a text that is not supported.
+func checkText(src string) (stmt.Statement, error) {
+	s, err := stmt.Check(src)
+	if err == nil && s != nil {
+		if err := engine.Check(src, s.Parameters()); errors.Is(err, stmt.ErrNotSupported) {
+			return nil, err
+		}
+	}
+	return s, err
+}
+
 // reaches reports whether s4ql takes src with args to the instance: the text holds a statement that
 // s4ql supports, with one argument for each parameter, each one that s4ql supports.
 func reaches(src string, args []any) bool {
-	s, err := stmt.Check(src)
+	s, err := checkText(src)
 	return err == nil && s != nil && len(args) == s.Parameters() && argumentRefusal(args) == ""
 }
 

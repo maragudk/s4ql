@@ -33,11 +33,13 @@ func namePools(t testing.TB) [][]string {
 var positionTexts = stmttest.PositionTexts
 
 // newGenerator of [stmttest] from seed, which writes a plain ? in place of one value of an insert
-// in four, columns and values of every type, and the forms of slice 5 with up to three columns.
+// in four, columns and values of every type, the forms of slice 5 with up to three columns, and those
+// of slice 6, with a column that takes NULL and a NULL one time in five.
 func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g := stmttest.NewGenerator(rand.New(rand.NewPCG(seed, 0x511ce1)), namePools(t))
 	g.Parameters = 4
 	g.Columns = 3
+	g.Nulls = 5
 	return g
 }
 
@@ -90,7 +92,7 @@ func TestGenerate_mutants(t *testing.T) {
 		}
 	}
 	t.Logf("%v mutants: %v", n**mutantsEach, c)
-	excused(t, c, 85, 310)
+	excused(t, c, 77, 305)
 	var names []string
 	for k := range kinds {
 		names = append(names, k)
@@ -246,8 +248,9 @@ var nearMisses = map[string][]string{
 		"create table %[1]v (%[2]v %[4]v not null primary key null) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key not null on conflict fail) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key primary key) strict, without rowid",
-		"create table %[1]v (%[2]v %[4]v primary key, w int) strict, without rowid",
-		"create table %[1]v (w int, %[2]v %[4]v primary key) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int default null) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v, w int) strict, without rowid",
+		"create table %[1]v (w int null, %[2]v %[4]v primary key) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key, w int null) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key, w int not null null) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key, w int not null not null) strict, without rowid",
@@ -296,7 +299,8 @@ var nearMisses = map[string][]string{
 		"insert into %[1]v (w, %[2]v, W) values (1, %[3]v, 2)",
 		"insert into %[1]v (%[2]v) values (%[3]v), (%[3]v)",
 		"insert into %[1]v values (%[3]v), (%[3]v)",
-		"insert into %[1]v values (%[3]v, null)",
+		"insert into %[1]v values (%[3]v, - null)",
+		"insert into %[1]v values (%[3]v, nullif(1, 1))",
 		"insert into %[1]v values (%[3]v, 1 + 1)",
 		"insert into %[1]v values (%[3]v, ?1)",
 		"insert into %[1]v values (?, :a)",
@@ -348,7 +352,14 @@ var nearMisses = map[string][]string{
 		"insert into %[1]v (%[2]v) values (-1e999)",
 		"insert into %[1]v (%[2]v) values (1_000.5)",
 		"insert into %[1]v (%[2]v) values (0x1p3)",
-		"insert into %[1]v (%[2]v) values (null)",
+		"insert into %[1]v (%[2]v) values (+null)",
+		"insert into %[1]v (%[2]v) values (-null)",
+		"insert into %[1]v (%[2]v) values (%[3]v is null)",
+		"insert into %[1]v (%[2]v) values (%[3]v is not null)",
+		"insert into %[1]v (%[2]v) values (%[3]v isnull)",
+		"insert into %[1]v (%[2]v) values (%[3]v notnull)",
+		"insert into %[1]v (%[2]v) values (%[3]v not null)",
+		"insert into %[1]v (%[2]v) values (cast(null as int))",
 		"insert into %[1]v (%[2]v) values (true)",
 		"insert into %[1]v (%[2]v) values (- false)",
 		`insert into %[1]v (%[2]v) values ("a")`,
@@ -378,6 +389,9 @@ var nearMisses = map[string][]string{
 		"select %[2]v, ? from %[1]v",
 		"select %[2]v collate nocase from %[1]v",
 		"select %[2]v is null from %[1]v",
+		"select null from %[1]v",
+		"select * from %[1]v where %[2]v is null",
+		"select %[2]v from %[1]v where %[2]v is not null",
 		"select count(%[2]v) from %[1]v",
 		"select true from %[1]v",
 		"select %[2]v, false from %[1]v",
@@ -470,5 +484,5 @@ func TestGenerate_nearMisses(t *testing.T) {
 		}
 	}
 	t.Logf("%v near misses: %v", c[syntaxError]+c[notSupported]+c[syntaxNotSaid]+c[notSupportedNotSaid], c)
-	excused(t, c, 0, 3022)
+	excused(t, c, 0, 2942)
 }
