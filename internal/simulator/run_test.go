@@ -273,25 +273,49 @@ func TestRun_actions(t *testing.T) {
 			func(r simulator.RequestState) bool { return r.Request == cut[0].Request && r.Waiting }), "the caller waits for it before")
 	})
 
-	t.Run("should trim the table to the rows that the writes keep, and keep the row of each write", func(t *testing.T) {
-		res := run(t, &e, `{"seed": 2, "end": 120000, "instances": 1, "workload": {"callers": 6, "think": 500, "writes": 70, "keep": 2}}`)
+	t.Run("should write with an insert and read with a select of the keys above the bound, and annotate each commit object with its statements", func(t *testing.T) {
+		res := run(t, &e, `{"seed": 2, "end": 120000, "instances": 1, "workload": {"callers": 6, "think": 500, "writes": 70, "window": 5}}`)
+		commits := find(res, func(e simulator.Event) bool { return e.What == "applied" && e.Object != nil && e.Object.Commit != nil })
+		is.True(t, len(commits) > 50, "many commit objects")
+		first := commits[0].Object.Commit
+		is.EqualSlice(t, []string{"orders"}, first.Tables)
+		is.Equal(t, 2, len(first.Statements))
+		is.Equal(t, "create table orders (id integer primary key) strict, without rowid", first.Statements[0].SQL)
+		is.Equal(t, 0, len(first.Statements[0].Args))
 		inserted := map[int64]bool{}
-		deletes := 0
-		for _, ev := range find(res, func(e simulator.Event) bool { return e.What == "applied" && e.Object != nil && e.Object.Commit != nil }) {
-			for _, k := range ev.Object.Commit.Keys {
-				inserted[k] = true
+		for _, ev := range commits {
+			c := ev.Object.Commit
+			is.Equal(t, 1, len(c.Keys))
+			inserted[c.Keys[0]] = true
+			insert := c.Statements[len(c.Statements)-1]
+			is.Equal(t, "insert into orders (id) values (?)", insert.SQL)
+			is.Equal(t, 1, len(insert.Args))
+			is.Equal(t, fmt.Sprint(c.Keys[0]), fmt.Sprint(insert.Args[0]))
+		}
+		for _, c := range find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.Op == "write" }) {
+			is.Equal(t, "insert into orders (id) values (?)", c.SQL)
+			is.Equal(t, fmt.Sprint(c.Value), fmt.Sprint(c.Args[0]))
+			if c.What == "committed" {
+				is.True(t, inserted[c.Value], fmt.Sprint("the commit of ", c.Value, " inserts it"))
 			}
-			deletes += len(ev.Object.Commit.Deletes)
 		}
-		committed := find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.What == "committed" })
-		is.True(t, len(committed) > 50, "many writes")
-		is.True(t, deletes > 50, "many deletes")
-		for _, c := range committed {
-			is.True(t, inserted[c.Value], fmt.Sprint("the commit of ", c.Value, " inserts it"))
+		served := find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.What == "served" })
+		is.True(t, len(served) > 20, "many reads")
+		full := 0
+		for _, r := range served {
+			is.Equal(t, "select id from orders where id > ?", r.SQL)
+			bound, ok := r.Args[0].(int64)
+			if !ok {
+				bound = int64(r.Args[0].(float64))
+			}
+			for i, k := range r.Keys {
+				is.True(t, k > bound && (i == 0 || k > r.Keys[i-1]), fmt.Sprint("a read above ", bound, " gives ", r.Keys))
+			}
+			if bound > 0 && len(r.Keys) >= 3 {
+				full++
+			}
 		}
-		for _, r := range find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.What == "served" }) {
-			is.True(t, len(r.Keys) <= 2, fmt.Sprint("a read of ", len(r.Keys), " rows"))
-		}
+		is.True(t, full > 10, "reads of the window, above a bound")
 		is.Equal(t, 0, res.Summary.Violations)
 	})
 

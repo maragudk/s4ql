@@ -77,17 +77,16 @@ type Workload struct {
 	Writes int `json:"writes"`
 	// Timeout of each call.
 	Timeout float64 `json:"timeout"`
-	// Keep is the number of rows that the writes keep in the table: each write also deletes the other
-	// rows with the smallest keys, until the table has at most Keep rows, so that the table, and with
-	// it the cost of a read, stops growing. A write never deletes its own row, and reads the whole
-	// table to find the others. Zero keeps every row.
-	Keep int `json:"keep"`
+	// Window is the number of keys that a read selects at most: a read selects the keys above the
+	// last key that a write had taken when the read started, less Window, so that the cost of a read
+	// does not grow with the table.
+	Window int `json:"window"`
 }
 
 // Client of the run: one source of calls that stands outside the instances, as the user of an
 // application does, and that no crash or stop of an instance ends. Its pauses, its share of writes,
-// its timeout, and the rows that its writes keep are those of the [Workload], which does not switch
-// it. The action "client" points it at another instance.
+// its timeout, and the window of its reads are those of the [Workload], which does not switch it.
+// The action "client" points it at another instance.
 type Client struct {
 	// Instance that the client calls from the start, by its name, or empty for no client.
 	Instance string `json:"instance"`
@@ -152,8 +151,8 @@ const (
 	maxInstances = 5
 	maxCallers   = 8
 	maxSchedule  = 1000
-	// maxKeep rows that the writes keep in the table.
-	maxKeep = 10_000
+	// maxWindow of the keys that a read selects.
+	maxWindow = 10_000
 )
 
 // defaultRequest has the default of every field.
@@ -164,7 +163,7 @@ func defaultRequest() Request {
 		Instances: 3,
 		Leases:    []float64{30_000},
 		Latency:   50,
-		Workload:  Workload{On: true, Callers: 2, Think: 5_000, Writes: 40, Timeout: 30_000},
+		Workload:  Workload{On: true, Callers: 2, Think: 5_000, Writes: 40, Timeout: 30_000, Window: 100},
 	}
 }
 
@@ -227,8 +226,8 @@ func (r Request) check() error {
 	if !positive(w.Timeout) || w.Timeout > maxEnd {
 		bad("workload.timeout is %v, and must be above 0 and at most %v", w.Timeout, maxEnd)
 	}
-	if w.Keep < 0 || w.Keep > maxKeep {
-		bad("workload.keep is %v, and must be from 0 to %v", w.Keep, maxKeep)
+	if w.Window < 1 || w.Window > maxWindow {
+		bad("workload.window is %v, and must be from 1 to %v", w.Window, maxWindow)
 	}
 	if c := r.Client.Instance; c != "" && !validInstance(c, r.Instances) {
 		bad("client.instance is %q, and must be empty or an instance from a to %v", c, instanceName(max(0, r.Instances-1)))
@@ -350,11 +349,9 @@ type Session struct {
 	Standby   bool      `json:"standby"`
 }
 
-// defaultSession has the default of every field: those of [defaultRequest], but two instances, and
-// writes that keep the last 100 rows, so that a read costs the same however long the session runs.
+// defaultSession has the default of every field: those of [defaultRequest], but two instances.
 func defaultSession() Session {
 	r := defaultRequest()
-	r.Workload.Keep = 100
 	return Session{Seed: r.Seed, Instances: 2, Leases: r.Leases, Latency: r.Latency, Workload: r.Workload}
 }
 

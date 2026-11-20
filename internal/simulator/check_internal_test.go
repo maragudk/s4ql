@@ -60,7 +60,11 @@ func TestChecker(t *testing.T) {
 			// down is.
 			c.writeEnded(t.Context(), 8, "lost")
 			c.writeEnded(t.Context(), 9, "down")
-			c.readEnded(t.Context(), p, c.readStarted(), []int64{1, 2}, position(2))
+			c.readEnded(t.Context(), p, c.readStarted(), 0, []int64{1, 2}, position(2))
+			// A read above a bound sees only the rows above it, and need not see an acknowledged
+			// write at or below it.
+			c.readEnded(t.Context(), p, c.readStarted(), 1, []int64{2}, position(2))
+			c.readEnded(t.Context(), p, c.readStarted(), 3, []int64{}, position(3))
 			c.final(t.Context())
 		})
 		is.Equal(t, 0, len(events))
@@ -97,7 +101,7 @@ func TestChecker(t *testing.T) {
 		{name: "a read that missed a write lost at a crash that the log holds at the end", invariant: invariantFresh, f: func(c *checker, p *process) {
 			log(c)
 			c.writeEnded(t.Context(), 3, "lost")
-			c.readEnded(t.Context(), p, c.readStarted(), []int64{1, 2}, position(2))
+			c.readEnded(t.Context(), p, c.readStarted(), 0, []int64{1, 2}, position(2))
 			c.final(t.Context())
 		}},
 		{name: "a write that the log holds twice", invariant: invariantOnce, f: func(c *checker, p *process) {
@@ -108,58 +112,128 @@ func TestChecker(t *testing.T) {
 		}},
 		{name: "a read at a position that is not in the log", invariant: invariantState, f: func(c *checker, p *process) {
 			log(c)
-			c.readEnded(t.Context(), p, c.readStarted(), nil, position(8))
+			c.readEnded(t.Context(), p, c.readStarted(), 0, nil, position(8))
 		}},
 		{name: "a read that saw rows that the log does not have at its position", invariant: invariantState, f: func(c *checker, p *process) {
 			log(c)
-			c.readEnded(t.Context(), p, c.readStarted(), []int64{1, 3}, position(2))
+			c.readEnded(t.Context(), p, c.readStarted(), 0, []int64{1, 3}, position(2))
 		}},
 		{name: "a read that saw a row twice", invariant: invariantState, f: func(c *checker, p *process) {
 			log(c)
-			c.readEnded(t.Context(), p, c.readStarted(), []int64{1, 1}, position(2))
+			c.readEnded(t.Context(), p, c.readStarted(), 0, []int64{1, 1}, position(2))
 		}},
-		{name: "a read that saw a row that a commit up to its position deleted", invariant: invariantState, f: func(c *checker, p *process) {
+		{name: "a read that saw a row twice among all the rows", invariant: invariantState, f: func(c *checker, p *process) {
 			log(c)
-			c.commit(&CommitObject{Name: name(4), Parent: name(3), Keys: []int64{4}, Deletes: []int64{1}})
-			c.manifest(t.Context(), &ManifestObject{Head: name(4)})
-			c.readEnded(t.Context(), p, c.readStarted(), []int64{1, 2, 3, 4}, position(4))
+			c.readEnded(t.Context(), p, c.readStarted(), 0, []int64{1, 1, 2}, position(2))
+		}},
+		{name: "a read that missed a row above its bound", invariant: invariantState, f: func(c *checker, p *process) {
+			log(c)
+			c.readEnded(t.Context(), p, c.readStarted(), 1, []int64{3}, position(3))
+		}},
+		{name: "a read that saw a row at its bound", invariant: invariantState, f: func(c *checker, p *process) {
+			log(c)
+			c.readEnded(t.Context(), p, c.readStarted(), 2, []int64{2, 3}, position(3))
+		}},
+		{name: "a read that saw a row below its bound", invariant: invariantState, f: func(c *checker, p *process) {
+			log(c)
+			c.readEnded(t.Context(), p, c.readStarted(), 2, []int64{1, 3}, position(3))
+		}},
+		{name: "a read that missed an acknowledged write above its bound", invariant: invariantFresh, f: func(c *checker, p *process) {
+			log(c)
+			c.writeEnded(t.Context(), 3, "committed")
+			c.readEnded(t.Context(), p, c.readStarted(), 1, []int64{2}, position(2))
+		}},
+		{name: "a read that missed a write of unknown outcome above its bound that the log holds at the end", invariant: invariantFresh, f: func(c *checker, p *process) {
+			log(c)
+			c.writeEnded(t.Context(), 3, "unknown")
+			c.readEnded(t.Context(), p, c.readStarted(), 2, []int64{}, position(2))
+			c.final(t.Context())
 		}},
 		{name: "a read that missed an acknowledged write", invariant: invariantFresh, f: func(c *checker, p *process) {
 			log(c)
 			c.writeEnded(t.Context(), 3, "committed")
-			c.readEnded(t.Context(), p, c.readStarted(), []int64{1, 2}, position(2))
+			c.readEnded(t.Context(), p, c.readStarted(), 0, []int64{1, 2}, position(2))
 		}},
 		{name: "a read that missed an acknowledged write on a process whose clocks both went wrong", invariant: invariantFresh, excused: true, f: func(c *checker, p *process) {
 			log(c)
 			p.monotonicStoppedEver, p.wallBackEver = true, true
 			c.writeEnded(t.Context(), 3, "committed")
-			c.readEnded(t.Context(), p, c.readStarted(), []int64{1, 2}, position(2))
+			c.readEnded(t.Context(), p, c.readStarted(), 0, []int64{1, 2}, position(2))
 		}},
 		{name: "a read that missed a write of unknown outcome that the log holds at the end", invariant: invariantFresh, f: func(c *checker, p *process) {
 			log(c)
 			c.writeEnded(t.Context(), 3, "unknown")
-			c.readEnded(t.Context(), p, c.readStarted(), []int64{1, 2}, position(2))
+			c.readEnded(t.Context(), p, c.readStarted(), 0, []int64{1, 2}, position(2))
 			c.final(t.Context())
 		}},
 	}
-	t.Run("should not count a row that a later commit deleted as missed, and stay fast after a violation of a read", func(t *testing.T) {
+	t.Run("should not count a write at or below the bound as missed, and stay fast after a violation of a read", func(t *testing.T) {
 		var fast bool
 		events := withChecker(t, func(c *checker, p *process) {
 			log(c)
 			c.writeEnded(t.Context(), 1, "committed")
-			c.commit(&CommitObject{Name: name(4), Parent: name(3), Keys: []int64{4}, Deletes: []int64{1}})
+			c.writeEnded(t.Context(), 2, "unknown")
+			c.commit(&CommitObject{Name: name(4), Parent: name(3), Keys: []int64{4}})
 			c.manifest(t.Context(), &ManifestObject{Head: name(4)})
 			c.writeEnded(t.Context(), 4, "committed")
-			c.readEnded(t.Context(), p, c.readStarted(), []int64{2, 3, 4}, position(4))
+			c.readEnded(t.Context(), p, c.readStarted(), 2, []int64{3, 4}, position(4))
 			// A read that missed the write of 4 is a violation, and the next read is still checked fast.
-			c.readEnded(t.Context(), p, c.readStarted(), []int64{1, 2, 3}, position(3))
-			c.readEnded(t.Context(), p, c.readStarted(), []int64{2, 3, 4}, position(4))
-			fast = c.fast && c.reads[2].fast
+			c.readEnded(t.Context(), p, c.readStarted(), 2, []int64{3}, position(3))
+			c.readEnded(t.Context(), p, c.readStarted(), 2, []int64{3, 4}, position(4))
+			fast = c.fast && c.reads[0].fast && c.reads[2].fast
 			c.final(t.Context())
 		})
 		is.Equal(t, 1, len(events))
 		is.Equal(t, invariantFresh, events[0].Invariant)
 		is.True(t, fast, "fast after a violation of a read")
+	})
+
+	// Every read of the keys 1 to 4 at every position of the log, above every bound from 0 to 4, with
+	// the writes 1 and 3 acknowledged and the write 2 of unknown outcome, is checked once by a checker
+	// that is fast and once by one that is slow from the start. Both must find the same violations.
+	t.Run("should find the same violations fast and slow", func(t *testing.T) {
+		check := func(t *testing.T, slow bool, bound int64, keys []int64, at int) []Event {
+			t.Helper()
+			return withChecker(t, func(c *checker, p *process) {
+				log(c)
+				if slow {
+					c.slow()
+				}
+				c.writeEnded(t.Context(), 1, "committed")
+				c.writeEnded(t.Context(), 2, "unknown")
+				c.writeEnded(t.Context(), 3, "committed")
+				pos := format.EmptyLog
+				if at > 0 {
+					pos = position(at)
+				}
+				c.readEnded(t.Context(), p, c.readStarted(), bound, keys, pos)
+				is.Equal(t, !slow && c.reads[0].fast, c.fast && c.reads[0].fast)
+				c.final(t.Context())
+			})
+		}
+		reads, violations := 0, 0
+		for at := range 4 {
+			for bound := range int64(5) {
+				for set := range 1 << 4 {
+					var keys []int64
+					for k := range int64(4) {
+						if set&(1<<k) != 0 {
+							keys = append(keys, k+1)
+						}
+					}
+					fast, slow := check(t, false, bound, keys, at), check(t, true, bound, keys, at)
+					is.Equal(t, len(slow), len(fast), fmt.Sprint("the violations of the keys ", keys, " above ", bound, " at ", at))
+					for i := range min(len(fast), len(slow)) {
+						is.Equal(t, slow[i].Invariant, fast[i].Invariant)
+						is.Equal(t, slow[i].Text, fast[i].Text)
+					}
+					reads++
+					violations += min(1, len(slow))
+				}
+			}
+		}
+		// Most of the reads are violations, and some are not.
+		is.True(t, violations > 0 && violations < reads, fmt.Sprint(violations, " of ", reads))
 	})
 
 	for _, test := range tests {

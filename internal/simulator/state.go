@@ -114,6 +114,9 @@ type CallState struct {
 	Op       string  `json:"op"`
 	Started  float64 `json:"started"`
 	Value    int64   `json:"value,omitzero"`
+	// SQL is the statement of the call, and Args its arguments, as in [Event].
+	SQL  string `json:"sql"`
+	Args []any  `json:"args"`
 }
 
 // ClientState is the client of a run.
@@ -235,7 +238,7 @@ func (f *fold) add(e Event) {
 		f.core(e)
 	case "call":
 		if e.What == "started" {
-			f.calls[e.Call] = CallState{Call: e.Call, Instance: e.Instance, Process: e.Process, Caller: e.Caller, Op: e.Op, Started: e.T, Value: e.Value}
+			f.calls[e.Call] = CallState{Call: e.Call, Instance: e.Instance, Process: e.Process, Caller: e.Caller, Op: e.Op, Started: e.T, Value: e.Value, SQL: e.SQL, Args: e.Args}
 			break
 		}
 		delete(f.calls, e.Call)

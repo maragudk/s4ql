@@ -18,7 +18,7 @@ import (
 // without a workload gets one without callers.
 func withClient(more, schedule string) string {
 	if !strings.Contains(more, `"workload"`) {
-		more += `, "workload": {"callers": 0, "keep": 50}`
+		more += `, "workload": {"callers": 0, "window": 50}`
 	}
 	return `{"instances": 2, "client": {"instance": "a"}, "standby": true` + more + `, "schedule": [` + schedule + `]}`
 }
@@ -252,7 +252,7 @@ func TestRun_client(t *testing.T) {
 			{"at": 96000, "do": "client", "instance": "a"}, {"at": 110000, "do": "restart", "instance": "b"}`
 		var lost, unknown int
 		for seed := 1; seed <= 24; seed++ {
-			res := run(t, &e, withClient(fmt.Sprintf(`, "seed": %v, "end": 150000, "faults": %v, "workload": {"callers": 0, "think": 400, "writes": 60, "keep": 50}`, seed, allFaults), schedule))
+			res := run(t, &e, withClient(fmt.Sprintf(`, "seed": %v, "end": 150000, "faults": %v, "workload": {"callers": 0, "think": 400, "writes": 60, "window": 50}`, seed, allFaults), schedule))
 			eachCall(t, res)
 			noViolation(t, res, fmt.Sprint("seed ", seed))
 			lost += res.Summary.Calls["write lost"]
