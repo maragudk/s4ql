@@ -605,6 +605,7 @@ h2 {
 .commit .meta { display: flex; flex-wrap: wrap; gap: 2px 16px; font-size: 13px; }
 .commit .meta .caps { margin-left: auto; }
 .commit .name { font-weight: 700; }
+.commit .sql { list-style: none; margin: 0; padding: 0; font-size: 13px; overflow-wrap: anywhere; }
 .commit.head { background: var(--lumin); color: var(--void); }
 .commit.orphan { outline: 1px dashed var(--lumin); outline-offset: -5px; }
 @media (max-width: 960px) {
@@ -664,8 +665,8 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
     <h1 id="intro-h">The storage code, under faults</h1>
     <div>
       <p>The storage code of s4ql runs in this page: the Go code itself, unchanged, compiled to WebAssembly, with its cache on the official SQLite WebAssembly build. S3 and time are simulated.</p>
-      <p>s4ql is built for one long-running instance per database, an app with s4ql embedded. Here requests to the app go to one instance, and a second stands by to take over.</p>
-      <p class="built"><span class="caps">Built from</span> <span id="build">an unknown commit</span> of <a href="https://github.com/maragudk/s4ql/tree/main/internal/core"><code>internal/core</code></a>, run by <a href="https://github.com/maragudk/s4ql/blob/main/internal/simulator/README.md"><code>internal/simulator</code></a>.</p>
+      <p>s4ql is built for one long-running instance per database, an app with s4ql embedded. Here requests to the app, each one SQL statement, go to one instance, and a second stands by to take over.</p>
+      <p class="built"><span class="caps">Built from</span> <span id="build">an unknown commit</span> of <a href="https://github.com/maragudk/s4ql/tree/main/internal/core"><code>internal/core</code></a> and <a href="https://github.com/maragudk/s4ql/tree/main/internal/engine"><code>internal/engine</code></a>, run by <a href="https://github.com/maragudk/s4ql/blob/main/internal/simulator/README.md"><code>internal/simulator</code></a>.</p>
     </div>
   </div>
 </section>
@@ -701,8 +702,8 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
         </div>
       </div>
       <dl>
-        <div><dt class="caps">Writes</dt><dd id="requests-writes">0</dd></div>
-        <div><dt class="caps">Reads</dt><dd id="requests-reads">0</dd></div>
+        <div><dt class="caps">Inserts</dt><dd id="requests-writes">0</dd></div>
+        <div><dt class="caps">Selects</dt><dd id="requests-reads">0</dd></div>
         <div><dt class="caps">Failed</dt><dd id="requests-failed">0</dd></div>
         <div class="status" id="requests-status"><dt class="caps">Status</dt><dd id="requests-status-words">no requests yet</dd></div>
       </dl>

@@ -34,8 +34,11 @@ type Event struct {
 	Caller  string   `json:"caller,omitzero"`
 	Op      string   `json:"op,omitzero"`
 	Started *float64 `json:"started,omitzero"`
-	// Value is the key of the row that a write inserts, and Keys those that a read saw.
+	// Value is the key of the row that a write inserts, and Keys those that a read saw. SQL is the
+	// statement of a call, and Args its arguments by position.
 	Value int64   `json:"value,omitzero"`
+	SQL   string  `json:"sql,omitzero"`
+	Args  []any   `json:"args,omitzero"`
 	Keys  []int64 `json:"keys,omitzero"`
 	// Position is the name of the last commit object in the state that a call saw.
 	Position string `json:"position,omitzero"`
@@ -116,15 +119,22 @@ type Lease struct {
 }
 
 // CommitObject is what a commit object holds: its name, the name of its parent, the keys of the
-// rows that it inserts into the table of the workload and of those that it deletes from it, the
-// tables that it creates, and the number of its changes.
+// rows that it inserts into the table of the workload, the tables that it creates, the number of
+// its changes, and the statements that its annotations hold.
 type CommitObject struct {
-	Name    string   `json:"name"`
-	Parent  string   `json:"parent"`
-	Keys    []int64  `json:"keys,omitzero"`
-	Deletes []int64  `json:"deletes,omitzero"`
-	Tables  []string `json:"tables,omitzero"`
-	Changes int      `json:"changes"`
+	Name       string      `json:"name"`
+	Parent     string      `json:"parent"`
+	Keys       []int64     `json:"keys,omitzero"`
+	Tables     []string    `json:"tables,omitzero"`
+	Changes    int         `json:"changes"`
+	Statements []Statement `json:"statements,omitzero"`
+}
+
+// Statement of SQL: its text, and its arguments by position, each an integer, a real, or text as
+// itself, a blob as hexadecimal text, or null.
+type Statement struct {
+	SQL  string `json:"sql"`
+	Args []any  `json:"args,omitzero"`
 }
 
 // recorder collects the events of a run, in the order in which they happen, and counts them for the
