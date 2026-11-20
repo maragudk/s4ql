@@ -185,3 +185,50 @@ What an update counts as rows read. Its scan reads each row, and `update.run` ge
 - The generated checks of indexes: the todo has what they can build on.
 - Mutation testing of `/internal/engine/access.go` and of the statements of indexes, and the planted bugs of indexes.
 - The status of the README, the site, and the roadmap are for the lead's sub-agent after the merge.
+
+## Step 4: one definition of the key of an index, the drawn direction in the event, the merge of `main`, and the landing
+
+**Author:** builder (index-engine lander)
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpts) "An independent reviewer found it ready to merge once its CI passes, with two small things to fix. [...] 1. **One function for the key of an index.** `engine.indexKey` (`internal/engine/access.go`) and `core.table.scanKey` (`internal/core/index.go`) are the same dozen lines written twice [...] 2. **The drawn direction in the statement's event.** Driver tests have no seed, so a failure that depends on the direction of a scan cannot be replayed from its output. [...] 3. `git merge origin/main` [...] 5. Land it".
+**Interpretation:** Remove the second copy of the rule of the key of an index, put the drawn direction in the event of a query, bring in `main` with its sharded CI, the mutation testing of slice 8, and the browser job, and take the pull request through CI to its merge.
+**Inferred intent:** Nothing in the engine can silently disagree with the core on which columns a scan pins, a failure of an unseeded run tells its direction, and slice 9 lands on a green CI.
+
+### What I did
+
+- `core.KeyColumn` (was `keyColumn`, now exported with `Position` and `Descending`) and `core.IndexKey(table, index)` in `/internal/core/index.go`, both over the unexported `indexKey(primaryKey, columns)`, which is the one definition. `table.scanKey` calls `indexKey`, and `engine.indexKey` in `/internal/engine/access.go` is now only the positions of `core.IndexKey`. `TestIndexKey` is a table test: no index, a primary key of several columns, the primary key first and last in the table, several index columns with directions, the primary key inside the index, also descending, a primary key of three columns of which the index holds one, and an index that holds the whole primary key.
+- `statement.direction` (`attrDirection` in `/internal/engine/telemetry.go`): `forward` or `backward`, set by `report.drew` from the new `reading.drawn`, which `Engine.reading` sets only when it draws. It is logged only with `statement.access`, so a query that fails before its access has none. A select that Exec runs is a query and has it; an update, a delete, and a query whose path the tests force have none. `recorder.last` leaves it out, since `newLoggedConn` draws from a real host. The README's table of attributes and `docs/todo.md` name it.
+- The root package's test helpers print no event of a statement anywhere, so nothing there prints the direction; the driver check has no logger either.
+- `git merge origin/main`. One conflict, in `/internal/sql/mutation/equivalent.txt`: this branch had dropped the entries of `keyAccess`, of `build.bind` around it, and of `openBounds.scanRange` with its comment, and `main` had added the entries of slice 8 next to them. I kept both: the 20 entries that `TestEquivalent` refused (three of `keyAccess`, seventeen of `openBounds.scanRange`) are gone, and the two of `build.bind` and the openBound comment as well, which this branch had removed and the merge had brought back. `docs/todo.md` and the engine README merged without conflicts; the planted-bug table has all fifteen rows, with `openBound` at `main`'s count from the hammer workload.
+- After the merge: `FuzzCreateIndex_core` goes in `engineLayers` of `/internal/sql/mutation/run.go`, which `main`'s new `TestEngineLayers` asks for; two calls of `buildSink` in `main`'s new tests passed `false` where this branch takes a `reading{}`; `main`'s new subtests of `TestChangeRows` on `w = 20` and `w >= 20` gained the look-up of the indexes that the rules make, through a helper `byRules`; and `main`'s `TestPrepare` pinned `CREATE INDEX` and `DROP INDEX` as not supported at the prepare, which they no longer are, so they now prepare without the instance and a unique index is refused from the text.
+
+### What worked
+
+- `go test ./internal/engine/... ./internal/core/... ./internal/sql/...` without `-short` passed after the merge, with the planted bugs of the simulation, and so did the driver check (`go test ./drivercheck/` in `/internal/sqlite/crosscheck`). No pinned number moved.
+- `make fuzz-shards FUZZSHARDS=4` and `FUZZGROUP=c FUZZSHARDS=4`: 38 and 35 fuzz tests, each in exactly one shard, `FuzzCreateIndex_core` in shard 3 of the C group. `make test`, `make lint`, and `make check-browser` passed.
+
+### What didn't work
+
+- `make fuzz-shards` without arguments fails with `fuzz-shards: FUZZSHARDS is a number of shards, such as 4, not ''`; CI passes the number.
+- `go test ... ./internal/sqlite/crosscheck/drivercheck/...` from the root fails with `directory prefix internal/sqlite/crosscheck/drivercheck does not contain main module`: the crosscheck is a module of its own.
+- Shell here-docs of Python mixed with `go` commands were refused again as too complex to verify; scripts in the scratchpad and the Edit tool worked.
+- `make test` failed first in `TestPrepare` (`conn_test.go:441: no error`), from `main`'s pin of `CREATE INDEX` as not supported.
+
+### What I learned
+
+- `TestEquivalent` names one unknown key per run, so the stale entries came out by a loop that ran it and dropped the key it named.
+
+### What was tricky
+
+Which `main` entries in `equivalent.txt` to drop: the test accepted the two of `build.bind` with `#4`, but this branch had removed them on purpose, since `build.bind` was rewritten and the fourth `err != nil` is no longer the one that the reason describes. They are dropped with the others, for the mutation round of slice 9 to redo.
+
+### What warrants review
+
+- `core.IndexKey` and `indexKey` in `/internal/core/index.go`, and the tests that pin `statement.direction` in `TestEngine_report`.
+- The `TestPrepare` change in `/conn_test.go`: the mutant of the driver's call of `engine.Check` that `main`'s pin killed may now live, for slice 9's round to judge.
+
+### Future work
+
+- The mutation round of slice 9 redoes the dropped equivalents of `keyAccess`, `build.bind`, and `openBounds.scanRange`.
