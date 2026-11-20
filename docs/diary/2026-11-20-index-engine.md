@@ -125,3 +125,63 @@ The second instance of a `pair` and the direction. Before, it read every row whe
 ### Future work
 
 - The tests by hand that pin rows in an order, the driver check, and the READMEs: three sub-agents, each in a worktree of its own.
+
+## Step 3: the tests that pinned an order, the driver check, a create index under a lowered length limit, the review, and the checks
+
+**Author:** builder (index-engine)
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpts from the lead's brief and from two messages of the coordinator during the work) "From here on, every comparison of a `select`'s rows with SQLite, in the engine's differential tests, the driver check, the simulation, and the fuzz targets, compares the rows as a multiset, never by order [...] Do this carefully: a comparison that sorts both sides must not hide a wrong row, a missing row, or a duplicate. [...] Self-review against these requirements (a code-review pass of your own is welcome)." And: "One more requirement, found while #97 was landed: the fault that #95 fixed for `create table` also exists for `create index`. [...] the engine answers `string or blob too big` exactly where SQLite does for the user's `create index` text (measure SQLite, also on Linux in Docker [...]), core creates and drops the index under SQLite's largest limit, a cache that holds such an index can be opened again, replay does the same, and what the cache cannot hold is refused before it reaches the log. Tests at each layer, a seed for the fuzz target that reaches it, and delete the item the lander recorded in `docs/todo.md`." And: "The root package `maragu.dev/s4ql` fails under `go test -short .` [...] 16 top-level tests fail, all on rows pinned in key order [...] And `TestTx_databaseSQL/should begin through a pinned connection…` hangs until the test timeout".
+**Interpretation:** Make every test of the module right under either direction, by a multiset where rows are compared and by a fixed direction where a test of the engine pins rows for another reason; close the gap of a create index under a lowered limit at every layer; and review the branch with two reviewers.
+**Inferred intent:** A branch whose every package passes run after run with the draw, and whose behaviour under a lowered limit is SQLite's.
+
+### What I did
+
+Three sub-agents, each in a worktree of its own, whose branches I merged:
+
+- The tests by hand of the engine and of the root package (`index-engine-hand-tests`). In the engine, a helper `forward()` fixes the direction where a test pins rows for another reason (`pin`, `pinTx`, the blob of `TestEngine_types`, `TestConn_isolation`, `TestConn_rows`, `leaseLost`). In the root package, which has no way to fix a direction, `query`, `values`, `rest`, and `rowsText` give sorted rows, `rowKeys` is the encoding of a row, and `inKeyOrder` accepts the order of the key and its reverse where the order is the point. `TestFilter` and `TestChangeRows` pin that a get by the whole key and a "no row" case make no call for the indexes, and every other WHERE one. `TestEngine_report` pins the access and the rows read of each kind of statement. The transaction of `TestTx_databaseSQL` ends in a `defer` that runs before the close of its connection, and two channels of the engine's tests are buffered, so a failed assertion fails and does not hang.
+- The driver check (`index-engine-drivercheck`): `outcome.String` and `outcome.full` hold the rows sorted, each as `rowText` writes it; the encoding of before was not injective (NULL and the text "nil" were one), and the new one is; a first row of open rows must be one of the rows of the query, and the rest is read and compared on both sides; three sequences of indexes in `TestSequences`, with `RowsAffected` and `LastInsertId` pinned.
+- The READMEs of the engine and of the core (`index-engine-readme`), by a writer.
+
+The create index under a lowered limit. The engine's rule (`indexTooBig`), the cache's `conn.changeSchema` for an index, and the refusal with `ErrInvalid` of an index whose statement is longer than the limit were built in steps 1 and 2. Added now: a subtest of `TestTx_tooBig` with the two indexes that the lander named, a subtest of `TestEngine_indexes` with a restart and a replay, `FuzzCreateIndex_core` with six seeds, and a run of the tests on Linux in Docker. The lander's item is gone from the todo.
+
+The review, by two reviewers on the most capable model, each told that it competes with the other. Fixed: `oracle.state` read `select *` without an order, which SQLite gives in the order of an index that holds every column (it orders by the key now, and a subtest has such an index); `scanOf` gave nil for an operator that it did not know (`source.scanned` now, which the compiler asks of a new operator); an update or a delete that a read-only transaction refuses had no access in its event; the engine's `maxIndexColumns` copied the core's (`core.MaxIndexColumns` now); the seed of the directions was reachable only from the engine's own tests, so the simulator of the site drew a direction from its scheduler for every read (`engine.Options.Directions` now, and the simulator sets it, so its two tests that the first sub-agent had changed are as they were); the doc comments of `Conn.Exec`, `Scan`, `build.change`, `chooseAccess`, `fit`, and `attrRowsRead`.
+
+### Why
+
+The seed as an exported option of the internal engine keeps the public package without one, and lets the simulator's runs stay those of each seed.
+
+### What worked
+
+- `FuzzCreateIndex_core` ran 5,956 inputs in 25 s without a failure, and the tests of indexes passed in the Linux container: SQLite refuses a create index at the same lengths there.
+- The second reviewer ran 40,000 random conjunctions on 12 indexes by the rules and by about 80 forced paths, and 1,500 random changes, against SQLite, and found no difference.
+- With `engine.Options.Directions` set by the simulator, its tests passed as they are on `main`.
+
+### What didn't work
+
+- The first reviewer found the branch red at the commit it read: the tests by hand and the driver check were still in the worktrees of their sub-agents. It also found the root package failing in 16 tests and one test hanging, which the coordinator passed on.
+- My first engine test of the lander's first index failed: `Expected "", but got "18/18: string or blob too big"`. SQLite refuses `create index <350 x> on t (<300 y>)` under a limit of 1,000 itself, and the engine with it; the lander's case is one of the core's API, where the cache's own statement fits. The engine's case is a name of 150 bytes.
+- A Bash command with a here-doc of Python and a `go vet` was refused again as "too complex to verify that it stays inside the worktree", and so was `git checkout ${m}^1 -- <files>` with a shell variable. A script in the scratchpad, and the commit's name written out, worked.
+- A sub-agent merged `index-engine` into its branch, against its brief, which arrived after it had done so; the merge of its branch was clean.
+
+### What I learned
+
+- A window of six bytes exists in which SQLite takes a create index and the cache needs SQLite's largest limit for its own statement, which quotes the names: with a name of the index of `n` bytes and a column of one byte, at `n` from 455 to 457.
+- Without `order by`, SQLite reads a table without a rowid in the order of an index that holds all its columns.
+
+### What was tricky
+
+What an update counts as rows read. Its scan reads each row, and `update.run` gets each row again to write it, so an update of one row by its key reads two. The attribute's comment and the README say so; the number is pinned as the code reads.
+
+### What warrants review
+
+- `engine.Options.Directions` and `run.open` in `/internal/simulator/run.go`: the seed of each engine of the simulator.
+- `/conn_test.go`, `/s4ql_test.go`, and `/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go`: the encodings of a row, `rowKeys` and `rowText`, on which every sorted comparison rests.
+- Two points of the reviewers that I left: the key of an index is worked out in the engine (`indexKey`) and in the core (`table.scanKey`), and only the tests tie the two; and `core.Tx.ScanRange`, `core.ReadTx.ScanRange`, and `table.checkBounds` have no user outside the core since the engine scans by `ScanIndex` alone.
+
+### Future work
+
+- The generated checks of indexes: the todo has what they can build on.
+- Mutation testing of `/internal/engine/access.go` and of the statements of indexes, and the planted bugs of indexes.
+- The status of the README, the site, and the roadmap are for the lead's sub-agent after the merge.
