@@ -466,7 +466,7 @@ var idPattern = regexp.MustCompile(`/\* id (\d+) \*/`)
 // withID puts the comment of the ID into the text of a statement of slice 1, after its first token,
 // where the annotation keeps it.
 func withID(src string, id uint64) string {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err != nil || s == nil {
 		return src
 	}
@@ -493,7 +493,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 	}
 	a.src = withID(call.Src, a.id)
 	call.Src = a.src
-	if s, _ := checkText(a.src); s != nil {
+	if s, _ := stmt.Check(a.src); s != nil {
 		_, isSelect := s.(*stmt.Select)
 		a.write = !isSelect
 	}
@@ -1511,7 +1511,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 
 // tableOf the statement of src, which is of slice 1, folded as SQLite compares names.
 func tableOf(src string) string {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err != nil {
 		panic(err)
 	}

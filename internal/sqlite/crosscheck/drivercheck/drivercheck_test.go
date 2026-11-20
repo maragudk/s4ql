@@ -477,7 +477,7 @@ func (y tally) add(scope, src string, got outcome, runs [][]any) {
 // statementKind of src: the kind of the statement of slices 1 and 2 that it is, in lower case and
 // with a parameter if it has one, or "other".
 func statementKind(src string) string {
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	if s == nil {
 		return "other"
 	}
@@ -499,7 +499,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome) {
 	if p.y == nil {
 		return
 	}
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	insert, ok := s.(*stmt.Insert)
 	if !ok {
 		return
@@ -560,7 +560,11 @@ const wrongArguments = "s4ql: wrong number of arguments: "
 
 // messageKind of an error's text: its message without the names.
 func messageKind(err string) string {
-	for _, kind := range []string{"already exists", "no such table", "has no column named", "UNIQUE constraint failed", "syntax error", "incomplete input", "no rows", "wrong number of arguments", "attempt to write a readonly database"} {
+	for _, kind := range []string{
+		"already exists", "no such table", "has no column named", "no such column", "values were supplied", " values for ", "duplicate column name",
+		"too many columns on", "UNIQUE constraint failed", "NOT NULL constraint failed", "syntax error", "incomplete input", "no rows",
+		"wrong number of arguments", "attempt to write a readonly database",
+	} {
 		if strings.Contains(err, kind) {
 			return kind
 		}
@@ -568,11 +572,15 @@ func messageKind(err string) string {
 	return err
 }
 
+// prepareKinds are the kinds of [messageKind] of SQLite's errors that depend on the database and that
+// SQLite gives when it prepares a statement, where s4ql gives them when the statement runs.
+var prepareKinds = []string{"no such table", "already exists", "has no column named", "no such column", "values were supplied", " values for ", "duplicate column name", "too many columns on"}
+
 // The kinds of the texts that the comparison excuses, under which [tally.excused] counts them.
 const (
 	// excusedPrepare is a text whose error SQLite gives when it prepares the text, and s4ql when the
-	// statement runs, because s4ql's Prepare checks only the text: `no such table`, `already exists`,
-	// and `has no column named` through Prepare.
+	// statement runs, because s4ql's Prepare checks only the text: the errors of [prepareKinds]
+	// through Prepare.
 	excusedPrepare = "SQLite's error at prepare, s4ql's at the run of the statement"
 	// excusedStartedTable is the one difference from SQLite that the engine's tests accept too; see
 	// [stmttest.ExistsAfterStart].
@@ -755,7 +763,7 @@ func (p *pair) where(c call, src string) (runner, runner, string) {
 		// The statements of a sql.Conn run in its transaction.
 		return p.s, p.o, t.kind()
 	}
-	if s, _ := checkText(src); s != nil {
+	if s, _ := stmt.Check(src); s != nil {
 		if _, ok := s.(*stmt.Select); ok {
 			return p.s, p.o, "beside a " + t.kind()
 		}
@@ -1060,7 +1068,7 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 	// gives before it binds the arguments, so that it runs there without them, or the outcome of a
 	// statement that s4ql ran, which must have had an argument that s4ql supports for each
 	// parameter in each run, and which runs there with them.
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	byText := err != nil || s == nil
 	mattnRuns := runs
 	if byText {
@@ -1089,7 +1097,7 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 		want = run(tb, o, c, first, mattnRuns, mattnText)
 	}
 	if t, ok := o.(inTx); ok && !p.pinned && (c == callStmtExec && !isSelect || c == callStmtQuery) && want.failed == "prepare" &&
-		slices.Contains([]string{"no such table", "already exists", "has no column named"}, messageKind(want.err)) {
+		slices.Contains(prepareKinds, messageKind(want.err)) {
 		// Through the pool, mattn's Prepare on the sql.DB ran outside the transaction, on another
 		// connection, and failed on the names of the state there, before database/sql prepared the
 		// statement again in the transaction. s4ql's Prepare checks only the text.
@@ -1099,12 +1107,12 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 	if !p.pinned {
 		// Through the pool, the count of changes is that of the connection that database/sql takes,
 		// so it is compared only for a statement that sets it. In slice 1 that is an insert.
-		if s, _ := checkText(src); s == nil || fmt.Sprintf("%T", s) != "*stmt.Insert" {
+		if s, _ := stmt.Check(src); s == nil || fmt.Sprintf("%T", s) != "*stmt.Insert" {
 			got.affected, want.affected = "", ""
 		}
 	}
 	if got.String() == want.String() {
-		if s, _ := checkText(src); s != nil && got.failed == "" {
+		if s, _ := stmt.Check(src); s != nil && got.failed == "" {
 			if ct, ok := s.(*stmt.CreateTable); ok {
 				p.created[ct.Table.Value] = true
 			}
@@ -1115,7 +1123,7 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 	switch {
 	case (c == callPrepareExec || c == callPrepareExecRuns || c == callStmtExec) && got.failed == "exec" || (c == callPrepareQuery || c == callStmtQuery) && got.failed == "query":
 		// SQLite gives the error when it prepares the text, and s4ql in each run of the statement.
-		if want.failed == "prepare" && slices.Contains([]string{"no such table", "already exists", "has no column named"}, messageKind(got.err)) &&
+		if want.failed == "prepare" && slices.Contains(prepareKinds, messageKind(got.err)) &&
 			!slices.ContainsFunc(got.runs(), func(o outcome) bool { return o.failed != got.failed || o.err != want.err }) {
 			p.y.excused(excusedPrepare)
 			return ""
@@ -1135,7 +1143,7 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 func (p *pair) checkNotSupported(src string, c call, supported bool, runs [][]any, got outcome) string {
 	tb := p.tb
 	tb.Helper()
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err == nil && s != nil {
 		return p.checkRefused(src, s, runs, got)
 	}
@@ -1254,23 +1262,10 @@ func converted(a any) any {
 	return a
 }
 
-// checkText src as the driver checks a text at Prepare: as [stmt.Check] does, and with the "not
-// supported" of [engine.Check] for a statement of slice 5 that the pass supports and the engine does
-// not run yet, which the tests take for a text that is not supported.
-func checkText(src string) (stmt.Statement, error) {
-	s, err := stmt.Check(src)
-	if err == nil && s != nil {
-		if err := engine.Check(src, s.Parameters()); errors.Is(err, stmt.ErrNotSupported) {
-			return nil, err
-		}
-	}
-	return s, err
-}
-
 // reaches reports whether s4ql takes src with args to the instance: the text holds a statement that
 // s4ql supports, with one argument for each parameter, each one that s4ql supports.
 func reaches(src string, args []any) bool {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	return err == nil && s != nil && len(args) == s.Parameters() && argumentRefusal(args) == ""
 }
 
@@ -2085,9 +2080,12 @@ func TestGenerated(t *testing.T) {
 	// begin on a pinned connection whose transaction is open, which both refuse ([excusedTxOpen]); and
 	// a statement prepared outside a transaction through the pool, whose names only the transaction
 	// has ([excusedOutside]).
+	// Since slice 5 the engine runs the insert without a list of columns and the select of a column
+	// of [stmttest.Others], which Prepare refused before: so excusedPrepare moved from 1010,
+	// excusedType from 173, excusedRowsOpen from 37, and excusedOutside from 48.
 	want := map[string]int{
-		excusedPrepare: 1010, excusedStartedTable: 12, excusedArguments: 395, excusedArgument: 126, excusedType: 173,
-		excusedLevel: 78, excusedRowsOpen: 37, excusedTxOpen: 22, excusedOutside: 48,
+		excusedPrepare: 1012, excusedStartedTable: 12, excusedArguments: 395, excusedArgument: 126, excusedType: 180,
+		excusedLevel: 78, excusedRowsOpen: 38, excusedTxOpen: 22, excusedOutside: 49,
 	}
 	kinds := slices.Collect(maps.Keys(want))
 	for name := range y {

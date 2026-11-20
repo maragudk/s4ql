@@ -339,10 +339,10 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 	if err != nil {
 		return Result{}, err
 	}
-	if err := s.check(); err != nil {
-		return Result{}, err
-	}
 	failed := Result{SetsChanges: insert}
+	if err := s.check(); err != nil {
+		return checked(failed, err), err
+	}
 	n, err := s.run(ctx)
 	if err != nil {
 		return failed, err

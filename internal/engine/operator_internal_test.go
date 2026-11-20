@@ -160,8 +160,10 @@ func (x fakeTx) get(_ context.Context, name string, key []*s4qlpb.Value) ([]*s4q
 	if x.f.getFails != nil {
 		return nil, x.f.getFails
 	}
-	for _, row := range x.f.tables[fold(name)].rows {
-		if row[0].GetInteger() == key[0].GetInteger() {
+	t := x.f.tables[fold(name)]
+	k := t.ct.GetPrimaryKey()[0]
+	for _, row := range t.rows {
+		if row[k].GetInteger() == key[0].GetInteger() {
 			return row, nil
 		}
 	}
@@ -197,7 +199,8 @@ func (x fakeTx) upsert(_ context.Context, name string, row []*s4qlpb.Value) erro
 		return x.f.upsertFails
 	}
 	t := x.f.tables[fold(name)]
-	t.rows = slices.DeleteFunc(t.rows, func(r []*s4qlpb.Value) bool { return r[0].GetInteger() == row[0].GetInteger() })
+	k := t.ct.GetPrimaryKey()[0]
+	t.rows = slices.DeleteFunc(t.rows, func(r []*s4qlpb.Value) bool { return r[k].GetInteger() == row[k].GetInteger() })
 	t.rows = append(t.rows, row)
 	return nil
 }
@@ -503,34 +506,39 @@ func TestBuild(t *testing.T) {
 		is.Equal(t, "no such table: u", err.Error())
 	})
 
-	t.Run("should fail with an internal error for plans that no statement of slice 1 gives", func(t *testing.T) {
+	t.Run("should fail with an internal error for plans that no supported statement gives", func(t *testing.T) {
 		one := [][]Expr{{&Integer{Value: 1}}}
 		v := []stmt.Name{{Value: "v"}}
+		ab := []ColumnDef{{Name: stmt.Name{Value: "a"}}, {Name: stmt.Name{Value: "b"}}}
 		cases := []struct {
 			name string
 			plan Plan
 			err  string
 		}{
 			{name: "a query of VALUES", plan: &Query{Root: &Values{Rows: one}}, err: "a query of a node of type *engine.Values"},
-			{name: "a projection without *", plan: &Query{Root: &Project{Source: &Scan{Table: stmt.Name{Value: "t"}}}}, err: "a projection without *"},
+			{name: "a projection of no columns", plan: &Query{Root: &Project{Source: &Scan{Table: stmt.Name{Value: "t"}}}}, err: "a projection of no columns"},
 			{name: "a projection of VALUES", plan: &Query{Root: &Project{Source: &Values{Rows: one}, Star: true}}, err: "a query of a node of type *engine.Values"},
 			{name: "an insert from a table", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Scan{Table: stmt.Name{Value: "u"}}}, err: "an insert from a node of type *engine.Scan"},
 			{name: "an insert of two rows", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Integer{Value: 1}}, {&Integer{Value: 2}}}}}, err: "an insert of 2 rows"},
 			{name: "an insert of no rows", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{}}, err: "an insert of 0 rows"},
-			{name: "an insert of two values", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Integer{Value: 1}, &Integer{Value: 2}}}}}, err: "an insert of 2 values"},
-			{name: "an insert into a table of two columns", plan: &Insert{Table: stmt.Name{Value: "ab"}, Columns: []stmt.Name{{Value: "a"}}, Source: &Values{Rows: one}}, err: "an insert of 1 columns into a table of 2 columns with the key [0]"},
-			{name: "an insert into a table without a key", plan: &Insert{Table: stmt.Name{Value: "nokey"}, Columns: v, Source: &Values{Rows: one}}, err: "an insert of 1 columns into a table of 1 columns with the key []"},
-			{name: "an insert into two columns", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: []stmt.Name{{Value: "v"}, {Value: "V"}}, Source: &Values{Rows: one}}, err: "an insert of 2 columns into a table of 1 columns with the key [0]"},
+			{name: "an insert into a table without a key", plan: &Insert{Table: stmt.Name{Value: "nokey"}, Columns: v, Source: &Values{Rows: one}}, err: "an insert into a table of 1 columns with the key []"},
+			{name: "an insert into a table with a key of two columns", plan: &Insert{Table: stmt.Name{Value: "ab"}, Columns: []stmt.Name{{Value: "a"}}, Source: &Values{Rows: one}}, err: "an insert into a table of 2 columns with the key [0 1]"},
+			{name: "an insert into a table with a key outside its columns", plan: &Insert{Table: stmt.Name{Value: "far"}, Columns: v, Source: &Values{Rows: one}}, err: "an insert into a table of 1 columns with the key [1]"},
+			{name: "an insert into one column twice", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: []stmt.Name{{Value: "v"}, {Value: "V"}}, Source: &Values{Rows: [][]Expr{{&Integer{Value: 1}, &Integer{Value: 2}}}}}, err: "an insert that names the column v twice"},
 			{name: "a plan of a type that the engine does not know", plan: unknownPlan{}, err: "a plan of type engine.unknownPlan"},
-			{name: "a table of two columns", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}, {Name: stmt.Name{Value: "b"}}}, PrimaryKey: []int{0}}, err: "a table of 2 columns with the key [0]"},
+			{name: "a table with a key of two columns", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: ab, PrimaryKey: []int{0, 1}}, err: "a table of 2 columns with the key [0 1]"},
+			{name: "a table with a key outside its columns", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: ab, PrimaryKey: []int{2}}, err: "a table of 2 columns with the key [2]"},
+			{name: "a table with a negative key", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: ab, PrimaryKey: []int{-1}}, err: "a table of 2 columns with the key [-1]"},
 			{name: "an insert of a parameter without its argument", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Parameter{Number: 1}}}}}, err: "the parameter 1 of a statement with 0 arguments"},
 			{name: "an insert of the parameter 0", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Parameter{Number: 0}}}}}, err: "the parameter 0 of a statement with 0 arguments"},
 			{name: "a table without a key", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}}}, err: "a table of 1 columns with the key []"},
 		}
 		for _, c := range cases {
 			t.Run(c.name, func(t *testing.T) {
-				f := newFake().with("t", []string{"v"}, []int64{1}).with("ab", []string{"a", "b"}).with("nokey", []string{"v"})
+				f := newFake().with("t", []string{"v"}, []int64{1}).with("ab", []string{"a", "b"}).with("nokey", []string{"v"}).with("far", []string{"v"})
 				f.tables["nokey"].ct.SetPrimaryKey(nil)
+				f.tables["ab"].ct.SetPrimaryKey([]uint32{0, 1})
+				f.tables["far"].ct.SetPrimaryKey([]uint32{1})
 				var err error
 				if q, ok := c.plan.(*Query); ok {
 					_, err = buildQuery(t.Context(), fakeTx{f}, q)

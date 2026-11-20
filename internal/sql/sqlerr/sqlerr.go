@@ -17,6 +17,9 @@ const (
 	// CodeConstraintPrimaryKey is SQLITE_CONSTRAINT_PRIMARYKEY, the extended code of a primary key
 	// that a statement would have twice.
 	CodeConstraintPrimaryKey = CodeConstraint | 6<<8
+	// CodeConstraintNotNull is SQLITE_CONSTRAINT_NOTNULL, the extended code of a column of NOT NULL
+	// that a statement would leave without a value.
+	CodeConstraintNotNull = CodeConstraint | 5<<8
 	// CodeReadOnly is SQLITE_READONLY, the code of a write that the connection may not make, such as
 	// one under `pragma query_only`.
 	CodeReadOnly = 8
