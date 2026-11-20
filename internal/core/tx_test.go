@@ -3247,6 +3247,10 @@ func TestTx_Keys(t *testing.T) {
 		is.Error(t, core.ErrClosed, tx.Keys(ctx, "t", func(k *core.KeySet) error {
 			is.NotError(t, k.Add(ctx, row(1)))
 			is.NotError(t, d.Close(ctx))
+			is.Error(t, core.ErrClosed, k.Add(ctx, row(2)))
+			for _, err := range k.All(ctx) {
+				is.Error(t, core.ErrClosed, err)
+			}
 			return nil
 		}))
 		_ = tx.Rollback(ctx)
