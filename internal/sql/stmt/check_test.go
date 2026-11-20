@@ -1216,7 +1216,14 @@ func TestCheck(t *testing.T) {
 			} else {
 				is.NotError(t, err)
 			}
-			is.Equal(t, fmt.Sprintf("%#v", c.want), fmt.Sprintf("%#v", s))
+			want := c.want
+			if ct, ok := want.(*stmt.CreateTable); ok && ct.SQL == "" {
+				// verify checks the text that SQLite keeps against SQLite.
+				copied := *ct
+				copied.SQL = s.(*stmt.CreateTable).SQL
+				want = &copied
+			}
+			is.Equal(t, fmt.Sprintf("%#v", want), fmt.Sprintf("%#v", s))
 			verify(t, c.src)
 		})
 	}

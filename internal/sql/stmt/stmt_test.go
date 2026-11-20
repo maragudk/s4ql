@@ -469,6 +469,8 @@ func checkCreateTable(t testing.TB, open func(testing.TB) *db, src string, s *st
 	d := open(t)
 	is.Equal(t, d.parameters(src), s.Parameters(), src)
 	d.must(src)
+	_, kept := d.query("select sql from sqlite_schema where name = ?", s.Table.Value)
+	is.Equal(t, fmt.Sprint([][]string{{"text:" + s.SQL}}), fmt.Sprint(kept), src)
 	got := d.schema()
 	want := open(t)
 	want.must(canonical(s))

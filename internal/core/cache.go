@@ -527,7 +527,9 @@ func typeOf(declared string) (s4qlpb.Type, bool) {
 // rowid, with the names and the columns of the database's table. A column that takes NULL is
 // declared "default null", which is how [conn.load] tells it, and every other column outside the
 // primary key "not null", so that SQLite refuses a NULL there too; a primary-key column of a table
-// without a rowid never takes NULL.
+// without a rowid never takes NULL. A primary key of one column is declared with the column, so
+// that its name is not in the text twice, and the text fits in the length limit as often as it can:
+// see [conn.create].
 func (t *table) createSQL() (string, error) {
 	var b strings.Builder
 	b.WriteString("create table main.")
@@ -538,20 +540,27 @@ func (t *table) createSQL() (string, error) {
 		if err != nil {
 			return "", err
 		}
+		if i > 0 {
+			b.WriteString(", ")
+		}
 		b.WriteString(quote(c.name))
 		b.WriteString(" ")
 		b.WriteString(typ)
 		switch {
+		case len(t.key) == 1 && t.inKey[i]:
+			b.WriteString(" primary key")
 		case c.nullable:
 			b.WriteString(" default null")
 		case !t.inKey[i]:
 			b.WriteString(" not null")
 		}
-		b.WriteString(", ")
 	}
-	b.WriteString("primary key (")
-	b.WriteString(t.columnList(t.key))
-	b.WriteString(")) strict, without rowid")
+	if len(t.key) > 1 {
+		b.WriteString(", primary key (")
+		b.WriteString(t.columnList(t.key))
+		b.WriteString(")")
+	}
+	b.WriteString(") strict, without rowid")
 	return b.String(), nil
 }
 
@@ -945,24 +954,38 @@ func (c *conn) delete(t *table, key []*s4qlpb.Value) (bool, error) {
 }
 
 // create the table in the cache.
+//
+// It fails with an error that wraps [ErrInvalid] for a table whose statement is longer than the
+// length limit as SQLite keeps it in its schema, without "main.", since a connection under the
+// limit cannot read a schema that holds a longer text.
 func (c *conn) create(t *table) error {
 	sql, err := t.createSQL()
 	if err != nil {
 		return err
 	}
-	// A statement that changes the schema is not kept, and those at rest are prepared again.
-	c.forget()
-	if err := c.c.Exec(sql); err != nil {
-		return err
+	if kept := len(sql) - len("main."); kept > c.limit {
+		return invalidf("a table whose statement in the cache is %v bytes, where the limit is %v", kept, c.limit)
 	}
-	c.forget()
-	return nil
+	return c.changeSchema(sql)
 }
 
 // drop the table from the cache, with its rows.
 func (c *conn) drop(t *table) error {
+	return c.changeSchema(fmt.Sprint("drop table main.", quote(t.name)))
+}
+
+// changeSchema with the statement sql, under SQLite's largest length limit. SQLite formats the
+// statements with which it changes its schema under the limit, and they hold the name of the table
+// and, for a create, the statement, so it refuses as too big a table whose statement is a little
+// shorter than the limit. A statement that changes the schema is not kept, and those at rest are
+// prepared again.
+func (c *conn) changeSchema(sql string) error {
 	c.forget()
-	if err := c.c.Exec(fmt.Sprint("drop table main.", quote(t.name))); err != nil {
+	if err := c.c.SetLengthLimit(maxLength); err != nil {
+		return err
+	}
+	err := c.c.Exec(sql)
+	if err := errors.Join(err, c.c.SetLengthLimit(c.limit)); err != nil {
 		return err
 	}
 	c.forget()

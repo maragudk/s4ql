@@ -2646,24 +2646,86 @@ func TestTx_tooBig(t *testing.T) {
 		}
 	})
 
-	t.Run("should refuse a create table whose declaration in the cache is longer than the limit, and commit nothing of it", func(t *testing.T) {
+	t.Run("should refuse a create table whose statement in the cache is longer than the limit, and go on without it", func(t *testing.T) {
 		w := newWorld(t)
 		d := w.serve(t, "a", options)
 		ctx := t.Context()
-		head := w.manifest(t).Head
-		// SQLite stores the text of the declaration in sqlite_schema, where it is longer than the
-		// limit.
-		long := tableOf("t", 1, "k", strings.Repeat("v", limit))
-		tx, err := d.Begin(ctx)
+		// SQLite keeps the statement in sqlite_schema, where a connection under the limit could not
+		// read it.
+		for _, long := range []*s4qlpb.CreateTable{
+			tableOf("t", 1, "k", strings.Repeat("v", limit)),
+			tableOf("t", 1, strings.Repeat("k", limit)),
+			tableOf(strings.Repeat("t", limit), 1, "k"),
+		} {
+			tx, err := d.Begin(ctx)
+			is.NotError(t, err)
+			is.Error(t, core.ErrInvalid, tx.CreateTable(ctx, long))
+			is.NotError(t, tx.CreateTable(ctx, tableOf("u", 1, "k")), "the transaction goes on")
+			is.NotError(t, tx.Commit(ctx))
+			transact(t, d, func(t *testing.T, tx *core.Tx) {
+				is.NotError(t, tx.DropTable(t.Context(), "u"))
+			})
+		}
+		r, err := startRead(t, d)
 		is.NotError(t, err)
-		err = tx.CreateTable(ctx, long)
-		// SQLite's own error, which is neither ErrTooBig nor ErrInvalid: see docs/todo.md.
-		se, ok := errors.AsType[*sqlite.Error](err)
-		is.True(t, ok && se.Code == 18, fmt.Sprint("not SQLite's string or blob too big: ", err))
-		is.True(t, tx.CreateTable(ctx, tableOf("u", 1, "k")) != nil, "the transaction goes on")
-		is.True(t, tx.Commit(ctx) != nil, "the commit succeeded")
-		is.Equal(t, head, w.manifest(t).Head, "the log has a new commit object")
+		tables, err := r.Tables(ctx)
+		is.NotError(t, err)
+		is.Equal(t, 0, len(tables))
+		is.NotError(t, r.Close(ctx))
 		_ = d.Close(ctx)
+	})
+
+	t.Run("should create and drop a table whose statement, as SQLite keeps it, is as long as the limit, and read it after a restart, and refuse one a byte longer", func(t *testing.T) {
+		// The statement in the cache of a table with the key k, without "main.", which SQLite does
+		// not keep.
+		n := limit - len(`create table "" ("k" int primary key) strict, without rowid`)
+		w := newWorld(t)
+		d := w.serve(t, "a", options)
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		is.Error(t, core.ErrInvalid, tx.CreateTable(t.Context(), tableOf(strings.Repeat("t", n+1), 1, "k")))
+		is.NotError(t, tx.CreateTable(t.Context(), tableOf(strings.Repeat("t", n), 1, "k")))
+		is.NotError(t, tx.Commit(t.Context()))
+		is.NotError(t, d.Close(t.Context()))
+		d = w.serve(t, "a", options)
+		transact(t, d, func(t *testing.T, tx *core.Tx) {
+			is.NotError(t, tx.Upsert(t.Context(), strings.Repeat("t", n), row(1)))
+			is.NotError(t, tx.DropTable(t.Context(), strings.Repeat("t", n)))
+		})
+		is.NotError(t, d.Close(t.Context()))
+	})
+
+	t.Run("should create a table whose statement fits in the limit, which SQLite cannot write into its schema under the limit, and read it after a restart and a replay", func(t *testing.T) {
+		// SQLite writes the table into sqlite_schema with a statement that holds the name of the
+		// table twice and the statement that creates it, which is longer than the limit for these.
+		x := strings.Repeat("x", 300)
+		for _, table := range []*s4qlpb.CreateTable{
+			tableOf(x, 1, "k", "v"),
+			tableOf("t", 1, x, "v"),
+			tableOf("t", 2, x[:200], strings.Repeat("y", 200)),
+		} {
+			w := newWorld(t)
+			d := w.serve(t, "a", options)
+			transact(t, d, func(t *testing.T, tx *core.Tx) {
+				is.NotError(t, tx.CreateTable(t.Context(), table))
+				is.NotError(t, tx.Upsert(t.Context(), table.GetTable(), row(1, 2)))
+			})
+			is.NotError(t, d.Close(t.Context()))
+			// The same cache opens again, and another one replays the log.
+			for _, cache := range []string{"a", "b"} {
+				d := w.serve(t, cache, options)
+				r, err := startRead(t, d)
+				is.NotError(t, err)
+				got, err := r.Table(t.Context(), table.GetTable())
+				is.NotError(t, err)
+				is.True(t, proto.Equal(table, got), cache)
+				rows, err := r.Get(t.Context(), table.GetTable(), row(1, 2)[:len(table.GetPrimaryKey())])
+				is.NotError(t, err)
+				is.Equal(t, fmt.Sprint(row(1, 2)), fmt.Sprint(rows), cache)
+				is.NotError(t, r.Close(t.Context()))
+				is.NotError(t, d.Close(t.Context()))
+			}
+		}
 	})
 
 	t.Run("should fail the transaction, and write no commit object, where the temporary tables of the keys that it touched cannot be created or dropped", func(t *testing.T) {
