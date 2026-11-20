@@ -2289,6 +2289,77 @@ func TestTx_types(t *testing.T) {
 	})
 }
 
+func TestTx_readFails(t *testing.T) {
+	// key of the row i, of 900 bytes, so that the rows take more pages than SQLite's page cache
+	// holds and SQLite reads some of them from the file again.
+	key := func(i int) string { return fmt.Sprintf("%0900d", i) }
+	const rows = 4000
+	setUp := func(t *testing.T) (*faultvfs.VFS, *world, *core.DB) {
+		t.Helper()
+		vfs, err := faultvfs.New()
+		is.NotError(t, err)
+		w := newWorld(t)
+		o := core.Options{}
+		o.VFS = vfs.Name()
+		d := w.serve(t, "a", o)
+		transact(t, d, func(t *testing.T, tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(t.Context(), typedTable("t", s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_INT)))
+			for i := range rows {
+				is.NotError(t, tx.Upsert(t.Context(), "t", row(key(i), i)))
+			}
+		})
+		return vfs, w, d
+	}
+	reads := faultvfs.Fault{Ops: faultvfs.Read, Files: faultvfs.MainDB | faultvfs.WAL}
+
+	t.Run("should fail the transaction for an upsert into a table that existed, when SQLite cannot read whether the row is there", func(t *testing.T) {
+		vfs, _, d := setUp(t)
+		ctx := t.Context()
+		tx, err := d.Begin(ctx)
+		is.NotError(t, err)
+		// Only the first read fails, which is that of the row before the upsert writes it.
+		once := reads
+		once.Times = 1
+		vfs.Fail(once)
+		for i := range rows {
+			if err = tx.Upsert(ctx, "t", row(key(i), -i)); err != nil {
+				break
+			}
+		}
+		is.True(t, vfs.Failures() > 0, "no read failed")
+		is.Error(t, core.ErrLocal, err)
+		vfs.Fail(faultvfs.Fault{})
+		_ = tx.Rollback(ctx)
+		_ = d.Close(ctx)
+		is.NotError(t, vfs.Close())
+	})
+
+	t.Run("should fail the commit, and write no commit object, when SQLite cannot read the rows that the transaction touched", func(t *testing.T) {
+		vfs, w, d := setUp(t)
+		ctx := t.Context()
+		head := w.manifest(t).Head
+		tx, err := d.Begin(ctx)
+		is.NotError(t, err)
+		for i := 0; i < rows; i += 2 {
+			is.NotError(t, tx.Upsert(ctx, "t", row(key(i), -i)))
+			_, err := tx.Delete(ctx, "t", row(key(i+1)))
+			is.NotError(t, err)
+		}
+		// Only the first read fails, which is that of the rows that the transaction upserted, so that
+		// every later step of the commit would work.
+		once := reads
+		once.Times = 1
+		vfs.Fail(once)
+		err = tx.Commit(ctx)
+		is.True(t, vfs.Failures() > 0, "no read failed")
+		is.True(t, err != nil, "the commit succeeded")
+		is.Equal(t, head, w.manifest(t).Head, "the log has a new commit object")
+		vfs.Fail(faultvfs.Fault{})
+		_ = d.Close(ctx)
+		is.NotError(t, vfs.Close())
+	})
+}
+
 func TestTx_tooBig(t *testing.T) {
 	// limit is the length limit of the cache in these tests, which SQLite does not raise.
 	const limit = 1000
