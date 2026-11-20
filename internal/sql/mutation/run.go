@@ -88,6 +88,9 @@ type stage struct {
 	tests    []string
 	baseline time.Duration
 	timeout  time.Duration
+	// first reports whether the stage holds the hand-written tests of the mutated package that
+	// -first names, which run before its other hand-written tests.
+	first bool
 }
 
 // result of a mutant.
@@ -127,6 +130,8 @@ type runner struct {
 	memory  int64
 	procs   int
 	gocache string
+	// first names the hand-written tests of the mutated package that run first, or is nil.
+	first *regexp.Regexp
 	// stages of the tests for each mutated package, in order.
 	stages map[string][]stage
 }
@@ -206,6 +211,7 @@ func (r *runner) plan(pkgs []string) error {
 				built[tp] = tests
 			}
 			byLayer := map[string][]string{}
+			var first []string
 			for _, t := range tests {
 				l := layerOther
 				switch {
@@ -229,19 +235,33 @@ func (r *runner) plan(pkgs []string) error {
 				case tp == pkg:
 					l = layerHand
 				}
+				if tp == pkg && l == layerHand && r.first != nil && r.first.MatchString(t) {
+					first = append(first, t)
+					continue
+				}
 				byLayer[l] = append(byLayer[l], t)
 			}
 			for l, ts := range byLayer {
 				stages = append(stages, stage{layer: l, pkg: tp, tests: ts})
+			}
+			if first != nil {
+				stages = append(stages, stage{layer: layerHand, pkg: tp, tests: first, first: true})
 			}
 		}
 		slices.SortFunc(stages, func(a, b stage) int {
 			if d := slices.Index(layers, a.layer) - slices.Index(layers, b.layer); d != 0 {
 				return d
 			}
-			// Among the hand-written tests, those of the mutated package run first.
+			// Among the hand-written tests, those of the mutated package run first, and among them those
+			// that -first names.
 			if (a.pkg == pkg) != (b.pkg == pkg) {
 				if a.pkg == pkg {
+					return -1
+				}
+				return 1
+			}
+			if a.first != b.first {
+				if a.first {
 					return -1
 				}
 				return 1

@@ -38,6 +38,7 @@ The target runs `go run ./internal/sql/mutation -out DIR` in the root of the mod
 | `-memory` | 4294967296 | The limit of the resident memory of a test binary, in bytes. |
 | `-gocache` | the usual cache | GOCACHE for the builds of the mutants. |
 | `-equivalent` | `internal/sql/mutation/equivalent.txt` | The list of equivalent mutants. |
+| `-first` | | A regular expression. The hand-written tests of the mutated package that it names run first, in a stage of their own, before its other hand-written tests. |
 
 Before you start a run, know these points:
 
