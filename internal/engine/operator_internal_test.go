@@ -364,6 +364,15 @@ func TestValues(t *testing.T) {
 		_, err := collect(ctx, v)
 		is.True(t, errors.Is(err, context.Canceled))
 	})
+
+	t.Run("should not build the values of a row of another number of values than its columns, an internal error", func(t *testing.T) {
+		row := []Expr{&Integer{Value: 1}, &Integer{Value: 2}}
+		for _, positions := range [][]int{{0}, {0, 1, 2}} {
+			_, _, err := buildValues(&Values{Rows: [][]Expr{row}}, nil, positions, 3)
+			is.True(t, errors.Is(err, ErrInternal), fmt.Sprint(positions))
+			is.Equal(t, fmt.Sprint("s4ql: internal error: a row of 2 values for ", len(positions), " columns"), err.Error())
+		}
+	})
 }
 
 func TestProject(t *testing.T) {
