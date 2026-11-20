@@ -141,6 +141,18 @@ func (c *checker) commit(o *CommitObject) {
 	c.commits[o.Name] = o
 }
 
+// seed the checker with the log of a bucket that the store holds from before the run, from the first
+// commit object to the head, which [checker.commit] has given it. The bucket was checked as the
+// invariants check a log, so the log is one chain with each key once.
+func (c *checker) seed(log []*CommitObject, head string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, o := range log {
+		c.extend(o)
+	}
+	c.head = head
+}
+
 // manifest that the store applied: check that its head extends the chain.
 func (c *checker) manifest(_ context.Context, m *ManifestObject) {
 	c.mu.Lock()
