@@ -416,6 +416,9 @@ func TestTx_Commit(t *testing.T) {
 		is.Error(t, core.ErrTableExists, tx.CreateTable(ctx, tableOf("T1", 1, "k")))
 		is.Error(t, core.ErrNoTable, tx.DropTable(ctx, "t9"))
 		is.Error(t, core.ErrNoTable, tx.Upsert(ctx, "t9", row(1)))
+		inserted, err := tx.Insert(ctx, "t9", row(1))
+		is.Error(t, core.ErrNoTable, err)
+		is.True(t, !inserted, "an insert into no table inserted")
 		_, err = tx.Delete(ctx, "t9", row(1))
 		is.Error(t, core.ErrNoTable, err)
 		_, err = tx.Get(ctx, "t9", row(1))
@@ -428,6 +431,8 @@ func TestTx_Commit(t *testing.T) {
 		is.Error(t, core.ErrNoTable, err)
 		is.Error(t, core.ErrNoTable, tx.DropTable(ctx, "s4ql_cache"))
 		is.Error(t, core.ErrNoTable, tx.Upsert(ctx, "s4ql_cache", row(1, 0, "x")))
+		_, err = tx.Insert(ctx, "s4ql_cache", row(1, 0, "x"))
+		is.Error(t, core.ErrNoTable, err)
 
 		for _, name := range []string{"s4ql_cache", "s4ql_", "S4QL_x", "s4Ql_touched_1", "sqlite_schema", "SQLITE_x", "sqlite_"} {
 			is.Error(t, core.ErrReservedName, tx.CreateTable(ctx, tableOf(name, 1, "k")))
