@@ -65,13 +65,39 @@ type Summary struct {
 
 // The table of the workload, with one column of integers, its primary key, and the statements of
 // the calls. A write inserts the row of its key, and creates the table first if the database does
-// not have it. A read selects the keys above its bound.
+// not have it. A read selects the row of one key.
 const (
 	tableName = "barcodes"
-	createSQL = "create table barcodes (id integer primary key) strict, without rowid"
-	insertSQL = "insert into barcodes (id) values (?)"
-	selectSQL = "select id from barcodes where id > ?"
+	createSQL = "create table barcodes (code integer primary key) strict, without rowid"
+	insertSQL = "insert into barcodes (code) values (?)"
+	selectSQL = "select code from barcodes where code = ?"
 )
+
+// barcode is the key of the nth write of a run, from 1: a number of 13 digits in the form of an
+// EAN-13 barcode, the prefix 57, ten digits that a bijection of n modulo 10^10 gives, and the check
+// digit of EAN-13. So the keys of a run are distinct, and do not rise with n. The bijection is four
+// rounds of a Feistel network on the two halves of five digits each: a round maps (hi, lo) to
+// (lo, hi + f(lo)) modulo 10^5, which can be undone whatever f is.
+func barcode(n int64) int64 {
+	const half = 100_000
+	x := n % (half * half)
+	hi, lo := x/half, x%half
+	for round := range int64(4) {
+		hi, lo = lo, (hi+(lo*lo*31_337+lo*7_919+round*104_729+12_345)%half)%half
+	}
+	body := 57*half*half + hi*half + lo
+	sum := int64(0)
+	for i, d := 0, body; i < 12; i, d = i+1, d/10 {
+		// The digit at i from the right is at the position 12-i from the left, and EAN-13 weighs
+		// the even positions by 3.
+		w := int64(1)
+		if i%2 == 0 {
+			w = 3
+		}
+		sum += w * (d % 10)
+	}
+	return body*10 + (10-sum%10)%10
+}
 
 // prefix of the database in the store.
 const prefix = "db"
@@ -500,32 +526,44 @@ func (r *run) caller(ctx context.Context, p *process, name string) {
 }
 
 // call of the application, by its caller: its number, whether it writes, the key that a write
-// inserts or the bound above which a read selects, and when it started.
+// inserts or that a read selects, and when it started.
 type call struct {
 	n       int
 	caller  string
 	write   bool
 	value   int64
-	bound   int64
+	key     int64
 	started time.Duration
 	// ended is set once the event that ends the call is in the trace. It is guarded by the mutex of
 	// the run.
 	ended bool
 }
 
-// newCall of the caller, which starts now. A write takes the next key. A read takes its bound, the
-// window of the workload below the last key that a write took, so that it selects the rows of the
-// last writes, however many rows the table has.
+// recentKeys is the number of the last keys taken among which a read picks the one it selects, when
+// it does not select the newest acknowledged key.
+const recentKeys = 50
+
+// newCall of the caller, which starts now. A write takes the key of the next value of the counter of
+// the run. A read picks the key that it selects, by a number from the seed: half of the reads the key
+// of the newest write acknowledged so far, whose row a read that is not stale gives, and the others
+// the key of one of the last [recentKeys] values taken, also of a write that failed or is still on
+// its way, whose row a read need not find.
 func (r *run) newCall(caller string, write bool) *call {
+	acked, ok := r.check.lastAcked()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls++
 	c := &call{n: r.calls, caller: caller, write: write, started: r.world.Monotonic()}
 	if write {
 		r.values++
-		c.value = r.values
+		c.value = barcode(r.values)
+		return c
+	}
+	u := r.world.Uint64()
+	if ok && u%2 == 0 {
+		c.key = acked
 	} else {
-		c.bound = max(0, r.values-int64(r.req.Workload.Window))
+		c.key = barcode(max(1, r.values-int64(u/2%recentKeys)))
 	}
 	return c
 }
@@ -535,7 +573,7 @@ func (c *call) statement() (string, int64) {
 	if c.write {
 		return insertSQL, c.value
 	}
-	return selectSQL, c.bound
+	return selectSQL, c.key
 }
 
 // event of the call c on the instance in, whose process is p or nil, that says what happened. An
@@ -601,10 +639,10 @@ func (r *run) serveCall(ctx context.Context, p *process, c *call) {
 		before := r.check.readStarted()
 		var keys []int64
 		var position format.Name
-		e.What, e.Error, keys, position = r.read(ctx, conn, c.bound)
+		e.What, e.Error, keys, position = r.read(ctx, conn, c.key)
 		if e.What == "served" {
 			e.Keys, e.Position = keys, position.String()
-			r.check.readEnded(ctx, p, before, c.bound, keys, position)
+			r.check.readEnded(ctx, p, before, c.key, keys, position)
 		}
 	}
 	r.callEnded(ctx, c, e)
@@ -639,15 +677,15 @@ func (r *run) write(ctx context.Context, conn *engine.Conn, value int64) (string
 	}
 }
 
-// read the keys above the bound with one select on conn, and say how the call ended, its error, and
+// read the row of the key with one select on conn, and say how the call ended, its error, and
 // what it saw: the keys, in order, and the position of the read, which the engine gives in its event
 // of the statement. A select on a database without the table is served with no rows and with the
 // error of the engine: it saw a state, which the checker checks as any other.
-func (r *run) read(ctx context.Context, conn *engine.Conn, bound int64) (string, string, []int64, format.Name) {
+func (r *run) read(ctx context.Context, conn *engine.Conn, key int64) (string, string, []int64, format.Name) {
 	seen := &statementSeen{}
 	ctx = context.WithValue(ctx, statementKey{}, seen)
 	keys := []int64{}
-	rows, err := conn.Query(ctx, selectSQL, s4qlpb.Value_builder{Integer: new(bound)}.Build())
+	rows, err := conn.Query(ctx, selectSQL, s4qlpb.Value_builder{Integer: new(key)}.Build())
 	if err == nil {
 		for row, rerr := range rows.All() {
 			if rerr != nil {

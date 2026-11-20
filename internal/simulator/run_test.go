@@ -3,6 +3,7 @@
 package simulator_test
 
 import (
+	"cmp"
 	"encoding/json/v2"
 	"fmt"
 	"slices"
@@ -188,9 +189,9 @@ func TestRun_actions(t *testing.T) {
 		is.Equal(t, 2, len(calls))
 		is.Equal(t, "visitor", calls[0].Caller)
 		is.Equal(t, "committed", calls[0].What)
-		is.Equal(t, int64(1), calls[0].Value)
+		is.Equal(t, 13, len(fmt.Sprint(calls[0].Value)))
 		is.Equal(t, "served", calls[1].What)
-		is.EqualSlice(t, []int64{1}, calls[1].Keys)
+		is.EqualSlice(t, []int64{calls[0].Value}, calls[1].Keys)
 	})
 
 	t.Run("should switch the workload off", func(t *testing.T) {
@@ -273,14 +274,21 @@ func TestRun_actions(t *testing.T) {
 			func(r simulator.RequestState) bool { return r.Request == cut[0].Request && r.Waiting }), "the caller waits for it before")
 	})
 
-	t.Run("should write with an insert and read with a select of the keys above the bound, and annotate each commit object with its statements", func(t *testing.T) {
-		res := run(t, &e, `{"seed": 2, "end": 120000, "instances": 1, "workload": {"callers": 6, "think": 500, "writes": 70, "window": 5}}`)
+	t.Run("should write barcodes with an insert, read one with a select, and annotate each commit object with its statements", func(t *testing.T) {
+		res := run(t, &e, `{"seed": 2, "end": 120000, "instances": 1, "workload": {"callers": 6, "think": 500, "writes": 70}}`)
+		// arg of a statement as text: JSON gives a number as a float64, which holds 13 digits exactly.
+		arg := func(v any) string {
+			if f, ok := v.(float64); ok {
+				return fmt.Sprint(int64(f))
+			}
+			return fmt.Sprint(v)
+		}
 		commits := find(res, func(e simulator.Event) bool { return e.What == "applied" && e.Object != nil && e.Object.Commit != nil })
 		is.True(t, len(commits) > 50, "many commit objects")
 		first := commits[0].Object.Commit
 		is.EqualSlice(t, []string{"barcodes"}, first.Tables)
 		is.Equal(t, 2, len(first.Statements))
-		is.Equal(t, "create table barcodes (id integer primary key) strict, without rowid", first.Statements[0].SQL)
+		is.Equal(t, "create table barcodes (code integer primary key) strict, without rowid", first.Statements[0].SQL)
 		is.Equal(t, 0, len(first.Statements[0].Args))
 		inserted := map[int64]bool{}
 		for _, ev := range commits {
@@ -289,34 +297,56 @@ func TestRun_actions(t *testing.T) {
 			inserted[c.Keys[0]] = true
 			is.True(t, len(c.Statements) > 0, "a commit object holds its statements")
 			insert := c.Statements[len(c.Statements)-1]
-			is.Equal(t, "insert into barcodes (id) values (?)", insert.SQL)
+			is.Equal(t, "insert into barcodes (code) values (?)", insert.SQL)
 			is.Equal(t, 1, len(insert.Args))
-			is.Equal(t, fmt.Sprint(c.Keys[0]), fmt.Sprint(insert.Args[0]))
+			is.Equal(t, fmt.Sprint(c.Keys[0]), arg(insert.Args[0]))
 		}
+		// Every key is a barcode of EAN-13 with the prefix 57, and the keys of the writes, in the
+		// order taken, are distinct and do not rise.
+		var keys []int64
+		for _, c := range find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.Op == "write" && e.What == "started" }) {
+			keys = append(keys, c.Value)
+		}
+		is.True(t, len(keys) > 50, "many writes")
+		seen, rises := map[int64]bool{}, 0
+		for i, k := range keys {
+			s := fmt.Sprint(k)
+			is.True(t, len(s) == 13 && s[:2] == "57", fmt.Sprint("a barcode of 13 digits with the prefix 57: ", s))
+			sum := 0
+			for j, d := range s[:12] {
+				sum += int(d-'0') * (1 + 2*(j%2))
+			}
+			is.Equal(t, (10-sum%10)%10, int(s[12]-'0'), "the check digit of "+s)
+			is.True(t, !seen[k], "a key once: "+s)
+			seen[k] = true
+			if i > 0 && k > keys[i-1] {
+				rises++
+			}
+		}
+		is.True(t, rises > len(keys)/4 && rises < len(keys)*3/4, fmt.Sprint(rises, " rises in ", len(keys), " keys"))
 		for _, c := range find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.Op == "write" }) {
-			is.Equal(t, "insert into barcodes (id) values (?)", c.SQL)
-			is.Equal(t, fmt.Sprint(c.Value), fmt.Sprint(c.Args[0]))
+			is.Equal(t, "insert into barcodes (code) values (?)", c.SQL)
+			is.Equal(t, fmt.Sprint(c.Value), arg(c.Args[0]))
 			if c.What == "committed" {
 				is.True(t, inserted[c.Value], fmt.Sprint("the commit of ", c.Value, " inserts it"))
 			}
 		}
+		// A read selects one key: half of them the newest acknowledged, whose row it finds, and the
+		// others one of the recent keys, also of writes that are not committed.
 		served := find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.What == "served" })
 		is.True(t, len(served) > 20, "many reads")
-		full := 0
+		found, missing := 0, 0
 		for _, r := range served {
-			is.Equal(t, "select id from barcodes where id > ?", r.SQL)
-			bound, ok := r.Args[0].(int64)
-			if !ok {
-				bound = int64(r.Args[0].(float64))
-			}
-			for i, k := range r.Keys {
-				is.True(t, k > bound && (i == 0 || k > r.Keys[i-1]), fmt.Sprint("a read above ", bound, " gives ", r.Keys))
-			}
-			if bound > 0 && len(r.Keys) >= 3 {
-				full++
+			is.Equal(t, "select code from barcodes where code = ?", r.SQL)
+			key := arg(r.Args[0])
+			is.True(t, len(r.Keys) == 0 || len(r.Keys) == 1 && fmt.Sprint(r.Keys[0]) == key, fmt.Sprint("a read of ", key, " gives ", r.Keys))
+			if len(r.Keys) == 1 {
+				found++
+			} else {
+				missing++
 			}
 		}
-		is.True(t, full > 10, "reads of the window, above a bound")
+		is.True(t, found > len(served)/2 && missing > 0, fmt.Sprint(found, " reads found their row, and ", missing, " did not"))
 		is.Equal(t, 0, res.Summary.Violations)
 	})
 
@@ -405,6 +435,9 @@ func TestRun_faults(t *testing.T) {
 	tests := []struct {
 		name, faults, schedule string
 		kind, what, text       string
+		// seed of the run, 5 if it is 0. A fault that needs a write on its way at a crash shows
+		// only with some seeds.
+		seed int
 	}{
 		{name: "lost requests", faults: `{"lostRequest": 0.2}`, kind: "request", what: "lost", text: "was lost on its way to the store"},
 		{name: "lost responses", faults: `{"lostResponse": 0.2}`, kind: "request", what: "response_lost", text: "was lost on its way back"},
@@ -417,7 +450,7 @@ func TestRun_faults(t *testing.T) {
 		{name: "writes stuck in the network", faults: `{"lostRequest": 0.3, "late": 1, "lateBy": 20000}`, kind: "request", what: "stuck"},
 		{name: "stuck writes that arrive", faults: `{"lostRequest": 0.3, "late": 1, "lateBy": 20000}`, kind: "request", what: "arrived"},
 		{name: "writes held back after the caller gave up", faults: `{"slow": 0.3, "slowBy": 20000, "late": 1, "lateBy": 20000}`, kind: "request", what: "held", text: "the caller gave up"},
-		{name: "writes held back after a crash", faults: `{"slow": 0.5, "slowBy": 20000, "afterCrash": 1, "lateBy": 20000}`,
+		{name: "writes held back after a crash", faults: `{"slow": 0.5, "slowBy": 20000, "afterCrash": 1, "lateBy": 20000}`, seed: 4,
 			schedule: `{"at": 20000, "do": "crash", "instance": "a"}, {"at": 20000, "do": "crash", "instance": "b"}, {"at": 20000, "do": "crash", "instance": "c"}`,
 			kind:     "request", what: "held", text: "the sender crashed"},
 		{name: "damaged downloads", faults: `{"damaged": 1}`, schedule: `{"at": 20000, "do": "crash", "instance": "a"}, {"at": 20000, "do": "crash", "instance": "b"}`,
@@ -426,7 +459,8 @@ func TestRun_faults(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run("should show "+test.name, func(t *testing.T) {
-			request := fmt.Sprintf(`{"seed": 5, "end": 120000, "buggify": %v, "faults": %v, "schedule": [%v]}`, test.kind == "buggify", test.faults, test.schedule)
+			seed := cmp.Or(test.seed, 5)
+			request := fmt.Sprintf(`{"seed": %v, "end": 120000, "buggify": %v, "faults": %v, "schedule": [%v]}`, seed, test.kind == "buggify", test.faults, test.schedule)
 			res := run(t, &e, request)
 			found := find(res, func(e simulator.Event) bool {
 				return e.Kind == test.kind && e.What == test.what && strings.Contains(e.Text+e.Error, test.text)

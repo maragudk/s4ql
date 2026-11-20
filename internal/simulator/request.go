@@ -77,15 +77,11 @@ type Workload struct {
 	Writes int `json:"writes"`
 	// Timeout of each call.
 	Timeout float64 `json:"timeout"`
-	// Window is the number of keys that a read selects at most: a read selects the keys above the
-	// last key that a write had taken when the read started, less Window, so that the cost of a read
-	// does not grow with the table.
-	Window int `json:"window"`
 }
 
 // Client of the run: one source of calls that stands outside the instances, as the user of an
 // application does, and that no crash or stop of an instance ends. Its pauses, its share of writes,
-// its timeout, and the window of its reads are those of the [Workload], which does not switch it.
+// and its timeout are those of the [Workload], which does not switch it.
 // The action "client" points it at another instance.
 type Client struct {
 	// Instance that the client calls from the start, by its name, or empty for no client.
@@ -151,8 +147,6 @@ const (
 	maxInstances = 5
 	maxCallers   = 8
 	maxSchedule  = 1000
-	// maxWindow of the keys that a read selects.
-	maxWindow = 10_000
 )
 
 // defaultRequest has the default of every field.
@@ -163,7 +157,7 @@ func defaultRequest() Request {
 		Instances: 3,
 		Leases:    []float64{30_000},
 		Latency:   50,
-		Workload:  Workload{On: true, Callers: 2, Think: 5_000, Writes: 40, Timeout: 30_000, Window: 100},
+		Workload:  Workload{On: true, Callers: 2, Think: 5_000, Writes: 40, Timeout: 30_000},
 	}
 }
 
@@ -225,9 +219,6 @@ func (r Request) check() error {
 	}
 	if !positive(w.Timeout) || w.Timeout > maxEnd {
 		bad("workload.timeout is %v, and must be above 0 and at most %v", w.Timeout, maxEnd)
-	}
-	if w.Window < 1 || w.Window > maxWindow {
-		bad("workload.window is %v, and must be from 1 to %v", w.Window, maxWindow)
 	}
 	if c := r.Client.Instance; c != "" && !validInstance(c, r.Instances) {
 		bad("client.instance is %q, and must be empty or an instance from a to %v", c, instanceName(max(0, r.Instances-1)))

@@ -113,7 +113,7 @@ func TestEngine_live(t *testing.T) {
 			{"at": 104000, "do": "failRequest", "request": "any", "instance": "b"}, {"at": 106000, "do": "workload"},
 			{"at": 110000, "do": "workload", "on": true}, {"at": 115000, "do": "calm"}]`
 		for _, seed := range []int{1, 2, 3} {
-			settings := fmt.Sprintf(`"seed": %v, "instances": 3, "buggify": true, "faults": %v, "workload": {"window": 20}`, seed, allFaults)
+			settings := fmt.Sprintf(`"seed": %v, "instances": 3, "buggify": true, "faults": %v, "workload": {}`, seed, allFaults)
 			res := run(t, &simulator.Engine{}, `{`+settings+`, "end": 130000, "schedule": `+schedule+`}`)
 
 			l, states := replay(t, `{`+settings+`}`, res.Request.Schedule, 130_000)
@@ -147,7 +147,7 @@ func TestEngine_live(t *testing.T) {
 			{"at": 70000, "do": "open", "instance": "a"}, {"at": 80000, "do": "failDisk", "instance": "b", "on": true},
 			{"at": 90000, "do": "failDisk", "instance": "b"}, {"at": 95000, "do": "client", "instance": "a"}]`
 		for _, seed := range []int{1, 2, 3} {
-			settings := fmt.Sprintf(`"seed": %v, "instances": 3, "faults": %v, "workload": {"callers": 0, "think": 500, "window": 20}, "client": {"instance": "a"}, "standby": true`, seed, allFaults)
+			settings := fmt.Sprintf(`"seed": %v, "instances": 3, "faults": %v, "workload": {"callers": 0, "think": 500}, "client": {"instance": "a"}, "standby": true`, seed, allFaults)
 			res := run(t, &simulator.Engine{}, `{`+settings+`, "end": 120000, "schedule": `+schedule+`}`)
 			is.True(t, res.Summary.Calls["read served"]+res.Summary.Calls["write committed"] > 0, "the client is served")
 
@@ -252,7 +252,7 @@ func TestEngine_live(t *testing.T) {
 		log      int
 	}{
 		{settings: `{"seed": 10}`, log: 500},
-		{settings: `{"seed": 10, "workload": {"callers": 0, "think": 1000, "window": 20}, "client": {"instance": "a"}, "standby": true}`, log: 300},
+		{settings: `{"seed": 10, "workload": {"callers": 0, "think": 1000}, "client": {"instance": "a"}, "standby": true}`, log: 300},
 	} {
 		t.Run("should take as many steps and give as many events for a fake minute after an hour as at the start, with "+test.settings, func(t *testing.T) {
 			l := startLive(t, test.settings)
