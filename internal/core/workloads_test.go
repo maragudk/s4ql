@@ -16,6 +16,7 @@ import (
 
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/store/simstore"
+	"maragu.dev/s4ql/internal/testshard"
 )
 
 // options of the instances of a workload, with the bugs of the given names planted.
@@ -1022,11 +1023,16 @@ var plantedBugs = []plantedBug{
 // TestSimulation_plantedBugs runs the workload of each bug until four seeds have found the bug,
 // from at most 200 seeds, and its control for 10 seeds. It runs the same workload without the bug
 // for 10 seeds, and for every seed that found the bug. With S4QL_SIM_SEEDS set, all three run that
-// many seeds, and the workload with the bug runs all of them, to count how many find it.
+// many seeds, and the workload with the bug runs all of them, to count how many find it. With
+// S4QL_TEST_SHARD set, it runs the bugs of that shard only: see [testshard].
 func TestSimulation_plantedBugs(t *testing.T) {
 	t.Parallel()
 	_, counting := os.LookupEnv("S4QL_SIM_SEEDS")
-	for _, bug := range plantedBugs {
+	shard := testshard.Get(t)
+	for i, bug := range plantedBugs {
+		if !shard.Holds(i) {
+			continue
+		}
 		name := "should find " + bug.name + " with some seed and again on every rerun of it"
 		if bug.control != nil {
 			name += ", and never without what it needs"
