@@ -1825,7 +1825,10 @@ func TestDifferential(t *testing.T) {
 		// The errors of the names of slice 5.
 		"createtable duplicate column name", "select no such column", "insert NOT NULL constraint failed", "insert values were supplied", "insert  values for ",
 	} {
-		if y[kind] == 0 {
+		// The tenth of the sequences of a slow run, under the race detector or the address sanitizer, has
+		// no create table with a column named twice since the sequence writes updates and deletes; the
+		// full run has 15.
+		if y[kind] == 0 && (kind != "createtable duplicate column name" || !slow()) {
 			t.Errorf("no statement has the outcome %q", kind)
 		}
 	}
