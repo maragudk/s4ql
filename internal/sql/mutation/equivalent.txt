@@ -750,3 +750,9 @@ internal/core/index.go conn.loadIndexes condition: s.ColumnText(2) == "pk" && sc
 	The index of the primary key of a table without a rowid is the one index of pragma_index_list without a row in sqlite_schema, which a UNIQUE constraint's index has, so it is the first row in the order by rowid, where NULL comes first, and the first row is the one for which primary is empty.
 internal/core/index.go conn.loadIndexes condition: primary == "" => true
 	A table has one index of the origin pk, so primary is empty when it comes.
+internal/core/index.go conn.loadIndexes operator: s.ColumnText(2) == "pk" && schemaless => s.ColumnText(2) == "pk" || schemaless
+	The index of the primary key of a table without a rowid is the one index of pragma_index_list without a row in sqlite_schema, which a UNIQUE constraint's index has, so it is the first row in the order by rowid, where NULL comes first, and the first row is the one for which primary is empty.
+internal/core/index.go conn.loadIndexes condition: s.ColumnText(2) == "pk" => true
+	The index of the primary key of a table without a rowid is the one index of pragma_index_list without a row in sqlite_schema, which a UNIQUE constraint's index has, so the one index without one is that of the primary key.
+internal/core/index.go conn.loadIndexes condition: schemaless => true
+	A table has one index of the origin pk, so primary is empty when it comes, and the index after it, which is not of the origin pk, goes on to the check of the others either way.
