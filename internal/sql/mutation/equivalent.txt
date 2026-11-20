@@ -700,6 +700,8 @@ internal/engine/access.go forcedAccess swap arguments: max(p.pins, 0) => max(0, 
 	max is commutative.
 internal/engine/operator.go build.access condition: err != nil => false
 	chooseAccess fails only for two bounds of one column with values of two kinds, which checkType in build.bind refuses before, so it never fails here; and if it did, chooseAccess with the indexes, after them, would fail in the same way at the fit of the primary key, which it runs first.
+internal/engine/operator.go build.access condition: err != nil => false #3
+	forcedAccess fails only in fit, for two bounds of one column with values of two kinds, which checkType in build.bind refuses before, so it never fails here; and if it did, it would give false, and chooseAccess after it would fail in the same way at the fit of the primary key.
 internal/engine/engine.go Conn.checkOutside boolean: false => true
 	The planted bug checkOutside: its check of an insert then draws a direction for the scans of the sink, which an insert does not scan, and the bug is found as before.
 

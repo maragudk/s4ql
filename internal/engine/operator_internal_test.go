@@ -741,6 +741,18 @@ func TestFilter(t *testing.T) {
 		}
 	})
 
+	t.Run("should read as the rules choose where the path names an index that the table does not have", func(t *testing.T) {
+		f := newTable().index("i", "t", 1)
+		s, err := stmt.Check("select * from t where k = 2")
+		is.NotError(t, err)
+		q, err := buildQuery(t.Context(), fakeTx{f}, NewPlan(s).(*Query), nil, 1_000_000_000, reading{path: path{kind: pathIndex, index: "nosuch"}})
+		is.NotError(t, err)
+		rows, err := collect(t.Context(), q)
+		is.NotError(t, err)
+		is.Equal(t, "[20,2]", fmt.Sprint(rows))
+		is.Equal(t, "i = 2", accessText(scanOf(q).access))
+	})
+
 	t.Run("should pass on an error of the read of the indexes of the table of a select, an update, and a delete that the indexes decide, and scan nothing", func(t *testing.T) {
 		for _, src := range []string{"select * from t where w > 0", "update t set w = 1 where w > 0", "delete from t where w > 0"} {
 			f := newTable()
