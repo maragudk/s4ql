@@ -2775,6 +2775,49 @@ func TestTx_tooBig(t *testing.T) {
 		is.NotError(t, d.Close(t.Context()))
 	})
 
+	t.Run("should take an index of long names whose statement fits in the limit, and refuse one of four long columns whose statement does not, and open the cache again", func(t *testing.T) {
+		// Under the limit of 1000: an index of 350 bytes on a column of 300 bytes, which SQLite cannot
+		// write into its schema under the limit, and an index of 400 bytes on four columns of 200 bytes
+		// each, in descending order, whose statement no connection under the limit could read back.
+		y := strings.Repeat("y", 300)
+		names := []string{"k"}
+		for _, letter := range []string{"a", "b", "c", "d"} {
+			names = append(names, strings.Repeat(letter, 200))
+		}
+		w := newWorld(t)
+		d := w.serve(t, "a", options)
+		transact(t, d, func(t *testing.T, tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(t.Context(), tableOf("t", 1, "k", y)))
+			is.NotError(t, tx.CreateTable(t.Context(), tableOf("wide", 1, names...)))
+			is.NotError(t, tx.Upsert(t.Context(), "t", row(1, 2)))
+			is.NotError(t, tx.CreateIndex(t.Context(), indexOf(strings.Repeat("x", 350), "t", 1)))
+			is.Error(t, core.ErrInvalid, tx.CreateIndex(t.Context(), indexOf(strings.Repeat("z", 400), "wide", desc(1), desc(2), desc(3), desc(4))))
+			is.NotError(t, tx.Upsert(t.Context(), "t", row(3, 4)), "the transaction goes on")
+		})
+		is.NotError(t, d.Close(t.Context()))
+		// The same cache opens again, and another one replays the log: neither holds the second index.
+		for _, cache := range []string{"a", "b"} {
+			d := w.serve(t, cache, options)
+			r, err := startRead(t, d)
+			is.NotError(t, err)
+			got, err := r.Indexes(t.Context(), "t")
+			is.NotError(t, err)
+			is.Equal(t, 1, len(got), cache)
+			is.Equal(t, strings.Repeat("x", 350), got[0].GetIndex(), cache)
+			wide, err := r.Indexes(t.Context(), "wide")
+			is.NotError(t, err)
+			is.Equal(t, 0, len(wide), cache)
+			var rows int
+			for _, err := range r.ScanIndex(t.Context(), "t", core.IndexScan{Index: strings.Repeat("x", 350)}) {
+				is.NotError(t, err)
+				rows++
+			}
+			is.Equal(t, 2, rows, cache)
+			is.NotError(t, r.Close(t.Context()))
+			is.NotError(t, d.Close(t.Context()))
+		}
+	})
+
 	t.Run("should fail the transaction, and write no commit object, where the temporary tables of the keys that it touched cannot be created or dropped", func(t *testing.T) {
 		// The keys of t take more pages than SQLite's page cache of the temporary tables holds, so
 		// SQLite writes those pages to the temporary file and reads them back, and a create or a drop

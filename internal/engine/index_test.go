@@ -393,6 +393,34 @@ func TestEngine_indexes(t *testing.T) {
 		}
 	})
 
+	t.Run("should take an index of long names that SQLite takes under the length limit, refuse those that SQLite refuses, and hold what it took after a restart and a replay", func(t *testing.T) {
+		const limit = 1000
+		y := strings.Repeat("y", 300)
+		var long []string
+		for _, letter := range []string{"a", "b", "c", "d"} {
+			long = append(long, strings.Repeat(letter, 200))
+		}
+		p := newIndexPair(t, limit, "create table t (k int primary key, "+y+" int) strict, without rowid",
+			"create table wide (k int primary key, "+strings.Join(long, " int, ")+" int) strict, without rowid",
+			"insert into t values (1, 2)", "insert into t values (3, 4)")
+
+		// SQLite writes an index into its schema with a statement that holds both names and the text of
+		// the create index, so it takes the first of these and refuses the second, whose text alone is
+		// far below the limit. The text of the third is longer than the limit.
+		is.Equal(t, "", p.run("create index "+strings.Repeat("x", 150)+" on t ("+y+")").err)
+		is.Equal(t, "18/18: string or blob too big", p.run("create index "+strings.Repeat("x", 350)+" on t ("+y+")").err)
+		is.Equal(t, "18/18: string or blob too big", p.run("create index "+strings.Repeat("z", 400)+" on wide ("+strings.Join(long, " desc, ")+" desc)").err)
+		is.Equal(t, "", p.run("create index short on wide ("+long[0]+" desc, "+long[1]+")").err)
+		is.Equal(t, 1, len(p.run("select * from t where "+y+" = 4").rows))
+
+		p.i.restart(false, engine.Options{})
+		p.same("a restart on the same cache")
+		p.i.restart(true, engine.Options{})
+		p.same("a replay of the log into an empty cache")
+		is.Equal(t, 1, len(p.run("select * from t where "+y+" = 4").rows))
+		is.Equal(t, "", p.run("drop index "+strings.Repeat("x", 150)).err)
+	})
+
 	t.Run("should log a create index and a drop index with their kinds, the table, and the index, and a statement that reads by an index with its name", func(t *testing.T) {
 		h := &events{}
 		i := newInstance(t, engine.Options{Logger: slog.New(h)})
