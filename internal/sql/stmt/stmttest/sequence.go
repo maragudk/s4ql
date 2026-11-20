@@ -598,10 +598,10 @@ func (q *Sequence) createIndex(index, table stmt.Name) []stmt.IndexColumn {
 // indexConditions of a WHERE of a statement of table, which an index of the sequence on table can
 // serve, or nil if the sequence has drawn no create index on table: for the columns of one of them,
 // the leading ones, from one to all, each pinned by = with a value as [Sequence.conditionValue] draws
-// it, or by IS NULL one time in eight; then, one time in two, a bound or two on the next column of
-// the key of the index, which is the key of the table after the columns of the index, each open or
-// closed; and one time in three one more condition as [Sequence.conditions] draws it. The conditions
-// are in any order one time in three.
+// it, or by IS NULL one time in three for a column that takes NULL and one time in eight otherwise;
+// then, one time in two, a bound or two on the next column of the key of the index, which is the key
+// of the table after the columns of the index, each open or closed; and one time in three one more
+// condition as [Sequence.conditions] draws it. The conditions are in any order one time in three.
 func (q *Sequence) indexConditions(table stmt.Name) []stmt.Condition {
 	r := q.r
 	indexed := q.indexed[table.Fold()]
@@ -632,7 +632,13 @@ func (q *Sequence) indexConditions(table stmt.Name) []stmt.Condition {
 	var cs []stmt.Condition
 	for _, fold := range key[:pins] {
 		c := stmt.Condition{Column: stmt.Name{Raw: q.spell(fold)}, Operator: stmt.OpEqual}
-		if r.IntN(8) == 0 {
+		// A column that takes NULL is pinned by IS NULL more often, since only there does the pin find
+		// rows, and the path of the index pins NULL.
+		odds := 8
+		if column := columnOfShape(shape, fold); column != nil && !column.PrimaryKey && !column.NotNull {
+			odds = 3
+		}
+		if r.IntN(odds) == 0 {
 			c.Operator = stmt.OpIsNull
 		} else {
 			c.Value.Value = q.conditionValue(table, fold, typeOf(fold))

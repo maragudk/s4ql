@@ -202,3 +202,54 @@ Nothing yet.
 
 - Mutation testing of the code of slice 10 in the engine and of `stmttest.ExistsRule`, and long fuzz runs of `FuzzIndexes` with the clauses, in the todo.
 - The engine of slice 11, which removes `defaultRefusal`, the driver's `engine.Check`, and the wrappers.
+
+## Step 5: The two findings of the independent review, and the landing
+
+**Author:** if-exists-engine landing builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "An independent reviewer found it ready to merge with two low findings. Fix them, bring the branch up to date, land it, and update the status."
+**Interpretation:** Make a statement of its own that does nothing return without the writer also while rows of its connection hold its reader; give the tally "path with a pin of NULL" a margin; merge `main`; land #110; update the status on `main`.
+**Inferred intent:** A slice 10 that behaves as SQLite in every case the reviewer ran, with generated checks that do not lose a kind by chance.
+
+### What I did
+
+- `Conn.nothingToWrite` in `/internal/engine/engine.go`: when the read on the connection's reader fails with `core.ErrReaderBusy`, it opens a reader of its own from `c.e.db.reader`, looks there, and closes it. The write path stays for a statement that has work to do, and for a read that cannot begin for another reason.
+- Tests: a subtest of `TestEngine_write` (`/internal/engine/engine_internal_test.go`) runs two statements that do nothing on a connection whose reader is a `busyReader`, on a fake that counts begins (`beginCounter`), and requires 0 begins, 2 readers opened and none left open, and 1 begin for a drop that has work. The subtest of `TestEngine_exists` that holds another connection's write transaction open now also runs the four statements with rows of the connection open, before that commit. Without the fix, the second hung until `-timeout 60s` ended it.
+- `Sequence.indexConditions` in `/internal/sql/stmt/stmttest/sequence.go` pins a column of the index that takes NULL by IS NULL one time in three, and others one time in eight as before. "path with a pin of NULL" went from 2 to 11, least number 3 (it was 1).
+- Pins that moved with the generator, recounted from the output of `TestDifferential`: "delete WHERE that reads a scan between two bounds that hold no key ok, no row found" 9 to 8, least number 9 to 2 (a third); the excused texts went from 16, 836, 326, 528, 1, 3, 1 to 15, 862, 324, 524, 1, 2, 1. The reasons are in the comments beside them.
+- The driver check (`TestGenerated` in `/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go`) moved too: its excused texts went from 1713, 12, 687, 351, 327, 85, 24, 46, 91, 106 to 1693, 10, 693, 360, 338, 83, 22, 45, 97, 101, and "update WHERE that reads a scan of every row ok, rows changed" from 1, its least number, to 0. It is left out there, as an earlier step left out "delete WHERE that reads a scan to an upper bound ok, rows changed"; the engine's `TestDifferential` still requires it, with a least number of 3.
+- `origin/main` was already in the branch (#109 was merged in step 4), so there was nothing to merge.
+- The README of the engine and `docs/todo.md` say that the statement looks on a reader of its own while rows hold the connection's reader.
+- Self-review (`code-review medium`): it saw the driver check fail on an intermediate state of the odds (fixed above), found the doc of `Conn` silent on the second reader (fixed), and noted that the rewritten subtest of `TestEngine_exists` no longer reached the branch of `Conn.write` where the write transaction finds nothing to do. The subtest of `TestEngine_write` now reaches it with a read that fails for another reason, and requires `[table nosuch rollback]` and no annotation or commit.
+
+### Why
+
+- SQLite returns at once for `create table if not exists t` with `t` existing while another connection writes, whatever the connection's own statements hold open. The reviewer saw `context deadline exceeded` instead.
+- With a count of 2 and a least number of 1, one shift of the random numbers could take the kind to 0 unseen.
+
+### What worked
+
+- The count of begins on a fake shows the writer was never asked for, without timing.
+
+### What didn't work
+
+- One time in four and one time in five gave 8 pins of NULL each, and lost kinds in the driver check too. One time in two for a column that takes NULL gave 25 pins of NULL, but moved five least numbers below their floor, and took "path of an index with 3 pinned" from 1 to 0. One time in three moved only one.
+- `go test ./internal/sqlite/crosscheck/drivercheck/...` from the root fails with `directory prefix internal/sqlite/crosscheck/drivercheck does not contain main module`: the crosscheck is a module of its own, run from its directory.
+
+### What I learned
+
+- The two-binary trick (`go test -c` before and after the change) gives the old and the new tally from the same seeds side by side, without a second worktree.
+
+### What was tricky
+
+- Choosing the odds: the margin of one kind against the margins of the others.
+
+### What warrants review
+
+- That opening a second reader per statement while rows are open is acceptable in cost: it happens only for a statement of the clauses beside open rows.
+
+### Future work
+
+- Mutation testing of slice 10, in the todo.

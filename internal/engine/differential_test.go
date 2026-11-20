@@ -2592,8 +2592,11 @@ func TestDifferential(t *testing.T) {
 		// 3, and [excusedLongCondition] went from 0 to 1: the generator draws a number for each create
 		// and drop, which moves the statements after it, and none of these kinds is of a statement of
 		// the clauses. The one select with a literal in a condition longer than the length limit for
-		// which SQLite gives rows is excused by its rule.
-		want := map[string]int{acceptedStartedTable: 16, excusedArguments: 836, excusedArgument: 326, excusedType: 528, excusedLong: 1, excusedLongChange: 3, excusedLongCondition: 1}
+		// which SQLite gives rows is excused by its rule. When the sequence pinned a column of an index
+		// that takes NULL by IS NULL one time in three, where it was one time in eight, they went from 16,
+		// 836, 326, 528, 1, and 3 to 15, 862, 324, 524, 1, and 2: the generator draws other random numbers
+		// after the first such pin, which moves each of them, and none of these kinds is of the pin.
+		want := map[string]int{acceptedStartedTable: 15, excusedArguments: 862, excusedArgument: 324, excusedType: 524, excusedLong: 1, excusedLongChange: 2, excusedLongCondition: 1}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
 			// The count of [excusedRecordSlip] depends on the allocator of the platform.
@@ -2715,7 +2718,11 @@ var reachedDifferential = map[string]int{
 	// is too long" from 1 to 0, which [TestPair_recordSlips] pins by hand, and "delete WHERE with
 	// contradicting conditions ok, no row found", "insert into REAL a value of another type", "insert
 	// that leaves out a column that takes NULL a value of another type", and "path with a pin of NULL"
-	// to 9, 23, 7, and 2, of which the least numbers are a third, or 1.
+	// to 9, 23, 7, and 2, of which the least numbers are a third, or 1. When the sequence pinned a
+	// column of an index that takes NULL by IS NULL one time in three, where it was one time in eight,
+	// "path with a pin of NULL" went from 2 to 11, and its least number is 3, and the other random
+	// numbers that the generator drew after such a pin took "delete WHERE that reads a scan between two
+	// bounds that hold no key ok, no row found" from 9 to 8, of which the least number is now a third.
 	"update with WHERE ok, rows changed": 17, "update with WHERE ok, no row found": 76, "update without WHERE ok, rows changed": 20, "update without WHERE ok, no row found": 17,
 	"delete with WHERE ok, rows changed": 32, "delete with WHERE ok, no row found": 77, "delete without WHERE ok, rows changed": 23, "delete without WHERE ok, no row found": 12,
 	"update that changes every row of a table with rows": 27, "update that changes some rows of a table": 10, "update that changes no row of a table with rows": 42,
@@ -2742,7 +2749,7 @@ var reachedDifferential = map[string]int{
 	"delete with arguments that s4ql refuses wrong number of arguments": 11, "delete WHERE that reads no row ok, no row found": 12,
 	"delete WHERE that reads a get of one key ok, rows changed": 15, "delete WHERE that reads a scan from a lower bound ok, rows changed": 3,
 	"delete WHERE that reads a scan to an upper bound ok, rows changed": 2, "delete WHERE that reads a scan between two bounds ok, rows changed": 4,
-	"delete WHERE that reads a scan between two bounds that hold no key ok, no row found": 9, "delete WHERE that reads a scan of every row ok, rows changed": 7,
+	"delete WHERE that reads a scan between two bounds that hold no key ok, no row found": 2, "delete WHERE that reads a scan of every row ok, rows changed": 7,
 	"delete WHERE that tests a column more than once ok, rows changed": 7, "delete WHERE with contradicting conditions ok, no row found": 3,
 	"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column": 2, "changed both ways": 576,
 	// The create indexes and drop indexes of slice 9, by outcome and by their columns, as [reachIndex]
@@ -2766,7 +2773,7 @@ var reachedDifferential = map[string]int{
 	"path of an index with 0 pinned": 135, "path of an index with 0 pinned and a range": 26, "path of an index with 1 pinned": 69,
 	"path of an index with 1 pinned and a range": 6, "path of an index with 2 pinned": 7, "path of an index with 2 pinned and a range": 1,
 	"path of an index with 3 pinned": 1, "path of an index of a descending column": 111, "path with a range on a descending column": 12,
-	"path with a pin of NULL": 1, "path of an index that holds every column": 204, "plan of the cache checked": 380,
+	"path with a pin of NULL": 3, "path of an index that holds every column": 204, "plan of the cache checked": 380,
 	"replay of indexes into an empty cache": 33, "restart with indexes in the cache": 33,
 
 	// Slice 10, a third of what the run gave on 2026-11-20 when one create and drop in three of the
