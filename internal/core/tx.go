@@ -54,7 +54,7 @@ type Tx struct {
 	droppedIndexes []string
 	createdIndexes map[string]bool
 
-	// read counts the rows that the transaction has read from the cache for its caller.
+	// read counts the rows that the scans and the gets of the transaction have read from the cache.
 	read int64
 
 	// saved is the state at the savepoint that is open, or nil.
@@ -393,9 +393,24 @@ func (tx *Tx) fail(ctx context.Context, operation string, err error) error {
 	return err
 }
 
-// table with the given name, or an error that wraps [ErrNoTable].
+// table with the given name and its indexes, as [conn.lookUp] gives it, or an error that wraps
+// [ErrNoTable].
 func (tx *Tx) table(ctx context.Context, operation, name string) (*table, error) {
 	t, err := tx.c.lookUp(name)
+	if err != nil {
+		return nil, tx.fail(ctx, operation, err)
+	}
+	if t == nil {
+		return nil, fmt.Errorf("%w: %q", ErrNoTable, name)
+	}
+	return t, nil
+}
+
+// tableWithoutIndexes is [Tx.table] without the indexes of the table, as
+// [conn.lookUpWithoutIndexes] gives it, for a call that reads the definition of the table or one row
+// by its key, and writes nothing.
+func (tx *Tx) tableWithoutIndexes(ctx context.Context, operation, name string) (*table, error) {
+	t, err := tx.c.lookUpWithoutIndexes(name)
 	if err != nil {
 		return nil, tx.fail(ctx, operation, err)
 	}
@@ -492,8 +507,10 @@ func (tx *Tx) DropTable(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
+	if err := tx.forgetIndexes(t); err != nil {
+		return tx.fail(ctx, operation, err)
+	}
 	e := tx.changed(t.name)
-	tx.forgetIndexes(t)
 	if err := tx.c.drop(t); err != nil {
 		return tx.fail(ctx, operation, err)
 	}
@@ -908,7 +925,7 @@ func (tx *Tx) Table(ctx context.Context, name string) (*s4qlpb.CreateTable, erro
 		return nil, err
 	}
 	defer tx.leave(ctx)
-	t, err := tx.table(ctx, operation, name)
+	t, err := tx.tableWithoutIndexes(ctx, operation, name)
 	if err != nil {
 		return nil, err
 	}
@@ -945,7 +962,7 @@ func (tx *Tx) Get(ctx context.Context, name string, key []*s4qlpb.Value) ([]*s4q
 		return nil, err
 	}
 	defer tx.leave(ctx)
-	t, err := tx.table(ctx, operation, name)
+	t, err := tx.tableWithoutIndexes(ctx, operation, name)
 	if err != nil {
 		return nil, err
 	}

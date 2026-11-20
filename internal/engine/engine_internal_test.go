@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,10 +47,12 @@ func (h *recorder) Handle(_ context.Context, r slog.Record) error {
 	return nil
 }
 
-// last event, without its duration.
+// last event, without its duration, its SQL text, and the direction that the engine drew from its
+// host, which [newLoggedConn] does not fix.
 func (h *recorder) last() string {
 	e := maps.Clone(h.events[len(h.events)-1])
 	delete(e, attrDuration)
+	delete(e, attrDirection)
 	delete(e, attrSQL)
 	return fmt.Sprint(e)
 }
@@ -194,12 +197,13 @@ func TestEngine_report(t *testing.T) {
 		for _, err := range rows.All() {
 			is.NotError(t, err)
 		}
-		is.Equal(t, fmt.Sprintf("map[msg:statement outcome:ok statement.kind:select statement.position:%v statement.rows:2 statement.table:t1]", empty), h.last())
+		is.Equal(t, fmt.Sprintf("map[msg:statement outcome:ok statement.access:full_scan statement.kind:select statement.position:%v statement.rows:2 statement.rows_read:2 statement.table:t1]", empty), h.last())
 
+		// The scan read one row before it failed.
 		f.scanFails = 1
 		_, err = conn.Exec(t.Context(), "select * from t1")
 		is.Equal(t, "the scan fails", err.Error())
-		is.Equal(t, fmt.Sprintf("map[error:the scan fails msg:statement outcome:core_error statement.kind:select statement.position:%v statement.rows:1 statement.table:t1]", empty), h.last())
+		is.Equal(t, fmt.Sprintf("map[error:the scan fails msg:statement outcome:core_error statement.access:full_scan statement.kind:select statement.position:%v statement.rows:1 statement.rows_read:1 statement.table:t1]", empty), h.last())
 
 		f.scanFails, f.endFails = 1, errors.New("the end fails")
 		_, err = conn.Exec(t.Context(), "select * from t1")
@@ -237,6 +241,146 @@ func TestEngine_report(t *testing.T) {
 		_, err = newLoggedConn(f, bugs{ackUnknown: true}, h).Exec(t.Context(), "insert into t1 (v1) values (4)")
 		is.NotError(t, err)
 		is.Equal(t, "1", h.events[len(h.events)-1][attrRows])
+	})
+
+	t.Run("should give the access, the index of an access by one, and the rows read of a select, an update, and a delete in the event, and neither an access nor rows read for a statement that reads no rows of a table and for one that failed before its access was chosen", func(t *testing.T) {
+		// reading of the event e: its attributes of the reading that it has, its rows, and its outcome.
+		reading := func(e map[string]string) string {
+			var parts []string
+			for _, key := range []string{attrAccess, attrIndex, attrRowsRead, attrRows, attrOutcome} {
+				if v, ok := e[key]; ok {
+					parts = append(parts, key+":"+v)
+				}
+			}
+			return strings.Join(parts, " ")
+		}
+		// The table t has the primary key k and the index i on w, which two rows have 20 in. Neither
+		// column takes NULL. The numbers do not depend on the direction that the engine draws for a
+		// select, since each statement reads its rows to the end.
+		newTable := func() *fake {
+			return newFake().with("t", []string{"k", "w"}, []int64{1, 10}, []int64{2, 20}, []int64{3, 30}, []int64{4, 20}).index("i", "t", 1)
+		}
+		for _, c := range []struct{ src, want string }{
+			// A select reads the rows of its access, whether or not the other conditions hold for them.
+			{src: "select * from t", want: "statement.access:full_scan statement.rows_read:4 statement.rows:4 outcome:ok"},
+			{src: "select * from t where w != 20", want: "statement.access:full_scan statement.rows_read:4 statement.rows:2 outcome:ok"},
+			{src: "select * from t where k = 2", want: "statement.access:primary_key statement.rows_read:1 statement.rows:1 outcome:ok"},
+			{src: "select * from t where k = 2 and w = 30", want: "statement.access:primary_key statement.rows_read:1 statement.rows:0 outcome:ok"},
+			{src: "select * from t where k = 9", want: "statement.access:primary_key statement.rows_read:0 statement.rows:0 outcome:ok"},
+			{src: "select * from t where k > 2", want: "statement.access:primary_key statement.rows_read:2 statement.rows:2 outcome:ok"},
+			{src: "select w from t where w = 20", want: "statement.access:index statement.index:i statement.rows_read:2 statement.rows:2 outcome:ok"},
+			{src: "select * from t where w = 20 and k != 2", want: "statement.access:index statement.index:i statement.rows_read:2 statement.rows:1 outcome:ok"},
+			{src: "select * from t where k > 2 and w = 20", want: "statement.access:index statement.index:i statement.rows_read:1 statement.rows:1 outcome:ok"},
+			{src: "select * from t where w > 10 and w < 30", want: "statement.access:index statement.index:i statement.rows_read:2 statement.rows:2 outcome:ok"},
+			{src: "select * from t where k is null", want: "statement.access:none statement.rows_read:0 statement.rows:0 outcome:ok"},
+			{src: "select * from t where w = null", want: "statement.access:none statement.rows_read:0 statement.rows:0 outcome:ok"},
+			// An update reads the rows of its access, and then the row of each key that it changes.
+			{src: "update t set w = 50", want: "statement.access:full_scan statement.rows_read:8 statement.rows:4 outcome:ok"},
+			{src: "update t set w = 50 where k = 2", want: "statement.access:primary_key statement.rows_read:2 statement.rows:1 outcome:ok"},
+			{src: "update t set w = 50 where k = 9", want: "statement.access:primary_key statement.rows_read:0 statement.rows:0 outcome:ok"},
+			{src: "update t set w = 50 where k >= 2 and w != 30", want: "statement.access:primary_key statement.rows_read:5 statement.rows:2 outcome:ok"},
+			{src: "update t set w = 50 where w = 20", want: "statement.access:index statement.index:i statement.rows_read:4 statement.rows:2 outcome:ok"},
+			{src: "update t set w = 50 where k is null", want: "statement.access:none statement.rows_read:0 statement.rows:0 outcome:ok"},
+			// An update that sets NULL in a column that does not take it reads one row in its check, which
+			// fails it if there is one.
+			{src: "update t set w = null where k = 2", want: "statement.access:primary_key statement.rows_read:1 statement.rows:0 outcome:sqlite_error"},
+			{src: "update t set w = null where w = 20", want: "statement.access:index statement.index:i statement.rows_read:1 statement.rows:0 outcome:sqlite_error"},
+			{src: "update t set w = null", want: "statement.access:full_scan statement.rows_read:1 statement.rows:0 outcome:sqlite_error"},
+			{src: "update t set w = null where k = 9", want: "statement.access:primary_key statement.rows_read:0 statement.rows:0 outcome:ok"},
+			// A value of another type fails the update after the choice of its access, before it reads.
+			{src: "update t set w = 'a' where k = 2", want: "statement.access:primary_key statement.rows_read:0 statement.rows:0 outcome:not_supported"},
+			// A delete reads the rows of its access.
+			{src: "delete from t", want: "statement.access:full_scan statement.rows_read:4 statement.rows:4 outcome:ok"},
+			{src: "delete from t where k = 2", want: "statement.access:primary_key statement.rows_read:1 statement.rows:1 outcome:ok"},
+			{src: "delete from t where k < 3 and w != 10", want: "statement.access:primary_key statement.rows_read:2 statement.rows:1 outcome:ok"},
+			{src: "delete from t where k < 3 and w = 10", want: "statement.access:index statement.index:i statement.rows_read:1 statement.rows:1 outcome:ok"},
+			{src: "delete from t where w = 20", want: "statement.access:index statement.index:i statement.rows_read:2 statement.rows:2 outcome:ok"},
+			{src: "delete from t where w != 20", want: "statement.access:full_scan statement.rows_read:4 statement.rows:2 outcome:ok"},
+			{src: "delete from t where k = null", want: "statement.access:none statement.rows_read:0 statement.rows:0 outcome:ok"},
+			// No rows of a table are read.
+			{src: "insert into t values (5, 50)", want: "statement.rows:1 outcome:ok"},
+			{src: "insert into t values (1, 50)", want: "statement.rows:0 outcome:sqlite_error"},
+			{src: "create table u (k int primary key) strict, without rowid", want: "statement.rows:0 outcome:ok"},
+			{src: "drop table t", want: "statement.rows:0 outcome:ok"},
+			// A create index and a drop index name their index, which is no access.
+			{src: "create index j on t (w)", want: "statement.index:j statement.rows:0 outcome:ok"},
+			{src: "drop index i", want: "statement.index:i statement.rows:0 outcome:ok"},
+			// The statement failed before its access was chosen.
+			{src: "select * from nosuch where k = 1", want: "statement.rows:0 outcome:sqlite_error"},
+			{src: "select x from t where k = 1", want: "statement.rows:0 outcome:sqlite_error"},
+			{src: "select * from t where x = 1", want: "statement.rows:0 outcome:sqlite_error"},
+			{src: "select * from t where k = 'a'", want: "statement.rows:0 outcome:not_supported"},
+			{src: "select * from t where k = ?", want: "statement.rows:0 outcome:wrong_arguments"},
+			{src: "update t set x = 1 where k = 1", want: "statement.rows:0 outcome:sqlite_error"},
+			{src: "update t set w = 1 where k = 'a'", want: "statement.rows:0 outcome:not_supported"},
+			{src: "delete from nosuch", want: "statement.rows:0 outcome:sqlite_error"},
+			{src: "delete from t where x is null", want: "statement.rows:0 outcome:sqlite_error"},
+			{src: "selec", want: "statement.rows:0 outcome:sqlite_error"},
+		} {
+			h := &recorder{}
+			_, _ = newLoggedConn(newTable(), bugs{}, h).Exec(t.Context(), c.src)
+			is.Equal(t, 1, len(h.events), c.src)
+			is.Equal(t, c.want, reading(h.events[0]), c.src)
+		}
+
+		// A loop that stops at its first row has read that row only.
+		h := &recorder{}
+		rows, err := newLoggedConn(newTable(), bugs{}, h).Query(t.Context(), "select * from t where w = 20")
+		is.NotError(t, err)
+		for _, err := range rows.All() {
+			is.NotError(t, err)
+			break
+		}
+		is.Equal(t, "statement.access:index statement.index:i statement.rows_read:1 statement.rows:1 outcome:ok", reading(h.events[0]))
+	})
+
+	t.Run("should give the direction that the engine drew for a query in the event, and none for a statement that drew none", func(t *testing.T) {
+		newTable := func() *fake {
+			return newFake().with("t", []string{"k", "w"}, []int64{1, 10}, []int64{2, 20}).index("i", "t", 1)
+		}
+		// query src on a connection of the engine of the host and the options, and give its event.
+		query := func(h host.Host, o Options, src string) map[string]string {
+			t.Helper()
+			r := &recorder{}
+			o.Logger = slog.New(r)
+			rows, err := newEngine(newTable(), h, o).Conn().Query(t.Context(), src)
+			is.NotError(t, err)
+			for _, err := range rows.All() {
+				is.NotError(t, err)
+			}
+			is.Equal(t, 1, len(r.events))
+			return r.events[0]
+		}
+
+		// The host gives an even number, forward, and then an odd one, backward, for every access.
+		h := &drawHost{Host: host.New(), draws: []uint64{2, 7}}
+		is.Equal(t, "forward", query(h, Options{}, "select * from t")[attrDirection])
+		is.Equal(t, "backward", query(h, Options{}, "select * from t where w = 20")[attrDirection])
+		is.Equal(t, "forward", query(h, Options{}, "select * from t where k = 1")[attrDirection])
+		is.Equal(t, "backward", query(h, Options{}, "select * from t where k is null")[attrDirection])
+
+		// A query of an engine with a seed has the direction of the first draw of the seed.
+		want := map[bool]string{false: "forward", true: "backward"}[newEngine(nil, h, Options{Directions: new(uint64(3))}).reading(true).backward]
+		is.Equal(t, want, query(h, Options{Directions: new(uint64(3))}, "select * from t")[attrDirection])
+
+		// A query whose path forces a direction draws none.
+		_, ok := query(h, Options{path: path{direction: directionBackward}}, "select * from t")[attrDirection]
+		is.True(t, !ok)
+
+		// A select that Exec runs is a query too, and draws.
+		r := &recorder{}
+		_, err := newEngine(newTable(), h, Options{Logger: slog.New(r)}).Conn().Exec(t.Context(), "select * from t")
+		is.NotError(t, err)
+		is.Equal(t, "forward", r.events[0][attrDirection])
+
+		// An update, a delete, and a statement that reads no rows draw none.
+		for _, src := range []string{"update t set w = 30 where k = 1", "delete from t where k = 2", "insert into t values (3, 30)"} {
+			r := &recorder{}
+			_, _ = newLoggedConn(newTable(), bugs{}, r).Exec(t.Context(), src)
+			is.Equal(t, 1, len(r.events), src)
+			_, ok := r.events[0][attrDirection]
+			is.True(t, !ok, src)
+		}
 	})
 }
 

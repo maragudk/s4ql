@@ -318,6 +318,8 @@ type run struct {
 	t     testing.TB
 	w     workload
 	world *sim.Scheduler
+	// seed of the scheduler, from which each engine gets the seed of the directions of its scans.
+	seed  uint64
 	store *simstore.Store
 	dir   string
 
@@ -439,6 +441,7 @@ func (r *run) open(ctx context.Context, n *node) error {
 	// Every second engine of a node reads every row of a table in each query, so that the checks of
 	// the queries against SQLite see both ways of reading rows, also across crashes and closes.
 	scanAll := n.gen%2 == 1
+	generation := n.gen
 	n.mu.Unlock()
 	d, err := core.Open(ctx, n.inst, n.client, n.path, "db", core.Options{
 		BusyTimeout:   time.Minute,
@@ -456,6 +459,15 @@ func (r *run) open(ctx context.Context, n *node) error {
 	if scanAll {
 		options.ScanAll()
 	}
+	// The engine draws the direction of each query from a seed of its own, which the seed of the run,
+	// the node, and the number of its engine fix, and not from the host, so that the draws of the
+	// scheduler are those of a run without them, and a replay of the seed reads in the same
+	// directions.
+	engineSeed := r.seed*1_000_003 + uint64(generation)*7919
+	for _, b := range []byte(n.name) {
+		engineSeed = engineSeed*31 + uint64(b)
+	}
+	options.Seed(engineSeed)
 	options.Logger = slog.New(handler{r})
 	n.mu.Lock()
 	n.d, n.e = d, engine.New(d, n.inst, options)
@@ -483,7 +495,7 @@ var idPattern = regexp.MustCompile(`/\* id (\d+) \*/`)
 // withID puts the comment of the ID into the text of a statement that the pass supports, after its
 // first token, where the annotation keeps it.
 func withID(src string, id uint64) string {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err != nil || s == nil {
 		return src
 	}
@@ -510,7 +522,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 	}
 	a.src = withID(call.Src, a.id)
 	call.Src = a.src
-	if s, _ := checkText(a.src); s != nil {
+	if s, _ := stmt.Check(a.src); s != nil {
 		_, isSelect := s.(*stmt.Select)
 		a.write = !isSelect
 	}
@@ -566,7 +578,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 	switch {
 	case err == nil:
 		a.state, a.answer = succeeded, got
-		if s, _ := checkText(a.src); res.SetsChanges && isChange(s) {
+		if s, _ := stmt.Check(a.src); res.SetsChanges && isChange(s) {
 			a.changes, a.unchanged = res.Changes, res.Changes == 0
 		}
 		// A write of a transaction is acknowledged by its commit.
@@ -594,7 +606,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 		// the generator, and every other that the pass supports, with the arguments that it takes must
 		// run.
 		kind, failure := checkArguments(call, a.answer)
-		s, _ := checkText(a.src)
+		s, _ := stmt.Check(a.src)
 		supported := call.Supported || s != nil
 		if kind == "" && supported && a.answer.err == "not supported" && typeRefusal(a.src, a.answer.message) {
 			// The refusal of a value of another type than its column, after the insert or the select
@@ -1081,8 +1093,8 @@ func copyCache(from, to string) error {
 }
 
 // do the workload, and check what happened: see [run.verify].
-func (w workload) do(ctx context.Context, world *sim.Scheduler, dir string, t testing.TB) *run {
-	r := &run{t: t, w: w, world: world, dir: dir, attempts: map[uint64]*attempt{}, events: map[string]int{}, endedForLease: map[string][]uint64{},
+func (w workload) do(ctx context.Context, world *sim.Scheduler, seed uint64, dir string, t testing.TB) *run {
+	r := &run{t: t, w: w, world: world, seed: seed, dir: dir, attempts: map[uint64]*attempt{}, events: map[string]int{}, endedForLease: map[string][]uint64{},
 		store: simstore.New(world, simstore.Options{Latency: 50 * time.Millisecond, Faults: w.faults}), q: newSequenceFrom(hostRand{world})}
 	var tasks []host.Task
 	for i := range w.instances {
@@ -1518,7 +1530,7 @@ func (r *run) verify(ctx context.Context) {
 				if m := idPattern.FindStringSubmatch(note); m != nil {
 					id, _ := strconv.ParseUint(m[1], 10, 64)
 					if a := r.attempts[id]; a != nil && a.tx == nil && a.state == succeeded && a.write {
-						if s, _ := checkText(a.src); isChange(s) {
+						if s, _ := stmt.Check(a.src); isChange(s) {
 							if a.changes != changes {
 								r.violate(ctx, "commit %v, %q, changes %v rows in SQLite, and its caller was told %v", k+1, note, changes, a.changes)
 							}
@@ -1650,7 +1662,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 			if got := a.answer.String(); got != want.String() {
 				r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v, gives %v, and in SQLite %v", a.id, a.src, tx.id, kind, at, got, want)
 			}
-			if s, _ := checkText(a.src); a.state == succeeded && isChange(s) {
+			if s, _ := stmt.Check(a.src); a.state == succeeded && isChange(s) {
 				if want.err == "" && a.changes != changes {
 					r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v, changes %v rows in SQLite, and its caller was told %v", a.id, a.src, tx.id, kind, at, changes, a.changes)
 				}
@@ -1691,7 +1703,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 // event of the run if it is a select with WHERE: by where it ran, of their own or in a transaction,
 // and, for a query that succeeded, by whether it gave rows.
 func (r *run) countWhere(a *attempt, where string) {
-	s, _ := checkText(a.src)
+	s, _ := stmt.Check(a.src)
 	if sel, ok := s.(*stmt.Select); !ok || sel.Where == nil {
 		return
 	}
@@ -1707,7 +1719,7 @@ func (r *run) countWhere(a *attempt, where string) {
 
 // tableOf the statement of src, which the pass supports, folded as SQLite compares names.
 func tableOf(src string) string {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err != nil {
 		panic(err)
 	}
@@ -1932,7 +1944,7 @@ func simulate(t *testing.T, seed uint64, w workload) simulation {
 		world := sim.New(seed, sim.Options{Jitter: 50 * time.Millisecond, MaxSteps: 5_000_000})
 		dir := t.TempDir()
 		s.err = world.Run(func(ctx context.Context) {
-			s.r = w.do(ctx, world, dir, t)
+			s.r = w.do(ctx, world, seed, dir, t)
 		})
 		s.lines = world.Lines()
 	})
@@ -2012,7 +2024,7 @@ func tallyOf(s simulation) map[string]int {
 		if a.typeRefused {
 			counts["refused for the type"]++
 		}
-		if s, _ := checkText(a.src); isChange(s) {
+		if s, _ := stmt.Check(a.src); isChange(s) {
 			counts["updates and deletes"]++
 			switch {
 			case a.state == succeeded && a.unchanged:

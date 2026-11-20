@@ -211,6 +211,30 @@ func noSuchTable(value string) error {
 	return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: "no such table: " + value, Offset: -1}
 }
 
+// indexNamed is `there is already an index named %s`, for a create table under the name of an index,
+// with the value of the name that the statement writes.
+func indexNamed(value string) error {
+	return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: "there is already an index named " + value, Offset: -1}
+}
+
+// tableNamed is `there is already a table named %s`, for a create index under the name of a table,
+// with the value of the name of the index that the statement writes.
+func tableNamed(value string) error {
+	return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: "there is already a table named " + value, Offset: -1}
+}
+
+// indexExists is `index %s already exists`, with the value of the name of the index that the
+// statement writes.
+func indexExists(value string) error {
+	return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: "index " + value + " already exists", Offset: -1}
+}
+
+// noSuchIndex is `no such index: %s`, with the value of the name of the index that the statement
+// writes.
+func noSuchIndex(value string) error {
+	return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: "no such index: " + value, Offset: -1}
+}
+
 // noSuchColumn is `table %s has no column named %s`, with the values of the names that the statement
 // writes.
 func noSuchColumn(table, column string) error {
@@ -273,6 +297,19 @@ func schemaTooBig(name, sql string, limit int) bool {
 	quoted := func(s string) int { return len(s) + strings.Count(s, "'") + 2 }
 	const rest = len("UPDATE 'main'.sqlite_master SET type='table', name=, tbl_name=, rootpage=#2, sql= WHERE rowid=#1")
 	return rest+2*quoted(name)+quoted(sql) >= limit
+}
+
+// indexTooBig reports whether SQLite refuses the create index of the index with the name on the
+// table, whose name is given as the table stores it, which keeps the text sql, as too big under the
+// length limit. SQLite writes the index into its schema with an INSERT into sqlite_schema whose text
+// it formats under the limit, with the two names and sql, each in single quotes and with every single
+// quote doubled, and it gives `string or blob too big` when it prepares the statement if that text is
+// limit bytes or longer. The register number in the text, #1, is that of every create index that
+// s4ql supports.
+func indexTooBig(name, table, sql string, limit int) bool {
+	quoted := func(s string) int { return len(s) + strings.Count(s, "'") + 2 }
+	const rest = len("INSERT INTO 'main'.sqlite_master VALUES('index',,,#1,);")
+	return rest+quoted(name)+quoted(table)+quoted(sql) >= limit
 }
 
 // readOnlyDatabase is `attempt to write a readonly database`, which SQLite gives for a statement that

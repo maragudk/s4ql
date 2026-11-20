@@ -119,12 +119,13 @@ type outcome struct {
 	// affected and lastID are of the [sql.Result] of an exec, or "" where there is none or it is not
 	// compared.
 	affected, lastID string
-	// columns of a query, by their names and by the names of their database types, and the rows,
-	// each value as its Go type and its value.
+	// columns of a query, by their names and by the names of their database types, and the rows, in
+	// the order in which they came, each as [rowText] gives it.
 	columns, types string
 	rows           []string
-	// scans of the rows of a query, each the values of a row as a scan into a sql.Null* value and into
-	// a pointer gives them, which [outcome.full] has and its String does not.
+	// scans of the rows of a query, one for each row and in the order of the rows, each the values of
+	// a row as a scan into a sql.Null* value and into a pointer gives them, as [readRow] gives it,
+	// which [outcome.full] has and its String does not.
 	scans []string
 	// null reports whether a value of the rows is NULL. It is not in the text of the outcome, which
 	// holds each NULL.
@@ -133,7 +134,28 @@ type outcome struct {
 	next []outcome
 }
 
+// String of the outcome, with the rows of a query as a multiset. SQLite leaves the order of the rows
+// of a select without ORDER BY unspecified, and s4ql varies it from one query to the next, so no
+// comparison is by the order of the rows: the text holds the rows in the order of their texts, and
+// the rows field keeps the order in which they came. The text of a row tells its values apart from
+// those of every other row, as [rowText] says, and ends where its bracket closes, so the list of
+// the texts in order is the same for two outcomes only if they have the same rows the same number of
+// times: a row that is wrong changes an element of the list, and a row that is missing, or one too
+// many, also one that is there twice, changes its length or another element.
 func (o outcome) String() string {
+	return o.text(false)
+}
+
+// full text of the outcome: its String, with each row beside its scan into sql.Null* values and
+// pointers, as [outcome.pairs] gives them, in the order of their texts, which a comparison of two
+// outcomes compares too. A row stays with its own scan, so a scan that belongs to another row
+// changes two elements of the list.
+func (o outcome) full() string {
+	return o.text(true)
+}
+
+// text of the outcome: its [outcome.full] if scans, and its String otherwise.
+func (o outcome) text(scans bool) string {
 	var b strings.Builder
 	b.WriteString(string(o.call))
 	if o.failed != "" {
@@ -141,27 +163,33 @@ func (o outcome) String() string {
 	} else if o.affected != "" || o.lastID != "" {
 		fmt.Fprintf(&b, ": %v affected, last insert id %v", o.affected, o.lastID)
 	}
+	rows, what := o.rows, "rows"
+	if scans && len(o.scans) > 0 {
+		rows, what = o.pairs(), "rows, each with its scan into sql.Null* values and pointers,"
+	}
+	rows = slices.Sorted(slices.Values(rows))
 	switch {
 	case o.failed != "":
 	case o.columns != "" || o.types != "":
-		fmt.Fprintf(&b, ": columns %q of types %q, rows %v", o.columns, o.types, strings.Join(o.rows, " "))
-	case len(o.rows) > 0:
+		fmt.Fprintf(&b, ": columns %q of types %q, %v %v", o.columns, o.types, what, strings.Join(rows, " "))
+	case len(rows) > 0:
 		// A row of QueryRow, whose columns database/sql does not give.
-		fmt.Fprintf(&b, ": row %v", strings.Join(o.rows, " "))
+		fmt.Fprintf(&b, ": row %v", strings.Join(rows, " "))
 	}
 	for _, n := range o.next {
-		fmt.Fprintf(&b, "; then%v", n)
+		fmt.Fprintf(&b, "; then%v", n.text(scans))
 	}
 	return b.String()
 }
 
-// full text of the outcome: its String, and the scans of its rows into sql.Null* values and
-// pointers, which a comparison of two outcomes compares too.
-func (o outcome) full() string {
-	if len(o.scans) == 0 {
-		return o.String()
+// pairs of the outcome: each row of a query with its scan, as [pairText] gives them, in the order in
+// which the rows came.
+func (o outcome) pairs() []string {
+	pairs := make([]string, len(o.rows))
+	for i, row := range o.rows {
+		pairs[i] = pairText(row, o.scans[i])
 	}
-	return o.String() + "; scanned into sql.Null* values and pointers " + strings.Join(o.scans, " ")
+	return pairs
 }
 
 // runs of the outcome: itself, and the outcomes of its later runs.
@@ -292,12 +320,10 @@ func run(tb testing.TB, r runner, c call, src string, runs [][]any, errText func
 			}
 			break
 		}
-		var texts []string
 		for _, v := range values {
-			texts = append(texts, valueText(v))
 			o.null = o.null || v == nil
 		}
-		o.rows = []string{strings.Join(texts, ",")}
+		o.rows = []string{rowText(values)}
 		return o
 	}
 	tb.Fatalf("no call %q", c)
@@ -329,35 +355,8 @@ func read(tb testing.TB, o outcome, rows *sql.Rows, errText func(testing.TB, err
 	}
 	o.columns, o.types = strings.Join(columns, ","), strings.Join(names, ",")
 	for rows.Next() {
-		values := make([]any, len(columns))
-		dest := make([]any, len(columns))
-		for i := range values {
-			dest[i] = &values[i]
-		}
-		is.NotError(tb, rows.Scan(dest...))
-		var texts []string
-		for _, v := range values {
-			texts = append(texts, valueText(v))
-			o.null = o.null || v == nil
-		}
-		o.rows = append(o.rows, strings.Join(texts, ","))
-		// The row again into a sql.Null* value for each column, and into a pointer, so that the scan
-		// of NULL into each is compared too.
-		texts = nil
-		for _, pointer := range []bool{false, true} {
-			typed := make([]any, len(columns))
-			for i, v := range values {
-				typed[i] = typedDest(v, names[i], pointer)
-			}
-			if err := rows.Scan(typed...); err != nil {
-				texts = append(texts, "scan: "+err.Error())
-				continue
-			}
-			for _, d := range typed {
-				texts = append(texts, typedText(d))
-			}
-		}
-		o.scans = append(o.scans, strings.Join(texts, ","))
+		row, scan, null := readRow(tb, rows, names)
+		o.rows, o.scans, o.null = append(o.rows, row), append(o.scans, scan), o.null || null
 	}
 	if err := rows.Err(); err != nil {
 		o.failed, o.err = "rows", errText(tb, err)
@@ -366,8 +365,67 @@ func read(tb testing.TB, o outcome, rows *sql.Rows, errText func(testing.TB, err
 	return o
 }
 
-// valueText of a value that database/sql scanned into an any: its Go type and its value.
+// readRow that the Next of rows found, whose columns have the database types of the names: its text,
+// as [rowText] gives it, the text of its scan, and whether a value of it is NULL. The scan is the row
+// read again into a sql.Null* value for each column, and into a pointer for each, so that the scan
+// of NULL into each is compared too: the list of the texts of the destinations, as [typedText] gives
+// them, or of the error of a scan that failed, each in quotes, so that two scans have one text only
+// if they are the same.
+func readRow(tb testing.TB, rows *sql.Rows, names []string) (row, scan string, null bool) {
+	tb.Helper()
+	values := make([]any, len(names))
+	dest := make([]any, len(names))
+	for i := range values {
+		dest[i] = &values[i]
+	}
+	is.NotError(tb, rows.Scan(dest...))
+	for _, v := range values {
+		null = null || v == nil
+	}
+	var texts []string
+	for _, pointer := range []bool{false, true} {
+		typed := make([]any, len(names))
+		for i, v := range values {
+			typed[i] = typedDest(v, names[i], pointer)
+		}
+		if err := rows.Scan(typed...); err != nil {
+			texts = append(texts, "scan: "+err.Error())
+			continue
+		}
+		for _, d := range typed {
+			texts = append(texts, typedText(d))
+		}
+	}
+	return rowText(values), fmt.Sprintf("%q", texts), null
+}
+
+// rowText of the values of a row that database/sql scanned into an any each: the list of their
+// texts, as [valueText] gives them, each in quotes, such as ["int64:1" "string:a"]. Two rows have
+// one text only if they have the same values: a quote, a comma, a space, or a bracket inside text is
+// inside the quotes of its value, where a quote is escaped, so no value runs into the next, and the
+// text of each value tells it apart from every other value.
+func rowText(values []any) string {
+	texts := make([]string, len(values))
+	for i, v := range values {
+		texts[i] = valueText(v)
+	}
+	return fmt.Sprintf("%q", texts)
+}
+
+// pairText of a row and its scan, as [readRow] gives them. The text of the row ends where its
+// bracket closes, so two pairs have one text only if both their rows and their scans do.
+func pairText(row, scan string) string {
+	return row + " as " + scan
+}
+
+// valueText of a value that database/sql scanned into an any: its Go type and its value. The type
+// has no colon, and the value is all that follows the first colon, so two values have one text only
+// if they are the same: NULL is <nil>:<nil> and the text "<nil>" is string:<nil>, -0.0 is float64:-0,
+// and a []byte that is nil is []uint8:nil, where an empty one is []uint8:[].
 func valueText(v any) string {
+	if b, ok := v.([]byte); ok && b == nil {
+		return "[]uint8:nil"
+	}
 	return fmt.Sprintf("%T:%v", v, v)
 }
 
@@ -410,17 +468,18 @@ func typedDest(v any, typ string, pointer bool) any {
 	return new(sql.NullString)
 }
 
-// typedText of a destination of [typedDest] after a scan: its Go type and its value, or nil for a
-// pointer that is nil.
+// typedText of a destination of [typedDest] after a scan: its Go type and its value as Go writes it,
+// with text in quotes, or nil for a pointer that is nil, so that NULL in a *string is *string:nil and
+// the text "nil" in one is *string:"nil".
 func typedText(d any) string {
 	v := reflect.ValueOf(d).Elem()
 	if v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return fmt.Sprintf("%v:nil", v.Type())
 		}
-		return fmt.Sprintf("%v:%v", v.Type(), v.Elem().Interface())
+		return fmt.Sprintf("%v:%#v", v.Type(), v.Elem().Interface())
 	}
-	return fmt.Sprintf("%T:%+v", v.Interface(), v.Interface())
+	return fmt.Sprintf("%#v", v.Interface())
 }
 
 // s4qlText of an error of s4ql's driver, or of database/sql around it. Any error that is not
@@ -582,7 +641,7 @@ func (y tally) add(scope, src string, got outcome, runs [][]any) {
 // statementKind of src: the kind of the statement of slices 1 and 2 that it is, in lower case and
 // with a parameter if it has one, or "other".
 func statementKind(src string) string {
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	if s == nil {
 		return "other"
 	}
@@ -602,7 +661,8 @@ func statementKind(src string) string {
 // columns by the form of the insert, without a list or with one, and by its faults, as
 // [stmttest.Faults] gives them, one or two. For a select of a table that SQLite has, the outcome of
 // each run by its form: * by the number of columns, names, and a name that the table does not have;
-// and of * and of names with NULL among the values of its rows.
+// and of * and of names with NULL among the values of its rows, or, for a QueryRow, of the row that
+// SQLite gives.
 func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 	tb := p.tb
 	tb.Helper()
@@ -621,7 +681,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 		}
 		return "ok"
 	}
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	switch s.(type) {
 	case *stmt.Update, *stmt.Delete:
 		p.reachChange(s, runs, got, o, kind, count)
@@ -633,17 +693,23 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 			return
 		}
 		p.reachWhere(sel, runs, got, o, kind, columns, count)
-		for _, o := range got.runs() {
-			if o.null {
-				count(map[bool]string{true: "select * with NULL ", false: "select of names with NULL "}[sel.Columns == nil] + kind(o))
+		for _, out := range got.runs() {
+			null := out.null
+			if got.call == callQueryRow && out.failed == "" {
+				// The row of a QueryRow is the one that s4ql's scan meets first, which varies with the
+				// direction of the scan, so the count is by the row that SQLite gives, which does not.
+				null = run(tb, o, callQueryRow, firstStatement(src), runs, mattnText).null
+			}
+			if null {
+				count(map[bool]string{true: "select * with NULL ", false: "select of names with NULL "}[sel.Columns == nil] + kind(out))
 			}
 			switch {
 			case sel.Columns == nil:
-				count(fmt.Sprint("select * of ", len(columns), " columns ", kind(o)))
+				count(fmt.Sprint("select * of ", len(columns), " columns ", kind(out)))
 			case slices.ContainsFunc(sel.Columns, func(n stmt.Name) bool { return stmttest.ColumnOf(columns, n) < 0 }):
-				count("select of a name that the table does not have " + kind(o))
+				count("select of a name that the table does not have " + kind(out))
 			default:
-				count("select of names " + kind(o))
+				count("select of names " + kind(out))
 			}
 		}
 		return
@@ -858,7 +924,8 @@ func messageKind(err string) string {
 	for _, kind := range []string{
 		"already exists", "no such table", "has no column named", "no such column", "values were supplied", " values for ", "duplicate column name",
 		"too many columns on", "UNIQUE constraint failed", "NOT NULL constraint failed", "syntax error", "incomplete input", "no rows",
-		"wrong number of arguments", "attempt to write a readonly database",
+		"wrong number of arguments", "attempt to write a readonly database", "there is already a table named", "there is already an index named",
+		"no such index",
 	} {
 		if strings.Contains(err, kind) {
 			return kind
@@ -869,7 +936,10 @@ func messageKind(err string) string {
 
 // prepareKinds are the kinds of [messageKind] of SQLite's errors that depend on the database and that
 // SQLite gives when it prepares a statement, where s4ql gives them when the statement runs.
-var prepareKinds = []string{"no such table", "already exists", "has no column named", "no such column", "values were supplied", " values for ", "duplicate column name", "too many columns on"}
+var prepareKinds = []string{
+	"no such table", "already exists", "has no column named", "no such column", "values were supplied", " values for ", "duplicate column name", "too many columns on",
+	"there is already a table named", "there is already an index named", "no such index",
+}
 
 // The kinds of the texts that the comparison excuses, under which [tally.excused] counts them.
 const (
@@ -953,8 +1023,10 @@ type transaction struct {
 	// s and o are s4ql's and SQLite's.
 	s, o     *sql.Tx
 	readOnly bool
-	// sRows and oRows are the rows that [callQueryOpen] left open, or nil.
-	sRows, oRows *sql.Rows
+	// sRows and oRows are the rows that [callQueryOpen] left open, or nil, opened is the text of their
+	// query, and sFirst and oFirst are the first row of each, which is read, as [firstRow] gives it.
+	sRows, oRows           *sql.Rows
+	opened, sFirst, oFirst string
 	// wrote is set once an insert succeeded in the transaction, failed once a call failed in it, and
 	// created and dropped once a create table or a drop table succeeded in it.
 	wrote, failed, created, dropped bool
@@ -1046,7 +1118,7 @@ func (p *pair) stepRuns(src string, c call, supported bool, runs [][]any) (outco
 	if failure == "" && p.tx != nil && scope == p.tx.kind() {
 		p.note(src, got)
 		if c == callQueryOpen && got.failed == "" && got.columns != "" {
-			failure = p.openRows(src, runs[0])
+			failure = p.openRows(src, runs[0], got)
 		}
 	}
 	return got, failure
@@ -1065,7 +1137,7 @@ func (p *pair) where(c call, src string) (runner, runner, string) {
 		// The statements of a sql.Conn run in its transaction.
 		return p.s, p.o, t.kind()
 	}
-	if s, _ := checkText(src); s != nil {
+	if s, _ := stmt.Check(src); s != nil {
 		if _, ok := s.(*stmt.Select); ok {
 			return p.s, p.o, "beside a " + t.kind()
 		}
@@ -1094,9 +1166,13 @@ func (p *pair) note(src string, got outcome) {
 	}
 }
 
-// openRows runs the query src, with args, again in the open transaction on both sides, after its
-// outcome was compared, reads the first row of each, and leaves the rows open for the next call.
-func (p *pair) openRows(src string, args []any) string {
+// openRows runs the query src, with args, again in the open transaction on both sides, reads the
+// first row of each, and leaves the rows open for the next call. compared is s4ql's outcome of the
+// query, which was compared with SQLite's before, so its rows are the rows that SQLite gives. The
+// two first rows need not be the same row, since each side reads in an order of its own: both sides
+// must have a first row or neither, and s4ql's, with its scan, must be one of the rows of compared.
+// [pair.closeRows] reads the rest.
+func (p *pair) openRows(src string, args []any, compared outcome) string {
 	tb := p.tb
 	tb.Helper()
 	t := p.tx
@@ -1105,14 +1181,21 @@ func (p *pair) openRows(src string, args []any) string {
 	is.NotError(tb, err)
 	t.oRows, err = t.o.QueryContext(tb.Context(), firstStatement(src), args...)
 	is.NotError(tb, err)
-	got, want := firstRow(tb, t.sRows), firstRow(tb, t.oRows)
-	if got != want {
-		return fmt.Sprintf("%q: the first row of s4ql's rows that are left open is %v, and of SQLite's %v", src, got, want)
-	}
-	if got == "none" {
+	got, found := firstRow(tb, t.sRows)
+	want, wanted := firstRow(tb, t.oRows)
+	t.opened, t.sFirst, t.oFirst = src, got, want
+	if !found || !wanted {
 		// database/sql closes rows whose Next found no row.
-		p.closeRows()
+		is.NotError(tb, t.sRows.Close())
+		is.NotError(tb, t.oRows.Close())
+		t.sRows, t.oRows = nil, nil
+		if found != wanted {
+			return fmt.Sprintf("%q: s4ql's rows that are left open have a first row: %v, %v, and SQLite's: %v, %v", src, found, got, wanted, want)
+		}
 		return ""
+	}
+	if !slices.Contains(compared.pairs(), got) {
+		return fmt.Sprintf("%q: the first row of s4ql's rows that are left open is\n%v\nwhich is none of the rows that the query gave:\n%v", src, got, compared.full())
 	}
 	if p.y != nil {
 		p.y[t.kind()+": rows left open"]++
@@ -1120,67 +1203,81 @@ func (p *pair) openRows(src string, args []any) string {
 	return ""
 }
 
-// firstRow of rows, with its values as [valueText] gives them and as a scan into sql.Null* values
-// and into pointers gives them, or "none".
-func firstRow(tb testing.TB, rows *sql.Rows) string {
+// firstRow of rows, with its scan into sql.Null* values and into pointers, as [pairText] gives them
+// and as [outcome.pairs] has them, and whether the rows have one.
+func firstRow(tb testing.TB, rows *sql.Rows) (string, bool) {
 	tb.Helper()
 	if !rows.Next() {
 		is.NotError(tb, rows.Err())
-		return "none"
+		return "", false
 	}
-	columns, err := rows.Columns()
-	is.NotError(tb, err)
-	values := make([]any, len(columns))
-	dest := make([]any, len(columns))
-	for i := range values {
-		dest[i] = &values[i]
-	}
-	is.NotError(tb, rows.Scan(dest...))
-	var texts []string
-	for _, v := range values {
-		texts = append(texts, valueText(v))
-	}
-	// The row again into a sql.Null* value for each column, and into a pointer, as [read] does.
-	types, err := rows.ColumnTypes()
-	is.NotError(tb, err)
-	for _, pointer := range []bool{false, true} {
-		typed := make([]any, len(columns))
-		for i, v := range values {
-			typed[i] = typedDest(v, types[i].DatabaseTypeName(), pointer)
-		}
-		if err := rows.Scan(typed...); err != nil {
-			texts = append(texts, "scan: "+err.Error())
-			continue
-		}
-		for _, d := range typed {
-			texts = append(texts, typedText(d))
-		}
-	}
-	return strings.Join(texts, ",")
+	return pairText(typedRow(tb, rows)), true
 }
 
-// closeRows that [callQueryOpen] left open in the open transaction, on both sides.
-func (p *pair) closeRows() {
+// typedRow that the Next of rows found: its text and the text of its scan, as [readRow] gives them.
+func typedRow(tb testing.TB, rows *sql.Rows) (row, scan string) {
+	tb.Helper()
+	types, err := rows.ColumnTypes()
+	is.NotError(tb, err)
+	names := make([]string, len(types))
+	for i, ct := range types {
+		names[i] = ct.DatabaseTypeName()
+	}
+	row, scan, _ = readRow(tb, rows, names)
+	return row, scan
+}
+
+// closeRows that [callQueryOpen] left open in the open transaction, on both sides, after reading the
+// rest of each. The first row of each side and its rest, each row with its scan, must be the same
+// rows the same number of times, in any order: the calls between the first row and the rest changed
+// nothing, since s4ql refuses a statement of the transaction while its rows are open. It gives what
+// differs, or "", also where no rows are open.
+func (p *pair) closeRows() string {
 	tb := p.tb
 	tb.Helper()
-	if t := p.tx; t != nil && t.sRows != nil {
-		is.NotError(tb, t.sRows.Close())
-		is.NotError(tb, t.oRows.Close())
-		t.sRows, t.oRows = nil, nil
+	t := p.tx
+	if t == nil || t.sRows == nil {
+		return ""
 	}
+	got, want := []string{t.sFirst}, []string{t.oFirst}
+	for t.sRows.Next() {
+		got = append(got, pairText(typedRow(tb, t.sRows)))
+	}
+	sErr := t.sRows.Err()
+	for t.oRows.Next() {
+		want = append(want, pairText(typedRow(tb, t.oRows)))
+	}
+	is.NotError(tb, t.oRows.Err())
+	is.NotError(tb, t.sRows.Close())
+	is.NotError(tb, t.oRows.Close())
+	t.sRows, t.oRows = nil, nil
+	if sErr != nil {
+		return fmt.Sprintf("%q: the rest of s4ql's rows that were left open fails with %v", t.opened, sErr)
+	}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		return fmt.Sprintf("%q: s4ql's rows that were left open, the first and then the rest, are\n%v\nand SQLite's\n%v", t.opened, strings.Join(got, " "), strings.Join(want, " "))
+	}
+	return ""
 }
 
 // whileRowsOpen is [pair.stepRuns] of src through the call c, with the arguments of each run, on s
-// and o, while rows of the open transaction are open, which it closes after the call. Where s4ql
-// would run the statement in every run, it must refuse each with [rowsOpen] when the statement runs,
-// and the call is not run in SQLite, which would run it. The open rows come after the checks of the
-// text and of the arguments, so every other call is compared as without them; so is a query beside
-// the transaction through the pool, which runs on another connection.
-func (p *pair) whileRowsOpen(src string, c call, supported bool, runs [][]any, s, o runner, scope string) (outcome, string) {
+// and o, while rows of the open transaction are open, which it reads to their end, compares, and
+// closes after the call, as [pair.closeRows] does. Where s4ql would run the statement in every run,
+// it must refuse each with [rowsOpen] when the statement runs, and the call is not run in SQLite,
+// which would run it. The open rows come after the checks of the text and of the arguments, so every
+// other call is compared as without them; so is a query beside the transaction through the pool,
+// which runs on another connection.
+func (p *pair) whileRowsOpen(src string, c call, supported bool, runs [][]any, s, o runner, scope string) (got outcome, failure string) {
 	tb := p.tb
 	tb.Helper()
-	defer p.closeRows()
-	got := run(tb, s, c, src, runs, s4qlText)
+	defer func() {
+		if rest := p.closeRows(); failure == "" {
+			failure = rest
+		}
+	}()
+	got = run(tb, s, c, src, runs, s4qlText)
 	p.y.add(scope, src, got, runs)
 	runsAll := !slices.ContainsFunc(runs, func(args []any) bool { return !reaches(src, args) })
 	if !runsAll || scope != p.tx.kind() {
@@ -1260,14 +1357,16 @@ func (p *pair) begin(src string, c call) (outcome, string) {
 // beginAgain is [pair.begin] on a pinned connection whose transaction is open, with opts: s4ql must
 // refuse an isolation level that it does not support as without the transaction, and otherwise give
 // [txOpen], which matches none of its sentinels, and SQLite must refuse it as a transaction within a
-// transaction. The open transaction stays open on both sides, and rows that it left open are closed
-// first.
+// transaction. The open transaction stays open on both sides, and rows that it left open are read to
+// their end, compared, and closed first, as [pair.closeRows] does.
 func (p *pair) beginAgain(c call, opts *sql.TxOptions) (outcome, string) {
 	tb := p.tb
 	tb.Helper()
 	ctx := tb.Context()
-	p.closeRows()
 	got := outcome{call: c}
+	if failure := p.closeRows(); failure != "" {
+		return got, failure
+	}
 	if p.y != nil {
 		p.y["call "+string(c)+" in a transaction"]++
 	}
@@ -1305,7 +1404,8 @@ func (p *pair) beginAgain(c call, opts *sql.TxOptions) (outcome, string) {
 
 // end the open transaction on both sides, by the call c, a commit or a roll back, and compare what
 // each gives, and then every table. Rows that the transaction left open stay open on s4ql's side,
-// which database/sql closes before the end. Without a transaction it does nothing.
+// which database/sql closes before the end, so their rest is not read: their first row was checked
+// when they were opened, as [pair.openRows] says. Without a transaction it does nothing.
 func (p *pair) end(c call) (outcome, string) {
 	tb := p.tb
 	tb.Helper()
@@ -1387,7 +1487,7 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 	// gives before it binds the arguments, so that it runs there without them, or the outcome of a
 	// statement that s4ql ran, which must have had an argument that s4ql supports for each
 	// parameter in each run, and which runs there with them.
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	byText := err != nil || s == nil
 	mattnRuns := runs
 	if byText {
@@ -1435,6 +1535,16 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 		default:
 			got.affected, want.affected = "", ""
 		}
+	}
+	if c == callQueryRow && got.failed == "" && want.failed == "" && !slices.Equal(got.rows, want.rows) {
+		// A QueryRow gives the row that comes first, and each side reads in an order of its own, so
+		// the two rows need not be the same row: s4ql's must be one of the rows that SQLite gives for
+		// the query when all of them are read.
+		all := run(tb, o, callQuery, first, mattnRuns, mattnText)
+		if all.failed != "" || len(got.rows) != 1 || !slices.Contains(all.rows, got.rows[0]) {
+			return fmt.Sprintf("%q with the arguments %#v: s4ql's QueryRow gives\n%v\nwhose row is none of the rows that SQLite gives:\n%v", src, runs, got, all)
+		}
+		want.rows = got.rows
 	}
 	if got.full() == want.full() {
 		if ct, ok := s.(*stmt.CreateTable); ok && got.failed == "" {
@@ -1512,7 +1622,7 @@ func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) 
 func (p *pair) checkNotSupported(src string, c call, supported bool, runs [][]any, got outcome) string {
 	tb := p.tb
 	tb.Helper()
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err == nil && s != nil {
 		return p.checkRefused(src, s, runs, got)
 	}
@@ -1646,23 +1756,10 @@ func converted(a any) any {
 	return a
 }
 
-// checkText src as the driver checks a text at Prepare: as [stmt.Check] does, and with the "not
-// supported" of [engine.Check] for a create index or a drop index of slice 9, which the pass supports
-// and the engine does not run yet, which the tests take for a text that is not supported.
-func checkText(src string) (stmt.Statement, error) {
-	s, err := stmt.Check(src)
-	if err == nil && s != nil {
-		if err := engine.Check(src, s.Parameters()); errors.Is(err, stmt.ErrNotSupported) {
-			return nil, err
-		}
-	}
-	return s, err
-}
-
 // reaches reports whether s4ql takes src with args to the instance: the text holds a statement that
 // s4ql supports, with one argument for each parameter, each one that s4ql supports.
 func reaches(src string, args []any) bool {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	return err == nil && s != nil && len(args) == s.Parameters() && argumentRefusal(args) == ""
 }
 
@@ -1838,7 +1935,7 @@ func (p *pair) compareChanged(src string, s, o runner) string {
 	tb := p.tb
 	tb.Helper()
 	var table stmt.Name
-	switch st, _ := checkText(src); st := st.(type) {
+	switch st, _ := stmt.Check(src); st := st.(type) {
 	case *stmt.Update:
 		table = st.Table
 	case *stmt.Delete:
@@ -1922,15 +2019,26 @@ func (p *pair) close() {
 type step struct {
 	call call
 	src  string
-	// want is the outcome that both sides must give, as [outcome.String] writes it, or "" to compare
-	// the two sides only.
+	// want is the outcome that both sides must give, as [outcome.String] writes it, with the rows of
+	// a query in the order of their texts, whatever the order in which they come, or "" to compare
+	// the two sides only. For a QueryRow of a query with several rows, it is [oneOf] the outcomes with
+	// each of them.
 	want string
+}
+
+// oneOf the outcomes, as the want of a [step] whose outcome depends on the order of the rows, which
+// SQLite leaves unspecified: a QueryRow of a query with several rows gives whichever comes first.
+func oneOf(outcomes ...string) string {
+	return strings.Join(outcomes, "\n")
 }
 
 const (
 	t1 = "create table t1 (v1 int primary key) strict, without rowid"
 	// t3 is the table of the example of slice 5: three columns of three types, with the key first.
 	t3 = "create table t3 (v1 int primary key, v2 text not null, v3 real not null) strict, without rowid"
+	// t4 is the table of the sequences of slice 9, with a column for each index: text and an integer
+	// that take NULL, and a real.
+	t4 = "create table t4 (v1 int primary key, v2 text, v3 real not null, v4 int) strict, without rowid"
 )
 
 // sequences written by hand, which cover every statement of slice 1, every error that an
@@ -1940,18 +2048,18 @@ var sequences = map[string][]step{
 		{callExec, t1, "exec: 0 affected, last insert id 0"},
 		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows `},
 		{callExec, "insert into t1 (v1) values (1)", "exec: 1 affected, last insert id 0"},
-		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1`},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows ["int64:1"]`},
 		{callExec, "drop table t1", "exec: 1 affected, last insert id 0"},
 	},
-	"several rows in the order of the key, through each call": {
+	"several rows, through each call": {
 		{callPrepareExec, t1, "prepare, exec: 0 affected, last insert id 0"},
 		{callExec, "insert into t1 (v1) values (3)", "exec: 1 affected, last insert id 0"},
 		{callPrepareExec, "insert into t1 (v1) values (-9223372036854775808)", "prepare, exec: 1 affected, last insert id 0"},
 		{callQuery, "insert into t1 (v1) values (9223372036854775807)", "query"},
 		{callQueryRow, "insert into t1 (v1) values (0)", "query row: scan failed with no rows"},
-		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:-9223372036854775808 int64:0 int64:3 int64:9223372036854775807`},
-		{callPrepareQuery, "select * from t1", `prepare, query: columns "v1" of types "INT", rows int64:-9223372036854775808 int64:0 int64:3 int64:9223372036854775807`},
-		{callQueryRow, "select * from t1", "query row: row int64:-9223372036854775808"},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows ["int64:-9223372036854775808"] ["int64:0"] ["int64:3"] ["int64:9223372036854775807"]`},
+		{callPrepareQuery, "select * from t1", `prepare, query: columns "v1" of types "INT", rows ["int64:-9223372036854775808"] ["int64:0"] ["int64:3"] ["int64:9223372036854775807"]`},
+		{callQueryRow, "select * from t1", oneOf(`query row: row ["int64:-9223372036854775808"]`, `query row: row ["int64:0"]`, `query row: row ["int64:3"]`, `query row: row ["int64:9223372036854775807"]`)},
 		{callExec, "select * from t1", "exec: 1 affected, last insert id 0"},
 		{callPrepareQuery, "drop table t1", "prepare, query"},
 		{callQueryRow, "select * from t1", "query row: scan failed with 1/1: no such table: t1"},
@@ -2005,7 +2113,7 @@ var sequences = map[string][]step{
 	"names in quotes and in other cases": {
 		{callExec, `create table "Foo bar" ("Bar""x" int primary key) strict, without rowid`, "exec: 0 affected, last insert id 0"},
 		{callExec, `insert into "foo BAR" ("bar""X") values (7)`, "exec: 1 affected, last insert id 0"},
-		{callQuery, `select * from "FOO BAR"`, `query: columns "Bar\"x" of types "INT", rows int64:7`},
+		{callQuery, `select * from "FOO BAR"`, `query: columns "Bar\"x" of types "INT", rows ["int64:7"]`},
 		{callExec, `insert into "Foo bar" ("Bar""x") values (7)`, `exec: exec failed with 19/1555: UNIQUE constraint failed: Foo bar.Bar"x`},
 		{callExec, "create table Été (abort int primary key) strict, without rowid", "exec: 0 affected, last insert id 0"},
 		{callQuery, "select * from Été", `query: columns "abort" of types "INT", rows `},
@@ -2060,7 +2168,7 @@ var sequences = map[string][]step{
 		{callExecArgument, "insert into t1 (v1) values (?)", "exec with an argument: 1 affected, last insert id 0"},
 		{callExecArgument, "insert into T1 (V1) values ( ? );", "exec with an argument: exec failed with 19/1555: UNIQUE constraint failed: t1.v1"},
 		{callExec, "insert into t1 (v1) values (?)", "exec: exec failed with s4ql: wrong number of arguments: 0 for a statement with 1 parameter"},
-		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1`},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows ["int64:1"]`},
 	},
 	"selects with WHERE": {
 		{callExec, "select * from t1 where v1 = 1", "exec: exec failed with 1/1: no such table: t1"},
@@ -2068,9 +2176,9 @@ var sequences = map[string][]step{
 		{callExec, "insert into t1 values (1, 'a')", "exec: 1 affected, last insert id 0"},
 		{callExec, "insert into t1 values (2, null)", "exec: 1 affected, last insert id 0"},
 		{callExec, "insert into t1 values (3, 'c')", "exec: 1 affected, last insert id 0"},
-		{callQuery, "select * from t1 where v1 >= 2 and v1 < 10 and v2 is not null", `query: columns "v1,v2" of types "INT,TEXT", rows int64:3,string:c`},
-		{callQueryArgument, "select v2 from t1 where v1 = ?", `query with an argument: columns "v2" of types "TEXT", rows string:a`},
-		{callPrepareQuery, "select v1 from t1 where v2 is null", `prepare, query: columns "v1" of types "INT", rows int64:2`},
+		{callQuery, "select * from t1 where v1 >= 2 and v1 < 10 and v2 is not null", `query: columns "v1,v2" of types "INT,TEXT", rows ["int64:3" "string:c"]`},
+		{callQueryArgument, "select v2 from t1 where v1 = ?", `query with an argument: columns "v2" of types "TEXT", rows ["string:a"]`},
+		{callPrepareQuery, "select v1 from t1 where v2 is null", `prepare, query: columns "v1" of types "INT", rows ["int64:2"]`},
 		{callQueryArgument, "select v1 from t1 where v1 > ? and v2 != 'c'", `query with an argument: columns "v1" of types "INT", rows `},
 		{callQuery, "select v1 from t1 where v2 = null", `query: columns "v1" of types "INT", rows `},
 		{callQuery, "select v1 from t1 where x is null and y = 1", "query: query failed with 1/1: no such column: x"},
@@ -2082,9 +2190,9 @@ var sequences = map[string][]step{
 		{callPrepareQuery, "select * from t1 where v1 = 1 or v1 = 2", "prepare, query: prepare failed with s4ql: not supported: OR (at offset 30)"},
 		{callBegin, "", "begin"},
 		{callExec, "insert into t1 values (4, 'd')", "exec: 1 affected, last insert id 0"},
-		{callQuery, "select v1 from t1 where v1 > 2", `query: columns "v1" of types "INT", rows int64:3 int64:4`},
+		{callQuery, "select v1 from t1 where v1 > 2", `query: columns "v1" of types "INT", rows ["int64:3"] ["int64:4"]`},
 		{callRollback, "", "rollback"},
-		{callQuery, "select v1 from t1 where v1 > 2", `query: columns "v1" of types "INT", rows int64:3`},
+		{callQuery, "select v1 from t1 where v1 > 2", `query: columns "v1" of types "INT", rows ["int64:3"]`},
 	},
 	"a prepared statement with a parameter, run several times, and a query with an argument": {
 		{callExec, t1, "exec: 0 affected, last insert id 0"},
@@ -2097,13 +2205,13 @@ var sequences = map[string][]step{
 		{callPrepareExecRuns, "insert into t9 (v1) values (?)", "prepare, exec several times: exec failed with 1/1: no such table: t9; then: exec failed with 1/1: no such table: t9; then: exec failed with 1/1: no such table: t9"},
 		{callPrepareExecRuns, "insert into t1 (v1) values (?1)", "prepare, exec several times: prepare failed with s4ql: not supported: numbered parameter (at offset 28)"},
 		{callPrepareExecRuns, "insert into t1 (v1) values (? ?)", `prepare, exec several times: prepare failed with 1/1: near "?": syntax error`},
-		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1 int64:2`},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows ["int64:1"] ["int64:2"]`},
 	},
 	"a semicolon and a comment after the statement": {
 		{callExec, t1 + "; -- c", "exec: 0 affected, last insert id 0"},
 		{callExec, "insert into t1 (v1) values (1);;", "exec: 1 affected, last insert id 0"},
 		{callExec, "insert into t1 (v1) values (2); /* c */", "exec: 1 affected, last insert id 0"},
-		{callQuery, "select * from t1 ; -- c", `query: columns "v1" of types "INT", rows int64:1 int64:2`},
+		{callQuery, "select * from t1 ; -- c", `query: columns "v1" of types "INT", rows ["int64:1"] ["int64:2"]`},
 	},
 	"a write transaction that commits, with arguments and prepared statements": {
 		{callExec, t1, "exec: 0 affected, last insert id 0"},
@@ -2112,17 +2220,17 @@ var sequences = map[string][]step{
 		{callExec, "insert into t1 (v1) values (1)", "exec: 1 affected, last insert id 0"},
 		{callExecArgument, "insert into t1 (v1) values (?)", "exec with an argument: exec failed with 19/1555: UNIQUE constraint failed: t1.v1"},
 		{callPrepareExecRuns, "insert into t1 (v1) values (?)", "prepare, exec several times: exec failed with 19/1555: UNIQUE constraint failed: t1.v1; then: 1 affected, last insert id 0; then: exec failed with 19/1555: UNIQUE constraint failed: t1.v1"},
-		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1 int64:2`},
-		{callQueryRow, "select * from t1", "query row: row int64:1"},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows ["int64:1"] ["int64:2"]`},
+		{callQueryRow, "select * from t1", oneOf(`query row: row ["int64:1"]`, `query row: row ["int64:2"]`)},
 		{callExec, "create table t2 (v2 int primary key) strict, without rowid", "exec: 0 affected, last insert id 0"},
 		// Through the pool, mattn's Prepare outside the transaction does not find t2.
 		{callStmtExec, "insert into t2 (v2) values (5)", "prepare outside, exec in the transaction: 1 affected, last insert id 0"},
-		{callStmtQuery, "select * from t2", `prepare outside, query in the transaction: columns "v2" of types "INT", rows int64:5`},
+		{callStmtQuery, "select * from t2", `prepare outside, query in the transaction: columns "v2" of types "INT", rows ["int64:5"]`},
 		{callStmtExec, "insert into t2 (v2) values (?)", "prepare outside, exec in the transaction: exec failed with s4ql: wrong number of arguments: 0 for a statement with 1 parameter"},
-		{callPrepareQuery, "select * from t2", `prepare, query: columns "v2" of types "INT", rows int64:5`},
+		{callPrepareQuery, "select * from t2", `prepare, query: columns "v2" of types "INT", rows ["int64:5"]`},
 		{callCommit, "", "commit"},
-		{callQuery, "select * from t2", `query: columns "v2" of types "INT", rows int64:5`},
-		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1 int64:2`},
+		{callQuery, "select * from t2", `query: columns "v2" of types "INT", rows ["int64:5"]`},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows ["int64:1"] ["int64:2"]`},
 	},
 	"a write transaction that rolls back, with create table and drop table": {
 		{callExec, t1, "exec: 0 affected, last insert id 0"},
@@ -2135,14 +2243,14 @@ var sequences = map[string][]step{
 		{callStmtExec, "insert into t1 (v1) values (3)", "prepare outside, exec in the transaction: exec failed with 1/1: no such table: t1"},
 		{callExec, "insert into t2 (v2) values (3)", "exec: 1 affected, last insert id 0"},
 		{callRollback, "", "rollback"},
-		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1`},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows ["int64:1"]`},
 		{callQuery, "select * from t2", "query: query failed with 1/1: no such table: t2"},
 	},
 	"a read-only transaction": {
 		{callExec, t1, "exec: 0 affected, last insert id 0"},
 		{callExec, "insert into t1 (v1) values (1)", "exec: 1 affected, last insert id 0"},
 		{callBeginReadOnly, "", "begin read-only"},
-		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1`},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows ["int64:1"]`},
 		{callExec, "insert into t1 (v1) values (2)", "exec: exec failed with 8/8: attempt to write a readonly database"},
 		{callExec, "create table t2 (v2 int primary key) strict, without rowid", "exec: exec failed with 8/8: attempt to write a readonly database"},
 		{callExec, "drop table t1", "exec: exec failed with 8/8: attempt to write a readonly database"},
@@ -2150,12 +2258,12 @@ var sequences = map[string][]step{
 		{callExec, t1, "exec: exec failed with 1/1: table t1 already exists"},
 		{callExecArgument, "insert into t1 (v1) values (?)", "exec with an argument: exec failed with 8/8: attempt to write a readonly database"},
 		{callPrepareExecRuns, "insert into t1 (v1) values (?)", "prepare, exec several times: exec failed with 8/8: attempt to write a readonly database; then: exec failed with 8/8: attempt to write a readonly database; then: exec failed with 8/8: attempt to write a readonly database"},
-		{callStmtQuery, "select * from t1", `prepare outside, query in the transaction: columns "v1" of types "INT", rows int64:1`},
-		{callQueryRow, "select * from t1", "query row: row int64:1"},
+		{callStmtQuery, "select * from t1", `prepare outside, query in the transaction: columns "v1" of types "INT", rows ["int64:1"]`},
+		{callQueryRow, "select * from t1", `query row: row ["int64:1"]`},
 		{callCommit, "", "commit"},
 		{callExec, "insert into t1 (v1) values (2)", "exec: 1 affected, last insert id 0"},
 		{callBeginReadOnly, "Serializable", "begin read-only"},
-		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1 int64:2`},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows ["int64:1"] ["int64:2"]`},
 		{callRollback, "", "rollback"},
 	},
 	"rows of a transaction left open": {
@@ -2163,9 +2271,9 @@ var sequences = map[string][]step{
 		{callExec, "insert into t1 (v1) values (1)", "exec: 1 affected, last insert id 0"},
 		{callExec, "insert into t1 (v1) values (2)", "exec: 1 affected, last insert id 0"},
 		{callBegin, "", "begin"},
-		{callQueryOpen, "select * from t1", `query, rows left open: columns "v1" of types "INT", rows int64:1 int64:2`},
+		{callQueryOpen, "select * from t1", `query, rows left open: columns "v1" of types "INT", rows ["int64:1"] ["int64:2"]`},
 		{callExec, "insert into t1 (v1) values (3)", "exec: exec failed with " + rowsOpen},
-		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1 int64:2`},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows ["int64:1"] ["int64:2"]`},
 		{callQueryOpen, "select * from t1", ""},
 		{callExec, "insert into t9 (v1) values (3)", "exec: exec failed with " + rowsOpen},
 		{callQueryOpen, "select * from t1", ""},
@@ -2182,11 +2290,11 @@ var sequences = map[string][]step{
 		{callQueryOpen, "select * from t1", ""},
 		{callCommit, "", "commit"},
 		{callBeginReadOnly, "", "begin read-only"},
-		{callQueryOpen, "select * from t1", `query, rows left open: columns "v1" of types "INT", rows int64:1 int64:2`},
+		{callQueryOpen, "select * from t1", `query, rows left open: columns "v1" of types "INT", rows ["int64:1"] ["int64:2"]`},
 		{callExec, "insert into t1 (v1) values (3)", "exec: exec failed with " + rowsOpen},
 		{callQueryOpen, "select * from t1", ""},
 		{callRollback, "", "rollback"},
-		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1 int64:2`},
+		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows ["int64:1"] ["int64:2"]`},
 	},
 	"isolation levels, and a begin in a transaction": {
 		{callBegin, "Serializable", "begin"},
@@ -2211,10 +2319,10 @@ var sequences = map[string][]step{
 		{callExec, t3, "exec: 0 affected, last insert id 0"},
 		{callExec, "insert into t3 values (1, 'a', 1.5)", "exec: 1 affected, last insert id 0"},
 		{callExec, "insert into t3 (v3, v1, v2) values (2.5, 2, 'b')", "exec: 1 affected, last insert id 0"},
-		{callQuery, "select v2, v1, v2 from t3", `query: columns "v2,v1,v2" of types "TEXT,INT,TEXT", rows string:a,int64:1,string:a string:b,int64:2,string:b`},
-		{callQuery, "select * from t3", `query: columns "v1,v2,v3" of types "INT,TEXT,REAL", rows int64:1,string:a,float64:1.5 int64:2,string:b,float64:2.5`},
-		{callPrepareQuery, "select V3, \"V1\" from T3", `prepare, query: columns "v3,v1" of types "REAL,INT", rows float64:1.5,int64:1 float64:2.5,int64:2`},
-		{callQueryRow, "select v2 from t3", "query row: row string:a"},
+		{callQuery, "select v2, v1, v2 from t3", `query: columns "v2,v1,v2" of types "TEXT,INT,TEXT", rows ["string:a" "int64:1" "string:a"] ["string:b" "int64:2" "string:b"]`},
+		{callQuery, "select * from t3", `query: columns "v1,v2,v3" of types "INT,TEXT,REAL", rows ["int64:1" "string:a" "float64:1.5"] ["int64:2" "string:b" "float64:2.5"]`},
+		{callPrepareQuery, "select V3, \"V1\" from T3", `prepare, query: columns "v3,v1" of types "REAL,INT", rows ["float64:1.5" "int64:1"] ["float64:2.5" "int64:2"]`},
+		{callQueryRow, "select v2 from t3", oneOf(`query row: row ["string:a"]`, `query row: row ["string:b"]`)},
 	},
 	"the errors of slice 5, through Exec, Query, and Prepare": {
 		{callExec, t3, "exec: 0 affected, last insert id 0"},
@@ -2238,8 +2346,8 @@ var sequences = map[string][]step{
 		{callExec, "insert into t3 (v3, v1, v2) values ('c', 'x', 'b')", "exec: exec failed with s4ql: not supported: a string literal for the column t3.v1 of type INT"},
 		// A column without a value comes first.
 		{callExec, "insert into t3 (v3, v2) values ('c', 2)", "exec: exec failed with 19/1299: NOT NULL constraint failed: t3.v1"},
-		{callQueryRow, `select V1 from t3`, "query row: row int64:1"},
-		{callQueryRow, `select V1, v3, v2 from t3`, "query row: row int64:1,float64:1.5,string:a"},
+		{callQueryRow, `select V1 from t3`, `query row: row ["int64:1"]`},
+		{callQueryRow, `select V1, v3, v2 from t3`, `query row: row ["int64:1" "float64:1.5" "string:a"]`},
 		// SQLite gives these errors when it prepares the text, and s4ql when the statement runs.
 		{callPrepareExec, "insert into t3 values (2, 'b')", "prepare, exec: exec failed with 1/1: table t3 has 3 columns but 2 values were supplied"},
 		{callPrepareExec, "insert into t3 (v1) values (2, 'b')", "prepare, exec: exec failed with 1/1: 2 values for 1 columns"},
@@ -2247,7 +2355,7 @@ var sequences = map[string][]step{
 		{callPrepareExec, "create table t4 (v int primary key, V text not null) strict, without rowid", "prepare, exec: exec failed with 1/1: duplicate column name: V"},
 		// This both sides give at the same step.
 		{callPrepareExec, "insert into t3 (v1) values (2)", "prepare, exec: exec failed with 19/1299: NOT NULL constraint failed: t3.v2"},
-		{callQuery, "select * from t3", `query: columns "v1,v2,v3" of types "INT,TEXT,REAL", rows int64:1,string:a,float64:1.5`},
+		{callQuery, "select * from t3", `query: columns "v1,v2,v3" of types "INT,TEXT,REAL", rows ["int64:1" "string:a" "float64:1.5"]`},
 	},
 	"parameters numbered across the values of an insert of several columns": {
 		{callExec, "create table k (a text not null, b int primary key) strict, without rowid", "exec: 0 affected, last insert id 0"},
@@ -2255,7 +2363,7 @@ var sequences = map[string][]step{
 		{callPrepareExecRuns, "insert into k values ('y', ?)", "prepare, exec several times: exec failed with 19/1555: UNIQUE constraint failed: k.b; then: 1 affected, last insert id 0; then: exec failed with 19/1555: UNIQUE constraint failed: k.b"},
 		{callExecArgument, "insert into k (b, a) values (?, ?)", "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 2 parameters"},
 		{callExecArgument, "insert into k (b, a) values (3, ?)", "exec with an argument: exec failed with s4ql: not supported: argument 1, which is an integer, for the column k.a of type TEXT"},
-		{callQuery, "select * from k", `query: columns "a,b" of types "TEXT,INT", rows string:x,int64:1 string:y,int64:2`},
+		{callQuery, "select * from k", `query: columns "a,b" of types "TEXT,INT", rows ["string:x" "int64:1"] ["string:y" "int64:2"]`},
 	},
 	"a transaction of several columns, with a failed insert that changes nothing": {
 		{callExec, t3, "exec: 0 affected, last insert id 0"},
@@ -2263,13 +2371,13 @@ var sequences = map[string][]step{
 		{callExec, "insert into t3 values (1, 'a', 1.5)", "exec: 1 affected, last insert id 0"},
 		{callExec, "insert into t3 (v1, v2) values (2, 'b')", "exec: exec failed with 19/1299: NOT NULL constraint failed: t3.v3"},
 		{callExec, "insert into t3 values (1, 'b', 2.5)", "exec: exec failed with 19/1555: UNIQUE constraint failed: t3.v1"},
-		{callQuery, "select v2 from t3", `query: columns "v2" of types "TEXT", rows string:a`},
+		{callQuery, "select v2 from t3", `query: columns "v2" of types "TEXT", rows ["string:a"]`},
 		{callCommit, "", "commit"},
 		{callBeginReadOnly, "", "begin read-only"},
 		{callExec, "insert into t3 values (2, 'b')", "exec: exec failed with 1/1: table t3 has 3 columns but 2 values were supplied"},
 		{callExec, "insert into t3 (v1, v2) values (2, 'b')", "exec: exec failed with 8/8: attempt to write a readonly database"},
 		{callExec, "insert into t3 values (2, 'b', 'c')", "exec: exec failed with 8/8: attempt to write a readonly database"},
-		{callQuery, "select v3, v1 from t3", `query: columns "v3,v1" of types "REAL,INT", rows float64:1.5,int64:1`},
+		{callQuery, "select v3, v1 from t3", `query: columns "v3,v1" of types "REAL,INT", rows ["float64:1.5" "int64:1"]`},
 		{callRollback, "", "rollback"},
 	},
 	"a query beside the transaction": {
@@ -2278,12 +2386,158 @@ var sequences = map[string][]step{
 		{callBegin, "", "begin"},
 		{callExec, "insert into t1 (v1) values (2)", "exec: 1 affected, last insert id 0"},
 		// On a pinned connection in the transaction, and through the pool outside it.
-		{callBeside, "select * from t1", `query beside the transaction: columns "v1" of types "INT", rows int64:1 int64:2`},
+		{callBeside, "select * from t1", `query beside the transaction: columns "v1" of types "INT", rows ["int64:1"] ["int64:2"]`},
 		{callBeside, "insert into t1 (v1) values (3)", "query beside the transaction"},
 		{callQueryOpen, "select * from t1", ""},
 		{callBeside, "select * from t1", ""},
 		{callRollback, "", "rollback"},
-		{callBeside, "select * from t1", `query beside the transaction: columns "v1" of types "INT", rows int64:1`},
+		{callBeside, "select * from t1", `query beside the transaction: columns "v1" of types "INT", rows ["int64:1"]`},
+	},
+	"the example of slice 9, with selects, updates, and deletes through indexes": {
+		{callExec, t4, "exec: 0 affected, last insert id 0"},
+		{callExec, "insert into t4 values (1, 'a', 1.5, 1)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t4 values (2, 'b', 2.5, 2)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t4 values (3, 'a', 3.5, 1)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t4 values (4, null, 0.5, null)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t4 values (5, 'c', 2.5, 1)", "exec: 1 affected, last insert id 0"},
+		// An index on one column, one on a descending column, and one on two columns, on a table with
+		// rows.
+		{callExec, "create index i1 on t4 (v2)", "exec: 1 affected, last insert id 0"},
+		{callPrepareExec, "create index i2 on t4 (v3 desc)", "prepare, exec: 1 affected, last insert id 0"},
+		{callQuery, "create index i3 on t4 (v4, v3 desc)", "query"},
+		// With =, with a range, and with IS NULL, on the column of each index.
+		{callQuery, "select v1 from t4 where v2 = 'a'", `query: columns "v1" of types "INT", rows ["int64:1"] ["int64:3"]`},
+		{callQueryRow, "select v1 from t4 where v2 = 'a'", oneOf(`query row: row ["int64:1"]`, `query row: row ["int64:3"]`)},
+		{callPrepareQuery, "select v1, v3 from t4 where v3 > 1.5 and v3 <= 3.5", `prepare, query: columns "v1,v3" of types "INT,REAL", rows ["int64:2" "float64:2.5"] ["int64:3" "float64:3.5"] ["int64:5" "float64:2.5"]`},
+		{callQuery, "select * from t4 where v2 is null", `query: columns "v1,v2,v3,v4" of types "INT,TEXT,REAL,INT", rows ["int64:4" "<nil>:<nil>" "float64:0.5" "<nil>:<nil>"]`},
+		{callQuery, "select v1 from t4 where v4 is null and v3 < 1.0", `query: columns "v1" of types "INT", rows ["int64:4"]`},
+		{callQueryArgument, "select v1, v3 from t4 where v4 = ? and v3 < 3.0", `query with an argument: columns "v1,v3" of types "INT,REAL", rows ["int64:1" "float64:1.5"] ["int64:5" "float64:2.5"]`},
+		{callQuery, "select v1 from t4 where v2 > 'a' and v2 <= 'c'", `query: columns "v1" of types "INT", rows ["int64:2"] ["int64:5"]`},
+		// An update and a delete find their rows through an index, and change the columns of the
+		// indexes.
+		{callExec, "update t4 set v3 = 9.5 where v2 = 'a'", "exec: 2 affected, last insert id 0"},
+		{callQuery, "select v1 from t4 where v3 >= 9.5", `query: columns "v1" of types "INT", rows ["int64:1"] ["int64:3"]`},
+		{callExecArgument, "update t4 set v2 = 'd' where v4 = ?", "exec with an argument: 3 affected, last insert id 0"},
+		{callQuery, "select v1, v3 from t4 where v2 = 'd'", `query: columns "v1,v3" of types "INT,REAL", rows ["int64:1" "float64:9.5"] ["int64:3" "float64:9.5"] ["int64:5" "float64:2.5"]`},
+		{callExec, "delete from t4 where v2 is null", "exec: 1 affected, last insert id 0"},
+		{callPrepareExec, "delete from t4 where v3 > 2.0 and v3 < 9.0", "prepare, exec: 2 affected, last insert id 0"},
+		{callQuery, "select * from t4", `query: columns "v1,v2,v3,v4" of types "INT,TEXT,REAL,INT", rows ["int64:1" "string:d" "float64:9.5" "int64:1"] ["int64:3" "string:d" "float64:9.5" "int64:1"]`},
+		{callExec, "insert into t4 values (6, 'd', 9.5, 1)", "exec: 1 affected, last insert id 0"},
+		{callQuery, "select v1 from t4 where v2 = 'd' and v3 = 9.5", `query: columns "v1" of types "INT", rows ["int64:1"] ["int64:3"] ["int64:6"]`},
+		// The same selects without the indexes.
+		{callExec, "drop index i1", "exec: 1 affected, last insert id 0"},
+		{callPrepareExec, "drop index i3", "prepare, exec: 1 affected, last insert id 0"},
+		{callQuery, "select v1 from t4 where v2 = 'd'", `query: columns "v1" of types "INT", rows ["int64:1"] ["int64:3"] ["int64:6"]`},
+		{callQueryArgument, "select v1 from t4 where v4 = ?", `query with an argument: columns "v1" of types "INT", rows ["int64:1"] ["int64:3"] ["int64:6"]`},
+		{callQuery, "drop index i2", "query"},
+		{callQuery, "select v1, v3 from t4 where v3 > 1.5", `query: columns "v1,v3" of types "INT,REAL", rows ["int64:1" "float64:9.5"] ["int64:3" "float64:9.5"] ["int64:6" "float64:9.5"]`},
+		{callQueryRow, "select v1 from t4 where v3 > 1.5", oneOf(`query row: row ["int64:1"]`, `query row: row ["int64:3"]`, `query row: row ["int64:6"]`)},
+	},
+	"the errors of slice 9, through Exec, Query, and Prepare": {
+		{callExec, "create index i1 on t4 (v2)", "exec: exec failed with 1/1: no such table: main.t4"},
+		{callExec, "drop index i1", "exec: exec failed with 1/1: no such index: i1"},
+		{callExec, t4, "exec: 0 affected, last insert id 0"},
+		{callExec, "insert into t4 values (1, 'a', 1.5, 1)", "exec: 1 affected, last insert id 0"},
+		// SQLite's order: the table, a table of the name of the index, an index of the name, and then
+		// the columns.
+		{callExec, "create index t4 on t9 (x)", "exec: exec failed with 1/1: no such table: main.t9"},
+		{callExec, "create index t4 on t4 (x)", "exec: exec failed with 1/1: there is already a table named t4"},
+		{callQuery, "create index T4 on t4 (v2)", "query: query failed with 1/1: there is already a table named T4"},
+		{callExec, "create index i1 on t4 (v2, x)", "exec: exec failed with 1/1: no such column: x"},
+		{callExec, "create index i1 on t4 (v2)", "exec: 1 affected, last insert id 0"},
+		{callExec, "create index i1 on t4 (x)", "exec: exec failed with 1/1: index i1 already exists"},
+		{callExec, "create index I1 on t4 (v3 desc)", "exec: exec failed with 1/1: index I1 already exists"},
+		{callQuery, "create index i1 on t4 (v2)", "query: query failed with 1/1: index i1 already exists"},
+		{callExec, "create index i1 on t9 (v2)", "exec: exec failed with 1/1: no such table: main.t9"},
+		{callExec, "create table i1 (v1 int primary key) strict, without rowid", "exec: exec failed with 1/1: there is already an index named i1"},
+		{callExec, `create table "I1" (v1 int primary key) strict, without rowid`, "exec: exec failed with 1/1: there is already an index named I1"},
+		{callExec, "drop index t4", "exec: exec failed with 1/1: no such index: t4"},
+		{callExec, "drop index i9", "exec: exec failed with 1/1: no such index: i9"},
+		{callQuery, "drop index i9", "query: query failed with 1/1: no such index: i9"},
+		{callExec, "drop table i1", "exec: exec failed with 1/1: no such table: i1"},
+		{callExecArgument, "create index i2 on t4 (v2)", "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
+		{callExecArgument, "drop index i1", "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
+		// What slice 9 does not support.
+		{callExec, "create unique index i2 on t4 (v2)", "exec: exec failed with s4ql: not supported: UNIQUE INDEX (at offset 7)"},
+		{callExec, "create index if not exists i1 on t4 (v2)", "exec: exec failed with s4ql: not supported: IF NOT EXISTS (at offset 13)"},
+		{callExec, "drop index if exists i9", "exec: exec failed with s4ql: not supported: IF EXISTS (at offset 11)"},
+		{callExec, "create index i2 on t4 (v2) where v2 is not null", "exec: exec failed with s4ql: not supported: partial index (at offset 27)"},
+		{callExec, "create index i2 on t4 (v2, V2)", "exec: exec failed with s4ql: not supported: column named twice (at offset 27)"},
+		{callExec, "create index i2 on t4 ()", `exec: exec failed with 1/1: near ")": syntax error`},
+		// SQLite gives these errors when it prepares the text, and s4ql when the statement runs.
+		{callPrepareExec, "create index i2 on t9 (v2)", "prepare, exec: exec failed with 1/1: no such table: main.t9"},
+		{callPrepareExec, "create index t4 on t4 (v2)", "prepare, exec: exec failed with 1/1: there is already a table named t4"},
+		{callPrepareExec, "create index i1 on t4 (v3)", "prepare, exec: exec failed with 1/1: index i1 already exists"},
+		{callPrepareExec, "create index i2 on t4 (x)", "prepare, exec: exec failed with 1/1: no such column: x"},
+		{callPrepareExec, "create table i1 (v1 int primary key) strict, without rowid", "prepare, exec: exec failed with 1/1: there is already an index named i1"},
+		{callPrepareExec, "drop index i9", "prepare, exec: exec failed with 1/1: no such index: i9"},
+		{callPrepareQuery, "drop index t4", "prepare, query: query failed with 1/1: no such index: t4"},
+		// A drop table drops the indexes of its table, and the names are free again.
+		{callExec, "drop table t4", "exec: 1 affected, last insert id 0"},
+		{callExec, "drop index i1", "exec: exec failed with 1/1: no such index: i1"},
+		{callExec, "create table i1 (v1 int primary key, v2 text) strict, without rowid", "exec: 1 affected, last insert id 0"},
+		{callExec, "create index t4 on i1 (v2 desc, v1)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into i1 values (1, 'a')", "exec: 1 affected, last insert id 0"},
+		{callQuery, "select * from i1 where v2 = 'a'", `query: columns "v1,v2" of types "INT,TEXT", rows ["int64:1" "string:a"]`},
+		{callPrepareExec, "drop index t4", "prepare, exec: 1 affected, last insert id 0"},
+	},
+	"indexes in transactions, with a roll back that undoes a create index and a drop index": {
+		{callExec, t4, "exec: 0 affected, last insert id 0"},
+		{callExec, "insert into t4 values (1, 'a', 1.5, 1)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t4 values (2, 'b', 2.5, 2)", "exec: 1 affected, last insert id 0"},
+		{callExec, "create index i1 on t4 (v2)", "exec: 1 affected, last insert id 0"},
+		{callBegin, "", "begin"},
+		{callExec, "create index i2 on t4 (v3 desc, v4)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t4 values (3, 'a', 3.5, 1)", "exec: 1 affected, last insert id 0"},
+		{callQuery, "select v1 from t4 where v3 > 2.0", `query: columns "v1" of types "INT", rows ["int64:2"] ["int64:3"]`},
+		{callExec, "create index i2 on t4 (v2)", "exec: exec failed with 1/1: index i2 already exists"},
+		{callExec, "drop index i1", "exec: 1 affected, last insert id 0"},
+		{callExec, "drop index i1", "exec: exec failed with 1/1: no such index: i1"},
+		{callQuery, "select v1 from t4 where v2 = 'a'", `query: columns "v1" of types "INT", rows ["int64:1"] ["int64:3"]`},
+		// On a pinned connection in the transaction, and through the pool outside it, where i1 is and
+		// the new row is not.
+		{callBeside, "select v1 from t4 where v2 = 'a'", `query beside the transaction: columns "v1" of types "INT", rows ["int64:1"] ["int64:3"]`},
+		{callExec, "update t4 set v2 = 'c' where v3 > 2.0", "exec: 2 affected, last insert id 0"},
+		{callRollback, "", "rollback"},
+		// The roll back undid the create index, the drop index, and the rows.
+		{callExec, "drop index i2", "exec: exec failed with 1/1: no such index: i2"},
+		{callExec, "create index i1 on t4 (v2)", "exec: exec failed with 1/1: index i1 already exists"},
+		{callQuery, "select v1 from t4 where v2 = 'a'", `query: columns "v1" of types "INT", rows ["int64:1"]`},
+		{callQuery, "select v1 from t4 where v3 > 2.0", `query: columns "v1" of types "INT", rows ["int64:2"]`},
+		{callBegin, "", "begin"},
+		// Through the pool, mattn's Prepare outside the transaction does not find i2 for the drop.
+		{callStmtExec, "create index i2 on t4 (v3 desc, v4)", "prepare outside, exec in the transaction: 2 affected, last insert id 0"},
+		{callStmtExec, "drop index i2", "prepare outside, exec in the transaction: 2 affected, last insert id 0"},
+		{callPrepareExec, "create index i2 on t4 (v4, v2 desc)", "prepare, exec: 2 affected, last insert id 0"},
+		{callExec, "insert into t4 values (3, 'c', 3.5, 1)", "exec: 1 affected, last insert id 0"},
+		// Rows that are read through an index stay open, and s4ql refuses a drop index and a create
+		// index while they are, as it refuses every statement of the transaction.
+		{callQueryOpen, "select v1, v2 from t4 where v4 >= 1", `query, rows left open: columns "v1,v2" of types "INT,TEXT", rows ["int64:1" "string:a"] ["int64:2" "string:b"] ["int64:3" "string:c"]`},
+		{callExec, "drop index i2", "exec: exec failed with " + rowsOpen},
+		{callQueryOpen, "select * from t4 where v2 > 'a'", `query, rows left open: columns "v1,v2,v3,v4" of types "INT,TEXT,REAL,INT", rows ["int64:2" "string:b" "float64:2.5" "int64:2"] ["int64:3" "string:c" "float64:3.5" "int64:1"]`},
+		{callExec, "create index i3 on t4 (v2)", "exec: exec failed with " + rowsOpen},
+		{callExecArgument, "delete from t4 where v4 = ?", "exec with an argument: 2 affected, last insert id 0"},
+		{callStmtExec, "drop index i1", "prepare outside, exec in the transaction: 2 affected, last insert id 0"},
+		{callStmtQuery, "select v1, v2 from t4 where v4 = 2", `prepare outside, query in the transaction: columns "v1,v2" of types "INT,TEXT", rows ["int64:2" "string:b"]`},
+		{callCommit, "", "commit"},
+		{callExec, "create index i2 on t4 (v2)", "exec: exec failed with 1/1: index i2 already exists"},
+		{callExec, "drop index i1", "exec: exec failed with 1/1: no such index: i1"},
+		{callQuery, "select * from t4 where v4 = 2", `query: columns "v1,v2,v3,v4" of types "INT,TEXT,REAL,INT", rows ["int64:2" "string:b" "float64:2.5" "int64:2"]`},
+		{callBeginReadOnly, "", "begin read-only"},
+		{callExec, "create index i3 on t4 (v2)", "exec: exec failed with 8/8: attempt to write a readonly database"},
+		{callExec, "drop index i2", "exec: exec failed with 8/8: attempt to write a readonly database"},
+		{callExec, "create index i2 on t4 (v2)", "exec: exec failed with 1/1: index i2 already exists"},
+		{callExec, "create index i3 on t4 (x)", "exec: exec failed with 1/1: no such column: x"},
+		{callExec, "drop index i9", "exec: exec failed with 1/1: no such index: i9"},
+		{callPrepareExec, "drop index i2", "prepare, exec: exec failed with 8/8: attempt to write a readonly database"},
+		{callQuery, "select v1 from t4 where v4 > 1", `query: columns "v1" of types "INT", rows ["int64:2"]`},
+		{callCommit, "", "commit"},
+		{callBegin, "", "begin"},
+		{callExec, "drop table t4", "exec: 2 affected, last insert id 0"},
+		{callExec, "drop index i2", "exec: exec failed with 1/1: no such index: i2"},
+		{callRollback, "", "rollback"},
+		{callExec, "drop index i2", "exec: 2 affected, last insert id 0"},
+		{callQuery, "select * from t4", `query: columns "v1,v2,v3,v4" of types "INT,TEXT,REAL,INT", rows ["int64:2" "string:b" "float64:2.5" "int64:2"]`},
 	},
 }
 
@@ -2592,9 +2846,10 @@ func TestSequences(t *testing.T) {
 						t.Fatal(failure)
 					}
 					// Through the pool, the count of changes is that of whichever connection database/sql
-					// takes, so the outcomes written down hold on a pinned connection.
-					if s.want != "" && pinned {
-						is.Equal(t, s.want, got.String(), s.src)
+					// takes, so the outcomes written down hold on a pinned connection. A new line separates
+					// the outcomes of [oneOf], and an outcome whose text held one would match none of them.
+					if wants := strings.Split(s.want, "\n"); s.want != "" && pinned && !slices.Contains(wants, got.String()) {
+						t.Fatalf("%q gives\n%v\nand the test expects\n%v", s.src, got, strings.Join(wants, "\nor\n"))
 					}
 				}
 				is.Equal(t, "", p.finish())

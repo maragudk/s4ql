@@ -53,6 +53,7 @@ import (
 	"errors"
 	"iter"
 	"log/slog"
+	"sync/atomic"
 
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/host"
@@ -68,21 +69,31 @@ type Options struct {
 
 	// bugs planted by the tests of this package.
 	bugs bugs
-	// scanAll makes every query read every row of its table, and test its conditions on each, where
-	// it would read the rows by the key. The tests of this package set it, to show that both give
-	// the same rows in the same order.
-	scanAll bool
+	// path makes every statement read the rows of its table by one access, where the rules would
+	// choose one. The tests of this package set it, to show that every access gives the same rows.
+	path path
+	// Directions, if not nil, is the seed of the directions in which the queries of the engine read
+	// their rows, forward or backward: see [Engine.reading]. With it the engine draws nothing from its
+	// host for a query, and two engines with one seed read their n-th queries in the same direction,
+	// so a run that must be had again from a seed, such as a simulation or a test, sets it. The
+	// default draws each direction from the host.
+	Directions *uint64
 }
 
 // Engine runs statements on one database, each on a [Conn] of the engine. It is safe for concurrent
 // use, and a Conn is not: each statement is its own transaction of the database, and the database
 // runs one write transaction at a time, and the read transactions of the connections in parallel.
 type Engine struct {
-	db      database
-	host    host.Host
-	log     *slog.Logger
-	bugs    bugs
-	scanAll bool
+	db   database
+	host host.Host
+	log  *slog.Logger
+	bugs bugs
+	// path that the tests force, as [Options.path] says.
+	path path
+	// seeded makes the engine draw the directions of its scans from draws, a sequence that its seed
+	// fixes, and not from the host.
+	seeded bool
+	draws  atomic.Uint64
 }
 
 // New engine for the database d, whose instance runs on the host h, which the engine reads the
@@ -96,7 +107,36 @@ func newEngine(d database, h host.Host, options Options) *Engine {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Engine{db: d, host: h, log: log, bugs: options.bugs, scanAll: options.scanAll}
+	e := &Engine{db: d, host: h, log: log, bugs: options.bugs, path: options.path}
+	if options.Directions != nil {
+		e.seeded = true
+		e.draws.Store(*options.Directions)
+	}
+	return e
+}
+
+// reading of the next statement of the engine: by the path that the tests force, if any, and, for a
+// query, forward or backward as the engine draws it, one draw for each query. The draw comes from the
+// host, or, for an engine with a seed of its own, [Options.Directions], from the sequence of that
+// seed, which is splitmix64, so that the n-th query of two engines with one seed reads in the same
+// direction. A path with a direction draws nothing.
+func (e *Engine) reading(query bool) reading {
+	how := reading{path: e.path}
+	switch {
+	case how.path.direction != directionDrawn:
+		how.backward = how.path.direction == directionBackward
+	case !query:
+	case e.seeded:
+		how.drawn = true
+		z := e.draws.Add(0x9e3779b97f4a7c15)
+		z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9
+		z = (z ^ (z >> 27)) * 0x94d049bb133111eb
+		how.backward = (z^(z>>31))&1 == 1
+	default:
+		how.drawn = true
+		how.backward = e.host.Uint64()&1 == 1
+	}
+	return how
 }
 
 // Result of a statement, for SQLite's count of changes, which sqlite3_changes gives after the
@@ -220,8 +260,10 @@ func (c *Conn) begin(ctx context.Context) (writeTx, error) {
 // its select list, and then for one of its conditions, as SQLite looks them up, with `string or blob
 // too big` for a value of a condition that is longer than the limit, and with "not supported" for the
 // first value of a condition, in the order of the text, that is not NULL and is of another type than
-// its column. It gives the rows of the table for which every condition is true, in the order of the
-// key, with SQLite's comparisons; a comparison with NULL is never true.
+// its column. It gives the rows of the table for which every condition is true, with SQLite's
+// comparisons; a comparison with NULL is never true. The rows come in the order of the key of the
+// access that the engine chooses for the conditions, the primary key or an index, or in its reverse,
+// as the engine draws it for each query: SQLite leaves the order unspecified.
 //
 // An update and a delete change the rows that a select with their WHERE would give, each once, in
 // the order of the key, and count each, also a row whose values an update does not change. They
@@ -335,9 +377,7 @@ func Check(src string, n int) error {
 	return countArguments(s.Parameters(), n)
 }
 
-// check the text src: its statement, or its error, as [stmt.Check] gives it, or [ErrNoStatement]. A
-// create index and a drop index, which the pass supports and the engine does not run yet, are not
-// supported, with the error that [indexRefusal] gives.
+// check the text src: its statement, or its error, as [stmt.Check] gives it, or [ErrNoStatement].
 func check(src string) (stmt.Statement, error) {
 	s, err := stmt.Check(src)
 	if err != nil {
@@ -345,9 +385,6 @@ func check(src string) (stmt.Statement, error) {
 	}
 	if s == nil {
 		return nil, ErrNoStatement
-	}
-	if err := indexRefusal(src, s); err != nil {
-		return nil, err
 	}
 	return s, nil
 }
@@ -412,10 +449,11 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	}()
 	b := e.bugs
 	b.skipUnique = b.skipUnique || b.checkOutside
-	s, err := buildSink(ctx, tx, p, args, b, e.db.lengthLimit(), e.scanAll)
+	s, err := buildSink(ctx, tx, p, args, b, e.db.lengthLimit(), e.reading(false))
 	if err != nil {
 		return Result{}, err
 	}
+	r.reads(tx, s)
 	// From here on, a failed insert, update, or delete sets the count of changes to 0, but for "not
 	// supported".
 	failed := Result{SetsChanges: setsChanges(p)}
@@ -472,7 +510,7 @@ func (c *Conn) checkOutside(ctx context.Context, r *report, p Plan, args []*s4ql
 	}
 	defer func() { _ = rt.end(ctx) }()
 	r.at(rt.position(), true)
-	s, err := buildSink(ctx, readOnly{rt}, p, args, bugs{}, c.e.db.lengthLimit(), c.e.scanAll)
+	s, err := buildSink(ctx, readOnly{rt}, p, args, bugs{}, c.e.db.lengthLimit(), c.e.reading(false))
 	if err != nil {
 		return err
 	}
@@ -505,6 +543,8 @@ type readOnly struct {
 
 func (readOnly) createTable(context.Context, *s4qlpb.CreateTable) error { return nil }
 func (readOnly) dropTable(context.Context, string) error                { return nil }
+func (readOnly) createIndex(context.Context, *s4qlpb.CreateIndex) error { return nil }
+func (readOnly) dropIndex(context.Context, string) error                { return nil }
 func (readOnly) upsert(context.Context, string, []*s4qlpb.Value) error  { return nil }
 func (readOnly) insertNew(context.Context, string, []*s4qlpb.Value) (bool, error) {
 	return false, nil
@@ -541,10 +581,13 @@ func (c *Conn) query(ctx context.Context, r *report, q *Query, args []*s4qlpb.Va
 			r.end(ctx, err)
 		}
 	}()
-	src, err := buildQuery(ctx, c.e.bugs.reader(tx), q, args, c.e.db.lengthLimit(), c.e.scanAll)
+	how := c.e.reading(true)
+	src, err := buildQuery(ctx, c.e.bugs.reader(tx), q, args, c.e.db.lengthLimit(), how)
 	if err != nil {
 		return nil, err
 	}
+	r.reads(tx, src)
+	r.drew(how)
 	rows := &Rows{ctx: ctx, tx: tx, src: src, columns: src.columns(), report: r}
 	built = true
 	c.rows = rows

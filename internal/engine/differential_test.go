@@ -40,6 +40,9 @@ var (
 	sequences = flag.Int("sequences", 300, "sequences of statements of TestDifferential")
 	length    = flag.Int("length", 40, "statements in each sequence of TestDifferential")
 	scanAll   = flag.Bool("scanall", false, "read every row of its table in each query of TestDifferential and FuzzDifferential_core, and not the rows by the key")
+	// directions replays a failure that depends on the directions in which the queries read: a test
+	// that fails logs the seed of each of its instances.
+	directions = flag.Uint64("directions", 0, "seed of the directions of the scans of the queries of every instance of the tests, or 0 for a seed that each instance draws")
 )
 
 // pinned fails the test unless got, a number of texts that a full run counts, is want. Such a number
@@ -89,11 +92,19 @@ type answer struct {
 	null bool
 }
 
+// String of the answer, which is what the tests compare between the engine and SQLite: its error, or
+// its columns and its rows as a multiset. SQLite leaves the order of the rows of a select without
+// ORDER BY unspecified, and the engine varies it from one query to the next, so no comparison is by
+// the order of the rows: the text holds the rows in the order of their texts, each in quotes. Two
+// answers have one text only if they have the same rows the same number of times: a row that is
+// wrong changes an element of the sorted list, and a row that is missing, or one too many, also one
+// that is there twice, changes its length or another element. The rows field keeps the order in
+// which the rows came.
 func (a answer) String() string {
 	if a.err != "" {
 		return a.err
 	}
-	return fmt.Sprintf("columns %q, rows %q", a.columns, a.rows)
+	return fmt.Sprintf("columns %q, rows %q", a.columns, slices.Sorted(slices.Values(a.rows)))
 }
 
 // oracle is SQLite, on a database in memory, which runs the statements that the engine runs.
@@ -238,7 +249,7 @@ func (o *oracle) run(t testing.TB, src string, args ...any) answer {
 }
 
 // state of the database in SQLite: each table, in the order of the names as bytes, with its
-// columns, as [columnText] gives them, and its rows in the order of select *.
+// columns, as [columnText] gives them, and its rows in the order of its primary key.
 func (o *oracle) state(t testing.TB) string {
 	t.Helper()
 	s, err := o.c.Prepare("select name from sqlite_schema where type = 'table' order by name collate binary")
@@ -255,12 +266,17 @@ func (o *oracle) state(t testing.TB) string {
 	is.NotError(t, s.Finalize())
 	var b strings.Builder
 	for _, name := range names {
-		a := o.run(t, "select * from "+stmttest.Quote(name))
 		_, columns := o.columns(t, name)
-		var cs []string
+		var cs, key []string
 		for _, c := range columns {
 			cs = append(cs, columnText(c.Name, c.Type, c.Nullable))
+			if c.PrimaryKey {
+				key = append(key, stmttest.Quote(c.Name))
+			}
 		}
+		// In the order of the key, as the state of the engine is: without ORDER BY, SQLite reads the
+		// rows in the order of an index, where one holds every column of the table.
+		a := o.run(t, "select * from "+stmttest.Quote(name)+" order by "+strings.Join(key, ", "))
 		fmt.Fprintf(&b, "%v (%v): %v\n", name, strings.Join(cs, ", "), strings.Join(a.rows, " "))
 	}
 	return b.String()
@@ -442,12 +458,42 @@ type instance struct {
 	coreLog *slog.Logger
 	// limit is the length limit of the cache, 0 for SQLite's default.
 	limit int
+	// seed of the directions in which the queries of the engines of the instance read, for options
+	// that have none of their own: the engine of the n-th open has the seed plus n.
+	seed  uint64
+	opens uint64
+}
+
+// seeded gives the instance the seed of the flag -directions, or one that it draws, and logs it if
+// the test fails, so that the directions of the failure can be had again.
+func (i *instance) seeded() {
+	i.seed = *directions
+	if i.seed == 0 {
+		i.seed = sim.NewFree(sim.Buggify{}).Uint64()
+	}
+	i.t.Cleanup(func() {
+		if i.t.Failed() {
+			i.t.Logf("an instance of the engine drew the directions of its scans from the seed %v: run the test again with -directions=%v", i.seed, i.seed)
+		}
+	})
+}
+
+// directed is options with the seed of the next engine of the instance, unless they have one.
+func (i *instance) directed(options engine.Options) engine.Options {
+	if !options.Seeded() {
+		options.Seed(i.seed + i.opens)
+	}
+	i.opens++
+	return options
 }
 
 // newMemoryInstance of the engine on a database in memory.
 func newMemoryInstance(t testing.TB) *instance {
-	e, state := engine.NewMemory(sim.NewFree(sim.Buggify{}))
-	return &instance{t: t, e: e, c: e.Conn(), memory: state}
+	i := &instance{t: t}
+	i.seeded()
+	i.e, i.memory = engine.NewMemory(sim.NewFree(sim.Buggify{}), i.directed(engine.Options{}))
+	i.c = i.e.Conn()
+	return i
 }
 
 func newInstance(t testing.TB, options engine.Options) *instance {
@@ -467,6 +513,7 @@ func newInstanceLimited(t testing.TB, options engine.Options, coreLog *slog.Logg
 	t.Helper()
 	h := sim.NewFree(sim.Buggify{})
 	i := &instance{t: t, host: h, store: simstore.New(h, simstore.Options{}), dir: t.TempDir(), coreLog: coreLog, limit: limit}
+	i.seeded()
 	i.open(true, options)
 	t.Cleanup(func() {
 		i.close()
@@ -494,7 +541,7 @@ func (i *instance) open(empty bool, options engine.Options) {
 	if i.c != nil {
 		is.NotError(i.t, i.c.Close(ctx))
 	}
-	i.d, i.e = d, engine.New(d, i.host, options)
+	i.d, i.e = d, engine.New(d, i.host, i.directed(options))
 	i.c = i.e.Conn()
 }
 
@@ -638,7 +685,7 @@ func (y tally) add(src string, a answer) {
 		return
 	}
 	kind := "other"
-	if s, _ := checkText(src); s != nil {
+	if s, _ := stmt.Check(src); s != nil {
 		kind = strings.ToLower(strings.TrimPrefix(fmt.Sprintf("%T", s), "*stmt."))
 		if s.Parameters() > 0 {
 			kind += " with a parameter"
@@ -820,9 +867,11 @@ type pair struct {
 	// readOnly is set while the statements run in a read-only transaction.
 	readOnly bool
 	// other is a second instance of the engine, of the kind of i, that runs every call of the pair and
-	// reads the rows the other way: every row where the engine of i reads by the key, and by the key
-	// where it reads every row. See [pair.bothWays].
+	// reads the rows another way: by a path that [otherPaths] gives where the engine of i reads as the
+	// rules choose, and as the rules choose where it reads every row. See [pair.bothWays].
 	other *instance
+	// ways counts the calls of [pair.bothWays], which takes the paths of the other instance in turn.
+	ways int
 	// last is the engine's answer of the last call of [pair.step].
 	last answer
 	y    tally
@@ -879,7 +928,7 @@ func (p *pair) step(c stmttest.Call) string {
 	// refuses before its arguments, a syntax error or no statement, which SQLite refuses before it
 	// binds them, so that it runs in SQLite without them.
 	args := oracleArgs(c.Args)
-	if s, err := checkText(src); err != nil || s == nil {
+	if s, err := stmt.Check(src); err != nil || s == nil {
 		args = nil
 	}
 	if kind, failure := p.checkLength(c, got); kind != "" {
@@ -899,7 +948,7 @@ func (p *pair) step(c stmttest.Call) string {
 		// for the refusals of their arguments and of the types of their values, which are checked
 		// above, and a text that is not supported is one that SQLite accepts: SQLite prepares it on an
 		// empty database without a syntax error.
-		if s, err := checkText(src); c.Supported || err == nil && s != nil {
+		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil {
 			return fmt.Sprintf("%q: the engine does not support a statement that the pass supports: %v", src, got.message)
 		}
 		if m := syntaxOfNotSupported(t, p.empty, src); m != "" {
@@ -914,7 +963,7 @@ func (p *pair) step(c stmttest.Call) string {
 	// An update that the engine refuses for a record that is too long runs in SQLite in a savepoint,
 	// which is rolled back, since SQLite does not measure every record of a statement that changes
 	// many rows: see [pair.recordSlips].
-	u, _ := checkText(src)
+	u, _ := stmt.Check(src)
 	update, mayslip := u.(*stmt.Update)
 	mayslip = mayslip && got.err == tooBig && p.i.limit > 0
 	if mayslip {
@@ -974,10 +1023,25 @@ func (p *pair) step(c stmttest.Call) string {
 	return ""
 }
 
+// otherPaths are the paths that the other instance of a [pair] reads by, in turn, where the instance
+// reads as the rules choose: every row of the table, and the primary key, which scans with the key
+// pinned where the rules get one row, each forward and backward, and then each index of the names,
+// forward and backward. The generated sequences create no index yet, so the pairs give no names; a
+// path of an index that the table of a statement does not have reads as the rules choose.
+func otherPaths(indexes ...string) []engine.Path {
+	paths := []engine.Path{{Full: true, Forward: true}, {Full: true, Backward: true}, {Primary: true, Forward: true}, {Primary: true, Backward: true}}
+	for _, name := range indexes {
+		paths = append(paths, engine.Path{Index: name, Forward: true}, engine.Path{Index: name, Backward: true})
+	}
+	return paths
+}
+
 // bothWays runs the call c, whose answer of the engine of the instance is got, on the other instance
-// of the pair, through the same method, with every row of a table read, as
-// [engine.Engine.SetScanAll] makes it, where the engine of the instance reads the rows by the key, as
-// the plan does, and by the key where it reads every row, as an engine of -scanall does. The two must
+// of the pair, through the same method, by the next of the paths of [otherPaths], as
+// [engine.Engine.SetPath] forces it, where the engine of the instance reads the rows as the rules
+// choose, and as the rules choose where it reads every row, as an engine of -scanall does. The rows
+// of the two are compared as multisets, as every two answers are: each query of the instance reads
+// in a direction that its engine draws. The two must
 // give the same answer, message, and count of changes, and after an update or a delete with WHERE
 // the same rows of its table, as a select of * gives them on each, so that each test that compares
 // the instance with SQLite compares both ways of reading rows, of a select and of the rows that an
@@ -989,7 +1053,13 @@ func (p *pair) step(c stmttest.Call) string {
 func (p *pair) bothWays(c stmttest.Call, got answer) string {
 	i, other := p.i, p.other
 	byKey := !i.e.ScansAll()
-	other.e.SetScanAll(byKey)
+	path := engine.Path{}
+	if byKey {
+		paths := otherPaths()
+		path = paths[p.ways%len(paths)]
+		p.ways++
+	}
+	other.e.SetPath(path)
 	var all answer
 	if c.Query {
 		all = other.queryValues(c.Src, values(c.Args))
@@ -1002,9 +1072,9 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 		got, all, changes, allChanges = all, got, allChanges, changes
 	}
 	if all.String() != got.String() || all.message != got.message || allChanges != changes {
-		return fmt.Sprintf("%q with %#v: the engine gives\n%v (%q)\nby the key, and\n%v (%q)\nwith every row read, with %v changes by the key and %v with every row read", c.Src, c.Args, got, got.message, all, all.message, changes, allChanges)
+		return fmt.Sprintf("%q with %#v: the engine gives\n%v (%q)\nas the rules choose, and\n%v (%q)\nby the path %+v, with %v changes as the rules choose and %v by the path", c.Src, c.Args, got, got.message, all, all.message, path, changes, allChanges)
 	}
-	s, _ := checkText(c.Src)
+	s, _ := stmt.Check(c.Src)
 	var table *stmt.Name
 	what := ""
 	switch s := s.(type) {
@@ -1056,7 +1126,7 @@ func (p *pair) reach(c stmttest.Call, got answer) {
 		if kind != "" {
 			p.y["reached: "+kind+" with a literal longer than the length limit in "+in]++
 		}
-		s, _ := checkText(c.Src)
+		s, _ := stmt.Check(c.Src)
 		if _, ok := s.(*stmt.Update); ok && kind == "" && got.err == tooBig && !slices.ContainsFunc(c.Args, func(a any) bool { return byteLength(a) > p.i.limit }) {
 			p.y["reached: update of a row whose record is too long"]++
 		}
@@ -1087,7 +1157,7 @@ func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, changes int64, 
 	case got.err != "":
 		outcome = messageKind(got.err)
 	}
-	s, _ := checkText(c.Src)
+	s, _ := stmt.Check(c.Src)
 	switch s := s.(type) {
 	case *stmt.Insert:
 		reachInsert(t, o, s, c, outcome, count)
@@ -1184,7 +1254,11 @@ func reachWhere(t testing.TB, o *oracle, s *stmt.Select, c stmttest.Call, got an
 	// where it reads more rows than it needs.
 	if want := stmttest.KeyAccess(columns, s, args); want != "" && got.err != tooBig {
 		want = strings.TrimSuffix(want, " that hold no key")
-		if access := engine.AccessOf(c.Src, createTableOf(table, columns), values(c.Args)); access != want {
+		var access string
+		if a, ok := engine.AccessOf(c.Src, createTableOf(table, columns), nil, values(c.Args)); ok {
+			access = a.String()
+		}
+		if access != want {
 			t.Errorf("%q with %#v: the plan reads %q, and the rule %q", c.Src, c.Args, access, want)
 		}
 	}
@@ -1258,7 +1332,11 @@ func reachChange(t testing.TB, o *oracle, s stmt.Statement, c stmttest.Call, got
 		// rows cannot see where it reads more rows than it needs.
 		if want := stmttest.KeyAccess(columns, sel, selArgs); want != "" && got.err != tooBig {
 			want = strings.TrimSuffix(want, " that hold no key")
-			if access := engine.AccessOf(c.Src, createTableOf(table, columns), values(c.Args)); access != want {
+			var access string
+			if a, ok := engine.AccessOf(c.Src, createTableOf(table, columns), nil, values(c.Args)); ok {
+				access = a.String()
+			}
+			if access != want {
 				t.Errorf("%q with %#v: the scan of the rows reads %q, and the rule %q", c.Src, c.Args, access, want)
 			}
 		}
@@ -1385,7 +1463,7 @@ func reachInsert(t testing.TB, o *oracle, s *stmt.Insert, c stmttest.Call, outco
 // first such argument, as [refusal] says. It gives the kind of the excuse, [excusedArguments] or
 // [excusedArgument], if the rule decides the call, or "", and what differs from the rule, or "".
 func checkArguments(c stmttest.Call, got answer) (kind, failure string) {
-	s, err := checkText(c.Src)
+	s, err := stmt.Check(c.Src)
 	if err != nil || s == nil {
 		return "", ""
 	}
@@ -1501,7 +1579,7 @@ func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failu
 func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string) {
 	t := p.t
 	t.Helper()
-	s, _ := checkText(c.Src)
+	s, _ := stmt.Check(c.Src)
 	excuse = excusedLong
 	var terms []stmt.Term
 	switch s := s.(type) {
@@ -1584,7 +1662,7 @@ func changeTerms(s stmt.Statement) []stmt.Term {
 // of the pair: "update" or "delete", and where the first such literal is, "SET" or "WHERE"; or "" and
 // "".
 func (p *pair) longChange(src string) (kind, in string) {
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	if p.i.limit == 0 {
 		return "", ""
 	}
@@ -1614,7 +1692,7 @@ func (p *pair) longChange(src string) (kind, in string) {
 // turns a blob literal into NULL, so that the select gives no rows: the known difference of
 // docs/todo.md.
 func (p *pair) longCondition(src string) bool {
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	sel, ok := s.(*stmt.Select)
 	return ok && p.i.limit > 0 && slices.ContainsFunc(sel.Where, func(c stmt.Condition) bool { return byteLength(c.Value.Value) > p.i.limit })
 }
@@ -1649,7 +1727,7 @@ func byteLength(v any) int {
 // `NOT NULL constraint failed` first, and a statement whose every value has the type of its column.
 func typeRule(t testing.TB, o *oracle, src string, args []any) string {
 	t.Helper()
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	if s == nil || len(args) != s.Parameters() {
 		return ""
 	}
@@ -1690,7 +1768,7 @@ func typeRule(t testing.TB, o *oracle, src string, args []any) string {
 // delete, and "" for an insert.
 func readOnlyRule(t testing.TB, o *oracle, src string, args []any) string {
 	t.Helper()
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	switch s := s.(type) {
 	case *stmt.Insert:
 		return ""
@@ -1746,7 +1824,7 @@ func (o *oracle) columns(t testing.TB, name string) (string, []stmttest.TableCol
 // typeRefusal reports whether message is the engine's refusal of a value of another type than its
 // column, for the statement of the text src, as [typeRule] gives it.
 func typeRefusal(src, message string) bool {
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	switch s := s.(type) {
 	case *stmt.Insert:
 		return strings.Contains(message, " for the column ")
@@ -1760,23 +1838,10 @@ func typeRefusal(src, message string) bool {
 	return false
 }
 
-// checkText src as the engine checks a text before it runs it: as [stmt.Check] does, and with the
-// "not supported" of [engine.Check] for a create index or a drop index of slice 9, which the pass
-// supports and the engine does not run yet, which the tests take for a text that is not supported.
-func checkText(src string) (stmt.Statement, error) {
-	s, err := stmt.Check(src)
-	if err == nil && s != nil {
-		if err := engine.Check(src, s.Parameters()); errors.Is(err, stmt.ErrNotSupported) {
-			return nil, err
-		}
-	}
-	return s, err
-}
-
 // changesRows reports whether src is a supported insert, update, or delete, which sets SQLite's count
 // of changes.
 func changesRows(src string) bool {
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	switch s.(type) {
 	case *stmt.Insert, *stmt.Update, *stmt.Delete:
 		return true
@@ -2059,7 +2124,7 @@ func TestPair_recordSlips(t *testing.T) {
 			}
 			got := p.i.execValues(c.src, nil)
 			is.Equal(t, c.tooBig, got.err == tooBig, got.String())
-			s, _ := checkText(c.src)
+			s, _ := stmt.Check(c.src)
 			is.Equal(t, c.slips, p.recordSlips(s.(*stmt.Update), nil))
 			changes, _ := p.o.changes(t)
 			is.Equal(t, int64(0), changes, "SQLite's count of changes after the check")

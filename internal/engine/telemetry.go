@@ -38,10 +38,29 @@ const eventStatement = "statement"
 // The names of the attributes, in the conventions of the core: lowercase, with dots for namespaces
 // and underscores inside words.
 const (
-	// attrKind is the kind of the statement: create_table, drop_table, insert, update, delete, or select.
+	// attrKind is the kind of the statement: create_table, drop_table, create_index, drop_index,
+	// insert, update, delete, or select.
 	attrKind = "statement.kind"
-	// attrTable is the name of the table that the statement names, as its value.
+	// attrTable is the name of the table that the statement names, as its value. A drop index names
+	// none, and has the empty name.
 	attrTable = "statement.table"
+	// attrAccess is how a select, an update, or a delete read the rows of its table, as the rules of
+	// [chooseAccess] chose it: none, for no row at all, primary_key, for a get or a scan by the primary
+	// key, index, for a scan by an index, or full_scan. A statement that failed before the choice has
+	// none of the three attributes of its reading.
+	attrAccess = "statement.access"
+	// attrIndex is the name of the index of an access by an index, as the index was created, and the
+	// name of the index that a create index or a drop index names, as its value.
+	attrIndex = "statement.index"
+	// attrDirection is the direction that the engine drew for a query, forward or backward, as
+	// [Engine.reading] draws it, so that a run whose rows depend on it can be told from its event. A
+	// statement that draws none, an update, a delete, or a query whose path the tests force, has
+	// none, and so has a query without the attribute [attrAccess].
+	attrDirection = "statement.direction"
+	// attrRowsRead is the number of rows that the statement read from the cache, whether or not its
+	// conditions held for them: by its scan or its get, and, for an update, also the row that it reads
+	// to check a NULL for a column that does not take it, and each row again that it changes.
+	attrRowsRead = "statement.rows_read"
 	// attrSQL is the SQL text, at Debug only.
 	attrSQL = "statement.sql"
 	// attrRows is the number of rows that the statement returned or changed.
@@ -137,6 +156,16 @@ type report struct {
 	// tx is the kind of the transaction that spans statements in which the statement runs, or empty.
 	tx   string
 	rows int64
+	// index is the name of the index that a create index or a drop index names, or of the access.
+	index string
+	// access is how the statement reads the rows of its table, once that is chosen, and reader is the
+	// transaction that it reads them in, which had read before rows when it was chosen.
+	access string
+	reader reader
+	before int64
+	// direction is the direction that the engine drew for a query, forward or backward, or empty for a
+	// statement that drew none.
+	direction string
 	// ended is set once the event is logged.
 	ended bool
 }
@@ -153,6 +182,10 @@ func (r *report) of(s stmt.Statement) {
 		r.kind, r.table = "create_table", s.Table.Value
 	case *stmt.DropTable:
 		r.kind, r.table = "drop_table", s.Table.Value
+	case *stmt.CreateIndex:
+		r.kind, r.table, r.index = "create_index", s.Table.Value, s.Index.Value
+	case *stmt.DropIndex:
+		r.kind, r.index = "drop_index", s.Index.Value
 	case *stmt.Insert:
 		r.kind, r.table = "insert", s.Table.Value
 	case *stmt.Update:
@@ -162,6 +195,51 @@ func (r *report) of(s stmt.Statement) {
 	case *stmt.Select:
 		r.kind, r.table = "select", s.Table.Value
 	}
+}
+
+// reads records how the statement reads the rows of its table in the transaction of rd: the access
+// of the scan of built, the operators of the statement, a source or a sink, if it has one.
+func (r *report) reads(rd reader, built any) {
+	s := scanOf(built)
+	if s == nil {
+		return
+	}
+	switch a := s.access; {
+	case a.none:
+		r.access = "none"
+	case a.full():
+		r.access = "full_scan"
+	case a.index != "":
+		r.access, r.index = "index", a.index
+	default:
+		r.access = "primary_key"
+	}
+	r.reader, r.before = rd, rd.rowsRead()
+}
+
+// drew records the direction of the reading how, if the engine drew it.
+func (r *report) drew(how reading) {
+	switch {
+	case !how.drawn:
+	case how.backward:
+		r.direction = "backward"
+	default:
+		r.direction = "forward"
+	}
+}
+
+// scanOf the operators built, a source or a sink: the scan that reads the rows of the table of a
+// select, an update, or a delete, or nil for a statement that reads no rows of a table.
+func scanOf(built any) *scan {
+	switch o := built.(type) {
+	case source:
+		return o.scanned()
+	case *update:
+		return o.src.scanned()
+	case *remove:
+		return o.src.scanned()
+	}
+	return nil
 }
 
 // panicked ends the statement with [errPanicked], unless its event is logged already: then the
@@ -200,6 +278,18 @@ func (r *report) end(ctx context.Context, err error) {
 		if r.write {
 			attrs = append(attrs, slog.String(attrParent, r.position.String()))
 		}
+	}
+	if r.access != "" {
+		attrs = append(attrs, slog.String(attrAccess, r.access))
+	}
+	if r.index != "" {
+		attrs = append(attrs, slog.String(attrIndex, r.index))
+	}
+	if r.access != "" && r.direction != "" {
+		attrs = append(attrs, slog.String(attrDirection, r.direction))
+	}
+	if r.access != "" {
+		attrs = append(attrs, slog.Int64(attrRowsRead, r.reader.rowsRead()-r.before))
 	}
 	attrs = append(attrs, slog.Int64(attrRows, r.rows), slog.String(attrOutcome, outcome))
 	var se *sqlerr.Error

@@ -970,8 +970,8 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 		s, span = c, &c.Span
 	}
 	*span = stmt.Span{Start: start, End: g.b.Len()}
-	// kept is where the text that SQLite keeps for a table ends: at the semicolon, or at the end
-	// of the text.
+	// kept is where the text that SQLite keeps for a table or an index ends: at the semicolon, or at
+	// the end of the text.
 	kept := -1
 	if g.r.IntN(2) == 0 {
 		g.gap(false)
@@ -994,6 +994,12 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 			kept = len(src)
 		}
 		c.SQL = "CREATE TABLE " + src[c.Table.Offset:kept]
+	}
+	if c, ok := s.(*stmt.CreateIndex); ok {
+		if kept < 0 {
+			kept = len(src)
+		}
+		c.SQL = "CREATE INDEX " + src[c.Index.Offset:kept]
 	}
 	return src, s, args
 }

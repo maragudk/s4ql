@@ -2,9 +2,12 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"math"
 
+	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
@@ -19,99 +22,250 @@ func (o *Options) Plant(name string) {
 	set(&o.bugs)
 }
 
-// ScanAll makes every query of an engine of the options o read every row of its table, and not the
-// rows by the key, as [Options.scanAll] says.
-func (o *Options) ScanAll() {
-	o.scanAll = true
+// Path that the tests force every statement of an engine to read its rows by, as [path] says. The
+// zero value forces nothing.
+type Path struct {
+	// Full reads every row of the table in the order of the primary key.
+	Full bool
+	// Primary scans by the primary key, also where the rules read one row by a get.
+	Primary bool
+	// Index is the name of the index to scan by. A statement on a table that has no index of the name
+	// reads as the rules say.
+	Index string
+	// Limited makes the access pin at most Pins leading columns of the key, and bound nothing unless
+	// the conditions pin no more than that.
+	Limited bool
+	Pins    int
+	// Forward and Backward fix the direction of the scan, which is otherwise drawn for a query, and
+	// forward for an update and a delete.
+	Forward, Backward bool
 }
 
-// SetScanAll makes every query of the engine e from now on read every row of its table if on, as
-// [Options.scanAll] says, and the rows by the key otherwise. A query reads the setting when it
-// starts, so a test sets it between the queries of a connection.
+func (p Path) path() path {
+	var q path
+	switch {
+	case p.Full:
+		q.kind = pathFull
+	case p.Primary:
+		q.kind = pathPrimary
+	case p.Index != "":
+		q.kind, q.index = pathIndex, p.Index
+	}
+	q.limited, q.pins = p.Limited, p.Pins
+	switch {
+	case p.Forward:
+		q.direction = directionForward
+	case p.Backward:
+		q.direction = directionBackward
+	}
+	return q
+}
+
+// Path makes every statement of an engine of the options o read its rows by p.
+func (o *Options) Path(p Path) {
+	o.path = p.path()
+}
+
+// SetPath makes every statement of the engine e from now on read its rows by p. A statement reads
+// the setting when it starts, so a test sets it between the statements of a connection, and never
+// while another goroutine runs a statement of the engine.
+func (e *Engine) SetPath(p Path) {
+	e.path = p.path()
+}
+
+// Seed makes an engine of the options o draw the directions of the scans of its queries from the
+// sequence of the seed, and not from its host.
+func (o *Options) Seed(seed uint64) {
+	o.Directions = &seed
+}
+
+// Seeded reports whether the options o have a seed, as [Options.Seed] gives them one.
+func (o Options) Seeded() bool {
+	return o.Directions != nil
+}
+
+// SetSeed makes the engine e draw the directions of the scans of its queries from the start of the
+// sequence of the seed from now on, as [Options.Seed] does.
+func (e *Engine) SetSeed(seed uint64) {
+	e.seeded = true
+	e.draws.Store(seed)
+}
+
+// ScanAll makes every query of an engine of the options o read every row of its table, and not the
+// rows that the rules choose, as a [Path] that is Full does.
+func (o *Options) ScanAll() {
+	o.path.kind = pathFull
+}
+
+// SetScanAll makes every query of the engine e from now on read every row of its table if on, and
+// the rows that the rules choose otherwise, as [Engine.SetPath] does with a [Path] that is Full or
+// with none. It keeps the direction that the path of the engine forces.
 func (e *Engine) SetScanAll(on bool) {
-	e.scanAll = on
+	e.path.kind = pathRules
+	if on {
+		e.path.kind = pathFull
+	}
 }
 
 // ScansAll reports whether every query of the engine e reads every row of its table, as
 // [Engine.SetScanAll] and [Options.ScanAll] make it.
 func (e *Engine) ScansAll() bool {
-	return e.scanAll
+	return e.path.kind == pathFull
+}
+
+// Access of a statement to the rows of its table, as [access] holds it, for the tests.
+type Access struct {
+	// None reads no row.
+	None bool
+	// Point is the primary key of the one row that a get reads, or nil.
+	Point []*s4qlpb.Value
+	// Full reads every row in the order of the primary key.
+	Full bool
+	// Index is the name of the index of a scan, or empty for the primary key.
+	Index string
+	// Equal holds the values that the scan pins the leading columns of its key to.
+	Equal []*s4qlpb.Value
+	// Lower and Upper bound the column after the pinned ones, if they are not nil, and leave the
+	// bound itself out if open.
+	Lower, Upper         *s4qlpb.Value
+	LowerOpen, UpperOpen bool
+	// Backward reports whether the scan gives its rows in the reverse of the order of its key.
+	Backward bool
+}
+
+// Pinned is the number of leading columns of its key that the access pins.
+func (a Access) Pinned() int {
+	if a.Point != nil {
+		return len(a.Point)
+	}
+	return len(a.Equal)
+}
+
+// String of the access in words: "no row", "a get of one key", "a scan of every row", or a scan by
+// the primary key or by an index, with the number of columns that it pins, if any, and its bounds,
+// if any, such as "a scan of the index i with 2 pinned from a lower bound". A scan by the primary key
+// that pins nothing is "a scan from a lower bound", "a scan to an upper bound", or "a scan between
+// two bounds". The direction is not in it.
+func (a Access) String() string {
+	switch {
+	case a.None:
+		return "no row"
+	case a.Point != nil:
+		return "a get of one key"
+	case a.Full:
+		return "a scan of every row"
+	}
+	s := "a scan"
+	if a.Index != "" {
+		s += " of the index " + a.Index
+	}
+	if len(a.Equal) > 0 {
+		s += fmt.Sprint(" with ", len(a.Equal), " pinned")
+	}
+	switch {
+	case a.Lower != nil && a.Upper != nil:
+		s += " between two bounds"
+	case a.Lower != nil:
+		s += " from a lower bound"
+	case a.Upper != nil:
+		s += " to an upper bound"
+	}
+	return s
+}
+
+func exported(a access) Access {
+	return Access{None: a.none, Point: a.point, Full: a.full(), Index: a.index, Equal: a.equal,
+		Lower: a.lower.value, Upper: a.upper.value, LowerOpen: a.lower.open, UpperOpen: a.upper.open, Backward: a.backward}
+}
+
+// ChooseAccess is [chooseAccess] for conditions on the columns at the positions, each with its
+// operator and its value, which is nil for a test for NULL: the rules of the choice of an access, as
+// a function of the table, its indexes, and the conditions alone.
+func ChooseAccess(t *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, positions []int, ops []stmt.Operator, values []*s4qlpb.Value) (Access, error) {
+	conditions := make([]condition, len(positions))
+	for i := range positions {
+		conditions[i] = condition{position: positions[i], op: ops[i], value: values[i]}
+	}
+	a, err := chooseAccess(t, indexes, conditions)
+	return exported(a), err
 }
 
 // AccessOf the select, the update, or the delete of src, with args for its parameters, on the table
-// ct: how its query, or the scan that finds the rows that the statement changes, reads the rows of ct
-// by the key, as [keyAccess] gives it to the scan: "no row", "a get of one key", "a scan from a lower
-// bound", "a scan to an upper bound", "a scan between two bounds", or "a scan of every row". It is ""
-// if src holds no select, update, or delete with WHERE, or if the build of the plan fails, as it does
-// for a column that ct does not have and for a value of a condition of another type than its column.
-// Each argument must be a value that a column holds.
-func AccessOf(src string, ct *s4qlpb.CreateTable, args []*s4qlpb.Value) string {
+// ct with the indexes, in the order in which they were created: how the statement reads the rows of
+// ct, as [chooseAccess] gives it to its scan, without a direction. It reports false if src holds no
+// such statement with WHERE, or if the statement fails before it has an access, as it does for a
+// column that ct does not have and for a value of another type than its column. Each argument must
+// be a value that a column holds.
+func AccessOf(src string, ct *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, args []*s4qlpb.Value) (Access, bool) {
+	return PathAccessOf(src, ct, indexes, args, Path{})
+}
+
+// PathAccessOf is [AccessOf] for an engine whose statements read by the path p, with the direction
+// that p fixes.
+func PathAccessOf(src string, ct *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, args []*s4qlpb.Value, p Path) (Access, bool) {
 	s, err := stmt.Check(src)
 	if err != nil || s == nil || len(args) != s.Parameters() {
-		return ""
+		return Access{}, false
 	}
-	var n source
+	how := reading{path: p.path()}
+	how.backward = how.path.direction == directionBackward
+	var built any
 	switch s := s.(type) {
 	case *stmt.Select:
 		if s.Where == nil {
-			return ""
+			return Access{}, false
 		}
-		n, err = buildQuery(context.Background(), tableOf{ct}, NewPlan(s).(*Query), args, math.MaxInt, false)
-	case *stmt.Update, *stmt.Delete:
-		if u, ok := s.(*stmt.Update); ok && u.Where == nil || !ok && s.(*stmt.Delete).Where == nil {
-			return ""
+		built, err = buildQuery(context.Background(), tableOf{ct, indexes}, NewPlan(s).(*Query), args, math.MaxInt, how)
+	case *stmt.Update:
+		if s.Where == nil {
+			return Access{}, false
 		}
-		var k sink
-		k, err = buildSink(context.Background(), tableOf{ct}, NewPlan(s), args, bugs{}, math.MaxInt, false)
-		switch k := k.(type) {
-		case *update:
-			n = k.src
-		case *remove:
-			n = k.src
+		built, err = buildSink(context.Background(), readOnly{tableOf{ct, indexes}}, NewPlan(s), args, bugs{}, math.MaxInt, how)
+	case *stmt.Delete:
+		if s.Where == nil {
+			return Access{}, false
 		}
+		built, err = buildSink(context.Background(), readOnly{tableOf{ct, indexes}}, NewPlan(s), args, bugs{}, math.MaxInt, how)
 	default:
-		return ""
+		return Access{}, false
 	}
-	for err == nil {
-		switch s := n.(type) {
-		case *project:
-			n = s.src
-		case *filter:
-			n = s.src
-		case *scan:
-			a := s.access
-			switch {
-			case a.none:
-				return "no row"
-			case a.key != nil:
-				return "a get of one key"
-			case a.lower.value != nil && a.upper.value != nil:
-				return "a scan between two bounds"
-			case a.lower.value != nil:
-				return "a scan from a lower bound"
-			case a.upper.value != nil:
-				return "a scan to an upper bound"
-			}
-			return "a scan of every row"
-		default:
-			return ""
-		}
+	if err != nil {
+		return Access{}, false
 	}
-	return ""
+	scan := scanOf(built)
+	if scan == nil {
+		return Access{}, false
+	}
+	return exported(scan.access), true
 }
 
-// tableOf is a [writer] of the one table ct, under any name, which reads and writes no rows.
+// Access of the rows of a query: how its scan reads the rows of its table, with the direction that
+// the engine drew for it, and false for rows of a statement that is no query.
+func (r *Rows) Access() (Access, bool) {
+	scan := scanOf(r.src)
+	if scan == nil {
+		return Access{}, false
+	}
+	return exported(scan.access), true
+}
+
+// tableOf is a [readTx] of the one table ct, under any name, with the indexes, which reads no rows.
 type tableOf struct {
-	ct *s4qlpb.CreateTable
+	ct  *s4qlpb.CreateTable
+	cis []*s4qlpb.CreateIndex
 }
 
 func (t tableOf) table(context.Context, string) (*s4qlpb.CreateTable, error) { return t.ct, nil }
 
-func (t tableOf) scan(context.Context, string) iter.Seq2[[]*s4qlpb.Value, error] {
-	panic("engine: a scan of a table of AccessOf")
+func (t tableOf) indexes(context.Context, string) ([]*s4qlpb.CreateIndex, error) {
+	return t.cis, nil
 }
 
-func (t tableOf) scanRange(context.Context, string, bound, bound) iter.Seq2[[]*s4qlpb.Value, error] {
+func (t tableOf) index(context.Context, string) (*s4qlpb.CreateIndex, error) {
+	return nil, nil
+}
+
+func (t tableOf) scan(context.Context, string, core.IndexScan) iter.Seq2[[]*s4qlpb.Value, error] {
 	panic("engine: a scan of a table of AccessOf")
 }
 
@@ -119,27 +273,13 @@ func (t tableOf) get(context.Context, string, []*s4qlpb.Value) ([]*s4qlpb.Value,
 	panic("engine: a get of a table of AccessOf")
 }
 
-func (t tableOf) createTable(context.Context, *s4qlpb.CreateTable) error {
-	panic("engine: a create table of AccessOf")
-}
+func (t tableOf) rowsRead() int64 { return 0 }
 
-func (t tableOf) dropTable(context.Context, string) error { panic("engine: a drop table of AccessOf") }
+func (t tableOf) position() format.Name { return format.Name{} }
 
-func (t tableOf) upsert(context.Context, string, []*s4qlpb.Value) error {
-	panic("engine: a write of a table of AccessOf")
-}
+func (t tableOf) serving(context.Context) error { return nil }
 
-func (t tableOf) insertNew(context.Context, string, []*s4qlpb.Value) (bool, error) {
-	panic("engine: a write of a table of AccessOf")
-}
-
-func (t tableOf) delete(context.Context, string, []*s4qlpb.Value) (bool, error) {
-	panic("engine: a write of a table of AccessOf")
-}
-
-func (t tableOf) keys(context.Context, string, func(keySet) error) error {
-	panic("engine: a set of keys of a table of AccessOf")
-}
+func (t tableOf) end(context.Context) error { return nil }
 
 // plantable bugs, by the names of the fields of [bugs].
 var plantable = map[string]func(b *bugs){
@@ -167,6 +307,9 @@ const (
 	AttrTable        = attrTable
 	AttrSQL          = attrSQL
 	AttrRows         = attrRows
+	AttrAccess       = attrAccess
+	AttrIndex        = attrIndex
+	AttrRowsRead     = attrRowsRead
 	AttrPosition     = attrPosition
 	AttrParent       = attrParent
 	AttrOutcome      = attrOutcome

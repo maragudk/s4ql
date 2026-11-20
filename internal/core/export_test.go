@@ -84,6 +84,18 @@ func (d *DB) Readers() int {
 	return len(d.readers)
 }
 
+// SchemaReads is the number of statements with which the connection of the transaction has read
+// tables and their indexes from the schema of the cache so far, in this transaction and in those
+// before it: two for a table, and one more for its indexes and one for each of them.
+func (tx *Tx) SchemaReads() int {
+	return tx.c.schemaReads
+}
+
+// SchemaReads is [Tx.SchemaReads] of the connection of the read transaction.
+func (r *ReadTx) SchemaReads() int {
+	return r.c.schemaReads
+}
+
 // CloseCache closes the connections of an instance that a test has crashed, as the operating system
 // closes the files of a process that has died.
 func (d *DB) CloseCache() {

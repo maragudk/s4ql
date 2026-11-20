@@ -842,6 +842,13 @@ func (r *recognizer) createIndex(c *ast.CreateIndex) *CreateIndex {
 	if c.Where != nil && r.isNext(c.Where.Where) {
 		r.reject("partial index")
 	}
+	// SQLite keeps the text up to the token that ends the statement: the semicolon, or the end of the
+	// text.
+	end := len(r.src)
+	if r.tree.Semi.Present() {
+		end = r.tree.Semi.Offset
+	}
+	s.SQL = "CREATE INDEX " + r.src[s.Index.Offset:end]
 	return s
 }
 

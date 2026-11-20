@@ -135,7 +135,7 @@ A caller repeats two steps. It pauses for 1 ms and a time from 0 to `think`, fro
 
 A write is an insert or a delete. One number u from the seed decides the call. The call is a write if `u mod 100` is below `writes`, and a read otherwise. A write is a delete if `(u / 100) mod 100`, with the division rounded down, is below `deletes`, and an insert otherwise.
 
-Each call is SQL, on a connection of its own, `engine.Conn`, of the engine of its process. Each process has an engine, `engine.New` on its database and its host, which it makes when it opens its database. The table is `barcodes`:
+Each call is SQL, on a connection of its own, `engine.Conn`, of the engine of its process. Each process has an engine, `engine.New` on its database and its host, which it makes when it opens its database. The engine draws the directions in which its queries read from a seed of its own, `engine.Options.Directions`, which the seed of the run, the process, and the number of its engine fix, so the draws of the scheduler are those of the callers and the faults alone. The table is `barcodes`:
 
 ```sql
 create table barcodes (code integer primary key) strict, without rowid

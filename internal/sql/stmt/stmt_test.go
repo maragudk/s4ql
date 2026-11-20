@@ -527,6 +527,8 @@ func checkCreateIndex(t testing.TB, open func(testing.TB) *db, src string, s *st
 			t.Fatalf("%q: SQLite records\n%v\nbut for the canonical text\n%v", src, d.schema(), want.schema())
 		}
 		is.Equal(t, fmt.Sprint([][]string{{"text:" + s.Index.Value, "text:" + table}}), fmt.Sprint(d.indexes()), src)
+		_, kept := d.query("select sql from sqlite_schema where type = 'index' and name = ?", s.Index.Value)
+		is.Equal(t, fmt.Sprint([][]string{{"text:" + s.SQL}}), fmt.Sprint(kept), src)
 		// The index of the primary key, of the origin pk, is the table itself.
 		_, list := d.query(`select name, "unique", origin, partial from pragma_index_list(?) where origin <> 'pk'`, table)
 		is.Equal(t, fmt.Sprint([][]string{{"text:" + s.Index.Value, "integer:0", "text:c", "integer:0"}}), fmt.Sprint(list), src)

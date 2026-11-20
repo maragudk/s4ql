@@ -108,6 +108,43 @@ func scanBy(t *testing.T, r interface {
 	return rows
 }
 
+func TestIndexKey(t *testing.T) {
+	// keyed is a table of the integer columns a, b, c, and d, with the primary key on the columns at
+	// the given positions, in that order.
+	keyed := func(primaryKey ...uint32) *s4qlpb.CreateTable {
+		ct := s4qlpb.CreateTable_builder{Table: new("t"), PrimaryKey: primaryKey}
+		for _, c := range []string{"a", "b", "c", "d"} {
+			ct.Columns = append(ct.Columns, s4qlpb.Column_builder{Name: new(c), Type: new(s4qlpb.Type_TYPE_INT)}.Build())
+		}
+		return ct.Build()
+	}
+	asc := func(position int) core.KeyColumn { return core.KeyColumn{Position: position} }
+	dsc := func(position int) core.KeyColumn { return core.KeyColumn{Position: position, Descending: true} }
+
+	tests := []struct {
+		name     string
+		table    *s4qlpb.CreateTable
+		index    *s4qlpb.CreateIndex
+		expected []core.KeyColumn
+	}{
+		{name: "should be the primary key for no index", table: keyed(0), index: nil, expected: []core.KeyColumn{asc(0)}},
+		{name: "should be the primary key of several columns in key order for no index", table: keyed(2, 0), index: nil, expected: []core.KeyColumn{asc(2), asc(0)}},
+		{name: "should be the column of the index and then the primary key first in the table", table: keyed(0), index: indexOf("i", "t", 2), expected: []core.KeyColumn{asc(2), asc(0)}},
+		{name: "should be the column of the index and then the primary key last in the table", table: keyed(3), index: indexOf("i", "t", 1), expected: []core.KeyColumn{asc(1), asc(3)}},
+		{name: "should keep the order and the directions of several columns of the index", table: keyed(0), index: indexOf("i", "t", desc(3), 1, desc(2)), expected: []core.KeyColumn{dsc(3), asc(1), dsc(2), asc(0)}},
+		{name: "should not repeat the primary key that the index holds", table: keyed(0), index: indexOf("i", "t", 2, 0), expected: []core.KeyColumn{asc(2), asc(0)}},
+		{name: "should keep the direction of the primary key that the index holds in descending order", table: keyed(1), index: indexOf("i", "t", desc(1), 3), expected: []core.KeyColumn{dsc(1), asc(3)}},
+		{name: "should add only the columns of a primary key of several that the index does not hold, in key order and ascending", table: keyed(3, 0, 1), index: indexOf("i", "t", desc(0), 2), expected: []core.KeyColumn{dsc(0), asc(2), asc(3), asc(1)}},
+		{name: "should add nothing to an index that holds every column of the primary key", table: keyed(1, 2), index: indexOf("i", "t", 2, desc(1)), expected: []core.KeyColumn{asc(2), dsc(1)}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			is.EqualSlice(t, test.expected, core.IndexKey(test.table, test.index))
+		})
+	}
+}
+
 func TestTx_CreateIndex(t *testing.T) {
 	// Each test starts from two tables: t1 with the rows 1,10 and 2,20 and 3,10, and t2 with the row
 	// 1,1,100, and from the index i1 on the column v of t1.
@@ -768,53 +805,104 @@ func TestOpen_cache_indexes(t *testing.T) {
 		is.True(t, string(before) == string(after), "the open changed the main file of the cache")
 	})
 
-	t.Run("should stop for good when another process adds to the cache an index that s4ql does not make", func(t *testing.T) {
+	t.Run("should answer a get and a table, and stop for good at the first call that needs the indexes, when another process adds to the cache an index that s4ql does not make", func(t *testing.T) {
 		for _, test := range []struct {
 			// statement that the other process runs on the cache, which has the table t1 with the
-			// columns k, v, and w.
+			// columns k, v, and w, and the row 1,1,1.
 			statement string
 			// table that the statement puts the index on, and index that it makes.
 			table, index string
-			why          string
+			// columns of the table, and the row that it holds under the key 1, or empty for none.
+			columns int
+			row     string
+			why     string
 		}{
-			{statement: "create unique index u on t1 (v)", table: "t1", index: "u", why: `its table "t1" has the index "u", which is unique, partial, of a constraint, or of a reserved name`},
-			{statement: "create index p on t1 (v) where v > 1", table: "t1", index: "p", why: `its table "t1" has the index "p", which is unique, partial`},
-			{statement: "create index e on t1 (v + 1)", table: "t1", index: "e", why: `the index "e" of its table "t1" is on an expression`},
-			{statement: "create index e on t1 (k, abs(v) desc)", table: "t1", index: "e", why: `the index "e" of its table "t1" is on an expression`},
-			{statement: "create index n on t1 (w collate nocase)", table: "t1", index: "n", why: `the index "n" of its table "t1" has the collation "nocase"`},
-			{statement: "create index n on t1 (v, w collate rtrim desc)", table: "t1", index: "n", why: `the index "n" of its table "t1" has the collation "rtrim"`},
-			{statement: "create index d on t1 (v, k, v)", table: "t1", index: "d", why: `the index "d" of its table "t1" holds the column "v" twice`},
-			{statement: "create index s4ql_i on t1 (v)", table: "t1", why: `its table "t1" has the index "s4ql_i", which is unique, partial, of a constraint, or of a reserved name`},
-			{statement: "create table t9 (k int primary key, v int unique) strict, without rowid", table: "t9", why: `its table "t9" has the index "sqlite_autoindex_t9_2"`},
+			{statement: "create unique index u on t1 (v)", table: "t1", index: "u", columns: 3, row: "1,1,1", why: `its table "t1" has the index "u", which is unique, partial, of a constraint, or of a reserved name`},
+			{statement: "create index p on t1 (v) where v > 1", table: "t1", index: "p", columns: 3, row: "1,1,1", why: `its table "t1" has the index "p", which is unique, partial`},
+			{statement: "create index e on t1 (v + 1)", table: "t1", index: "e", columns: 3, row: "1,1,1", why: `the index "e" of its table "t1" is on an expression`},
+			{statement: "create index e on t1 (k, abs(v) desc)", table: "t1", index: "e", columns: 3, row: "1,1,1", why: `the index "e" of its table "t1" is on an expression`},
+			{statement: "create index n on t1 (w collate nocase)", table: "t1", index: "n", columns: 3, row: "1,1,1", why: `the index "n" of its table "t1" has the collation "nocase"`},
+			{statement: "create index n on t1 (v, w collate rtrim desc)", table: "t1", index: "n", columns: 3, row: "1,1,1", why: `the index "n" of its table "t1" has the collation "rtrim"`},
+			{statement: "create index d on t1 (v, k, v)", table: "t1", index: "d", columns: 3, row: "1,1,1", why: `the index "d" of its table "t1" holds the column "v" twice`},
+			{statement: "create index s4ql_i on t1 (v)", table: "t1", columns: 3, row: "1,1,1", why: `its table "t1" has the index "s4ql_i", which is unique, partial, of a constraint, or of a reserved name`},
+			{statement: "create table t9 (k int primary key, v int unique) strict, without rowid", table: "t9", columns: 2, why: `its table "t9" has the index "sqlite_autoindex_t9_2"`},
 		} {
-			// A read looks the table up, and so do a create index on it and, by the name of the index,
-			// which is no reserved one, a drop index and a create table.
-			for _, call := range []string{"indexes", "create index", "drop index", "create table"} {
-				if test.index == "" && (call == "drop index" || call == "create table") {
-					continue
+			for _, write := range []bool{false, true} {
+				// A get, a table, and the tables read no index, so they answer. Every other call on the
+				// table reads its indexes first, a write of a row among them, and so do, by the name of
+				// the index, which is no reserved one, an index, a drop index, and a create table.
+				calls := []string{"indexes", "scan", "scan index", "index"}
+				if write {
+					calls = append(calls, "upsert", "insert", "delete", "keys", "drop table", "create index", "drop index", "create table")
 				}
-				w := newWorld(t)
-				d := w.serve(t, "a", core.Options{})
-				transact(t, d, create("t1", 1, "k", "v", "w"), upsert("t1", 1, 1, 1))
+				for _, call := range calls {
+					if test.index == "" && (call == "index" || call == "drop index" || call == "create table") {
+						continue
+					}
+					w := newWorld(t)
+					d := w.serve(t, "a", core.Options{})
+					transact(t, d, create("t1", 1, "k", "v", "w"), upsert("t1", 1, 1, 1))
 
-				c, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
-				is.NotError(t, err)
-				is.NotError(t, c.Exec(test.statement), test.statement)
-				is.NotError(t, c.Close())
+					c, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
+					is.NotError(t, err)
+					is.NotError(t, c.Exec(test.statement), test.statement)
+					is.NotError(t, c.Close())
 
-				what := test.statement + ", " + call
-				if call == "indexes" {
-					r, err := startRead(t, d)
-					is.NotError(t, err)
-					_, err = r.Indexes(t.Context(), test.table)
-					is.Error(t, core.ErrLocal, err, what)
-					is.Error(t, core.ErrCacheVersion, err, what)
-					is.True(t, strings.Contains(err.Error(), test.why), err.Error())
-					_ = r.Close(t.Context())
-				} else {
-					tx, err := d.Begin(t.Context())
-					is.NotError(t, err)
+					what := fmt.Sprint(test.statement, ", ", call, ", in a write: ", write)
+					var r schemaReader
+					var tx *core.Tx
+					var end func()
+					if write {
+						tx, err = d.Begin(t.Context())
+						is.NotError(t, err)
+						r, end = tx, func() { _ = tx.Rollback(t.Context()) }
+					} else {
+						rtx, err := startRead(t, d)
+						is.NotError(t, err)
+						r, end = rtx, func() { _ = rtx.Close(t.Context()) }
+					}
+
+					for range 2 {
+						got, err := r.Get(t.Context(), test.table, row(1))
+						is.NotError(t, err, what)
+						is.Equal(t, test.row, text(got), what)
+						ct, err := r.Table(t.Context(), test.table)
+						is.NotError(t, err, what)
+						is.Equal(t, test.table, ct.GetTable(), what)
+						is.Equal(t, test.columns, len(ct.GetColumns()), what)
+						tables, err := r.Tables(t.Context())
+						is.NotError(t, err, what)
+						is.True(t, slices.ContainsFunc(tables, func(ct *s4qlpb.CreateTable) bool { return ct.GetTable() == test.table }), what)
+					}
+					is.True(t, !isDone(d), what)
+
+					scanErr := func(rows iter.Seq2[[]*s4qlpb.Value, error]) error {
+						for _, err := range rows {
+							if err != nil {
+								return err
+							}
+						}
+						return nil
+					}
 					switch call {
+					case "indexes":
+						_, err = r.Indexes(t.Context(), test.table)
+					case "scan":
+						err = scanErr(r.Scan(t.Context(), test.table))
+					case "scan index":
+						err = scanErr(r.ScanIndex(t.Context(), test.table, core.IndexScan{}))
+					case "index":
+						_, err = r.Index(t.Context(), test.index)
+					case "upsert":
+						err = tx.Upsert(t.Context(), test.table, row(2, 2, 2)[:test.columns])
+					case "insert":
+						_, err = tx.Insert(t.Context(), test.table, row(2, 2, 2)[:test.columns])
+					case "delete":
+						_, err = tx.Delete(t.Context(), test.table, row(1))
+					case "keys":
+						err = tx.Keys(t.Context(), test.table, func(*core.KeySet) error { return nil })
+					case "drop table":
+						err = tx.DropTable(t.Context(), test.table)
 					case "create index":
 						err = tx.CreateIndex(t.Context(), indexOf("i1", test.table, 0))
 					case "drop index":
@@ -825,12 +913,160 @@ func TestOpen_cache_indexes(t *testing.T) {
 					is.Error(t, core.ErrLocal, err, what)
 					is.Error(t, core.ErrCacheVersion, err, what)
 					is.True(t, strings.Contains(err.Error(), test.why), err.Error())
-					_ = tx.Rollback(t.Context())
+					end()
+					is.True(t, isDone(d), what)
 				}
-				is.True(t, isDone(d), what)
 			}
 		}
 	})
+}
+
+// schemaReader is what a write transaction and a read transaction both read with, with the count of
+// the statements with which their connection has read tables and indexes from the schema of the
+// cache.
+type schemaReader interface {
+	reader
+	Table(ctx context.Context, name string) (*s4qlpb.CreateTable, error)
+	Index(ctx context.Context, name string) (*s4qlpb.CreateIndex, error)
+	ScanIndex(ctx context.Context, table string, scan core.IndexScan) iter.Seq2[[]*s4qlpb.Value, error]
+	SchemaReads() int
+}
+
+func TestSchemaReads(t *testing.T) {
+	// The table t5 has five indexes, and the table t0 has none. A table is read from the schema of
+	// the cache with two statements, and its indexes with one more and one for each of them: six for
+	// those of t5, and one for those of t0.
+	start := []step{
+		create("t5", 1, "k", "a", "b", "c", "d", "e"), upsert("t5", 1, 1, 1, 1, 1, 1),
+		createIndex("i1", "t5", 1), createIndex("i2", "t5", 2), createIndex("i3", "t5", 3), createIndex("i4", "t5", 4), createIndex("i5", "t5", 5),
+		create("t0", 1, "k", "a"), upsert("t0", 1, 1),
+	}
+
+	type call struct {
+		// what the call is, as [schemaCall] makes it.
+		what string
+		// t5 and t0 are the statements with which the call reads the schema, on each table.
+		t5, t0 int
+	}
+	for _, test := range []struct {
+		name string
+		// calls of one transaction, in their order.
+		calls []call
+		// write is whether only a write transaction makes the calls.
+		write bool
+	}{
+		{name: "two statements for a get, and none for the next", calls: []call{{"get", 2, 2}, {"get", 0, 0}}},
+		{name: "two statements for a table, and none for a get after it", calls: []call{{"table", 2, 2}, {"get", 0, 0}}},
+		{name: "two statements for each table for the tables, and none for a table and a get after them", calls: []call{{"tables", 4, 4}, {"table", 0, 0}, {"get", 0, 0}}},
+		{name: "the statements for the indexes at the first scan after a get, and none for a get and a scan after it", calls: []call{{"get", 2, 2}, {"scan", 6, 1}, {"get", 0, 0}, {"scan", 0, 0}, {"scan index", 0, 0}}},
+		{name: "the statements for the table and its indexes for a scan", calls: []call{{"scan", 8, 3}, {"table", 0, 0}}},
+		{name: "the statements for the table and its indexes for a scan by an index", calls: []call{{"scan index", 8, 3}, {"indexes", 0, 0}}},
+		{name: "the statements for the table and its indexes for the indexes", calls: []call{{"indexes", 8, 3}, {"indexes", 0, 0}, {"get", 0, 0}}},
+		{name: "the statements for the indexes for the indexes after the tables", calls: []call{{"tables", 4, 4}, {"indexes", 6, 1}}},
+		{name: "the statements for the table and its indexes for an upsert", write: true, calls: []call{{"upsert", 8, 3}, {"get", 0, 0}, {"upsert", 0, 0}}},
+		{name: "the statements for the indexes for an upsert after a get", write: true, calls: []call{{"get", 2, 2}, {"upsert", 6, 1}}},
+		{name: "the statements for the table and its indexes for an insert", write: true, calls: []call{{"insert", 8, 3}, {"insert", 0, 0}}},
+		{name: "the statements for the table and its indexes for a delete", write: true, calls: []call{{"delete", 8, 3}, {"delete", 0, 0}}},
+	} {
+		for _, write := range []bool{false, true} {
+			if test.write && !write {
+				continue
+			}
+			kind := "read"
+			if write {
+				kind = "write"
+			}
+			t.Run(fmt.Sprint("should read the schema with ", test.name, ", in a ", kind, " transaction"), func(t *testing.T) {
+				w := newWorld(t)
+				d := w.serve(t, "a", core.Options{})
+				transact(t, d, start...)
+
+				// Each table in a transaction of its own, since a connection forgets its tables when a
+				// transaction ends.
+				for _, table := range []string{"t5", "t0"} {
+					var r schemaReader
+					var tx *core.Tx
+					var end func(ctx context.Context) error
+					if write {
+						var err error
+						tx, err = d.Begin(t.Context())
+						is.NotError(t, err)
+						r, end = tx, tx.Rollback
+					} else {
+						rtx, err := startRead(t, d)
+						is.NotError(t, err)
+						r, end = rtx, rtx.Close
+					}
+
+					before := r.SchemaReads()
+					for i, c := range test.calls {
+						schemaCall(t, r, tx, table, c.what)
+						want := c.t5
+						if table == "t0" {
+							want = c.t0
+						}
+						after := r.SchemaReads()
+						is.Equal(t, want, after-before, fmt.Sprint("call ", i, ", ", c.what, ", on ", table))
+						before = after
+					}
+					is.NotError(t, end(t.Context()))
+				}
+			})
+		}
+	}
+}
+
+// schemaCall makes the call that what names on the table t5 or t0 of [TestSchemaReads], which holds
+// one row: a "get" of the row, a "table", the "tables", a "scan" of the table, a "scan index" by the
+// third index of t5 or by the primary key of t0, the "indexes", or, with tx, the write transaction
+// that r is, an "upsert" or an "insert" of a second row or a "delete" of it.
+func schemaCall(t *testing.T, r schemaReader, tx *core.Tx, table, what string) {
+	t.Helper()
+	indexes, second := 5, row(2, 2, 2, 2, 2, 2)
+	if table == "t0" {
+		indexes, second = 0, row(2, 2)
+	}
+	switch what {
+	case "get":
+		got, err := r.Get(t.Context(), table, row(1))
+		is.NotError(t, err)
+		is.Equal(t, strings.TrimSuffix(strings.Repeat("1,", len(second)), ","), text(got))
+	case "table":
+		ct, err := r.Table(t.Context(), table)
+		is.NotError(t, err)
+		is.Equal(t, table, ct.GetTable())
+	case "tables":
+		tables, err := r.Tables(t.Context())
+		is.NotError(t, err)
+		is.Equal(t, 2, len(tables))
+	case "scan":
+		var rows int
+		for _, err := range r.Scan(t.Context(), table) {
+			is.NotError(t, err)
+			rows++
+		}
+		is.True(t, rows > 0)
+	case "scan index":
+		scan := core.IndexScan{}
+		if table == "t5" {
+			scan.Index = "i3"
+		}
+		is.True(t, len(scanBy(t, r, table, scan)) > 0)
+	case "indexes":
+		cis, err := r.Indexes(t.Context(), table)
+		is.NotError(t, err)
+		is.Equal(t, indexes, len(cis))
+	case "upsert":
+		is.NotError(t, tx.Upsert(t.Context(), table, second))
+	case "insert":
+		_, err := tx.Insert(t.Context(), table, second)
+		is.NotError(t, err)
+	case "delete":
+		_, err := tx.Delete(t.Context(), table, second[:1])
+		is.NotError(t, err)
+	default:
+		t.Fatal("no call is named", what)
+	}
 }
 
 // keyPart is one column of the key of an index or a primary key, as the tests work it out for
