@@ -664,7 +664,8 @@ var checkCases = []checkCase{
 	{name: "a parameter in an upsert", src: "insert into t (v) values (?) on conflict (v) do update set v = ?", err: "s4ql: not supported: ON CONFLICT clause (at offset 29)"},
 	{name: "a parameter as a table", src: "insert into ? (v) values (1)", err: `near "?": syntax error`},
 	{name: "a parameter in a select", src: "select ?", err: "s4ql: not supported: result column other than a column or * (at offset 7)"},
-	{name: "a parameter in WHERE", src: "select * from t where v = ?", err: "s4ql: not supported: WHERE clause (at offset 16)"},
+	{name: "a parameter in WHERE", src: "select * from t where v = ?",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 27}, Table: name("t", "t", 14), Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpEqual, param(1, 26))}}},
 	{name: "a parameter in LIMIT", src: "select * from t limit ?", err: "s4ql: not supported: LIMIT clause (at offset 16)"},
 	{name: "a parameter in a default", src: "create table t (v int primary key default ?) strict, without rowid", err: `near "?": syntax error`},
 	{name: "an expression", src: "insert into t (v) values (1 + 2)", err: "s4ql: not supported: binary operator (at offset 26)"},
@@ -682,7 +683,8 @@ var checkCases = []checkCase{
 	{name: "all", src: "select all * from t", err: "s4ql: not supported: DISTINCT or ALL (at offset 7)"},
 	{name: "no from", src: "select *", err: "s4ql: not supported: SELECT without FROM (at offset 8)"},
 	{name: "no from but a where", src: "select * where 1", err: "s4ql: not supported: WHERE clause (at offset 9)"},
-	{name: "where", src: "select * from t where v = 1", err: "s4ql: not supported: WHERE clause (at offset 16)"},
+	{name: "where", src: "select * from t where v = 1",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 27}, Table: name("t", "t", 14), Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpEqual, lit(stmt.Integer(1), 26, 27))}}},
 	{name: "order by", src: "select * from t order by v", err: "s4ql: not supported: ORDER BY clause (at offset 16)"},
 	{name: "limit", src: "select * from t limit 1", err: "s4ql: not supported: LIMIT clause (at offset 16)"},
 	{name: "a join", src: "select * from t, u", err: "s4ql: not supported: join (at offset 15)"},
@@ -799,7 +801,8 @@ var checkCases = []checkCase{
 	{name: "an empty column name in select", src: `select "" from t`, err: "s4ql: not supported: empty name (at offset 7)"},
 	{name: "a comma before from", src: "select v, from t", err: `near "from": syntax error`},
 	{name: "a column without from", src: "select v", err: "s4ql: not supported: SELECT without FROM (at offset 8)"},
-	{name: "a column and where", src: "select v from t where v = ?", err: "s4ql: not supported: WHERE clause (at offset 16)"},
+	{name: "a column and where", src: "select v from t where v = ?",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 27}, Table: name("t", "t", 14), Columns: []stmt.Name{name("v", "v", 7)}, Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpEqual, param(1, 26))}}},
 
 	// Slice 6: NULL.
 	{name: "a column that takes NULL, as the roadmap writes it", src: "create table t1 (v1 int primary key, v2 text) strict, without rowid",
@@ -842,10 +845,172 @@ var checkCases = []checkCase{
 	{name: "null in a select", src: "insert into t (v) select null", err: "s4ql: not supported: INSERT with SELECT (at offset 18)"},
 	{name: "null as a result column", src: "select null from t", err: "s4ql: not supported: result column other than a column or * (at offset 7)"},
 	{name: "null after a column in the select list", src: "select v, NULL from t", err: "s4ql: not supported: result column other than a column or * (at offset 10)"},
-	{name: "is null in where", src: "select * from t where v is null", err: "s4ql: not supported: WHERE clause (at offset 16)"},
-	{name: "is not null in where", src: "select v from t where v is not null", err: "s4ql: not supported: WHERE clause (at offset 16)"},
+	{name: "is null in where", src: "select * from t where v is null",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 31}, Table: name("t", "t", 14), Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpIsNull, stmt.Term{})}}},
+	{name: "is not null in where", src: "select v from t where v is not null",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 35}, Table: name("t", "t", 14), Columns: []stmt.Name{name("v", "v", 7)}, Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpIsNotNull, stmt.Term{})}}},
 	{name: "null in limit", src: "select * from t limit null", err: "s4ql: not supported: LIMIT clause (at offset 16)"},
 	{name: "null in an upsert", src: "insert into t (v) values (1) on conflict (v) do update set v = null", err: "s4ql: not supported: ON CONFLICT clause (at offset 29)"},
+
+	// Slice 7: WHERE on SELECT.
+	{name: "where, as the roadmap writes it", src: "select * from t1 where v1 = 1",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 29}, Table: name("t1", "t1", 14), Where: []stmt.Condition{cond(name("v1", "v1", 23), stmt.OpEqual, lit(stmt.Integer(1), 28, 29))}}},
+	{name: "three conditions, as the roadmap writes them", src: "select v2 from t1 where v1 >= 2 and v1 < 10 and v2 is not null",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 62}, Table: name("t1", "t1", 15), Columns: []stmt.Name{name("v2", "v2", 7)}, Where: []stmt.Condition{
+			cond(name("v1", "v1", 24), stmt.OpGreaterOrEqual, lit(stmt.Integer(2), 30, 31)), cond(name("v1", "v1", 36), stmt.OpLess, lit(stmt.Integer(10), 41, 43)),
+			cond(name("v2", "v2", 48), stmt.OpIsNotNull, stmt.Term{})}}},
+	{name: "a parameter, as the roadmap writes it", src: "select * from t1 where v2 = ?",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 29}, Table: name("t1", "t1", 14), Where: []stmt.Condition{cond(name("v2", "v2", 23), stmt.OpEqual, param(1, 28))}}},
+	{name: "the other operators, and values of every type", src: "select * from t where a == 'x' and b <> x'00' and c != -1.5 and d <= - 7 and e > .5",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 83}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			cond(name("a", "a", 22), stmt.OpEqual, lit(stmt.Text("x"), 27, 30)), cond(name("b", "b", 35), stmt.OpNotEqual, lit(stmt.Blob{0}, 40, 45)),
+			cond(name("c", "c", 50), stmt.OpNotEqual, lit(stmt.Real(-1.5), 55, 59)), cond(name("d", "d", 64), stmt.OpLessOrEqual, lit(stmt.Integer(-7), 69, 72)),
+			cond(name("e", "e", 77), stmt.OpGreater, lit(stmt.Real(0.5), 81, 83))}}},
+	{name: "parameters around a test for NULL, numbered in the order of the text", src: "select * from t where a = ? and b < ? and c is null and d = ?",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 61}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			cond(name("a", "a", 22), stmt.OpEqual, param(1, 26)), cond(name("b", "b", 32), stmt.OpLess, param(2, 36)),
+			cond(name("c", "c", 42), stmt.OpIsNull, stmt.Term{}), cond(name("d", "d", 56), stmt.OpEqual, param(3, 60))}}},
+	{name: "keywords in upper case and a semicolon", src: "SELECT * FROM t WHERE v IS NOT NULL AND w == X'01';",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 51}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			cond(name("v", "v", 22), stmt.OpIsNotNull, stmt.Term{}), cond(name("w", "w", 40), stmt.OpEqual, lit(stmt.Blob{1}, 45, 50))}}},
+	{name: "a comparison with null, and is null", src: "select * from t where v = null and w is null",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 44}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			cond(name("v", "v", 22), stmt.OpEqual, lit(stmt.Null{}, 26, 30)), cond(name("w", "w", 35), stmt.OpIsNull, stmt.Term{})}}},
+	{name: "a column named by a keyword", src: "select * from t where abort = 1",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 31}, Table: name("t", "t", 14), Where: []stmt.Condition{cond(name("abort", "abort", 22), stmt.OpEqual, lit(stmt.Integer(1), 30, 31))}}},
+	{name: "a column in double quotes twice", src: `select * from t where "a b" = 'x' and "a b" > 'a'`,
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 49}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			cond(name(`"a b"`, "a b", 22), stmt.OpEqual, lit(stmt.Text("x"), 30, 33)), cond(name(`"a b"`, "a b", 38), stmt.OpGreater, lit(stmt.Text("a"), 46, 49))}}},
+	{name: "a column three times, once in another case", src: "select * from t where v > 1 and v < 5 and V <> 3",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 48}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			cond(name("v", "v", 22), stmt.OpGreater, lit(stmt.Integer(1), 26, 27)), cond(name("v", "v", 32), stmt.OpLess, lit(stmt.Integer(5), 36, 37)),
+			cond(name("V", "V", 42), stmt.OpNotEqual, lit(stmt.Integer(3), 47, 48))}}},
+	{name: "comments in every gap of a where", src: "select/*a*/*/*b*/from/*c*/t/*d*/where/*e*/v/*f*/=/*g*/1/*h*/and--i\nw/*j*/is/*k*/not/*l*/null/*m*/;",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 98}, Table: name("t", "t", 26), Where: []stmt.Condition{
+			cond(name("v", "v", 42), stmt.OpEqual, lit(stmt.Integer(1), 54, 55)), cond(name("w", "w", 67), stmt.OpIsNotNull, stmt.Term{})}}},
+	{name: "the limits of 64 bits", src: "select * from t where v = 9223372036854775807 and v = -9223372036854775808",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 74}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			cond(name("v", "v", 22), stmt.OpEqual, lit(stmt.Integer(9223372036854775807), 26, 45)), cond(name("v", "v", 50), stmt.OpEqual, lit(stmt.Integer(-9223372036854775808), 54, 74))}}},
+	{name: "a real below the smallest", src: "select * from t where v = 1e-400",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 32}, Table: name("t", "t", 14), Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpEqual, lit(stmt.Real(0), 26, 32))}}},
+	{name: "a column named true in quotes", src: `select * from t where "true" = 1`,
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 32}, Table: name("t", "t", 14), Where: []stmt.Condition{cond(name(`"true"`, "true", 22), stmt.OpEqual, lit(stmt.Integer(1), 31, 32))}}},
+	// SQLite goes on after a test for NULL of a column that the table does not have, and checkWhere
+	// checks which name its error gives.
+	{name: "tests for NULL of one column before a comparison", src: "select * from t where v is null and V is not null and v = 1",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 59}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			cond(name("v", "v", 22), stmt.OpIsNull, stmt.Term{}), cond(name("V", "V", 36), stmt.OpIsNotNull, stmt.Term{}),
+			cond(name("v", "v", 54), stmt.OpEqual, lit(stmt.Integer(1), 58, 59))}}},
+	{name: "tests for NULL of four columns around a comparison", src: "select a from t where b is null and c is null and d = 1 and e is null",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 69}, Table: name("t", "t", 14), Columns: []stmt.Name{name("a", "a", 7)}, Where: []stmt.Condition{
+			cond(name("b", "b", 22), stmt.OpIsNull, stmt.Term{}), cond(name("c", "c", 36), stmt.OpIsNull, stmt.Term{}),
+			cond(name("d", "d", 50), stmt.OpEqual, lit(stmt.Integer(1), 54, 55)), cond(name("e", "e", 60), stmt.OpIsNull, stmt.Term{})}}},
+	{name: "a value and AND without a gap", src: "select * from t where v=1and w<-1", err: `unrecognized token: "1and"`},
+	{name: "a literal on the left", src: "select * from t where 1 = v", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
+	{name: "a parameter on the left", src: "select * from t where ? = v", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
+	{name: "a negative number on the left", src: "select * from t where -1 < v", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
+	{name: "a string on the left", src: "select * from t where 'v' = 1", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
+	{name: "null is null", src: "select * from t where null is null", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
+	{name: "a blob is not null", src: "select * from t where x'00' is not null", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
+	{name: "a column on the right", src: "select * from t where v = w", err: "s4ql: not supported: column compared with a column (at offset 26)"},
+	{name: "a column in double quotes on the right", src: `select * from t where v = "a"`, err: "s4ql: not supported: column compared with a column (at offset 26)"},
+	{name: "a column with its table on the right", src: "select * from t where v = t.w", err: "s4ql: not supported: column compared with a column (at offset 26)"},
+	{name: "a column with its table in where", src: "select * from t where t.v = 1", err: "s4ql: not supported: column with the name of a table (at offset 22)"},
+	{name: "a column with its schema and table in where", src: "select * from t where main.t.v = 1", err: "s4ql: not supported: column with the name of a table (at offset 22)"},
+	{name: "or", src: "select * from t where v = 1 or w = 2", err: "s4ql: not supported: OR (at offset 28)"},
+	{name: "or after and", src: "select * from t where v = 1 and w = 2 or x = 3", err: "s4ql: not supported: OR (at offset 38)"},
+	{name: "or before and", src: "select * from t where v = 1 or w = 2 and x = 3", err: "s4ql: not supported: OR (at offset 28)"},
+	{name: "or twice", src: "select * from t where v = 1 or w = 2 or x = 3", err: "s4ql: not supported: OR (at offset 28)"},
+	{name: "a function before or", src: "select * from t where lower(v) = 'a' or w = 2", err: "s4ql: not supported: function call (at offset 22)"},
+	{name: "a function after and before or", src: "select * from t where v = 1 and lower(v) = 'a' or w = 2", err: "s4ql: not supported: function call (at offset 32)"},
+	{name: "not", src: "select * from t where not v = 1", err: "s4ql: not supported: NOT operator (at offset 22)"},
+	{name: "not after and", src: "select * from t where v = 1 and not w = 2", err: "s4ql: not supported: NOT operator (at offset 32)"},
+	{name: "a condition in parentheses", src: "select * from t where (v = 1)", err: "s4ql: not supported: parentheses (at offset 22)"},
+	{name: "a value in parentheses", src: "select * from t where v = (1)", err: "s4ql: not supported: parentheses (at offset 26)"},
+	{name: "a second condition in parentheses", src: "select * from t where v = 1 and (w = 2)", err: "s4ql: not supported: parentheses (at offset 32)"},
+	{name: "an expression on the left", src: "select * from t where v + 1 = 2", err: "s4ql: not supported: binary operator (at offset 22)"},
+	{name: "an expression on the right", src: "select * from t where v = 1 + 1", err: "s4ql: not supported: binary operator (at offset 26)"},
+	{name: "a column after a sign", src: "select * from t where -v = 1", err: "s4ql: not supported: unary operator (at offset 22)"},
+	{name: "a function on the left", src: "select * from t where lower(v) = 'a'", err: "s4ql: not supported: function call (at offset 22)"},
+	{name: "a function on the right", src: "select * from t where v = abs(1)", err: "s4ql: not supported: function call (at offset 26)"},
+	{name: "in", src: "select * from t where v in (1, 2)", err: "s4ql: not supported: IN (at offset 22)"},
+	{name: "not in", src: "select * from t where v not in (1)", err: "s4ql: not supported: IN (at offset 22)"},
+	{name: "between", src: "select * from t where v between 1 and 2", err: "s4ql: not supported: BETWEEN (at offset 22)"},
+	{name: "like", src: "select * from t where v like 'a'", err: "s4ql: not supported: LIKE, GLOB, REGEXP, or MATCH (at offset 22)"},
+	{name: "not like", src: "select * from t where v not like 'a'", err: "s4ql: not supported: LIKE, GLOB, REGEXP, or MATCH (at offset 22)"},
+	{name: "glob", src: "select * from t where v glob 'a'", err: "s4ql: not supported: LIKE, GLOB, REGEXP, or MATCH (at offset 22)"},
+	{name: "is and a number", src: "select * from t where v is 1", err: "s4ql: not supported: IS with a value other than NULL (at offset 27)"},
+	{name: "is true", src: "select * from t where v is true", err: "s4ql: not supported: IS with a value other than NULL (at offset 27)"},
+	{name: "is not and a number", src: "select * from t where v is not 1", err: "s4ql: not supported: IS with a value other than NULL (at offset 31)"},
+	{name: "is and a parameter", src: "select * from t where v is ?", err: "s4ql: not supported: IS with a value other than NULL (at offset 27)"},
+	{name: "is and a column", src: "select * from t where v is w", err: "s4ql: not supported: IS with a value other than NULL (at offset 27)"},
+	{name: "is and a negative number", src: "select * from t where v is -1", err: "s4ql: not supported: IS with a value other than NULL (at offset 27)"},
+	{name: "is and null in parentheses", src: "select * from t where v is (null)", err: "s4ql: not supported: parentheses (at offset 27)"},
+	{name: "is null with a collation", src: "select * from t where v is null collate binary", err: "s4ql: not supported: COLLATE (at offset 27)"},
+	{name: "is distinct from", src: "select * from t where v is distinct from null", err: "s4ql: not supported: IS DISTINCT FROM (at offset 27)"},
+	{name: "is not distinct from", src: "select * from t where v is not distinct from 1", err: "s4ql: not supported: IS DISTINCT FROM (at offset 31)"},
+	{name: "isnull", src: "select * from t where v isnull", err: "s4ql: not supported: NULL test (at offset 22)"},
+	{name: "notnull", src: "select * from t where v notnull", err: "s4ql: not supported: NULL test (at offset 22)"},
+	{name: "not null after a column", src: "select * from t where v not null", err: "s4ql: not supported: NULL test (at offset 22)"},
+	{name: "a collation on the left", src: "select * from t where v collate nocase = 'a'", err: "s4ql: not supported: COLLATE (at offset 22)"},
+	{name: "a collation on the right", src: "select * from t where v = 'a' collate nocase", err: "s4ql: not supported: COLLATE (at offset 26)"},
+	{name: "a column alone", src: "select * from t where v", err: "s4ql: not supported: column reference (at offset 22)"},
+	{name: "a literal alone", src: "select * from t where 1", err: "s4ql: not supported: literal (at offset 22)"},
+	{name: "a parameter alone", src: "select * from t where ?", err: "s4ql: not supported: parameter (at offset 22)"},
+	{name: "true alone", src: "select * from t where true", err: "s4ql: not supported: TRUE or FALSE (at offset 22)"},
+	{name: "true on the left", src: "select * from t where true = v", err: "s4ql: not supported: TRUE or FALSE (at offset 22)"},
+	{name: "true on the right", src: "select * from t where v = true", err: "s4ql: not supported: TRUE or FALSE (at offset 26)"},
+	{name: "false after and", src: "select * from t where v = 1 and false", err: "s4ql: not supported: TRUE or FALSE (at offset 32)"},
+	{name: "a literal after and", src: "select * from t where v = 1 and 1", err: "s4ql: not supported: literal (at offset 32)"},
+	{name: "a column after and", src: "select * from t where v = 1 and w", err: "s4ql: not supported: column reference (at offset 32)"},
+	{name: "order by after where", src: "select * from t where v = 1 order by v", err: "s4ql: not supported: ORDER BY clause (at offset 28)"},
+	{name: "limit after where", src: "select * from t where v = 1 limit 1", err: "s4ql: not supported: LIMIT clause (at offset 28)"},
+	{name: "group by after where", src: "select * from t where v = 1 group by v", err: "s4ql: not supported: GROUP BY clause (at offset 28)"},
+	{name: "a window after where", src: "select * from t where v = 1 window w as ()", err: "s4ql: not supported: WINDOW clause (at offset 28)"},
+	{name: "a compound after where", src: "select * from t where v = 1 union select * from t", err: "s4ql: not supported: compound SELECT (at offset 28)"},
+	{name: "a plus sign in where", src: "select * from t where v = +1", err: "s4ql: not supported: + sign (at offset 26)"},
+	{name: "a numbered parameter in where", src: "select * from t where v = ?1", err: "s4ql: not supported: numbered parameter (at offset 26)"},
+	{name: "a named parameter in where", src: "select * from t where v = :a", err: "s4ql: not supported: named parameter (at offset 26)"},
+	{name: "a parameter after a sign in where", src: "select * from t where v = -?", err: "s4ql: not supported: parameter after a sign (at offset 27)"},
+	{name: "two signs in where", src: "select * from t where v = - -1", err: "s4ql: not supported: second sign (at offset 28)"},
+	{name: "a hex literal in where", src: "select * from t where v = 0x10", err: "s4ql: not supported: hex literal (at offset 26)"},
+	{name: "an infinite real in where", src: "select * from t where v = 1e999", err: "s4ql: not supported: infinite real number (at offset 26)"},
+	{name: "an integer outside 64 bits in where", src: "select * from t where v = 9223372036854775808", err: "s4ql: not supported: integer outside 64 bits (at offset 26)"},
+	{name: "a string after a sign in where", src: "select * from t where v = -'a'", err: "s4ql: not supported: string after a sign (at offset 27)"},
+	{name: "a blob after a sign in where", src: "select * from t where v = -x'01'", err: "s4ql: not supported: blob after a sign (at offset 27)"},
+	{name: "null after a minus in where", src: "select * from t where v = -null", err: "s4ql: not supported: NULL after a sign (at offset 27)"},
+	{name: "null after a plus in where", src: "select * from t where v = +null", err: "s4ql: not supported: NULL after a sign (at offset 26)"},
+	{name: "a bitwise not in where", src: "select * from t where v = ~1", err: "s4ql: not supported: ~ operator (at offset 26)"},
+	{name: "not as a value in where", src: "select * from t where v = not 1", err: "s4ql: not supported: NOT operator (at offset 26)"},
+	{name: "the current time in where", src: "select * from t where v = current_time", err: "s4ql: not supported: current date or time (at offset 26)"},
+	{name: "two comparisons in a row", src: "select * from t where v = 1 = 1", err: "s4ql: not supported: binary operator (at offset 22)"},
+	{name: "is null and a comparison", src: "select * from t where v is null = 1", err: "s4ql: not supported: IS (at offset 22)"},
+	{name: "a comparison and is not null", src: "select * from t where v = 1 is not null", err: "s4ql: not supported: binary operator (at offset 22)"},
+	{name: "a JSON operator", src: "select * from t where v -> 'a' = 1", err: "s4ql: not supported: binary operator (at offset 22)"},
+	{name: "a column in brackets in where", src: "select * from t where [v] = 1", err: "s4ql: not supported: name in brackets (at offset 22)"},
+	{name: "a column in backticks in where", src: "select * from t where `v` = 1", err: "s4ql: not supported: name in backticks (at offset 22)"},
+	{name: "an empty name in where", src: `select * from t where "" = 1`, err: "s4ql: not supported: empty name (at offset 22)"},
+	{name: "a subquery in where", src: "select * from t where v = (select 1)", err: "s4ql: not supported: subquery (at offset 26)"},
+	{name: "exists", src: "select * from t where exists (select 1)", err: "s4ql: not supported: EXISTS (at offset 22)"},
+	{name: "case in where", src: "select * from t where v = case when 1 then 1 end", err: "s4ql: not supported: CASE (at offset 26)"},
+	{name: "a cast in where", src: "select * from t where v = cast(1 as int)", err: "s4ql: not supported: CAST (at offset 26)"},
+	{name: "an in with a parameter after and", src: "select * from t where v = 1 and w in (select v from u where v = ?)", err: "s4ql: not supported: IN (at offset 32)"},
+	{name: "a comma between conditions", src: "select * from t where v = 1, w = 2", err: `near ",": syntax error`},
+	{name: "and at the end", src: "select * from t where v = 1 and", err: "incomplete input"},
+	{name: "two operators", src: "select * from t where v == == 1", err: `near "==": syntax error`},
+	{name: "a join before where", src: "select * from t, u where v = 1", err: "s4ql: not supported: join (at offset 15)"},
+	{name: "an alias before where", src: "select * from t as u where u.v = 1", err: "s4ql: not supported: alias (at offset 16)"},
+	{name: "indexed by before where", src: "select * from t indexed by i where v = 1", err: "s4ql: not supported: INDEXED BY or NOT INDEXED (at offset 16)"},
+	{name: "a where in a subquery in FROM", src: "select * from (select * from u where v = 1)", err: "s4ql: not supported: subquery in FROM (at offset 14)"},
+	{name: "a where in an insert", src: "insert into t select * from u where v = 1", err: "s4ql: not supported: INSERT with SELECT (at offset 14)"},
+	{name: "a where in create table as", src: "create table t as select * from u where v = 1", err: "s4ql: not supported: CREATE TABLE AS (at offset 15)"},
+	{name: "a where in an update", src: "update t set v = 1 where v = 1", err: "s4ql: not supported: UPDATE (at offset 0)"},
+	{name: "a where in a delete", src: "delete from t where v = 1", err: "s4ql: not supported: DELETE (at offset 0)"},
+}
+
+// cond is a condition of a WHERE on the column, with the operator op and the value v.
+func cond(column stmt.Name, op stmt.Operator, v stmt.Term) stmt.Condition {
+	return stmt.Condition{Column: column, Operator: op, Value: v}
 }
 
 // column of a CREATE TABLE.
@@ -987,6 +1152,61 @@ func TestCheck(t *testing.T) {
 		slices.Sort(names)
 		is.True(t, len(names) > 80, "too few keywords are names")
 		t.Logf("%v keywords are names of columns in the select list: %v", len(names), names)
+	})
+
+	t.Run("should take every keyword of SQLite that SQLite reads as the name of a column in WHERE, and no other", func(t *testing.T) {
+		d := open(t)
+		d.must("create table t (x int primary key) strict, without rowid")
+		var names []string
+		for _, kw := range keywords(t) {
+			src := "select * from t where " + kw + " = 1"
+			if oracle.Judge(src).Kind != oracle.Parses {
+				continue
+			}
+			column := false
+			var e *sqlite.Error
+			if err := d.exec(src); errors.As(err, &e) && e.Message == "no such column: "+kw {
+				column = true
+				names = append(names, kw)
+			}
+			o, _ := verify(t, src)
+			is.Equal(t, column, o == supported, src)
+		}
+		slices.Sort(names)
+		is.True(t, len(names) > 80, "too few keywords are names")
+		t.Logf("%v keywords are names of columns in WHERE: %v", len(names), names)
+	})
+
+	t.Run("should take conditions as deep as SQLite allows, and not one deeper", func(t *testing.T) {
+		// SQLite allows an expression of 1000 levels. Each AND is one level more than the deeper of its
+		// two sides, a condition is two levels, and three with a sign before its value, so a sign in one
+		// of the first two conditions takes a level.
+		where := func(first string, n int) string {
+			return "select * from t where " + first + strings.Repeat(" and v = 1", n-1)
+		}
+		for _, c := range []struct {
+			first string
+			most  int
+		}{{"v = 1", 999}, {"v is null", 999}, {"v = -1", 998}} {
+			src := where(c.first, c.most)
+			s, err := stmt.Check(src)
+			is.NotError(t, err)
+			is.Equal(t, c.most, len(s.(*stmt.Select).Where))
+			is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
+			o, _ := verify(t, src)
+			is.Equal(t, supported, o)
+
+			src = where(c.first, c.most+1)
+			_, err = stmt.Check(src)
+			is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", len(src)-len("and v = 1")), err.Error())
+			is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
+			verify(t, src)
+		}
+		// A sign in the second condition takes a level too, and in the third none.
+		_, err := stmt.Check(where("v = 1 and v = -1", 998))
+		is.True(t, errors.Is(err, stmt.ErrNotSupported))
+		_, err = stmt.Check(where("v = 1 and v = 1 and v = -1", 997))
+		is.NotError(t, err)
 	})
 }
 

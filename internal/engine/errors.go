@@ -55,6 +55,15 @@ var (
 	errPanicked = fmt.Errorf("%w: the statement panicked", ErrInternal)
 )
 
+// checkWhere of the statement s, which [stmt.Check] supports: "not supported" for a select with the
+// WHERE of slice 7, which the engine does not run yet.
+func checkWhere(s stmt.Statement) error {
+	if s, ok := s.(*stmt.Select); ok && s.Where != nil {
+		return fmt.Errorf("%w: WHERE, which the engine does not run yet", stmt.ErrNotSupported)
+	}
+	return nil
+}
+
 // checkArguments of a statement with the given number of parameters: the error of [countArguments],
 // and then "not supported" for the first argument that is not a value that a column can hold, as
 // [checkArgument] says. Whether it is of the type of its column is checked when the statement runs,

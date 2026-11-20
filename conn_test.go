@@ -125,8 +125,8 @@ func TestExec(t *testing.T) {
 		db := w.serve(t, "a")
 		exec(t, db, t1)
 
-		_, err := db.ExecContext(t.Context(), "select * from t1 where v1 = 1")
-		is.Equal(t, "WHERE clause (at offset 17)", notSupported(t, err))
+		_, err := db.ExecContext(t.Context(), "select * from t1 order by v1")
+		is.Equal(t, "ORDER BY clause (at offset 17)", notSupported(t, err))
 		_, err = db.QueryContext(t.Context(), "insert into t1 (v1) values (1), (2)")
 		is.True(t, notSupported(t, err) != "")
 		_, err = db.ExecContext(t.Context(), insert1+"; "+insert1)
@@ -410,8 +410,11 @@ func TestPrepare(t *testing.T) {
 		sqlite, ok := errors.AsType[*s4ql.Error](failed(t, err))
 		is.True(t, ok, err.Error())
 		is.Equal(t, s4ql.Error{Code: 1, ExtendedCode: 1, Message: `near "selec": syntax error`}, *sqlite)
+		_, err = db.PrepareContext(t.Context(), "select * from t1 where v1 = 1 or v1 = 2")
+		is.Equal(t, "OR (at offset 30)", notSupported(t, err))
+		// The pass supports a select with WHERE, and the engine does not run it yet.
 		_, err = db.PrepareContext(t.Context(), "select * from t1 where v1 = 1")
-		is.Equal(t, "WHERE clause (at offset 17)", notSupported(t, err))
+		is.Equal(t, "WHERE, which the engine does not run yet", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values ($v)")
 		is.Equal(t, "named parameter (at offset 28)", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "create table t2 (v2 int(10) primary key) strict, without rowid")

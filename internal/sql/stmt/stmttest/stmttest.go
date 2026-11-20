@@ -1,9 +1,10 @@
-// Package stmttest is a generator of random statements of slices 1, 2, 4, 5, and 6, for tests: each
-// statement is a text with the typed form of [maragu.dev/s4ql/internal/sql/stmt] that it holds, with
-// names from pools, keywords and types in any case, values of every type with weight on their edges,
-// and spaces and comments in every gap. The statements of slice 5, of several columns, come only when
-// a test asks for them, with [Generator.Columns], and those of slice 6, with NULL, with
-// [Generator.Nulls].
+// Package stmttest is a generator of random statements of slices 1, 2, 4, 5, 6, and 7, for tests:
+// each statement is a text with the typed form of [maragu.dev/s4ql/internal/sql/stmt] that it holds,
+// with names from pools, keywords and types in any case, values of every type with weight on their
+// edges, and spaces and comments in every gap. The statements of slice 5, of several columns, come
+// only when a test asks for them, with [Generator.Columns], those of slice 6, with NULL, with
+// [Generator.Nulls], and those of slice 7, with WHERE, with [Generator.Conditions] or
+// [Generator.Where].
 //
 // The generator draws its random numbers from a [Rand] that the test gives it, so that a test
 // chooses its seed and its generator of numbers.
@@ -131,7 +132,7 @@ const (
 	KindDropTable
 )
 
-// Generator of random statements of slices 1, 2, 4, 5, and 6.
+// Generator of random statements of slices 1, 2, 4, 5, 6, and 7.
 type Generator struct {
 	r Rand
 	// pools of names, for each [Position].
@@ -170,6 +171,19 @@ type Generator struct {
 	// literal or, with [Generator.Parameters], as a ? with a nil argument. With 0 the generator draws as
 	// it did before slice 6.
 	Nulls int
+	// Conditions, if not 0, makes the generator write the WHERE of slice 7: one select in two has a
+	// WHERE of from 1 to Conditions conditions joined by AND, unless [Generator.Where] gives them. Each
+	// is a column from the pool of [SelectColumn], one time in three that of an earlier condition or
+	// of the select list, with one of the spellings of the operators and a value, NULL one time in
+	// [Generator.Nulls] and otherwise of a type at random, or with IS NULL or IS NOT NULL. With 0 and
+	// Where nil, the generator draws as it did before slice 7.
+	Conditions int
+	// Where, if not nil, gives the conditions of the WHERE of a select of the table, in place of
+	// conditions at random, or nil for a select without WHERE: the raw text of the name of the column
+	// of each, its operator, and, for a comparison, its value as Value.Value. The generator writes an
+	// operator in any of its spellings, and with [Generator.Parameters] a value as a ? now and then,
+	// with the value as its argument, as for an insert.
+	Where func(table stmt.Name) []stmt.Condition
 	b     strings.Builder
 }
 
@@ -460,7 +474,117 @@ func (g *Generator) literal(v stmt.Value) (stmt.Value, stmt.Span) {
 	return value, stmt.Span{Start: start, End: g.b.Len()}
 }
 
-// Statement at random: its text and the statement that it holds. An insert with a
+// term of the value v, after the arguments args of the parameters before it: one time in
+// [Generator.Parameters] a ? with the argument of v, as [Argument] gives it, added to args, and
+// otherwise the literal of v.
+func (g *Generator) term(v stmt.Value, args []any) (stmt.Term, []any) {
+	var term stmt.Term
+	if g.Parameters > 0 && g.r.IntN(g.Parameters) == 0 {
+		term.Parameter, term.Span = len(args)+1, stmt.Span{Start: g.b.Len(), End: g.b.Len() + 1}
+		g.punct("?")
+		return term, append(args, Argument(v))
+	}
+	term.Value, term.Span = g.literal(v)
+	return term, args
+}
+
+// operators of a condition, and the spellings of each.
+var operators = []struct {
+	op        stmt.Operator
+	spellings []string
+}{
+	{stmt.OpEqual, []string{"=", "=="}}, {stmt.OpNotEqual, []string{"!=", "<>"}}, {stmt.OpLess, []string{"<"}},
+	{stmt.OpLessOrEqual, []string{"<="}}, {stmt.OpGreater, []string{">"}}, {stmt.OpGreaterOrEqual, []string{">="}},
+	{stmt.OpIsNull, nil}, {stmt.OpIsNotNull, nil},
+}
+
+// where of the select s, of slice 7, after the name of its table, and the arguments of its
+// parameters: the conditions that [Generator.Where] gives, or with [Generator.Conditions] one time in
+// two conditions at random, or none.
+func (g *Generator) where(s *stmt.Select) ([]stmt.Condition, []any) {
+	var given []stmt.Condition
+	switch {
+	case g.Where != nil:
+		given = g.Where(s.Table)
+	case g.Conditions > 0 && g.r.IntN(2) == 0:
+		given = make([]stmt.Condition, 1+g.r.IntN(g.Conditions))
+	}
+	if len(given) == 0 {
+		return nil, nil
+	}
+	g.gap(true)
+	g.keyword("where")
+	var conditions []stmt.Condition
+	var args []any
+	for i, c := range given {
+		if i > 0 {
+			g.gap(true)
+			g.keyword("and")
+		}
+		g.gap(true)
+		if g.Where == nil {
+			c = g.condition(s.Columns, conditions)
+		}
+		w := stmt.Condition{Column: g.write(c.Column.Raw), Operator: c.Operator}
+		var spellings []string
+		for _, o := range operators {
+			if o.op == c.Operator {
+				spellings = o.spellings
+			}
+		}
+		switch {
+		case c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull:
+			g.gap(true)
+			g.keyword("is")
+			if c.Operator == stmt.OpIsNotNull {
+				g.gap(true)
+				g.keyword("not")
+			}
+			g.gap(true)
+			g.keyword("null")
+		case spellings == nil:
+			panic(fmt.Sprintf("stmttest: no operator %v", c.Operator))
+		default:
+			g.gap(false)
+			g.punct(spellings[g.r.IntN(len(spellings))])
+			g.gap(false)
+			w.Value, args = g.term(c.Value.Value, args)
+		}
+		conditions = append(conditions, w)
+	}
+	return conditions, args
+}
+
+// condition at random of a select with the select list columns, after the conditions before: a
+// column from the pool of [SelectColumn], or one time in three that of an earlier condition or of the
+// select list, with an operator at random, and for a comparison a value, NULL one time in
+// [Generator.Nulls] and otherwise of a type at random. Only the raw text of the name of its column
+// is set.
+func (g *Generator) condition(columns []stmt.Name, before []stmt.Condition) stmt.Condition {
+	names := slices.Clone(columns)
+	for _, c := range before {
+		names = append(names, c.Column)
+	}
+	var c stmt.Condition
+	if len(names) > 0 && g.r.IntN(3) == 0 {
+		c.Column.Raw = names[g.r.IntN(len(names))].Raw
+	} else {
+		c.Column.Raw = g.pick(SelectColumn)
+	}
+	c.Operator = operators[g.r.IntN(len(operators))].op
+	if c.Operator != stmt.OpIsNull && c.Operator != stmt.OpIsNotNull {
+		// As [Generator.value] draws a value, without [Generator.Value], which gives values of an
+		// insert.
+		if g.Nulls > 0 && g.r.IntN(g.Nulls) == 0 {
+			c.Value.Value = stmt.Null{}
+		} else {
+			c.Value.Value = ValueOf(g.r, Types[1+g.r.IntN(len(Types)-1)])
+		}
+	}
+	return c
+}
+
+// Statement at random: its text and the statement that it holds. A statement with a
 // parameter, which [Generator.Parameters] asks for, is written without its argument.
 func (g *Generator) Statement() (string, stmt.Statement) {
 	src, s, _ := g.statement(-1)
@@ -583,13 +707,7 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 				v = g.value(c.Table)
 			}
 			var term stmt.Term
-			if g.Parameters > 0 && g.r.IntN(g.Parameters) == 0 {
-				term.Parameter, term.Span = len(args)+1, stmt.Span{Start: g.b.Len(), End: g.b.Len() + 1}
-				g.punct("?")
-				args = append(args, Argument(v))
-			} else {
-				term.Value, term.Span = g.literal(v)
-			}
+			term, args = g.term(v, args)
 			c.Values = append(c.Values, term)
 		}
 		g.gap(false)
@@ -625,6 +743,7 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 		} else {
 			c.Table = g.name(SelectTable)
 		}
+		c.Where, args = g.where(c)
 		s, span = c, &c.Span
 	default:
 		c := &stmt.DropTable{}

@@ -127,11 +127,15 @@ func (*Blob) expr()        {}
 func (*Null) expr()        {}
 func (*Parameter) expr()   {}
 
-// NewPlan of the statement s, which [stmt.Check] gives. It panics for a statement of another type. A
-// column that is not the primary key and does not say NOT NULL is Nullable. The primary key is NOT
-// NULL also when it does not say so, as in SQLite's WITHOUT ROWID tables, so a key with NOT NULL and
-// one without have the same plan.
+// NewPlan of the statement s, which [stmt.Check] gives and the engine runs: it is not of a form that
+// [checkWhere] refuses. It panics for a statement of another type or of such a form. A column that is
+// not the primary key and does not say NOT NULL is Nullable. The primary key is NOT NULL also when it
+// does not say so, as in SQLite's WITHOUT ROWID tables, so a key with NOT NULL and one without have
+// the same plan.
 func NewPlan(s stmt.Statement) Plan {
+	if err := checkWhere(s); err != nil {
+		panic(fmt.Sprintf("engine: %v", err))
+	}
 	switch s := s.(type) {
 	case *stmt.CreateTable:
 		p := &CreateTable{Table: s.Table, PrimaryKey: []int{s.Key()}}

@@ -113,8 +113,9 @@ func publicError(err error) error {
 		return &failure{is: ErrNotSupported, message: ns.Error(), cause: err}
 	}
 	if errors.Is(err, stmt.ErrNotSupported) {
-		// An argument that the engine does not support, or a value of another type than its column,
-		// whose message starts with "s4ql: not supported: ".
+		// An argument that the engine does not support, a value of another type than its column, or
+		// a select with WHERE that the engine does not run yet, whose message starts with "s4ql: not
+		// supported: ".
 		return &failure{is: ErrNotSupported, message: err.Error(), cause: err}
 	}
 	if errors.Is(err, engine.ErrNoStatement) {
