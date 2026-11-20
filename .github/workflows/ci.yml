@@ -344,59 +344,16 @@ jobs:
           S4QL_CHROMIUM_FLAGS: --no-sandbox
         run: make test-browser
 
-  # TEMPORARY: measures each unit of the browser's tests alone on a runner.
-  browser-measure:
-    needs: changes
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        unit:
-          - { name: sqlite, pkg: ./internal/sqlite, run: '', skip: '' }
-          - { name: faultvfs, pkg: ./internal/sqlite/faultvfs, run: '', skip: '' }
-          - { name: core-planted, pkg: ./internal/core, run: '^TestSimulation_plantedBugs$', skip: '' }
-          - { name: core-planted-serial, pkg: ./internal/core, run: '^TestSimulation_plantedBugs$', skip: '', flags: '-parallel 1' }
-          - { name: core-sim, pkg: ./internal/core, run: '^(TestSimulation|TestFreeRunning)$', skip: '' }
-          - { name: core-rest, pkg: ./internal/core, run: '', skip: '^(TestSimulation|TestSimulation_plantedBugs|TestFreeRunning)$' }
-          - { name: sim, pkg: ./internal/sim, run: '', skip: 'TestSynctestWithCgo/among_parallel_readers' }
-          - { name: simstore, pkg: ./internal/store/simstore, run: '', skip: '' }
-          - { name: simulator, pkg: ./internal/simulator, run: '', skip: '' }
-          - { name: engine, pkg: ./internal/simulator/engine, run: '', skip: '' }
-
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          check-latest: true
-
-      - name: Build the runner and the test binary
-        run: |
-          go build -o "$RUNNER_TEMP/browser" ./internal/sqlite/browser
-          time GOOS=js GOARCH=wasm go test -tags s4ql_browser -c -o "$RUNNER_TEMP/t.wasm" ${{ matrix.unit.pkg }}
-          nproc
-
-      - name: Run
-        env:
-          S4QL_CHROMIUM_FLAGS: --no-sandbox
-        run: |
-          (while sleep 20; do echo "== load: $(cat /proc/loadavg)"; done) &
-          time GOOS=js GOARCH=wasm go test -count 1 -tags s4ql_browser -exec "$RUNNER_TEMP/browser" -timeout 20m -v ${{ matrix.unit.flags }} -run '${{ matrix.unit.run }}' -skip '${{ matrix.unit.skip }}' ${{ matrix.unit.pkg }} > "$RUNNER_TEMP/out.log" 2>&1; status=$?
-          grep -E '^(--- |    --- |ok|FAIL|PASS|browser:|== load)' "$RUNNER_TEMP/out.log" | cut -c1-220
-          exit $status
-
-  # TEMPORARY: starts four runners at once on a fresh runner, three times, to see whether Chromium
-  # hangs at its start.
+  # TEMPORARY: runs the tests of internal/sqlite in Chromium as the first Chromium of a fresh
+  # runner, and prints all the runner says, to see where the start of Chromium hangs.
   browser-start:
     needs: changes
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        n: [1, 2, 3, 4, 5, 6]
+        n: [1, 2, 3, 4, 5, 6, 7, 8]
+        flags: ['--no-sandbox', '--no-sandbox --disable-gpu --disable-dev-shm-usage --password-store=basic --use-mock-keychain']
 
     steps:
       - uses: actions/checkout@v7
@@ -412,19 +369,16 @@ jobs:
         run: |
           go build -o "$RUNNER_TEMP/browser" ./internal/sqlite/browser
           GOOS=js GOARCH=wasm go test -tags s4ql_browser -c -o "$RUNNER_TEMP/t.wasm" ./internal/sqlite
-          which chromium chromium-browser google-chrome google-chrome-stable chrome || true
+          ls -la $(which google-chrome) && readlink -f $(which google-chrome)
+          uptime
 
-      - name: Start four at once, three times
+      - name: Run
         env:
-          S4QL_CHROMIUM_FLAGS: --no-sandbox
+          S4QL_CHROMIUM_FLAGS: ${{ matrix.flags }}
         run: |
-          for round in 1 2 3; do
-            for i in 1 2 3 4; do
-              (cd "$RUNNER_TEMP" && timeout 300 ./browser ./t.wasm -test.timeout=2m -test.run '^TestOpen' > "out-$round-$i.log" 2>&1; echo "round $round runner $i: exit $? after $SECONDS s" >> "out-$round-$i.log") &
-            done
-            wait
-            for i in 1 2 3 4; do echo "== round $round runner $i"; cat "$RUNNER_TEMP/out-$round-$i.log" | cut -c1-300 | tail -40; done
-          done
+          time GOOS=js GOARCH=wasm go test -count 1 -tags s4ql_browser -exec "$RUNNER_TEMP/browser" -timeout 10m -v ./internal/sqlite > "$RUNNER_TEMP/out.log" 2>&1; status=$?
+          grep -v -E '^(=== |    --- PASS|--- PASS)' "$RUNNER_TEMP/out.log" | cut -c1-400
+          exit $status
 
   # Builds the engine into the site, as the Pages workflow does, and checks the simulator's page in
   # headless Chrome: see internal/simulator/sitecheck. It reads site/ and the Go code, so it runs for
