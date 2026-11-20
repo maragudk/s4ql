@@ -1185,170 +1185,43 @@ func TestOpen_cache(t *testing.T) {
 		}
 	})
 
-	t.Run("should open a cache of version 1, made before NULL, with a table of each type, raise its version, and read and change its tables, whose columns do not take NULL", func(t *testing.T) {
+	t.Run("should refuse a cache of version 1, made before NULL, and leave it as it is", func(t *testing.T) {
 		w := newWorld(t)
-		v := newVersionOne(t, w)
-		path := filepath.Join(w.dir, "old.db")
-		v.write(t, path)
-
-		// A cache that is refused for another reason keeps its version.
-		_, err := core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{Identity: "another"})
-		is.Error(t, core.ErrCacheDatabase, err)
-		is.Equal(t, int64(1), cacheVersion(t, path))
-
-		old := w.serve(t, "old", core.Options{})
-		is.Equal(t, v.want, read(t, old))
-		is.Equal(t, int64(core.CacheVersion), cacheVersion(t, path))
-		// After a restart, the rows read back the same, and the same as a replay of the log, bit for
-		// bit.
-		is.NotError(t, old.Close(t.Context()))
-		old = w.serve(t, "old", core.Options{})
-		is.Equal(t, v.want, read(t, old))
-		is.NotError(t, old.Close(t.Context()))
-		replayed := w.serve(t, "b", core.Options{})
-		is.Equal(t, v.want, read(t, replayed))
-		is.NotError(t, replayed.Close(t.Context()))
-		_, upgraded, err := cacheDump(path)
-		is.NotError(t, err)
-		_, fresh, err := cacheDump(filepath.Join(w.dir, "b.db"))
-		is.NotError(t, err)
-		is.Equal(t, show(fresh), show(upgraded))
-		old = w.serve(t, "old", core.Options{})
-
-		tx, err := old.Begin(t.Context())
-		is.NotError(t, err)
-		is.Error(t, core.ErrInvalid, tx.Upsert(t.Context(), "t1", row(3, nil)))
-		is.NotError(t, tx.Rollback(t.Context()))
-		transact(t, old, upsert("t1", 3, 30), createWith(nullableTable(tableOf("t2", 1, "k", "v"), 1)), upsert("t2", 1, nil))
-		want := read(t, old)
-		is.True(t, strings.Contains(want, "t1(k*0,v): 1,10 | 2,20 | 3,30\nt2(k*0,v?): 1,null\n"), want)
-		is.NotError(t, old.Close(t.Context()))
-		again := w.serve(t, "old", core.Options{})
-		is.Equal(t, want, read(t, again))
-		is.NotError(t, again.Close(t.Context()))
-		is.Equal(t, want, read(t, w.serve(t, "c", core.Options{})))
-	})
-
-	t.Run("should open a cache of version 1 that another instance upgrades after this one has read its version, as a cache of version 2", func(t *testing.T) {
-		w := newWorld(t)
-		v := newVersionOne(t, w)
-		path := filepath.Join(w.dir, "old.db")
-		v.write(t, path)
-
-		options := core.Options{}
-		var reads []int64
-		options.OnVersionRead(func(version int64) {
-			reads = append(reads, version)
-			if len(reads) > 1 {
-				return
-			}
-			// Another instance opens the cache and upgrades it, between the read of the version and
-			// the upgrade of this one.
-			other, err := core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{})
-			is.NotError(t, err)
-			is.NotError(t, other.Close(t.Context()))
-			is.Equal(t, int64(core.CacheVersion), cacheVersion(t, path))
-			// A cache of version 2 is not looked through for NULL again, which only an upgrade does:
-			// another process puts a NULL into the table t1 of version 1, which lacks "not null".
-			c, err := sqlite.Open(path)
-			is.NotError(t, err)
-			is.NotError(t, c.Exec(`insert into "t1" ("k", "v") values (3, null)`))
-			is.NotError(t, c.Close())
-		})
-		d := w.serve(t, "old", options)
-		is.EqualSlice(t, []int64{1}, reads)
-		is.Equal(t, strings.Replace(v.want, "t1(k*0,v): 1,10 | 2,20", "t1(k*0,v): 1,10 | 2,20 | 3,null", 1), read(t, d))
-		is.Equal(t, int64(core.CacheVersion), cacheVersion(t, path))
-		transact(t, d, upsert("t1", 3, 30))
-		want := read(t, d)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k", "v"), upsert("t1", 1, 10), upsert("t1", 2, 20))
 		is.NotError(t, d.Close(t.Context()))
-		is.Equal(t, want, read(t, w.serve(t, "b", core.Options{})))
-	})
-
-	t.Run("should open a cache of version 1 that another instance upgrades after this one has read its version, and whose write lock another connection then holds, as a cache of version 2", func(t *testing.T) {
-		w := newWorld(t)
-		v := newVersionOne(t, w)
-		path := filepath.Join(w.dir, "old.db")
-		v.write(t, path)
-
-		var c *sqlite.Conn
-		options := core.Options{BusyTimeout: time.Millisecond}
-		options.OnVersionRead(func(version int64) {
-			is.Equal(t, int64(1), version)
-			other, err := core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{})
-			is.NotError(t, err)
-			is.NotError(t, other.Close(t.Context()))
-			c, err = sqlite.Open(path)
-			is.NotError(t, err)
-			is.NotError(t, c.Exec("begin immediate"))
-		})
-		d, err := core.Open(t.Context(), w.host, w.client(), path, "db", options)
+		// The open reads the version that the cache records before it looks at a table, so a cache that
+		// records version 1 is refused as one of version 1, whose columns lack "not null", would be.
+		path := filepath.Join(w.dir, "a.db")
+		c, err := sqlite.Open(path)
 		is.NotError(t, err)
-		is.NotError(t, c.Exec("rollback"))
+		is.NotError(t, c.Exec("update s4ql_cache set version = 1"))
 		is.NotError(t, c.Close())
-		is.NotError(t, d.Wait(t.Context()))
-		is.Equal(t, v.want, read(t, d))
-		is.NotError(t, d.Close(t.Context()))
-	})
-
-	t.Run("should refuse a cache of version 1 that another process changes after this instance has read its version, and leave it as it is", func(t *testing.T) {
-		type refusal struct {
-			err     error
-			why     string
-			version int64
-		}
-		for tamper, want := range map[string]refusal{
-			fmt.Sprint("update s4ql_cache set version = ", core.CacheVersion+1): {core.ErrCacheVersion, fmt.Sprint("it has version ", core.CacheVersion+1), core.CacheVersion + 1},
-			"update s4ql_cache set database = 'another'":                        {core.ErrCacheDatabase, `it records the database "another"`, 1},
-			`insert into "t1" ("k", "v") values (3, null)`:                      {core.ErrCacheVersion, `its table "t1" holds NULL in the column "v"`, 1},
-			"delete from s4ql_cache":                                            {core.ErrCacheVersion, "it records 0 positions", 0},
-		} {
-			w := newWorld(t)
-			v := newVersionOne(t, w)
-			path := filepath.Join(w.dir, "old.db")
-			v.write(t, path)
-
-			options := core.Options{}
-			options.OnVersionRead(func(version int64) {
-				is.Equal(t, int64(1), version, tamper)
-				c, err := sqlite.Open(path)
-				is.NotError(t, err)
-				is.NotError(t, c.Exec(tamper), tamper)
-				is.NotError(t, c.Close())
-			})
-			_, err := core.Open(t.Context(), w.host, w.client(), path, "db", options)
-			is.Error(t, want.err, err, tamper)
-			is.True(t, strings.Contains(err.Error(), want.why), err.Error())
-			if want.version > 0 {
-				is.Equal(t, want.version, cacheVersion(t, path), tamper)
-			}
-		}
-	})
-
-	t.Run("should fail to open a cache of version 1 whose upgrade cannot commit, and leave it at version 1", func(t *testing.T) {
-		w := newWorld(t)
-		v := newVersionOne(t, w)
-		path := filepath.Join(w.dir, "old.db")
-		v.write(t, path)
-		vfs, err := faultvfs.New()
+		before, err := os.ReadFile(path)
 		is.NotError(t, err)
-		defer func() { is.NotError(t, vfs.Close()) }()
-		options := core.Options{}
-		options.VFS = vfs.Name()
-		// The commit of the upgrade is the first write to the write-ahead log of the open.
-		vfs.Fail(faultvfs.Fault{Ops: faultvfs.Write, Files: faultvfs.WAL})
-		_, err = core.Open(t.Context(), w.host, w.client(), path, "db", options)
-		is.True(t, vfs.Failures() > 0, "no write failed")
-		is.Error(t, core.ErrLocal, err)
-		vfs.Fail(faultvfs.Fault{})
+		_, state, err := cacheDump(path)
+		is.NotError(t, err)
+
+		_, err = core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{})
+		is.Error(t, core.ErrCacheVersion, err)
+		is.True(t, strings.Contains(err.Error(), fmt.Sprint("it has version 1, and this version of s4ql reads version ", core.CacheVersion)), err.Error())
+
 		is.Equal(t, int64(1), cacheVersion(t, path))
+		_, again, err := cacheDump(path)
+		is.NotError(t, err)
+		is.Equal(t, show(state), show(again))
+		after, err := os.ReadFile(path)
+		is.NotError(t, err)
+		is.True(t, string(before) == string(after), "the open changed the main file of the cache")
 	})
 
-	t.Run("should fail to open a cache of version 1 or 2 as a local failure, and never as a cache of another version or database, whichever read of the open fails", func(t *testing.T) {
+	t.Run("should fail to open a cache as a local failure, and never as a cache of another version or database, whichever read of the open fails", func(t *testing.T) {
 		w := newWorld(t)
-		v := newVersionOne(t, w)
-		v.write(t, filepath.Join(w.dir, "1.db"))
-		is.NotError(t, w.serve(t, "2", core.Options{}).Close(t.Context()))
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k", "v"), upsert("t1", 1, 10), upsert("t1", 2, 20))
+		is.NotError(t, d.Close(t.Context()))
+		data, err := os.ReadFile(filepath.Join(w.dir, "a.db"))
+		is.NotError(t, err)
 		vfs, err := faultvfs.New()
 		is.NotError(t, err)
 		defer func() { is.NotError(t, vfs.Close()) }()
@@ -1357,36 +1230,32 @@ func TestOpen_cache(t *testing.T) {
 		// The store is out of reach, so the task of the lease, which starts in Open, reads nothing
 		// from the cache, and every read that the fault counts is one of the open.
 		w.store.Outage(t.Context(), time.Hour)
-		for _, version := range []string{"1", "2"} {
-			data, err := os.ReadFile(filepath.Join(w.dir, version+".db"))
-			is.NotError(t, err)
-			// Each open gets a copy of the cache, so that the reads of every open are the same, and the
-			// read that fails is the one after the reads that succeed, until no read of the open fails.
-			failed := 0
-			for after := 0; ; after++ {
-				what := fmt.Sprint("version ", version, ", read ", after)
-				if after == 10000 {
-					t.Fatal("every open fails: " + what)
-				}
-				path := filepath.Join(w.dir, fmt.Sprint(version, "-", after, ".db"))
-				is.NotError(t, os.WriteFile(path, data, 0o600))
-				before := vfs.Failures()
-				vfs.Fail(faultvfs.Fault{Ops: faultvfs.Read, Files: faultvfs.MainDB | faultvfs.WAL, After: after, Times: 1})
-				d, err := core.Open(t.Context(), w.host, w.client(), path, "db", options)
-				if err == nil {
-					vfs.Fail(faultvfs.Fault{})
-					is.Equal(t, before, vfs.Failures(), "the open succeeded, and a read failed: "+what)
-					is.NotError(t, d.Close(t.Context()), what)
-					break
-				}
-				failed++
-				is.True(t, vfs.Failures() > before, "the open failed, and no read failed: "+what)
-				is.Error(t, core.ErrLocal, err, what)
-				is.True(t, !errors.Is(err, core.ErrCacheVersion) && !errors.Is(err, core.ErrCacheDatabase), what+": "+err.Error())
+		// Each open gets a copy of the cache, so that the reads of every open are the same, and the
+		// read that fails is the one after the reads that succeed, until no read of the open fails.
+		failed := 0
+		for after := 0; ; after++ {
+			what := fmt.Sprint("read ", after)
+			if after == 10000 {
+				t.Fatal("every open fails: " + what)
 			}
-			// An open reads at least the header of the file, the schema, and the record of the cache.
-			is.True(t, failed >= 3, fmt.Sprint("only ", failed, " opens of version ", version, " failed"))
+			path := filepath.Join(w.dir, fmt.Sprint("b-", after, ".db"))
+			is.NotError(t, os.WriteFile(path, data, 0o600))
+			before := vfs.Failures()
+			vfs.Fail(faultvfs.Fault{Ops: faultvfs.Read, Files: faultvfs.MainDB | faultvfs.WAL, After: after, Times: 1})
+			d, err := core.Open(t.Context(), w.host, w.client(), path, "db", options)
+			if err == nil {
+				vfs.Fail(faultvfs.Fault{})
+				is.Equal(t, before, vfs.Failures(), "the open succeeded, and a read failed: "+what)
+				is.NotError(t, d.Close(t.Context()), what)
+				break
+			}
+			failed++
+			is.True(t, vfs.Failures() > before, "the open failed, and no read failed: "+what)
+			is.Error(t, core.ErrLocal, err, what)
+			is.True(t, !errors.Is(err, core.ErrCacheVersion) && !errors.Is(err, core.ErrCacheDatabase), what+": "+err.Error())
 		}
+		// An open reads at least the header of the file, the schema, and the record of the cache.
+		is.True(t, failed >= 3, fmt.Sprint("only ", failed, " opens failed"))
 	})
 
 	t.Run("should fail to make a new cache with SQLite's I/O error, and make it at the next open, whichever lock, write, or sync of the make fails", func(t *testing.T) {
@@ -1432,107 +1301,26 @@ func TestOpen_cache(t *testing.T) {
 		}
 	})
 
-	t.Run("should open a cache of version 2 while another connection holds its write lock, and refuse to upgrade one of version 1 then, which keeps its version", func(t *testing.T) {
+	t.Run("should open a cache while another connection holds its write lock", func(t *testing.T) {
 		w := newWorld(t)
-		v := newVersionOne(t, w)
-		path := filepath.Join(w.dir, "old.db")
-		v.write(t, path)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k", "v"), upsert("t1", 1, 10), upsert("t1", 2, 20))
+		want := read(t, d)
+		is.NotError(t, d.Close(t.Context()))
+
+		// Opening a cache that exists takes no write lock: with a busy timeout of an hour, an open that
+		// waited for the lock would not end before the test.
+		path := filepath.Join(w.dir, "a.db")
 		c, err := sqlite.Open(path)
 		is.NotError(t, err)
 		is.NotError(t, c.Exec("begin immediate"))
-		_, err = core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{BusyTimeout: time.Millisecond})
-		is.Error(t, core.ErrLocal, err)
-		is.NotError(t, c.Exec("rollback"))
-		is.NotError(t, c.Close())
-		is.Equal(t, int64(1), cacheVersion(t, path))
-
-		// The instance "a" made its cache of version 2, and opening it takes no write lock: with a
-		// busy timeout of an hour, an open that waited for the lock would not end before the test.
-		c, err = sqlite.Open(filepath.Join(w.dir, "a.db"))
-		is.NotError(t, err)
-		is.NotError(t, c.Exec("begin immediate"))
-		d, err := core.Open(t.Context(), w.host, w.client(), filepath.Join(w.dir, "a.db"), "db", core.Options{BusyTimeout: time.Hour})
+		d, err = core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{BusyTimeout: time.Hour})
 		is.NotError(t, err)
 		is.NotError(t, c.Exec("rollback"))
 		is.NotError(t, c.Close())
 		is.NotError(t, d.Wait(t.Context()))
-		is.Equal(t, v.want, read(t, d))
+		is.Equal(t, want, read(t, d))
 		is.NotError(t, d.Close(t.Context()))
-	})
-
-	t.Run("should open a cache of version 1 that many instances open at once, in every instance, which all read the same", func(t *testing.T) {
-		w := newWorld(t)
-		v := newVersionOne(t, w)
-		for i := range 20 {
-			path := filepath.Join(w.dir, fmt.Sprint("old", i, ".db"))
-			v.write(t, path)
-			// A slow machine must not make the cache busy, nor the lease run out, and the spares look
-			// often for a lease that was released.
-			options := core.Options{BusyTimeout: time.Hour, Lease: time.Hour, Watch: 10 * time.Millisecond}
-			dbs := make([]*core.DB, 8)
-			errs := make([]error, len(dbs))
-			start := make(chan struct{})
-			var wg sync.WaitGroup
-			for j := range dbs {
-				s := w.client()
-				wg.Go(func() {
-					<-start
-					dbs[j], errs[j] = core.Open(t.Context(), w.host, s, path, "db", options)
-				})
-			}
-			close(start)
-			wg.Wait()
-			// The instances that a failure leaves open close when the test ends; a close of one that
-			// is closed does nothing.
-			t.Cleanup(func() {
-				for _, d := range dbs {
-					if d != nil {
-						_ = d.Close(context.WithoutCancel(t.Context()))
-					}
-				}
-			})
-			is.NotError(t, errors.Join(errs...), fmt.Sprint("round ", i))
-			is.Equal(t, int64(core.CacheVersion), cacheVersion(t, path))
-
-			// One instance at a time has the lease, and the next one serves once it has closed.
-			served := make(chan int, len(dbs))
-			for j, d := range dbs {
-				go func() {
-					if err := d.Wait(t.Context()); err != nil {
-						j = -1
-					}
-					served <- j
-				}()
-			}
-			for range dbs {
-				j := <-served
-				is.True(t, j >= 0, fmt.Sprint("an instance did not serve in round ", i))
-				is.Equal(t, v.want, read(t, dbs[j]), fmt.Sprint("round ", i, ", instance ", j))
-				is.NotError(t, dbs[j].Close(t.Context()))
-			}
-		}
-	})
-
-	t.Run("should refuse a cache of version 1 that holds NULL in a column outside the primary key, which version 2 reads as one that does not take NULL, and leave it as it is", func(t *testing.T) {
-		w := newWorld(t)
-		path := filepath.Join(w.dir, "old.db")
-		c, err := sqlite.Open(path)
-		is.NotError(t, err)
-		for _, sql := range []string{
-			"pragma journal_mode = wal",
-			"create table main.s4ql_cache (id integer primary key check (id = 1), version integer not null, head text not null, database text not null) strict",
-			"insert into main.s4ql_cache (id, version, head, database) values (1, 1, '" + format.EmptyLog.String() + "', '')",
-			`create table main."t1" ("k" int, "v" int, "w" int, primary key ("k")) strict, without rowid`,
-			`insert into main."t1" ("k", "v", "w") values (1, 10, 100), (2, 20, null)`,
-		} {
-			is.NotError(t, c.Exec(sql), sql)
-		}
-		is.NotError(t, c.Close())
-
-		_, err = core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{})
-		is.Error(t, core.ErrCacheVersion, err)
-		is.True(t, strings.Contains(err.Error(), `its table "t1" holds NULL in the column "w", which does not take NULL`), err.Error())
-		is.Equal(t, int64(1), cacheVersion(t, path))
 	})
 
 	t.Run("should refuse a database that holds tables and no table s4ql_cache, which this package did not make, and leave it as it is", func(t *testing.T) {
@@ -1654,89 +1442,6 @@ func TestOpen_cache(t *testing.T) {
 		is.EqualSlice(t, []string{"", "one/", "one/two/", "smørrebrød/🥪/"}, manifests)
 		is.EqualSlice(t, []string{"", "one/", "one/two/", "smørrebrød/🥪/"}, commits)
 	})
-}
-
-// versionOne is a log whose tables are as the versions of s4ql that wrote caches of version 1 made
-// them, with no column that takes NULL, and what an instance reads from it.
-type versionOne struct {
-	head   format.Name
-	tables []*s4qlpb.CreateTable
-	rows   map[string][][]*s4qlpb.Value
-	want   string
-}
-
-// newVersionOne log of the database "db" in w: the table t1 of two int columns, with two rows, and
-// for each type a table whose key is of that type, with a column of every type after it and a row
-// for each of the edges of the key's type.
-func newVersionOne(t *testing.T, w *world) versionOne {
-	t.Helper()
-	v := versionOne{tables: []*s4qlpb.CreateTable{tableOf("t1", 1, "k", "v")}, rows: map[string][][]*s4qlpb.Value{"t1": {row(1, 10), row(2, 20)}}}
-	for _, typ := range types {
-		ct := typedTable("t_"+typeName(typ), slices.Concat([]s4qlpb.Type{typ}, types)...)
-		v.tables = append(v.tables, ct)
-		for i, k := range edges[typ] {
-			values := []*s4qlpb.Value{k}
-			for _, other := range types {
-				values = append(values, edges[other][(i+1)%len(edges[other])])
-			}
-			v.rows[ct.GetTable()] = append(v.rows[ct.GetTable()], values)
-		}
-	}
-	d := w.serve(t, "a", core.Options{})
-	write(t, d, func(tx *core.Tx) {
-		for _, ct := range v.tables {
-			is.NotError(t, tx.CreateTable(t.Context(), ct))
-			for _, r := range v.rows[ct.GetTable()] {
-				is.NotError(t, tx.Upsert(t.Context(), ct.GetTable(), r), text(r))
-			}
-		}
-	})
-	v.head = w.manifest(t).Head
-	v.want = read(t, d)
-	is.NotError(t, d.Close(t.Context()))
-	return v
-}
-
-// write the cache at path as a version of s4ql that wrote caches of version 1 wrote it, statement
-// by statement, at the head of the log and with the empty identity.
-func (v versionOne) write(t *testing.T, path string) {
-	t.Helper()
-	c, err := sqlite.Open(path)
-	is.NotError(t, err)
-	defer func() { is.NotError(t, c.Close()) }()
-	for _, sql := range []string{
-		"pragma journal_mode = wal",
-		"create table main.s4ql_cache (id integer primary key check (id = 1), version integer not null, head text not null, database text not null) strict",
-		"insert into main.s4ql_cache (id, version, head, database) values (1, 1, '" + v.head.String() + "', '')",
-	} {
-		is.NotError(t, c.Exec(sql), sql)
-	}
-	for _, ct := range v.tables {
-		var declared, names, marks, key []string
-		for i, column := range ct.GetColumns() {
-			declared = append(declared, core.Quote(column.GetName())+" "+typeName(column.GetType()))
-			names = append(names, core.Quote(column.GetName()))
-			marks = append(marks, fmt.Sprint("?", i+1))
-		}
-		for _, position := range ct.GetPrimaryKey() {
-			key = append(key, names[position])
-		}
-		sql := fmt.Sprint("create table main.", core.Quote(ct.GetTable()), " (", strings.Join(declared, ", "), ", primary key (", strings.Join(key, ", "), ")) strict, without rowid")
-		is.NotError(t, c.Exec(sql), sql)
-		insert := fmt.Sprint("insert or replace into main.", core.Quote(ct.GetTable()), " (", strings.Join(names, ", "), ") values (", strings.Join(marks, ", "), ")")
-		for _, r := range v.rows[ct.GetTable()] {
-			s, err := c.Prepare(insert)
-			is.NotError(t, err)
-			args := make([]any, len(r))
-			for i, value := range r {
-				args[i] = value
-			}
-			is.NotError(t, core.Bind(s, args...))
-			_, err = s.Step()
-			is.NotError(t, err, text(r))
-			is.NotError(t, s.Finalize())
-		}
-	}
 }
 
 // cacheVersion is the version of the layout that the cache at path records.
