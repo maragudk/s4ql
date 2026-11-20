@@ -80,13 +80,13 @@ mattn builds the same C code with other compile options. The differences that SQ
 
 ## Memory safety
 
-The binding is memory-unsafe code, which Go's race detector and memory safety do not cover. `make test-asan` runs the tests, and then each fuzz test, of every package whose test binary links C under the C address sanitizer with `go test -asan`, and the other fuzz tests without it. A test binary links C if it links a package outside the standard library with cgo files, such as this one; the `Makefile` finds these with `go list`, so a new package falls on the right side by itself. The sanitizer finds faults in C code only, and `make test` and CI's job `test` run the other packages. Each fuzz test runs for `FUZZTIME`, which defaults to 30s. Go supports `-asan` only on Linux, so on macOS the target runs itself in a `golang` Docker container.
+The binding is memory-unsafe code, which Go's race detector and memory safety do not cover. `make test-asan` runs the tests, and then each fuzz test, of every package whose test binary links C under the C address sanitizer with `go test -asan`, and the other fuzz tests without it. A test binary links C if it links a package outside the standard library with cgo files, such as this one; the `Makefile` finds these with `go list`, so a new package falls on the right side by itself. The sanitizer finds faults in C code only, and `make test` and CI's jobs `test`, `test-core`, and `test-engine` run the other packages. Each fuzz test runs for `FUZZTIME`, which defaults to 30s. Go supports `-asan` only on Linux, so on macOS the target runs itself in a `golang` Docker container.
 
 SQLite's lookaside allocator reuses memory inside its own slabs, where the sanitizer cannot see it, so a statement used after it is finalized would go unnoticed. A binary built with `-asan` therefore turns lookaside off on every connection it opens. Other builds keep it on.
 
 `make fuzz` runs the fuzz tests without the sanitizer. On Linux, `FUZZFLAGS=-asan` adds it. Go's fuzzer measures coverage of Go code only, so for the C code the fuzzing is close to random mutation of the seeds.
 
-CI runs the same work in jobs that run at the same time: `asan` runs `make asan-test`, the four jobs `asan-fuzz` each run a shard of the fuzz tests that link C with `make fuzz FUZZGROUP=c FUZZFLAGS=-asan FUZZSHARD=i/4 FUZZTIME=30s`, and `fuzz` runs the others with `make fuzz FUZZGROUP=go FUZZTIME=30s`.
+CI runs the same work in jobs that run at the same time: `asan` runs `make asan-test` for every package but `internal/core` and `internal/engine`, which `asan-core` and `asan-engine` run in shards with `ASANSHARD=i/n`, each with its share of the planted bugs of `TestSimulation_plantedBugs` (see `internal/testshard`); the four jobs `asan-fuzz` each run a shard of the fuzz tests that link C with `make fuzz FUZZGROUP=c FUZZFLAGS=-asan FUZZSHARD=i/4 FUZZTIME=30s`, after `make fuzz-shards`, which checks that the shards hold every fuzz test once; and `fuzz` runs the others with `make fuzz FUZZGROUP=go FUZZTIME=30s`. The workflow `Nightly` runs each fuzz test for 5 minutes, and the planted bugs on 1,000 seeds.
 
 ## Updating SQLite
 

@@ -32,6 +32,7 @@ import (
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/store/simstore"
+	"maragu.dev/s4ql/internal/testshard"
 )
 
 // hostRand is the [stmttest.Rand] of a host, so that the statements of a simulation come from its
@@ -2225,7 +2226,8 @@ func replayCommand(seed uint64, flags ...string) string {
 }
 
 // TestSimulation_plantedBugs runs the workload with each planted bug until it finds the bug by its own
-// violation in two seeds, and the same seeds without the bug, which find nothing.
+// violation in two seeds, and the same seeds without the bug, which find nothing. With
+// S4QL_TEST_SHARD set, it runs the bugs of that shard only: see [testshard].
 func TestSimulation_plantedBugs(t *testing.T) {
 	limit := simSeeds(t, 100)
 	// The workload of each bug, and the violation that finds it: the check of an insert in a read
@@ -2305,7 +2307,11 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// differ.
 		{"keepOldKey", defaultWorkload, "default", []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes"}},
 	}
-	for _, b := range bugs {
+	shard := testshard.Get(t)
+	for i, b := range bugs {
+		if !shard.Holds(i) {
+			continue
+		}
 		bug := b.name
 		t.Run(bug, func(t *testing.T) {
 			w := b.w

@@ -18,6 +18,20 @@ concurrency:
 permissions:
   contents: read
 
+# The packages whose tests have jobs of their own, because they take the longest: test-core and
+# test-engine under the race detector, and asan-core and asan-engine under the address sanitizer,
+# which split TestSimulation_plantedBugs into shards. The jobs test and asan run every other
+# package, and leave out these, so that a package is in exactly one job of each kind.
+env:
+  CORE: maragu.dev/s4ql/internal/core
+  ENGINE: maragu.dev/s4ql/internal/engine
+
+# Each job sets timeout-minutes to about three times the longest it took in 194 runs of 2026-11-18
+# to 2026-11-20, and at least 5. A job whose go test has a -timeout of its own gets more, so that
+# the timeout of go test, which prints the stacks of the goroutines, comes first. Each job that
+# builds Go code sets up Go with the action go, which restores a build cache of its own, and saves
+# it with the action go-save on main: see .github/actions/go. The job browser is the exception to
+# both for now, with setup-go's cache and no timeout-minutes, while its hang is looked into apart.
 jobs:
   # Decides what the change touches, so that the other jobs run only where it needs them: with code,
   # every job runs; with documents only, none; with the site and documents only, the job site alone.
@@ -28,6 +42,7 @@ jobs:
   # of a pull request and the commit before a push are in the checkout.
   changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       code: ${{ steps.decide.outputs.code }}
       site: ${{ steps.decide.outputs.site }}
@@ -58,47 +73,140 @@ jobs:
           cat "$RUNNER_TEMP/changes"
           cat "$RUNNER_TEMP/changes" >>"$GITHUB_OUTPUT"
 
+  # golangci-lint over the library, as the reusable lint workflow of maragudk/workflows does, which
+  # this job was before, inline so that it has a timeout and a build cache. As there, it does not run
+  # for Dependabot.
   lint:
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    uses: maragudk/workflows/.github/workflows/lint.yml@main
-
-  # go test ./..., without -short, so the tests against a real bucket run too, and fail without their
-  # credentials: the bucket is named in .env.test, and the two secrets below are exported into the
-  # test run. Each test writes under a prefix of its own, and each test process first deletes the old
-  # prefixes that killed runs left: see internal/store/s3test. A pull request from Dependabot gets
-  # Dependabot's secrets, which hold the same two. One from a fork gets none, so the tests against the
-  # bucket fail there; the repository takes no pull requests from forks.
-  test:
-    needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    uses: maragudk/workflows/.github/workflows/test.yml@main
-    secrets: inherit
-    with:
-      secret-env: AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
-
-  # Library code must follow the rules of the simulation, which golangci-lint does not know. The lint
-  # is a separate module, which the reusable workflows above do not see. The free-running mode of the
-  # simulation exists for the race detector, so this job runs it under the race detector, whatever
-  # the reusable test workflow does.
-  simulation:
-    needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && github.triggering_actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/go
         with:
+          cache: lint
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+
+      - uses: ./.github/actions/go-save
+        if: ${{ !cancelled() }}
+
+  # go test ./... under the race detector, without -short, so the tests against a real bucket run
+  # too, and fail without their credentials: the bucket is named in .env.test, and the two secrets
+  # below are in the environment of the test run only. Each test writes under a prefix of its own,
+  # and each test process first deletes the old prefixes that killed runs left: see
+  # internal/store/s3test. A pull request from Dependabot gets Dependabot's secrets, which hold the
+  # same two. One from a fork gets none, so the tests against the bucket fail there; the repository
+  # takes no pull requests from forks. The steps are those of the reusable test workflow of
+  # maragudk/workflows, which this job was before, inline so that it has a timeout and a build cache.
+  # The packages of CORE and ENGINE are left out here, and test-core and test-engine run them; go
+  # list fails if one of the two names is not a package.
+  test:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/go
+        with:
+          cache: test-race
+
+      - name: Check that go.mod and go.sum are tidy
+        run: go mod tidy && git diff --exit-code go.mod go.sum
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          go list "$CORE" "$ENGINE" >/dev/null
+          pkgs=$(go list ./... | grep -vxF -e "$CORE" -e "$ENGINE")
+          go test -race -shuffle on -timeout 20m $pkgs
+
+      - uses: ./.github/actions/go-save
+        if: ${{ !cancelled() }}
+
+  # The tests of the storage core under the race detector, out of the job test. internal/core took
+  # 466 s at the most there, beside the other packages.
+  test-core:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/go
+        with:
+          cache: test-core-race
+
+      - name: Test the storage core under the race detector
+        run: go test -race -shuffle on -timeout 20m "$CORE"
+
+      - uses: ./.github/actions/go-save
+        if: ${{ !cancelled() }}
+
+  # The tests of the engine under the race detector, out of the job test. internal/engine took 395 s
+  # there on 2026-11-20, beside the other packages.
+  test-engine:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/go
+        with:
+          cache: test-engine-race
+
+      - name: Test the engine under the race detector
+        run: go test -race -shuffle on -timeout 20m "$ENGINE"
+
+      - uses: ./.github/actions/go-save
+        if: ${{ !cancelled() }}
+
+  # Library code must follow the rules of the simulation, which golangci-lint does not know. The lint
+  # is a separate module, which the reusable workflows above do not see. The free-running mode of the
+  # simulation exists for the race detector, so this job runs it under the race detector, whatever
+  # the job test does.
+  simulation:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/go
+        with:
+          cache: simulation
           go-version-file: internal/simlint/go.mod
-          # The lint runs over the library, and the free-running mode is the library's test.
-          cache-dependency-path: |
-            go.sum
-            internal/simlint/go.sum
-          check-latest: true
 
       - name: Check that the lint's go.mod and go.sum are tidy
         working-directory: internal/simlint
@@ -125,26 +233,32 @@ jobs:
       - name: Vet the tests that only a person runs
         run: go vet -tags s4ql_speed ./internal/sim/ && go vet -tags s4ql_hang ./internal/sim/
 
+      - uses: ./.github/actions/go-save
+        if: ${{ !cancelled() }}
+
   # Most tests of the SQL front end compare with SQLite on a tenth of the corpus and of the generated
-  # texts under the race detector, which the reusable test workflow uses, and under the address
-  # sanitizer, and leave out the checks that need all of them. This job runs them without either.
+  # texts under the race detector, which the job test uses, and under the address sanitizer, and
+  # leave out the checks that need all of them. This job runs them without either.
   sql:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/go
         with:
-          go-version-file: go.mod
-          check-latest: true
+          cache: sql
 
       - name: Test the SQL front end on the whole corpus
         run: make test-sql
+
+      - uses: ./.github/actions/go-save
+        if: ${{ !cancelled() }}
 
   # The schema of the commit object: Buf's lint, and a check that the committed generated code is what
   # the schema generates.
@@ -152,16 +266,16 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/go
         with:
-          go-version-file: go.mod
-          check-latest: true
+          cache: proto
 
       - name: Lint the schema
         run: make lint-proto
@@ -169,12 +283,16 @@ jobs:
       - name: Check that the generated code is up to date
         run: make generate && git status --porcelain && test -z "$(git status --porcelain)"
 
+      - uses: ./.github/actions/go-save
+        if: ${{ !cancelled() }}
+
   # The cross-checks against github.com/mattn/go-sqlite3 are a separate module, which the reusable
   # workflows above do not see.
   crosscheck:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: internal/sqlite/crosscheck
@@ -185,11 +303,10 @@ jobs:
           persist-credentials: false
 
       # Paths in uses steps are relative to the repository root, not to the working directory above.
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/go
         with:
+          cache: crosscheck-race
           go-version-file: internal/sqlite/crosscheck/go.mod
-          cache-dependency-path: internal/sqlite/crosscheck/go.sum
-          check-latest: true
 
       - name: Check that go.mod and go.sum are tidy
         run: go mod tidy && git diff --exit-code go.mod go.sum
@@ -203,34 +320,108 @@ jobs:
           version: latest
           working-directory: internal/sqlite/crosscheck
 
+      - uses: ./.github/actions/go-save
+        if: ${{ !cancelled() }}
+
   # The SQLite binding is memory-unsafe code, so the tests of both modules also go under the C address
   # sanitizer. It finds faults in C code only, so make asan-test runs the packages whose test binaries
-  # link C, and the job test alone runs the others. The jobs asan, asan-fuzz, and fuzz together run
-  # what make test-asan runs, and fuzz also checks the heap of a large transaction.
+  # link C, and the job test alone runs the others. The jobs asan, asan-core, asan-engine, asan-fuzz,
+  # and fuzz together run what make test-asan runs, and fuzz also checks the heap of a large
+  # transaction. This job runs every package that links C but those of CORE and ENGINE,
+  # and make asan-test fails if a name there is not such a package.
   asan:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/go
         with:
-          go-version-file: go.mod
-          check-latest: true
+          cache: asan
 
       - name: Test under the address sanitizer
-        run: make asan-test
+        run: make asan-test ASANSKIPPKGS="$CORE $ENGINE" ASANTIMEOUT=20m
+
+      - uses: ./.github/actions/go-save
+        if: ${{ !cancelled() }}
+
+  # The tests of the storage core under the address sanitizer, in shards that run at the same time:
+  # each runs its share of the planted bugs of TestSimulation_plantedBugs, which internal/testshard
+  # gives out by their index, and the first also every other test of the package. The number of
+  # shards is the size of the matrix, so a shard cannot go missing. internal/core took 591 s at the
+  # most in the job asan, beside the other packages. The first shard runs go test twice, each with
+  # the timeout of 15 minutes, so the job's timeout is above both.
+  asan-core:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/go
+        with:
+          cache: asan-core
+
+      - name: Test the storage core under the address sanitizer
+        run: make asan-test ASANPKGS="$CORE" ASANSHARD=${{ matrix.shard }}/${{ strategy.job-total }} ASANTIMEOUT=15m
+
+      # The shards build the same, so the first saves for all.
+      - uses: ./.github/actions/go-save
+        if: ${{ !cancelled() }}
+        with:
+          save: ${{ matrix.shard == 1 }}
+
+  # The tests of the engine under the address sanitizer, in shards, as asan-core does for the core.
+  # internal/engine took 468 s at the most in the job asan.
+  asan-engine:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/go
+        with:
+          cache: asan-engine
+
+      - name: Test the engine under the address sanitizer
+        run: make asan-test ASANPKGS="$ENGINE" ASANSHARD=${{ matrix.shard }}/${{ strategy.job-total }} ASANTIMEOUT=15m
+
+      - uses: ./.github/actions/go-save
+        if: ${{ !cancelled() }}
+        with:
+          save: ${{ matrix.shard == 1 }}
 
   # A short fuzz run of the fuzz tests whose test binaries link C, under the address sanitizer, in
-  # shards that run at the same time. make fuzz puts each fuzz test in exactly one shard.
+  # shards that run at the same time. make fuzz gives the fuzz tests to the shards one by one, and
+  # make fuzz-shards checks that every directory with a fuzz test is in FUZZDIRS and that the shards
+  # of the matrix hold every fuzz test of the group exactly once.
   asan-fuzz:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -241,17 +432,22 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/go
         with:
-          go-version-file: go.mod
-          check-latest: true
+          cache: asan-fuzz-${{ matrix.shard }}
+
+      - name: Check that the shards hold every fuzz test once
+        run: make fuzz-shards FUZZGROUP=c FUZZSHARDS=${{ strategy.job-total }}
 
       - name: Fuzz under the address sanitizer
         run: make fuzz FUZZGROUP=c FUZZFLAGS=-asan FUZZSHARD=${{ matrix.shard }}/${{ strategy.job-total }} FUZZTIME=30s
 
       - name: Show the inputs that made a fuzz test fail
         if: failure()
-        run: find . -path '*/testdata/fuzz/*' -type f -print -exec cat {} \;
+        run: sh .github/scripts/fuzz-failures.sh
+
+      - uses: ./.github/actions/go-save
+        if: ${{ !cancelled() }}
 
   # A short fuzz run of the fuzz tests whose test binaries link no C, without the sanitizer, which
   # has nothing to check in them.
@@ -259,30 +455,32 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/go
         with:
-          go-version-file: go.mod
-          check-latest: true
+          cache: fuzz
 
       # The check that a large transaction is never held in memory runs only without the race
-      # detector and the sanitizer, which change the heap, and the reusable test workflow uses the
-      # race detector.
+      # detector and the sanitizer, which change the heap, and the job test uses the race detector.
+      # -count=1, since a result from the build cache would not be a run.
       - name: Check the heap of a large transaction
-        run: go test -run '^TestTx_Commit_large$' ./internal/core/
+        run: go test -count=1 -run '^TestTx_Commit_large$' ./internal/core/
 
       - name: Fuzz
         run: make fuzz FUZZGROUP=go FUZZTIME=30s
 
       - name: Show the inputs that made a fuzz test fail
         if: failure()
-        run: find . -path '*/testdata/fuzz/*' -type f -print -exec cat {} \;
+        run: sh .github/scripts/fuzz-failures.sh
 
+      - uses: ./.github/actions/go-save
+        if: ${{ !cancelled() }}
   # The storage core also runs in a web browser, on the official SQLite WebAssembly build, through a
   # second implementation of the binding behind the tag s4ql_browser. A native build does not see its
   # files, so this job builds, vets, and lints them, and compiles the tests of every package that runs
@@ -373,21 +571,23 @@ jobs:
 
   # Builds the engine into the site, as the Pages workflow does, and checks the simulator's page in
   # headless Chrome: see internal/simulator/sitecheck. It reads site/ and the Go code, so it runs for
-  # a change to either, also when no other job but changes runs.
+  # a change to either, also when no other job but changes runs. make site-check runs the check
+  # twice, each with a timeout of 3 minutes, after which the check prints what it saw of the hang,
+  # so the job's timeout is above two of them and the builds.
   site:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.site != 'false' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/go
         with:
-          go-version-file: go.mod
-          check-latest: true
+          cache: site-wasm
 
       # Chrome's sandbox needs user namespaces, which the runner may not allow, and the page runs only
       # the project's own code from 127.0.0.1.
@@ -395,3 +595,6 @@ jobs:
         env:
           S4QL_CHROMIUM_FLAGS: --no-sandbox
         run: make site-check
+
+      - uses: ./.github/actions/go-save
+        if: ${{ !cancelled() }}
