@@ -1,10 +1,11 @@
-// Package stmttest is a generator of random statements of slices 1, 2, 4, 5, 6, 7, and 8, for tests:
+// Package stmttest is a generator of random statements of slices 1, 2, 4, 5, 6, 7, 8, and 9, for tests:
 // each statement is a text with the typed form of [maragu.dev/s4ql/internal/sql/stmt] that it holds,
 // with names from pools, keywords and types in any case, values of every type with weight on their
 // edges, and spaces and comments in every gap. The statements of slice 5, of several columns, come
 // only when a test asks for them, with [Generator.Columns], those of slice 6, with NULL, with
 // [Generator.Nulls], those of slice 7, with WHERE, with [Generator.Conditions] or [Generator.Where],
-// and the UPDATE and DELETE of slice 8 with [Generator.Changes] or a kind of their own.
+// the UPDATE and DELETE of slice 8 with [Generator.Changes] or a kind of their own, and the CREATE
+// INDEX and DROP INDEX of slice 9 with [Generator.Indexes] or a kind of their own.
 //
 // The generator draws its random numbers from a [Rand] that the test gives it, so that a test
 // chooses its seed and its generator of numbers.
@@ -30,7 +31,7 @@ type Rand interface {
 	Uint64() uint64
 }
 
-// Position of a name in the statements of slices 1, 5, and 8. The column of a condition of WHERE,
+// Position of a name in the statements of slices 1, 5, 8, and 9. The column of a condition of WHERE,
 // in a select, an update, or a delete, is from the pool of SelectColumn.
 type Position int
 
@@ -45,9 +46,13 @@ const (
 	UpdateTable
 	UpdateColumn
 	DeleteTable
+	IndexName
+	IndexTable
+	IndexColumn
+	DropIndex
 )
 
-// PositionTexts give, for each position, a statement of slice 1, 5, or 8 with %v in that position.
+// PositionTexts give, for each position, a statement of slice 1, 5, 8, or 9 with %v in that position.
 var PositionTexts = []string{
 	CreateTable:  "create table %v (v int primary key) strict, without rowid",
 	CreateColumn: "create table t (%v int primary key) strict, without rowid",
@@ -59,6 +64,10 @@ var PositionTexts = []string{
 	UpdateTable:  "update %v set v = 1",
 	UpdateColumn: "update t set %v = 1",
 	DeleteTable:  "delete from %v",
+	IndexName:    "create index %v on t (v)",
+	IndexTable:   "create index i on %v (v)",
+	IndexColumn:  "create index i on t (%v)",
+	DropIndex:    "drop index %v",
 }
 
 // BasePool of names: plain names, names in double quotes with odd content, names that differ only in
@@ -84,9 +93,9 @@ func Keywords() []string {
 // NamePools gives, for each position, the names of [BasePool] and the keywords of SQLite that SQLite
 // reads as a name there. It fails if SQLite does not read a name of BasePool as a name somewhere.
 //
-// In the select list, where SQLite reads some keywords as a value, such as NULL and CURRENT_TIME, a
-// keyword is in the pool if SQLite reads it as the name of a column: on a table without a column of
-// the name, SQLite gives `no such column` for it.
+// In the select list and in the columns of an index, where SQLite reads some keywords as a value,
+// such as NULL and CURRENT_TIME, a keyword is in the pool if SQLite reads it as the name of a column:
+// on a table without a column of the name, SQLite gives `no such column` for it.
 var NamePools = sync.OnceValues(func() ([][]string, error) {
 	c, err := sqlite.Open(":memory:")
 	if err != nil {
@@ -108,7 +117,7 @@ var NamePools = sync.OnceValues(func() ([][]string, error) {
 			if oracle.Judge(fmt.Sprintf(text, kw)).Kind != oracle.Parses {
 				continue
 			}
-			if Position(p) == SelectColumn {
+			if Position(p) == SelectColumn || Position(p) == IndexColumn {
 				s, err := c.Prepare(fmt.Sprintf(text, kw))
 				if err == nil {
 					_ = s.Finalize()
@@ -139,9 +148,11 @@ const (
 	KindDropTable
 	KindUpdate
 	KindDelete
+	KindCreateIndex
+	KindDropIndex
 )
 
-// Generator of random statements of slices 1, 2, 4, 5, 6, 7, and 8.
+// Generator of random statements of slices 1, 2, 4, 5, 6, 7, 8, and 9.
 type Generator struct {
 	r Rand
 	// pools of names, for each [Position].
@@ -212,7 +223,20 @@ type Generator struct {
 	// Delete, if not nil, gives the conditions of the WHERE of a delete from the table, as
 	// [Generator.Where] gives them, or nil for a delete without WHERE, in place of conditions at random.
 	Delete func(table stmt.Name) []stmt.Condition
-	b      strings.Builder
+	// Indexes, if not 0, makes the generator write the CREATE INDEX and DROP INDEX of slice 9 among
+	// the statements of a kind at random: one in Indexes is a create index or a drop index, each one
+	// time in two, after [Generator.Changes] has drawn. A create index has a name from the pool of
+	// [IndexName], a table from that of [IndexTable], and from 1 to Columns columns, or 1 without
+	// [Generator.Columns], each another column from the pool of [IndexColumn], with ASC, DESC, or
+	// neither, unless [Generator.CreateIndex] gives them. A drop index has a name from the pool of
+	// [DropIndex]. With 0 the generator draws as it did before slice 9; [Generator.StatementOf] and
+	// [Generator.CallOf] write a create index or a drop index whatever Indexes is.
+	Indexes int
+	// CreateIndex, if not nil, gives the columns of a create index of the name index on the table, in
+	// place of columns at random, one or more: the raw text of the name of each, and whether it is
+	// Descending. The generator writes ASC or nothing for a column that is not descending.
+	CreateIndex func(index, table stmt.Name) []stmt.IndexColumn
+	b           strings.Builder
 }
 
 // NewGenerator with the random numbers of r and a pool of names for each [Position]. Each name of a
@@ -681,6 +705,47 @@ func (g *Generator) update(c *stmt.Update) []any {
 	return args
 }
 
+// indexColumns of a create index of the name index on the table, of slice 9, between its
+// parentheses: those that [Generator.CreateIndex] gives, or from 1 to [Generator.Columns] at random,
+// or 1 without Columns, each another name from the pool of [IndexColumn]. Each is descending one time
+// in three, and otherwise ascending, with ASC one time in two.
+func (g *Generator) indexColumns(index, table stmt.Name) []stmt.IndexColumn {
+	var given []stmt.IndexColumn
+	if g.CreateIndex != nil {
+		given = g.CreateIndex(index, table)
+	} else {
+		given = make([]stmt.IndexColumn, 1+g.r.IntN(max(g.Columns, 1)))
+	}
+	seen := map[string]bool{}
+	var columns []stmt.IndexColumn
+	for i, c := range given {
+		if g.CreateIndex == nil {
+			raw := g.pickOther(IndexColumn, seen)
+			if raw == "" {
+				break
+			}
+			c = stmt.IndexColumn{Name: stmt.Name{Raw: raw}, Descending: g.r.IntN(3) == 0}
+		}
+		if i > 0 {
+			g.gap(false)
+			g.punct(",")
+		}
+		g.gap(false)
+		w := stmt.IndexColumn{Name: g.write(c.Name.Raw), Descending: c.Descending}
+		seen[w.Name.Fold()] = true
+		switch {
+		case w.Descending:
+			g.gap(true)
+			g.keyword("desc")
+		case g.r.IntN(2) == 0:
+			g.gap(true)
+			g.keyword("asc")
+		}
+		columns = append(columns, w)
+	}
+	return columns
+}
+
 // Statement at random: its text and the statement that it holds. A statement with a
 // parameter, which [Generator.Parameters] asks for, is written without its argument.
 func (g *Generator) Statement() (string, stmt.Statement) {
@@ -718,6 +783,9 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 		k = Kind(g.r.IntN(4))
 		if g.Changes > 0 && g.r.IntN(g.Changes) == 0 {
 			k = KindUpdate + Kind(g.r.IntN(2))
+		}
+		if g.Indexes > 0 && g.r.IntN(g.Indexes) == 0 {
+			k = KindCreateIndex + Kind(g.r.IntN(2))
 		}
 	}
 	var s stmt.Statement
@@ -866,6 +934,31 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 		} else {
 			c.Where, args = g.conditions(g.randomConditions(), true, nil, nil)
 		}
+		s, span = c, &c.Span
+	case KindCreateIndex:
+		c := &stmt.CreateIndex{}
+		g.keyword("create")
+		g.gap(true)
+		g.keyword("index")
+		g.gap(true)
+		c.Index = g.name(IndexName)
+		g.gap(true)
+		g.keyword("on")
+		g.gap(true)
+		c.Table = g.name(IndexTable)
+		g.gap(false)
+		g.punct("(")
+		c.Columns = g.indexColumns(c.Index, c.Table)
+		g.gap(false)
+		g.punct(")")
+		s, span = c, &c.Span
+	case KindDropIndex:
+		c := &stmt.DropIndex{}
+		g.keyword("drop")
+		g.gap(true)
+		g.keyword("index")
+		g.gap(true)
+		c.Index = g.name(DropIndex)
 		s, span = c, &c.Span
 	default:
 		c := &stmt.DropTable{}
