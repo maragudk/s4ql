@@ -973,6 +973,64 @@ func logAnnotations(t testing.TB, s *simstore.Store) [][]string {
 	return commits
 }
 
+// logChanges of the log in the store s, oldest commit first, each as its changes, one line for each
+// row: "upsert t 1,2" for a row of the table t, and "delete t 1" for the key of one. A create and a
+// drop of a table are "create t" and "drop t".
+func logChanges(t testing.TB, s *simstore.Store) [][]string {
+	t.Helper()
+	data, _, ok := s.Object("db/manifest.json")
+	if !ok {
+		return nil
+	}
+	m, err := format.ParseManifest(data)
+	is.NotError(t, err)
+	var commits [][]string
+	for name := m.Head; name != format.EmptyLog; {
+		key := name.String()
+		data, _, ok := s.Object("db/commits/" + key[:2] + "/" + key)
+		is.True(t, ok, key)
+		r := format.NewCommitReader(bytes.NewReader(data), name)
+		h, err := r.Header()
+		is.NotError(t, err)
+		var lines []string
+		for {
+			c, _, err := r.Next()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			is.NotError(t, err)
+			switch {
+			case c == nil:
+			case c.HasCreateTable():
+				lines = append(lines, "create "+c.GetCreateTable().GetTable())
+			case c.HasDropTable():
+				lines = append(lines, "drop "+c.GetDropTable().GetTable())
+			case c.HasUpsertRows():
+				for _, row := range c.GetUpsertRows().GetRows() {
+					var vs []string
+					for _, v := range row.GetValues() {
+						vs = append(vs, valueText(t, v))
+					}
+					lines = append(lines, "upsert "+c.GetUpsertRows().GetTable()+" "+strings.Join(vs, ","))
+				}
+			case c.HasDeleteRows():
+				for _, k := range c.GetDeleteRows().GetPrimaryKeys() {
+					var vs []string
+					for _, v := range k.GetValues() {
+						vs = append(vs, valueText(t, v))
+					}
+					lines = append(lines, "delete "+c.GetDeleteRows().GetTable()+" "+strings.Join(vs, ","))
+				}
+			}
+		}
+		commits = append(commits, lines)
+		name, err = format.NameFromBytes(h.GetParent())
+		is.NotError(t, err)
+	}
+	slices.Reverse(commits)
+	return commits
+}
+
 func TestEngine_annotations(t *testing.T) {
 	t.Run("should annotate each commit with the text of its statement, from its first token to its end, and commit nothing for a statement that fails", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
@@ -2340,5 +2398,283 @@ func TestEngine_where(t *testing.T) {
 		for src, n := range map[string]int{"select * from t where v = 1": 0, "select v from t where v >= ? and v < ? and w is not null": 2} {
 			is.NotError(t, engine.Check(src, n), src)
 		}
+	})
+}
+
+// changeTrio is SQLite and two instances of the engine, one that reads the rows of a statement by the
+// key and one that reads every row, which run the same statements.
+type changeTrio struct {
+	t          *testing.T
+	byKey, all *instance
+	o          *oracle
+}
+
+// newChangeTrio with the length limit limit, 0 for SQLite's default, and the statements of setup
+// run on each.
+func newChangeTrio(t *testing.T, limit int, setup ...string) *changeTrio {
+	t.Helper()
+	var all engine.Options
+	all.ScanAll()
+	o := newOracle(t)
+	if limit > 0 {
+		o = newOracleLimited(t, limit)
+	}
+	w := &changeTrio{t: t, byKey: newInstanceLimited(t, engine.Options{}, nil, limit), all: newInstanceLimited(t, all, nil, limit), o: o}
+	for _, src := range setup {
+		is.Equal(t, "", w.run(src).err, src)
+	}
+	return w
+}
+
+// run src, a statement that is no query, with args on each, and require SQLite's answer, SQLite's
+// count of changes, and SQLite's state of each instance of the engine afterwards. It gives SQLite's
+// answer.
+func (w *changeTrio) run(src string, args ...any) answer {
+	w.t.Helper()
+	want := w.o.run(w.t, src, oracleArgs(args)...)
+	want.columns, want.rows = "", nil
+	changes, _ := w.o.changes(w.t)
+	state := w.o.state(w.t)
+	what := fmt.Sprintf("%v with %#v", src, args)
+	for _, i := range []*instance{w.byKey, w.all} {
+		is.Equal(w.t, want.String(), i.execValues(src, values(args)).String(), "SQLite and the engine: "+what)
+		is.Equal(w.t, changes, i.changes, "the count of changes after "+what)
+		is.Equal(w.t, state, i.state(), "the state after "+what)
+	}
+	return want
+}
+
+// own runs src with args on each instance of the engine, and not in SQLite, and requires the
+// engine's own answer: the error err, as [answer] has it, with the message, and no change to the
+// state or to the count of changes.
+func (w *changeTrio) own(err, message, src string, args ...any) {
+	w.t.Helper()
+	what := fmt.Sprintf("%v with %#v", src, args)
+	for _, i := range []*instance{w.byKey, w.all} {
+		state, changes := i.state(), i.changes
+		got := i.execValues(src, values(args))
+		is.Equal(w.t, err, got.err, what)
+		is.Equal(w.t, message, got.message, what)
+		is.Equal(w.t, changes, i.changes, "the count of changes after "+what)
+		is.Equal(w.t, state, i.state(), "the state after "+what)
+	}
+}
+
+func TestEngine_update(t *testing.T) {
+	// t3 with three rows, and n, whose column r takes NULL, with two.
+	setup := []string{t3, "insert into t3 values (1, 'a', 1.5)", "insert into t3 values (2, 'b', 2.5)", "insert into t3 values (3, 'c', 3.5)",
+		"create table n (k int primary key, r real, s text not null) strict, without rowid", "insert into n values (1, 1.5, 'a')", "insert into n values (2, null, 'b')"}
+
+	cases := []struct {
+		name string
+		src  string
+		args []any
+		want string
+	}{
+		{name: "should update every row without WHERE, and count each, also one whose values do not change", src: "update t3 set v2 = 'b'"},
+		{name: "should update the rows of a WHERE by the key", src: "update T3 set V3 = -0.0, v2 = 'z' where v1 = 2"},
+		{name: "should update the rows of a WHERE by a range of the key", src: "update t3 set v2 = 'z' where v1 > 1 and v1 <= 3"},
+		{name: "should update the rows of a WHERE on another column", src: "update t3 set v3 = 9.5 where v2 != 'b'"},
+		{name: "should update no row and count none for a WHERE that holds for none", src: "update t3 set v2 = 'z' where v1 = 9"},
+		{name: "should update no row for a comparison with NULL", src: "update t3 set v2 = 'z' where v2 = null"},
+		{name: "should bind the arguments of SET before those of WHERE", src: "update t3 set v2 = ?, v3 = ? where v1 >= ? and v2 < ?", args: []any{"y", 7.5, int64(2), "c"}},
+		{name: "should change each row that WHERE finds once, when the update changes the column that WHERE reads", src: "update t3 set v2 = 'c' where v2 < 'c'"},
+		{name: "should change the key of a row to a key that no row has", src: "update t3 set v1 = 9 where v1 = 2"},
+		{name: "should change the key of a row that a range of the key finds to one outside the range, once", src: "update t3 set v1 = -1, v2 = 'm' where v1 >= 3"},
+		{name: "should change the key of a row to the key it has, which is no change of the key", src: "update t3 set v1 = 1, v2 = 'z' where v1 = 1"},
+		{name: "should give that a key exists for a new key that another row has, and change nothing", src: "update t3 set v1 = 2 where v1 = 1", want: "19/1555: UNIQUE constraint failed: t3.v1"},
+		{name: "should give that a key exists for a new key of two rows, and change nothing", src: "update t3 set v1 = 7, v2 = 'q' where v1 >= 2", want: "19/1555: UNIQUE constraint failed: t3.v1"},
+		{name: "should give that a key exists for every row of a table to one key", src: "update t3 set v1 = 3", want: "19/1555: UNIQUE constraint failed: t3.v1"},
+		{name: "should give that there is no table", src: "update t4 set x = 1 where y = 1", want: "1/1: no such table: t4"},
+		{name: "should give the first column of SET that the table does not have, in the order of the text", src: "update t3 set v2 = 'x', z = 1, y = 2", want: "1/1: no such column: z"},
+		{name: "should give a column of SET in double quotes that the table does not have without the question about quotes", src: `update t3 set "Z""z" = 1`, want: `1/1: no such column: Z"z`},
+		{name: "should give a column of SET that the table does not have before one of WHERE", src: "update t3 set z = 1 where y is null", want: "1/1: no such column: z"},
+		{name: "should give a column of WHERE that the table does not have by the rule of a select", src: "update t3 set v2 = 'x' where y is null and x = 1", want: "1/1: no such column: y"},
+		{name: "should give the later of two tests for NULL of columns that the table does not have", src: "update t3 set v2 = 'x' where x is null and y is null", want: "1/1: no such column: y"},
+		{name: "should give a column of WHERE in double quotes that the table does not have with the question about quotes", src: `update t3 set v2 = 'x' where "Q" = 1`, want: `1/1: no such column: "Q" - should this be a string literal in single-quotes?`},
+		{name: "should give that a column does not take NULL for a row that the update finds", src: "update t3 set v2 = null where v1 = 2", want: "19/1299: NOT NULL constraint failed: t3.v2"},
+		{name: "should give no error for NULL in a column that does not take it when the update finds no row", src: "update t3 set v2 = null where v1 = 9"},
+		{name: "should give the first column that does not take NULL in the order of the table", src: "update t3 set v3 = null, v2 = null where v1 = 1", want: "19/1299: NOT NULL constraint failed: t3.v2"},
+		{name: "should give that the key does not take NULL", src: "update t3 set v3 = 1.5, v1 = null", want: "19/1299: NOT NULL constraint failed: t3.v1"},
+		{name: "should give that a column does not take NULL before that a key exists", src: "update t3 set v1 = 2, v3 = ? where v1 = 1", args: []any{nil}, want: "19/1299: NOT NULL constraint failed: t3.v3"},
+		{name: "should give that a column does not take NULL before the type of another column", src: "update t3 set v3 = 'x', v2 = null where v1 = 1", want: "19/1299: NOT NULL constraint failed: t3.v2"},
+		{name: "should take NULL in a column that takes it, as a literal and as an argument", src: "update n set r = ? where k = ?", args: []any{nil, int64(1)}},
+		{name: "should take NULL in a column that takes it for every row", src: "update n set r = null, s = 'c'"},
+		{name: "should update the rows whose column is NULL", src: "update n set r = 0.5 where r is null"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := newChangeTrio(t, 0, setup...)
+			is.Equal(t, c.want, w.run(c.src, c.args...).err)
+		})
+	}
+
+	t.Run("should refuse a value of another type than its column as not supported, after the errors of the names and NOT NULL, whether the update finds a row or not", func(t *testing.T) {
+		w := newChangeTrio(t, 0, setup...)
+		w.run("update t3 set v2 = 'k'")
+		w.own("not supported", "s4ql: not supported: an integer literal for the column t3.v2 of type TEXT", "update t3 set v2 = 1 where v1 = 1")
+		w.own("not supported", "s4ql: not supported: an integer literal for the column t3.v2 of type TEXT", "update t3 set v2 = 1 where v1 = 9")
+		w.own("not supported", "s4ql: not supported: a string literal for the column t3.v3 of type REAL", "update t3 set v3 = '1.5', v2 = null where v1 = 9")
+		w.own("not supported", "s4ql: not supported: a real literal for the column t3.v1 of type INT", "update t3 set v1 = 1.0 where v1 = 1")
+		// The first in the order of the table.
+		w.own("not supported", "s4ql: not supported: an integer literal for the column t3.v2 of type TEXT", "update t3 set v3 = 'x', v2 = 1")
+		w.own("not supported", "s4ql: not supported: argument 2, which is text, for the column t3.v3 of type REAL", "update t3 set v2 = ?, v3 = ? where v1 = ?", "a", "1.5", int64(1))
+		// The refusal of a value of WHERE comes first, as for a select, also before NOT NULL.
+		w.own("not supported", "s4ql: not supported: a string literal compared with the column t3.v1 of type INT", "update t3 set v2 = 1 where v1 = 'x'")
+		w.own("not supported", "s4ql: not supported: a string literal compared with the column t3.v1 of type INT", "update t3 set v2 = null where v1 = '1'")
+		is.Equal(t, "1/1: no such column: z", w.run("update t3 set v2 = 1, z = 2").err)
+		is.Equal(t, "1/1: no such column: z", w.run("update t3 set v2 = 1 where z = 2").err)
+		is.Equal(t, "19/1299: NOT NULL constraint failed: t3.v3", w.run("update t3 set v2 = 1, v3 = null where v1 = 3").err)
+		is.Equal(t, int64(0), w.byKey.changes)
+	})
+
+	t.Run("should give SQLite's error for a value or a row that is too long, in SQLite's order", func(t *testing.T) {
+		const limit = 1000
+		w := newChangeTrio(t, limit, "create table t (k int primary key, v text, b blob) strict, without rowid",
+			"insert into t values (1, 'a', x'00')", "insert into t values (2, 'b', null)")
+		long, half := strings.Repeat("x", limit+1), strings.Repeat("y", limit/2)
+		is.Equal(t, "18/18: string or blob too big", w.run("update t set v = ? where k = 9", long).err)
+		is.Equal(t, "18/18: string or blob too big", w.run("update t set v = 'a' where v = ?", long).err)
+		is.Equal(t, "1/1: no such column: z", w.run("update t set z = ? where k = 9", long).err)
+		is.Equal(t, "1/1: no such column: z", w.run("update t set v = ? where z = 1", long).err)
+		is.Equal(t, "", w.run("update t set v = ? where k = 1", half).err)
+		is.Equal(t, "18/18: string or blob too big", w.run("update t set b = ? where k = 1", []byte(half)).err)
+		is.Equal(t, "18/18: string or blob too big", w.run("update t set k = 2, b = ? where k = 1", []byte(half)).err)
+		is.Equal(t, "19/1555: UNIQUE constraint failed: t.k", w.run("update t set k = 2, b = ? where k = 1", []byte("z")).err)
+		is.Equal(t, "", w.run("update t set k = 3, b = ? where k = 1", []byte("z")).err)
+		is.Equal(t, "", w.run("delete from t where v = ?", half).err)
+		// A literal that is too long is too big for s4ql also when the update finds no row, where SQLite
+		// steps no value: the known difference of docs/todo.md.
+		w.own("18/18: string or blob too big", "string or blob too big", "update t set v = '"+long+"' where k = 9")
+	})
+
+	t.Run("should update a table of 2000 columns, with every column but the key in SET", func(t *testing.T) {
+		w := newChangeTrio(t, 0, "create table t ("+manyColumns(2000)+") strict, without rowid")
+		var zeros, sets []string
+		for i := range 2000 {
+			zeros = append(zeros, "0")
+			if i > 0 {
+				sets = append(sets, fmt.Sprint("c", i, " = ", i))
+			}
+		}
+		w.run("insert into t values (" + strings.Join(zeros, ", ") + ")")
+		is.Equal(t, "", w.run("update t set "+strings.Join(sets, ", ")+" where c0 = 0").err)
+		is.Equal(t, "19/1299: NOT NULL constraint failed: t.c1", w.run("update t set c1999 = null, c1 = null").err)
+	})
+
+	t.Run("should update and delete in a table of every shape, as SQLite does, by the key and with every row", func(t *testing.T) {
+		for _, s := range shapes() {
+			t.Run(s.String(), func(t *testing.T) {
+				w := newChangeTrio(t, 0, s.create("t"))
+				inserts := func() {
+					for k := 10; k <= 40; k += 10 {
+						var vs []string
+						for p, typ := range s.types {
+							v := literal(typ, k)
+							if s.nullable[p] && k%20 == 0 {
+								v = "null"
+							}
+							vs = append(vs, v)
+						}
+						w.run("insert into t values (" + strings.Join(vs, ", ") + ")")
+					}
+				}
+				inserts()
+				key, keyType := spelledNames[s.key], s.types[s.key]
+				errs := map[string]int{}
+				for p, typ := range s.types {
+					column := spelledNames[p]
+					for _, step := range []struct {
+						src  string
+						args []any
+					}{
+						{src: fmt.Sprintf("update t set %v = %v", column, literal(typ, 15))},
+						{src: fmt.Sprintf("update t set %v = %v where %v = %v", column, literal(typ, 25), key, literal(keyType, 20))},
+						{src: fmt.Sprintf("update t set %v = ? where %v >= ? and %v < ?", column, key, key), args: []any{argument(typ, 35), argument(keyType, 20), argument(keyType, 40)}},
+						{src: fmt.Sprintf("update t set %v = null where %v = %v", column, key, literal(keyType, 30))},
+						{src: fmt.Sprintf("update t set %v = ? where %v > ?", column, key), args: []any{nil, argument(keyType, 90)}},
+						{src: fmt.Sprintf("update t set %v = %v where %v = %v", column, literal(typ, 45), column, literal(typ, 35))},
+						{src: fmt.Sprintf("update t set %v = %v where %v is null", column, literal(typ, 5), column)},
+						{src: fmt.Sprintf("update t set %v = %v where %v >= %v", column, literal(typ, 50), column, literal(typ, 10))},
+						{src: fmt.Sprintf("delete from t where %v = %v", column, literal(typ, 5))},
+						{src: fmt.Sprintf("delete from t where %v < ? and %v is not null", key, column), args: []any{argument(keyType, 20)}},
+					} {
+						if a := w.run(step.src, step.args...); a.err != "" {
+							errs[a.err]++
+						}
+					}
+					inserts()
+				}
+				for _, src := range []string{
+					fmt.Sprintf("update t set %v = %v where %v = %v", key, literal(keyType, 50), key, literal(keyType, 10)),
+					fmt.Sprintf("update t set %v = %v where %v = %v", key, literal(keyType, 20), key, literal(keyType, 30)),
+					fmt.Sprintf("update t set %v = %v where %v >= %v", key, literal(keyType, 60), key, literal(keyType, 20)),
+					fmt.Sprintf("update t set %v = %v where %v > %v", key, literal(keyType, 5), key, literal(keyType, 40)),
+					fmt.Sprintf("update t set %v = %v where %v = %v", key, literal(keyType, 20), key, literal(keyType, 20)),
+					"delete from t where " + key + " > " + literal(keyType, 30),
+					"delete from t",
+				} {
+					if a := w.run(src); a.err != "" {
+						errs[a.err]++
+					}
+				}
+				is.True(t, errs["19/1555: UNIQUE constraint failed: t."+storedNames[s.key]] >= 2, fmt.Sprint(errs))
+				if !slices.Contains(s.nullable, false) || len(s.types) == 2 && slices.Contains(s.nullable, true) {
+					return
+				}
+				is.True(t, errs["19/1299: NOT NULL constraint failed: t."+storedNames[s.key]] >= 1, fmt.Sprint(errs))
+			})
+		}
+	})
+
+	t.Run("should check a text of an update at once, without the database", func(t *testing.T) {
+		is.NotError(t, engine.Check("update t set v = ? where k = ?", 2))
+		is.Error(t, engine.ErrArguments, engine.Check("update t set v = ? where k = ?", 1))
+	})
+}
+
+func TestEngine_delete(t *testing.T) {
+	setup := []string{t3, "insert into t3 values (1, 'a', 1.5)", "insert into t3 values (2, 'b', 2.5)", "insert into t3 values (3, 'c', 3.5)"}
+	cases := []struct {
+		name string
+		src  string
+		args []any
+		want string
+	}{
+		{name: "should delete every row without WHERE, and count each", src: "delete from t3"},
+		{name: "should delete the row of a key", src: "DELETE FROM T3 WHERE V1 = ?", args: []any{int64(2)}},
+		{name: "should delete the rows of a range of the key", src: "delete from t3 where v1 >= 2 and v1 < 9"},
+		{name: "should delete the rows of a WHERE on another column", src: "delete from t3 where v3 > 1.5 and v2 != 'c'"},
+		{name: "should delete no row and count none for a WHERE that holds for none", src: "delete from t3 where v1 > 3"},
+		{name: "should delete no row for a comparison with NULL", src: "delete from t3 where v1 = ?", args: []any{nil}},
+		{name: "should give that there is no table", src: "delete from t4 where x = 1", want: "1/1: no such table: t4"},
+		{name: "should give a column of WHERE that the table does not have", src: "delete from t3 where v1 = 1 and x = 1", want: "1/1: no such column: x"},
+		{name: "should give a column of WHERE in double quotes with the question about quotes", src: `delete from t3 where "X" is null`, want: `1/1: no such column: "X" - should this be a string literal in single-quotes?`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := newChangeTrio(t, 0, setup...)
+			is.Equal(t, c.want, w.run(c.src, c.args...).err)
+		})
+	}
+
+	t.Run("should refuse a value of WHERE of another type than its column, after the errors of the names", func(t *testing.T) {
+		w := newChangeTrio(t, 0, setup...)
+		w.own("not supported", "s4ql: not supported: argument 1, which is a real, compared with the column t3.v1 of type INT", "delete from t3 where v1 = ?", 1.0)
+		is.Equal(t, "1/1: no such column: x", w.run("delete from t3 where v1 = 'a' and x = 1").err)
+	})
+
+	t.Run("should delete any number of rows, and leave none", func(t *testing.T) {
+		w := newChangeTrio(t, 0, t1)
+		for i := range 3000 {
+			w.byKey.exec(fmt.Sprint("insert into t1 values (", i, ")"))
+		}
+		res, err := w.byKey.c.Exec(t.Context(), "delete from t1 where v1 >= 1000")
+		is.NotError(t, err)
+		is.Equal(t, int64(2000), res.Changes)
+		res, err = w.byKey.c.Exec(t.Context(), "delete from t1")
+		is.NotError(t, err)
+		is.Equal(t, int64(1000), res.Changes)
+		is.Equal(t, "t1 (v1 INT): \n", w.byKey.state())
 	})
 }

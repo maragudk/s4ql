@@ -43,6 +43,10 @@ func TestNewPlan(t *testing.T) {
 		{src: "select * from t1 where v1 = 1", want: "query\n  project *\n    filter v1 = 1\n      scan t1\n"},
 		{src: `select v2 from t1 where v1 >= ? and "V1" <> -2.5 and v2 is not null and v1 == ? and v3 is null and v4 < x'00' and v4 > 'a''' and v4 <= null`,
 			want: "query\n  project v2\n    filter v1 >= ?1 and \"V1\" != -2.5 and v2 IS NOT NULL and v1 = ?2 and v3 IS NULL and v4 < x'00' and v4 > 'a''' and v4 <= null\n      scan t1\n"},
+		{src: "update t1 set v2 = 'b', V3 == 2.5", want: "update t1 set v2 = 'b', V3 = 2.5\n  scan t1\n"},
+		{src: `update "T1" set v1 = ?, v2 = null where v1 = ? and v2 is not null`, want: "update \"T1\" set v1 = ?1, v2 = null\n  filter v1 = ?2 and v2 IS NOT NULL\n    scan \"T1\"\n"},
+		{src: "delete from t1", want: "delete from t1\n  scan t1\n"},
+		{src: "DELETE FROM t1 WHERE v1 >= 10 AND v2 < ?", want: "delete from t1\n  filter v1 >= 10 and v2 < ?1\n    scan t1\n"},
 	}
 	for _, c := range cases {
 		t.Run(c.src, func(t *testing.T) {

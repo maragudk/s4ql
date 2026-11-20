@@ -582,7 +582,7 @@ func (y tally) add(scope, src string, got outcome, runs [][]any) {
 // statementKind of src: the kind of the statement of slices 1 and 2 that it is, in lower case and
 // with a parameter if it has one, or "other".
 func statementKind(src string) string {
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	if s == nil {
 		return "other"
 	}
@@ -621,7 +621,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 		}
 		return "ok"
 	}
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	if sel, ok := s.(*stmt.Select); ok {
 		_, columns := p.columnsIn(o, sel.Table.Value)
 		if columns == nil {
@@ -995,7 +995,7 @@ func (p *pair) where(c call, src string) (runner, runner, string) {
 		// The statements of a sql.Conn run in its transaction.
 		return p.s, p.o, t.kind()
 	}
-	if s, _ := checkText(src); s != nil {
+	if s, _ := stmt.Check(src); s != nil {
 		if _, ok := s.(*stmt.Select); ok {
 			return p.s, p.o, "beside a " + t.kind()
 		}
@@ -1317,7 +1317,7 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 	// gives before it binds the arguments, so that it runs there without them, or the outcome of a
 	// statement that s4ql ran, which must have had an argument that s4ql supports for each
 	// parameter in each run, and which runs there with them.
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	byText := err != nil || s == nil
 	mattnRuns := runs
 	if byText {
@@ -1360,12 +1360,12 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 	if !p.pinned {
 		// Through the pool, the count of changes is that of the connection that database/sql takes,
 		// so it is compared only for a statement that sets it. In slice 1 that is an insert.
-		if s, _ := checkText(src); s == nil || fmt.Sprintf("%T", s) != "*stmt.Insert" {
+		if s, _ := stmt.Check(src); s == nil || fmt.Sprintf("%T", s) != "*stmt.Insert" {
 			got.affected, want.affected = "", ""
 		}
 	}
 	if got.full() == want.full() {
-		if s, _ := checkText(src); s != nil && got.failed == "" {
+		if s, _ := stmt.Check(src); s != nil && got.failed == "" {
 			if ct, ok := s.(*stmt.CreateTable); ok {
 				p.created[ct.Table.Value] = true
 			}
@@ -1428,7 +1428,7 @@ func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) 
 func (p *pair) checkNotSupported(src string, c call, supported bool, runs [][]any, got outcome) string {
 	tb := p.tb
 	tb.Helper()
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err == nil && s != nil {
 		return p.checkRefused(src, s, runs, got)
 	}
@@ -1562,23 +1562,10 @@ func converted(a any) any {
 	return a
 }
 
-// checkText src as the driver checks a text at Prepare: as [stmt.Check] does, and with the "not
-// supported" of [engine.Check] for an update or a delete of slice 8, which the pass supports and the
-// engine does not run yet, which the tests take for a text that is not supported.
-func checkText(src string) (stmt.Statement, error) {
-	s, err := stmt.Check(src)
-	if err == nil && s != nil {
-		if err := engine.Check(src, s.Parameters()); errors.Is(err, stmt.ErrNotSupported) {
-			return nil, err
-		}
-	}
-	return s, err
-}
-
 // reaches reports whether s4ql takes src with args to the instance: the text holds a statement that
 // s4ql supports, with one argument for each parameter, each one that s4ql supports.
 func reaches(src string, args []any) bool {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	return err == nil && s != nil && len(args) == s.Parameters() && argumentRefusal(args) == ""
 }
 
@@ -1605,6 +1592,10 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any) string {
 			return ""
 		}
 		table = s.Table
+	case *stmt.Update:
+		table = s.Table
+	case *stmt.Delete:
+		table = s.Table
 	default:
 		return ""
 	}
@@ -1622,8 +1613,27 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any) string {
 		}
 		bound = append(bound, converted(a))
 	}
-	if s, ok := s.(*stmt.Select); ok {
+	switch s := s.(type) {
+	case *stmt.Select:
 		return stmttest.ConditionRule(name, columns, s, bound)
+	case *stmt.Delete:
+		return stmttest.DeleteRule(name, columns, s, bound)
+	case *stmt.Update:
+		if p.tx != nil && p.tx.readOnly {
+			// A read-only transaction refuses the update before it looks at a value of SET.
+			return stmttest.WhereRule(name, columns, s.Where, bound)
+		}
+		return stmttest.UpdateRule(name, columns, s, bound, func() bool {
+			q, args := stmttest.FoundQuery(s.Table, s.Where, bound)
+			rows, err := o.QueryContext(tb.Context(), q, args...)
+			is.NotError(tb, err)
+			defer func() { is.NotError(tb, rows.Close()) }()
+			if rows.Next() {
+				return true
+			}
+			is.NotError(tb, rows.Err())
+			return false
+		})
 	}
 	return stmttest.TypeRule(name, columns, s.(*stmt.Insert), bound)
 }
@@ -2854,9 +2864,12 @@ func TestGenerated(t *testing.T) {
 	// column now and then, which took excusedType up; and whose parameters have arguments that s4ql
 	// does not support now and then, which took excusedArgument up. A select with WHERE fails more
 	// often than one without, so fewer rows are left open in a transaction, which took
-	// excusedRowsOpen down.
+	// excusedRowsOpen down. The engine and the driver of slice 8 took excusedType from 231 to 234:
+	// they run the update of [stmttest.Others], which sets a column to a small integer, and 3 of them
+	// give it to a column of another type, which s4ql's rule refuses. The generator drew as before
+	// then.
 	want := map[string]int{
-		excusedPrepare: 1178, excusedStartedTable: 11, excusedArguments: 411, excusedArgument: 260, excusedType: 231,
+		excusedPrepare: 1178, excusedStartedTable: 11, excusedArguments: 411, excusedArgument: 260, excusedType: 234,
 		excusedLevel: 69, excusedRowsOpen: 24, excusedTxOpen: 24, excusedOutside: 58, excusedQuoted: 69,
 	}
 	kinds := slices.Collect(maps.Keys(want))

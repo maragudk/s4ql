@@ -532,11 +532,11 @@ internal/core/tx.go Tx.touch swap arguments: fmt.Sprint("s4ql_touched_", tx.temp
 	The names of the temporary tables need only differ from each other, which they still do.
 internal/core/tx.go Tx.touch swap arguments: fmt.Sprint("s4ql_existed_", tx.temps) => fmt.Sprint(tx.temps, "s4ql_existed_")
 	The names of the temporary tables need only differ from each other, which they still do.
-internal/core/tx.go Tx.touch condition: err != nil => false
+internal/core/tx.go Tx.createKeyTable condition: err != nil => false
 	No test can reach it: typeSQL fails only for a type that the table, which the core checked when it was created or loaded, cannot have.
-internal/core/tx.go Tx.touch remove statement: return err =>
+internal/core/tx.go Tx.createKeyTable remove statement: return err =>
 	No test can reach it: typeSQL fails only for a type that the table, which the core checked when it was created or loaded, cannot have.
-internal/core/tx.go Tx.touch condition: err != nil => false #3
+internal/core/tx.go Tx.touch condition: err != nil => false #2
 	count gives 0 with its error, so the test of first that follows gives back the error.
 internal/core/tx.go Tx.spoolTouched condition: err != nil => false
 	No test can reach it: the transaction has read the table, so lookUp finds it in the map of the connection and reads nothing.
@@ -658,9 +658,9 @@ internal/engine/operator.go keyAccess condition: c.op != stmt.OpIsNull => true
 	A test for NULL has no value, and HasNull of a nil value is false, so only a comparison with NULL gives no row either way.
 internal/engine/operator.go keyAccess condition: c.op != stmt.OpIsNotNull => true
 	A test for NULL has no value, and HasNull of a nil value is false, so only a comparison with NULL gives no row either way.
-internal/engine/operator.go build.filter condition: err != nil => false #4
+internal/engine/operator.go build.bind condition: err != nil => false #4
 	checkType has refused every value that is not NULL and of another type than its column, and keyAccess gives no row for NULL before it compares, so tighter compares only values of one kind and keyAccess never fails here.
-internal/engine/operator.go build.filter remove statement: return nil, err => #4
+internal/engine/operator.go build.bind remove statement: return nil, err => #4
 	checkType has refused every value that is not NULL and of another type than its column, and keyAccess gives no row for NULL before it compares, so tighter compares only values of one kind and keyAccess never fails here.
 
 # The planted bug openBound of slice 7. Its scan gets a bound without a value only from keyAccess,

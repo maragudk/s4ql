@@ -135,7 +135,103 @@ func ConditionRule(table string, columns []TableColumn, s *stmt.Select, args []a
 	if _, missing := MissingColumn(columns, s); missing || len(args) != s.Parameters() {
 		return ""
 	}
-	for _, c := range s.Where {
+	return WhereRule(table, columns, s.Where, args)
+}
+
+// UpdateRule of the update u of the table of the name, as the table stores it, and of the columns,
+// in the order of the table, with the arguments args as for [TypeRule]: s4ql's "not supported" for
+// the first condition of its WHERE whose value is of another type than its column, as for a select,
+// and then for the first column of its SET, in the order of the table, whose value is of another type
+// than the column, as for an insert. found reports whether the WHERE holds for a row of the table,
+// and the rule asks it only when SET gives NULL to a column that does not take it, which gets SQLite's
+// `NOT NULL constraint failed` first when the update finds a row. The rule is "" where every value
+// has the type of its column, and where SQLite gives its own error first: for a column of SET, and
+// then of WHERE, that the table does not have, and for another number of arguments than parameters.
+func UpdateRule(table string, columns []TableColumn, u *stmt.Update, args []any, found func() bool) string {
+	if len(args) != u.Parameters() {
+		return ""
+	}
+	byPosition := map[int]int{}
+	for i, a := range u.Set {
+		position := ColumnOf(columns, a.Column)
+		if position < 0 {
+			return ""
+		}
+		byPosition[position] = i
+	}
+	if _, missing := MissingColumn(columns, &stmt.Select{Where: u.Where}); missing {
+		return ""
+	}
+	if rule := WhereRule(table, columns, u.Where, args); rule != "" {
+		return rule
+	}
+	for position, c := range columns {
+		if i, ok := byPosition[position]; ok && !takesNull(c) && isNull(u.Set[i].Value, args) {
+			if found() {
+				return ""
+			}
+			break
+		}
+	}
+	for position, c := range columns {
+		i, ok := byPosition[position]
+		if !ok {
+			continue
+		}
+		if kind, what := ValueKind(u.Set[i].Value, args); kind != "null" && columnHolds[c.Type] != kind {
+			return fmt.Sprintf("s4ql: not supported: %v for the column %v.%v of type %v", what, table, c.Name, c.Type)
+		}
+	}
+	return ""
+}
+
+// DeleteRule of the delete d of the table of the name and the columns, with the arguments args, as
+// [ConditionRule] gives it for a select with the same WHERE.
+func DeleteRule(table string, columns []TableColumn, d *stmt.Delete, args []any) string {
+	return ConditionRule(table, columns, &stmt.Select{Table: d.Table, Where: d.Where}, args)
+}
+
+// FoundQuery of the conditions of a WHERE on the table: a select that gives a row if the conditions
+// hold for a row of the table, and the arguments of its parameters, each as SQLite binds it, from the
+// literals of the conditions and from args for their parameters, as the statement of the conditions
+// numbers them.
+func FoundQuery(table stmt.Name, where []stmt.Condition, args []any) (string, []any) {
+	var conditions []string
+	var bound []any
+	for _, c := range where {
+		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull {
+			conditions = append(conditions, Quote(c.Column.Value)+" "+c.Operator.String())
+			continue
+		}
+		conditions = append(conditions, Quote(c.Column.Value)+" "+c.Operator.String()+" ?")
+		switch v := c.Value.Value.(type) {
+		case stmt.Integer:
+			bound = append(bound, int64(v))
+		case stmt.Real:
+			bound = append(bound, float64(v))
+		case stmt.Text:
+			bound = append(bound, string(v))
+		case stmt.Blob:
+			bound = append(bound, []byte(v))
+		case stmt.Null:
+			bound = append(bound, nil)
+		default:
+			bound = append(bound, args[c.Value.Parameter-1])
+		}
+	}
+	src := "select 1 from " + Quote(table.Value)
+	if len(conditions) > 0 {
+		src += " where " + strings.Join(conditions, " and ")
+	}
+	return src + " limit 1", bound
+}
+
+// WhereRule of the conditions of a WHERE of the table of the name and the columns, which the table
+// has, with the arguments args of the statement, by the numbers of the parameters: s4ql's "not
+// supported" for the first condition, in the order of the text, whose value is of another type than
+// its column, as [ConditionRule] gives it, or "".
+func WhereRule(table string, columns []TableColumn, where []stmt.Condition, args []any) string {
+	for _, c := range where {
 		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull {
 			continue
 		}
