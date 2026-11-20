@@ -358,6 +358,21 @@ func TestEngine_reading(t *testing.T) {
 		is.Equal(t, first, directions(e, true, 64), "a statement that is no query takes no draw of the seed")
 	})
 
+	t.Run("should draw the direction of the n-th query of a seed by the low bit of the n-th number of splitmix64 from that seed", func(t *testing.T) {
+		// splitmix64 as Sebastiano Vigna gives it, at https://prng.di.unimi.it/splitmix64.c.
+		state := uint64(3)
+		var want strings.Builder
+		for range 64 {
+			state += 0x9e3779b97f4a7c15
+			z := state
+			z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9
+			z = (z ^ (z >> 27)) * 0x94d049bb133111eb
+			want.WriteString(map[uint64]string{0: "f", 1: "b"}[(z^(z>>31))&1])
+		}
+
+		is.Equal(t, want.String(), directions(newEngine(nil, &drawHost{draws: []uint64{1}}, Options{Directions: new(uint64(3))}), true, 64))
+	})
+
 	t.Run("should take the direction of a path that has one, for a query and for another statement, and draw nothing", func(t *testing.T) {
 		h := &drawHost{draws: []uint64{1}}
 		e := newEngine(nil, h, Options{path: path{direction: directionBackward}})

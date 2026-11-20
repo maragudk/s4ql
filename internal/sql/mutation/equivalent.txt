@@ -744,3 +744,9 @@ internal/core/index.go indexKey condition: columns != nil => true
 	The planted bug shortKey: the key of the primary key is empty too, another wrong key of a scan, and the bug is found by it.
 internal/core/index.go indexKey operator: columns != nil => columns == nil
 	The planted bug shortKey: the key of the primary key is empty and that of an index is whole, another wrong key of a scan, and the bug is found by it.
+internal/core/index.go conn.loadIndexes operator: s.ColumnText(2) == "pk" && schemaless && primary == "" => s.ColumnText(2) == "pk" && schemaless || primary == ""
+	The index of the primary key of a table without a rowid is the one index of pragma_index_list without a row in sqlite_schema, which a UNIQUE constraint's index has, so it is the first row in the order by rowid, where NULL comes first, and the first row is the one for which primary is empty.
+internal/core/index.go conn.loadIndexes condition: s.ColumnText(2) == "pk" && schemaless => true
+	The index of the primary key of a table without a rowid is the one index of pragma_index_list without a row in sqlite_schema, which a UNIQUE constraint's index has, so it is the first row in the order by rowid, where NULL comes first, and the first row is the one for which primary is empty.
+internal/core/index.go conn.loadIndexes condition: primary == "" => true
+	A table has one index of the origin pk, so primary is empty when it comes.
