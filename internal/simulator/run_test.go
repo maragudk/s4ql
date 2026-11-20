@@ -372,8 +372,13 @@ func TestRun_actions(t *testing.T) {
 			key := arg(r.Args[0])
 			switch r.Expect {
 			case "row":
-				is.True(t, len(r.Keys) == 1 && fmt.Sprint(r.Keys[0]) == key, fmt.Sprint("a read of ", key, " gives ", r.Keys))
-				found++
+				// A delete of the key can start while the read runs, and commit before the read
+				// fixes its state.
+				gives := len(r.Keys) == 1 && fmt.Sprint(r.Keys[0]) == key
+				is.True(t, gives || len(r.Keys) == 0 && deleted[int64(r.Args[0].(float64))], fmt.Sprint("a read of ", key, " gives ", r.Keys))
+				if gives {
+					found++
+				}
 			case "none":
 				is.True(t, len(r.Keys) == 0 && deleted[int64(r.Args[0].(float64))], fmt.Sprint("a read of the deleted ", key, " gives ", r.Keys))
 				gone++
