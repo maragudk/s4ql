@@ -17,16 +17,19 @@
 //	alarm      the checker finds a violation that the design does not excuse
 //
 // Every figure goes through one master gain. One figure is one voice, and at most VOICES sound at
-// once, so the peak of the mix stays below VOICES × MASTER, about 0.054, or −25 dBFS, and with the
-// alarm, which is louder, about 0.086, or −21 dBFS. A figure of a kind is dropped within SPACING of
-// the start of the one before it, or while that one still sounds, so that a kind never sounds over
-// itself, and every figure but the alarm beyond PER_SECOND a second, so that turbo and a burst of
-// events do not become a buzz. Figures that fall together start STAGGER apart instead of as a chord.
+// once. The site check renders a burst through player offline and holds its peak to at most 0.06,
+// or −24 dBFS, and with the alarm, which is louder, to at most 0.1, or −20 dBFS. A figure of a kind
+// is dropped within SPACING of the start of the one before it, or while that one still sounds, so
+// that a kind never sounds over itself, and every figure but the alarm beyond PER_SECOND a second,
+// so that turbo and a burst of events do not become a buzz. Figures that fall together start
+// STAGGER apart instead of as a chord.
 //
 // The page calls hear with each event of the engine, and whether the event is live: while playback
-// plays, or in the answer to the visitor's own action. A paused page sounds only what the visitor
+// plays, or in the answer to the visitor's own action, but for the later steps of a reset of the
+// clocks, which the page composes of several actions. A paused page sounds only what the visitor
 // does. hear follows the events also while sound is off, so that it knows whether the requests fail
-// and who holds the lease when sound is turned on.
+// and who holds the lease when sound is turned on. A fault in the sound turns it off for good, and
+// never reaches the page.
 //
 // player plays into any BaseAudioContext, so a check can render the figures into an
 // OfflineAudioContext with the code path of the page.
@@ -63,6 +66,7 @@ function figure(ctx, dest, kind, at) {
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
   osc.type = "square";
+  gain.gain.value = 0; // also before at, so that a fade before the start holds 0
   gain.gain.setValueAtTime(0, at);
   let t = at;
   for (const [hz, ms] of f.notes) {
@@ -85,22 +89,26 @@ function figure(ctx, dest, kind, at) {
 // length of the figure of the kind, in s.
 const length = (kind) => FIGURES[kind].notes.reduce((s, [, ms]) => s + ms / 1000 + GAP, 0);
 
-// fade a voice out from the time at, in RELEASE, and stop it.
+// fade a voice out from the time at, in about RELEASE, and stop it. A browser without
+// cancelAndHoldAtTime, such as Firefox, glides to 0 from the value that the voice has at at.
 function fade(v, at) {
   if (v.end <= at) return;
   const g = v.gain.gain;
-  if (g.cancelAndHoldAtTime) g.cancelAndHoldAtTime(at);
-  else {
+  let end = at + RELEASE;
+  if (g.cancelAndHoldAtTime) {
+    g.cancelAndHoldAtTime(at);
+    g.linearRampToValueAtTime(0, end);
+  } else {
     g.cancelScheduledValues(at);
-    g.setValueAtTime(g.value, at);
+    g.setTargetAtTime(0, at, RELEASE / 4);
+    end = at + 2 * RELEASE;
   }
-  g.linearRampToValueAtTime(0, at + RELEASE);
   try {
-    v.osc.stop(at + RELEASE);
+    v.osc.stop(end);
   } catch {
     // It has stopped already.
   }
-  v.end = at + RELEASE;
+  v.end = end;
 }
 
 // player of figures into dest of the context, with the limits of the package comment. play gives
@@ -127,10 +135,14 @@ export function player(ctx, dest) {
       latest = at;
       return true;
     },
+    // silence forgets the figures too, so that the next figure plays whatever was cut.
     silence() {
       const at = ctx.currentTime;
       for (const v of voices) fade(v, at);
       voices.length = 0;
+      last.clear();
+      starts.length = 0;
+      latest = -Infinity;
     },
   };
 }
@@ -204,19 +216,24 @@ export function listener() {
 }
 
 // What the page's sound has done, for a check: the figures played and dropped by kind, and the
-// latest figures played, each with its kind and its start in the context's time.
+// latest figures played, each with its kind and the context's time when it was asked for, which
+// can be up to some STAGGER before it starts.
 export const stats = { played: {}, dropped: {}, recent: [] };
 
 let ctx = null;
 let out = null; // the player of the page
 let on = false;
+let toggle = null; // the button Sound
 const classify = listener();
 
 // hear the event of the engine, and play its figure if sound is on and the event is live.
 export function hear(e, live) {
-  const kind = classify(e);
-  if (!kind || !on || !live || !out) return;
-  play(kind);
+  try {
+    const kind = classify(e);
+    if (kind && on && live && out) play(kind);
+  } catch {
+    broken();
+  }
 }
 
 function play(kind) {
@@ -227,48 +244,59 @@ function play(kind) {
   } else stats.dropped[kind] = (stats.dropped[kind] || 0) + 1;
 }
 
-// wire the toggle Sound, a button with aria-pressed. Its data-audio says "none" until the first click
-// that turns sound on creates the AudioContext, then the state of the context, and "unavailable" if
-// the browser has none or it fails, which also disables the toggle.
+// broken turns sound off for good, after a fault of the browser's audio.
+function broken() {
+  on = false;
+  out = null;
+  if (ctx) {
+    const c = ctx;
+    Promise.resolve().then(() => c.close()).catch(() => {});
+  }
+  if (toggle) {
+    toggle.disabled = true;
+    toggle.setAttribute("aria-pressed", "false");
+    toggle.dataset.audio = "unavailable";
+  }
+}
+
+// wire the toggle Sound, a button with aria-pressed, which the HTML disables until this module has
+// loaded. Its data-audio says "none" until the first click that turns sound on creates the
+// AudioContext, then the state of the context, and "unavailable" if the browser has none or it
+// fails, which also disables the toggle.
 export function wire(button) {
   if (!button) return;
-  const AC = window.AudioContext || window.webkitAudioContext;
-  const unavailable = () => {
-    on = false;
-    button.disabled = true;
-    button.setAttribute("aria-pressed", "false");
-    button.dataset.audio = "unavailable";
-  };
+  toggle = button;
   button.dataset.audio = "none";
-  if (typeof AC !== "function") return unavailable();
+  if (typeof window.AudioContext !== "function") return broken();
+  button.disabled = false;
   button.addEventListener("click", () => {
-    if (!ctx) {
-      try {
-        ctx = new AC();
+    try {
+      if (!ctx) {
+        ctx = new AudioContext();
         const master = ctx.createGain();
         master.gain.value = MASTER;
         master.connect(ctx.destination);
         out = player(ctx, master);
         ctx.addEventListener("statechange", () => {
-          if (button.dataset.audio !== "unavailable") button.dataset.audio = ctx.state;
+          if (out) button.dataset.audio = ctx.state;
         });
-      } catch {
-        ctx = null;
-        return unavailable();
       }
-    }
-    on = !on;
-    button.setAttribute("aria-pressed", String(on));
-    button.dataset.audio = ctx.state;
-    if (on) {
-      ctx.resume().catch(() => {});
-      play("blip");
-    } else {
-      out.silence();
-      // Suspend once the fades have ended, unless sound is on again by then.
-      setTimeout(() => {
-        if (!on) ctx.suspend().catch(() => {});
-      }, 50);
+      if (!out) return;
+      on = !on;
+      button.setAttribute("aria-pressed", String(on));
+      button.dataset.audio = ctx.state;
+      if (on) {
+        ctx.resume().catch(broken);
+        play("blip");
+      } else {
+        out.silence();
+        // Suspend once the fades have ended, unless sound is on again by then.
+        setTimeout(() => {
+          if (!on && out) ctx.suspend().catch(() => {});
+        }, 50);
+      }
+    } catch {
+      broken();
     }
   });
 }
