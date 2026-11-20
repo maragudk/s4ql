@@ -265,8 +265,11 @@ const (
 type direction int
 
 const (
+	// directionDrawn leaves the direction to the engine, which draws it for a query.
 	directionDrawn direction = iota
+	// directionForward reads in the order of the key.
 	directionForward
+	// directionBackward reads in the reverse of the order of the key.
 	directionBackward
 )
 

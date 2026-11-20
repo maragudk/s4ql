@@ -76,12 +76,12 @@ func (e *Engine) SetPath(p Path) {
 // Seed makes an engine of the options o draw the directions of the scans of its queries from the
 // sequence of the seed, and not from its host.
 func (o *Options) Seed(seed uint64) {
-	o.seed, o.seeded = seed, true
+	o.Directions = &seed
 }
 
 // Seeded reports whether the options o have a seed, as [Options.Seed] gives them one.
 func (o Options) Seeded() bool {
-	return o.seeded
+	return o.Directions != nil
 }
 
 // SetSeed makes the engine e draw the directions of the scans of its queries from the start of the

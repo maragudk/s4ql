@@ -45,6 +45,8 @@ type source interface {
 	rowSource
 	// columns of each row.
 	columns() []Column
+	// scanned is the scan that reads the rows of the table that the rows of the source come from.
+	scanned() *scan
 }
 
 // sink of a statement that changes the database.
@@ -64,6 +66,10 @@ type scan struct {
 	table *s4qlpb.CreateTable
 	// access is how the scan reads the rows of the table.
 	access access
+}
+
+func (s *scan) scanned() *scan {
+	return s
 }
 
 func (s *scan) columns() []Column {
@@ -135,6 +141,10 @@ type project struct {
 	positions []int
 }
 
+func (p *project) scanned() *scan {
+	return p.src.scanned()
+}
+
 func (p *project) columns() []Column {
 	all := p.src.columns()
 	cs := make([]Column, len(p.positions))
@@ -179,6 +189,10 @@ type condition struct {
 
 func (f *filter) columns() []Column {
 	return f.src.columns()
+}
+
+func (f *filter) scanned() *scan {
+	return f.src.scanned()
 }
 
 func (f *filter) rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {

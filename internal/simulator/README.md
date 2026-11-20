@@ -130,7 +130,7 @@ Each process runs callers, as an application would.
 
 A caller repeats two steps. It pauses for 1 ms and a time from 0 to `think`, from the seed. Then it makes one call, a write or a read by `writes`. While the workload is off it makes no call, and looks again after a second.
 
-Each call is SQL, on a connection of its own, `engine.Conn`, of the engine of its process. Each process has an engine, `engine.New` on its database and its host, which it makes when it opens its database. The table is `barcodes`:
+Each call is SQL, on a connection of its own, `engine.Conn`, of the engine of its process. Each process has an engine, `engine.New` on its database and its host, which it makes when it opens its database. The engine draws the directions in which its queries read from a seed of its own, `engine.Options.Directions`, which the seed of the run, the process, and the number of its engine fix, so the draws of the scheduler are those of the callers and the faults alone. The table is `barcodes`:
 
 ```sql
 create table barcodes (code integer primary key) strict, without rowid

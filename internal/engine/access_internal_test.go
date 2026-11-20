@@ -335,13 +335,13 @@ func TestEngine_reading(t *testing.T) {
 
 	t.Run("should draw the directions from its seed, and nothing from the host, the same for the same seed, both ways, and forward for a statement that is no query", func(t *testing.T) {
 		h := &drawHost{draws: []uint64{1}}
-		first := directions(newEngine(nil, h, Options{seed: 3, seeded: true}), true, 64)
+		first := directions(newEngine(nil, h, Options{Directions: new(uint64(3))}), true, 64)
 
-		is.Equal(t, first, directions(newEngine(nil, h, Options{seed: 3, seeded: true}), true, 64))
-		is.True(t, first != directions(newEngine(nil, h, Options{seed: 4, seeded: true}), true, 64))
+		is.Equal(t, first, directions(newEngine(nil, h, Options{Directions: new(uint64(3))}), true, 64))
+		is.True(t, first != directions(newEngine(nil, h, Options{Directions: new(uint64(4))}), true, 64))
 		is.True(t, strings.Count(first, "f") >= 16 && strings.Count(first, "b") >= 16, first)
 		is.Equal(t, 0, h.drawn)
-		e := newEngine(nil, h, Options{seed: 3, seeded: true})
+		e := newEngine(nil, h, Options{Directions: new(uint64(3))})
 		is.Equal(t, strings.Repeat("f", 8), directions(e, false, 8))
 		is.Equal(t, first, directions(e, true, 64), "a statement that is no query takes no draw of the seed")
 	})

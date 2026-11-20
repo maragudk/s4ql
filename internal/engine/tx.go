@@ -310,9 +310,11 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 	if t.write == nil {
 		// SQLite looks the names up when it prepares the statement, and refuses the write when it
 		// steps it.
-		if _, err := buildSink(ctx, readOnly{t.read}, p, args, bugs{}, c.e.db.lengthLimit(), c.e.reading(false)); err != nil {
+		s, err := buildSink(ctx, readOnly{t.read}, p, args, bugs{}, c.e.db.lengthLimit(), c.e.reading(false))
+		if err != nil {
 			return Result{}, err
 		}
+		r.reads(t.read, s)
 		return Result{SetsChanges: setsChanges(p)}, readOnlyDatabase()
 	}
 

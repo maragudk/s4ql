@@ -107,7 +107,8 @@ type Query struct {
 	Root Node
 }
 
-// Scan gives every row of a table, in the order of its primary key.
+// Scan gives every row of a table, forward or backward in the order of its primary key, or of the
+// index that the engine reads it by for the conditions of a [Filter] above it.
 type Scan struct {
 	Table stmt.Name
 }

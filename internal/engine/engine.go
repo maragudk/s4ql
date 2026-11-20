@@ -72,11 +72,12 @@ type Options struct {
 	// path makes every statement read the rows of its table by one access, where the rules would
 	// choose one. The tests of this package set it, to show that every access gives the same rows.
 	path path
-	// seed, if seeded, is the seed of the directions of the scans of the queries, which the engine
-	// otherwise draws from the host. The tests of this package set it, so that the order of the rows
-	// of a run can be had again.
-	seed   uint64
-	seeded bool
+	// Directions, if not nil, is the seed of the directions in which the queries of the engine read
+	// their rows, forward or backward: see [Engine.reading]. With it the engine draws nothing from its
+	// host for a query, and two engines with one seed read their n-th queries in the same direction,
+	// so a run that must be had again from a seed, such as a simulation or a test, sets it. The
+	// default draws each direction from the host.
+	Directions *uint64
 }
 
 // Engine runs statements on one database, each on a [Conn] of the engine. It is safe for concurrent
@@ -106,16 +107,19 @@ func newEngine(d database, h host.Host, options Options) *Engine {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	e := &Engine{db: d, host: h, log: log, bugs: options.bugs, path: options.path, seeded: options.seeded}
-	e.draws.Store(options.seed)
+	e := &Engine{db: d, host: h, log: log, bugs: options.bugs, path: options.path}
+	if options.Directions != nil {
+		e.seeded = true
+		e.draws.Store(*options.Directions)
+	}
 	return e
 }
 
 // reading of the next statement of the engine: by the path that the tests force, if any, and, for a
 // query, forward or backward as the engine draws it, one draw for each query. The draw comes from the
-// host, which is unpredictable in production and follows the seed of a simulation, or, for an engine
-// with a seed of its own, from the sequence of that seed, which is splitmix64, so that the n-th query
-// of two engines with one seed reads in the same direction. A path with a direction draws nothing.
+// host, or, for an engine with a seed of its own, [Options.Directions], from the sequence of that
+// seed, which is splitmix64, so that the n-th query of two engines with one seed reads in the same
+// direction. A path with a direction draws nothing.
 func (e *Engine) reading(query bool) reading {
 	how := reading{path: e.path}
 	switch {
@@ -254,8 +258,10 @@ func (c *Conn) begin(ctx context.Context) (writeTx, error) {
 // its select list, and then for one of its conditions, as SQLite looks them up, with `string or blob
 // too big` for a value of a condition that is longer than the limit, and with "not supported" for the
 // first value of a condition, in the order of the text, that is not NULL and is of another type than
-// its column. It gives the rows of the table for which every condition is true, in the order of the
-// key, with SQLite's comparisons; a comparison with NULL is never true.
+// its column. It gives the rows of the table for which every condition is true, with SQLite's
+// comparisons; a comparison with NULL is never true. The rows come in the order of the key of the
+// access that the engine chooses for the conditions, the primary key or an index, or in its reverse,
+// as the engine draws it for each query: SQLite leaves the order unspecified.
 //
 // An update and a delete change the rows that a select with their WHERE would give, each once, in
 // the order of the key, and count each, also a row whose values an update does not change. They

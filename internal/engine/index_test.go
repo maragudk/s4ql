@@ -456,6 +456,14 @@ func TestEngine_indexes(t *testing.T) {
 		is.Equal(t, "drop_index", e[engine.AttrKind])
 		is.Equal(t, "nosuch", e[engine.AttrIndex])
 		is.Equal(t, "sqlite_error", e[engine.AttrOutcome])
+
+		// A delete that a read-only transaction refuses has chosen its access, and read nothing.
+		is.NotError(t, i.c.BeginReadOnly(t.Context()))
+		_, err = i.c.Exec(t.Context(), "delete from t where k = 1")
+		is.True(t, err != nil)
+		e, _ = h.last(t)
+		is.Equal(t, "delete primary_key 0 sqlite_error", fmt.Sprint(e[engine.AttrKind], " ", e[engine.AttrAccess], " ", e[engine.AttrRowsRead], " ", e[engine.AttrOutcome]))
+		is.NotError(t, i.c.Rollback(t.Context()))
 	})
 
 	t.Run("should use an index that another instance created, after a replay of the log, with the same choice of access", func(t *testing.T) {

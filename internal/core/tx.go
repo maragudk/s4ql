@@ -54,7 +54,7 @@ type Tx struct {
 	droppedIndexes []string
 	createdIndexes map[string]bool
 
-	// read counts the rows that the transaction has read from the cache for its caller.
+	// read counts the rows that the scans and the gets of the transaction have read from the cache.
 	read int64
 
 	// saved is the state at the savepoint that is open, or nil.

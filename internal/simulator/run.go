@@ -211,8 +211,10 @@ type process struct {
 
 	mu sync.Mutex
 	db *core.DB
-	// eng is the engine of SQL on db, through which the calls go.
-	eng *engine.Engine
+	// eng is the engine of SQL on db, through which the calls go, and engines counts the engines
+	// that the process has had.
+	eng     *engine.Engine
+	engines int
 	// shut is the last database of the process whose close has ended.
 	shut   *core.DB
 	holder string
@@ -408,7 +410,17 @@ func (r *run) open(ctx context.Context, p *process) {
 		r.rec.add(Event{Kind: "process", What: "open_failed", Instance: p.i.name, Process: p.name, Error: err.Error()})
 		return
 	}
-	eng := engine.New(d, procHost{Instance: p.inst, r: r, p: p}, engine.Options{Logger: slog.New(positionHandler{})})
+	// The engine draws the directions in which its queries read from a seed of its own, which the seed
+	// of the run, the process, and the number of its engine fix, so that the draws of the scheduler
+	// are those of the callers and the faults alone.
+	p.mu.Lock()
+	p.engines++
+	directions := r.req.Seed*1_000_003 + uint64(p.engines)*7919
+	p.mu.Unlock()
+	for _, b := range []byte(p.i.name + "/" + p.name) {
+		directions = directions*31 + uint64(b)
+	}
+	eng := engine.New(d, procHost{Instance: p.inst, r: r, p: p}, engine.Options{Logger: slog.New(positionHandler{}), Directions: &directions})
 	p.mu.Lock()
 	p.db, p.eng, p.failed = d, eng, false
 	holder := p.holder

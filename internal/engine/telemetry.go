@@ -210,24 +210,17 @@ func (r *report) reads(rd reader, built any) {
 }
 
 // scanOf the operators built, a source or a sink: the scan that reads the rows of the table of a
-// select, an update, or a delete, or nil for a statement that has none.
+// select, an update, or a delete, or nil for a statement that reads no rows of a table.
 func scanOf(built any) *scan {
-	for {
-		switch o := built.(type) {
-		case *project:
-			built = o.src
-		case *filter:
-			built = o.src
-		case *update:
-			built = o.src
-		case *remove:
-			built = o.src
-		case *scan:
-			return o
-		default:
-			return nil
-		}
+	switch o := built.(type) {
+	case source:
+		return o.scanned()
+	case *update:
+		return o.src.scanned()
+	case *remove:
+		return o.src.scanned()
 	}
+	return nil
 }
 
 // panicked ends the statement with [errPanicked], unless its event is logged already: then the
