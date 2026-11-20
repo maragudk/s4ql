@@ -395,8 +395,8 @@ var inverses = map[stmt.Operator]stmt.Operator{
 // lower first in three ranges of four where they compare, and from none to two more conditions; or
 // else one or two conditions, or one time in eight from four to seven. The column of each such
 // condition is that of an earlier condition one time in four, one that the shape does not have one
-// time in ten, which can be in double quotes, and otherwise the key one time in three and another
-// column of the shape else. Its operator is IS NULL or IS NOT NULL one time in twelve each, and
+// time in ten, which can be in double quotes, and otherwise the key one time in three and any column
+// of the shape, the key too, else. Its operator is IS NULL or IS NOT NULL one time in twelve each, and
 // otherwise a comparison, with a value as [Sequence.conditionValue] draws it. One WHERE in eight then
 // has one more condition, the inverse of one of its conditions, which contradicts it, and for a
 // bound of the key leaves the range of the two without a key.
