@@ -167,7 +167,7 @@ func TestConn_Begin(t *testing.T) {
 				{src: t1, want: "1/1: table t1 already exists"},
 				{src: "drop table t2", want: "1/1: no such table: t2"},
 				{src: "selec * from t1", want: `1/1: near "selec": syntax error`},
-				{src: "select * from t1 where v1 = 1", want: "not supported"},
+				{src: "select * from t1 order by v1", want: "not supported"},
 				{src: " ; ", want: "no statement"},
 				{src: insertP, args: []any{3, 4}, want: "wrong arguments"},
 				{src: "insert into t1 (v1) values (3)"},
@@ -371,6 +371,15 @@ func TestConn_differential(t *testing.T) {
 		txDifferential(t, 9_000_000+s, 60, y)
 	}
 	t.Logf("%v sequences in transactions: %v", n, y)
+	// The selects with WHERE that [pair.bothWays] reads both ways, of which the run gave 438, 96 of
+	// them in a read-only transaction, on 2026-11-20: a third of each.
+	if !slow() {
+		for kind, least := range map[string]int{"read both ways": 146, "read both ways in a read-only transaction": 32} {
+			if y["reached: "+kind] < least {
+				t.Errorf("the run reaches %q %v times, and at least %v were expected", kind, y["reached: "+kind], least)
+			}
+		}
+	}
 }
 
 // txDifferential runs n statements of the sequence of seed, in transactions, as

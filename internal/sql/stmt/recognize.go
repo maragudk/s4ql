@@ -310,17 +310,25 @@ func (r *recognizer) insert(c *ast.Insert) *Insert {
 		if i > 0 {
 			r.take(row.Commas[i-1])
 		}
-		var v Term
-		if p, ok := e.(*ast.Variable); ok {
-			v.Parameter, v.Span = r.parameter(p, parameters)
+		v := r.term(e, parameters)
+		if v.Parameter > 0 {
 			parameters = v.Parameter
-		} else {
-			v.Value, v.Span = r.literal(e)
 		}
 		s.Values = append(s.Values, v)
 	}
 	r.take(row.RParen)
 	return s
+}
+
+// term e, after before parameters of the statement: a parameter, or a literal.
+func (r *recognizer) term(e ast.Expr, before int) Term {
+	var v Term
+	if p, ok := e.(*ast.Variable); ok {
+		v.Parameter, v.Span = r.parameter(p, before)
+	} else {
+		v.Value, v.Span = r.literal(e)
+	}
+	return v
 }
 
 // maxParameters of a statement in SQLite, SQLITE_MAX_VARIABLE_NUMBER, which the binding in
@@ -499,7 +507,186 @@ func (r *recognizer) selectCmd(c *ast.SelectCmd) *Select {
 		r.unexpected()
 	}
 	r.accept(source)
-	return &Select{Table: r.tableName(source.Name), Columns: columns}
+	s := &Select{Table: r.tableName(source.Name), Columns: columns}
+	if core.Where != nil {
+		r.accept(core.Where)
+		r.take(core.Where.Where)
+		s.Where = r.conditions(core.Where.X)
+	}
+	return s
+}
+
+// conditions of a WHERE clause, the expression e: one condition, or conditions joined by AND, in the
+// order of the text. A ? among them has the number after that of the ? before it.
+func (r *recognizer) conditions(e ast.Expr) []Condition {
+	// OR binds less tightly than AND, so the conditions before the first OR are the leftmost operand of
+	// the ORs; that OR comes after them. The ORs are accepted, as the ANDs are below, so that a token
+	// of those conditions that stops the recognizer is named for what holds it.
+	or := false
+	for isBinary(e, token.Or) {
+		or = true
+		r.accept(e)
+		e = e.(*ast.Binary).X
+	}
+	// AND groups to the left, so `a AND b AND c` is `(a AND b) AND c`: the ANDs are a spine down the
+	// left, whose last holds the first condition. They are all accepted before the first condition is
+	// read, so that a token that stops the recognizer there is named for what holds it.
+	var ands []*ast.Binary
+	for isBinary(e, token.And) {
+		b := e.(*ast.Binary)
+		r.accept(b)
+		ands = append(ands, b)
+		e = b.X
+	}
+	parameters := 0
+	condition := func(e ast.Expr) Condition {
+		c := r.condition(e, parameters)
+		if c.Value.Parameter > 0 {
+			parameters = c.Value.Parameter
+		}
+		return c
+	}
+	conditions := []Condition{condition(e)}
+	height := depth(e)
+	for i := len(ands) - 1; i >= 0; i-- {
+		// SQLite gives an AND the depth of its deeper operand and one more, and refuses an expression
+		// deeper than maxDepth while it parses, whatever the database holds. A condition is at most 3
+		// deep, so the depth of the AND is height+1 when that can be too much.
+		if height+1 > maxDepth {
+			r.reject("WHERE deeper than SQLite's limit")
+		}
+		r.take(ands[i].Op)
+		conditions = append(conditions, condition(ands[i].Y))
+		height = max(height, depth(ands[i].Y)) + 1
+	}
+	if or {
+		r.reject("OR")
+	}
+	return conditions
+}
+
+// maxDepth of an expression in SQLite, SQLITE_MAX_EXPR_DEPTH, which the binding in internal/sqlite
+// keeps at its default.
+const maxDepth = 1000
+
+// depth of the condition e, which the recognizer took, as SQLite counts it: a name, a literal, and a
+// parameter are 1 deep, and an operator is one deeper than its deepest operand, a sign too.
+func depth(e ast.Expr) int {
+	if b, ok := e.(*ast.Binary); ok {
+		if _, ok := b.Y.(*ast.Unary); ok {
+			return 3
+		}
+	}
+	return 2
+}
+
+// isBinary reports whether e is the binary operator of the kind k.
+func isBinary(e ast.Expr, k token.Kind) bool {
+	b, ok := e.(*ast.Binary)
+	return ok && b.Op.Kind == k
+}
+
+// comparisons are the operators of a comparison, by the kind of their token.
+var comparisons = map[token.Kind]Operator{
+	token.EQ: OpEqual, token.NE: OpNotEqual, token.LT: OpLess, token.LE: OpLessOrEqual, token.GT: OpGreater,
+	token.GE: OpGreaterOrEqual,
+}
+
+// condition e of a WHERE clause, after before parameters of the statement: a column compared with a
+// literal or a parameter, with one of the operators of [comparisons], or a column IS NULL or IS NOT
+// NULL.
+//
+// The next token is the first of e when it is called, since e follows WHERE or AND, and the first
+// token of the left operand of a condition is the first of the condition.
+func (r *recognizer) condition(e ast.Expr, before int) Condition {
+	switch e := e.(type) {
+	case *ast.Is:
+		return r.isCondition(e)
+	case *ast.Unary:
+		if e.Op.Kind == token.Not {
+			r.reject("NOT operator")
+		}
+	case *ast.ColumnRef:
+		if isTrueOrFalse(e) {
+			// SQLite reads a bare TRUE or FALSE as 1 or 0 where the table has no column of that name.
+			r.reject("TRUE or FALSE")
+		}
+	}
+	b, _ := e.(*ast.Binary)
+	var op Operator
+	if b != nil {
+		op = comparisons[b.Op.Kind]
+	}
+	if op == 0 {
+		r.unexpected()
+	}
+	r.accept(b)
+	c := Condition{Column: r.leftColumn(b.X), Operator: op}
+	r.take(b.Op)
+	if ref, ok := b.Y.(*ast.ColumnRef); ok && !isTrueOrFalse(ref) {
+		r.reject("column compared with a column")
+	}
+	c.Value = r.term(b.Y, before)
+	return c
+}
+
+// isCondition: a column IS NULL or IS NOT NULL.
+func (r *recognizer) isCondition(e *ast.Is) Condition {
+	r.accept(e)
+	c := Condition{Column: r.leftColumn(e.X), Operator: OpIsNull}
+	r.take(e.Is)
+	if e.Not.Present() {
+		r.take(e.Not)
+		c.Operator = OpIsNotNull
+	}
+	if e.Distinct.Present() {
+		r.reject("IS DISTINCT FROM")
+	}
+	if !isNull(e.Y) {
+		switch e.Y.(type) {
+		case *ast.Literal, *ast.Variable, *ast.ColumnRef, *ast.Unary:
+			r.reject("IS with a value other than NULL")
+		}
+		r.unexpected()
+	}
+	r.take(e.Y.(*ast.Literal).Value)
+	return c
+}
+
+// leftColumn of a condition, the expression x on the left of its operator, which starts at the next
+// token: the bare name of a column.
+func (r *recognizer) leftColumn(x ast.Expr) Name {
+	ref, ok := x.(*ast.ColumnRef)
+	switch {
+	case ok && ref.Table.Present():
+		r.reject("column with the name of a table")
+	case ok && isTrueOrFalse(ref):
+		// SQLite reads a bare TRUE or FALSE as 1 or 0 where the table has no column of that name.
+		r.reject("TRUE or FALSE")
+	case isValue(x):
+		r.reject("value on the left of a comparison")
+	case !ok:
+		r.unexpected()
+	}
+	r.accept(ref)
+	return r.name(ref.Column)
+}
+
+// isValue reports whether x is a literal or a parameter, with a sign or without one.
+func isValue(x ast.Expr) bool {
+	if u, ok := x.(*ast.Unary); ok && (u.Op.Kind == token.Minus || u.Op.Kind == token.Plus) {
+		x = u.X
+	}
+	switch x.(type) {
+	case *ast.Literal, *ast.Variable:
+		return true
+	}
+	return false
+}
+
+// isTrueOrFalse reports whether c is the bare word TRUE or FALSE, without a table.
+func isTrueOrFalse(c *ast.ColumnRef) bool {
+	return !c.Table.Present() && (isWord(c.Column, "true") || isWord(c.Column, "false"))
 }
 
 // resultColumn rc of a select list of n result columns, after the names of the columns before it: a

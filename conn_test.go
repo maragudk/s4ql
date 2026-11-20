@@ -125,8 +125,8 @@ func TestExec(t *testing.T) {
 		db := w.serve(t, "a")
 		exec(t, db, t1)
 
-		_, err := db.ExecContext(t.Context(), "select * from t1 where v1 = 1")
-		is.Equal(t, "WHERE clause (at offset 17)", notSupported(t, err))
+		_, err := db.ExecContext(t.Context(), "select * from t1 order by v1")
+		is.Equal(t, "ORDER BY clause (at offset 17)", notSupported(t, err))
 		_, err = db.QueryContext(t.Context(), "insert into t1 (v1) values (1), (2)")
 		is.True(t, notSupported(t, err) != "")
 		_, err = db.ExecContext(t.Context(), insert1+"; "+insert1)
@@ -213,7 +213,7 @@ func TestExec(t *testing.T) {
 				}
 
 				// A text that s4ql does not support gets the "not supported" that it gets without arguments.
-				for _, src := range []string{"select * from t1 where v1 = ?", "insert into t1 (v1) values (?1)", "insert into t1 (v1) values (?), (?)", "begin", "", " ; -- nothing"} {
+				for _, src := range []string{"select * from t1 where v1 = ? or v1 = 2", "select * from t1 order by v1", "insert into t1 (v1) values (?1)", "insert into t1 (v1) values (?), (?)", "begin", "", " ; -- nothing"} {
 					err := call(src, args...)
 					is.Equal(t, notSupported(t, call(src)), notSupported(t, err), name, src)
 				}
@@ -410,8 +410,14 @@ func TestPrepare(t *testing.T) {
 		sqlite, ok := errors.AsType[*s4ql.Error](failed(t, err))
 		is.True(t, ok, err.Error())
 		is.Equal(t, s4ql.Error{Code: 1, ExtendedCode: 1, Message: `near "selec": syntax error`}, *sqlite)
-		_, err = db.PrepareContext(t.Context(), "select * from t1 where v1 = 1")
-		is.Equal(t, "WHERE clause (at offset 17)", notSupported(t, err))
+		_, err = db.PrepareContext(t.Context(), "select * from t1 where v1 = 1 or v1 = 2")
+		is.Equal(t, "OR (at offset 30)", notSupported(t, err))
+		_, err = db.PrepareContext(t.Context(), "select * from t1 where v1 = 1 order by v1")
+		is.Equal(t, "ORDER BY clause (at offset 30)", notSupported(t, err))
+		// A select with WHERE that s4ql supports prepares without the instance.
+		p, err := db.PrepareContext(t.Context(), "select * from t1 where v1 = ? and v1 is not null")
+		is.NotError(t, err)
+		is.NotError(t, p.Close())
 		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values ($v)")
 		is.Equal(t, "named parameter (at offset 28)", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "create table t2 (v2 int(10) primary key) strict, without rowid")
@@ -1243,6 +1249,116 @@ func TestNulls(t *testing.T) {
 		is.NotError(t, ro.Commit())
 		is.NotError(t, db.Close())
 		is.Equal(t, "k INT, t TEXT, s TEXT: 1 <nil> x", rowsText(t, w.serve(t, "b"), "select k, t, s from n"))
+	})
+}
+
+func TestWhere(t *testing.T) {
+	const create = "create table w (k int primary key, s text, r real not null, b blob) strict, without rowid"
+	fill := func(t *testing.T, db *sql.DB) {
+		t.Helper()
+		exec(t, db, create, "insert into w values (1, 'a', 1.5, x'01')", "insert into w values (2, null, 2.5, null)", "insert into w values (3, 'c', 3.5, x'')", "insert into w values (10, 'a', -0.0, x'0a')")
+	}
+
+	t.Run("should give the rows of the conditions, directly, prepared, several times with other arguments, and through QueryRow, and none for a comparison with a nil argument", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		fill(t, db)
+		is.Equal(t, "k INT, s TEXT, r REAL, b BLOB: 1 a 1.5 [1]; 10 a 0 [10]", rowsText(t, db, "select * from w where s = ?", "a"))
+		is.Equal(t, "s TEXT: a; c", rowsText(t, db, "select s from w where k >= 1 and k < 10 and s is not null"))
+		is.Equal(t, "k INT: 2", rowsText(t, db, "select k from w where s is null"))
+		is.Equal(t, "k INT: 10", rowsText(t, db, "select k from w where r = 0.0 and r == -0.0 and b > x'01'"))
+		is.Equal(t, "k INT: 1; 10", rowsText(t, db, "select k from w where s <> 'c' and b != ?", []byte{}))
+
+		p, err := db.PrepareContext(t.Context(), "select k from w where k > ? and k <= ? and s is not null")
+		is.NotError(t, err)
+		for args, want := range map[[2]int]string{{0, 10}: "k INT: 1; 3; 10", {1, 3}: "k INT: 3", {3, 1}: "k INT: ", {-1, 1}: "k INT: 1"} {
+			rows, err := p.QueryContext(t.Context(), args[0], args[1])
+			is.NotError(t, err)
+			var ks []string
+			for rows.Next() {
+				var k int64
+				is.NotError(t, rows.Scan(&k))
+				ks = append(ks, fmt.Sprint(k))
+			}
+			is.NotError(t, rows.Err())
+			is.Equal(t, want, "k INT: "+strings.Join(ks, "; "), fmt.Sprint(args))
+		}
+		is.NotError(t, p.Close())
+
+		var s sql.NullString
+		is.NotError(t, db.QueryRowContext(t.Context(), "select s from w where k = ?", 3).Scan(&s))
+		is.Equal(t, "c", s.String)
+		err = db.QueryRowContext(t.Context(), "select s from w where k = ?", 4).Scan(&s)
+		is.True(t, errors.Is(err, sql.ErrNoRows), fmt.Sprint(err))
+
+		for _, arg := range []any{nil, sql.NullString{}, (*string)(nil), sql.Null[[]byte]{}} {
+			is.Equal(t, "k INT: ", rowsText(t, db, "select k from w where s = ? and s is not null", arg), fmt.Sprintf("%T", arg))
+		}
+	})
+
+	t.Run("should give SQLite's errors of the names, and refuse a value of another type and an argument that no column holds as not supported", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		fill(t, db)
+		for src, message := range map[string]string{
+			"select * from nosuch where k = 1":                  "no such table: nosuch",
+			"select x from w where y = 1":                       "no such column: x",
+			"select * from w where k = 1 and x = 1":             "no such column: x",
+			"select * from w where x is null and y is not null": "no such column: y",
+			"select * from w where x is null and k = 1":         "no such column: x",
+			`select * from w where "x" = 1`:                     `no such column: "x" - should this be a string literal in single-quotes?`,
+			"select * from w where k = 'x' and x = 1":           "no such column: x",
+		} {
+			_, err := db.QueryContext(t.Context(), src)
+			sqliteError(t, 1, 1, message, err)
+		}
+		for _, c := range []struct {
+			src  string
+			args []any
+			want string
+		}{
+			{src: "select * from w where k = '1'", want: "a string literal compared with the column w.k of type INT"},
+			{src: "select * from w where r > 1", want: "an integer literal compared with the column w.r of type REAL"},
+			{src: "select * from w where k = 1 and s = ?", args: []any{1}, want: "argument 1, which is an integer, compared with the column w.s of type TEXT"},
+			{src: "select * from w where b = ?", args: []any{"x"}, want: "argument 1, which is text, compared with the column w.b of type BLOB"},
+			{src: "select * from w where k = ? and s = ?", args: []any{1.5, 1}, want: "argument 1, which is a real, compared with the column w.k of type INT"},
+			{src: "select * from w where b = ?", args: []any{[]byte(nil)}, want: "argument 1 of type []byte, which is nil"},
+			{src: "select * from w where s = ?", args: []any{true}, want: "argument 1 of type bool"},
+			{src: "select * from w where s = ?", args: []any{"a\x00"}, want: "argument 1, which is text that holds the character NUL"},
+		} {
+			_, err := db.QueryContext(t.Context(), c.src, c.args...)
+			is.Equal(t, c.want, notSupported(t, err), c.src)
+			p, err := db.PrepareContext(t.Context(), c.src)
+			is.NotError(t, err, c.src)
+			_, err = p.QueryContext(t.Context(), c.args...)
+			is.Equal(t, c.want, notSupported(t, err), c.src)
+			is.NotError(t, p.Close())
+		}
+		_, err := db.QueryContext(t.Context(), "select * from w where k = ? and s = ?", 1)
+		is.Equal(t, "s4ql: wrong number of arguments: 1 for a statement with 2 parameters", fmt.Sprint(err))
+	})
+
+	t.Run("should select in a write transaction from its own writes, in a read-only one from the state of its beginning, and after a restart with an empty cache", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		fill(t, db)
+		before := len(commits(t, w))
+		tx := begin(t, db, nil)
+		_, err := tx.ExecContext(t.Context(), "insert into w values (?, ?, ?, ?)", 4, "d", 4.5, nil)
+		is.NotError(t, err)
+		is.Equal(t, "k INT, s TEXT: 3 c; 4 d", rowsText(t, tx, "select k, s from w where k > ? and k < ?", 2, 10))
+		is.Equal(t, "k INT: ", rowsText(t, db, "select k from w where k = 4"))
+		ro := begin(t, db, &sql.TxOptions{ReadOnly: true})
+		is.NotError(t, tx.Commit())
+		is.Equal(t, before+1, len(commits(t, w)))
+		is.Equal(t, "k INT: ", rowsText(t, ro, "select k from w where k = 4"))
+		is.Equal(t, "k INT: 3", rowsText(t, ro, "select k from w where k >= 3 and k <= 4"))
+		is.NotError(t, ro.Commit())
+		is.Equal(t, "k INT: 3; 4", rowsText(t, db, "select k from w where k >= 3 and k <= 4"))
+		// A select writes nothing, also in a transaction.
+		is.Equal(t, before+1, len(commits(t, w)))
+		is.NotError(t, db.Close())
+		is.Equal(t, "k INT, b BLOB: 2 <nil>; 4 <nil>", rowsText(t, w.serve(t, "b"), "select k, b from w where b is null"))
 	})
 }
 

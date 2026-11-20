@@ -785,6 +785,12 @@ func (tx *Tx) Get(ctx context.Context, name string, key []*s4qlpb.Value) ([]*s4q
 // there is no such table. The transaction must not change the table while it scans it, and must
 // not drop any table: SQLite refuses the drop, and the transaction can then only be rolled back.
 func (tx *Tx) Scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Value, error] {
+	return tx.ScanRange(ctx, name, Bound{}, Bound{})
+}
+
+// ScanRange is [Tx.Scan] of the rows whose primary key is within the bounds lower and upper, which
+// it checks as [ReadTx.ScanRange] does.
+func (tx *Tx) ScanRange(ctx context.Context, name string, lower, upper Bound) iter.Seq2[[]*s4qlpb.Value, error] {
 	const operation = "scan"
 	return func(yield func([]*s4qlpb.Value, error) bool) {
 		if err := tx.check(ctx, operation); err != nil {
@@ -797,7 +803,11 @@ func (tx *Tx) Scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Value, 
 			yield(nil, err)
 			return
 		}
-		for row, err := range tx.c.scan(t) {
+		if err := t.checkBounds(tx.c.limit, lower, upper); err != nil {
+			yield(nil, err)
+			return
+		}
+		for row, err := range tx.c.scan(t, lower, upper) {
 			if err != nil {
 				yield(nil, tx.fail(ctx, operation, err))
 				return
@@ -934,7 +944,7 @@ func (tx *Tx) spoolCommit(ctx context.Context) (_ *spooled, err error) {
 				return nil, fail(fmt.Errorf("%w: the table %q that the transaction created is gone", ErrCacheVersion, e.created.GetTable()))
 			}
 			columns := positions(len(t.columns))
-			for row, err := range tx.c.scan(t) {
+			for row, err := range tx.c.scan(t, Bound{}, Bound{}) {
 				if err != nil {
 					return nil, fail(err)
 				}

@@ -18,12 +18,17 @@ Made with ✨sparkles✨ by [maragu](https://www.maragu.dev/): independent softw
 
 As of 2026-11-20:
 
-- **Built: slice 1, end to end.** A database is a log of commits in S3, with a local SQLite cache. One instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work. They are tested in a deterministic simulation, and in tests against a real S3-compatible bucket, which run in CI on every pull request. The engine runs `create table`, `insert`, `select *`, and `drop table` for one integer column. It is checked against SQLite statement by statement, in a simulation with faults, and by fuzzing. The SQL parser agrees with SQLite on all 138,926 statements on which SQLite gives a clear verdict, of a corpus of 139,234. The package `maragu.dev/s4ql` is a `database/sql` driver, so an application can run these statements on a bucket. It is checked against SQLite through `database/sql`, in 200 generated sequences of 40 statements and by fuzzing. A cache belongs to one database, and another database refuses it.
-- **Built: slice 2, parameters.** An `insert` takes an integer argument for a plain `?` through `database/sql`, directly and through a prepared statement. It is checked against SQLite by generated tests in the engine and through `database/sql` (the engine's compares 12,000 statements), in a simulation, and by mutation testing.
-- **Built: slice 3, transactions.** `db.BeginTx` gives a transaction that is the single writer from its beginning until it commits or rolls back. `sql.TxOptions{ReadOnly: true}` gives a read-only transaction on one state that holds no one up. It is checked against SQLite by generated tests in the engine and through `database/sql` (499 generated transactions), in a simulation with faults, and by mutation testing (628 mutants of the engine).
-- **Built: slice 4, the other types.** A table has a column of type `int`, `integer`, `real`, `text`, or `blob`, with literals and arguments of Go types for each. A value must have the exact type of its column. It is checked against SQLite by generated tests in the engine and through `database/sql`, and in a simulation. Real literals are read as SQLite reads them, bit for bit.
-- **Built: slice 5, several columns.** A table has one or more columns, exactly one of them the primary key and every other one `not null`. An `insert` has a list of columns or none, and a `select` names columns or takes `*`. It is checked against SQLite by generated tests in the engine and through `database/sql`, and in a simulation.
-- **Not built:** `null`, `where`, and a statement while rows of the same transaction are open.
-- **Next:** slice 6 of the [roadmap](docs/roadmap.md) (`null`) is being built. Slices 7 and 8 (`where` on `select`, and `update` and `delete`) are agreed.
+- **Works now,** through `database/sql`, with the package `maragu.dev/s4ql` as the driver:
+  - `create table` and `drop table` of a strict table with one or more columns, exactly one of them the primary key.
+  - The column types `int`, `integer`, `real`, `text`, and `blob`. A value must have the exact type of its column.
+  - Columns that are `not null`, and columns that take null.
+  - `insert` of one row, with literals and arguments, with or without a list of columns.
+  - `select` of named columns or `*`, with a `where` of comparisons and of `is null` and `is not null`, joined by `and`.
+  - Arguments for a plain `?`, directly and through prepared statements.
+  - Transactions, also read-only ones.
+  - Storage: a database is a log of commits in S3, with a local SQLite cache. One instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work.
+- **How it is checked:** against SQLite with generated statements, in the engine and through `database/sql`, in a deterministic simulation with planted bugs, and with mutation testing and fuzzing. The storage is also tested against a real S3-compatible bucket in CI.
+- **Not built:** `update` and `delete`, `or` and other expressions in a `where`, `order by` and `limit`, more than one row per `insert`, indexes, defaults, and a statement while rows of the same transaction are open.
+- **Next:** slice 8 of the roadmap (`update` and `delete`), which is agreed and not built yet. After it comes the rest of what the first application needs (the roadmap's [milestones](docs/roadmap.md#milestones)).
 
-What is open in detail is in [docs/todo.md](docs/todo.md).
+The slices, and how each is checked, are in [docs/roadmap.md](docs/roadmap.md). What is open in detail is in [docs/todo.md](docs/todo.md).

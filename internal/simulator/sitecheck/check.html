@@ -74,7 +74,7 @@ async function open(address) {
     idle: () => html.dataset.busy === "false",
     instance: (name) => win.s4qlPage.state.instances.find((i) => i.instance === name),
     button: (name, a) => $(`[data-instance="${name}"] [data-a="${a}"]`),
-    card: (name) => $(`[data-instance="${name}"]`),
+    inst: (name) => $(`[data-instance="${name}"]`),
     // frames waits for n animation frames of the page.
     frames: async (n) => {
       for (let i = 0; i < n; i++) await new Promise((r) => win.requestAnimationFrame(r));
@@ -102,7 +102,7 @@ async function open(address) {
       c.failing = $("#requests-status").dataset.failing === "true";
       return c;
     },
-    // served and refused are what the card of the instance says that it served and refused.
+    // served and refused are what the instance in the diagram says that it served and refused.
     served: (name) => $(`[data-instance="${name}"] [data-f="calls"]`).textContent + "; refused " + $(`[data-instance="${name}"] [data-f="refused"]`).textContent,
     // send the requests to the instance with their switch, and wait until the page has the state
     // after it.
@@ -239,8 +239,10 @@ async function unit() {
   // an alarm on every event.
   tell = R.teller();
   const check = (t, excused) => ({ t, kind: "check", what: "violated", invariant: "fresh", excused, instance: "a", process: "a", text: "missed" });
-  const tiers = [check(1, true), check(2, true), check(3, false), check(4, false)].map((e) => tell(e).tier);
+  const told = [check(1, true), check(2, true), check(3, false), check(4, false)].map((e) => tell(e));
+  const tiers = told.map((w) => w.tier);
   expect(JSON.stringify(tiers) === JSON.stringify(["story", null, "alarm", "alarm"]), `a stale read that the design excuses takes one line, and a violation is an alarm (${tiers.join(", ")})`);
+  expect(told[0].text === "a serves a stale read after its clocks were paused, which the spec allows.", `the line of a stale read names the pause of the clocks (${told[0].text})`);
 }
 
 async function check() {
@@ -302,8 +304,22 @@ async function check() {
   expect(!play.disabled && play.textContent.trim() === "Play", "Play is offered");
   expect(turbo.getAttribute("aria-pressed") === "false" && !p.win.s4qlPage.turbo, "turbo is off");
   expect(p.instance("a") && p.instance("b") && p.win.s4qlPage.state.instances.length === 2, "the session has the two instances a and b");
-  const switchA = p.$('#requests [data-target="a"]'), wireA = p.$('[data-wire="a"]');
-  expect(p.requests().target === "a" && switchA.getAttribute("aria-pressed") === "true" && wireA.dataset.on === "true", "the requests go to a, their switch shows a on, and their wire goes to a");
+  // requestsEdge is the instance that the edge of the requests goes into, by what the page draws: its
+  // edge to that instance is on and has its arrow, and the instance says that the requests come to
+  // it. It is empty if no instance has all three, or if the edges are not drawn, and both letters if
+  // both have.
+  const requestsEdge = () => p.win.getComputedStyle(p.$(".fork")).display === "none" ? "" : ["a", "b"].filter((name) => {
+    const w = p.$(`[data-wire="${name}"]`);
+    return w.dataset.on === "true" && p.win.getComputedStyle(w, "::after").content !== "none" && p.inst(name).dataset.requests === "true";
+  }).join("");
+  const switchA = p.$('#requests [data-target="a"]');
+  expect(p.requests().target === "a" && switchA.getAttribute("aria-pressed") === "true" && requestsEdge() === "a", `the requests go to a, their switch shows a on, and their edge goes into a (${requestsEdge() || "none"})`);
+  // Each action's accessible name says what it acts on: its instance, by its letter. The letter a is
+  // also a word, so each name of a must be that of b with b changed to a.
+  const label = (name, a) => p.button(name, a).getAttribute("aria-label") || "";
+  const unnamed = [...p.inst("b").querySelectorAll("[data-a]")].map((b) => b.dataset.a)
+    .filter((a) => !/\bb\b/.test(label("b", a)) || label("a", a) !== label("b", a).replace(/\bb\b/g, "a")).map((a) => `${label("a", a)} / ${label("b", a)}`);
+  expect(unnamed.length === 0, `the accessible name of each action names its instance (${unnamed.join(" | ") || "all of them"})`);
   expect(p.requests().status === "no requests yet" && !p.requests().failing, `before the first request, the status of the requests is neutral (${p.requests().status})`);
   noClient("at zero");
   const t0 = p.t;
@@ -344,69 +360,87 @@ async function check() {
   // The engine names two of the faults by the network, but they act only on the connection of the
   // instance to S3, and the page names them so.
   const logged = (text) => [...p.$("#log").children].some((li) => li.querySelector(".text")?.textContent === text);
+  // The buttons of the faults sit on the edge or the disk that they act on, which shows the fault:
+  // its data attribute, and how it looks, from the computed styles of its line, its cut, and its
+  // frame, so that the check sees what a visitor sees.
+  const look = (edge) => {
+    const cs = (el, pseudo) => p.win.getComputedStyle(el, pseudo);
+    if (edge.dataset.edge === "s3") {
+      const cut = edge.querySelector(".cut");
+      return [cs(edge, "::before").backgroundImage, cs(cut).backgroundColor, cs(cut).borderTopStyle].join(" | ");
+    }
+    return [cs(edge).borderTopStyle, cs(edge, "::after").content, cs(edge, "::after").backgroundImage].join(" | ");
+  };
   const toggles = [
-    ["hang", "networkHung", "Hang S3", "You hang the connection of a to S3.", "The connection of a to S3 no longer hangs."],
-    ["disconnect", "networkDisconnected", "Disconnect S3", "You disconnect a from S3.", "You connect a to S3 again."],
-    ["disk", "diskFailing", "Error disk", "You make the disk of a fail.", "The disk of a works again."],
+    ["hang", "networkHung", "Hang", "s3", "hung", "You hang the connection of a to S3.", "The connection of a to S3 no longer hangs."],
+    ["disconnect", "networkDisconnected", "Disconnect", "s3", "disconnected", "You disconnect a from S3.", "You connect a to S3 again."],
+    ["disk", "diskFailing", "Error", "disk", "failing", "You make the disk of a fail.", "The disk of a works again."],
   ];
-  for (const [name, flag, label, onLine, offLine] of toggles) {
+  const looks = {};
+  for (const [name, flag, label, kind, attr, onLine, offLine] of toggles) {
+    const edge = p.inst("a").querySelector(`[data-edge="${kind}"]`);
+    const before = look(edge);
     await p.press("a", name);
     const on = !!a()[flag] && p.button("a", name).getAttribute("aria-pressed") === "true" && logged(onLine);
+    const edgeOn = edge.dataset[attr] === "true" && look(edge) !== before;
+    looks[name] = look(edge);
     await p.press("a", name);
     const off = !a()[flag] && p.button("a", name).getAttribute("aria-pressed") === "false" && logged(offLine);
     expect(on && off && p.button("a", name).textContent === label, `${label} switches ${flag} of a on, shows the button pressed, says "${onLine}", and switches it off again ("${offLine}")`);
+    expect(edgeOn && edge.dataset[attr] === "false" && look(edge) === before, `the ${kind === "s3" ? "edge of a to S3" : "disk of a"} shows that it is ${attr} while ${label} is on, and looks as before once it is off`);
+    if (kind === "s3") looks.working = before;
   }
+  // Working, hung, and disconnected look different at a glance, without a label.
+  const s3Looks = [looks.working, looks.hang, looks.disconnect];
+  expect(new Set(s3Looks).size === 3, `the edge to S3 looks different working, hung, and disconnected (${s3Looks.join(" / ")})`);
   // The clock actions: each has its effect in the state, its opposite or Reset clocks undoes it, and
-  // the card says how each clock differs from true time.
+  // the clocks of the instance say how they differ from normal.
   const wall = () => a().wall - p.win.s4qlPage.state.t;
-  const clocks = () => p.card("a").querySelector('[data-f="clocks"]').textContent;
+  const clocks = () => p.inst("a").querySelector('[data-f="clocks"]').textContent;
   const pressed = (name) => p.button("a", name).getAttribute("aria-pressed") === "true";
-  expect(clocks() === "true time" && p.button("a", "reset").disabled, `untouched, the clocks of a read ${clocks()}, and Reset clocks is off`);
+  const bothPaused = () => a().wallStopped && a().monotonicStopped && pressed("pause");
+  const bothRun = () => !a().wallStopped && !a().monotonicStopped && !pressed("pause");
+  expect(clocks() === "normal" && bothRun() && p.button("a", "reset").disabled, `untouched, the clocks of a read ${clocks()}, Pause is not pressed, and Reset clocks is off`);
   await p.press("a", "forward");
   const ahead = wall(), aheadText = clocks();
   await p.press("a", "back");
   const back = wall();
-  expect(Math.abs(ahead - 60000) < 1 && aheadText === "wall +60 s" && Math.abs(back) < 1 && clocks() === "true time"
-    && logged("You move the wall clock of a forward 60 s.") && logged("You move the wall clock of a back 60 s."),
-    `+60 s and −60 s move the wall clock of a forward (${ahead.toFixed(3)}, ${aheadText}) and back (${back.toFixed(3)}, ${clocks()})`);
-  await p.press("a", "wall");
-  const wallPaused = a().wallStopped && !a().monotonicStopped && pressed("wall") && !pressed("monotonic") && clocks() === "wall paused";
+  expect(Math.abs(ahead - 5000) < 1 && aheadText === "wall +5 s" && Math.abs(back) < 1 && clocks() === "normal"
+    && logged("You move the wall clock of a forward 5 s.") && logged("You move the wall clock of a back 5 s."),
+    `Wall +5 s and Wall −5 s move the wall clock of a forward (${ahead.toFixed(3)}, ${aheadText}) and back (${back.toFixed(3)}, ${clocks()})`);
+
+  // A pause after a jump: both clocks stand still, so the wall clock falls behind by the fake time
+  // that passes, and Pause pressed again starts both.
+  await p.press("a", "back");
+  await p.press("a", "pause");
+  const pausedText = clocks(), pausedBoth = bothPaused();
   await p.skip(5000);
   const behind = wall(), behindText = clocks();
-  await p.press("a", "wall");
-  expect(wallPaused && !a().wallStopped && !pressed("wall") && Math.abs(behind + 5000) < 50 && behindText === "wall paused, −5 s" && clocks() === "wall −5 s"
-    && logged("You pause the wall clock of a.") && logged("You start the wall clock of a again."),
-    `Pause of the wall clock stops only the wall clock of a (${behind.toFixed(0)} ms behind after 5 s, ${behindText}), and starts it again (${clocks()})`);
-  await p.press("a", "monotonic");
-  const monoPaused = a().monotonicStopped && !a().wallStopped && pressed("monotonic") && !pressed("wall") && clocks() === "wall −5 s; monotonic paused";
-  const monoText = clocks();
-  await p.press("a", "monotonic");
-  expect(monoPaused && !a().monotonicStopped && !pressed("monotonic") && clocks() === "wall −5 s"
-    && logged("You pause the monotonic clock of a.") && logged("You start the monotonic clock of a again."),
-    `Pause of the monotonic clock stops only the monotonic clock of a (${monoText}), and starts it again (${clocks()})`);
+  await p.press("a", "pause");
+  expect(pausedBoth && pausedText === "paused, wall −5 s" && Math.abs(behind + 10000) < 50 && behindText === "paused, wall −10 s"
+    && bothRun() && clocks() === "wall −10 s" && logged("You pause the clocks of a.") && logged("You start the clocks of a again."),
+    `Pause after Wall −5 s stops both clocks of a (${pausedText}, then ${behind.toFixed(0)} ms behind after 5 s, ${behindText}), and Pause again starts both (${clocks()})`);
 
-  // Reset clocks, after a jump and a pause of both clocks: the clocks of a run again, the wall clock
-  // at true time, and the card reads as for clocks that nobody touched. The log has one line for it.
+  // Reset clocks, after a jump and a pause: the clocks of a run again, the wall clock at true time,
+  // and the clocks read as clocks that nobody touched. The log has one line for it.
   await p.press("a", "forward");
-  await p.press("a", "wall");
-  await p.press("a", "monotonic");
-  await p.skip(5000);
+  await p.press("a", "pause");
+  await p.skip(2000);
   const clocksBefore = clocks();
-  const touched = !p.button("a", "reset").disabled && a().wallStopped && a().monotonicStopped && clocksBefore === "wall paused, +50 s; monotonic paused";
+  const touched = !p.button("a", "reset").disabled && bothPaused() && clocksBefore === "paused, wall −7 s";
   const linesBefore = p.lines;
   await p.press("a", "reset");
   const added = [...p.$("#log").children].slice(0, p.lines - linesBefore).filter((li) => li.classList.contains("you")).map((li) => li.querySelector(".text").textContent);
-  expect(touched && !a().wallStopped && !a().monotonicStopped && Math.abs(wall()) < 1e-3 && clocks() === "true time",
-    `Reset clocks runs the clocks of a again (${clocksBefore} before), with the wall clock at true time (off by ${wall()} ms), and the card says ${clocks()}`);
-  expect(!pressed("wall") && !pressed("monotonic") && p.button("a", "reset").disabled && !p.button("a", "wall").disabled,
-    "after Reset clocks, neither Pause is pressed, and Reset clocks is off");
+  expect(touched && bothRun() && Math.abs(wall()) < 1e-3 && clocks() === "normal",
+    `Reset clocks runs the clocks of a again (${clocksBefore} before), with the wall clock at true time (off by ${wall()} ms), and the clocks say ${clocks()}`);
+  expect(!pressed("pause") && p.button("a", "reset").disabled && !p.button("a", "pause").disabled, "after Reset clocks, Pause is not pressed and is on, and Reset clocks is off");
   expect(JSON.stringify(added) === JSON.stringify(["You reset the clocks of a."]), `the log has one line for Reset clocks (${added.join(" | ")})`);
-  // A reset whose shift has nothing to do, after a pause of the monotonic clock alone, leaves the
-  // controls on.
-  await p.press("a", "monotonic");
+  // A reset whose shift has nothing to do, after a pause alone in which no fake time passed, leaves
+  // the controls on.
+  await p.press("a", "pause");
   await p.press("a", "reset");
-  expect(!a().monotonicStopped && clocks() === "true time" && !p.button("a", "monotonic").disabled && !p.button("a", "crash").disabled && p.button("a", "reset").disabled,
-    `Reset clocks after a pause of the monotonic clock alone runs it again (${clocks()}), and leaves the controls on`);
+  expect(bothRun() && clocks() === "normal" && !p.button("a", "pause").disabled && !p.button("a", "crash").disabled && p.button("a", "reset").disabled,
+    `Reset clocks after a pause alone runs the clocks again (${clocks()}), and leaves the controls on`);
 
   const beforeCrash = p.requests();
   await p.press("a", "crash");
@@ -416,8 +450,8 @@ async function check() {
     `the requests keep going to a while a is crashed (${down.failed - beforeCrash.failed} failed), and their status says that no answer came, failing (${down.status})`);
   expect([...p.$("#log").children].filter((li) => li.textContent.includes("A request gets no answer from a")).length === 1, "the log says once that a request gets no answer from a");
   noClient("while a is crashed");
-  const crashed = a().state === "crashed" && p.button("a", "crash").textContent === "Restart" && p.button("a", "wall").disabled && p.button("a", "monotonic").disabled && p.button("a", "reset").disabled && p.button("a", "stop").disabled && !p.button("a", "hang").disabled;
-  expect(crashed, "Crash crashes a: Crash becomes Restart, the clocks and Stop are off, Hang S3, Disconnect S3, and the disk stay on");
+  const crashed = a().state === "crashed" && p.button("a", "crash").textContent === "Restart" && p.button("a", "crash").getAttribute("aria-label") === "Restart a" && p.button("a", "forward").disabled && p.button("a", "back").disabled && p.button("a", "pause").disabled && p.button("a", "reset").disabled && p.button("a", "stop").disabled && !p.button("a", "hang").disabled;
+  expect(crashed, "Crash crashes a: Crash becomes Restart (named Restart a), the clocks and Stop are off, Hang, Disconnect, and Error stay on");
   await p.press("a", "crash");
   expect(a().state !== "crashed" && a().process === "a2" && p.button("a", "crash").textContent === "Crash", `Restart starts process ${a().process} of a, in the state ${a().state}`);
 
@@ -443,8 +477,8 @@ async function check() {
   const aBefore = p.served("a"), bBefore = p.served("b"), switched = p.requests().calls;
   await p.send("b");
   const switchB = p.$('#requests [data-target="b"]');
-  expect(p.requests().target === "b" && switchB.getAttribute("aria-pressed") === "true" && switchA.getAttribute("aria-pressed") === "false" && p.$('[data-wire="b"]').dataset.on === "true",
-    "the switch sends the requests to b, and shows b on");
+  expect(p.requests().target === "b" && switchB.getAttribute("aria-pressed") === "true" && switchA.getAttribute("aria-pressed") === "false" && requestsEdge() === "b",
+    `the switch sends the requests to b, shows b on, and moves their edge into b (${requestsEdge() || "none"})`);
   await p.skipUntil(() => p.requests().calls > switched + 3);
   // A call that was on a at the switch can still end there; the ones after it go to b.
   const aMid = p.served("a");
@@ -460,7 +494,25 @@ async function check() {
   }
   noClient("with the requests sent to b");
   await p.send("a");
-  expect(p.requests().target === "a", "the switch sends the requests back to a");
+  expect(p.requests().target === "a" && requestsEdge() === "a", `the switch sends the requests back to a, and their edge with them (${requestsEdge() || "none"})`);
+
+  // At phone width the diagram stacks: nothing scrolls sideways, the edge of the requests comes into
+  // the instance that they go to from above, and the edge to S3 turns along the bottom of its disk and
+  // clocks, dashed while it hangs.
+  p.win.frameElement.style.width = "390px";
+  await p.frames(2);
+  const doc = p.win.document.documentElement;
+  const arrow = (name) => p.win.getComputedStyle(p.inst(name).querySelector(".in"), "::after").content !== "none";
+  const stacked = requestsEdge() === "" && doc.scrollWidth <= doc.clientWidth && arrow("a") && !arrow("b");
+  const along = () => p.win.getComputedStyle(p.inst("a").querySelector('[data-edge="s3"]'), "::after").backgroundImage;
+  const solid = along();
+  await p.press("a", "hang");
+  const dashed = along();
+  await p.press("a", "hang");
+  expect(stacked && dashed !== solid && along() === solid,
+    `at 390 px the diagram stacks without scrolling sideways (${doc.scrollWidth} px wide), the requests come into a from above, and the edge of a to S3 along the bottom is dashed while it hangs (${solid} / ${dashed})`);
+  p.win.frameElement.style.width = "1280px";
+  await p.frames(2);
 
   await p.press("a", "stop");
   const stopping = ["closing", "closed"].includes(a().state);
@@ -474,14 +526,16 @@ async function check() {
   await p.skipUntil(() => p.$('[data-role="serves"]'));
   const holder = p.$('[data-role="serves"]').dataset.instance, other = holder === "a" ? "b" : "a";
   await p.press(holder, "crash");
-  const took = await p.skipUntil(() => p.card(other).dataset.role === "serves");
-  expect(p.card(holder).dataset.state === "crashed", `after a crash of ${holder}, ${other} serves, ${took / 1000} s of fake time later`);
+  const took = await p.skipUntil(() => p.inst(other).dataset.role === "serves");
+  expect(p.inst(holder).dataset.state === "crashed", `after a crash of ${holder}, ${other} serves, ${took / 1000} s of fake time later`);
   await p.press(holder, "crash");
 
   await p.skipUntil(() => p.instance(holder).state === "running");
   noProcess(`after a crash and a restart of ${holder}, which served`);
 
-  // No limit: fake time goes past 10 minutes, and the log and the commits grow.
+  // No limit: fake time goes past 10 minutes, and the log and the commits grow. The commits grow
+  // only while the requests go to the instance that serves, and the restarted one stands by.
+  if (p.requests().target !== other) await p.send(other);
   const before = { lines: p.lines, commits: p.commits };
   await p.skip(Math.max(0, 660000 - p.t));
   const s = p.win.s4qlPage.state;

@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"fmt"
 	"math"
 	"testing"
 
@@ -39,6 +40,9 @@ func TestNewPlan(t *testing.T) {
 		{src: "select v from t", want: "query\n  project v\n    scan t\n"},
 		{src: "create table t1 (v1 int, v2 text primary key, v3 real not null, v4 blob) strict, without rowid", want: "create table t1 (v1 INT NULL, v2 TEXT, v3 REAL, v4 BLOB NULL, primary key (v2))\n"},
 		{src: "insert into t1 values (NULL, ?, null)", want: "insert into t1\n  values (null, ?1, null)\n"},
+		{src: "select * from t1 where v1 = 1", want: "query\n  project *\n    filter v1 = 1\n      scan t1\n"},
+		{src: `select v2 from t1 where v1 >= ? and "V1" <> -2.5 and v2 is not null and v1 == ? and v3 is null and v4 < x'00' and v4 > 'a''' and v4 <= null`,
+			want: "query\n  project v2\n    filter v1 >= ?1 and \"V1\" != -2.5 and v2 IS NOT NULL and v1 = ?2 and v3 IS NULL and v4 < x'00' and v4 > 'a''' and v4 <= null\n      scan t1\n"},
 	}
 	for _, c := range cases {
 		t.Run(c.src, func(t *testing.T) {
@@ -57,6 +61,22 @@ func TestNewPlan(t *testing.T) {
 		is.Equal(t, stmt.Name{Raw: "C", Value: "C", Offset: 20}, p.Columns[0].Name)
 		is.Equal(t, s4qlpb.Type_TYPE_INT, p.Columns[0].Type)
 		is.EqualSlice(t, []int{0}, p.PrimaryKey)
+	})
+
+	t.Run("should hold the conditions of a WHERE in a filter below the projection, in the order of the text, with no value for a test for NULL", func(t *testing.T) {
+		s, err := stmt.Check("select b from t where a is null and B = ? and a != 'x'")
+		is.NotError(t, err)
+		p := engine.NewPlan(s).(*engine.Query).Root.(*engine.Project)
+		f := p.Source.(*engine.Filter)
+		is.Equal(t, "t", f.Source.(*engine.Scan).Table.Value)
+		is.Equal(t, 3, len(f.Conditions))
+		is.Equal(t, "a IS NULL <nil>", fmt.Sprint(f.Conditions[0].Column.Value, " ", f.Conditions[0].Operator, " ", f.Conditions[0].Value))
+		is.Equal(t, "B = 1", fmt.Sprint(f.Conditions[1].Column.Raw, " ", f.Conditions[1].Operator, " ", f.Conditions[1].Value.(*engine.Parameter).Number))
+		is.Equal(t, "a != x", fmt.Sprint(f.Conditions[2].Column.Raw, " ", f.Conditions[2].Operator, " ", f.Conditions[2].Value.(*engine.Text).Value))
+		s, err = stmt.Check("select * from t")
+		is.NotError(t, err)
+		_, ok := engine.NewPlan(s).(*engine.Query).Root.(*engine.Project).Source.(*engine.Scan)
+		is.True(t, ok, "a select without WHERE has no filter")
 	})
 
 	t.Run("should hold every column in order, with the key at its position, and the same plan with and without NOT NULL on the key", func(t *testing.T) {

@@ -20,7 +20,7 @@ type Plan interface {
 	plan()
 }
 
-// Node of a plan that gives rows: a [*Scan], a [*Values], or a [*Project].
+// Node of a plan that gives rows: a [*Scan], a [*Filter], a [*Values], or a [*Project].
 type Node interface {
 	node()
 }
@@ -71,6 +71,22 @@ type Scan struct {
 	Table stmt.Name
 }
 
+// Filter gives the rows of Source for which every one of Conditions is true, in the order of Source.
+// A comparison with NULL on either side is neither true nor false, as in SQLite, so a row for which
+// one is NULL is left out.
+type Filter struct {
+	Source     Node
+	Conditions []Condition
+}
+
+// Condition of a [Filter]: the column of the name, as the statement writes it, compared with Value
+// by Operator, or tested for NULL, with a Value of nil.
+type Condition struct {
+	Column   stmt.Name
+	Operator stmt.Operator
+	Value    Expr
+}
+
 // Values gives one row for each of Rows, which hold one expression for each value.
 type Values struct {
 	Rows [][]Expr
@@ -118,6 +134,7 @@ func (*DropTable) plan()   {}
 func (*Insert) plan()      {}
 func (*Query) plan()       {}
 func (*Scan) node()        {}
+func (*Filter) node()      {}
 func (*Values) node()      {}
 func (*Project) node()     {}
 func (*Integer) expr()     {}
@@ -130,7 +147,8 @@ func (*Parameter) expr()   {}
 // NewPlan of the statement s, which [stmt.Check] gives. It panics for a statement of another type. A
 // column that is not the primary key and does not say NOT NULL is Nullable. The primary key is NOT
 // NULL also when it does not say so, as in SQLite's WITHOUT ROWID tables, so a key with NOT NULL and
-// one without have the same plan.
+// one without have the same plan. A select with WHERE reads its rows through a [*Filter] of its
+// conditions, in the order of the text.
 func NewPlan(s stmt.Statement) Plan {
 	switch s := s.(type) {
 	case *stmt.CreateTable:
@@ -148,12 +166,24 @@ func NewPlan(s stmt.Statement) Plan {
 		}
 		return &Insert{Table: s.Table, Columns: s.Columns, Source: &Values{Rows: [][]Expr{row}}}
 	case *stmt.Select:
-		return &Query{Root: &Project{Source: &Scan{Table: s.Table}, Star: s.Columns == nil, Columns: s.Columns}}
+		var source Node = &Scan{Table: s.Table}
+		if s.Where != nil {
+			f := &Filter{Source: source}
+			for _, c := range s.Where {
+				condition := Condition{Column: c.Column, Operator: c.Operator}
+				if c.Operator != stmt.OpIsNull && c.Operator != stmt.OpIsNotNull {
+					condition.Value = term(c.Value)
+				}
+				f.Conditions = append(f.Conditions, condition)
+			}
+			source = f
+		}
+		return &Query{Root: &Project{Source: source, Star: s.Columns == nil, Columns: s.Columns}}
 	}
 	panic(fmt.Sprintf("engine: a statement of type %T", s))
 }
 
-// term of a row of an insert, as an expression: its literal, NULL among them, or its parameter.
+// term of a row of an insert, or of a condition, as an expression: its literal, NULL among them, or its parameter.
 func term(t stmt.Term) Expr {
 	switch v := t.Value.(type) {
 	case stmt.Integer:
@@ -236,6 +266,19 @@ func formatNode(b *strings.Builder, n Node, depth int) {
 			b.WriteString(")")
 		}
 		b.WriteString("\n")
+	case *Filter:
+		b.WriteString("filter")
+		for i, c := range n.Conditions {
+			if i > 0 {
+				b.WriteString(" and")
+			}
+			fmt.Fprint(b, " ", c.Column.Raw, " ", c.Operator)
+			if c.Value != nil {
+				fmt.Fprint(b, " ", formatExpr(c.Value))
+			}
+		}
+		b.WriteString("\n")
+		formatNode(b, n.Source, depth+1)
 	case *Project:
 		b.WriteString("project")
 		switch {

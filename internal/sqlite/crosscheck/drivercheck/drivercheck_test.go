@@ -612,7 +612,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 	count := func(what string) { p.y["reached: "+what]++ }
 	kind := func(o outcome) string {
 		switch {
-		case strings.HasPrefix(o.err, "s4ql: not supported: ") && strings.Contains(o.err, " for the column "):
+		case strings.HasPrefix(o.err, "s4ql: not supported: ") && (strings.Contains(o.err, " for the column ") || strings.Contains(o.err, " compared with the column ")):
 			return "a value of another type"
 		case o.notSupported():
 			return "not supported"
@@ -627,6 +627,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 		if columns == nil {
 			return
 		}
+		p.reachWhere(sel, runs, got, o, kind, columns, count)
 		for _, o := range got.runs() {
 			if o.null {
 				count(map[bool]string{true: "select * with NULL ", false: "select of names with NULL "}[sel.Columns == nil] + kind(o))
@@ -701,6 +702,60 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 	}
 }
 
+// reachWhere counts what the select sel with the arguments of each run, whose outcome of s4ql is got,
+// reaches of WHERE, on its table with the columns on o, as [pair.reach] says, with the kind of each
+// outcome as kind gives it: for each run that s4ql takes to the instance, each case of
+// [stmttest.WhereCases], and for a query that reads its rows to their end and succeeds on a table
+// with rows, whether it gives none, some, or all of them; and for any other run, one with an argument
+// that s4ql does not support or with another number of arguments than parameters.
+func (p *pair) reachWhere(sel *stmt.Select, runs [][]any, got outcome, o runner, kind func(outcome) string, columns []stmttest.TableColumn, count func(string)) {
+	tb := p.tb
+	tb.Helper()
+	if sel.Where == nil {
+		return
+	}
+	for i, out := range got.runs() {
+		if i >= len(runs) {
+			break
+		}
+		if !reachesSelect(sel, runs[i]) {
+			count("WHERE with arguments that s4ql refuses " + kind(out))
+			continue
+		}
+		var bound []any
+		for _, a := range runs[i] {
+			if v, ok := stmttest.Integers([]any{a}); ok {
+				a = v[0]
+			}
+			bound = append(bound, converted(a))
+		}
+		for _, what := range stmttest.WhereCases(columns, sel, bound) {
+			count(what + " " + kind(out))
+		}
+		if out.failed != "" || got.call != callQuery && got.call != callPrepareQuery && got.call != callStmtQuery {
+			continue
+		}
+		table, _ := p.columnsIn(o, sel.Table.Value)
+		var n int
+		is.NotError(tb, o.QueryRowContext(tb.Context(), "select count(*) from "+stmttest.Quote(table)).Scan(&n))
+		switch {
+		case n == 0:
+		case len(out.rows) == 0:
+			count("WHERE that gives no row of a table with rows")
+		case len(out.rows) == n:
+			count("WHERE that gives every row of a table with rows")
+		default:
+			count("WHERE that gives some rows of a table")
+		}
+	}
+}
+
+// reachesSelect reports whether s4ql takes the select sel with args to the instance: with one
+// argument for each parameter, each one that s4ql supports.
+func reachesSelect(sel *stmt.Select, args []any) bool {
+	return len(args) == sel.Parameters() && argumentRefusal(args) == ""
+}
+
 // argumentKind of the argument a, for a count of what a test reaches, as [stmttest.ArgumentKind]
 // names it, and for a kind of nil that database/sql hands the driver as nil, or as a nil []byte,
 // "NULL as" or "nil []byte as" and its Go type.
@@ -769,9 +824,9 @@ const (
 	// a type or a value that no column holds, which SQLite binds: it is checked against s4ql's rule
 	// by [pair.checkRefused], and not run in SQLite.
 	excusedArgument = "an argument that s4ql does not support, checked against s4ql's rule"
-	// excusedType is an insert of a value, a literal or an argument, of another type than its column,
-	// which SQLite converts or refuses with an error of its own: it is checked against s4ql's rule by
-	// [pair.checkRefused], and not run in SQLite.
+	// excusedType is an insert or a select with a value, a literal or an argument, of another type
+	// than its column, which SQLite converts, compares as it is, or refuses with an error of its own:
+	// it is checked against s4ql's rule by [pair.checkRefused], and not run in SQLite.
 	excusedType = "a value of another type than its column, checked against s4ql's rule"
 	// excusedLevel is a begin with another isolation level than the default and serializable, which
 	// s4ql refuses by its rule, where mattn ignores the level: it is checked against the rule by
@@ -1338,28 +1393,28 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 }
 
 // checkQuoted s4ql's outcome got of src, which holds the statement s, run where SQLite runs on o,
-// when s is a select whose first name that the table does not have is in double quotes. mattn's
-// SQLite reads such a name as a string, where the pinned build of SQLite, which the engine's tests
-// compare with, gives `no such column`, because it takes double quotes for names only (DQS=0). So
-// such a select is not run in mattn's SQLite: each run must fail when the statement runs, since
-// Prepare checks only the text, with the pinned build's error, `no such column: "x" - should this be
-// a string literal in single-quotes?`. It reports whether s is such a select, and gives what
-// differs, or "".
+// when s is a select whose name that SQLite's `no such column` names, as [stmttest.MissingColumn]
+// gives it, is in double quotes, in the select list or in a condition. mattn's SQLite reads such a
+// name as a string, where the pinned build of SQLite, which the engine's tests compare with, gives
+// `no such column`, because it takes double quotes for names only (DQS=0). So such a select is not
+// run in mattn's SQLite: each run must fail when the statement runs, since Prepare checks only the
+// text, with the pinned build's error, `no such column: "x" - should this be a string literal in
+// single-quotes?`. It reports whether s is such a select, and gives what differs, or "".
 func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) (string, bool) {
 	p.tb.Helper()
 	sel, ok := s.(*stmt.Select)
-	if !ok || sel.Columns == nil {
+	if !ok {
 		return "", false
 	}
 	_, columns := p.columnsIn(o, sel.Table.Value)
 	if columns == nil {
 		return "", false
 	}
-	at := slices.IndexFunc(sel.Columns, func(n stmt.Name) bool { return stmttest.ColumnOf(columns, n) < 0 })
-	if at < 0 || sel.Columns[at].Raw[0] != '"' {
+	name, missing := stmttest.MissingColumn(columns, sel)
+	if !missing || name.Raw[0] != '"' {
 		return "", false
 	}
-	want := fmt.Sprintf(`1/1: no such column: "%v" - should this be a string literal in single-quotes?`, sel.Columns[at].Value)
+	want := fmt.Sprintf(`1/1: no such column: "%v" - should this be a string literal in single-quotes?`, name.Value)
 	for _, r := range got.runs() {
 		if r.failed == "" || r.failed == "prepare" || r.err != want {
 			return fmt.Sprintf("%q: s4ql gives %v, and the pinned build of SQLite %q when the statement runs", src, got, want), true
@@ -1515,16 +1570,29 @@ func reaches(src string, args []any) bool {
 }
 
 // typeRefusal is the "not supported" of the statement s of the text src, with the arguments args,
-// which s4ql supports, when it is an insert that SQLite prepares where the call runs, outside a
-// read-only transaction, with a value for each column, and its value of a column, a literal or an
-// argument, is of another type than the column: for the first such column in the order of the table,
-// as [stmttest.TypeRule] gives it. It is "" otherwise, also for an insert that leaves a column
+// which s4ql supports, when it is an insert or a select with WHERE that SQLite prepares where the
+// call runs, and its value of a column, a literal or an argument, is of another type than the
+// column. For an insert, outside a read-only transaction, with a value for each column, it is for
+// the first such column in the order of the table, as [stmttest.TypeRule] gives it; for a select, in
+// any transaction, for the first such condition in the order of the text, as
+// [stmttest.ConditionRule] gives it. It is "" otherwise, also for an insert that leaves a column
 // without a value, which gets SQLite's `NOT NULL constraint failed` first.
 func (p *pair) typeRefusal(src string, s stmt.Statement, args []any) string {
 	tb := p.tb
 	tb.Helper()
-	insert, ok := s.(*stmt.Insert)
-	if !ok || (p.tx != nil && p.tx.readOnly) {
+	var table stmt.Name
+	switch s := s.(type) {
+	case *stmt.Insert:
+		if p.tx != nil && p.tx.readOnly {
+			return ""
+		}
+		table = s.Table
+	case *stmt.Select:
+		if s.Where == nil {
+			return ""
+		}
+		table = s.Table
+	default:
 		return ""
 	}
 	_, o, _ := p.where(callExec, src)
@@ -1533,7 +1601,7 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any) string {
 		return ""
 	}
 	is.NotError(tb, ps.Close())
-	table, columns := p.columns(insert.Table.Value)
+	name, columns := p.columns(table.Value)
 	var bound []any
 	for _, a := range args {
 		if v, ok := stmttest.Integers([]any{a}); ok {
@@ -1541,7 +1609,10 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any) string {
 		}
 		bound = append(bound, converted(a))
 	}
-	return stmttest.TypeRule(table, columns, insert, bound)
+	if s, ok := s.(*stmt.Select); ok {
+		return stmttest.ConditionRule(name, columns, s, bound)
+	}
+	return stmttest.TypeRule(name, columns, s.(*stmt.Insert), bound)
 }
 
 // columns of the table with the name, as SQLite compares names, in SQLite where a call runs, in the
@@ -1823,7 +1894,9 @@ var sequences = map[string][]step{
 		{callExecArgument, "drop table", "exec with an argument: exec failed with 1/1: incomplete input"},
 		{callExecArgument, "selec", `exec with an argument: exec failed with 1/1: near "selec": syntax error`},
 		{callExecArgument, "select v1 from t1 where", "exec with an argument: exec failed with 1/1: incomplete input"},
-		{callExecArgument, "select * from t1 where v1 = 1", "exec with an argument: exec failed with s4ql: not supported: WHERE clause (at offset 17)"},
+		{callExecArgument, "select * from t1 order by v1", "exec with an argument: exec failed with s4ql: not supported: ORDER BY clause (at offset 17)"},
+		{callExecArgument, "select * from t1 where v1 = 1 or v1 = 2", "exec with an argument: exec failed with s4ql: not supported: OR (at offset 30)"},
+		{callExecArgument, "select * from t1 where v1 = 1", "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
 		{callExecArgument, "insert into t1 (v1) values (? ?)", `exec with an argument: exec failed with 1/1: near "?": syntax error`},
 		{callExecArgument, "insert into t1 (v1) values (?)", "exec with an argument: exec failed with 1/1: no such table: t1"},
 		{callExecArgument, " ; -- nothing", "exec with an argument: exec failed with s4ql: not supported: a text that holds no statement"},
@@ -1841,6 +1914,30 @@ var sequences = map[string][]step{
 		{callExecArgument, "insert into T1 (V1) values ( ? );", "exec with an argument: exec failed with 19/1555: UNIQUE constraint failed: t1.v1"},
 		{callExec, "insert into t1 (v1) values (?)", "exec: exec failed with s4ql: wrong number of arguments: 0 for a statement with 1 parameter"},
 		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows int64:1`},
+	},
+	"selects with WHERE": {
+		{callExec, "select * from t1 where v1 = 1", "exec: exec failed with 1/1: no such table: t1"},
+		{callExec, "create table t1 (v1 int primary key, v2 text) strict, without rowid", "exec: 0 affected, last insert id 0"},
+		{callExec, "insert into t1 values (1, 'a')", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t1 values (2, null)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t1 values (3, 'c')", "exec: 1 affected, last insert id 0"},
+		{callQuery, "select * from t1 where v1 >= 2 and v1 < 10 and v2 is not null", `query: columns "v1,v2" of types "INT,TEXT", rows int64:3,string:c`},
+		{callQueryArgument, "select v2 from t1 where v1 = ?", `query with an argument: columns "v2" of types "TEXT", rows string:a`},
+		{callPrepareQuery, "select v1 from t1 where v2 is null", `prepare, query: columns "v1" of types "INT", rows int64:2`},
+		{callQueryArgument, "select v1 from t1 where v1 > ? and v2 != 'c'", `query with an argument: columns "v1" of types "INT", rows `},
+		{callQuery, "select v1 from t1 where v2 = null", `query: columns "v1" of types "INT", rows `},
+		{callQuery, "select v1 from t1 where x is null and y = 1", "query: query failed with 1/1: no such column: x"},
+		{callQuery, "select v1 from t1 where x is null and y is null", "query: query failed with 1/1: no such column: y"},
+		{callQuery, "select x from t1 where y = 1", "query: query failed with 1/1: no such column: x"},
+		// s4ql's rule for a value of another type than its column, in the order of the text.
+		{callQuery, "select * from t1 where v2 is null and v1 = '1' and v2 = 2", "query: query failed with s4ql: not supported: a string literal compared with the column t1.v1 of type INT"},
+		{callQueryArgument, "select * from t1 where v2 = ?", "query with an argument: query failed with s4ql: not supported: argument 1, which is an integer, compared with the column t1.v2 of type TEXT"},
+		{callPrepareQuery, "select * from t1 where v1 = 1 or v1 = 2", "prepare, query: prepare failed with s4ql: not supported: OR (at offset 30)"},
+		{callBegin, "", "begin"},
+		{callExec, "insert into t1 values (4, 'd')", "exec: 1 affected, last insert id 0"},
+		{callQuery, "select v1 from t1 where v1 > 2", `query: columns "v1" of types "INT", rows int64:3 int64:4`},
+		{callRollback, "", "rollback"},
+		{callQuery, "select v1 from t1 where v1 > 2", `query: columns "v1" of types "INT", rows int64:3`},
 	},
 	"a prepared statement with a parameter, run several times, and a query with an argument": {
 		{callExec, t1, "exec: 0 affected, last insert id 0"},
@@ -2664,6 +2761,37 @@ func TestGenerated(t *testing.T) {
 		"insert with NULL in the key: NOT NULL constraint failed": 9, "insert with NULL in a column that does not take it: NOT NULL constraint failed": 5,
 		"insert of NULL beside a value of another type NOT NULL constraint failed": 2, "insert of NULL beside a value of another type a value of another type": 3,
 		"select * with NULL ok": 25, "select of names with NULL ok": 15,
+
+		// Slice 7, a third of what the run gave on 2026-11-20 when the sequence wrote WHERE: each
+		// operator on the key and on another column; each way that the plan reads rows; a select that
+		// gives no row, some rows, and every row of a table with rows; each kind of value, by literal and
+		// by argument, NULL by both; and the faults: a column that the table does not have, in a
+		// comparison and under IS NULL or IS NOT NULL, alone, before, and after other conditions, and in
+		// double quotes; a value of another type; arguments that s4ql refuses; a column tested twice;
+		// and contradicting conditions.
+		"= on the key ok": 10, "!= on the key ok": 12, "< on the key ok": 18, "<= on the key ok": 19, "> on the key ok": 22, ">= on the key ok": 15,
+		"IS NULL on the key ok": 10, "IS NOT NULL on the key ok": 8,
+		"= on another column ok": 6, "!= on another column ok": 5, "< on another column ok": 6, "<= on another column ok": 5, "> on another column ok": 7,
+		">= on another column ok": 8, "IS NULL on another column ok": 2, "IS NOT NULL on another column ok": 5,
+		"WHERE that reads no row ok": 17, "WHERE that reads a get of one key ok": 6, "WHERE that reads a scan from a lower bound ok": 8,
+		"WHERE that reads a scan to an upper bound ok": 9, "WHERE that reads a scan between two bounds ok": 9,
+		"WHERE that reads a scan between two bounds that hold no key ok": 7, "WHERE that reads a scan of every row ok": 23,
+		"WHERE that gives no row of a table with rows": 20, "WHERE that gives some rows of a table": 5, "WHERE that gives every row of a table with rows": 6,
+		"comparison with literal integer ok": 35, "comparison with literal real ok": 14, "comparison with literal real -0.0 ok": 2, "comparison with literal text ok": 12,
+		"comparison with literal empty text ok": 5, "comparison with literal blob ok": 12, "comparison with literal empty blob ok": 2, "comparison with literal null ok": 6,
+		"comparison with argument int64 ok": 16, "comparison with argument float64 ok": 7, "comparison with argument float64 -0.0 ok": 1,
+		"comparison with argument string ok": 9, "comparison with argument empty string ok": 2, "comparison with argument []uint8 ok": 4,
+		"comparison with argument empty []byte ok": 2, "comparison with argument nil ok": 3,
+		"WHERE with a column that the table does not have in a comparison, alone no such column":                                6,
+		"WHERE with a column that the table does not have in a comparison, before other conditions no such column":              13,
+		"WHERE with a column that the table does not have in a comparison, after other conditions no such column":               7,
+		"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column":                   1,
+		"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, before other conditions no such column": 4,
+		"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, after other conditions no such column":  2,
+		"WHERE with a column in double quotes that the table does not have no such column":                                      21,
+		"WHERE with a value of another type a value of another type":                                                            23, "WHERE with arguments that s4ql refuses not supported": 11,
+		"WHERE with arguments that s4ql refuses wrong number of arguments": 12, "WHERE that tests a column more than once ok": 44,
+		"WHERE with contradicting conditions ok": 10,
 	} {
 		if y["reached: "+kind] < least {
 			t.Errorf("the run reaches %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y["reached: "+kind], least)
@@ -2676,8 +2804,8 @@ func TestGenerated(t *testing.T) {
 	// a text that SQLite refuses at its prepare and s4ql when it runs ([excusedPrepare]); a create
 	// table that SQLite finds started ([excusedStartedTable]); a call with another number of
 	// arguments than parameters ([excusedArguments]), or with an argument that s4ql does not support
-	// ([excusedArgument]); an insert of a value of another type than its column ([excusedType]); a
-	// begin with an isolation level that s4ql refuses ([excusedLevel]); a
+	// ([excusedArgument]); an insert or a select with a value of another type than its column
+	// ([excusedType]); a begin with an isolation level that s4ql refuses ([excusedLevel]); a
 	// statement while rows of its transaction are open, which s4ql refuses ([excusedRowsOpen]); a
 	// begin on a pinned connection whose transaction is open, which both refuse ([excusedTxOpen]); and
 	// a statement prepared outside a transaction through the pool, whose names only the transaction
@@ -2698,10 +2826,25 @@ func TestGenerated(t *testing.T) {
 	// of [nilBytes], the counts went from 1075, 9, 396, 184, 161, 70, 29, 30, 68, and 32 to 1060, 10,
 	// 426, 200, 161, 74, 46, 29, 53, and 45: both draw other random numbers, which moves every count,
 	// the calls and the transactions too; and of their own, a call around a NULL argument has a nil
-	// []byte in its place, which took excusedArgument up.
+	// []byte in its place, which took excusedArgument up. The engine and the driver of slice 7 took
+	// excusedPrepare from 1060 to 1063, excusedType from 161 to 169, and excusedQuoted from 45 to 48,
+	// with the generator drawing as before: s4ql runs the two selects with WHERE of
+	// [stmttest.Others], which it refused as not supported, and of these 3 compare a column that the
+	// table does not have, which SQLite gives at prepare and s4ql when the statement runs, 8 compare a
+	// value of another type than its column, and 3 compare a name in double quotes that is no column.
+	// When the sequence wrote WHERE, the counts went from 1063, 10, 426, 200, 169, 74, 46, 29, 53, and
+	// 48 to 1178, 11, 411, 260, 231, 69, 24, 24, 58, and 69: the sequence draws other random numbers,
+	// which moves every count, the calls and the transactions too; and of its own, one select in two
+	// has a WHERE, which names a column that the table does not have now and then, which SQLite gives
+	// at prepare and s4ql when the statement runs, which took excusedPrepare up, and in double quotes
+	// in some of them, which took excusedQuoted up; which compares a value of another type than its
+	// column now and then, which took excusedType up; and whose parameters have arguments that s4ql
+	// does not support now and then, which took excusedArgument up. A select with WHERE fails more
+	// often than one without, so fewer rows are left open in a transaction, which took
+	// excusedRowsOpen down.
 	want := map[string]int{
-		excusedPrepare: 1060, excusedStartedTable: 10, excusedArguments: 426, excusedArgument: 200, excusedType: 161,
-		excusedLevel: 74, excusedRowsOpen: 46, excusedTxOpen: 29, excusedOutside: 53, excusedQuoted: 45,
+		excusedPrepare: 1178, excusedStartedTable: 11, excusedArguments: 411, excusedArgument: 260, excusedType: 231,
+		excusedLevel: 69, excusedRowsOpen: 24, excusedTxOpen: 24, excusedOutside: 58, excusedQuoted: 69,
 	}
 	kinds := slices.Collect(maps.Keys(want))
 	for name := range y {

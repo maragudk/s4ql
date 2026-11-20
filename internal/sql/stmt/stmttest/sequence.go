@@ -8,12 +8,13 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
 	"unicode/utf8"
 
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
-// Sequence of random statements of slices 1, 2, 4, 5, and 6 that meet at a few tables and columns, each
+// Sequence of random statements of slices 1, 2, 4, 5, 6, and 7 that meet at a few tables and columns, each
 // named in several spellings that SQLite takes for one name and in some that it takes for others,
 // with values from a small set so that keys repeat, and with statements that are not supported and
 // texts that SQLite refuses mixed in.
@@ -30,9 +31,11 @@ import (
 // column out of its list, names a column that the shape may not have, has a value more or less, has
 // a value of any type, which is mostly another than its column, for one column or for two, or has
 // NULL for any column, also the key; so some inserts have two faults. A select names * or columns
-// of the shape in any order, also one twice, and now and then a name that the shape may not have.
-// The small sets of values hold keys that SQLite takes for one, such as 0.0 and -0.0, so that every
-// type meets a key that exists.
+// of the shape in any order, also one twice, and now and then a name that the shape may not have,
+// and one time in two has a WHERE, as [Sequence.where] draws it, whose values are mostly those that
+// the inserts gave its columns, their neighbours, and the edges of each type. The small sets of
+// values hold keys that SQLite takes for one, such as 0.0 and -0.0, so that every type meets a key
+// that exists.
 //
 // One value in three of an insert is a plain ? with the value as its argument, nil for NULL, and
 // some calls, as [Sequence.Next] says, have arguments around those that s4ql supports: none for a
@@ -50,7 +53,14 @@ type Sequence struct {
 	// shapes of the tables by their names, folded as SQLite compares names: the columns of each in
 	// the order of the table, with the fold of each name as its Name.Value.
 	shapes map[string][]stmt.Column
+	// stored are values that the inserts of the sequence gave, by the folds of the names of their
+	// table and their column, the last [storedValues] of each, whether SQLite took the insert or not,
+	// for the values of the conditions of a WHERE.
+	stored map[[2]string][]stmt.Value
 }
+
+// storedValues is the most values of a column that a [Sequence] keeps for its conditions.
+const storedValues = 12
 
 // sequenceColumns is the most columns of a table of a [Sequence].
 const sequenceColumns = 3
@@ -131,7 +141,7 @@ func NewSequence(r Rand) (*Sequence, error) {
 	if err != nil {
 		return nil, err
 	}
-	q := &Sequence{r: r, spelled: map[string][]string{}, shapes: map[string][]stmt.Column{}}
+	q := &Sequence{r: r, spelled: map[string][]string{}, shapes: map[string][]stmt.Column{}, stored: map[[2]string][]stmt.Value{}}
 	tableNames, columnNames := common[0], common[1]
 	for range 1 + r.IntN(2) {
 		q.tables = append(q.tables, spellings(r, tableNames[r.IntN(len(tableNames))])...)
@@ -153,7 +163,7 @@ func NewSequence(r Rand) (*Sequence, error) {
 	}
 	pools[CreateColumn], pools[InsertColumn], pools[SelectColumn] = q.columns, q.columns, q.columns
 	q.g = NewGenerator(r, pools)
-	q.g.Columns, q.g.Create, q.g.Insert, q.g.Select = sequenceColumns, q.create, q.insert, q.selectList
+	q.g.Columns, q.g.Create, q.g.Insert, q.g.Select, q.g.Where = sequenceColumns, q.create, q.insert, q.selectList, q.where
 	q.g.Parameters = 3
 	return q, nil
 }
@@ -315,7 +325,35 @@ func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 			values = values[:len(values)-1]
 		}
 	}
+	q.store(table, shape, list, values)
 	return list, values
+}
+
+// store the values of an insert into table, whose shape is shape, with the list of columns list, or
+// nil for the order of the shape, among the values of its columns that a WHERE draws from: each that
+// is not NULL, for the column of its place, without a random number, so that the inserts draw as
+// before.
+func (q *Sequence) store(table stmt.Name, shape []stmt.Column, list []string, values []stmt.Value) {
+	for i, v := range values {
+		var column string
+		switch {
+		case list != nil && i < len(list):
+			column = nameOf(list[i], 0).Fold()
+		case list == nil && i < len(shape):
+			column = shape[i].Name.Value
+		default:
+			continue
+		}
+		if _, ok := v.(stmt.Null); ok {
+			continue
+		}
+		key := [2]string{table.Fold(), column}
+		vs := q.stored[key]
+		if len(vs) == storedValues {
+			vs = vs[1:]
+		}
+		q.stored[key] = append(slices.Clip(vs), v)
+	}
 }
 
 // selectList of a select of table, as [Generator.Select] gives it: * one time in two, and otherwise
@@ -339,6 +377,224 @@ func (q *Sequence) selectList(table stmt.Name) []string {
 		}
 	}
 	return names
+}
+
+// comparisons are the operators of a condition that compare a column with a value.
+var comparisons = []stmt.Operator{stmt.OpEqual, stmt.OpNotEqual, stmt.OpLess, stmt.OpLessOrEqual, stmt.OpGreater, stmt.OpGreaterOrEqual}
+
+// inverses of the operators: the condition with the inverse of a condition's operator, on its column
+// and with its value, is false wherever the condition is true.
+var inverses = map[stmt.Operator]stmt.Operator{
+	stmt.OpEqual: stmt.OpNotEqual, stmt.OpNotEqual: stmt.OpEqual, stmt.OpLess: stmt.OpGreaterOrEqual, stmt.OpGreaterOrEqual: stmt.OpLess,
+	stmt.OpLessOrEqual: stmt.OpGreater, stmt.OpGreater: stmt.OpLessOrEqual, stmt.OpIsNull: stmt.OpIsNotNull, stmt.OpIsNotNull: stmt.OpIsNull,
+}
+
+// where gives the conditions of the WHERE of a select of table, as [Generator.Where] gives them:
+// none one time in two. Otherwise, one time in five, a range of the key, a lower and an upper bound,
+// each open or closed, in either order, of two values as [Sequence.conditionValue] draws them, the
+// lower first in three ranges of four where they compare, and from none to two more conditions; or
+// else one or two conditions, or one time in eight from four to seven. The column of each such
+// condition is that of an earlier condition one time in four, one that the shape does not have one
+// time in ten, which can be in double quotes, and otherwise the key one time in three and any column
+// of the shape, the key too, else. Its operator is IS NULL or IS NOT NULL one time in twelve each, and
+// otherwise a comparison, with a value as [Sequence.conditionValue] draws it. One WHERE in eight then
+// has one more condition, the inverse of one of its conditions, which contradicts it, and for a
+// bound of the key leaves the range of the two without a key.
+func (q *Sequence) where(table stmt.Name) []stmt.Condition {
+	r := q.r
+	if r.IntN(2) == 0 {
+		return nil
+	}
+	shape := q.shapeOf(table)
+	key := &shape[slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })]
+	var cs []stmt.Condition
+	n := 1 + r.IntN(2)
+	switch {
+	case r.IntN(5) == 0:
+		lower := stmt.Condition{Column: stmt.Name{Raw: q.spell(key.Name.Value)}, Operator: []stmt.Operator{stmt.OpGreater, stmt.OpGreaterOrEqual}[r.IntN(2)]}
+		upper := stmt.Condition{Column: stmt.Name{Raw: q.spell(key.Name.Value)}, Operator: []stmt.Operator{stmt.OpLess, stmt.OpLessOrEqual}[r.IntN(2)]}
+		lower.Value.Value, upper.Value.Value = q.conditionValue(table, key.Name.Value, key.Type), q.conditionValue(table, key.Name.Value, key.Type)
+		a, b := termValue(lower.Value, nil), termValue(upper.Value, nil)
+		if a != nil && b != nil && reflect.TypeOf(a) == reflect.TypeOf(b) && compareValues(a, b) > 0 && r.IntN(4) != 0 {
+			lower.Value, upper.Value = upper.Value, lower.Value
+		}
+		cs = []stmt.Condition{lower, upper}
+		if r.IntN(2) == 0 {
+			cs[0], cs[1] = cs[1], cs[0]
+		}
+		n = r.IntN(3)
+	case r.IntN(8) == 0:
+		n = 4 + r.IntN(4)
+	}
+	for range n {
+		var c stmt.Condition
+		// column of the condition in the shape, or nil for one that the shape does not have.
+		var column *stmt.Column
+		switch {
+		case len(cs) > 0 && r.IntN(4) == 0:
+			c.Column.Raw = cs[r.IntN(len(cs))].Column.Raw
+			if column = columnOfShape(shape, nameOf(c.Column.Raw, 0).Fold()); column != nil {
+				c.Column.Raw = q.spell(column.Name.Value)
+			}
+		case r.IntN(10) == 0:
+			c.Column.Raw = q.missing(shape)
+		case r.IntN(3) == 0:
+			column = key
+			c.Column.Raw = q.spell(column.Name.Value)
+		default:
+			column = &shape[r.IntN(len(shape))]
+			c.Column.Raw = q.spell(column.Name.Value)
+		}
+		switch r.IntN(12) {
+		case 0:
+			c.Operator = stmt.OpIsNull
+		case 1:
+			c.Operator = stmt.OpIsNotNull
+		default:
+			c.Operator = comparisons[r.IntN(len(comparisons))]
+			t, fold := q.anyType(), ""
+			if column != nil {
+				t, fold = column.Type, column.Name.Value
+			}
+			c.Value.Value = q.conditionValue(table, fold, t)
+		}
+		cs = append(cs, c)
+	}
+	if len(cs) > 0 && r.IntN(8) == 0 {
+		c := cs[r.IntN(len(cs))]
+		c.Operator = inverses[c.Operator]
+		cs = append(cs, c)
+	}
+	return cs
+}
+
+// columnOfShape of the fold of a name: the column of the shape of that name, or nil.
+func columnOfShape(shape []stmt.Column, fold string) *stmt.Column {
+	for i := range shape {
+		if shape[i].Name.Value == fold {
+			return &shape[i]
+		}
+	}
+	return nil
+}
+
+// missing gives the raw text of a name of a column of the sequence that the shape does not have.
+// The sequence has more names than a shape has columns, so there is one.
+func (q *Sequence) missing(shape []stmt.Column) string {
+	var raws []string
+	for _, raw := range q.columns {
+		if columnOfShape(shape, nameOf(raw, 0).Fold()) == nil {
+			raws = append(raws, raw)
+		}
+	}
+	return raws[q.r.IntN(len(raws))]
+}
+
+// conditionValue for a condition on the column of the fold of a select of table, of type t, or of a
+// type at random for "", so that a condition is often true of some rows and false of others: NULL one
+// time in twenty; a value of another type than t one time in twenty; a value that an insert of the
+// sequence gave the column, as [Sequence.store] keeps them, two times in five, and a neighbour of
+// one, as [Sequence.neighbour] gives it, one time in eight; an edge of t, as [edgeOf] gives it, one
+// time in ten; and otherwise as [Sequence.valueOf] gives it.
+func (q *Sequence) conditionValue(table stmt.Name, fold string, t stmt.Type) stmt.Value {
+	r := q.r
+	stored := q.stored[[2]string{table.Fold(), fold}]
+	switch n := r.IntN(40); {
+	case n < 2:
+		return stmt.Null{}
+	case n < 4:
+		for {
+			if other := q.anyType(); kindOf(other) != kindOf(t) {
+				return q.valueOf(other)
+			}
+		}
+	case n < 20 && len(stored) > 0:
+		return stored[r.IntN(len(stored))]
+	case n < 25 && len(stored) > 0:
+		return q.neighbour(stored[r.IntN(len(stored))])
+	case n < 29:
+		return edgeOf(r, t)
+	}
+	return q.valueOf(t)
+}
+
+// kindOf the values of a column of the type t: INT and INTEGER hold one kind.
+func kindOf(t stmt.Type) stmt.Type {
+	if t == stmt.TypeInteger {
+		return stmt.TypeInt
+	}
+	return t
+}
+
+// edgeOf the type t at random from r: for an integer the limits of 64 bits, 0, -1, and 1; for a real
+// 0.0, -0.0, the largest and the smallest finite reals of each sign; for text the empty text, the
+// greatest code point, and the least that a text holds; and for a blob the empty blob, one zero byte,
+// and one byte of 255.
+func edgeOf(r Rand, t stmt.Type) stmt.Value {
+	switch t {
+	case stmt.TypeReal:
+		return stmt.Real([]float64{0, math.Copysign(0, -1), math.MaxFloat64, -math.MaxFloat64, math.SmallestNonzeroFloat64, -math.SmallestNonzeroFloat64}[r.IntN(6)])
+	case stmt.TypeText:
+		return stmt.Text([]string{"", "\U0010ffff", "\x01"}[r.IntN(3)])
+	case stmt.TypeBlob:
+		return stmt.Blob([][]byte{{}, {0}, {0xff}}[r.IntN(3)])
+	}
+	return stmt.Integer([]int64{math.MinInt64, math.MaxInt64, 0, -1, 1}[r.IntN(5)])
+}
+
+// neighbour of the value v, of its type: the next integer above or below, the next real above or
+// below, or for text and a blob a prefix of it, the least value above it, or the value with its last
+// character or byte one more or one less, whichever of these stays a value of its type, and v where
+// none does.
+func (q *Sequence) neighbour(v stmt.Value) stmt.Value {
+	r := q.r
+	up := r.IntN(2) == 0
+	switch v := v.(type) {
+	case stmt.Integer:
+		switch {
+		case up && v < math.MaxInt64, v == math.MinInt64:
+			return v + 1
+		default:
+			return v - 1
+		}
+	case stmt.Real:
+		f := math.Nextafter(float64(v), math.Inf(map[bool]int{true: 1, false: -1}[up]))
+		if math.IsInf(f, 0) {
+			return v
+		}
+		return stmt.Real(f)
+	case stmt.Text:
+		runes := []rune(string(v))
+		switch n := r.IntN(3); {
+		case n == 0 && len(runes) > 0:
+			return stmt.Text(string(runes[:r.IntN(len(runes))]))
+		case n == 1 || len(runes) == 0:
+			// The least text above v: v and the least character that a text holds.
+			return v + "\x01"
+		}
+		last := &runes[len(runes)-1]
+		if c := *last + rune(map[bool]int{true: 1, false: -1}[up]); c > 0 && c <= unicode.MaxRune && (c < 0xd800 || c > 0xdfff) {
+			*last = c
+		}
+		return stmt.Text(string(runes))
+	case stmt.Blob:
+		switch n := r.IntN(3); {
+		case n == 0 && len(v) > 0:
+			return slices.Clone(v[:r.IntN(len(v))])
+		case n == 1 || len(v) == 0:
+			// The least blob above v: v and a zero byte.
+			return append(slices.Clone(v), 0)
+		}
+		b := slices.Clone(v)
+		switch {
+		case up && b[len(b)-1] < 0xff:
+			b[len(b)-1]++
+		case !up && b[len(b)-1] > 0:
+			b[len(b)-1]--
+		}
+		return b
+	}
+	return v
 }
 
 // valueOf the type t: mostly from a small set, so that keys repeat, and otherwise as [ValueOf]
@@ -402,9 +658,9 @@ func (q *Sequence) Like(a any) any {
 // a table, %[2]v for a column, and %[3]v for a small integer: statements that the pass does not
 // support, among them literals that SQLite reads as an infinite real or as a real for an integer
 // outside 64 bits, texts that SQLite refuses with a syntax error, and texts without a statement.
-// Three are statements that s4ql supports, which a sequence does not mark as [Call.Supported], as it
+// Five are statements that s4ql supports, which a sequence does not mark as [Call.Supported], as it
 // marks none of the texts of Others: an insert without a list of columns and a select of a column, of
-// slice 5, and an insert of NULL, of slice 6.
+// slice 5, an insert of NULL, of slice 6, and two selects with WHERE, of slice 7.
 var Others = []string{
 	"create table %[1]v (%[2]v any primary key) strict, without rowid",
 	"create table %[1]v (%[2]v varchar primary key) strict, without rowid",

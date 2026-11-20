@@ -17,6 +17,10 @@ type reader interface {
 	table(ctx context.Context, name string) (*s4qlpb.CreateTable, error)
 	// scan the rows of the table with the name, in the order of the primary key.
 	scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Value, error]
+	// scanRange is scan of the rows whose key is within the bounds lower and upper, as SQLite
+	// compares the keys, of a table whose primary key is one column. Each bound has a value of the
+	// type of the key, or none.
+	scanRange(ctx context.Context, name string, lower, upper bound) iter.Seq2[[]*s4qlpb.Value, error]
 	// get the row of the table with the name that has the primary key, or nil if there is none.
 	get(ctx context.Context, name string, key []*s4qlpb.Value) ([]*s4qlpb.Value, error)
 }
@@ -88,6 +92,18 @@ type writeTx interface {
 	// error that every call of the transaction gives, which matches [core.ErrTxLeaseLost]. The roll
 	// back of such a transaction returns nil.
 	lost() error
+}
+
+// bound of a scan by the key: value is the first key that a lower bound lets through and the last
+// that an upper bound does, and the row whose key is value is left out if open. A bound without a
+// value bounds nothing.
+type bound struct {
+	value *s4qlpb.Value
+	open  bool
+}
+
+func (b bound) core() core.Bound {
+	return core.Bound{Value: b.value, Open: b.open}
 }
 
 // coreDB is the [database] of a [*core.DB].
@@ -184,6 +200,10 @@ func (c coreReadTx) scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.V
 	return fromCoreSeq(c.r.Scan(ctx, name))
 }
 
+func (c coreReadTx) scanRange(ctx context.Context, name string, lower, upper bound) iter.Seq2[[]*s4qlpb.Value, error] {
+	return fromCoreSeq(c.r.ScanRange(ctx, name, lower.core(), upper.core()))
+}
+
 func (c coreReadTx) get(ctx context.Context, name string, key []*s4qlpb.Value) ([]*s4qlpb.Value, error) {
 	row, err := c.r.Get(ctx, name, key)
 	return row, fromCore(err)
@@ -212,6 +232,10 @@ func (c coreTx) table(ctx context.Context, name string) (*s4qlpb.CreateTable, er
 
 func (c coreTx) scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Value, error] {
 	return fromCoreSeq(c.tx.Scan(ctx, name))
+}
+
+func (c coreTx) scanRange(ctx context.Context, name string, lower, upper bound) iter.Seq2[[]*s4qlpb.Value, error] {
+	return fromCoreSeq(c.tx.ScanRange(ctx, name, lower.core(), upper.core()))
 }
 
 func (c coreTx) get(ctx context.Context, name string, key []*s4qlpb.Value) ([]*s4qlpb.Value, error) {

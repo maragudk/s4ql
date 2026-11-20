@@ -314,6 +314,15 @@ func (r *ReadTx) Get(ctx context.Context, name string, key []*s4qlpb.Value) ([]*
 // Scan the rows of the table with the given name, in the order of the primary key. The sequence
 // ends with an error if the scan fails, which wraps [ErrNoTable] if there is no such table.
 func (r *ReadTx) Scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Value, error] {
+	return r.ScanRange(ctx, name, Bound{}, Bound{})
+}
+
+// ScanRange is [ReadTx.Scan] of the rows whose primary key is within the bounds lower and upper, as
+// SQLite compares the keys. A bound with a value is only for a table whose primary key is one
+// column, and the sequence ends with an error that wraps [ErrInvalid] for one of another table and
+// for a value that is not a key of the table, and with [ErrTooBig] for a text or a blob that is
+// longer than SQLite takes, as [ReadTx.Get] fails for its key.
+func (r *ReadTx) ScanRange(ctx context.Context, name string, lower, upper Bound) iter.Seq2[[]*s4qlpb.Value, error] {
 	const operation = "scan"
 	return func(yield func([]*s4qlpb.Value, error) bool) {
 		if err := r.check(); err != nil {
@@ -326,7 +335,11 @@ func (r *ReadTx) Scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Valu
 			yield(nil, err)
 			return
 		}
-		for row, err := range r.c.scan(t) {
+		if err := t.checkBounds(r.c.limit, lower, upper); err != nil {
+			yield(nil, err)
+			return
+		}
+		for row, err := range r.c.scan(t, lower, upper) {
 			if err == nil {
 				// A read that is running when the instance stops is aborted.
 				err = r.d.stoppedError()

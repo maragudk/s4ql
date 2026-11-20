@@ -112,8 +112,8 @@ func TestTx(t *testing.T) {
 		sqliteError(t, 19, 1555, "UNIQUE constraint failed: t1.v1", err)
 		_, err = tx.ExecContext(t.Context(), "insert into t2 (v2) values (1)")
 		sqliteError(t, 1, 1, "no such table: t2", err)
-		_, err = tx.ExecContext(t.Context(), "select * from t1 where v1 = 1")
-		is.Equal(t, "WHERE clause (at offset 17)", notSupported(t, err))
+		_, err = tx.ExecContext(t.Context(), "select * from t1 order by v1")
+		is.Equal(t, "ORDER BY clause (at offset 17)", notSupported(t, err))
 		execIn(t, tx, "insert into t1 (v1) values (2)")
 		is.NotError(t, tx.Commit())
 

@@ -67,7 +67,7 @@ const LINES = 100; // the lines of the log that the page keeps
 const WINDOW = 120000; // the fake time that the field shows
 const SLICES = 240; // the bars of the field
 const SLICE = WINDOW / SLICES;
-const JUMP = 60000; // a jump of a wall clock: longer than the lease of 30 s
+const JUMP = 5000; // a jump of a wall clock: short next to the lease of 30 s, so it shows that it changes nothing
 const NS = 1e-6; // a nanosecond in ms, the unit in which the engine keeps its clocks
 const MEMORY = 1 << 30; // SQLite's memory at which the page stops
 // The fake time at which the page stops. The engine's Go heap grows by about 12.5 MB a fake hour and
@@ -102,7 +102,11 @@ const stopped = {}; // by instance: whether the visitor's Stop closed the databa
 // whole ms, data-playing is "true" while it plays, data-lines counts the lines of the log so far, and
 // data-commits the commit objects. The element #requests has data-target, the instance that the
 // requests go to, and data-writes, data-reads, and data-failed, what they got. #requests-status has
-// data-failing, "true" while the latest request that ended failed. window.s4qlPage gives
+// data-failing, "true" while the latest request that ended failed. The edge of the requests to each
+// instance, [data-wire], has data-on, "true" for the instance that they go to, and so has the
+// instance, [data-instance], in data-requests. The edge of each instance to S3, [data-edge="s3"],
+// has data-hung and data-disconnected, and its disk, [data-edge="disk"], data-failing, each "true"
+// while that fault is on. window.s4qlPage gives
 // the check the state and a hook, skip, that advances fake time at once; a visitor reaches it only
 // through the console.
 const root = document.documentElement;
@@ -271,7 +275,7 @@ function draw() {
   drawLog();
   if (!state) return;
   drawRequests();
-  for (const c of cards) drawCard(c);
+  for (const c of nodes) drawNode(c);
   drawS3();
   drawControls();
 }
@@ -303,11 +307,12 @@ function drawLog() {
 
 // The instances.
 
-let cards = []; // the cards of a and b, which wire finds
+let nodes = []; // the instances a and b in the diagram, which wire finds
 
-// wire finds the cards of the instances, and connects the buttons of the page.
+// wire finds the instances in the diagram, with their edges, disks, and clocks, and connects the
+// buttons of the page.
 function wire() {
-  cards = ["a", "b"].map((name) => {
+  nodes = ["a", "b"].map((name) => {
     const el = document.querySelector(`[data-instance="${name}"]`);
     const f = {};
     for (const node of el.querySelectorAll("[data-f]")) f[node.dataset.f] = node;
@@ -316,7 +321,8 @@ function wire() {
       b[node.dataset.a] = node;
       node.addEventListener("click", () => act(name, node.dataset.a));
     }
-    return { name, el, f, b };
+    const s3 = el.querySelector('[data-edge="s3"]'), disk = el.querySelector('[data-edge="disk"]'), clocks = el.querySelector(".clocks");
+    return { name, el, f, b, s3, disk, clocks };
   });
   for (const b of document.querySelectorAll("#requests [data-target]")) b.addEventListener("click", () => send(b.dataset.target));
   $("play").addEventListener("click", () => setPlaying(!playing));
@@ -355,7 +361,7 @@ const WORDS = {
   failed: "cannot open its database",
 };
 
-function drawCard(c) {
+function drawNode(c) {
   const st = instanceState(c.name);
   if (!st) return;
   const r = role(st);
@@ -390,27 +396,40 @@ function drawCard(c) {
   let clocks;
   if (st.state === "crashed" || st.state === "waiting") clocks = "none";
   else {
-    // Each clock where it differs from true time. The monotonic clock cannot jump, so after a pause
-    // it stays behind true time for good. The core uses it only for durations, so the card says only
-    // whether it runs.
-    const wall = wallOffset(st);
-    const w = [st.wallStopped ? "paused" : "", Math.round(wall / 1000) ? R.offset(wall) : ""].filter(Boolean).join(", ");
-    clocks = [w ? "wall " + w : "", st.monotonicStopped ? "monotonic paused" : ""].filter(Boolean).join("; ") || "true time";
+    // Whether the clocks stand still, and how far the wall clock is off true time. The monotonic
+    // clock cannot jump, so after a pause it stays behind true time for good. The core uses it only
+    // for durations, so the page says only whether it runs.
+    const off = wallOffset(st);
+    const wall = Math.round(off / 1000) ? "wall " + R.offset(off) : "";
+    clocks = [paused(st) ? "paused" : "", wall].filter(Boolean).join(", ") || "normal";
   }
   set(c.f.clocks, clocks);
+  // The dial: its mark outside goes round with true time, and its hand with the wall clock of the
+  // instance, once a minute each, so the hand falls behind while the clocks stand still, and stands
+  // off the mark by the offset of the wall clock.
+  const turn = (ms) => `rotate(${(((ms / 1000) % 60) + 60) % 60 * 6})`;
+  c.f.now.setAttribute("transform", turn(state.t));
+  c.f.hand.setAttribute("transform", turn(st.wall));
+  c.f.hand.style.visibility = clocks === "none" ? "hidden" : "";
+  c.clocks.dataset.paused = String(clocks !== "none" && paused(st));
 
   const k = calls[c.name] || { w: 0, r: 0, x: 0, why: "" };
   set(c.f.calls, `${count(k.w)} writes, ${count(k.r)} reads`);
   set(c.f.refused, k.x ? `${count(k.x)}, last: ${R.reasonWords(k.why)}` : "0");
 
   c.el.dataset.requests = String(target() === c.name);
-  set(c.b.crash, st.state === "crashed" ? "Restart" : "Crash");
-  set(c.b.stop, startable(c.name, st) ? "Start" : "Stop");
+  const crash = st.state === "crashed" ? "Restart" : "Crash", stop = startable(c.name, st) ? "Start" : "Stop";
+  set(c.b.crash, crash);
+  set(c.b.stop, stop);
+  c.b.crash.setAttribute("aria-label", `${crash} ${c.name}`);
+  c.b.stop.setAttribute("aria-label", `${stop} ${c.name}`);
+  c.s3.dataset.hung = String(!!st.networkHung);
+  c.s3.dataset.disconnected = String(!!st.networkDisconnected);
+  c.disk.dataset.failing = String(!!st.diskFailing);
   c.b.hang.setAttribute("aria-pressed", String(!!st.networkHung));
   c.b.disconnect.setAttribute("aria-pressed", String(!!st.networkDisconnected));
   c.b.disk.setAttribute("aria-pressed", String(!!st.diskFailing));
-  c.b.wall.setAttribute("aria-pressed", String(!!st.wallStopped));
-  c.b.monotonic.setAttribute("aria-pressed", String(!!st.monotonicStopped));
+  c.b.pause.setAttribute("aria-pressed", String(paused(st)));
 }
 
 // drawControls enables what makes sense now. Every action waits while another is on its way, so that a
@@ -420,7 +439,7 @@ function drawControls() {
   $("play").disabled = !ready;
   $("turbo").disabled = !ready;
   const waiting = acting || jobs.some((j) => j.act);
-  for (const c of cards) {
+  for (const c of nodes) {
     const st = instanceState(c.name);
     const off = !ready || waiting || !st;
     const crashed = !!st && st.state === "crashed";
@@ -429,7 +448,7 @@ function drawControls() {
     c.b.crash.disabled = off || notStarted;
     c.b.stop.disabled = off || !(st.state === "running" || startable(c.name, st));
     for (const a of ["hang", "disconnect", "disk"]) c.b[a].disabled = off;
-    for (const a of ["forward", "back", "wall", "monotonic"]) c.b[a].disabled = off || crashed || notStarted;
+    for (const a of ["forward", "back", "pause"]) c.b[a].disabled = off || crashed || notStarted;
     c.b.reset.disabled = off || crashed || notStarted || !touched(st);
   }
   for (const b of document.querySelectorAll("#requests [data-target]")) b.disabled = !ready || waiting;
@@ -481,8 +500,7 @@ function act(name, a) {
     case "disk": action = { do: "failDisk", ...i, on: !st.diskFailing }; break;
     case "forward": action = { do: "shiftWall", ...i, by: JUMP }; break;
     case "back": action = { do: "shiftWall", ...i, by: -JUMP }; break;
-    case "wall": action = { do: st.wallStopped ? "startWall" : "stopWall", ...i }; break;
-    case "monotonic": action = { do: st.monotonicStopped ? "startMonotonic" : "stopMonotonic", ...i }; break;
+    case "pause": action = { do: paused(st) ? "resumeClocks" : "pauseClocks", ...i }; break;
     case "reset": return resetClocks(name, st);
   }
   jobs.push({ act: action });
@@ -493,20 +511,22 @@ function act(name, a) {
 // wallOffset of the wall clock of an instance from true time, in ms.
 const wallOffset = (st) => st.wall - state.t;
 
-// touched says whether the visitor has moved the clocks of the instance: whether one stands still,
+// paused says whether the clocks of the instance stand still. The page pauses and starts both
+// together, so it takes either for both.
+const paused = (st) => !!(st.wallStopped || st.monotonicStopped);
+
+// touched says whether the visitor has moved the clocks of the instance: whether they stand still,
 // or the wall clock is off true time. A monotonic clock that a pause left behind is not touched.
-const touched = (st) => st.wallStopped || st.monotonicStopped || Math.abs(wallOffset(st)) >= NS;
+const touched = (st) => paused(st) || Math.abs(wallOffset(st)) >= NS;
 
 // resetClocks of the instance: its clocks run again, and its wall clock reads true time. The engine
-// has no action for it, so the page sends startWall and startMonotonic for a clock that stands still,
-// and then shiftWall by the offset of the wall clock after that, because a pause leaves the wall
-// clock behind. The
-// engine keeps its clocks in whole nanoseconds, and rounds the shift to them, so the wall clock lands
-// on true time.
+// has no action for it, so the page sends resumeClocks if they stand still, and then shiftWall by
+// the offset of the wall clock after that, because a pause leaves the wall clock behind. The engine
+// keeps its clocks in whole nanoseconds, and rounds the shift to them, so the wall clock lands on
+// true time.
 function resetClocks(name, st) {
   const steps = [];
-  if (st.wallStopped) steps.push(() => ({ do: "startWall", instance: name }));
-  if (st.monotonicStopped) steps.push(() => ({ do: "startMonotonic", instance: name }));
+  if (paused(st)) steps.push(() => ({ do: "resumeClocks", instance: name }));
   steps.push(() => {
     const now = instanceState(name);
     const off = now ? wallOffset(now) : 0;
@@ -524,13 +544,18 @@ function drawS3() {
   const m = b.manifest;
   const length = b.logLength || b.log.length;
   set($("s3-head"), m && m.head !== R.EMPTY_LOG ? `${R.short(m.head)}, ${count(length)} commits in the log` : "empty");
+  // The bar code of the head, as each disk shows that of its cache: a cache at the head has the same.
+  const code = $("s3-code"), head = m ? m.head : R.EMPTY_LOG;
+  if (code.dataset.pos !== head) {
+    code.dataset.pos = head;
+    code.innerHTML = head === R.EMPTY_LOG ? "" : barcodeSVG(head, "code");
+  }
   set($("s3-lease"), m && m.lease ? `${holderName(m.lease.holder)}, ${m.lease.duration / 1000} s` : "nobody");
   set($("s3-writes"), count(b.manifestWrites));
   const total = b.commitCount || b.commits.length;
   root.dataset.commits = String(total);
   set($("commit-count"), total ? count(total) : "");
 
-  const head = m ? m.head : R.EMPTY_LOG;
   let out = b.commits.slice().reverse().map((c) => {
     const cls = c.name === head ? "head" : c.inLog ? "" : "orphan";
     const tag = c.name === head ? "head" : c.inLog ? "in the log" : "not in the log";

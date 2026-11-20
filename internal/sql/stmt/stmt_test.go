@@ -4,11 +4,15 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"math"
+	"math/rand/v2"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 
 	"maragu.dev/is"
 
@@ -331,10 +335,27 @@ func canonical(s stmt.Statement) string {
 		}
 		return fmt.Sprintf("insert into %v%v values (%v)", quote(s.Table.Value), list, strings.Join(values, ", "))
 	case *stmt.Select:
-		if s.Columns == nil {
-			return "select * from " + quote(s.Table.Value)
+		list := "*"
+		if s.Columns != nil {
+			list = quoteNames(s.Columns)
 		}
-		return fmt.Sprintf("select %v from %v", quoteNames(s.Columns), quote(s.Table.Value))
+		var conditions []string
+		for _, c := range s.Where {
+			condition := quote(c.Column.Value) + " " + c.Operator.String()
+			switch {
+			case c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull:
+			case c.Value.Parameter > 0:
+				condition += " ?"
+			default:
+				condition += " " + literal(c.Value.Value)
+			}
+			conditions = append(conditions, condition)
+		}
+		where := ""
+		if conditions != nil {
+			where = " where " + strings.Join(conditions, " and ")
+		}
+		return fmt.Sprintf("select %v from %v%v", list, quote(s.Table.Value), where)
 	case *stmt.DropTable:
 		return "drop table " + quote(s.Table.Value)
 	}
@@ -615,6 +636,10 @@ func checkNotNull(t testing.TB, open func(testing.TB) *db, src, table string, co
 // for the first name of the list on a table without it.
 func checkSelect(t testing.TB, open func(testing.TB) *db, src string, s *stmt.Select) {
 	t.Helper()
+	if s.Where != nil {
+		checkWhere(t, open, src, s)
+		return
+	}
 	table := swapCase(s.Table.Value)
 	// The columns of the table: those that s names, once each, as SQLite compares names, with the case
 	// of their names swapped, and one more, after them; or for *, three, the key second.
@@ -692,6 +717,362 @@ func checkSelect(t testing.TB, open func(testing.TB) *db, src string, s *stmt.Se
 		d.must(createColumns(s.Table.Value, intColumns([]string{"s4ql extra"}, 0)))
 		sqliteError(t, src, d.exec(src), 1, want)
 	}
+}
+
+// whereReads counts the selects with WHERE that [checkWhere] ran, by whether they read no row of the
+// table, some, or every row, so that a test can see that the conditions choose rows.
+var whereReads [3]atomic.Int64
+
+// checkWhere is [checkSelect] of a SELECT with WHERE. The value of each literal of a condition is the
+// one that SQLite gives its text. The table has the columns that src names, once each, with the case
+// of their names swapped, and a primary key of its own. They are of the type ANY, which SQLite
+// compares with a value without converting either, and hold the values around those of the
+// conditions, of every type, and NULL, as [whereRows] gives them. On it, src reads the same rows, by
+// the same names, as the canonical text does, with the same arguments, which differ from each other;
+// with *, in key order. SQLite gives `no such table` for src without the table, `no such column` for
+// the first name of the select list on a table without it, and `no such column` for the first column
+// of a condition that the list does not name, on a table without that column.
+func checkWhere(t testing.TB, open func(testing.TB) *db, src string, s *stmt.Select) {
+	t.Helper()
+	for _, c := range s.Where {
+		if v := c.Value; v.Parameter == 0 && v.Value != nil {
+			lit := src[v.Span.Start:v.Span.End]
+			if got, want := show(open(t).value("select "+lit)), show(v.Value); got != want {
+				t.Fatalf("%q: the value is %v, SQLite gives %v for %q", src, want, got, lit)
+			}
+		}
+	}
+	args := whereArgs(src, s)
+	table := swapCase(s.Table.Value)
+
+	// The columns of the table, by the folds of their names: those of the select list, then those of
+	// the conditions, with the key in the middle.
+	index := map[string]int{}
+	var names []string
+	for _, n := range s.Columns {
+		if _, ok := index[n.Fold()]; !ok {
+			index[n.Fold()] = len(names)
+			names = append(names, swapCase(n.Value))
+		}
+	}
+	for _, c := range s.Where {
+		if _, ok := index[c.Column.Fold()]; !ok {
+			index[c.Column.Fold()] = len(names)
+			names = append(names, swapCase(c.Column.Value))
+		}
+	}
+	key := len(names) / 2
+	names = slices.Insert(names, key, "s4ql key")
+	for f, i := range index {
+		if i >= key {
+			index[f] = i + 1
+		}
+	}
+	// The values of each column of a condition: those around the value of each of its conditions, and
+	// NULL and the least value of each type but the real.
+	pools := make([][]stmt.Value, len(names))
+	for _, c := range s.Where {
+		i := index[c.Column.Fold()]
+		if pools[i] == nil {
+			pools[i] = []stmt.Value{stmt.Null{}, stmt.Integer(math.MinInt64), stmt.Text(""), stmt.Blob{}}
+		}
+		switch {
+		case c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull:
+		case c.Value.Parameter > 0:
+			pools[i] = append(pools[i], around(args[c.Value.Parameter-1])...)
+		default:
+			pools[i] = append(pools[i], around(c.Value.Value)...)
+		}
+	}
+	rows := whereRows(src, pools, key)
+	create := func(names []string) string {
+		var defs []string
+		for _, n := range names {
+			if n == "s4ql key" {
+				defs = append(defs, quote(n)+" int primary key")
+			} else {
+				defs = append(defs, quote(n)+" any")
+			}
+		}
+		return fmt.Sprintf("create table %v (%v) strict, without rowid", quote(table), strings.Join(defs, ", "))
+	}
+	read := func(sql string) ([]string, [][]stmt.Value) {
+		d := open(t)
+		d.must(create(names))
+		d.insert(table, rows)
+		is.Equal(t, d.parameters(sql), s.Parameters(), sql)
+		names, got, err := d.run(sql, args)
+		if err != nil {
+			t.Fatalf("%q: %v", sql, err)
+		}
+		return names, got
+	}
+	gotNames, got := read(src)
+	wantNames := names
+	if s.Columns != nil {
+		wantNames = nil
+		for _, c := range s.Columns {
+			wantNames = append(wantNames, names[index[c.Fold()]])
+		}
+	}
+	is.Equal(t, fmt.Sprint(wantNames), fmt.Sprint(gotNames), src)
+	canonicalNames, want := read(canonical(s))
+	is.Equal(t, fmt.Sprint(gotNames), fmt.Sprint(canonicalNames), src)
+	is.Equal(t, showRows(want), showRows(got), src)
+	if s.Columns == nil {
+		for i := 1; i < len(got); i++ {
+			if got[i-1][key].(stmt.Integer) >= got[i][key].(stmt.Integer) {
+				t.Fatalf("%q: the rows are not in key order: %v", src, showRows(got))
+			}
+		}
+	}
+	switch len(got) {
+	case 0:
+		whereReads[0].Add(1)
+	case len(rows):
+		whereReads[2].Add(1)
+	default:
+		whereReads[1].Add(1)
+	}
+
+	_, _, err := open(t).run(src, args)
+	sqliteError(t, src, err, 1, "no such table: "+s.Table.Value)
+	// noSuchColumn requires SQLite's error for the name n on the table without the columns of missing,
+	// by their folds.
+	noSuchColumn := func(n stmt.Name, missing map[string]bool) {
+		want := "no such column: " + n.Value
+		if n.Raw[0] == '"' {
+			// SQLite asks whether it should be a string, since its build reads double quotes as names only.
+			want = `no such column: "` + n.Value + `" - should this be a string literal in single-quotes?`
+		}
+		var columns []string
+		for _, c := range names {
+			if !missing[stmt.Name{Value: c}.Fold()] {
+				columns = append(columns, c)
+			}
+		}
+		d := open(t)
+		d.must(create(columns))
+		_, _, err := d.run(src, args)
+		sqliteError(t, src, err, 1, want)
+	}
+	if s.Columns != nil {
+		noSuchColumn(s.Columns[0], map[string]bool{s.Columns[0].Fold(): true})
+	}
+	// SQLite looks for the names of the select list before those of the conditions, and for those in
+	// the order of the text. It stops at a comparison whose column is missing. It goes on after a test
+	// for NULL whose column is missing, as it does not stop the walk over the conditions, and a later
+	// test for NULL whose column is missing replaces its message, until a comparison stops it, whose
+	// column it then does not look for.
+	reported := func(missing map[string]bool) stmt.Name {
+		var n stmt.Name
+		for _, c := range s.Where {
+			test := c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull
+			if n.Raw != "" && !test {
+				break
+			}
+			if missing[c.Column.Fold()] {
+				n = c.Column
+				if !test {
+					break
+				}
+			}
+		}
+		return n
+	}
+	listed := map[string]bool{}
+	for _, n := range s.Columns {
+		listed[n.Fold()] = true
+	}
+	first, all := map[string]bool{}, map[string]bool{}
+	for _, c := range s.Where {
+		if !listed[c.Column.Fold()] {
+			if len(first) == 0 {
+				first[c.Column.Fold()] = true
+			}
+			all[c.Column.Fold()] = true
+		}
+	}
+	if len(first) > 0 {
+		noSuchColumn(reported(first), first)
+		noSuchColumn(reported(all), all)
+	}
+}
+
+// whereArgs gives each parameter of the select s of src a value of a type that the length of the text
+// and the number of the parameter pick, NULL among them, and the values differ from each other, so
+// that a value that goes to the wrong condition is seen.
+func whereArgs(src string, s *stmt.Select) []stmt.Value {
+	values := []stmt.Value{stmt.Integer(math.MinInt64), stmt.Real(-0.5), stmt.Text("a"), stmt.Blob{1}, stmt.Null{}, stmt.Integer(7), stmt.Text("")}
+	var args []stmt.Value
+	for i := range s.Parameters() {
+		v := values[(len(src)+i)%len(values)]
+		if i >= len(values) {
+			v = stmt.Integer(int64(i) * 1000)
+		}
+		args = append(args, v)
+	}
+	return args
+}
+
+// around the value v: v, and the values of its type just below and just above it, which a comparison
+// with v tells apart from it. NULL has none.
+func around(v stmt.Value) []stmt.Value {
+	vs := []stmt.Value{v}
+	switch v := v.(type) {
+	case stmt.Integer:
+		if v > math.MinInt64 {
+			vs = append(vs, v-1)
+		}
+		if v < math.MaxInt64 {
+			vs = append(vs, v+1)
+		}
+	case stmt.Real:
+		for _, f := range []float64{math.Nextafter(float64(v), math.Inf(-1)), math.Nextafter(float64(v), math.Inf(1))} {
+			if !math.IsInf(f, 0) {
+				vs = append(vs, stmt.Real(f))
+			}
+		}
+	case stmt.Text:
+		vs = append(vs, v+"a")
+		if _, n := utf8.DecodeLastRuneInString(string(v)); n > 0 {
+			vs = append(vs, v[:len(v)-n])
+		}
+	case stmt.Blob:
+		vs = append(vs, append(slices.Clone(v), 0))
+		if len(v) > 0 {
+			vs = append(vs, v[:len(v)-1])
+		}
+	}
+	return vs
+}
+
+// whereRows of a table whose columns have the values of pools, and whose primary key is at key: every
+// combination of the values of the pools that are not nil, or 100 at random, from a seed of src, if
+// they are more. A column without a pool has a number of its own in each row, and the key counts down
+// from the number of rows, so that the rows are inserted in the reverse of key order.
+func whereRows(src string, pools [][]stmt.Value, key int) [][]stmt.Value {
+	n := 1
+	for i, p := range pools {
+		if i != key && p != nil && n <= 100 {
+			n *= len(p)
+		}
+	}
+	random := n > 100
+	n = min(n, 100)
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(src))
+	r := rand.New(rand.NewPCG(h.Sum64(), 0x3a1e))
+	var rows [][]stmt.Value
+	for k := range n {
+		row := make([]stmt.Value, len(pools))
+		m := k
+		for i, p := range pools {
+			switch {
+			case i == key:
+				row[i] = stmt.Integer(n - k)
+			case p == nil:
+				row[i] = stmt.Integer(1000*k + i)
+			case random:
+				row[i] = p[r.IntN(len(p))]
+			default:
+				row[i] = p[m%len(p)]
+				m /= len(p)
+			}
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// insert the rows into the table, each value bound as its type.
+func (d *db) insert(table string, rows [][]stmt.Value) {
+	d.t.Helper()
+	sql := fmt.Sprintf("insert into %v values (%v)", quote(table), strings.TrimSuffix(strings.Repeat("?, ", len(rows[0])), ", "))
+	s, err := d.c.Prepare(sql)
+	is.NotError(d.t, err)
+	defer func() { _ = s.Finalize() }()
+	for _, row := range rows {
+		is.NotError(d.t, bind(s, row))
+		_, err := s.Step()
+		is.NotError(d.t, err, sql)
+		is.NotError(d.t, s.Reset())
+	}
+}
+
+// bind the values to the parameters of s, by position, each as its type.
+func bind(s *sqlite.Stmt, values []stmt.Value) error {
+	for i, v := range values {
+		var err error
+		switch v := v.(type) {
+		case stmt.Integer:
+			err = s.BindInt64(i+1, int64(v))
+		case stmt.Real:
+			err = s.BindDouble(i+1, float64(v))
+		case stmt.Text:
+			err = s.BindText(i+1, string(v))
+		case stmt.Blob:
+			err = s.BindBlob(i+1, v)
+		case stmt.Null:
+			err = s.BindNull(i + 1)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// run the first statement of sql with args bound by position, as [bind] binds them, and give the
+// names of its result columns, its rows, and its error.
+func (d *db) run(sql string, args []stmt.Value) ([]string, [][]stmt.Value, error) {
+	s, _, err := d.c.PrepareFirst(sql)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = s.Finalize() }()
+	if err := bind(s, args); err != nil {
+		return nil, nil, err
+	}
+	var names []string
+	for i := range s.ColumnCount() {
+		names = append(names, s.ColumnName(i))
+	}
+	var rows [][]stmt.Value
+	for {
+		ok, err := s.Step()
+		if err != nil || !ok {
+			return names, rows, err
+		}
+		row := make([]stmt.Value, s.ColumnCount())
+		for i := range row {
+			switch s.ColumnType(i) {
+			case sqlite.TypeInteger:
+				row[i] = stmt.Integer(s.ColumnInt64(i))
+			case sqlite.TypeFloat:
+				row[i] = stmt.Real(s.ColumnDouble(i))
+			case sqlite.TypeText:
+				row[i] = stmt.Text(s.ColumnText(i))
+			case sqlite.TypeBlob:
+				row[i] = stmt.Blob(s.ColumnBlob(i))
+			default:
+				row[i] = stmt.Null{}
+			}
+		}
+		rows = append(rows, row)
+	}
+}
+
+// showRows of a result, each value as [show] shows it.
+func showRows(rows [][]stmt.Value) string {
+	var b strings.Builder
+	for _, row := range rows {
+		for _, v := range row {
+			b.WriteString(show(v) + "; ")
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // intColumns of a table: an INT column for each of names, with the primary key at key, and NOT NULL.
@@ -794,8 +1175,43 @@ func checkPositions(t testing.TB, src string, s stmt.Statement) {
 		}
 	case *stmt.Select:
 		names = append([]stmt.Name{s.Table}, s.Columns...)
-		if s.Columns != nil && len(s.Columns) == 0 {
-			t.Fatalf("%q: an empty list of columns", src)
+		if s.Columns != nil && len(s.Columns) == 0 || s.Where != nil && len(s.Where) == 0 {
+			t.Fatalf("%q: an empty list of columns or of conditions", src)
+		}
+		// Each condition comes after the table and the condition before it, its column first, and a ?
+		// has the number after that of the ? before it.
+		parameters := 0
+		end := s.Table.Offset + len(s.Table.Raw)
+		for _, c := range s.Where {
+			names = append(names, c.Column)
+			v := c.Value
+			if c.Column.Offset < end {
+				t.Fatalf("%q: condition on %q at %v", src, c.Column.Raw, c.Column.Offset)
+			}
+			end = c.Column.Offset + len(c.Column.Raw)
+			switch c.Operator {
+			case stmt.OpIsNull, stmt.OpIsNotNull:
+				if v.Value != nil || v.Parameter != 0 || v.Span != (stmt.Span{}) {
+					t.Fatalf("%q: %v with the value %+v", src, c.Operator, v)
+				}
+				continue
+			case stmt.OpEqual, stmt.OpNotEqual, stmt.OpLess, stmt.OpLessOrEqual, stmt.OpGreater, stmt.OpGreaterOrEqual:
+			default:
+				t.Fatalf("%q: the operator %v", src, c.Operator)
+			}
+			if v.Span.Start < end || v.Span.End > b.End || v.Span.Start >= v.Span.End {
+				t.Fatalf("%q: value %v at %v", src, v.Value, v.Span)
+			}
+			end = v.Span.End
+			if v.Parameter > 0 {
+				parameters++
+				if v.Parameter != parameters || v.Value != nil || src[v.Span.Start:v.Span.End] != "?" {
+					t.Fatalf("%q: parameter %v with the value %v at %v", src, v.Parameter, v.Value, v.Span)
+				}
+			}
+			if v.Parameter == 0 && v.Value == nil {
+				t.Fatalf("%q: no value and no parameter", src)
+			}
 		}
 	case *stmt.DropTable:
 		names = []stmt.Name{s.Table}
@@ -818,6 +1234,16 @@ func TestName_Fold(t *testing.T) {
 		d.must(createFor("æøå", "v"))
 		d.must(createFor("t1", "v"))
 		sqliteError(t, "", d.exec("create table T1 (v int primary key) strict, without rowid"), 1, "table T1 already exists")
+	})
+}
+
+func TestOperator_String(t *testing.T) {
+	t.Run("should give each operator as SQL writes it, and nothing for no operator", func(t *testing.T) {
+		var got []string
+		for o := stmt.Operator(0); o <= stmt.OpIsNotNull+1; o++ {
+			got = append(got, o.String())
+		}
+		is.Equal(t, fmt.Sprint([]string{"", "=", "!=", "<", "<=", ">", ">=", "IS NULL", "IS NOT NULL", ""}), fmt.Sprint(got))
 	})
 }
 

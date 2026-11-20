@@ -158,13 +158,9 @@ function actionWords(e) {
     case "disconnectNetwork": return e.on ? `You disconnect ${i} from S3.` : `You connect ${i} to S3 again.`;
     case "failDisk": return e.on ? `You make the disk of ${i} fail.` : `The disk of ${i} works again.`;
     case "shiftWall": return `You move the wall clock of ${i} ${e.by > 0 ? "forward" : "back"} ${Math.abs(e.by) / 1000} s.`;
-    case "stopWall": return `You pause the wall clock of ${i}.`;
-    case "startWall": return `You start the wall clock of ${i} again.`;
-    case "stopMonotonic": return `You pause the monotonic clock of ${i}.`;
-    case "startMonotonic": return `You start the monotonic clock of ${i} again.`;
     case "pauseClocks": return `You pause the clocks of ${i}.`;
+    case "resumeClocks": return `You start the clocks of ${i} again.`;
     case "client": return `You send the requests to ${i}.`;
-    case "resumeClocks": return `You resume the clocks of ${i}.`;
   }
   return `You: ${e.do}.`;
 }
@@ -339,8 +335,9 @@ export function teller() {
       case "check":
         // The design accepts a stale read on a process whose two clocks both went wrong, its
         // monotonic clock stopped and its wall clock stopped or moved back, and the checker excuses
-        // it: the log says so once a spell, in the words of the story.
-        if (e.excused && e.invariant === "fresh") once("lease:stale", `${who} serves a stale read after both of its clocks went wrong, which the spec allows.`);
+        // it: the log says so once a spell, in the words of the story. On the page only a pause of
+        // the clocks stops the monotonic clock, and it stops the wall clock too.
+        if (e.excused && e.invariant === "fresh") once("lease:stale", `${who} serves a stale read after its clocks were paused, which the spec allows.`);
         else say(`The checker finds a violation of ${e.invariant}: ${e.text}.`, "alarm");
         break;
       case "buggify":

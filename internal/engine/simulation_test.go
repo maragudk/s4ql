@@ -152,8 +152,8 @@ type attempt struct {
 	acked int
 	// partial is set for a query whose rows were not read to their end.
 	partial bool
-	// typeRefused is set for an insert that the engine refused as "not supported" for a value of
-	// another type than its column.
+	// typeRefused is set for an insert, or a select with WHERE, that the engine refused as "not
+	// supported" for a value of another type than its column.
 	typeRefused bool
 	// reason why a statement failed: no lease, stopped, timeout, or canceled.
 	reason string
@@ -428,6 +428,9 @@ func (h handler) Handle(ctx context.Context, rec slog.Record) error {
 func (r *run) open(ctx context.Context, n *node) error {
 	n.mu.Lock()
 	key := fmt.Sprint(n.name, "/", n.gen+1)
+	// Every second engine of a node reads every row of a table in each query, so that the checks of
+	// the queries against SQLite see both ways of reading rows, also across crashes and closes.
+	scanAll := n.gen%2 == 1
 	n.mu.Unlock()
 	d, err := core.Open(ctx, n.inst, n.client, n.path, "db", core.Options{
 		BusyTimeout:   time.Minute,
@@ -441,6 +444,9 @@ func (r *run) open(ctx context.Context, n *node) error {
 	var options engine.Options
 	for _, bug := range r.w.bugs {
 		options.Plant(bug)
+	}
+	if scanAll {
+		options.ScanAll()
 	}
 	options.Logger = slog.New(handler{r})
 	n.mu.Lock()
@@ -575,9 +581,10 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 		kind, failure := checkArguments(call, a.answer)
 		s, _ := stmt.Check(a.src)
 		supported := call.Supported || s != nil
-		if kind == "" && supported && isInsert(a.src) && a.answer.err == "not supported" && strings.Contains(a.answer.message, " for the column ") {
-			// The refusal of a value of another type than its column, after the insert found its table
-			// and its column, which [run.verify] checks against SQLite on the state that it saw.
+		if kind == "" && supported && a.answer.err == "not supported" && typeRefusal(a.src, a.answer.message) {
+			// The refusal of a value of another type than its column, after the insert or the select
+			// found its table and its columns, which [run.verify] checks against SQLite on the state that
+			// it saw.
 			kind, a.typeRefused = excusedType, true
 		}
 		if kind == "" && (supported || a.answer.err == wrongArguments) {
@@ -1390,8 +1397,8 @@ func (r *run) verify(ctx context.Context) {
 	}
 	// The observations of each state of the log: the statements of their own that saw it.
 	seen := map[int][]*attempt{}
-	// refused are the inserts of their own that the engine refused for the type of their value, by
-	// the state of the log that each saw.
+	// refused are the inserts and the selects of their own that the engine refused for the type of a
+	// value, by the state of the log that each saw.
 	refused := map[int][]*attempt{}
 	empty := newOracle(r.t)
 	defer empty.close()
@@ -1446,6 +1453,7 @@ func (r *run) verify(ctx context.Context) {
 			if got := a.answer.String(); got != want.String() {
 				r.violate(ctx, "the statement %v, %q, at commit %v gives %v, and in SQLite %v", a.id, a.src, k, got, want)
 			}
+			r.countWhere(a, "of their own")
 		}
 		for _, a := range refused[k] {
 			if want := typeRule(r.t, o, a.src, oracleValues(a.args)); a.answer.message != want {
@@ -1553,9 +1561,10 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 		before := o.tables(r.t)
 		for _, a := range tx.stmts {
 			if a.typeRefused {
-				// A read-only transaction refuses an insert before it looks at its value.
+				// A read-only transaction refuses an insert before it looks at its value, and runs a
+				// select.
 				var want string
-				if !tx.readOnly {
+				if !tx.readOnly || !isInsert(a.src) {
 					want = typeRule(r.t, o, a.src, oracleValues(a.args))
 				}
 				if a.answer.message != want {
@@ -1580,6 +1589,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 			if got := a.answer.String(); got != want.String() {
 				r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v, gives %v, and in SQLite %v", a.id, a.src, tx.id, kind, at, got, want)
 			}
+			r.countWhere(a, "in a transaction")
 		}
 		after := o.tables(r.t)
 		o.close()
@@ -1598,6 +1608,24 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 		}
 	}
 	return nothing
+}
+
+// countWhere counts the attempt a, which [run.verify] or [run.verifyTxs] compared with SQLite, as an
+// event of the run if it is a select with WHERE: by where it ran, of their own or in a transaction,
+// and, for a query that succeeded, by whether it gave rows.
+func (r *run) countWhere(a *attempt, where string) {
+	s, _ := stmt.Check(a.src)
+	if sel, ok := s.(*stmt.Select); !ok || sel.Where == nil {
+		return
+	}
+	r.event("selects with WHERE " + where + " compared with SQLite")
+	if a.gen%2 == 0 {
+		// See [run.open].
+		r.event("selects with WHERE " + where + " compared with SQLite, on an engine that reads every row")
+	}
+	if a.state == succeeded && a.query && len(a.answer.rows) > 0 {
+		r.event("selects with WHERE " + where + " that give rows, compared with SQLite")
+	}
 }
 
 // tableOf the statement of src, which the pass supports, folded as SQLite compares names.
@@ -1874,9 +1902,10 @@ var storeFaults = map[string]string{
 var storeLine = regexp.MustCompile(`^\S+ store request \d+(, stuck)? store: `)
 
 // tallyOf the simulation s: its statements, by how they ended, its writes that were acknowledged,
-// its queries that were not read to their end, its inserts refused for the type of their value, its
-// commits and those of a statement with a parameter, the rows of tables of several columns and the
-// NULL values in the log, the faults that the store injected, by kind, and its other events.
+// its queries that were not read to their end, its inserts and selects refused for the type of a
+// value, its commits and those of a statement with a parameter, the rows of tables of several
+// columns and the NULL values in the log, the faults that the store injected, by kind, and its
+// other events.
 func tallyOf(s simulation) map[string]int {
 	r := s.r
 	counts := maps.Clone(r.events)
@@ -1966,6 +1995,16 @@ func TestSimulation(t *testing.T) {
 			// The NULL values in the log, of which the first 1,000 seeds gave 1,581, 316, and 2,694 in the
 			// three workloads on 2026-11-20, when the sequence wrote NULL: a quarter of that in each.
 			"NULL values in the log": 0.4,
+			// The selects with WHERE that the checks compare with SQLite, of their own and in a
+			// transaction, those on an engine that reads every row, and those that give rows, of which
+			// the first 1,000 seeds gave 3,078, 1,107, 324, 4,254, 1,507, and 468 in this workload, 2,449,
+			// 786, 58, 2,875, 892, and 78 in the idle one, and 6,968, 857, 8,052, and 1,041 in the hammer
+			// one on 2026-11-20, when the sequence wrote WHERE: a quarter of that in each, and one in
+			// fifty seeds for the fewest.
+			"selects with WHERE of their own compared with SQLite": 0.77, "selects with WHERE of their own compared with SQLite, on an engine that reads every row": 0.27,
+			"selects with WHERE of their own that give rows, compared with SQLite": 0.08, "selects with WHERE in a transaction compared with SQLite": 1.06,
+			"selects with WHERE in a transaction compared with SQLite, on an engine that reads every row": 0.37,
+			"selects with WHERE in a transaction that give rows, compared with SQLite":                    0.11,
 		}, 0.15},
 		// A quarter of what the first 1,000 seeds gave on 2026-11-19, with the ends of transactions for
 		// the lease, which only this workload reaches.
@@ -1980,6 +2019,10 @@ func TestSimulation(t *testing.T) {
 			"transactions not committed": 0.04, "commits of more than one statement": 0.08,
 			"transactions ended for the lease": 0.33, "kept transactions ended for the lease": 0.33, "refused for the type": 0.1,
 			"rows of several columns": 0.17, "NULL values in the log": 0.08,
+			"selects with WHERE of their own compared with SQLite": 0.61, "selects with WHERE of their own compared with SQLite, on an engine that reads every row": 0.19,
+			"selects with WHERE of their own that give rows, compared with SQLite": 0.02, "selects with WHERE in a transaction compared with SQLite": 0.71,
+			"selects with WHERE in a transaction compared with SQLite, on an engine that reads every row": 0.22,
+			"selects with WHERE in a transaction that give rows, compared with SQLite":                    0.02,
 		}, 0.15},
 		{"hammer", hammerWorkload, map[string]float64{
 			"succeeded": 12, "SQLite's error": 17, "unknown": 0.4, "skipped": 2.5, "failed: no lease": 2,
@@ -1990,6 +2033,8 @@ func TestSimulation(t *testing.T) {
 			"statements in a transaction": 24, "read-only transactions": 1.8, "transactions committed": 4, "transactions rolled back": 1.5,
 			"transactions not committed": 0.17, "transactions unknown": 0.12, "commits of more than one statement": 0.6, "refused for the type": 1,
 			"rows of several columns": 2, "NULL values in the log": 0.67,
+			"selects with WHERE of their own compared with SQLite": 1.74, "selects with WHERE of their own that give rows, compared with SQLite": 0.21,
+			"selects with WHERE in a transaction compared with SQLite": 2, "selects with WHERE in a transaction that give rows, compared with SQLite": 0.26,
 		}, 0.12},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -2117,8 +2162,9 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// its column, and the engine then refuses a later one, where the rule refuses the real. The bug
 		// needs an insert of a whole real into an INT or INTEGER column that otherwise succeeds, which
 		// a sequence gives rarely; the hammer workload runs more statements than the default one, on
-		// one instance that no other instance takes the lease from, and of the first 200 seeds 20 find
-		// the bug there and 5 in the default workload.
+		// one instance that no other instance takes the lease from. Of the first 200 seeds, 14 find the
+		// bug by its own violation there and 12 in the default workload, and the second of them is
+		// seed 31 there and seed 47 in the default workload.
 		{"convertReal", hammerWorkload, "hammer", []string{"stores a value of another type than its column", "and the rule for the type of a value"}},
 		// A row that holds its values in other columns than its statement names: the replay of the log
 		// into an empty cache, which writes the rows, differs from SQLite, which runs the statements; a
@@ -2133,6 +2179,11 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// that is not NULL finds it: the zero value has the type of its column, and no column that
 		// takes NULL is the key.
 		{"zeroLeftOut", defaultWorkload, "default", []string{", and in SQLite", "the replay of the log holds"}},
+		// A scan by one or two bounds of the key that leaves out the row of a closed bound: a select with
+		// WHERE, of its own or in a transaction, gives fewer rows than in SQLite. Nothing else sees it:
+		// the select writes nothing, and fails nothing. An engine that reads every row, as every second
+		// engine of a node does, does not have the bug.
+		{"openBound", defaultWorkload, "default", []string{", and in SQLite", "which began at commit"}},
 	}
 	for _, b := range bugs {
 		bug := b.name
