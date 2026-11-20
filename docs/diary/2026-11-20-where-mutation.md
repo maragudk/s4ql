@@ -110,3 +110,45 @@ The planted bug `openBound` has 17 mutants that survive, and each needed its own
 
 - Slice 8's changes in `recognizer.where`, `recognizer.conditions`, the driver's `check`, and the engine's `check` are for the mutation testing of slice 8; the rerun mutated the first two.
 - `FuzzSQL`, `FuzzSQL_core`, `FuzzColumns`, and `FuzzColumns_core` in the layers of the runner.
+
+## Step 3: The review and the checks
+
+**Author:** where-mutation builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the brief) "Finish: `make test`, `make lint`, `make check-browser` pass."
+**Interpretation:** Review the diff against `origin/main` with the code-review skill, fix what it finds, and run the three checks.
+**Inferred intent:** A branch that the lead can merge without a second look at the tests.
+
+### What I did
+
+The review (`/code-review medium origin/main...HEAD`) found no fault: the merge of `checkCompared` into `checkType` behaves as before with both callers, and the rows of the table in the README add up. It found one nit: the new check of two refused bounds in `TestScanRange` asserted only inside its loop, so a scan that yielded nothing would pass. It counts the yields now and requires one, with a nil row, as the other checks of the test do. `make test`, `make lint`, and `make check-browser` pass.
+
+### Why
+
+A check inside a loop that may not run proves nothing about a scan that gives nothing.
+
+### What worked
+
+The review checked the reasons of the equivalent mutants of `keyAccess`, `condition.holds`, and `tighter` against the code.
+
+### What didn't work
+
+Nothing.
+
+### What I learned
+
+Nothing new.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+As in step 2.
+
+### Future work
+
+As in step 2.
