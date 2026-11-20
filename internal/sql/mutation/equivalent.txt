@@ -372,7 +372,7 @@ internal/engine/engine.go Conn.write condition: b.skipUnique => false
 	The planted bugs skipUnique and checkOutside: only checkOutside then plants the write without the check, and only the tests plant either.
 internal/engine/tx.go Conn.writeIn element: skipUnique: c.e.bugs.skipUnique, =>
 	The planted bug skipUnique is then not planted in a write of a transaction that spans statements, and is found by the statements of their own.
-internal/engine/tx.go Conn.writeIn element: , convertReal: c.e.bugs.convertReal =>
+internal/engine/tx.go Conn.writeIn element: convertReal: c.e.bugs.convertReal, =>
 	The planted bug convertReal is then not planted in a write of a transaction that spans statements, and is found by the statements of their own.
 internal/engine/engine.go Conn.checkOutside remove statement: return internalError("the checks outside of a sink of type %T", s) =>
 	The planted bug checkOutside: it runs only for an insert, whose sink is an insert.
@@ -701,43 +701,3 @@ internal/engine/bugs.go openBounds.scanRange operator: upper.value != nil => upp
 	The planted bug openBound: an upper bound with a value stays as it is, one without bounds nothing, only a closed lower bound is read as open, and the bug is found by it.
 internal/engine/bugs.go openBounds.scanRange swap arguments: o.reader.scanRange(ctx, name, lower, upper) => o.reader.scanRange(ctx, name, upper, lower)
 	The planted bug openBound: the scan takes the upper bound as the lower one and the other way round, another wrong scan, which leaves out rows that the filter would give, and the bug is found by it.
-
-# The scan by the key of slice 7 in the storage core, internal/core.
-internal/core/cache.go conn.scan remove statement: sql += " order by " + t.columnList(t.key) =>
-	Every table of the cache is WITHOUT ROWID and has no index of its own, so SQLite reads it, whole or between bounds of the key, in the b-tree of its primary key, which is in the order of the key.
-internal/core/cache.go conn.scan swap arguments: fmt.Sprint(quote(t.columns[t.key[0]].name), " ", op, " ?", len(args)) => fmt.Sprint(" ", quote(t.columns[t.key[0]].name), op, " ?", len(args))
-	Only the spaces of the SQL move.
-internal/core/cache.go conn.scan swap arguments: fmt.Sprint(quote(t.columns[t.key[0]].name), " ", op, " ?", len(args)) => fmt.Sprint(quote(t.columns[t.key[0]].name), op, " ", " ?", len(args))
-	Only the spaces of the SQL move.
-internal/core/cache.go conn.scan condition: err != nil => false
-	No test can reach it: the scan's table was looked up in the same transaction, after its last change of the schema, by a query of sqlite_schema, so SQLite has the schema and the prepare reads no file; it fails only for want of memory. TestScanRange fails every read after the look-up, and the step fails.
-internal/core/cache.go conn.scan remove statement: yield(nil, err) =>
-	No test can reach it: the scan's table was looked up in the same transaction, after its last change of the schema, by a query of sqlite_schema, so SQLite has the schema and the prepare reads no file; it fails only for want of memory. TestScanRange fails every read after the look-up, and the step fails.
-internal/core/cache.go conn.scan remove statement: return =>
-	No test can reach it: the scan's table was looked up in the same transaction, after its last change of the schema, by a query of sqlite_schema, so SQLite has the schema and the prepare reads no file; it fails only for want of memory. TestScanRange fails every read after the look-up, and the step fails.
-internal/core/cache.go conn.scan condition: err != nil => false #2
-	No test can reach it: checkBounds has refused every bound that bind would refuse, a value of no kind and a text or a blob longer than the limit, so bind fails only for want of memory.
-internal/core/cache.go conn.scan remove statement: _ = c.rest(sql, s) =>
-	No test can reach it: checkBounds has refused every bound that bind would refuse, a value of no kind and a text or a blob longer than the limit, so bind fails only for want of memory.
-internal/core/cache.go conn.scan remove statement: yield(nil, err) => #2
-	No test can reach it: checkBounds has refused every bound that bind would refuse, a value of no kind and a text or a blob longer than the limit, so bind fails only for want of memory.
-internal/core/cache.go conn.scan remove statement: return => #2
-	No test can reach it: checkBounds has refused every bound that bind would refuse, a value of no kind and a text or a blob longer than the limit, so bind fails only for want of memory.
-internal/core/cache.go conn.scan condition: err != nil => false #3
-	A step that fails gives false, and rest then resets the statement, whose reset gives the error of the step again, and finalizes it, so the scan ends with the same error and frees the statement either way.
-internal/core/cache.go conn.scan remove statement: s = nil =>
-	The deferred rest then resets the finalized statement, which the binding refuses without a call of SQLite, and the error of that is ignored.
-internal/core/cache.go conn.scan condition: err != nil => false #4
-	The step before gave the end of the rows without an error, and the reset, and a finalize of a second statement of the same SQL, give the error of that step, which is none.
-internal/core/cache.go conn.scan remove statement: yield(nil, err) => #4
-	The step before gave the end of the rows without an error, and the reset, and a finalize of a second statement of the same SQL, give the error of that step, which is none.
-internal/core/cache.go conn.scan condition: err != nil => false #5
-	readRow fails only for a value of no fundamental type of SQLite, which sqlite3_column_type never gives.
-internal/core/cache.go conn.scan remove statement: _ = c.rest(sql, s) => #3
-	readRow fails only for a value of no fundamental type of SQLite, which sqlite3_column_type never gives.
-internal/core/cache.go conn.scan remove statement: s = nil => #3
-	readRow fails only for a value of no fundamental type of SQLite, which sqlite3_column_type never gives.
-internal/core/cache.go conn.scan remove statement: yield(nil, err) => #5
-	readRow fails only for a value of no fundamental type of SQLite, which sqlite3_column_type never gives.
-internal/core/cache.go conn.scan remove statement: return => #5
-	readRow fails only for a value of no fundamental type of SQLite, which sqlite3_column_type never gives.

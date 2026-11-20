@@ -63,14 +63,21 @@ The reader and the writer handle the top level of the stream themselves with `pr
 
 ### The kinds of change
 
-- **The kinds follow the roadmap.** A kind is defined when the slice that needs it is built, so `alter table` and indexes each become a new kind. Every `insert`, `update`, and `delete` ends up as upserted and deleted rows, so row changes need nothing new. Adding a column with a default will be one change, with no rows repeated.
+- **The kinds follow the roadmap.** A kind is defined when the slice that needs it is built: indexes came with slice 9 as two kinds, `CreateIndex` and `DropIndex`, and `alter table` will become a new kind. Every `insert`, `update`, and `delete` ends up as upserted and deleted rows, so row changes need nothing new. Adding a column with a default will be one change, with no rows repeated.
 - **Each kind has its own message, which holds only what it needs.** Markus asked for this in the review: "DropTable doesn't need columns nor primary key. That's my point."
 - **`CreateTable` holds the table as data, not as SQL text,** so that replay needs no SQL parser.
 - **`DropTable` does not list the rows as deletes.**
+- **A `DropTable` drops the indexes of its table, and the commit object does not list them.** SQLite drops them itself, a list could only disagree with the cache, and a drop table does not list its rows either.
+- **`CreateIndex` holds the definition of an index and none of its entries:** the name of the index in `index`, the `table`, and the `columns`. Replay builds the index from the rows of the table. Markus agreed on 2026-11-20, for slice 9 of the [roadmap](../../docs/roadmap.md#slice-9-indexes), that the log holds only the definition.
+- **A column of an index is an `IndexColumn`, a position and a direction.** `column` is a position in the table's columns, as in `UpsertRows`: a position cannot disagree with the table the way a second copy of a name could. `descending` says that the index holds the column in descending order, and a column in ascending order is without it, as a column that does not take NULL is without `nullable`.
+- **`DropIndex` holds only the name of the index.** A table and an index share their names in SQLite, so the name finds the index.
+- **The writer and the reader refuse as malformed a change of an index that no table could make right:** a create index with no name, with no table name, with the name of its own table, as SQLite compares names, with no columns, with a column without a position, or with a column twice, and a drop index with no name (`checkCreateIndex`). SQLite takes a column twice in an index; s4ql's statement pass refuses it, so the format refuses it too.
+- **What needs the table, the format cannot check,** because a commit object stands alone: a column position outside the table, an index on a table that is not there, or a name that another table or index has. The storage core refuses those at replay as a broken log (`applyCreateIndex` in `internal/core`).
 - **A key is its own message, `PrimaryKey`, and not a `Row`,** because it is not a row. Markus asked for this in the review.
 - **An update of a primary key is a delete of the old key and an upsert of the new row.**
 - **An unknown kind of change is refused, never skipped.** Skipping a `drop table` would silently leave the cache different from the log.
 - **A new kind is a new member of the `oneof`, with a new number.** Old commit objects stay valid, and `buf breaking` accepts the addition. Moving a field that is already there into a `oneof` is unsafe.
+- **The version of the format stayed 0 when indexes came.** `CreateIndex` and `DropIndex` are members 5 and 6 of the `oneof`, and a reader from before refuses a commit object that holds one as needing a newer version.
 
 ### Rows carry no column names or types
 
@@ -129,6 +136,6 @@ The agreement was that a commit object is checked against its SHA-256 name befor
 
 ## Tests
 
-`testdata/` holds sample commit objects and manifests of version 0, and the tests read them. `TestCommitSamples` fails if no sample sets some field of the schema. While the format is a draft, a change to it writes the samples again with `go test ./internal/format -run 'TestCommitSamples|TestManifestSamples' -update`. `manifest-v0-unknown.json` is written by hand, with fields of a pretended newer version at every level.
+`testdata/` holds sample commit objects and manifests of version 0, and the tests read them. `TestCommitSamples` fails if no sample sets some field of the schema. Since slice 9 the samples hold a create index of an ascending column, one of a descending and an ascending column, and a drop index. While the format is a draft, a change to it writes the samples again with `go test ./internal/format -run 'TestCommitSamples|TestManifestSamples' -update`. `manifest-v0-unknown.json` is written by hand, with fields of a pretended newer version at every level.
 
-`make fuzz` runs `FuzzParseManifest`, `FuzzCommitReader`, and `FuzzCommitWriter`. CI runs `make lint-proto`, which is `buf lint` with the `STANDARD` and `COMMENTS` rules and `buf format`, and checks that the committed generated code is what `make generate` makes.
+`make fuzz` runs `FuzzParseManifest`, `FuzzCommitReader`, and `FuzzCommitWriter`. `FuzzCommitWriter` writes creates and drops of indexes among its changes. CI runs `make lint-proto`, which is `buf lint` with the `STANDARD` and `COMMENTS` rules and `buf format`, and checks that the committed generated code is what `make generate` makes.

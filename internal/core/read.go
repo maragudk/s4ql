@@ -96,6 +96,8 @@ type ReadTx struct {
 	c        *conn
 	position format.Name
 	done     bool
+	// read counts the rows that the transaction has read from the cache.
+	read int64
 }
 
 // Read starts a read transaction on the reader. It does not wait: it fails at once with an error
@@ -308,6 +310,9 @@ func (r *ReadTx) Get(ctx context.Context, name string, key []*s4qlpb.Value) ([]*
 		return nil, err
 	}
 	row, err := r.c.get(t, key)
+	if row != nil {
+		r.read++
+	}
 	return row, r.d.cacheError(ctx, operation, err)
 }
 
@@ -323,36 +328,9 @@ func (r *ReadTx) Scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Valu
 // for a value that is not a key of the table, and with [ErrTooBig] for a text or a blob that is
 // longer than SQLite takes, as [ReadTx.Get] fails for its key.
 func (r *ReadTx) ScanRange(ctx context.Context, name string, lower, upper Bound) iter.Seq2[[]*s4qlpb.Value, error] {
-	const operation = "scan"
-	return func(yield func([]*s4qlpb.Value, error) bool) {
-		if err := r.check(); err != nil {
-			yield(nil, err)
-			return
-		}
-		defer r.leave()
-		t, err := r.table(ctx, operation, name)
-		if err != nil {
-			yield(nil, err)
-			return
-		}
-		if err := t.checkBounds(r.c.limit, lower, upper); err != nil {
-			yield(nil, err)
-			return
-		}
-		for row, err := range r.c.scan(t, lower, upper) {
-			if err == nil {
-				// A read that is running when the instance stops is aborted.
-				err = r.d.stoppedError()
-			}
-			if err != nil {
-				yield(nil, r.d.cacheError(ctx, operation, err))
-				return
-			}
-			if !yield(row, nil) {
-				return
-			}
-		}
-	}
+	return r.scan(ctx, name, func(t *table) (*index, IndexScan, error) {
+		return nil, IndexScan{Lower: lower, Upper: upper}, t.checkBounds(r.c.limit, lower, upper)
+	})
 }
 
 // Close the transaction, so that its reader can start the next.

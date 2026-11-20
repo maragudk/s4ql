@@ -32,6 +32,9 @@ func TestTypeRule(t *testing.T) {
 		// NULL has no type, so a value of another type in another column is the rule's.
 		{src: "insert into t values (null, 1, 1, null)", want: "s4ql: not supported: an integer literal for the column t.b of type REAL", faults: "[a value of another type in another column]"},
 		{src: "insert into t (k, b, a) values (1, 1.5, ?)", args: []any{int64(1)}, want: "s4ql: not supported: argument 1, which is an integer, for the column t.a of type TEXT", faults: "[a value of another type in another column]"},
+		// A value of another type in a column after the key, where the value of the key has the
+		// type of the key: the rule looks at every column, not at the key only.
+		{src: "insert into t values ('x', 2, 'c', null)", want: "s4ql: not supported: a string literal for the column t.b of type REAL", faults: "[a value of another type in another column]"},
 		{src: "insert into t (k, b) values ('x', 1.5)", want: "s4ql: not supported: a string literal for the column t.k of type INT", faults: "[a value of another type in the key]"},
 		// NULL, given or for a column left out, in the key or a column that does not take it: SQLite's
 		// NOT NULL comes first, also before a value of another type.

@@ -241,8 +241,23 @@ func TestCommitReader(t *testing.T) {
 			withUnknown(h.GetCommitTime(), 3, protowire.VarintType)
 			return h
 		}()))},
-		{name: "should refuse a change of a kind it does not know as newer", b: changeRecord(withUnknown(&s4qlpb.Change{}, 5, protowire.BytesType))},
-		{name: "should refuse a change with a known kind and a field it does not know as newer", b: changeRecord(withUnknown(dropTable("t"), 6, protowire.VarintType))},
+		{name: "should refuse a change of a kind it does not know as newer", b: changeRecord(withUnknown(&s4qlpb.Change{}, 7, protowire.BytesType))},
+		{name: "should refuse a change with a known kind and a field it does not know as newer", b: changeRecord(withUnknown(dropTable("t"), 8, protowire.VarintType))},
+		{name: "should refuse a field it does not know in create index as newer", b: changeRecord(func() *s4qlpb.Change {
+			c := createIndex("i", "t", ascending(0))
+			withUnknown(c.GetCreateIndex(), 4, protowire.VarintType)
+			return c
+		}())},
+		{name: "should refuse a field it does not know in a column of an index as newer", b: changeRecord(func() *s4qlpb.Change {
+			c := createIndex("i", "t", ascending(0), descending(1))
+			withUnknown(c.GetCreateIndex().GetColumns()[1], 3, protowire.VarintType)
+			return c
+		}())},
+		{name: "should refuse a field it does not know in drop index as newer", b: changeRecord(func() *s4qlpb.Change {
+			c := dropIndex("i")
+			withUnknown(c.GetDropIndex(), 2, protowire.VarintType)
+			return c
+		}())},
 		{name: "should refuse a field it does not know in create table as newer", b: changeRecord(func() *s4qlpb.Change {
 			c := createTable("t", []string{"a"}, []uint32{0})
 			withUnknown(c.GetCreateTable(), 4, protowire.VarintType)
@@ -379,6 +394,29 @@ func TestCommitReader(t *testing.T) {
 		{name: "should refuse a NULL in a primary key of a batch after keys without one", b: changeRecord(deleteRows("t", []*s4qlpb.Value{integer(1), text("a")}, []*s4qlpb.Value{integer(2), null()}))},
 		{name: "should refuse a drop table without a name", b: changeRecord(dropTable(""))},
 		{name: "should refuse a drop table whose name is not valid UTF-8", b: changeRecord(rawChange(2, protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), []byte("\xff"))))},
+		{name: "should refuse a create index without a name", b: changeRecord(createIndex("", "t", ascending(0))), why: "create_index.index is empty"},
+		{name: "should refuse a create index whose name holds NUL", b: changeRecord(createIndex("i\x00", "t", ascending(0))), why: "holds the character NUL"},
+		{name: "should refuse a create index whose name is not valid UTF-8", b: changeRecord(rawChange(5, join(
+			protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), []byte("\xff")),
+			protowire.AppendBytes(protowire.AppendTag(nil, 2, protowire.BytesType), []byte("t")),
+			protowire.AppendBytes(protowire.AppendTag(nil, 3, protowire.BytesType), protowire.AppendVarint(protowire.AppendTag(nil, 1, protowire.VarintType), 0)),
+		)))},
+		{name: "should refuse a create index without a table name", b: changeRecord(createIndex("i", "", ascending(0))), why: "create_index.table is empty"},
+		{name: "should refuse a create index whose table name holds NUL", b: changeRecord(createIndex("i", "\x00", ascending(0))), why: "holds the character NUL"},
+		{name: "should refuse a create index with the name of its table", b: changeRecord(createIndex("t", "t", ascending(0))), why: "create_index.index \"t\" is the name of its table"},
+		{name: "should refuse a create index whose name differs from the name of its table only in the case of ASCII letters", b: changeRecord(createIndex("Ab", "aB", ascending(0))), why: "create_index.index \"Ab\" is the name of its table"},
+		{name: "should refuse a create index without columns", b: changeRecord(createIndex("i", "t")), why: "create_index has no columns"},
+		{name: "should refuse a column of an index without a position", b: changeRecord(func() *s4qlpb.Change {
+			c := createIndex("i", "t", ascending(0), descending(1))
+			c.GetCreateIndex().GetColumns()[1].ClearColumn()
+			return c
+		}()), why: "columns[1] has no column"},
+		{name: "should refuse a create index that lists a column twice", b: changeRecord(createIndex("i", "t", ascending(1), ascending(0), ascending(1))), why: "columns[2] lists column 1 twice"},
+		{name: "should refuse a create index that lists a column twice, once in each direction", b: changeRecord(createIndex("i", "t", ascending(0), descending(0))), why: "columns[1] lists column 0 twice"},
+		{name: "should refuse an empty create index", b: changeRecord(s4qlpb.Change_builder{CreateIndex: &s4qlpb.CreateIndex{}}.Build()), why: "create_index.index is empty"},
+		{name: "should refuse a drop index without a name", b: changeRecord(dropIndex("")), why: "drop_index.index is empty"},
+		{name: "should refuse a drop index whose name holds NUL", b: changeRecord(dropIndex("a\x00b")), why: "holds the character NUL"},
+		{name: "should refuse a drop index whose name is not valid UTF-8", b: changeRecord(rawChange(6, protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), []byte("\xff"))))},
 		{name: "should refuse an upsert rows without a table name", b: changeRecord(upsertRows("", []uint32{0}, []*s4qlpb.Value{integer(1)}))},
 		{name: "should refuse an upsert rows without columns", b: changeRecord(upsertRows("t", nil, []*s4qlpb.Value{}))},
 		{name: "should refuse an upsert rows that lists a column twice", b: changeRecord(upsertRows("t", []uint32{0, 1, 0}, []*s4qlpb.Value{integer(1), integer(2), integer(3)}))},
@@ -466,7 +504,8 @@ func FuzzCommitReader(f *testing.F) {
 		f.Add(b)
 	}
 	f.Add([]byte{})
-	f.Add(changeRecord(withUnknown(&s4qlpb.Change{}, 5, protowire.BytesType)))
+	f.Add(changeRecord(withUnknown(&s4qlpb.Change{}, 7, protowire.BytesType)))
+	f.Add(changeRecord(createIndex("i", "t", ascending(0), descending(0))))
 	f.Add(join(record(1, testHeader()), record(3, withUnknown(&s4qlpb.Annotation{}, 2, protowire.BytesType))))
 	f.Add(changeRecord(upsertRows("t", []uint32{0, 1}, []*s4qlpb.Value{integer(1)})))
 
@@ -591,6 +630,26 @@ func dropTable(table string) *s4qlpb.Change {
 	return s4qlpb.Change_builder{DropTable: s4qlpb.DropTable_builder{Table: &table}.Build()}.Build()
 }
 
+// createIndex with the given name on the table, of the given columns.
+func createIndex(index, table string, columns ...*s4qlpb.IndexColumn) *s4qlpb.Change {
+	return s4qlpb.Change_builder{CreateIndex: s4qlpb.CreateIndex_builder{Index: &index, Table: &table, Columns: columns}.Build()}.Build()
+}
+
+// ascending is a column of an index in ascending order, as a commit object holds it: without the
+// field for the direction.
+func ascending(column uint32) *s4qlpb.IndexColumn {
+	return s4qlpb.IndexColumn_builder{Column: &column}.Build()
+}
+
+// descending is a column of an index in descending order.
+func descending(column uint32) *s4qlpb.IndexColumn {
+	return s4qlpb.IndexColumn_builder{Column: &column, Descending: new(true)}.Build()
+}
+
+func dropIndex(index string) *s4qlpb.Change {
+	return s4qlpb.Change_builder{DropIndex: s4qlpb.DropIndex_builder{Index: &index}.Build()}.Build()
+}
+
 func upsertRows(table string, columns []uint32, rows ...[]*s4qlpb.Value) *s4qlpb.Change {
 	var rs []*s4qlpb.Row
 	for _, values := range rows {
@@ -671,6 +730,7 @@ func commitSamples() []commitSample {
 					w.CreateTable(nullable(createTable("users", []string{"id", "age"}, []uint32{0}), 1).GetCreateTable()),
 					w.UpsertRow("users", []uint32{0, 1}, []*s4qlpb.Value{integer(1), integer(42)}),
 					w.UpsertRow("users", []uint32{0, 1}, []*s4qlpb.Value{integer(2), null()}),
+					w.CreateIndex(createIndex("users_age", "users", ascending(1)).GetCreateIndex()),
 					w.Annotate(statement("create table users (id int primary key, age int) strict")),
 					w.Annotate(statement("insert into users values (?, ?), (?, ?)", integer(1), integer(42), integer(2), null())),
 				)
@@ -678,6 +738,7 @@ func commitSamples() []commitSample {
 			want: []item{
 				{change: nullable(createTable("users", []string{"id", "age"}, []uint32{0}), 1)},
 				{change: upsertRows("users", []uint32{0, 1}, []*s4qlpb.Value{integer(1), integer(42)}, []*s4qlpb.Value{integer(2), null()})},
+				{change: createIndex("users_age", "users", ascending(1))},
 				{annotation: statement("create table users (id int primary key, age int) strict")},
 				{annotation: statement("insert into users values (?, ?), (?, ?)", integer(1), integer(42), integer(2), null())},
 			},
@@ -688,6 +749,7 @@ func commitSamples() []commitSample {
 			commitTime: time.Date(2026, 11, 12, 9, 31, 2, 123_456_789, time.UTC),
 			write: func(w *format.CommitWriter) error {
 				return errors.Join(
+					w.DropIndex("users_age"),
 					w.CreateTable(nullable(createTable("kv", []string{"a", "b", "c"}, []uint32{1, 0}), 2).GetCreateTable()),
 					w.UpsertRow("kv", []uint32{0, 1, 2}, []*s4qlpb.Value{integer(-7), text("ü"), realValue(2.5)}),
 					w.UpsertRow("kv", []uint32{0, 1, 2}, []*s4qlpb.Value{integer(8), text(""), blob([]byte{0, 0xff})}),
@@ -700,12 +762,14 @@ func commitSamples() []commitSample {
 					w.UpsertRow("every", []uint32{0, 1, 2, 3, 4}, []*s4qlpb.Value{integer(math.MinInt64), integer(math.MaxInt64), realValue(-math.MaxFloat64), text("é😀"), blob([]byte{})}),
 					w.UpsertRow("every", []uint32{0, 1, 2, 3, 4}, []*s4qlpb.Value{integer(0), integer(-1), realValue(0), text(""), blob([]byte{0})}),
 					w.DeleteRow("every", []*s4qlpb.Value{integer(1)}),
+					w.CreateIndex(createIndex("kv_c_a", "kv", descending(2), ascending(0)).GetCreateIndex()),
 					w.Annotate(statement("update kv set c = ? where a = ?", null(), integer(-7))),
 					w.Annotate(statement("select ?, ?, ?, ?, ?", integer(math.MaxInt64), realValue(-0.5), text("t"), blob([]byte("b")), null())),
 					w.Annotate(statement("insert into every (c) values (?)", realValue(math.Copysign(0, -1)))),
 				)
 			},
 			want: []item{
+				{change: dropIndex("users_age")},
 				{change: nullable(createTable("kv", []string{"a", "b", "c"}, []uint32{1, 0}), 2)},
 				{change: upsertRows("kv", []uint32{0, 1, 2},
 					[]*s4qlpb.Value{integer(-7), text("ü"), realValue(2.5)},
@@ -719,6 +783,7 @@ func commitSamples() []commitSample {
 					[]*s4qlpb.Value{integer(math.MinInt64), integer(math.MaxInt64), realValue(-math.MaxFloat64), text("é😀"), blob([]byte{})},
 					[]*s4qlpb.Value{integer(0), integer(-1), realValue(0), text(""), blob([]byte{0})})},
 				{change: deleteRows("every", []*s4qlpb.Value{integer(1)})},
+				{change: createIndex("kv_c_a", "kv", descending(2), ascending(0))},
 				{annotation: statement("update kv set c = ? where a = ?", null(), integer(-7))},
 				{annotation: statement("select ?, ?, ?, ?, ?", integer(math.MaxInt64), realValue(-0.5), text("t"), blob([]byte("b")), null())},
 				{annotation: statement("insert into every (c) values (?)", realValue(math.Copysign(0, -1)))},

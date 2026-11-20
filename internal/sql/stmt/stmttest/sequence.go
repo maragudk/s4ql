@@ -14,7 +14,7 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
-// Sequence of random statements of slices 1, 2, 4, 5, 6, and 7 that meet at a few tables and columns, each
+// Sequence of random statements of slices 1, 2, 4, 5, 6, 7, and 8 that meet at a few tables and columns, each
 // named in several spellings that SQLite takes for one name and in some that it takes for others,
 // with values from a small set so that keys repeat, and with statements that are not supported and
 // texts that SQLite refuses mixed in.
@@ -35,7 +35,9 @@ import (
 // and one time in two has a WHERE, as [Sequence.where] draws it, whose values are mostly those that
 // the inserts gave its columns, their neighbours, and the edges of each type. The small sets of
 // values hold keys that SQLite takes for one, such as 0.0 and -0.0, so that every type meets a key
-// that exists.
+// that exists. An update sets some columns of the shape, as [Sequence.update] draws it, and an
+// update three times in four and a delete four times in five have a WHERE, as [Sequence.changeConditions]
+// draws one: mostly as a select has one, and one time in three the key equal to a value of an insert.
 //
 // One value in three of an insert is a plain ? with the value as its argument, nil for NULL, and
 // some calls, as [Sequence.Next] says, have arguments around those that s4ql supports: none for a
@@ -161,9 +163,11 @@ func NewSequence(r Rand) (*Sequence, error) {
 	for _, p := range []Position{CreateTable, InsertTable, SelectTable, DropTable} {
 		pools[p] = q.tables
 	}
-	pools[CreateColumn], pools[InsertColumn], pools[SelectColumn] = q.columns, q.columns, q.columns
+	pools[UpdateTable], pools[DeleteTable] = q.tables, q.tables
+	pools[CreateColumn], pools[InsertColumn], pools[SelectColumn], pools[UpdateColumn] = q.columns, q.columns, q.columns, q.columns
 	q.g = NewGenerator(r, pools)
 	q.g.Columns, q.g.Create, q.g.Insert, q.g.Select, q.g.Where = sequenceColumns, q.create, q.insert, q.selectList, q.where
+	q.g.Update, q.g.Delete = q.update, q.delete
 	q.g.Parameters = 3
 	return q, nil
 }
@@ -401,10 +405,16 @@ var inverses = map[stmt.Operator]stmt.Operator{
 // has one more condition, the inverse of one of its conditions, which contradicts it, and for a
 // bound of the key leaves the range of the two without a key.
 func (q *Sequence) where(table stmt.Name) []stmt.Condition {
-	r := q.r
-	if r.IntN(2) == 0 {
+	if q.r.IntN(2) == 0 {
 		return nil
 	}
+	return q.conditions(table)
+}
+
+// conditions of a WHERE of a statement of table, one or more, as [Sequence.where] draws them when it
+// gives a WHERE.
+func (q *Sequence) conditions(table stmt.Name) []stmt.Condition {
+	r := q.r
 	shape := q.shapeOf(table)
 	key := &shape[slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })]
 	var cs []stmt.Condition
@@ -488,6 +498,89 @@ func (q *Sequence) missing(shape []stmt.Column) string {
 		}
 	}
 	return raws[q.r.IntN(len(raws))]
+}
+
+// update gives the assignments and the conditions of an update of table, as [Generator.Update] gives
+// them: from one to all of the columns of its shape, each once, in any order, where one time in two
+// the key is left out of two or more; one update in twelve has a name that the shape does not have
+// in place of one of them, which can be in double quotes. The value of each is NULL one time in ten,
+// also for the key and for a column that does not take NULL, for text or a blob one of about
+// [LengthLimit] bytes one time in twelve of the others, and otherwise drawn as
+// [Sequence.conditionValue] draws a value for a condition on its column: mostly a value that an
+// insert gave the column, a neighbour of one, or an edge of its type, now and then one of another
+// type, and as an insert gets one otherwise, so that a change of the key meets a key that exists and
+// also one that does not. Three updates in four have a WHERE, as [Sequence.changeConditions] draws one. The
+// values of the assignments are kept, as [Sequence.store] keeps those of an insert.
+func (q *Sequence) update(table stmt.Name) ([]stmt.Assignment, []stmt.Condition) {
+	r := q.r
+	shape := q.shapeOf(table)
+	order := make([]int, len(shape))
+	for i := range order {
+		order[i] = i
+	}
+	for i := len(order) - 1; i > 0; i-- {
+		j := r.IntN(i + 1)
+		order[i], order[j] = order[j], order[i]
+	}
+	order = order[:1+r.IntN(len(order))]
+	if len(order) > 1 && r.IntN(2) == 0 {
+		order = slices.DeleteFunc(order, func(position int) bool { return shape[position].PrimaryKey })
+	}
+	missing := -1
+	if r.IntN(12) == 0 {
+		missing = r.IntN(len(order))
+	}
+	var set []stmt.Assignment
+	var list []string
+	var values []stmt.Value
+	for i, position := range order {
+		c := shape[position]
+		raw, fold, t := q.spell(c.Name.Value), c.Name.Value, c.Type
+		if i == missing {
+			raw, fold, t = q.missing(shape), "", q.anyType()
+		}
+		var v stmt.Value
+		switch {
+		case r.IntN(10) == 0:
+			v = stmt.Null{}
+		case (t == stmt.TypeText || t == stmt.TypeBlob) && r.IntN(12) == 0:
+			// Of about the length limit, so that the record of the row is too long now and then.
+			s := long(r, func(n int) string { return runes(r, n) })
+			v = map[bool]stmt.Value{true: stmt.Text(s), false: stmt.Blob(s)}[t == stmt.TypeText]
+		default:
+			v = q.conditionValue(table, fold, t)
+		}
+		set = append(set, stmt.Assignment{Column: stmt.Name{Raw: raw}, Value: stmt.Term{Value: v}})
+		list, values = append(list, raw), append(values, v)
+	}
+	q.store(table, shape, list, values)
+	if r.IntN(4) == 0 {
+		return set, nil
+	}
+	return set, q.changeConditions(table)
+}
+
+// delete gives the conditions of a delete from table, as [Generator.Delete] gives them: none one
+// time in five, which deletes every row, and otherwise a WHERE as [Sequence.changeConditions] draws
+// one.
+func (q *Sequence) delete(table stmt.Name) []stmt.Condition {
+	if q.r.IntN(5) == 0 {
+		return nil
+	}
+	return q.changeConditions(table)
+}
+
+// changeConditions of the WHERE of an update or a delete of table: one time in three, if an insert
+// gave the key a value, the one condition that the key is such a value, which finds the row of the
+// key if it is there, since most WHERE that [Sequence.conditions] draws find no row of a table of a
+// few rows; and otherwise as [Sequence.conditions] draws them.
+func (q *Sequence) changeConditions(table stmt.Name) []stmt.Condition {
+	shape := q.shapeOf(table)
+	key := shape[slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })]
+	if stored := q.stored[[2]string{table.Fold(), key.Name.Value}]; len(stored) > 0 && q.r.IntN(3) == 0 {
+		return []stmt.Condition{{Column: stmt.Name{Raw: q.spell(key.Name.Value)}, Operator: stmt.OpEqual, Value: stmt.Term{Value: stored[q.r.IntN(len(stored))]}}}
+	}
+	return q.conditions(table)
 }
 
 // conditionValue for a condition on the column of the fold of a select of table, of type t, or of a
@@ -828,13 +921,17 @@ func (q *Sequence) next() Call {
 		return c
 	}
 	var k Kind
-	switch n := r.IntN(20); {
+	switch n := r.IntN(24); {
 	case n < 4:
 		k = KindCreateTable
 	case n < 14:
 		k = KindInsert
-	case n < 19:
+	case n < 18:
 		k = KindSelect
+	case n < 21:
+		k = KindUpdate
+	case n < 23:
+		k = KindDelete
 	default:
 		k = KindDropTable
 	}

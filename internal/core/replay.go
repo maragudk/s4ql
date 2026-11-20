@@ -46,7 +46,9 @@ func (c *countingReader) Read(p []byte) (int, error) {
 // the reader reports them, and [ErrLogBroken] for a commit object that the reader accepts and that
 // does not fit the cache: another parent, a table that is there already or is not there, a column
 // position outside the table, a row or a key that does not fit the table, a value of the wrong
-// storage class, and a row to change or delete that is not there. The cache is right up to the
+// storage class, a row to change or delete that is not there, an index on a table that is not
+// there or on a column outside the table, an index whose name a table or an index has or that is
+// reserved, and an index to drop that is not there. The cache is right up to the
 // parent, so such a commit object is wrong, and applying a part of it would leave the cache in a
 // state that the log never had. An error of body, of tick, or of the cache is passed on as it is.
 // After any error, the cache is as it was.
@@ -152,7 +154,7 @@ func authentic(r *format.CommitReader, refusal error) error {
 	}
 }
 
-// apply one change to the cache, and return how many tables and rows it changed.
+// apply one change to the cache, and return how many tables, indexes, and rows it changed.
 func apply(c *conn, change *s4qlpb.Change) (int, error) {
 	switch change.WhichKind() {
 	case s4qlpb.Change_CreateTable_case:
@@ -166,6 +168,13 @@ func apply(c *conn, change *s4qlpb.Change) (int, error) {
 		}
 		if existing != nil {
 			return 0, brokenf("it creates the table %q, and the table %q exists", ct.GetTable(), existing.name)
+		}
+		_, ix, err := c.lookUpIndex(ct.GetTable())
+		if err != nil {
+			return 0, err
+		}
+		if ix != nil {
+			return 0, brokenf("it creates the table %q, and the index %q exists", ct.GetTable(), ix.name)
 		}
 		return 1, c.create(newTable(ct))
 
@@ -198,6 +207,12 @@ func apply(c *conn, change *s4qlpb.Change) (int, error) {
 			}
 		}
 		return len(dr.GetPrimaryKeys()), nil
+
+	case s4qlpb.Change_CreateIndex_case:
+		return applyCreateIndex(c, change.GetCreateIndex())
+
+	case s4qlpb.Change_DropIndex_case:
+		return applyDropIndex(c, change.GetDropIndex().GetIndex())
 	}
 	// The reader hands out no change of another kind.
 	return 0, brokenf("it holds a change of kind %v", change.WhichKind())

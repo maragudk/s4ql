@@ -54,6 +54,12 @@ type bugs struct {
 	// open, so that it leaves out the row whose key is the bound, which the filter above it would
 	// give.
 	openBound bool
+	// changeNothing makes an update and a delete find no row, change nothing, and report a count of 0,
+	// as a statement does that finds no row, so that a transaction of it alone commits nothing.
+	changeNothing bool
+	// keepOldKey makes an update that gives a row a new key write the row under the new key and leave
+	// the row of the old key, so that the table holds the row twice, with the count that SQLite gives.
+	keepOldKey bool
 }
 
 // reader of a query on r: r, or with the planted bug openBound r as [openBounds] reads it.
