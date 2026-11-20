@@ -193,7 +193,7 @@ func ChooseAccess(t *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, position
 	for i := range positions {
 		conditions[i] = condition{position: positions[i], op: ops[i], value: values[i]}
 	}
-	a, err := chooseAccess(t, indexes, conditions)
+	a, err := chooseAccess(t, indexes, conditions, bugs{})
 	return exported(a), err
 }
 
@@ -305,6 +305,7 @@ var plantable = map[string]func(b *bugs){
 	"openBound":     func(b *bugs) { b.openBound = true },
 	"changeNothing": func(b *bugs) { b.changeNothing = true },
 	"keepOldKey":    func(b *bugs) { b.keepOldKey = true },
+	"pinByPlace":    func(b *bugs) { b.pinByPlace = true },
 }
 
 // The names of the event and of its attributes, for the tests of the telemetry.

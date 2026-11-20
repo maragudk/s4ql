@@ -75,6 +75,11 @@ type Sequence struct {
 	heavy bool
 }
 
+// IndexNames of the sequence: the spellings of the names of its indexes.
+func (q *Sequence) IndexNames() []string {
+	return slices.Clone(q.indexes)
+}
+
 // storedIndexes is the most create indexes of a table that a [Sequence] keeps for its conditions.
 const storedIndexes = 3
 

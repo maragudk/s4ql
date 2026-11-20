@@ -279,7 +279,7 @@ func (o *oracle) state(t testing.TB) string {
 		a := o.run(t, "select * from "+stmttest.Quote(name)+" order by "+strings.Join(key, ", "))
 		fmt.Fprintf(&b, "%v (%v): %v\n", name, strings.Join(cs, ", "), strings.Join(a.rows, " "))
 	}
-	return b.String()
+	return b.String() + o.indexes(t)
 }
 
 // columnText of a column of a table in the text of a state: its name and its declared type, and
@@ -462,6 +462,8 @@ type instance struct {
 	// that have none of their own: the engine of the n-th open has the seed plus n.
 	seed  uint64
 	opens uint64
+	// planted is set for an instance whose engine has a planted bug, which can cause an internal error.
+	planted bool
 }
 
 // seeded gives the instance the seed of the flag -directions, or one that it draws, and logs it if
@@ -580,7 +582,7 @@ func (i *instance) queryValues(src string, args []*s4qlpb.Value) answer {
 		}
 	}
 	if err != nil {
-		return errAnswer(i.t, src, err)
+		return i.errAnswer(src, err)
 	}
 	var a answer
 	var columns []string
@@ -590,7 +592,7 @@ func (i *instance) queryValues(src string, args []*s4qlpb.Value) answer {
 	a.columns = strings.Join(columns, ", ")
 	for row, err := range rows.All() {
 		if err != nil {
-			return answer{err: errText(i.t, src, err)}
+			return i.errAnswer(src, err)
 		}
 		values := make([]string, len(row))
 		for j, v := range row {
@@ -617,9 +619,19 @@ func (i *instance) execValues(src string, args []*s4qlpb.Value) answer {
 		i.changes = res.Changes
 	}
 	if err != nil {
-		return errAnswer(i.t, src, err)
+		return i.errAnswer(src, err)
 	}
 	return answer{}
+}
+
+// errAnswer of the engine's error err for src, as [errAnswer] gives it, or, for an instance with a
+// planted bug, an answer of the internal error that the bug can cause.
+func (i *instance) errAnswer(src string, err error) answer {
+	i.t.Helper()
+	if i.planted && errors.Is(err, engine.ErrInternal) {
+		return answer{err: "internal error", message: err.Error()}
+	}
+	return errAnswer(i.t, src, err)
 }
 
 // state of the database in the engine's instance, as [oracle.state] gives it, read from the core.
@@ -654,7 +666,9 @@ func (i *instance) state() string {
 		}
 		fmt.Fprintf(&b, "%v (%v): %v\n", ct.GetTable(), strings.Join(columns, ", "), strings.Join(rows, " "))
 	}
-	return b.String()
+	indexes, err := indexesText(ctx, r, tables)
+	is.NotError(i.t, err)
+	return b.String() + indexes
 }
 
 // sequence of random statements of slice 1, as [stmttest.Sequence] gives them.
@@ -820,6 +834,16 @@ func generatedOptions() engine.Options {
 // does.
 func differentialOn(t testing.TB, seed uint64, n int, restarts bool, y tally, i *instance) {
 	t.Helper()
+	if failure := differentialFind(t, seed, n, restarts, y, i, generatedOptions()); failure != "" {
+		t.Fatal(failure)
+	}
+}
+
+// differentialFind runs the sequence of n statements from seed on the instance i, as [differential]
+// does, with the options of the engine options after each restart, and gives the first difference
+// from SQLite, with the statements before it, or "".
+func differentialFind(t testing.TB, seed uint64, n int, restarts bool, y tally, i *instance, options engine.Options) (failure string) {
+	t.Helper()
 	r := rand.New(rand.NewPCG(seed, 0xe1e))
 	q := newSequence(t, r)
 	if seed%3 == 2 {
@@ -827,37 +851,40 @@ func differentialOn(t testing.TB, seed uint64, n int, restarts bool, y tally, i 
 		// columns, which its paths pin.
 		q.Indexed()
 	}
-	p := newPair(t, i, y)
+	p := newPairWith(t, i, y, options)
 	p.rnd = rand.New(rand.NewPCG(seed, 0x9a7))
 	// The other instance closes at the end of the sequence too, as [differential] closes i.
 	defer p.other.close()
 	var log []string
-	fail := func(format string, args ...any) {
-		t.Helper()
-		t.Fatalf("seed %v, after\n%v\n%v", seed, strings.Join(log, "\n"), fmt.Sprintf(format, args...))
+	fail := func(format string, args ...any) string {
+		return fmt.Sprintf("seed %v, after\n%v\n%v", seed, strings.Join(log, "\n"), fmt.Sprintf(format, args...))
 	}
 	for range n {
 		if restarts && r.IntN(10) == 0 {
 			empty := r.IntN(2) == 0
 			log = append(log, fmt.Sprint("-- restart, with an empty cache: ", empty))
-			i.restart(empty, generatedOptions())
+			if p.o.indexes(t) != "" {
+				p.count(map[bool]string{true: "replay of indexes into an empty cache", false: "restart with indexes in the cache"}[empty])
+			}
+			i.restart(empty, options)
 			if got, want := i.state(), p.o.state(t); got != want {
-				fail("after the restart the engine holds\n%v\nand SQLite\n%v", got, want)
+				return fail("after the restart the engine holds\n%v\nand SQLite\n%v", got, want)
 			}
 		}
 		c := q.Next()
 		log = append(log, fmt.Sprintf("%v -- with %#v", c.Src, c.Args))
 		if failure := p.step(c); failure != "" {
-			fail("%v", failure)
+			return fail("%v", failure)
 		}
 	}
 	want := p.o.state(t)
 	if got := i.state(); got != want {
-		fail("at the end the engine holds\n%v\nand SQLite\n%v", got, want)
+		return fail("at the end the engine holds\n%v\nand SQLite\n%v", got, want)
 	}
 	if got := p.other.state(); got != want {
-		fail("at the end the other engine, which reads the rows the other way, holds\n%v\nand SQLite\n%v", got, want)
+		return fail("at the end the other engine, which reads the rows the other way, holds\n%v\nand SQLite\n%v", got, want)
 	}
+	return ""
 }
 
 // pair of the engine's instance i and SQLite o, which run the same statements.
@@ -892,11 +919,18 @@ type pair struct {
 // engine of the kind of i, on a database in memory or on the core with the length limit of i.
 func newPair(t testing.TB, i *instance, y tally) *pair {
 	t.Helper()
+	return newPairWith(t, i, y, engine.Options{})
+}
+
+// newPairWith is [newPair] with the options of the other instance on the core, options.
+func newPairWith(t testing.TB, i *instance, y tally, options engine.Options) *pair {
+	t.Helper()
 	p := &pair{t: t, i: i, o: newOracle(t), empty: newOracle(t), y: y, rnd: rand.New(rand.NewPCG(0, 0x9a7))}
 	if i.memory != nil {
 		p.other = newMemoryInstance(t)
 	} else {
-		p.other = newInstanceLimited(t, engine.Options{}, nil, i.limit)
+		p.other = newInstanceLimited(t, options, nil, i.limit)
+		p.other.planted = i.planted
 	}
 	t.Cleanup(p.o.close)
 	t.Cleanup(p.empty.close)
@@ -1222,7 +1256,9 @@ func (p *pair) everyPath(s stmt.Statement, c stmttest.Call) string {
 	defer other.e.SetPath(engine.Path{})
 	other.e.SetPath(engine.Path{})
 	rules := other.queryValues(src, vals)
-	if rules.err != "" {
+	if rules.err == "not supported" {
+		// s4ql's refusal of a value of another type than its column, which the comparison of the call
+		// checks against s4ql's rule.
 		return ""
 	}
 	if rules.String() != want.String() {
@@ -2610,6 +2646,48 @@ var reachedDifferential = map[string]int{
 // length limit of 1000: the engine refuses the update of two rows whose second record is too long,
 // which SQLite stores on some platforms and refuses on others, and the comparison accepts either
 // only by an update of each row alone in SQLite.
+// TestDifferential_plantedBugs runs the first sequences of [TestDifferential] with each planted bug
+// of the choice of an access in the engines of both instances of the pair, and requires that at
+// least a pinned number of them find the bug, by a difference from SQLite, also on a path that
+// [pair.everyPath] forces. Without the bug the same sequences find nothing, as [TestDifferential]
+// shows.
+func TestDifferential_plantedBugs(t *testing.T) {
+	n := 60
+	if slow() {
+		n = 6
+	}
+	for _, b := range []struct {
+		name string
+		// least is the number of the n sequences that must find the bug, about half of what they found
+		// on 2026-11-20.
+		least int
+	}{
+		{"pinByPlace", 3},
+	} {
+		t.Run(b.name, func(t *testing.T) {
+			found := 0
+			first := ""
+			for s := range uint64(n) {
+				var options engine.Options
+				options.Plant(b.name)
+				i := newInstanceLimited(t, options, nil, map[bool]int{true: stmttest.LengthLimit}[s%4 >= 2])
+				i.planted = true
+				if failure := differentialFind(t, *seed+s, *length, s%2 == 1, nil, i, options); failure != "" {
+					found++
+					if first == "" {
+						first = failure[:min(len(failure), 2000)]
+					}
+				}
+				i.close()
+			}
+			t.Logf("%v of %v sequences find the bug; the first finds: %v", found, n, first)
+			if !slow() && atDefault("seed", "length") {
+				is.True(t, found >= b.least, fmt.Sprint("the bug is found too rarely: ", found))
+			}
+		})
+	}
+}
+
 func TestPair_recordSlips(t *testing.T) {
 	setup := []string{
 		"create table t (k int primary key, a text, b text not null) strict, without rowid",

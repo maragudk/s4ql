@@ -437,9 +437,11 @@ func (h handler) Handle(ctx context.Context, rec slog.Record) error {
 func (r *run) open(ctx context.Context, n *node) error {
 	n.mu.Lock()
 	key := fmt.Sprint(n.name, "/", n.gen+1)
-	// Every second engine of a node reads every row of a table in each query, so that the checks of
-	// the queries against SQLite see both ways of reading rows, also across crashes and closes.
-	scanAll := n.gen%2 == 1
+	// Every second engine of a node reads its rows another way than by the rules, so that the checks
+	// of the statements against SQLite see more ways of reading rows, also across crashes and closes:
+	// every row of a table, or, by turns, by one of the names of the indexes of the sequence, in a
+	// table that has an index of the name, and by the rules in another.
+	other := n.gen%2 == 1
 	generation := n.gen
 	n.mu.Unlock()
 	d, err := core.Open(ctx, n.inst, n.client, n.path, "db", core.Options{
@@ -455,8 +457,10 @@ func (r *run) open(ctx context.Context, n *node) error {
 	for _, bug := range r.w.bugs {
 		options.Plant(bug)
 	}
-	if scanAll {
+	if names := r.q.IndexNames(); other && generation%4 == 1 {
 		options.ScanAll()
+	} else if other {
+		options.Path(engine.Path{Index: names[generation/4%len(names)]})
 	}
 	// The engine draws the direction of each query from a seed of its own, which the seed of the run,
 	// the node, and the number of its engine fix, and not from the host, so that the draws of the
@@ -1682,6 +1686,12 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 		// there before and is not there after, as for a row that the transaction inserted and deleted,
 		// and commits the row of a key that it wrote, also with the values that it had.
 		ofTables := !slices.ContainsFunc(writes, func(a *attempt) bool {
+			// A drop index names no table, and is of a table that is there.
+			if s, _ := stmt.Check(a.src); s != nil {
+				if _, ok := s.(*stmt.DropIndex); ok {
+					return true
+				}
+			}
 			name := tableOf(a.src)
 			return before[name] || after[name]
 		})
@@ -1734,6 +1744,8 @@ func tableOf(src string) string {
 	case *stmt.Update:
 		return s.Table.Fold()
 	case *stmt.Delete:
+		return s.Table.Fold()
+	case *stmt.CreateIndex:
 		return s.Table.Fold()
 	}
 	panic(fmt.Sprintf("a statement of type %T", s))
@@ -1925,7 +1937,11 @@ func coreState(ctx context.Context, d *core.DB) (string, error) {
 		}
 		fmt.Fprintf(&b, "%v (%v): %v\n", ct.GetTable(), strings.Join(columns, ", "), strings.Join(rows, " "))
 	}
-	return b.String(), nil
+	indexes, err := indexesText(ctx, r, tables)
+	if err != nil {
+		return "", err
+	}
+	return b.String() + indexes, nil
 }
 
 // simulation of one seed of a workload.
@@ -2303,6 +2319,11 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// the select writes nothing, and fails nothing. An engine that reads every row, as every second
 		// engine of a node does, does not have the bug.
 		{"openBound", defaultWorkload, "default", []string{", and in SQLite", "which began at commit"}},
+		// A scan that pins a column of the key of an index to the value of a condition on another
+		// column: a select gives other rows than in SQLite, or fails where the value is of another type
+		// than the column; an update or a delete changes other rows, and the statements after it can
+		// differ.
+		{"pinByPlace", defaultWorkload, "default", []string{", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "fails in SQLite"}},
 		// An update or a delete that changes nothing and says so: of its own, it is in no commit, and
 		// SQLite, which runs it on the state that it saw, changes rows; in a transaction, SQLite gives
 		// another count; and the rows that it should have changed make later statements differ.
