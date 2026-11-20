@@ -1031,6 +1031,9 @@ func TestChangeRows(t *testing.T) {
 			{plan: &Delete{Table: name, Source: &Scan{Table: name}}, key: []uint32{2}, want: "a change of a table of 2 columns with the key [2]"},
 			{plan: &Update{Table: name, Set: []Assignment{{Column: stmt.Name{Raw: "w", Value: "w"}, Value: &Integer{Value: 1}}, {Column: stmt.Name{Raw: "W", Value: "W"}, Value: &Integer{Value: 2}}},
 				Source: &Scan{Table: name}}, key: []uint32{1}, want: "an update that sets the column w twice"},
+			{plan: &Update{Table: name, Set: []Assignment{{Column: stmt.Name{Raw: "w", Value: "w"}, Value: &Parameter{Number: 1}}}, Source: &Scan{Table: name}},
+				key: []uint32{1}, want: "the parameter 1 of a statement with 0 arguments"},
+			{plan: &Update{Table: name, Source: &Scan{Table: name}}, key: []uint32{1}, want: "an update that sets no column"},
 		} {
 			f := newTable()
 			f.tables["t"].ct.SetPrimaryKey(c.key)
