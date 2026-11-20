@@ -335,7 +335,9 @@ func Check(src string, n int) error {
 	return countArguments(s.Parameters(), n)
 }
 
-// check the text src: its statement, or its error, as [stmt.Check] gives it, or [ErrNoStatement].
+// check the text src: its statement, or its error, as [stmt.Check] gives it, or [ErrNoStatement]. A
+// create index and a drop index, which the pass supports and the engine does not run yet, are not
+// supported, with the error that [indexRefusal] gives.
 func check(src string) (stmt.Statement, error) {
 	s, err := stmt.Check(src)
 	if err != nil {
@@ -343,6 +345,9 @@ func check(src string) (stmt.Statement, error) {
 	}
 	if s == nil {
 		return nil, ErrNoStatement
+	}
+	if err := indexRefusal(src, s); err != nil {
+		return nil, err
 	}
 	return s, nil
 }
