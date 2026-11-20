@@ -904,14 +904,62 @@ func (c *conn) exists(t *table, key []*s4qlpb.Value) (bool, error) {
 	return n > 0, err
 }
 
-// scan the rows of the table in the order of its primary key. The statement is given back also when
-// a panic or [runtime.Goexit] in the loop over the scan unwinds through it: a statement that stays
-// stepped would hold its transaction's snapshot and locks, and the connection could not close.
-func (c *conn) scan(t *table) iter.Seq2[[]*s4qlpb.Value, error] {
+// Bound of a scan by the primary key of a table whose key is one column: the rows whose key is at
+// Value or beyond it, or only beyond it if Open, as SQLite compares the keys. A Bound without a Value
+// bounds nothing.
+type Bound struct {
+	Value *s4qlpb.Value
+	Open  bool
+}
+
+// checkBounds of a scan of the table: a bound with a value is only for a table whose primary key is
+// one column, and its value is a valid key of the table, as [table.checkKey] checks it.
+func (t *table) checkBounds(limit int, bounds ...Bound) error {
+	for _, b := range bounds {
+		if b.Value == nil {
+			continue
+		}
+		if err := t.checkKey([]*s4qlpb.Value{b.Value}, limit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// scan the rows of the table in the order of its primary key, from lower to upper, which
+// [table.checkBounds] has accepted. The statement is given back also when a panic or
+// [runtime.Goexit] in the loop over the scan unwinds through it: a statement that stays stepped
+// would hold its transaction's snapshot and locks, and the connection could not close.
+func (c *conn) scan(t *table, lower, upper Bound) iter.Seq2[[]*s4qlpb.Value, error] {
 	return func(yield func([]*s4qlpb.Value, error) bool) {
-		sql := fmt.Sprint("select * from main.", quote(t.name), " order by ", t.columnList(t.key))
+		var where []string
+		var args []any
+		for _, b := range []struct {
+			Bound
+			op string
+		}{{lower, ">"}, {upper, "<"}} {
+			if b.Value == nil {
+				continue
+			}
+			op := b.op
+			if !b.Open {
+				op += "="
+			}
+			args = append(args, b.Value)
+			where = append(where, fmt.Sprint(quote(t.columns[t.key[0]].name), " ", op, " ?", len(args)))
+		}
+		sql := fmt.Sprint("select * from main.", quote(t.name))
+		if len(where) > 0 {
+			sql += " where " + strings.Join(where, " and ")
+		}
+		sql += " order by " + t.columnList(t.key)
 		s, err := c.prepare(sql)
 		if err != nil {
+			yield(nil, err)
+			return
+		}
+		if err := bind(s, args...); err != nil {
+			_ = c.rest(sql, s)
 			yield(nil, err)
 			return
 		}

@@ -210,3 +210,131 @@ func TestScan_order(t *testing.T) {
 		}
 	})
 }
+
+func TestScanRange(t *testing.T) {
+	t.Run("should give the rows of a table of each type whose key is within the bounds, in the order of the scan, in a read and in a write", func(t *testing.T) {
+		for _, typ := range types {
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+			write(t, d, func(tx *core.Tx) {
+				is.NotError(t, tx.CreateTable(t.Context(), typedTable("t", typ, s4qlpb.Type_TYPE_INT)))
+				for i, k := range edges[typ] {
+					is.NotError(t, tx.Upsert(t.Context(), "t", []*s4qlpb.Value{k, row(int64(i))[0]}), text([]*s4qlpb.Value{k}))
+				}
+			})
+			r, err := startRead(t, d)
+			is.NotError(t, err)
+			var all [][]*s4qlpb.Value
+			for row, err := range r.Scan(t.Context(), "t") {
+				is.NotError(t, err)
+				all = append(all, row)
+			}
+			// want is the rows of the full scan whose key is within the bounds, by the model's order.
+			want := func(lower, upper core.Bound) string {
+				var rows []string
+				for _, row := range all {
+					k := row[:1]
+					if lower.Value != nil {
+						if c := compareKeys(k, []*s4qlpb.Value{lower.Value}); c < 0 || c == 0 && lower.Open {
+							continue
+						}
+					}
+					if upper.Value != nil {
+						if c := compareKeys(k, []*s4qlpb.Value{upper.Value}); c > 0 || c == 0 && upper.Open {
+							continue
+						}
+					}
+					rows = append(rows, text(row))
+				}
+				return strings.Join(rows, " | ")
+			}
+			scanned := func(scan iter.Seq2[[]*s4qlpb.Value, error]) string {
+				var rows []string
+				for row, err := range scan {
+					is.NotError(t, err)
+					rows = append(rows, text(row))
+				}
+				return strings.Join(rows, " | ")
+			}
+			// Every bound of every value of the edges, also -0.0, closed, open, and none.
+			bounds := []core.Bound{{}}
+			for _, k := range edges[typ] {
+				bounds = append(bounds, core.Bound{Value: k}, core.Bound{Value: k, Open: true})
+			}
+			tx, err := d.Begin(t.Context())
+			is.NotError(t, err)
+			cases := 0
+			for _, lower := range bounds {
+				for _, upper := range bounds {
+					bound := func(b core.Bound) string {
+						if b.Value == nil {
+							return "none"
+						}
+						return fmt.Sprint(text([]*s4qlpb.Value{b.Value}), " open ", b.Open)
+					}
+					name := fmt.Sprintf("%v from %v to %v", typeName(typ), bound(lower), bound(upper))
+					w := want(lower, upper)
+					is.Equal(t, w, scanned(r.ScanRange(t.Context(), "t", lower, upper)), name)
+					is.Equal(t, w, scanned(tx.ScanRange(t.Context(), "t", lower, upper)), name)
+					if w != "" && w != want(core.Bound{}, core.Bound{}) {
+						cases++
+					}
+				}
+			}
+			is.True(t, cases > len(bounds), "the bounds leave out some rows and not all of them")
+			is.NotError(t, tx.Rollback(t.Context()))
+			is.NotError(t, r.Close(t.Context()))
+			is.NotError(t, d.Close(t.Context()))
+		}
+	})
+
+	t.Run("should refuse a bound that is no key of the table, and a bound of a table whose key is two columns", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{LengthLimit: 1000})
+		transact(t, d, create("t1", 1, "k"), upsert("t1", 1), create("t2", 2, "a", "b"), upsert("t2", 1, 2))
+		cases := []struct {
+			name  string
+			table string
+			b     core.Bound
+			want  error
+		}{
+			{name: "NULL", table: "t1", b: core.Bound{Value: s4qlpb.Value_builder{Null: &s4qlpb.Null{}}.Build()}, want: core.ErrInvalid},
+			{name: "text for an INT key", table: "t1", b: core.Bound{Value: row("1")[0]}, want: core.ErrInvalid},
+			{name: "a value of no kind", table: "t1", b: core.Bound{Value: &s4qlpb.Value{}}, want: core.ErrInvalid},
+			{name: "a key of two columns", table: "t2", b: core.Bound{Value: row(1)[0]}, want: core.ErrInvalid},
+			{name: "no table", table: "t3", b: core.Bound{Value: row(1)[0]}, want: core.ErrNoTable},
+		}
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		for _, c := range cases {
+			for _, scan := range []func(lower, upper core.Bound) iter.Seq2[[]*s4qlpb.Value, error]{
+				func(lower, upper core.Bound) iter.Seq2[[]*s4qlpb.Value, error] { return r.ScanRange(t.Context(), c.table, lower, upper) },
+				func(lower, upper core.Bound) iter.Seq2[[]*s4qlpb.Value, error] { return tx.ScanRange(t.Context(), c.table, lower, upper) },
+			} {
+				for _, bounds := range [][2]core.Bound{{c.b, {}}, {{}, c.b}} {
+					n := 0
+					for row, err := range scan(bounds[0], bounds[1]) {
+						n++
+						is.True(t, row == nil, c.name)
+						is.True(t, errors.Is(err, c.want), c.name+": "+fmt.Sprint(err))
+					}
+					is.Equal(t, 1, n, c.name)
+				}
+			}
+		}
+		is.NotError(t, tx.Rollback(t.Context()))
+		is.NotError(t, r.Close(t.Context()))
+		transact(t, d, func(t *testing.T, tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(t.Context(), typedTable("t4", s4qlpb.Type_TYPE_TEXT)))
+		})
+		r, err = startRead(t, d)
+		is.NotError(t, err)
+		for _, err := range r.ScanRange(t.Context(), "t4", core.Bound{Value: row(strings.Repeat("x", 1001))[0]}, core.Bound{}) {
+			is.True(t, errors.Is(err, core.ErrTooBig), fmt.Sprint(err))
+		}
+		is.NotError(t, r.Close(t.Context()))
+		is.NotError(t, d.Close(t.Context()))
+	})
+}
