@@ -973,6 +973,9 @@ var checkCases = []checkCase{
 	{name: "true alone", src: "select * from t where true", err: "s4ql: not supported: TRUE or FALSE (at offset 22)"},
 	{name: "true on the left", src: "select * from t where true = v", err: "s4ql: not supported: TRUE or FALSE (at offset 22)"},
 	{name: "true on the right", src: "select * from t where v = true", err: "s4ql: not supported: TRUE or FALSE (at offset 26)"},
+	// With the name of a table, true and false are names of columns, as in SQLite.
+	{name: "a column named true with its table alone", src: "select * from t where t.true", err: "s4ql: not supported: column reference (at offset 22)"},
+	{name: "a column named false with its table on the right", src: "select * from t where v = t.false", err: "s4ql: not supported: column compared with a column (at offset 26)"},
 	{name: "false after and", src: "select * from t where v = 1 and false", err: "s4ql: not supported: TRUE or FALSE (at offset 32)"},
 	{name: "a literal after and", src: "select * from t where v = 1 and 1", err: "s4ql: not supported: literal (at offset 32)"},
 	{name: "a column after and", src: "select * from t where v = 1 and w", err: "s4ql: not supported: column reference (at offset 32)"},
