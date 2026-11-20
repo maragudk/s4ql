@@ -241,11 +241,11 @@ stmt/recognize.go recognizer.parameter remove statement: r.accept(v) =>
 	The only token of a parameter is taken at once, so describe never looks inside the node, and names it the same whether it was accepted or not.
 
 # The literals of slice 4 in the recognizer.
-stmt/recognize.go recognizer.literal condition: r.isNext(c.Column) => true
+stmt/recognize.go recognizer.value condition: r.isNext(c.Column) => true
 	A column reference without a table name has no schema name either, so its column is its first token, which is the next one.
-stmt/recognize.go recognizer.literal condition: !c.Table.Present() => true
+stmt/recognize.go recognizer.value condition: !c.Table.Present() => true
 	With a table name, the table name is the next token, so the column is not, and the test of isNext is false either way.
-stmt/recognize.go recognizer.literal constant: math.IsInf(f, 0) => math.IsInf(f, 1)
+stmt/recognize.go recognizer.value constant: math.IsInf(f, 0) => math.IsInf(f, 1)
 	atof reads the literal without its sign, so the only infinity that it gives is the positive one.
 
 # The columns of slices 5 and 6 in the recognizer. A token that the recognizer does not take is

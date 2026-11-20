@@ -189,8 +189,8 @@ var columnTypes = map[string]Type{"int": TypeInt, "integer": TypeInteger, "real"
 const otherType = "column type other than INT, INTEGER, REAL, TEXT, or BLOB"
 
 // column: name type and its constraints, where the type is one bare word of [columnTypes], in any
-// case, and the constraints are PRIMARY KEY and NOT NULL, each at most once, in either order, or
-// none. key reports whether an earlier column of the table is its primary key, so that this one must
+// case, and the constraints are PRIMARY KEY, NOT NULL, and DEFAULT, each at most once, in any order,
+// or none. key reports whether an earlier column of the table is its primary key, so that this one must
 // not be.
 func (r *recognizer) column(d *ast.ColumnDef, key bool) Column {
 	r.accept(d)
@@ -231,11 +231,62 @@ func (r *recognizer) column(d *ast.ColumnDef, key bool) Column {
 			r.take(k.Not)
 			r.take(k.Null)
 			c.NotNull = true
+		case *ast.DefaultConstraint:
+			if c.Default.Value != nil && r.isNext(k.Default) {
+				// SQLite keeps the last DEFAULT of the column, and the text of the others.
+				r.reject("second DEFAULT")
+			}
+			r.accept(k)
+			r.take(k.Default)
+			c.Default = r.defaultValue(k, c.Type)
 		default:
 			r.unexpected()
 		}
 	}
 	return c
+}
+
+// defaultValue of the DEFAULT d of a column of the type typ, after the keyword DEFAULT: a literal, as
+// a value of an insert is, of the type of the column or NULL. SQLite takes a literal of any type
+// there, and converts it or refuses it when an insert stores it; by the exact types of an insert,
+// s4ql could never store a literal of another type than its column, so the declaration is not
+// supported. SQLite reads a name after DEFAULT, also one in quotes, as a string, and TRUE and FALSE
+// as 1 and 0; a DEFAULT in parentheses is an expression.
+func (r *recognizer) defaultValue(d *ast.DefaultConstraint, typ Type) Default {
+	start := r.at()
+	if d.Name.Present() && r.isNext(d.Name) && (isWord(d.Name, "true") || isWord(d.Name, "false")) {
+		r.reject("TRUE or FALSE")
+	}
+	if d.LParen.Present() || d.Name.Present() {
+		r.unexpected()
+	}
+	negative := false
+	if d.Sign.Present() {
+		r.sign(d.Sign, d.X)
+		negative = true
+	}
+	v, span := r.value(d.X, negative, start)
+	if !takes(typ, v) {
+		panic(stop{&NotSupportedError{What: "DEFAULT of another type than its column", Offset: start}})
+	}
+	return Default{Value: v, Span: span}
+}
+
+// takes reports whether a column of the type typ takes the value v by the exact types of an insert:
+// an integer for INT and INTEGER, a real for REAL, a text for TEXT, a blob for BLOB, and NULL for
+// every type.
+func takes(typ Type, v Value) bool {
+	switch v.(type) {
+	case Integer:
+		return typ == TypeInt || typ == TypeInteger
+	case Real:
+		return typ == TypeReal
+	case Text:
+		return typ == TypeText
+	case Blob:
+		return typ == TypeBlob
+	}
+	return true
 }
 
 // tableOptions: STRICT and WITHOUT ROWID, each once, in either order, with a comma between them.
@@ -384,30 +435,41 @@ func (r *recognizer) literal(e ast.Expr) (Value, Span) {
 	start := r.at()
 	negative := false
 	if u, ok := e.(*ast.Unary); ok {
-		// SQLite reads NULL after a sign as NULL.
-		if u.Op.Kind == token.Plus && isNull(u.X) {
-			r.reject("NULL after a sign")
-		}
-		if u.Op.Kind != token.Minus {
-			r.reject(unaryName(u.Op))
-		}
 		r.accept(u)
-		r.take(u.Op)
-		switch x := u.X.(type) {
-		case *ast.Unary:
-			if x.Op.Kind == token.Minus || x.Op.Kind == token.Plus {
-				r.reject("second sign")
-			}
-			r.reject(unaryName(x.Op))
-		case *ast.Variable:
-			r.reject("parameter after a sign")
-		}
-		if isNull(u.X) {
-			r.reject("NULL after a sign")
-		}
+		r.sign(u.Op, u.X)
 		negative = true
 		e = u.X
 	}
+	return r.value(e, negative, start)
+}
+
+// sign op before the expression x of a literal: a -, which it takes. SQLite reads NULL after a sign
+// as NULL, and the pass supports neither that nor any other sign.
+func (r *recognizer) sign(op ast.Token, x ast.Expr) {
+	if op.Kind == token.Plus && isNull(x) {
+		r.reject("NULL after a sign")
+	}
+	if op.Kind != token.Minus {
+		r.reject(unaryName(op))
+	}
+	r.take(op)
+	switch x := x.(type) {
+	case *ast.Unary:
+		if x.Op.Kind == token.Minus || x.Op.Kind == token.Plus {
+			r.reject("second sign")
+		}
+		r.reject(unaryName(x.Op))
+	case *ast.Variable:
+		r.reject("parameter after a sign")
+	}
+	if isNull(x) {
+		r.reject("NULL after a sign")
+	}
+}
+
+// value of the literal e, after a - if negative, which starts at start: as [recognizer.literal]
+// gives it.
+func (r *recognizer) value(e ast.Expr, negative bool, start int) (Value, Span) {
 	if c, ok := e.(*ast.ColumnRef); ok && r.isNext(c.Column) && !c.Table.Present() &&
 		(isWord(c.Column, "true") || isWord(c.Column, "false")) {
 		// SQLite reads a bare TRUE or FALSE where no column of that name is, as in VALUES, as 1 or 0.

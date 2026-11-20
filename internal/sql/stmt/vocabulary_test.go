@@ -12,7 +12,7 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
-// allowed node types and fields of slices 1, 2, 5, 7, 8, 9, and 10, as the README defines them: a type by its
+// allowed node types and fields of slices 1, 2, 5, 7, 8, 9, 10, and 11, as the README defines them: a type by its
 // name, and a field by the name of its type and its path, as "CreateTable.Name.Name". A field is
 // present when its token is, when its node is not nil, or when its list is not empty.
 var allowed = map[string]bool{
@@ -26,6 +26,7 @@ var allowed = map[string]bool{
 	"TypeName": true, "TypeName.Names": true,
 	"PrimaryKeyConstraint": true, "PrimaryKeyConstraint.Primary": true, "PrimaryKeyConstraint.Key": true,
 	"NullConstraint": true, "NullConstraint.Not": true, "NullConstraint.Null": true,
+	"DefaultConstraint": true, "DefaultConstraint.Default": true, "DefaultConstraint.Sign": true, "DefaultConstraint.X": true,
 	"TableOption": true, "TableOption.Without": true, "TableOption.Name": true,
 
 	"Insert": true, "Insert.Insert": true, "Insert.Into": true, "Insert.Table": true, "Insert.LParen": true,
@@ -138,7 +139,7 @@ var allowListExtra = []string{
 	"insert or ignore into t (v) values (1)",
 }
 
-// TestAllowList checks that a supported statement uses only the node types and fields of slices 1 to 10,
+// TestAllowList checks that a supported statement uses only the node types and fields of slices 1 to 11,
 // on many statements, and that every node type of package ast and every field of the node types of
 // slice 1 occurs in some statement of the test, so that the check covers each of them.
 func TestAllowList(t *testing.T) {
@@ -178,7 +179,7 @@ func TestAllowList(t *testing.T) {
 		if s, err := stmt.Check(sql); err == nil && s != nil {
 			for k := range f {
 				if !allowed[k] {
-					t.Errorf("%q is supported, and has %v, which slices 1 to 10 do not have", sql, k)
+					t.Errorf("%q is supported, and has %v, which slices 1 to 11 do not have", sql, k)
 				}
 			}
 			maps.Copy(seenSupported, f)
