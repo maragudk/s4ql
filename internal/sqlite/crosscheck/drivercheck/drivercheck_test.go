@@ -687,6 +687,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 		p.reachChange(s, runs, got, o, kind, count)
 		return
 	}
+	p.reachExists(src, s, runs, got, o, kind, count)
 	if sel, ok := s.(*stmt.Select); ok {
 		_, columns := p.columnsIn(o, sel.Table.Value)
 		if columns == nil {
@@ -1879,6 +1880,68 @@ func (p *pair) columnsIn(o runner, name string) (string, []stmttest.TableColumn)
 	}
 	is.NotError(tb, rows.Err())
 	return table, columns
+}
+
+// reachExists counts with count what the statement s of IF NOT EXISTS or IF EXISTS of slice 10 of
+// the text src reaches, whose outcome of s4ql is got, on the tables and indexes that SQLite has on o
+// before the call, by [stmttest.ExistsRule]: the kind of the statement, such as "drop table if
+// exists", and, where the rule says that SQLite does nothing, "did nothing" and the rule's reason, and
+// otherwise "did its work" for one that succeeded and the kind of the outcome, as kind gives it, for
+// one that failed. Where the rule says that SQLite does nothing, s4ql must succeed. Only the first run
+// counts, since a run after it meets what the first did, and nothing counts for a statement without
+// the clause, or for runs with arguments, which s4ql refuses by its rule.
+func (p *pair) reachExists(src string, s stmt.Statement, runs [][]any, got outcome, o runner, kind func(outcome) string, count func(string)) {
+	tb := p.tb
+	tb.Helper()
+	var what string
+	switch s := s.(type) {
+	case *stmt.CreateTable:
+		what = map[bool]string{true: "create table if not exists"}[s.IfNotExists]
+	case *stmt.DropTable:
+		what = map[bool]string{true: "drop table if exists"}[s.IfExists]
+	case *stmt.CreateIndex:
+		what = map[bool]string{true: "create index if not exists"}[s.IfNotExists]
+	case *stmt.DropIndex:
+		what = map[bool]string{true: "drop index if exists"}[s.IfExists]
+	}
+	outs := got.runs()
+	if what == "" || len(outs) == 0 || slices.ContainsFunc(runs, func(args []any) bool { return len(args) > 0 }) {
+		return
+	}
+	tables := map[string][]stmttest.TableColumn{}
+	indexes := map[string]bool{}
+	rows, err := o.QueryContext(tb.Context(), "select type, name from sqlite_schema where type = 'table' or type = 'index' and sql is not null")
+	is.NotError(tb, err)
+	var names [][2]string
+	for rows.Next() {
+		var typ, name string
+		is.NotError(tb, rows.Scan(&typ, &name))
+		names = append(names, [2]string{typ, name})
+	}
+	is.NotError(tb, rows.Err())
+	is.NotError(tb, rows.Close())
+	for _, n := range names {
+		fold := stmt.Name{Value: n[1]}.Fold()
+		if n[0] == "index" {
+			indexes[fold] = true
+			continue
+		}
+		_, tables[fold] = p.columnsIn(o, n[1])
+	}
+	// A QueryRow of a statement that gives no rows ends with the error of its scan, which is no failure
+	// of the statement.
+	outcome := kind(outs[0])
+	if outcome == "ok" || outcome == "no rows" {
+		outcome = "did its work"
+	}
+	if rule := stmttest.ExistsRule(tables, indexes, s); rule != "" {
+		if outcome != "did its work" {
+			tb.Errorf("%q: s4ql gives %v, and the rule does nothing: %v", src, got, rule)
+		}
+		count(what + " did nothing: " + rule)
+		return
+	}
+	count(what + " " + outcome)
 }
 
 // checkArguments of the outcome got of src, with the arguments of each run, which is s4ql's error
@@ -3122,12 +3185,18 @@ func TestGenerated(t *testing.T) {
 		"read-only transaction: insert no such table", "read-only transaction: createtable already exists",
 		"read-only transaction: call " + string(callStmtExec), "read-only transaction: call " + string(callStmtQuery),
 		"read-only transaction: call " + string(callPrepareExecRuns) + " with arguments",
-		"read-only transaction: insert while rows are open",
 		"call " + string(callBeginReadOnly) + " in a transaction",
 	} {
 		if y[kind] == 0 {
 			t.Errorf("no text has the outcome %q", kind)
 		}
+	}
+	// An insert of a read-only transaction while rows of the transaction are open, with a parameter or
+	// without one, whichever the run reaches: since the sequence wrote the clauses of slice 10, on
+	// 2026-11-20, and drew other random numbers, the run reaches one with a parameter and none
+	// without.
+	if y["read-only transaction: insert while rows are open"]+y["read-only transaction: insert with a parameter while rows are open"] == 0 {
+		t.Errorf("no insert of a read-only transaction has the outcome %q", "while rows are open")
 	}
 
 	// What the run must reach, at least: each type as a key, with an insert that succeeds, meets a key
@@ -3182,7 +3251,7 @@ func TestGenerated(t *testing.T) {
 		"insert that leaves out a column that takes NULL ok": 28, "insert that leaves out a column that takes NULL UNIQUE constraint failed": 8,
 		"insert that leaves out a column that takes NULL a value of another type": 7, "insert that leaves out a column that takes NULL NOT NULL constraint failed": 7,
 		"insert with NULL in the key: NOT NULL constraint failed": 9, "insert with NULL in a column that does not take it: NOT NULL constraint failed": 5,
-		"insert of NULL beside a value of another type NOT NULL constraint failed": 2, "insert of NULL beside a value of another type a value of another type": 3,
+		"insert of NULL beside a value of another type NOT NULL constraint failed": 1, "insert of NULL beside a value of another type a value of another type": 3,
 		"select * with NULL ok": 6, "select of names with NULL ok": 4,
 
 		// Slice 7, a third of what the run gave on 2026-11-20 when the sequence wrote WHERE: each
@@ -3246,7 +3315,7 @@ func TestGenerated(t *testing.T) {
 		"update with arguments that s4ql refuses not supported": 14, "update with arguments that s4ql refuses wrong number of arguments": 15,
 		"delete with arguments that s4ql refuses not supported": 8, "delete with arguments that s4ql refuses wrong number of arguments": 10,
 		"update WHERE that reads a get of one key ok, rows changed": 9, "delete WHERE that reads a get of one key ok, rows changed": 6,
-		"update WHERE that reads a scan of every row ok, rows changed": 2, "delete WHERE that reads a scan from a lower bound ok, rows changed": 1,
+		"update WHERE that reads a scan of every row ok, rows changed": 1, "delete WHERE that reads a scan from a lower bound ok, rows changed": 1,
 		"update WHERE that reads no row ok, no row found": 7,
 		"table read back after an update or a delete":     165,
 	} {
@@ -3267,6 +3336,32 @@ func TestGenerated(t *testing.T) {
 	} {
 		if y[kind] < least {
 			t.Errorf("the run gives %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y[kind], least)
+		}
+	}
+
+	// Slice 10, a third of what the run gave on 2026-11-20 when one create and drop in three of the
+	// sequence said IF NOT EXISTS or IF EXISTS, or 1: each of the four statements that did its work,
+	// that did nothing for each reason of [stmttest.ExistsRule], and that gave each error, as
+	// [pair.reachExists] counts them, also in a read-only transaction, which refuses one that would
+	// write. Since then the least numbers of "insert of NULL beside a value of another type NOT NULL
+	// constraint failed", of slice 6, and of "update WHERE that reads a scan of every row ok, rows
+	// changed", of slice 8, are 1, where they were 2: the sequence draws other random numbers, and
+	// the run reaches each once.
+	for kind, least := range map[string]int{
+		"create table if not exists did its work": 61, "create table if not exists did nothing: a table of the name exists": 82,
+		"create table if not exists duplicate column name": 2, "create table if not exists there is already an index named": 1,
+		"create table if not exists attempt to write a readonly database": 6,
+		"drop table if exists did its work":                               18, "drop table if exists did nothing: no table of the name exists": 18,
+		"drop table if exists did nothing: no table of the name exists, and an index has it": 1,
+		"drop table if exists attempt to write a readonly database":                          3,
+		"create index if not exists did its work":                                            17, "create index if not exists did nothing: an index of the name exists": 10,
+		"create index if not exists no such table": 42, "create index if not exists there is already a table named": 15,
+		"create index if not exists no such column": 3, "create index if not exists attempt to write a readonly database": 3,
+		"drop index if exists did its work": 2, "drop index if exists did nothing: no index of the name exists": 27,
+		"drop index if exists did nothing: no index of the name exists, and a table has it": 8,
+	} {
+		if y["reached: "+kind] < least {
+			t.Errorf("the run reaches %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y["reached: "+kind], least)
 		}
 	}
 
@@ -3339,10 +3434,16 @@ func TestGenerated(t *testing.T) {
 	// up, excusedTxOpen and excusedOutside with the transactions, and fewer rows are left open in one
 	// with a statement that fails more often, which took excusedRowsOpen down. A create index of a name
 	// in double quotes that is no column is counted by excusedQuoted now, and the count is 89 again by
-	// chance: it was 77 with the sequences of 40 texts.
+	// chance: it was 77 with the sequences of 40 texts. When one create and drop in three of the
+	// sequence said IF NOT EXISTS or IF EXISTS of slice 10, on 2026-11-20, the counts went from 1894,
+	// 8, 681, 360, 372, 98, 13, 48, 97, and 89 to 1713, 12, 687, 351, 327, 85, 24, 46, 91, and 106:
+	// the generator draws a number for each create and drop, which moves every count, the calls and
+	// the transactions too; and of its own, a create table or a create index of a name that is taken,
+	// and a drop of one that is not, which SQLite refuses at prepare and s4ql when it runs, does nothing
+	// in both with the clause, which took excusedPrepare down.
 	want := map[string]int{
-		excusedPrepare: 1894, excusedStartedTable: 8, excusedArguments: 681, excusedArgument: 360, excusedType: 372,
-		excusedLevel: 98, excusedRowsOpen: 13, excusedTxOpen: 48, excusedOutside: 97, excusedQuoted: 89,
+		excusedPrepare: 1713, excusedStartedTable: 12, excusedArguments: 687, excusedArgument: 351, excusedType: 327,
+		excusedLevel: 85, excusedRowsOpen: 24, excusedTxOpen: 46, excusedOutside: 91, excusedQuoted: 106,
 	}
 	kinds := slices.Collect(maps.Keys(want))
 	for name := range y {

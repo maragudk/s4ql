@@ -495,6 +495,22 @@ func TestConn_differential(t *testing.T) {
 			"commit of a transaction with a create index or a drop index": 9, "roll back of a transaction with a create index or a drop index": 4,
 			"create index attempt to write a readonly database": 6, "drop index attempt to write a readonly database": 1,
 			"WHERE run by every path on a table with an index": 30,
+			// The statements of slice 10 in transactions, as [reachExists] counts them, a third of what the
+			// run gave on 2026-11-20, or 1: in a write transaction, each that did its work and each that
+			// did nothing; in a read-only one, each that did nothing, which it allows, and each that would
+			// write, which it refuses. The run gave no drop index that would write in a read-only
+			// transaction, which the hand tests cover.
+			"create table if not exists did its work in a write transaction": 6, "create table if not exists did nothing: a table of the name exists in a write transaction": 12,
+			"drop table if exists did its work in a write transaction": 3, "drop table if exists did nothing: no table of the name exists in a write transaction": 2,
+			"create index if not exists did its work in a write transaction": 4, "create index if not exists did nothing: an index of the name exists in a write transaction": 2,
+			"drop index if exists did its work in a write transaction": 1, "drop index if exists did nothing: no index of the name exists in a write transaction": 3,
+			"create table if not exists did nothing: a table of the name exists in a read-only transaction":  6,
+			"create table if not exists attempt to write a readonly database in a read-only transaction":     5,
+			"drop table if exists did nothing: no table of the name exists in a read-only transaction":       2,
+			"drop table if exists attempt to write a readonly database in a read-only transaction":           1,
+			"create index if not exists did nothing: an index of the name exists in a read-only transaction": 1,
+			"create index if not exists attempt to write a readonly database in a read-only transaction":     2,
+			"drop index if exists did nothing: no index of the name exists in a read-only transaction":       1,
 		} {
 			if y["reached: "+kind] < least {
 				t.Errorf("the run reaches %q %v times, and at least %v were expected", kind, y["reached: "+kind], least)

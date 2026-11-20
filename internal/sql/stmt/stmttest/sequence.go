@@ -14,7 +14,7 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
-// Sequence of random statements of slices 1, 2, 4, 5, 6, 7, 8, and 9 that meet at a few tables and columns, each
+// Sequence of random statements of slices 1, 2, 4, 5, 6, 7, 8, 9, and 10 that meet at a few tables and columns, each
 // named in several spellings that SQLite takes for one name and in some that it takes for others,
 // with values from a small set so that keys repeat, and with statements that are not supported and
 // texts that SQLite refuses mixed in.
@@ -43,7 +43,9 @@ import (
 // them; a drop index names one of those names, or now and then a name of a table; and a create table
 // and a drop table name one of the names of an index now and then. One WHERE of a select in two of a
 // table on which the sequence drew a create index, and one of an update or a delete in three, pins
-// leading columns of the index, as [Sequence.indexConditions] draws them.
+// leading columns of the index, as [Sequence.indexConditions] draws them. One create table, create
+// index, drop table, and drop index in three says IF NOT EXISTS or IF EXISTS, as [Generator.Exists]
+// writes it.
 //
 // One value in three of an insert is a plain ? with the value as its argument, nil for NULL, and
 // some calls, as [Sequence.Next] says, have arguments around those that s4ql supports: none for a
@@ -225,7 +227,7 @@ func NewSequence(r Rand) (*Sequence, error) {
 	q.g = NewGenerator(r, pools)
 	q.g.Columns, q.g.Create, q.g.Insert, q.g.Select, q.g.Where = sequenceColumns, q.create, q.insert, q.selectList, q.where
 	q.g.Update, q.g.Delete, q.g.CreateIndex = q.update, q.delete, q.createIndex
-	q.g.Parameters = 3
+	q.g.Parameters, q.g.Exists = 3, 3
 	return q, nil
 }
 

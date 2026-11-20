@@ -695,6 +695,22 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, c
 	return a
 }
 
+// hasClause reports whether s is a create table or a create index with IF NOT EXISTS, or a drop
+// table or a drop index with IF EXISTS, of slice 10.
+func hasClause(s stmt.Statement) bool {
+	switch s := s.(type) {
+	case *stmt.CreateTable:
+		return s.IfNotExists
+	case *stmt.DropTable:
+		return s.IfExists
+	case *stmt.CreateIndex:
+		return s.IfNotExists
+	case *stmt.DropIndex:
+		return s.IfExists
+	}
+	return false
+}
+
 // isChange reports whether s is an update or a delete.
 func isChange(s stmt.Statement) bool {
 	switch s.(type) {
@@ -2211,7 +2227,9 @@ var storeLine = regexp.MustCompile(`^\S+ store request \d+(, stuck)? store: `)
 
 // tallyOf the simulation s: its statements, by how they ended, its writes that were acknowledged,
 // its queries that were not read to their end, its inserts and selects refused for the type of a
-// value, its create indexes and drop indexes by outcome, its selects, updates, and deletes that read
+// value, its create indexes and drop indexes by outcome, its statements of IF NOT EXISTS or IF EXISTS
+// by whether they did nothing, did their work, or failed with SQLite's error, its selects, updates,
+// and deletes that read
 // by an index, its statements on an engine that forces an index path, its queries whose index was
 // dropped while their rows were open, its commits and those of a statement with a parameter, the
 // rows of tables of several columns and the NULL values in the log, the faults that the store
@@ -2267,6 +2285,16 @@ func tallyOf(s simulation) map[string]int {
 			counts["statements on an engine that forces an index path"]++
 			if a.access == "index" && fold(a.index) == fold(forced) {
 				counts["statements read by the index that their engine forces"]++
+			}
+		}
+		if hasClause(s) {
+			switch {
+			case a.state == succeeded && a.nothing:
+				counts["statements of IF NOT EXISTS or IF EXISTS that did nothing"]++
+			case a.state == succeeded:
+				counts["statements of IF NOT EXISTS or IF EXISTS that did their work"]++
+			case a.state == sqliteFailed:
+				counts["statements of IF NOT EXISTS or IF EXISTS with SQLite's error"]++
 			}
 		}
 		if isChange(s) {
@@ -2439,6 +2467,12 @@ func TestSimulation(t *testing.T) {
 			// Every seed checks the integrity of the cache of each crash, of the replay, and of each live node
 			// at the end.
 			"integrity checks after a crash": 1, "integrity checks after the replay": 1, "integrity checks at the end": 2,
+			// The statements of slice 10, which one create and drop in three of the sequence is since
+			// 2026-11-20: those that did nothing, did their work, and failed with SQLite's error, and those
+			// that did nothing and that the checks run in SQLite, of their own and in a transaction.
+			"statements of IF NOT EXISTS or IF EXISTS that did nothing": 0.98, "statements of IF NOT EXISTS or IF EXISTS that did their work": 0.54,
+			"statements of IF NOT EXISTS or IF EXISTS with SQLite's error": 0.76, "statements that do nothing, compared with SQLite": 0.41,
+			"statements that do nothing in a transaction, compared with SQLite": 0.57,
 		}, 0.15},
 		// The ends of transactions for the lease, which only this workload reaches.
 		{"idle", idleWorkload, map[string]float64{
@@ -2479,7 +2513,13 @@ func TestSimulation(t *testing.T) {
 			"crash, then an empty cache, of a log with an index":    0.0052, "replays of a log with an index": 0.038,
 			"indexes dropped while the rows of a query that read by them were open": 0.0035,
 			"integrity checks after a crash":                                        1, "integrity checks after the replay": 1, "integrity checks at the end": 2,
+			"statements of IF NOT EXISTS or IF EXISTS that did nothing": 0.31, "statements of IF NOT EXISTS or IF EXISTS that did their work": 0.25,
+			"statements of IF NOT EXISTS or IF EXISTS with SQLite's error": 0.43, "statements that do nothing, compared with SQLite": 0.068,
+			"statements that do nothing in a transaction, compared with SQLite": 0.24,
 		}, 0.15},
+		// The least number of the selects with WHERE in a transaction read by an index is a quarter of
+		// the 186 that the first 1,000 seeds gave on 2026-11-20, where it was 0.06, since the sequence
+		// writes the clauses of slice 10 and draws other random numbers.
 		{"hammer", hammerWorkload, map[string]float64{
 			"succeeded": 10, "SQLite's error": 23, "unknown": 0.2, "skipped": 7.8, "failed: no lease": 1.2,
 			"failed: timeout": 2.9, "query not read to its end": 0.96, "acknowledged writes": 5.9, "commits": 4.2,
@@ -2495,7 +2535,7 @@ func TestSimulation(t *testing.T) {
 			"selects with WHERE of their own compared with SQLite, read by an index":     0.027,
 			"selects with WHERE of their own that give rows, compared with SQLite":       0.089,
 			"selects with WHERE in a transaction compared with SQLite":                   1.6,
-			"selects with WHERE in a transaction compared with SQLite, read by an index": 0.06,
+			"selects with WHERE in a transaction compared with SQLite, read by an index": 0.046,
 			"selects with WHERE in a transaction that give rows, compared with SQLite":   0.11,
 			"updates and deletes": 7, "updates and deletes that succeeded and changed rows": 0.6,
 			"updates and deletes with SQLite's error": 2.9, "updates and deletes that change no row, compared with SQLite": 0.69,
@@ -2510,6 +2550,9 @@ func TestSimulation(t *testing.T) {
 			"replays of a log with an index":                                        0.11,
 			"indexes dropped while the rows of a query that read by them were open": 0.03,
 			"integrity checks after the replay":                                     1, "integrity checks at the end": 1,
+			"statements of IF NOT EXISTS or IF EXISTS that did nothing": 1.9, "statements of IF NOT EXISTS or IF EXISTS that did their work": 0.92,
+			"statements of IF NOT EXISTS or IF EXISTS with SQLite's error": 1.4, "statements that do nothing, compared with SQLite": 0.81,
+			"statements that do nothing in a transaction, compared with SQLite": 1.1,
 		}, 0.12},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -2684,6 +2727,12 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// differs from SQLite, which runs the statements; and the row that stays makes later statements
 		// differ.
 		{"keepOldKey", defaultWorkload, "default", []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes"}},
+		// A create table with IF NOT EXISTS of a table that exists, which replaces the table with the
+		// one of the statement, empty, where SQLite does nothing: the commit object holds the drop and
+		// the create, so the replay of the log into an empty cache, which writes them, differs from
+		// SQLite, which runs the statement and does nothing; and the rows that the table lost make later
+		// statements differ.
+		{"replaceExisting", defaultWorkload, "default", []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "and the rule for the type of a value"}},
 	}
 	shard := testshard.Get(t)
 	for i, b := range bugs {
