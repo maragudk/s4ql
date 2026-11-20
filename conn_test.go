@@ -1518,6 +1518,125 @@ func TestUpdateDelete(t *testing.T) {
 	})
 }
 
+func TestIndexes(t *testing.T) {
+	const create = "create table x (k int primary key, s text, r real not null) strict, without rowid"
+	fill := func(t *testing.T, db *sql.DB) {
+		t.Helper()
+		exec(t, db, create, "insert into x values (1, 'a', 1.5)", "insert into x values (2, null, 2.5)", "insert into x values (3, 'a', 3.5)")
+	}
+
+	t.Run("should create and drop an index, directly and prepared, with no last insert ID, and give the rows of a query through it", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		fill(t, db)
+
+		// A create index and a drop index leave SQLite's count of changes as the statement before on
+		// their connection left it, so only the last insert ID is pinned for them.
+		res, err := db.ExecContext(t.Context(), "create index xs on x (s, r desc)")
+		affected(t, res, err)
+		is.Equal(t, "k INT, s TEXT, r REAL: 1 a 1.5; 3 a 3.5", rowsText(t, db, "select * from x where s = ?", "a"))
+		is.Equal(t, "k INT: 3", rowsText(t, db, "select k from x where s = ? and r > ?", "a", 2.0))
+		is.Equal(t, "k INT: 2", rowsText(t, db, "select k from x where s is null"))
+		res, err = db.ExecContext(t.Context(), "update x set r = 9.5 where s = 'a'")
+		is.Equal(t, int64(2), affected(t, res, err))
+		res, err = db.ExecContext(t.Context(), "insert into x values (4, 'a', 0.5)")
+		is.Equal(t, int64(1), affected(t, res, err))
+		res, err = db.ExecContext(t.Context(), "drop index xs")
+		affected(t, res, err)
+		is.Equal(t, "k INT: 1; 3; 4", rowsText(t, db, "select k from x where s = ?", "a"))
+
+		p, err := db.PrepareContext(t.Context(), "create index xr on x (r)")
+		is.NotError(t, err)
+		_, err = p.ExecContext(t.Context())
+		is.NotError(t, err)
+		_, err = p.ExecContext(t.Context())
+		sqliteError(t, 1, 1, "index xr already exists", err)
+		is.NotError(t, p.Close())
+		is.Equal(t, "k INT: 1; 3", rowsText(t, db, "select k from x where r = 9.5"))
+
+		// Another instance replays the index, and reads by it.
+		is.NotError(t, db.Close())
+		is.Equal(t, "k INT: 1; 3", rowsText(t, w.serve(t, "b"), "select k from x where r = 9.5"))
+	})
+
+	t.Run("should give SQLite's errors of a create index and of a drop index, and refuse what s4ql does not support", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		fill(t, db)
+		exec(t, db, "create index xs on x (s)")
+
+		for src, want := range map[string]string{
+			"create index i on nosuch (s)": "no such table: main.nosuch",
+			"create index x on x (s)":      "there is already a table named x",
+			"create index XS on x (r)":     "index XS already exists",
+			"create index i on x (s, z)":   "no such column: z",
+			"drop index nosuch":            "no such index: nosuch",
+			"drop index x":                 "no such index: x",
+			"create table xs (k int primary key) strict, without rowid": "there is already an index named xs",
+		} {
+			_, err := db.ExecContext(t.Context(), src)
+			sqliteError(t, 1, 1, want, err)
+		}
+		for src, want := range map[string]string{
+			"create unique index i on x (s)":           "UNIQUE INDEX",
+			"create index i on x (s) where s = 'a'":    "partial index",
+			"select * from x indexed by xs":            "INDEXED BY",
+			"select * from x not indexed":              "NOT INDEXED",
+			"explain query plan select * from x":       "EXPLAIN QUERY PLAN",
+			"create index if not exists i on x (s)":    "IF NOT EXISTS",
+			"drop index if exists xs":                  "IF EXISTS",
+			"reindex xs":                               "REINDEX",
+			"analyze":                                  "ANALYZE",
+			"create index i on x (s collate nocase)":   "COLLATE",
+			"create index i on x (lower(s))":           "index on an expression",
+			"select * from x where s = 'a' order by k": "ORDER BY",
+		} {
+			_, err := db.ExecContext(t.Context(), src)
+			is.True(t, strings.HasPrefix(notSupported(t, err), want), fmt.Sprint(src, ": ", err))
+		}
+		is.Equal(t, "k INT: 1; 3", rowsText(t, db, "select k from x where s = 'a'"))
+	})
+
+	t.Run("should create and drop an index in a transaction, undo both with a roll back, and refuse both in a read-only one", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		fill(t, db)
+		exec(t, db, "create index kept on x (r)")
+
+		tx, err := db.BeginTx(t.Context(), nil)
+		is.NotError(t, err)
+		_, err = tx.ExecContext(t.Context(), "create index xs on x (s)")
+		is.NotError(t, err)
+		_, err = tx.ExecContext(t.Context(), "drop index kept")
+		is.NotError(t, err)
+		is.Equal(t, "k INT: 1; 3", rowsText(t, tx, "select k from x where s = 'a'"))
+		is.NotError(t, tx.Rollback())
+		_, err = db.ExecContext(t.Context(), "drop index xs")
+		sqliteError(t, 1, 1, "no such index: xs", err)
+
+		ro, err := db.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+		is.NotError(t, err)
+		_, err = ro.ExecContext(t.Context(), "create index xs on x (s)")
+		sqliteError(t, 8, 8, "attempt to write a readonly database", err)
+		_, err = ro.ExecContext(t.Context(), "drop index kept")
+		sqliteError(t, 8, 8, "attempt to write a readonly database", err)
+		_, err = ro.ExecContext(t.Context(), "drop index xs")
+		sqliteError(t, 1, 1, "no such index: xs", err)
+		is.NotError(t, ro.Commit())
+
+		tx, err = db.BeginTx(t.Context(), nil)
+		is.NotError(t, err)
+		_, err = tx.ExecContext(t.Context(), "drop index kept")
+		is.NotError(t, err)
+		_, err = tx.ExecContext(t.Context(), "create index xs on x (s desc, k)")
+		is.NotError(t, err)
+		is.NotError(t, tx.Commit())
+		_, err = db.ExecContext(t.Context(), "drop index kept")
+		sqliteError(t, 1, 1, "no such index: kept", err)
+		is.Equal(t, "k INT: 1; 3", rowsText(t, db, "select k from x where s >= 'a'"))
+	})
+}
+
 // nullValuer is a [driver.Valuer] that gives nil. database/sql takes a nil pointer to it for nil
 // too, without a call.
 type nullValuer struct{}
