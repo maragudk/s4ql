@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"time"
+
+	"maragu.dev/s4ql/internal/sqlite"
 )
 
 // Plant the bug with the given name in o, which is a field of [bugs]. It panics for a name that is
@@ -107,6 +109,11 @@ func Margin(duration time.Duration) time.Duration {
 // Quote an identifier.
 func Quote(name string) string {
 	return quote(name)
+}
+
+// Bind args to the parameters of s.
+func Bind(s *sqlite.Stmt, args ...any) error {
+	return bind(s, args...)
 }
 
 // Classify an error from the cache: "local", "busy", or "other".

@@ -1,8 +1,10 @@
 package core_test
 
 import (
+	"errors"
 	"fmt"
 	"iter"
+	"math"
 	"math/rand/v2"
 	"slices"
 	"strings"
@@ -45,6 +47,51 @@ func TestQuote(t *testing.T) {
 			is.True(t, name == s.ColumnText(0), fmt.Sprintf("%q was read as %q", name, s.ColumnText(0)))
 			is.NotError(t, s.Finalize())
 		}
+	})
+}
+
+func TestBind(t *testing.T) {
+	t.Run("should bind each argument to its parameter, in order, as its type, and -0.0 as 0.0", func(t *testing.T) {
+		c, err := sqlite.Open(":memory:")
+		is.NotError(t, err)
+		defer func() { is.NotError(t, c.Close()) }()
+		s, err := c.Prepare("select typeof(?1) || ' ' || ?1, ?2, ?3, quote(?4), quote(?5), ?6 is null, quote(?7), ?8")
+		is.NotError(t, err)
+		defer func() { is.NotError(t, s.Finalize()) }()
+		values := []*s4qlpb.Value{
+			s4qlpb.Value_builder{Real: new(1.5)}.Build(), s4qlpb.Value_builder{Text: new("é")}.Build(),
+			s4qlpb.Value_builder{Blob: []byte{0, 1}}.Build(), s4qlpb.Value_builder{Null: &s4qlpb.Null{}}.Build(),
+			s4qlpb.Value_builder{Integer: new(int64(-3))}.Build(), s4qlpb.Value_builder{Real: new(math.Copysign(0, -1))}.Build(),
+		}
+		is.NotError(t, core.Bind(s, values[4], "a", int64(7), values[0], values[2], values[3], values[1], values[5]))
+		ok, err := s.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+		is.Equal(t, "integer -3", s.ColumnText(0))
+		is.Equal(t, "a", s.ColumnText(1))
+		is.Equal(t, int64(7), s.ColumnInt64(2))
+		is.Equal(t, "1.5", s.ColumnText(3))
+		is.Equal(t, "X'0001'", s.ColumnText(4))
+		is.Equal(t, int64(1), s.ColumnInt64(5))
+		is.Equal(t, "'é'", s.ColumnText(6))
+		// SQLite keeps the sign of a parameter that it only selects; a column of the cache would not.
+		is.True(t, s.ColumnDouble(7) == 0 && !math.Signbit(s.ColumnDouble(7)), fmt.Sprint(s.ColumnDouble(7)))
+	})
+
+	t.Run("should refuse a value of no kind and an argument of another Go type, and give SQLite's error of a bind", func(t *testing.T) {
+		c, err := sqlite.Open(":memory:")
+		is.NotError(t, err)
+		defer func() { is.NotError(t, c.Close()) }()
+		s, err := c.Prepare("select ?")
+		is.NotError(t, err)
+		defer func() { is.NotError(t, s.Finalize()) }()
+		is.Error(t, core.ErrInvalid, core.Bind(s, &s4qlpb.Value{}))
+		err = core.Bind(s, 1)
+		is.True(t, err != nil && strings.Contains(err.Error(), "cannot bind a int"), fmt.Sprint(err))
+		// The statement has one parameter, so SQLite refuses the second.
+		err = core.Bind(s, int64(1), int64(2))
+		var se *sqlite.Error
+		is.True(t, errors.As(err, &se), fmt.Sprint(err))
 	})
 }
 

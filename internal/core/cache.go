@@ -99,15 +99,13 @@ func (c *conn) close() error {
 	return c.c.Close()
 }
 
-// bind args to the parameters of s, from the first on: an int64, a string, a [*s4qlpb.Value], or
-// nil for NULL. A real that is -0.0 is bound as 0.0, which is what a column of the cache holds for
-// it, so that no row, no key, and no temporary table of a transaction holds the sign.
+// bind args to the parameters of s, from the first on: an int64, a string, or a [*s4qlpb.Value]. A
+// real that is -0.0 is bound as 0.0, which is what a column of the cache holds for it, so that no
+// row, no key, and no temporary table of a transaction holds the sign.
 func bind(s *sqlite.Stmt, args ...any) error {
 	for i, arg := range args {
 		var err error
 		switch arg := arg.(type) {
-		case nil:
-			err = s.BindNull(i + 1)
 		case int64:
 			err = s.BindInt64(i+1, arg)
 		case string:

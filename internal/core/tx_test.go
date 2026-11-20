@@ -2237,8 +2237,13 @@ func TestTx_types(t *testing.T) {
 			}
 			for _, v := range refused {
 				what := typeName(typ) + " " + text([]*s4qlpb.Value{v})
-				is.Error(t, core.ErrInvalid, tx.Upsert(ctx, name, []*s4qlpb.Value{v, good}), what)
-				is.Error(t, core.ErrInvalid, tx.Upsert(ctx, name, []*s4qlpb.Value{good, v}), what)
+				// The error names the column and the table of the value.
+				for position, row := range [][]*s4qlpb.Value{{v, good}, {good, v}} {
+					err := tx.Upsert(ctx, name, row)
+					is.Error(t, core.ErrInvalid, err, what)
+					where := fmt.Sprintf("in the column %q of the table %q", fmt.Sprint("c", position), name)
+					is.True(t, strings.Contains(err.Error(), where), what+": "+err.Error())
+				}
 				_, err := tx.Delete(ctx, name, []*s4qlpb.Value{v})
 				is.Error(t, core.ErrInvalid, err, what)
 				_, err = tx.Get(ctx, name, []*s4qlpb.Value{v})
