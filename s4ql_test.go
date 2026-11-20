@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -140,7 +141,8 @@ type querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-// values of the one column of the rows of the query src on db, which must succeed.
+// values of the one column of the rows of the query src on db, which must succeed, in ascending
+// order, as [query] gives them.
 func values(t *testing.T, db querier, src string) []int64 {
 	t.Helper()
 	vs, err := query(t.Context(), db, src)
@@ -148,8 +150,10 @@ func values(t *testing.T, db querier, src string) []int64 {
 	return vs
 }
 
-// query db for the values of the one column of the rows of src. It fails no test, so that a
-// goroutine that is not the test's can call it.
+// query db for the values of the one column of the rows of src, and give them in ascending order,
+// each as often as the rows have it: the rows as a multiset, since a query without ORDER BY gives
+// its rows forward or backward, as the engine draws it, and a test of the driver cannot fix the
+// direction. It fails no test, so that a goroutine that is not the test's can call it.
 func query(ctx context.Context, db querier, src string) ([]int64, error) {
 	rows, err := db.QueryContext(ctx, src)
 	if err != nil {
@@ -163,6 +167,7 @@ func query(ctx context.Context, db querier, src string) ([]int64, error) {
 		}
 		vs = append(vs, v)
 	}
+	slices.Sort(vs)
 	return vs, errors.Join(rows.Err(), rows.Close())
 }
 

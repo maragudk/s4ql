@@ -288,7 +288,7 @@ func TestExec(t *testing.T) {
 }
 
 func TestQuery(t *testing.T) {
-	t.Run("should give the rows in the order of the key, with the names and the declared types of the columns", func(t *testing.T) {
+	t.Run("should give the rows in the order of the key or in its reverse, with the names and the declared types of the columns", func(t *testing.T) {
 		w := newWorld(t)
 		db := w.serve(t, "a")
 		exec(t, db, `create table "Foo" ("Bar x" int primary key) strict, without rowid`,
@@ -313,7 +313,12 @@ func TestQuery(t *testing.T) {
 			got = append(got, v)
 		}
 		is.NotError(t, rows.Err())
-		is.EqualSlice(t, []any{int64(-1), int64(2), int64(3)}, got)
+		// The query reads forward, which is the order of the key, or backward, as the engine draws it.
+		want := []any{int64(-1), int64(2), int64(3)}
+		if len(got) > 0 && got[0] == want[2] {
+			slices.Reverse(want)
+		}
+		is.EqualSlice(t, want, got)
 	})
 
 	t.Run("should give one row to QueryRow, and sql.ErrNoRows for an empty table", func(t *testing.T) {
@@ -324,7 +329,8 @@ func TestQuery(t *testing.T) {
 		is.Error(t, sql.ErrNoRows, db.QueryRowContext(t.Context(), select1).Scan(&v))
 		exec(t, db, "insert into t1 (v1) values (7)", "insert into t1 (v1) values (8)")
 		is.NotError(t, db.QueryRowContext(t.Context(), select1).Scan(&v))
-		is.Equal(t, int64(7), v)
+		// The one row is the first that the query reads, forward or backward.
+		is.True(t, v == 7 || v == 8, fmt.Sprint(v))
 		err := db.QueryRowContext(t.Context(), "select * from t2").Scan(&v)
 		is.Equal(t, "no such table: t2", failed(t, err).Error())
 		readersFree(t, db)
@@ -772,7 +778,25 @@ var typedTables = []string{
 	"create table blobs (v blob primary key) strict, without rowid",
 }
 
-// rowsOf the query src on db: each row as its one value, as database/sql gives it to an any.
+// rowKeys of the rows vs, each a row of one value, as database/sql gives it to an any: the texts of
+// the values in ascending order, where the text of a value is its Go type and its Go syntax, which
+// no two different values share: 0.0 and -0.0, nil and a text, and a blob and the text of its bytes
+// each have two. Two lists of rows have the same keys only if they hold the same rows, each as
+// often, so a test that compares the keys of two lists element by element compares the rows as a
+// multiset, in which a wrong row, a missing row, and a row that is there twice all show. A query
+// without ORDER BY gives its rows forward or backward, as the engine draws it, and a test of the
+// driver cannot fix the direction.
+func rowKeys(vs []any) []string {
+	keys := make([]string, len(vs))
+	for i, v := range vs {
+		keys[i] = fmt.Sprintf("%T %#v", v, v)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// rowsOf the query src on db: each row as its one value, as database/sql gives it to an any, in the
+// order in which the rows came.
 func rowsOf(t *testing.T, db querier, src string) []any {
 	t.Helper()
 	rows, err := db.QueryContext(t.Context(), src)
@@ -826,7 +850,7 @@ func TestTypes(t *testing.T) {
 			}
 			is.NotError(t, prepared.Close())
 			got := rowsOf(t, db, "select * from "+c.table)
-			is.Equal(t, fmt.Sprintf("%#v", c.want), fmt.Sprintf("%#v", got), c.table)
+			is.EqualSlice(t, rowKeys(c.want), rowKeys(got), c.table)
 		}
 		// Each type as declared, INT and INTEGER apart, also after a replay of the log into an empty
 		// cache.
@@ -840,8 +864,8 @@ func TestTypes(t *testing.T) {
 				is.Equal(t, typ, types[0].DatabaseTypeName())
 				is.NotError(t, rows.Close())
 			}
-			is.Equal(t, fmt.Sprintf("%#v", cases[4].want), fmt.Sprintf("%#v", rowsOf(t, db, "select * from blobs")))
-			is.Equal(t, fmt.Sprintf("%#v", cases[2].want), fmt.Sprintf("%#v", rowsOf(t, db, "select * from reals")))
+			is.EqualSlice(t, rowKeys(cases[4].want), rowKeys(rowsOf(t, db, "select * from blobs")))
+			is.EqualSlice(t, rowKeys(cases[2].want), rowKeys(rowsOf(t, db, "select * from reals")))
 		}
 		check(db)
 		is.NotError(t, db.Close())
@@ -967,7 +991,7 @@ func TestTypes(t *testing.T) {
 		_, err = tx.ExecContext(t.Context(), "insert into texts (v) values (?)", strings.Repeat("d", limit-10))
 		is.NotError(t, err)
 		is.NotError(t, tx.Commit())
-		is.Equal(t, fmt.Sprintf("%#v", []any{"a", strings.Repeat("d", limit-10)}), fmt.Sprintf("%#v", rowsOf(t, db, "select * from texts")))
+		is.EqualSlice(t, rowKeys([]any{"a", strings.Repeat("d", limit-10)}), rowKeys(rowsOf(t, db, "select * from texts")))
 	})
 
 	t.Run("should run values of every type in a read-only transaction, and undo them at a roll back", func(t *testing.T) {
@@ -975,7 +999,7 @@ func TestTypes(t *testing.T) {
 		db := w.serve(t, "a")
 		exec(t, db, typedTables[3], "insert into texts (v) values ('a')")
 		ro := begin(t, db, &sql.TxOptions{ReadOnly: true})
-		is.Equal(t, fmt.Sprintf("%#v", []any{"a"}), fmt.Sprintf("%#v", rowsOf(t, ro, "select * from texts")))
+		is.EqualSlice(t, rowKeys([]any{"a"}), rowKeys(rowsOf(t, ro, "select * from texts")))
 		for _, arg := range []any{"b", 1} {
 			_, err := ro.ExecContext(t.Context(), "insert into texts (v) values (?)", arg)
 			sqliteError(t, 8, 8, "attempt to write a readonly database", err)
@@ -987,9 +1011,9 @@ func TestTypes(t *testing.T) {
 		is.NotError(t, err)
 		_, err = tx.ExecContext(t.Context(), "insert into texts (v) values (?)", 1)
 		is.Equal(t, "argument 1, which is an integer, for the column texts.v of type TEXT", notSupported(t, err))
-		is.Equal(t, fmt.Sprintf("%#v", []any{"a", "b"}), fmt.Sprintf("%#v", rowsOf(t, tx, "select * from texts")))
+		is.EqualSlice(t, rowKeys([]any{"a", "b"}), rowKeys(rowsOf(t, tx, "select * from texts")))
 		is.NotError(t, tx.Rollback())
-		is.Equal(t, fmt.Sprintf("%#v", []any{"a"}), fmt.Sprintf("%#v", rowsOf(t, db, "select * from texts")))
+		is.EqualSlice(t, rowKeys([]any{"a"}), rowKeys(rowsOf(t, db, "select * from texts")))
 	})
 }
 
@@ -997,7 +1021,9 @@ func TestTypes(t *testing.T) {
 const t3 = "create table t3 (v1 int primary key, v2 text not null, v3 real not null) strict, without rowid"
 
 // rowsText of the rows of the query src on db, which must succeed: its column names, its declared
-// types, and each row as its values.
+// types, and each row as its values, with the rows in the order of their texts, each as often as the
+// query gives it: the rows as a multiset, since a query without ORDER BY gives its rows forward or
+// backward, as the engine draws it, and a test of the driver cannot fix the direction.
 func rowsText(t *testing.T, db querier, src string, args ...any) string {
 	t.Helper()
 	rows, err := db.QueryContext(t.Context(), src, args...)
@@ -1023,6 +1049,7 @@ func rowsText(t *testing.T, db querier, src string, args ...any) string {
 	}
 	is.NotError(t, rows.Err())
 	is.NotError(t, rows.Close())
+	slices.Sort(rs)
 	return strings.Join(names, ", ") + ": " + strings.Join(rs, "; ")
 }
 
@@ -1047,7 +1074,9 @@ func TestColumns(t *testing.T) {
 		var v2 string
 		var v3 float64
 		is.NotError(t, db.QueryRowContext(t.Context(), "select v2, v3 from t3").Scan(&v2, &v3))
-		is.Equal(t, "a 1.5", fmt.Sprint(v2, " ", v3))
+		// The one row is the first that the query reads, forward or backward.
+		one := fmt.Sprint(v2, " ", v3)
+		is.True(t, one == "a 1.5" || one == "d 4.5", one)
 
 		is.EqualSlice(t, []string{
 			t3, "insert into t3 values (2, 'b', 2.5)", `insert into T3 (V3, v1, "V2") values (1.5, 1, 'a')`,
@@ -1176,8 +1205,9 @@ func TestNulls(t *testing.T) {
 			pi       *int64
 			anyValue any = "not nil"
 		)
-		// The first row is that of the key 1.
-		is.NotError(t, db.QueryRowContext(t.Context(), "select t, i, r, b, t, i, t from n").Scan(&ns, &ni, &nf, &nb, &ps, &pi, &anyValue))
+		// The row of the key 1, whose other columns but the last are NULL: without the condition, the one
+		// row of QueryRow is the first that the query reads, forward or backward.
+		is.NotError(t, db.QueryRowContext(t.Context(), "select t, i, r, b, t, i, t from n where k = 1").Scan(&ns, &ni, &nf, &nb, &ps, &pi, &anyValue))
 		is.True(t, !ns.Valid && !ni.Valid && !nf.Valid && !nb.Valid, "a sql.Null of NULL is not valid")
 		is.True(t, ps == nil && pi == nil, "a pointer of NULL is nil")
 		is.True(t, anyValue == nil, "an any of NULL is nil")
@@ -1185,9 +1215,9 @@ func TestNulls(t *testing.T) {
 		// A scan of NULL into a plain value is database/sql's own error.
 		var s string
 		var i int64
-		err := db.QueryRowContext(t.Context(), "select t from n").Scan(&s)
+		err := db.QueryRowContext(t.Context(), "select t from n where k = 1").Scan(&s)
 		is.True(t, err != nil && strings.Contains(err.Error(), "converting NULL to string is unsupported"), fmt.Sprint(err))
-		err = db.QueryRowContext(t.Context(), "select i from n").Scan(&i)
+		err = db.QueryRowContext(t.Context(), "select i from n where k = 1").Scan(&i)
 		is.True(t, err != nil && strings.Contains(err.Error(), "converting NULL to int64 is unsupported"), fmt.Sprint(err))
 		_, ok := errors.AsType[*s4ql.Error](err)
 		is.True(t, !ok, "the driver reports nothing wrong itself")
@@ -1274,13 +1304,11 @@ func TestWhere(t *testing.T) {
 		for args, want := range map[[2]int]string{{0, 10}: "k INT: 1; 3; 10", {1, 3}: "k INT: 3", {3, 1}: "k INT: ", {-1, 1}: "k INT: 1"} {
 			rows, err := p.QueryContext(t.Context(), args[0], args[1])
 			is.NotError(t, err)
+			// The keys in ascending order, since the query reads forward or backward.
 			var ks []string
-			for rows.Next() {
-				var k int64
-				is.NotError(t, rows.Scan(&k))
+			for _, k := range rest(t, rows) {
 				ks = append(ks, fmt.Sprint(k))
 			}
-			is.NotError(t, rows.Err())
 			is.Equal(t, want, "k INT: "+strings.Join(ks, "; "), fmt.Sprint(args))
 		}
 		is.NotError(t, p.Close())
@@ -1578,7 +1606,8 @@ func counted(t *testing.T) (*world, *sql.DB, *faultvfs.VFS) {
 	return w, db, vfs
 }
 
-// rest of the values of the one column of rows, to their end.
+// rest of the values of the one column of rows, to their end, in ascending order, as [query] gives
+// the values of all rows.
 func rest(t *testing.T, rows *sql.Rows) []int64 {
 	t.Helper()
 	vs := []int64{}
@@ -1588,6 +1617,19 @@ func rest(t *testing.T, rows *sql.Rows) []int64 {
 		vs = append(vs, v)
 	}
 	is.NotError(t, rows.Err())
+	slices.Sort(vs)
+	return vs
+}
+
+// from the row that rows is at to their end: the value of the one column of that row and of each
+// row after it, in ascending order. A test that has read one row of a query cannot tell which it
+// was, the first or the last in the order of the key, so it checks that row with those after it.
+func from(t *testing.T, rows *sql.Rows) []int64 {
+	t.Helper()
+	var v int64
+	is.NotError(t, rows.Scan(&v))
+	vs := append(rest(t, rows), v)
+	slices.Sort(vs)
 	return vs
 }
 
@@ -1841,14 +1883,17 @@ func TestClose(t *testing.T) {
 						}
 						return
 					}
-					last := int64(-1)
+					// The rows come in the order of the key or in its reverse, as the engine draws it for the
+					// query.
+					var got []int64
 					for n := 1; rows.Next(); n++ {
 						var v int64
-						if err := rows.Scan(&v); err != nil || v <= last {
-							errs <- fmt.Errorf("the rows of a query are not in order, or cannot be scanned: %v after %v: %w", v, last, err)
+						err := rows.Scan(&v)
+						got = append(got, v)
+						if err != nil || !inKeyOrder(got) {
+							errs <- fmt.Errorf("the rows of a query are not in the order of the key or in its reverse, or cannot be scanned: %v: %w", got, err)
 							return
 						}
-						last = v
 						// Every other goroutine stops early.
 						if g%2 == 0 && n == 2 {
 							break
@@ -2531,8 +2576,19 @@ func TestOutcomeUnknown(t *testing.T) {
 	})
 }
 
-// some values of t1 on db: the first limit of them, with the rows closed after those, or all of them
-// if limit is negative.
+// inKeyOrder reports whether the values vs of a key of integers are in the order of the key or in
+// its reverse, with none twice: the two orders in which a query without ORDER BY gives the rows that
+// it reads by the primary key, forward or backward, as the engine draws it.
+func inKeyOrder(vs []int64) bool {
+	up, down := true, true
+	for i := 1; i < len(vs); i++ {
+		up, down = up && vs[i-1] < vs[i], down && vs[i-1] > vs[i]
+	}
+	return up || down
+}
+
+// some values of t1 on db, in the order in which the rows came: the first limit of them, with the
+// rows closed after those, or all of them if limit is negative.
 func some(ctx context.Context, db *sql.DB, limit int) ([]int64, error) {
 	rows, err := db.QueryContext(ctx, select1)
 	if err != nil {
@@ -2562,7 +2618,7 @@ func commits(t *testing.T, w *world) []string {
 }
 
 func TestConcurrent(t *testing.T) {
-	t.Run("should run writes and queries from many goroutines, each write once and each query with its rows in the order of the key", func(t *testing.T) {
+	t.Run("should run writes and queries from many goroutines, each write once and each query with its rows in the order of the key or in its reverse", func(t *testing.T) {
 		w := newWorld(t)
 		db := w.serve(t, "a")
 		exec(t, db, t1)
@@ -2593,8 +2649,8 @@ func TestConcurrent(t *testing.T) {
 						errs <- err
 						return
 					}
-					if !slices.IsSorted(got) || len(slices.Compact(slices.Clone(got))) != len(got) {
-						errs <- fmt.Errorf("the rows of a query are not in order: %v", got)
+					if !inKeyOrder(got) {
+						errs <- fmt.Errorf("the rows of a query are not in the order of the key or in its reverse: %v", got)
 						return
 					}
 				}

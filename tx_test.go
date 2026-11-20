@@ -191,7 +191,8 @@ func TestTx(t *testing.T) {
 		is.Equal(t, int64(1), affected(t, res, err))
 		var v int64
 		is.NotError(t, tx.QueryRowContext(t.Context(), select1).Scan(&v))
-		is.Equal(t, int64(424201), v)
+		// The one row is the first that the query reads, forward or backward.
+		is.True(t, v == 424201 || v == 424203, fmt.Sprint(v))
 		query, err := tx.PrepareContext(t.Context(), select1)
 		is.NotError(t, err)
 		rows, err := query.QueryContext(t.Context())
@@ -291,8 +292,8 @@ func TestTx(t *testing.T) {
 			is.Equal(t, what, notSupported(t, err))
 			_, err = tx.QueryContext(t.Context(), select1)
 			is.Equal(t, what, notSupported(t, err))
-			// The rows are not changed by the refusal.
-			is.EqualSlice(t, []int64{2}, rest(t, rows))
+			// The rows are not changed by the refusal: the row that they are at, and the other after it.
+			is.EqualSlice(t, []int64{1, 2}, from(t, rows))
 
 			if opts == nil {
 				execIn(t, tx, "insert into t1 (v1) values (3)")
