@@ -1,11 +1,12 @@
-// Package stmttest is a generator of random statements of slices 1, 2, 4, 5, 6, 7, 8, and 9, for tests:
+// Package stmttest is a generator of random statements of slices 1, 2, 4, 5, 6, 7, 8, 9, and 10, for tests:
 // each statement is a text with the typed form of [maragu.dev/s4ql/internal/sql/stmt] that it holds,
 // with names from pools, keywords and types in any case, values of every type with weight on their
 // edges, and spaces and comments in every gap. The statements of slice 5, of several columns, come
 // only when a test asks for them, with [Generator.Columns], those of slice 6, with NULL, with
 // [Generator.Nulls], those of slice 7, with WHERE, with [Generator.Conditions] or [Generator.Where],
-// the UPDATE and DELETE of slice 8 with [Generator.Changes] or a kind of their own, and the CREATE
-// INDEX and DROP INDEX of slice 9 with [Generator.Indexes] or a kind of their own.
+// the UPDATE and DELETE of slice 8 with [Generator.Changes] or a kind of their own, the CREATE
+// INDEX and DROP INDEX of slice 9 with [Generator.Indexes] or a kind of their own, and the IF NOT
+// EXISTS and IF EXISTS of slice 10 with [Generator.Exists].
 //
 // The generator draws its random numbers from a [Rand] that the test gives it, so that a test
 // chooses its seed and its generator of numbers.
@@ -152,7 +153,7 @@ const (
 	KindDropIndex
 )
 
-// Generator of random statements of slices 1, 2, 4, 5, 6, 7, 8, and 9.
+// Generator of random statements of slices 1, 2, 4, 5, 6, 7, 8, 9, and 10.
 type Generator struct {
 	r Rand
 	// pools of names, for each [Position].
@@ -236,7 +237,12 @@ type Generator struct {
 	// place of columns at random, one or more: the raw text of the name of each, and whether it is
 	// Descending. The generator writes ASC or nothing for a column that is not descending.
 	CreateIndex func(index, table stmt.Name) []stmt.IndexColumn
-	b           strings.Builder
+	// Exists, if not 0, makes the generator write the IF NOT EXISTS and IF EXISTS of slice 10: one
+	// create table or create index in Exists says IF NOT EXISTS, and one drop table or drop index in
+	// Exists says IF EXISTS, each with its keywords in any case and gaps between them. With 0 the
+	// generator draws as it did before slice 10.
+	Exists int
+	b      strings.Builder
 }
 
 // NewGenerator with the random numbers of r and a pool of names for each [Position]. Each name of a
@@ -746,6 +752,23 @@ func (g *Generator) indexColumns(index, table stmt.Name) []stmt.IndexColumn {
 	return columns
 }
 
+// exists writes IF NOT EXISTS, or IF EXISTS if not is false, and a gap after it, one time in
+// [Generator.Exists], and reports whether it wrote it. With Exists 0 it draws nothing.
+func (g *Generator) exists(not bool) bool {
+	if g.Exists == 0 || g.r.IntN(g.Exists) != 0 {
+		return false
+	}
+	g.keyword("if")
+	g.gap(true)
+	if not {
+		g.keyword("not")
+		g.gap(true)
+	}
+	g.keyword("exists")
+	g.gap(true)
+	return true
+}
+
 // Statement at random: its text and the statement that it holds. A statement with a
 // parameter, which [Generator.Parameters] asks for, is written without its argument.
 func (g *Generator) Statement() (string, stmt.Statement) {
@@ -798,6 +821,7 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 		g.gap(true)
 		g.keyword("table")
 		g.gap(true)
+		c.IfNotExists = g.exists(true)
 		c.Table = g.name(CreateTable)
 		g.gap(false)
 		g.punct("(")
@@ -941,6 +965,7 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 		g.gap(true)
 		g.keyword("index")
 		g.gap(true)
+		c.IfNotExists = g.exists(true)
 		c.Index = g.name(IndexName)
 		g.gap(true)
 		g.keyword("on")
@@ -958,6 +983,7 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 		g.gap(true)
 		g.keyword("index")
 		g.gap(true)
+		c.IfExists = g.exists(false)
 		c.Index = g.name(DropIndex)
 		s, span = c, &c.Span
 	default:
@@ -966,6 +992,7 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 		g.gap(true)
 		g.keyword("table")
 		g.gap(true)
+		c.IfExists = g.exists(false)
 		c.Table = g.name(DropTable)
 		s, span = c, &c.Span
 	}

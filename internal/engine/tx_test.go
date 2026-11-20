@@ -585,7 +585,7 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 		if failure := p.step(c); failure != "" {
 			fail("%v", failure)
 		}
-		if s, _ := stmt.Check(c.Src); open == "write" && p.last.err == "" && i.changes > 0 && changesRows(c.Src) {
+		if s, _ := checkText(c.Src); open == "write" && p.last.err == "" && i.changes > 0 && changesRows(c.Src) {
 			_, isInsert := s.(*stmt.Insert)
 			changed = changed || !isInsert
 		}

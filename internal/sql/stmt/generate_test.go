@@ -39,8 +39,9 @@ var positionTexts = stmttest.PositionTexts
 // of a condition in four, columns and values of every type, the forms of slice 5 with up to three
 // columns, those of slice 6, with a column that takes NULL and a NULL one time in five, those of
 // slice 7, with a WHERE of up to four conditions in one select in two, those of slice 8, an update
-// or a delete in one statement in three, with a WHERE as a select has one, and those of slice 9, a
-// create index or a drop index in one statement in four, with up to three columns.
+// or a delete in one statement in three, with a WHERE as a select has one, those of slice 9, a
+// create index or a drop index in one statement in four, with up to three columns, and those of slice
+// 10, IF NOT EXISTS or IF EXISTS in one create or drop in three.
 func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g := stmttest.NewGenerator(rand.New(rand.NewPCG(seed, 0x511ce1)), namePools(t))
 	g.Parameters = 4
@@ -49,6 +50,7 @@ func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g.Conditions = 4
 	g.Changes = 3
 	g.Indexes = 4
+	g.Exists = 3
 	return g
 }
 
@@ -125,7 +127,7 @@ func TestGenerate_mutants(t *testing.T) {
 		}
 	}
 	t.Logf("%v mutants: %v", n**mutantsEach, c)
-	excused(t, c, 39, 153)
+	excused(t, c, 29, 151)
 	var names []string
 	for k := range kinds {
 		names = append(names, k)
@@ -324,7 +326,17 @@ var nearMisses = map[string][]string{
 		"explain query plan create table %[1]v (%[2]v %[4]v primary key) strict, without rowid",
 		"create temp table %[1]v (%[2]v %[4]v primary key) strict, without rowid",
 		"create temporary table %[1]v (%[2]v %[4]v primary key) strict, without rowid",
-		"create table if not exists %[1]v (%[2]v %[4]v primary key) strict, without rowid",
+		"create if not exists table %[1]v (%[2]v %[4]v primary key) strict, without rowid",
+		"create table if exists %[1]v (%[2]v %[4]v primary key) strict, without rowid",
+		"create table if not %[1]v (%[2]v %[4]v primary key) strict, without rowid",
+		"create table if %[1]v (%[2]v %[4]v primary key) strict, without rowid",
+		"create table if not exists if not exists %[1]v (%[2]v %[4]v primary key) strict, without rowid",
+		"create table if not exists main.%[1]v (%[2]v %[4]v primary key) strict, without rowid",
+		"create temp table if not exists %[1]v (%[2]v %[4]v primary key) strict, without rowid",
+		"create table if not exists %[1]v (%[2]v %[4]v primary key) strict",
+		"create table if not exists %[1]v (%[2]v %[4]v primary key, w int primary key) strict, without rowid",
+		"create table if not exists %[1]v as select 1",
+		"create table if not exists if (%[2]v %[4]v primary key) strict, without rowid",
 		"create table main.%[1]v (%[2]v %[4]v primary key) strict, without rowid",
 		"create table temp.%[1]v (%[2]v %[4]v primary key) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v unsigned primary key) strict, without rowid",
@@ -680,7 +692,13 @@ var nearMisses = map[string][]string{
 	},
 	"*stmt.DropTable": {
 		"explain drop table %[1]v",
-		"drop table if exists %[1]v",
+		"drop table %[1]v if exists",
+		"drop table if not exists %[1]v",
+		"drop table if %[1]v",
+		"drop table if exists if exists %[1]v",
+		"drop table if exists main.%[1]v",
+		"drop view if exists %[1]v",
+		"explain drop table if exists %[1]v",
 		"drop table main.%[1]v",
 		"drop table temp.%[1]v",
 		"drop view %[1]v",
@@ -691,7 +709,15 @@ var nearMisses = map[string][]string{
 		"explain create index %[3]v on %[1]v (%[2]v)",
 		"explain query plan create index %[3]v on %[1]v (%[2]v)",
 		"create unique index %[3]v on %[1]v (%[2]v)",
-		"create index if not exists %[3]v on %[1]v (%[2]v)",
+		"create if not exists index %[3]v on %[1]v (%[2]v)",
+		"create index if exists %[3]v on %[1]v (%[2]v)",
+		"create index if not %[3]v on %[1]v (%[2]v)",
+		"create index if not exists if not exists %[3]v on %[1]v (%[2]v)",
+		"create index if not exists main.%[3]v on %[1]v (%[2]v)",
+		"create unique index if not exists %[3]v on %[1]v (%[2]v)",
+		"create index if not exists %[3]v on %[1]v (%[2]v) where %[2]v > 0",
+		"create index %[3]v on if not exists %[1]v (%[2]v)",
+		"create index if not exists if on %[1]v (%[2]v)",
 		"create temp index %[3]v on %[1]v (%[2]v)",
 		"create index main.%[3]v on %[1]v (%[2]v)",
 		"create index temp.%[3]v on %[1]v (%[2]v)",
@@ -729,7 +755,12 @@ var nearMisses = map[string][]string{
 	"*stmt.DropIndex": {
 		"explain drop index %[3]v",
 		"explain query plan drop index %[3]v",
-		"drop index if exists %[3]v",
+		"drop index %[3]v if exists",
+		"drop index if not exists %[3]v",
+		"drop index if %[3]v",
+		"drop index if exists if exists %[3]v",
+		"drop index if exists main.%[3]v",
+		"explain drop index if exists %[3]v",
 		"drop index main.%[3]v",
 		"drop index temp.%[3]v",
 		"drop index %[3]v on %[1]v",
@@ -797,5 +828,5 @@ func TestGenerate_nearMisses(t *testing.T) {
 		}
 	}
 	t.Logf("%v near misses: %v", c[syntaxError]+c[notSupported]+c[syntaxNotSaid]+c[notSupportedNotSaid], c)
-	excused(t, c, 0, 1531)
+	excused(t, c, 0, 1760)
 }

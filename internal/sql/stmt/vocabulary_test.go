@@ -12,13 +12,14 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
-// allowed node types and fields of slices 1, 2, 5, 7, 8, and 9, as the README defines them: a type by its
+// allowed node types and fields of slices 1, 2, 5, 7, 8, 9, and 10, as the README defines them: a type by its
 // name, and a field by the name of its type and its path, as "CreateTable.Name.Name". A field is
 // present when its token is, when its node is not nil, or when its list is not empty.
 var allowed = map[string]bool{
 	"Statement": true, "Statement.Cmd": true, "Statement.Semi": true,
 
 	"CreateTable": true, "CreateTable.Create": true, "CreateTable.Table": true, "CreateTable.Name.Name": true,
+	"CreateTable.IfNotExists.If": true, "CreateTable.IfNotExists.Not": true, "CreateTable.IfNotExists.Exists": true,
 	"CreateTable.LParen": true, "CreateTable.Columns": true, "CreateTable.Commas": true, "CreateTable.RParen": true,
 	"CreateTable.Options": true, "CreateTable.OptionCommas": true,
 	"ColumnDef": true, "ColumnDef.Name": true, "ColumnDef.Type": true, "ColumnDef.Constraints": true,
@@ -53,9 +54,11 @@ var allowed = map[string]bool{
 	"Assignment": true, "Assignment.Column": true, "Assignment.Eq": true, "Assignment.X": true,
 	"Delete": true, "Delete.Delete": true, "Delete.From": true, "Delete.Table": true, "Delete.Where": true,
 
-	"Drop": true, "Drop.Drop": true, "Drop.Object": true, "Drop.Name.Name": true,
+	"Drop": true, "Drop.Drop": true, "Drop.Object": true, "Drop.Name.Name": true, "Drop.IfExists.If": true,
+	"Drop.IfExists.Exists": true,
 
 	"CreateIndex": true, "CreateIndex.Create": true, "CreateIndex.Index": true, "CreateIndex.Name.Name": true,
+	"CreateIndex.IfNotExists.If": true, "CreateIndex.IfNotExists.Not": true, "CreateIndex.IfNotExists.Exists": true,
 	"CreateIndex.On": true, "CreateIndex.Table": true, "CreateIndex.LParen": true, "CreateIndex.Columns": true,
 	"CreateIndex.Commas": true, "CreateIndex.RParen": true,
 	"OrderingTerm": true, "OrderingTerm.X": true, "OrderingTerm.Order": true,
@@ -135,7 +138,7 @@ var allowListExtra = []string{
 	"insert or ignore into t (v) values (1)",
 }
 
-// TestAllowList checks that a supported statement uses only the node types and fields of slices 1 to 9,
+// TestAllowList checks that a supported statement uses only the node types and fields of slices 1 to 10,
 // on many statements, and that every node type of package ast and every field of the node types of
 // slice 1 occurs in some statement of the test, so that the check covers each of them.
 func TestAllowList(t *testing.T) {
@@ -175,7 +178,7 @@ func TestAllowList(t *testing.T) {
 		if s, err := stmt.Check(sql); err == nil && s != nil {
 			for k := range f {
 				if !allowed[k] {
-					t.Errorf("%q is supported, and has %v, which slices 1 to 9 do not have", sql, k)
+					t.Errorf("%q is supported, and has %v, which slices 1 to 10 do not have", sql, k)
 				}
 			}
 			maps.Copy(seenSupported, f)
