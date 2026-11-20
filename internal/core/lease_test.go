@@ -955,6 +955,15 @@ func TestLease_openTx(t *testing.T) {
 			}
 			_, err = tx.Tables(t.Context())
 			isLeaseEnded(t, err)
+			_, err = tx.Indexes(t.Context(), "t1")
+			isLeaseEnded(t, err)
+			_, err = tx.Index(t.Context(), "i1")
+			isLeaseEnded(t, err)
+			isLeaseEnded(t, tx.CreateIndex(t.Context(), indexOf("i1", "t1", 0)))
+			isLeaseEnded(t, tx.DropIndex(t.Context(), "i1"))
+			for _, err := range tx.ScanIndex(t.Context(), "t1", core.IndexScan{}) {
+				isLeaseEnded(t, err)
+			}
 			isLeaseEnded(t, tx.Annotate(t.Context(), "insert", nil))
 			isLeaseEnded(t, tx.Serving(t.Context()))
 			isLeaseEnded(t, tx.Release(t.Context()))
@@ -1064,7 +1073,7 @@ func TestLease_openTx(t *testing.T) {
 	})
 
 	t.Run("should end the transaction when rows of its scan that are open at the loss of the lease are read or stopped, and not before", func(t *testing.T) {
-		for _, how := range []string{"next", "stop"} {
+		for _, how := range []string{"next", "stop", "next of a scan by a key"} {
 			t.Run(how, func(t *testing.T) {
 				bubble(t, func(t *testing.T, w *world) {
 					var tx *core.Tx
@@ -1075,7 +1084,11 @@ func TestLease_openTx(t *testing.T) {
 						tx, err = a.Begin(t.Context())
 						is.NotError(t, err)
 						is.NotError(t, tx.Upsert(t.Context(), "t1", row(3)))
-						next, stop = iter.Pull2(tx.Scan(t.Context(), "t1"))
+						scan := tx.Scan(t.Context(), "t1")
+						if how == "next of a scan by a key" {
+							scan = tx.ScanIndex(t.Context(), "t1", core.IndexScan{Lower: core.Bound{Value: row(1)[0]}})
+						}
+						next, stop = iter.Pull2(scan)
 						r, err, ok := next()
 						is.True(t, ok)
 						is.NotError(t, err)
@@ -1087,7 +1100,7 @@ func TestLease_openTx(t *testing.T) {
 					time.Sleep(time.Minute)
 					is.True(t, !serves(t, a), "the instance serves while rows of a scan of the transaction that it ended are open")
 					switch how {
-					case "next":
+					case "next", "next of a scan by a key":
 						_, err, ok := next()
 						is.True(t, ok)
 						isLeaseEnded(t, err)

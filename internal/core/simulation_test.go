@@ -450,6 +450,33 @@ var (
 	}
 )
 
+// indexNames are the names of the indexes that the callers of a workload use: three, each in two
+// spellings that SQLite takes for one. The last is a name of [tableNames], which a table and an
+// index then compete for.
+var indexNames = [][2]string{{"i0", "I0"}, {`x"i'1`, `X"I'1`}, {"t0", "T0"}}
+
+// randomIndex with the given name on the table: one to three of its columns, in any order, none
+// twice, each in either direction.
+func randomIndex(h host.Host, name string, ct *s4qlpb.CreateTable) *s4qlpb.CreateIndex {
+	positions := make([]uint32, len(ct.GetColumns()))
+	for i := range positions {
+		positions[i] = uint32(i)
+	}
+	for i := len(positions) - 1; i > 0; i-- {
+		j := intn(h, i+1)
+		positions[i], positions[j] = positions[j], positions[i]
+	}
+	ci := s4qlpb.CreateIndex_builder{Index: new(name), Table: new(ct.GetTable())}
+	for _, position := range positions[:1+intn(h, min(len(positions), 3))] {
+		column := s4qlpb.IndexColumn_builder{Column: new(position)}
+		if intn(h, 2) == 0 {
+			column.Descending = new(true)
+		}
+		ci.Columns = append(ci.Columns, column.Build())
+	}
+	return ci.Build()
+}
+
 // randomRow for the table, with small keys, so that callers meet at the same rows, and values of
 // the [edges] of their type in the other columns, or now and then NULL in a column that takes it.
 func randomRow(h host.Host, ct *s4qlpb.CreateTable) []*s4qlpb.Value {
@@ -519,16 +546,18 @@ func (r *run) statement(ctx context.Context, n *node, tx *core.Tx, m *mtx) error
 	switch {
 	case len(existing) == 0 || pick < 12:
 		ct := shapes[intn(h, len(shapes))](name)
+		// A table or an index may have the name.
+		taken := m.taken(name)
 		created := m.create(ct)
 		err := tx.CreateTable(ctx, ct)
 		r.c.world.Trace(ctx, "create table %q: %v", name, err)
 		switch {
 		case created && err != nil:
 			return refused("create table", err)
-		case !created && errors.Is(err, core.ErrTableExists):
+		case !created && errors.Is(err, taken):
 		case !created:
 			if err == nil || !expected(err) {
-				r.o.violate(ctx, r.c.world, "create table %q, which exists: %v", name, err)
+				r.o.violate(ctx, r.c.world, "create table %q, whose name is taken: %v, and the model: %v", name, err, taken)
 			}
 			return errAbandon
 		}
@@ -544,6 +573,43 @@ func (r *run) statement(ctx context.Context, n *node, tx *core.Tx, m *mtx) error
 		case !dropped:
 			if err == nil || !expected(err) {
 				r.o.violate(ctx, r.c.world, "drop table %q, which does not exist: %v", name, err)
+			}
+			return errAbandon
+		}
+
+	case pick < 24:
+		index := indexNames[intn(h, len(indexNames))][intn(h, 2)]
+		ci := randomIndex(h, index, m.now.tables[existing[intn(h, len(existing))]].create)
+		want := m.createIndex(ci)
+		err := tx.CreateIndex(ctx, ci)
+		switch {
+		case want == nil && err == nil:
+			r.c.world.Trace(ctx, "created the index %v", describeIndex(ci))
+		case want == nil:
+			return refused("create index", err)
+		case errors.Is(err, want):
+			r.c.world.Trace(ctx, "no index %v: %v", describeIndex(ci), err)
+		default:
+			if err == nil || !expected(err) {
+				r.o.violate(ctx, r.c.world, "create index %v, whose name is taken: %v, and the model: %v", describeIndex(ci), err, want)
+			}
+			return errAbandon
+		}
+
+	case pick < 28:
+		index := indexNames[intn(h, len(indexNames))][intn(h, 2)]
+		dropped := m.dropIndex(index)
+		err := tx.DropIndex(ctx, index)
+		switch {
+		case dropped && err == nil:
+			r.c.world.Trace(ctx, "dropped the index %q", index)
+		case dropped:
+			return refused("drop index", err)
+		case errors.Is(err, core.ErrNoIndex):
+			r.c.world.Trace(ctx, "no drop of the index %q: %v", index, err)
+		default:
+			if err == nil || !expected(err) {
+				r.o.violate(ctx, r.c.world, "drop index %q, which does not exist: %v", index, err)
 			}
 			return errAbandon
 		}
@@ -605,6 +671,27 @@ func (r *run) statement(ctx context.Context, n *node, tx *core.Tx, m *mtx) error
 			}
 			if want := t.rows[text(stored(key))]; (got == nil) != (want == nil) || text(got) != text(want) {
 				r.o.violate(ctx, r.c.world, "a transaction read the row %v of %q as %v, and its own writes make it %v", text(key), name, text(got), text(want))
+			}
+
+		case len(t.indexes) > 0 && intn(h, 2) == 0:
+			// The whole table by one of its indexes, in either direction: the index holds every row of
+			// the table, in its order.
+			ci := t.indexes[intn(h, len(t.indexes))]
+			backward := intn(h, 2) == 0
+			var got []string
+			for values, err := range tx.ScanIndex(ctx, name, core.IndexScan{Index: ci.GetIndex(), Backward: backward}) {
+				if err != nil {
+					return refused("scan by an index", err)
+				}
+				got = append(got, text(values))
+			}
+			r.c.world.Trace(ctx, "scan of %q by its index %q, backward: %v", name, ci.GetIndex(), backward)
+			var want []string
+			for _, values := range t.sortedBy(ci, backward) {
+				want = append(want, text(values))
+			}
+			if !slices.Equal(got, want) {
+				r.o.violate(ctx, r.c.world, "a transaction scanned %q by its index %v, backward: %v, as %v, and its own writes make it %v", name, describeIndex(ci), backward, got, want)
 			}
 
 		default:

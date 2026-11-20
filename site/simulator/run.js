@@ -42,8 +42,20 @@ export function keysText(keys) {
   return keys.length + " rows";
 }
 
-// rowsText of the keys that a read gave: how many rows it found.
-const rowsText = (keys) => ((keys || []).length === 1 ? "1 row" : `${(keys || []).length} rows`);
+// commitKeysText of a commit object, for its line in the list: the keys of the rows that it inserts,
+// or of those that it deletes.
+export function commitKeysText(c) {
+  const keys = (c && c.keys) || [], deletes = (c && c.deletes) || [];
+  if (keys.length === 0 && deletes.length > 0) return "delete " + (deletes.length <= 3 ? deletes.join(", ") : deletes.length + " rows");
+  return keysText(keys);
+}
+
+// rowsText of the keys that a read gave: how many rows it found. A read of a row whose delete the
+// application knows was committed finds none, as it should, and says so.
+const rowsText = (e) => {
+  const n = (e.keys || []).length;
+  return (n === 1 ? "1 row" : `${n} rows`) + (n === 0 && e.expect === "none" ? ", as deleted" : "");
+};
 
 // literal of an argument of a statement in SQL: a number as itself, text in single quotes, and null.
 const literal = (v) => (v === null || v === undefined ? "null" : typeof v === "string" ? `'${v.replaceAll("'", "''")}'` : String(v));
@@ -131,7 +143,7 @@ export function requestFailure(e) {
       return null;
     case "down":
     case "lost":
-      return e.op === "write"
+      return e.op !== "read"
         ? { kind: "no answer " + i, words: `no answer from ${i}, write outcome unknown`, line: `A request gets no answer from ${i}: ${callText(e)}, outcome unknown.` }
         : { kind: "no answer " + i, words: `no answer from ${i}`, line: `A request gets no answer from ${i}.` };
   }
@@ -320,14 +332,14 @@ export function teller() {
           } else break;
         }
         switch (e.what) {
-          case "committed": // in the log as the commit of the core
+          case "committed": // in the log as the commit of the core, with its insert or delete
             calm("call");
             calm("core");
             break;
           case "served":
             calm("call");
             calm("core");
-            say(`${who} serves ${callText(e)}: ${e.error || rowsText(e.keys)}.`, "stream");
+            say(`${who} serves ${callText(e)}: ${e.error || rowsText(e)}.`, "stream");
             break;
           case "refused": {
             const r = reason(e);

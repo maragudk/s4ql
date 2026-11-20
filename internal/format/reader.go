@@ -68,7 +68,9 @@ var unmarshalOptions = proto.UnmarshalOptions{RecursionLimit: 100, NoLazyDecodin
 //     a number of values that differs from the number of its columns
 //   - a delete rows with no table name, no keys, a key with no values or with a NULL, or keys
 //     with different numbers of values
-//   - the name of a table or a column that holds the character NUL
+//   - a create index with no name, no table name, the name of its table as its own, no columns, a
+//     column without a position, or a column listed twice, and a drop index with no name
+//   - the name of a table, a column, or an index that holds the character NUL
 //   - text that is not valid UTF-8, anywhere, and, in a row or a primary key, text that holds the
 //     character NUL and a real that is NaN, infinite, or -0.0
 //   - a record larger than [MaxRecordSize], and bytes that are not Protocol Buffers

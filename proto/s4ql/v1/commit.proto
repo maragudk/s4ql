@@ -62,12 +62,16 @@ message Change {
   oneof kind {
     // Creates a table.
     CreateTable create_table = 1;
-    // Drops a table and all its rows.
+    // Drops a table, all its rows, and all its indexes.
     DropTable drop_table = 2;
     // Inserts rows into a table, or changes rows that are there.
     UpsertRows upsert_rows = 3;
     // Deletes rows from a table.
     DeleteRows delete_rows = 4;
+    // Creates an index on a table.
+    CreateIndex create_index = 5;
+    // Drops an index.
+    DropIndex drop_index = 6;
   }
 }
 
@@ -113,10 +117,42 @@ enum Type {
   TYPE_BLOB = 5;
 }
 
-// Drops a table and all its rows.
+// Drops a table, all its rows, and all its indexes. A commit object does not
+// list the indexes of the table as dropped.
 message DropTable {
   // The name of the table.
   string table = 1;
+}
+
+// Creates an index on a table that is there. The commit object holds the
+// definition of the index and none of its entries: replay builds the index
+// from the rows of the table, and keeps it up to date from then on.
+//
+// An index is not unique. The indexes of a table are in the order in which
+// their CreateIndex changes were applied.
+message CreateIndex {
+  // The name of the index. No table and no other index has it.
+  string index = 1;
+  // The name of the table.
+  string table = 2;
+  // The columns of the index, in the order of the index: at least one, and
+  // none twice.
+  repeated IndexColumn columns = 3;
+}
+
+// One column of an index.
+message IndexColumn {
+  // The column, as a position in the table's columns, starting at 0.
+  uint32 column = 1;
+  // Whether the index holds the column in descending order. A column
+  // without it is in ascending order.
+  bool descending = 2;
+}
+
+// Drops an index. The table and its rows stay.
+message DropIndex {
+  // The name of the index.
+  string index = 1;
 }
 
 // Inserts rows into a table, or changes rows that are there.

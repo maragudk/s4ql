@@ -61,12 +61,21 @@ var (
 	// is not a local I/O failure, and the instance goes on.
 	ErrBusy = errors.New("the cache is busy")
 
-	// ErrReservedName is wrapped by the error of [Tx.CreateTable] for a table whose name starts
-	// with "s4ql_" or "sqlite_", in any case of the letters.
+	// ErrReservedName is wrapped by the error of [Tx.CreateTable] and of [Tx.CreateIndex] for a
+	// table or an index whose name starts with "s4ql_" or "sqlite_", in any case of the letters.
 	ErrReservedName = errors.New("the name is reserved")
 
-	// ErrTableExists is wrapped by the error of [Tx.CreateTable] for a table that exists.
+	// ErrTableExists is wrapped by the error of [Tx.CreateTable] for a table that exists, and of
+	// [Tx.CreateIndex] for an index whose name a table has.
 	ErrTableExists = errors.New("the table exists")
+
+	// ErrIndexExists is wrapped by the error of [Tx.CreateIndex] for an index that exists, and of
+	// [Tx.CreateTable] for a table whose name an index has.
+	ErrIndexExists = errors.New("the index exists")
+
+	// ErrNoIndex is wrapped by the error of a call that names an index that does not exist, or that
+	// the table of the call does not have.
+	ErrNoIndex = errors.New("no such index")
 
 	// ErrNoTable is wrapped by the error of a call that names a table that does not exist.
 	ErrNoTable = errors.New("no such table")
