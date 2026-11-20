@@ -447,6 +447,7 @@ A test checks that every name the pass gives in any test is in these tables.
 | `empty name` | A name is `""`. |
 | `reserved table name` | A table name starts with `sqlite_` or `s4ql_`. |
 | `name of a virtual table of SQLite` | A table name is that of an eponymous virtual table. |
+| `reserved index name` | An index name starts with `sqlite_` or `s4ql_`. SQLite gives `object name reserved for internal use` for `sqlite_` in CREATE INDEX, and `index associated with UNIQUE or PRIMARY KEY constraint cannot be dropped` for the index of a primary key in DROP INDEX. |
 | `table constraint` | CREATE TABLE has a table constraint. |
 | `column without a type` | The column has no type. |
 | `column type other than INT, INTEGER, REAL, TEXT, or BLOB` | The column's type is not one of the bare words `int`, `integer`, `real`, `text`, and `blob`. |
@@ -458,7 +459,7 @@ A test checks that every name the pass gives in any test is in these tables.
 | `table without STRICT` | CREATE TABLE has WITHOUT ROWID only. |
 | `table without WITHOUT ROWID` | CREATE TABLE has STRICT only. |
 | `REPLACE` | The statement is REPLACE INTO. |
-| `column named twice` | The column list of INSERT, or the SET of UPDATE, names a column that it named before, as SQLite compares names. SQLite takes the first value of INSERT for it, and the last of SET. The offset is that of the later name. |
+| `column named twice` | The column list of INSERT, the SET of UPDATE, or the columns of CREATE INDEX name a column that they named before, as SQLite compares names. SQLite takes the first value of INSERT for it, the last of SET, and makes an index of the column twice. The offset is that of the later name. |
 | `SET beyond SQLite's limit` | The SET of UPDATE has more than 2,000 assignments, `SQLITE_MAX_COLUMN`. SQLite gives `too many columns in set list`. The offset is that of the 2,001st assignment. |
 | `INSERT with SELECT` | INSERT has a SELECT in place of VALUES. |
 | `+ sign` | The value has a `+` sign, but before NULL. |
@@ -489,8 +490,11 @@ A test checks that every name the pass gives in any test is in these tables.
 | `IS with a value other than NULL` | A condition of WHERE is IS or IS NOT with a literal other than NULL, a parameter, a name, or a value after a sign, as in `v is 1` or `v is true`. The offset is that of the value. |
 | `WHERE deeper than SQLite's limit` | The conditions of WHERE make an expression deeper than 1,000, `SQLITE_MAX_EXPR_DEPTH`. SQLite gives `Expression tree is too large (maximum depth 1000)`. The offset is that of the AND that makes it too deep. |
 | `DROP VIEW` | The statement is DROP VIEW. |
-| `DROP INDEX` | The statement is DROP INDEX. |
 | `DROP TRIGGER` | The statement is DROP TRIGGER. |
+| `index beyond SQLite's limit` | CREATE INDEX has more than 2,000 columns, `SQLITE_MAX_COLUMN`. SQLite gives `too many columns in index` once it has found the table. The offset is that of the 2,001st column. |
+| `index on an expression` | A column of CREATE INDEX is an expression, such as `a + 1`, `lower(a)`, `-a`, a literal, or a parameter. The offset is that of the expression. |
+| `partial index` | CREATE INDEX has a WHERE. The offset is that of the WHERE. |
+| `EXPLAIN QUERY PLAN` | The statement starts with EXPLAIN QUERY PLAN. The offset is that of the EXPLAIN. |
 
 ### Names of fields
 
@@ -498,15 +502,17 @@ These are the tokens of a node that the recognizer accepted, in a field that no 
 
 | Name | Fields |
 | --- | --- |
-| `EXPLAIN` | `Statement.Explain`, for EXPLAIN and EXPLAIN QUERY PLAN |
+| `EXPLAIN` | `Statement.Explain`, for EXPLAIN without QUERY PLAN |
 | `schema name` | `QualifiedName.Schema`, in any node |
 | `TEMP` | `CreateTable.Temp` |
-| `IF NOT EXISTS` | `CreateTable.IfNotExists` |
+| `IF NOT EXISTS` | `CreateTable.IfNotExists`, `CreateIndex.IfNotExists` |
 | `empty table option` | `CreateTable.OptionCommas`, for a comma before the first option |
 | `CREATE TABLE AS` | `CreateTable.As` |
 | `ASC or DESC` | `PrimaryKeyConstraint.Order` |
 | `AUTOINCREMENT` | `PrimaryKeyConstraint.Autoincrement` |
-| `IF EXISTS` | `Drop.IfExists` |
+| `IF EXISTS` | `Drop.IfExists`, for DROP TABLE and DROP INDEX |
+| `UNIQUE INDEX` | `CreateIndex.Unique` |
+| `NULLS FIRST or NULLS LAST` | `OrderingTerm.Nulls`, in a column of CREATE INDEX |
 | `INSERT OR` | `Insert.Or` |
 | `UPDATE OR` | `Update.Or` |
 | `SET of a list of columns` | `Assignment.LParen`, for `set (v, w) = ...` |
@@ -556,7 +562,8 @@ Any other field of an accepted node has the name of the node's type.
 | `join in parentheses` | `NestedFrom` |
 | `ON clause` | `JoinOn` |
 | `USING clause` | `JoinUsing` |
-| `INDEXED BY or NOT INDEXED` | `IndexedBy` |
+| `INDEXED BY` | `IndexedBy`, with INDEXED BY |
+| `NOT INDEXED` | `IndexedBy`, with NOT INDEXED |
 | `WHERE clause` | `Where` |
 | `GROUP BY clause` | `GroupBy` |
 | `HAVING clause` | `Having` |

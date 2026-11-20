@@ -339,6 +339,9 @@ func check(src string) (stmt.Statement, error) {
 	case *stmt.Delete:
 		return nil, &stmt.NotSupportedError{What: "DELETE", Offset: s.Bounds().Start}
 	}
+	if err := indexRefusal(src, s); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
