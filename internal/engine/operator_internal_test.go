@@ -495,6 +495,37 @@ func TestBuild(t *testing.T) {
 		})
 	}
 
+	t.Run("should place each value of an insert at the position of its column, and look the key up at its position", func(t *testing.T) {
+		for _, src := range []string{"insert into t (c, k, a) values (3, ?, 1)", "insert into t values (1, ?, 3)"} {
+			f := newFake().with("t", []string{"a", "k", "c"})
+			f.tables["t"].ct.SetPrimaryKey([]uint32{1})
+			s, err := buildSink(t.Context(), fakeTx{f}, plan(src), []*s4qlpb.Value{integer(2)}, bugs{}, 1_000_000_000)
+			is.NotError(t, err, src)
+			is.NotError(t, s.check(), src)
+			_, err = s.run(t.Context())
+			is.NotError(t, err, src)
+			is.Equal(t, "[table t get t 2 upsert t 1,2,3]", fmt.Sprint(f.calls), src)
+			_, err = s.run(t.Context())
+			is.Equal(t, "UNIQUE constraint failed: t.k", err.Error(), src)
+		}
+	})
+
+	t.Run("should check that each column has a value before the type of each value, in the order of the table", func(t *testing.T) {
+		f := newFake().with("t", []string{"a", "k", "c"})
+		f.tables["t"].ct.SetPrimaryKey([]uint32{1})
+		for src, want := range map[string]string{
+			"insert into t (c, a) values ('x', 'y')":       "NOT NULL constraint failed: t.k",
+			"insert into t (k, a) values ('x', 1)":         "NOT NULL constraint failed: t.c",
+			"insert into t (c, a, k) values (1, 'y', 'x')": "s4ql: not supported: a string literal for the column t.a of type INT",
+		} {
+			f.calls = nil
+			s, err := buildSink(t.Context(), fakeTx{f}, plan(src), nil, bugs{}, 1_000_000_000)
+			is.NotError(t, err, src)
+			is.Equal(t, want, s.check().Error(), src)
+			is.Equal(t, "[table t]", fmt.Sprint(f.calls), src)
+		}
+	})
+
 	t.Run("should build a query of a table that exists, and give SQLite's error for one that does not", func(t *testing.T) {
 		f := newFake().with("t", []string{"v"}, []int64{2}, []int64{1})
 		src, err := buildQuery(t.Context(), fakeTx{f}, plan("select * from T").(*Query))
