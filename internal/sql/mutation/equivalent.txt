@@ -243,6 +243,8 @@ stmt/recognize.go recognizer.parameter remove statement: r.accept(v) =>
 # The literals of slice 4 in the recognizer.
 stmt/recognize.go recognizer.literal condition: r.isNext(c.Column) => true
 	A column reference without a table name has no schema name either, so its column is its first token, which is the next one.
+stmt/recognize.go recognizer.literal condition: !c.Table.Present() => true
+	With a table name, the table name is the next token, so the column is not, and the test of isNext is false either way.
 stmt/recognize.go recognizer.literal constant: math.IsInf(f, 0) => math.IsInf(f, 1)
 	atof reads the literal without its sign, so the only infinity that it gives is the positive one.
 
@@ -460,6 +462,103 @@ internal/core/tx.go Tx.RollbackTo condition: err != nil => false #3
 	No test can reach it: the RELEASE after a ROLLBACK TO of the same savepoint does no I/O inside the open transaction.
 internal/core/tx.go Tx.RollbackTo remove statement: return tx.fail(ctx, operation, err) => #2
 	No test can reach it: the RELEASE after a ROLLBACK TO of the same savepoint does no I/O inside the open transaction.
+
+# The storage core, internal/core: the types of slice 4.
+internal/core/cache.go openConn condition: err != nil => false #2
+	No test can reach it: sqlite3_limit fails only for a closed connection or a limit below 1, and the options allow only 1000 and above.
+internal/core/cache.go openConn remove statement: return nil, err => #2
+	No test can reach it: sqlite3_limit fails only for a closed connection or a limit below 1, and the options allow only 1000 and above.
+internal/core/cache.go openConn remove statement: _ = c.Close() =>
+	The close after a failed sqlite3_limit, which no test can reach: it fails only for a closed connection or a limit below 1.
+internal/core/cache.go openConn condition: err != nil => false #3
+	No test can reach it: pragma busy_timeout only sets a field of the connection, for any number of milliseconds.
+internal/core/cache.go table.checkValue remove statement: return nil => #2
+	Without the return the switch ends with n at 0, and the check of the length gives nil.
+internal/core/cache.go table.checkValue remove statement: return nil => #3
+	Without the return the switch ends with n at 0, and the check of the length gives nil.
+internal/core/cache.go readRow remove statement: return nil, fmt.Errorf("%w: the cache holds a value of type %v", ErrCacheVersion, typ) =>
+	sqlite3_column_type gives one of SQLite's five fundamental types, which each have a case.
+internal/core/cache.go readRow swap arguments: fmt.Errorf("%w: the cache holds a value of type %v", ErrCacheVersion, typ) => fmt.Errorf("%w: the cache holds a value of type %v", typ, ErrCacheVersion)
+	sqlite3_column_type gives one of SQLite's five fundamental types, which each have a case.
+internal/core/tx.go Tx.touch condition: e.created != nil => false
+	The keys that it records for a table that the transaction created are never read: the commit object holds such a table whole, from the cache, and a drop of the table drops their temporary tables.
+internal/core/tx.go Tx.touch remove statement: return nil =>
+	The keys that it records for a table that the transaction created are never read: the commit object holds such a table whole, from the cache, and a drop of the table drops their temporary tables.
+internal/core/tx.go Tx.Upsert condition: tx.recording(t) => true
+	For a table that the transaction created, touch records nothing, so whether the row existed is read and not used.
+internal/core/tx.go Tx.touch increment: tx.temps++ => tx.temps--
+	The names of the temporary tables need only differ from each other, which they do counting down too.
+internal/core/tx.go Tx.touch swap arguments: fmt.Sprint("s4ql_touched_", tx.temps) => fmt.Sprint(tx.temps, "s4ql_touched_")
+	The names of the temporary tables need only differ from each other, which they still do.
+internal/core/tx.go Tx.touch swap arguments: fmt.Sprint("s4ql_existed_", tx.temps) => fmt.Sprint(tx.temps, "s4ql_existed_")
+	The names of the temporary tables need only differ from each other, which they still do.
+internal/core/tx.go Tx.touch condition: err != nil => false
+	No test can reach it: typeSQL fails only for a type that the table, which the core checked when it was created or loaded, cannot have.
+internal/core/tx.go Tx.touch remove statement: return err =>
+	No test can reach it: typeSQL fails only for a type that the table, which the core checked when it was created or loaded, cannot have.
+internal/core/tx.go Tx.touch condition: err != nil => false #3
+	count gives 0 with its error, so the test of first that follows gives back the error.
+internal/core/tx.go Tx.spoolTouched condition: err != nil => false
+	No test can reach it: the transaction has read the table, so lookUp finds it in the map of the connection and reads nothing.
+internal/core/tx.go Tx.spoolTouched remove statement: return 0, err =>
+	No test can reach it: the transaction has read the table, so lookUp finds it in the map of the connection and reads nothing.
+internal/core/tx.go Tx.spoolTouched constant: return 0, err => return 1, err
+	No test can reach it: the transaction has read the table, so lookUp finds it in the map of the connection and reads nothing.
+internal/core/tx.go Tx.spoolTouched condition: t == nil => false
+	No test can reach it: a table whose keys the transaction touched, and which it did not drop, is in the cache.
+internal/core/tx.go Tx.spoolTouched condition: err != nil => false #2
+	readRow fails only for a value of no fundamental type of SQLite, which sqlite3_column_type never gives.
+internal/core/tx.go Tx.spoolTouched remove statement: return err =>
+	readRow fails only for a value of no fundamental type of SQLite, which sqlite3_column_type never gives.
+internal/core/tx.go Tx.spoolTouched condition: err != nil => false #5
+	readRow fails only for a value of no fundamental type of SQLite, which sqlite3_column_type never gives.
+internal/core/tx.go Tx.spoolTouched remove statement: return err => #3
+	readRow fails only for a value of no fundamental type of SQLite, which sqlite3_column_type never gives.
+internal/core/tx.go Tx.spoolTouched condition: err != nil => false #3
+	The planted bug keyTwice: its first write of the row fails only as the second does, which the writer keeps and gives again.
+internal/core/tx.go Tx.spoolTouched remove statement: return err => #2
+	The planted bug keyTwice: its first write of the row fails only as the second does, which the writer keeps and gives again.
+internal/core/tx.go Tx.spoolTouched condition: err != nil => false #4
+	SQLite rolls the transaction back when a read fails in it, so the commit fails at a later step with a local failure either way and writes no commit object, which TestTx_readFails shows.
+internal/core/tx.go Tx.spoolTouched remove statement: return 0, err => #2
+	SQLite rolls the transaction back when a read fails in it, so the commit fails at a later step with a local failure either way and writes no commit object, which TestTx_readFails shows.
+internal/core/tx.go Tx.spoolTouched constant: return 0, err => return 1, err #2
+	The number of changes is not used with an error.
+internal/core/tx.go Tx.spoolTouched condition: err != nil => false #6
+	SQLite rolls the transaction back when a read fails in it, so the commit fails at a later step with a local failure either way and writes no commit object.
+internal/core/tx.go Tx.spoolTouched remove statement: return 0, err => #3
+	SQLite rolls the transaction back when a read fails in it, so the commit fails at a later step with a local failure either way and writes no commit object.
+internal/core/tx.go Tx.spoolTouched constant: return 0, err => return 1, err #3
+	The number of changes is not used with an error.
+internal/core/tx.go Tx.spoolTouched remove statement: row = tx.committed(row) =>
+	The planted bug blobCut is then planted only in the rows of the tables that the transaction created, and is found by those.
+internal/core/tx.go Tx.committed condition: v.WhichKind() == s4qlpb.Value_Blob_case => true
+	GetBlob of a value that is not a blob is nil, which holds no zero byte, so the planted bug blobCut leaves it as it is.
+internal/core/tx.go Tx.committed constant: bytes.IndexByte(v.GetBlob(), 0) => bytes.IndexByte(v.GetBlob(), 1)
+	The planted bug blobCut: it cuts a blob at another byte, and is found either way.
+internal/core/tx.go Tx.committed operator: j >= 0 => j > 0
+	The planted bug blobCut: it leaves a blob that starts with a zero byte, and is found by the others.
+internal/core/tx.go Tx.committed constant: j >= 0 => j >= 1
+	The planted bug blobCut: it leaves a blob that starts with a zero byte, and is found by the others.
+internal/core/tx.go Tx.dropTemps remove statement: tx.c.forget() =>
+	The statements that the connection keeps are reset after each use, so none of them holds up the drop of a temporary table.
+
+# Reachable only by a local failure that no test makes yet: a failure of the temporary file of the
+# cache in the CREATE TABLE or the DROP TABLE of the temporary tables of a transaction, where SQLite
+# writes and frees their pages. faultvfs can fail the temporary file, and TestTx_tooBig fails it
+# while a transaction records keys; a test of these two statements is open in docs/todo.md.
+internal/core/tx.go Tx.touch condition: err != nil => false #2
+	The CREATE TABLE of a temporary table, which fails only for a failure of the temporary file.
+internal/core/tx.go Tx.touch remove statement: return err => #2
+	The CREATE TABLE of a temporary table, which fails only for a failure of the temporary file.
+internal/core/tx.go Tx.dropTouched condition: err != nil => false
+	The DROP TABLE of a temporary table, which fails only for a failure of the temporary file.
+internal/core/tx.go Tx.dropTouched remove statement: return err =>
+	The DROP TABLE of a temporary table, which fails only for a failure of the temporary file.
+internal/core/tx.go Tx.dropTemps condition: err != nil => false
+	The DROP TABLE of a temporary table at the commit, which fails only for a failure of the temporary file.
+internal/core/tx.go Tx.dropTemps remove statement: return err =>
+	The DROP TABLE of a temporary table at the commit, which fails only for a failure of the temporary file.
 
 # The storage formats, internal/format: the checks of the values of slice 4.
 internal/format/check.go checkStored condition: v.WhichKind() == s4qlpb.Value_Real_case => true
