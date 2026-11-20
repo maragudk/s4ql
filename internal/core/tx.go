@@ -12,8 +12,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"google.golang.org/protobuf/proto"
-
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sqlite"
@@ -456,10 +454,13 @@ func (tx *Tx) CreateTable(ctx context.Context, ct *s4qlpb.CreateTable) error {
 	if existing != nil {
 		return fmt.Errorf("%w: %q", ErrTableExists, existing.name)
 	}
-	if err := tx.c.create(newTable(ct)); err != nil {
+	t := newTable(ct)
+	if err := tx.c.create(t); err != nil {
 		return tx.fail(ctx, operation, err)
 	}
-	tx.changed(ct.GetTable()).created = proto.CloneOf(ct)
+	// The commit object holds the table as the cache gives it back, without a field that is set to
+	// its default, such as a nullable of false.
+	tx.changed(ct.GetTable()).created = t.createTable()
 	return nil
 }
 

@@ -1190,6 +1190,11 @@ func TestOpen_cache(t *testing.T) {
 		}
 		is.NotError(t, c.Close())
 
+		// A cache that is refused for another reason keeps its version.
+		_, err = core.Open(t.Context(), w.host, w.client(), filepath.Join(w.dir, "old.db"), "db", core.Options{Identity: "another"})
+		is.Error(t, core.ErrCacheDatabase, err)
+		is.Equal(t, int64(1), cacheVersion(t, filepath.Join(w.dir, "old.db")))
+
 		old := w.serve(t, "old", core.Options{})
 		is.Equal(t, "t1(k*0,v): 1,10 | 2,20", read(t, old))
 		is.Equal(t, int64(core.CacheVersion), cacheVersion(t, filepath.Join(w.dir, "old.db")))
@@ -1206,6 +1211,28 @@ func TestOpen_cache(t *testing.T) {
 		is.Equal(t, want, read(t, again))
 		is.NotError(t, again.Close(t.Context()))
 		is.Equal(t, want, read(t, w.serve(t, "b", core.Options{})))
+	})
+
+	t.Run("should refuse a cache of version 1 that holds NULL in a column outside the primary key, which version 2 reads as one that does not take NULL, and leave it as it is", func(t *testing.T) {
+		w := newWorld(t)
+		path := filepath.Join(w.dir, "old.db")
+		c, err := sqlite.Open(path)
+		is.NotError(t, err)
+		for _, sql := range []string{
+			"pragma journal_mode = wal",
+			"create table main.s4ql_cache (id integer primary key check (id = 1), version integer not null, head text not null, database text not null) strict",
+			"insert into main.s4ql_cache (id, version, head, database) values (1, 1, '" + format.EmptyLog.String() + "', '')",
+			`create table main."t1" ("k" int, "v" int, "w" int, primary key ("k")) strict, without rowid`,
+			`insert into main."t1" ("k", "v", "w") values (1, 10, 100), (2, 20, null)`,
+		} {
+			is.NotError(t, c.Exec(sql), sql)
+		}
+		is.NotError(t, c.Close())
+
+		_, err = core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{})
+		is.Error(t, core.ErrCacheVersion, err)
+		is.True(t, strings.Contains(err.Error(), `its table "t1" holds NULL in the column "w", which does not take NULL`), err.Error())
+		is.Equal(t, int64(1), cacheVersion(t, path))
 	})
 
 	t.Run("should fail for a file that is not a database, and leave it as it is", func(t *testing.T) {

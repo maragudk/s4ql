@@ -247,10 +247,17 @@ func (c *conn) setUp(syncOff bool, identity string) error {
 		}
 	}
 
-	if err := c.upgrade(); err != nil {
+	// A cache of version 1 is checked as one of its version, and raised to version 2 only after every
+	// check, so that a cache that is refused is left as it is.
+	old, err := c.count("select 1 from main.s4ql_cache where version = 1")
+	if err != nil {
 		return err
 	}
-	if _, err := c.position(); err != nil {
+	version := int64(cacheVersion)
+	if old > 0 {
+		version = 1
+	}
+	if _, err := c.positionAt(version); err != nil {
 		return err
 	}
 	var recorded string
@@ -262,6 +269,9 @@ func (c *conn) setUp(syncOff bool, identity string) error {
 	}
 	if recorded != identity {
 		return fmt.Errorf("%w: it records the database %q, and this instance opens the database %q; open each database with a cache of its own, or delete the cache, with its files -wal and -shm, if the database has moved", ErrCacheDatabase, recorded, identity)
+	}
+	if old > 0 {
+		return c.upgrade()
 	}
 	return nil
 }
@@ -337,17 +347,19 @@ func (c *conn) make(identity string) error {
 
 // upgrade a cache of version 1 to version 2 in place, in a transaction that holds the write lock. A
 // table of a cache of version 1 is declared as a table of version 2 whose columns do not take NULL,
-// which no table of version 1 has, so only the version changes. A version of s4ql that reads version
-// 1 then refuses the cache, and does not take a column that takes NULL for one that does not.
+// and the engine before version 2 put no NULL into one, so only the version changes. The core did
+// take a NULL in any column outside the primary key then, so upgrade refuses a cache that holds
+// one, with [ErrCacheVersion], and leaves it as it is. A version of s4ql that reads version 1 then
+// refuses the cache, and does not take a column that takes NULL for one that does not.
 func (c *conn) upgrade() error {
-	old, err := c.count("select 1 from main.s4ql_cache where version = 1")
-	if err != nil || old == 0 {
-		return err
-	}
 	if err := c.c.Exec("begin immediate"); err != nil {
 		return err
 	}
-	if err := c.exec("update main.s4ql_cache set version = ? where version = 1", int64(cacheVersion)); err != nil {
+	err := c.checkNoNull()
+	if err == nil {
+		err = c.exec("update main.s4ql_cache set version = ? where version = 1", int64(cacheVersion))
+	}
+	if err != nil {
 		_ = c.c.Exec("rollback")
 		c.forget()
 		return err
@@ -360,14 +372,42 @@ func (c *conn) upgrade() error {
 	return nil
 }
 
+// checkNoNull finds no NULL in a column of the cache that does not take NULL.
+func (c *conn) checkNoNull() error {
+	tables, err := c.list()
+	if err != nil {
+		return err
+	}
+	for _, t := range tables {
+		for position, column := range t.columns {
+			if t.inKey[position] || column.nullable {
+				continue
+			}
+			n, err := c.count(fmt.Sprint("select 1 from main.", quote(t.name), " where ", quote(column.name), " is null limit 1"))
+			if err != nil {
+				return err
+			}
+			if n > 0 {
+				return fmt.Errorf("%w: its table %q holds NULL in the column %q, which does not take NULL; open the database with a new cache, or delete this one, with its files -wal and -shm", ErrCacheVersion, t.name, column.name)
+			}
+		}
+	}
+	return nil
+}
+
 // position that the cache records: the name of the last commit object that it has applied, or
 // [format.EmptyLog].
 func (c *conn) position() (format.Name, error) {
+	return c.positionAt(cacheVersion)
+}
+
+// positionAt is [conn.position] of a cache that has the given version.
+func (c *conn) positionAt(want int64) (format.Name, error) {
 	var name format.Name
 	var rows int
 	err := c.query("select version, head from main.s4ql_cache", func(s *sqlite.Stmt) error {
 		rows++
-		if version := s.ColumnInt64(0); version != cacheVersion {
+		if version := s.ColumnInt64(0); version != want {
 			return fmt.Errorf("%w: it has version %v, and this version of s4ql reads version %v; open the database with a new cache, or delete this one, with its files -wal and -shm", ErrCacheVersion, version, cacheVersion)
 		}
 		var err error
@@ -858,7 +898,9 @@ func (c *conn) upsert(t *table, row []*s4qlpb.Value) error {
 // whether it did. SQLite gives "string or blob too big" for a row that it cannot hold also when the
 // key exists, since it builds the record of the row first.
 func (c *conn) insert(t *table, row []*s4qlpb.Value) (bool, error) {
-	sql := fmt.Sprint("insert or ignore into main.", quote(t.name), " (", t.columnList(t.all()), ") values (", placeholders(len(t.columns)), ") returning 1")
+	// "on conflict do nothing" skips the row only for its primary key, and a NULL in a column that is
+	// declared "not null" still fails, where "insert or ignore" would skip that row too.
+	sql := fmt.Sprint("insert into main.", quote(t.name), " (", t.columnList(t.all()), ") values (", placeholders(len(t.columns)), ") on conflict do nothing returning 1")
 	n, err := c.count(sql, values(row)...)
 	return n > 0, err
 }

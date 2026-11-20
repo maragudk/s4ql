@@ -24,6 +24,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"google.golang.org/protobuf/proto"
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/core"
@@ -2341,6 +2342,28 @@ func TestTx_null(t *testing.T) {
 			is.Equal(t, text([]*s4qlpb.Value{edges[typ][0], edges[typ][0], null}), text(got))
 		}
 		is.NotError(t, r.Close(ctx))
+	})
+
+	t.Run("should commit a table whose columns say that they do not take NULL as the table that the cache gives back, which leaves the field out", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		ct := nullableTable(tableOf("t", 1, "k", "v", "w"), 2)
+		ct.GetColumns()[0].SetNullable(false)
+		ct.GetColumns()[1].SetNullable(false)
+		var got *s4qlpb.CreateTable
+		transact(t, d, func(t *testing.T, tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(t.Context(), ct))
+			var err error
+			got, err = tx.Table(t.Context(), "t")
+			is.NotError(t, err)
+		})
+		is.True(t, !got.GetColumns()[1].HasNullable(), "the cache gives back a nullable of false")
+		data, _, ok := w.store.Object(commitKey("db", w.manifest(t).Head))
+		is.True(t, ok)
+		r := format.NewCommitReader(bytes.NewReader(data), w.manifest(t).Head)
+		change, _, err := r.Next()
+		is.NotError(t, err)
+		is.True(t, proto.Equal(got, change.GetCreateTable()), "the commit object holds another table than the cache gives back")
 	})
 }
 
