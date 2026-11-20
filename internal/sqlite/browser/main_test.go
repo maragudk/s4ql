@@ -134,6 +134,21 @@ func TestRunner_run(t *testing.T) {
 		is.NotError(t, err)
 		is.Equal(t, 7, code)
 		is.Equal(t, "hello\n", stdout.String())
+		is.Equal(t, "", stderr.String())
+	})
+
+	t.Run("should write what it saw when the program exited, with S4QL_CHROMIUM_STEPS", func(t *testing.T) {
+		program := fake(t, "exit")
+		t.Setenv("S4QL_CHROMIUM_STEPS", "1")
+		var stdout, stderr syncBuilder
+		r := runner{stdout: &stdout, stderr: &stderr, startup: time.Minute, grace: time.Minute, attempts: 1}
+
+		code, err := r.run(t.Context(), []string{program})
+		is.NotError(t, err)
+		is.Equal(t, 7, code)
+		is.True(t, strings.Contains(stderr.String(), "browser: what the runner saw: chromium started after"), stderr.String())
+		is.True(t, strings.Contains(stderr.String(), "the Worker fetched its configuration after"), stderr.String())
+		is.True(t, strings.Contains(stderr.String(), "the program started after"), stderr.String())
 	})
 
 	t.Run("should start Chromium again when it did not start the program in time, and fail after the last attempt", func(t *testing.T) {

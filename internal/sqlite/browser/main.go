@@ -27,7 +27,8 @@
 // only thread. That is before go test stops the runner, a minute after the timeout. The runner then
 // writes which steps it saw, when the program last wrote, and, if the program ran with -test.v, the
 // tests that had started and not ended, with the end of Chromium's output. It does the same, and
-// stops Chromium, when it gets SIGINT, SIGTERM, or SIGQUIT.
+// stops Chromium, when it gets SIGINT, SIGTERM, or SIGQUIT. With S4QL_CHROMIUM_STEPS set, it writes
+// what it saw to its standard error when the program has exited, too.
 package main
 
 import (
@@ -245,6 +246,9 @@ func (r runner) attempt(ctx context.Context, chromium, program string, wasmExec,
 		case code := <-exited:
 			cancel()
 			<-stopped
+			if os.Getenv("S4QL_CHROMIUM_STEPS") != "" {
+				_, _ = fmt.Fprintln(r.stderr, "browser:", p.report(time.Now()))
+			}
 			return code, nil
 		case <-started:
 			started = nil
