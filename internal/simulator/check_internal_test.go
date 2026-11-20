@@ -46,6 +46,18 @@ func TestChecker(t *testing.T) {
 			parent = name(i)
 		}
 	}
+	// seeded checker, which starts on a stored log of the commits 1, 2, and 3.
+	seeded := func(c *checker) {
+		parent := empty
+		var objects []*CommitObject
+		for i := 1; i <= 3; i++ {
+			o := &CommitObject{Name: name(i), Parent: parent, Keys: []int64{int64(i)}}
+			c.commit(o)
+			objects = append(objects, o)
+			parent = name(i)
+		}
+		c.seed(objects, name(3))
+	}
 	position := func(i int) format.Name {
 		n, _ := format.ParseName(name(i))
 		return n
@@ -146,6 +158,24 @@ func TestChecker(t *testing.T) {
 			log(c)
 			c.writeEnded(t.Context(), 3, "committed")
 			c.readEnded(t.Context(), p, c.readStarted(), 1, []int64{1}, position(2))
+		}},
+		{name: "a read at the empty log after a start on a stored log", invariant: invariantFresh, f: func(c *checker, p *process) {
+			seeded(c)
+			c.readEnded(t.Context(), p, c.readStarted(), 1, []int64{}, format.EmptyLog)
+		}},
+		{name: "a read that missed its row of a stored log at the head", invariant: invariantState, f: func(c *checker, p *process) {
+			seeded(c)
+			c.readEnded(t.Context(), p, c.readStarted(), 2, []int64{}, position(3))
+		}},
+		{name: "a read at the empty log after a start on a stored log, by the slow check", invariant: invariantFresh, f: func(c *checker, p *process) {
+			seeded(c)
+			c.slow()
+			c.readEnded(t.Context(), p, c.readStarted(), 1, []int64{}, format.EmptyLog)
+		}},
+		{name: "a read that missed its row of a stored log at the head, by the slow check", invariant: invariantState, f: func(c *checker, p *process) {
+			seeded(c)
+			c.slow()
+			c.readEnded(t.Context(), p, c.readStarted(), 2, []int64{}, position(3))
 		}},
 		{name: "a read that missed a write of its key of unknown outcome that the log holds at the end", invariant: invariantFresh, f: func(c *checker, p *process) {
 			log(c)

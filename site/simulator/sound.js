@@ -317,6 +317,15 @@ export function hear(e, live) {
   }
 }
 
+// blip plays the neutral blip of a control, if sound is on.
+export function blip() {
+  try {
+    if (on && out) play("blip");
+  } catch {
+    broken();
+  }
+}
+
 function play(kind) {
   if (out.play(kind)) {
     stats.played[kind] = (stats.played[kind] || 0) + 1;

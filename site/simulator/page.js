@@ -10,6 +10,11 @@
 // The engine does not keep the events of a session, and neither does the page: it keeps the last
 // lines of the log, the counts of the calls, and the bars of the last WINDOW of fake time.
 //
+// What S3 holds outlives a reload, as S3 would: bucket.js keeps the tab's database in sessionStorage,
+// from the changes that each answer brings, and the page gives it to the engine when it starts the
+// session. The instances start on it with empty caches, as on new machines, and fake time goes on
+// from where it was. Reset empties the tab's database and starts over.
+//
 // The page loads every file at the version of its deploy: the HTML of a deploy loads this module
 // with the query ?v=<version>, see internal/simulator/serve, and the module loads run.js and the
 // engine with the same query, which the engine passes on to its Worker and everything that the
@@ -17,6 +22,7 @@
 const version = new URL(import.meta.url).search;
 
 let R = null; // the module run.js, which start loads
+let B = null; // the module bucket.js, which start loads
 let S = null; // the module sound.js, which start loads; the page works without it
 
 const $ = (id) => document.getElementById(id);
@@ -77,6 +83,12 @@ const HOURS = 24 * 3600000;
 
 // What the page knows.
 let engine = null;
+let Engine = null; // the class of simulator.js
+let keeper = null; // the tab's database, from bucket.js
+let storageVersion = ""; // the storage version of the engine
+let base = 0; // the time of the history at the time 0 of the session
+let resetting = false; // whether Reset is starting a new session
+let gen = 0; // the session that the answers belong to, which Reset moves on
 let t = 0; // the fake time of the session
 let state = null; // the answer of the engine to now
 let playing = false;
@@ -99,7 +111,7 @@ const names = new Map(); // the process of each holder ID
 const stopped = {}; // by instance: whether the visitor's Stop closed the database of its process
 
 // The page tells a check what it does through data attributes on <html>: data-engine is loading,
-// ready, or failed, data-busy is "true" while a command is on its way, data-t is the fake time in
+// ready, or failed, data-busy is "true" while a command is on its way, data-t is the fake time of the session in
 // whole ms, data-playing is "true" while it plays, data-lines counts the lines of the log so far, and
 // data-commits the commit objects. The element #requests has data-target, the instance that the
 // requests go to, and data-writes, data-reads, and data-failed, what they got. #requests-status has
@@ -114,6 +126,7 @@ const root = document.documentElement;
 root.dataset.engine = "loading";
 window.s4qlPage = {
   get t() { return t; },
+  get history() { return base + t; },
   get playing() { return playing; },
   get turbo() { return turbo; },
   get state() { return state; },
@@ -124,8 +137,8 @@ window.s4qlPage = {
   },
 };
 
-// halt the page for good, with one line on what happened. A reload starts over. It shows the failure
-// first, because the rest needs controls that a page which failed at start-up may lack.
+// halt the page, with one line on what happened, until a reload or Reset. It shows the failure first,
+// because the rest needs controls that a page which failed at start-up may lack.
 function halt(title, text) {
   halted = true;
   root.dataset.engine = "failed";
@@ -147,7 +160,7 @@ function halt(title, text) {
 // check, then a step of playback. After each it asks for the state. Commands never pile up: a frame
 // that comes while one is on its way adds its time to the debt, and the next step covers it.
 async function pump() {
-  if (busy || halted || !engine) return;
+  if (busy || halted || resetting || !engine) return;
   let job = jobs.shift();
   if (!job && playing && debt >= 1) {
     const real = Math.min(debt, STEP);
@@ -165,33 +178,41 @@ async function pump() {
   busy = true;
   acting = !!action;
   root.dataset.busy = "true";
+  const g = gen;
   let answer, now;
   try {
     answer = action ? await engine.act(action) : await engine.advance(job.by);
-    if (!answer.ended) now = await engine.now(COMMITS);
+    if (!answer.ended && g === gen) now = await engine.now(COMMITS);
   } catch (e) {
-    halt("The engine stopped.", `${e.message}. Reload to start over.`);
+    if (g === gen) halt("The engine stopped.", `${e.message}. ${AGAIN}`);
     return;
   } finally {
     busy = false;
     acting = false;
     root.dataset.busy = "false";
   }
+  // An answer of the session before a Reset is dropped.
+  if (g !== gen) return;
   try {
     if (job.real) lastStep = { real: job.real, fake: job.by };
     take(answer, job);
     if (answer.ended) {
-      halt("The simulation stopped.", `${answer.schedulerError || "The session ended."} Reload to start over.`);
+      halt("The simulation stopped.", `${answer.schedulerError || "The session ended."} ${AGAIN}`);
       return;
     }
     state = now.state;
     draw();
   } catch (e) {
-    halt("The page failed.", `${e.message}. Reload to start over.`);
+    halt("The page failed.", `${e.message}. ${AGAIN}`);
     return;
   }
   if (engine.memory > MEMORY || t >= HOURS) {
-    halt("The engine has used up its memory.", "Reload to start over.");
+    halt("The engine has used up its memory.", AGAIN);
+    return;
+  }
+  const total = state.bucket.commitCount || state.bucket.commits.length;
+  if (total >= B.CAP) {
+    halt("S3 is full.", `The database has ${count(total)} commit objects. Reset to start over.`);
     return;
   }
   if (jobs.length) pump();
@@ -201,16 +222,15 @@ async function pump() {
 // the clocks take one line in the log and one mark on the field, at the first.
 function take(answer, job = {}) {
   t = answer.t;
+  for (const e of answer.events) if (e.kind === "store" && e.what === "seeded") base = e.by || 0;
+  keepBucket(answer);
   for (const e of answer.events) {
     if (S) S.hear(e, (playing || !!job.act) && !(job.reset && !job.reset.first));
     let w = tell(e);
     if (job.reset && e.kind === "action") w = R.resetLine(e, job.reset.first);
     const slice = Math.floor(e.t / SLICE);
     bars.set(slice, (bars.get(slice) || 0) + 1);
-    if (w.tier) {
-      lines.unshift({ t: e.t, ...w });
-      linesTotal++;
-    }
+    if (w.tier) note(e.t, w);
     switch (e.kind) {
       case "action":
         if (!job.reset || job.reset.first) marks.push(e.t);
@@ -246,6 +266,22 @@ function take(answer, job = {}) {
   while (marks.length && marks[0] < t - WINDOW) marks.shift();
 }
 
+// note a line of the log at the time t of the session.
+function note(at, w) {
+  lines.unshift({ t: at, ...w });
+  linesTotal++;
+}
+
+// AGAIN is what a visitor can do after the page stopped.
+const AGAIN = "Reload to go on with what S3 holds, or Reset to start over.";
+
+// keepBucket keeps the changes of the answer in the tab's database. If storage fails, the page says so
+// once and goes on in memory.
+function keepBucket(answer) {
+  const why = keeper.keep(answer, storageVersion, base + answer.t);
+  if (why) note(answer.t, { tier: "story", text: why === "full" ? "The browser's storage for S3 is full: the page goes on in memory." : "The browser does not store S3: the page goes on in memory." });
+}
+
 // Playback.
 
 function setPlaying(on) {
@@ -272,7 +308,7 @@ function frame(ts) {
 function draw() {
   root.dataset.t = String(Math.floor(t));
   root.dataset.lines = String(linesTotal);
-  set($("clock"), R.clock(t));
+  set($("clock"), R.clock(base + t));
   drawField();
   drawLog();
   if (!state) return;
@@ -301,7 +337,7 @@ let logged = -1; // the lines that drawLog last drew
 function drawLog() {
   if (logged === linesTotal) return;
   logged = linesTotal;
-  const out = lines.map((l) => `<li class="${l.tier}"><span class="t">${R.clock(l.t)}</span><span class="text">${esc(l.text)}</span></li>`);
+  const out = lines.map((l) => `<li class="${l.tier}"><span class="t">${R.clock(base + l.t)}</span><span class="text">${esc(l.text)}</span></li>`);
   if (out.length === 0) out.push(`<li class="empty">Nothing yet.</li>`);
   html($("log"), out.join(""));
   set($("lines"), linesTotal > LINES ? `last ${LINES} of ${count(linesTotal)}` : "");
@@ -328,6 +364,7 @@ function wire() {
   });
   for (const b of document.querySelectorAll("#requests [data-target]")) b.addEventListener("click", () => send(b.dataset.target));
   $("play").addEventListener("click", () => setPlaying(!playing));
+  $("reset").addEventListener("click", () => reset());
   $("turbo").addEventListener("click", () => setTurbo(!turbo));
 }
 
@@ -440,6 +477,7 @@ function drawControls() {
   const ready = !!state && !halted;
   $("play").disabled = !ready;
   $("turbo").disabled = !ready;
+  $("reset").disabled = !engine || resetting;
   const waiting = acting || jobs.some((j) => j.act);
   for (const c of nodes) {
     const st = instanceState(c.name);
@@ -511,7 +549,7 @@ function act(name, a) {
 }
 
 // wallOffset of the wall clock of an instance from true time, in ms.
-const wallOffset = (st) => st.wall - state.t;
+const wallOffset = (st) => st.wall - state.t - base;
 
 // paused says whether the clocks of the instance stand still. The page pauses and starts both
 // together, so it takes either for both.
@@ -554,6 +592,7 @@ function drawS3() {
   }
   set($("s3-lease"), m && m.lease ? `${holderName(m.lease.holder)}, ${m.lease.duration / 1000} s` : "nobody");
   set($("s3-writes"), count(b.manifestWrites));
+  set($("s3-path"), `s4ql-sim/${keeper.name}/`);
   const total = b.commitCount || b.commits.length;
   root.dataset.commits = String(total);
   set($("commit-count"), total ? count(total) : "");
@@ -565,7 +604,7 @@ function drawS3() {
     const sql = (c.statements || []).map((s) => `<li><code>${esc(s.sql)}</code>` +
       ((s.args || []).length ? ` <span class="caps">args</span> ${esc(s.args.map((a) => JSON.stringify(a)).join(", "))}` : "") + `</li>`).join("");
     return `<li class="commit ${cls}">${barcodeSVG(c.name, "code")}` +
-      `<div class="meta"><span class="name">${R.short(c.name)}</span><span>${R.keysText(c.keys)}</span><span>${esc(R.instanceOf(c.process))}</span><span>${R.clock(c.at)}</span><span class="caps">${tag}</span></div>` +
+      `<div class="meta"><span class="name">${R.short(c.name)}</span><span>${R.keysText(c.keys)}</span><span>${esc(R.instanceOf(c.process))}</span><span>${R.clock(base + c.at)}</span><span class="caps">${tag}</span></div>` +
       (sql ? `<ul class="sql">${sql}</ul>` : "") + `</li>`;
   }).join("");
   if (!out) out = `<li class="empty">None yet.</li>`;
@@ -575,12 +614,88 @@ function drawS3() {
 
 // Start.
 
+// SETTINGS of the session: a starts alone, b stands by, and the client calls a.
+const SETTINGS = { workload: { callers: 0 }, client: { instance: "a" }, standby: true };
+
+// begin a session on the engine, on the tab's stored database if it has one. If the engine refuses
+// the database, the page drops it and begins on an empty one, with a line that says so.
+async function begin(e) {
+  const stored = keeper.load();
+  const settings = { seed: R.newSeed(), ...SETTINGS, prefix: keeper.name };
+  let answer, dropped = keeper.note === "damaged";
+  try {
+    answer = await e.start(stored ? { ...settings, bucket: stored } : settings);
+  } catch (err) {
+    // Only a refusal of the stored database drops it. Any other failure leaves it for a reload.
+    if (!stored || !String(err.message).startsWith("the bucket is refused")) throw err;
+    keeper.reset();
+    dropped = true;
+    answer = await e.start(settings);
+  }
+  storageVersion = answer.version;
+  base = 0;
+  take(answer);
+  if (dropped) note(answer.t, { tier: "story", text: "What the browser held of S3 could not be read, so S3 starts empty." });
+  else if (stored) note(answer.t, { tier: "story", text: `S3 still holds ${keeper.name}: ${count(stored.objects.filter((o) => !o.key.endsWith("/manifest.json")).length)} commit objects.` });
+  state = (await e.now(COMMITS)).state;
+}
+
+// reset empties the tab's database and starts a new session at time 0, paused, with the page as at
+// its start. It works while the page plays, is paused, or has stopped; an answer of the session
+// before that is still on its way is dropped.
+async function reset() {
+  if (resetting || !engine) return;
+  resetting = true;
+  gen++;
+  if (S && S.blip) S.blip();
+  setPlaying(false);
+  keeper.reset();
+  jobs.length = 0;
+  t = 0;
+  state = null;
+  halted = false;
+  debt = 0;
+  lastStep = null;
+  tell = R.teller();
+  lines.length = 0;
+  linesTotal = 0;
+  logged = -1;
+  for (const k of Object.keys(calls)) delete calls[k];
+  Object.assign(requests, { w: 0, r: 0, x: 0, status: "", failing: false });
+  bars.clear();
+  marks.length = 0;
+  names.clear();
+  for (const k of Object.keys(stopped)) delete stopped[k];
+  $("failure").hidden = true;
+  drawControls();
+  try {
+    try {
+      await begin(engine);
+    } catch {
+      // The Worker may have failed: a new one.
+      engine.terminate();
+      engine = await Engine.start();
+      await begin(engine);
+    }
+  } catch (e) {
+    resetting = false;
+    halt("The engine did not start.", `${e.message}. Reload to try again.`);
+    return;
+  }
+  resetting = false;
+  root.dataset.engine = "ready";
+  setPlaying(false);
+  draw();
+}
+
 // start the page: load run.js, connect the page, and start the engine. An error on the way ends in
 // the failure box.
 async function start() {
   drawMark();
   const sound = import("./sound.js" + version).catch(() => null);
   R = await import("./run.js" + version);
+  B = await import("./bucket.js" + version);
+  keeper = new B.Keeper();
   tell = R.teller();
   S = await sound;
   if (S) S.wire($("sound"));
@@ -598,12 +713,11 @@ async function start() {
   }
   set($("status"), "Loading the engine, about 3.5 MB.");
   try {
-    const { Engine } = await import("./engine/simulator.js" + version);
+    ({ Engine } = await import("./engine/simulator.js" + version));
     const e = await Engine.start();
-    const answer = await e.start({ seed: R.newSeed(), workload: { callers: 0 }, client: { instance: "a" }, standby: true });
-    take(answer);
-    state = (await e.now(COMMITS)).state;
+    await begin(e);
     engine = e;
+    if (!keeper.stored) note(t, { tier: "story", text: "The browser does not store S3 for this tab: a reload starts over." });
   } catch (e) {
     halt("The engine did not load.", `${e.message}. Reload to try again.`);
     return;
