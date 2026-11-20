@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"iter"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -648,6 +649,49 @@ func TestBuild(t *testing.T) {
 			_, err = s.run(t.Context())
 			is.NotError(t, err, src)
 			is.Equal(t, "[table t insert t null,2,null]", fmt.Sprint(f.calls), src)
+		}
+	})
+
+	t.Run("should give the zero value of its type to a column that takes NULL and that the list leaves out, with the planted bug zeroLeftOut", func(t *testing.T) {
+		text := func(row []*s4qlpb.Value) string {
+			var values []string
+			for _, v := range row {
+				switch {
+				case v.HasNull():
+					values = append(values, "null")
+				case v.HasReal():
+					values = append(values, fmt.Sprint("real ", v.GetReal()))
+				case v.HasText():
+					values = append(values, strconv.Quote(v.GetText()))
+				case v.HasBlob():
+					values = append(values, fmt.Sprintf("x'%x' nil %v", v.GetBlob(), v.GetBlob() == nil))
+				default:
+					values = append(values, fmt.Sprint(v.GetInteger()))
+				}
+			}
+			return strings.Join(values, ",")
+		}
+		for typ, zero := range map[s4qlpb.Type]string{
+			s4qlpb.Type_TYPE_INT: "0", s4qlpb.Type_TYPE_INTEGER: "0", s4qlpb.Type_TYPE_REAL: "real 0", s4qlpb.Type_TYPE_TEXT: `""`, s4qlpb.Type_TYPE_BLOB: "x'' nil false",
+		} {
+			// A NULL that the insert gives stays NULL, and so does a column without a list.
+			for src, want := range map[string]string{
+				"insert into t (k) values (2)":          zero + ",2," + zero,
+				"insert into t (k, c) values (2, null)": zero + ",2,null",
+				"insert into t values (null, 2, null)":  "null,2,null",
+			} {
+				f := newFake().with("t", []string{"a", "k", "c"})
+				ct := f.tables["t"].ct
+				ct.SetPrimaryKey([]uint32{1})
+				for _, position := range []int{0, 2} {
+					ct.GetColumns()[position].SetNullable(true)
+					ct.GetColumns()[position].SetType(typ)
+				}
+				s, err := buildSink(t.Context(), fakeTx{f}, plan(src), nil, bugs{zeroLeftOut: true}, 1_000_000_000)
+				is.NotError(t, err, src)
+				is.NotError(t, s.check(), src)
+				is.Equal(t, want, text(s.(*insert).src.data[0]), src)
+			}
 		}
 	})
 

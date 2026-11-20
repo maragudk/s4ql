@@ -481,6 +481,15 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 		if err != nil {
 			return nil, err
 		}
+		if b.zeroLeftOut && p.Columns != nil {
+			// The planted bug: a column that takes NULL and that the list leaves out gets the zero
+			// value of its type.
+			for position, c := range t.GetColumns() {
+				if !named[position] && c.GetNullable() {
+					src.data[0][position] = zeroOf(c.GetType())
+				}
+			}
+		}
 		for _, row := range src.data {
 			for _, v := range row {
 				if err := checkLength(v, limit); err != nil {

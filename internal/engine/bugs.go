@@ -1,5 +1,7 @@
 package engine
 
+import "maragu.dev/s4ql/internal/s4qlpb"
+
 // bugs that the tests of this package plant in it, to show that their checks find them. Each field
 // switches on one wrong decision, where the right one is made, and the comment there says "the
 // planted bug".
@@ -39,4 +41,21 @@ type bugs struct {
 	// the order of the list, the first value to the first column, and not to the columns that the
 	// list names.
 	listOrder bool
+	// zeroLeftOut makes an insert with a list of columns give a column that takes NULL and that the
+	// list leaves out the zero value of its type, 0, 0.0, the empty text, or the empty blob, in place
+	// of NULL.
+	zeroLeftOut bool
+}
+
+// zeroOf the type t: the value that the planted bug zeroLeftOut gives.
+func zeroOf(t s4qlpb.Type) *s4qlpb.Value {
+	switch t {
+	case s4qlpb.Type_TYPE_REAL:
+		return s4qlpb.Value_builder{Real: new(0.0)}.Build()
+	case s4qlpb.Type_TYPE_TEXT:
+		return s4qlpb.Value_builder{Text: new("")}.Build()
+	case s4qlpb.Type_TYPE_BLOB:
+		return s4qlpb.Value_builder{Blob: []byte{}}.Build()
+	}
+	return s4qlpb.Value_builder{Integer: new(int64(0))}.Build()
 }

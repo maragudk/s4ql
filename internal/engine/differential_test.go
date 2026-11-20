@@ -1528,8 +1528,9 @@ func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
 }
 
 // typesSetUp is the database that [FuzzTypes] runs on, with names in other cases than the inserts
-// use: for each of the five types a table whose one column, the key, is of the type, and a table
-// whose first column is of the type and whose second, the key, is an INT.
+// use: for each of the five types a table whose one column, the key, is of the type, a table whose
+// first column is of the type and whose second, the key, is an INT, and a table of the same two
+// columns whose first takes NULL.
 var typesSetUp = []string{
 	"create table T_int (v int primary key) strict, without rowid",
 	"create table t_INTEGER (v integer primary key) strict, without rowid",
@@ -1541,21 +1542,33 @@ var typesSetUp = []string{
 	"create table t_real_k (V real not null, k int primary key) strict, without rowid",
 	"create table t_text_k (v text not null, k int primary key) without rowid, strict",
 	"create table t_blob_k (v BLOB not null, k int primary key) strict, without rowid",
+	"create table T_int_n (v int, k int primary key) strict, without rowid",
+	"create table t_INTEGER_n (v integer, K int primary key) strict, without rowid",
+	"create table t_real_n (V real, k int primary key) strict, without rowid",
+	"create table t_text_n (v text, k int primary key) without rowid, strict",
+	"create table t_blob_n (v BLOB, k int primary key) strict, without rowid",
 }
 
 // typesTables are the names of the tables of [typesSetUp], as the inserts of [FuzzTypes] name them.
-// A name that ends in _k is of a table of two columns.
-var typesTables = []string{"t_int", "t_integer", "t_real", "t_text", "t_blob", "t_int_k", "t_integer_k", "t_real_k", "t_text_k", "t_blob_k"}
+// A name that ends in _k or _n is of a table of two columns, and one that ends in _n of a table whose
+// first column takes NULL.
+var typesTables = []string{
+	"t_int", "t_integer", "t_real", "t_text", "t_blob", "t_int_k", "t_integer_k", "t_real_k", "t_text_k", "t_blob_k",
+	"t_int_n", "t_integer_n", "t_real_n", "t_text_n", "t_blob_n",
+}
 
 // FuzzTypes gives the engine, on a database in memory, the bytes of its input as the value of an
 // insert into a table of each of the five types, in the form that its input chooses: as a text
 // argument, a blob argument, a string literal, a blob literal, the bits of a real argument or of an
-// integer argument, or SQL text in the place of the value. The value is the key of a table of one
-// column, and the first column of a table of two, whose key the insert sets to 1 and names first in
-// its list. Each insert runs twice, so that the second meets the key of the first, and a query reads
+// integer argument, or SQL text in the place of the value; or, in place of the bytes, NULL, by the
+// length of the bytes as the literal, as a nil argument, or as the first column left out of the list
+// of a table of two. The value is the key of a table of one column, and the first column of a table
+// of two, which takes NULL in one of them, whose key the insert sets to 1 and names first in its
+// list. Each insert runs twice, so that the second meets the key of the first, and a query reads
 // the table. It compares each answer with SQLite's,
 // as [TestDifferential] does, by s4ql's rules where they differ from SQLite: a value of another type
-// than its column, NaN, an infinity, and text that holds NUL or is not valid UTF-8 are refused. Then
+// than its column, NaN, an infinity, and text that holds NUL or is not valid UTF-8 are refused, and
+// NULL is refused by SQLite's NOT NULL in the key and in a column that does not take it. Then
 // it compares the tables. [FuzzTypes_core] runs the same on the storage core. The database in memory
 // has no length limit, so the input of the limit that [FuzzTypes_core] reads changes nothing here.
 func FuzzTypes(f *testing.F) {
@@ -1577,16 +1590,20 @@ const (
 	formBlobLiteral
 	formRealArgument
 	formIntegerArgument
+	formNull
 	formSQL
 	forms
 )
 
 // typesCall is the insert of the bytes data into the table in the form, which [FuzzTypes] runs.
 // The form is form % [forms], and an odd form / [forms] writes the hex digits of a blob literal and its
-// x in upper case.
+// x in upper case. The form [formNull] gives NULL by the length of data: as a nil argument for a
+// length of 1 modulo 3, by leaving the first column out of the list of a table of two for 2, and
+// otherwise as the literal.
 func typesCall(table string, data []byte, form uint8) stmttest.Call {
 	insert, end := "insert into "+table+" (v) values (", ")"
-	if strings.HasSuffix(table, "_k") {
+	two := strings.HasSuffix(table, "_k") || strings.HasSuffix(table, "_n")
+	if two {
 		insert = "insert into " + table + " (k, v) values (1, "
 	}
 	bits := func() uint64 {
@@ -1614,6 +1631,14 @@ func typesCall(table string, data []byte, form uint8) stmttest.Call {
 		return stmttest.Call{Src: insert + "?" + end, Args: []any{math.Float64frombits(bits())}, Supported: true}
 	case formIntegerArgument:
 		return stmttest.Call{Src: insert + "?" + end, Args: []any{int64(bits())}, Supported: true}
+	case formNull:
+		switch {
+		case len(data)%3 == 1:
+			return stmttest.Call{Src: insert + "?" + end, Args: []any{nil}, Supported: true}
+		case len(data)%3 == 2 && two:
+			return stmttest.Call{Src: "insert into " + table + " (k) values (1)", Supported: true}
+		}
+		return stmttest.Call{Src: insert + "null" + end, Supported: true}
 	default:
 		return stmttest.Call{Src: insert + string(data) + end}
 	}
