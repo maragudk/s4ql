@@ -36,6 +36,7 @@ func TestNewPlan(t *testing.T) {
 		{src: "insert into t1 values (1, 'a', ?)", want: "insert into t1\n  values (1, 'a', ?1)\n"},
 		{src: `insert into t1 (v3, "V1", v2) values (?, 2.5, ?)`, want: "insert into t1 (v3, \"V1\", v2)\n  values (?1, 2.5, ?2)\n"},
 		{src: `select v2, "V1", v2 from t1`, want: "query\n  project v2, \"V1\", v2\n    scan t1\n"},
+		{src: "select v from t", want: "query\n  project v\n    scan t\n"},
 		{src: "create table t1 (v1 int, v2 text primary key, v3 real not null, v4 blob) strict, without rowid", want: "create table t1 (v1 INT NULL, v2 TEXT, v3 REAL, v4 BLOB NULL, primary key (v2))\n"},
 		{src: "insert into t1 values (NULL, ?, null)", want: "insert into t1\n  values (null, ?1, null)\n"},
 	}
