@@ -171,6 +171,18 @@ func checkChange(c *s4qlpb.Change) error {
 		}
 		return nil
 
+	case s4qlpb.Change_CreateIndex_case:
+		if err := checkCreateIndex(c.GetCreateIndex()); err != nil {
+			return in(err, "create_index")
+		}
+		return nil
+
+	case s4qlpb.Change_DropIndex_case:
+		if err := checkIdentifier(c.GetDropIndex().GetIndex()); err != nil {
+			return in(err, "drop_index.index")
+		}
+		return nil
+
 	default:
 		// checkKnown found no field it does not know, so the change holds nothing.
 		return refuse(ErrMalformed, "has no kind")
@@ -220,6 +232,36 @@ func checkCreateTable(ct *s4qlpb.CreateTable) error {
 		if columns[position].GetNullable() {
 			return inElement(refuse(ErrMalformed, "is column %v, which takes NULL", position), "primary_key", i)
 		}
+	}
+	return nil
+}
+
+// checkCreateIndex has a name, the name of a table, which is another name, as SQLite compares names,
+// since a table and an index share their names, and at least one column, each with a position, and
+// none twice.
+func checkCreateIndex(ci *s4qlpb.CreateIndex) error {
+	if err := checkIdentifier(ci.GetIndex()); err != nil {
+		return in(err, "index")
+	}
+	if err := checkIdentifier(ci.GetTable()); err != nil {
+		return in(err, "table")
+	}
+	if asciiLower(ci.GetIndex()) == asciiLower(ci.GetTable()) {
+		return in(refuse(ErrMalformed, "%q is the name of its table", ci.GetIndex()), "index")
+	}
+	columns := ci.GetColumns()
+	if len(columns) == 0 {
+		return refuse(ErrMalformed, "has no columns")
+	}
+	seen := make(map[uint32]bool, len(columns))
+	for i, column := range columns {
+		if !column.HasColumn() {
+			return inElement(refuse(ErrMalformed, "has no column"), "columns", i)
+		}
+		if seen[column.GetColumn()] {
+			return inElement(refuse(ErrMalformed, "lists column %v twice", column.GetColumn()), "columns", i)
+		}
+		seen[column.GetColumn()] = true
 	}
 	return nil
 }
@@ -349,7 +391,7 @@ func checkValue(v *s4qlpb.Value) error {
 	}
 }
 
-// checkIdentifier, the name of a table or a column: not empty, valid UTF-8, and without the
+// checkIdentifier, the name of a table, a column, or an index: not empty, valid UTF-8, and without the
 // character NUL, at which SQLite's C interface ends a name.
 func checkIdentifier(name string) error {
 	switch {

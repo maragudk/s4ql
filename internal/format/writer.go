@@ -131,6 +131,16 @@ func (w *CommitWriter) DropTable(table string) error {
 	return w.change(s4qlpb.Change_builder{DropTable: s4qlpb.DropTable_builder{Table: &table}.Build()}.Build())
 }
 
+// CreateIndex as the next change.
+func (w *CommitWriter) CreateIndex(ci *s4qlpb.CreateIndex) error {
+	return w.change(s4qlpb.Change_builder{CreateIndex: ci}.Build())
+}
+
+// DropIndex as the next change.
+func (w *CommitWriter) DropIndex(index string) error {
+	return w.change(s4qlpb.Change_builder{DropIndex: s4qlpb.DropIndex_builder{Index: &index}.Build()}.Build())
+}
+
 // change that is not a batch: write the batch before it, then the change.
 func (w *CommitWriter) change(c *s4qlpb.Change) error {
 	if err := w.startChange(); err != nil {

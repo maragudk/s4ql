@@ -47,6 +47,16 @@ type Tx struct {
 	notes       *spool
 	annotations int
 
+	// droppedIndexes are the names of the indexes that existed when the transaction began and that
+	// it dropped, in the order in which it dropped them, and createdIndexes the folded names of the
+	// indexes that it created and that exist. An index that went with its table when the
+	// transaction dropped the table is in neither.
+	droppedIndexes []string
+	createdIndexes map[string]bool
+
+	// read counts the rows that the transaction has read from the cache for its caller.
+	read int64
+
 	// saved is the state at the savepoint that is open, or nil.
 	saved *savepoint
 
@@ -83,6 +93,9 @@ type savepoint struct {
 	// tables are copies of the entries of [Tx.order], in their order.
 	tables      []txTable
 	annotations int
+	// droppedIndexes and createdIndexes are copies of those of the transaction.
+	droppedIndexes []string
+	createdIndexes map[string]bool
 }
 
 // txTable is what a transaction has done to the table of one name, which is all that it needs to
@@ -293,6 +306,7 @@ func (tx *Tx) Savepoint(ctx context.Context) error {
 		return tx.fail(ctx, operation, err)
 	}
 	sp := &savepoint{annotations: tx.annotations}
+	tx.saveIndexes(sp)
 	for _, e := range tx.order {
 		sp.tables = append(sp.tables, *e)
 	}
@@ -354,6 +368,7 @@ func (tx *Tx) RollbackTo(ctx context.Context) error {
 		e := sp.tables[i]
 		tx.tables[e.folded], tx.order[i] = &e, &e
 	}
+	tx.restoreIndexes(sp)
 	return nil
 }
 
@@ -436,9 +451,9 @@ func checkCreateTable(ct *s4qlpb.CreateTable, commitTime time.Time) error {
 }
 
 // CreateTable from its name, its columns, and its primary key. It fails with an error that wraps
-// [ErrTableExists] if a table has the name, compared as SQLite compares names, with [ErrReservedName]
-// for a name that starts with "s4ql_" or "sqlite_", and with [ErrInvalid] for a table that the
-// database cannot hold.
+// [ErrTableExists] if a table has the name, and [ErrIndexExists] if an index has it, compared as
+// SQLite compares names, with [ErrReservedName] for a name that starts with "s4ql_" or "sqlite_",
+// and with [ErrInvalid] for a table that the database cannot hold.
 func (tx *Tx) CreateTable(ctx context.Context, ct *s4qlpb.CreateTable) error {
 	const operation = "create table"
 	if err := tx.check(ctx, operation); err != nil {
@@ -448,12 +463,8 @@ func (tx *Tx) CreateTable(ctx context.Context, ct *s4qlpb.CreateTable) error {
 	if err := checkCreateTable(ct, tx.d.host.Wall()); err != nil {
 		return err
 	}
-	existing, err := tx.c.lookUp(ct.GetTable())
-	if err != nil {
-		return tx.fail(ctx, operation, err)
-	}
-	if existing != nil {
-		return fmt.Errorf("%w: %q", ErrTableExists, existing.name)
+	if err := tx.unused(ctx, operation, ct.GetTable()); err != nil {
+		return err
 	}
 	t := newTable(ct)
 	if err := tx.c.create(t); err != nil {
@@ -469,8 +480,8 @@ func (tx *Tx) CreateTable(ctx context.Context, ct *s4qlpb.CreateTable) error {
 	return nil
 }
 
-// DropTable with the given name, and all its rows. It fails with an error that wraps [ErrNoTable]
-// if there is none.
+// DropTable with the given name, with all its rows and all its indexes. It fails with an error that
+// wraps [ErrNoTable] if there is none.
 func (tx *Tx) DropTable(ctx context.Context, name string) error {
 	const operation = "drop table"
 	if err := tx.check(ctx, operation); err != nil {
@@ -482,6 +493,7 @@ func (tx *Tx) DropTable(ctx context.Context, name string) error {
 		return err
 	}
 	e := tx.changed(t.name)
+	tx.forgetIndexes(t)
 	if err := tx.c.drop(t); err != nil {
 		return tx.fail(ctx, operation, err)
 	}
@@ -941,6 +953,9 @@ func (tx *Tx) Get(ctx context.Context, name string, key []*s4qlpb.Value) ([]*s4q
 		return nil, err
 	}
 	row, err := tx.c.get(t, key)
+	if row != nil {
+		tx.read++
+	}
 	return row, tx.fail(ctx, operation, err)
 }
 
@@ -955,38 +970,9 @@ func (tx *Tx) Scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Value, 
 // ScanRange is [Tx.Scan] of the rows whose primary key is within the bounds lower and upper, which
 // it checks as [ReadTx.ScanRange] does.
 func (tx *Tx) ScanRange(ctx context.Context, name string, lower, upper Bound) iter.Seq2[[]*s4qlpb.Value, error] {
-	const operation = "scan"
-	return func(yield func([]*s4qlpb.Value, error) bool) {
-		if err := tx.check(ctx, operation); err != nil {
-			yield(nil, err)
-			return
-		}
-		defer tx.leave(ctx)
-		t, err := tx.table(ctx, operation, name)
-		if err != nil {
-			yield(nil, err)
-			return
-		}
-		if err := t.checkBounds(tx.c.limit, lower, upper); err != nil {
-			yield(nil, err)
-			return
-		}
-		for row, err := range tx.c.scan(t, lower, upper) {
-			if err != nil {
-				yield(nil, tx.fail(ctx, operation, err))
-				return
-			}
-			// A scan is a call that the caller can keep running for long, so it looks at each row
-			// whether the lease task has ended the transaction.
-			if tx.marked.Load() {
-				yield(nil, tx.Lost())
-				return
-			}
-			if !yield(row, nil) {
-				return
-			}
-		}
-	}
+	return tx.scan(ctx, name, func(t *table) (*index, IndexScan, error) {
+		return nil, IndexScan{Lower: lower, Upper: upper}, t.checkBounds(tx.c.limit, lower, upper)
+	})
 }
 
 // Rollback the transaction: nothing of it is kept. It returns nil on a transaction that the
@@ -1044,20 +1030,35 @@ func (tx *Tx) end(ctx context.Context) {
 type spooled struct {
 	spool *spool
 	name  format.Name
-	// changes is the number of tables created and dropped and of rows upserted and deleted.
+	// changes is the number of tables and indexes created and dropped and of rows upserted and
+	// deleted.
 	changes int
 }
 
 // spoolCommit writes the commit object of the transaction to a spool file: the net effect of what
 // the transaction did, and then its annotations.
 //
-// For each table name that the transaction changed, in the order in which it first changed them,
-// the net effect is: the drop of the table that was there when the transaction began, if the
+// The net effect is, first, the drops of the indexes that were there when the transaction began
+// and that it dropped, in the order in which it dropped them. An index that went with its table,
+// which the transaction dropped, is not among them: the drop of the table drops it.
+//
+// Then, for each table name that the transaction changed, in the order in which it first changed
+// them, the net effect is: the drop of the table that was there when the transaction began, if the
 // transaction dropped it; then the table that is there now and all its rows, if the transaction
 // created it; and otherwise the rows that the transaction changed and that are there now, and the
 // keys of the rows that it changed, that were there when it began, and that are gone. So a primary
 // key appears at most once for each table, a table that is created and dropped leaves nothing, and
 // a table that is dropped and created again is a drop, a create, and its rows.
+//
+// Last come the indexes that the transaction created and that are there now, in the order in which
+// it created them, which is the order that they have among the indexes of their table on every
+// instance. An index that is created and dropped leaves nothing, and one that is dropped and
+// created again is a drop and a create, and is then the last of its table's.
+//
+// Applied in this order to the state before the transaction, every change finds what it needs: a
+// dropped index is there, because nothing before it has dropped its table; a name is free for a
+// table, because the index or the table that had it was dropped before; and the table and the
+// columns of a created index are there, with all their rows, so that the index is built once.
 func (tx *Tx) spoolCommit(ctx context.Context) (_ *spooled, err error) {
 	d := tx.d
 	sp, err := d.newSpool("commit")
@@ -1086,6 +1087,13 @@ func (tx *Tx) spoolCommit(ctx context.Context) (_ *spooled, err error) {
 		return nil, fail(err)
 	}
 	out := &spooled{spool: sp}
+
+	for _, name := range tx.droppedIndexes {
+		if err := w.DropIndex(name); err != nil {
+			return nil, fail(err)
+		}
+		out.changes++
+	}
 
 	for _, e := range tx.order {
 		if e.dropped != "" {
@@ -1126,6 +1134,12 @@ func (tx *Tx) spoolCommit(ctx context.Context) (_ *spooled, err error) {
 			out.changes += n
 		}
 	}
+
+	created, err := tx.spoolCreatedIndexes(w)
+	if err != nil {
+		return nil, fail(err)
+	}
+	out.changes += created
 
 	if tx.notes != nil {
 		if err := tx.notes.annotations(w.Annotate); err != nil {

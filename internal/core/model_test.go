@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sqlite"
@@ -26,6 +27,8 @@ type mtable struct {
 	create *s4qlpb.CreateTable
 	// rows by the text of their primary key.
 	rows map[string][]*s4qlpb.Value
+	// indexes of the table, in the order in which they were created.
+	indexes []*s4qlpb.CreateIndex
 }
 
 // key of a row of the table: the values of its primary-key columns, in key order.
@@ -45,6 +48,56 @@ func (t *mtable) sorted() [][]*s4qlpb.Value {
 	}
 	slices.SortFunc(rows, func(a, b []*s4qlpb.Value) int { return compareKeys(t.key(a), t.key(b)) })
 	return rows
+}
+
+// sortedBy gives the rows of the table in the order of the key of its index ci, or in the reverse
+// of it: the columns of the index, each in its direction, and then the primary-key columns that
+// the index does not hold, with NULL before every other value of a column.
+func (t *mtable) sortedBy(ci *s4qlpb.CreateIndex, backward bool) [][]*s4qlpb.Value {
+	type column struct {
+		position   uint32
+		descending bool
+	}
+	var key []column
+	for _, c := range ci.GetColumns() {
+		key = append(key, column{c.GetColumn(), c.GetDescending()})
+	}
+	for _, position := range t.create.GetPrimaryKey() {
+		if !slices.ContainsFunc(key, func(c column) bool { return c.position == position }) {
+			key = append(key, column{position: position})
+		}
+	}
+	rows := make([][]*s4qlpb.Value, 0, len(t.rows))
+	for _, row := range t.rows {
+		rows = append(rows, row)
+	}
+	slices.SortFunc(rows, func(a, b []*s4qlpb.Value) int {
+		for _, c := range key {
+			d := compareValues(a[c.position], b[c.position])
+			if c.descending != backward {
+				d = -d
+			}
+			if d != 0 {
+				return d
+			}
+		}
+		return 0
+	})
+	return rows
+}
+
+// compareValues of one column as SQLite orders them: NULL before every other value, and the others
+// as [compareKeys] compares them.
+func compareValues(a, b *s4qlpb.Value) int {
+	switch an, bn := a.WhichKind() == s4qlpb.Value_Null_case, b.WhichKind() == s4qlpb.Value_Null_case; {
+	case an && bn:
+		return 0
+	case an:
+		return -1
+	case bn:
+		return 1
+	}
+	return compareKeys([]*s4qlpb.Value{a}, []*s4qlpb.Value{b})
 }
 
 // compareKeys as SQLite orders the keys of a table, whose columns each hold values of one kind:
@@ -89,6 +142,19 @@ type mstate struct {
 	tables map[string]*mtable
 }
 
+// index of the state with the given name, compared as SQLite compares names: its table and its
+// place among the indexes of its table, or nil.
+func (s *mstate) index(name string) (*mtable, int) {
+	for _, t := range s.tables {
+		for i, ci := range t.indexes {
+			if foldName(ci.GetIndex()) == foldName(name) {
+				return t, i
+			}
+		}
+	}
+	return nil, 0
+}
+
 func newState() *mstate {
 	return &mstate{tables: map[string]*mtable{}}
 }
@@ -111,7 +177,7 @@ func (s *mstate) clone() *mstate {
 		for key, row := range t.rows {
 			rows[key] = row
 		}
-		c.tables[name] = &mtable{create: t.create, rows: rows}
+		c.tables[name] = &mtable{create: t.create, rows: rows, indexes: slices.Clone(t.indexes)}
 	}
 	return c
 }
@@ -124,7 +190,7 @@ func (s *mstate) dump() map[string][]string {
 		for _, row := range t.sorted() {
 			rows = append(rows, text(row))
 		}
-		state[describe(t.create)] = rows
+		state[describe(t.create)+describeIndexes(t.indexes)] = rows
 	}
 	return state
 }
@@ -147,7 +213,10 @@ type mcommit struct {
 // apply the changes of a commit object to the state, strictly: what a net effect never holds is an
 // error. A net effect names a table in at most one drop and at most one create, the drop first; it
 // lists a primary key of a table at most once; it deletes only rows that are there; and it changes
-// no table that it drops and does not create again.
+// no table that it drops and does not create again. It drops indexes before it changes a table,
+// and only indexes that are there; it creates indexes after everything else, on tables and columns
+// that are there, under names that no table and no index has; and it creates no table under the
+// name of an index.
 func (s *mstate) apply(name format.Name, data []byte) (*mcommit, error) {
 	parent, lines, err := changes(name, data)
 	if err != nil {
@@ -168,6 +237,10 @@ func (s *mstate) apply(name format.Name, data []byte) (*mcommit, error) {
 		return tables[folded]
 	}
 
+	// changedTable is whether the commit object has created or dropped a table or changed a row so
+	// far, and createdIndex whether it has created an index.
+	var changedTable, createdIndex bool
+
 	r := format.NewCommitReader(strings.NewReader(string(data)), name)
 	for {
 		change, annotation, err := r.Next()
@@ -175,7 +248,41 @@ func (s *mstate) apply(name format.Name, data []byte) (*mcommit, error) {
 			// The end: changes read the whole commit object before.
 			break
 		}
+		if annotation == nil && !change.HasCreateIndex() && createdIndex {
+			return nil, errors.New("it changes something after it created an index")
+		}
+		if annotation == nil && !change.HasCreateIndex() && !change.HasDropIndex() {
+			changedTable = true
+		}
 		switch {
+		case annotation == nil && change.HasDropIndex():
+			index := change.GetDropIndex().GetIndex()
+			if changedTable {
+				return nil, fmt.Errorf("it drops the index %q after it changed a table", index)
+			}
+			t, i := s.index(index)
+			if t == nil {
+				return nil, fmt.Errorf("it drops the index %q, which is not there", index)
+			}
+			t.indexes = slices.Delete(t.indexes, i, i+1)
+
+		case annotation == nil && change.HasCreateIndex():
+			ci := change.GetCreateIndex()
+			createdIndex = true
+			t := s.tables[foldName(ci.GetTable())]
+			if t == nil {
+				return nil, fmt.Errorf("it creates the index %q on the table %q, which is not there", ci.GetIndex(), ci.GetTable())
+			}
+			if other, _ := s.index(ci.GetIndex()); other != nil || s.tables[foldName(ci.GetIndex())] != nil {
+				return nil, fmt.Errorf("it creates the index %q, and a table or an index has the name", ci.GetIndex())
+			}
+			for _, c := range ci.GetColumns() {
+				if int(c.GetColumn()) >= len(t.create.GetColumns()) {
+					return nil, fmt.Errorf("it creates the index %q on column %v of the table %q", ci.GetIndex(), c.GetColumn(), ci.GetTable())
+				}
+			}
+			t.indexes = append(t.indexes, ci)
+
 		case annotation != nil:
 			var id uint64
 			if _, err := fmt.Sscanf(annotation.GetStatement().GetSql(), "transaction %d", &id); err == nil {
@@ -203,6 +310,9 @@ func (s *mstate) apply(name format.Name, data []byte) (*mcommit, error) {
 			seen.created = true
 			if s.tables[foldName(ct.GetTable())] != nil {
 				return nil, fmt.Errorf("it creates the table %q, which is there", ct.GetTable())
+			}
+			if other, _ := s.index(ct.GetTable()); other != nil {
+				return nil, fmt.Errorf("it creates the table %q, and an index has the name", ct.GetTable())
 			}
 			s.tables[foldName(ct.GetTable())] = &mtable{create: ct, rows: map[string][]*s4qlpb.Value{}}
 
@@ -288,6 +398,10 @@ type mtx struct {
 	// order of the folded names of the tables that the transaction changed, by first change.
 	order   []string
 	changed map[string]*mchanged
+	// droppedIndexes are the names of the indexes that were there when the transaction began and
+	// that it dropped by their names, in that order, and createdIndexes the folded names of the
+	// indexes that it created and that are there, in the order in which it created them.
+	droppedIndexes, createdIndexes []string
 }
 
 type mchanged struct {
@@ -307,7 +421,8 @@ func newTx(before *mstate) *mtx {
 // clone the transaction, as a savepoint keeps it. The state before is shared, because nothing
 // changes it.
 func (m *mtx) clone() *mtx {
-	c := &mtx{before: m.before, now: m.now.clone(), order: slices.Clone(m.order), changed: make(map[string]*mchanged, len(m.changed))}
+	c := &mtx{before: m.before, now: m.now.clone(), order: slices.Clone(m.order), changed: make(map[string]*mchanged, len(m.changed)),
+		droppedIndexes: slices.Clone(m.droppedIndexes), createdIndexes: slices.Clone(m.createdIndexes)}
 	for folded, ch := range m.changed {
 		c.changed[folded] = &mchanged{dropped: ch.dropped, created: ch.created, touched: maps.Clone(ch.touched)}
 	}
@@ -325,9 +440,48 @@ func (m *mtx) change(name string) *mchanged {
 	return c
 }
 
-// create the table, and report whether none had the name.
+// taken is the error of creating a table or an index with the given name, which a table and an
+// index share: one that says that a table has it, or that an index has it, or nil.
+func (m *mtx) taken(name string) error {
+	if m.now.tables[foldName(name)] != nil {
+		return core.ErrTableExists
+	}
+	if t, _ := m.now.index(name); t != nil {
+		return core.ErrIndexExists
+	}
+	return nil
+}
+
+// createIndex on a table that is there, and return nil, or the error of [mtx.taken] if a table or
+// an index has its name.
+func (m *mtx) createIndex(ci *s4qlpb.CreateIndex) error {
+	if err := m.taken(ci.GetIndex()); err != nil {
+		return err
+	}
+	t := m.now.tables[foldName(ci.GetTable())]
+	t.indexes = append(t.indexes, ci)
+	m.createdIndexes = append(m.createdIndexes, foldName(ci.GetIndex()))
+	return nil
+}
+
+// dropIndex with the given name, and report whether there was one.
+func (m *mtx) dropIndex(name string) bool {
+	t, i := m.now.index(name)
+	if t == nil {
+		return false
+	}
+	if at := slices.Index(m.createdIndexes, foldName(name)); at >= 0 {
+		m.createdIndexes = slices.Delete(m.createdIndexes, at, at+1)
+	} else {
+		m.droppedIndexes = append(m.droppedIndexes, t.indexes[i].GetIndex())
+	}
+	t.indexes = slices.Delete(t.indexes, i, i+1)
+	return true
+}
+
+// create the table, and report whether no table and no index had the name.
 func (m *mtx) create(ct *s4qlpb.CreateTable) bool {
-	if m.now.tables[foldName(ct.GetTable())] != nil {
+	if m.taken(ct.GetTable()) != nil {
 		return false
 	}
 	m.now.tables[foldName(ct.GetTable())] = &mtable{create: ct, rows: map[string][]*s4qlpb.Value{}}
@@ -348,6 +502,10 @@ func (m *mtx) drop(name string) bool {
 		c.dropped = t.create.GetTable()
 	}
 	clear(c.touched)
+	// The indexes of the table go with it.
+	for _, ci := range t.indexes {
+		m.createdIndexes = slices.DeleteFunc(m.createdIndexes, func(folded string) bool { return folded == foldName(ci.GetIndex()) })
+	}
 	delete(m.now.tables, foldName(name))
 	return true
 }
@@ -386,6 +544,9 @@ func (m *mtx) remove(name string, key []*s4qlpb.Value) (table, found bool) {
 // without the annotations.
 func (m *mtx) effect() []string {
 	var lines []string
+	for _, name := range m.droppedIndexes {
+		lines = append(lines, "drop index "+name)
+	}
 	for _, folded := range m.order {
 		c := m.changed[folded]
 		if c.dropped != "" {
@@ -419,6 +580,10 @@ func (m *mtx) effect() []string {
 				lines = append(lines, fmt.Sprint("delete ", t.create.GetTable(), " ", text(key)))
 			}
 		}
+	}
+	for _, folded := range m.createdIndexes {
+		t, i := m.now.index(folded)
+		lines = append(lines, "create index "+describeIndex(t.indexes[i]))
 	}
 	return lines
 }
@@ -574,7 +739,9 @@ func commitKey(prefix string, name format.Name) string {
 }
 
 // cacheDump reads the cache at path with a connection of its own and SQL of its own: its recorded
-// position, and its tables and rows as [dump] gives them.
+// position, and its tables, with their indexes, and rows as [dump] gives them. It fails if SQLite's
+// integrity check finds a fault in the cache, such as an index that does not hold what its table
+// holds.
 func cacheDump(path string) (position format.Name, state map[string][]string, err error) {
 	c, err := sqlite.Open(path)
 	if err != nil {
@@ -608,6 +775,18 @@ func cacheDump(path string) (position format.Name, state map[string][]string, er
 	}
 	if position, err = format.ParseName(head); err != nil {
 		return format.Name{}, nil, err
+	}
+
+	var faults []string
+	if err := query("pragma integrity_check", func(s *sqlite.Stmt) {
+		if fault := s.ColumnText(0); fault != "ok" {
+			faults = append(faults, fault)
+		}
+	}); err != nil {
+		return format.Name{}, nil, err
+	}
+	if len(faults) > 0 {
+		return format.Name{}, nil, fmt.Errorf("the integrity check of the cache at %v: %v", path, strings.Join(faults, "; "))
 	}
 
 	var names []string
@@ -659,7 +838,32 @@ func cacheDump(path string) (position format.Name, state map[string][]string, er
 		}); err != nil {
 			return format.Name{}, nil, err
 		}
-		state[describe(ct.Build())] = rows
+
+		// A connection reads the schema in the order of its rows and puts each index before those that
+		// it read earlier, so SQLite lists the indexes of a table from the newest to the oldest. This
+		// is another way to their order than the rowids that the core reads.
+		var indexNames []string
+		if err := query("select name from pragma_index_list("+literal(name)+") where origin = 'c'", func(s *sqlite.Stmt) {
+			indexNames = append(indexNames, s.ColumnText(0))
+		}); err != nil {
+			return format.Name{}, nil, err
+		}
+		slices.Reverse(indexNames)
+		var indexes []*s4qlpb.CreateIndex
+		for _, index := range indexNames {
+			ci := s4qlpb.CreateIndex_builder{Index: new(index), Table: new(name)}
+			if err := query(`select cid, "desc" from pragma_index_xinfo(`+literal(index)+`) where key order by seqno`, func(s *sqlite.Stmt) {
+				column := s4qlpb.IndexColumn_builder{Column: new(uint32(s.ColumnInt64(0)))}
+				if s.ColumnInt64(1) != 0 {
+					column.Descending = new(true)
+				}
+				ci.Columns = append(ci.Columns, column.Build())
+			}); err != nil {
+				return format.Name{}, nil, err
+			}
+			indexes = append(indexes, ci.Build())
+		}
+		state[describe(ct.Build())+describeIndexes(indexes)] = rows
 	}
 	return position, state, err
 }
