@@ -15,8 +15,8 @@
 //     statement and no error.
 //
 // The supported statements are those of slices 1 and 2 of docs/roadmap.md, with the column types and
-// the literals of slice 4 and the columns of slice 5. The README next to this file defines them token
-// for token, and lists the names that a "not supported" error gives.
+// the literals of slice 4, the columns of slice 5, and the NULL of slice 6. The README next to this
+// file defines them token for token, and lists the names that a "not supported" error gives.
 //
 // Names compare as SQLite compares them, by [Name.Fold]. What a statement means for a table, such as
 // whether its columns exist or its values are as many as the columns, is not decided here, since it
@@ -113,7 +113,8 @@ type Statement interface {
 }
 
 // CreateTable of one table, with one or more columns, of which exactly one is its primary key. The
-// table is STRICT and WITHOUT ROWID.
+// table is STRICT and WITHOUT ROWID. A column that is not the primary key takes NULL unless it is
+// declared NOT NULL.
 type CreateTable struct {
 	Span  Span
 	Table Name
@@ -132,8 +133,9 @@ type Column struct {
 	Type Type
 	// PrimaryKey reports whether the column is the primary key of its table.
 	PrimaryKey bool
-	// NotNull reports whether the column is declared NOT NULL. Every column that is not the primary
-	// key is. The primary key may be too, which changes nothing in a WITHOUT ROWID table.
+	// NotNull reports whether the column is declared NOT NULL. A column that is not the primary key
+	// and is not declared NOT NULL takes NULL. The primary key may be declared NOT NULL too, which
+	// changes nothing: the primary key of a WITHOUT ROWID table never takes NULL.
 	NotNull bool
 }
 
@@ -204,8 +206,8 @@ func (t Type) String() string {
 	return ""
 }
 
-// Value of a literal: an [Integer], a [Real], a [Text], or a [Blob], each with the value that SQLite
-// gives the literal.
+// Value of a literal: an [Integer], a [Real], a [Text], a [Blob], or [Null], each with the value that
+// SQLite gives the literal.
 type Value interface {
 	isValue()
 }
@@ -225,10 +227,15 @@ type Text string
 // empty.
 type Blob []byte
 
+// Null value, of the literal NULL in any case of its letters. It is a value of its own, so that the
+// [Term] of a NULL, whose Value is Null, is never taken for that of a parameter, whose Value is nil.
+type Null struct{}
+
 func (Integer) isValue() {}
 func (Real) isValue()    {}
 func (Text) isValue()    {}
 func (Blob) isValue()    {}
+func (Null) isValue()    {}
 
 // Insert of one row. Without a list of columns, the values are for the columns of the table, in the
 // order of the table.
@@ -245,7 +252,7 @@ type Insert struct {
 
 // Term of a row: the literal Value, or the argument of a parameter if Parameter is not 0.
 type Term struct {
-	// Value of the literal, and nil for a parameter.
+	// Value of the literal, and nil for a parameter. The literal NULL has the value [Null], never nil.
 	Value Value
 	// Parameter is the number of the parameter that gives the value, from 1 as SQLite counts them, or
 	// 0 if the value is a literal. Every parameter is a plain ?, which SQLite numbers one more than

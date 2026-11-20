@@ -97,9 +97,36 @@ func realOfLiteral(t testing.TB, d *db, lit string) string {
 	return "real"
 }
 
-// TestCheck_reals checks the value of real literals against SQLite, for texts made to be hard to
-// round. The routine of SQLite is not Go's, which rounds every text to the nearest float, and the
-// test logs for how many texts they differ.
+// realEdges are texts of real literals at the bounds of sqlite3AtoF, where a port that moved a bound
+// by one would give another float for some of them, and which random texts do not reach.
+var realEdges = func() []string {
+	// The digits of the mantissa at which SQLite stops reading them, (2^64 - 1 - 9) / 10, and
+	// another one below it.
+	const stop, below = "1844674407370955160", "16769767339735956015"
+	// 10,000 digits after the point, with the value 1 times 10^-10000, so that the exponent 10000,
+	// at which SQLite stops reading the exponent, gives the value 1.
+	small := "0." + strings.Repeat("0", 9999) + "1e"
+	return []string{
+		stop + "598.e-194", stop + "1.e-30", "184467440737095516197.e250", below + ".e154",
+		"184467440737.0955160629e-184", "." + stop + "197e32", ".167697673397359560184e-260",
+		small + "10000", small + "9999", small + "10001", small + "99990", small + "100000", small + "123456",
+		"1e" + strings.Repeat("9", 25), "1e-" + strings.Repeat("9", 25),
+		// Products with 10^p whose bits below the 53rd are nearly zero, where sqlite3Fp10Convert2
+		// decides by the 32 bits after them; the last is 10^-1, which has its own entry.
+		"115787124.915219669e12", "5808351833673036289e0", "2303716194659627680000000000000000000e-19",
+		// Products with an exact power of 10 that are a tie of the rounding, or a few units in the
+		// last of those 32 bits from one.
+		"15931884261748570403e16", "16638669360040085079e16",
+		// A tie with 10^27, which its table holds exactly.
+		"17679410011640714626e27",
+		// 2^54 - 1, a tie whose rounding up carries into the next power of two.
+		"18014398509481983e0", "18014398509481983.0",
+	}
+}()
+
+// TestCheck_reals checks the value of real literals against SQLite: those of [realEdges], and texts
+// made to be hard to round. The routine of SQLite is not Go's, which rounds every text to the
+// nearest float, and the test logs for how many texts they differ.
 func TestCheck_reals(t *testing.T) {
 	n := 100000
 	if slow() {
@@ -107,6 +134,10 @@ func TestCheck_reals(t *testing.T) {
 	}
 	r := rand.New(rand.NewPCG(*seed, 0x5ea1))
 	d := open(t)
+	for _, lit := range realEdges {
+		realOfLiteral(t, d, lit)
+		realOfLiteral(t, d, "-"+lit)
+	}
 	answers := map[string]int{}
 	differs := 0
 	for range n {
@@ -147,6 +178,8 @@ func FuzzLiteral(f *testing.F) {
 			f.Add(text)
 		}
 	}
+	nullText, _ := stmttest.Literal(r, stmt.Null{})
+	f.Add(nullText)
 	f.Fuzz(func(t *testing.T, lit string) {
 		src := "insert into t (v) values (" + lit + ")"
 		s, err := stmt.Check(src)

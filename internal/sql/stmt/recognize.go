@@ -165,9 +165,9 @@ var columnTypes = map[string]Type{"int": TypeInt, "integer": TypeInteger, "real"
 const otherType = "column type other than INT, INTEGER, REAL, TEXT, or BLOB"
 
 // column: name type and its constraints, where the type is one bare word of [columnTypes], in any
-// case, and the constraints are PRIMARY KEY and NOT NULL, each at most once, in either order. The
-// column has at least one of them. key reports whether an earlier column of the table is its primary
-// key, so that this one must not be.
+// case, and the constraints are PRIMARY KEY and NOT NULL, each at most once, in either order, or
+// none. key reports whether an earlier column of the table is its primary key, so that this one must
+// not be.
 func (r *recognizer) column(d *ast.ColumnDef, key bool) Column {
 	r.accept(d)
 	c := Column{Name: r.name(d.Name)}
@@ -196,6 +196,10 @@ func (r *recognizer) column(d *ast.ColumnDef, key bool) Column {
 			r.take(k.Key)
 			c.PrimaryKey = true
 		case *ast.NullConstraint:
+			if !k.Not.Present() && r.isNext(k.Null) {
+				// SQLite reads a NULL constraint as none: the column takes NULL without it.
+				r.reject("NULL constraint")
+			}
 			if c.NotNull || !k.Not.Present() {
 				r.unexpected()
 			}
@@ -206,13 +210,6 @@ func (r *recognizer) column(d *ast.ColumnDef, key bool) Column {
 		default:
 			r.unexpected()
 		}
-	}
-	switch {
-	case c.PrimaryKey || c.NotNull:
-	case key:
-		r.reject("column without NOT NULL")
-	default:
-		r.reject("column without PRIMARY KEY or NOT NULL")
 	}
 	return c
 }
@@ -350,11 +347,15 @@ func (r *recognizer) parameter(v *ast.Variable, before int) (int, Span) {
 }
 
 // literal value: a decimal integer literal that fits in 64 bits or a real literal, with at most one
-// - before either; a string; or a blob.
+// - before either; a string; a blob; or NULL.
 func (r *recognizer) literal(e ast.Expr) (Value, Span) {
 	start := r.at()
 	negative := false
 	if u, ok := e.(*ast.Unary); ok {
+		// SQLite reads NULL after a sign as NULL.
+		if u.Op.Kind == token.Plus && isNull(u.X) {
+			r.reject("NULL after a sign")
+		}
 		if u.Op.Kind != token.Minus {
 			r.reject(unaryName(u.Op))
 		}
@@ -368,6 +369,9 @@ func (r *recognizer) literal(e ast.Expr) (Value, Span) {
 			r.reject(unaryName(x.Op))
 		case *ast.Variable:
 			r.reject("parameter after a sign")
+		}
+		if isNull(u.X) {
+			r.reject("NULL after a sign")
 		}
 		negative = true
 		e = u.X
@@ -422,6 +426,8 @@ func (r *recognizer) literal(e ast.Expr) (Value, Span) {
 			panic(fmt.Sprintf("stmt: the blob literal %q: %v", t.Text, err))
 		}
 		v = Blob(b)
+	case token.Null:
+		v = Null{}
 	default:
 		r.reject(literalName(t))
 	}
@@ -429,13 +435,17 @@ func (r *recognizer) literal(e ast.Expr) (Value, Span) {
 	return v, Span{Start: start, End: t.End()}
 }
 
+// isNull reports whether e is the literal NULL.
+func isNull(e ast.Expr) bool {
+	l, ok := e.(*ast.Literal)
+	return ok && l.Value.Kind == token.Null
+}
+
 // literalName of the value of a literal that is not supported.
 func literalName(t ast.Token) string {
 	switch t.Kind {
 	case token.QNumber:
 		return "number with a digit separator"
-	case token.Null:
-		return "NULL"
 	case token.CTimeKw:
 		return "current date or time"
 	default:

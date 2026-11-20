@@ -50,8 +50,9 @@ func main() {
 var allPkgs = []string{"internal/sql/token", "internal/sql/ast", "internal/sql/parser", "internal/sql/stmt", "internal/engine"}
 
 // listedPkgs are the packages whose mutants the list of equivalent mutants names: those of
-// [allPkgs], and the core, which a run mutates only when -pkgs names it.
-var listedPkgs = append(slices.Clone(allPkgs), "internal/core")
+// [allPkgs], and the core, the storage formats, and the driver at the root, which a run mutates only
+// when -pkgs names them.
+var listedPkgs = append(slices.Clone(allPkgs), "internal/core", "internal/format", ".")
 
 func start() error {
 	pkgs := flag.String("pkgs", strings.Join(allPkgs, ","), "packages to mutate, separated by commas")

@@ -121,10 +121,14 @@ func (*Text) expr()        {}
 func (*Blob) expr()        {}
 func (*Parameter) expr()   {}
 
-// NewPlan of the statement s, which [stmt.Check] gives. It panics for a statement of another type.
-// The NOT NULL of a column is not in the plan: every column of a table is NOT NULL, the primary key
-// also when it does not say so, as in SQLite's WITHOUT ROWID tables.
+// NewPlan of the statement s, which [stmt.Check] gives and the engine runs: it is not of a form that
+// [checkNulls] refuses. It panics for a statement of another type or of such a form. The NOT NULL of
+// a column is not in the plan: every column of a table is NOT NULL, the primary key also when it does
+// not say so, as in SQLite's WITHOUT ROWID tables.
 func NewPlan(s stmt.Statement) Plan {
+	if err := checkNulls(s); err != nil {
+		panic(fmt.Sprintf("engine: %v", err))
+	}
 	switch s := s.(type) {
 	case *stmt.CreateTable:
 		p := &CreateTable{Table: s.Table, PrimaryKey: []int{s.Key()}}

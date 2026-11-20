@@ -469,7 +469,7 @@ var idPattern = regexp.MustCompile(`/\* id (\d+) \*/`)
 // withID puts the comment of the ID into the text of a statement that the pass supports, after its
 // first token, where the annotation keeps it.
 func withID(src string, id uint64) string {
-	s, err := stmt.Check(src)
+	s, err := checkText(src)
 	if err != nil || s == nil {
 		return src
 	}
@@ -496,7 +496,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 	}
 	a.src = withID(call.Src, a.id)
 	call.Src = a.src
-	if s, _ := stmt.Check(a.src); s != nil {
+	if s, _ := checkText(a.src); s != nil {
 		_, isSelect := s.(*stmt.Select)
 		a.write = !isSelect
 	}
@@ -573,7 +573,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 		// the generator, and every other that the pass supports, with the arguments that it takes must
 		// run.
 		kind, failure := checkArguments(call, a.answer)
-		s, _ := stmt.Check(a.src)
+		s, _ := checkText(a.src)
 		supported := call.Supported || s != nil
 		if kind == "" && supported && isInsert(a.src) && a.answer.err == "not supported" && strings.Contains(a.answer.message, " for the column ") {
 			// The refusal of a value of another type than its column, after the insert found its table
@@ -1591,7 +1591,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 
 // tableOf the statement of src, which the pass supports, folded as SQLite compares names.
 func tableOf(src string) string {
-	s, err := stmt.Check(src)
+	s, err := checkText(src)
 	if err != nil {
 		panic(err)
 	}

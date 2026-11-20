@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -74,6 +75,10 @@ type answer struct {
 	err string
 	// message of the engine's error, which is not compared with SQLite.
 	message string
+	// offset of SQLite's error, or of the engine's, as [sqlerr.Error] has it, and 0 for another
+	// error. It is not in the text of the answer: SQLite does not give the same offset on every
+	// connection, so only the tests that know it compare it.
+	offset int
 	// columns of a query, each as its name and declared type, and its rows, each as its values.
 	columns string
 	rows    []string
@@ -149,13 +154,24 @@ func sqliteText(t testing.TB, err error) string {
 	return fmt.Sprint(se.Code.Primary(), "/", int(se.Code), ": ", se.Message)
 }
 
+// sqliteAnswer of an error of the binding, with its offset.
+func sqliteAnswer(t testing.TB, err error) answer {
+	t.Helper()
+	a := answer{err: sqliteText(t, err)}
+	var se *sqlite.Error
+	if errors.As(err, &se) {
+		a.offset = se.Offset
+	}
+	return a
+}
+
 // run the statement of src, as sqlite3_prepare_v2 and sqlite3_step run it, with args bound to its
 // parameters by position: each an int64, a float64, a string, or a []byte.
 func (o *oracle) run(t testing.TB, src string, args ...any) answer {
 	t.Helper()
 	s, _, err := o.c.PrepareFirst(src)
 	if err != nil {
-		return answer{err: sqliteText(t, err)}
+		return sqliteAnswer(t, err)
 	}
 	if s == nil {
 		return answer{err: "no statement"}
@@ -176,7 +192,7 @@ func (o *oracle) run(t testing.TB, src string, args ...any) answer {
 			t.Fatalf("%q: an argument of type %T for SQLite", src, a)
 		}
 		if err != nil {
-			return answer{err: sqliteText(t, err)}
+			return sqliteAnswer(t, err)
 		}
 	}
 	var a answer
@@ -188,7 +204,7 @@ func (o *oracle) run(t testing.TB, src string, args ...any) answer {
 	for {
 		ok, err := s.Step()
 		if err != nil {
-			return answer{err: sqliteText(t, err)}
+			return sqliteAnswer(t, err)
 		}
 		if !ok {
 			return a
@@ -265,7 +281,12 @@ const wrongArguments = "wrong number of arguments"
 // errAnswer of an error of the engine, with its message.
 func errAnswer(t testing.TB, src string, err error) answer {
 	t.Helper()
-	return answer{err: errText(t, src, err), message: err.Error()}
+	a := answer{err: errText(t, src, err), message: err.Error()}
+	var se *sqlerr.Error
+	if errors.As(err, &se) {
+		a.offset = se.Offset
+	}
+	return a
 }
 
 // integers as values of the engine.
@@ -595,7 +616,7 @@ func (y tally) add(src string, a answer) {
 		return
 	}
 	kind := "other"
-	if s, _ := stmt.Check(src); s != nil {
+	if s, _ := checkText(src); s != nil {
 		kind = strings.ToLower(strings.TrimPrefix(fmt.Sprintf("%T", s), "*stmt."))
 		if s.Parameters() > 0 {
 			kind += " with a parameter"
@@ -787,7 +808,7 @@ func (p *pair) step(c stmttest.Call) string {
 	// refuses before its arguments, a syntax error or no statement, which SQLite refuses before it
 	// binds them, so that it runs in SQLite without them.
 	args := oracleArgs(c.Args)
-	if s, err := stmt.Check(src); err != nil || s == nil {
+	if s, err := checkText(src); err != nil || s == nil {
 		args = nil
 	}
 	if kind, failure := p.checkLength(c, got); kind != "" {
@@ -807,7 +828,7 @@ func (p *pair) step(c stmttest.Call) string {
 		// for the refusals of their arguments and of the types of their values, which are checked
 		// above, and a text that is not supported is one that SQLite accepts: SQLite prepares it on an
 		// empty database without a syntax error.
-		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil {
+		if s, err := checkText(src); c.Supported || err == nil && s != nil {
 			return fmt.Sprintf("%q: the engine does not support a statement that the pass supports: %v", src, got.message)
 		}
 		if m := syntaxOfNotSupported(t, p.empty, src); m != "" {
@@ -887,7 +908,7 @@ func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, count func(stri
 	case got.err != "":
 		outcome = messageKind(got.err)
 	}
-	s, _ := stmt.Check(c.Src)
+	s, _ := checkText(c.Src)
 	switch s := s.(type) {
 	case *stmt.Insert:
 		reachInsert(t, o, s, c, outcome, count)
@@ -1019,7 +1040,7 @@ func reachInsert(t testing.TB, o *oracle, s *stmt.Insert, c stmttest.Call, outco
 // first such argument, as [refusal] says. It gives the kind of the excuse, [excusedArguments] or
 // [excusedArgument], if the rule decides the call, or "", and what differs from the rule, or "".
 func checkArguments(c stmttest.Call, got answer) (kind, failure string) {
-	s, err := stmt.Check(c.Src)
+	s, err := checkText(c.Src)
 	if err != nil || s == nil {
 		return "", ""
 	}
@@ -1126,7 +1147,7 @@ func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failu
 func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string) {
 	t := p.t
 	t.Helper()
-	s, _ := stmt.Check(c.Src)
+	s, _ := checkText(c.Src)
 	insert, ok := s.(*stmt.Insert)
 	if !ok || p.i.limit == 0 || p.o.prepare(t, c.Src) != nil {
 		return "", ""
@@ -1172,7 +1193,7 @@ func byteLength(v any) int {
 // type of its column.
 func typeRule(t testing.TB, o *oracle, src string, args []any) string {
 	t.Helper()
-	s, _ := stmt.Check(src)
+	s, _ := checkText(src)
 	insert, ok := s.(*stmt.Insert)
 	if !ok || len(args) != insert.Parameters() || o.prepare(t, src) != nil {
 		return ""
@@ -1216,9 +1237,22 @@ func (o *oracle) columns(t testing.TB, name string) (string, []stmttest.TableCol
 	}
 }
 
+// checkText src as the engine checks a text before it runs it: as [stmt.Check] does, and with the
+// "not supported" of [engine.Check] for a statement with NULL of slice 6 that the pass supports and
+// the engine does not run yet, which the tests take for a text that is not supported.
+func checkText(src string) (stmt.Statement, error) {
+	s, err := stmt.Check(src)
+	if err == nil && s != nil {
+		if err := engine.Check(src, s.Parameters()); errors.Is(err, stmt.ErrNotSupported) {
+			return nil, err
+		}
+	}
+	return s, err
+}
+
 // isInsert reports whether src is a supported insert.
 func isInsert(src string) bool {
-	s, _ := stmt.Check(src)
+	s, _ := checkText(src)
 	_, ok := s.(*stmt.Insert)
 	return ok
 }
@@ -1354,12 +1388,15 @@ func FuzzDifferential(f *testing.F) {
 }
 
 // FuzzDifferential_core runs the sequence of statements that its input chooses, the seed, the number
-// of statements, and whether the instance restarts, as [TestDifferential] does.
+// of statements, whether the instance restarts, and whether the cache and SQLite have the lowered
+// length limit [stmttest.LengthLimit], as [TestDifferential] does.
 func FuzzDifferential_core(f *testing.F) {
-	f.Add(uint64(0), uint8(40), false)
-	f.Add(uint64(1), uint8(40), true)
-	f.Fuzz(func(t *testing.T, seed uint64, n uint8, restarts bool) {
-		differential(t, seed, int(n%64), restarts, 0, nil)
+	f.Add(uint64(0), uint8(40), false, false)
+	f.Add(uint64(1), uint8(40), true, false)
+	f.Add(uint64(2), uint8(40), false, true)
+	f.Add(uint64(3), uint8(40), true, true)
+	f.Fuzz(func(t *testing.T, seed uint64, n uint8, restarts, limited bool) {
+		differential(t, seed, int(n%64), restarts, map[bool]int{true: stmttest.LengthLimit}[limited], nil)
 	})
 }
 
@@ -1422,6 +1459,158 @@ func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
 		}
 		if got, want := i.state(), p.o.state(t); got != want {
 			t.Fatalf("%q: the engine holds\n%v\nand SQLite\n%v", src, got, want)
+		}
+	})
+}
+
+// typesSetUp is the database that [FuzzTypes] runs on, with names in other cases than the inserts
+// use: for each of the five types a table whose one column, the key, is of the type, and a table
+// whose first column is of the type and whose second, the key, is an INT.
+var typesSetUp = []string{
+	"create table T_int (v int primary key) strict, without rowid",
+	"create table t_INTEGER (v integer primary key) strict, without rowid",
+	"create table t_real (V real primary key) strict, without rowid",
+	"create table t_text (v text primary key) without rowid, strict",
+	"create table t_blob (v BLOB primary key) strict, without rowid",
+	"create table T_int_k (v int not null, k int primary key) strict, without rowid",
+	"create table t_INTEGER_k (v integer not null, K int primary key) strict, without rowid",
+	"create table t_real_k (V real not null, k int primary key) strict, without rowid",
+	"create table t_text_k (v text not null, k int primary key) without rowid, strict",
+	"create table t_blob_k (v BLOB not null, k int primary key) strict, without rowid",
+}
+
+// typesTables are the names of the tables of [typesSetUp], as the inserts of [FuzzTypes] name them.
+// A name that ends in _k is of a table of two columns.
+var typesTables = []string{"t_int", "t_integer", "t_real", "t_text", "t_blob", "t_int_k", "t_integer_k", "t_real_k", "t_text_k", "t_blob_k"}
+
+// FuzzTypes gives the engine, on a database in memory, the bytes of its input as the value of an
+// insert into a table of each of the five types, in the form that its input chooses: as a text
+// argument, a blob argument, a string literal, a blob literal, the bits of a real argument or of an
+// integer argument, or SQL text in the place of the value. The value is the key of a table of one
+// column, and the first column of a table of two, whose key the insert sets to 1 and names first in
+// its list. Each insert runs twice, so that the second meets the key of the first, and a query reads
+// the table. It compares each answer with SQLite's,
+// as [TestDifferential] does, by s4ql's rules where they differ from SQLite: a value of another type
+// than its column, NaN, an infinity, and text that holds NUL or is not valid UTF-8 are refused. Then
+// it compares the tables. [FuzzTypes_core] runs the same on the storage core. The database in memory
+// has no length limit, so the input of the limit that [FuzzTypes_core] reads changes nothing here.
+func FuzzTypes(f *testing.F) {
+	fuzzTypes(f, func(t testing.TB, limit int) *instance { return newMemoryInstance(t) })
+}
+
+// FuzzTypes_core is [FuzzTypes] on the storage core, with a store in memory and the length limit
+// that its input chooses, from 1001 to 1255 bytes or SQLite's default, in the cache and in SQLite.
+// After the inserts, it replays the log into an empty cache and compares the tables again.
+func FuzzTypes_core(f *testing.F) {
+	fuzzTypes(f, func(t testing.TB, limit int) *instance { return newInstanceLimited(t, engine.Options{}, nil, limit) })
+}
+
+// Forms of the value of [FuzzTypes].
+const (
+	formTextArgument = iota
+	formBlobArgument
+	formStringLiteral
+	formBlobLiteral
+	formRealArgument
+	formIntegerArgument
+	formSQL
+	forms
+)
+
+// typesCall is the insert of the bytes data into the table in the form, which [FuzzTypes] runs.
+// The form is form % [forms], and an odd form / [forms] writes the hex digits of a blob literal and its
+// x in upper case.
+func typesCall(table string, data []byte, form uint8) stmttest.Call {
+	insert, end := "insert into "+table+" (v) values (", ")"
+	if strings.HasSuffix(table, "_k") {
+		insert = "insert into " + table + " (k, v) values (1, "
+	}
+	bits := func() uint64 {
+		var b [8]byte
+		copy(b[:], data)
+		return binary.LittleEndian.Uint64(b[:])
+	}
+	switch form % forms {
+	case formTextArgument:
+		return stmttest.Call{Src: insert + "?" + end, Args: []any{string(data)}, Supported: true}
+	case formBlobArgument:
+		return stmttest.Call{Src: insert + "?" + end, Args: []any{append([]byte{}, data...)}, Supported: true}
+	case formStringLiteral:
+		text := string(data)
+		// The pass supports the text of a statement only if it is valid UTF-8 without NUL.
+		supported := utf8.ValidString(text) && !strings.ContainsRune(text, 0)
+		return stmttest.Call{Src: insert + "'" + strings.ReplaceAll(text, "'", "''") + "'" + end, Supported: supported}
+	case formBlobLiteral:
+		x := "x'" + hex.EncodeToString(data) + "'"
+		if form/forms%2 == 1 {
+			x = strings.ToUpper(x)
+		}
+		return stmttest.Call{Src: insert + x + end, Supported: true}
+	case formRealArgument:
+		return stmttest.Call{Src: insert + "?" + end, Args: []any{math.Float64frombits(bits())}, Supported: true}
+	case formIntegerArgument:
+		return stmttest.Call{Src: insert + "?" + end, Args: []any{int64(bits())}, Supported: true}
+	default:
+		return stmttest.Call{Src: insert + string(data) + end}
+	}
+}
+
+// fuzzTypes is [FuzzTypes] on the instances of newInstance, which takes the length limit, 0 for
+// SQLite's default. Its seeds are values at the edges of each type in every form.
+func fuzzTypes(f *testing.F, newInstance func(t testing.TB, limit int) *instance) {
+	bits := func(v uint64) []byte { return binary.LittleEndian.AppendUint64(nil, v) }
+	seeds := [][]byte{
+		nil, []byte("a"), []byte("'"), []byte("it''s"), []byte("\x00"), []byte("a\x00b"), []byte("\xff"), []byte("\xc3"),
+		[]byte("é"), []byte("💾"), []byte("1"), []byte("-0.0"), []byte("1e999"), []byte("0x10"), []byte("null"), []byte("x'0g'"),
+		[]byte("-9223372036854775808"), []byte("9223372036854775808"), []byte("'a' || 'b'"), []byte(strings.Repeat("abc", 40)),
+		bits(math.Float64bits(math.NaN())), bits(math.Float64bits(math.Inf(1))), bits(math.Float64bits(math.Copysign(0, -1))),
+		bits(math.Float64bits(math.SmallestNonzeroFloat64)), bits(math.Float64bits(math.MaxFloat64)), bits(math.Float64bits(1)), bits(1 << 63),
+	}
+	for _, data := range seeds {
+		for form := range uint8(forms) {
+			f.Add(data, form, uint8(0))
+		}
+		f.Add(data, uint8(formBlobLiteral+forms), uint8(0))
+	}
+	// Values about the length limit of 1001 bytes, where a value or its record is too long.
+	for n := 995; n <= 1002; n++ {
+		for _, form := range []uint8{formTextArgument, formBlobArgument, formStringLiteral, formBlobLiteral + forms} {
+			f.Add([]byte(strings.Repeat("x", n)), form, uint8(1))
+		}
+	}
+	f.Fuzz(func(t *testing.T, data []byte, form, limit uint8) {
+		n := 0
+		if limit > 0 {
+			n = 1000 + int(limit)
+		}
+		i := newInstance(t, n)
+		p := newPair(t, i, nil)
+		for _, s := range typesSetUp {
+			if failure := p.step(stmttest.Call{Src: s, Supported: true}); failure != "" {
+				t.Fatalf("the set-up: %v", failure)
+			}
+		}
+		for _, table := range typesTables {
+			c := typesCall(table, data, form)
+			for range 2 {
+				if failure := p.step(c); failure != "" {
+					t.Fatal(failure)
+				}
+			}
+			if failure := p.step(stmttest.Call{Src: "select * from " + table, Query: true, Supported: true}); failure != "" {
+				t.Fatal(failure)
+			}
+		}
+		want := p.o.state(t)
+		if got := i.state(); got != want {
+			t.Fatalf("the engine holds\n%v\nand SQLite\n%v", got, want)
+		}
+		if i.memory != nil {
+			return
+		}
+		i.restart(true, engine.Options{})
+		if got := i.state(); got != want {
+			t.Fatalf("the engine holds after a replay into an empty cache\n%v\nand SQLite\n%v", got, want)
 		}
 	})
 }

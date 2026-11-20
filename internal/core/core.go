@@ -72,8 +72,10 @@ type Options struct {
 	Identity string
 	// LengthLimit is the largest text or blob, and the largest row, in bytes, that the cache holds:
 	// SQLite's SQLITE_LIMIT_LENGTH of every connection. The default is 1,000,000,000, SQLite's
-	// default and its largest; nothing but tests sets another, which must be at least 30, SQLite's
-	// smallest.
+	// default and its largest; nothing but tests sets another, which must be at least 1000. SQLite
+	// takes any limit from 30, but the cache stores the text of its own schema, and its identity, in
+	// rows that a limit of a few hundred bytes already refuses; a long identity needs a higher limit
+	// than 1000.
 	LengthLimit int
 
 	// syncOff stops SQLite from syncing the cache to disk, for tests.
@@ -126,8 +128,8 @@ func (o Options) withDefaults() (Options, error) {
 		return o, fmt.Errorf("the lease lasts %v and is renewed after %v, which must be above zero and shorter", o.Lease, o.RenewAfter)
 	case o.BusyTimeout < 0 || o.StoreTimeout < 0 || o.ObjectTimeout < 0 || o.Watch < 0:
 		return o, errors.New("a timeout or an interval below zero")
-	case o.LengthLimit < 30 || o.LengthLimit > maxLength:
-		return o, fmt.Errorf("the length limit %v is not from 30 to %v", o.LengthLimit, maxLength)
+	case o.LengthLimit < 1000 || o.LengthLimit > maxLength:
+		return o, fmt.Errorf("the length limit %v is not from 1000 to %v", o.LengthLimit, maxLength)
 	}
 	return o, nil
 }

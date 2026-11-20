@@ -27,6 +27,7 @@ func TestNewPlan(t *testing.T) {
 		{src: "insert into t (v) values (1e300)", want: "insert into t (v)\n  values (1e+300)\n"},
 		{src: "insert into t (v) values (-0.0)", want: "insert into t (v)\n  values (-0.0)\n"},
 		{src: "insert into t (v) values (2.)", want: "insert into t (v)\n  values (2.0)\n"},
+		{src: "insert into t (v) values (1.25)", want: "insert into t (v)\n  values (1.25)\n"},
 		{src: "insert into t (v) values ('it''s')", want: "insert into t (v)\n  values ('it''s')\n"},
 		{src: "insert into t (v) values (X'0aFF')", want: "insert into t (v)\n  values (x'0aff')\n"},
 		{src: "select * from été", want: "query\n  project *\n    scan été\n"},

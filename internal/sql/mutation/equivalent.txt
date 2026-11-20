@@ -240,6 +240,92 @@ stmt/vocabulary.go childAt condition: s.Start <= offset => true
 stmt/recognize.go recognizer.parameter remove statement: r.accept(v) =>
 	The only token of a parameter is taken at once, so describe never looks inside the node, and names it the same whether it was accepted or not.
 
+# The literals of slice 4 in the recognizer.
+stmt/recognize.go recognizer.literal condition: r.isNext(c.Column) => true
+	A column reference without a table name has no schema name either, so its column is its first token, which is the next one.
+stmt/recognize.go recognizer.literal condition: !c.Table.Present() => true
+	With a table name, the table name is the next token, so the column is not, and the test of isNext is false either way.
+stmt/recognize.go recognizer.literal constant: math.IsInf(f, 0) => math.IsInf(f, 1)
+	atof reads the literal without its sign, so the only infinity that it gives is the positive one.
+
+# The port of SQLite's conversion of a real literal, stmt/real.go. The text that atof reads is that
+# of a real token of the tokenizer: digits, at most one point, and an exponent of e or E, a sign, and
+# at least one digit.
+stmt/real.go atof constant: return 0 => return 1
+	Past the end of the text at gives a byte that the code compares with digits, the point, e, E, and the signs; 1 is none of them, as 0 is not.
+stmt/real.go atof constant: '0' <= c => '/' <= c
+	A real token holds no '/', and past its end at gives 0, so isDigit never sees the byte that the change takes in.
+stmt/real.go atof constant: c <= '9' => c <= ':'
+	A real token holds no ':', and past its end at gives 0, so isDigit never sees the byte that the change takes in.
+stmt/real.go atof constant: largest-9 => largest-10
+	(2^64 - 1 - 10) / 10 and (2^64 - 1 - 9) / 10 are the same integer.
+stmt/real.go atof constant: largest-9 => largest-8
+	(2^64 - 1 - 8) / 10 and (2^64 - 1 - 9) / 10 are the same integer.
+stmt/real.go atof constant: largest-9 => largest-10 #2
+	(2^64 - 1 - 10) / 10 and (2^64 - 1 - 9) / 10 are the same integer.
+stmt/real.go atof constant: largest-9 => largest-8 #2
+	(2^64 - 1 - 8) / 10 and (2^64 - 1 - 9) / 10 are the same integer.
+stmt/real.go atof remove statement: break =>
+	The inner loop has read every digit, so the outer loop stops at its own test of the next byte.
+stmt/real.go atof condition: c == 'e' => true
+	Without an exponent the token ends after its digits, so at gives 0, which is no sign and no digit, and the exponent adds nothing.
+stmt/real.go atof condition: c == 'E' => true
+	Without an exponent the token ends after its digits, so at gives 0, which is no sign and no digit, and the exponent adds nothing.
+stmt/real.go atof condition: isDigit(at(i)) => true #5
+	The tokenizer gives a real token with an exponent only when a digit follows the e and its sign.
+stmt/real.go powersOf10First constant: -348 => -349
+	For p of -349, pwr10to2 gives -1160, so e is at least 53 - 64 + 1160 = 1149, and fp10Convert2 gives 0 before it looks up the power.
+stmt/real.go powersOf10First constant: -348 => -347
+	For p of -348, pwr10to2 gives -1157, so e is at least 1146, and fp10Convert2 gives 0 either way.
+stmt/real.go powersOf10Last constant: 347 => 348
+	For p of 348, pwr10to2 gives 1156, so e is at most 53 - 1 - 1156, below -972, and fp10Convert2 gives the infinity either way.
+stmt/real.go powersOf10Last constant: 347 => 346
+	For p of 347, pwr10to2 gives 1152, so e is at most -1100, below -972, and fp10Convert2 gives the infinity either way.
+stmt/real.go fp10Convert2 condition: p < powersOf10First => false
+	For every p below -348, e is at least 1149, so fp10Convert2 gives 0 at the check of e, before it looks up the power.
+stmt/real.go fp10Convert2 operator: p < powersOf10First => p <= powersOf10First
+	For p of -348, e is at least 1146, so fp10Convert2 gives 0 at the check of e either way.
+stmt/real.go fp10Convert2 remove statement: return 0 =>
+	For every p below -348, e is at least 1149, so fp10Convert2 gives 0 at the check of e, before it looks up the power.
+stmt/real.go fp10Convert2 operator: p > powersOf10Last => p >= powersOf10Last
+	For p of 347, e is at most -1100, below -972, so fp10Convert2 gives the infinity at its end.
+stmt/real.go fp10Convert2 constant: math.Inf(1) => math.Inf(2)
+	math.Inf gives the positive infinity for every sign that is not negative.
+stmt/real.go fp10Convert2 constant: math.Inf(1) => math.Inf(0)
+	math.Inf gives the positive infinity for every sign that is not negative.
+stmt/real.go fp10Convert2 constant: math.Inf(1) => math.Inf(2) #2
+	math.Inf gives the positive infinity for every sign that is not negative.
+stmt/real.go fp10Convert2 constant: math.Inf(1) => math.Inf(0) #2
+	math.Inf gives the positive infinity for every sign that is not negative.
+stmt/real.go fp10Convert2 operator: e > 1074 => e >= 1074
+	For e of 1074 the change sets e to 1074, which it is.
+stmt/real.go fp10Convert2 constant: e > 1074 => e > 1073
+	For e of 1074 the change sets e to 1074, which it is.
+stmt/real.go fp10Convert2 condition: e >= 1130 => false
+	With e of at least 1130 the value is below 2^-1076, under half of the smallest subnormal; with e set to 1074 the shift s is at least 64, which Go's shifts make 0, so m is 0 too.
+stmt/real.go fp10Convert2 operator: e >= 1130 => e > 1130
+	With e of 1130 the value is below 2^-1076, under half of the smallest subnormal, and the conversion from e set to 1074 gives 0 too.
+stmt/real.go fp10Convert2 constant: e >= 1130 => e >= 1131
+	With e of 1130 the value is below 2^-1076, under half of the smallest subnormal, and the conversion from e set to 1074 gives 0 too.
+stmt/real.go fp10Convert2 constant: e >= 1130 => e >= 1129
+	With e of 1129 the value is below 2^-1075, half of the smallest subnormal, so the conversion gives 0, as the change does.
+stmt/real.go fp10Convert2 remove statement: return 0 => #2
+	With e of at least 1130 the value is below 2^-1076, under half of the smallest subnormal; with e set to 1074 the shift s is at least 64, which Go's shifts make 0, so m is 0 too.
+stmt/real.go fp10Convert2 remove statement: sticky = 1 =>
+	sticky is 1 already, from its declaration.
+stmt/real.go multiply128 swap arguments: bits.Mul64(a, b) => bits.Mul64(b, a)
+	Multiplication is commutative.
+stmt/real.go multiply160 swap arguments: bits.Mul64(a, b) => bits.Mul64(b, a)
+	Multiplication is commutative.
+stmt/real.go multiply160 swap arguments: bits.Mul64(uint64(aLo), b) => bits.Mul64(b, uint64(aLo))
+	Multiplication is commutative.
+stmt/real.go multiply160 swap arguments: bits.Add64(lo, add, 0) => bits.Add64(add, lo, 0)
+	Addition is commutative.
+stmt/real.go fp10Convert2 swap arguments: multiply128(x, pwr10h) => multiply128(pwr10h, x)
+	Multiplication is commutative.
+stmt/real.go fp10Convert2 swap arguments: multiply128(x, uint64(pwr10l)<<32) => multiply128(uint64(pwr10l)<<32, x)
+	Multiplication is commutative.
+
 # The engine, internal/engine.
 
 # The planted bugs, which only the tests switch on.
@@ -253,11 +339,33 @@ internal/engine/engine.go Conn.write operator: a.GetInteger() + 1 => a.GetIntege
 	The planted bug annotateNext: the annotation holds another wrong argument, and the bug is found by the parameters of the commit either way.
 internal/engine/engine.go Conn.write constant: a.GetInteger() + 1 => a.GetInteger() + 2
 	The planted bug annotateNext: the annotation holds another wrong argument, and the bug is found by the parameters of the commit either way.
+internal/engine/engine.go Conn.write constant: a.GetInteger() + 1 => a.GetInteger() + 0
+	The planted bug annotateNext: the annotation holds each argument as an integer, which is wrong for a real, text, or a blob, and the bug is found by the parameters of the commit either way.
 
 internal/engine/engine.go Conn.write condition: b.skipUnique => false
 	The planted bugs skipUnique and checkOutside: only checkOutside then plants the write without the check, and only the tests plant either.
 internal/engine/tx.go Conn.writeIn element: skipUnique: c.e.bugs.skipUnique, =>
 	The planted bug skipUnique is then not planted in a write of a transaction that spans statements, and is found by the statements of their own.
+internal/engine/tx.go Conn.writeIn element: , convertReal: c.e.bugs.convertReal =>
+	The planted bug convertReal is then not planted in a write of a transaction that spans statements, and is found by the statements of their own.
+internal/engine/operator.go insert.check condition: typ == s4qlpb.Type_TYPE_INT => false
+	The planted bug convertReal: it converts a real only for an INTEGER column, and the check of the log finds a value of another type than its column either way.
+internal/engine/operator.go insert.check condition: typ == s4qlpb.Type_TYPE_INTEGER => false
+	The planted bug convertReal: it converts a real only for an INT column, and the check of the log finds a value of another type than its column either way.
+internal/engine/operator.go insert.check condition: f == math.Trunc(f) => true
+	The planted bug convertReal: it converts every real, also one that is not whole, to the integer of its whole part, and the check of the log finds a value of another type than its column either way.
+internal/engine/operator.go insert.check operator: f == math.Trunc(f) => f != math.Trunc(f)
+	The planted bug convertReal: it converts the reals that are not whole, to the integer of their whole part, and the check of the log finds a value of another type than its column either way.
+internal/engine/operator.go insert.check condition: math.Abs(f) < 1<<63 => true
+	The planted bug convertReal: it converts a whole real outside 64 bits too, to an integer that Go's conversion makes up, and the check of the log finds a value of another type than its column either way.
+internal/engine/operator.go insert.check operator: math.Abs(f) < 1<<63 => math.Abs(f) <= 1<<63
+	The planted bug convertReal: it converts the real 2^63 too, to an integer that Go's conversion makes up, and the check of the log finds a value of another type than its column either way.
+internal/engine/operator.go insert.check constant: 1<<63 => 2<<63
+	The planted bug convertReal: it converts a whole real below 2^64 too, to an integer that Go's conversion makes up, and the check of the log finds a value of another type than its column either way.
+internal/engine/operator.go insert.check constant: 1<<63 => 1<<64
+	The planted bug convertReal: it converts a whole real below 2^64 too, to an integer that Go's conversion makes up, and the check of the log finds a value of another type than its column either way.
+internal/engine/operator.go insert.check constant: 1<<63 => 1<<62
+	The planted bug convertReal: it converts only the whole reals below 2^62, and the check of the log finds a value of another type than its column either way.
 internal/engine/tx.go Conn.ready condition: err != nil => false #3
 	The planted bug readNewest: the end of the read transaction before the new one.
 internal/engine/tx.go Conn.ready remove statement: return err => #3
@@ -294,6 +402,14 @@ internal/engine/engine.go Conn.Close swap arguments: errors.Join(err, closeErr) 
 # Scheduling, which the production host ignores.
 internal/engine/engine.go Rows.read remove statement: r.report.e.host.Yield(r.ctx, "engine: between two rows of a query") =>
 	A yield only lets other tasks of the simulation run between two rows; the answers of the engine do not depend on it.
+
+# Bounds that mean "none".
+internal/engine/plan.go formatExpr constant: -1 => -2
+	strconv.FormatFloat gives the shortest digits for every negative precision.
+
+# Arguments of a comparison that is symmetric.
+internal/engine/plan.go formatExpr swap arguments: strings.ContainsAny(text, ".e") => strings.ContainsAny(".e", text)
+	strings.ContainsAny reports whether the two strings share a character, which is symmetric.
 
 # The events.
 internal/engine/telemetry.go outcomeOf remove statement: return "core_error", slog.LevelWarn => #2
@@ -334,3 +450,89 @@ internal/core/tx.go Tx.RollbackTo condition: err != nil => false #3
 	No test can reach it: the RELEASE after a ROLLBACK TO of the same savepoint does no I/O inside the open transaction.
 internal/core/tx.go Tx.RollbackTo remove statement: return tx.fail(ctx, operation, err) => #2
 	No test can reach it: the RELEASE after a ROLLBACK TO of the same savepoint does no I/O inside the open transaction.
+
+# The storage core, internal/core: the types of slice 4.
+internal/core/cache.go openConn condition: err != nil => false #2
+	No test can reach it: sqlite3_limit fails only for a closed connection or a limit below 1, and the options allow only 1000 and above.
+internal/core/cache.go openConn remove statement: return nil, err => #2
+	No test can reach it: sqlite3_limit fails only for a closed connection or a limit below 1, and the options allow only 1000 and above.
+internal/core/cache.go openConn remove statement: _ = c.Close() =>
+	The close after a failed sqlite3_limit, which no test can reach: it fails only for a closed connection or a limit below 1.
+internal/core/cache.go openConn condition: err != nil => false #3
+	No test can reach it: pragma busy_timeout only sets a field of the connection, for any number of milliseconds.
+internal/core/cache.go table.checkValue remove statement: return nil => #2
+	Without the return the switch ends with n at 0, and the check of the length gives nil.
+internal/core/cache.go table.checkValue remove statement: return nil => #3
+	Without the return the switch ends with n at 0, and the check of the length gives nil.
+internal/core/cache.go table.checkValue remove statement: return nil => #4
+	Without the return the switch ends with n at 0, and the check of the length gives nil.
+internal/core/cache.go readRow remove statement: return nil, fmt.Errorf("%w: the cache holds a value of type %v", ErrCacheVersion, typ) =>
+	sqlite3_column_type gives one of SQLite's five fundamental types, which each have a case.
+internal/core/cache.go readRow swap arguments: fmt.Errorf("%w: the cache holds a value of type %v", ErrCacheVersion, typ) => fmt.Errorf("%w: the cache holds a value of type %v", typ, ErrCacheVersion)
+	sqlite3_column_type gives one of SQLite's five fundamental types, which each have a case.
+internal/core/tx.go Tx.touch condition: e.created != nil => false
+	The keys that it records for a table that the transaction created are never read: the commit object holds such a table whole, from the cache, and a drop of the table drops their temporary tables.
+internal/core/tx.go Tx.touch remove statement: return nil =>
+	The keys that it records for a table that the transaction created are never read: the commit object holds such a table whole, from the cache, and a drop of the table drops their temporary tables.
+internal/core/tx.go Tx.Upsert condition: tx.recording(t) => true
+	For a table that the transaction created, touch records nothing, so whether the row existed is read and not used.
+internal/core/tx.go Tx.touch increment: tx.temps++ => tx.temps--
+	The names of the temporary tables need only differ from each other, which they do counting down too.
+internal/core/tx.go Tx.touch swap arguments: fmt.Sprint("s4ql_touched_", tx.temps) => fmt.Sprint(tx.temps, "s4ql_touched_")
+	The names of the temporary tables need only differ from each other, which they still do.
+internal/core/tx.go Tx.touch swap arguments: fmt.Sprint("s4ql_existed_", tx.temps) => fmt.Sprint(tx.temps, "s4ql_existed_")
+	The names of the temporary tables need only differ from each other, which they still do.
+internal/core/tx.go Tx.touch condition: err != nil => false
+	No test can reach it: typeSQL fails only for a type that the table, which the core checked when it was created or loaded, cannot have.
+internal/core/tx.go Tx.touch remove statement: return err =>
+	No test can reach it: typeSQL fails only for a type that the table, which the core checked when it was created or loaded, cannot have.
+internal/core/tx.go Tx.touch condition: err != nil => false #3
+	count gives 0 with its error, so the test of first that follows gives back the error.
+internal/core/tx.go Tx.spoolTouched condition: err != nil => false
+	No test can reach it: the transaction has read the table, so lookUp finds it in the map of the connection and reads nothing.
+internal/core/tx.go Tx.spoolTouched remove statement: return 0, err =>
+	No test can reach it: the transaction has read the table, so lookUp finds it in the map of the connection and reads nothing.
+internal/core/tx.go Tx.spoolTouched constant: return 0, err => return 1, err
+	No test can reach it: the transaction has read the table, so lookUp finds it in the map of the connection and reads nothing.
+internal/core/tx.go Tx.spoolTouched condition: t == nil => false
+	No test can reach it: a table whose keys the transaction touched, and which it did not drop, is in the cache.
+internal/core/tx.go Tx.spoolTouched condition: err != nil => false #2
+	readRow fails only for a value of no fundamental type of SQLite, which sqlite3_column_type never gives.
+internal/core/tx.go Tx.spoolTouched remove statement: return err =>
+	readRow fails only for a value of no fundamental type of SQLite, which sqlite3_column_type never gives.
+internal/core/tx.go Tx.spoolTouched condition: err != nil => false #5
+	readRow fails only for a value of no fundamental type of SQLite, which sqlite3_column_type never gives.
+internal/core/tx.go Tx.spoolTouched remove statement: return err => #3
+	readRow fails only for a value of no fundamental type of SQLite, which sqlite3_column_type never gives.
+internal/core/tx.go Tx.spoolTouched condition: err != nil => false #3
+	The planted bug keyTwice: its first write of the row fails only as the second does, which the writer keeps and gives again.
+internal/core/tx.go Tx.spoolTouched remove statement: return err => #2
+	The planted bug keyTwice: its first write of the row fails only as the second does, which the writer keeps and gives again.
+internal/core/tx.go Tx.spoolTouched condition: err != nil => false #4
+	SQLite rolls the transaction back when a read fails in it, so the commit fails at a later step with a local failure either way and writes no commit object, which TestTx_readFails shows.
+internal/core/tx.go Tx.spoolTouched remove statement: return 0, err => #2
+	SQLite rolls the transaction back when a read fails in it, so the commit fails at a later step with a local failure either way and writes no commit object, which TestTx_readFails shows.
+internal/core/tx.go Tx.spoolTouched constant: return 0, err => return 1, err #2
+	The number of changes is not used with an error.
+internal/core/tx.go Tx.spoolTouched condition: err != nil => false #6
+	SQLite rolls the transaction back when a read fails in it, so the commit fails at a later step with a local failure either way and writes no commit object.
+internal/core/tx.go Tx.spoolTouched remove statement: return 0, err => #3
+	SQLite rolls the transaction back when a read fails in it, so the commit fails at a later step with a local failure either way and writes no commit object.
+internal/core/tx.go Tx.spoolTouched constant: return 0, err => return 1, err #3
+	The number of changes is not used with an error.
+internal/core/tx.go Tx.spoolTouched remove statement: row = tx.committed(t, row) =>
+	The planted bugs blobCut and nullZero are then planted only in the rows of the tables that the transaction created, and are found by those.
+internal/core/tx.go Tx.committed condition: v.WhichKind() == s4qlpb.Value_Blob_case => true
+	GetBlob of a value that is not a blob is nil, which holds no zero byte, so the planted bug blobCut leaves it as it is; no test plants blobCut beside nullZero, whose case it would then hide.
+internal/core/tx.go Tx.committed constant: bytes.IndexByte(v.GetBlob(), 0) => bytes.IndexByte(v.GetBlob(), 1)
+	The planted bug blobCut: it cuts a blob at another byte, and is found either way.
+internal/core/tx.go Tx.committed operator: j >= 0 => j > 0
+	The planted bug blobCut: it leaves a blob that starts with a zero byte, and is found by the others.
+internal/core/tx.go Tx.committed constant: j >= 0 => j >= 1
+	The planted bug blobCut: it leaves a blob that starts with a zero byte, and is found by the others.
+internal/core/tx.go Tx.dropTemps remove statement: tx.c.forget() =>
+	The statements that the connection keeps are reset after each use, so none of them holds up the drop of a temporary table.
+
+# The storage formats, internal/format: the checks of the values of slice 4.
+internal/format/check.go checkStored condition: v.WhichKind() == s4qlpb.Value_Real_case => true
+	GetReal gives 0.0 for a value that is not a real, and its sign is not set, so the check of -0.0 holds only for a real either way.

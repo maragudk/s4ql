@@ -865,13 +865,13 @@ func TestDB_stop_cache(t *testing.T) {
 	})
 
 	t.Run("should stop for good when another process adds to the cache a table that s4ql did not make", func(t *testing.T) {
-		for _, table := range []string{
-			"t9 (k any primary key) strict, without rowid",
-			"t9 (k int primary key, v any) strict, without rowid",
-			"t9 (k int) strict",
-			"t9 (k int primary key, v int default 0) strict, without rowid",
-			"t9 (k int primary key, v int not null default null) strict, without rowid",
-			"t9 (k int primary key default null) strict, without rowid",
+		for table, why := range map[string]string{
+			"t9 (k any primary key) strict, without rowid":        `the column "k" of its table "t9" has the type "ANY"`,
+			"t9 (k int primary key, v any) strict, without rowid": `the column "v" of its table "t9" has the type "ANY"`,
+			"t9 (k int) strict": `its table "t9" has 1 columns and a primary key of 0`,
+			"t9 (k int primary key, v int default 0) strict, without rowid":             `the column "v" of its table "t9" has the default "0"`,
+			"t9 (k int primary key, v int not null default null) strict, without rowid": `the column "v" of its table "t9" has the default "null"`,
+			"t9 (k int primary key default null) strict, without rowid":                 `the column "k" of its table "t9" has the default "null"`,
 		} {
 			w := newWorld(t)
 			d := w.serve(t, "a", core.Options{})
@@ -886,6 +886,7 @@ func TestDB_stop_cache(t *testing.T) {
 			_, err = r.Table(t.Context(), "t9")
 			is.Error(t, core.ErrLocal, err, table)
 			is.Error(t, core.ErrCacheVersion, err, table)
+			is.True(t, strings.Contains(err.Error(), why), err.Error())
 			_ = r.Close(t.Context())
 			is.True(t, isDone(d), table)
 		}
@@ -1292,12 +1293,14 @@ func TestOpen_cache(t *testing.T) {
 			"a busy timeout below zero":         {BusyTimeout: -time.Second},
 			"an object timeout below zero":      {ObjectTimeout: -time.Second},
 			"a watch interval below zero":       {Watch: -time.Second},
-			"a length limit below SQLite's":     {LengthLimit: 29},
+			"a length limit below 1000":         {LengthLimit: 999},
 			"a length limit above SQLite's":     {LengthLimit: 1_000_000_001},
 		} {
 			_, err := core.Open(t.Context(), w.host, w.client(), path, "db", options)
 			is.True(t, err != nil, name)
 		}
+		_, err := core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{LengthLimit: 999})
+		is.True(t, strings.Contains(fmt.Sprint(err), "the length limit 999 is not from 1000 to 1000000000"), fmt.Sprint(err))
 		for _, prefix := range []string{"/db", "db/", "a//b", ".", "a/../b", "a/./b", "\xff", strings.Repeat("x", 901)} {
 			_, err := core.Open(t.Context(), w.host, w.client(), path, prefix, core.Options{})
 			is.True(t, err != nil, prefix)
@@ -1306,7 +1309,7 @@ func TestOpen_cache(t *testing.T) {
 			_, err := core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{})
 			is.True(t, err != nil, path)
 		}
-		_, err := os.Stat(path)
+		_, err = os.Stat(path)
 		is.True(t, os.IsNotExist(err), "a cache was made")
 	})
 

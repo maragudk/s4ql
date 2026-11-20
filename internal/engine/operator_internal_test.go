@@ -432,6 +432,34 @@ func TestInsert(t *testing.T) {
 		is.True(t, errors.Is(err, context.Canceled))
 	})
 
+	t.Run("should check the type of each value of every row, and fail with an internal error for rows that its expressions do not match", func(t *testing.T) {
+		f := newFake().with("t", []string{"v"})
+		ct := f.tables["t"].ct
+		one := []Expr{&Integer{Value: 1}}
+		is.NotError(t, (&insert{w: fakeTx{f}, table: ct, src: ints(1, 2), exprs: [][]Expr{one, one}}).check())
+
+		src := ints(1)
+		src.data = append(src.data, []*s4qlpb.Value{s4qlpb.Value_builder{Text: new("a")}.Build()})
+		err := (&insert{w: fakeTx{f}, table: ct, src: src, exprs: [][]Expr{one, {&Text{Value: "a"}}}}).check()
+		is.True(t, errors.Is(err, stmt.ErrNotSupported))
+		is.Equal(t, "s4ql: not supported: a string literal for the column t.v of type INT", err.Error())
+
+		for _, c := range []struct {
+			i    *insert
+			want string
+		}{
+			{i: &insert{table: ct, src: ints(1, 2), exprs: [][]Expr{one}}, want: "an insert of 2 rows from 1 rows of expressions"},
+			{i: &insert{table: ct, src: ints(1), exprs: [][]Expr{one, one}}, want: "an insert of 1 rows from 2 rows of expressions"},
+			{i: &insert{table: ct, src: ints(1), exprs: [][]Expr{{}}}, want: "an insert of 1 values from 0 expressions into 1 columns"},
+			{i: &insert{table: ct, src: ints(1), exprs: [][]Expr{{one[0], one[0]}}}, want: "an insert of 1 values from 2 expressions into 1 columns"},
+			{i: &insert{table: ct, src: &values{data: [][]*s4qlpb.Value{{integer(1), integer(1)}}}, exprs: [][]Expr{{one[0], one[0]}}}, want: "an insert of 2 values from 2 expressions into 1 columns"},
+		} {
+			err := c.i.check()
+			is.True(t, errors.Is(err, ErrInternal), c.want)
+			is.Equal(t, "s4ql: internal error: "+c.want, err.Error())
+		}
+	})
+
 	t.Run("should ask the storage to measure a row whose key the table has before it fails, and pass on its error", func(t *testing.T) {
 		f := newFake().with("t", []string{"v"}, []int64{1})
 		_, err := (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1)}).run(t.Context())
@@ -600,6 +628,7 @@ func TestBuild(t *testing.T) {
 			{name: "an insert of a parameter without its argument", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Parameter{Number: 1}}}}}, err: "the parameter 1 of a statement with 0 arguments"},
 			{name: "an insert of the parameter 0", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Parameter{Number: 0}}}}}, err: "the parameter 0 of a statement with 0 arguments"},
 			{name: "a table without a key", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}}}, err: "a table of 1 columns with the key []"},
+			{name: "an insert of a blob literal that is nil", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Blob{}}}}}, err: "a blob literal of no bytes that is nil"},
 		}
 		for _, c := range cases {
 			t.Run(c.name, func(t *testing.T) {

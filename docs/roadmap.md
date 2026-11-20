@@ -234,6 +234,9 @@ Rejected as not supported, where SQLite would accept it:
 - A nil `[]byte`, as in slice 4. It does not say whether it means null or the empty blob.
 - `default`.
 - `is null` and `is not null`. They come with `where`, in slice 7.
+- A null after a sign, `-null` or `+null`. SQLite reads both as null.
+- The column constraint `null`, as in `v2 text null`. SQLite reads it as no constraint, so the column takes null with it as without it.
+- A null anywhere but as a value of an `insert`, such as `select null from t1`.
 
 ### Slice 7: `where` on `select`
 

@@ -55,6 +55,34 @@ var (
 	errPanicked = fmt.Errorf("%w: the statement panicked", ErrInternal)
 )
 
+// checkNulls of the statement s, which [stmt.Check] supports: "not supported" for the forms of
+// slice 6 that the engine does not run yet. They are a column that takes NULL, which is a column
+// that is not the primary key and does not say NOT NULL, and the literal NULL as a value of an
+// insert.
+func checkNulls(s stmt.Statement) error {
+	var what string
+	switch s := s.(type) {
+	case *stmt.CreateTable:
+		for _, c := range s.Columns {
+			if !c.PrimaryKey && !c.NotNull {
+				what = "a column that takes NULL"
+				break
+			}
+		}
+	case *stmt.Insert:
+		for _, v := range s.Values {
+			if _, ok := v.Value.(stmt.Null); ok {
+				what = "NULL as a value"
+				break
+			}
+		}
+	}
+	if what == "" {
+		return nil
+	}
+	return fmt.Errorf("%w: %v, which the engine does not run yet", stmt.ErrNotSupported, what)
+}
+
 // checkArguments of a statement with the given number of parameters: the error of [countArguments],
 // and then "not supported" for the first argument that is not a value that a column can hold, as
 // [checkArgument] says. Whether it is of the type of its column is checked when the statement runs,

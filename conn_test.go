@@ -418,8 +418,14 @@ func TestPrepare(t *testing.T) {
 		is.Equal(t, "column type other than INT, INTEGER, REAL, TEXT, or BLOB (at offset 23)", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values (1e999)")
 		is.Equal(t, "infinite real number (at offset 28)", notSupported(t, err))
+		_, err = db.PrepareContext(t.Context(), "create table t2 (v1 int primary key, v2 text null) strict, without rowid")
+		is.Equal(t, "NULL constraint (at offset 45)", notSupported(t, err))
+		// The pass supports a column that takes NULL and the literal NULL, and the engine does not run
+		// them yet.
 		_, err = db.PrepareContext(t.Context(), "create table t2 (v1 int primary key, v2 text) strict, without rowid")
-		is.Equal(t, "column without NOT NULL (at offset 44)", notSupported(t, err))
+		is.Equal(t, "a column that takes NULL, which the engine does not run yet", notSupported(t, err))
+		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values (null)")
+		is.Equal(t, "NULL as a value, which the engine does not run yet", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1, V1) values (1, 2)")
 		is.Equal(t, "column named twice (at offset 20)", notSupported(t, err))
 		// The type of a column is looked up when the statement runs, and so are the columns.

@@ -1,8 +1,9 @@
-// Package stmttest is a generator of random statements of slices 1, 2, 4, and 5, for tests: each
+// Package stmttest is a generator of random statements of slices 1, 2, 4, 5, and 6, for tests: each
 // statement is a text with the typed form of [maragu.dev/s4ql/internal/sql/stmt] that it holds, with
 // names from pools, keywords and types in any case, values of every type with weight on their edges,
 // and spaces and comments in every gap. The statements of slice 5, of several columns, come only when
-// a test asks for them, with [Generator.Columns].
+// a test asks for them, with [Generator.Columns], and those of slice 6, with NULL, with
+// [Generator.Nulls].
 //
 // The generator draws its random numbers from a [Rand] that the test gives it, so that a test
 // chooses its seed and its generator of numbers.
@@ -130,7 +131,7 @@ const (
 	KindDropTable
 )
 
-// Generator of random statements of slices 1, 2, 4, and 5.
+// Generator of random statements of slices 1, 2, 4, 5, and 6.
 type Generator struct {
 	r Rand
 	// pools of names, for each [Position].
@@ -161,7 +162,13 @@ type Generator struct {
 	// Select, if not nil, gives the select list of a select of the table with [Generator.Columns], as
 	// the raw text of each name, or nil for *, in place of a select list at random.
 	Select func(table stmt.Name) []string
-	b      strings.Builder
+	// Nulls, if not 0, makes the generator write the forms of slice 6: one column in Nulls of a create
+	// table with [Generator.Columns] that is not the primary key is without NOT NULL, and takes NULL,
+	// and one value in Nulls of an insert that does not come from [Generator.Insert] is NULL, as a
+	// literal or, with [Generator.Parameters], as a ? with a nil argument. With 0 the generator draws as
+	// it did before slice 6.
+	Nulls int
+	b     strings.Builder
 }
 
 // NewGenerator with the random numbers of r and a pool of names for each [Position]. Each name of a
@@ -254,8 +261,12 @@ func nameOf(raw string, offset int) stmt.Name {
 	return stmt.Name{Raw: raw, Value: value, Offset: offset}
 }
 
-// value of an insert into the table: from [Generator.Value], or of a type at random.
+// value of an insert into the table: NULL one time in [Generator.Nulls], and otherwise from
+// [Generator.Value], or of a type at random.
 func (g *Generator) value(table stmt.Name) stmt.Value {
+	if g.Nulls > 0 && g.r.IntN(g.Nulls) == 0 {
+		return stmt.Null{}
+	}
 	if g.Value != nil {
 		return g.Value(table)
 	}
@@ -272,9 +283,9 @@ func (g *Generator) columnType(table stmt.Name) stmt.Type {
 
 // columns of a create table of the table, of slice 5: from 1 to [Generator.Columns] of them, with
 // the primary key at any position, which says NOT NULL too before PRIMARY KEY one time in three and
-// after it one time in three, and every other column NOT NULL. Their names are from the pool of [CreateColumn], so
-// that two of them can have one name, which SQLite refuses. [Generator.Create] can give the names,
-// the types, and the key instead.
+// after it one time in three, and every other column NOT NULL, but for one in [Generator.Nulls].
+// Their names are from the pool of [CreateColumn], so that two of them can have one name, which
+// SQLite refuses. [Generator.Create] can give the names, the types, and the key instead.
 func (g *Generator) columns(table stmt.Name) []stmt.Column {
 	var shapes []stmt.Column
 	if g.Create != nil {
@@ -321,6 +332,8 @@ func (g *Generator) columns(table stmt.Name) []stmt.Column {
 			g.keyword("key")
 		}
 		switch {
+		case !c.PrimaryKey && g.Nulls > 0 && g.r.IntN(g.Nulls) == 0:
+			// The column takes NULL.
 		case !c.PrimaryKey:
 			notNull()
 		case g.r.IntN(3) == 0:

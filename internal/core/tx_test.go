@@ -2155,7 +2155,8 @@ func TestTx_types(t *testing.T) {
 			is.Equal(t, committed.text(), read(t, d))
 
 			// A second transaction gets every key, also as it was given, deletes every other one,
-			// and upserts again one that it deleted, in a table that existed before it.
+			// upserts a key that existed and then deletes it, and upserts again one that it deleted,
+			// in a table that existed before it.
 			m = newTx(committed)
 			tx, err = d.Begin(ctx)
 			is.NotError(t, err)
@@ -2171,6 +2172,22 @@ func TestTx_types(t *testing.T) {
 					is.Equal(t, want, found, text([]*s4qlpb.Value{k}))
 				}
 			}
+			// The row of the key keys[1] existed, and is not deleted above: the commit object deletes
+			// it, and has no upsert of it.
+			existed := []*s4qlpb.Value{keys[1]}
+			for _, other := range types {
+				existed = append(existed, edges[other][1])
+			}
+			for range types {
+				existed = append(existed, row(nil)[0])
+			}
+			is.NotError(t, tx.Upsert(ctx, ct.GetTable(), existed))
+			m.upsert(ct.GetTable(), existed)
+			_, want := m.remove(ct.GetTable(), existed[:1])
+			is.True(t, want, "the row of "+text(existed[:1])+" is there")
+			found, err := tx.Delete(ctx, ct.GetTable(), existed[:1])
+			is.NotError(t, err)
+			is.True(t, found, text(existed[:1]))
 			again := []*s4qlpb.Value{keys[0]}
 			for _, other := range types {
 				again = append(again, edges[other][len(edges[other])-1])
@@ -2271,10 +2288,16 @@ func TestTx_types(t *testing.T) {
 			}
 			for _, v := range refused {
 				what := typeName(typ) + " " + text([]*s4qlpb.Value{v})
-				is.Error(t, core.ErrInvalid, tx.Upsert(ctx, name, []*s4qlpb.Value{v, good}), what)
-				is.Error(t, core.ErrInvalid, tx.Upsert(ctx, name, []*s4qlpb.Value{good, v}), what)
-				_, err := tx.Delete(ctx, name, []*s4qlpb.Value{v})
+				// The error names the column and the table of the value.
+				for position, row := range [][]*s4qlpb.Value{{v, good}, {good, v}} {
+					err := tx.Upsert(ctx, name, row)
+					is.Error(t, core.ErrInvalid, err, what)
+					where := fmt.Sprintf("in the column %q of the table %q", fmt.Sprint("c", position), name)
+					is.True(t, strings.Contains(err.Error(), where), what+": "+err.Error())
+				}
+				found, err := tx.Delete(ctx, name, []*s4qlpb.Value{v})
 				is.Error(t, core.ErrInvalid, err, what)
+				is.True(t, !found, what)
 				_, err = tx.Get(ctx, name, []*s4qlpb.Value{v})
 				is.Error(t, core.ErrInvalid, err, what)
 			}
@@ -2283,6 +2306,108 @@ func TestTx_types(t *testing.T) {
 		is.NotError(t, tx.Commit(ctx))
 		// Only the creates and the good rows.
 		is.Equal(t, 2*len(types), len(w.commits(t)[0]))
+	})
+
+	t.Run("should refuse a row of another number of values than columns, and a key whose later value is not of its column", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		ctx := t.Context()
+		tx, err := d.Begin(ctx)
+		is.NotError(t, err)
+		// A table whose primary key is its two columns, a text and a real.
+		ct := typedTable("two", s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_REAL)
+		ct.SetPrimaryKey([]uint32{0, 1})
+		is.NotError(t, tx.CreateTable(ctx, ct))
+
+		err = tx.Upsert(ctx, "two", row("a"))
+		is.Error(t, core.ErrInvalid, err)
+		is.True(t, strings.Contains(err.Error(), `a row of 1 values for the table "two", which has 2 columns`), err.Error())
+		err = tx.Upsert(ctx, "two", row("a", 1.5, 2.5))
+		is.True(t, strings.Contains(err.Error(), `a row of 3 values for the table "two", which has 2 columns`), err.Error())
+
+		found, err := tx.Delete(ctx, "nosuch", row(1))
+		is.Error(t, core.ErrNoTable, err)
+		is.True(t, !found)
+		for _, key := range [][]*s4qlpb.Value{row("a", "b"), row("a", math.NaN())} {
+			found, err = tx.Delete(ctx, "two", key)
+			is.Error(t, core.ErrInvalid, err, text(key))
+			is.True(t, !found, text(key))
+			is.True(t, strings.Contains(err.Error(), `in the column "c1" of the table "two"`), err.Error())
+			_, err = tx.Get(ctx, "two", key)
+			is.Error(t, core.ErrInvalid, err, text(key))
+		}
+		is.NotError(t, tx.Rollback(ctx))
+	})
+}
+
+func TestTx_readFails(t *testing.T) {
+	// key of the row i, of 900 bytes, so that the rows take more pages than SQLite's page cache
+	// holds and SQLite reads some of them from the file again.
+	key := func(i int) string { return fmt.Sprintf("%0900d", i) }
+	const rows = 4000
+	setUp := func(t *testing.T) (*faultvfs.VFS, *world, *core.DB) {
+		t.Helper()
+		vfs, err := faultvfs.New()
+		is.NotError(t, err)
+		w := newWorld(t)
+		o := core.Options{}
+		o.VFS = vfs.Name()
+		d := w.serve(t, "a", o)
+		transact(t, d, func(t *testing.T, tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(t.Context(), typedTable("t", s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_INT)))
+			for i := range rows {
+				is.NotError(t, tx.Upsert(t.Context(), "t", row(key(i), i)))
+			}
+		})
+		return vfs, w, d
+	}
+	reads := faultvfs.Fault{Ops: faultvfs.Read, Files: faultvfs.MainDB | faultvfs.WAL}
+
+	t.Run("should fail the transaction for an upsert into a table that existed, when SQLite cannot read whether the row is there", func(t *testing.T) {
+		vfs, _, d := setUp(t)
+		ctx := t.Context()
+		tx, err := d.Begin(ctx)
+		is.NotError(t, err)
+		// Only the first read fails, which is that of the row before the upsert writes it.
+		once := reads
+		once.Times = 1
+		vfs.Fail(once)
+		for i := range rows {
+			if err = tx.Upsert(ctx, "t", row(key(i), -i)); err != nil {
+				break
+			}
+		}
+		is.True(t, vfs.Failures() > 0, "no read failed")
+		is.Error(t, core.ErrLocal, err)
+		vfs.Fail(faultvfs.Fault{})
+		_ = tx.Rollback(ctx)
+		_ = d.Close(ctx)
+		is.NotError(t, vfs.Close())
+	})
+
+	t.Run("should fail the commit, and write no commit object, when SQLite cannot read the rows that the transaction touched", func(t *testing.T) {
+		vfs, w, d := setUp(t)
+		ctx := t.Context()
+		head := w.manifest(t).Head
+		tx, err := d.Begin(ctx)
+		is.NotError(t, err)
+		for i := 0; i < rows; i += 2 {
+			is.NotError(t, tx.Upsert(ctx, "t", row(key(i), -i)))
+			_, err := tx.Delete(ctx, "t", row(key(i+1)))
+			is.NotError(t, err)
+		}
+		// Only the first read fails, which is that of the rows that the transaction upserted, so that
+		// every later step of the commit would work.
+		once := reads
+		once.Times = 1
+		vfs.Fail(once)
+		err = tx.Commit(ctx)
+		is.True(t, vfs.Failures() > 0, "no read failed")
+		is.True(t, err != nil, "the commit succeeded")
+		is.Equal(t, head, w.manifest(t).Head, "the log has a new commit object")
+		vfs.Fail(faultvfs.Fault{})
+		_ = d.Close(ctx)
+		is.NotError(t, vfs.Close())
 	})
 }
 
@@ -2371,6 +2496,92 @@ func TestTx_tooBig(t *testing.T) {
 	// limit is the length limit of the cache in these tests, which SQLite does not raise.
 	const limit = 1000
 	options := core.Options{LengthLimit: limit}
+
+	t.Run("should fail the transaction for a write that fails locally, which is not one that is too big", func(t *testing.T) {
+		// The connections to the cache are closed by the cleanups that are registered later, which
+		// run first.
+		vfs, err := faultvfs.New()
+		is.NotError(t, err)
+		t.Cleanup(func() { is.NotError(t, vfs.Close()) })
+		w := newWorld(t)
+		o := options
+		o.VFS = vfs.Name()
+		d := w.serve(t, "a", o)
+		ctx := t.Context()
+		tx, err := d.Begin(ctx)
+		is.NotError(t, err)
+		is.NotError(t, tx.CreateTable(ctx, typedTable("t", s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_BLOB)))
+		// The rows take more pages than SQLite's page cache holds, so SQLite writes pages to the
+		// write-ahead log before the commit, and every such write fails.
+		vfs.Fail(faultvfs.Fault{Ops: faultvfs.Write, Files: faultvfs.WAL})
+		for i := range 100000 {
+			err = tx.Upsert(ctx, "t", row(i, bytes.Repeat([]byte{1}, 900)))
+			if err != nil {
+				break
+			}
+		}
+		is.True(t, vfs.Failures() > 0, "no write failed")
+		is.Error(t, core.ErrLocal, err)
+		is.True(t, !errors.Is(err, core.ErrTooBig), "a local failure is too big")
+		is.True(t, tx.Upsert(ctx, "t", row(-1, []byte{})) != nil, "the transaction goes on")
+		found, err := tx.Delete(ctx, "t", row(0))
+		is.True(t, err != nil && !found, "the transaction goes on")
+		vfs.Fail(faultvfs.Fault{})
+		_ = tx.Rollback(ctx)
+		_ = d.Close(ctx)
+	})
+
+	t.Run("should fail the transaction for an upsert or a delete that fails locally, also where it records the keys that it touched", func(t *testing.T) {
+		// The keys take more pages than SQLite's page caches hold, so SQLite writes pages of the
+		// table to the write-ahead log, and pages of the temporary tables of the keys that the
+		// transaction touched to a temporary file, before the commit.
+		key := func(i int) string { return fmt.Sprintf("%0900d", i) }
+		for _, c := range []struct {
+			files  faultvfs.File
+			delete bool
+		}{{faultvfs.WAL, true}, {faultvfs.Temp, true}, {faultvfs.Temp, false}} {
+			what := fmt.Sprint("files ", c.files, ", delete ", c.delete)
+			vfs, err := faultvfs.New()
+			is.NotError(t, err)
+			w := newWorld(t)
+			o := options
+			o.VFS = vfs.Name()
+			d := w.serve(t, "a", o)
+			ctx := t.Context()
+			const rows = 4000
+			transact(t, d, func(t *testing.T, tx *core.Tx) {
+				is.NotError(t, tx.CreateTable(ctx, typedTable("t", s4qlpb.Type_TYPE_TEXT)))
+				for i := range rows {
+					is.NotError(t, tx.Upsert(ctx, "t", row(key(i))))
+				}
+			})
+			tx, err := d.Begin(ctx)
+			is.NotError(t, err)
+			vfs.Fail(faultvfs.Fault{Ops: faultvfs.Write, Files: c.files})
+			found := true
+			for i := range rows {
+				if c.delete {
+					found, err = tx.Delete(ctx, "t", row(key(i)))
+					if err == nil {
+						is.True(t, found, what)
+					}
+				} else {
+					err = tx.Upsert(ctx, "t", row(key(i)))
+				}
+				if err != nil {
+					break
+				}
+			}
+			is.True(t, vfs.Failures() > 0, "no write failed: "+what)
+			is.Error(t, core.ErrLocal, err, what)
+			is.True(t, !errors.Is(err, core.ErrTooBig), what)
+			is.True(t, !c.delete || !found, "a delete that failed found its row: "+what)
+			vfs.Fail(faultvfs.Fault{})
+			_ = tx.Rollback(ctx)
+			_ = d.Close(ctx)
+			is.NotError(t, vfs.Close(), what)
+		}
+	})
 
 	// sqliteTakes reports whether SQLite's own table of the same shape, under the same limit,
 	// takes the row, and fails the test for any other error than "string or blob too big".
@@ -2475,6 +2686,8 @@ func TestTx_tooBig(t *testing.T) {
 				if long != nil {
 					_, err := tx.Get(ctx, "t", long)
 					is.Error(t, core.ErrTooBig, err)
+					want := fmt.Sprintf(`a value of %v bytes in the column "c0" of the table "t", where the limit is %v`, limit+1, limit)
+					is.True(t, strings.Contains(err.Error(), want), err.Error())
 					_, err = tx.Delete(ctx, "t", long)
 					is.Error(t, core.ErrTooBig, err)
 				}
