@@ -23,7 +23,7 @@ import (
 // key at any position. Nine create tables of the name in ten declare that shape, its names in any of
 // their spellings, and one of these in ten gives one column any type; the tenth has columns at
 // random, whose names can repeat, which SQLite refuses. An insert into a table of the name names the
-// columns of the shape in a list in any order, or two times in three without a list, in the order of
+// columns of the shape in a list in any order, or one time in three without a list, in the order of
 // the shape, with a value of the type of each column. Now and then it leaves a column out of its
 // list, names a column that the shape may not have, has a value more or less, or has a value of any
 // type, which is mostly another than its column, for one column or for two; so some inserts have two
@@ -31,7 +31,7 @@ import (
 // name that the shape may not have. The small sets of values hold keys that SQLite takes for one,
 // such as 0.0 and -0.0, so that every type meets a key that exists.
 //
-// One insert in three has a plain ? with its value as the argument, and some calls, as
+// One value in three of an insert is a plain ? with the value as its argument, and some calls, as
 // [Sequence.Next] says, have arguments around those that s4ql supports: none for a ?, one for a
 // statement without one, two for a ?, one that no column holds, one with a name, or a value of
 // another Go type that s4ql supports.
