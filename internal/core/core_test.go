@@ -873,6 +873,8 @@ func TestDB_stop_cache(t *testing.T) {
 			"t9 (k int primary key, v int default 0) strict, without rowid":             `the column "v" of its table "t9" has the default "0"`,
 			"t9 (k int primary key, v int not null default null) strict, without rowid": `the column "v" of its table "t9" has the default "null"`,
 			"t9 (k int primary key default null) strict, without rowid":                 `the column "k" of its table "t9" has the default "null"`,
+			// SQLite reports the key of a table that is not STRICT as a column that takes NULL.
+			"t9 (k int primary key default null)": `the column "k" of its table "t9" has the default "null"`,
 		} {
 			w := newWorld(t)
 			d := w.serve(t, "a", core.Options{})
