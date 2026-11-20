@@ -70,7 +70,7 @@ type columnsSeed struct {
 	limit uint8
 }
 
-// columnsSeeds of [FuzzColumns]: for each of four shapes, inputs that reach each form of
+// columnsSeeds of [FuzzColumns]: for each of five shapes, inputs that reach each form of
 // [columnsCalls] by hand, after four rows: each list of columns, NULL in a column that takes it and
 // in one that does not, each fault, a value of another type in each column, each kind of select, a
 // WHERE on each column, and values about the lowered length limit of 1001 bytes, where a value or a
@@ -91,6 +91,9 @@ func columnsSeeds() []columnsSeed {
 		{columnsSeedShape{types: []int{3, 4, 0, 3}, nullable: []bool{true, true, false, false}, key: 3}, 0, 16},
 		// Four INT columns, none of which takes NULL.
 		{columnsSeedShape{types: []int{0, 0, 0, 0}, nullable: []bool{false, false, false, false}, key: 1}, 1, 0},
+		// Three columns: TEXT that does not take NULL, an INT key, and BLOB that takes NULL, so that two
+		// values beside a key of a few bytes make a record that is too long.
+		{columnsSeedShape{types: []int{3, 0, 4}, nullable: []bool{false, false, true}, key: 1}, 0, 0},
 	}
 	var seeds []columnsSeed
 	for _, sh := range shapes {
@@ -99,7 +102,9 @@ func columnsSeeds() []columnsSeed {
 		for _, group := range [][][]byte{s.lists(), s.faults(), s.typesAndSelects(), s.wheres()} {
 			seeds = append(seeds, columnsSeed{data: slices.Concat(head, slices.Concat(group...))})
 		}
-		seeds = append(seeds, columnsSeed{data: slices.Concat(head, slices.Concat(s.long()...)), limit: 1})
+		if long := s.long(); long != nil {
+			seeds = append(seeds, columnsSeed{data: slices.Concat(head, slices.Concat(long...)), limit: 1})
+		}
 	}
 	r := rand.New(rand.NewPCG(5, 6))
 	for j := range 40 {
@@ -243,12 +248,12 @@ func (s columnsSeedShape) lists() [][]byte {
 		c = append(c, value(j, s.newKey(0, false), false)...)
 	}
 	calls = append(calls, c)
-	// The list shuffled.
+	// The list shuffled, by bytes 0, which move it for every count of columns.
 	c = []byte{2 << 1, 0b10011001}
 	for range len(s.types) - 1 {
-		c = append(c, 1)
+		c = append(c, 0)
 	}
-	for _, j := range seedShuffled(s.all(), 1) {
+	for _, j := range seedShuffled(s.all(), 0) {
 		c = append(c, value(j, s.newKey(1, true), true)...)
 	}
 	calls = append(calls, c)
@@ -363,8 +368,12 @@ func (s columnsSeedShape) wheres() [][]byte {
 // long of the shape: inserts of text and blobs about the lowered length limit of 1001 bytes, as
 // literals and as arguments: 800 bytes in each column of either type, which make a record that is
 // too long where two columns hold them, and 1,000 bytes and 1,005 bytes, which is too long, in the
-// first column of either type. The key is new where it is not long.
+// first column of either type. The key is new where it is not long. It is nil for a shape without
+// a column of either type.
 func (s columnsSeedShape) long() [][]byte {
+	if !slices.ContainsFunc(s.types, func(typ int) bool { return whereTypes[typ] == "text" || whereTypes[typ] == "blob" }) {
+		return nil
+	}
 	var calls [][]byte
 	for r, length := range []byte{160, 200, 201} {
 		for a, arg := range []bool{false, true} {
@@ -419,29 +428,35 @@ func (in *columnsInput) take(n int) []byte {
 }
 
 // columnsCalls of [FuzzColumns], from the bytes data: a create table of the table t and up to 16
-// inserts and selects on it, then a select of every column.
+// inserts and selects on it, then a select of every column. Once data is read, every byte is 0.
 //
 // The create table reads a byte for the count of columns, two to four, a byte for the index of the
-// key, a byte for each column, and a byte for the order of the options. The byte of a column chooses
-// its type, one of the five, by its lowest three bits modulo 5, and with 8 a column that is not the key takes
-// NULL and the key says NOT NULL after PRIMARY KEY, and with 16 the key says it before. A column
-// that is not the key and does not take NULL says NOT NULL. The columns are c0 to c3.
+// key, a byte for each column, and a byte for the order of the options. The byte of a column
+// chooses its type, one of the five, by its lowest three bits modulo 5. With 8, a column that is not
+// the key takes NULL, and the key says NOT NULL after PRIMARY KEY; with 16, the key says it before.
+// A column that is not the key and does not take NULL says NOT NULL. The columns are c0 to c3.
 //
 // After that each call reads an op byte, which is an insert if it is even and a select if not, while
-// the input has bytes. Bit 6 of the op names the table T. An insert reads a byte whose bits 2j and
-// 2j+1 spell the name of column j in its list (see [columnsName]), and its op chooses by bits 1 and
-// 2 a list of columns: none, the columns in the order of the table, the columns shuffled by a byte
-// each, or the columns of the bits of a byte, at least one, shuffled. Bits 3 to 5 choose a fault,
-// for 1 to 4: a value more, a value fewer, a name of the list replaced by x, which the table does
-// not have, or a name of the list twice, which s4ql does not support; and none for 0 and 5 to 7. The
-// last two need a list. Each value
-// is as [columnsValue] gives it for the type of its column, or of the key for x.
+// the input has bytes. Bit 6 of the op names the table T.
 //
-// A select is of every column, or with bit 1 of named columns, one to four by bits 2 and 3, each by
-// a byte whose value modulo the count of columns and one is c0 to c3 or x and whose bits 4 and 5
-// spell it. Bits 4 and 5 of the op give the number of conditions of its WHERE, zero to three, each by
-// a byte for the column as for a name of the list, a byte for one of the operators of slice 7, and
-// for a comparison a value of the type of the column, or of the key for x.
+// An insert reads, in this order: a byte whose bits 2j and 2j+1 spell the name of column j in its
+// list (see [columnsName]); the bytes of its list, which bits 1 and 2 of the op choose: none for no
+// list, none for the columns in the order of the table, a byte for each column but the first to
+// shuffle the columns, or a byte whose bits 0 to 3 keep the columns and then a byte for each kept
+// column but the first to shuffle them, where a byte that keeps none keeps the column of its bits 4
+// to 7; the byte of its fault, if the fault reads one; and its values. Bits 3 to 5 of the op choose
+// the fault: for 1 a value more, for the column of a byte; for 2 a value fewer, where there are two
+// or more; for 3 the name at the position of a byte replaced by x, which the table does not have;
+// for 4 the name at the position of a byte twice, which s4ql does not support; and no fault for 0
+// and for 5 to 7. Faults 3 and 4 need a list, and read no byte without one. Each value is as
+// [columnsValue] gives it for the type of its column, or of the key for x.
+//
+// A select is of every column, or with bit 1 of the op of named columns, one to four by bits 2 and 3,
+// each by a byte whose bits 0 to 3, modulo the count of columns and one, are c0 to c3 or x, and whose
+// bits 4 and 5 spell it. Bits 4 and 5 of the op give the number of conditions of its WHERE, zero to
+// three, each by a byte for the column as for a name of the list, a byte for one of the ten
+// operators of slice 7 in their spellings, and for a comparison a value of the type of the column,
+// or of the key for x.
 func columnsCalls(data []byte) []stmttest.Call {
 	in := columnsInput(data)
 	n := 2 + int(in.next())%3
@@ -591,7 +606,7 @@ func columnsSelect(s columnsShape, in *columnsInput, op byte) stmttest.Call {
 		var names []string
 		for range 1 + int(op>>2%4) {
 			b := in.next()
-			names = append(names, columnsName(s, int(b)%(n+1), b>>4&3))
+			names = append(names, columnsName(s, int(b&15)%(n+1), b>>4&3))
 		}
 		list = strings.Join(names, ", ")
 	}
@@ -599,7 +614,7 @@ func columnsSelect(s columnsShape, in *columnsInput, op byte) stmttest.Call {
 	ops := []string{"=", "==", "!=", "<>", "<", "<=", ">", ">=", "is null", "is not null"}
 	for range int(op >> 4 % 4) {
 		b := in.next()
-		j := int(b) % (n + 1)
+		j := int(b&15) % (n + 1)
 		operator := ops[int(in.next())%len(ops)]
 		condition := columnsName(s, j, b>>4&3) + " " + operator
 		if !strings.HasPrefix(operator, "is") {
