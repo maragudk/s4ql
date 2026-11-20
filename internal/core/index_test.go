@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"maragu.dev/is"
 
@@ -693,6 +694,55 @@ func TestReplay_indexes(t *testing.T) {
 			is.True(t, w.manifest(t).Lease == nil, "the lease is not released")
 		})
 	}
+
+	t.Run("should keep nothing of a commit object that breaks off after it created an index, and apply it when it comes whole", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			l := newHandLog(t, w)
+			l.commit(func(cw *format.CommitWriter) {
+				is.NotError(t, cw.CreateTable(tableOf("t1", 1, "k", "v")))
+				// The first index is there when the rows come, and the second is built from them.
+				is.NotError(t, cw.CreateIndex(indexOf("i1", "t1", desc(1))))
+				for i := range 1000 {
+					is.NotError(t, cw.UpsertRow("t1", []uint32{0, 1}, row(i, i%7)))
+				}
+				is.NotError(t, cw.CreateIndex(indexOf("i2", "t1", 1, desc(0))))
+			})
+			l.publish()
+			s := newScriptStore(w.client())
+			// The walk back through the log reads the commit object once, whole. Every download to
+			// apply it breaks off in the middle of its rows, after the table and its first index.
+			s.on("get", "commits/", pass, 1)
+			s.on("get", "commits/", breakOff, -1)
+			d := w.openOn(t, "a", s, core.Options{})
+
+			time.Sleep(time.Minute)
+			is.True(t, !serves(t, d))
+			is.NotError(t, d.Err())
+			is.True(t, s.count("get", "commits/") > 3, "the download was not tried again")
+			position, state, err := cacheDump(filepath.Join(w.dir, "a.db"))
+			is.NotError(t, err)
+			is.Equal(t, format.EmptyLog, position)
+			is.Equal(t, "", show(state))
+
+			s.clear()
+			is.NotError(t, d.Wait(t.Context()))
+			r, err := startRead(t, d)
+			is.NotError(t, err)
+			indexes, err := r.Indexes(t.Context(), "t1")
+			is.NotError(t, err)
+			is.Equal(t, " +i1(1 desc) +i2(1,0 desc)", describeIndexes(indexes))
+			for _, index := range []string{"i1", "i2"} {
+				is.Equal(t, 1000, len(scanBy(t, r, "t1", core.IndexScan{Index: index})))
+				is.Equal(t, 143, len(scanBy(t, r, "t1", core.IndexScan{Index: index, Equal: row(0)})))
+			}
+			is.NotError(t, r.Close(t.Context()))
+			// The integrity check of the cache passes, with both indexes.
+			position, state, err = cacheDump(filepath.Join(w.dir, "a.db"))
+			is.NotError(t, err)
+			is.Equal(t, l.head, position)
+			is.Equal(t, 1, len(state))
+		})
+	})
 }
 
 func TestOpen_cache_indexes(t *testing.T) {
