@@ -2110,6 +2110,10 @@ func newWhereTrio(t *testing.T, setup ...string) *whereTrio {
 	var all engine.Options
 	all.ScanAll()
 	w := &whereTrio{t: t, byKey: newInstance(t, engine.Options{}), all: newInstance(t, all), o: newOracle(t)}
+	// The comparison of rows cannot tell the two engines apart, so the option of the one that reads
+	// every row must reach its engine.
+	is.True(t, w.all.e.ScansAll(), "the engine of options with ScanAll reads every row")
+	is.True(t, !w.byKey.e.ScansAll(), "the engine of options without ScanAll reads by the key")
 	for _, src := range setup {
 		w.exec(src)
 	}
