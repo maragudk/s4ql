@@ -2608,6 +2608,25 @@ func TestTx_tooBig(t *testing.T) {
 		}
 	})
 
+	t.Run("should refuse a create table whose declaration in the cache is longer than the limit, and commit nothing of it", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", options)
+		ctx := t.Context()
+		head := w.manifest(t).Head
+		// SQLite stores the text of the declaration in sqlite_schema, where it is longer than the
+		// limit.
+		long := tableOf("t", 1, "k", strings.Repeat("v", limit))
+		tx, err := d.Begin(ctx)
+		is.NotError(t, err)
+		err = tx.CreateTable(ctx, long)
+		is.True(t, err != nil, "the create table succeeded")
+		_, err = tx.Table(ctx, "t")
+		is.True(t, err != nil, "the transaction goes on")
+		is.True(t, tx.Commit(ctx) != nil, "the commit succeeded")
+		is.Equal(t, head, w.manifest(t).Head, "the log has a new commit object")
+		_ = d.Close(ctx)
+	})
+
 	t.Run("should fail the transaction, and write no commit object, where the temporary tables of the keys that it touched cannot be created or dropped", func(t *testing.T) {
 		// The keys of t take more pages than SQLite's page cache of the temporary tables holds, so
 		// SQLite writes those pages to the temporary file and reads them back, and a create or a drop
