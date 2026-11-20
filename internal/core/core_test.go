@@ -1329,6 +1329,46 @@ func TestOpen_cache(t *testing.T) {
 		is.Equal(t, int64(1), cacheVersion(t, path))
 	})
 
+	t.Run("should fail to open a cache of version 1 or 2 as a local failure, and never as a cache of another version or database, whichever read of the open fails", func(t *testing.T) {
+		w := newWorld(t)
+		v := newVersionOne(t, w)
+		v.write(t, filepath.Join(w.dir, "1.db"))
+		is.NotError(t, w.serve(t, "2", core.Options{}).Close(t.Context()))
+		vfs, err := faultvfs.New()
+		is.NotError(t, err)
+		defer func() { is.NotError(t, vfs.Close()) }()
+		options := core.Options{}
+		options.VFS = vfs.Name()
+		for _, version := range []string{"1", "2"} {
+			data, err := os.ReadFile(filepath.Join(w.dir, version+".db"))
+			is.NotError(t, err)
+			// Each open gets a copy of the cache, so that the reads of every open are the same, and the
+			// read that fails is the one after the reads that succeed, until no read of the open fails.
+			failed := 0
+			for after := 0; ; after++ {
+				what := fmt.Sprint("version ", version, ", read ", after)
+				path := filepath.Join(w.dir, fmt.Sprint(version, "-", after, ".db"))
+				is.NotError(t, os.WriteFile(path, data, 0o600))
+				before := vfs.Failures()
+				vfs.Fail(faultvfs.Fault{Ops: faultvfs.Read, Files: faultvfs.MainDB | faultvfs.WAL, After: after, Times: 1})
+				d, err := core.Open(t.Context(), w.host, w.client(), path, "db", options)
+				if err == nil {
+					// The task of the lease can read the cache before the fault is disarmed, and its
+					// failure would be that of the close.
+					vfs.Fail(faultvfs.Fault{})
+					_ = d.Close(t.Context())
+					break
+				}
+				failed++
+				is.True(t, vfs.Failures() > before, "the open failed, and no read failed: "+what)
+				is.Error(t, core.ErrLocal, err, what)
+				is.True(t, !errors.Is(err, core.ErrCacheVersion) && !errors.Is(err, core.ErrCacheDatabase), what+": "+err.Error())
+			}
+			// An open reads at least the header of the file, the schema, and the record of the cache.
+			is.True(t, failed >= 3, fmt.Sprint("only ", failed, " opens of version ", version, " failed"))
+		}
+	})
+
 	t.Run("should open a cache of version 2 while another connection holds its write lock, and refuse to upgrade one of version 1 then, which keeps its version", func(t *testing.T) {
 		w := newWorld(t)
 		v := newVersionOne(t, w)

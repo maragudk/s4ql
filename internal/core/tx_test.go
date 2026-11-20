@@ -2583,6 +2583,77 @@ func TestTx_tooBig(t *testing.T) {
 		}
 	})
 
+	t.Run("should fail the transaction, and write no commit object, where the temporary tables of the keys that it touched cannot be created or dropped", func(t *testing.T) {
+		// The keys of t take more pages than SQLite's page cache of the temporary tables holds, so
+		// SQLite writes those pages to the temporary file and reads them back, and a create or a drop
+		// of a temporary table needs the file: there is no room for a page without it.
+		key := func(i int) string { return fmt.Sprintf("%0900d", i) }
+		const rows = 4000
+		for _, step := range []string{"create", "drop table", "commit"} {
+			vfs, err := faultvfs.New()
+			is.NotError(t, err)
+			w := newWorld(t)
+			o := options
+			o.VFS = vfs.Name()
+			temp := faultvfs.Fault{Ops: faultvfs.Read | faultvfs.Write, Files: faultvfs.Temp}
+			// The commit object of the step "commit" is one row, which the spool writes to its file at
+			// once at the end, after the commit has read the temporary tables and before it drops them.
+			var armAtSpool atomic.Bool
+			o.WrapSpools(func(kind string, f *os.File) core.SpoolFile {
+				return &armingSpool{f: f, arm: func() {
+					if armAtSpool.Load() {
+						vfs.Fail(temp)
+					}
+				}}
+			})
+			d := w.serve(t, "a", o)
+			ctx := t.Context()
+			transact(t, d, func(t *testing.T, tx *core.Tx) {
+				is.NotError(t, tx.CreateTable(ctx, typedTable("t", s4qlpb.Type_TYPE_TEXT)))
+				is.NotError(t, tx.CreateTable(ctx, typedTable("u", s4qlpb.Type_TYPE_INT)))
+				if step != "commit" {
+					for i := range rows {
+						is.NotError(t, tx.Upsert(ctx, "t", row(key(i))))
+					}
+				}
+				is.NotError(t, tx.Upsert(ctx, "u", row(1)))
+			})
+			head := w.manifest(t).Head
+			tx, err := d.Begin(ctx)
+			is.NotError(t, err)
+			for i := range rows {
+				is.NotError(t, tx.Upsert(ctx, "t", row(key(i))))
+			}
+			before := vfs.Failures()
+			switch step {
+			case "create":
+				// The upsert into u creates its temporary tables.
+				vfs.Fail(temp)
+				err = tx.Upsert(ctx, "u", row(1))
+			case "drop table":
+				vfs.Fail(temp)
+				err = tx.DropTable(ctx, "t")
+			case "commit":
+				// The keys of t are of rows that the transaction inserts and deletes, so the commit object
+				// holds only the new row of u.
+				for i := range rows {
+					_, err := tx.Delete(ctx, "t", row(key(i)))
+					is.NotError(t, err)
+				}
+				is.NotError(t, tx.Upsert(ctx, "u", row(2)))
+				armAtSpool.Store(true)
+				err = tx.Commit(ctx)
+			}
+			is.True(t, vfs.Failures() > before, "nothing failed: "+step)
+			is.Error(t, core.ErrLocal, err, step)
+			is.Equal(t, head, w.manifest(t).Head, "the log has a new commit object: "+step)
+			vfs.Fail(faultvfs.Fault{})
+			_ = tx.Rollback(ctx)
+			_ = d.Close(ctx)
+			is.NotError(t, vfs.Close(), step)
+		}
+	})
+
 	// sqliteTakes reports whether SQLite's own table of the same shape, under the same limit,
 	// takes the row, and fails the test for any other error than "string or blob too big".
 	sqliteTakes := func(t *testing.T, create string, row []*s4qlpb.Value) bool {
@@ -2779,4 +2850,28 @@ func TestTx_tooBig(t *testing.T) {
 		is.True(t, got == nil)
 		is.NotError(t, r.Close(t.Context()))
 	})
+}
+
+// armingSpool is a spool file that calls arm before each write. It does not embed the file, so that
+// no method of the file, such as ReadFrom, goes around arm.
+type armingSpool struct {
+	f   *os.File
+	arm func()
+}
+
+func (s *armingSpool) Read(p []byte) (int, error) {
+	return s.f.Read(p)
+}
+
+func (s *armingSpool) Write(p []byte) (int, error) {
+	s.arm()
+	return s.f.Write(p)
+}
+
+func (s *armingSpool) Seek(offset int64, whence int) (int64, error) {
+	return s.f.Seek(offset, whence)
+}
+
+func (s *armingSpool) Close() error {
+	return s.f.Close()
 }
