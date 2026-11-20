@@ -274,8 +274,8 @@ func TestCommitWriter(t *testing.T) {
 			return w.CreateTable(createTable("t", []string{"a"}, nil).GetCreateTable())
 		}, why: "has no primary key"},
 		{name: "should refuse a create table whose primary key points outside its columns", write: func(w *format.CommitWriter) error {
-			return w.CreateTable(createTable("t", []string{"a"}, []uint32{1}).GetCreateTable())
-		}, why: "primary_key[0] is column 1 of 1"},
+			return w.CreateTable(createTable("t", []string{"a"}, []uint32{2}).GetCreateTable())
+		}, why: "primary_key[0] is column 2 of 1"},
 		{name: "should refuse a create table whose primary key lists a column twice", write: func(w *format.CommitWriter) error {
 			return w.CreateTable(createTable("t", []string{"a", "b"}, []uint32{0, 0}).GetCreateTable())
 		}, why: "primary_key[1] lists column 0 twice"},
