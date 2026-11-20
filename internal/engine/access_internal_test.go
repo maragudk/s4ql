@@ -8,6 +8,7 @@ import (
 
 	"maragu.dev/is"
 
+	"maragu.dev/s4ql/internal/host"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
@@ -299,4 +300,60 @@ func TestForcedAccess(t *testing.T) {
 			}
 		})
 	}
+}
+
+// drawHost is a host that gives the numbers of draws, in turn, and counts them.
+type drawHost struct {
+	host.Host
+	draws []uint64
+	drawn int
+}
+
+func (h *drawHost) Uint64() uint64 {
+	h.drawn++
+	return h.draws[(h.drawn-1)%len(h.draws)]
+}
+
+func TestEngine_reading(t *testing.T) {
+	directions := func(e *Engine, query bool, n int) string {
+		var b strings.Builder
+		for range n {
+			b.WriteString(map[bool]string{false: "f", true: "b"}[e.reading(query).backward])
+		}
+		return b.String()
+	}
+
+	t.Run("should draw the direction of each query from the host, backward for an odd number, and draw nothing for a statement that is no query", func(t *testing.T) {
+		h := &drawHost{draws: []uint64{2, 7, 1 << 63, 1<<63 + 1, 0}}
+		e := newEngine(nil, h, Options{})
+
+		is.Equal(t, "fbfbf", directions(e, true, 5))
+		is.Equal(t, 5, h.drawn)
+		is.Equal(t, "fffff", directions(e, false, 5))
+		is.Equal(t, 5, h.drawn)
+	})
+
+	t.Run("should draw the directions from its seed, and nothing from the host, the same for the same seed, both ways, and forward for a statement that is no query", func(t *testing.T) {
+		h := &drawHost{draws: []uint64{1}}
+		first := directions(newEngine(nil, h, Options{seed: 3, seeded: true}), true, 64)
+
+		is.Equal(t, first, directions(newEngine(nil, h, Options{seed: 3, seeded: true}), true, 64))
+		is.True(t, first != directions(newEngine(nil, h, Options{seed: 4, seeded: true}), true, 64))
+		is.True(t, strings.Count(first, "f") >= 16 && strings.Count(first, "b") >= 16, first)
+		is.Equal(t, 0, h.drawn)
+		e := newEngine(nil, h, Options{seed: 3, seeded: true})
+		is.Equal(t, strings.Repeat("f", 8), directions(e, false, 8))
+		is.Equal(t, first, directions(e, true, 64), "a statement that is no query takes no draw of the seed")
+	})
+
+	t.Run("should take the direction of a path that has one, for a query and for another statement, and draw nothing", func(t *testing.T) {
+		h := &drawHost{draws: []uint64{1}}
+		e := newEngine(nil, h, Options{path: path{direction: directionBackward}})
+
+		is.Equal(t, "bbbb", directions(e, true, 2)+directions(e, false, 2))
+		e.path.direction = directionForward
+		is.Equal(t, "ffff", directions(e, true, 2)+directions(e, false, 2))
+		is.Equal(t, 0, h.drawn)
+		is.Equal(t, pathRules, e.reading(true).path.kind)
+	})
 }

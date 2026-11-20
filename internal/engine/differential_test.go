@@ -40,6 +40,9 @@ var (
 	sequences = flag.Int("sequences", 300, "sequences of statements of TestDifferential")
 	length    = flag.Int("length", 40, "statements in each sequence of TestDifferential")
 	scanAll   = flag.Bool("scanall", false, "read every row of its table in each query of TestDifferential and FuzzDifferential_core, and not the rows by the key")
+	// directions replays a failure that depends on the directions in which the queries read: a test
+	// that fails logs the seed of each of its instances.
+	directions = flag.Uint64("directions", 0, "seed of the directions of the scans of the queries of every instance of the tests, or 0 for a seed that each instance draws")
 )
 
 // pinned fails the test unless got, a number of texts that a full run counts, is want. Such a number
@@ -450,12 +453,42 @@ type instance struct {
 	coreLog *slog.Logger
 	// limit is the length limit of the cache, 0 for SQLite's default.
 	limit int
+	// seed of the directions in which the queries of the engines of the instance read, for options
+	// that have none of their own: the engine of the n-th open has the seed plus n.
+	seed  uint64
+	opens uint64
+}
+
+// seeded gives the instance the seed of the flag -directions, or one that it draws, and logs it if
+// the test fails, so that the directions of the failure can be had again.
+func (i *instance) seeded() {
+	i.seed = *directions
+	if i.seed == 0 {
+		i.seed = sim.NewFree(sim.Buggify{}).Uint64()
+	}
+	i.t.Cleanup(func() {
+		if i.t.Failed() {
+			i.t.Logf("an instance of the engine drew the directions of its scans from the seed %v: run the test again with -directions=%v", i.seed, i.seed)
+		}
+	})
+}
+
+// directed is options with the seed of the next engine of the instance, unless they have one.
+func (i *instance) directed(options engine.Options) engine.Options {
+	if !options.Seeded() {
+		options.Seed(i.seed + i.opens)
+	}
+	i.opens++
+	return options
 }
 
 // newMemoryInstance of the engine on a database in memory.
 func newMemoryInstance(t testing.TB) *instance {
-	e, state := engine.NewMemory(sim.NewFree(sim.Buggify{}))
-	return &instance{t: t, e: e, c: e.Conn(), memory: state}
+	i := &instance{t: t}
+	i.seeded()
+	i.e, i.memory = engine.NewMemory(sim.NewFree(sim.Buggify{}), i.directed(engine.Options{}))
+	i.c = i.e.Conn()
+	return i
 }
 
 func newInstance(t testing.TB, options engine.Options) *instance {
@@ -475,6 +508,7 @@ func newInstanceLimited(t testing.TB, options engine.Options, coreLog *slog.Logg
 	t.Helper()
 	h := sim.NewFree(sim.Buggify{})
 	i := &instance{t: t, host: h, store: simstore.New(h, simstore.Options{}), dir: t.TempDir(), coreLog: coreLog, limit: limit}
+	i.seeded()
 	i.open(true, options)
 	t.Cleanup(func() {
 		i.close()
@@ -502,7 +536,7 @@ func (i *instance) open(empty bool, options engine.Options) {
 	if i.c != nil {
 		is.NotError(i.t, i.c.Close(ctx))
 	}
-	i.d, i.e = d, engine.New(d, i.host, options)
+	i.d, i.e = d, engine.New(d, i.host, i.directed(options))
 	i.c = i.e.Conn()
 }
 
@@ -828,9 +862,11 @@ type pair struct {
 	// readOnly is set while the statements run in a read-only transaction.
 	readOnly bool
 	// other is a second instance of the engine, of the kind of i, that runs every call of the pair and
-	// reads the rows the other way: every row where the engine of i reads by the key, and by the key
-	// where it reads every row. See [pair.bothWays].
+	// reads the rows another way: by a path that [otherPaths] gives where the engine of i reads as the
+	// rules choose, and as the rules choose where it reads every row. See [pair.bothWays].
 	other *instance
+	// ways counts the calls of [pair.bothWays], which takes the paths of the other instance in turn.
+	ways int
 	// last is the engine's answer of the last call of [pair.step].
 	last answer
 	y    tally
@@ -982,10 +1018,25 @@ func (p *pair) step(c stmttest.Call) string {
 	return ""
 }
 
+// otherPaths are the paths that the other instance of a [pair] reads by, in turn, where the instance
+// reads as the rules choose: every row of the table, and the primary key, which scans with the key
+// pinned where the rules get one row, each forward and backward, and then each index of the names,
+// forward and backward. The generated sequences create no index yet, so the pairs give no names; a
+// path of an index that the table of a statement does not have reads as the rules choose.
+func otherPaths(indexes ...string) []engine.Path {
+	paths := []engine.Path{{Full: true, Forward: true}, {Full: true, Backward: true}, {Primary: true, Forward: true}, {Primary: true, Backward: true}}
+	for _, name := range indexes {
+		paths = append(paths, engine.Path{Index: name, Forward: true}, engine.Path{Index: name, Backward: true})
+	}
+	return paths
+}
+
 // bothWays runs the call c, whose answer of the engine of the instance is got, on the other instance
-// of the pair, through the same method, with every row of a table read, as
-// [engine.Engine.SetScanAll] makes it, where the engine of the instance reads the rows by the key, as
-// the plan does, and by the key where it reads every row, as an engine of -scanall does. The two must
+// of the pair, through the same method, by the next of the paths of [otherPaths], as
+// [engine.Engine.SetPath] forces it, where the engine of the instance reads the rows as the rules
+// choose, and as the rules choose where it reads every row, as an engine of -scanall does. The rows
+// of the two are compared as multisets, as every two answers are: each query of the instance reads
+// in a direction that its engine draws. The two must
 // give the same answer, message, and count of changes, and after an update or a delete with WHERE
 // the same rows of its table, as a select of * gives them on each, so that each test that compares
 // the instance with SQLite compares both ways of reading rows, of a select and of the rows that an
@@ -997,7 +1048,13 @@ func (p *pair) step(c stmttest.Call) string {
 func (p *pair) bothWays(c stmttest.Call, got answer) string {
 	i, other := p.i, p.other
 	byKey := !i.e.ScansAll()
-	other.e.SetScanAll(byKey)
+	path := engine.Path{}
+	if byKey {
+		paths := otherPaths()
+		path = paths[p.ways%len(paths)]
+		p.ways++
+	}
+	other.e.SetPath(path)
 	var all answer
 	if c.Query {
 		all = other.queryValues(c.Src, values(c.Args))
@@ -1010,7 +1067,7 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 		got, all, changes, allChanges = all, got, allChanges, changes
 	}
 	if all.String() != got.String() || all.message != got.message || allChanges != changes {
-		return fmt.Sprintf("%q with %#v: the engine gives\n%v (%q)\nby the key, and\n%v (%q)\nwith every row read, with %v changes by the key and %v with every row read", c.Src, c.Args, got, got.message, all, all.message, changes, allChanges)
+		return fmt.Sprintf("%q with %#v: the engine gives\n%v (%q)\nas the rules choose, and\n%v (%q)\nby the path %+v, with %v changes as the rules choose and %v by the path", c.Src, c.Args, got, got.message, all, all.message, path, changes, allChanges)
 	}
 	s, _ := stmt.Check(c.Src)
 	var table *stmt.Name

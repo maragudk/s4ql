@@ -317,6 +317,8 @@ type run struct {
 	t     testing.TB
 	w     workload
 	world *sim.Scheduler
+	// seed of the scheduler, from which each engine gets the seed of the directions of its scans.
+	seed uint64
 	store *simstore.Store
 	dir   string
 
@@ -438,6 +440,7 @@ func (r *run) open(ctx context.Context, n *node) error {
 	// Every second engine of a node reads every row of a table in each query, so that the checks of
 	// the queries against SQLite see both ways of reading rows, also across crashes and closes.
 	scanAll := n.gen%2 == 1
+	generation := n.gen
 	n.mu.Unlock()
 	d, err := core.Open(ctx, n.inst, n.client, n.path, "db", core.Options{
 		BusyTimeout:   time.Minute,
@@ -455,6 +458,15 @@ func (r *run) open(ctx context.Context, n *node) error {
 	if scanAll {
 		options.ScanAll()
 	}
+	// The engine draws the direction of each query from a seed of its own, which the seed of the run,
+	// the node, and the number of its engine fix, and not from the host, so that the draws of the
+	// scheduler are those of a run without them, and a replay of the seed reads in the same
+	// directions.
+	engineSeed := r.seed*1_000_003 + uint64(generation)*7919
+	for _, b := range []byte(n.name) {
+		engineSeed = engineSeed*31 + uint64(b)
+	}
+	options.Seed(engineSeed)
 	options.Logger = slog.New(handler{r})
 	n.mu.Lock()
 	n.d, n.e = d, engine.New(d, n.inst, options)
@@ -1080,8 +1092,8 @@ func copyCache(from, to string) error {
 }
 
 // do the workload, and check what happened: see [run.verify].
-func (w workload) do(ctx context.Context, world *sim.Scheduler, dir string, t testing.TB) *run {
-	r := &run{t: t, w: w, world: world, dir: dir, attempts: map[uint64]*attempt{}, events: map[string]int{}, endedForLease: map[string][]uint64{},
+func (w workload) do(ctx context.Context, world *sim.Scheduler, seed uint64, dir string, t testing.TB) *run {
+	r := &run{t: t, w: w, world: world, seed: seed, dir: dir, attempts: map[uint64]*attempt{}, events: map[string]int{}, endedForLease: map[string][]uint64{},
 		store: simstore.New(world, simstore.Options{Latency: 50 * time.Millisecond, Faults: w.faults}), q: newSequenceFrom(hostRand{world})}
 	var tasks []host.Task
 	for i := range w.instances {
@@ -1931,7 +1943,7 @@ func simulate(t *testing.T, seed uint64, w workload) simulation {
 		world := sim.New(seed, sim.Options{Jitter: 50 * time.Millisecond, MaxSteps: 5_000_000})
 		dir := t.TempDir()
 		s.err = world.Run(func(ctx context.Context) {
-			s.r = w.do(ctx, world, dir, t)
+			s.r = w.do(ctx, world, seed, dir, t)
 		})
 		s.lines = world.Lines()
 	})
