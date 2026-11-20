@@ -278,15 +278,16 @@ func (x fakeTx) scan(_ context.Context, name string, s core.IndexScan) iter.Seq2
 	}
 }
 
+// get records its call, as "get", the name, and the integers of the key, with a comma between two,
+// and gives the row whose primary key is the key, or nil.
 func (x fakeTx) get(_ context.Context, name string, key []*s4qlpb.Value) ([]*s4qlpb.Value, error) {
-	x.f.calls = append(x.f.calls, fmt.Sprint("get ", name, " ", key[0].GetInteger()))
+	x.f.calls = append(x.f.calls, fmt.Sprint("get ", name, " ", rowText(key)))
 	if x.f.getFails != nil {
 		return nil, x.f.getFails
 	}
 	t := x.f.tables[fold(name)]
-	k := t.ct.GetPrimaryKey()[0]
 	for _, row := range t.rows {
-		if row[k].GetInteger() == key[0].GetInteger() {
+		if slices.EqualFunc(t.ct.GetPrimaryKey(), key, func(position uint32, v *s4qlpb.Value) bool { return row[position].GetInteger() == v.GetInteger() }) {
 			x.f.rowsGiven++
 			return row, nil
 		}
@@ -590,8 +591,9 @@ func TestProject(t *testing.T) {
 }
 
 func TestFilter(t *testing.T) {
-	// query src with args on the fake f, and give its rows and the calls of the fake.
-	query := func(t *testing.T, f *fake, src string, scanAll bool, args ...*s4qlpb.Value) (string, string) {
+	// query src with args on the fake f, forward, and give its rows, the calls of the fake, and the
+	// access of its scan.
+	query := func(t *testing.T, f *fake, src string, scanAll bool, args ...*s4qlpb.Value) (string, string, access) {
 		t.Helper()
 		s, err := stmt.Check(src)
 		is.NotError(t, err, src)
@@ -600,76 +602,106 @@ func TestFilter(t *testing.T) {
 		is.NotError(t, err, src)
 		rows, err := collect(t.Context(), q)
 		is.NotError(t, err, src)
-		return fmt.Sprint(rows), fmt.Sprint(f.calls)
+		return fmt.Sprint(rows), fmt.Sprint(f.calls), scanOf(q).access
 	}
 	newTable := func() *fake {
 		return newFake().with("t", []string{"w", "k"}, []int64{40, 4}, []int64{10, 1}, []int64{30, 3}, []int64{20, 2})
 	}
 
-	t.Run("should read the row of the key, the rows within the tightest bounds of the key, or no row, where the conditions allow it, and give the rows of a scan of every row", func(t *testing.T) {
+	// reads checks the calls of the fake f, calls, for the statement src, which read by the access a
+	// that the rules chose: no row and the row of a whole primary key, which do not depend on the
+	// indexes of the table, look none up and scan nothing, and every other access looks them up once,
+	// before its one scan.
+	reads := func(t *testing.T, f *fake, src, calls string, a access) {
+		t.Helper()
+		want := 1
+		if a.none || a.point != nil {
+			want = 0
+		}
+		is.Equal(t, want, strings.Count(calls, "indexes "), "the look-ups of the indexes of "+src)
+		is.Equal(t, want, f.scanned, "the scans of "+src)
+		is.Equal(t, map[bool]int{true: 1}[a.point != nil], strings.Count(calls, " get "), "the gets of "+src)
+	}
+
+	t.Run("should read the row of the key, the rows within the tightest bounds of the key, or no row, where the conditions allow it, look the indexes up only for another access, and give the rows of a scan of every row", func(t *testing.T) {
 		cases := []struct {
 			src   string
 			args  []*s4qlpb.Value
 			rows  string
 			calls string
-			// none is set where the scan reads no row at all.
-			none bool
 		}{
+			// The row of the key, by a get, without the indexes.
 			{src: "select * from t where k = 3", rows: "[30,3]", calls: "[table t get t 3]"},
 			{src: "select k from t where K = ?", args: []*s4qlpb.Value{integer(2)}, rows: "[2]", calls: "[table t get t 2]"},
 			{src: "select * from t where k = 9", rows: "[]", calls: "[table t get t 9]"},
 			{src: "select * from t where k = 2 and k > 2", rows: "[]", calls: "[table t get t 2]"},
 			{src: "select * from t where k > 3 and k = 2 and k = 4", rows: "[]", calls: "[table t get t 2]"},
 			{src: "select * from t where w = 20 and k = 2", rows: "[20,2]", calls: "[table t get t 2]"},
-			{src: "select * from t where k > 1", rows: "[20,2 30,3 40,4]", calls: "[table t range t > 1]"},
-			{src: "select * from t where k >= 2 and k < 4", rows: "[20,2 30,3]", calls: "[table t range t >= 2 < 4]"},
-			{src: "select * from t where k <= 3 and k < 3", rows: "[10,1 20,2]", calls: "[table t range t < 3]"},
-			{src: "select * from t where k < 3 and k <= 3", rows: "[10,1 20,2]", calls: "[table t range t < 3]"},
-			{src: "select * from t where k <= 2 and k <= 3", rows: "[10,1 20,2]", calls: "[table t range t <= 2]"},
-			{src: "select * from t where k <= 3 and k <= 2", rows: "[10,1 20,2]", calls: "[table t range t <= 2]"},
-			{src: "select * from t where k > 1 and k >= 2 and k > 2", rows: "[30,3 40,4]", calls: "[table t range t > 2]"},
-			{src: "select * from t where k >= 2 and k > 1", rows: "[20,2 30,3 40,4]", calls: "[table t range t >= 2]"},
-			{src: "select * from t where k > ? and k < ?", args: []*s4qlpb.Value{integer(3), integer(2)}, rows: "[]", calls: "[table t range t > 3 < 2]"},
-			{src: "select * from t where w > 10 and k < 4 and w != 30", rows: "[20,2]", calls: "[table t range t < 4]"},
-			{src: "select * from t where k is not null and k >= 4", rows: "[40,4]", calls: "[table t range t >= 4]"},
-			// No use of the key.
-			{src: "select * from t where k != 2", rows: "[10,1 30,3 40,4]", calls: "[table t]"},
-			{src: "select * from t where w = 20", rows: "[20,2]", calls: "[table t]"},
-			{src: "select * from t where w >= 20 and w < 40", rows: "[20,2 30,3]", calls: "[table t]"},
-			{src: "select * from t where k is not null", rows: "[10,1 20,2 30,3 40,4]", calls: "[table t]"},
-			// No row: the key is never NULL, and a comparison with NULL is never true.
-			{src: "select * from t where k is null", rows: "[]", calls: "[table t]", none: true},
-			{src: "select * from t where w = null and k = 1", rows: "[]", calls: "[table t]", none: true},
-			{src: "select * from t where k > 1 and w < ?", args: []*s4qlpb.Value{null()}, rows: "[]", calls: "[table t]", none: true},
-			{src: "select * from t where w is null", rows: "[]", calls: "[table t]"},
+			// The rows within bounds of the key, which the primary key wins for a table without indexes.
+			{src: "select * from t where k > 1", rows: "[20,2 30,3 40,4]", calls: "[table t indexes t range t > 1]"},
+			{src: "select * from t where k >= 2 and k < 4", rows: "[20,2 30,3]", calls: "[table t indexes t range t >= 2 < 4]"},
+			{src: "select * from t where k <= 3 and k < 3", rows: "[10,1 20,2]", calls: "[table t indexes t range t < 3]"},
+			{src: "select * from t where k < 3 and k <= 3", rows: "[10,1 20,2]", calls: "[table t indexes t range t < 3]"},
+			{src: "select * from t where k <= 2 and k <= 3", rows: "[10,1 20,2]", calls: "[table t indexes t range t <= 2]"},
+			{src: "select * from t where k <= 3 and k <= 2", rows: "[10,1 20,2]", calls: "[table t indexes t range t <= 2]"},
+			{src: "select * from t where k > 1 and k >= 2 and k > 2", rows: "[30,3 40,4]", calls: "[table t indexes t range t > 2]"},
+			{src: "select * from t where k >= 2 and k > 1", rows: "[20,2 30,3 40,4]", calls: "[table t indexes t range t >= 2]"},
+			{src: "select * from t where k > ? and k < ?", args: []*s4qlpb.Value{integer(3), integer(2)}, rows: "[]", calls: "[table t indexes t range t > 3 < 2]"},
+			{src: "select * from t where w > 10 and k < 4 and w != 30", rows: "[20,2]", calls: "[table t indexes t range t < 4]"},
+			{src: "select * from t where k is not null and k >= 4", rows: "[40,4]", calls: "[table t indexes t range t >= 4]"},
+			// No use of the key: every row, by a scan forward, which the fake does not record.
+			{src: "select * from t where k != 2", rows: "[10,1 30,3 40,4]", calls: "[table t indexes t]"},
+			{src: "select * from t where w = 20", rows: "[20,2]", calls: "[table t indexes t]"},
+			{src: "select * from t where w >= 20 and w < 40", rows: "[20,2 30,3]", calls: "[table t indexes t]"},
+			{src: "select * from t where k is not null", rows: "[10,1 20,2 30,3 40,4]", calls: "[table t indexes t]"},
+			// A test for NULL of a column that is not of the key and takes no NULL is left to the filter.
+			{src: "select * from t where w is null", rows: "[]", calls: "[table t indexes t]"},
+			// No row, without the indexes: the key is never NULL, and a comparison with NULL is never
+			// true.
+			{src: "select * from t where k is null", rows: "[]", calls: "[table t]"},
+			{src: "select * from t where w = null and k = 1", rows: "[]", calls: "[table t]"},
+			{src: "select * from t where k > 1 and w < ?", args: []*s4qlpb.Value{null()}, rows: "[]", calls: "[table t]"},
 		}
 		for _, c := range cases {
 			f := newTable()
 			f.tables["t"].ct.SetPrimaryKey([]uint32{1})
-			rows, calls := query(t, f, c.src, false, c.args...)
+			rows, calls, a := query(t, f, c.src, false, c.args...)
 			is.Equal(t, c.rows, rows, c.src)
 			is.Equal(t, c.calls, calls, c.src)
-			// A get reads the row of its key, and every other access but none a scan.
-			is.Equal(t, map[bool]int{true: 0, false: 1}[c.none || strings.Contains(c.calls, " get ")], f.scanned, c.src)
-			rows, calls = query(t, f, c.src, true, c.args...)
+			reads(t, f, c.src, calls, a)
+			// A scan of every row that the test forces chooses nothing, so it looks no index up.
+			rows, calls, _ = query(t, f, c.src, true, c.args...)
 			is.Equal(t, c.rows, rows, "every row: "+c.src)
 			is.Equal(t, "[table t]", calls, "every row: "+c.src)
 			is.Equal(t, 1, f.scanned, "every row: "+c.src)
 		}
 	})
 
-	t.Run("should read every row of a table whose primary key is two columns, which no bound of one value can bound", func(t *testing.T) {
-		for _, c := range []struct{ src, rows string }{
-			{src: "select * from t where k = 3", rows: "[30,3]"},
-			{src: "select * from t where k > 2 and w < 40", rows: "[30,3]"},
-			{src: "select * from t where k is null", rows: "[]"},
+	t.Run("should read by a primary key of two columns as by one: the row of the whole key, the rows of its first column pinned, with bounds on the second, or within bounds of the first, no row, and every row for a condition on the second column alone", func(t *testing.T) {
+		for _, c := range []struct{ src, rows, calls string }{
+			// The whole key, in the order of the key whatever the order of the text, by a get.
+			{src: "select * from t where k = 3 and w = 30", rows: "[30,3]", calls: "[table t get t 3,30]"},
+			{src: "select * from t where w = 30 and k = 3", rows: "[30,3]", calls: "[table t get t 3,30]"},
+			{src: "select * from t where k = 3 and w = 31", rows: "[]", calls: "[table t get t 3,31]"},
+			// The first column pinned, without and with bounds on the second.
+			{src: "select * from t where k = 3", rows: "[30,3]", calls: "[table t indexes t range t = 3]"},
+			{src: "select * from t where k = 3 and w > 10 and w <= 30", rows: "[30,3]", calls: "[table t indexes t range t = 3 > 10 <= 30]"},
+			{src: "select * from t where w < 30 and k = 3", rows: "[]", calls: "[table t indexes t range t = 3 < 30]"},
+			// Bounds on the first column, which a condition on the second does not tighten.
+			{src: "select * from t where k > 2 and w < 40", rows: "[30,3]", calls: "[table t indexes t range t > 2]"},
+			// The second column alone neither pins nor bounds the key: every row.
+			{src: "select * from t where w = 30", rows: "[30,3]", calls: "[table t indexes t]"},
+			{src: "select * from t where w >= 30", rows: "[30,3 40,4]", calls: "[table t indexes t]"},
+			// No row: neither column of the key is ever NULL.
+			{src: "select * from t where k is null", rows: "[]", calls: "[table t]"},
+			{src: "select * from t where k = 3 and w is null", rows: "[]", calls: "[table t]"},
 		} {
 			f := newTable()
 			f.tables["t"].ct.SetPrimaryKey([]uint32{1, 0})
-			rows, calls := query(t, f, c.src, false)
+			rows, calls, a := query(t, f, c.src, false)
 			is.Equal(t, c.rows, rows, c.src)
-			is.Equal(t, "[table t]", calls, c.src)
-			is.Equal(t, 1, f.scanned, c.src)
+			is.Equal(t, c.calls, calls, c.src)
+			reads(t, f, c.src, calls, a)
 		}
 	})
 
@@ -967,6 +999,10 @@ func TestChangeRows(t *testing.T) {
 		// byKey and all are the calls of the fake by the key and with a scan of every row, which the
 		// fake does not record.
 		byKey, all string
+		// indexes is the number of look-ups of the indexes of the table by the key: one for a WHERE
+		// that reads neither the row of the key nor no row, since only then the access depends on
+		// them, and none without WHERE.
+		indexes int
 	}{
 		{src: "update t set w = 25 where k = 2", n: 1,
 			byKey: "[table t keys t get t 2 add 2 key 2 get t 2 upsert t 25,2]",
@@ -974,11 +1010,11 @@ func TestChangeRows(t *testing.T) {
 		{src: "update t set w = 0", n: 4,
 			byKey: "[table t keys t add 1 add 2 add 3 add 4 key 1 get t 1 upsert t 0,1 key 2 get t 2 upsert t 0,2 key 3 get t 3 upsert t 0,3 key 4 get t 4 upsert t 0,4]",
 			all:   "[table t keys t add 1 add 2 add 3 add 4 key 1 get t 1 upsert t 0,1 key 2 get t 2 upsert t 0,2 key 3 get t 3 upsert t 0,3 key 4 get t 4 upsert t 0,4]"},
-		{src: "update t set k = 5, w = 50 where k > 3", n: 1,
-			byKey: "[table t keys t range t > 3 add 4 key 4 get t 4 delete t 4 insert t 50,5]",
+		{src: "update t set k = 5, w = 50 where k > 3", n: 1, indexes: 1,
+			byKey: "[table t indexes t keys t range t > 3 add 4 key 4 get t 4 delete t 4 insert t 50,5]",
 			all:   "[table t keys t add 4 key 4 get t 4 delete t 4 insert t 50,5]"},
-		{src: "update t set k = 9 where k >= 3", err: "UNIQUE constraint failed: t.k", n: 1,
-			byKey: "[table t keys t range t >= 3 add 3 add 4 key 3 get t 3 delete t 3 insert t 30,9 key 4 get t 4 delete t 4 insert t 40,9]",
+		{src: "update t set k = 9 where k >= 3", err: "UNIQUE constraint failed: t.k", n: 1, indexes: 1,
+			byKey: "[table t indexes t keys t range t >= 3 add 3 add 4 key 3 get t 3 delete t 3 insert t 30,9 key 4 get t 4 delete t 4 insert t 40,9]",
 			all:   "[table t keys t add 3 add 4 key 3 get t 3 delete t 3 insert t 30,9 key 4 get t 4 delete t 4 insert t 40,9]"},
 		{src: "update t set k = 2 where k = 2", n: 1,
 			byKey: "[table t keys t get t 2 add 2 key 2 get t 2 upsert t 20,2]",
@@ -989,13 +1025,20 @@ func TestChangeRows(t *testing.T) {
 		{src: "update t set w = null where k = 2", err: "NOT NULL constraint failed: t.w",
 			byKey: "[table t get t 2]",
 			all:   "[table t]"},
+		{src: "update t set w = null where k > 2", err: "NOT NULL constraint failed: t.w", indexes: 1,
+			byKey: "[table t indexes t range t > 2]",
+			all:   "[table t]"},
 		{src: "update t set w = 1 where k is null", n: 0, byKey: "[table t keys t]", all: "[table t keys t]"},
-		{src: "delete from t where k < 3", n: 2,
-			byKey: "[table t keys t range t < 3 add 1 add 2 key 1 delete t 1 key 2 delete t 2]",
+		{src: "delete from t where k < 3", n: 2, indexes: 1,
+			byKey: "[table t indexes t keys t range t < 3 add 1 add 2 key 1 delete t 1 key 2 delete t 2]",
 			all:   "[table t keys t add 1 add 2 key 1 delete t 1 key 2 delete t 2]"},
-		{src: "delete from t where w = 30", n: 1,
-			byKey: "[table t keys t add 3 key 3 delete t 3]",
+		{src: "delete from t where w = 30", n: 1, indexes: 1,
+			byKey: "[table t indexes t keys t add 3 key 3 delete t 3]",
 			all:   "[table t keys t add 3 key 3 delete t 3]"},
+		{src: "delete from t where k = 3", n: 1,
+			byKey: "[table t keys t get t 3 add 3 key 3 delete t 3]",
+			all:   "[table t keys t add 3 key 3 delete t 3]"},
+		{src: "delete from t where w = null", n: 0, byKey: "[table t keys t]", all: "[table t keys t]"},
 		{src: "delete from t", n: 4,
 			byKey: "[table t keys t add 1 add 2 add 3 add 4 key 1 delete t 1 key 2 delete t 2 key 3 delete t 3 key 4 delete t 4]",
 			all:   "[table t keys t add 1 add 2 add 3 add 4 key 1 delete t 1 key 2 delete t 2 key 3 delete t 3 key 4 delete t 4]"},
@@ -1007,6 +1050,8 @@ func TestChangeRows(t *testing.T) {
 				is.Equal(t, c.err, err)
 				is.Equal(t, c.n, n)
 				is.Equal(t, want, calls, fmt.Sprint("scan all: ", scanAll))
+				// A scan of every row that the test forces chooses nothing, so it looks no index up.
+				is.Equal(t, map[bool]int{false: c.indexes}[scanAll], strings.Count(calls, "indexes "), fmt.Sprint("scan all: ", scanAll))
 			}
 		})
 	}
