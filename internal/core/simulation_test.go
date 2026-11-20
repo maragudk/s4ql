@@ -497,6 +497,101 @@ func randomRow(h host.Host, ct *s4qlpb.CreateTable) []*s4qlpb.Value {
 	return values
 }
 
+// randomScan of the table by one of its indexes, mostly, if it has any, or by its primary key: the
+// index that it gives, or nil. A fifth of the scans read the whole index. The others pin some of the leading
+// columns of the key, maybe all, and bound the column after them by a lower bound, an upper bound,
+// both, or neither, each open or closed. Most values are of the rows that the table holds, so
+// that the scans give some rows and not all, and a NULL pins a column only where the column takes
+// it. A bound is never NULL, and both bounds are mostly in order, so the core refuses none of the
+// scans. Either direction is drawn.
+func randomScan(h host.Host, t *mtable) (*s4qlpb.CreateIndex, core.IndexScan) {
+	var ci *s4qlpb.CreateIndex
+	if len(t.indexes) > 0 && intn(h, 8) > 0 {
+		ci = t.indexes[intn(h, len(t.indexes))]
+	}
+	scan := core.IndexScan{Index: ci.GetIndex(), Backward: intn(h, 2) == 0}
+	if intn(h, 5) == 0 {
+		return ci, scan
+	}
+	key := t.keyOf(ci)
+	rows := t.sorted()
+	// value in the column at position: of a row of the table, mostly, or else of the edges of the
+	// column's type, or NULL if the column takes it and null is true.
+	value := func(position uint32, null bool) *s4qlpb.Value {
+		c := t.create.GetColumns()[position]
+		if len(rows) > 0 && intn(h, 4) > 0 {
+			if v := rows[intn(h, len(rows))][position]; null || !isNull(v) {
+				return v
+			}
+		}
+		if null && c.GetNullable() && intn(h, 4) == 0 {
+			return row(nil)[0]
+		}
+		pool := edges[c.GetType()]
+		return pool[intn(h, len(pool))]
+	}
+	// The pinned values are mostly those of one row, so that the scan finds it.
+	var from []*s4qlpb.Value
+	if len(rows) > 0 {
+		from = rows[intn(h, len(rows))]
+	}
+	// Half of the time, the column after the pinned ones is a column of the index, which may be
+	// descending, and else any column of the key, or none.
+	pinned := intn(h, len(key)+1)
+	if columns := len(ci.GetColumns()); columns > 0 && intn(h, 2) == 0 {
+		pinned = intn(h, columns)
+	}
+	for i := range pinned {
+		if t.create.GetColumns()[key[i].position].GetNullable() && intn(h, 3) == 0 {
+			scan.Equal = append(scan.Equal, row(nil)[0])
+			continue
+		}
+		if from != nil && intn(h, 8) > 0 {
+			scan.Equal = append(scan.Equal, from[key[i].position])
+			continue
+		}
+		scan.Equal = append(scan.Equal, value(key[i].position, true))
+	}
+	if pinned == len(key) {
+		return ci, scan
+	}
+	bound := func() core.Bound {
+		if intn(h, 3) == 0 {
+			return core.Bound{}
+		}
+		return core.Bound{Value: value(key[pinned].position, false), Open: intn(h, 2) == 0}
+	}
+	scan.Lower, scan.Upper = bound(), bound()
+	if scan.Lower.Value != nil && scan.Upper.Value != nil && compareValues(scan.Lower.Value, scan.Upper.Value) > 0 && intn(h, 8) > 0 {
+		scan.Lower.Value, scan.Upper.Value = scan.Upper.Value, scan.Lower.Value
+	}
+	return ci, scan
+}
+
+// scanMarks of a scan by the key, which gave got of the all rows of the table, for the trace: what
+// it exercised, if it gave some rows and not all, and a pin to NULL that gave rows.
+func scanMarks(key []mkeyColumn, scan core.IndexScan, got, all int) string {
+	var marks []string
+	if got > 0 && slices.ContainsFunc(scan.Equal, isNull) {
+		marks = append(marks, "[pinned to NULL]")
+	}
+	if got == 0 || got == all {
+		return strings.Join(marks, " ")
+	}
+	if len(scan.Equal) > 0 {
+		marks = append(marks, "[pinned]")
+	}
+	if scan.Lower.Value != nil || scan.Upper.Value != nil {
+		if key[len(scan.Equal)].descending {
+			marks = append(marks, "[bounded descending]")
+		}
+		if scan.Backward && got > 1 {
+			marks = append(marks, "[bounded backward]")
+		}
+	}
+	return strings.Join(marks, " ")
+}
+
 // notNullable are the positions of the columns of the table outside its primary key that do not
 // take NULL.
 func notNullable(ct *s4qlpb.CreateTable) []int {
@@ -664,7 +759,7 @@ func (r *run) statement(ctx context.Context, n *node, tx *core.Tx, m *mtx) error
 				r.o.violate(ctx, r.c.world, "a delete of the row %v of %q in a transaction found a row: %v, and the model: %v", text(key), name, found, want)
 			}
 
-		case pick < 90:
+		case pick < 85:
 			got, err := tx.Get(ctx, name, key)
 			if err != nil {
 				return refused("get", err)
@@ -673,25 +768,28 @@ func (r *run) statement(ctx context.Context, n *node, tx *core.Tx, m *mtx) error
 				r.o.violate(ctx, r.c.world, "a transaction read the row %v of %q as %v, and its own writes make it %v", text(key), name, text(got), text(want))
 			}
 
-		case len(t.indexes) > 0 && intn(h, 2) == 0:
-			// The whole table by one of its indexes, in either direction: the index holds every row of
-			// the table, in its order.
-			ci := t.indexes[intn(h, len(t.indexes))]
-			backward := intn(h, 2) == 0
+		case intn(h, 4) > 0:
+			// A scan by one of the indexes of the table, or by its primary key, with pins and bounds
+			// or without, in either direction.
+			ci, scan := randomScan(h, t)
 			var got []string
-			for values, err := range tx.ScanIndex(ctx, name, core.IndexScan{Index: ci.GetIndex(), Backward: backward}) {
+			for values, err := range tx.ScanIndex(ctx, name, scan) {
 				if err != nil {
-					return refused("scan by an index", err)
+					return refused("scan by a key", err)
 				}
 				got = append(got, text(values))
 			}
-			r.c.world.Trace(ctx, "scan of %q by its index %q, backward: %v", name, ci.GetIndex(), backward)
 			var want []string
-			for _, values := range t.sortedBy(ci, backward) {
+			for _, values := range t.scanned(ci, scan) {
 				want = append(want, text(values))
 			}
+			by := "its primary key"
+			if ci != nil {
+				by = fmt.Sprintf("its index %v", describeIndex(ci))
+			}
+			r.c.world.Trace(ctx, "scan of %q by %v, %v: %v of %v rows %v", name, by, describeScan(scan), len(got), len(t.rows), scanMarks(t.keyOf(ci), scan, len(got), len(t.rows)))
 			if !slices.Equal(got, want) {
-				r.o.violate(ctx, r.c.world, "a transaction scanned %q by its index %v, backward: %v, as %v, and its own writes make it %v", name, describeIndex(ci), backward, got, want)
+				r.o.violate(ctx, r.c.world, "a transaction scanned %q by %v, %v, as %v, and its own writes make it %v", name, by, describeScan(scan), got, want)
 			}
 
 		default:

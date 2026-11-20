@@ -50,23 +50,32 @@ func (t *mtable) sorted() [][]*s4qlpb.Value {
 	return rows
 }
 
-// sortedBy gives the rows of the table in the order of the key of its index ci, or in the reverse
-// of it: the columns of the index, each in its direction, and then the primary-key columns that
-// the index does not hold, with NULL before every other value of a column.
-func (t *mtable) sortedBy(ci *s4qlpb.CreateIndex, backward bool) [][]*s4qlpb.Value {
-	type column struct {
-		position   uint32
-		descending bool
-	}
-	var key []column
+// mkeyColumn is a column of the key of an index or of a primary key in the model.
+type mkeyColumn struct {
+	position   uint32
+	descending bool
+}
+
+// keyOf the index ci of the table, or of its primary key if ci is nil: the columns of the index,
+// each in its direction, and then the primary-key columns that the index does not hold, ascending.
+func (t *mtable) keyOf(ci *s4qlpb.CreateIndex) []mkeyColumn {
+	var key []mkeyColumn
 	for _, c := range ci.GetColumns() {
-		key = append(key, column{c.GetColumn(), c.GetDescending()})
+		key = append(key, mkeyColumn{c.GetColumn(), c.GetDescending()})
 	}
 	for _, position := range t.create.GetPrimaryKey() {
-		if !slices.ContainsFunc(key, func(c column) bool { return c.position == position }) {
-			key = append(key, column{position: position})
+		if !slices.ContainsFunc(key, func(c mkeyColumn) bool { return c.position == position }) {
+			key = append(key, mkeyColumn{position: position})
 		}
 	}
+	return key
+}
+
+// sortedBy gives the rows of the table in the order of the key of its index ci, or of its primary
+// key if ci is nil, or in the reverse of it, with NULL before every other value of a column: see
+// [mtable.keyOf].
+func (t *mtable) sortedBy(ci *s4qlpb.CreateIndex, backward bool) [][]*s4qlpb.Value {
+	key := t.keyOf(ci)
 	rows := make([][]*s4qlpb.Value, 0, len(t.rows))
 	for _, row := range t.rows {
 		rows = append(rows, row)
@@ -83,6 +92,43 @@ func (t *mtable) sortedBy(ci *s4qlpb.CreateIndex, backward bool) [][]*s4qlpb.Val
 		}
 		return 0
 	})
+	return rows
+}
+
+// scanned rows of the table by its index ci, or by its primary key if ci is nil, as the scan says,
+// in the order of [mtable.sortedBy]: those whose values in the leading columns of the key are
+// those of Equal, where a NULL is the same as a NULL only, and whose value in the column after
+// those is within both bounds, which no NULL is.
+func (t *mtable) scanned(ci *s4qlpb.CreateIndex, scan core.IndexScan) [][]*s4qlpb.Value {
+	key := t.keyOf(ci)
+	// within reports whether v is within the bound b, which is the lower bound if lower is true.
+	within := func(v *s4qlpb.Value, b core.Bound, lower bool) bool {
+		switch {
+		case b.Value == nil:
+			return true
+		case v.WhichKind() == s4qlpb.Value_Null_case:
+			return false
+		}
+		d := compareValues(v, b.Value)
+		if !lower {
+			d = -d
+		}
+		return d > 0 || d == 0 && !b.Open
+	}
+	var rows [][]*s4qlpb.Value
+	for _, row := range t.sortedBy(ci, scan.Backward) {
+		matches := true
+		for i, v := range scan.Equal {
+			matches = matches && compareValues(row[key[i].position], v) == 0
+		}
+		if len(scan.Equal) < len(key) {
+			v := row[key[len(scan.Equal)].position]
+			matches = matches && within(v, scan.Lower, true) && within(v, scan.Upper, false)
+		}
+		if matches {
+			rows = append(rows, row)
+		}
+	}
 	return rows
 }
 
