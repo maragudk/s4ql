@@ -258,6 +258,8 @@ func TestCommitWriter(t *testing.T) {
 	refused := []struct {
 		name  string
 		write func(w *format.CommitWriter) error
+		// why the value is refused, as the error says it, for a value that is refused.
+		why string
 	}{
 		{name: "should refuse a create table without a name", write: func(w *format.CommitWriter) error {
 			return w.CreateTable(createTable("", []string{"a"}, []uint32{0}).GetCreateTable())
@@ -320,25 +322,25 @@ func TestCommitWriter(t *testing.T) {
 		{name: "should refuse an upsert with a value of a kind it does not know", write: func(w *format.CommitWriter) error {
 			return w.UpsertRow("t", []uint32{0}, []*s4qlpb.Value{withUnknown(&s4qlpb.Value{}, 6, protowire.VarintType)})
 		}},
-		{name: "should refuse an upsert with a real that is NaN", write: func(w *format.CommitWriter) error {
+		{name: "should refuse an upsert with a real that is NaN", why: "is a real that is NaN", write: func(w *format.CommitWriter) error {
 			return w.UpsertRow("t", []uint32{0}, []*s4qlpb.Value{realValue(math.NaN())})
 		}},
-		{name: "should refuse an upsert with text that is not valid UTF-8", write: func(w *format.CommitWriter) error {
+		{name: "should refuse an upsert with text that is not valid UTF-8", why: "is text that is not valid UTF-8", write: func(w *format.CommitWriter) error {
 			return w.UpsertRow("t", []uint32{0}, []*s4qlpb.Value{text("\xff")})
 		}},
-		{name: "should refuse an upsert with a real that is infinite", write: func(w *format.CommitWriter) error {
+		{name: "should refuse an upsert with a real that is infinite", why: "is a real that is infinite", write: func(w *format.CommitWriter) error {
 			return w.UpsertRow("t", []uint32{0}, []*s4qlpb.Value{realValue(math.Inf(1))})
 		}},
-		{name: "should refuse an upsert with a real that is -0.0", write: func(w *format.CommitWriter) error {
+		{name: "should refuse an upsert with a real that is -0.0", why: "is a real that is -0.0", write: func(w *format.CommitWriter) error {
 			return w.UpsertRow("t", []uint32{0}, []*s4qlpb.Value{realValue(math.Copysign(0, -1))})
 		}},
-		{name: "should refuse an upsert with text that holds the character NUL", write: func(w *format.CommitWriter) error {
+		{name: "should refuse an upsert with text that holds the character NUL", why: "is text that holds the character NUL", write: func(w *format.CommitWriter) error {
 			return w.UpsertRow("t", []uint32{0}, []*s4qlpb.Value{text("a\x00b")})
 		}},
-		{name: "should refuse a delete with a real that is -0.0", write: func(w *format.CommitWriter) error {
+		{name: "should refuse a delete with a real that is -0.0", why: "is a real that is -0.0", write: func(w *format.CommitWriter) error {
 			return w.DeleteRow("t", []*s4qlpb.Value{realValue(math.Copysign(0, -1))})
 		}},
-		{name: "should refuse a delete with text that holds the character NUL", write: func(w *format.CommitWriter) error {
+		{name: "should refuse a delete with text that holds the character NUL", why: "is text that holds the character NUL", write: func(w *format.CommitWriter) error {
 			return w.DeleteRow("t", []*s4qlpb.Value{text("\x00")})
 		}},
 		{name: "should refuse a delete without a table name", write: func(w *format.CommitWriter) error {
@@ -395,6 +397,7 @@ func TestCommitWriter(t *testing.T) {
 
 			err = test.write(w)
 			is.True(t, errors.Is(err, format.ErrMalformed) || errors.Is(err, format.ErrNewerVersion), "error is not a refusal: "+errorString(err))
+			is.True(t, strings.Contains(errorString(err), test.why), "the error does not say "+test.why+": "+errorString(err))
 
 			is.Equal(t, err, w.DropTable("u"))
 			_, closeErr := w.Close()

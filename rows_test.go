@@ -16,6 +16,8 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql"
+	"maragu.dev/s4ql/internal/engine"
+	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sim"
 )
 
@@ -40,6 +42,28 @@ func held(t *testing.T, db *sql.DB, ctx func() context.Context) []*sql.Rows {
 		all = append(all, rows)
 	}
 	return all
+}
+
+func TestValue(t *testing.T) {
+	t.Run("should give a copy of a blob, which the application owns, and not nil for the empty blob", func(t *testing.T) {
+		v := s4qlpb.Value_builder{Blob: []byte{1, 2}}.Build()
+		got, err := s4ql.Value(v)
+		is.NotError(t, err)
+		got.([]byte)[0] = 9
+		is.EqualSlice(t, []byte{1, 2}, v.GetBlob())
+
+		got, err = s4ql.Value(s4qlpb.Value_builder{Blob: []byte{}}.Build())
+		is.NotError(t, err)
+		is.True(t, got.([]byte) != nil)
+	})
+
+	t.Run("should give nil for NULL, and an internal error for a value of no kind", func(t *testing.T) {
+		got, err := s4ql.Value(s4qlpb.Value_builder{Null: &s4qlpb.Null{}}.Build())
+		is.NotError(t, err)
+		is.Equal(t, nil, got)
+		_, err = s4ql.Value(&s4qlpb.Value{})
+		is.True(t, errors.Is(err, engine.ErrInternal))
+	})
 }
 
 func TestRows(t *testing.T) {

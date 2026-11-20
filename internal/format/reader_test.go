@@ -303,6 +303,8 @@ func TestCommitReader(t *testing.T) {
 	malformed := []struct {
 		name string
 		b    []byte
+		// why the value is refused, as the error says it, for a value that is refused.
+		why string
 	}{
 		{name: "should refuse no bytes", b: nil},
 		{name: "should refuse a change before the header", b: join(record(2, dropTable("t")), record(1, testHeader()))},
@@ -374,10 +376,10 @@ func TestCommitReader(t *testing.T) {
 		{name: "should refuse an upsert rows without columns", b: changeRecord(upsertRows("t", nil, []*s4qlpb.Value{}))},
 		{name: "should refuse an upsert rows that lists a column twice", b: changeRecord(upsertRows("t", []uint32{0, 1, 0}, []*s4qlpb.Value{integer(1), integer(2), integer(3)}))},
 		{name: "should refuse an upsert rows without rows", b: changeRecord(s4qlpb.Change_builder{UpsertRows: s4qlpb.UpsertRows_builder{Table: new("t"), Columns: []uint32{0}}.Build()}.Build())},
-		{name: "should refuse a row with fewer values than columns", b: changeRecord(upsertRows("t", []uint32{0, 1}, []*s4qlpb.Value{integer(1)}, []*s4qlpb.Value{integer(1), integer(2)}))},
-		{name: "should refuse a row with more values than columns", b: changeRecord(upsertRows("t", []uint32{0, 1}, []*s4qlpb.Value{integer(1), integer(2)}, []*s4qlpb.Value{integer(1), integer(2), integer(3)}))},
-		{name: "should refuse a value without a kind in a row", b: changeRecord(upsertRows("t", []uint32{0}, []*s4qlpb.Value{{}}))},
-		{name: "should refuse a real that is NaN in a row", b: changeRecord(upsertRows("t", []uint32{0}, []*s4qlpb.Value{realValue(math.NaN())}))},
+		{name: "should refuse a row with fewer values than columns", b: changeRecord(upsertRows("t", []uint32{0, 1}, []*s4qlpb.Value{integer(1)}, []*s4qlpb.Value{integer(1), integer(2)})), why: "has 1 values for 2 columns"},
+		{name: "should refuse a row with more values than columns", b: changeRecord(upsertRows("t", []uint32{0, 1}, []*s4qlpb.Value{integer(1), integer(2)}, []*s4qlpb.Value{integer(1), integer(2), integer(3)})), why: "has 3 values for 2 columns"},
+		{name: "should refuse a value without a kind in a row", b: changeRecord(upsertRows("t", []uint32{0}, []*s4qlpb.Value{{}})), why: "has no kind"},
+		{name: "should refuse a real that is NaN in a row", b: changeRecord(upsertRows("t", []uint32{0}, []*s4qlpb.Value{realValue(math.NaN())})), why: "is a real that is NaN"},
 		{name: "should refuse text that is not valid UTF-8 in a row", b: changeRecord(rawChange(3, join(
 			protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), []byte("t")),
 			protowire.AppendBytes(protowire.AppendTag(nil, 2, protowire.BytesType), []byte{0}),
@@ -385,19 +387,19 @@ func TestCommitReader(t *testing.T) {
 				protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType),
 					protowire.AppendBytes(protowire.AppendTag(nil, 3, protowire.BytesType), []byte("\xc0\x80")))),
 		)))},
-		{name: "should refuse a real that is infinite in a row", b: changeRecord(upsertRows("t", []uint32{0}, []*s4qlpb.Value{realValue(math.Inf(1))}))},
-		{name: "should refuse a real that is negative and infinite in a row", b: changeRecord(upsertRows("t", []uint32{0}, []*s4qlpb.Value{realValue(math.Inf(-1))}))},
-		{name: "should refuse a real that is -0.0 in a row", b: changeRecord(upsertRows("t", []uint32{0}, []*s4qlpb.Value{realValue(math.Copysign(0, -1))}))},
-		{name: "should refuse text with the character NUL in a row", b: changeRecord(upsertRows("t", []uint32{0}, []*s4qlpb.Value{text("a\x00")}))},
+		{name: "should refuse a real that is infinite in a row", b: changeRecord(upsertRows("t", []uint32{0}, []*s4qlpb.Value{realValue(math.Inf(1))})), why: "is a real that is infinite"},
+		{name: "should refuse a real that is negative and infinite in a row", b: changeRecord(upsertRows("t", []uint32{0}, []*s4qlpb.Value{realValue(math.Inf(-1))})), why: "is a real that is infinite"},
+		{name: "should refuse a real that is -0.0 in a row", b: changeRecord(upsertRows("t", []uint32{0}, []*s4qlpb.Value{realValue(math.Copysign(0, -1))})), why: "is a real that is -0.0"},
+		{name: "should refuse text with the character NUL in a row", b: changeRecord(upsertRows("t", []uint32{0}, []*s4qlpb.Value{text("a\x00")})), why: "is text that holds the character NUL"},
 		{name: "should refuse a delete rows without a table name", b: changeRecord(deleteRows("", []*s4qlpb.Value{integer(1)}))},
 		{name: "should refuse a delete rows without keys", b: changeRecord(deleteRows("t"))},
 		{name: "should refuse a primary key without values", b: changeRecord(deleteRows("t", []*s4qlpb.Value{}))},
-		{name: "should refuse primary keys with different numbers of values", b: changeRecord(deleteRows("t", []*s4qlpb.Value{integer(1)}, []*s4qlpb.Value{integer(1), integer(2)}))},
-		{name: "should refuse a value without a kind in a primary key", b: changeRecord(deleteRows("t", []*s4qlpb.Value{{}}))},
-		{name: "should refuse a real that is NaN in a primary key", b: changeRecord(deleteRows("t", []*s4qlpb.Value{realValue(math.NaN())}))},
-		{name: "should refuse a real that is infinite in a primary key", b: changeRecord(deleteRows("t", []*s4qlpb.Value{realValue(math.Inf(-1))}))},
-		{name: "should refuse a real that is -0.0 in a primary key", b: changeRecord(deleteRows("t", []*s4qlpb.Value{realValue(math.Copysign(0, -1))}))},
-		{name: "should refuse text with the character NUL in a primary key", b: changeRecord(deleteRows("t", []*s4qlpb.Value{text("\x00")}))},
+		{name: "should refuse primary keys with different numbers of values", b: changeRecord(deleteRows("t", []*s4qlpb.Value{integer(1)}, []*s4qlpb.Value{integer(1), integer(2)})), why: "has 2 values, and the first key of its batch has 1"},
+		{name: "should refuse a value without a kind in a primary key", b: changeRecord(deleteRows("t", []*s4qlpb.Value{{}})), why: "has no kind"},
+		{name: "should refuse a real that is NaN in a primary key", b: changeRecord(deleteRows("t", []*s4qlpb.Value{realValue(math.NaN())})), why: "is a real that is NaN"},
+		{name: "should refuse a real that is infinite in a primary key", b: changeRecord(deleteRows("t", []*s4qlpb.Value{realValue(math.Inf(-1))})), why: "is a real that is infinite"},
+		{name: "should refuse a real that is -0.0 in a primary key", b: changeRecord(deleteRows("t", []*s4qlpb.Value{realValue(math.Copysign(0, -1))})), why: "is a real that is -0.0"},
+		{name: "should refuse text with the character NUL in a primary key", b: changeRecord(deleteRows("t", []*s4qlpb.Value{text("\x00")})), why: "is text that holds the character NUL"},
 		{name: "should refuse an annotation that is not Protocol Buffers", b: join(record(1, testHeader()), protowire.AppendBytes([]byte{0x1a}, []byte{0x0a, 0x05}))},
 		{name: "should refuse SQL text that is not valid UTF-8", b: join(record(1, testHeader()), protowire.AppendBytes([]byte{0x1a},
 			protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType),
@@ -407,6 +409,7 @@ func TestCommitReader(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			_, _, err := readAll(test.b, nameOf(test.b))
 			is.True(t, errors.Is(err, format.ErrMalformed), "error is not malformed: "+errorString(err))
+			is.True(t, strings.Contains(errorString(err), test.why), "the error does not say "+test.why+": "+errorString(err))
 			is.True(t, !errors.Is(err, format.ErrNewerVersion), "error is newer version")
 			is.True(t, !errors.Is(err, format.ErrNameMismatch), "error is a mismatch")
 		})

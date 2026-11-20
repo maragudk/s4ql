@@ -628,10 +628,13 @@ func TestEngine_tooBig(t *testing.T) {
 			is.Equal(t, "", o.run(t, s).err)
 		}
 		long := strings.Repeat("a", limit+1)
+		// Each error has SQLite's offset too, which is -1 for those that name no token.
 		run := func(src string, arg any, want string) {
 			t.Helper()
-			is.Equal(t, want, o.run(t, src, arg).err, "SQLite: "+src)
-			is.Equal(t, want, i.execValues(src, values([]any{arg})).err, src)
+			sqlite, got := o.run(t, src, arg), i.execValues(src, values([]any{arg}))
+			is.Equal(t, want, sqlite.err, "SQLite: "+src)
+			is.Equal(t, want, got.err, src)
+			is.Equal(t, sqlite.offset, got.offset, src)
 		}
 		run("insert into nosuch (v) values (?)", long, "1/1: no such table: nosuch")
 		run("insert into t (w) values (?)", long, "1/1: table t has no column named w")
