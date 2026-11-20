@@ -27,7 +27,7 @@ func TestCommitWriter(t *testing.T) {
 
 		var whole s4qlpb.CommitObject
 		is.NotError(t, proto.Unmarshal(b.Bytes(), &whole))
-		is.Equal(t, 6, len(whole.GetChanges()))
+		is.Equal(t, 8, len(whole.GetChanges()))
 		is.Equal(t, 2, len(whole.GetAnnotations()))
 
 		again, err := proto.MarshalOptions{Deterministic: true}.Marshal(&whole)
@@ -56,15 +56,17 @@ func TestCommitWriter(t *testing.T) {
 		parent := sha256.Sum256([]byte("parent"))
 		is.True(t, bytes.Equal(parent[:], h.GetParent()), "parent differs")
 
-		is.Equal(t, 8, len(items))
+		is.Equal(t, 10, len(items))
 		is.True(t, proto.Equal(exampleCreateTable(), items[0].change.GetCreateTable()), "create table differs")
 		is.True(t, proto.Equal(upsertRows("t", []uint32{0, 1}, []*s4qlpb.Value{integer(1), text("a")}, []*s4qlpb.Value{integer(2), null()}), items[1].change), "first upsert differs")
 		is.True(t, proto.Equal(upsertRows("t", []uint32{1, 0}, []*s4qlpb.Value{blob([]byte{1}), integer(3)}), items[2].change), "upsert with other columns differs")
 		is.True(t, proto.Equal(deleteRows("t", []*s4qlpb.Value{integer(1)}, []*s4qlpb.Value{integer(2)}), items[3].change), "delete differs")
 		is.True(t, proto.Equal(upsertRows("t", []uint32{0}, []*s4qlpb.Value{integer(4)}), items[4].change), "upsert after delete differs")
 		is.True(t, proto.Equal(dropTable("t"), items[5].change), "drop differs")
-		is.True(t, proto.Equal(statement("insert into t values (?, ?)", integer(1), text("a")), items[6].annotation), "first annotation differs")
-		is.True(t, proto.Equal(statement("drop table t"), items[7].annotation), "second annotation differs")
+		is.True(t, proto.Equal(createIndex("u_v", "u", descending(1), ascending(0)), items[6].change), "create index differs")
+		is.True(t, proto.Equal(dropIndex("u_w"), items[7].change), "drop index differs")
+		is.True(t, proto.Equal(statement("insert into t values (?, ?)", integer(1), text("a")), items[8].annotation), "first annotation differs")
+		is.True(t, proto.Equal(statement("drop table t"), items[9].annotation), "second annotation differs")
 	})
 
 	t.Run("should write a commit object with only a header", func(t *testing.T) {
@@ -208,7 +210,7 @@ func TestCommitWriter(t *testing.T) {
 	t.Run("should make one call of Write for the header and for each change and annotation", func(t *testing.T) {
 		var cw countingWriter
 		writeExample(t, &cw)
-		is.Equal(t, 9, cw.writes)
+		is.Equal(t, 11, cw.writes)
 	})
 
 	t.Run("should refuse a change after an annotation", func(t *testing.T) {
@@ -309,6 +311,36 @@ func TestCommitWriter(t *testing.T) {
 		{name: "should refuse a drop table whose name holds NUL", write: func(w *format.CommitWriter) error {
 			return w.DropTable("a\x00")
 		}},
+		{name: "should refuse a create index without a name", write: func(w *format.CommitWriter) error {
+			return w.CreateIndex(createIndex("", "t", ascending(0)).GetCreateIndex())
+		}, why: "create_index.index is empty"},
+		{name: "should refuse a create index without a table name", write: func(w *format.CommitWriter) error {
+			return w.CreateIndex(createIndex("i", "", ascending(0)).GetCreateIndex())
+		}, why: "create_index.table is empty"},
+		{name: "should refuse a create index with the name of its table", write: func(w *format.CommitWriter) error {
+			return w.CreateIndex(createIndex("T", "t", ascending(0)).GetCreateIndex())
+		}, why: "is the name of its table"},
+		{name: "should refuse a create index without columns", write: func(w *format.CommitWriter) error {
+			return w.CreateIndex(createIndex("i", "t").GetCreateIndex())
+		}, why: "has no columns"},
+		{name: "should refuse a create index with a column without a position", write: func(w *format.CommitWriter) error {
+			return w.CreateIndex(createIndex("i", "t", &s4qlpb.IndexColumn{}).GetCreateIndex())
+		}, why: "columns[0] has no column"},
+		{name: "should refuse a create index that lists a column twice", write: func(w *format.CommitWriter) error {
+			return w.CreateIndex(createIndex("i", "t", ascending(3), descending(3)).GetCreateIndex())
+		}, why: "columns[1] lists column 3 twice"},
+		{name: "should refuse a create index with a field it does not know", write: func(w *format.CommitWriter) error {
+			return w.CreateIndex(withUnknown(createIndex("i", "t", ascending(0)).GetCreateIndex(), 9, protowire.VarintType))
+		}},
+		{name: "should refuse a create index whose name is not valid UTF-8", write: func(w *format.CommitWriter) error {
+			return w.CreateIndex(createIndex("\xff", "t", ascending(0)).GetCreateIndex())
+		}},
+		{name: "should refuse a drop index without a name", write: func(w *format.CommitWriter) error {
+			return w.DropIndex("")
+		}, why: "drop_index.index is empty"},
+		{name: "should refuse a drop index whose name holds NUL", write: func(w *format.CommitWriter) error {
+			return w.DropIndex("a\x00")
+		}, why: "holds the character NUL"},
 		{name: "should refuse an upsert without a table name", write: func(w *format.CommitWriter) error {
 			return w.UpsertRow("", []uint32{0}, []*s4qlpb.Value{integer(1)})
 		}},
@@ -420,6 +452,7 @@ func TestCommitWriter(t *testing.T) {
 // commit object message.
 func FuzzCommitWriter(f *testing.F) {
 	f.Add([]byte{0, 1, 2, 3, 4, 5})
+	f.Add([]byte{0, 0, 2, 0, 0, 6, 1, 2, 0, 6, 3, 0, 1, 7, 0, 7, 2, 6, 0, 1})
 	f.Add([]byte{2, 0, 0, 1, 2, 0, 0, 2, 3, 1, 0, 3, 1, 1, 4, 0})
 	f.Add(bytes.Repeat([]byte{2, 0, 0, 6, 1, 2, 3}, 40))
 
@@ -441,7 +474,7 @@ func FuzzCommitWriter(f *testing.F) {
 			table := []string{"a", "b", "c"}[in.byte()%3]
 			var err error
 			var c *s4qlpb.Change
-			switch op := in.byte() % 6; op {
+			switch op := in.byte() % 8; op {
 			case 0:
 				c = createTable(table, []string{"x", "y", "z"}[:1+in.byte()%3], []uint32{0})
 				// The columns outside the primary key take NULL by the bits of a byte.
@@ -471,6 +504,23 @@ func FuzzCommitWriter(f *testing.F) {
 				}
 				c = deleteRows(table, key)
 				err = w.DeleteRow(table, key)
+			case 6:
+				// An index with a name of its own, on up to three distinct columns, each in the
+				// direction of a bit.
+				positions := [][]uint32{{0}, {1, 0}, {2, 0, 1}, {4_000_000_000}}[in.byte()%4]
+				directions := in.byte()
+				columns := make([]*s4qlpb.IndexColumn, len(positions))
+				for i, position := range positions {
+					columns[i] = ascending(position)
+					if directions&(1<<i) != 0 {
+						columns[i] = descending(position)
+					}
+				}
+				c = createIndex(table+"_i", table, columns...)
+				err = w.CreateIndex(c.GetCreateIndex())
+			case 7:
+				c = dropIndex(table + "_i")
+				err = w.DropIndex(table + "_i")
 			case 5:
 				var parameters []*s4qlpb.Value
 				for range in.byte() % 3 {
@@ -649,6 +699,8 @@ func writeExample(t *testing.T, w interface{ Write([]byte) (int, error) }) forma
 	is.NotError(t, cw.DeleteRow("t", []*s4qlpb.Value{integer(2)}))
 	is.NotError(t, cw.UpsertRow("t", []uint32{0}, []*s4qlpb.Value{integer(4)}))
 	is.NotError(t, cw.DropTable("t"))
+	is.NotError(t, cw.CreateIndex(createIndex("u_v", "u", descending(1), ascending(0)).GetCreateIndex()))
+	is.NotError(t, cw.DropIndex("u_w"))
 	is.NotError(t, cw.Annotate(statement("insert into t values (?, ?)", integer(1), text("a"))))
 	is.NotError(t, cw.Annotate(statement("drop table t")))
 	name, err := cw.Close()
