@@ -2004,7 +2004,7 @@ func TestSimulation(t *testing.T) {
 			"selects with WHERE of their own compared with SQLite": 0.77, "selects with WHERE of their own compared with SQLite, on an engine that reads every row": 0.27,
 			"selects with WHERE of their own that give rows, compared with SQLite": 0.08, "selects with WHERE in a transaction compared with SQLite": 1.06,
 			"selects with WHERE in a transaction compared with SQLite, on an engine that reads every row": 0.37,
-			"selects with WHERE in a transaction that give rows, compared with SQLite": 0.11,
+			"selects with WHERE in a transaction that give rows, compared with SQLite":                    0.11,
 		}, 0.15},
 		// A quarter of what the first 1,000 seeds gave on 2026-11-19, with the ends of transactions for
 		// the lease, which only this workload reaches.
@@ -2022,7 +2022,7 @@ func TestSimulation(t *testing.T) {
 			"selects with WHERE of their own compared with SQLite": 0.61, "selects with WHERE of their own compared with SQLite, on an engine that reads every row": 0.19,
 			"selects with WHERE of their own that give rows, compared with SQLite": 0.02, "selects with WHERE in a transaction compared with SQLite": 0.71,
 			"selects with WHERE in a transaction compared with SQLite, on an engine that reads every row": 0.22,
-			"selects with WHERE in a transaction that give rows, compared with SQLite": 0.02,
+			"selects with WHERE in a transaction that give rows, compared with SQLite":                    0.02,
 		}, 0.15},
 		{"hammer", hammerWorkload, map[string]float64{
 			"succeeded": 12, "SQLite's error": 17, "unknown": 0.4, "skipped": 2.5, "failed: no lease": 2,
@@ -2174,7 +2174,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// that is not NULL finds it: the zero value has the type of its column, and no column that
 		// takes NULL is the key.
 		{"zeroLeftOut", defaultWorkload, "default", []string{", and in SQLite", "the replay of the log holds"}},
-		// A scan between bounds of the key that leaves out the row of a closed bound: a select with
+		// A scan by one or two bounds of the key that leaves out the row of a closed bound: a select with
 		// WHERE, of its own or in a transaction, gives fewer rows than in SQLite. Nothing else sees it:
 		// the select writes nothing, and fails nothing. An engine that reads every row, as every second
 		// engine of a node does, does not have the bug.

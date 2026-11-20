@@ -50,8 +50,9 @@ type bugs struct {
 	// list leaves out the zero value of its type, 0, 0.0, the empty text, or the empty blob, in place
 	// of NULL.
 	zeroLeftOut bool
-	// openBound makes a scan between bounds of the key read a closed bound, of <= or >=, as open, so
-	// that it leaves out the row whose key is the bound, which the filter above it would give.
+	// openBound makes a scan by one or two bounds of the key read a closed bound, of <= or >=, as
+	// open, so that it leaves out the row whose key is the bound, which the filter above it would
+	// give.
 	openBound bool
 }
 
@@ -63,8 +64,8 @@ func (b bugs) reader(r reader) reader {
 	return r
 }
 
-// openBounds reads the rows of its reader, but for a scan between bounds of the key, which reads a
-// closed bound as open: the planted bug openBound.
+// openBounds reads the rows of its reader, but for a scan by bounds of the key, one or two, which
+// reads a closed bound as open: the planted bug openBound.
 type openBounds struct {
 	reader
 }

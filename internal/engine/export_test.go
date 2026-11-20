@@ -32,6 +32,12 @@ func (e *Engine) SetScanAll(on bool) {
 	e.scanAll = on
 }
 
+// ScansAll reports whether every query of the engine e reads every row of its table, as
+// [Engine.SetScanAll] and [Options.ScanAll] make it.
+func (e *Engine) ScansAll() bool {
+	return e.scanAll
+}
+
 // AccessOf the select of src, with args for its parameters, on the table ct: how its query reads
 // the rows of ct by the key, as [keyAccess] gives it to the scan: "no row", "a get of one key", "a
 // scan from a lower bound", "a scan to an upper bound", "a scan between two bounds", or "a scan of

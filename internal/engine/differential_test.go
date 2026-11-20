@@ -883,6 +883,11 @@ func (p *pair) step(c stmttest.Call) string {
 	if !c.Query {
 		want.columns, want.rows = "", nil
 	}
+	if p.longCondition(src) && want.err == "" && got.err != tooBig {
+		// Where SQLite gives rows, as it does for a blob literal, which it turns into NULL, the rule
+		// decides alone.
+		return fmt.Sprintf("%q with the arguments %v: a literal of a condition is longer than the length limit, and the engine gives %v, and the rule %q", src, args, got, tooBig)
+	}
 	if got.String() != want.String() {
 		gap := knownGap(src, got, want)
 		switch {
@@ -922,29 +927,32 @@ func (p *pair) step(c stmttest.Call) string {
 
 // bothWays runs the call c again if it holds a select with WHERE, through the same method, on the
 // engine of the instance with every row of the table read, as [engine.Engine.SetScanAll] makes it,
-// where the first run read the rows by the key, as the plan does unless -scanall. The two must give
+// where the first run read the rows by the key, as the plan does, or by the key where the first read
+// every row, as an engine of -scanall does. The two must give
 // the same answer, message, and count of changes, so that each test that compares the first with
 // SQLite compares both ways of reading rows, also in transactions. It counts the call in the tally
 // under "reached: read both ways", and also under "reached: read both ways in a read-only
 // transaction" in one, and gives what differs, or "".
 func (p *pair) bothWays(c stmttest.Call, got answer) string {
-	if *scanAll {
-		return ""
-	}
 	s, _ := stmt.Check(c.Src)
 	if sel, ok := s.(*stmt.Select); !ok || sel.Where == nil {
 		return ""
 	}
 	i := p.i
 	changes := i.changes
-	i.e.SetScanAll(true)
+	byKey := !i.e.ScansAll()
+	i.e.SetScanAll(byKey)
 	var all answer
 	if c.Query {
 		all = i.queryValues(c.Src, values(c.Args))
 	} else {
 		all = i.execValues(c.Src, values(c.Args))
 	}
-	i.e.SetScanAll(false)
+	i.e.SetScanAll(!byKey)
+	if !byKey {
+		// The first run read every row, as -scanall makes it, and the second by the key.
+		got, all = all, got
+	}
 	if p.y != nil {
 		p.y["reached: read both ways"]++
 		if p.readOnly {
@@ -952,7 +960,7 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 		}
 	}
 	if all.String() != got.String() || all.message != got.message || i.changes != changes {
-		return fmt.Sprintf("%q with %#v: the engine gives\n%v (%q, %v changes)\nby the key, and\n%v (%q, %v changes)\nwith every row read", c.Src, c.Args, got, got.message, changes, all, all.message, i.changes)
+		return fmt.Sprintf("%q with %#v: the engine gives\n%v (%q)\nby the key, and\n%v (%q)\nwith every row read, with %v changes after the first and %v after the second", c.Src, c.Args, got, got.message, all, all.message, changes, i.changes)
 	}
 	return ""
 }
@@ -2041,7 +2049,11 @@ func whereOf(table, typ string, data []byte) stmttest.Call {
 		case 1:
 			value = whereValue(typ, take)
 		case 3:
-			value = whereValue(whereTypes[(slices.Index(whereTypes, typ)+1+int(next())%4)%len(whereTypes)], take)
+			// A type whose values are of another kind: INT and INTEGER hold one kind.
+			others := slices.DeleteFunc(slices.Clone(whereTypes), func(o string) bool {
+				return o == typ || strings.HasPrefix(o, "int") && strings.HasPrefix(typ, "int")
+			})
+			value = whereValue(others[int(next())%len(others)], take)
 		}
 		if form/4%2 == 1 {
 			b.WriteString(" ?")
