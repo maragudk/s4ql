@@ -74,3 +74,98 @@ The hang left no trace in the old runner, and `go test` without `-v` prints noth
 - The cause inside Chromium is not found: what it waits for on D-Bus or in its network service in the first minute of a runner. The restart makes it cost about a minute.
 - The job `site` hung twice the same way ("sitecheck: the check did not end within 10m0s", on #70 and in run 44695519186), and `/internal/simulator/sitecheck/main.go` starts Chromium as the old runner did. It needs the same restart; I left it alone, because the site is outside this task.
 - The entry "Seen once: CI's job `browser` hung in four packages at once" in `/docs/todo.md` is answered by this step, and the lead updates `docs/todo.md`.
+
+## Step 2: Six shards, more restarts, the same restart in `sitecheck`, and the reviews
+
+**Author:** faster-browser-ci builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpts from the lead's messages) "When that pull request is merged, merge `origin/main` into `faster-browser-ci` [...] and go on with the start-up detection and the speed-up. Run your review of the runner fix as part of your branch; if it finds something, fix it there as a follow-up commit." Later: "Give `internal/simulator/sitecheck` the same protection: if Chromium has not fetched the page within the start-up limit, stop it and start again, with the same number of attempts and the same messages as the browser runner [...] Test it with a fake Chromium as you did for the runner. Keep `make site-check` one command." And on #101: "Keep your change to the `browser` job and the runner; do not redo what #101 does for other jobs".
+**Interpretation:** Split the tests in Chromium over parallel jobs by the measured times, make the restart hold up against the data, give sitecheck the same restart, and address both reviews.
+**Inferred intent:** A browser check of a few minutes that a hang of Chromium can no longer turn into 30.
+
+### What I did
+
+The shards, in `/Makefile` (`make test-browser BROWSERSHARD=i/6`; without it the target runs everything in one `go test` as before), each one `go test`:
+
+1. the planted bugs of a commit: `-run '^TestSimulation_plantedBugs$/^should_find_a_commit'`;
+2. the other planted bugs: `-run '^TestSimulation_plantedBugs$' -skip '^TestSimulation_plantedBugs$/^should_find_a_commit|<BROWSERSKIP>'`;
+3. `TestSimulation` and `TestFreeRunning` of the core;
+4. the rest of the core: `-skip '^(TestSimulation_plantedBugs|TestSimulation|TestFreeRunning)$|<BROWSERSKIP>'`;
+5. `simstore`, `internal/sim`, `internal/sqlite`, `faultvfs`, and `engine`, side by side;
+6. every other package of `BROWSERPKGS` (`$(filter-out ...)`), today `internal/simulator`.
+
+The patterns are built from three variables, so the skips of shards 2 and 4 are the complements of the runs of shards 1 to 3 by construction. `browserskip` joins a pattern with `BROWSERSKIP` only when that is not empty, since an empty alternative skips every test. In `/.github/workflows/ci.yml`, the job `browser` keeps the builds, vets, lints, and the native test of the simulator, with `timeout-minutes: 10`. The new matrix job `browser-test` runs `make test-browser BROWSERSHARD=${{ matrix.shard }}/${{ strategy.job-total }} BROWSERTIMEOUT=7m BROWSERFLAGS=-v` with `S4QL_CHROMIUM_STEPS=1` and `timeout-minutes: 12`. The target refuses an `n` that is not `BROWSERSHARDS`, so the matrix and the Makefile cannot drift apart.
+
+Coverage: from the `-v` logs of the first sharded run (run 44769115590), the four shards of the core hold 749 test results with distinct names, the same 749 as a full local run of the core, none missing and none extra. Only the parent `TestSimulation_plantedBugs` appears twice, in shards 1 and 2, each time with its own subtests. The other packages run whole in one shard each.
+
+More data on the start, all with `-v` unless said:
+
+- Run 44769115590 (sharded): 4 restarts in 6 shards, one shard twice in a row. Its Chromium after the restarts loaded the page after 276 ms. The browser check took 3 min 43 s.
+- Run 44770131148: 24 runners, half with `DBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent/s4ql`. That job had no `-v`, so `go test` dropped the runner's stderr for passing packages, and my count of restarts read 0. The times of `internal/sqlite` show them anyway: 123 s and 129 s, where a start without a hang takes 10 to 38 s. So two runners with the bus switched off needed two restarts each. One runner without it failed after about three minutes, as three hung starts would; `bash -e` ended the step at `go test`, before it printed the log. The shards in that run: 1 restart in 6.
+- Run 44773625888: 1 restart in 6 shards. Browser check 3 min 37 s.
+
+So three attempts were not enough, and switching off the D-Bus system bus did not help. Commit 6e9c274 allows six attempts in all. The first gets a minute, because a first start on a fresh runner needs up to 37 s when it works. Each later one gets 30 s, because a restarted Chromium loads the page within 5 s. That is 3.5 minutes at most before a shard fails. `BROWSERTIMEOUT=7m` leaves room for that plus the slowest shard's 3 minutes on a slow runner.
+
+The review of the runner fix (code-review skill, medium) found a real race. The attempt loop's `select` could take Chromium's stop, or the start-up timer, over an exit or a start that arrived in the same instant. It then reported a failure for a program that had exited, or started a program a second time. Commit d0637ed fixes it:
+
+- It checks for an exit first when Chromium stops.
+- It keeps whether the program was fetched and whether it began in atomics, and ends the start at the fetch of the program.
+- It sets `cmd.WaitDelay` to 5 s, so a child of Chromium that holds its output cannot block the stop.
+- It keeps a line buffer per file descriptor, strips the 0x16 byte of `go test -json`, and caps the unfinished line at 1 KiB.
+- It counts the deadline from the start of the runner, and stops after one attempt when no number of attempts is set.
+
+The review of the whole branch, fixed in aaa1518, found three more problems that mattered:
+
+- Shard 4 ran two `go test` one after the other, joined with `&&`. A failure in the core then kept `internal/sqlite` from running, and the two binaries' timeouts together could run past the job's. Its three small packages moved to shard 5.
+- A Worker that fetched the program and then never started it waited for the deadline. Now it gets as long again after the fetch (`compile`).
+- Nits: the runner's directory was left behind when its build failed; the runner's tests did not clear `S4QL_CHROMIUM_STEPS`; and the shards ignore a `BROWSERPKGS` that is not the default, which the Makefile and the README now say.
+
+`sitecheck` (d1fb421, `/internal/simulator/sitecheck/main.go`): `run` starts Chromium in a loop. For each start, it resets the recorded requests and closes a channel when Chromium asks for the check's page. It stops a Chromium that has not asked for the page within a minute (30 s after a restart), or that stopped before. It then writes `sitecheck: attempt i of 6: ...` with the end of Chromium's output, and `sitecheck: starting Chromium again`. `-timeout` now counts from the load of the page. The tests make the test binary a fake Chromium (`hang`, `pass`, `crash-once`). `make site-check` passes locally. I copied the loop instead of sharing a package with the runner. The runner's loop is tied to its per-attempt server, so sharing would have meant reworking the runner that #99 had just merged, in a file that #101 also changes.
+
+`/internal/sqlite/browser/README.md`: a writer sub-agent updated its section "Tests" (the shard variable, the restart and its reason, `S4QL_CHROMIUM_STEPS`, the two CI jobs). I corrected its numbers twice after later data.
+
+Local checks:
+
+- `make check-browser` passed.
+- `make test-browser`, all packages in one `go test`, passed in 4 min 5 s at a load average of 34.
+- All six shards run at the same time passed twice in a row: 12 shard runs at load averages of 16 to 28, with the same count of passed tests per shard in both rounds.
+- `go test -race -count 20 ./internal/sqlite/browser/` and `-count 10` of `sitecheck` passed.
+- `golangci-lint` and `simlint` report nothing over the changed packages.
+
+### Why
+
+`internal/core` alone took 11 of the 14 minutes, so the shards had to split it by test name. Its biggest test, the planted bugs, takes 167 to 276 s by itself, so it is split again by its subtests. The restart has to outlast the stretch in which a runner's Chromium hangs, and the data showed that stretch can be longer than three minutes.
+
+### What worked
+
+Measuring each unit alone on CI gave the balance in one run. The shards came out between 1.5 and 3 minutes of tests each. The complement patterns made coverage a property of the Makefile, and the `-v` logs proved it.
+
+### What didn't work
+
+- My first version of the compile limit re-armed the start-up timer only when it fired, so a test with `startup: time.Hour` waited an hour, and `go test -count 20` hung until I stopped it. The limit now starts at the fetch.
+- An earlier version of that test used one 10 ms limit for both the fetch and the compile, so it depended on the fake fetching within 10 ms. It failed with "chromium did not fetch it within 10ms" on most of 10 runs. The compile limit is a field of its own now, and the test gives the fetch an hour.
+- A matrix job that ran `go test ...; status=$?` under the default `bash -e` lost its output when `go test` failed.
+- Counting restarts with `grep -c 'starting Chromium again'` over a job's log also counted the echo of the script itself. The summaries now match `Z browser: starting Chromium again`.
+
+### What I learned
+
+- Runners differ in speed by up to 1.7 times, and a Chromium's first start on a runner loads the page after 7 to 32 s. Shards need about 2x headroom over a fast runner's time.
+- The `browser` job no longer runs Chromium, but it is now the longest job of the browser check, at about 3.5 minutes: its native test of the simulator under the race detector takes 75 to 80 s, and the lints most of the rest.
+
+### What was tricky
+
+Two other branches moved under this one. #99 put 786c981 on `main` as its own merge, so the merge of `origin/main` conflicted in the runner's two files. I kept this branch's versions, which build on 786c981, and #99 holds 786c981 unchanged. #101 changes `sitecheck`'s `run` too; `git merge-tree` shows a conflict in `/internal/simulator/sitecheck/main.go` only.
+
+### What warrants review
+
+- `/Makefile`, `test-browser`: that the six cases together are every test, and `browserskip`.
+- `/internal/sqlite/browser/main.go`: the loop of `runner.attempt`, now with the compile phase.
+- `/internal/simulator/sitecheck/main.go`: the start loop in `run`.
+- The temporary commits 4fd3e58, d8c6abc, 0c2128c, and the TEMPORARY part of 5c4d40a added and removed measuring jobs in the workflow. The branch's final `ci.yml` has none of them (`grep -c TEMPORARY .github/workflows/ci.yml` is 0), and a squash on merge drops them.
+
+### Future work
+
+- Shards 1 and 2 split the planted bugs by name. #101 adds `internal/testshard` (`S4QL_TEST_SHARD=i/n`, by index), which would balance them better once both are on `main`. #101's per-job Go cache (`.github/actions/go`) could also serve `browser` and `browser-test`.
+- `/docs/todo.md` is not mine to edit: its entry on the browser hang is answered, and the cause of the `site` hang is very likely this one.
