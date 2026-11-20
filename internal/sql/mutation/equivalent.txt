@@ -774,5 +774,3 @@ internal/core/index.go conn.loadIndexes condition: position >= int64(len(t.colum
 	pragma_index_xinfo gives a key column of an index as the position of a column of its table, -1 for the rowid, or -2 for an expression, never one past the columns.
 internal/core/index.go conn.loadIndexes operator: position >= int64(len(t.columns)) => position > int64(len(t.columns))
 	pragma_index_xinfo gives a key column of an index as the position of a column of its table, -1 for the rowid, or -2 for an expression, never one past the columns.
-internal/core/index.go conn.loadIndexes condition: len(ix.columns) == 0 => false
-	An index of SQLite has at least one column of its own, which pragma_index_xinfo gives with key 1, and the case before refuses one that is an expression, so an index that loadIndexes reaches the end of has columns.

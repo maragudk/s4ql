@@ -218,9 +218,8 @@ func (c *conn) loadIndexes(t *table) error {
 		}, name); err != nil {
 			return err
 		}
-		if len(ix.columns) == 0 {
-			return fmt.Errorf("%w: the index %q of its table %q has no columns", ErrCacheVersion, name, t.name)
-		}
+		// An index of SQLite has a column of its own, and one on an expression is refused above, so ix
+		// has columns.
 		indexes = append(indexes, ix)
 	}
 	t.indexes, t.primary, t.indexed = indexes, primary, true
