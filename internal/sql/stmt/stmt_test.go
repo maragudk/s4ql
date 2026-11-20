@@ -434,7 +434,11 @@ func checkCreateTable(t testing.TB, open func(testing.TB) *db, src string, s *st
 	if e := s.ColumnsError(); e != nil {
 		is.Equal(t, sqlerr.CodeError, e.Code, src)
 		is.Equal(t, sqlerr.CodeError, e.ExtendedCode, src)
-		sqliteError(t, src, open(t).exec(src), 1, e.Message)
+		err := open(t).exec(src)
+		sqliteError(t, src, err, 1, e.Message)
+		if se, _ := errors.AsType[*sqlite.Error](err); se.Offset != e.Offset {
+			t.Fatalf("%q: SQLite gives the offset %v, and ColumnsError %v", src, se.Offset, e.Offset)
+		}
 		sqliteError(t, src, open(t).exec(canonical(s)), 1, e.Message)
 		d := open(t)
 		d.must(createFor(swapCase(s.Table.Value), "v"))
