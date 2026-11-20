@@ -18,6 +18,7 @@ This document holds only what Markus and maragubot have explicitly agreed to wri
 - **A strict subset of SQLite's SQL.** Because SQLite is the oracle, the dialect is SQLite's, and everything supported is also valid SQLite.
 - **Strict tables only.** Only `STRICT` tables are supported. Other restrictions may be added as they are found.
 - **The `database/sql` driver is the only public API.** An application uses s4ql through Go's `database/sql`, and s4ql has no API of its own next to it.
+- **Unspecified row order varies.** Where SQLite leaves the order of rows unspecified, s4ql varies it from one query to the next, so that nothing can come to depend on it. This holds for a `select` without `order by` and for rows that tie under `order by`.
 
 Which SQL is supported today, and what comes next, is in the working document [roadmap.md](roadmap.md).
 

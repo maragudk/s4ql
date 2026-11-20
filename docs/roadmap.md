@@ -31,7 +31,7 @@ Rejected for now, to be decided later: upserts, and join variants such as comma 
 
 A milestone is a goal that several slices lead to. It helps to choose which slice comes next.
 
-- **The first application on s4ql: [glue](https://www.maragu.dev/glue).** `maragu.dev/glue` runs on s4ql in place of SQLite. Markus on 2026-11-19: "a nice second milestone: get maragu.dev/glue working on this storage instead of SQLite." The SQL that it needs and s4ql does not have yet is in [the research note on glue](research/glue-on-s4ql.md). Slices 5 to 8 lead to it. After slice 8 comes the rest of what glue needs, which is not agreed as slices yet.
+- **The first application on s4ql: [glue](https://www.maragu.dev/glue).** `maragu.dev/glue` runs on s4ql in place of SQLite. Markus on 2026-11-19: "a nice second milestone: get maragu.dev/glue working on this storage instead of SQLite." The SQL that it needs and s4ql does not have yet is in [the research note on glue](research/glue-on-s4ql.md). Slices 5 to 12 lead to it. After slice 12 comes the rest of what glue needs, which is not agreed as slices yet.
 
 ## Slices
 
@@ -323,11 +323,123 @@ Included:
 
 Further details are decided when the slice is built, and recorded here.
 
-Rejected as not supported, where SQLite would accept it:
+Rejected as not supported, where SQLite would accept it (except the last item):
 
 - An expression in `set`, such as `v1 = v1 + 1`.
 - `returning`.
 - `update ... from`.
 - `set (v2, v3) = (...)`.
 - `or replace` and the other conflict clauses.
-- `limit` and `order by` on `update` and `delete`.
+- `limit` and `order by` on `update` and `delete`. The pinned SQLite build gives a syntax error for them, and so does s4ql.
+
+### Slice 9: `if not exists` and `if exists`
+
+Status: agreed on 2026-11-20, not built.
+
+```sql
+create table if not exists t1 (v1 int primary key, v2 text) strict, without rowid;
+
+drop table if exists t1;
+```
+
+Included:
+
+- `create table if not exists t1 (...)`: when no table `t1` exists, it does what `create table` does. When a table `t1` exists, the statement does nothing and gives no error, whatever the columns of the existing table are, as in SQLite.
+- `drop table if exists t1`: when no table `t1` exists, nothing happens and there is no error. When it exists, it does what `drop table` does.
+- A statement that does nothing writes nothing to the log.
+- An error that the declaration would give is still given by SQLite's rules when the table exists, for example a syntax error in the column list. What SQLite does with a declaration that is valid in syntax but not supported by s4ql, when the table exists, is decided when the slice is built, by SQLite's behaviour and the rule of the statement pass, and recorded in [the todo](todo.md).
+- The commit format does not change.
+- Everything of slices 1 to 8 with the two forms: transactions, prepared statements, and a restart with an empty cache.
+- The reason: the migration tool of glue creates its migrations table with `create table if not exists`.
+
+Further details are decided when the slice is built, and recorded here.
+
+Rejected as not supported, where SQLite would accept it:
+
+- `create temp table`.
+- `create table ... as select`.
+- Everything else that slices 1 to 8 reject in a declaration.
+
+### Slice 10: `default` with a literal
+
+Status: agreed on 2026-11-20, not built.
+
+```sql
+create table t1 (v1 int primary key, v2 int not null default 0, v3 text default 'a') strict, without rowid;
+
+insert into t1 (v1) values (1);
+```
+
+Included:
+
+- A column declaration may carry `default <literal>`, where the literal is one of the literals that `insert` takes, or `null`.
+- An `insert` with a column list that leaves the column out stores the default. Until now such a column gets `null` if it takes null, and the statement is refused if it is `not null`.
+- The commit format changes: a column carries its default. The cache's layout version rises to 3, and an older cache is refused, with no upgrade, because nothing uses s4ql yet.
+- A default whose type is not the column's type, a default on the primary key column, `not null default null`, signed numbers, and `true` and `false` are decided when the slice is built, by SQLite's behaviour and the rule of exact types, and recorded in [the todo](todo.md).
+- Everything of slices 1 to 9 with a default: transactions, prepared statements, and a restart with an empty cache.
+- The reason: the schema of goqite, the queue that glue uses, declares two columns with `default 0`.
+
+Further details are decided when the slice is built, and recorded here.
+
+Rejected as not supported, where SQLite would accept it:
+
+- A default that is an expression, such as `default (1 + 1)`.
+- `current_time`, `current_date`, and `current_timestamp`.
+- `insert ... default values`.
+
+### Slice 11: a value on the left of a comparison
+
+Status: agreed on 2026-11-20, not built.
+
+```sql
+select v1 from t1 where 5 < v1;
+
+select v1 from t1 where ? >= v2;
+```
+
+Included:
+
+- In a `where`, a comparison may have the literal or `?` on the left and the column on the right, such as `? >= timeout` and `5 < a`. Slice 7 allows only the column on the left.
+- It means what SQLite says it means. The rule of exact types holds as for the other order, and the primary key is used for lookups and ranges as in slice 7: `5 < a` bounds `a` from below.
+- The commit format does not change.
+- Everything of slices 1 to 10 with the new order: arguments, prepared statements, transactions, and a restart with an empty cache.
+- The reason: goqite, the queue that glue uses, writes its receive query both ways round, `? >= timeout` and `received < ?`.
+
+Further details are decided when the slice is built, and recorded here.
+
+Rejected as not supported, where SQLite would accept it:
+
+- A column on both sides of a comparison.
+- A value on both sides of a comparison.
+- `is null` and `is not null` with anything but a column on the left.
+
+### Slice 12: `order by` and `limit` on `select`
+
+Status: agreed on 2026-11-20, not built.
+
+```sql
+select v1, v2 from t1 order by v2 desc, v1 limit 10;
+
+select v1 from t1 where v2 > ? order by v1 limit ?;
+```
+
+Included:
+
+- `order by` takes one or more column names, each with `asc` or `desc`. When neither is written, it is `asc`.
+- `limit` takes a number or `?`.
+- Rows that tie under `order by`, and the rows of a `select` without `order by`, come in an order that varies from one query to the next, by the rule in [the spec](spec.md). Each query runs unordered scans and ties forward or backward by key, chosen at random, so rows still stream and nothing is held in memory for a shuffle. Tests and the simulation give the engine a seed, so a failure can be replayed. The checks against SQLite compare unordered and tied rows as a set. Any order of such rows is one SQLite could give too.
+- `null` sorts where SQLite sorts it: first in `asc`, last in `desc`.
+- The commit format does not change.
+- A negative `limit`, `limit 0`, a `limit` argument that is not an integer, a column named twice in `order by`, and a column in `order by` that is not in the list of selected columns are decided when the slice is built, by SQLite's behaviour, and recorded in [the todo](todo.md).
+- Everything of slices 1 to 11 with `order by` and `limit`: arguments, prepared statements, transactions, and a restart with an empty cache.
+- The reason: goqite picks the next message with `order by priority desc, created limit 1`.
+
+Further details are decided when the slice is built, and recorded here.
+
+Rejected as not supported, where SQLite would accept it:
+
+- `offset`, also as `limit x, y`.
+- Ordering by an expression or by position, such as `order by 1`.
+- `nulls first` and `nulls last`.
+- `collate`.
+- `order by` and `limit` on `update` and `delete`. The pinned SQLite build gives a syntax error for them, and so does s4ql.

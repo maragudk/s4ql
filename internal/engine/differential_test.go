@@ -78,7 +78,8 @@ type answer struct {
 	message string
 	// offset of SQLite's error, or of the engine's, as [sqlerr.Error] has it, and 0 for another
 	// error. It is not in the text of the answer: SQLite does not give the same offset on every
-	// connection, so only the tests that know it compare it.
+	// connection, so only the tests that know it compare it, such as pin, which compares the
+	// answers of a fresh connection to SQLite and of the engine after the same statements.
 	offset int
 	// columns of a query, each as its name and declared type, and its rows, each as its values.
 	columns string
