@@ -46,8 +46,8 @@ type StoredObject struct {
 const maxStoredObjects = 50_000
 
 // storageShape is the version of the shape of a [StoredBucket] itself. It goes up when the meaning
-// of its fields changes.
-const storageShape = 1
+// of its fields changes. The log of a bucket of shape 2 can delete rows.
+const storageShape = 2
 
 // StorageVersion of the objects that this engine writes: the shape of a [StoredBucket], and a hash
 // of a manifest and of a commit object as the storage formats write them, so that it changes with
@@ -193,7 +193,7 @@ func (s *seed) readLog() error {
 	for i, j := 0, len(s.log)-1; i < j; i, j = i+1, j-1 {
 		s.log[i], s.log[j] = s.log[j], s.log[i]
 	}
-	inLog := map[int64]bool{}
+	inLog, rows := map[int64]bool{}, map[int64]bool{}
 	for _, c := range s.log {
 		for _, k := range c.Keys {
 			switch {
@@ -202,7 +202,13 @@ func (s *seed) readLog() error {
 			case !given(k, s.values):
 				return fmt.Errorf("the log holds the key %v, which the counter of %v values has not given", k, s.values)
 			}
-			inLog[k] = true
+			inLog[k], rows[k] = true, true
+		}
+		for _, k := range c.Deletes {
+			if !rows[k] {
+				return fmt.Errorf("the log deletes the key %v, which it does not hold there", k)
+			}
+			delete(rows, k)
 		}
 	}
 	return nil

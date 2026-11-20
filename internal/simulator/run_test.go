@@ -286,7 +286,7 @@ func TestRun_actions(t *testing.T) {
 		is.Equal(t, 0, res.Summary.Violations)
 	})
 
-	t.Run("should write barcodes with an insert, read one with a select, and annotate each commit object with its statements", func(t *testing.T) {
+	t.Run("should write barcodes with an insert, delete one with a delete, read one with a select, and annotate each commit object with its statements", func(t *testing.T) {
 		res := run(t, &e, `{"seed": 2, "end": 120000, "instances": 1, "workload": {"callers": 6, "think": 500, "writes": 70}}`)
 		// arg of a statement as text: JSON gives a number as a float64, which holds 13 digits exactly.
 		arg := func(v any) string {
@@ -302,16 +302,34 @@ func TestRun_actions(t *testing.T) {
 		is.Equal(t, 2, len(first.Statements))
 		is.Equal(t, "create table barcodes (code integer primary key) strict, without rowid", first.Statements[0].SQL)
 		is.Equal(t, 0, len(first.Statements[0].Args))
-		inserted := map[int64]bool{}
+		// Each commit object inserts one row, or deletes one that a commit object before it inserted.
+		inserted, deleted := map[int64]bool{}, map[int64]bool{}
 		for _, ev := range commits {
 			c := ev.Object.Commit
-			is.Equal(t, 1, len(c.Keys))
-			inserted[c.Keys[0]] = true
+			is.Equal(t, 1, len(c.Keys)+len(c.Deletes))
 			is.True(t, len(c.Statements) > 0, "a commit object holds its statements")
-			insert := c.Statements[len(c.Statements)-1]
-			is.Equal(t, "insert into barcodes (code) values (?)", insert.SQL)
-			is.Equal(t, 1, len(insert.Args))
-			is.Equal(t, fmt.Sprint(c.Keys[0]), arg(insert.Args[0]))
+			last := c.Statements[len(c.Statements)-1]
+			is.Equal(t, 1, len(last.Args))
+			if len(c.Keys) == 1 {
+				inserted[c.Keys[0]] = true
+				is.Equal(t, "insert into barcodes (code) values (?)", last.SQL)
+				is.Equal(t, fmt.Sprint(c.Keys[0]), arg(last.Args[0]))
+				continue
+			}
+			k := c.Deletes[0]
+			is.True(t, inserted[k] && !deleted[k], fmt.Sprint("a delete of a row that is there: ", k))
+			deleted[k] = true
+			is.Equal(t, 1, len(c.Statements))
+			is.Equal(t, "delete from barcodes where code = ?", last.SQL)
+			is.Equal(t, fmt.Sprint(k), arg(last.Args[0]))
+		}
+		is.True(t, len(deleted) > 5 && len(deleted) < len(inserted)/2, fmt.Sprint(len(deleted), " deletes of ", len(inserted), " rows"))
+		for _, c := range find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.Op == "delete" }) {
+			is.Equal(t, "delete from barcodes where code = ?", c.SQL)
+			is.Equal(t, int64(0), c.Value)
+			if c.What == "committed" {
+				is.True(t, deleted[int64(c.Args[0].(float64))], fmt.Sprint("the commit of the delete of ", arg(c.Args[0]), " deletes it"))
+			}
 		}
 		// Every key is a barcode of EAN-13 with the prefix 57, and the keys of the writes, in the
 		// order taken, are distinct and do not rise.
@@ -343,22 +361,27 @@ func TestRun_actions(t *testing.T) {
 				is.True(t, inserted[c.Value], fmt.Sprint("the commit of ", c.Value, " inserts it"))
 			}
 		}
-		// A read selects one key that the application knows is in the store: half of them the newest
-		// acknowledged, and the others one of the recent ones. A read that is not stale finds its row.
+		// A read selects one key that the application knows is in the store, and expects its row, or,
+		// one in eight, the key of a recent acknowledged delete, and expects no row. A read that is not
+		// stale gives what it expects.
 		served := find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.What == "served" })
 		is.True(t, len(served) > 20, "many reads")
-		found, missing := 0, 0
+		found, gone := 0, 0
 		for _, r := range served {
 			is.Equal(t, "select code from barcodes where code = ?", r.SQL)
 			key := arg(r.Args[0])
-			is.True(t, len(r.Keys) == 0 || len(r.Keys) == 1 && fmt.Sprint(r.Keys[0]) == key, fmt.Sprint("a read of ", key, " gives ", r.Keys))
-			if len(r.Keys) == 1 {
+			switch r.Expect {
+			case "row":
+				is.True(t, len(r.Keys) == 1 && fmt.Sprint(r.Keys[0]) == key, fmt.Sprint("a read of ", key, " gives ", r.Keys))
 				found++
-			} else {
-				missing++
+			case "none":
+				is.True(t, len(r.Keys) == 0 && deleted[int64(r.Args[0].(float64))], fmt.Sprint("a read of the deleted ", key, " gives ", r.Keys))
+				gone++
+			default:
+				t.Fatal("a read expects", r.Expect)
 			}
 		}
-		is.True(t, found == len(served) && missing == 0, fmt.Sprint(found, " reads found their row, and ", missing, " did not"))
+		is.True(t, gone > 0 && gone < found/3, fmt.Sprint(found, " reads found their row, and ", gone, " found that it was gone"))
 		is.Equal(t, 0, res.Summary.Violations)
 	})
 
@@ -462,7 +485,7 @@ func TestRun_faults(t *testing.T) {
 		{name: "writes stuck in the network", faults: `{"lostRequest": 0.3, "late": 1, "lateBy": 20000}`, kind: "request", what: "stuck"},
 		{name: "stuck writes that arrive", faults: `{"lostRequest": 0.3, "late": 1, "lateBy": 20000}`, kind: "request", what: "arrived"},
 		{name: "writes held back after the caller gave up", faults: `{"slow": 0.3, "slowBy": 20000, "late": 1, "lateBy": 20000}`, kind: "request", what: "held", text: "the caller gave up"},
-		{name: "writes held back after a crash", faults: `{"slow": 0.5, "slowBy": 20000, "afterCrash": 1, "lateBy": 20000}`, seed: 1,
+		{name: "writes held back after a crash", faults: `{"slow": 0.5, "slowBy": 20000, "afterCrash": 1, "lateBy": 20000}`, seed: 2,
 			schedule: `{"at": 20000, "do": "crash", "instance": "a"}, {"at": 20000, "do": "crash", "instance": "b"}, {"at": 20000, "do": "crash", "instance": "c"}`,
 			kind:     "request", what: "held", text: "the sender crashed"},
 		{name: "damaged downloads", faults: `{"damaged": 1}`, schedule: `{"at": 20000, "do": "crash", "instance": "a"}, {"at": 20000, "do": "crash", "instance": "b"}`,

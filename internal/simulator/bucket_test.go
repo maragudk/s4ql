@@ -124,7 +124,7 @@ func keysOf(t *testing.T, s simulator.State) map[int64]bool {
 const pageSettings = `"workload": {"callers": 0}, "client": {"instance": "a"}, "standby": true`
 
 func TestEngine_bucket(t *testing.T) {
-	t.Run("should continue a session on the bucket that it left, with its rows, new keys, and no violation", func(t *testing.T) {
+	t.Run("should continue a session on the bucket that it left, with its rows, new keys, its deletes, and no violation", func(t *testing.T) {
 		first := startKeeping(t, `"seed": 7, `+pageSettings, nil)
 		for range 20 {
 			first.advance(15_000)
@@ -133,6 +133,14 @@ func TestEngine_bucket(t *testing.T) {
 		is.True(t, len(before.Bucket.Log) > 20, "the first session commits")
 		is.Equal(t, 0, len(violations(first.events)))
 		oldKeys := keysOf(t, *before)
+		oldDeletes := map[int64]bool{}
+		for _, c := range before.Bucket.Commits {
+			for _, k := range c.Deletes {
+				is.True(t, c.InLog, "a delete in the log")
+				oldDeletes[k] = true
+			}
+		}
+		is.True(t, len(oldDeletes) > 0, "the first session deletes")
 		b := first.kept.bucket()
 
 		second := startKeeping(t, `"seed": 8, `+pageSettings, &b)
@@ -156,6 +164,11 @@ func TestEngine_bucket(t *testing.T) {
 			case e.Kind == "call" && e.Op == "write" && e.What == "committed":
 				newWrites++
 				is.True(t, !oldKeys[e.Value], "a new write takes a key of its own")
+			}
+			// After the reload, the application knows the rows of the log, and not those that it
+			// deleted: no call picks one of them.
+			if e.Kind == "call" && e.What == "started" && e.Op != "write" {
+				is.True(t, !oldDeletes[int64(e.Args[0].(float64))], fmt.Sprint("a ", e.Op, " of a row deleted before the reload: ", e.Args[0]))
 			}
 		}
 		is.Equal(t, 1, opened)

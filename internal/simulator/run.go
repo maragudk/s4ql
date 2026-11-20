@@ -65,13 +65,34 @@ type Summary struct {
 
 // The table of the workload, with one column of integers, its primary key, and the statements of
 // the calls. A write inserts the row of its key, and creates the table first if the database does
-// not have it. A read selects the row of one key.
+// not have it. A delete deletes the row of one key, and a read selects it.
 const (
 	tableName = "barcodes"
 	createSQL = "create table barcodes (code integer primary key) strict, without rowid"
 	insertSQL = "insert into barcodes (code) values (?)"
+	deleteSQL = "delete from barcodes where code = ?"
 	selectSQL = "select code from barcodes where code = ?"
 )
+
+// The ops of the calls, as the events of the calls name them.
+const (
+	opWrite  = "write"
+	opDelete = "delete"
+	opRead   = "read"
+)
+
+// opOf the call that the number u from the seed gives, by the shares of the workload w: a write
+// transaction by w.Writes, which deletes by w.Deletes and inserts otherwise, or a read.
+func opOf(u uint64, w Workload) string {
+	switch {
+	case int(u%100) >= w.Writes:
+		return opRead
+	case int(u/100%100) < w.Deletes:
+		return opDelete
+	default:
+		return opWrite
+	}
+}
 
 // barcode is the key of the nth write of a run, from 1: a number of 13 digits in the form of an
 // EAN-13 barcode, the prefix 57, ten digits that a bijection of n modulo 10^10 gives, and the check
@@ -521,8 +542,8 @@ func stopped(d *core.DB) bool {
 	}
 }
 
-// caller of the workload on p: until the end of the run, it pauses and then makes a call, a write or
-// a read, while the workload is on.
+// caller of the workload on p: until the end of the run, it pauses and then makes a call, a write, a
+// delete, or a read, while the workload is on.
 func (r *run) caller(ctx context.Context, p *process, name string) {
 	w := r.req.Workload
 	for !r.isEnding() {
@@ -541,62 +562,81 @@ func (r *run) caller(ctx context.Context, p *process, name string) {
 			_ = p.inst.Sleep(ctx, time.Second)
 			continue
 		}
-		write := int(p.inst.Uint64()%100) < w.Writes
-		r.call(ctx, p, name, write)
+		r.call(ctx, p, name, opOf(p.inst.Uint64(), w))
 	}
 }
 
-// call of the application, by its caller: its number, whether it writes, the key that a write
-// inserts or that a read selects, and when it started.
+// call of the application, by its caller: its number, its op, the key that a write inserts, or that
+// a delete deletes or a read selects, whether a read expects the row, and when it started.
 type call struct {
 	n       int
 	caller  string
-	write   bool
+	op      string
 	value   int64
 	key     int64
+	row     bool
 	started time.Duration
 	// ended is set once the event that ends the call is in the trace. It is guarded by the mutex of
 	// the run.
 	ended bool
 }
 
-// newCall of the caller, which starts now. A write takes the key of the next value of the counter of
-// the run. A read selects a key that the application knows is in the store, which [checker.pick]
-// picks by a number from the seed. While the application knows none, the call is a write.
-func (r *run) newCall(caller string, write bool) *call {
+// newCall of the caller with the op, which starts now. A write takes the key of the next value of
+// the counter of the run. A delete and a read take a key that the application knows, which
+// [checker.pickDelete] and [checker.pickRead] pick by a number from the seed. While there is no key to
+// pick, the call is a write.
+func (r *run) newCall(caller, op string) *call {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls++
-	c := &call{n: r.calls, caller: caller, write: write, started: r.world.Monotonic()}
-	if !write {
-		if r.check.knows() {
-			c.key = r.check.pick(r.world.Uint64())
-			return c
-		}
-		c.write = true
+	c := &call{n: r.calls, caller: caller, op: op, started: r.world.Monotonic()}
+	var ok bool
+	switch op {
+	case opRead:
+		c.key, c.row, ok = r.check.pickRead(r.world.Uint64())
+	case opDelete:
+		c.key, ok = r.check.pickDelete(r.world.Uint64())
 	}
+	if ok {
+		return c
+	}
+	c.op = opWrite
 	r.values++
 	c.value = barcode(r.values)
 	return c
 }
 
-// statement of the call: the text of its insert or select, and its argument.
+// statement of the call: the text of its insert, delete, or select, and its argument.
 func (c *call) statement() (string, int64) {
-	if c.write {
+	switch c.op {
+	case opWrite:
 		return insertSQL, c.value
+	case opDelete:
+		return deleteSQL, c.key
+	default:
+		return selectSQL, c.key
 	}
-	return selectSQL, c.key
+}
+
+// txn of a call that writes: the row that it inserts or deletes.
+func (c *call) txn() txn {
+	if c.op == opDelete {
+		return txn{key: c.key, delete: true}
+	}
+	return txn{key: c.value}
 }
 
 // event of the call c on the instance in, whose process is p or nil, that says what happened. An
 // event that ends the call has the time at which it started.
 func (c *call) event(in *instance, p *process, what string) Event {
-	op := "read"
-	if c.write {
-		op = "write"
-	}
 	sql, arg := c.statement()
-	e := Event{Kind: "call", What: what, Instance: in.name, Call: c.n, Caller: c.caller, Op: op, Value: c.value, SQL: sql, Args: []any{arg}}
+	e := Event{Kind: "call", What: what, Instance: in.name, Call: c.n, Caller: c.caller, Op: c.op, Value: c.value, SQL: sql, Args: []any{arg}}
+	if c.op == opRead {
+		e.Expect = "none"
+		if c.row {
+			e.Expect = "row"
+		}
+	}
 	if p != nil {
 		e.Process = p.name
 	}
@@ -607,7 +647,7 @@ func (c *call) event(in *instance, p *process, what string) Event {
 }
 
 // callEnded with the event e, which ends the call c unless it has ended already: the checker learns
-// how a write ended, and the event is recorded.
+// how a write or a delete ended, and the event is recorded.
 func (r *run) callEnded(ctx context.Context, c *call, e Event) {
 	r.mu.Lock()
 	ended := c.ended
@@ -616,20 +656,20 @@ func (r *run) callEnded(ctx context.Context, c *call, e Event) {
 	if ended {
 		return
 	}
-	if c.write {
-		r.check.writeEnded(ctx, c.value, e.What)
+	if c.op != opRead {
+		r.check.writeEnded(ctx, c.txn(), e.What)
 	}
 	r.rec.add(e)
 }
 
 // call of the application on p, which starts now, in a task of p.
-func (r *run) call(ctx context.Context, p *process, caller string, write bool) {
-	c := r.newCall(caller, write)
+func (r *run) call(ctx context.Context, p *process, caller, op string) {
+	c := r.newCall(caller, op)
 	r.rec.add(c.event(p.i, p, "started"))
 	r.serveCall(ctx, p, c)
 }
 
-// serveCall c in a task of p: one write or read on the engine of p, on a connection of its own, with
+// serveCall c in a task of p: one write, delete, or read on the engine of p, on a connection of its own, with
 // the timeout of the workload, and the event that ends the call.
 func (r *run) serveCall(ctx context.Context, p *process, c *call) {
 	e := c.event(p.i, p, "")
@@ -645,9 +685,12 @@ func (r *run) serveCall(ctx context.Context, p *process, c *call) {
 	}
 	conn := eng.Conn()
 	defer func() { _ = conn.Close(ctx) }()
-	if c.write {
-		e.What, e.Error = r.write(ctx, conn, c.value)
-	} else {
+	switch c.op {
+	case opWrite:
+		e.What, e.Error = r.write(ctx, conn, insertSQL, c.value)
+	case opDelete:
+		e.What, e.Error = r.write(ctx, conn, deleteSQL, c.key)
+	default:
 		before := r.check.readStarted()
 		var keys []int64
 		var position format.Name
@@ -660,17 +703,18 @@ func (r *run) serveCall(ctx context.Context, p *process, c *call) {
 	r.callEnded(ctx, c, e)
 }
 
-// write the row with the key value in a write transaction on conn, and say how the call ended, and
-// its error. The transaction creates the table first if the database does not have it, so the first
-// write of a run commits both statements. A statement that fails in the transaction has no effect,
-// and the transaction stays open, so the insert can come again after the create.
-func (r *run) write(ctx context.Context, conn *engine.Conn, value int64) (string, string) {
+// write runs the statement, an insert or a delete, with the key as its argument, in a write
+// transaction on conn, and says how the call ended, and its error. The transaction of an insert
+// creates the table first if the database does not have it, so the first write of a run commits both
+// statements. A statement that fails in the transaction has no effect, and the transaction stays
+// open, so the insert can come again after the create.
+func (r *run) write(ctx context.Context, conn *engine.Conn, statement string, key int64) (string, string) {
 	if err := conn.Begin(ctx); err != nil {
 		return refusal(err), err.Error()
 	}
-	arg := s4qlpb.Value_builder{Integer: new(value)}.Build()
-	_, err := conn.Exec(ctx, insertSQL, arg)
-	if noTable(err) {
+	arg := s4qlpb.Value_builder{Integer: new(key)}.Build()
+	_, err := conn.Exec(ctx, statement, arg)
+	if statement == insertSQL && noTable(err) {
 		if _, err = conn.Exec(ctx, createSQL); err == nil {
 			_, err = conn.Exec(ctx, insertSQL, arg)
 		}
@@ -843,7 +887,7 @@ func (r *run) act(ctx context.Context, i int, a Action) {
 		r.visitors++
 		task := fmt.Sprint("visitor-", r.visitors)
 		r.mu.Unlock()
-		p.inst.Go(ctx, task, func(ctx context.Context) { r.call(ctx, p, "visitor", a.Do == "write") })
+		p.inst.Go(ctx, task, func(ctx context.Context) { r.call(ctx, p, "visitor", a.Do) })
 	case "crash":
 		p.inst.Crash()
 		// The calls of the process on the network end with it, and a disconnect has none to end.
@@ -1483,6 +1527,13 @@ func readCommit(content []byte, name format.Name) (*CommitObject, error) {
 			for _, row := range u.GetRows() {
 				if v := row.GetValues(); len(v) > 0 {
 					c.Keys = append(c.Keys, v[0].GetInteger())
+				}
+			}
+		}
+		if d := change.GetDeleteRows(); d != nil && d.GetTable() == tableName {
+			for _, key := range d.GetPrimaryKeys() {
+				if v := key.GetValues(); len(v) > 0 {
+					c.Deletes = append(c.Deletes, v[0].GetInteger())
 				}
 			}
 		}

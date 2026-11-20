@@ -83,6 +83,9 @@ type Workload struct {
 	Think float64 `json:"think"`
 	// Writes is the share of calls that are write transactions, in percent. The others are reads.
 	Writes int `json:"writes"`
+	// Deletes is the share of the write transactions that delete a row, in percent. The others
+	// insert one.
+	Deletes int `json:"deletes"`
 	// Timeout of each call.
 	Timeout float64 `json:"timeout"`
 }
@@ -165,7 +168,7 @@ func defaultRequest() Request {
 		Instances: 3,
 		Leases:    []float64{30_000},
 		Latency:   50,
-		Workload:  Workload{On: true, Callers: 2, Think: 5_000, Writes: 40, Timeout: 30_000},
+		Workload:  Workload{On: true, Callers: 2, Think: 5_000, Writes: 40, Deletes: 25, Timeout: 30_000},
 		Prefix:    "db",
 	}
 }
@@ -230,6 +233,9 @@ func (r Request) check() error {
 	}
 	if w.Writes < 0 || w.Writes > 100 {
 		bad("workload.writes is %v, and must be from 0 to 100", w.Writes)
+	}
+	if w.Deletes < 0 || w.Deletes > 100 {
+		bad("workload.deletes is %v, and must be from 0 to 100", w.Deletes)
 	}
 	if !positive(w.Timeout) || w.Timeout > maxEnd {
 		bad("workload.timeout is %v, and must be above 0 and at most %v", w.Timeout, maxEnd)
