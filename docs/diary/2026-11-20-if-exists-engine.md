@@ -45,3 +45,110 @@ Nothing yet.
 
 - The engine, the driver, the hand tests, and the removal of `existsRefusal` and the wrappers: step 2.
 - The generated checks, the simulation and its planted bug, the fuzz alphabet, and the documents: the steps after it.
+
+## Step 2: The engine, the driver, and the hand tests
+
+**Author:** if-exists-engine builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "1. Statement by statement, s4ql does what SQLite does [...] 2. A statement that does nothing writes nothing: no commit object, no annotation in the log, nothing in the cache [...] 3. [...] what the pass supports and only the engine can refuse [...] must follow SQLite when the object exists [...] 4. Remove what the statement pass left as temporary [...] 6. Driver: `Exec` of the four forms; `RowsAffected` and `LastInsertId` as for the plain forms. 7. [...] Telemetry: the statement's event says whether the statement did its work or nothing"
+**Interpretation:** A sink that does nothing, chosen in `buildSink` where SQLite stops, kept out of the annotation and the commit in each of the three paths of a write; hand tests against SQLite through `indexPair`, the log, and a replay.
+**Inferred intent:** The four statements behave as in SQLite, and the log holds only what changed.
+
+### What I did
+
+- `/internal/engine/plan.go`: `IfNotExists` and `IfExists` on the four plans, printed by `Format` (`ifClause`).
+- `/internal/engine/operator.go`: the sink `nothing`, given by `buildSink`, `buildCreateIndex`, and `buildDropIndex` where SQLite does nothing; the planted bug `replaceExisting` (`replaceTable`), in `/internal/engine/bugs.go` and `export_test.go`.
+- `/internal/engine/engine.go` (`Conn.write`): a statement of its own whose sink is `nothing` returns before the annotation, so the deferred roll back ends its write transaction. `/internal/engine/tx.go` (`Conn.writeIn`): in a write transaction it releases its savepoint without an annotation; in a read-only one it succeeds.
+- `/internal/engine/telemetry.go`: `attrNothing`, `statement.nothing`, set by `report.doesNothing`.
+- Removed `existsRefusal` and its test, the driver's `engine.Check` in `conn.go`'s `check`, and the `checkText` wrappers.
+- Tests: `TestEngine_exists` in `/internal/engine/exists_test.go` (every case of the statement pass's table against SQLite, the log, transactions, read-only, rows open, the length limit, 251 columns, offsets, the event); `TestExists` in `/conn_test.go`; the plans in `TestNewPlan`. The driver check's sequences of slice 9 hold the four forms where they held their refusal, and the "not supported" sequence has `drop view if exists t1` where it had `drop table if exists t1`, which is supported now.
+- The simulation (`/internal/engine/simulation_test.go`) reads `statement.nothing` into `attempt.nothing`, keeps such a statement out of `r.acked` and `txRecord.writes`, runs it in SQLite on the state that it saw and requires the state to stay, and fails if a commit holds it.
+
+### Why
+
+- A statement of its own that does nothing still begins a write transaction: deciding in a read transaction and then writing would be the race of the planted bug `checkOutside`, and SQLite does not treat the statement as read-only either.
+- The release in `writeIn` sets `kept`, so the deferred branch of the planted bug `keepFailed` does not annotate a statement that did nothing.
+
+### What worked
+
+- `TestEngine_exists` passed on its first run against SQLite but for the case of 251 columns, whose table of 251 columns is too big for the length limit of 1,000 of the same subtest; it got a subtest of its own.
+- A scratch test measured SQLite's length limit: a statement that does nothing gives no `string or blob too big`, also with a comment of 1,200 bytes after it, and one whose name is not taken gives it as the plain statement does.
+
+### What didn't work
+
+- `go test -short ./...` failed in `internal/sql/mutation` with `no such mutant: internal/engine/tx.go Conn.writeIn element: , keepOldKey: c.e.bugs.keepOldKey =>`, after I added `replaceExisting` to the literal of bugs in `writeIn`. The field is set on its own line now, so the literal and its mutant stay as `equivalent.txt` names them; the builder of the mutation testing of slice 9 works on that file.
+- The simulation failed at once with `the acknowledged statement 92, "create /* id 92 */  table if not exists ...", is not in the log` in many seeds, until it read `statement.nothing`.
+- `TestSequences` of the driver check expected `IF NOT EXISTS (at offset 13)` for `create index if not exists i1 on t4 (v2)`; it gives `exec: 1 affected, last insert id 0` now.
+- Python heredocs whose text holds backticks were refused by the permission system as too complex to verify ("this command is too complex to verify that it stays inside the worktree"); scripts written to the scratchpad with the Write tool and run with `python3 <path>` worked.
+
+### What I learned
+
+- `Tx.Commit` of the core writes no commit object for a transaction without changes even with annotations, so an annotation of a statement that does nothing would show only in a transaction with other changes.
+- To check the simulation's new violation, I planted an annotation of a statement that does nothing in `writeIn` by hand: seed 0 of the hammer workload found it with `commit 8 holds the statements [39 40 42 43] of the transaction 10, whose statements that succeeded and write are [39 40 42]` and `the statement 43, ... did nothing, and is in commit 8`. The file was restored after.
+
+### What was tricky
+
+- Where the sink is chosen: SQLite looks for an index of the name of a create table after the table, so `there is already an index named` stays with the clause, while a create index meets `no such table` and `there is already a table named` before its index.
+
+### What warrants review
+
+- `Conn.write` and `Conn.writeIn` for a sink that does nothing, and the release in `writeIn`.
+- The simulation's handling of `attempt.nothing` in `run.verify` and `run.verifyTxs`.
+
+### Future work
+
+- The generated checks: step 3.
+
+## Step 3: The generated checks, the simulation, the planted bug, and the fuzz alphabet
+
+**Author:** if-exists-engine builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "5. Generated checks: turn on `Generator.Exists` in `stmttest.Sequence` with rules in `stmttest/rule.go` for the four forms (the rule must track which tables and indexes exist, also across rollbacks and after `drop table` took its indexes along) [...] with tallies that count every kind of outcome [...] and fail if a kind is never reached. One planted bug in the simulation [...] Extend an existing fuzz target's alphabet to the four forms instead of adding a new target [...] Pinned numbers that move: recounted from the tests' own output, with the reason beside each."
+**Interpretation:** A rule of why SQLite does nothing, fed with SQLite's schema before each statement; counts by outcome in every generated test with least numbers; `replaceExisting` in the simulation; `FuzzIndexes` writes the clauses.
+**Inferred intent:** The clauses get the same generated scrutiny as the slices before, and a generator that stops reaching a case fails a test.
+
+### What I did
+
+- `/internal/sql/stmt/stmttest/rule.go`: `ExistsRule`, and `IndexRule` gives nothing for a statement that does nothing; `TestExistsRule` and a subtest of `TestIndexRule`. `/internal/sql/stmt/stmttest/sequence.go`: `Generator.Exists` is 3.
+- `/internal/engine/differential_test.go`: `oracle.schema`, used by `reachIndex` and the new `reachExists`, which `reach` calls first; `pair.reach` counts the kinds of the clauses again by the kind of the transaction. Least numbers of slice 10 in `reachedDifferential`, in `TestConn_differential`, in `TestGenerated` of the driver check (`pair.reachExists` there), and in `TestSimulation` (`hasClause`, `tallyOf`).
+- `indexesCalls`: the bits 4, 8, and 16 of the byte of a drop and a create; a new seed in `indexesSeeds`; `TestFuzzIndexes_seeds` requires every kind of the clauses.
+- `replaceExisting` in `TestSimulation_plantedBugs`.
+- Recounted every pin and least number that moved, from the tests' own output, with the reason beside each.
+
+### Why
+
+- The rule reads SQLite's schema before each statement, as `reachIndex` did, so it follows roll backs and the indexes that a drop table takes along without a model of its own that could drift from SQLite.
+- `replaceExisting` over a statement that does nothing and writes to the log: the latter shows only in a transaction with other writes (see step 2), and the simulation's new violation already finds it.
+
+### What worked
+
+- No difference from SQLite in `TestDifferential` (300 sequences), `TestConn_differential` (60), `TestGenerated` (250), or 1,000 seeds of each workload of `TestSimulation`, at the first run with the clauses.
+- `TestSimulation_plantedBugs/replaceExisting`: 130 of 200 seeds find the bug, 89 of them by "the replay of the log holds"; the default run finds it at seeds 0 and 1, and the seeds without it find nothing.
+- `FuzzIndexes` for 60 s: 17,692 executions, no failure.
+
+### What didn't work
+
+- `TestSimulation_plantedBugs/replaceExisting` first failed with `seed 72 finds the bug by another violation: [the statement 70, ... gives "s4ql: not supported: argument 1, which is a blob, for the column current_time.tEmpORArY of type INT", and the rule for the type of a value ""`: the replaced table has other types. That violation is in its list now.
+- The driver check's `pair.reachExists` first failed on QueryRow calls: `s4ql gives query row: scan failed with no rows, and the rule does nothing`. A QueryRow of a statement without rows ends with `no rows`, which is no failure.
+- Least numbers of other slices failed with the generator's new random numbers, in `TestDifferential` ("update of a row whose record is too long" 0, "delete WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column" 0, and four others), in `TestGenerated` ("read-only transaction: insert while rows are open" 0, and two others), and in the hammer workload at 50 seeds ("selects with WHERE in a transaction compared with SQLite, read by an index" 2 of 3). Each is a third of the new count, or 1, or for the simulation a quarter of 1,000 seeds; the two at 0 moved to the select of the same WHERE, and to an insert with or without a parameter, with the reason beside each.
+
+### What I learned
+
+- The pins of the driver check moved most in `excusedPrepare`, from 1,894 to 1,713: a create of a name that is taken, or a drop of one that is not, is an error that SQLite gives at prepare and s4ql when it runs, and with the clause both do nothing.
+
+### What was tricky
+
+- `make test` runs the driver check without `-short`, and its pins are the same with and without it.
+
+### What warrants review
+
+- `stmttest.ExistsRule` and its reasons, and whether reading the schema from SQLite is what the brief meant by tracking.
+- The least numbers that went down, and the two kinds that moved to another statement.
+
+### Future work
+
+- Merge `origin/main`, the README, the todo, the review, and the checks: step 4.

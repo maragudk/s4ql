@@ -1902,10 +1902,10 @@ func reachExists(t testing.TB, o *oracle, s stmt.Statement, c stmttest.Call, got
 		return true
 	}
 	outcome := got.err
-	switch {
-	case got.err == "":
+	switch got.err {
+	case "":
 		outcome = "did its work"
-	case got.err == "not supported":
+	case "not supported":
 	default:
 		if i := slices.IndexFunc(existsKinds, func(k string) bool { return strings.Contains(got.err, k) }); i >= 0 {
 			outcome = existsKinds[i]
