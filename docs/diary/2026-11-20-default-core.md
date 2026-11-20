@@ -113,3 +113,62 @@ Keeping the generated tests' other draws where they were: a stream of its own fo
 ### Future work
 
 - The README of the core (step 3), the review, and the checks.
+
+## Step 3: the README of the core, the review, and the checks
+
+**Author:** default-core builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Update the core's and the format's READMEs. [...] 6. CI's time is watched: keep each package's run within about its present time [...]; `make fuzz-shards` must pass; `make test-asan` for the packages whose fuzz tests you changed. [...] Finish: `make test`, `make lint`, `make check-browser`, `make fuzz-shards` pass. Self-review against these requirements."
+**Interpretation:** have a writer sub-agent describe the design in `/internal/core/README.md`, review the branch with the code-review skill, fix what matters, and run every check, the sanitizer for `internal/core` in Docker.
+**Inferred intent:** a branch whose code, numbers, and documents agree, ready for an independent reviewer and for the builder of the engine.
+
+### What I did
+
+A writer sub-agent, without a worktree of its own and limited to the one file, wrote the README of the core: a bullet in "The interface", three in "The cache" (version 4 and why the default is declared in SQLite; the canonical form, the measurement, and what `conn.load` refuses; the length limit), a closing sentence on the bullet of version 2 that says it describes versions 2 and 3, and two paragraphs in "Tests". It also moved the counts of `TestScanIndex_generated` to the past tense with their date, since the new draws in `checkIndexScans` moved them (52,988 scans became 51,974), and gave the new ones. I read its diff and kept it. It reported that it read its own skill's style guide outside the worktree, which its instructions ask for; it read nothing else outside.
+
+`code-review high origin/main...HEAD` found no fault in the code and three nits, all fixed: `nullDefaults` of `TestTx_Savepoint_random` counts columns, and `defaults` also the creates that fail because the name is taken, so both are named by what they count now; the version of the commit format stays 0 while it gains a field, which the format's README now says, as it said for indexes (a draft until version 1, and an older reader refuses the field as newer); and the README of the core was not yet committed when the todo pointed at it.
+
+The first `make test` failed in `internal/sql/mutation`:
+
+```
+--- FAIL: TestEquivalent/should_name_only_mutants_that_the_generator_makes (1.18s)
+    generate_test.go:204: no such mutant: internal/format/check.go checkStored condition: v.WhichKind() == s4qlpb.Value_Real_case => true
+```
+
+The condition moved into `checkStoredValue`; the entry in `/internal/sql/mutation/equivalent.txt` is renamed, with the same reason.
+
+I checked the claim that the other counts of `TestTx_Savepoint_random` stayed as they were: `origin/main`, unpacked with `git archive` into the scratchpad, gave the same 400-seed counts as this branch, field for field (`transactions:1599 ... nulls:203 refusedNulls:56`).
+
+`origin/main` merged again after pull request #109 landed; the merge changed no file.
+
+### Why
+
+The README is where the reasons of the core live, and the checks are the brief's.
+
+### What worked
+
+`make test` (second run), `make lint` (0 issues), `make check-browser`, and `make fuzz-shards FUZZSHARDS=4 FUZZGROUP=c` and `FUZZSHARDS=2 FUZZGROUP=go` passed. `go test -race -count=20` of the new tests passed in 84 s, `-count=50` without the race detector in 9 s, and the changed subtest of `TestDB_stop_cache` 20 times under `-race` in 5 s. The full run of `internal/core` took 141 s against 147 s before the change. In Docker (`golang:1.27.3`, the version of `go.mod`), `make asan-test ASANPKGS=maragu.dev/s4ql/internal/core` passed in 241 s, and `make fuzz FUZZDIRS=internal/core FUZZFLAGS=-asan FUZZTIME=30s`, which is `FuzzScanIndex`, passed with 701 executions. `internal/format` links no C, so its fuzz test runs without the sanitizer; `FuzzCommitWriter` ran 96,053 executions in step 1.
+
+### What didn't work
+
+`go test -race -count=20` with all of `TestDB_stop_cache` hit the timeout of ten minutes: its subtest of a file system that fails during replay takes 31 s under the race detector by itself, on `main` too, so 20 runs cannot fit. It is not a hang; one run of the whole test under `-race` passes in 33 s.
+
+### What I learned
+
+Nothing beyond steps 1 and 2.
+
+### What was tricky
+
+Nothing in this step.
+
+### What warrants review
+
+- The three new bullets on the cache in `/internal/core/README.md`.
+- The group "Decisions of the core step of slice 11" in `/docs/todo.md`.
+
+### Future work
+
+- The engine and the driver for slice 11, from this branch: remove `defaultRefusal` (`/internal/engine/defaults.go`), fill in each left-out column with `Column.default` from `Tx.Table`, or NULL where the column has none, and give SQLite's `NOT NULL constraint failed` where that is NULL in a column that does not take it, before the core sees the row. A create table within a few bytes of the length limit with a real default can get `ErrInvalid` from the core where SQLite takes it, since the canonical form of a real can be longer than the user's spelling.
+- Mutation testing of `/internal/core/default.go` and of the changed `conn.load` and `table.createSQL`, and a long fuzz run of `FuzzScanIndex` and `FuzzCommitWriter` with defaults, for a fresh builder.
