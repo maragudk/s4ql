@@ -436,6 +436,15 @@ func TestPrepare(t *testing.T) {
 		is.Equal(t, "NULL after a sign (at offset 29)", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1, V1) values (1, 2)")
 		is.Equal(t, "column named twice (at offset 20)", notSupported(t, err))
+		// An index that s4ql does not support is refused from the text alone, and one that it supports,
+		// and its drop, prepare without the instance.
+		_, err = db.PrepareContext(t.Context(), "create unique index i on t1 (v1)")
+		is.Equal(t, "UNIQUE INDEX (at offset 7)", notSupported(t, err))
+		for _, src := range []string{"create index i on t1 (v1)", "drop index i"} {
+			p, err := db.PrepareContext(t.Context(), src)
+			is.NotError(t, err, src)
+			is.NotError(t, p.Close())
+		}
 		// The type of a column is looked up when the statement runs, and so are the columns.
 		for _, src := range []string{
 			"create table t2 (v2 real primary key) strict, without rowid", "insert into t1 (v1) values ('a')", "insert into t1 (v1) values (x'')",

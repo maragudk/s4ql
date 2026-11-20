@@ -32,6 +32,7 @@ import (
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/store/simstore"
+	"maragu.dev/s4ql/internal/testshard"
 )
 
 // hostRand is the [stmttest.Rand] of a host, so that the statements of a simulation come from its
@@ -2237,7 +2238,8 @@ func replayCommand(seed uint64, flags ...string) string {
 }
 
 // TestSimulation_plantedBugs runs the workload with each planted bug until it finds the bug by its own
-// violation in two seeds, and the same seeds without the bug, which find nothing.
+// violation in two seeds, and the same seeds without the bug, which find nothing. With
+// S4QL_TEST_SHARD set, it runs the bugs of that shard only: see [testshard].
 func TestSimulation_plantedBugs(t *testing.T) {
 	limit := simSeeds(t, 100)
 	// The workload of each bug, and the violation that finds it: the check of an insert in a read
@@ -2301,8 +2303,12 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// A scan by one or two bounds of the key that leaves out the row of a closed bound: a select with
 		// WHERE, of its own or in a transaction, gives fewer rows than in SQLite. Nothing else sees it:
 		// the select writes nothing, and fails nothing. An engine that reads every row, as every second
-		// engine of a node does, does not have the bug.
-		{"openBound", defaultWorkload, "default", []string{", and in SQLite", "which began at commit"}},
+		// engine of a node does, does not have the bug. The bug needs a select whose bound of the key is
+		// the key of a row, which the updates and deletes of the sequence made rarer: they take turns of
+		// the selects, and delete rows. The hammer workload runs more statements than the default one,
+		// on one engine that reads by the key. Of the first 200 seeds, with updates and deletes in the
+		// sequence, 32 found the bug there and 8 in the default workload.
+		{"openBound", hammerWorkload, "hammer", []string{", and in SQLite", "which began at commit"}},
 		// An update or a delete that changes nothing and says so: of its own, it is in no commit, and
 		// SQLite, which runs it on the state that it saw, changes rows; in a transaction, SQLite gives
 		// another count; and the rows that it should have changed make later statements differ.
@@ -2313,7 +2319,11 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// differ.
 		{"keepOldKey", defaultWorkload, "default", []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes"}},
 	}
-	for _, b := range bugs {
+	shard := testshard.Get(t)
+	for i, b := range bugs {
+		if !shard.Holds(i) {
+			continue
+		}
 		bug := b.name
 		t.Run(bug, func(t *testing.T) {
 			w := b.w

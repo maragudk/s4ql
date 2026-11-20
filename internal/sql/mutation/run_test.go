@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -91,6 +92,32 @@ func TestRunner_run(t *testing.T) {
 		res := r.run(t.Context(), m, t.TempDir())
 		is.Equal(t, statusError, res.Status)
 		is.True(t, strings.Contains(res.Detail, "changed since its mutants were made"), res.Detail)
+	})
+}
+
+// TestEngineLayers checks the layers of the tests of the engine against its test files.
+func TestEngineLayers(t *testing.T) {
+	t.Run("should count the seeds of every fuzz target of the engine in the layer fuzz seeds", func(t *testing.T) {
+		root, err := moduleRoot()
+		is.NotError(t, err)
+		files, err := filepath.Glob(filepath.Join(root, enginePkg, "*_test.go"))
+		is.NotError(t, err)
+		fuzz := regexp.MustCompile(`(?m)^func (Fuzz\w*)\(\w+ \*testing\.F\)`)
+		targets := map[string]bool{}
+		for _, f := range files {
+			src, err := os.ReadFile(f)
+			is.NotError(t, err)
+			for _, m := range fuzz.FindAllStringSubmatch(string(src), -1) {
+				targets[m[1]] = true
+				is.Equal(t, layerFuzzSeeds, engineLayers[m[1]], m[1]+" in "+filepath.Base(f))
+			}
+		}
+		is.True(t, len(targets) >= 12, "too few fuzz targets")
+		for name, layer := range engineLayers {
+			if layer == layerFuzzSeeds {
+				is.True(t, targets[name], "no fuzz target of the engine is named "+name)
+			}
+		}
 	})
 }
 
