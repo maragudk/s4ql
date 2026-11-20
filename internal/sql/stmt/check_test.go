@@ -917,6 +917,9 @@ var checkCases = []checkCase{
 	{name: "a literal on the left", src: "select * from t where 1 = v", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
 	{name: "a parameter on the left", src: "select * from t where ? = v", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
 	{name: "a negative number on the left", src: "select * from t where -1 < v", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
+	{name: "a positive number on the left", src: "select * from t where +1 < v", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
+	// Only a sign makes a value of a literal: ~ is an operator of its own.
+	{name: "a bitwise not of a number on the left", src: "select * from t where ~1 < v", err: "s4ql: not supported: unary operator (at offset 22)"},
 	{name: "a string on the left", src: "select * from t where 'v' = 1", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
 	{name: "null is null", src: "select * from t where null is null", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
 	{name: "a blob is not null", src: "select * from t where x'00' is not null", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
