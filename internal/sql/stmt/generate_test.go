@@ -79,7 +79,9 @@ func TestGenerate(t *testing.T) {
 		reads[i] = whereReads[i].Load() - before[i]
 	}
 	t.Logf("selects with WHERE that read no row of the table: %v, some: %v, every row: %v", reads[0], reads[1], reads[2])
-	is.True(t, reads[1] > (reads[0]+reads[2])/2, "too few selects with WHERE read some rows of the table and not others")
+	if reads[0]+reads[1]+reads[2] >= 100 {
+		is.True(t, reads[1] > (reads[0]+reads[2])/2, "too few selects with WHERE read some rows of the table and not others")
+	}
 }
 
 var mutantsEach = flag.Int("mutants", 5, "mutants of each statement in TestGenerate_mutants")

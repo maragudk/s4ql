@@ -174,9 +174,9 @@ type Generator struct {
 	// Conditions, if not 0, makes the generator write the WHERE of slice 7: one select in two has a
 	// WHERE of from 1 to Conditions conditions joined by AND, unless [Generator.Where] gives them. Each
 	// is a column from the pool of [SelectColumn], one time in three that of an earlier condition or
-	// of the select list, with one of the spellings of the operators and a value as
-	// [Generator.value] gives it, or with IS NULL or IS NOT NULL. With 0 and Where nil, the generator
-	// draws as it did before slice 7.
+	// of the select list, with one of the spellings of the operators and a value, NULL one time in
+	// [Generator.Nulls] and otherwise of a type at random, or with IS NULL or IS NOT NULL. With 0 and
+	// Where nil, the generator draws as it did before slice 7.
 	Conditions int
 	// Where, if not nil, gives the conditions of the WHERE of a select of the table, in place of
 	// conditions at random, or nil for a select without WHERE: the raw text of the name of the column
@@ -523,7 +523,7 @@ func (g *Generator) where(s *stmt.Select) ([]stmt.Condition, []any) {
 		}
 		g.gap(true)
 		if g.Where == nil {
-			c = g.condition(s.Table, s.Columns, conditions)
+			c = g.condition(s.Columns, conditions)
 		}
 		w := stmt.Condition{Column: g.write(c.Column.Raw), Operator: c.Operator}
 		var spellings []string
@@ -555,11 +555,12 @@ func (g *Generator) where(s *stmt.Select) ([]stmt.Condition, []any) {
 	return conditions, args
 }
 
-// condition at random of a select of the table, with the select list columns, after the conditions
-// before: a column from the pool of [SelectColumn], or one time in three that of an earlier condition
-// or of the select list, with an operator at random, and for a comparison a value as
-// [Generator.value] gives it. Only the raw text of the name of its column is set.
-func (g *Generator) condition(table stmt.Name, columns []stmt.Name, before []stmt.Condition) stmt.Condition {
+// condition at random of a select with the select list columns, after the conditions before: a
+// column from the pool of [SelectColumn], or one time in three that of an earlier condition or of the
+// select list, with an operator at random, and for a comparison a value, NULL one time in
+// [Generator.Nulls] and otherwise of a type at random. Only the raw text of the name of its column
+// is set.
+func (g *Generator) condition(columns []stmt.Name, before []stmt.Condition) stmt.Condition {
 	names := slices.Clone(columns)
 	for _, c := range before {
 		names = append(names, c.Column)
@@ -572,7 +573,13 @@ func (g *Generator) condition(table stmt.Name, columns []stmt.Name, before []stm
 	}
 	c.Operator = operators[g.r.IntN(len(operators))].op
 	if c.Operator != stmt.OpIsNull && c.Operator != stmt.OpIsNotNull {
-		c.Value.Value = g.value(table)
+		// As [Generator.value] draws a value, without [Generator.Value], which gives values of an
+		// insert.
+		if g.Nulls > 0 && g.r.IntN(g.Nulls) == 0 {
+			c.Value.Value = stmt.Null{}
+		} else {
+			c.Value.Value = ValueOf(g.r, Types[1+g.r.IntN(len(Types)-1)])
+		}
 	}
 	return c
 }
