@@ -56,3 +56,52 @@ The engine reproduces SQLite's order of checks on purpose, where the order is vi
 ### Future work
 
 - For the builder of the generated checks: the helpers of the rule of the type, `typeRule`, `valueKind`, `insertType`, `oracle.column`, `pair.reach`, and `pair.checkLength` in `/internal/engine/differential_test.go`, and `typeRefusal`, `reach`, and `columnType` in drivercheck, read `Values[0]` and the key column; with `Generator.Columns` they must take every value and the first column of another type in the order of the table, after NOT NULL. The simulation's checks of the type use `typeRule` too. And a name in double quotes that is no column differs between mattn and the pinned build.
+
+## Step 2: The documents, the stale mutants, and the review
+
+**Author:** columns-engine builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Decisions of detail are yours: decide by SQLite's behaviour, the spec, and the roadmap, and record each in `docs/todo.md` (or in slice 5's section of the roadmap where it refines the slice). [...] Run `make test`, `make lint`, and `make check-browser`. [...] Review your own work with the code-review skill before you report, and fix what it finds."
+**Interpretation:** Record the decisions, run every check, review the branch, and fix what matters.
+**Inferred intent:** A branch whose code, tests, and documents agree, ready for the lead.
+
+### What I did
+
+A writer sub-agent updated `/internal/engine/README.md` (stages, operators, errors, changes, types, annotations, how it is tested, the moved pin), `/docs/todo.md` (the status of the SQL front end, the decisions of slice 5 for the lead to confirm, the work left for the builder of the generated checks), and one bullet of slice 5 in `/docs/roadmap.md` on the order of the errors of an insert. I read its diff and changed one stale sub-bullet of the pass's decisions ("For the engine's builder:" is now built).
+
+`make test` failed in `internal/sql/mutation`: `TestEquivalent/should_name_only_mutants_that_the_generator_makes` gave `no such mutant: internal/engine/operator.go buildSink swap arguments: slices.Equal(p.PrimaryKey, []int{0}) => ...`, and the same for `slices.Equal(t.GetPrimaryKey(), []uint32{0})`: the code that the two equivalent mutants named is gone. I removed both from `/internal/sql/mutation/equivalent.txt`, and later the one of `columnPosition`, which the review's fix removed.
+
+Added `TestBuild` cases in `/internal/engine/operator_internal_test.go`: the positions of the values against the fake, the key looked up at its position, and NOT NULL before the type.
+
+The review (`code-review high f9cc7be...columns-engine`) found no bug of the order and six nits. Fixed: the lookup of the names of a select and of an insert's list folded every name of the table for each name (quadratic for 2000 columns), and now uses `positionsOf`, a map built once; the differential test and the simulation accepted "not supported" for a text of `stmttest.Others` that the pass supports, because only `Call.Supported` marked a statement as supported, and now take every text that `stmt.Check` supports as supported (the flag itself is unchanged, since `Sequence.next` draws by it); the comments of `withID` and `tableOf`, and a long line in the comment of `Conn.Exec`. Left: the README was then uncommitted (committed since), and the single-column helpers of the type rule, which are the next builder's and in `/docs/todo.md`.
+
+### Why
+
+A refusal that the tests accept for a supported text would hide a regression of exactly the two forms of slice 5 that the generated tests reach today.
+
+### What worked
+
+After the fixes, `go test ./internal/engine/ ./internal/sql/mutation/`, the root package under `-short`, the cross-check module, `-race -count=3` of the new engine tests, `golangci-lint run`, and `make check-browser` passed; the pinned numbers did not move again.
+
+### What didn't work
+
+Only the stale mutants above, which the first `make test` found. After the fixes, `make test` passed whole.
+
+### What I learned
+
+`stmttest.Sequence.next` draws a random number only for a call whose `Supported` is set, so that flag cannot change without moving every pinned number of the generated tests.
+
+### What was tricky
+
+Nothing beyond the above.
+
+### What warrants review
+
+- `positionsOf` in `/internal/engine/operator.go`: the first column of each fold wins, which a table never needs, since `ColumnsError` keeps a column named twice out of every table.
+- The new condition on supported texts in `pair.step` of `/internal/engine/differential_test.go` and in the simulation's check of a refusal.
+
+### Future work
+
+As in step 1.
