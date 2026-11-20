@@ -334,7 +334,7 @@ Rejected as not supported, where SQLite would accept it (except the last item):
 
 ### Slice 9: indexes
 
-Status: built, except for the generated checks and mutation testing. The statement pass, the commit format and storage core, the engine, and the `database/sql` driver run `create index` and `drop index`, and the engine picks the index for a `where` by the fixed rules. It is checked by table tests against SQLite, by tests that run queries through every path, by two independent reviews, and by pinned counts of rows read.
+Status: built, with the generated checks done on 2026-11-20; mutation testing is still to come. The statement pass, the commit format and storage core, the engine, and the `database/sql` driver run `create index` and `drop index`, and the engine picks the index for a `where` by the fixed rules. It is checked by table tests against SQLite, by two independent reviews, and by pinned counts of rows read. Generated sequences with indexes run every query through every path that can serve it, the engine's choice is compared with a model of the rules, and the query plan of the cache is checked. The simulations find planted bugs of indexes, golden plans pin the plans, and fuzz targets run every path.
 
 ```sql
 create table t1 (v1 int primary key, v2 text not null, v3 real) strict, without rowid;
