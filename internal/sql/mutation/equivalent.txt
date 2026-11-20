@@ -295,10 +295,6 @@ internal/engine/engine.go Conn.Close swap arguments: errors.Join(err, closeErr) 
 internal/engine/engine.go Rows.read remove statement: r.report.e.host.Yield(r.ctx, "engine: between two rows of a query") =>
 	A yield only lets other tasks of the simulation run between two rows; the answers of the engine do not depend on it.
 
-# Bounds that mean "none".
-internal/engine/operator.go columnPosition constant: -1 => -2
-	The caller tests for a negative position.
-
 # The events.
 internal/engine/telemetry.go outcomeOf remove statement: return "core_error", slog.LevelWarn => #2
 	The case without its return ends the switch, whose last return gives the same.

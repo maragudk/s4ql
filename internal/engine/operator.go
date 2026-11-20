@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"iter"
 	"math"
-	"slices"
 
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/stmt"
@@ -280,9 +279,14 @@ func buildNode(ctx context.Context, r reader, n Node) (source, error) {
 			return nil, internalError("a projection of no columns")
 		}
 		// SQLite resolves the names of the select list in their order, once it has found the table.
+		var names []string
+		for _, c := range columns {
+			names = append(names, c.Name)
+		}
+		of := positionsOf(names)
 		for _, name := range n.Columns {
-			position := slices.IndexFunc(columns, func(c Column) bool { return fold(c.Name) == name.Fold() })
-			if position < 0 {
+			position, ok := of[name.Fold()]
+			if !ok {
 				return nil, noSuchResultColumn(name)
 			}
 			p.positions = append(p.positions, position)
@@ -388,21 +392,30 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 			return nil, noSuchTable(p.Table.Value)
 		}
 		var positions []int
-		for _, c := range p.Columns {
-			position := columnPosition(t, c)
-			if position < 0 {
-				return nil, noSuchColumn(p.Table.Value, c.Value)
+		if p.Columns != nil {
+			var names []string
+			for _, c := range t.GetColumns() {
+				names = append(names, c.GetName())
 			}
-			positions = append(positions, position)
+			of := positionsOf(names)
+			for _, c := range p.Columns {
+				position, ok := of[c.Fold()]
+				if !ok {
+					return nil, noSuchColumn(p.Table.Value, c.Value)
+				}
+				positions = append(positions, position)
+			}
 		}
 		width := len(t.GetColumns())
 		if key := t.GetPrimaryKey(); len(key) != 1 || int(key[0]) >= width {
 			return nil, internalError("an insert into a table of %v columns with the key %v", width, key)
 		}
-		for i, position := range positions {
-			if slices.Contains(positions[:i], position) {
+		named := make([]bool, width)
+		for _, position := range positions {
+			if named[position] {
 				return nil, internalError("an insert that names the column %v twice", t.GetColumns()[position].GetName())
 			}
+			named[position] = true
 		}
 		v, ok := p.Source.(*Values)
 		if !ok {
@@ -452,15 +465,16 @@ func columnsError(p *CreateTable) error {
 	return nil
 }
 
-// columnPosition of the column with the name in the table, compared as SQLite compares names, or -1
-// if the table has none.
-func columnPosition(t *s4qlpb.CreateTable, name stmt.Name) int {
-	for i, c := range t.GetColumns() {
-		if fold(c.GetName()) == name.Fold() {
-			return i
+// positionsOf the columns of the names, by the fold of each name, as SQLite compares names: the
+// position of the first column of each fold.
+func positionsOf(names []string) map[string]int {
+	positions := make(map[string]int, len(names))
+	for i, name := range names {
+		if _, ok := positions[fold(name)]; !ok {
+			positions[fold(name)] = i
 		}
 	}
-	return -1
+	return positions
 }
 
 // fold the ASCII letters of a name to lower case, as [stmt.Name.Fold] does.

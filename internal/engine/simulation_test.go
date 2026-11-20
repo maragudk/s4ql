@@ -463,8 +463,8 @@ func (r *run) close(ctx context.Context, n *node) {
 // idPattern finds the ID that a statement's text carries.
 var idPattern = regexp.MustCompile(`/\* id (\d+) \*/`)
 
-// withID puts the comment of the ID into the text of a statement of slice 1, after its first token,
-// where the annotation keeps it.
+// withID puts the comment of the ID into the text of a statement that the pass supports, after its
+// first token, where the annotation keeps it.
 func withID(src string, id uint64) string {
 	s, err := stmt.Check(src)
 	if err != nil || s == nil {
@@ -567,14 +567,17 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 			a.answer.err = wrongArguments
 		}
 		// A call that s4ql refuses for its arguments must be refused by its rule, and a statement of
-		// slices 1 and 2 with the arguments that it takes must run.
+		// the generator, and every other that the pass supports, with the arguments that it takes must
+		// run.
 		kind, failure := checkArguments(call, a.answer)
-		if kind == "" && call.Supported && isInsert(a.src) && a.answer.err == "not supported" && strings.Contains(a.answer.message, " for the column ") {
+		s, _ := stmt.Check(a.src)
+		supported := call.Supported || s != nil
+		if kind == "" && supported && isInsert(a.src) && a.answer.err == "not supported" && strings.Contains(a.answer.message, " for the column ") {
 			// The refusal of a value of another type than its column, after the insert found its table
 			// and its column, which [run.verify] checks against SQLite on the state that it saw.
 			kind, a.typeRefused = excusedType, true
 		}
-		if kind == "" && (call.Supported || a.answer.err == wrongArguments) {
+		if kind == "" && (supported || a.answer.err == wrongArguments) {
 			failure = fmt.Sprintf("the statement %v, %q, with %v arguments: %v", a.id, a.src, len(call.Args), err)
 		}
 		if failure != "" {
@@ -1509,7 +1512,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 	return nothing
 }
 
-// tableOf the statement of src, which is of slice 1, folded as SQLite compares names.
+// tableOf the statement of src, which the pass supports, folded as SQLite compares names.
 func tableOf(src string) string {
 	s, err := stmt.Check(src)
 	if err != nil {

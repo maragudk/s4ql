@@ -206,8 +206,8 @@ func (c *Conn) begin(ctx context.Context) (writeTx, error) {
 // of the database, which SQLite gives when it binds such an argument, with SQLite's error of a
 // read-only transaction, with SQLite's `NOT NULL constraint failed` for a column that it leaves out,
 // with "not supported" for a value of another type than its column, with SQLite's error of a key
-// that exists, and with `string or blob too big` for a row that is longer than the limit. A real that is -0.0 is
-// stored as 0.0, as SQLite stores it, and its key is the key of 0.0.
+// that exists, and with `string or blob too big` for a row that is longer than the limit. A real
+// that is -0.0 is stored as 0.0, as SQLite stores it, and its key is the key of 0.0.
 //
 // In a transaction that spans statements, the statement then fails with the error of ctx if ctx has
 // ended, with the refusal of a statement of its own if the instance does not serve now, and with

@@ -803,10 +803,12 @@ func (p *pair) step(c stmttest.Call) string {
 		return failure
 	}
 	if got.err == "not supported" {
-		// A statement of slices 1 and 2 is supported, and a text that is not supported is one that
-		// SQLite accepts: SQLite prepares it on an empty database without a syntax error.
-		if c.Supported {
-			return fmt.Sprintf("%q: the engine does not support a statement of slice 1: %v", src, got.message)
+		// A statement of the generator and every statement that the pass supports are supported, but
+		// for the refusals of their arguments and of the types of their values, which are checked
+		// above, and a text that is not supported is one that SQLite accepts: SQLite prepares it on an
+		// empty database without a syntax error.
+		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil {
+			return fmt.Sprintf("%q: the engine does not support a statement that the pass supports: %v", src, got.message)
 		}
 		if m := syntaxOfNotSupported(t, p.empty, src); m != "" {
 			return fmt.Sprintf("%q: the engine does not support it, and SQLite gives %v", src, m)
