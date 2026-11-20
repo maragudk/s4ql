@@ -17,6 +17,7 @@
 const version = new URL(import.meta.url).search;
 
 let R = null; // the module run.js, which start loads
+let S = null; // the module sound.js, which start loads; the page works without it
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -201,6 +202,7 @@ async function pump() {
 function take(answer, job = {}) {
   t = answer.t;
   for (const e of answer.events) {
+    if (S) S.hear(e, (playing || !!job.act) && !(job.reset && !job.reset.first));
     let w = tell(e);
     if (job.reset && e.kind === "action") w = R.resetLine(e, job.reset.first);
     const slice = Math.floor(e.t / SLICE);
@@ -577,8 +579,11 @@ function drawS3() {
 // the failure box.
 async function start() {
   drawMark();
+  const sound = import("./sound.js" + version).catch(() => null);
   R = await import("./run.js" + version);
   tell = R.teller();
+  S = await sound;
+  if (S) S.wire($("sound"));
   wire();
 
   fetch("engine/build.json" + version).then((r) => (r.ok ? r.json() : null)).then((b) => {

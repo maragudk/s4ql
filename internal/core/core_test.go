@@ -873,23 +873,38 @@ func TestDB_stop_cache(t *testing.T) {
 			"t9 (k int primary key, v int default 0) strict, without rowid":             `the column "v" of its table "t9" has the default "0"`,
 			"t9 (k int primary key, v int not null default null) strict, without rowid": `the column "v" of its table "t9" has the default "null"`,
 			"t9 (k int primary key default null) strict, without rowid":                 `the column "k" of its table "t9" has the default "null"`,
+			// SQLite reports the key of a table that is not STRICT as a column that takes NULL.
+			"t9 (k int primary key default null)": `the column "k" of its table "t9" has the default "null"`,
 		} {
-			w := newWorld(t)
-			d := w.serve(t, "a", core.Options{})
+			// A read looks the table up, and so does a create table of its name.
+			for _, write := range []bool{false, true} {
+				w := newWorld(t)
+				d := w.serve(t, "a", core.Options{})
 
-			c, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
-			is.NotError(t, err)
-			is.NotError(t, c.Exec("create table "+table))
-			is.NotError(t, c.Close())
+				c, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
+				is.NotError(t, err)
+				is.NotError(t, c.Exec("create table "+table))
+				is.NotError(t, c.Close())
 
-			r, err := startRead(t, d)
-			is.NotError(t, err)
-			_, err = r.Table(t.Context(), "t9")
-			is.Error(t, core.ErrLocal, err, table)
-			is.Error(t, core.ErrCacheVersion, err, table)
-			is.True(t, strings.Contains(err.Error(), why), err.Error())
-			_ = r.Close(t.Context())
-			is.True(t, isDone(d), table)
+				if write {
+					tx, err := d.Begin(t.Context())
+					is.NotError(t, err)
+					err = tx.CreateTable(t.Context(), typedTable("t9", s4qlpb.Type_TYPE_INT))
+					is.Error(t, core.ErrLocal, err, table)
+					is.Error(t, core.ErrCacheVersion, err, table)
+					is.True(t, strings.Contains(err.Error(), why), err.Error())
+					_ = tx.Rollback(t.Context())
+				} else {
+					r, err := startRead(t, d)
+					is.NotError(t, err)
+					_, err = r.Table(t.Context(), "t9")
+					is.Error(t, core.ErrLocal, err, table)
+					is.Error(t, core.ErrCacheVersion, err, table)
+					is.True(t, strings.Contains(err.Error(), why), err.Error())
+					_ = r.Close(t.Context())
+				}
+				is.True(t, isDone(d), table)
+			}
 		}
 	})
 
@@ -1329,6 +1344,94 @@ func TestOpen_cache(t *testing.T) {
 		is.Equal(t, int64(1), cacheVersion(t, path))
 	})
 
+	t.Run("should fail to open a cache of version 1 or 2 as a local failure, and never as a cache of another version or database, whichever read of the open fails", func(t *testing.T) {
+		w := newWorld(t)
+		v := newVersionOne(t, w)
+		v.write(t, filepath.Join(w.dir, "1.db"))
+		is.NotError(t, w.serve(t, "2", core.Options{}).Close(t.Context()))
+		vfs, err := faultvfs.New()
+		is.NotError(t, err)
+		defer func() { is.NotError(t, vfs.Close()) }()
+		options := core.Options{}
+		options.VFS = vfs.Name()
+		// The store is out of reach, so the task of the lease, which starts in Open, reads nothing
+		// from the cache, and every read that the fault counts is one of the open.
+		w.store.Outage(t.Context(), time.Hour)
+		for _, version := range []string{"1", "2"} {
+			data, err := os.ReadFile(filepath.Join(w.dir, version+".db"))
+			is.NotError(t, err)
+			// Each open gets a copy of the cache, so that the reads of every open are the same, and the
+			// read that fails is the one after the reads that succeed, until no read of the open fails.
+			failed := 0
+			for after := 0; ; after++ {
+				what := fmt.Sprint("version ", version, ", read ", after)
+				if after == 10000 {
+					t.Fatal("every open fails: " + what)
+				}
+				path := filepath.Join(w.dir, fmt.Sprint(version, "-", after, ".db"))
+				is.NotError(t, os.WriteFile(path, data, 0o600))
+				before := vfs.Failures()
+				vfs.Fail(faultvfs.Fault{Ops: faultvfs.Read, Files: faultvfs.MainDB | faultvfs.WAL, After: after, Times: 1})
+				d, err := core.Open(t.Context(), w.host, w.client(), path, "db", options)
+				if err == nil {
+					vfs.Fail(faultvfs.Fault{})
+					is.Equal(t, before, vfs.Failures(), "the open succeeded, and a read failed: "+what)
+					is.NotError(t, d.Close(t.Context()), what)
+					break
+				}
+				failed++
+				is.True(t, vfs.Failures() > before, "the open failed, and no read failed: "+what)
+				is.Error(t, core.ErrLocal, err, what)
+				is.True(t, !errors.Is(err, core.ErrCacheVersion) && !errors.Is(err, core.ErrCacheDatabase), what+": "+err.Error())
+			}
+			// An open reads at least the header of the file, the schema, and the record of the cache.
+			is.True(t, failed >= 3, fmt.Sprint("only ", failed, " opens of version ", version, " failed"))
+		}
+	})
+
+	t.Run("should fail to make a new cache with SQLite's I/O error, and make it at the next open, whichever lock, write, or sync of the make fails", func(t *testing.T) {
+		w := newWorld(t)
+		vfs, err := faultvfs.New()
+		is.NotError(t, err)
+		defer func() { is.NotError(t, vfs.Close()) }()
+		options := core.Options{}
+		options.VFS = vfs.Name()
+		// The store is out of reach, so the task of the lease, which starts in Open, does nothing with
+		// the cache, and every operation that the fault counts is one of the open.
+		w.store.Outage(t.Context(), time.Hour)
+		for op, name := range map[faultvfs.Op]string{faultvfs.Lock: "lock", faultvfs.Write: "write", faultvfs.Sync: "sync"} {
+			// The operation that fails is the one after those that succeed, on a new cache each time,
+			// until none of the open fails.
+			failed := 0
+			for after := 0; ; after++ {
+				what := fmt.Sprint(name, " ", after)
+				if after == 10000 {
+					t.Fatal("every open fails: " + what)
+				}
+				path := filepath.Join(w.dir, fmt.Sprint(name, "-", after, ".db"))
+				before := vfs.Failures()
+				vfs.Fail(faultvfs.Fault{Ops: op, Files: faultvfs.AnyFile, After: after, Times: 1})
+				d, err := core.Open(t.Context(), w.host, w.client(), path, "db", options)
+				vfs.Fail(faultvfs.Fault{})
+				if err == nil {
+					is.Equal(t, before, vfs.Failures(), "the open succeeded, and an operation failed: "+what)
+					is.NotError(t, d.Close(t.Context()), what)
+					break
+				}
+				failed++
+				is.True(t, vfs.Failures() > before, "the open failed, and no operation failed: "+what)
+				is.Error(t, core.ErrLocal, err, what)
+				se, ok := errors.AsType[*sqlite.Error](err)
+				is.True(t, ok && se.Code.Primary() == 10, "not SQLite's I/O error: "+what+": "+err.Error())
+				d, err = core.Open(t.Context(), w.host, w.client(), path, "db", options)
+				is.NotError(t, err, "the open after the failure: "+what)
+				is.NotError(t, d.Close(t.Context()), what)
+				is.Equal(t, int64(core.CacheVersion), cacheVersion(t, path), what)
+			}
+			is.True(t, failed > 0, "no open failed at a "+name)
+		}
+	})
+
 	t.Run("should open a cache of version 2 while another connection holds its write lock, and refuse to upgrade one of version 1 then, which keeps its version", func(t *testing.T) {
 		w := newWorld(t)
 		v := newVersionOne(t, w)
@@ -1430,6 +1533,24 @@ func TestOpen_cache(t *testing.T) {
 		is.Error(t, core.ErrCacheVersion, err)
 		is.True(t, strings.Contains(err.Error(), `its table "t1" holds NULL in the column "w", which does not take NULL`), err.Error())
 		is.Equal(t, int64(1), cacheVersion(t, path))
+	})
+
+	t.Run("should refuse a database that holds tables and no table s4ql_cache, which this package did not make, and leave it as it is", func(t *testing.T) {
+		w := newWorld(t)
+		path := filepath.Join(w.dir, "other.db")
+		c, err := sqlite.Open(path)
+		is.NotError(t, err)
+		is.NotError(t, c.Exec("create table t (k int primary key) strict, without rowid"))
+		is.NotError(t, c.Close())
+
+		_, err = core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{})
+		is.Error(t, core.ErrCacheVersion, err)
+		is.True(t, strings.Contains(err.Error(), "it records no position, and holds 1 tables and indexes"), err.Error())
+		c, err = sqlite.Open(path)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, c.Close()) }()
+		is.NotError(t, c.Exec("insert into t (k) values (1)"))
+		is.True(t, c.Exec("select * from s4ql_cache") != nil, "the open made the table s4ql_cache")
 	})
 
 	t.Run("should fail for a file that is not a database, and leave it as it is", func(t *testing.T) {

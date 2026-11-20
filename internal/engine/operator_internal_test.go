@@ -400,6 +400,15 @@ func TestValues(t *testing.T) {
 		_, err := collect(ctx, v)
 		is.True(t, errors.Is(err, context.Canceled))
 	})
+
+	t.Run("should not build the values of a row of another number of values than its columns, an internal error", func(t *testing.T) {
+		row := []Expr{&Integer{Value: 1}, &Integer{Value: 2}}
+		for _, positions := range [][]int{{0}, {0, 1, 2}} {
+			_, _, err := buildValues(&Values{Rows: [][]Expr{row}}, nil, positions, 3)
+			is.True(t, errors.Is(err, ErrInternal), fmt.Sprint(positions))
+			is.Equal(t, fmt.Sprint("s4ql: internal error: a row of 2 values for ", len(positions), " columns"), err.Error())
+		}
+	})
 }
 
 func TestProject(t *testing.T) {
@@ -636,6 +645,7 @@ func TestInsert(t *testing.T) {
 			{i: &insert{table: ct, src: ints(1), exprs: [][]Expr{{}}}, want: "an insert of 1 values from 0 expressions into 1 columns"},
 			{i: &insert{table: ct, src: ints(1), exprs: [][]Expr{{one[0], one[0]}}}, want: "an insert of 1 values from 2 expressions into 1 columns"},
 			{i: &insert{table: ct, src: &values{data: [][]*s4qlpb.Value{{integer(1), integer(1)}}}, exprs: [][]Expr{{one[0], one[0]}}}, want: "an insert of 2 values from 2 expressions into 1 columns"},
+			{i: &insert{table: ct, src: &values{data: [][]*s4qlpb.Value{{integer(1), integer(1)}}}, exprs: [][]Expr{one}}, want: "an insert of 2 values from 1 expressions into 1 columns"},
 		} {
 			err := c.i.check()
 			is.True(t, errors.Is(err, ErrInternal), c.want)
