@@ -55,3 +55,57 @@ The rule of the type must name the first column of another type in the order of 
 ### Future work
 
 - The driver's generated test, the mattn limit of names in double quotes, and the simulation's check of the rows of the log and its planted bugs, in the next steps.
+
+## Step 2: The driver's generated test, the simulation's check of the rows of the log, `listOrder`, and the review
+
+**Author:** columns-checks builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "3. **Known limit of the driver's oracle:** mattn's SQLite reads a double-quoted unknown name as a string, where the pinned build gives `no such column`. Keep such a `select` out of the comparison with mattn in a way that is counted [...] 4. **The simulation of the engine** runs with tables of several columns, and checks the log against them: every row in the log has one value per column of its table, each of its column's type. Add a planted bug that only several columns can show [...] Say how many of 200 seeds find each planted bug, old and new. 5. Update the pinned numbers that move and explain each in your report."
+**Interpretation:** Make drivercheck read every value, count the mattn excuse, check the rows of the log, plant a bug of the order of a list, and pin and explain what moves.
+**Inferred intent:** The same trust for the driver and the simulation as for the differential test.
+
+### What I did
+
+`/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go`: `typeRefusal` asks `stmttest.TypeRule` with the columns of the table where the call runs (`pair.columns`, `pair.columnsIn`); `columnType` is gone; `reach` counts every literal, the key's type, the forms and faults of an insert of several columns, and the forms of a select, on the tables of the runner where the call runs. A `QueryRow` scanned one value, which failed with `sql: expected 4 destination arguments in Scan, not 1`; it now runs again with as many values as that error names. `pair.checkQuoted` keeps a select whose first name that the table does not have is in double quotes out of the comparison with mattn, checks each run's error against the pinned build's `no such column: "x" - should this be a string literal in single-quotes?`, and counts it as `excusedQuoted` (32 in the default run). Two hand-written steps that the builder of the engine had left out are back, a select of `"x"` and the refusal of a value of another type in a list of several columns, with one of NOT NULL before it. The pins moved: `excusedPrepare` 1012 to 1072, `excusedStartedTable` 12 to 9, `excusedArguments` 395 to 396, `excusedArgument` 126 to 189, `excusedType` 180 to 161, `excusedLevel` 78 to 70, `excusedRowsOpen` 38 to 29, `excusedTxOpen` 22 to 30, `excusedOutside` 49 to 68, `excusedQuoted` new at 32. A throwaway run of 1,500 other seeds (from 100,000) found no difference from mattn.
+
+`/internal/engine/simulation_test.go`: `readLog` keeps the changes of each commit, and `run.verifyRows` checks every upserted row against the table that the log has there: for every column in order, one value per column, each of its column's type. "rows of several columns" is counted and required: the first 1,000 seeds gave 4,591, 715, and 8,380 in the default, idle, and hammer workloads, and the least numbers are 1.1, 0.17, and 2 for each seed. The planted bug `listOrder` (`/internal/engine/bugs.go`, `buildSink` in `/internal/engine/operator.go`, a case in `TestBuild`) gives the values of a list to the columns in the order of the list; it is planted in statements of their own, since `writeIn` hands `buildSink` only two bugs and a change of that line would rename keys of `/internal/sql/mutation/equivalent.txt`. 200 seeds of each bug, seeds that found it, against the counts of 2026-11-19: skipUnique 168 (168), ackUnknown 67 (45), checkOutside 68 (67), keepOpen 198 (194), keepRead 98 (111), annotateNext 165 (148), keepFailed 186 (187), readNewest 180 (172), rollbackKeeps 100 (108), convertReal 14 (14), listOrder 125, 39 of them by its own violation, "the replay of the log holds". None found anything without its bug. 1,000 seeds of each workload found no violation.
+
+A writer sub-agent updated `/internal/engine/README.md`, `/docs/todo.md`, and `/internal/sql/stmt/README.md`; I read its diff, and fixed two facts in the doc comment of `stmttest.Sequence` that its report found wrong (one insert in three has no list, not two; one value in three is a `?`, not one insert).
+
+The review (`code-review high`, over `92438c6...columns-checks`, since `origin/columns-engine` was merged and gone) found no bug and five nits. Fixed: drivercheck's `reach` read the tables of the transaction also for a call beside it, and now takes the runner of the call; the doc comment of `Conn.Exec` was not rewrapped; the least numbers of rows of several columns were not quite a quarter (1.2 and 0.18, now 1.1 and 0.17); and `/docs/todo.md` now says that the core's own model and simulation tests drive `Upsert` and not the new `Tx.Insert`. Left: the nit that the engine's `reachInsert` counts a call with a named argument as reaching the forms; the engine's test hands the engine the value of a named argument, as `values` says, so the engine runs such a call, and the count is right there.
+
+### Why
+
+The comparison with mattn must not hide a select, so each one it leaves out is checked against the pinned build and counted. The replay of the log in SQLite runs its statements, not its rows, so only a check of the rows sees a row whose values are in other columns than its statement names.
+
+### What worked
+
+- `go test -count=20` and `-race -count=20` of `TestDifferential`, `TestConn_differential`, `TestSimulation`, and `TestSimulation_plantedBugs` passed (347 s and 367 s at a load of about 23), and so did `-count=20` and `-race -count=20` of the new tests of the core and the engine, and `-race -count=5` of drivercheck's `TestSequences` and `TestGenerated`.
+- `make test` (3 min 9 s), `make lint`, and `make check-browser` passed.
+
+### What didn't work
+
+- The first 200 seeds of `TestSimulation_plantedBugs` failed for `convertReal`: `seed 41 finds the bug by another violation: [... gives "s4ql: not supported: a string literal for the column WITh.Ｔ１ of type INTEGER", and the rule for the type of a value "s4ql: not supported: a real literal for the column WITh.OTHERS of type INTEGER"]`. With several columns the real that the bug converts can be the first value of another type, so the engine refuses a later one. That violation is the bug's, and is in its list now.
+- `s4qlpb.Value_Kind_case` is not exported (`undefined: s4qlpb.Value_Kind_case`); `holds` uses `HasInteger` and the others.
+- Some compound shell commands were refused as "too complex to verify that it stays inside the worktree"; plain commands and the Edit tool worked.
+
+### What I learned
+
+- `database/sql`'s `Row` gives no columns; its error `sql: expected N destination arguments in Scan, not 1` is the only way to learn the width of a row of `QueryRow` without another query.
+
+### What was tricky
+
+- Choosing the own violation of `listOrder`: a key in the wrong column shows first as a later insert of the log that fails in SQLite, and a value of another type in the wrong column as a refusal that the rule does not give; the replay of the log, which writes the rows, is the violation that only a row in the wrong order causes.
+
+### What warrants review
+
+- `pair.checkQuoted` in drivercheck: the condition that the first unknown name is quoted, which is where mattn and the pinned build differ.
+- `run.verifyRows` in `/internal/engine/simulation_test.go`.
+- The planted bug `listOrder` in `buildSink`.
+
+### Future work
+
+- Mutation testing of the code of slice 5, including the core's `Tx.Insert`, and fuzz targets of several columns, as `/docs/todo.md` says.
+- The core's model and simulation tests could drive `Tx.Insert`.
