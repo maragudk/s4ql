@@ -638,7 +638,7 @@ func (y tally) add(src string, a answer) {
 		return
 	}
 	kind := "other"
-	if s, _ := stmt.Check(src); s != nil {
+	if s, _ := checkText(src); s != nil {
 		kind = strings.ToLower(strings.TrimPrefix(fmt.Sprintf("%T", s), "*stmt."))
 		if s.Parameters() > 0 {
 			kind += " with a parameter"
@@ -848,7 +848,7 @@ func (p *pair) step(c stmttest.Call) string {
 	// refuses before its arguments, a syntax error or no statement, which SQLite refuses before it
 	// binds them, so that it runs in SQLite without them.
 	args := oracleArgs(c.Args)
-	if s, err := stmt.Check(src); err != nil || s == nil {
+	if s, err := checkText(src); err != nil || s == nil {
 		args = nil
 	}
 	if kind, failure := p.checkLength(c, got); kind != "" {
@@ -868,7 +868,7 @@ func (p *pair) step(c stmttest.Call) string {
 		// for the refusals of their arguments and of the types of their values, which are checked
 		// above, and a text that is not supported is one that SQLite accepts: SQLite prepares it on an
 		// empty database without a syntax error.
-		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil {
+		if s, err := checkText(src); c.Supported || err == nil && s != nil {
 			return fmt.Sprintf("%q: the engine does not support a statement that the pass supports: %v", src, got.message)
 		}
 		if m := syntaxOfNotSupported(t, p.empty, src); m != "" {
@@ -935,7 +935,7 @@ func (p *pair) step(c stmttest.Call) string {
 // under "reached: read both ways", and also under "reached: read both ways in a read-only
 // transaction" in one, and gives what differs, or "".
 func (p *pair) bothWays(c stmttest.Call, got answer) string {
-	s, _ := stmt.Check(c.Src)
+	s, _ := checkText(c.Src)
 	if sel, ok := s.(*stmt.Select); !ok || sel.Where == nil {
 		return ""
 	}
@@ -1001,7 +1001,7 @@ func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, count func(stri
 	case got.err != "":
 		outcome = messageKind(got.err)
 	}
-	s, _ := stmt.Check(c.Src)
+	s, _ := checkText(c.Src)
 	switch s := s.(type) {
 	case *stmt.Insert:
 		reachInsert(t, o, s, c, outcome, count)
@@ -1222,7 +1222,7 @@ func reachInsert(t testing.TB, o *oracle, s *stmt.Insert, c stmttest.Call, outco
 // first such argument, as [refusal] says. It gives the kind of the excuse, [excusedArguments] or
 // [excusedArgument], if the rule decides the call, or "", and what differs from the rule, or "".
 func checkArguments(c stmttest.Call, got answer) (kind, failure string) {
-	s, err := stmt.Check(c.Src)
+	s, err := checkText(c.Src)
 	if err != nil || s == nil {
 		return "", ""
 	}
@@ -1331,7 +1331,7 @@ func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failu
 func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string) {
 	t := p.t
 	t.Helper()
-	s, _ := stmt.Check(c.Src)
+	s, _ := checkText(c.Src)
 	insert, ok := s.(*stmt.Insert)
 	if !ok || p.i.limit == 0 || p.o.prepare(t, c.Src) != nil {
 		return "", ""
@@ -1357,7 +1357,7 @@ func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string)
 // turns a blob literal into NULL, so that the select gives no rows: the known difference of
 // docs/todo.md.
 func (p *pair) longCondition(src string) bool {
-	s, _ := stmt.Check(src)
+	s, _ := checkText(src)
 	sel, ok := s.(*stmt.Select)
 	return ok && p.i.limit > 0 && slices.ContainsFunc(sel.Where, func(c stmt.Condition) bool { return byteLength(c.Value.Value) > p.i.limit })
 }
@@ -1391,7 +1391,7 @@ func byteLength(v any) int {
 // constraint failed` first, and a statement whose every value has the type of its column.
 func typeRule(t testing.TB, o *oracle, src string, args []any) string {
 	t.Helper()
-	s, _ := stmt.Check(src)
+	s, _ := checkText(src)
 	if s == nil || len(args) != s.Parameters() {
 		return ""
 	}
@@ -1453,7 +1453,7 @@ func (o *oracle) columns(t testing.TB, name string) (string, []stmttest.TableCol
 // typeRefusal reports whether message is the engine's refusal of a value of another type than its
 // column, for the insert or the select with WHERE of the text src, as [typeRule] gives it.
 func typeRefusal(src, message string) bool {
-	s, _ := stmt.Check(src)
+	s, _ := checkText(src)
 	switch s := s.(type) {
 	case *stmt.Insert:
 		return strings.Contains(message, " for the column ")
@@ -1463,9 +1463,22 @@ func typeRefusal(src, message string) bool {
 	return false
 }
 
+// checkText src as the engine checks a text before it runs it: as [stmt.Check] does, and with the
+// "not supported" of [engine.Check] for an update or a delete of slice 8, which the pass supports and
+// the engine does not run yet, which the tests take for a text that is not supported.
+func checkText(src string) (stmt.Statement, error) {
+	s, err := stmt.Check(src)
+	if err == nil && s != nil {
+		if err := engine.Check(src, s.Parameters()); errors.Is(err, stmt.ErrNotSupported) {
+			return nil, err
+		}
+	}
+	return s, err
+}
+
 // isInsert reports whether src is a supported insert.
 func isInsert(src string) bool {
-	s, _ := stmt.Check(src)
+	s, _ := checkText(src)
 	_, ok := s.(*stmt.Insert)
 	return ok
 }

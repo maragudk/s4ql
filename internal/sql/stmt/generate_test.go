@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"maragu.dev/is"
@@ -36,14 +37,16 @@ var positionTexts = stmttest.PositionTexts
 
 // newGenerator of [stmttest] from seed, which writes a plain ? in place of one value of an insert or
 // of a condition in four, columns and values of every type, the forms of slice 5 with up to three
-// columns, those of slice 6, with a column that takes NULL and a NULL one time in five, and those of
-// slice 7, with a WHERE of up to four conditions in one select in two.
+// columns, those of slice 6, with a column that takes NULL and a NULL one time in five, those of
+// slice 7, with a WHERE of up to four conditions in one select in two, and those of slice 8, an
+// update or a delete in one statement in three, with a WHERE as a select has one.
 func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g := stmttest.NewGenerator(rand.New(rand.NewPCG(seed, 0x511ce1)), namePools(t))
 	g.Parameters = 4
 	g.Columns = 3
 	g.Nulls = 5
 	g.Conditions = 4
+	g.Changes = 3
 	return g
 }
 
@@ -57,10 +60,12 @@ func TestGenerate(t *testing.T) {
 		n /= 10
 	}
 	g := newGenerator(t, *seed)
-	var before [3]int64
+	var before, beforeChanges [3]int64
 	for i := range whereReads {
 		before[i] = whereReads[i].Load()
+		beforeChanges[i] = changeReads[i].Load()
 	}
+	kinds := map[string]int{}
 	for range n {
 		src, want := g.Statement()
 		s, err := stmt.Check(src)
@@ -68,19 +73,27 @@ func TestGenerate(t *testing.T) {
 			t.Fatalf("%q: gives %#v %v, want %#v", src, s, err, want)
 		}
 		verify(t, src)
+		kinds[fmt.Sprintf("%T", s)]++
 	}
 	for p, pool := range namePools(t) {
 		t.Logf("%v names in position %q", len(pool), positionTexts[p])
 	}
-	// The check of a select with WHERE tells its conditions apart only on a table where they choose
-	// some rows and not others.
-	var reads [3]int64
-	for i := range whereReads {
-		reads[i] = whereReads[i].Load() - before[i]
-	}
-	t.Logf("selects with WHERE that read no row of the table: %v, some: %v, every row: %v", reads[0], reads[1], reads[2])
-	if reads[0]+reads[1]+reads[2] >= 100 {
-		is.True(t, reads[1] > (reads[0]+reads[2])/2, "too few selects with WHERE read some rows of the table and not others")
+	t.Logf("statements by kind: %v", kinds)
+	// The check of a select, an update, or a delete with WHERE tells its conditions apart only on a
+	// table where they choose some rows and not others.
+	for _, c := range []struct {
+		what   string
+		reads  *[3]atomic.Int64
+		before [3]int64
+	}{{"selects", &whereReads, before}, {"updates and deletes", &changeReads, beforeChanges}} {
+		var reads [3]int64
+		for i := range c.reads {
+			reads[i] = c.reads[i].Load() - c.before[i]
+		}
+		t.Logf("%v with WHERE that read or changed no row of the table: %v, some: %v, every row: %v", c.what, reads[0], reads[1], reads[2])
+		if reads[0]+reads[1]+reads[2] >= 100 {
+			is.True(t, reads[1] > (reads[0]+reads[2])/2, "too few "+c.what+" with WHERE read or changed some rows of the table and not others")
+		}
 	}
 }
 
@@ -110,7 +123,7 @@ func TestGenerate_mutants(t *testing.T) {
 		}
 	}
 	t.Logf("%v mutants: %v", n**mutantsEach, c)
-	excused(t, c, 54, 284)
+	excused(t, c, 64, 196)
 	var names []string
 	for k := range kinds {
 		names = append(names, k)
@@ -146,6 +159,40 @@ func difference(a, b stmt.Statement) string {
 			}
 		}
 	}
+	// values of as many terms, a and b.
+	values := func(a, b []stmt.Term) {
+		for i := range a {
+			a, b := a[i], b[i]
+			switch {
+			case a.Parameter != b.Parameter:
+				diffs = append(diffs, "parameter")
+			case fmt.Sprintf("%T", a.Value) != fmt.Sprintf("%T", b.Value):
+				diffs = append(diffs, "kind of value")
+			case a.Value != nil && show(a.Value) != show(b.Value):
+				diffs = append(diffs, "value")
+			}
+		}
+	}
+	conditions := func(a, b []stmt.Condition) {
+		var ac, bc []stmt.Name
+		for _, c := range a {
+			ac = append(ac, c.Column)
+		}
+		for _, c := range b {
+			bc = append(bc, c.Column)
+		}
+		names(ac, bc, "condition")
+		if len(a) != len(b) {
+			return
+		}
+		for i := range a {
+			if a[i].Operator != b[i].Operator {
+				diffs = append(diffs, "operator")
+				continue
+			}
+			values([]stmt.Term{a[i].Value}, []stmt.Term{b[i].Value})
+		}
+	}
 	switch a := a.(type) {
 	case *stmt.CreateTable:
 		b := b.(*stmt.CreateTable)
@@ -177,47 +224,38 @@ func difference(a, b stmt.Statement) string {
 			diffs = append(diffs, "number of values")
 			break
 		}
-		for i := range a.Values {
-			a, b := a.Values[i], b.Values[i]
-			switch {
-			case a.Parameter != b.Parameter:
-				diffs = append(diffs, "parameter")
-			case fmt.Sprintf("%T", a.Value) != fmt.Sprintf("%T", b.Value):
-				diffs = append(diffs, "kind of value")
-			case show(a.Value) != show(b.Value):
-				diffs = append(diffs, "value")
-			}
-		}
+		values(a.Values, b.Values)
 	case *stmt.Select:
 		b := b.(*stmt.Select)
 		if a.Table.Value != b.Table.Value {
 			diffs = append(diffs, "table name")
 		}
 		names(a.Columns, b.Columns, "result column")
+		conditions(a.Where, b.Where)
+	case *stmt.Update:
+		b := b.(*stmt.Update)
+		if a.Table.Value != b.Table.Value {
+			diffs = append(diffs, "table name")
+		}
 		var ac, bc []stmt.Name
-		for _, c := range a.Where {
-			ac = append(ac, c.Column)
+		var av, bv []stmt.Term
+		for _, x := range a.Set {
+			ac, av = append(ac, x.Column), append(av, x.Value)
 		}
-		for _, c := range b.Where {
-			bc = append(bc, c.Column)
+		for _, x := range b.Set {
+			bc, bv = append(bc, x.Column), append(bv, x.Value)
 		}
-		names(ac, bc, "condition")
-		if len(a.Where) != len(b.Where) {
-			break
+		names(ac, bc, "assignment")
+		if len(av) == len(bv) {
+			values(av, bv)
 		}
-		for i := range a.Where {
-			a, b := a.Where[i], b.Where[i]
-			switch {
-			case a.Operator != b.Operator:
-				diffs = append(diffs, "operator")
-			case a.Value.Parameter != b.Value.Parameter:
-				diffs = append(diffs, "parameter")
-			case fmt.Sprintf("%T", a.Value.Value) != fmt.Sprintf("%T", b.Value.Value):
-				diffs = append(diffs, "kind of value")
-			case a.Value.Value != nil && show(a.Value.Value) != show(b.Value.Value):
-				diffs = append(diffs, "value")
-			}
+		conditions(a.Where, b.Where)
+	case *stmt.Delete:
+		b := b.(*stmt.Delete)
+		if a.Table.Value != b.Table.Value {
+			diffs = append(diffs, "table name")
 		}
+		conditions(a.Where, b.Where)
 	case *stmt.DropTable:
 		if a.Table.Value != b.(*stmt.DropTable).Table.Value {
 			diffs = append(diffs, "table name")
@@ -499,8 +537,116 @@ var nearMisses = map[string][]string{
 		"select * from %[1]v where %[2]v = true",
 		"select * from %[1]v where %[2]v = 1 and",
 		"select * from %[1]v where %[2]v",
-		"update %[1]v set %[2]v = 1 where %[2]v = 1",
-		"delete from %[1]v where %[2]v = 1",
+		"select * from %[1]v where %[2]v = 1 returning *",
+	},
+	"*stmt.Update": {
+		"explain update %[1]v set %[2]v = %[3]v",
+		"explain query plan update %[1]v set %[2]v = %[3]v",
+		"with x as (select 1) update %[1]v set %[2]v = %[3]v",
+		"update or replace %[1]v set %[2]v = %[3]v",
+		"update or ignore %[1]v set %[2]v = %[3]v",
+		"update or abort %[1]v set %[2]v = %[3]v",
+		"update or fail %[1]v set %[2]v = %[3]v",
+		"update or rollback %[1]v set %[2]v = %[3]v",
+		"update main.%[1]v set %[2]v = %[3]v",
+		"update temp.%[1]v set %[2]v = %[3]v",
+		"update %[1]v as x set %[2]v = %[3]v",
+		"update %[1]v indexed by i set %[2]v = %[3]v",
+		"update %[1]v not indexed set %[2]v = %[3]v",
+		"update %[1]v set %[2]v = %[3]v, %[2]v = %[3]v",
+		"update %[1]v set %[2]v = %[3]v, w = 1, %[2]v = 2",
+		"update %[1]v set (%[2]v) = (%[3]v)",
+		"update %[1]v set (%[2]v, w) = (%[3]v, 1)",
+		"update %[1]v set w = 1, (%[2]v) = %[3]v",
+		"update %[1]v set %[2]v = %[3]v from u",
+		"update %[1]v set %[2]v = %[3]v from u where u.w = 1",
+		"update %[1]v set %[2]v = %[3]v returning *",
+		"update %[1]v set %[2]v = %[3]v where %[2]v = 1 returning %[2]v",
+		"update %[1]v set %[2]v = %[3]v limit 1",
+		"update %[1]v set %[2]v = %[3]v order by %[2]v",
+		"update %[1]v set %[2]v = %[3]v where %[2]v = 1 order by %[2]v limit 1",
+		"update %[1]v set %[2]v = %[3]v + 1",
+		"update %[1]v set %[2]v = (%[3]v)",
+		"update %[1]v set %[2]v = - (%[3]v)",
+		"update %[1]v set %[2]v = +%[3]v",
+		"update %[1]v set %[2]v = %[2]v",
+		"update %[1]v set %[2]v = %[1]v.%[2]v",
+		`update %[1]v set %[2]v = "a"`,
+		"update %[1]v set %[2]v = ?1",
+		"update %[1]v set %[2]v = :a",
+		"update %[1]v set %[2]v = -?",
+		"update %[1]v set %[2]v = true",
+		"update %[1]v set %[2]v = %[3]v collate binary",
+		"update %[1]v set %[2]v = cast(%[3]v as int)",
+		"update %[1]v set %[2]v = %[3]v || %[3]v",
+		"update %[1]v set %[2]v = %[3]v is null",
+		"update %[1]v set %[2]v = coalesce(%[3]v, 1)",
+		"update %[1]v set %[2]v = (select 1)",
+		"update %[1]v set %[2]v = default",
+		"update %[1]v set %[2]v <> %[3]v",
+		"update %[1]v set %[1]v.%[2]v = %[3]v",
+		"update %[1]v set [%[2]v] = %[3]v",
+		"update %[1]v set '%[2]v' = %[3]v",
+		"update %[1]v set %[2]v = %[3]v,",
+		"update %[1]v set , %[2]v = %[3]v",
+		"update %[1]v set",
+		"update %[1]v %[2]v = %[3]v",
+		"update %[1]v set %[2]v = %[3]v where",
+		"update %[1]v set %[2]v = %[3]v where %[2]v",
+		"update %[1]v set %[2]v = %[3]v where 1",
+		"update %[1]v set %[2]v = %[3]v where 1 = %[2]v",
+		"update %[1]v set %[2]v = %[3]v where %[2]v = 1 or %[2]v = 2",
+		"update %[1]v set %[2]v = %[3]v where not %[2]v = 1",
+		"update %[1]v set %[2]v = %[3]v where %[1]v.%[2]v = 1",
+		"update %[1]v set %[2]v = %[3]v where %[2]v isnull",
+		"update %[1]v set %[2]v = %[3]v where %[2]v is 1",
+		"update %[1]v set %[2]v = %[3]v where %[2]v in (1)",
+		"update %[1]v set %[2]v = %[3]v where %[2]v = w",
+		"update %[1]v set %[2]v = %[3]v where %[2]v = 1 and",
+		"update %[1]v set %[2]v = %[3]v; select 1",
+	},
+	"*stmt.Delete": {
+		"explain delete from %[1]v",
+		"explain query plan delete from %[1]v where %[2]v = %[3]v",
+		"with x as (select 1) delete from %[1]v",
+		"delete from main.%[1]v",
+		"delete from temp.%[1]v where %[2]v = %[3]v",
+		"delete from %[1]v as x",
+		"delete from %[1]v as x where x.%[2]v = %[3]v",
+		"delete from %[1]v indexed by i",
+		"delete from %[1]v not indexed where %[2]v = %[3]v",
+		"delete from %[1]v returning *",
+		"delete from %[1]v where %[2]v = %[3]v returning *",
+		"delete from %[1]v limit 1",
+		"delete from %[1]v order by %[2]v",
+		"delete from %[1]v where %[2]v = %[3]v order by %[2]v limit 1",
+		"delete %[1]v",
+		"delete from %[1]v, u",
+		"delete from (%[1]v)",
+		"delete from %[1]v where",
+		"delete from %[1]v where %[2]v",
+		"delete from %[1]v where 1",
+		"delete from %[1]v where 1 = %[2]v",
+		"delete from %[1]v where %[2]v = %[3]v or %[2]v = %[3]v",
+		"delete from %[1]v where not %[2]v = %[3]v",
+		"delete from %[1]v where (%[2]v = %[3]v)",
+		"delete from %[1]v where %[2]v = %[3]v + 1",
+		"delete from %[1]v where %[2]v = +%[3]v",
+		"delete from %[1]v where %[2]v = ?1",
+		"delete from %[1]v where %[2]v = -?",
+		"delete from %[1]v where %[2]v = true",
+		"delete from %[1]v where %[2]v in (%[3]v)",
+		"delete from %[1]v where %[2]v between %[3]v and %[3]v",
+		"delete from %[1]v where %[2]v like 'a'",
+		"delete from %[1]v where %[2]v = %[2]v",
+		"delete from %[1]v where %[1]v.%[2]v = %[3]v",
+		"delete from %[1]v where %[2]v is %[3]v",
+		"delete from %[1]v where %[2]v is distinct from null",
+		"delete from %[1]v where %[2]v notnull",
+		"delete from %[1]v where %[2]v = %[3]v collate binary",
+		"delete from %[1]v where %[2]v = %[3]v and",
+		"delete from %[1]v where %[2]v = %[3]v, %[2]v = %[3]v",
+		"delete from %[1]v; select 1",
 	},
 	"*stmt.DropTable": {
 		"explain drop table %[1]v",
@@ -545,6 +691,14 @@ func TestGenerate_nearMisses(t *testing.T) {
 			if s.Columns != nil {
 				column = s.Columns[0].Raw
 			}
+		case *stmt.Update:
+			a := s.Set[0]
+			table, column, value = s.Table.Raw, a.Column.Raw, src[a.Value.Span.Start:a.Value.Span.End]
+		case *stmt.Delete:
+			table, value = s.Table.Raw, "1"
+			if s.Where != nil {
+				column = s.Where[0].Column.Raw
+			}
 		case *stmt.DropTable:
 			table = s.Table.Raw
 		}
@@ -558,5 +712,5 @@ func TestGenerate_nearMisses(t *testing.T) {
 		}
 	}
 	t.Logf("%v near misses: %v", c[syntaxError]+c[notSupported]+c[syntaxNotSaid]+c[notSupportedNotSaid], c)
-	excused(t, c, 0, 3003)
+	excused(t, c, 0, 2054)
 }

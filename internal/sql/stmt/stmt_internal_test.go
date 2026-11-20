@@ -18,7 +18,7 @@ func TestNotSupportedError(t *testing.T) {
 
 func TestStatement(t *testing.T) {
 	t.Run("should give the span that it was given, for every kind of statement", func(t *testing.T) {
-		for _, s := range []Statement{&CreateTable{}, &Insert{}, &Select{}, &DropTable{}} {
+		for _, s := range []Statement{&CreateTable{}, &Insert{}, &Select{}, &Update{}, &Delete{}, &DropTable{}} {
 			s.setSpan(Span{1, 2})
 			is.Equal(t, Span{1, 2}, s.Bounds())
 		}

@@ -1,6 +1,6 @@
 # The engine of the simulator
 
-`internal/simulator` runs the storage core of s4ql under the simulation, and returns what happened as a structured trace. It runs the code in two ways:
+`internal/simulator` runs the storage core of s4ql, with its SQL engine on top, under the simulation, and returns what happened as a structured trace. It runs the code in two ways:
 
 - A batch run takes a request, which is a seed, settings, and a schedule of actions and faults at fake times, runs it to its end, and returns the whole trace.
 - A live session takes a seed and settings, and has no end. The page advances its fake time, acts at the time of the session, and asks for the state now, one command at a time. Each answer has the events since the answer before.
@@ -8,7 +8,7 @@
 It exists for the simulator on the project's site, which is to show how the current code reacts to faults of its environment. The page must therefore run the code, and `site/simulator/` runs this engine in place of the JavaScript model of the design that it ran before. The page drives one live session, and `make site-check` checks it. This file is the specification for the page: the messages, the request, the response, the live session, the events, the state at a time, the invariants, what the code does under each action, and how a page loads the engine.
 
 - The package builds only with the tag `s4ql_browser`. With the tag it builds natively and for a browser, with `GOOS=js GOARCH=wasm`, where it runs on the SQLite binding of [internal/sqlite/browser](../sqlite/browser/README.md).
-- `internal/core`, `internal/sim`, and `internal/store/simstore` are used unchanged, through their exported API.
+- `internal/core`, `internal/engine`, `internal/sim`, and `internal/store/simstore` are used unchanged, through their exported API. The calls of the workload are SQL, which `internal/engine` runs on the database of the core, as the `database/sql` driver does.
 - `engine/` holds the program for a browser, its Worker, the module that a page imports, and a demo page. `serve/` builds and serves them.
 
 ## How a run works
@@ -127,22 +127,29 @@ Each process runs callers, as an application would.
 | `think` | 5000 | 0 to 1800000 | The longest pause of a caller before a call. |
 | `writes` | 40 | 0 to 100 | The share of calls that are writes, in percent. The others are reads. |
 | `timeout` | 30000 | above 0, at most 1800000 | The timeout of each call, on the monotonic clock of its process. |
-| `keep` | 0 | 0 to 10000 | The number of rows that the writes keep in the table. 0 keeps every row. |
 
 A caller repeats two steps. It pauses for 1 ms and a time from 0 to `think`, from the seed. Then it makes one call, a write or a read by `writes`. While the workload is off it makes no call, and looks again after a second.
 
-- A write is one write transaction. It creates the table `t`, with the one integer column `k` as its primary key, if the database does not have it. It inserts one row, trims the table by `keep`, and commits. The key of the row is the next value of a counter of the run, which starts at 1. Every write takes a value when it starts, also one that is then refused, so a key belongs to one call, and the keys tell the transactions apart.
-- A read is one read transaction that scans `t`. It reports the keys that it saw and its position: the name of the last commit object in the state that it saw.
+Each call is SQL, on a connection of its own, `engine.Conn`, of the engine of its process. Each process has an engine, `engine.New` on its database and its host, which it makes when it opens its database. The table is `barcodes`:
 
-The actions `write` and `read` make the same calls, with the caller `visitor`.
+```sql
+create table barcodes (code integer primary key) strict, without rowid
+```
 
-With `keep` above 0, a write deletes rows in its transaction, after its insert: the other rows with the smallest keys, until the table has `keep` rows. The table then stops growing, and a read costs the same however long the run. The commit object of the write carries the keys that it deletes, in `deletes`. The new row counts as one of the `keep`, and a write never deletes its own row, also when its key is smaller than those of the other rows, so that every commit holds the key it was written for. A write reads the whole table, at most `keep` rows and its own, to find the rows to delete. With `keep` at 0, the default of a request, no write deletes a row, and a batch run is as it was before `keep`. A session has the default 100.
+- A write is one write transaction: `Conn.Begin`, the insert `insert into barcodes (code) values (?)`, and `Conn.Commit`. The argument is the key of the row, the barcode of the next value of a counter of the run, which starts at 1. Every write takes a value when it starts, also one that is then refused, so a key belongs to one call, and the keys tell the transactions apart. If the insert fails with `no such table: barcodes`, the transaction runs the `create table` above and the insert again, so the first write of a run commits both statements. A statement that fails in a transaction has no effect there, and the transaction stays open.
+- A read is one select of one key, `select code from barcodes where code = ?`, which the engine runs as a lookup of the key. It picks the key when it starts, by a number from the seed: half of the reads the key of the newest write acknowledged so far, whose row a read that is not stale gives, and the others the key of one of the last 50 values taken, also of a write that failed or is still on its way, for which no row is a right answer. So the key is the same in every build. The read reports the key that it saw, if it found the row, and its position: the name of the last commit object in the state that it saw, which the engine gives as `statement.position` in its event of the statement. A select on a database without the table is served with no rows and the error `no such table: barcodes`, because it saw a state too.
+
+The barcode of the value n is a number of 13 digits in the form of an EAN-13 barcode: the prefix `57`, ten digits that a bijection of n modulo 10^10 gives, and the check digit of EAN-13, which weighs the twelve digits before it by 1 and 3 in turn from the left. The bijection is four rounds of a Feistel network on the two halves of five digits each, which maps (hi, lo) to (lo, hi + f(lo)) modulo 10^5 with `f(lo) = (31337 lo² + 7919 lo + 104729 r + 12345) mod 10^5` in the round r from 0. So the keys of a run are distinct and do not rise with n, and each fits an integer of 64 bits, also in JavaScript.
+
+No call deletes a row: the table grows for the whole run. The actions `write` and `read` make the same calls, with the caller `visitor`.
+
+How a call ends comes from the calls of the engine, which passes every error of the core through unchanged. A write that `Conn.Begin` refuses ends as a refusal, by the error of the core: `refused`, `stopped`, `busy`, or `timed_out`. One whose insert or create fails ends with `abandoned`, and one whose `Conn.Commit` fails with `unknown` for an error that matches `core.ErrOutcomeUnknown`, or with `not_committed`. A read that fails ends as a refusal in the same way. `error` is the text of the engine's error.
 
 ### Client
 
 The client is one source of calls that stands outside the instances, as the user of an application does. `client.instance` is the instance that it calls first, its target, and the action `client` points it at another. It is a task of the run, not of a process, so no crash, stop, or fault of an instance ends it. A batch run and a session have no client unless the request names one.
 
-It repeats two steps, as a caller does: a pause of 1 ms and a time from 0 to `workload.think`, from the seed, on the time of the run, and then one call on its target, a write or a read by `workload.writes`. Its calls are those of [Workload](#workload), with the caller `client`, the timeout `workload.timeout` on the monotonic clock of the target's process, and the rows that `workload.keep` keeps. `workload.on` and the action `workload` do not switch it.
+It repeats two steps, as a caller does: a pause of 1 ms and a time from 0 to `workload.think`, from the seed, on the time of the run, and then one call on its target, a write or a read by `workload.writes`. Its calls are those of [Workload](#workload), with the caller `client`, the timeout `workload.timeout` on the monotonic clock of the target's process. `workload.on` and the action `workload` do not switch it.
 
 Each call goes to the process that runs the target when the call starts:
 
@@ -278,12 +285,7 @@ An engine has one session at most. A command without a session gets an answer wi
 
 The body of `start` is an object with the fields of a request that hold for a whole run: `seed`, `instances`, `leases`, `latency`, `faults`, `buggify`, `workload`, `client`, and `standby`. Each has the meaning and the limits that [The request](#the-request) gives it. A session has no `end`, no `schedule`, and no `lines`: each of them is an error, as any other member is.
 
-A field that is missing has the default of a request, with two exceptions:
-
-| Field | Default in a session | Default in a request |
-| --- | --- | --- |
-| `instances` | 2 | 3 |
-| `workload.keep` | 100 | 0 |
+A field that is missing has the default of a request, with one exception: `instances` is 2 in a session, and 3 in a request.
 
 The default of `seed` is 1. A page that wants another run each time picks the seed itself.
 
@@ -402,9 +404,10 @@ A call of the application: one write or read transaction.
 | `call` | The number of the call, from 1, in the order in which the calls started. |
 | `caller` | `caller-0`, `caller-1`, and so on for the workload, `visitor` for an action, and `client` for the client. |
 | `op` | `write` or `read`. |
-| `value` | The key that a write inserts. |
+| `value` | The key that a write inserts, a barcode of 13 digits. |
+| `sql`, `args` | The statement of the call, `insert into barcodes (code) values (?)` or `select code from barcodes where code = ?`, and its argument in a list: the key that a write inserts or that a read selects. They are on every event of the call. |
 | `started` | When the call started. It is on the event that ends the call. |
-| `keys`, `position` | What a read that was served saw. |
+| `keys`, `position` | What a read that was served saw: its key if it found the row, and its position. |
 
 Every call has the event `started`, and one event when it ends:
 
@@ -414,7 +417,7 @@ Every call has the event `started`, and one event when it ends:
 | `unknown` | The commit ended with an unknown outcome. |
 | `not_committed` | The commit failed, and the transaction is not committed. |
 | `abandoned` | The write failed before its commit and was rolled back. |
-| `served` | The read was served. |
+| `served` | The read was served. On a database without the table, with no keys and the error `no such table: barcodes`. |
 | `refused` | The instance has no valid lease. `error` ends with the reason of the core. |
 | `stopped` | The instance has stopped, or its database is closed. |
 | `busy` | The cache was busy. |
@@ -483,7 +486,7 @@ A request of a process that crashes gets no `returned`.
 `object` on `applied` has one of three members:
 
 - `manifest`: `head`, the name of the newest commit object, and `lease`, which is null or has `holder`, `duration`, `renewed`, and `salt`. `renewed` is the wall clock of the holder at the renewal, in milliseconds from the start of the run. `salt` is in hexadecimal.
-- `commit`: `name`, `parent`, `keys`, the keys of the rows that it inserts into `t`, `deletes`, the keys of the rows that it deletes from `t`, `tables`, the tables that it creates, and `changes`, the number of its changes. `keys`, `deletes`, and `tables` are left out when they are empty.
+- `commit`: `name`, `parent`, `keys`, the keys of the rows that it inserts into `barcodes`, `tables`, the tables that it creates, `changes`, the number of its changes, and `statements`, the annotations that the engine wrote into it: one for each statement of the transaction that wrote, in order, each with `sql`, its text, and `args`, its arguments by position. An argument is an integer, a real, or text as itself, a blob as hexadecimal text, or null. `keys`, `tables`, `statements`, and `args` are left out when they are empty.
 - `error`: why the object could not be read.
 
 ### store
@@ -555,7 +558,7 @@ As in the events, a field that is zero can be missing: `outageUntil`, `calm`, `h
 | `manifest` | The `object.manifest` of the last one, or null. |
 | `manifestVersion` | Its `version`. |
 | `manifestWrites` | The number of them. |
-| `commits` | Each `object.commit`, once, in the order written, with its `name`, `parent`, `keys`, `deletes`, `tables`, and `changes`, the `process` that wrote it, the time `at`, and `inLog`. |
+| `commits` | Each `object.commit`, once, in the order written, with its `name`, `parent`, `keys`, `tables`, `changes`, and `statements`, the `process` that wrote it, the time `at`, and `inLog`. |
 | `log` | The names of the commit objects of the log, from the first to the head: from `manifest.head`, follow `parent` through `commits` to the empty log. `inLog` says whether a commit object is among them. |
 | `commitCount`, `logLength` | The numbers of all commit objects and of all names of the log, in a state of `now` that lists only the last of each. |
 
@@ -605,7 +608,7 @@ A request that is not sent, by `failRequest`, a hang, or a disconnect, has no nu
 
 A request is listed while `waiting` is true or `phase` is not `done`. So a write that the store holds back stays listed after its caller gave up, and a request without an answer stays listed, as `done`, while its caller waits.
 
-A call in flight has `call`, `instance`, `process`, `caller`, `op`, and `value` from its event `started`, and `started`, the `t` of that event.
+A call in flight has `call`, `instance`, `process`, `caller`, `op`, `value`, `sql`, and `args` from its event `started`, and `started`, the `t` of that event.
 
 A crash ends the calls of its process in the fold, and every wait of the process for a request: its calls leave `calls`, and its requests get `waiting` false. A request of a crashed process stays in `requests` while the network still carries it, until its `phase` is `done`.
 
@@ -613,7 +616,7 @@ A crash ends the calls of its process in the fold, and every wait of the process
 
 The engine checks six invariants during the run and at its end. The end of a session is its command `end`, so a session that is not ended gets only the checks during the run. A violation is an event of the kind `check`. The checker sees what an application and the store see: how each call ends, what each read returns, and the objects that the store applies. Each write has a key of its own, so the keys tell the transactions apart.
 
-"The log" is the chain of commit objects from the head of the manifest back to the empty log. The rows of the log up to a position are the keys that its commit objects up to there insert, without those that the same or a later one of them deletes.
+"The log" is the chain of commit objects from the head of the manifest back to the empty log. The rows of the log up to a position are the keys that its commit objects up to there insert. A read selects the row of one key; its position says which rows its state has besides.
 
 | `invariant` | Checked | Meaning |
 | --- | --- | --- |
@@ -621,12 +624,16 @@ The engine checks six invariants during the run and at its end. The end of a ses
 | `acknowledged` | When a write ends with `committed`, and at the end. | A commit that was acknowledged is in the log: once when it is acknowledged, and still at the end. |
 | `not_committed` | At the end. | A write that ended with `not_committed` is not in the log, and neither is a write of the client that ended with `down`, which was never made. |
 | `once` | At the end. | No key is in the log twice. |
-| `state` | When a read is served. | The read saw a state that the log had: its position is the empty log or a commit object of the log, and its keys are the rows of the log up to that position. |
-| `fresh` | When a read is served, and at the end. | The read saw every write that was acknowledged before the read started. It also saw every write that returned with an unknown outcome before the read started and that the log holds at the end, which includes a write of the client that ended with `lost`. A read need not see a write whose row a commit object up to the read's position deleted, as the writes do with `workload.keep`. A read gets at most one violation in each of the two checks. |
+| `state` | When a read is served. | The read saw a state that the log had: its position is the empty log or a commit object of the log, and it gives the row of its key, once, if the log up to that position has it, and no row otherwise. |
+| `fresh` | When a read is served, and at the end. | The read saw every write that was acknowledged before the read started. It also saw every write that returned with an unknown outcome before the read started and that the log holds at the end, which includes a write of the client that ended with `lost`. It saw the write of its own key if it gave its row, and any other if the state at its position holds the key: the commit object of the position, or one of its ancestors, inserts it. Half of the reads select the newest acknowledged key, so a stale state shows in their rows too. A read gets at most one violation in each of the two checks. |
+
+The checker checks a read in a time that does not grow with the log while the log is one chain: it keeps the index in the log of the commit object of each key, and of the latest acknowledged write. A read that this fast check does not pass is checked again against the chain from the head, which decides. `check_internal_test.go` checks every read of the keys 0 to 4, giving every set of four keys, at every position both ways: both find the same violations, and the fast check passes every read without one.
 
 Only `fresh` can be excused. The design accepts a read that misses a commit on a process whose two clocks both went wrong in the direction that keeps a lease alive too long. A violation of `fresh` is excused if, by the time of the check, the monotonic clock of the read's process has been stopped, and its wall clock has been stopped or shifted backward. `pauseClocks` stops both.
 
 What the checker cannot see, and how far it is tested:
+
+- A read shows one row of its state. `state` checks that row against the log at the read's position, and `fresh` checks the other writes by the position. A read that gives the right row of its key and the right position, from a state whose other rows are wrong, is not caught; a read of a range showed many rows of its state at once.
 
 - It sees nothing inside the core: no cache except through the reads, and nothing of what an instance believes about its lease.
 - It checks reads that were served. For a write that ended in another way than `committed`, `unknown`, `lost`, `not_committed`, or `down`, such as `abandoned`, it does not check that the log lacks it.
@@ -818,7 +825,8 @@ The tests of `internal/simulator` run natively and in Chromium. They show:
 - **The client** (`client_test.go`), with `standby` and no callers. `a` takes the lease before `b` starts, and the first call of the client comes after that. The client keeps calling `a` through a crash and a restart, a close and an open, and a failing disk: `down` while `a` cannot take its calls, and `refused` once `a` stands by. A switch moves its calls to `b`, and a call that was on `a` at the switch ends on `a`. The instance that the client does not call gets no call. A write that a hang holds on `a` when `a` crashes ends with `lost` at the crash. Actions on an instance that has not started are ignored, except the faults of the instance. Over 24 seeds with every fault, crashes, closes, and switches, every call ends once on the instance and process it started on, and no violation is not excused. Writes are lost at crashes in those runs, and some of them are in the log at the end: with `lost` counted as `not_committed`, the same runs have violations of `not_committed`.
 - **Faults** (`run_test.go`): each fault of the store, damaged downloads, and buggify show their events, with no violation. Under every fault at once, the engine knows every line of the store.
 - **The state** (`state_test.go`): the position of each cache, folded from the events of the core alone, against what each read saw. The log. A request and a call in flight, from their start to their end.
-- **The checker** (`check_internal_test.go`): each invariant on input made to break it, also by a write of the client that ended with `down` or `lost`, and the excuse of `fresh`.
+- **The checker** (`check_internal_test.go`): each invariant on input made to break it, also by a write of the client that ended with `down` or `lost`, by a read that misses its row, gives another or gives it twice, by one that misses the write of its key, and by one at a state without the write of another key, and the excuse of `fresh`. The fast check and the slow one find the same violations for every read of five keys.
+- **The SQL** (`run_test.go`): the first commit object holds the `create table` and the insert, each later one an insert of its key, with its key as argument. The keys are barcodes of EAN-13, distinct and not rising, and every read gives the row of its key or none; most find it.
 
 `TestEngine` in `internal/simulator/engine` serves a page when one drives it: it looks for the object `s4qlEngine`, which `worker.js` sets. Without the object, as in `make test-browser`, it plays the page with an object of its own: it shows that `submit` refuses a second message while the first waits and a message without its three arguments, and that the answers that `done` gets to a run and to a state of that run are those of an engine called directly, so that one engine serves every message. The whole path through `worker.js` is what `make site-check` checks.
 
@@ -869,20 +877,24 @@ The hashes of two requests, the demo's and one with a crash and a restart, are t
 
 ### A long session
 
-Measured on 2026-11-19 on the same machine, with Go 1.27.4, and in the browser with headless Chrome through the runner of `internal/sqlite/browser`.
+Measured on 2026-11-20 on the same machine, with Go 1.27.4, natively and in headless Chrome through the runner of `internal/sqlite/browser`, with the workload as SQL and a read of one key. A session with the seed 7 advanced in steps of 30 fake minutes, and at each age five advances of one fake minute were timed. The page's settings are `{"workload": {"callers": 0}, "client": {"instance": "a"}, "standby": true}`; the defaults are two instances with two callers each.
 
-The time of one fake minute in Chromium, as one `advance`:
+The mean time of one fake minute, as one `advance`, at the age of the session:
 
-| Session | Minutes 1 to 5 | Minutes 56 to 60 |
-| --- | --- | --- |
-| The defaults: two instances, the workload, `keep` at 100, no faults | 115, 68, 39, 43, and 44 ms | 51, 30, 42, 51, and 54 ms |
-| The defaults with the preset of faults | 35, 53, 44, 24, and 29 ms | 28, 27, 40, 39, and 31 ms |
+| Session | Where | 0 h | 24 h |
+| --- | --- | --- | --- |
+| The page's settings | natively | 15 ms | 14 ms |
+| The page's settings | Chromium | 61 ms | 24 ms |
+| The defaults | natively | 34 ms | 39 ms |
+| The defaults | Chromium | 55 ms | 96 ms |
 
-Natively, in `TestEngine_live`, a fake minute of a default session takes 611 steps and gives 442 events in 120,319 bytes of JSON, as the mean of minutes 10 to 20. As the mean of minutes 50 to 60 it takes 626 steps and gives 458 events in 128,781 bytes. The bytes grow a little because the keys and the numbers gain digits.
+A fake minute of the page's settings takes 423 steps at the start and 472 after 24 hours, and the steps were the same natively and in Chromium, to the step. A read is a lookup of one key, so it costs the same however many rows the table has. The engine yields to the host between two rows of a query, a step each, so a read of a range of 100 rows cost about 100 steps, and a fake minute about 1,440.
+
+`TestEngine_live` also checks that the steps, the events, and the bytes of a fake minute, as the mean of minutes 50 to 60, are less than 15% above those of minutes 10 to 20.
 
 So a fake minute costs the same after an hour as at the start. Four things still grow with a session:
 
-- **The Go heap**, natively by about 12.5 MB for each fake hour: 7.97 MB after 30 min, 14.3 MB after 60, 20.1 MB after 90, and 26.9 MB after 120, in a session of two instances with 2229 commit objects after 120 min. Most of it is the text trace of `sim`, which keeps every line for the hash and cannot be switched off without a change to `internal/sim`. The rest is what `simstore` keeps, which is every applied write with its content and a handle of every task that carried a request, the commit objects of the bucket in the engine's fold and in its checker, the checker's record of every read that was served and of every write that ended, and a map of the manifests by their versions.
+- **The Go heap**, natively by about 6.5 MB for each fake hour with the page's settings: 155.5 MB after 24 hours, and 250.4 MB with the defaults. Most of it is the text trace of `sim`, which has a line for each step, also for each row of a query, and keeps every line for the hash, which cannot be switched off without a change to `internal/sim`. The rest is what `simstore` keeps, which is every applied write with its content and a handle of every task that carried a request, the commit objects of the bucket in the engine's fold and in its checker, the checker's record of every read that was served and of every write that ended, and a map of the manifests by their versions.
 - **SQLite's WebAssembly memory**, with every crash. Without crashes it does not grow: it is 8 MiB after an hour. With crashes it grows by about 0.47 MB for each crashed process: from 8.4 MB to 12.1, 25.3, and 36.5 MB after 20, 40, and 60 crashes and restarts in one session. Nothing closes the connections of a crashed process. Closing them needs `CloseCache` of `core` as a normal method, where only its tests have it now, and that is a change to `core`.
 - **The time of a step**, with every crash. A crashed process leaves its tasks parked in the scheduler until the run ends, and the scheduler sorts the names of all parked tasks at every step. After 60 crashes a fake minute took 89 ms in Chromium, against about 45 ms without them.
 - **The state that `now` returns**, which lists every commit object unless `commits` limits it.

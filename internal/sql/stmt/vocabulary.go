@@ -107,6 +107,8 @@ var fieldNames = map[string]string{
 	"Insert.Or":                          "INSERT OR",
 	"Insert.Default":                     "DEFAULT VALUES",
 	"TargetTable.As":                     "alias",
+	"Update.Or":                          "UPDATE OR",
+	"Assignment.LParen":                  "SET of a list of columns",
 	"Values.Commas":                      "second row",
 	"SimpleSelect.Distinct":              "DISTINCT or ALL",
 	"ResultColumn.As":                    "alias",

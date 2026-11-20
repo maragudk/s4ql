@@ -188,11 +188,12 @@ func run(root, version string, timeout time.Duration) (bool, error) {
 	}
 }
 
-// simulatorFiles that the page loads: page.js and run.js, which its HTML names, and the files of
-// the engine, which page.js, simulator.js, and the Worker load.
+// simulatorFiles that the page loads: page.js, which its HTML names, run.js and sound.js, which
+// page.js loads, and the files of the engine, which page.js, simulator.js, and the Worker load.
 var simulatorFiles = []string{
 	"/simulator/page.js",
 	"/simulator/run.js",
+	"/simulator/sound.js",
 	"/simulator/engine/build.json",
 	"/simulator/engine/simulator.js",
 	"/simulator/engine/worker.js",
