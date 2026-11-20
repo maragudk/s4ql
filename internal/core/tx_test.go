@@ -2657,9 +2657,10 @@ func TestTx_tooBig(t *testing.T) {
 		tx, err := d.Begin(ctx)
 		is.NotError(t, err)
 		err = tx.CreateTable(ctx, long)
-		is.True(t, err != nil, "the create table succeeded")
-		_, err = tx.Table(ctx, "t")
-		is.True(t, err != nil, "the transaction goes on")
+		// SQLite's own error, which is neither ErrTooBig nor ErrInvalid: see docs/todo.md.
+		se, ok := errors.AsType[*sqlite.Error](err)
+		is.True(t, ok && se.Code == 18, fmt.Sprint("not SQLite's string or blob too big: ", err))
+		is.True(t, tx.CreateTable(ctx, tableOf("u", 1, "k")) != nil, "the transaction goes on")
 		is.True(t, tx.Commit(ctx) != nil, "the commit succeeded")
 		is.Equal(t, head, w.manifest(t).Head, "the log has a new commit object")
 		_ = d.Close(ctx)
@@ -2683,7 +2684,7 @@ func TestTx_tooBig(t *testing.T) {
 			var armAtSpool atomic.Bool
 			o.WrapSpools(func(kind string, f *os.File) core.SpoolFile {
 				return &armingSpool{f: f, arm: func() {
-					if armAtSpool.Load() {
+					if kind == "commit" && armAtSpool.Load() {
 						vfs.Fail(temp)
 					}
 				}}
@@ -2729,6 +2730,7 @@ func TestTx_tooBig(t *testing.T) {
 			is.True(t, vfs.Failures() > before, "nothing failed: "+step)
 			is.Error(t, core.ErrLocal, err, step)
 			is.Equal(t, head, w.manifest(t).Head, "the log has a new commit object: "+step)
+			armAtSpool.Store(false)
 			vfs.Fail(faultvfs.Fault{})
 			_ = tx.Rollback(ctx)
 			_ = d.Close(ctx)

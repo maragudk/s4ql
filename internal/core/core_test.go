@@ -1365,6 +1365,9 @@ func TestOpen_cache(t *testing.T) {
 			failed := 0
 			for after := 0; ; after++ {
 				what := fmt.Sprint("version ", version, ", read ", after)
+				if after == 10000 {
+					t.Fatal("every open fails: " + what)
+				}
 				path := filepath.Join(w.dir, fmt.Sprint(version, "-", after, ".db"))
 				is.NotError(t, os.WriteFile(path, data, 0o600))
 				before := vfs.Failures()
@@ -1402,6 +1405,9 @@ func TestOpen_cache(t *testing.T) {
 			failed := 0
 			for after := 0; ; after++ {
 				what := fmt.Sprint(name, " ", after)
+				if after == 10000 {
+					t.Fatal("every open fails: " + what)
+				}
 				path := filepath.Join(w.dir, fmt.Sprint(name, "-", after, ".db"))
 				before := vfs.Failures()
 				vfs.Fail(faultvfs.Fault{Ops: op, Files: faultvfs.AnyFile, After: after, Times: 1})
