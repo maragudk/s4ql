@@ -30,7 +30,8 @@
 // on in fake time without waiting real minutes, the check calls the page's hook s4qlPage.skip, which
 // advances the session at once. Nothing in the check waits for a time: it waits for what the page
 // says through data attributes and its state, or for animation frames. -timeout only stops a check
-// that hangs, and is far above what a check takes on a slow machine.
+// that hangs, and is about three times what a check takes at the most in CI. On a timeout, it prints
+// the stacks of its goroutines, the requests of the page so far, and the output of Chromium.
 //
 // Chromium is found as the runner in internal/sqlite/browser finds it: S4QL_CHROMIUM, or the PATH, or
 // /Applications on macOS. S4QL_CHROMIUM_FLAGS adds flags, such as --no-sandbox.
@@ -53,6 +54,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"strings"
 	"sync"
 	"time"
@@ -64,7 +66,7 @@ var checkHTML []byte
 func main() {
 	root := flag.String("root", "site", "the directory of the site, with the engine built into it")
 	version := flag.String("version", "", "the version that the site's page was built with, if any")
-	timeout := flag.Duration("timeout", 10*time.Minute, "the time after which a check that hangs is stopped")
+	timeout := flag.Duration("timeout", 3*time.Minute, "the time after which a check that hangs is stopped")
 	flag.Parse()
 	ok, err := run(*root, *version, *timeout)
 	if err != nil {
@@ -182,9 +184,20 @@ func run(root, version string, timeout time.Duration) (bool, error) {
 	case <-stopped:
 		return false, fmt.Errorf("chromium stopped before the check ended: %v\n%s", waitErr, tail(log.String()))
 	case <-time.After(timeout):
+		// For a hang: the stacks of this program's goroutines, taken before Chromium is stopped, the
+		// requests of the page so far, and the output of Chromium.
+		var stacks strings.Builder
+		_ = pprof.Lookup("goroutine").WriteTo(&stacks, 2)
 		cancel()
 		<-stopped
-		return false, fmt.Errorf("the check did not end within %v", timeout)
+		mu.Lock()
+		var asked strings.Builder
+		for _, u := range requests {
+			fmt.Fprintln(&asked, u.String())
+		}
+		mu.Unlock()
+		return false, fmt.Errorf("the check did not end within %v\n\nthe goroutines of sitecheck:\n%v\nthe requests of the page, in order:\n%v\nthe output of Chromium:\n%v",
+			timeout, stacks.String(), asked.String(), tail(log.String()))
 	}
 }
 
