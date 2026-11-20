@@ -118,3 +118,57 @@ The keys of equal mutants in one function are numbered by an order that is not t
 ### Future work
 
 The rest of the core's run and the reruns of the survivors on the final tests.
+
+## Step 3: The rest of the core, the reruns, the review, and the checks
+
+**Author:** columns-null-mutation builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the brief) "6. Update `docs/todo.md` (remove what this task closes, keep what stays open) and the results section of the README of `internal/sql/mutation`. [...] Run `make test`, `make lint`, and `make check-browser` at the end. [...] Review your own work with the code-review skill before you report, and fix what it finds."
+**Interpretation:** Finish the survivors of the core, run every survivor again on the final tests, write the results, review, and check.
+**Inferred intent:** Numbers in the README that a rerun on the merged code would give again.
+
+### What I did
+
+The core's run of 411 mutants took 2 h 32 min with 3 workers and `-factor 3`: 73 did not compile, 264 were killed, 19 timed out, 55 survived. New tests from its survivors, beyond those of step 2: `TestTx_tooBig` fails an insert locally and requires that it reports no row inserted, and refuses a create table whose declaration in the cache is longer than the limit; `TestTx_Commit` refuses `Tx.Insert` after the end of the transaction and into no table, and commits nothing of a row that a transaction inserts and deletes, whose key `Tx.Insert` records as one of no row before; `TestTx_null` inserts a key that the table has; `TestDB_stop_cache` refuses a key with the default NULL in a table that is not STRICT, and looks a table that s4ql did not make up through a create table too.
+
+The reruns on copies of the final tree: `stmt` 30 (16 killed, 14 equivalent), the format 5 (all killed), the engine 50 with `-min-time 5m` and then 3 more (all killed), the core 55 with `-first` (22 killed, 2 timed out, 26 equivalent, and 5 of the planted bugs that timed out under the load), and those 5 again with `-min-time 10m` (all survive, all listed). A last check of every listed key against the final status of its mutant found two of `convertReal` that the first run had killed in the default workload; a rerun in the hammer workload has both survive, so their entries hold. One entry, `typ == s4qlpb.Type_TYPE_INT => false`, is killed in the hammer workload and left the list, and two of `conn.setUp` that I had listed are killed by the new test of the make of a new cache and left it too.
+
+The first review ran against the range of #79 itself, since `origin/null-checks` was gone after its merge; its five nits are in that pull request's code, not in this branch, and are in the report. The second, on `8a6dae5..HEAD`, found a pre-existing issue and four nits. Fixed: the test of a create table that is too long pins SQLite's error (code 18) and shows that the transaction is failed with a create of another table, where it looked up a table that never existed; the arming spool arms only for the spool of the commit object and is disarmed before the rollback; both loops over the faults of the open stop at 10,000 with a message; the comment of `answer.offset` says that `pin` compares it. The pre-existing issue, that `Tx.CreateTable` gives SQLite's raw `string or blob too big` where its doc comment promises `ErrInvalid`, is in `/docs/todo.md`: only a limit that a test lowers reaches it, and the right error is a decision of the core's contract.
+
+`make test`, `make lint`, and `make check-browser` pass.
+
+### Why
+
+A result that counts a mutant as killed by a test that a rerun has not run on is a guess; every number in the README comes from a run on the tests as they are.
+
+### What worked
+
+Comparing every listed key with the final status of its mutant across all runs, which found the three entries whose reason no longer held.
+
+### What didn't work
+
+- A background command of mine committed more than I meant: `go test ... && git add -A internal/core && git commit` ran in the background for 3 min, and when it finished it committed a test that I had started meanwhile, with a `t.Log` in it. A `git reset --soft HEAD~1` and two commits put it right.
+- The first review was of the wrong range: "There is no `origin/null-checks` branch on the remote any more, because the PR is already merged, so I reviewed the PR's own range `a246c387...8a6dae54`."
+
+### What I learned
+
+- In a STRICT table SQLite reports every column of the primary key as NOT NULL, and in a table that is not STRICT and has a rowid it does not, so only such a table reaches the test of `pk > 0` in `conn.load`.
+- The commit writer keeps its first error and gives it again at `Close`, so a dropped error of `UpsertRow` fails the commit anyway.
+
+### What was tricky
+
+Planted bugs under load: their mutants that only make the bug rarer run the simulation to its limit of seeds, which a time limit of three times the baseline does not allow at a load of 30.
+
+### What warrants review
+
+- The new section of `/internal/sql/mutation/README.md`, and the new entries of `/internal/sql/mutation/equivalent.txt`, above all the reasons of the core.
+- `-first` in `/internal/sql/mutation/run.go`.
+- The tests of `/internal/core/core_test.go` that fail each operation of an open, and the `armingSpool` of `/internal/core/tx_test.go`.
+
+### Future work
+
+- `conn.upgrade` and `conn.checkNoNull` were not run, since the upgrade is to be removed; its entries in `equivalent.txt`, from the builder of the core of slice 6, go with it, and so does the version 1 half of the test of the reads of the open.
+- The error of a create table that is too long for the cache, in `/docs/todo.md`.
+- Fuzz targets of several columns.
