@@ -855,8 +855,9 @@ footer ul {
               <li>The column types <code>int</code>, <code>integer</code>, <code>real</code>, <code>text</code>, and <code>blob</code>. A value must have the exact type of its column.</li>
               <li>Columns that are <code>not null</code>, and columns that take null.</li>
               <li><code>insert</code> of one row, with literals and arguments, with or without a list of columns.</li>
-              <li><code>select</code> of named columns or <code>*</code>, with a <code>where</code> of comparisons and of <code>is null</code> and <code>is not null</code>, joined by <code>and</code>.</li>
+              <li><code>select</code> of named columns or <code>*</code>, with a <code>where</code> of comparisons and of <code>is null</code> and <code>is not null</code>, joined by <code>and</code>. Rows without <code>order by</code> come in a varying order.</li>
               <li><code>update</code> and <code>delete</code>, with or without that <code>where</code>. An update may change the primary key, and <code>RowsAffected</code> is what SQLite reports.</li>
+              <li><code>create index</code> and <code>drop index</code>, on one or more columns, each ascending or descending, not unique. The engine picks the index for a <code>where</code> by fixed rules.</li>
               <li>Arguments for a plain <code>?</code>, directly and through prepared statements.</li>
               <li>Transactions, also read-only ones.</li>
               <li>Storage: a database is a log of commits in S3, with a local SQLite cache. One instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work.</li>
@@ -869,11 +870,11 @@ footer ul {
         </tr>
         <tr>
           <th scope="row" class="caps">Not built</th>
-          <td><p><code>or</code> and other expressions in a <code>where</code>, <code>order by</code> and <code>limit</code>, more than one row per <code>insert</code>, indexes, defaults, and a statement while rows of the same transaction are open.</p></td>
+          <td><p><code>or</code> and other expressions in a <code>where</code>, <code>order by</code> and <code>limit</code>, more than one row per <code>insert</code>, defaults, and a statement while rows of the same transaction are open.</p></td>
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
-          <td><p>Slice 9 of the roadmap (indexes). After it comes the rest of what the first application needs (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
+          <td><p>The generated checks and mutation testing of indexes, then slice 10 (<code>if not exists</code> and <code>if exists</code>). After it comes the rest of what the first application needs (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
         </tr>
       </tbody>
     </table>
@@ -964,7 +965,7 @@ footer ul {
       </li>
       <li class="agreed">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 9: indexes</h3><p><code>create index</code> on one or more columns, each <code>asc</code> or <code>desc</code>, and <code>drop index</code>. The log holds only the definition, and the cache holds a real SQLite index. s4ql picks the index by fixed rules, so the choice is the same on every instance, and rows without <code>order by</code> come in an order that varies from query to query.</p></div>
+        <div><h3>Slice 9: indexes</h3><p><code>create index</code> on one or more columns, each <code>asc</code> or <code>desc</code>, and <code>drop index</code>. The log holds only the definition, and the cache holds a real SQLite index. s4ql picks the index by fixed rules, so the choice is the same on every instance, and rows without <code>order by</code> come in an order that varies from query to query. The statements run; their generated checks and mutation testing are still to come.</p></div>
         <span class="where caps">Agreed</span>
       </li>
       <li class="agreed">

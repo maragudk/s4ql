@@ -291,7 +291,7 @@ Rejected as not supported, where SQLite would accept it:
 
 ### Slice 8: `update` and `delete`
 
-Status: built, except for mutation testing. The statement pass, the engine, and the `database/sql` driver run `update` and `delete`, each with or without a `where`, with literals, `null`, and arguments as values, with exact types, with a change of the primary key, and with `RowsAffected` as SQLite reports it. They are checked statement by statement against SQLite in table tests, and an independent review ran its own random comparison with SQLite. The generated tests write updates and deletes, with and without a `where`, from the values that the inserts gave. The engine's differential test runs every update and delete with a `where` both by the key and with a scan of every row, and compares the rows afterwards and the count of changes with SQLite. The driver's generated test compares `RowsAffected` and the tables afterwards with mattn/go-sqlite3. The simulation compares the count of changes of every update and delete with SQLite's, and finds two planted bugs, `changeNothing`, which changes no row, and `keepOldKey`, which leaves the old row of an update of the key. The fuzz targets `FuzzChanges` and `FuzzChanges_core` build updates and deletes from their input. Mutation testing of the code of slice 8 is still to come.
+Status: built. The statement pass, the engine, and the `database/sql` driver run `update` and `delete`, each with or without a `where`, with literals, `null`, and arguments as values, with exact types, with a change of the primary key, and with `RowsAffected` as SQLite reports it. They are checked statement by statement against SQLite in table tests, and an independent review ran its own random comparison with SQLite. The generated tests write updates and deletes, with and without a `where`, from the values that the inserts gave. The engine's differential test runs every update and delete with a `where` both by the key and with a scan of every row, and compares the rows afterwards and the count of changes with SQLite. The driver's generated test compares `RowsAffected` and the tables afterwards with mattn/go-sqlite3. The simulation compares the count of changes of every update and delete with SQLite's, and finds two planted bugs, `changeNothing`, which changes no row, and `keepOldKey`, which leaves the old row of an update of the key. The fuzz targets `FuzzChanges` and `FuzzChanges_core` build updates and deletes from their input. Its generated checks and its mutation testing were done on 2026-11-20; `internal/sql/mutation/README.md` has the record.
 
 ```sql
 create table t1 (v1 int primary key, v2 text, v3 real not null) strict, without rowid;
@@ -334,7 +334,7 @@ Rejected as not supported, where SQLite would accept it (except the last item):
 
 ### Slice 9: indexes
 
-Status: agreed on 2026-11-20, not built.
+Status: built, except for the generated checks and mutation testing. The statement pass, the commit format and storage core, the engine, and the `database/sql` driver run `create index` and `drop index`, and the engine picks the index for a `where` by the fixed rules. It is checked by table tests against SQLite, by tests that run queries through every path, by two independent reviews, and by pinned counts of rows read.
 
 ```sql
 create table t1 (v1 int primary key, v2 text not null, v3 real) strict, without rowid;
