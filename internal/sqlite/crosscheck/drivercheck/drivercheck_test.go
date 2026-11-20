@@ -622,6 +622,11 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 		return "ok"
 	}
 	s, _ := checkText(src)
+	switch s.(type) {
+	case *stmt.Update, *stmt.Delete:
+		p.reachChange(s, runs, got, o, kind, count)
+		return
+	}
 	if sel, ok := s.(*stmt.Select); ok {
 		_, columns := p.columnsIn(o, sel.Table.Value)
 		if columns == nil {
@@ -750,6 +755,68 @@ func (p *pair) reachWhere(sel *stmt.Select, runs [][]any, got outcome, o runner,
 	}
 }
 
+// reachChange counts what the update or the delete s with the arguments of each run, whose outcome of
+// s4ql is got, reaches on its table on o, as [pair.reach] says, with the kind of each outcome as kind
+// gives it, where "ok" of an exec is "ok, rows changed" or "ok, no row found" by the rows that it
+// affected: for each run, the kind of the statement, with or without WHERE, and its outcome; one with
+// arguments that s4ql refuses; and otherwise, for an update, each case of [stmttest.SetCases], and
+// for a WHERE each case of the WHERE as a whole of [stmttest.WhereCases], of the select of its
+// conditions as [stmttest.SelectOf] gives it, after the kind of the statement.
+func (p *pair) reachChange(s stmt.Statement, runs [][]any, got outcome, o runner, kind func(outcome) string, count func(string)) {
+	statement, name, where := "update", stmt.Name{}, []stmt.Condition(nil)
+	switch s := s.(type) {
+	case *stmt.Update:
+		name, where = s.Table, s.Where
+	case *stmt.Delete:
+		statement, name, where = "delete", s.Table, s.Where
+	}
+	_, columns := p.columnsIn(o, name.Value)
+	if columns == nil {
+		return
+	}
+	for i, out := range got.runs() {
+		if i >= len(runs) {
+			break
+		}
+		outcome := kind(out)
+		switch {
+		case outcome != "ok" || out.affected == "":
+		case out.affected == "0":
+			outcome = "ok, no row found"
+		default:
+			outcome = "ok, rows changed"
+		}
+		count(statement + map[bool]string{true: " with WHERE ", false: " without WHERE "}[where != nil] + outcome)
+		if len(runs[i]) != s.Parameters() || argumentRefusal(runs[i]) != "" {
+			count(statement + " with arguments that s4ql refuses " + outcome)
+			continue
+		}
+		var bound []any
+		for _, a := range runs[i] {
+			if v, ok := stmttest.Integers([]any{a}); ok {
+				a = v[0]
+			}
+			bound = append(bound, converted(a))
+		}
+		missing := false
+		if u, ok := s.(*stmt.Update); ok {
+			for _, what := range stmttest.SetCases(columns, u, bound) {
+				count(what + " " + outcome)
+				missing = missing || strings.HasPrefix(what, "SET of a column that the table does not have")
+			}
+		}
+		if where == nil || missing {
+			continue
+		}
+		sel, selArgs := stmttest.SelectOf(s, bound)
+		for _, what := range stmttest.WhereCases(columns, sel, selArgs) {
+			if strings.HasPrefix(what, "WHERE ") {
+				count(statement + " " + what + " " + outcome)
+			}
+		}
+	}
+}
+
 // reachesSelect reports whether s4ql takes the select sel with args to the instance: with one
 // argument for each parameter, each one that s4ql supports.
 func reachesSelect(sel *stmt.Select, args []any) bool {
@@ -845,10 +912,10 @@ const (
 	// s4ql's Prepare checks only the text: the statement is compared with mattn's prepared in the
 	// transaction, which database/sql prepares it in, by [pair.compare].
 	excusedOutside = "a statement prepared outside the transaction, whose names only the transaction has, compared as prepared in it"
-	// excusedQuoted is a select of a name in double quotes that the table does not have, which
+	// excusedQuoted is a select, an update, or a delete with a name in double quotes that the table does not have, which
 	// mattn's SQLite reads as a string, and which [pair.checkQuoted] checks against the pinned build's
 	// error instead.
-	excusedQuoted = "a select of a name in double quotes that is no column, which mattn's SQLite reads as a string, checked against the pinned build's error"
+	excusedQuoted = "a select, an update, or a delete with a name in double quotes that is no column, which mattn's SQLite reads as a string, checked against the pinned build's error"
 )
 
 // rowsOpen is the error of s4ql for a statement in a transaction while the rows of a query of the
@@ -973,6 +1040,9 @@ func (p *pair) stepRuns(src string, c call, supported bool, runs [][]any) (outco
 	p.y.add(scope, src, got, runs)
 	p.reach(src, runs, got, o)
 	failure := p.compare(src, c, supported, runs, got, o)
+	if failure == "" && got.failed == "" {
+		failure = p.compareChanged(src, s, o)
+	}
 	if failure == "" && p.tx != nil && scope == p.tx.kind() {
 		p.note(src, got)
 		if c == callQueryOpen && got.failed == "" && got.columns != "" {
@@ -1359,16 +1429,16 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 	}
 	if !p.pinned {
 		// Through the pool, the count of changes is that of the connection that database/sql takes,
-		// so it is compared only for a statement that sets it. In slice 1 that is an insert.
-		if s, _ := checkText(src); s == nil || fmt.Sprintf("%T", s) != "*stmt.Insert" {
+		// so it is compared only for a statement that sets it: an insert, an update, and a delete.
+		switch s.(type) {
+		case *stmt.Insert, *stmt.Update, *stmt.Delete:
+		default:
 			got.affected, want.affected = "", ""
 		}
 	}
 	if got.full() == want.full() {
-		if s, _ := checkText(src); s != nil && got.failed == "" {
-			if ct, ok := s.(*stmt.CreateTable); ok {
-				p.created[ct.Table.Value] = true
-			}
+		if ct, ok := s.(*stmt.CreateTable); ok && got.failed == "" {
+			p.created[ct.Table.Value] = true
 		}
 		return ""
 	}
@@ -1399,11 +1469,25 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 // `no such column`, because it takes double quotes for names only (DQS=0). So such a select is not
 // run in mattn's SQLite: each run must fail when the statement runs, since Prepare checks only the
 // text, with the pinned build's error, `no such column: "x" - should this be a string literal in
-// single-quotes?`. It reports whether s is such a select, and gives what differs, or "".
+// single-quotes?`. The same holds for a name of a condition of an update, whose names of SET the
+// table has, and of a delete. It reports whether s is such a statement, and gives what differs, or "".
 func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) (string, bool) {
 	p.tb.Helper()
-	sel, ok := s.(*stmt.Select)
-	if !ok {
+	var sel *stmt.Select
+	switch s := s.(type) {
+	case *stmt.Select:
+		sel = s
+	case *stmt.Update:
+		// A name of SET that the table does not have gets SQLite's error first, without the question, in
+		// both builds.
+		_, columns := p.columnsIn(o, s.Table.Value)
+		if columns == nil || slices.ContainsFunc(s.Set, func(a stmt.Assignment) bool { return stmttest.ColumnOf(columns, a.Column) < 0 }) {
+			return "", false
+		}
+		sel = &stmt.Select{Table: s.Table, Where: s.Where}
+	case *stmt.Delete:
+		sel = &stmt.Select{Table: s.Table, Where: s.Where}
+	default:
 		return "", false
 	}
 	_, columns := p.columnsIn(o, sel.Table.Value)
@@ -1744,6 +1828,33 @@ func (p *pair) tables() []string {
 	is.NotError(tb, rows.Err())
 	is.NotError(tb, rows.Close())
 	return names
+}
+
+// compareChanged reads back the table of src, if it holds an update or a delete, after the statement
+// succeeded on s4ql's runner s and SQLite's o, through a query of it on each, in the transaction where
+// the statement ran, if it ran in one, and gives what differs, or "". It counts each such read under
+// "reached: table read back after an update or a delete".
+func (p *pair) compareChanged(src string, s, o runner) string {
+	tb := p.tb
+	tb.Helper()
+	var table stmt.Name
+	switch st, _ := checkText(src); st := st.(type) {
+	case *stmt.Update:
+		table = st.Table
+	case *stmt.Delete:
+		table = st.Table
+	default:
+		return ""
+	}
+	if p.y != nil {
+		p.y["reached: table read back after an update or a delete"]++
+	}
+	q := "select * from " + stmttest.Quote(table.Value)
+	got, want := run(tb, s, callQuery, q, nil, s4qlText), run(tb, o, callQuery, q, nil, mattnText)
+	if got.full() != want.full() {
+		return fmt.Sprintf("%q: after it, the table holds in s4ql\n%v\nand in SQLite\n%v", src, got.full(), want.full())
+	}
+	return ""
 }
 
 // compareTables of SQLite, and the tables that a text created, through a query of each on both
@@ -2678,7 +2789,7 @@ func generated(t *testing.T, w *world, seed uint64, n int, y tally) {
 // It fails if a kind of outcome is never reached, and it pins how many texts each kind of excuse lets
 // through, so that a change that excuses more cannot pass unseen.
 func TestGenerated(t *testing.T) {
-	const n, length = 200, 40
+	const n, length = 250, 40
 	w := newWorld(t)
 	y := tally{}
 	for seed := range uint64(n) {
@@ -2735,7 +2846,7 @@ func TestGenerated(t *testing.T) {
 		"read-only transaction: insert no such table", "read-only transaction: createtable already exists",
 		"read-only transaction: call " + string(callStmtExec), "read-only transaction: call " + string(callStmtQuery),
 		"read-only transaction: call " + string(callPrepareExecRuns) + " with arguments",
-		"read-only transaction: insert with a parameter while rows are open",
+		"read-only transaction: insert while rows are open",
 		"call " + string(callBeginReadOnly) + " in a transaction",
 	} {
 		if y[kind] == 0 {
@@ -2796,7 +2907,7 @@ func TestGenerated(t *testing.T) {
 		"insert that leaves out a column that takes NULL a value of another type": 7, "insert that leaves out a column that takes NULL NOT NULL constraint failed": 7,
 		"insert with NULL in the key: NOT NULL constraint failed": 9, "insert with NULL in a column that does not take it: NOT NULL constraint failed": 5,
 		"insert of NULL beside a value of another type NOT NULL constraint failed": 2, "insert of NULL beside a value of another type a value of another type": 3,
-		"select * with NULL ok": 25, "select of names with NULL ok": 15,
+		"select * with NULL ok": 25, "select of names with NULL ok": 4,
 
 		// Slice 7, a third of what the run gave on 2026-11-20 when the sequence wrote WHERE: each
 		// operator on the key and on another column; each way that the plan reads rows; a select that
@@ -2828,6 +2939,35 @@ func TestGenerated(t *testing.T) {
 		"WHERE with a value of another type a value of another type":                                                            23, "WHERE with arguments that s4ql refuses not supported": 11,
 		"WHERE with arguments that s4ql refuses wrong number of arguments": 12, "WHERE that tests a column more than once ok": 44,
 		"WHERE with contradicting conditions ok": 10,
+
+		// Slice 8, a third of what the run gave on 2026-11-20 when the sequence wrote updates and
+		// deletes: each with and without WHERE, that changes rows and that finds none, by the rows that
+		// it affected, which is compared through the pool too; refused in a read-only transaction; a
+		// change of the key that succeeds, meets a key that exists, and gets NULL; NULL for a column
+		// that does not take it, with a row found and without; a column of SET that the table does not
+		// have, also in double quotes; a column of WHERE that the table does not have in double quotes,
+		// which mattn's SQLite reads as a string; a value of another type in SET and in WHERE; arguments
+		// that s4ql refuses; ways that the scan reads the rows; and each table that an update or a
+		// delete changed, read back on both sides. The sequence writes fewer selects since then, so the
+		// least number of "select of names with NULL ok" is a third of what the run gives now, 4, where
+		// it was 15, and the run requires a read-only transaction's insert while rows are open without a
+		// parameter, which it reaches, where it required one with a parameter.
+		"update with WHERE ok, rows changed": 13, "update with WHERE ok, no row found": 48, "update without WHERE ok, rows changed": 10, "update without WHERE ok, no row found": 12,
+		"delete with WHERE ok, rows changed": 12, "delete with WHERE ok, no row found": 60, "delete without WHERE ok, rows changed": 9, "delete without WHERE ok, no row found": 15,
+		"update with WHERE attempt to write a readonly database": 7, "delete with WHERE attempt to write a readonly database": 11,
+		"SET of the key ok, rows changed": 8, "SET of the key UNIQUE constraint failed": 9, "SET of the key NOT NULL constraint failed": 3,
+		"SET of NULL for a column that does not take it NOT NULL constraint failed": 5, "SET of NULL for a column that does not take it ok, no row found": 9,
+		"SET of a column that the table does not have no such column": 27, "SET of a column in double quotes that the table does not have no such column": 14,
+		"SET with a value of another type a value of another type": 23, "SET with literal null ok, rows changed": 1, "SET with argument nil ok, no row found": 3,
+		"update WHERE with a column in double quotes that the table does not have no such column": 8,
+		"delete WHERE with a column in double quotes that the table does not have no such column": 12,
+		"update WHERE with a value of another type a value of another type":                       16, "delete WHERE with a value of another type a value of another type": 11,
+		"update with arguments that s4ql refuses not supported": 14, "update with arguments that s4ql refuses wrong number of arguments": 15,
+		"delete with arguments that s4ql refuses not supported": 8, "delete with arguments that s4ql refuses wrong number of arguments": 10,
+		"update WHERE that reads a get of one key ok, rows changed": 9, "delete WHERE that reads a get of one key ok, rows changed": 6,
+		"update WHERE that reads a scan of every row ok, rows changed": 2, "delete WHERE that reads a scan from a lower bound ok, rows changed": 1,
+		"delete WHERE that reads a scan to an upper bound ok, rows changed": 1, "update WHERE that reads no row ok, no row found": 7,
+		"table read back after an update or a delete": 165,
 	} {
 		if y["reached: "+kind] < least {
 			t.Errorf("the run reaches %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y["reached: "+kind], least)
@@ -2880,10 +3020,21 @@ func TestGenerated(t *testing.T) {
 	// excusedRowsOpen down. The engine and the driver of slice 8 took excusedType from 231 to 234:
 	// they run the update of [stmttest.Others], which sets a column to a small integer, and 3 of them
 	// give it to a column of another type, which s4ql's rule refuses. The generator drew as before
-	// then.
+	// then. When the sequence wrote updates and deletes, and the test ran 250 sequences where it ran
+	// 200, so that it still reaches every outcome that it requires, the counts went from 1178, 11, 411,
+	// 260, 234, 69, 24, 24, 58, and 69 to 1410, 12, 556, 343, 328, 90, 16, 39, 72, and 89: the
+	// sequences are more, and draw other random numbers, which moves every count; and of their own an
+	// update or a delete names a column that the table does not have now and then, which SQLite gives
+	// at prepare and s4ql when the statement runs, which took excusedPrepare up, and in double quotes
+	// in a condition in some of them, which [pair.checkQuoted] checks now for an update and a delete
+	// too, which took excusedQuoted up; gives a column, or compares it with, a value of another type
+	// now and then, which took excusedType up; and has parameters, whose arguments are wrong in number
+	// or of no column now and then, which took excusedArguments and excusedArgument up. The sequence
+	// writes fewer selects, so fewer rows are left open in a transaction, which took excusedRowsOpen
+	// down.
 	want := map[string]int{
-		excusedPrepare: 1178, excusedStartedTable: 11, excusedArguments: 411, excusedArgument: 260, excusedType: 234,
-		excusedLevel: 69, excusedRowsOpen: 24, excusedTxOpen: 24, excusedOutside: 58, excusedQuoted: 69,
+		excusedPrepare: 1410, excusedStartedTable: 12, excusedArguments: 556, excusedArgument: 343, excusedType: 328,
+		excusedLevel: 90, excusedRowsOpen: 16, excusedTxOpen: 39, excusedOutside: 72, excusedQuoted: 89,
 	}
 	kinds := slices.Collect(maps.Keys(want))
 	for name := range y {

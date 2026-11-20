@@ -2,6 +2,7 @@ package stmttest
 
 import (
 	"bytes"
+	"fmt"
 	"math"
 	"math/rand/v2"
 	"strings"
@@ -107,6 +108,103 @@ func TestSequence_where(t *testing.T) {
 			is.True(t, counts[kind] >= 50, kind)
 		}
 	})
+}
+
+func TestSequence_update(t *testing.T) {
+	t.Run("should give assignments to the columns of the shape and to others, with values of the inserts and NULL, and a WHERE three times in four", func(t *testing.T) {
+		q, err := NewSequence(rand.New(rand.NewPCG(7, 8)))
+		is.NotError(t, err)
+		// A table of three columns, which every seed of the shape's random numbers does not give.
+		var table stmt.Name
+		for i := 0; ; i++ {
+			table = stmt.Name{Raw: fmt.Sprint("t", i), Value: fmt.Sprint("t", i)}
+			if len(q.shapeOf(table)) == sequenceColumns {
+				break
+			}
+		}
+		shape := q.shapeOf(table)
+		for range 50 {
+			q.insert(table)
+		}
+		counts := map[string]int{}
+		for range 4000 {
+			set, where := q.update(table)
+			is.True(t, len(set) >= 1 && len(set) <= len(shape), "one assignment to each of some columns")
+			if where == nil {
+				counts["no WHERE"]++
+			}
+			seen := map[string]bool{}
+			for _, a := range set {
+				fold := nameOf(a.Column.Raw, 0).Fold()
+				is.True(t, !seen[fold], "no column twice")
+				seen[fold] = true
+				column := columnOfShape(shape, fold)
+				switch {
+				case column == nil:
+					counts["a column that the shape does not have"]++
+				case column.PrimaryKey:
+					counts["the key"]++
+				default:
+					counts["another column"]++
+				}
+				is.True(t, a.Value.Value != nil, "an assignment of a value")
+				if _, ok := a.Value.Value.(stmt.Null); ok {
+					counts["NULL"]++
+					continue
+				}
+				if column == nil {
+					continue
+				}
+				if kindOf(typeOf(a.Value.Value)) != kindOf(column.Type) {
+					counts["a value of another type"]++
+				}
+				for _, v := range q.stored[[2]string{table.Value, column.Name.Value}] {
+					if valueKey(v) == valueKey(a.Value.Value) {
+						counts["a value of an insert"]++
+						break
+					}
+				}
+			}
+			counts[fmt.Sprint(len(set), " assignments")]++
+		}
+		t.Log(counts)
+		is.True(t, counts["no WHERE"] > 800 && counts["no WHERE"] < 1200, "one update in four without WHERE")
+		for _, kind := range []string{"a column that the shape does not have", "the key", "another column", "NULL", "a value of another type", "a value of an insert",
+			"1 assignments", "2 assignments", "3 assignments"} {
+			is.True(t, counts[kind] >= 50, kind)
+		}
+	})
+}
+
+func TestSequence_delete(t *testing.T) {
+	t.Run("should give a WHERE four times in five", func(t *testing.T) {
+		q, err := NewSequence(rand.New(rand.NewPCG(9, 10)))
+		is.NotError(t, err)
+		table := stmt.Name{Raw: "t", Value: "t"}
+		for range 50 {
+			q.insert(table)
+		}
+		none := 0
+		for range 4000 {
+			if q.delete(table) == nil {
+				none++
+			}
+		}
+		is.True(t, none > 650 && none < 950, "one delete in five without WHERE")
+	})
+}
+
+// typeOf the value v, which is not NULL: INT for an integer.
+func typeOf(v stmt.Value) stmt.Type {
+	switch v.(type) {
+	case stmt.Real:
+		return stmt.TypeReal
+	case stmt.Text:
+		return stmt.TypeText
+	case stmt.Blob:
+		return stmt.TypeBlob
+	}
+	return stmt.TypeInt
 }
 
 // valueKey of a value, for a comparison of two in a test.
