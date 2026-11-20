@@ -97,3 +97,59 @@ Nothing.
 ### Future work
 
 None.
+
+## Step 3: The runs, the survivors, and the tests that close them
+
+**Author:** update-delete-mutation builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the brief) "Every mutant is killed by a test, or is listed in `equivalent.txt` with a reason a reader can check. No survivor stays unexplained. A survivor that shows a missing test: write the test in the package's style, compared with SQLite where the neighbours compare. A survivor that shows a real fault: fix the code, add the test, and put it in the first line of your report." And from the lead: "Verify with the tester that each of the two entries names the mutant its reason describes and that the reason is still true".
+**Interpretation:** Classify each survivor, check each new test against its mutant before the rerun, and rerun the survivors with the tester on a copy of the tree with the new tests.
+**Inferred intent:** Numbers in the README that a rerun on the final tests gives again, and reasons in `equivalent.txt` that hold.
+
+### What I did
+
+- The runs, each on an `rsync` copy of the worktree (`udm/copy.sh`, `udm/run.sh`), at a load of 15 to 30 on 10 cores: `stmt` with 3 workers and `-first 'TestCheck$|TestRecognize|TestStatement'` (162 mutants, 12 min 42 s, 3 survivors); the engine with 4, `-factor 5`, and `-first` of `TestChangeRows`, `TestEngine_update`, `TestEngine_delete`, `TestNewPlan`, `TestCheckType`, `TestFilter`, `TestConn_netEffect`, and `TestEngine_errors` (455, 47 min, 54 survivors); the core with 2, `-factor 3`, and `-first` of six of its transaction tests (183 of 271 in 1 h 29 min, 18 survivors, then stopped, see below); the driver with 1 (12, 1 min, none).
+- The two entries of `build.bind ... #4` that a merge had moved from `build.filter`: the tester ran both, and both survive. `#4` is the fourth `err != nil` of `build.bind`, the error of `keyAccess`, and the reason holds: `build.bind` calls `checkType` on every value before `keyAccess`, which gives no row for NULL before it compares, so `tighter` compares values of one kind; `build.bind` is the only caller of `keyAccess`, for a select and for an update and a delete. The entries stay as they are.
+- `udm/mutant.py` checked each new test against its mutant through `-overlay` in seconds. It printed "KILLED" for a mutant that did not compile, which a `\&\&` in a shell argument made once; it says "UNCOMPILED" now.
+- The new tests, each in the style of its neighbours:
+  - `/internal/sql/stmt/recognize_internal_test.go`, `TestRecognize`: an update whose second column of SET is not at the next token, and one whose assignment beyond SQLite's limit is not, trees that the parser never gives, as the round of slices 5 and 6 did for the list of an insert.
+  - `/internal/engine/engine_test.go`: `changeTrio.run` compares the offset of each error with SQLite's, as `pin` does, which pins the offset -1 of `noSuchSetColumn`; `TestEngine_events` has the events of an update and a delete.
+  - `/internal/engine/operator_internal_test.go`: the fake fails a delete, an add of a key, and the read of the keys on demand (`deleteFails`, `addFails`, `readKeysFails`). `TestChangeRows` pins that the check of NOT NULL reads the source once for two columns, the errors of that read, of the get of a found row, of the delete of a delete and of a change of the key, and of the set of keys; the stop of `changeRows` at the next key once the context ends; the planted bugs `changeNothing` and `keepOldKey` through `buildSink`; the internal errors of `update.run` and `remove.run` for a found key whose row is gone, from a scan of another fake; and those of `build.change` for plans that no statement gives: a source that is no scan, a key of two columns or past the columns, a column set twice, a parameter without its argument, and an update that sets nothing.
+  - `/internal/core/tx_test.go`, `TestTx_Keys`: a set refused after the end of the transaction; the error of f before that of a drop of the set that fails locally, with a fault of the temporary file under 4,000 keys of 900 bytes as `TestTx_tooBig` makes one; no error of its own for a set that f leaves where the transaction can only be rolled back; and `ErrClosed` for an instance that f closes, the one way `Tx.checkOpen` fails while the transaction has not failed.
+- The engine's 54 survivors ran again on a copy with the new tests (`udm/tree3`, 3 workers, `-min-time 5m`): 45 killed by the hand-written tests, and the 9 others equivalent. The 3 of `stmt`: 2 killed, and `max` that is commutative, listed since slice 7.
+- The core's run took 10 min for each survivor, which runs every test of the core under that load. I stopped it at 183 and ran the 88 left and the 11 survivors that `equivalent.txt` did not list on a copy with the new tests (`udm/tree4`, `udm/remaining.py`), 3 workers.
+- The new section at the end of `/internal/sql/mutation/equivalent.txt` has 6 mutants of the engine and the ones of the core: `readOnly.delete`, whose sink is never run; the key that is never nullable in `update.check`, as in `insert.check`; the swapped arguments of a `compare` of which only the equality is read; the error of that `compare`, which `update.check` rules out; `changeNothing` and `keepOldKey` left out of `Conn.writeIn`, as `skipUnique` and `convertReal` are; the number and the name of the table of a set; and the finalize of statements at rest in `Tx.dropKeys`.
+
+### Why
+
+A test of an internal error builds what no statement gives, as `TestInsert` does for the insert; the alternative, deleting the checks, would leave a fault of the plan to panic later, far from its cause.
+
+### What worked
+
+- The fake of the engine's operators took three more failures in a few lines each, and every path of `changeRows` is pinned with its calls.
+- `faultvfs` and the large keys of `TestTx_tooBig` made the drop of a set fail for real.
+
+### What didn't work
+
+- `git reset --hard` was refused earlier (step 1). A here-doc into the scratchpad was refused; the scripts went through the editor.
+- My first try of an add that fails locally added one key after the fault, which SQLite still held in its page cache; the test adds until one fails, at most 4,000 more.
+
+### What I learned
+
+- `conn.rest` finalizes a statement whose reset fails, so a statement at rest always finalizes without an error, and the binding's `Finalize` of a finalized statement is a no-op.
+- `DB.Close` during f closes the idle write connection, and `Tx.checkOpen` then fails with `ErrClosed` while `Tx.state` is still nil.
+
+### What was tricky
+
+- `Tx.dropKeys` gives nil for a transaction that can only be rolled back, so only an f that swallows the error of a call shows that path; the engine's `changeRows` always passes the error on.
+
+### What warrants review
+
+- The reasons of the new section of `equivalent.txt`, above all those of `Tx.dropKeys`.
+- `TestTx_Keys`'s reliance on SQLite's page cache of temporary tables, as in `TestTx_tooBig`: it requires that a fault happened, so a larger page cache fails it rather than passing it silently.
+
+### Future work
+
+- The core's rerun, the README of the runner, and the checks.
