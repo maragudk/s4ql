@@ -961,6 +961,11 @@ footer ul {
         <div><h3>Slice 8: <code>update</code> and <code>delete</code></h3><p><code>update ... set</code> with literals, <code>null</code>, and <code>?</code>, and <code>delete from</code>, each with or without the <code>where</code> of slice 7. <code>RowsAffected</code> gives the rows that SQLite reports as changed.</p></div>
         <span class="where caps">Agreed</span>
       </li>
+      <li class="agreed">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Slice 9: <code>if not exists</code> and <code>if exists</code></h3><p><code>create table if not exists</code> does nothing when the table exists, and <code>drop table if exists</code> does nothing when it does not. A statement that does nothing writes nothing to the log.</p></div>
+        <span class="where caps">Agreed</span>
+      </li>
       <li class="open">
         <span class="glyph" aria-hidden="true"></span>
         <div><h3>More SQL, slice by slice</h3><p>Each slice is agreed before it is built. Every table is strict and without rowid, foreign keys are always enforced, and a name is never empty.</p></div>

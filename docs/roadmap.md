@@ -31,7 +31,7 @@ Rejected for now, to be decided later: upserts, and join variants such as comma 
 
 A milestone is a goal that several slices lead to. It helps to choose which slice comes next.
 
-- **The first application on s4ql: [glue](https://www.maragu.dev/glue).** `maragu.dev/glue` runs on s4ql in place of SQLite. Markus on 2026-11-19: "a nice second milestone: get maragu.dev/glue working on this storage instead of SQLite." The SQL that it needs and s4ql does not have yet is in [the research note on glue](research/glue-on-s4ql.md). Slices 5 to 8 lead to it. After slice 8 comes the rest of what glue needs, which is not agreed as slices yet.
+- **The first application on s4ql: [glue](https://www.maragu.dev/glue).** `maragu.dev/glue` runs on s4ql in place of SQLite. Markus on 2026-11-19: "a nice second milestone: get maragu.dev/glue working on this storage instead of SQLite." The SQL that it needs and s4ql does not have yet is in [the research note on glue](research/glue-on-s4ql.md). Slices 5 to 9 lead to it. After slice 9 comes the rest of what glue needs, which is not agreed as slices yet.
 
 ## Slices
 
@@ -331,3 +331,31 @@ Rejected as not supported, where SQLite would accept it:
 - `set (v2, v3) = (...)`.
 - `or replace` and the other conflict clauses.
 - `limit` and `order by` on `update` and `delete`.
+
+### Slice 9: `if not exists` and `if exists`
+
+Status: agreed on 2026-11-20, not built.
+
+```sql
+create table if not exists t1 (v1 int primary key, v2 text) strict, without rowid;
+
+drop table if exists t1;
+```
+
+Included:
+
+- `create table if not exists t1 (...)`: when no table `t1` exists, it does what `create table` does. When a table `t1` exists, the statement does nothing and gives no error, whatever the columns of the existing table are, as in SQLite.
+- `drop table if exists t1`: when no table `t1` exists, nothing happens and there is no error. When it exists, it does what `drop table` does.
+- A statement that does nothing writes nothing to the log.
+- An error that the declaration would give is still given by SQLite's rules when the table exists, for example a syntax error in the column list. What SQLite does with a declaration that is valid in syntax but not supported by s4ql, when the table exists, is decided when the slice is built, by SQLite's behaviour and the rule of the statement pass, and recorded in [the todo](todo.md).
+- The commit format does not change.
+- Everything of slices 1 to 8 with the two forms: transactions, prepared statements, and a restart with an empty cache.
+- The reason: the migration tool of glue creates its migrations table with `create table if not exists`.
+
+Further details are decided when the slice is built, and recorded here.
+
+Rejected as not supported, where SQLite would accept it:
+
+- `create temp table`.
+- `create table ... as select`.
+- Everything else that slices 1 to 8 reject in a declaration.
