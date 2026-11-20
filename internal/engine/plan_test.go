@@ -47,6 +47,12 @@ func TestNewPlan(t *testing.T) {
 		{src: `update "T1" set v1 = ?, v2 = null where v1 = ? and v2 is not null`, want: "update \"T1\" set v1 = ?1, v2 = null\n  filter v1 = ?2 and v2 IS NOT NULL\n    scan \"T1\"\n"},
 		{src: "delete from t1", want: "delete from t1\n  scan t1\n"},
 		{src: "DELETE FROM t1 WHERE v1 >= 10 AND v2 < ?", want: "delete from t1\n  filter v1 >= 10 and v2 < ?1\n    scan t1\n"},
+		{src: "create index i on t (a, b desc)", want: "create index i on t (a, b desc)\n"},
+		{src: "drop index I", want: "drop index I\n"},
+		{src: `CREATE TABLE If Not Exists "t" (v int primary key) strict, without rowid`, want: "create table if not exists \"t\" (v INT, primary key (v))\n"},
+		{src: "drop table IF EXISTS t1", want: "drop table if exists t1\n"},
+		{src: "create index if not exists i on t (a desc)", want: "create index if not exists i on t (a desc)\n"},
+		{src: "drop index if exists i", want: "drop index if exists i\n"},
 	}
 	for _, c := range cases {
 		t.Run(c.src, func(t *testing.T) {
