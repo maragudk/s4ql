@@ -1514,6 +1514,24 @@ func TestOpen_cache(t *testing.T) {
 		is.Equal(t, int64(1), cacheVersion(t, path))
 	})
 
+	t.Run("should refuse a database that holds tables and no table s4ql_cache, which this package did not make, and leave it as it is", func(t *testing.T) {
+		w := newWorld(t)
+		path := filepath.Join(w.dir, "other.db")
+		c, err := sqlite.Open(path)
+		is.NotError(t, err)
+		is.NotError(t, c.Exec("create table t (k int primary key) strict, without rowid"))
+		is.NotError(t, c.Close())
+
+		_, err = core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{})
+		is.Error(t, core.ErrCacheVersion, err)
+		is.True(t, strings.Contains(err.Error(), "it records no position, and holds 1 tables and indexes"), err.Error())
+		c, err = sqlite.Open(path)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, c.Close()) }()
+		is.NotError(t, c.Exec("insert into t (k) values (1)"))
+		is.True(t, c.Exec("select * from s4ql_cache") != nil, "the open made the table s4ql_cache")
+	})
+
 	t.Run("should fail for a file that is not a database, and leave it as it is", func(t *testing.T) {
 		w := newWorld(t)
 		path := filepath.Join(w.dir, "a.db")
