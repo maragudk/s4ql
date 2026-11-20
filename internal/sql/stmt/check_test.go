@@ -917,6 +917,9 @@ var checkCases = []checkCase{
 	{name: "a literal on the left", src: "select * from t where 1 = v", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
 	{name: "a parameter on the left", src: "select * from t where ? = v", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
 	{name: "a negative number on the left", src: "select * from t where -1 < v", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
+	{name: "a positive number on the left", src: "select * from t where +1 < v", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
+	// Only a sign makes a value of a literal: ~ is an operator of its own.
+	{name: "a bitwise not of a number on the left", src: "select * from t where ~1 < v", err: "s4ql: not supported: unary operator (at offset 22)"},
 	{name: "a string on the left", src: "select * from t where 'v' = 1", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
 	{name: "null is null", src: "select * from t where null is null", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
 	{name: "a blob is not null", src: "select * from t where x'00' is not null", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
@@ -965,9 +968,14 @@ var checkCases = []checkCase{
 	{name: "a column alone", src: "select * from t where v", err: "s4ql: not supported: column reference (at offset 22)"},
 	{name: "a literal alone", src: "select * from t where 1", err: "s4ql: not supported: literal (at offset 22)"},
 	{name: "a parameter alone", src: "select * from t where ?", err: "s4ql: not supported: parameter (at offset 22)"},
+	{name: "a column after a sign alone", src: "select * from t where -v", err: "s4ql: not supported: unary operator (at offset 22)"},
+	{name: "a bitwise not of a column alone", src: "select * from t where ~v", err: "s4ql: not supported: unary operator (at offset 22)"},
 	{name: "true alone", src: "select * from t where true", err: "s4ql: not supported: TRUE or FALSE (at offset 22)"},
 	{name: "true on the left", src: "select * from t where true = v", err: "s4ql: not supported: TRUE or FALSE (at offset 22)"},
 	{name: "true on the right", src: "select * from t where v = true", err: "s4ql: not supported: TRUE or FALSE (at offset 26)"},
+	// With the name of a table, true and false are names of columns, as in SQLite.
+	{name: "a column named true with its table alone", src: "select * from t where t.true", err: "s4ql: not supported: column reference (at offset 22)"},
+	{name: "a column named false with its table on the right", src: "select * from t where v = t.false", err: "s4ql: not supported: column compared with a column (at offset 26)"},
 	{name: "false after and", src: "select * from t where v = 1 and false", err: "s4ql: not supported: TRUE or FALSE (at offset 32)"},
 	{name: "a literal after and", src: "select * from t where v = 1 and 1", err: "s4ql: not supported: literal (at offset 32)"},
 	{name: "a column after and", src: "select * from t where v = 1 and w", err: "s4ql: not supported: column reference (at offset 32)"},
@@ -1216,7 +1224,14 @@ func TestCheck(t *testing.T) {
 			} else {
 				is.NotError(t, err)
 			}
-			is.Equal(t, fmt.Sprintf("%#v", c.want), fmt.Sprintf("%#v", s))
+			want := c.want
+			if ct, ok := want.(*stmt.CreateTable); ok && ct.SQL == "" {
+				// verify checks the text that SQLite keeps against SQLite.
+				copied := *ct
+				copied.SQL = s.(*stmt.CreateTable).SQL
+				want = &copied
+			}
+			is.Equal(t, fmt.Sprintf("%#v", want), fmt.Sprintf("%#v", s))
 			verify(t, c.src)
 		})
 	}

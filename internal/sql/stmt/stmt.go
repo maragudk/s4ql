@@ -125,6 +125,10 @@ type CreateTable struct {
 	// once it has found that no table of the name exists, with the error of
 	// [CreateTable.ColumnsError].
 	Columns []Column
+	// SQL is the text that SQLite keeps for the table in sqlite_schema: "CREATE TABLE ", and the
+	// text from the name of the table up to the semicolon of the statement, or to the end of the
+	// text if it has none, with its spaces and comments.
+	SQL string
 }
 
 // Column of a table, as CREATE TABLE declares it.
