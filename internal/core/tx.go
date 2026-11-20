@@ -457,6 +457,10 @@ func (tx *Tx) CreateTable(ctx context.Context, ct *s4qlpb.CreateTable) error {
 	}
 	t := newTable(ct)
 	if err := tx.c.create(t); err != nil {
+		if errors.Is(err, ErrInvalid) {
+			// The cache refused the table before it changed anything.
+			return err
+		}
 		return tx.fail(ctx, operation, err)
 	}
 	// The commit object holds the table as the cache gives it back, without a field that is set to

@@ -10,14 +10,15 @@
 //     not valid UTF-8, or that has a NUL byte, is not supported either, and is rejected before it is
 //     parsed.
 //   - A supported statement: a [*CreateTable], an [*Insert], a [*Select], an [*Update], a [*Delete],
-//     or a [*DropTable]. Its [Statement.Parameters] says how many arguments it takes.
+//     a [*DropTable], a [*CreateIndex], or a [*DropIndex]. Its [Statement.Parameters] says how many
+//     arguments it takes.
 //   - No statement, for a text of only spaces, comments, and semicolons, which SQLite prepares into no
 //     statement and no error.
 //
 // The supported statements are those of slices 1 and 2 of docs/roadmap.md, with the column types and
-// the literals of slice 4, the columns of slice 5, the NULL of slice 6, the WHERE of slice 7, and the
-// UPDATE and DELETE of slice 8. The README next to this file defines them token for token, and lists
-// the names that a "not supported" error gives.
+// the literals of slice 4, the columns of slice 5, the NULL of slice 6, the WHERE of slice 7, the
+// UPDATE and DELETE of slice 8, and the CREATE INDEX and DROP INDEX of slice 9. The README next to
+// this file defines them token for token, and lists the names that a "not supported" error gives.
 //
 // Names compare as SQLite compares them, by [Name.Fold]. What a statement means for a table, such as
 // whether its columns exist, its values are as many as the columns, or a value has the type of its
@@ -101,7 +102,7 @@ func asciiLower(s string) string {
 }
 
 // Statement that s4ql supports: a [*CreateTable], an [*Insert], a [*Select], an [*Update], a [*Delete],
-// or a [*DropTable].
+// a [*DropTable], a [*CreateIndex], or a [*DropIndex].
 type Statement interface {
 	// Bounds of the statement in the text, from its first token to the end of its semicolon, or of
 	// its last token if it has none.
@@ -125,6 +126,10 @@ type CreateTable struct {
 	// once it has found that no table of the name exists, with the error of
 	// [CreateTable.ColumnsError].
 	Columns []Column
+	// SQL is the text that SQLite keeps for the table in sqlite_schema: "CREATE TABLE ", and the
+	// text from the name of the table up to the semicolon of the statement, or to the end of the
+	// text if it has none, with its spaces and comments.
+	SQL string
 }
 
 // Column of a table, as CREATE TABLE declares it.
@@ -368,6 +373,34 @@ type DropTable struct {
 	Table Name
 }
 
+// CreateIndex of one index, which is not unique, on one table, by one or more of its columns.
+type CreateIndex struct {
+	Span Span
+	// Index is the name of the index.
+	Index Name
+	// Table is the name of the table, after ON.
+	Table Name
+	// Columns of the index, in the order of the text, one or more and at most as many as SQLite
+	// allows in an index. No two of them have one name, as [Name.Fold] compares names. Whether the
+	// table has them is not decided here.
+	Columns []IndexColumn
+}
+
+// IndexColumn of a [CreateIndex]: a column of the table and its order in the index.
+type IndexColumn struct {
+	// Name of the column.
+	Name Name
+	// Descending reports whether the column says DESC. A column that says ASC, or neither, is in
+	// ascending order.
+	Descending bool
+}
+
+// DropIndex of one index.
+type DropIndex struct {
+	Span  Span
+	Index Name
+}
+
 // Bounds of the statement in the text.
 func (s *CreateTable) Bounds() Span { return s.Span }
 
@@ -385,6 +418,12 @@ func (s *Delete) Bounds() Span { return s.Span }
 
 // Bounds of the statement in the text.
 func (s *DropTable) Bounds() Span { return s.Span }
+
+// Bounds of the statement in the text.
+func (s *CreateIndex) Bounds() Span { return s.Span }
+
+// Bounds of the statement in the text.
+func (s *DropIndex) Bounds() Span { return s.Span }
 
 // Parameters of the statement, which has none.
 func (s *CreateTable) Parameters() int { return 0 }
@@ -437,9 +476,17 @@ func conditionParameters(where []Condition) int {
 // Parameters of the statement, which has none.
 func (s *DropTable) Parameters() int { return 0 }
 
+// Parameters of the statement, which has none.
+func (s *CreateIndex) Parameters() int { return 0 }
+
+// Parameters of the statement, which has none.
+func (s *DropIndex) Parameters() int { return 0 }
+
 func (s *CreateTable) setSpan(sp Span) { s.Span = sp }
 func (s *Insert) setSpan(sp Span)      { s.Span = sp }
 func (s *Select) setSpan(sp Span)      { s.Span = sp }
 func (s *Update) setSpan(sp Span)      { s.Span = sp }
 func (s *Delete) setSpan(sp Span)      { s.Span = sp }
 func (s *DropTable) setSpan(sp Span)   { s.Span = sp }
+func (s *CreateIndex) setSpan(sp Span) { s.Span = sp }
+func (s *DropIndex) setSpan(sp Span)   { s.Span = sp }

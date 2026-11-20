@@ -1,0 +1,4 @@
+go test fuzz v1
+string("create table t3 (v1 int primary key, v2 text not null, v3 real not null) strict, without rowid\x1e\x1einsert into t3 values (1, 'a', 1.5)\x1einsert into t3 (v1, v2) values (2, 'b')\x1einsert into t3 values (1, 'b', 2.5)\x1eselect v2 from t3\x1e\x1e\x1einsert into t3 values (2, 'b')\x1einsert into t3 (v1, v2) values (2, 'b')\x1einsert into t3 values (2, 'b', 'c')\x1eselect v3, v1 from t3\x1e")
+[]byte("\x00\x06\x00\x00\x00\x01\x18\t\x00\x00\x00\x01\v")
+bool(true)

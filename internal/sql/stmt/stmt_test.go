@@ -350,6 +350,18 @@ func canonical(s stmt.Statement) string {
 		return fmt.Sprintf("delete from %v%v", quote(s.Table.Value), canonicalWhere(s.Where))
 	case *stmt.DropTable:
 		return "drop table " + quote(s.Table.Value)
+	case *stmt.CreateIndex:
+		var columns []string
+		for _, c := range s.Columns {
+			column := quote(c.Name.Value)
+			if c.Descending {
+				column += " desc"
+			}
+			columns = append(columns, column)
+		}
+		return fmt.Sprintf("create index %v on %v (%v)", quote(s.Index.Value), quote(s.Table.Value), strings.Join(columns, ", "))
+	case *stmt.DropIndex:
+		return "drop index " + quote(s.Index.Value)
 	}
 	panic(fmt.Sprintf("%T", s))
 }
@@ -441,7 +453,144 @@ func checkMeaning(t testing.TB, src string, s stmt.Statement) {
 		is.Equal(t, fmt.Sprint([]string{"other_" + s.Table.Value}), fmt.Sprint(got), src)
 		is.Equal(t, fmt.Sprint(drop(canonical(s))), fmt.Sprint(got), src)
 		sqliteError(t, src, open(t).exec(src), 1, "no such table: "+s.Table.Value)
+	case *stmt.CreateIndex:
+		checkCreateIndex(t, open, src, s)
+	case *stmt.DropIndex:
+		checkDropIndex(t, open, src, s)
 	}
+}
+
+// indexes of the database: the name of each index in sqlite_schema and the name of its table, in
+// order.
+func (d *db) indexes() [][]string {
+	d.t.Helper()
+	_, rows := d.query("select name, tbl_name from sqlite_schema where type = 'index' order by name")
+	return rows
+}
+
+// noSuchColumn is SQLite's message for a column named n that the table does not have, in a WHERE or
+// in the columns of an index.
+func noSuchColumn(n stmt.Name) string {
+	if n.Raw[0] == '"' {
+		// SQLite asks whether it should be a string, since its build reads double quotes as names only.
+		return `no such column: "` + n.Value + `" - should this be a string literal in single-quotes?`
+	}
+	return "no such column: " + n.Value
+}
+
+// checkCreateIndex is [checkMeaning] of a CREATE INDEX. The table has a column for each column of the
+// index, of its name with the case swapped, in the other order, and a primary key of its own, "s4ql
+// key", first. On it, src makes the index that the canonical text makes: of the name of s, on the
+// table, not unique and not partial, with the columns of s in their order, each descending if it says
+// so, and then the primary key, as SQLite records it; a second run gives `index <Value> already
+// exists`, and so does an index of the name with the case swapped on another table. SQLite gives
+// `no such table: main.<Value>` without the table, also with a table of the name of the index; `there
+// is already a table named <Value>` with a table of the name of the index, with the case swapped,
+// which the table of src is when the two names are one name; and `no such column` for the first and
+// the last column of s on a table without it, and for the first on a table without any of them, but
+// for the error of an index of the name, which comes first. SQLite looks the names up in this order.
+func checkCreateIndex(t testing.TB, open func(testing.TB) *db, src string, s *stmt.CreateIndex) {
+	t.Helper()
+	is.Equal(t, 0, s.Parameters(), src)
+	table := swapCase(s.Table.Value)
+	// with the table of the columns of the index but those of without, by their indexes in s.Columns.
+	with := func(without map[int]bool) *db {
+		columns := []stmt.Column{{Name: stmt.Name{Value: "s4ql key"}, Type: stmt.TypeInt, PrimaryKey: true}}
+		for i := len(s.Columns) - 1; i >= 0; i-- {
+			if !without[i] {
+				columns = append(columns, stmt.Column{Name: stmt.Name{Value: swapCase(s.Columns[i].Name.Value)}, Type: stmt.TypeInt, NotNull: true})
+			}
+		}
+		d := open(t)
+		d.must(createColumns(table, columns))
+		return d
+	}
+	all := map[int]bool{}
+	for i := range s.Columns {
+		all[i] = true
+	}
+	alreadyTable := "there is already a table named " + s.Index.Value
+	alreadyIndex := "index " + s.Index.Value + " already exists"
+
+	if s.Index.Fold() == s.Table.Fold() {
+		// The index has the name of its table, which SQLite never creates.
+		sqliteError(t, src, with(nil).exec(src), 1, alreadyTable)
+		sqliteError(t, src, with(all).exec(src), 1, alreadyTable)
+		sqliteError(t, src, with(nil).exec(canonical(s)), 1, alreadyTable)
+	} else {
+		d := with(nil)
+		is.Equal(t, d.parameters(src), s.Parameters(), src)
+		d.must(src)
+		want := with(nil)
+		want.must(canonical(s))
+		if d.schema() != want.schema() {
+			t.Fatalf("%q: SQLite records\n%v\nbut for the canonical text\n%v", src, d.schema(), want.schema())
+		}
+		is.Equal(t, fmt.Sprint([][]string{{"text:" + s.Index.Value, "text:" + table}}), fmt.Sprint(d.indexes()), src)
+		// The index of the primary key, of the origin pk, is the table itself.
+		_, list := d.query(`select name, "unique", origin, partial from pragma_index_list(?) where origin <> 'pk'`, table)
+		is.Equal(t, fmt.Sprint([][]string{{"text:" + s.Index.Value, "integer:0", "text:c", "integer:0"}}), fmt.Sprint(list), src)
+		var key [][]string
+		for _, c := range s.Columns {
+			desc := "integer:0"
+			if c.Descending {
+				desc = "integer:1"
+			}
+			key = append(key, []string{"text:" + swapCase(c.Name.Value), desc, "text:BINARY", "integer:1"})
+		}
+		key = append(key, []string{"text:s4ql key", "integer:0", "text:BINARY", "integer:0"})
+		_, xinfo := d.query("select name, desc, coll, key from pragma_index_xinfo(?)", s.Index.Value)
+		is.Equal(t, fmt.Sprint(key), fmt.Sprint(xinfo), src)
+		sqliteError(t, src, d.exec(src), 1, alreadyIndex)
+
+		other := with(all)
+		other.must(createFor("s4ql other", "v"))
+		other.must(`create index ` + quote(swapCase(s.Index.Value)) + ` on "s4ql other" ("v")`)
+		sqliteError(t, src, other.exec(src), 1, alreadyIndex)
+		named := with(all)
+		named.must(createFor(swapCase(s.Index.Value), "v"))
+		sqliteError(t, src, named.exec(src), 1, alreadyTable)
+	}
+
+	missingTable := "no such table: main." + s.Table.Value
+	sqliteError(t, src, open(t).exec(src), 1, missingTable)
+	sqliteError(t, src, open(t).exec(canonical(s)), 1, missingTable)
+	if s.Index.Fold() != s.Table.Fold() {
+		d := open(t)
+		d.must(createFor(swapCase(s.Index.Value), "v"))
+		sqliteError(t, src, d.exec(src), 1, missingTable)
+
+		first, last := s.Columns[0].Name, s.Columns[len(s.Columns)-1].Name
+		sqliteError(t, src, with(map[int]bool{0: true}).exec(src), 1, noSuchColumn(first))
+		sqliteError(t, src, with(map[int]bool{len(s.Columns) - 1: true}).exec(src), 1, noSuchColumn(last))
+		sqliteError(t, src, with(all).exec(src), 1, noSuchColumn(first))
+	}
+}
+
+// checkDropIndex is [checkMeaning] of a DROP INDEX: on a table with an index of the name of s, with
+// the case swapped, and another index, src drops the index of the name and leaves the other, as the
+// canonical text does. SQLite gives `no such index: <Value>` without the index, also with a table of
+// the name of the index.
+func checkDropIndex(t testing.TB, open func(testing.TB) *db, src string, s *stmt.DropIndex) {
+	t.Helper()
+	other := "other_" + s.Index.Value
+	drop := func(sql string) [][]string {
+		d := open(t)
+		d.must(createFor("s4ql t", "v"))
+		d.must(`create index ` + quote(swapCase(s.Index.Value)) + ` on "s4ql t" ("v")`)
+		d.must(`create index ` + quote(other) + ` on "s4ql t" ("v")`)
+		is.Equal(t, d.parameters(sql), s.Parameters(), sql)
+		d.must(sql)
+		return d.indexes()
+	}
+	got := drop(src)
+	is.Equal(t, fmt.Sprint([][]string{{"text:" + other, "text:s4ql t"}}), fmt.Sprint(got), src)
+	is.Equal(t, fmt.Sprint(drop(canonical(s))), fmt.Sprint(got), src)
+	missing := "no such index: " + s.Index.Value
+	sqliteError(t, src, open(t).exec(src), 1, missing)
+	d := open(t)
+	d.must(createFor(swapCase(s.Index.Value), "v"))
+	sqliteError(t, src, d.exec(src), 1, missing)
 }
 
 // checkCreateTable is [checkMeaning] of a CREATE TABLE: the schema that SQLite records for src is
@@ -469,6 +618,8 @@ func checkCreateTable(t testing.TB, open func(testing.TB) *db, src string, s *st
 	d := open(t)
 	is.Equal(t, d.parameters(src), s.Parameters(), src)
 	d.must(src)
+	_, kept := d.query("select sql from sqlite_schema where name = ?", s.Table.Value)
+	is.Equal(t, fmt.Sprint([][]string{{"text:" + s.SQL}}), fmt.Sprint(kept), src)
 	got := d.schema()
 	want := open(t)
 	want.must(canonical(s))
@@ -869,12 +1020,7 @@ func (a anyTable) refuses(t testing.TB, open func(testing.TB) *db, src string, a
 // runs with args on the table without the columns of missing, by their folds.
 func (a anyTable) noSuchColumn(t testing.TB, open func(testing.TB) *db, src string, args []stmt.Value, n stmt.Name, missing map[string]bool) {
 	t.Helper()
-	want := "no such column: " + n.Value
-	if n.Raw[0] == '"' {
-		// SQLite asks whether it should be a string, since its build reads double quotes as names only.
-		want = `no such column: "` + n.Value + `" - should this be a string literal in single-quotes?`
-	}
-	a.refuses(t, open, src, args, missing, want)
+	a.refuses(t, open, src, args, missing, noSuchColumn(n))
 }
 
 // checkMissing of the conditions where of src, with args, on the table: SQLite's error on the table
@@ -1385,6 +1531,26 @@ func checkPositions(t testing.TB, src string, s stmt.Statement) {
 		names = append([]stmt.Name{s.Table}, checkConditions(t, src, b, s.Table.Offset+len(s.Table.Raw), &parameters, s.Where)...)
 	case *stmt.DropTable:
 		names = []stmt.Name{s.Table}
+	case *stmt.CreateIndex:
+		// The name of the index comes before the table, and the table before the columns, each after
+		// the one before it.
+		names = []stmt.Name{s.Index, s.Table}
+		if len(s.Columns) == 0 || len(s.Columns) > 2000 {
+			t.Fatalf("%q: %v columns", src, len(s.Columns))
+		}
+		var columns []stmt.Name
+		for _, c := range s.Columns {
+			columns = append(columns, c.Name)
+		}
+		checkOnce(t, src, columns)
+		names = append(names, columns...)
+		for i := 1; i < len(names); i++ {
+			if names[i].Offset < names[i-1].Offset+len(names[i-1].Raw) {
+				t.Fatalf("%q: name %q at %v", src, names[i].Raw, names[i].Offset)
+			}
+		}
+	case *stmt.DropIndex:
+		names = []stmt.Name{s.Index}
 	}
 	for _, n := range names {
 		if n.Offset < b.Start || n.Offset+len(n.Raw) > b.End || src[n.Offset:n.Offset+len(n.Raw)] != n.Raw {

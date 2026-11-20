@@ -875,7 +875,8 @@ func null() *s4qlpb.Value {
 // buildSink: the sink of the plan p, in the transaction of w, with args for the parameters of p, and
 // with the planted bugs of b. It makes the checks that SQLite makes when it prepares the statement,
 // in SQLite's order, and fails with SQLite's error: for CREATE TABLE, a table of the name, and then
-// a column named twice or more columns than SQLite allows, as [stmt.CreateTable.ColumnsError] says;
+// a column named twice or more columns than SQLite allows, as [stmt.CreateTable.ColumnsError] says,
+// and then a table that SQLite cannot write into its schema under limit, as [schemaTooBig] says;
 // for DROP TABLE, no table of the name; for INSERT, no table of the name, then a column of its list
 // that the table does not have, in the order of the list, and then another number of values than
 // the columns of its list, or than the columns of the table if it has no list. For INSERT it then
@@ -899,6 +900,9 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 		}
 		if err := columnsError(p); err != nil {
 			return nil, err
+		}
+		if schemaTooBig(p.Table.Value, p.SQL, limit) {
+			return nil, tooBig()
 		}
 		if len(p.PrimaryKey) != 1 || p.PrimaryKey[0] < 0 || p.PrimaryKey[0] >= len(p.Columns) {
 			return nil, internalError("a table of %v columns with the key %v", len(p.Columns), p.PrimaryKey)
