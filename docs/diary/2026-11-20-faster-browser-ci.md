@@ -140,7 +140,9 @@ Local checks:
 
 ### What worked
 
-Measuring each unit alone on CI gave the balance in one run. The shards came out between 1.5 and 3 minutes of tests each. The complement patterns made coverage a property of the Makefile, and the `-v` logs proved it.
+Measuring each unit alone on CI gave the balance in one run. The shards came out between 1 and 4 minutes of tests each. The complement patterns made coverage a property of the Makefile, and the `-v` logs proved it.
+
+The wall time of the browser check (from the first start to the last end of `browser` and the six `browser-test` jobs) in the three CI runs of the final code: 3 min 29 s (run 44775245837 on aaa1518, no restart), 4 min 26 s (run 44777295258 on 208bdb3, one restart, shard 2 took 247 s on a slow runner), and 4 min 8 s (run 44778189011 on e7a2416, no restart, shard 2 229 s). Before: 14 min 49 s (run 44757417889) and 13 min 57 s (run 44747038667) on `main`. Shard 2, the planted bugs other than those of a commit, is the longest on a slow runner. The job `browser` takes about 3.5 minutes.
 
 ### What didn't work
 
