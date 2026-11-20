@@ -112,11 +112,18 @@ func simulate(t *testing.T, req Request) Response {
 		world := sim.New(req.Seed, sim.Options{Jitter: 50 * time.Millisecond, Buggify: sim.Buggify{On: req.Buggify}, MaxSteps: 5_000_000})
 		r := newRun(t, req, world, duration(req.End), disks, false)
 		r.ends(world.Run(r.main), &res)
+		if r.refusal != "" {
+			res = Response{Error: "the bucket is refused: " + r.refusal}
+			return
+		}
 		if req.Lines {
 			res.Lines = world.Lines()
 		}
 		res.Events = r.rec.events
 	})
+	if res.Error != "" {
+		return res
+	}
 	res.Request = &req
 	return res
 }
@@ -180,6 +187,8 @@ type run struct {
 	changes []StoredObject
 	// offset is the time of the history at the time 0 of the run: zero without a bucket.
 	offset time.Duration
+	// refusal says why the run is refused after it started: the store did not take the bucket.
+	refusal string
 }
 
 // instance is one instance of the database, by its name, which a process after process runs.
@@ -279,7 +288,9 @@ func (h storeHost) Trace(ctx context.Context, format string, args ...any) {
 // main is the first task of a batch run. It starts the instances, does the actions of the schedule
 // at their times, and at the end runs the last checks and lets every process close its database.
 func (r *run) main(ctx context.Context) {
-	r.setUp(ctx)
+	if !r.setUp(ctx) {
+		return
+	}
 	schedule := slices.Clone(r.req.Schedule)
 	order := make([]int, len(schedule))
 	for i := range order {
@@ -305,12 +316,15 @@ func (r *run) main(ctx context.Context) {
 // setUp the store, the instances, each with its first process, and the client. With
 // [Request.Standby], only the first instance starts here, and a task starts the others once it
 // serves.
-func (r *run) setUp(ctx context.Context) {
+func (r *run) setUp(ctx context.Context) bool {
 	r.store = simstore.New(storeHost{Scheduler: r.world, r: r}, simstore.Options{
 		Latency: duration(r.req.Latency),
 		Faults:  r.req.Faults.store(),
 	})
-	r.seedStore(ctx)
+	if !r.seedStore(ctx) {
+		r.end(ctx)
+		return false
+	}
 	for i := range r.req.Instances {
 		in := &instance{name: instanceName(i), lease: duration(r.req.Leases[i%len(r.req.Leases)]), disk: r.disks[i], inFlight: map[*pending]context.CancelFunc{}}
 		r.instances = append(r.instances, in)
@@ -329,6 +343,7 @@ func (r *run) setUp(ctx context.Context) {
 		r.rec.add(Event{Kind: "client", What: "started", Instance: name})
 		r.world.Go(ctx, "client", func(ctx context.Context) { r.client(ctx, gate) })
 	}
+	return true
 }
 
 // cachePath of the first process of the instance in, in the directory dir.

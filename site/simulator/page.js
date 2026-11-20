@@ -626,7 +626,8 @@ async function begin(e) {
   try {
     answer = await e.start(stored ? { ...settings, bucket: stored } : settings);
   } catch (err) {
-    if (!stored) throw err;
+    // Only a refusal of the stored database drops it. Any other failure leaves it for a reload.
+    if (!stored || !String(err.message).startsWith("the bucket is refused")) throw err;
     keeper.reset();
     dropped = true;
     answer = await e.start(settings);
@@ -635,7 +636,7 @@ async function begin(e) {
   base = 0;
   take(answer);
   if (dropped) note(answer.t, { tier: "story", text: "What the browser held of S3 could not be read, so S3 starts empty." });
-  else if (stored) note(answer.t, { tier: "story", text: `S3 still holds ${keeper.name}: ${count(stored.objects.length - 1)} commit objects.` });
+  else if (stored) note(answer.t, { tier: "story", text: `S3 still holds ${keeper.name}: ${count(stored.objects.filter((o) => !o.key.endsWith("/manifest.json")).length)} commit objects.` });
   state = (await e.now(COMMITS)).state;
 }
 

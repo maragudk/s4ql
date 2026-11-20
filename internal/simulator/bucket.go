@@ -215,25 +215,32 @@ const seedWorkers = 32
 // client of its own, and then tells the checker, the fold, and the purposes of the requests what the
 // store holds. Its event "seeded" has in by the time of the history at the time 0 of the run, which
 // the wall clocks of the processes read then, so that the history goes on from the bucket's time
-// when the instances start. Each object is written until the store holds it, so a fault of the store delays the
-// seed and does not change it. The events of its requests are not in the trace.
-func (r *run) seedStore(ctx context.Context) {
+// when the instances start. Each object is written until the store holds it, up to [seedAttempts]
+// times, so a fault of the store delays the seed and does not change it. If the store does not take
+// an object, as under faults that make every write fail, the run is refused, and seedStore returns
+// false. The events of its requests are not in the trace.
+func (r *run) seedStore(ctx context.Context) bool {
 	s := r.req.seed
 	if s == nil {
-		return
+		return true
 	}
 	r.mu.Lock()
 	r.values = s.values
 	r.mu.Unlock()
 	c := r.store.Client("seed", nil)
 	put := func(ctx context.Context, o StoredObject) {
-		for {
+		for range seedAttempts {
 			if _, _, ok := r.store.Object(o.Key); ok {
 				return
 			}
 			ctx, cancel := r.world.WithTimeout(ctx, 10*time.Second)
 			_, _ = c.Create(ctx, o.Key, bytes.NewReader(o.Content), nil)
 			cancel()
+		}
+		if _, _, ok := r.store.Object(o.Key); !ok {
+			r.mu.Lock()
+			r.refusal = fmt.Sprintf("the store did not take %v of the bucket in %v attempts", o.Key, seedAttempts)
+			r.mu.Unlock()
 		}
 	}
 	// The commit objects first, side by side, and the manifest once the store holds every one of them.
@@ -260,6 +267,9 @@ func (r *run) seedStore(ctx context.Context) {
 	for _, w := range workers {
 		_ = w.Wait(ctx)
 	}
+	if r.refused() {
+		return false
+	}
 	for _, o := range commits {
 		r.check.commit(s.commits[o.Key])
 	}
@@ -267,6 +277,9 @@ func (r *run) seedStore(ctx context.Context) {
 	if s.manifest != nil {
 		key := s.objects[len(s.objects)-1].Key
 		put(ctx, s.objects[len(s.objects)-1])
+		if r.refused() {
+			return false
+		}
 		_, version, _ := r.store.Object(key)
 		e.Version = string(version)
 		r.mu.Lock()
@@ -274,8 +287,9 @@ func (r *run) seedStore(ctx context.Context) {
 		r.mu.Unlock()
 		r.check.seed(s.log, s.manifest.Head)
 	}
-	// The history goes on from where the bucket left it, from the time at which the instances start.
-	offset := s.from - r.world.Monotonic()
+	// The history goes on from where the bucket left it, from the time at which the instances start,
+	// and never goes back before its start.
+	offset := max(0, s.from-r.world.Monotonic())
 	e.By = millis(offset)
 	r.mu.Lock()
 	r.offset = offset
@@ -284,6 +298,17 @@ func (r *run) seedStore(ctx context.Context) {
 		r.rec.fold.pending = s
 	}
 	r.rec.add(e)
+	return true
+}
+
+// seedAttempts is the number of times that the seed writes an object before it gives up.
+const seedAttempts = 100
+
+// refused reports whether the run is refused.
+func (r *run) refused() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.refusal != ""
 }
 
 // changed records the object at key as the store holds it now, which a write has just put there,

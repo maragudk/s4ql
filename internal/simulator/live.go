@@ -82,6 +82,7 @@ func startSession(t *testing.T, req Request) (*session, answer) {
 	s := &session{instances: req.Instances, line: handoff.New[command, answer]()}
 	first := s.line.Start(func() {
 		var last Live
+		var refusal string
 		synctest.Test(t, func(t *testing.T) {
 			world := sim.New(req.Seed, sim.Options{Jitter: 50 * time.Millisecond, Buggify: sim.Buggify{On: req.Buggify}, MaxSteps: math.MaxInt})
 			r := newRun(t, req, world, math.MaxInt64, disks, true)
@@ -94,8 +95,15 @@ func startSession(t *testing.T, req Request) (*session, answer) {
 			if last.SchedulerError != "" {
 				last.T = millis(world.Monotonic())
 			}
+			if r.refusal != "" {
+				refusal = "the bucket is refused: " + r.refusal
+			}
 		})
 		putDisks(disks)
+		if refusal != "" {
+			s.line.Last(answer{body: refused(refusal), final: true})
+			return
+		}
 		s.line.Last(answer{body: marshal(last), final: true})
 	})
 	return s, first
@@ -111,7 +119,9 @@ func (s *session) do(c command) answer {
 // task of a batch run does, in the same order: an advance sleeps as the batch run sleeps until the
 // time of its next action, and an action is done as the batch run does it.
 func (r *run) serve(ctx context.Context) {
-	r.setUp(ctx)
+	if !r.setUp(ctx) {
+		return
+	}
 	s := r.session
 	var state *State
 	var refusal string

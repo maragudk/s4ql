@@ -340,6 +340,19 @@ func TestEngine_bucket(t *testing.T) {
 		is.Equal(t, "", first.try("start", `{"seed": 8, `+pageSettings+`, "bucket": `+string(data)+`}`).Error)
 	})
 
+	t.Run("should refuse a bucket that the store does not take, under faults that make every write fail", func(t *testing.T) {
+		first := startKeeping(t, `"seed": 7, `+pageSettings, nil)
+		first.advance(30_000)
+		data, err := json.Marshal(first.kept.bucket())
+		is.NotError(t, err)
+		a := first.try("start", `{"seed": 8, `+pageSettings+`, "faults": {"lostRequest": 1}, "bucket": `+string(data)+`}`)
+		is.True(t, strings.Contains(a.Error, "the store did not take"), a.Error)
+		var res simulator.Response
+		is.NotError(t, json.Unmarshal((&simulator.Engine{}).Handle(t, "run", []byte(`{"faults": {"lostRequest": 1}, "bucket": `+string(data)+`}`)), &res))
+		is.True(t, strings.Contains(res.Error, "the store did not take"), res.Error)
+		is.Equal(t, 0, len(res.Events))
+	})
+
 	t.Run("should keep the objects of a database under its prefix", func(t *testing.T) {
 		k := startKeeping(t, `"seed": 7, "prefix": "db-x7k2", `+pageSettings, nil)
 		k.advance(30_000)
