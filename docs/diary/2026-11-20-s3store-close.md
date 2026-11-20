@@ -140,6 +140,8 @@ Optional job: the close of an owned store moves from `Options.connector` into `o
 
 Before the fix, with the new subtest on the old client (its own dialer in place), the subtest failed in 40 of 40 runs without `-race` and 40 of 40 with it, each with `outcome unknown: ... write tcp ...: use of closed network connection` or `read tcp ...`. After the fix, 0 of 20 runs failed, with and without `-race`. A run of the subtest takes about 1.2 seconds, and about 5 under `-race`.
 
+`-count=200` and `-race -count=100` of `TestClient_Close` and `TestClient_endedContext` passed, and the same counts of the two new subtests of `TestClose`. The run under `-race` takes about 6.6 seconds an iteration, so `-race -count=100` needs `-timeout 40m`; the first try, with the default timeout of 10 minutes and the run without `-race` beside it, ended at the timeout with no failure. `make test`, `make lint`, and `make check-browser` passed after the merge of `main`.
+
 With the call in `leave` taken out, "should send a call after the close" and the held dial failed. The first because the Create asks the pool for a connection, which turns `closeIdle` off. With the close of the store taken out of `connector.Close` and of `ownedConnector`, both new subtests of `TestClose` failed.
 
 ### What didn't work
