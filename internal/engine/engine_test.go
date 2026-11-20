@@ -1177,6 +1177,19 @@ func TestEngine_events(t *testing.T) {
 		is.True(t, !ok, "a query has no parent")
 		is.Equal(t, e[engine.AttrPosition] != "", true)
 
+		// An update and a delete, with the rows that they change.
+		for _, s := range []struct{ src, kind string }{{"update T1 set v1 = 7 where v1 = 5", "update"}, {"delete from T1 where v1 = 7", "delete"}} {
+			_, err = i.c.Exec(ctx, s.src)
+			is.NotError(t, err)
+			e, _ = h.last(t)
+			is.Equal(t, s.kind, e[engine.AttrKind], s.src)
+			is.Equal(t, "T1", e[engine.AttrTable], s.src)
+			is.Equal(t, "ok", e[engine.AttrOutcome], s.src)
+			is.Equal(t, "1", e[engine.AttrRows], s.src)
+		}
+		_, err = i.c.Exec(ctx, "insert into t1 (v1) values (5)")
+		is.NotError(t, err)
+
 		_, err = i.c.Exec(ctx, "select * from t1 where 1")
 		is.True(t, err != nil)
 		e, _ = h.last(t)
