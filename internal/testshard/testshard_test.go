@@ -2,6 +2,8 @@ package testshard_test
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
 	"maragu.dev/is"
@@ -88,11 +90,58 @@ func TestShard_zero(t *testing.T) {
 func TestGet(t *testing.T) {
 	t.Run("should read the shard from S4QL_TEST_SHARD", func(t *testing.T) {
 		t.Setenv("S4QL_TEST_SHARD", "3/4")
-		is.Equal(t, "3/4", testshard.Get(t).String())
+		s := testshard.Get(t)
+		is.Equal(t, "3/4", s.String())
+		is.True(t, s.Holds(2))
 	})
 
 	t.Run("should give the one shard without S4QL_TEST_SHARD", func(t *testing.T) {
 		t.Setenv("S4QL_TEST_SHARD", "")
 		is.Equal(t, "1/1", testshard.Get(t).String())
 	})
+
+	t.Run("should fail the test if the shard held no subtest by its end", func(t *testing.T) {
+		t.Setenv("S4QL_TEST_SHARD", "3/3")
+		r := &recorder{TB: t}
+		s := testshard.Get(r)
+		for index := range 2 {
+			is.True(t, !s.Holds(index))
+		}
+		r.cleanUp()
+		is.Equal(t, 1, len(r.errors))
+		is.True(t, strings.Contains(r.errors[0], "held no subtest"), r.errors[0])
+	})
+
+	t.Run("should not fail the test if the shard held a subtest", func(t *testing.T) {
+		t.Setenv("S4QL_TEST_SHARD", "2/3")
+		r := &recorder{TB: t}
+		s := testshard.Get(r)
+		for index := range 2 {
+			_ = s.Holds(index)
+		}
+		r.cleanUp()
+		is.Equal(t, 0, len(r.errors))
+	})
+}
+
+// recorder is a [testing.TB] that records the errors and the cleanups of [testshard.Get], and runs
+// the cleanups on cleanUp.
+type recorder struct {
+	testing.TB
+	errors   []string
+	cleanups []func()
+}
+
+func (r *recorder) Errorf(format string, args ...any) {
+	r.errors = append(r.errors, fmt.Sprintf(format, args...))
+}
+
+func (r *recorder) Cleanup(f func()) {
+	r.cleanups = append(r.cleanups, f)
+}
+
+func (r *recorder) cleanUp() {
+	for _, f := range slices.Backward(r.cleanups) {
+		f()
+	}
 }

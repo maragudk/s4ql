@@ -14,7 +14,8 @@
 // falls into exactly one shard by itself, and the n shards together run every subtest once, which
 // the tests of this package show for every n up to 16. Without S4QL_TEST_SHARD, a run is the one
 // shard 1/1, which holds every subtest, so a run on a developer's machine runs them all. A value
-// that is not i/n, with 1 <= i <= n, fails the test, so that a typo cannot run nothing.
+// that is not i/n, with 1 <= i <= n, fails the test, so that a typo cannot run nothing, and so does
+// a shard that holds no subtest, as one does when there are more shards than subtests.
 package testshard
 
 import (
@@ -22,12 +23,15 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
 // Shard i of n, from 1. The zero Shard is the shard 1/1.
 type Shard struct {
 	i, n int
+	// held is set by Holds when it holds a subtest, for the check of [Get].
+	held *atomic.Bool
 }
 
 // Parse the shard from a value of S4QL_TEST_SHARD: i/n, or the empty string for the shard 1/1.
@@ -45,7 +49,8 @@ func Parse(value string) (Shard, error) {
 }
 
 // Get the shard of S4QL_TEST_SHARD, and log it if the variable is set. A value that [Parse]
-// refuses fails the test.
+// refuses fails the test, and so does a shard of the variable that has held no subtest by the end
+// of the test.
 func Get(t testing.TB) Shard {
 	t.Helper()
 	value := os.Getenv("S4QL_TEST_SHARD")
@@ -55,6 +60,12 @@ func Get(t testing.TB) Shard {
 	}
 	if value != "" {
 		t.Logf("S4QL_TEST_SHARD is %v: this run holds the subtests whose index is %v modulo %v, and the other shards the others", s, s.i-1, s.n)
+		s.held = new(atomic.Bool)
+		t.Cleanup(func() {
+			if !s.held.Load() {
+				t.Errorf("S4QL_TEST_SHARD is %v, and the shard held no subtest: there are more shards than subtests", s)
+			}
+		})
 	}
 	return s
 }
@@ -64,7 +75,11 @@ func (s Shard) Holds(index int) bool {
 	if s.n == 0 {
 		return true
 	}
-	return index%s.n == s.i-1
+	holds := index%s.n == s.i-1
+	if holds && s.held != nil {
+		s.held.Store(true)
+	}
+	return holds
 }
 
 // String of the shard, as i/n.

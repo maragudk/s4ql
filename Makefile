@@ -366,7 +366,8 @@ LINKSCAWK = '$$1 == "cgo" { c[$$2] = 1 } $$1 ~ /\.test$$/ { n++; t[n] = $$0 } \
 # ASANPKGS: the tests named in ASANSHARDED, which give their subtests to the shards with
 # internal/testshard, run with S4QL_TEST_SHARD=i/n, and every other test runs in the first shard,
 # without S4QL_TEST_SHARD, so whole. A shard fails if a package of ASANPKGS has no test in
-# ASANSHARDED, as go test then runs nothing. The n shards together run every test, and every
+# ASANSHARDED, as go test then runs nothing, and internal/testshard fails a test whose shard holds
+# none of its subtests. The n shards together run every test, and every
 # subtest of a test in ASANSHARDED once: see internal/testshard.
 ASANTIMEOUT ?= 10m
 ASANPKGS ?=
