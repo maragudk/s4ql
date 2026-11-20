@@ -604,6 +604,8 @@ A test checks that every name the pass gives in any test is in these tables.
 | `column type other than INT, INTEGER, REAL, TEXT, or BLOB` | The column's type is not one of the bare words `int`, `integer`, `real`, `text`, and `blob`. |
 | `NULL constraint` | A column says NULL, without NOT before it. SQLite reads it as no constraint. |
 | `second PRIMARY KEY` | A column says PRIMARY KEY after an earlier one did, or says it twice. SQLite gives `table "t" has more than one primary key`. |
+| `second DEFAULT` | A column says DEFAULT after an earlier DEFAULT of the column. SQLite keeps the last one. The offset is that of the later DEFAULT. |
+| `DEFAULT of another type than its column` | The literal of a DEFAULT is not of the type of its column, and not NULL: an integer for a column that is not INT or INTEGER, a real for one that is not REAL, a string for one that is not TEXT, or a blob for one that is not BLOB. SQLite takes the declaration, and converts the value or refuses it when an insert stores it; by the exact types of an insert, s4ql could never store it. The offset is that of the literal, its sign included. |
 | `table without PRIMARY KEY` | No column says PRIMARY KEY. SQLite gives `PRIMARY KEY missing on table t` after it has parsed the statement. |
 | `table option` | An option is not STRICT or WITHOUT ROWID, or comes again, or is a third. |
 | `table without STRICT and WITHOUT ROWID` | CREATE TABLE has no options. |
@@ -660,6 +662,8 @@ These are the tokens of a node that the recognizer accepted, in a field that no 
 | `CREATE TABLE AS` | `CreateTable.As` |
 | `ASC or DESC` | `PrimaryKeyConstraint.Order` |
 | `AUTOINCREMENT` | `PrimaryKeyConstraint.Autoincrement` |
+| `DEFAULT of an expression` | `DefaultConstraint.LParen`, for a DEFAULT in parentheses, such as `default (1)` |
+| `name after DEFAULT` | `DefaultConstraint.Name`, for a name after DEFAULT, bare or in quotes, which SQLite reads as a string |
 | `UNIQUE INDEX` | `CreateIndex.Unique` |
 | `NULLS FIRST or NULLS LAST` | `OrderingTerm.Nulls`, in a column of CREATE INDEX |
 | `INSERT OR` | `Insert.Or` |

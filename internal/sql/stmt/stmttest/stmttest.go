@@ -242,7 +242,14 @@ type Generator struct {
 	// Exists says IF EXISTS, each with its keywords in any case and gaps between them. With 0 the
 	// generator draws as it did before slice 10.
 	Exists int
-	b      strings.Builder
+	// Defaults, if not 0, makes the generator write the DEFAULT of slice 11: one column in Defaults of
+	// a create table that [Generator.Create] does not give says DEFAULT, with a literal of the type of
+	// the column, or NULL one time in [Generator.Nulls] and one time in eight without Nulls, also on
+	// the key and on a column that is NOT NULL, before, between, or after its other constraints. A
+	// column that Create gives says DEFAULT if its Default has a Value, whatever Defaults is. With 0
+	// and no such column the generator draws as it did before slice 11.
+	Defaults int
+	b        strings.Builder
 }
 
 // NewGenerator with the random numbers of r and a pool of names for each [Position]. Each name of a
@@ -406,25 +413,59 @@ func (g *Generator) columns(table stmt.Name) []stmt.Column {
 			g.gap(true)
 			g.keyword("key")
 		}
+		var constraints []func()
 		switch {
 		case !c.PrimaryKey && g.Create != nil && !shape.NotNull:
 			// The column takes NULL, as the hook gives it.
 		case !c.PrimaryKey && g.Create == nil && g.Nulls > 0 && g.r.IntN(g.Nulls) == 0:
 			// The column takes NULL.
 		case !c.PrimaryKey:
-			notNull()
+			constraints = []func(){notNull}
 		case g.r.IntN(3) == 0:
-			notNull()
-			primaryKey()
+			constraints = []func(){notNull, primaryKey}
 		case g.r.IntN(2) == 0:
-			primaryKey()
-			notNull()
+			constraints = []func(){primaryKey, notNull}
 		default:
-			primaryKey()
+			constraints = []func(){primaryKey}
+		}
+		var given stmt.Value
+		if g.Create != nil {
+			given = shape.Default.Value
+		}
+		constraints = g.withDefault(&c, given, constraints)
+		for _, f := range constraints {
+			f()
 		}
 		columns = append(columns, c)
 	}
 	return columns
+}
+
+// withDefault gives the constraints of the column c with its DEFAULT among them, at a place at
+// random, if it has one: of the value given, or with [Generator.Defaults] one time in Defaults
+// without a value given, as [Generator.Defaults] says, and the constraints as they are otherwise.
+// The DEFAULT, when it is written, sets the Default of c.
+func (g *Generator) withDefault(c *stmt.Column, given stmt.Value, constraints []func()) []func() {
+	v := given
+	if v == nil && g.Create == nil && g.Defaults > 0 && g.r.IntN(g.Defaults) == 0 {
+		switch {
+		case g.Nulls > 0 && g.r.IntN(g.Nulls) == 0, g.Nulls == 0 && g.r.IntN(8) == 0:
+			v = stmt.Null{}
+		default:
+			v = ValueOf(g.r, c.Type)
+		}
+	}
+	if v == nil {
+		return constraints
+	}
+	write := func() {
+		g.gap(true)
+		g.keyword("default")
+		g.gap(true)
+		value, span := g.literal(v)
+		c.Default = stmt.Default{Value: value, Span: span}
+	}
+	return slices.Insert(constraints, g.r.IntN(len(constraints)+1), write)
 }
 
 // columnList of an insert of slice 5, with the gaps around it, before VALUES: none one time in three,
@@ -831,10 +872,15 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 			g.gap(true)
 			column.Type = g.columnType(c.Table)
 			g.keyword(strings.ToLower(column.Type.String()))
-			g.gap(true)
-			g.keyword("primary")
-			g.gap(true)
-			g.keyword("key")
+			primaryKey := func() {
+				g.gap(true)
+				g.keyword("primary")
+				g.gap(true)
+				g.keyword("key")
+			}
+			for _, f := range g.withDefault(&column, nil, []func(){primaryKey}) {
+				f()
+			}
 			c.Columns = []stmt.Column{column}
 		} else {
 			c.Columns = g.columns(c.Table)

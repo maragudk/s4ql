@@ -17,8 +17,8 @@
 //
 // The supported statements are those of slices 1 and 2 of docs/roadmap.md, with the column types and
 // the literals of slice 4, the columns of slice 5, the NULL of slice 6, the WHERE of slice 7, the
-// UPDATE and DELETE of slice 8, the CREATE INDEX and DROP INDEX of slice 9, and the IF NOT EXISTS and
-// IF EXISTS of slice 10. The README next to this file defines them token for token, and lists the
+// UPDATE and DELETE of slice 8, the CREATE INDEX and DROP INDEX of slice 9, the IF NOT EXISTS and
+// IF EXISTS of slice 10, and the DEFAULT of slice 11. The README next to this file defines them token for token, and lists the
 // names that a "not supported" error gives.
 //
 // Names compare as SQLite compares them, by [Name.Fold]. What a statement means for a table, such as
@@ -118,7 +118,7 @@ type Statement interface {
 
 // CreateTable of one table, with one or more columns, of which exactly one is its primary key. The
 // table is STRICT and WITHOUT ROWID. A column that is not the primary key takes NULL unless it is
-// declared NOT NULL.
+// declared NOT NULL. A column may have a DEFAULT.
 type CreateTable struct {
 	Span Span
 	// IfNotExists reports whether the statement says IF NOT EXISTS. With it, SQLite does nothing and
@@ -152,6 +152,22 @@ type Column struct {
 	// and is not declared NOT NULL takes NULL. The primary key may be declared NOT NULL too, which
 	// changes nothing: the primary key of a WITHOUT ROWID table never takes NULL.
 	NotNull bool
+	// Default of the column, which an INSERT whose list of columns leaves the column out stores, or
+	// the zero Default if the column says no DEFAULT.
+	Default Default
+}
+
+// Default of a [Column]: the literal after DEFAULT. The literal has the type of its column, or is
+// NULL, which a column of every type may say, also one that is NOT NULL or the primary key: SQLite
+// takes such a declaration, and an insert that leaves the column out gives `NOT NULL constraint
+// failed`, as it does for the column without the DEFAULT.
+type Default struct {
+	// Value of the literal, as for a [Term], or nil if the column says no DEFAULT. DEFAULT NULL has
+	// the value [Null].
+	Value Value
+	// Span of the literal in the text, its sign included. Its text is what SQLite keeps as the
+	// default of the column, which pragma_table_info gives as dflt_value.
+	Span Span
 }
 
 // maxColumns of a table in SQLite, SQLITE_MAX_COLUMN, which the binding in internal/sqlite keeps at

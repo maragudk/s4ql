@@ -139,6 +139,8 @@ func (d *db) query(sql string, args ...string) ([]string, [][]string) {
 
 // schema of the database as SQLite records it, apart from the text of each statement: every object
 // of sqlite_schema, and of each table its options, its columns, and its indexes and their columns.
+// The default of a column is the value that SQLite gives the text it keeps for it, which differs
+// from one spelling of the literal to another.
 func (d *db) schema() string {
 	d.t.Helper()
 	var b strings.Builder
@@ -151,6 +153,11 @@ func (d *db) schema() string {
 		name := strings.TrimPrefix(o[1], "text:")
 		_, list := d.query("select * from pragma_table_list where schema = 'main' and name = ?", name)
 		_, columns := d.query("select * from pragma_table_xinfo(?)", name)
+		for _, c := range columns {
+			if text, ok := strings.CutPrefix(c[4], "text:"); ok {
+				c[4] = "default " + show(d.value("select "+text))
+			}
+		}
 		_, indexes := d.query("select * from pragma_index_list(?)", name)
 		fmt.Fprintln(&b, "table", list, "columns", columns, "indexes", indexes)
 		for _, ix := range indexes {
@@ -220,7 +227,8 @@ func createTyped(table, column string, typ stmt.Type) string {
 }
 
 // createColumns of a table named table with the columns, by the values of their names, in the
-// canonical form: every name in double quotes, and NOT NULL after PRIMARY KEY.
+// canonical form: every name in double quotes, NOT NULL after PRIMARY KEY, and DEFAULT after both,
+// with the canonical literal of its value.
 func createColumns(table string, columns []stmt.Column) string {
 	var defs []string
 	for _, c := range columns {
@@ -230,6 +238,9 @@ func createColumns(table string, columns []stmt.Column) string {
 		}
 		if c.NotNull {
 			def += " not null"
+		}
+		if c.Default.Value != nil {
+			def += " default " + literal(c.Default.Value)
 		}
 		defs = append(defs, def)
 	}
@@ -716,15 +727,73 @@ func checkCreateTable(t testing.TB, open func(testing.TB) *db, src string, s *st
 		if c.PrimaryKey || c.NotNull {
 			notNull = "integer:1"
 		}
-		columns = append(columns, []string{fmt.Sprint("integer:", i), "text:" + c.Name.Value, "text:" + c.Type.String(), notNull, "null:", pk, "integer:0"})
+		// SQLite keeps the text of the literal of a DEFAULT, with its sign, as the default.
+		dflt := "null:"
+		if c.Default.Value != nil {
+			dflt = "text:" + src[c.Default.Span.Start:c.Default.Span.End]
+		}
+		columns = append(columns, []string{fmt.Sprint("integer:", i), "text:" + c.Name.Value, "text:" + c.Type.String(), notNull, dflt, pk, "integer:0"})
 	}
 	_, got2 := d.query("select * from pragma_table_xinfo(?)", s.Table.Value)
 	is.Equal(t, fmt.Sprint(columns), fmt.Sprint(got2), src)
+	checkDefaults(t, open, src, s)
 	already(d)
 	if s.IfNotExists {
 		other := open(t)
 		other.must(createFor(swapCase(s.Table.Value), "s4ql other"))
 		already(other)
+	}
+}
+
+// checkDefaults of the create table s, which src holds and which has no error of its columns: on the
+// table that src creates, and on the one that its canonical text creates, an insert with a list of
+// columns that leaves out a column with a DEFAULT, and gives the other columns a value each, stores
+// the value of the DEFAULT, as SQLite gives it to the text of its literal. A real 0 comes back as 0.0
+// of either sign, since SQLite stores a real of a REAL column that has an integer value as an
+// integer. For DEFAULT NULL, the insert stores NULL, or gives `NOT NULL constraint failed` for a
+// column that is NOT NULL or the primary key, as for a column without a DEFAULT; and for a primary
+// key with a DEFAULT that is not NULL, a second insert gives `UNIQUE constraint failed`.
+func checkDefaults(t testing.TB, open func(testing.TB) *db, src string, s *stmt.CreateTable) {
+	t.Helper()
+	values := map[stmt.Type]string{stmt.TypeInt: "7", stmt.TypeInteger: "8", stmt.TypeReal: "2.5", stmt.TypeText: "'b'", stmt.TypeBlob: "x'02'"}
+	for i, c := range s.Columns {
+		if c.Default.Value == nil {
+			continue
+		}
+		if got, want := show(open(t).value("select "+src[c.Default.Span.Start:c.Default.Span.End])), show(c.Default.Value); got != want {
+			t.Fatalf("%q: the default of %v is %v, SQLite gives %v for its text", src, c.Name.Value, want, got)
+		}
+		var names, given []string
+		for j, o := range s.Columns {
+			if j != i {
+				names, given = append(names, quote(o.Name.Value)), append(given, values[o.Type])
+			}
+		}
+		insert := "insert into " + quote(s.Table.Value) + " default values"
+		if names != nil {
+			insert = fmt.Sprintf("insert into %v (%v) values (%v)", quote(s.Table.Value), strings.Join(names, ", "), strings.Join(given, ", "))
+		}
+		for _, create := range []string{src, canonical(s)} {
+			d := open(t)
+			d.must(create)
+			_, null := c.Default.Value.(stmt.Null)
+			if null && (c.PrimaryKey || c.NotNull) {
+				sqliteError(t, src, d.exec(insert), 1299, "NOT NULL constraint failed: "+s.Table.Value+"."+c.Name.Value)
+				continue
+			}
+			d.must(insert)
+			want := c.Default.Value
+			if r, ok := want.(stmt.Real); ok && r == 0 {
+				want = stmt.Real(0)
+			}
+			got := d.value("select " + quote(c.Name.Value) + " from " + quote(s.Table.Value))
+			if show(got) != show(want) {
+				t.Fatalf("%q: %q stores %v in %v, want %v", src, insert, show(got), c.Name.Value, show(want))
+			}
+			if c.PrimaryKey {
+				sqliteError(t, src, d.exec(insert), 1555, "UNIQUE constraint failed: "+s.Table.Value+"."+c.Name.Value)
+			}
+		}
 	}
 }
 
