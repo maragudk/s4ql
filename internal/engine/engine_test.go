@@ -1649,3 +1649,30 @@ func TestEngine_columns(t *testing.T) {
 		is.Equal(t, want, i.state(), "after a replay of the log")
 	})
 }
+
+func TestEngine_nulls(t *testing.T) {
+	t.Run("should refuse a statement with NULL that the pass supports as not supported, before anything runs", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(t1).err)
+		cases := []struct {
+			src  string
+			args []int64
+			want string
+		}{
+			{src: "create table t2 (v1 int primary key, v2 text) strict, without rowid", want: "s4ql: not supported: a column that takes NULL, which the engine does not run yet"},
+			{src: "create table t2 (v1 text, v2 int primary key) strict, without rowid", want: "s4ql: not supported: a column that takes NULL, which the engine does not run yet"},
+			{src: "insert into t1 (v1) values (null)", want: "s4ql: not supported: NULL as a value, which the engine does not run yet"},
+			{src: "insert into t1 values (?, NULL)", args: []int64{1}, want: "s4ql: not supported: NULL as a value, which the engine does not run yet"},
+		}
+		for _, c := range cases {
+			_, err := i.c.Exec(t.Context(), c.src, integers(c.args)...)
+			is.True(t, errors.Is(err, stmt.ErrNotSupported), c.src)
+			is.Equal(t, c.want, fmt.Sprint(err), c.src)
+			is.Equal(t, c.want, fmt.Sprint(engine.Check(c.src, len(c.args))), c.src)
+			_, err = i.c.Query(t.Context(), c.src, integers(c.args)...)
+			is.Equal(t, c.want, fmt.Sprint(err), c.src)
+		}
+		is.Equal(t, "t1 (v1 INT): \n", i.state())
+		is.Equal(t, 0, len(logAnnotations(t, i.store)[1:]))
+	})
+}

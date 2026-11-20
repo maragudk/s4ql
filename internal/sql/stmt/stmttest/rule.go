@@ -94,7 +94,8 @@ var columnHolds = map[string]string{"INT": "integer", "INTEGER": "integer", "REA
 // ValueKind of the value of a term of an insert, a literal or the argument of args for its
 // parameter, as SQLite binds it: "integer", "real", "text", or "blob", and how s4ql's message of a
 // value of another type than its column names the value. It panics for an argument of another type
-// than int64, float64, string, and []byte, and for a literal of no kind.
+// than int64, float64, string, and []byte, nil among them, and for a literal of no kind, [stmt.Null]
+// among them: the rule does not know NULL yet, which [Generator.Nulls] gives.
 func ValueKind(term stmt.Term, args []any) (kind, what string) {
 	if term.Parameter > 0 {
 		a := args[term.Parameter-1]

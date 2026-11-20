@@ -147,6 +147,8 @@ func FuzzLiteral(f *testing.F) {
 			f.Add(text)
 		}
 	}
+	nullText, _ := stmttest.Literal(r, stmt.Null{})
+	f.Add(nullText)
 	f.Fuzz(func(t *testing.T, lit string) {
 		src := "insert into t (v) values (" + lit + ")"
 		s, err := stmt.Check(src)
