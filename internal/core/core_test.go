@@ -1371,6 +1371,46 @@ func TestOpen_cache(t *testing.T) {
 		}
 	})
 
+	t.Run("should fail to make a new cache with SQLite's I/O error, and make it at the next open, whichever lock, write, or sync of the make fails", func(t *testing.T) {
+		w := newWorld(t)
+		vfs, err := faultvfs.New()
+		is.NotError(t, err)
+		defer func() { is.NotError(t, vfs.Close()) }()
+		options := core.Options{}
+		options.VFS = vfs.Name()
+		// The store is out of reach, so the task of the lease, which starts in Open, does nothing with
+		// the cache, and every operation that the fault counts is one of the open.
+		w.store.Outage(t.Context(), time.Hour)
+		for op, name := range map[faultvfs.Op]string{faultvfs.Lock: "lock", faultvfs.Write: "write", faultvfs.Sync: "sync"} {
+			// The operation that fails is the one after those that succeed, on a new cache each time,
+			// until none of the open fails.
+			failed := 0
+			for after := 0; ; after++ {
+				what := fmt.Sprint(name, " ", after)
+				path := filepath.Join(w.dir, fmt.Sprint(name, "-", after, ".db"))
+				before := vfs.Failures()
+				vfs.Fail(faultvfs.Fault{Ops: op, Files: faultvfs.AnyFile, After: after, Times: 1})
+				d, err := core.Open(t.Context(), w.host, w.client(), path, "db", options)
+				vfs.Fail(faultvfs.Fault{})
+				if err == nil {
+					is.Equal(t, before, vfs.Failures(), "the open succeeded, and an operation failed: "+what)
+					is.NotError(t, d.Close(t.Context()), what)
+					break
+				}
+				failed++
+				is.True(t, vfs.Failures() > before, "the open failed, and no operation failed: "+what)
+				is.Error(t, core.ErrLocal, err, what)
+				se, ok := errors.AsType[*sqlite.Error](err)
+				is.True(t, ok && se.Code.Primary() == 10, "not SQLite's I/O error: "+what+": "+err.Error())
+				d, err = core.Open(t.Context(), w.host, w.client(), path, "db", options)
+				is.NotError(t, err, "the open after the failure: "+what)
+				is.NotError(t, d.Close(t.Context()), what)
+				is.Equal(t, int64(core.CacheVersion), cacheVersion(t, path), what)
+			}
+			is.True(t, failed > 0, "no open failed at a "+name)
+		}
+	})
+
 	t.Run("should open a cache of version 2 while another connection holds its write lock, and refuse to upgrade one of version 1 then, which keeps its version", func(t *testing.T) {
 		w := newWorld(t)
 		v := newVersionOne(t, w)
