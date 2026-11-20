@@ -912,7 +912,10 @@ type pair struct {
 	rnd *rand.Rand
 	// inTx is set while the statements run in a transaction.
 	inTx bool
-	y    tally
+	// allPaths is set for a pair whose [pair.everyPath] runs each WHERE by every candidate, and not by
+	// [pathSample] of them.
+	allPaths bool
+	y        tally
 }
 
 // newPair of the instance i and SQLite, with the length limit of i, and a second instance of the
@@ -1222,7 +1225,7 @@ const pathSample = 4
 // everyPath runs the WHERE of the statement s of the call c, a select with WHERE or the select of the
 // WHERE of an update or a delete, as [stmttest.SelectOf] gives it, on the other instance of the pair,
 // before the call changes anything: by the access of the rules, and by [pathSample] candidates of
-// [candidates] at random, or by each if there are no more. Each must give the rows that SQLite gives,
+// [candidates] at random, or by each if there are no more or the pair has allPaths. Each must give the rows that SQLite gives,
 // as a multiset, and a candidate, whose path is forced, the rows in the order of its key, as SQLite's
 // ORDER BY of the key gives them. One candidate in four, and the access of the rules, run outside a
 // transaction on the core, also go through [core.ReadTx.ScanPlan], and SQLite must search the index
@@ -1276,7 +1279,7 @@ func (p *pair) everyPath(s stmt.Statement, c stmttest.Call) string {
 	if len(cis) > 0 {
 		p.count("WHERE run by every path on a table with an index")
 	}
-	if len(cs) > pathSample {
+	if !p.allPaths && len(cs) > pathSample {
 		for j := range pathSample {
 			k := j + p.rnd.IntN(len(cs)-j)
 			cs[j], cs[k] = cs[k], cs[j]
@@ -3106,6 +3109,16 @@ func (r *fuzzBytes) take(n int) []byte {
 // of the type typ, after the arguments args of the parameters before them, and the arguments with
 // theirs, as [whereOf] says.
 func (r *fuzzBytes) conditions(typ string, names []string, most int, args []any) (string, []any) {
+	types := make([]string, len(names))
+	for j := range types {
+		types[j] = typ
+	}
+	return r.typedConditions(names, types, most, args)
+}
+
+// typedConditions are [fuzzBytes.conditions] on columns of the names, each of the type at its
+// position in types.
+func (r *fuzzBytes) typedConditions(names, types []string, most int, args []any) (string, []any) {
 	ops := []string{"=", "==", "!=", "<>", "<", "<=", ">", ">=", "is null", "is not null"}
 	var b strings.Builder
 	for n := range most {
@@ -3116,6 +3129,7 @@ func (r *fuzzBytes) conditions(typ string, names []string, most int, args []any)
 			b.WriteString(" and ")
 		}
 		col := r.next()
+		typ := types[int(col&0x7f)%len(names)]
 		name := names[int(col&0x7f)%len(names)]
 		if col > 127 {
 			name = `"` + name + `"`
@@ -3362,4 +3376,375 @@ func whereLiteral(v any) string {
 		return "x'" + hex.EncodeToString(v) + "'"
 	}
 	return "null"
+}
+
+// FuzzIndexes runs, on the engine on a database in memory, a test double of the core, and on SQLite,
+// a table of one to three columns with one to three indexes, and inserts, updates, deletes, selects,
+// drops of an index, and creates of one on it, all of which the bytes of its input choose as
+// [indexesCalls] says, and compares what each gives, as [TestDifferential] does. Each WHERE runs by
+// every path that can serve it, and the engine's choice of a path must be that of
+// [stmttest.ChosenAccess]: see [pair.everyPath] and [checkChoice]. Then it compares the tables and
+// their indexes. [FuzzIndexes_core] runs the same on the storage core.
+func FuzzIndexes(f *testing.F) {
+	fuzzIndexes(f, newMemoryInstance)
+}
+
+// FuzzIndexes_core is [FuzzIndexes] on the storage core, with a store in memory. After the calls, it
+// replays the log into an empty cache and compares the tables and their indexes again.
+func FuzzIndexes_core(f *testing.F) {
+	fuzzIndexes(f, func(t testing.TB) *instance { return newInstance(t, engine.Options{}) })
+}
+
+// fuzzIndexes is [FuzzIndexes] on the instances of newInstance. Its seeds are those of
+// [indexesSeeds].
+func fuzzIndexes(f *testing.F, newInstance func(t testing.TB) *instance) {
+	for _, data := range indexesSeeds() {
+		f.Add(data)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		indexesRun(t, newInstance(t), data, tally{})
+	})
+}
+
+// indexesRun runs the calls of [indexesCalls] of data on the instance i and SQLite, through a pair
+// whose tally is y and which runs each WHERE by every path, and compares the tables and their
+// indexes at the end, also after a replay of the log into an empty cache on the core.
+func indexesRun(t *testing.T, i *instance, data []byte, y tally) {
+	t.Helper()
+	p := newPair(t, i, y)
+	p.allPaths = true
+	var log []string
+	for _, c := range indexesCalls(data) {
+		log = append(log, fmt.Sprintf("%v -- with %#v", c.Src, c.Args))
+		if failure := p.step(c); failure != "" {
+			t.Fatalf("after\n%v\n%v", strings.Join(log[:len(log)-1], "\n"), failure)
+		}
+	}
+	want := p.o.state(t)
+	if got := i.state(); got != want {
+		t.Fatalf("after\n%v\nthe engine holds\n%v\nand SQLite\n%v", strings.Join(log, "\n"), got, want)
+	}
+	if got := p.other.state(); got != want {
+		t.Fatalf("after\n%v\nthe engine that reads the rows the other way holds\n%v\nand SQLite\n%v", strings.Join(log, "\n"), got, want)
+	}
+	if i.memory != nil {
+		return
+	}
+	i.restart(true, engine.Options{})
+	if got := i.state(); got != want {
+		t.Fatalf("after\n%v\nthe engine holds after a replay into an empty cache\n%v\nand SQLite\n%v", strings.Join(log, "\n"), got, want)
+	}
+}
+
+// indexesIndex is an index of the table of [indexesCalls]: its name, and its columns, each as its
+// position in the table and whether it is descending.
+type indexesIndex struct {
+	name       string
+	columns    []int
+	descending []bool
+}
+
+// indexesCalls of the bytes data: a table, its indexes, its rows, and up to 16 statements on it.
+//
+// The first byte chooses the table: its lowest seven bits, modulo 3, one to three columns, and,
+// divided by 3, the position of the key, and its highest bit the names. The names are c0 to c2, or
+// queue, priority, and created, and the table is t, or goqite. A byte for each column chooses its
+// type, one of the five of [whereTypes], and, by the bit 8, whether a column outside the key takes
+// NULL.
+//
+// The next byte, modulo 3, chooses one to three indexes, which [fuzzBytes.index] reads, named i0 to
+// i2. An index is created before the rows, or after them if the highest bit of its first byte is
+// set. The rows are as many as [whereRows] has of the type of the key: the j-th has the j-th of them
+// as its key, and in each other column, at the position c, the value of [whereRows] of its type at
+// j/2 + c, or NULL where the column takes it and j + c is 1 modulo 3, so that pairs of rows share
+// values.
+//
+// Each statement after them takes a byte, whose lowest three bits choose its kind and whose others,
+// a, what it is of: for 0, a select of * with a WHERE of a%3+1 conditions, as
+// [fuzzBytes.typedConditions] gives them on the columns of the table; for 1 and 7, a select of *
+// that pins and bounds the key of the index a modulo the indexes that the table has, or of the
+// primary key if it has none, as [fuzzBytes.pins] says; for 2, an insert of a value of each column,
+// as [fuzzBytes.term] gives it; for 3, an update of the column a modulo the columns to a term, with a
+// WHERE of a/4%2+1 conditions; for 4, a delete with a WHERE of a%2+1 conditions; for 5, a drop of the
+// index a modulo the indexes, or of i0 if there are none; and for 6, a create of an index: again of
+// the last that was dropped, for an odd a where one was, and otherwise of a new one that
+// [fuzzBytes.index] reads, named i3 and on.
+func indexesCalls(data []byte) []stmttest.Call {
+	r := &fuzzBytes{data: data}
+	shape := r.next()
+	n := int(shape&0x7f)%3 + 1
+	key := int(shape&0x7f) / 3 % n
+	table, names := "t", []string{"c0", "c1", "c2"}
+	if shape&0x80 != 0 {
+		table, names = "goqite", []string{"queue", "priority", "created"}
+	}
+	names = names[:n]
+	types := make([]string, n)
+	nullable := make([]bool, n)
+	var columns []string
+	for j := range n {
+		b := r.next()
+		types[j] = whereTypes[int(b)%len(whereTypes)]
+		nullable[j] = b&8 != 0 && j != key
+		column := names[j] + " " + types[j]
+		switch {
+		case j == key:
+			column += " primary key"
+		case !nullable[j]:
+			column += " not null"
+		}
+		columns = append(columns, column)
+	}
+	calls := []stmttest.Call{{Src: "create table " + table + " (" + strings.Join(columns, ", ") + ") strict, without rowid", Supported: true}}
+	create := func(ix indexesIndex) stmttest.Call {
+		var cs []string
+		for j, position := range ix.columns {
+			c := names[position]
+			if ix.descending[j] {
+				c += " desc"
+			}
+			cs = append(cs, c)
+		}
+		return stmttest.Call{Src: "create index " + ix.name + " on " + table + " (" + strings.Join(cs, ", ") + ")", Supported: true}
+	}
+	var live, dropped, after []indexesIndex
+	for j := range int(r.next())%3 + 1 {
+		ix, later := r.index(fmt.Sprint("i", j), n)
+		if later {
+			after = append(after, ix)
+		} else {
+			calls = append(calls, create(ix))
+		}
+		live = append(live, ix)
+	}
+	insert := "insert into " + table + " values (" + strings.Repeat("?, ", n-1) + "?)"
+	for j, k := range whereRows[types[key]] {
+		row := make([]any, n)
+		for c := range n {
+			values := whereRows[types[c]]
+			switch {
+			case c == key:
+				row[c] = k
+			case nullable[c] && (j+c)%3 == 1:
+			default:
+				row[c] = values[(j/2+c)%len(values)]
+			}
+		}
+		calls = append(calls, stmttest.Call{Src: insert, Args: row, Supported: true})
+	}
+	for _, ix := range after {
+		calls = append(calls, create(ix))
+	}
+	next := 3
+	for s := 0; s < 16 && len(r.data) > 0; s++ {
+		b := r.next()
+		a := int(b >> 3)
+		c := stmttest.Call{Supported: true}
+		switch b % 8 {
+		case 0:
+			var where string
+			where, c.Args = r.typedConditions(names, types, a%3+1, nil)
+			c.Src, c.Query = "select * from "+table+" where "+where, true
+		case 1, 7:
+			ix := indexesIndex{columns: []int{key}, descending: []bool{false}}
+			if len(live) > 0 {
+				ix = live[a%len(live)]
+			}
+			var where string
+			where, c.Args = r.pins(ix, key, names, types)
+			c.Src, c.Query = "select * from "+table+" where "+where, true
+		case 2:
+			terms := make([]string, n)
+			for j := range n {
+				terms[j], c.Args = r.term(types[j], c.Args)
+			}
+			c.Src = "insert into " + table + " values (" + strings.Join(terms, ", ") + ")"
+		case 3:
+			var term, where string
+			term, c.Args = r.term(types[a%n], nil)
+			where, c.Args = r.typedConditions(names, types, a/4%2+1, c.Args)
+			c.Src = "update " + table + " set " + names[a%n] + " = " + term + " where " + where
+		case 4:
+			var where string
+			where, c.Args = r.typedConditions(names, types, a%2+1, nil)
+			c.Src = "delete from " + table + " where " + where
+		case 5:
+			if len(live) == 0 {
+				c.Src = "drop index i0"
+				break
+			}
+			j := a % len(live)
+			c.Src = "drop index " + live[j].name
+			dropped = append(dropped, live[j])
+			live = slices.Delete(live, j, j+1)
+		case 6:
+			var ix indexesIndex
+			if a%2 == 1 && len(dropped) > 0 {
+				ix, dropped = dropped[len(dropped)-1], dropped[:len(dropped)-1]
+			} else {
+				ix, _ = r.index(fmt.Sprint("i", next), n)
+				next++
+			}
+			c = create(ix)
+			live = append(live, ix)
+		}
+		calls = append(calls, c)
+	}
+	return calls
+}
+
+// index of the name on a table of n columns: by a byte whose lowest seven bits, modulo n, choose one
+// to n columns, and whose highest bit says whether the index is created after the rows, and a byte
+// for each column, whose lowest seven bits choose it among the columns that the index does not hold
+// yet, in the order of the table, and whose highest bit whether it is descending.
+func (r *fuzzBytes) index(name string, n int) (indexesIndex, bool) {
+	h := r.next()
+	left := make([]int, n)
+	for j := range left {
+		left[j] = j
+	}
+	ix := indexesIndex{name: name}
+	for range int(h&0x7f)%n + 1 {
+		b := r.next()
+		j := int(b&0x7f) % len(left)
+		ix.columns = append(ix.columns, left[j])
+		ix.descending = append(ix.descending, b&0x80 != 0)
+		left = slices.Delete(left, j, j+1)
+	}
+	return ix, h&0x80 != 0
+}
+
+// pins of a WHERE, without the keyword, and their arguments, on the key of the index ix, its columns
+// and then the key column key if it does not hold it, of a table of the columns of the names and the
+// types: a byte, modulo the columns of the key plus one, chooses how many of them are pinned, and a
+// byte for each pinned column whether it is IS NULL, for an odd byte, or = a term, as
+// [fuzzBytes.term] gives it. A byte then bounds the next column of the key, if there is one: by its
+// lowest two bits not, from below, from above, or both, from below with >= if its bit 4 is set and >
+// otherwise, and from above with <= if its bit 8 is set and < otherwise, each with a term. A WHERE
+// that pins nothing and bounds nothing is the condition of the first column IS NOT NULL.
+func (r *fuzzBytes) pins(ix indexesIndex, key int, names, types []string) (string, []any) {
+	columns := slices.Clone(ix.columns)
+	if !slices.Contains(columns, key) {
+		columns = append(columns, key)
+	}
+	var conditions []string
+	var args []any
+	pinned := int(r.next()) % (len(columns) + 1)
+	for _, c := range columns[:pinned] {
+		if r.next()%2 == 1 {
+			conditions = append(conditions, names[c]+" is null")
+			continue
+		}
+		var term string
+		term, args = r.term(types[c], args)
+		conditions = append(conditions, names[c]+" = "+term)
+	}
+	bounds := r.next()
+	if pinned < len(columns) {
+		c := columns[pinned]
+		if bounds&1 != 0 {
+			var term string
+			term, args = r.term(types[c], args)
+			conditions = append(conditions, names[c]+map[bool]string{false: " > ", true: " >= "}[bounds&4 != 0]+term)
+		}
+		if bounds&2 != 0 {
+			var term string
+			term, args = r.term(types[c], args)
+			conditions = append(conditions, names[c]+map[bool]string{false: " < ", true: " <= "}[bounds&8 != 0]+term)
+		}
+	}
+	if conditions == nil {
+		return names[columns[0]] + " is not null", args
+	}
+	return strings.Join(conditions, " and "), args
+}
+
+// indexesSeeds of [FuzzIndexes], built by hand: pins of one, two, and three columns, a pin of NULL,
+// ranges on a descending column, indexes that hold the primary key, a drop of an index while the
+// table has rows and selects after it, a create of the index again, goqite's table with its index on
+// (queue, priority desc, created), and, for each type, a table of one column and a table of three.
+// A term is [0, j] for the j-th value of [whereRows] of its type as a literal, [4, j] for it as an
+// argument, and [2] for NULL.
+func indexesSeeds() [][]byte {
+	seeds := [][]byte{
+		// t (c0 int primary key, c1 text, c2 real) with i0 (c1) before the rows and i1 (c2 desc, c0)
+		// after them: c1 = 'a'; c1 is null; c1 = 'a' and c0 = 0; c2 > -1.5 and c2 < 1.5; and c2 = the
+		// least real and c0 >= ? of the least integer.
+		{2, 0, 11, 10, 1, 0, 1, 0x81, 0x82, 0,
+			1, 1, 0, 0, 2, 0,
+			1, 1, 1, 0,
+			1, 2, 0, 0, 2, 0, 0, 2, 0,
+			9, 0, 3, 0, 1, 0, 5,
+			9, 1, 0, 0, 3, 5, 4, 0},
+		// The same table: drop i0 while it has rows; a select of c1 = 'a'; a select by i1; create i0
+		// again, and a select by it; and create i3 (c2 desc, c0 desc, c1), and pin its three columns.
+		{2, 0, 11, 10, 1, 0, 1, 0x81, 0x82, 0,
+			5,
+			0, 1, 0, 0, 2,
+			1, 1, 0, 0, 3, 0,
+			14,
+			9, 1, 0, 0, 2, 0,
+			6, 2, 0x82, 0x80, 0,
+			17, 3, 0, 0, 3, 0, 0, 2, 0, 0, 2, 0},
+		// goqite (queue text, priority int, created text primary key) with i0 (queue, priority desc,
+		// created) after the rows: pins of three; of two and a range on created; of queue and a range
+		// on priority; an insert; an update of priority; pins of two after it; a delete; a select of
+		// two conditions; a pin of queue to an integer; and a pin of queue to NULL.
+		{0x88, 3, 0, 3, 0, 0x82, 0, 0x80, 0,
+			1, 3, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0,
+			1, 2, 0, 0, 0, 0, 4, 1, 5, 0, 0,
+			1, 1, 0, 4, 0, 3, 0, 0, 0, 5,
+			2, 0, 2, 1, 5, 0, 0, 0, 0, 0, 0, 0, 4, 7,
+			11, 0, 4, 0, 0, 0, 0,
+			1, 2, 0, 0, 0, 0, 0, 4, 0,
+			4, 0, 0, 0, 1,
+			8, 1, 7, 0, 2, 2, 4, 0, 5,
+			1, 1, 0, 3, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+			1, 1, 0, 2, 0},
+	}
+	for typ := range byte(len(whereTypes)) {
+		// t (c0 primary key) with i0 (c0 desc): a pin; a range; an insert of a key that exists; a
+		// delete; a drop of i0; a pin of the primary key; a create of i3 (c0); and a select.
+		seeds = append(seeds, []byte{0, typ, 0, 0, 0x80,
+			1, 1, 0, 0, 2, 0,
+			1, 0, 3, 0, 1, 0, 4,
+			2, 0, 3,
+			4, 0, 0, 0, 1,
+			5,
+			1, 1, 0, 0, 2, 0,
+			6, 0, 0,
+			0, 0, 7, 0, 2})
+		// t (c0, c1 primary key, c2), of three types, with c0 and c2 taking NULL, i0 (c0 desc) and i1
+		// (c2, c0) before the rows, and i2 (c1 desc, c0 desc, c2) after them: pins and ranges by each
+		// index, an update of c2, a delete, a drop of i1, and a select by i2 after it.
+		seeds = append(seeds, []byte{5, typ | 8, (typ + 1) % 5, (typ+2)%5 | 8, 2, 0, 0x80, 1, 2, 0, 0x82, 0x81, 0x80, 0,
+			1, 1, 0, 0, 1, 15, 0, 0, 0, 6,
+			9, 2, 1, 0, 0, 2, 1, 0, 3,
+			17, 3, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0,
+			19, 4, 3, 1, 0, 0, 2,
+			4, 0, 8,
+			13,
+			9, 2, 0, 0, 1, 0, 0, 1, 0})
+	}
+	return seeds
+}
+
+func TestFuzzIndexes_seeds(t *testing.T) {
+	t.Run("should reach each kind of path, choice, and statement of indexes with the seeds of FuzzIndexes", func(t *testing.T) {
+		y := tally{}
+		for _, data := range indexesSeeds() {
+			indexesRun(t, newMemoryInstance(t), data, y)
+		}
+		for _, kind := range []string{
+			"path of an index with 1 pinned", "path of an index with 2 pinned", "path of an index with 3 pinned",
+			"path of an index with 1 pinned and a range", "path with a range on a descending column", "path with a pin of NULL",
+			"path of an index that holds every column", "chosen an index with 1 pinned", "chosen an index with 2 pinned",
+			"chosen an index with 2 pinned and a range of a table of several indexes", "chosen a get of a table of several indexes",
+			"create index that holds the primary key ok", "create index of a descending column ok", "create index of 3 columns ok",
+			"drop index ok", "create index ok", "delete with WHERE ok, rows changed", "update with WHERE ok, rows changed",
+		} {
+			is.True(t, y["reached: "+kind] > 0, kind)
+		}
+		is.Equal(t, 0, y["reached: WHERE run by a sample of its paths"])
+	})
 }
