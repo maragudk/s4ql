@@ -454,8 +454,8 @@ func (in *columnsInput) take(n int) []byte {
 // A select is of every column, or with bit 1 of the op of named columns, one to four by bits 2 and 3,
 // each by a byte whose bits 0 to 3, modulo the count of columns and one, are c0 to c3 or x, and whose
 // bits 4 and 5 spell it. Bits 4 and 5 of the op give the number of conditions of its WHERE, zero to
-// three, each by a byte for the column as for a name of the list, a byte for one of the ten
-// operators of slice 7 in their spellings, and for a comparison a value of the type of the column,
+// three, each by a byte for the column as for a name of the list, a byte for one of the eight
+// operators of slice 7 in one of its spellings, and for a comparison a value of the type of the column,
 // or of the key for x.
 func columnsCalls(data []byte) []stmttest.Call {
 	in := columnsInput(data)
