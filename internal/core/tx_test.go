@@ -3248,9 +3248,13 @@ func TestTx_Keys(t *testing.T) {
 			is.NotError(t, k.Add(ctx, row(1)))
 			is.NotError(t, d.Close(ctx))
 			is.Error(t, core.ErrClosed, k.Add(ctx, row(2)))
-			for _, err := range k.All(ctx) {
-				is.Error(t, core.ErrClosed, err)
+			var errs []error
+			for key, err := range k.All(ctx) {
+				is.True(t, key == nil)
+				errs = append(errs, err)
 			}
+			is.Equal(t, 1, len(errs), "the read of the keys gives its error")
+			is.Error(t, core.ErrClosed, errs[0])
 			return nil
 		}))
 		_ = tx.Rollback(ctx)
