@@ -159,7 +159,9 @@ type Result struct {
 // connection runs on that reader, one at a time: a statement that reads while the rows of an
 // earlier query of the connection have not ended fails at once, with an error that matches
 // [core.ErrReaderBusy], and does not wait for them. A statement that changes the database needs no
-// reader, and runs.
+// reader, and runs. A statement of its own of IF NOT EXISTS or IF EXISTS reads first, on the reader
+// of the connection, or, while rows hold it, on a reader of its own for the time of its look; see
+// [Conn.nothingToWrite].
 //
 // A transaction that spans statements is open on the connection from [Conn.Begin] or
 // [Conn.BeginReadOnly] to [Conn.Commit] or [Conn.Rollback], and every statement of the connection
@@ -516,12 +518,12 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 
 // nothingToWrite reports whether the plan p of a statement of its own, with the arguments args, is
 // one of IF NOT EXISTS or IF EXISTS that does nothing on the newest state, which it looks up in a
-// read transaction of the connection, and gives the error of the end of that transaction then. SQLite
-// only reads the schema for such a statement, so it waits for no writer; here too it neither waits
-// for the place of the writer nor takes it. It reports false, and the statement runs in a write
-// transaction, which looks again and decides, for another plan, for one that does something or
-// fails there, and where the read transaction cannot begin, as while the rows of an earlier query of
-// the connection are open.
+// read transaction of the connection, or, while the rows of an earlier query of the connection hold
+// its reader, of a reader of its own, and gives the error of the end of that transaction then.
+// SQLite only reads the schema for such a statement, so it waits for no writer; here too it neither
+// waits for the place of the writer nor takes it. It reports false, and the statement runs in a
+// write transaction, which looks again and decides, for another plan, for one that does something or
+// fails there, and where the read transaction cannot begin.
 func (c *Conn) nothingToWrite(ctx context.Context, r *report, p Plan, args []*s4qlpb.Value) (bool, error) {
 	switch p := p.(type) {
 	case *CreateTable:
@@ -544,6 +546,16 @@ func (c *Conn) nothingToWrite(ctx context.Context, r *report, p Plan, args []*s4
 		return false, nil
 	}
 	rt, err := c.read(ctx)
+	if errors.Is(err, core.ErrReaderBusy) {
+		// The rows of an earlier query of the connection hold its reader, so the statement looks on a
+		// reader of its own, which it closes when it has looked.
+		rd, rdErr := c.e.db.reader(ctx)
+		if rdErr != nil {
+			return false, nil
+		}
+		defer func() { _ = rd.close(ctx) }()
+		rt, err = rd.read(ctx)
+	}
 	if err != nil {
 		return false, nil
 	}
