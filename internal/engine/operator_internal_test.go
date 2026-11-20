@@ -42,9 +42,10 @@ type fake struct {
 	endFails    error
 	// scans counts the scans that have started and not ended, and open the transactions.
 	scans, open int
-	// scanned counts the scans that have started, and getFails is the error of a get.
-	scanned  int
-	getFails error
+	// scanned counts the scans that have started, getFails is the error of a get, and deleteFails of
+	// a delete.
+	scanned               int
+	getFails, deleteFails error
 	// readers counts the readers that are open, and opened those that were ever opened. readerFails
 	// is the error of opening one, and closeFails of closing one.
 	readers, opened         int
@@ -245,9 +246,13 @@ func (x fakeTx) insertNew(_ context.Context, name string, row []*s4qlpb.Value) (
 	return true, nil
 }
 
-// delete records its call, as "delete", the name, and the integer key, and deletes the row.
+// delete records its call, as "delete", the name, and the integer key, and deletes the row, or fails
+// with deleteFails.
 func (x fakeTx) delete(_ context.Context, name string, key []*s4qlpb.Value) (bool, error) {
 	x.f.calls = append(x.f.calls, fmt.Sprint("delete ", name, " ", key[0].GetInteger()))
+	if x.f.deleteFails != nil {
+		return false, x.f.deleteFails
+	}
 	t := x.f.tables[fold(name)]
 	k := t.ct.GetPrimaryKey()[0]
 	n := len(t.rows)
@@ -928,6 +933,22 @@ func TestChangeRows(t *testing.T) {
 			is.Equal(t, "the get fails", err)
 			is.Equal(t, int64(0), n)
 			is.Equal(t, "[table t keys t add 2 key 2 get t 2]", calls, fmt.Sprint("scan all: ", scanAll))
+		}
+	})
+
+	t.Run("should give the error of the delete of a row, of a delete and of a change of the key", func(t *testing.T) {
+		for _, scanAll := range []bool{false, true} {
+			for src, want := range map[string]string{
+				"delete from t where w = 20":      "[table t keys t add 2 key 2 delete t 2]",
+				"update t set k = 5 where w = 20": "[table t keys t add 2 key 2 get t 2 delete t 2]",
+			} {
+				f := newTable()
+				f.deleteFails = errors.New("the delete fails")
+				err, n, calls := change(t, f, src, scanAll)
+				is.Equal(t, "the delete fails", err, src)
+				is.Equal(t, int64(0), n, src)
+				is.Equal(t, want, calls, fmt.Sprint(src, ", scan all: ", scanAll))
+			}
 		}
 	})
 
