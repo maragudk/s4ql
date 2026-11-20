@@ -22,10 +22,12 @@ import (
 	"time"
 
 	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/engine"
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/host"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sim"
+	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/store"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
@@ -61,15 +63,40 @@ type Summary struct {
 	Excused    int `json:"excused"`
 }
 
-// The table of the workload: one column of integers, its primary key.
-const tableName = "t"
+// The table of the workload, with one column of integers, its primary key, and the statements of
+// the calls. A write inserts the row of its key, and creates the table first if the database does
+// not have it. A read selects the row of one key.
+const (
+	tableName = "barcodes"
+	createSQL = "create table barcodes (code integer primary key) strict, without rowid"
+	insertSQL = "insert into barcodes (code) values (?)"
+	selectSQL = "select code from barcodes where code = ?"
+)
 
-func workloadTable() *s4qlpb.CreateTable {
-	return s4qlpb.CreateTable_builder{
-		Table:      new(tableName),
-		Columns:    []*s4qlpb.Column{s4qlpb.Column_builder{Name: new("k"), Type: new(s4qlpb.Type_TYPE_INT)}.Build()},
-		PrimaryKey: []uint32{0},
-	}.Build()
+// barcode is the key of the nth write of a run, from 1: a number of 13 digits in the form of an
+// EAN-13 barcode, the prefix 57, ten digits that a bijection of n modulo 10^10 gives, and the check
+// digit of EAN-13. So the keys of a run are distinct, and do not rise with n. The bijection is four
+// rounds of a Feistel network on the two halves of five digits each: a round maps (hi, lo) to
+// (lo, hi + f(lo)) modulo 10^5, which can be undone whatever f is.
+func barcode(n int64) int64 {
+	const half = 100_000
+	x := n % (half * half)
+	hi, lo := x/half, x%half
+	for round := range int64(4) {
+		hi, lo = lo, (hi+(lo*lo*31_337+lo*7_919+round*104_729+12_345)%half)%half
+	}
+	body := 57*half*half + hi*half + lo
+	sum := int64(0)
+	for i, d := 0, body; i < 12; i, d = i+1, d/10 {
+		// The digit at i from the right is at the position 12-i from the left, and EAN-13 weighs
+		// the even positions by 3.
+		w := int64(1)
+		if i%2 == 0 {
+			w = 3
+		}
+		sum += w * (d % 10)
+	}
+	return body*10 + (10-sum%10)%10
 }
 
 // prefix of the database in the store.
@@ -184,6 +211,8 @@ type process struct {
 
 	mu sync.Mutex
 	db *core.DB
+	// eng is the engine of SQL on db, through which the calls go.
+	eng *engine.Engine
 	// shut is the last database of the process whose close has ended.
 	shut   *core.DB
 	holder string
@@ -379,8 +408,9 @@ func (r *run) open(ctx context.Context, p *process) {
 		r.rec.add(Event{Kind: "process", What: "open_failed", Instance: p.i.name, Process: p.name, Error: err.Error()})
 		return
 	}
+	eng := engine.New(d, procHost{Instance: p.inst, r: r, p: p}, engine.Options{Logger: slog.New(positionHandler{})})
 	p.mu.Lock()
-	p.db, p.failed = d, false
+	p.db, p.eng, p.failed = d, eng, false
 	holder := p.holder
 	p.mu.Unlock()
 	r.rec.add(Event{Kind: "process", What: "opened", Instance: p.i.name, Process: p.name, Holder: holder})
@@ -496,29 +526,54 @@ func (r *run) caller(ctx context.Context, p *process, name string) {
 }
 
 // call of the application, by its caller: its number, whether it writes, the key that a write
-// inserts, and when it started.
+// inserts or that a read selects, and when it started.
 type call struct {
 	n       int
 	caller  string
 	write   bool
 	value   int64
+	key     int64
 	started time.Duration
 	// ended is set once the event that ends the call is in the trace. It is guarded by the mutex of
 	// the run.
 	ended bool
 }
 
-// newCall of the caller, which starts now. A write takes the next key.
+// recentKeys is the number of the last keys taken among which a read picks the one it selects, when
+// it does not select the newest acknowledged key.
+const recentKeys = 50
+
+// newCall of the caller, which starts now. A write takes the key of the next value of the counter of
+// the run. A read picks the key that it selects, by a number from the seed: half of the reads the key
+// of the newest write acknowledged so far, whose row a read that is not stale gives, and the others
+// the key of one of the last [recentKeys] values taken, also of a write that failed or is still on
+// its way, whose row a read need not find.
 func (r *run) newCall(caller string, write bool) *call {
+	acked, ok := r.check.lastAcked()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls++
 	c := &call{n: r.calls, caller: caller, write: write, started: r.world.Monotonic()}
 	if write {
 		r.values++
-		c.value = r.values
+		c.value = barcode(r.values)
+		return c
+	}
+	u := r.world.Uint64()
+	if ok && u%2 == 0 {
+		c.key = acked
+	} else {
+		c.key = barcode(max(1, r.values-int64(u/2%recentKeys)))
 	}
 	return c
+}
+
+// statement of the call: the text of its insert or select, and its argument.
+func (c *call) statement() (string, int64) {
+	if c.write {
+		return insertSQL, c.value
+	}
+	return selectSQL, c.key
 }
 
 // event of the call c on the instance in, whose process is p or nil, that says what happened. An
@@ -528,7 +583,8 @@ func (c *call) event(in *instance, p *process, what string) Event {
 	if c.write {
 		op = "write"
 	}
-	e := Event{Kind: "call", What: what, Instance: in.name, Call: c.n, Caller: c.caller, Op: op, Value: c.value}
+	sql, arg := c.statement()
+	e := Event{Kind: "call", What: what, Instance: in.name, Call: c.n, Caller: c.caller, Op: op, Value: c.value, SQL: sql, Args: []any{arg}}
 	if p != nil {
 		e.Process = p.name
 	}
@@ -561,59 +617,57 @@ func (r *run) call(ctx context.Context, p *process, caller string, write bool) {
 	r.serveCall(ctx, p, c)
 }
 
-// serveCall c in a task of p: one write or read transaction on the database of p, with the timeout of
-// the workload, and the event that ends the call.
+// serveCall c in a task of p: one write or read on the engine of p, on a connection of its own, with
+// the timeout of the workload, and the event that ends the call.
 func (r *run) serveCall(ctx context.Context, p *process, c *call) {
 	e := c.event(p.i, p, "")
 	ctx, cancel := p.inst.WithTimeout(ctx, duration(r.req.Workload.Timeout))
 	defer cancel()
-	d := p.current()
-	if d == nil {
+	p.mu.Lock()
+	eng := p.eng
+	p.mu.Unlock()
+	if eng == nil {
 		e.What, e.Error = "failed", "the instance has no database open"
 		r.callEnded(ctx, c, e)
 		return
 	}
+	conn := eng.Conn()
+	defer func() { _ = conn.Close(ctx) }()
 	if c.write {
-		e.What, e.Error = r.write(ctx, d, c.value)
+		e.What, e.Error = r.write(ctx, conn, c.value)
 	} else {
 		before := r.check.readStarted()
 		var keys []int64
 		var position format.Name
-		e.What, e.Error, keys, position = r.read(ctx, d)
+		e.What, e.Error, keys, position = r.read(ctx, conn, c.key)
 		if e.What == "served" {
 			e.Keys, e.Position = keys, position.String()
-			r.check.readEnded(ctx, p, before, keys, position)
+			r.check.readEnded(ctx, p, before, c.key, keys, position)
 		}
 	}
 	r.callEnded(ctx, c, e)
 }
 
-// write one row with the key value in a write transaction on d, and say how the call ended, and its
-// error.
-func (r *run) write(ctx context.Context, d *core.DB, value int64) (string, string) {
-	tx, err := d.Begin(ctx)
-	if err != nil {
+// write the row with the key value in a write transaction on conn, and say how the call ended, and
+// its error. The transaction creates the table first if the database does not have it, so the first
+// write of a run commits both statements. A statement that fails in the transaction has no effect,
+// and the transaction stays open, so the insert can come again after the create.
+func (r *run) write(ctx context.Context, conn *engine.Conn, value int64) (string, string) {
+	if err := conn.Begin(ctx); err != nil {
 		return refusal(err), err.Error()
 	}
-	if _, err := tx.Table(ctx, tableName); errors.Is(err, core.ErrNoTable) {
-		err = tx.CreateTable(ctx, workloadTable())
-		if err != nil {
-			_ = tx.Rollback(ctx)
-			return "abandoned", err.Error()
+	arg := s4qlpb.Value_builder{Integer: new(value)}.Build()
+	_, err := conn.Exec(ctx, insertSQL, arg)
+	if noTable(err) {
+		if _, err = conn.Exec(ctx, createSQL); err == nil {
+			_, err = conn.Exec(ctx, insertSQL, arg)
 		}
-	} else if err != nil {
-		_ = tx.Rollback(ctx)
+	}
+	if err != nil {
+		_ = conn.Rollback(ctx)
 		return "abandoned", err.Error()
 	}
-	if err := tx.Upsert(ctx, tableName, []*s4qlpb.Value{s4qlpb.Value_builder{Integer: new(value)}.Build()}); err != nil {
-		_ = tx.Rollback(ctx)
-		return "abandoned", err.Error()
-	}
-	if err := r.trim(ctx, tx, value); err != nil {
-		_ = tx.Rollback(ctx)
-		return "abandoned", err.Error()
-	}
-	switch err := tx.Commit(ctx); {
+	switch err := conn.Commit(ctx); {
 	case err == nil:
 		return "committed", ""
 	case errors.Is(err, core.ErrOutcomeUnknown):
@@ -623,59 +677,84 @@ func (r *run) write(ctx context.Context, d *core.DB, value int64) (string, strin
 	}
 }
 
-// trim the table of the workload in tx, after the write of the key value, to the rows that
-// [Workload.Keep] keeps: delete the other rows with the smallest keys, the oldest, until it has at
-// most Keep rows. The row of the write stays, so that every commit holds the key it was written
-// for. A table that is trimmed has at most Keep rows and the one inserted, so a trim reads at most
-// that many.
-func (r *run) trim(ctx context.Context, tx *core.Tx, value int64) error {
-	keep := r.req.Workload.Keep
-	if keep == 0 {
-		return nil
-	}
-	var keys []int64
-	for row, err := range tx.Scan(ctx, tableName) {
-		if err != nil {
-			return err
+// read the row of the key with one select on conn, and say how the call ended, its error, and
+// what it saw: the keys, in order, and the position of the read, which the engine gives in its event
+// of the statement. A select on a database without the table is served with no rows and with the
+// error of the engine: it saw a state, which the checker checks as any other.
+func (r *run) read(ctx context.Context, conn *engine.Conn, key int64) (string, string, []int64, format.Name) {
+	seen := &statementSeen{}
+	ctx = context.WithValue(ctx, statementKey{}, seen)
+	keys := []int64{}
+	rows, err := conn.Query(ctx, selectSQL, s4qlpb.Value_builder{Integer: new(key)}.Build())
+	if err == nil {
+		for row, rerr := range rows.All() {
+			if rerr != nil {
+				err = rerr
+				break
+			}
+			keys = append(keys, row[0].GetInteger())
 		}
-		keys = append(keys, row[0].GetInteger())
-	}
-	excess := len(keys) - keep
-	keys = slices.DeleteFunc(keys, func(k int64) bool { return k == value })
-	slices.Sort(keys)
-	for _, k := range keys[:max(0, min(excess, len(keys)))] {
-		if _, err := tx.Delete(ctx, tableName, []*s4qlpb.Value{s4qlpb.Value_builder{Integer: new(k)}.Build()}); err != nil {
-			return err
+		if cerr := rows.Close(); err == nil {
+			err = cerr
 		}
 	}
-	return nil
+	switch {
+	case err == nil && seen.position != nil:
+		return "served", "", keys, *seen.position
+	case noTable(err) && seen.position != nil:
+		return "served", err.Error(), []int64{}, *seen.position
+	case err == nil:
+		return "failed", "the engine gave no position for the read", nil, format.Name{}
+	default:
+		return refusal(err), err.Error(), nil, format.Name{}
+	}
 }
 
-// read the keys of the table of the workload in a read transaction on d, and say how the call
-// ended, its error, and what it saw. The call opens a reader of its own for the transaction, and
-// closes it.
-func (r *run) read(ctx context.Context, d *core.DB) (string, string, []int64, format.Name) {
-	rd, err := d.Reader(ctx)
-	if err != nil {
-		return refusal(err), err.Error(), nil, format.Name{}
+// noTable reports whether err is the engine's error for a statement on the table of the workload in
+// a database that does not have it.
+func noTable(err error) bool {
+	var se *sqlerr.Error
+	return errors.As(err, &se) && se.Message == "no such table: "+tableName
+}
+
+// statementSeen is what the simulator needs of the engine's event of a statement: the position of
+// the state that the statement saw. A read puts one on its context, under statementKey, and
+// [positionHandler] fills it in.
+type statementSeen struct {
+	position *format.Name
+}
+
+type statementKey struct{}
+
+// positionHandler is the handler of the logger of an engine. It takes the position from the event
+// of each statement whose context carries a [statementSeen], and is disabled for every other
+// statement, so that the engine builds no event for it.
+type positionHandler struct{}
+
+func (positionHandler) Enabled(ctx context.Context, _ slog.Level) bool {
+	_, ok := ctx.Value(statementKey{}).(*statementSeen)
+	return ok
+}
+
+func (h positionHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h positionHandler) WithGroup(string) slog.Handler { return h }
+
+func (positionHandler) Handle(ctx context.Context, rec slog.Record) error {
+	seen, ok := ctx.Value(statementKey{}).(*statementSeen)
+	if !ok || rec.Message != "statement" {
+		return nil
 	}
-	defer func() { _ = rd.Close(ctx) }()
-	rtx, err := rd.Read(ctx)
-	if err != nil {
-		return refusal(err), err.Error(), nil, format.Name{}
-	}
-	defer func() { _ = rtx.Close(ctx) }()
-	keys := []int64{}
-	for row, err := range rtx.Scan(ctx, tableName) {
-		if errors.Is(err, core.ErrNoTable) {
-			break
+	rec.Attrs(func(a slog.Attr) bool {
+		if a.Key != "statement.position" {
+			return true
 		}
-		if err != nil {
-			return "failed", err.Error(), nil, format.Name{}
+		if n, err := format.ParseName(a.Value.String()); err == nil {
+			seen.position = &n
 		}
-		keys = append(keys, row[0].GetInteger())
-	}
-	return "served", "", keys, rtx.Position()
+		return false
+	})
+	return nil
 }
 
 // refusal of a call at its start, in a word.
@@ -1361,12 +1440,19 @@ func readCommit(content []byte, name format.Name) (*CommitObject, error) {
 	}
 	c := &CommitObject{Name: name.String(), Parent: parent.String()}
 	for {
-		change, _, err := cr.Next()
+		change, annotation, err := cr.Next()
 		if errors.Is(err, io.EOF) {
 			return c, nil
 		}
 		if err != nil {
 			return nil, err
+		}
+		if s := annotation.GetStatement(); s != nil {
+			st := Statement{SQL: s.GetSql()}
+			for _, v := range s.GetParameters() {
+				st.Args = append(st.Args, argValue(v))
+			}
+			c.Statements = append(c.Statements, st)
 		}
 		if change == nil {
 			continue
@@ -1382,13 +1468,23 @@ func readCommit(content []byte, name format.Name) (*CommitObject, error) {
 				}
 			}
 		}
-		if d := change.GetDeleteRows(); d != nil && d.GetTable() == tableName {
-			for _, key := range d.GetPrimaryKeys() {
-				if v := key.GetValues(); len(v) > 0 {
-					c.Deletes = append(c.Deletes, v[0].GetInteger())
-				}
-			}
-		}
+	}
+}
+
+// argValue of an argument of a statement as JSON: an integer, a real, or text as itself, a blob as
+// hexadecimal text, and NULL as null.
+func argValue(v *s4qlpb.Value) any {
+	switch v.WhichKind() {
+	case s4qlpb.Value_Integer_case:
+		return v.GetInteger()
+	case s4qlpb.Value_Real_case:
+		return v.GetReal()
+	case s4qlpb.Value_Text_case:
+		return v.GetText()
+	case s4qlpb.Value_Blob_case:
+		return hex.EncodeToString(v.GetBlob())
+	default:
+		return nil
 	}
 }
 
