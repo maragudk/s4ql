@@ -1737,8 +1737,8 @@ type savepointCounts struct {
 	// nulls counts the upserts of a row with NULL in its column that takes NULL, and refusedNulls
 	// the upserts of NULL into a column that does not take it, among those that refused counts.
 	nulls, refusedNulls int
-	// defaults counts the creates of a table with a default, and nullDefaults those with DEFAULT
-	// NULL.
+	// defaults counts the creates of a table with a default, also those that fail because the name
+	// is taken, and nullDefaults the columns with DEFAULT NULL in them.
 	defaults, nullDefaults int
 }
 
@@ -1835,8 +1835,8 @@ func TestTx_Savepoint_random(t *testing.T) {
 		{"upserts of a row with NULL", all.nulls, 50},
 		{"upserts of NULL where the table takes none", all.refusedNulls, 14},
 		// A quarter of what the 400 seeds reached on 2026-11-21 with the defaults of slice 11.
-		{"creates of a table with a default", all.defaults, 469},
-		{"creates of a table with DEFAULT NULL", all.nullDefaults, 150},
+		{"creates of a table with a default, taken or not", all.defaults, 469},
+		{"columns with DEFAULT NULL in those creates", all.nullDefaults, 150},
 	} {
 		if c.got < c.atLeast {
 			t.Errorf("the transactions reached %q %v times, and must reach it %v times at least", c.name, c.got, c.atLeast)
