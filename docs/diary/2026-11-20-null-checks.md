@@ -23,7 +23,7 @@ The engine and the driver run the NULL of slice 6 since the branch `null-engine`
 - `/internal/engine/simulation_test.go`: `run.verifyRows` counts the NULL values in the log, as "NULL values in the log".
 - `FuzzTypes`: five tables whose first column takes NULL, and the form `formNull`, which gives NULL by the length of the input as the literal, as a nil argument, or by leaving the first column out.
 
-Commits: `e8dbf27`, the format fix after it, the commit of `NullCases`, the commit of `drivercheck`, and the commit of the planted bug and `FuzzTypes`.
+Commits: `e8dbf27`, `9a7a700`, `8749c4d`, `b73b4b3`, `de79354`, and in step 2 `8425817`, `764e9e6`, `889bcea`.
 
 ### Why
 
@@ -57,3 +57,54 @@ The differential tests are where the earlier slices found their bugs, so every r
 ### Future work
 
 - The documents, the minimums of NULL in the simulation, the counts of the planted bugs, and the fuzz runs: step 2.
+
+## Step 2: The counts of the simulation, the fuzz runs, the documents, and the review
+
+**Author:** null-checks builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "`run.verifyRows` already accepts a null only in a nullable column; make sure it is reached (count and require it). [...] Say how many of 200 seeds find each planted bug, old and new. [...] run each for about a minute. 5. Update the pinned numbers that move and explain each in your report. Fix the stale entry on the generator in the slice 2 part of `docs/todo.md` [...] Review your own work with the code-review skill before you report, and fix what it finds."
+**Interpretation:** measure the NULL of the log over 1,000 seeds of each workload, count the planted bugs over 200 seeds, fuzz `FuzzTypes` and `FuzzTypes_core` for a minute each, have a writer bring the documents up to date, review, and run every check.
+**Inferred intent:** a branch whose numbers, documents, and code agree, ready for the lead.
+
+### What I did
+
+- `S4QL_ENGINE_SIM_SEEDS=1000 go test -v -run '^TestSimulation$' ./internal/engine/` (118 s) gave 1,581, 316, and 2,694 NULL values in the log in the default, idle, and hammer workloads; `TestSimulation` requires a quarter: 0.4, 0.08, and 0.67 for each seed. The default 50 seeds give 61, 16, and 87.
+- `S4QL_ENGINE_SIM_SEEDS=200 go test -v -run '^TestSimulation_plantedBugs$' ./internal/engine/` (150 s): skipUnique 163 (156), ackUnknown 45, checkOutside 65, keepOpen 198, keepRead 98 (54), annotateNext 160, keepFailed 188, readNewest 185 (164), rollbackKeeps 104, convertReal 5 (5), listOrder 112 (44), zeroLeftOut 52 (44), and none without its bug. The default run of `convertReal` now needs 63 seeds for its two.
+- `go test -run '^$' -fuzz '^FuzzTypes$' -fuzztime 60s ./internal/engine/`: 114,686 executions; `FuzzTypes_core`: 5,001; nothing found, on 10 workers.
+- A writer sub-agent updated `/docs/todo.md` (the status of slice 6, the stale entry of `Generator.Nulls`, a group of my decisions, what is left, and the stale entry of slice 2 on the generator), `/internal/engine/README.md`, and `/internal/sql/stmt/README.md`. Its report found one fact of mine wrong: the arguments that are a nil `[]byte` in `TestDifferential` went from 26 to 54, not from 9 (9 was the old least number); I fixed the comment in the test. I fixed the doc comment of `Sequence.next` that it found stale.
+- The review (`code-review high` over `39fee85...HEAD`) found no bug and six nits. Fixed: `firstRow`, which compares the rows that `callQueryOpen` leaves open, now scans into `sql.Null*` values and pointers too; the doc comments of drivercheck's `pair.reach` and of `stmttest.Others`. Left: that `formNull` before `formSQL` renumbers the forms of cached fuzz inputs (no corpus of `FuzzTypes` is committed, and adding a form changes `forms` either way); that `docs/todo.md` records built details and moved numbers, which is how every builder's group of decisions there is written; and that the sequence no longer writes an extra nil argument for a statement without a parameter, since nil left `Unsupported` (see below).
+- `make test` (1 min 52 s), `make lint`, and `make check-browser` pass. `go test -count=20` of `TestDifferential`, `TestSimulation`, `TestSimulation_plantedBugs`, `TestBuild`, and the seeds of `FuzzTypes` and `FuzzTypes_core` passed (400 s), and so did the same with `-race` (744 s), the `stmttest` tests with and without `-race`, drivercheck `-count=20` (112 s), and drivercheck `-race -count=5` (95 s).
+- Run times of the changed packages, `go test -count=1`, before and after: `internal/engine` 20.8 s and 25.1 s, most of it `TestSimulation_plantedBugs` with the new bug and the 63 seeds that `convertReal` now takes; `internal/sql/stmt` 32.1 s and 32.5 s; drivercheck 5.6 s and 5.8 s.
+
+### Why
+
+The least numbers of the simulation are a quarter of 1,000 seeds, as for the rows of several columns, so that they fail when a case stops and not by chance.
+
+### What worked
+
+The writer's report checked my brief against the code and found the one wrong number.
+
+### What didn't work
+
+- The fix of the nit about an extra nil argument, `anyValue` giving nil one time in six, moved the random numbers of the simulation, and `TestSimulation/default` failed an old least number that has nothing to do with NULL: `50 seeds give 1 of "failed: stopped", and at least 2 were expected`. The first 1,000 seeds give 191 of them, so the 50 seeds were unlucky with a rare outcome that comes in clusters. I reverted the change rather than lower a least number of another slice to fit; the case it would cover is the error of the number of arguments, which comes before any value is looked at.
+- A `-race -count=20` run of the engine's tests in one `go test` call hit the default timeout: `panic: test timed out after 10m0s`, with no test failed before it. It ran again with `-timeout 60m`.
+- Loops of mine that waited for a file in the shell broke on `[ $(grep -c ... || echo 0) -ge 4 ]`, which gives two numbers when grep counts 0: `(eval):1: condition expected: 0`.
+
+### What I learned
+
+- The least numbers of `TestSimulation` over 50 seeds hold for the seeds they were set with; any change of the sequence's random numbers can trip one of a rare outcome, so a change of the generator should leave its draws alone where it can.
+
+### What was tricky
+
+- Keeping the review's fix from moving every count again: each draw of the sequence moves the pins of both differential tests and the run of every seed of the simulation.
+
+### What warrants review
+
+- The new group of decisions in `/docs/todo.md`, for the lead to confirm.
+- `convertReal` is found by 5 of 200 seeds now, where it was 14; the default run passes at seed 62.
+
+### Future work
+
+- Mutation testing of the code of slices 5 and 6, as `/docs/todo.md` says.
