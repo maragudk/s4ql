@@ -46,7 +46,8 @@ func (g *guard) close() {
 }
 
 // body of an object that a read returned. It fails with [io.ErrUnexpectedEOF] if the content ends
-// before the length that the answer gave, and logs the event of the read when it is closed.
+// before the length that the answer gave, wraps the error of the context of the read in a failure
+// after the context ended, as [ended] does, and logs the event of the read when it is closed.
 type body struct {
 	r    *request
 	body io.ReadCloser
@@ -70,6 +71,9 @@ func (b *body) Read(p []byte) (int, error) {
 		err = fmt.Errorf("s3store: get %q: the content ended after %v of %v bytes: %w", b.r.key, b.read, b.size, io.ErrUnexpectedEOF)
 	case err != nil && !errors.Is(err, io.EOF):
 		err = fmt.Errorf("s3store: get %q: %w", b.r.key, err)
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		err = ended(b.r.ctx, err)
 	}
 	if err != nil {
 		b.err = err

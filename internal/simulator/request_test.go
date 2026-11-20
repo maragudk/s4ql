@@ -23,6 +23,7 @@ func TestParseRequest(t *testing.T) {
 		is.True(t, r.Workload.On)
 		is.Equal(t, 2, r.Workload.Callers)
 		is.Equal(t, 40, r.Workload.Writes)
+		is.Equal(t, 25, r.Workload.Deletes)
 		is.Equal(t, 0.0, r.Faults.LostRequest)
 		is.Equal(t, "", r.Client.Instance)
 		is.True(t, !r.Standby, "no standby")
@@ -64,6 +65,7 @@ func TestParseRequest(t *testing.T) {
 		{"should refuse a probability above one", `{"faults": {"lostRequest": 2}}`, "faults.lostRequest is 2"},
 		{"should refuse a negative duration of a fault", `{"faults": {"slowBy": -1}}`, "faults.slowBy is -1"},
 		{"should refuse a share of writes above 100", `{"workload": {"writes": 101}}`, "workload.writes is 101"},
+		{"should refuse a share of deletes below 0", `{"workload": {"deletes": -1}}`, "workload.deletes is -1"},
 		{"should refuse an unknown action", `{"schedule": [{"at": 1, "do": "explode"}]}`, `schedule[0]: no action is called "explode"`},
 		{"should refuse an action at the end", `{"end": 1000, "schedule": [{"at": 1000, "do": "calm"}]}`, "schedule[0]: calm at 1000"},
 		{"should refuse an action without its instance", `{"schedule": [{"at": 1, "do": "crash"}]}`, `crash needs an instance from a to c, and has ""`},
