@@ -1339,6 +1339,9 @@ func TestOpen_cache(t *testing.T) {
 		defer func() { is.NotError(t, vfs.Close()) }()
 		options := core.Options{}
 		options.VFS = vfs.Name()
+		// The store is out of reach, so the task of the lease, which starts in Open, reads nothing
+		// from the cache, and every read that the fault counts is one of the open.
+		w.store.Outage(t.Context(), time.Hour)
 		for _, version := range []string{"1", "2"} {
 			data, err := os.ReadFile(filepath.Join(w.dir, version+".db"))
 			is.NotError(t, err)
@@ -1353,10 +1356,9 @@ func TestOpen_cache(t *testing.T) {
 				vfs.Fail(faultvfs.Fault{Ops: faultvfs.Read, Files: faultvfs.MainDB | faultvfs.WAL, After: after, Times: 1})
 				d, err := core.Open(t.Context(), w.host, w.client(), path, "db", options)
 				if err == nil {
-					// The task of the lease can read the cache before the fault is disarmed, and its
-					// failure would be that of the close.
 					vfs.Fail(faultvfs.Fault{})
-					_ = d.Close(t.Context())
+					is.Equal(t, before, vfs.Failures(), "the open succeeded, and a read failed: "+what)
+					is.NotError(t, d.Close(t.Context()), what)
 					break
 				}
 				failed++
