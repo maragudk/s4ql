@@ -844,31 +844,32 @@ footer ul {
     <table class="status-table">
       <tbody>
         <tr>
-          <th scope="row" class="caps">Built</th>
+          <th scope="row" class="caps">Works now</th>
           <td>
+            <p>Through <code>database/sql</code>, with the package <code>maragu.dev/s4ql</code> as the driver:</p>
             <ul>
-              <li>The storage core. A database is a log of commits in S3 with a local SQLite cache, and one instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work.</li>
-              <li>The tests behind it: a deterministic simulation, and tests against a real S3-compatible bucket, which run in CI on every pull request.</li>
-              <li>The S3 client, which passes the conformance suite on Tigris.</li>
-              <li>The SQL tokenizer, the parser, and the pass after the parser.</li>
-              <li>The parser agrees with SQLite on all 138,926 statements on which SQLite gives a clear verdict, of a corpus of 139,234.</li>
-              <li>The SQL engine for slice 1: <code>create table</code>, <code>insert</code>, <code>select *</code>, and <code>drop table</code> for one integer column. It is checked against SQLite statement by statement, in a simulation with faults, and by fuzzing.</li>
-              <li>The <code>database/sql</code> driver, in the package <code>maragu.dev/s4ql</code>. With it, an application can run the statements of slice 1 on a bucket. It is checked against SQLite through <code>database/sql</code>, in 200 generated sequences of 40 statements and by fuzzing. A cache belongs to one database, and another database refuses it.</li>
-              <li>Slice 2, parameters: an <code>insert</code> takes an integer argument for a plain <code>?</code> through <code>database/sql</code>, directly and through a prepared statement. It is checked against SQLite by generated tests in the engine and through <code>database/sql</code> (the engine's compares 12,000 statements), in a simulation, and by mutation testing.</li>
-              <li>Slice 3, transactions: <code>db.BeginTx</code> gives a transaction that is the single writer from its beginning until it commits or rolls back. <code>sql.TxOptions{ReadOnly: true}</code> gives a read-only transaction on one state that holds no one up. It is checked against SQLite by generated tests in the engine and through <code>database/sql</code> (499 generated transactions), in a simulation with faults, and by mutation testing (628 mutants of the engine).</li>
-              <li>Slice 4, the other types: a table has a column of type <code>int</code>, <code>integer</code>, <code>real</code>, <code>text</code>, or <code>blob</code>, with literals and arguments of Go types for each. A value must have the exact type of its column. It is checked against SQLite by generated tests in the engine and through <code>database/sql</code>, and in a simulation. Real literals are read as SQLite reads them, bit for bit.</li>
-              <li>Slice 5, several columns: a table has one or more columns, exactly one of them the primary key and every other one <code>not null</code>. An <code>insert</code> has a list of columns or none, and a <code>select</code> names columns or takes <code>*</code>. It is checked against SQLite by generated tests in the engine and through <code>database/sql</code>, and in a simulation.</li>
-              <li>Slice 6, <code>null</code>: a column that is not the primary key can take null. The literal <code>null</code>, a nil argument, and a column left out of an <code>insert</code> give it, and it reads back as nil. It is checked against SQLite by generated tests in the engine and through <code>database/sql</code>, and in a simulation.</li>
+              <li><code>create table</code> and <code>drop table</code> of a strict table with one or more columns, exactly one of them the primary key.</li>
+              <li>The column types <code>int</code>, <code>integer</code>, <code>real</code>, <code>text</code>, and <code>blob</code>. A value must have the exact type of its column.</li>
+              <li>Columns that are <code>not null</code>, and columns that take null.</li>
+              <li><code>insert</code> of one row, with literals and arguments, with or without a list of columns.</li>
+              <li><code>select</code> of named columns or <code>*</code>, with a <code>where</code> of comparisons and of <code>is null</code> and <code>is not null</code>, joined by <code>and</code>.</li>
+              <li>Arguments for a plain <code>?</code>, directly and through prepared statements.</li>
+              <li>Transactions, also read-only ones.</li>
+              <li>Storage: a database is a log of commits in S3, with a local SQLite cache. One instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work.</li>
             </ul>
           </td>
         </tr>
         <tr>
+          <th scope="row" class="caps">Checked</th>
+          <td><p>Against SQLite with generated statements, in the engine and through <code>database/sql</code>, in a deterministic simulation with planted bugs, and with mutation testing and fuzzing. The storage is also tested against a real S3-compatible bucket in CI.</p></td>
+        </tr>
+        <tr>
           <th scope="row" class="caps">Not built</th>
-          <td><p><code>where</code>, and a statement while rows of the same transaction are open.</p></td>
+          <td><p><code>update</code> and <code>delete</code>, <code>or</code> and other expressions in a <code>where</code>, <code>order by</code> and <code>limit</code>, more than one row per <code>insert</code>, indexes, defaults, and a statement while rows of the same transaction are open.</p></td>
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
-          <td><p>Slice 7 of the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a> (<code>where</code> on <code>select</code>) is being built. Slice 8 (<code>update</code> and <code>delete</code>) is agreed.</p></td>
+          <td><p>Slice 8 of the roadmap (<code>update</code> and <code>delete</code>), which is agreed and not built yet. After it comes the rest of what the first application needs (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
         </tr>
       </tbody>
     </table>
@@ -947,10 +948,10 @@ footer ul {
         <div><h3>Slice 6: <code>null</code></h3><p>Columns that take null: the literal <code>null</code>, a nil argument, and a column left out of an <code>insert</code>. A null comes back as nil.</p></div>
         <span class="where caps">Built</span>
       </li>
-      <li class="agreed">
+      <li class="built">
         <span class="glyph" aria-hidden="true"></span>
         <div><h3>Slice 7: <code>where</code> on <code>select</code></h3><p>A column compared with a literal or a <code>?</code>, <code>is null</code>, and <code>is not null</code>, joined with <code>and</code>.</p></div>
-        <span class="where caps">Agreed</span>
+        <span class="where caps">Built</span>
       </li>
       <li class="agreed">
         <span class="glyph" aria-hidden="true"></span>
@@ -1003,7 +1004,7 @@ footer ul {
 
 <footer>
   <div class="wrap">
-    <p>Made by <a href="https://www.maragu.dev/">maragu</a>: independent software consulting for cloud-native Go apps and AI engineering. s4ql is MIT licensed. Set in <a href="https://commitmono.com/">Commit Mono</a>.</p>
+    <p>Made by <a href="https://www.maragu.dev/">maragu</a>: independent software consulting for cloud-native Go apps and AI engineering.</p>
     <ul class="caps">
       <li><a href="https://github.com/maragudk/s4ql">GitHub</a></li>
       <li><a href="https://pkg.go.dev/maragu.dev/s4ql">Go docs</a></li>

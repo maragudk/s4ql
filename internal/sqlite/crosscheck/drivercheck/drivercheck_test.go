@@ -627,6 +627,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 		if columns == nil {
 			return
 		}
+		p.reachWhere(sel, runs, got, o, kind, columns, count)
 		for _, o := range got.runs() {
 			if o.null {
 				count(map[bool]string{true: "select * with NULL ", false: "select of names with NULL "}[sel.Columns == nil] + kind(o))
@@ -699,6 +700,60 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 			count("insert with two faults: " + kind(o))
 		}
 	}
+}
+
+// reachWhere counts what the select sel with the arguments of each run, whose outcome of s4ql is got,
+// reaches of WHERE, on its table with the columns on o, as [pair.reach] says, with the kind of each
+// outcome as kind gives it: for each run that s4ql takes to the instance, each case of
+// [stmttest.WhereCases], and for a query that reads its rows to their end and succeeds on a table
+// with rows, whether it gives none, some, or all of them; and for any other run, one with an argument
+// that s4ql does not support or with another number of arguments than parameters.
+func (p *pair) reachWhere(sel *stmt.Select, runs [][]any, got outcome, o runner, kind func(outcome) string, columns []stmttest.TableColumn, count func(string)) {
+	tb := p.tb
+	tb.Helper()
+	if sel.Where == nil {
+		return
+	}
+	for i, out := range got.runs() {
+		if i >= len(runs) {
+			break
+		}
+		if !reachesSelect(sel, runs[i]) {
+			count("WHERE with arguments that s4ql refuses " + kind(out))
+			continue
+		}
+		var bound []any
+		for _, a := range runs[i] {
+			if v, ok := stmttest.Integers([]any{a}); ok {
+				a = v[0]
+			}
+			bound = append(bound, converted(a))
+		}
+		for _, what := range stmttest.WhereCases(columns, sel, bound) {
+			count(what + " " + kind(out))
+		}
+		if out.failed != "" || got.call != callQuery && got.call != callPrepareQuery && got.call != callStmtQuery {
+			continue
+		}
+		table, _ := p.columnsIn(o, sel.Table.Value)
+		var n int
+		is.NotError(tb, o.QueryRowContext(tb.Context(), "select count(*) from "+stmttest.Quote(table)).Scan(&n))
+		switch {
+		case n == 0:
+		case len(out.rows) == 0:
+			count("WHERE that gives no row of a table with rows")
+		case len(out.rows) == n:
+			count("WHERE that gives every row of a table with rows")
+		default:
+			count("WHERE that gives some rows of a table")
+		}
+	}
+}
+
+// reachesSelect reports whether s4ql takes the select sel with args to the instance: with one
+// argument for each parameter, each one that s4ql supports.
+func reachesSelect(sel *stmt.Select, args []any) bool {
+	return len(args) == sel.Parameters() && argumentRefusal(args) == ""
 }
 
 // argumentKind of the argument a, for a count of what a test reaches, as [stmttest.ArgumentKind]
@@ -2706,6 +2761,37 @@ func TestGenerated(t *testing.T) {
 		"insert with NULL in the key: NOT NULL constraint failed": 9, "insert with NULL in a column that does not take it: NOT NULL constraint failed": 5,
 		"insert of NULL beside a value of another type NOT NULL constraint failed": 2, "insert of NULL beside a value of another type a value of another type": 3,
 		"select * with NULL ok": 25, "select of names with NULL ok": 15,
+
+		// Slice 7, a third of what the run gave on 2026-11-20 when the sequence wrote WHERE: each
+		// operator on the key and on another column; each way that the plan reads rows; a select that
+		// gives no row, some rows, and every row of a table with rows; each kind of value, by literal and
+		// by argument, NULL by both; and the faults: a column that the table does not have, in a
+		// comparison and under IS NULL or IS NOT NULL, alone, before, and after other conditions, and in
+		// double quotes; a value of another type; arguments that s4ql refuses; a column tested twice;
+		// and contradicting conditions.
+		"= on the key ok": 10, "!= on the key ok": 12, "< on the key ok": 18, "<= on the key ok": 19, "> on the key ok": 22, ">= on the key ok": 15,
+		"IS NULL on the key ok": 10, "IS NOT NULL on the key ok": 8,
+		"= on another column ok": 6, "!= on another column ok": 5, "< on another column ok": 6, "<= on another column ok": 5, "> on another column ok": 7,
+		">= on another column ok": 8, "IS NULL on another column ok": 2, "IS NOT NULL on another column ok": 5,
+		"WHERE that reads no row ok": 17, "WHERE that reads a get of one key ok": 6, "WHERE that reads a scan from a lower bound ok": 8,
+		"WHERE that reads a scan to an upper bound ok": 9, "WHERE that reads a scan between two bounds ok": 9,
+		"WHERE that reads a scan between two bounds that hold no key ok": 7, "WHERE that reads a scan of every row ok": 23,
+		"WHERE that gives no row of a table with rows": 20, "WHERE that gives some rows of a table": 5, "WHERE that gives every row of a table with rows": 6,
+		"comparison with literal integer ok": 35, "comparison with literal real ok": 14, "comparison with literal real -0.0 ok": 2, "comparison with literal text ok": 12,
+		"comparison with literal empty text ok": 5, "comparison with literal blob ok": 12, "comparison with literal empty blob ok": 2, "comparison with literal null ok": 6,
+		"comparison with argument int64 ok": 16, "comparison with argument float64 ok": 7, "comparison with argument float64 -0.0 ok": 1,
+		"comparison with argument string ok": 9, "comparison with argument empty string ok": 2, "comparison with argument []uint8 ok": 4,
+		"comparison with argument empty []byte ok": 2, "comparison with argument nil ok": 3,
+		"WHERE with a column that the table does not have in a comparison, alone no such column":                                6,
+		"WHERE with a column that the table does not have in a comparison, before other conditions no such column":              13,
+		"WHERE with a column that the table does not have in a comparison, after other conditions no such column":               7,
+		"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column":                   1,
+		"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, before other conditions no such column": 4,
+		"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, after other conditions no such column":  2,
+		"WHERE with a column in double quotes that the table does not have no such column":                                      21,
+		"WHERE with a value of another type a value of another type":                                                            23, "WHERE with arguments that s4ql refuses not supported": 11,
+		"WHERE with arguments that s4ql refuses wrong number of arguments": 12, "WHERE that tests a column more than once ok": 44,
+		"WHERE with contradicting conditions ok": 10,
 	} {
 		if y["reached: "+kind] < least {
 			t.Errorf("the run reaches %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y["reached: "+kind], least)
@@ -2746,9 +2832,19 @@ func TestGenerated(t *testing.T) {
 	// [stmttest.Others], which it refused as not supported, and of these 3 compare a column that the
 	// table does not have, which SQLite gives at prepare and s4ql when the statement runs, 8 compare a
 	// value of another type than its column, and 3 compare a name in double quotes that is no column.
+	// When the sequence wrote WHERE, the counts went from 1063, 10, 426, 200, 169, 74, 46, 29, 53, and
+	// 48 to 1178, 11, 411, 260, 231, 69, 24, 24, 58, and 69: the sequence draws other random numbers,
+	// which moves every count, the calls and the transactions too; and of its own, one select in two
+	// has a WHERE, which names a column that the table does not have now and then, which SQLite gives
+	// at prepare and s4ql when the statement runs, which took excusedPrepare up, and in double quotes
+	// in some of them, which took excusedQuoted up; which compares a value of another type than its
+	// column now and then, which took excusedType up; and whose parameters have arguments that s4ql
+	// does not support now and then, which took excusedArgument up. A select with WHERE fails more
+	// often than one without, so fewer rows are left open in a transaction, which took
+	// excusedRowsOpen down.
 	want := map[string]int{
-		excusedPrepare: 1063, excusedStartedTable: 10, excusedArguments: 426, excusedArgument: 200, excusedType: 169,
-		excusedLevel: 74, excusedRowsOpen: 46, excusedTxOpen: 29, excusedOutside: 53, excusedQuoted: 48,
+		excusedPrepare: 1178, excusedStartedTable: 11, excusedArguments: 411, excusedArgument: 260, excusedType: 231,
+		excusedLevel: 69, excusedRowsOpen: 24, excusedTxOpen: 24, excusedOutside: 58, excusedQuoted: 69,
 	}
 	kinds := slices.Collect(maps.Keys(want))
 	for name := range y {

@@ -46,7 +46,7 @@ Do not spend effort scrubbing Markus's email address from documents, transcripts
 `README.md` is not a dumping ground for all kinds of information. Things are added to it judiciously.
 
 - **Why:** Markus said on 2026-11-11 that "the readme isn't a dumping ground for all kinds of info, we'll add things there judiciously", when he had the paragraph on cgo and the C compiler removed from it.
-- **How to apply:** do not add to `README.md` as a side effect of other work. Details on building, internals, and design go next to the code they describe or in `docs/`. If something seems to belong in the README, propose it to Markus instead of writing it. The section "Status" is the exception: Markus asked for it on 2026-11-13, "we can keep it up to date without dumping everything there". Update it when a piece of the project is merged, and keep it to what is built, what is not, and what is next, in a few lines. Details stay in `docs/todo.md`.
+- **How to apply:** do not add to `README.md` as a side effect of other work. Details on building, internals, and design go next to the code they describe or in `docs/`. If something seems to belong in the README, propose it to Markus instead of writing it. The section "Status" is the exception: Markus asked for it on 2026-11-13, "we can keep it up to date without dumping everything there". Update it when a piece of the project is merged, and keep it to what is built, what is not, and what is next, in a few lines. It says what s4ql supports now, by feature, not slice by slice, and the slices and how each is checked are in `docs/roadmap.md`. Markus on 2026-11-20: "the status block should be condensed, so we don't have to write all slices out, but just what we support now". Details stay in `docs/todo.md`.
 
 ### Work without waiting for Markus, except on design
 
@@ -60,7 +60,7 @@ Commit agreed work and merge pull requests when you judge them ready, without as
 Do not update the public site in `site/` (served at www.s4ql.com) as a side effect of other work, except its "Status" and "Roadmap" sections.
 
 - **Why:** Markus said on 2026-11-16: "you don't need to keep the public site updated automatically, I'll do that once in a while", and then: "feel free to update the Status section on the site, but only that", "and the roadmap."
-- **How to apply:** when a piece of the project is merged, update the "Status" section of `README.md`, the section with the id `status` in `site/index.html`, and `docs/todo.md`. Keep the site's status as short as the README's. When `docs/roadmap.md` changes or a slice of it is built, update the section with the id `roadmap` in `site/index.html` to match. A slice that is built stays in both, marked as built, and is never removed or folded into another; Markus on 2026-11-19: "don't delete the old slices entirely from the roadmap? It's nice to see progress". Leave everything else in `site/` alone unless Markus asks. Neither the lead nor the builder makes these updates: the lead spawns a small sub-agent for them after the work is merged, so that the lead's context stays clean and the builder concentrates on the code. Markus: "I want to keep your context clean. Delegate", and: "A small subagent after the work is done sounds better to me."
+- **How to apply:** when a piece of the project is merged, update the "Status" section of `README.md`, the section with the id `status` in `site/index.html`, and `docs/todo.md`. Keep the site's status as short as the README's, and by feature like it, not slice by slice. When `docs/roadmap.md` changes or a slice of it is built, update the section with the id `roadmap` in `site/index.html` to match. A slice that is built stays in both, marked as built, and is never removed or folded into another; Markus on 2026-11-19: "don't delete the old slices entirely from the roadmap? It's nice to see progress". Leave everything else in `site/` alone unless Markus asks. Neither the lead nor the builder makes these updates: the lead spawns a small sub-agent for them after the work is merged, so that the lead's context stays clean and the builder concentrates on the code. Markus: "I want to keep your context clean. Delegate", and: "A small subagent after the work is done sounds better to me."
 
 ### A new page on the site gets a preview image of its own
 
@@ -110,6 +110,13 @@ A builder gets a git worktree of its own when it is spawned, through the Agent t
 
 - **Why:** on 2026-11-12 the lead created the worktrees and switched between them while builders ran. One builder's working directory moved with the lead, and its writes and git commands in its own worktree were refused, so it could not commit its last diary step. Markus then said: "From now on maybe let builders create their worktrees?" A builder that got its own worktree the same day ran without friction.
 - **How to apply:** spawn builders and writers with worktree isolation. The builder writes the first step of the feature's diary from the requirements in its brief. The lead reviews a builder's branch from `main` with `git diff main...<branch>`, pushes it, and opens the pull request. After the merge, remove the worktree and the branch.
+
+### The lead delegates heavily, also small jobs
+
+The lead hands off not only building but the routine around it, to keep its own context for the conversation with Markus and for decisions.
+
+- **Why:** on 2026-11-20, after a long session in which the lead itself reviewed diffs, opened pull requests, waited for CI, merged, cleaned up, and checked each deploy of the site, Markus said: "Remember to delegate to subagents heavily to conserve your context. Doesn't have to be whole builders each time."
+- **How to apply:** give a small sub-agent, on a small model where that is enough, each job whose steps are known: taking a finished branch through its pull request, its checks, the merge, the cleanup, and the check of the deploy; a text change of a few lines; a search; reading a log. Its brief names the rules of this file that bind it, and asks for a report of a few lines. The lead keeps what needs judgement: what to build, whether a result is what Markus asked for, and anything that deviates from what was agreed.
 
 ### A builder's task fits well inside its context
 
