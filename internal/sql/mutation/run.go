@@ -78,6 +78,8 @@ var engineLayers = map[string]string{
 	"FuzzChanges":                layerFuzzSeeds,
 	"FuzzChanges_core":           layerFuzzSeeds,
 	"FuzzCreateIndex_core":       layerFuzzSeeds,
+	"FuzzIndexes":                layerFuzzSeeds,
+	"FuzzIndexes_core":           layerFuzzSeeds,
 	"TestSimulation":             layerSim,
 	"TestSimulation_plantedBugs": layerSim,
 }
