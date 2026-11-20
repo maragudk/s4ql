@@ -908,6 +908,17 @@ func TestChangeRows(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("should give the error of the read of the check of NOT NULL, and change nothing", func(t *testing.T) {
+		for _, scanAll := range []bool{false, true} {
+			f := newTable()
+			f.scanFails = 0
+			err, n, calls := change(t, f, "update t set w = null where w = 20", scanAll)
+			is.Equal(t, "the scan fails", err)
+			is.Equal(t, int64(0), n)
+			is.Equal(t, "[table t]", calls, fmt.Sprint("scan all: ", scanAll))
+		}
+	})
 }
 
 func TestBuild(t *testing.T) {
