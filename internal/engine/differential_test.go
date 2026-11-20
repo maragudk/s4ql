@@ -1463,24 +1463,33 @@ func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
 	})
 }
 
-// typesSetUp is the database that [FuzzTypes] runs on: a table of each of the five types, with
-// names in other cases than the inserts use.
+// typesSetUp is the database that [FuzzTypes] runs on, with names in other cases than the inserts
+// use: for each of the five types a table whose one column, the key, is of the type, and a table
+// whose first column is of the type and whose second, the key, is an INT.
 var typesSetUp = []string{
 	"create table T_int (v int primary key) strict, without rowid",
 	"create table t_INTEGER (v integer primary key) strict, without rowid",
 	"create table t_real (V real primary key) strict, without rowid",
 	"create table t_text (v text primary key) without rowid, strict",
 	"create table t_blob (v BLOB primary key) strict, without rowid",
+	"create table T_int_k (v int not null, k int primary key) strict, without rowid",
+	"create table t_INTEGER_k (v integer not null, K int primary key) strict, without rowid",
+	"create table t_real_k (V real not null, k int primary key) strict, without rowid",
+	"create table t_text_k (v text not null, k int primary key) without rowid, strict",
+	"create table t_blob_k (v BLOB not null, k int primary key) strict, without rowid",
 }
 
 // typesTables are the names of the tables of [typesSetUp], as the inserts of [FuzzTypes] name them.
-var typesTables = []string{"t_int", "t_integer", "t_real", "t_text", "t_blob"}
+// A name that ends in _k is of a table of two columns.
+var typesTables = []string{"t_int", "t_integer", "t_real", "t_text", "t_blob", "t_int_k", "t_integer_k", "t_real_k", "t_text_k", "t_blob_k"}
 
 // FuzzTypes gives the engine, on a database in memory, the bytes of its input as the value of an
 // insert into a table of each of the five types, in the form that its input chooses: as a text
 // argument, a blob argument, a string literal, a blob literal, the bits of a real argument or of an
-// integer argument, or SQL text in the place of the value. Each insert runs twice, so that the second
-// meets the key of the first, and a query reads the table. It compares each answer with SQLite's,
+// integer argument, or SQL text in the place of the value. The value is the key of a table of one
+// column, and the first column of a table of two, whose key the insert sets to 1 and names first in
+// its list. Each insert runs twice, so that the second meets the key of the first, and a query reads
+// the table. It compares each answer with SQLite's,
 // as [TestDifferential] does, by s4ql's rules where they differ from SQLite: a value of another type
 // than its column, NaN, an infinity, and text that holds NUL or is not valid UTF-8 are refused. Then
 // it compares the tables. [FuzzTypes_core] runs the same on the storage core. The database in memory
@@ -1512,7 +1521,10 @@ const (
 // The form is form % [forms], and an odd form / [forms] writes the hex digits of a blob literal and its
 // x in upper case.
 func typesCall(table string, data []byte, form uint8) stmttest.Call {
-	insert := "insert into " + table + " (v) values "
+	insert, end := "insert into "+table+" (v) values (", ")"
+	if strings.HasSuffix(table, "_k") {
+		insert = "insert into " + table + " (k, v) values (1, "
+	}
 	bits := func() uint64 {
 		var b [8]byte
 		copy(b[:], data)
@@ -1520,26 +1532,26 @@ func typesCall(table string, data []byte, form uint8) stmttest.Call {
 	}
 	switch form % forms {
 	case formTextArgument:
-		return stmttest.Call{Src: insert + "(?)", Args: []any{string(data)}, Supported: true}
+		return stmttest.Call{Src: insert + "?" + end, Args: []any{string(data)}, Supported: true}
 	case formBlobArgument:
-		return stmttest.Call{Src: insert + "(?)", Args: []any{append([]byte{}, data...)}, Supported: true}
+		return stmttest.Call{Src: insert + "?" + end, Args: []any{append([]byte{}, data...)}, Supported: true}
 	case formStringLiteral:
 		text := string(data)
 		// The pass supports the text of a statement only if it is valid UTF-8 without NUL.
 		supported := utf8.ValidString(text) && !strings.ContainsRune(text, 0)
-		return stmttest.Call{Src: insert + "('" + strings.ReplaceAll(text, "'", "''") + "')", Supported: supported}
+		return stmttest.Call{Src: insert + "'" + strings.ReplaceAll(text, "'", "''") + "'" + end, Supported: supported}
 	case formBlobLiteral:
 		x := "x'" + hex.EncodeToString(data) + "'"
 		if form/forms%2 == 1 {
 			x = strings.ToUpper(x)
 		}
-		return stmttest.Call{Src: insert + "(" + x + ")", Supported: true}
+		return stmttest.Call{Src: insert + x + end, Supported: true}
 	case formRealArgument:
-		return stmttest.Call{Src: insert + "(?)", Args: []any{math.Float64frombits(bits())}, Supported: true}
+		return stmttest.Call{Src: insert + "?" + end, Args: []any{math.Float64frombits(bits())}, Supported: true}
 	case formIntegerArgument:
-		return stmttest.Call{Src: insert + "(?)", Args: []any{int64(bits())}, Supported: true}
+		return stmttest.Call{Src: insert + "?" + end, Args: []any{int64(bits())}, Supported: true}
 	default:
-		return stmttest.Call{Src: insert + "(" + string(data) + ")"}
+		return stmttest.Call{Src: insert + string(data) + end}
 	}
 }
 
