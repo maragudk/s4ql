@@ -385,6 +385,8 @@ func TestTx_Commit(t *testing.T) {
 			is.Error(t, core.ErrTxDone, tx.CreateTable(t.Context(), tableOf("t1", 1, "k")))
 			is.Error(t, core.ErrTxDone, tx.DropTable(t.Context(), "t1"))
 			is.Error(t, core.ErrTxDone, tx.Upsert(t.Context(), "t1", row(1)))
+			_, err = tx.Insert(t.Context(), "t1", row(1))
+			is.Error(t, core.ErrTxDone, err)
 			_, err = tx.Delete(t.Context(), "t1", row(1))
 			is.Error(t, core.ErrTxDone, err)
 			is.Error(t, core.ErrTxDone, tx.Annotate(t.Context(), "select 1", nil))
