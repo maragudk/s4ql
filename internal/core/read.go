@@ -254,9 +254,24 @@ func (r *ReadTx) leave() {
 	r.d.unuse(r.c)
 }
 
-// table with the given name, or an error that wraps [ErrNoTable].
+// table with the given name and its indexes, as [conn.lookUp] gives it, or an error that wraps
+// [ErrNoTable].
 func (r *ReadTx) table(ctx context.Context, operation, name string) (*table, error) {
 	t, err := r.c.lookUp(name)
+	if err != nil {
+		return nil, r.d.cacheError(ctx, operation, err)
+	}
+	if t == nil {
+		return nil, fmt.Errorf("%w: %q", ErrNoTable, name)
+	}
+	return t, nil
+}
+
+// tableWithoutIndexes is [ReadTx.table] without the indexes of the table, as
+// [conn.lookUpWithoutIndexes] gives it, for a call that reads the definition of the table or one row
+// by its key.
+func (r *ReadTx) tableWithoutIndexes(ctx context.Context, operation, name string) (*table, error) {
+	t, err := r.c.lookUpWithoutIndexes(name)
 	if err != nil {
 		return nil, r.d.cacheError(ctx, operation, err)
 	}
@@ -272,7 +287,7 @@ func (r *ReadTx) Table(ctx context.Context, name string) (*s4qlpb.CreateTable, e
 		return nil, err
 	}
 	defer r.leave()
-	t, err := r.table(ctx, "table", name)
+	t, err := r.tableWithoutIndexes(ctx, "table", name)
 	if err != nil {
 		return nil, err
 	}
@@ -302,7 +317,7 @@ func (r *ReadTx) Get(ctx context.Context, name string, key []*s4qlpb.Value) ([]*
 		return nil, err
 	}
 	defer r.leave()
-	t, err := r.table(ctx, operation, name)
+	t, err := r.tableWithoutIndexes(ctx, operation, name)
 	if err != nil {
 		return nil, err
 	}
