@@ -388,10 +388,12 @@ func check(src string) (stmt.Statement, error) {
 	if s == nil {
 		return nil, ErrNoStatement
 	}
-	if err := existsRefusal(src, s); err != nil {
+	// Before slice 11, the pass refused a DEFAULT and never gave the statement, so the DEFAULT wins
+	// over IF NOT EXISTS.
+	if err := defaultRefusal(src, s); err != nil {
 		return nil, err
 	}
-	if err := defaultRefusal(src, s); err != nil {
+	if err := existsRefusal(src, s); err != nil {
 		return nil, err
 	}
 	return s, nil

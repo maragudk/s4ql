@@ -62,3 +62,51 @@ The pinned numbers. `TestGenerate_mutants` went from 29 to 41 syntax errors and 
 
 - The README of the pass, beyond the four names of the vocabulary, and the review: step 2.
 - The engine and the driver for slice 11, which remove `defaultRefusal`; the core and the commit format, whose cache must tell a column with `not null default null` from a nullable one.
+
+## Step 2: The README, the review, and the checks
+
+**Author:** default-stmt builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Finish: `make test`, `make lint`, `make check-browser`, `make fuzz-shards` pass; `make test-asan` only for the packages whose fuzz tests you changed. Self-review against these requirements."
+**Interpretation:** Bring the README of the pass up to date, review the branch with the code-review skill, fix what matters, and run every check.
+**Inferred intent:** A branch whose code, numbers, and documents agree, ready for the lead and for the builders of the engine and the core.
+
+### What I did
+
+A writer sub-agent updated `/internal/sql/stmt/README.md`: the typed form (`Column.Default`, `stmt.Default`), the column-def grammar, a section on DEFAULT under CREATE TABLE in the shape of the one on IF NOT EXISTS, the INSERT sentences that a DEFAULT changes, "How it is tested", and "Results" from a full run of the package (`go test -count=1 -v ./internal/sql/stmt`, 100 s). I read its diff. It found two claims of `/docs/todo.md` that no test pins, the NOT NULL of the first of two left-out columns and the place of `no such table`; the todo now says that both were measured with the shell only. Coverage under `-short` is still 99.5%, now with the code of slice 11.
+
+The review (`code-review high origin/main...HEAD`) found one real fault: `check` in `/internal/engine/engine.go` called `existsRefusal` before `defaultRefusal`, so `create table if not exists t (k int primary key default 1) ...` got `IF NOT EXISTS (at offset 13)` from the engine and the driver, where on `main` it got `DEFAULT (at offset 48)`: the pass refused the DEFAULT itself and never gave the statement. That is goqite's own shape, IF NOT EXISTS and DEFAULT together. `defaultRefusal` now comes first, and `TestCheck_defaults` pins `DEFAULT (at offset 48)`; the todo and the README say so. The review found nothing else: the split of `recognizer.literal` changes no answer of an insert, 30 extra texts of its own got the expected values and refusals, and the generator draws as before with Defaults 0.
+
+### Why
+
+The README is the definition of the forms, and the engine's refusal must give what the pass gave before, so that the engine and the driver answer as they did until their builder comes.
+
+### What worked
+
+`make test` (with the crosscheck module), `make lint` (0 issues), `make check-browser`, and `make fuzz-shards FUZZGROUP=c FUZZSHARDS=4` and `FUZZGROUP=go FUZZSHARDS=2` passed. `make asan-test ASANPKGS="maragu.dev/s4ql/internal/sql/stmt maragu.dev/s4ql/internal/sql/stmt/stmttest"` in the `golang` image passed (49 s and 2 s): the seeds of `FuzzCheck` and `FuzzGenerate` changed with the cases and the generator, though their code did not. `go test -race -count=20` of `TestGenerator_*` passed, and after the fix of the order the engine's tests under `-short`, the root package, and the crosscheck module passed again.
+
+### What didn't work
+
+`make test` ran before the fix of the order of the refusals; only the engine, the root package, and the crosscheck module ran again after it, since nothing else calls `check`.
+
+### What I learned
+
+A refusal that stands in for an old answer has to reproduce the old order of the refusals too, not only the old message: the pass of slice 10 had made IF NOT EXISTS a supported token, so on `main` the DEFAULT after it was the first token that the pass did not take.
+
+### What was tricky
+
+Nothing beyond step 1.
+
+### What warrants review
+
+- The section on DEFAULT under CREATE TABLE and the "Results" of `/internal/sql/stmt/README.md`.
+- The order of `defaultRefusal` and `existsRefusal` in `check` of `/internal/engine/engine.go`.
+
+### Future work
+
+- The engine and the driver for slice 11; the todo has what to remove and the facts of SQLite that they need.
+- The core and the commit format for slice 11, with the `dflt_value` texts in the todo.
+- Mutation testing and long fuzz runs of the code of slice 11 in the pass.
+- The status of the README, the site, and the roadmap are for the lead's sub-agent after the merge.
