@@ -46,7 +46,8 @@ export function keysText(keys) {
 const literal = (v) => (v === null || v === undefined ? "null" : typeof v === "string" ? `'${v.replaceAll("'", "''")}'` : String(v));
 
 // sqlText of a statement with its arguments in place of its parameters, in order, as the log shows it.
-// The statements of the engine's workload hold no ? but their parameters.
+// It is for the statements of the engine's workload, which hold no ? but their parameters, in no
+// string literal, and take only integers.
 export function sqlText(sql, args) {
   const a = args || [];
   let i = 0;

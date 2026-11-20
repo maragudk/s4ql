@@ -61,8 +61,8 @@ func TestChecker(t *testing.T) {
 			c.writeEnded(t.Context(), 8, "lost")
 			c.writeEnded(t.Context(), 9, "down")
 			c.readEnded(t.Context(), p, c.readStarted(), 0, []int64{1, 2}, position(2))
-			// A read above a bound sees only the rows above it, and need not see an acknowledged
-			// write at or below it.
+			// A read above a bound gives only the rows above it, and its state holds the acknowledged
+			// writes at or below it.
 			c.readEnded(t.Context(), p, c.readStarted(), 1, []int64{2}, position(2))
 			c.readEnded(t.Context(), p, c.readStarted(), 3, []int64{}, position(3))
 			c.final(t.Context())
@@ -143,6 +143,17 @@ func TestChecker(t *testing.T) {
 			c.writeEnded(t.Context(), 3, "committed")
 			c.readEnded(t.Context(), p, c.readStarted(), 1, []int64{2}, position(2))
 		}},
+		{name: "a read at a state without an acknowledged write at or below its bound", invariant: invariantFresh, f: func(c *checker, p *process) {
+			log(c)
+			c.writeEnded(t.Context(), 3, "committed")
+			c.readEnded(t.Context(), p, c.readStarted(), 3, []int64{}, position(2))
+		}},
+		{name: "a read at a state without a write of unknown outcome at or below its bound that the log holds at the end", invariant: invariantFresh, f: func(c *checker, p *process) {
+			log(c)
+			c.writeEnded(t.Context(), 3, "unknown")
+			c.readEnded(t.Context(), p, c.readStarted(), 3, []int64{}, position(2))
+			c.final(t.Context())
+		}},
 		{name: "a read that missed a write of unknown outcome above its bound that the log holds at the end", invariant: invariantFresh, f: func(c *checker, p *process) {
 			log(c)
 			c.writeEnded(t.Context(), 3, "unknown")
@@ -167,7 +178,7 @@ func TestChecker(t *testing.T) {
 			c.final(t.Context())
 		}},
 	}
-	t.Run("should not count a write at or below the bound as missed, and stay fast after a violation of a read", func(t *testing.T) {
+	t.Run("should not count a write at or below the bound that the state holds as missed, and stay fast after a violation of a read", func(t *testing.T) {
 		var fast bool
 		events := withChecker(t, func(c *checker, p *process) {
 			log(c)
@@ -240,11 +251,9 @@ func TestChecker(t *testing.T) {
 				}
 			}
 		}
-		// Most of the reads are violations, and some are not. The fast check passes some of those, and
-		// leaves the others to the slow check: a read at a position before an acknowledged write at or
-		// below its bound.
+		// Most of the reads are violations, and the fast check passes every one that is not.
 		is.True(t, violations > 0 && violations < reads, fmt.Sprint(violations, " of ", reads))
-		is.True(t, checkedFast > 0, fmt.Sprint(checkedFast, " of ", reads-violations, " checked fast"))
+		is.Equal(t, reads-violations, checkedFast)
 	})
 
 	for _, test := range tests {

@@ -287,6 +287,7 @@ func TestRun_actions(t *testing.T) {
 			c := ev.Object.Commit
 			is.Equal(t, 1, len(c.Keys))
 			inserted[c.Keys[0]] = true
+			is.True(t, len(c.Statements) > 0, "a commit object holds its statements")
 			insert := c.Statements[len(c.Statements)-1]
 			is.Equal(t, "insert into orders (id) values (?)", insert.SQL)
 			is.Equal(t, 1, len(insert.Args))

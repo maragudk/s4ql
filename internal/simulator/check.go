@@ -32,9 +32,10 @@ const (
 	// invariantState: a read sees a state that the log had: its position is in the log, and it sees
 	// the rows of the log above its bound up to that position, each once.
 	invariantState = "state"
-	// invariantFresh: a read sees every commit above its bound that was acknowledged before it
-	// started, and every commit above its bound of unknown outcome that had returned before it
-	// started and that is in the log at the end. The design accepts a read that misses one on an
+	// invariantFresh: a read sees every commit that was acknowledged before it started, and every
+	// commit of unknown outcome that had returned before it started and that is in the log at the
+	// end: it gives the key of such a commit above its bound, and its position holds the key of one
+	// at or below its bound. The design accepts a read that misses one on an
 	// instance whose two clocks both went wrong in the direction that keeps a lease alive too long;
 	// such a violation is excused.
 	invariantFresh = "fresh"
@@ -78,7 +79,8 @@ type checker struct {
 
 // readSeen is a read that was served: how many acknowledged and unknown writes had ended before it
 // started, its process, and its bound. A read that the checker checked fast keeps the number of
-// commit objects of the log up to its position, and others the keys that they saw.
+// commit objects of the log up to its position, and others the keys that they saw above the bound
+// and their position.
 type readSeen struct {
 	acked, unknown int
 	p              *process
@@ -87,6 +89,7 @@ type readSeen struct {
 	fast           bool
 	prefix         int
 	keys           map[int64]bool
+	position       format.Name
 }
 
 func newChecker(r *run) *checker {
@@ -122,6 +125,10 @@ func (c *checker) slow() {
 	for i, read := range c.reads {
 		if read.fast {
 			c.reads[i].keys = rowsAbove(c.log[:read.prefix], read.bound)
+			c.reads[i].position = format.EmptyLog
+			if read.prefix > 0 {
+				c.reads[i].position, _ = format.ParseName(c.log[read.prefix-1].Name)
+			}
 			c.reads[i].fast = false
 		}
 	}
@@ -206,6 +213,38 @@ func (c *checker) chain(head string) []*CommitObject {
 	}
 	slices.Reverse(chain)
 	return chain
+}
+
+// below gives the rows at or below the bound in the state at the position: the keys that the commit
+// object of the position and its ancestors in the store insert. A read does not select them, but
+// its position says whether its state holds them, so a read at a state without an acknowledged write
+// is stale also when the write is at or below its bound. The state of a position does not change,
+// because a commit object names its parent. below walks the ancestors once, on the first call of the
+// function that it gives.
+func (c *checker) below(position format.Name, bound int64) func() map[int64]bool {
+	var rows map[int64]bool
+	return func() map[int64]bool {
+		if rows != nil {
+			return rows
+		}
+		rows = map[int64]bool{}
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		empty := format.EmptyLog.String()
+		for name, n := position.String(), 0; name != empty && n <= len(c.commits); n++ {
+			o := c.commits[name]
+			if o == nil {
+				break
+			}
+			for _, k := range o.Keys {
+				if k <= bound {
+					rows[k] = true
+				}
+			}
+			name = o.Parent
+		}
+		return rows
+	}
 }
 
 // rowsAbove the bound after the commit objects of chain: the keys above it that they insert.
@@ -313,13 +352,14 @@ func (c *checker) readEnded(ctx context.Context, p *process, before readSeen, bo
 	c.mu.Lock()
 	acked := slices.Clone(c.acked[:before.acked])
 	c.mu.Unlock()
+	below := c.below(position, bound)
 	for _, v := range acked {
-		if v > bound && !seen[v] {
+		if v > bound && !seen[v] || v <= bound && !below()[v] {
 			c.violate(invariantFresh, p.bothClocks(), p, "a read missed the write of %v, which was acknowledged before the read started", v)
 			break
 		}
 	}
-	before.keys, before.p = seen, p
+	before.keys, before.position, before.p = seen, position, p
 	c.mu.Lock()
 	c.reads = append(c.reads, before)
 	c.mu.Unlock()
@@ -359,7 +399,8 @@ func (c *checker) readFast(p *process, before readSeen, keys []int64, position f
 		return false
 	}
 	// The read saw the rows of the log above its bound at its position, so it saw every
-	// acknowledged write above its bound if their commit objects are among the first at.
+	// acknowledged write, above its bound by its keys and at or below by its position, if their
+	// commit objects are among the first at.
 	if before.acked > 0 && c.ackedAt[before.acked-1] >= at {
 		return false
 	}
@@ -411,18 +452,22 @@ func (c *checker) final(_ context.Context) {
 		}
 	}
 	for _, read := range reads {
+		below := c.below(read.position, read.bound)
 		for _, v := range unknown[:read.unknown] {
-			if v <= read.bound {
+			// A read that was checked fast saw the write if its commit object is among the first of
+			// the log, which is still the log at the end, as the checker is still fast. Another saw
+			// it if it gave its key above its bound, or if its state holds it at or below.
+			if inLog[v] == 0 {
 				continue
 			}
-			// A read that was checked fast saw the write if its commit object is among the first of
-			// the log, which is still the log at the end, as the checker is still fast.
-			missed := !read.keys[v]
+			var missed bool
 			if read.fast {
 				i, ok := inserted[v]
 				missed = !ok || i >= read.prefix
+			} else {
+				missed = v > read.bound && !read.keys[v] || v <= read.bound && !below()[v]
 			}
-			if inLog[v] > 0 && missed {
+			if missed {
 				c.violate(invariantFresh, read.p.bothClocks(), read.p, "a read at %v missed the write of %v, which returned with an unknown outcome before the read started, and which the log holds at the end", millis(read.at), v)
 				break
 			}
