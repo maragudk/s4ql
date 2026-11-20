@@ -110,3 +110,25 @@ A later message from the lead, from Markus: a select asks only for a barcode tha
 
 - The quota page hung in Chrome: my fill loop overwrote the same key forever once a small write succeeded.
 - The first sitecheck run took a's role "serves" for the end of the catch-up; a takes the lease about 35 s before it has caught up. The check now waits for the line of the catch-up.
+
+## Step 6: Self-review and checks
+
+**Author:** builder (simulator persistent bucket)
+
+### What I did
+
+- A writer sub-agent updated `internal/simulator/README.md` from a brief: the stored bucket, the seed, the event `seeded`, the new fields of the answer, reads of known keys, the measurements. It noted that a read with no row at a position that holds its key violates both `state` and `fresh` in the slow path, which it wrote so.
+- The code-review skill over `main...HEAD` found four things, all fixed:
+  1. The seed retried a write without end under faults that make every write fail (`lostRequest` at 1): now 100 attempts, and the run is refused with `the bucket is refused: the store did not take ...`. Tested for a session and a batch run.
+  2. The page dropped its stored database on any failure of the start, also a Worker that failed: now only on the engine's refusal of the bucket.
+  3. The line after a reload counted one commit object fewer for a bucket without a manifest.
+  4. The history could start below zero when the seed took longer than `from`: the offset is clamped at 0.
+- The same seeded session gives the same hash natively and in Chromium (`d61a2f89f67cbe19...`, logged by the test); no test compares the two builds, as before.
+
+### What didn't work
+
+- `-race -count=20` of the new tests together hit the default timeout of 10 minutes of `go test`, not a race: the test with every fault plays 10 fake minutes after the reload for three seeds. It ran again with `-timeout 90m`.
+
+### How to review
+
+`make site-check` drives a reload, damage, a failing write, Reset, the cap, and a tab without storage. To see it by hand: `make site-serve`, open the simulator, skip with `s4qlPage.skip(3600000)` in the console, reload, and watch a wait for the old lease and catch up.
