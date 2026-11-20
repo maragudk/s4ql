@@ -2328,38 +2328,56 @@ func TestTx_tooBig(t *testing.T) {
 		_ = d.Close(ctx)
 	})
 
-	t.Run("should fail the transaction for a delete that fails locally", func(t *testing.T) {
-		vfs, err := faultvfs.New()
-		is.NotError(t, err)
-		t.Cleanup(func() { is.NotError(t, vfs.Close()) })
-		w := newWorld(t)
-		o := options
-		o.VFS = vfs.Name()
-		d := w.serve(t, "a", o)
-		ctx := t.Context()
-		const rows = 3000
-		transact(t, d, func(t *testing.T, tx *core.Tx) {
-			is.NotError(t, tx.CreateTable(ctx, typedTable("t", s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_BLOB)))
+	t.Run("should fail the transaction for an upsert or a delete that fails locally, also where it records the keys that it touched", func(t *testing.T) {
+		// The keys take more pages than SQLite's page caches hold, so SQLite writes pages of the
+		// table to the write-ahead log, and pages of the temporary tables of the keys that the
+		// transaction touched to a temporary file, before the commit.
+		key := func(i int) string { return fmt.Sprintf("%0900d", i) }
+		for _, c := range []struct {
+			files  faultvfs.File
+			delete bool
+		}{{faultvfs.WAL, true}, {faultvfs.Temp, true}, {faultvfs.Temp, false}} {
+			what := fmt.Sprint("files ", c.files, ", delete ", c.delete)
+			vfs, err := faultvfs.New()
+			is.NotError(t, err)
+			w := newWorld(t)
+			o := options
+			o.VFS = vfs.Name()
+			d := w.serve(t, "a", o)
+			ctx := t.Context()
+			const rows = 4000
+			transact(t, d, func(t *testing.T, tx *core.Tx) {
+				is.NotError(t, tx.CreateTable(ctx, typedTable("t", s4qlpb.Type_TYPE_TEXT)))
+				for i := range rows {
+					is.NotError(t, tx.Upsert(ctx, "t", row(key(i))))
+				}
+			})
+			tx, err := d.Begin(ctx)
+			is.NotError(t, err)
+			vfs.Fail(faultvfs.Fault{Ops: faultvfs.Write, Files: c.files})
+			found := true
 			for i := range rows {
-				is.NotError(t, tx.Upsert(ctx, "t", row(i, bytes.Repeat([]byte{1}, 900))))
+				if c.delete {
+					found, err = tx.Delete(ctx, "t", row(key(i)))
+					if err == nil {
+						is.True(t, found, what)
+					}
+				} else {
+					err = tx.Upsert(ctx, "t", row(key(i)))
+				}
+				if err != nil {
+					break
+				}
 			}
-		})
-		tx, err := d.Begin(ctx)
-		is.NotError(t, err)
-		vfs.Fail(faultvfs.Fault{Ops: faultvfs.Write, Files: faultvfs.WAL})
-		var found bool
-		for i := range rows {
-			if found, err = tx.Delete(ctx, "t", row(i)); err != nil {
-				break
-			}
-			is.True(t, found)
+			is.True(t, vfs.Failures() > 0, "no write failed: "+what)
+			is.Error(t, core.ErrLocal, err, what)
+			is.True(t, !errors.Is(err, core.ErrTooBig), what)
+			is.True(t, !c.delete || !found, "a delete that failed found its row: "+what)
+			vfs.Fail(faultvfs.Fault{})
+			_ = tx.Rollback(ctx)
+			_ = d.Close(ctx)
+			is.NotError(t, vfs.Close(), what)
 		}
-		is.True(t, vfs.Failures() > 0, "no write failed")
-		is.Error(t, core.ErrLocal, err)
-		is.True(t, !found, "a delete that failed found its row")
-		vfs.Fail(faultvfs.Fault{})
-		_ = tx.Rollback(ctx)
-		_ = d.Close(ctx)
 	})
 
 	// sqliteTakes reports whether SQLite's own table of the same shape, under the same limit,
