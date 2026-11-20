@@ -1563,9 +1563,8 @@ func converted(a any) any {
 }
 
 // checkText src as the driver checks a text at Prepare: as [stmt.Check] does, and with the "not
-// supported" of [engine.Check] for an update or a delete of slice 8, and a create index or a drop index
-// of slice 9, which the pass supports and the engine does not run yet, which the tests take for a text
-// that is not supported.
+// supported" of [engine.Check] for a create index or a drop index of slice 9, which the pass supports
+// and the engine does not run yet, which the tests take for a text that is not supported.
 func checkText(src string) (stmt.Statement, error) {
 	s, err := stmt.Check(src)
 	if err == nil && s != nil {
@@ -1606,6 +1605,10 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any) string {
 			return ""
 		}
 		table = s.Table
+	case *stmt.Update:
+		table = s.Table
+	case *stmt.Delete:
+		table = s.Table
 	default:
 		return ""
 	}
@@ -1623,8 +1626,27 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any) string {
 		}
 		bound = append(bound, converted(a))
 	}
-	if s, ok := s.(*stmt.Select); ok {
+	switch s := s.(type) {
+	case *stmt.Select:
 		return stmttest.ConditionRule(name, columns, s, bound)
+	case *stmt.Delete:
+		return stmttest.DeleteRule(name, columns, s, bound)
+	case *stmt.Update:
+		if p.tx != nil && p.tx.readOnly {
+			// A read-only transaction refuses the update before it looks at a value of SET.
+			return stmttest.WhereRule(name, columns, s.Where, bound)
+		}
+		return stmttest.UpdateRule(name, columns, s, bound, func() bool {
+			q, args := stmttest.FoundQuery(s.Table, s.Where, bound)
+			rows, err := o.QueryContext(tb.Context(), q, args...)
+			is.NotError(tb, err)
+			defer func() { is.NotError(tb, rows.Close()) }()
+			if rows.Next() {
+				return true
+			}
+			is.NotError(tb, rows.Err())
+			return false
+		})
 	}
 	return stmttest.TypeRule(name, columns, s.(*stmt.Insert), bound)
 }
@@ -2855,9 +2877,12 @@ func TestGenerated(t *testing.T) {
 	// column now and then, which took excusedType up; and whose parameters have arguments that s4ql
 	// does not support now and then, which took excusedArgument up. A select with WHERE fails more
 	// often than one without, so fewer rows are left open in a transaction, which took
-	// excusedRowsOpen down.
+	// excusedRowsOpen down. The engine and the driver of slice 8 took excusedType from 231 to 234:
+	// they run the update of [stmttest.Others], which sets a column to a small integer, and 3 of them
+	// give it to a column of another type, which s4ql's rule refuses. The generator drew as before
+	// then.
 	want := map[string]int{
-		excusedPrepare: 1178, excusedStartedTable: 11, excusedArguments: 411, excusedArgument: 260, excusedType: 231,
+		excusedPrepare: 1178, excusedStartedTable: 11, excusedArguments: 411, excusedArgument: 260, excusedType: 234,
 		excusedLevel: 69, excusedRowsOpen: 24, excusedTxOpen: 24, excusedOutside: 58, excusedQuoted: 69,
 	}
 	kinds := slices.Collect(maps.Keys(want))

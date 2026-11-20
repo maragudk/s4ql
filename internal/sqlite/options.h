@@ -6,7 +6,8 @@
 ** docs/roadmap.md, it makes misuse of SQLite or of an obsolete feature impossible or detectable, it
 ** makes this build match what a normal build of SQLite has, or the build needs it. Options that only
 ** tune performance are left out, because every option is a way in which this build differs from a
-** stock build of SQLite. The tests check that SQLite reports every option defined here.
+** stock build of SQLite. The tests check that SQLite reports every option defined here, but for
+** SQLITE_WITHOUT_ZONEMALLOC, which SQLite does not report.
 */
 #ifndef S4QL_OPTIONS_H
 #define S4QL_OPTIONS_H
@@ -82,6 +83,15 @@
 ** functions only, so it costs nothing while there are none.
 */
 #define SQLITE_STRICT_SUBTYPE 1
+/*
+** On Apple's systems SQLite allocates its memory through SQLite's own wrapper of malloc, as it does
+** on every other system, and not through Apple's zone allocator. The answer of SQLite to a statement
+** must not depend on the allocator of the host: SQLite formats the text with which it writes a new
+** table into its schema under the length limit, and with the zone allocator, which rounds an
+** allocation up to 16 or 512 bytes, it takes a text that is up to some tens of bytes longer than the
+** limit, which it refuses elsewhere. SQLite does not report this option.
+*/
+#define SQLITE_WITHOUT_ZONEMALLOC 1
 
 /*
 ** Considered and left out:

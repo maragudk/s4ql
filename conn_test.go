@@ -1362,6 +1362,134 @@ func TestWhere(t *testing.T) {
 	})
 }
 
+func TestUpdateDelete(t *testing.T) {
+	const create = "create table u (k int primary key, s text, r real not null) strict, without rowid"
+	fill := func(t *testing.T, db *sql.DB) {
+		t.Helper()
+		exec(t, db, create, "insert into u values (1, 'a', 1.5)", "insert into u values (2, null, 2.5)", "insert into u values (3, 'c', 3.5)")
+	}
+	// affected runs src with args on db, and gives the rows that it affected.
+	affected := func(t *testing.T, db interface {
+		ExecContext(context.Context, string, ...any) (sql.Result, error)
+	}, src string, args ...any) int64 {
+		t.Helper()
+		res, err := db.ExecContext(t.Context(), src, args...)
+		is.NotError(t, err, src)
+		n, err := res.RowsAffected()
+		is.NotError(t, err)
+		id, err := res.LastInsertId()
+		is.NotError(t, err)
+		is.Equal(t, int64(0), id)
+		return n
+	}
+
+	t.Run("should update and delete, directly and prepared, with the arguments of SET before those of WHERE, and give every row that they find as affected", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		fill(t, db)
+		is.Equal(t, int64(3), affected(t, db, "update u set r = 0.5"))
+		is.Equal(t, int64(3), affected(t, db, "update u set r = 0.5"))
+		is.Equal(t, int64(1), affected(t, db, "update u set s = ?, r = ? where k = ? and s is null", "b", 9.5, 2))
+		is.Equal(t, int64(0), affected(t, db, "update u set s = ? where k = ?", "z", 9))
+		is.Equal(t, "k INT, s TEXT, r REAL: 1 a 0.5; 2 b 9.5; 3 c 0.5", rowsText(t, db, "select * from u"))
+
+		p, err := db.PrepareContext(t.Context(), "update u set k = ? where k = ?")
+		is.NotError(t, err)
+		for _, args := range [][2]int{{4, 1}, {1, 4}, {5, 3}} {
+			res, err := p.ExecContext(t.Context(), args[0], args[1])
+			is.NotError(t, err)
+			n, err := res.RowsAffected()
+			is.NotError(t, err)
+			is.Equal(t, int64(1), n, fmt.Sprint(args))
+		}
+		is.NotError(t, p.Close())
+		is.Equal(t, "k INT: 1; 2; 5", rowsText(t, db, "select k from u"))
+
+		is.Equal(t, int64(1), affected(t, db, "delete from u where k = ?", 5))
+		is.Equal(t, int64(0), affected(t, db, "delete from u where s = ?", nil))
+		is.Equal(t, "k INT, s TEXT, r REAL: 1 a 0.5; 2 b 9.5", rowsText(t, db, "select * from u"))
+		is.Equal(t, int64(2), affected(t, db, "delete from u"))
+		is.Equal(t, "k INT: ", rowsText(t, db, "select k from u"))
+		is.NotError(t, db.Close())
+		is.Equal(t, "k INT: ", rowsText(t, w.serve(t, "b"), "select k from u"))
+	})
+
+	t.Run("should give SQLite's errors, refuse a value of another type as not supported, and change nothing", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		fill(t, db)
+		for _, c := range []struct {
+			src               string
+			args              []any
+			code, extended    int
+			message           string
+			notSupportedWhich string
+		}{
+			{src: "update nosuch set s = 'x'", code: 1, extended: 1, message: "no such table: nosuch"},
+			{src: "delete from nosuch", code: 1, extended: 1, message: "no such table: nosuch"},
+			{src: `update u set s = 'x', "z" = 1 where y = 1`, code: 1, extended: 1, message: "no such column: z"},
+			{src: "update u set s = 'x' where y is null and k = 1", code: 1, extended: 1, message: "no such column: y"},
+			{src: "delete from u where z = ?", args: []any{1}, code: 1, extended: 1, message: "no such column: z"},
+			{src: "update u set r = ? where k = 1", args: []any{nil}, code: 19, extended: 1299, message: "NOT NULL constraint failed: u.r"},
+			{src: "update u set k = null where k = 1", code: 19, extended: 1299, message: "NOT NULL constraint failed: u.k"},
+			{src: "update u set k = 3 where k = 1", code: 19, extended: 1555, message: "UNIQUE constraint failed: u.k"},
+			{src: "update u set k = ? where k > ?", args: []any{7, 1}, code: 19, extended: 1555, message: "UNIQUE constraint failed: u.k"},
+			{src: "update u set s = 1 where k = 9", notSupportedWhich: "an integer literal for the column u.s of type TEXT"},
+			{src: "update u set r = ? where k = 1", args: []any{"1.5"}, notSupportedWhich: "argument 1, which is text, for the column u.r of type REAL"},
+			{src: "delete from u where k = ?", args: []any{"1"}, notSupportedWhich: "argument 1, which is text, compared with the column u.k of type INT"},
+			{src: "update u set s = ?", args: []any{true}, notSupportedWhich: "argument 1 of type bool"},
+		} {
+			_, err := db.ExecContext(t.Context(), c.src, c.args...)
+			if c.notSupportedWhich != "" {
+				is.Equal(t, c.notSupportedWhich, notSupported(t, err), c.src)
+			} else {
+				sqliteError(t, c.code, c.extended, c.message, err)
+			}
+		}
+		_, err := db.ExecContext(t.Context(), "update u set s = ? where k = ?", "x")
+		is.Equal(t, "s4ql: wrong number of arguments: 1 for a statement with 2 parameters", fmt.Sprint(err))
+		_, err = db.PrepareContext(t.Context(), "update u set s = 'x' returning *")
+		is.Equal(t, "RETURNING clause (at offset 21)", notSupported(t, err))
+		is.Equal(t, "k INT, s TEXT, r REAL: 1 a 1.5; 2 <nil> 2.5; 3 c 3.5", rowsText(t, db, "select * from u"))
+	})
+
+	t.Run("should update and delete in a write transaction, which reads its own changes, keeps them after a statement that fails, and commits them as one", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		fill(t, db)
+		before := len(commits(t, w))
+		tx := begin(t, db, nil)
+		is.Equal(t, int64(2), affected(t, tx, "update u set s = 'q' where k >= ?", 2))
+		_, err := tx.ExecContext(t.Context(), "update u set k = 1 where k = 2")
+		sqliteError(t, 19, 1555, "UNIQUE constraint failed: u.k", err)
+		is.Equal(t, int64(1), affected(t, tx, "update u set k = 9 where k = 3"))
+		is.Equal(t, int64(1), affected(t, tx, "delete from u where k = 1"))
+		is.Equal(t, "k INT, s TEXT: 2 q; 9 q", rowsText(t, tx, "select k, s from u"))
+		is.Equal(t, "k INT: 1; 2; 3", rowsText(t, db, "select k from u"))
+		is.NotError(t, tx.Commit())
+		is.Equal(t, before+1, len(commits(t, w)))
+		is.NotError(t, db.Close())
+		is.Equal(t, "k INT, s TEXT: 2 q; 9 q", rowsText(t, w.serve(t, "b"), "select k, s from u"))
+	})
+
+	t.Run("should refuse an update and a delete in a read-only transaction with SQLite's error, after the errors of the names", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		fill(t, db)
+		ro := begin(t, db, &sql.TxOptions{ReadOnly: true})
+		for _, src := range []string{"update u set s = 'x'", "update u set s = 'x' where k = 9", "delete from u", "delete from u where k = 9"} {
+			_, err := ro.ExecContext(t.Context(), src)
+			sqliteError(t, 8, 8, "attempt to write a readonly database", err)
+		}
+		_, err := ro.ExecContext(t.Context(), "update u set z = 1")
+		sqliteError(t, 1, 1, "no such column: z", err)
+		_, err = ro.ExecContext(t.Context(), "delete from v")
+		sqliteError(t, 1, 1, "no such table: v", err)
+		is.NotError(t, ro.Commit())
+		is.Equal(t, "k INT: 1; 2; 3", rowsText(t, db, "select k from u"))
+	})
+}
+
 // nullValuer is a [driver.Valuer] that gives nil. database/sql takes a nil pointer to it for nil
 // too, without a call.
 type nullValuer struct{}
