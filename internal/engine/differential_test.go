@@ -2678,8 +2678,8 @@ var reachedDifferential = map[string]int{
 // TestDifferential_plantedBugs runs the first sequences of [TestDifferential] with each planted bug
 // of the choice of an access in the engines of both instances of the pair, and requires that at
 // least a pinned number of them find the bug, by a difference from SQLite, also on a path that
-// [pair.everyPath] forces. Without the bug the same sequences find nothing, as [TestDifferential]
-// shows.
+// [pair.everyPath] forces. Each sequence that finds the bug runs again without it and must find
+// nothing, as every sequence of [TestDifferential] does.
 func TestDifferential_plantedBugs(t *testing.T) {
 	n := 60
 	if slow() {
@@ -2701,13 +2701,21 @@ func TestDifferential_plantedBugs(t *testing.T) {
 				options.Plant(b.name)
 				i := newInstanceLimited(t, options, nil, map[bool]int{true: stmttest.LengthLimit}[s%4 >= 2])
 				i.planted = true
-				if failure := differentialFind(t, *seed+s, *length, s%2 == 1, nil, i, options); failure != "" {
-					found++
-					if first == "" {
-						first = failure[:min(len(failure), 2000)]
-					}
-				}
+				limit := map[bool]int{true: stmttest.LengthLimit}[s%4 >= 2]
+				failure := differentialFind(t, *seed+s, *length, s%2 == 1, nil, i, options)
 				i.close()
+				if failure == "" {
+					continue
+				}
+				found++
+				if first == "" {
+					first = failure[:min(len(failure), 2000)]
+				}
+				clean := newInstanceLimited(t, generatedOptions(), nil, limit)
+				if failure := differentialFind(t, *seed+s, *length, s%2 == 1, nil, clean, generatedOptions()); failure != "" {
+					t.Errorf("seed %v finds something without the bug: %v", *seed+s, failure)
+				}
+				clean.close()
 			}
 			t.Logf("%v of %v sequences find the bug; the first finds: %v", found, n, first)
 			if !slow() && atDefault("seed", "length") {

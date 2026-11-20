@@ -176,7 +176,7 @@ func fit(t *s4qlpb.CreateTable, index string, key []int, conditions []condition,
 	a := access{index: index}
 	for i, position := range key {
 		pinned := position
-		if b.pinByPlace && i < len(t.GetColumns()) {
+		if b.pinByPlace {
 			// The planted bug: the pin of a column of the key is looked for among the conditions on the
 			// column of the table at its place in the key.
 			pinned = i
