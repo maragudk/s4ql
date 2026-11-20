@@ -369,6 +369,23 @@ func TestTx_Commit(t *testing.T) {
 		is.EqualSlice(t, []string{"upsert t1 [0 1] 4,40"}, w.commits(t)[1])
 	})
 
+	t.Run("should commit nothing of a row that the transaction inserts and deletes in a table that existed, whose key it records as one of no row before", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, createWith(typedTable("t", s4qlpb.Type_TYPE_INT)))
+		transact(t, d, func(t *testing.T, tx *core.Tx) {
+			inserted, err := tx.Insert(t.Context(), "t", row(1))
+			is.NotError(t, err)
+			is.True(t, inserted)
+			found, err := tx.Delete(t.Context(), "t", row(1))
+			is.NotError(t, err)
+			is.True(t, found)
+			is.NotError(t, tx.Upsert(t.Context(), "t", row(2)))
+		})
+		commits := w.commits(t)
+		is.Equal(t, "upsert t [0] 2", strings.Join(commits[len(commits)-1], "\n"))
+	})
+
 	t.Run("should refuse every call after the transaction has ended", func(t *testing.T) {
 		w := newWorld(t)
 		d := w.serve(t, "a", core.Options{})
@@ -2466,6 +2483,10 @@ func TestTx_null(t *testing.T) {
 			is.NotError(t, err)
 			is.True(t, inserted)
 			m.upsert(name, []*s4qlpb.Value{edges[typ][1], good, null})
+			// A row of a key that the table has is not inserted, and leaves the row as it is.
+			inserted, err = tx.Insert(ctx, name, []*s4qlpb.Value{edges[typ][1], edges[typ][1], edges[typ][1]})
+			is.NotError(t, err)
+			is.True(t, !inserted, "a row of a key that the table has was inserted")
 		}
 		own, err := dump(ctx, tx)
 		is.NotError(t, err)
