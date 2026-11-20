@@ -961,6 +961,26 @@ footer ul {
         <div><h3>Slice 8: <code>update</code> and <code>delete</code></h3><p><code>update ... set</code> with literals, <code>null</code>, and <code>?</code>, and <code>delete from</code>, each with or without the <code>where</code> of slice 7. <code>RowsAffected</code> gives the rows that SQLite reports as changed.</p></div>
         <span class="where caps">Agreed</span>
       </li>
+      <li class="agreed">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Slice 9: <code>if not exists</code> and <code>if exists</code></h3><p><code>create table if not exists</code> does nothing when the table exists, and <code>drop table if exists</code> does nothing when it does not. A statement that does nothing writes nothing to the log.</p></div>
+        <span class="where caps">Agreed</span>
+      </li>
+      <li class="agreed">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Slice 10: <code>default</code> with a literal</h3><p>A column may carry <code>default</code> with a literal or <code>null</code>, and an <code>insert</code> that leaves the column out stores it. The commit format changes: a column carries its default.</p></div>
+        <span class="where caps">Agreed</span>
+      </li>
+      <li class="agreed">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Slice 11: a value on the left of a comparison</h3><p>In a <code>where</code>, a comparison may have a literal or <code>?</code> on the left and the column on the right, such as <code>? &gt;= timeout</code>. The primary key is used for lookups and ranges as before. No change to the commit format.</p></div>
+        <span class="where caps">Agreed</span>
+      </li>
+      <li class="agreed">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Slice 12: <code>order by</code> and <code>limit</code></h3><p><code>select</code> takes <code>order by</code> with one or more columns, each <code>asc</code> or <code>desc</code>, and <code>limit</code> with a number or <code>?</code>. Rows that tie, and rows without <code>order by</code>, come in an order that varies from query to query. No change to the commit format.</p></div>
+        <span class="where caps">Agreed</span>
+      </li>
       <li class="open">
         <span class="glyph" aria-hidden="true"></span>
         <div><h3>More SQL, slice by slice</h3><p>Each slice is agreed before it is built. Every table is strict and without rowid, foreign keys are always enforced, and a name is never empty.</p></div>

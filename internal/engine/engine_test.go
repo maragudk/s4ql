@@ -67,6 +67,7 @@ func pin(t *testing.T, setup []string, src, want string, args ...any) {
 		is.Equal(t, o.state(t), i.state(), "SQLite and the engine")
 	}
 	is.Equal(t, sqlite.String(), got.String(), "SQLite and the engine")
+	is.Equal(t, sqlite.offset, got.offset, "the offset of SQLite's error and of the engine's")
 	text := got.err
 	if got.err == "" && query {
 		text = fmt.Sprintf("columns %v; rows %v", got.columns, strings.Join(got.rows, " "))

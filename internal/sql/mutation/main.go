@@ -67,6 +67,7 @@ func start() error {
 	procs := flag.Int("procs", 2, "GOMAXPROCS of each test binary, or 0 to leave it unset")
 	gocache := flag.String("gocache", "", "GOCACHE for the builds of the mutants, or empty for the usual one; each mutant adds about 3 MB to it")
 	equivalent := flag.String("equivalent", "internal/sql/mutation/equivalent.txt", "the list of equivalent mutants")
+	first := flag.String("first", "", "a regular expression of the hand-written tests of the mutated package that run first, in a stage of their own")
 	flag.Parse()
 
 	root, err := moduleRoot()
@@ -161,6 +162,11 @@ func start() error {
 	fmt.Fprintf(os.Stderr, "%v mutants, %v with a result already, %v to run with %v at once\n",
 		len(mutants), len(mutants)-len(todo), len(todo), *jobs)
 	r := &runner{root: root, out: *out, factor: *factor, minTime: *minTime, memory: *memory, procs: *procs, gocache: *gocache}
+	if *first != "" {
+		if r.first, err = regexp.Compile(*first); err != nil {
+			return err
+		}
+	}
 	began := time.Now()
 	if err := r.plan(dirs); err != nil {
 		return err

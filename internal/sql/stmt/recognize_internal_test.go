@@ -2,6 +2,7 @@ package stmt
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"maragu.dev/is"
@@ -82,6 +83,32 @@ func TestRecognize(t *testing.T) {
 		s, nse := recognize(src, tree)
 		is.True(t, s == nil)
 		is.Equal(t, "s4ql: not supported: parameter (at offset 27)", nse.Error())
+	})
+
+	t.Run("should not support a parameter beyond SQLite's limit whose name is not the next token, before it counts it", func(t *testing.T) {
+		// INSERT INTO t (v) VALUES (?, ..., ?) with one parameter more than SQLite allows, where the
+		// tree holds the name of the last one at an offset where the text has a space.
+		src := "insert into t (v) values (" + strings.Repeat("?, ", maxParameters) + " ?)"
+		tree, _, err := parser.Parse(src)
+		is.NotError(t, err)
+		values := tree.Cmd.(*ast.Insert).Select.First.(*ast.Values).Rows[0].Exprs
+		v := values[len(values)-1].(*ast.Variable)
+		v.Name.Offset--
+		s, nse := recognize(src, tree)
+		is.True(t, s == nil)
+		is.Equal(t, fmt.Sprint("s4ql: not supported: parameter (at offset ", v.Name.Offset+1, ")"), nse.Error())
+	})
+
+	t.Run("should not support a column of the list of an insert whose name is not the next token, before it looks whether the list names it twice", func(t *testing.T) {
+		// INSERT INTO t (v,  v) VALUES (1, 2), where the tree holds the second v at an offset where the
+		// text has a space.
+		src := "insert into t (v,  v) values (1, 2)"
+		tree, _, err := parser.Parse(src)
+		is.NotError(t, err)
+		tree.Cmd.(*ast.Insert).Columns.Names[1].Offset--
+		s, nse := recognize(src, tree)
+		is.True(t, s == nil)
+		is.Equal(t, "s4ql: not supported: column list (at offset 19)", nse.Error())
 	})
 
 	t.Run("should panic for a blob literal of an odd number of hex digits, which the tokenizer never gives", func(t *testing.T) {
