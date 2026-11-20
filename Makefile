@@ -42,10 +42,10 @@ corpus-verify:
 # directory's test binary links C, and go if not. FUZZGROUP=c or FUZZGROUP=go runs one group only;
 # test-asan runs the first under the address sanitizer and the second without it. FUZZSHARD=i/n
 # runs the i-th of n shards of what FUZZGROUP selects, so that CI can fuzz in jobs that run at the
-# same time. The directories go to the shards whole, so that each shard builds a directory's test
-# binary once: those with the most fuzz tests first, each to the shard with the fewest fuzz tests so
-# far, the first of those on a tie. Every fuzz test is in exactly one shard. A shard that gets no
-# directory fails, so n must not be more than the number of directories in the group.
+# same time. The fuzz tests go to the shards one by one, in the order of FUZZDIRS and of their test
+# files: the k-th, from 0, to the shard k modulo n, plus one. So every fuzz test is in exactly one
+# shard, and the shards differ by one fuzz test at most. A shard that gets no fuzz test fails, so n
+# must not be more than the number of fuzz tests in the group. fuzz-shards checks the shards.
 #
 # To make the groups and the shards without building a test binary, which takes minutes for the
 # packages that link SQLite, it reads the names of the fuzz tests from the test files that go list
@@ -55,9 +55,9 @@ FUZZDIRS ?= internal/sqlite $(CROSSCHECK) $(CROSSCHECK)/drivercheck internal/for
 	internal/sql/parser internal/sql/shapetest internal/sql/stmt internal/engine
 FUZZGROUP ?=
 FUZZSHARD ?=
-.PHONY: fuzz
-fuzz:
-	plan=$$(for dir in $(FUZZDIRS); do \
+# FUZZPLAN prints a line for each directory of FUZZDIRS: its group, the directory, and the names of
+# its fuzz tests.
+FUZZPLAN = for dir in $(FUZZDIRS); do \
 		files=$$(cd $$dir && go list -f '{{range .TestGoFiles}}{{$$.Dir}}/{{.}} {{end}}{{range .XTestGoFiles}}{{$$.Dir}}/{{.}} {{end}}' .) || \
 			{ echo "fuzz: cannot list the fuzz tests of $$dir" >&2; exit 1; }; \
 		tests=$$([ -z "$$files" ] || sed -n 's/^func \(Fuzz[A-Za-z0-9_]*\)(.*/\1/p' $$files); \
@@ -67,37 +67,72 @@ fuzz:
 		[ "$$group" = c ] || [ "$$group" = go ] || \
 			{ echo "fuzz: cannot tell whether the tests of $$dir link C, so its fuzz tests are in no group" >&2; exit 1; }; \
 		echo $$group $$dir $$tests; \
-	done) || exit 1; \
-	run=$$(echo "$$plan" | awk -v group='$(FUZZGROUP)' -v shard='$(FUZZSHARD)' ' \
-		BEGIN { \
-			if (group != "" && group != "c" && group != "go") { print "fuzz: FUZZGROUP is c, go, or empty, not " group > "/dev/stderr"; bad = 1; exit 2 } \
-			if (shard != "" && shard !~ /^[1-9][0-9]*\/[1-9][0-9]*$$/) { print "fuzz: FUZZSHARD is i/n, such as 1/4, not " shard > "/dev/stderr"; bad = 1; exit 2 } \
-		} \
-		group == "" || $$1 == group { n++; line[n] = $$0; weight[n] = NF - 2 } \
-		END { \
-			if (bad) exit 2; \
-			if (shard == "") { for (i = 1; i <= n; i++) print line[i]; exit } \
-			split(shard, s, "/"); k = s[1] + 0; m = s[2] + 0; \
-			if (k > m) { print "fuzz: FUZZSHARD " shard " names a shard after the last" > "/dev/stderr"; exit 2 } \
-			for (j = 1; j <= m; j++) load[j] = 0; \
-			for (r = 1; r <= n; r++) { \
-				b = 0; for (i = 1; i <= n; i++) if (!(i in to) && (b == 0 || weight[i] > weight[b])) b = i; \
-				t = 1; for (j = 2; j <= m; j++) if (load[j] < load[t]) t = j; \
-				to[b] = t; load[t] += weight[b]; \
-			} \
-			for (i = 1; i <= n; i++) if (to[i] == k) print line[i]; \
-		}') || exit 1; \
+	done
+# FUZZSELECT reads the lines of FUZZPLAN and prints a line for each fuzz test that the shell
+# variables group and shard select, as FUZZGROUP and FUZZSHARD do: its group, its directory, and its
+# name. It fails on a group or a shard of another form, and on a shard after the last.
+FUZZSELECT = awk -v group="$$group" -v shard="$$shard" ' \
+	BEGIN { \
+		if (group != "" && group != "c" && group != "go") { print "fuzz: FUZZGROUP is c, go, or empty, not " group > "/dev/stderr"; bad = 1; exit 2 } \
+		if (shard != "" && shard !~ /^[1-9][0-9]*\/[1-9][0-9]*$$/) { print "fuzz: FUZZSHARD is i/n, such as 1/4, not " shard > "/dev/stderr"; bad = 1; exit 2 } \
+	} \
+	group == "" || $$1 == group { for (i = 3; i <= NF; i++) { n++; test[n] = $$1 " " $$2 " " $$i } } \
+	END { \
+		if (bad) exit 2; \
+		if (shard == "") { for (i = 1; i <= n; i++) print test[i]; exit } \
+		split(shard, s, "/"); k = s[1] + 0; m = s[2] + 0; \
+		if (k > m) { print "fuzz: FUZZSHARD " shard " names a shard after the last" > "/dev/stderr"; exit 2 } \
+		for (i = 1; i <= n; i++) if ((i - 1) % m == k - 1) print test[i]; \
+	}'
+.PHONY: fuzz
+fuzz:
+	plan=$$($(FUZZPLAN)) || exit 1; \
+	group='$(FUZZGROUP)' shard='$(FUZZSHARD)'; \
+	run=$$(echo "$$plan" | $(FUZZSELECT)) || exit 1; \
 	[ -n "$$run" ] || { echo "fuzz: no fuzz test in FUZZGROUP '$(FUZZGROUP)' and FUZZSHARD '$(FUZZSHARD)'" >&2; exit 1; }; \
 	echo "$$run" | sed 's/^/fuzz: /'; \
-	echo "$$run" | while read -r group dir tests; do \
+	echo "$$plan" | while read -r group dir tests; do \
+		mine=$$(echo "$$run" | awk -v dir="$$dir" '$$2 == dir { print $$3 }'); \
+		[ -n "$$mine" ] || continue; \
 		list=$$(cd $$dir && go test $(FUZZFLAGS) -run '^$$' -fuzz '^$$' -list '^Fuzz' . </dev/null) || \
 			{ echo "fuzz: cannot list the fuzz tests of $$dir" >&2; exit 1; }; \
 		[ "$$(echo "$$list" | grep '^Fuzz' | sort)" = "$$(printf '%s\n' $$tests | sort)" ] || \
 			{ echo "fuzz: go test lists other fuzz tests in $$dir than its test files declare:" $$(echo "$$list" | grep '^Fuzz') >&2; exit 1; }; \
-		for test in $$tests; do \
+		for test in $$mine; do \
 			(cd $$dir && go test $(FUZZFLAGS) -run '^$$' -fuzz "^$$test\$$" -fuzztime $(FUZZTIME) . </dev/null) || exit 1; \
 		done; \
 	done
+
+# fuzz-shards checks that the shards of fuzz leave no fuzz test out: that every directory with a fuzz
+# test, outside testdata, is in FUZZDIRS, and that the FUZZSHARDS shards of FUZZGROUP, as
+# FUZZSHARD=1/n to n/n select them, together hold every fuzz test of the group exactly once, and
+# each at least one. It prints the fuzz tests of each shard. It reads the test files only, as fuzz
+# does before it builds, so it takes seconds.
+FUZZSHARDS ?=
+.PHONY: fuzz-shards
+fuzz-shards:
+	n='$(FUZZSHARDS)'; \
+	echo "$$n" | grep -Eq '^[1-9][0-9]*$$' || { echo "fuzz-shards: FUZZSHARDS is a number of shards, such as 4, not '$$n'" >&2; exit 1; }; \
+	declared=$$(git grep -l '^func Fuzz' -- '*_test.go' ':!*/testdata/*' | xargs -n 1 dirname | sort -u) && [ -n "$$declared" ] || \
+		{ echo "fuzz-shards: cannot find the directories with fuzz tests" >&2; exit 1; }; \
+	listed=$$(printf '%s\n' $(FUZZDIRS) | sort -u); \
+	[ "$$declared" = "$$listed" ] || \
+		{ echo "fuzz-shards: the directories with fuzz tests are" $$declared "and FUZZDIRS holds" $$listed >&2; exit 1; }; \
+	plan=$$($(FUZZPLAN)) || exit 1; \
+	group='$(FUZZGROUP)' shard=; \
+	all=$$(echo "$$plan" | $(FUZZSELECT)) && [ -n "$$all" ] || \
+		{ echo "fuzz-shards: no fuzz test in FUZZGROUP '$(FUZZGROUP)'" >&2; exit 1; }; \
+	held=; k=1; \
+	while [ $$k -le $$n ]; do \
+		shard=$$k/$$n; \
+		one=$$(echo "$$plan" | $(FUZZSELECT)) && [ -n "$$one" ] || { echo "fuzz-shards: the shard $$shard holds no fuzz test" >&2; exit 1; }; \
+		echo "$$one" | sed "s|^|fuzz-shards: $$shard: |"; \
+		held=$$(printf '%s\n%s' "$$held" "$$one"); \
+		k=$$((k + 1)); \
+	done; \
+	[ "$$(echo "$$held" | sed '/^$$/d' | sort)" = "$$(echo "$$all" | sort)" ] || \
+		{ echo "fuzz-shards: the $$n shards do not hold every fuzz test of FUZZGROUP '$(FUZZGROUP)' exactly once" >&2; exit 1; }; \
+	echo "fuzz-shards: the $$n shards hold each of the" $$(echo "$$all" | wc -l) "fuzz tests of FUZZGROUP '$(FUZZGROUP)' exactly once"
 
 # generate the Go code for the schema of the commit object in proto/ into internal/s4qlpb, with the
 # Buf pinned above and the protoc-gen-go pinned as a tool in go.mod.
@@ -187,8 +222,8 @@ sqlite-verify:
 # tests against a real bucket skip, which otherwise fail without their settings (see
 # internal/store/s3test), and the tests of the SQL front end and of the engine compare with SQLite on
 # a tenth of the corpus and of the generated texts, as under the race detector. test-s3 runs the
-# first and test-sql the second without it. CI's job test runs go test ./... without -short, with the
-# credentials, and its job sql runs test-sql.
+# first and test-sql the second without it. CI's jobs test, test-core, and test-engine run go test
+# ./... between them, without -short, with the credentials, and its job sql runs test-sql.
 .PHONY: test
 test: test-changes
 	go test -short -coverprofile cover.out -shuffle on ./...
@@ -248,11 +283,44 @@ check-browser:
 # test-browser runs the tests of BROWSERPKGS in headless Chromium, through the runner in
 # internal/sqlite/browser as the -exec program of go test. BROWSERFLAGS go to go test, such as
 # BROWSERFLAGS='-run TestSimulation -v'.
+#
+# BROWSERSHARD=i/n, with n BROWSERSHARDS, runs the i-th shard of the tests of the default
+# BROWSERPKGS, so that CI can run them in jobs at the same time; BROWSERFLAGS must then hold no -run
+# or -skip. Every test is in exactly one shard, and each shard is one go test. The tests of
+# internal/core take most of the time, so they are in four shards: 1, the planted bugs of a commit,
+# the subtests of BROWSERPLANTED that match BROWSERCOMMIT; 2, the other planted bugs; 3, the tests of
+# BROWSERSIM; and 4, the rest, which skips those of 1 to 3. Shard 5 runs the packages of
+# BROWSERSHARD5, side by side, and shard 6 every other package of BROWSERPKGS, so that a new package
+# lands there. The shards are balanced by the times that CI measured on 2026-11-20; see
+# docs/diary/2026-11-20-faster-browser-ci.md.
+BROWSERSHARDS := 6
+BROWSERSHARD ?=
+BROWSERCORE := ./internal/core
+BROWSERPLANTED := TestSimulation_plantedBugs
+BROWSERCOMMIT := ^should_find_a_commit
+BROWSERSIM := TestSimulation|TestFreeRunning
+BROWSERSHARD5 := ./internal/store/simstore ./internal/sim ./internal/sqlite ./internal/sqlite/faultvfs \
+	./internal/simulator/engine
+BROWSERSHARD6 = $(filter-out $(BROWSERCORE) $(BROWSERSHARD5),$(BROWSERPKGS))
+# browserskip is BROWSERSKIP with the pattern given after it as an alternative, which a -skip takes
+# at every level of a test's name. An empty alternative would skip every test.
+browserskip = $(if $(BROWSERSKIP),$(1)|$(BROWSERSKIP),$(1))
 .PHONY: test-browser
 test-browser:
-	dir=$$(mktemp -d) && go build -o $$dir/browser ./internal/sqlite/browser && \
-		$(BROWSER) test -tags s4ql_browser -exec $$dir/browser -timeout $(BROWSERTIMEOUT) -skip '$(BROWSERSKIP)' $(BROWSERFLAGS) $(BROWSERPKGS); \
-		status=$$?; rm -rf $$dir; exit $$status
+	dir=$$(mktemp -d) || exit 1; go build -o $$dir/browser ./internal/sqlite/browser || { rm -rf $$dir; exit 1; }; \
+	t() { $(BROWSER) test -tags s4ql_browser -exec $$dir/browser -timeout $(BROWSERTIMEOUT) $(BROWSERFLAGS) "$$@"; }; \
+	case '$(BROWSERSHARD)' in \
+	'') t -skip '$(BROWSERSKIP)' $(BROWSERPKGS) ;; \
+	1/$(BROWSERSHARDS)) t -run '^$(BROWSERPLANTED)$$/$(BROWSERCOMMIT)' -skip '$(BROWSERSKIP)' $(BROWSERCORE) ;; \
+	2/$(BROWSERSHARDS)) t -run '^$(BROWSERPLANTED)$$' -skip '$(call browserskip,^$(BROWSERPLANTED)$$/$(BROWSERCOMMIT))' $(BROWSERCORE) ;; \
+	3/$(BROWSERSHARDS)) t -run '^($(BROWSERSIM))$$' -skip '$(BROWSERSKIP)' $(BROWSERCORE) ;; \
+	4/$(BROWSERSHARDS)) t -skip '$(call browserskip,^($(BROWSERPLANTED)|$(BROWSERSIM))$$)' $(BROWSERCORE) ;; \
+	5/$(BROWSERSHARDS)) t -skip '$(BROWSERSKIP)' $(BROWSERSHARD5) ;; \
+	6/$(BROWSERSHARDS)) [ -n '$(BROWSERSHARD6)' ] || { echo "test-browser: shard 6 has no package of BROWSERPKGS left" >&2; false; } && \
+		t -skip '$(BROWSERSKIP)' $(BROWSERSHARD6) ;; \
+	*) echo "test-browser: BROWSERSHARD is i/$(BROWSERSHARDS), such as 1/$(BROWSERSHARDS), or empty, not $(BROWSERSHARD)" >&2; false ;; \
+	esac; \
+	status=$$?; rm -rf $$dir; exit $$status
 
 # simulator builds the simulator's engine for a browser, and writes it with every file that a page
 # needs into SIMULATORDIR. simulator-demo also serves that directory, with the demo page of
@@ -317,20 +385,73 @@ LINKSCAWK = '$$1 == "cgo" { c[$$2] = 1 } $$1 ~ /\.test$$/ { n++; t[n] = $$0 } \
 
 # asan-test runs the tests of the packages of both modules whose test binaries link C under the C
 # address sanitizer (Linux only). The other packages have nothing for the sanitizer to check, and
-# make test and CI's job test run them. It fails if it cannot list the packages of a module, or if
+# make test and CI's jobs test, test-core, and test-engine run them. It fails if it cannot list the packages of a module, or if
 # none links C. It passes -short, so that the tests against a real bucket skip, since it has no
 # credentials, and the job test runs those. Under the sanitizer, the tests of the SQL front end and
 # of the engine use a tenth of the corpus whether or not -short is given, so it changes nothing else.
+# ASANTIMEOUT is the timeout of go test for each package, after which go test prints the stacks of
+# all goroutines and fails.
+#
+# CI runs these tests in jobs that run at the same time, with three settings that are empty by
+# default, so that a run without them runs every test. ASANPKGS runs only these packages, and
+# ASANSKIPPKGS leaves these out, by import path; a name that is not a package that links C fails, so
+# that a name gone stale cannot run nothing. ASANSHARD=i/n runs the i-th of n shards of the tests of
+# ASANPKGS: the tests named in ASANSHARDED, which give their subtests to the shards with
+# internal/testshard, run with S4QL_TEST_SHARD=i/n, and every other test runs in the first shard,
+# without S4QL_TEST_SHARD, so whole. A shard fails if a package of ASANPKGS has no test in
+# ASANSHARDED, as go test then runs nothing, and internal/testshard fails a test whose shard holds
+# none of its subtests. The n shards together run every test, and every
+# subtest of a test in ASANSHARDED once: see internal/testshard.
+ASANTIMEOUT ?= 10m
+ASANPKGS ?=
+ASANSKIPPKGS ?=
+ASANSHARD ?=
+ASANSHARDED ?= TestSimulation_plantedBugs
 .PHONY: asan-test
 asan-test:
-	for dir in . $(CROSSCHECK); do \
+	shard='$(ASANSHARD)'; \
+	if [ -n "$$shard" ]; then \
+		{ echo "$$shard" | grep -Eq '^[1-9][0-9]*/[1-9][0-9]*$$' && [ "$${shard%/*}" -le "$${shard#*/}" ]; } || \
+			{ echo "asan-test: ASANSHARD is i/n with 1 <= i <= n, such as 2/4, not $$shard" >&2; exit 1; }; \
+		[ -n '$(ASANPKGS)' ] || { echo "asan-test: ASANSHARD needs ASANPKGS, the packages to shard" >&2; exit 1; }; \
+	fi; \
+	plan=$$(for dir in . $(CROSSCHECK); do \
 		list=$$(cd $$dir && $(LINKSC) ./...) || { echo "asan-test: cannot list the packages of $$dir" >&2; exit 1; }; \
 		sides=$$(echo "$$list" | awk $(LINKSCAWK)) || exit 1; \
 		others=$$(echo "$$sides" | sed -n 's/^go //p'); \
-		echo "asan-test: in $$dir, without C, so not under the sanitizer:" $${others:-none}; \
+		echo "asan-test: in $$dir, without C, so not under the sanitizer:" $${others:-none} >&2; \
 		pkgs=$$(echo "$$sides" | sed -n 's/^c //p'); \
 		[ -n "$$pkgs" ] || { echo "asan-test: no package in $$dir links C" >&2; exit 1; }; \
-		(cd $$dir && go test -asan -short -shuffle on $$pkgs) || exit 1; \
+		for pkg in $$pkgs; do echo $$dir $$pkg; done; \
+	done) || exit 1; \
+	for pkg in $(ASANPKGS) $(ASANSKIPPKGS); do \
+		echo "$$plan" | awk -v pkg="$$pkg" '$$2 == pkg { found = 1 } END { exit !found }' || \
+			{ echo "asan-test: $$pkg is not a package that links C" >&2; exit 1; }; \
+	done; \
+	run=$$(echo "$$plan" | awk -v only='$(ASANPKGS)' -v skip='$(ASANSKIPPKGS)' ' \
+		BEGIN { n = split(only, o, " "); for (i = 1; i <= n; i++) keep[o[i]] = 1; m = split(skip, s, " "); for (i = 1; i <= m; i++) drop[s[i]] = 1 } \
+		(n == 0 || $$2 in keep) && !($$2 in drop)'); \
+	[ -n "$$run" ] || { echo "asan-test: ASANPKGS and ASANSKIPPKGS leave no package to run" >&2; exit 1; }; \
+	test='go test -asan -short -shuffle on -timeout $(ASANTIMEOUT)'; \
+	for dir in . $(CROSSCHECK); do \
+		pkgs=$$(echo "$$run" | awk -v dir="$$dir" '$$1 == dir { print $$2 }'); \
+		[ -n "$$pkgs" ] || continue; \
+		echo "asan-test: in $$dir, under the sanitizer:" $$pkgs; \
+		if [ -z "$$shard" ]; then \
+			(cd $$dir && $$test $$pkgs) || exit 1; \
+			continue; \
+		fi; \
+		if [ "$${shard%/*}" = 1 ]; then \
+			echo "asan-test: shard $$shard: every test but $(ASANSHARDED), whole"; \
+			(cd $$dir && $$test -skip '^($(ASANSHARDED))$$' $$pkgs) || exit 1; \
+		fi; \
+		echo "asan-test: shard $$shard: $(ASANSHARDED), with S4QL_TEST_SHARD=$$shard"; \
+		out=$$(mktemp) || exit 1; \
+		{ (cd $$dir && S4QL_TEST_SHARD=$$shard $$test -run '^($(ASANSHARDED))$$' $$pkgs); echo $$? >"$$out.status"; } | tee "$$out"; \
+		status=$$(cat "$$out.status"); none=$$(grep -c 'no tests to run' "$$out"); \
+		rm -f "$$out" "$$out.status"; \
+		[ "$$status" = 0 ] || exit 1; \
+		[ "$$none" = 0 ] || { echo "asan-test: a package of $$dir has no test in ASANSHARDED, $(ASANSHARDED)" >&2; exit 1; }; \
 	done
 
 # test-asan runs what CI's jobs for the address sanitizer run together: asan-test, the fuzz tests

@@ -3171,6 +3171,116 @@ func TestTx_Keys(t *testing.T) {
 		})
 		is.Equal(t, `t(c0*0:text): "a"`, read(t, d))
 	})
+
+	t.Run("should give the error of f before that of a drop of the set that fails locally, and fail the transaction for the drop", func(t *testing.T) {
+		// The keys take more pages than SQLite's page cache of the temporary tables holds, so the drop
+		// of the set needs the temporary file, as in TestTx_tooBig.
+		key := func(i int) string { return fmt.Sprintf("%0900d", i) }
+		failed := errors.New("f fails")
+		for _, fErr := range []error{nil, failed} {
+			vfs, err := faultvfs.New()
+			is.NotError(t, err)
+			t.Cleanup(func() { is.NotError(t, vfs.Close()) })
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{LengthLimit: 1000, VFS: vfs.Name()})
+			ctx := t.Context()
+			write(t, d, func(tx *core.Tx) {
+				is.NotError(t, tx.CreateTable(ctx, typedTable("t", s4qlpb.Type_TYPE_TEXT)))
+			})
+			head := w.manifest(t).Head
+			tx, err := d.Begin(ctx)
+			is.NotError(t, err)
+			before := vfs.Failures()
+			err = tx.Keys(ctx, "t", func(k *core.KeySet) error {
+				for i := range 4000 {
+					is.NotError(t, k.Add(ctx, row(key(i))))
+				}
+				vfs.Fail(faultvfs.Fault{Ops: faultvfs.Read | faultvfs.Write, Files: faultvfs.Temp})
+				return fErr
+			})
+			is.True(t, vfs.Failures() > before, "nothing failed")
+			if fErr != nil {
+				is.Error(t, failed, err)
+			} else {
+				is.Error(t, core.ErrLocal, err)
+			}
+			vfs.Fail(faultvfs.Fault{})
+			is.Error(t, core.ErrLocal, tx.Upsert(ctx, "t", row("a")), fmt.Sprint("the transaction after the drop, with the error of f ", fErr))
+			_ = tx.Rollback(ctx)
+			is.Equal(t, head, w.manifest(t).Head)
+		}
+	})
+
+	t.Run("should give no error of its own for a set that f leaves where the transaction can only be rolled back, and the error of an instance that f closes", func(t *testing.T) {
+		// f gives no error in either case, so what Keys gives is its own.
+		key := func(i int) string { return fmt.Sprintf("%0900d", i) }
+		vfs, err := faultvfs.New()
+		is.NotError(t, err)
+		t.Cleanup(func() { is.NotError(t, vfs.Close()) })
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{LengthLimit: 1000, VFS: vfs.Name()})
+		ctx := t.Context()
+		write(t, d, func(tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(ctx, typedTable("t", s4qlpb.Type_TYPE_TEXT)))
+		})
+		tx, err := d.Begin(ctx)
+		is.NotError(t, err)
+		is.NotError(t, tx.Keys(ctx, "t", func(k *core.KeySet) error {
+			for i := range 4000 {
+				is.NotError(t, k.Add(ctx, row(key(i))))
+			}
+			vfs.Fail(faultvfs.Fault{Ops: faultvfs.Read | faultvfs.Write, Files: faultvfs.Temp})
+			// An add fails once a page of the set must go to the temporary file.
+			var err error
+			for i := 4000; err == nil && i < 8000; i++ {
+				err = k.Add(ctx, row(key(i)))
+			}
+			is.Error(t, core.ErrLocal, err)
+			return nil
+		}))
+		vfs.Fail(faultvfs.Fault{})
+		is.Error(t, core.ErrLocal, tx.Upsert(ctx, "t", row("a")))
+		_ = tx.Rollback(ctx)
+
+		w = newWorld(t)
+		d = w.serve(t, "a", core.Options{})
+		write(t, d, func(tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(ctx, tableOf("t", 1, "k")))
+		})
+		tx, err = d.Begin(ctx)
+		is.NotError(t, err)
+		is.Error(t, core.ErrClosed, tx.Keys(ctx, "t", func(k *core.KeySet) error {
+			is.NotError(t, k.Add(ctx, row(1)))
+			is.NotError(t, d.Close(ctx))
+			is.Error(t, core.ErrClosed, k.Add(ctx, row(2)))
+			var errs []error
+			for key, err := range k.All(ctx) {
+				is.True(t, key == nil)
+				errs = append(errs, err)
+			}
+			is.Equal(t, 1, len(errs), "the read of the keys gives its error")
+			is.Error(t, core.ErrClosed, errs[0])
+			return nil
+		}))
+		_ = tx.Rollback(ctx)
+	})
+
+	t.Run("should refuse a set of keys after the end of the transaction, before it looks at the table", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		write(t, d, func(tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(t.Context(), tableOf("t", 1, "k")))
+		})
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		is.NotError(t, tx.Rollback(t.Context()))
+		for _, name := range []string{"t", "u"} {
+			is.Error(t, core.ErrTxDone, tx.Keys(t.Context(), name, func(*core.KeySet) error {
+				t.Fatal("f runs after the end of the transaction")
+				return nil
+			}), name)
+		}
+	})
 }
 
 // armingSpool is a spool file that calls arm before each write. It does not embed the file, so that

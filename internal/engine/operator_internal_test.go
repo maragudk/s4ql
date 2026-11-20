@@ -42,9 +42,13 @@ type fake struct {
 	endFails    error
 	// scans counts the scans that have started and not ended, and open the transactions.
 	scans, open int
-	// scanned counts the scans that have started, and getFails is the error of a get.
-	scanned  int
-	getFails error
+	// scanned counts the scans that have started, getFails is the error of a get, and deleteFails of
+	// a delete.
+	scanned               int
+	getFails, deleteFails error
+	// addFails is the error of an add of a key to a set, and readKeysFails of the read of the keys of
+	// a set, before its first key.
+	addFails, readKeysFails error
 	// readers counts the readers that are open, and opened those that were ever opened. readerFails
 	// is the error of opening one, and closeFails of closing one.
 	readers, opened         int
@@ -245,9 +249,13 @@ func (x fakeTx) insertNew(_ context.Context, name string, row []*s4qlpb.Value) (
 	return true, nil
 }
 
-// delete records its call, as "delete", the name, and the integer key, and deletes the row.
+// delete records its call, as "delete", the name, and the integer key, and deletes the row, or fails
+// with deleteFails.
 func (x fakeTx) delete(_ context.Context, name string, key []*s4qlpb.Value) (bool, error) {
 	x.f.calls = append(x.f.calls, fmt.Sprint("delete ", name, " ", key[0].GetInteger()))
+	if x.f.deleteFails != nil {
+		return false, x.f.deleteFails
+	}
 	t := x.f.tables[fold(name)]
 	k := t.ct.GetPrimaryKey()[0]
 	n := len(t.rows)
@@ -269,6 +277,9 @@ type fakeKeys struct {
 
 func (k *fakeKeys) add(_ context.Context, key []*s4qlpb.Value) error {
 	k.f.calls = append(k.f.calls, fmt.Sprint("add ", key[0].GetInteger()))
+	if k.f.addFails != nil {
+		return k.f.addFails
+	}
 	if !slices.Contains(k.keys, key[0].GetInteger()) {
 		k.keys = append(k.keys, key[0].GetInteger())
 	}
@@ -277,6 +288,10 @@ func (k *fakeKeys) add(_ context.Context, key []*s4qlpb.Value) error {
 
 func (k *fakeKeys) all(context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
 	return func(yield func([]*s4qlpb.Value, error) bool) {
+		if k.f.readKeysFails != nil {
+			yield(nil, k.f.readKeysFails)
+			return
+		}
 		var last *int64
 		for {
 			var next *int64
@@ -880,6 +895,10 @@ func TestChangeRows(t *testing.T) {
 		{src: "update t set w = null where k = 9", n: 0,
 			byKey: "[table t get t 9 keys t get t 9]",
 			all:   "[table t keys t]"},
+		// The check reads the source once, also for two columns that do not take NULL and get it.
+		{src: "update t set k = null, w = null where k = 9", n: 0,
+			byKey: "[table t get t 9 keys t get t 9]",
+			all:   "[table t keys t]"},
 		{src: "update t set w = null where k = 2", err: "NOT NULL constraint failed: t.w",
 			byKey: "[table t get t 2]",
 			all:   "[table t]"},
@@ -904,6 +923,142 @@ func TestChangeRows(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("should give the error of the read of the check of NOT NULL, and change nothing", func(t *testing.T) {
+		for _, scanAll := range []bool{false, true} {
+			f := newTable()
+			f.scanFails = 0
+			err, n, calls := change(t, f, "update t set w = null where w = 20", scanAll)
+			is.Equal(t, "the scan fails", err)
+			is.Equal(t, int64(0), n)
+			is.Equal(t, "[table t]", calls, fmt.Sprint("scan all: ", scanAll))
+		}
+	})
+
+	t.Run("should give the error of the read of the row of a key that the update found", func(t *testing.T) {
+		for _, scanAll := range []bool{false, true} {
+			f := newTable()
+			f.getFails = errors.New("the get fails")
+			err, n, calls := change(t, f, "update t set w = 5 where w = 20", scanAll)
+			is.Equal(t, "the get fails", err)
+			is.Equal(t, int64(0), n)
+			is.Equal(t, "[table t keys t add 2 key 2 get t 2]", calls, fmt.Sprint("scan all: ", scanAll))
+		}
+	})
+
+	t.Run("should give the error of the delete of a row, of a delete and of a change of the key", func(t *testing.T) {
+		for _, scanAll := range []bool{false, true} {
+			for src, want := range map[string]string{
+				"delete from t where w = 20":      "[table t keys t add 2 key 2 delete t 2]",
+				"update t set k = 5 where w = 20": "[table t keys t add 2 key 2 get t 2 delete t 2]",
+			} {
+				f := newTable()
+				f.deleteFails = errors.New("the delete fails")
+				err, n, calls := change(t, f, src, scanAll)
+				is.Equal(t, "the delete fails", err, src)
+				is.Equal(t, int64(0), n, src)
+				is.Equal(t, want, calls, fmt.Sprint(src, ", scan all: ", scanAll))
+			}
+		}
+	})
+
+	t.Run("should give the error of the set of keys, of an add and of a read, and change nothing", func(t *testing.T) {
+		for _, scanAll := range []bool{false, true} {
+			f := newTable()
+			f.addFails = errors.New("the add fails")
+			err, n, calls := change(t, f, "delete from t where w >= 20", scanAll)
+			is.Equal(t, "the add fails", err)
+			is.Equal(t, int64(0), n)
+			is.Equal(t, "[table t keys t add 2]", calls, fmt.Sprint("scan all: ", scanAll))
+
+			f = newTable()
+			f.readKeysFails = errors.New("the read of the keys fails")
+			err, n, calls = change(t, f, "delete from t where w >= 20", scanAll)
+			is.Equal(t, "the read of the keys fails", err)
+			is.Equal(t, int64(0), n)
+			is.Equal(t, "[table t keys t add 2 add 3 add 4]", calls, fmt.Sprint("scan all: ", scanAll))
+		}
+	})
+
+	t.Run("should stop at the next key once the context ends, before it changes the row of the key", func(t *testing.T) {
+		f := newTable()
+		ctx, cancel := context.WithCancel(t.Context())
+		src := &scan{r: fakeTx{f}, table: f.tables["t"].ct}
+		n, err := changeRows(ctx, fakeTx{f}, "t", 1, src, bugs{}, func(key []*s4qlpb.Value) error {
+			f.calls = append(f.calls, fmt.Sprint("change ", key[0].GetInteger()))
+			cancel()
+			return nil
+		})
+		is.True(t, errors.Is(err, context.Canceled), fmt.Sprint(err))
+		is.Equal(t, int64(1), n)
+		is.Equal(t, "[keys t add 1 add 2 add 3 add 4 key 1 change 1 key 2]", fmt.Sprint(f.calls))
+	})
+
+	t.Run("should change nothing and count no row of an update and a delete with the planted bug changeNothing, and keep the row of the old key with keepOldKey", func(t *testing.T) {
+		for _, c := range []struct {
+			src   string
+			bugs  bugs
+			n     int64
+			calls string
+		}{
+			{src: "update t set w = 5 where k = 2", bugs: bugs{changeNothing: true}, calls: "[table t]"},
+			{src: "delete from t", bugs: bugs{changeNothing: true}, calls: "[table t]"},
+			{src: "update t set k = 5 where k = 2", bugs: bugs{keepOldKey: true}, n: 1, calls: "[table t keys t get t 2 add 2 key 2 get t 2 insert t 20,5]"},
+		} {
+			f := newTable()
+			s, err := stmt.Check(c.src)
+			is.NotError(t, err)
+			k, err := buildSink(t.Context(), fakeTx{f}, NewPlan(s), nil, c.bugs, 1_000_000_000, false)
+			is.NotError(t, err)
+			is.NotError(t, k.check(t.Context()))
+			n, err := k.run(t.Context())
+			is.NotError(t, err)
+			is.Equal(t, c.n, n, c.src)
+			is.Equal(t, c.calls, fmt.Sprint(f.calls), c.src)
+		}
+	})
+
+	t.Run("should give an internal error for a plan of a change that no statement gives", func(t *testing.T) {
+		name := stmt.Name{Raw: "t", Value: "t"}
+		for _, c := range []struct {
+			plan Plan
+			key  []uint32
+			want string
+		}{
+			{plan: &Delete{Table: name, Source: &Values{}}, key: []uint32{1}, want: "a change of the rows of a node of type *engine.Values"},
+			{plan: &Delete{Table: name, Source: &Filter{Source: &Values{}}}, key: []uint32{1}, want: "a change of the rows of a node of type *engine.Values"},
+			{plan: &Delete{Table: name, Source: &Scan{Table: name}}, key: []uint32{0, 1}, want: "a change of a table of 2 columns with the key [0 1]"},
+			{plan: &Delete{Table: name, Source: &Scan{Table: name}}, key: []uint32{2}, want: "a change of a table of 2 columns with the key [2]"},
+			{plan: &Update{Table: name, Set: []Assignment{{Column: stmt.Name{Raw: "w", Value: "w"}, Value: &Integer{Value: 1}}, {Column: stmt.Name{Raw: "W", Value: "W"}, Value: &Integer{Value: 2}}},
+				Source: &Scan{Table: name}}, key: []uint32{1}, want: "an update that sets the column w twice"},
+			{plan: &Update{Table: name, Set: []Assignment{{Column: stmt.Name{Raw: "w", Value: "w"}, Value: &Parameter{Number: 1}}}, Source: &Scan{Table: name}},
+				key: []uint32{1}, want: "the parameter 1 of a statement with 0 arguments"},
+			{plan: &Update{Table: name, Source: &Scan{Table: name}}, key: []uint32{1}, want: "an update that sets no column"},
+		} {
+			f := newTable()
+			f.tables["t"].ct.SetPrimaryKey(c.key)
+			_, err := buildSink(t.Context(), fakeTx{f}, c.plan, nil, bugs{}, 1_000_000_000, false)
+			is.True(t, errors.Is(err, ErrInternal), fmt.Sprint(err))
+			is.Equal(t, "s4ql: internal error: "+c.want, err.Error())
+		}
+	})
+
+	t.Run("should give an internal error for a key that the statement found and whose row is gone", func(t *testing.T) {
+		// A source that gives the row of the key 9, from a table of another fake, which the table of the
+		// statement does not have.
+		f, other := newTable(), newFake().with("t", []string{"w", "k"}, []int64{90, 9})
+		other.tables["t"].ct.SetPrimaryKey([]uint32{1})
+		ct, src := f.tables["t"].ct, &scan{r: fakeTx{other}, table: other.tables["t"].ct}
+		n, err := (&update{w: fakeTx{f}, table: ct, key: 1, src: src, positions: []int{0}, values: []*s4qlpb.Value{integer(5)}}).run(t.Context())
+		is.True(t, errors.Is(err, ErrInternal))
+		is.Equal(t, "s4ql: internal error: the row of a key that an update found is gone", err.Error())
+		is.Equal(t, int64(0), n)
+		n, err = (&remove{w: fakeTx{f}, table: ct, key: 1, src: src}).run(t.Context())
+		is.True(t, errors.Is(err, ErrInternal))
+		is.Equal(t, "s4ql: internal error: the row of a key that a delete found is gone", err.Error())
+		is.Equal(t, int64(0), n)
+		is.Equal(t, "[keys t add 9 key 9 get t 9 keys t add 9 key 9 delete t 9]", fmt.Sprint(f.calls))
+	})
 }
 
 func TestBuild(t *testing.T) {

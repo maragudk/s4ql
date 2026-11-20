@@ -1,0 +1,53 @@
+name: Go with a build cache
+description: >
+  Sets up Go as actions/setup-go does, without its cache, and restores the Go build cache and the
+  module cache that a run on main saved under the name of the cache, for the same Go version. The
+  action go-save saves them again at the end of a job on main.
+
+# setup-go's own cache is one key of the Go version and go.sum, which the first job to end saves, so
+# every other job started with the build of that job. Here each job, and each kind of build, such
+# as -race or -asan, has a cache of its own. Go's build cache is content-addressed, so an entry of
+# an older commit is only used where its inputs are the same. A cached test result is never used:
+# every go test of CI has -count=1, -shuffle, or -fuzz, which go test does not cache.
+#
+# Only main saves, and a pull request restores the newest cache of main, which GitHub lets a pull
+# request read. The key ends in the commit, so that each run on main saves anew; a restore takes the
+# newest key with the prefix.
+
+inputs:
+  cache:
+    description: The name of the cache, which says the job and the kind of build, such as test-race.
+    required: true
+  go-version-file:
+    description: The go.mod whose go line names the Go version.
+    default: go.mod
+
+runs:
+  using: composite
+  steps:
+    - id: setup
+      uses: actions/setup-go@v7
+      with:
+        go-version-file: ${{ inputs.go-version-file }}
+        check-latest: true
+        cache: false
+
+    - id: key
+      shell: sh
+      env:
+        CACHE: ${{ inputs.cache }}
+        GO_VERSION: ${{ steps.setup.outputs.go-version }}
+      run: |
+        prefix="go-$CACHE-$RUNNER_OS-$RUNNER_ARCH-go$GO_VERSION-"
+        echo "prefix=$prefix" >>"$GITHUB_OUTPUT"
+        echo "S4QL_GO_CACHE_KEY=$prefix$GITHUB_SHA" >>"$GITHUB_ENV"
+        echo "S4QL_GOCACHE=$(go env GOCACHE)" >>"$GITHUB_ENV"
+        echo "S4QL_GOMODCACHE=$(go env GOMODCACHE)" >>"$GITHUB_ENV"
+
+    - uses: actions/cache/restore@v6
+      with:
+        path: |
+          ${{ env.S4QL_GOCACHE }}
+          ${{ env.S4QL_GOMODCACHE }}
+        key: ${{ env.S4QL_GO_CACHE_KEY }}
+        restore-keys: ${{ steps.key.outputs.prefix }}
