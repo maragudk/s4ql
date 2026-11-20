@@ -53,3 +53,47 @@ The engine's run waits for the change of the workload of `openBound`, since its 
 ### Future work
 
 - The engine's run, after the change for `openBound`, and the survivors of every run.
+
+## Step 2: Why `openBound` grew thin, and the hammer workload
+
+**Author:** update-delete-mutation builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the brief) "`openBound` (slice 7) is found in 8 of 200 seeds of the simulation, the second time only at seed 55 of the default 100. Find out why the workload reaches it so seldom now (the checks of slice 8 changed the mix of statements) and raise its share the honest way, by making the workload exercise key ranges with open bounds more (as an earlier round did for `convertReal` by moving it to the hammer workload), not by changing what counts as found. Recount all planted bugs afterwards (`S4QL_ENGINE_SIM_SEEDS=200`), update the engine README's table, and confirm that none is found without its bug."
+**Interpretation:** Measure what the bug needs before and after the sequence wrote updates and deletes, and run the bug where the workload gives more of it.
+**Inferred intent:** A planted bug whose detection does not hang on a few seeds, found by the same violation as before.
+
+### What I did
+
+- The bug needs a select with WHERE, compared with SQLite, on an engine that reads by the key, whose closed bound of the key is the key of a row. `git archive b1d380d^` put the tree before the hooks of slice 8 in the sequence into the scratchpad (`udm/old`), and `S4QL_ENGINE_SIM_SEEDS=200 go test ./internal/engine/ -run '^TestSimulation$/^default$' -v` ran there and here. Of 200 seeds of the default workload, the selects with WHERE that the checks compare with SQLite went from 1,408 to 1,007, and those that give rows from 167 to 84. A third of the selects run on an engine that reads every row, which has no bug to find. The updates and deletes take turns of the selects, 3,649 of them in the 200 seeds, and delete rows (a delete without WHERE, one in five, empties its table), so fewer selects meet a row.
+- The hammer workload has one instance, opened once, so every select reads by the key, and it runs more statements. `openBound` moved there in `TestSimulation_plantedBugs` in `/internal/engine/simulation_test.go`, with the reason in the comment. 32 of 200 seeds find it, each by its own violation ", and in SQLite", against 8 in the default workload, and the default run finds it the second time at seed 14, where it did at seed 55.
+- `S4QL_ENGINE_SIM_SEEDS=200 go test ./internal/engine/ -run '^TestSimulation_plantedBugs$' -v`, in 303 s: the other fourteen counts are what the generated checks of slice 8 gave, and every seed that finds a bug finds nothing without it. `/internal/engine/README.md` has the new row, the workload, and the reason.
+
+### Why
+
+Moving the bug to the workload that reaches it is what the round of slices 5 and 6 did for `convertReal`, and keeps what counts as found. A change of `stmttest.Sequence` to write more selects by the key would have moved every pinned count of the differential tests and of `drivercheck`, for one planted bug.
+
+### What worked
+
+- The counts of the simulation's own tallies, "selects with WHERE ... that give rows", showed the cause without new code.
+
+### What didn't work
+
+Nothing.
+
+### What I learned
+
+- The hammer workload reads by the key only, since every second engine of a node reads every row and its one node opens once.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+- Whether a planted bug of the selects should stay in a workload that the default run of `TestSimulation_plantedBugs` does not reach by default otherwise; it now runs in the hammer one, as `checkOutside`, `readNewest`, and `convertReal` do.
+
+### Future work
+
+None.
