@@ -393,7 +393,7 @@ func (i *insert) check() error {
 				v = s4qlpb.Value_builder{Integer: new(int64(f))}.Build()
 				row[position] = v
 			}
-			if err := checkType(i.table, position, v, i.exprs[n][position]); err != nil {
+			if err := checkType(i.table, position, v, i.exprs[n][position], "for"); err != nil {
 				return err
 			}
 		}
@@ -608,7 +608,7 @@ func (b build) filter(f *Filter, src source) (source, error) {
 		if c.value == nil {
 			continue
 		}
-		if err := checkCompared(s.table, c.position, c.value, f.Conditions[i].Value); err != nil {
+		if err := checkType(s.table, c.position, c.value, f.Conditions[i].Value, "compared with"); err != nil {
 			return nil, err
 		}
 	}
