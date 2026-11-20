@@ -1597,6 +1597,8 @@ func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) 
 		sel = &stmt.Select{Table: s.Table, Where: s.Where}
 	case *stmt.Delete:
 		sel = &stmt.Select{Table: s.Table, Where: s.Where}
+	case *stmt.CreateIndex:
+		sel = &stmt.Select{Table: s.Table}
 	default:
 		return "", false
 	}
@@ -1605,10 +1607,24 @@ func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) 
 		return "", false
 	}
 	name, missing := stmttest.MissingColumn(columns, sel)
+	if ci, ok := s.(*stmt.CreateIndex); ok {
+		// The first column of the index in the order of the text that the table does not have: the
+		// build of SQLite with DQS on makes an index on a string literal of it, if it is in double
+		// quotes, where the pinned build gives its error.
+		at := slices.IndexFunc(ci.Columns, func(c stmt.IndexColumn) bool { return stmttest.ColumnOf(columns, c.Name) < 0 })
+		if missing = at >= 0; missing {
+			name = ci.Columns[at].Name
+		}
+	}
 	if !missing || name.Raw[0] != '"' {
 		return "", false
 	}
 	want := fmt.Sprintf(`1/1: no such column: "%v" - should this be a string literal in single-quotes?`, name.Value)
+	if _, ok := s.(*stmt.CreateIndex); ok && !slices.ContainsFunc(got.runs(), func(r outcome) bool { return r.err == want }) {
+		// An error of the name of the index or of the table comes first in both builds, and the
+		// comparison with mattn's SQLite checks it.
+		return "", false
+	}
 	for _, r := range got.runs() {
 		if r.failed == "" || r.failed == "prepare" || r.err != want {
 			return fmt.Sprintf("%q: s4ql gives %v, and the pinned build of SQLite %q when the statement runs", src, got, want), true

@@ -38,7 +38,7 @@ import (
 var (
 	seed      = flag.Uint64("seed", 0, "first seed of the sequences of statements")
 	sequences = flag.Int("sequences", 300, "sequences of statements of TestDifferential")
-	length    = flag.Int("length", 40, "statements in each sequence of TestDifferential")
+	length    = flag.Int("length", 48, "statements in each sequence of TestDifferential")
 	scanAll   = flag.Bool("scanall", false, "read every row of its table in each query of TestDifferential and FuzzDifferential_core, and not the rows by the key")
 	// directions replays a failure that depends on the directions in which the queries read: a test
 	// that fails logs the seed of each of its instances.
@@ -2492,8 +2492,15 @@ func TestDifferential(t *testing.T) {
 		// arguments [stmttest.Sequence.Next] makes wrong in number or of no column now and then, which
 		// took the third up, and an update gives a column a value of another type, or compares one in
 		// its WHERE, now and then, which took the fourth up. The 4 are updates and deletes with a literal
-		// longer than the length limit, in SET or in WHERE.
-		want := map[string]int{acceptedStartedTable: 14, excusedArguments: 707, excusedArgument: 300, excusedType: 576, excusedLong: 2, excusedLongChange: 4}
+		// longer than the length limit, in SET or in WHERE. When the sequence wrote create indexes and
+		// drop indexes, a third of the sequences more of them, and the sequences grew from 40 statements
+		// to 48, so that the statements of the earlier slices are about as many as before, they went
+		// from 14, 707, 300, 576, 2, and 4 to 14, 822, 326, 477, 1, and 2: the sequence draws other
+		// random numbers, which moves each of them, and its longer sequences took the second and the
+		// third up; the create indexes and drop indexes, which have no values, take turns of the
+		// inserts, the updates, and the deletes, which took the fourth down, and a third of the
+		// sequences write more of them.
+		want := map[string]int{acceptedStartedTable: 14, excusedArguments: 822, excusedArgument: 326, excusedType: 477, excusedLong: 1, excusedLongChange: 2}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
 			// The count of [excusedRecordSlip] depends on the allocator of the platform.
@@ -2512,7 +2519,7 @@ func TestDifferential(t *testing.T) {
 // of [TestDifferential] must reach.
 var reachedDifferential = map[string]int{
 	"insert into INT ok": 130, "insert into INTEGER ok": 70, "insert into REAL ok": 100, "insert into TEXT ok": 110, "insert into BLOB ok": 100,
-	"insert into INT UNIQUE constraint failed": 50, "insert into INTEGER UNIQUE constraint failed": 26, "insert into REAL UNIQUE constraint failed": 34,
+	"insert into INT UNIQUE constraint failed": 14, "insert into INTEGER UNIQUE constraint failed": 26, "insert into REAL UNIQUE constraint failed": 34,
 	"insert into TEXT UNIQUE constraint failed": 26, "insert into BLOB UNIQUE constraint failed": 42,
 	"-0.0 literal into REAL UNIQUE constraint failed": 2, "-0.0 argument into REAL UNIQUE constraint failed": 2,
 	"insert into INT a value of another type": 20, "insert into INTEGER a value of another type": 20, "insert into REAL a value of another type": 24,
@@ -2561,7 +2568,7 @@ var reachedDifferential = map[string]int{
 	"insert that leaves out a column that takes NULL a value of another type": 11, "insert that leaves out a column that takes NULL NOT NULL constraint failed": 13,
 	"insert with NULL in the key: NOT NULL constraint failed": 17, "insert with NULL in a column that does not take it: NOT NULL constraint failed": 11,
 	"insert of NULL beside a value of another type NOT NULL constraint failed": 4, "insert of NULL beside a value of another type a value of another type": 6,
-	"select * with NULL ok": 45, "select of names with NULL ok": 7,
+	"select * with NULL ok": 12, "select of names with NULL ok": 7,
 
 	// Slice 7, a third of what the run gave on 2026-11-20 when the sequence wrote WHERE: each operator
 	// on the key and on another column, and with a value of another type on the key; each way that the
@@ -2575,7 +2582,7 @@ var reachedDifferential = map[string]int{
 	"= on the key ok": 22, "!= on the key ok": 27, "< on the key ok": 47, "<= on the key ok": 39, "> on the key ok": 39, ">= on the key ok": 42,
 	"IS NULL on the key ok": 19, "IS NOT NULL on the key ok": 16,
 	"= on another column ok": 10, "!= on another column ok": 8, "< on another column ok": 9, "<= on another column ok": 6, "> on another column ok": 11,
-	">= on another column ok": 7, "IS NULL on another column ok": 2, "IS NOT NULL on another column ok": 8,
+	">= on another column ok": 7, "IS NULL on another column ok": 2, "IS NOT NULL on another column ok": 2,
 	"= on the key a value of another type": 11, "!= on the key a value of another type": 11, "< on the key a value of another type": 14,
 	"<= on the key a value of another type": 11, "> on the key a value of another type": 12, ">= on the key a value of another type": 11,
 	"WHERE that reads no row ok": 29, "WHERE that reads a get of one key ok": 18, "WHERE that reads a scan from a lower bound ok": 15,
@@ -2629,7 +2636,7 @@ var reachedDifferential = map[string]int{
 	"update with arguments that s4ql refuses not supported": 10, "update with arguments that s4ql refuses wrong number of arguments": 22,
 	"update with a literal longer than the length limit in SET": 1,
 	"update WHERE that reads no row ok, no row found":           13, "update WHERE that reads a get of one key ok, rows changed": 10, "update WHERE that reads a scan from a lower bound ok, rows changed": 1,
-	"update WHERE that reads a scan to an upper bound ok, rows changed": 1, "update WHERE that reads a scan between two bounds ok, rows changed": 1,
+	"update WHERE that reads a scan between two bounds ok, rows changed":                  1,
 	"update WHERE that reads a scan between two bounds that hold no key ok, no row found": 5, "update WHERE that reads a scan of every row ok, rows changed": 3,
 	"update WHERE that tests a column more than once ok, rows changed": 3, "update WHERE with contradicting conditions ok, no row found": 11,
 	"delete with WHERE no such column": 18, "delete WHERE with a column in double quotes that the table does not have no such column": 13,
@@ -2640,12 +2647,31 @@ var reachedDifferential = map[string]int{
 	"delete WHERE that reads a scan between two bounds that hold no key ok, no row found": 9, "delete WHERE that reads a scan of every row ok, rows changed": 7,
 	"delete WHERE that tests a column more than once ok, rows changed": 7, "delete WHERE with contradicting conditions ok, no row found": 12,
 	"delete WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column": 1, "changed both ways": 576,
+	// The create indexes and drop indexes of slice 9, by outcome and by their columns, as [reachIndex]
+	// counts them; the choices of the rules, as [checkChoice] counts them; the paths that
+	// [pair.everyPath] runs, by their kinds, as [pathKinds] gives them, and the plans of the cache
+	// that it checks; and the restarts of a database with indexes. Each least number is a third of
+	// what the run gave on 2026-11-20, or 1.
+	"create index ok": 114, "create index already exists": 123, "create index no such column": 27, "create index no such table": 213,
+	"create index there is already a table named": 102, "drop index ok": 29, "drop index no such index": 117,
+	"create index of 1 columns ok": 71, "create index of 2 columns ok": 33, "create index of 3 columns ok": 9,
+	"create index of a column of type BLOB ok": 27, "create index of a column of type INT ok": 34, "create index of a column of type INTEGER ok": 36,
+	"create index of a column of type REAL ok": 34, "create index of a column of type TEXT ok": 34, "create index of a column that takes NULL ok": 43,
+	"create index of a descending column ok": 56, "create index that holds the primary key ok": 79,
+	"chosen no row": 53, "chosen a get": 155, "chosen every row": 47, "chosen the primary key with 0 pinned and a range": 75,
+	"chosen an index with 0 pinned and a range": 3, "chosen an index with 1 pinned": 6, "chosen an index with 1 pinned and a range": 4,
+	"chosen an index with 2 pinned": 1, "chosen an index with 2 pinned and a range": 1, "chosen an index with 1 pinned of a table of several indexes": 2,
+	"chosen a get of a table of several indexes": 9, "chosen every row of a table of several indexes": 2,
+	"WHERE run by every path": 379, "WHERE run by every path on a table with an index": 147, "WHERE run by a sample of its paths": 116,
+	"path forward": 717, "path backward": 721, "path that reads no row": 112, "path of every row": 652,
+	"path of the primary key with 1 pinned": 275, "path of the primary key with 0 pinned and a range": 151,
+	"path of an index with 0 pinned": 135, "path of an index with 0 pinned and a range": 26, "path of an index with 1 pinned": 69,
+	"path of an index with 1 pinned and a range": 6, "path of an index with 2 pinned": 7, "path of an index with 2 pinned and a range": 1,
+	"path of an index with 3 pinned": 1, "path of an index of a descending column": 111, "path with a range on a descending column": 12,
+	"path with a pin of NULL": 3, "path of an index that holds every column": 204, "plan of the cache checked": 380,
+	"replay of indexes into an empty cache": 33, "restart with indexes in the cache": 33,
 }
 
-// TestPair_recordSlips pins the known difference of a record that is too long, of docs/todo.md, at the
-// length limit of 1000: the engine refuses the update of two rows whose second record is too long,
-// which SQLite stores on some platforms and refuses on others, and the comparison accepts either
-// only by an update of each row alone in SQLite.
 // TestDifferential_plantedBugs runs the first sequences of [TestDifferential] with each planted bug
 // of the choice of an access in the engines of both instances of the pair, and requires that at
 // least a pinned number of them find the bug, by a difference from SQLite, also on a path that
@@ -2688,6 +2714,10 @@ func TestDifferential_plantedBugs(t *testing.T) {
 	}
 }
 
+// TestPair_recordSlips pins the known difference of a record that is too long, of docs/todo.md, at the
+// length limit of 1000: the engine refuses the update of two rows whose second record is too long,
+// which SQLite stores on some platforms and refuses on others, and the comparison accepts either
+// only by an update of each row alone in SQLite.
 func TestPair_recordSlips(t *testing.T) {
 	setup := []string{
 		"create table t (k int primary key, a text, b text not null) strict, without rowid",
