@@ -770,3 +770,7 @@ internal/core/index.go conn.loadIndexes condition: schemaless => false #2
 	The one index without a row in sqlite_schema is that of the primary key, which the case before takes.
 internal/core/index.go conn.loadIndexes condition: s.ColumnText(2) != "c" => false
 	An index of a constraint is that of the primary key, which the case before takes, or that of a UNIQUE constraint, which is unique and refused by the test of unique.
+internal/core/index.go conn.loadIndexes condition: position >= int64(len(t.columns)) => false
+	pragma_index_xinfo gives a key column of an index as the position of a column of its table, -1 for the rowid, or -2 for an expression, never one past the columns.
+internal/core/index.go conn.loadIndexes operator: position >= int64(len(t.columns)) => position > int64(len(t.columns))
+	pragma_index_xinfo gives a key column of an index as the position of a column of its table, -1 for the rowid, or -2 for an expression, never one past the columns.

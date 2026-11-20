@@ -49,8 +49,9 @@ type fake struct {
 	// addFails is the error of an add of a key to a set, and readKeysFails of the read of the keys of
 	// a set, before its first key.
 	addFails, readKeysFails error
-	// indexesFails is the error of the read of the indexes of a table.
-	indexesFails error
+	// indexesFails is the error of the read of the indexes of a table, and indexFails of the lookup
+	// of an index by its name.
+	indexesFails, indexFails error
 	// readers counts the readers that are open, and opened those that were ever opened. readerFails
 	// is the error of opening one, and closeFails of closing one.
 	readers, opened         int
@@ -158,6 +159,9 @@ func (x fakeTx) indexes(_ context.Context, name string) ([]*s4qlpb.CreateIndex, 
 }
 
 func (x fakeTx) index(_ context.Context, name string) (*s4qlpb.CreateIndex, error) {
+	if x.f.indexFails != nil {
+		return nil, x.f.indexFails
+	}
 	for _, t := range x.f.tables {
 		for _, ix := range t.indexes {
 			if fold(ix.GetIndex()) == fold(name) {
@@ -1340,6 +1344,14 @@ func TestBuild(t *testing.T) {
 			_, err = s.run(t.Context())
 			is.Equal(t, "UNIQUE constraint failed: t.k", err.Error(), src)
 		}
+	})
+
+	t.Run("should pass on an error of the lookup of an index of the name of a create table, and create nothing", func(t *testing.T) {
+		f := newFake()
+		f.indexFails = errors.New("the lookup of the index fails")
+		err := sink(f, "create table t (v int primary key) strict, without rowid")
+		is.True(t, errors.Is(err, f.indexFails))
+		is.Equal(t, "[table t]", fmt.Sprint(f.calls))
 	})
 
 	t.Run("should place the values of a list in the order of the list with the planted bug listOrder", func(t *testing.T) {
