@@ -222,8 +222,8 @@ sqlite-verify:
 # tests against a real bucket skip, which otherwise fail without their settings (see
 # internal/store/s3test), and the tests of the SQL front end and of the engine compare with SQLite on
 # a tenth of the corpus and of the generated texts, as under the race detector. test-s3 runs the
-# first and test-sql the second without it. CI's job test runs go test ./... without -short, with the
-# credentials, and its job sql runs test-sql.
+# first and test-sql the second without it. CI's jobs test, test-core, and test-engine run go test
+# ./... between them, without -short, with the credentials, and its job sql runs test-sql.
 .PHONY: test
 test: test-changes
 	go test -short -coverprofile cover.out -shuffle on ./...
@@ -352,7 +352,7 @@ LINKSCAWK = '$$1 == "cgo" { c[$$2] = 1 } $$1 ~ /\.test$$/ { n++; t[n] = $$0 } \
 
 # asan-test runs the tests of the packages of both modules whose test binaries link C under the C
 # address sanitizer (Linux only). The other packages have nothing for the sanitizer to check, and
-# make test and CI's job test run them. It fails if it cannot list the packages of a module, or if
+# make test and CI's jobs test, test-core, and test-engine run them. It fails if it cannot list the packages of a module, or if
 # none links C. It passes -short, so that the tests against a real bucket skip, since it has no
 # credentials, and the job test runs those. Under the sanitizer, the tests of the SQL front end and
 # of the engine use a tenth of the corpus whether or not -short is given, so it changes nothing else.
