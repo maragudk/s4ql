@@ -2388,66 +2388,253 @@ func fuzzWhere(f *testing.F, newInstance func(t testing.TB) *instance) {
 // bytes that follow, NULL, or a value of another type from the bytes that follow, and whose next bit
 // chooses a literal or an argument.
 func whereOf(table, typ string, data []byte) stmttest.Call {
-	next := func() byte {
-		if len(data) == 0 {
-			return 0
-		}
-		b := data[0]
-		data = data[1:]
-		return b
+	r := &fuzzBytes{data: data}
+	where, args := r.conditions(typ, []string{"k", "v", "x"}, 8, nil)
+	return stmttest.Call{Src: "select * from " + table + " where " + where, Args: args, Query: true, Supported: true}
+}
+
+// fuzzBytes are the bytes of the input of a fuzz target, which its methods take from the front, and
+// which are zero bytes once they are all taken.
+type fuzzBytes struct {
+	data []byte
+}
+
+// next byte.
+func (r *fuzzBytes) next() byte {
+	if len(r.data) == 0 {
+		return 0
 	}
-	// take n bytes from data, or what it has.
-	take := func(n int) []byte {
-		n = min(n, len(data))
-		b := data[:n]
-		data = data[n:]
-		return b
-	}
+	b := r.data[0]
+	r.data = r.data[1:]
+	return b
+}
+
+// take n bytes, or what is left.
+func (r *fuzzBytes) take(n int) []byte {
+	n = min(n, len(r.data))
+	b := r.data[:n]
+	r.data = r.data[n:]
+	return b
+}
+
+// conditions of a WHERE, without the keyword, of at least one and up to most conditions, the later
+// ones while bytes are left, on columns of the names, of a table whose key k and other columns are
+// of the type typ, after the arguments args of the parameters before them, and the arguments with
+// theirs, as [whereOf] says.
+func (r *fuzzBytes) conditions(typ string, names []string, most int, args []any) (string, []any) {
 	ops := []string{"=", "==", "!=", "<>", "<", "<=", ">", ">=", "is null", "is not null"}
 	var b strings.Builder
-	b.WriteString("select * from " + table + " where ")
-	c := stmttest.Call{Query: true, Supported: true}
-	for n := range 8 {
+	for n := range most {
 		if n > 0 {
-			if len(data) == 0 {
+			if len(r.data) == 0 {
 				break
 			}
 			b.WriteString(" and ")
 		}
-		col := next()
-		name := []string{"k", "v", "x"}[int(col&0x7f)%3]
+		col := r.next()
+		name := names[int(col&0x7f)%len(names)]
 		if col > 127 {
 			name = `"` + name + `"`
 		}
-		op := ops[int(next())%len(ops)]
+		op := ops[int(r.next())%len(ops)]
 		b.WriteString(name + " " + op)
 		if strings.HasPrefix(op, "is") {
 			continue
 		}
-		form := next()
-		var value any
-		switch form % 4 {
-		case 0:
-			keys := whereRows[typ]
-			value = keys[int(next())%len(keys)]
-		case 1:
-			value = whereValue(typ, take)
-		case 3:
-			// A type whose values are of another kind: INT and INTEGER hold one kind.
-			others := slices.DeleteFunc(slices.Clone(whereTypes), func(o string) bool {
-				return o == typ || strings.HasPrefix(o, "int") && strings.HasPrefix(typ, "int")
-			})
-			value = whereValue(others[int(next())%len(others)], take)
-		}
-		if form/4%2 == 1 {
-			b.WriteString(" ?")
-			c.Args = append(c.Args, value)
-			continue
-		}
-		b.WriteString(" " + whereLiteral(value))
+		var term string
+		term, args = r.term(typ, args)
+		b.WriteString(" " + term)
 	}
-	c.Src = b.String()
-	return c
+	return b.String(), args
+}
+
+// term of a value, after the arguments args of the parameters before it, and the arguments with its
+// own: by a byte whose lowest bits choose a key of a row of the table of [whereRows] of the type typ,
+// a value of typ from the bytes that follow, NULL, or a value of another type from the bytes that
+// follow, and whose next bit chooses a literal or a ? with the value as its argument.
+func (r *fuzzBytes) term(typ string, args []any) (string, []any) {
+	form := r.next()
+	var value any
+	switch form % 4 {
+	case 0:
+		keys := whereRows[typ]
+		value = keys[int(r.next())%len(keys)]
+	case 1:
+		value = whereValue(typ, r.take)
+	case 3:
+		// A type whose values are of another kind: INT and INTEGER hold one kind.
+		others := slices.DeleteFunc(slices.Clone(whereTypes), func(o string) bool {
+			return o == typ || strings.HasPrefix(o, "int") && strings.HasPrefix(typ, "int")
+		})
+		value = whereValue(others[int(r.next())%len(others)], r.take)
+	}
+	if form/4%2 == 1 {
+		return "?", append(args, value)
+	}
+	return whereLiteral(value), args
+}
+
+// FuzzChanges runs updates and deletes that the bytes of its input build on the engine, on a database
+// in memory, a test double of the core, and on SQLite, of their own or in a write transaction that
+// commits or rolls back, and compares what each gives, as [TestDifferential] does, also with the rows
+// read the other way: see [pair.bothWays]. The table, chosen by the first byte, has a key k and the
+// columns v, which takes NULL, and w, which does not, of one of the five types, and the rows of
+// [whereRows], of which one in three has v NULL and the others v as the key, and w is the key. The
+// input builds the statements as [changesOf] says, and the tables are compared at the end.
+// [FuzzChanges_core] runs the same on the storage core, and replays the log into an empty cache.
+func FuzzChanges(f *testing.F) {
+	fuzzChanges(f, newMemoryInstance)
+}
+
+// FuzzChanges_core is [FuzzChanges] on the storage core, with a store in memory.
+func FuzzChanges_core(f *testing.F) {
+	fuzzChanges(f, func(t testing.TB) *instance { return newInstance(t, engine.Options{}) })
+}
+
+// fuzzChanges is [FuzzChanges] on the instances of newInstance. Its seeds have updates of each column
+// and of several, also of a column that the table does not have, with each kind of value, as a
+// literal and as an argument, with and without WHERE, deletes with and without WHERE, of one row and
+// of many, a change of the key that meets a key that exists, and several statements in a transaction.
+func fuzzChanges(f *testing.F, newInstance func(t testing.TB) *instance) {
+	for table := range byte(len(whereTypes)) {
+		for mask := range byte(16) {
+			for form := range byte(8) {
+				if (mask+form)%5 == 0 {
+					// An update of the columns of the mask, each with a value of the form, and a WHERE of one
+					// condition = on the key.
+					data := []byte{table, 0, 0b010}
+					data = append(data, mask)
+					for range 4 {
+						data = append(data, form, 2, 1)
+					}
+					f.Add(append(data, 0, 0, 0, 3))
+				}
+			}
+		}
+		f.Add([]byte{table, 1, 0b001, 0, 6, 0, 0, 2})                   // In a transaction that rolls back, a delete of the rows with k >= a key.
+		f.Add([]byte{table, 3, 0b000, 0b0001, 0, 1, 0b011, 2, 6, 0, 1}) // In one that commits: an update of k to a key that exists, and a delete.
+		f.Add([]byte{table, 0, 0b001, 0b100, 0, 0, 2, 0b000, 0b0010, 1, 0b111, 0b1000, 4, 3, 0, 0, 2})
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) < 2 {
+			return
+		}
+		typ := whereTypes[int(data[0])%len(whereTypes)]
+		i := newInstance(t)
+		p := newPair(t, i, nil)
+		table := "c_" + typ
+		setUp := []stmttest.Call{{Src: "create table " + table + " (k " + typ + " primary key, v " + typ + ", w " + typ + " not null) strict, without rowid", Supported: true}}
+		for j, key := range whereRows[typ] {
+			v := key
+			if j%3 == 1 {
+				v = nil
+			}
+			setUp = append(setUp, stmttest.Call{Src: "insert into " + table + " values (?, ?, ?)", Args: []any{key, v, key}, Supported: true})
+		}
+		for _, c := range setUp {
+			if failure := p.step(c); failure != "" {
+				t.Fatalf("the set-up: %v", failure)
+			}
+		}
+		inTx, commit := data[1]&1 == 1, data[1]&2 == 2
+		var log []string
+		if inTx {
+			log = append(log, "-- begin")
+			is.NotError(t, i.c.Begin(t.Context()))
+			is.NotError(t, p.other.c.Begin(t.Context()))
+			for _, s := range oracleBegin(false) {
+				is.Equal(t, "", p.o.run(t, s).err, s)
+			}
+		}
+		for _, c := range changesOf(table, typ, data[2:]) {
+			log = append(log, fmt.Sprintf("%v -- with %#v", c.Src, c.Args))
+			if failure := p.step(c); failure != "" {
+				t.Fatalf("after\n%v\n%v", strings.Join(log[:len(log)-1], "\n"), failure)
+			}
+		}
+		if inTx {
+			log = append(log, fmt.Sprint("-- end, with a commit: ", commit))
+			for _, c := range []*engine.Conn{i.c, p.other.c} {
+				if commit {
+					is.NotError(t, c.Commit(t.Context()))
+				} else {
+					is.NotError(t, c.Rollback(t.Context()))
+				}
+			}
+			for _, s := range oracleEnd(false, commit) {
+				is.Equal(t, "", p.o.run(t, s).err, s)
+			}
+		}
+		want := p.o.state(t)
+		if got := i.state(); got != want {
+			t.Fatalf("after\n%v\nthe engine holds\n%v\nand SQLite\n%v", strings.Join(log, "\n"), got, want)
+		}
+		if got := p.other.state(); got != want {
+			t.Fatalf("after\n%v\nthe engine that reads the rows the other way holds\n%v\nand SQLite\n%v", strings.Join(log, "\n"), got, want)
+		}
+		if i.memory != nil {
+			return
+		}
+		i.restart(true, engine.Options{})
+		if got := i.state(); got != want {
+			t.Fatalf("after\n%v\nthe engine holds after a replay into an empty cache\n%v\nand SQLite\n%v", strings.Join(log, "\n"), got, want)
+		}
+	})
+}
+
+// changesOf the bytes data: up to four updates and deletes of the table, whose key k and columns v
+// and w are of the type typ, while bytes are left, each by a byte whose lowest bit chooses a delete
+// or an update and whose next two bits the number of conditions of its WHERE, none for no WHERE.
+// An update sets the columns of the lowest four bits of the next byte, k, v, w, and x, which the table
+// does not have, or v for none, in that order, or in the reverse order if the next bit is set, and in
+// double quotes if the one after is, each with a value as [fuzzBytes.term] gives it. The conditions
+// are as [whereOf] has them, on k, v, w, or x.
+func changesOf(table, typ string, data []byte) []stmttest.Call {
+	r := &fuzzBytes{data: data}
+	var calls []stmttest.Call
+	for n := 0; n < 4 && (n == 0 || len(r.data) > 0); n++ {
+		kind := r.next()
+		var b strings.Builder
+		c := stmttest.Call{Supported: true}
+		if kind&1 == 1 {
+			b.WriteString("delete from " + table)
+		} else {
+			b.WriteString("update " + table + " set ")
+			mask := r.next()
+			columns := []string{"k", "v", "w", "x"}
+			var set []string
+			for j, name := range columns {
+				if mask&(1<<j) != 0 {
+					set = append(set, name)
+				}
+			}
+			if set == nil {
+				set = []string{"v"}
+			}
+			if mask&16 != 0 {
+				slices.Reverse(set)
+			}
+			for j, name := range set {
+				if j > 0 {
+					b.WriteString(", ")
+				}
+				if mask&32 != 0 {
+					name = `"` + name + `"`
+				}
+				var term string
+				term, c.Args = r.term(typ, c.Args)
+				b.WriteString(name + " = " + term)
+			}
+		}
+		if conditions := int(kind>>1) % 4; conditions > 0 {
+			var where string
+			where, c.Args = r.conditions(typ, []string{"k", "v", "w", "x"}, conditions, c.Args)
+			b.WriteString(" where " + where)
+		}
+		c.Src = b.String()
+		calls = append(calls, c)
+	}
+	return calls
 }
 
 // whereValue of the type typ from the bytes that take gives: an integer or the bits of a real of up
