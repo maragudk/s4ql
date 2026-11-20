@@ -1350,20 +1350,26 @@ func argumentRefusal(args []any) string {
 	return ""
 }
 
-// converted argument a, as database/sql converts a float32 to a float64 for the driver, a
-// [driver.Valuer] to its value, and a nil pointer to nil. Every other argument of the tests is as
-// database/sql hands it, or is refused by its type.
+// converted argument a, as database/sql converts a float32 to a float64 for the driver, a nil
+// pointer to nil, also one to a [driver.Valuer], a [driver.Valuer] to its value, and another pointer
+// to what it points to. Every other argument of the tests is as database/sql hands it, or is refused
+// by its type.
 func converted(a any) any {
 	if f, ok := a.(float32); ok {
 		return float64(f)
+	}
+	rv := reflect.ValueOf(a)
+	if rv.Kind() == reflect.Pointer && rv.IsNil() {
+		return nil
 	}
 	if v, ok := a.(driver.Valuer); ok {
 		if value, err := v.Value(); err == nil {
 			return converted(value)
 		}
+		return a
 	}
-	if rv := reflect.ValueOf(a); rv.Kind() == reflect.Pointer && rv.IsNil() {
-		return nil
+	if rv.Kind() == reflect.Pointer {
+		return converted(rv.Elem().Interface())
 	}
 	return a
 }

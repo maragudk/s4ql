@@ -463,11 +463,11 @@ func arguments(query string, args []driver.NamedValue) ([]*s4qlpb.Value, error) 
 
 // argument a as a value: an int64 as an integer, a float64 as a real, a string as text, a []byte
 // that is not nil as a blob, which an empty one is too, and nil as NULL. nil is what
-// [conn.CheckNamedValue] gives for a nil pointer and for a [driver.Valuer] that gives nil, such as a
-// [database/sql.NullString] that is not valid. It gives "not supported" for an argument with a name, for a
-// []byte that is nil, which does not say whether it means NULL or the empty blob, and for one of
-// another type, such as a bool or a time.Time. The message names the argument by its position, and
-// the type, never the value.
+// [conn.CheckNamedValue] gives for a nil pointer and for a [driver.Valuer] that gives nil, such as
+// a [database/sql.NullString] that is not valid. It gives "not supported" for an argument with a
+// name, for a []byte that is nil, which does not say whether it means NULL or the empty blob, and
+// for one of another type, such as a bool or a time.Time. The message names the argument by its
+// position, and the type, never the value.
 func argument(a driver.NamedValue) (*s4qlpb.Value, error) {
 	if a.Name != "" {
 		return nil, notSupported(fmt.Sprintf("the named argument %q", a.Name))

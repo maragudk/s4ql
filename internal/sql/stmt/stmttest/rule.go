@@ -120,8 +120,8 @@ var columnHolds = map[string]string{"INT": "integer", "INTEGER": "integer", "REA
 // ValueKind of the value of a term of an insert, a literal or the argument of args for its
 // parameter, as SQLite binds it: "integer", "real", "text", "blob", or "null", and how s4ql's message
 // of a value of another type than its column names the value, which no message does for NULL. An
-// argument is NULL if it is nil, and a []byte that is nil is a blob. It panics for an argument of another type than int64, float64, string, and []byte, and for a literal
-// of no kind.
+// argument is NULL if it is nil, and a []byte that is nil is a blob. It panics for an argument of
+// another type than int64, float64, string, and []byte, and for a literal of no kind.
 func ValueKind(term stmt.Term, args []any) (kind, what string) {
 	if term.Parameter > 0 {
 		a := args[term.Parameter-1]
@@ -160,8 +160,8 @@ func ValueKind(term stmt.Term, args []any) (kind, what string) {
 
 // Faults of the insert into the table of the columns, with the arguments args as for [TypeRule], by
 // kind, in the order in which SQLite and s4ql look for them: each name of the list that the table
-// does not have, "a column that the table does not have"; another number of values, "the wrong number of
-// values"; each column that the list leaves out and that does not take NULL, "a column without a
+// does not have, "a column that the table does not have"; another number of values, "the wrong
+// number of values"; each column that the list leaves out and that does not take NULL, "a column without a
 // value"; each NULL that the insert gives for a column that does not take it, "NULL in a column that
 // does not take it"; and each value of another type than its column, "a value of another type in
 // the key" or "a value of another type in another column", which NULL never is. A column that takes

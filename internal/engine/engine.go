@@ -199,16 +199,17 @@ func (c *Conn) begin(ctx context.Context) (writeTx, error) {
 // The text is checked first, and then the arguments, before the statement needs the database: there
 // must be one argument for each parameter, as [Check] checks it, and each must be a value that a
 // column can hold: an integer, a real that is a finite number, valid UTF-8 text without the
-// character NUL, or a blob.
+// character NUL, a blob, or NULL.
 //
 // An insert then fails, in this order, with SQLite's errors of the names and of the number of its
 // values, with SQLite's `string or blob too big` for a text or a blob that is longer than the limit
 // of the database, which SQLite gives when it binds such an argument, with SQLite's error of a
-// read-only transaction, with SQLite's `NOT NULL constraint failed` for a column that it leaves out,
-// with "not supported" for a value of another type than its column, with `string or blob too big`
-// for a row that is longer than the limit, also when its key exists, and with SQLite's error of a
-// key that exists. A real that is -0.0 is stored as 0.0, as SQLite stores it, and its key is the
-// key of 0.0.
+// read-only transaction, with SQLite's `NOT NULL constraint failed` for the first column in the
+// order of the table, the key among them, that does not take NULL and that it gives NULL or leaves
+// out, with "not supported" for a value other than NULL of another type than its column, with
+// `string or blob too big` for a row that is longer than the limit, also when its key exists, and
+// with SQLite's error of a key that exists. A real that is -0.0 is stored as 0.0, as SQLite stores
+// it, and its key is the key of 0.0.
 //
 // In a transaction that spans statements, the statement then fails with the error of ctx if ctx has
 // ended, with the refusal of a statement of its own if the instance does not serve now, and with

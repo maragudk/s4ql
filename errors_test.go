@@ -107,9 +107,9 @@ func TestError(t *testing.T) {
 				is.True(t, !errors.Is(err, sentinel), sentinel.Error())
 			}
 		}
-		err := s4ql.PublicError(fmt.Errorf("%w: argument 1, which is NULL", stmt.ErrNotSupported))
+		err := s4ql.PublicError(fmt.Errorf("%w: argument 1, which is a real that is not a number", stmt.ErrNotSupported))
 		is.Error(t, s4ql.ErrNotSupported, err)
-		is.Equal(t, "s4ql: not supported: argument 1, which is NULL", err.Error())
+		is.Equal(t, "s4ql: not supported: argument 1, which is a real that is not a number", err.Error())
 	})
 
 	t.Run("should give a commit object that is too large and rows that are open in a transaction their public errors", func(t *testing.T) {
