@@ -2478,6 +2478,22 @@ func TestTx_null(t *testing.T) {
 		is.NotError(t, r.Close(ctx))
 	})
 
+	t.Run("should declare a column that does not take NULL as NOT NULL in the cache, so that SQLite refuses a NULL in it too, in the cache of the transaction and in a cache that replays the log", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, createWith(nullableTable(typedTable("t", s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INT), 2)))
+		is.NotError(t, d.Close(t.Context()))
+		is.NotError(t, w.serve(t, "b", core.Options{}).Close(t.Context()))
+		for _, cache := range []string{"a", "b"} {
+			c, err := sqlite.Open(filepath.Join(w.dir, cache+".db"))
+			is.NotError(t, err)
+			err = c.Exec(`insert into "t" ("c0", "c1", "c2") values (1, null, 1)`)
+			is.True(t, err != nil && strings.Contains(err.Error(), "NOT NULL constraint failed: t.c1"), fmt.Sprint(cache, ": ", err))
+			is.NotError(t, c.Exec(`insert into "t" ("c0", "c1", "c2") values (1, 1, null)`), cache)
+			is.NotError(t, c.Close())
+		}
+	})
+
 	t.Run("should commit a table whose columns say that they do not take NULL as the table that the cache gives back, which leaves the field out", func(t *testing.T) {
 		w := newWorld(t)
 		d := w.serve(t, "a", core.Options{})
