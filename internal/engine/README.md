@@ -343,7 +343,7 @@ Slice 9 adds `create index` and `drop index`. With an index, a statement with a 
 - **The engine gives the storage the definition of the index.** It is an `s4qlpb.CreateIndex`: the name of the index as the statement writes it, the name of the table as the table stores it, and each column as its position in the table, with `descending` only when it is true. The commit object holds this definition, and each instance builds the index in its cache; see [the README of the core](../core/README.md#the-interface). An index is not unique.
 - **A table and an index share their names.** A create index under the name of a table fails, and so does a create table under the name of an index. A drop index of the name of a table gives `no such index`.
 - **`drop table` drops the indexes of the table.** Their names are free for new tables and indexes afterwards.
-- **An index has at most 250 columns** (`maxIndexColumns`). The storage core holds no more in an index, where SQLite takes 2,000. A create index of more columns is "not supported", as `index of more than 250 columns`, at the 251st column.
+- **An index has at most 250 columns** (`core.MaxIndexColumns`). The storage core holds no more in an index, where SQLite takes 2,000. A create index of more columns is "not supported", as `index of more than 250 columns`, at the 251st column.
 - **The errors of both statements are SQLite's, in SQLite's order.** They are under [Errors](#errors).
 
 ### The rules
