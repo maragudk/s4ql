@@ -2278,13 +2278,14 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// give other rows than in SQLite; and a value in a column of another type is refused where the
 		// rule refuses nothing. The log holds no such value, since the check of the type sees the values
 		// in the columns where the bug puts them.
-		{"listOrder", defaultWorkload, "default", []string{"the replay of the log holds", "fails in SQLite", ", and in SQLite", "and the rule for the type of a value"}},
+		{"listOrder", defaultWorkload, "default", []string{"the replay of the log holds", "fails in SQLite", ", and in SQLite", "and the rule for the type of a value", "rows in SQLite, and its caller was told", "is in no commit, and changes", "which began at commit"}},
 		// A column left out of a list that holds the zero value of its type where SQLite has NULL: a
 		// query of the row gives other rows than in SQLite, which runs the statements of the log, and
 		// so does the replay of the log into an empty cache, which writes its rows. No check of a value
 		// that is not NULL finds it: the zero value has the type of its column, and no column that
-		// takes NULL is the key.
-		{"zeroLeftOut", defaultWorkload, "default", []string{", and in SQLite", "the replay of the log holds"}},
+		// takes NULL is the key. An update or a delete whose WHERE meets the zero value changes another
+		// number of rows than in SQLite, and then the statements after it can differ.
+		{"zeroLeftOut", defaultWorkload, "default", []string{", and in SQLite", "the replay of the log holds", "rows in SQLite, and its caller was told", "is in no commit, and changes", "which began at commit", "fails in SQLite"}},
 		// A scan by one or two bounds of the key that leaves out the row of a closed bound: a select with
 		// WHERE, of its own or in a transaction, gives fewer rows than in SQLite. Nothing else sees it:
 		// the select writes nothing, and fails nothing. An engine that reads every row, as every second
