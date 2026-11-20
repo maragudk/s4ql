@@ -335,9 +335,23 @@ func TestScanRange(t *testing.T) {
 		})
 		r, err = startRead(t, d)
 		is.NotError(t, err)
-		for _, err := range r.ScanRange(t.Context(), "t4", core.Bound{Value: row(strings.Repeat("x", 1001))[0]}, core.Bound{}) {
-			is.True(t, errors.Is(err, core.ErrTooBig), fmt.Sprint(err))
+		tx, err = d.Begin(t.Context())
+		is.NotError(t, err)
+		long := core.Bound{Value: row(strings.Repeat("x", 1001))[0]}
+		for _, scan := range []iter.Seq2[[]*s4qlpb.Value, error]{
+			r.ScanRange(t.Context(), "t4", long, core.Bound{}),
+			r.ScanRange(t.Context(), "t4", core.Bound{}, long),
+			tx.ScanRange(t.Context(), "t4", long, core.Bound{}),
+			tx.ScanRange(t.Context(), "t4", core.Bound{}, long),
+		} {
+			n := 0
+			for _, err := range scan {
+				n++
+				is.True(t, errors.Is(err, core.ErrTooBig), fmt.Sprint(err))
+			}
+			is.Equal(t, 1, n)
 		}
+		is.NotError(t, tx.Rollback(t.Context()))
 		is.NotError(t, r.Close(t.Context()))
 		is.NotError(t, d.Close(t.Context()))
 	})

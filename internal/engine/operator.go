@@ -70,7 +70,7 @@ type access struct {
 	none bool
 	// key is the value of the primary key of the one row to read, if it is not nil.
 	key *s4qlpb.Value
-	// lower and upper bound the keys of the rows to read.
+	// lower and upper bound the keys of the rows to read, if key is nil.
 	lower, upper bound
 }
 
@@ -89,7 +89,7 @@ func (s *scan) rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
 			return
 		}
 		name, a := s.table.GetTable(), s.access
-		rows := s.r.scan(ctx, name)
+		var rows iter.Seq2[[]*s4qlpb.Value, error]
 		switch {
 		case a.none:
 			return
@@ -103,6 +103,8 @@ func (s *scan) rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
 			return
 		case a.lower.value != nil || a.upper.value != nil:
 			rows = s.r.scanRange(ctx, name, a.lower, a.upper)
+		default:
+			rows = s.r.scan(ctx, name)
 		}
 		for row, err := range rows {
 			if err == nil {
@@ -313,9 +315,6 @@ func keyAccess(conditions []condition, key int) (access, error) {
 		if err != nil {
 			return access{}, err
 		}
-	}
-	if a.key != nil {
-		a.lower, a.upper = bound{}, bound{}
 	}
 	return a, nil
 }
@@ -548,7 +547,8 @@ func (b build) node(ctx context.Context, n Node) (source, error) {
 // that the table does not have replaces the error, and the next comparison ends the walk with it,
 // before SQLite looks its own column up. Then it evaluates each value, and gives SQLite's error for
 // one that is longer than the limit, and then "not supported" for the first value, in the order of
-// the text, that is of another type than its column.
+// the text, that is of another type than its column. Last, unless scanAll, it gives the scan the
+// access by the key that the conditions allow, as [keyAccess] gives it.
 func (b build) filter(f *Filter, src source) (source, error) {
 	s, ok := src.(*scan)
 	if !ok {

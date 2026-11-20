@@ -42,6 +42,9 @@ type fake struct {
 	endFails    error
 	// scans counts the scans that have started and not ended, and open the transactions.
 	scans, open int
+	// scanned counts the scans that have started, and getFails is the error of a get.
+	scanned  int
+	getFails error
 	// readers counts the readers that are open, and opened those that were ever opened. readerFails
 	// is the error of opening one, and closeFails of closing one.
 	readers, opened         int
@@ -138,6 +141,7 @@ func (x fakeTx) table(_ context.Context, name string) (*s4qlpb.CreateTable, erro
 func (x fakeTx) scan(_ context.Context, name string) iter.Seq2[[]*s4qlpb.Value, error] {
 	return func(yield func([]*s4qlpb.Value, error) bool) {
 		x.f.scans++
+		x.f.scanned++
 		defer func() { x.f.scans-- }()
 		t := x.f.tables[fold(name)]
 		rows := slices.Clone(t.rows)
@@ -188,6 +192,9 @@ func (x fakeTx) scanRange(ctx context.Context, name string, lower, upper bound) 
 
 func (x fakeTx) get(_ context.Context, name string, key []*s4qlpb.Value) ([]*s4qlpb.Value, error) {
 	x.f.calls = append(x.f.calls, fmt.Sprint("get ", name, " ", key[0].GetInteger()))
+	if x.f.getFails != nil {
+		return nil, x.f.getFails
+	}
 	t := x.f.tables[fold(name)]
 	k := t.ct.GetPrimaryKey()[0]
 	for _, row := range t.rows {
@@ -421,7 +428,7 @@ func TestFilter(t *testing.T) {
 		t.Helper()
 		s, err := stmt.Check(src)
 		is.NotError(t, err, src)
-		f.calls = nil
+		f.calls, f.scanned = nil, 0
 		q, err := buildQuery(t.Context(), fakeTx{f}, NewPlan(s).(*Query), args, 1_000_000_000, scanAll)
 		is.NotError(t, err, src)
 		rows, err := collect(t.Context(), q)
@@ -438,6 +445,8 @@ func TestFilter(t *testing.T) {
 			args  []*s4qlpb.Value
 			rows  string
 			calls string
+			// none is set where the scan reads no row at all.
+			none bool
 		}{
 			{src: "select * from t where k = 3", rows: "[30,3]", calls: "[table t get t 3]"},
 			{src: "select k from t where K = ?", args: []*s4qlpb.Value{integer(2)}, rows: "[2]", calls: "[table t get t 2]"},
@@ -462,9 +471,9 @@ func TestFilter(t *testing.T) {
 			{src: "select * from t where w >= 20 and w < 40", rows: "[20,2 30,3]", calls: "[table t]"},
 			{src: "select * from t where k is not null", rows: "[10,1 20,2 30,3 40,4]", calls: "[table t]"},
 			// No row: the key is never NULL, and a comparison with NULL is never true.
-			{src: "select * from t where k is null", rows: "[]", calls: "[table t]"},
-			{src: "select * from t where w = null and k = 1", rows: "[]", calls: "[table t]"},
-			{src: "select * from t where k > 1 and w < ?", args: []*s4qlpb.Value{null()}, rows: "[]", calls: "[table t]"},
+			{src: "select * from t where k is null", rows: "[]", calls: "[table t]", none: true},
+			{src: "select * from t where w = null and k = 1", rows: "[]", calls: "[table t]", none: true},
+			{src: "select * from t where k > 1 and w < ?", args: []*s4qlpb.Value{null()}, rows: "[]", calls: "[table t]", none: true},
 			{src: "select * from t where w is null", rows: "[]", calls: "[table t]"},
 		}
 		for _, c := range cases {
@@ -473,9 +482,12 @@ func TestFilter(t *testing.T) {
 			rows, calls := query(t, f, c.src, false, c.args...)
 			is.Equal(t, c.rows, rows, c.src)
 			is.Equal(t, c.calls, calls, c.src)
+			// A get reads the row of its key, and every other access but none a scan.
+			is.Equal(t, map[bool]int{true: 0, false: 1}[c.none || strings.Contains(c.calls, " get ")], f.scanned, c.src)
 			rows, calls = query(t, f, c.src, true, c.args...)
 			is.Equal(t, c.rows, rows, "every row: "+c.src)
 			is.Equal(t, "[table t]", calls, "every row: "+c.src)
+			is.Equal(t, 1, f.scanned, "every row: "+c.src)
 		}
 	})
 
@@ -494,7 +506,7 @@ func TestFilter(t *testing.T) {
 		}
 	})
 
-	t.Run("should pass on an error of the scan, and stop the scan at an early stop", func(t *testing.T) {
+	t.Run("should pass on an error of the scan and of the get, and stop the scan at an early stop", func(t *testing.T) {
 		f := newTable()
 		f.tables["t"].ct.SetPrimaryKey([]uint32{1})
 		f.scanFails = 2
@@ -512,6 +524,14 @@ func TestFilter(t *testing.T) {
 			}
 			is.Equal(t, 0, f.scans, src)
 		}
+		f.getFails = errors.New("the get fails")
+		s, err := stmt.Check("select * from t where k = 1")
+		is.NotError(t, err)
+		q, err := buildQuery(t.Context(), fakeTx{f}, NewPlan(s).(*Query), nil, 1_000_000_000, false)
+		is.NotError(t, err)
+		rows, err := collect(t.Context(), q)
+		is.Equal(t, "the get fails", fmt.Sprint(err))
+		is.Equal(t, "[]", fmt.Sprint(rows))
 	})
 
 	t.Run("should fail with an internal error for filters that no supported statement gives", func(t *testing.T) {

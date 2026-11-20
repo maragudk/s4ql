@@ -904,9 +904,9 @@ func (c *conn) exists(t *table, key []*s4qlpb.Value) (bool, error) {
 	return n > 0, err
 }
 
-// Bound of a scan by the primary key of a table whose key is one column: the rows whose key is at
-// Value or beyond it, or only beyond it if Open, as SQLite compares the keys. A Bound without a Value
-// bounds nothing.
+// Bound of a scan by the primary key of a table whose key is one column, as SQLite compares the
+// keys: Value is the first key that a lower bound lets through and the last that an upper bound
+// does, and the row whose key is Value is left out if Open. A Bound without a Value bounds nothing.
 type Bound struct {
 	Value *s4qlpb.Value
 	Open  bool

@@ -94,8 +94,9 @@ type writeTx interface {
 	lost() error
 }
 
-// bound of a scan by the key: the rows whose key is at value or beyond it, or only beyond it if
-// open. A bound without a value bounds nothing.
+// bound of a scan by the key: value is the first key that a lower bound lets through and the last
+// that an upper bound does, and the row whose key is value is left out if open. A bound without a
+// value bounds nothing.
 type bound struct {
 	value *s4qlpb.Value
 	open  bool

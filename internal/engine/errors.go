@@ -255,8 +255,8 @@ func noSuchColumn(table, column string) error {
 	return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: fmt.Sprintf("table %v has no column named %v", table, column), Offset: -1}
 }
 
-// noSuchResultColumn is `no such column: %s`, for the name of a column of a select list that the
-// table does not have, with the value of the name. For a name in double quotes, SQLite, whose build
+// noSuchResultColumn is `no such column: %s`, for the name of a column of a select list or of a
+// condition that the table does not have, with the value of the name. For a name in double quotes, SQLite, whose build
 // takes double quotes for names only, adds that it may have been meant as a string: `no such column:
 // "%s" - should this be a string literal in single-quotes?`.
 func noSuchResultColumn(name stmt.Name) error {

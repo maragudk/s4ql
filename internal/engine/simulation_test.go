@@ -152,8 +152,8 @@ type attempt struct {
 	acked int
 	// partial is set for a query whose rows were not read to their end.
 	partial bool
-	// typeRefused is set for an insert that the engine refused as "not supported" for a value of
-	// another type than its column.
+	// typeRefused is set for an insert, or a select with WHERE, that the engine refused as "not
+	// supported" for a value of another type than its column.
 	typeRefused bool
 	// reason why a statement failed: no lease, stopped, timeout, or canceled.
 	reason string
@@ -1391,8 +1391,8 @@ func (r *run) verify(ctx context.Context) {
 	}
 	// The observations of each state of the log: the statements of their own that saw it.
 	seen := map[int][]*attempt{}
-	// refused are the inserts of their own that the engine refused for the type of their value, by
-	// the state of the log that each saw.
+	// refused are the inserts and the selects of their own that the engine refused for the type of a
+	// value, by the state of the log that each saw.
 	refused := map[int][]*attempt{}
 	empty := newOracle(r.t)
 	defer empty.close()
@@ -1876,9 +1876,10 @@ var storeFaults = map[string]string{
 var storeLine = regexp.MustCompile(`^\S+ store request \d+(, stuck)? store: `)
 
 // tallyOf the simulation s: its statements, by how they ended, its writes that were acknowledged,
-// its queries that were not read to their end, its inserts refused for the type of their value, its
-// commits and those of a statement with a parameter, the rows of tables of several columns and the
-// NULL values in the log, the faults that the store injected, by kind, and its other events.
+// its queries that were not read to their end, its inserts and selects refused for the type of a
+// value, its commits and those of a statement with a parameter, the rows of tables of several
+// columns and the NULL values in the log, the faults that the store injected, by kind, and its
+// other events.
 func tallyOf(s simulation) map[string]int {
 	r := s.r
 	counts := maps.Clone(r.events)

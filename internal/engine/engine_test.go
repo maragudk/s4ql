@@ -1978,20 +1978,6 @@ func TestEngine_nulls(t *testing.T) {
 	})
 }
 
-// whereProbes of each type, beside [edges]: values below, between, and above the edges, and values
-// that an edge begins or that begin an edge, which the comparisons of [TestEngine_where] compare
-// the edges with.
-var whereProbes = map[string][]edge{
-	"int":     {{"-2", int64(-2)}, {"2", int64(2)}, {"5", int64(5)}},
-	"integer": {{"-2", int64(-2)}, {"2", int64(2)}, {"5", int64(5)}},
-	"real":    {{"0.5", 0.5}, {"-0.5", -0.5}, {"-1e300", -1e300}, {"1e300", 1e300}, {"2.0", 2.0}},
-	"text":    {{"'b'", "b"}, {"'aa'", "aa"}, {"'ä'", "ä"}, {"'日本'", "日本"}, {"'a\x01'", "a\x01"}, {"'~'", "~"}, {"'it'", "it"}},
-	"blob":    {{"x'7f'", []byte{0x7f}}, {"x'80'", []byte{0x80}}, {"x'ff00'", []byte{0xff, 0}}, {"x'616263'", []byte("abc")}, {"x'000000'", []byte{0, 0, 0}}},
-}
-
-// operators of a comparison, in every spelling.
-var operators = []string{"=", "==", "!=", "<>", "<", "<=", ">", ">="}
-
 // whereTrio is an engine that reads the rows by the key, one that reads every row of a table, and
 // SQLite, which run the same statements.
 type whereTrio struct {
@@ -2031,7 +2017,19 @@ func (w *whereTrio) query(src string, args ...any) answer {
 }
 
 func TestEngine_where(t *testing.T) {
+	// The operators of a comparison, in every spelling.
+	operators := []string{"=", "==", "!=", "<>", "<", "<=", ">", ">="}
+
 	t.Run("should compare each operator with the edges of each type and with values beside them, as SQLite does, on the key and on another column, by the key and with every row", func(t *testing.T) {
+		// beside are values of each type beside the edges: values below, between, and above them, and
+		// values that an edge begins or that begin an edge.
+		ints := []edge{{"-2", int64(-2)}, {"2", int64(2)}, {"5", int64(5)}}
+		beside := map[string][]edge{
+			"int": ints, "integer": ints,
+			"real": {{"0.5", 0.5}, {"-0.5", -0.5}, {"-1e300", -1e300}, {"1e300", 1e300}, {"2.0", 2.0}},
+			"text": {{"'b'", "b"}, {"'aa'", "aa"}, {"'ä'", "ä"}, {"'日本'", "日本"}, {"'a\x01'", "a\x01"}, {"'~'", "~"}, {"'it'", "it"}},
+			"blob": {{"x'7f'", []byte{0x7f}}, {"x'80'", []byte{0x80}}, {"x'ff00'", []byte{0xff, 0}}, {"x'616263'", []byte("abc")}, {"x'000000'", []byte{0, 0, 0}}},
+		}
 		for _, typ := range []string{"int", "integer", "real", "text", "blob"} {
 			t.Run(typ, func(t *testing.T) {
 				w := newWhereTrio(t, "create table e (k "+typ+" primary key, v "+typ+") strict, without rowid")
@@ -2047,7 +2045,7 @@ func TestEngine_where(t *testing.T) {
 					is.Equal(t, want.String(), w.byKey.exec(src).String(), src)
 					is.Equal(t, want.String(), w.all.exec(src).String(), src)
 				}
-				probes := slices.Concat(es, whereProbes[typ])
+				probes := slices.Concat(es, beside[typ])
 				some, none := 0, 0
 				for _, column := range []string{"k", "V"} {
 					for _, op := range operators {
