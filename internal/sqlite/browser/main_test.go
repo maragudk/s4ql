@@ -31,6 +31,7 @@ func TestMain(m *testing.M) {
 //     exits right after, so that the runner sees the exit and Chromium's stop at about the same time;
 //   - crash-once: exit with code 1 at once if the file in S4QL_CHROMIUM_FAKE_MARK is not there, and
 //     create it, and else do as exit;
+//   - fetch-and-hang: fetch the program, and never start it;
 //   - run-and-hang: fetch the program and start it, and it writes that TestA and TestB started and
 //     TestA ended, and then hangs.
 func fakeChromium(mode, url string) {
@@ -75,6 +76,9 @@ func fakeChromium(mode, url string) {
 		post("output?fd=1", "hello\n")
 		post("exit?code=7", "")
 		os.Exit(0)
+	case "fetch-and-hang":
+		fetch(url + "program.wasm")
+		time.Sleep(time.Hour)
 	case "run-and-hang":
 		fetch(url + "program.wasm")
 		post("started", "")
@@ -111,6 +115,7 @@ func fake(t *testing.T, mode string) string {
 	is.NotError(t, err)
 	t.Setenv("S4QL_CHROMIUM", exe)
 	t.Setenv("S4QL_CHROMIUM_FLAGS", "")
+	t.Setenv("S4QL_CHROMIUM_STEPS", "")
 	t.Setenv("S4QL_CHROMIUM_FAKE", mode)
 	t.Setenv("S4QL_CHROMIUM_FAKE_MARK", filepath.Join(t.TempDir(), "mark"))
 	program := filepath.Join(t.TempDir(), "program.wasm")
@@ -173,6 +178,17 @@ func TestRunner_run(t *testing.T) {
 		is.True(t, strings.Contains(err.Error(), "attempt 2 of 2: chromium did not start the program: chromium did not fetch it within 20ms"), err)
 		is.True(t, strings.Contains(stderr.String(), "attempt 1 of 2: chromium did not start the program: chromium did not fetch it within 10ms"), stderr.String())
 		is.True(t, strings.Contains(stderr.String(), "what the runner saw: chromium started after"), stderr.String())
+	})
+
+	t.Run("should start Chromium again when the Worker fetched the program and did not start it in time", func(t *testing.T) {
+		program := fake(t, "fetch-and-hang")
+		var stdout, stderr syncBuilder
+		r := runner{stdout: &stdout, stderr: &stderr, startup: time.Hour, restartup: time.Hour, compile: 10 * time.Millisecond, grace: time.Minute, attempts: 2}
+
+		_, err := r.run(t.Context(), []string{program})
+		is.True(t, errors.Is(err, errNotStarted), err)
+		is.True(t, strings.Contains(err.Error(), "attempt 2 of 2: chromium did not start the program: the Worker fetched it, and did not start it within 10ms after"), err)
+		is.True(t, strings.Contains(stderr.String(), "the Worker fetched the program after"), stderr.String())
 	})
 
 	t.Run("should start Chromium again when it stopped before it started the program", func(t *testing.T) {

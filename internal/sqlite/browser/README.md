@@ -76,9 +76,9 @@ The program's working directory is the root of the file system of `fs.js`, which
 - `BROWSERFLAGS` go to `go test`, such as `BROWSERFLAGS='-run TestSimulation -v'`.
 - `BROWSERTIMEOUT` is the timeout of each test binary, by default `30m`.
 - `BROWSERSKIP` are the tests to skip, described below.
-- `BROWSERSHARD=i/6` runs the i-th of six shards, so that CI can run them at the same time. Every test is in exactly one shard. `BROWSERFLAGS` must then hold no `-run` or `-skip`.
+- `BROWSERSHARD=i/6` runs the i-th of six shards of the default `BROWSERPKGS`, so that CI can run them at the same time. Every test is in exactly one shard. `BROWSERFLAGS` must then hold no `-run` or `-skip`.
 
-Shards 1 to 4 split the tests of `internal/core` by name, and shard 4 runs every test that the first three leave. Shards 4 to 6 share the other packages, and shard 6 takes every package that no other shard names, so a new package lands there. The comment above `test-browser` in the Makefile lists what each shard runs.
+Shards 1 to 4 split the tests of `internal/core` by name, and shard 4 runs every test that the first three leave. Shards 5 and 6 share the other packages, and shard 6 takes every package that no other shard names, so a new package lands there. The comment above `test-browser` in the Makefile lists what each shard runs.
 
 To run one package by hand:
 

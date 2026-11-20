@@ -19,11 +19,12 @@
 //
 // A Chromium that has not fetched the program a minute after it was started, or that stops before
 // the program started, is started again, with a new profile, up to six times in all; no code of the
-// program has run by then. A Chromium started again has 30 seconds. Each time, the runner writes to
-// its standard error which steps of the start it saw, and the end of Chromium's output. On a fresh
-// runner of GitHub Actions, a Chromium sometimes never loads the page, at times several in a row
-// over the first minutes, while a later one does. The first Chromium of a runner needs up to about
-// 40 seconds to start the program, a later one a few.
+// program has run by then. A Chromium started again has 30 seconds. After the fetch, the Worker has
+// as long again to compile the program and start it. Each time, the runner writes to its standard
+// error which steps of the start it saw, and the end of Chromium's output. On a fresh runner of
+// GitHub Actions, a Chromium sometimes never loads the page, at times several in a row over the
+// first minutes, while a later one does. The first Chromium of a runner needs up to about 40
+// seconds to start the program, a later one a few.
 //
 // With -test.timeout among the arguments, as go test passes it, the runner stops Chromium 30 seconds
 // after that timeout, in case the program cannot stop itself, which it cannot while SQLite holds the
@@ -78,13 +79,22 @@ func main() {
 }
 
 // runner of a program in Chromium. A Chromium that has not fetched the program within startup, or
-// within restartup, if set, when it was started again, or that stops before the program started,
-// is started again until it has been started attempts times. Chromium is stopped grace after the
-// -test.timeout of the program.
+// within restartup, if set, when it was started again, or that has not started it within compile
+// after the fetch, or as long as it had for the fetch if compile is not set, or that stops before
+// the program started, is started again until it has been started attempts times. Chromium is
+// stopped grace after the -test.timeout of the program.
 type runner struct {
-	stdout, stderr            io.Writer
-	startup, restartup, grace time.Duration
-	attempts                  int
+	stdout, stderr                     io.Writer
+	startup, restartup, compile, grace time.Duration
+	attempts                           int
+}
+
+// compileLimit of an attempt whose limit to fetch the program is limit.
+func (r runner) compileLimit(limit time.Duration) time.Duration {
+	if r.compile > 0 {
+		return r.compile
+	}
+	return limit
 }
 
 // errNotStarted is the error of an attempt in which Chromium did not start the program.
@@ -141,9 +151,10 @@ func (r runner) attempt(ctx context.Context, chromium, program string, wasmExec,
 	exited := make(chan int, 1)
 	var exitOnce sync.Once
 	exit := func(code int) { exitOnce.Do(func() { exited <- code }) }
-	// fetched is set when the Worker fetches the program, which ends the start of Chromium, and
-	// began when the program starts, after which it is never started again.
+	// fetched is set, and fetchedNow closed, when the Worker fetches the program, which ends the
+	// start of Chromium; began is set when the program starts, after which it is never started again.
 	var fetched, began atomic.Bool
+	fetchedNow := make(chan struct{})
 
 	var output sync.Mutex
 	mux := http.NewServeMux()
@@ -155,6 +166,7 @@ func (r runner) attempt(ctx context.Context, chromium, program string, wasmExec,
 	mux.HandleFunc("GET /program.wasm", func(w http.ResponseWriter, req *http.Request) {
 		if !fetched.Swap(true) {
 			p.mark("the Worker fetched the program")
+			close(fetchedNow)
 		}
 		w.Header().Set("Content-Type", "application/wasm")
 		http.ServeFile(w, req, program)
@@ -266,14 +278,33 @@ func (r runner) attempt(ctx context.Context, chromium, program string, wasmExec,
 		return code, nil
 	}
 
+	// startup runs until the Worker fetches the program, and then again for the compile, until the
+	// program starts.
 	startup := time.NewTimer(limit)
 	defer startup.Stop()
+	var compiling bool
+	compile := func() {
+		compiling = true
+		startup.Reset(r.compileLimit(limit))
+	}
 	for {
 		select {
 		case code := <-exited:
 			return done(code)
+		case <-fetchedNow:
+			fetchedNow = nil
+			if !compiling {
+				compile()
+			}
 		case <-startup.C:
-			if fetched.Load() {
+			switch {
+			case began.Load():
+				continue
+			case compiling:
+				return 0, fmt.Errorf("%w: the Worker fetched it, and did not start it within %v after:\n%s", errNotStarted, r.compileLimit(limit), stop())
+			case fetched.Load():
+				// The fetch came at about the time of the timer.
+				compile()
 				continue
 			}
 			return 0, fmt.Errorf("%w: chromium did not fetch it within %v:\n%s", errNotStarted, limit, stop())
