@@ -1461,18 +1461,17 @@ var reachedDifferential = map[string]int{
 	// or the refusal of the type by where the NULL is; and a select of * and of names with NULL among
 	// its values.
 	"create table of which no column takes NULL ok": 70, "create table of which every column outside the key takes NULL ok": 70,
-	"create table of which some columns outside the key take NULL ok": 16,
+	"create table of which some columns outside the key take NULL ok": 16, "literal null": 220,
 	"NULL literal into a column that takes NULL ok": 34, "NULL argument into a column that takes NULL ok": 16,
 	"NULL literal into a column that takes NULL UNIQUE constraint failed": 11, "NULL argument into a column that takes NULL UNIQUE constraint failed": 5,
 	"NULL literal into a column that takes NULL a value of another type": 5, "NULL argument into a column that takes NULL a value of another type": 2,
 	"NULL literal into the key NOT NULL constraint failed": 35, "NULL argument into the key NOT NULL constraint failed": 14,
-	"NULL literal into a column that does not take NULL NOT NULL constraint failed": 10,
-	"NULL argument into a column that does not take NULL NOT NULL constraint failed": 4,
+	"NULL literal into a column that does not take NULL NOT NULL constraint failed": 10, "NULL argument into a column that does not take NULL NOT NULL constraint failed": 4,
 	"insert that leaves out a column that takes NULL ok": 60, "insert that leaves out a column that takes NULL UNIQUE constraint failed": 16,
 	"insert that leaves out a column that takes NULL a value of another type": 11, "insert that leaves out a column that takes NULL NOT NULL constraint failed": 13,
 	"insert with NULL in the key: NOT NULL constraint failed": 17, "insert with NULL in a column that does not take it: NOT NULL constraint failed": 11,
 	"insert of NULL beside a value of another type NOT NULL constraint failed": 4, "insert of NULL beside a value of another type a value of another type": 6,
-	"literal null": 220, "select * with NULL ok": 45, "select of names with NULL ok": 25,
+	"select * with NULL ok": 45, "select of names with NULL ok": 25,
 }
 
 // FuzzDifferential runs the sequence of statements that its input chooses, the seed and the number of
