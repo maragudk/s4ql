@@ -67,7 +67,7 @@ const LINES = 100; // the lines of the log that the page keeps
 const WINDOW = 120000; // the fake time that the field shows
 const SLICES = 240; // the bars of the field
 const SLICE = WINDOW / SLICES;
-const JUMP = 60000; // a jump of a wall clock: longer than the lease of 30 s
+const JUMP = 5000; // a jump of a wall clock: short next to the lease of 30 s, so it shows that it changes nothing
 const NS = 1e-6; // a nanosecond in ms, the unit in which the engine keeps its clocks
 const MEMORY = 1 << 30; // SQLite's memory at which the page stops
 // The fake time at which the page stops. The engine's Go heap grows by about 12.5 MB a fake hour and
@@ -390,12 +390,12 @@ function drawCard(c) {
   let clocks;
   if (st.state === "crashed" || st.state === "waiting") clocks = "none";
   else {
-    // Each clock where it differs from true time. The monotonic clock cannot jump, so after a pause
-    // it stays behind true time for good. The core uses it only for durations, so the card says only
-    // whether it runs.
-    const wall = wallOffset(st);
-    const w = [st.wallStopped ? "paused" : "", Math.round(wall / 1000) ? R.offset(wall) : ""].filter(Boolean).join(", ");
-    clocks = [w ? "wall " + w : "", st.monotonicStopped ? "monotonic paused" : ""].filter(Boolean).join("; ") || "true time";
+    // Whether the clocks stand still, and how far the wall clock is off true time. The monotonic
+    // clock cannot jump, so after a pause it stays behind true time for good. The core uses it only
+    // for durations, so the card says only whether it runs.
+    const off = wallOffset(st);
+    const wall = Math.round(off / 1000) ? "wall " + R.offset(off) : "";
+    clocks = [paused(st) ? "paused" : "", wall].filter(Boolean).join(", ") || "normal";
   }
   set(c.f.clocks, clocks);
 
@@ -409,8 +409,7 @@ function drawCard(c) {
   c.b.hang.setAttribute("aria-pressed", String(!!st.networkHung));
   c.b.disconnect.setAttribute("aria-pressed", String(!!st.networkDisconnected));
   c.b.disk.setAttribute("aria-pressed", String(!!st.diskFailing));
-  c.b.wall.setAttribute("aria-pressed", String(!!st.wallStopped));
-  c.b.monotonic.setAttribute("aria-pressed", String(!!st.monotonicStopped));
+  c.b.pause.setAttribute("aria-pressed", String(paused(st)));
 }
 
 // drawControls enables what makes sense now. Every action waits while another is on its way, so that a
@@ -429,7 +428,7 @@ function drawControls() {
     c.b.crash.disabled = off || notStarted;
     c.b.stop.disabled = off || !(st.state === "running" || startable(c.name, st));
     for (const a of ["hang", "disconnect", "disk"]) c.b[a].disabled = off;
-    for (const a of ["forward", "back", "wall", "monotonic"]) c.b[a].disabled = off || crashed || notStarted;
+    for (const a of ["forward", "back", "pause"]) c.b[a].disabled = off || crashed || notStarted;
     c.b.reset.disabled = off || crashed || notStarted || !touched(st);
   }
   for (const b of document.querySelectorAll("#requests [data-target]")) b.disabled = !ready || waiting;
@@ -481,8 +480,7 @@ function act(name, a) {
     case "disk": action = { do: "failDisk", ...i, on: !st.diskFailing }; break;
     case "forward": action = { do: "shiftWall", ...i, by: JUMP }; break;
     case "back": action = { do: "shiftWall", ...i, by: -JUMP }; break;
-    case "wall": action = { do: st.wallStopped ? "startWall" : "stopWall", ...i }; break;
-    case "monotonic": action = { do: st.monotonicStopped ? "startMonotonic" : "stopMonotonic", ...i }; break;
+    case "pause": action = { do: paused(st) ? "resumeClocks" : "pauseClocks", ...i }; break;
     case "reset": return resetClocks(name, st);
   }
   jobs.push({ act: action });
@@ -493,20 +491,22 @@ function act(name, a) {
 // wallOffset of the wall clock of an instance from true time, in ms.
 const wallOffset = (st) => st.wall - state.t;
 
-// touched says whether the visitor has moved the clocks of the instance: whether one stands still,
+// paused says whether the clocks of the instance stand still. The page pauses and starts both
+// together, so it takes either for both.
+const paused = (st) => !!(st.wallStopped || st.monotonicStopped);
+
+// touched says whether the visitor has moved the clocks of the instance: whether they stand still,
 // or the wall clock is off true time. A monotonic clock that a pause left behind is not touched.
-const touched = (st) => st.wallStopped || st.monotonicStopped || Math.abs(wallOffset(st)) >= NS;
+const touched = (st) => paused(st) || Math.abs(wallOffset(st)) >= NS;
 
 // resetClocks of the instance: its clocks run again, and its wall clock reads true time. The engine
-// has no action for it, so the page sends startWall and startMonotonic for a clock that stands still,
-// and then shiftWall by the offset of the wall clock after that, because a pause leaves the wall
-// clock behind. The
-// engine keeps its clocks in whole nanoseconds, and rounds the shift to them, so the wall clock lands
-// on true time.
+// has no action for it, so the page sends resumeClocks if they stand still, and then shiftWall by
+// the offset of the wall clock after that, because a pause leaves the wall clock behind. The engine
+// keeps its clocks in whole nanoseconds, and rounds the shift to them, so the wall clock lands on
+// true time.
 function resetClocks(name, st) {
   const steps = [];
-  if (st.wallStopped) steps.push(() => ({ do: "startWall", instance: name }));
-  if (st.monotonicStopped) steps.push(() => ({ do: "startMonotonic", instance: name }));
+  if (paused(st)) steps.push(() => ({ do: "resumeClocks", instance: name }));
   steps.push(() => {
     const now = instanceState(name);
     const off = now ? wallOffset(now) : 0;
