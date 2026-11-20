@@ -3113,6 +3113,7 @@ func TestTx_Keys(t *testing.T) {
 		for _, fErr := range []error{nil, failed} {
 			vfs, err := faultvfs.New()
 			is.NotError(t, err)
+			t.Cleanup(func() { is.NotError(t, vfs.Close()) })
 			w := newWorld(t)
 			d := w.serve(t, "a", core.Options{LengthLimit: 1000, VFS: vfs.Name()})
 			ctx := t.Context()
@@ -3140,8 +3141,6 @@ func TestTx_Keys(t *testing.T) {
 			is.Error(t, core.ErrLocal, tx.Upsert(ctx, "t", row("a")), fmt.Sprint("the transaction after the drop, with the error of f ", fErr))
 			_ = tx.Rollback(ctx)
 			is.Equal(t, head, w.manifest(t).Head)
-			_ = d.Close(ctx)
-			is.NotError(t, vfs.Close())
 		}
 	})
 
@@ -3150,6 +3149,7 @@ func TestTx_Keys(t *testing.T) {
 		key := func(i int) string { return fmt.Sprintf("%0900d", i) }
 		vfs, err := faultvfs.New()
 		is.NotError(t, err)
+		t.Cleanup(func() { is.NotError(t, vfs.Close()) })
 		w := newWorld(t)
 		d := w.serve(t, "a", core.Options{LengthLimit: 1000, VFS: vfs.Name()})
 		ctx := t.Context()
@@ -3174,8 +3174,6 @@ func TestTx_Keys(t *testing.T) {
 		vfs.Fail(faultvfs.Fault{})
 		is.Error(t, core.ErrLocal, tx.Upsert(ctx, "t", row("a")))
 		_ = tx.Rollback(ctx)
-		_ = d.Close(ctx)
-		is.NotError(t, vfs.Close())
 
 		w = newWorld(t)
 		d = w.serve(t, "a", core.Options{})
