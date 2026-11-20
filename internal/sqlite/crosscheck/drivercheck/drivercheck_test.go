@@ -1455,7 +1455,11 @@ type step struct {
 	want string
 }
 
-const t1 = "create table t1 (v1 int primary key) strict, without rowid"
+const (
+	t1 = "create table t1 (v1 int primary key) strict, without rowid"
+	// t3 is the table of the example of slice 5: three columns of three types, with the key first.
+	t3 = "create table t3 (v1 int primary key, v2 text not null, v3 real not null) strict, without rowid"
+)
 
 // sequences written by hand, which cover every statement of slice 1, every error that an
 // application can get from it, and each call.
@@ -1705,6 +1709,64 @@ var sequences = map[string][]step{
 		{callRollback, "", "rollback"},
 		{callQuery, "select * from t1", ""},
 	},
+	"the example of slice 5, of several columns": {
+		{callExec, t3, "exec: 0 affected, last insert id 0"},
+		{callExec, "insert into t3 values (1, 'a', 1.5)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t3 (v3, v1, v2) values (2.5, 2, 'b')", "exec: 1 affected, last insert id 0"},
+		{callQuery, "select v2, v1, v2 from t3", `query: columns "v2,v1,v2" of types "TEXT,INT,TEXT", rows string:a,int64:1,string:a string:b,int64:2,string:b`},
+		{callQuery, "select * from t3", `query: columns "v1,v2,v3" of types "INT,TEXT,REAL", rows int64:1,string:a,float64:1.5 int64:2,string:b,float64:2.5`},
+		{callPrepareQuery, "select V3, \"V1\" from T3", `prepare, query: columns "v3,v1" of types "REAL,INT", rows float64:1.5,int64:1 float64:2.5,int64:2`},
+		{callQueryRow, "select v2 from t3", "query row: row string:a"},
+	},
+	"the errors of slice 5, through Exec, Query, and Prepare": {
+		{callExec, t3, "exec: 0 affected, last insert id 0"},
+		{callExec, "insert into t3 values (1, 'a', 1.5)", "exec: 1 affected, last insert id 0"},
+		{callExec, "create table t3 (v int primary key, v text not null) strict, without rowid", "exec: exec failed with 1/1: table t3 already exists"},
+		{callExec, "create table t4 (v int primary key, V text not null) strict, without rowid", "exec: exec failed with 1/1: duplicate column name: V"},
+		{callExec, "insert into t3 values (2, 'b')", "exec: exec failed with 1/1: table t3 has 3 columns but 2 values were supplied"},
+		{callQuery, "insert into t3 (v1, v2) values (2, 'b', 2.5)", "query: query failed with 1/1: 3 values for 2 columns"},
+		{callExec, "insert into t3 (v1, x) values (2)", "exec: exec failed with 1/1: table t3 has no column named x"},
+		{callExec, "insert into t3 (v1, v2) values (2, 'b')", "exec: exec failed with 19/1299: NOT NULL constraint failed: t3.v3"},
+		{callExec, "select * from t3", "exec: 0 affected, last insert id 0"},
+		{callQuery, "insert into t3 (v2, v3) values ('b', 2.5)", "query: query failed with 19/1299: NOT NULL constraint failed: t3.v1"},
+		{callExec, "insert into t3 values (1, 'b', 2.5)", "exec: exec failed with 19/1555: UNIQUE constraint failed: t3.v1"},
+		{callQuery, "select v1, x from t3", "query: query failed with 1/1: no such column: x"},
+		// mattn's build reads a name in double quotes that is no column as a string, where the pinned
+		// build of s4ql's tests gives `no such column`, so `select "x" from t3` is not compared here,
+		// and a value of another type than its column is checked by the rule only for an insert of one
+		// value.
+		{callQueryRow, `select V1 from t3`, "query row: row int64:1"},
+		// SQLite gives these errors when it prepares the text, and s4ql when the statement runs.
+		{callPrepareExec, "insert into t3 values (2, 'b')", "prepare, exec: exec failed with 1/1: table t3 has 3 columns but 2 values were supplied"},
+		{callPrepareExec, "insert into t3 (v1) values (2, 'b')", "prepare, exec: exec failed with 1/1: 2 values for 1 columns"},
+		{callPrepareQuery, "select x from t3", "prepare, query: query failed with 1/1: no such column: x"},
+		{callPrepareExec, "create table t4 (v int primary key, V text not null) strict, without rowid", "prepare, exec: exec failed with 1/1: duplicate column name: V"},
+		// This both sides give at the same step.
+		{callPrepareExec, "insert into t3 (v1) values (2)", "prepare, exec: exec failed with 19/1299: NOT NULL constraint failed: t3.v2"},
+		{callQuery, "select * from t3", `query: columns "v1,v2,v3" of types "INT,TEXT,REAL", rows int64:1,string:a,float64:1.5`},
+	},
+	"parameters numbered across the values of an insert of several columns": {
+		{callExec, "create table k (a text not null, b int primary key) strict, without rowid", "exec: 0 affected, last insert id 0"},
+		{callExecArgument, "insert into k (a, b) values ('x', ?)", "exec with an argument: 1 affected, last insert id 0"},
+		{callPrepareExecRuns, "insert into k values ('y', ?)", "prepare, exec several times: exec failed with 19/1555: UNIQUE constraint failed: k.b; then: 1 affected, last insert id 0; then: exec failed with 19/1555: UNIQUE constraint failed: k.b"},
+		{callExecArgument, "insert into k (b, a) values (?, ?)", "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 2 parameters"},
+		{callQuery, "select * from k", `query: columns "a,b" of types "TEXT,INT", rows string:x,int64:1 string:y,int64:2`},
+	},
+	"a transaction of several columns, with a failed insert that changes nothing": {
+		{callExec, t3, "exec: 0 affected, last insert id 0"},
+		{callBegin, "", "begin"},
+		{callExec, "insert into t3 values (1, 'a', 1.5)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t3 (v1, v2) values (2, 'b')", "exec: exec failed with 19/1299: NOT NULL constraint failed: t3.v3"},
+		{callExec, "insert into t3 values (1, 'b', 2.5)", "exec: exec failed with 19/1555: UNIQUE constraint failed: t3.v1"},
+		{callQuery, "select v2 from t3", `query: columns "v2" of types "TEXT", rows string:a`},
+		{callCommit, "", "commit"},
+		{callBeginReadOnly, "", "begin read-only"},
+		{callExec, "insert into t3 values (2, 'b')", "exec: exec failed with 1/1: table t3 has 3 columns but 2 values were supplied"},
+		{callExec, "insert into t3 (v1, v2) values (2, 'b')", "exec: exec failed with 8/8: attempt to write a readonly database"},
+		{callExec, "insert into t3 values (2, 'b', 'c')", "exec: exec failed with 8/8: attempt to write a readonly database"},
+		{callQuery, "select v3, v1 from t3", `query: columns "v3,v1" of types "REAL,INT", rows float64:1.5,int64:1`},
+		{callRollback, "", "rollback"},
+	},
 	"a query beside the transaction": {
 		{callExec, t1, "exec: 0 affected, last insert id 0"},
 		{callExec, "insert into t1 (v1) values (1)", "exec: 1 affected, last insert id 0"},
@@ -1789,6 +1851,141 @@ func TestTypes(t *testing.T) {
 					is.Equal(t, "", p.compareTables())
 					step("insert into p (v) values (?)", callPrepareExecRuns, runs[:2]...)
 					step("select * from P", callQuery)
+					p.close()
+				})
+			}
+		}
+	}
+}
+
+// literal of the type typ for the number k, and the argument of database/sql with its value: k as an
+// integer, k and a half as a real, k as text, and the byte k as a blob.
+func literal(typ string, k int) (string, any) {
+	switch typ {
+	case "int", "integer":
+		return fmt.Sprint(k), int64(k)
+	case "real":
+		return fmt.Sprint(k, ".5"), float64(k) + 0.5
+	case "text":
+		return fmt.Sprintf("'%v'", k), fmt.Sprint(k)
+	}
+	return fmt.Sprintf("x'%02x'", k), []byte{byte(k)}
+}
+
+func TestColumns(t *testing.T) {
+	w := newWorld(t)
+	// The names of the columns by position: as the create table writes them, and in another spelling
+	// of the same names, which the other statements write.
+	created, spelled := []string{"a", `"B b"`, "C"}, []string{"A", `"b B"`, "c"}
+	for _, types := range [][]string{{"int", "text"}, {"blob", "real"}, {"text", "integer", "real"}, {"real", "blob", "int"}, {"integer", "text", "blob"}} {
+		for key := range types {
+			for _, pinned := range []bool{true, false} {
+				t.Run(fmt.Sprintf("should give what SQLite gives for a table of %v with the key at %v, on a pinned connection: %v", strings.Join(types, ", "), key, pinned), func(t *testing.T) {
+					n := len(types)
+					p := newPair(t, w, pinned, nil)
+					step := func(src string, c call, runs ...[]any) {
+						t.Helper()
+						if len(runs) == 0 {
+							runs = [][]any{nil}
+						}
+						if _, failure := p.stepRuns(src, c, true, runs); failure != "" {
+							t.Fatal(failure)
+						}
+					}
+					var columns []string
+					for i, typ := range types {
+						c := created[i] + " " + typ + " not null"
+						if i == key {
+							c = created[i] + " " + typ + " primary key"
+						}
+						columns = append(columns, c)
+					}
+					create := "create table t (" + strings.Join(columns, ", ") + ") strict, without rowid"
+					// insert of the number k into the columns at the positions, through literals, or
+					// through parameters with the arguments of the run.
+					insert := func(positions []int, k int, parameters bool) (string, []any) {
+						var names, vs []string
+						var args []any
+						for _, i := range positions {
+							l, a := literal(types[i], k)
+							names = append(names, spelled[i])
+							if parameters {
+								l = "?"
+								args = append(args, a)
+							}
+							vs = append(vs, l)
+						}
+						return fmt.Sprintf("insert into t (%v) values (%v)", strings.Join(names, ", "), strings.Join(vs, ", ")), args
+					}
+					all, reversed := make([]int, n), make([]int, n)
+					for i := range n {
+						all[i], reversed[i] = i, n-1-i
+					}
+
+					step(create, callExec)
+					step(create, callPrepareExec)
+					src, _ := insert(all, 4, false)
+					step(src, callExec)
+					src, _ = insert(reversed, 1, false)
+					step(src, callPrepareExec)
+					src, args := insert(reversed, 3, true)
+					var runs [][]any
+					for _, k := range []int{2, 5, 2} {
+						_, a := insert(reversed, k, true)
+						runs = append(runs, a)
+					}
+					step(src, callExec, args)
+					step(src, callPrepareExecRuns, runs...)
+					step("select * from t", callQuery)
+					step(fmt.Sprintf("select %v, %v, %v from T", spelled[n-1], created[0], created[n-1]), callPrepareQuery)
+					step(fmt.Sprintf("select %v from t", spelled[key]), callQueryRow)
+					step("select x from t", callQuery)
+					step("select x from t", callPrepareQuery)
+					step("insert into t values (1)", callExec)
+					step("insert into t values (1)", callPrepareExec)
+					src, _ = insert(all[1:], 6, false)
+					step(strings.Replace(src, ") values (", ", "+spelled[0]+") values (", 1), callPrepareExec)
+					step(strings.Replace(src, "insert into t (", "insert into t ("+spelled[0]+", ", 1), callExec)
+					for left := range n {
+						src, _ := insert(slices.DeleteFunc(slices.Clone(all), func(i int) bool { return i == left }), 7, false)
+						step(src, callExec)
+						step(src, callPrepareExec)
+					}
+					src, _ = insert(all, 1, false)
+					step(src, callQuery)
+
+					// In a transaction, a statement that fails changes nothing, also with a roll back of
+					// the transaction after it.
+					for _, end := range []call{callCommit, callRollback} {
+						step("", callBegin)
+						src, _ = insert(all, 8, false)
+						step(src, callExec)
+						src, _ = insert(all[:n-1], 9, false)
+						step(src, callExec)
+						src, _ = insert(all, 8, false)
+						step(src, callExec)
+						step("select * from t", callQuery)
+						step("", end)
+					}
+					step("", callBeginReadOnly)
+					src, _ = insert(all, 10, false)
+					step(src, callExec)
+					src, _ = insert(all[:n-1], 10, false)
+					step(src, callExec)
+					step("insert into t values (1)", callExec)
+					step("", callRollback)
+
+					is.Equal(t, "", p.finish())
+					is.Equal(t, "", p.compareTables())
+					p.restart(true)
+					is.Equal(t, "", p.compareTables())
+					step(fmt.Sprintf("select %v from t", strings.Join(slices.Collect(func(yield func(string) bool) {
+						for _, i := range reversed {
+							if !yield(spelled[i]) {
+								return
+							}
+						}
+					}), ", ")), callQuery)
 					p.close()
 				})
 			}
