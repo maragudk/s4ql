@@ -414,7 +414,7 @@ function drawNode(c) {
   c.clocks.dataset.paused = String(clocks !== "none" && paused(st));
 
   const k = calls[c.name] || { w: 0, r: 0, x: 0, why: "" };
-  set(c.f.calls, `${count(k.w)} writes, ${count(k.r)} reads`);
+  set(c.f.calls, `${count(k.w)} inserts, ${count(k.r)} selects`);
   set(c.f.refused, k.x ? `${count(k.x)}, last: ${R.reasonWords(k.why)}` : "0");
 
   c.el.dataset.requests = String(target() === c.name);
@@ -559,8 +559,12 @@ function drawS3() {
   let out = b.commits.slice().reverse().map((c) => {
     const cls = c.name === head ? "head" : c.inLog ? "" : "orphan";
     const tag = c.name === head ? "head" : c.inLog ? "in the log" : "not in the log";
+    // The statements of its annotations, each with its arguments as the commit object holds them.
+    const sql = (c.statements || []).map((s) => `<li><code>${esc(s.sql)}</code>` +
+      ((s.args || []).length ? ` <span class="caps">args</span> ${esc(s.args.map((a) => JSON.stringify(a)).join(", "))}` : "") + `</li>`).join("");
     return `<li class="commit ${cls}">${barcodeSVG(c.name, "code")}` +
-      `<div class="meta"><span class="name">${R.short(c.name)}</span><span>${R.keysText(c.keys)}</span><span>${esc(R.instanceOf(c.process))}</span><span>${R.clock(c.at)}</span><span class="caps">${tag}</span></div></li>`;
+      `<div class="meta"><span class="name">${R.short(c.name)}</span><span>${R.keysText(c.keys)}</span><span>${esc(R.instanceOf(c.process))}</span><span>${R.clock(c.at)}</span><span class="caps">${tag}</span></div>` +
+      (sql ? `<ul class="sql">${sql}</ul>` : "") + `</li>`;
   }).join("");
   if (!out) out = `<li class="empty">None yet.</li>`;
   if (total > b.commits.length) out += `<li class="empty">${count(total - b.commits.length)} older</li>`;

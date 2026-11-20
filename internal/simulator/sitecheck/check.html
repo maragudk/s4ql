@@ -150,7 +150,9 @@ async function unit() {
   // served, and sending the requests to the other instance, end the run. The events are those of the
   // engine's client.
   tell = R.teller();
-  const call = (t, inst, what, error) => ({ t, kind: "call", caller: "client", what, instance: inst, process: inst, op: "read", error });
+  const call = (t, inst, what, error) => ({ t, kind: "call", caller: "client", what, instance: inst, process: inst, op: "read", sql: "select id from orders where id > ?", args: [0], error });
+  // write of the key 7, in place of the read of a call.
+  const write = (e) => ({ ...e, op: "write", value: 7, sql: "insert into orders (id) values (?)", args: [7] });
   const clientEvents = [
     call(1, "a", "down", "the process of the instance has crashed"), call(2, "a", "down", "the process of the instance has crashed"),
     call(3, "a", "refused", "no valid lease: not_holder"), call(4, "a", "refused", "no valid lease: not_holder"),
@@ -159,12 +161,27 @@ async function unit() {
     call(8, "b", "served", ""), call(9, "b", "refused", "no valid lease: not_holder"),
   ];
   const clientLines = clientEvents.map((e) => tell(e)).filter((w) => w.tier).map((w) => w.text);
-  const wantLines = ["A request gets no answer from a.", "A request gets an error from a: no lease.", "You send the requests to b.", "A request gets an error from b: no lease.", "b serves a read: no rows.", "A request gets an error from b: no lease."];
+  const wantLines = ["A request gets no answer from a.", "A request gets an error from a: no lease.", "You send the requests to b.", "A request gets an error from b: no lease.", "b serves select id from orders where id > 0: no rows.", "A request gets an error from b: no lease."];
   expect(JSON.stringify(clientLines) === JSON.stringify(wantLines), `a run of failures of the requests takes one line, until one is served or they go to the other instance (${clientLines.join(" | ")})`);
-  const failures = [call(1, "a", "down", "the process of the instance has crashed"), call(2, "b", "refused", "no valid lease: not_holder"), { ...call(3, "a", "lost", "crashed"), op: "write", value: 7 }].map((e) => R.requestFailure(e));
+  const failures = [call(1, "a", "down", "the process of the instance has crashed"), call(2, "b", "refused", "no valid lease: not_holder"), write(call(3, "a", "lost", "crashed"))].map((e) => R.requestFailure(e));
   const words = failures.map((f) => f.words);
   expect(JSON.stringify(words) === JSON.stringify(["no answer from a", "error from b: no lease", "no answer from a, write outcome unknown"]), `a failure of a request in a few words (${words.join(" | ")})`);
-  expect(failures[2].line === "A request gets no answer from a: write of key 7, outcome unknown.", `a write that gets no answer names its key in the log (${failures[2].line})`);
+  expect(failures[2].line === "A request gets no answer from a: insert into orders (id) values (7), outcome unknown.", `a write that gets no answer names its statement in the log (${failures[2].line})`);
+
+  // The log shows the statement of a request with its arguments in place of its parameters, and a
+  // commit with the statements of its commit object.
+  expect(R.sqlText("select id from t where id > ? and v = ? and w = ?", [5, "it's", null]) === "select id from t where id > 5 and v = 'it''s' and w = null", "the arguments of a statement take the places of its parameters");
+  tell = R.teller();
+  const name = "0123456789abcdef".repeat(4);
+  const stream = [
+    { t: 1, kind: "request", what: "applied", purpose: "upload", object: { commit: { name, keys: [1], statements: [{ sql: "create table orders (id integer primary key) strict, without rowid" }, { sql: "insert into orders (id) values (?)", args: [1] }] } } },
+    { t: 2, kind: "core", event: "commit", instance: "a", process: "a", attrs: { outcome: "committed", "commit.name": name } },
+    { ...call(3, "a", "served", ""), keys: [1] },
+    { ...call(4, "a", "served", "no such table: orders"), keys: [] },
+  ].map((e) => tell(e)).filter((w) => w.tier).map((w) => w.text);
+  const wantStream = ["a commits create table orders (id integer primary key) strict, without rowid; insert into orders (id) values (1) as 01234567.",
+    "a serves select id from orders where id > 0: key 1.", "a serves select id from orders where id > 0: no such table: orders."];
+  expect(JSON.stringify(stream) === JSON.stringify(wantStream), `the log shows the SQL of commits and reads (${stream.join(" | ")})`);
 
   // The status of the requests is what the latest that ended got: ok from the instance that served
   // or committed it, or the words of its failure, which is the only state that is failing.
@@ -177,7 +194,7 @@ async function unit() {
   // whatever the reason.
   const silent = ["the instance has not started", "the process of the instance has crashed", "the database of the instance could not be opened",
     "the database of the instance is not open", "the database of the instance is closed", "the database of the instance has stopped"]
-    .flatMap((error) => ["down", "lost"].flatMap((what) => ["read", "write"].map((op) => R.requestFailure({ ...call(1, "a", what, error), op, value: 7 }))));
+    .flatMap((error) => ["down", "lost"].flatMap((what) => ["read", "write"].map((op) => R.requestFailure((op === "write" ? write : (e) => e)(call(1, "a", what, error))))));
   expect(new Set(silent.map((f) => f.words + " | " + f.line)).size === 2, `no answer reads the same for every reason, once for a read and once for a write (${[...new Set(silent.map((f) => f.words))].join(" | ")})`);
 
   // Every outcome and error that the engine can give a call of its client has plain words for the
@@ -194,8 +211,8 @@ async function unit() {
   ];
   for (const [what, error] of outcomes) {
     for (const op of ["read", "write"]) {
-      const f = R.requestFailure({ ...call(1, "a", what, error), op, value: 7 });
-      texts.add(f.words).add(f.line).add(R.requestStatus({ ...call(1, "a", what, error), op, value: 7 }).words);
+      const f = R.requestFailure((op === "write" ? write : (e) => e)(call(1, "a", what, error)));
+      texts.add(f.words).add(f.line).add(R.requestStatus((op === "write" ? write : (e) => e)(call(1, "a", what, error))).words);
     }
   }
   for (const what of ["committed", "served"]) texts.add(R.requestStatus({ ...call(1, "a", what, ""), keys: [1] }).words);
@@ -344,7 +361,7 @@ async function check() {
   turbo.click();
   expect(turbo.getAttribute("aria-pressed") === "false", "turbo is off again");
   await until(() => p.requests().writes + p.requests().reads > 0);
-  expect(p.served("b") === "0 writes, 0 reads; refused 0", `the requests are served by a from the start (${JSON.stringify(p.requests())}), and b gets no call (${p.served("b")})`);
+  expect(p.served("b") === "0 inserts, 0 selects; refused 0", `the requests are served by a from the start (${JSON.stringify(p.requests())}), and b gets no call (${p.served("b")})`);
   await until(() => p.requests().status === "ok from a");
   expect(!p.requests().failing, "while a serves the requests, their status is ok from a, and not failing");
 

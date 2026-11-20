@@ -42,6 +42,23 @@ export function keysText(keys) {
   return keys.length + " rows";
 }
 
+// literal of an argument of a statement in SQL: a number as itself, text in single quotes, and null.
+const literal = (v) => (v === null || v === undefined ? "null" : typeof v === "string" ? `'${v.replaceAll("'", "''")}'` : String(v));
+
+// sqlText of a statement with its arguments in place of its parameters, in order, as the log shows it.
+// The statements of the engine's workload hold no ? but their parameters.
+export function sqlText(sql, args) {
+  const a = args || [];
+  let i = 0;
+  return String(sql || "").replace(/\?/g, () => (i < a.length ? literal(a[i++]) : "?"));
+}
+
+// callText of the event of a call: its statement, with its arguments.
+export const callText = (e) => sqlText(e.sql, e.args);
+
+// statementsText of a commit object: the statements of its annotations, with their arguments.
+export const statementsText = (c) => ((c && c.statements) || []).map((s) => sqlText(s.sql, s.args)).join("; ");
+
 // REASONS of the core for refusing a call, in words.
 export const REASONS = {
   not_holder: "no lease",
@@ -111,12 +128,12 @@ export function requestFailure(e) {
     case "down":
     case "lost":
       return e.op === "write"
-        ? { kind: "no answer " + i, words: `no answer from ${i}, write outcome unknown`, line: `A request gets no answer from ${i}: write of key ${e.value}, outcome unknown.` }
+        ? { kind: "no answer " + i, words: `no answer from ${i}, write outcome unknown`, line: `A request gets no answer from ${i}: ${callText(e)}, outcome unknown.` }
         : { kind: "no answer " + i, words: `no answer from ${i}`, line: `A request gets no answer from ${i}.` };
   }
   const words = errorWords(e);
   const keyed = e.what === "unknown" || e.what === "not_committed";
-  const line = e.what === "unknown" ? `write of key ${e.value}, outcome unknown` : e.what === "not_committed" ? `write of key ${e.value} not committed` : words;
+  const line = e.what === "unknown" ? `${callText(e)}, outcome unknown` : e.what === "not_committed" ? `${callText(e)}, not committed` : words;
   return { kind: keyed ? undefined : `error ${i} ${e.what} ${words}`, words: `error from ${i}: ${words}`, line: `A request gets an error from ${i}: ${line}.` };
 }
 
@@ -183,7 +200,7 @@ function actionWords(e) {
 export function teller() {
   const names = new Map(); // the instances of holder IDs, by the process that opened them
   const current = new Map(); // the holder ID of each process's latest open
-  const keys = new Map(); // the keys of each commit object, by its name
+  const commits = new Map(); // each commit object that S3 took and the core has not logged, by its name
   const opened = new Set(); // processes that have opened their database once
   const spells = new Map(); // the kinds of line that each instance has said in its spells, by group
   const holder = (id) => (id ? names.get(id) || short(id) : "nobody");
@@ -259,8 +276,10 @@ export function teller() {
             break;
           case "commit": {
             const name = a["commit.name"];
+            const sql = statementsText(commits.get(name));
+            commits.delete(name);
             switch (a.outcome) {
-              case "committed": say(`${who} commits ${keysText(keys.get(name))} as ${short(name)}.`, "stream"); break;
+              case "committed": say(sql ? `${who} commits ${sql} as ${short(name)}.` : `${who} commits ${short(name)}.`, "stream"); break;
               case "committed_and_stopped": say(`${who} commits ${short(name)}, then its cache fails and the core stops.`); break;
               case "unknown": say(`${who} does not know whether its commit ${short(name)} went through.`); break;
             }
@@ -304,15 +323,15 @@ export function teller() {
           case "served":
             calm("call");
             calm("core");
-            say(`${who} serves a read: ${keysText(e.keys)}.`, "stream");
+            say(`${who} serves ${callText(e)}: ${e.error || keysText(e.keys)}.`, "stream");
             break;
           case "refused": {
             const r = reason(e);
             once("call:refused:" + r, `${who} refuses calls: ${reasonWords(r)}.`);
             break;
           }
-          case "unknown": say(`The write of key ${e.value} on ${who} ends without an answer.`); break;
-          case "not_committed": say(`The write of key ${e.value} on ${who} is not committed.`); break;
+          case "unknown": say(`On ${who}, ${callText(e)} ends without an answer.`); break;
+          case "not_committed": say(`On ${who}, ${callText(e)} is not committed.`); break;
           case "abandoned": once("call:abandoned", `A write on ${who} is rolled back before its commit.`); break;
           case "stopped": once("call:stopped", `${who} ends its calls: its database is not open.`); break;
           case "busy": once("call:busy", `A call on ${who} finds the cache busy.`); break;
@@ -321,7 +340,7 @@ export function teller() {
         }
         break;
       case "request":
-        if (e.what === "applied" && e.object && e.object.commit) keys.set(e.object.commit.name, e.object.commit.keys);
+        if (e.what === "applied" && e.object && e.object.commit) commits.set(e.object.commit.name, e.object.commit);
         else if (e.what === "refused" && e.purpose !== "take" && SWAPS[e.purpose]) say(`S3 refuses the ${SWAPS[e.purpose]} of ${who}: the manifest has another version.`);
         break;
       case "store":
