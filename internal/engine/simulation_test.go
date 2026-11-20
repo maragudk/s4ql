@@ -141,10 +141,14 @@ type attempt struct {
 	query bool
 	// write is true for a statement that changes the database if it succeeds.
 	write bool
-	// unchanged is set for an update or a delete that succeeded and found no row, which changes
-	// nothing, so that a transaction of it alone leaves no commit object.
+	// unchanged is set for an update or a delete that succeeded and found no row, by the engine's
+	// count, which changes nothing, so that a transaction of it alone leaves no commit object. The
+	// engine's word is not taken for it: [run.verify] runs each such statement of its own in SQLite.
 	unchanged bool
-	state     attemptState
+	// changes is the engine's count of changes of an update or a delete that succeeded, which
+	// [run.verify] and [run.verifyTxs] compare with SQLite's.
+	changes int64
+	state   attemptState
 	// answer of the statement: SQLite's error of a statement that failed with it, "not supported",
 	// "no statement", or [wrongArguments] for one that was skipped, and the rows of a query that
 	// succeeded.
@@ -561,11 +565,8 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 	switch {
 	case err == nil:
 		a.state, a.answer = succeeded, got
-		if s, _ := stmt.Check(a.src); res.SetsChanges && res.Changes == 0 {
-			switch s.(type) {
-			case *stmt.Update, *stmt.Delete:
-				a.unchanged = true
-			}
+		if s, _ := stmt.Check(a.src); res.SetsChanges && isChange(s) {
+			a.changes, a.unchanged = res.Changes, res.Changes == 0
 		}
 		// A write of a transaction is acknowledged by its commit.
 		if a.write && tx == nil {
@@ -634,6 +635,15 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 	}
 	r.world.Trace(ctx, "statement %v ends as %v: %v", a.id, a.state, err)
 	return a
+}
+
+// isChange reports whether s is an update or a delete.
+func isChange(s stmt.Statement) bool {
+	switch s.(type) {
+	case *stmt.Update, *stmt.Delete:
+		return true
+	}
+	return false
 }
 
 // reasonOf an error that means that a call did nothing: no lease, stopped, timeout, or canceled, and
@@ -1429,7 +1439,10 @@ func (r *run) verify(ctx context.Context) {
 			}
 			continue
 		}
-		if a.state != sqliteFailed && (a.state != succeeded || !a.query || a.write || a.partial) {
+		// The statements that are compared with SQLite on the state that they saw: those that failed with
+		// SQLite's error, the queries that succeeded and were read to their end, and the updates and
+		// deletes that succeeded and changed no row by the engine's count, which are in no commit object.
+		if a.state != sqliteFailed && (a.state != succeeded || !a.query || a.write || a.partial) && (a.state != succeeded || !a.unchanged) {
 			continue
 		}
 		if a.position == "" {
@@ -1459,12 +1472,28 @@ func (r *run) verify(ctx context.Context) {
 	o := newOracle(r.t)
 	for k := 0; k <= len(log); k++ {
 		for _, a := range seen[k] {
+			// A write here changed nothing in the engine, so it runs in a savepoint that is rolled back,
+			// and SQLite stays at the state of the log.
+			if a.write {
+				is.Equal(r.t, "", o.run(r.t, "savepoint s4ql_seen").err)
+			}
 			want := o.run(r.t, a.src, oracleValues(a.args)...)
+			changes, _ := o.changes(r.t)
+			if a.write {
+				is.Equal(r.t, "", o.run(r.t, "rollback to s4ql_seen").err)
+				is.Equal(r.t, "", o.run(r.t, "release s4ql_seen").err)
+			}
 			if !a.query {
 				want.columns, want.rows = "", nil
 			}
 			if got := a.answer.String(); got != want.String() {
 				r.violate(ctx, "the statement %v, %q, at commit %v gives %v, and in SQLite %v", a.id, a.src, k, got, want)
+			}
+			if a.unchanged && want.err == "" && changes != 0 {
+				r.violate(ctx, "the statement %v, %q, at commit %v changes no row, is in no commit, and changes %v rows in SQLite", a.id, a.src, k, changes)
+			}
+			if a.unchanged {
+				r.event("updates and deletes that change no row, compared with SQLite")
 			}
 			r.countWhere(a, "of their own")
 		}
@@ -1482,6 +1511,19 @@ func (r *run) verify(ctx context.Context) {
 				}
 				if a := o.run(r.t, note, oracleValues(log[k].params[i])...); a.err != "" {
 					r.violate(ctx, "commit %v, %q, fails in SQLite: %v", k+1, note, a.err)
+				}
+				// The count of changes of an update or a delete of its own, which its caller was given.
+				changes, _ := o.changes(r.t)
+				if m := idPattern.FindStringSubmatch(note); m != nil {
+					id, _ := strconv.ParseUint(m[1], 10, 64)
+					if a := r.attempts[id]; a != nil && a.tx == nil && a.state == succeeded && a.write {
+						if s, _ := stmt.Check(a.src); isChange(s) {
+							if a.changes != changes {
+								r.violate(ctx, "commit %v, %q, changes %v rows in SQLite, and its caller was told %v", k+1, note, changes, a.changes)
+							}
+							r.event("updates and deletes of their own whose count of changes is compared with SQLite")
+						}
+					}
 				}
 			}
 		}
@@ -1573,7 +1615,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 		if tx.readOnly {
 			o.run(r.t, "pragma query_only = 1")
 		}
-		before := o.tables(r.t)
+		before, beforeState := o.tables(r.t), o.state(r.t)
 		for _, a := range tx.stmts {
 			if a.typeRefused {
 				// A read-only transaction refuses an insert before it looks at its value, and runs a
@@ -1595,6 +1637,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 				r.violate(ctx, "the statement %v, %q, of the transaction %v (%v) succeeded, and stores a value of another type than its column: %v", a.id, a.src, tx.id, kind, want)
 			}
 			want := o.run(r.t, a.src, oracleValues(a.args)...)
+			changes, _ := o.changes(r.t)
 			if a.partial {
 				continue
 			}
@@ -1604,20 +1647,36 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 			if got := a.answer.String(); got != want.String() {
 				r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v, gives %v, and in SQLite %v", a.id, a.src, tx.id, kind, at, got, want)
 			}
+			if s, _ := stmt.Check(a.src); a.state == succeeded && isChange(s) {
+				if want.err == "" && a.changes != changes {
+					r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v, changes %v rows in SQLite, and its caller was told %v", a.id, a.src, tx.id, kind, at, changes, a.changes)
+				}
+				r.event("updates and deletes in a transaction whose count of changes is compared with SQLite")
+			}
 			r.countWhere(a, "in a transaction")
 		}
 		after := o.tables(r.t)
+		afterState := o.state(r.t)
 		o.close()
 		writes := tx.writes()
-		if tx.readOnly || len(writes) == 0 || slices.ContainsFunc(writes, func(a *attempt) bool {
+		if tx.readOnly || len(writes) == 0 {
+			continue
+		}
+		// A transaction whose writes that succeeded are all of tables that were not there when it began
+		// and are not there at its end writes no commit object. One whose rows SQLite has as they were
+		// when it began may write none either: the core commits nothing for a key whose row was not
+		// there before and is not there after, as for a row that the transaction inserted and deleted,
+		// and commits the row of a key that it wrote, also with the values that it had.
+		ofTables := !slices.ContainsFunc(writes, func(a *attempt) bool {
 			name := tableOf(a.src)
 			return before[name] || after[name]
-		}) {
+		})
+		if !ofTables && afterState != beforeState {
 			continue
 		}
 		for _, a := range writes {
 			nothing[a.id] = true
-			if inLog[a.id] > 0 {
+			if ofTables && inLog[a.id] > 0 {
 				r.violate(ctx, "the statement %v of the transaction %v, whose net effect is nothing, is in commit %v", a.id, tx.id, inLog[a.id])
 			}
 		}
@@ -1950,6 +2009,17 @@ func tallyOf(s simulation) map[string]int {
 		if a.typeRefused {
 			counts["refused for the type"]++
 		}
+		if s, _ := stmt.Check(a.src); isChange(s) {
+			counts["updates and deletes"]++
+			switch {
+			case a.state == succeeded && a.unchanged:
+				counts["updates and deletes that succeeded and changed no row"]++
+			case a.state == succeeded:
+				counts["updates and deletes that succeeded and changed rows"]++
+			case a.state == sqliteFailed:
+				counts["updates and deletes with SQLite's error"]++
+			}
+		}
 	}
 	counts["acknowledged writes"] = len(r.acked)
 	for _, tx := range r.txs {
@@ -2203,6 +2273,15 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// the select writes nothing, and fails nothing. An engine that reads every row, as every second
 		// engine of a node does, does not have the bug.
 		{"openBound", defaultWorkload, "default", []string{", and in SQLite", "which began at commit"}},
+		// An update or a delete that changes nothing and says so: of its own, it is in no commit, and
+		// SQLite, which runs it on the state that it saw, changes rows; in a transaction, SQLite gives
+		// another count; and the rows that it should have changed make later statements differ.
+		{"changeNothing", defaultWorkload, "default", []string{"is in no commit, and changes", "rows in SQLite, and its caller was told", ", and in SQLite", "which began at commit", "the replay of the log holds", "fails in SQLite"}},
+		// An update that changes the key and leaves the old row: the commit object holds the new row and
+		// no delete of the old key, so the replay of the log into an empty cache, which writes its rows,
+		// differs from SQLite, which runs the statements; and the row that stays makes later statements
+		// differ.
+		{"keepOldKey", defaultWorkload, "default", []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes"}},
 	}
 	for _, b := range bugs {
 		bug := b.name
