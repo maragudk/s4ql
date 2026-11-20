@@ -107,3 +107,59 @@ Telling the bounds of `atof` that matter from those that do not: `largest-10` an
 ### Future work
 
 The results of the core, the driver, and the second run of `stmt`.
+
+## Step 3: The rest of `stmt`, the core, the driver, and the confirmation runs
+
+**Author:** types-mutation builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the brief, as in step 1) "Two known gaps from a review of the core, to close here: nothing pins that `bind` stores `-0.0` as `0.0` (SQLite does it anyway, so say whether that mutant is equivalent), and only the random savepoint test covers \"upsert of a key that existed, then delete it\" (add a direct case to `TestTx_types`). [...] If mutation testing or fuzzing finds a real bug or a difference from SQLite: fix it if the fix is small and clearly right, with a test, and describe it prominently in your report."
+**Interpretation:** Finish the survivors of `stmt` and the core, run every survivor again on the final tests, and record what stays open.
+**Inferred intent:** A list of equivalent mutants that a reviewer can trust, and no survivor left unexplained.
+
+### What I did
+
+`stmt`: the second run, of the 612 mutants that had no result or had survived, on a copy with `realEdges`, `TestPowerOfTen`, and `TestMultiply160`, left 54 survivors. For the 44 in `real.go` I wrote a throwaway test in `internal/sql/mutation` that, for each surviving key, writes a small module with the original `real.go` and the mutated one, each with an exported `Atof`, and `go run`s a search for a literal on which they differ. Four searches: random texts; exact floats and midpoints that have short decimal forms; mantissas solved, with a modular inverse, so that their product with the top 64 bits of 10^p has its bits 64 to 64+k near zero; and the same solved for a tie of the rounding with a few units in the 32 bits after it. The last found ties that kill `pwr10l != 0 => true`, `pwr10l != 0 => pwr10l != 1`, `mid1-mid2 > 1 => > 2`, and the two mutants of `n == 0` in `powerOfTen`; the earlier ones killed `u64Bit(s)-1 => -2` and the special case of 10^-1. 2^54 - 1 kills the two bounds of `u >= u64Bit(55)-2`, which I found by reasoning, not by search. Every literal is in `realEdges` and agrees with SQLite. The remaining ones are in `equivalent.txt`, each with its reason; the bounds of p and e have arithmetic in their reasons (for example, for p below -348, `pwr10to2` gives at most -1160, so e is at least 1149 and the result is 0 before the power is looked up). In `recognize.go`: `TestCheck` has `t.true` and `-t.false`, and `TestRecognize` gives the recognizer a blob token of an odd number of hex digits, which pins the panic and its message; the tests and not `recognize.go` changed, as the brief asks.
+
+The core: the run of 628 mutants took 2 h with `-factor 3` and left 93 survivors. New tests: `TestBind` in `/internal/core/cache_test.go`, with `core.Bind` in `/internal/core/export_test.go`, binds every kind directly, among them -0.0, which SQLite keeps for a parameter that it only selects, so the mutant of `bind` that keeps the sign is not equivalent at the level of `bind`, though it is in every column of the cache, where SQLite stores 0.0 anyway. The `case nil` of `bind` is gone: no caller passed nil. `TestTx_types` has the upsert of a key that existed and then its delete, the column and the table in the message of every refused value, and a subtest of rows of another number of values and a key of two columns whose second value is refused. `TestTx_tooBig` fails the write-ahead log under an upsert and a delete, and the temporary file where a transaction records the keys that it touches, and requires `ErrLocal`, never `ErrTooBig`, and `found` false; `TestTx_readFails` (new) fails one read under an upsert into a table that existed and under a commit. `TestDB_stop_cache` checks the message of a column of another type. The lower bound of `Options.LengthLimit` is 1000.
+
+The driver: `value` in `/rows.go` had two survivors, the copy of a blob and the case of NULL; `TestValue` in `/rows_test.go`, with `s4ql.Value` in `/export_test.go`, kills both.
+
+`FuzzDifferential_core` takes a fourth input, whether the cache and SQLite have the lowered length limit.
+
+Then a rerun of every survivor that a new test should kill, on a copy of the final tree: 15 of `stmt` (14 killed; the 15th, `!c.Table.Present() => true`, is equivalent with its twin, since a table name is then the next token), 20 of the engine, 4 of the format, and 2 of the driver, all killed by the hand-written tests; and the core's again.
+
+### Why
+
+A mutant of the port of SQLite's arithmetic is either equivalent, which needs a proof, or killed by a literal, which needs the literal: a random search does not reach the cases, so the search solves for them.
+
+### What worked
+
+Solving for the mantissa: `x = target * inverse(odd part of H) mod 2^(64+s+2-t)`, kept when x is a 64-bit number with its top bit set, gives inputs whose product sits where `fp10Convert2` looks at its extra 32 bits. A first version that only made the low bits zero found nothing in 2.4 million tries, because it never made a tie.
+
+### What didn't work
+
+- The first version of the tie search hung for 34 min on the first mutant: for small p the odd part of 10^p's top bits has many factors of two, so the modulus was 2^11 and the loop over multiples below 2^64 had 2^53 steps. A random multiple from 2^63 on fixed it.
+- `timeout 3000 go test ...` failed with `command not found: timeout` on macOS.
+- `TestTx_readFails` first armed every read to fail, and its mutants survived: the upsert after the failed read of whether the row exists needs the same pages, and fails anyway. A fault of `Times: 1` fails only the first read, which kills the mutant that drops the error of `exists`. For the commit, even one failed read fails the commit at a later step, `commit: sqlite: disk I/O error (code 266)`: SQLite rolls the transaction back after a read fails in it, so the mutants that drop the error of a query of `spoolTouched` are equivalent, and listed so.
+- Six mutants of the core drop the error of the `create table` or `drop table` of a temporary table; no test fails the temporary file at those two statements. They are in a section of their own in `equivalent.txt`, which says they are reachable, and `docs/todo.md` has the test to write.
+
+### What I learned
+
+- SQLite's tables of powers of 10 round the 96 bits to the nearest; only the special entry for 10^-1 is cut.
+- `FUZZDIRS` in the Makefile lists directories, and `make fuzz` reads the names of the fuzz tests from their files, so CI's shards take new targets without a change of the workflow.
+
+### What was tricky
+
+The run reads the files of its tree for each mutant, so every run worked on an `rsync` copy, and a rerun on new tests needs a new copy and a new `-out`, since the fingerprint of the tree changes.
+
+### What warrants review
+
+- The reasons in `equivalent.txt` for `real.go` and for the core, above all the arithmetic of the bounds of p and e, and the six of the core that are reachable.
+- The lower bound of 1000 for `core.Options.LengthLimit`.
+- `FuzzTypes` and `FuzzTypes_core`, and whether `typesCall` marks each form as supported rightly.
+
+### Future work
+
+- A test that fails the temporary file at the `create table` or `drop table` of a temporary table of a transaction (in `docs/todo.md`).
