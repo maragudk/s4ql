@@ -1364,8 +1364,7 @@ func FuzzTypes(f *testing.F) {
 }
 
 // FuzzTypes_core is [FuzzTypes] on the storage core, with a store in memory and the length limit
-// that its input chooses, from 301 to 555 bytes or SQLite's default, in the cache and in SQLite.
-// A cache cannot be made with a limit much below 300 bytes, which its own schema needs.
+// that its input chooses, from 1001 to 1255 bytes or SQLite's default, in the cache and in SQLite.
 // After the inserts, it replays the log into an empty cache and compares the tables again.
 func FuzzTypes_core(f *testing.F) {
 	fuzzTypes(f, func(t testing.TB, limit int) *instance { return newInstanceLimited(t, engine.Options{}, nil, limit) })
@@ -1433,8 +1432,8 @@ func fuzzTypes(f *testing.F, newInstance func(t testing.TB, limit int) *instance
 			f.Add(data, form, uint8(0))
 		}
 	}
-	// Values about the length limit of 301 bytes, where a value or its record is too long.
-	for n := 295; n <= 302; n++ {
+	// Values about the length limit of 1001 bytes, where a value or its record is too long.
+	for n := 995; n <= 1002; n++ {
 		for _, form := range []uint8{formTextArgument, formBlobArgument, formStringLiteral, formBlobLiteral | 8} {
 			f.Add([]byte(strings.Repeat("x", n)), form, uint8(1))
 		}
@@ -1442,7 +1441,7 @@ func fuzzTypes(f *testing.F, newInstance func(t testing.TB, limit int) *instance
 	f.Fuzz(func(t *testing.T, data []byte, form, limit uint8) {
 		n := 0
 		if limit > 0 {
-			n = 300 + int(limit)
+			n = 1000 + int(limit)
 		}
 		i := newInstance(t, n)
 		p := newPair(t, i, nil)

@@ -1241,12 +1241,14 @@ func TestOpen_cache(t *testing.T) {
 			"a busy timeout below zero":         {BusyTimeout: -time.Second},
 			"an object timeout below zero":      {ObjectTimeout: -time.Second},
 			"a watch interval below zero":       {Watch: -time.Second},
-			"a length limit below SQLite's":     {LengthLimit: 29},
+			"a length limit below 1000":         {LengthLimit: 999},
 			"a length limit above SQLite's":     {LengthLimit: 1_000_000_001},
 		} {
 			_, err := core.Open(t.Context(), w.host, w.client(), path, "db", options)
 			is.True(t, err != nil, name)
 		}
+		_, err := core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{LengthLimit: 999})
+		is.True(t, strings.Contains(fmt.Sprint(err), "the length limit 999 is not from 1000 to 1000000000"), fmt.Sprint(err))
 		for _, prefix := range []string{"/db", "db/", "a//b", ".", "a/../b", "a/./b", "\xff", strings.Repeat("x", 901)} {
 			_, err := core.Open(t.Context(), w.host, w.client(), path, prefix, core.Options{})
 			is.True(t, err != nil, prefix)
@@ -1255,7 +1257,7 @@ func TestOpen_cache(t *testing.T) {
 			_, err := core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{})
 			is.True(t, err != nil, path)
 		}
-		_, err := os.Stat(path)
+		_, err = os.Stat(path)
 		is.True(t, os.IsNotExist(err), "a cache was made")
 	})
 
