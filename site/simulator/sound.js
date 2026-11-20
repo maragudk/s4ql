@@ -17,11 +17,11 @@
 //	alarm      the checker finds a violation that the design does not excuse
 //
 // Every figure goes through one master gain. One figure is one voice, and at most VOICES sound at
-// once, so the peak of the mix stays below VOICES × MASTER × the overshoot of the band-limited square
-// wave, about 0.06, or −24 dBFS, and with the alarm, which is louder, about 0.1, or −20 dBFS. A
-// figure of a kind is dropped within SPACING of the one before it, and every figure but the alarm
-// beyond PER_SECOND a second, so that turbo and a burst of events do not become a buzz. Figures that
-// fall together start STAGGER apart instead of as a chord.
+// once, so the peak of the mix stays below VOICES × MASTER, about 0.054, or −25 dBFS, and with the
+// alarm, which is louder, about 0.086, or −21 dBFS. A figure of a kind is dropped within SPACING of
+// the start of the one before it, or while that one still sounds, so that a kind never sounds over
+// itself, and every figure but the alarm beyond PER_SECOND a second, so that turbo and a burst of
+// events do not become a buzz. Figures that fall together start STAGGER apart instead of as a chord.
 //
 // The page calls hear with each event of the engine, and whether the event is live: while playback
 // plays, or in the answer to the visitor's own action. A paused page sounds only what the visitor
@@ -82,6 +82,9 @@ function figure(ctx, dest, kind, at) {
   return { kind, osc, gain, start: at, end: t };
 }
 
+// length of the figure of the kind, in s.
+const length = (kind) => FIGURES[kind].notes.reduce((s, [, ms]) => s + ms / 1000 + GAP, 0);
+
 // fade a voice out from the time at, in RELEASE, and stop it.
 function fade(v, at) {
   if (v.end <= at) return;
@@ -113,7 +116,7 @@ export function player(ctx, dest) {
       at = Math.max(at, latest + STAGGER);
       for (let i = voices.length - 1; i >= 0; i--) if (voices[i].end <= at) voices.splice(i, 1);
       while (starts.length && starts[0] <= at - 1) starts.shift();
-      if (at - (last.has(kind) ? last.get(kind) : -Infinity) < SPACING) return false;
+      if (at - (last.has(kind) ? last.get(kind) : -Infinity) < Math.max(SPACING, length(kind))) return false;
       const alarm = kind === "alarm";
       if (!alarm && (voices.length >= VOICES || starts.length >= PER_SECOND)) return false;
       // The alarm takes the place of the oldest voice.

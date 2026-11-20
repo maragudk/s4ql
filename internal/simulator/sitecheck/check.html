@@ -273,6 +273,26 @@ async function unit() {
   expect(JSON.stringify(sounds) === JSON.stringify(wantSounds), `the important events have their sounds, each once (${sounds.join(", ")})`);
   const notes = Object.values(S.FIGURES).flatMap((f) => f.notes);
   expect(Object.keys(S.FIGURES).every((k) => wantSounds.includes(k)) && notes.every(([hz, ms]) => hz > 0 && ms >= 25 && ms <= 90), `every figure is heard, and its notes are 25 to 90 ms (${notes.length} notes)`);
+
+  // The volume of a burst, as turbo gives, rendered offline through the page's player: every kind
+  // every 10 ms for 3 s. Its peak stays at most 0.06 (−24 dBFS) without the alarm, and 0.1 with it.
+  const burst = async (kinds) => {
+    const ctx = new OfflineAudioContext(1, 48000 * 3.5, 48000);
+    const master = ctx.createGain();
+    master.gain.value = S.MASTER;
+    master.connect(ctx.destination);
+    const player = S.player(ctx, master);
+    let played = 0;
+    for (let i = 0; i < 300; i++) for (const k of kinds) if (player.play(k, i / 100)) played++;
+    let peak = 0;
+    for (const v of (await ctx.startRendering()).getChannelData(0)) peak = Math.max(peak, Math.abs(v));
+    return { played, peak };
+  };
+  const kinds = Object.keys(S.FIGURES);
+  const [calm, alarmed] = [await burst(kinds.filter((k) => k !== "alarm")), await burst(kinds)];
+  const dB = (x) => (20 * Math.log10(x)).toFixed(1) + " dBFS";
+  expect(calm.peak > 0 && calm.peak <= 0.06 && calm.played <= 4 * 3, `a burst of sounds peaks at ${dB(calm.peak)}, and plays ${calm.played} sounds in 3 s`);
+  expect(alarmed.peak > 0 && alarmed.peak <= 0.1, `a burst of sounds with the alarm peaks at ${dB(alarmed.peak)}`);
 }
 
 async function check() {
