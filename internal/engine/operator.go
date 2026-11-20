@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"iter"
 	"math"
-	"slices"
 
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/stmt"
@@ -19,9 +18,9 @@ import (
 // Operators are built from a plan by [buildQuery] and [buildSink], in the transaction that runs them,
 // and read and change the database only through the transaction's [reader] or [writer].
 //
-// They build only the plans that a statement of slice 1 gives. A plan of another shape, such as an
-// insert of several values or a projection without `*`, fails with an internal error, because what
-// SQLite gives for it has not been compared with SQLite.
+// They build only the plans that a statement of [stmt.Check] gives. A plan of another shape, such as
+// an insert of several rows or into a table whose key is several columns, fails with an internal
+// error, because what SQLite gives for it has not been compared with SQLite.
 
 // Column of the rows that an operator gives: its name, and its declared type, which is empty for a
 // column that is not a column of a table.
@@ -141,16 +140,21 @@ func (p *project) rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
 	}
 }
 
-// insert writes each row of its source into a table of one column, which is its primary key, as a
-// new row, and fails with SQLite's error for a row whose key the table has, also one that an earlier
-// row of the source wrote. Its check fails with "not supported" for a value of another type than its
-// column.
+// insert writes each row of its source into a table whose primary key is one column, as a new row,
+// and fails with SQLite's error for a row whose key the table has, also one that an earlier row of
+// the source wrote. Each row of the source has a value for each column of the table, in the order
+// of the table, and nil for a column that the statement leaves out.
+//
+// Its check fails, in SQLite's order, with SQLite's error for a column without a value, every column
+// being NOT NULL, and then with "not supported" for a value of another type than its column.
 type insert struct {
 	w     writer
 	table *s4qlpb.CreateTable
-	src   *values
-	// exprs are the expressions that the values of each row of the source come from, for the
-	// messages of the errors of the check.
+	// key is the position of the column of the primary key of the table.
+	key int
+	src *values
+	// exprs are the expressions that the values of each row of the source come from, in the order of
+	// the table, with nil for a column without a value, for the messages of the errors of the check.
 	exprs [][]Expr
 	// skipUnique is the planted bug that writes a row without the check of its key.
 	skipUnique bool
@@ -159,16 +163,25 @@ type insert struct {
 	convertReal bool
 }
 
+// check each row as SQLite's constraint checks do: first the NOT NULL of each column, in the order
+// of the table, and then the type of each column, in the order of the table, where SQLite has its
+// OP_TypeCheck, which comes before the check of the key.
 func (i *insert) check() error {
 	if len(i.src.data) != len(i.exprs) {
 		return internalError("an insert of %v rows from %v rows of expressions", len(i.src.data), len(i.exprs))
 	}
+	columns := i.table.GetColumns()
 	for n, row := range i.src.data {
-		if len(row) != len(i.exprs[n]) {
-			return internalError("an insert of %v values from %v expressions", len(row), len(i.exprs[n]))
+		if len(row) != len(columns) || len(i.exprs[n]) != len(columns) {
+			return internalError("an insert of %v values from %v expressions into %v columns", len(row), len(i.exprs[n]), len(columns))
 		}
 		for position, v := range row {
-			typ := i.table.GetColumns()[position].GetType()
+			if v == nil {
+				return notNullFailed(i.table.GetTable(), columns[position].GetName())
+			}
+		}
+		for position, v := range row {
+			typ := columns[position].GetType()
 			if f := v.GetReal(); i.convertReal && v.HasReal() && (typ == s4qlpb.Type_TYPE_INT || typ == s4qlpb.Type_TYPE_INTEGER) &&
 				f == math.Trunc(f) && math.Abs(f) < 1<<63 {
 				// The planted bug: the real becomes the integer, as SQLite converts it.
@@ -184,19 +197,29 @@ func (i *insert) check() error {
 }
 
 func (i *insert) run(ctx context.Context) (int64, error) {
-	name := i.table.GetTable()
+	name, key := i.table.GetTable(), i.key
 	var n int64
 	for row, err := range i.src.rows(ctx) {
 		if err != nil {
 			return n, err
 		}
 		if !i.skipUnique {
-			existing, err := i.w.get(ctx, name, row)
+			existing, err := i.w.get(ctx, name, []*s4qlpb.Value{row[key]})
 			if err != nil {
 				return n, err
 			}
 			if existing != nil {
-				return n, uniqueFailed(name, i.table.GetColumns()[0].GetName())
+				// SQLite builds the record of the row before it looks for its key, so a row whose
+				// record is too long gets `string or blob too big` before `UNIQUE constraint failed`.
+				// The core measures the row as SQLite does, and inserts nothing for a key that exists.
+				inserted, err := i.w.insertNew(ctx, name, row)
+				if err != nil {
+					return n, err
+				}
+				if inserted {
+					return n, internalError("a row of a key that the table has was inserted into %v", name)
+				}
+				return n, uniqueFailed(name, i.table.GetColumns()[key].GetName())
 			}
 		}
 		if err := i.w.upsert(ctx, name, row); err != nil {
@@ -250,40 +273,61 @@ func buildNode(ctx context.Context, r reader, n Node) (source, error) {
 		}
 		return &scan{r: r, table: t}, nil
 	case *Project:
-		if !n.Star {
-			return nil, internalError("a projection without *")
-		}
 		src, err := buildNode(ctx, r, n.Source)
 		if err != nil {
 			return nil, err
 		}
 		p := &project{src: src}
-		for i := range src.columns() {
-			p.positions = append(p.positions, i)
+		columns := src.columns()
+		if n.Star {
+			for i := range columns {
+				p.positions = append(p.positions, i)
+			}
+			return p, nil
+		}
+		if len(n.Columns) == 0 {
+			return nil, internalError("a projection of no columns")
+		}
+		// SQLite resolves the names of the select list in their order, once it has found the table.
+		var names []string
+		for _, c := range columns {
+			names = append(names, c.Name)
+		}
+		of := positionsOf(names)
+		for _, name := range n.Columns {
+			position, ok := of[name.Fold()]
+			if !ok {
+				return nil, noSuchResultColumn(name)
+			}
+			p.positions = append(p.positions, position)
 		}
 		return p, nil
 	}
 	return nil, internalError("a query of a node of type %T", n)
 }
 
-// buildValues: the source of the rows of the node n of an insert, which is one row of one value, with
-// args for its parameters.
-func buildValues(n Node, args []*s4qlpb.Value) (*values, error) {
-	v, ok := n.(*Values)
-	if !ok {
-		return nil, internalError("an insert from a node of type %T", n)
+// buildValues: the source of the rows of v, with args for their parameters, and the expressions of
+// each row. The value at the index i of a row of v is for the column at positions[i] of a table of
+// width columns, and each row that it gives has a value for each column of the table, in the order
+// of the table, with nil for a column that positions do not name, as do the expressions.
+func buildValues(v *Values, args []*s4qlpb.Value, positions []int, width int) (*values, [][]Expr, error) {
+	src := &values{}
+	var exprs [][]Expr
+	for _, row := range v.Rows {
+		if len(row) != len(positions) {
+			return nil, nil, internalError("a row of %v values for %v columns", len(row), len(positions))
+		}
+		data, es := make([]*s4qlpb.Value, width), make([]Expr, width)
+		for i, e := range row {
+			value, err := eval(e, args)
+			if err != nil {
+				return nil, nil, err
+			}
+			data[positions[i]], es[positions[i]] = value, e
+		}
+		src.data, exprs = append(src.data, data), append(exprs, es)
 	}
-	if len(v.Rows) != 1 {
-		return nil, internalError("an insert of %v rows", len(v.Rows))
-	}
-	if len(v.Rows[0]) != 1 {
-		return nil, internalError("an insert of %v values", len(v.Rows[0]))
-	}
-	value, err := eval(v.Rows[0][0], args)
-	if err != nil {
-		return nil, err
-	}
-	return &values{data: [][]*s4qlpb.Value{{value}}}, nil
+	return src, exprs, nil
 }
 
 // eval the constant expression e, with args for its parameters, which the engine has counted.
@@ -311,12 +355,14 @@ func eval(e Expr, args []*s4qlpb.Value) (*s4qlpb.Value, error) {
 
 // buildSink: the sink of the plan p, in the transaction of w, with args for the parameters of p, and
 // with the planted bugs of b. It makes the checks that SQLite makes when it prepares the statement,
-// in SQLite's order, and fails with SQLite's error: for CREATE TABLE, a table of the name; for DROP
-// TABLE, no table of the name; for INSERT, no table of the name, and then a column that the table
-// does not have. For INSERT it then makes the check that SQLite makes when it binds the arguments: a
-// text or a blob that is longer than limit bytes gets SQLite's `string or blob too big`. It checks
-// a literal so too, which SQLite meets in its text only with a limit below the length of the text:
-// see the README.
+// in SQLite's order, and fails with SQLite's error: for CREATE TABLE, a table of the name, and then
+// a column named twice or more columns than SQLite allows, as [stmt.CreateTable.ColumnsError] says;
+// for DROP TABLE, no table of the name; for INSERT, no table of the name, then a column of its list
+// that the table does not have, in the order of the list, and then another number of values than
+// the columns of its list, or than the columns of the table if it has no list. For INSERT it then
+// makes the check that SQLite makes when it binds the arguments: a text or a blob that is longer
+// than limit bytes gets SQLite's `string or blob too big`. It checks a literal so too, which SQLite
+// meets in its text only with a limit below the length of the text: see the README.
 func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bugs, limit int) (sink, error) {
 	switch p := p.(type) {
 	case *CreateTable:
@@ -327,14 +373,15 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 		if existing != nil {
 			return nil, tableExists(p.Table.Raw, p.Table.Offset)
 		}
-		if len(p.Columns) != 1 || !slices.Equal(p.PrimaryKey, []int{0}) {
+		if err := columnsError(p); err != nil {
+			return nil, err
+		}
+		if len(p.PrimaryKey) != 1 || p.PrimaryKey[0] < 0 || p.PrimaryKey[0] >= len(p.Columns) {
 			return nil, internalError("a table of %v columns with the key %v", len(p.Columns), p.PrimaryKey)
 		}
-		c := p.Columns[0]
-		ct := s4qlpb.CreateTable_builder{
-			Table:      new(p.Table.Value),
-			Columns:    []*s4qlpb.Column{s4qlpb.Column_builder{Name: new(c.Name.Value), Type: new(c.Type)}.Build()},
-			PrimaryKey: []uint32{0},
+		ct := s4qlpb.CreateTable_builder{Table: new(p.Table.Value), PrimaryKey: []uint32{uint32(p.PrimaryKey[0])}}
+		for _, c := range p.Columns {
+			ct.Columns = append(ct.Columns, s4qlpb.Column_builder{Name: new(c.Name.Value), Type: new(c.Type)}.Build())
 		}
 		return &createTable{w: w, ct: ct.Build()}, nil
 	case *DropTable:
@@ -354,15 +401,58 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 		if t == nil {
 			return nil, noSuchTable(p.Table.Value)
 		}
-		for _, c := range p.Columns {
-			if columnPosition(t, c) < 0 {
-				return nil, noSuchColumn(p.Table.Value, c.Value)
+		var positions []int
+		if p.Columns != nil {
+			var names []string
+			for _, c := range t.GetColumns() {
+				names = append(names, c.GetName())
+			}
+			of := positionsOf(names)
+			for _, c := range p.Columns {
+				position, ok := of[c.Fold()]
+				if !ok {
+					return nil, noSuchColumn(p.Table.Value, c.Value)
+				}
+				positions = append(positions, position)
 			}
 		}
-		if len(p.Columns) != 1 || len(t.GetColumns()) != 1 || !slices.Equal(t.GetPrimaryKey(), []uint32{0}) {
-			return nil, internalError("an insert of %v columns into a table of %v columns with the key %v", len(p.Columns), len(t.GetColumns()), t.GetPrimaryKey())
+		width := len(t.GetColumns())
+		if key := t.GetPrimaryKey(); len(key) != 1 || int(key[0]) >= width {
+			return nil, internalError("an insert into a table of %v columns with the key %v", width, key)
 		}
-		src, err := buildValues(p.Source, args)
+		named := make([]bool, width)
+		for _, position := range positions {
+			if named[position] {
+				return nil, internalError("an insert that names the column %v twice", t.GetColumns()[position].GetName())
+			}
+			named[position] = true
+		}
+		if b.listOrder {
+			// The planted bug: the values go to the columns in the order of the list.
+			for i := range positions {
+				positions[i] = i
+			}
+		}
+		v, ok := p.Source.(*Values)
+		if !ok {
+			return nil, internalError("an insert from a node of type %T", p.Source)
+		}
+		if len(v.Rows) != 1 {
+			return nil, internalError("an insert of %v rows", len(v.Rows))
+		}
+		n := len(v.Rows[0])
+		switch {
+		case p.Columns == nil && n != width:
+			return nil, valuesSupplied(p.Table.Value, width, n)
+		case p.Columns == nil:
+			positions = make([]int, width)
+			for i := range positions {
+				positions[i] = i
+			}
+		case n != len(p.Columns):
+			return nil, valuesForColumns(n, len(p.Columns))
+		}
+		src, exprs, err := buildValues(v, args, positions, width)
 		if err != nil {
 			return nil, err
 		}
@@ -373,20 +463,34 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 				}
 			}
 		}
-		return &insert{w: w, table: t, src: src, exprs: p.Source.(*Values).Rows, skipUnique: b.skipUnique, convertReal: b.convertReal}, nil
+		return &insert{w: w, table: t, key: int(t.GetPrimaryKey()[0]), src: src, exprs: exprs, skipUnique: b.skipUnique, convertReal: b.convertReal}, nil
 	}
 	return nil, internalError("a plan of type %T", p)
 }
 
-// columnPosition of the column with the name in the table, compared as SQLite compares names, or -1
-// if the table has none.
-func columnPosition(t *s4qlpb.CreateTable, name stmt.Name) int {
-	for i, c := range t.GetColumns() {
-		if fold(c.GetName()) == name.Fold() {
-			return i
+// columnsError of the plan p of a table that does not exist: SQLite's error for a column named twice
+// or for more columns than SQLite allows, as [stmt.CreateTable.ColumnsError] gives it, or nil.
+func columnsError(p *CreateTable) error {
+	s := &stmt.CreateTable{Table: p.Table}
+	for _, c := range p.Columns {
+		s.Columns = append(s.Columns, stmt.Column{Name: c.Name})
+	}
+	if err := s.ColumnsError(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// positionsOf the columns of the names, by the fold of each name, as SQLite compares names: the
+// position of the first column of each fold.
+func positionsOf(names []string) map[string]int {
+	positions := make(map[string]int, len(names))
+	for i, name := range names {
+		if _, ok := positions[fold(name)]; !ok {
+			positions[fold(name)] = i
 		}
 	}
-	return -1
+	return positions
 }
 
 // fold the ASCII letters of a name to lower case, as [stmt.Name.Fold] does.

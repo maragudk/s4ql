@@ -404,22 +404,10 @@ internal/engine/engine.go Rows.read remove statement: r.report.e.host.Yield(r.ct
 	A yield only lets other tasks of the simulation run between two rows; the answers of the engine do not depend on it.
 
 # Bounds that mean "none".
-internal/engine/operator.go columnPosition constant: -1 => -2
-	The caller tests for a negative position.
 internal/engine/plan.go formatExpr constant: -1 => -2
 	strconv.FormatFloat gives the shortest digits for every negative precision.
 
-# Checks that the types of the pass leave nothing to.
-internal/engine/errors.go checkArguments condition: err != nil => true #2
-	Every statement of slices 1 to 4 has at most one parameter, and countArguments has checked that there is one argument for each, so the loop has at most one argument.
-internal/engine/plan.go NewPlan remove statement: panic(fmt.Sprintf("engine: a value of type %T", v)) =>
-	stmt.Value has an unexported method, so the four types of stmt are its only values, and each has a case.
-
 # Arguments of a comparison that is symmetric.
-internal/engine/operator.go buildSink swap arguments: slices.Equal(p.PrimaryKey, []int{0}) => slices.Equal([]int{0}, p.PrimaryKey)
-	slices.Equal is symmetric.
-internal/engine/operator.go buildSink swap arguments: slices.Equal(t.GetPrimaryKey(), []uint32{0}) => slices.Equal([]uint32{0}, t.GetPrimaryKey())
-	slices.Equal is symmetric.
 internal/engine/plan.go formatExpr swap arguments: strings.ContainsAny(text, ".e") => strings.ContainsAny(".e", text)
 	strings.ContainsAny reports whether the two strings share a character, which is symmetric.
 

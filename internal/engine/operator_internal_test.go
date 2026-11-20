@@ -38,6 +38,8 @@ type fake struct {
 	tablePanics bool
 	tableFails  error
 	endFails    error
+	// insertNewFails is the error of an insert of a row whose key the table has.
+	insertNewFails error
 	// scans counts the scans that have started and not ended, and open the transactions.
 	scans, open int
 	// readers counts the readers that are open, and opened those that were ever opened. readerFails
@@ -160,8 +162,10 @@ func (x fakeTx) get(_ context.Context, name string, key []*s4qlpb.Value) ([]*s4q
 	if x.f.getFails != nil {
 		return nil, x.f.getFails
 	}
-	for _, row := range x.f.tables[fold(name)].rows {
-		if row[0].GetInteger() == key[0].GetInteger() {
+	t := x.f.tables[fold(name)]
+	k := t.ct.GetPrimaryKey()[0]
+	for _, row := range t.rows {
+		if row[k].GetInteger() == key[0].GetInteger() {
 			return row, nil
 		}
 	}
@@ -197,9 +201,24 @@ func (x fakeTx) upsert(_ context.Context, name string, row []*s4qlpb.Value) erro
 		return x.f.upsertFails
 	}
 	t := x.f.tables[fold(name)]
-	t.rows = slices.DeleteFunc(t.rows, func(r []*s4qlpb.Value) bool { return r[0].GetInteger() == row[0].GetInteger() })
+	k := t.ct.GetPrimaryKey()[0]
+	t.rows = slices.DeleteFunc(t.rows, func(r []*s4qlpb.Value) bool { return r[k].GetInteger() == row[k].GetInteger() })
 	t.rows = append(t.rows, row)
 	return nil
+}
+
+// insertNew inserts the row if the table has no row with its key, and does not measure the row.
+func (x fakeTx) insertNew(ctx context.Context, name string, row []*s4qlpb.Value) (bool, error) {
+	t := x.f.tables[fold(name)]
+	k := t.ct.GetPrimaryKey()[0]
+	x.f.calls = append(x.f.calls, fmt.Sprint("insert new ", name, " ", row[k].GetInteger()))
+	if x.f.insertNewFails != nil {
+		return false, x.f.insertNewFails
+	}
+	if slices.ContainsFunc(t.rows, func(r []*s4qlpb.Value) bool { return r[k].GetInteger() == row[k].GetInteger() }) {
+		return false, nil
+	}
+	return true, x.upsert(ctx, name, row)
 }
 
 func (x fakeTx) position() format.Name {
@@ -431,13 +450,24 @@ func TestInsert(t *testing.T) {
 		}{
 			{i: &insert{table: ct, src: ints(1, 2), exprs: [][]Expr{one}}, want: "an insert of 2 rows from 1 rows of expressions"},
 			{i: &insert{table: ct, src: ints(1), exprs: [][]Expr{one, one}}, want: "an insert of 1 rows from 2 rows of expressions"},
-			{i: &insert{table: ct, src: ints(1), exprs: [][]Expr{{}}}, want: "an insert of 1 values from 0 expressions"},
-			{i: &insert{table: ct, src: ints(1), exprs: [][]Expr{{one[0], one[0]}}}, want: "an insert of 1 values from 2 expressions"},
+			{i: &insert{table: ct, src: ints(1), exprs: [][]Expr{{}}}, want: "an insert of 1 values from 0 expressions into 1 columns"},
+			{i: &insert{table: ct, src: ints(1), exprs: [][]Expr{{one[0], one[0]}}}, want: "an insert of 1 values from 2 expressions into 1 columns"},
+			{i: &insert{table: ct, src: &values{data: [][]*s4qlpb.Value{{integer(1), integer(1)}}}, exprs: [][]Expr{{one[0], one[0]}}}, want: "an insert of 2 values from 2 expressions into 1 columns"},
 		} {
 			err := c.i.check()
 			is.True(t, errors.Is(err, ErrInternal), c.want)
 			is.Equal(t, "s4ql: internal error: "+c.want, err.Error())
 		}
+	})
+
+	t.Run("should ask the storage to measure a row whose key the table has before it fails, and pass on its error", func(t *testing.T) {
+		f := newFake().with("t", []string{"v"}, []int64{1})
+		_, err := (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1)}).run(t.Context())
+		is.Equal(t, "UNIQUE constraint failed: t.v", err.Error())
+		is.Equal(t, "[get t 1 insert new t 1]", fmt.Sprint(f.calls))
+		f.insertNewFails = errors.New("string or blob too big")
+		_, err = (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1)}).run(t.Context())
+		is.Equal(t, "string or blob too big", err.Error())
 	})
 
 	t.Run("should write without the check with the planted bug", func(t *testing.T) {
@@ -519,6 +549,48 @@ func TestBuild(t *testing.T) {
 		})
 	}
 
+	t.Run("should place each value of an insert at the position of its column, and look the key up at its position", func(t *testing.T) {
+		for _, src := range []string{"insert into t (c, k, a) values (3, ?, 1)", "insert into t values (1, ?, 3)"} {
+			f := newFake().with("t", []string{"a", "k", "c"})
+			f.tables["t"].ct.SetPrimaryKey([]uint32{1})
+			s, err := buildSink(t.Context(), fakeTx{f}, plan(src), []*s4qlpb.Value{integer(2)}, bugs{}, 1_000_000_000)
+			is.NotError(t, err, src)
+			is.NotError(t, s.check(), src)
+			_, err = s.run(t.Context())
+			is.NotError(t, err, src)
+			is.Equal(t, "[table t get t 2 upsert t 1,2,3]", fmt.Sprint(f.calls), src)
+			_, err = s.run(t.Context())
+			is.Equal(t, "UNIQUE constraint failed: t.k", err.Error(), src)
+		}
+	})
+
+	t.Run("should place the values of a list in the order of the list with the planted bug listOrder", func(t *testing.T) {
+		f := newFake().with("t", []string{"a", "k", "c"})
+		f.tables["t"].ct.SetPrimaryKey([]uint32{1})
+		s, err := buildSink(t.Context(), fakeTx{f}, plan("insert into t (c, k, a) values (3, ?, 1)"), []*s4qlpb.Value{integer(2)}, bugs{listOrder: true}, 1_000_000_000)
+		is.NotError(t, err)
+		is.NotError(t, s.check())
+		_, err = s.run(t.Context())
+		is.NotError(t, err)
+		is.Equal(t, "[table t get t 2 upsert t 3,2,1]", fmt.Sprint(f.calls))
+	})
+
+	t.Run("should check that each column has a value before the type of each value, in the order of the table", func(t *testing.T) {
+		f := newFake().with("t", []string{"a", "k", "c"})
+		f.tables["t"].ct.SetPrimaryKey([]uint32{1})
+		for src, want := range map[string]string{
+			"insert into t (c, a) values ('x', 'y')":       "NOT NULL constraint failed: t.k",
+			"insert into t (k, a) values ('x', 1)":         "NOT NULL constraint failed: t.c",
+			"insert into t (c, a, k) values (1, 'y', 'x')": "s4ql: not supported: a string literal for the column t.a of type INT",
+		} {
+			f.calls = nil
+			s, err := buildSink(t.Context(), fakeTx{f}, plan(src), nil, bugs{}, 1_000_000_000)
+			is.NotError(t, err, src)
+			is.Equal(t, want, s.check().Error(), src)
+			is.Equal(t, "[table t]", fmt.Sprint(f.calls), src)
+		}
+	})
+
 	t.Run("should build a query of a table that exists, and give SQLite's error for one that does not", func(t *testing.T) {
 		f := newFake().with("t", []string{"v"}, []int64{2}, []int64{1})
 		src, err := buildQuery(t.Context(), fakeTx{f}, plan("select * from T").(*Query))
@@ -530,26 +602,29 @@ func TestBuild(t *testing.T) {
 		is.Equal(t, "no such table: u", err.Error())
 	})
 
-	t.Run("should fail with an internal error for plans that no statement of slice 1 gives", func(t *testing.T) {
+	t.Run("should fail with an internal error for plans that no supported statement gives", func(t *testing.T) {
 		one := [][]Expr{{&Integer{Value: 1}}}
 		v := []stmt.Name{{Value: "v"}}
+		ab := []ColumnDef{{Name: stmt.Name{Value: "a"}}, {Name: stmt.Name{Value: "b"}}}
 		cases := []struct {
 			name string
 			plan Plan
 			err  string
 		}{
 			{name: "a query of VALUES", plan: &Query{Root: &Values{Rows: one}}, err: "a query of a node of type *engine.Values"},
-			{name: "a projection without *", plan: &Query{Root: &Project{Source: &Scan{Table: stmt.Name{Value: "t"}}}}, err: "a projection without *"},
+			{name: "a projection of no columns", plan: &Query{Root: &Project{Source: &Scan{Table: stmt.Name{Value: "t"}}}}, err: "a projection of no columns"},
 			{name: "a projection of VALUES", plan: &Query{Root: &Project{Source: &Values{Rows: one}, Star: true}}, err: "a query of a node of type *engine.Values"},
 			{name: "an insert from a table", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Scan{Table: stmt.Name{Value: "u"}}}, err: "an insert from a node of type *engine.Scan"},
 			{name: "an insert of two rows", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Integer{Value: 1}}, {&Integer{Value: 2}}}}}, err: "an insert of 2 rows"},
 			{name: "an insert of no rows", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{}}, err: "an insert of 0 rows"},
-			{name: "an insert of two values", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Integer{Value: 1}, &Integer{Value: 2}}}}}, err: "an insert of 2 values"},
-			{name: "an insert into a table of two columns", plan: &Insert{Table: stmt.Name{Value: "ab"}, Columns: []stmt.Name{{Value: "a"}}, Source: &Values{Rows: one}}, err: "an insert of 1 columns into a table of 2 columns with the key [0]"},
-			{name: "an insert into a table without a key", plan: &Insert{Table: stmt.Name{Value: "nokey"}, Columns: v, Source: &Values{Rows: one}}, err: "an insert of 1 columns into a table of 1 columns with the key []"},
-			{name: "an insert into two columns", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: []stmt.Name{{Value: "v"}, {Value: "V"}}, Source: &Values{Rows: one}}, err: "an insert of 2 columns into a table of 1 columns with the key [0]"},
+			{name: "an insert into a table without a key", plan: &Insert{Table: stmt.Name{Value: "nokey"}, Columns: v, Source: &Values{Rows: one}}, err: "an insert into a table of 1 columns with the key []"},
+			{name: "an insert into a table with a key of two columns", plan: &Insert{Table: stmt.Name{Value: "ab"}, Columns: []stmt.Name{{Value: "a"}}, Source: &Values{Rows: one}}, err: "an insert into a table of 2 columns with the key [0 1]"},
+			{name: "an insert into a table with a key outside its columns", plan: &Insert{Table: stmt.Name{Value: "far"}, Columns: v, Source: &Values{Rows: one}}, err: "an insert into a table of 1 columns with the key [1]"},
+			{name: "an insert into one column twice", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: []stmt.Name{{Value: "v"}, {Value: "V"}}, Source: &Values{Rows: [][]Expr{{&Integer{Value: 1}, &Integer{Value: 2}}}}}, err: "an insert that names the column v twice"},
 			{name: "a plan of a type that the engine does not know", plan: unknownPlan{}, err: "a plan of type engine.unknownPlan"},
-			{name: "a table of two columns", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}, {Name: stmt.Name{Value: "b"}}}, PrimaryKey: []int{0}}, err: "a table of 2 columns with the key [0]"},
+			{name: "a table with a key of two columns", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: ab, PrimaryKey: []int{0, 1}}, err: "a table of 2 columns with the key [0 1]"},
+			{name: "a table with a key outside its columns", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: ab, PrimaryKey: []int{2}}, err: "a table of 2 columns with the key [2]"},
+			{name: "a table with a negative key", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: ab, PrimaryKey: []int{-1}}, err: "a table of 2 columns with the key [-1]"},
 			{name: "an insert of a parameter without its argument", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Parameter{Number: 1}}}}}, err: "the parameter 1 of a statement with 0 arguments"},
 			{name: "an insert of the parameter 0", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Parameter{Number: 0}}}}}, err: "the parameter 0 of a statement with 0 arguments"},
 			{name: "a table without a key", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}}}, err: "a table of 1 columns with the key []"},
@@ -557,8 +632,10 @@ func TestBuild(t *testing.T) {
 		}
 		for _, c := range cases {
 			t.Run(c.name, func(t *testing.T) {
-				f := newFake().with("t", []string{"v"}, []int64{1}).with("ab", []string{"a", "b"}).with("nokey", []string{"v"})
+				f := newFake().with("t", []string{"v"}, []int64{1}).with("ab", []string{"a", "b"}).with("nokey", []string{"v"}).with("far", []string{"v"})
 				f.tables["nokey"].ct.SetPrimaryKey(nil)
+				f.tables["ab"].ct.SetPrimaryKey([]uint32{0, 1})
+				f.tables["far"].ct.SetPrimaryKey([]uint32{1})
 				var err error
 				if q, ok := c.plan.(*Query); ok {
 					_, err = buildQuery(t.Context(), fakeTx{f}, q)

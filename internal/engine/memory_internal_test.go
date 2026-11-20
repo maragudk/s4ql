@@ -158,6 +158,15 @@ func (x *memTx) upsert(_ context.Context, name string, row []*s4qlpb.Value) erro
 	return nil
 }
 
+// insertNew does not measure the record of the row, as a memory holds rows of any length.
+func (x *memTx) insertNew(ctx context.Context, name string, row []*s4qlpb.Value) (bool, error) {
+	t := x.tables[fold(name)]
+	if _, ok := t.rows[memKey(row[t.ct.GetPrimaryKey()[0]])]; ok {
+		return false, nil
+	}
+	return true, x.upsert(ctx, name, row)
+}
+
 func (x *memTx) position() format.Name                                   { return format.EmptyLog }
 func (x *memTx) annotate(context.Context, string, []*s4qlpb.Value) error { return nil }
 func (x *memTx) rollback(context.Context) error                          { return nil }

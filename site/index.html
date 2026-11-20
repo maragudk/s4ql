@@ -839,7 +839,7 @@ footer ul {
   <div class="wrap">
     <div class="block-head">
       <h2 id="status-h">Status</h2>
-      <p>As of 19 November 2026. s4ql is an experiment. It is not ready for use, and anything in it may change.</p>
+      <p>As of 20 November 2026. s4ql is an experiment. It is not ready for use, and anything in it may change.</p>
     </div>
     <table class="status-table">
       <tbody>
@@ -856,16 +856,18 @@ footer ul {
               <li>The <code>database/sql</code> driver, in the package <code>maragu.dev/s4ql</code>. With it, an application can run the statements of slice 1 on a bucket. It is checked against SQLite through <code>database/sql</code>, in 200 generated sequences of 40 statements and by fuzzing. A cache belongs to one database, and another database refuses it.</li>
               <li>Slice 2, parameters: an <code>insert</code> takes an integer argument for a plain <code>?</code> through <code>database/sql</code>, directly and through a prepared statement. It is checked against SQLite by generated tests in the engine and through <code>database/sql</code> (the engine's compares 12,000 statements), in a simulation, and by mutation testing.</li>
               <li>Slice 3, transactions: <code>db.BeginTx</code> gives a transaction that is the single writer from its beginning until it commits or rolls back. <code>sql.TxOptions{ReadOnly: true}</code> gives a read-only transaction on one state that holds no one up. It is checked against SQLite by generated tests in the engine and through <code>database/sql</code> (499 generated transactions), in a simulation with faults, and by mutation testing (628 mutants of the engine).</li>
+              <li>Slice 4, the other types: a table has a column of type <code>int</code>, <code>integer</code>, <code>real</code>, <code>text</code>, or <code>blob</code>, with literals and arguments of Go types for each. A value must have the exact type of its column. It is checked against SQLite by generated tests in the engine and through <code>database/sql</code>, and in a simulation. Real literals are read as SQLite reads them, bit for bit.</li>
+              <li>Slice 5, several columns: a table has one or more columns, exactly one of them the primary key and every other one <code>not null</code>. An <code>insert</code> has a list of columns or none, and a <code>select</code> names columns or takes <code>*</code>. It is checked against SQLite by generated tests in the engine and through <code>database/sql</code>, and in a simulation.</li>
             </ul>
           </td>
         </tr>
         <tr>
           <th scope="row" class="caps">Not built</th>
-          <td><p>More than one column, <code>where</code>, other types than integer, and a statement while rows of the same transaction are open.</p></td>
+          <td><p><code>null</code>, <code>where</code>, and a statement while rows of the same transaction are open.</p></td>
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
-          <td><p>Slice 4 of the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a> (the other types) is being built. Slices 5 to 8 (several columns, <code>null</code>, <code>where</code>, and <code>update</code> and <code>delete</code>) are agreed.</p></td>
+          <td><p>Slice 6 of the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a> (<code>null</code>) is being built. Slices 7 and 8 (<code>where</code> on <code>select</code>, and <code>update</code> and <code>delete</code>) are agreed.</p></td>
         </tr>
       </tbody>
     </table>
@@ -929,15 +931,15 @@ footer ul {
         <div><h3>Slice 3: transactions</h3><p><code>db.BeginTx</code> begins a write transaction, which holds the place of the single writer until it commits or rolls back, or a read-only one with <code>sql.TxOptions{ReadOnly: true}</code>, which reads the state of its beginning and holds up no one. A transaction writes one commit object.</p></div>
         <span class="where caps">Built</span>
       </li>
-      <li class="agreed">
+      <li class="built">
         <span class="glyph" aria-hidden="true"></span>
         <div><h3>Slice 4: the other types</h3><p>The column types <code>int</code>, <code>integer</code>, <code>real</code>, <code>text</code>, and <code>blob</code>, with their literals and Go arguments. A value must have the exact type of its column.</p></div>
-        <span class="where caps">Agreed</span>
+        <span class="where caps">Built</span>
       </li>
-      <li class="agreed">
+      <li class="built">
         <span class="glyph" aria-hidden="true"></span>
         <div><h3>Slice 5: several columns</h3><p>A table with several columns: one primary key, and the others <code>not null</code>. An <code>insert</code> gives the columns in the table's order or names them in any order, and a <code>select</code> names the columns it returns.</p></div>
-        <span class="where caps">Agreed</span>
+        <span class="where caps">Built</span>
       </li>
       <li class="agreed">
         <span class="glyph" aria-hidden="true"></span>

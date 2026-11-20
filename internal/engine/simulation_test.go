@@ -333,6 +333,9 @@ type run struct {
 	crashed []*core.DB
 	// events of the run that are not statements: crashes, closes, and restarts, by kind.
 	events map[string]int
+	// wide is the number of rows of tables of several columns in the log, as [run.verifyRows] counts
+	// them.
+	wide int
 	// endedForLease are the numbers of the run's clock of events at which an instance ended a write
 	// transaction because it lost its lease, by the node and the generation of its engine, as the
 	// event of the storage core says: see [run.verifyOverlaps].
@@ -463,10 +466,10 @@ func (r *run) close(ctx context.Context, n *node) {
 // idPattern finds the ID that a statement's text carries.
 var idPattern = regexp.MustCompile(`/\* id (\d+) \*/`)
 
-// withID puts the comment of the ID into the text of a statement of slice 1, after its first token,
-// where the annotation keeps it.
+// withID puts the comment of the ID into the text of a statement that the pass supports, after its
+// first token, where the annotation keeps it.
 func withID(src string, id uint64) string {
-	s, err := stmt.Check(src)
+	s, err := checkText(src)
 	if err != nil || s == nil {
 		return src
 	}
@@ -493,7 +496,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 	}
 	a.src = withID(call.Src, a.id)
 	call.Src = a.src
-	if s, _ := stmt.Check(a.src); s != nil {
+	if s, _ := checkText(a.src); s != nil {
 		_, isSelect := s.(*stmt.Select)
 		a.write = !isSelect
 	}
@@ -567,14 +570,17 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 			a.answer.err = wrongArguments
 		}
 		// A call that s4ql refuses for its arguments must be refused by its rule, and a statement of
-		// slices 1 and 2 with the arguments that it takes must run.
+		// the generator, and every other that the pass supports, with the arguments that it takes must
+		// run.
 		kind, failure := checkArguments(call, a.answer)
-		if kind == "" && call.Supported && isInsert(a.src) && a.answer.err == "not supported" && strings.Contains(a.answer.message, " for the column ") {
+		s, _ := checkText(a.src)
+		supported := call.Supported || s != nil
+		if kind == "" && supported && isInsert(a.src) && a.answer.err == "not supported" && strings.Contains(a.answer.message, " for the column ") {
 			// The refusal of a value of another type than its column, after the insert found its table
 			// and its column, which [run.verify] checks against SQLite on the state that it saw.
 			kind, a.typeRefused = excusedType, true
 		}
-		if kind == "" && (call.Supported || a.answer.err == wrongArguments) {
+		if kind == "" && (supported || a.answer.err == wrongArguments) {
 			failure = fmt.Sprintf("the statement %v, %q, with %v arguments: %v", a.id, a.src, len(call.Args), err)
 		}
 		if failure != "" {
@@ -1182,12 +1188,85 @@ func (r *run) readsFree(ctx context.Context, live []*node) {
 	}
 }
 
-// logCommit is a commit object of the log: its name, and the texts of its annotations and their
-// parameters.
+// logCommit is a commit object of the log: its name, its changes, and the texts of its annotations
+// and their parameters.
 type logCommit struct {
-	name   format.Name
-	notes  []string
-	params [][]*s4qlpb.Value
+	name    format.Name
+	changes []*s4qlpb.Change
+	notes   []string
+	params  [][]*s4qlpb.Value
+}
+
+// verifyRows checks the rows of the changes of the log against the tables of the log before them:
+// each row that a commit upserts is of a table that exists there, has a value for every column of
+// the table, in the order of the table, and each value has the type of its column. The replay of the
+// log in SQLite runs its statements, and not its rows, so it does not see a row that holds the
+// values of a statement in other columns. It gives the number of rows of tables of several columns.
+func (r *run) verifyRows(ctx context.Context, log []logCommit) (wide int) {
+	tables := map[string]*s4qlpb.CreateTable{}
+	for k, c := range log {
+		for _, ch := range c.changes {
+			switch {
+			case ch.HasCreateTable():
+				tables[fold(ch.GetCreateTable().GetTable())] = ch.GetCreateTable()
+			case ch.HasDropTable():
+				delete(tables, fold(ch.GetDropTable().GetTable()))
+			case ch.HasUpsertRows():
+				u := ch.GetUpsertRows()
+				t := tables[fold(u.GetTable())]
+				if t == nil {
+					r.violate(ctx, "commit %v upserts rows of the table %q, which the log does not have there", k+1, u.GetTable())
+					continue
+				}
+				columns := t.GetColumns()
+				all := make([]uint32, len(columns))
+				for i := range all {
+					all[i] = uint32(i)
+				}
+				if !slices.Equal(u.GetColumns(), all) {
+					r.violate(ctx, "commit %v upserts rows of the table %v for the columns %v, and not for each of its %v columns in their order", k+1, t.GetTable(), u.GetColumns(), len(columns))
+					continue
+				}
+				for _, row := range u.GetRows() {
+					values := row.GetValues()
+					if len(values) != len(columns) {
+						r.violate(ctx, "commit %v holds a row of the table %v of %v values for %v columns", k+1, t.GetTable(), len(values), len(columns))
+						continue
+					}
+					if len(columns) > 1 {
+						wide++
+					}
+					for i, v := range values {
+						if !holds(columns[i].GetType(), v) {
+							r.violate(ctx, "commit %v holds a row of the table %v whose value %v of the column %v is of another type than its column, %v", k+1, t.GetTable(), valuesText([]*s4qlpb.Value{v}), columns[i].GetName(), declType(columns[i].GetType()))
+						}
+					}
+				}
+			}
+		}
+	}
+	return wide
+}
+
+// holds reports whether a column of the type t holds the value v: an integer for INT and INTEGER, a
+// real for REAL, text for TEXT, and a blob for BLOB.
+func holds(t s4qlpb.Type, v *s4qlpb.Value) bool {
+	switch t {
+	case s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INTEGER:
+		return v.HasInteger()
+	case s4qlpb.Type_TYPE_REAL:
+		return v.HasReal()
+	case s4qlpb.Type_TYPE_TEXT:
+		return v.HasText()
+	case s4qlpb.Type_TYPE_BLOB:
+		return v.HasBlob()
+	}
+	return false
+}
+
+// fold a name as SQLite compares names.
+func fold(name string) string {
+	return stmt.Name{Value: name}.Fold()
 }
 
 // verify what happened in the run against SQLite and the log:
@@ -1223,6 +1302,7 @@ type logCommit struct {
 //   - A new instance with an empty cache replays the log to the state that SQLite has after it.
 func (r *run) verify(ctx context.Context) {
 	log := readLog(r.store)
+	r.wide = r.verifyRows(ctx, log)
 	index := map[string]int{format.EmptyLog.String(): 0}
 	inLog := map[uint64]int{}
 	txInLog := map[uint64]int{}
@@ -1509,9 +1589,9 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 	return nothing
 }
 
-// tableOf the statement of src, which is of slice 1, folded as SQLite compares names.
+// tableOf the statement of src, which the pass supports, folded as SQLite compares names.
 func tableOf(src string) string {
-	s, err := stmt.Check(src)
+	s, err := checkText(src)
 	if err != nil {
 		panic(err)
 	}
@@ -1605,12 +1685,15 @@ func readLog(s *simstore.Store) []logCommit {
 			panic(err)
 		}
 		for {
-			_, a, err := r.Next()
+			ch, a, err := r.Next()
 			if errors.Is(err, io.EOF) {
 				break
 			}
 			if err != nil {
 				panic(err)
+			}
+			if ch != nil {
+				c.changes = append(c.changes, ch)
 			}
 			if a != nil {
 				c.notes = append(c.notes, a.GetStatement().GetSql())
@@ -1697,11 +1780,15 @@ func coreState(ctx context.Context, d *core.DB) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			text, ok := valueString(row[0])
-			if !ok || row[0].HasBlob() && row[0].GetBlob() == nil {
-				return "", fmt.Errorf("the table %v holds %v, or a blob that is nil", ct.GetTable(), text)
+			texts := make([]string, len(row))
+			for j, v := range row {
+				text, ok := valueString(v)
+				if !ok || v.HasBlob() && v.GetBlob() == nil {
+					return "", fmt.Errorf("the table %v holds %v, or a blob that is nil", ct.GetTable(), text)
+				}
+				texts[j] = text
 			}
-			rows = append(rows, text)
+			rows = append(rows, strings.Join(texts, ","))
 		}
 		fmt.Fprintf(&b, "%v (%v): %v\n", ct.GetTable(), strings.Join(columns, ", "), strings.Join(rows, " "))
 	}
@@ -1813,6 +1900,7 @@ func tallyOf(s simulation) map[string]int {
 	}
 	log := readLog(r.store)
 	counts["commits"] = len(log)
+	counts["rows of several columns"] = r.wide
 	for _, c := range log {
 		if slices.ContainsFunc(c.params, func(ps []*s4qlpb.Value) bool { return len(ps) > 0 }) {
 			counts["commits with a parameter"]++
@@ -1858,6 +1946,9 @@ func TestSimulation(t *testing.T) {
 			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.25, "fault: write applied after a crash": 0.05,
 			"statements in a transaction": 12, "read-only transactions": 0.9, "transactions committed": 2, "transactions rolled back": 0.8,
 			"transactions not committed": 0.08, "transactions unknown": 0.07, "commits of more than one statement": 0.4, "refused for the type": 0.5,
+			// The rows of several columns in the log, of which the first 1,000 seeds gave 4,591, 715, and
+			// 8,380 in the three workloads on 2026-11-20: a quarter of that in each.
+			"rows of several columns": 1.1,
 		}, 0.15},
 		// A quarter of what the first 1,000 seeds gave on 2026-11-19, with the ends of transactions for
 		// the lease, which only this workload reaches.
@@ -1871,6 +1962,7 @@ func TestSimulation(t *testing.T) {
 			"statements in a transaction": 7, "read-only transactions": 0.7, "transactions committed": 0.7, "transactions rolled back": 0.7,
 			"transactions not committed": 0.04, "commits of more than one statement": 0.08,
 			"transactions ended for the lease": 0.33, "kept transactions ended for the lease": 0.33, "refused for the type": 0.1,
+			"rows of several columns": 0.17,
 		}, 0.15},
 		{"hammer", hammerWorkload, map[string]float64{
 			"succeeded": 12, "SQLite's error": 17, "unknown": 0.4, "skipped": 2.5, "failed: no lease": 2,
@@ -1880,6 +1972,7 @@ func TestSimulation(t *testing.T) {
 			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.7,
 			"statements in a transaction": 24, "read-only transactions": 1.8, "transactions committed": 4, "transactions rolled back": 1.5,
 			"transactions not committed": 0.17, "transactions unknown": 0.12, "commits of more than one statement": 0.6, "refused for the type": 1,
+			"rows of several columns": 2,
 		}, 0.12},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -2002,8 +2095,17 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		{"readNewest", hammerWorkload, "hammer", []string{"(read-only), which began at commit", "the statements of the read-only transaction", "the transaction has ended"}},
 		{"rollbackKeeps", defaultWorkload, "default", []string{"and its caller rolled it back"}},
 		// SQLite converts the real of the log as the bug did, so the replay of the log agrees with the
-		// engine, and only the check of the type of each value of the log finds it.
-		{"convertReal", defaultWorkload, "default", []string{"stores a value of another type than its column"}},
+		// engine, and only the check of the type of each value of the log finds it. In a table of
+		// several columns, the real that the bug converts can be the first value of another type than
+		// its column, and the engine then refuses a later one, where the rule refuses the real.
+		{"convertReal", defaultWorkload, "default", []string{"stores a value of another type than its column", "and the rule for the type of a value"}},
+		// A row that holds its values in other columns than its statement names: the replay of the log
+		// into an empty cache, which writes the rows, differs from SQLite, which runs the statements; a
+		// row whose key is another value makes a later insert of the log fail in SQLite, and a query
+		// give other rows than in SQLite; and a value in a column of another type is refused where the
+		// rule refuses nothing. The log holds no such value, since the check of the type sees the values
+		// in the columns where the bug puts them.
+		{"listOrder", defaultWorkload, "default", []string{"the replay of the log holds", "fails in SQLite", ", and in SQLite", "and the rule for the type of a value"}},
 	}
 	for _, b := range bugs {
 		bug := b.name

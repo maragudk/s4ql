@@ -90,7 +90,7 @@ func realOfLiteral(t testing.TB, d *db, lit string) string {
 		}
 		return "infinite"
 	}
-	got := s.(*stmt.Insert).Value
+	got := s.(*stmt.Insert).Values[0].Value
 	if show(got) != show(sqlite) {
 		t.Fatalf("%q: gives %v, and SQLite %v", lit, show(got), show(sqlite))
 	}
@@ -158,12 +158,16 @@ func TestCheck_reals(t *testing.T) {
 	is.True(t, answers["real"] > n/2 && answers["infinite"] > 0)
 }
 
-// FuzzLiteral checks the value of any literal that the pass supports as the value of an insert against
-// the value that SQLite gives it.
+// FuzzLiteral checks the value of any literal that the pass supports as a value of an insert against
+// the value that SQLite gives it. A text with commas is several values.
 func FuzzLiteral(f *testing.F) {
 	for _, c := range checkCases {
-		if s, ok := c.want.(*stmt.Insert); ok && s.Parameter == 0 {
-			f.Add(c.src[s.ValueSpan.Start:s.ValueSpan.End])
+		if s, ok := c.want.(*stmt.Insert); ok {
+			for _, v := range s.Values {
+				if v.Parameter == 0 {
+					f.Add(c.src[v.Span.Start:v.Span.End])
+				}
+			}
 		}
 	}
 	r := rand.New(rand.NewPCG(1, 0x5ea1))
@@ -174,6 +178,8 @@ func FuzzLiteral(f *testing.F) {
 			f.Add(text)
 		}
 	}
+	nullText, _ := stmttest.Literal(r, stmt.Null{})
+	f.Add(nullText)
 	f.Fuzz(func(t *testing.T, lit string) {
 		src := "insert into t (v) values (" + lit + ")"
 		s, err := stmt.Check(src)
@@ -181,14 +187,19 @@ func FuzzLiteral(f *testing.F) {
 			return
 		}
 		insert, ok := s.(*stmt.Insert)
-		if !ok || insert.Parameter > 0 {
+		if !ok {
 			return
 		}
 		d := openUnmanaged(t)
 		defer func() { _ = d.c.Close() }()
-		value := src[insert.ValueSpan.Start:insert.ValueSpan.End]
-		if got, want := show(insert.Value), show(d.value("select "+value)); got != want {
-			t.Fatalf("%q: gives %v, and SQLite %v", value, got, want)
+		for _, v := range insert.Values {
+			if v.Parameter > 0 {
+				continue
+			}
+			value := src[v.Span.Start:v.Span.End]
+			if got, want := show(v.Value), show(d.value("select "+value)); got != want {
+				t.Fatalf("%q: gives %v, and SQLite %v", value, got, want)
+			}
 		}
 	})
 }

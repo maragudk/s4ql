@@ -614,6 +614,39 @@ func (tx *Tx) Upsert(ctx context.Context, name string, row []*s4qlpb.Value) erro
 	return tx.fail(ctx, operation, tx.touch(t, key, existed))
 }
 
+// Insert a row into the table with the given name if the table has no row with the same primary
+// key, and report whether it did. The row is as for [Tx.Upsert]. It fails as Upsert fails, also
+// with [ErrTooBig] for a row that is larger than SQLite takes when the table has a row with its key:
+// SQLite builds the record of a row of a WITHOUT ROWID table before it looks for its key, so it
+// refuses such a row as too big before it finds the key. After ErrTooBig the transaction goes on
+// without the row.
+func (tx *Tx) Insert(ctx context.Context, name string, row []*s4qlpb.Value) (bool, error) {
+	const operation = "insert"
+	if err := tx.check(ctx, operation); err != nil {
+		return false, err
+	}
+	defer tx.leave(ctx)
+	t, err := tx.table(ctx, operation, name)
+	if err != nil {
+		return false, err
+	}
+	if err := t.checkRow(row, tx.c.limit); err != nil {
+		return false, err
+	}
+	inserted, err := tx.c.insert(t, row)
+	if err != nil {
+		if refused := tooBig(err); refused != nil {
+			return false, refused
+		}
+		return false, tx.fail(ctx, operation, err)
+	}
+	if !inserted {
+		return false, nil
+	}
+	// The table had no row with the key, so none existed before the change.
+	return true, tx.fail(ctx, operation, tx.touch(t, t.keyOf(row), false))
+}
+
 // Delete the row with the given primary key from the table with the given name, and report
 // whether there was one. The key has a value for each primary-key column, in key order. It fails
 // with an error that wraps [ErrNoTable] if there is no such table, with [ErrInvalid] for a key that

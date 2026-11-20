@@ -51,7 +51,8 @@ type DropTable struct {
 }
 
 // Insert inserts the rows of Source into a table, each as a new row. Source gives a value for each
-// of Columns, in their order.
+// of Columns, in their order, or, if Columns is nil, for each column of the table, in the order of
+// the table.
 type Insert struct {
 	Table   stmt.Name
 	Columns []stmt.Name
@@ -73,11 +74,12 @@ type Values struct {
 	Rows [][]Expr
 }
 
-// Project gives the columns of each row of Source that a query names. Star is `*`: every column, in
-// the order of the table.
+// Project gives the columns of each row of Source that a query names: Columns, in their order, each
+// as often as it is named, or, if Star, `*`: every column, in the order of the table.
 type Project struct {
-	Source Node
-	Star   bool
+	Source  Node
+	Star    bool
+	Columns []stmt.Name
 }
 
 // Integer is an integer literal.
@@ -119,34 +121,50 @@ func (*Text) expr()        {}
 func (*Blob) expr()        {}
 func (*Parameter) expr()   {}
 
-// NewPlan of the statement s, which [stmt.Check] gives. It panics for a statement of another type.
+// NewPlan of the statement s, which [stmt.Check] gives and the engine runs: it is not of a form that
+// [checkNulls] refuses. It panics for a statement of another type or of such a form. The NOT NULL of
+// a column is not in the plan: every column of a table is NOT NULL, the primary key also when it does
+// not say so, as in SQLite's WITHOUT ROWID tables.
 func NewPlan(s stmt.Statement) Plan {
+	if err := checkNulls(s); err != nil {
+		panic(fmt.Sprintf("engine: %v", err))
+	}
 	switch s := s.(type) {
 	case *stmt.CreateTable:
-		return &CreateTable{Table: s.Table, Columns: []ColumnDef{{Name: s.Column, Type: columnType(s.Type)}}, PrimaryKey: []int{0}}
+		p := &CreateTable{Table: s.Table, PrimaryKey: []int{s.Key()}}
+		for _, c := range s.Columns {
+			p.Columns = append(p.Columns, ColumnDef{Name: c.Name, Type: columnType(c.Type)})
+		}
+		return p
 	case *stmt.DropTable:
 		return &DropTable{Table: s.Table}
 	case *stmt.Insert:
-		var value Expr
-		switch v := s.Value.(type) {
-		case stmt.Integer:
-			value = &Integer{Value: int64(v)}
-		case stmt.Real:
-			value = &Real{Value: float64(v)}
-		case stmt.Text:
-			value = &Text{Value: string(v)}
-		case stmt.Blob:
-			value = &Blob{Value: []byte(v)}
-		case nil:
-			value = &Parameter{Number: s.Parameter}
-		default:
-			panic(fmt.Sprintf("engine: a value of type %T", v))
+		row := make([]Expr, len(s.Values))
+		for i, t := range s.Values {
+			row[i] = term(t)
 		}
-		return &Insert{Table: s.Table, Columns: []stmt.Name{s.Column}, Source: &Values{Rows: [][]Expr{{value}}}}
+		return &Insert{Table: s.Table, Columns: s.Columns, Source: &Values{Rows: [][]Expr{row}}}
 	case *stmt.Select:
-		return &Query{Root: &Project{Source: &Scan{Table: s.Table}, Star: true}}
+		return &Query{Root: &Project{Source: &Scan{Table: s.Table}, Star: s.Columns == nil, Columns: s.Columns}}
 	}
 	panic(fmt.Sprintf("engine: a statement of type %T", s))
+}
+
+// term of a row of an insert, as an expression: its literal, or its parameter.
+func term(t stmt.Term) Expr {
+	switch v := t.Value.(type) {
+	case stmt.Integer:
+		return &Integer{Value: int64(v)}
+	case stmt.Real:
+		return &Real{Value: float64(v)}
+	case stmt.Text:
+		return &Text{Value: string(v)}
+	case stmt.Blob:
+		return &Blob{Value: []byte(v)}
+	case nil:
+		return &Parameter{Number: t.Parameter}
+	}
+	panic(fmt.Sprintf("engine: a value of type %T", t.Value))
 }
 
 // Format the plan p as text: a line for each statement and node, with the nodes that a node reads
@@ -173,14 +191,11 @@ func Format(p Plan) string {
 	case *DropTable:
 		fmt.Fprint(&b, "drop table ", p.Table.Raw, "\n")
 	case *Insert:
-		fmt.Fprint(&b, "insert into ", p.Table.Raw, " (")
-		for i, c := range p.Columns {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			b.WriteString(c.Raw)
+		fmt.Fprint(&b, "insert into ", p.Table.Raw)
+		if p.Columns != nil {
+			fmt.Fprint(&b, " (", names(p.Columns), ")")
 		}
-		b.WriteString(")\n")
+		b.WriteString("\n")
 		formatNode(&b, p.Source, 1)
 	case *Query:
 		b.WriteString("query\n")
@@ -214,14 +229,26 @@ func formatNode(b *strings.Builder, n Node, depth int) {
 		b.WriteString("\n")
 	case *Project:
 		b.WriteString("project")
-		if n.Star {
+		switch {
+		case n.Star:
 			b.WriteString(" *")
+		case len(n.Columns) > 0:
+			b.WriteString(" " + names(n.Columns))
 		}
 		b.WriteString("\n")
 		formatNode(b, n.Source, depth+1)
 	default:
 		panic(fmt.Sprintf("engine: a node of type %T", n))
 	}
+}
+
+// names ns as the statement writes them, with a comma between two.
+func names(ns []stmt.Name) string {
+	raw := make([]string, len(ns))
+	for i, n := range ns {
+		raw[i] = n.Raw
+	}
+	return strings.Join(raw, ", ")
 }
 
 func formatExpr(e Expr) string {

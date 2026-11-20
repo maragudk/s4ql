@@ -167,10 +167,12 @@ func ValueOf(r Rand, t stmt.Type) stmt.Value {
 	panic(fmt.Sprintf("no type %v", t))
 }
 
-// Argument of the value v, as database/sql hands it to a driver: an int64, a float64, a string, or
-// a []byte that is not nil.
+// Argument of the value v, as database/sql hands it to a driver: an int64, a float64, a string, a
+// []byte that is not nil, or nil for [stmt.Null].
 func Argument(v stmt.Value) any {
 	switch v := v.(type) {
+	case stmt.Null:
+		return nil
 	case stmt.Integer:
 		return int64(v)
 	case stmt.Real:
@@ -191,7 +193,8 @@ func Argument(v stmt.Value) any {
 // for a real in more than 17 digits, which SQLite may read as a neighbour of v. An integer is
 // written with leading zeros now and then, and 0 as -0; a real in one of the forms of a real literal
 // of SQLite; a string in single quotes, with two single quotes for a quote; and a blob with an x
-// or an X and hex digits in lower case, upper case, or both.
+// or an X and hex digits in lower case, upper case, or both; and NULL in one of four cases of its
+// letters.
 func Literal(r Rand, v stmt.Value) (string, stmt.Value) {
 	switch v := v.(type) {
 	case stmt.Integer:
@@ -227,6 +230,8 @@ func Literal(r Rand, v stmt.Value) (string, stmt.Value) {
 			v = stmt.Blob{}
 		}
 		return []string{"x", "X"}[r.IntN(2)] + "'" + string(digits) + "'", v
+	case stmt.Null:
+		return []string{"null", "NULL", "Null", "nULl"}[r.IntN(4)], v
 	}
 	panic(fmt.Sprintf("no value %#v", v))
 }
@@ -296,7 +301,7 @@ func readReal(text string) (float64, bool) {
 	if err != nil {
 		return 0, false
 	}
-	v, ok := s.(*stmt.Insert).Value.(stmt.Real)
+	v, ok := s.(*stmt.Insert).Values[0].Value.(stmt.Real)
 	return float64(v), ok
 }
 
@@ -327,6 +332,8 @@ func LiteralKind(v stmt.Value) string {
 			return "empty blob"
 		}
 		return "blob"
+	case stmt.Null:
+		return "null"
 	}
 	return fmt.Sprintf("%T", v)
 }

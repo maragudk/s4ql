@@ -32,8 +32,9 @@
 //     message: a syntax error, an error about the tables, the columns, or a primary key, or a text
 //     or a blob that is too long.
 //   - "Not supported", as a [*stmt.NotSupportedError] that matches [stmt.ErrNotSupported], or, for
-//     an argument that no column holds, and for a value of another type than its column, an error
-//     that matches stmt.ErrNotSupported.
+//     an argument that no column holds, for a value of another type than its column, and for a
+//     statement with NULL that the pass supports and the engine does not run yet, an error that
+//     matches stmt.ErrNotSupported.
 //   - [ErrNoStatement], for a text that holds no statement.
 //   - An error that matches [ErrArguments], for another number of arguments than the statement has
 //     parameters.
@@ -57,6 +58,7 @@ import (
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/host"
 	"maragu.dev/s4ql/internal/s4qlpb"
+	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
@@ -200,12 +202,14 @@ func (c *Conn) begin(ctx context.Context) (writeTx, error) {
 // column can hold: an integer, a real that is a finite number, valid UTF-8 text without the
 // character NUL, or a blob.
 //
-// An insert then fails, in this order, with SQLite's errors of the names, with SQLite's `string or
-// blob too big` for a text or a blob that is longer than the limit of the database, which SQLite
-// gives when it binds such an argument, with SQLite's error of a read-only transaction, with "not
-// supported" for a value of another type than its column, with SQLite's error of a key that exists,
-// and with `string or blob too big` for a row that is longer than the limit. A real that is -0.0 is
-// stored as 0.0, as SQLite stores it, and its key is the key of 0.0.
+// An insert then fails, in this order, with SQLite's errors of the names and of the number of its
+// values, with SQLite's `string or blob too big` for a text or a blob that is longer than the limit
+// of the database, which SQLite gives when it binds such an argument, with SQLite's error of a
+// read-only transaction, with SQLite's `NOT NULL constraint failed` for a column that it leaves out,
+// with "not supported" for a value of another type than its column, with `string or blob too big`
+// for a row that is longer than the limit, also when its key exists, and with SQLite's error of a
+// key that exists. A real that is -0.0 is stored as 0.0, as SQLite stores it, and its key is the
+// key of 0.0.
 //
 // In a transaction that spans statements, the statement then fails with the error of ctx if ctx has
 // ended, with the refusal of a statement of its own if the instance does not serve now, and with
@@ -297,11 +301,15 @@ func (c *Conn) newReport(src string) *report {
 
 // Check the text src, as [Conn.Exec] and [Conn.Query] check it, for a run with n arguments, without
 // the database and without an event: the text's error, as [stmt.Check] gives it, [ErrNoStatement],
-// or the error of [ErrArguments] for another number of arguments than the statement has parameters;
-// otherwise nil. It does not check what the arguments are.
+// "not supported" for a statement of slice 6 that the engine does not run yet, as [checkNulls] gives
+// it, or the error of [ErrArguments] for another number of arguments than the statement has
+// parameters; otherwise nil. It does not check what the arguments are.
 func Check(src string, n int) error {
 	s, err := check(src)
 	if err != nil {
+		return err
+	}
+	if err := checkNulls(s); err != nil {
 		return err
 	}
 	return countArguments(s.Parameters(), n)
@@ -329,6 +337,9 @@ func prepare(r *report, src string, args []*s4qlpb.Value) (Plan, string, error) 
 		return nil, "", err
 	}
 	r.of(s)
+	if err := checkNulls(s); err != nil {
+		return nil, "", err
+	}
 	if err := checkArguments(s.Parameters(), args); err != nil {
 		return nil, "", err
 	}
@@ -373,11 +384,11 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	if err != nil {
 		return Result{}, err
 	}
-	if err := s.check(); err != nil {
-		return Result{}, err
-	}
-	// From here on, a failed insert sets the count of changes to 0.
+	// From here on, a failed insert sets the count of changes to 0, but for "not supported".
 	failed := Result{SetsChanges: insert}
+	if err := s.check(); err != nil {
+		return checked(failed, err), err
+	}
 	n, err := s.run(ctx)
 	if err != nil {
 		return failed, err
@@ -405,6 +416,18 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	}
 	r.rows = n
 	return Result{Changes: n, SetsChanges: insert}, nil
+}
+
+// checked is the result of a statement whose sink's check failed with err, where failed is the result
+// of a statement that fails after it has started to write. SQLite gives its errors of the check,
+// such as `NOT NULL constraint failed`, when it steps the statement, so they set the count of changes
+// as failed does; "not supported" for a value of another type leaves the count, as every "not
+// supported" does.
+func checked(failed Result, err error) Result {
+	if _, ok := errors.AsType[*sqlerr.Error](err); ok {
+		return failed
+	}
+	return Result{}
 }
 
 // checkOutside is the planted bug that checks an insert in a read transaction before its write
@@ -436,6 +459,9 @@ type readOnly struct {
 func (readOnly) createTable(context.Context, *s4qlpb.CreateTable) error { return nil }
 func (readOnly) dropTable(context.Context, string) error                { return nil }
 func (readOnly) upsert(context.Context, string, []*s4qlpb.Value) error  { return nil }
+func (readOnly) insertNew(context.Context, string, []*s4qlpb.Value) (bool, error) {
+	return false, nil
+}
 
 // query runs the plan q in a read transaction of its own, and gives its rows, which hold the
 // transaction until they end. The transaction ends if the rows cannot be built, also when that

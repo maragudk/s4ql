@@ -13,28 +13,44 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
-// Sequence of random statements of slices 1, 2, and 4 that meet at a few tables and columns, each
+// Sequence of random statements of slices 1, 2, 4, and 5 that meet at a few tables and columns, each
 // named in several spellings that SQLite takes for one name and in some that it takes for others,
 // with values from a small set so that keys repeat, and with statements that are not supported and
 // texts that SQLite refuses mixed in.
 //
-// Each name of a table has a type of the sequence's own, which most of its create tables declare,
-// and most values of an insert into a table of the name are of that type: the others are of another
-// type than the column, which s4ql refuses. The small sets hold keys that SQLite takes for one, such
-// as 0.0 and -0.0, so that every type meets a key that exists.
+// Each name of a table has a shape of the sequence's own: from one to [sequenceColumns] columns,
+// each with a name and one of the five types, of which two often have the same type, and the primary
+// key at any position. Nine create tables of the name in ten declare that shape, its names in any of
+// their spellings, and one of these in ten gives one column any type; the tenth has columns at
+// random, whose names can repeat, which SQLite refuses. An insert into a table of the name names the
+// columns of the shape in a list in any order, or one time in three without a list, in the order of
+// the shape, with a value of the type of each column. Now and then it leaves a column out of its
+// list, names a column that the shape may not have, has a value more or less, or has a value of any
+// type, which is mostly another than its column, for one column or for two; so some inserts have two
+// faults. A select names * or columns of the shape in any order, also one twice, and now and then a
+// name that the shape may not have. The small sets of values hold keys that SQLite takes for one,
+// such as 0.0 and -0.0, so that every type meets a key that exists.
 //
-// One insert in three has a plain ? with its value as the argument, and some calls, as
+// One value in three of an insert is a plain ? with the value as its argument, and some calls, as
 // [Sequence.Next] says, have arguments around those that s4ql supports: none for a ?, one for a
 // statement without one, two for a ?, one that no column holds, one with a name, or a value of
 // another Go type that s4ql supports.
 type Sequence struct {
-	r       Rand
-	g       *Generator
-	tables  []string
+	r      Rand
+	g      *Generator
+	tables []string
+	// columns are the spellings of the names of columns, folds the folds of their names, in the order
+	// that the spellings first have them, and spelled the spellings of each fold.
 	columns []string
-	// types of the tables by their names, folded as SQLite compares names.
-	types map[string]stmt.Type
+	folds   []string
+	spelled map[string][]string
+	// shapes of the tables by their names, folded as SQLite compares names: the columns of each in
+	// the order of the table, with the fold of each name as its Name.Value.
+	shapes map[string][]stmt.Column
 }
+
+// sequenceColumns is the most columns of a table of a [Sequence].
+const sequenceColumns = 3
 
 // spellings of the name raw: itself, and other spellings in and without quotes, of which those that
 // change only ASCII letters name the same name, and an upper case that changes other letters names
@@ -87,7 +103,7 @@ var commonPools = sync.OnceValues(func() ([2][]string, error) {
 	}
 	return [2][]string{
 		common(pools, CreateTable, InsertTable, SelectTable, DropTable),
-		common(pools, CreateColumn, InsertColumn),
+		common(pools, CreateColumn, InsertColumn, SelectColumn),
 	}, nil
 })
 
@@ -112,52 +128,186 @@ func NewSequence(r Rand) (*Sequence, error) {
 	if err != nil {
 		return nil, err
 	}
-	q := &Sequence{r: r, types: map[string]stmt.Type{}}
+	q := &Sequence{r: r, spelled: map[string][]string{}, shapes: map[string][]stmt.Column{}}
 	tableNames, columnNames := common[0], common[1]
 	for range 1 + r.IntN(2) {
 		q.tables = append(q.tables, spellings(r, tableNames[r.IntN(len(tableNames))])...)
 	}
-	for range 1 + r.IntN(2) {
-		q.columns = append(q.columns, spellings(r, columnNames[r.IntN(len(columnNames))])...)
+	// So many names of columns that a table of the most columns lacks one of them.
+	for len(q.folds) <= sequenceColumns {
+		for _, raw := range spellings(r, columnNames[r.IntN(len(columnNames))]) {
+			q.columns = append(q.columns, raw)
+			fold := nameOf(raw, 0).Fold()
+			if q.spelled[fold] == nil {
+				q.folds = append(q.folds, fold)
+			}
+			q.spelled[fold] = append(q.spelled[fold], raw)
+		}
 	}
 	pools := make([][]string, len(PositionTexts))
 	for _, p := range []Position{CreateTable, InsertTable, SelectTable, DropTable} {
 		pools[p] = q.tables
 	}
-	pools[CreateColumn], pools[InsertColumn] = q.columns, q.columns
+	pools[CreateColumn], pools[InsertColumn], pools[SelectColumn] = q.columns, q.columns, q.columns
 	q.g = NewGenerator(r, pools)
-	q.g.Type, q.g.Value = q.columnType, q.Value
+	q.g.Columns, q.g.Create, q.g.Insert, q.g.Select = sequenceColumns, q.create, q.insert, q.selectList
 	q.g.Parameters = 3
 	return q, nil
 }
 
-// typeOf the tables of the name of table: the sequence's own, chosen at random the first time.
-func (q *Sequence) typeOf(table stmt.Name) stmt.Type {
+// shapeOf the tables of the name of table: the sequence's own, chosen at random the first time.
+func (q *Sequence) shapeOf(table stmt.Name) []stmt.Column {
 	name := table.Fold()
-	t, ok := q.types[name]
-	if !ok {
-		t = Types[q.r.IntN(len(Types))]
-		q.types[name] = t
+	shape, ok := q.shapes[name]
+	if ok {
+		return shape
 	}
-	return t
+	r := q.r
+	folds := slices.Clone(q.folds)
+	n := 1 + r.IntN(sequenceColumns)
+	key := r.IntN(n)
+	for i := range n {
+		j := i + r.IntN(len(folds)-i)
+		folds[i], folds[j] = folds[j], folds[i]
+		typ := Types[r.IntN(len(Types))]
+		if i > 0 && r.IntN(2) == 0 {
+			// Two columns of one type, so that a value in the place of the other has the type of its
+			// column.
+			typ = shape[r.IntN(i)].Type
+		}
+		shape = append(shape, stmt.Column{Name: stmt.Name{Value: folds[i]}, Type: typ, PrimaryKey: i == key})
+	}
+	q.shapes[name] = shape
+	return shape
 }
 
-// columnType of a create table of table: the type of its name, and one time in ten any type.
-func (q *Sequence) columnType(table stmt.Name) stmt.Type {
-	if q.r.IntN(10) == 0 {
-		return Types[q.r.IntN(len(Types))]
-	}
-	return q.typeOf(table)
+// spell the name of a column of the fold in one of its spellings.
+func (q *Sequence) spell(fold string) string {
+	raws := q.spelled[fold]
+	return raws[q.r.IntN(len(raws))]
 }
 
-// Value of an insert into table: of the type of its name, and one time in ten of any type, which is
-// mostly another.
-func (q *Sequence) Value(table stmt.Name) stmt.Value {
-	t := q.typeOf(table)
-	if q.r.IntN(10) == 0 {
-		t = Types[q.r.IntN(len(Types))]
+// anyType at random.
+func (q *Sequence) anyType() stmt.Type {
+	return Types[q.r.IntN(len(Types))]
+}
+
+// create gives the columns of a create table of table, as [Generator.Create] does: those of its
+// shape, in any of their spellings, and one time in ten with one column of any type, or one time in
+// ten columns at random, whose names can repeat.
+func (q *Sequence) create(table stmt.Name) []stmt.Column {
+	r := q.r
+	shape := q.shapeOf(table)
+	if r.IntN(10) == 0 {
+		n := 1 + r.IntN(sequenceColumns)
+		key := r.IntN(n)
+		columns := make([]stmt.Column, n)
+		for i := range columns {
+			columns[i] = stmt.Column{Name: stmt.Name{Raw: q.columns[r.IntN(len(q.columns))]}, Type: q.anyType(), PrimaryKey: i == key}
+		}
+		return columns
 	}
-	return q.valueOf(t)
+	retyped := -1
+	if r.IntN(10) == 0 {
+		retyped = r.IntN(len(shape))
+	}
+	var columns []stmt.Column
+	for i, c := range shape {
+		c.Name = stmt.Name{Raw: q.spell(c.Name.Value)}
+		if i == retyped {
+			c.Type = q.anyType()
+		}
+		columns = append(columns, c)
+	}
+	return columns
+}
+
+// insert gives the list of columns and the values of an insert into table, as [Generator.Insert]
+// does: the columns of its shape, in a list in any order or without a list, with a value of the type
+// of each. One list in eight leaves a column out, one in twelve has a name in place of one of its
+// own that is no other of the list, one insert in sixteen has a value more and one a value less,
+// and one in ten has a value of any type, and one in three of these a second.
+func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
+	r := q.r
+	shape := q.shapeOf(table)
+	order := make([]int, len(shape))
+	for i := range order {
+		order[i] = i
+	}
+	withList := r.IntN(3) != 0
+	if withList {
+		if r.IntN(3) != 0 {
+			for i := len(order) - 1; i > 0; i-- {
+				j := r.IntN(i + 1)
+				order[i], order[j] = order[j], order[i]
+			}
+		}
+		if len(order) > 1 && r.IntN(8) == 0 {
+			at := r.IntN(len(order))
+			order = slices.Delete(order, at, at+1)
+		}
+	}
+	var list []string
+	var values []stmt.Value
+	for _, position := range order {
+		c := shape[position]
+		if withList {
+			list = append(list, q.spell(c.Name.Value))
+		}
+		values = append(values, q.valueOf(c.Type))
+	}
+	if withList && r.IntN(12) == 0 {
+		seen := map[string]bool{}
+		for _, raw := range list {
+			seen[nameOf(raw, 0).Fold()] = true
+		}
+		at := r.IntN(len(list))
+		delete(seen, nameOf(list[at], 0).Fold())
+		for range 100 {
+			if raw := q.columns[r.IntN(len(q.columns))]; !seen[nameOf(raw, 0).Fold()] {
+				list[at] = raw
+				break
+			}
+		}
+	}
+	if r.IntN(10) == 0 {
+		values[r.IntN(len(values))] = q.valueOf(q.anyType())
+		if r.IntN(3) == 0 {
+			values[r.IntN(len(values))] = q.valueOf(q.anyType())
+		}
+	}
+	switch r.IntN(16) {
+	case 0:
+		values = append(values, q.valueOf(q.anyType()))
+	case 1:
+		if len(values) > 1 {
+			values = values[:len(values)-1]
+		}
+	}
+	return list, values
+}
+
+// selectList of a select of table, as [Generator.Select] gives it: * one time in two, and otherwise
+// from one to [sequenceColumns]+1 names of the columns of its shape, of which one in four after the
+// first is an earlier one, and one in twelve any name of a column of the sequence.
+func (q *Sequence) selectList(table stmt.Name) []string {
+	r := q.r
+	if r.IntN(2) == 0 {
+		return nil
+	}
+	shape := q.shapeOf(table)
+	var names []string
+	for i := range 1 + r.IntN(sequenceColumns+1) {
+		switch {
+		case i > 0 && r.IntN(4) == 0:
+			names = append(names, names[r.IntN(i)])
+		case r.IntN(12) == 0:
+			names = append(names, q.columns[r.IntN(len(q.columns))])
+		default:
+			names = append(names, q.spell(shape[r.IntN(len(shape))].Name.Value))
+		}
+	}
+	return names
 }
 
 // valueOf the type t: mostly from a small set, so that keys repeat, and otherwise as [ValueOf]
@@ -219,8 +369,11 @@ func (q *Sequence) Like(a any) any {
 
 // Others are texts that are not statements of slices 1, 2, and 4, with %[1]v for a table, %[2]v
 // for a column, and %[3]v for a small integer: statements that the pass does not support, among them
-// literals that SQLite reads as an infinite real, as a real for an integer outside 64 bits, or as
-// NULL, texts that SQLite refuses with a syntax error, and texts without a statement.
+// literals that SQLite reads as an infinite real or as a real for an integer outside 64 bits, texts
+// that SQLite refuses with a syntax error, and texts without a statement. Two are statements of slice
+// 5, an insert without a list of columns and a select of a column, which s4ql supports and a sequence
+// does not mark as supported yet. One is of slice 6, an insert of NULL, which the pass supports and
+// the engine refuses as not supported until it runs slice 6.
 var Others = []string{
 	"create table %[1]v (%[2]v any primary key) strict, without rowid",
 	"create table %[1]v (%[2]v varchar primary key) strict, without rowid",

@@ -31,6 +31,11 @@ func TestNewPlan(t *testing.T) {
 		{src: "insert into t (v) values ('it''s')", want: "insert into t (v)\n  values ('it''s')\n"},
 		{src: "insert into t (v) values (X'0aFF')", want: "insert into t (v)\n  values (x'0aff')\n"},
 		{src: "select * from été", want: "query\n  project *\n    scan été\n"},
+		{src: "create table t1 (v1 int not null, v2 text primary key, v3 real not null) strict, without rowid", want: "create table t1 (v1 INT, v2 TEXT, v3 REAL, primary key (v2))\n"},
+		{src: "create table t1 (v1 int primary key not null, v2 blob not null) strict, without rowid", want: "create table t1 (v1 INT, v2 BLOB, primary key (v1))\n"},
+		{src: "insert into t1 values (1, 'a', ?)", want: "insert into t1\n  values (1, 'a', ?1)\n"},
+		{src: `insert into t1 (v3, "V1", v2) values (?, 2.5, ?)`, want: "insert into t1 (v3, \"V1\", v2)\n  values (?1, 2.5, ?2)\n"},
+		{src: `select v2, "V1", v2 from t1`, want: "query\n  project v2, \"V1\", v2\n    scan t1\n"},
 	}
 	for _, c := range cases {
 		t.Run(c.src, func(t *testing.T) {
@@ -49,6 +54,36 @@ func TestNewPlan(t *testing.T) {
 		is.Equal(t, stmt.Name{Raw: "C", Value: "C", Offset: 20}, p.Columns[0].Name)
 		is.Equal(t, s4qlpb.Type_TYPE_INT, p.Columns[0].Type)
 		is.EqualSlice(t, []int{0}, p.PrimaryKey)
+	})
+
+	t.Run("should hold every column in order, with the key at its position, and the same plan with and without NOT NULL on the key", func(t *testing.T) {
+		with, err := stmt.Check("create table t (a text not null, b int not null primary key, c blob not null) strict, without rowid")
+		is.NotError(t, err)
+		without, err := stmt.Check("create table t (a text not null, b int primary key, c blob not null) strict, without rowid")
+		is.NotError(t, err)
+		p := engine.NewPlan(with).(*engine.CreateTable)
+		is.Equal(t, 3, len(p.Columns))
+		for i, want := range []string{"a", "b", "c"} {
+			is.Equal(t, want, p.Columns[i].Name.Value)
+		}
+		is.EqualSlice(t, []int{1}, p.PrimaryKey)
+		is.Equal(t, engine.Format(p), engine.Format(engine.NewPlan(without)))
+	})
+
+	t.Run("should hold the columns of an insert as nil without a list, and of a select as nil for *", func(t *testing.T) {
+		s, err := stmt.Check("insert into t values (1, 2)")
+		is.NotError(t, err)
+		is.True(t, engine.NewPlan(s).(*engine.Insert).Columns == nil)
+		s, err = stmt.Check("select * from t")
+		is.NotError(t, err)
+		p := engine.NewPlan(s).(*engine.Query).Root.(*engine.Project)
+		is.True(t, p.Star)
+		is.True(t, p.Columns == nil)
+		s, err = stmt.Check("select a, a from t")
+		is.NotError(t, err)
+		p = engine.NewPlan(s).(*engine.Query).Root.(*engine.Project)
+		is.True(t, !p.Star)
+		is.Equal(t, 2, len(p.Columns))
 	})
 
 	t.Run("should keep each type of a column as declared, INT and INTEGER apart", func(t *testing.T) {
