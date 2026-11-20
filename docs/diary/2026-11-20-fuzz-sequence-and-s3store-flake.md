@@ -54,3 +54,61 @@ Telling the leak of connections from a slow machine: the fuzz run's rate of 0 pe
 ### Future work
 
 The idle connections of a closed instance, in `docs/todo.md`. They may also slow the fuzz jobs of CI, where Linux has about 28,000 local ports.
+
+## Step 2: An answer that races with the end of the context
+
+**Author:** fuzz-sequence and s3store-flake builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "`TestClient_connections/\"should end a write and a read whose answer is slow when the context ends\"` in `internal/store/s3store` (`s3store_test.go` around line 415) failed in 4 of 142 runs of the `test` job, on four different branches: it got \"the answer has no ETag\" instead of `context.DeadlineExceeded`. [...] Decide what is right and say why: either the client must return the context's error first when the context has ended (then that is a fix in the client, with a test that forces the order), or both orders are legal for the client and the test must force one or accept both. Consider what a caller of the store needs: an operation whose context ended must not be reported as a broken answer from S3 [...]"
+**Interpretation:** Find out how the answer of the fake reaches the client after the deadline, decide which error the client owes its caller then, and make the test independent of the race.
+**Inferred intent:** A test of the job `test` that never fails by chance, and a client whose errors say why a call ended.
+
+### What I did
+
+The fake answers 200 without headers once the server sees the request's context end, which is when the client closes the connection after its deadline. `persistConn.roundTrip` of net/http, on the end of the context, first takes a response that its read loop has already parsed, and returns that ("Check for a response racing the context close, and use the response if available"). On a loaded machine the fake's answer can come in between the deadline and the close of the connection, and then `Client.Get` saw a 200 without an ETag and reported "the answer has no ETag", an unexpected answer, with nothing of the deadline in its error. The log of run 44715954848 shows it: `s3store: get "k": the answer has no ETag`. `Client.Create` has the same window, with "outcome unknown: the answer has no ETag".
+
+I decided that the client takes such an answer if it shows what happened, and otherwise reports the end of the context:
+
+- A success, and the errors of `store.Store` (`ErrNotFound` of a read, and the refusals of a write), are what the store did, whenever they come in. A write that the store answers with success is applied, and an unknown outcome in its place would only make the core find out by reading.
+- Any other answer, or an error of the SDK, after the end of the context wraps the context's error, through `ended` in `internal/store/s3store/s3store.go`. The end of the context may be what broke the answer, as here. The call is logged as `failed` (a read) or `unknown` (a write) and not as `unexpected`, which is for a store that misbehaves.
+
+Why it matters to a caller: `internal/core` decides by its own `ctx.Err()` and by the sentinels of `store.Store`, and treats both errors the same in its retries, so it was not wrong. But its per-request timeouts (`StoreTimeout`, `ObjectTimeout`) end the context of a request and not the caller's, and the error of the request then reaches the caller of the core, where "the answer has no ETag" reads as a broken store and `errors.Is(err, context.DeadlineExceeded)` is false. The package doc of `s3store` says the rule now.
+
+The new subtest "should wrap the error of a context that ended before the answer came in, unless the answer shows what happened" forces the order: `ending`, a context of the test, reports `context.DeadlineExceeded` from `Err` once the fake's hook has called `end`, while its `Done` stays open, so the transport always takes the answer and the client always finds the context ended. It checks a read and a create answered with no ETag and with a 500, and that a success, a 412 of a create, and a 404 of a read are still taken. Before the fix it failed with `no-etag s3store: get "no-etag": the answer has no ETag`, the error of CI. The flaky subtest is unchanged: both of its orders now give `context.DeadlineExceeded`.
+
+The two subtests, by `-run 'TestClient_connections/(should_end_a_write_and_a_read_whose_answer_is_slow|should_wrap_the_error_of_a_context_that_ended_before)'` with `-short`: `-count=500` passed in 81 s; with 20 busy loops on the 10 cores (load averages from 19 to 34) `-count=500` passed in 81 s, and `-race -count=200` passed in 38 s (load 34 to 38). With the client of `main` put back, the old subtest passed 500 times under the same load: the race is rarer on this machine than in CI, and the new subtest is what shows the fault.
+
+The review of the code-review skill (medium) found six things. I fixed three. The content of a read that fails after the end of the context did not wrap the context's error; `body.Read` in `/internal/store/s3store/content.go` now passes such a failure through `ended`, and the new subtest reads a body that the fake cuts after the end (before the fix: `s3store: get "cut-body": unexpected EOF`). The error of a write printed the context's error twice, once from `ended` and once from `unknown`; `unknown` now keeps the text of its error and wraps the context's error through `textOf`, which adds no text, and the subtest counts it once. A swap refused with 412 after the end is now checked too. The internal tests of `body` made a `request` without a context, which `ended` needs; they pass `t.Context()` now. I left three. A real broken answer that comes in just before a deadline and is checked just after it is reported as the end of the context, not as `unexpected`. A 403 after the end wraps `context.DeadlineExceeded` too. And `unknown` keeps `Canceled` over `DeadlineExceeded` if the error of the SDK wraps the one and the context ended with the other. Each of these needs the deadline to fall within the few microseconds between the answer and its check, and none changes what the core does.
+
+After the fixes, under the same load: `-count=500` passed in 83 s, and `-race -count=200` in 39 s, at load averages from 18 to 41.
+
+### Why
+
+The other way, a test that accepts both errors, would have kept a client that tells its caller of a broken store when the caller's own deadline ended the call.
+
+### What worked
+
+The comment in net/http's `roundTrip` named the race at once, and the log of CI showed that it was the read and not the write.
+
+### What didn't work
+
+The first run of the package's tests failed in two other subtests with `connect: can't assign requested address`: the fuzz run of step 1 held most of the machine's local ports. They passed once it had ended.
+
+### What I learned
+
+A context whose deadline has passed can still be followed by a complete answer from net/http, and the SDK does not look at the context after the answer, so a client has to.
+
+### What was tricky
+
+Forcing the order without a sleep. Nothing in the client can be hooked between the answer and its check, and a real deadline or cancel races with the transport. `ending` breaks the rule of `context.Context` that `Err` is nil while `Done` is open, on purpose and in a test only. It stands for the moment after a deadline at which the transport has not acted on it yet.
+
+### What warrants review
+
+- The decision that a success or a refusal after the end of the context is taken, and that only the other answers are reported as the end of the context.
+- `ending`, which breaks the contract of `context.Context`: whether a reviewer accepts it as the way to force the order.
+
+### Future work
+
+None.
