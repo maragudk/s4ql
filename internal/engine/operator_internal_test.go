@@ -245,6 +245,58 @@ func (x fakeTx) insertNew(_ context.Context, name string, row []*s4qlpb.Value) (
 	return true, nil
 }
 
+// delete records its call, as "delete", the name, and the integer key, and deletes the row.
+func (x fakeTx) delete(_ context.Context, name string, key []*s4qlpb.Value) (bool, error) {
+	x.f.calls = append(x.f.calls, fmt.Sprint("delete ", name, " ", key[0].GetInteger()))
+	t := x.f.tables[fold(name)]
+	k := t.ct.GetPrimaryKey()[0]
+	n := len(t.rows)
+	t.rows = slices.DeleteFunc(t.rows, func(r []*s4qlpb.Value) bool { return r[k].GetInteger() == key[0].GetInteger() })
+	return len(t.rows) < n, nil
+}
+
+// keys records its call, as "keys" and the name, and runs f with a set of integer keys in memory,
+// which records each add, as "add" and the key, and each key that it gives, as "key" and the key.
+func (x fakeTx) keys(_ context.Context, name string, f func(keySet) error) error {
+	x.f.calls = append(x.f.calls, "keys "+name)
+	return f(&fakeKeys{f: x.f})
+}
+
+type fakeKeys struct {
+	f    *fake
+	keys []int64
+}
+
+func (k *fakeKeys) add(_ context.Context, key []*s4qlpb.Value) error {
+	k.f.calls = append(k.f.calls, fmt.Sprint("add ", key[0].GetInteger()))
+	if !slices.Contains(k.keys, key[0].GetInteger()) {
+		k.keys = append(k.keys, key[0].GetInteger())
+	}
+	return nil
+}
+
+func (k *fakeKeys) all(context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
+	return func(yield func([]*s4qlpb.Value, error) bool) {
+		var last *int64
+		for {
+			var next *int64
+			for _, key := range k.keys {
+				if (last == nil || key > *last) && (next == nil || key < *next) {
+					next = &key
+				}
+			}
+			if next == nil {
+				return
+			}
+			k.f.calls = append(k.f.calls, fmt.Sprint("key ", *next))
+			if !yield([]*s4qlpb.Value{integer(*next)}, nil) {
+				return
+			}
+			last = next
+		}
+	}
+}
+
 // rowText of the integers and NULLs of the row, with a comma between two.
 func rowText(row []*s4qlpb.Value) string {
 	var values []string
@@ -619,11 +671,11 @@ func TestInsert(t *testing.T) {
 		f := newFake().with("t", []string{"v"})
 		ct := f.tables["t"].ct
 		one := []Expr{&Integer{Value: 1}}
-		is.NotError(t, (&insert{w: fakeTx{f}, table: ct, src: ints(1, 2), exprs: [][]Expr{one, one}}).check())
+		is.NotError(t, (&insert{w: fakeTx{f}, table: ct, src: ints(1, 2), exprs: [][]Expr{one, one}}).check(t.Context()))
 
 		src := ints(1)
 		src.data = append(src.data, []*s4qlpb.Value{s4qlpb.Value_builder{Text: new("a")}.Build()})
-		err := (&insert{w: fakeTx{f}, table: ct, src: src, exprs: [][]Expr{one, {&Text{Value: "a"}}}}).check()
+		err := (&insert{w: fakeTx{f}, table: ct, src: src, exprs: [][]Expr{one, {&Text{Value: "a"}}}}).check(t.Context())
 		is.True(t, errors.Is(err, stmt.ErrNotSupported))
 		is.Equal(t, "s4ql: not supported: a string literal for the column t.v of type INT", err.Error())
 
@@ -637,7 +689,7 @@ func TestInsert(t *testing.T) {
 			{i: &insert{table: ct, src: ints(1), exprs: [][]Expr{{one[0], one[0]}}}, want: "an insert of 1 values from 2 expressions into 1 columns"},
 			{i: &insert{table: ct, src: &values{data: [][]*s4qlpb.Value{{integer(1), integer(1)}}}, exprs: [][]Expr{{one[0], one[0]}}}, want: "an insert of 2 values from 2 expressions into 1 columns"},
 		} {
-			err := c.i.check()
+			err := c.i.check(t.Context())
 			is.True(t, errors.Is(err, ErrInternal), c.want)
 			is.Equal(t, "s4ql: internal error: "+c.want, err.Error())
 		}
@@ -700,7 +752,7 @@ func TestInsert(t *testing.T) {
 			{row: []*s4qlpb.Value{text, integer(1), text, null}, want: "s4ql: not supported: a string literal for the column t.a of type INT"},
 			{row: []*s4qlpb.Value{null, integer(1), text, text}, want: "s4ql: not supported: a string literal for the column t.c of type BLOB"},
 		} {
-			err := (&insert{table: ct, key: 1, src: &values{data: [][]*s4qlpb.Value{c.row}}, exprs: [][]Expr{literals(c.row)}}).check()
+			err := (&insert{table: ct, key: 1, src: &values{data: [][]*s4qlpb.Value{c.row}}, exprs: [][]Expr{literals(c.row)}}).check(t.Context())
 			if c.want == "" {
 				is.NotError(t, err)
 				continue
@@ -710,10 +762,87 @@ func TestInsert(t *testing.T) {
 				is.Equal(t, sqlerr.Error{Code: 19, ExtendedCode: 1299, Message: c.want, Offset: -1}, *se)
 			}
 		}
-		err := (&insert{table: ct, key: 1, src: &values{data: [][]*s4qlpb.Value{{null, integer(1), nil, null}}}, exprs: [][]Expr{make([]Expr, 4)}}).check()
+		err := (&insert{table: ct, key: 1, src: &values{data: [][]*s4qlpb.Value{{null, integer(1), nil, null}}}, exprs: [][]Expr{make([]Expr, 4)}}).check(t.Context())
 		is.True(t, errors.Is(err, ErrInternal))
 		is.Equal(t, "s4ql: internal error: an insert without a value for the column b", err.Error())
 	})
+}
+
+func TestChangeRows(t *testing.T) {
+	// change runs src on the fake f, by the key unless scanAll, and gives its error, the number of
+	// rows that it changed, and the calls of the fake.
+	change := func(t *testing.T, f *fake, src string, scanAll bool) (string, int64, string) {
+		t.Helper()
+		s, err := stmt.Check(src)
+		is.NotError(t, err, src)
+		f.calls = nil
+		k, err := buildSink(t.Context(), fakeTx{f}, NewPlan(s), nil, bugs{}, 1_000_000_000, scanAll)
+		is.NotError(t, err, src)
+		if err := k.check(t.Context()); err != nil {
+			return err.Error(), 0, fmt.Sprint(f.calls)
+		}
+		n, err := k.run(t.Context())
+		if err != nil {
+			return err.Error(), n, fmt.Sprint(f.calls)
+		}
+		return "", n, fmt.Sprint(f.calls)
+	}
+	newTable := func() *fake {
+		f := newFake().with("t", []string{"w", "k"}, []int64{40, 4}, []int64{10, 1}, []int64{30, 3}, []int64{20, 2})
+		f.tables["t"].ct.SetPrimaryKey([]uint32{1})
+		return f
+	}
+
+	cases := []struct {
+		src string
+		err string
+		n   int64
+		// byKey and all are the calls of the fake by the key and with a scan of every row, which the
+		// fake does not record.
+		byKey, all string
+	}{
+		{src: "update t set w = 25 where k = 2", n: 1,
+			byKey: "[table t keys t get t 2 add 2 key 2 get t 2 upsert t 25,2]",
+			all:   "[table t keys t add 2 key 2 get t 2 upsert t 25,2]"},
+		{src: "update t set w = 0", n: 4,
+			byKey: "[table t keys t add 1 add 2 add 3 add 4 key 1 get t 1 upsert t 0,1 key 2 get t 2 upsert t 0,2 key 3 get t 3 upsert t 0,3 key 4 get t 4 upsert t 0,4]",
+			all:   "[table t keys t add 1 add 2 add 3 add 4 key 1 get t 1 upsert t 0,1 key 2 get t 2 upsert t 0,2 key 3 get t 3 upsert t 0,3 key 4 get t 4 upsert t 0,4]"},
+		{src: "update t set k = 5, w = 50 where k > 3", n: 1,
+			byKey: "[table t keys t range t > 3 add 4 key 4 get t 4 delete t 4 insert t 50,5]",
+			all:   "[table t keys t add 4 key 4 get t 4 delete t 4 insert t 50,5]"},
+		{src: "update t set k = 9 where k >= 3", err: "UNIQUE constraint failed: t.k", n: 1,
+			byKey: "[table t keys t range t >= 3 add 3 add 4 key 3 get t 3 delete t 3 insert t 30,9 key 4 get t 4 delete t 4 insert t 40,9]",
+			all:   "[table t keys t add 3 add 4 key 3 get t 3 delete t 3 insert t 30,9 key 4 get t 4 delete t 4 insert t 40,9]"},
+		{src: "update t set k = 2 where k = 2", n: 1,
+			byKey: "[table t keys t get t 2 add 2 key 2 get t 2 upsert t 20,2]",
+			all:   "[table t keys t add 2 key 2 get t 2 upsert t 20,2]"},
+		{src: "update t set w = null where k = 9", n: 0,
+			byKey: "[table t get t 9 keys t get t 9]",
+			all:   "[table t keys t]"},
+		{src: "update t set w = null where k = 2", err: "NOT NULL constraint failed: t.w",
+			byKey: "[table t get t 2]",
+			all:   "[table t]"},
+		{src: "update t set w = 1 where k is null", n: 0, byKey: "[table t keys t]", all: "[table t keys t]"},
+		{src: "delete from t where k < 3", n: 2,
+			byKey: "[table t keys t range t < 3 add 1 add 2 key 1 delete t 1 key 2 delete t 2]",
+			all:   "[table t keys t add 1 add 2 key 1 delete t 1 key 2 delete t 2]"},
+		{src: "delete from t where w = 30", n: 1,
+			byKey: "[table t keys t add 3 key 3 delete t 3]",
+			all:   "[table t keys t add 3 key 3 delete t 3]"},
+		{src: "delete from t", n: 4,
+			byKey: "[table t keys t add 1 add 2 add 3 add 4 key 1 delete t 1 key 2 delete t 2 key 3 delete t 3 key 4 delete t 4]",
+			all:   "[table t keys t add 1 add 2 add 3 add 4 key 1 delete t 1 key 2 delete t 2 key 3 delete t 3 key 4 delete t 4]"},
+	}
+	for _, c := range cases {
+		t.Run(c.src, func(t *testing.T) {
+			for scanAll, want := range map[bool]string{false: c.byKey, true: c.all} {
+				err, n, calls := change(t, newTable(), c.src, scanAll)
+				is.Equal(t, c.err, err)
+				is.Equal(t, c.n, n)
+				is.Equal(t, want, calls, fmt.Sprint("scan all: ", scanAll))
+			}
+		})
+	}
 }
 
 func TestBuild(t *testing.T) {
@@ -729,7 +858,7 @@ func TestBuild(t *testing.T) {
 		for _, a := range args {
 			values = append(values, integer(a))
 		}
-		s, err := buildSink(t.Context(), fakeTx{f}, plan(src), values, bugs{}, 1_000_000_000)
+		s, err := buildSink(t.Context(), fakeTx{f}, plan(src), values, bugs{}, 1_000_000_000, false)
 		if err != nil {
 			return err
 		}
@@ -791,9 +920,9 @@ func TestBuild(t *testing.T) {
 		for _, src := range []string{"insert into t (c, k, a) values (3, ?, 1)", "insert into t values (1, ?, 3)"} {
 			f := newFake().with("t", []string{"a", "k", "c"})
 			f.tables["t"].ct.SetPrimaryKey([]uint32{1})
-			s, err := buildSink(t.Context(), fakeTx{f}, plan(src), []*s4qlpb.Value{integer(2)}, bugs{}, 1_000_000_000)
+			s, err := buildSink(t.Context(), fakeTx{f}, plan(src), []*s4qlpb.Value{integer(2)}, bugs{}, 1_000_000_000, false)
 			is.NotError(t, err, src)
-			is.NotError(t, s.check(), src)
+			is.NotError(t, s.check(t.Context()), src)
 			_, err = s.run(t.Context())
 			is.NotError(t, err, src)
 			is.Equal(t, "[table t insert t 1,2,3]", fmt.Sprint(f.calls), src)
@@ -805,9 +934,9 @@ func TestBuild(t *testing.T) {
 	t.Run("should place the values of a list in the order of the list with the planted bug listOrder", func(t *testing.T) {
 		f := newFake().with("t", []string{"a", "k", "c"})
 		f.tables["t"].ct.SetPrimaryKey([]uint32{1})
-		s, err := buildSink(t.Context(), fakeTx{f}, plan("insert into t (c, k, a) values (3, ?, 1)"), []*s4qlpb.Value{integer(2)}, bugs{listOrder: true}, 1_000_000_000)
+		s, err := buildSink(t.Context(), fakeTx{f}, plan("insert into t (c, k, a) values (3, ?, 1)"), []*s4qlpb.Value{integer(2)}, bugs{listOrder: true}, 1_000_000_000, false)
 		is.NotError(t, err)
-		is.NotError(t, s.check())
+		is.NotError(t, s.check(t.Context()))
 		_, err = s.run(t.Context())
 		is.NotError(t, err)
 		is.Equal(t, "[table t insert t 3,2,1]", fmt.Sprint(f.calls))
@@ -825,9 +954,9 @@ func TestBuild(t *testing.T) {
 			ct.SetPrimaryKey([]uint32{1})
 			ct.GetColumns()[0].SetNullable(true)
 			ct.GetColumns()[2].SetNullable(true)
-			s, err := buildSink(t.Context(), fakeTx{f}, plan(src), []*s4qlpb.Value{arg}, bugs{}, 1_000_000_000)
+			s, err := buildSink(t.Context(), fakeTx{f}, plan(src), []*s4qlpb.Value{arg}, bugs{}, 1_000_000_000, false)
 			is.NotError(t, err, src)
-			is.NotError(t, s.check(), src)
+			is.NotError(t, s.check(t.Context()), src)
 			_, err = s.run(t.Context())
 			is.NotError(t, err, src)
 			is.Equal(t, "[table t insert t null,2,null]", fmt.Sprint(f.calls), src)
@@ -869,9 +998,9 @@ func TestBuild(t *testing.T) {
 					ct.GetColumns()[position].SetNullable(true)
 					ct.GetColumns()[position].SetType(typ)
 				}
-				s, err := buildSink(t.Context(), fakeTx{f}, plan(src), nil, bugs{zeroLeftOut: true}, 1_000_000_000)
+				s, err := buildSink(t.Context(), fakeTx{f}, plan(src), nil, bugs{zeroLeftOut: true}, 1_000_000_000, false)
 				is.NotError(t, err, src)
-				is.NotError(t, s.check(), src)
+				is.NotError(t, s.check(t.Context()), src)
 				is.Equal(t, want, text(s.(*insert).src.data[0]), src)
 			}
 		}
@@ -886,9 +1015,9 @@ func TestBuild(t *testing.T) {
 			"insert into t (c, a, k) values (1, 'y', 'x')": "s4ql: not supported: a string literal for the column t.a of type INT",
 		} {
 			f.calls = nil
-			s, err := buildSink(t.Context(), fakeTx{f}, plan(src), nil, bugs{}, 1_000_000_000)
+			s, err := buildSink(t.Context(), fakeTx{f}, plan(src), nil, bugs{}, 1_000_000_000, false)
 			is.NotError(t, err, src)
-			is.Equal(t, want, s.check().Error(), src)
+			is.Equal(t, want, s.check(t.Context()).Error(), src)
 			is.Equal(t, "[table t]", fmt.Sprint(f.calls), src)
 		}
 	})
@@ -943,7 +1072,7 @@ func TestBuild(t *testing.T) {
 				if q, ok := c.plan.(*Query); ok {
 					_, err = buildQuery(t.Context(), fakeTx{f}, q, nil, 1_000_000_000, false)
 				} else {
-					_, err = buildSink(t.Context(), fakeTx{f}, c.plan, nil, bugs{}, 1_000_000_000)
+					_, err = buildSink(t.Context(), fakeTx{f}, c.plan, nil, bugs{}, 1_000_000_000, false)
 				}
 				is.True(t, errors.Is(err, ErrInternal))
 				is.Equal(t, "s4ql: internal error: "+c.err, err.Error())
@@ -957,7 +1086,7 @@ func TestBuild(t *testing.T) {
 			if q, ok := plan(src).(*Query); ok {
 				_, err = buildQuery(t.Context(), failingLookUp{}, q, nil, 1_000_000_000, false)
 			} else {
-				_, err = buildSink(t.Context(), failingLookUp{}, plan(src), nil, bugs{}, 1_000_000_000)
+				_, err = buildSink(t.Context(), failingLookUp{}, plan(src), nil, bugs{}, 1_000_000_000, false)
 			}
 			is.Equal(t, "the lookup fails", err.Error(), src)
 		}

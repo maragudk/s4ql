@@ -306,3 +306,10 @@ func tooBig() error {
 func readOnlyDatabase() error {
 	return &sqlerr.Error{Code: sqlerr.CodeReadOnly, ExtendedCode: sqlerr.CodeReadOnly, Message: "attempt to write a readonly database", Offset: -1}
 }
+
+// noSuchSetColumn is `no such column: %s`, for a column of the SET of an update that the table does
+// not have, with the value of the name, also for a name in double quotes: SQLite's update gives it
+// itself, and not its resolver of names, which adds the question about quotes.
+func noSuchSetColumn(name stmt.Name) error {
+	return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: "no such column: " + name.Value, Offset: -1}
+}

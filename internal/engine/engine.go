@@ -323,23 +323,26 @@ func Check(src string, n int) error {
 	return countArguments(s.Parameters(), n)
 }
 
-// check the text src: its statement, or its error, as [stmt.Check] gives it, or [ErrNoStatement]. An
-// update and a delete, which the pass supports and the engine does not run yet, are not supported,
-// with the error that the pass gave them before it supported them.
+// check the text src: its statement, or its error, as [stmt.Check] gives it, or [ErrNoStatement].
 func check(src string) (stmt.Statement, error) {
 	s, err := stmt.Check(src)
 	if err != nil {
 		return nil, err
 	}
-	switch s.(type) {
-	case nil:
+	if s == nil {
 		return nil, ErrNoStatement
-	case *stmt.Update:
-		return nil, &stmt.NotSupportedError{What: "UPDATE", Offset: s.Bounds().Start}
-	case *stmt.Delete:
-		return nil, &stmt.NotSupportedError{What: "DELETE", Offset: s.Bounds().Start}
 	}
 	return s, nil
+}
+
+// setsChanges reports whether the plan p sets SQLite's count of changes: an insert, an update, and a
+// delete do.
+func setsChanges(p Plan) bool {
+	switch p.(type) {
+	case *Insert, *Update, *Delete:
+		return true
+	}
+	return false
 }
 
 // prepare the text src with the arguments args for the report r: check the text, and then the
@@ -392,13 +395,14 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	}()
 	b := e.bugs
 	b.skipUnique = b.skipUnique || b.checkOutside
-	s, err := buildSink(ctx, tx, p, args, b, e.db.lengthLimit())
+	s, err := buildSink(ctx, tx, p, args, b, e.db.lengthLimit(), e.scanAll)
 	if err != nil {
 		return Result{}, err
 	}
-	// From here on, a failed insert sets the count of changes to 0, but for "not supported".
-	failed := Result{SetsChanges: insert}
-	if err := s.check(); err != nil {
+	// From here on, a failed insert, update, or delete sets the count of changes to 0, but for "not
+	// supported".
+	failed := Result{SetsChanges: setsChanges(p)}
+	if err := s.check(ctx); err != nil {
 		return checked(failed, err), err
 	}
 	n, err := s.run(ctx)
@@ -422,12 +426,12 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 		if e.bugs.ackUnknown && errors.Is(err, core.ErrOutcomeUnknown) {
 			// The planted bug: a commit whose outcome is unknown counts as committed.
 			r.rows = n
-			return Result{Changes: n, SetsChanges: insert}, nil
+			return Result{Changes: n, SetsChanges: setsChanges(p)}, nil
 		}
 		return failed, err
 	}
 	r.rows = n
-	return Result{Changes: n, SetsChanges: insert}, nil
+	return Result{Changes: n, SetsChanges: setsChanges(p)}, nil
 }
 
 // checked is the result of a statement whose sink's check failed with err, where failed is the result
@@ -451,11 +455,11 @@ func (c *Conn) checkOutside(ctx context.Context, r *report, p Plan, args []*s4ql
 	}
 	defer func() { _ = rt.end(ctx) }()
 	r.at(rt.position(), true)
-	s, err := buildSink(ctx, readOnly{rt}, p, args, bugs{}, c.e.db.lengthLimit())
+	s, err := buildSink(ctx, readOnly{rt}, p, args, bugs{}, c.e.db.lengthLimit(), c.e.scanAll)
 	if err != nil {
 		return err
 	}
-	if err := s.check(); err != nil {
+	if err := s.check(ctx); err != nil {
 		return err
 	}
 	i, ok := s.(*insert)
@@ -488,6 +492,8 @@ func (readOnly) upsert(context.Context, string, []*s4qlpb.Value) error  { return
 func (readOnly) insertNew(context.Context, string, []*s4qlpb.Value) (bool, error) {
 	return false, nil
 }
+func (readOnly) delete(context.Context, string, []*s4qlpb.Value) (bool, error) { return false, nil }
+func (readOnly) keys(context.Context, string, func(keySet) error) error        { return nil }
 
 // query runs the plan q, with args for its parameters, in a read transaction of its own, and gives
 // its rows, which hold the transaction until they end. The transaction ends if the rows cannot be
