@@ -724,8 +724,12 @@ async function persistence(address) {
   expect(/^s4ql-sim\/db-[a-z0-9]{6}\/$/.test(name) && before.commits > 0 && before.objects === before.commits + 1,
     `S3 holds the database ${name} of the tab after a reload, with ${before.commits} commit objects, ${before.objects} objects in sessionStorage`);
   p = await reload(p);
-  expect(p.$("#s3-path").textContent === name && p.commits === before.commits && p.win.s4qlPage.history >= before.history && logHas(p, /S3 still holds db-/),
-    `a reload keeps the database, its name, and its ${p.commits} commit objects, and the time goes on from ${p.$("#clock").textContent}`);
+  // The time of the history after the reload is the offset of the seed plus the time of the session,
+  // a sum of floats that can come out a rounding below the sum that was stored, as 660017.381003
+  // against 660017.3810030001.
+  expect(p.$("#s3-path").textContent === name && p.commits === before.commits && p.win.s4qlPage.history >= before.history - 1e-6 && logHas(p, /S3 still holds db-/),
+    `a reload keeps the database, its name, and its ${p.commits} commit objects, and the time goes on from ${p.$("#clock").textContent}` +
+    ` (${p.$("#s3-path").textContent}, ${before.commits} commit objects, ${before.history} to ${p.win.s4qlPage.history} ms of history, the log: ${[...p.$("#log").children].slice(-3).map((li) => li.textContent).join(" | ")})`);
   const took = await p.skipUntil(() => logHas(p, /^\S+a catches up: \d+ commit objects? from S3\.$/) && p.inst("a").dataset.role === "serves");
   const s = p.win.s4qlPage.state;
   expect(s.violations === s.excused,
