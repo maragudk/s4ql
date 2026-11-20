@@ -52,6 +52,11 @@ const (
 	// attrIndex is the name of the index of an access by an index, as the index was created, and the
 	// name of the index that a create index or a drop index names, as its value.
 	attrIndex = "statement.index"
+	// attrDirection is the direction that the engine drew for a query, forward or backward, as
+	// [Engine.reading] draws it, so that a run whose rows depend on it can be told from its event. A
+	// statement that draws none, an update, a delete, or a query whose path the tests force, has
+	// none, and so has a query without the attribute [attrAccess].
+	attrDirection = "statement.direction"
 	// attrRowsRead is the number of rows that the statement read from the cache, whether or not its
 	// conditions held for them: by its scan or its get, and, for an update, also the row that it reads
 	// to check a NULL for a column that does not take it, and each row again that it changes.
@@ -158,6 +163,9 @@ type report struct {
 	access string
 	reader reader
 	before int64
+	// direction is the direction that the engine drew for a query, forward or backward, or empty for a
+	// statement that drew none.
+	direction string
 	// ended is set once the event is logged.
 	ended bool
 }
@@ -207,6 +215,17 @@ func (r *report) reads(rd reader, built any) {
 		r.access = "primary_key"
 	}
 	r.reader, r.before = rd, rd.rowsRead()
+}
+
+// drew records the direction of the reading how, if the engine drew it.
+func (r *report) drew(how reading) {
+	switch {
+	case !how.drawn:
+	case how.backward:
+		r.direction = "backward"
+	default:
+		r.direction = "forward"
+	}
 }
 
 // scanOf the operators built, a source or a sink: the scan that reads the rows of the table of a
@@ -265,6 +284,9 @@ func (r *report) end(ctx context.Context, err error) {
 	}
 	if r.index != "" {
 		attrs = append(attrs, slog.String(attrIndex, r.index))
+	}
+	if r.access != "" && r.direction != "" {
+		attrs = append(attrs, slog.String(attrDirection, r.direction))
 	}
 	if r.access != "" {
 		attrs = append(attrs, slog.Int64(attrRowsRead, r.reader.rowsRead()-r.before))
