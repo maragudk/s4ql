@@ -79,6 +79,11 @@ func (o *Options) Seed(seed uint64) {
 	o.seed, o.seeded = seed, true
 }
 
+// Seeded reports whether the options o have a seed, as [Options.Seed] gives them one.
+func (o Options) Seeded() bool {
+	return o.seeded
+}
+
 // SetSeed makes the engine e draw the directions of the scans of its queries from the start of the
 // sequence of the seed from now on, as [Options.Seed] does.
 func (e *Engine) SetSeed(seed uint64) {
@@ -291,6 +296,8 @@ var plantable = map[string]func(b *bugs){
 	"listOrder":     func(b *bugs) { b.listOrder = true },
 	"zeroLeftOut":   func(b *bugs) { b.zeroLeftOut = true },
 	"openBound":     func(b *bugs) { b.openBound = true },
+	"changeNothing": func(b *bugs) { b.changeNothing = true },
+	"keepOldKey":    func(b *bugs) { b.keepOldKey = true },
 }
 
 // The names of the event and of its attributes, for the tests of the telemetry.

@@ -32,6 +32,10 @@ type conn struct {
 	tables map[string]*table
 	// limit is SQLite's limit on the connection for the length of a text, a blob, and a row.
 	limit int
+	// schemaReads counts the statements with which [conn.load] and [conn.loadIndexes] have read
+	// tables and their indexes from the schema of the cache, so that a test can pin what a call
+	// reads of it.
+	schemaReads int
 
 	// users is the number of calls that use the connection now, and closed whether [DB.Close] or
 	// [Reader.Close] has closed it. [DB.mu] guards both.
@@ -195,6 +199,13 @@ func (c *conn) query(sql string, row func(s *sqlite.Stmt) error, args ...any) er
 			return err
 		}
 	}
+}
+
+// readSchema is [conn.query] for a statement of [conn.load] or of [conn.loadIndexes], which it
+// counts.
+func (c *conn) readSchema(sql string, row func(s *sqlite.Stmt) error, args ...any) error {
+	c.schemaReads++
+	return c.query(sql, row, args...)
 }
 
 // setUp the cache on the write connection: the write-ahead log, how hard SQLite syncs, and the
@@ -430,11 +441,25 @@ type table struct {
 	key []int
 	// inKey reports for each column whether it is a primary-key column.
 	inKey []bool
+	// indexed is whether [conn.loadIndexes] has read indexes and primary from the cache, and found
+	// no index there that this package does not make. Until then both are empty and say nothing of
+	// the table, and [table.checkIndexed] guards what reads them.
+	indexed bool
 	// indexes of the table, in the order in which they were created.
 	indexes []*index
-	// primary is the name that SQLite gives the index of the primary key, for a table that was
-	// loaded from the cache.
+	// primary is the name that SQLite gives the index of the primary key.
 	primary string
+}
+
+// checkIndexed is nil for a table whose indexes [conn.loadIndexes] has read, as [conn.lookUp] gives
+// it. Its error wraps [ErrCacheVersion] for any other table, which only [conn.lookUpWithoutIndexes]
+// and [newTable] give: a fault of this package, since everything that reads the indexes of a table,
+// scans it, or writes a row to it takes the table from lookUp.
+func (t *table) checkIndexed() error {
+	if t.indexed {
+		return nil
+	}
+	return fmt.Errorf("%w: the indexes of its table %q are used before they are read", ErrCacheVersion, t.name)
 }
 
 type column struct {
@@ -721,9 +746,28 @@ func readRow(s *sqlite.Stmt, first, n int) ([]*s4qlpb.Value, error) {
 	return row, nil
 }
 
-// lookUp the table of the database with the given name, compared as SQLite compares names, or nil
-// if there is none.
+// lookUp the table of the database with the given name, compared as SQLite compares names, with its
+// indexes, or nil if there is none. The indexes are read when a table is first looked up with them,
+// and stay with the table until the connection forgets it: see [conn.loadIndexes], which refuses a
+// table with an index that this package does not make. Everything that writes a row of a table,
+// scans it, or reads its indexes looks the table up here, so that it runs after that check.
 func (c *conn) lookUp(name string) (*table, error) {
+	t, err := c.lookUpWithoutIndexes(name)
+	if err != nil || t == nil {
+		return nil, err
+	}
+	if err := c.loadIndexes(t); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+// lookUpWithoutIndexes is [conn.lookUp] of the table alone: its columns and its primary key, which
+// is all that reading the definition of a table or one row by its key takes, so that such a call
+// reads nothing of the indexes from the schema. The table that it gives has its indexes only if a
+// lookUp read them before, and the check of [conn.loadIndexes] may not have run on it, so it is
+// for nothing that writes a row, scans, or reads an index: [table.checkIndexed] refuses those.
+func (c *conn) lookUpWithoutIndexes(name string) (*table, error) {
 	folded := fold(name)
 	if t, ok := c.tables[folded]; ok {
 		return t, nil
@@ -736,14 +780,14 @@ func (c *conn) lookUp(name string) (*table, error) {
 	return t, nil
 }
 
-// load the table with the given name from the schema of the cache, with its indexes, or nil if
+// load the table with the given name from the schema of the cache, without its indexes, or nil if
 // there is none. The cache's own tables are not tables of the database.
 func (c *conn) load(name string) (*table, error) {
 	if reserved(name) {
 		return nil, nil
 	}
 	var t *table
-	if err := c.query("select name from main.sqlite_schema where type = 'table' and name = ? collate nocase", func(s *sqlite.Stmt) error {
+	if err := c.readSchema("select name from main.sqlite_schema where type = 'table' and name = ? collate nocase", func(s *sqlite.Stmt) error {
 		t = &table{name: s.ColumnText(0)}
 		return nil
 	}, name); err != nil {
@@ -757,7 +801,7 @@ func (c *conn) load(name string) (*table, error) {
 	keyed := map[int64]int{}
 	// A column takes NULL if it is declared "default null", and has no other default: SQLite reports
 	// the text of a default as it was declared, and no default as NULL.
-	if err := c.query(`select name, type, pk, "notnull", dflt_value from pragma_table_info(?, 'main') order by cid`, func(s *sqlite.Stmt) error {
+	if err := c.readSchema(`select name, type, pk, "notnull", dflt_value from pragma_table_info(?, 'main') order by cid`, func(s *sqlite.Stmt) error {
 		typ, ok := typeOf(s.ColumnText(1))
 		if !ok {
 			return fmt.Errorf("%w: the column %q of its table %q has the type %q", ErrCacheVersion, s.ColumnText(0), t.name, s.ColumnText(1))
@@ -790,13 +834,11 @@ func (c *conn) load(name string) (*table, error) {
 	if len(t.columns) == 0 || len(t.key) == 0 {
 		return nil, fmt.Errorf("%w: its table %q has %v columns and a primary key of %v", ErrCacheVersion, t.name, len(t.columns), len(t.key))
 	}
-	if err := c.loadIndexes(t); err != nil {
-		return nil, err
-	}
 	return t, nil
 }
 
-// list the tables of the database, in the order of their names as bytes.
+// list the tables of the database, in the order of their names as bytes, each without its indexes,
+// as [conn.lookUpWithoutIndexes] gives it.
 func (c *conn) list() ([]*table, error) {
 	var names []string
 	if err := c.query(`select name from main.sqlite_schema where type = 'table' order by name collate binary`, func(s *sqlite.Stmt) error {
@@ -809,7 +851,7 @@ func (c *conn) list() ([]*table, error) {
 	}
 	tables := make([]*table, 0, len(names))
 	for _, name := range names {
-		t, err := c.lookUp(name)
+		t, err := c.lookUpWithoutIndexes(name)
 		if err != nil {
 			return nil, err
 		}
@@ -870,16 +912,24 @@ func (c *conn) scan(t *table, lower, upper Bound) iter.Seq2[[]*s4qlpb.Value, err
 }
 
 // upsert the row into the table: insert it, or replace the row with the same primary key. The
-// table has no triggers and no foreign keys, so replacing a row runs nothing else.
+// table has no triggers and no foreign keys, so replacing a row runs nothing else, and no unique
+// index but that of its primary key, so it replaces no other row: [conn.loadIndexes] has refused a
+// table with one, which [table.checkIndexed] makes sure of.
 func (c *conn) upsert(t *table, row []*s4qlpb.Value) error {
+	if err := t.checkIndexed(); err != nil {
+		return err
+	}
 	sql := fmt.Sprint("insert or replace into main.", quote(t.name), " (", t.columnList(t.all()), ") values (", placeholders(len(t.columns)), ")")
 	return c.exec(sql, values(row)...)
 }
 
 // insert the row into the table if the table has no row with the same primary key, and report
 // whether it did. SQLite gives "string or blob too big" for a row that it cannot hold also when the
-// key exists, since it builds the record of the row first.
+// key exists, since it builds the record of the row first. It fails as [table.checkIndexed] does.
 func (c *conn) insert(t *table, row []*s4qlpb.Value) (bool, error) {
+	if err := t.checkIndexed(); err != nil {
+		return false, err
+	}
 	// "on conflict do nothing" skips the row only for its primary key, and a NULL in a column that is
 	// declared "not null" still fails, where "insert or ignore" would skip that row too.
 	sql := fmt.Sprint("insert into main.", quote(t.name), " (", t.columnList(t.all()), ") values (", placeholders(len(t.columns)), ") on conflict do nothing returning 1")
@@ -887,8 +937,12 @@ func (c *conn) insert(t *table, row []*s4qlpb.Value) (bool, error) {
 	return n > 0, err
 }
 
-// delete the row of the table with the given primary key, and report whether there was one.
+// delete the row of the table with the given primary key, and report whether there was one. It
+// fails as [table.checkIndexed] does.
 func (c *conn) delete(t *table, key []*s4qlpb.Value) (bool, error) {
+	if err := t.checkIndexed(); err != nil {
+		return false, err
+	}
 	sql := fmt.Sprint("delete from main.", quote(t.name), " as t where ", t.keyCondition("t"), " returning 1")
 	n, err := c.count(sql, values(key)...)
 	return n > 0, err

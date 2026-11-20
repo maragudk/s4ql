@@ -384,9 +384,9 @@ func (m *memory) state(text func(*s4qlpb.Value) string) string {
 	return b.String()
 }
 
-// NewMemory engine, on a database in memory, and a function that gives the state of the database as
-// text, with each value as its argument gives it.
-func NewMemory(h host.Host) (*Engine, func(text func(*s4qlpb.Value) string) string) {
+// NewMemory engine with the options, on a database in memory, and a function that gives the state of
+// the database as text, with each value as its argument gives it.
+func NewMemory(h host.Host, options Options) (*Engine, func(text func(*s4qlpb.Value) string) string) {
 	m := &memory{tables: map[string]*memTable{}}
-	return newEngine(m, h, Options{}), m.state
+	return newEngine(m, h, options), m.state
 }

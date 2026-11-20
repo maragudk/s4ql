@@ -372,7 +372,7 @@ internal/engine/engine.go Conn.write condition: b.skipUnique => false
 	The planted bugs skipUnique and checkOutside: only checkOutside then plants the write without the check, and only the tests plant either.
 internal/engine/tx.go Conn.writeIn element: skipUnique: c.e.bugs.skipUnique, =>
 	The planted bug skipUnique is then not planted in a write of a transaction that spans statements, and is found by the statements of their own.
-internal/engine/tx.go Conn.writeIn element: , convertReal: c.e.bugs.convertReal =>
+internal/engine/tx.go Conn.writeIn element: convertReal: c.e.bugs.convertReal, =>
 	The planted bug convertReal is then not planted in a write of a transaction that spans statements, and is found by the statements of their own.
 internal/engine/engine.go Conn.checkOutside remove statement: return internalError("the checks outside of a sink of type %T", s) =>
 	The planted bug checkOutside: it runs only for an insert, whose sink is an insert.
@@ -652,92 +652,3 @@ stmt/recognize.go recognizer.leftColumn remove statement: r.accept(ref) =>
 # The WHERE of slice 7 in the engine, internal/engine.
 internal/engine/operator.go filter.holds condition: err != nil => false
 	condition.holds gives false with every error, so !ok gives the error back as well.
-internal/engine/operator.go keyAccess condition: c.op != stmt.OpIsNull && c.op != stmt.OpIsNotNull => true
-	A test for NULL has no value, and HasNull of a nil value is false, so only a comparison with NULL gives no row either way.
-internal/engine/operator.go keyAccess condition: c.op != stmt.OpIsNull => true
-	A test for NULL has no value, and HasNull of a nil value is false, so only a comparison with NULL gives no row either way.
-internal/engine/operator.go keyAccess condition: c.op != stmt.OpIsNotNull => true
-	A test for NULL has no value, and HasNull of a nil value is false, so only a comparison with NULL gives no row either way.
-internal/engine/operator.go build.bind condition: err != nil => false #4
-	checkType has refused every value that is not NULL and of another type than its column, and keyAccess gives no row for NULL before it compares, so tighter compares only values of one kind and keyAccess never fails here.
-internal/engine/operator.go build.bind remove statement: return nil, err => #4
-	checkType has refused every value that is not NULL and of another type than its column, and keyAccess gives no row for NULL before it compares, so tighter compares only values of one kind and keyAccess never fails here.
-
-# The planted bug openBound of slice 7. Its scan gets a bound without a value only from keyAccess,
-# where such a bound is the zero bound, which is closed, and a bound without a value bounds nothing,
-# open or closed. A mutant that opens such a bound too reads the same rows. One that leaves one
-# bound closed plants half of the bug, and the simulation finds it by the other bound.
-internal/engine/bugs.go openBounds.scanRange remove statement: lower.open = lower.open || lower.value != nil =>
-	The planted bug openBound: only a closed upper bound is read as open, and the bug is found by it.
-internal/engine/bugs.go openBounds.scanRange remove statement: upper.open = upper.open || upper.value != nil =>
-	The planted bug openBound: only a closed lower bound is read as open, and the bug is found by it.
-internal/engine/bugs.go openBounds.scanRange operator: lower.open || lower.value != nil => lower.open && lower.value != nil
-	The planted bug openBound: a lower bound stays as it is, only a closed upper bound is read as open, and the bug is found by it.
-internal/engine/bugs.go openBounds.scanRange condition: lower.open => true
-	The planted bug openBound: every lower bound is open, which for a bound without a value bounds nothing, so the scan reads the same rows.
-internal/engine/bugs.go openBounds.scanRange condition: lower.open => false
-	The planted bug openBound: a lower bound with a value is open, and one without is closed, as the zero bound of keyAccess is, so the scan reads the same rows.
-internal/engine/bugs.go openBounds.scanRange condition: lower.open => !lower.open
-	The planted bug openBound: a lower bound with a value is open, and one without, which bounds nothing, is open too, so the scan reads the same rows.
-internal/engine/bugs.go openBounds.scanRange condition: lower.value != nil => true
-	The planted bug openBound: every lower bound is open, which for a bound without a value bounds nothing, so the scan reads the same rows.
-internal/engine/bugs.go openBounds.scanRange condition: lower.value != nil => false
-	The planted bug openBound: a lower bound stays as it is, only a closed upper bound is read as open, and the bug is found by it.
-internal/engine/bugs.go openBounds.scanRange operator: lower.value != nil => lower.value == nil
-	The planted bug openBound: a lower bound with a value stays as it is, one without bounds nothing, only a closed upper bound is read as open, and the bug is found by it.
-internal/engine/bugs.go openBounds.scanRange operator: upper.open || upper.value != nil => upper.open && upper.value != nil
-	The planted bug openBound: an upper bound stays as it is, only a closed lower bound is read as open, and the bug is found by it.
-internal/engine/bugs.go openBounds.scanRange condition: upper.open => true
-	The planted bug openBound: every upper bound is open, which for a bound without a value bounds nothing, so the scan reads the same rows.
-internal/engine/bugs.go openBounds.scanRange condition: upper.open => false
-	The planted bug openBound: an upper bound with a value is open, and one without is closed, as the zero bound of keyAccess is, so the scan reads the same rows.
-internal/engine/bugs.go openBounds.scanRange condition: upper.open => !upper.open
-	The planted bug openBound: an upper bound with a value is open, and one without, which bounds nothing, is open too, so the scan reads the same rows.
-internal/engine/bugs.go openBounds.scanRange condition: upper.value != nil => true
-	The planted bug openBound: every upper bound is open, which for a bound without a value bounds nothing, so the scan reads the same rows.
-internal/engine/bugs.go openBounds.scanRange condition: upper.value != nil => false
-	The planted bug openBound: an upper bound stays as it is, only a closed lower bound is read as open, and the bug is found by it.
-internal/engine/bugs.go openBounds.scanRange operator: upper.value != nil => upper.value == nil
-	The planted bug openBound: an upper bound with a value stays as it is, one without bounds nothing, only a closed lower bound is read as open, and the bug is found by it.
-internal/engine/bugs.go openBounds.scanRange swap arguments: o.reader.scanRange(ctx, name, lower, upper) => o.reader.scanRange(ctx, name, upper, lower)
-	The planted bug openBound: the scan takes the upper bound as the lower one and the other way round, another wrong scan, which leaves out rows that the filter would give, and the bug is found by it.
-
-# The scan by the key of slice 7 in the storage core, internal/core.
-internal/core/cache.go conn.scan remove statement: sql += " order by " + t.columnList(t.key) =>
-	Every table of the cache is WITHOUT ROWID and has no index of its own, so SQLite reads it, whole or between bounds of the key, in the b-tree of its primary key, which is in the order of the key.
-internal/core/cache.go conn.scan swap arguments: fmt.Sprint(quote(t.columns[t.key[0]].name), " ", op, " ?", len(args)) => fmt.Sprint(" ", quote(t.columns[t.key[0]].name), op, " ?", len(args))
-	Only the spaces of the SQL move.
-internal/core/cache.go conn.scan swap arguments: fmt.Sprint(quote(t.columns[t.key[0]].name), " ", op, " ?", len(args)) => fmt.Sprint(quote(t.columns[t.key[0]].name), op, " ", " ?", len(args))
-	Only the spaces of the SQL move.
-internal/core/cache.go conn.scan condition: err != nil => false
-	No test can reach it: the scan's table was looked up in the same transaction, after its last change of the schema, by a query of sqlite_schema, so SQLite has the schema and the prepare reads no file; it fails only for want of memory. TestScanRange fails every read after the look-up, and the step fails.
-internal/core/cache.go conn.scan remove statement: yield(nil, err) =>
-	No test can reach it: the scan's table was looked up in the same transaction, after its last change of the schema, by a query of sqlite_schema, so SQLite has the schema and the prepare reads no file; it fails only for want of memory. TestScanRange fails every read after the look-up, and the step fails.
-internal/core/cache.go conn.scan remove statement: return =>
-	No test can reach it: the scan's table was looked up in the same transaction, after its last change of the schema, by a query of sqlite_schema, so SQLite has the schema and the prepare reads no file; it fails only for want of memory. TestScanRange fails every read after the look-up, and the step fails.
-internal/core/cache.go conn.scan condition: err != nil => false #2
-	No test can reach it: checkBounds has refused every bound that bind would refuse, a value of no kind and a text or a blob longer than the limit, so bind fails only for want of memory.
-internal/core/cache.go conn.scan remove statement: _ = c.rest(sql, s) =>
-	No test can reach it: checkBounds has refused every bound that bind would refuse, a value of no kind and a text or a blob longer than the limit, so bind fails only for want of memory.
-internal/core/cache.go conn.scan remove statement: yield(nil, err) => #2
-	No test can reach it: checkBounds has refused every bound that bind would refuse, a value of no kind and a text or a blob longer than the limit, so bind fails only for want of memory.
-internal/core/cache.go conn.scan remove statement: return => #2
-	No test can reach it: checkBounds has refused every bound that bind would refuse, a value of no kind and a text or a blob longer than the limit, so bind fails only for want of memory.
-internal/core/cache.go conn.scan condition: err != nil => false #3
-	A step that fails gives false, and rest then resets the statement, whose reset gives the error of the step again, and finalizes it, so the scan ends with the same error and frees the statement either way.
-internal/core/cache.go conn.scan remove statement: s = nil =>
-	The deferred rest then resets the finalized statement, which the binding refuses without a call of SQLite, and the error of that is ignored.
-internal/core/cache.go conn.scan condition: err != nil => false #4
-	The step before gave the end of the rows without an error, and the reset, and a finalize of a second statement of the same SQL, give the error of that step, which is none.
-internal/core/cache.go conn.scan remove statement: yield(nil, err) => #4
-	The step before gave the end of the rows without an error, and the reset, and a finalize of a second statement of the same SQL, give the error of that step, which is none.
-internal/core/cache.go conn.scan condition: err != nil => false #5
-	readRow fails only for a value of no fundamental type of SQLite, which sqlite3_column_type never gives.
-internal/core/cache.go conn.scan remove statement: _ = c.rest(sql, s) => #3
-	readRow fails only for a value of no fundamental type of SQLite, which sqlite3_column_type never gives.
-internal/core/cache.go conn.scan remove statement: s = nil => #3
-	readRow fails only for a value of no fundamental type of SQLite, which sqlite3_column_type never gives.
-internal/core/cache.go conn.scan remove statement: yield(nil, err) => #5
-	readRow fails only for a value of no fundamental type of SQLite, which sqlite3_column_type never gives.
-internal/core/cache.go conn.scan remove statement: return => #5
-	readRow fails only for a value of no fundamental type of SQLite, which sqlite3_column_type never gives.

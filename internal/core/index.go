@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -59,15 +60,18 @@ func (t *table) scanKey(ix *index) []keyColumn {
 }
 
 // index of the table with the given name, compared as SQLite compares names, or nil if the table
-// has none.
-func (t *table) index(name string) *index {
+// has none. It fails as [table.checkIndexed] does.
+func (t *table) index(name string) (*index, error) {
+	if err := t.checkIndexed(); err != nil {
+		return nil, err
+	}
 	folded := fold(name)
 	for _, ix := range t.indexes {
 		if fold(ix.name) == folded {
-			return ix
+			return ix, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // createIndex that describes the index ix of the table, as a commit object holds it: a column in
@@ -84,13 +88,17 @@ func (t *table) createIndex(ix *index) *s4qlpb.CreateIndex {
 	return ci.Build()
 }
 
-// createIndexes that describe the indexes of the table, in the order in which they were created.
-func (t *table) createIndexes() []*s4qlpb.CreateIndex {
+// createIndexes that describe the indexes of the table, in the order in which they were created. It
+// fails as [table.checkIndexed] does.
+func (t *table) createIndexes() ([]*s4qlpb.CreateIndex, error) {
+	if err := t.checkIndexed(); err != nil {
+		return nil, err
+	}
 	cis := make([]*s4qlpb.CreateIndex, len(t.indexes))
 	for i, ix := range t.indexes {
 		cis[i] = t.createIndex(ix)
 	}
-	return cis
+	return cis, nil
 }
 
 // newIndex of the table from the data of a create index, or an error that says which of its columns
@@ -121,11 +129,17 @@ func (t *table) createIndexSQL(ix *index) string {
 	return fmt.Sprint("create index main.", quote(ix.name), " on ", quote(t.name), " (", strings.Join(terms, ", "), ")")
 }
 
-// loadIndexes of the table t from the schema of the cache, in the order in which they were created,
-// and the name that SQLite gives the index of its primary key, which a scan names to read the table
-// in the order of its key. It refuses an index that this package does not make with
-// [ErrCacheVersion]: one that is unique or partial, on an expression, with a collation, with a
-// column twice, or with a reserved name.
+// loadIndexes of the table t from the schema of the cache, unless t has them: its indexes in the
+// order in which they were created, and the name that SQLite gives the index of its primary key,
+// which a scan names to read the table in the order of its key. It refuses an index that this
+// package does not make with [ErrCacheVersion]: one that is unique or partial, on an expression,
+// with a collation, with a column twice, or with a reserved name. A table that it refuses stays
+// without its indexes, and the next call that needs them refuses it again.
+//
+// It runs when a call first needs the indexes of the table, which is before the call writes a row
+// of the table, scans it, or reads an index of it: see [conn.lookUp]. A unique index that this
+// package did not make would let the upsert of a row replace another row, so no row is written to
+// a table whose indexes it has not read.
 //
 // The order of creation is the order of the rowids in sqlite_schema. SQLite gives a new row of a
 // table the rowid after the largest one in the table (https://sqlite.org/autoinc.html), so an index
@@ -133,12 +147,16 @@ func (t *table) createIndexSQL(ix *index) string {
 // indexes and tables were dropped. The index of the primary key of a table without a rowid is the
 // table itself, and has a name and no row there.
 func (c *conn) loadIndexes(t *table) error {
+	if t.indexed {
+		return nil
+	}
+	var primary string
 	var names []string
-	if err := c.query(`select l.name, l."unique", l.origin, l.partial, s.rowid from pragma_index_list(?1, 'main') as l
+	if err := c.readSchema(`select l.name, l."unique", l.origin, l.partial, s.rowid from pragma_index_list(?1, 'main') as l
 		left join main.sqlite_schema as s on s.type = 'index' and s.name = l.name order by s.rowid`, func(s *sqlite.Stmt) error {
 		name, schemaless := s.ColumnText(0), s.ColumnType(4) == sqlite.TypeNull
-		if s.ColumnText(2) == "pk" && schemaless && t.primary == "" {
-			t.primary = name
+		if s.ColumnText(2) == "pk" && schemaless && primary == "" {
+			primary = name
 			return nil
 		}
 		if s.ColumnText(2) != "c" || s.ColumnInt64(1) != 0 || s.ColumnInt64(3) != 0 || schemaless || reserved(name) {
@@ -149,14 +167,15 @@ func (c *conn) loadIndexes(t *table) error {
 	}, t.name); err != nil {
 		return err
 	}
-	if t.primary == "" {
+	if primary == "" {
 		return fmt.Errorf("%w: its table %q has no index of its primary key", ErrCacheVersion, t.name)
 	}
 
+	var indexes []*index
 	for _, name := range names {
 		ix := &index{name: name}
 		held := make([]bool, len(t.columns))
-		if err := c.query(`select cid, "desc", coll, key from pragma_index_xinfo(?1, 'main') order by seqno`, func(s *sqlite.Stmt) error {
+		if err := c.readSchema(`select cid, "desc", coll, key from pragma_index_xinfo(?1, 'main') order by seqno`, func(s *sqlite.Stmt) error {
 			if s.ColumnInt64(3) == 0 {
 				// A column of the primary key, which SQLite adds to the key of the index.
 				return nil
@@ -179,8 +198,9 @@ func (c *conn) loadIndexes(t *table) error {
 		if len(ix.columns) == 0 {
 			return fmt.Errorf("%w: the index %q of its table %q has no columns", ErrCacheVersion, name, t.name)
 		}
-		t.indexes = append(t.indexes, ix)
+		indexes = append(indexes, ix)
 	}
+	t.indexes, t.primary, t.indexed = indexes, primary, true
 	return nil
 }
 
@@ -206,7 +226,10 @@ func (c *conn) lookUpIndex(name string) (*table, *index, error) {
 	if t == nil {
 		return nil, nil, fmt.Errorf("%w: its index %q is on the table %q, which cannot be found", ErrCacheVersion, name, owner)
 	}
-	ix := t.index(name)
+	ix, err := t.index(name)
+	if err != nil {
+		return nil, nil, err
+	}
 	if ix == nil {
 		return nil, nil, fmt.Errorf("%w: its index %q is listed and cannot be found on its table %q", ErrCacheVersion, name, t.name)
 	}
@@ -226,25 +249,24 @@ func (c *conn) indexNames() ([]string, error) {
 	return names, err
 }
 
-// createIndex ix of the table t in the cache, which builds it from the rows of the table.
+// createIndex ix of the table t in the cache, which builds it from the rows of the table. SQLite
+// keeps the statement in its schema, without the name of the schema, and a connection under the
+// length limit cannot load a schema with a longer text, so an index whose statement is longer than
+// the limit is refused before anything changes, with an error that wraps [ErrInvalid], as
+// [conn.create] refuses such a table. A statement within the limit runs as [conn.changeSchema]
+// says, since SQLite formats the statement that writes the index into its schema under the limit
+// too.
 func (c *conn) createIndex(t *table, ix *index) error {
-	// A statement that changes the schema is not kept, and those at rest are prepared again.
-	c.forget()
-	if err := c.c.Exec(t.createIndexSQL(ix)); err != nil {
-		return err
+	sql := t.createIndexSQL(ix)
+	if kept := len(sql) - len("main."); kept > c.limit {
+		return invalidf("an index whose statement in the cache is %v bytes, where the limit is %v", kept, c.limit)
 	}
-	c.forget()
-	return nil
+	return c.changeSchema(sql)
 }
 
 // dropIndex ix from the cache.
 func (c *conn) dropIndex(ix *index) error {
-	c.forget()
-	if err := c.c.Exec(fmt.Sprint("drop index main.", quote(ix.name))); err != nil {
-		return err
-	}
-	c.forget()
-	return nil
+	return c.changeSchema(fmt.Sprint("drop index main.", quote(ix.name)))
 }
 
 // checkCreateIndex is one that a commit object can hold. Its error wraps [ErrInvalid].
@@ -272,7 +294,8 @@ func checkCreateIndex(ci *s4qlpb.CreateIndex, commitTime time.Time) error {
 // starts with "s4ql_" or "sqlite_", [ErrTableExists] if a table has the name, and [ErrIndexExists]
 // if an index has it, each compared as SQLite compares names, and then [ErrInvalid] for an index
 // that the database cannot hold: one without a name or without columns, with a column twice, with
-// more than 250 columns, or with a column that the table does not have.
+// more than 250 columns, with a column that the table does not have, or whose statement in the
+// cache is longer than the length limit. After each of these the transaction goes on.
 func (tx *Tx) CreateIndex(ctx context.Context, ci *s4qlpb.CreateIndex) error {
 	const operation = "create index"
 	if err := tx.check(ctx, operation); err != nil {
@@ -297,6 +320,10 @@ func (tx *Tx) CreateIndex(ctx context.Context, ci *s4qlpb.CreateIndex) error {
 		return invalidf("an index on %v", err)
 	}
 	if err := tx.c.createIndex(t, ix); err != nil {
+		if errors.Is(err, ErrInvalid) {
+			// The cache refused the index before it changed anything.
+			return err
+		}
 		return tx.fail(ctx, operation, err)
 	}
 	if tx.createdIndexes == nil {
@@ -365,11 +392,16 @@ func (tx *Tx) restoreIndexes(sp *savepoint) {
 }
 
 // forgetIndexes of the table t, which the transaction is about to drop: those that it created are
-// gone with the table, and leave nothing in its commit object.
-func (tx *Tx) forgetIndexes(t *table) {
+// gone with the table, and leave nothing in its commit object. It fails as [table.checkIndexed]
+// does.
+func (tx *Tx) forgetIndexes(t *table) error {
+	if err := t.checkIndexed(); err != nil {
+		return err
+	}
 	for _, ix := range t.indexes {
 		delete(tx.createdIndexes, fold(ix.name))
 	}
+	return nil
 }
 
 // spoolCreatedIndexes writes the indexes that the transaction created and that are there, in the
@@ -418,7 +450,8 @@ func (tx *Tx) Indexes(ctx context.Context, name string) ([]*s4qlpb.CreateIndex, 
 	if err != nil {
 		return nil, err
 	}
-	return t.createIndexes(), nil
+	cis, err := t.createIndexes()
+	return cis, tx.fail(ctx, operation, err)
 }
 
 // Index with the given name, as the transaction sees it, or an error that wraps [ErrNoIndex].
@@ -441,15 +474,17 @@ func (tx *Tx) Index(ctx context.Context, name string) (*s4qlpb.CreateIndex, erro
 // Indexes of the table with the given name, in the order in which they were created, which is the
 // same on every instance. It fails with an error that wraps [ErrNoTable] if there is no such table.
 func (r *ReadTx) Indexes(ctx context.Context, name string) ([]*s4qlpb.CreateIndex, error) {
+	const operation = "indexes"
 	if err := r.check(); err != nil {
 		return nil, err
 	}
 	defer r.leave()
-	t, err := r.table(ctx, "indexes", name)
+	t, err := r.table(ctx, operation, name)
 	if err != nil {
 		return nil, err
 	}
-	return t.createIndexes(), nil
+	cis, err := t.createIndexes()
+	return cis, r.d.cacheError(ctx, operation, err)
 }
 
 // Index with the given name, or an error that wraps [ErrNoIndex].
@@ -600,7 +635,8 @@ func scanConditions(names []string, scan IndexScan) (conditions []string, args [
 }
 
 // scanSQL is the statement of a scan of the table by its index ix, or by its primary key if ix is
-// nil, which [table.checkScan] has accepted, with the arguments of its parameters.
+// nil, which [table.checkScan] has accepted, with the arguments of its parameters. It fails as
+// [table.checkIndexed] does.
 //
 // SQLite must read exactly that index, and seek exactly the bounds. The statement therefore names
 // the index with "indexed by", which leaves SQLite no other, and names the index of the primary
@@ -611,7 +647,10 @@ func scanConditions(names []string, scan IndexScan) (conditions []string, args [
 // SQLite reads the index, so it sorts nothing: unless those columns are more than 63, which is the
 // most that SQLite compares with the order of an index, and it then reads the same rows and sorts
 // them.
-func (t *table) scanSQL(ix *index, scan IndexScan) (string, []any) {
+func (t *table) scanSQL(ix *index, scan IndexScan) (string, []any, error) {
+	if err := t.checkIndexed(); err != nil {
+		return "", nil, err
+	}
 	key := t.scanKey(ix)
 	names := make([]string, len(key))
 	for i, c := range key {
@@ -637,7 +676,7 @@ func (t *table) scanSQL(ix *index, scan IndexScan) (string, []any) {
 	if len(order) > 0 {
 		sql += " order by " + strings.Join(order, ", ")
 	}
-	return sql, args
+	return sql, args, nil
 }
 
 // scanIndex reads the rows of the table by its index ix, or by its primary key if ix is nil, as
@@ -648,7 +687,11 @@ func (t *table) scanSQL(ix *index, scan IndexScan) (string, []any) {
 // close.
 func (c *conn) scanIndex(t *table, ix *index, scan IndexScan, read *int64) iter.Seq2[[]*s4qlpb.Value, error] {
 	return func(yield func([]*s4qlpb.Value, error) bool) {
-		sql, args := t.scanSQL(ix, scan)
+		sql, args, err := t.scanSQL(ix, scan)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
 		s, err := c.prepare(sql)
 		if err != nil {
 			yield(nil, err)
@@ -705,7 +748,11 @@ func (c *conn) scanIndex(t *table, ix *index, scan IndexScan, read *int64) iter.
 func scanned(t *table, scan IndexScan, limit int) (*index, error) {
 	var ix *index
 	if scan.Index != "" {
-		if ix = t.index(scan.Index); ix == nil {
+		var err error
+		if ix, err = t.index(scan.Index); err != nil {
+			return nil, err
+		}
+		if ix == nil {
 			return nil, fmt.Errorf("%w: %q on the table %q", ErrNoIndex, scan.Index, t.name)
 		}
 	}
@@ -715,11 +762,13 @@ func scanned(t *table, scan IndexScan, limit int) (*index, error) {
 // ScanIndex is [ReadTx.Scan] by an index of the table, or by its primary key, of the rows that scan
 // says, in the order of the key of the index, or its reverse: see [IndexScan]. The cache reads
 // exactly that index, and seeks the bounds in it, so the scan reads no more rows than are within
-// them: [ReadTx.RowsRead] counts them. The sequence ends with an error that wraps [ErrNoTable] if
-// there is no such table, [ErrNoIndex] if the table has no such index, [ErrInvalid] for a scan that
-// pins more columns than the key has, for a bound after the last column of the key or that is
-// NULL, and for a value that the column does not hold, and [ErrTooBig] for a text or a blob that is
-// longer than SQLite takes.
+// them: [ReadTx.RowsRead] counts them. For a key with more than 63 columns that the scan does not
+// pin, SQLite sorts the rows, and reads every row within the bounds before it gives the first, so a
+// loop over the sequence that stops early has still read them all. The sequence ends with an error
+// that wraps [ErrNoTable] if there is no such table, [ErrNoIndex] if the table has no such index,
+// [ErrInvalid] for a scan that pins more columns than the key has, for a bound after the last
+// column of the key or that is NULL, and for a value that the column does not hold, and
+// [ErrTooBig] for a text or a blob that is longer than SQLite takes.
 func (r *ReadTx) ScanIndex(ctx context.Context, name string, scan IndexScan) iter.Seq2[[]*s4qlpb.Value, error] {
 	return r.scan(ctx, name, func(t *table) (*index, IndexScan, error) {
 		ix, err := scanned(t, scan, r.c.limit)
@@ -771,13 +820,19 @@ func (r *ReadTx) scan(ctx context.Context, name string, plan func(t *table) (*in
 // It counts the rows that SQLite gave, and not the entries of an index that SQLite looked at to
 // find them. The two are the same while SQLite seeks every bound of a scan, which the statement of
 // [table.scanSQL] is written for and which the tests check with SQLite's plan of it.
+//
+// A scan whose key has more than 63 columns that the scan does not pin is the exception: SQLite
+// sorts its rows, as [table.scanSQL] says, and reads every row within the bounds of the scan
+// before it gives the first. A loop over such a scan that stops early has made SQLite read them
+// all, and RowsRead counts only the rows that the loop stepped to.
 func (r *ReadTx) RowsRead() int64 {
 	return r.read
 }
 
 // ScanIndex is [Tx.Scan] by an index of the table, or by its primary key, as the transaction sees
-// the rows, and as [ReadTx.ScanIndex] reads and fails. The transaction must not create or drop an
-// index or a table while it scans.
+// the rows, and as [ReadTx.ScanIndex] reads and fails, also where SQLite sorts the rows and so
+// reads every row within the bounds before it gives the first. The transaction must not create or
+// drop an index or a table while it scans.
 func (tx *Tx) ScanIndex(ctx context.Context, name string, scan IndexScan) iter.Seq2[[]*s4qlpb.Value, error] {
 	return tx.scan(ctx, name, func(t *table) (*index, IndexScan, error) {
 		ix, err := scanned(t, scan, tx.c.limit)
@@ -824,8 +879,9 @@ func (tx *Tx) scan(ctx context.Context, name string, plan func(t *table) (*index
 }
 
 // RowsRead is the number of rows that the transaction has read from the cache so far for its
-// caller, as [ReadTx.RowsRead] counts them: by its scans and by [Tx.Get], and not by its writes or
-// its commit.
+// caller: by its scans and by [Tx.Get], and not by its writes or its commit. It counts them as
+// [ReadTx.RowsRead] does, also for a scan whose rows SQLite sorts, of which it counts only the rows
+// that the loop stepped to.
 func (tx *Tx) RowsRead() int64 {
 	return tx.read
 }

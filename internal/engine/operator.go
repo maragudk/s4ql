@@ -429,6 +429,8 @@ type update struct {
 	positions []int
 	values    []*s4qlpb.Value
 	exprs     []Expr
+	// bugs planted in the update, for the tests of this package.
+	bugs bugs
 }
 
 // check the values that the update sets as SQLite's constraint checks do, and as [insert.check]
@@ -468,7 +470,7 @@ func (u *update) check(ctx context.Context) error {
 
 func (u *update) run(ctx context.Context) (int64, error) {
 	name := u.table.GetTable()
-	return changeRows(ctx, u.w, name, u.key, u.src, func(key []*s4qlpb.Value) error {
+	return changeRows(ctx, u.w, name, u.key, u.src, u.bugs, func(key []*s4qlpb.Value) error {
 		old, err := u.w.get(ctx, name, key)
 		if err != nil {
 			return err
@@ -490,9 +492,12 @@ func (u *update) run(ctx context.Context) (int64, error) {
 		// A row under a new key is the old row deleted and the new one inserted, which the statement's
 		// savepoint takes back if it fails. The storage measures the record of the new row before it
 		// looks for its key, as SQLite does.
-		if _, err := u.w.delete(ctx, name, key); err != nil {
-			return err
+		if !u.bugs.keepOldKey {
+			if _, err := u.w.delete(ctx, name, key); err != nil {
+				return err
+			}
 		}
+		// Else the planted bug: the row of the old key stays.
 		inserted, err := u.w.insertNew(ctx, name, row)
 		if err != nil {
 			return err
@@ -512,13 +517,15 @@ type remove struct {
 	// key is the position of the column of the primary key of the table.
 	key int
 	src source
+	// bugs planted in the delete, for the tests of this package.
+	bugs bugs
 }
 
 func (r *remove) check(context.Context) error { return nil }
 
 func (r *remove) run(ctx context.Context) (int64, error) {
 	name := r.table.GetTable()
-	return changeRows(ctx, r.w, name, r.key, r.src, func(key []*s4qlpb.Value) error {
+	return changeRows(ctx, r.w, name, r.key, r.src, r.bugs, func(key []*s4qlpb.Value) error {
 		found, err := r.w.delete(ctx, name, key)
 		if err == nil && !found {
 			return internalError("the row of a key that a delete found is gone")
@@ -542,8 +549,13 @@ func finds(ctx context.Context, src source) (bool, error) {
 // it, which SQLite leaves undefined, and a row that change writes, also under a new key, is not in
 // the set: each row that src gives is changed once, as SQLite changes each row that it finds once,
 // also when change writes the columns that the conditions of src read. The set is in the storage,
-// so a statement changes any number of rows without holding them in memory.
-func changeRows(ctx context.Context, w writer, name string, key int, src source, change func(key []*s4qlpb.Value) error) (int64, error) {
+// so a statement changes any number of rows without holding them in memory. The bugs b are those
+// planted in the statement.
+func changeRows(ctx context.Context, w writer, name string, key int, src source, b bugs, change func(key []*s4qlpb.Value) error) (int64, error) {
+	if b.changeNothing {
+		// The planted bug: the statement finds no row.
+		return 0, nil
+	}
 	var n int64
 	err := w.keys(ctx, name, func(k keySet) error {
 		for row, err := range src.rows(ctx) {
@@ -588,6 +600,8 @@ type build struct {
 	args  []*s4qlpb.Value
 	limit int
 	how   reading
+	// bugs planted in an update and a delete, for the tests of this package.
+	bugs bugs
 }
 
 // node: the source of the rows of the node n of a query.
@@ -857,9 +871,9 @@ func null() *s4qlpb.Value {
 func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bugs, limit int, how reading) (sink, error) {
 	switch p := p.(type) {
 	case *Update:
-		return build{r: w, args: args, limit: limit, how: how}.change(ctx, w, p.Source, p.Set, true)
+		return build{r: w, args: args, limit: limit, how: how, bugs: b}.change(ctx, w, p.Source, p.Set, true)
 	case *Delete:
-		return build{r: w, args: args, limit: limit, how: how}.change(ctx, w, p.Source, nil, false)
+		return build{r: w, args: args, limit: limit, how: how, bugs: b}.change(ctx, w, p.Source, nil, false)
 	case *CreateIndex:
 		return buildCreateIndex(ctx, w, p, limit)
 	case *DropIndex:
@@ -1064,12 +1078,12 @@ func (b build) change(ctx context.Context, w writer, source Node, set []Assignme
 		}
 	}
 	if !isUpdate {
-		return &remove{w: w, table: t, key: int(key[0]), src: src}, nil
+		return &remove{w: w, table: t, key: int(key[0]), src: src, bugs: b.bugs}, nil
 	}
 	if len(set) == 0 {
 		return nil, internalError("an update that sets no column")
 	}
-	return &update{w: w, table: t, key: int(key[0]), src: src, positions: positions, values: values, exprs: exprs}, nil
+	return &update{w: w, table: t, key: int(key[0]), src: src, positions: positions, values: values, exprs: exprs, bugs: b.bugs}, nil
 }
 
 // maxIndexColumns is the largest number of columns of an index that the storage holds, where SQLite
