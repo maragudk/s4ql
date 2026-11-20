@@ -15,12 +15,13 @@
 //     statement and no error.
 //
 // The supported statements are those of slices 1 and 2 of docs/roadmap.md, with the column types and
-// the literals of slice 4, the columns of slice 5, and the NULL of slice 6. The README next to this
-// file defines them token for token, and lists the names that a "not supported" error gives.
+// the literals of slice 4, the columns of slice 5, the NULL of slice 6, and the WHERE of slice 7. The
+// README next to this file defines them token for token, and lists the names that a "not supported"
+// error gives.
 //
 // Names compare as SQLite compares them, by [Name.Fold]. What a statement means for a table, such as
-// whether its columns exist or its values are as many as the columns, is not decided here, since it
-// depends on the database.
+// whether its columns exist, its values are as many as the columns, or a value has the type of its
+// column, is not decided here, since it depends on the database.
 //
 // A statement is built only from what the pass has recognized. The pass reads the syntax tree of
 // internal/sql/parser in the order of the text and takes each token that the supported form expects
@@ -250,7 +251,8 @@ type Insert struct {
 	Values []Term
 }
 
-// Term of a row: the literal Value, or the argument of a parameter if Parameter is not 0.
+// Term of a row, or of a [Condition]: the literal Value, or the argument of a parameter if Parameter
+// is not 0.
 type Term struct {
 	// Value of the literal, and nil for a parameter. The literal NULL has the value [Null], never nil.
 	Value Value
@@ -262,13 +264,68 @@ type Term struct {
 	Span Span
 }
 
-// Select of every row of one table, with the columns that it names, or every column.
+// Select of the rows of one table that meet the conditions of its WHERE clause, or of every row, with
+// the columns that it names, or every column.
 type Select struct {
 	Span  Span
 	Table Name
 	// Columns that the select list names, in the order of the text, each as often as the list names
 	// it, or nil for *, which is every column in the order of the table.
 	Columns []Name
+	// Where holds the conditions of the WHERE clause, in the order of the text, which are joined by
+	// AND, so that a row is read only if it meets every one, or nil if the statement has no WHERE.
+	// Two of them may test one column.
+	Where []Condition
+}
+
+// Condition of a WHERE clause: a column compared with a value, or tested for NULL.
+type Condition struct {
+	// Column that the condition tests, which is on the left of its operator. Whether the table has it
+	// is not decided here.
+	Column Name
+	// Operator of the condition.
+	Operator Operator
+	// Value that the column is compared with, a literal or a parameter, as a value of an insert is.
+	// For [OpIsNull] and [OpIsNotNull] it is the zero Term, which is neither.
+	Value Term
+}
+
+// Operator of a [Condition]. The zero value is no operator.
+type Operator int
+
+// The operators of a condition. SQLite reads = and == as one operator, and != and <> as one.
+const (
+	OpEqual Operator = iota + 1
+	OpNotEqual
+	OpLess
+	OpLessOrEqual
+	OpGreater
+	OpGreaterOrEqual
+	OpIsNull
+	OpIsNotNull
+)
+
+// String of the operator as SQL writes it, such as = or IS NOT NULL, or "" for no operator.
+func (o Operator) String() string {
+	switch o {
+	case OpEqual:
+		return "="
+	case OpNotEqual:
+		return "!="
+	case OpLess:
+		return "<"
+	case OpLessOrEqual:
+		return "<="
+	case OpGreater:
+		return ">"
+	case OpGreaterOrEqual:
+		return ">="
+	case OpIsNull:
+		return "IS NULL"
+	case OpIsNotNull:
+		return "IS NOT NULL"
+	}
+	return ""
 }
 
 // DropTable of one table.
@@ -303,8 +360,16 @@ func (s *Insert) Parameters() int {
 	return n
 }
 
-// Parameters of the statement, which has none.
-func (s *Select) Parameters() int { return 0 }
+// Parameters of the statement: the number of the values of its conditions that are a parameter.
+func (s *Select) Parameters() int {
+	n := 0
+	for _, c := range s.Where {
+		if c.Value.Parameter > 0 {
+			n++
+		}
+	}
+	return n
+}
 
 // Parameters of the statement, which has none.
 func (s *DropTable) Parameters() int { return 0 }

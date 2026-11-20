@@ -317,7 +317,7 @@ A test checks that every name the pass gives in any test is in these tables.
 | `INSERT with SELECT` | INSERT has a SELECT in place of VALUES. |
 | `+ sign` | The value has a `+` sign, but before NULL. |
 | `~ operator` | The value has a `~`, also after its `-`. |
-| `NOT operator` | The value has a NOT, also after its `-`. |
+| `NOT operator` | The value has a NOT, also after its `-`, or a condition of WHERE starts with NOT. |
 | `second sign` | The value has a `+` or `-` after its `-`. |
 | `hex literal` | The value is a hex literal. |
 | `number with a digit separator` | The value has a digit separator. |
@@ -325,7 +325,7 @@ A test checks that every name the pass gives in any test is in these tables.
 | `infinite real number` | The value is a real number that SQLite reads as an infinity, such as `1e999`. |
 | `string after a sign` | The value is a string after its `-`. |
 | `blob after a sign` | The value is a blob after its `-`. |
-| `TRUE or FALSE` | The value of INSERT, or a result column of SELECT, is the bare word TRUE or FALSE, which SQLite reads as 1 or 0. |
+| `TRUE or FALSE` | The value of INSERT, a result column of SELECT, or a condition of WHERE, its column, or its value, is the bare word TRUE or FALSE, which SQLite reads as 1 or 0. |
 | `NULL after a sign` | The value is NULL after a `-` or a `+`, which SQLite reads as NULL. |
 | `current date or time` | The value is CURRENT_DATE, CURRENT_TIME, or CURRENT_TIMESTAMP. |
 | `numbered parameter` | The value is a parameter with a number, such as `?1`. |
@@ -335,6 +335,13 @@ A test checks that every name the pass gives in any test is in these tables.
 | `result column other than a column or *` | SELECT has a result column that is not the bare name of a column or `*`, such as `1`, `v + 1`, `t.v`, or `t.*`. |
 | `* and another result column` | SELECT has `*` and another result column. |
 | `SELECT without FROM` | SELECT has no FROM. |
+| `value on the left of a comparison` | A condition of WHERE has a literal or a parameter on the left, also after a sign, as in `1 = v` or `null is null`. |
+| `column compared with a column` | A comparison of WHERE has a column on the right, also in double quotes or with the name of its table, as in `v = w`. |
+| `column with the name of a table` | The column of a condition of WHERE has the name of its table before it, as in `t.v = 1`. |
+| `OR` | WHERE has OR. The offset is that of the first OR, after the conditions before it. |
+| `IS DISTINCT FROM` | A condition of WHERE is IS DISTINCT FROM or IS NOT DISTINCT FROM. The offset is that of DISTINCT. |
+| `IS with a value other than NULL` | A condition of WHERE is IS or IS NOT with a literal other than NULL, a parameter, a name, or a value after a sign, as in `v is 1` or `v is true`. |
+| `WHERE deeper than SQLite's limit` | The conditions of WHERE make an expression deeper than 1,000, `SQLITE_MAX_EXPR_DEPTH`. SQLite gives `Expression tree is too large (maximum depth 1000)`. The offset is that of the AND that makes it too deep. |
 | `DROP VIEW` | The statement is DROP VIEW. |
 | `DROP INDEX` | The statement is DROP INDEX. |
 | `DROP TRIGGER` | The statement is DROP TRIGGER. |

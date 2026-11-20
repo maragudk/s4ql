@@ -158,14 +158,22 @@ func TestCheck_reals(t *testing.T) {
 	is.True(t, answers["real"] > n/2 && answers["infinite"] > 0)
 }
 
-// FuzzLiteral checks the value of any literal that the pass supports as a value of an insert against
-// the value that SQLite gives it. A text with commas is several values.
+// FuzzLiteral checks the value of any literal that the pass supports as a value of an insert, or of a
+// condition of WHERE, against the value that SQLite gives it. A text with commas is several values of
+// an insert, and a text with AND several conditions.
 func FuzzLiteral(f *testing.F) {
 	for _, c := range checkCases {
-		if s, ok := c.want.(*stmt.Insert); ok {
+		switch s := c.want.(type) {
+		case *stmt.Insert:
 			for _, v := range s.Values {
 				if v.Parameter == 0 {
 					f.Add(c.src[v.Span.Start:v.Span.End])
+				}
+			}
+		case *stmt.Select:
+			for _, w := range s.Where {
+				if w.Value.Value != nil {
+					f.Add(c.src[w.Value.Span.Start:w.Value.Span.End])
 				}
 			}
 		}
@@ -181,24 +189,41 @@ func FuzzLiteral(f *testing.F) {
 	nullText, _ := stmttest.Literal(r, stmt.Null{})
 	f.Add(nullText)
 	f.Fuzz(func(t *testing.T, lit string) {
-		src := "insert into t (v) values (" + lit + ")"
-		s, err := stmt.Check(src)
-		if err != nil {
-			return
-		}
-		insert, ok := s.(*stmt.Insert)
-		if !ok {
-			return
-		}
-		d := openUnmanaged(t)
-		defer func() { _ = d.c.Close() }()
-		for _, v := range insert.Values {
-			if v.Parameter > 0 {
-				continue
+		var d *db
+		defer func() {
+			if d != nil {
+				_ = d.c.Close()
 			}
-			value := src[v.Span.Start:v.Span.End]
-			if got, want := show(v.Value), show(d.value("select "+value)); got != want {
-				t.Fatalf("%q: gives %v, and SQLite %v", value, got, want)
+		}()
+		// check the value of each literal of terms in src against the value that SQLite gives its text.
+		check := func(src string, terms []stmt.Term) {
+			for _, v := range terms {
+				if v.Parameter > 0 || v.Value == nil {
+					continue
+				}
+				if d == nil {
+					d = openUnmanaged(t)
+				}
+				value := src[v.Span.Start:v.Span.End]
+				if got, want := show(v.Value), show(d.value("select "+value)); got != want {
+					t.Fatalf("%q: gives %v, and SQLite %v", value, got, want)
+				}
+			}
+		}
+		src := "insert into t (v) values (" + lit + ")"
+		if s, err := stmt.Check(src); err == nil {
+			if insert, ok := s.(*stmt.Insert); ok {
+				check(src, insert.Values)
+			}
+		}
+		src = "select * from t where v = " + lit
+		if s, err := stmt.Check(src); err == nil {
+			if sel, ok := s.(*stmt.Select); ok {
+				var terms []stmt.Term
+				for _, c := range sel.Where {
+					terms = append(terms, c.Value)
+				}
+				check(src, terms)
 			}
 		}
 	})

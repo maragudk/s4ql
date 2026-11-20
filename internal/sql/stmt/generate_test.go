@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"maragu.dev/is"
+
 	"maragu.dev/s4ql/internal/sql/parsetest"
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
@@ -32,14 +34,16 @@ func namePools(t testing.TB) [][]string {
 // positionTexts are those of [stmttest.PositionTexts].
 var positionTexts = stmttest.PositionTexts
 
-// newGenerator of [stmttest] from seed, which writes a plain ? in place of one value of an insert
-// in four, columns and values of every type, the forms of slice 5 with up to three columns, and those
-// of slice 6, with a column that takes NULL and a NULL one time in five.
+// newGenerator of [stmttest] from seed, which writes a plain ? in place of one value of an insert or
+// of a condition in four, columns and values of every type, the forms of slice 5 with up to three
+// columns, those of slice 6, with a column that takes NULL and a NULL one time in five, and those of
+// slice 7, with a WHERE of up to four conditions in one select in two.
 func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g := stmttest.NewGenerator(rand.New(rand.NewPCG(seed, 0x511ce1)), namePools(t))
 	g.Parameters = 4
 	g.Columns = 3
 	g.Nulls = 5
+	g.Conditions = 4
 	return g
 }
 
@@ -53,6 +57,10 @@ func TestGenerate(t *testing.T) {
 		n /= 10
 	}
 	g := newGenerator(t, *seed)
+	var before [3]int64
+	for i := range whereReads {
+		before[i] = whereReads[i].Load()
+	}
 	for range n {
 		src, want := g.Statement()
 		s, err := stmt.Check(src)
@@ -64,6 +72,14 @@ func TestGenerate(t *testing.T) {
 	for p, pool := range namePools(t) {
 		t.Logf("%v names in position %q", len(pool), positionTexts[p])
 	}
+	// The check of a select with WHERE tells its conditions apart only on a table where they choose
+	// some rows and not others.
+	var reads [3]int64
+	for i := range whereReads {
+		reads[i] = whereReads[i].Load() - before[i]
+	}
+	t.Logf("selects with WHERE that read no row of the table: %v, some: %v, every row: %v", reads[0], reads[1], reads[2])
+	is.True(t, reads[1] > (reads[0]+reads[2])/2, "too few selects with WHERE read some rows of the table and not others")
 }
 
 var mutantsEach = flag.Int("mutants", 5, "mutants of each statement in TestGenerate_mutants")
@@ -92,7 +108,7 @@ func TestGenerate_mutants(t *testing.T) {
 		}
 	}
 	t.Logf("%v mutants: %v", n**mutantsEach, c)
-	excused(t, c, 77, 305)
+	excused(t, c, 54, 284)
 	var names []string
 	for k := range kinds {
 		names = append(names, k)
@@ -176,6 +192,30 @@ func difference(a, b stmt.Statement) string {
 			diffs = append(diffs, "table name")
 		}
 		names(a.Columns, b.Columns, "result column")
+		var ac, bc []stmt.Name
+		for _, c := range a.Where {
+			ac = append(ac, c.Column)
+		}
+		for _, c := range b.Where {
+			bc = append(bc, c.Column)
+		}
+		names(ac, bc, "condition")
+		if len(a.Where) != len(b.Where) {
+			break
+		}
+		for i := range a.Where {
+			a, b := a.Where[i], b.Where[i]
+			switch {
+			case a.Operator != b.Operator:
+				diffs = append(diffs, "operator")
+			case a.Value.Parameter != b.Value.Parameter:
+				diffs = append(diffs, "parameter")
+			case fmt.Sprintf("%T", a.Value.Value) != fmt.Sprintf("%T", b.Value.Value):
+				diffs = append(diffs, "kind of value")
+			case a.Value.Value != nil && show(a.Value.Value) != show(b.Value.Value):
+				diffs = append(diffs, "value")
+			}
+		}
 	case *stmt.DropTable:
 		if a.Table.Value != b.(*stmt.DropTable).Table.Value {
 			diffs = append(diffs, "table name")
@@ -390,8 +430,8 @@ var nearMisses = map[string][]string{
 		"select %[2]v collate nocase from %[1]v",
 		"select %[2]v is null from %[1]v",
 		"select null from %[1]v",
-		"select * from %[1]v where %[2]v is null",
-		"select %[2]v from %[1]v where %[2]v is not null",
+		"select * from %[1]v where %[2]v isnull",
+		"select %[2]v from %[1]v where %[2]v not null",
 		"select count(%[2]v) from %[1]v",
 		"select true from %[1]v",
 		"select %[2]v, false from %[1]v",
@@ -427,6 +467,38 @@ var nearMisses = map[string][]string{
 		"select * from %[1]v union all select * from %[1]v",
 		"select * from %[1]v except select * from %[1]v",
 		"select * from %[1]v; select 1",
+		"select * from %[1]v where 1 = %[2]v",
+		"select * from %[1]v where ? = %[2]v",
+		"select * from %[1]v where %[2]v = %[2]v",
+		"select * from %[1]v where %[1]v.%[2]v = 1",
+		"select * from %[1]v where %[2]v = 1 or %[2]v = 2",
+		"select * from %[1]v where %[2]v = 1 and %[2]v = 2 or %[2]v = 3",
+		"select * from %[1]v where not %[2]v = 1",
+		"select * from %[1]v where (%[2]v = 1)",
+		"select * from %[1]v where %[2]v = (1)",
+		"select * from %[1]v where %[2]v + 1 = 2",
+		"select * from %[1]v where lower(%[2]v) = 'a'",
+		"select * from %[1]v where %[2]v in (1)",
+		"select * from %[1]v where %[2]v between 1 and 2",
+		"select * from %[1]v where %[2]v like 'a'",
+		"select * from %[1]v where %[2]v glob 'a'",
+		"select * from %[1]v where %[2]v is 1",
+		"select * from %[1]v where %[2]v is true",
+		"select * from %[1]v where %[2]v is not false",
+		"select * from %[1]v where %[2]v is distinct from null",
+		"select * from %[1]v where %[2]v is not distinct from null",
+		"select * from %[1]v where %[2]v collate nocase = 'a'",
+		"select * from %[1]v where %[2]v = 'a' collate nocase",
+		"select * from %[1]v where %[2]v = 1 order by %[2]v",
+		"select * from %[1]v where %[2]v = 1 limit 1",
+		"select * from %[1]v where %[2]v = +1",
+		"select * from %[1]v where %[2]v = -?",
+		"select * from %[1]v where %[2]v = ?1",
+		"select * from %[1]v where %[2]v = true",
+		"select * from %[1]v where %[2]v = 1 and",
+		"select * from %[1]v where %[2]v",
+		"update %[1]v set %[2]v = 1 where %[2]v = 1",
+		"delete from %[1]v where %[2]v = 1",
 	},
 	"*stmt.DropTable": {
 		"explain drop table %[1]v",
@@ -484,5 +556,5 @@ func TestGenerate_nearMisses(t *testing.T) {
 		}
 	}
 	t.Logf("%v near misses: %v", c[syntaxError]+c[notSupported]+c[syntaxNotSaid]+c[notSupportedNotSaid], c)
-	excused(t, c, 0, 2942)
+	excused(t, c, 0, 3003)
 }
