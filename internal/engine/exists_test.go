@@ -153,6 +153,40 @@ func TestEngine_exists(t *testing.T) {
 		p.end(true, true)
 	})
 
+	t.Run("should run a statement of its own that does nothing without the place of the writer, as SQLite only reads the schema for it", func(t *testing.T) {
+		p := newIndexPair(t, 0, existsSetup...)
+		other := p.i.e.Conn()
+		defer func() { is.NotError(t, other.Close(t.Context())) }()
+		// The write transaction of another connection holds the place of the writer, so a statement that
+		// waited for it would not return before the commit below.
+		is.NotError(t, other.Begin(t.Context()))
+		for _, src := range []string{
+			"create table if not exists t (k int primary key) strict, without rowid", "drop table if exists nosuch",
+			"create index if not exists i on t (b)", "drop index if exists nosuch",
+		} {
+			_, err := p.i.c.Exec(t.Context(), src)
+			is.NotError(t, err, src)
+		}
+		_, err := other.Exec(t.Context(), "drop table u")
+		is.NotError(t, err)
+		is.NotError(t, other.Commit(t.Context()))
+		is.Equal(t, "", p.o.run(t, "drop table u").err)
+		p.same("the commit of the other connection")
+
+		// With rows of a query of the connection open, which hold its reader, the statement looks in a
+		// write transaction, and does nothing there.
+		rows, err := p.i.c.Query(t.Context(), "select * from t")
+		is.NotError(t, err)
+		commits := len(logAnnotations(t, p.i.store))
+		for _, src := range []string{"create table if not exists t (k int primary key) strict, without rowid", "drop index if exists nosuch"} {
+			_, err := p.i.c.Exec(t.Context(), src)
+			is.NotError(t, err, src)
+		}
+		is.NotError(t, rows.Close())
+		is.Equal(t, commits, len(logAnnotations(t, p.i.store)))
+		p.same("the statements beside the rows")
+	})
+
 	t.Run("should refuse a statement that would do nothing while rows of its transaction are open, as every statement in a transaction", func(t *testing.T) {
 		p := newIndexPair(t, 0, existsSetup...)
 		for _, readOnly := range []bool{false, true} {

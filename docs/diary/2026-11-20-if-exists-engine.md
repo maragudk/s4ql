@@ -127,7 +127,7 @@ Nothing yet.
 ### What worked
 
 - No difference from SQLite in `TestDifferential` (300 sequences), `TestConn_differential` (60), `TestGenerated` (250), or 1,000 seeds of each workload of `TestSimulation`, at the first run with the clauses.
-- `TestSimulation_plantedBugs/replaceExisting`: 130 of 200 seeds find the bug, 89 of them by "the replay of the log holds"; the default run finds it at seeds 0 and 1, and the seeds without it find nothing.
+- `TestSimulation_plantedBugs/replaceExisting`: 130 of 200 seeds find the bug, 89 of them by "the replay of the log holds"; the default run finds it at seeds 0 and 1, and the seeds without it find nothing (with the first version of `Conn.write`; see step 4).
 - `FuzzIndexes` for 60 s: 17,692 executions, no failure.
 
 ### What didn't work
@@ -152,3 +152,53 @@ Nothing yet.
 ### Future work
 
 - Merge `origin/main`, the README, the todo, the review, and the checks: step 4.
+
+## Step 4: The merge of main, the README, the review, and the checks
+
+**Author:** if-exists-engine builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Merge `origin/main` again before you open your pull request. [...] Update the engine's README. [...] Finish: `make test`, `make lint`, `make check-browser`, `make fuzz-shards` pass; `make test-asan` for the packages whose fuzz tests you changed. Self-review against these requirements."
+**Interpretation:** Take in the statement pass of slice 11, document, review, fix what matters, and run every check.
+**Inferred intent:** A branch that the independent reviewer can read as one piece of work.
+
+### What I did
+
+- Merged `origin/main` with the statement pass of slice 11 (#109), which had added `defaultRefusal` beside `existsRefusal` in `engine.check`. The conflict kept `defaultRefusal` alone. Since the engine refuses DEFAULT by the text until its builder comes, the driver's `check` calls `engine.Check` again, and the `checkText` wrappers came back at the same call sites as on `main`, with a doc comment for slice 11; `docs/todo.md` says both go with `defaultRefusal`.
+- A writer sub-agent updated `/internal/engine/README.md`: a section "IF NOT EXISTS and IF EXISTS", the facts in the sections of transactions, stages, operators, errors, changes, annotations, events, tests, results, and run times. I read its diff and corrected the paragraph on a statement of its own after the review.
+- `/docs/todo.md`: the group "Decisions of the engine step of slice 10", the item for its mutation testing, the facts and the list of what to remove for this step deleted as built, and the item of slice 11 updated. `/internal/sql/stmt/README.md` no longer says the engine refuses slice 10.
+- The review (`code-review high origin/main...HEAD`) found no bug and four findings. Fixed: (1) a statement of its own that does nothing waited for the place of the writer and needed a write transaction, where SQLite only reads the schema under a read lock; `Conn.nothingToWrite` now looks in a read transaction first and succeeds there, and the write transaction looks again where it cannot tell; the simulation's `run.verifyOverlaps` leaves such a statement out; a subtest pins that it returns while another connection holds a write transaction, and that it does nothing through the write path while rows of the connection hold its reader. (2) Stale comments: the todo line on `existsRefusal`, the doc of `Conn.write` and `Conn.writeIn`. (3) The event of a statement that did nothing in its write transaction no longer has `commit.parent`. (4) Two comments rewrapped.
+
+### Why
+
+- SQLite's `create table if not exists` of a table that exists returns at once while another connection writes; the first version would block it until that transaction ended, which an application with two connections could meet as a hang.
+- The write transaction still decides, so a commit between the read and the write cannot make the statement skip its work.
+
+### What worked
+
+- `make test`, `make lint` (after a tagged switch in `reachExists`, `QF1002`), `make check-browser`, `make fuzz-shards FUZZGROUP=c FUZZSHARDS=4` and `FUZZGROUP=go FUZZSHARDS=2`, and `make asan-test ASANPKGS="maragu.dev/s4ql/internal/engine"` in the `golang:1.27.3` image (308 s), before the change of the review; the engine's tests without `-short` passed after it.
+- `-race -count=20` and `-count=50` of `TestEngine_exists`, `TestFuzzIndexes_seeds`, `TestNewPlan`, `TestExists`, and of `TestExistsRule` and `TestIndexRule` (`-count=50` under `-race`).
+- After the change, `replaceExisting` is found by 123 of 200 seeds, 87 of them by its own violation, where it was 130 and 89, and the default run finds it the second time at seed 11.
+
+### What didn't work
+
+- `git worktree` and pipes or heredocs of Python with backticks were refused by the permission system; scripts in the scratchpad worked. The base for the timing was a detached checkout of `3a1382d` in this worktree.
+
+### What I learned
+
+- `go test ./internal/engine` took 178 s of wall time and 72 s of user time at a load of about 30, and 134 s and 74 s on the code before at about 25: the change costs no CPU time that the load does not hide.
+
+### What was tricky
+
+- The merge: the statement pass of slice 11 landed while this step was built, and needs the wrappers that this step was asked to remove.
+
+### What warrants review
+
+- `Conn.nothingToWrite` and the two places where a statement of its own can do nothing.
+- The decisions in `docs/todo.md`, above all the first two.
+
+### Future work
+
+- Mutation testing of the code of slice 10 in the engine and of `stmttest.ExistsRule`, and long fuzz runs of `FuzzIndexes` with the clauses, in the todo.
+- The engine of slice 11, which removes `defaultRefusal`, the driver's `engine.Check`, and the wrappers.

@@ -902,9 +902,10 @@ func null() *s4qlpb.Value {
 // and then a table that SQLite cannot write into its schema under limit, as [schemaTooBig] says;
 // for DROP TABLE, no table of the name. With IF NOT EXISTS and a table of the name, or with IF
 // EXISTS and none, the sink is [nothing], as SQLite does nothing there, so a CREATE TABLE then
-// gives none of its later errors; but an index of the name still gives its error. For INSERT, no table of the name, then a column of its list
-// that the table does not have, in the order of the list, and then another number of values than
-// the columns of its list, or than the columns of the table if it has no list. For INSERT it then
+// gives none of its later errors; but an index of the name still gives its error. For INSERT, no
+// table of the name, then a column of its list that the table does not have, in the order of the
+// list, and then another number of values than the columns of its list, or than the columns of the
+// table if it has no list. For INSERT it then
 // makes the check that SQLite makes when it binds the arguments: a text or a blob that is longer
 // than limit bytes gets SQLite's `string or blob too big`. It checks a literal so too, which SQLite
 // meets in its text only with a limit below the length of the text: see the README. For UPDATE and

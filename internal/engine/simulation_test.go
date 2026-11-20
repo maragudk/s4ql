@@ -1994,7 +1994,7 @@ func (r *run) verifyOverlaps(ctx context.Context) {
 			}
 		}
 		for _, s := range r.order {
-			if s.tx == nil && s.write && s.state == succeeded && s.node == a.node && s.gen == a.gen && a.began < s.start && s.stop < end {
+			if s.tx == nil && s.write && !s.nothing && s.state == succeeded && s.node == a.node && s.gen == a.gen && a.began < s.start && s.stop < end {
 				r.violate(ctx, "the statement %v committed on %v while the write transaction %v was open there", s.id, a.node, a.id)
 			}
 		}
@@ -2229,8 +2229,8 @@ var storeLine = regexp.MustCompile(`^\S+ store request \d+(, stuck)? store: `)
 // its queries that were not read to their end, its inserts and selects refused for the type of a
 // value, its create indexes and drop indexes by outcome, its statements of IF NOT EXISTS or IF EXISTS
 // by whether they did nothing, did their work, or failed with SQLite's error, its selects, updates,
-// and deletes that read
-// by an index, its statements on an engine that forces an index path, its queries whose index was
+// and deletes that read by an index, its statements on an engine that forces an index path, its
+// queries whose index was
 // dropped while their rows were open, its commits and those of a statement with a parameter, the
 // rows of tables of several columns and the NULL values in the log, the faults that the store
 // injected, by kind, and its other events.

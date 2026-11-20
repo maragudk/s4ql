@@ -430,8 +430,11 @@ func prepare(r *report, src string, args []*s4qlpb.Value) (Plan, string, error) 
 
 // write runs the plan p of a statement that changes the database, whose text is sql, with the
 // arguments args, in a write transaction of its own, and gives its result. The transaction is
-// annotated with the text and the arguments, and committed if the statement succeeds, and rolled
-// back otherwise, also when an operator panics.
+// annotated with the text and the arguments, and committed if the statement succeeds and writes,
+// and rolled back otherwise, also when an operator panics. A statement of IF NOT EXISTS or IF EXISTS
+// that does nothing on the newest state succeeds in a read transaction, as [Conn.nothingToWrite]
+// says, without the write transaction; one that does nothing in the write transaction succeeds there
+// without an annotation, and the transaction is rolled back.
 func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []*s4qlpb.Value) (_ Result, err error) {
 	if c.tx != nil {
 		return c.writeIn(ctx, r, p, sql, args)
@@ -440,6 +443,9 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 		return Result{}, ErrRowsOpen
 	}
 	e := c.e
+	if nothing, err := c.nothingToWrite(ctx, r, p, args); nothing {
+		return Result{}, err
+	}
 	_, insert := p.(*Insert)
 	if insert && e.bugs.checkOutside {
 		// The planted bug: the checks of the insert, in a read transaction of their own.
@@ -467,8 +473,10 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	}
 	r.reads(tx, s)
 	if r.doesNothing(s) {
-		// The statement does nothing, so the transaction is rolled back above, and nothing of it is in
-		// the log.
+		// The statement does nothing, which [Conn.nothingToWrite] could not tell, or which a commit
+		// since its read transaction made so. The transaction is rolled back above, and nothing of it
+		// is in the log. It wrote nothing, so its event has no parent.
+		r.write = false
 		return Result{}, nil
 	}
 	// From here on, a failed insert, update, or delete sets the count of changes to 0, but for "not
@@ -504,6 +512,57 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	}
 	r.rows = n
 	return Result{Changes: n, SetsChanges: setsChanges(p)}, nil
+}
+
+// nothingToWrite reports whether the plan p of a statement of its own, with the arguments args, is
+// one of IF NOT EXISTS or IF EXISTS that does nothing on the newest state, which it looks up in a
+// read transaction of the connection, and gives the error of the end of that transaction then. SQLite
+// only reads the schema for such a statement, so it waits for no writer; here too it neither waits
+// for the place of the writer nor takes it. It reports false, and the statement runs in a write
+// transaction, which looks again and decides, for another plan, for one that does something or
+// fails there, and where the read transaction cannot begin, as while the rows of an earlier query of
+// the connection are open.
+func (c *Conn) nothingToWrite(ctx context.Context, r *report, p Plan, args []*s4qlpb.Value) (bool, error) {
+	switch p := p.(type) {
+	case *CreateTable:
+		if !p.IfNotExists {
+			return false, nil
+		}
+	case *CreateIndex:
+		if !p.IfNotExists {
+			return false, nil
+		}
+	case *DropTable:
+		if !p.IfExists {
+			return false, nil
+		}
+	case *DropIndex:
+		if !p.IfExists {
+			return false, nil
+		}
+	default:
+		return false, nil
+	}
+	rt, err := c.read(ctx)
+	if err != nil {
+		return false, nil
+	}
+	ended := false
+	defer func() {
+		// Also when an operator panics.
+		if !ended {
+			_ = rt.end(ctx)
+		}
+	}()
+	// The planted bug replaceExisting must reach the write transaction, where it replaces the table.
+	s, err := buildSink(ctx, readOnly{rt}, p, args, bugs{replaceExisting: c.e.bugs.replaceExisting}, c.e.db.lengthLimit(), c.e.reading(false))
+	if _, ok := s.(nothing); err != nil || !ok {
+		return false, nil
+	}
+	r.at(rt.position(), false)
+	r.doesNothing(s)
+	ended = true
+	return true, rt.end(ctx)
 }
 
 // checked is the result of a statement whose sink's check failed with err, where failed is the result

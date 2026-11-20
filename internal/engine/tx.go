@@ -300,7 +300,9 @@ func commitError(err error) error {
 // between a savepoint and its release, and is annotated before the release; if it fails, the
 // transaction rolls back to the savepoint, so that the statement has no effect and what the
 // statements before it did is kept, as in SQLite. In a read-only transaction, it fails with the
-// error that SQLite gives under `pragma query_only = 1`, after SQLite's errors of its names.
+// error that SQLite gives under `pragma query_only = 1`, after SQLite's errors of its names. A
+// statement of IF NOT EXISTS or IF EXISTS that does nothing succeeds in either, and is not
+// annotated.
 func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args []*s4qlpb.Value) (Result, error) {
 	t := c.tx
 	r.at(t.position(), t.write != nil)
