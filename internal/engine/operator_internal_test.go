@@ -49,6 +49,8 @@ type fake struct {
 	// addFails is the error of an add of a key to a set, and readKeysFails of the read of the keys of
 	// a set, before its first key.
 	addFails, readKeysFails error
+	// indexesFails is the error of the read of the indexes of a table.
+	indexesFails error
 	// readers counts the readers that are open, and opened those that were ever opened. readerFails
 	// is the error of opening one, and closeFails of closing one.
 	readers, opened         int
@@ -149,6 +151,9 @@ func (x fakeTx) table(_ context.Context, name string) (*s4qlpb.CreateTable, erro
 // indexes records its call, as "indexes" and the name, and gives the indexes of the table.
 func (x fakeTx) indexes(_ context.Context, name string) ([]*s4qlpb.CreateIndex, error) {
 	x.f.calls = append(x.f.calls, "indexes "+name)
+	if x.f.indexesFails != nil {
+		return nil, x.f.indexesFails
+	}
 	return x.f.tables[fold(name)].indexes, nil
 }
 
@@ -733,6 +738,24 @@ func TestFilter(t *testing.T) {
 			is.NotError(t, err)
 			_, err = collect(ctx, q)
 			is.True(t, errors.Is(err, context.Canceled), src)
+		}
+	})
+
+	t.Run("should pass on an error of the read of the indexes of the table of a select, an update, and a delete that the indexes decide, and scan nothing", func(t *testing.T) {
+		for _, src := range []string{"select * from t where w > 0", "update t set w = 1 where w > 0", "delete from t where w > 0"} {
+			f := newTable()
+			f.indexesFails = errors.New("the indexes fail")
+			s, err := stmt.Check(src)
+			is.NotError(t, err)
+			switch p := NewPlan(s).(type) {
+			case *Query:
+				_, err = buildQuery(t.Context(), fakeTx{f}, p, nil, 1_000_000_000, reading{})
+			default:
+				_, err = buildSink(t.Context(), fakeTx{f}, p, nil, bugs{}, 1_000_000_000, reading{})
+			}
+			is.True(t, errors.Is(err, f.indexesFails), src)
+			is.Equal(t, "[table t indexes t]", fmt.Sprint(f.calls), src)
+			is.Equal(t, 0, f.scanned, src)
 		}
 	})
 

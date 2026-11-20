@@ -698,6 +698,8 @@ stmt/recognize.go recognizer.indexColumn remove statement: r.accept(x) =>
 # The indexes of slice 9 in the engine, internal/engine.
 internal/engine/access.go forcedAccess swap arguments: max(p.pins, 0) => max(0, p.pins)
 	max is commutative.
+internal/engine/operator.go build.access condition: err != nil => false
+	chooseAccess without the indexes fails only in the fit of the primary key, which chooseAccess with the indexes then runs first and fails in the same way, after a read of the indexes, which bind has checked the types for before, so it never fails here.
 internal/engine/engine.go Conn.checkOutside boolean: false => true
 	The planted bug checkOutside: its check of an insert then draws a direction for the scans of the sink, which an insert does not scan, and the bug is found as before.
 
