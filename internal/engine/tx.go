@@ -370,7 +370,7 @@ func (c *Conn) queryIn(ctx context.Context, r *report, q *Query, args []*s4qlpb.
 		r.end(ctx, err)
 		return nil, err
 	}
-	src, err := buildQuery(ctx, t.reader(), q, args, c.e.db.lengthLimit(), c.e.scanAll)
+	src, err := buildQuery(ctx, c.e.bugs.reader(t.reader()), q, args, c.e.db.lengthLimit(), c.e.scanAll)
 	if err != nil {
 		r.end(ctx, err)
 		return nil, err

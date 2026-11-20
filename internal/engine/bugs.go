@@ -1,6 +1,11 @@
 package engine
 
-import "maragu.dev/s4ql/internal/s4qlpb"
+import (
+	"context"
+	"iter"
+
+	"maragu.dev/s4ql/internal/s4qlpb"
+)
 
 // bugs that the tests of this package plant in it, to show that their checks find them. Each field
 // switches on one wrong decision, where the right one is made, and the comment there says "the
@@ -45,6 +50,30 @@ type bugs struct {
 	// list leaves out the zero value of its type, 0, 0.0, the empty text, or the empty blob, in place
 	// of NULL.
 	zeroLeftOut bool
+	// openBound makes a scan by one or two bounds of the key read a closed bound, of <= or >=, as
+	// open, so that it leaves out the row whose key is the bound, which the filter above it would
+	// give.
+	openBound bool
+}
+
+// reader of a query on r: r, or with the planted bug openBound r as [openBounds] reads it.
+func (b bugs) reader(r reader) reader {
+	if b.openBound {
+		return openBounds{r}
+	}
+	return r
+}
+
+// openBounds reads the rows of its reader, but for a scan by bounds of the key, one or two, which
+// reads a closed bound as open: the planted bug openBound.
+type openBounds struct {
+	reader
+}
+
+func (o openBounds) scanRange(ctx context.Context, name string, lower, upper bound) iter.Seq2[[]*s4qlpb.Value, error] {
+	lower.open = lower.open || lower.value != nil
+	upper.open = upper.open || upper.value != nil
+	return o.reader.scanRange(ctx, name, lower, upper)
 }
 
 // zeroOf the type t: the value that the planted bug zeroLeftOut gives.

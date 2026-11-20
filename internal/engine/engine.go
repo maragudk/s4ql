@@ -511,7 +511,7 @@ func (c *Conn) query(ctx context.Context, r *report, q *Query, args []*s4qlpb.Va
 			r.end(ctx, err)
 		}
 	}()
-	src, err := buildQuery(ctx, tx, q, args, c.e.db.lengthLimit(), c.e.scanAll)
+	src, err := buildQuery(ctx, c.e.bugs.reader(tx), q, args, c.e.db.lengthLimit(), c.e.scanAll)
 	if err != nil {
 		return nil, err
 	}

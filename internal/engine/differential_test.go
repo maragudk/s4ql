@@ -685,6 +685,11 @@ const (
 	// excusedLong is an insert of a literal that is longer than the length limit, which SQLite meets
 	// only with a limit below the length of its text, and then refuses later or turns into NULL.
 	excusedLong = "a literal longer than the length limit, checked against s4ql's rule"
+	// excusedLongCondition is a select with a literal in a condition that is longer than the length
+	// limit, which s4ql refuses with SQLite's `string or blob too big`, and for which SQLite gives
+	// rows: no rows for a blob literal, which it turns into NULL, and for a string literal on the
+	// upper bound of the key whose search reaches no row. See [pair.longCondition].
+	excusedLongCondition = "a literal in a condition longer than the length limit, for which SQLite gives rows, checked against s4ql's rule"
 )
 
 // knownGap of the pass after the parser, as [stmttest.KnownGap] gives it, that the engine's answer
@@ -829,6 +834,9 @@ func (p *pair) step(c stmttest.Call) string {
 	}
 	p.y.add(src, got)
 	p.reach(c, got)
+	if failure := p.bothWays(c, got); failure != "" {
+		return failure
+	}
 	if kind, failure := checkArguments(c, got); kind != "" {
 		if failure == "" {
 			p.y.excused(kind)
@@ -875,11 +883,18 @@ func (p *pair) step(c stmttest.Call) string {
 	if !c.Query {
 		want.columns, want.rows = "", nil
 	}
+	if p.longCondition(src) && want.err == "" && got.err != tooBig {
+		// Where SQLite gives rows, as it does for a blob literal, which it turns into NULL, the rule
+		// decides alone.
+		return fmt.Sprintf("%q with the arguments %v: a literal of a condition is longer than the length limit, and the engine gives %v, and the rule %q", src, args, got, tooBig)
+	}
 	if got.String() != want.String() {
 		gap := knownGap(src, got, want)
 		switch {
 		case startedTable(t, p.empty, src, got, want):
 			p.y.excused(acceptedStartedTable)
+		case want.err == "" && got.err == tooBig && p.longCondition(src):
+			p.y.excused(excusedLongCondition)
 		case gap != "":
 			p.y.excused(gap + knownGapSuffix)
 		default:
@@ -910,12 +925,55 @@ func (p *pair) step(c stmttest.Call) string {
 	return ""
 }
 
+// bothWays runs the call c again if it holds a select with WHERE, through the same method, on the
+// engine of the instance with every row of the table read, as [engine.Engine.SetScanAll] makes it,
+// where the first run read the rows by the key, as the plan does, or by the key where the first read
+// every row, as an engine of -scanall does. The two must give
+// the same answer, message, and count of changes, so that each test that compares the first with
+// SQLite compares both ways of reading rows, also in transactions. It counts the call in the tally
+// under "reached: read both ways", and also under "reached: read both ways in a read-only
+// transaction" in one, and gives what differs, or "".
+func (p *pair) bothWays(c stmttest.Call, got answer) string {
+	s, _ := stmt.Check(c.Src)
+	if sel, ok := s.(*stmt.Select); !ok || sel.Where == nil {
+		return ""
+	}
+	i := p.i
+	changes := i.changes
+	byKey := !i.e.ScansAll()
+	i.e.SetScanAll(byKey)
+	var all answer
+	if c.Query {
+		all = i.queryValues(c.Src, values(c.Args))
+	} else {
+		all = i.execValues(c.Src, values(c.Args))
+	}
+	i.e.SetScanAll(!byKey)
+	if !byKey {
+		// The first run read every row, as -scanall makes it, and the second by the key.
+		got, all = all, got
+	}
+	if p.y != nil {
+		p.y["reached: read both ways"]++
+		if p.readOnly {
+			p.y["reached: read both ways in a read-only transaction"]++
+		}
+	}
+	if all.String() != got.String() || all.message != got.message || i.changes != changes {
+		return fmt.Sprintf("%q with %#v: the engine gives\n%v (%q)\nby the key, and\n%v (%q)\nwith every row read, with %v changes after the first and %v after the second", c.Src, c.Args, got, got.message, all, all.message, changes, i.changes)
+	}
+	return ""
+}
+
 // reach counts in the tally what the call c, whose answer of the engine is got, reaches, under
 // "reached: ", on the database of SQLite before the call, as [reach] says.
 func (p *pair) reach(c stmttest.Call, got answer) {
 	p.t.Helper()
 	if p.y != nil {
 		reach(p.t, p.o, c, got, func(what string) { p.y["reached: "+what]++ })
+		if p.longCondition(c.Src) {
+			p.y["reached: WHERE with a literal longer than the length limit"]++
+		}
 	}
 }
 
@@ -979,10 +1037,11 @@ func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, count func(stri
 			}
 		}
 	case *stmt.Select:
-		_, columns := o.columns(t, s.Table.Value)
+		table, columns := o.columns(t, s.Table.Value)
 		if columns == nil {
 			return
 		}
+		reachWhere(t, o, s, c, got, outcome, table, columns, count)
 		if got.null {
 			count(map[bool]string{true: "select * with NULL ", false: "select of names with NULL "}[s.Columns == nil] + outcome)
 		}
@@ -1007,6 +1066,70 @@ func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, count func(stri
 			count("select of a name twice " + outcome)
 		}
 	}
+}
+
+// reachWhere counts what the select s of the call c, whose answer of the engine is got and whose
+// outcome in the engine is outcome, reaches of WHERE on the database of o, where its table has the
+// name table and the columns, as [reach] says: for a select with WHERE, one whose arguments the
+// engine refuses, for their number or for one that no column holds; and otherwise each case of
+// [stmttest.WhereCases], and for a query that succeeds on a table with rows, whether it gives none,
+// some, or all of them.
+func reachWhere(t testing.TB, o *oracle, s *stmt.Select, c stmttest.Call, got answer, outcome, table string, columns []stmttest.TableColumn, count func(string)) {
+	t.Helper()
+	if s.Where == nil {
+		return
+	}
+	args := oracleArgs(c.Args)
+	switch {
+	case len(args) != s.Parameters():
+		count("WHERE with the wrong number of arguments " + outcome)
+		return
+	case slices.ContainsFunc(args, func(a any) bool { return refusal(a) != "" }):
+		count("WHERE with an argument that no column holds " + outcome)
+		return
+	}
+	for _, what := range stmttest.WhereCases(columns, s, args) {
+		count(what + " " + outcome)
+	}
+	// The plan reads the rows by the key as the rule says, which the comparison of the rows cannot see
+	// where it reads more rows than it needs.
+	if want := stmttest.KeyAccess(columns, s, args); want != "" && got.err != tooBig {
+		want = strings.TrimSuffix(want, " that hold no key")
+		if access := engine.AccessOf(c.Src, createTableOf(table, columns), values(c.Args)); access != want {
+			t.Errorf("%q with %#v: the plan reads %q, and the rule %q", c.Src, c.Args, access, want)
+		}
+	}
+	if !c.Query || got.err != "" {
+		return
+	}
+	n, err := strconv.Atoi(o.run(t, "select count(*) from "+stmttest.Quote(table)).rows[0])
+	is.NotError(t, err)
+	switch {
+	case n == 0:
+	case len(got.rows) == 0:
+		count("WHERE that gives no row of a table with rows")
+	case len(got.rows) == n:
+		count("WHERE that gives every row of a table with rows")
+	default:
+		count("WHERE that gives some rows of a table")
+	}
+}
+
+// createTableOf the table of the name and the columns, as SQLite has them, in the engine's terms.
+func createTableOf(name string, columns []stmttest.TableColumn) *s4qlpb.CreateTable {
+	ct := s4qlpb.CreateTable_builder{Table: new(name)}
+	for i, c := range columns {
+		typ := map[string]s4qlpb.Type{"INT": s4qlpb.Type_TYPE_INT, "INTEGER": s4qlpb.Type_TYPE_INTEGER, "REAL": s4qlpb.Type_TYPE_REAL, "TEXT": s4qlpb.Type_TYPE_TEXT, "BLOB": s4qlpb.Type_TYPE_BLOB}[c.Type]
+		column := s4qlpb.Column_builder{Name: new(c.Name), Type: new(typ)}
+		if c.Nullable {
+			column.Nullable = new(true)
+		}
+		ct.Columns = append(ct.Columns, column.Build())
+		if c.PrimaryKey {
+			ct.PrimaryKey = []uint32{uint32(i)}
+		}
+	}
+	return ct.Build()
 }
 
 // reachInsert counts what the insert s of the call c, whose outcome in the engine is outcome,
@@ -1182,9 +1305,10 @@ func oracleArgs(args []any) []any {
 func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failure string) {
 	t := p.t
 	t.Helper()
-	if p.readOnly && isInsert(c.Src) || slices.ContainsFunc(args, func(a any) bool { return p.i.limit > 0 && byteLength(a) > p.i.limit }) {
+	if p.readOnly && isInsert(c.Src) || slices.ContainsFunc(args, func(a any) bool { return p.i.limit > 0 && byteLength(a) > p.i.limit }) || p.longCondition(c.Src) {
 		// An argument that is too long gets SQLite's error when SQLite binds it, which the caller
-		// compares.
+		// compares, and so does a literal of a condition that is too long, which s4ql refuses before the
+		// type of a value, and SQLite mostly too.
 		return "", ""
 	}
 	want := typeRule(t, p.o, c.Src, args)
@@ -1222,6 +1346,19 @@ func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string)
 		return excusedLong, fmt.Sprintf("%q with a literal of %v bytes: the engine gives %v, and the rule %q", c.Src, n, got, tooBig)
 	}
 	return excusedLong, ""
+}
+
+// longCondition reports whether src holds a select with a literal in a condition that is longer than
+// the length limit of the pair. By s4ql's rule such a select, whose names the table has and whose
+// arguments s4ql takes, fails with SQLite's `string or blob too big` before the type of a value is
+// checked, as an insert does. SQLite gives the same for a string literal, which it evaluates once
+// before it reads a row, but for one on the upper bound of the key whose search reaches no row, and
+// turns a blob literal into NULL, so that the select gives no rows: the known difference of
+// docs/todo.md.
+func (p *pair) longCondition(src string) bool {
+	s, _ := stmt.Check(src)
+	sel, ok := s.(*stmt.Select)
+	return ok && p.i.limit > 0 && slices.ContainsFunc(sel.Where, func(c stmt.Condition) bool { return byteLength(c.Value.Value) > p.i.limit })
 }
 
 // tooBig is the err of an [answer] of SQLite's error of a text or a blob that is too long.
@@ -1407,8 +1544,15 @@ func TestDifferential(t *testing.T) {
 		// no longer among [stmttest.Unsupported]. The engine of slice 7 took the fourth from 339 to 350:
 		// it runs the two selects with WHERE of [stmttest.Others], which compare a column with a small
 		// integer or with an argument of any type, and 11 of them compare one of another type than its
-		// column, which s4ql's rule refuses. The generator drew as before then.
-		want := map[string]int{acceptedStartedTable: 18, excusedArguments: 703, excusedArgument: 220, excusedType: 350, excusedLong: 8}
+		// column, which s4ql's rule refuses. The generator drew as before then. When the sequence wrote
+		// WHERE, they went from 18, 703, 220, 350, and 8 to 19, 718, 248, 478, and 4: the sequence
+		// draws other random numbers, which moves each of them, and of its own one select in two has a
+		// WHERE, which compares a value of another type than its column in 112 selects of the sequence,
+		// which took the fourth up, and has parameters, whose arguments [stmttest.Sequence.Next] makes
+		// wrong in number or of no column now and then, which took the second and the third up. The
+		// selects with a literal in a condition longer than the length limit, of which the run has 2,
+		// give `string or blob too big` in SQLite too, so [excusedLongCondition] is 0.
+		want := map[string]int{acceptedStartedTable: 19, excusedArguments: 718, excusedArgument: 248, excusedType: 478, excusedLong: 4}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
 			if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) {
@@ -1476,6 +1620,41 @@ var reachedDifferential = map[string]int{
 	"insert with NULL in the key: NOT NULL constraint failed": 17, "insert with NULL in a column that does not take it: NOT NULL constraint failed": 11,
 	"insert of NULL beside a value of another type NOT NULL constraint failed": 4, "insert of NULL beside a value of another type a value of another type": 6,
 	"select * with NULL ok": 45, "select of names with NULL ok": 25,
+
+	// Slice 7, a third of what the run gave on 2026-11-20 when the sequence wrote WHERE: each operator
+	// on the key and on another column, and with a value of another type on the key; each way that the
+	// plan reads rows, also two bounds that hold no key; a select that gives no row, some rows, and
+	// every row of a table with rows; each kind of value, by literal and by argument, NULL by both;
+	// and the faults: a column that the table does not have, in a comparison and under IS NULL or IS
+	// NOT NULL, alone, before, and after other conditions, and in double quotes; a value of another
+	// type; an argument that no column holds; the wrong number of arguments; a column tested twice;
+	// contradicting conditions; and a literal longer than the length limit. Every select with WHERE is
+	// read both ways.
+	"= on the key ok": 22, "!= on the key ok": 27, "< on the key ok": 47, "<= on the key ok": 39, "> on the key ok": 39, ">= on the key ok": 42,
+	"IS NULL on the key ok": 19, "IS NOT NULL on the key ok": 16,
+	"= on another column ok": 10, "!= on another column ok": 8, "< on another column ok": 9, "<= on another column ok": 6, "> on another column ok": 11,
+	">= on another column ok": 7, "IS NULL on another column ok": 2, "IS NOT NULL on another column ok": 8,
+	"= on the key a value of another type": 11, "!= on the key a value of another type": 11, "< on the key a value of another type": 14,
+	"<= on the key a value of another type": 11, "> on the key a value of another type": 12, ">= on the key a value of another type": 11,
+	"WHERE that reads no row ok": 29, "WHERE that reads a get of one key ok": 18, "WHERE that reads a scan from a lower bound ok": 15,
+	"WHERE that reads a scan to an upper bound ok": 16, "WHERE that reads a scan between two bounds ok": 19,
+	"WHERE that reads a scan between two bounds that hold no key ok": 18, "WHERE that reads a scan of every row ok": 38,
+	"WHERE that gives no row of a table with rows": 58, "WHERE that gives some rows of a table": 20, "WHERE that gives every row of a table with rows": 13,
+	"comparison with literal integer ok": 79, "comparison with literal real ok": 28, "comparison with literal real -0.0 ok": 2, "comparison with literal text ok": 28,
+	"comparison with literal empty text ok": 7, "comparison with literal blob ok": 28, "comparison with literal empty blob ok": 6, "comparison with literal null ok": 7,
+	"comparison with argument int64 ok": 34, "comparison with argument float64 ok": 9, "comparison with argument float64 -0.0 ok": 2,
+	"comparison with argument string ok": 11, "comparison with argument empty string ok": 3, "comparison with argument []uint8 ok": 11,
+	"comparison with argument empty []byte ok": 6, "comparison with argument nil ok": 5,
+	"WHERE with a column that the table does not have in a comparison, alone no such column":                                13,
+	"WHERE with a column that the table does not have in a comparison, before other conditions no such column":              26,
+	"WHERE with a column that the table does not have in a comparison, after other conditions no such column":               14,
+	"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column":                   1,
+	"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, before other conditions no such column": 4,
+	"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, after other conditions no such column":  3,
+	"WHERE with a column in double quotes that the table does not have no such column":                                      32,
+	"WHERE with a value of another type a value of another type":                                                            37, "WHERE with an argument that no column holds not supported": 12,
+	"WHERE with the wrong number of arguments wrong number of arguments": 19, "WHERE that tests a column more than once ok": 87,
+	"WHERE with contradicting conditions ok": 21, "WHERE with a literal longer than the length limit": 1, "read both ways": 444,
 }
 
 // FuzzDifferential runs the sequence of statements that its input chooses, the seed and the number of
@@ -1742,4 +1921,190 @@ func fuzzTypes(f *testing.F, newInstance func(t testing.TB, limit int) *instance
 			t.Fatalf("the engine holds after a replay into an empty cache\n%v\nand SQLite\n%v", got, want)
 		}
 	})
+}
+
+// whereTypes are the types of the tables of [FuzzWhere], and whereRows the keys of the rows of the
+// table of each type, at the edges of the type: for a real -0.0 is the key 0.0, which SQLite stores
+// for it.
+var (
+	whereTypes = []string{"int", "integer", "real", "text", "blob"}
+	whereRows  = map[string][]any{
+		"int":     {int64(math.MinInt64), int64(-1), int64(0), int64(1), int64(2), int64(math.MaxInt64)},
+		"integer": {int64(math.MinInt64), int64(math.MinInt64 + 1), int64(0), int64(7), int64(math.MaxInt64 - 1), int64(math.MaxInt64)},
+		"real":    {-math.MaxFloat64, -1.5, 0.0, math.SmallestNonzeroFloat64, 1.0, 1.5, math.MaxFloat64},
+		"text":    {"", "\x01", "a", "a\x01", "ab", "b", "é", "\U0010ffff"},
+		"blob":    {[]byte{}, []byte{0}, []byte{0, 0}, []byte{0, 1}, []byte("a"), []byte{0xff}, []byte{0xff, 0}},
+	}
+)
+
+// FuzzWhere runs a select with a WHERE that the bytes of its input build on the engine, on a
+// database in memory, a test double of the core, and on SQLite, and compares what each gives, as
+// [TestDifferential] does, also with every row read: see [pair.bothWays]. The table, chosen by the
+// first byte, has a key and a column v of one of the five types, which takes NULL, and rows whose
+// keys are at the edges of the type, of which one in three has v NULL and the others v as the key.
+// The input builds the conditions as [whereOf] says. [FuzzWhere_core] runs the same on the storage
+// core.
+func FuzzWhere(f *testing.F) {
+	fuzzWhere(f, newMemoryInstance)
+}
+
+// FuzzWhere_core is [FuzzWhere] on the storage core, with a store in memory.
+func FuzzWhere_core(f *testing.F) {
+	fuzzWhere(f, func(t testing.TB) *instance { return newInstance(t, engine.Options{}) })
+}
+
+// fuzzWhere is [FuzzWhere] on the instances of newInstance. Its seeds have every operator on the key
+// and on v, with a value of a row, of the bytes, NULL, and of another type, as a literal and as an
+// argument, a column that the table does not have, and several conditions.
+func fuzzWhere(f *testing.F, newInstance func(t testing.TB) *instance) {
+	for table := range byte(len(whereTypes)) {
+		for op := range byte(10) {
+			for form := range byte(8) {
+				if (op+form)%3 == 0 {
+					f.Add([]byte{table, form / 2 % 3, op, form, 2, 1, 0})
+				}
+			}
+		}
+		f.Add([]byte{table, 0, 4, 0, 1, 0, 2, 0, 3, 3, 0, 2, 5})
+		f.Add([]byte{table, 2, 0, 0, 0, 0, 6, 1, 0, 5, 9})
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) == 0 {
+			return
+		}
+		typ := whereTypes[int(data[0])%len(whereTypes)]
+		i := newInstance(t)
+		p := newPair(t, i, nil)
+		table := "w_" + typ
+		setUp := []stmttest.Call{{Src: "create table " + table + " (k " + typ + " primary key, v " + typ + ") strict, without rowid", Supported: true}}
+		for j, key := range whereRows[typ] {
+			v := key
+			if j%3 == 1 {
+				v = nil
+			}
+			setUp = append(setUp, stmttest.Call{Src: "insert into " + table + " values (?, ?)", Args: []any{key, v}, Supported: true})
+		}
+		for _, c := range setUp {
+			if failure := p.step(c); failure != "" {
+				t.Fatalf("the set-up: %v", failure)
+			}
+		}
+		c := whereOf(table, typ, data[1:])
+		if failure := p.step(c); failure != "" {
+			t.Fatal(failure)
+		}
+	})
+}
+
+// whereOf the bytes data: a select of * from the table, whose key k and column v are of the type
+// typ, with a WHERE of up to eight conditions, each of which takes bytes from data while it has
+// them, and zero bytes after them: its column, k, v, or x, which the table does not have, in double
+// quotes for a byte above 127; its operator, one of the eight of slice 7; and for a comparison its
+// value, by a byte whose lowest bits choose a key of a row of the table, a value of typ from the
+// bytes that follow, NULL, or a value of another type from the bytes that follow, and whose next bit
+// chooses a literal or an argument.
+func whereOf(table, typ string, data []byte) stmttest.Call {
+	next := func() byte {
+		if len(data) == 0 {
+			return 0
+		}
+		b := data[0]
+		data = data[1:]
+		return b
+	}
+	// take n bytes from data, or what it has.
+	take := func(n int) []byte {
+		n = min(n, len(data))
+		b := data[:n]
+		data = data[n:]
+		return b
+	}
+	ops := []string{"=", "==", "!=", "<>", "<", "<=", ">", ">=", "is null", "is not null"}
+	var b strings.Builder
+	b.WriteString("select * from " + table + " where ")
+	c := stmttest.Call{Query: true, Supported: true}
+	for n := range 8 {
+		if n > 0 {
+			if len(data) == 0 {
+				break
+			}
+			b.WriteString(" and ")
+		}
+		col := next()
+		name := []string{"k", "v", "x"}[int(col&0x7f)%3]
+		if col > 127 {
+			name = `"` + name + `"`
+		}
+		op := ops[int(next())%len(ops)]
+		b.WriteString(name + " " + op)
+		if strings.HasPrefix(op, "is") {
+			continue
+		}
+		form := next()
+		var value any
+		switch form % 4 {
+		case 0:
+			keys := whereRows[typ]
+			value = keys[int(next())%len(keys)]
+		case 1:
+			value = whereValue(typ, take)
+		case 3:
+			// A type whose values are of another kind: INT and INTEGER hold one kind.
+			others := slices.DeleteFunc(slices.Clone(whereTypes), func(o string) bool {
+				return o == typ || strings.HasPrefix(o, "int") && strings.HasPrefix(typ, "int")
+			})
+			value = whereValue(others[int(next())%len(others)], take)
+		}
+		if form/4%2 == 1 {
+			b.WriteString(" ?")
+			c.Args = append(c.Args, value)
+			continue
+		}
+		b.WriteString(" " + whereLiteral(value))
+	}
+	c.Src = b.String()
+	return c
+}
+
+// whereValue of the type typ from the bytes that take gives: an integer or the bits of a real of up
+// to eight bytes, and text, valid UTF-8 without NUL, or a blob, of as many bytes as the first byte
+// says, up to 15. A real is finite.
+func whereValue(typ string, take func(n int) []byte) any {
+	switch typ {
+	case "int", "integer", "real":
+		var bits [8]byte
+		copy(bits[:], take(8))
+		v := binary.LittleEndian.Uint64(bits[:])
+		if typ != "real" {
+			return int64(v)
+		}
+		if f := math.Float64frombits(v); !math.IsNaN(f) && !math.IsInf(f, 0) {
+			return f
+		}
+		return float64(int64(v))
+	}
+	n := 0
+	if b := take(1); len(b) > 0 {
+		n = int(b[0] % 16)
+	}
+	data := slices.Clone(take(n))
+	if typ == "blob" {
+		return data
+	}
+	return strings.ReplaceAll(strings.ToValidUTF8(string(data), "?"), "\x00", "0")
+}
+
+// whereLiteral of the value v of [whereValue], as SQL writes it, or NULL for nil.
+func whereLiteral(v any) string {
+	switch v := v.(type) {
+	case int64:
+		return fmt.Sprint(v)
+	case float64:
+		return strconv.FormatFloat(v, 'e', -1, 64)
+	case string:
+		return "'" + strings.ReplaceAll(v, "'", "''") + "'"
+	case []byte:
+		return "x'" + hex.EncodeToString(v) + "'"
+	}
+	return "null"
 }
