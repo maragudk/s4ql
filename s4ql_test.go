@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -658,14 +659,56 @@ func TestOpen_s3(t *testing.T) {
 	// requests to the server, of which the test reads the first of each instance. It holds more
 	// than the instances of the test send before they are closed, and a request beyond it is dropped.
 	requests := make(chan string, 1000)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case requests <- r.Method + " " + r.URL.Path + " " + r.Header.Get("Authorization"):
 		default:
 		}
 		http.Error(w, "down", http.StatusServiceUnavailable)
 	}))
+	// conns that the instances have open to the server, which signals changed when one closes.
+	var conns struct {
+		sync.Mutex
+		open    int
+		changed chan struct{}
+	}
+	conns.changed = make(chan struct{}, 1)
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		conns.Lock()
+		defer conns.Unlock()
+		switch state {
+		case http.StateNew:
+			conns.open++
+		case http.StateClosed, http.StateHijacked:
+			conns.open--
+			select {
+			case conns.changed <- struct{}{}:
+			default:
+			}
+		}
+	}
+	srv.Start()
 	defer srv.Close()
+	// allClosed waits until the server has seen every connection closed. An instance that closes
+	// closes its connections at once, and one that left them idle would hold them for the 90
+	// seconds of the transport's idle timeout, so the wait is bounded from that side alone.
+	allClosed := func(t *testing.T) {
+		t.Helper()
+		limit := time.After(30 * time.Second)
+		for {
+			conns.Lock()
+			open := conns.open
+			conns.Unlock()
+			if open == 0 {
+				return
+			}
+			select {
+			case <-conns.changed:
+			case <-limit:
+				t.Fatalf("%v connections to the store are open after the close of the instance", open)
+			}
+		}
+	}
 	options := func(prefix string) s4ql.Options {
 		return s4ql.Options{
 			Bucket: "bucket", Prefix: prefix, Endpoint: srv.URL, Region: "eu-north-1", AccessKeyID: "AKIDOFOPTIONS", SecretAccessKey: "secret",
@@ -703,6 +746,8 @@ func TestOpen_s3(t *testing.T) {
 			is.True(t, strings.HasPrefix(first, "GET /bucket/"+prefix+"/manifest.json AWS4-HMAC-SHA256 Credential=AKIDOFOPTIONS/"), first)
 			is.True(t, strings.Contains(first, "/eu-north-1/s3/aws4_request"), first)
 			is.NotError(t, db.Close())
+			// The close of the instance closes its connections to the store.
+			allClosed(t)
 		}
 	})
 
