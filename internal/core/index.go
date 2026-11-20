@@ -53,13 +53,18 @@ func IndexKey(t *s4qlpb.CreateTable, ix *s4qlpb.CreateIndex) []KeyColumn {
 	for i, position := range t.GetPrimaryKey() {
 		primaryKey[i] = int(position)
 	}
-	return indexKey(primaryKey, columns)
+	return indexKey(primaryKey, columns, bugs{})
 }
 
 // indexKey of the index on the columns of a table whose primary key has the columns at the
-// positions primaryKey, as [IndexKey] says.
-func indexKey(primaryKey []int, columns []KeyColumn) []KeyColumn {
+// positions primaryKey, as [IndexKey] says, with the planted bugs. Under the planted bug shortKey,
+// the key of an index is its columns alone, without the primary-key columns that it does not hold.
+func indexKey(primaryKey []int, columns []KeyColumn, bugs bugs) []KeyColumn {
 	key := slices.Clone(columns)
+	if bugs.shortKey && columns != nil {
+		// The planted bug.
+		return key
+	}
 	for _, position := range primaryKey {
 		if !slices.ContainsFunc(columns, func(c KeyColumn) bool { return c.Position == position }) {
 			key = append(key, KeyColumn{Position: position})
@@ -69,17 +74,12 @@ func indexKey(primaryKey []int, columns []KeyColumn) []KeyColumn {
 }
 
 // scanKey is the key that a scan by the index ix of the table reads in the order of, as
-// [IndexKey] says. The key of no index is the primary key. Under the planted bug shortKey, the key
-// of an index is its columns alone, without the primary-key columns that it does not hold.
+// [IndexKey] says, with the planted bugs. The key of no index is the primary key.
 func (t *table) scanKey(ix *index, bugs bugs) []KeyColumn {
-	switch {
-	case ix == nil:
-		return indexKey(t.key, nil)
-	case bugs.shortKey:
-		// The planted bug.
-		return slices.Clone(ix.columns)
+	if ix == nil {
+		return indexKey(t.key, nil, bugs)
 	}
-	return indexKey(t.key, ix.columns)
+	return indexKey(t.key, ix.columns, bugs)
 }
 
 // index of the table with the given name, compared as SQLite compares names, or nil if the table
