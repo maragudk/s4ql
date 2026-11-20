@@ -1700,11 +1700,15 @@ func coreState(ctx context.Context, d *core.DB) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			text, ok := valueString(row[0])
-			if !ok || row[0].HasBlob() && row[0].GetBlob() == nil {
-				return "", fmt.Errorf("the table %v holds %v, or a blob that is nil", ct.GetTable(), text)
+			texts := make([]string, len(row))
+			for j, v := range row {
+				text, ok := valueString(v)
+				if !ok || v.HasBlob() && v.GetBlob() == nil {
+					return "", fmt.Errorf("the table %v holds %v, or a blob that is nil", ct.GetTable(), text)
+				}
+				texts[j] = text
 			}
-			rows = append(rows, text)
+			rows = append(rows, strings.Join(texts, ","))
 		}
 		fmt.Fprintf(&b, "%v (%v): %v\n", ct.GetTable(), strings.Join(columns, ", "), strings.Join(rows, " "))
 	}
