@@ -92,7 +92,7 @@ Nothing.
 
 ### What warrants review
 
-- Whether a planted bug of the selects should stay in a workload that the default run of `TestSimulation_plantedBugs` does not reach by default otherwise; it now runs in the hammer one, as `checkOutside`, `readNewest`, and `convertReal` do.
+- `openBound` in the hammer workload, beside `checkOutside`, `readNewest`, and `convertReal`: the default workload no longer runs it, so a fault that only two instances or a crash show would not be found by it there.
 
 ### Future work
 
