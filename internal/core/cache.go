@@ -15,8 +15,7 @@ import (
 
 // cacheVersion is the version of the layout of the cache that this package makes and reads: the
 // table s4ql_cache, and one table for each table of the database, in which a column that takes NULL
-// is declared with "default null". A cache of version 1 has no column that takes NULL, so it holds
-// what version 2 means, and [conn.setUp] raises its version in place.
+// is declared with "default null".
 const cacheVersion = 2
 
 // maxLength is SQLite's default limit for the length of a text, a blob, and a row, in bytes, which
@@ -208,8 +207,7 @@ func (c *conn) query(sql string, row func(s *sqlite.Stmt) error, args ...any) er
 // loss the cache can then lack its last commits, and is never corrupt
 // (https://sqlite.org/pragma.html#pragma_synchronous). A cache that is behind is what catching up
 // from the log is for, so the sync at every commit that synchronous = full adds buys nothing.
-func (c *conn) setUp(options Options) error {
-	syncOff, identity := options.syncOff, options.Identity
+func (c *conn) setUp(syncOff bool, identity string) error {
 	if err := c.wal(); err != nil {
 		return err
 	}
@@ -246,23 +244,11 @@ func (c *conn) setUp(options Options) error {
 		}
 	}
 
-	// A cache of version 1 is checked as one of its version, and raised to version 2 only after every
-	// check, so that a cache that is refused is left as it is. Another instance can raise it after
-	// these reads, so the upgrade decides on what it reads again in its own transaction.
 	r, err := c.record()
 	if err != nil {
 		return err
 	}
-	if options.versionRead != nil {
-		(*options.versionRead)(r.version)
-	}
-	if err := r.check(identity); err != nil {
-		return err
-	}
-	if r.version != cacheVersion {
-		return c.upgrade(identity)
-	}
-	return nil
+	return r.check(identity)
 }
 
 // wal puts the cache into the journal mode wal, or finds it there.
@@ -334,72 +320,6 @@ func (c *conn) make(identity string) error {
 	return c.exec("insert into main.s4ql_cache (id, version, head, database) values (1, ?, ?, ?)", int64(cacheVersion), format.EmptyLog.String(), identity)
 }
 
-// upgrade a cache of version 1 to version 2 in place, in a transaction that holds the write lock. A
-// table of a cache of version 1 is declared as a table of version 2 whose columns do not take NULL,
-// and the engine before version 2 put no NULL into one, so only the version changes. The core did
-// take a NULL in any column outside the primary key then, so upgrade refuses a cache that holds
-// one, with [ErrCacheVersion], and leaves it as it is. A version of s4ql that reads version 1 then
-// refuses the cache, and does not take a column that takes NULL for one that does not.
-//
-// Another instance can upgrade the cache between the read of [conn.setUp] and this transaction, so
-// upgrade reads the record of the cache again inside the transaction and checks it as setUp does,
-// for the given identity, and decides on that: a cache that is of version 2 by then is left as it
-// is, as one that the instance opens. The other instance can also hold the write lock by then, for
-// a write of its own, so when the transaction cannot begin, upgrade looks at the version again, and
-// opens a cache of version 2 without the lock.
-func (c *conn) upgrade(identity string) error {
-	if err := c.c.Exec("begin immediate"); err != nil {
-		if r, herr := c.head(); herr == nil && r.version == cacheVersion {
-			return nil
-		}
-		return err
-	}
-	r, err := c.record()
-	if err == nil {
-		err = r.check(identity)
-	}
-	if err == nil && r.version != cacheVersion {
-		err = c.checkNoNull()
-		if err == nil {
-			err = c.exec("update main.s4ql_cache set version = ? where id = 1", int64(cacheVersion))
-		}
-	}
-	if err != nil {
-		_ = c.c.Exec("rollback")
-		c.forget()
-		return err
-	}
-	c.forget()
-	if err := c.c.Exec("commit"); err != nil {
-		_ = c.c.Exec("rollback")
-		return err
-	}
-	return nil
-}
-
-// checkNoNull finds no NULL in a column of the cache that does not take NULL.
-func (c *conn) checkNoNull() error {
-	tables, err := c.list()
-	if err != nil {
-		return err
-	}
-	for _, t := range tables {
-		for position, column := range t.columns {
-			if t.inKey[position] || column.nullable {
-				continue
-			}
-			n, err := c.count(fmt.Sprint("select 1 from main.", quote(t.name), " where ", quote(column.name), " is null limit 1"))
-			if err != nil {
-				return err
-			}
-			if n > 0 {
-				return fmt.Errorf("%w: its table %q holds NULL in the column %q, which does not take NULL; open the database with a new cache, or delete this one, with its files -wal and -shm", ErrCacheVersion, t.name, column.name)
-			}
-		}
-	}
-	return nil
-}
-
 // position that the cache records: the name of the last commit object that it has applied, or
 // [format.EmptyLog]. It refuses a cache of another version than this code makes with
 // [ErrCacheVersion].
@@ -421,16 +341,16 @@ type record struct {
 	database string
 }
 
-// record of the cache, with the identity of its database if it is of a version that this code
-// opens: a cache of version 0 has no column for it. It reads the identity in a statement of its
-// own, so outside a transaction the identity can be of a later state of the row than the version;
-// no instance changes the identity of a cache.
+// record of the cache, with the identity of its database if it is of [cacheVersion]: a cache of
+// another version is refused before its identity matters, and one of version 0 has no column for
+// it. It reads the identity in a statement of its own, so outside a transaction the identity can
+// be of a later state of the row than the version; no instance changes the identity of a cache.
 func (c *conn) record() (record, error) {
 	r, err := c.head()
 	if err != nil {
 		return record{}, err
 	}
-	if r.version != 1 && r.version != cacheVersion {
+	if r.version != cacheVersion {
 		return r, nil
 	}
 	err = c.query("select database from main.s4ql_cache", func(s *sqlite.Stmt) error {
@@ -459,11 +379,11 @@ func (c *conn) head() (record, error) {
 }
 
 // check that the record is of a cache that this code opens for the database with the given
-// identity: of version 1, which [conn.upgrade] raises, or of [cacheVersion], with a position that
-// is a name, and of that database. It refuses another version, and a position that is no name, with
-// [ErrCacheVersion], and another database with [ErrCacheDatabase].
+// identity: of [cacheVersion], with a position that is a name, and of that database. It refuses
+// another version, and a position that is no name, with [ErrCacheVersion], and another database
+// with [ErrCacheDatabase].
 func (r record) check(identity string) error {
-	if r.version != 1 && r.version != cacheVersion {
+	if r.version != cacheVersion {
 		return r.versionError()
 	}
 	if _, err := r.position(); err != nil {
