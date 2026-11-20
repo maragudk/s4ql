@@ -690,3 +690,57 @@ internal/core/tx.go Tx.dropKeys remove statement: return tx.fail(ctx, operation,
 	A statement at rest has been reset without an error, since conn.rest finalizes one whose reset fails, so its finalize gives no error but for want of memory.
 internal/core/tx.go Tx.dropKeys remove statement: delete(tx.c.stmts, sql) =>
 	The texts of the statements of a set name its table, whose number no later table of the transaction has, so a finalized statement that stays at rest is never prepared again, and forget finalizes it again, which the binding does without a call of SQLite and without an error.
+
+# The indexes of slice 9 in the recognizer, internal/sql/stmt.
+stmt/recognize.go recognizer.indexColumn remove statement: r.accept(x) =>
+	A column reference without a table name has one token, its column, which is the next one: name rejects it at once or takes it, so describe never looks inside the node, and names it the same whether it was accepted or not.
+
+# The indexes of slice 9 in the engine, internal/engine.
+internal/engine/access.go forcedAccess swap arguments: max(p.pins, 0) => max(0, p.pins)
+	max is commutative.
+
+# The planted bug openBound, since slice 9 in openBounds.scan. A scan gets a bound without a value
+# only from access.scan, where such a bound is the zero bound, which is closed, and the core's
+# scanConditions skips a bound without a value, open or closed. A mutant that opens such a bound too
+# reads the same rows. One that leaves one bound closed plants half of the bug, and the simulation
+# finds it by the other bound.
+internal/engine/bugs.go openBounds.scan remove statement: s.Lower.Open = s.Lower.Open || s.Lower.Value != nil =>
+	The planted bug openBound: only a closed upper bound is read as open, and the bug is found by it.
+internal/engine/bugs.go openBounds.scan remove statement: s.Upper.Open = s.Upper.Open || s.Upper.Value != nil =>
+	The planted bug openBound: only a closed lower bound is read as open, and the bug is found by it.
+internal/engine/bugs.go openBounds.scan operator: s.Lower.Open || s.Lower.Value != nil => s.Lower.Open && s.Lower.Value != nil
+	The planted bug openBound: a lower bound stays as it is, only a closed upper bound is read as open, and the bug is found by it.
+internal/engine/bugs.go openBounds.scan condition: s.Lower.Open => true
+	The planted bug openBound: every lower bound is open, which for a bound without a value bounds nothing, so the scan reads the same rows.
+internal/engine/bugs.go openBounds.scan condition: s.Lower.Open => false
+	The planted bug openBound: a lower bound with a value is open, and one without is closed, as the zero bound of access.scan is, so the scan reads the same rows.
+internal/engine/bugs.go openBounds.scan condition: s.Lower.Open => !s.Lower.Open
+	The planted bug openBound: a lower bound with a value is open, and one without, which bounds nothing, is open too, so the scan reads the same rows.
+internal/engine/bugs.go openBounds.scan condition: s.Lower.Value != nil => true
+	The planted bug openBound: every lower bound is open, which for a bound without a value bounds nothing, so the scan reads the same rows.
+internal/engine/bugs.go openBounds.scan condition: s.Lower.Value != nil => false
+	The planted bug openBound: a lower bound stays as it is, only a closed upper bound is read as open, and the bug is found by it.
+internal/engine/bugs.go openBounds.scan operator: s.Lower.Value != nil => s.Lower.Value == nil
+	The planted bug openBound: a lower bound with a value stays as it is, one without bounds nothing, only a closed upper bound is read as open, and the bug is found by it.
+internal/engine/bugs.go openBounds.scan operator: s.Upper.Open || s.Upper.Value != nil => s.Upper.Open && s.Upper.Value != nil
+	The planted bug openBound: an upper bound stays as it is, only a closed lower bound is read as open, and the bug is found by it.
+internal/engine/bugs.go openBounds.scan condition: s.Upper.Open => true
+	The planted bug openBound: every upper bound is open, which for a bound without a value bounds nothing, so the scan reads the same rows.
+internal/engine/bugs.go openBounds.scan condition: s.Upper.Open => false
+	The planted bug openBound: an upper bound with a value is open, and one without is closed, as the zero bound of access.scan is, so the scan reads the same rows.
+internal/engine/bugs.go openBounds.scan condition: s.Upper.Open => !s.Upper.Open
+	The planted bug openBound: an upper bound with a value is open, and one without, which bounds nothing, is open too, so the scan reads the same rows.
+internal/engine/bugs.go openBounds.scan condition: s.Upper.Value != nil => true
+	The planted bug openBound: every upper bound is open, which for a bound without a value bounds nothing, so the scan reads the same rows.
+
+# The indexes of slice 9 in the core, internal/core.
+internal/core/cache.go conn.lookUp condition: err != nil => false
+	lookUpWithoutIndexes gives a nil table with every error, so the test of the table alone gives the error back.
+internal/core/cache.go conn.insert boolean: false => true
+	Tx.Insert, the one caller, returns at an error of insert before it reads whether the row was inserted.
+internal/core/cache.go conn.delete boolean: false => true
+	Tx.Delete and the replay of a commit, the two callers, return at an error of delete before they read whether there was a row.
+internal/core/index.go indexKey condition: columns != nil => true
+	The planted bug shortKey: the key of the primary key is empty too, another wrong key of a scan, and the bug is found by it.
+internal/core/index.go indexKey operator: columns != nil => columns == nil
+	The planted bug shortKey: the key of the primary key is empty and that of an index is whole, another wrong key of a scan, and the bug is found by it.
