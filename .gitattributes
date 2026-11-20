@@ -2,6 +2,9 @@
 # its files keep line feeds on every checkout.
 /internal/sql/corpus/*.txt text eol=lf
 
+# The golden plans of the engine are compared byte for byte with the text that their test writes.
+/internal/engine/testdata/plans/*.txt text eol=lf
+
 # The generated corpus is large, and is reviewed through the tool that writes it.
 /internal/sql/corpus/tcl.txt linguist-generated=true -diff
 /internal/sql/corpus/doc.txt linguist-generated=true -diff

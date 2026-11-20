@@ -531,7 +531,8 @@ const (
 )
 
 // goqiteQueries are shaped like the statements of goqite, a queue on SQLite. The receive is
-// goqite's without its ORDER BY and its LIMIT, which slice 13 brings.
+// goqite's without its ORDER BY and its LIMIT, which slice 13 brings, and with `timeout <= ?` where
+// goqite writes `? >= timeout`, which slice 12 brings.
 var goqiteQueries = []planQuery{
 	{name: "receive", src: "select id from goqite where queue = ? and timeout <= ? and received < ?",
 		args: []any{"default", "2026-11-20T12:00:00.000Z", int64(3)}},
@@ -658,7 +659,7 @@ func TestAccessOf_golden(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	is.NotError(t, err)
 	for _, e := range entries {
-		if names[e.Name()] {
+		if names[e.Name()] || e.IsDir() || filepath.Ext(e.Name()) != ".txt" {
 			continue
 		}
 		if *update {
@@ -775,10 +776,18 @@ func planAccess(ct *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, a engine.
 		}
 		return columns
 	}
+	// column i of the key columns, or "column i" for one past the end of the key, which is an access
+	// to a longer key than this test makes of the index.
+	column := func(columns []string, i int) string {
+		if i >= len(columns) {
+			return fmt.Sprint("column ", i, " of a key of ", len(columns))
+		}
+		return strings.TrimSuffix(columns[i], " desc")
+	}
 	pinned := func(columns []string, vs []*s4qlpb.Value) string {
 		pins := make([]string, len(vs))
 		for i, v := range vs {
-			pins[i] = strings.TrimSuffix(columns[i], " desc") + " = " + planValue(v)
+			pins[i] = column(columns, i) + " = " + planValue(v)
 		}
 		return strings.Join(pins, ", ")
 	}
@@ -808,7 +817,6 @@ func planAccess(ct *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, a engine.
 	if a.Lower == nil && a.Upper == nil {
 		return s
 	}
-	column := strings.TrimSuffix(columns[len(a.Equal)], " desc")
 	less := func(open bool) string {
 		if open {
 			return " < "
@@ -819,7 +827,7 @@ func planAccess(ct *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, a engine.
 	if a.Lower != nil {
 		s += planValue(a.Lower) + less(a.LowerOpen)
 	}
-	s += column
+	s += column(columns, len(a.Equal))
 	if a.Upper != nil {
 		s += less(a.UpperOpen) + planValue(a.Upper)
 	}
@@ -874,6 +882,9 @@ func planDiff(want, got string) string {
 	}
 	wanted := map[string]string{}
 	for _, block := range wantBlocks {
+		if _, ok := wanted[block[0]]; ok {
+			fmt.Fprintf(&b, "the golden file has two queries named %q\n", block[0])
+		}
 		wanted[block[0]] = block[1]
 	}
 	gotten := map[string]bool{}
@@ -894,25 +905,46 @@ func planDiff(want, got string) string {
 			lines("+ ", block[1])
 		case old != block[1]:
 			fmt.Fprintf(&b, "the plan of the query %q changed:\n", block[0])
-			oldLines := slices.Collect(strings.Lines(old))
-			newLines := slices.Collect(strings.Lines(block[1]))
-			for j := range max(len(oldLines), len(newLines)) {
-				switch {
-				case j < len(oldLines) && j < len(newLines) && oldLines[j] == newLines[j]:
-					b.WriteString("  " + newLines[j])
-				default:
-					if j < len(oldLines) {
-						b.WriteString("- " + oldLines[j])
-					}
-					if j < len(newLines) {
-						b.WriteString("+ " + newLines[j])
-					}
-				}
-			}
+			b.WriteString(lineDiff(slices.Collect(strings.Lines(old)), slices.Collect(strings.Lines(block[1]))))
 		}
 	}
 	if b.Len() == 0 {
 		b.WriteString("the queries are in another order, or the file differs in its spaces\n")
+	}
+	return b.String()
+}
+
+// lineDiff of the lines before and after, by their longest common subsequence. A line of both is
+// prefixed with "  ", a line of before alone with "- ", and a line of after alone with "+ ".
+func lineDiff(before, after []string) string {
+	// common[i][j] is the length of the longest common subsequence of before[i:] and after[j:].
+	common := make([][]int, len(before)+1)
+	for i := range common {
+		common[i] = make([]int, len(after)+1)
+	}
+	for i := len(before) - 1; i >= 0; i-- {
+		for j := len(after) - 1; j >= 0; j-- {
+			if before[i] == after[j] {
+				common[i][j] = common[i+1][j+1] + 1
+			} else {
+				common[i][j] = max(common[i+1][j], common[i][j+1])
+			}
+		}
+	}
+	var b strings.Builder
+	i, j := 0, 0
+	for i < len(before) || j < len(after) {
+		switch {
+		case i < len(before) && j < len(after) && before[i] == after[j]:
+			b.WriteString("  " + before[i])
+			i, j = i+1, j+1
+		case j == len(after) || (i < len(before) && common[i+1][j] >= common[i][j+1]):
+			b.WriteString("- " + before[i])
+			i++
+		default:
+			b.WriteString("+ " + after[j])
+			j++
+		}
 	}
 	return b.String()
 }
