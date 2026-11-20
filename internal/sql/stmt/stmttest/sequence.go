@@ -553,8 +553,8 @@ func (q *Sequence) around(args []any) []any {
 	return args
 }
 
-// next call of the sequence, with an argument for each parameter of a statement of slices 1, 2,
-// and 4, and for each ? of a text that is not.
+// next call of the sequence, with an argument for each parameter of a statement of the
+// slices that a sequence writes, and for each ? of a text that is not.
 func (q *Sequence) next() Call {
 	r := q.r
 	if r.IntN(12) == 0 {

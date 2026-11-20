@@ -1366,7 +1366,7 @@ func TestDifferential(t *testing.T) {
 		// now. The generator drew as before then. When the sequence wrote NULL, they went from 17, 718,
 		// 184, 336, and 3 to 18, 703, 220, 339, and 8: the sequence draws other random numbers, which
 		// moves each of them, and of its own a call around a NULL argument has a nil []byte in its
-		// place, which took the third up: the arguments that are a nil []byte went from 9 to 54. Nil is
+		// place, which took the third up: the arguments that are a nil []byte went from 26 to 54. Nil is
 		// no longer among [stmttest.Unsupported].
 		want := map[string]int{acceptedStartedTable: 18, excusedArguments: 703, excusedArgument: 220, excusedType: 339, excusedLong: 8}
 		kinds := slices.Collect(maps.Keys(want))
