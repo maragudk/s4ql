@@ -241,7 +241,7 @@ func TestEngine_report(t *testing.T) {
 		is.Equal(t, "1", h.events[len(h.events)-1][attrRows])
 	})
 
-	t.Run("should give the access, the index of an access by one, and the rows read of a select, an update, and a delete in the event, and none of the three for a statement that reads no rows of a table and for one that failed before its access was chosen", func(t *testing.T) {
+	t.Run("should give the access, the index of an access by one, and the rows read of a select, an update, and a delete in the event, and neither an access nor rows read for a statement that reads no rows of a table and for one that failed before its access was chosen", func(t *testing.T) {
 		// reading of the event e: its attributes of the reading that it has, its rows, and its outcome.
 		reading := func(e map[string]string) string {
 			var parts []string
@@ -299,9 +299,10 @@ func TestEngine_report(t *testing.T) {
 			{src: "insert into t values (5, 50)", want: "statement.rows:1 outcome:ok"},
 			{src: "insert into t values (1, 50)", want: "statement.rows:0 outcome:sqlite_error"},
 			{src: "create table u (k int primary key) strict, without rowid", want: "statement.rows:0 outcome:ok"},
-			{src: "create index j on t (w)", want: "statement.rows:0 outcome:ok"},
-			{src: "drop index i", want: "statement.rows:0 outcome:ok"},
 			{src: "drop table t", want: "statement.rows:0 outcome:ok"},
+			// A create index and a drop index name their index, which is no access.
+			{src: "create index j on t (w)", want: "statement.index:j statement.rows:0 outcome:ok"},
+			{src: "drop index i", want: "statement.index:i statement.rows:0 outcome:ok"},
 			// The statement failed before its access was chosen.
 			{src: "select * from nosuch where k = 1", want: "statement.rows:0 outcome:sqlite_error"},
 			{src: "select x from t where k = 1", want: "statement.rows:0 outcome:sqlite_error"},
