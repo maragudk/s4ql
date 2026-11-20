@@ -919,6 +919,34 @@ func TestChangeRows(t *testing.T) {
 			is.Equal(t, "[table t]", calls, fmt.Sprint("scan all: ", scanAll))
 		}
 	})
+
+	t.Run("should give the error of the read of the row of a key that the update found", func(t *testing.T) {
+		for _, scanAll := range []bool{false, true} {
+			f := newTable()
+			f.getFails = errors.New("the get fails")
+			err, n, calls := change(t, f, "update t set w = 5 where w = 20", scanAll)
+			is.Equal(t, "the get fails", err)
+			is.Equal(t, int64(0), n)
+			is.Equal(t, "[table t keys t add 2 key 2 get t 2]", calls, fmt.Sprint("scan all: ", scanAll))
+		}
+	})
+
+	t.Run("should give an internal error for a key that the statement found and whose row is gone", func(t *testing.T) {
+		// A source that gives the row of the key 9, from a table of another fake, which the table of the
+		// statement does not have.
+		f, other := newTable(), newFake().with("t", []string{"w", "k"}, []int64{90, 9})
+		other.tables["t"].ct.SetPrimaryKey([]uint32{1})
+		ct, src := f.tables["t"].ct, &scan{r: fakeTx{other}, table: other.tables["t"].ct}
+		n, err := (&update{w: fakeTx{f}, table: ct, key: 1, src: src, positions: []int{0}, values: []*s4qlpb.Value{integer(5)}}).run(t.Context())
+		is.True(t, errors.Is(err, ErrInternal))
+		is.Equal(t, "s4ql: internal error: the row of a key that an update found is gone", err.Error())
+		is.Equal(t, int64(0), n)
+		n, err = (&remove{w: fakeTx{f}, table: ct, key: 1, src: src}).run(t.Context())
+		is.True(t, errors.Is(err, ErrInternal))
+		is.Equal(t, "s4ql: internal error: the row of a key that a delete found is gone", err.Error())
+		is.Equal(t, int64(0), n)
+		is.Equal(t, "[keys t add 9 key 9 get t 9 keys t add 9 key 9 delete t 9]", fmt.Sprint(f.calls))
+	})
 }
 
 func TestBuild(t *testing.T) {
