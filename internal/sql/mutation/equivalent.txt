@@ -291,6 +291,10 @@ stmt/real.go fp10Convert2 constant: math.Inf(1) => math.Inf(2)
 	math.Inf gives the positive infinity for every sign that is not negative.
 stmt/real.go fp10Convert2 constant: math.Inf(1) => math.Inf(0)
 	math.Inf gives the positive infinity for every sign that is not negative.
+stmt/real.go fp10Convert2 constant: math.Inf(1) => math.Inf(2) #2
+	math.Inf gives the positive infinity for every sign that is not negative.
+stmt/real.go fp10Convert2 constant: math.Inf(1) => math.Inf(0) #2
+	math.Inf gives the positive infinity for every sign that is not negative.
 stmt/real.go fp10Convert2 operator: e > 1074 => e >= 1074
 	For e of 1074 the change sets e to 1074, which it is.
 stmt/real.go fp10Convert2 constant: e > 1074 => e > 1073

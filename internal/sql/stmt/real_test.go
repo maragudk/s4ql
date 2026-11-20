@@ -119,6 +119,8 @@ var realEdges = func() []string {
 		"15931884261748570403e16", "16638669360040085079e16",
 		// A tie with 10^27, which its table holds exactly.
 		"17679410011640714626e27",
+		// 2^54 - 1, a tie whose rounding up carries into the next power of two.
+		"18014398509481983e0", "18014398509481983.0",
 	}
 }()
 
