@@ -117,8 +117,8 @@ func TestEngine_report(t *testing.T) {
 			{name: "build of a query, through Query", src: "select * from t1", panic: "the lookup panics", set: func(f *fake) { f.tablePanics = true }, query: true},
 			{name: "build of a query, through Exec", src: "select * from t1", panic: "the lookup panics", set: func(f *fake) { f.tablePanics = true }},
 			{name: "build of a write, through Exec", src: "drop table t1", panic: "the lookup panics", set: func(f *fake) { f.tablePanics = true }},
-			{name: "write, through Exec", src: "insert into t1 (v1) values (3)", panic: "the upsert panics", set: func(f *fake) { f.upsertPanics = true }},
-			{name: "write, through Query", src: "insert into t1 (v1) values (3)", panic: "the upsert panics", set: func(f *fake) { f.upsertPanics = true }, query: true},
+			{name: "write, through Exec", src: "insert into t1 (v1) values (3)", panic: "the insert panics", set: func(f *fake) { f.insertPanics = true }},
+			{name: "write, through Query", src: "insert into t1 (v1) values (3)", panic: "the insert panics", set: func(f *fake) { f.insertPanics = true }, query: true},
 			{name: "scan before its first row, through Query", src: "select * from t1", panic: "the scan panics", set: func(f *fake) { f.scanPanics = 0 }, query: true},
 			{name: "scan before its second row, through Query", src: "select * from t1", panic: "the scan panics", set: func(f *fake) { f.scanPanics = 1 }, query: true},
 			{name: "scan, through Exec", src: "select * from t1", panic: "the scan panics", set: func(f *fake) { f.scanPanics = 1 }},
@@ -253,15 +253,15 @@ func TestEngine_write(t *testing.T) {
 		is.Equal(t, "table t1 already exists", err.Error())
 		is.Equal(t, "[table t1 rollback]", fmt.Sprint(f.calls))
 
-		f.calls, f.upsertFails = nil, errors.New("upsert fails")
+		f.calls, f.insertFails = nil, errors.New("insert fails")
 		_, err = conn.Exec(t.Context(), "insert into t1 (v1) values (1)")
-		is.Equal(t, "upsert fails", err.Error())
-		is.Equal(t, "[table t1 get t1 1 upsert t1 1 rollback]", fmt.Sprint(f.calls))
+		is.Equal(t, "insert fails", err.Error())
+		is.Equal(t, "[table t1 insert t1 1 rollback]", fmt.Sprint(f.calls))
 
-		f.calls, f.upsertFails, f.annotateFails = nil, nil, errors.New("annotate fails")
+		f.calls, f.insertFails, f.annotateFails = nil, nil, errors.New("annotate fails")
 		_, err = conn.Exec(t.Context(), "insert into t1 (v1) values (1)")
 		is.Equal(t, "annotate fails", err.Error())
-		is.Equal(t, "[table t1 get t1 1 upsert t1 1 annotate insert into t1 (v1) values (1) rollback]", fmt.Sprint(f.calls))
+		is.Equal(t, "[table t1 insert t1 1 annotate insert into t1 (v1) values (1) rollback]", fmt.Sprint(f.calls))
 
 		f.calls, f.annotateFails, f.commitFails = nil, nil, core.ErrOutcomeUnknown
 		res, err := conn.Exec(t.Context(), "insert into t1 (v1) values (2)")
@@ -273,10 +273,10 @@ func TestEngine_write(t *testing.T) {
 
 	t.Run("should roll back when an operator panics", func(t *testing.T) {
 		f := newFake().with("t1", []string{"v1"})
-		f.upsertPanics = true
+		f.insertPanics = true
 		conn := newTestConn(f, bugs{})
 		func() {
-			defer func() { is.Equal(t, "the upsert panics", recover()) }()
+			defer func() { is.Equal(t, "the insert panics", recover()) }()
 			_, _ = conn.Exec(t.Context(), "insert into t1 (v1) values (1)")
 		}()
 		is.Equal(t, "rollback", f.calls[len(f.calls)-1])

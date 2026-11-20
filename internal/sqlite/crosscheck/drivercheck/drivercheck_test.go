@@ -495,7 +495,7 @@ func (y tally) add(scope, src string, got outcome, runs [][]any) {
 // statementKind of src: the kind of the statement of slices 1 and 2 that it is, in lower case and
 // with a parameter if it has one, or "other".
 func statementKind(src string) string {
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	if s == nil {
 		return "other"
 	}
@@ -532,7 +532,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 		}
 		return "ok"
 	}
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	if sel, ok := s.(*stmt.Select); ok {
 		_, columns := p.columnsIn(o, sel.Table.Value)
 		if columns == nil {
@@ -823,7 +823,7 @@ func (p *pair) where(c call, src string) (runner, runner, string) {
 		// The statements of a sql.Conn run in its transaction.
 		return p.s, p.o, t.kind()
 	}
-	if s, _ := checkText(src); s != nil {
+	if s, _ := stmt.Check(src); s != nil {
 		if _, ok := s.(*stmt.Select); ok {
 			return p.s, p.o, "beside a " + t.kind()
 		}
@@ -1128,7 +1128,7 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 	// gives before it binds the arguments, so that it runs there without them, or the outcome of a
 	// statement that s4ql ran, which must have had an argument that s4ql supports for each
 	// parameter in each run, and which runs there with them.
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	byText := err != nil || s == nil
 	mattnRuns := runs
 	if byText {
@@ -1171,12 +1171,12 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 	if !p.pinned {
 		// Through the pool, the count of changes is that of the connection that database/sql takes,
 		// so it is compared only for a statement that sets it. In slice 1 that is an insert.
-		if s, _ := checkText(src); s == nil || fmt.Sprintf("%T", s) != "*stmt.Insert" {
+		if s, _ := stmt.Check(src); s == nil || fmt.Sprintf("%T", s) != "*stmt.Insert" {
 			got.affected, want.affected = "", ""
 		}
 	}
 	if got.String() == want.String() {
-		if s, _ := checkText(src); s != nil && got.failed == "" {
+		if s, _ := stmt.Check(src); s != nil && got.failed == "" {
 			if ct, ok := s.(*stmt.CreateTable); ok {
 				p.created[ct.Table.Value] = true
 			}
@@ -1239,7 +1239,7 @@ func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) 
 func (p *pair) checkNotSupported(src string, c call, supported bool, runs [][]any, got outcome) string {
 	tb := p.tb
 	tb.Helper()
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err == nil && s != nil {
 		return p.checkRefused(src, s, runs, got)
 	}
@@ -1304,9 +1304,9 @@ func (p *pair) checkRefused(src string, s stmt.Statement, runs [][]any, got outc
 
 // argumentRefusal is the "not supported" of the first argument of args that s4ql does not support,
 // in order, its name before its type: one with a name, an unsigned integer above the largest int64,
-// nil, a real that is not a number or is infinite, text that is not valid UTF-8 or holds the
-// character NUL, and one of a type that no column holds, by its type as database/sql converts it. It
-// is "" if s4ql supports every argument.
+// a real that is not a number or is infinite, text that is not valid UTF-8 or holds the character
+// NUL, a []byte that is nil, and one of a type that no column holds, by its type as database/sql
+// converts it. It is "" if s4ql supports every argument, nil for NULL among them.
 func argumentRefusal(args []any) string {
 	for i, a := range args {
 		if n, ok := a.(sql.NamedArg); ok {
@@ -1320,7 +1320,7 @@ func argumentRefusal(args []any) string {
 		case uint64:
 			return fmt.Sprintf("s4ql: not supported: argument %v of type uint64, whose value does not fit a signed 64-bit integer", i+1)
 		case nil:
-			return fmt.Sprintf("s4ql: not supported: argument %v of type nil", i+1)
+			// NULL, which a column that takes NULL holds, and SQLite's NOT NULL refuses for any other.
 		case float64:
 			switch {
 			case math.IsNaN(v):
@@ -1358,23 +1358,10 @@ func converted(a any) any {
 	return a
 }
 
-// checkText src as the driver checks a text at Prepare: as [stmt.Check] does, and with the "not
-// supported" of [engine.Check] for a statement with NULL of slice 6 that the pass supports and the
-// engine does not run yet, which the tests take for a text that is not supported.
-func checkText(src string) (stmt.Statement, error) {
-	s, err := stmt.Check(src)
-	if err == nil && s != nil {
-		if err := engine.Check(src, s.Parameters()); errors.Is(err, stmt.ErrNotSupported) {
-			return nil, err
-		}
-	}
-	return s, err
-}
-
 // reaches reports whether s4ql takes src with args to the instance: the text holds a statement that
 // s4ql supports, with one argument for each parameter, each one that s4ql supports.
 func reaches(src string, args []any) bool {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	return err == nil && s != nil && len(args) == s.Parameters() && argumentRefusal(args) == ""
 }
 
@@ -1421,16 +1408,19 @@ func (p *pair) columns(name string) (string, []stmttest.TableColumn) {
 func (p *pair) columnsIn(o runner, name string) (string, []stmttest.TableColumn) {
 	tb := p.tb
 	tb.Helper()
-	rows, err := o.QueryContext(tb.Context(), "select m.name, p.name, p.type, p.pk from sqlite_schema m, pragma_table_info(m.name) p where m.type = 'table' and m.name = ? collate nocase order by p.cid", name)
+	rows, err := o.QueryContext(tb.Context(), `select m.name, p.name, p.type, p.pk, p."notnull" from sqlite_schema m, pragma_table_info(m.name) p where m.type = 'table' and m.name = ? collate nocase order by p.cid`, name)
 	is.NotError(tb, err)
 	defer func() { is.NotError(tb, rows.Close()) }()
 	var table string
 	var columns []stmttest.TableColumn
 	for rows.Next() {
 		var c stmttest.TableColumn
-		var pk int
-		is.NotError(tb, rows.Scan(&table, &c.Name, &c.Type, &pk))
+		var pk, notNull int
+		is.NotError(tb, rows.Scan(&table, &c.Name, &c.Type, &pk, &notNull))
+		// The key of a table WITHOUT ROWID never takes NULL, also when SQLite reports it without NOT
+		// NULL.
 		c.PrimaryKey = pk == 1
+		c.Nullable = !c.PrimaryKey && notNull == 0
 		columns = append(columns, c)
 	}
 	is.NotError(tb, rows.Err())
@@ -2419,9 +2409,13 @@ func TestGenerated(t *testing.T) {
 	// prepare took excusedPrepare up, inserts of up to four values have more arguments, which took
 	// excusedArgument up, one insert in ten has a value of any type, where one value in ten had,
 	// which took excusedType down, and select lists name columns in double quotes, which
-	// excusedQuoted counts.
+	// excusedQuoted counts. The engine and the driver of slice 6 took excusedPrepare from 1072 to
+	// 1075 and excusedArgument from 189 to 184, with the generator drawing as before: a nil argument
+	// is NULL, which s4ql takes, so 5 calls with one are no longer refused for it, and one of them
+	// meets SQLite's error of a name at prepare; and two inserts of the literal NULL of
+	// [stmttest.Others], which s4ql refused as not supported, meet such an error too.
 	want := map[string]int{
-		excusedPrepare: 1072, excusedStartedTable: 9, excusedArguments: 396, excusedArgument: 189, excusedType: 161,
+		excusedPrepare: 1075, excusedStartedTable: 9, excusedArguments: 396, excusedArgument: 184, excusedType: 161,
 		excusedLevel: 70, excusedRowsOpen: 29, excusedTxOpen: 30, excusedOutside: 68, excusedQuoted: 32,
 	}
 	kinds := slices.Collect(maps.Keys(want))

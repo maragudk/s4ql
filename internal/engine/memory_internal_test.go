@@ -190,8 +190,9 @@ func (x *memTx) commit(context.Context) error {
 	return nil
 }
 
-// state of the memory: each table, in the order of the names as bytes, with its columns and its
-// rows in the order of the key, and each value as text gives it.
+// state of the memory: each table, in the order of the names as bytes, with its columns, each with
+// NULL after its type if it takes NULL, and its rows in the order of the key, and each value as text
+// gives it.
 func (m *memory) state(text func(*s4qlpb.Value) string) string {
 	tables := slices.Collect(maps.Values(m.tables))
 	slices.SortFunc(tables, func(a, b *memTable) int { return cmp.Compare(a.ct.GetTable(), b.ct.GetTable()) })
@@ -199,7 +200,11 @@ func (m *memory) state(text func(*s4qlpb.Value) string) string {
 	for _, t := range tables {
 		var columns []string
 		for _, c := range t.ct.GetColumns() {
-			columns = append(columns, c.GetName()+" "+typeName(c.GetType()))
+			column := c.GetName() + " " + typeName(c.GetType())
+			if c.GetNullable() {
+				column += " NULL"
+			}
+			columns = append(columns, column)
 		}
 		var rows []string
 		for _, row := range t.sorted() {

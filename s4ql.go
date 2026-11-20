@@ -57,12 +57,14 @@
 //
 // An argument is, after database/sql's conversion, which also takes the value of a
 // [database/sql/driver.Valuer]: a Go integer that fits a signed 64-bit integer, a float64 or a
-// float32 that is a finite number, a string of valid UTF-8 without the character NUL, or a []byte
-// that is not nil, which can be empty. A statement is given exactly one argument for each parameter,
-// and another number fails with an error that says both numbers, which is not SQLite's error: SQLite
-// would take a missing argument for NULL. Another form of a parameter, such as ?1 or :name, an
-// argument of another type or value, such as nil, a bool, or a time.Time, and a named argument of
-// [database/sql.Named] are not supported. The text of a statement is judged before its arguments,
+// float32 that is a finite number, a string of valid UTF-8 without the character NUL, a []byte that
+// is not nil, which can be empty, or nil for NULL. database/sql gives nil for a nil pointer and for a
+// [database/sql.NullString] or another value of [database/sql.Null] that is not valid. A []byte
+// that is nil is not supported: it does not say whether it means NULL or the empty blob. A statement
+// is given exactly one argument for each parameter, and another number fails with an error that
+// says both numbers, which is not SQLite's error: SQLite would take a missing argument for NULL.
+// Another form of a parameter, such as ?1 or :name, an argument of another type or value, such as a
+// bool or a time.Time, and a named argument of [database/sql.Named] are not supported. The text of a statement is judged before its arguments,
 // and both before the instance, so a syntax error is SQLite's whatever the arguments are, and an
 // error of the arguments does not depend on whether the instance serves. A statement with an error
 // of its text or of its arguments does not run.
@@ -70,8 +72,11 @@
 // A column is of the type INT, INTEGER, REAL, TEXT, or BLOB, and a value must have its type: an
 // integer for INT and INTEGER, a real for REAL, text for TEXT, and a blob for BLOB. A value of another
 // type is not supported, also where SQLite would convert it, such as the integer 1 for a REAL
-// column; that is known only when the statement runs and finds its table. A query gives an int64, a
-// float64, a string, or a []byte, which is the application's own. A real that is -0.0 is stored, and
+// column; that is known only when the statement runs and finds its table. A column that is not the
+// primary key and is not declared NOT NULL takes NULL, in a column of any type, and gets NULL when
+// an insert leaves it out. NULL in any other column fails with SQLite's error. A query gives an
+// int64, a float64, a string, or a []byte, which is the application's own, or nil for NULL, which
+// scans into a value of [database/sql.Null], a pointer, or an any. A real that is -0.0 is stored, and
 // given back, as 0.0, as SQLite stores it.
 //
 // [database/sql.Result.RowsAffected] is SQLite's count of changes on the connection: an insert sets

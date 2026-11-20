@@ -27,10 +27,11 @@ type fake struct {
 	tables map[string]*fakeTable
 	// scanFails makes a scan fail before the row of that index, if it is not negative.
 	scanFails int
-	// getFails, upsertFails, annotateFails, and commitFails are the errors of those calls.
-	getFails, upsertFails, annotateFails, commitFails, beginFails, readFails error
-	// upsertPanics makes an upsert panic, and endPanics the end of a read transaction.
-	upsertPanics, endPanics bool
+	// insertFails, annotateFails, and commitFails are the errors of those calls. insertFails is the
+	// error of an insert of a row also when the table has its key, as the core's too big is.
+	insertFails, annotateFails, commitFails, beginFails, readFails error
+	// insertPanics makes an insert panic, and endPanics the end of a read transaction.
+	insertPanics, endPanics bool
 	// scanPanics makes a scan panic before the row of that index, if it is not negative.
 	scanPanics int
 	// tablePanics makes a lookup panic, tableFails is the error of a lookup, and endFails is the
@@ -38,8 +39,6 @@ type fake struct {
 	tablePanics bool
 	tableFails  error
 	endFails    error
-	// insertNewFails is the error of an insert of a row whose key the table has.
-	insertNewFails error
 	// scans counts the scans that have started and not ended, and open the transactions.
 	scans, open int
 	// readers counts the readers that are open, and opened those that were ever opened. readerFails
@@ -159,9 +158,6 @@ func (x fakeTx) scan(_ context.Context, name string) iter.Seq2[[]*s4qlpb.Value, 
 
 func (x fakeTx) get(_ context.Context, name string, key []*s4qlpb.Value) ([]*s4qlpb.Value, error) {
 	x.f.calls = append(x.f.calls, fmt.Sprint("get ", name, " ", key[0].GetInteger()))
-	if x.f.getFails != nil {
-		return nil, x.f.getFails
-	}
 	t := x.f.tables[fold(name)]
 	k := t.ct.GetPrimaryKey()[0]
 	for _, row := range t.rows {
@@ -185,9 +181,35 @@ func (x fakeTx) dropTable(_ context.Context, name string) error {
 }
 
 func (x fakeTx) upsert(_ context.Context, name string, row []*s4qlpb.Value) error {
-	if x.f.upsertPanics {
-		panic("the upsert panics")
+	x.f.calls = append(x.f.calls, fmt.Sprint("upsert ", name, " ", rowText(row)))
+	t := x.f.tables[fold(name)]
+	k := t.ct.GetPrimaryKey()[0]
+	t.rows = slices.DeleteFunc(t.rows, func(r []*s4qlpb.Value) bool { return r[k].GetInteger() == row[k].GetInteger() })
+	t.rows = append(t.rows, row)
+	return nil
+}
+
+// insertNew inserts the row if the table has no row with its key. It does not measure the row, and
+// fails with insertFails before it looks for the key, as the core fails for a row that is too big.
+func (x fakeTx) insertNew(_ context.Context, name string, row []*s4qlpb.Value) (bool, error) {
+	if x.f.insertPanics {
+		panic("the insert panics")
 	}
+	x.f.calls = append(x.f.calls, fmt.Sprint("insert ", name, " ", rowText(row)))
+	if x.f.insertFails != nil {
+		return false, x.f.insertFails
+	}
+	t := x.f.tables[fold(name)]
+	k := t.ct.GetPrimaryKey()[0]
+	if slices.ContainsFunc(t.rows, func(r []*s4qlpb.Value) bool { return r[k].GetInteger() == row[k].GetInteger() }) {
+		return false, nil
+	}
+	t.rows = append(t.rows, row)
+	return true, nil
+}
+
+// rowText of the integers and NULLs of the row, with a comma between two.
+func rowText(row []*s4qlpb.Value) string {
 	var values []string
 	for _, v := range row {
 		if v.HasNull() {
@@ -196,29 +218,7 @@ func (x fakeTx) upsert(_ context.Context, name string, row []*s4qlpb.Value) erro
 			values = append(values, fmt.Sprint(v.GetInteger()))
 		}
 	}
-	x.f.calls = append(x.f.calls, fmt.Sprint("upsert ", name, " ", strings.Join(values, ",")))
-	if x.f.upsertFails != nil {
-		return x.f.upsertFails
-	}
-	t := x.f.tables[fold(name)]
-	k := t.ct.GetPrimaryKey()[0]
-	t.rows = slices.DeleteFunc(t.rows, func(r []*s4qlpb.Value) bool { return r[k].GetInteger() == row[k].GetInteger() })
-	t.rows = append(t.rows, row)
-	return nil
-}
-
-// insertNew inserts the row if the table has no row with its key, and does not measure the row.
-func (x fakeTx) insertNew(ctx context.Context, name string, row []*s4qlpb.Value) (bool, error) {
-	t := x.f.tables[fold(name)]
-	k := t.ct.GetPrimaryKey()[0]
-	x.f.calls = append(x.f.calls, fmt.Sprint("insert new ", name, " ", row[k].GetInteger()))
-	if x.f.insertNewFails != nil {
-		return false, x.f.insertNewFails
-	}
-	if slices.ContainsFunc(t.rows, func(r []*s4qlpb.Value) bool { return r[k].GetInteger() == row[k].GetInteger() }) {
-		return false, nil
-	}
-	return true, x.upsert(ctx, name, row)
+	return strings.Join(values, ",")
 }
 
 func (x fakeTx) position() format.Name {
@@ -394,13 +394,13 @@ func TestInsert(t *testing.T) {
 		return v
 	}
 
-	t.Run("should check each key before it writes the row, and count the rows", func(t *testing.T) {
+	t.Run("should insert each row only if its key is new, with one call of the storage for each, and count the rows", func(t *testing.T) {
 		f := newFake().with("T1", []string{"v"})
 		i := &insert{w: fakeTx{f}, table: f.tables["t1"].ct, src: ints(2, 1)}
 		n, err := i.run(t.Context())
 		is.NotError(t, err)
 		is.Equal(t, int64(2), n)
-		is.Equal(t, "[get T1 2 upsert T1 2 get T1 1 upsert T1 1]", fmt.Sprint(f.calls))
+		is.Equal(t, "[insert T1 2 insert T1 1]", fmt.Sprint(f.calls))
 	})
 
 	t.Run("should fail with SQLite's error for a key that the table has, also from an earlier row, with the stored names", func(t *testing.T) {
@@ -420,16 +420,16 @@ func TestInsert(t *testing.T) {
 
 	t.Run("should pass on an error of the storage, and of the source", func(t *testing.T) {
 		f := newFake().with("t", []string{"v"})
-		f.getFails = errors.New("get fails")
-		_, err := (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1)}).run(t.Context())
-		is.Equal(t, "get fails", err.Error())
-		f.getFails, f.upsertFails = nil, errors.New("upsert fails")
-		_, err = (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1)}).run(t.Context())
-		is.Equal(t, "upsert fails", err.Error())
+		f.insertFails = errors.New("insert fails")
+		n, err := (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1)}).run(t.Context())
+		is.Equal(t, "insert fails", err.Error())
+		is.Equal(t, int64(0), n)
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
+		f.insertFails = nil
 		_, err = (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1)}).run(ctx)
 		is.True(t, errors.Is(err, context.Canceled))
+		is.Equal(t, "[insert t 1]", fmt.Sprint(f.calls))
 	})
 
 	t.Run("should check the type of each value of every row, and fail with an internal error for rows that its expressions do not match", func(t *testing.T) {
@@ -460,21 +460,76 @@ func TestInsert(t *testing.T) {
 		}
 	})
 
-	t.Run("should ask the storage to measure a row whose key the table has before it fails, and pass on its error", func(t *testing.T) {
+	t.Run("should ask the storage to insert a row whose key the table has, so that it measures the row, and pass on its error", func(t *testing.T) {
 		f := newFake().with("t", []string{"v"}, []int64{1})
 		_, err := (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1)}).run(t.Context())
 		is.Equal(t, "UNIQUE constraint failed: t.v", err.Error())
-		is.Equal(t, "[get t 1 insert new t 1]", fmt.Sprint(f.calls))
-		f.insertNewFails = errors.New("string or blob too big")
+		is.Equal(t, "[insert t 1]", fmt.Sprint(f.calls))
+		f.insertFails = errors.New("string or blob too big")
 		_, err = (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1)}).run(t.Context())
 		is.Equal(t, "string or blob too big", err.Error())
 	})
 
-	t.Run("should write without the check with the planted bug", func(t *testing.T) {
-		f := newFake().with("t", []string{"v"}, []int64{1})
-		_, err := (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1), skipUnique: true}).run(t.Context())
+	t.Run("should write without the check with the planted bug, so that the row replaces the row with its key", func(t *testing.T) {
+		f := newFake().with("t", []string{"v", "w"}, []int64{1, 1})
+		row := &values{data: [][]*s4qlpb.Value{{integer(1), integer(2)}}}
+		n, err := (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: row, skipUnique: true}).run(t.Context())
 		is.NotError(t, err)
-		is.Equal(t, "[upsert t 1]", fmt.Sprint(f.calls))
+		is.Equal(t, int64(1), n)
+		is.Equal(t, "[upsert t 1,2]", fmt.Sprint(f.calls))
+		is.Equal(t, 1, len(f.tables["t"].rows))
+		is.Equal(t, "1,2", rowText(f.tables["t"].rows[0]))
+	})
+
+	t.Run("should take NULL in a column that takes it, of any type, and give SQLite's error for NULL in any other column and in the key, in the order of the table", func(t *testing.T) {
+		null, text := null(), s4qlpb.Value_builder{Text: new("a")}.Build()
+		ct := s4qlpb.CreateTable_builder{Table: new("t"), PrimaryKey: []uint32{1}, Columns: []*s4qlpb.Column{
+			s4qlpb.Column_builder{Name: new("a"), Type: new(s4qlpb.Type_TYPE_INT), Nullable: new(true)}.Build(),
+			s4qlpb.Column_builder{Name: new("k"), Type: new(s4qlpb.Type_TYPE_INT)}.Build(),
+			s4qlpb.Column_builder{Name: new("b"), Type: new(s4qlpb.Type_TYPE_TEXT)}.Build(),
+			s4qlpb.Column_builder{Name: new("c"), Type: new(s4qlpb.Type_TYPE_BLOB), Nullable: new(true)}.Build(),
+		}}.Build()
+		// The literals of the values of a row.
+		literals := func(row []*s4qlpb.Value) []Expr {
+			var es []Expr
+			for _, v := range row {
+				switch {
+				case v.HasNull():
+					es = append(es, &Null{})
+				case v.HasText():
+					es = append(es, &Text{Value: v.GetText()})
+				default:
+					es = append(es, &Integer{Value: v.GetInteger()})
+				}
+			}
+			return es
+		}
+		for _, c := range []struct {
+			row  []*s4qlpb.Value
+			want string
+		}{
+			{row: []*s4qlpb.Value{null, integer(1), text, null}, want: ""},
+			{row: []*s4qlpb.Value{null, null, text, null}, want: "NOT NULL constraint failed: t.k"},
+			{row: []*s4qlpb.Value{null, integer(1), null, null}, want: "NOT NULL constraint failed: t.b"},
+			{row: []*s4qlpb.Value{null, null, null, null}, want: "NOT NULL constraint failed: t.k"},
+			// NOT NULL comes before the type of a value, also of a column before it.
+			{row: []*s4qlpb.Value{text, integer(1), null, null}, want: "NOT NULL constraint failed: t.b"},
+			{row: []*s4qlpb.Value{text, integer(1), text, null}, want: "s4ql: not supported: a string literal for the column t.a of type INT"},
+			{row: []*s4qlpb.Value{null, integer(1), text, text}, want: "s4ql: not supported: a string literal for the column t.c of type BLOB"},
+		} {
+			err := (&insert{table: ct, key: 1, src: &values{data: [][]*s4qlpb.Value{c.row}}, exprs: [][]Expr{literals(c.row)}}).check()
+			if c.want == "" {
+				is.NotError(t, err)
+				continue
+			}
+			is.Equal(t, c.want, err.Error())
+			if se, ok := errors.AsType[*sqlerr.Error](err); ok {
+				is.Equal(t, sqlerr.Error{Code: 19, ExtendedCode: 1299, Message: c.want, Offset: -1}, *se)
+			}
+		}
+		err := (&insert{table: ct, key: 1, src: &values{data: [][]*s4qlpb.Value{{null, integer(1), nil, null}}}, exprs: [][]Expr{make([]Expr, 4)}}).check()
+		is.True(t, errors.Is(err, ErrInternal))
+		is.Equal(t, "s4ql: internal error: an insert without a value for the column b", err.Error())
 	})
 }
 
@@ -517,9 +572,9 @@ func TestBuild(t *testing.T) {
 		{name: "drop table that does not exist", f: newFake(), src: `drop table "x y"`,
 			err: "no such table: x y", calls: "[table x y]"},
 		{name: "insert", f: newFake().with("t", []string{"V"}), src: "insert into T (v) values (-3)",
-			calls: "[table T get t -3 upsert t -3]"},
+			calls: "[table T insert t -3]"},
 		{name: "insert of a parameter", f: newFake().with("t", []string{"V"}), src: "insert into T (v) values (?)", args: []int64{-9223372036854775808},
-			calls: "[table T get t -9223372036854775808 upsert t -9223372036854775808]"},
+			calls: "[table T insert t -9223372036854775808]"},
 		{name: "insert of a parameter into a table that does not exist", f: newFake(), src: "insert into t (v) values (?)", args: []int64{1},
 			err: "no such table: t", calls: "[table t]"},
 		{name: "insert into a table that does not exist, with a column that does not exist", f: newFake(), src: "insert into t (w) values (1)",
@@ -558,7 +613,7 @@ func TestBuild(t *testing.T) {
 			is.NotError(t, s.check(), src)
 			_, err = s.run(t.Context())
 			is.NotError(t, err, src)
-			is.Equal(t, "[table t get t 2 upsert t 1,2,3]", fmt.Sprint(f.calls), src)
+			is.Equal(t, "[table t insert t 1,2,3]", fmt.Sprint(f.calls), src)
 			_, err = s.run(t.Context())
 			is.Equal(t, "UNIQUE constraint failed: t.k", err.Error(), src)
 		}
@@ -572,7 +627,28 @@ func TestBuild(t *testing.T) {
 		is.NotError(t, s.check())
 		_, err = s.run(t.Context())
 		is.NotError(t, err)
-		is.Equal(t, "[table t get t 2 upsert t 3,2,1]", fmt.Sprint(f.calls))
+		is.Equal(t, "[table t insert t 3,2,1]", fmt.Sprint(f.calls))
+	})
+
+	t.Run("should give NULL to a column that the list leaves out, and a NULL literal or argument to its column", func(t *testing.T) {
+		for src, arg := range map[string]*s4qlpb.Value{
+			"insert into t (k) values (?)":          integer(2),
+			"insert into t (c, k) values (null, ?)": integer(2),
+			"insert into t values (?, 2, null)":     null(),
+			"insert into t (k, a) values (2, ?)":    null(),
+		} {
+			f := newFake().with("t", []string{"a", "k", "c"})
+			ct := f.tables["t"].ct
+			ct.SetPrimaryKey([]uint32{1})
+			ct.GetColumns()[0].SetNullable(true)
+			ct.GetColumns()[2].SetNullable(true)
+			s, err := buildSink(t.Context(), fakeTx{f}, plan(src), []*s4qlpb.Value{arg}, bugs{}, 1_000_000_000)
+			is.NotError(t, err, src)
+			is.NotError(t, s.check(), src)
+			_, err = s.run(t.Context())
+			is.NotError(t, err, src)
+			is.Equal(t, "[table t insert t null,2,null]", fmt.Sprint(f.calls), src)
+		}
 	})
 
 	t.Run("should check that each column has a value before the type of each value, in the order of the table", func(t *testing.T) {
@@ -628,6 +704,7 @@ func TestBuild(t *testing.T) {
 			{name: "an insert of a parameter without its argument", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Parameter{Number: 1}}}}}, err: "the parameter 1 of a statement with 0 arguments"},
 			{name: "an insert of the parameter 0", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Parameter{Number: 0}}}}}, err: "the parameter 0 of a statement with 0 arguments"},
 			{name: "a table without a key", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}}}, err: "a table of 1 columns with the key []"},
+			{name: "a table whose key takes NULL", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}, {Name: stmt.Name{Value: "b"}, Nullable: true}}, PrimaryKey: []int{1}}, err: "a table whose key b takes NULL"},
 			{name: "an insert of a blob literal that is nil", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Blob{}}}}}, err: "a blob literal of no bytes that is nil"},
 		}
 		for _, c := range cases {
