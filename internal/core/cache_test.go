@@ -317,7 +317,9 @@ func TestScanRange(t *testing.T) {
 					return tx.ScanRange(t.Context(), c.table, lower, upper)
 				},
 			} {
-				for _, bounds := range [][2]core.Bound{{c.b, {}}, {{}, c.b}} {
+				// The bound is refused alone, and next to a bound that is a key of t1, on either side.
+				valid := core.Bound{Value: row(1)[0]}
+				for _, bounds := range [][2]core.Bound{{c.b, {}}, {{}, c.b}, {valid, c.b}, {c.b, valid}} {
 					n := 0
 					for row, err := range scan(bounds[0], bounds[1]) {
 						n++

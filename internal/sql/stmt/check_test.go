@@ -965,6 +965,8 @@ var checkCases = []checkCase{
 	{name: "a column alone", src: "select * from t where v", err: "s4ql: not supported: column reference (at offset 22)"},
 	{name: "a literal alone", src: "select * from t where 1", err: "s4ql: not supported: literal (at offset 22)"},
 	{name: "a parameter alone", src: "select * from t where ?", err: "s4ql: not supported: parameter (at offset 22)"},
+	{name: "a column after a sign alone", src: "select * from t where -v", err: "s4ql: not supported: unary operator (at offset 22)"},
+	{name: "a bitwise not of a column alone", src: "select * from t where ~v", err: "s4ql: not supported: unary operator (at offset 22)"},
 	{name: "true alone", src: "select * from t where true", err: "s4ql: not supported: TRUE or FALSE (at offset 22)"},
 	{name: "true on the left", src: "select * from t where true = v", err: "s4ql: not supported: TRUE or FALSE (at offset 22)"},
 	{name: "true on the right", src: "select * from t where v = true", err: "s4ql: not supported: TRUE or FALSE (at offset 26)"},
