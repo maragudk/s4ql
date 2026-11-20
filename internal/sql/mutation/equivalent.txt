@@ -380,8 +380,16 @@ internal/engine/engine.go Conn.checkOutside condition: err != nil => false #4
 	The planted bug checkOutside: a failed read of the key then counts as no row, and the write transaction after it checks nothing either, so the bug is found by a commit that fails in SQLite either way.
 internal/engine/engine.go Conn.checkOutside remove statement: return err => #4
 	The planted bug checkOutside: a failed read of the key then counts as no row, and the write transaction after it checks nothing either, so the bug is found by a commit that fails in SQLite either way.
-internal/engine/operator.go insert.check condition: typ == s4qlpb.Type_TYPE_INT => false
-	The planted bug convertReal: it converts a real only for an INTEGER column, and the check of the log finds a value of another type than its column either way.
+internal/engine/operator.go insert.check condition: typ == s4qlpb.Type_TYPE_INT => true
+	The planted bug convertReal: it converts a whole real for a column of every type, and the check of the log, or the rule for the type of a value where the engine then refuses the integer in a column of another type, finds the bug either way.
+internal/engine/operator.go insert.check condition: typ == s4qlpb.Type_TYPE_INTEGER => true
+	The planted bug convertReal: it converts a whole real for a column of every type, and the check of the log, or the rule for the type of a value where the engine then refuses the integer in a column of another type, finds the bug either way.
+internal/engine/operator.go insert.check operator: typ == s4qlpb.Type_TYPE_INTEGER => typ != s4qlpb.Type_TYPE_INTEGER
+	The planted bug convertReal: it converts a whole real for a column of every type but INTEGER, and the check of the log, or the rule for the type of a value where the engine then refuses the integer in a column of another type, finds the bug either way.
+internal/engine/operator.go insert.run condition: err != nil => false #2
+	The planted bugs skipUnique and checkOutside: an upsert that fails then counts as a row written, and the bugs are found by a commit that fails in SQLite either way.
+internal/engine/operator.go insert.run remove statement: return n, err => #2
+	The planted bugs skipUnique and checkOutside: an upsert that fails then counts as a row written, and the bugs are found by a commit that fails in SQLite either way.
 internal/engine/operator.go insert.check condition: typ == s4qlpb.Type_TYPE_INTEGER => false
 	The planted bug convertReal: it converts a real only for an INT column, and the check of the log finds a value of another type than its column either way.
 internal/engine/operator.go insert.check condition: f == math.Trunc(f) => true
