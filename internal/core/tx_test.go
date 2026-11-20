@@ -1737,6 +1737,9 @@ type savepointCounts struct {
 	// nulls counts the upserts of a row with NULL in its column that takes NULL, and refusedNulls
 	// the upserts of NULL into a column that does not take it, among those that refused counts.
 	nulls, refusedNulls int
+	// defaults counts the creates of a table with a default, and nullDefaults those with DEFAULT
+	// NULL.
+	defaults, nullDefaults int
 }
 
 // savepointLimit is the length limit of the cache in [TestTx_Savepoint_random].
@@ -1760,6 +1763,8 @@ func (c *savepointCounts) add(o savepointCounts) {
 	c.blobKeys += o.blobKeys
 	c.nulls += o.nulls
 	c.refusedNulls += o.refusedNulls
+	c.defaults += o.defaults
+	c.nullDefaults += o.nullDefaults
 }
 
 // TestTx_Savepoint_random runs random write transactions of random steps on one instance: creates
@@ -1829,6 +1834,9 @@ func TestTx_Savepoint_random(t *testing.T) {
 		// A quarter of what the 400 seeds reached on 2026-11-20 with the NULL of slice 6.
 		{"upserts of a row with NULL", all.nulls, 50},
 		{"upserts of NULL where the table takes none", all.refusedNulls, 14},
+		// A quarter of what the 400 seeds reached on 2026-11-21 with the defaults of slice 11.
+		{"creates of a table with a default", all.defaults, 469},
+		{"creates of a table with DEFAULT NULL", all.nullDefaults, 150},
 	} {
 		if c.got < c.atLeast {
 			t.Errorf("the transactions reached %q %v times, and must reach it %v times at least", c.name, c.got, c.atLeast)
@@ -1842,6 +1850,9 @@ func randomSavepoints(t *testing.T, seed uint64, verbose bool) savepointCounts {
 	t.Helper()
 	ctx := t.Context()
 	r := rand.New(rand.NewPCG(seed, 0x5a7e9014))
+	// defaults draws the defaults of the tables from a stream of its own, so that the other draws of
+	// a seed are those from before defaults came.
+	defaults := rand.New(rand.NewPCG(seed, 0xdefa))
 	logf := func(format string, args ...any) {
 		if verbose {
 			t.Logf(format, args...)
@@ -1939,6 +1950,21 @@ func randomSavepoints(t *testing.T, seed uint64, verbose bool) savepointCounts {
 					ct = typedTable(name, types[r.IntN(len(types))])
 				case 2:
 					ct = nullableTable(ct, 1)
+				}
+				// Each column has a default one time in two: NULL one time in four, and else an edge of
+				// its type, -0.0 among them, which the table then holds as 0.0.
+				for _, column := range ct.GetColumns() {
+					switch defaults.IntN(8) {
+					case 0:
+						column.SetDefault(row(nil)[0])
+						c.nullDefaults++
+					case 1, 2, 3:
+						pool := edges[column.GetType()]
+						column.SetDefault(pool[defaults.IntN(len(pool))])
+					}
+				}
+				if slices.ContainsFunc(ct.GetColumns(), (*s4qlpb.Column).HasDefault) {
+					c.defaults++
 				}
 				logf("create %v", describe(ct))
 				err := tx.CreateTable(ctx, ct)
