@@ -3104,6 +3104,23 @@ func TestTx_Keys(t *testing.T) {
 		})
 		is.Equal(t, `t(c0*0:text): "a"`, read(t, d))
 	})
+
+	t.Run("should refuse a set of keys after the end of the transaction, before it looks at the table", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		write(t, d, func(tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(t.Context(), tableOf("t", 1, "k")))
+		})
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		is.NotError(t, tx.Rollback(t.Context()))
+		for _, name := range []string{"t", "u"} {
+			is.Error(t, core.ErrTxDone, tx.Keys(t.Context(), name, func(*core.KeySet) error {
+				t.Fatal("f runs after the end of the transaction")
+				return nil
+			}), name)
+		}
+	})
 }
 
 // armingSpool is a spool file that calls arm before each write. It does not embed the file, so that
