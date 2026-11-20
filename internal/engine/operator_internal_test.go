@@ -880,6 +880,10 @@ func TestChangeRows(t *testing.T) {
 		{src: "update t set w = null where k = 9", n: 0,
 			byKey: "[table t get t 9 keys t get t 9]",
 			all:   "[table t keys t]"},
+		// The check reads the source once, also for two columns that do not take NULL and get it.
+		{src: "update t set k = null, w = null where k = 9", n: 0,
+			byKey: "[table t get t 9 keys t get t 9]",
+			all:   "[table t keys t]"},
 		{src: "update t set w = null where k = 2", err: "NOT NULL constraint failed: t.w",
 			byKey: "[table t get t 2]",
 			all:   "[table t]"},
