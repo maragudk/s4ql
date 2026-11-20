@@ -698,6 +698,8 @@ stmt/recognize.go recognizer.indexColumn remove statement: r.accept(x) =>
 # The indexes of slice 9 in the engine, internal/engine.
 internal/engine/access.go forcedAccess swap arguments: max(p.pins, 0) => max(0, p.pins)
 	max is commutative.
+internal/engine/engine.go Conn.checkOutside boolean: false => true
+	The planted bug checkOutside: its check of an insert then draws a direction for the scans of the sink, which an insert does not scan, and the bug is found as before.
 
 # The planted bug openBound, since slice 9 in openBounds.scan. A scan gets a bound without a value
 # only from access.scan, where such a bound is the zero bound, which is closed, and the core's
@@ -732,6 +734,10 @@ internal/engine/bugs.go openBounds.scan condition: s.Upper.Open => !s.Upper.Open
 	The planted bug openBound: an upper bound with a value is open, and one without, which bounds nothing, is open too, so the scan reads the same rows.
 internal/engine/bugs.go openBounds.scan condition: s.Upper.Value != nil => true
 	The planted bug openBound: every upper bound is open, which for a bound without a value bounds nothing, so the scan reads the same rows.
+internal/engine/bugs.go openBounds.scan condition: s.Upper.Value != nil => false
+	The planted bug openBound: an upper bound stays as it is, only a closed lower bound is read as open, and the bug is found by it.
+internal/engine/bugs.go openBounds.scan operator: s.Upper.Value != nil => s.Upper.Value == nil
+	The planted bug openBound: an upper bound with a value stays as it is, one without bounds nothing, only a closed lower bound is read as open, and the bug is found by it.
 
 # The indexes of slice 9 in the core, internal/core.
 internal/core/cache.go conn.lookUp condition: err != nil => false
@@ -756,3 +762,7 @@ internal/core/index.go conn.loadIndexes condition: s.ColumnText(2) == "pk" => tr
 	The index of the primary key of a table without a rowid is the one index of pragma_index_list without a row in sqlite_schema, which a UNIQUE constraint's index has, so the one index without one is that of the primary key.
 internal/core/index.go conn.loadIndexes condition: schemaless => true
 	A table has one index of the origin pk, so primary is empty when it comes, and the index after it, which is not of the origin pk, goes on to the check of the others either way.
+internal/core/index.go conn.loadIndexes condition: schemaless => false #2
+	The one index without a row in sqlite_schema is that of the primary key, which the case before takes.
+internal/core/index.go conn.loadIndexes condition: s.ColumnText(2) != "c" => false
+	An index of a constraint is that of the primary key, which the case before takes, or that of a UNIQUE constraint, which is unique and refused by the test of unique.
