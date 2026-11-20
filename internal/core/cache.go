@@ -14,8 +14,10 @@ import (
 )
 
 // cacheVersion is the version of the layout of the cache that this package makes and reads: the
-// table s4ql_cache, and one table for each table of the database.
-const cacheVersion = 1
+// table s4ql_cache, and one table for each table of the database, in which a column that takes NULL
+// is declared with "default null". A cache of version 1 has no column that takes NULL, so it holds
+// what version 2 means, and [conn.setUp] raises its version in place.
+const cacheVersion = 2
 
 // maxLength is SQLite's default limit for the length of a text, a blob, and a row, in bytes, which
 // is also the largest that SQLite takes: SQLITE_MAX_LENGTH.
@@ -245,6 +247,9 @@ func (c *conn) setUp(syncOff bool, identity string) error {
 		}
 	}
 
+	if err := c.upgrade(); err != nil {
+		return err
+	}
 	if _, err := c.position(); err != nil {
 		return err
 	}
@@ -330,6 +335,31 @@ func (c *conn) make(identity string) error {
 	return c.exec("insert into main.s4ql_cache (id, version, head, database) values (1, ?, ?, ?)", int64(cacheVersion), format.EmptyLog.String(), identity)
 }
 
+// upgrade a cache of version 1 to version 2 in place, in a transaction that holds the write lock. A
+// table of a cache of version 1 is declared as a table of version 2 whose columns do not take NULL,
+// which no table of version 1 has, so only the version changes. A version of s4ql that reads version
+// 1 then refuses the cache, and does not take a column that takes NULL for one that does not.
+func (c *conn) upgrade() error {
+	old, err := c.count("select 1 from main.s4ql_cache where version = 1")
+	if err != nil || old == 0 {
+		return err
+	}
+	if err := c.c.Exec("begin immediate"); err != nil {
+		return err
+	}
+	if err := c.exec("update main.s4ql_cache set version = ? where version = 1", int64(cacheVersion)); err != nil {
+		_ = c.c.Exec("rollback")
+		c.forget()
+		return err
+	}
+	c.forget()
+	if err := c.c.Exec("commit"); err != nil {
+		_ = c.c.Exec("rollback")
+		return err
+	}
+	return nil
+}
+
 // position that the cache records: the name of the last commit object that it has applied, or
 // [format.EmptyLog].
 func (c *conn) position() (format.Name, error) {
@@ -381,13 +411,19 @@ type table struct {
 type column struct {
 	name string
 	typ  s4qlpb.Type
+	// nullable is whether the column takes NULL. A primary-key column never does.
+	nullable bool
 }
 
 // createTable that describes t.
 func (t *table) createTable() *s4qlpb.CreateTable {
 	ct := s4qlpb.CreateTable_builder{Table: new(t.name)}
 	for _, c := range t.columns {
-		ct.Columns = append(ct.Columns, s4qlpb.Column_builder{Name: new(c.name), Type: new(c.typ)}.Build())
+		column := s4qlpb.Column_builder{Name: new(c.name), Type: new(c.typ)}
+		if c.nullable {
+			column.Nullable = new(true)
+		}
+		ct.Columns = append(ct.Columns, column.Build())
 	}
 	for _, position := range t.key {
 		ct.PrimaryKey = append(ct.PrimaryKey, uint32(position))
@@ -399,7 +435,7 @@ func (t *table) createTable() *s4qlpb.CreateTable {
 func newTable(ct *s4qlpb.CreateTable) *table {
 	t := &table{name: ct.GetTable(), inKey: make([]bool, len(ct.GetColumns()))}
 	for _, c := range ct.GetColumns() {
-		t.columns = append(t.columns, column{name: c.GetName(), typ: c.GetType()})
+		t.columns = append(t.columns, column{name: c.GetName(), typ: c.GetType(), nullable: c.GetNullable()})
 	}
 	for _, position := range ct.GetPrimaryKey() {
 		t.key = append(t.key, int(position))
@@ -464,13 +500,16 @@ func typeOf(declared string) (s4qlpb.Type, bool) {
 }
 
 // createSQL is the statement that creates the table t in the cache: a strict table without a
-// rowid, with the names and the columns of the database's table.
+// rowid, with the names and the columns of the database's table. A column that takes NULL is
+// declared "default null", which is how [conn.load] tells it, and every other column outside the
+// primary key "not null", so that SQLite refuses a NULL there too; a primary-key column of a table
+// without a rowid never takes NULL.
 func (t *table) createSQL() (string, error) {
 	var b strings.Builder
 	b.WriteString("create table main.")
 	b.WriteString(quote(t.name))
 	b.WriteString(" (")
-	for _, c := range t.columns {
+	for i, c := range t.columns {
 		typ, err := typeSQL(c.typ)
 		if err != nil {
 			return "", err
@@ -478,6 +517,12 @@ func (t *table) createSQL() (string, error) {
 		b.WriteString(quote(c.name))
 		b.WriteString(" ")
 		b.WriteString(typ)
+		switch {
+		case c.nullable:
+			b.WriteString(" default null")
+		case !t.inKey[i]:
+			b.WriteString(" not null")
+		}
 		b.WriteString(", ")
 	}
 	b.WriteString("primary key (")
@@ -524,7 +569,7 @@ func placeholders(n int) string {
 }
 
 // checkValue v for the column at position of the table: its storage class is the one of the
-// column's type, or it is NULL in a column outside the primary key; a real is neither NaN nor
+// column's type, or it is NULL in a column that takes NULL, which no primary-key column does; a real is neither NaN nor
 // infinite, and text is valid UTF-8 without the character NUL, which s4ql never stores; and a text
 // or a blob is not longer than limit, SQLite's limit for the length of one, for which the error
 // wraps [ErrTooBig]. A strict table of SQLite does not refuse every value of another storage class:
@@ -552,10 +597,13 @@ func (t *table) checkValue(position int, v *s4qlpb.Value, limit int) error {
 	case kind == s4qlpb.Value_Blob_case && c.typ == s4qlpb.Type_TYPE_BLOB:
 		n = len(v.GetBlob())
 	case kind == s4qlpb.Value_Null_case:
-		if !t.inKey[position] {
-			return nil
+		switch {
+		case t.inKey[position]:
+			return invalidf("NULL in the primary-key column %q of the table %q", c.name, t.name)
+		case !c.nullable:
+			return invalidf("NULL in the column %q of the table %q, which does not take NULL", c.name, t.name)
 		}
-		return invalidf("NULL in the primary-key column %q of the table %q", c.name, t.name)
+		return nil
 	default:
 		return invalidf("a value of kind %v in the column %q of the table %q, whose type is %v", kind, c.name, t.name, c.typ)
 	}
@@ -668,15 +716,25 @@ func (c *conn) load(name string) (*table, error) {
 
 	// The position of a column in the primary key, from 1, with its position in the table.
 	keyed := map[int64]int{}
-	if err := c.query("select name, type, pk from pragma_table_info(?, 'main') order by cid", func(s *sqlite.Stmt) error {
+	// A column takes NULL if it is declared "default null", and has no other default: SQLite reports
+	// the text of a default as it was declared, and no default as NULL.
+	if err := c.query(`select name, type, pk, "notnull", dflt_value from pragma_table_info(?, 'main') order by cid`, func(s *sqlite.Stmt) error {
 		typ, ok := typeOf(s.ColumnText(1))
 		if !ok {
 			return fmt.Errorf("%w: the column %q of its table %q has the type %q", ErrCacheVersion, s.ColumnText(0), t.name, s.ColumnText(1))
 		}
-		if pk := s.ColumnInt64(2); pk > 0 {
+		pk := s.ColumnInt64(2)
+		var nullable bool
+		if s.ColumnType(4) != sqlite.TypeNull {
+			if fold(s.ColumnText(4)) != "null" || pk > 0 || s.ColumnInt64(3) != 0 {
+				return fmt.Errorf("%w: the column %q of its table %q has the default %q", ErrCacheVersion, s.ColumnText(0), t.name, s.ColumnText(4))
+			}
+			nullable = true
+		}
+		if pk > 0 {
 			keyed[pk] = len(t.columns)
 		}
-		t.columns = append(t.columns, column{name: s.ColumnText(0), typ: typ})
+		t.columns = append(t.columns, column{name: s.ColumnText(0), typ: typ, nullable: nullable})
 		return nil
 	}, t.name); err != nil {
 		return nil, err

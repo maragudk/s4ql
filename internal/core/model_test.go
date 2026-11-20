@@ -217,6 +217,11 @@ func (s *mstate) apply(name format.Name, data []byte) (*mcommit, error) {
 			}
 			seen := of(ur.GetTable())
 			for _, row := range ur.GetRows() {
+				for i, v := range row.GetValues() {
+					if err := fits(t.create.GetColumns()[i], v); err != nil {
+						return nil, fmt.Errorf("it upserts into the table %q %v", ur.GetTable(), err)
+					}
+				}
 				key := text(t.key(row.GetValues()))
 				if seen.keys[key] {
 					return nil, fmt.Errorf("it lists the key %v of the table %q twice", key, ur.GetTable())
@@ -249,6 +254,21 @@ func (s *mstate) apply(name format.Name, data []byte) (*mcommit, error) {
 		}
 	}
 	return c, nil
+}
+
+// fits reports why the value v does not fit the column c, or nil if it does: a value of the kind of
+// the column's type, or NULL if the column takes NULL.
+func fits(c *s4qlpb.Column, v *s4qlpb.Value) error {
+	switch {
+	case v.WhichKind() == s4qlpb.Value_Null_case && c.GetNullable():
+		return nil
+	case v.WhichKind() == s4qlpb.Value_Null_case:
+		return fmt.Errorf("NULL in the column %q, which does not take NULL", c.GetName())
+	// The edges of a type are values of its kind.
+	case len(edges[c.GetType()]) == 0 || v.WhichKind() != edges[c.GetType()][0].WhichKind():
+		return fmt.Errorf("a value of kind %v in the column %q of type %v", v.WhichKind(), c.GetName(), c.GetType())
+	}
+	return nil
 }
 
 func columnPositions(n int) []uint32 {
@@ -601,7 +621,8 @@ func cacheDump(path string) (position format.Name, state map[string][]string, er
 		}
 		ct := s4qlpb.CreateTable_builder{Table: new(name)}
 		keyed := map[int64]uint32{}
-		if err := query("select name, type, pk from pragma_table_info("+literal(name)+") order by cid", func(s *sqlite.Stmt) {
+		// A column that takes NULL is declared "default null".
+		if err := query("select name, type, pk, coalesce(lower(dflt_value) = 'null', 0) from pragma_table_info("+literal(name)+") order by cid", func(s *sqlite.Stmt) {
 			if pk := s.ColumnInt64(2); pk > 0 {
 				keyed[pk] = uint32(len(ct.Columns))
 			}
@@ -615,7 +636,11 @@ func cacheDump(path string) (position format.Name, state map[string][]string, er
 			if typ == s4qlpb.Type_TYPE_UNSPECIFIED {
 				err = fmt.Errorf("the column %v of the table %v has the type %v", s.ColumnText(0), name, s.ColumnText(1))
 			}
-			ct.Columns = append(ct.Columns, s4qlpb.Column_builder{Name: new(s.ColumnText(0)), Type: new(typ)}.Build())
+			column := s4qlpb.Column_builder{Name: new(s.ColumnText(0)), Type: new(typ)}
+			if s.ColumnInt64(3) == 1 {
+				column.Nullable = new(true)
+			}
+			ct.Columns = append(ct.Columns, column.Build())
 		}); err != nil {
 			return format.Name{}, nil, err
 		}

@@ -208,6 +208,14 @@ func typedTable(name string, types ...s4qlpb.Type) *s4qlpb.CreateTable {
 	return ct.Build()
 }
 
+// nullableTable makes the columns of ct at the given positions take NULL, and returns ct.
+func nullableTable(ct *s4qlpb.CreateTable, positions ...int) *s4qlpb.CreateTable {
+	for _, position := range positions {
+		ct.GetColumns()[position].SetNullable(true)
+	}
+	return ct
+}
+
 // reader is what a write transaction and a read transaction both read with.
 type reader interface {
 	Tables(ctx context.Context) ([]*s4qlpb.CreateTable, error)
@@ -216,7 +224,8 @@ type reader interface {
 }
 
 // describe a table: its name, its columns, each with a star if it is in the primary key and the
-// position there, and with its type after a colon unless it is int, as in "t1(a*0,b:text)".
+// position there, with its type after a colon unless it is int, and with a question mark if it takes
+// NULL, as in "t1(a*0,b:text,c?)".
 func describe(ct *s4qlpb.CreateTable) string {
 	columns := make([]string, len(ct.GetColumns()))
 	for i, c := range ct.GetColumns() {
@@ -228,6 +237,9 @@ func describe(ct *s4qlpb.CreateTable) string {
 		}
 		if c.GetType() != s4qlpb.Type_TYPE_INT {
 			columns[i] += ":" + typeName(c.GetType())
+		}
+		if c.GetNullable() {
+			columns[i] += "?"
 		}
 	}
 	return fmt.Sprint(ct.GetTable(), "(", strings.Join(columns, ","), ")")
@@ -322,7 +334,7 @@ func TestOpen(t *testing.T) {
 
 		is.Equal(t, "", read(t, d))
 		write(t, d, func(tx *core.Tx) {
-			is.NotError(t, tx.CreateTable(t.Context(), tableOf("t1", 1, "k", "v")))
+			is.NotError(t, tx.CreateTable(t.Context(), nullableTable(tableOf("t1", 1, "k", "v"), 1)))
 			is.NotError(t, tx.Upsert(t.Context(), "t1", row(2, 20)))
 			is.NotError(t, tx.Upsert(t.Context(), "t1", row(1, nil)))
 		})
@@ -332,15 +344,15 @@ func TestOpen(t *testing.T) {
 			is.NotError(t, err)
 			is.True(t, found)
 		})
-		is.Equal(t, "t1(k*0,v): 1,null | 3,30", read(t, d))
+		is.Equal(t, "t1(k*0,v?): 1,null | 3,30", read(t, d))
 		is.NotError(t, d.Close(t.Context()))
 
 		again := w.serve(t, "a", core.Options{})
-		is.Equal(t, "t1(k*0,v): 1,null | 3,30", read(t, again))
+		is.Equal(t, "t1(k*0,v?): 1,null | 3,30", read(t, again))
 		is.NotError(t, again.Close(t.Context()))
 
 		empty := w.serve(t, "b", core.Options{})
-		is.Equal(t, "t1(k*0,v): 1,null | 3,30", read(t, empty))
+		is.Equal(t, "t1(k*0,v?): 1,null | 3,30", read(t, empty))
 	})
 }
 
@@ -857,6 +869,9 @@ func TestDB_stop_cache(t *testing.T) {
 			"t9 (k any primary key) strict, without rowid",
 			"t9 (k int primary key, v any) strict, without rowid",
 			"t9 (k int) strict",
+			"t9 (k int primary key, v int default 0) strict, without rowid",
+			"t9 (k int primary key, v int not null default null) strict, without rowid",
+			"t9 (k int primary key default null) strict, without rowid",
 		} {
 			w := newWorld(t)
 			d := w.serve(t, "a", core.Options{})
@@ -1153,10 +1168,10 @@ func TestOpen_cache(t *testing.T) {
 		}
 	})
 
-	t.Run("should open a cache made before the other types, with its tables of int columns, and read and change them", func(t *testing.T) {
+	t.Run("should open a cache of version 1, made before the other types and before NULL, raise its version, and read and change its tables of int columns, which do not take NULL", func(t *testing.T) {
 		w := newWorld(t)
 		d := w.serve(t, "a", core.Options{})
-		transact(t, d, create("t1", 1, "k", "v"), upsert("t1", 1, 10), upsert("t1", 2, nil))
+		transact(t, d, create("t1", 1, "k", "v"), upsert("t1", 1, 10), upsert("t1", 2, 20))
 		head := w.manifest(t).Head
 		is.NotError(t, d.Close(t.Context()))
 
@@ -1169,18 +1184,28 @@ func TestOpen_cache(t *testing.T) {
 			"insert into main.s4ql_cache (id, version, head, database) values (1, 1, '" + head.String() + "', '')",
 			`create table main."t1" ("k" int, "v" int, primary key ("k")) strict, without rowid`,
 			`insert or replace into main."t1" ("k", "v") values (1, 10)`,
-			`insert or replace into main."t1" ("k", "v") values (2, null)`,
+			`insert or replace into main."t1" ("k", "v") values (2, 20)`,
 		} {
 			is.NotError(t, c.Exec(sql), sql)
 		}
 		is.NotError(t, c.Close())
 
 		old := w.serve(t, "old", core.Options{})
-		is.Equal(t, "t1(k*0,v): 1,10 | 2,null", read(t, old))
-		transact(t, old, upsert("t1", 3, 30), create("t2", 1, "k"), upsert("t2", 1))
-		is.Equal(t, "t1(k*0,v): 1,10 | 2,null | 3,30\nt2(k*0): 1", read(t, old))
+		is.Equal(t, "t1(k*0,v): 1,10 | 2,20", read(t, old))
+		is.Equal(t, int64(core.CacheVersion), cacheVersion(t, filepath.Join(w.dir, "old.db")))
+
+		tx, err := old.Begin(t.Context())
+		is.NotError(t, err)
+		is.Error(t, core.ErrInvalid, tx.Upsert(t.Context(), "t1", row(3, nil)))
+		is.NotError(t, tx.Rollback(t.Context()))
+		transact(t, old, upsert("t1", 3, 30), createWith(nullableTable(tableOf("t2", 1, "k", "v"), 1)), upsert("t2", 1, nil))
+		const want = "t1(k*0,v): 1,10 | 2,20 | 3,30\nt2(k*0,v?): 1,null"
+		is.Equal(t, want, read(t, old))
 		is.NotError(t, old.Close(t.Context()))
-		is.Equal(t, "t1(k*0,v): 1,10 | 2,null | 3,30\nt2(k*0): 1", read(t, w.serve(t, "b", core.Options{})))
+		again := w.serve(t, "old", core.Options{})
+		is.Equal(t, want, read(t, again))
+		is.NotError(t, again.Close(t.Context()))
+		is.Equal(t, want, read(t, w.serve(t, "b", core.Options{})))
 	})
 
 	t.Run("should fail for a file that is not a database, and leave it as it is", func(t *testing.T) {
@@ -1283,6 +1308,22 @@ func TestOpen_cache(t *testing.T) {
 	})
 }
 
+// cacheVersion is the version of the layout that the cache at path records.
+func cacheVersion(t *testing.T, path string) int64 {
+	t.Helper()
+	c, err := sqlite.Open(path)
+	is.NotError(t, err)
+	defer func() { is.NotError(t, c.Close()) }()
+	s, err := c.Prepare("select version from s4ql_cache")
+	is.NotError(t, err)
+	ok, err := s.Step()
+	is.NotError(t, err)
+	is.True(t, ok, "the cache records no version")
+	version := s.ColumnInt64(0)
+	is.NotError(t, s.Finalize())
+	return version
+}
+
 // cacheIdentity is the identity of the database that the cache at path records.
 func cacheIdentity(t *testing.T, path string) string {
 	t.Helper()
@@ -1373,7 +1414,7 @@ func TestOpen_identity(t *testing.T) {
 
 		_, err = core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{Identity: "one"})
 		is.Error(t, core.ErrCacheVersion, err)
-		is.Equal(t, "open the cache: the cache is not one that this version of s4ql reads: it has version 0, and this version of s4ql reads version 1; open the database with a new cache, or delete this one, with its files -wal and -shm", err.Error())
+		is.Equal(t, "open the cache: the cache is not one that this version of s4ql reads: it has version 0, and this version of s4ql reads version 2; open the database with a new cache, or delete this one, with its files -wal and -shm", err.Error())
 		is.True(t, hasRow1(t, path), "the row is gone")
 		position, _, err := cacheDump(path)
 		is.NotError(t, err)

@@ -53,6 +53,9 @@ type bugs struct {
 	// blobCut makes a commit object cut each blob of a row that it upserts at the blob's first zero
 	// byte, while the cache keeps the whole blob.
 	blobCut bool
+	// nullZero makes a commit object write each NULL of a row that it upserts as the zero value of
+	// its column's type, while the cache keeps the NULL.
+	nullZero bool
 	// skipUnreadable makes a catch-up skip a commit object whose bytes do not match its name.
 	skipUnreadable bool
 	// resendTake makes an instance send a take of the lease that got no answer again with the same

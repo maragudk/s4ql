@@ -406,12 +406,13 @@ type run struct {
 
 // The tables that the callers of a workload use: three names, each in two spellings that SQLite
 // takes for one, with characters that an identifier must be quoted for, and eight shapes, with
-// columns of every type and keys of one and of two columns.
+// columns of every type, keys of one and of two columns, and columns of every type that take NULL
+// beside columns that do not.
 var (
 	tableNames = [][2]string{{"t0", "T0"}, {`q"t'1`, `Q"T'1`}, {"tbl 2;--", "TBL 2;--"}}
 	shapes     = []func(name string) *s4qlpb.CreateTable{
 		func(name string) *s4qlpb.CreateTable { return tableOf(name, 1, "k", "v") },
-		func(name string) *s4qlpb.CreateTable { return tableOf(name, 2, "a", "b", `v "w"`) },
+		func(name string) *s4qlpb.CreateTable { return nullableTable(tableOf(name, 2, "a", "b", `v "w"`), 2) },
 		func(name string) *s4qlpb.CreateTable { return tableOf(name, 1, "select") },
 		func(name string) *s4qlpb.CreateTable {
 			// The primary key is the third column and then the second.
@@ -420,19 +421,19 @@ var (
 			return ct
 		},
 		func(name string) *s4qlpb.CreateTable {
-			return typedTable(name, s4qlpb.Type_TYPE_REAL, s4qlpb.Type_TYPE_TEXT)
+			return nullableTable(typedTable(name, s4qlpb.Type_TYPE_REAL, s4qlpb.Type_TYPE_TEXT), 1)
 		},
 		func(name string) *s4qlpb.CreateTable {
-			return typedTable(name, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_BLOB, s4qlpb.Type_TYPE_REAL)
+			return nullableTable(typedTable(name, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_BLOB, s4qlpb.Type_TYPE_REAL), 1, 2)
 		},
 		func(name string) *s4qlpb.CreateTable {
-			return typedTable(name, s4qlpb.Type_TYPE_BLOB, s4qlpb.Type_TYPE_INTEGER)
+			return nullableTable(typedTable(name, s4qlpb.Type_TYPE_BLOB, s4qlpb.Type_TYPE_INTEGER), 1)
 		},
 		func(name string) *s4qlpb.CreateTable {
-			// A key of a blob and a real, after a text and an integer.
+			// A key of a blob and a real, after a text that does not take NULL and an integer that does.
 			ct := typedTable(name, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_INTEGER, s4qlpb.Type_TYPE_BLOB, s4qlpb.Type_TYPE_REAL)
 			ct.SetPrimaryKey([]uint32{2, 3})
-			return ct
+			return nullableTable(ct, 1)
 		},
 	}
 	// simKeys are the keys of each type, of which a key of one column takes one of the first six,
@@ -450,14 +451,14 @@ var (
 )
 
 // randomRow for the table, with small keys, so that callers meet at the same rows, and values of
-// the [edges] of their type in the other columns.
+// the [edges] of their type in the other columns, or now and then NULL in a column that takes it.
 func randomRow(h host.Host, ct *s4qlpb.CreateTable) []*s4qlpb.Value {
 	values := make([]*s4qlpb.Value, len(ct.GetColumns()))
 	for i, c := range ct.GetColumns() {
 		switch {
 		case slices.Contains(ct.GetPrimaryKey(), uint32(i)):
 			values[i] = simKeys[c.GetType()][intn(h, 6/len(ct.GetPrimaryKey()))]
-		case intn(h, 5) == 0:
+		case c.GetNullable() && intn(h, 4) == 0:
 			values[i] = row(nil)[0]
 		case c.GetType() == s4qlpb.Type_TYPE_INT:
 			values[i] = row(intn(h, 100) - 50)[0]
@@ -467,6 +468,23 @@ func randomRow(h host.Host, ct *s4qlpb.CreateTable) []*s4qlpb.Value {
 		}
 	}
 	return values
+}
+
+// notNullable are the positions of the columns of the table outside its primary key that do not
+// take NULL.
+func notNullable(ct *s4qlpb.CreateTable) []int {
+	var positions []int
+	for i, c := range ct.GetColumns() {
+		if !c.GetNullable() && !slices.Contains(ct.GetPrimaryKey(), uint32(i)) {
+			positions = append(positions, i)
+		}
+	}
+	return positions
+}
+
+// isNull reports whether v is NULL.
+func isNull(v *s4qlpb.Value) bool {
+	return v.WhichKind() == s4qlpb.Value_Null_case
 }
 
 // errAbandon is the error of a statement after which a caller gives its transaction up, because the
@@ -541,9 +559,30 @@ func (r *run) statement(ctx context.Context, n *node, tx *core.Tx, m *mtx) error
 		key := t.key(values)
 		switch {
 		case pick < 60:
+			// Now and then a NULL in a column that does not take it, which the core refuses, and
+			// after which the transaction goes on.
+			if columns := notNullable(t.create); len(columns) > 0 && intn(h, 10) == 0 {
+				values[columns[intn(h, len(columns))]] = row(nil)[0]
+				err := tx.Upsert(ctx, name, values)
+				// The trace does not start with "upsert", so that this is not counted as an upsert of a key.
+				r.c.world.Trace(ctx, "NULL where a column takes none: %v, in an upsert of %v into %q", err, text(values), name)
+				switch {
+				case errors.Is(err, core.ErrInvalid):
+				case expected(err):
+					return errAbandon
+				default:
+					r.o.violate(ctx, r.c.world, "an upsert of %v into %q, with NULL where a column takes none: %v", text(values), name, err)
+					return errAbandon
+				}
+				return nil
+			}
 			m.upsert(name, values)
 			err := tx.Upsert(ctx, name, values)
-			r.c.world.Trace(ctx, "upsert %v into %q: %v", text(values), name, err)
+			if slices.ContainsFunc(values, isNull) {
+				r.c.world.Trace(ctx, "upsert %v into %q, with NULL: %v", text(values), name, err)
+			} else {
+				r.c.world.Trace(ctx, "upsert %v into %q: %v", text(values), name, err)
+			}
 			if err != nil {
 				return refused("upsert", err)
 			}

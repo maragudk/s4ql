@@ -158,7 +158,10 @@ func TestReplay(t *testing.T) {
 		l.commit(func(cw *format.CommitWriter) {
 			is.NotError(t, cw.UpsertRow("t1", []uint32{1, 0}, row(30, 3)))
 			is.NotError(t, cw.UpsertRow("t1", []uint32{1, 0}, row(11, 1)))
-			is.NotError(t, cw.UpsertRow("t2", []uint32{2, 0, 1}, row(nil, 2, 2)))
+			is.NotError(t, cw.UpsertRow("t2", []uint32{2, 0, 1}, row(200, 2, 2)))
+			// A column that takes NULL.
+			is.NotError(t, cw.CreateTable(nullableTable(tableOf("t3", 1, "k", "x", "y"), 2)))
+			is.NotError(t, cw.UpsertRow("t3", []uint32{2, 0, 1}, row(nil, 1, 1)))
 			is.NotError(t, cw.Annotate(s4qlpb.Annotation_builder{Statement: s4qlpb.Statement_builder{Sql: new("insert"), Parameters: row("text", 1.5, nil)}.Build()}.Build()))
 		})
 		// Rows that list only some columns: only those change, in rows that are there.
@@ -171,7 +174,10 @@ func TestReplay(t *testing.T) {
 		})
 		l.commit(func(cw *format.CommitWriter) {
 			is.NotError(t, cw.UpsertRow("t2", []uint32{1, 2, 0}, row(2, 220, 2)))
-			is.NotError(t, cw.UpsertRow("t2", []uint32{0, 1, 2}, row(1, 1, nil)))
+			is.NotError(t, cw.UpsertRow("t2", []uint32{0, 1, 2}, row(1, 1, 110)))
+			is.NotError(t, cw.UpsertRow("t3", []uint32{0, 1, 2}, row(2, 2, 2)))
+			is.NotError(t, cw.UpsertRow("t3", []uint32{2, 0}, row(5, 1)))
+			is.NotError(t, cw.UpsertRow("t3", []uint32{2, 0}, row(nil, 2)))
 		})
 		// Names in another case than the table was created with, a table that is dropped and created
 		// again, an annotation of a kind that this version does not know, and a field that it does
@@ -188,14 +194,14 @@ func TestReplay(t *testing.T) {
 		l.publish()
 
 		d := w.serve(t, "a", core.Options{})
-		is.Equal(t, "T2(x*0): 9\nt1(k*0,v): 1,11 | 5,50", read(t, d))
+		is.Equal(t, "T2(x*0): 9\nt1(k*0,v): 1,11 | 5,50\nt3(k*0,x,y?): 1,1,5 | 2,2,null", read(t, d))
 		position, _, err := cacheDump(filepath.Join(w.dir, "a.db"))
 		is.NotError(t, err)
 		is.Equal(t, l.head, position)
 
 		// The core goes on from there.
 		transact(t, d, upsert("t1", 6, 60), remove("T2", true, 9))
-		is.Equal(t, "T2(x*0): \nt1(k*0,v): 1,11 | 5,50 | 6,60", read(t, d))
+		is.Equal(t, "T2(x*0): \nt1(k*0,v): 1,11 | 5,50 | 6,60\nt3(k*0,x,y?): 1,1,5 | 2,2,null", read(t, d))
 	})
 
 	t.Run("should apply the intermediate states of the rows that list only some columns", func(t *testing.T) {
@@ -236,13 +242,15 @@ func TestReplay(t *testing.T) {
 		"upserts a blob into an integer column":                           {changes: []*s4qlpb.Change{upsertRows("t1", []uint32{0, 1}, row(3, []byte{30}))}, reason: `row 0 that it upserts: invalid: a value of kind blob in the column "v" of the table "t1", whose type is TYPE_INT`},
 		"upserts text that looks like an integer into the primary key":    {changes: []*s4qlpb.Change{upsertRows("t1", []uint32{0, 1}, row("3", 30))}, reason: `row 0 that it upserts: invalid: a value of kind text in the column "k" of the table "t1", whose type is TYPE_INT`},
 		"upserts NULL into the primary key":                               {changes: []*s4qlpb.Change{upsertRows("t1", []uint32{0, 1}, row(nil, 30))}, reason: `row 0 that it upserts: invalid: NULL in the primary-key column "k" of the table "t1"`},
+		"upserts NULL into a column that does not take NULL":              {changes: []*s4qlpb.Change{upsertRows("t1", []uint32{0, 1}, row(3, nil))}, reason: `row 0 that it upserts: invalid: NULL in the column "v" of the table "t1", which does not take NULL`},
+		"changes a column that does not take NULL to NULL":                {changes: []*s4qlpb.Change{createTable(tableOf("t3", 1, "k", "x", "y")), upsertRows("t3", []uint32{0, 1, 2}, row(1, 1, 1)), upsertRows("t3", []uint32{2, 0}, row(nil, 1))}, reason: `row 0 that it upserts: invalid: NULL in the column "y" of the table "t3", which does not take NULL`},
+		"upserts NULL into the primary key of a table that it creates":    {changes: []*s4qlpb.Change{createTable(nullableTable(tableOf("t3", 1, "k", "v"), 1)), upsertRows("t3", []uint32{0, 1}, row(nil, nil))}, reason: `row 0 that it upserts: invalid: NULL in the primary-key column "k" of the table "t3"`},
 		"changes a column to text in a row that is there":                 {changes: []*s4qlpb.Change{createTable(tableOf("t3", 1, "k", "x", "y")), upsertRows("t3", []uint32{0, 1, 2}, row(1, 1, 1)), upsertRows("t3", []uint32{2, 0}, row("7", 1))}, reason: `row 0 that it upserts: invalid: a value of kind text in the column "y" of the table "t3", whose type is TYPE_INT`},
 		"deletes rows of a table that does not exist":                     {changes: []*s4qlpb.Change{deleteRows("t3", row(1))}, reason: `it deletes rows of the table "t3", which does not exist`},
 		"deletes a row that is not there":                                 {changes: []*s4qlpb.Change{deleteRows("t1", row(1), row(3))}, reason: `it deletes a row of the table "t1" that is not there, key 1 of its batch`},
 		"deletes with a key of more values than the primary key has":      {changes: []*s4qlpb.Change{deleteRows("t1", row(1, 10))}, reason: `key 0 that it deletes: invalid: a key of 2 values for the table "t1", whose primary key has 1 columns`},
 		"deletes with a key of fewer values than the primary key has":     {changes: []*s4qlpb.Change{deleteRows("t2", row(1))}, reason: `key 0 that it deletes: invalid: a key of 1 values for the table "t2", whose primary key has 2 columns`},
 		"deletes with a key of text":                                      {changes: []*s4qlpb.Change{deleteRows("t1", row("1"))}, reason: `key 0 that it deletes: invalid: a value of kind text in the column "k" of the table "t1", whose type is TYPE_INT`},
-		"deletes with a key that is NULL":                                 {changes: []*s4qlpb.Change{deleteRows("t1", row(nil))}, reason: `key 0 that it deletes: invalid: NULL in the primary-key column "k" of the table "t1"`},
 		"is right at first and wrong later, so that a part of it applies": {changes: []*s4qlpb.Change{upsertRows("t1", []uint32{0, 1}, row(3, 30)), dropTableChange("t2"), deleteRows("t1", row(9))}, reason: `it deletes a row of the table "t1" that is not there, key 0 of its batch`},
 	} {
 		t.Run("should stop, apply nothing, and release the lease for a commit object that "+name, func(t *testing.T) {
@@ -304,6 +312,20 @@ func TestReplay(t *testing.T) {
 			name: "that is malformed, because it holds a change of no kind",
 			write: func(l *handLog) {
 				l.raw(nil, []*s4qlpb.Change{{}}, nil)
+			},
+			cause: format.ErrMalformed,
+		},
+		{
+			name: "that is malformed, because it deletes with a key that is NULL",
+			write: func(l *handLog) {
+				l.raw(nil, []*s4qlpb.Change{deleteRows("t1", row(nil))}, nil)
+			},
+			cause: format.ErrMalformed,
+		},
+		{
+			name: "that is malformed, because it creates a table whose primary-key column takes NULL",
+			write: func(l *handLog) {
+				l.raw(nil, []*s4qlpb.Change{createTable(nullableTable(tableOf("t3", 1, "k", "v"), 0))}, nil)
 			},
 			cause: format.ErrMalformed,
 		},
