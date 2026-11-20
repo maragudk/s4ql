@@ -1,10 +1,10 @@
-// Package stmttest is a generator of random statements of slices 1, 2, 4, 5, 6, and 7, for tests:
+// Package stmttest is a generator of random statements of slices 1, 2, 4, 5, 6, 7, and 8, for tests:
 // each statement is a text with the typed form of [maragu.dev/s4ql/internal/sql/stmt] that it holds,
 // with names from pools, keywords and types in any case, values of every type with weight on their
 // edges, and spaces and comments in every gap. The statements of slice 5, of several columns, come
 // only when a test asks for them, with [Generator.Columns], those of slice 6, with NULL, with
-// [Generator.Nulls], and those of slice 7, with WHERE, with [Generator.Conditions] or
-// [Generator.Where].
+// [Generator.Nulls], those of slice 7, with WHERE, with [Generator.Conditions] or [Generator.Where],
+// and the UPDATE and DELETE of slice 8 with [Generator.Changes] or a kind of their own.
 //
 // The generator draws its random numbers from a [Rand] that the test gives it, so that a test
 // chooses its seed and its generator of numbers.
@@ -30,7 +30,8 @@ type Rand interface {
 	Uint64() uint64
 }
 
-// Position of a name in the statements of slices 1 and 5.
+// Position of a name in the statements of slices 1, 5, and 8. The column of a condition of WHERE,
+// in a select, an update, or a delete, is from the pool of SelectColumn.
 type Position int
 
 const (
@@ -41,9 +42,12 @@ const (
 	SelectTable
 	DropTable
 	SelectColumn
+	UpdateTable
+	UpdateColumn
+	DeleteTable
 )
 
-// PositionTexts give, for each position, a statement of slice 1 or 5 with %v in that position.
+// PositionTexts give, for each position, a statement of slice 1, 5, or 8 with %v in that position.
 var PositionTexts = []string{
 	CreateTable:  "create table %v (v int primary key) strict, without rowid",
 	CreateColumn: "create table t (%v int primary key) strict, without rowid",
@@ -52,6 +56,9 @@ var PositionTexts = []string{
 	SelectTable:  "select * from %v",
 	DropTable:    "drop table %v",
 	SelectColumn: "select %v from t",
+	UpdateTable:  "update %v set v = 1",
+	UpdateColumn: "update t set %v = 1",
+	DeleteTable:  "delete from %v",
 }
 
 // BasePool of names: plain names, names in double quotes with odd content, names that differ only in
@@ -130,9 +137,11 @@ const (
 	KindInsert
 	KindSelect
 	KindDropTable
+	KindUpdate
+	KindDelete
 )
 
-// Generator of random statements of slices 1, 2, 4, 5, 6, and 7.
+// Generator of random statements of slices 1, 2, 4, 5, 6, 7, and 8.
 type Generator struct {
 	r Rand
 	// pools of names, for each [Position].
@@ -184,7 +193,26 @@ type Generator struct {
 	// operator in any of its spellings, and with [Generator.Parameters] a value as a ? now and then,
 	// with the value as its argument, as for an insert.
 	Where func(table stmt.Name) []stmt.Condition
-	b     strings.Builder
+	// Changes, if not 0, makes the generator write the UPDATE and DELETE of slice 8 among the
+	// statements of a kind at random: one in Changes is an update or a delete, each one time in two.
+	// An update has from 1 to Columns assignments, or 1 without [Generator.Columns], each to another
+	// column from the pool of [UpdateColumn], with = or == and a value as a condition has one, unless
+	// [Generator.Update] gives them. An update or a delete has a WHERE as a select without
+	// [Generator.Where] has one, with [Generator.Conditions], unless its hook gives its conditions. With
+	// 0 the generator draws as it did before slice 8; [Generator.StatementOf] and [Generator.CallOf]
+	// write an update or a delete whatever Changes is.
+	Changes int
+	// Update, if not nil, gives the assignments of an update of the table, in place of assignments at
+	// random, one or more, each with the raw text of the name of its column and its value as
+	// Value.Value, and the conditions of its WHERE, as [Generator.Where] gives them, or nil for an
+	// update without WHERE. The generator writes = or == in each assignment, and with
+	// [Generator.Parameters] a value as a ? now and then, with the value as its argument, as for an
+	// insert, the ? of the assignments before those of the conditions.
+	Update func(table stmt.Name) ([]stmt.Assignment, []stmt.Condition)
+	// Delete, if not nil, gives the conditions of the WHERE of a delete from the table, as
+	// [Generator.Where] gives them, or nil for a delete without WHERE, in place of conditions at random.
+	Delete func(table stmt.Name) []stmt.Condition
+	b      strings.Builder
 }
 
 // NewGenerator with the random numbers of r and a pool of names for each [Position]. Each name of a
@@ -502,28 +530,39 @@ var operators = []struct {
 // parameters: the conditions that [Generator.Where] gives, or with [Generator.Conditions] one time in
 // two conditions at random, or none.
 func (g *Generator) where(s *stmt.Select) ([]stmt.Condition, []any) {
-	var given []stmt.Condition
-	switch {
-	case g.Where != nil:
-		given = g.Where(s.Table)
-	case g.Conditions > 0 && g.r.IntN(2) == 0:
-		given = make([]stmt.Condition, 1+g.r.IntN(g.Conditions))
+	if g.Where != nil {
+		return g.conditions(g.Where(s.Table), false, s.Columns, nil)
 	}
+	return g.conditions(g.randomConditions(), true, s.Columns, nil)
+}
+
+// randomConditions of a WHERE: with [Generator.Conditions] one time in two from 1 to Conditions of
+// them, which are zero conditions for [Generator.conditions] to draw, and otherwise none.
+func (g *Generator) randomConditions() []stmt.Condition {
+	if g.Conditions > 0 && g.r.IntN(2) == 0 {
+		return make([]stmt.Condition, 1+g.r.IntN(g.Conditions))
+	}
+	return nil
+}
+
+// conditions of a WHERE, written with WHERE before them if there are any, after the arguments args of
+// the parameters before them, and the arguments with those of theirs. The conditions are given, or,
+// if random, drawn at random, as many as given has, with the columns of the statement before the WHERE.
+func (g *Generator) conditions(given []stmt.Condition, random bool, columns []stmt.Name, args []any) ([]stmt.Condition, []any) {
 	if len(given) == 0 {
-		return nil, nil
+		return nil, args
 	}
 	g.gap(true)
 	g.keyword("where")
 	var conditions []stmt.Condition
-	var args []any
 	for i, c := range given {
 		if i > 0 {
 			g.gap(true)
 			g.keyword("and")
 		}
 		g.gap(true)
-		if g.Where == nil {
-			c = g.condition(s.Columns, conditions)
+		if random {
+			c = g.condition(columns, conditions)
 		}
 		w := stmt.Condition{Column: g.write(c.Column.Raw), Operator: c.Operator}
 		var spellings []string
@@ -573,15 +612,73 @@ func (g *Generator) condition(columns []stmt.Name, before []stmt.Condition) stmt
 	}
 	c.Operator = operators[g.r.IntN(len(operators))].op
 	if c.Operator != stmt.OpIsNull && c.Operator != stmt.OpIsNotNull {
-		// As [Generator.value] draws a value, without [Generator.Value], which gives values of an
-		// insert.
-		if g.Nulls > 0 && g.r.IntN(g.Nulls) == 0 {
-			c.Value.Value = stmt.Null{}
-		} else {
-			c.Value.Value = ValueOf(g.r, Types[1+g.r.IntN(len(Types)-1)])
-		}
+		c.Value.Value = g.randomValue()
 	}
 	return c
+}
+
+// randomValue of a condition or an assignment: NULL one time in [Generator.Nulls], and otherwise of a
+// type at random, as [Generator.value] draws a value without [Generator.Value], which gives values of
+// an insert.
+func (g *Generator) randomValue() stmt.Value {
+	if g.Nulls > 0 && g.r.IntN(g.Nulls) == 0 {
+		return stmt.Null{}
+	}
+	return ValueOf(g.r, Types[1+g.r.IntN(len(Types)-1)])
+}
+
+// update of the table, of slice 8, after SET, and the arguments of its parameters: the assignments
+// and the conditions that [Generator.Update] gives, or assignments at random and conditions as for a
+// select without [Generator.Where].
+func (g *Generator) update(c *stmt.Update) []any {
+	var given []stmt.Assignment
+	var where []stmt.Condition
+	if g.Update != nil {
+		given, where = g.Update(c.Table)
+	} else {
+		given = make([]stmt.Assignment, 1+g.r.IntN(max(g.Columns, 1)))
+	}
+	seen := map[string]bool{}
+	var args []any
+	for i, a := range given {
+		if g.Update == nil {
+			raw := g.pickOther(UpdateColumn, seen)
+			if raw == "" {
+				break
+			}
+			a = stmt.Assignment{Column: stmt.Name{Raw: raw}, Value: stmt.Term{Value: g.randomValue()}}
+		}
+		if i > 0 {
+			g.gap(false)
+			g.punct(",")
+		}
+		g.gap(true)
+		w := stmt.Assignment{Column: g.write(a.Column.Raw)}
+		seen[w.Column.Fold()] = true
+		g.gap(false)
+		if g.r.IntN(4) == 0 {
+			g.punct("==")
+		} else {
+			g.punct("=")
+		}
+		g.gap(false)
+		w.Value, args = g.term(a.Value.Value, args)
+		c.Set = append(c.Set, w)
+	}
+	// A condition at random can test a column of the assignments that SQLite reads as a column in
+	// WHERE too: some keywords, such as CURRENT_DATE, are names after SET and values in WHERE.
+	var columns []stmt.Name
+	for _, a := range c.Set {
+		if raw := a.Column.Raw; slices.Contains(g.pools[SelectColumn], raw) || slices.Contains(g.pools[SelectColumn], strings.ToLower(raw)) {
+			columns = append(columns, a.Column)
+		}
+	}
+	if g.Update != nil {
+		c.Where, args = g.conditions(where, false, columns, args)
+	} else {
+		c.Where, args = g.conditions(g.randomConditions(), true, columns, args)
+	}
+	return args
 }
 
 // Statement at random: its text and the statement that it holds. A statement with a
@@ -619,6 +716,9 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 	start := g.b.Len()
 	if k < 0 {
 		k = Kind(g.r.IntN(4))
+		if g.Changes > 0 && g.r.IntN(g.Changes) == 0 {
+			k = KindUpdate + Kind(g.r.IntN(2))
+		}
 	}
 	var s stmt.Statement
 	var span *stmt.Span
@@ -744,6 +844,28 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 			c.Table = g.name(SelectTable)
 		}
 		c.Where, args = g.where(c)
+		s, span = c, &c.Span
+	case KindUpdate:
+		c := &stmt.Update{}
+		g.keyword("update")
+		g.gap(true)
+		c.Table = g.name(UpdateTable)
+		g.gap(true)
+		g.keyword("set")
+		args = g.update(c)
+		s, span = c, &c.Span
+	case KindDelete:
+		c := &stmt.Delete{}
+		g.keyword("delete")
+		g.gap(true)
+		g.keyword("from")
+		g.gap(true)
+		c.Table = g.name(DeleteTable)
+		if g.Delete != nil {
+			c.Where, args = g.conditions(g.Delete(c.Table), false, nil, nil)
+		} else {
+			c.Where, args = g.conditions(g.randomConditions(), true, nil, nil)
+		}
 		s, span = c, &c.Span
 	default:
 		c := &stmt.DropTable{}

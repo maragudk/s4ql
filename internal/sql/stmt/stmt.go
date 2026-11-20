@@ -9,15 +9,15 @@
 //     accepts the text and it is not, token for token, a statement that s4ql supports. Text that is
 //     not valid UTF-8, or that has a NUL byte, is not supported either, and is rejected before it is
 //     parsed.
-//   - A supported statement: a [*CreateTable], an [*Insert], a [*Select], or a [*DropTable]. Its
-//     [Statement.Parameters] says how many arguments it takes.
+//   - A supported statement: a [*CreateTable], an [*Insert], a [*Select], an [*Update], a [*Delete],
+//     or a [*DropTable]. Its [Statement.Parameters] says how many arguments it takes.
 //   - No statement, for a text of only spaces, comments, and semicolons, which SQLite prepares into no
 //     statement and no error.
 //
 // The supported statements are those of slices 1 and 2 of docs/roadmap.md, with the column types and
-// the literals of slice 4, the columns of slice 5, the NULL of slice 6, and the WHERE of slice 7. The
-// README next to this file defines them token for token, and lists the names that a "not supported"
-// error gives.
+// the literals of slice 4, the columns of slice 5, the NULL of slice 6, the WHERE of slice 7, and the
+// UPDATE and DELETE of slice 8. The README next to this file defines them token for token, and lists
+// the names that a "not supported" error gives.
 //
 // Names compare as SQLite compares them, by [Name.Fold]. What a statement means for a table, such as
 // whether its columns exist, its values are as many as the columns, or a value has the type of its
@@ -100,7 +100,8 @@ func asciiLower(s string) string {
 	return string(b)
 }
 
-// Statement that s4ql supports: a [*CreateTable], an [*Insert], a [*Select], or a [*DropTable].
+// Statement that s4ql supports: a [*CreateTable], an [*Insert], a [*Select], an [*Update], a [*Delete],
+// or a [*DropTable].
 type Statement interface {
 	// Bounds of the statement in the text, from its first token to the end of its semicolon, or of
 	// its last token if it has none.
@@ -251,7 +252,7 @@ type Insert struct {
 	Values []Term
 }
 
-// Term of a row, or of a [Condition]: the literal Value, or the argument of a parameter if Parameter
+// Term of a row, of an [Assignment], or of a [Condition]: the literal Value, or the argument of a parameter if Parameter
 // is not 0.
 type Term struct {
 	// Value of the literal, and nil for a parameter. The literal NULL has the value [Null], never nil.
@@ -278,7 +279,8 @@ type Select struct {
 	Where []Condition
 }
 
-// Condition of a WHERE clause: a column compared with a value, or tested for NULL.
+// Condition of a WHERE clause of a select, an update, or a delete: a column compared with a value,
+// or tested for NULL.
 type Condition struct {
 	// Column that the condition tests, which is on the left of its operator. Whether the table has it
 	// is not decided here.
@@ -328,6 +330,37 @@ func (o Operator) String() string {
 	return ""
 }
 
+// Update of the rows of one table that meet the conditions of its WHERE clause, or of every row: each
+// gets the values of the assignments of its SET clause.
+type Update struct {
+	Span  Span
+	Table Name
+	// Set holds the assignments of the SET clause, in the order of the text, one or more. No two of
+	// them have one column, as [Name.Fold] compares names. Whether the table has the columns is not
+	// decided here.
+	Set []Assignment
+	// Where holds the conditions of the WHERE clause, in the order of the text, as for a [Select], or
+	// nil if the statement has no WHERE.
+	Where []Condition
+}
+
+// Assignment of a SET clause: a column and the value that it gets.
+type Assignment struct {
+	// Column that gets the value.
+	Column Name
+	// Value of the column, a literal or a parameter, as a value of an insert is.
+	Value Term
+}
+
+// Delete of the rows of one table that meet the conditions of its WHERE clause, or of every row.
+type Delete struct {
+	Span  Span
+	Table Name
+	// Where holds the conditions of the WHERE clause, in the order of the text, as for a [Select], or
+	// nil if the statement has no WHERE.
+	Where []Condition
+}
+
 // DropTable of one table.
 type DropTable struct {
 	Span  Span
@@ -342,6 +375,12 @@ func (s *Insert) Bounds() Span { return s.Span }
 
 // Bounds of the statement in the text.
 func (s *Select) Bounds() Span { return s.Span }
+
+// Bounds of the statement in the text.
+func (s *Update) Bounds() Span { return s.Span }
+
+// Bounds of the statement in the text.
+func (s *Delete) Bounds() Span { return s.Span }
 
 // Bounds of the statement in the text.
 func (s *DropTable) Bounds() Span { return s.Span }
@@ -362,8 +401,31 @@ func (s *Insert) Parameters() int {
 
 // Parameters of the statement: the number of the values of its conditions that are a parameter.
 func (s *Select) Parameters() int {
+	return conditionParameters(s.Where)
+}
+
+// Parameters of the statement: the number of the values of its assignments and of its conditions
+// that are a parameter. Those of the assignments come first, as SQLite numbers them in the order of
+// the text.
+func (s *Update) Parameters() int {
 	n := 0
-	for _, c := range s.Where {
+	for _, a := range s.Set {
+		if a.Value.Parameter > 0 {
+			n++
+		}
+	}
+	return n + conditionParameters(s.Where)
+}
+
+// Parameters of the statement: the number of the values of its conditions that are a parameter.
+func (s *Delete) Parameters() int {
+	return conditionParameters(s.Where)
+}
+
+// conditionParameters of the conditions where: the number of their values that are a parameter.
+func conditionParameters(where []Condition) int {
+	n := 0
+	for _, c := range where {
 		if c.Value.Parameter > 0 {
 			n++
 		}
@@ -377,4 +439,6 @@ func (s *DropTable) Parameters() int { return 0 }
 func (s *CreateTable) setSpan(sp Span) { s.Span = sp }
 func (s *Insert) setSpan(sp Span)      { s.Span = sp }
 func (s *Select) setSpan(sp Span)      { s.Span = sp }
+func (s *Update) setSpan(sp Span)      { s.Span = sp }
+func (s *Delete) setSpan(sp Span)      { s.Span = sp }
 func (s *DropTable) setSpan(sp Span)   { s.Span = sp }

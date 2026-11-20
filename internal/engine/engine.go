@@ -312,7 +312,7 @@ func (c *Conn) newReport(src string) *report {
 }
 
 // Check the text src, as [Conn.Exec] and [Conn.Query] check it, for a run with n arguments, without
-// the database and without an event: the text's error, as [stmt.Check] gives it, [ErrNoStatement],
+// the database and without an event: the text's error, as [check] gives it, [ErrNoStatement],
 // or the error of [ErrArguments] for another number of arguments than the statement has parameters;
 // otherwise nil. It does not check what the arguments are.
 func Check(src string, n int) error {
@@ -323,14 +323,21 @@ func Check(src string, n int) error {
 	return countArguments(s.Parameters(), n)
 }
 
-// check the text src: its statement, or its error, as [stmt.Check] gives it, or [ErrNoStatement].
+// check the text src: its statement, or its error, as [stmt.Check] gives it, or [ErrNoStatement]. An
+// update and a delete, which the pass supports and the engine does not run yet, are not supported,
+// with the error that the pass gave them before it supported them.
 func check(src string) (stmt.Statement, error) {
 	s, err := stmt.Check(src)
 	if err != nil {
 		return nil, err
 	}
-	if s == nil {
+	switch s.(type) {
+	case nil:
 		return nil, ErrNoStatement
+	case *stmt.Update:
+		return nil, &stmt.NotSupportedError{What: "UPDATE", Offset: s.Bounds().Start}
+	case *stmt.Delete:
+		return nil, &stmt.NotSupportedError{What: "DELETE", Offset: s.Bounds().Start}
 	}
 	return s, nil
 }

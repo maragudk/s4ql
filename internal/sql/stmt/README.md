@@ -361,7 +361,8 @@ A test checks that every name the pass gives in any test is in these tables.
 | `table without STRICT` | CREATE TABLE has WITHOUT ROWID only. |
 | `table without WITHOUT ROWID` | CREATE TABLE has STRICT only. |
 | `REPLACE` | The statement is REPLACE INTO. |
-| `column named twice` | The column list of INSERT names a column that it named before, as SQLite compares names. SQLite takes the first value for it. |
+| `column named twice` | The column list of INSERT, or the SET of UPDATE, names a column that it named before, as SQLite compares names. SQLite takes the first value of INSERT for it, and the last of SET. The offset is that of the later name. |
+| `SET beyond SQLite's limit` | The SET of UPDATE has more than 2,000 assignments, `SQLITE_MAX_COLUMN`. SQLite gives `too many columns in set list`. The offset is that of the 2,001st assignment. |
 | `INSERT with SELECT` | INSERT has a SELECT in place of VALUES. |
 | `+ sign` | The value has a `+` sign, but before NULL. |
 | `~ operator` | The value has a `~`, also after its `-`. |
@@ -410,6 +411,8 @@ These are the tokens of a node that the recognizer accepted, in a field that no 
 | `AUTOINCREMENT` | `PrimaryKeyConstraint.Autoincrement` |
 | `IF EXISTS` | `Drop.IfExists` |
 | `INSERT OR` | `Insert.Or` |
+| `UPDATE OR` | `Update.Or` |
+| `SET of a list of columns` | `Assignment.LParen`, for `set (v, w) = ...` |
 | `DEFAULT VALUES` | `Insert.Default` |
 | `alias` | `TargetTable.As`, `FromItem.As`, `FromItem.Alias`, `ResultColumn.As`, `ResultColumn.Alias` |
 | `second row` | `Values.Commas` |

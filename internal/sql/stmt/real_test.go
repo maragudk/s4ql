@@ -158,9 +158,10 @@ func TestCheck_reals(t *testing.T) {
 	is.True(t, answers["real"] > n/2 && answers["infinite"] > 0)
 }
 
-// FuzzLiteral checks the value of any literal that the pass supports as a value of an insert, or of a
-// condition of WHERE, against the value that SQLite gives it. A text with commas is several values of
-// an insert, and a text with AND several conditions.
+// FuzzLiteral checks the value of any literal that the pass supports as a value of an insert, of a
+// condition of WHERE, or of an assignment of an update, against the value that SQLite gives it. A
+// text with commas is several values of an insert, or several assignments, and a text with AND
+// several conditions.
 func FuzzLiteral(f *testing.F) {
 	for _, c := range checkCases {
 		switch s := c.want.(type) {
@@ -174,6 +175,12 @@ func FuzzLiteral(f *testing.F) {
 			for _, w := range s.Where {
 				if w.Value.Value != nil {
 					f.Add(c.src[w.Value.Span.Start:w.Value.Span.End])
+				}
+			}
+		case *stmt.Update:
+			for _, a := range s.Set {
+				if a.Value.Parameter == 0 {
+					f.Add(c.src[a.Value.Span.Start:a.Value.Span.End])
 				}
 			}
 		}
@@ -219,11 +226,23 @@ func FuzzLiteral(f *testing.F) {
 		src = "select * from t where v = " + lit
 		if s, err := stmt.Check(src); err == nil {
 			if sel, ok := s.(*stmt.Select); ok {
+				check(src, conditionValues(sel.Where))
+			}
+		}
+		src = "update t set v = " + lit
+		if s, err := stmt.Check(src); err == nil {
+			if u, ok := s.(*stmt.Update); ok {
 				var terms []stmt.Term
-				for _, c := range sel.Where {
-					terms = append(terms, c.Value)
+				for _, a := range u.Set {
+					terms = append(terms, a.Value)
 				}
 				check(src, terms)
+			}
+		}
+		src = "delete from t where v = " + lit
+		if s, err := stmt.Check(src); err == nil {
+			if d, ok := s.(*stmt.Delete); ok {
+				check(src, conditionValues(d.Where))
 			}
 		}
 	})
