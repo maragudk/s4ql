@@ -78,7 +78,7 @@ body {
 }
 
 ::selection { background: var(--lumin); color: var(--void); }
-.cell[data-role="serves"] .cell-head ::selection, .alarm ::selection, .commit.head ::selection, .btn[aria-pressed="true"] ::selection, li.you ::selection, li.alarm ::selection { background: var(--void); color: var(--lumin); }
+.alarm ::selection, .commit.head ::selection, .btn[aria-pressed="true"] ::selection, li.you ::selection, li.alarm ::selection { background: var(--void); color: var(--lumin); }
 
 a {
   color: inherit;
@@ -298,8 +298,25 @@ h2 {
 .alarm strong { display: block; font-size: 18px; }
 .alarm p { margin: 4px 0 0; max-width: 72ch; }
 
-/* The requests, above the instances: a switch between a and b, what they got, and a wire down to
-   the instance they go to */
+/* The system, drawn: the requests at the top, the two instances side by side, each with its disk and
+   its clocks, and S3 below, shared by both. A node is a frame and an edge a line between two, and
+   each action sits on the node or the edge that it acts on. An edge shows its state by its line
+   alone: solid while it works, dashed while the connection hangs, cut while it is disconnected, and
+   crossed while the disk fails. */
+
+.panel { padding: 20px 0 0; }
+
+.system {
+  --g: 64px; /* between the two instances */
+  --stub: 24px; /* the edges from an instance down to its disk and its clocks */
+  --drop: 48px; /* the edges from the instances down to S3 */
+  --solid: linear-gradient(var(--lumin), var(--lumin));
+  --dash-y: repeating-linear-gradient(to bottom, var(--lumin) 0 6px, transparent 6px 11px);
+  --dash-x: repeating-linear-gradient(to right, var(--lumin) 0 6px, transparent 6px 11px);
+  --arrow: polygon(4.5px 0, 7.5px 0, 7.5px calc(100% - 9px), 12px calc(100% - 9px), 6px 100%, 0 calc(100% - 9px), 4.5px calc(100% - 9px));
+}
+
+/* The requests: a switch between a and b, and what they got */
 
 .requests {
   display: grid;
@@ -322,20 +339,7 @@ h2 {
 .switch .btn:disabled { border-style: solid; opacity: 1; }
 .switch:has(.btn:disabled) { border-style: dashed; }
 
-.wires { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); height: 24px; }
-.wires span { position: relative; }
-.wires span[data-on="true"]::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 28px;
-  width: 3px;
-  background: var(--lumin);
-}
-.cell-head .tag { display: none; }
-
-@media (max-width: 1100px) {
+@media (max-width: 1139px) {
   .requests { grid-template-columns: auto minmax(0, 1fr); }
   .requests > div:nth-child(2) { justify-content: flex-end; }
   .requests dl { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 2.4fr); border-top: var(--rule); }
@@ -346,42 +350,70 @@ h2 {
   .requests dl { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .requests dl > div { padding: 8px 16px; }
   .requests dl > div.status { grid-column: 1 / -1; border-left: 0; border-top: var(--rule); }
-  .wires { display: none; }
-  .requests + .wires + .cells { margin-top: 12px; }
-  .cell[data-requests="true"] .cell-head .tag { display: inline; }
 }
 
-/* The two instances, side by side on hairlines */
+/* The edge of the requests, from the middle of their strip down into the instance that they go to.
+   It is the one thick line, because it is the way in. */
 
-.panel { padding: 20px 0 0; }
+.fork { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--g); height: 44px; }
+.fork span { position: relative; }
+.fork span[data-on="true"]::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  height: calc(50% + 1.5px);
+  border-bottom: 3px solid var(--lumin);
+}
+.fork [data-wire="a"][data-on="true"]::before { left: calc(50% - 1.5px); right: calc(var(--g) / -2 - 1.5px); border-right: 3px solid var(--lumin); }
+.fork [data-wire="b"][data-on="true"]::before { left: calc(var(--g) / -2 - 1.5px); right: calc(50% - 1.5px); border-left: 3px solid var(--lumin); }
+.fork span[data-on="true"]::after, .inst[data-requests="true"] .in::after {
+  content: "";
+  position: absolute;
+  left: calc(50% - 6px);
+  width: 12px;
+  top: 50%;
+  bottom: 0;
+  background: var(--lumin);
+  clip-path: var(--arrow);
+}
 
-.cells {
+/* The instances. a is the mirror of b, so that both edges to S3 run down the middle. */
+
+.instances {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  border-top: var(--rule);
-  border-left: var(--rule);
+  column-gap: var(--g);
+  margin-bottom: var(--drop);
 }
-.cells > * {
-  min-width: 0;
-  border-right: var(--rule);
-  border-bottom: var(--rule);
-}
-@media (max-width: 720px) {
-  .cells { grid-template-columns: minmax(0, 1fr); }
-}
+.inst { position: relative; display: flex; flex-direction: column; min-width: 0; }
+.in { display: none; }
 
-.cell { display: flex; flex-direction: column; }
-.cell-head {
+.node { border: var(--rule); }
+.inst:not([data-state="running"]) .node { border-style: dashed; }
+.node .head {
   display: flex;
-  align-items: baseline;
-  gap: 14px;
-  padding: 12px 20px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 10px 12px 10px 20px;
   border-bottom: var(--rule);
 }
-.cell-head .letter { font-size: 32px; font-weight: 700; line-height: 1; margin: 0; }
-.cell-head .word { font-weight: 700; flex: 1 1 auto; min-width: 0; }
-.cell[data-role="serves"] .cell-head { background: var(--lumin); color: var(--void); }
-.cell[data-state="crashed"] .cell-head .letter { text-decoration: line-through; text-decoration-thickness: 3px; }
+.node .head .name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; min-width: 0; }
+.node .head .letter { font-size: 32px; font-weight: 700; line-height: 1; margin: 0; }
+.node .head .word { font-weight: 700; }
+.node .head .tag { display: none; }
+.node .head .acts { display: flex; gap: 8px; }
+.inst[data-state="crashed"] .head .letter { text-decoration: line-through; text-decoration-thickness: 3px; }
+/* The instance that serves has its head inverted, its buttons with it. */
+.inst[data-role="serves"] .head {
+  --void: #fff;
+  --lumin: #000;
+  --ink: #000;
+  --rule: 1px solid #000;
+  background: var(--void);
+  color: var(--lumin);
+}
 
 .facts { margin: 0; padding: 4px 20px; }
 .facts > div {
@@ -394,49 +426,159 @@ h2 {
   line-height: 1.5;
 }
 .facts > div:last-child { border-bottom: 0; }
-.facts dt { margin: 0; }
-.facts dd { margin: 0; overflow-wrap: anywhere; }
-.facts .code { display: block; width: 100%; height: 14px; margin-top: 4px; }
+.facts dt, .facts dd { margin: 0; }
+.facts dd { overflow-wrap: anywhere; }
 
-.actions {
-  margin-top: auto;
-  border-top: var(--rule);
-  padding: 14px 20px 16px;
+.links {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1.4fr);
+  grid-template-areas: "link disk clocks";
+  column-gap: 16px;
+  padding-top: var(--stub);
+}
+.inst[data-instance="a"] .links { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto; grid-template-areas: "clocks disk link"; }
+
+/* The edge to S3 runs from the instance down into S3, through its two faults. */
+.link {
+  grid-area: link;
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  align-items: center;
+  gap: 16px;
+  padding-top: 16px;
 }
-.actions div { display: flex; flex-wrap: wrap; gap: 8px; }
-/* The row of the clock actions starts with its name. */
-.actions .clock { align-items: center; }
-@media (max-width: 520px) {
-  .cell-head, .facts, .actions { padding-left: 16px; padding-right: 16px; }
-  .actions div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .actions .btn { white-space: normal; text-align: left; justify-content: flex-start; }
-  .actions .clock .caps { grid-column: 1 / -1; }
+.link > .btn, .link > .cut, .link > .to { position: relative; z-index: 1; }
+.link::before {
+  content: "";
+  position: absolute;
+  left: calc(50% - 0.5px);
+  width: 1px;
+  top: calc(-1 * var(--stub));
+  bottom: calc(-1 * var(--drop));
+  background: var(--solid);
 }
+.link[data-hung="true"]::before { background: var(--dash-y); }
+.cut { flex: none; width: 21px; height: 30px; }
+.link[data-disconnected="true"] .cut { background: var(--void); border-top: var(--rule); border-bottom: var(--rule); }
+.to { display: none; }
 
-/* S3, the log, and the commit objects */
+/* The disk and the clocks, each on a short edge from the instance */
+.box {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: var(--rule);
+  padding: 8px 14px 14px;
+}
+.box::before {
+  content: "";
+  position: absolute;
+  left: calc(50% - 0.5px);
+  width: 1px;
+  top: calc(-1 * var(--stub) - 1px);
+  height: var(--stub);
+  background: var(--solid);
+}
+.box .title { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 32px; }
+.box h4 { margin: 0; font-weight: 700; }
+.box p, .box dl, .box dd { margin: 0; }
+.box dl > div { display: grid; gap: 2px; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.box .btn { width: 100%; padding-left: 8px; padding-right: 8px; }
+.box > .btn, .box > .acts { margin-top: auto; }
+.disk { grid-area: disk; }
+.disk .code { display: block; width: 100%; height: 16px; }
+.disk[data-failing="true"] { border-style: dashed; }
+.disk[data-failing="true"]::after {
+  content: "";
+  position: absolute;
+  left: calc(50% - 8px);
+  top: calc(-1 * var(--stub) / 2 - 9px);
+  width: 16px;
+  height: 16px;
+  background:
+    linear-gradient(45deg, transparent calc(50% - 1px), var(--lumin) calc(50% - 1px) calc(50% + 1px), transparent calc(50% + 1px)),
+    linear-gradient(-45deg, transparent calc(50% - 1px), var(--lumin) calc(50% - 1px) calc(50% + 1px), transparent calc(50% + 1px)),
+    var(--void);
+}
+.glyph { display: block; width: 16px; height: 20px; flex: none; }
+.clocks { grid-area: clocks; container-type: inline-size; }
+.clocks .state { font-size: 13px; line-height: 1.5; }
+.clocks .acts { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+@container (min-width: 190px) {
+  .clocks .acts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+/* The dial: the mark outside is true time, the hand the wall clock of the instance. It is dashed
+   while the clocks stand still. */
+.dial { display: block; width: 32px; height: 32px; flex: none; overflow: visible; }
+.clocks[data-paused="true"] .dial circle { stroke-dasharray: 3 3; }
+
+/* S3, below the two, shared by both */
 
 .s3 {
   display: grid;
-  grid-template-columns: auto repeat(3, minmax(0, 1fr));
-  align-items: stretch;
+  grid-template-columns: auto minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
+  max-width: 820px;
+  margin: 0 auto;
   border: var(--rule);
-  border-top: 0;
 }
-.s3 > div { padding: 12px 20px; min-width: 0; }
-.s3 .letter { font-size: 32px; font-weight: 700; line-height: 1; margin: 0; letter-spacing: 0; text-transform: none; }
+.s3 > div { display: flex; align-items: center; padding: 12px 20px; min-width: 0; }
+.s3 .letter { font-size: 32px; font-weight: 700; line-height: 1; margin: 0; }
 .s3 dl { margin: 0; display: contents; }
 .s3 dl > div { display: grid; align-content: start; gap: 2px; font-size: 13px; border-left: var(--rule); padding: 12px 20px; overflow-wrap: anywhere; min-width: 0; }
 .s3 dd { margin: 0; }
+.s3 .code { display: block; width: 100%; height: 16px; margin: 4px 0 6px; }
+
+/* Narrower, the instances stand one above the other, and the edges turn: the edge of the requests
+   comes into the instance that they go to from above, and each edge to S3 runs down the left of its
+   disk and clocks, then along the bottom to S3, which is named at its end. */
+@media (max-width: 1139px) {
+  .fork { display: none; }
+  .instances { grid-template-columns: minmax(0, 1fr); margin-bottom: 32px; }
+  .inst { padding-top: 32px; }
+  .in { display: block; position: absolute; top: 0; left: 24px; width: 12px; height: 32px; }
+  .inst[data-requests="true"] .in::after { top: 0; }
+  .inst[data-requests="true"] .head .tag { display: inline; }
+  .links, .inst[data-instance="a"] .links {
+    grid-template-columns: 24px minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto 60px;
+    grid-template-areas: none;
+    column-gap: 12px;
+  }
+  .disk { grid-area: 1 / 2; }
+  .clocks { grid-area: 1 / 3; }
+  .link { grid-area: 1 / 1 / 3 / 4; flex-direction: row; align-items: flex-end; gap: 10px; padding: 0 0 12px 36px; }
+  .link::before { left: 11.5px; bottom: 30px; }
+  .link::after { content: ""; position: absolute; left: 12px; right: 30px; bottom: 30px; height: 1px; background: var(--solid); }
+  .link[data-hung="true"]::after { background: var(--dash-x); }
+  .cut { width: 30px; height: 21px; margin-bottom: 7.5px; }
+  .link[data-disconnected="true"] .cut { border: 0; border-left: var(--rule); border-right: var(--rule); }
+  .to { display: flex; align-items: center; gap: 6px; height: 36px; margin-left: auto; font-weight: 700; }
+  .to::before { content: ""; width: 9px; height: 12px; background: var(--lumin); clip-path: polygon(0 0, 100% 50%, 0 100%); }
+  .s3 { max-width: none; }
+}
 @media (max-width: 720px) {
+  .node .head { padding-left: 16px; }
+  .facts { padding: 4px 16px; }
+  .in { left: 16px; }
+  .links, .inst[data-instance="a"] .links { grid-template-columns: 20px minmax(0, 1fr) minmax(0, 1fr); column-gap: 8px; }
+  .link { gap: 6px; padding-left: 28px; }
+  .link .btn { gap: 8px; padding-left: 8px; padding-right: 8px; }
+  .cut { width: 20px; }
+  .link::before { left: 9.5px; }
+  .link::after { left: 10px; }
+  .box { padding: 6px 10px 10px; }
   .s3 { grid-template-columns: minmax(0, 1fr); }
   .s3 dl > div { border-left: 0; border-top: var(--rule); grid-template-columns: 9ch minmax(0, 1fr); gap: 12px; padding: 8px 16px; }
   .s3 > div:first-child { padding: 12px 16px; }
 }
 
-.logs { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); border: var(--rule); border-top: 0; margin-bottom: 40px; }
+/* The log and the commit objects, below the system */
+
+.logs { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); border: var(--rule); margin: 48px 0 40px; }
 .logs > section { min-width: 0; }
 .logs > section + section { border-left: var(--rule); }
 .log-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px 16px; padding: 12px 20px; border-bottom: var(--rule); }
@@ -546,9 +688,9 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
   <div class="alarm" id="failure" role="alert" hidden></div>
 </div>
 
-<section class="panel" aria-labelledby="cells-h">
-  <div class="wrap">
-    <h2 class="vh" id="cells-h">The requests, the instances, and S3</h2>
+<section class="panel" aria-labelledby="system-h">
+  <div class="wrap system">
+    <h2 class="vh" id="system-h">The requests, the instances, and S3</h2>
     <section class="requests" id="requests" aria-labelledby="requests-h">
       <div><h3 class="letter" id="requests-h">Requests</h3></div>
       <div>
@@ -564,69 +706,97 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
         <div class="status" id="requests-status"><dt class="caps">Status</dt><dd id="requests-status-words">no requests yet</dd></div>
       </dl>
     </section>
-    <div class="wires" aria-hidden="true"><span data-wire="a"></span><span data-wire="b"></span></div>
-    <div class="cells">
-      <article class="cell" data-instance="a" aria-labelledby="inst-a">
-        <div class="cell-head"><h3 class="letter" id="inst-a">a</h3><span class="word" data-f="word">…</span><span class="tag caps">requests</span></div>
-        <dl class="facts">
-          <div><dt class="caps">Lease</dt><dd data-f="lease">…</dd></div>
-          <div><dt class="caps">Cache</dt><dd><span data-f="pos">…</span><span data-f="code"></span></dd></div>
-          <div><dt class="caps">Clocks</dt><dd data-f="clocks">…</dd></div>
-          <div><dt class="caps">Served</dt><dd data-f="calls">…</dd></div>
-          <div><dt class="caps">Refused</dt><dd data-f="refused">…</dd></div>
-        </dl>
-        <div class="actions" role="group" aria-label="Actions on a">
-          <div>
-            <button class="btn" type="button" data-a="crash" disabled>Crash</button>
-            <button class="btn" type="button" data-a="stop" disabled>Stop</button>
+    <div class="fork" aria-hidden="true"><span data-wire="a"></span><span data-wire="b"></span></div>
+    <div class="instances">
+      <article class="inst" data-instance="a" aria-labelledby="inst-a">
+        <span class="in" aria-hidden="true"></span>
+        <div class="node">
+          <div class="head">
+            <div class="name"><h3 class="letter" id="inst-a"><span class="vh">Instance </span>a</h3><span class="word" data-f="word">…</span><span class="tag caps">requests</span></div>
+            <div class="acts" role="group" aria-label="Actions on a">
+              <button class="btn" type="button" data-a="crash" aria-label="Crash a" disabled>Crash</button>
+              <button class="btn" type="button" data-a="stop" aria-label="Stop a" disabled>Stop</button>
+            </div>
           </div>
-          <div>
-            <button class="btn" type="button" data-a="hang" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Hang S3</button>
-            <button class="btn" type="button" data-a="disconnect" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Disconnect S3</button>
-            <button class="btn" type="button" data-a="disk" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Error disk</button>
-          </div>
-          <div class="clock" role="group" aria-labelledby="clocks-a">
-            <span class="caps" id="clocks-a">Clocks</span>
-            <button class="btn" type="button" data-a="forward" aria-label="Move the wall clock of a forward 5 s" disabled>Wall +5 s</button>
-            <button class="btn" type="button" data-a="back" aria-label="Move the wall clock of a back 5 s" disabled>Wall −5 s</button>
-            <button class="btn" type="button" data-a="pause" aria-pressed="false" aria-label="Pause both clocks of a" disabled><span class="led" aria-hidden="true"></span>Pause</button>
-            <button class="btn" type="button" data-a="reset" aria-label="Reset the clocks of a" disabled>Reset</button>
-          </div>
+          <dl class="facts">
+            <div><dt class="caps">Lease</dt><dd data-f="lease">…</dd></div>
+            <div><dt class="caps">Served</dt><dd data-f="calls">…</dd></div>
+            <div><dt class="caps">Refused</dt><dd data-f="refused">…</dd></div>
+          </dl>
+        </div>
+        <div class="links">
+          <section class="link" data-edge="s3" data-hung="false" data-disconnected="false" aria-labelledby="link-a">
+            <h4 class="vh" id="link-a">Connection of a to S3</h4>
+            <button class="btn" type="button" data-a="hang" aria-pressed="false" aria-label="Hang the connection of a to S3" disabled><span class="led" aria-hidden="true"></span>Hang</button>
+            <button class="btn" type="button" data-a="disconnect" aria-pressed="false" aria-label="Disconnect a from S3" disabled><span class="led" aria-hidden="true"></span>Disconnect</button>
+            <span class="cut" aria-hidden="true"></span>
+            <span class="to caps" aria-hidden="true">S3</span>
+          </section>
+          <section class="box disk" data-edge="disk" data-failing="false" aria-labelledby="disk-a">
+            <div class="title"><h4 class="caps" id="disk-a">Disk</h4><svg class="glyph" viewBox="0 0 16 20" aria-hidden="true"><path d="M1.5 4.5a6.5 3 0 0 0 13 0a6.5 3 0 0 0-13 0v11a6.5 3 0 0 0 13 0v-11" fill="none" stroke="currentColor"/></svg></div>
+            <span data-f="code"></span>
+            <dl><div><dt class="caps">Cache</dt><dd data-f="pos">…</dd></div></dl>
+            <button class="btn" type="button" data-a="disk" aria-pressed="false" aria-label="Error on the disk of a" disabled><span class="led" aria-hidden="true"></span>Error</button>
+          </section>
+          <section class="box clocks" aria-labelledby="clocks-a">
+            <div class="title"><h4 class="caps" id="clocks-a">Clocks</h4><svg class="dial" viewBox="-20 -20 40 40" aria-hidden="true"><circle r="15" fill="none" stroke="currentColor"/><path data-f="now" d="M0-15v-4" stroke="currentColor" stroke-width="1.5"/><path data-f="hand" d="M0 0v-11" stroke="currentColor" stroke-width="2.5"/></svg></div>
+            <p class="state" data-f="clocks">…</p>
+            <div class="acts" role="group" aria-labelledby="clocks-a">
+              <button class="btn" type="button" data-a="forward" aria-label="Move the wall clock of a forward 5 s" disabled>Wall +5 s</button>
+              <button class="btn" type="button" data-a="back" aria-label="Move the wall clock of a back 5 s" disabled>Wall −5 s</button>
+              <button class="btn" type="button" data-a="pause" aria-pressed="false" aria-label="Pause both clocks of a" disabled><span class="led" aria-hidden="true"></span>Pause</button>
+              <button class="btn" type="button" data-a="reset" aria-label="Reset the clocks of a" disabled>Reset</button>
+            </div>
+          </section>
         </div>
       </article>
-      <article class="cell" data-instance="b" aria-labelledby="inst-b">
-        <div class="cell-head"><h3 class="letter" id="inst-b">b</h3><span class="word" data-f="word">…</span><span class="tag caps">requests</span></div>
-        <dl class="facts">
-          <div><dt class="caps">Lease</dt><dd data-f="lease">…</dd></div>
-          <div><dt class="caps">Cache</dt><dd><span data-f="pos">…</span><span data-f="code"></span></dd></div>
-          <div><dt class="caps">Clocks</dt><dd data-f="clocks">…</dd></div>
-          <div><dt class="caps">Served</dt><dd data-f="calls">…</dd></div>
-          <div><dt class="caps">Refused</dt><dd data-f="refused">…</dd></div>
-        </dl>
-        <div class="actions" role="group" aria-label="Actions on b">
-          <div>
-            <button class="btn" type="button" data-a="crash" disabled>Crash</button>
-            <button class="btn" type="button" data-a="stop" disabled>Stop</button>
+      <article class="inst" data-instance="b" aria-labelledby="inst-b">
+        <span class="in" aria-hidden="true"></span>
+        <div class="node">
+          <div class="head">
+            <div class="name"><h3 class="letter" id="inst-b"><span class="vh">Instance </span>b</h3><span class="word" data-f="word">…</span><span class="tag caps">requests</span></div>
+            <div class="acts" role="group" aria-label="Actions on b">
+              <button class="btn" type="button" data-a="crash" aria-label="Crash b" disabled>Crash</button>
+              <button class="btn" type="button" data-a="stop" aria-label="Stop b" disabled>Stop</button>
+            </div>
           </div>
-          <div>
-            <button class="btn" type="button" data-a="hang" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Hang S3</button>
-            <button class="btn" type="button" data-a="disconnect" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Disconnect S3</button>
-            <button class="btn" type="button" data-a="disk" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Error disk</button>
-          </div>
-          <div class="clock" role="group" aria-labelledby="clocks-b">
-            <span class="caps" id="clocks-b">Clocks</span>
-            <button class="btn" type="button" data-a="forward" aria-label="Move the wall clock of b forward 5 s" disabled>Wall +5 s</button>
-            <button class="btn" type="button" data-a="back" aria-label="Move the wall clock of b back 5 s" disabled>Wall −5 s</button>
-            <button class="btn" type="button" data-a="pause" aria-pressed="false" aria-label="Pause both clocks of b" disabled><span class="led" aria-hidden="true"></span>Pause</button>
-            <button class="btn" type="button" data-a="reset" aria-label="Reset the clocks of b" disabled>Reset</button>
-          </div>
+          <dl class="facts">
+            <div><dt class="caps">Lease</dt><dd data-f="lease">…</dd></div>
+            <div><dt class="caps">Served</dt><dd data-f="calls">…</dd></div>
+            <div><dt class="caps">Refused</dt><dd data-f="refused">…</dd></div>
+          </dl>
+        </div>
+        <div class="links">
+          <section class="link" data-edge="s3" data-hung="false" data-disconnected="false" aria-labelledby="link-b">
+            <h4 class="vh" id="link-b">Connection of b to S3</h4>
+            <button class="btn" type="button" data-a="hang" aria-pressed="false" aria-label="Hang the connection of b to S3" disabled><span class="led" aria-hidden="true"></span>Hang</button>
+            <button class="btn" type="button" data-a="disconnect" aria-pressed="false" aria-label="Disconnect b from S3" disabled><span class="led" aria-hidden="true"></span>Disconnect</button>
+            <span class="cut" aria-hidden="true"></span>
+            <span class="to caps" aria-hidden="true">S3</span>
+          </section>
+          <section class="box disk" data-edge="disk" data-failing="false" aria-labelledby="disk-b">
+            <div class="title"><h4 class="caps" id="disk-b">Disk</h4><svg class="glyph" viewBox="0 0 16 20" aria-hidden="true"><path d="M1.5 4.5a6.5 3 0 0 0 13 0a6.5 3 0 0 0-13 0v11a6.5 3 0 0 0 13 0v-11" fill="none" stroke="currentColor"/></svg></div>
+            <span data-f="code"></span>
+            <dl><div><dt class="caps">Cache</dt><dd data-f="pos">…</dd></div></dl>
+            <button class="btn" type="button" data-a="disk" aria-pressed="false" aria-label="Error on the disk of b" disabled><span class="led" aria-hidden="true"></span>Error</button>
+          </section>
+          <section class="box clocks" aria-labelledby="clocks-b">
+            <div class="title"><h4 class="caps" id="clocks-b">Clocks</h4><svg class="dial" viewBox="-20 -20 40 40" aria-hidden="true"><circle r="15" fill="none" stroke="currentColor"/><path data-f="now" d="M0-15v-4" stroke="currentColor" stroke-width="1.5"/><path data-f="hand" d="M0 0v-11" stroke="currentColor" stroke-width="2.5"/></svg></div>
+            <p class="state" data-f="clocks">…</p>
+            <div class="acts" role="group" aria-labelledby="clocks-b">
+              <button class="btn" type="button" data-a="forward" aria-label="Move the wall clock of b forward 5 s" disabled>Wall +5 s</button>
+              <button class="btn" type="button" data-a="back" aria-label="Move the wall clock of b back 5 s" disabled>Wall −5 s</button>
+              <button class="btn" type="button" data-a="pause" aria-pressed="false" aria-label="Pause both clocks of b" disabled><span class="led" aria-hidden="true"></span>Pause</button>
+              <button class="btn" type="button" data-a="reset" aria-label="Reset the clocks of b" disabled>Reset</button>
+            </div>
+          </section>
         </div>
       </article>
     </div>
     <section class="s3" aria-labelledby="s3-h">
       <div><h3 class="letter" id="s3-h">S3</h3></div>
       <dl>
-        <div><dt class="caps">Head</dt><dd id="s3-head">…</dd></div>
+        <div class="head-of-log"><dt class="caps">Head</dt><dd><span id="s3-code"></span><span id="s3-head">…</span></dd></div>
         <div><dt class="caps">Lease</dt><dd id="s3-lease">…</dd></div>
         <div><dt class="caps">Manifest writes</dt><dd id="s3-writes">…</dd></div>
       </dl>
