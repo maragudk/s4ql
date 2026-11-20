@@ -2244,8 +2244,9 @@ func TestTx_types(t *testing.T) {
 					where := fmt.Sprintf("in the column %q of the table %q", fmt.Sprint("c", position), name)
 					is.True(t, strings.Contains(err.Error(), where), what+": "+err.Error())
 				}
-				_, err := tx.Delete(ctx, name, []*s4qlpb.Value{v})
+				found, err := tx.Delete(ctx, name, []*s4qlpb.Value{v})
 				is.Error(t, core.ErrInvalid, err, what)
+				is.True(t, !found, what)
 				_, err = tx.Get(ctx, name, []*s4qlpb.Value{v})
 				is.Error(t, core.ErrInvalid, err, what)
 			}
@@ -2273,9 +2274,13 @@ func TestTx_types(t *testing.T) {
 		err = tx.Upsert(ctx, "two", row("a", 1.5, 2.5))
 		is.True(t, strings.Contains(err.Error(), `a row of 3 values for the table "two", which has 2 columns`), err.Error())
 
+		found, err := tx.Delete(ctx, "nosuch", row(1))
+		is.Error(t, core.ErrNoTable, err)
+		is.True(t, !found)
 		for _, key := range [][]*s4qlpb.Value{row("a", "b"), row("a", math.NaN())} {
-			_, err = tx.Delete(ctx, "two", key)
+			found, err = tx.Delete(ctx, "two", key)
 			is.Error(t, core.ErrInvalid, err, text(key))
+			is.True(t, !found, text(key))
 			is.True(t, strings.Contains(err.Error(), `in the column "c1" of the table "two"`), err.Error())
 			_, err = tx.Get(ctx, "two", key)
 			is.Error(t, core.ErrInvalid, err, text(key))
@@ -2288,6 +2293,74 @@ func TestTx_tooBig(t *testing.T) {
 	// limit is the length limit of the cache in these tests, which SQLite does not raise.
 	const limit = 1000
 	options := core.Options{LengthLimit: limit}
+
+	t.Run("should fail the transaction for a write that fails locally, which is not one that is too big", func(t *testing.T) {
+		// The connections to the cache are closed by the cleanups that are registered later, which
+		// run first.
+		vfs, err := faultvfs.New()
+		is.NotError(t, err)
+		t.Cleanup(func() { is.NotError(t, vfs.Close()) })
+		w := newWorld(t)
+		o := options
+		o.VFS = vfs.Name()
+		d := w.serve(t, "a", o)
+		ctx := t.Context()
+		tx, err := d.Begin(ctx)
+		is.NotError(t, err)
+		is.NotError(t, tx.CreateTable(ctx, typedTable("t", s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_BLOB)))
+		// The rows take more pages than SQLite's page cache holds, so SQLite writes pages to the
+		// write-ahead log before the commit, and every such write fails.
+		vfs.Fail(faultvfs.Fault{Ops: faultvfs.Write, Files: faultvfs.WAL})
+		for i := range 100000 {
+			err = tx.Upsert(ctx, "t", row(i, bytes.Repeat([]byte{1}, 900)))
+			if err != nil {
+				break
+			}
+		}
+		is.True(t, vfs.Failures() > 0, "no write failed")
+		is.Error(t, core.ErrLocal, err)
+		is.True(t, !errors.Is(err, core.ErrTooBig), "a local failure is too big")
+		is.True(t, tx.Upsert(ctx, "t", row(-1, []byte{})) != nil, "the transaction goes on")
+		found, err := tx.Delete(ctx, "t", row(0))
+		is.True(t, err != nil && !found, "the transaction goes on")
+		vfs.Fail(faultvfs.Fault{})
+		_ = tx.Rollback(ctx)
+		_ = d.Close(ctx)
+	})
+
+	t.Run("should fail the transaction for a delete that fails locally", func(t *testing.T) {
+		vfs, err := faultvfs.New()
+		is.NotError(t, err)
+		t.Cleanup(func() { is.NotError(t, vfs.Close()) })
+		w := newWorld(t)
+		o := options
+		o.VFS = vfs.Name()
+		d := w.serve(t, "a", o)
+		ctx := t.Context()
+		const rows = 3000
+		transact(t, d, func(t *testing.T, tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(ctx, typedTable("t", s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_BLOB)))
+			for i := range rows {
+				is.NotError(t, tx.Upsert(ctx, "t", row(i, bytes.Repeat([]byte{1}, 900))))
+			}
+		})
+		tx, err := d.Begin(ctx)
+		is.NotError(t, err)
+		vfs.Fail(faultvfs.Fault{Ops: faultvfs.Write, Files: faultvfs.WAL})
+		var found bool
+		for i := range rows {
+			if found, err = tx.Delete(ctx, "t", row(i)); err != nil {
+				break
+			}
+			is.True(t, found)
+		}
+		is.True(t, vfs.Failures() > 0, "no write failed")
+		is.Error(t, core.ErrLocal, err)
+		is.True(t, !found, "a delete that failed found its row")
+		vfs.Fail(faultvfs.Fault{})
+		_ = tx.Rollback(ctx)
+		_ = d.Close(ctx)
+	})
 
 	// sqliteTakes reports whether SQLite's own table of the same shape, under the same limit,
 	// takes the row, and fails the test for any other error than "string or blob too big".
