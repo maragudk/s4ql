@@ -14,9 +14,9 @@ import (
 )
 
 // cacheVersion is the version of the layout of the cache that this package makes and reads: the
-// table s4ql_cache, and one table for each table of the database, in which a column that takes NULL
-// is declared with "default null".
-const cacheVersion = 2
+// table s4ql_cache, one table for each table of the database, in which a column that takes NULL is
+// declared with "default null", and one index of SQLite for each index of the database.
+const cacheVersion = 3
 
 // maxLength is SQLite's default limit for the length of a text, a blob, and a row, in bytes, which
 // is also the largest that SQLite takes: SQLITE_MAX_LENGTH.
@@ -430,6 +430,11 @@ type table struct {
 	key []int
 	// inKey reports for each column whether it is a primary-key column.
 	inKey []bool
+	// indexes of the table, in the order in which they were created.
+	indexes []*index
+	// primary is the name that SQLite gives the index of the primary key, for a table that was
+	// loaded from the cache.
+	primary string
 }
 
 type column struct {
@@ -722,8 +727,8 @@ func (c *conn) lookUp(name string) (*table, error) {
 	return t, nil
 }
 
-// load the table with the given name from the schema of the cache, or nil if there is none. The
-// cache's own tables are not tables of the database.
+// load the table with the given name from the schema of the cache, with its indexes, or nil if
+// there is none. The cache's own tables are not tables of the database.
 func (c *conn) load(name string) (*table, error) {
 	if reserved(name) {
 		return nil, nil
@@ -776,6 +781,9 @@ func (c *conn) load(name string) (*table, error) {
 	if len(t.columns) == 0 || len(t.key) == 0 {
 		return nil, fmt.Errorf("%w: its table %q has %v columns and a primary key of %v", ErrCacheVersion, t.name, len(t.columns), len(t.key))
 	}
+	if err := c.loadIndexes(t); err != nil {
+		return nil, err
+	}
 	return t, nil
 }
 
@@ -824,9 +832,9 @@ func (c *conn) exists(t *table, key []*s4qlpb.Value) (bool, error) {
 	return n > 0, err
 }
 
-// Bound of a scan by the primary key of a table whose key is one column, as SQLite compares the
-// keys: Value is the first key that a lower bound lets through and the last that an upper bound
-// does, and the row whose key is Value is left out if Open. A Bound without a Value bounds nothing.
+// Bound of a scan on one column of a key, as SQLite compares the values of the column: Value is the
+// smallest value that a lower bound lets through and the largest that an upper bound does, and the
+// rows whose value is Value are left out if Open. A Bound without a Value bounds nothing.
 type Bound struct {
 	Value *s4qlpb.Value
 	Open  bool
@@ -846,77 +854,10 @@ func (t *table) checkBounds(limit int, bounds ...Bound) error {
 	return nil
 }
 
-// scan the rows of the table in the order of its primary key, from lower to upper, which
-// [table.checkBounds] has accepted. The statement is given back also when a panic or
-// [runtime.Goexit] in the loop over the scan unwinds through it: a statement that stays stepped
-// would hold its transaction's snapshot and locks, and the connection could not close.
+// scan the rows of the table in the order of its primary key, from lower to upper on the first
+// column of the key, which [table.checkBounds] has accepted, as [conn.scanIndex] reads them.
 func (c *conn) scan(t *table, lower, upper Bound) iter.Seq2[[]*s4qlpb.Value, error] {
-	return func(yield func([]*s4qlpb.Value, error) bool) {
-		var where []string
-		var args []any
-		for _, b := range []struct {
-			Bound
-			op string
-		}{{lower, ">"}, {upper, "<"}} {
-			if b.Value == nil {
-				continue
-			}
-			op := b.op
-			if !b.Open {
-				op += "="
-			}
-			args = append(args, b.Value)
-			where = append(where, fmt.Sprint(quote(t.columns[t.key[0]].name), " ", op, " ?", len(args)))
-		}
-		sql := fmt.Sprint("select * from main.", quote(t.name))
-		if len(where) > 0 {
-			sql += " where " + strings.Join(where, " and ")
-		}
-		sql += " order by " + t.columnList(t.key)
-		s, err := c.prepare(sql)
-		if err != nil {
-			yield(nil, err)
-			return
-		}
-		if err := bind(s, args...); err != nil {
-			_ = c.rest(sql, s)
-			yield(nil, err)
-			return
-		}
-		// s is nil once it is given back.
-		defer func() {
-			if s != nil {
-				_ = c.rest(sql, s)
-			}
-		}()
-		for {
-			ok, err := s.Step()
-			if err != nil {
-				_ = s.Finalize()
-				s = nil
-				yield(nil, err)
-				return
-			}
-			if !ok {
-				err := c.rest(sql, s)
-				s = nil
-				if err != nil {
-					yield(nil, err)
-				}
-				return
-			}
-			row, err := readRow(s, 0, len(t.columns))
-			if err != nil {
-				_ = c.rest(sql, s)
-				s = nil
-				yield(nil, err)
-				return
-			}
-			if !yield(row, nil) {
-				return
-			}
-		}
-	}
+	return c.scanIndex(t, nil, IndexScan{Lower: lower, Upper: upper}, nil)
 }
 
 // upsert the row into the table: insert it, or replace the row with the same primary key. The

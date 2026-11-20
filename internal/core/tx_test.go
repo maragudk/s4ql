@@ -54,8 +54,9 @@ func (w *world) commits(t *testing.T) [][]string {
 }
 
 // changes of the commit object with the given name and bytes, one line for each change and each
-// annotation, such as "create t1(k*0,v)", "drop t1", "upsert t1 [0 1] 1,2", "delete t1 1", and
-// "note insert... [1,2]", and the name of its parent.
+// annotation, such as "create t1(k*0,v)", "drop t1", "upsert t1 [0 1] 1,2", "delete t1 1",
+// "create index i on t1(1 desc)", "drop index i", and "note insert... [1,2]", and the name of its
+// parent.
 func changes(name format.Name, data []byte) (format.Name, []string, error) {
 	r := format.NewCommitReader(bytes.NewReader(data), name)
 	header, err := r.Header()
@@ -83,6 +84,10 @@ func changes(name format.Name, data []byte) (format.Name, []string, error) {
 			lines = append(lines, "create "+describe(change.GetCreateTable()))
 		case change.HasDropTable():
 			lines = append(lines, "drop "+change.GetDropTable().GetTable())
+		case change.HasCreateIndex():
+			lines = append(lines, "create index "+describeIndex(change.GetCreateIndex()))
+		case change.HasDropIndex():
+			lines = append(lines, "drop index "+change.GetDropIndex().GetIndex())
 		case change.HasUpsertRows():
 			for _, row := range change.GetUpsertRows().GetRows() {
 				lines = append(lines, fmt.Sprint("upsert ", change.GetUpsertRows().GetTable(), " ", change.GetUpsertRows().GetColumns(), " ", text(row.GetValues())))
