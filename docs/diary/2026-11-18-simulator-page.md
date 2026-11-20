@@ -868,3 +868,56 @@ Self-review with the code-review skill at medium:
 **Interpretation:** rebuild the strip of the requests, the two instance cards, and the S3 row as one picture: nodes joined by edges, every action on the node or edge that it acts on, and every node and edge showing its own state. Hung, disconnected, and a failing disk must look different by line style alone. Keep the playback bar, the introduction, the log, and the commit objects as they are. No new actions, no lost texts, no Go changes; the smoke check keeps everything it checks and adds the states of the edges and the edge of the requests.
 
 **Inferred intent:** a visitor should see the system in two seconds: two instances, each with a disk and clocks, both joined to one S3, requests going into one of them. Then play with faults where they happen.
+
+## Step 17: Building the diagram
+
+**Author:** builder (diagram)
+
+### What I did
+
+- Built on the clock row of step 15 (`git merge worktree-agent-ac42757420ad6b019`).
+- The middle of the page is one picture in `.system`: the strip of the requests as before; a thick edge (3 px, with an arrowhead) from the middle of the strip down into the instance that the requests go to, which moves with the switch; two instance nodes side by side; under each, its disk and its clocks on short hairline edges; and from each instance an edge straight down into one S3 node, centred below both. a is drawn as the mirror of b (clocks, disk, edge to S3 from the outside in), so both edges to S3 run down the middle and meet S3 side by side.
+- An instance node has its letter, its state word, Crash/Restart and Stop/Start, and Lease, Served, Refused. The instance that serves has its head inverted, buttons and all: the head swaps `--void`, `--lumin`, `--ink`, and `--rule`, so the buttons, their disabled and pressed states, the focus ring, and the selection invert with it. A node whose process is not running has a dashed frame; a crashed one also has its letter struck through.
+- The edge to S3 carries Hang and Disconnect, sitting on the line. Working is a solid hairline, hung is dashed (6 px on, 5 off) along its whole length into S3, disconnected is cut: a gap of 30 px with a tick across each end. Both at once are dashed and cut.
+- The disk box: a drawn cylinder, the bar code of the cache's position, "Cache" and the text the card's Cache row had, and Error. While the disk fails, its frame is dashed and its edge from the instance has an X.
+- The clocks box: a dial, the text the card's Clocks row had, and the four clock buttons, two by two where the box is at least 190 px wide (a container query), else one column. The dial's outer mark goes round with true time and its hand with the instance's wall clock, once a fake minute: the hand stops while the clocks are paused, and stands off the mark by the wall offset. The dial's circle is dashed while paused, and the hand is hidden while the clocks are "none".
+- S3 has its head as a bar code too, so a cache at the head shows the same bar code as S3.
+- Below 1140 px the instances stack. The edge of the requests is a short arrow above the instance that they go to (and its head says "requests", as the card did at 720 px). Each edge to S3 runs down a lane left of the disk and clocks, then along the bottom through Hang and Disconnect to a terminal "▸ S3"; S3 sits below both instances. The lane and the bottom line take the same dashes and cut.
+- Words: the buttons on the edge say "Hang" and "Disconnect" and the one on the disk "Error"; their accessible names are "Hang the connection of a to S3", "Disconnect a from S3", and "Error on the disk of a". Crash and Stop have names "Crash a", "Restart a", "Stop a", "Start a", kept in step with their text. Each instance heading reads "Instance a" to a screen reader; the edge to S3 is a section named "Connection of a to S3", the boxes are sections headed "Disk" and "Clocks". The row label "Clocks" became the box heading. Log, states, and every other text are unchanged.
+- `page.js`: `cards`/`drawCard` are `nodes`/`drawNode`; it sets `data-hung` and `data-disconnected` on `[data-edge="s3"]`, `data-failing` on `[data-edge="disk"]`, `data-paused` on the clocks, turns the dial, and draws the head's bar code in S3. Removed: `.cells`, `.cell*`, `.actions`, `.wires`, and the 520 px rules that wrapped action buttons.
+- `check.html`: the labels Hang, Disconnect, Error; for each fault, that its edge or disk has the attribute while on, looks different (computed style of the line, the cut, the frame, the X), and looks as before once off; that working, hung, and disconnected give three different looks; that the edge of the requests is drawn into a at zero, into b after the switch, and into a again; that each action's accessible name names its instance (a's names must be b's with b changed to a, because "a" is also a word); Restart's name after a crash; and at 390 px, that nothing scrolls sideways, the arrow of the requests is over a and not b, and the bottom line of the edge to S3 is dashed while it hangs.
+
+### What worked
+
+- With the dashed style of a hung edge removed by hand, the check failed twice: "FAIL the edge of a to S3 shows that it is hung while Hang is on, ..." and "FAIL the edge to S3 looks different working, hung, and disconnected (...)".
+- Before the review fixes: 6 runs of `sitecheck -root site`, three at a time, and 10 runs of `make site-check` (20 checks), all ok. `make lint` passed.
+- `playwright-cli` at 1440, 1280, and 390, in each state of the brief: at zero, playing, a crashed, a hung, a hung and disconnected, a disconnected, a's disk failing, a's clocks paused after Wall −5 s, requests sent to b, after a takeover, and with all faults on at once. The first viewport at 1280 by 800 shows Play, the strip, and both instance nodes. `scrollWidth` is 390 at 390.
+
+### What didn't work
+
+- The worktree guard refused a shell pipeline that spliced the new markup in with `awk`; separate `head`, `cat`, and `tail` commands into a scratch file worked.
+- The box's title row was first named `.top`, which is also the page header's class, and got its bottom rule.
+- At 390 the bottom line of the edge to S3 painted over Hang and Disconnect: a positioned `::after` paints after positioned children. The buttons have `z-index: 1`.
+- A `playwright-cli` session stopped answering ("The browser 'default' is not open", then "EADDRINUSE ... default.sock" on `open`); a new session with `-s=d2` worked.
+- A first driver run timed out at 390 and 1440 waiting for five commits under the default 5 s timeout; `page.setDefaultTimeout(120000)` fixed it.
+
+### What warrants review
+
+Self-review with the code-review skill at medium found eight things:
+
+- Fixed: the bare `.head` of the instance node also matched `li.commit.head`, so the head commit object lost its layout (its tag no longer sat at the right). The rules are `.node .head` now; a screenshot of the head commit shows it as before.
+- Fixed: below 520 px the old rules wrapped action buttons; without them the row of the edge to S3 (Hang, Disconnect, cut, "▸ S3") would overflow at 320 px. At 720 px and narrower the buttons on the edge have 8 px padding and the cut is 20 px wide. At 320 px the diagram fits; the page is still 330 px wide because of the header's nav, as before this change, and outside this brief.
+- Fixed: the check saw only the wide layout. It now also checks at 390 px (the frame is narrowed and widened again): no sideways scrolling, the arrow of the requests over a and not b, and the bottom line of the edge to S3 dashed while it hangs. `requestsEdge` is empty while the fork is hidden.
+- Fixed: the check that each action names its instance matched the English word "a". a's names must now equal b's with b changed to a, and b's must contain b.
+- Fixed: the strip of the requests switched at 1100 px and the diagram at 1140 px; both switch at 1139 px now.
+- Fixed: `data-f="face"` on the dial was unused.
+- Not changed: the inverted head hard-codes `#fff` and `#000`. A rule cannot swap `--void` and `--lumin` through each other (a cycle), and the page is black and white by design.
+- Not changed: the markup of a and b is written out twice, as before; generating it in `page.js` would also move it out of the HTML that the check and a visitor without JavaScript read.
+
+After the fixes: 7 runs of `make site-check` (14 checks), 3 runs of the previous `sitecheck` binary at once, and 6 runs of one built with the new check, three at a time: all ok. `make lint` passed.
+
+For the lead and Markus:
+
+- a is the mirror of b, so in a the order left to right is clocks, disk, edge to S3, while the DOM order (and the order of Tab) is edge to S3, disk, clocks in both. I chose the mirror so that both edges to S3 run down the middle into one S3.
+- Below 1140 px the edges to S3 end in a terminal "▸ S3" instead of running down to the S3 node, and the edge of the requests to b starts in the gap above b. The brief allowed edges to simplify there.
+- The dial is new: it shows the existing state of the clocks (true time, the wall clock, paused), not new state.
