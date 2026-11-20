@@ -876,22 +876,35 @@ func TestDB_stop_cache(t *testing.T) {
 			// SQLite reports the key of a table that is not STRICT as a column that takes NULL.
 			"t9 (k int primary key default null)": `the column "k" of its table "t9" has the default "null"`,
 		} {
-			w := newWorld(t)
-			d := w.serve(t, "a", core.Options{})
+			// A read looks the table up, and so does a create table of its name.
+			for _, write := range []bool{false, true} {
+				w := newWorld(t)
+				d := w.serve(t, "a", core.Options{})
 
-			c, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
-			is.NotError(t, err)
-			is.NotError(t, c.Exec("create table "+table))
-			is.NotError(t, c.Close())
+				c, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
+				is.NotError(t, err)
+				is.NotError(t, c.Exec("create table "+table))
+				is.NotError(t, c.Close())
 
-			r, err := startRead(t, d)
-			is.NotError(t, err)
-			_, err = r.Table(t.Context(), "t9")
-			is.Error(t, core.ErrLocal, err, table)
-			is.Error(t, core.ErrCacheVersion, err, table)
-			is.True(t, strings.Contains(err.Error(), why), err.Error())
-			_ = r.Close(t.Context())
-			is.True(t, isDone(d), table)
+				if write {
+					tx, err := d.Begin(t.Context())
+					is.NotError(t, err)
+					err = tx.CreateTable(t.Context(), typedTable("t9", s4qlpb.Type_TYPE_INT))
+					is.Error(t, core.ErrLocal, err, table)
+					is.Error(t, core.ErrCacheVersion, err, table)
+					is.True(t, strings.Contains(err.Error(), why), err.Error())
+					_ = tx.Rollback(t.Context())
+				} else {
+					r, err := startRead(t, d)
+					is.NotError(t, err)
+					_, err = r.Table(t.Context(), "t9")
+					is.Error(t, core.ErrLocal, err, table)
+					is.Error(t, core.ErrCacheVersion, err, table)
+					is.True(t, strings.Contains(err.Error(), why), err.Error())
+					_ = r.Close(t.Context())
+				}
+				is.True(t, isDone(d), table)
+			}
 		}
 	})
 
