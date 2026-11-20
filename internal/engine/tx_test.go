@@ -229,6 +229,44 @@ func TestConn_Begin(t *testing.T) {
 				{src: selectT, want: "rows 1"},
 			},
 			want: "t1 (v1 INT): 1\n"},
+		{name: "should update and delete in a transaction, read its own changes, and keep the transaction open after a change that fails",
+			setup: []string{tn, "insert into n values (1, 1.5, 'a')", "insert into n values (2, null, 'b')"}, commit: true,
+			steps: []txStep{
+				{src: "update n set r = ? where k = ?", args: []any{2.5, 2}},
+				{src: "select * from n", want: `rows 1,real 1.5,"a" 2,real 2.5,"b"`},
+				{src: "update n set k = 1 where k = 2", want: "19/1555: UNIQUE constraint failed: n.k"},
+				{src: "update n set s = null", want: "19/1299: NOT NULL constraint failed: n.s"},
+				{src: "update n set s = 1", want: "not supported"},
+				{src: "update n set z = 1", want: "1/1: no such column: z"},
+				{src: "update n set k = 3, s = 'c' where k = 2"},
+				{src: "delete from n where k = 1"},
+				{src: "delete from n where k = 1"},
+				{src: "insert into n values (1, null, 'd')"},
+				{src: "select * from n", want: `rows 1,null,"d" 3,real 2.5,"c"`},
+			},
+			want: "n (k INT, r REAL NULL, s TEXT): 1,null,\"d\" 3,real 2.5,\"c\"\n"},
+		{name: "should undo updates and deletes at a roll back", setup: []string{tn, "insert into n values (1, 1.5, 'a')", "insert into n values (2, null, 'b')"},
+			steps: []txStep{{src: "update n set k = 5 where k = 1"}, {src: "delete from n"}, {src: "select * from n", want: "rows"}},
+			want:  "n (k INT, r REAL NULL, s TEXT): 1,real 1.5,\"a\" 2,null,\"b\"\n"},
+		{name: "should refuse an update and a delete in a read-only transaction with SQLite's error, after the errors of the names, whether they find a row or not",
+			setup: []string{tn, "insert into n values (1, 1.5, 'a')"}, readOnly: true, commit: true,
+			steps: []txStep{
+				{src: "update n set r = 2.5", want: "8/8: attempt to write a readonly database"},
+				{src: "update n set r = 2.5 where k = 9", want: "8/8: attempt to write a readonly database"},
+				{src: "update n set s = null where k = 1", want: "8/8: attempt to write a readonly database"},
+				{src: "update n set s = 1 where k = 1", want: "8/8: attempt to write a readonly database"},
+				{src: "update n set k = 1 where k = 1", want: "8/8: attempt to write a readonly database"},
+				{src: "delete from n", want: "8/8: attempt to write a readonly database"},
+				{src: "delete from n where k = ?", args: []any{nil}, want: "8/8: attempt to write a readonly database"},
+				{src: "update m set r = 2.5", want: "1/1: no such table: m"},
+				{src: "update n set z = 2.5", want: "1/1: no such column: z"},
+				{src: "update n set r = 2.5 where z = 1", want: "1/1: no such column: z"},
+				{src: "delete from m", want: "1/1: no such table: m"},
+				{src: "delete from n where z is null", want: "1/1: no such column: z"},
+				{src: "update n set r = 1.5 where k = 'a'", want: "not supported"},
+				{src: "select * from n", want: `rows 1,real 1.5,"a"`},
+			},
+			want: "n (k INT, r REAL NULL, s TEXT): 1,real 1.5,\"a\"\n"},
 		{name: "should write nothing at the roll back of a read-only transaction", setup: []string{t1, insert1}, readOnly: true,
 			steps: []txStep{{src: selectT, want: "rows 1"}, {src: insert2, want: "8/8: attempt to write a readonly database"}},
 			want:  "t1 (v1 INT): 1\n"},
@@ -353,6 +391,75 @@ func TestConn_Begin(t *testing.T) {
 		pinTx(t, []string{t1}, true, []txStep{{src: insert1, want: "8/8: attempt to write a readonly database"}}, true, "t1 (v1 INT): \n")
 		i := pinTx(t, []string{t1, insert1}, true, []txStep{{src: insert2, want: "8/8: attempt to write a readonly database"}}, true, "t1 (v1 INT): 1\n")
 		is.Equal(t, "", i.exec(insert2).err)
+	})
+}
+
+func TestConn_netEffect(t *testing.T) {
+	setup := []string{tn, "insert into n values (1, 1.5, 'a')", "insert into n values (2, null, 'b')"}
+	cases := []struct {
+		name  string
+		steps []txStep
+		// commit is the changes of the commit object of the transaction, as [logChanges] gives them.
+		commit string
+		want   string
+	}{
+		{name: "should commit nothing of a row that was inserted, updated, and deleted",
+			steps:  []txStep{{src: "insert into n values (5, null, 'x')"}, {src: "update n set r = 0.5, s = 'y' where k = 5"}, {src: "update n set k = 6 where k = 5"}, {src: "delete from n where k = 6"}},
+			commit: "", want: "n (k INT, r REAL NULL, s TEXT): 1,real 1.5,\"a\" 2,null,\"b\"\n"},
+		{name: "should commit the row as it is of a key that was changed away and back",
+			steps:  []txStep{{src: "update n set k = 7 where k = 1"}, {src: "update n set k = 1, s = 'z' where k = 7"}},
+			commit: `upsert n 1,real 1.5,"z"`, want: "n (k INT, r REAL NULL, s TEXT): 1,real 1.5,\"z\" 2,null,\"b\"\n"},
+		{name: "should commit a row that was deleted and inserted again as its new values",
+			steps:  []txStep{{src: "delete from n where k = 2"}, {src: "insert into n values (2, 2.5, 'q')"}},
+			commit: `upsert n 2,real 2.5,"q"`, want: "n (k INT, r REAL NULL, s TEXT): 1,real 1.5,\"a\" 2,real 2.5,\"q\"\n"},
+		{name: "should commit a row under a new key as the new row and the delete of the old key",
+			steps:  []txStep{{src: "update n set k = 0 where k = 2"}},
+			commit: `upsert n 0,null,"b" delete n 2`, want: "n (k INT, r REAL NULL, s TEXT): 0,null,\"b\" 1,real 1.5,\"a\"\n"},
+		{name: "should commit a row that an update found, also when its values did not change",
+			steps:  []txStep{{src: "update n set s = 'a' where k = 1"}, {src: "update n set k = 3 where k = 9"}},
+			commit: `upsert n 1,real 1.5,"a"`, want: "n (k INT, r REAL NULL, s TEXT): 1,real 1.5,\"a\" 2,null,\"b\"\n"},
+		{name: "should commit the deletes of every row, and nothing of a statement that failed",
+			steps:  []txStep{{src: "update n set k = 1 where k = 2", want: "19/1555: UNIQUE constraint failed: n.k"}, {src: "delete from n"}},
+			commit: "delete n 1 delete n 2", want: "n (k INT, r REAL NULL, s TEXT): \n"},
+		{name: "should commit the net effect of many statements on rows of several keys",
+			steps: []txStep{
+				{src: "insert into n values (3, null, 'c')"}, {src: "update n set r = 3.5 where k >= 2"}, {src: "update n set k = 4 where k = 3"},
+				{src: "delete from n where k = 1"}, {src: "insert into n values (1, null, 'd')"}, {src: "update n set k = 5 where r is null"},
+			},
+			commit: `upsert n 2,real 3.5,"b" upsert n 4,real 3.5,"c" upsert n 5,null,"d" delete n 1`,
+			want:   "n (k INT, r REAL NULL, s TEXT): 2,real 3.5,\"b\" 4,real 3.5,\"c\" 5,null,\"d\"\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			i := pinTx(t, setup, false, c.steps, true, c.want)
+			log := logChanges(t, i.store)
+			if c.commit == "" {
+				// A transaction that changes nothing in the end leaves no commit object.
+				is.Equal(t, len(setup), len(log))
+				return
+			}
+			is.Equal(t, len(setup)+1, len(log))
+			is.Equal(t, c.commit, strings.Join(log[len(log)-1], " "))
+		})
+	}
+
+	t.Run("should commit the rows of an update and of a delete of their own, and replay them", func(t *testing.T) {
+		w := newChangeTrio(t, 0, setup...)
+		w.run("update n set r = 0.5")
+		w.run("update n set k = 3 where k = 1")
+		w.run("delete from n where s = 'b'")
+		w.run("delete from n where k = 9")
+		// A statement that changes no row leaves no commit object.
+		log := logChanges(t, w.byKey.store)
+		is.Equal(t, len(setup)+3, len(log))
+		is.Equal(t, `upsert n 1,real 0.5,"a" upsert n 2,real 0.5,"b"`, strings.Join(log[len(log)-3], " "))
+		is.Equal(t, `upsert n 3,real 0.5,"a" delete n 1`, strings.Join(log[len(log)-2], " "))
+		is.Equal(t, `delete n 2`, strings.Join(log[len(log)-1], " "))
+		is.Equal(t, `[[update n set r = 0.5] [update n set k = 3 where k = 1] [delete from n where s = 'b']]`,
+			fmt.Sprint(logAnnotations(t, w.byKey.store)[len(setup):]))
+		state := w.o.state(t)
+		w.byKey.restart(true, engine.Options{})
+		is.Equal(t, state, w.byKey.state(), "after a replay of the log")
 	})
 }
 

@@ -141,7 +141,10 @@ type attempt struct {
 	query bool
 	// write is true for a statement that changes the database if it succeeds.
 	write bool
-	state attemptState
+	// unchanged is set for an update or a delete that succeeded and found no row, which changes
+	// nothing, so that a transaction of it alone leaves no commit object.
+	unchanged bool
+	state     attemptState
 	// answer of the statement: SQLite's error of a statement that failed with it, "not supported",
 	// "no statement", or [wrongArguments] for one that was skipped, and the rows of a query that
 	// succeeded.
@@ -475,7 +478,7 @@ var idPattern = regexp.MustCompile(`/\* id (\d+) \*/`)
 // withID puts the comment of the ID into the text of a statement that the pass supports, after its
 // first token, where the annotation keeps it.
 func withID(src string, id uint64) string {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err != nil || s == nil {
 		return src
 	}
@@ -502,7 +505,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 	}
 	a.src = withID(call.Src, a.id)
 	call.Src = a.src
-	if s, _ := checkText(a.src); s != nil {
+	if s, _ := stmt.Check(a.src); s != nil {
 		_, isSelect := s.(*stmt.Select)
 		a.write = !isSelect
 	}
@@ -515,9 +518,13 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 
 	var got answer
 	var err error
+	var res engine.Result
 	if query {
 		var rows *engine.Rows
 		rows, err = c.Query(ctx, a.src, a.args...)
+		if rows != nil {
+			res = rows.Result()
+		}
 		if err == nil {
 			// One query in four is not read to its end: its loop stops at the first row, it is closed
 			// unread, or its consumer panics. Its rows are then not compared.
@@ -545,7 +552,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 			}
 		}
 	} else {
-		_, err = c.Exec(ctx, a.src, a.args...)
+		res, err = c.Exec(ctx, a.src, a.args...)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -554,6 +561,12 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 	switch {
 	case err == nil:
 		a.state, a.answer = succeeded, got
+		if s, _ := stmt.Check(a.src); res.SetsChanges && res.Changes == 0 {
+			switch s.(type) {
+			case *stmt.Update, *stmt.Delete:
+				a.unchanged = true
+			}
+		}
 		// A write of a transaction is acknowledged by its commit.
 		if a.write && tx == nil {
 			r.acked = append(r.acked, a.id)
@@ -579,7 +592,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 		// the generator, and every other that the pass supports, with the arguments that it takes must
 		// run.
 		kind, failure := checkArguments(call, a.answer)
-		s, _ := checkText(a.src)
+		s, _ := stmt.Check(a.src)
 		supported := call.Supported || s != nil
 		if kind == "" && supported && a.answer.err == "not supported" && typeRefusal(a.src, a.answer.message) {
 			// The refusal of a value of another type than its column, after the insert or the select
@@ -1475,7 +1488,9 @@ func (r *run) verify(ctx context.Context) {
 	}
 	nothing := r.verifyTxs(ctx, log, index, inLog)
 	for _, id := range r.acked {
-		if inLog[id] == 0 && !nothing[id] {
+		// An update or a delete that found no row changes nothing, and is in the log only if the
+		// transaction that ran it changed something else.
+		if inLog[id] == 0 && !nothing[id] && !r.attempts[id].unchanged {
 			r.violate(ctx, "the acknowledged statement %v, %q, is not in the log", id, r.attempts[id].src)
 		}
 	}
@@ -1563,9 +1578,9 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 			if a.typeRefused {
 				// A read-only transaction refuses an insert before it looks at its value, and runs a
 				// select.
-				var want string
-				if !tx.readOnly || !isInsert(a.src) {
-					want = typeRule(r.t, o, a.src, oracleValues(a.args))
+				want := typeRule(r.t, o, a.src, oracleValues(a.args))
+				if tx.readOnly {
+					want = readOnlyRule(r.t, o, a.src, oracleValues(a.args))
 				}
 				if a.answer.message != want {
 					r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v, gives %q, and the rule for the type of a value %q", a.id, a.src, tx.id, kind, at, a.answer.message, want)
@@ -1614,7 +1629,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 // event of the run if it is a select with WHERE: by where it ran, of their own or in a transaction,
 // and, for a query that succeeded, by whether it gave rows.
 func (r *run) countWhere(a *attempt, where string) {
-	s, _ := checkText(a.src)
+	s, _ := stmt.Check(a.src)
 	if sel, ok := s.(*stmt.Select); !ok || sel.Where == nil {
 		return
 	}
@@ -1630,7 +1645,7 @@ func (r *run) countWhere(a *attempt, where string) {
 
 // tableOf the statement of src, which the pass supports, folded as SQLite compares names.
 func tableOf(src string) string {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err != nil {
 		panic(err)
 	}
@@ -1642,6 +1657,10 @@ func tableOf(src string) string {
 	case *stmt.DropTable:
 		return s.Table.Fold()
 	case *stmt.Select:
+		return s.Table.Fold()
+	case *stmt.Update:
+		return s.Table.Fold()
+	case *stmt.Delete:
 		return s.Table.Fold()
 	}
 	panic(fmt.Sprintf("a statement of type %T", s))

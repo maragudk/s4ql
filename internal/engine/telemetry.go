@@ -38,7 +38,7 @@ const eventStatement = "statement"
 // The names of the attributes, in the conventions of the core: lowercase, with dots for namespaces
 // and underscores inside words.
 const (
-	// attrKind is the kind of the statement: create_table, drop_table, insert, or select.
+	// attrKind is the kind of the statement: create_table, drop_table, insert, update, delete, or select.
 	attrKind = "statement.kind"
 	// attrTable is the name of the table that the statement names, as its value.
 	attrTable = "statement.table"
@@ -155,6 +155,10 @@ func (r *report) of(s stmt.Statement) {
 		r.kind, r.table = "drop_table", s.Table.Value
 	case *stmt.Insert:
 		r.kind, r.table = "insert", s.Table.Value
+	case *stmt.Update:
+		r.kind, r.table = "update", s.Table.Value
+	case *stmt.Delete:
+		r.kind, r.table = "delete", s.Table.Value
 	case *stmt.Select:
 		r.kind, r.table = "select", s.Table.Value
 	}

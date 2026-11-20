@@ -638,7 +638,7 @@ func (y tally) add(src string, a answer) {
 		return
 	}
 	kind := "other"
-	if s, _ := checkText(src); s != nil {
+	if s, _ := stmt.Check(src); s != nil {
 		kind = strings.ToLower(strings.TrimPrefix(fmt.Sprintf("%T", s), "*stmt."))
 		if s.Parameters() > 0 {
 			kind += " with a parameter"
@@ -848,7 +848,7 @@ func (p *pair) step(c stmttest.Call) string {
 	// refuses before its arguments, a syntax error or no statement, which SQLite refuses before it
 	// binds them, so that it runs in SQLite without them.
 	args := oracleArgs(c.Args)
-	if s, err := checkText(src); err != nil || s == nil {
+	if s, err := stmt.Check(src); err != nil || s == nil {
 		args = nil
 	}
 	if kind, failure := p.checkLength(c, got); kind != "" {
@@ -868,7 +868,7 @@ func (p *pair) step(c stmttest.Call) string {
 		// for the refusals of their arguments and of the types of their values, which are checked
 		// above, and a text that is not supported is one that SQLite accepts: SQLite prepares it on an
 		// empty database without a syntax error.
-		if s, err := checkText(src); c.Supported || err == nil && s != nil {
+		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil {
 			return fmt.Sprintf("%q: the engine does not support a statement that the pass supports: %v", src, got.message)
 		}
 		if m := syntaxOfNotSupported(t, p.empty, src); m != "" {
@@ -903,16 +903,16 @@ func (p *pair) step(c stmttest.Call) string {
 		}
 	}
 	// SQLite's count of changes: the engine's result sets it, and a statement that fails keeps it,
-	// except one that fails while SQLite steps it, which sets it to 0: a broken constraint, an insert
-	// in a read-only transaction, and an insert of a row whose record is too long, while its value,
-	// which SQLite would refuse when it binds it, is not.
+	// except one that fails while SQLite steps it, which sets it to 0: a broken constraint, an insert,
+	// an update, or a delete in a read-only transaction, and an insert or an update of a row whose
+	// record is too long, while its value, which SQLite would refuse when it binds it, is not.
 	changes, rowid := o.changes(t)
 	p.prev = changes
-	recordTooBig := want.err == tooBig && isInsert(src) && !slices.ContainsFunc(args, func(a any) bool { return byteLength(a) > p.i.limit })
+	recordTooBig := want.err == tooBig && changesRows(src) && !slices.ContainsFunc(args, func(a any) bool { return byteLength(a) > p.i.limit })
 	switch {
-	case strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeConstraint, "/")), strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeReadOnly, "/")) && isInsert(src), recordTooBig:
+	case strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeConstraint, "/")), strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeReadOnly, "/")) && changesRows(src), recordTooBig:
 		if changes != 0 {
-			return fmt.Sprintf("%q: SQLite counts %v changes after a broken constraint, a refused insert, or a record that is too long", src, changes)
+			return fmt.Sprintf("%q: SQLite counts %v changes after a broken constraint, a refused change, or a record that is too long", src, changes)
 		}
 	case want.err != "" && changes != before:
 		return fmt.Sprintf("%q: SQLite counts %v changes after its error, and %v before", src, changes, before)
@@ -935,7 +935,7 @@ func (p *pair) step(c stmttest.Call) string {
 // under "reached: read both ways", and also under "reached: read both ways in a read-only
 // transaction" in one, and gives what differs, or "".
 func (p *pair) bothWays(c stmttest.Call, got answer) string {
-	s, _ := checkText(c.Src)
+	s, _ := stmt.Check(c.Src)
 	if sel, ok := s.(*stmt.Select); !ok || sel.Where == nil {
 		return ""
 	}
@@ -1001,7 +1001,7 @@ func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, count func(stri
 	case got.err != "":
 		outcome = messageKind(got.err)
 	}
-	s, _ := checkText(c.Src)
+	s, _ := stmt.Check(c.Src)
 	switch s := s.(type) {
 	case *stmt.Insert:
 		reachInsert(t, o, s, c, outcome, count)
@@ -1222,7 +1222,7 @@ func reachInsert(t testing.TB, o *oracle, s *stmt.Insert, c stmttest.Call, outco
 // first such argument, as [refusal] says. It gives the kind of the excuse, [excusedArguments] or
 // [excusedArgument], if the rule decides the call, or "", and what differs from the rule, or "".
 func checkArguments(c stmttest.Call, got answer) (kind, failure string) {
-	s, err := checkText(c.Src)
+	s, err := stmt.Check(c.Src)
 	if err != nil || s == nil {
 		return "", ""
 	}
@@ -1306,13 +1306,16 @@ func oracleArgs(args []any) []any {
 func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failure string) {
 	t := p.t
 	t.Helper()
-	if p.readOnly && isInsert(c.Src) || slices.ContainsFunc(args, func(a any) bool { return p.i.limit > 0 && byteLength(a) > p.i.limit }) || p.longCondition(c.Src) {
+	if slices.ContainsFunc(args, func(a any) bool { return p.i.limit > 0 && byteLength(a) > p.i.limit }) || p.longCondition(c.Src) {
 		// An argument that is too long gets SQLite's error when SQLite binds it, which the caller
 		// compares, and so does a literal of a condition that is too long, which s4ql refuses before the
 		// type of a value, and SQLite mostly too.
 		return "", ""
 	}
 	want := typeRule(t, p.o, c.Src, args)
+	if p.readOnly {
+		want = readOnlyRule(t, p.o, c.Src, args)
+	}
 	if want == "" {
 		return "", ""
 	}
@@ -1331,7 +1334,7 @@ func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failu
 func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string) {
 	t := p.t
 	t.Helper()
-	s, _ := checkText(c.Src)
+	s, _ := stmt.Check(c.Src)
 	insert, ok := s.(*stmt.Insert)
 	if !ok || p.i.limit == 0 || p.o.prepare(t, c.Src) != nil {
 		return "", ""
@@ -1357,7 +1360,7 @@ func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string)
 // turns a blob literal into NULL, so that the select gives no rows: the known difference of
 // docs/todo.md.
 func (p *pair) longCondition(src string) bool {
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	sel, ok := s.(*stmt.Select)
 	return ok && p.i.limit > 0 && slices.ContainsFunc(sel.Where, func(c stmt.Condition) bool { return byteLength(c.Value.Value) > p.i.limit })
 }
@@ -1380,18 +1383,19 @@ func byteLength(v any) int {
 	return 0
 }
 
-// typeRule of the insert or the select of the text src, with the arguments args as SQLite binds
-// them, on the database of o: s4ql's "not supported" for the first column, in the order of the table,
-// whose value, a literal or an argument, is of another type than the column, where SQLite would
-// convert the value or give an error of its own, as [stmttest.TypeRule] gives it, and for the first
-// condition of a select, in the order of the text, whose value is of another type than its column,
-// as [stmttest.ConditionRule] gives it; or "". It is "" for a text that is neither, a statement that
-// SQLite does not prepare, which gets SQLite's error, one with another number of arguments than
-// parameters, an insert that leaves a column without a value, which gets SQLite's `NOT NULL
-// constraint failed` first, and a statement whose every value has the type of its column.
+// typeRule of the insert, the select, the update, or the delete of the text src, with the arguments
+// args as SQLite binds them, on the database of o: s4ql's "not supported" for the first column, in
+// the order of the table, whose value, a literal or an argument, is of another type than the column,
+// where SQLite would convert the value or give an error of its own, as [stmttest.TypeRule] gives it,
+// and for the first condition of a select, in the order of the text, whose value is of another type
+// than its column, as [stmttest.ConditionRule] gives it, and as [stmttest.UpdateRule] and
+// [stmttest.DeleteRule] give it for an update and a delete; or "". It is "" for another text, a
+// statement that SQLite does not prepare, which gets SQLite's error, one with another number of
+// arguments than parameters, an insert that leaves a column without a value, which gets SQLite's
+// `NOT NULL constraint failed` first, and a statement whose every value has the type of its column.
 func typeRule(t testing.TB, o *oracle, src string, args []any) string {
 	t.Helper()
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	if s == nil || len(args) != s.Parameters() {
 		return ""
 	}
@@ -1408,8 +1412,43 @@ func typeRule(t testing.TB, o *oracle, src string, args []any) string {
 		}
 		table, columns := o.columns(t, s.Table.Value)
 		return stmttest.ConditionRule(table, columns, s, args)
+	case *stmt.Update:
+		if o.prepare(t, src) != nil {
+			return ""
+		}
+		table, columns := o.columns(t, s.Table.Value)
+		return stmttest.UpdateRule(table, columns, s, args, func() bool {
+			q, bound := stmttest.FoundQuery(s.Table, s.Where, args)
+			return len(o.run(t, q, bound...).rows) > 0
+		})
+	case *stmt.Delete:
+		if o.prepare(t, src) != nil {
+			return ""
+		}
+		table, columns := o.columns(t, s.Table.Value)
+		return stmttest.DeleteRule(table, columns, s, args)
 	}
 	return ""
+}
+
+// readOnlyRule is [typeRule] in a read-only transaction, which refuses an insert, and the SET of an
+// update, before it looks at a value: the rule of the WHERE of an update, of a select, and of a
+// delete, and "" for an insert.
+func readOnlyRule(t testing.TB, o *oracle, src string, args []any) string {
+	t.Helper()
+	s, _ := stmt.Check(src)
+	switch s := s.(type) {
+	case *stmt.Insert:
+		return ""
+	case *stmt.Update:
+		// SQLite prepares the update only if the table has every column that it names.
+		if len(args) != s.Parameters() || o.prepare(t, src) != nil {
+			return ""
+		}
+		table, columns := o.columns(t, s.Table.Value)
+		return stmttest.WhereRule(table, columns, s.Where, args)
+	}
+	return typeRule(t, o, src, args)
 }
 
 // keyType is the declared type of the key column of the table of the insert, on the database of o,
@@ -1451,36 +1490,31 @@ func (o *oracle) columns(t testing.TB, name string) (string, []stmttest.TableCol
 }
 
 // typeRefusal reports whether message is the engine's refusal of a value of another type than its
-// column, for the insert or the select with WHERE of the text src, as [typeRule] gives it.
+// column, for the statement of the text src, as [typeRule] gives it.
 func typeRefusal(src, message string) bool {
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	switch s := s.(type) {
 	case *stmt.Insert:
 		return strings.Contains(message, " for the column ")
 	case *stmt.Select:
 		return s.Where != nil && strings.Contains(message, " compared with the column ")
+	case *stmt.Update:
+		return strings.Contains(message, " for the column ") || strings.Contains(message, " compared with the column ")
+	case *stmt.Delete:
+		return strings.Contains(message, " compared with the column ")
 	}
 	return false
 }
 
-// checkText src as the engine checks a text before it runs it: as [stmt.Check] does, and with the
-// "not supported" of [engine.Check] for an update or a delete of slice 8, which the pass supports and
-// the engine does not run yet, which the tests take for a text that is not supported.
-func checkText(src string) (stmt.Statement, error) {
-	s, err := stmt.Check(src)
-	if err == nil && s != nil {
-		if err := engine.Check(src, s.Parameters()); errors.Is(err, stmt.ErrNotSupported) {
-			return nil, err
-		}
+// changesRows reports whether src is a supported insert, update, or delete, which sets SQLite's count
+// of changes.
+func changesRows(src string) bool {
+	s, _ := stmt.Check(src)
+	switch s.(type) {
+	case *stmt.Insert, *stmt.Update, *stmt.Delete:
+		return true
 	}
-	return s, err
-}
-
-// isInsert reports whether src is a supported insert.
-func isInsert(src string) bool {
-	s, _ := checkText(src)
-	_, ok := s.(*stmt.Insert)
-	return ok
+	return false
 }
 
 // syntaxOfNotSupported gives the message of the syntax error that SQLite gives when it prepares src, a
@@ -1565,8 +1599,11 @@ func TestDifferential(t *testing.T) {
 		// which took the fourth up, and has parameters, whose arguments [stmttest.Sequence.Next] makes
 		// wrong in number or of no column now and then, which took the second and the third up. The
 		// selects with a literal in a condition longer than the length limit, of which the run has 2,
-		// give `string or blob too big` in SQLite too, so [excusedLongCondition] is 0.
-		want := map[string]int{acceptedStartedTable: 19, excusedArguments: 718, excusedArgument: 248, excusedType: 478, excusedLong: 4}
+		// give `string or blob too big` in SQLite too, so [excusedLongCondition] is 0. The engine of
+		// slice 8 took the fourth from 478 to 483: it runs the update of [stmttest.Others], which sets
+		// a column to a small integer, and 5 of them give it to a column of another type, which s4ql's
+		// rule refuses. The generator drew as before then.
+		want := map[string]int{acceptedStartedTable: 19, excusedArguments: 718, excusedArgument: 248, excusedType: 483, excusedLong: 4}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
 			if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) {

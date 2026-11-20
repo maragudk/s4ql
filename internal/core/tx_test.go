@@ -2936,6 +2936,176 @@ func TestTx_tooBig(t *testing.T) {
 	})
 }
 
+// keysOf the set k, as [core.KeySet.All] gives them, each as [text] gives it.
+func keysOf(t *testing.T, k *core.KeySet) []string {
+	t.Helper()
+	var keys []string
+	for key, err := range k.All(t.Context()) {
+		is.NotError(t, err)
+		keys = append(keys, text(key))
+	}
+	return keys
+}
+
+func TestTx_Keys(t *testing.T) {
+	t.Run("should give the keys of each type once, in the order of the key, as SQLite compares them", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		for _, typ := range types {
+			name := "t_" + typeName(typ)
+			is.NotError(t, tx.CreateTable(t.Context(), typedTable(name, typ)))
+			keys := slices.Clone(edges[typ])
+			// The model: each key once, as the cache holds it, in the order of the key.
+			var want [][]*s4qlpb.Value
+			for _, k := range keys {
+				key := stored([]*s4qlpb.Value{k})
+				if !slices.ContainsFunc(want, func(w []*s4qlpb.Value) bool { return compareKeys(w, key) == 0 }) {
+					want = append(want, key)
+				}
+			}
+			slices.SortFunc(want, compareKeys)
+			var wantText []string
+			for _, key := range want {
+				wantText = append(wantText, text(key))
+			}
+			rand.New(rand.NewPCG(1, 2)).Shuffle(len(keys), func(i, j int) { keys[i], keys[j] = keys[j], keys[i] })
+			is.NotError(t, tx.Keys(t.Context(), name, func(k *core.KeySet) error {
+				is.Equal(t, 0, len(keysOf(t, k)), "an empty set")
+				for _, key := range append(keys, keys...) {
+					is.NotError(t, k.Add(t.Context(), []*s4qlpb.Value{key}))
+				}
+				is.EqualSlice(t, wantText, keysOf(t, k))
+				return nil
+			}), name)
+		}
+		is.NotError(t, tx.Commit(t.Context()))
+	})
+
+	t.Run("should give the keys of a key of two columns in the order of the key, and of any number", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		write(t, d, func(tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(t.Context(), tableOf("t", 2, "a", "b", "c")))
+			is.NotError(t, tx.Keys(t.Context(), "T", func(k *core.KeySet) error {
+				var want []string
+				for a := 3; a > 0; a-- {
+					for b := 1000; b > 0; b-- {
+						is.NotError(t, k.Add(t.Context(), row(a, b)))
+					}
+				}
+				for a := 1; a <= 3; a++ {
+					for b := 1; b <= 1000; b++ {
+						want = append(want, fmt.Sprint(a, ",", b))
+					}
+				}
+				is.EqualSlice(t, want, keysOf(t, k))
+				return nil
+			}))
+		})
+	})
+
+	t.Run("should let the transaction change the table and the set between two keys, and give a key that is added after the last", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		write(t, d, func(tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(t.Context(), tableOf("t", 1, "k", "v")))
+			for i := 1; i <= 5; i++ {
+				is.NotError(t, tx.Upsert(t.Context(), "t", row(i*10, i)))
+			}
+			is.NotError(t, tx.Keys(t.Context(), "t", func(k *core.KeySet) error {
+				for row, err := range tx.Scan(t.Context(), "t") {
+					is.NotError(t, err)
+					if row[1].GetInteger()%2 == 1 {
+						// Only the set changes while the scan runs.
+						is.NotError(t, k.Add(t.Context(), row[:1]))
+					}
+				}
+				var got []string
+				for key, err := range k.All(t.Context()) {
+					is.NotError(t, err)
+					got = append(got, text(key))
+					k0 := key[0].GetInteger()
+					if k0%10 != 0 {
+						continue
+					}
+					// The row moves to the next key, which is added to the set and comes next, and a key
+					// before the last that is added does not come.
+					found, err := tx.Delete(t.Context(), "t", key)
+					is.NotError(t, err)
+					is.True(t, found)
+					is.NotError(t, tx.Upsert(t.Context(), "t", row(k0+1, 0)))
+					is.NotError(t, k.Add(t.Context(), row(k0+1)))
+					is.NotError(t, k.Add(t.Context(), row(1)))
+				}
+				is.EqualSlice(t, []string{"10", "11", "30", "31", "50", "51"}, got)
+				return nil
+			}))
+		})
+		is.Equal(t, "t(k*0,v): 11,0 | 20,2 | 31,0 | 40,4 | 51,0", read(t, d))
+	})
+
+	t.Run("should give the error of f, and drop the set either way, also in a savepoint that rolls back", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		failed := errors.New("f fails")
+		write(t, d, func(tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(t.Context(), tableOf("t", 1, "k")))
+		})
+		write(t, d, func(tx *core.Tx) {
+			var kept *core.KeySet
+			for i := range 3 {
+				is.NotError(t, tx.Savepoint(t.Context()))
+				err := tx.Keys(t.Context(), "t", func(k *core.KeySet) error {
+					kept = k
+					is.Equal(t, 0, len(keysOf(t, k)), "a set of an earlier call")
+					is.NotError(t, k.Add(t.Context(), row(i)))
+					is.NotError(t, tx.Upsert(t.Context(), "t", row(i)))
+					return failed
+				})
+				is.Error(t, failed, err)
+				is.NotError(t, tx.RollbackTo(t.Context()))
+			}
+			is.Error(t, core.ErrInvalid, kept.Add(t.Context(), row(9)))
+			for _, err := range kept.All(t.Context()) {
+				is.Error(t, core.ErrInvalid, err)
+			}
+			is.NotError(t, tx.Keys(t.Context(), "t", func(k *core.KeySet) error {
+				is.NotError(t, k.Add(t.Context(), row(7)))
+				return nil
+			}))
+			is.NotError(t, tx.Upsert(t.Context(), "t", row(8)))
+		})
+		is.Equal(t, "upsert t [0] 8", strings.Join(w.commits(t)[1], "\n"))
+		is.Equal(t, "t(k*0): 8", read(t, d))
+	})
+
+	t.Run("should refuse a table that does not exist and a key that the table cannot hold, and go on", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{LengthLimit: 1000})
+		write(t, d, func(tx *core.Tx) {
+			is.Error(t, core.ErrNoTable, tx.Keys(t.Context(), "t", func(*core.KeySet) error {
+				t.Fatal("f runs for a table that does not exist")
+				return nil
+			}))
+			is.NotError(t, tx.CreateTable(t.Context(), typedTable("t", s4qlpb.Type_TYPE_TEXT)))
+			is.NotError(t, tx.Keys(t.Context(), "t", func(k *core.KeySet) error {
+				is.Error(t, core.ErrInvalid, k.Add(t.Context(), row(1)))
+				is.Error(t, core.ErrInvalid, k.Add(t.Context(), row("a", "b")))
+				is.Error(t, core.ErrTooBig, k.Add(t.Context(), row(strings.Repeat("x", 1001))))
+				// A key of the limit is longer than the limit as a record, which SQLite refuses.
+				is.Error(t, core.ErrTooBig, k.Add(t.Context(), row(strings.Repeat("x", 1000))))
+				is.NotError(t, k.Add(t.Context(), row(strings.Repeat("x", 990))))
+				is.Equal(t, 1, len(keysOf(t, k)))
+				return nil
+			}))
+			is.NotError(t, tx.Upsert(t.Context(), "t", row("a")))
+		})
+		is.Equal(t, `t(c0*0:text): "a"`, read(t, d))
+	})
+}
+
 // armingSpool is a spool file that calls arm before each write. It does not embed the file, so that
 // no method of the file, such as ReadFrom, goes around arm.
 type armingSpool struct {
