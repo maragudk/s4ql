@@ -62,3 +62,50 @@ SQLite gives `string or blob too big` for a string literal in WHERE that is long
 ### Future work
 
 - The documents and the full checks: step 2.
+
+## Step 2: The pinned numbers, the documents, the checks, and the review
+
+**Author:** where-engine builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Keep the pinned numbers of those tests true; where one moves, explain why. [...] `make check-browser` must pass [...] Run `make test`, `make lint`, and `make check-browser`. [...] Review your own work with the code-review skill before you report, and fix what it finds."
+**Interpretation:** Pin the numbers that moved with their reasons, have the documents written, run every check, and review the branch with two reviewers.
+**Inferred intent:** A branch whose code, numbers, and documents agree, ready for the lead.
+
+### What I did
+
+Pinned numbers, with the generator drawing as before (only the two texts with WHERE of `stmttest.Others` reach the engine): `TestDifferential` `excusedType` 339 to 350; `drivercheck`'s `TestGenerated` `excusedPrepare` 1060 to 1063, `excusedType` 161 to 169, `excusedQuoted` 45 to 48. The comments beside the pins say why. The simulation's minimums held.
+
+A writer sub-agent updated `/internal/engine/README.md`, `/docs/todo.md` (status, the decisions of slice 7, what is not built, the known difference of a long literal), and refinements under slice 7 in `/docs/roadmap.md` (status line untouched). I read the diff and committed it.
+
+The review (two reviewers on `git diff 8d150cc`): neither found a wrong row or error; one ran 16,000 random selects and 20,000 random error cases, the other 24,000 and 20,000, all equal to SQLite. Fixed: the doc of `core.Bound` and `bound`, which described only a lower bound (both); `scan.rows` built the full scan before its switch, and `keyAccess` cleared the bounds for a key with no effect (both); `whereProbes` and `operators` were package-level and used in one test (both); the core's README named the engine (both); the `get` path's error was untested (one reviewer: removing `yield(nil, err)` passed every test) and `access.none` was unpinned (one): `fake` has `getFails` and `scanned` now, and `TestFilter` checks both; a too-long string literal as the upper bound of the key gives no rows in SQLite when the search reaches no row (one reviewer, which I confirmed), now a known difference in `docs/todo.md`; the vacuous `ErrTooBig` loop of `TestScanRange`; stale comments in `errors.go`, `simulation_test.go`, and the README of the pass. Left: `checkCompared` duplicates `checkType` (both reviewers) because another builder is mutation-testing the code of slice 4 to 6 and keys its equivalent mutants by function, so I did not move `checkType`'s body; the comment on `Options.scanAll` names the tests, as the one on `bugs` does; `-scanall` is in no CI job, now in the todo for the builder of the generated checks.
+
+### Why
+
+A moved pin needs its reason; the review's findings were cheap and, for the `get` error and the long literal, real.
+
+### What worked
+
+`make test`, `make lint`, and `make check-browser` passed. The new tests passed with `-count=20` and with `-race -count=20` (`TestEngine_where`, `TestFilter`, `TestNewPlan`, `TestScanRange`, `TestConditionRule`, `TestWhere`). After the fixes, `TestDifferential`, `TestSimulation`, `TestConn_differential`, and `drivercheck` passed again.
+
+### What didn't work
+
+`TestOpen_realBucket` fails without `-short` for want of credentials, as it must; `make test` runs with `-short`.
+
+### What I learned
+
+SQLite evaluates the upper bound of a search of the primary key only when the search reaches a row, so `k < 'long'` on an empty table gives no rows where `v < 'long'` gives `string or blob too big`.
+
+### What was tricky
+
+Seeing that the key access cannot add a row (the filter tests every condition) but can drop one, so the tests must compare it with a scan of every row, which `scanAll` gives.
+
+### What warrants review
+
+- The decisions of slice 7 in `/docs/todo.md`, and the refinements in `/docs/roadmap.md`.
+- Whether `checkCompared` should merge with `checkType` once the mutation testing of slices 5 and 6 is merged.
+
+### Future work
+
+- WHERE in the generated tests, with `-scanall` in CI; the simulation with a planted bug for WHERE; mutation testing of slice 7; fuzz targets with WHERE.
