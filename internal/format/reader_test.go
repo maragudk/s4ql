@@ -268,6 +268,8 @@ func TestCommitReader(t *testing.T) {
 			withUnknown(c.GetCreateTable().GetColumns()[1], 4, protowire.VarintType)
 			return c
 		}())},
+		{name: "should refuse a default of a kind it does not know as newer", b: changeRecord(withDefault(createTable("t", []string{"a", "b"}, []uint32{0}), 1, withUnknown(&s4qlpb.Value{}, 6, protowire.BytesType)))},
+		{name: "should refuse a default with a known kind and a field it does not know as newer", b: changeRecord(withDefault(createTable("t", []string{"a", "b"}, []uint32{0}), 1, withUnknown(integer(1), 7, protowire.VarintType)))},
 		{name: "should refuse a type it does not know as newer", b: changeRecord(func() *s4qlpb.Change {
 			c := createTable("t", []string{"a"}, []uint32{0})
 			c.GetCreateTable().GetColumns()[0].SetType(s4qlpb.Type(6))
@@ -390,6 +392,26 @@ func TestCommitReader(t *testing.T) {
 			c.GetCreateTable().GetColumns()[1].SetNullable(true)
 			return c
 		}()), why: "primary_key[1] is column 1, which takes NULL"},
+		{name: "should refuse a default without a kind", b: changeRecord(withDefault(createTable("t", []string{"a", "b"}, []uint32{0}), 1, &s4qlpb.Value{})), why: "columns[1].default has no kind"},
+		{name: "should refuse a default that is a real for a column of type INT", b: changeRecord(withDefault(createTable("t", []string{"a", "b"}, []uint32{0}), 1, realValue(1))), why: "columns[1].default is a value of kind real, which a column of type TYPE_INT does not hold"},
+		{name: "should refuse a default that is text for a column of type INTEGER", b: changeRecord(withDefault(createTypedTable("t", []string{"a"}, []s4qlpb.Type{s4qlpb.Type_TYPE_INTEGER}, []uint32{0}), 0, text("1"))), why: "columns[0].default is a value of kind text, which a column of type TYPE_INTEGER does not hold"},
+		{name: "should refuse a default that is an integer for a column of type REAL", b: changeRecord(withDefault(everyType(), 2, integer(1))), why: "columns[2].default is a value of kind integer, which a column of type TYPE_REAL does not hold"},
+		{name: "should refuse a default that is a blob for a column of type TEXT", b: changeRecord(withDefault(everyType(), 3, blob([]byte("a")))), why: "columns[3].default is a value of kind blob, which a column of type TYPE_TEXT does not hold"},
+		{name: "should refuse a default that is text for a column of type BLOB", b: changeRecord(withDefault(everyType(), 4, text("a"))), why: "columns[4].default is a value of kind text, which a column of type TYPE_BLOB does not hold"},
+		{name: "should refuse a default that is a real that is NaN", b: changeRecord(withDefault(everyType(), 2, realValue(math.NaN()))), why: "columns[2].default is a real that is NaN"},
+		{name: "should refuse a default that is a real that is infinite", b: changeRecord(withDefault(everyType(), 2, realValue(math.Inf(1)))), why: "columns[2].default is a real that is infinite"},
+		{name: "should refuse a default that is a real that is -0.0", b: changeRecord(withDefault(everyType(), 2, realValue(math.Copysign(0, -1)))), why: "columns[2].default is a real that is -0.0"},
+		{name: "should refuse a default that is text with the character NUL", b: changeRecord(withDefault(everyType(), 3, text("a\x00b"))), why: "columns[3].default is text that holds the character NUL"},
+		{name: "should refuse a default that is text that is not valid UTF-8", b: changeRecord(rawChange(1, join(
+			protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), []byte("t")),
+			protowire.AppendBytes(protowire.AppendTag(nil, 2, protowire.BytesType), join(
+				protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), []byte("a")),
+				protowire.AppendVarint(protowire.AppendTag(nil, 2, protowire.VarintType), uint64(s4qlpb.Type_TYPE_TEXT)),
+				protowire.AppendBytes(protowire.AppendTag(nil, 4, protowire.BytesType),
+					protowire.AppendBytes(protowire.AppendTag(nil, 3, protowire.BytesType), []byte("\xff"))),
+			)),
+			protowire.AppendVarint(protowire.AppendTag(nil, 3, protowire.VarintType), 0),
+		)))},
 		{name: "should refuse a NULL in a primary key", b: changeRecord(deleteRows("t", []*s4qlpb.Value{null()}))},
 		{name: "should refuse a NULL in a primary key of a batch after keys without one", b: changeRecord(deleteRows("t", []*s4qlpb.Value{integer(1), text("a")}, []*s4qlpb.Value{integer(2), null()}))},
 		{name: "should refuse a drop table without a name", b: changeRecord(dropTable(""))},
@@ -626,6 +648,12 @@ func nullable(c *s4qlpb.Change, positions ...int) *s4qlpb.Change {
 	return c
 }
 
+// withDefault gives the column at position of the create table c the default v, and returns c.
+func withDefault(c *s4qlpb.Change, position int, v *s4qlpb.Value) *s4qlpb.Change {
+	c.GetCreateTable().GetColumns()[position].SetDefault(v)
+	return c
+}
+
 func dropTable(table string) *s4qlpb.Change {
 	return s4qlpb.Change_builder{DropTable: s4qlpb.DropTable_builder{Table: &table}.Build()}.Build()
 }
@@ -750,7 +778,7 @@ func commitSamples() []commitSample {
 			write: func(w *format.CommitWriter) error {
 				return errors.Join(
 					w.DropIndex("users_age"),
-					w.CreateTable(nullable(createTable("kv", []string{"a", "b", "c"}, []uint32{1, 0}), 2).GetCreateTable()),
+					w.CreateTable(withDefault(nullable(createTable("kv", []string{"a", "b", "c"}, []uint32{1, 0}), 2), 2, null()).GetCreateTable()),
 					w.UpsertRow("kv", []uint32{0, 1, 2}, []*s4qlpb.Value{integer(-7), text("ü"), realValue(2.5)}),
 					w.UpsertRow("kv", []uint32{0, 1, 2}, []*s4qlpb.Value{integer(8), text(""), blob([]byte{0, 0xff})}),
 					w.UpsertRow("kv", []uint32{1, 0, 2}, []*s4qlpb.Value{text("x"), integer(9), null()}),
@@ -758,7 +786,7 @@ func commitSamples() []commitSample {
 					w.DeleteRow("kv", []*s4qlpb.Value{text("x"), integer(9)}),
 					w.DeleteRow("kv", []*s4qlpb.Value{text(""), integer(8)}),
 					w.DropTable("users"),
-					w.CreateTable(everyType().GetCreateTable()),
+					w.CreateTable(everyDefault().GetCreateTable()),
 					w.UpsertRow("every", []uint32{0, 1, 2, 3, 4}, []*s4qlpb.Value{integer(math.MinInt64), integer(math.MaxInt64), realValue(-math.MaxFloat64), text("é😀"), blob([]byte{})}),
 					w.UpsertRow("every", []uint32{0, 1, 2, 3, 4}, []*s4qlpb.Value{integer(0), integer(-1), realValue(0), text(""), blob([]byte{0})}),
 					w.DeleteRow("every", []*s4qlpb.Value{integer(1)}),
@@ -770,7 +798,7 @@ func commitSamples() []commitSample {
 			},
 			want: []item{
 				{change: dropIndex("users_age")},
-				{change: nullable(createTable("kv", []string{"a", "b", "c"}, []uint32{1, 0}), 2)},
+				{change: withDefault(nullable(createTable("kv", []string{"a", "b", "c"}, []uint32{1, 0}), 2), 2, null())},
 				{change: upsertRows("kv", []uint32{0, 1, 2},
 					[]*s4qlpb.Value{integer(-7), text("ü"), realValue(2.5)},
 					[]*s4qlpb.Value{integer(8), text(""), blob([]byte{0, 0xff})})},
@@ -778,7 +806,7 @@ func commitSamples() []commitSample {
 				{change: upsertRows("kv", []uint32{0, 1}, []*s4qlpb.Value{integer(-7), text("ü")})},
 				{change: deleteRows("kv", []*s4qlpb.Value{text("x"), integer(9)}, []*s4qlpb.Value{text(""), integer(8)})},
 				{change: dropTable("users")},
-				{change: everyType()},
+				{change: everyDefault()},
 				{change: upsertRows("every", []uint32{0, 1, 2, 3, 4},
 					[]*s4qlpb.Value{integer(math.MinInt64), integer(math.MaxInt64), realValue(-math.MaxFloat64), text("é😀"), blob([]byte{})},
 					[]*s4qlpb.Value{integer(0), integer(-1), realValue(0), text(""), blob([]byte{0})})},
@@ -790,6 +818,12 @@ func commitSamples() []commitSample {
 			},
 		},
 	}
+}
+
+// everyDefault is [everyType] with a default for each column but the last, of its type, and one
+// of NULL for the last, which does not take NULL.
+func everyDefault() *s4qlpb.Change {
+	return withDefault(withDefault(withDefault(withDefault(withDefault(everyType(), 0, integer(-1)), 1, integer(0)), 2, realValue(0.5)), 3, text("it's")), 4, null())
 }
 
 // everyType is the create table of a table with a column of every type.
