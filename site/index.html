@@ -294,6 +294,18 @@ h1 .process { font-weight: 400; }
   font-weight: 700;
   line-height: 1.2;
 }
+.seed-btn {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.seed-btn:hover { text-decoration: underline; text-decoration-thickness: 3px; text-underline-offset: 0.25em; }
 
 @media (max-width: 960px) {
   .hero .wrap {
@@ -670,7 +682,7 @@ footer ul {
 
 <header class="top">
   <div class="wrap">
-    <a class="mark" href="#top" aria-label="s4ql, top of page">
+    <a class="mark" href="./" aria-label="s4ql, home">
       <svg id="mark" width="32" height="22" viewBox="0 0 32 22" aria-hidden="true" shape-rendering="crispEdges"></svg>
       <span>s4ql</span>
     </a>
@@ -715,7 +727,7 @@ footer ul {
         <div><dt class="caps">Dialect</dt><dd>A subset of SQLite's</dd></div>
         <div><dt class="caps">Written by</dt><dd>AI agents</dd></div>
         <div><dt class="caps">Tested with</dt><dd>Simulation and SQLite as oracle</dd></div>
-        <div><dt class="caps">Field seed</dt><dd class="seed-echo">0x7334716c</dd></div>
+        <div><dt class="caps">Pattern seed</dt><dd><button class="seed-btn" id="pattern-seed" type="button" aria-label="Pattern seed 0x7334716c. Draw the background from a new seed.">0x7334716c</button></dd></div>
       </dl>
     </aside>
   </div>
@@ -1164,6 +1176,17 @@ footer ul {
   (document.fonts ? document.fonts.ready : Promise.resolve()).then(() => hero.run(true));
   replay.run(false);
   close.run(false);
+
+  // The seed in the rail of facts: a click draws the hero field again from a new seed. Nothing is stored.
+  const seedBtn = document.getElementById("pattern-seed");
+  seedBtn.addEventListener("click", () => {
+    const s = crypto.getRandomValues(new Uint32Array(1))[0] >>> 0;
+    const text = "0x" + s.toString(16).padStart(8, "0");
+    seedBtn.textContent = text;
+    seedBtn.setAttribute("aria-label", "Pattern seed " + text + ". Draw the background from a new seed.");
+    hero.setSeed(s);
+    hero.run(false);
+  });
 
   // The replay strip.
   const form = document.getElementById("replay-form");
