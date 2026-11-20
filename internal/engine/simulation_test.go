@@ -1946,6 +1946,9 @@ func TestSimulation(t *testing.T) {
 			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.25, "fault: write applied after a crash": 0.05,
 			"statements in a transaction": 12, "read-only transactions": 0.9, "transactions committed": 2, "transactions rolled back": 0.8,
 			"transactions not committed": 0.08, "transactions unknown": 0.07, "commits of more than one statement": 0.4, "refused for the type": 0.5,
+			// The rows of several columns in the log, of which the first 1,000 seeds gave 4,591, 715, and
+			// 8,380 in the three workloads on 2026-11-20: a quarter of that in each.
+			"rows of several columns": 1.2,
 		}, 0.15},
 		// A quarter of what the first 1,000 seeds gave on 2026-11-19, with the ends of transactions for
 		// the lease, which only this workload reaches.
@@ -1959,6 +1962,7 @@ func TestSimulation(t *testing.T) {
 			"statements in a transaction": 7, "read-only transactions": 0.7, "transactions committed": 0.7, "transactions rolled back": 0.7,
 			"transactions not committed": 0.04, "commits of more than one statement": 0.08,
 			"transactions ended for the lease": 0.33, "kept transactions ended for the lease": 0.33, "refused for the type": 0.1,
+			"rows of several columns": 0.18,
 		}, 0.15},
 		{"hammer", hammerWorkload, map[string]float64{
 			"succeeded": 12, "SQLite's error": 17, "unknown": 0.4, "skipped": 2.5, "failed: no lease": 2,
@@ -1968,6 +1972,7 @@ func TestSimulation(t *testing.T) {
 			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.7,
 			"statements in a transaction": 24, "read-only transactions": 1.8, "transactions committed": 4, "transactions rolled back": 1.5,
 			"transactions not committed": 0.17, "transactions unknown": 0.12, "commits of more than one statement": 0.6, "refused for the type": 1,
+			"rows of several columns": 2,
 		}, 0.12},
 	} {
 		t.Run(c.name, func(t *testing.T) {
