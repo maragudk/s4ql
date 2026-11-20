@@ -98,51 +98,59 @@ var hammerWorkload = workload{
 // 2026-11-19, when the tables got those types; the other minimums stayed as they were, and the
 // seeds still reach them. The upserts of rows with NULL, and the upserts of NULL into a column that
 // does not take it, which the core refuses, are a quarter of what the seeds reached on 2026-11-20,
-// when the tables got columns that take NULL.
+// when the tables got columns that take NULL. The scans by the primary key, and the scans by a key
+// that pin, that pin to NULL, that bound a descending column, and that are bounded and backward,
+// are a quarter of what the seeds reached on 2026-11-20, when the scans by a key got pins and
+// bounds; the scans of a write transaction then took a part of its gets, which moved the draws
+// after them.
 var (
 	// singleReaches is what the 40 seeds of the default run of [singleWorkload] must reach. It also
 	// has one failed commit, of the two that they reached, which the rule leaves out.
 	singleReaches = map[string]int64{
-		"callers that gave up":          25,
-		"calls with no answer":          11,
-		"commits":                       149,
-		"commits of nothing":            25,
-		"conflicts":                     3,
-		"cut-offs":                      3,
-		"deletes of a blob key":         22,
-		"deletes of a text key":         10,
-		"deletes of the key -0.0":       3,
-		"event catch_up/caught_up":      10,
-		"event commit/committed":        149,
-		"event commit/empty":            25,
-		"event lease/released/released": 20,
-		"event lease/renewed/renewed":   8,
-		"event lease/renewed/unknown":   6,
-		"event lease/taken/taken":       20,
-		"event refusal/refused":         6,
-		"event stop/closed":             20,
-		"failed commits":                1,
-		"indexes created":               26,
-		"indexes dropped":               4,
-		"indexes refused":               13,
-		"lost requests":                 6,
-		"lost responses":                6,
-		"reads":                         286,
-		"reads overtaken by a commit":   5,
-		"reads refused by a clock":      1,
-		"refused reads":                 2,
-		"refused upserts of NULL":       5,
-		"rollbacks":                     20,
-		"scans by an index":             8,
-		"slow ways":                     16,
-		"timeouts that expired":         27,
-		"transactions refused at start": 4,
-		"upserts with NULL":             52,
-		"upserts with a blob key":       35,
-		"upserts with a text key":       37,
-		"upserts with the key -0.0":     7,
-		"writes applied late":           3,
-		"writes stuck":                  21,
+		"bounded scans backward":               1,
+		"bounded scans on a descending column": 1,
+		"callers that gave up":                 25,
+		"calls with no answer":                 11,
+		"commits":                              149,
+		"commits of nothing":                   25,
+		"conflicts":                            3,
+		"cut-offs":                             3,
+		"deletes of a blob key":                22,
+		"deletes of a text key":                10,
+		"deletes of the key -0.0":              3,
+		"event catch_up/caught_up":             10,
+		"event commit/committed":               149,
+		"event commit/empty":                   25,
+		"event lease/released/released":        20,
+		"event lease/renewed/renewed":          8,
+		"event lease/renewed/unknown":          6,
+		"event lease/taken/taken":              20,
+		"event refusal/refused":                6,
+		"event stop/closed":                    20,
+		"failed commits":                       1,
+		"indexes created":                      26,
+		"indexes dropped":                      4,
+		"indexes refused":                      13,
+		"lost requests":                        6,
+		"lost responses":                       6,
+		"pinned scans":                         9,
+		"reads":                                286,
+		"reads overtaken by a commit":          5,
+		"reads refused by a clock":             1,
+		"refused reads":                        2,
+		"refused upserts of NULL":              5,
+		"rollbacks":                            20,
+		"scans by an index":                    8,
+		"scans by the primary key":             39,
+		"slow ways":                            16,
+		"timeouts that expired":                27,
+		"transactions refused at start":        4,
+		"upserts with NULL":                    52,
+		"upserts with a blob key":              35,
+		"upserts with a text key":              37,
+		"upserts with the key -0.0":            7,
+		"writes applied late":                  3,
+		"writes stuck":                         21,
 	}
 
 	// fullReaches is what the 30 seeds of the default run of [fullWorkload] must reach.
@@ -183,6 +191,7 @@ var (
 		"lost responses":                           33,
 		"moves of a clock":                         124,
 		"outages":                                  3,
+		"pinned scans":                             6,
 		"reads":                                    177,
 		"reads refused by a clock":                 7,
 		"refused reads":                            394,
@@ -191,6 +200,7 @@ var (
 		"restarts that recovered from WAL":         5,
 		"rollbacks":                                12,
 		"scans by an index":                        3,
+		"scans by the primary key":                 27,
 		"slow ways":                                69,
 		"stops":                                    4,
 		"timeouts that expired":                    362,
@@ -209,8 +219,12 @@ var (
 	// reads refused by a clock on 2026-11-18, 8 after each caller got a reader of its own, and none
 	// after [core.DB.Reader] got its yield. That is chance and no change of the code: over 200 seeds
 	// the workload reached 88 of them before the readers and 80 after, about 4 in 10 seeds, which is
-	// less than the minimum of 5 that the 10 seeds had.
+	// less than the minimum of 5 that the 10 seeds had. On 2026-11-20 the scans with pins and bounds
+	// moved the draws, and the 30 seeds reached none, so that minimum left the workload; over 200
+	// seeds it then reached 102 of them.
 	hammerReaches = map[string]int64{
+		"bounded scans backward":                     8,
+		"bounded scans on a descending column":       8,
 		"broken reads":                               1,
 		"callers that gave up":                       71,
 		"calls with no answer":                       28,
@@ -242,13 +256,15 @@ var (
 		"lost requests":                              24,
 		"lost responses":                             20,
 		"outages":                                    3,
+		"pinned scans":                               48,
 		"reads":                                      971,
 		"reads overtaken by a commit":                169,
-		"reads refused by a clock":                   4,
 		"refused reads":                              91,
 		"refused upserts of NULL":                    23,
 		"rollbacks":                                  66,
 		"scans by an index":                          32,
+		"scans by the primary key":                   147,
+		"scans pinned to NULL":                       2,
 		"slow ways":                                  47,
 		"timeouts that expired":                      117,
 		"transactions refused at start":              96,
@@ -264,6 +280,8 @@ var (
 	// they reached on 2026-11-19, with the write transactions that an instance ended because it lost its
 	// lease, which only this workload reaches often.
 	idleReaches = map[string]int64{
+		"bounded scans backward":                          1,
+		"bounded scans on a descending column":            1,
 		"broken reads":                                    7,
 		"callers that gave up":                            126,
 		"calls with no answer":                            94,
@@ -299,6 +317,7 @@ var (
 		"lost requests":                                   17,
 		"lost responses":                                  11,
 		"outages":                                         1,
+		"pinned scans":                                    8,
 		"reads":                                           230,
 		"reads overtaken by a commit":                     5,
 		"reads refused by a clock":                        92,
@@ -306,6 +325,7 @@ var (
 		"refused upserts of NULL":                         6,
 		"rollbacks":                                       10,
 		"scans by an index":                               6,
+		"scans by the primary key":                        28,
 		"slow ways":                                       37,
 		"timeouts that expired":                           458,
 		"transactions refused at start":                   272,
@@ -316,6 +336,7 @@ var (
 
 	// lateReaches is what the 10 seeds of the default run of [lateWrites] must reach.
 	lateReaches = map[string]int64{
+		"bounded scans on a descending column":     1,
 		"broken reads":                             14,
 		"callers that gave up":                     192,
 		"calls with no answer":                     79,
@@ -350,6 +371,7 @@ var (
 		"lost requests":                            31,
 		"lost responses":                           24,
 		"outages":                                  2,
+		"pinned scans":                             5,
 		"reads":                                    178,
 		"reads overtaken by a commit":              1,
 		"reads refused by a clock":                 8,
@@ -359,6 +381,7 @@ var (
 		"restarts that recovered from WAL":         2,
 		"rollbacks":                                12,
 		"scans by an index":                        7,
+		"scans by the primary key":                 25,
 		"slow ways":                                132,
 		"timeouts that expired":                    509,
 		"transactions refused at start":            263,
@@ -402,22 +425,29 @@ var markers = map[string]string{
 	"indexes dropped":           "dropped the index ",
 	"indexes refused":           "no index ",
 	"scans by an index":         "by its index ",
-	"lost requests":             "was lost on its way to the store",
-	"lost responses":            "was lost on its way back",
-	"calls with no answer":      "no answer comes",
-	"conflicts":                 "a conflict with another write in flight",
-	"slow ways":                 "is slow on its way",
-	"broken reads":              "whose content breaks off",
-	"cut-offs":                  "cut off for",
-	"outages":                   "unreachable for",
-	"writes stuck":              "is stuck in the network",
-	"writes applied late":       "and is applied",
-	"callers that gave up":      "the caller gives up",
-	"damaged downloads":         "is damaged",
-	"buggify points that fired": " fires",
-	"moves of a clock":          " clock",
-	"crashes":                   " crashes",
-	"timeouts that expired":     " expires",
+	"scans by the primary key":  "by its primary key",
+	// The scans by a key that gave some rows of the table and not all, by what they exercised, and
+	// the pins to NULL that gave rows: see [scanMarks].
+	"pinned scans":                         "[pinned]",
+	"scans pinned to NULL":                 "[pinned to NULL]",
+	"bounded scans on a descending column": "[bounded descending]",
+	"bounded scans backward":               "[bounded backward]",
+	"lost requests":                        "was lost on its way to the store",
+	"lost responses":                       "was lost on its way back",
+	"calls with no answer":                 "no answer comes",
+	"conflicts":                            "a conflict with another write in flight",
+	"slow ways":                            "is slow on its way",
+	"broken reads":                         "whose content breaks off",
+	"cut-offs":                             "cut off for",
+	"outages":                              "unreachable for",
+	"writes stuck":                         "is stuck in the network",
+	"writes applied late":                  "and is applied",
+	"callers that gave up":                 "the caller gives up",
+	"damaged downloads":                    "is damaged",
+	"buggify points that fired":            " fires",
+	"moves of a clock":                     " clock",
+	"crashes":                              " crashes",
+	"timeouts that expired":                " expires",
 }
 
 func (y *tally) add(seed uint64, s simulation) {
@@ -1040,6 +1070,20 @@ var plantedBugs = []plantedBug{
 			w.instances = 1
 		}), "keepIdleTx")),
 		symptoms: []string{"is open and idle, does not serve"},
+	},
+	{
+		bug:      "turnDescBound",
+		name:     "a scan that swaps its bounds on a descending column",
+		workload: plant(calm(singleWorkload), "turnDescBound"),
+		symptoms: []string{"a transaction scanned"},
+	},
+	{
+		// The core then refuses a scan that pins or bounds a primary-key column after those of the
+		// index, as one that reaches beyond the key.
+		bug:      "shortKey",
+		name:     "a scan by an index whose key lacks the primary-key columns that the index does not hold",
+		workload: plant(calm(singleWorkload), "shortKey"),
+		symptoms: []string{"a transaction scanned", "scan by a key: "},
 	},
 }
 

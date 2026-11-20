@@ -41,9 +41,9 @@ import (
 // A create index names an index from a few names in several spellings, or now and then a name of a
 // table, on a table of the sequence, and the columns of its shape, as [Sequence.createIndex] draws
 // them; a drop index names one of those names, or now and then a name of a table; and a create table
-// and a drop table name one of the names of an index now and then. One WHERE in three of a table on
-// which the sequence drew a create index, and one in three of an update or a delete, pins leading columns of the index, as
-// [Sequence.indexConditions] draws them.
+// and a drop table name one of the names of an index now and then. One WHERE of a select in two of a
+// table on which the sequence drew a create index, and one of an update or a delete in three, pins
+// leading columns of the index, as [Sequence.indexConditions] draws them.
 //
 // One value in three of an insert is a plain ? with the value as its argument, nil for NULL, and
 // some calls, as [Sequence.Next] says, have arguments around those that s4ql supports: none for a
@@ -75,9 +75,14 @@ type Sequence struct {
 	heavy bool
 }
 
-// IndexNames of the sequence: the spellings of the names of its indexes.
+// IndexNames of the sequence: the values of the names of its indexes, without their quotes, each
+// once for every spelling that names it, as a path of an index names it.
 func (q *Sequence) IndexNames() []string {
-	return slices.Clone(q.indexes)
+	var names []string
+	for _, raw := range q.indexes {
+		names = append(names, nameOf(raw, 0).Value)
+	}
+	return names
 }
 
 // storedIndexes is the most create indexes of a table that a [Sequence] keeps for its conditions.
@@ -542,11 +547,11 @@ func (q *Sequence) conditions(table stmt.Name) []stmt.Condition {
 
 // createIndex gives the columns of a create index of the name index on table, as
 // [Generator.CreateIndex] gives them: from one to all of the columns of the shape of table, each once,
-// in any order, so that the key is among them now and then, each descending one time in three. One
-// create index in twelve has a name that the shape does not have in place of one of them, and one in
-// forty a second, another than the first, which can be in double quotes, so that SQLite gives `no such column` for the first
-// in the order of the text. The columns are kept for the conditions of a WHERE, as
-// [Sequence.indexConditions] draws them.
+// in any order, so that the key is among them now and then, each descending one time in three. A
+// name that the shape does not have, which can be in double quotes, is added at any place one time in
+// twelve, and one time in forty, so that a few create indexes have two, another than the first, and
+// SQLite gives `no such column` for the first in the order of the text. The columns are kept for the
+// conditions of a WHERE, as [Sequence.indexConditions] draws them.
 func (q *Sequence) createIndex(index, table stmt.Name) []stmt.IndexColumn {
 	r := q.r
 	shape := q.shapeOf(table)

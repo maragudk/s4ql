@@ -44,3 +44,64 @@ Nothing yet.
 ### Future work
 
 - The sequence's index statements and rules, the device of the paths, the model, the plans, the bugs, the golden files, the fuzz targets, and the tallies: the next steps.
+
+## Step 2: Indexes in the sequence, every path, the model, the plan of the cache, a planted bug, and the pins
+
+**Author:** index-checks builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "1. Generated sequences with indexes. [...] 2. Every path gives SQLite's rows. [...] choose and justify a sampling that still reaches every kind of path in every run, proven by tallies [...] 3. The choice against a model. [...] 4. SQLite did what was asked. [...] 5. Planted bugs [...] (a) in the engine's fitting of conditions to an index [...] 9. Tallies."
+**Interpretation:** Make the sequence write slice 9, one device in the engine's tests that runs the paths beside SQLite, a model in `stmttest`, the plan from the engine's tests, the bug in `fit`, and recount every pin that moved.
+**Inferred intent:** The generated checks read through indexes as often as the hand tests, and a wrong rule or a wrong scan cannot pass unseen.
+
+### What I did
+
+- `stmttest.Sequence` (`internal/sql/stmt/stmttest/sequence.go`): a create index in about ten statements and a drop index in 29 (`next`); index names from a pool common to every position of a table and of an index, one of them among the names of a create table and a drop table, and one name of a table among those of a create index and a drop index; `Sequence.createIndex`, the hook `Generator.CreateIndex`, which gives columns of the shape, each once, descending one time in three, and one time in twelve a name that the shape does not have, one in forty a second; `Sequence.indexConditions`, one WHERE in two of a table on which a create index was drawn, which pins leading columns of the index with `=` or IS NULL and bounds the next; a create table makes its name likelier for a create index; `Sequence.Indexed`, which a third of the sequences of `TestDifferential` and `TestConn_differential` call, for more create indexes, of columns without the key, and more such WHERE; `Sequence.IndexNames`.
+- `stmttest` rules (`rule.go`): `ChosenAccess` with `TableIndex` and `Access` (with `Same` and `String`), the model of the rules, written from the roadmap's text and the decisions in the todo; `IndexRule`, SQLite's errors of a create index and a drop index in SQLite's order; `SelectText`. Tests `TestChosenAccess`, `TestIndexRule`, `TestSequence_createIndex`.
+- The device, in `internal/engine/differential_test.go`: `pair.everyPath` runs the WHERE of each select, update, and delete (as `stmttest.SelectOf` gives the select of a change) on the second engine of the pair before the call: by the rules, and by a sample of `candidates`, every path that can serve it (every row, the primary key, each index, each with every number of pins that `engine.Path.Limited` allows, forward and backward, each once by what it reads). Each must give SQLite's rows as a multiset, and a forced path SQLite's `ORDER BY` of its key exactly (`accessKey`, `orderOf`). One in four, and the access of the rules one time in four, go through `core.ReadTx.ScanPlan` outside a transaction (`pair.checkPlan`, `wantPlan`). `pair.bothWays` then runs the call itself by the next of `otherPaths` with the table's index names. `checkChoice` compares `engine.AccessOf` with `stmttest.ChosenAccess` for every WHERE; `reachIndex` checks each create index and drop index against `stmttest.IndexRule` and counts it. The states that the tests compare (`oracle.state`, `instance.state`, `memory.state`, `coreState`) include the indexes.
+- `core.ReadTx.ScanPlan` moved from the core's test file into `index.go`, so that the engine's tests reach it; `engine.Access.Scan`. `TestEngine_rowsRead` checks the plan of each pinned query (`checkPlanOf`).
+- The planted bug `pinByPlace` in `engine.fit`: the pin of the n-th column of a key is looked for among the conditions on the n-th column of the table. The bugs reach `fit` through `reading.bugs`. `TestDifferential_plantedBugs` plants it in both engines of the first 60 sequences, through `differentialFind`, which gives the first difference in place of failing, and `instance.planted`, which makes an internal error an answer.
+- The simulation: every fourth engine of a node reads every row and the others of every second engine force a path of one of the sequence's index names; `tableOf` knows a create index, and a drop index counts as a write of a table that is there.
+- `drivercheck`: `pair.checkQuoted` excuses a create index whose first column that the table does not have, in the order of the text, is in double quotes, which mattn's build with DQS on indexes as a string.
+- Golden plans, by a sub-agent: `TestAccessOf_golden` in `access_test.go`, 7 schemas and 62 plans under `internal/engine/testdata/plans`, `-update`.
+
+### Why
+
+- The sample: `TestDifferential` runs 1,138 WHERE by the device, 443 of them on a table with an index; 349 have more than four candidates and run four at random from the pair's own seed, the others all. Four keeps the package within its budget, and the tallies show every kind reached in every run, with least numbers (a third, or 1) that fail when one stops. The fuzz targets run every candidate.
+- An update and a delete find their rows with the same scan as a select (`build.access`), so the select of their WHERE through every path checks what they find; the call itself then runs by one path in turn on the second engine, which checks the change, and the table after it.
+- `pinByPlace` in place of a first try, `boundPastGap` (the bounds of a later column of the key taken for the column after the pins): with that one, 2 of 60 sequences found it, because the rules pick the primary key at a tie of a range; the pin taken from the wrong column is found by 6 of 60.
+- The sequences of `TestDifferential` grew from 40 statements to 48, so that those of the earlier slices are about as many as before: at 40, least numbers of slices 5 to 8 failed, at 48 four did, which went to a third of their new counts.
+
+### What worked
+
+- No difference from SQLite at the first run with indexes, by any path, in any order, in any plan, and no difference between the model and the engine.
+- `TestChosenAccess`, `TestIndexRule`, and the plans of `TestEngine_rowsRead` passed at once.
+
+### What didn't work
+
+- `TestDifferential` at the first run of the sequence with indexes reached few paths of an index: 375 of 3,600, and 1 with three pins. The share of create indexes, the WHERE of indexes, and `Sequence.Indexed` took it to about 950 of 4,300, with 21 of two pins and 3 of three; most create indexes fail on a table that is not there (640 of 1,700) or a name that is taken.
+- The first simulation with indexes panicked in `tableOf` on a drop index: `panic: a statement of type *stmt.DropIndex`.
+- `TestSimulation`'s idle workload failed `"selects with WHERE of their own that give rows, compared with SQLite"`, 0 of 50 seeds with at least 1 expected: the sequence draws otherwise; recounted in the next step.
+- `drivercheck` failed on `create index "before" on BEGIN (REPLACE asc, """")`, where s4ql gives `no such column: """ - should this be a string literal in single-quotes?` and mattn creates the index; then on a create index whose index already existed, which the first version of the excuse took for the quoted column; then on one whose first missing column in the order of the text is in double quotes and a later one is not, which `stmttest.MissingColumn` gives in another order.
+- `git worktree add` of the base commit into the scratchpad, to measure the time before, was refused by the permission system as a git command outside the worktree; I measured on a detached checkout of the base in this worktree instead.
+- Python one-liners and heredocs of several edits were refused as too complex to verify; scripts in the scratchpad and the Edit tool worked.
+
+### What I learned
+
+- A planted bug in the fitting is found only where an index wins or a path forces it, so it must be in both engines of the pair; a skip of a WHERE whose rules-run fails hid it until only "not supported" was skipped.
+- `strings.EqualFold` folds more than SQLite does (`été` and `ÉTÉ` are two names); `fold` of the tests is `stmt.Name.Fold`.
+
+### What was tricky
+
+- `Path.Limited` with zero pins is the same access as every row, and the candidates are deduplicated by what they read, so "the primary key with 0 pinned" never shows apart.
+
+### What warrants review
+
+- The sampling of four candidates, and whether the least numbers of rare kinds (two pins and a range: 1) are firm enough; the fuzz targets run every candidate.
+- `checkChoice` against `stmttest.ChosenAccess`, whose bounds of equal value are compared by SQLite's comparison, not by identity (the engine keeps the later of two open bounds at one value, the model the first).
+- Pinned numbers that moved, from the test's own output: `excusedArguments` 707 to 822, `excusedArgument` 300 to 326, `excusedType` 576 to 477, `excusedLong` 2 to 1, `excusedLongChange` 4 to 2; least numbers `insert into INT UNIQUE constraint failed` 50 to 14, `select * with NULL ok` 45 to 12, `IS NOT NULL on another column ok` 8 to 2, and `update WHERE that reads a scan to an upper bound ok, rows changed` (1, reached 0 times at 48 statements) removed.
+
+### Future work
+
+- The simulation's integrity checks, tallies, and recounted minimums, the core's bounded scans and its two planted bugs, the fuzz targets, and the driver check's pins: sub-agents, merged in the next step.

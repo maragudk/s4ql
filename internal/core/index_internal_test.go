@@ -33,7 +33,7 @@ func TestTable_checkIndexed(t *testing.T) {
 				return (&Tx{}).forgetIndexes(tb)
 			},
 			"scan statement": func() error {
-				_, _, err := tb.scanSQL(nil, IndexScan{})
+				_, _, err := tb.scanSQL(nil, IndexScan{}, bugs{})
 				return err
 			},
 			"scan": func() error {
@@ -67,7 +67,7 @@ func TestTable_checkIndexed(t *testing.T) {
 		cis, err := tb.createIndexes()
 		is.NotError(t, err)
 		is.Equal(t, 0, len(cis))
-		sql, _, err := tb.scanSQL(nil, IndexScan{})
+		sql, _, err := tb.scanSQL(nil, IndexScan{}, bugs{})
 		is.NotError(t, err)
 		is.Equal(t, `select * from main."t1" indexed by "sqlite_autoindex_t1_1" order by "k"`, sql)
 	})

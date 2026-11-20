@@ -388,6 +388,41 @@ func TestEngine_order(t *testing.T) {
 	})
 }
 
+// checkPlanOf the select src with args on the instance i, outside a transaction: the access that the
+// rules choose for it on the table and the indexes that the core holds, and SQLite's plan for the
+// statement that the cache runs for its scan, which must be the one row that [wantPlan] gives, so that
+// the rows that the cache reads cannot come from a scan of a whole index that SQLite filters.
+func checkPlanOf(t *testing.T, i *instance, src string, args []any) {
+	t.Helper()
+	s, err := stmt.Check(src)
+	is.NotError(t, err)
+	ctx := t.Context()
+	rd, err := i.d.Reader(ctx)
+	is.NotError(t, err)
+	defer func() { is.NotError(t, rd.Close(ctx)) }()
+	r, err := rd.Read(ctx)
+	is.NotError(t, err)
+	var ct *s4qlpb.CreateTable
+	tables, err := r.Tables(ctx)
+	is.NotError(t, err)
+	for _, table := range tables {
+		if fold(table.GetTable()) == s.(*stmt.Select).Table.Fold() {
+			ct = table
+		}
+	}
+	is.True(t, ct != nil, "no table of "+src)
+	cis, err := r.Indexes(ctx, ct.GetTable())
+	is.NotError(t, err)
+	is.NotError(t, r.Close(ctx))
+	a, ok := engine.AccessOf(src, ct, cis, values(args))
+	is.True(t, ok, src)
+	if a.None || a.Point != nil {
+		return
+	}
+	sql, plan := scanPlan(t, i, ct.GetTable(), a)
+	is.EqualSlice(t, []string{wantPlan(a, ct, cis)}, plan, src+", which the cache runs as "+sql)
+}
+
 func TestEngine_rowsRead(t *testing.T) {
 	// read runs src with args on the instance, by the rules and then forward and backward, and gives
 	// the access of its event and the number of rows that it read from the cache, which must be the
@@ -411,6 +446,7 @@ func TestEngine_rowsRead(t *testing.T) {
 			access, read, rows = a, event[engine.AttrRowsRead], event[engine.AttrRows]
 		}
 		i.e.SetPath(engine.Path{})
+		checkPlanOf(t, i, src, args)
 		return access, read, rows
 	}
 	// fill runs the statements of rows on the instance in transactions of 500.

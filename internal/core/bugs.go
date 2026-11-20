@@ -67,6 +67,12 @@ type bugs struct {
 	// keepIdleTx makes the lease task leave a write transaction that is open and idle alone when the
 	// instance has lost its lease, and wait for its end before it takes the lease again.
 	keepIdleTx bool
+	// turnDescBound makes a scan swap its lower and its upper bound on a column that the key of its
+	// index holds in descending order.
+	turnDescBound bool
+	// shortKey makes a scan by an index read by a key of the columns of the index alone, without the
+	// primary-key columns that the index does not hold.
+	shortKey bool
 	// unlockedCounter makes every read add to a counter without synchronisation, which is a data
 	// race.
 	unlockedCounter bool
