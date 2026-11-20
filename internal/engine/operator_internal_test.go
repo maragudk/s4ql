@@ -238,8 +238,9 @@ func (x fakeTx) scan(_ context.Context, name string, s core.IndexScan) iter.Seq2
 			return true
 		}
 		k := row[key[len(s.Equal)]].GetInteger()
-		return !(s.Lower.Value != nil && (k < s.Lower.Value.GetInteger() || k == s.Lower.Value.GetInteger() && s.Lower.Open) ||
-			s.Upper.Value != nil && (k > s.Upper.Value.GetInteger() || k == s.Upper.Value.GetInteger() && s.Upper.Open))
+		below := s.Lower.Value != nil && (k < s.Lower.Value.GetInteger() || k == s.Lower.Value.GetInteger() && s.Lower.Open)
+		above := s.Upper.Value != nil && (k > s.Upper.Value.GetInteger() || k == s.Upper.Value.GetInteger() && s.Upper.Open)
+		return !below && !above
 	}
 	return func(yield func([]*s4qlpb.Value, error) bool) {
 		x.f.scans++
