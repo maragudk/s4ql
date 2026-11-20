@@ -153,7 +153,9 @@ type Generator struct {
 	Columns int
 	// Create, if not nil, gives the columns of a create table of the table with [Generator.Columns], in
 	// place of columns at random: the raw text of the name of each, its type, and whether it is the
-	// primary key, which exactly one of them is. The generator writes NOT NULL as for columns at random.
+	// primary key, which exactly one of them is, and for a column that is not the key whether it is
+	// NOT NULL. The generator writes NOT NULL after such a column if its NotNull says so, and for the
+	// key as for columns at random.
 	Create func(table stmt.Name) []stmt.Column
 	// Insert, if not nil, gives the list of columns of an insert into the table with
 	// [Generator.Columns], as the raw text of each name, or nil for an insert without a list, and its
@@ -163,8 +165,8 @@ type Generator struct {
 	// the raw text of each name, or nil for *, in place of a select list at random.
 	Select func(table stmt.Name) []string
 	// Nulls, if not 0, makes the generator write the forms of slice 6: one column in Nulls of a create
-	// table with [Generator.Columns] that is not the primary key is without NOT NULL, and takes NULL,
-	// and one value in Nulls of an insert that does not come from [Generator.Insert] is NULL, as a
+	// table with [Generator.Columns] that is not the primary key, and that [Generator.Create] does not
+	// give, is without NOT NULL, and takes NULL, and one value in Nulls of an insert that does not come from [Generator.Insert] is NULL, as a
 	// literal or, with [Generator.Parameters], as a ? with a nil argument. With 0 the generator draws as
 	// it did before slice 6.
 	Nulls int
@@ -285,7 +287,8 @@ func (g *Generator) columnType(table stmt.Name) stmt.Type {
 // the primary key at any position, which says NOT NULL too before PRIMARY KEY one time in three and
 // after it one time in three, and every other column NOT NULL, but for one in [Generator.Nulls].
 // Their names are from the pool of [CreateColumn], so that two of them can have one name, which
-// SQLite refuses. [Generator.Create] can give the names, the types, and the key instead.
+// SQLite refuses. [Generator.Create] can give the names, the types, the key, and which other columns
+// are NOT NULL instead.
 func (g *Generator) columns(table stmt.Name) []stmt.Column {
 	var shapes []stmt.Column
 	if g.Create != nil {
@@ -332,7 +335,9 @@ func (g *Generator) columns(table stmt.Name) []stmt.Column {
 			g.keyword("key")
 		}
 		switch {
-		case !c.PrimaryKey && g.Nulls > 0 && g.r.IntN(g.Nulls) == 0:
+		case !c.PrimaryKey && g.Create != nil && !shape.NotNull:
+			// The column takes NULL, as the hook gives it.
+		case !c.PrimaryKey && g.Create == nil && g.Nulls > 0 && g.r.IntN(g.Nulls) == 0:
 			// The column takes NULL.
 		case !c.PrimaryKey:
 			notNull()

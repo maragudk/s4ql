@@ -35,12 +35,13 @@ func TestTypeRule(t *testing.T) {
 		{src: "insert into t (k, b) values ('x', 1.5)", want: "s4ql: not supported: a string literal for the column t.k of type INT", faults: "[a value of another type in the key]"},
 		// NULL, given or for a column left out, in the key or a column that does not take it: SQLite's
 		// NOT NULL comes first, also before a value of another type.
-		{src: "insert into t values ('x', null, 1.5, null)", faults: "[NULL in a column that does not take it]"},
-		{src: "insert into t values ('x', ?, 1.5, null)", args: []any{nil}, faults: "[NULL in a column that does not take it]"},
+		{src: "insert into t values ('x', null, 1.5, null)", faults: "[NULL in the key]"},
+		{src: "insert into t values ('x', ?, 1.5, null)", args: []any{nil}, faults: "[NULL in the key]"},
+		{src: "insert into t values ('x', 1, ?, null)", args: []any{nil}, faults: "[NULL in a column that does not take it]"},
 		{src: "insert into t (a, b) values ('x', 1.5)", faults: "[a column without a value]"},
 		{src: "insert into t (k, a) values (1, 'x')", faults: "[a column without a value]"},
 		{src: "insert into t values (1, 1, null, null)", faults: "[NULL in a column that does not take it a value of another type in another column]"},
-		{src: "insert into t (k, a, c) values (null, 1, 'y')", faults: "[a column without a value NULL in a column that does not take it a value of another type in another column a value of another type in another column]"},
+		{src: "insert into t (k, a, c) values (null, 1, 'y')", faults: "[a column without a value NULL in the key a value of another type in another column a value of another type in another column]"},
 		// SQLite's errors of the names and the number of values come first.
 		{src: "insert into t (x) values (null)", faults: "[a column that the table does not have]"},
 		{src: "insert into t values (null)", faults: "[the wrong number of values]"},

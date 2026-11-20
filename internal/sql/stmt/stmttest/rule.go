@@ -161,12 +161,13 @@ func ValueKind(term stmt.Term, args []any) (kind, what string) {
 // Faults of the insert into the table of the columns, with the arguments args as for [TypeRule], by
 // kind, in the order in which SQLite and s4ql look for them: each name of the list that the table
 // does not have, "a column that the table does not have"; another number of values, "the wrong
-// number of values"; each column that the list leaves out and that does not take NULL, "a column without a
-// value"; each NULL that the insert gives for a column that does not take it, "NULL in a column that
-// does not take it"; and each value of another type than its column, "a value of another type in
-// the key" or "a value of another type in another column", which NULL never is. A column that takes
-// NULL and that the list leaves out gets NULL, which is no fault. A wrong number of values, and a
-// name that the table does not have, leave out the faults of the values.
+// number of values"; each column that the list leaves out and that does not take NULL, "a column
+// without a value"; each NULL that the insert gives for the key, "NULL in the key", or for another
+// column that does not take it, "NULL in a column that does not take it"; and each value of another
+// type than its column, "a value of another type in the key" or "a value of another type in another
+// column", which NULL never is. A column that takes NULL and that the list leaves out gets NULL,
+// which is no fault. A wrong number of values, and a name that the table does not have, leave out
+// the faults of the values.
 func Faults(columns []TableColumn, insert *stmt.Insert, args []any) []string {
 	var faults []string
 	for _, name := range insert.Columns {
@@ -192,7 +193,7 @@ func Faults(columns []TableColumn, insert *stmt.Insert, args []any) []string {
 	}
 	for i, position := range positions {
 		if c := columns[position]; !takesNull(c) && isNull(insert.Values[i], args) {
-			faults = append(faults, "NULL in a column that does not take it")
+			faults = append(faults, map[bool]string{true: "NULL in the key", false: "NULL in a column that does not take it"}[c.PrimaryKey])
 		}
 	}
 	for i, position := range positions {
