@@ -2531,37 +2531,46 @@ func TestTx_tooBig(t *testing.T) {
 	options := core.Options{LengthLimit: limit}
 
 	t.Run("should fail the transaction for a write that fails locally, which is not one that is too big", func(t *testing.T) {
-		// The connections to the cache are closed by the cleanups that are registered later, which
-		// run first.
-		vfs, err := faultvfs.New()
-		is.NotError(t, err)
-		t.Cleanup(func() { is.NotError(t, vfs.Close()) })
-		w := newWorld(t)
-		o := options
-		o.VFS = vfs.Name()
-		d := w.serve(t, "a", o)
-		ctx := t.Context()
-		tx, err := d.Begin(ctx)
-		is.NotError(t, err)
-		is.NotError(t, tx.CreateTable(ctx, typedTable("t", s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_BLOB)))
-		// The rows take more pages than SQLite's page cache holds, so SQLite writes pages to the
-		// write-ahead log before the commit, and every such write fails.
-		vfs.Fail(faultvfs.Fault{Ops: faultvfs.Write, Files: faultvfs.WAL})
-		for i := range 100000 {
-			err = tx.Upsert(ctx, "t", row(i, bytes.Repeat([]byte{1}, 900)))
-			if err != nil {
-				break
+		// Through an upsert, and through an insert, which reports that it inserted nothing.
+		for _, insert := range []bool{false, true} {
+			what := fmt.Sprint("insert ", insert)
+			vfs, err := faultvfs.New()
+			is.NotError(t, err)
+			w := newWorld(t)
+			o := options
+			o.VFS = vfs.Name()
+			d := w.serve(t, "a", o)
+			ctx := t.Context()
+			tx, err := d.Begin(ctx)
+			is.NotError(t, err)
+			is.NotError(t, tx.CreateTable(ctx, typedTable("t", s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_BLOB)))
+			// The rows take more pages than SQLite's page cache holds, so SQLite writes pages to the
+			// write-ahead log before the commit, and every such write fails.
+			vfs.Fail(faultvfs.Fault{Ops: faultvfs.Write, Files: faultvfs.WAL})
+			inserted := true
+			for i := range 100000 {
+				r := row(i, bytes.Repeat([]byte{1}, 900))
+				if insert {
+					inserted, err = tx.Insert(ctx, "t", r)
+				} else {
+					err = tx.Upsert(ctx, "t", r)
+				}
+				if err != nil {
+					break
+				}
 			}
+			is.True(t, vfs.Failures() > 0, "no write failed: "+what)
+			is.Error(t, core.ErrLocal, err, what)
+			is.True(t, !errors.Is(err, core.ErrTooBig), "a local failure is too big: "+what)
+			is.True(t, !insert || !inserted, "an insert that failed inserted")
+			is.True(t, tx.Upsert(ctx, "t", row(-1, []byte{})) != nil, "the transaction goes on: "+what)
+			found, err := tx.Delete(ctx, "t", row(0))
+			is.True(t, err != nil && !found, "the transaction goes on: "+what)
+			vfs.Fail(faultvfs.Fault{})
+			_ = tx.Rollback(ctx)
+			_ = d.Close(ctx)
+			is.NotError(t, vfs.Close(), what)
 		}
-		is.True(t, vfs.Failures() > 0, "no write failed")
-		is.Error(t, core.ErrLocal, err)
-		is.True(t, !errors.Is(err, core.ErrTooBig), "a local failure is too big")
-		is.True(t, tx.Upsert(ctx, "t", row(-1, []byte{})) != nil, "the transaction goes on")
-		found, err := tx.Delete(ctx, "t", row(0))
-		is.True(t, err != nil && !found, "the transaction goes on")
-		vfs.Fail(faultvfs.Fault{})
-		_ = tx.Rollback(ctx)
-		_ = d.Close(ctx)
 	})
 
 	t.Run("should fail the transaction for an upsert or a delete that fails locally, also where it records the keys that it touched", func(t *testing.T) {
