@@ -127,11 +127,13 @@ func (e *Engine) reading(query bool) reading {
 		how.backward = how.path.direction == directionBackward
 	case !query:
 	case e.seeded:
+		how.drawn = true
 		z := e.draws.Add(0x9e3779b97f4a7c15)
 		z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9
 		z = (z ^ (z >> 27)) * 0x94d049bb133111eb
 		how.backward = (z^(z>>31))&1 == 1
 	default:
+		how.drawn = true
 		how.backward = e.host.Uint64()&1 == 1
 	}
 	return how
@@ -579,11 +581,13 @@ func (c *Conn) query(ctx context.Context, r *report, q *Query, args []*s4qlpb.Va
 			r.end(ctx, err)
 		}
 	}()
-	src, err := buildQuery(ctx, c.e.bugs.reader(tx), q, args, c.e.db.lengthLimit(), c.e.reading(true))
+	how := c.e.reading(true)
+	src, err := buildQuery(ctx, c.e.bugs.reader(tx), q, args, c.e.db.lengthLimit(), how)
 	if err != nil {
 		return nil, err
 	}
 	r.reads(tx, src)
+	r.drew(how)
 	rows := &Rows{ctx: ctx, tx: tx, src: src, columns: src.columns(), report: r}
 	built = true
 	c.rows = rows

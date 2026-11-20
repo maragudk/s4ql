@@ -47,10 +47,12 @@ func (h *recorder) Handle(_ context.Context, r slog.Record) error {
 	return nil
 }
 
-// last event, without its duration.
+// last event, without its duration, its SQL text, and the direction that the engine drew from its
+// host, which [newLoggedConn] does not fix.
 func (h *recorder) last() string {
 	e := maps.Clone(h.events[len(h.events)-1])
 	delete(e, attrDuration)
+	delete(e, attrDirection)
 	delete(e, attrSQL)
 	return fmt.Sprint(e)
 }
@@ -330,6 +332,55 @@ func TestEngine_report(t *testing.T) {
 			break
 		}
 		is.Equal(t, "statement.access:index statement.index:i statement.rows_read:1 statement.rows:1 outcome:ok", reading(h.events[0]))
+	})
+
+	t.Run("should give the direction that the engine drew for a query in the event, and none for a statement that drew none", func(t *testing.T) {
+		newTable := func() *fake {
+			return newFake().with("t", []string{"k", "w"}, []int64{1, 10}, []int64{2, 20}).index("i", "t", 1)
+		}
+		// query src on a connection of the engine of the host and the options, and give its event.
+		query := func(h host.Host, o Options, src string) map[string]string {
+			t.Helper()
+			r := &recorder{}
+			o.Logger = slog.New(r)
+			rows, err := newEngine(newTable(), h, o).Conn().Query(t.Context(), src)
+			is.NotError(t, err)
+			for _, err := range rows.All() {
+				is.NotError(t, err)
+			}
+			is.Equal(t, 1, len(r.events))
+			return r.events[0]
+		}
+
+		// The host gives an even number, forward, and then an odd one, backward, for every access.
+		h := &drawHost{Host: host.New(), draws: []uint64{2, 7}}
+		is.Equal(t, "forward", query(h, Options{}, "select * from t")[attrDirection])
+		is.Equal(t, "backward", query(h, Options{}, "select * from t where w = 20")[attrDirection])
+		is.Equal(t, "forward", query(h, Options{}, "select * from t where k = 1")[attrDirection])
+		is.Equal(t, "backward", query(h, Options{}, "select * from t where k is null")[attrDirection])
+
+		// A query of an engine with a seed has the direction of the first draw of the seed.
+		want := map[bool]string{false: "forward", true: "backward"}[newEngine(nil, h, Options{Directions: new(uint64(3))}).reading(true).backward]
+		is.Equal(t, want, query(h, Options{Directions: new(uint64(3))}, "select * from t")[attrDirection])
+
+		// A query whose path forces a direction draws none.
+		_, ok := query(h, Options{path: path{direction: directionBackward}}, "select * from t")[attrDirection]
+		is.True(t, !ok)
+
+		// A select that Exec runs is a query too, and draws.
+		r := &recorder{}
+		_, err := newEngine(newTable(), h, Options{Logger: slog.New(r)}).Conn().Exec(t.Context(), "select * from t")
+		is.NotError(t, err)
+		is.Equal(t, "forward", r.events[0][attrDirection])
+
+		// An update, a delete, and a statement that reads no rows draw none.
+		for _, src := range []string{"update t set w = 30 where k = 1", "delete from t where k = 2", "insert into t values (3, 30)"} {
+			r := &recorder{}
+			_, _ = newLoggedConn(newTable(), bugs{}, r).Exec(t.Context(), src)
+			is.Equal(t, 1, len(r.events), src)
+			_, ok := r.events[0][attrDirection]
+			is.True(t, !ok, src)
+		}
 	})
 }
 

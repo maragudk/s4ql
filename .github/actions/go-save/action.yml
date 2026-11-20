@@ -1,0 +1,20 @@
+name: Save the Go caches
+description: >
+  Saves the Go build cache and the module cache that the action go restored, under its key, on a
+  push to main only. Elsewhere it does nothing.
+
+inputs:
+  save:
+    description: Whether this job saves, such as only the first of several shards that build the same.
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - if: github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.save == 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: |
+          ${{ env.S4QL_GOCACHE }}
+          ${{ env.S4QL_GOMODCACHE }}
+        key: ${{ env.S4QL_GO_CACHE_KEY }}

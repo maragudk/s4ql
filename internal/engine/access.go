@@ -158,19 +158,11 @@ func primaryKey(t *s4qlpb.CreateTable) []int {
 }
 
 // indexKey is the key that a scan by the index ix of the table t reads in the order of, as
-// positions of the columns of t: the columns of the index, and then the columns of the primary key
-// that the index does not hold, in key order, as SQLite stores an index of a table without a rowid.
+// positions of the columns of t, in the order of [core.IndexKey], which defines it.
 func indexKey(t *s4qlpb.CreateTable, ix *s4qlpb.CreateIndex) []int {
 	var key []int
-	held := make([]bool, len(t.GetColumns()))
-	for _, c := range ix.GetColumns() {
-		key = append(key, int(c.GetColumn()))
-		held[c.GetColumn()] = true
-	}
-	for _, position := range t.GetPrimaryKey() {
-		if !held[position] {
-			key = append(key, int(position))
-		}
+	for _, c := range core.IndexKey(t, ix) {
+		key = append(key, c.Position)
 	}
 	return key
 }
@@ -318,6 +310,9 @@ func forcedAccess(t *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, conditio
 type reading struct {
 	path     path
 	backward bool
+	// drawn is whether the engine drew backward, which it does for a query whose path forces no
+	// direction.
+	drawn bool
 	// bugs planted in the choice of the access, for the tests of this package.
 	bugs bugs
 }
