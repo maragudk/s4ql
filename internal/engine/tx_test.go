@@ -139,6 +139,7 @@ const (
 	textT   = "create table tt (v text primary key) strict, without rowid"
 	realT   = "create table rt (v real primary key) strict, without rowid"
 	blobT   = "create table bt (v blob primary key) strict, without rowid"
+	tn      = "create table n (k int primary key, r real, s text not null) strict, without rowid"
 )
 
 func TestConn_Begin(t *testing.T) {
@@ -307,6 +308,39 @@ func TestConn_Begin(t *testing.T) {
 				{src: "select v1, x from t3", want: "1/1: no such column: x"},
 			},
 			want: "t3 (v1 INT, v2 TEXT, v3 REAL): 1,\"a\",real 1.5\n"},
+		{name: "should commit NULL, through the literal, an argument, and a column left out, and keep the transaction open after NULL in a column that does not take it",
+			setup: []string{tn}, commit: true,
+			steps: []txStep{
+				{src: "insert into n values (1, null, 'a')"},
+				{src: "insert into n values (?, ?, ?)", args: []any{2, nil, "b"}},
+				{src: "insert into n (k, s) values (3, 'c')"},
+				{src: "insert into n values (4, 1.5, null)", want: "19/1299: NOT NULL constraint failed: n.s"},
+				{src: "insert into n (r, s) values (?, ?)", args: []any{nil, "d"}, want: "19/1299: NOT NULL constraint failed: n.k"},
+				{src: "insert into n (k, r) values (?, ?)", args: []any{4, 2.5}, want: "19/1299: NOT NULL constraint failed: n.s"},
+				{src: "insert into n (k, s) values (4, 'd')"},
+				{src: "create table m (a text, k int primary key) strict, without rowid"},
+				{src: "insert into m (k) values (1)"},
+				{src: "select * from n", want: `rows 1,null,"a" 2,null,"b" 3,null,"c" 4,null,"d"`},
+				{src: "select a, k from m", want: `rows null,1`},
+			},
+			want: "m (a TEXT NULL, k INT): null,1\nn (k INT, r REAL NULL, s TEXT): 1,null,\"a\" 2,null,\"b\" 3,null,\"c\" 4,null,\"d\"\n"},
+		{name: "should undo NULL and a table whose columns take NULL at a roll back",
+			setup: []string{tn, "insert into n values (1, null, 'a')"},
+			steps: []txStep{
+				{src: "insert into n (k, s) values (2, 'b')"},
+				{src: "create table m (a text, k int primary key) strict, without rowid"},
+				{src: "insert into m values (?, ?)", args: []any{nil, 1}},
+			},
+			want: "n (k INT, r REAL NULL, s TEXT): 1,null,\"a\"\n"},
+		{name: "should refuse NULL in a read-only transaction with SQLite's error, before NOT NULL",
+			setup: []string{tn}, readOnly: true, commit: true,
+			steps: []txStep{
+				{src: "insert into n values (1, null, 'a')", want: "8/8: attempt to write a readonly database"},
+				{src: "insert into n values (?, ?, ?)", args: []any{nil, nil, nil}, want: "8/8: attempt to write a readonly database"},
+				{src: "insert into n (r) values (null)", want: "8/8: attempt to write a readonly database"},
+				{src: "create table m (a text, k int primary key) strict, without rowid", want: "8/8: attempt to write a readonly database"},
+			},
+			want: "n (k INT, r REAL NULL, s TEXT): \n"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
