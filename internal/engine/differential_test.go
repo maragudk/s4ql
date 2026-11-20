@@ -913,7 +913,7 @@ func (p *pair) reach(c stmttest.Call, got answer) {
 // literal by its kind, as [stmttest.LiteralKind] names it, a text or a blob of more than 900 bytes,
 // and, for an insert into a table that SQLite has, the outcome: for one that SQLite prepares by the
 // type of the key column, also for -0.0 in the key that meets a key that exists; what it reaches of
-// NULL, as [reachNulls] says; and for a table of several columns by the form of the insert, without
+// NULL, as [stmttest.NullCases] gives it; and for a table of several columns by the form of the insert, without
 // a list or with a list in the order of the table or in another, and by its faults, as
 // [stmttest.Faults] gives them, one or two. For a create table that SQLite prepares, the outcome by
 // its number of columns, by the position of its key, for one with two columns of a type and one of
@@ -1056,7 +1056,9 @@ func reachInsert(t testing.TB, o *oracle, s *stmt.Insert, c stmttest.Call, outco
 		}
 	}
 	if !refused {
-		reachNulls(columns, s, args, outcome, count)
+		for _, what := range stmttest.NullCases(columns, s, args) {
+			count(what + " " + outcome)
+		}
 	}
 	if len(columns) < 2 || refused {
 		return
@@ -1075,44 +1077,6 @@ func reachInsert(t testing.TB, o *oracle, s *stmt.Insert, c stmttest.Call, outco
 		count("insert with " + faults[0] + ": " + outcome)
 	default:
 		count("insert with two faults: " + outcome)
-	}
-}
-
-// reachNulls counts with count what the insert s, with the arguments args as SQLite binds them,
-// into the table of the columns, whose outcome is outcome, reaches of slice 6: each NULL that it
-// gives, by whether it is a literal or an argument and whether its column is the key, takes NULL, or
-// does not; a column that takes NULL and that its list leaves out; and a NULL that it gives beside a
-// value of another type than its column, as [stmttest.Faults] finds it. It counts nothing for an
-// insert that SQLite refuses for its names or its number of values, or with another number of
-// arguments than parameters.
-func reachNulls(columns []stmttest.TableColumn, s *stmt.Insert, args []any, outcome string, count func(string)) {
-	positions, ok := stmttest.Positions(columns, s)
-	if !ok || len(args) != s.Parameters() {
-		return
-	}
-	given := false
-	for i, position := range positions {
-		if kind, _ := stmttest.ValueKind(s.Values[i], args); kind != "null" {
-			continue
-		}
-		given = true
-		into := "a column that takes NULL"
-		switch c := columns[position]; {
-		case c.PrimaryKey:
-			into = "the key"
-		case !c.Nullable:
-			into = "a column that does not take NULL"
-		}
-		count(fmt.Sprint("NULL ", map[bool]string{true: "argument", false: "literal"}[s.Values[i].Parameter > 0], " into ", into, " ", outcome))
-	}
-	for position, c := range columns {
-		if c.Nullable && !slices.Contains(positions, position) {
-			count("insert that leaves out a column that takes NULL " + outcome)
-			break
-		}
-	}
-	if given && slices.ContainsFunc(stmttest.Faults(columns, s, args), func(f string) bool { return strings.HasPrefix(f, "a value of another type") }) {
-		count("insert of NULL beside a value of another type " + outcome)
 	}
 }
 

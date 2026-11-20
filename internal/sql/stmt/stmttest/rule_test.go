@@ -56,6 +56,30 @@ func TestTypeRule(t *testing.T) {
 		})
 	}
 
+	t.Run("should give the cases of NULL that an insert reaches", func(t *testing.T) {
+		for _, c := range []struct {
+			src  string
+			args []any
+			want string
+		}{
+			{src: "insert into t values ('x', 1, 1.5, x'01')", want: "[]"},
+			{src: "insert into t values (null, 1, 1.5, ?)", args: []any{nil}, want: "[NULL literal into a column that takes NULL NULL argument into a column that takes NULL]"},
+			{src: "insert into t (k, b) values (1, 1.5)", want: "[insert that leaves out a column that takes NULL]"},
+			{src: "insert into t (b, k, c) values (?, null, x'01')", args: []any{nil}, want: "[NULL argument into a column that does not take NULL NULL literal into the key insert that leaves out a column that takes NULL]"},
+			{src: "insert into t values (null, 1, 1, x'01')", want: "[NULL literal into a column that takes NULL insert of NULL beside a value of another type]"},
+			{src: "insert into t values (1, 1, null, x'01')", want: "[NULL literal into a column that does not take NULL insert of NULL beside a value of another type]"},
+			// SQLite's errors of the names and the number of values come first, and so does the error of
+			// the number of arguments.
+			{src: "insert into t (x) values (null)", want: "[]"},
+			{src: "insert into t values (null)", want: "[]"},
+			{src: "insert into t values (?, 1, 1.5, null)", want: "[]"},
+		} {
+			s, err := stmt.Check(c.src)
+			is.NotError(t, err)
+			is.Equal(t, c.want, fmt.Sprint(stmttest.NullCases(columns, s.(*stmt.Insert), c.args)), c.src)
+		}
+	})
+
 	t.Run("should take NULL for no other type than any column, as a literal and as a nil argument", func(t *testing.T) {
 		s, err := stmt.Check("insert into t values (null, ?)")
 		is.NotError(t, err)

@@ -3,6 +3,8 @@ package stmttest
 import (
 	"fmt"
 	"reflect"
+	"slices"
+	"strings"
 
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
@@ -203,4 +205,44 @@ func Faults(columns []TableColumn, insert *stmt.Insert, args []any) []string {
 		}
 	}
 	return faults
+}
+
+// NullCases of the insert into the table of the columns, with the arguments args as for [TypeRule],
+// for a count of what a test reaches of NULL: each NULL that the insert gives, in the order of its
+// values, as "NULL literal into" or "NULL argument into" and "the key", "a column that takes NULL",
+// or "a column that does not take NULL"; "insert that leaves out a column that takes NULL" if its
+// list leaves one out; and "insert of NULL beside a value of another type" if it gives NULL and a
+// value of another type than its column, as [Faults] finds it. It is nil for an insert that SQLite
+// refuses for its names or its number of values, and for another number of arguments than
+// parameters.
+func NullCases(columns []TableColumn, insert *stmt.Insert, args []any) []string {
+	positions, ok := Positions(columns, insert)
+	if !ok || len(args) != insert.Parameters() {
+		return nil
+	}
+	var cases []string
+	for i, position := range positions {
+		if !isNull(insert.Values[i], args) {
+			continue
+		}
+		into := "a column that takes NULL"
+		switch c := columns[position]; {
+		case c.PrimaryKey:
+			into = "the key"
+		case !takesNull(c):
+			into = "a column that does not take NULL"
+		}
+		cases = append(cases, fmt.Sprint("NULL ", map[bool]string{true: "argument", false: "literal"}[insert.Values[i].Parameter > 0], " into ", into))
+	}
+	given := len(cases) > 0
+	for position, i := range valuesOf(columns, positions) {
+		if i < 0 && takesNull(columns[position]) {
+			cases = append(cases, "insert that leaves out a column that takes NULL")
+			break
+		}
+	}
+	if given && slices.ContainsFunc(Faults(columns, insert, args), func(f string) bool { return strings.HasPrefix(f, "a value of another type") }) {
+		cases = append(cases, "insert of NULL beside a value of another type")
+	}
+	return cases
 }
