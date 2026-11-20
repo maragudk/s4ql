@@ -277,6 +277,13 @@ func (c *Conn) begin(ctx context.Context) (writeTx, error) {
 // row by row, with `string or blob too big` for a row that is longer than the limit and with
 // SQLite's error of a key that exists, for an update that gives a row the key of another.
 //
+// A create table with IF NOT EXISTS whose name a table has, a create index with IF NOT EXISTS whose
+// name an index has, a drop table with IF EXISTS whose name no table has, and a drop index with IF
+// EXISTS whose name no index has, does nothing, as SQLite does: it writes nothing, is not annotated,
+// and succeeds also in a read-only transaction. A create index gives SQLite's errors of its table
+// and of a table of its name first, and a create table that of an index of its name; see
+// [buildSink].
+//
 // In a transaction that spans statements, the statement then fails with the error of ctx if ctx has
 // ended, with the refusal of a statement of its own if the instance does not serve now, and with
 // [ErrRowsOpen] while the rows of an earlier query of the connection are open. A statement that
