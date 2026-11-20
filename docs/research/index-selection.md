@@ -149,7 +149,7 @@ The cache then runs `select ... from t indexed by i where <bounds> order by <key
 
 For goqite, rule 4 alone picks its index. With an added `(queue, timeout)` index, rule 5 keeps goqite's index, where SQLite would take the other.
 
-Tied rows still have to vary (spec, "Unspecified row order varies"). When the index gives the order, a backward scan reverses the `order by` too, so it does not vary ties. The variation has to come from the key columns after the `order by` columns. SQLite can sort that last part in blocks (`USE TEMP B-TREE FOR LAST TERM OF ORDER BY` for `order by priority desc, created, id desc`, run), or the engine can reverse each tied group. Either way, only one group is held at a time. This is decided when slice 12 meets indexes.
+Tied rows still have to vary (spec, "Unspecified row order varies"). When the index gives the order, a backward scan reverses the `order by` too, so it does not vary ties. The variation has to come from the key columns after the `order by` columns. SQLite can sort that last part in blocks (`USE TEMP B-TREE FOR LAST TERM OF ORDER BY` for `order by priority desc, created, id desc`, run), or the engine can reverse each tied group. Either way, only one group is held at a time. This is decided when slice 13 meets indexes.
 
 ### The bad cases of rules
 
@@ -201,4 +201,4 @@ Free to change later:
 - `internal/sqlite/options.h`
 - `internal/engine/operator.go` (`keyAccess`), `internal/engine/telemetry.go`, `internal/core/read.go` (`ScanRange`), `internal/core/cache.go` (`conn.scan`)
 - `/Volumes/990/go/mod/maragu.dev/goqite@v0.4.0/goqite.go` and `schema_sqlite.sql`
-- `docs/spec.md`, `docs/roadmap.md` (slices 7, 8, 11, 12), `docs/research/glue-on-s4ql.md`
+- `docs/spec.md`, `docs/roadmap.md` (slices 7, 8, 12, 13), `docs/research/glue-on-s4ql.md`

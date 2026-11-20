@@ -21,6 +21,7 @@ import (
 	"maragu.dev/s4ql/internal/sql/parsetest"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
+	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 	"maragu.dev/s4ql/internal/sql/token"
 	"maragu.dev/s4ql/internal/sqlite"
 )
@@ -440,7 +441,7 @@ var checkCases = []checkCase{
 	// Syntax errors.
 	{name: "syntax error", src: "selec * from t", err: `near "selec": syntax error`},
 	{name: "incomplete input", src: "create table t1 (v1 int primary key) strict, without", err: "incomplete input"},
-	{name: "syntax error in a statement that is not supported", src: "update t set v = 1 where", err: "incomplete input"},
+	{name: "syntax error in a statement that is not supported", src: "create view v as select 1 + where", err: `near "where": syntax error`},
 	{name: "syntax error after a statement that is not supported", src: "create table t (v1 int primary key) strict without rowid", err: `near "without": syntax error`},
 	{name: "unrecognized token", src: "insert into t (v) values (1_)", err: `unrecognized token: "1_"`},
 
@@ -453,7 +454,6 @@ var checkCases = []checkCase{
 	{name: "the two tokens of /* at the end", src: "drop table t; /*", err: "s4ql: not supported: second statement (at offset 14)"},
 
 	// Commands that are not supported.
-	{name: "update", src: "update t set v = 1", err: "s4ql: not supported: UPDATE (at offset 0)"},
 	{name: "begin", src: "begin", err: "s4ql: not supported: BEGIN (at offset 0)"},
 	{name: "create view", src: "create view v as select 1", err: "s4ql: not supported: CREATE VIEW (at offset 0)"},
 	{name: "explain", src: "explain select * from t", err: "s4ql: not supported: EXPLAIN (at offset 0)"},
@@ -1012,13 +1012,155 @@ var checkCases = []checkCase{
 	{name: "a where in a subquery in FROM", src: "select * from (select * from u where v = 1)", err: "s4ql: not supported: subquery in FROM (at offset 14)"},
 	{name: "a where in an insert", src: "insert into t select * from u where v = 1", err: "s4ql: not supported: INSERT with SELECT (at offset 14)"},
 	{name: "a where in create table as", src: "create table t as select * from u where v = 1", err: "s4ql: not supported: CREATE TABLE AS (at offset 15)"},
-	{name: "a where in an update", src: "update t set v = 1 where v = 1", err: "s4ql: not supported: UPDATE (at offset 0)"},
-	{name: "a where in a delete", src: "delete from t where v = 1", err: "s4ql: not supported: DELETE (at offset 0)"},
+
+	// Slice 8: UPDATE and DELETE.
+	{name: "update, as the roadmap writes it", src: "update t1 set v2 = 'b', v3 = 2.5 where v1 = 1",
+		want: &stmt.Update{Span: stmt.Span{Start: 0, End: 45}, Table: name("t1", "t1", 7),
+			Set:   []stmt.Assignment{set(name("v2", "v2", 14), lit(stmt.Text("b"), 19, 22)), set(name("v3", "v3", 24), lit(stmt.Real(2.5), 29, 32))},
+			Where: []stmt.Condition{cond(name("v1", "v1", 39), stmt.OpEqual, lit(stmt.Integer(1), 44, 45))}}},
+	{name: "update of null without where, as the roadmap writes it", src: "update t1 set v2 = null",
+		want: &stmt.Update{Span: stmt.Span{Start: 0, End: 23}, Table: name("t1", "t1", 7), Set: []stmt.Assignment{set(name("v2", "v2", 14), lit(stmt.Null{}, 19, 23))}}},
+	{name: "delete, as the roadmap writes it", src: "delete from t1 where v1 >= 10",
+		want: &stmt.Delete{Span: stmt.Span{Start: 0, End: 29}, Table: name("t1", "t1", 12), Where: []stmt.Condition{cond(name("v1", "v1", 21), stmt.OpGreaterOrEqual, lit(stmt.Integer(10), 27, 29))}}},
+	{name: "delete without where, as the roadmap writes it", src: "delete from t1",
+		want: &stmt.Delete{Span: stmt.Span{Start: 0, End: 14}, Table: name("t1", "t1", 12)}},
+	{name: "update with parameters, as the roadmap writes it", src: "update t1 set v2 = ? where v1 = ?",
+		want: &stmt.Update{Span: stmt.Span{Start: 0, End: 33}, Table: name("t1", "t1", 7), Set: []stmt.Assignment{set(name("v2", "v2", 14), param(1, 19))},
+			Where: []stmt.Condition{cond(name("v1", "v1", 27), stmt.OpEqual, param(2, 32))}}},
+	{name: "parameters of an update, numbered in the order of the text, those of set first", src: "update t set a = ?, b = 1, c = ? where d = ? and e is null and f < ?",
+		want: &stmt.Update{Span: stmt.Span{Start: 0, End: 68}, Table: name("t", "t", 7),
+			Set: []stmt.Assignment{set(name("a", "a", 13), param(1, 17)), set(name("b", "b", 20), lit(stmt.Integer(1), 24, 25)), set(name("c", "c", 27), param(2, 31))},
+			Where: []stmt.Condition{cond(name("d", "d", 39), stmt.OpEqual, param(3, 43)), cond(name("e", "e", 49), stmt.OpIsNull, stmt.Term{}),
+				cond(name("f", "f", 63), stmt.OpLess, param(4, 67))}}},
+	{name: "update with keywords in upper case and a semicolon", src: "UPDATE T SET V = X'01' WHERE V IS NOT NULL;",
+		want: &stmt.Update{Span: stmt.Span{Start: 0, End: 43}, Table: name("T", "T", 7), Set: []stmt.Assignment{set(name("V", "V", 13), lit(stmt.Blob{1}, 17, 22))},
+			Where: []stmt.Condition{cond(name("V", "V", 29), stmt.OpIsNotNull, stmt.Term{})}}},
+	{name: "delete with parameters", src: "delete from t where a = ? and b <> ?",
+		want: &stmt.Delete{Span: stmt.Span{Start: 0, End: 36}, Table: name("t", "t", 12),
+			Where: []stmt.Condition{cond(name("a", "a", 20), stmt.OpEqual, param(1, 24)), cond(name("b", "b", 30), stmt.OpNotEqual, param(2, 35))}}},
+	{name: "update with literals of every form", src: "update t set a = -1, b = - 7, c = .5e1, d = 9223372036854775807, e = -9223372036854775808, f = ''''",
+		want: &stmt.Update{Span: stmt.Span{Start: 0, End: 99}, Table: name("t", "t", 7), Set: []stmt.Assignment{
+			set(name("a", "a", 13), lit(stmt.Integer(-1), 17, 19)), set(name("b", "b", 21), lit(stmt.Integer(-7), 25, 28)),
+			set(name("c", "c", 30), lit(stmt.Real(5), 34, 38)), set(name("d", "d", 40), lit(stmt.Integer(math.MaxInt64), 44, 63)),
+			set(name("e", "e", 65), lit(stmt.Integer(math.MinInt64), 69, 89)), set(name("f", "f", 91), lit(stmt.Text("'"), 95, 99))}}},
+	{name: "update with comments in every gap", src: "/*a*/update/*b*/t/*c*/set/*d*/v/*e*/=/*f*/1/*g*/,--h\nw=2/*i*/where/*j*/v=1/*k*/;--l",
+		want: &stmt.Update{Span: stmt.Span{Start: 5, End: 80}, Table: name("t", "t", 16),
+			Set:   []stmt.Assignment{set(name("v", "v", 30), lit(stmt.Integer(1), 42, 43)), set(name("w", "w", 53), lit(stmt.Integer(2), 55, 56))},
+			Where: []stmt.Condition{cond(name("v", "v", 71), stmt.OpEqual, lit(stmt.Integer(1), 73, 74))}}},
+	{name: "delete with comments in every gap", src: "delete/**/from/**/t/**/where/**/v/**/is/**/null--x",
+		want: &stmt.Delete{Span: stmt.Span{Start: 0, End: 47}, Table: name("t", "t", 18), Where: []stmt.Condition{cond(name("v", "v", 32), stmt.OpIsNull, stmt.Term{})}}},
+	{name: "update of a table and columns named by keywords", src: "update abort set key = 1 where abort = 1",
+		want: &stmt.Update{Span: stmt.Span{Start: 0, End: 40}, Table: name("abort", "abort", 7), Set: []stmt.Assignment{set(name("key", "key", 17), lit(stmt.Integer(1), 23, 24))},
+			Where: []stmt.Condition{cond(name("abort", "abort", 31), stmt.OpEqual, lit(stmt.Integer(1), 39, 40))}}},
+	{name: "delete of a table named by a keyword", src: "delete from abort where key = 1",
+		want: &stmt.Delete{Span: stmt.Span{Start: 0, End: 31}, Table: name("abort", "abort", 12), Where: []stmt.Condition{cond(name("key", "key", 24), stmt.OpEqual, lit(stmt.Integer(1), 30, 31))}}},
+	{name: "update with names in double quotes", src: `update "a b" set "x""y" = 1 where "x""y" = 2`,
+		want: &stmt.Update{Span: stmt.Span{Start: 0, End: 44}, Table: name(`"a b"`, "a b", 7), Set: []stmt.Assignment{set(name(`"x""y"`, `x"y`, 17), lit(stmt.Integer(1), 26, 27))},
+			Where: []stmt.Condition{cond(name(`"x""y"`, `x"y`, 34), stmt.OpEqual, lit(stmt.Integer(2), 43, 44))}}},
+	{name: "update of the column of its where", src: "update t set v = 1 where v = 2",
+		want: &stmt.Update{Span: stmt.Span{Start: 0, End: 30}, Table: name("t", "t", 7), Set: []stmt.Assignment{set(name("v", "v", 13), lit(stmt.Integer(1), 17, 18))},
+			Where: []stmt.Condition{cond(name("v", "v", 25), stmt.OpEqual, lit(stmt.Integer(2), 29, 30))}}},
+	{name: "update of columns named rowid, oid, and _rowid_", src: "update t set rowid = 1, oid = 2, _rowid_ = 3",
+		want: &stmt.Update{Span: stmt.Span{Start: 0, End: 44}, Table: name("t", "t", 7), Set: []stmt.Assignment{
+			set(name("rowid", "rowid", 13), lit(stmt.Integer(1), 21, 22)), set(name("oid", "oid", 24), lit(stmt.Integer(2), 30, 31)),
+			set(name("_rowid_", "_rowid_", 33), lit(stmt.Integer(3), 43, 44))}}},
+	{name: "update of a column named true", src: "update t set true = 1",
+		want: &stmt.Update{Span: stmt.Span{Start: 0, End: 21}, Table: name("t", "t", 7), Set: []stmt.Assignment{set(name("true", "true", 13), lit(stmt.Integer(1), 20, 21))}}},
+	{name: "update after empty statements", src: ";; update t set v = 1;",
+		want: &stmt.Update{Span: stmt.Span{Start: 3, End: 22}, Table: name("t", "t", 10), Set: []stmt.Assignment{set(name("v", "v", 16), lit(stmt.Integer(1), 20, 21))}}},
+	{name: "delete with a comparison with null", src: "delete from t where v = null and w is not null",
+		want: &stmt.Delete{Span: stmt.Span{Start: 0, End: 46}, Table: name("t", "t", 12),
+			Where: []stmt.Condition{cond(name("v", "v", 20), stmt.OpEqual, lit(stmt.Null{}, 24, 28)), cond(name("w", "w", 33), stmt.OpIsNotNull, stmt.Term{})}}},
+	{name: "an assignment with ==, which SQLite reads as =", src: "update t set v == 1",
+		want: &stmt.Update{Span: stmt.Span{Start: 0, End: 19}, Table: name("t", "t", 7), Set: []stmt.Assignment{set(name("v", "v", 13), lit(stmt.Integer(1), 18, 19))}}},
+	{name: "an assignment with <>", src: "update t set v <> 1", err: `near "<>": syntax error`},
+	{name: "an assignment of default", src: "update t set v = default", err: `near "default": syntax error`},
+	{name: "a column twice in set", src: "update t set v = 1, v = 2", err: "s4ql: not supported: column named twice (at offset 20)"},
+	{name: "a column twice in set, in another case", src: "update t set v = 1, w = 2, V = 3", err: "s4ql: not supported: column named twice (at offset 27)"},
+	{name: "a column twice in set, once in double quotes", src: `update t set "v" = 1, v = 2`, err: "s4ql: not supported: column named twice (at offset 22)"},
+	{name: "an expression in set", src: "update t set v = v + 1", err: "s4ql: not supported: binary operator (at offset 17)"},
+	{name: "a column as the value in set", src: "update t set v = w", err: "s4ql: not supported: column reference (at offset 17)"},
+	{name: "a name in double quotes as the value in set", src: `update t set v = "a"`, err: "s4ql: not supported: column reference (at offset 17)"},
+	{name: "a value in parentheses in set", src: "update t set v = (1)", err: "s4ql: not supported: parentheses (at offset 17)"},
+	{name: "a function in set", src: "update t set v = abs(1)", err: "s4ql: not supported: function call (at offset 17)"},
+	{name: "a subquery in set", src: "update t set v = (select 1)", err: "s4ql: not supported: subquery (at offset 17)"},
+	{name: "a plus sign in set", src: "update t set v = +1", err: "s4ql: not supported: + sign (at offset 17)"},
+	{name: "a numbered parameter in set", src: "update t set v = ?1", err: "s4ql: not supported: numbered parameter (at offset 17)"},
+	{name: "a named parameter in set", src: "update t set v = :a", err: "s4ql: not supported: named parameter (at offset 17)"},
+	{name: "a parameter after a sign in set", src: "update t set v = -?", err: "s4ql: not supported: parameter after a sign (at offset 18)"},
+	{name: "true in set", src: "update t set v = true", err: "s4ql: not supported: TRUE or FALSE (at offset 17)"},
+	{name: "a hex literal in set", src: "update t set v = 0x10", err: "s4ql: not supported: hex literal (at offset 17)"},
+	{name: "an infinite real in set", src: "update t set v = -1e999", err: "s4ql: not supported: infinite real number (at offset 18)"},
+	{name: "the current time in set", src: "update t set v = current_time", err: "s4ql: not supported: current date or time (at offset 17)"},
+	{name: "null after a sign in set", src: "update t set v = -null", err: "s4ql: not supported: NULL after a sign (at offset 18)"},
+	{name: "returning after set", src: "update t set v = 1 returning *", err: "s4ql: not supported: RETURNING clause (at offset 19)"},
+	{name: "returning after the where of an update", src: "update t set v = 1 where v = 1 returning v", err: "s4ql: not supported: RETURNING clause (at offset 31)"},
+	{name: "returning after a delete", src: "delete from t returning *", err: "s4ql: not supported: RETURNING clause (at offset 14)"},
+	{name: "returning after the where of a delete", src: "delete from t where v = 1 returning *", err: "s4ql: not supported: RETURNING clause (at offset 26)"},
+	{name: "update from", src: "update t set v = 1 from u", err: "s4ql: not supported: FROM clause (at offset 19)"},
+	{name: "update from with a column of the other table", src: "update t set v = u.v from u where t.w = u.w", err: "s4ql: not supported: column reference (at offset 17)"},
+	{name: "update from with a literal and where", src: "update t set v = 1 from u where w = 1", err: "s4ql: not supported: FROM clause (at offset 19)"},
+	{name: "set of a list of columns", src: "update t set (v, w) = (1, 2)", err: "s4ql: not supported: SET of a list of columns (at offset 13)"},
+	{name: "set of a list of one column", src: "update t set (v) = 1", err: "s4ql: not supported: SET of a list of columns (at offset 13)"},
+	{name: "set of a list of columns after a column", src: "update t set v = 1, (w, x) = (2, 3)", err: "s4ql: not supported: SET of a list of columns (at offset 20)"},
+	{name: "update or replace", src: "update or replace t set v = 1", err: "s4ql: not supported: UPDATE OR (at offset 7)"},
+	{name: "update or ignore", src: "update or ignore t set v = 1", err: "s4ql: not supported: UPDATE OR (at offset 7)"},
+	{name: "update or rollback", src: "update or rollback t set v = 1", err: "s4ql: not supported: UPDATE OR (at offset 7)"},
+	{name: "update or abort", src: "update or abort t set v = 1", err: "s4ql: not supported: UPDATE OR (at offset 7)"},
+	{name: "update or fail", src: "update or fail t set v = 1", err: "s4ql: not supported: UPDATE OR (at offset 7)"},
+	{name: "an alias in an update", src: "update t as u set v = 1", err: "s4ql: not supported: alias (at offset 9)"},
+	{name: "an alias in a delete", src: "delete from t as u where u.v = 1", err: "s4ql: not supported: alias (at offset 14)"},
+	{name: "indexed by in an update", src: "update t indexed by i set v = 1", err: "s4ql: not supported: INDEXED BY or NOT INDEXED (at offset 9)"},
+	{name: "not indexed in an update", src: "update t not indexed set v = 1", err: "s4ql: not supported: INDEXED BY or NOT INDEXED (at offset 9)"},
+	{name: "indexed by in a delete", src: "delete from t indexed by i where v = 1", err: "s4ql: not supported: INDEXED BY or NOT INDEXED (at offset 14)"},
+	{name: "with before an update", src: "with x as (select 1) update t set v = 1", err: "s4ql: not supported: WITH clause (at offset 0)"},
+	{name: "with before a delete", src: "with x as (select 1) delete from t", err: "s4ql: not supported: WITH clause (at offset 0)"},
+	{name: "explain update", src: "explain update t set v = 1", err: "s4ql: not supported: EXPLAIN (at offset 0)"},
+	{name: "explain delete", src: "explain query plan delete from t", err: "s4ql: not supported: EXPLAIN (at offset 0)"},
+	{name: "a schema in an update", src: "update main.t set v = 1", err: "s4ql: not supported: schema name (at offset 7)"},
+	{name: "a schema in a delete", src: "delete from main.t", err: "s4ql: not supported: schema name (at offset 12)"},
+	{name: "the temp schema in a delete", src: "delete from temp.t where v = 1", err: "s4ql: not supported: schema name (at offset 12)"},
+	{name: "a column in brackets in set", src: "update t set [v] = 1", err: "s4ql: not supported: name in brackets (at offset 13)"},
+	{name: "a column in backticks in set", src: "update t set `v` = 1", err: "s4ql: not supported: name in backticks (at offset 13)"},
+	{name: "a single-quoted column in set", src: "update t set 'v' = 1", err: "s4ql: not supported: single-quoted name (at offset 13)"},
+	{name: "an empty column name in set", src: `update t set "" = 1`, err: "s4ql: not supported: empty name (at offset 13)"},
+	{name: "an empty table name in an update", src: `update "" set v = 1`, err: "s4ql: not supported: empty name (at offset 7)"},
+	{name: "a table in brackets in a delete", src: "delete from [t]", err: "s4ql: not supported: name in brackets (at offset 12)"},
+	{name: "a reserved table in an update", src: "update sqlite_schema set v = 1", err: "s4ql: not supported: reserved table name (at offset 7)"},
+	{name: "a reserved table in a delete", src: "delete from S4QL_x", err: "s4ql: not supported: reserved table name (at offset 12)"},
+	{name: "a virtual table of SQLite in a delete", src: "delete from json_each", err: "s4ql: not supported: name of a virtual table of SQLite (at offset 12)"},
+	{name: "or in the where of an update", src: "update t set v = 1 where v = 1 or w = 2", err: "s4ql: not supported: OR (at offset 31)"},
+	{name: "a value on the left in the where of a delete", src: "delete from t where 1 = v", err: "s4ql: not supported: value on the left of a comparison (at offset 20)"},
+	{name: "in in the where of an update", src: "update t set v = 1 where v = 1 and w in (1)", err: "s4ql: not supported: IN (at offset 35)"},
+	{name: "a column with its table in the where of a delete", src: "delete from t where t.v = 1", err: "s4ql: not supported: column with the name of a table (at offset 20)"},
+	{name: "a numbered parameter in the where of an update", src: "update t set v = ? where w = ?2", err: "s4ql: not supported: numbered parameter (at offset 29)"},
+	{name: "a second statement after an update", src: "update t set v = 1; select 1", err: "s4ql: not supported: second statement (at offset 20)"},
+	{name: "a second statement after a delete", src: "delete from t;delete from t", err: "s4ql: not supported: second statement (at offset 14)"},
+	{name: "limit on an update", src: "update t set v = 1 limit 1", err: `near "limit": syntax error`},
+	{name: "order by on an update", src: "update t set v = 1 where v = 1 order by v", err: `near "order": syntax error`},
+	{name: "limit on a delete", src: "delete from t limit 1", err: `near "limit": syntax error`},
+	{name: "order by and limit on a delete", src: "delete from t where v = 1 order by v limit 1", err: `near "order": syntax error`},
+	{name: "update with where and nothing after it", src: "update t set v = 1 where", err: "incomplete input"},
+	{name: "update with where and a semicolon after it", src: "update t set v = 1 where;", err: `near ";": syntax error`},
+	{name: "delete with where and nothing after it", src: "delete from t where", err: "incomplete input"},
+	{name: "delete with and at the end", src: "delete from t where v = 1 and", err: "incomplete input"},
+	{name: "update without set", src: "update t", err: "incomplete input"},
+	{name: "update with set and no assignment", src: "update t set;", err: `near ";": syntax error`},
+	{name: "update with an assignment without a value", src: "update t set v = ;", err: `near ";": syntax error`},
+	{name: "update with a comma at the end of set", src: "update t set v = 1, where v = 1", err: `near "where": syntax error`},
+	{name: "update of a column with its table", src: "update t set t.v = 1", err: `near ".": syntax error`},
+	{name: "delete without from", src: "delete t", err: `near "t": syntax error`},
+	{name: "delete of two tables", src: "delete from t, u", err: `near ",": syntax error`},
 }
 
 // cond is a condition of a WHERE on the column, with the operator op and the value v.
 func cond(column stmt.Name, op stmt.Operator, v stmt.Term) stmt.Condition {
 	return stmt.Condition{Column: column, Operator: op, Value: v}
+}
+
+// set is an assignment of an UPDATE of the value v to the column.
+func set(column stmt.Name, v stmt.Term) stmt.Assignment {
+	return stmt.Assignment{Column: column, Value: v}
 }
 
 // column of a CREATE TABLE.
@@ -1183,6 +1325,89 @@ func TestCheck(t *testing.T) {
 		slices.Sort(names)
 		is.True(t, len(names) > 80, "too few keywords are names")
 		t.Logf("%v keywords are names of columns in WHERE: %v", len(names), names)
+	})
+
+	t.Run("should take every keyword of SQLite that SQLite reads as the name of a table or a column of an update or a delete, and no other", func(t *testing.T) {
+		// SQLite reads a keyword as a name if it gives `no such table` or `no such column` for it on a
+		// table without a column of that name. The pools of the generator are those of the same names
+		// in an insert and in a select.
+		d := open(t)
+		d.must("create table t (x int primary key) strict, without rowid")
+		pools := namePools(t)
+		for _, c := range []struct {
+			form, message string
+			pool          stmttest.Position
+		}{
+			{"update %v set x = 1", "no such table: ", stmttest.UpdateTable},
+			{"delete from %v", "no such table: ", stmttest.DeleteTable},
+			{"update t set %v = 1", "no such column: ", stmttest.UpdateColumn},
+			{"update t set x = 1 where %v = 1", "no such column: ", stmttest.SelectColumn},
+			{"delete from t where %v is null", "no such column: ", stmttest.SelectColumn},
+		} {
+			var names []string
+			for _, kw := range keywords(t) {
+				src := fmt.Sprintf(c.form, kw)
+				if oracle.Judge(src).Kind != oracle.Parses {
+					continue
+				}
+				name := false
+				var e *sqlite.Error
+				if err := d.exec(src); errors.As(err, &e) && e.Message == c.message+kw {
+					name = true
+					names = append(names, kw)
+				}
+				o, _ := verify(t, src)
+				is.Equal(t, name, o == supported, src)
+				is.Equal(t, name, slices.Contains(pools[c.pool], kw), src)
+			}
+			is.True(t, len(names) > 80, "too few keywords are names")
+			t.Logf("%v keywords are names in %q", len(names), c.form)
+		}
+	})
+
+	t.Run("should take as many assignments as SQLite allows, and not one more", func(t *testing.T) {
+		update := func(n int) string {
+			var b strings.Builder
+			b.WriteString("update t set ")
+			for i := range n {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(&b, "c%v = ?", i)
+			}
+			return b.String() + " where c0 = ?"
+		}
+		// The meaning of so many assignments is not checked in SQLite, since that needs a table of as
+		// many columns: the text parses, and SQLite counts its parameters.
+		src := update(2000)
+		s, err := stmt.Check(src)
+		is.NotError(t, err)
+		is.Equal(t, 2001, s.Parameters())
+		is.Equal(t, 2001, s.(*stmt.Update).Where[0].Value.Parameter)
+		is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
+
+		src = update(2001)
+		_, err = stmt.Check(src)
+		is.Equal(t, fmt.Sprintf("s4ql: not supported: SET beyond SQLite's limit (at offset %v)", strings.LastIndex(src, "c2000")), err.Error())
+		is.Equal(t, "too many columns in set list", oracle.Judge(src).Message)
+		verify(t, src)
+	})
+
+	t.Run("should take conditions of an update and a delete as deep as SQLite allows, and not one deeper", func(t *testing.T) {
+		for _, start := range []string{"update t set v = -1 where ", "delete from t where "} {
+			where := func(n int) string {
+				return start + "v = 1" + strings.Repeat(" and v = 1", n-1)
+			}
+			src := where(999)
+			_, err := stmt.Check(src)
+			is.NotError(t, err)
+			is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
+			src = where(1000)
+			_, err = stmt.Check(src)
+			is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", len(src)-len("and v = 1")), err.Error())
+			is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
+			verify(t, src)
+		}
 	})
 
 	t.Run("should take conditions as deep as SQLite allows, and not one deeper", func(t *testing.T) {

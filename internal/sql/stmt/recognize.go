@@ -115,6 +115,10 @@ func (r *recognizer) statement() Statement {
 		s = r.insert(c)
 	case *ast.SelectCmd:
 		s = r.selectCmd(c)
+	case *ast.Update:
+		s = r.update(c)
+	case *ast.Delete:
+		s = r.delete(c)
 	case *ast.Drop:
 		s = r.drop(c)
 	}
@@ -509,16 +513,77 @@ func (r *recognizer) selectCmd(c *ast.SelectCmd) *Select {
 	r.accept(source)
 	s := &Select{Table: r.tableName(source.Name), Columns: columns}
 	if core.Where != nil {
-		r.accept(core.Where)
-		r.take(core.Where.Where)
-		s.Where = r.conditions(core.Where.X)
+		s.Where = r.where(core.Where, 0)
 	}
 	return s
 }
 
-// conditions of a WHERE clause, the expression e: one condition, or conditions joined by AND, in the
-// order of the text. A ? among them has the number after that of the ? before it.
-func (r *recognizer) conditions(e ast.Expr) []Condition {
+// where: WHERE and its conditions, after before parameters of the statement.
+func (r *recognizer) where(w *ast.Where, before int) []Condition {
+	r.accept(w)
+	r.take(w.Where)
+	return r.conditions(w.X, before)
+}
+
+// update: UPDATE table SET and one or more assignments, separated by commas, each a column = a value,
+// where the value is a literal or a parameter, and an optional WHERE.
+func (r *recognizer) update(c *ast.Update) *Update {
+	r.accept(c)
+	r.take(c.Update)
+	r.accept(c.Table)
+	s := &Update{Table: r.tableName(c.Table.Name)}
+	r.take(c.Set)
+	seen := map[string]bool{}
+	parameters := 0
+	for i, a := range c.Assignments {
+		if i > 0 {
+			r.take(c.Commas[i-1])
+		}
+		if i == maxColumns && r.at() == a.Bounds().Start {
+			// SQLite gives `too many columns in set list` while it parses, whatever the database holds.
+			r.reject("SET beyond SQLite's limit")
+		}
+		r.accept(a)
+		if !a.Column.Present() {
+			// The assignment is to a list of columns in parentheses.
+			r.unexpected()
+		}
+		if r.isNext(a.Column) && seen[asciiLower(dequote(a.Column))] {
+			// SQLite gives the column the value of its last assignment, and leaves the others unused.
+			r.reject("column named twice")
+		}
+		n := r.name(a.Column)
+		seen[n.Fold()] = true
+		r.take(a.Eq)
+		v := r.term(a.X, parameters)
+		if v.Parameter > 0 {
+			parameters = v.Parameter
+		}
+		s.Set = append(s.Set, Assignment{Column: n, Value: v})
+	}
+	if c.Where != nil {
+		s.Where = r.where(c.Where, parameters)
+	}
+	return s
+}
+
+// delete: DELETE FROM table and an optional WHERE.
+func (r *recognizer) delete(c *ast.Delete) *Delete {
+	r.accept(c)
+	r.take(c.Delete)
+	r.take(c.From)
+	r.accept(c.Table)
+	s := &Delete{Table: r.tableName(c.Table.Name)}
+	if c.Where != nil {
+		s.Where = r.where(c.Where, 0)
+	}
+	return s
+}
+
+// conditions of a WHERE clause, the expression e, after before parameters of the statement: one
+// condition, or conditions joined by AND, in the order of the text. A ? among them has the number
+// after that of the ? before it.
+func (r *recognizer) conditions(e ast.Expr, before int) []Condition {
 	// OR binds less tightly than AND, so the conditions before the first OR are the leftmost operand of
 	// the ORs; that OR comes after them. The ORs are accepted, as the ANDs are below, so that a token
 	// of those conditions that stops the recognizer is named for what holds it.
@@ -538,7 +603,7 @@ func (r *recognizer) conditions(e ast.Expr) []Condition {
 		ands = append(ands, b)
 		e = b.X
 	}
-	parameters := 0
+	parameters := before
 	condition := func(e ast.Expr) Condition {
 		c := r.condition(e, parameters)
 		if c.Value.Parameter > 0 {
