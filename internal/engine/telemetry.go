@@ -52,8 +52,9 @@ const (
 	// attrIndex is the name of the index of an access by an index, as the index was created, and the
 	// name of the index that a create index or a drop index names, as its value.
 	attrIndex = "statement.index"
-	// attrRowsRead is the number of rows that the statement read from the cache, by its scan or its
-	// get, whether or not its conditions held for them.
+	// attrRowsRead is the number of rows that the statement read from the cache, whether or not its
+	// conditions held for them: by its scan or its get, and, for an update, also the row that it reads
+	// to check a NULL for a column that does not take it, and each row again that it changes.
 	attrRowsRead = "statement.rows_read"
 	// attrSQL is the SQL text, at Debug only.
 	attrSQL = "statement.sql"

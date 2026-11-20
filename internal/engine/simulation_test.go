@@ -318,7 +318,7 @@ type run struct {
 	w     workload
 	world *sim.Scheduler
 	// seed of the scheduler, from which each engine gets the seed of the directions of its scans.
-	seed uint64
+	seed  uint64
 	store *simstore.Store
 	dir   string
 

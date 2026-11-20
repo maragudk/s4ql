@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
@@ -1016,7 +1017,7 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 // [build.conditions] says; and for a value of the SET and then of the WHERE that is longer than
 // the limit, as SQLite gives it when it binds an argument, the first in the order of the text, which
 // is the order of the parameters too. Then it fails with "not supported" for a value of the WHERE of
-// another type than its column, as a select does, and gives the scan its access by the key, as
+// another type than its column, as a select does, and gives the scan its access, as
 // [build.bind] says. A table without a WHERE is read as the reading says too.
 func (b build) change(ctx context.Context, w writer, source Node, set []Assignment, isUpdate bool) (sink, error) {
 	f, filtered := source.(*Filter)
@@ -1086,17 +1087,14 @@ func (b build) change(ctx context.Context, w writer, source Node, set []Assignme
 	return &update{w: w, table: t, key: int(key[0]), src: src, positions: positions, values: values, exprs: exprs, bugs: b.bugs}, nil
 }
 
-// maxIndexColumns is the largest number of columns of an index that the storage holds, where SQLite
-// takes 2,000: see [core.Tx.CreateIndex].
-const maxIndexColumns = 250
-
 // buildCreateIndex is the sink of the plan p of a CREATE INDEX, in the transaction of w. It fails with
 // SQLite's errors in SQLite's order: for a table that does not exist, with the name of the schema
 // before the name of the table; for a table that has the name of the index, which a table and an
 // index share; for an index that has it, on any table; for the first column, in the order of the
 // text, that the table does not have; and for an index that SQLite cannot write into its schema
 // under limit, as [indexTooBig] says. Then it fails with "not supported" for an index of more than
-// [maxIndexColumns] columns, at the first column beyond them.
+// [core.MaxIndexColumns] columns, which is what the storage holds where SQLite takes 2,000, at the
+// first column beyond them.
 func buildCreateIndex(ctx context.Context, w writer, p *CreateIndex, limit int) (sink, error) {
 	t, err := w.table(ctx, p.Table.Value)
 	if err != nil {
@@ -1145,8 +1143,8 @@ func buildCreateIndex(ctx context.Context, w writer, p *CreateIndex, limit int) 
 	if indexTooBig(p.Index.Value, t.GetTable(), p.SQL, limit) {
 		return nil, tooBig()
 	}
-	if len(p.Columns) > maxIndexColumns {
-		return nil, &stmt.NotSupportedError{What: fmt.Sprint("index of more than ", maxIndexColumns, " columns"), Offset: p.Columns[maxIndexColumns].Name.Offset}
+	if len(p.Columns) > core.MaxIndexColumns {
+		return nil, &stmt.NotSupportedError{What: fmt.Sprint("index of more than ", core.MaxIndexColumns, " columns"), Offset: p.Columns[core.MaxIndexColumns].Name.Offset}
 	}
 	return &createIndex{w: w, ci: ci.Build()}, nil
 }

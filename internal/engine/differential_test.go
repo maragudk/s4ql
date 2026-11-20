@@ -249,7 +249,7 @@ func (o *oracle) run(t testing.TB, src string, args ...any) answer {
 }
 
 // state of the database in SQLite: each table, in the order of the names as bytes, with its
-// columns, as [columnText] gives them, and its rows in the order of select *.
+// columns, as [columnText] gives them, and its rows in the order of its primary key.
 func (o *oracle) state(t testing.TB) string {
 	t.Helper()
 	s, err := o.c.Prepare("select name from sqlite_schema where type = 'table' order by name collate binary")
@@ -266,12 +266,17 @@ func (o *oracle) state(t testing.TB) string {
 	is.NotError(t, s.Finalize())
 	var b strings.Builder
 	for _, name := range names {
-		a := o.run(t, "select * from "+stmttest.Quote(name))
 		_, columns := o.columns(t, name)
-		var cs []string
+		var cs, key []string
 		for _, c := range columns {
 			cs = append(cs, columnText(c.Name, c.Type, c.Nullable))
+			if c.PrimaryKey {
+				key = append(key, stmttest.Quote(c.Name))
+			}
 		}
+		// In the order of the key, as the state of the engine is: without ORDER BY, SQLite reads the
+		// rows in the order of an index, where one holds every column of the table.
+		a := o.run(t, "select * from "+stmttest.Quote(name)+" order by "+strings.Join(key, ", "))
 		fmt.Fprintf(&b, "%v (%v): %v\n", name, strings.Join(cs, ", "), strings.Join(a.rows, " "))
 	}
 	return b.String()

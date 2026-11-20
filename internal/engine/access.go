@@ -60,9 +60,9 @@ func (a access) scan() core.IndexScan {
 //     created first.
 //  4. Every row, if the winner pins nothing and bounds nothing.
 //
-// The access for no row and for the row of a primary key does not depend on the indexes, so a caller
-// that gets one of them for no indexes need not read the indexes of the table. The values of the
-// conditions are of the types of their columns, as [checkType] checks them.
+// Rules 1 and 2 do not depend on the indexes: the access is no row, or the row of a primary key, for
+// no indexes exactly when it is for any. The values of the conditions are of the types of their
+// columns, as [checkType] checks them.
 func chooseAccess(t *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, conditions []condition) (access, error) {
 	if never(t, conditions) {
 		return access{none: true}, nil
@@ -176,10 +176,10 @@ func indexKey(t *s4qlpb.CreateTable, ix *s4qlpb.CreateIndex) []int {
 }
 
 // fit the conditions, none of which is never true, to the key of the index of the table t with the
-// name, or of the primary key, if it is empty: the access that pins each leading column of the key that a condition
-// pins, with = or with a test for NULL, as [pinOf] says, and that bounds the first column that none
-// pins by the tightest bounds of the conditions that compare it with <, <=, >, or >=. It never sets
-// none or point.
+// name, or of the primary key, if it is empty: the access that pins each leading column of the key
+// that a condition pins, with = or with a test for NULL, as [pinOf] says, and that bounds the first
+// column that none pins by the tightest bounds of the conditions that compare it with <, <=, >, or
+// >=. It never sets none or point.
 func fit(t *s4qlpb.CreateTable, index string, key []int, conditions []condition) (access, error) {
 	a := access{index: index}
 	for _, position := range key {

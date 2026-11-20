@@ -12,6 +12,7 @@ import (
 
 	"maragu.dev/s4ql/internal/engine"
 	"maragu.dev/s4ql/internal/sql/stmt"
+	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 )
 
 // indexPair is the engine and SQLite, which run the same statements, for the tests of indexes.
@@ -191,6 +192,16 @@ func TestEngine_indexes(t *testing.T) {
 		is.Equal(t, "", p.run("drop index i").err)
 		is.Equal(t, "", p.i.indexes())
 		is.Equal(t, 2, len(p.run("select * from t where a > 5").rows))
+	})
+
+	t.Run("should hold SQLite's rows of a table whose index holds every column, which SQLite reads in the order of the index", func(t *testing.T) {
+		p := newIndexPair(t, 0, "create table r (k int primary key, c real, d real not null) strict, without rowid", "create index rd on r (d desc, c)")
+
+		for _, src := range []string{"insert into r values (1, 1.5, 3.5)", "insert into r values (2, null, 9.5)", "insert into r values (3, 0.5, 9.5)", "update r set d = 0.5 where k = 2"} {
+			is.Equal(t, "", p.run(src).err, src)
+		}
+		is.Equal(t, 3, len(p.run("select * from r").rows))
+		is.Equal(t, 2, len(p.run("select k, d from r where d < 9.5").rows))
 	})
 
 	t.Run("should keep the indexes of a table in the order in which they were created, with ASC as no direction, on any column and on the key", func(t *testing.T) {
@@ -478,5 +489,59 @@ func TestEngine_indexes(t *testing.T) {
 			is.Equal(t, q.want, access(q.src), "after the replay: "+q.src)
 			p.run(q.src)
 		}
+	})
+}
+
+// FuzzCreateIndex_core creates an index on the storage core and in SQLite, both under the lowered
+// length limit [stmttest.LengthLimit], where SQLite refuses a create index whose names and text it
+// cannot write into its schema: the engine must refuse exactly those, and hold the others, also
+// after a restart on the same cache and after a replay of the log into an empty one. The input
+// chooses the length of the name of the index, the length of the names of its columns, and the form:
+// from one to four columns, in descending order or not, the name in double quotes or not, and what
+// follows the statement.
+func FuzzCreateIndex_core(f *testing.F) {
+	// The cache needs SQLite's largest limit to hold this one, which SQLite takes.
+	f.Add(uint16(299), uint16(311), uint8(0))
+	// SQLite refuses this one, whose text is far below the limit.
+	f.Add(uint16(349), uint16(299), uint8(0))
+	f.Add(uint16(149), uint16(299), uint8(1+8+16))
+	// The text of this one, of four columns in descending order, is longer than the limit.
+	f.Add(uint16(399), uint16(199), uint8(3+4))
+	// The longest name that SQLite takes on a column of one byte, and one byte more.
+	f.Add(uint16(456), uint16(0), uint8(0))
+	f.Add(uint16(457), uint16(0), uint8(0))
+	f.Fuzz(func(t *testing.T, index, column uint16, form uint8) {
+		var names, terms []string
+		for _, letter := range []string{"a", "b", "c", "d"}[:1+form%4] {
+			name := strings.Repeat(letter, 1+int(column)%400)
+			names = append(names, name)
+			if form&4 != 0 {
+				name += " desc"
+			}
+			terms = append(terms, name)
+		}
+		name := strings.Repeat("x", 1+int(index)%600)
+		if form&8 != 0 {
+			name = strconv.Quote(name)
+		}
+		create := "create index " + name + " on t (" + strings.Join(terms, ", ") + ")" + []string{"", ";", " -- end", " ; "}[form>>4%4]
+
+		p := &indexPair{t: t, i: newInstanceLimited(t, engine.Options{}, nil, stmttest.LengthLimit), o: newOracleLimited(t, stmttest.LengthLimit)}
+		// SQLite refuses the table itself, as the engine then does, where its names are too long.
+		if p.run("create table t (k int primary key, "+strings.Join(names, " int, ")+" int) strict, without rowid").err != "" {
+			return
+		}
+		p.run("insert into t (k, " + names[0] + ") values (1, 2)")
+		p.run("insert into t (k, " + names[0] + ") values (3, 2)")
+
+		created := p.run(create).err == ""
+
+		p.run("select * from t where " + names[0] + " = 2")
+		p.i.restart(false, engine.Options{})
+		p.same("a restart on the same cache")
+		p.i.restart(true, engine.Options{})
+		p.same("a replay of the log into an empty cache")
+		p.run("select k from t where " + names[0] + " >= 2")
+		is.Equal(t, created, p.run("drop index "+name).err == "", create)
 	})
 }

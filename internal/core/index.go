@@ -16,11 +16,11 @@ import (
 	"maragu.dev/s4ql/internal/sqlite"
 )
 
-// maxIndexColumns is the largest number of columns of an index. A scan pins the columns of the key
+// MaxIndexColumns is the largest number of columns of an index. A scan pins the columns of the key
 // of an index with one term of a condition each, the key of an index is its columns and then those
 // of the primary key, of which there are at most 250, and SQLite refuses a condition that is nested
 // deeper than a thousand levels.
-const maxIndexColumns = 250
+const MaxIndexColumns = 250
 
 // index of a table of the database, as the cache holds it: an index of SQLite on the columns, which
 // is not unique.
@@ -279,8 +279,8 @@ func checkCreateIndex(ci *s4qlpb.CreateIndex, commitTime time.Time) error {
 	if err := w.CreateIndex(ci); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	if len(ci.GetColumns()) > maxIndexColumns {
-		return invalidf("an index of %v columns, where the limit is %v", len(ci.GetColumns()), maxIndexColumns)
+	if len(ci.GetColumns()) > MaxIndexColumns {
+		return invalidf("an index of %v columns, where the limit is %v", len(ci.GetColumns()), MaxIndexColumns)
 	}
 	return nil
 }
@@ -526,8 +526,8 @@ func applyCreateIndex(c *conn, ci *s4qlpb.CreateIndex) (int, error) {
 	if other != nil {
 		return 0, brokenf("it creates the index %q, and the index %q exists", ci.GetIndex(), other.name)
 	}
-	if len(ci.GetColumns()) > maxIndexColumns {
-		return 0, brokenf("it creates the index %q of %v columns, where the limit is %v", ci.GetIndex(), len(ci.GetColumns()), maxIndexColumns)
+	if len(ci.GetColumns()) > MaxIndexColumns {
+		return 0, brokenf("it creates the index %q of %v columns, where the limit is %v", ci.GetIndex(), len(ci.GetColumns()), MaxIndexColumns)
 	}
 	ix, err := t.newIndex(ci)
 	if err != nil {
