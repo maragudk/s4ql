@@ -310,8 +310,12 @@ func TestScanRange(t *testing.T) {
 		is.NotError(t, err)
 		for _, c := range cases {
 			for _, scan := range []func(lower, upper core.Bound) iter.Seq2[[]*s4qlpb.Value, error]{
-				func(lower, upper core.Bound) iter.Seq2[[]*s4qlpb.Value, error] { return r.ScanRange(t.Context(), c.table, lower, upper) },
-				func(lower, upper core.Bound) iter.Seq2[[]*s4qlpb.Value, error] { return tx.ScanRange(t.Context(), c.table, lower, upper) },
+				func(lower, upper core.Bound) iter.Seq2[[]*s4qlpb.Value, error] {
+					return r.ScanRange(t.Context(), c.table, lower, upper)
+				},
+				func(lower, upper core.Bound) iter.Seq2[[]*s4qlpb.Value, error] {
+					return tx.ScanRange(t.Context(), c.table, lower, upper)
+				},
 			} {
 				for _, bounds := range [][2]core.Bound{{c.b, {}}, {{}, c.b}} {
 					n := 0
