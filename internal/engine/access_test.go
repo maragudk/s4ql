@@ -1,15 +1,24 @@
 package engine_test
 
 import (
+	"errors"
+	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"math"
+	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/engine"
+	"maragu.dev/s4ql/internal/s4qlpb"
+	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
 // pathIndex is an index of the table of the tests of the paths: its name, and the columns of its key,
@@ -379,6 +388,41 @@ func TestEngine_order(t *testing.T) {
 	})
 }
 
+// checkPlanOf the select src with args on the instance i, outside a transaction: the access that the
+// rules choose for it on the table and the indexes that the core holds, and SQLite's plan for the
+// statement that the cache runs for its scan, which must be the one row that [wantPlan] gives, so that
+// the rows that the cache reads cannot come from a scan of a whole index that SQLite filters.
+func checkPlanOf(t *testing.T, i *instance, src string, args []any) {
+	t.Helper()
+	s, err := stmt.Check(src)
+	is.NotError(t, err)
+	ctx := t.Context()
+	rd, err := i.d.Reader(ctx)
+	is.NotError(t, err)
+	defer func() { is.NotError(t, rd.Close(ctx)) }()
+	r, err := rd.Read(ctx)
+	is.NotError(t, err)
+	var ct *s4qlpb.CreateTable
+	tables, err := r.Tables(ctx)
+	is.NotError(t, err)
+	for _, table := range tables {
+		if fold(table.GetTable()) == s.(*stmt.Select).Table.Fold() {
+			ct = table
+		}
+	}
+	is.True(t, ct != nil, "no table of "+src)
+	cis, err := r.Indexes(ctx, ct.GetTable())
+	is.NotError(t, err)
+	is.NotError(t, r.Close(ctx))
+	a, ok := engine.AccessOf(src, ct, cis, values(args))
+	is.True(t, ok, src)
+	if a.None || a.Point != nil {
+		return
+	}
+	sql, plan := scanPlan(t, i, ct.GetTable(), a)
+	is.EqualSlice(t, []string{wantPlan(a, ct, cis)}, plan, src+", which the cache runs as "+sql)
+}
+
 func TestEngine_rowsRead(t *testing.T) {
 	// read runs src with args on the instance, by the rules and then forward and backward, and gives
 	// the access of its event and the number of rows that it read from the cache, which must be the
@@ -402,6 +446,7 @@ func TestEngine_rowsRead(t *testing.T) {
 			access, read, rows = a, event[engine.AttrRowsRead], event[engine.AttrRows]
 		}
 		i.e.SetPath(engine.Path{})
+		checkPlanOf(t, i, src, args)
 		return access, read, rows
 	}
 	// fill runs the statements of rows on the instance in transactions of 500.
@@ -494,4 +539,460 @@ func TestEngine_rowsRead(t *testing.T) {
 		access, rowsRead, rows = read(t, i, h, receive, args...)
 		is.Equal(t, "index goqite_queue_timeout reads 500 gives 400", fmt.Sprint(access, " reads ", rowsRead, " gives ", rows))
 	})
+}
+
+var update = flag.Bool("update", false, "rewrite the golden files of TestAccessOf_golden with the plans that the engine chooses now")
+
+// planSchema is a table and its indexes, with the queries whose plans TestAccessOf_golden keeps in
+// the golden file testdata/plans/<name>.txt.
+type planSchema struct {
+	name string
+	// statements are the create table and then the create index of each index, in the order in which
+	// they are created.
+	statements []string
+	queries    []planQuery
+}
+
+// planQuery is a select, an update, or a delete with WHERE, and the arguments of its parameters.
+type planQuery struct {
+	name string
+	src  string
+	args []any
+}
+
+const (
+	goqiteTable = "create table goqite (id text primary key, created text not null, updated text not null, queue text not null, " +
+		"body blob not null, timeout text not null, received int not null, priority int not null) strict, without rowid"
+	goqiteIndex = "create index goqite_queue_priority_created_idx on goqite (queue, priority desc, created)"
+)
+
+// goqiteQueries are shaped like the statements of goqite, a queue on SQLite. The receive is
+// goqite's without its ORDER BY and its LIMIT, which slice 13 brings, and with `timeout <= ?` where
+// goqite writes `? >= timeout`, which slice 12 brings.
+var goqiteQueries = []planQuery{
+	{name: "receive", src: "select id from goqite where queue = ? and timeout <= ? and received < ?",
+		args: []any{"default", "2026-11-20T12:00:00.000Z", int64(3)}},
+	{name: "by id", src: "select body from goqite where id = ?", args: []any{"m_0001"}},
+	{name: "by queue", src: "select id from goqite where queue = 'default'"},
+	{name: "by queue and priority", src: "select id from goqite where queue = ? and priority = ?", args: []any{"default", int64(1)}},
+	{name: "by queue and a range of priorities", src: "select id from goqite where queue = 'default' and priority >= 1 and priority < 3"},
+	{name: "extend", src: "update goqite set timeout = ? where queue = ? and id = ?",
+		args: []any{"2026-11-20T12:05:00.000Z", "default", "m_0001"}},
+	{name: "delete", src: "delete from goqite where queue = ? and id = ?", args: []any{"default", "m_0001"}},
+	{name: "delete a queue", src: "delete from goqite where queue = 'default'"},
+}
+
+// planSchemas whose plans TestAccessOf_golden keeps.
+var planSchemas = []planSchema{
+	{name: "goqite", statements: []string{goqiteTable}, queries: goqiteQueries},
+	{name: "goqite_index", statements: []string{goqiteTable, goqiteIndex}, queries: goqiteQueries},
+	{
+		name:       "goqite_two_indexes",
+		statements: []string{goqiteTable, goqiteIndex, "create index goqite_queue_timeout on goqite (queue, timeout)"},
+		queries:    goqiteQueries,
+	},
+	{
+		name: "glue_sessions",
+		statements: []string{
+			"create table sessions (token text primary key, data blob not null, expiry real not null) strict, without rowid",
+			"create index sessions_expiry_idx on sessions (expiry)",
+		},
+		queries: []planQuery{
+			{name: "delete expired", src: "delete from sessions where expiry < ?", args: []any{1763640000.5}},
+			{name: "by token", src: "select data, expiry from sessions where token = ?", args: []any{"abc"}},
+			{name: "by token and expiry", src: "select data from sessions where token = ? and expiry > ?", args: []any{"abc", 1763640000.5}},
+			{name: "a range of expiries", src: "select token from sessions where expiry >= 1763640000.0 and expiry <= 1763650000.0"},
+			{name: "update by token", src: "update sessions set expiry = ? where token = ?", args: []any{1763650000.5, "abc"}},
+		},
+	},
+	{
+		name: "roadmap",
+		statements: []string{
+			"create table t1 (v1 int primary key, v2 text not null, v3 real) strict, without rowid",
+			"create index t1_v2_v3 on t1 (v2, v3 desc)",
+		},
+		queries: []planQuery{
+			{name: "example", src: "select v1 from t1 where v2 = 'a' and v3 > 1.5"},
+		},
+	},
+	{
+		name:       "readme",
+		statements: []string{indexTable, "create index ia on t (a)", "create index iab on t (a, b)"},
+		queries: []planQuery{
+			{name: "a", src: "select * from t where a = 10"},
+			{name: "a and b", src: "select * from t where a = 10 and b = 'x'"},
+			{name: "a and a range of b", src: "select * from t where a = 10 and b > 'x'"},
+			{name: "a and a range of k", src: "select * from t where a = 10 and k < 2"},
+			{name: "b", src: "select * from t where b = 'x'"},
+			{name: "k and a", src: "select * from t where k = 2 and a = 10"},
+		},
+	},
+	{
+		name: "rules",
+		statements: []string{
+			"create table r (k int primary key, a int not null, b text, c real, d blob) strict, without rowid",
+			"create index rk on r (k desc)",
+			"create index ra on r (a)",
+			"create index rb on r (b)",
+			"create index rbc on r (b, c desc)",
+			"create index rd on r (d)",
+		},
+		queries: []planQuery{
+			{name: "no row for a comparison with null", src: "select k from r where a = null"},
+			{name: "no row for a comparison with an argument of null", src: "select k from r where b > ?", args: []any{nil}},
+			{name: "no row for is null on the primary key", src: "select k from r where k is null"},
+			{name: "a get", src: "select a from r where k = ?", args: []any{int64(3)}},
+			{name: "a get where an index pins more", src: "select a from r where k = 3 and a = 1"},
+			{name: "the primary key wins a tie with an index", src: "select a from r where k > 3"},
+			{name: "the first index created wins a tie", src: "select k from r where b = 'x'"},
+			{name: "a range wins over no range at the same pins", src: "select k from r where b = 'x' and c > 1.5"},
+			{name: "a range of a descending column", src: "select k from r where b = ? and c > ? and c <= ?", args: []any{"x", 1.5, 9.5}},
+			{name: "is null pins a nullable column", src: "select k from r where b is null"},
+			{name: "the first condition pins", src: "select k from r where b is null and b = 'x'"},
+			{name: "the first of two equal pins", src: "select k from r where a = 1 and a = 2"},
+			{name: "is null pins nothing on a column without null", src: "select k from r where a is null"},
+			{name: "the primary key at the end of an index key", src: "select b from r where a = 1 and k > 3"},
+			{name: "the open bound is tighter", src: "select a from r where k >= 3 and k > 3 and k < 9 and k <= 9"},
+			{name: "bounds that hold no value", src: "select a from r where k > 5 and k < 3"},
+			{name: "not equal pins nothing", src: "select k from r where a != 1"},
+			{name: "is not null pins nothing", src: "select k from r where b is not null"},
+			{name: "a later column of a key pins nothing", src: "select k from r where c = 1.5"},
+			{name: "a blob", src: "select k from r where d = ?", args: []any{[]byte{1, 2}}},
+			{name: "an update", src: "update r set c = ? where b = ? and c < ?", args: []any{2.5, "y", 0.5}},
+			{name: "an update by a get", src: "update r set a = 2 where k = 3"},
+			{name: "a delete", src: "delete from r where a = ? and k <= ?", args: []any{int64(1), int64(10)}},
+			{name: "a delete of no row", src: "delete from r where k is null"},
+		},
+	},
+}
+
+// TestAccessOf_golden keeps the plans of the queries of [planSchemas] as golden files in
+// testdata/plans, so that a change of the rules of the choice of an access shows as a diff of them.
+// The flag -update rewrites them.
+func TestAccessOf_golden(t *testing.T) {
+	dir := filepath.Join("testdata", "plans")
+	names := map[string]bool{}
+	for _, s := range planSchemas {
+		names[s.name+".txt"] = true
+		got := planText(t, s)
+		file := filepath.Join(dir, s.name+".txt")
+		if *update {
+			is.NotError(t, os.MkdirAll(dir, 0o755))
+			is.NotError(t, os.WriteFile(file, []byte(got), 0o644))
+			continue
+		}
+		want, err := os.ReadFile(file)
+		if errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("no golden file %v of the schema %v: write it with go test ./internal/engine -run TestAccessOf_golden -update", file, s.name)
+			continue
+		}
+		is.NotError(t, err)
+		if diff := planDiff(string(want), got); diff != "" {
+			t.Errorf("the plans of the schema %v differ from %v, which go test ./internal/engine -run TestAccessOf_golden -update rewrites:\n%v", s.name, file, diff)
+		}
+	}
+
+	entries, err := os.ReadDir(dir)
+	is.NotError(t, err)
+	for _, e := range entries {
+		if names[e.Name()] || e.IsDir() || filepath.Ext(e.Name()) != ".txt" {
+			continue
+		}
+		if *update {
+			is.NotError(t, os.Remove(filepath.Join(dir, e.Name())))
+			continue
+		}
+		t.Errorf("the golden file %v belongs to no schema: -update removes it", filepath.Join(dir, e.Name()))
+	}
+}
+
+// planText of the schema s: a header with its statements, and a block for each query, which starts
+// with "## " and the name of the query.
+func planText(t *testing.T, s planSchema) string {
+	t.Helper()
+	ct, indexes := planTable(t, s.statements)
+	var b strings.Builder
+	b.WriteString("# The plans of the queries on the schema " + s.name + ", which TestAccessOf_golden in access_test.go checks.\n")
+	b.WriteString("# Rewrite with: go test ./internal/engine -run TestAccessOf_golden -update\n\n")
+	for _, src := range s.statements {
+		b.WriteString(src + "\n")
+	}
+	seen := map[string]bool{}
+	for _, q := range s.queries {
+		if seen[q.name] {
+			t.Fatalf("two queries of the schema %v are named %q", s.name, q.name)
+		}
+		seen[q.name] = true
+		args := values(q.args)
+		a, ok := engine.AccessOf(q.src, ct, indexes, args)
+		if !ok {
+			t.Fatalf("the query %q of the schema %v has no access: %v", q.name, s.name, q.src)
+		}
+		b.WriteString("\n## " + q.name + "\n" + q.src + "\n")
+		if len(args) > 0 {
+			texts := make([]string, len(args))
+			for i, v := range args {
+				texts[i] = planValue(v)
+			}
+			b.WriteString("args: " + strings.Join(texts, ", ") + "\n")
+		}
+		b.WriteString("access: " + planAccess(ct, indexes, a) + "\n")
+	}
+	return b.String()
+}
+
+// planTable of the statements: the table of the create table, and the indexes of the create indexes
+// on it, in their order.
+func planTable(t *testing.T, statements []string) (*s4qlpb.CreateTable, []*s4qlpb.CreateIndex) {
+	t.Helper()
+	plan := func(src string) engine.Plan {
+		s, err := stmt.Check(src)
+		is.NotError(t, err, src)
+		return engine.NewPlan(s)
+	}
+	table, ok := plan(statements[0]).(*engine.CreateTable)
+	is.True(t, ok, statements[0])
+	ct := s4qlpb.CreateTable_builder{Table: new(table.Table.Value)}
+	positions := map[string]int{}
+	for i, c := range table.Columns {
+		column := s4qlpb.Column_builder{Name: new(c.Name.Value), Type: new(c.Type)}
+		if c.Nullable {
+			column.Nullable = new(true)
+		}
+		ct.Columns = append(ct.Columns, column.Build())
+		positions[c.Name.Fold()] = i
+	}
+	for _, p := range table.PrimaryKey {
+		ct.PrimaryKey = append(ct.PrimaryKey, uint32(p))
+	}
+	var indexes []*s4qlpb.CreateIndex
+	for _, src := range statements[1:] {
+		index, ok := plan(src).(*engine.CreateIndex)
+		is.True(t, ok, src)
+		ci := s4qlpb.CreateIndex_builder{Index: new(index.Index.Value), Table: new(table.Table.Value)}
+		for _, c := range index.Columns {
+			position, ok := positions[c.Name.Fold()]
+			is.True(t, ok, src)
+			column := s4qlpb.IndexColumn_builder{Column: new(uint32(position))}
+			if c.Descending {
+				column.Descending = new(true)
+			}
+			ci.Columns = append(ci.Columns, column.Build())
+		}
+		indexes = append(indexes, ci.Build())
+	}
+	return ct.Build(), indexes
+}
+
+// planAccess in words: "no row", "every row", "get" with the value of each column of the primary
+// key, or a scan of the primary key or of an index, with the columns of its key, its pinned columns,
+// and its bounds, such as "index rbc (b, c desc, k), pins b = 'x', bounds 1.5 < c <= 9.5".
+func planAccess(ct *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, a engine.Access) string {
+	name := func(position uint32) string { return ct.GetColumns()[position].GetName() }
+	key := func(index string) []string {
+		var columns []string
+		held := map[uint32]bool{}
+		for _, ci := range indexes {
+			if ci.GetIndex() != index {
+				continue
+			}
+			for _, c := range ci.GetColumns() {
+				held[c.GetColumn()] = true
+				column := name(c.GetColumn())
+				if c.GetDescending() {
+					column += " desc"
+				}
+				columns = append(columns, column)
+			}
+		}
+		for _, p := range ct.GetPrimaryKey() {
+			if !held[p] {
+				columns = append(columns, name(p))
+			}
+		}
+		return columns
+	}
+	// column i of the key columns, or "column i" for one past the end of the key, which is an access
+	// to a longer key than this test makes of the index.
+	column := func(columns []string, i int) string {
+		if i >= len(columns) {
+			return fmt.Sprint("column ", i, " of a key of ", len(columns))
+		}
+		return strings.TrimSuffix(columns[i], " desc")
+	}
+	pinned := func(columns []string, vs []*s4qlpb.Value) string {
+		pins := make([]string, len(vs))
+		for i, v := range vs {
+			pins[i] = column(columns, i) + " = " + planValue(v)
+		}
+		return strings.Join(pins, ", ")
+	}
+
+	switch {
+	case a.None:
+		return "no row"
+	case a.Full:
+		return "every row"
+	case a.Point != nil:
+		var columns []string
+		for _, p := range ct.GetPrimaryKey() {
+			columns = append(columns, name(p))
+		}
+		return "get, " + pinned(columns, a.Point)
+	}
+	s := "primary key"
+	columns := key("")
+	if a.Index != "" {
+		s = "index " + a.Index
+		columns = key(a.Index)
+	}
+	s += " (" + strings.Join(columns, ", ") + ")"
+	if len(a.Equal) > 0 {
+		s += ", pins " + pinned(columns, a.Equal)
+	}
+	if a.Lower == nil && a.Upper == nil {
+		return s
+	}
+	less := func(open bool) string {
+		if open {
+			return " < "
+		}
+		return " <= "
+	}
+	s += ", bounds "
+	if a.Lower != nil {
+		s += planValue(a.Lower) + less(a.LowerOpen)
+	}
+	s += column(columns, len(a.Equal))
+	if a.Upper != nil {
+		s += less(a.UpperOpen) + planValue(a.Upper)
+	}
+	return s
+}
+
+// planValue as a literal of SQL: an integer, a real with a point or an exponent and the shortest
+// digits that give it, a text in single quotes, a blob as x'...', or NULL.
+func planValue(v *s4qlpb.Value) string {
+	switch v.WhichKind() {
+	case s4qlpb.Value_Integer_case:
+		return fmt.Sprint(v.GetInteger())
+	case s4qlpb.Value_Real_case:
+		r := v.GetReal()
+		format := byte('f')
+		if a := math.Abs(r); a != 0 && (a < 1e-6 || a >= 1e21) {
+			format = 'g'
+		}
+		s := strconv.FormatFloat(r, format, -1, 64)
+		if !strings.ContainsAny(s, ".eIN") {
+			s += ".0"
+		}
+		return s
+	case s4qlpb.Value_Text_case:
+		return "'" + strings.ReplaceAll(v.GetText(), "'", "''") + "'"
+	case s4qlpb.Value_Blob_case:
+		return blobText(v.GetBlob())
+	case s4qlpb.Value_Null_case:
+		return "NULL"
+	}
+	return fmt.Sprint("a value of kind ", v.WhichKind())
+}
+
+// planDiff of the golden text want and the text got, by block: the header with the statements of the
+// schema, and each query by its name. It is empty if the two are equal.
+func planDiff(want, got string) string {
+	if want == got {
+		return ""
+	}
+	wantHeader, wantBlocks := planBlocks(want)
+	gotHeader, gotBlocks := planBlocks(got)
+	var b strings.Builder
+	lines := func(prefix, s string) {
+		for line := range strings.Lines(s) {
+			b.WriteString(prefix + line)
+		}
+	}
+	if wantHeader != gotHeader {
+		b.WriteString("the statements of the schema changed:\n")
+		lines("- ", wantHeader)
+		lines("+ ", gotHeader)
+	}
+	wanted := map[string]string{}
+	for _, block := range wantBlocks {
+		if _, ok := wanted[block[0]]; ok {
+			fmt.Fprintf(&b, "the golden file has two queries named %q\n", block[0])
+		}
+		wanted[block[0]] = block[1]
+	}
+	gotten := map[string]bool{}
+	for _, block := range gotBlocks {
+		gotten[block[0]] = true
+	}
+	for _, block := range wantBlocks {
+		if !gotten[block[0]] {
+			fmt.Fprintf(&b, "the query %q is gone:\n", block[0])
+			lines("- ", block[1])
+		}
+	}
+	for _, block := range gotBlocks {
+		old, ok := wanted[block[0]]
+		switch {
+		case !ok:
+			fmt.Fprintf(&b, "the query %q is new:\n", block[0])
+			lines("+ ", block[1])
+		case old != block[1]:
+			fmt.Fprintf(&b, "the plan of the query %q changed:\n", block[0])
+			b.WriteString(lineDiff(slices.Collect(strings.Lines(old)), slices.Collect(strings.Lines(block[1]))))
+		}
+	}
+	if b.Len() == 0 {
+		b.WriteString("the queries are in another order, or the file differs in its spaces\n")
+	}
+	return b.String()
+}
+
+// lineDiff of the lines before and after, by their longest common subsequence. A line of both is
+// prefixed with "  ", a line of before alone with "- ", and a line of after alone with "+ ".
+func lineDiff(before, after []string) string {
+	// common[i][j] is the length of the longest common subsequence of before[i:] and after[j:].
+	common := make([][]int, len(before)+1)
+	for i := range common {
+		common[i] = make([]int, len(after)+1)
+	}
+	for i := len(before) - 1; i >= 0; i-- {
+		for j := len(after) - 1; j >= 0; j-- {
+			if before[i] == after[j] {
+				common[i][j] = common[i+1][j+1] + 1
+			} else {
+				common[i][j] = max(common[i+1][j], common[i][j+1])
+			}
+		}
+	}
+	var b strings.Builder
+	i, j := 0, 0
+	for i < len(before) || j < len(after) {
+		switch {
+		case i < len(before) && j < len(after) && before[i] == after[j]:
+			b.WriteString("  " + before[i])
+			i, j = i+1, j+1
+		case j == len(after) || (i < len(before) && common[i+1][j] >= common[i][j+1]):
+			b.WriteString("- " + before[i])
+			i++
+		default:
+			b.WriteString("+ " + after[j])
+			j++
+		}
+	}
+	return b.String()
+}
+
+// planBlocks of a text of [planText]: the header before the first block, and each block as its name
+// and its text.
+func planBlocks(s string) (string, [][2]string) {
+	parts := strings.Split(s, "\n## ")
+	var blocks [][2]string
+	for _, part := range parts[1:] {
+		name, _, _ := strings.Cut(part, "\n")
+		blocks = append(blocks, [2]string{name, "## " + part})
+	}
+	return parts[0], blocks
 }

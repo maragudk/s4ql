@@ -265,3 +265,78 @@ func TestWhereCases(t *testing.T) {
 		})
 	}
 }
+
+func TestChosenAccess(t *testing.T) {
+	// The table t (k int primary key, a int not null, b text, c real) of the README of the engine, with
+	// the indexes ia on (a) and iab on (a, b), created in that order, and ic on (c desc).
+	columns := []stmttest.TableColumn{
+		{Name: "k", Type: "INT", PrimaryKey: true},
+		{Name: "a", Type: "INT"},
+		{Name: "b", Type: "TEXT", Nullable: true},
+		{Name: "c", Type: "REAL", Nullable: true},
+	}
+	indexes := []stmttest.TableIndex{
+		{Name: "ia", Columns: []stmttest.IndexKeyColumn{{Position: 1}}},
+		{Name: "iab", Columns: []stmttest.IndexKeyColumn{{Position: 1}, {Position: 2}}},
+		{Name: "ic", Columns: []stmttest.IndexKeyColumn{{Position: 3, Descending: true}}},
+	}
+	cases := []struct {
+		src  string
+		args []any
+		want string
+	}{
+		{src: "select * from t where k = 1 and a = 2", want: "a get of one key []interface {}{1}"},
+		{src: "select * from t where a = 10", want: "a scan of the index ia with 1 pinned []interface {}{10}"},
+		{src: "select * from t where a = 10 and b = 'x'", want: `a scan of the index iab with 2 pinned []interface {}{10, "x"}`},
+		{src: "select * from t where a = 10 and b > 'x'", want: `a scan of the index iab with 1 pinned []interface {}{10} from a lower bound ("x"`},
+		{src: "select * from t where a = 10 and k > 3", want: "a scan of the index ia with 1 pinned []interface {}{10} from a lower bound (3"},
+		{src: "select * from t where k > 3 and c < 1.5", want: "a scan from a lower bound (3"},
+		{src: "select * from t where c < 1.5 and c <= 1.5", want: "a scan of the index ic to an upper bound 1.5)"},
+		{src: "select * from t where b is null and a = ?", args: []any{int64(1)}, want: "a scan of the index iab with 2 pinned []interface {}{1, interface {}(nil)}"},
+		{src: "select * from t where a is null", want: "a scan of every row"},
+		{src: "select * from t where a = 1 and a = 2", want: "a scan of the index ia with 1 pinned []interface {}{1}"},
+		{src: "select * from t where b != 'x'", want: "a scan of every row"},
+		{src: "select * from t where c = null", want: "no row"},
+		{src: "select * from t where k is null and a = 1", want: "no row"},
+	}
+	for _, c := range cases {
+		t.Run(c.src, func(t *testing.T) {
+			s, err := stmt.Check(c.src)
+			is.NotError(t, err)
+			a, ok := stmttest.ChosenAccess(columns, indexes, s.(*stmt.Select), c.args)
+			is.True(t, ok)
+			is.Equal(t, c.want, a.String())
+		})
+	}
+
+	t.Run("should report false for a select that SQLite or s4ql refuses", func(t *testing.T) {
+		for _, src := range []string{"select * from t where x = 1", "select * from t where a = 'x'", "select * from t where a = ?"} {
+			s, err := stmt.Check(src)
+			is.NotError(t, err)
+			_, ok := stmttest.ChosenAccess(columns, indexes, s.(*stmt.Select), nil)
+			is.True(t, !ok, src)
+		}
+	})
+}
+
+func TestIndexRule(t *testing.T) {
+	tables := map[string][]stmttest.TableColumn{
+		"t": {{Name: "k", Type: "INT", PrimaryKey: true}, {Name: "a", Type: "INT"}},
+		"u": {{Name: "v", Type: "TEXT", PrimaryKey: true}},
+	}
+	indexes := map[string]bool{"i": true}
+	for _, c := range []struct{ src, want string }{
+		{"create index j on t (a, k desc)", ""},
+		{"create index t on nosuch (a)", "no such table: main.nosuch"},
+		{"create index T on u (nosuch)", "there is already a table named T"},
+		{"create index I on u (nosuch)", "index I already exists"},
+		{`create index j on t (a, "z" desc, y)`, `no such column: "z" - should this be a string literal in single-quotes?`},
+		{"create index j on t (a, z desc, y)", "no such column: z"},
+		{"drop index I", ""},
+		{"drop index t", "no such index: t"},
+	} {
+		s, err := stmt.Check(c.src)
+		is.NotError(t, err, c.src)
+		is.Equal(t, c.want, stmttest.IndexRule(tables, indexes, s), c.src)
+	}
+}

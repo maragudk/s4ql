@@ -38,7 +38,7 @@ import (
 var (
 	seed      = flag.Uint64("seed", 0, "first seed of the sequences of statements")
 	sequences = flag.Int("sequences", 300, "sequences of statements of TestDifferential")
-	length    = flag.Int("length", 40, "statements in each sequence of TestDifferential")
+	length    = flag.Int("length", 48, "statements in each sequence of TestDifferential")
 	scanAll   = flag.Bool("scanall", false, "read every row of its table in each query of TestDifferential and FuzzDifferential_core, and not the rows by the key")
 	// directions replays a failure that depends on the directions in which the queries read: a test
 	// that fails logs the seed of each of its instances.
@@ -279,7 +279,7 @@ func (o *oracle) state(t testing.TB) string {
 		a := o.run(t, "select * from "+stmttest.Quote(name)+" order by "+strings.Join(key, ", "))
 		fmt.Fprintf(&b, "%v (%v): %v\n", name, strings.Join(cs, ", "), strings.Join(a.rows, " "))
 	}
-	return b.String()
+	return b.String() + o.indexes(t)
 }
 
 // columnText of a column of a table in the text of a state: its name and its declared type, and
@@ -462,6 +462,8 @@ type instance struct {
 	// that have none of their own: the engine of the n-th open has the seed plus n.
 	seed  uint64
 	opens uint64
+	// planted is set for an instance whose engine has a planted bug, which can cause an internal error.
+	planted bool
 }
 
 // seeded gives the instance the seed of the flag -directions, or one that it draws, and logs it if
@@ -580,7 +582,7 @@ func (i *instance) queryValues(src string, args []*s4qlpb.Value) answer {
 		}
 	}
 	if err != nil {
-		return errAnswer(i.t, src, err)
+		return i.errAnswer(src, err)
 	}
 	var a answer
 	var columns []string
@@ -590,7 +592,7 @@ func (i *instance) queryValues(src string, args []*s4qlpb.Value) answer {
 	a.columns = strings.Join(columns, ", ")
 	for row, err := range rows.All() {
 		if err != nil {
-			return answer{err: errText(i.t, src, err)}
+			return i.errAnswer(src, err)
 		}
 		values := make([]string, len(row))
 		for j, v := range row {
@@ -617,9 +619,19 @@ func (i *instance) execValues(src string, args []*s4qlpb.Value) answer {
 		i.changes = res.Changes
 	}
 	if err != nil {
-		return errAnswer(i.t, src, err)
+		return i.errAnswer(src, err)
 	}
 	return answer{}
+}
+
+// errAnswer of the engine's error err for src, as [errAnswer] gives it, or, for an instance with a
+// planted bug, an answer of the internal error that the bug can cause.
+func (i *instance) errAnswer(src string, err error) answer {
+	i.t.Helper()
+	if i.planted && errors.Is(err, engine.ErrInternal) {
+		return answer{err: "internal error", message: err.Error()}
+	}
+	return errAnswer(i.t, src, err)
 }
 
 // state of the database in the engine's instance, as [oracle.state] gives it, read from the core.
@@ -654,7 +666,9 @@ func (i *instance) state() string {
 		}
 		fmt.Fprintf(&b, "%v (%v): %v\n", ct.GetTable(), strings.Join(columns, ", "), strings.Join(rows, " "))
 	}
-	return b.String()
+	indexes, err := indexesText(ctx, r, tables)
+	is.NotError(i.t, err)
+	return b.String() + indexes
 }
 
 // sequence of random statements of slice 1, as [stmttest.Sequence] gives them.
@@ -820,38 +834,57 @@ func generatedOptions() engine.Options {
 // does.
 func differentialOn(t testing.TB, seed uint64, n int, restarts bool, y tally, i *instance) {
 	t.Helper()
+	if failure := differentialFind(t, seed, n, restarts, y, i, generatedOptions()); failure != "" {
+		t.Fatal(failure)
+	}
+}
+
+// differentialFind runs the sequence of n statements from seed on the instance i, as [differential]
+// does, with the options of the engine options after each restart, and gives the first difference
+// from SQLite, with the statements before it, or "".
+func differentialFind(t testing.TB, seed uint64, n int, restarts bool, y tally, i *instance, options engine.Options) (failure string) {
+	t.Helper()
 	r := rand.New(rand.NewPCG(seed, 0xe1e))
 	q := newSequence(t, r)
-	p := newPair(t, i, y)
+	if seed%3 == 2 {
+		// A third of the sequences write more of slice 9, so that more WHERE meet an index, of more
+		// columns, which its paths pin.
+		q.Indexed()
+	}
+	p := newPairWith(t, i, y, options)
+	p.rnd = rand.New(rand.NewPCG(seed, 0x9a7))
 	// The other instance closes at the end of the sequence too, as [differential] closes i.
 	defer p.other.close()
 	var log []string
-	fail := func(format string, args ...any) {
-		t.Helper()
-		t.Fatalf("seed %v, after\n%v\n%v", seed, strings.Join(log, "\n"), fmt.Sprintf(format, args...))
+	fail := func(format string, args ...any) string {
+		return fmt.Sprintf("seed %v, after\n%v\n%v", seed, strings.Join(log, "\n"), fmt.Sprintf(format, args...))
 	}
 	for range n {
 		if restarts && r.IntN(10) == 0 {
 			empty := r.IntN(2) == 0
 			log = append(log, fmt.Sprint("-- restart, with an empty cache: ", empty))
-			i.restart(empty, generatedOptions())
+			if p.o.indexes(t) != "" {
+				p.count(map[bool]string{true: "replay of indexes into an empty cache", false: "restart with indexes in the cache"}[empty])
+			}
+			i.restart(empty, options)
 			if got, want := i.state(), p.o.state(t); got != want {
-				fail("after the restart the engine holds\n%v\nand SQLite\n%v", got, want)
+				return fail("after the restart the engine holds\n%v\nand SQLite\n%v", got, want)
 			}
 		}
 		c := q.Next()
 		log = append(log, fmt.Sprintf("%v -- with %#v", c.Src, c.Args))
 		if failure := p.step(c); failure != "" {
-			fail("%v", failure)
+			return fail("%v", failure)
 		}
 	}
 	want := p.o.state(t)
 	if got := i.state(); got != want {
-		fail("at the end the engine holds\n%v\nand SQLite\n%v", got, want)
+		return fail("at the end the engine holds\n%v\nand SQLite\n%v", got, want)
 	}
 	if got := p.other.state(); got != want {
-		fail("at the end the other engine, which reads the rows the other way, holds\n%v\nand SQLite\n%v", got, want)
+		return fail("at the end the other engine, which reads the rows the other way, holds\n%v\nand SQLite\n%v", got, want)
 	}
+	return ""
 }
 
 // pair of the engine's instance i and SQLite o, which run the same statements.
@@ -874,18 +907,33 @@ type pair struct {
 	ways int
 	// last is the engine's answer of the last call of [pair.step].
 	last answer
-	y    tally
+	// rnd draws the candidates of [pair.everyPath], from a seed of the pair's own, so that the
+	// sequence draws as it would without them.
+	rnd *rand.Rand
+	// inTx is set while the statements run in a transaction.
+	inTx bool
+	// allPaths is set for a pair whose [pair.everyPath] runs each WHERE by every candidate, and not by
+	// [pathSample] of them.
+	allPaths bool
+	y        tally
 }
 
 // newPair of the instance i and SQLite, with the length limit of i, and a second instance of the
 // engine of the kind of i, on a database in memory or on the core with the length limit of i.
 func newPair(t testing.TB, i *instance, y tally) *pair {
 	t.Helper()
-	p := &pair{t: t, i: i, o: newOracle(t), empty: newOracle(t), y: y}
+	return newPairWith(t, i, y, engine.Options{})
+}
+
+// newPairWith is [newPair] with the options of the other instance on the core, options.
+func newPairWith(t testing.TB, i *instance, y tally, options engine.Options) *pair {
+	t.Helper()
+	p := &pair{t: t, i: i, o: newOracle(t), empty: newOracle(t), y: y, rnd: rand.New(rand.NewPCG(0, 0x9a7))}
 	if i.memory != nil {
 		p.other = newMemoryInstance(t)
 	} else {
-		p.other = newInstanceLimited(t, engine.Options{}, nil, i.limit)
+		p.other = newInstanceLimited(t, options, nil, i.limit)
+		p.other.planted = i.planted
 	}
 	t.Cleanup(p.o.close)
 	t.Cleanup(p.empty.close)
@@ -1023,11 +1071,11 @@ func (p *pair) step(c stmttest.Call) string {
 	return ""
 }
 
-// otherPaths are the paths that the other instance of a [pair] reads by, in turn, where the instance
-// reads as the rules choose: every row of the table, and the primary key, which scans with the key
-// pinned where the rules get one row, each forward and backward, and then each index of the names,
-// forward and backward. The generated sequences create no index yet, so the pairs give no names; a
-// path of an index that the table of a statement does not have reads as the rules choose.
+// otherPaths are the paths that the other instance of a [pair] runs the calls by, in turn, where the
+// instance reads as the rules choose: every row of the table, and the primary key, which scans with
+// the key pinned where the rules get one row, each forward and backward, and then each index of the
+// names, forward and backward. A path of an index that the table of a statement does not have reads
+// as the rules choose.
 func otherPaths(indexes ...string) []engine.Path {
 	paths := []engine.Path{{Full: true, Forward: true}, {Full: true, Backward: true}, {Primary: true, Forward: true}, {Primary: true, Backward: true}}
 	for _, name := range indexes {
@@ -1036,26 +1084,384 @@ func otherPaths(indexes ...string) []engine.Path {
 	return paths
 }
 
+// candidate is a path that can serve a select, and the access that the engine reads by on it.
+type candidate struct {
+	path   engine.Path
+	access engine.Access
+}
+
+// candidates of the select src, with the arguments args, on the table ct with the indexes cis, in
+// the order in which they were created: every path that can serve it, each once for what it reads
+// and its direction. They are every row, the primary key, and each index, each with every number of
+// pinned columns that it can have, of which the most bounds the next column if the conditions bound
+// it, and each forward and backward.
+func candidates(src string, ct *s4qlpb.CreateTable, cis []*s4qlpb.CreateIndex, args []*s4qlpb.Value) []candidate {
+	var cs []candidate
+	seen := map[string]bool{}
+	add := func(p engine.Path) (engine.Access, bool) {
+		a, ok := engine.PathAccessOf(src, ct, cis, args, p)
+		if !ok {
+			return a, false
+		}
+		if key := fmt.Sprint(a.String(), a.Index, a.Equal, a.Lower, a.LowerOpen, a.Upper, a.UpperOpen, a.Backward); !seen[key] {
+			seen[key] = true
+			cs = append(cs, candidate{path: p, access: a})
+		}
+		return a, true
+	}
+	names := []string{""}
+	for _, ci := range cis {
+		names = append(names, ci.GetIndex())
+	}
+	for _, backward := range []bool{false, true} {
+		add(engine.Path{Full: true, Forward: !backward, Backward: backward})
+		for _, name := range names {
+			p := engine.Path{Primary: name == "", Index: name, Forward: !backward, Backward: backward}
+			a, ok := add(p)
+			if !ok {
+				continue
+			}
+			for pins := range len(a.Equal) {
+				p.Limited, p.Pins = true, pins
+				add(p)
+			}
+		}
+	}
+	return cs
+}
+
+// keyColumn of the key that a scan reads in the order of: the name of its column as the table stores
+// it, and whether the key holds it in descending order.
+type keyColumn struct {
+	name       string
+	descending bool
+}
+
+// accessKey of the access a on the table ct with the indexes cis: the key of the index of a, its columns and
+// then those of the primary key that it does not hold, or the primary key.
+func accessKey(a engine.Access, ct *s4qlpb.CreateTable, cis []*s4qlpb.CreateIndex) []keyColumn {
+	var key []keyColumn
+	held := map[uint32]bool{}
+	for _, ci := range cis {
+		if a.Index == "" || fold(ci.GetIndex()) != fold(a.Index) {
+			continue
+		}
+		for _, c := range ci.GetColumns() {
+			key = append(key, keyColumn{name: ct.GetColumns()[c.GetColumn()].GetName(), descending: c.GetDescending()})
+			held[c.GetColumn()] = true
+		}
+	}
+	for _, position := range ct.GetPrimaryKey() {
+		if !held[position] {
+			key = append(key, keyColumn{name: ct.GetColumns()[position].GetName()})
+		}
+	}
+	return key
+}
+
+// orderOf the key: the ORDER BY that gives the rows in the order of the key, or in its reverse if
+// backward.
+func orderOf(key []keyColumn, backward bool) string {
+	var terms []string
+	for _, c := range key {
+		term := stmttest.Quote(c.name)
+		if c.descending != backward {
+			term += " desc"
+		}
+		terms = append(terms, term)
+	}
+	return " order by " + strings.Join(terms, ", ")
+}
+
+// pathKinds of the candidate k, whose key is key, for the tally: whether it reads no row or every
+// row, else by the primary key or by an index, with how many columns pinned and whether with a
+// range, and whether backward, with a pin of NULL, with a range on a column that the key holds in
+// descending order, by an index of a descending column, and by an index that holds the primary key.
+func pathKinds(k candidate, key []keyColumn, ct *s4qlpb.CreateTable) []string {
+	a := k.access
+	var kinds []string
+	if a.Backward {
+		kinds = append(kinds, "path backward")
+	} else {
+		kinds = append(kinds, "path forward")
+	}
+	switch {
+	case a.None:
+		return append(kinds, "path that reads no row")
+	case a.Full:
+		return append(kinds, "path of every row")
+	}
+	by := "the primary key"
+	if a.Index != "" {
+		by = "an index"
+	}
+	ranged := ""
+	if a.Lower != nil || a.Upper != nil {
+		ranged = " and a range"
+		if key[len(a.Equal)].descending {
+			kinds = append(kinds, "path with a range on a descending column")
+		}
+	}
+	kinds = append(kinds, fmt.Sprint("path of ", by, " with ", len(a.Equal), " pinned", ranged))
+	if slices.ContainsFunc(a.Equal, (*s4qlpb.Value).HasNull) {
+		kinds = append(kinds, "path with a pin of NULL")
+	}
+	if a.Index != "" {
+		if slices.ContainsFunc(key, func(c keyColumn) bool { return c.descending }) {
+			kinds = append(kinds, "path of an index of a descending column")
+		}
+		if len(key) > 0 && len(key) == len(ct.GetColumns()) {
+			kinds = append(kinds, "path of an index that holds every column")
+		}
+	}
+	return kinds
+}
+
+// pathSample is the number of candidates, as [candidates] gives them, that [pair.everyPath] runs for
+// each select with WHERE, and for the WHERE of each update and delete, beside the access of the
+// rules.
+const pathSample = 4
+
+// everyPath runs the WHERE of the statement s of the call c, a select with WHERE or the select of the
+// WHERE of an update or a delete, as [stmttest.SelectOf] gives it, on the other instance of the pair,
+// before the call changes anything: by the access of the rules, and by [pathSample] candidates of
+// [candidates] at random, or by each if there are no more or the pair has allPaths. Each must give
+// the rows that SQLite gives, as a multiset, and a candidate, whose path is forced, the rows in the
+// order of its key, as SQLite's ORDER BY of the key gives them. One candidate in four, and the access of the rules, run outside a
+// transaction on the core, also go through [core.ReadTx.ScanPlan], and SQLite must search the index
+// and the bounds that the engine asked for, as [wantPlan] says. A WHERE that s4ql refuses, or SQLite,
+// or that has an argument that no column holds, is left to the comparison of the call. The candidates
+// that it runs are counted in the tally, by [pathKinds]. It gives what differs, or "".
+func (p *pair) everyPath(s stmt.Statement, c stmttest.Call) string {
+	t, o, other := p.t, p.o, p.other
+	t.Helper()
+	var sel *stmt.Select
+	args := c.Args
+	switch s := s.(type) {
+	case *stmt.Select:
+		sel = s
+	case *stmt.Update, *stmt.Delete:
+		sel, args = stmttest.SelectOf(s, c.Args)
+	}
+	if sel == nil || sel.Where == nil || len(args) != sel.Parameters() || slices.ContainsFunc(args, func(a any) bool { return refusal(a) != "" }) || p.longCondition(c.Src) {
+		return ""
+	}
+	table, columns := o.columns(t, sel.Table.Value)
+	if columns == nil {
+		return ""
+	}
+	src, bound := stmttest.SelectText(sel, oracleArgs(args), "")
+	want := o.run(t, src, bound...)
+	if want.err != "" {
+		return ""
+	}
+	vals := values(bound)
+	defer other.e.SetPath(engine.Path{})
+	other.e.SetPath(engine.Path{})
+	rules := other.queryValues(src, vals)
+	if rules.err == "not supported" {
+		// s4ql's refusal of a value of another type than its column, which the comparison of the call
+		// checks against s4ql's rule.
+		return ""
+	}
+	if rules.String() != want.String() {
+		return fmt.Sprintf("%q with %#v: the WHERE, as %q with %#v, gives\n%v\nas the rules choose, and SQLite\n%v", c.Src, c.Args, src, bound, rules, want)
+	}
+	ct := createTableOf(table, columns)
+	cis, _ := o.tableIndexes(t, table, columns)
+	if a, ok := engine.AccessOf(src, ct, cis, vals); ok && p.rnd.IntN(4) == 0 {
+		if failure := p.checkPlan(src, table, a, ct, cis); failure != "" {
+			return failure
+		}
+	}
+	cs := candidates(src, ct, cis, vals)
+	p.count("WHERE run by every path")
+	if len(cis) > 0 {
+		p.count("WHERE run by every path on a table with an index")
+	}
+	if !p.allPaths && len(cs) > pathSample {
+		for j := range pathSample {
+			k := j + p.rnd.IntN(len(cs)-j)
+			cs[j], cs[k] = cs[k], cs[j]
+		}
+		cs = cs[:pathSample]
+		p.count("WHERE run by a sample of its paths")
+	}
+	for _, k := range cs {
+		other.e.SetPath(k.path)
+		got := other.queryValues(src, vals)
+		if got.String() != want.String() {
+			return fmt.Sprintf("%q with %#v: the WHERE, as %q with %#v, gives\n%v\nby the path %+v, which reads by %v, and SQLite\n%v", c.Src, c.Args, src, bound, got, k.path, k.access, want)
+		}
+		key := accessKey(k.access, ct, cis)
+		ordered, orderedArgs := stmttest.SelectText(sel, oracleArgs(args), orderOf(key, k.access.Backward))
+		in := o.run(t, ordered, orderedArgs...)
+		if !k.access.None && !slices.Equal(got.rows, in.rows) {
+			return fmt.Sprintf("%q with %#v: the WHERE gives the rows\n%v\nby the path %+v, which reads by %v, and SQLite, as %q,\n%v", c.Src, c.Args, got.rows, k.path, k.access, ordered, in.rows)
+		}
+		for _, kind := range pathKinds(k, key, ct) {
+			p.count(kind)
+		}
+		if p.rnd.IntN(4) == 0 {
+			if failure := p.checkPlan(src, table, k.access, ct, cis); failure != "" {
+				return failure
+			}
+		}
+	}
+	return ""
+}
+
+// checkPlan of the select src on the table of the name, which reads by the access a, on the table ct
+// with the indexes cis: on the other instance of the pair, outside a transaction and on the core, the
+// plan of SQLite for the scan of a, as [core.ReadTx.ScanPlan] gives it, must be the one row that
+// [wantPlan] gives. An access that reads no row, or one row by a get, has no scan. It gives what
+// differs, or "".
+func (p *pair) checkPlan(src, table string, a engine.Access, ct *s4qlpb.CreateTable, cis []*s4qlpb.CreateIndex) string {
+	other := p.other
+	if other.d == nil || p.inTx || a.None || a.Point != nil {
+		return ""
+	}
+	sql, plan := scanPlan(p.t, other, table, a)
+	want := wantPlan(a, ct, cis)
+	if !slices.Equal(plan, []string{want}) {
+		return fmt.Sprintf("%q: the cache runs %q for the access %v, and SQLite's plan for it is %q, where it must be %q", src, sql, a, plan, want)
+	}
+	p.count("plan of the cache checked")
+	return ""
+}
+
+// scanPlan of the scan of the access a of the table of the name in the instance i, outside a
+// transaction: the statement that the cache runs, and SQLite's plan for it, as
+// [core.ReadTx.ScanPlan] gives them.
+func scanPlan(t testing.TB, i *instance, table string, a engine.Access) (string, []string) {
+	t.Helper()
+	ctx := t.Context()
+	rd, err := i.d.Reader(ctx)
+	is.NotError(t, err)
+	defer func() { is.NotError(t, rd.Close(ctx)) }()
+	r, err := rd.Read(ctx)
+	is.NotError(t, err)
+	defer func() { is.NotError(t, r.Close(ctx)) }()
+	sql, plan, err := r.ScanPlan(ctx, table, a.Scan())
+	is.NotError(t, err)
+	return sql, plan
+}
+
+// wantPlan is the one row of SQLite's plan of the statement of the cache for the scan of the access
+// a on the table ct with the indexes cis: a search of the index of a, or of the primary key, with a
+// constraint for each pinned column and for each bound of the next, or a scan of the index or of the
+// table where a pins and bounds nothing, and no sort, since the statement orders by the key that the
+// index holds. An index whose key holds every column of the table covers it.
+func wantPlan(a engine.Access, ct *s4qlpb.CreateTable, cis []*s4qlpb.CreateIndex) string {
+	key := accessKey(a, ct, cis)
+	var constraints []string
+	for i := range a.Equal {
+		constraints = append(constraints, key[i].name+"=?")
+	}
+	if a.Lower != nil {
+		constraints = append(constraints, key[len(a.Equal)].name+">?")
+	}
+	if a.Upper != nil {
+		constraints = append(constraints, key[len(a.Equal)].name+"<?")
+	}
+	by := "PRIMARY KEY"
+	if a.Index != "" {
+		by = "INDEX " + a.Index
+		if len(key) == len(ct.GetColumns()) {
+			by = "COVERING " + by
+		}
+	}
+	switch {
+	case len(constraints) > 0:
+		return fmt.Sprint("SEARCH main.", ct.GetTable(), " USING ", by, " (", strings.Join(constraints, " AND "), ")")
+	case a.Index != "":
+		return fmt.Sprint("SCAN main.", ct.GetTable(), " USING ", by)
+	}
+	return "SCAN main." + ct.GetTable()
+}
+
+// tableIndexes of the table of the name and the columns in SQLite's database, in the order in which
+// they were created: as the engine's definitions, and as those of [stmttest.ChosenAccess].
+func (o *oracle) tableIndexes(t testing.TB, table string, columns []stmttest.TableColumn) ([]*s4qlpb.CreateIndex, []stmttest.TableIndex) {
+	t.Helper()
+	list := o.run(t, "select name from sqlite_schema where type = 'index' and tbl_name = ? and sql is not null order by rowid", table)
+	is.Equal(t, "", list.err)
+	var cis []*s4qlpb.CreateIndex
+	var model []stmttest.TableIndex
+	for _, quoted := range list.rows {
+		name := unquoted(t, quoted)
+		xinfo := o.run(t, `select cid, "desc" from pragma_index_xinfo(?) where key = 1 order by seqno`, name)
+		is.Equal(t, "", xinfo.err)
+		ci := s4qlpb.CreateIndex_builder{Index: new(name), Table: new(table)}
+		ix := stmttest.TableIndex{Name: name}
+		for _, row := range xinfo.rows {
+			cid, desc, _ := strings.Cut(row, ",")
+			position, err := strconv.Atoi(cid)
+			is.NotError(t, err)
+			column := s4qlpb.IndexColumn_builder{Column: new(uint32(position))}
+			if desc == "1" {
+				column.Descending = new(true)
+			}
+			ci.Columns = append(ci.Columns, column.Build())
+			ix.Columns = append(ix.Columns, stmttest.IndexKeyColumn{Position: position, Descending: desc == "1"})
+		}
+		cis = append(cis, ci.Build())
+		model = append(model, ix)
+	}
+	return cis, model
+}
+
+// indexNames of the table of the select, the update, or the delete s, in SQLite's database, in the
+// order in which they were created, or nil for another statement.
+func (p *pair) indexNames(s stmt.Statement) []string {
+	var table stmt.Name
+	switch s := s.(type) {
+	case *stmt.Select:
+		table = s.Table
+	case *stmt.Update:
+		table = s.Table
+	case *stmt.Delete:
+		table = s.Table
+	default:
+		return nil
+	}
+	name, columns := p.o.columns(p.t, table.Value)
+	if columns == nil {
+		return nil
+	}
+	cis, _ := p.o.tableIndexes(p.t, name, columns)
+	var names []string
+	for _, ci := range cis {
+		names = append(names, ci.GetIndex())
+	}
+	return names
+}
+
 // bothWays runs the call c, whose answer of the engine of the instance is got, on the other instance
-// of the pair, through the same method, by the next of the paths of [otherPaths], as
-// [engine.Engine.SetPath] forces it, where the engine of the instance reads the rows as the rules
-// choose, and as the rules choose where it reads every row, as an engine of -scanall does. The rows
-// of the two are compared as multisets, as every two answers are: each query of the instance reads
-// in a direction that its engine draws. The two must
-// give the same answer, message, and count of changes, and after an update or a delete with WHERE
-// the same rows of its table, as a select of * gives them on each, so that each test that compares
-// the instance with SQLite compares both ways of reading rows, of a select and of the rows that an
-// update or a delete changes, also in transactions. The other instance runs every call, so that it
-// holds what the instance holds. A second instance, and not a second run on the instance, because an
-// update or a delete changes what a second run would find. bothWays counts a select with WHERE in the
-// tally under "reached: read both ways", and an update or a delete with WHERE under "reached: changed
-// both ways", each also with " in a read-only transaction" in one, and gives what differs, or "".
+// of the pair, through the same method, by the next of the paths of [otherPaths] for the indexes of
+// the table of c, as [engine.Engine.SetPath] forces it, where the engine of the instance reads the
+// rows as the rules choose, and as the rules choose where it reads every row, as an engine of
+// -scanall does. Before that, for a WHERE, it runs [pair.everyPath]. The rows of the two are compared
+// as multisets, as every two answers are: each query of the instance reads in a direction that its
+// engine draws. The two must give the same answer, message, and count of changes, and after an update
+// or a delete with WHERE the same rows of its table, as a select of * gives them on each, so that each
+// test that compares the instance with SQLite compares the ways of reading rows, of a select and of
+// the rows that an update or a delete changes, also in transactions. The other instance runs every
+// call, so that it holds what the instance holds. A second instance, and not a second run on the
+// instance, because an update or a delete changes what a second run would find. bothWays counts a
+// select with WHERE in the tally under "reached: read both ways", and an update or a delete with
+// WHERE under "reached: changed both ways", each also with " in a read-only transaction" in one, and
+// gives what differs, or "".
 func (p *pair) bothWays(c stmttest.Call, got answer) string {
 	i, other := p.i, p.other
 	byKey := !i.e.ScansAll()
+	s, _ := checkText(c.Src)
+	if failure := p.everyPath(s, c); failure != "" {
+		return failure
+	}
 	path := engine.Path{}
 	if byKey {
-		paths := otherPaths()
+		paths := otherPaths(p.indexNames(s)...)
 		path = paths[p.ways%len(paths)]
 		p.ways++
 	}
@@ -1074,7 +1480,6 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 	if all.String() != got.String() || all.message != got.message || allChanges != changes {
 		return fmt.Sprintf("%q with %#v: the engine gives\n%v (%q)\nas the rules choose, and\n%v (%q)\nby the path %+v, with %v changes as the rules choose and %v by the path", c.Src, c.Args, got, got.message, all, all.message, path, changes, allChanges)
 	}
-	s, _ := checkText(c.Src)
 	var table *stmt.Name
 	what := ""
 	switch s := s.(type) {
@@ -1111,6 +1516,13 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 		return fmt.Sprintf("%q with %#v: after it, the table holds\n%v\nby the key, and\n%v\nwith every row read", c.Src, c.Args, rows, allRows)
 	}
 	return ""
+}
+
+// count the kind under "reached: " in the tally of the pair, if it has one.
+func (p *pair) count(kind string) {
+	if p.y != nil {
+		p.y["reached: "+kind]++
+	}
 }
 
 // reach counts in the tally what the call c, whose answer of the engine is got, reaches, under
@@ -1195,6 +1607,8 @@ func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, changes int64, 
 		}
 	case *stmt.Update, *stmt.Delete:
 		reachChange(t, o, s, c, got, outcome, changes, count)
+	case *stmt.CreateIndex, *stmt.DropIndex:
+		reachIndex(t, o, s, c, got, count)
 	case *stmt.Select:
 		table, columns := o.columns(t, s.Table.Value)
 		if columns == nil {
@@ -1261,6 +1675,9 @@ func reachWhere(t testing.TB, o *oracle, s *stmt.Select, c stmttest.Call, got an
 		if access != want {
 			t.Errorf("%q with %#v: the plan reads %q, and the rule %q", c.Src, c.Args, access, want)
 		}
+	}
+	if got.err != tooBig {
+		checkChoice(t, o, s, args, c, table, columns, count)
 	}
 	if !c.Query || got.err != "" {
 		return
@@ -1340,6 +1757,9 @@ func reachChange(t testing.TB, o *oracle, s stmt.Statement, c stmttest.Call, got
 				t.Errorf("%q with %#v: the scan of the rows reads %q, and the rule %q", c.Src, c.Args, access, want)
 			}
 		}
+		if got.err != tooBig {
+			checkChoice(t, o, sel, selArgs, c, table, columns, count)
+		}
 	}
 	if got.err != "" {
 		return
@@ -1355,6 +1775,137 @@ func reachChange(t testing.TB, o *oracle, s stmt.Statement, c stmttest.Call, got
 	default:
 		count(kind + " that changes some rows of a table")
 	}
+}
+
+// reachIndex counts what the create index or the drop index s of the call c, whose answer of the
+// engine is got, reaches on the database of o, before the call: its kind and its outcome, and for a
+// create index that succeeds, the number of its columns, and whether it holds the primary key, a
+// descending column, a column that takes NULL, and each type of column. For a call without
+// arguments, it checks the outcome against [stmttest.IndexRule], a second statement of SQLite's
+// errors of the names, which comes before SQLite's errors of a read-only transaction and of the
+// length limit, which the rule does not know.
+func reachIndex(t testing.TB, o *oracle, s stmt.Statement, c stmttest.Call, got answer, count func(string)) {
+	t.Helper()
+	if len(c.Args) > 0 {
+		return
+	}
+	tables := map[string][]stmttest.TableColumn{}
+	for _, quoted := range o.run(t, "select name from sqlite_schema where type = 'table'").rows {
+		name := unquoted(t, quoted)
+		_, tables[fold(name)] = o.columns(t, name)
+	}
+	indexes := map[string]bool{}
+	for _, quoted := range o.run(t, "select name from sqlite_schema where type = 'index' and sql is not null").rows {
+		indexes[fold(unquoted(t, quoted))] = true
+	}
+	rule := stmttest.IndexRule(tables, indexes, s)
+	kind := "drop index"
+	if _, ok := s.(*stmt.CreateIndex); ok {
+		kind = "create index"
+	}
+	switch {
+	case rule == "" && (strings.Contains(got.err, "attempt to write a readonly database") || got.err == tooBig || got.err == "not supported"):
+		count(kind + " " + messageKind(got.err))
+		return
+	case rule == "" && got.err != "":
+		t.Errorf("%q: the engine gives %v, and the rule nothing", c.Src, got)
+		return
+	case rule != "" && !strings.HasSuffix(got.err, ": "+rule):
+		t.Errorf("%q: the engine gives %v, and the rule %q", c.Src, got, rule)
+		return
+	case rule != "":
+		for _, what := range []string{"no such table", "there is already a table named", "already exists", "no such column", "no such index"} {
+			if strings.Contains(rule, what) {
+				count(kind + " " + what)
+			}
+		}
+		return
+	}
+	count(kind + " ok")
+	ci, ok := s.(*stmt.CreateIndex)
+	if !ok {
+		return
+	}
+	columns := tables[ci.Table.Fold()]
+	count(fmt.Sprint("create index of ", len(ci.Columns), " columns ok"))
+	for _, ic := range ci.Columns {
+		column := columns[stmttest.ColumnOf(columns, ic.Name)]
+		count("create index of a column of type " + column.Type + " ok")
+		if column.PrimaryKey {
+			count("create index that holds the primary key ok")
+		}
+		if column.Nullable {
+			count("create index of a column that takes NULL ok")
+		}
+		if ic.Descending {
+			count("create index of a descending column ok")
+		}
+	}
+}
+
+// accessOf the access a of the engine, in the terms of [stmttest.ChosenAccess].
+func accessOf(a engine.Access) stmttest.Access {
+	value := func(v *s4qlpb.Value) any {
+		switch {
+		case v == nil:
+			return nil
+		case v.HasInteger():
+			return v.GetInteger()
+		case v.HasReal():
+			return v.GetReal()
+		case v.HasText():
+			return v.GetText()
+		case v.HasBlob():
+			return v.GetBlob()
+		}
+		return nil
+	}
+	m := stmttest.Access{None: a.None, Get: a.Point != nil, Full: a.Full, Index: a.Index, LowerOpen: a.LowerOpen, UpperOpen: a.UpperOpen}
+	for _, v := range append(slices.Clone(a.Point), a.Equal...) {
+		m.Pins = append(m.Pins, value(v))
+	}
+	m.Lower, m.Upper = value(a.Lower), value(a.Upper)
+	return m
+}
+
+// checkChoice of the access of the select, the update, or the delete of the call c, whose WHERE is
+// that of the select s with the arguments args, on the table of the name and the columns in o:
+// unless s4ql or SQLite refuses it, the engine's choice, as [engine.AccessOf] gives it, must be the
+// model's, as [stmttest.ChosenAccess] gives it. It counts the choice under "chosen", by its kind.
+func checkChoice(t testing.TB, o *oracle, s *stmt.Select, args []any, c stmttest.Call, table string, columns []stmttest.TableColumn, count func(string)) {
+	t.Helper()
+	cis, indexes := o.tableIndexes(t, table, columns)
+	want, ok := stmttest.ChosenAccess(columns, indexes, s, args)
+	if !ok {
+		return
+	}
+	a, ok := engine.AccessOf(c.Src, createTableOf(table, columns), cis, values(c.Args))
+	if !ok || !accessOf(a).Same(want) {
+		t.Errorf("%q with %#v: the engine chooses %v, and the model %v", c.Src, c.Args, accessOf(a), want)
+		return
+	}
+	var kind string
+	switch {
+	case want.None:
+		kind = "no row"
+	case want.Get:
+		kind = "a get"
+	case want.Full:
+		kind = "every row"
+	default:
+		kind = "an index"
+		if want.Index == "" {
+			kind = "the primary key"
+		}
+		kind += fmt.Sprint(" with ", len(want.Pins), " pinned")
+		if want.Lower != nil || want.Upper != nil {
+			kind += " and a range"
+		}
+	}
+	if len(cis) > 1 {
+		kind += " of a table of several indexes"
+	}
+	count("chosen " + kind)
 }
 
 // createTableOf the table of the name and the columns, as SQLite has them, in the engine's terms.
@@ -1958,8 +2509,15 @@ func TestDifferential(t *testing.T) {
 		// arguments [stmttest.Sequence.Next] makes wrong in number or of no column now and then, which
 		// took the third up, and an update gives a column a value of another type, or compares one in
 		// its WHERE, now and then, which took the fourth up. The 4 are updates and deletes with a literal
-		// longer than the length limit, in SET or in WHERE.
-		want := map[string]int{acceptedStartedTable: 14, excusedArguments: 707, excusedArgument: 300, excusedType: 576, excusedLong: 2, excusedLongChange: 4}
+		// longer than the length limit, in SET or in WHERE. When the sequence wrote create indexes and
+		// drop indexes, a third of the sequences more of them, and the sequences grew from 40 statements
+		// to 48, so that the statements of the earlier slices are about as many as before, they went
+		// from 14, 707, 300, 576, 2, and 4 to 14, 822, 326, 477, 1, and 2: the sequence draws other
+		// random numbers, which moves each of them, and its longer sequences took the second and the
+		// third up; the create indexes and drop indexes, which have no values, take turns of the
+		// inserts, the updates, and the deletes, which took the fourth down, and a third of the
+		// sequences write more of them.
+		want := map[string]int{acceptedStartedTable: 14, excusedArguments: 822, excusedArgument: 326, excusedType: 477, excusedLong: 1, excusedLongChange: 2}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
 			// The count of [excusedRecordSlip] depends on the allocator of the platform.
@@ -1978,7 +2536,7 @@ func TestDifferential(t *testing.T) {
 // of [TestDifferential] must reach.
 var reachedDifferential = map[string]int{
 	"insert into INT ok": 130, "insert into INTEGER ok": 70, "insert into REAL ok": 100, "insert into TEXT ok": 110, "insert into BLOB ok": 100,
-	"insert into INT UNIQUE constraint failed": 50, "insert into INTEGER UNIQUE constraint failed": 26, "insert into REAL UNIQUE constraint failed": 34,
+	"insert into INT UNIQUE constraint failed": 14, "insert into INTEGER UNIQUE constraint failed": 26, "insert into REAL UNIQUE constraint failed": 34,
 	"insert into TEXT UNIQUE constraint failed": 26, "insert into BLOB UNIQUE constraint failed": 42,
 	"-0.0 literal into REAL UNIQUE constraint failed": 2, "-0.0 argument into REAL UNIQUE constraint failed": 2,
 	"insert into INT a value of another type": 20, "insert into INTEGER a value of another type": 20, "insert into REAL a value of another type": 24,
@@ -2027,7 +2585,7 @@ var reachedDifferential = map[string]int{
 	"insert that leaves out a column that takes NULL a value of another type": 11, "insert that leaves out a column that takes NULL NOT NULL constraint failed": 13,
 	"insert with NULL in the key: NOT NULL constraint failed": 17, "insert with NULL in a column that does not take it: NOT NULL constraint failed": 11,
 	"insert of NULL beside a value of another type NOT NULL constraint failed": 4, "insert of NULL beside a value of another type a value of another type": 6,
-	"select * with NULL ok": 45, "select of names with NULL ok": 7,
+	"select * with NULL ok": 12, "select of names with NULL ok": 7,
 
 	// Slice 7, a third of what the run gave on 2026-11-20 when the sequence wrote WHERE: each operator
 	// on the key and on another column, and with a value of another type on the key; each way that the
@@ -2041,7 +2599,7 @@ var reachedDifferential = map[string]int{
 	"= on the key ok": 22, "!= on the key ok": 27, "< on the key ok": 47, "<= on the key ok": 39, "> on the key ok": 39, ">= on the key ok": 42,
 	"IS NULL on the key ok": 19, "IS NOT NULL on the key ok": 16,
 	"= on another column ok": 10, "!= on another column ok": 8, "< on another column ok": 9, "<= on another column ok": 6, "> on another column ok": 11,
-	">= on another column ok": 7, "IS NULL on another column ok": 2, "IS NOT NULL on another column ok": 8,
+	">= on another column ok": 7, "IS NULL on another column ok": 2, "IS NOT NULL on another column ok": 2,
 	"= on the key a value of another type": 11, "!= on the key a value of another type": 11, "< on the key a value of another type": 14,
 	"<= on the key a value of another type": 11, "> on the key a value of another type": 12, ">= on the key a value of another type": 11,
 	"WHERE that reads no row ok": 29, "WHERE that reads a get of one key ok": 18, "WHERE that reads a scan from a lower bound ok": 15,
@@ -2095,7 +2653,7 @@ var reachedDifferential = map[string]int{
 	"update with arguments that s4ql refuses not supported": 10, "update with arguments that s4ql refuses wrong number of arguments": 22,
 	"update with a literal longer than the length limit in SET": 1,
 	"update WHERE that reads no row ok, no row found":           13, "update WHERE that reads a get of one key ok, rows changed": 10, "update WHERE that reads a scan from a lower bound ok, rows changed": 1,
-	"update WHERE that reads a scan to an upper bound ok, rows changed": 1, "update WHERE that reads a scan between two bounds ok, rows changed": 1,
+	"update WHERE that reads a scan between two bounds ok, rows changed":                  1,
 	"update WHERE that reads a scan between two bounds that hold no key ok, no row found": 5, "update WHERE that reads a scan of every row ok, rows changed": 3,
 	"update WHERE that tests a column more than once ok, rows changed": 3, "update WHERE with contradicting conditions ok, no row found": 11,
 	"delete with WHERE no such column": 18, "delete WHERE with a column in double quotes that the table does not have no such column": 13,
@@ -2106,6 +2664,79 @@ var reachedDifferential = map[string]int{
 	"delete WHERE that reads a scan between two bounds that hold no key ok, no row found": 9, "delete WHERE that reads a scan of every row ok, rows changed": 7,
 	"delete WHERE that tests a column more than once ok, rows changed": 7, "delete WHERE with contradicting conditions ok, no row found": 12,
 	"delete WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column": 1, "changed both ways": 576,
+	// The create indexes and drop indexes of slice 9, by outcome and by their columns, as [reachIndex]
+	// counts them; the choices of the rules, as [checkChoice] counts them; the paths that
+	// [pair.everyPath] runs, by their kinds, as [pathKinds] gives them, and the plans of the cache
+	// that it checks; and the restarts of a database with indexes. Each least number is a third of
+	// what the run gave on 2026-11-20, or 1.
+	"create index ok": 114, "create index already exists": 123, "create index no such column": 27, "create index no such table": 213,
+	"create index there is already a table named": 102, "drop index ok": 29, "drop index no such index": 117,
+	"create index of 1 columns ok": 71, "create index of 2 columns ok": 33, "create index of 3 columns ok": 9,
+	"create index of a column of type BLOB ok": 27, "create index of a column of type INT ok": 34, "create index of a column of type INTEGER ok": 36,
+	"create index of a column of type REAL ok": 34, "create index of a column of type TEXT ok": 34, "create index of a column that takes NULL ok": 43,
+	"create index of a descending column ok": 56, "create index that holds the primary key ok": 79,
+	"chosen no row": 53, "chosen a get": 155, "chosen every row": 47, "chosen the primary key with 0 pinned and a range": 75,
+	"chosen an index with 0 pinned and a range": 3, "chosen an index with 1 pinned": 6, "chosen an index with 1 pinned and a range": 4,
+	"chosen an index with 2 pinned": 1, "chosen an index with 2 pinned and a range": 1, "chosen an index with 1 pinned of a table of several indexes": 2,
+	"chosen a get of a table of several indexes": 9, "chosen every row of a table of several indexes": 2,
+	"WHERE run by every path": 379, "WHERE run by every path on a table with an index": 147, "WHERE run by a sample of its paths": 116,
+	"path forward": 717, "path backward": 721, "path that reads no row": 112, "path of every row": 652,
+	"path of the primary key with 1 pinned": 275, "path of the primary key with 0 pinned and a range": 151,
+	"path of an index with 0 pinned": 135, "path of an index with 0 pinned and a range": 26, "path of an index with 1 pinned": 69,
+	"path of an index with 1 pinned and a range": 6, "path of an index with 2 pinned": 7, "path of an index with 2 pinned and a range": 1,
+	"path of an index with 3 pinned": 1, "path of an index of a descending column": 111, "path with a range on a descending column": 12,
+	"path with a pin of NULL": 3, "path of an index that holds every column": 204, "plan of the cache checked": 380,
+	"replay of indexes into an empty cache": 33, "restart with indexes in the cache": 33,
+}
+
+// TestDifferential_plantedBugs runs the first sequences of [TestDifferential] with each planted bug
+// of the choice of an access in the engines of both instances of the pair, and requires that at
+// least a pinned number of them find the bug, by a difference from SQLite, also on a path that
+// [pair.everyPath] forces. Each sequence that finds the bug runs again without it and must find
+// nothing, as every sequence of [TestDifferential] does.
+func TestDifferential_plantedBugs(t *testing.T) {
+	n := 60
+	if slow() {
+		n = 6
+	}
+	for _, b := range []struct {
+		name string
+		// least is the number of the n sequences that must find the bug, about half of what they found
+		// on 2026-11-20.
+		least int
+	}{
+		{"pinByPlace", 3},
+	} {
+		t.Run(b.name, func(t *testing.T) {
+			found := 0
+			first := ""
+			for s := range uint64(n) {
+				var options engine.Options
+				options.Plant(b.name)
+				i := newInstanceLimited(t, options, nil, map[bool]int{true: stmttest.LengthLimit}[s%4 >= 2])
+				i.planted = true
+				limit := map[bool]int{true: stmttest.LengthLimit}[s%4 >= 2]
+				failure := differentialFind(t, *seed+s, *length, s%2 == 1, nil, i, options)
+				i.close()
+				if failure == "" {
+					continue
+				}
+				found++
+				if first == "" {
+					first = failure[:min(len(failure), 2000)]
+				}
+				clean := newInstanceLimited(t, generatedOptions(), nil, limit)
+				if failure := differentialFind(t, *seed+s, *length, s%2 == 1, nil, clean, generatedOptions()); failure != "" {
+					t.Errorf("seed %v finds something without the bug: %v", *seed+s, failure)
+				}
+				clean.close()
+			}
+			t.Logf("%v of %v sequences find the bug; the first finds: %v", found, n, first)
+			if !slow() && atDefault("seed", "length") {
+				is.True(t, found >= b.least, fmt.Sprint("the bug is found too rarely: ", found))
+			}
+		})
+	}
 }
 
 // TestPair_recordSlips pins the known difference of a record that is too long, of docs/todo.md, at the
@@ -2530,6 +3161,16 @@ func (r *fuzzBytes) take(n int) []byte {
 // of the type typ, after the arguments args of the parameters before them, and the arguments with
 // theirs, as [whereOf] says.
 func (r *fuzzBytes) conditions(typ string, names []string, most int, args []any) (string, []any) {
+	types := make([]string, len(names))
+	for j := range types {
+		types[j] = typ
+	}
+	return r.typedConditions(names, types, most, args)
+}
+
+// typedConditions are [fuzzBytes.conditions] on columns of the names, each of the type at its
+// position in types.
+func (r *fuzzBytes) typedConditions(names, types []string, most int, args []any) (string, []any) {
 	ops := []string{"=", "==", "!=", "<>", "<", "<=", ">", ">=", "is null", "is not null"}
 	var b strings.Builder
 	for n := range most {
@@ -2540,6 +3181,7 @@ func (r *fuzzBytes) conditions(typ string, names []string, most int, args []any)
 			b.WriteString(" and ")
 		}
 		col := r.next()
+		typ := types[int(col&0x7f)%len(names)]
 		name := names[int(col&0x7f)%len(names)]
 		if col > 127 {
 			name = `"` + name + `"`
@@ -2654,6 +3296,7 @@ func fuzzChanges(f *testing.F, newInstance func(t testing.TB) *instance) {
 				is.Equal(t, "", p.o.run(t, s).err, s)
 			}
 		}
+		p.inTx = inTx
 		for _, c := range changesOf(table, typ, data[2:]) {
 			log = append(log, fmt.Sprintf("%v -- with %#v", c.Src, c.Args))
 			if failure := p.step(c); failure != "" {
@@ -2786,4 +3429,386 @@ func whereLiteral(v any) string {
 		return "x'" + hex.EncodeToString(v) + "'"
 	}
 	return "null"
+}
+
+// FuzzIndexes runs, on the engine on a database in memory, a test double of the core, and on SQLite,
+// a table of one to three columns with one to three indexes, and inserts, updates, deletes, selects,
+// drops of an index, and creates of one on it, all of which the bytes of its input choose as
+// [indexesCalls] says, and compares what each gives, as [TestDifferential] does. Each WHERE runs by
+// every path that can serve it, and the engine's choice of a path must be that of
+// [stmttest.ChosenAccess]: see [pair.everyPath] and [checkChoice]. Then it compares the tables and
+// their indexes. [FuzzIndexes_core] runs the same on the storage core.
+func FuzzIndexes(f *testing.F) {
+	fuzzIndexes(f, newMemoryInstance)
+}
+
+// FuzzIndexes_core is [FuzzIndexes] on the storage core, with a store in memory. After the calls, it
+// replays the log into an empty cache and compares the tables and their indexes again.
+func FuzzIndexes_core(f *testing.F) {
+	fuzzIndexes(f, func(t testing.TB) *instance { return newInstance(t, engine.Options{}) })
+}
+
+// fuzzIndexes is [FuzzIndexes] on the instances of newInstance. Its seeds are those of
+// [indexesSeeds].
+func fuzzIndexes(f *testing.F, newInstance func(t testing.TB) *instance) {
+	for _, data := range indexesSeeds() {
+		f.Add(data)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		indexesRun(t, newInstance(t), data, tally{})
+	})
+}
+
+// indexesRun runs the calls of [indexesCalls] of data on the instance i and SQLite, through a pair
+// whose tally is y and which runs each WHERE by every path, and compares the tables and their
+// indexes at the end, also after a replay of the log into an empty cache on the core, after which it
+// runs the selects again.
+func indexesRun(t *testing.T, i *instance, data []byte, y tally) {
+	t.Helper()
+	p := newPair(t, i, y)
+	p.allPaths = true
+	var log []string
+	calls := indexesCalls(data)
+	for _, c := range calls {
+		log = append(log, fmt.Sprintf("%v -- with %#v", c.Src, c.Args))
+		if failure := p.step(c); failure != "" {
+			t.Fatalf("after\n%v\n%v", strings.Join(log[:len(log)-1], "\n"), failure)
+		}
+	}
+	want := p.o.state(t)
+	if got := i.state(); got != want {
+		t.Fatalf("after\n%v\nthe engine holds\n%v\nand SQLite\n%v", strings.Join(log, "\n"), got, want)
+	}
+	if got := p.other.state(); got != want {
+		t.Fatalf("after\n%v\nthe engine that reads the rows the other way holds\n%v\nand SQLite\n%v", strings.Join(log, "\n"), got, want)
+	}
+	if i.memory != nil {
+		return
+	}
+	i.restart(true, engine.Options{})
+	if got := i.state(); got != want {
+		t.Fatalf("after\n%v\nthe engine holds after a replay into an empty cache\n%v\nand SQLite\n%v", strings.Join(log, "\n"), got, want)
+	}
+	// The selects again, which read by the indexes of the replay.
+	for _, c := range calls {
+		if !c.Query {
+			continue
+		}
+		if failure := p.step(c); failure != "" {
+			t.Fatalf("after\n%v\nand a replay into an empty cache\n%v", strings.Join(log, "\n"), failure)
+		}
+	}
+}
+
+// indexesIndex is an index of the table of [indexesCalls]: its name, and its columns, each as its
+// position in the table and whether it is descending.
+type indexesIndex struct {
+	name       string
+	columns    []int
+	descending []bool
+}
+
+// indexesCalls of the bytes data: a table, its indexes, its rows, and up to 16 statements on it.
+//
+// The first byte chooses the table: its lowest seven bits, modulo 3, one to three columns, and,
+// divided by 3, the position of the key, and its highest bit the names. The names are c0 to c2, or
+// queue, priority, and created, and the table is t, or goqite. A byte for each column chooses by its
+// lowest three bits, modulo 5, its type, one of the five of [whereTypes], and by its bit 8 whether a
+// column outside the key takes NULL.
+//
+// The next byte, modulo 3, chooses one to three indexes, which [fuzzBytes.index] reads, named i0 to
+// i2. An index is created before the rows, or after them if the highest bit of its first byte is
+// set. The rows are as many as [whereRows] has of the type of the key: the j-th has the j-th of them
+// as its key, and in each other column, at the position c, the value of [whereRows] of its type at
+// j/2 + c, or NULL where the column takes it and j + c is 1 modulo 3, so that pairs of rows share
+// values.
+//
+// Each statement after them takes a byte, whose lowest three bits choose its kind and whose others,
+// a, what it is of: for 0, a select of * with a WHERE of a%3+1 conditions, as
+// [fuzzBytes.typedConditions] gives them on the columns of the table; for 1 and 7, a select of *
+// that pins and bounds the key of the index a modulo the indexes that the table has, or of the
+// primary key if it has none, as [fuzzBytes.pins] says; for 2, an insert of a value of each column,
+// as [fuzzBytes.term] gives it; for 3, an update of the column a modulo the columns to a term, with a
+// WHERE of a/4%2+1 conditions; for 4, a delete with a WHERE of a%2+1 conditions; for 5, a drop of the
+// index a modulo the indexes, or of i0 if there are none; and for 6, a create of an index: again of
+// the last that was dropped, for an odd a where one was, and otherwise of a new one that
+// [fuzzBytes.index] reads, named i3 and on.
+func indexesCalls(data []byte) []stmttest.Call {
+	r := &fuzzBytes{data: data}
+	shape := r.next()
+	n := int(shape&0x7f)%3 + 1
+	key := int(shape&0x7f) / 3 % n
+	table, names := "t", []string{"c0", "c1", "c2"}
+	if shape&0x80 != 0 {
+		table, names = "goqite", []string{"queue", "priority", "created"}
+	}
+	names = names[:n]
+	types := make([]string, n)
+	nullable := make([]bool, n)
+	var columns []string
+	for j := range n {
+		b := r.next()
+		types[j] = whereTypes[int(b&7)%len(whereTypes)]
+		nullable[j] = b&8 != 0 && j != key
+		column := names[j] + " " + types[j]
+		switch {
+		case j == key:
+			column += " primary key"
+		case !nullable[j]:
+			column += " not null"
+		}
+		columns = append(columns, column)
+	}
+	calls := []stmttest.Call{{Src: "create table " + table + " (" + strings.Join(columns, ", ") + ") strict, without rowid", Supported: true}}
+	create := func(ix indexesIndex) stmttest.Call {
+		var cs []string
+		for j, position := range ix.columns {
+			c := names[position]
+			if ix.descending[j] {
+				c += " desc"
+			}
+			cs = append(cs, c)
+		}
+		return stmttest.Call{Src: "create index " + ix.name + " on " + table + " (" + strings.Join(cs, ", ") + ")", Supported: true}
+	}
+	var live, dropped, after []indexesIndex
+	for j := range int(r.next())%3 + 1 {
+		ix, later := r.index(fmt.Sprint("i", j), n)
+		if later {
+			after = append(after, ix)
+		} else {
+			calls = append(calls, create(ix))
+		}
+		live = append(live, ix)
+	}
+	insert := "insert into " + table + " values (" + strings.Repeat("?, ", n-1) + "?)"
+	for j, k := range whereRows[types[key]] {
+		row := make([]any, n)
+		for c := range n {
+			values := whereRows[types[c]]
+			switch {
+			case c == key:
+				row[c] = k
+			case nullable[c] && (j+c)%3 == 1:
+			default:
+				row[c] = values[(j/2+c)%len(values)]
+			}
+		}
+		calls = append(calls, stmttest.Call{Src: insert, Args: row, Supported: true})
+	}
+	for _, ix := range after {
+		calls = append(calls, create(ix))
+	}
+	next := 3
+	for s := 0; s < 16 && len(r.data) > 0; s++ {
+		b := r.next()
+		a := int(b >> 3)
+		c := stmttest.Call{Supported: true}
+		switch b % 8 {
+		case 0:
+			var where string
+			where, c.Args = r.typedConditions(names, types, a%3+1, nil)
+			c.Src, c.Query = "select * from "+table+" where "+where, true
+		case 1, 7:
+			ix := indexesIndex{columns: []int{key}, descending: []bool{false}}
+			if len(live) > 0 {
+				ix = live[a%len(live)]
+			}
+			var where string
+			where, c.Args = r.pins(ix, key, names, types)
+			c.Src, c.Query = "select * from "+table+" where "+where, true
+		case 2:
+			terms := make([]string, n)
+			for j := range n {
+				terms[j], c.Args = r.term(types[j], c.Args)
+			}
+			c.Src = "insert into " + table + " values (" + strings.Join(terms, ", ") + ")"
+		case 3:
+			var term, where string
+			term, c.Args = r.term(types[a%n], nil)
+			where, c.Args = r.typedConditions(names, types, a/4%2+1, c.Args)
+			c.Src = "update " + table + " set " + names[a%n] + " = " + term + " where " + where
+		case 4:
+			var where string
+			where, c.Args = r.typedConditions(names, types, a%2+1, nil)
+			c.Src = "delete from " + table + " where " + where
+		case 5:
+			if len(live) == 0 {
+				c.Src = "drop index i0"
+				break
+			}
+			j := a % len(live)
+			c.Src = "drop index " + live[j].name
+			dropped = append(dropped, live[j])
+			live = slices.Delete(live, j, j+1)
+		case 6:
+			var ix indexesIndex
+			if a%2 == 1 && len(dropped) > 0 {
+				ix, dropped = dropped[len(dropped)-1], dropped[:len(dropped)-1]
+			} else {
+				ix, _ = r.index(fmt.Sprint("i", next), n)
+				next++
+			}
+			c = create(ix)
+			live = append(live, ix)
+		}
+		calls = append(calls, c)
+	}
+	return calls
+}
+
+// index of the name on a table of n columns: by a byte whose lowest seven bits, modulo n, choose one
+// to n columns, and whose highest bit says whether the index is created after the rows, and a byte
+// for each column, whose lowest seven bits choose it among the columns that the index does not hold
+// yet, in the order of the table, and whose highest bit whether it is descending.
+func (r *fuzzBytes) index(name string, n int) (indexesIndex, bool) {
+	h := r.next()
+	left := make([]int, n)
+	for j := range left {
+		left[j] = j
+	}
+	ix := indexesIndex{name: name}
+	for range int(h&0x7f)%n + 1 {
+		b := r.next()
+		j := int(b&0x7f) % len(left)
+		ix.columns = append(ix.columns, left[j])
+		ix.descending = append(ix.descending, b&0x80 != 0)
+		left = slices.Delete(left, j, j+1)
+	}
+	return ix, h&0x80 != 0
+}
+
+// pins of a WHERE, without the keyword, and their arguments, on the key of the index ix, its columns
+// and then the key column key if it does not hold it, of a table of the columns of the names and the
+// types: a byte, modulo the columns of the key plus one, chooses how many of them are pinned, and a
+// byte for each pinned column whether it is IS NULL, for an odd byte, or = a term, as
+// [fuzzBytes.term] gives it. A byte then bounds the next column of the key, if there is one: by its
+// lowest two bits not, from below, from above, or both, from below with >= if its bit 4 is set and >
+// otherwise, and from above with <= if its bit 8 is set and < otherwise, each with a term. A WHERE
+// that pins nothing and bounds nothing is the condition of the first column IS NOT NULL.
+func (r *fuzzBytes) pins(ix indexesIndex, key int, names, types []string) (string, []any) {
+	columns := slices.Clone(ix.columns)
+	if !slices.Contains(columns, key) {
+		columns = append(columns, key)
+	}
+	var conditions []string
+	var args []any
+	pinned := int(r.next()) % (len(columns) + 1)
+	for _, c := range columns[:pinned] {
+		if r.next()%2 == 1 {
+			conditions = append(conditions, names[c]+" is null")
+			continue
+		}
+		var term string
+		term, args = r.term(types[c], args)
+		conditions = append(conditions, names[c]+" = "+term)
+	}
+	bounds := r.next()
+	if pinned < len(columns) {
+		c := columns[pinned]
+		if bounds&1 != 0 {
+			var term string
+			term, args = r.term(types[c], args)
+			conditions = append(conditions, names[c]+map[bool]string{false: " > ", true: " >= "}[bounds&4 != 0]+term)
+		}
+		if bounds&2 != 0 {
+			var term string
+			term, args = r.term(types[c], args)
+			conditions = append(conditions, names[c]+map[bool]string{false: " < ", true: " <= "}[bounds&8 != 0]+term)
+		}
+	}
+	if conditions == nil {
+		return names[columns[0]] + " is not null", args
+	}
+	return strings.Join(conditions, " and "), args
+}
+
+// indexesSeeds of [FuzzIndexes], built by hand: pins of one, two, and three columns, a pin of NULL,
+// ranges on a descending column, indexes that hold the primary key, a drop of an index while the
+// table has rows and selects after it, a create of the index again, goqite's table with its index on
+// (queue, priority desc, created), and, for each type, a table of one column and a table of three.
+// A term is [0, j] for the j-th value of [whereRows] of its type as a literal, [4, j] for it as an
+// argument, and [2] for NULL.
+func indexesSeeds() [][]byte {
+	seeds := [][]byte{
+		// t (c0 int primary key, c1 text, c2 real) with i0 (c1) before the rows and i1 (c2 desc, c0)
+		// after them: c1 = 'a'; c1 is null; c1 = 'a' and c0 = 0; c2 > -1.5 and c2 < 1.5; and c2 = the
+		// least real and c0 >= ? of the least integer.
+		{2, 0, 11, 10, 1, 0, 1, 0x81, 0x82, 0,
+			1, 1, 0, 0, 2, 0,
+			1, 1, 1, 0,
+			1, 2, 0, 0, 2, 0, 0, 2, 0,
+			9, 0, 3, 0, 1, 0, 5,
+			9, 1, 0, 0, 3, 5, 4, 0},
+		// The same table: drop i0 while it has rows; a select of c1 = 'a'; a select by i1; create i0
+		// again, and a select by it; and create i3 (c2 desc, c0 desc, c1), and pin its three columns.
+		{2, 0, 11, 10, 1, 0, 1, 0x81, 0x82, 0,
+			5,
+			0, 1, 0, 0, 2,
+			1, 1, 0, 0, 3, 0,
+			14,
+			9, 1, 0, 0, 2, 0,
+			6, 2, 0x82, 0x80, 0,
+			17, 3, 0, 0, 3, 0, 0, 2, 0, 0, 2, 0},
+		// goqite (queue text, priority int, created text primary key) with i0 (queue, priority desc,
+		// created) after the rows: pins of three; of two and a range on created; of queue and a range
+		// on priority; an insert; an update of priority; pins of two after it; a delete; a select of
+		// two conditions; a pin of queue to an integer; and a pin of queue to NULL.
+		{0x88, 3, 0, 3, 0, 0x82, 0, 0x80, 0,
+			1, 3, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0,
+			1, 2, 0, 0, 0, 0, 4, 1, 5, 0, 0,
+			1, 1, 0, 4, 0, 3, 0, 0, 0, 5,
+			2, 0, 2, 1, 5, 0, 0, 0, 0, 0, 0, 0, 4, 7,
+			11, 0, 4, 0, 0, 0, 0,
+			1, 2, 0, 0, 0, 0, 0, 4, 0,
+			4, 0, 0, 0, 1,
+			8, 1, 7, 0, 2, 2, 4, 0, 5,
+			1, 1, 0, 3, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+			1, 1, 0, 2, 0},
+	}
+	for typ := range byte(len(whereTypes)) {
+		// t (c0 primary key) with i0 (c0 desc): a pin; a range; an insert of a key that exists; a
+		// delete; a drop of i0; a pin of the primary key; a create of i3 (c0); and a select.
+		seeds = append(seeds, []byte{0, typ, 0, 0, 0x80,
+			1, 1, 0, 0, 2, 0,
+			1, 0, 3, 0, 1, 0, 4,
+			2, 0, 3,
+			4, 0, 0, 0, 1,
+			5,
+			1, 1, 0, 0, 2, 0,
+			6, 0, 0,
+			0, 0, 7, 0, 2})
+		// t (c0, c1 primary key, c2), of three types, with c0 and c2 taking NULL, i0 (c0 desc) and i1
+		// (c2, c0) before the rows, and i2 (c1 desc, c0 desc, c2) after them: pins and ranges by each
+		// index, an update of c2, a delete, a drop of i1, and a select by i2 after it.
+		seeds = append(seeds, []byte{5, typ | 8, (typ + 1) % 5, (typ+2)%5 | 8, 2, 0, 0x80, 1, 2, 0, 0x82, 0x81, 0x80, 0,
+			1, 1, 0, 0, 1, 15, 0, 0, 0, 6,
+			9, 2, 1, 0, 0, 2, 1, 0, 3,
+			17, 3, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0,
+			19, 4, 3, 1, 0, 0, 2,
+			4, 0, 8,
+			13,
+			9, 2, 0, 0, 1, 0, 0, 1, 0})
+	}
+	return seeds
+}
+
+func TestFuzzIndexes_seeds(t *testing.T) {
+	t.Run("should reach each kind of path, choice, and statement of indexes with the seeds of FuzzIndexes", func(t *testing.T) {
+		y := tally{}
+		for _, data := range indexesSeeds() {
+			indexesRun(t, newMemoryInstance(t), data, y)
+		}
+		for _, kind := range []string{
+			"path of an index with 1 pinned", "path of an index with 2 pinned", "path of an index with 3 pinned",
+			"path of an index with 1 pinned and a range", "path with a range on a descending column", "path with a pin of NULL",
+			"path of an index that holds every column", "chosen an index with 1 pinned", "chosen an index with 2 pinned",
+			"chosen an index with 2 pinned and a range of a table of several indexes", "chosen a get of a table of several indexes",
+			"create index that holds the primary key ok", "create index of a descending column ok", "create index of 3 columns ok",
+			"drop index ok", "create index ok", "delete with WHERE ok, rows changed", "update with WHERE ok, rows changed",
+		} {
+			is.True(t, y["reached: "+kind] > 0, kind)
+		}
+		is.Equal(t, 0, y["reached: WHERE run by a sample of its paths"])
+	})
 }

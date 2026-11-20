@@ -231,14 +231,14 @@ func TestChooseAccess(t *testing.T) {
 			}
 			conditions := accessConditions(test.table, test.where)
 
-			a, err := chooseAccess(test.table, indexes, conditions)
+			a, err := chooseAccess(test.table, indexes, conditions, bugs{})
 			is.NotError(t, err)
 			is.Equal(t, test.want, accessText(a))
 			is.True(t, !a.backward, "the rules set no direction")
 
 			// The first two rules do not depend on the indexes, which is why a statement that they decide
 			// reads none.
-			without, err := chooseAccess(test.table, nil, conditions)
+			without, err := chooseAccess(test.table, nil, conditions, bugs{})
 			is.NotError(t, err)
 			if a.none || a.point != nil || without.none || without.point != nil {
 				is.Equal(t, accessText(a), accessText(without))
@@ -252,11 +252,11 @@ func TestChooseAccess(t *testing.T) {
 			{position: 0, op: stmt.OpLess, value: s4qlpb.Value_builder{Text: new("a")}.Build()},
 		}
 
-		_, err := chooseAccess(one, nil, conditions)
+		_, err := chooseAccess(one, nil, conditions, bugs{})
 		is.True(t, errors.Is(err, ErrInternal))
 
 		conditions[0].position, conditions[1].position = 1, 1
-		_, err = chooseAccess(one, []*s4qlpb.CreateIndex{accessIndex(one, "i", "a")}, conditions)
+		_, err = chooseAccess(one, []*s4qlpb.CreateIndex{accessIndex(one, "i", "a")}, conditions, bugs{})
 		is.True(t, errors.Is(err, ErrInternal))
 	})
 }
@@ -288,7 +288,7 @@ func TestForcedAccess(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			a, ok, err := forcedAccess(one, indexes, accessConditions(one, test.where), test.path)
+			a, ok, err := forcedAccess(one, indexes, accessConditions(one, test.where), test.path, bugs{})
 			is.NotError(t, err)
 			is.Equal(t, !test.other, ok)
 			if ok {

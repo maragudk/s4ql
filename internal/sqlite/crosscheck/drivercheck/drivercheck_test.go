@@ -982,10 +982,11 @@ const (
 	// s4ql's Prepare checks only the text: the statement is compared with mattn's prepared in the
 	// transaction, which database/sql prepares it in, by [pair.compare].
 	excusedOutside = "a statement prepared outside the transaction, whose names only the transaction has, compared as prepared in it"
-	// excusedQuoted is a select, an update, or a delete with a name in double quotes that the table does not have, which
-	// mattn's SQLite reads as a string, and which [pair.checkQuoted] checks against the pinned build's
-	// error instead.
-	excusedQuoted = "a select, an update, or a delete with a name in double quotes that is no column, which mattn's SQLite reads as a string, checked against the pinned build's error"
+	// excusedQuoted is a select, an update, or a delete with a name in double quotes that the table does not have, or a
+	// create index whose first column in the order of the text that the table does not have is in double
+	// quotes, which mattn's SQLite reads as a string, and which [pair.checkQuoted] checks against the
+	// pinned build's error instead.
+	excusedQuoted = "a select, an update, a delete, or a create index with a name in double quotes that is no column, which mattn's SQLite reads as a string, checked against the pinned build's error"
 )
 
 // rowsOpen is the error of s4ql for a statement in a transaction while the rows of a query of the
@@ -1597,6 +1598,8 @@ func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) 
 		sel = &stmt.Select{Table: s.Table, Where: s.Where}
 	case *stmt.Delete:
 		sel = &stmt.Select{Table: s.Table, Where: s.Where}
+	case *stmt.CreateIndex:
+		sel = &stmt.Select{Table: s.Table}
 	default:
 		return "", false
 	}
@@ -1605,10 +1608,24 @@ func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) 
 		return "", false
 	}
 	name, missing := stmttest.MissingColumn(columns, sel)
+	if ci, ok := s.(*stmt.CreateIndex); ok {
+		// The first column of the index in the order of the text that the table does not have: the
+		// build of SQLite with DQS on makes an index on a string literal of it, if it is in double
+		// quotes, where the pinned build gives its error.
+		at := slices.IndexFunc(ci.Columns, func(c stmt.IndexColumn) bool { return stmttest.ColumnOf(columns, c.Name) < 0 })
+		if missing = at >= 0; missing {
+			name = ci.Columns[at].Name
+		}
+	}
 	if !missing || name.Raw[0] != '"' {
 		return "", false
 	}
 	want := fmt.Sprintf(`1/1: no such column: "%v" - should this be a string literal in single-quotes?`, name.Value)
+	if _, ok := s.(*stmt.CreateIndex); ok && !slices.ContainsFunc(got.runs(), func(r outcome) bool { return r.err == want }) {
+		// An error of the name of the index or of the table comes first in both builds, and the
+		// comparison with mattn's SQLite checks it.
+		return "", false
+	}
 	for _, r := range got.runs() {
 		if r.failed == "" || r.failed == "prepare" || r.err != want {
 			return fmt.Sprintf("%q: s4ql gives %v, and the pinned build of SQLite %q when the statement runs", src, got, want), true
@@ -3058,7 +3075,7 @@ func generated(t *testing.T, w *world, seed uint64, n int, y tally) {
 // It fails if a kind of outcome is never reached, and it pins how many texts each kind of excuse lets
 // through, so that a change that excuses more cannot pass unseen.
 func TestGenerated(t *testing.T) {
-	const n, length = 250, 40
+	const n, length = 250, 48
 	w := newWorld(t)
 	y := tally{}
 	for seed := range uint64(n) {
@@ -3176,7 +3193,7 @@ func TestGenerated(t *testing.T) {
 		"insert that leaves out a column that takes NULL a value of another type": 7, "insert that leaves out a column that takes NULL NOT NULL constraint failed": 7,
 		"insert with NULL in the key: NOT NULL constraint failed": 9, "insert with NULL in a column that does not take it: NOT NULL constraint failed": 5,
 		"insert of NULL beside a value of another type NOT NULL constraint failed": 2, "insert of NULL beside a value of another type a value of another type": 3,
-		"select * with NULL ok": 25, "select of names with NULL ok": 4,
+		"select * with NULL ok": 6, "select of names with NULL ok": 4,
 
 		// Slice 7, a third of what the run gave on 2026-11-20 when the sequence wrote WHERE: each
 		// operator on the key and on another column; each way that the plan reads rows; a select that
@@ -3220,7 +3237,12 @@ func TestGenerated(t *testing.T) {
 		// delete changed, read back on both sides. The sequence writes fewer selects since then, so the
 		// least number of "select of names with NULL ok" is a third of what the run gives now, 4, where
 		// it was 15, and the run requires a read-only transaction's insert while rows are open without a
-		// parameter, which it reaches, where it required one with a parameter.
+		// parameter, which it reaches, where it required one with a parameter. Since the sequence writes
+		// create indexes and drop indexes, and is 48 texts long, on 2026-11-20, it draws other random
+		// numbers and takes turns of other statements: the least number of "select * with NULL ok", of
+		// slice 6, is a third of what the run gives now, 19, where it was 25, and the run no longer
+		// reaches "delete WHERE that reads a scan to an upper bound ok, rows changed", which had the
+		// least number 1 and so was reached 1 to 3 times, so it is left out.
 		"update with WHERE ok, rows changed": 13, "update with WHERE ok, no row found": 48, "update without WHERE ok, rows changed": 10, "update without WHERE ok, no row found": 12,
 		"delete with WHERE ok, rows changed": 12, "delete with WHERE ok, no row found": 60, "delete without WHERE ok, rows changed": 9, "delete without WHERE ok, no row found": 15,
 		"update with WHERE attempt to write a readonly database": 7, "delete with WHERE attempt to write a readonly database": 11,
@@ -3235,11 +3257,26 @@ func TestGenerated(t *testing.T) {
 		"delete with arguments that s4ql refuses not supported": 8, "delete with arguments that s4ql refuses wrong number of arguments": 10,
 		"update WHERE that reads a get of one key ok, rows changed": 9, "delete WHERE that reads a get of one key ok, rows changed": 6,
 		"update WHERE that reads a scan of every row ok, rows changed": 2, "delete WHERE that reads a scan from a lower bound ok, rows changed": 1,
-		"delete WHERE that reads a scan to an upper bound ok, rows changed": 1, "update WHERE that reads no row ok, no row found": 7,
-		"table read back after an update or a delete": 165,
+		"update WHERE that reads no row ok, no row found": 7,
+		"table read back after an update or a delete":     165,
 	} {
 		if y["reached: "+kind] < least {
 			t.Errorf("the run reaches %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y["reached: "+kind], least)
+		}
+	}
+
+	// Slice 9, a third of what the run gave on 2026-11-20 when the sequence wrote create indexes and
+	// drop indexes, and the sequences were 48 texts long: each outcome of a create index, of a drop
+	// index, and of a create table that meets an index, as the tally counts it by the kind of the
+	// statement and of the error, also in a read-only transaction, which refuses both.
+	for kind, least := range map[string]int{
+		"createindex ok": 66, "createindex no such table": 175, "createindex already exists": 64, "createindex there is already a table named": 63,
+		"createindex no such column": 13, "createindex attempt to write a readonly database": 5,
+		"dropindex ok": 10, "dropindex no such index": 109, "dropindex attempt to write a readonly database": 1,
+		"createtable there is already an index named": 18,
+	} {
+		if y[kind] < least {
+			t.Errorf("the run gives %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y[kind], least)
 		}
 	}
 
@@ -3254,8 +3291,8 @@ func TestGenerated(t *testing.T) {
 	// statement while rows of its transaction are open, which s4ql refuses ([excusedRowsOpen]); a
 	// begin on a pinned connection whose transaction is open, which both refuse ([excusedTxOpen]); and
 	// a statement prepared outside a transaction through the pool, whose names only the transaction
-	// has ([excusedOutside]); and a select of a name in double quotes that is no column, which mattn's
-	// SQLite reads as a string ([excusedQuoted]).
+	// has ([excusedOutside]); and a select, an update, a delete, or a create index of a name in double
+	// quotes that is no column, which mattn's SQLite reads as a string ([excusedQuoted]).
 	// Before the sequence wrote tables of several columns, the counts were 1012, 12, 395, 126, 180,
 	// 78, 38, 22, 49, and 0. The sequence draws other random numbers, which moves every count, the
 	// calls and the transactions too; and of its own: the errors of slice 5 that SQLite gives at
@@ -3300,10 +3337,22 @@ func TestGenerated(t *testing.T) {
 	// now and then, which took excusedType up; and has parameters, whose arguments are wrong in number
 	// or of no column now and then, which took excusedArguments and excusedArgument up. The sequence
 	// writes fewer selects, so fewer rows are left open in a transaction, which took excusedRowsOpen
-	// down.
+	// down. When the sequence wrote create indexes and drop indexes, and the test made the sequences 48
+	// texts long where they were 40, so that the texts of the earlier slices stay about as many, the
+	// counts went from 1410, 12, 556, 343, 328, 90, 16, 39, 72, and 89 to 1894, 8, 681, 360, 372, 98,
+	// 13, 48, 97, and 89, on 2026-11-20: the sequence draws other random numbers, which moves every
+	// count, the calls and the transactions too; and of its own, create indexes and drop indexes take
+	// turns of the other statements, and a create index of a table that does not exist, of a column
+	// that the table does not have, or of a name that a table or an index has meets SQLite's error at
+	// prepare and s4ql's when it runs, which took excusedPrepare up, and one with arguments is refused
+	// by s4ql's rule, which took excusedArguments up; the sequences are longer, which took every count
+	// up, excusedTxOpen and excusedOutside with the transactions, and fewer rows are left open in one
+	// with a statement that fails more often, which took excusedRowsOpen down. A create index of a name
+	// in double quotes that is no column is counted by excusedQuoted now, and the count is 89 again by
+	// chance: it was 77 with the sequences of 40 texts.
 	want := map[string]int{
-		excusedPrepare: 1410, excusedStartedTable: 12, excusedArguments: 556, excusedArgument: 343, excusedType: 328,
-		excusedLevel: 90, excusedRowsOpen: 16, excusedTxOpen: 39, excusedOutside: 72, excusedQuoted: 89,
+		excusedPrepare: 1894, excusedStartedTable: 8, excusedArguments: 681, excusedArgument: 360, excusedType: 372,
+		excusedLevel: 98, excusedRowsOpen: 13, excusedTxOpen: 48, excusedOutside: 97, excusedQuoted: 89,
 	}
 	kinds := slices.Collect(maps.Keys(want))
 	for name := range y {

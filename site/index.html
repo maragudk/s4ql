@@ -874,7 +874,7 @@ footer ul {
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
-          <td><p>The generated checks and mutation testing of indexes, then slice 10 (<code>if not exists</code> and <code>if exists</code>). After it comes the rest of what the first application needs (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
+          <td><p>Mutation testing of indexes, then slice 10 (<code>if not exists</code> and <code>if exists</code>). After it comes the rest of what the first application needs (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
         </tr>
       </tbody>
     </table>
@@ -963,10 +963,10 @@ footer ul {
         <div><h3>Slice 8: <code>update</code> and <code>delete</code></h3><p><code>update ... set</code> with literals, <code>null</code>, and <code>?</code>, and <code>delete from</code>, each with or without the <code>where</code> of slice 7. <code>RowsAffected</code> gives the rows that SQLite reports as changed.</p></div>
         <span class="where caps">Built</span>
       </li>
-      <li class="agreed">
+      <li class="built">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 9: indexes</h3><p><code>create index</code> on one or more columns, each <code>asc</code> or <code>desc</code>, and <code>drop index</code>. The log holds only the definition, and the cache holds a real SQLite index. s4ql picks the index by fixed rules, so the choice is the same on every instance, and rows without <code>order by</code> come in an order that varies from query to query. The statements run; their generated checks and mutation testing are still to come.</p></div>
-        <span class="where caps">Agreed</span>
+        <div><h3>Slice 9: indexes</h3><p><code>create index</code> on one or more columns, each <code>asc</code> or <code>desc</code>, and <code>drop index</code>. The log holds only the definition, and the cache holds a real SQLite index. s4ql picks the index by fixed rules, so the choice is the same on every instance, and rows without <code>order by</code> come in an order that varies from query to query. The statements run, and generated queries run through every path that can serve them. Mutation testing is still to come.</p></div>
+        <span class="where caps">Built</span>
       </li>
       <li class="agreed">
         <span class="glyph" aria-hidden="true"></span>

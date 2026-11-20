@@ -1,0 +1,42 @@
+# The plans of the queries on the schema goqite_index, which TestAccessOf_golden in access_test.go checks.
+# Rewrite with: go test ./internal/engine -run TestAccessOf_golden -update
+
+create table goqite (id text primary key, created text not null, updated text not null, queue text not null, body blob not null, timeout text not null, received int not null, priority int not null) strict, without rowid
+create index goqite_queue_priority_created_idx on goqite (queue, priority desc, created)
+
+## receive
+select id from goqite where queue = ? and timeout <= ? and received < ?
+args: 'default', '2026-11-20T12:00:00.000Z', 3
+access: index goqite_queue_priority_created_idx (queue, priority desc, created, id), pins queue = 'default'
+
+## by id
+select body from goqite where id = ?
+args: 'm_0001'
+access: get, id = 'm_0001'
+
+## by queue
+select id from goqite where queue = 'default'
+access: index goqite_queue_priority_created_idx (queue, priority desc, created, id), pins queue = 'default'
+
+## by queue and priority
+select id from goqite where queue = ? and priority = ?
+args: 'default', 1
+access: index goqite_queue_priority_created_idx (queue, priority desc, created, id), pins queue = 'default', priority = 1
+
+## by queue and a range of priorities
+select id from goqite where queue = 'default' and priority >= 1 and priority < 3
+access: index goqite_queue_priority_created_idx (queue, priority desc, created, id), pins queue = 'default', bounds 1 <= priority < 3
+
+## extend
+update goqite set timeout = ? where queue = ? and id = ?
+args: '2026-11-20T12:05:00.000Z', 'default', 'm_0001'
+access: get, id = 'm_0001'
+
+## delete
+delete from goqite where queue = ? and id = ?
+args: 'default', 'm_0001'
+access: get, id = 'm_0001'
+
+## delete a queue
+delete from goqite where queue = 'default'
+access: index goqite_queue_priority_created_idx (queue, priority desc, created, id), pins queue = 'default'

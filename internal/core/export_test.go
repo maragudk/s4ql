@@ -43,6 +43,8 @@ var plantable = map[string]func(b *bugs){
 	"resendTake":           func(b *bugs) { b.resendTake = true },
 	"renewWaitsForWriter":  func(b *bugs) { b.renewWaitsForWriter = true },
 	"keepIdleTx":           func(b *bugs) { b.keepIdleTx = true },
+	"turnDescBound":        func(b *bugs) { b.turnDescBound = true },
+	"shortKey":             func(b *bugs) { b.shortKey = true },
 	"unlockedCounter":      func(b *bugs) { b.unlockedCounter = true },
 }
 
