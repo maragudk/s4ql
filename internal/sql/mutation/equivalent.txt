@@ -248,6 +248,30 @@ stmt/recognize.go recognizer.literal condition: !c.Table.Present() => true
 stmt/recognize.go recognizer.literal constant: math.IsInf(f, 0) => math.IsInf(f, 1)
 	atof reads the literal without its sign, so the only infinity that it gives is the positive one.
 
+# The columns of slices 5 and 6 in the recognizer. A token that the recognizer does not take is
+# described by the next take, or by the check at the end, at its own offset, so a reject of the next
+# token that only names what describe names anyway can go.
+stmt/recognize.go recognizer.column condition: len(d.Type.Names) > 1 || d.Type.LParen.Present() => false
+	The next token is then a word or the parenthesis of the type, in the TypeName that the recognizer does not accept, which describe names as the same type at the same offset.
+stmt/recognize.go recognizer.column operator: len(d.Type.Names) > 1 || d.Type.LParen.Present() => len(d.Type.Names) > 1 && d.Type.LParen.Present()
+	The next token is then a word or the parenthesis of the type, in the TypeName that the recognizer does not accept, which describe names as the same type at the same offset.
+stmt/recognize.go recognizer.column condition: len(d.Type.Names) > 1 => false
+	The next token is then the second word of the type, in the TypeName that the recognizer does not accept, which describe names as the same type at the same offset.
+stmt/recognize.go recognizer.column condition: d.Type.LParen.Present() => false
+	The next token is then the parenthesis of the type, in the TypeName that the recognizer does not accept, which describe names as the same type at the same offset.
+stmt/recognize.go recognizer.column constant: len(d.Type.Names) > 1 => len(d.Type.Names) > 2
+	The next token is then the second word of the type, in the TypeName that the recognizer does not accept, which describe names as the same type at the same offset.
+stmt/recognize.go recognizer.column remove statement: r.reject(otherType) => #2
+	The next token is then a word or the parenthesis of the type, in the TypeName that the recognizer does not accept, which describe names as the same type at the same offset.
+stmt/recognize.go recognizer.column condition: !k.Not.Present() => true
+	With NOT, the next token is NOT or one before it, never NULL, so the test of isNext is false either way.
+stmt/recognize.go recognizer.column condition: !k.Not.Present() => false #2
+	A NULL constraint without NOT then goes on to take its absent NOT, which is never the next token, so the statement stops at the same next token.
+stmt/recognize.go recognizer.column remove statement: r.unexpected() => #2
+	A constraint of another kind then stays untaken, and the next take, or the check at the end, stops at its first token, as unexpected does.
+stmt/recognize.go recognizer.insert remove statement: r.accept(c.Columns) =>
+	Every token of the column list is taken in the order of the text, or the statement stops at it with a reject of its own, so describe never looks inside the list.
+
 # The port of SQLite's conversion of a real literal, stmt/real.go. The text that atof reads is that
 # of a real token of the tokenizer: digits, at most one point, and an exponent of e or E, a sign, and
 # at least one digit.
@@ -348,6 +372,14 @@ internal/engine/tx.go Conn.writeIn element: skipUnique: c.e.bugs.skipUnique, =>
 	The planted bug skipUnique is then not planted in a write of a transaction that spans statements, and is found by the statements of their own.
 internal/engine/tx.go Conn.writeIn element: , convertReal: c.e.bugs.convertReal =>
 	The planted bug convertReal is then not planted in a write of a transaction that spans statements, and is found by the statements of their own.
+internal/engine/engine.go Conn.checkOutside remove statement: return internalError("the checks outside of a sink of type %T", s) =>
+	The planted bug checkOutside: it runs only for an insert, whose sink is an insert.
+internal/engine/engine.go Conn.checkOutside condition: err != nil => false #4
+	The planted bug checkOutside: a failed read of the key then counts as no row, and the write transaction after it checks nothing either, so the bug is found by a commit that fails in SQLite either way.
+internal/engine/engine.go Conn.checkOutside remove statement: return err => #4
+	The planted bug checkOutside: a failed read of the key then counts as no row, and the write transaction after it checks nothing either, so the bug is found by a commit that fails in SQLite either way.
+internal/engine/engine.go readOnly.insertNew boolean: false => true
+	A sink of a readOnly is built and checked, and never run, so its insertNew is never called.
 internal/engine/operator.go insert.check condition: typ == s4qlpb.Type_TYPE_INT => false
 	The planted bug convertReal: it converts a real only for an INTEGER column, and the check of the log finds a value of another type than its column either way.
 internal/engine/operator.go insert.check condition: typ == s4qlpb.Type_TYPE_INTEGER => false

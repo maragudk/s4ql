@@ -157,8 +157,9 @@ func (s *CreateTable) Key() int {
 // no table of the name exists, or nil. SQLite adds the columns in order, and refuses the first column
 // after the 2000th with `too many columns on t1`, and before that the first column whose name an
 // earlier column has, as [Name.Fold] compares them, with `duplicate column name: v1`, with the name
-// of the later column. Each prints the value of the name. When a table of the name exists, SQLite
-// gives `table t1 already exists` instead, with the name as written.
+// of the later column. Each prints the value of the name, and has the offset -1, as SQLite gives
+// for both. When a table of the name exists, SQLite gives `table t1 already exists` instead, with
+// the name as written.
 func (s *CreateTable) ColumnsError() *sqlerr.Error {
 	seen := map[string]bool{}
 	for i, c := range s.Columns {
@@ -170,7 +171,7 @@ func (s *CreateTable) ColumnsError() *sqlerr.Error {
 			message = "duplicate column name: " + c.Name.Value
 		}
 		if message != "" {
-			return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: message, Offset: c.Name.Offset}
+			return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: message, Offset: -1}
 		}
 		seen[c.Name.Fold()] = true
 	}

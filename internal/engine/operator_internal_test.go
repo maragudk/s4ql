@@ -454,6 +454,7 @@ func TestInsert(t *testing.T) {
 			{i: &insert{table: ct, src: ints(1), exprs: [][]Expr{{}}}, want: "an insert of 1 values from 0 expressions into 1 columns"},
 			{i: &insert{table: ct, src: ints(1), exprs: [][]Expr{{one[0], one[0]}}}, want: "an insert of 1 values from 2 expressions into 1 columns"},
 			{i: &insert{table: ct, src: &values{data: [][]*s4qlpb.Value{{integer(1), integer(1)}}}, exprs: [][]Expr{{one[0], one[0]}}}, want: "an insert of 2 values from 2 expressions into 1 columns"},
+			{i: &insert{table: ct, src: &values{data: [][]*s4qlpb.Value{{integer(1), integer(1)}}}, exprs: [][]Expr{one}}, want: "an insert of 2 values from 1 expressions into 1 columns"},
 		} {
 			err := c.i.check()
 			is.True(t, errors.Is(err, ErrInternal), c.want)
