@@ -10,6 +10,12 @@ func (o *Options) Plant(name string) {
 	set(&o.bugs)
 }
 
+// ScanAll makes every query of an engine of the options o read every row of its table, and not the
+// rows by the key, as [Options.scanAll] says.
+func (o *Options) ScanAll() {
+	o.scanAll = true
+}
+
 // plantable bugs, by the names of the fields of [bugs].
 var plantable = map[string]func(b *bugs){
 	"skipUnique":    func(b *bugs) { b.skipUnique = true },

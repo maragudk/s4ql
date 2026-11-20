@@ -90,6 +90,61 @@ func TypeRule(table string, columns []TableColumn, insert *stmt.Insert, args []a
 	return ""
 }
 
+// MissingColumn of the select s of the table of the columns, in the order of the table: the name
+// that SQLite's `no such column` names, and true, or false if the table has every column that s
+// names. SQLite looks the select list up first, in its order, and then the conditions, in the order
+// of the text: the first comparison of a column that the table does not have gives the error. A test
+// for NULL of such a column does not stop SQLite, which goes on with the error of that column: a
+// later such test replaces it, and the next comparison ends the walk with it.
+func MissingColumn(columns []TableColumn, s *stmt.Select) (stmt.Name, bool) {
+	for _, name := range s.Columns {
+		if ColumnOf(columns, name) < 0 {
+			return name, true
+		}
+	}
+	var missing *stmt.Name
+	for i, c := range s.Where {
+		found := ColumnOf(columns, c.Column) >= 0
+		switch {
+		case c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull:
+			if !found {
+				missing = &s.Where[i].Column
+			}
+		case missing != nil:
+			return *missing, true
+		case !found:
+			return c.Column, true
+		}
+	}
+	if missing != nil {
+		return *missing, true
+	}
+	return stmt.Name{}, false
+}
+
+// ConditionRule of the select of the table of the name, as the table stores it, and of the columns,
+// in the order of the table, with the arguments args as for [TypeRule]: s4ql's "not supported" for
+// the first condition, in the order of the text, whose value, a literal or an argument, is of another
+// type than its column, where SQLite would convert the value or compare it as it is. NULL has no
+// type, so it is of no other type than any column. The rule is "" where every value has the type of
+// its column, and where SQLite gives its own error first: for a column of the select list or of a
+// condition that the table does not have, and for another number of arguments than parameters.
+func ConditionRule(table string, columns []TableColumn, s *stmt.Select, args []any) string {
+	if _, missing := MissingColumn(columns, s); missing || len(args) != s.Parameters() {
+		return ""
+	}
+	for _, c := range s.Where {
+		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull {
+			continue
+		}
+		kind, what := ValueKind(c.Value, args)
+		if column := columns[ColumnOf(columns, c.Column)]; kind != "null" && columnHolds[column.Type] != kind {
+			return fmt.Sprintf("s4ql: not supported: %v compared with the column %v.%v of type %v", what, table, column.Name, column.Type)
+		}
+	}
+	return ""
+}
+
 // valuesOf the columns: for each column, in the order of the table, the index of its value among
 // the values of an insert at the positions, or -1 for a column that the insert leaves out.
 func valuesOf(columns []TableColumn, positions []int) []int {

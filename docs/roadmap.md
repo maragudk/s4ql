@@ -268,6 +268,12 @@ Included:
 
 Further details are decided when the slice is built, and recorded here. The forms of the `where`, token for token, are in [internal/sql/stmt/README.md](../internal/sql/stmt/README.md).
 
+- The errors of a `select` with `where` come in SQLite's order. An unknown table comes first, then an unknown column of the select list, then the columns of the conditions, in the order of the text. After these comes `string or blob too big` for a value of a condition that is too long. Last is "not supported" for a value of another type than its column, for the first such condition in the order of the text.
+- The first comparison of an unknown column gets SQLite's error, such as `no such column: v8`. An unknown column under `is null` or `is not null` does not stop SQLite at once: a later such test replaces the name, and the next comparison ends the search with it. So `v8 is null and v9 is null` names `v9`, and `v8 is null and v9 = 1` names `v8`, in a table that has neither.
+- The refusal of a value of another type names the value and the column: `s4ql: not supported: a string literal compared with the column t1.v1 of type INT`, or `s4ql: not supported: argument 1, which is text, compared with the column t1.v1 of type INT`. A null has no type, and is never refused.
+- A `select` by the key, such as `v1 = 1`, reads only the row of that key. One by a range of the key, such as `v1 >= 2 and v1 < 10`, reads only the rows of that range. A `where` that does not bound the key reads every row of the table.
+- The rows are the same however they are read, and they come in the order of the key.
+
 Rejected as not supported, where SQLite would accept it:
 
 - `update` and `delete`, with or without `where`. They come in slice 8.

@@ -131,6 +131,28 @@ func (x *memTx) scan(_ context.Context, name string) iter.Seq2[[]*s4qlpb.Value, 
 	}
 }
 
+func (x *memTx) scanRange(_ context.Context, name string, lower, upper bound) iter.Seq2[[]*s4qlpb.Value, error] {
+	return func(yield func([]*s4qlpb.Value, error) bool) {
+		t := x.tables[fold(name)]
+		k := t.ct.GetPrimaryKey()[0]
+		for _, row := range t.sorted() {
+			if lower.value != nil {
+				if c := compareValues(row[k], lower.value); c < 0 || c == 0 && lower.open {
+					continue
+				}
+			}
+			if upper.value != nil {
+				if c := compareValues(row[k], upper.value); c > 0 || c == 0 && upper.open {
+					continue
+				}
+			}
+			if !yield(row, nil) {
+				return
+			}
+		}
+	}
+}
+
 func (x *memTx) get(_ context.Context, name string, key []*s4qlpb.Value) ([]*s4qlpb.Value, error) {
 	return x.tables[fold(name)].rows[memKey(key[0])], nil
 }

@@ -152,8 +152,8 @@ type attempt struct {
 	acked int
 	// partial is set for a query whose rows were not read to their end.
 	partial bool
-	// typeRefused is set for an insert that the engine refused as "not supported" for a value of
-	// another type than its column.
+	// typeRefused is set for an insert, or a select with WHERE, that the engine refused as "not
+	// supported" for a value of another type than its column.
 	typeRefused bool
 	// reason why a statement failed: no lease, stopped, timeout, or canceled.
 	reason string
@@ -469,7 +469,7 @@ var idPattern = regexp.MustCompile(`/\* id (\d+) \*/`)
 // withID puts the comment of the ID into the text of a statement that the pass supports, after its
 // first token, where the annotation keeps it.
 func withID(src string, id uint64) string {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err != nil || s == nil {
 		return src
 	}
@@ -496,7 +496,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 	}
 	a.src = withID(call.Src, a.id)
 	call.Src = a.src
-	if s, _ := checkText(a.src); s != nil {
+	if s, _ := stmt.Check(a.src); s != nil {
 		_, isSelect := s.(*stmt.Select)
 		a.write = !isSelect
 	}
@@ -573,11 +573,12 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 		// the generator, and every other that the pass supports, with the arguments that it takes must
 		// run.
 		kind, failure := checkArguments(call, a.answer)
-		s, _ := checkText(a.src)
+		s, _ := stmt.Check(a.src)
 		supported := call.Supported || s != nil
-		if kind == "" && supported && isInsert(a.src) && a.answer.err == "not supported" && strings.Contains(a.answer.message, " for the column ") {
-			// The refusal of a value of another type than its column, after the insert found its table
-			// and its column, which [run.verify] checks against SQLite on the state that it saw.
+		if kind == "" && supported && a.answer.err == "not supported" && typeRefusal(a.src, a.answer.message) {
+			// The refusal of a value of another type than its column, after the insert or the select
+			// found its table and its columns, which [run.verify] checks against SQLite on the state that
+			// it saw.
 			kind, a.typeRefused = excusedType, true
 		}
 		if kind == "" && (supported || a.answer.err == wrongArguments) {
@@ -1390,8 +1391,8 @@ func (r *run) verify(ctx context.Context) {
 	}
 	// The observations of each state of the log: the statements of their own that saw it.
 	seen := map[int][]*attempt{}
-	// refused are the inserts of their own that the engine refused for the type of their value, by
-	// the state of the log that each saw.
+	// refused are the inserts and the selects of their own that the engine refused for the type of a
+	// value, by the state of the log that each saw.
 	refused := map[int][]*attempt{}
 	empty := newOracle(r.t)
 	defer empty.close()
@@ -1553,9 +1554,10 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 		before := o.tables(r.t)
 		for _, a := range tx.stmts {
 			if a.typeRefused {
-				// A read-only transaction refuses an insert before it looks at its value.
+				// A read-only transaction refuses an insert before it looks at its value, and runs a
+				// select.
 				var want string
-				if !tx.readOnly {
+				if !tx.readOnly || !isInsert(a.src) {
 					want = typeRule(r.t, o, a.src, oracleValues(a.args))
 				}
 				if a.answer.message != want {
@@ -1602,7 +1604,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 
 // tableOf the statement of src, which the pass supports, folded as SQLite compares names.
 func tableOf(src string) string {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err != nil {
 		panic(err)
 	}
@@ -1874,9 +1876,10 @@ var storeFaults = map[string]string{
 var storeLine = regexp.MustCompile(`^\S+ store request \d+(, stuck)? store: `)
 
 // tallyOf the simulation s: its statements, by how they ended, its writes that were acknowledged,
-// its queries that were not read to their end, its inserts refused for the type of their value, its
-// commits and those of a statement with a parameter, the rows of tables of several columns and the
-// NULL values in the log, the faults that the store injected, by kind, and its other events.
+// its queries that were not read to their end, its inserts and selects refused for the type of a
+// value, its commits and those of a statement with a parameter, the rows of tables of several
+// columns and the NULL values in the log, the faults that the store injected, by kind, and its
+// other events.
 func tallyOf(s simulation) map[string]int {
 	r := s.r
 	counts := maps.Clone(r.events)

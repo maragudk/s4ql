@@ -92,3 +92,45 @@ func TestTypeRule(t *testing.T) {
 		is.Equal(t, "blob", kind)
 	})
 }
+
+func TestConditionRule(t *testing.T) {
+	// The table t (a text, k int primary key, b real not null, c blob), as SQLite has it.
+	columns := []stmttest.TableColumn{
+		{Name: "a", Type: "TEXT", Nullable: true},
+		{Name: "k", Type: "INT", PrimaryKey: true},
+		{Name: "b", Type: "REAL"},
+		{Name: "c", Type: "BLOB", Nullable: true},
+	}
+	cases := []struct {
+		src     string
+		args    []any
+		want    string
+		missing string
+	}{
+		{src: "select * from t where a = 'x' and k > 1 and b <= 1.5 and c != x'01'"},
+		{src: "select * from t where a is null and k = ? and c = ?", args: []any{int64(1), nil}},
+		{src: "select * from t where a = null and k = null and b = null"},
+		// The first condition of another type, in the order of the text.
+		{src: "select * from t where K = 1.0 and a = 1", want: "s4ql: not supported: a real literal compared with the column t.k of type INT"},
+		{src: "select * from t where a is null and b > 1 and k = 'x'", want: "s4ql: not supported: an integer literal compared with the column t.b of type REAL"},
+		{src: "select * from t where k = 1 and c = ? and a = ?", args: []any{"x", 1.5}, want: "s4ql: not supported: argument 1, which is text, compared with the column t.c of type BLOB"},
+		// SQLite's errors of the names come first, and another number of arguments.
+		{src: "select x from t where k = 'x'", missing: "x"},
+		{src: "select * from t where k = 'x' and x = 1", missing: "x"},
+		{src: "select * from t where x is null and y is null and k = 'x'", missing: "y"},
+		{src: "select * from t where x is null and k = 'x' and y = 1", missing: "x"},
+		{src: "select a, y from t where x = 1", missing: "y"},
+		{src: "select * from t where k = ?", args: []any{"x", "y"}},
+	}
+	for _, c := range cases {
+		t.Run(c.src, func(t *testing.T) {
+			s, err := stmt.Check(c.src)
+			is.NotError(t, err)
+			sel := s.(*stmt.Select)
+			is.Equal(t, c.want, stmttest.ConditionRule("t", columns, sel, c.args))
+			name, missing := stmttest.MissingColumn(columns, sel)
+			is.Equal(t, c.missing != "", missing)
+			is.Equal(t, c.missing, name.Value)
+		})
+	}
+}

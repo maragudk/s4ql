@@ -402,10 +402,9 @@ func (q *Sequence) Like(a any) any {
 // a table, %[2]v for a column, and %[3]v for a small integer: statements that the pass does not
 // support, among them literals that SQLite reads as an infinite real or as a real for an integer
 // outside 64 bits, texts that SQLite refuses with a syntax error, and texts without a statement.
-// Three are statements that s4ql supports, which a sequence does not mark as [Call.Supported], as it
+// Five are statements that s4ql supports, which a sequence does not mark as [Call.Supported], as it
 // marks none of the texts of Others: an insert without a list of columns and a select of a column, of
-// slice 5, and an insert of NULL, of slice 6. Two more are selects with WHERE, of slice 7, which the
-// pass supports and the engine refuses as not supported until it runs that slice.
+// slice 5, an insert of NULL, of slice 6, and two selects with WHERE, of slice 7.
 var Others = []string{
 	"create table %[1]v (%[2]v any primary key) strict, without rowid",
 	"create table %[1]v (%[2]v varchar primary key) strict, without rowid",

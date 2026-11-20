@@ -1,10 +1,13 @@
 package engine
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"iter"
 	"math"
+	"strings"
 
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/stmt"
@@ -51,11 +54,24 @@ type sink interface {
 	run(ctx context.Context) (int64, error)
 }
 
-// scan gives the rows of a table in the order of its primary key. It ends with the error of the
-// context when the context ends.
+// scan gives the rows of a table in the order of its primary key: every row, or those that its
+// access reads by the key. It ends with the error of the context when the context ends.
 type scan struct {
 	r     reader
 	table *s4qlpb.CreateTable
+	// access is how the scan reads the rows of the table.
+	access access
+}
+
+// access of a [scan] to the rows of its table, for a filter above it, as [keyAccess] gives it. The
+// zero value reads every row.
+type access struct {
+	// none reads no row, because a condition of the filter is never true.
+	none bool
+	// key is the value of the primary key of the one row to read, if it is not nil.
+	key *s4qlpb.Value
+	// lower and upper bound the keys of the rows to read, if key is nil.
+	lower, upper bound
 }
 
 func (s *scan) columns() []Column {
@@ -72,7 +88,25 @@ func (s *scan) rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
 			yield(nil, err)
 			return
 		}
-		for row, err := range s.r.scan(ctx, s.table.GetTable()) {
+		name, a := s.table.GetTable(), s.access
+		var rows iter.Seq2[[]*s4qlpb.Value, error]
+		switch {
+		case a.none:
+			return
+		case a.key != nil:
+			row, err := s.r.get(ctx, name, []*s4qlpb.Value{a.key})
+			if err != nil {
+				yield(nil, err)
+			} else if row != nil {
+				yield(row, nil)
+			}
+			return
+		case a.lower.value != nil || a.upper.value != nil:
+			rows = s.r.scanRange(ctx, name, a.lower, a.upper)
+		default:
+			rows = s.r.scan(ctx, name)
+		}
+		for row, err := range rows {
 			if err == nil {
 				err = ctx.Err()
 			}
@@ -138,6 +172,170 @@ func (p *project) rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
 			}
 		}
 	}
+}
+
+// filter gives the rows of its source for which every one of its conditions is true, in the order
+// of the source.
+type filter struct {
+	src        source
+	conditions []condition
+}
+
+// condition of a [filter] on a row: the value at position compared with value by op, or tested for
+// NULL, with a value of nil.
+type condition struct {
+	position int
+	op       stmt.Operator
+	value    *s4qlpb.Value
+}
+
+func (f *filter) columns() []Column {
+	return f.src.columns()
+}
+
+func (f *filter) rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
+	return func(yield func([]*s4qlpb.Value, error) bool) {
+		for row, err := range f.src.rows(ctx) {
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			ok, err := f.holds(row)
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			if ok && !yield(row, nil) {
+				return
+			}
+		}
+	}
+}
+
+// holds reports whether every condition is true of the row.
+func (f *filter) holds(row []*s4qlpb.Value) (bool, error) {
+	for _, c := range f.conditions {
+		ok, err := c.holds(row)
+		if err != nil || !ok {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// holds reports whether the condition is true of the row. A comparison with NULL on either side is
+// neither true nor false, as in SQLite, and gives false, as a WHERE leaves the row out for both. A
+// test for NULL is always true or false.
+func (c condition) holds(row []*s4qlpb.Value) (bool, error) {
+	if c.position < 0 || c.position >= len(row) {
+		return false, internalError("a condition of the column at %v of a row of %v values", c.position, len(row))
+	}
+	v := row[c.position]
+	switch c.op {
+	case stmt.OpIsNull:
+		return v.HasNull(), nil
+	case stmt.OpIsNotNull:
+		return !v.HasNull(), nil
+	}
+	if v.HasNull() || c.value.HasNull() {
+		return false, nil
+	}
+	n, err := compare(v, c.value)
+	if err != nil {
+		return false, err
+	}
+	switch c.op {
+	case stmt.OpEqual:
+		return n == 0, nil
+	case stmt.OpNotEqual:
+		return n != 0, nil
+	case stmt.OpLess:
+		return n < 0, nil
+	case stmt.OpLessOrEqual:
+		return n <= 0, nil
+	case stmt.OpGreater:
+		return n > 0, nil
+	case stmt.OpGreaterOrEqual:
+		return n >= 0, nil
+	}
+	return false, internalError("a condition with the operator %v", int(c.op))
+}
+
+// compare the values a and b, which are of one type and not NULL, as SQLite compares them: integers
+// and reals by their number, with 0.0 the same as -0.0, and text and blobs by their bytes, as
+// memcmp compares them, with the shorter first where it begins the other, as the collation BINARY
+// compares text. It gives a negative number if a is less than b, 0 if they are equal, and a positive
+// number otherwise.
+func compare(a, b *s4qlpb.Value) (int, error) {
+	if a.WhichKind() != b.WhichKind() {
+		return 0, internalError("a comparison of a value of kind %v with one of kind %v", a.WhichKind(), b.WhichKind())
+	}
+	switch a.WhichKind() {
+	case s4qlpb.Value_Integer_case:
+		return cmp.Compare(a.GetInteger(), b.GetInteger()), nil
+	case s4qlpb.Value_Real_case:
+		return cmp.Compare(a.GetReal(), b.GetReal()), nil
+	case s4qlpb.Value_Text_case:
+		return strings.Compare(a.GetText(), b.GetText()), nil
+	case s4qlpb.Value_Blob_case:
+		return bytes.Compare(a.GetBlob(), b.GetBlob()), nil
+	}
+	return 0, internalError("a comparison of values of kind %v", a.WhichKind())
+}
+
+// keyAccess of a scan of a table whose primary key is the column at the position key, below a filter
+// of the conditions: no row if a comparison is with NULL, or the key is tested for NULL, since such a
+// condition is never true; the row of its key if a condition fixes the key, the first that does;
+// the rows within the tightest bounds of the conditions that bound the key; and otherwise every row.
+// The filter tests every condition on every row that the scan gives, so the access only leaves out
+// rows for which some condition is not true, and the rows and their order are those of a scan of
+// every row.
+func keyAccess(conditions []condition, key int) (access, error) {
+	var a access
+	var err error
+	for _, c := range conditions {
+		if c.op != stmt.OpIsNull && c.op != stmt.OpIsNotNull && c.value.HasNull() {
+			return access{none: true}, nil
+		}
+		if c.position != key {
+			continue
+		}
+		switch c.op {
+		case stmt.OpIsNull:
+			return access{none: true}, nil
+		case stmt.OpEqual:
+			if a.key == nil {
+				a.key = c.value
+			}
+		case stmt.OpLess, stmt.OpLessOrEqual:
+			a.upper, err = tighter(a.upper, bound{value: c.value, open: c.op == stmt.OpLess}, true)
+		case stmt.OpGreater, stmt.OpGreaterOrEqual:
+			a.lower, err = tighter(a.lower, bound{value: c.value, open: c.op == stmt.OpGreater}, false)
+		}
+		if err != nil {
+			return access{}, err
+		}
+	}
+	return a, nil
+}
+
+// tighter of the bounds a and b, which are both upper bounds if upper, and both lower bounds
+// otherwise: the one that leaves out more keys. b has a value, and a may have none.
+func tighter(a, b bound, upper bool) (bound, error) {
+	if a.value == nil {
+		return b, nil
+	}
+	n, err := compare(b.value, a.value)
+	if err != nil {
+		return bound{}, err
+	}
+	if upper {
+		n = -n
+	}
+	if n > 0 || n == 0 && b.open {
+		return b, nil
+	}
+	return a, nil
 }
 
 // insert writes each row of its source into a table whose primary key is one column, as a new row,
@@ -258,56 +456,170 @@ func (d *dropTable) run(ctx context.Context) (int64, error) {
 	return 0, d.w.dropTable(ctx, d.name)
 }
 
-// buildQuery: the source of the rows of the plan q, in the transaction of r. It fails with SQLite's
-// error for a table that does not exist.
-func buildQuery(ctx context.Context, r reader, q *Query) (source, error) {
-	return buildNode(ctx, r, q.Root)
+// buildQuery: the source of the rows of the plan q, in the transaction of r, with args for the
+// parameters of q, and with limit for the length of a text or a blob. It fails with SQLite's errors
+// in SQLite's order: for a table that does not exist, for a column of the select list that the table
+// does not have, for a column of a condition that it does not have, and for a value of a condition
+// that is longer than limit, as SQLite gives it when it binds an argument; and then with "not
+// supported" for the first value of a condition, in the order of the text, that is of another type
+// than its column. A scan below a filter reads by the key, as [keyAccess] says, unless scanAll.
+func buildQuery(ctx context.Context, r reader, q *Query, args []*s4qlpb.Value, limit int, scanAll bool) (source, error) {
+	return build{r: r, args: args, limit: limit, scanAll: scanAll}.node(ctx, q.Root)
 }
 
-// buildNode: the source of the rows of the node n of a query.
-func buildNode(ctx context.Context, r reader, n Node) (source, error) {
+// build of the operators of a query, in the transaction of r, as [buildQuery] says.
+type build struct {
+	r       reader
+	args    []*s4qlpb.Value
+	limit   int
+	scanAll bool
+}
+
+// node: the source of the rows of the node n of a query.
+func (b build) node(ctx context.Context, n Node) (source, error) {
 	switch n := n.(type) {
 	case *Scan:
-		t, err := r.table(ctx, n.Table.Value)
+		t, err := b.r.table(ctx, n.Table.Value)
 		if err != nil {
 			return nil, err
 		}
 		if t == nil {
 			return nil, noSuchTable(n.Table.Value)
 		}
-		return &scan{r: r, table: t}, nil
-	case *Project:
-		src, err := buildNode(ctx, r, n.Source)
+		return &scan{r: b.r, table: t}, nil
+	case *Filter:
+		src, err := b.node(ctx, n.Source)
 		if err != nil {
 			return nil, err
 		}
-		p := &project{src: src}
+		return b.filter(n, src)
+	case *Project:
+		// SQLite resolves the names of the select list before those of the WHERE, so the filter below
+		// the projection is built after it.
+		inner := n.Source
+		f, filtered := inner.(*Filter)
+		if filtered {
+			inner = f.Source
+		}
+		src, err := b.node(ctx, inner)
+		if err != nil {
+			return nil, err
+		}
+		p := &project{}
 		columns := src.columns()
-		if n.Star {
+		switch {
+		case n.Star:
 			for i := range columns {
 				p.positions = append(p.positions, i)
 			}
-			return p, nil
-		}
-		if len(n.Columns) == 0 {
+		case len(n.Columns) == 0:
 			return nil, internalError("a projection of no columns")
-		}
-		// SQLite resolves the names of the select list in their order, once it has found the table.
-		var names []string
-		for _, c := range columns {
-			names = append(names, c.Name)
-		}
-		of := positionsOf(names)
-		for _, name := range n.Columns {
-			position, ok := of[name.Fold()]
-			if !ok {
-				return nil, noSuchResultColumn(name)
+		default:
+			// SQLite resolves the names of the select list in their order, once it has found the table.
+			var names []string
+			for _, c := range columns {
+				names = append(names, c.Name)
 			}
-			p.positions = append(p.positions, position)
+			of := positionsOf(names)
+			for _, name := range n.Columns {
+				position, ok := of[name.Fold()]
+				if !ok {
+					return nil, noSuchResultColumn(name)
+				}
+				p.positions = append(p.positions, position)
+			}
 		}
+		if filtered {
+			if src, err = b.filter(f, src); err != nil {
+				return nil, err
+			}
+		}
+		p.src = src
 		return p, nil
 	}
 	return nil, internalError("a query of a node of type %T", n)
+}
+
+// filter of the rows of src, a scan, by the conditions of f. It looks the columns of the conditions
+// up in the order of the text, as SQLite does: the first comparison of a column that the table does
+// not have fails with `no such column`. A test for NULL of such a column does not stop SQLite, which
+// goes on to the next condition with the error of that column: a later test for NULL of a column
+// that the table does not have replaces the error, and the next comparison ends the walk with it,
+// before SQLite looks its own column up. Then it evaluates each value, and gives SQLite's error for
+// one that is longer than the limit, and then "not supported" for the first value, in the order of
+// the text, that is of another type than its column. Last, unless scanAll, it gives the scan the
+// access by the key that the conditions allow, as [keyAccess] gives it.
+func (b build) filter(f *Filter, src source) (source, error) {
+	s, ok := src.(*scan)
+	if !ok {
+		return nil, internalError("a filter of a node of type %T", src)
+	}
+	var names []string
+	for _, c := range s.table.GetColumns() {
+		names = append(names, c.GetName())
+	}
+	of := positionsOf(names)
+	conditions := make([]condition, len(f.Conditions))
+	// missing is the column of a test for NULL that the table does not have, of the last such test
+	// since the last comparison, or nil.
+	var missing *stmt.Name
+	for i, c := range f.Conditions {
+		position, ok := of[c.Column.Fold()]
+		switch c.Operator {
+		case stmt.OpIsNull, stmt.OpIsNotNull:
+			if c.Value != nil {
+				return nil, internalError("a test for NULL with a value")
+			}
+			if !ok {
+				missing = &f.Conditions[i].Column
+			}
+		case stmt.OpEqual, stmt.OpNotEqual, stmt.OpLess, stmt.OpLessOrEqual, stmt.OpGreater, stmt.OpGreaterOrEqual:
+			if c.Value == nil {
+				return nil, internalError("a comparison without a value")
+			}
+			if missing != nil {
+				return nil, noSuchResultColumn(*missing)
+			}
+			if !ok {
+				return nil, noSuchResultColumn(c.Column)
+			}
+		default:
+			return nil, internalError("a condition with the operator %v", int(c.Operator))
+		}
+		conditions[i] = condition{position: position, op: c.Operator}
+	}
+	if missing != nil {
+		return nil, noSuchResultColumn(*missing)
+	}
+	for i, c := range f.Conditions {
+		if c.Value == nil {
+			continue
+		}
+		v, err := eval(c.Value, b.args)
+		if err != nil {
+			return nil, err
+		}
+		if err := checkLength(v, b.limit); err != nil {
+			return nil, err
+		}
+		conditions[i].value = v
+	}
+	for i, c := range conditions {
+		if c.value == nil {
+			continue
+		}
+		if err := checkCompared(s.table, c.position, c.value, f.Conditions[i].Value); err != nil {
+			return nil, err
+		}
+	}
+	if key := s.table.GetPrimaryKey(); !b.scanAll && len(key) == 1 {
+		a, err := keyAccess(conditions, int(key[0]))
+		if err != nil {
+			return nil, err
+		}
+		s.access = a
+	}
+	return &filter{src: s, conditions: conditions}, nil
 }
 
 // buildValues: the source of the rows of v, with args for their parameters, and the expressions of
