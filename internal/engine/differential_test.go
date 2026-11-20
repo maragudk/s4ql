@@ -1225,9 +1225,9 @@ const pathSample = 4
 // everyPath runs the WHERE of the statement s of the call c, a select with WHERE or the select of the
 // WHERE of an update or a delete, as [stmttest.SelectOf] gives it, on the other instance of the pair,
 // before the call changes anything: by the access of the rules, and by [pathSample] candidates of
-// [candidates] at random, or by each if there are no more or the pair has allPaths. Each must give the rows that SQLite gives,
-// as a multiset, and a candidate, whose path is forced, the rows in the order of its key, as SQLite's
-// ORDER BY of the key gives them. One candidate in four, and the access of the rules, run outside a
+// [candidates] at random, or by each if there are no more or the pair has allPaths. Each must give
+// the rows that SQLite gives, as a multiset, and a candidate, whose path is forced, the rows in the
+// order of its key, as SQLite's ORDER BY of the key gives them. One candidate in four, and the access of the rules, run outside a
 // transaction on the core, also go through [core.ReadTx.ScanPlan], and SQLite must search the index
 // and the bounds that the engine asked for, as [wantPlan] says. A WHERE that s4ql refuses, or SQLite,
 // or that has an argument that no column holds, is left to the comparison of the call. The candidates
@@ -3408,13 +3408,15 @@ func fuzzIndexes(f *testing.F, newInstance func(t testing.TB) *instance) {
 
 // indexesRun runs the calls of [indexesCalls] of data on the instance i and SQLite, through a pair
 // whose tally is y and which runs each WHERE by every path, and compares the tables and their
-// indexes at the end, also after a replay of the log into an empty cache on the core.
+// indexes at the end, also after a replay of the log into an empty cache on the core, after which it
+// runs the selects again.
 func indexesRun(t *testing.T, i *instance, data []byte, y tally) {
 	t.Helper()
 	p := newPair(t, i, y)
 	p.allPaths = true
 	var log []string
-	for _, c := range indexesCalls(data) {
+	calls := indexesCalls(data)
+	for _, c := range calls {
 		log = append(log, fmt.Sprintf("%v -- with %#v", c.Src, c.Args))
 		if failure := p.step(c); failure != "" {
 			t.Fatalf("after\n%v\n%v", strings.Join(log[:len(log)-1], "\n"), failure)
@@ -3434,6 +3436,15 @@ func indexesRun(t *testing.T, i *instance, data []byte, y tally) {
 	if got := i.state(); got != want {
 		t.Fatalf("after\n%v\nthe engine holds after a replay into an empty cache\n%v\nand SQLite\n%v", strings.Join(log, "\n"), got, want)
 	}
+	// The selects again, which read by the indexes of the replay.
+	for _, c := range calls {
+		if !c.Query {
+			continue
+		}
+		if failure := p.step(c); failure != "" {
+			t.Fatalf("after\n%v\nand a replay into an empty cache\n%v", strings.Join(log, "\n"), failure)
+		}
+	}
 }
 
 // indexesIndex is an index of the table of [indexesCalls]: its name, and its columns, each as its
@@ -3448,9 +3459,9 @@ type indexesIndex struct {
 //
 // The first byte chooses the table: its lowest seven bits, modulo 3, one to three columns, and,
 // divided by 3, the position of the key, and its highest bit the names. The names are c0 to c2, or
-// queue, priority, and created, and the table is t, or goqite. A byte for each column chooses its
-// type, one of the five of [whereTypes], and, by the bit 8, whether a column outside the key takes
-// NULL.
+// queue, priority, and created, and the table is t, or goqite. A byte for each column chooses by its
+// lowest three bits, modulo 5, its type, one of the five of [whereTypes], and by its bit 8 whether a
+// column outside the key takes NULL.
 //
 // The next byte, modulo 3, chooses one to three indexes, which [fuzzBytes.index] reads, named i0 to
 // i2. An index is created before the rows, or after them if the highest bit of its first byte is
@@ -3484,7 +3495,7 @@ func indexesCalls(data []byte) []stmttest.Call {
 	var columns []string
 	for j := range n {
 		b := r.next()
-		types[j] = whereTypes[int(b)%len(whereTypes)]
+		types[j] = whereTypes[int(b&7)%len(whereTypes)]
 		nullable[j] = b&8 != 0 && j != key
 		column := names[j] + " " + types[j]
 		switch {
