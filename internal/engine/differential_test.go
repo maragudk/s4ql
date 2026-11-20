@@ -686,6 +686,12 @@ const (
 	// excusedLong is an insert of a literal that is longer than the length limit, which SQLite meets
 	// only with a limit below the length of its text, and then refuses later or turns into NULL.
 	excusedLong = "a literal longer than the length limit, checked against s4ql's rule"
+	// excusedLongChange is an update or a delete with a literal longer than the length limit, in SET
+	// or in a condition, which s4ql refuses with SQLite's `string or blob too big` after the errors of
+	// the names, whether the statement finds a row or not, where SQLite gives the error only when it
+	// changes a row, and turns a blob literal into NULL: the known difference of docs/todo.md. See
+	// [pair.checkLength].
+	excusedLongChange = "an update or a delete with a literal longer than the length limit, checked against s4ql's rule"
 	// excusedLongCondition is a select with a literal in a condition that is longer than the length
 	// limit, which s4ql refuses with SQLite's `string or blob too big`, and for which SQLite gives
 	// rows: no rows for a blob literal, which it turns into NULL, and for a string literal on the
@@ -784,8 +790,12 @@ func differentialOn(t testing.TB, seed uint64, n int, restarts bool, y tally, i 
 			fail("%v", failure)
 		}
 	}
-	if got, want := i.state(), p.o.state(t); got != want {
+	want := p.o.state(t)
+	if got := i.state(); got != want {
 		fail("at the end the engine holds\n%v\nand SQLite\n%v", got, want)
+	}
+	if got := p.other.state(); got != want {
+		fail("at the end the other engine, which reads the rows the other way, holds\n%v\nand SQLite\n%v", got, want)
 	}
 }
 
@@ -801,13 +811,25 @@ type pair struct {
 	prev int64
 	// readOnly is set while the statements run in a read-only transaction.
 	readOnly bool
-	y        tally
+	// other is a second instance of the engine, of the kind of i, that runs every call of the pair and
+	// reads the rows the other way: every row where the engine of i reads by the key, and by the key
+	// where it reads every row. See [pair.bothWays].
+	other *instance
+	// last is the engine's answer of the last call of [pair.step].
+	last answer
+	y    tally
 }
 
-// newPair of the instance i and SQLite, with the length limit of i.
+// newPair of the instance i and SQLite, with the length limit of i, and a second instance of the
+// engine of the kind of i, on a database in memory or on the core with the length limit of i.
 func newPair(t testing.TB, i *instance, y tally) *pair {
 	t.Helper()
 	p := &pair{t: t, i: i, o: newOracle(t), empty: newOracle(t), y: y}
+	if i.memory != nil {
+		p.other = newMemoryInstance(t)
+	} else {
+		p.other = newInstanceLimited(t, engine.Options{}, nil, i.limit)
+	}
 	t.Cleanup(p.o.close)
 	t.Cleanup(p.empty.close)
 	if i.limit > 0 {
@@ -833,6 +855,7 @@ func (p *pair) step(c stmttest.Call) string {
 	} else {
 		got = i.execValues(src, values(c.Args))
 	}
+	p.last = got
 	p.y.add(src, got)
 	p.reach(c, got)
 	if failure := p.bothWays(c, got); failure != "" {
@@ -926,42 +949,71 @@ func (p *pair) step(c stmttest.Call) string {
 	return ""
 }
 
-// bothWays runs the call c again if it holds a select with WHERE, through the same method, on the
-// engine of the instance with every row of the table read, as [engine.Engine.SetScanAll] makes it,
-// where the first run read the rows by the key, as the plan does, or by the key where the first read
-// every row, as an engine of -scanall does. The two must give
-// the same answer, message, and count of changes, so that each test that compares the first with
-// SQLite compares both ways of reading rows, also in transactions. It counts the call in the tally
-// under "reached: read both ways", and also under "reached: read both ways in a read-only
-// transaction" in one, and gives what differs, or "".
+// bothWays runs the call c, whose answer of the engine of the instance is got, on the other instance
+// of the pair, through the same method, with every row of a table read, as
+// [engine.Engine.SetScanAll] makes it, where the engine of the instance reads the rows by the key, as
+// the plan does, and by the key where it reads every row, as an engine of -scanall does. The two must
+// give the same answer, message, and count of changes, and after an update or a delete with WHERE
+// the same rows of its table, as a select of * gives them on each, so that each test that compares
+// the instance with SQLite compares both ways of reading rows, of a select and of the rows that an
+// update or a delete changes, also in transactions. The other instance runs every call, so that it
+// holds what the instance holds. A second instance, and not a second run on the instance, because an
+// update or a delete changes what a second run would find. bothWays counts a select with WHERE in the
+// tally under "reached: read both ways", and an update or a delete with WHERE under "reached: changed
+// both ways", each also with " in a read-only transaction" in one, and gives what differs, or "".
 func (p *pair) bothWays(c stmttest.Call, got answer) string {
-	s, _ := stmt.Check(c.Src)
-	if sel, ok := s.(*stmt.Select); !ok || sel.Where == nil {
-		return ""
-	}
-	i := p.i
-	changes := i.changes
+	i, other := p.i, p.other
 	byKey := !i.e.ScansAll()
-	i.e.SetScanAll(byKey)
+	other.e.SetScanAll(byKey)
 	var all answer
 	if c.Query {
-		all = i.queryValues(c.Src, values(c.Args))
+		all = other.queryValues(c.Src, values(c.Args))
 	} else {
-		all = i.execValues(c.Src, values(c.Args))
+		all = other.execValues(c.Src, values(c.Args))
 	}
-	i.e.SetScanAll(!byKey)
+	changes, allChanges := i.changes, other.changes
 	if !byKey {
-		// The first run read every row, as -scanall makes it, and the second by the key.
-		got, all = all, got
+		// The instance read every row, as -scanall makes it, and the other instance by the key.
+		got, all, changes, allChanges = all, got, allChanges, changes
 	}
-	if p.y != nil {
-		p.y["reached: read both ways"]++
-		if p.readOnly {
-			p.y["reached: read both ways in a read-only transaction"]++
+	if all.String() != got.String() || all.message != got.message || allChanges != changes {
+		return fmt.Sprintf("%q with %#v: the engine gives\n%v (%q)\nby the key, and\n%v (%q)\nwith every row read, with %v changes by the key and %v with every row read", c.Src, c.Args, got, got.message, all, all.message, changes, allChanges)
+	}
+	s, _ := stmt.Check(c.Src)
+	var table *stmt.Name
+	what := ""
+	switch s := s.(type) {
+	case *stmt.Select:
+		if s.Where != nil {
+			what = "read both ways"
+		}
+	case *stmt.Update:
+		if s.Where != nil {
+			what, table = "changed both ways", &s.Table
+		}
+	case *stmt.Delete:
+		if s.Where != nil {
+			what, table = "changed both ways", &s.Table
 		}
 	}
-	if all.String() != got.String() || all.message != got.message || i.changes != changes {
-		return fmt.Sprintf("%q with %#v: the engine gives\n%v (%q)\nby the key, and\n%v (%q)\nwith every row read, with %v changes after the first and %v after the second", c.Src, c.Args, got, got.message, all, all.message, changes, i.changes)
+	if what == "" {
+		return ""
+	}
+	if p.y != nil {
+		p.y["reached: "+what]++
+		if p.readOnly {
+			p.y["reached: "+what+" in a read-only transaction"]++
+		}
+	}
+	if table == nil {
+		return ""
+	}
+	src := "select * from " + stmttest.Quote(table.Value)
+	if rows, allRows := i.queryValues(src, nil), other.queryValues(src, nil); rows.String() != allRows.String() {
+		if !byKey {
+			rows, allRows = allRows, rows
+		}
+		return fmt.Sprintf("%q with %#v: after it, the table holds\n%v\nby the key, and\n%v\nwith every row read", c.Src, c.Args, rows, allRows)
 	}
 	return ""
 }
@@ -971,9 +1023,17 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 func (p *pair) reach(c stmttest.Call, got answer) {
 	p.t.Helper()
 	if p.y != nil {
-		reach(p.t, p.o, c, got, func(what string) { p.y["reached: "+what]++ })
+		reach(p.t, p.o, c, got, p.i.changes, func(what string) { p.y["reached: "+what]++ })
 		if p.longCondition(c.Src) {
 			p.y["reached: WHERE with a literal longer than the length limit"]++
+		}
+		kind, in := p.longChange(c.Src)
+		if kind != "" {
+			p.y["reached: "+kind+" with a literal longer than the length limit in "+in]++
+		}
+		s, _ := stmt.Check(c.Src)
+		if _, ok := s.(*stmt.Update); ok && kind == "" && got.err == tooBig && !slices.ContainsFunc(c.Args, func(a any) bool { return byteLength(a) > p.i.limit }) {
+			p.y["reached: update of a row whose record is too long"]++
 		}
 	}
 }
@@ -991,8 +1051,9 @@ func (p *pair) reach(c stmttest.Call, got answer) {
 // the key take NULL. For a select of a table that SQLite has, the outcome by its form: * by the
 // number of columns, names, names in another order than the table's, a name twice, and a name that
 // the table does not have, as written and in double quotes; and of * and of names with NULL among
-// the values of its rows.
-func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, count func(string)) {
+// the values of its rows. For an update or a delete, what [reachChange] counts, with the count of
+// changes of the engine after the call, changes.
+func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, changes int64, count func(string)) {
 	t.Helper()
 	outcome := "ok"
 	switch {
@@ -1037,6 +1098,8 @@ func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, count func(stri
 				count("create table of which some columns outside the key take NULL " + outcome)
 			}
 		}
+	case *stmt.Update, *stmt.Delete:
+		reachChange(t, o, s, c, got, outcome, changes, count)
 	case *stmt.Select:
 		table, columns := o.columns(t, s.Table.Value)
 		if columns == nil {
@@ -1113,6 +1176,81 @@ func reachWhere(t testing.TB, o *oracle, s *stmt.Select, c stmttest.Call, got an
 		count("WHERE that gives every row of a table with rows")
 	default:
 		count("WHERE that gives some rows of a table")
+	}
+}
+
+// reachChange counts what the update or the delete s of the call c, whose answer of the engine is got,
+// whose outcome in the engine is outcome, and after which the engine's count of changes is changes,
+// reaches on the database of o, before the call, for a table that SQLite has. An outcome "ok" is "ok,
+// rows changed" or "ok, no row found" by the count. It counts the statement by its kind, with or
+// without WHERE, and its outcome; one whose arguments the engine refuses, for their number or for one
+// that no column holds; and otherwise, for an update, each case of [stmttest.SetCases]; for a WHERE,
+// each case of [stmttest.WhereCases] of the select of its conditions, as [stmttest.SelectOf] gives
+// it, after the kind, but for those of each condition; for a statement that succeeds on a table with rows, whether it changes none,
+// some, or all of them; and it checks the access by the key of the scan that finds the rows, as
+// [reachWhere] checks that of a select.
+func reachChange(t testing.TB, o *oracle, s stmt.Statement, c stmttest.Call, got answer, outcome string, changes int64, count func(string)) {
+	t.Helper()
+	kind, name, where := "update", stmt.Name{}, []stmt.Condition(nil)
+	switch s := s.(type) {
+	case *stmt.Update:
+		name, where = s.Table, s.Where
+	case *stmt.Delete:
+		kind, name, where = "delete", s.Table, s.Where
+	}
+	table, columns := o.columns(t, name.Value)
+	if columns == nil {
+		return
+	}
+	if outcome == "ok" {
+		outcome = map[bool]string{true: "ok, no row found", false: "ok, rows changed"}[changes == 0]
+	}
+	count(kind + map[bool]string{true: " with WHERE ", false: " without WHERE "}[where != nil] + outcome)
+	args := oracleArgs(c.Args)
+	if len(args) != s.Parameters() || slices.ContainsFunc(args, func(a any) bool { return refusal(a) != "" }) {
+		count(kind + " with arguments that s4ql refuses " + outcome)
+		return
+	}
+	missing := false
+	if u, ok := s.(*stmt.Update); ok {
+		for _, what := range stmttest.SetCases(columns, u, args) {
+			count(what + " " + outcome)
+			missing = missing || strings.HasPrefix(what, "SET of a column that the table does not have")
+		}
+	}
+	if missing {
+		return
+	}
+	if where != nil {
+		sel, selArgs := stmttest.SelectOf(s, args)
+		for _, what := range stmttest.WhereCases(columns, sel, selArgs) {
+			// The cases of the WHERE as a whole, and not those of each condition, which the selects count.
+			if strings.HasPrefix(what, "WHERE ") {
+				count(kind + " " + what + " " + outcome)
+			}
+		}
+		// The scan that finds the rows reads them by the key as the rule says, which the comparison of the
+		// rows cannot see where it reads more rows than it needs.
+		if want := stmttest.KeyAccess(columns, sel, selArgs); want != "" && got.err != tooBig {
+			want = strings.TrimSuffix(want, " that hold no key")
+			if access := engine.AccessOf(c.Src, createTableOf(table, columns), values(c.Args)); access != want {
+				t.Errorf("%q with %#v: the scan of the rows reads %q, and the rule %q", c.Src, c.Args, access, want)
+			}
+		}
+	}
+	if got.err != "" {
+		return
+	}
+	n, err := strconv.Atoi(o.run(t, "select count(*) from "+stmttest.Quote(table)).rows[0])
+	is.NotError(t, err)
+	switch {
+	case n == 0:
+	case changes == 0:
+		count(kind + " that changes no row of a table with rows")
+	case changes == int64(n):
+		count(kind + " that changes every row of a table with rows")
+	default:
+		count(kind + " that changes some rows of a table")
 	}
 }
 
@@ -1326,30 +1464,87 @@ func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failu
 }
 
 // checkLength of the call c, whose answer of the engine is got, against s4ql's rule for a literal
-// that is longer than the length limit: an insert that SQLite prepares fails with SQLite's `string or
-// blob too big`, after the names. SQLite meets such a literal only with a limit below the length of
-// the text that holds it, and then gives the error for a string literal only when it steps the
-// statement, and turns a blob literal into NULL, so the call is not run in SQLite. It gives
-// [excusedLong] if the rule decides the call, or "", and what differs from the rule, or "".
+// that is longer than the length limit: an insert, an update, or a delete that SQLite prepares fails
+// with SQLite's `string or blob too big`, after the names, for a literal of an insert, of SET, or of
+// a condition of an update or a delete. SQLite meets such a literal only with a limit below the
+// length of the text that holds it, and then gives the error for a string literal only when it steps
+// the statement, which an update or a delete does only for a row that it finds, and turns a blob
+// literal into NULL, so the call is not run in SQLite. It gives [excusedLong] for an insert and
+// [excusedLongChange] for an update or a delete if the rule decides the call, or "", and what differs
+// from the rule, or "". A select with such a literal in a condition is compared with SQLite, as
+// [pair.longCondition] says.
 func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string) {
 	t := p.t
 	t.Helper()
 	s, _ := stmt.Check(c.Src)
-	insert, ok := s.(*stmt.Insert)
-	if !ok || p.i.limit == 0 || p.o.prepare(t, c.Src) != nil {
+	excuse = excusedLong
+	var terms []stmt.Term
+	switch s := s.(type) {
+	case *stmt.Insert:
+		terms = s.Values
+	case *stmt.Update, *stmt.Delete:
+		excuse = excusedLongChange
+		terms = changeTerms(s)
+	default:
 		return "", ""
 	}
 	var n int
-	for _, v := range insert.Values {
+	for _, v := range terms {
 		n = max(n, byteLength(v.Value))
 	}
-	if n <= p.i.limit {
+	if p.i.limit == 0 || n <= p.i.limit || p.o.prepare(t, c.Src) != nil {
 		return "", ""
 	}
 	if got.err != tooBig {
-		return excusedLong, fmt.Sprintf("%q with a literal of %v bytes: the engine gives %v, and the rule %q", c.Src, n, got, tooBig)
+		return excuse, fmt.Sprintf("%q with a literal of %v bytes: the engine gives %v, and the rule %q", c.Src, n, got, tooBig)
 	}
-	return excusedLong, ""
+	return excuse, ""
+}
+
+// changeTerms of the update or the delete s: the values of its SET, and of its conditions, in the
+// order of the text.
+func changeTerms(s stmt.Statement) []stmt.Term {
+	var terms []stmt.Term
+	var where []stmt.Condition
+	switch s := s.(type) {
+	case *stmt.Update:
+		for _, a := range s.Set {
+			terms = append(terms, a.Value)
+		}
+		where = s.Where
+	case *stmt.Delete:
+		where = s.Where
+	}
+	for _, c := range where {
+		terms = append(terms, c.Value)
+	}
+	return terms
+}
+
+// longChange of src, if it holds an update or a delete with a literal longer than the length limit
+// of the pair: "update" or "delete", and where the first such literal is, "SET" or "WHERE"; or "" and
+// "".
+func (p *pair) longChange(src string) (kind, in string) {
+	s, _ := stmt.Check(src)
+	if p.i.limit == 0 {
+		return "", ""
+	}
+	switch s := s.(type) {
+	case *stmt.Update:
+		for _, a := range s.Set {
+			if byteLength(a.Value.Value) > p.i.limit {
+				return "update", "SET"
+			}
+		}
+		if slices.ContainsFunc(s.Where, func(c stmt.Condition) bool { return byteLength(c.Value.Value) > p.i.limit }) {
+			return "update", "WHERE"
+		}
+	case *stmt.Delete:
+		if slices.ContainsFunc(s.Where, func(c stmt.Condition) bool { return byteLength(c.Value.Value) > p.i.limit }) {
+			return "delete", "WHERE"
+		}
+	}
+	return "", ""
 }
 
 // longCondition reports whether src holds a select with a literal in a condition that is longer than
@@ -1602,8 +1797,15 @@ func TestDifferential(t *testing.T) {
 		// give `string or blob too big` in SQLite too, so [excusedLongCondition] is 0. The engine of
 		// slice 8 took the fourth from 478 to 483: it runs the update of [stmttest.Others], which sets
 		// a column to a small integer, and 5 of them give it to a column of another type, which s4ql's
-		// rule refuses. The generator drew as before then.
-		want := map[string]int{acceptedStartedTable: 19, excusedArguments: 718, excusedArgument: 248, excusedType: 483, excusedLong: 4}
+		// rule refuses. The generator drew as before then. When the sequence wrote updates and deletes,
+		// they went from 19, 718, 248, 483, and 4 to 14, 707, 300, 576, and 2, and [excusedLongChange]
+		// is 4: the sequence draws other random numbers, which moves each of them, and writes fewer
+		// inserts, which took the last down; of its own an update or a delete has parameters, whose
+		// arguments [stmttest.Sequence.Next] makes wrong in number or of no column now and then, which
+		// took the third up, and an update gives a column a value of another type, or compares one in
+		// its WHERE, now and then, which took the fourth up. The 4 are updates and deletes with a literal
+		// longer than the length limit, in SET or in WHERE.
+		want := map[string]int{acceptedStartedTable: 14, excusedArguments: 707, excusedArgument: 300, excusedType: 576, excusedLong: 2, excusedLongChange: 4}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
 			if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) {
@@ -1623,7 +1825,7 @@ var reachedDifferential = map[string]int{
 	"insert into INT ok": 130, "insert into INTEGER ok": 70, "insert into REAL ok": 100, "insert into TEXT ok": 110, "insert into BLOB ok": 100,
 	"insert into INT UNIQUE constraint failed": 50, "insert into INTEGER UNIQUE constraint failed": 26, "insert into REAL UNIQUE constraint failed": 34,
 	"insert into TEXT UNIQUE constraint failed": 26, "insert into BLOB UNIQUE constraint failed": 42,
-	"-0.0 literal into REAL UNIQUE constraint failed": 6, "-0.0 argument into REAL UNIQUE constraint failed": 2,
+	"-0.0 literal into REAL UNIQUE constraint failed": 2, "-0.0 argument into REAL UNIQUE constraint failed": 2,
 	"insert into INT a value of another type": 20, "insert into INTEGER a value of another type": 20, "insert into REAL a value of another type": 24,
 	"insert into TEXT a value of another type": 24, "insert into BLOB a value of another type": 24,
 	"insert into TEXT string or blob too big": 7, "insert into BLOB string or blob too big": 5, "long value": 90,
@@ -1670,7 +1872,7 @@ var reachedDifferential = map[string]int{
 	"insert that leaves out a column that takes NULL a value of another type": 11, "insert that leaves out a column that takes NULL NOT NULL constraint failed": 13,
 	"insert with NULL in the key: NOT NULL constraint failed": 17, "insert with NULL in a column that does not take it: NOT NULL constraint failed": 11,
 	"insert of NULL beside a value of another type NOT NULL constraint failed": 4, "insert of NULL beside a value of another type a value of another type": 6,
-	"select * with NULL ok": 45, "select of names with NULL ok": 25,
+	"select * with NULL ok": 45, "select of names with NULL ok": 7,
 
 	// Slice 7, a third of what the run gave on 2026-11-20 when the sequence wrote WHERE: each operator
 	// on the key and on another column, and with a value of another type on the key; each way that the
@@ -1699,13 +1901,51 @@ var reachedDifferential = map[string]int{
 	"WHERE with a column that the table does not have in a comparison, alone no such column":                                13,
 	"WHERE with a column that the table does not have in a comparison, before other conditions no such column":              26,
 	"WHERE with a column that the table does not have in a comparison, after other conditions no such column":               14,
-	"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column":                   1,
 	"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, before other conditions no such column": 4,
 	"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, after other conditions no such column":  3,
 	"WHERE with a column in double quotes that the table does not have no such column":                                      32,
 	"WHERE with a value of another type a value of another type":                                                            37, "WHERE with an argument that no column holds not supported": 12,
 	"WHERE with the wrong number of arguments wrong number of arguments": 19, "WHERE that tests a column more than once ok": 87,
 	"WHERE with contradicting conditions ok": 21, "WHERE with a literal longer than the length limit": 1, "read both ways": 444,
+
+	// Slice 8, a third of what the run gave on 2026-11-20 when the sequence wrote updates and deletes:
+	// each with and without WHERE, that changes rows and that finds none, of a table with rows that it
+	// changes every row, some rows, and none of; a change of the key that succeeds, meets a key that
+	// exists, and gets NULL; NULL for a column that does not take it, with a row found and without; a
+	// column of SET that the table does not have, also in double quotes; a value of another type in SET
+	// and in WHERE; each kind of value of SET, by literal and by argument; a column of WHERE that the
+	// table does not have; NOT NULL and UNIQUE with and without WHERE; a record that is too long; a
+	// literal of SET longer than the length limit; arguments that s4ql refuses; each way that the scan
+	// reads the rows; and every update and delete with WHERE changed both ways.
+	"update with WHERE ok, rows changed": 17, "update with WHERE ok, no row found": 76, "update without WHERE ok, rows changed": 20, "update without WHERE ok, no row found": 17,
+	"delete with WHERE ok, rows changed": 32, "delete with WHERE ok, no row found": 77, "delete without WHERE ok, rows changed": 23, "delete without WHERE ok, no row found": 12,
+	"update that changes every row of a table with rows": 27, "update that changes some rows of a table": 10, "update that changes no row of a table with rows": 42,
+	"delete that changes every row of a table with rows": 35, "delete that changes some rows of a table": 20, "delete that changes no row of a table with rows": 42,
+	"SET of the key ok, rows changed": 19, "SET of the key UNIQUE constraint failed": 18, "SET of the key NOT NULL constraint failed": 9, "SET of every column ok, rows changed": 13,
+	"SET of NULL for a column that does not take it NOT NULL constraint failed": 10, "SET of NULL for a column that does not take it ok, no row found": 13,
+	"SET of a column that the table does not have no such column": 30, "SET of a column in double quotes that the table does not have no such column": 12,
+	"SET with a value of another type a value of another type": 29, "SET with literal integer ok, rows changed": 15, "SET with literal real ok, rows changed": 5,
+	"SET with literal real -0.0 ok, rows changed": 1, "SET with literal text ok, rows changed": 5, "SET with literal empty text ok, rows changed": 1,
+	"SET with literal blob ok, rows changed": 4, "SET with literal empty blob ok, rows changed": 1, "SET with literal null ok, rows changed": 2,
+	"SET with argument int64 ok, rows changed": 4, "SET with argument float64 ok, rows changed": 2, "SET with argument string ok, rows changed": 1,
+	"SET with argument []uint8 ok, no row found": 5, "SET with argument nil ok, rows changed": 1,
+	"update with WHERE no such column": 34, "update WHERE with a column in double quotes that the table does not have no such column": 11,
+	"update WHERE with a value of another type a value of another type": 24, "update with WHERE NOT NULL constraint failed": 4, "update without WHERE NOT NULL constraint failed": 5,
+	"update with WHERE UNIQUE constraint failed": 6, "update without WHERE UNIQUE constraint failed": 12, "update of a row whose record is too long": 1,
+	"update with arguments that s4ql refuses not supported": 10, "update with arguments that s4ql refuses wrong number of arguments": 22,
+	"update with a literal longer than the length limit in SET": 1,
+	"update WHERE that reads no row ok, no row found": 13, "update WHERE that reads a get of one key ok, rows changed": 10, "update WHERE that reads a scan from a lower bound ok, rows changed": 1,
+	"update WHERE that reads a scan to an upper bound ok, rows changed": 1, "update WHERE that reads a scan between two bounds ok, rows changed": 1,
+	"update WHERE that reads a scan between two bounds that hold no key ok, no row found": 5, "update WHERE that reads a scan of every row ok, rows changed": 3,
+	"update WHERE that tests a column more than once ok, rows changed": 3, "update WHERE with contradicting conditions ok, no row found": 11,
+	"delete with WHERE no such column": 18, "delete WHERE with a column in double quotes that the table does not have no such column": 13,
+	"delete WHERE with a value of another type a value of another type": 18, "delete with arguments that s4ql refuses not supported": 7,
+	"delete with arguments that s4ql refuses wrong number of arguments": 11, "delete WHERE that reads no row ok, no row found": 12,
+	"delete WHERE that reads a get of one key ok, rows changed": 15, "delete WHERE that reads a scan from a lower bound ok, rows changed": 3,
+	"delete WHERE that reads a scan to an upper bound ok, rows changed": 2, "delete WHERE that reads a scan between two bounds ok, rows changed": 4,
+	"delete WHERE that reads a scan between two bounds that hold no key ok, no row found": 9, "delete WHERE that reads a scan of every row ok, rows changed": 7,
+	"delete WHERE that tests a column more than once ok, rows changed": 7, "delete WHERE with contradicting conditions ok, no row found": 12,
+	"delete WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column": 1, "changed both ways": 576,
 }
 
 // FuzzDifferential runs the sequence of statements that its input chooses, the seed and the number of

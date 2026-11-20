@@ -485,6 +485,97 @@ func WhereCases(columns []TableColumn, s *stmt.Select, args []any) []string {
 	return append(cases, "WHERE that reads "+KeyAccess(columns, s, args))
 }
 
+// SelectOf the WHERE of the update or the delete s, with the arguments args of s: a select of * of its
+// table with its conditions, whose parameters are numbered from 1, as those of a select of its own
+// are, and the arguments of those parameters, as [WhereCases] and [KeyAccess] take them. It is nil for
+// another statement, and for another number of arguments than s has parameters.
+func SelectOf(s stmt.Statement, args []any) (*stmt.Select, []any) {
+	var table stmt.Name
+	var where []stmt.Condition
+	offset := 0
+	switch s := s.(type) {
+	case *stmt.Update:
+		table, where = s.Table, s.Where
+		for _, a := range s.Set {
+			if a.Value.Parameter > 0 {
+				offset++
+			}
+		}
+	case *stmt.Delete:
+		table, where = s.Table, s.Where
+	default:
+		return nil, nil
+	}
+	if len(args) != s.Parameters() {
+		return nil, nil
+	}
+	sel := &stmt.Select{Table: table}
+	for _, c := range where {
+		if c.Value.Parameter > 0 {
+			c.Value.Parameter -= offset
+		}
+		sel.Where = append(sel.Where, c)
+	}
+	return sel, args[offset:]
+}
+
+// SetCases of the update u of the table of the columns, in the order of the table, with the arguments
+// args as for [TypeRule], for a count of what a test reaches of slice 8. For a column of SET that the
+// table does not have: "SET of a column that the table does not have", also "in double quotes" for
+// one in double quotes, and nothing more, since SQLite gives its error first. Otherwise: "SET of the
+// key" if it sets the key; "SET of every column" if it sets each; "SET of NULL for a column that
+// does not take it" for the key or a column with NOT NULL; with as many arguments as parameters, the
+// value of each, a literal by its kind, as [LiteralKind] names it, after "SET with literal ", or an
+// argument, as [ArgumentKind] names it, after "SET with argument "; and "SET with a value of another
+// type" for a value that is not NULL of another type than its column.
+func SetCases(columns []TableColumn, u *stmt.Update, args []any) []string {
+	var cases []string
+	for _, a := range u.Set {
+		if ColumnOf(columns, a.Column) < 0 {
+			cases = append(cases, "SET of a column that the table does not have")
+			if a.Column.Raw[0] == '"' {
+				cases = append(cases, "SET of a column in double quotes that the table does not have")
+			}
+			return cases
+		}
+	}
+	argsOK := len(args) == u.Parameters()
+	key, other, null := false, false, false
+	for _, a := range u.Set {
+		c := columns[ColumnOf(columns, a.Column)]
+		key = key || c.PrimaryKey
+		switch {
+		case a.Value.Parameter == 0:
+			cases = append(cases, "SET with literal "+LiteralKind(a.Value.Value))
+		case argsOK:
+			cases = append(cases, "SET with argument "+ArgumentKind(args[a.Value.Parameter-1]))
+		}
+		if !argsOK {
+			continue
+		}
+		kind, _ := ValueKind(a.Value, args)
+		switch {
+		case kind == "null":
+			null = null || !takesNull(c)
+		case columnHolds[c.Type] != kind:
+			other = true
+		}
+	}
+	if key {
+		cases = append(cases, "SET of the key")
+	}
+	if len(u.Set) == len(columns) {
+		cases = append(cases, "SET of every column")
+	}
+	if null {
+		cases = append(cases, "SET of NULL for a column that does not take it")
+	}
+	if other {
+		cases = append(cases, "SET with a value of another type")
+	}
+	return cases
+}
+
 // KeyAccess of the select s with WHERE of the table of the columns, with the arguments args as for
 // [TypeRule], by the roadmap's rule of slice 7 as the README of the engine details it: "no row" if a
 // comparison is with NULL or the key is tested with IS NULL, which is never true of a row; "a get of
