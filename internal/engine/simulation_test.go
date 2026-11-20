@@ -141,7 +141,10 @@ type attempt struct {
 	query bool
 	// write is true for a statement that changes the database if it succeeds.
 	write bool
-	state attemptState
+	// unchanged is set for an update or a delete that succeeded and found no row, which changes
+	// nothing, so that a transaction of it alone leaves no commit object.
+	unchanged bool
+	state     attemptState
 	// answer of the statement: SQLite's error of a statement that failed with it, "not supported",
 	// "no statement", or [wrongArguments] for one that was skipped, and the rows of a query that
 	// succeeded.
@@ -515,9 +518,13 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 
 	var got answer
 	var err error
+	var res engine.Result
 	if query {
 		var rows *engine.Rows
 		rows, err = c.Query(ctx, a.src, a.args...)
+		if rows != nil {
+			res = rows.Result()
+		}
 		if err == nil {
 			// One query in four is not read to its end: its loop stops at the first row, it is closed
 			// unread, or its consumer panics. Its rows are then not compared.
@@ -545,7 +552,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 			}
 		}
 	} else {
-		_, err = c.Exec(ctx, a.src, a.args...)
+		res, err = c.Exec(ctx, a.src, a.args...)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -554,6 +561,12 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 	switch {
 	case err == nil:
 		a.state, a.answer = succeeded, got
+		if s, _ := stmt.Check(a.src); res.SetsChanges && res.Changes == 0 {
+			switch s.(type) {
+			case *stmt.Update, *stmt.Delete:
+				a.unchanged = true
+			}
+		}
 		// A write of a transaction is acknowledged by its commit.
 		if a.write && tx == nil {
 			r.acked = append(r.acked, a.id)
@@ -1475,7 +1488,9 @@ func (r *run) verify(ctx context.Context) {
 	}
 	nothing := r.verifyTxs(ctx, log, index, inLog)
 	for _, id := range r.acked {
-		if inLog[id] == 0 && !nothing[id] {
+		// An update or a delete that found no row changes nothing, and is in the log only if the
+		// transaction that ran it changed something else.
+		if inLog[id] == 0 && !nothing[id] && !r.attempts[id].unchanged {
 			r.violate(ctx, "the acknowledged statement %v, %q, is not in the log", id, r.attempts[id].src)
 		}
 	}
@@ -1642,6 +1657,10 @@ func tableOf(src string) string {
 	case *stmt.DropTable:
 		return s.Table.Fold()
 	case *stmt.Select:
+		return s.Table.Fold()
+	case *stmt.Update:
+		return s.Table.Fold()
+	case *stmt.Delete:
 		return s.Table.Fold()
 	}
 	panic(fmt.Sprintf("a statement of type %T", s))

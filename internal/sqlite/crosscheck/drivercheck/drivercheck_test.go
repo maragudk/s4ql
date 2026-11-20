@@ -1628,7 +1628,11 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any) string {
 			rows, err := o.QueryContext(tb.Context(), q, args...)
 			is.NotError(tb, err)
 			defer func() { is.NotError(tb, rows.Close()) }()
-			return rows.Next()
+			if rows.Next() {
+				return true
+			}
+			is.NotError(tb, rows.Err())
+			return false
 		})
 	}
 	return stmttest.TypeRule(name, columns, s.(*stmt.Insert), bound)

@@ -902,16 +902,16 @@ func (p *pair) step(c stmttest.Call) string {
 		}
 	}
 	// SQLite's count of changes: the engine's result sets it, and a statement that fails keeps it,
-	// except one that fails while SQLite steps it, which sets it to 0: a broken constraint, an insert
-	// in a read-only transaction, and an insert of a row whose record is too long, while its value,
-	// which SQLite would refuse when it binds it, is not.
+	// except one that fails while SQLite steps it, which sets it to 0: a broken constraint, an insert,
+	// an update, or a delete in a read-only transaction, and an insert or an update of a row whose
+	// record is too long, while its value, which SQLite would refuse when it binds it, is not.
 	changes, rowid := o.changes(t)
 	p.prev = changes
-	recordTooBig := want.err == tooBig && isInsert(src) && !slices.ContainsFunc(args, func(a any) bool { return byteLength(a) > p.i.limit })
+	recordTooBig := want.err == tooBig && changesRows(src) && !slices.ContainsFunc(args, func(a any) bool { return byteLength(a) > p.i.limit })
 	switch {
-	case strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeConstraint, "/")), strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeReadOnly, "/")) && isInsert(src), recordTooBig:
+	case strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeConstraint, "/")), strings.HasPrefix(want.err, fmt.Sprint(sqlerr.CodeReadOnly, "/")) && changesRows(src), recordTooBig:
 		if changes != 0 {
-			return fmt.Sprintf("%q: SQLite counts %v changes after a broken constraint, a refused insert, or a record that is too long", src, changes)
+			return fmt.Sprintf("%q: SQLite counts %v changes after a broken constraint, a refused change, or a record that is too long", src, changes)
 		}
 	case want.err != "" && changes != before:
 		return fmt.Sprintf("%q: SQLite counts %v changes after its error, and %v before", src, changes, before)
@@ -1505,11 +1505,15 @@ func typeRefusal(src, message string) bool {
 	return false
 }
 
-// isInsert reports whether src is a supported insert.
-func isInsert(src string) bool {
+// changesRows reports whether src is a supported insert, update, or delete, which sets SQLite's count
+// of changes.
+func changesRows(src string) bool {
 	s, _ := stmt.Check(src)
-	_, ok := s.(*stmt.Insert)
-	return ok
+	switch s.(type) {
+	case *stmt.Insert, *stmt.Update, *stmt.Delete:
+		return true
+	}
+	return false
 }
 
 // syntaxOfNotSupported gives the message of the syntax error that SQLite gives when it prepares src, a
