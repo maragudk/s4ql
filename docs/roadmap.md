@@ -137,12 +137,12 @@ db.ExecContext(ctx, "insert into t1 (v1) values (?)", "b")
 Included:
 
 - The column types `int`, `integer`, `real`, `text`, and `blob`, for the one column of a table, which is its primary key.
-- Literals: an integer as in slice 1; a real number, such as `1.5`, `.5`, and `1e3`, with at most one `-` in front; a string in single quotes, with `''` for a quote in it; and a blob as `x'6162'`. s4ql reads a real literal to the same 64-bit float as SQLite, bit for bit, and rejects a literal for which that is not sure.
+- Literals: an integer as in slice 1; a real number, such as `1.5`, `.5`, and `1e3`, with at most one `-` in front; a string in single quotes, with `''` for a quote in it; and a blob as `x'6162'`. s4ql reads every real literal to the same 64-bit float as SQLite, bit for bit, by a port of SQLite's own conversion. It rejects none for that reason, only a literal that SQLite reads as an infinity.
 - Arguments: a Go integer, a `float64` or `float32`, a `string`, and a `[]byte` that is not nil.
 - Exact types. A value must have the type of its column: an integer for `int` and `integer`, a real for `real`, text for `text`, a blob for `blob`. A value of another type is rejected as not supported. This holds also where SQLite converts the value, such as the integer `1` for a `real` column, the text `'1'` for an `int` column, and the real `1.5` for a `text` column, and where SQLite gives an error of its own, such as text for a `blob` column. Markus on 2026-11-19: "Let's stay strict and maybe loosen later".
 - Keys are compared as SQLite compares them: text and blobs byte by byte, reals by their number. `select *` returns rows in that order. `0.0` and `-0.0` are the same key, and `-0.0` is stored as `0.0`, as in SQLite.
 - The error of a key that exists, matching SQLite's, for every type.
-- A text or a blob of up to 1,000,000,000 bytes, SQLite's limit. A longer one gets SQLite's error.
+- A text or a blob of up to 1,000,000,000 bytes, SQLite's limit. A longer argument gets SQLite's error. A literal that long gets `string or blob too big` from s4ql, where SQLite gives `statement too long`, which [todo.md](todo.md) records as an open difference.
 - The commit object names the type of a column as it was declared, so `int` and `integer` stay apart, and replay declares the column in the same way.
 - Everything of slices 1 to 3 with these types: arguments, prepared statements, transactions, and a restart with an empty cache.
 
@@ -157,7 +157,7 @@ Rejected as not supported, where SQLite would accept it:
 
 ### Slice 5: several columns
 
-Status: agreed on 2026-11-19, not built.
+Status: built. The statement pass, the engine, and the `database/sql` driver hold tables of one or more columns, `insert` with and without a list of columns, and `select` of names and of `*`, with SQLite's errors in SQLite's order. The engine's `TestEngine_columns` compares 13 shapes of tables, of two and three columns of mixed types with the key at each position, with SQLite, and a table of 2,000 columns, SQLite's limit. The generated tests make tables of one to three columns with the key at any position; inserts with a list in the order of the table and in another, with a column left out, a column that the table does not have, a wrong number of values, a value of another type, and two faults at once; and selects of `*`, of names in another order, of a name twice, and of a name that the table does not have. The engine's differential test compares 12,000 statements with SQLite, half of its sequences with the length limit lowered to 1,000 bytes, and checks 1,254 of them against s4ql's rule (718 with the wrong number of arguments, 197 with an argument that no column holds, 336 with a value of another type than its column, and 3 with a literal longer than the limit); the driver's `TestGenerated` in `internal/sqlite/crosscheck/drivercheck` compares 8,000 calls with mattn/go-sqlite3 and checks 746 against the rule (396 with the wrong number of arguments, 189 with an argument that the driver does not support, and 161 with a value of another type than its column). Both pin how often each case is reached. The simulation checks that every row in the log has one value for each column of its table, of the type of that column, and it finds a planted bug, `listOrder`, which gives the values of an insert to the columns in the order of its list, in 125 of 200 seeds, 39 of them by the replay of the log, which it breaks. Mutation testing of the new code and fuzz targets of several columns are still to come.
 
 ```sql
 create table t1 (v1 int primary key, v2 text not null, v3 real not null) strict, without rowid;

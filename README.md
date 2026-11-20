@@ -22,7 +22,8 @@ As of 2026-11-20:
 - **Built: slice 2, parameters.** An `insert` takes an integer argument for a plain `?` through `database/sql`, directly and through a prepared statement. It is checked against SQLite by generated tests in the engine and through `database/sql` (the engine's compares 12,000 statements), in a simulation, and by mutation testing.
 - **Built: slice 3, transactions.** `db.BeginTx` gives a transaction that is the single writer from its beginning until it commits or rolls back. `sql.TxOptions{ReadOnly: true}` gives a read-only transaction on one state that holds no one up. It is checked against SQLite by generated tests in the engine and through `database/sql` (499 generated transactions), in a simulation with faults, and by mutation testing (628 mutants of the engine).
 - **Built: slice 4, the other types.** A table has a column of type `int`, `integer`, `real`, `text`, or `blob`, with literals and arguments of Go types for each. A value must have the exact type of its column. It is checked against SQLite by generated tests in the engine and through `database/sql`, and in a simulation. Real literals are read as SQLite reads them, bit for bit.
-- **Not built:** more than one column, `null`, `where`, and a statement while rows of the same transaction are open.
-- **Next:** slice 5 of the [roadmap](docs/roadmap.md) (several columns) is being built. Slices 6 to 8 (`null`, `where`, and `update` and `delete`) are agreed.
+- **Built: slice 5, several columns.** A table has one or more columns, exactly one of them the primary key and every other one `not null`. An `insert` has a list of columns or none, and a `select` names columns or takes `*`. It is checked against SQLite by generated tests in the engine and through `database/sql`, and in a simulation.
+- **Not built:** `null`, `where`, and a statement while rows of the same transaction are open.
+- **Next:** slice 6 of the [roadmap](docs/roadmap.md) (`null`) is being built. Slices 7 and 8 (`where` on `select`, and `update` and `delete`) are agreed.
 
 What is open in detail is in [docs/todo.md](docs/todo.md).
