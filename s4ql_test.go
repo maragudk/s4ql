@@ -192,6 +192,8 @@ func readersFree(t *testing.T, db *sql.DB) {
 		defer func() { is.NotError(t, conn.Close()) }()
 		rows, err := conn.QueryContext(ctx, select1)
 		is.NotError(t, err, "a read is held")
+		// So that the close of the connection does not wait for the rows if the next check fails.
+		defer func() { _ = rows.Close() }()
 		is.True(t, rows.Next() || rows.Err() == nil)
 		is.NotError(t, rows.Close())
 	}

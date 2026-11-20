@@ -727,7 +727,10 @@ func TestConn_isolation(t *testing.T) {
 				is.NotError(t, first.Begin(t.Context()))
 				is.Equal(t, "", do(t, first, insert1))
 
-				began := make(chan error)
+				// The channel holds the answer of the begin, so that its goroutine ends also when a check
+				// before the receive fails the test, and the bubble does not end in a deadlock that hides
+				// the failure.
+				began := make(chan error, 1)
 				go func() {
 					began <- second.Begin(t.Context())
 				}()
@@ -957,7 +960,10 @@ func TestConn_rows(t *testing.T) {
 			is.Equal(t, "", do(t, i.c, insert1))
 			is.Equal(t, "", do(t, i.c, insert2))
 			other := conn(t, i)
-			began := make(chan error)
+			// The channel holds the answer of the begin, so that its goroutine ends also when a check
+			// before the receive fails the test, and the bubble does not end in a deadlock that hides
+			// the failure.
+			began := make(chan error, 1)
 			rows, err := i.c.Query(t.Context(), selectT)
 			is.NotError(t, err)
 			var got []string
