@@ -51,3 +51,63 @@ Where the type refusal of SET goes, since SQLite has none: see step 2.
 ### Future work
 
 - The engine and the driver: step 2.
+
+## Step 2: The engine, the driver, the generated tests, and the review
+
+**Author:** update-delete-engine builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "An unknown column in `set` or `where` gives SQLite's error, in SQLite's order [...] where the exact-type refusal has no counterpart in SQLite, place it as `insert` places it. A statement that fails changes nothing [...] Remove what the statement pass left as temporary: the refusal in `engine.check`, the `engine.Check` call in `conn.go`'s `check`, and the `checkText` wrappers in the tests where they now can go [...] Decisions on details the roadmap does not settle: [...] record them in `docs/todo.md` in a group \"decisions of the engine step of slice 8, for the lead to confirm\"."
+**Interpretation:** Plans, operators, and errors for both statements; the driver; tests by hand against SQLite both ways; the temporary refusals gone; decisions and the README written down.
+**Inferred intent:** Slice 8 working end to end, ready for the builder of the generated checks.
+
+### What I did
+
+- `/internal/engine/plan.go`: `Update` (with `Assignment`) and `Delete`, whose `Source` is `rowsOf`, the scan or filter that a select reads too, and their `Format`.
+- `/internal/engine/operator.go`: `build.filter` split into `build.conditions` (names) and `build.bind` (lengths, types, access), so that `build.change` can put the SET between them in SQLite's order; the sinks `update` and `remove`; `changeRows`; `finds`. The sink's `check` takes a context, because NOT NULL of an update depends on whether it finds a row. `buildSink` takes `scanAll`.
+- `/internal/engine/storage.go`: `writer.delete`, `writer.keys`, `keySet`, `coreKeys`; `fake` and `memory` got both. `/internal/engine/errors.go`: `noSuchSetColumn`. `/internal/engine/engine.go`: the refusal in `check` is gone, `setsChanges`, the doc of `Exec`. `/internal/engine/telemetry.go`: kinds `update` and `delete`.
+- `/conn.go`: `check` is `stmt.Check` alone again; `/s4ql.go`: the doc of `RowsAffected`.
+- Tests: `TestEngine_update`, `TestEngine_delete` (with `changeTrio`: SQLite, an engine by the key, and one that reads every row, comparing answer, count, and state after each statement; the 44 shapes; lengths at a limit of 1000; a table of 2,000 columns), `TestChangeRows` (calls of the fake both ways), `TestNewPlan`, cases of `TestConn_Begin` (in a write transaction, a roll back, read-only), `TestConn_netEffect` (commit objects read from the log with `logChanges`, and a replay), and the driver's `TestUpdateDelete`.
+- The `checkText` wrappers are gone. The generated tests then ran the update of `stmttest.Others` and failed on its type refusals (`"update \"WiTH\" set \"AnalyZe\" = 4": the engine does not support a statement that the pass supports`), so `stmttest.UpdateRule`, `DeleteRule`, `WhereRule`, and `FoundQuery` went into `/internal/sql/stmt/stmttest/rule.go`, used by `typeRule`, `typeRefusal`, the new `readOnlyRule`, and `drivercheck`'s `pair.typeRefusal`. Pins moved: `excusedType` 478 to 483 in `TestDifferential`, 231 to 234 in `TestGenerated`.
+- `/internal/sql/mutation/equivalent.txt`: the equivalent mutants of `Tx.touch` that moved to `Tx.createKeyTable`, and `#3` became `#2`.
+- `docs/todo.md`: the decisions, and the item for the generated checks. A writer sub-agent updated `/internal/engine/README.md`; I read its diff and fixed the sentence on the exceptions of the count.
+
+### Why
+
+Splitting `build.filter` keeps one implementation of the conditions for select, update, and delete, as the brief asked, and puts SQLite's binding order (SET's parameters first) in one place. The rules in `rule.go` are the smallest thing that let the wrappers go without leaving updates out of the generated tests.
+
+### What worked
+
+- `TestEngine_update`, `TestEngine_delete`, `TestChangeRows`, and `TestConn_netEffect` agreed with SQLite at the first run, apart from my expected messages (the `sqlite: ` prefix is not in `Error()` of the engine's error, and a `RETURNING` offset of 21).
+- Two planted mutants failed `TestEngine_update` at once: every update written in place (52 subtests failed) and NOT NULL without a found row (48).
+- `-race -count=50` of `TestChangeRows`, `TestConn_netEffect`, `TestEngine_delete`, `TestNewPlan`, `TestConn_Begin`, `TestUpdateDelete`, and `TestUpdateRule`; `-count=20` and `-race -count=2` of `TestEngine_update`; `S4QL_ENGINE_SIM_SEEDS=300` of `TestSimulation`; `make lint`; `make check-browser`.
+
+### What didn't work
+
+- `make test` failed in `internal/sql/mutation`: `no such mutant: internal/core/tx.go Tx.touch condition: err != nil => false #3`, from the move of the creation of the key tables into `createKeyTable`.
+- Bash commands with backticks in a heredoc or a Python script, and a loop that named git in a pipeline, were refused as too complex to verify; the Edit tool and plain commands worked.
+
+### What I learned
+
+- SQLite's update gives `no such column` for SET itself, without the question about quotes, and checks NOT NULL per row, so an update that finds no row takes NULL in a NOT NULL column.
+- The core commits nothing for a transaction that changed nothing, so an update or a delete of its own that finds no row leaves no commit object and its annotation is nowhere.
+
+### What was tricky
+
+- Where the type refusal of SET goes: after NOT NULL as for an insert, but NOT NULL depends on the data, so `update.check` asks the source for a first row.
+- The generated tests: the old wrappers became no-ops once the engine stopped refusing, so they could not stay; the rules had to come in.
+
+### What warrants review
+
+The review (`code-review high bcac770...HEAD`) found one real problem and two nits; the writer found two more in the tests:
+- Fixed: `run.verify` of the simulation required every acknowledged statement in the log, also an update or a delete that found no row (`attempt.unchanged` now excuses it).
+- Fixed: `tableOf` of the simulation panicked for an update in a transaction with more seeds (`a statement of type *stmt.Update`).
+- Fixed: `pair.step` accepted a count of 0 after the read-only error and a record too big only for an insert (`changesRows`).
+- Fixed: `drivercheck`'s found query did not check `rows.Err()`; `s4ql.go` had a ragged comment.
+- To review: `changeRows`, `update.check`, `build.change` in `/internal/engine/operator.go`; `UpdateRule` in `rule.go`.
+
+### Future work
+
+- The generated checks of slice 8, and mutation testing of its code: the item in `docs/todo.md`.
+- An update or a delete by a point lookup makes and drops a temporary table of keys for one row; a path without it is possible if the cost matters.
