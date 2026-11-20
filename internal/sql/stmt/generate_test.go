@@ -40,8 +40,9 @@ var positionTexts = stmttest.PositionTexts
 // columns, those of slice 6, with a column that takes NULL and a NULL one time in five, those of
 // slice 7, with a WHERE of up to four conditions in one select in two, those of slice 8, an update
 // or a delete in one statement in three, with a WHERE as a select has one, those of slice 9, a
-// create index or a drop index in one statement in four, with up to three columns, and those of slice
-// 10, IF NOT EXISTS or IF EXISTS in one create or drop in three.
+// create index or a drop index in one statement in four, with up to three columns, those of slice
+// 10, IF NOT EXISTS or IF EXISTS in one create or drop in three, and those of slice 11, a DEFAULT on
+// one column in three of a create table.
 func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g := stmttest.NewGenerator(rand.New(rand.NewPCG(seed, 0x511ce1)), namePools(t))
 	g.Parameters = 4
@@ -51,6 +52,7 @@ func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g.Changes = 3
 	g.Indexes = 4
 	g.Exists = 3
+	g.Defaults = 3
 	return g
 }
 
@@ -127,7 +129,7 @@ func TestGenerate_mutants(t *testing.T) {
 		}
 	}
 	t.Logf("%v mutants: %v", n**mutantsEach, c)
-	excused(t, c, 29, 151)
+	excused(t, c, 41, 154)
 	var names []string
 	for k := range kinds {
 		names = append(names, k)
@@ -215,6 +217,13 @@ func difference(a, b stmt.Statement) string {
 			}
 			if a.Columns[i].PrimaryKey != b.Columns[i].PrimaryKey || a.Columns[i].NotNull != b.Columns[i].NotNull {
 				diffs = append(diffs, "constraint")
+			}
+			ad, bd := a.Columns[i].Default.Value, b.Columns[i].Default.Value
+			switch {
+			case (ad == nil) != (bd == nil):
+				diffs = append(diffs, "default or none")
+			case ad != nil && show(ad) != show(bd):
+				diffs = append(diffs, "default")
 			}
 		}
 		names(an, bn, "column")
@@ -354,8 +363,46 @@ var nearMisses = map[string][]string{
 		"create table %[1]v (%[2]v %[4]v primary key null) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key unique) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key check (%[2]v > 0)) strict, without rowid",
-		"create table %[1]v (%[2]v %[4]v primary key default 1) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key default (1)) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default +1) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default +null) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default -null) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default - -1) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default true) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default false not null) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default 0x1) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default 1_0) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default 9223372036854775808) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default 1e999) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default -'a') strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default -x'01') strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default \"a\") strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default a) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default [a]) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default current_time) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default ?) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default (null)) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default (?)) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default null default null) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v default null primary key default null) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default null null) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default null collate binary) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default 'a' 'b') strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int default 'a') strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int not null default 1.5) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w integer default x'01') strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w real default 1) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w real not null default '1.5') strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w text default 1) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w text default -1.5) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w blob default 'a') strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w blob default 0) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int default 1 default 2) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int default (1 + 1)) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w text default current_timestamp) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int default 1 unique) strict, without rowid",
+		"create table if not exists %[1]v (%[2]v %[4]v primary key default +1) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key collate binary) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key references u (x)) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key references u deferrable initially deferred) strict, without rowid",
@@ -370,7 +417,6 @@ var nearMisses = map[string][]string{
 		"create table %[1]v (%[2]v %[4]v not null primary key null) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key not null on conflict fail) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key primary key) strict, without rowid",
-		"create table %[1]v (%[2]v %[4]v primary key, w int default null) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v, w int) strict, without rowid",
 		"create table %[1]v (w int null, %[2]v %[4]v primary key) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key, w int null) strict, without rowid",
@@ -379,7 +425,6 @@ var nearMisses = map[string][]string{
 		"create table %[1]v (%[2]v %[4]v primary key, w int primary key) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key, w int not null primary key) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v not null, w int not null) strict, without rowid",
-		"create table %[1]v (%[2]v %[4]v primary key, w int not null default 1) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key, w int not null unique) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key, w int not null check (w > 0)) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key, w int not null collate binary) strict, without rowid",
@@ -828,5 +873,5 @@ func TestGenerate_nearMisses(t *testing.T) {
 		}
 	}
 	t.Logf("%v near misses: %v", c[syntaxError]+c[notSupported]+c[syntaxNotSaid]+c[notSupportedNotSaid], c)
-	excused(t, c, 0, 1760)
+	excused(t, c, 0, 2130)
 }

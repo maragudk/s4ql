@@ -106,6 +106,8 @@ var fieldNames = map[string]string{
 	"CreateTable.As":                     "CREATE TABLE AS",
 	"PrimaryKeyConstraint.Order":         "ASC or DESC",
 	"PrimaryKeyConstraint.Autoincrement": "AUTOINCREMENT",
+	"DefaultConstraint.LParen":           "DEFAULT of an expression",
+	"DefaultConstraint.Name":             "name after DEFAULT",
 	"CreateIndex.Unique":                 "UNIQUE INDEX",
 	"OrderingTerm.Nulls":                 "NULLS FIRST or NULLS LAST",
 	"Insert.Or":                          "INSERT OR",
