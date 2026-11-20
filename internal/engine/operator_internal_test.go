@@ -500,6 +500,21 @@ func TestFilter(t *testing.T) {
 		}
 	})
 
+	t.Run("should read every row of a table whose primary key is two columns, which no bound of one value can bound", func(t *testing.T) {
+		for _, c := range []struct{ src, rows string }{
+			{src: "select * from t where k = 3", rows: "[30,3]"},
+			{src: "select * from t where k > 2 and w < 40", rows: "[30,3]"},
+			{src: "select * from t where k is null", rows: "[]"},
+		} {
+			f := newTable()
+			f.tables["t"].ct.SetPrimaryKey([]uint32{1, 0})
+			rows, calls := query(t, f, c.src, false)
+			is.Equal(t, c.rows, rows, c.src)
+			is.Equal(t, "[table t]", calls, c.src)
+			is.Equal(t, 1, f.scanned, c.src)
+		}
+	})
+
 	t.Run("should end with the error of a context that has ended, for every way of reading the rows", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
@@ -564,10 +579,13 @@ func TestFilter(t *testing.T) {
 			is.Equal(t, "s4ql: internal error: "+c.err, fmt.Sprint(err), c.name)
 		}
 		text := s4qlpb.Value_builder{Text: new("a")}.Build()
-		_, err := compare(integer(1), text)
+		// A comparison that fails gives 0, the zero value, with its error.
+		n, err := compare(integer(1), text)
 		is.Equal(t, "s4ql: internal error: a comparison of a value of kind integer with one of kind text", fmt.Sprint(err))
-		_, err = compare(&s4qlpb.Value{}, &s4qlpb.Value{})
-		is.True(t, errors.Is(err, ErrInternal))
+		is.Equal(t, 0, n)
+		n, err = compare(&s4qlpb.Value{}, &s4qlpb.Value{})
+		is.Equal(t, "s4ql: internal error: a comparison of values of kind not set", fmt.Sprint(err))
+		is.Equal(t, 0, n)
 		// A condition that cannot be tested on the row is not true of it, and fails.
 		for _, c := range []struct {
 			c   condition
