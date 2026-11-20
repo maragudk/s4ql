@@ -35,10 +35,11 @@ type fake struct {
 	insertPanics, endPanics bool
 	// scanPanics makes a scan panic before the row of that index, if it is not negative.
 	scanPanics int
-	// tablePanics makes a lookup panic, tableFails is the error of a lookup, and endFails is the
-	// error of the end of a read transaction.
-	tablePanics bool
-	tableFails  error
+	// tablePanics makes a lookup panic, tableFails is the error of a lookup, of the name tableFailsFor
+	// only if that is not empty, and endFails is the error of the end of a read transaction.
+	tablePanics   bool
+	tableFails    error
+	tableFailsFor string
 	endFails    error
 	// scans counts the scans that have started and not ended, and open the transactions.
 	scans, open int
@@ -140,7 +141,7 @@ func (x fakeTx) table(_ context.Context, name string) (*s4qlpb.CreateTable, erro
 	if x.f.tablePanics {
 		panic("the lookup panics")
 	}
-	if x.f.tableFails != nil {
+	if x.f.tableFails != nil && (x.f.tableFailsFor == "" || fold(x.f.tableFailsFor) == fold(name)) {
 		return nil, x.f.tableFails
 	}
 	if t, ok := x.f.tables[fold(name)]; ok {
@@ -1352,6 +1353,24 @@ func TestBuild(t *testing.T) {
 		err := sink(f, "create table t (v int primary key) strict, without rowid")
 		is.True(t, errors.Is(err, f.indexFails))
 		is.Equal(t, "[table t]", fmt.Sprint(f.calls))
+	})
+
+	t.Run("should pass on an error of the lookup of a table and of an index of a create index and a drop index, and create and drop nothing", func(t *testing.T) {
+		f := newFake().with("t", []string{"k", "v"})
+		f.tableFails = errors.New("the lookup of the table fails")
+		err := sink(f, "create index i on t (v)")
+		is.True(t, errors.Is(err, f.tableFails))
+		f.tableFailsFor = "I"
+		err = sink(f, "create index i on t (v)")
+		is.True(t, errors.Is(err, f.tableFails), "the lookup of a table of the name of the index")
+
+		f = newFake().with("t", []string{"k", "v"}).index("i", "t", 1)
+		f.indexFails = errors.New("the lookup of the index fails")
+		for _, src := range []string{"create index j on t (v)", "drop index i"} {
+			err := sink(f, src)
+			is.True(t, errors.Is(err, f.indexFails), src)
+		}
+		is.Equal(t, "[table t table j]", fmt.Sprint(f.calls))
 	})
 
 	t.Run("should place the values of a list in the order of the list with the planted bug listOrder", func(t *testing.T) {
