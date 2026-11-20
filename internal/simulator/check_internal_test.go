@@ -192,9 +192,10 @@ func TestChecker(t *testing.T) {
 	// the writes 1 and 3 acknowledged and the write 2 of unknown outcome, is checked once by a checker
 	// that is fast and once by one that is slow from the start. Both must find the same violations.
 	t.Run("should find the same violations fast and slow", func(t *testing.T) {
-		check := func(t *testing.T, slow bool, bound int64, keys []int64, at int) []Event {
+		check := func(t *testing.T, slow bool, bound int64, keys []int64, at int) ([]Event, bool) {
 			t.Helper()
-			return withChecker(t, func(c *checker, p *process) {
+			var fast bool
+			events := withChecker(t, func(c *checker, p *process) {
 				log(c)
 				if slow {
 					c.slow()
@@ -207,11 +208,13 @@ func TestChecker(t *testing.T) {
 					pos = position(at)
 				}
 				c.readEnded(t.Context(), p, c.readStarted(), bound, keys, pos)
-				is.Equal(t, !slow && c.reads[0].fast, c.fast && c.reads[0].fast)
+				is.True(t, !slow || !c.fast, "the slow checker stays slow")
+				fast = c.reads[0].fast
 				c.final(t.Context())
 			})
+			return events, fast
 		}
-		reads, violations := 0, 0
+		reads, violations, checkedFast := 0, 0, 0
 		for at := range 4 {
 			for bound := range int64(5) {
 				for set := range 1 << 4 {
@@ -221,7 +224,8 @@ func TestChecker(t *testing.T) {
 							keys = append(keys, k+1)
 						}
 					}
-					fast, slow := check(t, false, bound, keys, at), check(t, true, bound, keys, at)
+					fast, wasFast := check(t, false, bound, keys, at)
+					slow, _ := check(t, true, bound, keys, at)
 					is.Equal(t, len(slow), len(fast), fmt.Sprint("the violations of the keys ", keys, " above ", bound, " at ", at))
 					for i := range min(len(fast), len(slow)) {
 						is.Equal(t, slow[i].Invariant, fast[i].Invariant)
@@ -229,11 +233,18 @@ func TestChecker(t *testing.T) {
 					}
 					reads++
 					violations += min(1, len(slow))
+					if wasFast {
+						checkedFast++
+						is.Equal(t, 0, len(fast), "a read that the fast check passes has no violation")
+					}
 				}
 			}
 		}
-		// Most of the reads are violations, and some are not.
+		// Most of the reads are violations, and some are not. The fast check passes some of those, and
+		// leaves the others to the slow check: a read at a position before an acknowledged write at or
+		// below its bound.
 		is.True(t, violations > 0 && violations < reads, fmt.Sprint(violations, " of ", reads))
+		is.True(t, checkedFast > 0, fmt.Sprint(checkedFast, " of ", reads-violations, " checked fast"))
 	})
 
 	for _, test := range tests {
