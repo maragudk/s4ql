@@ -117,6 +117,8 @@ var realEdges = func() []string {
 		// Products with an exact power of 10 that are a tie of the rounding, or a few units in the
 		// last of those 32 bits from one.
 		"15931884261748570403e16", "16638669360040085079e16",
+		// A tie with 10^27, which its table holds exactly.
+		"17679410011640714626e27",
 	}
 }()
 
