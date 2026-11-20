@@ -40,7 +40,7 @@ type fake struct {
 	tablePanics   bool
 	tableFails    error
 	tableFailsFor string
-	endFails    error
+	endFails      error
 	// scans counts the scans that have started and not ended, and open the transactions.
 	scans, open int
 	// scanned counts the scans that have started, getFails is the error of a get, and deleteFails of
