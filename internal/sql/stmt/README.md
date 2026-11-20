@@ -3,11 +3,11 @@
 `internal/sql/stmt` takes SQL text and gives one of four answers:
 
 1. **SQLite's syntax error**, as a `*sqlerr.Error` of [`internal/sql/sqlerr`](../sqlerr/sqlerr.go), the one type of SQLite's errors that s4ql gives, which the engine gives too: the message of SQLite's parser, with the result code 1 and the extended result code 1, when the text is a syntax error in SQLite. This holds also when the text is SQL that s4ql does not support. Only the checks before parsing come first: a text longer than SQLite's limit, with a NUL byte, or with bytes that are not UTF-8 is not supported, whatever else it holds. The byte offset is kept as extra information; it is not part of the promise.
-2. **"Not supported"**, as a `*stmt.NotSupportedError`, when SQLite's parser accepts the text and the text is not, token for token, a statement of [slice 1](#slice-1), with the parameter of slice 2, the column types and the literals of slice 4, and the several columns of slice 5. The error matches `stmt.ErrNotSupported` with `errors.Is`, its message starts with `s4ql: not supported: `, and it carries no result code of SQLite.
+2. **"Not supported"**, as a `*stmt.NotSupportedError`, when SQLite's parser accepts the text and the text is not, token for token, a statement of [slice 1](#slice-1), with the parameter of slice 2, the column types and the literals of slice 4, the several columns of slice 5, and the NULL of slice 6. The error matches `stmt.ErrNotSupported` with `errors.Is`, its message starts with `s4ql: not supported: `, and it carries no result code of SQLite.
 3. **No statement and no error**, for a text that is empty or holds only spaces, comments, and semicolons. SQLite prepares such a text into no statement and no error.
 4. **A supported statement**: a `*stmt.CreateTable`, `*stmt.Insert`, `*stmt.Select`, or `*stmt.DropTable`.
 
-The function is `stmt.Check(src) (stmt.Statement, error)`. The rule of the project is in [docs/roadmap.md](../../../docs/roadmap.md): nothing is supported until it is listed. This package is the place where that rule is enforced, and the [definition](#slice-1) below is the precise form of the roadmap's slices 1 and 2, of the column types and the literals of slice 4, and of the several columns of slice 5, as the pass implements them.
+The function is `stmt.Check(src) (stmt.Statement, error)`. The rule of the project is in [docs/roadmap.md](../../../docs/roadmap.md): nothing is supported until it is listed. This package is the place where that rule is enforced, and the [definition](#slice-1) below is the precise form of the roadmap's slices 1 and 2, of the column types and the literals of slice 4, of the several columns of slice 5, and of the NULL of slice 6, as the pass implements them.
 
 ## The typed form
 
@@ -27,19 +27,21 @@ A `stmt.Column` is a column as CREATE TABLE declares it. It has four fields:
 - `Name` is the name of the column.
 - `Type` is the type of the column.
 - `PrimaryKey` reports whether the column is the primary key of its table.
-- `NotNull` reports whether the column says NOT NULL. Every column that is not the primary key says it. The primary key can say it too, and SQLite records the same table with it and without it.
+- `NotNull` reports whether the column says NOT NULL. A column that is not the primary key and does not say it takes NULL. The primary key can say it too, and SQLite records the same table with it and without it: the primary key of a WITHOUT ROWID table never takes NULL.
 
 `CreateTable.Key()` gives the index in `Columns` of the primary key. `CreateTable.ColumnsError()` gives the error that SQLite gives for the columns of the statement, or nil; [CREATE TABLE](#create-table) says when it is not nil.
 
 A `stmt.Term` is one value of the row of an insert. It has three fields:
 
-- `Value` is the value of a literal. It is nil for a parameter.
+- `Value` is the value of a literal. It is nil for a parameter. For the literal NULL it is `stmt.Null{}`, never nil.
 - `Parameter` is the number of the parameter that gives the value, from 1, or 0 if the value is a literal.
 - `Span` is the bytes of the value, with its sign, or of the parameter.
 
+So the `Term` of a NULL has `Value: stmt.Null{}` and `Parameter: 0`, and the `Term` of a parameter has a nil `Value` and a `Parameter` from 1. The two cannot be taken for each other.
+
 A `stmt.Type` is the type of the column as the statement declares it: `TypeInt`, `TypeInteger`, `TypeReal`, `TypeText`, or `TypeBlob`. Its `String` is the name that SQLite records: `INT`, `INTEGER`, `REAL`, `TEXT`, or `BLOB`. INT and INTEGER stay two types, as SQLite records them, though they behave the same in a STRICT, WITHOUT ROWID table. The zero value is no type.
 
-A `stmt.Value` is the value of a literal, and one of four types: `stmt.Integer`, an `int64`; `stmt.Real`, a `float64`; `stmt.Text`, a `string`; and `stmt.Blob`, a `[]byte`, which is never nil, also when it is empty. [INSERT](#insert) says which value each literal has.
+A `stmt.Value` is the value of a literal, and one of five types: `stmt.Integer`, an `int64`; `stmt.Real`, a `float64`; `stmt.Text`, a `string`; `stmt.Blob`, a `[]byte`, which is never nil, also when it is empty; and `stmt.Null`, an empty struct, which is the value of the literal NULL. [INSERT](#insert) says which value each literal has.
 
 A `Name` has three fields, because SQLite prints names in different forms in its messages:
 
@@ -75,7 +77,7 @@ By the parser's ownership rule, which its tests check on every statement, these 
 
 ## Slice 1
 
-A statement is supported if it is one of the four forms below, token for token. Slice 2 of the roadmap adds one form of the value of INSERT, a parameter, and this section defines it under [INSERT](#insert). Slice 4 adds the column types other than INT and the literals other than an integer, and this section defines them under [CREATE TABLE](#create-table) and [INSERT](#insert). The rest of slice 4, the arguments and the check of a value against the type of its column, is for the engine and the driver. Slice 5 adds a table of several columns, an insert of several values with or without a list of columns, and a select of named columns, and this section defines them under [CREATE TABLE](#create-table), [INSERT](#insert), and [SELECT](#select). What such a statement means for a table depends on the database, so it is for the engine: whether the columns exist, and whether the values are as many as the columns. The tables give the tokens in order. A gap between two tokens may hold any spaces and comments. A keyword may be in any case of its letters.
+A statement is supported if it is one of the four forms below, token for token. Slice 2 of the roadmap adds one form of the value of INSERT, a parameter, and this section defines it under [INSERT](#insert). Slice 4 adds the column types other than INT and the literals other than an integer, and this section defines them under [CREATE TABLE](#create-table) and [INSERT](#insert). The rest of slice 4, the arguments and the check of a value against the type of its column, is for the engine and the driver. Slice 5 adds a table of several columns, an insert of several values with or without a list of columns, and a select of named columns, and this section defines them under [CREATE TABLE](#create-table), [INSERT](#insert), and [SELECT](#select). What such a statement means for a table depends on the database, so it is for the engine: whether the columns exist, and whether the values are as many as the columns. Slice 6 adds a column that takes NULL and the literal NULL as a value of an insert, and this section defines them under [CREATE TABLE](#create-table) and [INSERT](#insert). Whether a column takes the NULL that an insert gives it depends on the table, so it is for the engine too. The rest of slice 6, the nil argument and the NULL that is stored and read, is for the engine and the driver, which refuse the forms of slice 6 as not supported until they run them. The tables give the tokens in order. A gap between two tokens may hold any spaces and comments. A keyword may be in any case of its letters.
 
 The roadmap's restrictions and these slices define the forms. Where the roadmap leaves the form open, the rule is: when in doubt, it is not supported. A form is supported only if a test against SQLite shows that SQLite treats it exactly as the plain form, or the roadmap names it.
 
@@ -89,6 +91,7 @@ CREATE TABLE table ( column-def [, column-def]... ) WITHOUT ROWID , STRICT
 A `column-def` is one of these:
 
 ```
+column type
 column type PRIMARY KEY
 column type NOT NULL
 column type PRIMARY KEY NOT NULL
@@ -98,8 +101,8 @@ column type NOT NULL PRIMARY KEY
 - `type` is one bare word, `int`, `integer`, `real`, `text`, or `blob`, in any case of its letters.
 - `int` and `integer` are two types. In a STRICT, WITHOUT ROWID table, `integer primary key` is not an alias of the rowid, since there is none, and it behaves as `int primary key` does. But SQLite records the type as `INTEGER`, not `INT`, so it is not the same table, and `Column.Type` keeps the two apart.
 - Exactly one column says PRIMARY KEY. It can be at any position.
-- Every other column says NOT NULL.
-- The primary key can say NOT NULL too, before or after PRIMARY KEY. SQLite records the same table with it and without it: `pragma_table_xinfo` gives `notnull` 1 for the primary key of a WITHOUT ROWID table either way. `Column.NotNull` keeps what the statement says.
+- Every other column says NOT NULL or no constraint. A column without a constraint takes NULL, which is slice 6: `pragma_table_xinfo` gives `notnull` 0 for it, and `Column.NotNull` is false.
+- The primary key can say NOT NULL too, before or after PRIMARY KEY. SQLite records the same table with it and without it: `pragma_table_xinfo` gives `notnull` 1 for the primary key of a WITHOUT ROWID table either way, and the primary key never takes NULL. `Column.NotNull` keeps what the statement says.
 - Both orders of the options are supported. SQLite records the same table for both: `pragma_table_list` gives `wr` 1 and `strict` 1, and `pragma_table_xinfo` the same columns, for `strict, without rowid` and for `without rowid, strict`. The tests compare the schema that each statement makes with that of the plain form, as SQLite's PRAGMAs record it: the tables and their options, columns, and indexes. The text that `sqlite_schema` keeps is not compared, since SQLite keeps it as written.
 - The roadmap's restrictions say that all tables are STRICT and WITHOUT ROWID, and [research/sql-front-end.md](../../../docs/research/sql-front-end.md) §3.3 lists a table without the options as rejected. The statement must therefore say both: without them, SQLite makes a table that is not STRICT or has a rowid, and the roadmap's principle is to reject, never to reinterpret.
 
@@ -123,10 +126,10 @@ Not supported, with what SQLite does where it bears on the decision:
   - `ANY`, which the roadmap's restrictions rule out.
   - Every other type name, such as `varchar` or `double`. SQLite itself refuses an unknown type in a STRICT table, with `unknown datatype for t.v: "foo"`. It does so in `sqlite3EndTable`, after it has parsed the statement, so the oracle says that the text parses. The error is not a syntax error, so by the pass's rule the answer is "not supported", as for `int(10)`. This is not a gap.
 - No type.
-- A column that says neither PRIMARY KEY nor NOT NULL. Its name is `column without PRIMARY KEY or NOT NULL` if no column before it is the primary key, and `column without NOT NULL` after the primary key. A column that can hold NULL comes in slice 6.
 - A second PRIMARY KEY, on another column or twice on one column, as `second PRIMARY KEY`. SQLite gives `table "t" has more than one primary key` while it parses.
-- No PRIMARY KEY, where every column says NOT NULL, as `table without PRIMARY KEY`. SQLite gives `PRIMARY KEY missing on table t` after it has parsed the statement. The error is not a syntax error, so by the pass's rule the answer is "not supported", as for an unknown type.
-- NOT NULL twice, a NULL constraint, NOT NULL with ON CONFLICT, DEFAULT, and every other column constraint, each with the name of its node, such as `NULL or NOT NULL constraint`. Also `CONSTRAINT name`, ASC or DESC, ON CONFLICT, and AUTOINCREMENT.
+- No PRIMARY KEY, as `table without PRIMARY KEY`, at the `)` after the columns. This holds whatever the columns say, also when they take NULL. SQLite gives `PRIMARY KEY missing on table t` after it has parsed the statement. The error is not a syntax error, so by the pass's rule the answer is "not supported", as for an unknown type.
+- The column constraint NULL without NOT before it, as in `v2 text null`, as `NULL constraint`, at the NULL. SQLite reads it as no constraint, so the column takes NULL with it as without it. The roadmap's slice 6 lists only a column without NOT NULL, so the pass rejects the constraint. This holds also before or after NOT NULL, with ON CONFLICT, and on the primary key.
+- NOT NULL twice, NOT NULL with ON CONFLICT, DEFAULT, also `default null`, and every other column constraint, each with the name of its node, such as `NULL or NOT NULL constraint` and `DEFAULT`. Also `CONSTRAINT name`, ASC or DESC, ON CONFLICT, and AUTOINCREMENT.
 - A table constraint, such as `primary key (a, b)` or `unique (b)`, as `table constraint`, at the comma after the last column.
 - `STRICT` or `WITHOUT ROWID` alone, none, either twice, a third option, an empty first option (`) , strict, without rowid`), and `"strict"` or `without "rowid"`, which SQLite rejects with `unknown table option`.
 - TEMP, IF NOT EXISTS, a schema name, and `AS SELECT`.
@@ -140,12 +143,13 @@ INSERT INTO table ( column [, column]... ) VALUES ( value [, value]... )
 
 Without a list of columns, the values are for the columns of the table, in the order of the table. With a list, the columns can be in any order.
 
-Each value is a literal or a parameter. A literal is one of four kinds:
+Each value is a literal or a parameter. A literal is one of five kinds:
 
 - **An integer:** a decimal integer literal that fits a signed 64-bit integer, with at most one `-` in front, and any spaces and comments between the sign and the digits. `-9223372036854775808` is in. Leading zeros are allowed: they are part of a decimal integer literal, and SQLite stores `00012` as 12 and `-0` as 0. SQLite stores every value of this form as the integer it names, with any number of leading zeros, which the tests check against SQLite for each value.
 - **A real:** a real literal in every form that SQLite's tokenizer reads as one, such as `1.5`, `.5`, `1.`, `1e3`, `1E+3`, and `1.5e-3`, with any number of digits, with at most one `-` in front, and any spaces and comments after the sign. Its value is the 64-bit float that SQLite gives it, bit for bit. `-0.0` is negative zero. A literal below the smallest float, such as `1e-400`, is `0.0`, as in SQLite.
 - **A string** in single quotes, with `''` for a quote in it. Its value is the bytes between the quotes, with `''` read as `'`. It is valid UTF-8 without a NUL byte, since the text is.
 - **A blob:** `x'6162'` or `X'6162'`, with hex digits in either case. Its value is the bytes that the digits give. `x''` is the empty blob. An odd number of digits, or a digit that is not hex, is a syntax error in SQLite's tokenizer, `unrecognized token: "x'6'"`, which the pass gives.
+- **NULL:** the bare word `null`, in any case of its letters, without a sign. It is slice 6. Its value is `stmt.Null{}`.
 
 The pass reads a real literal with a port, in `real.go`, of `sqlite3AtoF` and `sqlite3Fp10Convert2` of SQLite 3.54.1, with the same integer arithmetic. It does not use Go's `strconv.ParseFloat`, which rounds every text to the nearest float. SQLite keeps only about the first 19 significant digits of a literal, so for a longer one it can round to another float than the nearest. SQLite's own example is `3500000000000000.2500001`: it is `3500000000000000.0` in SQLite, where `strconv.ParseFloat` gives `3500000000000000.5`, and the pass gives SQLite's. A new version of SQLite that changes these routines needs the port changed with it, and `TestCheck_reals` would show it.
 
@@ -156,7 +160,9 @@ The pass does not know the table, so `insert into t1 (v1) values ('a')` is a sup
 - `2 values for 1 columns`, when the list and the values differ in number.
 - `table t1 has 3 columns but 2 values were supplied`, when a statement without a list has another number of values than the table has columns.
 - `table t1 has no column named v9`, for a column of the list that the table does not have.
-- `NOT NULL constraint failed: t1.v2`, for a column that the list leaves out.
+- `NOT NULL constraint failed: t1.v2`, with the extended result code 1299, for a column that says NOT NULL, or the primary key, when the list leaves it out or its value is NULL. The message names the first such column in the order of the table.
+
+A column that takes NULL gets NULL when the list leaves it out.
 
 A value can also be a parameter, a plain `?`, which is slice 2. SQLite gives a `?` the number after the largest one before it, and every parameter of a supported statement is a plain `?`. So the k-th `?` of the statement has the number k. For a parameter, `Term.Parameter` is that number, `Term.Value` is nil, and `Term.Span` is the span of the `?`. `Parameters()` of every statement gives the number of its parameters, as `sqlite3_bind_parameter_count` gives it: the number of `?` in an insert, and 0 for every other statement. Which argument binds to a parameter, and what an argument may be, is for the engine and the driver to check; the pass sees only the text.
 
@@ -167,15 +173,17 @@ Not supported: REPLACE, INSERT OR, WITH, an alias, DEFAULT VALUES, a second row,
 Not supported as the value:
 
 - A `+` sign, a second sign, `~`, and NOT.
+- NULL after a sign, `-null` or `+null`, as `NULL after a sign`. SQLite reads both as NULL, and the roadmap lists only the plain word. The offset for `-null` is that of the NULL, as for a string after a sign, and the offset for `+null` is that of the `+`. The other names stay: `- -null` is `second sign`, `+-null` is `+ sign`, `~null` is `~ operator`, and `not null` as a value is `NOT operator`.
 - A hex literal, and a digit separator, also in a real, as in `1_000.5`.
 - An integer outside 64 bits. SQLite reads it as a real, and the pass rejects it and never reinterprets it.
 - A real that SQLite reads as an infinity.
 - A string or a blob after a `-`, as `string after a sign` and `blob after a sign`. SQLite gives the integer 0 for `select -'a'` and for `select -x'01'`.
 - The bare word TRUE or FALSE, as `TRUE or FALSE`. SQLite reads them as 1 and 0 where no column of the name is.
 - A name. A double-quoted string, such as `"a"`, is a name too: to the grammar it is a column reference, and it is not supported as `column reference`. The pinned build of SQLite has `DQS=0`, so SQLite gives `no such column: "a" - should this be a string literal in single-quotes?` for it.
-- NULL, CURRENT_TIME and its kind, and parentheses.
+- CURRENT_TIME and its kind, and parentheses, also around NULL.
 - A parameter with a number or a name, and a parameter after a sign.
-- Any other expression, such as `'a' || 'b'` or `cast('1' as int)`.
+- A test for NULL: `is null` and `is not null`, as `IS`, and `isnull`, `notnull`, and `not null` after a value, as `NULL test`.
+- Any other expression, such as `'a' || 'b'`, `cast('1' as int)`, `cast(null as text)`, `null collate binary`, or `nullif(1, 1)`.
 
 A parameter anywhere else is not supported for what holds it: a WHERE clause, a LIMIT clause, a result column, a DEFAULT, and so on.
 
@@ -200,7 +208,7 @@ The pass does not know the table, so two facts of SQLite are for the engine:
 Not supported as a result column:
 
 - `*` with another result column, as `* and another result column`.
-- Any other result column, such as an expression, a literal, `t.v`, or `t.*`, as `result column other than a column or *`.
+- Any other result column, such as an expression, a literal, also NULL, `t.v`, or `t.*`, as `result column other than a column or *`.
 - An alias, as `alias`.
 - The bare word TRUE or FALSE, as `TRUE or FALSE`. SQLite reads it as 1 or 0 where the table has no column of that name. `"true"` in double quotes is a name.
 
@@ -307,7 +315,7 @@ A test checks that every name the pass gives in any test is in these tables.
 | `REPLACE` | The statement is REPLACE INTO. |
 | `column named twice` | The column list of INSERT names a column that it named before, as SQLite compares names. SQLite takes the first value for it. |
 | `INSERT with SELECT` | INSERT has a SELECT in place of VALUES. |
-| `+ sign` | The value has a `+` sign. |
+| `+ sign` | The value has a `+` sign, but before NULL. |
 | `~ operator` | The value has a `~`, also after its `-`. |
 | `NOT operator` | The value has a NOT, also after its `-`. |
 | `second sign` | The value has a `+` or `-` after its `-`. |
@@ -473,7 +481,7 @@ Any other field of an accepted node has the name of the node's type.
 3. Extend the recognizer in `recognize.go`. Take every new token with `take`, accept every new node with `accept` before you take its tokens, and build the typed form only from tokens you took. Check the content of a token before you take it, with `isNext`, so that a reject names the right token. Do not loosen the check at the end of `recognize`.
 4. Add a name to `fieldNames` in `vocabulary.go` for each field of an accepted node that the slice does not support, and every new name of a check, to the tables above.
 5. Extend the allow-list in `vocabulary_test.go` with exactly the node types and fields that the slice adds. The test fails until every field outside the list has an example that is not supported.
-6. Extend the generator to every new form, and `checkMeaning` in `stmt_test.go` to compare each new statement with what SQLite does. The generator in [`stmttest`](stmttest/stmttest.go) is shared with the tests of the engine and the driver. So put a new form behind an option of the generator, as `Generator.Columns` is for slice 5, until the engine supports it. With the option off, the generator must write what it wrote before and draw the same random numbers, so that the generated tests of the engine and the driver draw the same calls.
+6. Extend the generator to every new form, and `checkMeaning` in `stmt_test.go` to compare each new statement with what SQLite does. The generator in [`stmttest`](stmttest/stmttest.go) is shared with the tests of the engine and the driver. So put a new form behind an option of the generator, as `Generator.Columns` is for slice 5 and `Generator.Nulls` for slice 6, until the engine supports it. With the option off, the generator must write what it wrote before and draw the same random numbers, so that the generated tests of the engine and the driver draw the same calls.
 7. Add hand-written cases for each new form and its near misses to `checkCases` in `check_test.go`.
 8. Update this README: the definition of the slice, and the names.
 
@@ -490,14 +498,15 @@ SQLite is the judge, through the oracle in [`internal/sql/oracle`](../oracle/REA
 - A "not supported" error matches `ErrNotSupported`, has the form above, and has a name from the tables above, which the test reads from this README. Its offset is where a token that is not a space or a comment starts or ends.
 - A text without a statement holds only spaces, comments, and semicolons.
 - A supported statement is one that SQLite parses, and `checkMeaning` in `stmt_test.go` checks it in SQLite:
-  - CREATE TABLE: the schema that SQLite records for the text is that of the canonical statement built from the typed form. `pragma_table_list` gives the name of the table, the number of its columns, `wr` 1, and `strict` 1. `pragma_table_xinfo` gives, for every column, its name, the name of its `Type`, `notnull` 1, and `pk` 1 for the primary key and 0 for every other column. The second run of the text gives `table <Raw> already exists`.
+  - CREATE TABLE: the schema that SQLite records for the text is that of the canonical statement built from the typed form. `pragma_table_list` gives the name of the table, the number of its columns, `wr` 1, and `strict` 1. `pragma_table_xinfo` gives, for every column, its name, the name of its `Type`, `notnull` 1 for the primary key and for a column that says NOT NULL and 0 for a column that takes NULL, and `pk` 1 for the primary key and 0 for every other column. The second run of the text gives `table <Raw> already exists`.
   - CREATE TABLE with a `ColumnsError()`: on an empty database SQLite gives that error, with its message and the code 1, for the text and for the canonical statement. On a database that has the table, with the case of its name swapped, SQLite gives `table <Raw> already exists`.
-  - INSERT, the values: the value of each literal is exactly what SQLite gives for `select` and the text of the literal, which the test reads from `Term.Span`. It has the same type and the same value: an integer by its number, a real by its 64 bits, and text and a blob byte by byte.
-  - INSERT, the table of the check: its name has the case of its ASCII letters swapped. Its columns are those of the list, with the case swapped, in the reverse order of the list, so that a value goes to its column by the name. Without a list, they are `c1` to `cn`, in the order of the values. The column of the first value is the primary key. Each column has the type of its value: INT for an integer and for a parameter, REAL, TEXT, or BLOB. The parameters are bound to integers at or near the limits of 64 bits that differ from each other, so that a value in the wrong column is seen.
+  - INSERT, the values: the value of each literal is exactly what SQLite gives for `select` and the text of the literal, which the test reads from `Term.Span`. It has the same type and the same value: an integer by its number, a real by its 64 bits, and text and a blob byte by byte. The literal NULL is compared with what SQLite gives for `select null`, as every literal is.
+  - INSERT, the table of the check: its name has the case of its ASCII letters swapped. Its columns are those of the list, with the case swapped, in the reverse order of the list, so that a value goes to its column by the name. Without a list, they are `c1` to `cn`, in the order of the values. The column of the first value that is not NULL is the primary key. Each column has the type of its value: INT for an integer and for a parameter, REAL, TEXT, or BLOB. The column of a NULL has one of the five types and no NOT NULL. Every other column that is not the primary key says NOT NULL. The parameters are bound to integers at or near the limits of 64 bits that differ from each other, so that a value in the wrong column is seen.
   - INSERT, what SQLite does: on that table, the text stores each value in its column, as the canonical statement does, and the test reads every column. A second run gives `UNIQUE constraint failed` with the names as the table stores them. Without the table the text gives `no such table: <Value>`. When the list and the values differ in number, it gives `N values for M columns`. Without a list, on a table with one more column, it gives `table <Value> has N+1 columns but N values were supplied`. With a list, on a table without the first column of the list, it gives `table <Value> has no column named <Value>`. The stored value is the value, but for a real zero: SQLite stores a real with an integer value as an integer in a REAL column, so `-0.0` reads back as `0.0`.
+  - INSERT with a NULL, in `checkNotNull`: the table has the same columns in the same order, and every column says NOT NULL or is the primary key. If no value can be the key, the first column of the table is the key. SQLite gives `NOT NULL constraint failed: <table>.<column>`, with the extended code 1299, for the first column in the order of the table that gets a NULL, with the names as the table stores them. An insert of only NULLs has no column that can be the key, so no table stores its row. Of the checks on a table that has its columns, only this one runs for it.
   - SELECT: the table of the check has the columns that the text names, once each, with the case swapped, and one more column. For `*` it has three columns, with the primary key second. It holds three rows, beside another table. The names of the result columns and the rows must be SQLite's: the names as the table stores them, and the rows in key order. The canonical statement gives the same. Without the table the text gives `no such table: <Value>`. On a table without the first name of the list it gives `no such column: <Value>`, or the message with the question about a string literal for a name in double quotes.
   - DROP TABLE: the text drops the named table and leaves the other, as the canonical statement does; without the table it gives `no such table: <Value>`.
-  - The canonical statement is supported and gives the same statement, the raw text of each name is at its offset, and the span ends where SQLite's prepare ends the statement. The canonical statement writes every name in double quotes, NOT NULL after PRIMARY KEY, an integer in decimal, a real in Go's shortest form with an exponent (`strconv.FormatFloat(v, 'e', -1, 64)`), a string in single quotes, and a blob in hex.
+  - The canonical statement is supported and gives the same statement, the raw text of each name is at its offset, and the span ends where SQLite's prepare ends the statement. The canonical statement writes every name in double quotes, NOT NULL after PRIMARY KEY, an integer in decimal, a real in Go's shortest form with an exponent (`strconv.FormatFloat(v, 'e', -1, 64)`), a string in single quotes, a blob in hex, and NULL as `NULL`. It writes NOT NULL only for a column that says it.
   - For every statement, `Parameters()` is SQLite's count of its parameters, which the test reads as the largest index that `sqlite3_bind_int64` takes on the prepared statement.
 
 The layers:
@@ -512,16 +521,21 @@ The layers:
      - A select has `*` one time in two. Otherwise it has 1 to 4 names from the pool of a position of its own, `select %v from t`, which holds 134 names. One name in four after the first repeats an earlier name.
      - Each column of a create table takes its name from the pool on its own, so two columns can have one name. Some create tables therefore have a `ColumnsError()`.
    - Three hooks give the forms of slice 5 in place of forms at random, when `Generator.Columns` is not 0. `Generator.Create` gives the columns of a create table: the name, the type, and the key. `Generator.Insert` gives the list of columns of an insert, or no list, and its values. `Generator.Select` gives the select list, or `*`. With the hooks nil, the generator draws exactly as before, so the pinned numbers of the tests of the pass did not move. `stmttest.Sequence`, which the tests of the engine and the driver use, sets `Columns` to 3 and the three hooks, so that each name of a table has a shape of its own, which its create tables, its inserts, and its selects share. [The README of the engine](../../engine/README.md#how-it-is-tested) has the shapes.
+   - `Generator.Nulls` turns on the forms of slice 6. With 0, the generator writes what it wrote before slice 6 and draws the same random numbers, so the tests of the engine and the driver draw the same calls while they have it at 0. This was checked once, by hand: a dump of 27,000 texts and arguments of `Generator` and of `Sequence`, from 30 seeds, from the code before slice 6 and the same dump from the code with slice 6 are the same, byte for byte. `stmttest.Sequence` leaves it at 0, and the tests of the pass set it to 5:
+     - One column in five of a create table of slice 5 that is not the primary key has no NOT NULL, and takes NULL.
+     - One value in five of an insert is NULL. It is written as `null`, `NULL`, `Null`, or `nULl`, or, where `Parameters` puts a `?` in its place, the argument of the `?` is nil. A value that the `Insert` hook gives is never replaced.
+     - `Literal`, `Argument`, and `LiteralKind` know `stmt.Null`: `Argument` gives nil for it, and `LiteralKind` gives `"null"`.
    - A real comes from a float64 that `strconv` writes, in one of six forms: as `strconv` writes it, such as `1.5e+00`; without a point and with an upper-case `E`, such as `15E-1`; without an exponent; without an exponent and without a zero before the point, such as `.5`; with leading and trailing zeros; and with an upper-case `E` and the sign of the exponent, such as `1.5E+03`. Its expected value is the float64. That holds only if SQLite rounds those digits to the nearest float, which the 20,000 statements show for these texts.
    - A string comes from a pool and from random runes, and a blob from random bytes.
-4. `TestGenerate_mutants` runs `verify` on five one-token mutants of each statement of the generator, and logs the mutants that are still supported, by how they differ from their statement. `TestGenerate_nearMisses` adds what a one-token mutant cannot. It writes each statement of the generator in every form of its kind, 71 for CREATE TABLE, 72 for INSERT, 58 for SELECT, and 8 for DROP TABLE, and requires that none is supported.
+4. `TestGenerate_mutants` runs `verify` on five one-token mutants of each statement of the generator, and logs the mutants that are still supported, by how they differ from their statement. `TestGenerate_nearMisses` adds what a one-token mutant cannot. It writes each statement of the generator in every form of its kind, 72 for CREATE TABLE, 80 for INSERT, 61 for SELECT, and 8 for DROP TABLE, and requires that none is supported.
    - Most forms add or change a clause, a keyword, or an item, such as WHERE, RETURNING, a column constraint after PRIMARY KEY, or a second row.
-   - Forms of the columns: a second column without NOT NULL, a second PRIMARY KEY, NOT NULL twice, a NULL constraint, another constraint after NOT NULL, a table constraint after the columns, a column and `*` in one select list, and an alias of a column.
+   - Forms of the columns: a table without a primary key whose second column takes NULL, a second column with `default null`, a second PRIMARY KEY, NOT NULL twice, a NULL constraint on the primary key, on a column before it, and on a column after it, another constraint after NOT NULL, a table constraint after the columns, a column and `*` in one select list, and an alias of a column.
    - Forms of the type: a type in double quotes, single quotes, or brackets, `any`, `varchar`, `double`, a type twice, and a plural such as `texts`. The forms of CREATE TABLE use the type of the generated statement.
-   - Forms of the literal: an unterminated string, `'a''`, two strings without a comma, `x'6'`, `x'6g'`, `x '61'`, `1e`, `1e+`, `1.5.5`, `.`, `1e999`, `-1e999`, `1_000.5`, `0x1p3`, NULL, TRUE, `- false`, `"a"`, a cast, `- 'a'`, `-x'01'`, a concatenation, a literal followed by a letter or a quote, and two literals without a comma.
+   - Forms of the literal: an unterminated string, `'a''`, two strings without a comma, `x'6'`, `x'6g'`, `x '61'`, `1e`, `1e+`, `1.5.5`, `.`, `1e999`, `-1e999`, `1_000.5`, `0x1p3`, TRUE, `- false`, `"a"`, a cast, `- 'a'`, `-x'01'`, a concatenation, a literal followed by a letter or a quote, and two literals without a comma.
+   - Forms of NULL: `+null`, `-null`, `- null` as a second value, `nullif(1, 1)`, `cast(null as int)`, `is null`, `is not null`, `isnull`, `notnull`, and `not null` after the value, `select null from t`, and `is null` and `is not null` in WHERE. Slice 6 made four forms supported: a column without a constraint after the primary key and one before it, and NULL as the only value and as a second value. Each was replaced by a form that is still not supported.
 5. `TestCheck_reals` in `real_test.go` checks the value of real literals against SQLite, on texts made to be hard to round: any digits with a point anywhere; a float's exact value halfway to the next one, cut to 15 to 40 significant digits, and one more or one less in its last digit; runs of nines and zeros; texts around the largest float and the smallest ones; leading zeros; and exponents far out of range or of many digits. One text in three comes after a `-`. For each, the pass gives the value that SQLite's `select` gives, bit for bit, or rejects a literal that SQLite reads as an infinity. The test logs for how many texts Go's `strconv.ParseFloat` gives another float than SQLite.
-6. `TestAllowList` in `vocabulary_test.go` parses many statements, and requires that a supported statement uses only the node types and fields of the supported forms. Slice 4 added none: its types and its literals are in nodes and fields that slice 1 has. Slice 5 added `NullConstraint` with `Not` and `Null`, `ColumnRef` with `Column`, `ResultColumn.Expr`, and the commas `CreateTable.Commas`, `IDList.Commas`, `ValuesRow.Commas`, and `SimpleSelect.Commas`. It reads the node types from the source of `internal/sql/ast` and their fields through reflection, so the list cannot go stale: every node type, and every field of the node types of the supported forms, must occur in some statement of the test, so that a statement that has one outside them is seen to be not supported. The test sees types and fields, not how many there are or what their tokens say: `strict, without rowid, strict` and `values (+1)` use only the types and fields of the supported forms. The hand-written cases and the check of the meaning cover those. `vocabulary_internal_test.go` checks that every node type has a name, and `TestRecognize` there gives the recognizer trees that no text gives, for its paths that SQLite's grammar never reaches.
-7. `FuzzCheck` runs `verify` on any text, and `FuzzGenerate` on a statement of the generator and a mutant of it. `FuzzLiteral` takes any text as the value of an insert and, if the pass supports it, compares its value with what SQLite's `select` gives. `make fuzz` runs all three.
+6. `TestAllowList` in `vocabulary_test.go` parses many statements, and requires that a supported statement uses only the node types and fields of the supported forms. Slice 4 added none: its types and its literals are in nodes and fields that slice 1 has. Slice 5 added `NullConstraint` with `Not` and `Null`, `ColumnRef` with `Column`, `ResultColumn.Expr`, and the commas `CreateTable.Commas`, `IDList.Commas`, `ValuesRow.Commas`, and `SimpleSelect.Commas`. Slice 6 added none: the literal NULL is a `Literal`, a column that takes NULL has no constraint, and the NULL constraint, which is not supported, is a `NullConstraint` without `Not`. It reads the node types from the source of `internal/sql/ast` and their fields through reflection, so the list cannot go stale: every node type, and every field of the node types of the supported forms, must occur in some statement of the test, so that a statement that has one outside them is seen to be not supported. The test sees types and fields, not how many there are or what their tokens say: `strict, without rowid, strict` and `values (+1)` use only the types and fields of the supported forms. The hand-written cases and the check of the meaning cover those. `vocabulary_internal_test.go` checks that every node type has a name, and `TestRecognize` there gives the recognizer trees that no text gives, for its paths that SQLite's grammar never reaches.
+7. `FuzzCheck` runs `verify` on any text, and `FuzzGenerate` on a statement of the generator and a mutant of it. `FuzzLiteral` takes any text as the value of an insert and, if the pass supports it, compares its value with what SQLite's `select` gives. One of its seeds is NULL. `make fuzz` runs all three.
 8. [`internal/sql/mutation`](../mutation/README.md) runs mutation testing of this package.
 
 Under `-short`, the race detector, or the address sanitizer, the tests on the corpus, the grammar, the generator, and the real literals use a tenth of their texts.
@@ -532,15 +546,15 @@ On the code as it is now, with the default flags:
 
 | Layer | Texts | Rejected before parsing | Syntax error | Syntax error where SQLite does not say | Not supported | Not supported where SQLite does not say | No statement | Supported |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Corpus, and the parts before a byte rejected before parsing | 183,694 | 44,460 | 52,938 | 62 | 66,824 | 237 | 6,437 | 12,736 |
-| One mutant of each corpus entry, and the parts before such a byte | 168,292 | 29,535 | 120,774 | 78 | 11,478 | 178 | 5,995 | 254 |
+| Corpus, and the parts before a byte rejected before parsing | 183,694 | 44,460 | 52,938 | 62 | 66,106 | 237 | 6,437 | 13,454 |
+| One mutant of each corpus entry, and the parts before such a byte | 168,292 | 29,535 | 120,774 | 78 | 11,470 | 178 | 5,995 | 262 |
 | 20,000 sentences of the grammar and a mutant of each | 40,000 | 0 | 12,996 | 2,356 | 20,250 | 1,479 | 2,895 | 24 |
-| Five mutants of each of 20,000 statements of the generator | 100,000 | 0 | 78,501 | 85 | 10,237 | 310 | 0 | 10,867 |
-| Near misses of 2,000 statements of the generator | 106,786 | 0 | 11,207 | 0 | 92,557 | 3,022 | 0 | 0 |
+| Five mutants of each of 20,000 statements of the generator | 100,000 | 0 | 78,422 | 77 | 10,435 | 305 | 0 | 10,761 |
+| Near misses of 2,000 statements of the generator | 113,477 | 0 | 11,489 | 0 | 99,046 | 2,942 | 0 | 0 |
 
 The two columns "where SQLite does not say" are the texts that the oracle excuses from the comparison with SQLite: SQLite stopped before the end of the statement for a reason that is not the grammar, so nothing holds the pass's answer to SQLite's there. With the default flags and all the texts, the tests require the numbers of both columns exactly, each on its own (`excused` in `check_test.go`). A change of the oracle or of the pass that excuses more texts, or that moves a text from one column to the other, fails them, and the numbers may be changed only on purpose, with the reason.
 
-The 12,736 supported texts of the corpus are 3 CREATE TABLE, 191 DROP TABLE, 11,950 INSERT, and 592 SELECT, each checked in SQLite. Before slice 5 they were 1,198, with 654 INSERT and 350 SELECT. Most of the 11,296 INSERT more have no list of columns or several values, and the 242 SELECT more name columns. The 471 INSERT more than before slice 4 have a real, a string, or a blob as their value. The two that were supported before the empty name was rejected are `DROP TABLE ""` and `INSERT INTO ""("") VALUES(1)`.
+The 13,454 supported texts of the corpus are 4 CREATE TABLE, 191 DROP TABLE, 12,667 INSERT, and 592 SELECT, each checked in SQLite. Before slice 6 they were 12,736, with 3 CREATE TABLE and 11,950 INSERT: slice 6 added 717 INSERT with NULL as a value and 1 CREATE TABLE with a column that takes NULL. Before slice 5 they were 1,198, with 654 INSERT and 350 SELECT. Most of the 11,296 INSERT that slice 5 added have no list of columns or several values, and the 242 SELECT that it added name columns. The 471 INSERT more than before slice 4 have a real, a string, or a blob as their value. The two that were supported before the empty name was rejected are `DROP TABLE ""` and `INSERT INTO ""("") VALUES(1)`.
 
 The supported mutants of the generator are the same statement with a semicolon or a comment changed, or the same kind of statement with one of these differences:
 
@@ -563,19 +577,26 @@ Slice 5 moved the pinned numbers of the generated tests again. The generator wri
 - The mutants not supported where SQLite does not say went from 343 to 310: 254 with `unknown table option`, 51 with `duplicate column name`, 3 with `no such collation sequence`, and 2 with `AUTOINCREMENT is only allowed on an INTEGER PRIMARY KEY`.
 - The excused near misses went from 956 to 3,022. Of these, 2,080 are four new forms on each of the 520 CREATE TABLE statements, for which SQLite gives `table "t" has more than one primary key` while it parses: PRIMARY KEY twice on one column, PRIMARY KEY on a second column with NOT NULL and without it, and a PRIMARY KEY table constraint after the columns. The rest are forms that the near misses had before: 520 with `generated columns cannot be part of the PRIMARY KEY`, 402 with AUTOINCREMENT on a primary key that is not INTEGER, and 20 of two forms with a table constraint.
 
+Slice 6 moved the pinned numbers of the generated tests again. With `Generator.Nulls` on, the generator draws other random numbers, so the statements, and so their mutants and their near misses, are other texts. A throwaway test grouped the excused texts by SQLite's message, on the code before slice 6 and on the code with it, and found no new message.
+
+- The syntax errors of the mutants where SQLite does not say went from 85 to 77: 76 with `duplicate column name` and 1 with `no such collation sequence`, where there were 83 and 2.
+- The mutants not supported where SQLite does not say went from 310 to 305: 251 with `unknown table option`, 47 with `duplicate column name`, 6 with `no such collation sequence`, and 1 with `AUTOINCREMENT is only allowed on an INTEGER PRIMARY KEY`.
+- The excused near misses went from 3,022 to 2,942, because 502 of the 2,000 statements are CREATE TABLE, where 520 were. Of the 2,942, 2,008 are the four forms with `table "t" has more than one primary key` on each of the 502 statements, 502 have `generated columns cannot be part of the PRIMARY KEY`, 406 have AUTOINCREMENT on a primary key that is not INTEGER, and 26 are of two forms with a table constraint, for which SQLite gives `non-deterministic functions prohibited in index expressions`.
+- In the corpus, 718 texts went from not supported to supported, and 8 of its mutants did. The excused numbers of both did not move. The numbers of the sentences of the grammar and of `TestCheck_reals` did not move.
+
 `TestCheck_reals` checks 100,000 texts of real literals: SQLite reads 81,351 as reals and 18,649 as infinities, and the pass answers every one as SQLite gives it. For 6,998 of the texts Go's `strconv.ParseFloat` gives another float than SQLite.
 
 Fuzzing, before slice 4: `FuzzCheck` made 202,673,795 executions in 40 minutes on 6 workers, and on the code after the review 87,983,456 in 30 minutes on 4 workers. `FuzzGenerate` made 11,418,100 executions in 15 minutes on 4 workers; each checks a statement of the generator and its mutant in SQLite. None of the runs found anything. On the code of slice 4, short local runs found nothing: `FuzzLiteral` made 7,192,877 executions in 1 minute, `FuzzCheck` 4,915,832 in 45 seconds, and `FuzzGenerate` ran 30 seconds. CI runs them longer.
 
-Mutation testing, before slice 4, on 2026-11-18 after `StartedTable` moved to `stmttest`, which is not mutated: of 896 mutants, 117 do not compile, 766 are killed, 12 time out, and 1 is equivalent; none is unexplained. Before, with `StartedTable` in the package, of 1,122 mutants, 123 did not compile, 970 were killed, 14 timed out, and 15 were equivalent, 14 of them in `StartedTable`. See [`internal/sql/mutation`](../mutation/README.md#the-pass-after-the-parser). Mutation testing of the code of slice 4 is for a later task. So are mutation testing and long fuzz runs of the code of slice 5.
+Mutation testing, before slice 4, on 2026-11-18 after `StartedTable` moved to `stmttest`, which is not mutated: of 896 mutants, 117 do not compile, 766 are killed, 12 time out, and 1 is equivalent; none is unexplained. Before, with `StartedTable` in the package, of 1,122 mutants, 123 did not compile, 970 were killed, 14 timed out, and 15 were equivalent, 14 of them in `StartedTable`. See [`internal/sql/mutation`](../mutation/README.md#the-pass-after-the-parser). Mutation testing of the code of slice 4 is for a later task. So are mutation testing and long fuzz runs of the code of slice 5. Mutation testing and long fuzz runs of the code of slice 6 are for a later task too.
 
-Statement coverage is 98.8% under `-short`. The generated tests do not reach the panic of `CreateTable.Key()` for a table without a primary key, which the pass never gives; the unit test `TestCreateTable_Key` covers it. The places that are not covered:
+Statement coverage is 99.0% under `-short`, measured with the code of slice 6. The generated tests do not reach the panic of `CreateTable.Key()` for a table without a primary key, which the pass never gives; the unit test `TestCreateTable_Key` covers it. The places that are not covered:
 
 - The defaults of `literalName` and `unaryName` for a kind of token that the grammar never puts there.
 - The name of a node for one of its own tokens whose field has no name, which no offset reaches.
 - The empty name of the zero `Type`.
 - The panic for a blob token that is not hex. The tokenizer gives a blob only for an even number of hex digits.
-- The `isValue` markers of the four value types.
+- The `isValue` markers of the five value types.
 
 ### Run times
 
