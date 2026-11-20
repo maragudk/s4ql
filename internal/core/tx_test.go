@@ -2429,9 +2429,18 @@ func TestTx_null(t *testing.T) {
 			good := edges[typ][0]
 			for _, refused := range [][]*s4qlpb.Value{{null, good, good}, {null, good, null}, {good, null, good}, {good, null, null}} {
 				what := typeName(typ) + " " + text(refused)
-				is.Error(t, core.ErrInvalid, tx.Upsert(ctx, name, refused), what)
+				// The message says which rule the NULL breaks: the key's, or that of a column that does
+				// not take NULL.
+				why := `NULL in the column "c1" of the table "` + name + `", which does not take NULL`
+				if refused[0].HasNull() {
+					why = `NULL in the primary-key column "c0" of the table "` + name + `"`
+				}
+				err := tx.Upsert(ctx, name, refused)
+				is.Error(t, core.ErrInvalid, err, what)
+				is.True(t, strings.Contains(err.Error(), why), what+": "+err.Error())
 				inserted, err := tx.Insert(ctx, name, refused)
 				is.Error(t, core.ErrInvalid, err, what)
+				is.True(t, strings.Contains(err.Error(), why), what+": "+err.Error())
 				is.True(t, !inserted, what)
 			}
 			_, err := tx.Delete(ctx, name, []*s4qlpb.Value{null})
