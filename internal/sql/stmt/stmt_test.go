@@ -456,7 +456,7 @@ func checkCreateTable(t testing.TB, open func(testing.TB) *db, src string, s *st
 // a table whose columns say NOT NULL gives `NOT NULL constraint failed`, as [checkNotNull] says; and
 // SQLite gives `no such table`, `has no column named`, a wrong number of values, or `values for` with
 // the names and the numbers of s. When every value is NULL, no column can be the primary key of a
-// table that holds them, and only the errors are checked.
+// table that holds them, and only the stored values are not checked.
 func checkInsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.Insert) {
 	t.Helper()
 	// The value of a literal is the value that SQLite gives the text of the literal, exactly.
@@ -533,34 +533,34 @@ func checkInsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.In
 		}
 	}
 	checkNotNull(t, open, src, table, tableColumns, nulls, args)
-	if key < 0 {
-		// Every value is NULL, and no column of the table can be its primary key.
-		return
-	}
-	read := "select " + strings.Join(quoted(names), ", ") + " from " + quote(table)
-	run := func(sql string) *db {
-		d := open(t)
-		d.must(createColumns(table, tableColumns))
-		is.Equal(t, d.parameters(sql), s.Parameters(), sql)
-		d.must(sql, args...)
-		return d
-	}
-	d := run(src)
-	_, rows := d.query(read)
-	want := make([]string, n)
-	for i := range n {
-		want[i] = show(stored[i])
-	}
-	got := make([]string, n)
-	for i := range n {
-		got[i] = show(d.valueAt(read, i))
-	}
-	is.Equal(t, fmt.Sprint(want), fmt.Sprint(got), src)
-	is.Equal(t, 1, len(rows), src)
-	sqliteError(t, src, d.exec(src, args...), 1555, "UNIQUE constraint failed: "+table+"."+names[key])
-	c := run(canonical(s))
-	for i := range n {
-		is.Equal(t, got[i], show(c.valueAt(read, i)), src)
+	// When every value is NULL, no column of the table can be its primary key, and no table stores the
+	// row.
+	if key >= 0 {
+		read := "select " + strings.Join(quoted(names), ", ") + " from " + quote(table)
+		run := func(sql string) *db {
+			d := open(t)
+			d.must(createColumns(table, tableColumns))
+			is.Equal(t, d.parameters(sql), s.Parameters(), sql)
+			d.must(sql, args...)
+			return d
+		}
+		d := run(src)
+		_, rows := d.query(read)
+		want := make([]string, n)
+		for i := range n {
+			want[i] = show(stored[i])
+		}
+		got := make([]string, n)
+		for i := range n {
+			got[i] = show(d.valueAt(read, i))
+		}
+		is.Equal(t, fmt.Sprint(want), fmt.Sprint(got), src)
+		is.Equal(t, 1, len(rows), src)
+		sqliteError(t, src, d.exec(src, args...), 1555, "UNIQUE constraint failed: "+table+"."+names[key])
+		c := run(canonical(s))
+		for i := range n {
+			is.Equal(t, got[i], show(c.valueAt(read, i)), src)
+		}
 	}
 
 	// SQLite prints the name of the table as the statement writes it, and the table has it with the

@@ -15,8 +15,8 @@
 //     statement and no error.
 //
 // The supported statements are those of slices 1 and 2 of docs/roadmap.md, with the column types and
-// the literals of slice 4, the columns of slice 5, and the NULL of slice 6. The README next to this file defines them token
-// for token, and lists the names that a "not supported" error gives.
+// the literals of slice 4, the columns of slice 5, and the NULL of slice 6. The README next to this
+// file defines them token for token, and lists the names that a "not supported" error gives.
 //
 // Names compare as SQLite compares them, by [Name.Fold]. What a statement means for a table, such as
 // whether its columns exist or its values are as many as the columns, is not decided here, since it
