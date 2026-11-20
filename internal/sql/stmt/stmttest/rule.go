@@ -196,6 +196,13 @@ func DeleteRule(table string, columns []TableColumn, d *stmt.Delete, args []any)
 // literals of the conditions and from args for their parameters, as the statement of the conditions
 // numbers them.
 func FoundQuery(table stmt.Name, where []stmt.Condition, args []any) (string, []any) {
+	conditions, bound := whereText(where, args)
+	return "select 1 from " + Quote(table.Value) + conditions + " limit 1", bound
+}
+
+// whereText of the conditions of a WHERE, with a ? for each value, after " where ", or "" for no
+// condition, and the arguments of its parameters, as [FoundQuery] gives them.
+func whereText(where []stmt.Condition, args []any) (string, []any) {
 	var conditions []string
 	var bound []any
 	for _, c := range where {
@@ -204,26 +211,51 @@ func FoundQuery(table stmt.Name, where []stmt.Condition, args []any) (string, []
 			continue
 		}
 		conditions = append(conditions, Quote(c.Column.Value)+" "+c.Operator.String()+" ?")
-		switch v := c.Value.Value.(type) {
-		case stmt.Integer:
-			bound = append(bound, int64(v))
-		case stmt.Real:
-			bound = append(bound, float64(v))
-		case stmt.Text:
-			bound = append(bound, string(v))
-		case stmt.Blob:
-			bound = append(bound, []byte(v))
-		case stmt.Null:
-			bound = append(bound, nil)
-		default:
-			bound = append(bound, args[c.Value.Parameter-1])
-		}
+		bound = append(bound, boundValue(c.Value, args))
 	}
-	src := "select 1 from " + Quote(table.Value)
-	if len(conditions) > 0 {
-		src += " where " + strings.Join(conditions, " and ")
+	if len(conditions) == 0 {
+		return "", nil
 	}
-	return src + " limit 1", bound
+	return " where " + strings.Join(conditions, " and "), bound
+}
+
+// boundValue of a term, a literal or the argument of args for its parameter, as SQLite binds it: an
+// int64, a float64, a string, a []byte, or nil.
+func boundValue(term stmt.Term, args []any) any {
+	switch v := term.Value.(type) {
+	case stmt.Integer:
+		return int64(v)
+	case stmt.Real:
+		return float64(v)
+	case stmt.Text:
+		return string(v)
+	case stmt.Blob:
+		return []byte(v)
+	case stmt.Null:
+		return nil
+	}
+	return args[term.Parameter-1]
+}
+
+// RowQueries of the update u of a table whose key is the column with the name key, with the
+// arguments args as SQLite binds them: a create of the temporary table s4ql_found of the keys of the
+// rows that the WHERE of u finds, in the order of the key, and the arguments of its parameters; and
+// an update with the SET of u of the row whose key is the one at an offset of s4ql_found, and the
+// arguments of its parameters but the last, which is the offset. The updates of one row each, in the
+// order of the offsets, change the rows as u changes them, one at a time in the order of the key,
+// and each measures the record of its row afresh, as a statement that changes many rows does not in
+// every build of SQLite: see the known difference of a record that is too long in docs/todo.md.
+func RowQueries(u *stmt.Update, key string, args []any) (found string, foundArgs []any, one string, oneArgs []any) {
+	conditions, bound := whereText(u.Where, args)
+	table := Quote(u.Table.Value)
+	var sets []string
+	for _, a := range u.Set {
+		sets = append(sets, Quote(a.Column.Value)+" = ?")
+		oneArgs = append(oneArgs, boundValue(a.Value, args))
+	}
+	found = "create temp table s4ql_found as select " + Quote(key) + " as k from " + table + conditions + " order by " + Quote(key)
+	one = "update " + table + " set " + strings.Join(sets, ", ") + " where " + Quote(key) + " = (select k from temp.s4ql_found order by rowid limit 1 offset ?)"
+	return found, bound, one, oneArgs
 }
 
 // WhereRule of the conditions of a WHERE of the table of the name and the columns, which the table
@@ -483,6 +515,97 @@ func WhereCases(columns []TableColumn, s *stmt.Select, args []any) []string {
 		cases = append(cases, "WHERE with contradicting conditions")
 	}
 	return append(cases, "WHERE that reads "+KeyAccess(columns, s, args))
+}
+
+// SelectOf the WHERE of the update or the delete s, with the arguments args of s: a select of * of its
+// table with its conditions, whose parameters are numbered from 1, as those of a select of its own
+// are, and the arguments of those parameters, as [WhereCases] and [KeyAccess] take them. It is nil for
+// another statement, and for another number of arguments than s has parameters.
+func SelectOf(s stmt.Statement, args []any) (*stmt.Select, []any) {
+	var table stmt.Name
+	var where []stmt.Condition
+	offset := 0
+	switch s := s.(type) {
+	case *stmt.Update:
+		table, where = s.Table, s.Where
+		for _, a := range s.Set {
+			if a.Value.Parameter > 0 {
+				offset++
+			}
+		}
+	case *stmt.Delete:
+		table, where = s.Table, s.Where
+	default:
+		return nil, nil
+	}
+	if len(args) != s.Parameters() {
+		return nil, nil
+	}
+	sel := &stmt.Select{Table: table}
+	for _, c := range where {
+		if c.Value.Parameter > 0 {
+			c.Value.Parameter -= offset
+		}
+		sel.Where = append(sel.Where, c)
+	}
+	return sel, args[offset:]
+}
+
+// SetCases of the update u of the table of the columns, in the order of the table, with the arguments
+// args as for [TypeRule], for a count of what a test reaches of slice 8. For a column of SET that the
+// table does not have: "SET of a column that the table does not have", also "in double quotes" for
+// one in double quotes, and nothing more, since SQLite gives its error first. Otherwise: "SET of the
+// key" if it sets the key; "SET of every column" if it sets each; "SET of NULL for a column that
+// does not take it" for the key or a column with NOT NULL; with as many arguments as parameters, the
+// value of each, a literal by its kind, as [LiteralKind] names it, after "SET with literal ", or an
+// argument, as [ArgumentKind] names it, after "SET with argument "; and "SET with a value of another
+// type" for a value that is not NULL of another type than its column.
+func SetCases(columns []TableColumn, u *stmt.Update, args []any) []string {
+	var cases []string
+	for _, a := range u.Set {
+		if ColumnOf(columns, a.Column) < 0 {
+			cases = append(cases, "SET of a column that the table does not have")
+			if a.Column.Raw[0] == '"' {
+				cases = append(cases, "SET of a column in double quotes that the table does not have")
+			}
+			return cases
+		}
+	}
+	argsOK := len(args) == u.Parameters()
+	key, other, null := false, false, false
+	for _, a := range u.Set {
+		c := columns[ColumnOf(columns, a.Column)]
+		key = key || c.PrimaryKey
+		switch {
+		case a.Value.Parameter == 0:
+			cases = append(cases, "SET with literal "+LiteralKind(a.Value.Value))
+		case argsOK:
+			cases = append(cases, "SET with argument "+ArgumentKind(args[a.Value.Parameter-1]))
+		}
+		if !argsOK {
+			continue
+		}
+		kind, _ := ValueKind(a.Value, args)
+		switch {
+		case kind == "null":
+			null = null || !takesNull(c)
+		case columnHolds[c.Type] != kind:
+			other = true
+		}
+	}
+	if key {
+		cases = append(cases, "SET of the key")
+	}
+	if len(u.Set) == len(columns) {
+		cases = append(cases, "SET of every column")
+	}
+	if null {
+		cases = append(cases, "SET of NULL for a column that does not take it")
+	}
+	if other {
+		cases = append(cases, "SET with a value of another type")
+	}
+	return cases
 }
 
 // KeyAccess of the select s with WHERE of the table of the columns, with the arguments args as for

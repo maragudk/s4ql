@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2690,6 +2691,84 @@ func TestEngine_update(t *testing.T) {
 		is.NotError(t, engine.Check("update t set v = ? where k = ?", 2))
 		is.Error(t, engine.ErrArguments, engine.Check("update t set v = ? where k = ?", 1))
 	})
+}
+
+// flipContext is a context whose Err gives [context.Canceled] once it has been called n times, where
+// n is what is left of the count that it was made with, and nil before. Its Done is that of the
+// context that it wraps.
+type flipContext struct {
+	context.Context
+	left *atomic.Int64
+}
+
+func newFlipContext(ctx context.Context, n int64) flipContext {
+	c := flipContext{Context: ctx, left: &atomic.Int64{}}
+	c.left.Store(n)
+	return c
+}
+
+func (c flipContext) Err() error {
+	if c.left.Add(-1) < 0 {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestEngine_cancelChange(t *testing.T) {
+	setup := []string{"create table t (k int primary key, v text, w real not null) strict, without rowid"}
+	for k := range 40 {
+		setup = append(setup, fmt.Sprintf("insert into t values (%v, 'v%v', %v.5)", k, k, k))
+	}
+	for _, c := range []struct{ name, src string }{
+		{"an update of every row", "update t set v = 'z', w = 0.5"},
+		{"an update of most rows by a range of the key", "update t set v = null where k >= 3"},
+		{"an update of the key of one row", "update t set k = 100 where k = 20"},
+		{"a delete of most rows", "delete from t where k > 3"},
+		{"a delete of every row", "delete from t"},
+	} {
+		for _, inTx := range []bool{false, true} {
+			t.Run(fmt.Sprint("should change nothing when the context is canceled midway through ", c.name, ", in a transaction ", inTx, ", which goes on and commits, and replays"), func(t *testing.T) {
+				i, o := newInstance(t, engine.Options{}), newOracle(t)
+				for _, src := range setup {
+					is.Equal(t, "", o.run(t, src).err, src)
+					is.Equal(t, "", i.exec(src).err, src)
+				}
+				if inTx {
+					is.NotError(t, i.c.Begin(t.Context()))
+					is.Equal(t, "", o.run(t, "begin").err)
+					is.Equal(t, "", o.run(t, "insert into t values (50, 'tx', 1.5)").err)
+					is.Equal(t, "", i.exec("insert into t values (50, 'tx', 1.5)").err)
+				}
+				// The context is canceled at each call of its Err in turn, until the statement no longer
+				// calls it as often, and succeeds.
+				canceled := 0
+				for n := int64(0); ; n++ {
+					_, err := i.c.Exec(newFlipContext(t.Context(), n), c.src)
+					if err == nil {
+						break
+					}
+					is.True(t, errors.Is(err, context.Canceled), fmt.Sprint("the error of a canceled statement: ", err))
+					canceled++
+					is.Equal(t, o.run(t, "select * from t").String(), i.query("select * from t").String(), fmt.Sprint("the rows after a cancel at the call ", n))
+					is.True(t, n < 100_000, "the statement succeeds once its context is no longer canceled")
+				}
+				is.Equal(t, "", o.run(t, c.src).err)
+				rows, _ := o.changes(t)
+				is.True(t, canceled > int(rows), fmt.Sprint("the statement is canceled at each of its calls of Err, which are more than the ", rows, " rows that it changes: ", canceled))
+				is.Equal(t, o.run(t, "select * from t").String(), i.query("select * from t").String(), "the rows after the statement")
+				if inTx {
+					is.Equal(t, "", o.run(t, "insert into t values (51, 'after', 2.5)").err)
+					is.Equal(t, "", i.exec("insert into t values (51, 'after', 2.5)").err)
+					is.NotError(t, i.c.Commit(t.Context()))
+					is.Equal(t, "", o.run(t, "commit").err)
+				}
+				state := o.state(t)
+				is.Equal(t, state, i.state(), "the state at the end")
+				i.restart(true, engine.Options{})
+				is.Equal(t, state, i.state(), "the state after a replay of the log into an empty cache")
+			})
+		}
+	}
 }
 
 func TestEngine_delete(t *testing.T) {
