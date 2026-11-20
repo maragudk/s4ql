@@ -384,6 +384,10 @@ type CreateIndex struct {
 	// allows in an index. No two of them have one name, as [Name.Fold] compares names. Whether the
 	// table has them is not decided here.
 	Columns []IndexColumn
+	// SQL is the text that SQLite keeps for the index in sqlite_schema: "CREATE INDEX ", and the
+	// text from the name of the index up to the semicolon of the statement, or to the end of the
+	// text if it has none, with its spaces and comments.
+	SQL string
 }
 
 // IndexColumn of a [CreateIndex]: a column of the table and its order in the index.

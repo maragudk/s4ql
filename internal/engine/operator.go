@@ -55,24 +55,14 @@ type sink interface {
 	run(ctx context.Context) (int64, error)
 }
 
-// scan gives the rows of a table in the order of its primary key: every row, or those that its
-// access reads by the key. It ends with the error of the context when the context ends.
+// scan gives the rows of a table as its access reads them: every row in the order of the primary
+// key, or the rows that the access finds by the primary key or by an index, in the order of its key,
+// or in the reverse of either. It ends with the error of the context when the context ends.
 type scan struct {
 	r     reader
 	table *s4qlpb.CreateTable
 	// access is how the scan reads the rows of the table.
 	access access
-}
-
-// access of a [scan] to the rows of its table, for a filter above it, as [keyAccess] gives it. The
-// zero value reads every row.
-type access struct {
-	// none reads no row, because a condition of the filter is never true.
-	none bool
-	// key is the value of the primary key of the one row to read, if it is not nil.
-	key *s4qlpb.Value
-	// lower and upper bound the keys of the rows to read, if key is nil.
-	lower, upper bound
 }
 
 func (s *scan) columns() []Column {
@@ -90,23 +80,19 @@ func (s *scan) rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
 			return
 		}
 		name, a := s.table.GetTable(), s.access
-		var rows iter.Seq2[[]*s4qlpb.Value, error]
 		switch {
 		case a.none:
 			return
-		case a.key != nil:
-			row, err := s.r.get(ctx, name, []*s4qlpb.Value{a.key})
+		case a.point != nil:
+			row, err := s.r.get(ctx, name, a.point)
 			if err != nil {
 				yield(nil, err)
 			} else if row != nil {
 				yield(row, nil)
 			}
 			return
-		case a.lower.value != nil || a.upper.value != nil:
-			rows = s.r.scanRange(ctx, name, a.lower, a.upper)
-		default:
-			rows = s.r.scan(ctx, name)
 		}
+		rows := s.r.scan(ctx, name, a.scan())
 		for row, err := range rows {
 			if err == nil {
 				err = ctx.Err()
@@ -284,61 +270,6 @@ func compare(a, b *s4qlpb.Value) (int, error) {
 	return 0, internalError("a comparison of values of kind %v", a.WhichKind())
 }
 
-// keyAccess of a scan of a table whose primary key is the column at the position key, below a filter
-// of the conditions: no row if a comparison is with NULL, or the key is tested for NULL, since such a
-// condition is never true; the row of its key if a condition fixes the key, the first that does;
-// the rows within the tightest bounds of the conditions that bound the key; and otherwise every row.
-// The filter tests every condition on every row that the scan gives, so the access only leaves out
-// rows for which some condition is not true, and the rows and their order are those of a scan of
-// every row.
-func keyAccess(conditions []condition, key int) (access, error) {
-	var a access
-	var err error
-	for _, c := range conditions {
-		if c.op != stmt.OpIsNull && c.op != stmt.OpIsNotNull && c.value.HasNull() {
-			return access{none: true}, nil
-		}
-		if c.position != key {
-			continue
-		}
-		switch c.op {
-		case stmt.OpIsNull:
-			return access{none: true}, nil
-		case stmt.OpEqual:
-			if a.key == nil {
-				a.key = c.value
-			}
-		case stmt.OpLess, stmt.OpLessOrEqual:
-			a.upper, err = tighter(a.upper, bound{value: c.value, open: c.op == stmt.OpLess}, true)
-		case stmt.OpGreater, stmt.OpGreaterOrEqual:
-			a.lower, err = tighter(a.lower, bound{value: c.value, open: c.op == stmt.OpGreater}, false)
-		}
-		if err != nil {
-			return access{}, err
-		}
-	}
-	return a, nil
-}
-
-// tighter of the bounds a and b, which are both upper bounds if upper, and both lower bounds
-// otherwise: the one that leaves out more keys. b has a value, and a may have none.
-func tighter(a, b bound, upper bool) (bound, error) {
-	if a.value == nil {
-		return b, nil
-	}
-	n, err := compare(b.value, a.value)
-	if err != nil {
-		return bound{}, err
-	}
-	if upper {
-		n = -n
-	}
-	if n > 0 || n == 0 && b.open {
-		return b, nil
-	}
-	return a, nil
-}
-
 // insert writes each row of its source into a table whose primary key is one column, as a new row,
 // and fails with SQLite's error for a row whose key the table has, also one that an earlier row of
 // the source wrote. Each row of the source has a value for each column of the table, in the order
@@ -455,6 +386,30 @@ func (d *dropTable) check(context.Context) error { return nil }
 
 func (d *dropTable) run(ctx context.Context) (int64, error) {
 	return 0, d.w.dropTable(ctx, d.name)
+}
+
+// createIndex creates an index.
+type createIndex struct {
+	w  writer
+	ci *s4qlpb.CreateIndex
+}
+
+func (c *createIndex) check(context.Context) error { return nil }
+
+func (c *createIndex) run(ctx context.Context) (int64, error) {
+	return 0, c.w.createIndex(ctx, c.ci)
+}
+
+// dropIndex drops an index.
+type dropIndex struct {
+	w    writer
+	name string
+}
+
+func (d *dropIndex) check(context.Context) error { return nil }
+
+func (d *dropIndex) run(ctx context.Context) (int64, error) {
+	return 0, d.w.dropIndex(ctx, d.name)
 }
 
 // update sets columns of each row of its source: the rows that the statement finds, by a scan of a
@@ -622,17 +577,17 @@ func changeRows(ctx context.Context, w writer, name string, key int, src source,
 // does not have, for a column of a condition that it does not have, and for a value of a condition
 // that is longer than limit, as SQLite gives it when it binds an argument; and then with "not
 // supported" for the first value of a condition, in the order of the text, that is of another type
-// than its column. A scan below a filter reads by the key, as [keyAccess] says, unless scanAll.
-func buildQuery(ctx context.Context, r reader, q *Query, args []*s4qlpb.Value, limit int, scanAll bool) (source, error) {
-	return build{r: r, args: args, limit: limit, scanAll: scanAll}.node(ctx, q.Root)
+// than its column. Its scan reads the rows as [build.access] says, by the reading how.
+func buildQuery(ctx context.Context, r reader, q *Query, args []*s4qlpb.Value, limit int, how reading) (source, error) {
+	return build{r: r, args: args, limit: limit, how: how}.node(ctx, q.Root)
 }
 
 // build of the operators of a query, in the transaction of r, as [buildQuery] says.
 type build struct {
-	r       reader
-	args    []*s4qlpb.Value
-	limit   int
-	scanAll bool
+	r     reader
+	args  []*s4qlpb.Value
+	limit int
+	how   reading
 }
 
 // node: the source of the rows of the node n of a query.
@@ -646,13 +601,13 @@ func (b build) node(ctx context.Context, n Node) (source, error) {
 		if t == nil {
 			return nil, noSuchTable(n.Table.Value)
 		}
-		return &scan{r: b.r, table: t}, nil
+		return &scan{r: b.r, table: t, access: access{backward: b.how.backward}}, nil
 	case *Filter:
 		src, err := b.node(ctx, n.Source)
 		if err != nil {
 			return nil, err
 		}
-		return b.filter(n, src)
+		return b.filter(ctx, n, src)
 	case *Project:
 		// SQLite resolves the names of the select list before those of the WHERE, so the filter below
 		// the projection is built after it.
@@ -690,7 +645,7 @@ func (b build) node(ctx context.Context, n Node) (source, error) {
 			}
 		}
 		if filtered {
-			if src, err = b.filter(f, src); err != nil {
+			if src, err = b.filter(ctx, f, src); err != nil {
 				return nil, err
 			}
 		}
@@ -702,12 +657,12 @@ func (b build) node(ctx context.Context, n Node) (source, error) {
 
 // filter of the rows of src, a scan, by the conditions of f: the names of [build.conditions], and
 // then the values of [build.bind].
-func (b build) filter(f *Filter, src source) (source, error) {
+func (b build) filter(ctx context.Context, f *Filter, src source) (source, error) {
 	s, conditions, err := b.conditions(f, src)
 	if err != nil {
 		return nil, err
 	}
-	return b.bind(f, s, conditions)
+	return b.bind(ctx, f, s, conditions)
 }
 
 // conditions of the filter f of the rows of src, a scan, with the position of the column of each, and
@@ -764,9 +719,9 @@ func (b build) conditions(f *Filter, src source) (*scan, []condition, error) {
 // bind the values of the conditions of the filter f to conditions, which [build.conditions] gave for
 // the scan s, and give the filter of the rows of s. It evaluates each value, and gives SQLite's error
 // for one that is longer than the limit, and then "not supported" for the first value, in the order
-// of the text, that is of another type than its column. Last, unless scanAll, it gives the scan the
-// access by the key that the conditions allow, as [keyAccess] gives it.
-func (b build) bind(f *Filter, s *scan, conditions []condition) (source, error) {
+// of the text, that is of another type than its column. Last it gives the scan its access, as
+// [build.access] says, so the errors do not depend on the access.
+func (b build) bind(ctx context.Context, f *Filter, s *scan, conditions []condition) (source, error) {
 	for i, c := range f.Conditions {
 		if c.Value == nil {
 			continue
@@ -788,14 +743,42 @@ func (b build) bind(f *Filter, s *scan, conditions []condition) (source, error) 
 			return nil, err
 		}
 	}
-	if key := s.table.GetPrimaryKey(); !b.scanAll && len(key) == 1 {
-		a, err := keyAccess(conditions, int(key[0]))
-		if err != nil {
-			return nil, err
-		}
-		s.access = a
+	a, err := b.access(ctx, s.table, conditions)
+	if err != nil {
+		return nil, err
 	}
+	a.backward = b.how.backward
+	s.access = a
 	return &filter{src: s, conditions: conditions}, nil
+}
+
+// access to the rows of the table t for a filter of the conditions: the one that [chooseAccess]
+// gives, or the one of the path that the tests force, as [forcedAccess] gives it. It reads the
+// indexes of the table only if the access depends on them, so a statement that the rules give no
+// row, or the row of a primary key, reads none.
+func (b build) access(ctx context.Context, t *s4qlpb.CreateTable, conditions []condition) (access, error) {
+	p := b.how.path
+	switch p.kind {
+	case pathFull:
+		return access{}, nil
+	case pathPrimary:
+		a, _, err := forcedAccess(t, nil, conditions, p)
+		return a, err
+	case pathRules:
+		if a, err := chooseAccess(t, nil, conditions); err != nil || a.none || a.point != nil {
+			return a, err
+		}
+	}
+	indexes, err := b.r.indexes(ctx, t.GetTable())
+	if err != nil {
+		return access{}, err
+	}
+	if p.kind == pathIndex {
+		if a, ok, err := forcedAccess(t, indexes, conditions, p); err != nil || ok {
+			return a, err
+		}
+	}
+	return chooseAccess(t, indexes, conditions)
 }
 
 // buildValues: the source of the rows of v, with args for their parameters, and the expressions of
@@ -869,13 +852,18 @@ func null() *s4qlpb.Value {
 // makes the check that SQLite makes when it binds the arguments: a text or a blob that is longer
 // than limit bytes gets SQLite's `string or blob too big`. It checks a literal so too, which SQLite
 // meets in its text only with a limit below the length of the text: see the README. For UPDATE and
-// DELETE, see [buildChange]; their scan reads by the key unless scanAll.
-func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bugs, limit int, scanAll bool) (sink, error) {
+// DELETE, see [build.change]; their scan reads the rows as [build.access] says, by the reading how.
+// For CREATE INDEX and DROP INDEX, see [buildCreateIndex] and [buildDropIndex].
+func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bugs, limit int, how reading) (sink, error) {
 	switch p := p.(type) {
 	case *Update:
-		return build{r: w, args: args, limit: limit, scanAll: scanAll}.change(ctx, w, p.Source, p.Set, true)
+		return build{r: w, args: args, limit: limit, how: how}.change(ctx, w, p.Source, p.Set, true)
 	case *Delete:
-		return build{r: w, args: args, limit: limit, scanAll: scanAll}.change(ctx, w, p.Source, nil, false)
+		return build{r: w, args: args, limit: limit, how: how}.change(ctx, w, p.Source, nil, false)
+	case *CreateIndex:
+		return buildCreateIndex(ctx, w, p, limit)
+	case *DropIndex:
+		return buildDropIndex(ctx, w, p)
 	case *CreateTable:
 		existing, err := w.table(ctx, p.Table.Value)
 		if err != nil {
@@ -883,6 +871,13 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 		}
 		if existing != nil {
 			return nil, tableExists(p.Table.Raw, p.Table.Offset)
+		}
+		index, err := w.index(ctx, p.Table.Value)
+		if err != nil {
+			return nil, err
+		}
+		if index != nil {
+			return nil, indexNamed(p.Table.Value)
 		}
 		if err := columnsError(p); err != nil {
 			return nil, err
@@ -1008,7 +1003,7 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 // the limit, as SQLite gives it when it binds an argument, the first in the order of the text, which
 // is the order of the parameters too. Then it fails with "not supported" for a value of the WHERE of
 // another type than its column, as a select does, and gives the scan its access by the key, as
-// [build.bind] says.
+// [build.bind] says. A table without a WHERE is read as the reading says too.
 func (b build) change(ctx context.Context, w writer, source Node, set []Assignment, isUpdate bool) (sink, error) {
 	f, filtered := source.(*Filter)
 	inner := source
@@ -1064,7 +1059,7 @@ func (b build) change(ctx context.Context, w writer, source Node, set []Assignme
 		values[i], exprs[i] = v, a.Value
 	}
 	if filtered {
-		if src, err = b.bind(f, s, conditions); err != nil {
+		if src, err = b.bind(ctx, f, s, conditions); err != nil {
 			return nil, err
 		}
 	}
@@ -1075,6 +1070,84 @@ func (b build) change(ctx context.Context, w writer, source Node, set []Assignme
 		return nil, internalError("an update that sets no column")
 	}
 	return &update{w: w, table: t, key: int(key[0]), src: src, positions: positions, values: values, exprs: exprs}, nil
+}
+
+// maxIndexColumns is the largest number of columns of an index that the storage holds, where SQLite
+// takes 2,000: see [core.Tx.CreateIndex].
+const maxIndexColumns = 250
+
+// buildCreateIndex is the sink of the plan p of a CREATE INDEX, in the transaction of w. It fails with
+// SQLite's errors in SQLite's order: for a table that does not exist, with the name of the schema
+// before the name of the table; for a table that has the name of the index, which a table and an
+// index share; for an index that has it, on any table; for the first column, in the order of the
+// text, that the table does not have; and for an index that SQLite cannot write into its schema
+// under limit, as [indexTooBig] says. Then it fails with "not supported" for an index of more than
+// [maxIndexColumns] columns, at the first column beyond them.
+func buildCreateIndex(ctx context.Context, w writer, p *CreateIndex, limit int) (sink, error) {
+	t, err := w.table(ctx, p.Table.Value)
+	if err != nil {
+		return nil, err
+	}
+	if t == nil {
+		return nil, noSuchTable("main." + p.Table.Value)
+	}
+	named, err := w.table(ctx, p.Index.Value)
+	if err != nil {
+		return nil, err
+	}
+	if named != nil {
+		return nil, tableNamed(p.Index.Value)
+	}
+	existing, err := w.index(ctx, p.Index.Value)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		return nil, indexExists(p.Index.Value)
+	}
+	var names []string
+	for _, c := range t.GetColumns() {
+		names = append(names, c.GetName())
+	}
+	of := positionsOf(names)
+	ci := s4qlpb.CreateIndex_builder{Index: new(p.Index.Value), Table: new(t.GetTable())}
+	held := make([]bool, len(names))
+	for _, c := range p.Columns {
+		position, ok := of[c.Name.Fold()]
+		if !ok {
+			return nil, noSuchResultColumn(c.Name)
+		}
+		if held[position] {
+			return nil, internalError("an index that names the column %v twice", names[position])
+		}
+		held[position] = true
+		column := s4qlpb.IndexColumn_builder{Column: new(uint32(position))}
+		if c.Descending {
+			// Only when it is true, as the storage gives the index back.
+			column.Descending = new(true)
+		}
+		ci.Columns = append(ci.Columns, column.Build())
+	}
+	if indexTooBig(p.Index.Value, t.GetTable(), p.SQL, limit) {
+		return nil, tooBig()
+	}
+	if len(p.Columns) > maxIndexColumns {
+		return nil, &stmt.NotSupportedError{What: fmt.Sprint("index of more than ", maxIndexColumns, " columns"), Offset: p.Columns[maxIndexColumns].Name.Offset}
+	}
+	return &createIndex{w: w, ci: ci.Build()}, nil
+}
+
+// buildDropIndex is the sink of the plan p of a DROP INDEX, in the transaction of w. It fails with
+// SQLite's error for no index of the name, also when a table has the name.
+func buildDropIndex(ctx context.Context, w writer, p *DropIndex) (sink, error) {
+	ix, err := w.index(ctx, p.Index.Value)
+	if err != nil {
+		return nil, err
+	}
+	if ix == nil {
+		return nil, noSuchIndex(p.Index.Value)
+	}
+	return &dropIndex{w: w, name: ix.GetIndex()}, nil
 }
 
 // columnsError of the plan p of a table that does not exist: SQLite's error for a column named twice

@@ -89,11 +89,19 @@ type answer struct {
 	null bool
 }
 
+// String of the answer, which is what the tests compare between the engine and SQLite: its error, or
+// its columns and its rows as a multiset. SQLite leaves the order of the rows of a select without
+// ORDER BY unspecified, and the engine varies it from one query to the next, so no comparison is by
+// the order of the rows: the text holds the rows in the order of their texts, each in quotes. Two
+// answers have one text only if they have the same rows the same number of times: a row that is
+// wrong changes an element of the sorted list, and a row that is missing, or one too many, also one
+// that is there twice, changes its length or another element. The rows field keeps the order in
+// which the rows came.
 func (a answer) String() string {
 	if a.err != "" {
 		return a.err
 	}
-	return fmt.Sprintf("columns %q, rows %q", a.columns, a.rows)
+	return fmt.Sprintf("columns %q, rows %q", a.columns, slices.Sorted(slices.Values(a.rows)))
 }
 
 // oracle is SQLite, on a database in memory, which runs the statements that the engine runs.
@@ -1096,7 +1104,11 @@ func reachWhere(t testing.TB, o *oracle, s *stmt.Select, c stmttest.Call, got an
 	// where it reads more rows than it needs.
 	if want := stmttest.KeyAccess(columns, s, args); want != "" && got.err != tooBig {
 		want = strings.TrimSuffix(want, " that hold no key")
-		if access := engine.AccessOf(c.Src, createTableOf(table, columns), values(c.Args)); access != want {
+		var access string
+		if a, ok := engine.AccessOf(c.Src, createTableOf(table, columns), nil, values(c.Args)); ok {
+			access = a.String()
+		}
+		if access != want {
 			t.Errorf("%q with %#v: the plan reads %q, and the rule %q", c.Src, c.Args, access, want)
 		}
 	}

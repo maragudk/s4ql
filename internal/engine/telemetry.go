@@ -38,10 +38,22 @@ const eventStatement = "statement"
 // The names of the attributes, in the conventions of the core: lowercase, with dots for namespaces
 // and underscores inside words.
 const (
-	// attrKind is the kind of the statement: create_table, drop_table, insert, update, delete, or select.
+	// attrKind is the kind of the statement: create_table, drop_table, create_index, drop_index,
+	// insert, update, delete, or select.
 	attrKind = "statement.kind"
-	// attrTable is the name of the table that the statement names, as its value.
+	// attrTable is the name of the table that the statement names, as its value. A drop index names
+	// none, and has the name of its index there.
 	attrTable = "statement.table"
+	// attrAccess is how a select, an update, or a delete read the rows of its table, as the rules of
+	// [chooseAccess] chose it: none, for no row at all, primary_key, for a get or a scan by the primary
+	// key, index, for a scan by an index, or full_scan. A statement that failed before the choice has
+	// none of the three attributes of its reading.
+	attrAccess = "statement.access"
+	// attrIndex is the name of the index of an access by an index.
+	attrIndex = "statement.index"
+	// attrRowsRead is the number of rows that the statement read from the cache, by its scan or its
+	// get, whether or not its conditions held for them.
+	attrRowsRead = "statement.rows_read"
 	// attrSQL is the SQL text, at Debug only.
 	attrSQL = "statement.sql"
 	// attrRows is the number of rows that the statement returned or changed.
@@ -137,6 +149,11 @@ type report struct {
 	// tx is the kind of the transaction that spans statements in which the statement runs, or empty.
 	tx   string
 	rows int64
+	// access and index are how the statement reads the rows of its table, once that is chosen, and
+	// reader is the transaction that it reads them in, which had read before rows when it was chosen.
+	access, index string
+	reader        reader
+	before        int64
 	// ended is set once the event is logged.
 	ended bool
 }
@@ -153,6 +170,10 @@ func (r *report) of(s stmt.Statement) {
 		r.kind, r.table = "create_table", s.Table.Value
 	case *stmt.DropTable:
 		r.kind, r.table = "drop_table", s.Table.Value
+	case *stmt.CreateIndex:
+		r.kind, r.table = "create_index", s.Table.Value
+	case *stmt.DropIndex:
+		r.kind, r.table = "drop_index", s.Index.Value
 	case *stmt.Insert:
 		r.kind, r.table = "insert", s.Table.Value
 	case *stmt.Update:
@@ -161,6 +182,47 @@ func (r *report) of(s stmt.Statement) {
 		r.kind, r.table = "delete", s.Table.Value
 	case *stmt.Select:
 		r.kind, r.table = "select", s.Table.Value
+	}
+}
+
+// reads records how the statement reads the rows of its table in the transaction of rd: the access
+// of the scan of built, the operators of the statement, a source or a sink, if it has one.
+func (r *report) reads(rd reader, built any) {
+	s := scanOf(built)
+	if s == nil {
+		return
+	}
+	switch a := s.access; {
+	case a.none:
+		r.access = "none"
+	case a.full():
+		r.access = "full_scan"
+	case a.index != "":
+		r.access, r.index = "index", a.index
+	default:
+		r.access = "primary_key"
+	}
+	r.reader, r.before = rd, rd.rowsRead()
+}
+
+// scanOf the operators built, a source or a sink: the scan that reads the rows of the table of a
+// select, an update, or a delete, or nil for a statement that has none.
+func scanOf(built any) *scan {
+	for {
+		switch o := built.(type) {
+		case *project:
+			built = o.src
+		case *filter:
+			built = o.src
+		case *update:
+			built = o.src
+		case *remove:
+			built = o.src
+		case *scan:
+			return o
+		default:
+			return nil
+		}
 	}
 }
 
@@ -200,6 +262,13 @@ func (r *report) end(ctx context.Context, err error) {
 		if r.write {
 			attrs = append(attrs, slog.String(attrParent, r.position.String()))
 		}
+	}
+	if r.access != "" {
+		attrs = append(attrs, slog.String(attrAccess, r.access))
+		if r.index != "" {
+			attrs = append(attrs, slog.String(attrIndex, r.index))
+		}
+		attrs = append(attrs, slog.Int64(attrRowsRead, r.reader.rowsRead()-r.before))
 	}
 	attrs = append(attrs, slog.Int64(attrRows, r.rows), slog.String(attrOutcome, outcome))
 	var se *sqlerr.Error

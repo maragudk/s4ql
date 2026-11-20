@@ -55,6 +55,23 @@ type DropTable struct {
 	Table stmt.Name
 }
 
+// CreateIndex creates an index, which is not unique, on columns of a table, which must exist. No
+// table and no index of its name may exist.
+type CreateIndex struct {
+	Index stmt.Name
+	Table stmt.Name
+	// Columns of the index, in the order of the index.
+	Columns []stmt.IndexColumn
+	// SQL is the text that SQLite keeps for the index, as [stmt.CreateIndex] gives it, which decides
+	// whether SQLite refuses the statement as too big. [Format] does not print it.
+	SQL string
+}
+
+// DropIndex drops an index, which must exist.
+type DropIndex struct {
+	Index stmt.Name
+}
+
 // Insert inserts the rows of Source into a table, each as a new row. Source gives a value for each
 // of Columns, in their order, or, if Columns is nil, for each column of the table, in the order of
 // the table.
@@ -155,6 +172,8 @@ type Parameter struct {
 
 func (*CreateTable) plan() {}
 func (*DropTable) plan()   {}
+func (*CreateIndex) plan() {}
+func (*DropIndex) plan()   {}
 func (*Insert) plan()      {}
 func (*Update) plan()      {}
 func (*Delete) plan()      {}
@@ -185,6 +204,10 @@ func NewPlan(s stmt.Statement) Plan {
 		return p
 	case *stmt.DropTable:
 		return &DropTable{Table: s.Table}
+	case *stmt.CreateIndex:
+		return &CreateIndex{Index: s.Index, Table: s.Table, Columns: s.Columns, SQL: s.SQL}
+	case *stmt.DropIndex:
+		return &DropIndex{Index: s.Index}
 	case *stmt.Insert:
 		row := make([]Expr, len(s.Values))
 		for i, t := range s.Values {
@@ -269,6 +292,20 @@ func Format(p Plan) string {
 		b.WriteString("))\n")
 	case *DropTable:
 		fmt.Fprint(&b, "drop table ", p.Table.Raw, "\n")
+	case *CreateIndex:
+		fmt.Fprint(&b, "create index ", p.Index.Raw, " on ", p.Table.Raw, " (")
+		for i, c := range p.Columns {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(c.Name.Raw)
+			if c.Descending {
+				b.WriteString(" desc")
+			}
+		}
+		b.WriteString(")\n")
+	case *DropIndex:
+		fmt.Fprint(&b, "drop index ", p.Index.Raw, "\n")
 	case *Insert:
 		fmt.Fprint(&b, "insert into ", p.Table.Raw)
 		if p.Columns != nil {

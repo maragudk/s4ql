@@ -1341,6 +1341,12 @@ func TestCheck(t *testing.T) {
 				copied.SQL = s.(*stmt.CreateTable).SQL
 				want = &copied
 			}
+			if ci, ok := want.(*stmt.CreateIndex); ok && ci.SQL == "" {
+				// verify checks the text that SQLite keeps against SQLite.
+				copied := *ci
+				copied.SQL = s.(*stmt.CreateIndex).SQL
+				want = &copied
+			}
 			is.Equal(t, fmt.Sprintf("%#v", want), fmt.Sprintf("%#v", s))
 			verify(t, c.src)
 		})

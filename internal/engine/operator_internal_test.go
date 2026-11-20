@@ -51,11 +51,15 @@ type fake struct {
 	readerFails, closeFails error
 	// calls of the transactions, in order.
 	calls []string
+	// rowsGiven counts the rows that the scans and the gets gave.
+	rowsGiven int64
 }
 
 type fakeTable struct {
 	ct   *s4qlpb.CreateTable
 	rows [][]*s4qlpb.Value
+	// indexes of the table, in the order in which they were created.
+	indexes []*s4qlpb.CreateIndex
 }
 
 func newFake() *fake {
@@ -138,14 +142,126 @@ func (x fakeTx) table(_ context.Context, name string) (*s4qlpb.CreateTable, erro
 	return nil, nil
 }
 
-func (x fakeTx) scan(_ context.Context, name string) iter.Seq2[[]*s4qlpb.Value, error] {
+// indexes records its call, as "indexes" and the name, and gives the indexes of the table.
+func (x fakeTx) indexes(_ context.Context, name string) ([]*s4qlpb.CreateIndex, error) {
+	x.f.calls = append(x.f.calls, "indexes "+name)
+	return x.f.tables[fold(name)].indexes, nil
+}
+
+func (x fakeTx) index(_ context.Context, name string) (*s4qlpb.CreateIndex, error) {
+	for _, t := range x.f.tables {
+		for _, ix := range t.indexes {
+			if fold(ix.GetIndex()) == fold(name) {
+				return ix, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (x fakeTx) rowsRead() int64 {
+	return x.f.rowsGiven
+}
+
+// with an index of the name on the columns at the positions of the table, each in ascending order,
+// or in descending order for a position that is given as its negative minus one, as ^position is.
+func (f *fake) index(name, table string, positions ...int) *fake {
+	ci := s4qlpb.CreateIndex_builder{Index: new(name), Table: new(table)}
+	for _, position := range positions {
+		column := s4qlpb.IndexColumn_builder{Column: new(uint32(position))}
+		if position < 0 {
+			column = s4qlpb.IndexColumn_builder{Column: new(uint32(^position)), Descending: new(true)}
+		}
+		ci.Columns = append(ci.Columns, column.Build())
+	}
+	t := f.tables[fold(table)]
+	t.indexes = append(t.indexes, ci.Build())
+	return f
+}
+
+// scan the rows of the table, whose values are integers, as s says: in the order of the key of the
+// index of s, or of the primary key, or its reverse, those whose leading columns are equal to the
+// pinned values and whose next column is within the bounds. A scan that pins or bounds something, or
+// names an index, records its call: "range" for one by the primary key, or "index" and the name of
+// the index, then the name of the table, "= " and the value for each pinned column, and each bound
+// as an operator and an integer. A scan backward records "backward" last. A scan of every row
+// forward records nothing.
+func (x fakeTx) scan(_ context.Context, name string, s core.IndexScan) iter.Seq2[[]*s4qlpb.Value, error] {
+	t := x.f.tables[fold(name)]
+	var key []int
+	descending := map[int]bool{}
+	call := "range " + name
+	if s.Index != "" {
+		call = "index " + s.Index + " " + name
+		for _, ix := range t.indexes {
+			if fold(ix.GetIndex()) != fold(s.Index) {
+				continue
+			}
+			for _, c := range ix.GetColumns() {
+				key = append(key, int(c.GetColumn()))
+				descending[int(c.GetColumn())] = c.GetDescending()
+			}
+		}
+		if key == nil {
+			panic("the fake has no index " + s.Index + " on " + name)
+		}
+	}
+	for _, position := range t.ct.GetPrimaryKey() {
+		if !slices.Contains(key, int(position)) {
+			key = append(key, int(position))
+		}
+	}
+	for _, v := range s.Equal {
+		call += " = " + fmt.Sprint(v.GetInteger())
+	}
+	for _, b := range []struct {
+		core.Bound
+		op string
+	}{{s.Lower, ">"}, {s.Upper, "<"}} {
+		if b.Value != nil {
+			call += " " + b.op + map[bool]string{true: "", false: "="}[b.Open] + " " + fmt.Sprint(b.Value.GetInteger())
+		}
+	}
+	if s.Backward {
+		call += " backward"
+	}
+	if call != "range "+name {
+		x.f.calls = append(x.f.calls, call)
+	}
+	within := func(row []*s4qlpb.Value) bool {
+		for i, v := range s.Equal {
+			if row[key[i]].GetInteger() != v.GetInteger() {
+				return false
+			}
+		}
+		if s.Lower.Value == nil && s.Upper.Value == nil {
+			return true
+		}
+		k := row[key[len(s.Equal)]].GetInteger()
+		return !(s.Lower.Value != nil && (k < s.Lower.Value.GetInteger() || k == s.Lower.Value.GetInteger() && s.Lower.Open) ||
+			s.Upper.Value != nil && (k > s.Upper.Value.GetInteger() || k == s.Upper.Value.GetInteger() && s.Upper.Open))
+	}
 	return func(yield func([]*s4qlpb.Value, error) bool) {
 		x.f.scans++
 		x.f.scanned++
 		defer func() { x.f.scans-- }()
-		t := x.f.tables[fold(name)]
 		rows := slices.Clone(t.rows)
-		slices.SortFunc(rows, func(a, b []*s4qlpb.Value) int { return cmp.Compare(a[0].GetInteger(), b[0].GetInteger()) })
+		slices.SortFunc(rows, func(a, b []*s4qlpb.Value) int {
+			for _, position := range key {
+				c := cmp.Compare(a[position].GetInteger(), b[position].GetInteger())
+				if descending[position] {
+					c = -c
+				}
+				if c != 0 {
+					return c
+				}
+			}
+			return 0
+		})
+		if s.Backward {
+			slices.Reverse(rows)
+		}
+		rows = slices.DeleteFunc(rows, func(row []*s4qlpb.Value) bool { return !within(row) })
 		for i, row := range rows {
 			if i == x.f.scanPanics {
 				panic("the scan panics")
@@ -154,36 +270,8 @@ func (x fakeTx) scan(_ context.Context, name string) iter.Seq2[[]*s4qlpb.Value, 
 				yield(nil, errors.New("the scan fails"))
 				return
 			}
+			x.f.rowsGiven++
 			if !yield(row, nil) {
-				return
-			}
-		}
-	}
-}
-
-// scanRange records its call, as "range", the name, and each bound as an operator and an integer,
-// and gives the rows of scan whose integer key is within the bounds.
-func (x fakeTx) scanRange(ctx context.Context, name string, lower, upper bound) iter.Seq2[[]*s4qlpb.Value, error] {
-	call := "range " + name
-	for _, b := range []struct {
-		bound
-		op string
-	}{{lower, ">"}, {upper, "<"}} {
-		if b.value != nil {
-			call += " " + b.op + map[bool]string{true: "", false: "="}[b.open] + " " + fmt.Sprint(b.value.GetInteger())
-		}
-	}
-	x.f.calls = append(x.f.calls, call)
-	return func(yield func([]*s4qlpb.Value, error) bool) {
-		for row, err := range x.scan(ctx, name) {
-			if err == nil {
-				k := row[x.f.tables[fold(name)].ct.GetPrimaryKey()[0]].GetInteger()
-				if lower.value != nil && (k < lower.value.GetInteger() || k == lower.value.GetInteger() && lower.open) ||
-					upper.value != nil && (k > upper.value.GetInteger() || k == upper.value.GetInteger() && upper.open) {
-					continue
-				}
-			}
-			if !yield(row, err) {
 				return
 			}
 		}
@@ -199,10 +287,28 @@ func (x fakeTx) get(_ context.Context, name string, key []*s4qlpb.Value) ([]*s4q
 	k := t.ct.GetPrimaryKey()[0]
 	for _, row := range t.rows {
 		if row[k].GetInteger() == key[0].GetInteger() {
+			x.f.rowsGiven++
 			return row, nil
 		}
 	}
 	return nil, nil
+}
+
+// createIndex records its call, as "create index", the name, and the table.
+func (x fakeTx) createIndex(_ context.Context, ci *s4qlpb.CreateIndex) error {
+	x.f.calls = append(x.f.calls, fmt.Sprint("create index ", ci.GetIndex(), " ", ci.GetTable()))
+	t := x.f.tables[fold(ci.GetTable())]
+	t.indexes = append(t.indexes, ci)
+	return nil
+}
+
+// dropIndex records its call, as "drop index" and the name.
+func (x fakeTx) dropIndex(_ context.Context, name string) error {
+	x.f.calls = append(x.f.calls, "drop index "+name)
+	for _, t := range x.f.tables {
+		t.indexes = slices.DeleteFunc(t.indexes, func(ix *s4qlpb.CreateIndex) bool { return fold(ix.GetIndex()) == fold(name) })
+	}
+	return nil
 }
 
 func (x fakeTx) createTable(_ context.Context, ct *s4qlpb.CreateTable) error {
@@ -490,7 +596,7 @@ func TestFilter(t *testing.T) {
 		s, err := stmt.Check(src)
 		is.NotError(t, err, src)
 		f.calls, f.scanned = nil, 0
-		q, err := buildQuery(t.Context(), fakeTx{f}, NewPlan(s).(*Query), args, 1_000_000_000, scanAll)
+		q, err := buildQuery(t.Context(), fakeTx{f}, NewPlan(s).(*Query), args, 1_000_000_000, readingOf(scanAll))
 		is.NotError(t, err, src)
 		rows, err := collect(t.Context(), q)
 		is.NotError(t, err, src)
@@ -575,7 +681,7 @@ func TestFilter(t *testing.T) {
 			f.tables["t"].ct.SetPrimaryKey([]uint32{1})
 			s, err := stmt.Check(src)
 			is.NotError(t, err)
-			q, err := buildQuery(t.Context(), fakeTx{f}, NewPlan(s).(*Query), nil, 1_000_000_000, false)
+			q, err := buildQuery(t.Context(), fakeTx{f}, NewPlan(s).(*Query), nil, 1_000_000_000, reading{})
 			is.NotError(t, err)
 			_, err = collect(ctx, q)
 			is.True(t, errors.Is(err, context.Canceled), src)
@@ -589,7 +695,7 @@ func TestFilter(t *testing.T) {
 		for _, src := range []string{"select * from t where k > 0", "select * from t where w > 0"} {
 			s, err := stmt.Check(src)
 			is.NotError(t, err)
-			q, err := buildQuery(t.Context(), fakeTx{f}, NewPlan(s).(*Query), nil, 1_000_000_000, false)
+			q, err := buildQuery(t.Context(), fakeTx{f}, NewPlan(s).(*Query), nil, 1_000_000_000, reading{})
 			is.NotError(t, err)
 			rows, err := collect(t.Context(), q)
 			is.Equal(t, "the scan fails", fmt.Sprint(err), src)
@@ -603,7 +709,7 @@ func TestFilter(t *testing.T) {
 		f.getFails = errors.New("the get fails")
 		s, err := stmt.Check("select * from t where k = 1")
 		is.NotError(t, err)
-		q, err := buildQuery(t.Context(), fakeTx{f}, NewPlan(s).(*Query), nil, 1_000_000_000, false)
+		q, err := buildQuery(t.Context(), fakeTx{f}, NewPlan(s).(*Query), nil, 1_000_000_000, reading{})
 		is.NotError(t, err)
 		rows, err := collect(t.Context(), q)
 		is.Equal(t, "the get fails", fmt.Sprint(err))
@@ -626,7 +732,7 @@ func TestFilter(t *testing.T) {
 			{name: "a comparison of a parameter without its argument", root: &Filter{Source: scanT, Conditions: []Condition{{Column: k, Operator: stmt.OpLess, Value: &Parameter{Number: 1}}}}, err: "the parameter 1 of a statement with 0 arguments"},
 		}
 		for _, c := range cases {
-			_, err := buildQuery(t.Context(), fakeTx{newTable()}, &Query{Root: c.root}, nil, 1_000_000_000, false)
+			_, err := buildQuery(t.Context(), fakeTx{newTable()}, &Query{Root: c.root}, nil, 1_000_000_000, reading{})
 			is.True(t, errors.Is(err, ErrInternal), c.name)
 			is.Equal(t, "s4ql: internal error: "+c.err, fmt.Sprint(err), c.name)
 		}
@@ -654,7 +760,7 @@ func TestFilter(t *testing.T) {
 			is.True(t, errors.Is(err, ErrInternal), c.err)
 			is.Equal(t, "s4ql: internal error: "+c.err, fmt.Sprint(err))
 		}
-		_, err = keyAccess([]condition{{position: 0, op: stmt.OpLess, value: integer(1)}, {position: 0, op: stmt.OpLess, value: text}}, 0)
+		_, err = chooseAccess(newTable().tables["t"].ct, nil, []condition{{position: 0, op: stmt.OpLess, value: integer(1)}, {position: 0, op: stmt.OpLess, value: text}})
 		is.True(t, errors.Is(err, ErrInternal))
 	})
 
@@ -837,7 +943,7 @@ func TestChangeRows(t *testing.T) {
 		s, err := stmt.Check(src)
 		is.NotError(t, err, src)
 		f.calls = nil
-		k, err := buildSink(t.Context(), fakeTx{f}, NewPlan(s), nil, bugs{}, 1_000_000_000, scanAll)
+		k, err := buildSink(t.Context(), fakeTx{f}, NewPlan(s), nil, bugs{}, 1_000_000_000, readingOf(scanAll))
 		is.NotError(t, err, src)
 		if err := k.check(t.Context()); err != nil {
 			return err.Error(), 0, fmt.Sprint(f.calls)
@@ -919,7 +1025,7 @@ func TestBuild(t *testing.T) {
 		for _, a := range args {
 			values = append(values, integer(a))
 		}
-		s, err := buildSink(t.Context(), fakeTx{f}, plan(src), values, bugs{}, 1_000_000_000, false)
+		s, err := buildSink(t.Context(), fakeTx{f}, plan(src), values, bugs{}, 1_000_000_000, reading{})
 		if err != nil {
 			return err
 		}
@@ -981,7 +1087,7 @@ func TestBuild(t *testing.T) {
 		for _, src := range []string{"insert into t (c, k, a) values (3, ?, 1)", "insert into t values (1, ?, 3)"} {
 			f := newFake().with("t", []string{"a", "k", "c"})
 			f.tables["t"].ct.SetPrimaryKey([]uint32{1})
-			s, err := buildSink(t.Context(), fakeTx{f}, plan(src), []*s4qlpb.Value{integer(2)}, bugs{}, 1_000_000_000, false)
+			s, err := buildSink(t.Context(), fakeTx{f}, plan(src), []*s4qlpb.Value{integer(2)}, bugs{}, 1_000_000_000, reading{})
 			is.NotError(t, err, src)
 			is.NotError(t, s.check(t.Context()), src)
 			_, err = s.run(t.Context())
@@ -995,7 +1101,7 @@ func TestBuild(t *testing.T) {
 	t.Run("should place the values of a list in the order of the list with the planted bug listOrder", func(t *testing.T) {
 		f := newFake().with("t", []string{"a", "k", "c"})
 		f.tables["t"].ct.SetPrimaryKey([]uint32{1})
-		s, err := buildSink(t.Context(), fakeTx{f}, plan("insert into t (c, k, a) values (3, ?, 1)"), []*s4qlpb.Value{integer(2)}, bugs{listOrder: true}, 1_000_000_000, false)
+		s, err := buildSink(t.Context(), fakeTx{f}, plan("insert into t (c, k, a) values (3, ?, 1)"), []*s4qlpb.Value{integer(2)}, bugs{listOrder: true}, 1_000_000_000, reading{})
 		is.NotError(t, err)
 		is.NotError(t, s.check(t.Context()))
 		_, err = s.run(t.Context())
@@ -1015,7 +1121,7 @@ func TestBuild(t *testing.T) {
 			ct.SetPrimaryKey([]uint32{1})
 			ct.GetColumns()[0].SetNullable(true)
 			ct.GetColumns()[2].SetNullable(true)
-			s, err := buildSink(t.Context(), fakeTx{f}, plan(src), []*s4qlpb.Value{arg}, bugs{}, 1_000_000_000, false)
+			s, err := buildSink(t.Context(), fakeTx{f}, plan(src), []*s4qlpb.Value{arg}, bugs{}, 1_000_000_000, reading{})
 			is.NotError(t, err, src)
 			is.NotError(t, s.check(t.Context()), src)
 			_, err = s.run(t.Context())
@@ -1059,7 +1165,7 @@ func TestBuild(t *testing.T) {
 					ct.GetColumns()[position].SetNullable(true)
 					ct.GetColumns()[position].SetType(typ)
 				}
-				s, err := buildSink(t.Context(), fakeTx{f}, plan(src), nil, bugs{zeroLeftOut: true}, 1_000_000_000, false)
+				s, err := buildSink(t.Context(), fakeTx{f}, plan(src), nil, bugs{zeroLeftOut: true}, 1_000_000_000, reading{})
 				is.NotError(t, err, src)
 				is.NotError(t, s.check(t.Context()), src)
 				is.Equal(t, want, text(s.(*insert).src.data[0]), src)
@@ -1076,7 +1182,7 @@ func TestBuild(t *testing.T) {
 			"insert into t (c, a, k) values (1, 'y', 'x')": "s4ql: not supported: a string literal for the column t.a of type INT",
 		} {
 			f.calls = nil
-			s, err := buildSink(t.Context(), fakeTx{f}, plan(src), nil, bugs{}, 1_000_000_000, false)
+			s, err := buildSink(t.Context(), fakeTx{f}, plan(src), nil, bugs{}, 1_000_000_000, reading{})
 			is.NotError(t, err, src)
 			is.Equal(t, want, s.check(t.Context()).Error(), src)
 			is.Equal(t, "[table t]", fmt.Sprint(f.calls), src)
@@ -1085,12 +1191,12 @@ func TestBuild(t *testing.T) {
 
 	t.Run("should build a query of a table that exists, and give SQLite's error for one that does not", func(t *testing.T) {
 		f := newFake().with("t", []string{"v"}, []int64{2}, []int64{1})
-		src, err := buildQuery(t.Context(), fakeTx{f}, plan("select * from T").(*Query), nil, 1_000_000_000, false)
+		src, err := buildQuery(t.Context(), fakeTx{f}, plan("select * from T").(*Query), nil, 1_000_000_000, reading{})
 		is.NotError(t, err)
 		rows, err := collect(t.Context(), src)
 		is.NotError(t, err)
 		is.Equal(t, "[1 2]", fmt.Sprint(rows))
-		_, err = buildQuery(t.Context(), fakeTx{f}, plan("select * from u").(*Query), nil, 1_000_000_000, false)
+		_, err = buildQuery(t.Context(), fakeTx{f}, plan("select * from u").(*Query), nil, 1_000_000_000, reading{})
 		is.Equal(t, "no such table: u", err.Error())
 	})
 
@@ -1131,9 +1237,9 @@ func TestBuild(t *testing.T) {
 				f.tables["far"].ct.SetPrimaryKey([]uint32{1})
 				var err error
 				if q, ok := c.plan.(*Query); ok {
-					_, err = buildQuery(t.Context(), fakeTx{f}, q, nil, 1_000_000_000, false)
+					_, err = buildQuery(t.Context(), fakeTx{f}, q, nil, 1_000_000_000, reading{})
 				} else {
-					_, err = buildSink(t.Context(), fakeTx{f}, c.plan, nil, bugs{}, 1_000_000_000, false)
+					_, err = buildSink(t.Context(), fakeTx{f}, c.plan, nil, bugs{}, 1_000_000_000, reading{})
 				}
 				is.True(t, errors.Is(err, ErrInternal))
 				is.Equal(t, "s4ql: internal error: "+c.err, err.Error())
@@ -1145,9 +1251,9 @@ func TestBuild(t *testing.T) {
 		for _, src := range []string{t1, "drop table t", "insert into t (v) values (1)", "select * from t"} {
 			var err error
 			if q, ok := plan(src).(*Query); ok {
-				_, err = buildQuery(t.Context(), failingLookUp{}, q, nil, 1_000_000_000, false)
+				_, err = buildQuery(t.Context(), failingLookUp{}, q, nil, 1_000_000_000, reading{})
 			} else {
-				_, err = buildSink(t.Context(), failingLookUp{}, plan(src), nil, bugs{}, 1_000_000_000, false)
+				_, err = buildSink(t.Context(), failingLookUp{}, plan(src), nil, bugs{}, 1_000_000_000, reading{})
 			}
 			is.Equal(t, "the lookup fails", err.Error(), src)
 		}
@@ -1173,4 +1279,13 @@ type failingLookUp struct {
 
 func (failingLookUp) table(context.Context, string) (*s4qlpb.CreateTable, error) {
 	return nil, errors.New("the lookup fails")
+}
+
+// readingOf a statement of a test: of every row of its table if scanAll, and as the rules choose
+// otherwise, forward.
+func readingOf(scanAll bool) reading {
+	if scanAll {
+		return reading{path: path{kind: pathFull}}
+	}
+	return reading{}
 }

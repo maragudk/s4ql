@@ -15,14 +15,20 @@ import (
 type reader interface {
 	// table with the name, or nil if there is none.
 	table(ctx context.Context, name string) (*s4qlpb.CreateTable, error)
-	// scan the rows of the table with the name, in the order of the primary key.
-	scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Value, error]
-	// scanRange is scan of the rows whose key is within the bounds lower and upper, as SQLite
-	// compares the keys, of a table whose primary key is one column. Each bound has a value of the
-	// type of the key, or none.
-	scanRange(ctx context.Context, name string, lower, upper bound) iter.Seq2[[]*s4qlpb.Value, error]
+	// indexes of the table with the name, which exists, in the order in which they were created,
+	// which is the same on every instance.
+	indexes(ctx context.Context, name string) ([]*s4qlpb.CreateIndex, error)
+	// index with the name, or nil if there is none.
+	index(ctx context.Context, name string) (*s4qlpb.CreateIndex, error)
+	// scan the rows of the table with the name by one of its indexes, or by its primary key, as s
+	// says: see [core.IndexScan]. The rows come in the order of the key of the index, or in its
+	// reverse.
+	scan(ctx context.Context, name string, s core.IndexScan) iter.Seq2[[]*s4qlpb.Value, error]
 	// get the row of the table with the name that has the primary key, or nil if there is none.
 	get(ctx context.Context, name string, key []*s4qlpb.Value) ([]*s4qlpb.Value, error)
+	// rowsRead is the number of rows that the transaction has read from the storage so far, by its
+	// scans and its gets, as [core.ReadTx.RowsRead] counts them.
+	rowsRead() int64
 }
 
 // writer is what the operators read and change: the tables and rows of one write transaction, which
@@ -31,8 +37,12 @@ type writer interface {
 	reader
 	// createTable that no table of its name exists for.
 	createTable(ctx context.Context, ct *s4qlpb.CreateTable) error
-	// dropTable with the name, which exists.
+	// dropTable with the name, which exists, and with it its indexes.
 	dropTable(ctx context.Context, name string) error
+	// createIndex that no table and no index of its name exists for, on a table that exists.
+	createIndex(ctx context.Context, ci *s4qlpb.CreateIndex) error
+	// dropIndex with the name, which exists.
+	dropIndex(ctx context.Context, name string) error
 	// upsert the row into the table with the name: insert it, or replace the row with its key. It
 	// fails with SQLite's `string or blob too big` for a row whose record is too long.
 	upsert(ctx context.Context, name string, row []*s4qlpb.Value) error
@@ -113,9 +123,9 @@ type writeTx interface {
 	lost() error
 }
 
-// bound of a scan by the key: value is the first key that a lower bound lets through and the last
-// that an upper bound does, and the row whose key is value is left out if open. A bound without a
-// value bounds nothing.
+// bound of a scan on a column of a key: value is the smallest value that a lower bound lets through
+// and the largest that an upper bound does, and the rows whose value is value are left out if open. A
+// bound without a value bounds nothing.
 type bound struct {
 	value *s4qlpb.Value
 	open  bool
@@ -178,7 +188,7 @@ func fromCore(err error) error {
 	if errors.Is(err, core.ErrTooBig) {
 		return tooBig()
 	}
-	for _, r := range []error{core.ErrTableExists, core.ErrNoTable, core.ErrReservedName, core.ErrInvalid, core.ErrTxDone, core.ErrReaderClosed} {
+	for _, r := range []error{core.ErrTableExists, core.ErrNoTable, core.ErrIndexExists, core.ErrNoIndex, core.ErrReservedName, core.ErrInvalid, core.ErrTxDone, core.ErrReaderClosed} {
 		if errors.Is(err, r) {
 			return internalError("the storage core refused a call that the engine had checked: %v", err)
 		}
@@ -193,6 +203,15 @@ func lookUp(ctx context.Context, name string, table func(ctx context.Context, na
 		return nil, nil
 	}
 	return ct, fromCore(err)
+}
+
+// lookUpIndex with the name through the call index, as [reader.index] gives it.
+func lookUpIndex(ctx context.Context, name string, index func(ctx context.Context, name string) (*s4qlpb.CreateIndex, error)) (*s4qlpb.CreateIndex, error) {
+	ci, err := index(ctx, name)
+	if errors.Is(err, core.ErrNoIndex) {
+		return nil, nil
+	}
+	return ci, fromCore(err)
 }
 
 // fromCoreSeq is the scan seq with the errors of [fromCore].
@@ -215,17 +234,26 @@ func (c coreReadTx) table(ctx context.Context, name string) (*s4qlpb.CreateTable
 	return lookUp(ctx, name, c.r.Table)
 }
 
-func (c coreReadTx) scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Value, error] {
-	return fromCoreSeq(c.r.Scan(ctx, name))
+func (c coreReadTx) indexes(ctx context.Context, name string) ([]*s4qlpb.CreateIndex, error) {
+	cis, err := c.r.Indexes(ctx, name)
+	return cis, fromCore(err)
 }
 
-func (c coreReadTx) scanRange(ctx context.Context, name string, lower, upper bound) iter.Seq2[[]*s4qlpb.Value, error] {
-	return fromCoreSeq(c.r.ScanRange(ctx, name, lower.core(), upper.core()))
+func (c coreReadTx) index(ctx context.Context, name string) (*s4qlpb.CreateIndex, error) {
+	return lookUpIndex(ctx, name, c.r.Index)
+}
+
+func (c coreReadTx) scan(ctx context.Context, name string, s core.IndexScan) iter.Seq2[[]*s4qlpb.Value, error] {
+	return fromCoreSeq(c.r.ScanIndex(ctx, name, s))
 }
 
 func (c coreReadTx) get(ctx context.Context, name string, key []*s4qlpb.Value) ([]*s4qlpb.Value, error) {
 	row, err := c.r.Get(ctx, name, key)
 	return row, fromCore(err)
+}
+
+func (c coreReadTx) rowsRead() int64 {
+	return c.r.RowsRead()
 }
 
 func (c coreReadTx) position() format.Name {
@@ -249,17 +277,34 @@ func (c coreTx) table(ctx context.Context, name string) (*s4qlpb.CreateTable, er
 	return lookUp(ctx, name, c.tx.Table)
 }
 
-func (c coreTx) scan(ctx context.Context, name string) iter.Seq2[[]*s4qlpb.Value, error] {
-	return fromCoreSeq(c.tx.Scan(ctx, name))
+func (c coreTx) indexes(ctx context.Context, name string) ([]*s4qlpb.CreateIndex, error) {
+	cis, err := c.tx.Indexes(ctx, name)
+	return cis, fromCore(err)
 }
 
-func (c coreTx) scanRange(ctx context.Context, name string, lower, upper bound) iter.Seq2[[]*s4qlpb.Value, error] {
-	return fromCoreSeq(c.tx.ScanRange(ctx, name, lower.core(), upper.core()))
+func (c coreTx) index(ctx context.Context, name string) (*s4qlpb.CreateIndex, error) {
+	return lookUpIndex(ctx, name, c.tx.Index)
+}
+
+func (c coreTx) scan(ctx context.Context, name string, s core.IndexScan) iter.Seq2[[]*s4qlpb.Value, error] {
+	return fromCoreSeq(c.tx.ScanIndex(ctx, name, s))
 }
 
 func (c coreTx) get(ctx context.Context, name string, key []*s4qlpb.Value) ([]*s4qlpb.Value, error) {
 	row, err := c.tx.Get(ctx, name, key)
 	return row, fromCore(err)
+}
+
+func (c coreTx) rowsRead() int64 {
+	return c.tx.RowsRead()
+}
+
+func (c coreTx) createIndex(ctx context.Context, ci *s4qlpb.CreateIndex) error {
+	return fromCore(c.tx.CreateIndex(ctx, ci))
+}
+
+func (c coreTx) dropIndex(ctx context.Context, name string) error {
+	return fromCore(c.tx.DropIndex(ctx, name))
 }
 
 func (c coreTx) createTable(ctx context.Context, ct *s4qlpb.CreateTable) error {

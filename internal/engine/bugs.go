@@ -4,6 +4,7 @@ import (
 	"context"
 	"iter"
 
+	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/s4qlpb"
 )
 
@@ -50,7 +51,7 @@ type bugs struct {
 	// list leaves out the zero value of its type, 0, 0.0, the empty text, or the empty blob, in place
 	// of NULL.
 	zeroLeftOut bool
-	// openBound makes a scan by one or two bounds of the key read a closed bound, of <= or >=, as
+	// openBound makes a scan by one or two bounds of a key read a closed bound, of <= or >=, as
 	// open, so that it leaves out the row whose key is the bound, which the filter above it would
 	// give.
 	openBound bool
@@ -64,16 +65,16 @@ func (b bugs) reader(r reader) reader {
 	return r
 }
 
-// openBounds reads the rows of its reader, but for a scan by bounds of the key, one or two, which
+// openBounds reads the rows of its reader, but for a scan by bounds of a key, one or two, which
 // reads a closed bound as open: the planted bug openBound.
 type openBounds struct {
 	reader
 }
 
-func (o openBounds) scanRange(ctx context.Context, name string, lower, upper bound) iter.Seq2[[]*s4qlpb.Value, error] {
-	lower.open = lower.open || lower.value != nil
-	upper.open = upper.open || upper.value != nil
-	return o.reader.scanRange(ctx, name, lower, upper)
+func (o openBounds) scan(ctx context.Context, name string, s core.IndexScan) iter.Seq2[[]*s4qlpb.Value, error] {
+	s.Lower.Open = s.Lower.Open || s.Lower.Value != nil
+	s.Upper.Open = s.Upper.Open || s.Upper.Value != nil
+	return o.reader.scan(ctx, name, s)
 }
 
 // zeroOf the type t: the value that the planted bug zeroLeftOut gives.
