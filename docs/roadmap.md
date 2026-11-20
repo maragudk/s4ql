@@ -256,15 +256,17 @@ Included:
 
 - `select ... from t1 where <condition>`.
 - A condition compares a column with a literal or a `?`, with `=`, `==`, `!=`, `<>`, `<`, `<=`, `>`, or `>=`. The column is on the left.
+- The value of a comparison is a literal of slice 4, `null`, or a `?`.
+- `=` and `==` mean the same, and so do `!=` and `<>`.
 - The conditions `v2 is null` and `v2 is not null`.
-- Conditions joined with `and`.
+- Conditions joined with `and`. Several conditions can test the same column, as in `v1 >= 2 and v1 < 10`.
 - Exact types. The value has the type of its column, as in slice 4. A value of another type is rejected as not supported. This holds also where SQLite converts the value, such as the text `'1'` for an `int` column and the integer `1` for a `real` column.
 - A comparison with null, such as `v2 = null` or `v2 = ?` with a nil argument, is unknown, as in SQLite, and gives no rows.
 - Values compare as SQLite compares them. Text compares by its bytes, which is SQLite's `binary` collation.
 - Rows come in the order that SQLite gives them.
 - Everything of slices 1 to 6 with `where`: arguments, prepared statements, transactions, and a restart with an empty cache.
 
-Further details are decided when the slice is built, and recorded here.
+Further details are decided when the slice is built, and recorded here. The forms of the `where`, token for token, are in [internal/sql/stmt/README.md](../internal/sql/stmt/README.md).
 
 Rejected as not supported, where SQLite would accept it:
 
@@ -272,9 +274,14 @@ Rejected as not supported, where SQLite would accept it:
 - A literal or a `?` on the left of a comparison, such as `1 = v1`.
 - `or`, `not`, and parentheses.
 - A column compared with another column.
+- A column with the name of its table, such as `t1.v1 = 1`.
 - Expressions and functions, such as `v1 + 1 = 2` and `lower(v2) = 'a'`.
-- `in`, `between`, and `like`.
+- `in`, `between`, `like`, and `glob`.
+- `collate`.
+- `is` with anything but `null`, such as `v1 is 1`, `v1 is true`, and `v1 is distinct from 1`.
+- `isnull`, `notnull`, and `not null` after a column. SQLite reads them as `is null` and `is not null`.
 - `order by` and `limit`.
+- A `where` deeper than SQLite's limit of 1000 levels for an expression, which SQLite refuses while it parses. The most is 999 conditions, or 998 if one of the first two has a sign before its value.
 
 ### Slice 8: `update` and `delete`
 

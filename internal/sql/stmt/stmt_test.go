@@ -1233,6 +1233,16 @@ func TestName_Fold(t *testing.T) {
 	})
 }
 
+func TestOperator_String(t *testing.T) {
+	t.Run("should give each operator as SQL writes it, and nothing for no operator", func(t *testing.T) {
+		var got []string
+		for o := stmt.Operator(0); o <= stmt.OpIsNotNull+1; o++ {
+			got = append(got, o.String())
+		}
+		is.Equal(t, fmt.Sprint([]string{"", "=", "!=", "<", "<=", ">", ">=", "IS NULL", "IS NOT NULL", ""}), fmt.Sprint(got))
+	})
+}
+
 func TestCreateTable_Key(t *testing.T) {
 	t.Run("should give the index of the primary key", func(t *testing.T) {
 		s := &stmt.CreateTable{Columns: []stmt.Column{{NotNull: true}, {PrimaryKey: true}, {NotNull: true}}}

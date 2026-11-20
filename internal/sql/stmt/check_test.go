@@ -921,6 +921,8 @@ var checkCases = []checkCase{
 	{name: "or after and", src: "select * from t where v = 1 and w = 2 or x = 3", err: "s4ql: not supported: OR (at offset 38)"},
 	{name: "or before and", src: "select * from t where v = 1 or w = 2 and x = 3", err: "s4ql: not supported: OR (at offset 28)"},
 	{name: "or twice", src: "select * from t where v = 1 or w = 2 or x = 3", err: "s4ql: not supported: OR (at offset 28)"},
+	{name: "a function before or", src: "select * from t where lower(v) = 'a' or w = 2", err: "s4ql: not supported: function call (at offset 22)"},
+	{name: "a function after and before or", src: "select * from t where v = 1 and lower(v) = 'a' or w = 2", err: "s4ql: not supported: function call (at offset 32)"},
 	{name: "not", src: "select * from t where not v = 1", err: "s4ql: not supported: NOT operator (at offset 22)"},
 	{name: "not after and", src: "select * from t where v = 1 and not w = 2", err: "s4ql: not supported: NOT operator (at offset 32)"},
 	{name: "a condition in parentheses", src: "select * from t where (v = 1)", err: "s4ql: not supported: parentheses (at offset 22)"},

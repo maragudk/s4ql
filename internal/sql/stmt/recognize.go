@@ -520,10 +520,12 @@ func (r *recognizer) selectCmd(c *ast.SelectCmd) *Select {
 // order of the text. A ? among them has the number after that of the ? before it.
 func (r *recognizer) conditions(e ast.Expr) []Condition {
 	// OR binds less tightly than AND, so the conditions before the first OR are the leftmost operand of
-	// the ORs; that OR comes after them.
+	// the ORs; that OR comes after them. The ORs are accepted, as the ANDs are below, so that a token
+	// of those conditions that stops the recognizer is named for what holds it.
 	or := false
 	for isBinary(e, token.Or) {
 		or = true
+		r.accept(e)
 		e = e.(*ast.Binary).X
 	}
 	// AND groups to the left, so `a AND b AND c` is `(a AND b) AND c`: the ANDs are a spine down the

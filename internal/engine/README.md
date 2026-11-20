@@ -332,6 +332,7 @@ The errors that are not SQLite's:
 
 - **"Not supported"** is the `*stmt.NotSupportedError` of the pass, unchanged. It matches `stmt.ErrNotSupported`. The engine runs every form of slice 6 that the pass supports, and `Check` refuses none of them. A form with NULL that the pass does not support, such as `-null`, which is `NULL after a sign`, stays "not supported" by the text alone.
 - **A value of another type than its column is "not supported";** see [Types](#types).
+- **A select with the WHERE of slice 7 is "not supported" until the engine runs that slice.** The pass supports it, and the engine does not run a condition yet. `checkWhere` in `errors.go` refuses it, in `Check` and before the arguments of the statement are checked, so that the driver's `Prepare` refuses it at once, with an error that matches `stmt.ErrNotSupported`: `s4ql: not supported: WHERE, which the engine does not run yet`. `NewPlan` panics for such a statement.
 - **A text without a statement** gives `ErrNoStatement`.
 - **The state of the transaction of a connection has four errors:** `ErrTxOpen`, `ErrNoTx`, `ErrRowsOpen`, and `ErrTxDone`. Each is returned as it is, but for the commit of a write transaction while a loop reads its rows, whose error wraps `ErrRowsOpen`. See [Transactions](#transactions).
 - **A commit that is too large gives an error that matches `ErrTooLarge`,** and that wraps the error of the core, which matches `core.ErrTooLarge`.
