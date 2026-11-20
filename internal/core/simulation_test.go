@@ -498,9 +498,9 @@ func randomRow(h host.Host, ct *s4qlpb.CreateTable) []*s4qlpb.Value {
 }
 
 // randomScan of the table by one of its indexes, mostly, if it has any, or by its primary key: the
-// index that it gives, or nil. A fifth of the scans read the whole index. The others pin some of the leading
-// columns of the key, maybe all, and bound the column after them by a lower bound, an upper bound,
-// both, or neither, each open or closed. Most values are of the rows that the table holds, so
+// index that it gives, or nil. A fifth of the scans read the whole index. The others pin some of
+// the leading columns of the key, maybe all, and bound the column after them by a lower bound, an
+// upper bound, both, or neither, each open or closed. Most values are of the rows that the table holds, so
 // that the scans give some rows and not all, and a NULL pins a column only where the column takes
 // it. A bound is never NULL, and both bounds are mostly in order, so the core refuses none of the
 // scans. Either direction is drawn.
@@ -568,8 +568,9 @@ func randomScan(h host.Host, t *mtable) (*s4qlpb.CreateIndex, core.IndexScan) {
 	return ci, scan
 }
 
-// scanMarks of a scan by the key, which gave got of the all rows of the table, for the trace: what
-// it exercised, if it gave some rows and not all, and a pin to NULL that gave rows.
+// scanMarks of a scan by the key, for the trace, where got is the number of rows that the scan gave
+// and all the number of rows of the table: what it exercised, if it gave some rows and not all, and
+// a pin to NULL that gave rows.
 func scanMarks(key []mkeyColumn, scan core.IndexScan, got, all int) string {
 	var marks []string
 	if got > 0 && slices.ContainsFunc(scan.Equal, isNull) {

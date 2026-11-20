@@ -32,7 +32,8 @@ type conn struct {
 	tables map[string]*table
 	// limit is SQLite's limit on the connection for the length of a text, a blob, and a row.
 	limit int
-	// bugs planted in the instance of the connection, from [Options].
+	// bugs planted in the instance of the connection: a copy of those of its [Options], which no
+	// instance changes after its start.
 	bugs bugs
 	// schemaReads counts the statements with which [conn.load] and [conn.loadIndexes] have read
 	// tables and their indexes from the schema of the cache, so that a test can pin what a call
