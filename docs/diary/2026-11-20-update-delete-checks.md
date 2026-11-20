@@ -141,3 +141,52 @@ The count of 0 was the engine's own word, so a bug that changes nothing and says
 ### Future work
 
 - Mutation testing of the code of slice 8, as `docs/todo.md` says.
+
+## Step 4: The review, the counts of the planted bugs, the documents, and the checks
+
+**Author:** update-delete-checks builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Finish: `make test`, `make lint`, `make check-browser` pass; `make test-asan` only for the packages whose fuzz tests you changed. Self-review against these requirements."
+**Interpretation:** Review with the code-review skill, fix what it finds, count the planted bugs over 200 seeds, bring the README of the engine up to date, and run every check.
+**Inferred intent:** A branch ready for the lead.
+
+### What I did
+
+- `code-review high origin/update-delete-engine...HEAD` found one real problem and three nits, all fixed: the second engine of a pair stayed open until the end of the test (`defer p.other.close()` in `differentialOn` and `txDifferential` now); `pair.recordSlips` excused a refusal when any row alone was too long, also where an earlier row should fail with UNIQUE first, so it now changes the rows one at a time in the order of the key, in a temporary table of the keys found (`stmttest.RowQueries`), and excuses only if the first error is `string or blob too big`, with a new case in `TestPair_recordSlips`; the comments say why some least numbers fell; the docs of `Sequence.update` point at `Sequence.changeConditions`.
+- `S4QL_ENGINE_SIM_SEEDS=200 go test -run '^TestSimulation_plantedBugs$'`: skipUnique 147 (138 by its own violation), ackUnknown 43 (43), checkOutside 64 (64), keepOpen 197 (197), keepRead 65 (24), annotateNext 160 (160), keepFailed 187 (187), readNewest 175 (143), rollbackKeeps 87 (87), convertReal 20 (18), listOrder 112 (17), zeroLeftOut 39 (20), openBound 8 (8), changeNothing 156 (108), keepOldKey 29 (15); none without its bug. `S4QL_ENGINE_SIM_SEEDS=1000` of `TestSimulation`: no violation, every least number held.
+- A writer sub-agent updated `/internal/engine/README.md`; I read its diff, fixed the stale description of `pair.recordSlips` in `docs/todo.md` and the old counts of `convertReal` in a comment that it reported.
+- `make lint`, `make check-browser`, the engine's tests and fuzz tests under the address sanitizer in Docker (`go test -asan ./internal/engine/` and `make fuzz FUZZDIRS=internal/engine FUZZGROUP=c FUZZFLAGS=-asan FUZZTIME=10s`), `-count=50` of the new tests, and `-race` of the engine's generated tests.
+
+### Why
+
+Each excuse must be no wider than the difference it names, and a moved count needs its reason.
+
+### What worked
+
+- No real fault of the engine was found by any of the new checks.
+
+### What didn't work
+
+- The first run of the planted bugs failed: `seed 136 finds the bug by another violation: [the statement 68, "delete ... where "no" < x'cE83'", of the transaction 13 (write), which began at commit 4, changes 0 rows in SQLite, and its caller was told 1]`. I first took it for `openBound`, whose count line followed it; a run of `zeroLeftOut` and `openBound` alone showed it was `zeroLeftOut`, whose zero blob meets `< x'cE83'` where SQLite has NULL. The new count check found it; `zeroLeftOut` and `listOrder` list that violation now.
+- Under `-race`, `TestDifferential` failed: `no statement has the outcome "createtable duplicate column name"`; the tenth of the sequences that a slow run has no longer reaches one, so only the full run requires it.
+- `make test` failed in `internal/sql/mutation`: `no such mutant: internal/engine/tx.go Conn.writeIn element: , convertReal: c.e.bugs.convertReal =>`, since the list of bugs of `writeIn` has two more; the entry of `equivalent.txt` names the mutant as the generator writes it now.
+- My first run of the sanitizer in Docker started before the fix of the slow run; I stopped it and its container and ran it again.
+
+### What I learned
+
+- `openBound` is found the second time at seed 55 of the limit of 100 of the default run now, a thin margin, since the sequence writes fewer selects.
+
+### What was tricky
+
+- Reading which subtest a line of `-v` belongs to: a subtest that fails with `Fatalf` prints no count line, so the next one's line follows the failure.
+
+### What warrants review
+
+- The decisions in `/docs/todo.md` under "Decided by the builder of the generated checks for slice 8", for the lead to confirm.
+- The margin of `openBound` in the default run of `TestSimulation_plantedBugs`.
+
+### Future work
+
+- Mutation testing of the code of slice 8, with the two new planted bugs.
