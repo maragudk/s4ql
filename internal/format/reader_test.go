@@ -250,7 +250,7 @@ func TestCommitReader(t *testing.T) {
 		}())},
 		{name: "should refuse a field it does not know in a column as newer", b: changeRecord(func() *s4qlpb.Change {
 			c := createTable("t", []string{"a", "b"}, []uint32{0})
-			withUnknown(c.GetCreateTable().GetColumns()[1], 3, protowire.VarintType)
+			withUnknown(c.GetCreateTable().GetColumns()[1], 4, protowire.VarintType)
 			return c
 		}())},
 		{name: "should refuse a type it does not know as newer", b: changeRecord(func() *s4qlpb.Change {
@@ -368,6 +368,13 @@ func TestCommitReader(t *testing.T) {
 		{name: "should refuse an empty primary key", b: changeRecord(createTable("t", []string{"a"}, nil))},
 		{name: "should refuse a primary key that lists a column twice", b: changeRecord(createTable("t", []string{"a", "b"}, []uint32{1, 0, 1}))},
 		{name: "should refuse a primary key that points outside the columns", b: changeRecord(createTable("t", []string{"a", "b"}, []uint32{2}))},
+		{name: "should refuse a primary-key column that takes NULL", b: changeRecord(func() *s4qlpb.Change {
+			c := createTable("t", []string{"a", "b"}, []uint32{0, 1})
+			c.GetCreateTable().GetColumns()[1].SetNullable(true)
+			return c
+		}())},
+		{name: "should refuse a NULL in a primary key", b: changeRecord(deleteRows("t", []*s4qlpb.Value{null()}))},
+		{name: "should refuse a NULL in a primary key of a batch after keys without one", b: changeRecord(deleteRows("t", []*s4qlpb.Value{integer(1), text("a")}, []*s4qlpb.Value{integer(2), null()}))},
 		{name: "should refuse a drop table without a name", b: changeRecord(dropTable(""))},
 		{name: "should refuse a drop table whose name is not valid UTF-8", b: changeRecord(rawChange(2, protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), []byte("\xff"))))},
 		{name: "should refuse an upsert rows without a table name", b: changeRecord(upsertRows("", []uint32{0}, []*s4qlpb.Value{integer(1)}))},
@@ -569,6 +576,14 @@ func createTypedTable(table string, columns []string, types []s4qlpb.Type, prima
 	return s4qlpb.Change_builder{CreateTable: s4qlpb.CreateTable_builder{Table: &table, Columns: cs, PrimaryKey: primaryKey}.Build()}.Build()
 }
 
+// nullable makes the columns at the given positions of the create table c take NULL, and returns c.
+func nullable(c *s4qlpb.Change, positions ...int) *s4qlpb.Change {
+	for _, position := range positions {
+		c.GetCreateTable().GetColumns()[position].SetNullable(true)
+	}
+	return c
+}
+
 func dropTable(table string) *s4qlpb.Change {
 	return s4qlpb.Change_builder{DropTable: s4qlpb.DropTable_builder{Table: &table}.Build()}.Build()
 }
@@ -650,7 +665,7 @@ func commitSamples() []commitSample {
 			commitTime: time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC),
 			write: func(w *format.CommitWriter) error {
 				return errors.Join(
-					w.CreateTable(createTable("users", []string{"id", "age"}, []uint32{0}).GetCreateTable()),
+					w.CreateTable(nullable(createTable("users", []string{"id", "age"}, []uint32{0}), 1).GetCreateTable()),
 					w.UpsertRow("users", []uint32{0, 1}, []*s4qlpb.Value{integer(1), integer(42)}),
 					w.UpsertRow("users", []uint32{0, 1}, []*s4qlpb.Value{integer(2), null()}),
 					w.Annotate(statement("create table users (id int primary key, age int) strict")),
@@ -658,7 +673,7 @@ func commitSamples() []commitSample {
 				)
 			},
 			want: []item{
-				{change: createTable("users", []string{"id", "age"}, []uint32{0})},
+				{change: nullable(createTable("users", []string{"id", "age"}, []uint32{0}), 1)},
 				{change: upsertRows("users", []uint32{0, 1}, []*s4qlpb.Value{integer(1), integer(42)}, []*s4qlpb.Value{integer(2), null()})},
 				{annotation: statement("create table users (id int primary key, age int) strict")},
 				{annotation: statement("insert into users values (?, ?), (?, ?)", integer(1), integer(42), integer(2), null())},
@@ -670,7 +685,7 @@ func commitSamples() []commitSample {
 			commitTime: time.Date(2026, 11, 12, 9, 31, 2, 123_456_789, time.UTC),
 			write: func(w *format.CommitWriter) error {
 				return errors.Join(
-					w.CreateTable(createTable("kv", []string{"a", "b", "c"}, []uint32{1, 0}).GetCreateTable()),
+					w.CreateTable(nullable(createTable("kv", []string{"a", "b", "c"}, []uint32{1, 0}), 2).GetCreateTable()),
 					w.UpsertRow("kv", []uint32{0, 1, 2}, []*s4qlpb.Value{integer(-7), text("ü"), realValue(2.5)}),
 					w.UpsertRow("kv", []uint32{0, 1, 2}, []*s4qlpb.Value{integer(8), text(""), blob([]byte{0, 0xff})}),
 					w.UpsertRow("kv", []uint32{1, 0, 2}, []*s4qlpb.Value{text("x"), integer(9), null()}),
@@ -688,7 +703,7 @@ func commitSamples() []commitSample {
 				)
 			},
 			want: []item{
-				{change: createTable("kv", []string{"a", "b", "c"}, []uint32{1, 0})},
+				{change: nullable(createTable("kv", []string{"a", "b", "c"}, []uint32{1, 0}), 2)},
 				{change: upsertRows("kv", []uint32{0, 1, 2},
 					[]*s4qlpb.Value{integer(-7), text("ü"), realValue(2.5)},
 					[]*s4qlpb.Value{integer(8), text(""), blob([]byte{0, 0xff})})},

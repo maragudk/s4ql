@@ -178,7 +178,7 @@ func checkChange(c *s4qlpb.Change) error {
 }
 
 // checkCreateTable has a name, at least one column, columns with names and types, and a primary key
-// of distinct positions in its columns.
+// of distinct positions in its columns, none of which takes NULL.
 func checkCreateTable(ct *s4qlpb.CreateTable) error {
 	if err := checkIdentifier(ct.GetTable()); err != nil {
 		return in(err, "table")
@@ -217,6 +217,9 @@ func checkCreateTable(ct *s4qlpb.CreateTable) error {
 			return inElement(refuse(ErrMalformed, "lists column %v twice", position), "primary_key", i)
 		}
 		seen[position] = true
+		if columns[position].GetNullable() {
+			return inElement(refuse(ErrMalformed, "is column %v, which takes NULL", position), "primary_key", i)
+		}
 	}
 	return nil
 }
@@ -283,7 +286,7 @@ func checkRow(columns int, values []*s4qlpb.Value) error {
 }
 
 // checkPrimaryKey has at least one value, as many as the first key of its batch, and each value is
-// valid.
+// valid and not NULL, which no primary-key column takes.
 func checkPrimaryKey(want int, values []*s4qlpb.Value) error {
 	if len(values) == 0 {
 		return refuse(ErrMalformed, "has no values")
@@ -291,7 +294,15 @@ func checkPrimaryKey(want int, values []*s4qlpb.Value) error {
 	if len(values) != want {
 		return refuse(ErrMalformed, "has %v values, and the first key of its batch has %v", len(values), want)
 	}
-	return checkStored(values)
+	if err := checkStored(values); err != nil {
+		return err
+	}
+	for i, v := range values {
+		if v.WhichKind() == s4qlpb.Value_Null_case {
+			return inElement(refuse(ErrMalformed, "is NULL, which no primary-key column takes"), "values", i)
+		}
+	}
+	return nil
 }
 
 // checkStored values of a row or a primary key: each is valid, and a real is not -0.0, which SQLite

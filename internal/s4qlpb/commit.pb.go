@@ -744,6 +744,7 @@ type Column struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Name        *string                `protobuf:"bytes,1,opt,name=name"`
 	xxx_hidden_Type        Type                   `protobuf:"varint,2,opt,name=type,enum=s4ql.v1.Type"`
+	xxx_hidden_Nullable    bool                   `protobuf:"varint,3,opt,name=nullable"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
 	XXX_presence           [1]uint32
 	unknownFields          protoimpl.UnknownFields
@@ -794,14 +795,26 @@ func (x *Column) GetType() Type {
 	return Type_TYPE_UNSPECIFIED
 }
 
+func (x *Column) GetNullable() bool {
+	if x != nil {
+		return x.xxx_hidden_Nullable
+	}
+	return false
+}
+
 func (x *Column) SetName(v string) {
 	x.xxx_hidden_Name = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 2)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 3)
 }
 
 func (x *Column) SetType(v Type) {
 	x.xxx_hidden_Type = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 2)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 3)
+}
+
+func (x *Column) SetNullable(v bool) {
+	x.xxx_hidden_Nullable = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 3)
 }
 
 func (x *Column) HasName() bool {
@@ -818,6 +831,13 @@ func (x *Column) HasType() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 1)
 }
 
+func (x *Column) HasNullable() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 2)
+}
+
 func (x *Column) ClearName() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
 	x.xxx_hidden_Name = nil
@@ -828,6 +848,11 @@ func (x *Column) ClearType() {
 	x.xxx_hidden_Type = Type_TYPE_UNSPECIFIED
 }
 
+func (x *Column) ClearNullable() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 2)
+	x.xxx_hidden_Nullable = false
+}
+
 type Column_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
@@ -835,6 +860,10 @@ type Column_builder struct {
 	Name *string
 	// The declared type of the column.
 	Type *Type
+	// Whether the column takes NULL. It is never true for a primary-key
+	// column, and a reader refuses a create table where it is. A column
+	// without it does not take NULL.
+	Nullable *bool
 }
 
 func (b0 Column_builder) Build() *Column {
@@ -842,12 +871,16 @@ func (b0 Column_builder) Build() *Column {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.Name != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 2)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 3)
 		x.xxx_hidden_Name = b.Name
 	}
 	if b.Type != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 2)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 3)
 		x.xxx_hidden_Type = *b.Type
+	}
+	if b.Nullable != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 3)
+		x.xxx_hidden_Nullable = *b.Nullable
 	}
 	return m0
 }
@@ -1888,10 +1921,11 @@ const file_s4ql_v1_commit_proto_rawDesc = "" +
 	"\x05table\x18\x01 \x01(\tR\x05table\x12)\n" +
 	"\acolumns\x18\x02 \x03(\v2\x0f.s4ql.v1.ColumnR\acolumns\x12\x1f\n" +
 	"\vprimary_key\x18\x03 \x03(\rR\n" +
-	"primaryKey\"?\n" +
+	"primaryKey\"[\n" +
 	"\x06Column\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
-	"\x04type\x18\x02 \x01(\x0e2\r.s4ql.v1.TypeR\x04type\"!\n" +
+	"\x04type\x18\x02 \x01(\x0e2\r.s4ql.v1.TypeR\x04type\x12\x1a\n" +
+	"\bnullable\x18\x03 \x01(\bR\bnullable\"!\n" +
 	"\tDropTable\x12\x14\n" +
 	"\x05table\x18\x01 \x01(\tR\x05table\"^\n" +
 	"\n" +

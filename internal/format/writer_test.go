@@ -287,6 +287,14 @@ func TestCommitWriter(t *testing.T) {
 			ct.GetColumns()[0].SetType(s4qlpb.Type(6))
 			return w.CreateTable(ct)
 		}},
+		{name: "should refuse a primary-key column that takes NULL", write: func(w *format.CommitWriter) error {
+			ct := createTable("t", []string{"a", "b"}, []uint32{1}).GetCreateTable()
+			ct.GetColumns()[1].SetNullable(true)
+			return w.CreateTable(ct)
+		}},
+		{name: "should refuse a delete with a NULL in its key", write: func(w *format.CommitWriter) error {
+			return w.DeleteRow("t", []*s4qlpb.Value{integer(1), null()})
+		}},
 		{name: "should refuse a create table with a field it does not know", write: func(w *format.CommitWriter) error {
 			return w.CreateTable(withUnknown(createTable("t", []string{"a"}, []uint32{0}).GetCreateTable(), 9, protowire.VarintType))
 		}},
@@ -433,6 +441,13 @@ func FuzzCommitWriter(f *testing.F) {
 			switch op := in.byte() % 6; op {
 			case 0:
 				c = createTable(table, []string{"x", "y", "z"}[:1+in.byte()%3], []uint32{0})
+				// The columns outside the primary key take NULL by the bits of a byte.
+				nullable := in.byte()
+				for i, column := range c.GetCreateTable().GetColumns()[1:] {
+					if nullable&(1<<i) != 0 {
+						column.SetNullable(true)
+					}
+				}
 				err = w.CreateTable(c.GetCreateTable())
 			case 1:
 				c = dropTable(table)
@@ -449,7 +464,7 @@ func FuzzCommitWriter(f *testing.F) {
 				// Every key of a table has the same number of values.
 				key := make([]*s4qlpb.Value, 1+len(table)%2+int(table[0]-'a'))
 				for i := range key {
-					key[i] = in.value()
+					key[i] = in.keyValue()
 				}
 				c = deleteRows(table, key)
 				err = w.DeleteRow(table, key)
@@ -605,6 +620,16 @@ func (in *fuzzInput) value() *s4qlpb.Value {
 	default:
 		return null()
 	}
+}
+
+// keyValue of any kind but NULL, which the writer refuses in a primary key, as [fuzzInput.value]
+// makes it: a NULL is made the integer 0.
+func (in *fuzzInput) keyValue() *s4qlpb.Value {
+	v := in.value()
+	if v.WhichKind() == s4qlpb.Value_Null_case {
+		return integer(0)
+	}
+	return v
 }
 
 // writeExample commit object to w, with every kind of change and two annotations, and return its
