@@ -1373,6 +1373,15 @@ func TestBuild(t *testing.T) {
 		is.Equal(t, "[table t table j]", fmt.Sprint(f.calls))
 	})
 
+	t.Run("should fail with an internal error for a create index that names a column twice, which no statement gives", func(t *testing.T) {
+		f := newFake().with("t", []string{"k", "v"})
+		p := &CreateIndex{Index: stmt.Name{Raw: "i", Value: "i"}, Table: stmt.Name{Raw: "t", Value: "t"},
+			Columns: []stmt.IndexColumn{{Name: stmt.Name{Raw: "v", Value: "v"}}, {Name: stmt.Name{Raw: "V", Value: "V"}}}, SQL: "CREATE INDEX i on t (v, V)"}
+		_, err := buildSink(t.Context(), fakeTx{f}, p, nil, bugs{}, 1_000_000_000, reading{})
+		is.True(t, errors.Is(err, ErrInternal))
+		is.True(t, strings.Contains(err.Error(), "an index that names the column v twice"), err.Error())
+	})
+
 	t.Run("should place the values of a list in the order of the list with the planted bug listOrder", func(t *testing.T) {
 		f := newFake().with("t", []string{"a", "k", "c"})
 		f.tables["t"].ct.SetPrimaryKey([]uint32{1})
