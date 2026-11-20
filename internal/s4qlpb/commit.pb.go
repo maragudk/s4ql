@@ -624,7 +624,7 @@ type Change_builder struct {
 	// Fields of oneof xxx_hidden_Kind:
 	// Creates a table.
 	CreateTable *CreateTable
-	// Drops a table and all its rows.
+	// Drops a table, all its rows, and all its indexes.
 	DropTable *DropTable
 	// Inserts rows into a table, or changes rows that are there.
 	UpsertRows *UpsertRows
@@ -682,7 +682,7 @@ type change_CreateTable struct {
 }
 
 type change_DropTable struct {
-	// Drops a table and all its rows.
+	// Drops a table, all its rows, and all its indexes.
 	DropTable *DropTable `protobuf:"bytes,2,opt,name=drop_table,json=dropTable,oneof"`
 }
 
