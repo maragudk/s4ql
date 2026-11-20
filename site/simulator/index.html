@@ -342,7 +342,7 @@ h2 {
 .switch .btn:disabled { border-style: solid; opacity: 1; }
 .switch:has(.btn:disabled) { border-style: dashed; }
 
-@media (max-width: 1100px) {
+@media (max-width: 1139px) {
   .requests { grid-template-columns: auto minmax(0, 1fr); }
   .requests > div:nth-child(2) { justify-content: flex-end; }
   .requests dl { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 2.4fr); border-top: var(--rule); }
@@ -393,7 +393,7 @@ h2 {
 
 .node { border: var(--rule); }
 .inst:not([data-state="running"]) .node { border-style: dashed; }
-.head {
+.node .head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -402,11 +402,11 @@ h2 {
   padding: 10px 12px 10px 20px;
   border-bottom: var(--rule);
 }
-.head .name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; min-width: 0; }
-.head .letter { font-size: 32px; font-weight: 700; line-height: 1; margin: 0; }
-.head .word { font-weight: 700; }
-.head .tag { display: none; }
-.head .acts { display: flex; gap: 8px; }
+.node .head .name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; min-width: 0; }
+.node .head .letter { font-size: 32px; font-weight: 700; line-height: 1; margin: 0; }
+.node .head .word { font-weight: 700; }
+.node .head .tag { display: none; }
+.node .head .acts { display: flex; gap: 8px; }
 .inst[data-state="crashed"] .head .letter { text-decoration: line-through; text-decoration-thickness: 3px; }
 /* The instance that serves has its head inverted, its buttons with it. */
 .inst[data-role="serves"] .head {
@@ -564,11 +564,13 @@ h2 {
   .s3 { max-width: none; }
 }
 @media (max-width: 720px) {
-  .head { padding-left: 16px; }
+  .node .head { padding-left: 16px; }
   .facts { padding: 4px 16px; }
   .in { left: 16px; }
   .links, .inst[data-instance="a"] .links { grid-template-columns: 20px minmax(0, 1fr) minmax(0, 1fr); column-gap: 8px; }
-  .link { gap: 8px; padding-left: 28px; }
+  .link { gap: 6px; padding-left: 28px; }
+  .link .btn { gap: 8px; padding-left: 8px; padding-right: 8px; }
+  .cut { width: 20px; }
   .link::before { left: 9.5px; }
   .link::after { left: 10px; }
   .box { padding: 6px 10px 10px; }
@@ -745,7 +747,7 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
             <button class="btn" type="button" data-a="disk" aria-pressed="false" aria-label="Error on the disk of a" disabled><span class="led" aria-hidden="true"></span>Error</button>
           </section>
           <section class="box clocks" aria-labelledby="clocks-a">
-            <div class="title"><h4 class="caps" id="clocks-a">Clocks</h4><svg class="dial" viewBox="-20 -20 40 40" aria-hidden="true"><circle data-f="face" r="15" fill="none" stroke="currentColor"/><path data-f="now" d="M0-15v-4" stroke="currentColor" stroke-width="1.5"/><path data-f="hand" d="M0 0v-11" stroke="currentColor" stroke-width="2.5"/></svg></div>
+            <div class="title"><h4 class="caps" id="clocks-a">Clocks</h4><svg class="dial" viewBox="-20 -20 40 40" aria-hidden="true"><circle r="15" fill="none" stroke="currentColor"/><path data-f="now" d="M0-15v-4" stroke="currentColor" stroke-width="1.5"/><path data-f="hand" d="M0 0v-11" stroke="currentColor" stroke-width="2.5"/></svg></div>
             <p class="state" data-f="clocks">…</p>
             <div class="acts" role="group" aria-labelledby="clocks-a">
               <button class="btn" type="button" data-a="forward" aria-label="Move the wall clock of a forward 5 s" disabled>Wall +5 s</button>
@@ -787,7 +789,7 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
             <button class="btn" type="button" data-a="disk" aria-pressed="false" aria-label="Error on the disk of b" disabled><span class="led" aria-hidden="true"></span>Error</button>
           </section>
           <section class="box clocks" aria-labelledby="clocks-b">
-            <div class="title"><h4 class="caps" id="clocks-b">Clocks</h4><svg class="dial" viewBox="-20 -20 40 40" aria-hidden="true"><circle data-f="face" r="15" fill="none" stroke="currentColor"/><path data-f="now" d="M0-15v-4" stroke="currentColor" stroke-width="1.5"/><path data-f="hand" d="M0 0v-11" stroke="currentColor" stroke-width="2.5"/></svg></div>
+            <div class="title"><h4 class="caps" id="clocks-b">Clocks</h4><svg class="dial" viewBox="-20 -20 40 40" aria-hidden="true"><circle r="15" fill="none" stroke="currentColor"/><path data-f="now" d="M0-15v-4" stroke="currentColor" stroke-width="1.5"/><path data-f="hand" d="M0 0v-11" stroke="currentColor" stroke-width="2.5"/></svg></div>
             <p class="state" data-f="clocks">…</p>
             <div class="acts" role="group" aria-labelledby="clocks-b">
               <button class="btn" type="button" data-a="forward" aria-label="Move the wall clock of b forward 5 s" disabled>Wall +5 s</button>

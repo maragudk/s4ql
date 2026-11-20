@@ -306,15 +306,19 @@ async function check() {
   expect(p.instance("a") && p.instance("b") && p.win.s4qlPage.state.instances.length === 2, "the session has the two instances a and b");
   // requestsEdge is the instance that the edge of the requests goes into, by what the page draws: its
   // edge to that instance is on and has its arrow, and the instance says that the requests come to
-  // it. It is empty if no instance has all three, and both letters if both have.
-  const requestsEdge = () => ["a", "b"].filter((name) => {
+  // it. It is empty if no instance has all three, or if the edges are not drawn, and both letters if
+  // both have.
+  const requestsEdge = () => p.win.getComputedStyle(p.$(".fork")).display === "none" ? "" : ["a", "b"].filter((name) => {
     const w = p.$(`[data-wire="${name}"]`);
     return w.dataset.on === "true" && p.win.getComputedStyle(w, "::after").content !== "none" && p.inst(name).dataset.requests === "true";
   }).join("");
   const switchA = p.$('#requests [data-target="a"]');
   expect(p.requests().target === "a" && switchA.getAttribute("aria-pressed") === "true" && requestsEdge() === "a", `the requests go to a, their switch shows a on, and their edge goes into a (${requestsEdge() || "none"})`);
-  // Each action's accessible name says what it acts on: its instance, by its letter.
-  const unnamed = ["a", "b"].flatMap((name) => [...p.inst(name).querySelectorAll("[data-a]")].filter((b) => !new RegExp(`\\b${name}\\b`).test(b.getAttribute("aria-label") || "")).map((b) => `${name}: ${b.textContent}`));
+  // Each action's accessible name says what it acts on: its instance, by its letter. The letter a is
+  // also a word, so each name of a must be that of b with b changed to a.
+  const label = (name, a) => p.button(name, a).getAttribute("aria-label") || "";
+  const unnamed = [...p.inst("b").querySelectorAll("[data-a]")].map((b) => b.dataset.a)
+    .filter((a) => !/\bb\b/.test(label("b", a)) || label("a", a) !== label("b", a).replace(/\bb\b/g, "a")).map((a) => `${label("a", a)} / ${label("b", a)}`);
   expect(unnamed.length === 0, `the accessible name of each action names its instance (${unnamed.join(" | ") || "all of them"})`);
   expect(p.requests().status === "no requests yet" && !p.requests().failing, `before the first request, the status of the requests is neutral (${p.requests().status})`);
   noClient("at zero");
@@ -491,6 +495,24 @@ async function check() {
   noClient("with the requests sent to b");
   await p.send("a");
   expect(p.requests().target === "a" && requestsEdge() === "a", `the switch sends the requests back to a, and their edge with them (${requestsEdge() || "none"})`);
+
+  // At phone width the diagram stacks: nothing scrolls sideways, the edge of the requests comes into
+  // the instance that they go to from above, and the edge to S3 turns along the bottom of its disk and
+  // clocks, dashed while it hangs.
+  p.win.frameElement.style.width = "390px";
+  await p.frames(2);
+  const doc = p.win.document.documentElement;
+  const arrow = (name) => p.win.getComputedStyle(p.inst(name).querySelector(".in"), "::after").content !== "none";
+  const stacked = requestsEdge() === "" && doc.scrollWidth <= doc.clientWidth && arrow("a") && !arrow("b");
+  const along = () => p.win.getComputedStyle(p.inst("a").querySelector('[data-edge="s3"]'), "::after").backgroundImage;
+  const solid = along();
+  await p.press("a", "hang");
+  const dashed = along();
+  await p.press("a", "hang");
+  expect(stacked && dashed !== solid && along() === solid,
+    `at 390 px the diagram stacks without scrolling sideways (${doc.scrollWidth} px wide), the requests come into a from above, and the edge of a to S3 along the bottom is dashed while it hangs (${solid} / ${dashed})`);
+  p.win.frameElement.style.width = "1280px";
+  await p.frames(2);
 
   await p.press("a", "stop");
   const stopping = ["closing", "closed"].includes(a().state);
