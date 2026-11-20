@@ -67,10 +67,10 @@ type Summary struct {
 // the calls. A write inserts the row of its key, and creates the table first if the database does
 // not have it. A read selects the keys above its bound.
 const (
-	tableName = "orders"
-	createSQL = "create table orders (id integer primary key) strict, without rowid"
-	insertSQL = "insert into orders (id) values (?)"
-	selectSQL = "select id from orders where id > ?"
+	tableName = "barcodes"
+	createSQL = "create table barcodes (id integer primary key) strict, without rowid"
+	insertSQL = "insert into barcodes (id) values (?)"
+	selectSQL = "select id from barcodes where id > ?"
 )
 
 // prefix of the database in the store.

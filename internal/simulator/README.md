@@ -131,14 +131,14 @@ Each process runs callers, as an application would.
 
 A caller repeats two steps. It pauses for 1 ms and a time from 0 to `think`, from the seed. Then it makes one call, a write or a read by `writes`. While the workload is off it makes no call, and looks again after a second.
 
-Each call is SQL, on a connection of its own, `engine.Conn`, of the engine of its process. Each process has an engine, `engine.New` on its database and its host, which it makes when it opens its database. The table is `orders`:
+Each call is SQL, on a connection of its own, `engine.Conn`, of the engine of its process. Each process has an engine, `engine.New` on its database and its host, which it makes when it opens its database. The table is `barcodes`:
 
 ```sql
-create table orders (id integer primary key) strict, without rowid
+create table barcodes (id integer primary key) strict, without rowid
 ```
 
-- A write is one write transaction: `Conn.Begin`, the insert `insert into orders (id) values (?)`, and `Conn.Commit`. The argument is the key of the row, the next value of a counter of the run, which starts at 1. Every write takes a value when it starts, also one that is then refused, so a key belongs to one call, and the keys tell the transactions apart. If the insert fails with `no such table: orders`, the transaction runs the `create table` above and the insert again, so the first write of a run commits both statements. A statement that fails in a transaction has no effect there, and the transaction stays open.
-- A read is one select, `select id from orders where id > ?`. Its argument is its bound: the last key that a write had taken when the read started, less `window`, and at least 0. So a read selects the rows of at most the last `window` writes, however many rows the table has, and the bound is the same in every build, because it comes from the counter. The engine reads the rows by the key, with a scan of the range above the bound. The read reports the keys that it saw, in order, and its position: the name of the last commit object in the state that it saw, which the engine gives as `statement.position` in its event of the statement. A select on a database without the table is served with no rows and the error `no such table: orders`, because it saw a state too.
+- A write is one write transaction: `Conn.Begin`, the insert `insert into barcodes (id) values (?)`, and `Conn.Commit`. The argument is the key of the row, the next value of a counter of the run, which starts at 1. Every write takes a value when it starts, also one that is then refused, so a key belongs to one call, and the keys tell the transactions apart. If the insert fails with `no such table: barcodes`, the transaction runs the `create table` above and the insert again, so the first write of a run commits both statements. A statement that fails in a transaction has no effect there, and the transaction stays open.
+- A read is one select, `select id from barcodes where id > ?`. Its argument is its bound: the last key that a write had taken when the read started, less `window`, and at least 0. So a read selects the rows of at most the last `window` writes, however many rows the table has, and the bound is the same in every build, because it comes from the counter. The engine reads the rows by the key, with a scan of the range above the bound. The read reports the keys that it saw, in order, and its position: the name of the last commit object in the state that it saw, which the engine gives as `statement.position` in its event of the statement. A select on a database without the table is served with no rows and the error `no such table: barcodes`, because it saw a state too.
 
 No call deletes a row: the table grows for the whole run. The actions `write` and `read` make the same calls, with the caller `visitor`.
 
@@ -404,7 +404,7 @@ A call of the application: one write or read transaction.
 | `caller` | `caller-0`, `caller-1`, and so on for the workload, `visitor` for an action, and `client` for the client. |
 | `op` | `write` or `read`. |
 | `value` | The key that a write inserts. |
-| `sql`, `args` | The statement of the call, `insert into orders (id) values (?)` or `select id from orders where id > ?`, and its argument in a list: the key of a write, and the bound of a read. They are on every event of the call. |
+| `sql`, `args` | The statement of the call, `insert into barcodes (id) values (?)` or `select id from barcodes where id > ?`, and its argument in a list: the key of a write, and the bound of a read. They are on every event of the call. |
 | `started` | When the call started. It is on the event that ends the call. |
 | `keys`, `position` | What a read that was served saw: the keys above its bound, in order, and its position. |
 
@@ -416,7 +416,7 @@ Every call has the event `started`, and one event when it ends:
 | `unknown` | The commit ended with an unknown outcome. |
 | `not_committed` | The commit failed, and the transaction is not committed. |
 | `abandoned` | The write failed before its commit and was rolled back. |
-| `served` | The read was served. On a database without the table, with no keys and the error `no such table: orders`. |
+| `served` | The read was served. On a database without the table, with no keys and the error `no such table: barcodes`. |
 | `refused` | The instance has no valid lease. `error` ends with the reason of the core. |
 | `stopped` | The instance has stopped, or its database is closed. |
 | `busy` | The cache was busy. |
@@ -485,7 +485,7 @@ A request of a process that crashes gets no `returned`.
 `object` on `applied` has one of three members:
 
 - `manifest`: `head`, the name of the newest commit object, and `lease`, which is null or has `holder`, `duration`, `renewed`, and `salt`. `renewed` is the wall clock of the holder at the renewal, in milliseconds from the start of the run. `salt` is in hexadecimal.
-- `commit`: `name`, `parent`, `keys`, the keys of the rows that it inserts into `orders`, `tables`, the tables that it creates, `changes`, the number of its changes, and `statements`, the annotations that the engine wrote into it: one for each statement of the transaction that wrote, in order, each with `sql`, its text, and `args`, its arguments by position. An argument is an integer, a real, or text as itself, a blob as hexadecimal text, or null. `keys`, `tables`, `statements`, and `args` are left out when they are empty.
+- `commit`: `name`, `parent`, `keys`, the keys of the rows that it inserts into `barcodes`, `tables`, the tables that it creates, `changes`, the number of its changes, and `statements`, the annotations that the engine wrote into it: one for each statement of the transaction that wrote, in order, each with `sql`, its text, and `args`, its arguments by position. An argument is an integer, a real, or text as itself, a blob as hexadecimal text, or null. `keys`, `tables`, `statements`, and `args` are left out when they are empty.
 - `error`: why the object could not be read.
 
 ### store

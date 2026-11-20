@@ -278,9 +278,9 @@ func TestRun_actions(t *testing.T) {
 		commits := find(res, func(e simulator.Event) bool { return e.What == "applied" && e.Object != nil && e.Object.Commit != nil })
 		is.True(t, len(commits) > 50, "many commit objects")
 		first := commits[0].Object.Commit
-		is.EqualSlice(t, []string{"orders"}, first.Tables)
+		is.EqualSlice(t, []string{"barcodes"}, first.Tables)
 		is.Equal(t, 2, len(first.Statements))
-		is.Equal(t, "create table orders (id integer primary key) strict, without rowid", first.Statements[0].SQL)
+		is.Equal(t, "create table barcodes (id integer primary key) strict, without rowid", first.Statements[0].SQL)
 		is.Equal(t, 0, len(first.Statements[0].Args))
 		inserted := map[int64]bool{}
 		for _, ev := range commits {
@@ -289,12 +289,12 @@ func TestRun_actions(t *testing.T) {
 			inserted[c.Keys[0]] = true
 			is.True(t, len(c.Statements) > 0, "a commit object holds its statements")
 			insert := c.Statements[len(c.Statements)-1]
-			is.Equal(t, "insert into orders (id) values (?)", insert.SQL)
+			is.Equal(t, "insert into barcodes (id) values (?)", insert.SQL)
 			is.Equal(t, 1, len(insert.Args))
 			is.Equal(t, fmt.Sprint(c.Keys[0]), fmt.Sprint(insert.Args[0]))
 		}
 		for _, c := range find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.Op == "write" }) {
-			is.Equal(t, "insert into orders (id) values (?)", c.SQL)
+			is.Equal(t, "insert into barcodes (id) values (?)", c.SQL)
 			is.Equal(t, fmt.Sprint(c.Value), fmt.Sprint(c.Args[0]))
 			if c.What == "committed" {
 				is.True(t, inserted[c.Value], fmt.Sprint("the commit of ", c.Value, " inserts it"))
@@ -304,7 +304,7 @@ func TestRun_actions(t *testing.T) {
 		is.True(t, len(served) > 20, "many reads")
 		full := 0
 		for _, r := range served {
-			is.Equal(t, "select id from orders where id > ?", r.SQL)
+			is.Equal(t, "select id from barcodes where id > ?", r.SQL)
 			bound, ok := r.Args[0].(int64)
 			if !ok {
 				bound = int64(r.Args[0].(float64))
