@@ -2289,8 +2289,12 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// A scan by one or two bounds of the key that leaves out the row of a closed bound: a select with
 		// WHERE, of its own or in a transaction, gives fewer rows than in SQLite. Nothing else sees it:
 		// the select writes nothing, and fails nothing. An engine that reads every row, as every second
-		// engine of a node does, does not have the bug.
-		{"openBound", defaultWorkload, "default", []string{", and in SQLite", "which began at commit"}},
+		// engine of a node does, does not have the bug. The bug needs a select whose bound of the key is
+		// the key of a row, which the updates and deletes of the sequence made rarer: they take turns of
+		// the selects, and delete rows. The hammer workload runs more statements than the default one,
+		// on one engine that reads by the key. Of the first 200 seeds, with updates and deletes in the
+		// sequence, 32 found the bug there and 8 in the default workload.
+		{"openBound", hammerWorkload, "hammer", []string{", and in SQLite", "which began at commit"}},
 		// An update or a delete that changes nothing and says so: of its own, it is in no commit, and
 		// SQLite, which runs it on the state that it saw, changes rows; in a transaction, SQLite gives
 		// another count; and the rows that it should have changed make later statements differ.
