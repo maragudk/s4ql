@@ -418,8 +418,15 @@ func TestPrepare(t *testing.T) {
 		is.Equal(t, "column type other than INT, INTEGER, REAL, TEXT, or BLOB (at offset 23)", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values (1e999)")
 		is.Equal(t, "infinite real number (at offset 28)", notSupported(t, err))
-		// The type of a column is looked up when the statement runs.
-		for _, src := range []string{"create table t2 (v2 real primary key) strict, without rowid", "insert into t1 (v1) values ('a')", "insert into t1 (v1) values (x'')"} {
+		_, err = db.PrepareContext(t.Context(), "create table t2 (v1 int primary key, v2 text) strict, without rowid")
+		is.Equal(t, "column without NOT NULL (at offset 44)", notSupported(t, err))
+		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1, V1) values (1, 2)")
+		is.Equal(t, "column named twice (at offset 20)", notSupported(t, err))
+		// The type of a column is looked up when the statement runs, and so are the columns.
+		for _, src := range []string{
+			"create table t2 (v2 real primary key) strict, without rowid", "insert into t1 (v1) values ('a')", "insert into t1 (v1) values (x'')",
+			"create table t2 (v1 int primary key, v1 text not null) strict, without rowid", "insert into t1 values (1, 2, 3)", "select v2, v2 from t1",
+		} {
 			prepared, err := db.PrepareContext(t.Context(), src)
 			is.NotError(t, err, src)
 			is.NotError(t, prepared.Close())
@@ -970,6 +977,144 @@ func TestTypes(t *testing.T) {
 		is.Equal(t, fmt.Sprintf("%#v", []any{"a", "b"}), fmt.Sprintf("%#v", rowsOf(t, tx, "select * from texts")))
 		is.NotError(t, tx.Rollback())
 		is.Equal(t, fmt.Sprintf("%#v", []any{"a"}), fmt.Sprintf("%#v", rowsOf(t, db, "select * from texts")))
+	})
+}
+
+// t3 is the table of the example of slice 5: three columns of three types, with the key first.
+const t3 = "create table t3 (v1 int primary key, v2 text not null, v3 real not null) strict, without rowid"
+
+// rowsText of the rows of the query src on db, which must succeed: its column names, its declared
+// types, and each row as its values.
+func rowsText(t *testing.T, db querier, src string, args ...any) string {
+	t.Helper()
+	rows, err := db.QueryContext(t.Context(), src, args...)
+	is.NotError(t, err, src)
+	columns, err := rows.Columns()
+	is.NotError(t, err)
+	types, err := rows.ColumnTypes()
+	is.NotError(t, err)
+	var names []string
+	for i, c := range columns {
+		is.Equal(t, c, types[i].Name())
+		names = append(names, c+" "+types[i].DatabaseTypeName())
+	}
+	var rs []string
+	for rows.Next() {
+		vs := make([]any, len(columns))
+		dest := make([]any, len(columns))
+		for i := range vs {
+			dest[i] = &vs[i]
+		}
+		is.NotError(t, rows.Scan(dest...))
+		rs = append(rs, strings.TrimSuffix(fmt.Sprintln(vs...), "\n"))
+	}
+	is.NotError(t, rows.Err())
+	is.NotError(t, rows.Close())
+	return strings.Join(names, ", ") + ": " + strings.Join(rs, "; ")
+}
+
+func TestColumns(t *testing.T) {
+	t.Run("should insert rows of several values, with and without a list of columns, and give named columns in any order, with the names as the table stores them", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, t3, "insert into t3 values (2, 'b', 2.5)", "insert into T3 (V3, v1, \"V2\") values (1.5, 1, 'a')")
+		res, err := db.ExecContext(t.Context(), "insert into t3 (v1, v2, v3) values (?, ?, ?)", 4, "d", 4.5)
+		is.Equal(t, int64(1), affected(t, res, err))
+		prepared, err := db.PrepareContext(t.Context(), "insert into t3 (v2, v3, v1) values (?, ?, ?)")
+		is.NotError(t, err)
+		_, err = prepared.ExecContext(t.Context(), "c", 3.5, 3)
+		is.NotError(t, err)
+		_, err = prepared.ExecContext(t.Context(), "z", 9.5, 3)
+		sqliteError(t, 19, 1555, "UNIQUE constraint failed: t3.v1", err)
+		is.NotError(t, prepared.Close())
+
+		want := "v1 INT, v2 TEXT, v3 REAL: 1 a 1.5; 2 b 2.5; 3 c 3.5; 4 d 4.5"
+		is.Equal(t, want, rowsText(t, db, "select * from t3"))
+		is.Equal(t, "v2 TEXT, v1 INT, v2 TEXT: a 1 a; b 2 b; c 3 c; d 4 d", rowsText(t, db, `select V2, "V1", v2 from T3`))
+		var v2 string
+		var v3 float64
+		is.NotError(t, db.QueryRowContext(t.Context(), "select v2, v3 from t3").Scan(&v2, &v3))
+		is.Equal(t, "a 1.5", fmt.Sprint(v2, " ", v3))
+
+		is.EqualSlice(t, []string{
+			t3, "insert into t3 values (2, 'b', 2.5)", `insert into T3 (V3, v1, "V2") values (1.5, 1, 'a')`,
+			`insert into t3 (v1, v2, v3) values (?, ?, ?) with 4 with "d" with real 4.5`,
+			`insert into t3 (v2, v3, v1) values (?, ?, ?) with "c" with real 3.5 with 3`,
+		}, annotations(t, w))
+		is.NotError(t, db.Close())
+		is.Equal(t, want, rowsText(t, w.serve(t, "b"), "select * from t3"))
+	})
+
+	t.Run("should give SQLite's errors of several columns when the statement runs, also prepared, and set the count of changes as SQLite does", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, t3, "insert into t3 values (1, 'a', 1.5)")
+		conn, err := db.Conn(t.Context())
+		is.NotError(t, err)
+		defer func() { is.NotError(t, conn.Close()) }()
+		cases := []struct {
+			src     string
+			code    int
+			ext     int
+			message string
+		}{
+			{"insert into t3 values (2, 'b')", 1, 1, "table t3 has 3 columns but 2 values were supplied"},
+			{"insert into t3 (v1, v2) values (2, 'b', 2.5)", 1, 1, "3 values for 2 columns"},
+			{"insert into t3 (v1, x) values (2)", 1, 1, "table t3 has no column named x"},
+			{"insert into t3 (v2, v3) values ('b', 2.5)", 19, 1299, "NOT NULL constraint failed: t3.v1"},
+			{"insert into t3 (v1, v3) values (2, 'x')", 19, 1299, "NOT NULL constraint failed: t3.v2"},
+			{"insert into t3 values (1, 'b', 2.5)", 19, 1555, "UNIQUE constraint failed: t3.v1"},
+			{"select v1, x from t3", 1, 1, "no such column: x"},
+			{`select "x" from t3`, 1, 1, `no such column: "x" - should this be a string literal in single-quotes?`},
+			{"create table t3 (v int primary key, v text not null) strict, without rowid", 1, 1, "table t3 already exists"},
+			{"create table t4 (v int primary key, V text not null) strict, without rowid", 1, 1, "duplicate column name: V"},
+		}
+		for i, c := range cases {
+			// The count of changes is 1 before each, and a constraint that fails sets it to 0, as in
+			// SQLite.
+			_, err := conn.ExecContext(t.Context(), fmt.Sprint("insert into t3 values (", 100+i, ", 'x', 0.5)"))
+			is.NotError(t, err)
+			prepared, err := conn.PrepareContext(t.Context(), c.src)
+			is.NotError(t, err, "Prepare checks only the text: "+c.src)
+			_, err = prepared.ExecContext(t.Context())
+			sqliteError(t, c.code, c.ext, c.message, err)
+			is.NotError(t, prepared.Close())
+			res, err := conn.ExecContext(t.Context(), "select * from t3")
+			want := int64(1)
+			if c.code == 19 {
+				want = 0
+			}
+			is.Equal(t, want, affected(t, res, err), c.src)
+		}
+		is.Equal(t, 1+len(cases), len(commits(t, w))-1)
+	})
+
+	t.Run("should keep a transaction usable after an insert of several values that fails, which changes nothing, and refuse a write in a read-only one after the errors of the names and the number of values", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, t3)
+		tx := begin(t, db, nil)
+		_, err := tx.ExecContext(t.Context(), "insert into t3 values (?, ?, ?)", 1, "a", 1.5)
+		is.NotError(t, err)
+		_, err = tx.ExecContext(t.Context(), "insert into t3 (v1, v2) values (?, ?)", 2, "b")
+		sqliteError(t, 19, 1299, "NOT NULL constraint failed: t3.v3", err)
+		_, err = tx.ExecContext(t.Context(), "insert into t3 values (2, 'b', ?)", "c")
+		is.Equal(t, "argument 1, which is text, for the column t3.v3 of type REAL", notSupported(t, err))
+		is.Equal(t, "v3 REAL, v1 INT: 1.5 1", rowsText(t, tx, "select v3, v1 from t3"))
+		is.NotError(t, tx.Commit())
+		is.Equal(t, "v1 INT, v2 TEXT, v3 REAL: 1 a 1.5", rowsText(t, db, "select * from t3"))
+
+		ro := begin(t, db, &sql.TxOptions{ReadOnly: true})
+		_, err = ro.ExecContext(t.Context(), "insert into t3 values (2, 'b')")
+		sqliteError(t, 1, 1, "table t3 has 3 columns but 2 values were supplied", err)
+		_, err = ro.ExecContext(t.Context(), "insert into t3 (v1, y) values (2, 'b')")
+		sqliteError(t, 1, 1, "table t3 has no column named y", err)
+		for _, src := range []string{"insert into t3 (v1, v2) values (2, 'b')", "insert into t3 values (2, 'b', 'c')", "insert into t3 values (2, 'b', 2.5)"} {
+			_, err = ro.ExecContext(t.Context(), src)
+			sqliteError(t, 8, 8, "attempt to write a readonly database", err)
+		}
+		is.Equal(t, "v2 TEXT: a", rowsText(t, ro, "select v2 from t3"))
+		is.NotError(t, ro.Commit())
 	})
 }
 

@@ -27,7 +27,20 @@ import (
 	"maragu.dev/s4ql/internal/store/simstore"
 )
 
-const t1 = "create table t1 (v1 int primary key) strict, without rowid"
+const (
+	t1 = "create table t1 (v1 int primary key) strict, without rowid"
+	// t3 is a table of three columns, of three types, with the key first.
+	t3 = "create table t3 (v1 int primary key, v2 text not null, v3 real not null) strict, without rowid"
+)
+
+// manyColumns of a create table: n columns, the first the primary key, and every other NOT NULL.
+func manyColumns(n int) string {
+	cs := []string{"c0 int primary key"}
+	for i := 1; i < n; i++ {
+		cs = append(cs, fmt.Sprint("c", i, " int not null"))
+	}
+	return strings.Join(cs, ", ")
+}
 
 // pin runs the statements of setup and then src, with args for its parameters, on a new instance of
 // the engine and on SQLite, and requires the same answer of both, and the answer want: an error as
@@ -99,6 +112,42 @@ func TestEngine_errors(t *testing.T) {
 			src: "selec * from t1", want: `1/1: near "selec": syntax error`},
 		{name: "should drop a table that a name in another case names", setup: []string{t1, "insert into t1 (v1) values (1)"},
 			src: "drop table T1", want: ""},
+		{name: "should give that a column is named twice, with the name of the later column",
+			src: `create table t (v int primary key, w text not null, "V" real not null) strict, without rowid`, want: "1/1: duplicate column name: V"},
+		{name: "should give that a table exists before that a column is named twice", setup: []string{t3},
+			src: "create table T3 (v int primary key, v text not null) strict, without rowid", want: "1/1: table T3 already exists"},
+		{name: "should give that a table has more columns than SQLite allows",
+			src: "create table t (" + manyColumns(2001) + ") strict, without rowid", want: "1/1: too many columns on t"},
+		{name: "should give the number of columns and of values of an insert without a list", setup: []string{t3},
+			src: "insert into T3 values (1, 'a')", want: "1/1: table T3 has 3 columns but 2 values were supplied"},
+		{name: "should give the number of values and of columns of an insert with a list", setup: []string{t3},
+			src: "insert into t3 (v3, v1) values (1.5, 1, 'a')", want: "1/1: 3 values for 2 columns"},
+		{name: "should give that there is no column before the number of values", setup: []string{t3},
+			src: "insert into t3 (v1, x) values (1)", want: "1/1: table t3 has no column named x"},
+		{name: "should give that a column has no value, with the names as the table stores them", setup: []string{t3},
+			src: "insert into T3 (V3, V1) values (1.5, 1)", want: "19/1299: NOT NULL constraint failed: t3.v2"},
+		{name: "should give that the key has no value", setup: []string{t3},
+			src: "insert into t3 (v2, v3) values ('a', 1.5)", want: "19/1299: NOT NULL constraint failed: t3.v1"},
+		{name: "should give the first column without a value, in the order of the table", setup: []string{t3},
+			src: "insert into t3 (v1) values (1)", want: "19/1299: NOT NULL constraint failed: t3.v2"},
+		{name: "should give that a column has no value before that a key exists", setup: []string{t3, "insert into t3 values (1, 'a', 1.5)"},
+			src: "insert into t3 (v1, v2) values (1, 'a')", want: "19/1299: NOT NULL constraint failed: t3.v3"},
+		{name: "should give that a column has no value before the type of another", setup: []string{t3},
+			src: "insert into t3 (v1, v3) values (1, 'a')", want: "19/1299: NOT NULL constraint failed: t3.v2"},
+		{name: "should give that a key exists for a key at any position", setup: []string{"create table k (a text not null, b int primary key) strict, without rowid", "insert into k values ('x', 1)"},
+			src: "insert into k (b, a) values (1, 'y')", want: "19/1555: UNIQUE constraint failed: k.b"},
+		{name: "should give that a column of a select does not exist, the first in the list", setup: []string{t3},
+			src: "select v1, x, y from t3", want: "1/1: no such column: x"},
+		{name: "should give that a column in double quotes does not exist, as SQLite does with DQS=0", setup: []string{t3},
+			src: `select "V""1" from t3`, want: `1/1: no such column: "V"1" - should this be a string literal in single-quotes?`},
+		{name: "should give that there is no table before that there is no column of a select",
+			src: "select x from t3", want: "1/1: no such table: t3"},
+		{name: "should give the columns of a select in its order, with repeats and the names as the table stores them",
+			setup: []string{t3, "insert into t3 values (2, 'b', 2.5)", "insert into t3 (v3, v2, v1) values (1.5, 'a', 1)"},
+			src:   "select V3, v1, v3 from T3", want: `columns v3 REAL, v1 INT, v3 REAL; rows real 1.5,1,real 1.5 real 2.5,2,real 2.5`},
+		{name: "should give every column of * in the order of the table, and the rows in the order of a key that is not the first column",
+			setup: []string{"create table k (a text not null, b int primary key) strict, without rowid", "insert into k values ('x', 2)", "insert into k values ('y', 1)"},
+			src:   "select * from k", want: `columns a TEXT, b INT; rows "y",1 "x",2`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -601,6 +650,29 @@ func TestEngine_tooBig(t *testing.T) {
 		is.NotError(t, i.c.Rollback(t.Context()))
 	})
 
+	t.Run("should give the number of values before an argument that is too long, and that argument before a column without a value or a key that exists", func(t *testing.T) {
+		i := newInstanceLimited(t, engine.Options{}, nil, limit)
+		o := newOracleLimited(t, limit)
+		for _, s := range []string{"create table m (k int primary key, v text not null, w blob not null) strict, without rowid", "insert into m values (1, 'a', x'01')"} {
+			is.Equal(t, "", i.exec(s).err)
+			is.Equal(t, "", o.run(t, s).err)
+		}
+		long := strings.Repeat("a", limit+1)
+		run := func(src string, want string, args ...any) {
+			t.Helper()
+			is.Equal(t, want, o.run(t, src, args...).err, "SQLite: "+src)
+			is.Equal(t, want, i.execValues(src, values(args)).err, src)
+			changes, _ := o.changes(t)
+			is.Equal(t, changes, i.changes, "the count of changes after "+src)
+		}
+		run("insert into m values (?, ?)", "1/1: table m has 3 columns but 2 values were supplied", int64(2), long)
+		run("insert into m (k, v) values (?, ?, ?)", "1/1: 3 values for 2 columns", int64(2), long, []byte{1})
+		run("insert into m (k, v) values (?, ?)", "18/18: string or blob too big", int64(2), long)
+		run("insert into m values (?, ?, ?)", "18/18: string or blob too big", int64(1), long, []byte{1})
+		run("insert into m (k, w) values (?, ?)", "19/1299: NOT NULL constraint failed: m.v", int64(2), []byte{1})
+		is.Equal(t, o.state(t), i.state())
+	})
+
 	t.Run("should keep a transaction usable after a value that is too long", func(t *testing.T) {
 		i := newInstanceLimited(t, engine.Options{}, nil, limit)
 		is.Equal(t, "", i.exec("create table t (v blob primary key) strict, without rowid").err)
@@ -823,6 +895,23 @@ func TestEngine_annotations(t *testing.T) {
 			{"insert into t1 (v1) values (1)"},
 			{"insert into t1 (v1) values ( ? ) with 9223372036854775807"},
 		}), fmt.Sprint(logAnnotations(t, i.store)))
+	})
+
+	t.Run("should annotate an insert of several values with all its arguments, in the order of its parameters", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(t3).err)
+		is.Equal(t, "", i.execValues("insert into t3 (v3, v1, v2) values (?, 1, ?)", values([]any{1.5, "a"})).err)
+		is.Equal(t, "", i.execValues("insert into t3 values (?, ?, ?)", values([]any{int64(2), "b", 2.5})).err)
+		is.Equal(t, "19/1299: NOT NULL constraint failed: t3.v3", i.execValues("insert into t3 (v1, v2) values (?, ?)", values([]any{int64(3), "c"})).err)
+		is.Equal(t, fmt.Sprint([][]string{
+			{t3},
+			{`insert into t3 (v3, v1, v2) values (?, 1, ?) with real 1.5 with "a"`},
+			{`insert into t3 values (?, ?, ?) with 2 with "b" with real 2.5`},
+		}), fmt.Sprint(logAnnotations(t, i.store)))
+		want := "t3 (v1 INT, v2 TEXT, v3 REAL): 1,\"a\",real 1.5 2,\"b\",real 2.5\n"
+		is.Equal(t, want, i.state())
+		i.restart(true, engine.Options{})
+		is.Equal(t, want, i.state(), "after a replay of the log")
 	})
 }
 
@@ -1227,5 +1316,292 @@ func TestEngine_concurrent(t *testing.T) {
 			readFree(t, c)
 			is.NotError(t, c.Close(t.Context()))
 		}
+	})
+}
+
+// shape of a table of several columns: the type of each column, in order, and the position of the
+// column of its primary key.
+type shape struct {
+	types []string
+	key   int
+}
+
+// shapes of tables of two and three columns of mixed types, with the key at each position.
+func shapes() []shape {
+	var ss []shape
+	for _, types := range [][]string{{"int", "text"}, {"blob", "real"}, {"text", "integer", "real"}, {"real", "blob", "int"}, {"integer", "text", "blob"}} {
+		for key := range types {
+			ss = append(ss, shape{types: types, key: key})
+		}
+	}
+	return ss
+}
+
+// The names of the columns of a shape, by position: as its create table writes them, as the table
+// stores them, and in another spelling of the same names, which the other statements write.
+var (
+	columnNames  = []string{"a", `"B b"`, "C"}
+	storedNames  = []string{"a", "B b", "C"}
+	spelledNames = []string{"A", `"b B"`, "c"}
+)
+
+func (s shape) String() string {
+	return fmt.Sprintf("%v with the key at %v", strings.Join(s.types, ", "), s.key)
+}
+
+// create table of the shape, with the name table.
+func (s shape) create(table string) string {
+	var cs []string
+	for i, typ := range s.types {
+		c := columnNames[i] + " " + typ + " not null"
+		if i == s.key {
+			c = columnNames[i] + " " + typ + " primary key"
+		}
+		cs = append(cs, c)
+	}
+	return "create table " + table + " (" + strings.Join(cs, ", ") + ") strict, without rowid"
+}
+
+// literal of the type typ for the number k: k as an integer, k and a half as a real, k as text, and
+// the byte k as a blob.
+func literal(typ string, k int) string {
+	switch typ {
+	case "int", "integer":
+		return fmt.Sprint(k)
+	case "real":
+		return fmt.Sprint(k, ".5")
+	case "text":
+		return fmt.Sprintf("'%v'", k)
+	}
+	return fmt.Sprintf("x'%02x'", k)
+}
+
+// argument of the type typ for the number k, with the value that [literal] gives.
+func argument(typ string, k int) any {
+	switch typ {
+	case "int", "integer":
+		return int64(k)
+	case "real":
+		return float64(k) + 0.5
+	case "text":
+		return fmt.Sprint(k)
+	}
+	return []byte{byte(k)}
+}
+
+// otherLiteral is a literal of another type than typ, with its kind as the message of the engine
+// names it.
+func otherLiteral(typ string) (literal, kind string) {
+	switch typ {
+	case "int", "integer":
+		return "1.5", "a real literal"
+	case "real":
+		return "1", "an integer literal"
+	case "text":
+		return "x'01'", "a blob literal"
+	}
+	return "'x'", "a string literal"
+}
+
+// columnsStep is a statement of [TestEngine_columns], with its arguments, and, for a statement that
+// the engine refuses by its own rule, the message of the refusal, which is not compared with SQLite.
+type columnsStep struct {
+	src  string
+	args []any
+	own  string
+}
+
+// steps of the shape on its table t, which does not exist before them.
+func (s shape) steps() []columnsStep {
+	n := len(s.types)
+	inOrder, reversed := make([]int, n), make([]int, n)
+	for i := range n {
+		inOrder[i], reversed[i] = i, n-1-i
+	}
+	without := func(left ...int) []int {
+		return slices.DeleteFunc(slices.Clone(inOrder), func(i int) bool { return slices.Contains(left, i) })
+	}
+	list := func(names []string, order []int) string {
+		var ns []string
+		for _, i := range order {
+			ns = append(ns, names[i])
+		}
+		return strings.Join(ns, ", ")
+	}
+	// row of literals for the number k, for the columns in order, with the literal replaced for the
+	// column at the position wrong, if it is not -1, by one of another type.
+	row := func(order []int, k, wrong int) string {
+		var vs []string
+		for _, i := range order {
+			v := literal(s.types[i], k)
+			if i == wrong {
+				v, _ = otherLiteral(s.types[i])
+			}
+			vs = append(vs, v)
+		}
+		return strings.Join(vs, ", ")
+	}
+	insert := func(order []int, k, wrong int) string {
+		return fmt.Sprintf("insert into t (%v) values (%v)", list(spelledNames, order), row(order, k, wrong))
+	}
+	insertAll := func(k, wrong int) string {
+		return fmt.Sprintf("insert into t values (%v)", row(inOrder, k, wrong))
+	}
+	refusal := func(position int) string {
+		_, kind := otherLiteral(s.types[position])
+		return fmt.Sprintf("s4ql: not supported: %v for the column t.%v of type %v", kind, storedNames[position], strings.ToUpper(s.types[position]))
+	}
+	params := strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
+	var reversedArgs []any
+	for _, i := range reversed {
+		reversedArgs = append(reversedArgs, argument(s.types[i], 3))
+	}
+
+	steps := []columnsStep{
+		{src: s.create("t")},
+		{src: s.create("T")},
+		// A table that exists comes before a column named twice, which comes after the check of the
+		// table.
+		{src: "create table t (a int primary key, A text not null) strict, without rowid"},
+		{src: "create table u (a int primary key, b text not null, A text not null) strict, without rowid"},
+		{src: "select * from t"},
+		{src: insertAll(4, -1)},
+		{src: insert(reversed, 1, -1)},
+		{src: fmt.Sprintf("insert into T (%v) values (%v)", list(spelledNames, reversed), params), args: reversedArgs},
+		{src: fmt.Sprintf("insert into t (%v) values (?, %v)", list(columnNames, inOrder), row(inOrder[1:], 2, -1)), args: []any{argument(s.types[0], 2)}},
+		// The rows in the order of the key, with the names of the columns as the table stores them.
+		{src: "select * from t"},
+		{src: "select * from T"},
+		{src: fmt.Sprintf("select %v, %v, %v from t", spelledNames[n-1], columnNames[0], columnNames[n-1])},
+		{src: fmt.Sprintf("select %v from t", spelledNames[s.key])},
+		{src: fmt.Sprintf("select %v from t", list(spelledNames, reversed))},
+		{src: "select x from t"},
+		{src: `select "x" from t`},
+		{src: `select "a""b" from t`},
+		{src: fmt.Sprintf(`select %v, x, "y" from t`, columnNames[0])},
+		{src: "select x from nosuch"},
+		// The number of values, after the names.
+		{src: fmt.Sprintf("insert into t values (%v)", row(inOrder[1:], 5, -1))},
+		{src: fmt.Sprintf("insert into t values (%v, %v)", row(inOrder, 5, -1), literal(s.types[0], 5))},
+		{src: fmt.Sprintf("insert into t (%v) values (%v)", list(spelledNames, inOrder), row(inOrder[1:], 5, -1))},
+		{src: fmt.Sprintf("insert into t (%v) values (%v, 5)", list(spelledNames, without(0)), row(inOrder, 5, -1))},
+		{src: fmt.Sprintf("insert into t (%v, x) values (%v)", spelledNames[0], literal(s.types[0], 5))},
+		{src: fmt.Sprintf("insert into t (x, %v) values (1, 2)", spelledNames[0])},
+		{src: "insert into nosuch (x) values (1, 2)"},
+		{src: "insert into nosuch values (1)"},
+		// A key that exists.
+		{src: insert(inOrder, 1, -1)},
+		{src: insertAll(1, -1)},
+	}
+	for left := range n {
+		other := (left + 1) % n
+		steps = append(steps,
+			// A column left out, also the key, and also with a key that exists: NOT NULL first.
+			columnsStep{src: insert(without(left), 6, -1)},
+			columnsStep{src: insert(without(left), 1, -1)},
+			// A value of another type than its column, also with a key that exists: the type first,
+			// where SQLite has its OP_TypeCheck.
+			columnsStep{src: insertAll(7, left), own: refusal(left)},
+			columnsStep{src: insertAll(1, left), own: refusal(left)},
+			// A value of another type, with another column left out: NOT NULL first, as in SQLite.
+			columnsStep{src: insert(without(other), 8, left)},
+		)
+	}
+	// Two values of another type: the first in the order of the table, whatever the list's order.
+	steps = append(steps, columnsStep{src: fmt.Sprintf("insert into t (%v) values (%v)", list(spelledNames, reversed),
+		strings.Join(slices.Collect(func(yield func(string) bool) {
+			for _, i := range reversed {
+				v, _ := otherLiteral(s.types[i])
+				if !yield(v) {
+					return
+				}
+			}
+		}), ", ")), own: refusal(0)})
+	if n == 3 {
+		// Two columns left out: SQLite names the first in the order of the table.
+		steps = append(steps, columnsStep{src: insert([]int{2}, 9, -1)}, columnsStep{src: insert([]int{1}, 9, -1)}, columnsStep{src: insert([]int{0}, 9, -1)})
+	}
+	// An argument of another type than its column, which the message names by its number.
+	args := make([]any, n)
+	for i := range n {
+		args[i] = argument(s.types[i], 10)
+	}
+	last, wrongType, kind := n-1, "text", "text"
+	if s.types[n-1] == "text" {
+		wrongType, kind = "int", "an integer"
+	}
+	args[last] = argument(wrongType, 10)
+	steps = append(steps,
+		columnsStep{src: "insert into t values (" + params + ")", args: args,
+			own: fmt.Sprintf("s4ql: not supported: argument %v, which is %v, for the column t.%v of type %v", n, kind, storedNames[last], strings.ToUpper(s.types[last]))},
+		columnsStep{src: "select * from t"},
+		columnsStep{src: "drop table u"},
+	)
+	return steps
+}
+
+// TestEngine_columns compares tables of two and three columns of mixed types, with the key at each
+// position, with SQLite: the answer of each statement, which is its error with its codes and
+// message, or the names and declared types of its columns and its rows in their order; the count of
+// changes after it; and the tables at the end, also after a replay of the log into an empty cache. A
+// statement that the engine refuses by its own rule, for a value of another type than its column, is
+// checked against the message of the rule, and must leave the count of changes.
+func TestEngine_columns(t *testing.T) {
+	for _, s := range shapes() {
+		t.Run(s.String(), func(t *testing.T) {
+			i := newInstance(t, engine.Options{})
+			o := newOracle(t)
+			for _, step := range s.steps() {
+				query := strings.HasPrefix(step.src, "select")
+				var got answer
+				if query {
+					got = i.queryValues(step.src, values(step.args))
+				} else {
+					got = i.execValues(step.src, values(step.args))
+				}
+				if step.own != "" {
+					before, _ := o.changes(t)
+					is.Equal(t, "not supported", got.err, step.src)
+					is.Equal(t, step.own, got.message, step.src)
+					is.Equal(t, before, i.changes, "the count of changes after "+step.src)
+					continue
+				}
+				want := o.run(t, step.src, oracleArgs(step.args)...)
+				if !query {
+					want.columns, want.rows = "", nil
+				}
+				is.Equal(t, want.String(), got.String(), "SQLite and the engine: "+step.src)
+				changes, _ := o.changes(t)
+				is.Equal(t, changes, i.changes, "the count of changes after "+step.src)
+			}
+			want := o.state(t)
+			is.True(t, strings.Contains(want, "t ("), want)
+			is.Equal(t, want, i.state())
+			i.restart(true, engine.Options{})
+			is.Equal(t, want, i.state(), "after a replay of the log")
+		})
+	}
+
+	t.Run("should create, fill, and read a table of as many columns as SQLite allows, and replay it", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		o := newOracle(t)
+		vs := make([]string, 2000)
+		for j := range vs {
+			vs[j] = fmt.Sprint(j)
+		}
+		for _, src := range []string{"create table t (" + manyColumns(2000) + ") strict, without rowid", "insert into t values (" + strings.Join(vs, ", ") + ")", "select c1999, c0, c1999 from t"} {
+			want := o.run(t, src)
+			if !strings.HasPrefix(src, "select") {
+				want.columns, want.rows = "", nil
+				is.Equal(t, want.String(), i.exec(src).String(), src)
+				continue
+			}
+			is.Equal(t, `columns "c1999 INT, c0 INT, c1999 INT", rows ["1999,0,1999"]`, want.String())
+			is.Equal(t, want.String(), i.query(src).String())
+		}
+		want := o.state(t)
+		is.Equal(t, want, i.state())
+		i.restart(true, engine.Options{})
+		is.Equal(t, want, i.state(), "after a replay of the log")
 	})
 }

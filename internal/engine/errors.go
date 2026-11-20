@@ -55,40 +55,6 @@ var (
 	errPanicked = fmt.Errorf("%w: the statement panicked", ErrInternal)
 )
 
-// checkColumns of the statement s, which [stmt.Check] supports: "not supported" for the forms of
-// slice 5 that the engine does not run yet. They are a table of more than one column, a column that
-// says NOT NULL, an insert without a list of columns or of more than one column or value, and a
-// select that names its columns.
-func checkColumns(s stmt.Statement) error {
-	var what string
-	switch s := s.(type) {
-	case *stmt.CreateTable:
-		switch {
-		case len(s.Columns) > 1:
-			what = fmt.Sprintf("a table of %v columns", len(s.Columns))
-		case s.Columns[0].NotNull:
-			what = "a column that says NOT NULL"
-		}
-	case *stmt.Insert:
-		switch {
-		case s.Columns == nil:
-			what = "INSERT without a column list"
-		case len(s.Columns) > 1:
-			what = fmt.Sprintf("INSERT of %v columns", len(s.Columns))
-		case len(s.Values) > 1:
-			what = fmt.Sprintf("INSERT of %v values", len(s.Values))
-		}
-	case *stmt.Select:
-		if s.Columns != nil {
-			what = "SELECT of columns by name"
-		}
-	}
-	if what == "" {
-		return nil
-	}
-	return fmt.Errorf("%w: %v, which the engine does not run yet", stmt.ErrNotSupported, what)
-}
-
 // checkArguments of a statement with the given number of parameters: the error of [countArguments],
 // and then "not supported" for the first argument that is not a value that a column can hold, as
 // [checkArgument] says. Whether it is of the type of its column is checked when the statement runs,
@@ -230,7 +196,7 @@ func internalError(format string, args ...any) error {
 	return fmt.Errorf("%w: %v", ErrInternal, fmt.Sprintf(format, args...))
 }
 
-// The errors of SQLite that the statements of slice 1 can give, with the names in the form that
+// The errors of SQLite that the supported statements can give, with the names in the form that
 // SQLite prints in each.
 
 // tableExists is `table %s already exists`, with the name of the table as the statement writes it,
@@ -249,6 +215,39 @@ func noSuchTable(value string) error {
 // writes.
 func noSuchColumn(table, column string) error {
 	return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: fmt.Sprintf("table %v has no column named %v", table, column), Offset: -1}
+}
+
+// noSuchResultColumn is `no such column: %s`, for the name of a column of a select list that the
+// table does not have, with the value of the name. For a name in double quotes, SQLite, whose build
+// takes double quotes for names only, adds that it may have been meant as a string: `no such column:
+// "%s" - should this be a string literal in single-quotes?`.
+func noSuchResultColumn(name stmt.Name) error {
+	message := "no such column: " + name.Value
+	if strings.HasPrefix(name.Raw, `"`) {
+		message = `no such column: "` + name.Value + `" - should this be a string literal in single-quotes?`
+	}
+	return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: message, Offset: name.Offset}
+}
+
+// valuesSupplied is `table %s has %d columns but %d values were supplied`, for an insert without a
+// list of columns, with the value of the name of the table that the statement writes.
+func valuesSupplied(table string, columns, values int) error {
+	return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError,
+		Message: fmt.Sprintf("table %v has %v columns but %v values were supplied", table, columns, values), Offset: -1}
+}
+
+// valuesForColumns is `%d values for %d columns`, for an insert whose list of columns has another
+// number of columns than it has values.
+func valuesForColumns(values, columns int) error {
+	return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError,
+		Message: fmt.Sprintf("%v values for %v columns", values, columns), Offset: -1}
+}
+
+// notNullFailed is `NOT NULL constraint failed: %s.%s`, for a column that an insert leaves without a
+// value, with the names as the table stores them.
+func notNullFailed(table, column string) error {
+	return &sqlerr.Error{Code: sqlerr.CodeConstraint, ExtendedCode: sqlerr.CodeConstraintNotNull,
+		Message: "NOT NULL constraint failed: " + table + "." + column, Offset: -1}
 }
 
 // uniqueFailed is `UNIQUE constraint failed: %s.%s`, for a primary key of one column, with the names

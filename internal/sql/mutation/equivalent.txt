@@ -295,16 +295,6 @@ internal/engine/engine.go Conn.Close swap arguments: errors.Join(err, closeErr) 
 internal/engine/engine.go Rows.read remove statement: r.report.e.host.Yield(r.ctx, "engine: between two rows of a query") =>
 	A yield only lets other tasks of the simulation run between two rows; the answers of the engine do not depend on it.
 
-# Bounds that mean "none".
-internal/engine/operator.go columnPosition constant: -1 => -2
-	The caller tests for a negative position.
-
-# Arguments of a comparison that is symmetric.
-internal/engine/operator.go buildSink swap arguments: slices.Equal(p.PrimaryKey, []int{0}) => slices.Equal([]int{0}, p.PrimaryKey)
-	slices.Equal is symmetric.
-internal/engine/operator.go buildSink swap arguments: slices.Equal(t.GetPrimaryKey(), []uint32{0}) => slices.Equal([]uint32{0}, t.GetPrimaryKey())
-	slices.Equal is symmetric.
-
 # The events.
 internal/engine/telemetry.go outcomeOf remove statement: return "core_error", slog.LevelWarn => #2
 	The case without its return ends the switch, whose last return gives the same.
