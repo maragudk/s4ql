@@ -696,13 +696,13 @@ footer ul {
       <div class="claim-body">
       <p class="lede">s4ql is an embedded database engine in the spirit of SQLite. Your Go application talks to the bucket directly, and there is no server to run. Every line of it is written by AI agents, and no human reviews the code. Trust has to come from verification.</p>
       <div class="actions">
-        <a class="btn" href="https://github.com/maragudk/s4ql">Follow on GitHub <span class="bars" aria-hidden="true"></span></a>
-        <a href="https://github.com/maragudk/s4ql/blob/main/docs/spec.md">Read the spec</a>
+        <a class="btn" href="simulator/">Try in simulator <span class="bars" aria-hidden="true"></span></a>
+        <a href="https://github.com/maragudk/s4ql">See on GitHub</a>
       </div>
       <ul class="state caps" aria-label="Project state">
         <li class="on">Experiment</li>
         <li>Storage built</li>
-        <li>SQL not built</li>
+        <li>First SQL built</li>
         <li>Not ready for use</li>
       </ul>
       </div>
@@ -790,7 +790,7 @@ footer ul {
       <div><dt class="caps">Lease</dt><dd>One instance at a time holds the database's lease, recorded in the manifest. It lasts 30 seconds and is renewed every 20. A spare instance waits and takes over when the lease times out.</dd></div>
       <div><dt class="caps">Unknown outcome</dt><dd>If the swap ends without an answer, the instance asks S3 until it knows. The transaction is committed if and only if its commit object is in the log.</dd></div>
       <div><dt class="caps">S3 must offer</dt><dd>Strong consistency, compare-and-swap, and create-if-absent.</dd></div>
-      <div><dt class="caps">Interface</dt><dd>Go's <code>database/sql</code>. Agreed, not built yet.</dd></div>
+      <div><dt class="caps">Interface</dt><dd>Go's <code>database/sql</code>.</dd></div>
     </dl>
   </div>
 </section>
