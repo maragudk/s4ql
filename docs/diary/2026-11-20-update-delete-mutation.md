@@ -153,3 +153,51 @@ A test of an internal error builds what no statement gives, as `TestInsert` does
 ### Future work
 
 - The core's rerun, the README of the runner, and the checks.
+
+## Step 4: The rest of the core, the driver after slice 9, the review, and the checks
+
+**Author:** update-delete-mutation builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the brief) "Record in `docs/todo.md` what is found and not fixed; delete the item on slice 8's mutation round when done; numbers of the run in `internal/sql/mutation/README.md` as the earlier rounds did. [...] Before you open your pull request, merge `origin/main` again. [...] Finish: `make test`, `make lint`, `make check-browser` pass."
+**Interpretation:** Finish the core's run, rerun what the merges of `main` touched in the scope, write the numbers, review, and run the checks.
+**Inferred intent:** A branch that the lead can merge without a second look at the numbers.
+
+### What I did
+
+- The core's other 88 mutants and its 11 survivors that the list did not hold ran on `udm/tree4` in 40 min (3 workers): 35 of the 88 killed, 15 timed out, 25 not compiled, 13 survived; 8 of the 11 killed. Of the survivors, 6 in `KeySet.Add`, `KeySet.All`, and `KeySet.after` showed that no test called them after f had closed the instance; `TestTx_Keys` does now, and requires that the read gives its error once, since a loop that sees no error at all passes otherwise. A run of those 6 on `udm/tree6` killed them all. The others went into `equivalent.txt`: the statements of a set that `Tx.dropKeys` leaves at rest, the block of the error of `KeySet.Add`, which gives nil for nil, and the return after the error of `KeySet.All`, whose key is nil then. Over the runs, the core has 271 mutants: 62 not compiled, 159 killed, 33 timed out, 17 equivalent, 0 unexplained; 14 survivors of the earlier runs are killed by the new tests. `udm/final.py` combines the results by key, the later over the earlier.
+- The first merge of `origin/main` brought #92, the pass of slice 9, which gave the driver's `check` its call of `engine.Check` back, for the refusal of an index. The driver ran again on that code (`udm/tree5`, 18 mutants): one survivor, the skip of `engine.Check`, which `TestPrepare` kills now with a create index and a drop index refused at the prepare. The other changes of #92 and #95 to functions of the scope are the refusal of an index in the engine's `check` and the length of the schema of a create table in `buildSink`, and are not in this run; the README of the runner says so.
+- The second merge of `origin/main` brought #97, the indexes of the core, whose commit removed the section of `conn.scan` from `equivalent.txt`, since `conn.scan` only calls `conn.scanIndex` now. The conflict was beside my section; I took the removal. #97 changed no function of the scope in `tx.go`.
+- The review (`/code-review medium 79de6cd^..HEAD`) found no fault. It reported that the results of the run were not written yet, which this step does, that the diary lacked the step of the survivors, which step 3 is, that the fault VFS of the new subtests of `TestTx_Keys` was closed only at their end (it is closed at the cleanup of the test now, as `sleepCounter` does), and that `TestEngineLayers` checked one way only (it also requires that each fuzz target of the layer exists now).
+- `/internal/sql/mutation/README.md` has the section "The UPDATE and DELETE of slice 8", and `/docs/todo.md` drops the items of this round, and keeps the long fuzz runs of the pass of slice 8.
+- `make test`, `make lint`, and `make check-browser` pass after the second merge; the new tests pass 50 times in a row, and those of the core and the engine under `-race` too.
+
+### Why
+
+A run of the remaining mutants on the new tests gives the same verdict as a full run on them, in a third of the time, since only the survivors run every stage.
+
+### What worked
+
+- Running the survivors that `equivalent.txt` already listed only once: each takes the whole time limit of every stage.
+
+### What didn't work
+
+- The core's first run took about 10 min for each survivor at a load of 20 to 30, so I stopped it at 183 of 271 rather than wait the rest on tests that had changed.
+- A shell command with a here-doc of Python that wrote the README was refused as "too complex to verify that it stays inside the worktree"; the edits went through the editor.
+
+### What I learned
+
+- A test of a sequence that must give an error needs to count the values: a loop that never runs passes every check inside it.
+
+### What was tricky
+
+- Telling which numbers of the core belong to which tree: `udm/final.py` takes each mutant's last result.
+
+### What warrants review
+
+- The 33 timeouts of the core, which leave out the end of a call or loop over the set: a timeout counts as killed, as in the earlier rounds.
+
+### Future work
+
+- Long fuzz runs of the code of slice 8 in the pass, as `docs/todo.md` says.
