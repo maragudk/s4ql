@@ -670,7 +670,93 @@ async function check() {
 
   expect(new URL(p.win.location.href).pathname === address && p.win.location.search === "" && p.win.location.hash === "", "the page writes nothing into its address");
 
+  p.win.frameElement.remove();
+  await persistence(address);
   await broken();
+}
+
+// persistence checks that S3 outlives a reload of the tab and that Reset empties it: the tab's
+// database in sessionStorage, which the frames of this page share with it, as the frames of one tab
+// do. A reload keeps the database, its name, and the time of the history, and the instance a gets its
+// data from S3 before it serves. Reset empties it and keeps the name. The page stops cleanly at the
+// cap, and Reset starts over from there. A write that fails leaves nothing half-written, and a stored
+// database that is damaged or of another version is dropped, with a line in the log.
+async function persistence(address) {
+  const stored = () => Object.keys(sessionStorage).filter((k) => k.startsWith("s4ql:")).sort();
+  const objects = () => stored().filter((k) => k === "s4ql:m" || k.startsWith("s4ql:c:")).length;
+  const logHas = (p, re) => [...p.$("#log").children].some((li) => re.test(li.textContent));
+  // reload the page in a new frame.
+  const reload = async (p) => {
+    if (p) p.win.frameElement.remove();
+    return open(address);
+  };
+
+  let p = await reload(null);
+  const name = p.$("#s3-path").textContent;
+  const before = { commits: p.commits, history: p.win.s4qlPage.history, objects: objects() };
+  expect(/^s4ql-sim\/db-[a-z0-9]{6}$/.test(name) && before.commits > 0 && before.objects === before.commits + 1,
+    `S3 holds the database ${name} of the tab after a reload, with ${before.commits} commit objects, ${before.objects} objects in sessionStorage`);
+  p = await reload(p);
+  expect(p.$("#s3-path").textContent === name && p.commits === before.commits && p.win.s4qlPage.history >= before.history && logHas(p, /S3 still holds db-/),
+    `a reload keeps the database, its name, and its ${p.commits} commit objects, and the time goes on from ${p.$("#clock").textContent}`);
+  const took = await p.skipUntil(() => logHas(p, /^\S+a catches up: \d+ commit objects? from S3\.$/) && p.inst("a").dataset.role === "serves");
+  const s = p.win.s4qlPage.state;
+  expect(s.violations === s.excused,
+    `a catches up from S3 and serves ${took / 1000} s of fake time after the reload, and the checker finds no violation that is not excused (${s.violations})`);
+
+  // A stored object that is missing, and a stored version of other formats: the page starts empty.
+  sessionStorage.removeItem(stored().find((k) => k.startsWith("s4ql:c:")));
+  p = await reload(p);
+  expect(p.commits === 0 && logHas(p, /could not be read/) && p.$("#s3-path").textContent === name, `a stored database without one of its objects is dropped, and S3 starts empty`);
+  await p.skipUntil(() => p.commits > 2);
+  const meta = JSON.parse(sessionStorage.getItem("s4ql:meta"));
+  sessionStorage.setItem("s4ql:meta", JSON.stringify({ ...meta, version: "0-0" }));
+  p = await reload(p);
+  expect(p.commits === 0 && logHas(p, /could not be read/), `a stored database of another version is dropped, and S3 starts empty`);
+
+  // A write that fails: nothing half-written stays, and the page goes on in memory.
+  await p.skipUntil(() => p.commits > 2);
+  const proto = p.win.Storage.prototype, setItem = proto.setItem;
+  proto.setItem = function (k, v) {
+    if (k.startsWith("s4ql:c:")) throw new p.win.DOMException("The quota has been exceeded.", "QuotaExceededError");
+    return setItem.call(this, k, v);
+  };
+  const commits = p.commits;
+  await p.skipUntil(() => p.commits > commits);
+  proto.setItem = setItem;
+  expect(logHas(p, /goes on in memory/) && stored().join() === "s4ql:name", `a write that fails drops the stored database, and the page goes on in memory (${stored().join(", ")})`);
+  await p.skip(10000);
+  expect(stored().join() === "s4ql:name", "nothing is stored after that");
+
+  // Reset empties the database, keeps its name, and stores again.
+  p.$("#reset").click();
+  await until(() => p.html.dataset.engine === "ready" && !p.$("#reset").disabled && p.win.s4qlPage.state);
+  expect(p.commits === 0 && p.t < 1000 && !p.win.s4qlPage.playing && p.$("#s3-path").textContent === name && p.$("#log").textContent === "Nothing yet.",
+    `Reset empties the database ${name}, and the page waits at ${p.$("#clock").textContent}`);
+  // The cap: the page stops cleanly, and Reset starts over from there.
+  const box = p.$("#failure");
+  while (box.hidden) {
+    const to = Math.floor(p.win.s4qlPage.t) + 600000 - 1;
+    p.win.s4qlPage.skip(600000);
+    await until(() => !box.hidden || (p.t >= to && p.idle()));
+  }
+  const full = p.commits;
+  expect(/S3 is full/.test(box.textContent) && full >= 2000 && objects() === full + 1 && !p.$("#reset").disabled,
+    `at ${full} commit objects the page stops, says that S3 is full, keeps them in sessionStorage, and offers Reset (${box.textContent})`);
+  p.$("#reset").click();
+  await until(() => p.html.dataset.engine === "ready" && !p.$("#reset").disabled && p.win.s4qlPage.state && box.hidden);
+  expect(p.commits === 0 && objects() === 0, "Reset after the stop starts over");
+  p.win.frameElement.remove();
+
+  // A tab that the browser gives no storage, and a new tab, whose sessionStorage is empty.
+  const blocked = await load("/__check/broken/no-storage/simulator/");
+  expect(blocked.html.dataset.engine === "ready" && /^s4ql-sim\/db-[a-z0-9]{6}$/.test(blocked.win.document.getElementById("s3-path").textContent) &&
+    blocked.win.document.getElementById("log").textContent.includes("does not store S3"), "a tab without storage runs in memory, with a database of its own name");
+  blocked.frame.remove();
+  sessionStorage.clear();
+  p = await reload(null);
+  expect(p.$("#s3-path").textContent !== name && p.commits === 0, `a new tab, with an empty sessionStorage, gets a database of its own (${p.$("#s3-path").textContent})`);
+  p.win.frameElement.remove();
 }
 
 // broken checks that a fault at start-up ends in the page's failure box, which asks for a reload:

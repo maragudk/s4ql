@@ -678,6 +678,7 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
     <button class="btn big play" type="button" id="play" disabled><span id="play-word">Play</span> <span class="bars" aria-hidden="true"></span></button>
     <button class="btn big" type="button" id="turbo" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Turbo 5×</button>
     <button class="btn big" type="button" id="sound" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Sound</button>
+    <button class="btn big" type="button" id="reset" disabled>Reset</button>
     <div class="clock"><span id="clock">0:00.0</span><span class="caps">fake time</span></div>
     <p class="status" id="status" role="status">Starting.</p>
     <div class="field" aria-hidden="true">
@@ -801,6 +802,7 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
         <div class="head-of-log"><dt class="caps">Head</dt><dd><span id="s3-code"></span><span id="s3-head">…</span></dd></div>
         <div><dt class="caps">Lease</dt><dd id="s3-lease">…</dd></div>
         <div><dt class="caps">Manifest writes</dt><dd id="s3-writes">…</dd></div>
+        <div><dt class="caps">Database</dt><dd id="s3-path">…</dd></div>
       </dl>
     </section>
     <div class="logs">
