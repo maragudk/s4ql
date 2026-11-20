@@ -300,6 +300,18 @@ func TestForcedAccess(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("should fail with an internal error for two bounds of values of two types, which the check of the types refuses before", func(t *testing.T) {
+		conditions := []condition{
+			{position: 1, op: stmt.OpGreater, value: s4qlpb.Value_builder{Integer: new(int64(1))}.Build()},
+			{position: 1, op: stmt.OpGreater, value: s4qlpb.Value_builder{Text: new("a")}.Build()},
+		}
+
+		a, ok, err := forcedAccess(one, indexes, conditions, path{kind: pathIndex, index: "i"}, bugs{})
+		is.True(t, errors.Is(err, ErrInternal))
+		is.True(t, !ok)
+		is.True(t, a.index == "" && !a.ranged())
+	})
 }
 
 // drawHost is a host that gives the numbers of draws, in turn, and counts them.
