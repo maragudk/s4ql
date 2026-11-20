@@ -2268,9 +2268,9 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// its column, and the engine then refuses a later one, where the rule refuses the real. The bug
 		// needs an insert of a whole real into an INT or INTEGER column that otherwise succeeds, which
 		// a sequence gives rarely; the hammer workload runs more statements than the default one, on
-		// one instance that no other instance takes the lease from. Of the first 200 seeds, 14 find the
-		// bug by its own violation there and 12 in the default workload, and the second of them is
-		// seed 31 there and seed 47 in the default workload.
+		// one instance that no other instance takes the lease from. Of the first 200 seeds, with WHERE
+		// in the sequence, 14 found the bug by its own violation there and 12 in the default workload;
+		// with updates and deletes in it, 18 there, and the second of them is seed 5.
 		{"convertReal", hammerWorkload, "hammer", []string{"stores a value of another type than its column", "and the rule for the type of a value"}},
 		// A row that holds its values in other columns than its statement names: the replay of the log
 		// into an empty cache, which writes the rows, differs from SQLite, which runs the statements; a
