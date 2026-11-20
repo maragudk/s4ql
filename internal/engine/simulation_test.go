@@ -485,13 +485,18 @@ func (r *run) open(ctx context.Context, n *node) error {
 	}
 	options.Seed(engineSeed)
 	// Which other way an engine reads by is drawn from its seed too, one engine in two of each, and not
-	// by the number of the engine, since a node rarely opens its database more than twice.
+	// by the number of the engine, since a node rarely opens its database more than twice. The seed is
+	// mixed first, as splitmix64 does, since its last bit follows the parities of the seed of the run
+	// and of the node's name.
+	draw := (engineSeed ^ engineSeed>>30) * 0xbf58476d1ce4e5b9
+	draw = (draw ^ draw>>27) * 0x94d049bb133111eb
+	draw ^= draw >> 31
 	way := "rules"
-	if names := r.q.IndexNames(); other && engineSeed%2 == 0 {
+	if names := r.q.IndexNames(); other && draw%2 == 0 {
 		way = "every row"
 		options.ScanAll()
 	} else if other {
-		index := names[engineSeed/2%uint64(len(names))]
+		index := names[draw/2%uint64(len(names))]
 		way = "index " + index
 		options.Path(engine.Path{Index: index})
 	}
@@ -2321,8 +2326,8 @@ func (r *run) droppedUnder() int {
 // TestSimulation runs the default workload, the idle workload, and the hammer workload for many seeds each, and twice
 // for some, whose traces must be the same. In a run of at least 50 seeds, every kind of outcome, of
 // fault of the store, and of event must occur at least as often as reached says, for each seed:
-// from a fifth to a third of what the first 1,000 seeds give, so that the test fails when a kind
-// stops happening, and not by chance. And at most the share noLease of the statements may be refused
+// about a quarter of what the first 1,000 seeds give, so that the test fails when a kind stops
+// happening, and not by chance. And at most the share noLease of the statements may be refused
 // for want of the lease, about twice what the first 1,000 seeds give, so that the test fails when
 // most statements no longer reach a transaction. The seeds are the same in every run, so the counts
 // are too. With the flag -replay, it replays that one seed instead: see [replaySeed].
@@ -2343,76 +2348,134 @@ func TestSimulation(t *testing.T) {
 		// noLease is the largest share of the statements that may be refused for want of the lease.
 		noLease float64
 	}{
+		// Each least number is a quarter of what the first 1,000 seeds gave on 2026-11-20, rounded down
+		// to two digits, or one in fifty seeds for a kind of which they gave 60 to 80; and every seed
+		// checks the integrity of each cache. The numbers moved that day, since the sequence writes
+		// create indexes and drop indexes, which take turns of the other statements, the sequence of
+		// every second seed is indexed, a quarter of the engines of a node force an index path, where a
+		// quarter read every row and a half by the rules, and a query that reads by an index has the
+		// index dropped while its rows are open. [run.countWhere] and [tallyOf] count them.
 		{"default", defaultWorkload, map[string]float64{
-			"succeeded": 4, "SQLite's error": 6, "unknown": 0.15, "pending": 0.25, "skipped": 1, "failed: no lease": 1.5,
-			"failed: stopped": 0.04, "failed: timeout": 0.25, "query not read to its end": 0.5, "acknowledged writes": 2.5,
-			"commits": 2.5, "commits with a parameter": 0.5, "crash, then an empty cache": 0.12, "crash, then a copy of the cache": 0.12, "close and open": 0.4,
-			"fault: lost request": 0.4, "fault: lost response": 0.4, "fault: no answer": 0.35, "fault: conflict": 0.06,
-			"fault: slow way": 0.8, "fault: broken read": 0.25, "fault: cut-off": 0.1, "fault: outage": 0.04,
-			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.25, "fault: write applied after a crash": 0.05,
-			"statements in a transaction": 12, "read-only transactions": 0.9, "transactions committed": 2, "transactions rolled back": 0.8,
-			"transactions not committed": 0.08, "transactions unknown": 0.07, "commits of more than one statement": 0.4, "refused for the type": 0.5,
-			// The rows of several columns in the log, of which the first 1,000 seeds gave 4,591, 715, and
-			// 8,380 in the three workloads on 2026-11-20: a quarter of that in each.
-			"rows of several columns": 1.1,
-			// The NULL values in the log, of which the first 1,000 seeds gave 1,581, 316, and 2,694 in the
-			// three workloads on 2026-11-20, when the sequence wrote NULL: a quarter of that in each.
-			"NULL values in the log": 0.4,
-			// The selects with WHERE that the checks compare with SQLite, of their own and in a
-			// transaction, those on an engine that reads every row, and those that give rows, of which
-			// the first 1,000 seeds gave 3,078, 1,107, 324, 4,254, 1,507, and 468 in this workload, 2,449,
-			// 786, 58, 2,875, 892, and 78 in the idle one, and 6,968, 857, 8,052, and 1,041 in the hammer
-			// one on 2026-11-20, when the sequence wrote WHERE: a quarter of that in each, and one in
-			// fifty seeds for the fewest.
-			"selects with WHERE of their own compared with SQLite": 0.77, "selects with WHERE of their own compared with SQLite, on an engine that reads every row": 0.27,
-			"selects with WHERE of their own that give rows, compared with SQLite": 0.08, "selects with WHERE in a transaction compared with SQLite": 1.06,
-			"selects with WHERE in a transaction compared with SQLite, on an engine that reads every row": 0.37,
-			"selects with WHERE in a transaction that give rows, compared with SQLite":                    0.11,
-			// The updates and deletes, of which the first 1,000 seeds gave 18,084, 1,575 that succeeded
-			// and changed rows, 8,481 with SQLite's error, 1,845 of their own that changed no row and that
-			// the checks run in SQLite, and 717 of their own and 2,587 in a transaction whose count of
-			// changes the checks compare with SQLite's, in this workload; 12,853, 326, 4,609, 356, 91, and
-			// 975 in the idle one; and 36,081, 3,412, 14,982, 3,433, 1,545, and 5,002 in the hammer one, on
-			// 2026-11-20, when the sequence wrote updates and deletes: a quarter of that in each.
-			"updates and deletes": 4.5, "updates and deletes that succeeded and changed rows": 0.39, "updates and deletes with SQLite's error": 2.1,
-			"updates and deletes that change no row, compared with SQLite": 0.46, "updates and deletes of their own whose count of changes is compared with SQLite": 0.18,
-			"updates and deletes in a transaction whose count of changes is compared with SQLite": 0.64,
+			"succeeded": 5.4, "SQLite's error": 12, "unknown": 0.1, "pending": 0.18, "skipped": 3.8, "failed: no lease": 0.85,
+			"failed: stopped": 0.034, "failed: timeout": 0.19, "query not read to its end": 0.43, "acknowledged writes": 3.2,
+			"commits": 2.3, "commits with a parameter": 0.61, "crash, then an empty cache": 0.12,
+			"crash, then a copy of the cache": 0.12, "close and open": 0.32,
+			"fault: lost request": 0.39, "fault: lost response": 0.38, "fault: no answer": 0.35, "fault: conflict": 0.072,
+			"fault: slow way": 0.83, "fault: broken read": 0.25, "fault: cut-off": 0.12, "fault: outage": 0.048,
+			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.22,
+			"fault: write applied after a crash": 0.034,
+			"statements in a transaction":        12, "read-only transactions": 0.88, "transactions committed": 2.2,
+			"transactions rolled back": 0.79, "transactions not committed": 0.063, "transactions unknown": 0.052,
+			"commits of more than one statement": 0.35, "refused for the type": 0.77, "rows of several columns": 0.81,
+			"NULL values in the log": 0.26,
+			// The selects with WHERE that the checks compare with SQLite, of their own and in a transaction: those
+			// on an engine that reads every row, on one that forces an index path, and those read by an index,
+			// and those that give rows.
+			"selects with WHERE of their own compared with SQLite":                                             0.6,
+			"selects with WHERE of their own compared with SQLite, on an engine that reads every row":          0.092,
+			"selects with WHERE of their own compared with SQLite, on an engine that forces an index path":     0.1,
+			"selects with WHERE of their own compared with SQLite, read by an index":                           0.011,
+			"selects with WHERE of their own that give rows, compared with SQLite":                             0.037,
+			"selects with WHERE in a transaction compared with SQLite":                                         0.88,
+			"selects with WHERE in a transaction compared with SQLite, on an engine that reads every row":      0.15,
+			"selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path": 0.15,
+			"selects with WHERE in a transaction compared with SQLite, read by an index":                       0.027,
+			"selects with WHERE in a transaction that give rows, compared with SQLite":                         0.05,
+			// The updates and deletes: those that succeeded and changed rows, those with SQLite's error, those of
+			// their own that changed no row and that the checks run in SQLite, and those whose count of changes
+			// the checks compare with SQLite's.
+			"updates and deletes": 3.5, "updates and deletes that succeeded and changed rows": 0.27,
+			"updates and deletes with SQLite's error": 1.6, "updates and deletes that change no row, compared with SQLite": 0.35,
+			"updates and deletes of their own whose count of changes is compared with SQLite":     0.11,
+			"updates and deletes in a transaction whose count of changes is compared with SQLite": 0.5,
+			// The create indexes and drop indexes, by outcome; the selects, updates, and deletes that read by an
+			// index; the statements on an engine that forces an index path, and those that read by its index;
+			// the replays of a log with an index; and the queries whose index was dropped while their rows were
+			// open.
+			"create index: ok": 0.42, "create index: 1/1: index … already exists": 0.65,
+			"create index: 1/1: no such column: …": 0.11, "create index: 1/1: no such table: …": 1.1,
+			"create index: 1/1: there is already a table named …":     0.55,
+			"create index: 8/8: attempt to write a readonly database": 0.079, "drop index: ok": 0.13,
+			"drop index: 1/1: no such index: …": 0.45, "drop index: 8/8: attempt to write a readonly database": 0.023,
+			"selects read by an index": 0.06, "updates read by an index": 0.026, "deletes read by an index": 0.024,
+			"statements on an engine that forces an index path":     3.1,
+			"statements read by the index that their engine forces": 0.03,
+			"crash, then an empty cache, of a log with an index":    0.034, "replays of a log with an index": 0.12,
+			"indexes dropped while the rows of a query that read by them were open": 0.02,
+			// Every seed checks the integrity of the cache of each crash, of the replay, and of each live node
+			// at the end.
+			"integrity checks after a crash": 1, "integrity checks after the replay": 1, "integrity checks at the end": 2,
 		}, 0.15},
-		// A quarter of what the first 1,000 seeds gave on 2026-11-19, with the ends of transactions for
-		// the lease, which only this workload reaches.
+		// The ends of transactions for the lease, which only this workload reaches.
 		{"idle", idleWorkload, map[string]float64{
-			"succeeded": 2.5, "SQLite's error": 6, "pending": 0.15, "skipped": 2, "failed: no lease": 1.5,
-			"failed: stopped": 0.6, "failed: timeout": 2.5, "query not read to its end": 0.25, "acknowledged writes": 0.6,
-			"commits": 0.5, "commits with a parameter": 0.1, "crash, then an empty cache": 0.1, "crash, then a copy of the cache": 0.1, "close and open": 0.3,
-			"fault: lost request": 0.3, "fault: lost response": 0.3, "fault: no answer": 2.5, "fault: conflict": 0.1,
-			"fault: slow way": 0.9, "fault: broken read": 0.2, "fault: cut-off": 0.15, "fault: outage": 0.05,
-			"fault: write applied after its caller gave up": 0.1, "fault: write stuck in the network": 4,
-			"statements in a transaction": 7, "read-only transactions": 0.7, "transactions committed": 0.7, "transactions rolled back": 0.7,
-			"transactions not committed": 0.04, "commits of more than one statement": 0.08,
-			"transactions ended for the lease": 0.33, "kept transactions ended for the lease": 0.33, "refused for the type": 0.1,
-			"rows of several columns": 0.17, "NULL values in the log": 0.08,
-			"selects with WHERE of their own compared with SQLite": 0.61, "selects with WHERE of their own compared with SQLite, on an engine that reads every row": 0.19,
-			"selects with WHERE of their own that give rows, compared with SQLite": 0.02, "selects with WHERE in a transaction compared with SQLite": 0.71,
-			"selects with WHERE in a transaction compared with SQLite, on an engine that reads every row": 0.22,
-			"selects with WHERE in a transaction that give rows, compared with SQLite":                    0.02,
-			"updates and deletes": 3.2, "updates and deletes that succeeded and changed rows": 0.08, "updates and deletes with SQLite's error": 1.15,
-			"updates and deletes that change no row, compared with SQLite": 0.089, "updates and deletes of their own whose count of changes is compared with SQLite": 0.02,
-			"updates and deletes in a transaction whose count of changes is compared with SQLite": 0.24,
+			"succeeded": 1.6, "SQLite's error": 6.8, "pending": 0.17, "skipped": 2.3, "failed: no lease": 1.6,
+			"failed: stopped": 0.73, "failed: timeout": 3, "query not read to its end": 0.12, "acknowledged writes": 0.57,
+			"commits": 0.42, "commits with a parameter": 0.088, "crash, then an empty cache": 0.12,
+			"crash, then a copy of the cache": 0.12, "close and open": 0.33,
+			"fault: lost request": 0.32, "fault: lost response": 0.31, "fault: no answer": 2.7, "fault: conflict": 0.14,
+			"fault: slow way": 0.93, "fault: broken read": 0.24, "fault: cut-off": 0.14, "fault: outage": 0.066,
+			"fault: write applied after its caller gave up": 0.11, "fault: write stuck in the network": 4.2,
+			"statements in a transaction": 7.6, "read-only transactions": 0.74, "transactions committed": 0.75,
+			"transactions rolled back": 0.78, "transactions not committed": 0.04, "commits of more than one statement": 0.065,
+			"transactions ended for the lease": 0.34, "kept transactions ended for the lease": 0.33,
+			"refused for the type": 0.17, "rows of several columns": 0.13, "NULL values in the log": 0.045,
+			"selects with WHERE of their own compared with SQLite":                                             0.51,
+			"selects with WHERE of their own compared with SQLite, on an engine that reads every row":          0.086,
+			"selects with WHERE of their own compared with SQLite, on an engine that forces an index path":     0.081,
+			"selects with WHERE of their own compared with SQLite, read by an index":                           0.0022,
+			"selects with WHERE of their own that give rows, compared with SQLite":                             0.0032,
+			"selects with WHERE in a transaction compared with SQLite":                                         0.57,
+			"selects with WHERE in a transaction compared with SQLite, on an engine that reads every row":      0.095,
+			"selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path": 0.086,
+			"selects with WHERE in a transaction compared with SQLite, read by an index":                       0.005,
+			"selects with WHERE in a transaction that give rows, compared with SQLite":                         0.0052,
+			"updates and deletes": 2.4, "updates and deletes that succeeded and changed rows": 0.043,
+			"updates and deletes with SQLite's error":                                             0.93,
+			"updates and deletes that change no row, compared with SQLite":                        0.052,
+			"updates and deletes of their own whose count of changes is compared with SQLite":     0.012,
+			"updates and deletes in a transaction whose count of changes is compared with SQLite": 0.14,
+			"create index: ok": 0.14, "create index: 1/1: index … already exists": 0.09,
+			"create index: 1/1: no such column: …": 0.038, "create index: 1/1: no such table: …": 0.87,
+			"create index: 1/1: there is already a table named …":     0.091,
+			"create index: 8/8: attempt to write a readonly database": 0.036, "drop index: ok": 0.02,
+			"drop index: 1/1: no such index: …": 0.23, "drop index: 8/8: attempt to write a readonly database": 0.0025,
+			"selects read by an index": 0.011, "updates read by an index": 0.005, "deletes read by an index": 0.003,
+			"statements on an engine that forces an index path":     1.4,
+			"statements read by the index that their engine forces": 0.0072,
+			"crash, then an empty cache, of a log with an index":    0.0052, "replays of a log with an index": 0.039,
+			"indexes dropped while the rows of a query that read by them were open": 0.0027,
+			"integrity checks after a crash":                                        1, "integrity checks after the replay": 1, "integrity checks at the end": 2,
 		}, 0.15},
 		{"hammer", hammerWorkload, map[string]float64{
-			"succeeded": 12, "SQLite's error": 17, "unknown": 0.4, "skipped": 2.5, "failed: no lease": 2,
-			"failed: timeout": 3, "query not read to its end": 1.5, "acknowledged writes": 6, "commits": 6, "commits with a parameter": 1,
-			"fault: lost request": 0.25, "fault: lost response": 0.2, "fault: no answer": 0.35, "fault: conflict": 0.2,
-			"fault: slow way": 0.5, "fault: broken read": 0.02, "fault: cut-off": 0.09, "fault: outage": 0.025,
-			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.7,
-			"statements in a transaction": 24, "read-only transactions": 1.8, "transactions committed": 4, "transactions rolled back": 1.5,
-			"transactions not committed": 0.17, "transactions unknown": 0.12, "commits of more than one statement": 0.6, "refused for the type": 1,
-			"rows of several columns": 2, "NULL values in the log": 0.67,
-			"selects with WHERE of their own compared with SQLite": 1.74, "selects with WHERE of their own that give rows, compared with SQLite": 0.21,
-			"selects with WHERE in a transaction compared with SQLite": 2, "selects with WHERE in a transaction that give rows, compared with SQLite": 0.26,
-			"updates and deletes": 9, "updates and deletes that succeeded and changed rows": 0.85, "updates and deletes with SQLite's error": 3.7,
-			"updates and deletes that change no row, compared with SQLite": 0.85, "updates and deletes of their own whose count of changes is compared with SQLite": 0.38,
-			"updates and deletes in a transaction whose count of changes is compared with SQLite": 1.25,
+			"succeeded": 10, "SQLite's error": 23, "unknown": 0.2, "skipped": 7.8, "failed: no lease": 1.2,
+			"failed: timeout": 2.9, "query not read to its end": 0.96, "acknowledged writes": 5.9, "commits": 4.2,
+			"commits with a parameter": 1.2,
+			"fault: lost request":      0.23, "fault: lost response": 0.21, "fault: no answer": 0.25, "fault: conflict": 0.14,
+			"fault: slow way": 0.45, "fault: broken read": 0.02, "fault: cut-off": 0.058, "fault: outage": 0.026,
+			"fault: write applied after its caller gave up": 0.079, "fault: write stuck in the network": 0.41,
+			"statements in a transaction": 24, "read-only transactions": 1.8, "transactions committed": 4.2,
+			"transactions rolled back": 1.5, "transactions not committed": 0.15, "transactions unknown": 0.1,
+			"commits of more than one statement": 0.64, "refused for the type": 1.5, "rows of several columns": 1.7,
+			"NULL values in the log":                                                     0.56,
+			"selects with WHERE of their own compared with SQLite":                       1.3,
+			"selects with WHERE of their own compared with SQLite, read by an index":     0.027,
+			"selects with WHERE of their own that give rows, compared with SQLite":       0.089,
+			"selects with WHERE in a transaction compared with SQLite":                   1.6,
+			"selects with WHERE in a transaction compared with SQLite, read by an index": 0.06,
+			"selects with WHERE in a transaction that give rows, compared with SQLite":   0.11,
+			"updates and deletes": 7, "updates and deletes that succeeded and changed rows": 0.6,
+			"updates and deletes with SQLite's error": 2.9, "updates and deletes that change no row, compared with SQLite": 0.69,
+			"updates and deletes of their own whose count of changes is compared with SQLite":     0.27,
+			"updates and deletes in a transaction whose count of changes is compared with SQLite": 1,
+			"create index: ok": 0.7, "create index: 1/1: index … already exists": 1.3,
+			"create index: 1/1: no such column: …": 0.18, "create index: 1/1: no such table: …": 1.8,
+			"create index: 1/1: there is already a table named …":     1.4,
+			"create index: 8/8: attempt to write a readonly database": 0.16, "drop index: ok": 0.26,
+			"drop index: 1/1: no such index: …": 0.85, "drop index: 8/8: attempt to write a readonly database": 0.042,
+			"selects read by an index": 0.14, "updates read by an index": 0.063, "deletes read by an index": 0.051,
+			"replays of a log with an index":                                        0.11,
+			"indexes dropped while the rows of a query that read by them were open": 0.03,
+			"integrity checks after the replay":                                     1, "integrity checks at the end": 1,
 		}, 0.12},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -2575,8 +2638,8 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// the primary key, the storage core refuses the scan, which the engine had checked, as an
 		// internal error. Otherwise a select gives other rows than in SQLite, and an update or a delete
 		// changes other rows, after which the statements can differ. Of the first 200 seeds, on
-		// 2026-11-20, with the sequence of every second seed indexed, 13 found the bug, 12 of them by
-		// the refusal of the core, and the first two of those are seeds 15 and 26.
+		// 2026-11-20, with the sequence of every second seed indexed, 17 found the bug, each by the
+		// refusal of the core, and the second of them is seed 23.
 		{"pinByPlace", defaultWorkload, "default", []string{"the storage core refused a call that the engine had checked", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "fails in SQLite"}},
 		// An update or a delete that changes nothing and says so: of its own, it is in no commit, and
 		// SQLite, which runs it on the state that it saw, changes rows; in a transaction, SQLite gives
