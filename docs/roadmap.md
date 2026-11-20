@@ -31,7 +31,7 @@ Rejected for now, to be decided later: upserts, and join variants such as comma 
 
 A milestone is a goal that several slices lead to. It helps to choose which slice comes next.
 
-- **The first application on s4ql: [glue](https://www.maragu.dev/glue).** `maragu.dev/glue` runs on s4ql in place of SQLite. Markus on 2026-11-19: "a nice second milestone: get maragu.dev/glue working on this storage instead of SQLite." The SQL that it needs and s4ql does not have yet is in [the research note on glue](research/glue-on-s4ql.md). Slices 5 to 10 lead to it. After slice 10 comes the rest of what glue needs, which is not agreed as slices yet.
+- **The first application on s4ql: [glue](https://www.maragu.dev/glue).** `maragu.dev/glue` runs on s4ql in place of SQLite. Markus on 2026-11-19: "a nice second milestone: get maragu.dev/glue working on this storage instead of SQLite." The SQL that it needs and s4ql does not have yet is in [the research note on glue](research/glue-on-s4ql.md). Slices 5 to 12 lead to it. After slice 12 comes the rest of what glue needs, which is not agreed as slices yet.
 
 ## Slices
 
@@ -386,3 +386,60 @@ Rejected as not supported, where SQLite would accept it:
 - A default that is an expression, such as `default (1 + 1)`.
 - `current_time`, `current_date`, and `current_timestamp`.
 - `insert ... default values`.
+
+### Slice 11: a value on the left of a comparison
+
+Status: agreed on 2026-11-20, not built.
+
+```sql
+select v1 from t1 where 5 < v1;
+
+select v1 from t1 where ? >= v2;
+```
+
+Included:
+
+- In a `where`, a comparison may have the literal or `?` on the left and the column on the right, such as `? >= timeout` and `5 < a`. Slice 7 allows only the column on the left.
+- It means what SQLite says it means. The rule of exact types holds as for the other order, and the primary key is used for lookups and ranges as in slice 7: `5 < a` bounds `a` from below.
+- The commit format does not change.
+- Everything of slices 1 to 10 with the new order: arguments, prepared statements, transactions, and a restart with an empty cache.
+- The reason: goqite, the queue that glue uses, writes its receive query both ways round, `? >= timeout` and `received < ?`.
+
+Further details are decided when the slice is built, and recorded here.
+
+Rejected as not supported, where SQLite would accept it:
+
+- A column on both sides of a comparison.
+- A value on both sides of a comparison.
+- `is null` and `is not null` with anything but a column on the left.
+
+### Slice 12: `order by` and `limit` on `select`
+
+Status: agreed on 2026-11-20, not built.
+
+```sql
+select v1, v2 from t1 order by v2 desc, v1 limit 10;
+
+select v1 from t1 where v2 > ? order by v1 limit ?;
+```
+
+Included:
+
+- `order by` takes one or more column names, each with `asc` or `desc`. When neither is written, it is `asc`.
+- `limit` takes a number or `?`.
+- Rows that tie under `order by` come in the order of the primary key. SQLite promises no order for ties, and s4ql defines one, so the same query on the same data gives the same rows in the same order every time, also with `limit`. The checks against SQLite compare tied rows as a set. Markus on 2026-11-20: "great to keep things deterministic by default instead of undefined, I like that restriction."
+- `null` sorts where SQLite sorts it: first in `asc`, last in `desc`.
+- The commit format does not change.
+- A negative `limit`, `limit 0`, a `limit` argument that is not an integer, a column named twice in `order by`, and a column in `order by` that is not in the list of selected columns are decided when the slice is built, by SQLite's behaviour, and recorded in [the todo](todo.md).
+- Everything of slices 1 to 11 with `order by` and `limit`: arguments, prepared statements, transactions, and a restart with an empty cache.
+- The reason: goqite picks the next message with `order by priority desc, created limit 1`.
+
+Further details are decided when the slice is built, and recorded here.
+
+Rejected as not supported, where SQLite would accept it:
+
+- `offset`, also as `limit x, y`.
+- Ordering by an expression or by position, such as `order by 1`.
+- `nulls first` and `nulls last`.
+- `collate`.
+- `order by` and `limit` on `update` and `delete`.
