@@ -83,10 +83,10 @@ type Options struct {
 // use, and a Conn is not: each statement is its own transaction of the database, and the database
 // runs one write transaction at a time, and the read transactions of the connections in parallel.
 type Engine struct {
-	db      database
-	host    host.Host
-	log     *slog.Logger
-	bugs    bugs
+	db   database
+	host host.Host
+	log  *slog.Logger
+	bugs bugs
 	// path that the tests force, as [Options.path] says.
 	path path
 	// seeded makes the engine draw the directions of its scans from draws, a sequence that its seed
