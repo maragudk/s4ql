@@ -479,11 +479,23 @@ func TestConn_differential(t *testing.T) {
 	}
 	t.Logf("%v sequences in transactions: %v", n, y)
 	// The selects with WHERE that [pair.bothWays] reads both ways, of which the run gave 438, 96 of
-	// them in a read-only transaction, on 2026-11-20: a third of each.
+	// them in a read-only transaction, on 2026-11-20: a third of each. When the sequence wrote updates
+	// and deletes, it gave 270 and 64, which these least numbers still hold; and 543 updates and deletes
+	// with WHERE that [pair.bothWays] changes both ways, 115 of them in a read-only transaction, which
+	// refuses them, and 21 commits and 8 roll backs of a write transaction whose update or delete
+	// changed rows: a third of each.
 	if !slow() {
-		for kind, least := range map[string]int{"read both ways": 146, "read both ways in a read-only transaction": 32} {
+		for kind, least := range map[string]int{
+			"read both ways": 146, "read both ways in a read-only transaction": 32, "changed both ways": 181, "changed both ways in a read-only transaction": 38,
+			"commit of a transaction whose update or delete changed rows": 7, "roll back of a transaction whose update or delete changed rows": 2,
+		} {
 			if y["reached: "+kind] < least {
 				t.Errorf("the run reaches %q %v times, and at least %v were expected", kind, y["reached: "+kind], least)
+			}
+		}
+		for _, kind := range []string{"update attempt to write a readonly database", "update with a parameter attempt to write a readonly database", "delete attempt to write a readonly database"} {
+			if y[kind] == 0 {
+				t.Errorf("no statement has the outcome %q", kind)
 			}
 		}
 	}
@@ -498,28 +510,39 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 	r := rand.New(rand.NewPCG(seed, 0x7e))
 	q := newSequence(t, r)
 	p := newPair(t, i, y)
+	defer p.other.close()
 	var log []string
 	fail := func(format string, args ...any) {
 		t.Helper()
 		t.Fatalf("seed %v, after\n%v\n%v", seed, strings.Join(log, "\n"), fmt.Sprintf(format, args...))
 	}
-	// open is the kind of the transaction that is open: "", "write", or "read only".
-	open := ""
+	// open is the kind of the transaction that is open: "", "write", or "read only", and changed
+	// reports whether an update or a delete of the transaction changed rows.
+	open, changed := "", false
 	end := func() {
 		t.Helper()
 		commit := r.IntN(3) > 0
 		log = append(log, fmt.Sprint("-- end the ", open, " transaction, with a commit: ", commit))
-		if commit {
-			is.NotError(t, i.c.Commit(t.Context()))
-		} else {
-			is.NotError(t, i.c.Rollback(t.Context()))
+		for _, c := range []*engine.Conn{i.c, p.other.c} {
+			if commit {
+				is.NotError(t, c.Commit(t.Context()))
+			} else {
+				is.NotError(t, c.Rollback(t.Context()))
+			}
 		}
 		for _, s := range oracleEnd(open == "read only", commit) {
 			is.Equal(t, "", p.o.run(t, s).err, s)
 		}
-		open = ""
-		if got, want := i.state(), p.o.state(t); got != want {
+		if changed && y != nil {
+			y["reached: "+map[bool]string{true: "commit", false: "roll back"}[commit]+" of a transaction whose update or delete changed rows"]++
+		}
+		open, changed = "", false
+		want := p.o.state(t)
+		if got := i.state(); got != want {
 			fail("after the end of the transaction the engine holds\n%v\nand SQLite\n%v", got, want)
+		}
+		if got := p.other.state(); got != want {
+			fail("after the end of the transaction the other engine, which reads the rows the other way, holds\n%v\nand SQLite\n%v", got, want)
 		}
 	}
 	for range n {
@@ -529,8 +552,10 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 			if r.IntN(3) == 0 {
 				open = "read only"
 				is.NotError(t, i.c.BeginReadOnly(t.Context()))
+				is.NotError(t, p.other.c.BeginReadOnly(t.Context()))
 			} else {
 				is.NotError(t, i.c.Begin(t.Context()))
+				is.NotError(t, p.other.c.Begin(t.Context()))
 			}
 			log = append(log, "-- begin a "+open+" transaction")
 			for _, s := range oracleBegin(open == "read only") {
@@ -544,6 +569,10 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 		p.readOnly = open == "read only"
 		if failure := p.step(c); failure != "" {
 			fail("%v", failure)
+		}
+		if s, _ := checkText(c.Src); open == "write" && p.last.err == "" && i.changes > 0 && changesRows(c.Src) {
+			_, isInsert := s.(*stmt.Insert)
+			changed = changed || !isInsert
 		}
 	}
 	if open != "" {

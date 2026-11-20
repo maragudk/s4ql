@@ -291,6 +291,8 @@ var plantable = map[string]func(b *bugs){
 	"listOrder":     func(b *bugs) { b.listOrder = true },
 	"zeroLeftOut":   func(b *bugs) { b.zeroLeftOut = true },
 	"openBound":     func(b *bugs) { b.openBound = true },
+	"changeNothing": func(b *bugs) { b.changeNothing = true },
+	"keepOldKey":    func(b *bugs) { b.keepOldKey = true },
 }
 
 // The names of the event and of its attributes, for the tests of the telemetry.
