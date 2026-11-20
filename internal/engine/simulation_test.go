@@ -333,9 +333,9 @@ type run struct {
 	crashed []*core.DB
 	// events of the run that are not statements: crashes, closes, and restarts, by kind.
 	events map[string]int
-	// wide is the number of rows of tables of several columns in the log, as [run.verifyRows] counts
-	// them.
-	wide int
+	// wide is the number of rows of tables of several columns in the log, and nulls the number of
+	// NULL values in its rows, as [run.verifyRows] counts them.
+	wide, nulls int
 	// endedForLease are the numbers of the run's clock of events at which an instance ended a write
 	// transaction because it lost its lease, by the node and the generation of its engine, as the
 	// event of the storage core says: see [run.verifyOverlaps].
@@ -1202,8 +1202,9 @@ type logCommit struct {
 // the table, in the order of the table, and each value has the type of its column, or is NULL in a
 // column that takes NULL. The replay of the
 // log in SQLite runs its statements, and not its rows, so it does not see a row that holds the
-// values of a statement in other columns. It gives the number of rows of tables of several columns.
-func (r *run) verifyRows(ctx context.Context, log []logCommit) (wide int) {
+// values of a statement in other columns. It gives the number of rows of tables of several columns,
+// and the number of NULL values in the rows.
+func (r *run) verifyRows(ctx context.Context, log []logCommit) (wide, nulls int) {
 	tables := map[string]*s4qlpb.CreateTable{}
 	for k, c := range log {
 		for _, ch := range c.changes {
@@ -1239,6 +1240,7 @@ func (r *run) verifyRows(ctx context.Context, log []logCommit) (wide int) {
 					}
 					for i, v := range values {
 						if v.HasNull() {
+							nulls++
 							// NULL has no type. The core refuses it for a column that does not take
 							// it, so this finds a fault of the engine and of the core together.
 							if !columns[i].GetNullable() {
@@ -1254,7 +1256,7 @@ func (r *run) verifyRows(ctx context.Context, log []logCommit) (wide int) {
 			}
 		}
 	}
-	return wide
+	return wide, nulls
 }
 
 // holds reports whether a column of the type t holds the value v: an integer for INT and INTEGER, a
@@ -1311,7 +1313,7 @@ func fold(name string) string {
 //   - A new instance with an empty cache replays the log to the state that SQLite has after it.
 func (r *run) verify(ctx context.Context) {
 	log := readLog(r.store)
-	r.wide = r.verifyRows(ctx, log)
+	r.wide, r.nulls = r.verifyRows(ctx, log)
 	index := map[string]int{format.EmptyLog.String(): 0}
 	inLog := map[uint64]int{}
 	txInLog := map[uint64]int{}
@@ -1873,8 +1875,8 @@ var storeLine = regexp.MustCompile(`^\S+ store request \d+(, stuck)? store: `)
 
 // tallyOf the simulation s: its statements, by how they ended, its writes that were acknowledged,
 // its queries that were not read to their end, its inserts refused for the type of their value, its
-// commits and those of a statement with a
-// parameter, the faults that the store injected, by kind, and its other events.
+// commits and those of a statement with a parameter, the rows of tables of several columns and the
+// NULL values in the log, the faults that the store injected, by kind, and its other events.
 func tallyOf(s simulation) map[string]int {
 	r := s.r
 	counts := maps.Clone(r.events)
@@ -1912,6 +1914,7 @@ func tallyOf(s simulation) map[string]int {
 	log := readLog(r.store)
 	counts["commits"] = len(log)
 	counts["rows of several columns"] = r.wide
+	counts["NULL values in the log"] = r.nulls
 	for _, c := range log {
 		if slices.ContainsFunc(c.params, func(ps []*s4qlpb.Value) bool { return len(ps) > 0 }) {
 			counts["commits with a parameter"]++
@@ -1960,6 +1963,9 @@ func TestSimulation(t *testing.T) {
 			// The rows of several columns in the log, of which the first 1,000 seeds gave 4,591, 715, and
 			// 8,380 in the three workloads on 2026-11-20: a quarter of that in each.
 			"rows of several columns": 1.1,
+			// The NULL values in the log, of which the first 1,000 seeds gave 1,581, 316, and 2,694 in the
+			// three workloads on 2026-11-20, when the sequence wrote NULL: a quarter of that in each.
+			"NULL values in the log": 0.4,
 		}, 0.15},
 		// A quarter of what the first 1,000 seeds gave on 2026-11-19, with the ends of transactions for
 		// the lease, which only this workload reaches.
@@ -1973,7 +1979,7 @@ func TestSimulation(t *testing.T) {
 			"statements in a transaction": 7, "read-only transactions": 0.7, "transactions committed": 0.7, "transactions rolled back": 0.7,
 			"transactions not committed": 0.04, "commits of more than one statement": 0.08,
 			"transactions ended for the lease": 0.33, "kept transactions ended for the lease": 0.33, "refused for the type": 0.1,
-			"rows of several columns": 0.17,
+			"rows of several columns": 0.17, "NULL values in the log": 0.08,
 		}, 0.15},
 		{"hammer", hammerWorkload, map[string]float64{
 			"succeeded": 12, "SQLite's error": 17, "unknown": 0.4, "skipped": 2.5, "failed: no lease": 2,
@@ -1983,7 +1989,7 @@ func TestSimulation(t *testing.T) {
 			"fault: write applied after its caller gave up": 0.08, "fault: write stuck in the network": 0.7,
 			"statements in a transaction": 24, "read-only transactions": 1.8, "transactions committed": 4, "transactions rolled back": 1.5,
 			"transactions not committed": 0.17, "transactions unknown": 0.12, "commits of more than one statement": 0.6, "refused for the type": 1,
-			"rows of several columns": 2,
+			"rows of several columns": 2, "NULL values in the log": 0.67,
 		}, 0.12},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -2117,6 +2123,12 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// rule refuses nothing. The log holds no such value, since the check of the type sees the values
 		// in the columns where the bug puts them.
 		{"listOrder", defaultWorkload, "default", []string{"the replay of the log holds", "fails in SQLite", ", and in SQLite", "and the rule for the type of a value"}},
+		// A column left out of a list that holds the zero value of its type where SQLite has NULL: a
+		// query of the row gives other rows than in SQLite, which runs the statements of the log, and
+		// so does the replay of the log into an empty cache, which writes its rows. No check of a value
+		// that is not NULL finds it: the zero value has the type of its column, and no column that
+		// takes NULL is the key.
+		{"zeroLeftOut", defaultWorkload, "default", []string{", and in SQLite", "the replay of the log holds"}},
 	}
 	for _, b := range bugs {
 		bug := b.name
