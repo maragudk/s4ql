@@ -176,9 +176,7 @@ type run struct {
 	endedAt time.Duration
 	// target is the instance that the client calls now, or nil in a run without a client.
 	target *instance
-	// seeding is set while the store takes the objects of the bucket of the request, and changes
-	// holds the objects that writes put into the store since the last answer of a session.
-	seeding bool
+	// changes holds the objects that writes put into the store since the last answer of a session.
 	changes []StoredObject
 	// offset is the time of the history at the time 0 of the run: zero without a bucket.
 	offset time.Duration

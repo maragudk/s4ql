@@ -223,7 +223,7 @@ func (r *run) seedStore(ctx context.Context) {
 		return
 	}
 	r.mu.Lock()
-	r.seeding, r.values = true, s.values
+	r.values = s.values
 	r.mu.Unlock()
 	c := r.store.Client("seed", nil)
 	put := func(ctx context.Context, o StoredObject) {
@@ -278,19 +278,12 @@ func (r *run) seedStore(ctx context.Context) {
 	offset := s.from - r.world.Monotonic()
 	e.By = millis(offset)
 	r.mu.Lock()
-	r.seeding, r.offset = false, offset
+	r.offset = offset
 	r.mu.Unlock()
 	if r.rec.fold != nil {
 		r.rec.fold.pending = s
 	}
 	r.rec.add(e)
-}
-
-// isSeeding reports whether the store is being seeded.
-func (r *run) isSeeding() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.seeding
 }
 
 // changed records the object at key as the store holds it now, which a write has just put there,

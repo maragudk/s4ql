@@ -694,7 +694,7 @@ async function persistence(address) {
   let p = await reload(null);
   const name = p.$("#s3-path").textContent;
   const before = { commits: p.commits, history: p.win.s4qlPage.history, objects: objects() };
-  expect(/^s4ql-sim\/db-[a-z0-9]{6}$/.test(name) && before.commits > 0 && before.objects === before.commits + 1,
+  expect(/^s4ql-sim\/db-[a-z0-9]{6}\/$/.test(name) && before.commits > 0 && before.objects === before.commits + 1,
     `S3 holds the database ${name} of the tab after a reload, with ${before.commits} commit objects, ${before.objects} objects in sessionStorage`);
   p = await reload(p);
   expect(p.$("#s3-path").textContent === name && p.commits === before.commits && p.win.s4qlPage.history >= before.history && logHas(p, /S3 still holds db-/),
@@ -750,7 +750,7 @@ async function persistence(address) {
 
   // A tab that the browser gives no storage, and a new tab, whose sessionStorage is empty.
   const blocked = await load("/__check/broken/no-storage/simulator/");
-  expect(blocked.html.dataset.engine === "ready" && /^s4ql-sim\/db-[a-z0-9]{6}$/.test(blocked.win.document.getElementById("s3-path").textContent) &&
+  expect(blocked.html.dataset.engine === "ready" && /^s4ql-sim\/db-[a-z0-9]{6}\/$/.test(blocked.win.document.getElementById("s3-path").textContent) &&
     blocked.win.document.getElementById("log").textContent.includes("does not store S3"), "a tab without storage runs in memory, with a database of its own name");
   blocked.frame.remove();
   sessionStorage.clear();

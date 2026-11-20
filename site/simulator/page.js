@@ -592,7 +592,7 @@ function drawS3() {
   }
   set($("s3-lease"), m && m.lease ? `${holderName(m.lease.holder)}, ${m.lease.duration / 1000} s` : "nobody");
   set($("s3-writes"), count(b.manifestWrites));
-  set($("s3-path"), `s4ql-sim/${keeper.name}`);
+  set($("s3-path"), `s4ql-sim/${keeper.name}/`);
   const total = b.commitCount || b.commits.length;
   root.dataset.commits = String(total);
   set($("commit-count"), total ? count(total) : "");
