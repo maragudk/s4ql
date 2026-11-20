@@ -84,12 +84,13 @@ func TestRecognize(t *testing.T) {
 	})
 
 	t.Run("should pass on a panic that is not its own", func(t *testing.T) {
-		// CREATE TABLE t (, with no column, which the grammar does not allow.
-		src := "create table t ("
-		tree := &ast.Statement{Cmd: &ast.CreateTable{Create: tok(token.Create, 0, "create"), Table: tok(token.Table, 7, "table"),
-			Name: ast.QualifiedName{Name: tok(token.ID, 13, "t")}, LParen: tok(token.LP, 15, "(")}}
-		span(tree.Cmd, 0, 16)
-		span(tree, 0, 16)
+		// INSERT INTO t (a b, with no comma between the columns, which the grammar does not allow.
+		src := "insert into t (a b"
+		tree := &ast.Statement{Cmd: &ast.Insert{Insert: tok(token.Insert, 0, "insert"), Into: tok(token.Into, 7, "into"),
+			Table: &ast.TargetTable{Name: ast.QualifiedName{Name: tok(token.ID, 12, "t")}}, LParen: tok(token.LP, 14, "("),
+			Columns: &ast.IDList{Names: []ast.Token{tok(token.ID, 15, "a"), tok(token.ID, 17, "b")}}}}
+		span(tree.Cmd, 0, 18)
+		span(tree, 0, 18)
 		defer func() {
 			is.True(t, recover() != nil)
 		}()

@@ -12,34 +12,35 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
-// allowed node types and fields of slices 1 and 2, as the README defines them: a type by its name, and a field
-// by the name of its type and its path, as "CreateTable.Name.Name". A field is present when its token
-// is, when its node is not nil, or when its list is not empty.
+// allowed node types and fields of slices 1, 2, and 5, as the README defines them: a type by its
+// name, and a field by the name of its type and its path, as "CreateTable.Name.Name". A field is
+// present when its token is, when its node is not nil, or when its list is not empty.
 var allowed = map[string]bool{
 	"Statement": true, "Statement.Cmd": true, "Statement.Semi": true,
 
 	"CreateTable": true, "CreateTable.Create": true, "CreateTable.Table": true, "CreateTable.Name.Name": true,
-	"CreateTable.LParen": true, "CreateTable.Columns": true, "CreateTable.RParen": true,
+	"CreateTable.LParen": true, "CreateTable.Columns": true, "CreateTable.Commas": true, "CreateTable.RParen": true,
 	"CreateTable.Options": true, "CreateTable.OptionCommas": true,
 	"ColumnDef": true, "ColumnDef.Name": true, "ColumnDef.Type": true, "ColumnDef.Constraints": true,
 	"TypeName": true, "TypeName.Names": true,
 	"PrimaryKeyConstraint": true, "PrimaryKeyConstraint.Primary": true, "PrimaryKeyConstraint.Key": true,
+	"NullConstraint": true, "NullConstraint.Not": true, "NullConstraint.Null": true,
 	"TableOption": true, "TableOption.Without": true, "TableOption.Name": true,
 
 	"Insert": true, "Insert.Insert": true, "Insert.Into": true, "Insert.Table": true, "Insert.LParen": true,
 	"Insert.Columns": true, "Insert.RParen": true, "Insert.Select": true,
 	"TargetTable": true, "TargetTable.Name.Name": true,
-	"IDList": true, "IDList.Names": true,
+	"IDList": true, "IDList.Names": true, "IDList.Commas": true,
 	"Select": true, "Select.First": true,
 	"Values": true, "Values.Values": true, "Values.Rows": true,
-	"ValuesRow": true, "ValuesRow.LParen": true, "ValuesRow.Exprs": true, "ValuesRow.RParen": true,
+	"ValuesRow": true, "ValuesRow.LParen": true, "ValuesRow.Exprs": true, "ValuesRow.Commas": true, "ValuesRow.RParen": true,
 	"Unary": true, "Unary.Op": true, "Unary.X": true,
 	"Literal": true, "Literal.Value": true,
 	"Variable": true, "Variable.Name": true,
 
 	"SelectCmd": true, "SelectCmd.Select": true,
-	"SimpleSelect": true, "SimpleSelect.Select": true, "SimpleSelect.Columns": true, "SimpleSelect.From": true,
-	"ResultColumn": true, "ResultColumn.Star": true,
+	"SimpleSelect": true, "SimpleSelect.Select": true, "SimpleSelect.Columns": true, "SimpleSelect.Commas": true, "SimpleSelect.From": true,
+	"ResultColumn": true, "ResultColumn.Star": true, "ResultColumn.Expr": true, "ColumnRef": true, "ColumnRef.Column": true,
 	"From": true, "From.From": true, "From.Items": true,
 	"FromItem": true, "FromItem.Source": true,
 	"TableSource": true, "TableSource.Name.Name": true,
@@ -121,7 +122,7 @@ var allowListExtra = []string{
 	"insert or ignore into t (v) values (1)",
 }
 
-// TestAllowList checks that a supported statement uses only the node types and fields of slice 1,
+// TestAllowList checks that a supported statement uses only the node types and fields of slices 1 to 5,
 // on many statements, and that every node type of package ast and every field of the node types of
 // slice 1 occurs in some statement of the test, so that the check covers each of them.
 func TestAllowList(t *testing.T) {
@@ -161,7 +162,7 @@ func TestAllowList(t *testing.T) {
 		if s, err := stmt.Check(sql); err == nil && s != nil {
 			for k := range f {
 				if !allowed[k] {
-					t.Errorf("%q is supported, and has %v, which slice 1 does not have", sql, k)
+					t.Errorf("%q is supported, and has %v, which slices 1 to 5 do not have", sql, k)
 				}
 			}
 			maps.Copy(seenSupported, f)

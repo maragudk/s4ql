@@ -15,8 +15,12 @@
 //     statement and no error.
 //
 // The supported statements are those of slices 1 and 2 of docs/roadmap.md, with the column types and
-// the literals of slice 4. The README next to this file defines them token for token, and lists the
-// names that a "not supported" error gives.
+// the literals of slice 4 and the columns of slice 5. The README next to this file defines them token
+// for token, and lists the names that a "not supported" error gives.
+//
+// Names compare as SQLite compares them, by [Name.Fold]. What a statement means for a table, such as
+// whether its columns exist or its values are as many as the columns, is not decided here, since it
+// depends on the database.
 //
 // A statement is built only from what the pass has recognized. The pass reads the syntax tree of
 // internal/sql/parser in the order of the text and takes each token that the supported form expects
@@ -28,6 +32,8 @@ package stmt
 import (
 	"errors"
 	"fmt"
+
+	"maragu.dev/s4ql/internal/sql/sqlerr"
 )
 
 // ErrNotSupported is matched by every [*NotSupportedError], with [errors.Is].
@@ -106,15 +112,67 @@ type Statement interface {
 	setSpan(Span)
 }
 
-// CreateTable of one table, with one column of the type Type that is its primary key. The table is
-// STRICT and WITHOUT ROWID.
+// CreateTable of one table, with one or more columns, of which exactly one is its primary key. The
+// table is STRICT and WITHOUT ROWID.
 type CreateTable struct {
-	Span   Span
-	Table  Name
-	Column Name
+	Span  Span
+	Table Name
+	// Columns of the table, in the order of the text. Two of them may have one name, as
+	// [Name.Fold] compares names, and there may be more than SQLite allows: SQLite refuses both
+	// once it has found that no table of the name exists, with the error of
+	// [CreateTable.ColumnsError].
+	Columns []Column
+}
+
+// Column of a table, as CREATE TABLE declares it.
+type Column struct {
+	Name Name
 	// Type of the column as it is declared: INT and INTEGER are two types here, as SQLite records
 	// them, though they behave the same.
 	Type Type
+	// PrimaryKey reports whether the column is the primary key of its table.
+	PrimaryKey bool
+	// NotNull reports whether the column is declared NOT NULL. Every column that is not the primary
+	// key is. The primary key may be too, which changes nothing in a WITHOUT ROWID table.
+	NotNull bool
+}
+
+// maxColumns of a table in SQLite, SQLITE_MAX_COLUMN, which the binding in internal/sqlite keeps at
+// its default.
+const maxColumns = 2000
+
+// Key of the table: the index in Columns of its primary key.
+func (s *CreateTable) Key() int {
+	for i, c := range s.Columns {
+		if c.PrimaryKey {
+			return i
+		}
+	}
+	panic("stmt: a table without a primary key")
+}
+
+// ColumnsError of the statement: the error that SQLite gives for its columns once it has found that
+// no table of the name exists, or nil. SQLite adds the columns in order, and refuses the first column
+// after the 2000th with `too many columns on t1`, and before that the first column whose name an
+// earlier column has, as [Name.Fold] compares them, with `duplicate column name: v1`, with the name
+// of the later column. Each prints the value of the name. When a table of the name exists, SQLite
+// gives `table t1 already exists` instead, with the name as written.
+func (s *CreateTable) ColumnsError() *sqlerr.Error {
+	seen := map[string]bool{}
+	for i, c := range s.Columns {
+		message := ""
+		switch {
+		case i == maxColumns:
+			message = "too many columns on " + s.Table.Value
+		case seen[c.Name.Fold()]:
+			message = "duplicate column name: " + c.Name.Value
+		}
+		if message != "" {
+			return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: message, Offset: c.Name.Offset}
+		}
+		seen[c.Name.Fold()] = true
+	}
+	return nil
 }
 
 // Type of a column, as a STRICT table of SQLite declares it.
@@ -172,25 +230,38 @@ func (Real) isValue()    {}
 func (Text) isValue()    {}
 func (Blob) isValue()    {}
 
-// Insert of one row with one value, into the one column that it names. The value is the literal
-// Value, or the argument of a parameter if Parameter is not 0.
+// Insert of one row. Without a list of columns, the values are for the columns of the table, in the
+// order of the table.
 type Insert struct {
-	Span   Span
-	Table  Name
-	Column Name
+	Span  Span
+	Table Name
+	// Columns of the list of columns, in the order of the text, or nil if the statement has none. No
+	// two of them have one name, as [Name.Fold] compares names.
+	Columns []Name
+	// Values of the row, in the order of the text. Their number may differ from that of the columns,
+	// which SQLite refuses once it has found the table.
+	Values []Term
+}
+
+// Term of a row: the literal Value, or the argument of a parameter if Parameter is not 0.
+type Term struct {
 	// Value of the literal, and nil for a parameter.
 	Value Value
 	// Parameter is the number of the parameter that gives the value, from 1 as SQLite counts them, or
-	// 0 if the value is a literal.
+	// 0 if the value is a literal. Every parameter is a plain ?, which SQLite numbers one more than
+	// the one before it.
 	Parameter int
-	// ValueSpan of the value in the text, its sign included, or of the parameter.
-	ValueSpan Span
+	// Span of the value in the text, its sign included, or of the parameter.
+	Span Span
 }
 
-// Select of every column and every row of one table.
+// Select of every row of one table, with the columns that it names, or every column.
 type Select struct {
 	Span  Span
 	Table Name
+	// Columns that the select list names, in the order of the text, each as often as the list names
+	// it, or nil for *, which is every column in the order of the table.
+	Columns []Name
 }
 
 // DropTable of one table.
@@ -214,12 +285,15 @@ func (s *DropTable) Bounds() Span { return s.Span }
 // Parameters of the statement, which has none.
 func (s *CreateTable) Parameters() int { return 0 }
 
-// Parameters of the statement: 1 if its value is a parameter, and 0 otherwise.
+// Parameters of the statement: the number of its values that are a parameter.
 func (s *Insert) Parameters() int {
-	if s.Parameter > 0 {
-		return 1
+	n := 0
+	for _, v := range s.Values {
+		if v.Parameter > 0 {
+			n++
+		}
 	}
-	return 0
+	return n
 }
 
 // Parameters of the statement, which has none.

@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -31,11 +32,12 @@ func namePools(t testing.TB) [][]string {
 // positionTexts are those of [stmttest.PositionTexts].
 var positionTexts = stmttest.PositionTexts
 
-// newGenerator of [stmttest] from seed, which writes a plain ? in place of the value of one insert
-// in four, and columns and values of every type.
+// newGenerator of [stmttest] from seed, which writes a plain ? in place of one value of an insert
+// in four, columns and values of every type, and the forms of slice 5 with up to three columns.
 func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g := stmttest.NewGenerator(rand.New(rand.NewPCG(seed, 0x511ce1)), namePools(t))
 	g.Parameters = 4
+	g.Columns = 3
 	return g
 }
 
@@ -88,7 +90,7 @@ func TestGenerate_mutants(t *testing.T) {
 		}
 	}
 	t.Logf("%v mutants: %v", n**mutantsEach, c)
-	excused(t, c, 0, 343)
+	excused(t, c, 85, 310)
 	var names []string
 	for k := range kinds {
 		names = append(names, k)
@@ -109,38 +111,69 @@ func difference(a, b stmt.Statement) string {
 		return fmt.Sprintf("another kind of statement, %T", b)
 	}
 	var diffs []string
+	names := func(a, b []stmt.Name, what string) {
+		switch {
+		case (a == nil) != (b == nil):
+			diffs = append(diffs, what+" or none")
+		case len(a) != len(b):
+			diffs = append(diffs, "number of "+what+"s")
+		default:
+			for i := range a {
+				if a[i].Value != b[i].Value {
+					diffs = append(diffs, what+" name")
+					break
+				}
+			}
+		}
+	}
 	switch a := a.(type) {
 	case *stmt.CreateTable:
 		b := b.(*stmt.CreateTable)
 		if a.Table.Value != b.Table.Value {
 			diffs = append(diffs, "table name")
 		}
-		if a.Column.Value != b.Column.Value {
-			diffs = append(diffs, "column name")
+		if len(a.Columns) != len(b.Columns) {
+			diffs = append(diffs, "number of columns")
+			break
 		}
-		if a.Type != b.Type {
-			diffs = append(diffs, "type")
+		var an, bn []stmt.Name
+		for i := range a.Columns {
+			an, bn = append(an, a.Columns[i].Name), append(bn, b.Columns[i].Name)
+			if a.Columns[i].Type != b.Columns[i].Type {
+				diffs = append(diffs, "type")
+			}
+			if a.Columns[i].PrimaryKey != b.Columns[i].PrimaryKey || a.Columns[i].NotNull != b.Columns[i].NotNull {
+				diffs = append(diffs, "constraint")
+			}
 		}
+		names(an, bn, "column")
 	case *stmt.Insert:
 		b := b.(*stmt.Insert)
 		if a.Table.Value != b.Table.Value {
 			diffs = append(diffs, "table name")
 		}
-		if a.Column.Value != b.Column.Value {
-			diffs = append(diffs, "column name")
+		names(a.Columns, b.Columns, "column")
+		if len(a.Values) != len(b.Values) {
+			diffs = append(diffs, "number of values")
+			break
 		}
-		switch {
-		case a.Parameter != b.Parameter:
-			diffs = append(diffs, "parameter")
-		case fmt.Sprintf("%T", a.Value) != fmt.Sprintf("%T", b.Value):
-			diffs = append(diffs, "kind of value")
-		case show(a.Value) != show(b.Value):
-			diffs = append(diffs, "value")
+		for i := range a.Values {
+			a, b := a.Values[i], b.Values[i]
+			switch {
+			case a.Parameter != b.Parameter:
+				diffs = append(diffs, "parameter")
+			case fmt.Sprintf("%T", a.Value) != fmt.Sprintf("%T", b.Value):
+				diffs = append(diffs, "kind of value")
+			case show(a.Value) != show(b.Value):
+				diffs = append(diffs, "value")
+			}
 		}
 	case *stmt.Select:
-		if a.Table.Value != b.(*stmt.Select).Table.Value {
+		b := b.(*stmt.Select)
+		if a.Table.Value != b.Table.Value {
 			diffs = append(diffs, "table name")
 		}
+		names(a.Columns, b.Columns, "result column")
 	case *stmt.DropTable:
 		if a.Table.Value != b.(*stmt.DropTable).Table.Value {
 			diffs = append(diffs, "table name")
@@ -149,7 +182,8 @@ func difference(a, b stmt.Statement) string {
 	if diffs == nil {
 		return fmt.Sprintf("the same %T", a)
 	}
-	return fmt.Sprintf("%T with another %v", a, strings.Join(diffs, " and "))
+	slices.Sort(diffs)
+	return fmt.Sprintf("%T with another %v", a, strings.Join(slices.Compact(diffs), " and "))
 }
 
 // FuzzGenerate checks the pass against SQLite on a statement of the generator of slice 1 and a
@@ -193,7 +227,6 @@ var nearMisses = map[string][]string{
 		"create table %[1]v (%[2]v %[4]vs primary key) strict, without rowid",
 		"create table %[1]v (%[2]v primary key) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v) strict, without rowid",
-		"create table %[1]v (%[2]v %[4]v primary key not null) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key null) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key unique) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key check (%[2]v > 0)) strict, without rowid",
@@ -209,9 +242,31 @@ var nearMisses = map[string][]string{
 		"create table %[1]v (%[2]v %[4]v primary key generated always as (1)) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key constraint c) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v constraint c primary key) strict, without rowid",
-		"create table %[1]v (%[2]v %[4]v not null primary key) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key not null not null) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v not null primary key null) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key not null on conflict fail) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key primary key) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key, w int) strict, without rowid",
 		"create table %[1]v (w int, %[2]v %[4]v primary key) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int null) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int not null null) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int not null not null) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int primary key) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int not null primary key) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v not null, w int not null) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int not null default 1) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int not null unique) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int not null check (w > 0)) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int not null collate binary) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int not null references u) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int not null on conflict ignore) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int not null generated always as (1)) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w not null) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w varchar not null) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int not null, primary key (w)) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, w int not null, unique (w)) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key,) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key, , w int not null) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key, unique (%[2]v)) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key, check (%[2]v > 0)) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v, primary key (%[2]v)) strict, without rowid",
@@ -234,11 +289,28 @@ var nearMisses = map[string][]string{
 		"insert or abort into %[1]v (%[2]v) values (%[3]v)",
 		"insert into main.%[1]v (%[2]v) values (%[3]v)",
 		"insert into %[1]v as x (%[2]v) values (%[3]v)",
-		"insert into %[1]v values (%[3]v)",
-		"insert into %[1]v (%[2]v, w) values (%[3]v, 1)",
+		"insert into %[1]v as x values (%[3]v)",
+		"insert into main.%[1]v values (%[3]v)",
 		"insert into %[1]v (%[2]v, %[2]v) values (%[3]v, %[3]v)",
+		"insert into %[1]v (%[2]v, w, %[2]v) values (%[3]v, 1, %[3]v)",
+		"insert into %[1]v (w, %[2]v, W) values (1, %[3]v, 2)",
 		"insert into %[1]v (%[2]v) values (%[3]v), (%[3]v)",
-		"insert into %[1]v (%[2]v) values (%[3]v, 1)",
+		"insert into %[1]v values (%[3]v), (%[3]v)",
+		"insert into %[1]v values (%[3]v, null)",
+		"insert into %[1]v values (%[3]v, 1 + 1)",
+		"insert into %[1]v values (%[3]v, ?1)",
+		"insert into %[1]v values (?, :a)",
+		"insert into %[1]v values (%[3]v, -?)",
+		"insert into %[1]v (%[2]v, w) values (%[3]v, (1))",
+		"insert into %[1]v (%[2]v, w) select %[3]v, 1",
+		"insert into %[1]v select %[3]v",
+		"insert into %[1]v (%[2]v,) values (%[3]v)",
+		"insert into %[1]v values (%[3]v,)",
+		"insert into %[1]v () values (%[3]v)",
+		"insert into %[1]v values ()",
+		"insert into %[1]v values (%[3]v) returning *",
+		"insert into %[1]v (%[2]v, [w]) values (%[3]v, 1)",
+		"insert into %[1]v (%[2]v, '') values (%[3]v, 1)",
 		"insert into %[1]v (%[2]v) values ((%[3]v))",
 		"insert into %[1]v (%[2]v) values (+%[3]v)",
 		"insert into %[1]v (%[2]v) values (%[3]v + 0)",
@@ -248,7 +320,7 @@ var nearMisses = map[string][]string{
 		"insert into %[1]v (%[2]v) values (?1)",
 		"insert into %[1]v (%[2]v) values (:a)",
 		"insert into %[1]v (%[2]v) values (-?)",
-		"insert into %[1]v (%[2]v) values (?, ?)",
+		"insert into %[1]v (%[2]v) values (?, ?2)",
 		"insert into %[1]v (%[2]v) select %[3]v",
 		"insert into %[1]v (%[2]v) values (%[3]v) union select 1",
 		"insert into %[1]v (%[2]v) values (%[3]v) returning *",
@@ -290,6 +362,35 @@ var nearMisses = map[string][]string{
 		"select *, * from %[1]v",
 		"select %[1]v.* from %[1]v",
 		"select 1 from %[1]v",
+		"select %[2]v, * from %[1]v",
+		"select *, %[2]v from %[1]v",
+		"select %[2]v, %[1]v.* from %[1]v",
+		"select %[2]v as x from %[1]v",
+		"select %[2]v x from %[1]v",
+		"select %[2]v, %[2]v as x from %[1]v",
+		"select %[1]v.%[2]v from %[1]v",
+		"select main.%[1]v.%[2]v from %[1]v",
+		"select %[2]v + 1 from %[1]v",
+		"select (%[2]v) from %[1]v",
+		"select -%[2]v from %[1]v",
+		"select %[2]v, 1 from %[1]v",
+		"select %[2]v, null from %[1]v",
+		"select %[2]v, ? from %[1]v",
+		"select %[2]v collate nocase from %[1]v",
+		"select %[2]v is null from %[1]v",
+		"select count(%[2]v) from %[1]v",
+		"select true from %[1]v",
+		"select %[2]v, false from %[1]v",
+		"select '%[2]v' from %[1]v",
+		"select [%[2]v] from %[1]v",
+		"select distinct %[2]v from %[1]v",
+		"select %[2]v from %[1]v where 1",
+		"select %[2]v from %[1]v order by %[2]v",
+		"select %[2]v from %[1]v limit 1",
+		"select %[2]v from %[1]v, u",
+		"select %[2]v",
+		"select %[2]v, from %[1]v",
+		"select , %[2]v from %[1]v",
 		"select * from main.%[1]v",
 		"select * from %[1]v as x",
 		"select * from %[1]v x",
@@ -339,14 +440,23 @@ func TestGenerate_nearMisses(t *testing.T) {
 	c := counts{}
 	for range n {
 		src, s := g.Statement()
-		var table, column, value, typ string
+		// The column of a form is the primary key of a create table, and the first column that an
+		// insert or a select names, or v.
+		table, column, value, typ := "", "v", "", ""
 		switch s := s.(type) {
 		case *stmt.CreateTable:
-			table, column, typ = s.Table.Raw, s.Column.Raw, s.Type.String()
+			key := s.Columns[s.Key()]
+			table, column, typ = s.Table.Raw, key.Name.Raw, key.Type.String()
 		case *stmt.Insert:
-			table, column, value = s.Table.Raw, s.Column.Raw, src[s.ValueSpan.Start:s.ValueSpan.End]
+			table, value = s.Table.Raw, src[s.Values[0].Span.Start:s.Values[0].Span.End]
+			if s.Columns != nil {
+				column = s.Columns[0].Raw
+			}
 		case *stmt.Select:
 			table = s.Table.Raw
+			if s.Columns != nil {
+				column = s.Columns[0].Raw
+			}
 		case *stmt.DropTable:
 			table = s.Table.Raw
 		}
@@ -360,5 +470,5 @@ func TestGenerate_nearMisses(t *testing.T) {
 		}
 	}
 	t.Logf("%v near misses: %v", c[syntaxError]+c[notSupported]+c[syntaxNotSaid]+c[notSupportedNotSaid], c)
-	excused(t, c, 0, 956)
+	excused(t, c, 0, 3022)
 }

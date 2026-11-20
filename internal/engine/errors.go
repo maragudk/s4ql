@@ -55,6 +55,40 @@ var (
 	errPanicked = fmt.Errorf("%w: the statement panicked", ErrInternal)
 )
 
+// checkColumns of the statement s, which [stmt.Check] supports: "not supported" for the forms of
+// slice 5 that the engine does not run yet. They are a table of more than one column, a column that
+// says NOT NULL, an insert without a list of columns or of more than one column or value, and a
+// select that names its columns.
+func checkColumns(s stmt.Statement) error {
+	var what string
+	switch s := s.(type) {
+	case *stmt.CreateTable:
+		switch {
+		case len(s.Columns) > 1:
+			what = fmt.Sprintf("a table of %v columns", len(s.Columns))
+		case s.Columns[0].NotNull:
+			what = "a column that says NOT NULL"
+		}
+	case *stmt.Insert:
+		switch {
+		case s.Columns == nil:
+			what = "INSERT without a column list"
+		case len(s.Columns) > 1:
+			what = fmt.Sprintf("INSERT of %v columns", len(s.Columns))
+		case len(s.Values) > 1:
+			what = fmt.Sprintf("INSERT of %v values", len(s.Values))
+		}
+	case *stmt.Select:
+		if s.Columns != nil {
+			what = "SELECT of columns by name"
+		}
+	}
+	if what == "" {
+		return nil
+	}
+	return fmt.Errorf("%w: %v, which the engine does not run yet", stmt.ErrNotSupported, what)
+}
+
 // checkArguments of a statement with the given number of parameters: the error of [countArguments],
 // and then "not supported" for the first argument that is not a value that a column can hold, as
 // [checkArgument] says. Whether it is of the type of its column is checked when the statement runs,

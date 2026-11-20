@@ -252,6 +252,7 @@ The order of the errors is SQLite's:
 The errors that are not SQLite's:
 
 - **"Not supported"** is the `*stmt.NotSupportedError` of the pass, unchanged. It matches `stmt.ErrNotSupported`.
+- **A statement of several columns, of slice 5, is "not supported" until the engine runs it.** The pass supports a table of more than one column, a column that says NOT NULL, an insert without a list of columns or of more than one column or value, and a select of named columns. `checkColumns` in `errors.go` refuses each with `s4ql: not supported: <what>, which the engine does not run yet`, in an error that matches `stmt.ErrNotSupported`, and `Check` gives it too, so that the driver's `Prepare` refuses the statement.
 - **A value of another type than its column is "not supported";** see [Types](#types).
 - **A text without a statement** gives `ErrNoStatement`.
 - **The state of the transaction of a connection has four errors:** `ErrTxOpen`, `ErrNoTx`, `ErrRowsOpen`, and `ErrTxDone`. Each is returned as it is, but for the commit of a write transaction while a loop reads its rows, whose error wraps `ErrRowsOpen`. See [Transactions](#transactions).
