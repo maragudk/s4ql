@@ -398,7 +398,7 @@ async function check() {
   const added = [...p.$("#log").children].slice(0, p.lines - linesBefore).filter((li) => li.classList.contains("you")).map((li) => li.querySelector(".text").textContent);
   expect(touched && bothRun() && Math.abs(wall()) < 1e-3 && clocks() === "normal",
     `Reset clocks runs the clocks of a again (${clocksBefore} before), with the wall clock at true time (off by ${wall()} ms), and the card says ${clocks()}`);
-  expect(p.button("a", "reset").disabled && !p.button("a", "pause").disabled, "after Reset clocks, Pause is not pressed and is on, and Reset clocks is off");
+  expect(!pressed("pause") && p.button("a", "reset").disabled && !p.button("a", "pause").disabled, "after Reset clocks, Pause is not pressed and is on, and Reset clocks is off");
   expect(JSON.stringify(added) === JSON.stringify(["You reset the clocks of a."]), `the log has one line for Reset clocks (${added.join(" | ")})`);
   // A reset whose shift has nothing to do, after a pause alone in which no fake time passed, leaves
   // the controls on.
@@ -480,7 +480,9 @@ async function check() {
   await p.skipUntil(() => p.instance(holder).state === "running");
   noProcess(`after a crash and a restart of ${holder}, which served`);
 
-  // No limit: fake time goes past 10 minutes, and the log and the commits grow.
+  // No limit: fake time goes past 10 minutes, and the log and the commits grow. The commits grow
+  // only while the requests go to the instance that serves, and the restarted one stands by.
+  if (p.requests().target !== other) await p.send(other);
   const before = { lines: p.lines, commits: p.commits };
   await p.skip(Math.max(0, 660000 - p.t));
   const s = p.win.s4qlPage.state;

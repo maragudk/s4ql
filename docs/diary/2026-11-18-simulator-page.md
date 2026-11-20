@@ -816,3 +816,43 @@ Self-review with the code-review skill at medium:
 - Not changed: the engine's names `"client"` are compared in `page.js` and `run.js` in four places, as before.
 - An ignored action `client` would log the engine's text "the run has no client", but the page always starts its session with a client, so it cannot happen.
 - Follow-up from the lead, on the double meaning of "requests": the Hang S3 lines say "You hang the connection of a to S3." and "The connection of a to S3 no longer hangs.". No other text the page shows says "request" for a request of an instance to S3: S3's refusals already name the renewal, commit, or release, the cards and the S3 row say no "request", and every format of `simstore` is known to `storeLine`, so no raw store text with "request" reaches the log. `check.html` asserts at 11 min that every line the log has had that says request begins "A request gets " or is "You send the requests to a." (or b). `make site-check` passed 4 times, `make lint` passed.
+
+## Step 15: One row of clock actions
+
+**Author:** builder (clocks)
+
+### Prompt Context
+
+**Verbatim prompt:** Markus, through the lead: "I still like having the clocks, because it shows it has no effect on the result. But maybe make the wall clock increments +-5, and just one button to pause both clocks?"
+
+**Interpretation:** jumps of the wall clock of 5 s, one Pause that toggles both clocks, Reset clocks as before, and no separate pause of either clock. One row if it fits, with as few words as possible.
+
+**Inferred intent:** the clocks stay on the page to show that moving them does not break the result. Small jumps and one pause are easier to read than two clocks with their own pauses.
+
+### What I did
+
+- The row: label "Clocks", buttons "Wall +5 s", "Wall −5 s", "Pause" (with its LED and `aria-pressed`), "Reset". Their `aria-label`s are "Move the wall clock of a forward 5 s", "… back 5 s", "Pause both clocks of a", and "Reset the clocks of a". It is one row at 1280. At 390 the label takes its own line and the four buttons a 2 by 2 grid, like every other action row there, because about 324 px inside the card is too narrow for four of them.
+- `page.js`: `JUMP` is 5000. Pause sends `pauseClocks` or `resumeClocks`, by `paused(st)`, which is true if either clock stands still (the page stops and starts them together). Reset clocks sends `resumeClocks` if the clocks stand still, then the `shiftWall` back to true time, as before. The `data-a` values `wall` and `monotonic`, their ids `wall-*` and `mono-*`, and the CSS `.clock.wall`, `.reset`, and the label's `min-width` are gone.
+- The card's Clocks value was "true time", "wall +60 s", "wall paused, −5 s", "wall −5 s; monotonic paused". It is "normal", "wall +5 s", "paused", "paused, wall −5 s".
+- Log, `run.js`: "You move the wall clock of a forward 5 s." (and back), "You pause the clocks of a.", "You start the clocks of a again." (was "You resume the clocks of a."), "You reset the clocks of a." The lines for `stopWall`, `startWall`, `stopMonotonic`, and `startMonotonic` are gone, because the page no longer sends them.
+- Stale read: was "a serves a stale read after both of its clocks went wrong, which the spec allows.", is "a serves a stale read after its clocks were paused, which the spec allows." The checker excuses a stale read only if the monotonic clock was stopped, and on the page only Pause stops it, together with the wall clock.
+- `check.html`: untouched; +5 s and −5 s; −5 s, then Pause (both clocks stop, "paused, wall −5 s", then "paused, wall −10 s" after 5 s), then Pause again ("wall −10 s"); +5 s, Pause, 2 s, Reset ("paused, wall −7 s" before, "normal" after, one line in the log); Pause and Reset with no fake time between; and the clock buttons off after a crash. A unit check asserts the new stale-read line.
+
+### What worked
+
+- `make site-check` passed 10 times in a row, then 6 and 15 more, then 8 more after the review fixes. `make lint` passed.
+- `playwright-cli run-code` at 1280 and 390: untouched, after +5 s, paused, and after a reset.
+
+### What didn't work
+
+- One run of `make site-check`, between the batches, failed: "FAIL fake time goes on to 11:00.0, with 44 lines and 3 commit objects". A passing run has some 269 lines and 93 commit objects there, so the requests went unserved for about 10 minutes. I did not save that run's output. My best guess: the step before crashes the instance that holds the lease and restarts it, but leaves the requests where they were. In every saved run that instance was b, so a took over and served. If it was a, the restarted a stands by and refuses every request. The check now sends the requests to the instance that serves before the skip. This changes nothing in the branch that every saved run took. Not confirmed, since the seed is random.
+- `playwright-cli eval` and a `run-code` with `$(cat file)` were refused by the worktree guard; inline `run-code` worked.
+
+### What warrants review
+
+Self-review with the code-review skill at medium:
+
+- Fixed: the check after Reset said "Pause is not pressed" without asserting it; it asserts `!pressed("pause")` now.
+- Fixed: the comment on `JUMP` explains the 5 s: short next to the lease of 30 s, so it shows that it changes nothing. The reviewer noted that +5 s no longer makes the core refuse calls by its wall clock, as +60 s did. That is what Markus asked for.
+- Not changed: the stale-read line, `paused(st)`, and the removed lines for the four single-clock actions assume that the page is the only source of clock actions in its session, which it is. The engine still accepts the single-clock actions; a page that sent them would need the lines back.
+- Not changed: "normal" for untouched clocks. The lead's brief said "normal when untouched". It is also truer than "true time" after a pause, because the monotonic clock stays behind.

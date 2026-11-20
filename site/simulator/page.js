@@ -67,7 +67,7 @@ const LINES = 100; // the lines of the log that the page keeps
 const WINDOW = 120000; // the fake time that the field shows
 const SLICES = 240; // the bars of the field
 const SLICE = WINDOW / SLICES;
-const JUMP = 5000; // a jump of a wall clock
+const JUMP = 5000; // a jump of a wall clock: short next to the lease of 30 s, so it shows that it changes nothing
 const NS = 1e-6; // a nanosecond in ms, the unit in which the engine keeps its clocks
 const MEMORY = 1 << 30; // SQLite's memory at which the page stops
 // The fake time at which the page stops. The engine's Go heap grows by about 12.5 MB a fake hour and
