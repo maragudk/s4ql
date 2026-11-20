@@ -658,9 +658,9 @@ internal/engine/operator.go keyAccess condition: c.op != stmt.OpIsNull => true
 	A test for NULL has no value, and HasNull of a nil value is false, so only a comparison with NULL gives no row either way.
 internal/engine/operator.go keyAccess condition: c.op != stmt.OpIsNotNull => true
 	A test for NULL has no value, and HasNull of a nil value is false, so only a comparison with NULL gives no row either way.
-internal/engine/operator.go build.filter condition: err != nil => false #4
+internal/engine/operator.go build.bind condition: err != nil => false #4
 	checkType has refused every value that is not NULL and of another type than its column, and keyAccess gives no row for NULL before it compares, so tighter compares only values of one kind and keyAccess never fails here.
-internal/engine/operator.go build.filter remove statement: return nil, err => #4
+internal/engine/operator.go build.bind remove statement: return nil, err => #4
 	checkType has refused every value that is not NULL and of another type than its column, and keyAccess gives no row for NULL before it compares, so tighter compares only values of one kind and keyAccess never fails here.
 
 # The planted bug openBound of slice 7. Its scan gets a bound without a value only from keyAccess,
