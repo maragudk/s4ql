@@ -62,6 +62,12 @@ func (o *Options) SyncOff() {
 	o.syncOff = true
 }
 
+// OnVersionRead makes the instance call f with the version that it reads from its cache when it
+// opens, before it upgrades a cache of an older version.
+func (o *Options) OnVersionRead(f func(version int64)) {
+	o.versionRead = &f
+}
+
 // SpoolFile is the file of a spool, which [Options.WrapSpools] wraps.
 type SpoolFile = spoolFile
 

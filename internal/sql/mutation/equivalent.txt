@@ -466,6 +466,18 @@ internal/core/cache.go table.checkValue remove statement: return nil => #3
 	Without the return the switch ends with n at 0, and the check of the length gives nil.
 internal/core/cache.go table.checkValue remove statement: return nil => #4
 	Without the return the switch ends with n at 0, and the check of the length gives nil.
+internal/core/cache.go conn.upgrade remove statement: return err =>
+	The begin of the upgrade fails only for busy, while another connection holds the write lock: the upgrade then runs without a transaction of its own, and its update fails with the same busy.
+internal/core/cache.go conn.upgrade remove statement: _ = c.c.Exec("rollback") =>
+	Open closes the write connection after setUp fails, and the close rolls the transaction back.
+internal/core/cache.go conn.upgrade remove statement: c.forget() => #2
+	Open closes the write connection after setUp fails, and the close finalizes the statements that it keeps.
+internal/core/cache.go conn.upgrade remove statement: c.forget() =>
+	The statements that the connection keeps are reset after each use, so none of them holds up the commit.
+internal/core/cache.go conn.upgrade condition: err != nil => true #3
+	After a commit that succeeds, the rollback finds no transaction and the error is nil.
+internal/core/cache.go conn.upgrade remove statement: _ = c.c.Exec("rollback") => #2
+	Open closes the write connection after setUp fails, and the close rolls back what the failed commit left.
 internal/core/cache.go readRow remove statement: return nil, fmt.Errorf("%w: the cache holds a value of type %v", ErrCacheVersion, typ) =>
 	sqlite3_column_type gives one of SQLite's five fundamental types, which each have a case.
 internal/core/cache.go readRow swap arguments: fmt.Errorf("%w: the cache holds a value of type %v", ErrCacheVersion, typ) => fmt.Errorf("%w: the cache holds a value of type %v", typ, ErrCacheVersion)
