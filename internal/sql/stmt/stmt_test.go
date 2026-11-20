@@ -1010,7 +1010,7 @@ func bind(s *sqlite.Stmt, values []stmt.Value) error {
 		case stmt.Blob:
 			err = s.BindBlob(i+1, v)
 		case stmt.Null:
-			err = s.BindNull(i+1)
+			err = s.BindNull(i + 1)
 		}
 		if err != nil {
 			return err

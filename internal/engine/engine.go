@@ -32,8 +32,9 @@
 //     message: a syntax error, an error about the tables, the columns, or a primary key, or a text
 //     or a blob that is too long.
 //   - "Not supported", as a [*stmt.NotSupportedError] that matches [stmt.ErrNotSupported], or, for
-//     an argument that no column holds and for a value of another type than its column, an error
-//     that matches stmt.ErrNotSupported.
+//     an argument that no column holds, for a value of another type than its column, and for a
+//     select with WHERE, which the pass supports and the engine does not run yet, an error that
+//     matches stmt.ErrNotSupported.
 //   - [ErrNoStatement], for a text that holds no statement.
 //   - An error that matches [ErrArguments], for another number of arguments than the statement has
 //     parameters.
@@ -301,11 +302,15 @@ func (c *Conn) newReport(src string) *report {
 
 // Check the text src, as [Conn.Exec] and [Conn.Query] check it, for a run with n arguments, without
 // the database and without an event: the text's error, as [stmt.Check] gives it, [ErrNoStatement],
-// or the error of [ErrArguments] for another number of arguments than the statement has
-// parameters; otherwise nil. It does not check what the arguments are.
+// "not supported" for a select with WHERE of slice 7, which the engine does not run yet, as
+// [checkWhere] gives it, or the error of [ErrArguments] for another number of arguments than the
+// statement has parameters; otherwise nil. It does not check what the arguments are.
 func Check(src string, n int) error {
 	s, err := check(src)
 	if err != nil {
+		return err
+	}
+	if err := checkWhere(s); err != nil {
 		return err
 	}
 	return countArguments(s.Parameters(), n)
@@ -333,6 +338,9 @@ func prepare(r *report, src string, args []*s4qlpb.Value) (Plan, string, error) 
 		return nil, "", err
 	}
 	r.of(s)
+	if err := checkWhere(s); err != nil {
+		return nil, "", err
+	}
 	if err := checkArguments(s.Parameters(), args); err != nil {
 		return nil, "", err
 	}

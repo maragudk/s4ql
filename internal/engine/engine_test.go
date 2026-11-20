@@ -397,10 +397,12 @@ func TestEngine_parameters(t *testing.T) {
 		i := newInstance(t, engine.Options{})
 		is.Equal(t, "", i.exec(t1).err)
 		text := map[string]string{
-			"insert into t1 (v1) values (? ?)": `near "?": syntax error`,
-			"insert into t1 (v1) values (?1)":  "s4ql: not supported: numbered parameter (at offset 28)",
-			"select * from t1 where v1 = ?":    "s4ql: not supported: WHERE clause (at offset 17)",
-			" ; ":                              "s4ql: the text holds no statement",
+			"insert into t1 (v1) values (? ?)":        `near "?": syntax error`,
+			"insert into t1 (v1) values (?1)":         "s4ql: not supported: numbered parameter (at offset 28)",
+			"select * from t1 where v1 = ? or v1 = ?": "s4ql: not supported: OR (at offset 30)",
+			// The pass supports a select with WHERE, and the engine does not run it yet.
+			"select * from t1 where v1 = ?": "s4ql: not supported: WHERE, which the engine does not run yet",
+			" ; ":                           "s4ql: the text holds no statement",
 		}
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
@@ -1971,5 +1973,43 @@ func TestEngine_nulls(t *testing.T) {
 			is.NotError(t, err)
 			is.NotError(t, engine.Check(src, s.Parameters()), src)
 		}
+	})
+}
+
+func TestEngine_where(t *testing.T) {
+	t.Run("should refuse a select with WHERE that the pass supports as not supported, before its arguments and anything runs", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(t1).err)
+		is.Equal(t, "", i.exec("insert into t1 (v1) values (1)").err)
+		const want = "s4ql: not supported: WHERE, which the engine does not run yet"
+		for _, c := range []struct {
+			src  string
+			args []int64
+		}{
+			{src: "select * from t1 where v1 = 1"},
+			{src: "select v1 from t1 where v1 >= 2 and v1 < 10 and v1 is not null"},
+			{src: "select * from t1 where v1 = ?", args: []int64{1}},
+			{src: "select * from t1 where v1 = ?"},
+			{src: "select * from t1 where v1 is null", args: []int64{1, 2}},
+			{src: "select * from nosuch where nosuch = 1"},
+		} {
+			_, err := i.c.Exec(t.Context(), c.src, integers(c.args)...)
+			is.True(t, errors.Is(err, stmt.ErrNotSupported), c.src)
+			is.Equal(t, want, fmt.Sprint(err), c.src)
+			is.Equal(t, want, fmt.Sprint(engine.Check(c.src, len(c.args))), c.src)
+			_, err = i.c.Query(t.Context(), c.src, integers(c.args)...)
+			is.Equal(t, want, fmt.Sprint(err), c.src)
+		}
+		is.Equal(t, 1, len(logAnnotations(t, i.store)[1:]))
+	})
+
+	t.Run("should panic for the plan of a select with WHERE, which the engine does not run yet", func(t *testing.T) {
+		s, err := stmt.Check("select * from t1 where v1 = 1")
+		is.NotError(t, err)
+		defer func() {
+			is.Equal(t, "engine: s4ql: not supported: WHERE, which the engine does not run yet", fmt.Sprint(recover()))
+		}()
+		engine.NewPlan(s)
+		t.Fatal("no panic")
 	})
 }
