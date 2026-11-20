@@ -248,11 +248,45 @@ check-browser:
 # test-browser runs the tests of BROWSERPKGS in headless Chromium, through the runner in
 # internal/sqlite/browser as the -exec program of go test. BROWSERFLAGS go to go test, such as
 # BROWSERFLAGS='-run TestSimulation -v'.
+#
+# BROWSERSHARD=i/n, with n BROWSERSHARDS, runs the i-th shard of the tests of BROWSERPKGS, so that
+# CI can run them in jobs at the same time; BROWSERFLAGS must then hold no -run or -skip. Every test
+# is in exactly one shard. The tests of internal/core take most of the time, so they are in four
+# shards: 1, the planted bugs of a commit, the subtests of BROWSERPLANTED that match BROWSERCOMMIT;
+# 2, the other planted bugs; 3, the tests of BROWSERSIM; and 4, the rest, which skips those of 1 to 3.
+# After that, shard 4 runs the packages of BROWSERSHARD4. Shard 5 runs those of BROWSERSHARD5, and
+# shard 6 every other package of BROWSERPKGS, so that a new package lands there. The packages of one
+# go test run side by side. The shards are balanced by the times that CI measured on 2026-11-20; see
+# docs/diary/2026-11-20-faster-browser-ci.md.
+BROWSERSHARDS := 6
+BROWSERSHARD ?=
+BROWSERCORE := ./internal/core
+BROWSERPLANTED := TestSimulation_plantedBugs
+BROWSERCOMMIT := ^should_find_a_commit
+BROWSERSIM := TestSimulation|TestFreeRunning
+BROWSERSHARD4 := ./internal/sqlite ./internal/sqlite/faultvfs ./internal/simulator/engine
+BROWSERSHARD5 := ./internal/store/simstore ./internal/sim
+BROWSERSHARD6 = $(filter-out $(BROWSERCORE) $(BROWSERSHARD4) $(BROWSERSHARD5),$(BROWSERPKGS))
+# browserskip is BROWSERSKIP with the pattern given after it as an alternative, which a -skip takes
+# at every level of a test's name. An empty alternative would skip every test.
+browserskip = $(if $(BROWSERSKIP),$(1)|$(BROWSERSKIP),$(1))
 .PHONY: test-browser
 test-browser:
-	dir=$$(mktemp -d) && go build -o $$dir/browser ./internal/sqlite/browser && \
-		$(BROWSER) test -tags s4ql_browser -exec $$dir/browser -timeout $(BROWSERTIMEOUT) -skip '$(BROWSERSKIP)' $(BROWSERFLAGS) $(BROWSERPKGS); \
-		status=$$?; rm -rf $$dir; exit $$status
+	dir=$$(mktemp -d) && go build -o $$dir/browser ./internal/sqlite/browser || exit 1; \
+	t() { $(BROWSER) test -tags s4ql_browser -exec $$dir/browser -timeout $(BROWSERTIMEOUT) $(BROWSERFLAGS) "$$@"; }; \
+	case '$(BROWSERSHARD)' in \
+	'') t -skip '$(BROWSERSKIP)' $(BROWSERPKGS) ;; \
+	1/$(BROWSERSHARDS)) t -run '^$(BROWSERPLANTED)$$/$(BROWSERCOMMIT)' -skip '$(BROWSERSKIP)' $(BROWSERCORE) ;; \
+	2/$(BROWSERSHARDS)) t -run '^$(BROWSERPLANTED)$$' -skip '$(call browserskip,^$(BROWSERPLANTED)$$/$(BROWSERCOMMIT))' $(BROWSERCORE) ;; \
+	3/$(BROWSERSHARDS)) t -run '^($(BROWSERSIM))$$' -skip '$(BROWSERSKIP)' $(BROWSERCORE) ;; \
+	4/$(BROWSERSHARDS)) t -skip '$(call browserskip,^($(BROWSERPLANTED)|$(BROWSERSIM))$$)' $(BROWSERCORE) && \
+		t -skip '$(BROWSERSKIP)' $(BROWSERSHARD4) ;; \
+	5/$(BROWSERSHARDS)) t -skip '$(BROWSERSKIP)' $(BROWSERSHARD5) ;; \
+	6/$(BROWSERSHARDS)) [ -n '$(BROWSERSHARD6)' ] || { echo "test-browser: shard 6 has no package of BROWSERPKGS left" >&2; false; } && \
+		t -skip '$(BROWSERSKIP)' $(BROWSERSHARD6) ;; \
+	*) echo "test-browser: BROWSERSHARD is i/$(BROWSERSHARDS), such as 1/$(BROWSERSHARDS), or empty, not $(BROWSERSHARD)" >&2; false ;; \
+	esac; \
+	status=$$?; rm -rf $$dir; exit $$status
 
 # simulator builds the simulator's engine for a browser, and writes it with every file that a page
 # needs into SIMULATORDIR. simulator-demo also serves that directory, with the demo page of
