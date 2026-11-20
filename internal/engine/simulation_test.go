@@ -31,6 +31,8 @@ import (
 	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
+	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
+	"maragu.dev/s4ql/internal/sqlite"
 	"maragu.dev/s4ql/internal/store/simstore"
 	"maragu.dev/s4ql/internal/testshard"
 )
@@ -156,6 +158,10 @@ type attempt struct {
 	answer answer
 	// position is the state that the statement saw, from its event.
 	position string
+	// access is how the statement read the rows of its table, and index the name of the index that it
+	// read by, or that a create index or a drop index names, from its event: see [engine.AttrAccess]
+	// and [engine.AttrIndex].
+	access, index string
 	// acked is the number of writes that were acknowledged when the statement started.
 	acked int
 	// partial is set for a query whose rows were not read to their end.
@@ -341,6 +347,11 @@ type run struct {
 	q *sequence
 	// crashed databases, which stay open: see [run.crash].
 	crashed []*core.DB
+	// checks is the number of integrity checks of caches: see [run.checkCache].
+	checks int
+	// ways in which the engines read their rows, by the node and the generation of each engine: "rules",
+	// "every row", or "index" and the name of the index of its path, as [run.open] chooses them.
+	ways map[string]string
 	// events of the run that are not statements: crashes, closes, and restarts, by kind.
 	events map[string]int
 	// wide is the number of rows of tables of several columns in the log, and nulls the number of
@@ -415,20 +426,26 @@ func (h handler) WithGroup(string) slog.Handler            { return h }
 func (h handler) Handle(ctx context.Context, rec slog.Record) error {
 	var b strings.Builder
 	b.WriteString(rec.Message)
-	var position string
+	var position, access, index string
 	rec.Attrs(func(a slog.Attr) bool {
 		if a.Key != engine.AttrSQL {
 			fmt.Fprint(&b, " ", a.Key, "=", a.Value)
 		}
-		if a.Key == engine.AttrPosition {
+		switch a.Key {
+		case engine.AttrPosition:
 			position = a.Value.String()
+		case engine.AttrAccess:
+			access = a.Value.String()
+		case engine.AttrIndex:
+			index = a.Value.String()
 		}
 		return true
 	})
 	h.r.world.Trace(ctx, "%v", b.String())
 	if id, ok := ctx.Value(idKey{}).(uint64); ok && rec.Message == engine.EventStatement {
 		h.r.mu.Lock()
-		h.r.attempts[id].position = position
+		a := h.r.attempts[id]
+		a.position, a.access, a.index = position, access, index
 		h.r.mu.Unlock()
 	}
 	return nil
@@ -440,8 +457,8 @@ func (r *run) open(ctx context.Context, n *node) error {
 	key := fmt.Sprint(n.name, "/", n.gen+1)
 	// Every second engine of a node reads its rows another way than by the rules, so that the checks
 	// of the statements against SQLite see more ways of reading rows, also across crashes and closes:
-	// every row of a table, or, by turns, by one of the names of the indexes of the sequence, in a
-	// table that has an index of the name, and by the rules in another.
+	// every row of a table, or by one of the names of the indexes of the sequence, in a table that has
+	// an index of the name, and by the rules in another.
 	other := n.gen%2 == 1
 	generation := n.gen
 	n.mu.Unlock()
@@ -458,11 +475,6 @@ func (r *run) open(ctx context.Context, n *node) error {
 	for _, bug := range r.w.bugs {
 		options.Plant(bug)
 	}
-	if names := r.q.IndexNames(); other && generation%4 == 1 {
-		options.ScanAll()
-	} else if other {
-		options.Path(engine.Path{Index: names[generation/4%len(names)]})
-	}
 	// The engine draws the direction of each query from a seed of its own, which the seed of the run,
 	// the node, and the number of its engine fix, and not from the host, so that the draws of the
 	// scheduler are those of a run without them, and a replay of the seed reads in the same
@@ -472,6 +484,20 @@ func (r *run) open(ctx context.Context, n *node) error {
 		engineSeed = engineSeed*31 + uint64(b)
 	}
 	options.Seed(engineSeed)
+	// Which other way an engine reads by is drawn from its seed too, one engine in two of each, and not
+	// by the number of the engine, since a node rarely opens its database more than twice.
+	way := "rules"
+	if names := r.q.IndexNames(); other && engineSeed%2 == 0 {
+		way = "every row"
+		options.ScanAll()
+	} else if other {
+		index := names[engineSeed/2%uint64(len(names))]
+		way = "index " + index
+		options.Path(engine.Path{Index: index})
+	}
+	r.mu.Lock()
+	r.ways[key] = way
+	r.mu.Unlock()
 	options.Logger = slog.New(handler{r})
 	n.mu.Lock()
 	n.d, n.e = d, engine.New(d, n.inst, options)
@@ -510,11 +536,10 @@ func withID(src string, id uint64) string {
 	return src[:at] + fmt.Sprint(" /* id ", id, " */ ") + src[at:]
 }
 
-// statement runs one statement of the sequence q on the connection c of a caller of n, whose engine
-// has the generation gen, records it, and gives it. It runs in the transaction tx that spans
-// statements, or on its own if tx is nil.
-func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q *sequence, tx *txRecord) *attempt {
-	call := q.Next()
+// statement runs the call, of the sequence of the run or of the workload, on the connection c of a
+// caller of n, whose engine has the generation gen, records it, and gives it. It runs in the
+// transaction tx that spans statements, or on its own if tx is nil.
+func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, call stmttest.Call, tx *txRecord) *attempt {
 	query := call.Query
 	r.mu.Lock()
 	r.nextID++
@@ -548,7 +573,8 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 		}
 		if err == nil {
 			// One query in four is not read to its end: its loop stops at the first row, it is closed
-			// unread, or its consumer panics. Its rows are then not compared.
+			// unread, or its consumer panics. Its rows are then not compared. The others are read to
+			// their end, and the index that one reads by is dropped while its rows are open.
 			switch (hostRand{n.inst}).IntN(12) {
 			case 0:
 				for _, err := range rows.All() {
@@ -569,7 +595,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 				}()
 				a.partial = true
 			default:
-				got, err = readRows(rows)
+				got, err = readRows(rows, func() { r.dropUnder(ctx, n, gen, rows, tx) })
 			}
 		}
 	} else {
@@ -734,7 +760,7 @@ func (r *run) transactionOf(ctx context.Context, n *node, c *engine.Conn, gen in
 	for range 2 + rnd.IntN(5) {
 		_ = n.inst.Sleep(ctx, time.Duration(rnd.IntN(500))*time.Millisecond)
 		sctx, cancel := timeout()
-		a := r.statement(sctx, n, c, gen, r.q, tx)
+		a := r.statement(sctx, n, c, gen, r.q.Next(), tx)
 		cancel()
 		if a.reason == "no lease" || a.reason == "stopped" {
 			reason = a.reason
@@ -762,7 +788,7 @@ func (r *run) transactionOf(ctx context.Context, n *node, c *engine.Conn, gen in
 		}
 		_ = n.inst.Sleep(ctx, time.Duration(rnd.IntN(int(r.w.idle/time.Millisecond)))*time.Millisecond)
 		sctx, cancel := timeout()
-		if a := r.statement(sctx, n, c, gen, r.q, tx); a.reason == "no lease" || a.reason == "stopped" {
+		if a := r.statement(sctx, n, c, gen, r.q.Next(), tx); a.reason == "no lease" || a.reason == "stopped" {
 			reason = a.reason
 		}
 		cancel()
@@ -815,8 +841,36 @@ func (r *run) transactionOf(ctx context.Context, n *node, c *engine.Conn, gen in
 	return reason
 }
 
-// readRows of a query to their end.
-func readRows(rows *engine.Rows) (answer, error) {
+// dropUnder drops the index that the rows of a query read by, if they read by one, with a statement
+// of its own on a new connection of the engine of n of the generation gen, while the rows are open,
+// so that the check of the rows against SQLite on the state that the query saw shows that the drop
+// leaves the rows of an open query as they are: see [run.droppedUnder]. The rows of a write
+// transaction tx are left alone, since the drop would wait for its place of the writer.
+func (r *run) dropUnder(ctx context.Context, n *node, gen int, rows *engine.Rows, tx *txRecord) {
+	access, ok := rows.Access()
+	if !ok || access.Index == "" || (tx != nil && !tx.readOnly) {
+		return
+	}
+	_, e := n.current()
+	if n.generation(e) != gen {
+		return
+	}
+	r.world.Trace(ctx, "the index %q is dropped while the rows of a query that reads by it are open", access.Index)
+	c := e.Conn()
+	sctx, cancel := n.inst.WithTimeout(ctx, r.w.timeout)
+	r.statement(sctx, n, c, gen, stmttest.Call{Src: `drop index "` + strings.ReplaceAll(access.Index, `"`, `""`) + `"`, Supported: true}, nil)
+	cancel()
+	if err := c.Close(ctx); err != nil {
+		r.violate(ctx, "close of the connection of a drop index: %v", err)
+	}
+}
+
+// readRows of a query to their end, and call open, if it is not nil, before the first row, while the
+// rows are open.
+func readRows(rows *engine.Rows, open func()) (answer, error) {
+	if open != nil {
+		open()
+	}
 	var a answer
 	var columns []string
 	for _, c := range rows.Columns() {
@@ -903,7 +957,7 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 					reason = r.transaction(ctx, n, conn, gen, rnd)
 				} else {
 					sctx, cancel := inst.WithTimeout(ctx, time.Duration(1+rnd.IntN(int(r.w.timeout/time.Millisecond)))*time.Millisecond)
-					reason = r.statement(sctx, n, conn, gen, r.q, nil).reason
+					reason = r.statement(sctx, n, conn, gen, r.q.Next(), nil).reason
 					cancel()
 				}
 				if reason == "no lease" && !r.waitServing(ctx, n) {
@@ -1068,6 +1122,11 @@ func (r *run) crash(ctx context.Context, i int) []host.Task {
 	empty := r.world.Uint64()%2 == 0
 	r.world.Trace(ctx, "%v crashes, and %v starts on %v", victim.name, name, map[bool]string{true: "an empty cache", false: "a copy of its cache"}[empty])
 	r.event(map[bool]string{true: "crash, then an empty cache", false: "crash, then a copy of the cache"}[empty])
+	r.checkCache(ctx, victim.path, "integrity checks after a crash")
+	if empty && indexesAtEnd(readLog(r.store)) > 0 {
+		// The new node replays a log that leaves an index, at least as far as the log is now.
+		r.event("crash, then an empty cache, of a log with an index")
+	}
 	if !empty {
 		if err := copyCache(victim.path, path); err != nil {
 			r.violate(ctx, "copy of the cache: %v", err)
@@ -1096,10 +1155,70 @@ func copyCache(from, to string) error {
 	return nil
 }
 
+// checkCache runs SQLite's integrity check on a copy of the cache at path, with its write-ahead
+// log, as [copyCache] makes it, so that the cache itself, on which a new node may start, is never
+// opened by it. A fault that the check finds, such as an index that does not hold what its table
+// holds, is a violation. The check counts as an event of the kind.
+func (r *run) checkCache(ctx context.Context, path, kind string) {
+	r.mu.Lock()
+	r.checks++
+	at := filepath.Join(r.dir, fmt.Sprint("check-", r.checks, ".db"))
+	r.mu.Unlock()
+	r.event(kind)
+	if _, err := os.Stat(path); err != nil {
+		r.violate(ctx, "the cache at %v to check: %v", path, err)
+		return
+	}
+	if err := copyCache(path, at); err != nil {
+		r.violate(ctx, "copy of the cache at %v to check: %v", path, err)
+		return
+	}
+	faults, err := integrityCheck(at)
+	switch {
+	case err != nil:
+		r.violate(ctx, "the integrity check of the cache at %v: %v", path, err)
+	case len(faults) > 0:
+		r.violate(ctx, "the integrity check of the cache at %v, %v: %v", path, kind, strings.Join(faults, "; "))
+	}
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		_ = os.Remove(at + suffix)
+	}
+}
+
+// integrityCheck of the database at path: the faults that `pragma integrity_check` gives, or none.
+func integrityCheck(path string) (faults []string, err error) {
+	c, err := sqlite.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, c.Close()) }()
+	s, err := c.Prepare("pragma integrity_check")
+	if err != nil {
+		return nil, err
+	}
+	for {
+		ok, err := s.Step()
+		if err != nil {
+			return nil, errors.Join(err, s.Finalize())
+		}
+		if !ok {
+			return faults, s.Finalize()
+		}
+		if fault := s.ColumnText(0); fault != "ok" {
+			faults = append(faults, fault)
+		}
+	}
+}
+
 // do the workload, and check what happened: see [run.verify].
 func (w workload) do(ctx context.Context, world *sim.Scheduler, seed uint64, dir string, t testing.TB) *run {
-	r := &run{t: t, w: w, world: world, seed: seed, dir: dir, attempts: map[uint64]*attempt{}, events: map[string]int{}, endedForLease: map[string][]uint64{},
+	r := &run{t: t, w: w, world: world, seed: seed, dir: dir, attempts: map[uint64]*attempt{}, events: map[string]int{}, endedForLease: map[string][]uint64{}, ways: map[string]string{},
 		store: simstore.New(world, simstore.Options{Latency: 50 * time.Millisecond, Faults: w.faults}), q: newSequenceFrom(hostRand{world})}
+	if seed%2 == 1 {
+		// The sequence of every second seed writes more create indexes, and more WHERE that an index
+		// serves, as [stmttest.Sequence.Indexed] says.
+		r.q.Indexed()
+	}
 	var tasks []host.Task
 	for i := range w.instances {
 		name := string(rune('a' + i))
@@ -1159,6 +1278,10 @@ func (w workload) do(ctx context.Context, world *sim.Scheduler, seed uint64, dir
 		r.violate(ctx, "no instance runs a write ten minutes after the end of the workload")
 	}
 	r.readsFree(ctx, live)
+	// Each live node is closed now. The cache of a node that crashed was checked at its crash.
+	for _, n := range live {
+		r.checkCache(ctx, n.path, "integrity checks at the end")
+	}
 	if err := r.store.Wait(ctx); err != nil {
 		r.violate(ctx, "wait for the store: %v", err)
 	}
@@ -1357,7 +1480,9 @@ func fold(name string) string {
 //     commits on it while one is: see [run.verifyOverlaps].
 //   - Each text that the engine does not support is one that SQLite prepares on an empty database
 //     without a syntax error, as in [pair.step].
-//   - A new instance with an empty cache replays the log to the state that SQLite has after it.
+//   - A new instance with an empty cache replays the log to the state that SQLite has after it, its
+//     indexes included, and SQLite's integrity check of its cache finds no fault, as it finds none in
+//     the cache of a node after its crash or at the end of the workload: see [run.checkCache].
 func (r *run) verify(ctx context.Context) {
 	log := readLog(r.store)
 	r.wide, r.nulls = r.verifyRows(ctx, log)
@@ -1578,6 +1703,10 @@ func (r *run) verify(ctx context.Context) {
 			r.violate(ctx, "the replay of the log holds\n%v\nand SQLite\n%v", got, want)
 		}
 	})
+	r.checkCache(ctx, n.path, "integrity checks after the replay")
+	if indexesAtEnd(log) > 0 {
+		r.event("replays of a log with an index")
+	}
 }
 
 // verifyTxs checks what each statement of a transaction that spans statements gave. The statements
@@ -1709,6 +1838,13 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 	return nothing
 }
 
+// way in which the engine of the attempt a read its rows: see [run.ways].
+func (r *run) way(a *attempt) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ways[fmt.Sprint(a.node, "/", a.gen)]
+}
+
 // countWhere counts the attempt a, which [run.verify] or [run.verifyTxs] compared with SQLite, as an
 // event of the run if it is a select with WHERE: by where it ran, of their own or in a transaction,
 // and, for a query that succeeded, by whether it gave rows.
@@ -1718,9 +1854,14 @@ func (r *run) countWhere(a *attempt, where string) {
 		return
 	}
 	r.event("selects with WHERE " + where + " compared with SQLite")
-	if a.gen%2 == 0 {
-		// See [run.open].
+	switch way := r.way(a); {
+	case way == "every row":
 		r.event("selects with WHERE " + where + " compared with SQLite, on an engine that reads every row")
+	case strings.HasPrefix(way, "index "):
+		r.event("selects with WHERE " + where + " compared with SQLite, on an engine that forces an index path")
+	}
+	if a.access == "index" {
+		r.event("selects with WHERE " + where + " compared with SQLite, read by an index")
 	}
 	if a.state == succeeded && a.query && len(a.answer.rows) > 0 {
 		r.event("selects with WHERE " + where + " that give rows, compared with SQLite")
@@ -1803,6 +1944,25 @@ func (r *run) verifyOverlaps(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// indexesAtEnd of the log: the number of indexes that its tables have after its last commit.
+func indexesAtEnd(log []logCommit) int {
+	// The tables of the indexes, by the folds of the names of the indexes.
+	indexes := map[string]string{}
+	for _, c := range log {
+		for _, ch := range c.changes {
+			switch {
+			case ch.HasCreateIndex():
+				indexes[fold(ch.GetCreateIndex().GetIndex())] = fold(ch.GetCreateIndex().GetTable())
+			case ch.HasDropIndex():
+				delete(indexes, fold(ch.GetDropIndex().GetIndex()))
+			case ch.HasDropTable():
+				maps.DeleteFunc(indexes, func(_, table string) bool { return table == fold(ch.GetDropTable().GetTable()) })
+			}
+		}
+	}
+	return len(indexes)
 }
 
 // readLog of the database in the store s, oldest first.
@@ -2012,9 +2172,11 @@ var storeLine = regexp.MustCompile(`^\S+ store request \d+(, stuck)? store: `)
 
 // tallyOf the simulation s: its statements, by how they ended, its writes that were acknowledged,
 // its queries that were not read to their end, its inserts and selects refused for the type of a
-// value, its commits and those of a statement with a parameter, the rows of tables of several
-// columns and the NULL values in the log, the faults that the store injected, by kind, and its
-// other events.
+// value, its create indexes and drop indexes by outcome, its selects, updates, and deletes that read
+// by an index, its statements on an engine that forces an index path, its queries whose index was
+// dropped while their rows were open, its commits and those of a statement with a parameter, the
+// rows of tables of several columns and the NULL values in the log, the faults that the store
+// injected, by kind, and its other events.
 func tallyOf(s simulation) map[string]int {
 	r := s.r
 	counts := maps.Clone(r.events)
@@ -2040,7 +2202,35 @@ func tallyOf(s simulation) map[string]int {
 		if a.typeRefused {
 			counts["refused for the type"]++
 		}
-		if s, _ := stmt.Check(a.src); isChange(s) {
+		s, _ := stmt.Check(a.src)
+		var kind string
+		switch s.(type) {
+		case *stmt.CreateIndex:
+			kind = "create index"
+		case *stmt.DropIndex:
+			kind = "drop index"
+		case *stmt.Select:
+			kind = "selects"
+		case *stmt.Update:
+			kind = "updates"
+		case *stmt.Delete:
+			kind = "deletes"
+		}
+		switch {
+		case (kind == "create index" || kind == "drop index") && a.state == succeeded:
+			counts[kind+": ok"]++
+		case (kind == "create index" || kind == "drop index") && a.state == sqliteFailed:
+			counts[kind+": "+errorKind(a.answer.err)]++
+		case a.access == "index":
+			counts[kind+" read by an index"]++
+		}
+		if forced, ok := strings.CutPrefix(r.way(a), "index "); ok && a.position != "" {
+			counts["statements on an engine that forces an index path"]++
+			if a.access == "index" && fold(a.index) == fold(forced) {
+				counts["statements read by the index that their engine forces"]++
+			}
+		}
+		if isChange(s) {
 			counts["updates and deletes"]++
 			switch {
 			case a.state == succeeded && a.unchanged:
@@ -2052,6 +2242,7 @@ func tallyOf(s simulation) map[string]int {
 			}
 		}
 	}
+	counts["indexes dropped while the rows of a query that read by them were open"] = r.droppedUnder()
 	counts["acknowledged writes"] = len(r.acked)
 	for _, tx := range r.txs {
 		counts[map[bool]string{false: "write transactions", true: "read-only transactions"}[tx.readOnly]]++
@@ -2073,6 +2264,58 @@ func tallyOf(s simulation) map[string]int {
 		}
 	}
 	return counts
+}
+
+// errorNames match the names in SQLite's errors, which [errorKind] leaves out.
+var errorNames = []*regexp.Regexp{
+	regexp.MustCompile(`(?s)^(index ).*( already exists)$`),
+	regexp.MustCompile(`(?s)^(there is already a table named ).*()$`),
+	regexp.MustCompile(`(?s)^(table ).*( has no column named ).*()$`),
+	regexp.MustCompile(`(?s)^([^:]*: ).*()$`),
+}
+
+// errorKind of the text of SQLite's error err, as an attempt's answer gives it: its codes and its
+// message without the names in it, so that errors of one kind count together.
+func errorKind(err string) string {
+	codes, message, _ := strings.Cut(err, ": ")
+	for _, re := range errorNames {
+		if m := re.FindStringSubmatch(message); m != nil {
+			message = strings.Join(m[1:], "…")
+			break
+		}
+	}
+	return codes + ": " + message
+}
+
+// droppedUnder is the number of queries that read by an index, gave their rows, and were read to
+// their end, while a drop index of the index committed on their node: one of its own that started
+// and returned in that time, or one of a transaction whose commit was called and returned in it.
+// Those rows are compared with SQLite on the state that the query saw, which holds the index.
+func (r *run) droppedUnder() int {
+	var drops []*attempt
+	for _, a := range r.order {
+		if s, _ := stmt.Check(a.src); a.state == succeeded && a.index != "" {
+			if _, ok := s.(*stmt.DropIndex); ok && (a.tx == nil || a.tx.end == "committed") {
+				drops = append(drops, a)
+			}
+		}
+	}
+	var n int
+	for _, q := range r.order {
+		if !q.query || q.state != succeeded || q.partial || q.access != "index" {
+			continue
+		}
+		if slices.ContainsFunc(drops, func(d *attempt) bool {
+			start, stop := d.start, d.stop
+			if d.tx != nil {
+				start, stop = d.tx.ending, d.tx.stop
+			}
+			return d.node == q.node && fold(d.index) == fold(q.index) && q.start < start && stop < q.stop
+		}) {
+			n++
+		}
+	}
+	return n
 }
 
 // TestSimulation runs the default workload, the idle workload, and the hammer workload for many seeds each, and twice
@@ -2300,7 +2543,8 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// a sequence gives rarely; the hammer workload runs more statements than the default one, on
 		// one instance that no other instance takes the lease from. Of the first 200 seeds, with WHERE
 		// in the sequence, 14 found the bug by its own violation there and 12 in the default workload;
-		// with updates and deletes in it, 18 there, and the second of them is seed 5.
+		// with updates and deletes in it, 18 there; and on 2026-11-20, with indexes in it, which take
+		// turns of the inserts, 8 there, and the second of them is seed 59.
 		{"convertReal", hammerWorkload, "hammer", []string{"stores a value of another type than its column", "and the rule for the type of a value"}},
 		// A row that holds its values in other columns than its statement names: the replay of the log
 		// into an empty cache, which writes the rows, differs from SQLite, which runs the statements; a
@@ -2318,18 +2562,22 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		{"zeroLeftOut", defaultWorkload, "default", []string{", and in SQLite", "the replay of the log holds", "rows in SQLite, and its caller was told", "is in no commit, and changes", "which began at commit", "fails in SQLite"}},
 		// A scan by one or two bounds of the key that leaves out the row of a closed bound: a select with
 		// WHERE, of its own or in a transaction, gives fewer rows than in SQLite. Nothing else sees it:
-		// the select writes nothing, and fails nothing. An engine that reads every row, as every second
-		// engine of a node does, does not have the bug. The bug needs a select whose bound of the key is
+		// the select writes nothing, and fails nothing. An engine that reads every row, as some engines
+		// of a node do (see [run.open]), does not have the bug. The bug needs a select whose bound of the key is
 		// the key of a row, which the updates and deletes of the sequence made rarer: they take turns of
 		// the selects, and delete rows. The hammer workload runs more statements than the default one,
 		// on one engine that reads by the key. Of the first 200 seeds, with updates and deletes in the
-		// sequence, 32 found the bug there and 8 in the default workload.
+		// sequence, 32 found the bug there and 8 in the default workload; on 2026-11-20, with indexes
+		// in it, 27 there.
 		{"openBound", hammerWorkload, "hammer", []string{", and in SQLite", "which began at commit"}},
-		// A scan that pins a column of the key of an index to the value of a condition on another
-		// column: a select gives other rows than in SQLite, or fails where the value is of another type
-		// than the column; an update or a delete changes other rows, and the statements after it can
-		// differ.
-		{"pinByPlace", defaultWorkload, "default", []string{", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "fails in SQLite"}},
+		// A scan that pins a column of the key of an index, or of the primary key, to the value of a
+		// condition on another column. Where the value is of another type than the column, or NULL in
+		// the primary key, the storage core refuses the scan, which the engine had checked, as an
+		// internal error. Otherwise a select gives other rows than in SQLite, and an update or a delete
+		// changes other rows, after which the statements can differ. Of the first 200 seeds, on
+		// 2026-11-20, with the sequence of every second seed indexed, 13 found the bug, 12 of them by
+		// the refusal of the core, and the first two of those are seeds 15 and 26.
+		{"pinByPlace", defaultWorkload, "default", []string{"the storage core refused a call that the engine had checked", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "fails in SQLite"}},
 		// An update or a delete that changes nothing and says so: of its own, it is in no commit, and
 		// SQLite, which runs it on the state that it saw, changes rows; in a transaction, SQLite gives
 		// another count; and the rows that it should have changed make later statements differ.
