@@ -73,8 +73,9 @@ type Options struct {
 	// LengthLimit is the largest text or blob, and the largest row, in bytes, that the cache holds:
 	// SQLite's SQLITE_LIMIT_LENGTH of every connection. The default is 1,000,000,000, SQLite's
 	// default and its largest; nothing but tests sets another, which must be at least 1000. SQLite
-	// takes any limit from 30, but the cache stores its own schema and the identity in rows of their
-	// own, which a limit of a few hundred bytes already refuses.
+	// takes any limit from 30, but the cache stores the text of its own schema, and its identity, in
+	// rows that a limit of a few hundred bytes already refuses; a long identity needs a higher limit
+	// than 1000.
 	LengthLimit int
 
 	// syncOff stops SQLite from syncing the cache to disk, for tests.

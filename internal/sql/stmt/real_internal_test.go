@@ -56,9 +56,9 @@ func TestPowerOfTen(t *testing.T) {
 				// SQLite's special case, which is cut where rounding would give 0xcccccccd.
 				p, round = -1, false
 			}
-			hi, lo := topBits(pow10(p), round)
-			is.Equal(t, hi, powerOfTenScale[g], fmt.Sprint("1e", p))
-			is.Equal(t, lo, powerOfTenScaleLo[g], fmt.Sprint("1e", p))
+			wantHi, wantLo := topBits(pow10(p), round)
+			is.Equal(t, wantHi, powerOfTenScale[g], fmt.Sprint("1e", p))
+			is.Equal(t, wantLo, powerOfTenScaleLo[g], fmt.Sprint("1e", p))
 		}
 	})
 }

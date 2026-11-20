@@ -143,7 +143,7 @@ Solving for the mantissa: `x = target * inverse(odd part of H) mod 2^(64+s+2-t)`
 - The first version of the tie search hung for 34 min on the first mutant: for small p the odd part of 10^p's top bits has many factors of two, so the modulus was 2^11 and the loop over multiples below 2^64 had 2^53 steps. A random multiple from 2^63 on fixed it.
 - `timeout 3000 go test ...` failed with `command not found: timeout` on macOS.
 - `TestTx_readFails` first armed every read to fail, and its mutants survived: the upsert after the failed read of whether the row exists needs the same pages, and fails anyway. A fault of `Times: 1` fails only the first read, which kills the mutant that drops the error of `exists`. For the commit, even one failed read fails the commit at a later step, `commit: sqlite: disk I/O error (code 266)`: SQLite rolls the transaction back after a read fails in it, so the mutants that drop the error of a query of `spoolTouched` are equivalent, and listed so.
-- Six mutants of the core drop the error of the `create table` or `drop table` of a temporary table; no test fails the temporary file at those two statements. They are in a section of their own in `equivalent.txt`, which says they are reachable, and `docs/todo.md` has the test to write.
+- Six mutants of the core drop the error of the `create table` or `drop table` of a temporary table; no test fails the temporary file at those two statements. They stay out of `equivalent.txt`, so a run lists them as unexplained, and `docs/todo.md` has the test to write; the review asked for that, after a first version listed them in a section of their own.
 
 ### What I learned
 

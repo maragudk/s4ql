@@ -1361,7 +1361,8 @@ var typesTables = []string{"t_int", "t_integer", "t_real", "t_text", "t_blob"}
 // meets the key of the first, and a query reads the table. It compares each answer with SQLite's,
 // as [TestDifferential] does, by s4ql's rules where they differ from SQLite: a value of another type
 // than its column, NaN, an infinity, and text that holds NUL or is not valid UTF-8 are refused. Then
-// it compares the tables. [FuzzTypes_core] runs the same on the storage core.
+// it compares the tables. [FuzzTypes_core] runs the same on the storage core. The database in memory
+// has no length limit, so the input of the limit that [FuzzTypes_core] reads changes nothing here.
 func FuzzTypes(f *testing.F) {
 	fuzzTypes(f, func(t testing.TB, limit int) *instance { return newMemoryInstance(t) })
 }
@@ -1386,7 +1387,8 @@ const (
 )
 
 // typesCall is the insert of the bytes data into the table in the form, which [FuzzTypes] runs.
-// The bit 8 of form writes the hex digits of a blob literal and its x in upper case.
+// The form is form % [forms], and an odd form / [forms] writes the hex digits of a blob literal and its
+// x in upper case.
 func typesCall(table string, data []byte, form uint8) stmttest.Call {
 	insert := "insert into " + table + " (v) values "
 	bits := func() uint64 {
@@ -1406,7 +1408,7 @@ func typesCall(table string, data []byte, form uint8) stmttest.Call {
 		return stmttest.Call{Src: insert + "('" + strings.ReplaceAll(text, "'", "''") + "')", Supported: supported}
 	case formBlobLiteral:
 		x := "x'" + hex.EncodeToString(data) + "'"
-		if form&8 != 0 {
+		if form/forms%2 == 1 {
 			x = strings.ToUpper(x)
 		}
 		return stmttest.Call{Src: insert + "(" + x + ")", Supported: true}
@@ -1434,10 +1436,11 @@ func fuzzTypes(f *testing.F, newInstance func(t testing.TB, limit int) *instance
 		for form := range uint8(forms) {
 			f.Add(data, form, uint8(0))
 		}
+		f.Add(data, uint8(formBlobLiteral+forms), uint8(0))
 	}
 	// Values about the length limit of 1001 bytes, where a value or its record is too long.
 	for n := 995; n <= 1002; n++ {
-		for _, form := range []uint8{formTextArgument, formBlobArgument, formStringLiteral, formBlobLiteral | 8} {
+		for _, form := range []uint8{formTextArgument, formBlobArgument, formStringLiteral, formBlobLiteral + forms} {
 			f.Add([]byte(strings.Repeat("x", n)), form, uint8(1))
 		}
 	}

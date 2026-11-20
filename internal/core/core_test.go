@@ -856,7 +856,7 @@ func TestDB_stop_cache(t *testing.T) {
 		for table, why := range map[string]string{
 			"t9 (k any primary key) strict, without rowid":        `the column "k" of its table "t9" has the type "ANY"`,
 			"t9 (k int primary key, v any) strict, without rowid": `the column "v" of its table "t9" has the type "ANY"`,
-			"t9 (k int) strict": "",
+			"t9 (k int) strict": `its table "t9" has 1 columns and a primary key of 0`,
 		} {
 			w := newWorld(t)
 			d := w.serve(t, "a", core.Options{})

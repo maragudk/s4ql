@@ -67,6 +67,8 @@ var engineLayers = map[string]string{
 	"TestDifferential":           layerGenerator,
 	"FuzzDifferential":           layerFuzzSeeds,
 	"FuzzDifferential_core":      layerFuzzSeeds,
+	"FuzzTypes":                  layerFuzzSeeds,
+	"FuzzTypes_core":             layerFuzzSeeds,
 	"TestSimulation":             layerSim,
 	"TestSimulation_plantedBugs": layerSim,
 }
