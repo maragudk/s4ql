@@ -1464,8 +1464,9 @@ func typeRefusal(src, message string) bool {
 }
 
 // checkText src as the engine checks a text before it runs it: as [stmt.Check] does, and with the
-// "not supported" of [engine.Check] for an update or a delete of slice 8, which the pass supports and
-// the engine does not run yet, which the tests take for a text that is not supported.
+// "not supported" of [engine.Check] for an update or a delete of slice 8, and a create index or a drop
+// index of slice 9, which the pass supports and the engine does not run yet, which the tests take for
+// a text that is not supported.
 func checkText(src string) (stmt.Statement, error) {
 	s, err := stmt.Check(src)
 	if err == nil && s != nil {

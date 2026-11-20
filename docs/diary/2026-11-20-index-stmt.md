@@ -71,3 +71,50 @@ The brief's list of what stays not supported, each under a name; SQLite's behavi
 
 - The README of the pass, `docs/todo.md`, and the decisions: step 2.
 - The engine and the driver for slice 9, which remove `indexRefusal`.
+
+## Step 2: The documents, the review, and the checks
+
+**Author:** index-stmt builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "3. Details that the agreement does not settle: decide by SQLite's behaviour and the rule above, and record each in `docs/todo.md` in a group \"decisions of the statement pass of indexes, for the lead to confirm\" [...] Finish: `make test`, `make lint`, `make check-browser` pass [...] Self-review against these requirements."
+**Interpretation:** Record the decisions and SQLite's facts in the todo, bring the README of the pass up to date, review the branch with the code-review skill, fix what matters, and run every check.
+**Inferred intent:** A branch whose code, numbers, and documents agree, ready for the lead and for the builder of the engine.
+
+### What I did
+
+`/docs/todo.md`: the group "Decisions of the statement pass of indexes, slice 9", with SQLite's facts and the order of the errors for the engine's builder, and two items for fresh builders: the engine and the driver for slice 9, and mutation testing and long fuzz runs of the code of slice 9 in the pass. The item of slice 8 now says that the `checkText` wrappers and the driver's call of `engine.Check` stay until the engine runs slice 9 too, and the decisions of slice 8 note the names that slice 9 split. A writer sub-agent updated `/internal/sql/stmt/README.md`: the typed form, sections CREATE INDEX and DROP INDEX, the names, the errors of grammar actions, "How it is tested", and "Results" with the numbers of the full run. I read its sections on the two statements. It found that "None is another kind of statement" no longer holds for the supported mutants (a DROP TABLE whose TABLE became INDEX, and the other way), and changed it; and that the tests do not check the offsets of SQLite's errors, which the todo had said they did. I corrected the todo.
+
+The review (`code-review high origin/main...HEAD`) found no bug and four nits. Fixed: the comments of the engine's `check`, of the driver's `check` in `/conn.go`, and of the two `checkText` wrappers named only the update and the delete; the README did not define slice 9 yet and gave the old names (the writer's work); and the check of the 2,001st column in `createIndex` had a condition, `r.at() == o.Bounds().Start`, that always holds, and is now `i == maxColumns` alone.
+
+### Why
+
+The decisions are the lead's to confirm, and a moved number or a changed message needs its reason written down.
+
+### What worked
+
+`make test` (with the crosscheck module, so `drivercheck` without `-short`), `make lint` (0 issues), and `make check-browser` passed. The engine's `TestDifferential` and `TestSimulation` without `-short` passed with every pinned number unchanged. `go test ./internal/sql/stmt/...` without `-short` passed, in about 60 s. `-race -count=10` of `TestGenerator_*`, `-count=50` of the two new generator tests, `-race -count=20` of `TestCheck_indexes`, and `-race -count=3` of `TestCheck`, `TestStatement`, and `TestAllowList` passed. Coverage of the pass under `-short` is 99.5%, with the code of the index statements covered completely. `make test-asan` was not run: no fuzz target changed its code, and the binding is untouched.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+The roadmap's slice 9 on `main` asks that a column named twice, an index of the name of a table, what `drop table` does to the indexes, and `create index` in a transaction that rolls back are decided by SQLite's behaviour and recorded in the todo; the group has all four.
+
+### What was tricky
+
+Nothing beyond step 1.
+
+### What warrants review
+
+- The group "Decisions of the statement pass of indexes, slice 9" in `/docs/todo.md`, for the lead to confirm, above all the names of their own for EXPLAIN QUERY PLAN, INDEXED BY, and NOT INDEXED, which change the answer of texts that the pass refused before.
+- The sections CREATE INDEX and DROP INDEX, "How it is tested", and "Results" of `/internal/sql/stmt/README.md`.
+
+### Future work
+
+- The engine and the driver for slice 9; the todo has what to remove and set. The builder of the engine for slice 8, at work now on `update-delete-engine`, removes the `checkText` wrappers; with this branch merged they must stay for the indexes.
+- Mutation testing and long fuzz runs of the code of slice 9 in the pass.
+- The status of the README, the site, and the roadmap are for the lead's sub-agent after the merge.

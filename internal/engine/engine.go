@@ -324,8 +324,9 @@ func Check(src string, n int) error {
 }
 
 // check the text src: its statement, or its error, as [stmt.Check] gives it, or [ErrNoStatement]. An
-// update and a delete, which the pass supports and the engine does not run yet, are not supported,
-// with the error that the pass gave them before it supported them.
+// update and a delete, and a create index and a drop index, which the pass supports and the engine
+// does not run yet, are not supported, with the error that the pass gave them before it supported
+// them; [indexRefusal] gives that of the two of slice 9.
 func check(src string) (stmt.Statement, error) {
 	s, err := stmt.Check(src)
 	if err != nil {

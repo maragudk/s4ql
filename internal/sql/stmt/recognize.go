@@ -820,7 +820,7 @@ func (r *recognizer) createIndex(c *ast.CreateIndex) *CreateIndex {
 		if i > 0 {
 			r.take(c.Commas[i-1])
 		}
-		if i == maxColumns && r.at() == o.Bounds().Start {
+		if i == maxColumns {
 			// SQLite gives `too many columns in index` once it has found the table, before it looks for
 			// the columns.
 			r.reject("index beyond SQLite's limit")
