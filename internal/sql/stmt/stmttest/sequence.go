@@ -37,7 +37,8 @@ import (
 // values hold keys that SQLite takes for one, such as 0.0 and -0.0, so that every type meets a key
 // that exists. An update sets some columns of the shape, as [Sequence.update] draws it, and an
 // update three times in four and a delete four times in five have a WHERE, as [Sequence.changeConditions]
-// draws one: mostly as a select has one, and one time in three the key equal to a value of an insert.
+// draws one: mostly as a select has one, one time in four the key equal to a value of an insert,
+// and one time in six the key bounded on one side by one.
 // A create index names an index from a few names in several spellings, or now and then a name of a
 // table, on a table of the sequence, and the columns of its shape, as [Sequence.createIndex] draws
 // them; a drop index names one of those names, or now and then a name of a table; and a create table
@@ -71,8 +72,8 @@ type Sequence struct {
 	// their table, the last [storedIndexes] of each, whether SQLite took the create index or not, with
 	// the fold of each name as its Name.Value, for the conditions of a WHERE that an index can serve.
 	indexed map[string][][]stmt.IndexColumn
-	// heavy is set by [Sequence.Indexed].
-	heavy bool
+	// heavy is set by [Sequence.Indexed], and mistyped by [Sequence.Mistyped].
+	heavy, mistyped bool
 }
 
 // IndexNames of the sequence: the values of the names of its indexes, without their quotes, each
@@ -93,6 +94,14 @@ const storedIndexes = 3
 // index as [Sequence.indexConditions] draws them, where it is one in two otherwise.
 func (q *Sequence) Indexed() {
 	q.heavy = true
+}
+
+// Mistyped makes one insert in eight of the sequence give an integer of a column of INT or INTEGER,
+// if it has one, as the real of the same value, which SQLite converts back to the integer and s4ql
+// refuses, as it refuses every value of another type than its column. The values that the
+// conditions of a WHERE draw from keep the integer.
+func (q *Sequence) Mistyped() {
+	q.mistyped = true
 }
 
 // indexWhere reports whether a WHERE that an index of the sequence could serve is drawn as
@@ -320,7 +329,8 @@ func (q *Sequence) create(table stmt.Name) []stmt.Column {
 // time in three. One list in eight leaves a column out, one in twelve has a name in place of one of
 // its own that is no other of the list, one insert in sixteen has a value more and one a value less,
 // one in ten has a value of any type, and one in three of these a second, and one in twelve has NULL
-// for any column, also the key.
+// for any column, also the key. After [Sequence.Mistyped], one insert in eight also gives an integer
+// of a column of INT or INTEGER as a real.
 func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 	r := q.r
 	shape := q.shapeOf(table)
@@ -392,6 +402,21 @@ func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 		}
 	}
 	q.store(table, shape, list, values)
+	if q.mistyped && r.IntN(8) == 0 {
+		// An integer of a column of INT or INTEGER as the whole real of its value, which SQLite
+		// converts back to the integer that is stored for the conditions.
+		var integers []int
+		for i, position := range order[:min(len(order), len(values))] {
+			if _, ok := values[i].(stmt.Integer); ok && kindOf(shape[position].Type) == stmt.TypeInt {
+				integers = append(integers, i)
+			}
+		}
+		if len(integers) > 0 {
+			values = slices.Clone(values)
+			at := integers[r.IntN(len(integers))]
+			values[at] = stmt.Real(float64(values[at].(stmt.Integer)))
+		}
+	}
 	return list, values
 }
 
@@ -447,6 +472,9 @@ func (q *Sequence) selectList(table stmt.Name) []string {
 
 // comparisons are the operators of a condition that compare a column with a value.
 var comparisons = []stmt.Operator{stmt.OpEqual, stmt.OpNotEqual, stmt.OpLess, stmt.OpLessOrEqual, stmt.OpGreater, stmt.OpGreaterOrEqual}
+
+// bounds are the operators of a condition that bound a column on one side.
+var bounds = []stmt.Operator{stmt.OpLess, stmt.OpLessOrEqual, stmt.OpGreater, stmt.OpGreaterOrEqual}
 
 // inverses of the operators: the condition with the inverse of a condition's operator, on its column
 // and with its value, is false wherever the condition is true.
@@ -756,15 +784,22 @@ func (q *Sequence) delete(table stmt.Name) []stmt.Condition {
 	return q.changeConditions(table)
 }
 
-// changeConditions of the WHERE of an update or a delete of table: one time in three, if an insert
-// gave the key a value, the one condition that the key is such a value, which finds the row of the
-// key if it is there, since most WHERE that [Sequence.conditions] draws find no row of a table of a
-// few rows; and otherwise as [Sequence.conditions] draws them.
+// changeConditions of the WHERE of an update or a delete of table, if an insert gave the key a value:
+// one time in four the one condition that the key is such a value, which finds the row of the key if
+// it is there, and one time in six the one condition that bounds the key on one side by such a value,
+// with <, <=, >, or >=, which finds the rows on that side, since most WHERE that
+// [Sequence.conditions] draws find no row of a table of a few rows; and otherwise as
+// [Sequence.conditions] draws them.
 func (q *Sequence) changeConditions(table stmt.Name) []stmt.Condition {
 	shape := q.shapeOf(table)
 	key := shape[slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })]
-	if stored := q.stored[[2]string{table.Fold(), key.Name.Value}]; len(stored) > 0 && q.r.IntN(3) == 0 {
-		return []stmt.Condition{{Column: stmt.Name{Raw: q.spell(key.Name.Value)}, Operator: stmt.OpEqual, Value: stmt.Term{Value: stored[q.r.IntN(len(stored))]}}}
+	if stored := q.stored[[2]string{table.Fold(), key.Name.Value}]; len(stored) > 0 {
+		switch n := q.r.IntN(12); {
+		case n < 3:
+			return []stmt.Condition{{Column: stmt.Name{Raw: q.spell(key.Name.Value)}, Operator: stmt.OpEqual, Value: stmt.Term{Value: stored[q.r.IntN(len(stored))]}}}
+		case n == 3, n == 4:
+			return []stmt.Condition{{Column: stmt.Name{Raw: q.spell(key.Name.Value)}, Operator: bounds[q.r.IntN(len(bounds))], Value: stmt.Term{Value: stored[q.r.IntN(len(stored))]}}}
+		}
 	}
 	if q.indexWhere() {
 		if cs := q.indexConditions(table); cs != nil {

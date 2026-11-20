@@ -3132,7 +3132,7 @@ func TestGenerated(t *testing.T) {
 		"read-only transaction: insert no such table", "read-only transaction: createtable already exists",
 		"read-only transaction: call " + string(callStmtExec), "read-only transaction: call " + string(callStmtQuery),
 		"read-only transaction: call " + string(callPrepareExecRuns) + " with arguments",
-		"read-only transaction: insert while rows are open",
+		"read-only transaction: insert with a parameter while rows are open",
 		"call " + string(callBeginReadOnly) + " in a transaction",
 	} {
 		if y[kind] == 0 {
@@ -3205,11 +3205,11 @@ func TestGenerated(t *testing.T) {
 		"= on the key ok": 10, "!= on the key ok": 12, "< on the key ok": 18, "<= on the key ok": 19, "> on the key ok": 22, ">= on the key ok": 15,
 		"IS NULL on the key ok": 10, "IS NOT NULL on the key ok": 8,
 		"= on another column ok": 6, "!= on another column ok": 5, "< on another column ok": 6, "<= on another column ok": 5, "> on another column ok": 7,
-		">= on another column ok": 8, "IS NULL on another column ok": 2, "IS NOT NULL on another column ok": 5,
+		">= on another column ok": 8, "IS NULL on another column ok": 2, "IS NOT NULL on another column ok": 1,
 		"WHERE that reads no row ok": 17, "WHERE that reads a get of one key ok": 6, "WHERE that reads a scan from a lower bound ok": 8,
 		"WHERE that reads a scan to an upper bound ok": 9, "WHERE that reads a scan between two bounds ok": 9,
 		"WHERE that reads a scan between two bounds that hold no key ok": 7, "WHERE that reads a scan of every row ok": 23,
-		"WHERE that gives no row of a table with rows": 20, "WHERE that gives some rows of a table": 5, "WHERE that gives every row of a table with rows": 6,
+		"WHERE that gives no row of a table with rows": 20, "WHERE that gives some rows of a table": 5, "WHERE that gives every row of a table with rows": 1,
 		"comparison with literal integer ok": 35, "comparison with literal real ok": 14, "comparison with literal real -0.0 ok": 2, "comparison with literal text ok": 12,
 		"comparison with literal empty text ok": 5, "comparison with literal blob ok": 12, "comparison with literal empty blob ok": 2, "comparison with literal null ok": 6,
 		"comparison with argument int64 ok": 16, "comparison with argument float64 ok": 7, "comparison with argument float64 -0.0 ok": 1,
@@ -3242,7 +3242,13 @@ func TestGenerated(t *testing.T) {
 		// numbers and takes turns of other statements: the least number of "select * with NULL ok", of
 		// slice 6, is a third of what the run gives now, 19, where it was 25, and the run no longer
 		// reaches "delete WHERE that reads a scan to an upper bound ok, rows changed", which had the
-		// least number 1 and so was reached 1 to 3 times, so it is left out.
+		// least number 1 and so was reached 1 to 3 times. Since an update and a delete of the sequence
+		// bound the key on one side by a value of an insert now and then, on 2026-11-20, the run
+		// reaches it 3 times, and requires it again; the sequence draws other random numbers, and the
+		// least numbers of "IS NOT NULL on another column ok" and "WHERE that gives every row of a table
+		// with rows", of slice 7, are a third of what the run gives now, or 1, where they were 5 and 6.
+		// Its read-only transactions then insert while rows are open only with a parameter, so the run
+		// requires that one again.
 		"update with WHERE ok, rows changed": 13, "update with WHERE ok, no row found": 48, "update without WHERE ok, rows changed": 10, "update without WHERE ok, no row found": 12,
 		"delete with WHERE ok, rows changed": 12, "delete with WHERE ok, no row found": 60, "delete without WHERE ok, rows changed": 9, "delete without WHERE ok, no row found": 15,
 		"update with WHERE attempt to write a readonly database": 7, "delete with WHERE attempt to write a readonly database": 11,
@@ -3257,8 +3263,9 @@ func TestGenerated(t *testing.T) {
 		"delete with arguments that s4ql refuses not supported": 8, "delete with arguments that s4ql refuses wrong number of arguments": 10,
 		"update WHERE that reads a get of one key ok, rows changed": 9, "delete WHERE that reads a get of one key ok, rows changed": 6,
 		"update WHERE that reads a scan of every row ok, rows changed": 2, "delete WHERE that reads a scan from a lower bound ok, rows changed": 1,
-		"update WHERE that reads no row ok, no row found": 7,
-		"table read back after an update or a delete":     165,
+		"delete WHERE that reads a scan to an upper bound ok, rows changed": 1,
+		"update WHERE that reads no row ok, no row found":                   7,
+		"table read back after an update or a delete":                       165,
 	} {
 		if y["reached: "+kind] < least {
 			t.Errorf("the run reaches %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y["reached: "+kind], least)
@@ -3349,10 +3356,14 @@ func TestGenerated(t *testing.T) {
 	// up, excusedTxOpen and excusedOutside with the transactions, and fewer rows are left open in one
 	// with a statement that fails more often, which took excusedRowsOpen down. A create index of a name
 	// in double quotes that is no column is counted by excusedQuoted now, and the count is 89 again by
-	// chance: it was 77 with the sequences of 40 texts.
+	// chance: it was 77 with the sequences of 40 texts. When an update and a delete of the sequence
+	// bounded the key on one side by a value of an insert now and then, the counts went from 1894, 8,
+	// 681, 360, 372, 98, 13, 48, 97, and 89 to 1891, 5, 686, 358, 368, 97, 11, 54, 91, and 90: the
+	// sequence draws other random numbers, which moves every count, the calls and the transactions
+	// too.
 	want := map[string]int{
-		excusedPrepare: 1894, excusedStartedTable: 8, excusedArguments: 681, excusedArgument: 360, excusedType: 372,
-		excusedLevel: 98, excusedRowsOpen: 13, excusedTxOpen: 48, excusedOutside: 97, excusedQuoted: 89,
+		excusedPrepare: 1891, excusedStartedTable: 5, excusedArguments: 686, excusedArgument: 358, excusedType: 368,
+		excusedLevel: 97, excusedRowsOpen: 11, excusedTxOpen: 54, excusedOutside: 91, excusedQuoted: 90,
 	}
 	kinds := slices.Collect(maps.Keys(want))
 	for name := range y {

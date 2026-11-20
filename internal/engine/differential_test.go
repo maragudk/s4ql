@@ -2516,8 +2516,10 @@ func TestDifferential(t *testing.T) {
 		// random numbers, which moves each of them, and its longer sequences took the second and the
 		// third up; the create indexes and drop indexes, which have no values, take turns of the
 		// inserts, the updates, and the deletes, which took the fourth down, and a third of the
-		// sequences write more of them.
-		want := map[string]int{acceptedStartedTable: 14, excusedArguments: 822, excusedArgument: 326, excusedType: 477, excusedLong: 1, excusedLongChange: 2}
+		// sequences write more of them. When an update and a delete of the sequence bounded the key on
+		// one side by a value of an insert now and then, they went from 14, 822, 326, 477, 1, and 2 to
+		// 8, 855, 316, 470, 2, and 1: the sequence draws other random numbers, which moves each of them.
+		want := map[string]int{acceptedStartedTable: 8, excusedArguments: 855, excusedArgument: 316, excusedType: 470, excusedLong: 2, excusedLongChange: 1}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
 			// The count of [excusedRecordSlip] depends on the allocator of the platform.
@@ -2600,7 +2602,7 @@ var reachedDifferential = map[string]int{
 	"IS NULL on the key ok": 19, "IS NOT NULL on the key ok": 16,
 	"= on another column ok": 10, "!= on another column ok": 8, "< on another column ok": 9, "<= on another column ok": 6, "> on another column ok": 11,
 	">= on another column ok": 7, "IS NULL on another column ok": 2, "IS NOT NULL on another column ok": 2,
-	"= on the key a value of another type": 11, "!= on the key a value of another type": 11, "< on the key a value of another type": 14,
+	"= on the key a value of another type": 11, "!= on the key a value of another type": 3, "< on the key a value of another type": 14,
 	"<= on the key a value of another type": 11, "> on the key a value of another type": 12, ">= on the key a value of another type": 11,
 	"WHERE that reads no row ok": 29, "WHERE that reads a get of one key ok": 18, "WHERE that reads a scan from a lower bound ok": 15,
 	"WHERE that reads a scan to an upper bound ok": 16, "WHERE that reads a scan between two bounds ok": 19,
@@ -2634,7 +2636,13 @@ var reachedDifferential = map[string]int{
 	// constraint failed" and "select of names with NULL ok" are a third of what the run gives now, 2
 	// and 7, where they were 6 and 25; and no select of the run has a column that the table does not
 	// have under IS NULL or IS NOT NULL alone, so the run requires it of a delete, whose WHERE is read
-	// by the same conditions.
+	// by the same conditions. Since an update and a delete bound the key on one side by a value of an
+	// insert now and then, on 2026-11-20, the run reaches "update WHERE that reads a scan to an upper
+	// bound ok, rows changed" 6 times, which the sequences of create indexes and drop indexes had not
+	// reached, and the sequence draws other random numbers: the least numbers of "update WHERE that
+	// reads a scan of every row ok, rows changed", "update WHERE that tests a column more than once
+	// ok, rows changed", and "!= on the key a value of another type" are a third of what the run gives
+	// now, or 1, where they were 3, 3, and 11, which the run before gave 4, 3, and 11 of.
 	"update with WHERE ok, rows changed": 17, "update with WHERE ok, no row found": 76, "update without WHERE ok, rows changed": 20, "update without WHERE ok, no row found": 17,
 	"delete with WHERE ok, rows changed": 32, "delete with WHERE ok, no row found": 77, "delete without WHERE ok, rows changed": 23, "delete without WHERE ok, no row found": 12,
 	"update that changes every row of a table with rows": 27, "update that changes some rows of a table": 10, "update that changes no row of a table with rows": 42,
@@ -2653,9 +2661,9 @@ var reachedDifferential = map[string]int{
 	"update with arguments that s4ql refuses not supported": 10, "update with arguments that s4ql refuses wrong number of arguments": 22,
 	"update with a literal longer than the length limit in SET": 1,
 	"update WHERE that reads no row ok, no row found":           13, "update WHERE that reads a get of one key ok, rows changed": 10, "update WHERE that reads a scan from a lower bound ok, rows changed": 1,
-	"update WHERE that reads a scan between two bounds ok, rows changed":                  1,
-	"update WHERE that reads a scan between two bounds that hold no key ok, no row found": 5, "update WHERE that reads a scan of every row ok, rows changed": 3,
-	"update WHERE that tests a column more than once ok, rows changed": 3, "update WHERE with contradicting conditions ok, no row found": 11,
+	"update WHERE that reads a scan between two bounds ok, rows changed": 1, "update WHERE that reads a scan to an upper bound ok, rows changed": 2,
+	"update WHERE that reads a scan between two bounds that hold no key ok, no row found": 5, "update WHERE that reads a scan of every row ok, rows changed": 1,
+	"update WHERE that tests a column more than once ok, rows changed": 1, "update WHERE with contradicting conditions ok, no row found": 11,
 	"delete with WHERE no such column": 18, "delete WHERE with a column in double quotes that the table does not have no such column": 13,
 	"delete WHERE with a value of another type a value of another type": 18, "delete with arguments that s4ql refuses not supported": 7,
 	"delete with arguments that s4ql refuses wrong number of arguments": 11, "delete WHERE that reads no row ok, no row found": 12,

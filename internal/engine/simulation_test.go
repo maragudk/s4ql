@@ -75,10 +75,15 @@ type workload struct {
 	// after the end of the workload: see [run.idler].
 	idlers int
 	idle   time.Duration
+	// mistyped makes the sequence give more inserts a value of another type than its column, as
+	// [stmttest.Sequence.Mistyped] says.
+	mistyped bool
 }
 
 // hammerWorkload has one instance whose callers hardly wait between their statements, so that two
-// statements of one instance often run at once.
+// statements of one instance often run at once. Its sequence gives more inserts a value of another
+// type than its column, among them whole reals for a column of INT or INTEGER, which SQLite converts
+// and s4ql refuses.
 var hammerWorkload = workload{
 	instances: 1,
 	callers:   4,
@@ -88,6 +93,7 @@ var hammerWorkload = workload{
 	durations: []time.Duration{30 * time.Second},
 	faults:    simstore.AllFaults(),
 	txs:       4,
+	mistyped:  true,
 }
 
 // defaultWorkload has two instances that compete for the lease, two callers on each, a crash and a
@@ -1223,6 +1229,9 @@ func (w workload) do(ctx context.Context, world *sim.Scheduler, seed uint64, dir
 		// The sequence of every second seed writes more create indexes, and more WHERE that an index
 		// serves, as [stmttest.Sequence.Indexed] says.
 		r.q.Indexed()
+	}
+	if w.mistyped {
+		r.q.Mistyped()
 	}
 	var tasks []host.Task
 	for i := range w.instances {
