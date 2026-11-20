@@ -195,7 +195,7 @@ func TestEngine_errors(t *testing.T) {
 
 	t.Run("should give not supported, and no statement, as errors of their own", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
-		_, err := i.c.Exec(t.Context(), "select * from t1 where v1 = 1")
+		_, err := i.c.Exec(t.Context(), "select * from t1 order by v1")
 		is.True(t, errors.Is(err, stmt.ErrNotSupported))
 		var se *sqlerr.Error
 		is.True(t, !errors.As(err, &se))
@@ -400,9 +400,7 @@ func TestEngine_parameters(t *testing.T) {
 			"insert into t1 (v1) values (? ?)":        `near "?": syntax error`,
 			"insert into t1 (v1) values (?1)":         "s4ql: not supported: numbered parameter (at offset 28)",
 			"select * from t1 where v1 = ? or v1 = ?": "s4ql: not supported: OR (at offset 30)",
-			// The pass supports a select with WHERE, and the engine does not run it yet.
-			"select * from t1 where v1 = ?": "s4ql: not supported: WHERE, which the engine does not run yet",
-			" ; ":                           "s4ql: the text holds no statement",
+			" ; ": "s4ql: the text holds no statement",
 		}
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
@@ -417,12 +415,16 @@ func TestEngine_parameters(t *testing.T) {
 					is.Equal(t, want, fmt.Sprint(engine.Check(src, len(args))), src)
 				}
 			}
-			_, err := i.c.Exec(ctx, "insert into t1 (v1) values (?)")
-			is.True(t, errors.Is(err, engine.ErrArguments))
-			_, err = i.c.Exec(ctx, "insert into t1 (v1) values (?)", s4qlpb.Value_builder{Text: new("1\x00")}.Build())
-			is.True(t, errors.Is(err, stmt.ErrNotSupported))
-			_, err = i.c.Exec(ctx, "insert into t1 (v1) values (?)", s4qlpb.Value_builder{Real: new(math.NaN())}.Build())
-			is.True(t, errors.Is(err, stmt.ErrNotSupported))
+			for _, src := range []string{"insert into t1 (v1) values (?)", "select * from t1 where v1 = ?"} {
+				_, err := i.c.Exec(ctx, src)
+				is.True(t, errors.Is(err, engine.ErrArguments), src)
+				_, err = i.c.Query(ctx, src, integers([]int64{1, 2})...)
+				is.True(t, errors.Is(err, engine.ErrArguments), src)
+				_, err = i.c.Exec(ctx, src, s4qlpb.Value_builder{Text: new("1\x00")}.Build())
+				is.Equal(t, "s4ql: not supported: argument 1, which is text that holds the character NUL", fmt.Sprint(err), src)
+				_, err = i.c.Query(ctx, src, s4qlpb.Value_builder{Real: new(math.NaN())}.Build())
+				is.Equal(t, "s4ql: not supported: argument 1, which is a real that is not a number", fmt.Sprint(err), src)
+			}
 		}
 		check(ctx)
 		_, err := i.c.Exec(ctx, "insert into t1 (v1) values (?)", integers([]int64{1})...)
@@ -1976,40 +1978,364 @@ func TestEngine_nulls(t *testing.T) {
 	})
 }
 
+// whereProbes of each type, beside [edges]: values below, between, and above the edges, and values
+// that an edge begins or that begin an edge, which the comparisons of [TestEngine_where] compare
+// the edges with.
+var whereProbes = map[string][]edge{
+	"int":     {{"-2", int64(-2)}, {"2", int64(2)}, {"5", int64(5)}},
+	"integer": {{"-2", int64(-2)}, {"2", int64(2)}, {"5", int64(5)}},
+	"real":    {{"0.5", 0.5}, {"-0.5", -0.5}, {"-1e300", -1e300}, {"1e300", 1e300}, {"2.0", 2.0}},
+	"text":    {{"'b'", "b"}, {"'aa'", "aa"}, {"'ä'", "ä"}, {"'日本'", "日本"}, {"'a\x01'", "a\x01"}, {"'~'", "~"}, {"'it'", "it"}},
+	"blob":    {{"x'7f'", []byte{0x7f}}, {"x'80'", []byte{0x80}}, {"x'ff00'", []byte{0xff, 0}}, {"x'616263'", []byte("abc")}, {"x'000000'", []byte{0, 0, 0}}},
+}
+
+// operators of a comparison, in every spelling.
+var operators = []string{"=", "==", "!=", "<>", "<", "<=", ">", ">="}
+
+// whereTrio is an engine that reads the rows by the key, one that reads every row of a table, and
+// SQLite, which run the same statements.
+type whereTrio struct {
+	t          *testing.T
+	byKey, all *instance
+	o          *oracle
+}
+
+// newWhereTrio with the statements of setup run on each, which must give the same answers.
+func newWhereTrio(t *testing.T, setup ...string) *whereTrio {
+	t.Helper()
+	var all engine.Options
+	all.ScanAll()
+	w := &whereTrio{t: t, byKey: newInstance(t, engine.Options{}), all: newInstance(t, all), o: newOracle(t)}
+	for _, src := range setup {
+		w.exec(src)
+	}
+	return w
+}
+
+// exec src, a statement that is no query, on each, and require the same answer of each.
+func (w *whereTrio) exec(src string) {
+	w.t.Helper()
+	want := w.o.run(w.t, src)
+	want.columns, want.rows = "", nil
+	is.Equal(w.t, want.String(), w.byKey.exec(src).String(), src)
+	is.Equal(w.t, want.String(), w.all.exec(src).String(), src)
+}
+
+// query src with args on each, require the same answer of each, and give SQLite's.
+func (w *whereTrio) query(src string, args ...any) answer {
+	w.t.Helper()
+	want := w.o.run(w.t, src, oracleArgs(args)...)
+	is.Equal(w.t, want.String(), w.byKey.queryValues(src, values(args)).String(), fmt.Sprintf("SQLite and the engine: %v with %#v", src, args))
+	is.Equal(w.t, want.String(), w.all.queryValues(src, values(args)).String(), fmt.Sprintf("SQLite and the engine that reads every row: %v with %#v", src, args))
+	return want
+}
+
 func TestEngine_where(t *testing.T) {
-	t.Run("should refuse a select with WHERE that the pass supports as not supported, before its arguments and anything runs", func(t *testing.T) {
-		i := newInstance(t, engine.Options{})
-		is.Equal(t, "", i.exec(t1).err)
-		is.Equal(t, "", i.exec("insert into t1 (v1) values (1)").err)
-		const want = "s4ql: not supported: WHERE, which the engine does not run yet"
-		for _, c := range []struct {
-			src  string
-			args []int64
-		}{
-			{src: "select * from t1 where v1 = 1"},
-			{src: "select v1 from t1 where v1 >= 2 and v1 < 10 and v1 is not null"},
-			{src: "select * from t1 where v1 = ?", args: []int64{1}},
-			{src: "select * from t1 where v1 = ?"},
-			{src: "select * from t1 where v1 is null", args: []int64{1, 2}},
-			{src: "select * from nosuch where nosuch = 1"},
-		} {
-			_, err := i.c.Exec(t.Context(), c.src, integers(c.args)...)
-			is.True(t, errors.Is(err, stmt.ErrNotSupported), c.src)
-			is.Equal(t, want, fmt.Sprint(err), c.src)
-			is.Equal(t, want, fmt.Sprint(engine.Check(c.src, len(c.args))), c.src)
-			_, err = i.c.Query(t.Context(), c.src, integers(c.args)...)
-			is.Equal(t, want, fmt.Sprint(err), c.src)
+	t.Run("should compare each operator with the edges of each type and with values beside them, as SQLite does, on the key and on another column, by the key and with every row", func(t *testing.T) {
+		for _, typ := range []string{"int", "integer", "real", "text", "blob"} {
+			t.Run(typ, func(t *testing.T) {
+				w := newWhereTrio(t, "create table e (k "+typ+" primary key, v "+typ+") strict, without rowid")
+				es := edges[typ]
+				for n, e := range es {
+					v := es[(n+1)%len(es)].literal
+					if n%3 == 2 {
+						v = "null"
+					}
+					// -0.0 after 0.0 is a key that exists.
+					src := fmt.Sprintf("insert into e values (%v, %v)", e.literal, v)
+					want := w.o.run(t, src)
+					is.Equal(t, want.String(), w.byKey.exec(src).String(), src)
+					is.Equal(t, want.String(), w.all.exec(src).String(), src)
+				}
+				probes := slices.Concat(es, whereProbes[typ])
+				some, none := 0, 0
+				for _, column := range []string{"k", "V"} {
+					for _, op := range operators {
+						for _, p := range probes {
+							for _, a := range []answer{
+								w.query(fmt.Sprintf("select * from e where %v %v %v", column, op, p.literal)),
+								w.query(fmt.Sprintf("select k from e where %v %v ?", column, op), p.arg),
+							} {
+								if len(a.rows) > 0 && len(a.rows) < len(es)-1 {
+									some++
+								} else if len(a.rows) == 0 {
+									none++
+								}
+							}
+						}
+						// A comparison with NULL is never true.
+						is.Equal(t, 0, len(w.query(fmt.Sprintf("select * from e where %v %v null", column, op)).rows))
+						is.Equal(t, 0, len(w.query(fmt.Sprintf("select * from e where %v %v ?", column, op), nil).rows))
+					}
+					is.Equal(t, map[string]int{"k": 0, "V": len(es) / 3}[column], len(w.query("select * from e where "+column+" is null").rows))
+					w.query("select * from e where " + column + " IS NOT NULL")
+				}
+				is.True(t, some > 100 && none > 10, fmt.Sprint("some rows ", some, ", and none ", none))
+			})
 		}
-		is.Equal(t, 1, len(logAnnotations(t, i.store)[1:]))
 	})
 
-	t.Run("should panic for the plan of a select with WHERE, which the engine does not run yet", func(t *testing.T) {
-		s, err := stmt.Check("select * from t1 where v1 = 1")
+	t.Run("should give the rows of a table of every shape that one, two, and three conditions select, as SQLite does, by the key and with every row", func(t *testing.T) {
+		for n, s := range shapes() {
+			t.Run(s.String(), func(t *testing.T) {
+				w := newWhereTrio(t, s.create("t"))
+				// Four rows, of the numbers 10 to 40, with NULL in each column that takes it in the second
+				// and the fourth.
+				for k := 10; k <= 40; k += 10 {
+					var vs []string
+					for p, typ := range s.types {
+						v := literal(typ, k)
+						if s.nullable[p] && k%20 == 0 {
+							v = "null"
+						}
+						vs = append(vs, v)
+					}
+					w.exec("insert into t values (" + strings.Join(vs, ", ") + ")")
+				}
+				type condition struct {
+					src  string
+					args []any
+				}
+				var pool []condition
+				for p, typ := range s.types {
+					name := spelledNames[p]
+					for _, op := range operators {
+						// Below, equal to, between, and above the values of the rows, NULL, and an argument.
+						for _, k := range []int{5, 20, 25, 50} {
+							pool = append(pool, condition{src: fmt.Sprint(name, " ", op, " ", literal(typ, k))})
+						}
+						pool = append(pool, condition{src: name + " " + op + " null"}, condition{src: name + " " + op + " ?", args: []any{argument(typ, 30)}})
+					}
+					pool = append(pool, condition{src: name + " is null"}, condition{src: name + " is not null"})
+				}
+				rows := 0
+				for _, c := range pool {
+					rows += len(w.query("select * from t where "+c.src, c.args...).rows)
+				}
+				r := rand.New(rand.NewPCG(uint64(n), 7))
+				for range 80 {
+					var srcs []string
+					var args []any
+					for range 2 + r.IntN(2) {
+						c := pool[r.IntN(len(pool))]
+						srcs, args = append(srcs, c.src), append(args, c.args...)
+					}
+					list := "*"
+					if r.IntN(2) == 0 {
+						list = columnNames[len(s.types)-1] + ", " + columnNames[0]
+					}
+					rows += len(w.query("select "+list+" from t where "+strings.Join(srcs, " and "), args...).rows)
+				}
+				// The key twice, with bounds that contradict each other, that hold one row, and that fix it.
+				key, typ := spelledNames[s.key], s.types[s.key]
+				lit := func(k int) string { return literal(typ, k) }
+				for _, c := range []condition{
+					{src: key + " > " + lit(30) + " and " + key + " < " + lit(20)},
+					{src: key + " >= " + lit(20) + " and " + key + " <= " + lit(20)},
+					{src: key + " > " + lit(10) + " and " + key + " <= " + lit(30) + " and " + key + " != " + lit(20)},
+					{src: key + " = " + lit(20) + " and " + key + " = " + lit(30)},
+					{src: key + " = " + lit(20) + " and " + key + " >= " + lit(20)},
+					{src: key + " < ? and " + key + " >= ? and " + key + " < ?", args: []any{argument(typ, 40), argument(typ, 20), argument(typ, 35)}},
+					{src: key + " is not null and " + key + " > " + lit(25)},
+					{src: key + " is null and " + key + " > " + lit(25)},
+				} {
+					rows += len(w.query("select * from t where "+c.src, c.args...).rows)
+				}
+				is.True(t, rows > 100, fmt.Sprint(rows, " rows"))
+			})
+		}
+	})
+
+	t.Run("should give SQLite's errors of the names in SQLite's order, and the rows of a column in double quotes", func(t *testing.T) {
+		setup := []string{"create table t (a int primary key, b text, c real not null) strict, without rowid", "insert into t values (1, 'x', 1.5)", "insert into t values (2, null, 2.5)"}
+		for _, c := range []struct {
+			src, want string
+		}{
+			{src: "select * from nosuch where a = 1", want: "1/1: no such table: nosuch"},
+			{src: "select x from nosuch where y = 'a'", want: "1/1: no such table: nosuch"},
+			{src: "select x from t where y = 1", want: "1/1: no such column: x"},
+			{src: "select a, x from t where y is null", want: "1/1: no such column: x"},
+			{src: "select * from t where x = 1", want: "1/1: no such column: x"},
+			{src: "select * from t where a = 1 and B = 'x' and x = 1 and y = 1", want: "1/1: no such column: x"},
+			// A test for NULL of a column that the table does not have does not stop SQLite: a later one
+			// replaces its error, and the next comparison ends the walk with it.
+			{src: "select * from t where x is null and y is null", want: "1/1: no such column: y"},
+			{src: "select * from t where x is null and y = 1", want: "1/1: no such column: x"},
+			{src: "select * from t where x is null and a = 1 and y = 1", want: "1/1: no such column: x"},
+			{src: "select * from t where x is not null and a is null and y is not null and a = 2", want: "1/1: no such column: y"},
+			{src: "select * from t where a is null and y is null and a = 1", want: "1/1: no such column: y"},
+			{src: "select * from t where a = 1 and y is null", want: "1/1: no such column: y"},
+			{src: "select * from t where x is null and a is not null", want: "1/1: no such column: x"},
+			{src: `select * from t where "y" = 1`, want: `1/1: no such column: "y" - should this be a string literal in single-quotes?`},
+			{src: `select * from t where x is not null and "Y""z" is null`, want: `1/1: no such column: "Y"z" - should this be a string literal in single-quotes?`},
+			{src: "select * from t where rowid = 1", want: "1/1: no such column: rowid"},
+			{src: "select * from t where _ROWID_ is null and oid = 1", want: "1/1: no such column: _ROWID_"},
+			// The names come before the type of a value.
+			{src: "select * from t where a = 'x' and y = 1", want: "1/1: no such column: y"},
+			{src: "select y from t where a = 'x'", want: "1/1: no such column: y"},
+			{src: `select * from t where "A" = 1 and "b" is not null`, want: `columns a INT, b TEXT, c REAL; rows 1,"x",real 1.5`},
+			{src: "select c from T where A >= 1 and C < 3.0 and b is null", want: "columns c REAL; rows real 2.5"},
+		} {
+			pin(t, setup, c.src, c.want)
+		}
+	})
+
+	t.Run("should refuse a value of another type than its column as not supported, for the first such condition in the order of the text, after SQLite's errors of the names and of a value that is too long, and take NULL", func(t *testing.T) {
+		const limit = 1000
+		i := newInstanceLimited(t, engine.Options{}, nil, limit)
+		o := newOracleLimited(t, limit)
+		for _, src := range []string{"create table T (a int primary key, b text, c real not null, d blob, e integer) strict, without rowid", "insert into t values (1, 'x', 1.5, x'01', 2)"} {
+			is.Equal(t, "", i.exec(src).err, src)
+			is.Equal(t, "", o.run(t, src).err, src)
+		}
+		long := strings.Repeat("x", limit+1)
+		for _, c := range []struct {
+			src  string
+			args []any
+			want string
+		}{
+			{src: "select * from t where A = '1'", want: "a string literal compared with the column T.a of type INT"},
+			{src: "select * from t where a = 1.0", want: "a real literal compared with the column T.a of type INT"},
+			{src: "select * from t where e = 1.0", want: "a real literal compared with the column T.e of type INTEGER"},
+			{src: "select * from t where c = 1", want: "an integer literal compared with the column T.c of type REAL"},
+			{src: "select * from t where c < -0", want: "an integer literal compared with the column T.c of type REAL"},
+			{src: "select * from t where b = x'78'", want: "a blob literal compared with the column T.b of type TEXT"},
+			{src: "select * from t where d >= 'a'", want: "a string literal compared with the column T.d of type BLOB"},
+			{src: "select * from t where b is null and c = 1.5 and b = 1 and a = 'x'", want: "an integer literal compared with the column T.b of type TEXT"},
+			{src: "select * from t where a = ?", args: []any{"1"}, want: "argument 1, which is text, compared with the column T.a of type INT"},
+			{src: "select * from t where a = 1 and c != ?", args: []any{int64(1)}, want: "argument 1, which is an integer, compared with the column T.c of type REAL"},
+			{src: "select * from t where a = ? and b = ? and c = ?", args: []any{int64(1), 2.5, "x"}, want: "argument 2, which is a real, compared with the column T.b of type TEXT"},
+			{src: "select * from t where d = ?", args: []any{"x"}, want: "argument 1, which is text, compared with the column T.d of type BLOB"},
+			{src: "select * from t where b < ?", args: []any{[]byte("x")}, want: "argument 1, which is a blob, compared with the column T.b of type TEXT"},
+			{src: "select * from t where b = null and a = ? and c = 'x'", args: []any{nil}, want: "a string literal compared with the column T.c of type REAL"},
+		} {
+			i.changes = 7
+			for _, run := range []func(string, []*s4qlpb.Value) answer{i.queryValues, i.execValues} {
+				got := run(c.src, values(c.args))
+				is.Equal(t, "not supported", got.err, c.src)
+				is.Equal(t, "s4ql: not supported: "+c.want, got.message, c.src)
+			}
+			is.Equal(t, int64(7), i.changes, "the count of changes after "+c.src)
+			_, err := i.c.Query(t.Context(), c.src, values(c.args)...)
+			is.True(t, errors.Is(err, stmt.ErrNotSupported), c.src)
+			se, ok := errors.AsType[*sqlerr.Error](err)
+			is.True(t, !ok, fmt.Sprint(se))
+			// The rule of the generated tests gives the same refusal.
+			s, err := stmt.Check(c.src)
+			is.NotError(t, err)
+			table, columns := o.columns(t, "t")
+			is.Equal(t, "s4ql: not supported: "+c.want, stmttest.ConditionRule(table, columns, s.(*stmt.Select), oracleArgs(c.args)), c.src)
+		}
+		// These SQLite answers, as the engine does.
+		for _, c := range []struct {
+			src  string
+			args []any
+			want string
+		}{
+			{src: "select * from t where b = null and a = ?", args: []any{nil}, want: `columns "a INT, b TEXT, c REAL, d BLOB, e INTEGER", rows []`},
+			{src: "select * from t where a = ? and b is not null", args: []any{int64(1)}, want: `columns "a INT, b TEXT, c REAL, d BLOB, e INTEGER", rows ["1,\"x\",real 1.5,x'01',2"]`},
+			{src: "select * from nosuch where a = '1'", want: "1/1: no such table: nosuch"},
+			{src: "select x from t where a = ?", args: []any{long}, want: "1/1: no such column: x"},
+			{src: "select * from t where a = 1 and x = '1'", want: "1/1: no such column: x"},
+			{src: "select * from t where b = ?", args: []any{long}, want: tooBig},
+			{src: "select * from t where d = ?", args: []any{[]byte(long)}, want: tooBig},
+			{src: "select * from t where a = ? and b = 'x'", args: []any{long}, want: tooBig},
+			{src: "select * from t where a = 'x' and b = ?", args: []any{long}, want: tooBig},
+			{src: "select * from t where b = '" + long + "'", want: tooBig},
+			{src: "select * from t where a = 1.5 and b = '" + long + "'", want: tooBig},
+		} {
+			want := o.run(t, c.src, oracleArgs(c.args)...)
+			is.Equal(t, c.want, want.String(), "SQLite: "+c.src)
+			is.Equal(t, want.String(), i.queryValues(c.src, values(c.args)).String(), c.src)
+		}
+		// A blob literal that is too long, which SQLite takes for NULL, is SQLite's error for a value
+		// that is too long, as in an insert.
+		is.Equal(t, tooBig, i.query("select * from t where d = x'"+strings.Repeat("00", limit+1)+"'").err)
+		is.Equal(t, `columns "a INT, b TEXT, c REAL, d BLOB, e INTEGER", rows []`, o.run(t, "select * from t where d = x'"+strings.Repeat("00", limit+1)+"'").String())
+	})
+
+	t.Run("should refuse an argument that no column holds before the instance, and number the parameters across the conditions in the order of the text", func(t *testing.T) {
+		w := newWhereTrio(t, t3, "insert into t3 values (1, 'a', 1.5)", "insert into t3 values (2, 'b', 2.5)", "insert into t3 values (3, 'c', 3.5)")
+		is.Equal(t, `columns "v1 INT, v2 TEXT", rows ["2,\"b\""]`, w.query("select v1, v2 from t3 where v1 >= ? and v2 != ? and v3 < ?", int64(2), "c", 3.0).String())
+		is.Equal(t, `columns "v3 REAL", rows ["real 2.5"]`, w.query("select v3 from t3 where v1 = ? and v1 < 3 and v2 <= ?", int64(2), "b").String())
+		for which, args := range map[string][]any{
+			"argument 1, which is a real that is not a number":       {math.NaN(), "a"},
+			"argument 2, which is an infinite real":                  {int64(1), math.Inf(-1)},
+			"argument 2, which is text that is not valid UTF-8":      {int64(1), "\xff"},
+			"argument 2, which is text that holds the character NUL": {int64(1), "a\x00"},
+			"argument 1, which has no value":                         {[]byte(nil), "a"},
+		} {
+			got := w.byKey.queryValues("select * from t3 where v1 = ? and v2 = ?", values(args))
+			is.Equal(t, "s4ql: not supported: "+which, got.message)
+		}
+		is.Equal(t, "s4ql: wrong number of arguments: 1 for a statement with 2 parameters", w.byKey.queryValues("select * from t3 where v1 = ? and v2 = ?", values([]any{int64(1)})).message)
+		is.Equal(t, "s4ql: wrong number of arguments: 1 for a statement with 0 parameters", w.byKey.queryValues("select * from t3 where v1 = 1 and v2 is null", values([]any{int64(1)})).message)
+		is.NotError(t, engine.Check("select * from t3 where v1 = ? and v2 = ?", 2))
+		is.Equal(t, "s4ql: wrong number of arguments: 3 for a statement with 2 parameters", fmt.Sprint(engine.Check("select * from t3 where v1 = ? and v2 = ?", 3)))
+		// Before the instance: on an instance that is closed, and with a context that has ended.
+		w.byKey.close()
+		got := w.byKey.queryValues("select * from t3 where v1 = ? and v2 = ?", values([]any{math.NaN(), "a"}))
+		is.Equal(t, "s4ql: not supported: argument 1, which is a real that is not a number", got.message)
+		_, err := w.byKey.c.Query(t.Context(), "select * from t3 where v1 = ?", values([]any{int64(1)})...)
+		is.True(t, errors.Is(err, core.ErrStopped), fmt.Sprint(err))
+	})
+
+	t.Run("should select in a write transaction from its own writes, and in a read-only one from the state of its beginning, and write no annotation", func(t *testing.T) {
+		const tw = "create table w (k int primary key, s text) strict, without rowid"
+		pinTx(t, []string{tw, "insert into w values (1, 'a')", "insert into w values (5, null)"}, false, []txStep{
+			{src: "insert into w values (3, 'c')"},
+			{src: "select * from w where k > 1 and k < 5", want: `rows 3,"c"`},
+			{src: "select * from w where k = ?", args: []any{3}, want: `rows 3,"c"`},
+			{src: "select k from w where s is null or k = 1", want: "not supported"},
+			{src: "select k from w where s is null", want: "rows 5"},
+			{src: "select * from w where k = 'x'", want: "not supported"},
+			{src: "select * from w where x = 1", want: "1/1: no such column: x"},
+			{src: "insert into w values (2, 'b')"},
+			{src: "select k from w where k <= 3 and s >= 'b'", want: "rows 2 3"},
+		}, true, "w (k INT, s TEXT NULL): 1,\"a\" 2,\"b\" 3,\"c\" 5,null\n")
+		i := pinTx(t, []string{tw, "insert into w values (1, 'a')"}, true, []txStep{
+			{src: "select * from w where k >= 1", want: `rows 1,"a"`},
+			{src: "select * from w where k = ? and s = ?", args: []any{1, "a"}, want: `rows 1,"a"`},
+			{src: "select * from w where s = 1", want: "not supported"},
+		}, true, "w (k INT, s TEXT NULL): 1,\"a\"\n")
+		is.Equal(t, 2, len(logAnnotations(t, i.store)))
+
+		// The rows of a query with WHERE in a transaction keep its other statements out until they end.
+		i = newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec(tw).err)
+		is.Equal(t, "", i.exec("insert into w values (1, 'a')").err)
+		is.NotError(t, i.c.Begin(t.Context()))
+		rows, err := i.c.Query(t.Context(), "select * from w where k = 1")
 		is.NotError(t, err)
-		defer func() {
-			is.Equal(t, "engine: s4ql: not supported: WHERE, which the engine does not run yet", fmt.Sprint(recover()))
-		}()
-		engine.NewPlan(s)
-		t.Fatal("no panic")
+		_, err = i.c.Exec(t.Context(), "select * from w where k = 1")
+		is.True(t, errors.Is(err, engine.ErrRowsOpen))
+		is.NotError(t, rows.Close())
+		is.NotError(t, i.c.Rollback(t.Context()))
+	})
+
+	t.Run("should select the same rows after a replay of the log into an empty cache", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		o := newOracle(t)
+		for _, src := range []string{"create table r (k text primary key, v real) strict, without rowid", "insert into r values ('b', 2.5)", "insert into r values ('a', null)", "insert into r values ('c', -0.0)"} {
+			is.Equal(t, "", i.exec(src).err)
+			is.Equal(t, "", o.run(t, src).err)
+		}
+		queries := []string{"select * from r where k > 'a'", "select * from r where v = 0.0", "select * from r where v is null", "select * from r where k = 'b' and v >= 2.5"}
+		var before []string
+		for _, src := range queries {
+			want := o.run(t, src).String()
+			is.Equal(t, want, i.query(src).String(), src)
+			before = append(before, want)
+		}
+		i.restart(true, engine.Options{})
+		for n, src := range queries {
+			is.Equal(t, before[n], i.query(src).String(), "after a replay: "+src)
+		}
+	})
+
+	t.Run("should check a text with WHERE at once, without the database", func(t *testing.T) {
+		for src, n := range map[string]int{"select * from t where v = 1": 0, "select v from t where v >= ? and v < ? and w is not null": 2} {
+			is.NotError(t, engine.Check(src, n), src)
+		}
 	})
 }

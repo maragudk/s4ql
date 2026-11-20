@@ -55,15 +55,6 @@ var (
 	errPanicked = fmt.Errorf("%w: the statement panicked", ErrInternal)
 )
 
-// checkWhere of the statement s, which [stmt.Check] supports: "not supported" for a select with the
-// WHERE of slice 7, which the engine does not run yet.
-func checkWhere(s stmt.Statement) error {
-	if s, ok := s.(*stmt.Select); ok && s.Where != nil {
-		return fmt.Errorf("%w: WHERE, which the engine does not run yet", stmt.ErrNotSupported)
-	}
-	return nil
-}
-
 // checkArguments of a statement with the given number of parameters: the error of [countArguments],
 // and then "not supported" for the first argument that is not a value that a column can hold, as
 // [checkArgument] says. Whether it is of the type of its column is checked when the statement runs,
@@ -168,6 +159,46 @@ func checkType(t *s4qlpb.CreateTable, position int, v *s4qlpb.Value, e Expr) err
 		return internalError("a value of an expression of type %T", e)
 	}
 	return fmt.Errorf("%w: %v for the column %v.%v of type %v", stmt.ErrNotSupported, what, t.GetTable(), c.GetName(), typeName(c.GetType()))
+}
+
+// checkCompared value v, of the expression e, an argument or a literal, which a condition compares
+// with the column at position of the table t: "not supported" unless the value has the type of the
+// column, as [checkType] says for a value of an insert, also where SQLite would convert it. NULL has
+// no type, and a comparison with it is neither true nor false.
+func checkCompared(t *s4qlpb.CreateTable, position int, v *s4qlpb.Value, e Expr) error {
+	c := t.GetColumns()[position]
+	var holds bool
+	switch c.GetType() {
+	case s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INTEGER:
+		holds = v.HasInteger()
+	case s4qlpb.Type_TYPE_REAL:
+		holds = v.HasReal()
+	case s4qlpb.Type_TYPE_TEXT:
+		holds = v.HasText()
+	case s4qlpb.Type_TYPE_BLOB:
+		holds = v.HasBlob()
+	default:
+		return internalError("a column of type %v", c.GetType())
+	}
+	if holds || v.HasNull() {
+		return nil
+	}
+	var what string
+	switch e := e.(type) {
+	case *Parameter:
+		what = fmt.Sprintf("argument %v, which is %v,", e.Number, kindName(v))
+	case *Integer:
+		what = "an integer literal"
+	case *Real:
+		what = "a real literal"
+	case *Text:
+		what = "a string literal"
+	case *Blob:
+		what = "a blob literal"
+	default:
+		return internalError("a value of an expression of type %T", e)
+	}
+	return fmt.Errorf("%w: %v compared with the column %v.%v of type %v", stmt.ErrNotSupported, what, t.GetTable(), c.GetName(), typeName(c.GetType()))
 }
 
 // kindName of the kind of the value v, in a sentence: "an integer", "a real", "text", or "a blob".

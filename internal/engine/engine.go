@@ -32,9 +32,8 @@
 //     message: a syntax error, an error about the tables, the columns, or a primary key, or a text
 //     or a blob that is too long.
 //   - "Not supported", as a [*stmt.NotSupportedError] that matches [stmt.ErrNotSupported], or, for
-//     an argument that no column holds, for a value of another type than its column, and for a
-//     select with WHERE, which the pass supports and the engine does not run yet, an error that
-//     matches stmt.ErrNotSupported.
+//     an argument that no column holds and for a value of another type than its column, also one
+//     that a condition compares with a column, an error that matches stmt.ErrNotSupported.
 //   - [ErrNoStatement], for a text that holds no statement.
 //   - An error that matches [ErrArguments], for another number of arguments than the statement has
 //     parameters.
@@ -69,16 +68,21 @@ type Options struct {
 
 	// bugs planted by the tests of this package.
 	bugs bugs
+	// scanAll makes every query read every row of its table, and test its conditions on each, where
+	// it would read the rows by the key. The tests of this package set it, to show that both give
+	// the same rows in the same order.
+	scanAll bool
 }
 
 // Engine runs statements on one database, each on a [Conn] of the engine. It is safe for concurrent
 // use, and a Conn is not: each statement is its own transaction of the database, and the database
 // runs one write transaction at a time, and the read transactions of the connections in parallel.
 type Engine struct {
-	db   database
-	host host.Host
-	log  *slog.Logger
-	bugs bugs
+	db      database
+	host    host.Host
+	log     *slog.Logger
+	bugs    bugs
+	scanAll bool
 }
 
 // New engine for the database d, whose instance runs on the host h, which the engine reads the
@@ -92,7 +96,7 @@ func newEngine(d database, h host.Host, options Options) *Engine {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Engine{db: d, host: h, log: log, bugs: options.bugs}
+	return &Engine{db: d, host: h, log: log, bugs: options.bugs, scanAll: options.scanAll}
 }
 
 // Result of a statement, for SQLite's count of changes, which sqlite3_changes gives after the
@@ -212,6 +216,13 @@ func (c *Conn) begin(ctx context.Context) (writeTx, error) {
 // with SQLite's error of a key that exists. A real that is -0.0 is stored as 0.0, as SQLite stores
 // it, and its key is the key of 0.0.
 //
+// A select fails, in this order, with SQLite's `no such table`, with `no such column` for a column of
+// its select list, and then for one of its conditions, as SQLite looks them up, with `string or blob
+// too big` for a value of a condition that is longer than the limit, and with "not supported" for the
+// first value of a condition, in the order of the text, that is not NULL and is of another type than
+// its column. It gives the rows of the table for which every condition is true, in the order of the
+// key, with SQLite's comparisons; a comparison with NULL is never true.
+//
 // In a transaction that spans statements, the statement then fails with the error of ctx if ctx has
 // ended, with the refusal of a statement of its own if the instance does not serve now, and with
 // [ErrRowsOpen] while the rows of an earlier query of the connection are open. A statement that
@@ -237,7 +248,7 @@ func (c *Conn) exec(ctx context.Context, r *report, src string, args []*s4qlpb.V
 		return Result{}, err
 	}
 	if q, ok := p.(*Query); ok {
-		rows, err := c.query(ctx, r, q)
+		rows, err := c.query(ctx, r, q, args)
 		if err != nil {
 			return Result{}, err
 		}
@@ -282,7 +293,7 @@ func (c *Conn) queryText(ctx context.Context, r *report, src string, args []*s4q
 		return nil, err
 	}
 	if q, ok := p.(*Query); ok {
-		return c.query(ctx, r, q)
+		return c.query(ctx, r, q, args)
 	}
 	res, err := c.write(ctx, r, p, text, args)
 	r.end(ctx, err)
@@ -302,15 +313,11 @@ func (c *Conn) newReport(src string) *report {
 
 // Check the text src, as [Conn.Exec] and [Conn.Query] check it, for a run with n arguments, without
 // the database and without an event: the text's error, as [stmt.Check] gives it, [ErrNoStatement],
-// "not supported" for a select with WHERE of slice 7, which the engine does not run yet, as
-// [checkWhere] gives it, or the error of [ErrArguments] for another number of arguments than the
-// statement has parameters; otherwise nil. It does not check what the arguments are.
+// or the error of [ErrArguments] for another number of arguments than the statement has parameters;
+// otherwise nil. It does not check what the arguments are.
 func Check(src string, n int) error {
 	s, err := check(src)
 	if err != nil {
-		return err
-	}
-	if err := checkWhere(s); err != nil {
 		return err
 	}
 	return countArguments(s.Parameters(), n)
@@ -338,9 +345,6 @@ func prepare(r *report, src string, args []*s4qlpb.Value) (Plan, string, error) 
 		return nil, "", err
 	}
 	r.of(s)
-	if err := checkWhere(s); err != nil {
-		return nil, "", err
-	}
 	if err := checkArguments(s.Parameters(), args); err != nil {
 		return nil, "", err
 	}
@@ -478,12 +482,12 @@ func (readOnly) insertNew(context.Context, string, []*s4qlpb.Value) (bool, error
 	return false, nil
 }
 
-// query runs the plan q in a read transaction of its own, and gives its rows, which hold the
-// transaction until they end. The transaction ends if the rows cannot be built, also when that
-// panics; the event of a panic is then left to [Conn.Exec] and [Conn.Query].
-func (c *Conn) query(ctx context.Context, r *report, q *Query) (_ *Rows, err error) {
+// query runs the plan q, with args for its parameters, in a read transaction of its own, and gives
+// its rows, which hold the transaction until they end. The transaction ends if the rows cannot be
+// built, also when that panics; the event of a panic is then left to [Conn.Exec] and [Conn.Query].
+func (c *Conn) query(ctx context.Context, r *report, q *Query, args []*s4qlpb.Value) (_ *Rows, err error) {
 	if c.tx != nil {
-		return c.queryIn(ctx, r, q)
+		return c.queryIn(ctx, r, q, args)
 	}
 	if c.pending() {
 		r.end(ctx, ErrRowsOpen)
@@ -507,7 +511,7 @@ func (c *Conn) query(ctx context.Context, r *report, q *Query) (_ *Rows, err err
 			r.end(ctx, err)
 		}
 	}()
-	src, err := buildQuery(ctx, tx, q)
+	src, err := buildQuery(ctx, tx, q, args, c.e.db.lengthLimit(), c.e.scanAll)
 	if err != nil {
 		return nil, err
 	}

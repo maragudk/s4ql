@@ -39,6 +39,7 @@ var (
 	seed      = flag.Uint64("seed", 0, "first seed of the sequences of statements")
 	sequences = flag.Int("sequences", 300, "sequences of statements of TestDifferential")
 	length    = flag.Int("length", 40, "statements in each sequence of TestDifferential")
+	scanAll   = flag.Bool("scanall", false, "read every row of its table in each query of TestDifferential and FuzzDifferential_core, and not the rows by the key")
 )
 
 // pinned fails the test unless got, a number of texts that a full run counts, is want. Such a number
@@ -636,7 +637,7 @@ func (y tally) add(src string, a answer) {
 		return
 	}
 	kind := "other"
-	if s, _ := checkText(src); s != nil {
+	if s, _ := stmt.Check(src); s != nil {
 		kind = strings.ToLower(strings.TrimPrefix(fmt.Sprintf("%T", s), "*stmt."))
 		if s.Parameters() > 0 {
 			kind += " with a parameter"
@@ -735,9 +736,19 @@ func differential(t testing.TB, seed uint64, n int, restarts bool, limit int, y 
 	t.Helper()
 	// The instance closes at the end of the sequence, so that a test of many sequences does not keep
 	// the files of each open until it ends.
-	i := newInstanceLimited(t, engine.Options{}, nil, limit)
+	i := newInstanceLimited(t, generatedOptions(), nil, limit)
 	defer i.close()
 	differentialOn(t, seed, n, restarts, y, i)
+}
+
+// generatedOptions of the engine of the generated tests: every query reads every row of its table
+// with -scanall, and the rows by the key otherwise.
+func generatedOptions() engine.Options {
+	var o engine.Options
+	if *scanAll {
+		o.ScanAll()
+	}
+	return o
 }
 
 // differentialOn runs the sequence of n statements from seed on the instance i, as [differential]
@@ -756,7 +767,7 @@ func differentialOn(t testing.TB, seed uint64, n int, restarts bool, y tally, i 
 		if restarts && r.IntN(10) == 0 {
 			empty := r.IntN(2) == 0
 			log = append(log, fmt.Sprint("-- restart, with an empty cache: ", empty))
-			i.restart(empty, engine.Options{})
+			i.restart(empty, generatedOptions())
 			if got, want := i.state(), p.o.state(t); got != want {
 				fail("after the restart the engine holds\n%v\nand SQLite\n%v", got, want)
 			}
@@ -828,7 +839,7 @@ func (p *pair) step(c stmttest.Call) string {
 	// refuses before its arguments, a syntax error or no statement, which SQLite refuses before it
 	// binds them, so that it runs in SQLite without them.
 	args := oracleArgs(c.Args)
-	if s, err := checkText(src); err != nil || s == nil {
+	if s, err := stmt.Check(src); err != nil || s == nil {
 		args = nil
 	}
 	if kind, failure := p.checkLength(c, got); kind != "" {
@@ -848,7 +859,7 @@ func (p *pair) step(c stmttest.Call) string {
 		// for the refusals of their arguments and of the types of their values, which are checked
 		// above, and a text that is not supported is one that SQLite accepts: SQLite prepares it on an
 		// empty database without a syntax error.
-		if s, err := checkText(src); c.Supported || err == nil && s != nil {
+		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil {
 			return fmt.Sprintf("%q: the engine does not support a statement that the pass supports: %v", src, got.message)
 		}
 		if m := syntaxOfNotSupported(t, p.empty, src); m != "" {
@@ -926,12 +937,12 @@ func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, count func(stri
 	t.Helper()
 	outcome := "ok"
 	switch {
-	case got.err == "not supported" && strings.Contains(got.message, " for the column "):
+	case got.err == "not supported" && typeRefusal(c.Src, got.message):
 		outcome = "a value of another type"
 	case got.err != "":
 		outcome = messageKind(got.err)
 	}
-	s, _ := checkText(c.Src)
+	s, _ := stmt.Check(c.Src)
 	switch s := s.(type) {
 	case *stmt.Insert:
 		reachInsert(t, o, s, c, outcome, count)
@@ -1087,7 +1098,7 @@ func reachInsert(t testing.TB, o *oracle, s *stmt.Insert, c stmttest.Call, outco
 // first such argument, as [refusal] says. It gives the kind of the excuse, [excusedArguments] or
 // [excusedArgument], if the rule decides the call, or "", and what differs from the rule, or "".
 func checkArguments(c stmttest.Call, got answer) (kind, failure string) {
-	s, err := checkText(c.Src)
+	s, err := stmt.Check(c.Src)
 	if err != nil || s == nil {
 		return "", ""
 	}
@@ -1166,12 +1177,12 @@ func oracleArgs(args []any) []any {
 // checkType of the call c, with the arguments args as SQLite binds them, whose answer of the engine is
 // got, against s4ql's rule for the type of a value, as [typeRule] gives it. It gives [excusedType] if
 // the rule decides the call, or "", and what differs from the rule, or "". In a read-only
-// transaction the rule decides nothing: SQLite and the engine refuse the write before they look at
-// its value.
+// transaction the rule decides nothing for an insert: SQLite and the engine refuse the write before
+// they look at its value.
 func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failure string) {
 	t := p.t
 	t.Helper()
-	if p.readOnly || slices.ContainsFunc(args, func(a any) bool { return p.i.limit > 0 && byteLength(a) > p.i.limit }) {
+	if p.readOnly && isInsert(c.Src) || slices.ContainsFunc(args, func(a any) bool { return p.i.limit > 0 && byteLength(a) > p.i.limit }) {
 		// An argument that is too long gets SQLite's error when SQLite binds it, which the caller
 		// compares.
 		return "", ""
@@ -1195,7 +1206,7 @@ func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failu
 func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string) {
 	t := p.t
 	t.Helper()
-	s, _ := checkText(c.Src)
+	s, _ := stmt.Check(c.Src)
 	insert, ok := s.(*stmt.Insert)
 	if !ok || p.i.limit == 0 || p.o.prepare(t, c.Src) != nil {
 		return "", ""
@@ -1231,23 +1242,36 @@ func byteLength(v any) int {
 	return 0
 }
 
-// typeRule of the insert of the text src, with the arguments args as SQLite binds them, on the
-// database of o: s4ql's "not supported" for the first column, in the order of the table, whose
-// value, a literal or an argument, is of another type than the column, where SQLite would convert
-// the value or give an error of its own, as [stmttest.TypeRule] gives it, or "". It is "" for a text
-// that is not an insert, an insert that SQLite does not prepare, which gets SQLite's error, an insert
-// with another number of arguments than parameters, an insert that leaves a column without a value,
-// which gets SQLite's `NOT NULL constraint failed` first, and an insert whose every value has the
-// type of its column.
+// typeRule of the insert or the select of the text src, with the arguments args as SQLite binds
+// them, on the database of o: s4ql's "not supported" for the first column, in the order of the table,
+// whose value, a literal or an argument, is of another type than the column, where SQLite would
+// convert the value or give an error of its own, as [stmttest.TypeRule] gives it, and for the first
+// condition of a select, in the order of the text, whose value is of another type than its column,
+// as [stmttest.ConditionRule] gives it; or "". It is "" for a text that is neither, a statement that
+// SQLite does not prepare, which gets SQLite's error, one with another number of arguments than
+// parameters, an insert that leaves a column without a value, which gets SQLite's `NOT NULL
+// constraint failed` first, and a statement whose every value has the type of its column.
 func typeRule(t testing.TB, o *oracle, src string, args []any) string {
 	t.Helper()
-	s, _ := checkText(src)
-	insert, ok := s.(*stmt.Insert)
-	if !ok || len(args) != insert.Parameters() || o.prepare(t, src) != nil {
+	s, _ := stmt.Check(src)
+	if s == nil || len(args) != s.Parameters() {
 		return ""
 	}
-	table, columns := o.columns(t, insert.Table.Value)
-	return stmttest.TypeRule(table, columns, insert, args)
+	switch s := s.(type) {
+	case *stmt.Insert:
+		if o.prepare(t, src) != nil {
+			return ""
+		}
+		table, columns := o.columns(t, s.Table.Value)
+		return stmttest.TypeRule(table, columns, s, args)
+	case *stmt.Select:
+		if s.Where == nil || o.prepare(t, src) != nil {
+			return ""
+		}
+		table, columns := o.columns(t, s.Table.Value)
+		return stmttest.ConditionRule(table, columns, s, args)
+	}
+	return ""
 }
 
 // keyType is the declared type of the key column of the table of the insert, on the database of o,
@@ -1288,22 +1312,22 @@ func (o *oracle) columns(t testing.TB, name string) (string, []stmttest.TableCol
 	}
 }
 
-// checkText src as the engine checks a text before it runs it: as [stmt.Check] does, and with the
-// "not supported" of [engine.Check] for a select with WHERE of slice 7 that the pass supports and the
-// engine does not run yet, which the tests take for a text that is not supported.
-func checkText(src string) (stmt.Statement, error) {
-	s, err := stmt.Check(src)
-	if err == nil && s != nil {
-		if err := engine.Check(src, s.Parameters()); errors.Is(err, stmt.ErrNotSupported) {
-			return nil, err
-		}
+// typeRefusal reports whether message is the engine's refusal of a value of another type than its
+// column, for the insert or the select with WHERE of the text src, as [typeRule] gives it.
+func typeRefusal(src, message string) bool {
+	s, _ := stmt.Check(src)
+	switch s := s.(type) {
+	case *stmt.Insert:
+		return strings.Contains(message, " for the column ")
+	case *stmt.Select:
+		return s.Where != nil && strings.Contains(message, " compared with the column ")
 	}
-	return s, err
+	return false
 }
 
 // isInsert reports whether src is a supported insert.
 func isInsert(src string) bool {
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	_, ok := s.(*stmt.Insert)
 	return ok
 }
@@ -1380,8 +1404,11 @@ func TestDifferential(t *testing.T) {
 		// 184, 336, and 3 to 18, 703, 220, 339, and 8: the sequence draws other random numbers, which
 		// moves each of them, and of its own a call around a NULL argument has a nil []byte in its
 		// place, which took the third up: the arguments that are a nil []byte went from 26 to 54. Nil is
-		// no longer among [stmttest.Unsupported].
-		want := map[string]int{acceptedStartedTable: 18, excusedArguments: 703, excusedArgument: 220, excusedType: 339, excusedLong: 8}
+		// no longer among [stmttest.Unsupported]. The engine of slice 7 took the fourth from 339 to 350:
+		// it runs the two selects with WHERE of [stmttest.Others], which compare a column with a small
+		// integer or with an argument of any type, and 11 of them compare one of another type than its
+		// column, which s4ql's rule refuses. The generator drew as before then.
+		want := map[string]int{acceptedStartedTable: 18, excusedArguments: 703, excusedArgument: 220, excusedType: 350, excusedLong: 8}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
 			if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) {

@@ -361,16 +361,16 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 	return Result{Changes: n, SetsChanges: insert}, nil
 }
 
-// queryIn runs the plan q in the transaction of the connection, and gives its rows, which read the
-// state of the transaction. Their end does not end the transaction.
-func (c *Conn) queryIn(ctx context.Context, r *report, q *Query) (*Rows, error) {
+// queryIn runs the plan q, with args for its parameters, in the transaction of the connection, and
+// gives its rows, which read the state of the transaction. Their end does not end the transaction.
+func (c *Conn) queryIn(ctx context.Context, r *report, q *Query, args []*s4qlpb.Value) (*Rows, error) {
 	t := c.tx
 	r.at(t.position(), t.write != nil)
 	if err := c.ready(ctx); err != nil {
 		r.end(ctx, err)
 		return nil, err
 	}
-	src, err := buildQuery(ctx, t.reader(), q)
+	src, err := buildQuery(ctx, t.reader(), q, args, c.e.db.lengthLimit(), c.e.scanAll)
 	if err != nil {
 		r.end(ctx, err)
 		return nil, err

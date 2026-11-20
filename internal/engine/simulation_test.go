@@ -469,7 +469,7 @@ var idPattern = regexp.MustCompile(`/\* id (\d+) \*/`)
 // withID puts the comment of the ID into the text of a statement that the pass supports, after its
 // first token, where the annotation keeps it.
 func withID(src string, id uint64) string {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err != nil || s == nil {
 		return src
 	}
@@ -496,7 +496,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 	}
 	a.src = withID(call.Src, a.id)
 	call.Src = a.src
-	if s, _ := checkText(a.src); s != nil {
+	if s, _ := stmt.Check(a.src); s != nil {
 		_, isSelect := s.(*stmt.Select)
 		a.write = !isSelect
 	}
@@ -573,11 +573,12 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, q
 		// the generator, and every other that the pass supports, with the arguments that it takes must
 		// run.
 		kind, failure := checkArguments(call, a.answer)
-		s, _ := checkText(a.src)
+		s, _ := stmt.Check(a.src)
 		supported := call.Supported || s != nil
-		if kind == "" && supported && isInsert(a.src) && a.answer.err == "not supported" && strings.Contains(a.answer.message, " for the column ") {
-			// The refusal of a value of another type than its column, after the insert found its table
-			// and its column, which [run.verify] checks against SQLite on the state that it saw.
+		if kind == "" && supported && a.answer.err == "not supported" && typeRefusal(a.src, a.answer.message) {
+			// The refusal of a value of another type than its column, after the insert or the select
+			// found its table and its columns, which [run.verify] checks against SQLite on the state that
+			// it saw.
 			kind, a.typeRefused = excusedType, true
 		}
 		if kind == "" && (supported || a.answer.err == wrongArguments) {
@@ -1553,9 +1554,10 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 		before := o.tables(r.t)
 		for _, a := range tx.stmts {
 			if a.typeRefused {
-				// A read-only transaction refuses an insert before it looks at its value.
+				// A read-only transaction refuses an insert before it looks at its value, and runs a
+				// select.
 				var want string
-				if !tx.readOnly {
+				if !tx.readOnly || !isInsert(a.src) {
 					want = typeRule(r.t, o, a.src, oracleValues(a.args))
 				}
 				if a.answer.message != want {
@@ -1602,7 +1604,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 
 // tableOf the statement of src, which the pass supports, folded as SQLite compares names.
 func tableOf(src string) string {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err != nil {
 		panic(err)
 	}
