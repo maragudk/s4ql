@@ -14,7 +14,7 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
-// Sequence of random statements of slices 1, 2, 4, 5, and 6 that meet at a few tables and columns, each
+// Sequence of random statements of slices 1, 2, 4, 5, 6, and 7 that meet at a few tables and columns, each
 // named in several spellings that SQLite takes for one name and in some that it takes for others,
 // with values from a small set so that keys repeat, and with statements that are not supported and
 // texts that SQLite refuses mixed in.
@@ -31,9 +31,11 @@ import (
 // column out of its list, names a column that the shape may not have, has a value more or less, has
 // a value of any type, which is mostly another than its column, for one column or for two, or has
 // NULL for any column, also the key; so some inserts have two faults. A select names * or columns
-// of the shape in any order, also one twice, and now and then a name that the shape may not have.
-// The small sets of values hold keys that SQLite takes for one, such as 0.0 and -0.0, so that every
-// type meets a key that exists.
+// of the shape in any order, also one twice, and now and then a name that the shape may not have,
+// and one time in two has a WHERE, as [Sequence.where] draws it, whose values are mostly those that
+// the inserts gave its columns, their neighbours, and the edges of each type. The small sets of
+// values hold keys that SQLite takes for one, such as 0.0 and -0.0, so that every type meets a key
+// that exists.
 //
 // One value in three of an insert is a plain ? with the value as its argument, nil for NULL, and
 // some calls, as [Sequence.Next] says, have arguments around those that s4ql supports: none for a
@@ -443,10 +445,10 @@ func (q *Sequence) where(table stmt.Name) []stmt.Condition {
 			column = &shape[r.IntN(len(shape))]
 			c.Column.Raw = q.spell(column.Name.Value)
 		}
-		switch n := r.IntN(12); {
-		case n == 0:
+		switch r.IntN(12) {
+		case 0:
 			c.Operator = stmt.OpIsNull
-		case n == 1:
+		case 1:
 			c.Operator = stmt.OpIsNotNull
 		default:
 			c.Operator = comparisons[r.IntN(len(comparisons))]
@@ -571,7 +573,7 @@ func (q *Sequence) neighbour(v stmt.Value) stmt.Value {
 			return v + "\x01"
 		}
 		last := &runes[len(runes)-1]
-		if c := *last + rune(map[bool]int{true: 1, false: -1}[up]); c > 0 && c <= unicode.MaxRune && !(0xd800 <= c && c <= 0xdfff) {
+		if c := *last + rune(map[bool]int{true: 1, false: -1}[up]); c > 0 && c <= unicode.MaxRune && (c < 0xd800 || c > 0xdfff) {
 			*last = c
 		}
 		return stmt.Text(string(runes))
