@@ -364,9 +364,13 @@ func TestScanRange(t *testing.T) {
 				r.ScanRange(t.Context(), "t4", c.lower, c.upper),
 				tx.ScanRange(t.Context(), "t4", c.lower, c.upper),
 			} {
-				for _, err := range scan {
+				n := 0
+				for row, err := range scan {
+					n++
+					is.True(t, row == nil)
 					is.True(t, errors.Is(err, c.want), fmt.Sprint(err))
 				}
+				is.Equal(t, 1, n)
 			}
 		}
 		is.NotError(t, tx.Rollback(t.Context()))
