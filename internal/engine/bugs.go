@@ -35,4 +35,8 @@ type bugs struct {
 	// store the integer, as SQLite converts it also in a STRICT table, where s4ql refuses a value of
 	// another type than its column.
 	convertReal bool
+	// listOrder makes an insert with a list of columns give its values to the columns of the table in
+	// the order of the list, the first value to the first column, and not to the columns that the
+	// list names.
+	listOrder bool
 }

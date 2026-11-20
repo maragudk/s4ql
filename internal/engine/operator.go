@@ -427,6 +427,12 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 			}
 			named[position] = true
 		}
+		if b.listOrder {
+			// The planted bug: the values go to the columns in the order of the list.
+			for i := range positions {
+				positions[i] = i
+			}
+		}
 		v, ok := p.Source.(*Values)
 		if !ok {
 			return nil, internalError("an insert from a node of type %T", p.Source)

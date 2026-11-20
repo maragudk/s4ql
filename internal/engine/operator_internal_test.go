@@ -536,6 +536,17 @@ func TestBuild(t *testing.T) {
 		}
 	})
 
+	t.Run("should place the values of a list in the order of the list with the planted bug listOrder", func(t *testing.T) {
+		f := newFake().with("t", []string{"a", "k", "c"})
+		f.tables["t"].ct.SetPrimaryKey([]uint32{1})
+		s, err := buildSink(t.Context(), fakeTx{f}, plan("insert into t (c, k, a) values (3, ?, 1)"), []*s4qlpb.Value{integer(2)}, bugs{listOrder: true}, 1_000_000_000)
+		is.NotError(t, err)
+		is.NotError(t, s.check())
+		_, err = s.run(t.Context())
+		is.NotError(t, err)
+		is.Equal(t, "[table t get t 2 upsert t 3,2,1]", fmt.Sprint(f.calls))
+	})
+
 	t.Run("should check that each column has a value before the type of each value, in the order of the table", func(t *testing.T) {
 		f := newFake().with("t", []string{"a", "k", "c"})
 		f.tables["t"].ct.SetPrimaryKey([]uint32{1})
