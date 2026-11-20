@@ -413,7 +413,9 @@ async function check() {
   // The page waits at zero until Play.
   expect(p.t < 1000 && !p.win.s4qlPage.playing && p.html.dataset.playing === "false", `the page starts paused at ${p.t} ms`);
   expect(!play.disabled && play.textContent.trim() === "Play", "Play is offered");
-  expect(turbo.getAttribute("aria-pressed") === "false" && !p.win.s4qlPage.turbo, "turbo is off");
+  expect(turbo.getAttribute("aria-pressed") === "true" && p.win.s4qlPage.turbo, "turbo is on");
+  turbo.click();
+  expect(turbo.getAttribute("aria-pressed") === "false" && !p.win.s4qlPage.turbo, "turbo is off after a click");
   const sound = p.$("#sound");
   expect(sound && !sound.disabled && sound.getAttribute("aria-pressed") === "false" && sound.dataset.audio === "none", `sound is off, and the page has made no audio context (${sound && sound.dataset.audio})`);
   expect(p.instance("a") && p.instance("b") && p.win.s4qlPage.state.instances.length === 2, "the session has the two instances a and b");
