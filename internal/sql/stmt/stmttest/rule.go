@@ -200,6 +200,22 @@ func FoundQuery(table stmt.Name, where []stmt.Condition, args []any) (string, []
 	return "select 1 from " + Quote(table.Value) + conditions + " limit 1", bound
 }
 
+// SelectText of the select s with the arguments args of its parameters: the select again, with its
+// select list, or *, its table, and its WHERE, each name in double quotes, a ? for each value of a
+// condition, and orderBy after it, and the arguments of its parameters, as [FoundQuery] gives them.
+func SelectText(s *stmt.Select, args []any, orderBy string) (string, []any) {
+	list := "*"
+	if s.Columns != nil {
+		var names []string
+		for _, c := range s.Columns {
+			names = append(names, Quote(c.Value))
+		}
+		list = strings.Join(names, ", ")
+	}
+	conditions, bound := whereText(s.Where, args)
+	return "select " + list + " from " + Quote(s.Table.Value) + conditions + orderBy, bound
+}
+
 // whereText of the conditions of a WHERE, with a ? for each value, after " where ", or "" for no
 // condition, and the arguments of its parameters, as [FoundQuery] gives them.
 func whereText(where []stmt.Condition, args []any) (string, []any) {
@@ -713,4 +729,252 @@ func compareValues(a, b any) int {
 		return bytes.Compare(a, b.([]byte))
 	}
 	panic(fmt.Sprintf("stmttest: a comparison of %T with %T", a, b))
+}
+
+// TableIndex of a table as SQLite has it: its name as it was created, and its columns, each the
+// position of its column in the table and whether the index holds it in descending order.
+type TableIndex struct {
+	Name    string
+	Columns []IndexKeyColumn
+}
+
+// IndexKeyColumn of a [TableIndex].
+type IndexKeyColumn struct {
+	Position   int
+	Descending bool
+}
+
+// Access of a WHERE to the rows of its table, as [ChosenAccess] gives it.
+type Access struct {
+	// None reads no row, Get reads the row of one primary key, whose values are Pins, and Full reads
+	// every row. Otherwise the access is a scan by the index of the name Index, or by the primary key
+	// if Index is "".
+	None, Get, Full bool
+	Index           string
+	// Pins are the values that the leading columns of the key are pinned to, in the order of the key,
+	// as [termValue] gives them: nil for a column pinned by IS NULL.
+	Pins []any
+	// Lower and Upper bound the column of the key after the pinned ones, if they are not nil, and
+	// leave the bound itself out if open.
+	Lower, Upper         any
+	LowerOpen, UpperOpen bool
+}
+
+// ChosenAccess of the select s with WHERE of the table of the columns, in the order of the table,
+// with the indexes, in the order in which they were created, and with the arguments args as for
+// [TypeRule], by the rules of slice 9 as the roadmap states them: the key of an index is its columns
+// followed by the columns of the primary key that it does not hold, and a column is pinned by = or by
+// IS NULL. A WHERE that pins the whole primary key with = reads its row. Otherwise the index, or the
+// primary key, that has the most leading columns of its key pinned wins, and of those with as many,
+// one with a range on the next column; a tie goes to the primary key, then to the index created
+// first; and when nothing fits, every row is read. Before these, as in slice 7, a WHERE that compares
+// a column with NULL, or tests the primary key with IS NULL, reads no row.
+//
+// What the roadmap leaves open is as the builder of slice 9 decided it, in the todo: a column is
+// pinned by the first condition in the order of the text that pins it; IS NULL pins only a column
+// that takes NULL, since no row has NULL in another; and the bounds of the range are the tightest of
+// the conditions with <, <=, >, and >= on the column, where of two at one value the open one is the
+// tighter. It reports false for a select that SQLite or s4ql refuses, as [KeyAccess] gives "" for
+// one.
+func ChosenAccess(columns []TableColumn, indexes []TableIndex, s *stmt.Select, args []any) (Access, bool) {
+	if _, missing := MissingColumn(columns, s); missing || len(args) != s.Parameters() || ConditionRule("t", columns, s, args) != "" {
+		return Access{}, false
+	}
+	type term struct {
+		position int
+		op       stmt.Operator
+		value    any
+	}
+	var terms []term
+	for _, c := range s.Where {
+		terms = append(terms, term{position: ColumnOf(columns, c.Column), op: c.Operator, value: termValue(c.Value, args)})
+	}
+	for _, t := range terms {
+		switch {
+		case t.op == stmt.OpIsNull && columns[t.position].PrimaryKey:
+			return Access{None: true}, true
+		case t.op != stmt.OpIsNull && t.op != stmt.OpIsNotNull && t.value == nil:
+			return Access{None: true}, true
+		}
+	}
+	var primary []int
+	for i, c := range columns {
+		if c.PrimaryKey {
+			primary = append(primary, i)
+		}
+	}
+	// pin of the column at the position: the value of the first condition that pins it, and whether
+	// one does.
+	pin := func(position int, byNull bool) (any, bool) {
+		for _, t := range terms {
+			switch {
+			case t.position != position:
+			case t.op == stmt.OpEqual:
+				return t.value, true
+			case t.op == stmt.OpIsNull && byNull && takesNull(columns[position]):
+				return nil, true
+			}
+		}
+		return nil, false
+	}
+	get := Access{Get: true}
+	for _, position := range primary {
+		v, ok := pin(position, false)
+		if !ok {
+			get.Pins = nil
+			break
+		}
+		get.Pins = append(get.Pins, v)
+	}
+	if get.Pins != nil {
+		return get, true
+	}
+	// tighter reports whether the bound v, open if open, leaves out more values than the bound w,
+	// open if wOpen, or w is nil, of upper bounds if upper.
+	tighter := func(v any, open bool, w any, wOpen, upper bool) bool {
+		if w == nil {
+			return true
+		}
+		n := compareValues(v, w)
+		if upper {
+			n = -n
+		}
+		return n > 0 || n == 0 && open && !wOpen
+	}
+	// fitted is the access of a scan by the key of the index of the name, or of the primary key.
+	fitted := func(name string, key []int) Access {
+		a := Access{Index: name}
+		for _, position := range key {
+			if v, ok := pin(position, true); ok {
+				a.Pins = append(a.Pins, v)
+				continue
+			}
+			for _, t := range terms {
+				open := t.op == stmt.OpLess || t.op == stmt.OpGreater
+				switch {
+				case t.position != position:
+				case (t.op == stmt.OpLess || t.op == stmt.OpLessOrEqual) && tighter(t.value, open, a.Upper, a.UpperOpen, true):
+					a.Upper, a.UpperOpen = t.value, open
+				case (t.op == stmt.OpGreater || t.op == stmt.OpGreaterOrEqual) && tighter(t.value, open, a.Lower, a.LowerOpen, false):
+					a.Lower, a.LowerOpen = t.value, open
+				}
+			}
+			break
+		}
+		return a
+	}
+	// score of an access: the pinned columns count first, and a range then.
+	score := func(a Access) int {
+		n := 2 * len(a.Pins)
+		if a.Lower != nil || a.Upper != nil {
+			n++
+		}
+		return n
+	}
+	best := fitted("", primary)
+	for _, ix := range indexes {
+		var key []int
+		for _, c := range ix.Columns {
+			key = append(key, c.Position)
+		}
+		for _, position := range primary {
+			if !slices.Contains(key, position) {
+				key = append(key, position)
+			}
+		}
+		if a := fitted(ix.Name, key); score(a) > score(best) {
+			best = a
+		}
+	}
+	if score(best) == 0 {
+		return Access{Full: true}, true
+	}
+	return best, true
+}
+
+// Same reports whether the accesses a and b read the same rows: of the same kind, by the same index,
+// as SQLite compares names, with pins and bounds of the same values, as SQLite compares them, so that
+// 0.0 is -0.0, and with the same bounds open.
+func (a Access) Same(b Access) bool {
+	equal := func(x, y any) bool {
+		if x == nil || y == nil {
+			return x == nil && y == nil
+		}
+		return reflect.TypeOf(x) == reflect.TypeOf(y) && compareValues(x, y) == 0
+	}
+	if a.None != b.None || a.Get != b.Get || a.Full != b.Full || nameOf(Quote(a.Index), 0).Fold() != nameOf(Quote(b.Index), 0).Fold() || len(a.Pins) != len(b.Pins) {
+		return false
+	}
+	for i := range a.Pins {
+		if !equal(a.Pins[i], b.Pins[i]) {
+			return false
+		}
+	}
+	return equal(a.Lower, b.Lower) && equal(a.Upper, b.Upper) && (a.Lower == nil || a.LowerOpen == b.LowerOpen) && (a.Upper == nil || a.UpperOpen == b.UpperOpen)
+}
+
+// String of the access in words, with its values: "no row", "a get of one key" and the key, "a scan
+// of every row", or a scan by the primary key or by an index, with the number of columns that it
+// pins and their values, if any, and its bounds, if any, such as `a scan of the index i with 2 pinned
+// []interface {}{1, "a"} from a lower bound (3`, where ( and ) are open and [ and ] closed.
+func (a Access) String() string {
+	switch {
+	case a.None:
+		return "no row"
+	case a.Get:
+		return fmt.Sprintf("a get of one key %#v", a.Pins)
+	case a.Full:
+		return "a scan of every row"
+	}
+	s := "a scan"
+	if a.Index != "" {
+		s += " of the index " + a.Index
+	}
+	if len(a.Pins) > 0 {
+		s += fmt.Sprintf(" with %v pinned %#v", len(a.Pins), a.Pins)
+	}
+	if a.Lower != nil {
+		s += fmt.Sprintf(" from a lower bound %v%#v", map[bool]string{true: "(", false: "["}[a.LowerOpen], a.Lower)
+	}
+	if a.Upper != nil {
+		s += fmt.Sprintf(" to an upper bound %#v%v", a.Upper, map[bool]string{true: ")", false: "]"}[a.UpperOpen])
+	}
+	return s
+}
+
+// IndexRule of the create index or the drop index s, on a database whose tables, by the folds of
+// their names as [stmt.Name.Fold] gives them, have the columns, and whose indexes are the folds of
+// the names in indexes: SQLite's message, or "" if SQLite runs the statement. A create index gives
+// `no such table: main.<table>`, then `there is already a table named <index>`, then `index <index>
+// already exists`, then `no such column` for the first column in the order of the text that the table
+// does not have, with SQLite's question about quotes for a name in double quotes, in the order in
+// which SQLite checks them; a drop index gives `no such index: <index>`, also for the name of a
+// table. The names are as the statement writes them, without their quotes. The rule does not know
+// the length limit, nor a read-only transaction.
+func IndexRule(tables map[string][]TableColumn, indexes map[string]bool, s stmt.Statement) string {
+	switch s := s.(type) {
+	case *stmt.CreateIndex:
+		columns, ok := tables[s.Table.Fold()]
+		switch {
+		case !ok:
+			return "no such table: main." + s.Table.Value
+		case tables[s.Index.Fold()] != nil:
+			return "there is already a table named " + s.Index.Value
+		case indexes[s.Index.Fold()]:
+			return "index " + s.Index.Value + " already exists"
+		}
+		for _, c := range s.Columns {
+			if ColumnOf(columns, c.Name) < 0 {
+				if c.Name.Raw[0] == '"' {
+					return `no such column: "` + c.Name.Value + `" - should this be a string literal in single-quotes?`
+				}
+				return "no such column: " + c.Name.Value
+			}
+		}
+	case *stmt.DropIndex:
+		if !indexes[s.Index.Fold()] {
+			return "no such index: " + s.Index.Value
+		}
+	}
+	return ""
 }

@@ -1,43 +1,12 @@
 package core
 
 import (
-	"context"
 	"testing"
 
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/s4qlpb"
-	"maragu.dev/s4ql/internal/sqlite"
 )
-
-// ScanPlan is the statement that [ReadTx.ScanIndex] runs for the scan, and SQLite's plan for it on
-// the connection of the transaction: the details of the rows of "explain query plan", in their
-// order. It fails as ScanIndex does.
-func (r *ReadTx) ScanPlan(ctx context.Context, name string, scan IndexScan) (string, []string, error) {
-	const operation = "scan"
-	if err := r.check(); err != nil {
-		return "", nil, err
-	}
-	defer r.leave()
-	t, err := r.table(ctx, operation, name)
-	if err != nil {
-		return "", nil, err
-	}
-	ix, err := scanned(t, scan, r.c.limit)
-	if err != nil {
-		return "", nil, err
-	}
-	sql, _, err := t.scanSQL(ix, scan)
-	if err != nil {
-		return "", nil, err
-	}
-	var plan []string
-	err = r.c.query("explain query plan "+sql, func(s *sqlite.Stmt) error {
-		plan = append(plan, s.ColumnText(3))
-		return nil
-	})
-	return sql, plan, r.d.cacheError(ctx, operation, err)
-}
 
 func TestTable_checkIndexed(t *testing.T) {
 	t.Run("should refuse to read the indexes of a table, to scan it, and to write a row of it before its indexes are read", func(t *testing.T) {

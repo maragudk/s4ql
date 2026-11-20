@@ -173,6 +173,13 @@ func (a Access) String() string {
 	return s
 }
 
+// Scan of the access, a scan by the primary key or by an index, as the engine gives it to the
+// storage.
+func (a Access) Scan() core.IndexScan {
+	return core.IndexScan{Index: a.Index, Equal: a.Equal, Lower: core.Bound{Value: a.Lower, Open: a.LowerOpen},
+		Upper: core.Bound{Value: a.Upper, Open: a.UpperOpen}, Backward: a.Backward}
+}
+
 func exported(a access) Access {
 	return Access{None: a.none, Point: a.point, Full: a.full(), Index: a.index, Equal: a.equal,
 		Lower: a.lower.value, Upper: a.upper.value, LowerOpen: a.lower.open, UpperOpen: a.upper.open, Backward: a.backward}

@@ -776,6 +776,36 @@ func (r *ReadTx) ScanIndex(ctx context.Context, name string, scan IndexScan) ite
 	})
 }
 
+// ScanPlan is the statement that [ReadTx.ScanIndex] runs for the scan, and SQLite's plan for it on
+// the connection of the transaction: the details of the rows of "explain query plan", in their
+// order. It fails as ScanIndex does. It reads no row, and is for tests, which check with it that the
+// cache searches exactly the index and the bounds of the scan.
+func (r *ReadTx) ScanPlan(ctx context.Context, name string, scan IndexScan) (string, []string, error) {
+	const operation = "scan"
+	if err := r.check(); err != nil {
+		return "", nil, err
+	}
+	defer r.leave()
+	t, err := r.table(ctx, operation, name)
+	if err != nil {
+		return "", nil, err
+	}
+	ix, err := scanned(t, scan, r.c.limit)
+	if err != nil {
+		return "", nil, err
+	}
+	sql, _, err := t.scanSQL(ix, scan)
+	if err != nil {
+		return "", nil, err
+	}
+	var plan []string
+	err = r.c.query("explain query plan "+sql, func(s *sqlite.Stmt) error {
+		plan = append(plan, s.ColumnText(3))
+		return nil
+	})
+	return sql, plan, r.d.cacheError(ctx, operation, err)
+}
+
 // scan the table with the given name by the index, or the primary key, and as the scan says that
 // plan gives for the table, or end the sequence with the error of plan.
 func (r *ReadTx) scan(ctx context.Context, name string, plan func(t *table) (*index, IndexScan, error)) iter.Seq2[[]*s4qlpb.Value, error] {

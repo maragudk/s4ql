@@ -14,7 +14,7 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
-// Sequence of random statements of slices 1, 2, 4, 5, 6, 7, and 8 that meet at a few tables and columns, each
+// Sequence of random statements of slices 1, 2, 4, 5, 6, 7, 8, and 9 that meet at a few tables and columns, each
 // named in several spellings that SQLite takes for one name and in some that it takes for others,
 // with values from a small set so that keys repeat, and with statements that are not supported and
 // texts that SQLite refuses mixed in.
@@ -38,6 +38,12 @@ import (
 // that exists. An update sets some columns of the shape, as [Sequence.update] draws it, and an
 // update three times in four and a delete four times in five have a WHERE, as [Sequence.changeConditions]
 // draws one: mostly as a select has one, and one time in three the key equal to a value of an insert.
+// A create index names an index from a few names in several spellings, or now and then a name of a
+// table, on a table of the sequence, and the columns of its shape, as [Sequence.createIndex] draws
+// them; a drop index names one of those names, or now and then a name of a table; and a create table
+// and a drop table name one of the names of an index now and then. One WHERE in three of a table on
+// which the sequence drew a create index, and one in three of an update or a delete, pins leading columns of the index, as
+// [Sequence.indexConditions] draws them.
 //
 // One value in three of an insert is a plain ? with the value as its argument, nil for NULL, and
 // some calls, as [Sequence.Next] says, have arguments around those that s4ql supports: none for a
@@ -59,6 +65,33 @@ type Sequence struct {
 	// table and their column, the last [storedValues] of each, whether SQLite took the insert or not,
 	// for the values of the conditions of a WHERE.
 	stored map[[2]string][]stmt.Value
+	// indexes are the spellings of the names of indexes.
+	indexes []string
+	// indexed holds the columns of the create indexes of the sequence, by the fold of the name of
+	// their table, the last [storedIndexes] of each, whether SQLite took the create index or not, with
+	// the fold of each name as its Name.Value, for the conditions of a WHERE that an index can serve.
+	indexed map[string][][]stmt.IndexColumn
+	// heavy is set by [Sequence.Indexed].
+	heavy bool
+}
+
+// storedIndexes is the most create indexes of a table that a [Sequence] keeps for its conditions.
+const storedIndexes = 3
+
+// Indexed makes the sequence write more of slice 9: a create index about one statement in five,
+// where it is one in ten otherwise, and three WHERE in four of a table on which it drew a create
+// index as [Sequence.indexConditions] draws them, where it is one in two otherwise.
+func (q *Sequence) Indexed() {
+	q.heavy = true
+}
+
+// indexWhere reports whether a WHERE that an index of the sequence could serve is drawn as
+// [Sequence.indexConditions] draws it.
+func (q *Sequence) indexWhere() bool {
+	if q.heavy {
+		return q.r.IntN(4) != 0
+	}
+	return q.r.IntN(2) == 0
 }
 
 // storedValues is the most values of a column that a [Sequence] keeps for its conditions.
@@ -109,16 +142,19 @@ func randomCase(r Rand, s string) string {
 	return string(b)
 }
 
-// commonPools are the names that SQLite reads as a name of a table in every position of a table, and
-// those that it reads as a name of a column in every position of a column.
-var commonPools = sync.OnceValues(func() ([2][]string, error) {
+// commonPools are the names that SQLite reads as a name of a table in every position of a table and
+// of a create index, those that it reads as a name of a column in every position of a column, also
+// of an index, and those that it reads as a name of an index in every position of an index and of a
+// table.
+var commonPools = sync.OnceValues(func() ([3][]string, error) {
 	pools, err := NamePools()
 	if err != nil {
-		return [2][]string{}, err
+		return [3][]string{}, err
 	}
-	return [2][]string{
-		common(pools, CreateTable, InsertTable, SelectTable, DropTable, UpdateTable, DeleteTable),
-		common(pools, CreateColumn, InsertColumn, SelectColumn, UpdateColumn),
+	return [3][]string{
+		common(pools, CreateTable, InsertTable, SelectTable, DropTable, UpdateTable, DeleteTable, IndexTable, IndexName, DropIndex),
+		common(pools, CreateColumn, InsertColumn, SelectColumn, UpdateColumn, IndexColumn),
+		common(pools, IndexName, DropIndex, CreateTable, InsertTable, SelectTable, DropTable, UpdateTable, DeleteTable, IndexTable),
 	}, nil
 })
 
@@ -143,7 +179,7 @@ func NewSequence(r Rand) (*Sequence, error) {
 	if err != nil {
 		return nil, err
 	}
-	q := &Sequence{r: r, spelled: map[string][]string{}, shapes: map[string][]stmt.Column{}, stored: map[[2]string][]stmt.Value{}}
+	q := &Sequence{r: r, spelled: map[string][]string{}, shapes: map[string][]stmt.Column{}, stored: map[[2]string][]stmt.Value{}, indexed: map[string][][]stmt.IndexColumn{}}
 	tableNames, columnNames := common[0], common[1]
 	for range 1 + r.IntN(2) {
 		q.tables = append(q.tables, spellings(r, tableNames[r.IntN(len(tableNames))])...)
@@ -163,11 +199,22 @@ func NewSequence(r Rand) (*Sequence, error) {
 	for _, p := range []Position{CreateTable, InsertTable, SelectTable, DropTable} {
 		pools[p] = q.tables
 	}
-	pools[UpdateTable], pools[DeleteTable] = q.tables, q.tables
-	pools[CreateColumn], pools[InsertColumn], pools[SelectColumn], pools[UpdateColumn] = q.columns, q.columns, q.columns, q.columns
+	pools[UpdateTable], pools[DeleteTable], pools[IndexTable] = q.tables, q.tables, q.tables
+	pools[CreateColumn], pools[InsertColumn], pools[SelectColumn], pools[UpdateColumn], pools[IndexColumn] = q.columns, q.columns, q.columns, q.columns, q.columns
+	// The names of indexes, of which one is also among the names of a create table and a drop table,
+	// and one name of a table among those of a create index and a drop index, so that a table and an
+	// index meet at a name.
+	indexNames := common[2]
+	for range 1 + r.IntN(2) {
+		q.indexes = append(q.indexes, spellings(r, indexNames[r.IntN(len(indexNames))])...)
+	}
+	pools[CreateTable] = append(slices.Clone(q.tables), q.indexes[r.IntN(len(q.indexes))])
+	pools[DropTable] = append(slices.Clone(q.tables), q.indexes[r.IntN(len(q.indexes))])
+	pools[IndexName] = append(slices.Clone(q.indexes), q.tables[r.IntN(len(q.tables))])
+	pools[DropIndex] = append(slices.Clone(q.indexes), q.tables[r.IntN(len(q.tables))])
 	q.g = NewGenerator(r, pools)
 	q.g.Columns, q.g.Create, q.g.Insert, q.g.Select, q.g.Where = sequenceColumns, q.create, q.insert, q.selectList, q.where
-	q.g.Update, q.g.Delete = q.update, q.delete
+	q.g.Update, q.g.Delete, q.g.CreateIndex = q.update, q.delete, q.createIndex
 	q.g.Parameters = 3
 	return q, nil
 }
@@ -222,6 +269,11 @@ func (q *Sequence) anyType() stmt.Type {
 func (q *Sequence) create(table stmt.Name) []stmt.Column {
 	r := q.r
 	shape := q.shapeOf(table)
+	// A create index names a table that a create table named more often than one that none named,
+	// since a create index of a table that is not there only fails.
+	if pool := &q.g.pools[IndexTable]; len(*pool) < 4*len(q.tables) {
+		*pool = append(slices.Clip(*pool), table.Raw, table.Raw)
+	}
 	if r.IntN(10) == 0 {
 		n := 1 + r.IntN(sequenceColumns)
 		key := r.IntN(n)
@@ -405,8 +457,13 @@ var inverses = map[stmt.Operator]stmt.Operator{
 // has one more condition, the inverse of one of its conditions, which contradicts it, and for a
 // bound of the key leaves the range of the two without a key.
 func (q *Sequence) where(table stmt.Name) []stmt.Condition {
-	if q.r.IntN(2) == 0 {
+	if q.r.IntN(map[bool]int{false: 2, true: 4}[q.heavy]) == 0 {
 		return nil
+	}
+	if q.indexWhere() {
+		if cs := q.indexConditions(table); cs != nil {
+			return cs
+		}
 	}
 	return q.conditions(table)
 }
@@ -476,6 +533,125 @@ func (q *Sequence) conditions(table stmt.Name) []stmt.Condition {
 		cs = append(cs, c)
 	}
 	return cs
+}
+
+// createIndex gives the columns of a create index of the name index on table, as
+// [Generator.CreateIndex] gives them: from one to all of the columns of the shape of table, each once,
+// in any order, so that the key is among them now and then, each descending one time in three. One
+// create index in twelve has a name that the shape does not have in place of one of them, and one in
+// forty a second, another than the first, which can be in double quotes, so that SQLite gives `no such column` for the first
+// in the order of the text. The columns are kept for the conditions of a WHERE, as
+// [Sequence.indexConditions] draws them.
+func (q *Sequence) createIndex(index, table stmt.Name) []stmt.IndexColumn {
+	r := q.r
+	shape := q.shapeOf(table)
+	order := make([]int, len(shape))
+	for i := range order {
+		order[i] = i
+	}
+	shuffle(r, order)
+	if q.heavy && len(order) > 1 && r.IntN(2) == 0 {
+		// Every column but the key, whose pin the rules read by a get, so that a WHERE pins several
+		// columns of the index, and reaches the key after them.
+		order = slices.DeleteFunc(order, func(position int) bool { return shape[position].PrimaryKey })
+	} else {
+		order = order[:1+r.IntN(len(order))]
+	}
+	var columns, kept []stmt.IndexColumn
+	for _, position := range order {
+		c := shape[position]
+		descending := r.IntN(3) == 0
+		columns = append(columns, stmt.IndexColumn{Name: stmt.Name{Raw: q.spell(c.Name.Value)}, Descending: descending})
+		kept = append(kept, stmt.IndexColumn{Name: stmt.Name{Value: c.Name.Value}, Descending: descending})
+	}
+	missing := ""
+	for range map[bool]int{true: 1, false: 0}[r.IntN(12) == 0] + map[bool]int{true: 1, false: 0}[r.IntN(40) == 0] {
+		// A second name is another than the first, since a column named twice is not supported.
+		raw := q.missing(shape)
+		if missing != "" && nameOf(raw, 0).Fold() == nameOf(missing, 0).Fold() {
+			break
+		}
+		missing = raw
+		at := r.IntN(len(columns) + 1)
+		columns = slices.Insert(columns, at, stmt.IndexColumn{Name: stmt.Name{Raw: raw}, Descending: r.IntN(3) == 0})
+	}
+	indexed := q.indexed[table.Fold()]
+	if len(indexed) == storedIndexes {
+		indexed = indexed[1:]
+	}
+	q.indexed[table.Fold()] = append(slices.Clip(indexed), kept)
+	return columns
+}
+
+// indexConditions of a WHERE of a statement of table, which an index of the sequence on table can
+// serve, or nil if the sequence has drawn no create index on table: for the columns of one of them,
+// the leading ones, from one to all, each pinned by = with a value as [Sequence.conditionValue] draws
+// it, or by IS NULL one time in eight; then, one time in two, a bound or two on the next column of
+// the key of the index, which is the key of the table after the columns of the index, each open or
+// closed; and one time in three one more condition as [Sequence.conditions] draws it. The conditions
+// are in any order one time in three.
+func (q *Sequence) indexConditions(table stmt.Name) []stmt.Condition {
+	r := q.r
+	indexed := q.indexed[table.Fold()]
+	if len(indexed) == 0 {
+		return nil
+	}
+	shape := q.shapeOf(table)
+	columns := indexed[r.IntN(len(indexed))]
+	var key []string
+	for _, c := range columns {
+		key = append(key, c.Name.Value)
+	}
+	for _, c := range shape {
+		if c.PrimaryKey && !slices.Contains(key, c.Name.Value) {
+			key = append(key, c.Name.Value)
+		}
+	}
+	typeOf := func(fold string) stmt.Type {
+		if c := columnOfShape(shape, fold); c != nil {
+			return c.Type
+		}
+		return q.anyType()
+	}
+	pins := 1 + r.IntN(len(columns))
+	if q.heavy && r.IntN(2) == 0 {
+		pins = len(columns)
+	}
+	var cs []stmt.Condition
+	for _, fold := range key[:pins] {
+		c := stmt.Condition{Column: stmt.Name{Raw: q.spell(fold)}, Operator: stmt.OpEqual}
+		if r.IntN(8) == 0 {
+			c.Operator = stmt.OpIsNull
+		} else {
+			c.Value.Value = q.conditionValue(table, fold, typeOf(fold))
+		}
+		cs = append(cs, c)
+	}
+	if pins < len(key) && r.IntN(2) == 0 {
+		fold := key[pins]
+		bounds := []stmt.Operator{stmt.OpLess, stmt.OpLessOrEqual, stmt.OpGreater, stmt.OpGreaterOrEqual}
+		for range 1 + r.IntN(2) {
+			c := stmt.Condition{Column: stmt.Name{Raw: q.spell(fold)}, Operator: bounds[r.IntN(len(bounds))]}
+			c.Value.Value = q.conditionValue(table, fold, typeOf(fold))
+			cs = append(cs, c)
+		}
+	}
+	if r.IntN(3) == 0 {
+		more := q.conditions(table)
+		cs = append(cs, more[r.IntN(len(more))])
+	}
+	if r.IntN(3) == 0 {
+		shuffle(r, cs)
+	}
+	return cs
+}
+
+// shuffle the elements of s into an order at random.
+func shuffle[T any](r Rand, s []T) {
+	for i := len(s) - 1; i > 0; i-- {
+		j := r.IntN(i + 1)
+		s[i], s[j] = s[j], s[i]
+	}
 }
 
 // columnOfShape of the fold of a name: the column of the shape of that name, or nil.
@@ -579,6 +755,11 @@ func (q *Sequence) changeConditions(table stmt.Name) []stmt.Condition {
 	key := shape[slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })]
 	if stored := q.stored[[2]string{table.Fold(), key.Name.Value}]; len(stored) > 0 && q.r.IntN(3) == 0 {
 		return []stmt.Condition{{Column: stmt.Name{Raw: q.spell(key.Name.Value)}, Operator: stmt.OpEqual, Value: stmt.Term{Value: stored[q.r.IntN(len(stored))]}}}
+	}
+	if q.indexWhere() {
+		if cs := q.indexConditions(table); cs != nil {
+			return cs
+		}
 	}
 	return q.conditions(table)
 }
@@ -921,17 +1102,25 @@ func (q *Sequence) next() Call {
 		return c
 	}
 	var k Kind
-	switch n := r.IntN(24); {
+	createIndexes := 3
+	if q.heavy {
+		createIndexes = 7
+	}
+	switch n := r.IntN(26 + createIndexes); {
 	case n < 4:
 		k = KindCreateTable
 	case n < 14:
 		k = KindInsert
-	case n < 18:
+	case n < 19:
 		k = KindSelect
-	case n < 21:
+	case n < 22:
 		k = KindUpdate
-	case n < 23:
+	case n < 24:
 		k = KindDelete
+	case n < 24+createIndexes:
+		k = KindCreateIndex
+	case n < 25+createIndexes:
+		k = KindDropIndex
 	default:
 		k = KindDropTable
 	}

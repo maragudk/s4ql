@@ -509,7 +509,11 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 	defer i.close()
 	r := rand.New(rand.NewPCG(seed, 0x7e))
 	q := newSequence(t, r)
+	if seed%3 == 2 {
+		q.Indexed()
+	}
 	p := newPair(t, i, y)
+	p.rnd = rand.New(rand.NewPCG(seed, 0x9a7))
 	defer p.other.close()
 	var log []string
 	fail := func(format string, args ...any) {
@@ -566,7 +570,7 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 		}
 		c := q.Next()
 		log = append(log, fmt.Sprintf("%v -- with %#v", c.Src, c.Args))
-		p.readOnly = open == "read only"
+		p.readOnly, p.inTx = open == "read only", open != ""
 		if failure := p.step(c); failure != "" {
 			fail("%v", failure)
 		}
