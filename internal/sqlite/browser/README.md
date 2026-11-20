@@ -91,7 +91,7 @@ The runner serves the page, the program, and the JavaScript on a port of 127.0.0
 
 With `-test.timeout` among the arguments, the runner stops Chromium 30 seconds after that timeout, because the program cannot stop itself while SQLite holds the only thread. That is before `go test` stops the runner, a minute after the timeout. The runner also stops Chromium on SIGINT, SIGTERM, and SIGQUIT.
 
-A Chromium that has not fetched the program a minute after its start, or that stops before the program started, is started again with a new profile, up to three times in all. No code of the program has run by then. The reason: on a fresh runner of GitHub Actions the first Chromium sometimes never loads the page, and one started after it does. That happened on 5 of 48 fresh runners on 2026-11-20, and a first start that works loads the page there after 7 to 32 seconds.
+A Chromium that has not fetched the program a minute after its start, or that stops before the program started, is started again with a new profile, up to six times in all, and each one started again has 30 seconds. No code of the program has run by then. The reason: on a fresh runner of GitHub Actions a Chromium sometimes never loads the page, at times two or three in a row over the first minutes of the runner, while a later one does. The first Chromium of a runner that works loads the page after 7 to 32 seconds, and one started again within 5.
 
 Each time it stops Chromium or starts it again, the runner writes to its standard error which steps of the start it saw, when the program last wrote, the tests that had started and not ended if the program ran with `-test.v`, and the end of Chromium's output.
 
@@ -107,7 +107,7 @@ Variables whose names start with `S4QL_CHROMIUM` stay with the runner. The progr
 
 `make lint` also runs `golangci-lint` over the browser's build of `BROWSERPKGS`, whose files a native run does not see.
 
-CI's job `browser` runs `make check-browser` and lints the browser's build. Its job `browser-test` runs `make test-browser` in the headless Chrome of the runner image, in six shards at the same time, with `BROWSERTIMEOUT=6m`, `BROWSERFLAGS=-v`, `S4QL_CHROMIUM_FLAGS=--no-sandbox`, and `S4QL_CHROMIUM_STEPS=1`.
+CI's job `browser` runs `make check-browser` and lints the browser's build. Its job `browser-test` runs `make test-browser` in the headless Chrome of the runner image, in six shards at the same time, with `BROWSERTIMEOUT=7m`, `BROWSERFLAGS=-v`, `S4QL_CHROMIUM_FLAGS=--no-sandbox`, and `S4QL_CHROMIUM_STEPS=1`.
 
 ## Measurements
 

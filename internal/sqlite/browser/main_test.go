@@ -166,11 +166,11 @@ func TestRunner_run(t *testing.T) {
 	t.Run("should start Chromium again when it did not start the program in time, and fail after the last attempt", func(t *testing.T) {
 		program := fake(t, "hang")
 		var stdout, stderr syncBuilder
-		r := runner{stdout: &stdout, stderr: &stderr, startup: 10 * time.Millisecond, grace: time.Minute, attempts: 2}
+		r := runner{stdout: &stdout, stderr: &stderr, startup: 10 * time.Millisecond, restartup: 20 * time.Millisecond, grace: time.Minute, attempts: 2}
 
 		_, err := r.run(t.Context(), []string{program})
 		is.True(t, errors.Is(err, errNotStarted), err)
-		is.True(t, strings.Contains(err.Error(), "attempt 2 of 2: chromium did not start the program: chromium did not fetch it within 10ms"), err)
+		is.True(t, strings.Contains(err.Error(), "attempt 2 of 2: chromium did not start the program: chromium did not fetch it within 20ms"), err)
 		is.True(t, strings.Contains(stderr.String(), "attempt 1 of 2: chromium did not start the program: chromium did not fetch it within 10ms"), stderr.String())
 		is.True(t, strings.Contains(stderr.String(), "what the runner saw: chromium started after"), stderr.String())
 	})
@@ -178,7 +178,7 @@ func TestRunner_run(t *testing.T) {
 	t.Run("should start Chromium again when it stopped before it started the program", func(t *testing.T) {
 		program := fake(t, "crash-once")
 		var stdout, stderr syncBuilder
-		r := runner{stdout: &stdout, stderr: &stderr, startup: time.Minute, grace: time.Minute, attempts: 2}
+		r := runner{stdout: &stdout, stderr: &stderr, startup: time.Minute, restartup: time.Minute, grace: time.Minute, attempts: 2}
 
 		code, err := r.run(t.Context(), []string{program})
 		is.NotError(t, err)

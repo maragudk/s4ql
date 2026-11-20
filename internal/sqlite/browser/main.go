@@ -18,10 +18,12 @@
 // --no-sandbox where Chromium's sandbox cannot start.
 //
 // A Chromium that has not fetched the program a minute after it was started, or that stops before
-// the program started, is started again, with a new profile, up to three times in all; no code of
-// the program has run by then. Each time, the runner writes to its standard error which steps of the
-// start it saw, and the end of Chromium's output. On a runner of GitHub Actions, the first Chromium
-// sometimes never loads the page, and one started after it does.
+// the program started, is started again, with a new profile, up to six times in all; no code of the
+// program has run by then. A Chromium started again has 30 seconds. Each time, the runner writes to
+// its standard error which steps of the start it saw, and the end of Chromium's output. On a fresh
+// runner of GitHub Actions, a Chromium sometimes never loads the page, at times several in a row
+// over the first minutes, while a later one does. The first Chromium of a runner needs up to about
+// 40 seconds to start the program, a later one a few.
 //
 // With -test.timeout among the arguments, as go test passes it, the runner stops Chromium 30 seconds
 // after that timeout, in case the program cannot stop itself, which it cannot while SQLite holds the
@@ -62,7 +64,10 @@ var assets embed.FS
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
-	r := runner{stdout: os.Stdout, stderr: os.Stderr, startup: time.Minute, grace: 30 * time.Second, attempts: 3}
+	r := runner{
+		stdout: os.Stdout, stderr: os.Stderr,
+		startup: time.Minute, restartup: 30 * time.Second, grace: 30 * time.Second, attempts: 6,
+	}
 	code, err := r.run(ctx, os.Args[1:])
 	stop()
 	if err != nil {
@@ -73,12 +78,13 @@ func main() {
 }
 
 // runner of a program in Chromium. A Chromium that has not fetched the program within startup, or
-// that stops before the program started, is started again until it has been started attempts times.
-// Chromium is stopped grace after the -test.timeout of the program.
+// within restartup, if set, when it was started again, or that stops before the program started,
+// is started again until it has been started attempts times. Chromium is stopped grace after the
+// -test.timeout of the program.
 type runner struct {
-	stdout, stderr io.Writer
-	startup, grace time.Duration
-	attempts       int
+	stdout, stderr            io.Writer
+	startup, restartup, grace time.Duration
+	attempts                  int
 }
 
 // errNotStarted is the error of an attempt in which Chromium did not start the program.
@@ -113,7 +119,11 @@ func (r runner) run(ctx context.Context, args []string) (int, error) {
 		deadline = time.After(time.Until(start.Add(timeout + r.grace)))
 	}
 	for attempt := 1; ; attempt++ {
-		code, err := r.attempt(ctx, chromium, program, wasmExec, config, deadline)
+		limit := r.startup
+		if attempt > 1 && r.restartup > 0 {
+			limit = r.restartup
+		}
+		code, err := r.attempt(ctx, chromium, program, wasmExec, config, limit, deadline)
 		if !errors.Is(err, errNotStarted) {
 			return code, err
 		}
@@ -124,8 +134,9 @@ func (r runner) run(ctx context.Context, args []string) (int, error) {
 	}
 }
 
-// attempt to run the program in a new Chromium, on a new port and with a new profile.
-func (r runner) attempt(ctx context.Context, chromium, program string, wasmExec, config []byte, deadline <-chan time.Time) (int, error) {
+// attempt to run the program in a new Chromium, on a new port and with a new profile, which must
+// fetch the program within limit.
+func (r runner) attempt(ctx context.Context, chromium, program string, wasmExec, config []byte, limit time.Duration, deadline <-chan time.Time) (int, error) {
 	p := &progress{start: time.Now()}
 	exited := make(chan int, 1)
 	var exitOnce sync.Once
@@ -255,7 +266,7 @@ func (r runner) attempt(ctx context.Context, chromium, program string, wasmExec,
 		return code, nil
 	}
 
-	startup := time.NewTimer(r.startup)
+	startup := time.NewTimer(limit)
 	defer startup.Stop()
 	for {
 		select {
@@ -265,7 +276,7 @@ func (r runner) attempt(ctx context.Context, chromium, program string, wasmExec,
 			if fetched.Load() {
 				continue
 			}
-			return 0, fmt.Errorf("%w: chromium did not fetch it within %v:\n%s", errNotStarted, r.startup, stop())
+			return 0, fmt.Errorf("%w: chromium did not fetch it within %v:\n%s", errNotStarted, limit, stop())
 		case <-stopped:
 			// The program may have exited just before Chromium stopped.
 			select {
