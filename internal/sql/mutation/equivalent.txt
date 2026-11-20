@@ -698,6 +698,10 @@ stmt/recognize.go recognizer.indexColumn remove statement: r.accept(x) =>
 # The indexes of slice 9 in the engine, internal/engine.
 internal/engine/access.go forcedAccess swap arguments: max(p.pins, 0) => max(0, p.pins)
 	max is commutative.
+internal/engine/operator.go buildCreateIndex swap arguments: indexTooBig(p.Index.Value, t.GetTable(), p.SQL, limit) => indexTooBig(t.GetTable(), p.Index.Value, p.SQL, limit)
+	indexTooBig adds the quoted lengths of the name, the table, and the text alike, so their order does not change the sum.
+internal/engine/operator.go buildCreateIndex swap arguments: indexTooBig(p.Index.Value, t.GetTable(), p.SQL, limit) => indexTooBig(p.Index.Value, p.SQL, t.GetTable(), limit)
+	indexTooBig adds the quoted lengths of the name, the table, and the text alike, so their order does not change the sum.
 internal/engine/operator.go build.access condition: err != nil => false
 	chooseAccess fails only for two bounds of one column with values of two kinds, which checkType in build.bind refuses before, so it never fails here; and if it did, chooseAccess with the indexes, after them, would fail in the same way at the fit of the primary key, which it runs first.
 internal/engine/operator.go build.access condition: err != nil => false #3
