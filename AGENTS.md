@@ -111,6 +111,13 @@ A builder gets a git worktree of its own when it is spawned, through the Agent t
 - **Why:** on 2026-11-12 the lead created the worktrees and switched between them while builders ran. One builder's working directory moved with the lead, and its writes and git commands in its own worktree were refused, so it could not commit its last diary step. Markus then said: "From now on maybe let builders create their worktrees?" A builder that got its own worktree the same day ran without friction.
 - **How to apply:** spawn builders and writers with worktree isolation. The builder writes the first step of the feature's diary from the requirements in its brief. The lead reviews a builder's branch from `main` with `git diff main...<branch>`, pushes it, and opens the pull request. After the merge, remove the worktree and the branch.
 
+### The lead delegates heavily, also small jobs
+
+The lead hands off not only building but the routine around it, to keep its own context for the conversation with Markus and for decisions.
+
+- **Why:** on 2026-11-20, after a long session in which the lead itself reviewed diffs, opened pull requests, waited for CI, merged, cleaned up, and checked each deploy of the site, Markus said: "Remember to delegate to subagents heavily to conserve your context. Doesn't have to be whole builders each time."
+- **How to apply:** give a small sub-agent, on a small model where that is enough, each job whose steps are known: taking a finished branch through its pull request, its checks, the merge, the cleanup, and the check of the deploy; a text change of a few lines; a search; reading a log. Its brief names the rules of this file that bind it, and asks for a report of a few lines. The lead keeps what needs judgement: what to build, whether a result is what Markus asked for, and anything that deviates from what was agreed.
+
 ### A builder's task fits well inside its context
 
 Split the work so that no builder comes near the limit of its context.
