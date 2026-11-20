@@ -388,6 +388,22 @@ Examples, on `create table t (k int primary key, a int not null, b text, c real)
 | `b = 'x'` | A scan of every row. No key starts with `b`. |
 | `k = 2 and a = 10` | A `get` of the row with the key 2. |
 
+The golden files in `testdata/plans` hold these examples, the other rules case by case, and the queries of goqite and glue. See [The golden plans](#the-golden-plans).
+
+### The golden plans
+
+`TestAccessOf_golden` in `access_test.go` keeps the access of a fixed set of named queries as golden files, one file for each schema in `testdata/plans/<schema>.txt`. A schema is a table and its indexes, in the order in which they are created. A file holds the statements of the schema, and then a block for each query: its name after `## `, its text, its arguments, and its access. The access is the one that `AccessOf` gives: no row, every row, a `get` with the value of each column of the primary key, or a scan of the primary key or of an index, with the columns of its key, the values that it pins, and its bounds, each open (`<`) or closed (`<=`). The direction is not in it.
+
+The schemas are goqite's table with no index, with goqite's index, and with an added index on `(queue, timeout)`, each with goqite's receive without its `order by` and with `timeout <= ?` for goqite's `? >= timeout`, which slice 12 brings, and other queries of goqite's shape; glue's table of sessions with its index on `expiry`; the example of the roadmap; the examples above; and a table with a case for each rule.
+
+A change of the rules changes these files. The test then fails, and names each query whose access changed, with the old lines after `- ` and the new after `+ `. It also fails for a schema whose file is missing and for a file of no schema. After a change of the rules that is meant, rewrite the files with:
+
+```sh
+go test ./internal/engine -run TestAccessOf_golden -update
+```
+
+and commit them with the change. In review, a diff of `testdata/plans` is a change of the choice of an access, and each changed block shows which query reads its rows in another way.
+
 ### The order of the rows
 
 The spec says: "Unspecified row order varies." With indexes, the order of the rows of a select without `order by` depends on the access. The engine varies it further, so that no application comes to depend on it.
@@ -775,7 +791,9 @@ The layers:
 
    `TestEngine_rowsRead` pins the rows that named queries read from the cache, in each direction; see [The rows read from the cache](#the-rows-read-from-the-cache).
 
-   The generated tests and the simulation create no index: `stmttest.Sequence` leaves `Generator.Indexes` and the hook `Generator.CreateIndex` off. So these checks of slice 9 are not built: the generated run of every statement by every path of its table, the model of the rules for a table with indexes, the planted bugs of indexes, the golden plans of pinned queries, and a check from the engine of the cache's statement with `explain query plan`, which only the tests of the core make. The second instance of a `pair` takes only the paths of every row and of the primary key, and every second engine of a node of the simulation only the path of every row. [The todo](../../docs/todo.md#the-sql-front-end) has what the checks can build on.
+   `TestAccessOf_golden` keeps the access of named queries on fixed schemas as golden files, so that a change of the rules shows as a diff of them; see [The golden plans](#the-golden-plans).
+
+   The generated tests and the simulation create no index: `stmttest.Sequence` leaves `Generator.Indexes` and the hook `Generator.CreateIndex` off. So these checks of slice 9 are not built: the generated run of every statement by every path of its table, the model of the rules for a table with indexes, the planted bugs of indexes, and a check from the engine of the cache's statement with `explain query plan`, which only the tests of the core make. The second instance of a `pair` takes only the paths of every row and of the primary key, and every second engine of a node of the simulation only the path of every row. [The todo](../../docs/todo.md#the-sql-front-end) has what the checks can build on.
 
    The generated tests and the simulation write updates and deletes since the generated checks of slice 8, of 2026-11-20: see the differential test, the fuzz targets, the simulation, and the planted bugs `changeNothing` and `keepOldKey` above. The generated tests of the engine run every update and delete with WHERE on two engines, one for each way of reading rows. What is not built for slice 8 is in [the todo](../../docs/todo.md#the-sql-front-end).
 
@@ -815,6 +833,7 @@ The flags of the test binary:
 - `-directions` is the seed of the directions of the queries of every instance of the tests. The default is 0, and each instance then draws a seed. Every engine of an instance has a seed: the engine of the n-th open of an instance has the seed of the instance plus n, unless its options have a seed. A test that fails logs the seed of each of its instances, with the flag that runs the test again in the same directions.
 - `-replay` makes `TestSimulation` replay that one seed, and nothing else, and log its whole trace. `-workload` chooses the workload: `default`, the default, or `hammer`.
 - `-bug` plants the bug of that name in the replay.
+- `-update` makes `TestAccessOf_golden` rewrite the golden files of the plans; see [The golden plans](#the-golden-plans).
 
 A seed that fails in `TestSimulation` or `TestSimulation_plantedBugs` prints the command that replays it, with `-race` or `-asan` if the run that failed had one: the simulation runs no crashes under the address sanitizer, so a replay without it would be another run.
 
