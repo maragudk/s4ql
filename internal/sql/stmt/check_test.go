@@ -441,7 +441,7 @@ var checkCases = []checkCase{
 	// Syntax errors.
 	{name: "syntax error", src: "selec * from t", err: `near "selec": syntax error`},
 	{name: "incomplete input", src: "create table t1 (v1 int primary key) strict, without", err: "incomplete input"},
-	{name: "syntax error in a statement that is not supported", src: "update t set v = 1 + where", err: `near "where": syntax error`},
+	{name: "syntax error in a statement that is not supported", src: "create view v as select 1 + where", err: `near "where": syntax error`},
 	{name: "syntax error after a statement that is not supported", src: "create table t (v1 int primary key) strict without rowid", err: `near "without": syntax error`},
 	{name: "unrecognized token", src: "insert into t (v) values (1_)", err: `unrecognized token: "1_"`},
 

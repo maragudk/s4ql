@@ -241,8 +241,8 @@ func FuzzLiteral(f *testing.F) {
 		}
 		src = "delete from t where v = " + lit
 		if s, err := stmt.Check(src); err == nil {
-			if d, ok := s.(*stmt.Delete); ok {
-				check(src, conditionValues(d.Where))
+			if del, ok := s.(*stmt.Delete); ok {
+				check(src, conditionValues(del.Where))
 			}
 		}
 	})

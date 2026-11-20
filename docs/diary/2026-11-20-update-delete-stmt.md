@@ -72,3 +72,52 @@ The brief's list of what stays not supported, each under a name; SQLite's behavi
 
 - The README of the pass, `docs/todo.md`, and the decisions: step 2.
 - The engine and the driver for slice 8, which remove the refusal in `check` and the call of `engine.Check` in the driver's `check`.
+
+## Step 2: The documents, the review, and the checks
+
+**Author:** update-delete-stmt builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Where SQLite's behaviour is a detail that the roadmap does not settle, decide by SQLite's behaviour and the agreed rules, and record the decision in `docs/todo.md` in a group \"decisions of the statement pass of slice 8, for the lead to confirm\" [...] Finish: `make test`, `make lint`, `make check-browser` pass [...] Self-review the diff against these requirements."
+**Interpretation:** Record the decisions and SQLite's facts in the todo, bring the README of the pass up to date, review the branch with the code-review skill, fix what matters, and run every check.
+**Inferred intent:** A branch whose code, numbers, and documents agree, ready for the lead and for the builder of the engine.
+
+### What I did
+
+`/docs/todo.md`: the group "Decisions of the statement pass of slice 8", and two items for fresh builders: the engine and the driver for slice 8, and mutation testing and long fuzz runs of the code of slice 8 in the pass. A writer sub-agent updated `/internal/sql/stmt/README.md`: the typed form, sections UPDATE and DELETE, the errors of grammar actions, "How it is tested", and "Results" with the numbers of the full run of step 1. I read its diff. Its breakdown of the excused near misses is more exact than my brief: 2,054 = 1,396 `table "t" has more than one primary key` + 349 `generated columns cannot be part of the PRIMARY KEY` + 291 `AUTOINCREMENT is only allowed on an INTEGER PRIMARY KEY` + 18 `non-deterministic functions prohibited in index expressions`, all of CREATE TABLE.
+
+`checkChange` gained a check of the order of SQLite's errors: on a table without the last assigned column and without every column of the conditions, SQLite names the assigned column.
+
+The review (`code-review high 4b07614...HEAD`) found no bug and four nits. Fixed: the case "syntax error in a statement that is not supported" used an update, which the pass supports now, and uses `create view v as select 1 + where`; the todo said that the engine answers every update and delete as before, which holds only for those that the pass supports (`update t set v = 1 returning *` gives `RETURNING clause (at offset 19)` where it gave `UPDATE (at offset 0)`); `FuzzLiteral` shadowed its `d *db` with a `*stmt.Delete`. Left: the driver's `check` parses a supported text twice, through `engine.Check`, until the engine runs slice 8, as in slice 7.
+
+### Why
+
+The decisions are the lead's to confirm, and a moved number or a changed message needs its reason written down.
+
+### What worked
+
+`make test`, `make lint`, and `make check-browser` passed. `go test -asan ./internal/sql/stmt/...` passed in a `golang:1.27.3` container, since the fuzz targets `FuzzLiteral` and `FuzzGenerate` changed. `-race -count=10` of `TestCheck`, `TestGenerator_*`, `TestStatement`, and `TestAllowList`, and `-count=50` of `TestGenerator_*`, passed. `golangci-lint run ./internal/sql/stmt/... ./internal/engine/ .` gave 0 issues. The engine's `TestDifferential` and `TestSimulation` without `-short` passed with every pinned number unchanged, and so did `drivercheck`. Coverage of the pass under `-short` is 99.4%, with `update` and `delete` covered completely.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+The roadmap's slice 8 lists ORDER BY and LIMIT on an update and a delete as "Rejected as not supported, where SQLite would accept it", but the pinned build of SQLite refuses both with a syntax error. The pass gives the syntax error; the todo says so, and the roadmap's text is the lead's.
+
+### What was tricky
+
+Nothing beyond step 1.
+
+### What warrants review
+
+- The group "Decisions of the statement pass of slice 8" in `/docs/todo.md`, for the lead to confirm.
+- The sections UPDATE and DELETE, "How it is tested", and "Results" of `/internal/sql/stmt/README.md`.
+
+### Future work
+
+- The engine and the driver for slice 8; the todo has the list of what to remove and add.
+- Mutation testing and long fuzz runs of the code of slice 8 in the pass.
+- The roadmap's slice 8 is not marked built; the status of the README, the site, and the todo are for the lead's sub-agent after the merge.

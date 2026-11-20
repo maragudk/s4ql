@@ -983,9 +983,10 @@ func checkWhere(t testing.TB, open func(testing.TB) *db, src string, s *stmt.Sel
 // as many rows, as SQLite counts them. Each row that is left is the row before, or, for an update,
 // the row before with the values of the assignments; an update without WHERE changes every row, and
 // a delete without WHERE leaves none. SQLite gives `no such table` for src without the table, `no such
-// column` for the first and for the last column of the assignments on a table without it, with the
-// value of the name, also of one in double quotes, and `no such column` for the columns of the
-// conditions that no assignment names, as [anyTable.checkMissing] says.
+// column` for the first column of the assignments on a table without it, and for the last on a table
+// without it and without the columns of the conditions, with the value of the name, also of one in
+// double quotes, and `no such column` for the columns of the conditions that no assignment names, as
+// [anyTable.checkMissing] says.
 func checkChange(t testing.TB, open func(testing.TB) *db, src string, s stmt.Statement, table stmt.Name, set []stmt.Assignment, where []stmt.Condition) {
 	t.Helper()
 	var terms []stmt.Term
@@ -1077,10 +1078,17 @@ func checkChange(t testing.TB, open func(testing.TB) *db, src string, s stmt.Sta
 		// order of the text, and prints the value of the name, also of one in double quotes.
 		first, last := set[0].Column, set[len(set)-1].Column
 		a.refuses(t, open, src, args, map[string]bool{first.Fold(): true}, "no such column: "+first.Value)
-		a.refuses(t, open, src, args, map[string]bool{last.Fold(): true}, "no such column: "+last.Value)
 		for _, as := range set {
 			listed[as.Column.Fold()] = true
 		}
+		// Without the columns of the conditions too, SQLite names the column of the assignment.
+		missing := map[string]bool{last.Fold(): true}
+		for _, c := range where {
+			if !listed[c.Column.Fold()] {
+				missing[c.Column.Fold()] = true
+			}
+		}
+		a.refuses(t, open, src, args, missing, "no such column: "+last.Value)
 	}
 	a.checkMissing(t, open, src, args, where, listed)
 }
