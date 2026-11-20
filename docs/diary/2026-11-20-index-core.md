@@ -144,7 +144,7 @@ A statement that compares values needs no turning of bounds for a descending col
 ### What didn't work
 
 - The first plan check failed: `Expected "SCAN wide USING COVERING INDEX wide_i", but got "SCAN main.wide USING COVERING INDEX wide_i"`. SQLite prints the schema that the statement names.
-- A Bash command with `sed -i` and a second command was refused twice as "too complex to verify that it stays inside the worktree"; the Edit tool did the change.
+- More Bash commands were refused as "too complex to verify that it stays inside the worktree": two `sed -i` with a replacement of several lines, a chain of `git status`, `sed`, and a script, and a heredoc that appended to this diary together with a `git add`. The Edit tool, or a script in the scratchpad, did each change.
 
 ### What I learned
 
@@ -163,3 +163,58 @@ The `order by` of a scan. With every column of the key in it, a key of more than
 ### Future work
 
 - The documents, the review, and the checks: step 4.
+
+## Step 4: the documents, the review, and the checks
+
+**Author:** builder (index-core)
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "8. Decisions that the agreement does not settle: decide by SQLite's behaviour and the agreed rules, and record each in `docs/todo.md` in a group \"decisions of the core step of indexes, for the lead to confirm\". [...] Update `internal/core/README.md` and `internal/format/README.md` for what you built. [...] Finish: `make test`, `make lint`, `make check-browser` pass. Self-review against these requirements (a code-review pass of your own is welcome). [...] Since you change a fuzz test and perhaps the binding, run `make test-asan` for the packages you touched only."
+**Interpretation:** Write the decisions down where the lead reads them, have a writer bring the two READMEs up to date, review the branch, and run every check.
+**Inferred intent:** A branch whose code, numbers, and documents agree, for the reviewer and for the builder of the engine.
+
+### What I did
+
+`/docs/todo.md`: the group "Decisions of the core step of indexes, slice 9" under "The storage core", three items for later (the planted bugs of indexes, mutation testing of `index.go`, and the cost of reading the indexes at the first look-up of a table), and a pointer in the item of the engine for slice 9. A writer sub-agent updated `/internal/core/README.md` and `/internal/format/README.md` from a brief with the facts; I read its diff, and its report named one place where my brief was wrong (a scan without bounds has the plan `SCAN`, not `SEARCH`), which it had written right.
+
+The review (`code-review high origin/index-stmt...HEAD`) found no bug and four smaller things. Its own random test of 4,000 seeds of creates, drops, competing names, rows, and savepoints found the writer, the cache, the replayed cache, and the model in agreement, the order of the indexes among them. What I did with the four:
+
+- "A scan that SQLite sorts can fail as too big for a row near the length limit": measured, and not so. The sorter holds the columns of the key once, as columns of the row. A new subtest of `TestScanIndex` finds the longest text that a table of 71 columns takes at a limit of 3,000 bytes, 2,787 bytes, and scans that row by a key of 70 columns, forward, backward, and with a bound. The todo said the same wrong thing, and is corrected.
+- "`RowsRead` cannot show that SQLite read more of an index than the bounds": true, and the doc comment of `ReadTx.RowsRead` says now that it counts the rows that SQLite gave, and that the plan check of the tests is what ties them to the bounds.
+- "Every first look-up of a table reads its indexes too": true, not measured, and in the todo as not decided.
+- "The full workload reaches no delete of the key -0.0 any more": true, and left for the lead; the todo and the README say it.
+
+### Why
+
+The decisions are the lead's to confirm, and a claim in a document that a test can check should be checked.
+
+### What worked
+
+- `make test`, `make lint`, and `make check-browser` passed. The core's tests are at 93.8% coverage under `-short`.
+- The new tests ran 50 times (`go test -short -count=50`, 221 s) and 20 times under the race detector (`-race -short -count=20`, 63 s) without a failure.
+- In a Linux container, as `make test-asan` runs it, for the two packages that the change touches: `go test -asan -short ./internal/core/ ./internal/format/` passed (430 s for the core), and `make fuzz FUZZDIRS=internal/core FUZZFLAGS=-asan` and `make fuzz FUZZDIRS=internal/format`, 30 s each test, passed.
+- `FuzzScanIndex` ran 24,571 inputs in 150 s natively without a failure.
+
+### What didn't work
+
+- Under the sanitizer in the container, `FuzzScanIndex` ran only 319 inputs in 30 s, with stretches of several seconds without one. Natively it runs 150 to 400 a second. Each input opens a database with a cache file.
+- My first try at a test of the review's first finding used a length limit of 1,000 bytes, and the setup failed with `sqlite: string or blob too big (code 18)` before any scan: a table of 71 columns needs statements longer than that. With a limit of 3,000 the scan that the review expected to fail gave its row.
+
+### What I learned
+
+SQLite's sorter does not hold a column twice that is both in the `order by` and in the result, so sorting whole rows by their own columns needs no more room than the rows.
+
+### What was tricky
+
+Pull request #92, which this branch starts from, was not merged when the work was done, and `main` had moved on with pull request #91. A trial merge of `origin/main` (`git merge-tree`) conflicts in `conn.go`, `docs/todo.md`, `internal/engine/engine.go`, `internal/engine/differential_test.go`, and `drivercheck_test.go`, all between the statement pass of indexes and the engine of slice 8; the files of this task merge cleanly.
+
+### What warrants review
+
+- The group of decisions in `/docs/todo.md`.
+- The four findings of the review above, the one about the full workload most of all.
+
+### Future work
+
+- The engine, the planner, and the driver for slice 9, from this branch.
+- The planted bugs of indexes in the core's simulation, and mutation testing of `/internal/core/index.go`.

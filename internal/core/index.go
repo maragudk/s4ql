@@ -767,6 +767,10 @@ func (r *ReadTx) scan(ctx context.Context, name string, plan func(t *table) (*in
 // row that a scan stepped to, whether or not the loop over the scan went on to use it, and one for
 // each row that [ReadTx.Get] found. It depends only on the rows of the database and on the calls,
 // so a test can pin how many rows a query reads.
+//
+// It counts the rows that SQLite gave, and not the entries of an index that SQLite looked at to
+// find them. The two are the same while SQLite seeks every bound of a scan, which the statement of
+// [table.scanSQL] is written for and which the tests check with SQLite's plan of it.
 func (r *ReadTx) RowsRead() int64 {
 	return r.read
 }

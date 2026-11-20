@@ -1313,6 +1313,45 @@ func TestScanIndex(t *testing.T) {
 		is.NotError(t, <-closed)
 	})
 
+	t.Run("should scan the longest row that a table takes by a key of more than 63 columns, which SQLite sorts", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{LengthLimit: 3000})
+		// A key of 70 columns, 6 in the primary key and 64 in the index, and a text that fills the
+		// row up to the limit.
+		wide := tableOf("wide", 6, manyColumns(71)...)
+		wide.GetColumns()[70].SetType(s4qlpb.Type_TYPE_TEXT)
+		values := make([]any, 71)
+		positions := make([]any, 64)
+		for i := range values {
+			values[i] = 1000 + i
+		}
+		for i := range positions {
+			positions[i] = 6 + i
+		}
+		transact(t, d, createWith(wide), createIndex("wide_i", "wide", positions...))
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		// The longest text with which SQLite takes the row.
+		longest := -1
+		for n := 3000; n > 2000; n-- {
+			values[70] = strings.Repeat("x", n)
+			err := tx.Upsert(t.Context(), "wide", row(values...))
+			if err == nil {
+				longest = n
+				break
+			}
+			is.Error(t, core.ErrTooBig, err)
+		}
+		is.True(t, longest > 2000 && longest < 3000, fmt.Sprint(longest))
+		// The sorter holds the columns of the key once, as columns of the row, so its record is no
+		// longer than the row, and SQLite takes it.
+		for _, scan := range []core.IndexScan{{Index: "wide_i"}, {Index: "wide_i", Backward: true}, {Index: "wide_i", Lower: core.Bound{Value: row(1006)[0]}}} {
+			is.Equal(t, 1, len(scanBy(t, tx, "wide", scan)), describeScan(scan))
+		}
+		is.NotError(t, tx.Commit(t.Context()))
+	})
+
 	t.Run("should read the same rows in the same order, sorted by SQLite, by a key of more columns than SQLite compares with the order of an index", func(t *testing.T) {
 		w := newWorld(t)
 		d := w.serve(t, "a", core.Options{})
