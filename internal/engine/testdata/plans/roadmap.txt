@@ -1,0 +1,9 @@
+# The plans of the queries on the schema roadmap, which TestAccessOf_golden in access_test.go checks.
+# Rewrite with: go test ./internal/engine -run TestAccessOf_golden -update
+
+create table t1 (v1 int primary key, v2 text not null, v3 real) strict, without rowid
+create index t1_v2_v3 on t1 (v2, v3 desc)
+
+## example
+select v1 from t1 where v2 = 'a' and v3 > 1.5
+access: index t1_v2_v3 (v2, v3 desc, v1), pins v2 = 'a', bounds 1.5 < v3

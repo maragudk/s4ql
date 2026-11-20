@@ -53,13 +53,18 @@ func IndexKey(t *s4qlpb.CreateTable, ix *s4qlpb.CreateIndex) []KeyColumn {
 	for i, position := range t.GetPrimaryKey() {
 		primaryKey[i] = int(position)
 	}
-	return indexKey(primaryKey, columns)
+	return indexKey(primaryKey, columns, bugs{})
 }
 
 // indexKey of the index on the columns of a table whose primary key has the columns at the
-// positions primaryKey, as [IndexKey] says.
-func indexKey(primaryKey []int, columns []KeyColumn) []KeyColumn {
+// positions primaryKey, as [IndexKey] says, with the planted bugs. Under the planted bug shortKey,
+// the key of an index is its columns alone, without the primary-key columns that it does not hold.
+func indexKey(primaryKey []int, columns []KeyColumn, bugs bugs) []KeyColumn {
 	key := slices.Clone(columns)
+	if bugs.shortKey && columns != nil {
+		// The planted bug.
+		return key
+	}
 	for _, position := range primaryKey {
 		if !slices.ContainsFunc(columns, func(c KeyColumn) bool { return c.Position == position }) {
 			key = append(key, KeyColumn{Position: position})
@@ -69,12 +74,12 @@ func indexKey(primaryKey []int, columns []KeyColumn) []KeyColumn {
 }
 
 // scanKey is the key that a scan by the index ix of the table reads in the order of, as
-// [IndexKey] says. The key of no index is the primary key.
-func (t *table) scanKey(ix *index) []KeyColumn {
+// [IndexKey] says, with the planted bugs. The key of no index is the primary key.
+func (t *table) scanKey(ix *index, bugs bugs) []KeyColumn {
 	if ix == nil {
-		return indexKey(t.key, nil)
+		return indexKey(t.key, nil, bugs)
 	}
-	return indexKey(t.key, ix.columns)
+	return indexKey(t.key, ix.columns, bugs)
 }
 
 // index of the table with the given name, compared as SQLite compares names, or nil if the table
@@ -625,8 +630,13 @@ func (t *table) checkScan(key []KeyColumn, scan IndexScan, limit int) error {
 // the key, with the arguments of their parameters: a term for each value of Equal, and one for each
 // bound on the column after them. The terms compare values, so the direction of a column in the key
 // changes none of them: SQLite turns a bound on a descending column into the right end of the
-// range of the index.
-func scanConditions(names []string, scan IndexScan) (conditions []string, args []any) {
+// range of the index. Under the planted bug turnDescBound, the lower and the upper bound of a
+// column that the key holds descending change places.
+func scanConditions(names []string, key []KeyColumn, scan IndexScan, bugs bugs) (conditions []string, args []any) {
+	if bugs.turnDescBound && len(scan.Equal) < len(key) && key[len(scan.Equal)].Descending {
+		// The planted bug.
+		scan.Lower, scan.Upper = scan.Upper, scan.Lower
+	}
 	for i, v := range scan.Equal {
 		if v.WhichKind() == s4qlpb.Value_Null_case {
 			conditions = append(conditions, names[i]+" is null")
@@ -653,8 +663,8 @@ func scanConditions(names []string, scan IndexScan) (conditions []string, args [
 }
 
 // scanSQL is the statement of a scan of the table by its index ix, or by its primary key if ix is
-// nil, which [table.checkScan] has accepted, with the arguments of its parameters. It fails as
-// [table.checkIndexed] does.
+// nil, which [table.checkScan] has accepted, with the arguments of its parameters, and with the
+// planted bugs of [scanConditions]. It fails as [table.checkIndexed] does.
 //
 // SQLite must read exactly that index, and seek exactly the bounds. The statement therefore names
 // the index with "indexed by", which leaves SQLite no other, and names the index of the primary
@@ -665,11 +675,11 @@ func scanConditions(names []string, scan IndexScan) (conditions []string, args [
 // SQLite reads the index, so it sorts nothing: unless those columns are more than 63, which is the
 // most that SQLite compares with the order of an index, and it then reads the same rows and sorts
 // them.
-func (t *table) scanSQL(ix *index, scan IndexScan) (string, []any, error) {
+func (t *table) scanSQL(ix *index, scan IndexScan, bugs bugs) (string, []any, error) {
 	if err := t.checkIndexed(); err != nil {
 		return "", nil, err
 	}
-	key := t.scanKey(ix)
+	key := t.scanKey(ix, bugs)
 	names := make([]string, len(key))
 	for i, c := range key {
 		names[i] = quote(t.columns[c.Position].name)
@@ -678,7 +688,7 @@ func (t *table) scanSQL(ix *index, scan IndexScan) (string, []any, error) {
 	if ix != nil {
 		by = ix.name
 	}
-	conditions, args := scanConditions(names, scan)
+	conditions, args := scanConditions(names, key, scan, bugs)
 	sql := fmt.Sprint("select * from main.", quote(t.name), " indexed by ", quote(by))
 	if len(conditions) > 0 {
 		sql += " where " + strings.Join(conditions, " and ")
@@ -705,7 +715,7 @@ func (t *table) scanSQL(ix *index, scan IndexScan) (string, []any, error) {
 // close.
 func (c *conn) scanIndex(t *table, ix *index, scan IndexScan, read *int64) iter.Seq2[[]*s4qlpb.Value, error] {
 	return func(yield func([]*s4qlpb.Value, error) bool) {
-		sql, args, err := t.scanSQL(ix, scan)
+		sql, args, err := t.scanSQL(ix, scan, c.bugs)
 		if err != nil {
 			yield(nil, err)
 			return
@@ -763,7 +773,7 @@ func (c *conn) scanIndex(t *table, ix *index, scan IndexScan, read *int64) iter.
 // key, for a scan that [table.checkScan] accepts on a connection with the given limit. Its error
 // wraps [ErrNoIndex] if the table has no such index, and [ErrInvalid] or [ErrTooBig] as checkScan
 // says.
-func scanned(t *table, scan IndexScan, limit int) (*index, error) {
+func scanned(t *table, scan IndexScan, limit int, bugs bugs) (*index, error) {
 	var ix *index
 	if scan.Index != "" {
 		var err error
@@ -774,7 +784,7 @@ func scanned(t *table, scan IndexScan, limit int) (*index, error) {
 			return nil, fmt.Errorf("%w: %q on the table %q", ErrNoIndex, scan.Index, t.name)
 		}
 	}
-	return ix, t.checkScan(t.scanKey(ix), scan, limit)
+	return ix, t.checkScan(t.scanKey(ix, bugs), scan, limit)
 }
 
 // ScanIndex is [ReadTx.Scan] by an index of the table, or by its primary key, of the rows that scan
@@ -789,9 +799,39 @@ func scanned(t *table, scan IndexScan, limit int) (*index, error) {
 // [ErrTooBig] for a text or a blob that is longer than SQLite takes.
 func (r *ReadTx) ScanIndex(ctx context.Context, name string, scan IndexScan) iter.Seq2[[]*s4qlpb.Value, error] {
 	return r.scan(ctx, name, func(t *table) (*index, IndexScan, error) {
-		ix, err := scanned(t, scan, r.c.limit)
+		ix, err := scanned(t, scan, r.c.limit, r.c.bugs)
 		return ix, scan, err
 	})
+}
+
+// ScanPlan is the statement that [ReadTx.ScanIndex] runs for the scan, and SQLite's plan for it on
+// the connection of the transaction: the details of the rows of "explain query plan", in their
+// order. It fails as ScanIndex does. It reads no row, and is for tests, which check with it that the
+// cache searches exactly the index and the bounds of the scan.
+func (r *ReadTx) ScanPlan(ctx context.Context, name string, scan IndexScan) (string, []string, error) {
+	const operation = "scan"
+	if err := r.check(); err != nil {
+		return "", nil, err
+	}
+	defer r.leave()
+	t, err := r.table(ctx, operation, name)
+	if err != nil {
+		return "", nil, err
+	}
+	ix, err := scanned(t, scan, r.c.limit, r.c.bugs)
+	if err != nil {
+		return "", nil, err
+	}
+	sql, _, err := t.scanSQL(ix, scan, r.c.bugs)
+	if err != nil {
+		return "", nil, err
+	}
+	var plan []string
+	err = r.c.query("explain query plan "+sql, func(s *sqlite.Stmt) error {
+		plan = append(plan, s.ColumnText(3))
+		return nil
+	})
+	return sql, plan, r.d.cacheError(ctx, operation, err)
 }
 
 // scan the table with the given name by the index, or the primary key, and as the scan says that
@@ -853,7 +893,7 @@ func (r *ReadTx) RowsRead() int64 {
 // drop an index or a table while it scans.
 func (tx *Tx) ScanIndex(ctx context.Context, name string, scan IndexScan) iter.Seq2[[]*s4qlpb.Value, error] {
 	return tx.scan(ctx, name, func(t *table) (*index, IndexScan, error) {
-		ix, err := scanned(t, scan, tx.c.limit)
+		ix, err := scanned(t, scan, tx.c.limit, tx.c.bugs)
 		return ix, scan, err
 	})
 }

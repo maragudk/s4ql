@@ -488,6 +488,13 @@ func TestConn_differential(t *testing.T) {
 		for kind, least := range map[string]int{
 			"read both ways": 146, "read both ways in a read-only transaction": 32, "changed both ways": 181, "changed both ways in a read-only transaction": 38,
 			"commit of a transaction whose update or delete changed rows": 7, "roll back of a transaction whose update or delete changed rows": 2,
+			// The create indexes and drop indexes of slice 9 in transactions, of which the run gave 29
+			// commits and 13 roll backs of a write transaction with one, 20 create indexes and 5 drop
+			// indexes in a read-only transaction, which refuses them, and 91 WHERE on a table with an
+			// index that [pair.everyPath] ran by its paths, on 2026-11-20: a third of each.
+			"commit of a transaction with a create index or a drop index": 9, "roll back of a transaction with a create index or a drop index": 4,
+			"create index attempt to write a readonly database": 6, "drop index attempt to write a readonly database": 1,
+			"WHERE run by every path on a table with an index": 30,
 		} {
 			if y["reached: "+kind] < least {
 				t.Errorf("the run reaches %q %v times, and at least %v were expected", kind, y["reached: "+kind], least)
@@ -509,7 +516,11 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 	defer i.close()
 	r := rand.New(rand.NewPCG(seed, 0x7e))
 	q := newSequence(t, r)
+	if seed%3 == 2 {
+		q.Indexed()
+	}
 	p := newPair(t, i, y)
+	p.rnd = rand.New(rand.NewPCG(seed, 0x9a7))
 	defer p.other.close()
 	var log []string
 	fail := func(format string, args ...any) {
@@ -518,7 +529,8 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 	}
 	// open is the kind of the transaction that is open: "", "write", or "read only", and changed
 	// reports whether an update or a delete of the transaction changed rows.
-	open, changed := "", false
+	// indexed reports whether a create index or a drop index of the transaction succeeded.
+	open, changed, indexed := "", false, false
 	end := func() {
 		t.Helper()
 		commit := r.IntN(3) > 0
@@ -536,7 +548,10 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 		if changed && y != nil {
 			y["reached: "+map[bool]string{true: "commit", false: "roll back"}[commit]+" of a transaction whose update or delete changed rows"]++
 		}
-		open, changed = "", false
+		if indexed && y != nil {
+			y["reached: "+map[bool]string{true: "commit", false: "roll back"}[commit]+" of a transaction with a create index or a drop index"]++
+		}
+		open, changed, indexed = "", false, false
 		want := p.o.state(t)
 		if got := i.state(); got != want {
 			fail("after the end of the transaction the engine holds\n%v\nand SQLite\n%v", got, want)
@@ -566,13 +581,17 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 		}
 		c := q.Next()
 		log = append(log, fmt.Sprintf("%v -- with %#v", c.Src, c.Args))
-		p.readOnly = open == "read only"
+		p.readOnly, p.inTx = open == "read only", open != ""
 		if failure := p.step(c); failure != "" {
 			fail("%v", failure)
 		}
 		if s, _ := checkText(c.Src); open == "write" && p.last.err == "" && i.changes > 0 && changesRows(c.Src) {
 			_, isInsert := s.(*stmt.Insert)
 			changed = changed || !isInsert
+		}
+		switch s, _ := stmt.Check(c.Src); s.(type) {
+		case *stmt.CreateIndex, *stmt.DropIndex:
+			indexed = indexed || open == "write" && p.last.err == ""
 		}
 	}
 	if open != "" {

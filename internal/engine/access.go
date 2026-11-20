@@ -63,19 +63,19 @@ func (a access) scan() core.IndexScan {
 // Rules 1 and 2 do not depend on the indexes: the access is no row, or the row of a primary key, for
 // no indexes exactly when it is for any. The values of the conditions are of the types of their
 // columns, as [checkType] checks them.
-func chooseAccess(t *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, conditions []condition) (access, error) {
+func chooseAccess(t *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, conditions []condition, b bugs) (access, error) {
 	if never(t, conditions) {
 		return access{none: true}, nil
 	}
 	if point := pointOf(t, conditions); point != nil {
 		return access{point: point}, nil
 	}
-	best, err := fit(t, "", primaryKey(t), conditions)
+	best, err := fit(t, "", primaryKey(t), conditions, b)
 	if err != nil {
 		return access{}, err
 	}
 	for _, ix := range indexes {
-		a, err := fit(t, ix.GetIndex(), indexKey(t, ix), conditions)
+		a, err := fit(t, ix.GetIndex(), indexKey(t, ix), conditions, b)
 		if err != nil {
 			return access{}, err
 		}
@@ -171,11 +171,17 @@ func indexKey(t *s4qlpb.CreateTable, ix *s4qlpb.CreateIndex) []int {
 // name, or of the primary key, if it is empty: the access that pins each leading column of the key
 // that a condition pins, with = or with a test for NULL, as [pinOf] says, and that bounds the first
 // column that none pins by the tightest bounds of the conditions that compare it with <, <=, >, or
-// >=. It never sets none or point.
-func fit(t *s4qlpb.CreateTable, index string, key []int, conditions []condition) (access, error) {
+// >=. It never sets none or point. The bugs b are those planted in it.
+func fit(t *s4qlpb.CreateTable, index string, key []int, conditions []condition, b bugs) (access, error) {
 	a := access{index: index}
-	for _, position := range key {
-		if v := pinOf(t, position, conditions, true); v != nil {
+	for i, position := range key {
+		pinned := position
+		if b.pinByPlace {
+			// The planted bug: the pin of a column of the key is looked for among the conditions on the
+			// column of the table at its place in the key.
+			pinned = i
+		}
+		if v := pinOf(t, pinned, conditions, true); v != nil {
 			a.equal = append(a.equal, v)
 			continue
 		}
@@ -269,7 +275,7 @@ const (
 // is pathPrimary or pathIndex, and whether p can serve the table: an index of another table, or of
 // none, cannot. It reads no row for conditions of which one is never true, as the rules do, since
 // the storage takes no such scan.
-func forcedAccess(t *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, conditions []condition, p path) (access, bool, error) {
+func forcedAccess(t *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, conditions []condition, p path, b bugs) (access, bool, error) {
 	name, key := "", primaryKey(t)
 	if p.kind == pathIndex {
 		var found *s4qlpb.CreateIndex
@@ -286,7 +292,7 @@ func forcedAccess(t *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, conditio
 	if never(t, conditions) {
 		return access{none: true}, true, nil
 	}
-	a, err := fit(t, name, key, conditions)
+	a, err := fit(t, name, key, conditions, b)
 	if err != nil {
 		return access{}, false, err
 	}
@@ -307,4 +313,6 @@ type reading struct {
 	// drawn is whether the engine drew backward, which it does for a query whose path forces no
 	// direction.
 	drawn bool
+	// bugs planted in the choice of the access, for the tests of this package.
+	bugs bugs
 }

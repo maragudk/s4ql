@@ -1,0 +1,111 @@
+# The plans of the queries on the schema rules, which TestAccessOf_golden in access_test.go checks.
+# Rewrite with: go test ./internal/engine -run TestAccessOf_golden -update
+
+create table r (k int primary key, a int not null, b text, c real, d blob) strict, without rowid
+create index rk on r (k desc)
+create index ra on r (a)
+create index rb on r (b)
+create index rbc on r (b, c desc)
+create index rd on r (d)
+
+## no row for a comparison with null
+select k from r where a = null
+access: no row
+
+## no row for a comparison with an argument of null
+select k from r where b > ?
+args: NULL
+access: no row
+
+## no row for is null on the primary key
+select k from r where k is null
+access: no row
+
+## a get
+select a from r where k = ?
+args: 3
+access: get, k = 3
+
+## a get where an index pins more
+select a from r where k = 3 and a = 1
+access: get, k = 3
+
+## the primary key wins a tie with an index
+select a from r where k > 3
+access: primary key (k), bounds 3 < k
+
+## the first index created wins a tie
+select k from r where b = 'x'
+access: index rb (b, k), pins b = 'x'
+
+## a range wins over no range at the same pins
+select k from r where b = 'x' and c > 1.5
+access: index rbc (b, c desc, k), pins b = 'x', bounds 1.5 < c
+
+## a range of a descending column
+select k from r where b = ? and c > ? and c <= ?
+args: 'x', 1.5, 9.5
+access: index rbc (b, c desc, k), pins b = 'x', bounds 1.5 < c <= 9.5
+
+## is null pins a nullable column
+select k from r where b is null
+access: index rb (b, k), pins b = NULL
+
+## the first condition pins
+select k from r where b is null and b = 'x'
+access: index rb (b, k), pins b = NULL
+
+## the first of two equal pins
+select k from r where a = 1 and a = 2
+access: index ra (a, k), pins a = 1
+
+## is null pins nothing on a column without null
+select k from r where a is null
+access: every row
+
+## the primary key at the end of an index key
+select b from r where a = 1 and k > 3
+access: index ra (a, k), pins a = 1, bounds 3 < k
+
+## the open bound is tighter
+select a from r where k >= 3 and k > 3 and k < 9 and k <= 9
+access: primary key (k), bounds 3 < k < 9
+
+## bounds that hold no value
+select a from r where k > 5 and k < 3
+access: primary key (k), bounds 5 < k < 3
+
+## not equal pins nothing
+select k from r where a != 1
+access: every row
+
+## is not null pins nothing
+select k from r where b is not null
+access: every row
+
+## a later column of a key pins nothing
+select k from r where c = 1.5
+access: every row
+
+## a blob
+select k from r where d = ?
+args: x'0102'
+access: index rd (d, k), pins d = x'0102'
+
+## an update
+update r set c = ? where b = ? and c < ?
+args: 2.5, 'y', 0.5
+access: index rbc (b, c desc, k), pins b = 'y', bounds c < 0.5
+
+## an update by a get
+update r set a = 2 where k = 3
+access: get, k = 3
+
+## a delete
+delete from r where a = ? and k <= ?
+args: 1, 10
+access: index ra (a, k), pins a = 1, bounds k <= 10
+
+## a delete of no row
+delete from r where k is null
+access: no row

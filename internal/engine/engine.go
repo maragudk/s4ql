@@ -121,7 +121,7 @@ func newEngine(d database, h host.Host, options Options) *Engine {
 // seed, which is splitmix64, so that the n-th query of two engines with one seed reads in the same
 // direction. A path with a direction draws nothing.
 func (e *Engine) reading(query bool) reading {
-	how := reading{path: e.path}
+	how := reading{path: e.path, bugs: e.bugs}
 	switch {
 	case how.path.direction != directionDrawn:
 		how.backward = how.path.direction == directionBackward

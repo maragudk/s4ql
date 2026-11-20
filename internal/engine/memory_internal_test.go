@@ -9,6 +9,7 @@ import (
 	"maps"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 
 	"maragu.dev/s4ql/internal/core"
@@ -380,6 +381,24 @@ func (m *memory) state(text func(*s4qlpb.Value) string) string {
 			rows = append(rows, strings.Join(values, ","))
 		}
 		fmt.Fprintf(&b, "%v (%v): %v\n", t.ct.GetTable(), strings.Join(columns, ", "), strings.Join(rows, " "))
+	}
+	// The indexes of the tables, as the tests of the engine on the core give them.
+	for _, t := range tables {
+		var indexes []string
+		for _, ci := range t.indexes {
+			var cs []string
+			for _, c := range ci.GetColumns() {
+				column := strconv.Quote(t.ct.GetColumns()[c.GetColumn()].GetName())
+				if c.GetDescending() {
+					column += " desc"
+				}
+				cs = append(cs, column)
+			}
+			indexes = append(indexes, strconv.Quote(ci.GetIndex())+" ("+strings.Join(cs, ", ")+")")
+		}
+		if len(indexes) > 0 {
+			fmt.Fprintf(&b, "%v: %v\n", strconv.Quote(t.ct.GetTable()), strings.Join(indexes, " "))
+		}
 	}
 	return b.String()
 }

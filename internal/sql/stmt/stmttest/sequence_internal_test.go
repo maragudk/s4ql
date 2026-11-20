@@ -194,6 +194,62 @@ func TestSequence_delete(t *testing.T) {
 	})
 }
 
+func TestSequence_createIndex(t *testing.T) {
+	t.Run("should give columns of the shape, each once, and now and then one that it does not have", func(t *testing.T) {
+		q, err := NewSequence(rand.New(rand.NewPCG(11, 12)))
+		is.NotError(t, err)
+		table := stmt.Name{Raw: "t", Value: "t"}
+		shape := q.shapeOf(table)
+		missing, descending := 0, 0
+		for range 2000 {
+			columns := q.createIndex(stmt.Name{Raw: "i", Value: "i"}, table)
+			seen := map[string]bool{}
+			for _, c := range columns {
+				fold := nameOf(c.Name.Raw, 0).Fold()
+				is.True(t, !seen[fold], "a column twice")
+				seen[fold] = true
+				if columnOfShape(shape, fold) == nil {
+					missing++
+				}
+				if c.Descending {
+					descending++
+				}
+			}
+			is.True(t, len(columns) > 0 && len(columns) <= len(shape)+2)
+		}
+		is.True(t, missing > 100 && missing < 300, fmt.Sprint("one create index in twelve with a column that the shape does not have: ", missing))
+		is.True(t, descending > 400, fmt.Sprint("a column in three descending: ", descending))
+		is.Equal(t, storedIndexes, len(q.indexed["t"]))
+	})
+
+	t.Run("should pin leading columns of a create index of the table in a WHERE, and more of them with Indexed", func(t *testing.T) {
+		count := func(indexed bool) int {
+			q, err := NewSequence(rand.New(rand.NewPCG(13, 14)))
+			is.NotError(t, err)
+			if indexed {
+				q.Indexed()
+			}
+			table := stmt.Name{Raw: "t", Value: "t"}
+			is.True(t, q.indexConditions(table) == nil, "no WHERE of an index before a create index")
+			for range 20 {
+				q.insert(table)
+			}
+			q.createIndex(stmt.Name{Raw: "i", Value: "i"}, table)
+			pins := 0
+			for range 2000 {
+				for _, c := range q.where(table) {
+					if c.Operator == stmt.OpEqual || c.Operator == stmt.OpIsNull {
+						pins++
+					}
+				}
+			}
+			return pins
+		}
+		plain, indexed := count(false), count(true)
+		is.True(t, plain > 0 && indexed > plain, fmt.Sprint(plain, " ", indexed))
+	})
+}
+
 // typeOf the value v, which is not NULL: INT for an integer.
 func typeOf(v stmt.Value) stmt.Type {
 	switch v.(type) {

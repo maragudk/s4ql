@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,7 +11,9 @@ import (
 
 	"maragu.dev/is"
 
+	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/engine"
+	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 )
@@ -152,11 +155,20 @@ func (i *instance) indexes() string {
 	defer func() { is.NotError(i.t, r.Close(ctx)) }()
 	tables, err := r.Tables(ctx)
 	is.NotError(i.t, err)
+	text, err := indexesText(ctx, r, tables)
+	is.NotError(i.t, err)
+	return text
+}
+
+// indexesText of the tables of the read transaction r, as [oracle.indexes] gives them.
+func indexesText(ctx context.Context, r *core.ReadTx, tables []*s4qlpb.CreateTable) (string, error) {
 	var b strings.Builder
 	quote := strconv.Quote
 	for _, ct := range tables {
 		cis, err := r.Indexes(ctx, ct.GetTable())
-		is.NotError(i.t, err)
+		if err != nil {
+			return "", err
+		}
 		var indexes []string
 		for _, ci := range cis {
 			var cs []string
@@ -173,7 +185,7 @@ func (i *instance) indexes() string {
 			fmt.Fprintf(&b, "%v: %v\n", quote(ct.GetTable()), strings.Join(indexes, " "))
 		}
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 const indexTable = "create table t (k int primary key, a int not null, b text, c real) strict, without rowid"

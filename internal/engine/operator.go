@@ -791,10 +791,10 @@ func (b build) access(ctx context.Context, t *s4qlpb.CreateTable, conditions []c
 	case pathFull:
 		return access{}, nil
 	case pathPrimary:
-		a, _, err := forcedAccess(t, nil, conditions, p)
+		a, _, err := forcedAccess(t, nil, conditions, p, b.how.bugs)
 		return a, err
 	case pathRules:
-		if a, err := chooseAccess(t, nil, conditions); err != nil || a.none || a.point != nil {
+		if a, err := chooseAccess(t, nil, conditions, b.how.bugs); err != nil || a.none || a.point != nil {
 			return a, err
 		}
 	}
@@ -803,11 +803,11 @@ func (b build) access(ctx context.Context, t *s4qlpb.CreateTable, conditions []c
 		return access{}, err
 	}
 	if p.kind == pathIndex {
-		if a, ok, err := forcedAccess(t, indexes, conditions, p); err != nil || ok {
+		if a, ok, err := forcedAccess(t, indexes, conditions, p, b.how.bugs); err != nil || ok {
 			return a, err
 		}
 	}
-	return chooseAccess(t, indexes, conditions)
+	return chooseAccess(t, indexes, conditions, b.how.bugs)
 }
 
 // buildValues: the source of the rows of v, with args for their parameters, and the expressions of

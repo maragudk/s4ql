@@ -173,6 +173,13 @@ func (a Access) String() string {
 	return s
 }
 
+// Scan of the access, a scan by the primary key or by an index, as the engine gives it to the
+// storage.
+func (a Access) Scan() core.IndexScan {
+	return core.IndexScan{Index: a.Index, Equal: a.Equal, Lower: core.Bound{Value: a.Lower, Open: a.LowerOpen},
+		Upper: core.Bound{Value: a.Upper, Open: a.UpperOpen}, Backward: a.Backward}
+}
+
 func exported(a access) Access {
 	return Access{None: a.none, Point: a.point, Full: a.full(), Index: a.index, Equal: a.equal,
 		Lower: a.lower.value, Upper: a.upper.value, LowerOpen: a.lower.open, UpperOpen: a.upper.open, Backward: a.backward}
@@ -186,7 +193,7 @@ func ChooseAccess(t *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, position
 	for i := range positions {
 		conditions[i] = condition{position: positions[i], op: ops[i], value: values[i]}
 	}
-	a, err := chooseAccess(t, indexes, conditions)
+	a, err := chooseAccess(t, indexes, conditions, bugs{})
 	return exported(a), err
 }
 
@@ -298,6 +305,7 @@ var plantable = map[string]func(b *bugs){
 	"openBound":     func(b *bugs) { b.openBound = true },
 	"changeNothing": func(b *bugs) { b.changeNothing = true },
 	"keepOldKey":    func(b *bugs) { b.keepOldKey = true },
+	"pinByPlace":    func(b *bugs) { b.pinByPlace = true },
 }
 
 // The names of the event and of its attributes, for the tests of the telemetry.

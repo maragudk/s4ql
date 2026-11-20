@@ -808,7 +808,7 @@ func TestFilter(t *testing.T) {
 			is.True(t, errors.Is(err, ErrInternal), c.err)
 			is.Equal(t, "s4ql: internal error: "+c.err, fmt.Sprint(err))
 		}
-		_, err = chooseAccess(newTable().tables["t"].ct, nil, []condition{{position: 0, op: stmt.OpLess, value: integer(1)}, {position: 0, op: stmt.OpLess, value: text}})
+		_, err = chooseAccess(newTable().tables["t"].ct, nil, []condition{{position: 0, op: stmt.OpLess, value: integer(1)}, {position: 0, op: stmt.OpLess, value: text}}, bugs{})
 		is.True(t, errors.Is(err, ErrInternal))
 	})
 

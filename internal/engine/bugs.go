@@ -61,6 +61,10 @@ type bugs struct {
 	// keepOldKey makes an update that gives a row a new key write the row under the new key and leave
 	// the row of the old key, so that the table holds the row twice, with the count that SQLite gives.
 	keepOldKey bool
+	// pinByPlace makes the fitting of the conditions to the key of an index or of the primary key
+	// look for the pin of the n-th column of the key among the conditions on the n-th column of the
+	// table, and not on the column itself, so that a scan pins a column to the value of another.
+	pinByPlace bool
 }
 
 // reader of a query on r: r, or with the planted bug openBound r as [openBounds] reads it.
