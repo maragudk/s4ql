@@ -11,6 +11,9 @@ name: Nightly
 # testdata/fuzz that reproduces it with go test and can be committed there. A seed that fails prints
 # the command that replays it.
 on:
+  push:
+    branches:
+      - ci-faster
   schedule:
     - cron: "17 2 * * *"
   workflow_dispatch:
@@ -30,8 +33,8 @@ permissions:
   contents: read
 
 env:
-  FUZZTIME: ${{ inputs.fuzztime || '5m' }}
-  SEEDS: ${{ inputs.seeds || '1000' }}
+  FUZZTIME: ${{ inputs.fuzztime || (github.event_name == 'push' && '10s') || '5m' }}
+  SEEDS: ${{ inputs.seeds || (github.event_name == 'push' && '200') || '1000' }}
 
 jobs:
   # The fuzz tests that link C, under the address sanitizer, in shards, as CI's job asan-fuzz runs
