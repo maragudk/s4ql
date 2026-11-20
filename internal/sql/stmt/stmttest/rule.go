@@ -196,6 +196,13 @@ func DeleteRule(table string, columns []TableColumn, d *stmt.Delete, args []any)
 // literals of the conditions and from args for their parameters, as the statement of the conditions
 // numbers them.
 func FoundQuery(table stmt.Name, where []stmt.Condition, args []any) (string, []any) {
+	conditions, bound := whereText(where, args)
+	return "select 1 from " + Quote(table.Value) + conditions + " limit 1", bound
+}
+
+// whereText of the conditions of a WHERE, with a ? for each value, after " where ", or "" for no
+// condition, and the arguments of its parameters, as [FoundQuery] gives them.
+func whereText(where []stmt.Condition, args []any) (string, []any) {
 	var conditions []string
 	var bound []any
 	for _, c := range where {
@@ -204,26 +211,50 @@ func FoundQuery(table stmt.Name, where []stmt.Condition, args []any) (string, []
 			continue
 		}
 		conditions = append(conditions, Quote(c.Column.Value)+" "+c.Operator.String()+" ?")
-		switch v := c.Value.Value.(type) {
-		case stmt.Integer:
-			bound = append(bound, int64(v))
-		case stmt.Real:
-			bound = append(bound, float64(v))
-		case stmt.Text:
-			bound = append(bound, string(v))
-		case stmt.Blob:
-			bound = append(bound, []byte(v))
-		case stmt.Null:
-			bound = append(bound, nil)
-		default:
-			bound = append(bound, args[c.Value.Parameter-1])
-		}
+		bound = append(bound, boundValue(c.Value, args))
 	}
-	src := "select 1 from " + Quote(table.Value)
-	if len(conditions) > 0 {
-		src += " where " + strings.Join(conditions, " and ")
+	if len(conditions) == 0 {
+		return "", nil
 	}
-	return src + " limit 1", bound
+	return " where " + strings.Join(conditions, " and "), bound
+}
+
+// boundValue of a term, a literal or the argument of args for its parameter, as SQLite binds it: an
+// int64, a float64, a string, a []byte, or nil.
+func boundValue(term stmt.Term, args []any) any {
+	switch v := term.Value.(type) {
+	case stmt.Integer:
+		return int64(v)
+	case stmt.Real:
+		return float64(v)
+	case stmt.Text:
+		return string(v)
+	case stmt.Blob:
+		return []byte(v)
+	case stmt.Null:
+		return nil
+	}
+	return args[term.Parameter-1]
+}
+
+// RowQueries of the update u of a table whose key is the column with the name key, with the
+// arguments args as SQLite binds them: a select of the number of rows that the WHERE of u finds, and
+// the arguments of its parameters; and an update of one of those rows with the SET of u, the row at
+// an offset in the order of the key, and the arguments of its parameters but the last, which is the
+// offset. Each update of one row measures the record of its row afresh, as a statement that changes
+// many rows does not in every build of SQLite: see the known difference of a record that is too long
+// in docs/todo.md.
+func RowQueries(u *stmt.Update, key string, args []any) (count string, countArgs []any, one string, oneArgs []any) {
+	conditions, bound := whereText(u.Where, args)
+	table := Quote(u.Table.Value)
+	var sets []string
+	for _, a := range u.Set {
+		sets = append(sets, Quote(a.Column.Value)+" = ?")
+		oneArgs = append(oneArgs, boundValue(a.Value, args))
+	}
+	one = "update " + table + " set " + strings.Join(sets, ", ") + " where " + Quote(key) + " = (select " + Quote(key) + " from " + table + conditions +
+		" order by " + Quote(key) + " limit 1 offset ?)"
+	return "select count(*) from " + table + conditions, bound, one, append(oneArgs, bound...)
 }
 
 // WhereRule of the conditions of a WHERE of the table of the name and the columns, which the table

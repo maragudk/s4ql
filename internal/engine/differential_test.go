@@ -692,6 +692,11 @@ const (
 	// changes a row, and turns a blob literal into NULL: the known difference of docs/todo.md. See
 	// [pair.checkLength].
 	excusedLongChange = "an update or a delete with a literal longer than the length limit, checked against s4ql's rule"
+	// excusedRecordSlip is an update of two rows or more that s4ql refuses with SQLite's `string or
+	// blob too big` for a record of a row, longer than the length limit by SQLite's measure of that row
+	// alone, which SQLite stores where its allocator leaves room: the known difference of
+	// docs/todo.md. See [pair.recordSlips]. Its count depends on the platform, so no test pins it.
+	excusedRecordSlip = "an update of rows of which SQLite does not measure every record, checked by an update of each row alone"
 	// excusedLongCondition is a select with a literal in a condition that is longer than the length
 	// limit, which s4ql refuses with SQLite's `string or blob too big`, and for which SQLite gives
 	// rows: no rows for a blob literal, which it turns into NULL, and for a string literal on the
@@ -903,7 +908,24 @@ func (p *pair) step(c stmttest.Call) string {
 		return fmt.Sprintf("%q with %v arguments: the engine gives %q", src, len(c.Args), got.message)
 	}
 	before := p.prev
+	// An update that the engine refuses for a record that is too long runs in SQLite in a savepoint,
+	// which is rolled back, since SQLite does not measure every record of a statement that changes
+	// many rows: see [pair.recordSlips].
+	u, _ := stmt.Check(src)
+	update, mayslip := u.(*stmt.Update)
+	mayslip = mayslip && got.err == tooBig && p.i.limit > 0
+	if mayslip {
+		is.Equal(t, "", o.run(t, "savepoint s4ql_record").err)
+	}
 	want := o.run(t, src, args...)
+	if mayslip {
+		is.Equal(t, "", o.run(t, "rollback to s4ql_record").err)
+		is.Equal(t, "", o.run(t, "release s4ql_record").err)
+		if (want.err == "" || strings.Contains(want.err, "UNIQUE constraint failed")) && p.recordSlips(update, args) {
+			p.y.excused(excusedRecordSlip)
+			return ""
+		}
+	}
 	if !c.Query {
 		want.columns, want.rows = "", nil
 	}
@@ -1501,6 +1523,36 @@ func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string)
 	return excuse, ""
 }
 
+// recordSlips reports whether the update u, with the arguments args as SQLite binds them, which the
+// engine refused with `string or blob too big` for the record of a row, and which SQLite ran without
+// that error, succeeding or failing with `UNIQUE constraint failed`, is the known difference of a
+// record that is too long in docs/todo.md: it finds two rows or more, and the record of one of them
+// with the values of its SET is longer than the length limit, as an update of that row alone
+// measures it in SQLite, in a savepoint that is rolled back. SQLite's `OP_MakeRecord` checks the
+// limit only when the buffer of the record of an earlier row of the statement is too small for the
+// next, and that buffer has the size that the allocator gives, so a statement that changes many rows
+// can store a record over the limit by a few bytes, on some platforms. recordSlips leaves SQLite's
+// count of changes at 0, as the engine's is after the refusal.
+func (p *pair) recordSlips(u *stmt.Update, args []any) bool {
+	t, o := p.t, p.o
+	t.Helper()
+	table, columns := o.columns(t, u.Table.Value)
+	key := columns[slices.IndexFunc(columns, func(c stmttest.TableColumn) bool { return c.PrimaryKey })].Name
+	count, countArgs, one, oneArgs := stmttest.RowQueries(u, key, args)
+	n, err := strconv.Atoi(o.run(t, count, countArgs...).rows[0])
+	is.NotError(t, err)
+	slips := false
+	for i := range n {
+		is.Equal(t, "", o.run(t, "savepoint s4ql_row").err)
+		slips = slips || o.run(t, one, append(slices.Clone(oneArgs), int64(i))...).err == tooBig
+		is.Equal(t, "", o.run(t, "rollback to s4ql_row").err)
+		is.Equal(t, "", o.run(t, "release s4ql_row").err)
+	}
+	is.Equal(t, "", o.run(t, "update "+stmttest.Quote(table)+" set "+stmttest.Quote(key)+" = "+stmttest.Quote(key)+" where 0").err)
+	p.prev = 0
+	return n >= 2 && slips
+}
+
 // changeTerms of the update or the delete s: the values of its SET, and of its conditions, in the
 // order of the text.
 func changeTerms(s stmt.Statement) []stmt.Term {
@@ -1808,7 +1860,8 @@ func TestDifferential(t *testing.T) {
 		want := map[string]int{acceptedStartedTable: 14, excusedArguments: 707, excusedArgument: 300, excusedType: 576, excusedLong: 2, excusedLongChange: 4}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
-			if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) {
+			// The count of [excusedRecordSlip] depends on the allocator of the platform.
+			if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) && kind != excusedRecordSlip {
 				kinds = append(kinds, kind)
 			}
 		}
@@ -1934,7 +1987,7 @@ var reachedDifferential = map[string]int{
 	"update with WHERE UNIQUE constraint failed": 6, "update without WHERE UNIQUE constraint failed": 12, "update of a row whose record is too long": 1,
 	"update with arguments that s4ql refuses not supported": 10, "update with arguments that s4ql refuses wrong number of arguments": 22,
 	"update with a literal longer than the length limit in SET": 1,
-	"update WHERE that reads no row ok, no row found": 13, "update WHERE that reads a get of one key ok, rows changed": 10, "update WHERE that reads a scan from a lower bound ok, rows changed": 1,
+	"update WHERE that reads no row ok, no row found":           13, "update WHERE that reads a get of one key ok, rows changed": 10, "update WHERE that reads a scan from a lower bound ok, rows changed": 1,
 	"update WHERE that reads a scan to an upper bound ok, rows changed": 1, "update WHERE that reads a scan between two bounds ok, rows changed": 1,
 	"update WHERE that reads a scan between two bounds that hold no key ok, no row found": 5, "update WHERE that reads a scan of every row ok, rows changed": 3,
 	"update WHERE that tests a column more than once ok, rows changed": 3, "update WHERE with contradicting conditions ok, no row found": 11,
@@ -1946,6 +1999,46 @@ var reachedDifferential = map[string]int{
 	"delete WHERE that reads a scan between two bounds that hold no key ok, no row found": 9, "delete WHERE that reads a scan of every row ok, rows changed": 7,
 	"delete WHERE that tests a column more than once ok, rows changed": 7, "delete WHERE with contradicting conditions ok, no row found": 12,
 	"delete WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column": 1, "changed both ways": 576,
+}
+
+// TestPair_recordSlips pins the known difference of a record that is too long, of docs/todo.md, at the
+// length limit of 1000: the engine refuses the update of two rows whose second record is too long,
+// which SQLite stores on some platforms and refuses on others, and the comparison accepts either
+// only by an update of each row alone in SQLite.
+func TestPair_recordSlips(t *testing.T) {
+	setup := []string{
+		"create table t (k int primary key, a text, b text not null) strict, without rowid",
+		"insert into t values (1, '', '')", "insert into t values (2, '" + strings.Repeat("x", 301) + "', '')",
+	}
+	cases := []struct {
+		name, src string
+		// tooBig reports whether the engine refuses the update for a record that is too long, and slips
+		// whether [pair.recordSlips] reports the known difference.
+		tooBig, slips bool
+	}{
+		{"should accept an update of two rows whose second record is too long", "update t set b = '" + strings.Repeat("x", 700) + "'", true, true},
+		{"should accept such an update whose new key exists too", "update t set k = 1, b = '" + strings.Repeat("x", 700) + "'", true, true},
+		{"should not accept an update of one row whose record is too long", "update t set b = '" + strings.Repeat("x", 700) + "' where k = 2", true, false},
+		{"should not accept an update of two rows whose records are within the limit", "update t set b = '" + strings.Repeat("x", 600) + "'", false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			y := tally{}
+			p := newPair(t, newInstanceLimited(t, engine.Options{}, nil, 1000), y)
+			for _, src := range setup {
+				is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
+			}
+			got := p.i.execValues(c.src, nil)
+			is.Equal(t, c.tooBig, got.err == tooBig, got.String())
+			s, _ := stmt.Check(c.src)
+			is.Equal(t, c.slips, p.recordSlips(s.(*stmt.Update), nil))
+			changes, _ := p.o.changes(t)
+			is.Equal(t, int64(0), changes, "SQLite's count of changes after the check")
+			if c.tooBig {
+				is.Equal(t, p.o.state(t), p.i.state(), "SQLite's state after the check, which the engine's refusal did not change")
+			}
+		})
+	}
 }
 
 // FuzzDifferential runs the sequence of statements that its input chooses, the seed and the number of
