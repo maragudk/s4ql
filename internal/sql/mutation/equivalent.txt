@@ -765,6 +765,8 @@ internal/core/tx.go Tx.Keys swap arguments: fmt.Sprint("s4ql_keys_", tx.temps) =
 	The names of the temporary tables need only differ from each other, which they still do.
 internal/core/tx.go KeySet.Add condition: err != nil => true #3
 	tooBig and tx.fail both give nil for nil, so the add gives nil without an error either way.
+internal/core/tx.go KeySet.All remove statement: return =>
+	after gives a nil key with its error: its query has LIMIT 1, so SQLite reads nothing after the one row, and the step that ends it cannot fail where the step of the row did not, and readRow gives nil with its error. The sequence then returns at the nil key.
 internal/core/tx.go Tx.dropKeys element: k.add, =>
 	A statement of the set that is not finalized is at rest and reset, which does not keep SQLite from dropping its table; its text names the table, whose number no later table of the transaction has, so it is never prepared again, and forget finalizes it at the end of the transaction.
 internal/core/tx.go Tx.dropKeys element: k.first, =>
