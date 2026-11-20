@@ -11,7 +11,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - if: github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.save == 'true'
+    - if: ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.head_ref == 'ci-faster') && inputs.save == 'true'
       uses: actions/cache/save@v6
       with:
         path: |
