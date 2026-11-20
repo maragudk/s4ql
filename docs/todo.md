@@ -329,6 +329,10 @@ Status: built in `internal/core` on 2026-11-12 and 2026-11-13, and merged in pul
 - **Not decided: a connection whose close fails.** `DB.Close` marks the instance as closed before it knows that the connections closed, so a connection whose close fails is never closed. Since the fix of the scan, only an `iter.Pull` of a scan without its `stop` can cause that.
 - **A possible later addition: S3's timestamps could shorten the wait after a crash.** They would be switched on only for a store that has been checked. They help how fast an instance serves, not safety. Why S3's clock is not safe enough to rest the lease on is in [research/s3-clock.md](research/s3-clock.md).
 - **Open: OpenTelemetry, traces, and metrics.** The core, the engine, and the driver log structured events through `log/slog`, to the logger of `s4ql.Options`, and nothing else. The lead decided on 2026-11-19 to leave traces and metrics out of the first round of the driver.
+- **Idea of Markus on 2026-11-20, not agreed and not for now: reads at a named commit, also on an instance without the lease.** His words: "allow reads from instance without lease if commit id given?" A caller that names a commit, for example the one that its own last write produced, could be served by any instance, also one that does not hold the lease, once that instance's cache has caught up to at least that commit. The read then sees the caller's own writes, and reads can spread over instances. Open points:
+  - **Exact or later:** whether the read is at exactly that commit, or at that commit or later.
+  - **The commit's id in `database/sql`:** how the caller gets the id of a commit from a write, and hands it to a read.
+  - **What the spec says today:** in the section "Concurrency", the bullet "Always a lease" says that an instance must hold the lease to read or write and that there is no mode without it, and "An instance without a valid lease refuses and keeps trying" says that its reads fail at once with a temporary error.
 
 ## Tests of the storage core
 
