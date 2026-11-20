@@ -42,14 +42,15 @@ const (
 	// insert, update, delete, or select.
 	attrKind = "statement.kind"
 	// attrTable is the name of the table that the statement names, as its value. A drop index names
-	// none, and has the name of its index there.
+	// none, and has the empty name.
 	attrTable = "statement.table"
 	// attrAccess is how a select, an update, or a delete read the rows of its table, as the rules of
 	// [chooseAccess] chose it: none, for no row at all, primary_key, for a get or a scan by the primary
 	// key, index, for a scan by an index, or full_scan. A statement that failed before the choice has
 	// none of the three attributes of its reading.
 	attrAccess = "statement.access"
-	// attrIndex is the name of the index of an access by an index.
+	// attrIndex is the name of the index of an access by an index, as the index was created, and the
+	// name of the index that a create index or a drop index names, as its value.
 	attrIndex = "statement.index"
 	// attrRowsRead is the number of rows that the statement read from the cache, by its scan or its
 	// get, whether or not its conditions held for them.
@@ -149,11 +150,13 @@ type report struct {
 	// tx is the kind of the transaction that spans statements in which the statement runs, or empty.
 	tx   string
 	rows int64
-	// access and index are how the statement reads the rows of its table, once that is chosen, and
-	// reader is the transaction that it reads them in, which had read before rows when it was chosen.
-	access, index string
-	reader        reader
-	before        int64
+	// index is the name of the index that a create index or a drop index names, or of the access.
+	index string
+	// access is how the statement reads the rows of its table, once that is chosen, and reader is the
+	// transaction that it reads them in, which had read before rows when it was chosen.
+	access string
+	reader reader
+	before int64
 	// ended is set once the event is logged.
 	ended bool
 }
@@ -171,9 +174,9 @@ func (r *report) of(s stmt.Statement) {
 	case *stmt.DropTable:
 		r.kind, r.table = "drop_table", s.Table.Value
 	case *stmt.CreateIndex:
-		r.kind, r.table = "create_index", s.Table.Value
+		r.kind, r.table, r.index = "create_index", s.Table.Value, s.Index.Value
 	case *stmt.DropIndex:
-		r.kind, r.table = "drop_index", s.Index.Value
+		r.kind, r.index = "drop_index", s.Index.Value
 	case *stmt.Insert:
 		r.kind, r.table = "insert", s.Table.Value
 	case *stmt.Update:
@@ -265,9 +268,11 @@ func (r *report) end(ctx context.Context, err error) {
 	}
 	if r.access != "" {
 		attrs = append(attrs, slog.String(attrAccess, r.access))
-		if r.index != "" {
-			attrs = append(attrs, slog.String(attrIndex, r.index))
-		}
+	}
+	if r.index != "" {
+		attrs = append(attrs, slog.String(attrIndex, r.index))
+	}
+	if r.access != "" {
 		attrs = append(attrs, slog.Int64(attrRowsRead, r.reader.rowsRead()-r.before))
 	}
 	attrs = append(attrs, slog.Int64(attrRows, r.rows), slog.String(attrOutcome, outcome))

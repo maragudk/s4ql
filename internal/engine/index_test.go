@@ -3,6 +3,7 @@ package engine_test
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"testing"
@@ -390,6 +391,32 @@ func TestEngine_indexes(t *testing.T) {
 			}
 			is.True(t, refused > 0 && taken > 0, fmt.Sprintf("%q: SQLite refuses %v and takes %v", form, refused, taken))
 		}
+	})
+
+	t.Run("should log a create index and a drop index with their kinds, the table, and the index, and a statement that reads by an index with its name", func(t *testing.T) {
+		h := &events{}
+		i := newInstance(t, engine.Options{Logger: slog.New(h)})
+		event := func(src string) string {
+			is.Equal(t, "", i.exec(src).err, src)
+			e, _ := h.last(t)
+			_, read := e[engine.AttrRowsRead]
+			return fmt.Sprintf("%v %q %q %q %v", e[engine.AttrKind], e[engine.AttrTable], e[engine.AttrIndex], e[engine.AttrAccess], read)
+		}
+
+		is.Equal(t, `create_table "t" "" "" false`, event(indexTable))
+		is.Equal(t, `create_index "T" "Ta" "" false`, event("create index Ta on T (a)"))
+		is.Equal(t, `insert "t" "" "" false`, event("insert into t values (1, 10, 'x', 1.5)"))
+		is.Equal(t, `update "t" "Ta" "index" true`, event("update t set b = 'y' where a = 10"))
+		is.Equal(t, `delete "t" "Ta" "index" true`, event("delete from t where a > 10"))
+		is.Equal(t, `drop_index "" "TA" "" false`, event("drop index TA"))
+		is.Equal(t, `delete "t" "" "full_scan" true`, event("delete from t where a > 10"))
+
+		_, err := i.c.Exec(t.Context(), "drop index nosuch")
+		is.True(t, err != nil)
+		e, _ := h.last(t)
+		is.Equal(t, "drop_index", e[engine.AttrKind])
+		is.Equal(t, "nosuch", e[engine.AttrIndex])
+		is.Equal(t, "sqlite_error", e[engine.AttrOutcome])
 	})
 
 	t.Run("should use an index that another instance created, after a replay of the log, with the same choice of access", func(t *testing.T) {
