@@ -856,3 +856,15 @@ Self-review with the code-review skill at medium:
 - Fixed: the comment on `JUMP` explains the 5 s: short next to the lease of 30 s, so it shows that it changes nothing. The reviewer noted that +5 s no longer makes the core refuse calls by its wall clock, as +60 s did. That is what Markus asked for.
 - Not changed: the stale-read line, `paused(st)`, and the removed lines for the four single-clock actions assume that the page is the only source of clock actions in its session, which it is. The engine still accepts the single-clock actions; a page that sent them would need the lines back.
 - Not changed: "normal" for untouched clocks. The lead's brief said "normal when untouched". It is also truer than "true time" after a pause, because the monotonic clock stays behind.
+
+## Step 16: The middle of the page as a diagram
+
+**Author:** builder (diagram)
+
+### Prompt Context
+
+**Verbatim prompt:** Markus, through the lead: "it would be nice to make it more visual. For example, the instance in the middle, with actions to crash or stop. Then an edge to S3, with hang/disconnect, and an edge to disk, with error action. And the clocks, with the actions for those." On the lead's sketch of requests at the top, two instance nodes each with a disk and clocks, and both joined to one S3 below: "Yes. But keep how the log works, and the barcode commit objects, I like those."
+
+**Interpretation:** rebuild the strip of the requests, the two instance cards, and the S3 row as one picture: nodes joined by edges, every action on the node or edge that it acts on, and every node and edge showing its own state. Hung, disconnected, and a failing disk must look different by line style alone. Keep the playback bar, the introduction, the log, and the commit objects as they are. No new actions, no lost texts, no Go changes; the smoke check keeps everything it checks and adds the states of the edges and the edge of the requests.
+
+**Inferred intent:** a visitor should see the system in two seconds: two instances, each with a disk and clocks, both joined to one S3, requests going into one of them. Then play with faults where they happen.
