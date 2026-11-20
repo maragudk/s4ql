@@ -266,24 +266,24 @@ func TestCommitWriter(t *testing.T) {
 		}},
 		{name: "should refuse a create table without columns", write: func(w *format.CommitWriter) error {
 			return w.CreateTable(createTable("t", nil, []uint32{0}).GetCreateTable())
-		}},
+		}, why: "has no columns"},
 		{name: "should refuse a create table with two columns of the same name", write: func(w *format.CommitWriter) error {
 			return w.CreateTable(createTable("t", []string{"a", "A"}, []uint32{0}).GetCreateTable())
-		}},
+		}, why: "columns[1] has the name \"A\", as column 0 does"},
 		{name: "should refuse a create table with an empty primary key", write: func(w *format.CommitWriter) error {
 			return w.CreateTable(createTable("t", []string{"a"}, nil).GetCreateTable())
-		}},
+		}, why: "has no primary key"},
 		{name: "should refuse a create table whose primary key points outside its columns", write: func(w *format.CommitWriter) error {
 			return w.CreateTable(createTable("t", []string{"a"}, []uint32{1}).GetCreateTable())
-		}},
+		}, why: "primary_key[0] is column 1 of 1"},
 		{name: "should refuse a create table whose primary key lists a column twice", write: func(w *format.CommitWriter) error {
 			return w.CreateTable(createTable("t", []string{"a", "b"}, []uint32{0, 0}).GetCreateTable())
-		}},
+		}, why: "primary_key[1] lists column 0 twice"},
 		{name: "should refuse a column of TYPE_UNSPECIFIED", write: func(w *format.CommitWriter) error {
 			ct := createTable("t", []string{"a"}, []uint32{0}).GetCreateTable()
 			ct.GetColumns()[0].SetType(s4qlpb.Type_TYPE_UNSPECIFIED)
 			return w.CreateTable(ct)
-		}},
+		}, why: "columns[0] has no type"},
 		{name: "should refuse a column of a type it does not know", write: func(w *format.CommitWriter) error {
 			ct := createTable("t", []string{"a"}, []uint32{0}).GetCreateTable()
 			ct.GetColumns()[0].SetType(s4qlpb.Type(6))
@@ -293,7 +293,7 @@ func TestCommitWriter(t *testing.T) {
 			ct := createTable("t", []string{"a", "b"}, []uint32{1}).GetCreateTable()
 			ct.GetColumns()[1].SetNullable(true)
 			return w.CreateTable(ct)
-		}},
+		}, why: "primary_key[0] is column 1, which takes NULL"},
 		{name: "should refuse a delete with a NULL in its key", write: func(w *format.CommitWriter) error {
 			return w.DeleteRow("t", []*s4qlpb.Value{integer(1), null()})
 		}},
