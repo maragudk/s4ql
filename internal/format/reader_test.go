@@ -352,29 +352,29 @@ func TestCommitReader(t *testing.T) {
 		{name: "should refuse a change that is not Protocol Buffers", b: join(record(1, testHeader()), protowire.AppendBytes([]byte{0x12}, []byte{0x0a, 0x05}))},
 		{name: "should refuse a create table without a name", b: changeRecord(createTable("", []string{"a"}, []uint32{0}))},
 		{name: "should refuse a create table whose name holds NUL", b: changeRecord(createTable("t\x00u", []string{"a"}, []uint32{0}))},
-		{name: "should refuse a create table without columns", b: changeRecord(createTable("t", nil, []uint32{0}))},
-		{name: "should refuse a column without a name", b: changeRecord(createTable("t", []string{"a", ""}, []uint32{0}))},
-		{name: "should refuse a column whose name holds NUL", b: changeRecord(createTable("t", []string{"a\x00"}, []uint32{0}))},
-		{name: "should refuse two columns with the same name", b: changeRecord(createTable("t", []string{"a", "b", "a"}, []uint32{0}))},
-		{name: "should refuse two columns whose names differ only in the case of ASCII letters", b: changeRecord(createTable("t", []string{"Ab", "aB"}, []uint32{0}))},
+		{name: "should refuse a create table without columns", b: changeRecord(createTable("t", nil, []uint32{0})), why: "has no columns"},
+		{name: "should refuse a column without a name", b: changeRecord(createTable("t", []string{"a", ""}, []uint32{0})), why: "columns[1].name is empty"},
+		{name: "should refuse a column whose name holds NUL", b: changeRecord(createTable("t", []string{"a\x00"}, []uint32{0})), why: "holds the character NUL"},
+		{name: "should refuse two columns with the same name", b: changeRecord(createTable("t", []string{"a", "b", "a"}, []uint32{0})), why: "columns[2] has the name \"a\", as column 0 does"},
+		{name: "should refuse two columns whose names differ only in the case of ASCII letters", b: changeRecord(createTable("t", []string{"Ab", "aB"}, []uint32{0})), why: "columns[1] has the name \"aB\", as column 0 does"},
 		{name: "should refuse a column without a type", b: changeRecord(func() *s4qlpb.Change {
 			c := createTable("t", []string{"a"}, []uint32{0})
 			c.GetCreateTable().GetColumns()[0].ClearType()
 			return c
-		}())},
+		}()), why: "columns[0] has no type"},
 		{name: "should refuse a column of TYPE_UNSPECIFIED", b: changeRecord(func() *s4qlpb.Change {
 			c := createTable("t", []string{"a"}, []uint32{0})
 			c.GetCreateTable().GetColumns()[0].SetType(s4qlpb.Type_TYPE_UNSPECIFIED)
 			return c
-		}())},
-		{name: "should refuse an empty primary key", b: changeRecord(createTable("t", []string{"a"}, nil))},
-		{name: "should refuse a primary key that lists a column twice", b: changeRecord(createTable("t", []string{"a", "b"}, []uint32{1, 0, 1}))},
-		{name: "should refuse a primary key that points outside the columns", b: changeRecord(createTable("t", []string{"a", "b"}, []uint32{2}))},
+		}()), why: "columns[0] has no type"},
+		{name: "should refuse an empty primary key", b: changeRecord(createTable("t", []string{"a"}, nil)), why: "has no primary key"},
+		{name: "should refuse a primary key that lists a column twice", b: changeRecord(createTable("t", []string{"a", "b"}, []uint32{1, 0, 1})), why: "primary_key[2] lists column 1 twice"},
+		{name: "should refuse a primary key that points outside the columns", b: changeRecord(createTable("t", []string{"a", "b"}, []uint32{2})), why: "primary_key[0] is column 2 of 2"},
 		{name: "should refuse a primary-key column that takes NULL", b: changeRecord(func() *s4qlpb.Change {
 			c := createTable("t", []string{"a", "b"}, []uint32{0, 1})
 			c.GetCreateTable().GetColumns()[1].SetNullable(true)
 			return c
-		}())},
+		}()), why: "primary_key[1] is column 1, which takes NULL"},
 		{name: "should refuse a NULL in a primary key", b: changeRecord(deleteRows("t", []*s4qlpb.Value{null()}))},
 		{name: "should refuse a NULL in a primary key of a batch after keys without one", b: changeRecord(deleteRows("t", []*s4qlpb.Value{integer(1), text("a")}, []*s4qlpb.Value{integer(2), null()}))},
 		{name: "should refuse a drop table without a name", b: changeRecord(dropTable(""))},

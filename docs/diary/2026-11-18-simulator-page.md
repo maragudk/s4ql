@@ -921,3 +921,55 @@ For the lead and Markus:
 - a is the mirror of b, so in a the order left to right is clocks, disk, edge to S3, while the DOM order (and the order of Tab) is edge to S3, disk, clocks in both. I chose the mirror so that both edges to S3 run down the middle into one S3.
 - Below 1140 px the edges to S3 end in a terminal "▸ S3" instead of running down to the S3 node, and the edge of the requests to b starts in the gap above b. The brief allowed edges to simplify there.
 - The dial is new: it shows the existing state of the clocks (true time, the wall clock, paused), not new state.
+
+## Step 18: Sound
+
+**Author:** builder (sound)
+
+### Prompt Context
+
+**Verbatim prompt:** Markus, through the lead: "add some subtle sound to the simulator on important events. Make it sound very digital. Default off, but can be turned on. Square waves. Watch the volume."
+
+**Interpretation:** the lead decided the rest: Web Audio only, `OscillatorNode` of type square with no filter, notes of 25 to 90 ms with an envelope of a few ms at each end; a toggle Sound beside Turbo, off on every load, and no `AudioContext` before the click that turns it on; one sound per kind of important event, from one scale, rising for what comes back and falling for what goes away; one master gain, a peak of at most about −24 dBFS (−20 with the alarm), at most three voices, and a rate limit so that turbo is not a buzz; nothing while paused but the visitor's own action. Another builder changes the log in `page.js` at the same time, so all sound code goes in `sound.js` and `page.js` gets as few lines as possible.
+
+**Inferred intent:** a visitor who wants it hears, without looking, that something happened to an instance, the lease, or the requests, and learns the sounds after a few minutes.
+
+### What I did
+
+- `site/simulator/sound.js`, an ES module that loads nothing. `listener()` maps events of the engine to a kind of sound, keeping what it needs: `up` when an instance opens its database (start of the standby, restart, Start, a reopen after its core stopped); `down` at a crash; `stop` at the visitor's Stop or a stop of the core; `takeover` when the lease is taken by another instance than the one that took it last; `failing` and `recovered` when the requests' status changes (the rule of `requestStatus` in `run.js`); `blip` for every other action of the visitor (Hang, Disconnect, Error, the clock actions, the switch of the requests) and for turning sound on; `alarm` for a violation that is not excused. Stop, Start, and Restart sound at the action, and the process events they cause later are silent, so a paused visitor hears their own action, and nothing sounds twice.
+- `player(ctx, dest)` plays into any `BaseAudioContext`: one oscillator and one gain per figure, pitches of A minor pentatonic, A4 to A6. Master 0.018; the alarm at 2.75 times that. At most 3 voices (the alarm takes the place of the oldest), a kind never over itself or within 120 ms, at most 4 figures a second but the alarm, starts 50 ms apart.
+- `page.js`, four lines: `let S`, the import of `sound.js` with the version (started before `run.js` and awaited after it, and a failed import leaves the page without sound), `S.wire($("sound"))`, and one line in `take`: `S.hear(e, live)`, where live is playing or the answer to an action, but not a later step of a reset of the clocks. `index.html`, one line: the button, `.btn big` like Turbo, disabled until `sound.js` has wired it. No new styles.
+- Site check: `sound.js` is in the files that must load at the version; the toggle starts unpressed with `data-audio="none"`; a unit check of the kinds over a scripted session; every note 25 to 90 ms; and an offline render of a burst (every kind every 10 ms for 3 s) whose peak must be at most 0.06 without the alarm and 0.1 with it.
+
+### What worked
+
+- Offline in Chromium, 48 kHz: each ordinary figure peaks at 0.018 (−34.9 dBFS), RMS over 50 ms −36.4 to −39.4 dBFS; the alarm 0.049 (−26.1 dBFS, RMS −27.6). Three figures at once 0.050 (−26.0); the alarm over two others 0.083 (−21.7); the burst without the alarm 0.051 (−25.9 dBFS, 12 figures in 3 s), with it 0.083 (−21.6). Chromium's square wave showed no overshoot over its gain.
+- On the real page with `playwright-cli`: no `AudioContext` before the click (counted through a wrapped constructor), one after it; a session with a crash, a takeover, a restart, the switch to b, a disconnect, and a reconnect played blip, up, down, failing, takeover, up, blip, recovered, and so on, one per event; after Sound off, `data-audio` is `suspended` and a crash of b played nothing; paused, a Restart played `up` and 60 s skipped through the hook played nothing; under turbo with faults switched for 20 s, the same kind never twice within 832 ms and at most 4 a second.
+- With `MASTER` raised to 0.03, the site check failed: "FAIL a burst of sounds peaks at -21.5 dBFS". With `createOscillator` made to throw, and with no `AudioContext`, the toggle went to `unavailable` and disabled, and the session went on.
+- `make site-check` passes, also after the review fixes.
+
+### What didn't work
+
+- The first render of the burst peaked at 0.144 (−16.8 dBFS): the alarm, exempt from the cap a second, sounded over itself every 120 ms. A kind now waits until its figure has ended.
+- `go run ./internal/simulator/serve -addr 127.0.0.1:8093` failed with "bind: address already in use", another worktree's server; 8417 worked.
+- I ran `git checkout site/simulator/sound.js` to undo the trial with a raised master, and it also undid the uncommitted fix above. I wrote it again.
+- A screenshot taken at once after the click showed the toggle not inverted: `.btn` has a transition of 120 ms.
+
+### What warrants review
+
+Self-review with the code-review skill at medium found nine things:
+
+- Fixed (important): an exception from Web Audio in `hear` would have reached `pump` and halted the page with "The page failed". `hear` and the click catch everything, and a fault turns sound off for good and disables the toggle.
+- Fixed: the `webkitAudioContext` fallback, whose prefixed context lacks the promises the code uses, is gone; such a browser gets a disabled toggle.
+- Fixed: a fade before a figure's start held the gain's default of 1; the gain now starts at 0.
+- Fixed: the fade without `cancelAndHoldAtTime` (Firefox) set the value of now at a later time; it glides with `setTargetAtTime` from the value at that time.
+- Fixed: `sound.js` was imported after `run.js`; it is now fetched in parallel. A `modulepreload` would need `internal/simulator/serve` to stamp it, so there is none.
+- Fixed: the toggle was enabled in the HTML; it is disabled until `wire`, so a missing `sound.js` leaves no dead button.
+- Fixed: `silence` kept the times of cut figures, so on, off, on within 120 ms dropped the confirming blip.
+- Fixed: a reset of the clocks of paused clocks blipped twice, for its two actions.
+- Fixed: the package comment claimed a bound the check does not hold; it now states the bound of the check.
+
+For the lead and Markus:
+
+- Between 360 and 429 px the clock no longer fits on the row of the buttons, so the sticky bar is 124 px high instead of 89 (at 320 it was already 124, now 137). Fitting it would mean smaller Play and Turbo buttons at phone width, outside this brief.
+- The switch of the requests and turning sound on also blip; the brief listed faults only.

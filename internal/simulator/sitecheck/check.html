@@ -243,6 +243,56 @@ async function unit() {
   const tiers = told.map((w) => w.tier);
   expect(JSON.stringify(tiers) === JSON.stringify(["story", null, "alarm", "alarm"]), `a stale read that the design excuses takes one line, and a violation is an alarm (${tiers.join(", ")})`);
   expect(told[0].text === "a serves a stale read after its clocks were paused, which the spec allows.", `the line of a stale read names the pause of the clocks (${told[0].text})`);
+
+  // The sound of the page: each important event has one figure, the visitor's Stop, Start, and
+  // Restart sound once, at the action, and the requests sound when their status changes, not at
+  // each request. Every note is short.
+  const S = await import("/simulator/sound.js" + query);
+  const hear = S.listener();
+  const sounds = [
+    lease(1, "a", "a", { "lease.transition": "taken", outcome: "taken" }),
+    call(2, "a", "served"), call(3, "a", "committed"),
+    { t: 4, kind: "action", what: "done", do: "hangNetwork", instance: "a", on: true },
+    call(5, "a", "timed_out"), call(6, "a", "timed_out"), call(7, "a", "served"),
+    { t: 8, kind: "process", what: "crashed", instance: "a", process: "a" },
+    { t: 8, kind: "action", what: "done", do: "crash", instance: "a" },
+    call(9, "a", "down"), call(10, "a", "down"),
+    lease(11, "b", "b", { "lease.transition": "taken", outcome: "taken", "lease.previous_holder": "h1" }),
+    { t: 12, kind: "action", what: "done", do: "restart", instance: "a" },
+    { t: 12, kind: "process", what: "started", instance: "a", process: "a2" },
+    opened(12, "a", "a2", "h2"),
+    { t: 13, kind: "action", what: "done", do: "close", instance: "a" },
+    { t: 14, kind: "process", what: "closed", instance: "a", process: "a2" },
+    { t: 15, kind: "process", what: "stopped", instance: "b", process: "b" },
+    { t: 17, kind: "process", what: "closed", instance: "b", process: "b" },
+    opened(19, "b", "b", "h4"),
+    { t: 20, kind: "action", what: "ignored", do: "restart", instance: "b" },
+    check(21, true), check(22, false),
+  ].map((e) => hear(e)).filter(Boolean);
+  const wantSounds = ["blip", "failing", "recovered", "down", "failing", "takeover", "up", "stop", "stop", "up", "alarm"];
+  expect(JSON.stringify(sounds) === JSON.stringify(wantSounds), `the important events have their sounds, each once (${sounds.join(", ")})`);
+  const notes = Object.values(S.FIGURES).flatMap((f) => f.notes);
+  expect(Object.keys(S.FIGURES).every((k) => wantSounds.includes(k)) && notes.every(([hz, ms]) => hz > 0 && ms >= 25 && ms <= 90), `every figure is heard, and its notes are 25 to 90 ms (${notes.length} notes)`);
+
+  // The volume of a burst, as turbo gives, rendered offline through the page's player: every kind
+  // every 10 ms for 3 s. Its peak stays at most 0.06 (−24 dBFS) without the alarm, and 0.1 with it.
+  const burst = async (kinds) => {
+    const ctx = new OfflineAudioContext(1, 48000 * 3.5, 48000);
+    const master = ctx.createGain();
+    master.gain.value = S.MASTER;
+    master.connect(ctx.destination);
+    const player = S.player(ctx, master);
+    let played = 0;
+    for (let i = 0; i < 300; i++) for (const k of kinds) if (player.play(k, i / 100)) played++;
+    let peak = 0;
+    for (const v of (await ctx.startRendering()).getChannelData(0)) peak = Math.max(peak, Math.abs(v));
+    return { played, peak };
+  };
+  const kinds = Object.keys(S.FIGURES);
+  const [calm, alarmed] = [await burst(kinds.filter((k) => k !== "alarm")), await burst(kinds)];
+  const dB = (x) => (20 * Math.log10(x)).toFixed(1) + " dBFS";
+  expect(calm.peak > 0 && calm.peak <= 0.06 && calm.played <= 4 * 3, `a burst of sounds peaks at ${dB(calm.peak)}, and plays ${calm.played} sounds in 3 s`);
+  expect(alarmed.peak > 0 && alarmed.peak <= 0.1, `a burst of sounds with the alarm peaks at ${dB(alarmed.peak)}`);
 }
 
 async function check() {
@@ -303,6 +353,8 @@ async function check() {
   expect(p.t < 1000 && !p.win.s4qlPage.playing && p.html.dataset.playing === "false", `the page starts paused at ${p.t} ms`);
   expect(!play.disabled && play.textContent.trim() === "Play", "Play is offered");
   expect(turbo.getAttribute("aria-pressed") === "false" && !p.win.s4qlPage.turbo, "turbo is off");
+  const sound = p.$("#sound");
+  expect(sound && !sound.disabled && sound.getAttribute("aria-pressed") === "false" && sound.dataset.audio === "none", `sound is off, and the page has made no audio context (${sound && sound.dataset.audio})`);
   expect(p.instance("a") && p.instance("b") && p.win.s4qlPage.state.instances.length === 2, "the session has the two instances a and b");
   // requestsEdge is the instance that the edge of the requests goes into, by what the page draws: its
   // edge to that instance is on and has its arrow, and the instance says that the requests come to

@@ -248,6 +248,32 @@ stmt/recognize.go recognizer.literal condition: !c.Table.Present() => true
 stmt/recognize.go recognizer.literal constant: math.IsInf(f, 0) => math.IsInf(f, 1)
 	atof reads the literal without its sign, so the only infinity that it gives is the positive one.
 
+# The columns of slices 5 and 6 in the recognizer. A token that the recognizer does not take is
+# described by the next take, or by the check at the end, at its own offset, so a reject of the next
+# token that only names what describe names anyway can go.
+stmt/recognize.go recognizer.column condition: len(d.Type.Names) > 1 || d.Type.LParen.Present() => false
+	The next token is then a word or the parenthesis of the type, in the TypeName that the recognizer does not accept, which describe names as the same type at the same offset.
+stmt/recognize.go recognizer.column operator: len(d.Type.Names) > 1 || d.Type.LParen.Present() => len(d.Type.Names) > 1 && d.Type.LParen.Present()
+	The next token is then a word or the parenthesis of the type, in the TypeName that the recognizer does not accept, which describe names as the same type at the same offset.
+stmt/recognize.go recognizer.column condition: len(d.Type.Names) > 1 => false
+	The next token is then the second word of the type, in the TypeName that the recognizer does not accept, which describe names as the same type at the same offset.
+stmt/recognize.go recognizer.column condition: d.Type.LParen.Present() => false
+	The next token is then the parenthesis of the type, in the TypeName that the recognizer does not accept, which describe names as the same type at the same offset.
+stmt/recognize.go recognizer.column constant: len(d.Type.Names) > 1 => len(d.Type.Names) > 2
+	The next token is then the second word of the type, in the TypeName that the recognizer does not accept, which describe names as the same type at the same offset.
+stmt/recognize.go recognizer.column remove statement: r.reject(otherType) => #2
+	The next token is then a word or the parenthesis of the type, in the TypeName that the recognizer does not accept, which describe names as the same type at the same offset.
+stmt/recognize.go recognizer.column condition: !k.Not.Present() => true
+	With NOT, the next token is NOT or one before it, never NULL, so the test of isNext is false either way.
+stmt/recognize.go recognizer.column condition: !k.Not.Present() => false #2
+	A NULL constraint without NOT then goes on to take its absent NOT, which is never the next token, so the statement stops at the same next token.
+stmt/recognize.go recognizer.column remove statement: r.unexpected() => #2
+	A constraint of another kind then stays untaken, and the next take, or the check at the end, stops at its first token, as unexpected does.
+stmt/recognize.go recognizer.insert remove statement: r.accept(c.Columns) =>
+	Every token of the column list is taken in the order of the text, or the statement stops at it with a reject of its own, so describe never looks inside the list.
+stmt/recognize.go recognizer.resultColumn remove statement: r.accept(ref) =>
+	A column reference without a table name has one token, its column, which the recognizer takes at once, or the statement stops at it with a reject of its own, so describe never looks inside the reference.
+
 # The port of SQLite's conversion of a real literal, stmt/real.go. The text that atof reads is that
 # of a real token of the tokenizer: digits, at most one point, and an exponent of e or E, a sign, and
 # at least one digit.
@@ -348,8 +374,22 @@ internal/engine/tx.go Conn.writeIn element: skipUnique: c.e.bugs.skipUnique, =>
 	The planted bug skipUnique is then not planted in a write of a transaction that spans statements, and is found by the statements of their own.
 internal/engine/tx.go Conn.writeIn element: , convertReal: c.e.bugs.convertReal =>
 	The planted bug convertReal is then not planted in a write of a transaction that spans statements, and is found by the statements of their own.
-internal/engine/operator.go insert.check condition: typ == s4qlpb.Type_TYPE_INT => false
-	The planted bug convertReal: it converts a real only for an INTEGER column, and the check of the log finds a value of another type than its column either way.
+internal/engine/engine.go Conn.checkOutside remove statement: return internalError("the checks outside of a sink of type %T", s) =>
+	The planted bug checkOutside: it runs only for an insert, whose sink is an insert.
+internal/engine/engine.go Conn.checkOutside condition: err != nil => false #4
+	The planted bug checkOutside: a failed read of the key then counts as no row, and the write transaction after it checks nothing either, so the bug is found by a commit that fails in SQLite either way.
+internal/engine/engine.go Conn.checkOutside remove statement: return err => #4
+	The planted bug checkOutside: a failed read of the key then counts as no row, and the write transaction after it checks nothing either, so the bug is found by a commit that fails in SQLite either way.
+internal/engine/operator.go insert.check condition: typ == s4qlpb.Type_TYPE_INT => true
+	The planted bug convertReal: it converts a whole real for a column of every type, and the check of the log, or the rule for the type of a value where the engine then refuses the integer in a column of another type, finds the bug either way.
+internal/engine/operator.go insert.check condition: typ == s4qlpb.Type_TYPE_INTEGER => true
+	The planted bug convertReal: it converts a whole real for a column of every type, and the check of the log, or the rule for the type of a value where the engine then refuses the integer in a column of another type, finds the bug either way.
+internal/engine/operator.go insert.check operator: typ == s4qlpb.Type_TYPE_INTEGER => typ != s4qlpb.Type_TYPE_INTEGER
+	The planted bug convertReal: it converts a whole real for a column of every type but INTEGER, and the check of the log, or the rule for the type of a value where the engine then refuses the integer in a column of another type, finds the bug either way.
+internal/engine/operator.go insert.run condition: err != nil => false #2
+	The planted bugs skipUnique and checkOutside: an upsert that fails then counts as a row written, and the bugs are found by a commit that fails in SQLite either way.
+internal/engine/operator.go insert.run remove statement: return n, err => #2
+	The planted bugs skipUnique and checkOutside: an upsert that fails then counts as a row written, and the bugs are found by a commit that fails in SQLite either way.
 internal/engine/operator.go insert.check condition: typ == s4qlpb.Type_TYPE_INTEGER => false
 	The planted bug convertReal: it converts a real only for an INT column, and the check of the log finds a value of another type than its column either way.
 internal/engine/operator.go insert.check condition: f == math.Trunc(f) => true
@@ -384,6 +424,16 @@ internal/engine/tx.go Conn.Rollback constant: t.writes == 1 => t.writes == 2
 	The planted bug rollbackKeeps: its condition after c.e.bugs.rollbackKeeps, which only the tests set.
 internal/engine/tx.go Conn.Rollback remove statement: return nil => #2
 	The planted bug rollbackKeeps: the roll back after its commit then fails, as it would.
+internal/engine/operator.go buildSink condition: c.GetNullable() => true
+	The planted bug zeroLeftOut: it gives the zero value also to a column left out that does not take NULL, where the insert would fail with NOT NULL, and the bug is still found by a query that differs from SQLite.
+
+# The sinks of slices 5 and 6.
+internal/engine/engine.go readOnly.insertNew boolean: false => true
+	A sink of a readOnly is built and checked, and never run, so its insertNew is never called.
+internal/engine/operator.go insert.check condition: position == i.key => false
+	The table of an insert is the core's, which refuses a table whose primary key takes NULL, as the format does, so the column of the key is never nullable.
+internal/engine/operator.go buildSink condition: p.Columns != nil => true
+	Without a list of columns, the loop over the list does nothing, and the positions stay nil, as without the block.
 
 # The end of a transaction that rows hold.
 internal/engine/engine.go Rows.read remove statement: return => #3
@@ -466,18 +516,6 @@ internal/core/cache.go table.checkValue remove statement: return nil => #3
 	Without the return the switch ends with n at 0, and the check of the length gives nil.
 internal/core/cache.go table.checkValue remove statement: return nil => #4
 	Without the return the switch ends with n at 0, and the check of the length gives nil.
-internal/core/cache.go conn.upgrade remove statement: return err =>
-	The begin of the upgrade fails only for busy, while another connection holds the write lock: the upgrade then runs without a transaction of its own, and its update fails with the same busy.
-internal/core/cache.go conn.upgrade remove statement: _ = c.c.Exec("rollback") =>
-	Open closes the write connection after setUp fails, and the close rolls the transaction back.
-internal/core/cache.go conn.upgrade remove statement: c.forget() => #2
-	Open closes the write connection after setUp fails, and the close finalizes the statements that it keeps.
-internal/core/cache.go conn.upgrade remove statement: c.forget() =>
-	The statements that the connection keeps are reset after each use, so none of them holds up the commit.
-internal/core/cache.go conn.upgrade condition: err != nil => true #3
-	After a commit that succeeds, the rollback finds no transaction and the error is nil.
-internal/core/cache.go conn.upgrade remove statement: _ = c.c.Exec("rollback") => #2
-	Open closes the write connection after setUp fails, and the close rolls back what the failed commit left.
 internal/core/cache.go readRow remove statement: return nil, fmt.Errorf("%w: the cache holds a value of type %v", ErrCacheVersion, typ) =>
 	sqlite3_column_type gives one of SQLite's five fundamental types, which each have a case.
 internal/core/cache.go readRow swap arguments: fmt.Errorf("%w: the cache holds a value of type %v", ErrCacheVersion, typ) => fmt.Errorf("%w: the cache holds a value of type %v", typ, ErrCacheVersion)
@@ -544,6 +582,62 @@ internal/core/tx.go Tx.committed constant: j >= 0 => j >= 1
 	The planted bug blobCut: it leaves a blob that starts with a zero byte, and is found by the others.
 internal/core/tx.go Tx.dropTemps remove statement: tx.c.forget() =>
 	The statements that the connection keeps are reset after each use, so none of them holds up the drop of a temporary table.
+
+# The storage core, internal/core: the several columns and the NULL of slices 5 and 6.
+internal/core/cache.go conn.setUp condition: syncOff => !syncOff
+	How hard SQLite syncs the cache shows only after a power loss, which no test makes: synchronous off and normal give the same cache otherwise.
+internal/core/cache.go conn.setUp condition: syncOff => true
+	How hard SQLite syncs the cache shows only after a power loss, which no test makes: synchronous off and normal give the same cache otherwise.
+internal/core/cache.go conn.setUp condition: syncOff => false
+	How hard SQLite syncs the cache shows only after a power loss, which no test makes: synchronous off and normal give the same cache otherwise.
+internal/core/cache.go conn.setUp remove statement: synchronous = "pragma synchronous = off" =>
+	How hard SQLite syncs the cache shows only after a power loss, which no test makes: synchronous off and normal give the same cache otherwise.
+internal/core/cache.go conn.setUp condition: err != nil => false #2
+	pragma synchronous only sets a flag of the connection and reads and writes no file, so it fails only for want of memory, which no test makes.
+internal/core/cache.go conn.setUp remove statement: return err => #2
+	pragma synchronous only sets a flag of the connection and reads and writes no file, so it fails only for want of memory, which no test makes.
+internal/core/cache.go conn.setUp remove statement: c.forget() =>
+	The statements that the connection keeps are reset after each use, so none of them holds up the commit, SQLite prepares a kept statement again after the change of the schema, and make looks up no table.
+internal/core/cache.go conn.setUp condition: err != nil => false #4
+	In the journal mode wal, begin immediate touches no file that a fault fails, and fails only with busy, when another connection holds the write lock; the first write of make then waits for the same lock and fails with busy too.
+internal/core/cache.go conn.setUp remove statement: return err => #4
+	In the journal mode wal, begin immediate touches no file that a fault fails, and fails only with busy, when another connection holds the write lock; the first write of make then waits for the same lock and fails with busy too.
+internal/core/cache.go conn.setUp remove statement: _ = c.c.Exec("rollback") =>
+	Open closes the write connection after setUp fails, and the close rolls back the transaction that is open.
+internal/core/cache.go conn.setUp remove statement: _ = c.c.Exec("rollback") => #2
+	Open closes the write connection after setUp fails, and the close rolls back the transaction that is open.
+internal/core/cache.go conn.setUp remove statement: c.forget() => #2
+	Open closes the write connection after setUp fails, and the close finalizes the statements that it keeps.
+internal/core/cache.go newTable remove statement: t.inKey[position] = true =>
+	The table of newTable serves only to declare the table in the cache and to give it back: its key columns are then declared not null, which a primary key of a table without rowid is anyway, and the core reads the key from the schema when it looks the table up.
+internal/core/cache.go newTable boolean: true => false
+	The table of newTable serves only to declare the table in the cache and to give it back: its key columns are then declared not null, which a primary key of a table without rowid is anyway, and the core reads the key from the schema when it looks the table up.
+internal/core/cache.go table.createSQL remove statement: b.WriteString(" ") =>
+	The name of the column is in double quotes, and SQLite's tokenizer ends it at its closing quote, so the type after it needs no space.
+internal/core/cache.go table.createSQL condition: err != nil => false
+	No test can reach it: typeSQL fails only for a type that the table, which the core checked when it was created or loaded, cannot have.
+internal/core/cache.go table.createSQL remove statement: return "", err =>
+	No test can reach it: typeSQL fails only for a type that the table, which the core checked when it was created or loaded, cannot have.
+internal/core/tx.go Tx.spoolCommit condition: err != nil => false #8
+	The commit writer keeps its first error and gives it again at Close, which fails the commit with the same error.
+internal/core/tx.go Tx.committed condition: !bugs.blobCut && !bugs.nullZero => false
+	Without the planted bugs, the loop copies each value as it is, so the row is the same; the return only saves the copy.
+internal/core/tx.go Tx.committed condition: !bugs.blobCut => false
+	Without the planted bug nullZero, the loop copies each value as it is, or cuts a blob for the planted bug blobCut, so the row is the same; the return only saves the copy.
+internal/core/tx.go Tx.committed condition: !bugs.nullZero => false
+	Without the planted bug blobCut, the loop copies each value as it is, or gives a NULL the zero value for the planted bug nullZero, so the row is the same; the return only saves the copy.
+internal/core/tx.go Tx.committed remove statement: return row =>
+	Without the planted bugs, the loop copies each value as it is, so the row is the same; the return only saves the copy.
+internal/core/tx.go Tx.committed condition: bugs.nullZero => true
+	The loop runs only with a planted bug: with blobCut alone it then also gives a NULL the zero value, and the simulation finds blobCut either way.
+internal/core/tx.go zeroValue element: Real: new(0.0) =>
+	The planted bug nullZero: it then writes a value of no kind for a NULL in a REAL column, which the writer refuses, and the bug is found by its other columns either way.
+internal/core/tx.go zeroValue element: Text: new("") =>
+	The planted bug nullZero: it then writes a value of no kind for a NULL in a TEXT column, which the writer refuses, and the bug is found by its other columns either way.
+internal/core/tx.go zeroValue element: Blob: []byte{} =>
+	The planted bug nullZero: it then writes a value of no kind for a NULL in a BLOB column, which the writer refuses, and the bug is found by its other columns either way.
+internal/core/tx.go zeroValue constant: int64(0) => int64(1)
+	The planted bug nullZero: it then writes 1 for a NULL in an INT or INTEGER column, which is as wrong as 0, and the bug is found either way.
 
 # The storage formats, internal/format: the checks of the values of slice 4.
 internal/format/check.go checkStored condition: v.WhichKind() == s4qlpb.Value_Real_case => true
