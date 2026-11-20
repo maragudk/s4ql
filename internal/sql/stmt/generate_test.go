@@ -38,8 +38,9 @@ var positionTexts = stmttest.PositionTexts
 // newGenerator of [stmttest] from seed, which writes a plain ? in place of one value of an insert or
 // of a condition in four, columns and values of every type, the forms of slice 5 with up to three
 // columns, those of slice 6, with a column that takes NULL and a NULL one time in five, those of
-// slice 7, with a WHERE of up to four conditions in one select in two, and those of slice 8, an
-// update or a delete in one statement in three, with a WHERE as a select has one.
+// slice 7, with a WHERE of up to four conditions in one select in two, those of slice 8, an update
+// or a delete in one statement in three, with a WHERE as a select has one, and those of slice 9, a
+// create index or a drop index in one statement in four, with up to three columns.
 func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g := stmttest.NewGenerator(rand.New(rand.NewPCG(seed, 0x511ce1)), namePools(t))
 	g.Parameters = 4
@@ -47,6 +48,7 @@ func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g.Nulls = 5
 	g.Conditions = 4
 	g.Changes = 3
+	g.Indexes = 4
 	return g
 }
 
@@ -123,7 +125,7 @@ func TestGenerate_mutants(t *testing.T) {
 		}
 	}
 	t.Logf("%v mutants: %v", n**mutantsEach, c)
-	excused(t, c, 64, 196)
+	excused(t, c, 39, 153)
 	var names []string
 	for k := range kinds {
 		names = append(names, k)
@@ -260,6 +262,33 @@ func difference(a, b stmt.Statement) string {
 		if a.Table.Value != b.(*stmt.DropTable).Table.Value {
 			diffs = append(diffs, "table name")
 		}
+	case *stmt.CreateIndex:
+		b := b.(*stmt.CreateIndex)
+		if a.Index.Value != b.Index.Value {
+			diffs = append(diffs, "index name")
+		}
+		if a.Table.Value != b.Table.Value {
+			diffs = append(diffs, "table name")
+		}
+		var an, bn []stmt.Name
+		for _, c := range a.Columns {
+			an = append(an, c.Name)
+		}
+		for _, c := range b.Columns {
+			bn = append(bn, c.Name)
+		}
+		names(an, bn, "index column")
+		if len(a.Columns) == len(b.Columns) {
+			for i := range a.Columns {
+				if a.Columns[i].Descending != b.Columns[i].Descending {
+					diffs = append(diffs, "order")
+				}
+			}
+		}
+	case *stmt.DropIndex:
+		if a.Index.Value != b.(*stmt.DropIndex).Index.Value {
+			diffs = append(diffs, "index name")
+		}
 	}
 	if diffs == nil {
 		return fmt.Sprintf("the same %T", a)
@@ -285,9 +314,10 @@ func FuzzGenerate(f *testing.F) {
 	})
 }
 
-// nearMisses of the four forms: each is the form with one clause, keyword, or item added or changed,
-// which a one-token mutant cannot make, or a literal that is not supported or is a syntax error. %[1]v
-// is the table, %[2]v the column, %[3]v the text of the value, and %[4]v the type of the column.
+// nearMisses of the forms: each is the form with one clause, keyword, or item added or changed, which
+// a one-token mutant cannot make, or a literal that is not supported or is a syntax error. %[1]v is
+// the table, %[2]v the column, %[3]v the text of the value, and %[4]v the type of the column; for an
+// index, %[1]v is the table of a create index, and %[3]v the name of the index.
 var nearMisses = map[string][]string{
 	"*stmt.CreateTable": {
 		"explain create table %[1]v (%[2]v %[4]v primary key) strict, without rowid",
@@ -654,9 +684,60 @@ var nearMisses = map[string][]string{
 		"drop table main.%[1]v",
 		"drop table temp.%[1]v",
 		"drop view %[1]v",
-		"drop index %[1]v",
 		"drop trigger %[1]v",
 		"drop table %[1]v; select 1",
+	},
+	"*stmt.CreateIndex": {
+		"explain create index %[3]v on %[1]v (%[2]v)",
+		"explain query plan create index %[3]v on %[1]v (%[2]v)",
+		"create unique index %[3]v on %[1]v (%[2]v)",
+		"create index if not exists %[3]v on %[1]v (%[2]v)",
+		"create temp index %[3]v on %[1]v (%[2]v)",
+		"create index main.%[3]v on %[1]v (%[2]v)",
+		"create index temp.%[3]v on %[1]v (%[2]v)",
+		"create index %[3]v on main.%[1]v (%[2]v)",
+		"create index %[3]v on %[1]v (%[2]v) where %[2]v > 0",
+		"create index %[3]v on %[1]v (%[2]v) where %[2]v is not null",
+		"create index %[3]v on %[1]v (%[2]v collate nocase)",
+		"create index %[3]v on %[1]v (%[2]v collate binary desc)",
+		"create index %[3]v on %[1]v (%[2]v nulls first)",
+		"create index %[3]v on %[1]v (%[2]v desc nulls last)",
+		"create index %[3]v on %[1]v (%[2]v + 1)",
+		"create index %[3]v on %[1]v (-%[2]v)",
+		"create index %[3]v on %[1]v ((%[2]v))",
+		"create index %[3]v on %[1]v (%[1]v.%[2]v)",
+		"create index %[3]v on %[1]v (main.%[1]v.%[2]v)",
+		"create index %[3]v on %[1]v (lower(%[2]v))",
+		"create index %[3]v on %[1]v (%[2]v, %[2]v)",
+		"create index %[3]v on %[1]v (%[2]v asc, %[2]v desc)",
+		"create index %[3]v on %[1]v ('%[2]v')",
+		"create index %[3]v on %[1]v ([%[2]v])",
+		"create index %[3]v on %[1]v (1)",
+		"create index %[3]v on %[1]v (null)",
+		"create index %[3]v on %[1]v (true)",
+		"create index %[3]v on %[1]v (?)",
+		"create index %[3]v on %[1]v (current_time)",
+		"create index %[3]v on %[1]v ()",
+		"create index %[3]v on %[1]v",
+		"create index %[3]v on %[1]v (%[2]v,)",
+		"create index %[3]v on %[1]v (%[2]v) desc",
+		"create index %[3]v on %[1]v (%[2]v asc desc)",
+		"create index %[3]v (%[2]v)",
+		"create index on %[1]v (%[2]v)",
+		"create index %[3]v on %[1]v (%[2]v); select 1",
+	},
+	"*stmt.DropIndex": {
+		"explain drop index %[3]v",
+		"explain query plan drop index %[3]v",
+		"drop index if exists %[3]v",
+		"drop index main.%[3]v",
+		"drop index temp.%[3]v",
+		"drop index %[3]v on %[1]v",
+		"drop index %[3]v, %[3]v",
+		"drop index",
+		"reindex %[3]v",
+		"analyze %[3]v",
+		"drop index %[3]v; select 1",
 	},
 }
 
@@ -701,6 +782,10 @@ func TestGenerate_nearMisses(t *testing.T) {
 			}
 		case *stmt.DropTable:
 			table = s.Table.Raw
+		case *stmt.CreateIndex:
+			table, column, value = s.Table.Raw, s.Columns[0].Name.Raw, s.Index.Raw
+		case *stmt.DropIndex:
+			table, value = "t", s.Index.Raw
 		}
 		for _, form := range nearMisses[fmt.Sprintf("%T", s)] {
 			src := fmt.Sprintf(form, table, column, value, typ)
@@ -712,5 +797,5 @@ func TestGenerate_nearMisses(t *testing.T) {
 		}
 	}
 	t.Logf("%v near misses: %v", c[syntaxError]+c[notSupported]+c[syntaxNotSaid]+c[notSupportedNotSaid], c)
-	excused(t, c, 0, 2054)
+	excused(t, c, 0, 1531)
 }

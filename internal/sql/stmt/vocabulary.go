@@ -87,8 +87,12 @@ func fieldKeys(n ast.Node, t ast.Token) []string {
 	return find(v, v.Type().Name())
 }
 
-// nodeName of the node n, from [nodeNames], which names every type of node.
+// nodeName of the node n, from [nodeNames], which names every type of node. NOT INDEXED has a name of
+// its own, apart from INDEXED BY, which is a node of the same type.
 func nodeName(n ast.Node) string {
+	if ib, ok := n.(*ast.IndexedBy); ok && ib.Not.Present() {
+		return "NOT INDEXED"
+	}
 	return nodeNames[reflect.TypeOf(n).Elem().Name()]
 }
 
@@ -104,6 +108,9 @@ var fieldNames = map[string]string{
 	"PrimaryKeyConstraint.Order":         "ASC or DESC",
 	"PrimaryKeyConstraint.Autoincrement": "AUTOINCREMENT",
 	"Drop.IfExists.If":                   "IF EXISTS",
+	"CreateIndex.Unique":                 "UNIQUE INDEX",
+	"CreateIndex.IfNotExists.If":         "IF NOT EXISTS",
+	"OrderingTerm.Nulls":                 "NULLS FIRST or NULLS LAST",
 	"Insert.Or":                          "INSERT OR",
 	"Insert.Default":                     "DEFAULT VALUES",
 	"TargetTable.As":                     "alias",
@@ -161,7 +168,7 @@ var nodeNames = map[string]string{
 	"JoinOp":         "join",
 	"JoinOn":         "ON clause",
 	"JoinUsing":      "USING clause",
-	"IndexedBy":      "INDEXED BY or NOT INDEXED",
+	"IndexedBy":      "INDEXED BY",
 	"Where":          "WHERE clause",
 	"GroupBy":        "GROUP BY clause",
 	"Having":         "HAVING clause",
@@ -245,14 +252,20 @@ var nodeNames = map[string]string{
 // that starts with sqlite_ or s4ql_, in any case of the letters, is reserved, and so is the name of a
 // virtual table that SQLite gives every connection, which a statement reads without creating it.
 func reservedName(v string) string {
-	l := asciiLower(v)
-	if strings.HasPrefix(l, "sqlite_") || strings.HasPrefix(l, "s4ql_") {
+	if reservedPrefix(v) {
 		return "reserved table name"
 	}
-	if eponymous[l] {
+	if eponymous[asciiLower(v)] {
 		return "name of a virtual table of SQLite"
 	}
 	return ""
+}
+
+// reservedPrefix reports whether the name with the value v starts with sqlite_ or s4ql_, in any case
+// of the ASCII letters.
+func reservedPrefix(v string) bool {
+	l := asciiLower(v)
+	return strings.HasPrefix(l, "sqlite_") || strings.HasPrefix(l, "s4ql_")
 }
 
 // eponymous virtual tables of SQLite, which every connection has without creating them, in lower
