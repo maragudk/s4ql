@@ -763,6 +763,12 @@ internal/core/tx.go Tx.Keys remove statement: tx.temps++ =>
 	The table of a set is dropped before Keys returns, or with the transaction when it can only be rolled back, and its prefix s4ql_keys_ is not that of a table of touched keys, so a number that repeats never meets a table of its name.
 internal/core/tx.go Tx.Keys swap arguments: fmt.Sprint("s4ql_keys_", tx.temps) => fmt.Sprint(tx.temps, "s4ql_keys_")
 	The names of the temporary tables need only differ from each other, which they still do.
+internal/core/tx.go Tx.dropKeys element: k.add, =>
+	A statement of the set that is not finalized is at rest and reset, which does not keep SQLite from dropping its table; its text names the table, whose number no later table of the transaction has, so it is never prepared again, and forget finalizes it at the end of the transaction.
+internal/core/tx.go Tx.dropKeys element: k.first, =>
+	A statement of the set that is not finalized is at rest and reset, which does not keep SQLite from dropping its table; its text names the table, whose number no later table of the transaction has, so it is never prepared again, and forget finalizes it at the end of the transaction.
+internal/core/tx.go Tx.dropKeys element: , k.next =>
+	A statement of the set that is not finalized is at rest and reset, which does not keep SQLite from dropping its table; its text names the table, whose number no later table of the transaction has, so it is never prepared again, and forget finalizes it at the end of the transaction.
 internal/core/tx.go Tx.dropKeys condition: err != nil => false #2
 	A statement at rest has been reset without an error, since conn.rest finalizes one whose reset fails, so its finalize gives no error but for want of memory.
 internal/core/tx.go Tx.dropKeys remove statement: return tx.fail(ctx, operation, err) =>
