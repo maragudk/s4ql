@@ -114,6 +114,9 @@ var realEdges = func() []string {
 		// Products with 10^p whose bits below the 53rd are nearly zero, where sqlite3Fp10Convert2
 		// decides by the 32 bits after them; the last is 10^-1, which has its own entry.
 		"115787124.915219669e12", "5808351833673036289e0", "2303716194659627680000000000000000000e-19",
+		// Products with an exact power of 10 that are a tie of the rounding, or a few units in the
+		// last of those 32 bits from one.
+		"15931884261748570403e16", "16638669360040085079e16",
 	}
 }()
 
