@@ -925,7 +925,8 @@ func (p *pair) step(c stmttest.Call) string {
 // where the first run read the rows by the key, as the plan does unless -scanall. The two must give
 // the same answer, message, and count of changes, so that each test that compares the first with
 // SQLite compares both ways of reading rows, also in transactions. It counts the call in the tally
-// under "reached: read both ways", and gives what differs, or "".
+// under "reached: read both ways", and also under "reached: read both ways in a read-only
+// transaction" in one, and gives what differs, or "".
 func (p *pair) bothWays(c stmttest.Call, got answer) string {
 	if *scanAll {
 		return ""
@@ -946,6 +947,9 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 	i.e.SetScanAll(false)
 	if p.y != nil {
 		p.y["reached: read both ways"]++
+		if p.readOnly {
+			p.y["reached: read both ways in a read-only transaction"]++
+		}
 	}
 	if all.String() != got.String() || all.message != got.message || i.changes != changes {
 		return fmt.Sprintf("%q with %#v: the engine gives\n%v (%q, %v changes)\nby the key, and\n%v (%q, %v changes)\nwith every row read", c.Src, c.Args, got, got.message, changes, all, all.message, i.changes)
@@ -959,6 +963,9 @@ func (p *pair) reach(c stmttest.Call, got answer) {
 	p.t.Helper()
 	if p.y != nil {
 		reach(p.t, p.o, c, got, func(what string) { p.y["reached: "+what]++ })
+		if p.longCondition(c.Src) {
+			p.y["reached: WHERE with a literal longer than the length limit"]++
+		}
 	}
 }
 
@@ -1529,8 +1536,15 @@ func TestDifferential(t *testing.T) {
 		// no longer among [stmttest.Unsupported]. The engine of slice 7 took the fourth from 339 to 350:
 		// it runs the two selects with WHERE of [stmttest.Others], which compare a column with a small
 		// integer or with an argument of any type, and 11 of them compare one of another type than its
-		// column, which s4ql's rule refuses. The generator drew as before then.
-		want := map[string]int{acceptedStartedTable: 18, excusedArguments: 703, excusedArgument: 220, excusedType: 350, excusedLong: 8}
+		// column, which s4ql's rule refuses. The generator drew as before then. When the sequence wrote
+		// WHERE, they went from 18, 703, 220, 350, and 8 to 19, 718, 248, 478, and 4: the sequence
+		// draws other random numbers, which moves each of them, and of its own one select in two has a
+		// WHERE, which compares a value of another type than its column in 112 selects of the sequence,
+		// which took the fourth up, and has parameters, whose arguments [stmttest.Sequence.Next] makes
+		// wrong in number or of no column now and then, which took the second and the third up. The
+		// selects with a literal in a condition longer than the length limit, of which the run has 2,
+		// give `string or blob too big` in SQLite too, so [excusedLongCondition] is 0.
+		want := map[string]int{acceptedStartedTable: 19, excusedArguments: 718, excusedArgument: 248, excusedType: 478, excusedLong: 4}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
 			if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) {
@@ -1598,6 +1612,41 @@ var reachedDifferential = map[string]int{
 	"insert with NULL in the key: NOT NULL constraint failed": 17, "insert with NULL in a column that does not take it: NOT NULL constraint failed": 11,
 	"insert of NULL beside a value of another type NOT NULL constraint failed": 4, "insert of NULL beside a value of another type a value of another type": 6,
 	"select * with NULL ok": 45, "select of names with NULL ok": 25,
+
+	// Slice 7, a third of what the run gave on 2026-11-20 when the sequence wrote WHERE: each operator
+	// on the key and on another column, and with a value of another type on the key; each way that the
+	// plan reads rows, also two bounds that hold no key; a select that gives no row, some rows, and
+	// every row of a table with rows; each kind of value, by literal and by argument, NULL by both;
+	// and the faults: a column that the table does not have, in a comparison and under IS NULL or IS
+	// NOT NULL, alone, before, and after other conditions, and in double quotes; a value of another
+	// type; an argument that no column holds; the wrong number of arguments; a column tested twice;
+	// contradicting conditions; and a literal longer than the length limit. Every select with WHERE is
+	// read both ways.
+	"= on the key ok": 22, "!= on the key ok": 27, "< on the key ok": 47, "<= on the key ok": 39, "> on the key ok": 39, ">= on the key ok": 42,
+	"IS NULL on the key ok": 19, "IS NOT NULL on the key ok": 16,
+	"= on another column ok": 10, "!= on another column ok": 8, "< on another column ok": 9, "<= on another column ok": 6, "> on another column ok": 11,
+	">= on another column ok": 7, "IS NULL on another column ok": 2, "IS NOT NULL on another column ok": 8,
+	"= on the key a value of another type": 11, "!= on the key a value of another type": 11, "< on the key a value of another type": 14,
+	"<= on the key a value of another type": 11, "> on the key a value of another type": 12, ">= on the key a value of another type": 11,
+	"WHERE that reads no row ok": 29, "WHERE that reads a get of one key ok": 18, "WHERE that reads a scan from a lower bound ok": 15,
+	"WHERE that reads a scan to an upper bound ok": 16, "WHERE that reads a scan between two bounds ok": 19,
+	"WHERE that reads a scan between two bounds that hold no key ok": 18, "WHERE that reads a scan of every row ok": 38,
+	"WHERE that gives no row of a table with rows": 58, "WHERE that gives some rows of a table": 20, "WHERE that gives every row of a table with rows": 13,
+	"comparison with literal integer ok": 79, "comparison with literal real ok": 28, "comparison with literal real -0.0 ok": 2, "comparison with literal text ok": 28,
+	"comparison with literal empty text ok": 7, "comparison with literal blob ok": 28, "comparison with literal empty blob ok": 6, "comparison with literal null ok": 7,
+	"comparison with argument int64 ok": 34, "comparison with argument float64 ok": 9, "comparison with argument float64 -0.0 ok": 2,
+	"comparison with argument string ok": 11, "comparison with argument empty string ok": 3, "comparison with argument []uint8 ok": 11,
+	"comparison with argument empty []byte ok": 6, "comparison with argument nil ok": 5,
+	"WHERE with a column that the table does not have in a comparison, alone no such column":                                13,
+	"WHERE with a column that the table does not have in a comparison, before other conditions no such column":              26,
+	"WHERE with a column that the table does not have in a comparison, after other conditions no such column":               14,
+	"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column":                   1,
+	"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, before other conditions no such column": 4,
+	"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, after other conditions no such column":  3,
+	"WHERE with a column in double quotes that the table does not have no such column":                                      32,
+	"WHERE with a value of another type a value of another type":                                                            37, "WHERE with an argument that no column holds not supported": 12,
+	"WHERE with the wrong number of arguments wrong number of arguments": 19, "WHERE that tests a column more than once ok": 87,
+	"WHERE with contradicting conditions ok": 21, "WHERE with a literal longer than the length limit": 1, "read both ways": 444,
 }
 
 // FuzzDifferential runs the sequence of statements that its input chooses, the seed and the number of
