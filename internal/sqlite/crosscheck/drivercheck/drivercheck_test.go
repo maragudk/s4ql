@@ -595,12 +595,14 @@ func statementKind(src string) string {
 
 // reach counts in the tally what the text src with the arguments of each run, whose outcome of s4ql
 // is got, reaches, under "reached: ", on the tables that SQLite has on o, where the call runs,
-// before it runs there. For an insert: each argument by its kind, as [stmttest.ArgumentKind] names it, each
+// before it runs there. For an insert: each argument by its kind, as [argumentKind] names it, each
 // literal by its kind, as [stmttest.LiteralKind] names it, and, for an insert into a table that
-// SQLite has, the outcome of each run by the type of the key column, and for a table of several
+// SQLite has, the outcome of each run by the type of the key column; of each run that reaches the
+// instance, by what it reaches of NULL, as [stmttest.NullCases] gives it; and for a table of several
 // columns by the form of the insert, without a list or with one, and by its faults, as
 // [stmttest.Faults] gives them, one or two. For a select of a table that SQLite has, the outcome of
-// each run by its form: * by the number of columns, names, and a name that the table does not have.
+// each run by its form: * by the number of columns, names, and a name that the table does not have;
+// and of * and of names with NULL among the values of its rows.
 func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 	tb := p.tb
 	tb.Helper()
@@ -993,7 +995,8 @@ func (p *pair) openRows(src string, args []any) string {
 	return ""
 }
 
-// firstRow of rows, with its values as [valueText] gives them, or "none".
+// firstRow of rows, with its values as [valueText] gives them and as a scan into sql.Null* values
+// and into pointers gives them, or "none".
 func firstRow(tb testing.TB, rows *sql.Rows) string {
 	tb.Helper()
 	if !rows.Next() {
@@ -1011,6 +1014,22 @@ func firstRow(tb testing.TB, rows *sql.Rows) string {
 	var texts []string
 	for _, v := range values {
 		texts = append(texts, valueText(v))
+	}
+	// The row again into a sql.Null* value for each column, and into a pointer, as [read] does.
+	types, err := rows.ColumnTypes()
+	is.NotError(tb, err)
+	for _, pointer := range []bool{false, true} {
+		typed := make([]any, len(columns))
+		for i, v := range values {
+			typed[i] = typedDest(v, types[i].DatabaseTypeName(), pointer)
+		}
+		if err := rows.Scan(typed...); err != nil {
+			texts = append(texts, "scan: "+err.Error())
+			continue
+		}
+		for _, d := range typed {
+			texts = append(texts, typedText(d))
+		}
 	}
 	return strings.Join(texts, ",")
 }
