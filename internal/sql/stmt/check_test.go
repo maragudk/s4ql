@@ -616,6 +616,8 @@ var checkCases = []checkCase{
 	{name: "true", src: "insert into t (v) values (true)", err: "s4ql: not supported: TRUE or FALSE (at offset 26)"},
 	{name: "false after a minus", src: "insert into t (v) values (-FALSE)", err: "s4ql: not supported: TRUE or FALSE (at offset 27)"},
 	{name: "true in double quotes", src: `insert into t (v) values ("true")`, err: "s4ql: not supported: column reference (at offset 26)"},
+	{name: "true after a table name", src: "insert into t (v) values (t.true)", err: "s4ql: not supported: column reference (at offset 26)"},
+	{name: "false after a minus and a table name", src: "insert into t (v) values (-t.false)", err: "s4ql: not supported: column reference (at offset 27)"},
 	{name: "a concatenation", src: "insert into t (v) values ('a' || 'b')", err: "s4ql: not supported: binary operator (at offset 26)"},
 	{name: "a cast of a string", src: "insert into t (v) values (cast('1' as int))", err: "s4ql: not supported: CAST (at offset 26)"},
 	{name: "a real after two minus signs", src: "insert into t (v) values (- -1.5)", err: "s4ql: not supported: second sign (at offset 28)"},

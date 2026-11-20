@@ -1,6 +1,7 @@
 package stmt
 
 import (
+	"fmt"
 	"testing"
 
 	"maragu.dev/is"
@@ -81,6 +82,33 @@ func TestRecognize(t *testing.T) {
 		s, nse := recognize(src, tree)
 		is.True(t, s == nil)
 		is.Equal(t, "s4ql: not supported: parameter (at offset 27)", nse.Error())
+	})
+
+	t.Run("should panic for a blob literal of an odd number of hex digits, which the tokenizer never gives", func(t *testing.T) {
+		// INSERT INTO t (v) VALUES (x'00'), where the tree holds the blob x'0'.
+		src := "insert into t (v) values (x'00')"
+		tree, _, err := parser.Parse(src)
+		is.NotError(t, err)
+		var find func(n ast.Node) *ast.Literal
+		find = func(n ast.Node) *ast.Literal {
+			if l, ok := n.(*ast.Literal); ok {
+				return l
+			}
+			for _, c := range ast.Children(n) {
+				if l := find(c); l != nil {
+					return l
+				}
+			}
+			return nil
+		}
+		l := find(tree)
+		is.True(t, l != nil)
+		l.Value.Text = "x'0'"
+		defer func() {
+			is.Equal(t, `stmt: the blob literal "x'0'": encoding/hex: odd length hex string`, fmt.Sprint(recover()))
+		}()
+		_, _ = recognize(src, tree)
+		t.Fatal("no panic")
 	})
 
 	t.Run("should pass on a panic that is not its own", func(t *testing.T) {
