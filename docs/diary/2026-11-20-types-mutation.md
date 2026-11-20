@@ -163,3 +163,45 @@ The run reads the files of its tree for each mutant, so every run worked on an `
 ### Future work
 
 - A test that fails the temporary file at the `create table` or `drop table` of a temporary table of a transaction (in `docs/todo.md`).
+
+## Step 4: The review, and the checks
+
+**Author:** types-mutation builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the brief) "Run `make test`, `make lint`, and `make check-browser` at the end. [...] Review your own work with the code-review skill before you report, and fix what it finds."
+**Interpretation:** Review the branch, fix the findings that matter, and run the three checks.
+**Inferred intent:** A branch that the lead can merge after a read.
+
+### What I did
+
+`make test`, `make lint`, and `make check-browser` passed before the review. The review (`code-review high`, against 205a1ed, since `origin/types-checks` was gone after its merge) found one important issue and eight nits. The important one: the seeds of an upper-case blob literal at the length limit used `formBlobLiteral | 8`, which is 11, and `11 % forms` is `formRealArgument`; the form is now `form % forms`, and an odd `form / forms` writes the blob in upper case, with seeds of `formBlobLiteral + forms` at the limit and for every value. Of the nits I fixed: the placeholder of the core's row in the README of the tester (already filled in), the six reachable mutants of the core out of `equivalent.txt` so that a run lists them as unexplained, `FuzzTypes` and `FuzzTypes_core` in the layer `fuzz seeds` of `engineLayers` in `/internal/sql/mutation/run.go`, the comment of `FuzzTypes` on the limit that it ignores, the comment of `Options.LengthLimit` on a long identity, the reason of `t9 (k int) strict` in `TestDB_stop_cache`, which was empty and so checked nothing, the names in `TestPowerOfTen` (the order of its arguments was right already), and the new fuzz targets in `/internal/engine/README.md`.
+
+### Why
+
+A seed that does not test what its comment says is worse than none.
+
+### What worked
+
+The review read the base from the reflog when the branch it was given was gone.
+
+### What didn't work
+
+Nothing new.
+
+### What I learned
+
+`x | 8` and `x % 7` do not compose: a flag must live in its own part of the byte.
+
+### What was tricky
+
+Nothing more.
+
+### What warrants review
+
+As in step 3.
+
+### Future work
+
+As in step 3.
