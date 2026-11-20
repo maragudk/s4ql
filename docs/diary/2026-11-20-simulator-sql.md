@@ -135,3 +135,32 @@ Checks: `go test -tags s4ql_browser ./internal/simulator/...`, also with `-race`
 
 - The section "What the code does under each action" in the README of the simulator is dated 2026-11-19, with times from runs of the workload on the core. The courses that `run_test.go` checks still hold; the times were not measured again.
 - The Go heap after 24 fake hours, about 300 MB with the page's settings, and the steps of a fake minute, about three times those of `main`: both from the engine's yield between two rows of a query.
+
+## Step 6: Barcodes, one key per read, the merge, and sounds for the requests
+
+**Author:** builder (simulator SQL)
+
+### Prompt Context
+
+**Verbatim prompt:** (follow-ups from Markus through the lead, consolidated) Name the table `barcodes`, `create table barcodes (code integer primary key) strict, without rowid`. "Maybe always just select one key? And insert a hash instead of an int if it becomes too sequential": keys are barcode numbers of EAN-13 from a bijection of the run's counter; a read selects one key, a good share the newest acknowledged, the others recent keys. Merge `origin/main` with the sound of the page (#87). "Make every read and write make small beeps. I want it to sound alive"; "I liked the idea of a barcode scanner beeping when scanning"; "the pitch changing depending on the barcode is wonderful"; "it makes sense that it depends on the written key, so two reads of the same key get the same tone". Ticks with their own budget, a rate limit, and the mix limits as they were.
+
+### What I did
+
+- **The table and the keys.** `barcodes (code integer primary key)`. `barcode(n)` is `57`, ten digits from four rounds of a Feistel network over two halves of five digits, and the EAN-13 check digit. My first try was the affine `(n*a + b) mod 10^10` that the brief suggested; with `a` near 0.79·10^10 the keys fell four times and rose once, over and over (167 rises in 801 keys), which the page would show as a pattern. The Feistel rounds are a bijection whatever their round function, and the keys rise about half the time. `TestBarcode` checks 200,000 values for distinctness.
+- **One key per read.** `select code from barcodes where code = ?`. `newCall` draws a number from the seed: if it is even and a write has been acknowledged, the read selects the key of the newest acknowledged write; otherwise one of the last 50 values taken, also of a write that failed. `workload.window` is gone.
+- **The checker.** `state` checks the row of the read's key against the log at its position. `fresh` checks the read's own key by its row, and every other acknowledged write, and every write of unknown outcome that the log holds at the end, by the state at the position (`checker.stateOf`, which walks the ancestors of the position in the store). The fast check is O(1): the key is live at the position or not, and `ackedAt` is before the position. The agreement test runs every key from 0 to 4 against every set of the keys 1 to 4 at every position, and requires the same violations both ways and that the fast check passes every read without one.
+- **What the checker lost.** A read shows one row of its state. A state whose other rows are wrong, behind a right position and the right row of its key, is not caught. The window read showed up to 100 rows. `fresh` lost nothing, because it already went by the position.
+- **`TestRun_faults/should_show_writes_held_back_after_a_crash`** failed after the change: with seed 5 no write is on its way at the crash at 20 s. Seeds 1, 3, 4, 8, and 10 show it; the case now has its own seed, 4.
+- **The merge** of `origin/main` was clean. `sound.js` reads `action`, `process`, `core` with `lease`, `call` of the client with `committed` and `served`, and `check`; this branch changed none of them.
+- **The sounds of the requests**, in `sound.js`: `keyNote` maps a key through an integer mix of its low 32 bits to one of six notes of the scale, A minor pentatonic from E6 to E7 (1318.5, 1568, 1760, 2093, 2349.3, 2637 Hz). An insert that commits is a scan: a square wave of 80 ms at the note of its key, 3 ms attack and 4 ms release. A select that finds its row ticks for 20 ms at the note of its key; one that finds none ticks for 12 ms an octave lower. A failure is the error tone, two 45 ms notes at 330 Hz, 35 ms apart, at most every 1.5 s. Ticks have their own budget: one at a time, 40 ms apart, dropped while two or more figures sound, and faded out when a second figure starts.
+
+### What worked
+
+- Levels, rendered offline in the site check: a scan peaks at −36.3 dBFS at every note, a select at −42.0 dBFS, an error tone at −41.0 dBFS, against −34.9 dBFS for a figure. A burst of every figure and every tick every 10 ms for 3 s peaks at −26.0 dBFS (limit −24) and −21.7 dBFS with the alarm (limit −20), the same as without the ticks; it plays 26 ticks in the 3 s. A long run of failures gives 2 error tones in 3 s.
+- In a real session in headless Chromium with sound on: 0.47 request sounds a real second at 1×, 1.63 with Turbo.
+- Cost, mean of five fake minutes, page's settings: natively 15 ms at 0 h and 14 ms at 24 h, Chromium 61 and 24 ms; 423 and 472 steps a minute; Go heap 155.5 MB after 24 h. That is `main`'s again.
+
+### What warrants review
+
+- At 1× the page makes about one request sound every two seconds, because the client thinks up to 5 s between calls. A shorter `workload.think` in the page's settings would make it livelier, at the cost of steps and heap; I left it.
+- The section "What the code does under each action" still has the times of 2026-11-19.
