@@ -38,6 +38,8 @@ type fake struct {
 	tablePanics bool
 	tableFails  error
 	endFails    error
+	// insertNewFails is the error of an insert of a row whose key the table has.
+	insertNewFails error
 	// scans counts the scans that have started and not ended, and open the transactions.
 	scans, open int
 	// readers counts the readers that are open, and opened those that were ever opened. readerFails
@@ -203,6 +205,20 @@ func (x fakeTx) upsert(_ context.Context, name string, row []*s4qlpb.Value) erro
 	t.rows = slices.DeleteFunc(t.rows, func(r []*s4qlpb.Value) bool { return r[k].GetInteger() == row[k].GetInteger() })
 	t.rows = append(t.rows, row)
 	return nil
+}
+
+// insertNew inserts the row if the table has no row with its key, and does not measure the row.
+func (x fakeTx) insertNew(ctx context.Context, name string, row []*s4qlpb.Value) (bool, error) {
+	t := x.f.tables[fold(name)]
+	k := t.ct.GetPrimaryKey()[0]
+	x.f.calls = append(x.f.calls, fmt.Sprint("insert new ", name, " ", row[k].GetInteger()))
+	if x.f.insertNewFails != nil {
+		return false, x.f.insertNewFails
+	}
+	if slices.ContainsFunc(t.rows, func(r []*s4qlpb.Value) bool { return r[k].GetInteger() == row[k].GetInteger() }) {
+		return false, nil
+	}
+	return true, x.upsert(ctx, name, row)
 }
 
 func (x fakeTx) position() format.Name {
@@ -416,6 +432,16 @@ func TestInsert(t *testing.T) {
 		is.True(t, errors.Is(err, context.Canceled))
 	})
 
+	t.Run("should ask the storage to measure a row whose key the table has before it fails, and pass on its error", func(t *testing.T) {
+		f := newFake().with("t", []string{"v"}, []int64{1})
+		_, err := (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1)}).run(t.Context())
+		is.Equal(t, "UNIQUE constraint failed: t.v", err.Error())
+		is.Equal(t, "[get t 1 insert new t 1]", fmt.Sprint(f.calls))
+		f.insertNewFails = errors.New("string or blob too big")
+		_, err = (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1)}).run(t.Context())
+		is.Equal(t, "string or blob too big", err.Error())
+	})
+
 	t.Run("should write without the check with the planted bug", func(t *testing.T) {
 		f := newFake().with("t", []string{"v"}, []int64{1})
 		_, err := (&insert{w: fakeTx{f}, table: f.tables["t"].ct, src: ints(1), skipUnique: true}).run(t.Context())
@@ -508,6 +534,17 @@ func TestBuild(t *testing.T) {
 			_, err = s.run(t.Context())
 			is.Equal(t, "UNIQUE constraint failed: t.k", err.Error(), src)
 		}
+	})
+
+	t.Run("should place the values of a list in the order of the list with the planted bug listOrder", func(t *testing.T) {
+		f := newFake().with("t", []string{"a", "k", "c"})
+		f.tables["t"].ct.SetPrimaryKey([]uint32{1})
+		s, err := buildSink(t.Context(), fakeTx{f}, plan("insert into t (c, k, a) values (3, ?, 1)"), []*s4qlpb.Value{integer(2)}, bugs{listOrder: true}, 1_000_000_000)
+		is.NotError(t, err)
+		is.NotError(t, s.check())
+		_, err = s.run(t.Context())
+		is.NotError(t, err)
+		is.Equal(t, "[table t get t 2 upsert t 3,2,1]", fmt.Sprint(f.calls))
 	})
 
 	t.Run("should check that each column has a value before the type of each value, in the order of the table", func(t *testing.T) {

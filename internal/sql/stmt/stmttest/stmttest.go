@@ -150,7 +150,18 @@ type Generator struct {
 	// or of from 1 to Columns+1 names of columns. With 0 it writes only the forms of slices 1, 2, and
 	// 4, of one column, each with a list of its one column.
 	Columns int
-	b       strings.Builder
+	// Create, if not nil, gives the columns of a create table of the table with [Generator.Columns], in
+	// place of columns at random: the raw text of the name of each, its type, and whether it is the
+	// primary key, which exactly one of them is. The generator writes NOT NULL as for columns at random.
+	Create func(table stmt.Name) []stmt.Column
+	// Insert, if not nil, gives the list of columns of an insert into the table with
+	// [Generator.Columns], as the raw text of each name, or nil for an insert without a list, and its
+	// values, in place of a list and values at random. A list that it gives is not empty.
+	Insert func(table stmt.Name) (list []string, values []stmt.Value)
+	// Select, if not nil, gives the select list of a select of the table with [Generator.Columns], as
+	// the raw text of each name, or nil for *, in place of a select list at random.
+	Select func(table stmt.Name) []string
+	b      strings.Builder
 }
 
 // NewGenerator with the random numbers of r and a pool of names for each [Position]. Each name of a
@@ -262,20 +273,39 @@ func (g *Generator) columnType(table stmt.Name) stmt.Type {
 // columns of a create table of the table, of slice 5: from 1 to [Generator.Columns] of them, with
 // the primary key at any position, which says NOT NULL too before PRIMARY KEY one time in three and
 // after it one time in three, and every other column NOT NULL. Their names are from the pool of [CreateColumn], so
-// that two of them can have one name, which SQLite refuses.
+// that two of them can have one name, which SQLite refuses. [Generator.Create] can give the names,
+// the types, and the key instead.
 func (g *Generator) columns(table stmt.Name) []stmt.Column {
-	n := 1 + g.r.IntN(g.Columns)
-	key := g.r.IntN(n)
+	var shapes []stmt.Column
+	if g.Create != nil {
+		shapes = g.Create(table)
+	} else {
+		n := 1 + g.r.IntN(g.Columns)
+		key := g.r.IntN(n)
+		shapes = make([]stmt.Column, n)
+		for i := range shapes {
+			shapes[i].PrimaryKey = i == key
+		}
+	}
 	var columns []stmt.Column
-	for i := range n {
+	for i, shape := range shapes {
 		if i > 0 {
 			g.gap(false)
 			g.punct(",")
 			g.gap(false)
 		}
-		c := stmt.Column{Name: g.name(CreateColumn), PrimaryKey: i == key}
+		c := stmt.Column{PrimaryKey: shape.PrimaryKey}
+		if g.Create != nil {
+			c.Name = g.write(shape.Name.Raw)
+		} else {
+			c.Name = g.name(CreateColumn)
+		}
 		g.gap(true)
-		c.Type = g.columnType(table)
+		if g.Create != nil {
+			c.Type = shape.Type
+		} else {
+			c.Type = g.columnType(table)
+		}
 		g.keyword(strings.ToLower(c.Type.String()))
 		notNull := func() {
 			g.gap(true)
@@ -338,6 +368,47 @@ func (g *Generator) columnList(n int) []stmt.Name {
 	g.gap(false)
 	g.punct(")")
 	g.gap(false)
+	return names
+}
+
+// list of the columns of an insert of slice 5 with the names raws, as [Generator.columnList] writes
+// one, or with the gap of no list if raws is nil.
+func (g *Generator) list(raws []string) []stmt.Name {
+	if raws == nil {
+		g.gap(true)
+		return nil
+	}
+	g.gap(false)
+	g.punct("(")
+	g.gap(false)
+	var names []stmt.Name
+	for i, raw := range raws {
+		if i > 0 {
+			g.gap(false)
+			g.punct(",")
+			g.gap(false)
+		}
+		names = append(names, g.write(raw))
+	}
+	g.gap(false)
+	g.punct(")")
+	g.gap(false)
+	return names
+}
+
+// resultColumnsOf a select of slice 5 with the names raws, with the gaps around them, as
+// [Generator.resultColumns] writes them.
+func (g *Generator) resultColumnsOf(raws []string) []stmt.Name {
+	var names []stmt.Name
+	for i, raw := range raws {
+		if i > 0 {
+			g.gap(false)
+			g.punct(",")
+		}
+		g.gap(true)
+		names = append(names, g.write(raw))
+	}
+	g.gap(true)
 	return names
 }
 
@@ -458,7 +529,14 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 		g.gap(true)
 		c.Table = g.name(InsertTable)
 		values := 1
-		if g.Columns == 0 {
+		var given []stmt.Value
+		switch {
+		case g.Columns > 0 && g.Insert != nil:
+			var list []string
+			list, given = g.Insert(c.Table)
+			values = len(given)
+			c.Columns = g.list(list)
+		case g.Columns == 0:
 			g.gap(false)
 			g.punct("(")
 			g.gap(false)
@@ -466,7 +544,7 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 			g.gap(false)
 			g.punct(")")
 			g.gap(false)
-		} else {
+		default:
 			values = 1 + g.r.IntN(g.Columns)
 			c.Columns = g.columnList(values)
 		}
@@ -480,7 +558,12 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 				g.punct(",")
 				g.gap(false)
 			}
-			v := g.value(c.Table)
+			var v stmt.Value
+			if given != nil {
+				v = given[i]
+			} else {
+				v = g.value(c.Table)
+			}
 			var term stmt.Term
 			if g.Parameters > 0 && g.r.IntN(g.Parameters) == 0 {
 				term.Parameter, term.Span = len(args)+1, stmt.Span{Start: g.b.Len(), End: g.b.Len() + 1}
@@ -497,16 +580,33 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 	case KindSelect:
 		c := &stmt.Select{}
 		g.keyword("select")
-		if g.Columns == 0 || g.r.IntN(2) == 0 {
+		// table is the raw text of the name of the table when it is picked before the select list, for
+		// [Generator.Select], or "".
+		var table string
+		switch {
+		case g.Columns > 0 && g.Select != nil:
+			table = g.pick(SelectTable)
+			if names := g.Select(nameOf(table, 0)); names != nil {
+				c.Columns = g.resultColumnsOf(names)
+				break
+			}
 			g.gap(false)
 			g.punct("*")
 			g.gap(false)
-		} else {
+		case g.Columns == 0 || g.r.IntN(2) == 0:
+			g.gap(false)
+			g.punct("*")
+			g.gap(false)
+		default:
 			c.Columns = g.resultColumns()
 		}
 		g.keyword("from")
 		g.gap(true)
-		c.Table = g.name(SelectTable)
+		if table != "" {
+			c.Table = g.write(table)
+		} else {
+			c.Table = g.name(SelectTable)
+		}
 		s, span = c, &c.Span
 	default:
 		c := &stmt.DropTable{}

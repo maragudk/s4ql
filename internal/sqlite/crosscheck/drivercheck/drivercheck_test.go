@@ -256,13 +256,31 @@ func run(tb testing.TB, r runner, c call, src string, runs [][]any, errText func
 		}
 		return read(tb, o, rows, errText)
 	case callQueryRow:
-		// database/sql gives the error of the query at Scan, and one destination is enough for slice
-		// 1, whose queries have one column.
-		var v any
-		if err := r.QueryRowContext(ctx, src, args...).Scan(&v); err != nil {
-			return failed("scan", err)
+		// database/sql gives the error of the query at Scan, and gives no columns of a row: the query
+		// runs with one destination, and again with as many as database/sql says that the row has, if
+		// it has more.
+		values := make([]any, 1)
+		for {
+			dest := make([]any, len(values))
+			for i := range values {
+				dest[i] = &values[i]
+			}
+			err := r.QueryRowContext(ctx, src, args...).Scan(dest...)
+			var n int
+			if _, scanned := fmt.Sscanf(fmt.Sprint(err), "sql: expected %d destination arguments in Scan, not 1", &n); err != nil && scanned == nil && len(values) == 1 {
+				values = make([]any, n)
+				continue
+			}
+			if err != nil {
+				return failed("scan", err)
+			}
+			break
 		}
-		o.rows = []string{valueText(v)}
+		var texts []string
+		for _, v := range values {
+			texts = append(texts, valueText(v))
+		}
+		o.rows = []string{strings.Join(texts, ",")}
 		return o
 	}
 	tb.Fatalf("no call %q", c)
@@ -488,63 +506,101 @@ func statementKind(src string) string {
 	return kind
 }
 
-// reach counts in the tally what an insert, the text src with the arguments of each run, whose
-// outcome of s4ql is got, reaches, under "reached: ": each argument by its kind, as
-// [stmttest.ArgumentKind] names it, a literal by its kind, as [stmttest.LiteralKind] names it, and,
-// for an insert into a table that SQLite has where the call runs, the outcome of each run by the
-// type of its column.
-func (p *pair) reach(src string, runs [][]any, got outcome) {
+// reach counts in the tally what the text src with the arguments of each run, whose outcome of s4ql
+// is got, reaches, under "reached: ", on the tables that SQLite has on o, where the call runs,
+// before it runs there. For an insert: each argument by its kind, as [stmttest.ArgumentKind] names it, each
+// literal by its kind, as [stmttest.LiteralKind] names it, and, for an insert into a table that
+// SQLite has, the outcome of each run by the type of the key column, and for a table of several
+// columns by the form of the insert, without a list or with one, and by its faults, as
+// [stmttest.Faults] gives them, one or two. For a select of a table that SQLite has, the outcome of
+// each run by its form: * by the number of columns, names, and a name that the table does not have.
+func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 	tb := p.tb
 	tb.Helper()
 	if p.y == nil {
 		return
 	}
+	count := func(what string) { p.y["reached: "+what]++ }
+	kind := func(o outcome) string {
+		switch {
+		case strings.HasPrefix(o.err, "s4ql: not supported: ") && strings.Contains(o.err, " for the column "):
+			return "a value of another type"
+		case o.notSupported():
+			return "not supported"
+		case o.failed != "":
+			return messageKind(o.err)
+		}
+		return "ok"
+	}
 	s, _ := stmt.Check(src)
+	if sel, ok := s.(*stmt.Select); ok {
+		_, columns := p.columnsIn(o, sel.Table.Value)
+		if columns == nil {
+			return
+		}
+		for _, o := range got.runs() {
+			switch {
+			case sel.Columns == nil:
+				count(fmt.Sprint("select * of ", len(columns), " columns ", kind(o)))
+			case slices.ContainsFunc(sel.Columns, func(n stmt.Name) bool { return stmttest.ColumnOf(columns, n) < 0 }):
+				count("select of a name that the table does not have " + kind(o))
+			default:
+				count("select of names " + kind(o))
+			}
+		}
+		return
+	}
 	insert, ok := s.(*stmt.Insert)
 	if !ok {
 		return
 	}
-	count := func(what string) { p.y["reached: "+what]++ }
-	if insert.Values[0].Parameter > 0 {
+	if insert.Parameters() > 0 {
 		for _, args := range runs {
 			for _, a := range args {
 				count("argument " + stmttest.ArgumentKind(a))
 			}
 		}
-	} else {
-		count("literal " + stmttest.LiteralKind(insert.Values[0].Value))
 	}
-	typ := p.columnType(insert)
+	for _, v := range insert.Values {
+		if v.Parameter == 0 {
+			count("literal " + stmttest.LiteralKind(v.Value))
+		}
+	}
+	_, columns := p.columnsIn(o, insert.Table.Value)
+	var typ string
+	for _, c := range columns {
+		if c.PrimaryKey {
+			typ = c.Type
+		}
+	}
 	if typ == "" {
 		return
 	}
-	for _, o := range got.runs() {
-		kind := "ok"
-		switch {
-		case strings.HasPrefix(o.err, "s4ql: not supported: ") && strings.Contains(o.err, " for the column "):
-			kind = "a value of another type"
-		case o.notSupported():
-			kind = "not supported"
-		case o.failed != "":
-			kind = messageKind(o.err)
+	for i, o := range got.runs() {
+		count("insert into " + typ + " " + kind(o))
+		if len(columns) < 2 || i >= len(runs) || !reaches(src, runs[i]) {
+			continue
 		}
-		count("insert into " + typ + " " + kind)
+		var bound []any
+		for _, a := range runs[i] {
+			if v, ok := stmttest.Integers([]any{a}); ok {
+				a = v[0]
+			}
+			bound = append(bound, converted(a))
+		}
+		form := "insert without a list"
+		if insert.Columns != nil {
+			form = "insert with a list"
+		}
+		count(form + " " + kind(o))
+		switch faults := stmttest.Faults(columns, insert, bound); len(faults) {
+		case 0:
+		case 1:
+			count("insert with " + faults[0] + ": " + kind(o))
+		default:
+			count("insert with two faults: " + kind(o))
+		}
 	}
-}
-
-// columnType of the table of the insert in SQLite, where a call runs, or "" if SQLite has no such
-// table there.
-func (p *pair) columnType(insert *stmt.Insert) string {
-	tb := p.tb
-	tb.Helper()
-	_, o, _ := p.where(callExec, "")
-	var typ string
-	err := o.QueryRowContext(tb.Context(), "select p.type from sqlite_schema m, pragma_table_info(m.name) p where m.type = 'table' and m.name = ? collate nocase and p.pk = 1", insert.Table.Value).Scan(&typ)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ""
-	}
-	is.NotError(tb, err)
-	return typ
 }
 
 // excused counts a text of the kind that the comparison excuses.
@@ -617,6 +673,10 @@ const (
 	// s4ql's Prepare checks only the text: the statement is compared with mattn's prepared in the
 	// transaction, which database/sql prepares it in, by [pair.compare].
 	excusedOutside = "a statement prepared outside the transaction, whose names only the transaction has, compared as prepared in it"
+	// excusedQuoted is a select of a name in double quotes that the table does not have, which
+	// mattn's SQLite reads as a string, and which [pair.checkQuoted] checks against the pinned build's
+	// error instead.
+	excusedQuoted = "a select of a name in double quotes that is no column, which mattn's SQLite reads as a string, checked against the pinned build's error"
 )
 
 // rowsOpen is the error of s4ql for a statement in a transaction while the rows of a query of the
@@ -739,7 +799,7 @@ func (p *pair) stepRuns(src string, c call, supported bool, runs [][]any) (outco
 	}
 	got := run(tb, s, c, src, runs, s4qlText)
 	p.y.add(scope, src, got, runs)
-	p.reach(src, runs, got)
+	p.reach(src, runs, got, o)
 	failure := p.compare(src, c, supported, runs, got, o)
 	if failure == "" && p.tx != nil && scope == p.tx.kind() {
 		p.note(src, got)
@@ -1081,6 +1141,10 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 		}
 	}
 
+	if failure, ok := p.checkQuoted(src, s, got, o); ok {
+		return failure
+	}
+
 	first := firstStatement(src)
 	var want outcome
 	_, isSelect := s.(*stmt.Select)
@@ -1137,6 +1201,38 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 		return ""
 	}
 	return fmt.Sprintf("%q with the arguments %#v: s4ql gives\n%v\nand SQLite\n%v", src, runs, got, want)
+}
+
+// checkQuoted s4ql's outcome got of src, which holds the statement s, run where SQLite runs on o,
+// when s is a select whose first name that the table does not have is in double quotes. mattn's
+// SQLite reads such a name as a string, where the pinned build of SQLite, which the engine's tests
+// compare with, gives `no such column`, because it takes double quotes for names only (DQS=0). So
+// such a select is not run in mattn's SQLite: each run must fail when the statement runs, since
+// Prepare checks only the text, with the pinned build's error, `no such column: "x" - should this be
+// a string literal in single-quotes?`. It reports whether s is such a select, and gives what
+// differs, or "".
+func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) (string, bool) {
+	p.tb.Helper()
+	sel, ok := s.(*stmt.Select)
+	if !ok || sel.Columns == nil {
+		return "", false
+	}
+	_, columns := p.columnsIn(o, sel.Table.Value)
+	if columns == nil {
+		return "", false
+	}
+	at := slices.IndexFunc(sel.Columns, func(n stmt.Name) bool { return stmttest.ColumnOf(columns, n) < 0 })
+	if at < 0 || sel.Columns[at].Raw[0] != '"' {
+		return "", false
+	}
+	want := fmt.Sprintf(`1/1: no such column: "%v" - should this be a string literal in single-quotes?`, sel.Columns[at].Value)
+	for _, r := range got.runs() {
+		if r.failed == "" || r.failed == "prepare" || r.err != want {
+			return fmt.Sprintf("%q: s4ql gives %v, and the pinned build of SQLite %q when the statement runs", src, got, want), true
+		}
+	}
+	p.y.excused(excusedQuoted)
+	return "", true
 }
 
 // checkNotSupported is [pair.stepRuns] of a text that s4ql answers with "not supported", in got.
@@ -1270,9 +1366,11 @@ func reaches(src string, args []any) bool {
 }
 
 // typeRefusal is the "not supported" of the statement s of the text src, with the arguments args,
-// which s4ql supports, when it is an insert into a table and a column that SQLite has where the call
-// runs, outside a read-only transaction, and its value, a literal or an argument, is of another type
-// than the column. It is "" otherwise.
+// which s4ql supports, when it is an insert that SQLite prepares where the call runs, outside a
+// read-only transaction, with a value for each column, and its value of a column, a literal or an
+// argument, is of another type than the column: for the first such column in the order of the table,
+// as [stmttest.TypeRule] gives it. It is "" otherwise, also for an insert that leaves a column
+// without a value, which gets SQLite's `NOT NULL constraint failed` first.
 func (p *pair) typeRefusal(src string, s stmt.Statement, args []any) string {
 	tb := p.tb
 	tb.Helper()
@@ -1286,40 +1384,44 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any) string {
 		return ""
 	}
 	is.NotError(tb, ps.Close())
-	var table, column, typ string
-	err = o.QueryRowContext(tb.Context(), "select m.name, p.name, p.type from sqlite_schema m, pragma_table_info(m.name) p where m.type = 'table' and m.name = ? collate nocase and p.pk = 1", insert.Table.Value).Scan(&table, &column, &typ)
-	is.NotError(tb, err)
-	var what, kind string
-	switch v := insert.Values[0].Value.(type) {
-	case nil:
-		switch a := converted(args[0]).(type) {
-		case float64:
-			kind, what = "REAL", "argument 1, which is a real,"
-		case string:
-			kind, what = "TEXT", "argument 1, which is text,"
-		case []byte:
-			kind, what = "BLOB", "argument 1, which is a blob,"
-		default:
-			if _, ok := stmttest.Integers([]any{a}); !ok {
-				tb.Fatalf("%q: an argument of type %T", src, a)
-			}
-			kind, what = "INT", "argument 1, which is an integer,"
+	table, columns := p.columns(insert.Table.Value)
+	var bound []any
+	for _, a := range args {
+		if v, ok := stmttest.Integers([]any{a}); ok {
+			a = v[0]
 		}
-	case stmt.Integer:
-		kind, what = "INT", "an integer literal"
-	case stmt.Real:
-		kind, what = "REAL", "a real literal"
-	case stmt.Text:
-		kind, what = "TEXT", "a string literal"
-	case stmt.Blob:
-		kind, what = "BLOB", "a blob literal"
-	default:
-		tb.Fatalf("%q: a value of type %T", src, v)
+		bound = append(bound, converted(a))
 	}
-	if kind == typ || kind == "INT" && typ == "INTEGER" {
-		return ""
+	return stmttest.TypeRule(table, columns, insert, bound)
+}
+
+// columns of the table with the name, as SQLite compares names, in SQLite where a call runs, in the
+// order of the table, and the name of the table as the table stores it. They are nil and "" if
+// SQLite has no such table there.
+func (p *pair) columns(name string) (string, []stmttest.TableColumn) {
+	p.tb.Helper()
+	_, o, _ := p.where(callExec, "")
+	return p.columnsIn(o, name)
+}
+
+// columnsIn are the [pair.columns] of the table with the name in SQLite on o.
+func (p *pair) columnsIn(o runner, name string) (string, []stmttest.TableColumn) {
+	tb := p.tb
+	tb.Helper()
+	rows, err := o.QueryContext(tb.Context(), "select m.name, p.name, p.type, p.pk from sqlite_schema m, pragma_table_info(m.name) p where m.type = 'table' and m.name = ? collate nocase order by p.cid", name)
+	is.NotError(tb, err)
+	defer func() { is.NotError(tb, rows.Close()) }()
+	var table string
+	var columns []stmttest.TableColumn
+	for rows.Next() {
+		var c stmttest.TableColumn
+		var pk int
+		is.NotError(tb, rows.Scan(&table, &c.Name, &c.Type, &pk))
+		c.PrimaryKey = pk == 1
+		columns = append(columns, c)
 	}
-	return fmt.Sprintf("s4ql: not supported: %v for the column %v.%v of type %v", what, table, column, typ)
+	is.NotError(tb, rows.Err())
+	return table, columns
 }
 
 // checkArguments of the outcome got of src, with the arguments of each run, which is s4ql's error
@@ -1732,10 +1834,16 @@ var sequences = map[string][]step{
 		{callExec, "insert into t3 values (1, 'b', 2.5)", "exec: exec failed with 19/1555: UNIQUE constraint failed: t3.v1"},
 		{callQuery, "select v1, x from t3", "query: query failed with 1/1: no such column: x"},
 		// mattn's build reads a name in double quotes that is no column as a string, where the pinned
-		// build of s4ql's tests gives `no such column`, so `select "x" from t3` is not compared here,
-		// and a value of another type than its column is checked by the rule only for an insert of one
-		// value.
+		// build of s4ql's tests gives `no such column`: [pair.checkQuoted] checks such a select against
+		// the pinned build's error instead.
+		{callQuery, `select v1, "x" from t3`, `query: query failed with 1/1: no such column: "x" - should this be a string literal in single-quotes?`},
+		// The first value of another type than its column in the order of the table is refused, also
+		// where a column before it in the list has a value of another type.
+		{callExec, "insert into t3 (v3, v1, v2) values ('c', 'x', 'b')", "exec: exec failed with s4ql: not supported: a string literal for the column t3.v1 of type INT"},
+		// A column without a value comes first.
+		{callExec, "insert into t3 (v3, v2) values ('c', 2)", "exec: exec failed with 19/1299: NOT NULL constraint failed: t3.v1"},
 		{callQueryRow, `select V1 from t3`, "query row: row int64:1"},
+		{callQueryRow, `select V1, v3, v2 from t3`, "query row: row int64:1,float64:1.5,string:a"},
 		// SQLite gives these errors when it prepares the text, and s4ql when the statement runs.
 		{callPrepareExec, "insert into t3 values (2, 'b')", "prepare, exec: exec failed with 1/1: table t3 has 3 columns but 2 values were supplied"},
 		{callPrepareExec, "insert into t3 (v1) values (2, 'b')", "prepare, exec: exec failed with 1/1: 2 values for 1 columns"},
@@ -1750,6 +1858,7 @@ var sequences = map[string][]step{
 		{callExecArgument, "insert into k (a, b) values ('x', ?)", "exec with an argument: 1 affected, last insert id 0"},
 		{callPrepareExecRuns, "insert into k values ('y', ?)", "prepare, exec several times: exec failed with 19/1555: UNIQUE constraint failed: k.b; then: 1 affected, last insert id 0; then: exec failed with 19/1555: UNIQUE constraint failed: k.b"},
 		{callExecArgument, "insert into k (b, a) values (?, ?)", "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 2 parameters"},
+		{callExecArgument, "insert into k (b, a) values (3, ?)", "exec with an argument: exec failed with s4ql: not supported: argument 1, which is an integer, for the column k.a of type TEXT"},
 		{callQuery, "select * from k", `query: columns "a,b" of types "TEXT,INT", rows string:x,int64:1 string:y,int64:2`},
 	},
 	"a transaction of several columns, with a failed insert that changes nothing": {
@@ -2259,6 +2368,19 @@ func TestGenerated(t *testing.T) {
 		"argument NaN": 2, "argument infinite float64": 2, "argument float32 that is not finite": 1, "argument string that is not valid UTF-8": 3,
 		"argument string with NUL": 4, "argument nil": 1, "argument nil []byte": 6, "argument bool": 2, "argument time.Time": 2,
 		"argument uint64 above int64": 1, "argument named": 23,
+
+		// Slice 5, as the run gave it on 2026-11-20: inserts into tables of several columns, without a
+		// list and with one, with each fault and with two, also in a read-only transaction, and selects of
+		// * of each number of columns, of names, and of a name that the table does not have.
+		"insert without a list ok": 64, "insert with a list ok": 100, "insert without a list UNIQUE constraint failed": 27, "insert with a list UNIQUE constraint failed": 52,
+		"insert with a list attempt to write a readonly database": 22, "insert without a list attempt to write a readonly database": 10,
+		"insert with a column that the table does not have: has no column named": 19, "insert with a column without a value: NOT NULL constraint failed": 31,
+		"insert with the wrong number of values: values were supplied": 18, "insert with the wrong number of values:  values for ": 30,
+		"insert with a value of another type in the key: a value of another type": 10, "insert with a value of another type in another column: a value of another type": 10,
+		"insert with two faults: NOT NULL constraint failed": 5, "insert with two faults: a value of another type": 7, "insert with two faults: has no column named": 3,
+		"insert with a column without a value: attempt to write a readonly database": 2,
+		"select * of 1 columns ok": 49, "select * of 2 columns ok": 52, "select * of 3 columns ok": 40, "select of names ok": 130,
+		"select of a name that the table does not have no such column": 24,
 	} {
 		if y["reached: "+kind] < least {
 			t.Errorf("the run reaches %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y["reached: "+kind], least)
@@ -2276,13 +2398,18 @@ func TestGenerated(t *testing.T) {
 	// statement while rows of its transaction are open, which s4ql refuses ([excusedRowsOpen]); a
 	// begin on a pinned connection whose transaction is open, which both refuse ([excusedTxOpen]); and
 	// a statement prepared outside a transaction through the pool, whose names only the transaction
-	// has ([excusedOutside]).
-	// Since slice 5 the engine runs the insert without a list of columns and the select of a column
-	// of [stmttest.Others], which Prepare refused before: so excusedPrepare moved from 1010,
-	// excusedType from 173, excusedRowsOpen from 37, and excusedOutside from 48.
+	// has ([excusedOutside]); and a select of a name in double quotes that is no column, which mattn's
+	// SQLite reads as a string ([excusedQuoted]).
+	// Before the sequence wrote tables of several columns, the counts were 1012, 12, 395, 126, 180,
+	// 78, 38, 22, 49, and 0. The sequence draws other random numbers, which moves every count, the
+	// calls and the transactions too; and of its own: the errors of slice 5 that SQLite gives at
+	// prepare took excusedPrepare up, inserts of up to four values have more arguments, which took
+	// excusedArgument up, one insert in ten has a value of any type, where one value in ten had,
+	// which took excusedType down, and select lists name columns in double quotes, which
+	// excusedQuoted counts.
 	want := map[string]int{
-		excusedPrepare: 1012, excusedStartedTable: 12, excusedArguments: 395, excusedArgument: 126, excusedType: 180,
-		excusedLevel: 78, excusedRowsOpen: 38, excusedTxOpen: 22, excusedOutside: 49,
+		excusedPrepare: 1072, excusedStartedTable: 9, excusedArguments: 396, excusedArgument: 189, excusedType: 161,
+		excusedLevel: 70, excusedRowsOpen: 29, excusedTxOpen: 30, excusedOutside: 68, excusedQuoted: 32,
 	}
 	kinds := slices.Collect(maps.Keys(want))
 	for name := range y {

@@ -83,7 +83,7 @@ func TestConn_writeIn(t *testing.T) {
 		is.NotError(t, c.Commit(t.Context()))
 		is.Equal(t, strings.Join([]string{
 			"serving", "savepoint", "table t1", "get t1 2", "upsert t1 2", "annotate insert into t1 (v1) values (2)", "release",
-			"serving", "savepoint", "table t1", "get t1 2", "rollback to",
+			"serving", "savepoint", "table t1", "get t1 2", "insert new t1 2", "rollback to",
 			"serving", "savepoint", "table t1", "get t1 3", "upsert t1 3", "annotate insert into t1 (v1) values (3)", "rollback to",
 			"serving", "savepoint", "table t1", "get t1 4", "rollback to",
 			"serving", "savepoint", "table t1", "drop t1", "annotate drop table t1", "release",

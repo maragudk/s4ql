@@ -858,40 +858,28 @@ func (p *pair) step(c stmttest.Call) string {
 	return ""
 }
 
-// reach counts in the tally what an insert, the call c, whose answer of the engine is got, reaches,
-// under "reached: ": each argument by its kind, as [stmttest.ArgumentKind] names it, a literal by
-// its kind, as [stmttest.LiteralKind] names it, a text or a blob of more than 900 bytes, and, for an insert
-// that SQLite prepares, the outcome by the type of its column, and -0.0 that meets a key that exists.
+// reach counts in the tally what the call c, whose answer of the engine is got, reaches, under
+// "reached: ", on the database of SQLite before the call, as [reach] says.
 func (p *pair) reach(c stmttest.Call, got answer) {
-	t := p.t
+	p.t.Helper()
+	if p.y != nil {
+		reach(p.t, p.o, c, got, func(what string) { p.y["reached: "+what]++ })
+	}
+}
+
+// reach counts with count what the call c, whose answer of the engine is got, reaches on the
+// database of o. For an insert: each argument by its kind, as [stmttest.ArgumentKind] names it, each
+// literal by its kind, as [stmttest.LiteralKind] names it, a text or a blob of more than 900 bytes,
+// and, for an insert into a table that SQLite has, the outcome: for one that SQLite prepares by the
+// type of the key column, also for -0.0 in the key that meets a key that exists; and for a table of
+// several columns by the form of the insert, without a list or with a list in the order of the table
+// or in another, and by its faults, as [stmttest.Faults] gives them, one or two. For a create table
+// that SQLite prepares, the outcome by its number of columns, by the position of its key, and for one
+// with two columns of a type and one of mixed types. For a select of a table that SQLite has, the
+// outcome by its form: * by the number of columns, names, names in another order than the table's, a
+// name twice, and a name that the table does not have, as written and in double quotes.
+func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, count func(string)) {
 	t.Helper()
-	if p.y == nil {
-		return
-	}
-	s, _ := stmt.Check(c.Src)
-	insert, ok := s.(*stmt.Insert)
-	if !ok {
-		return
-	}
-	count := func(what string) { p.y["reached: "+what]++ }
-	var value any = insert.Values[0].Value
-	if insert.Values[0].Parameter > 0 {
-		for _, a := range c.Args {
-			count("argument " + stmttest.ArgumentKind(a))
-		}
-		if len(c.Args) == 1 {
-			value = converted(unnamed(c.Args)[0])
-		}
-	} else {
-		count("literal " + stmttest.LiteralKind(insert.Values[0].Value))
-	}
-	if byteLength(value) > 900 {
-		count("long value")
-	}
-	typ := insertType(t, p.o, c.Src)
-	if typ == "" {
-		return
-	}
 	outcome := "ok"
 	switch {
 	case got.err == "not supported" && strings.Contains(got.message, " for the column "):
@@ -899,12 +887,128 @@ func (p *pair) reach(c stmttest.Call, got answer) {
 	case got.err != "":
 		outcome = messageKind(got.err)
 	}
-	count("insert into " + typ + " " + outcome)
-	if f, ok := value.(float64); ok && f == 0 && math.Signbit(f) && outcome == "UNIQUE constraint failed" {
-		count("-0.0 argument into " + typ + " " + outcome)
+	s, _ := stmt.Check(c.Src)
+	switch s := s.(type) {
+	case *stmt.Insert:
+		reachInsert(t, o, s, c, outcome, count)
+	case *stmt.CreateTable:
+		if o.prepare(t, c.Src) != nil {
+			return
+		}
+		count(fmt.Sprint("create table of ", len(s.Columns), " columns ", outcome))
+		count(fmt.Sprint("create table with the key at ", s.Key(), " ", outcome))
+		kinds := map[string]int{}
+		for _, col := range s.Columns {
+			kinds[map[stmt.Type]string{stmt.TypeInt: "integer", stmt.TypeInteger: "integer", stmt.TypeReal: "real", stmt.TypeText: "text", stmt.TypeBlob: "blob"}[col.Type]]++
+		}
+		if len(kinds) > 1 {
+			count("create table of mixed types " + outcome)
+		}
+		if slices.ContainsFunc(slices.Collect(maps.Values(kinds)), func(n int) bool { return n > 1 }) {
+			count("create table with two columns of a type " + outcome)
+		}
+	case *stmt.Select:
+		_, columns := o.columns(t, s.Table.Value)
+		if columns == nil {
+			return
+		}
+		if s.Columns == nil {
+			count(fmt.Sprint("select * of ", len(columns), " columns ", outcome))
+			return
+		}
+		var positions []int
+		for _, name := range s.Columns {
+			position := stmttest.ColumnOf(columns, name)
+			if position < 0 {
+				count(map[bool]string{false: "select of a name that the table does not have ", true: "select of a name in double quotes that the table does not have "}[name.Raw[0] == '"'] + outcome)
+				return
+			}
+			positions = append(positions, position)
+		}
+		count("select of names " + outcome)
+		if !slices.IsSorted(positions) {
+			count("select of names in another order " + outcome)
+		}
+		if len(slices.Compact(slices.Sorted(slices.Values(positions)))) < len(positions) {
+			count("select of a name twice " + outcome)
+		}
 	}
-	if f, ok := value.(stmt.Real); ok && f == 0 && math.Signbit(float64(f)) && outcome == "UNIQUE constraint failed" {
-		count("-0.0 literal into " + typ + " " + outcome)
+}
+
+// reachInsert counts what the insert s of the call c, whose outcome in the engine is outcome,
+// reaches on the database of o, as [reach] says.
+func reachInsert(t testing.TB, o *oracle, s *stmt.Insert, c stmttest.Call, outcome string, count func(string)) {
+	t.Helper()
+	if s.Parameters() > 0 {
+		for _, a := range c.Args {
+			count("argument " + stmttest.ArgumentKind(a))
+		}
+	}
+	args := oracleArgs(c.Args)
+	refused := len(args) != s.Parameters() || slices.ContainsFunc(args, func(a any) bool { return refusal(a) != "" })
+	// value of the term, a literal or its argument as SQLite binds it, or nil for an argument that the
+	// engine refuses.
+	value := func(term stmt.Term) any {
+		switch {
+		case term.Parameter == 0:
+			return term.Value
+		case refused:
+			return nil
+		}
+		return args[term.Parameter-1]
+	}
+	long := false
+	for _, term := range s.Values {
+		if term.Parameter == 0 {
+			count("literal " + stmttest.LiteralKind(term.Value))
+		}
+		long = long || byteLength(value(term)) > 900
+	}
+	if long {
+		count("long value")
+	}
+	_, columns := o.columns(t, s.Table.Value)
+	if columns == nil {
+		return
+	}
+	if o.prepare(t, c.Src) == nil {
+		typ := keyType(t, o, s)
+		count("insert into " + typ + " " + outcome)
+		if positions, ok := stmttest.Positions(columns, s); ok && outcome == "UNIQUE constraint failed" {
+			for i, position := range positions {
+				if !columns[position].PrimaryKey {
+					continue
+				}
+				switch v := value(s.Values[i]).(type) {
+				case float64:
+					if v == 0 && math.Signbit(v) {
+						count("-0.0 argument into " + typ + " " + outcome)
+					}
+				case stmt.Real:
+					if v == 0 && math.Signbit(float64(v)) {
+						count("-0.0 literal into " + typ + " " + outcome)
+					}
+				}
+			}
+		}
+	}
+	if len(columns) < 2 || refused {
+		return
+	}
+	form := "insert without a list"
+	if s.Columns != nil {
+		form = "insert with a list in the order of the table"
+		if positions, ok := stmttest.Positions(columns, s); ok && !slices.IsSorted(positions) {
+			form = "insert with a list in another order"
+		}
+	}
+	count(form + " " + outcome)
+	switch faults := stmttest.Faults(columns, s, args); len(faults) {
+	case 0:
+	case 1:
+		count("insert with " + faults[0] + ": " + outcome)
+	default:
+		count("insert with two faults: " + outcome)
 	}
 }
 
@@ -1027,7 +1131,10 @@ func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string)
 	if !ok || p.i.limit == 0 || p.o.prepare(t, c.Src) != nil {
 		return "", ""
 	}
-	n := byteLength(insert.Values[0].Value)
+	var n int
+	for _, v := range insert.Values {
+		n = max(n, byteLength(v.Value))
+	}
 	if n <= p.i.limit {
 		return "", ""
 	}
@@ -1056,11 +1163,13 @@ func byteLength(v any) int {
 }
 
 // typeRule of the insert of the text src, with the arguments args as SQLite binds them, on the
-// database of o: s4ql's "not supported" for a value, a literal or an argument, of another type than
-// its column, where SQLite would convert the value or give an error of its own, or "". It is "" for a
-// text that is not an insert, an insert that SQLite does not prepare, which gets SQLite's error, an
-// insert with another number of arguments than parameters, and an insert of a value of the type of
-// its column.
+// database of o: s4ql's "not supported" for the first column, in the order of the table, whose
+// value, a literal or an argument, is of another type than the column, where SQLite would convert
+// the value or give an error of its own, as [stmttest.TypeRule] gives it, or "". It is "" for a text
+// that is not an insert, an insert that SQLite does not prepare, which gets SQLite's error, an insert
+// with another number of arguments than parameters, an insert that leaves a column without a value,
+// which gets SQLite's `NOT NULL constraint failed` first, and an insert whose every value has the
+// type of its column.
 func typeRule(t testing.TB, o *oracle, src string, args []any) string {
 	t.Helper()
 	s, _ := stmt.Check(src)
@@ -1068,75 +1177,43 @@ func typeRule(t testing.TB, o *oracle, src string, args []any) string {
 	if !ok || len(args) != insert.Parameters() || o.prepare(t, src) != nil {
 		return ""
 	}
-	table, column, typ := o.column(t, insert.Table.Value)
-	kind, what := valueKind(t, insert, args)
-	if columnHolds[typ] == kind {
-		return ""
-	}
-	return fmt.Sprintf("s4ql: not supported: %v for the column %v.%v of type %v", what, table, column, typ)
+	table, columns := o.columns(t, insert.Table.Value)
+	return stmttest.TypeRule(table, columns, insert, args)
 }
 
-// valueKind of the value of the insert, a literal or the argument of args as SQLite binds it: the
-// kind that [columnHolds] names, and how s4ql's message names the value.
-func valueKind(t testing.TB, insert *stmt.Insert, args []any) (kind, what string) {
+// keyType is the declared type of the key column of the table of the insert, on the database of o,
+// or "" if SQLite has no such table.
+func keyType(t testing.TB, o *oracle, insert *stmt.Insert) string {
 	t.Helper()
-	switch v := insert.Values[0].Value.(type) {
-	case nil:
-		switch args[0].(type) {
-		case int64:
-			return "integer", "argument 1, which is an integer,"
-		case float64:
-			return "real", "argument 1, which is a real,"
-		case string:
-			return "text", "argument 1, which is text,"
-		case []byte:
-			return "blob", "argument 1, which is a blob,"
+	_, columns := o.columns(t, insert.Table.Value)
+	for _, c := range columns {
+		if c.PrimaryKey {
+			return c.Type
 		}
-		t.Fatalf("an argument of type %T for SQLite", args[0])
-	case stmt.Integer:
-		return "integer", "an integer literal"
-	case stmt.Real:
-		return "real", "a real literal"
-	case stmt.Text:
-		return "text", "a string literal"
-	case stmt.Blob:
-		return "blob", "a blob literal"
-	default:
-		t.Fatalf("a value of type %T", v)
 	}
-	return "", ""
+	return ""
 }
 
-// insertType is the declared type of the column of the insert of the text src, on the database of
-// o, or "" if src is not an insert that SQLite prepares.
-func insertType(t testing.TB, o *oracle, src string) string {
+// columns of the table with the name, as SQLite compares names, in SQLite, in the order of the
+// table, and the name of the table as the table stores it. They are nil and "" if SQLite has no such
+// table.
+func (o *oracle) columns(t testing.TB, name string) (string, []stmttest.TableColumn) {
 	t.Helper()
-	s, _ := stmt.Check(src)
-	insert, ok := s.(*stmt.Insert)
-	if !ok || o.prepare(t, src) != nil {
-		return ""
-	}
-	_, _, typ := o.column(t, insert.Table.Value)
-	return typ
-}
-
-// columnHolds is the kind of value that a column of each declared type holds.
-var columnHolds = map[string]string{"INT": "integer", "INTEGER": "integer", "REAL": "real", "TEXT": "text", "BLOB": "blob"}
-
-// column of the table with the name, as SQLite compares names, in SQLite: the names of the table and
-// of its primary-key column as the table stores them, and its declared type. The table must exist.
-func (o *oracle) column(t testing.TB, name string) (table, column, typ string) {
-	t.Helper()
-	s, err := o.c.Prepare("select m.name, p.name, p.type from sqlite_schema m, pragma_table_info(m.name) p where m.type = 'table' and m.name = ?1 collate nocase and p.pk = 1")
+	s, err := o.c.Prepare("select m.name, p.name, p.type, p.pk from sqlite_schema m, pragma_table_info(m.name) p where m.type = 'table' and m.name = ?1 collate nocase order by p.cid")
 	is.NotError(t, err)
 	defer func() { is.NotError(t, s.Finalize()) }()
 	is.NotError(t, s.BindText(1, name))
-	ok, err := s.Step()
-	is.NotError(t, err)
-	if !ok {
-		t.Fatalf("SQLite has no table %q", name)
+	var table string
+	var columns []stmttest.TableColumn
+	for {
+		ok, err := s.Step()
+		is.NotError(t, err)
+		if !ok {
+			return table, columns
+		}
+		table = s.ColumnText(0)
+		columns = append(columns, stmttest.TableColumn{Name: s.ColumnText(1), Type: s.ColumnText(2), PrimaryKey: s.ColumnInt64(3) == 1})
 	}
-	return s.ColumnText(0), s.ColumnText(1), s.ColumnText(2)
 }
 
 // isInsert reports whether src is a supported insert.
@@ -1179,8 +1256,9 @@ func TestDifferential(t *testing.T) {
 		// What the full run must reach, at least: each type as a key, with an insert that succeeds,
 		// meets a key that exists, and has a value of another type, also -0.0 after 0.0; each kind of
 		// literal and of argument, also those that no column holds; and a text or a blob that is too
-		// long, as a literal and as an argument. Each least number is about a third of what the run
-		// gave on 2026-11-19, so that a generator that stops reaching a case fails the test.
+		// long, as a literal and as an argument; and the forms and the faults of slice 5. Each least
+		// number is about a third of what the run gave on 2026-11-20, so that a generator that stops
+		// reaching a case fails the test.
 		for kind, least := range reachedDifferential {
 			if y["reached: "+kind] < least {
 				t.Errorf("the run reaches %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y["reached: "+kind], least)
@@ -1196,6 +1274,8 @@ func TestDifferential(t *testing.T) {
 	for _, kind := range []string{
 		"insert with a parameter ok", "insert with a parameter UNIQUE constraint failed", "insert with a parameter wrong number of arguments",
 		"insert with a parameter not supported", "insert wrong number of arguments", "select wrong number of arguments",
+		// The errors of the names of slice 5.
+		"createtable duplicate column name", "select no such column", "insert NOT NULL constraint failed", "insert values were supplied", "insert  values for ",
 	} {
 		if y[kind] == 0 {
 			t.Errorf("no statement has the outcome %q", kind)
@@ -1205,10 +1285,12 @@ func TestDifferential(t *testing.T) {
 	// such as each known gap, is pinned at 0. Of the calls that are excused because s4ql refuses
 	// their arguments by its rule, each is checked against the rule instead.
 	if !slow() && atDefault("seed", "sequences", "length") {
-		// excusedType was 363 while the engine refused the insert without a list of columns of
-		// [stmttest.Others], which it runs since slice 5: 8 of them give an integer to a column of
-		// another type.
-		want := map[string]int{acceptedStartedTable: 21, excusedArguments: 644, excusedArgument: 140, excusedType: 371, excusedLong: 5}
+		// Before the sequence wrote tables of several columns, the counts were 21, 644, 140, 371, and
+		// 5. Its inserts have up to four values, and so more parameters and more arguments around
+		// them, which took the second and the third up; one insert in ten has a value of any type,
+		// where one value in ten had, which took the fourth down; and the sequence draws other random
+		// numbers, which moved the first and the last.
+		want := map[string]int{acceptedStartedTable: 17, excusedArguments: 718, excusedArgument: 197, excusedType: 336, excusedLong: 3}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
 			if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) {
@@ -1225,19 +1307,37 @@ func TestDifferential(t *testing.T) {
 // reachedDifferential is the least number of each kind of what [pair.reach] counts that the full run
 // of [TestDifferential] must reach.
 var reachedDifferential = map[string]int{
-	"insert into INT ok": 90, "insert into INTEGER ok": 100, "insert into REAL ok": 110, "insert into TEXT ok": 110, "insert into BLOB ok": 100,
-	"insert into INT UNIQUE constraint failed": 30, "insert into INTEGER UNIQUE constraint failed": 30, "insert into REAL UNIQUE constraint failed": 40,
-	"insert into TEXT UNIQUE constraint failed": 30, "insert into BLOB UNIQUE constraint failed": 40,
-	"-0.0 literal into REAL UNIQUE constraint failed": 8, "-0.0 argument into REAL UNIQUE constraint failed": 2,
-	"insert into INT a value of another type": 9, "insert into INTEGER a value of another type": 24, "insert into REAL a value of another type": 20,
-	"insert into TEXT a value of another type": 29, "insert into BLOB a value of another type": 37,
-	"insert into TEXT string or blob too big": 2, "insert into BLOB string or blob too big": 2, "long value": 50,
-	"literal integer": 480, "literal real": 230, "literal real -0.0": 30, "literal text": 200, "literal empty text": 40, "literal blob": 180, "literal empty blob": 50,
-	"argument int64": 200, "argument int": 3, "argument int32": 4, "argument uint64": 2, "argument float64": 100, "argument float64 -0.0": 15,
-	"argument float32": 6, "argument string": 90, "argument empty string": 20, "argument []uint8": 80, "argument empty []byte": 24,
-	"argument NaN": 4, "argument infinite float64": 5, "argument float32 that is not finite": 3, "argument string that is not valid UTF-8": 5,
-	"argument string with NUL": 8, "argument nil": 1, "argument nil []byte": 11, "argument bool": 3, "argument time.Time": 2,
-	"argument uint64 above int64": 2, "argument named": 30,
+	"insert into INT ok": 130, "insert into INTEGER ok": 70, "insert into REAL ok": 100, "insert into TEXT ok": 110, "insert into BLOB ok": 100,
+	"insert into INT UNIQUE constraint failed": 50, "insert into INTEGER UNIQUE constraint failed": 26, "insert into REAL UNIQUE constraint failed": 34,
+	"insert into TEXT UNIQUE constraint failed": 26, "insert into BLOB UNIQUE constraint failed": 42,
+	"-0.0 literal into REAL UNIQUE constraint failed": 6, "-0.0 argument into REAL UNIQUE constraint failed": 2,
+	"insert into INT a value of another type": 20, "insert into INTEGER a value of another type": 20, "insert into REAL a value of another type": 24,
+	"insert into TEXT a value of another type": 24, "insert into BLOB a value of another type": 24,
+	"insert into TEXT string or blob too big": 7, "insert into BLOB string or blob too big": 5, "long value": 90,
+	"literal integer": 950, "literal real": 390, "literal real -0.0": 68, "literal text": 400, "literal empty text": 76, "literal blob": 390, "literal empty blob": 100,
+	"argument int64": 440, "argument int": 7, "argument int32": 4, "argument uint64": 7, "argument float64": 200, "argument float64 -0.0": 26,
+	"argument float32": 9, "argument string": 170, "argument empty string": 34, "argument []uint8": 170, "argument empty []byte": 45,
+	"argument NaN": 4, "argument infinite float64": 7, "argument float32 that is not finite": 5, "argument string that is not valid UTF-8": 12,
+	"argument string with NUL": 14, "argument nil": 4, "argument nil []byte": 9, "argument bool": 3, "argument time.Time": 4,
+	"argument uint64 above int64": 4, "argument named": 40,
+
+	// Slice 5: tables of one to three columns, of mixed types and with two columns of a type, with
+	// the key at each position; inserts without a list and with a list in the order of the table and
+	// in another, and with each fault and two; selects of *, of names in another order, of a name
+	// twice, and of a name that the table does not have, also in double quotes.
+	"create table of 1 columns ok": 70, "create table of 2 columns ok": 90, "create table of 3 columns ok": 70,
+	"create table of mixed types ok": 76, "create table with two columns of a type ok": 120,
+	"create table with the key at 0 ok": 140, "create table with the key at 1 ok": 68, "create table with the key at 2 ok": 26,
+	"insert without a list ok": 130, "insert with a list in the order of the table ok": 120, "insert with a list in another order ok": 86,
+	"insert with a list in another order UNIQUE constraint failed": 26, "insert with a list in another order a value of another type": 17,
+	"insert with a list in another order NOT NULL constraint failed":         8,
+	"insert with a column that the table does not have: has no column named": 29, "insert with a column without a value: NOT NULL constraint failed": 43,
+	"insert with the wrong number of values: values were supplied": 37, "insert with the wrong number of values:  values for ": 44,
+	"insert with a value of another type in the key: a value of another type": 31, "insert with a value of another type in another column: a value of another type": 33,
+	"insert with two faults: NOT NULL constraint failed": 8, "insert with two faults: a value of another type": 8, "insert with two faults: has no column named": 5,
+	"select * of 1 columns ok": 86, "select * of 2 columns ok": 100, "select * of 3 columns ok": 90, "select of names ok": 250,
+	"select of names in another order ok": 55, "select of a name twice ok": 170,
+	"select of a name that the table does not have no such column": 17, "select of a name in double quotes that the table does not have no such column": 24,
 }
 
 // FuzzDifferential runs the sequence of statements that its input chooses, the seed and the number of
