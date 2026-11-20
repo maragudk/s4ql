@@ -23,7 +23,8 @@ As of 2026-11-20:
 - **Built: slice 3, transactions.** `db.BeginTx` gives a transaction that is the single writer from its beginning until it commits or rolls back. `sql.TxOptions{ReadOnly: true}` gives a read-only transaction on one state that holds no one up. It is checked against SQLite by generated tests in the engine and through `database/sql` (499 generated transactions), in a simulation with faults, and by mutation testing (628 mutants of the engine).
 - **Built: slice 4, the other types.** A table has a column of type `int`, `integer`, `real`, `text`, or `blob`, with literals and arguments of Go types for each. A value must have the exact type of its column. It is checked against SQLite by generated tests in the engine and through `database/sql`, and in a simulation. Real literals are read as SQLite reads them, bit for bit.
 - **Built: slice 5, several columns.** A table has one or more columns, exactly one of them the primary key and every other one `not null`. An `insert` has a list of columns or none, and a `select` names columns or takes `*`. It is checked against SQLite by generated tests in the engine and through `database/sql`, and in a simulation.
-- **Not built:** `null`, `where`, and a statement while rows of the same transaction are open.
-- **Next:** slice 6 of the [roadmap](docs/roadmap.md) (`null`) is being built. Slices 7 and 8 (`where` on `select`, and `update` and `delete`) are agreed.
+- **Built: slice 6, `null`.** A column that is not the primary key can take null. The literal `null`, a nil argument, and a column left out of an `insert` give it, and it reads back as nil. It is checked against SQLite by generated tests in the engine and through `database/sql`, and in a simulation.
+- **Not built:** `where`, and a statement while rows of the same transaction are open.
+- **Next:** slice 7 of the [roadmap](docs/roadmap.md) (`where` on `select`) is being built. Slice 8 (`update` and `delete`) is agreed.
 
 What is open in detail is in [docs/todo.md](docs/todo.md).

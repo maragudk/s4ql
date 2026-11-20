@@ -858,16 +858,17 @@ footer ul {
               <li>Slice 3, transactions: <code>db.BeginTx</code> gives a transaction that is the single writer from its beginning until it commits or rolls back. <code>sql.TxOptions{ReadOnly: true}</code> gives a read-only transaction on one state that holds no one up. It is checked against SQLite by generated tests in the engine and through <code>database/sql</code> (499 generated transactions), in a simulation with faults, and by mutation testing (628 mutants of the engine).</li>
               <li>Slice 4, the other types: a table has a column of type <code>int</code>, <code>integer</code>, <code>real</code>, <code>text</code>, or <code>blob</code>, with literals and arguments of Go types for each. A value must have the exact type of its column. It is checked against SQLite by generated tests in the engine and through <code>database/sql</code>, and in a simulation. Real literals are read as SQLite reads them, bit for bit.</li>
               <li>Slice 5, several columns: a table has one or more columns, exactly one of them the primary key and every other one <code>not null</code>. An <code>insert</code> has a list of columns or none, and a <code>select</code> names columns or takes <code>*</code>. It is checked against SQLite by generated tests in the engine and through <code>database/sql</code>, and in a simulation.</li>
+              <li>Slice 6, <code>null</code>: a column that is not the primary key can take null. The literal <code>null</code>, a nil argument, and a column left out of an <code>insert</code> give it, and it reads back as nil. It is checked against SQLite by generated tests in the engine and through <code>database/sql</code>, and in a simulation.</li>
             </ul>
           </td>
         </tr>
         <tr>
           <th scope="row" class="caps">Not built</th>
-          <td><p><code>null</code>, <code>where</code>, and a statement while rows of the same transaction are open.</p></td>
+          <td><p><code>where</code>, and a statement while rows of the same transaction are open.</p></td>
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
-          <td><p>Slice 6 of the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a> (<code>null</code>) is being built. Slices 7 and 8 (<code>where</code> on <code>select</code>, and <code>update</code> and <code>delete</code>) are agreed.</p></td>
+          <td><p>Slice 7 of the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a> (<code>where</code> on <code>select</code>) is being built. Slice 8 (<code>update</code> and <code>delete</code>) is agreed.</p></td>
         </tr>
       </tbody>
     </table>
@@ -941,10 +942,10 @@ footer ul {
         <div><h3>Slice 5: several columns</h3><p>A table with several columns: one primary key, and the others <code>not null</code>. An <code>insert</code> gives the columns in the table's order or names them in any order, and a <code>select</code> names the columns it returns.</p></div>
         <span class="where caps">Built</span>
       </li>
-      <li class="agreed">
+      <li class="built">
         <span class="glyph" aria-hidden="true"></span>
         <div><h3>Slice 6: <code>null</code></h3><p>Columns that take null: the literal <code>null</code>, a nil argument, and a column left out of an <code>insert</code>. A null comes back as nil.</p></div>
-        <span class="where caps">Agreed</span>
+        <span class="where caps">Built</span>
       </li>
       <li class="agreed">
         <span class="glyph" aria-hidden="true"></span>
