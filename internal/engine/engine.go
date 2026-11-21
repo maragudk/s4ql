@@ -378,8 +378,7 @@ func Check(src string, n int) error {
 }
 
 // check the text src: its statement, or its error, as [stmt.Check] gives it, or [ErrNoStatement],
-// or the "not supported" of [existsRefusal] for a statement of slice 10 and of [defaultRefusal] for
-// one of slice 11.
+// or the "not supported" of [existsRefusal] for a statement of slice 10.
 func check(src string) (stmt.Statement, error) {
 	s, err := stmt.Check(src)
 	if err != nil {
@@ -387,11 +386,6 @@ func check(src string) (stmt.Statement, error) {
 	}
 	if s == nil {
 		return nil, ErrNoStatement
-	}
-	// Before slice 11, the pass refused a DEFAULT and never gave the statement, so the DEFAULT wins
-	// over IF NOT EXISTS.
-	if err := defaultRefusal(src, s); err != nil {
-		return nil, err
 	}
 	if err := existsRefusal(src, s); err != nil {
 		return nil, err

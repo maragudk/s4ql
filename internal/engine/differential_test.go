@@ -269,7 +269,7 @@ func (o *oracle) state(t testing.TB) string {
 		_, columns := o.columns(t, name)
 		var cs, key []string
 		for _, c := range columns {
-			cs = append(cs, columnText(c.Name, c.Type, c.Nullable))
+			cs = append(cs, columnText(c.Name, c.Type, c.Nullable, o.defaultText(t, c.Default)))
 			if c.PrimaryKey {
 				key = append(key, stmttest.Quote(c.Name))
 			}
@@ -282,13 +282,46 @@ func (o *oracle) state(t testing.TB) string {
 	return b.String() + o.indexes(t)
 }
 
-// columnText of a column of a table in the text of a state: its name and its declared type, and
-// NULL after them if it takes NULL.
-func columnText(name, typ string, nullable bool) string {
+// columnText of a column of a table in the text of a state: its name and its declared type, NULL
+// after them if it takes NULL, and DEFAULT and the text of the value of its default, dflt, as
+// [valueText] writes it, if it has one, where dflt is not "".
+func columnText(name, typ string, nullable bool, dflt string) string {
+	text := name + " " + typ
 	if nullable {
-		return name + " " + typ + " NULL"
+		text += " NULL"
 	}
-	return name + " " + typ
+	if dflt != "" {
+		text += " DEFAULT " + dflt
+	}
+	return text
+}
+
+// defaultText of a column whose default SQLite keeps as the text dflt, or "" for none: the value
+// that SQLite gives the literal, as [oracle.run] writes it, which is what an insert that leaves the
+// column out stores, but for -0.0, which a REAL column of a STRICT table stores as 0.0.
+func (o *oracle) defaultText(t testing.TB, dflt string) string {
+	t.Helper()
+	if dflt == "" {
+		return ""
+	}
+	a := o.run(t, "select "+dflt)
+	if a.err != "" || len(a.rows) != 1 {
+		t.Fatalf("SQLite gives %v for the default %q", a, dflt)
+	}
+	if a.rows[0] == "real -0" {
+		return "real 0"
+	}
+	return a.rows[0]
+}
+
+// defaultOf a column of the commit format: the text of its default, as [valueText] writes it, or ""
+// if it has none.
+func defaultOf(t testing.TB, c *s4qlpb.Column) string {
+	t.Helper()
+	if !c.HasDefault() {
+		return ""
+	}
+	return valueText(t, c.GetDefault())
 }
 
 // errText of an error of the engine, as [answer] has it. Any other error fails the test.
@@ -653,7 +686,7 @@ func (i *instance) state() string {
 	for _, ct := range tables {
 		var columns []string
 		for _, c := range ct.GetColumns() {
-			columns = append(columns, columnText(c.GetName(), declType(c.GetType()), c.GetNullable()))
+			columns = append(columns, columnText(c.GetName(), declType(c.GetType()), c.GetNullable(), defaultOf(i.t, c)))
 		}
 		var rows []string
 		for row, err := range r.Scan(ctx, ct.GetTable()) {
@@ -2366,7 +2399,7 @@ func keyType(t testing.TB, o *oracle, insert *stmt.Insert) string {
 // table.
 func (o *oracle) columns(t testing.TB, name string) (string, []stmttest.TableColumn) {
 	t.Helper()
-	s, err := o.c.Prepare(`select m.name, p.name, p.type, p.pk, p."notnull" from sqlite_schema m, pragma_table_info(m.name) p where m.type = 'table' and m.name = ?1 collate nocase order by p.cid`)
+	s, err := o.c.Prepare(`select m.name, p.name, p.type, p.pk, p."notnull", p.dflt_value from sqlite_schema m, pragma_table_info(m.name) p where m.type = 'table' and m.name = ?1 collate nocase order by p.cid`)
 	is.NotError(t, err)
 	defer func() { is.NotError(t, s.Finalize()) }()
 	is.NotError(t, s.BindText(1, name))
@@ -2382,7 +2415,8 @@ func (o *oracle) columns(t testing.TB, name string) (string, []stmttest.TableCol
 		// The key of a table WITHOUT ROWID never takes NULL, also when SQLite reports it without NOT
 		// NULL.
 		key := s.ColumnInt64(3) == 1
-		columns = append(columns, stmttest.TableColumn{Name: s.ColumnText(1), Type: s.ColumnText(2), PrimaryKey: key, Nullable: !key && s.ColumnInt64(4) == 0})
+		// A column without DEFAULT has the dflt_value NULL, and the text of a literal is never empty.
+		columns = append(columns, stmttest.TableColumn{Name: s.ColumnText(1), Type: s.ColumnText(2), PrimaryKey: key, Nullable: !key && s.ColumnInt64(4) == 0, Default: s.ColumnText(5)})
 	}
 }
 

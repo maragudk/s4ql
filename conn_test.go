@@ -1660,6 +1660,59 @@ func rowCount(t *testing.T, db querier, src string) int64 {
 	return int64(len(rowsOf(t, db, src)))
 }
 
+func TestDefaults(t *testing.T) {
+	const create = "create table d (k int primary key, n integer not null default 0, r real default -0.0, s text default 'it''s', b blob default x'0a', u text default null) strict, without rowid"
+
+	t.Run("should create a table with defaults and store them for the columns that an insert leaves out, directly, prepared, and in a transaction, with the count of rows and no last insert ID", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		res, err := db.ExecContext(t.Context(), create)
+		affected(t, res, err)
+		res, err = db.ExecContext(t.Context(), "insert into d (k) values (?)", 1)
+		is.Equal(t, int64(1), affected(t, res, err))
+		p, err := db.PrepareContext(t.Context(), "insert into d (s, k) values (?, ?)")
+		is.NotError(t, err)
+		res, err = p.ExecContext(t.Context(), nil, 2)
+		is.Equal(t, int64(1), affected(t, res, err))
+		res, err = p.ExecContext(t.Context(), "x", 3)
+		is.Equal(t, int64(1), affected(t, res, err))
+		_, err = p.ExecContext(t.Context(), "y", 3)
+		sqliteError(t, 19, 1555, "UNIQUE constraint failed: d.k", err)
+		is.NotError(t, p.Close())
+		tx, err := db.BeginTx(t.Context(), nil)
+		is.NotError(t, err)
+		res, err = tx.ExecContext(t.Context(), "insert into d (k, n, u) values (4, 5, 'u')")
+		is.Equal(t, int64(1), affected(t, res, err))
+		_, err = tx.ExecContext(t.Context(), "insert into d (k, n) values (5, null)")
+		sqliteError(t, 19, 1299, "NOT NULL constraint failed: d.n", err)
+		is.NotError(t, tx.Commit())
+		const want = "k INT, n INTEGER, r REAL, s TEXT, b BLOB, u TEXT: 1 0 0 it's [10] <nil>; 2 0 0 <nil> [10] <nil>; 3 0 0 x [10] <nil>; 4 5 0 it's [10] u"
+		is.Equal(t, want, rowsText(t, db, "select * from d"))
+		is.Equal(t, "insert into d (k) values (?) with 1", annotations(t, w)[1])
+
+		// Another instance replays the table with its defaults, and fills them in.
+		is.NotError(t, db.Close())
+		db = w.serve(t, "b")
+		is.Equal(t, want, rowsText(t, db, "select * from d"))
+		exec(t, db, "insert into d (k) values (6)")
+		is.Equal(t, "k INT, n INTEGER, r REAL, s TEXT, b BLOB, u TEXT: 6 0 0 it's [10] <nil>", rowsText(t, db, "select * from d where k = 6"))
+	})
+
+	t.Run("should refuse at once what s4ql does not support of a DEFAULT", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		for src, want := range map[string]string{
+			"create table d (k int primary key, v real default 1) strict, without rowid":            "DEFAULT of another type than its column (at offset 50)",
+			"create table d (k int primary key, v int default (1)) strict, without rowid":           "DEFAULT of an expression (at offset 49)",
+			"create table d (k int primary key, v text default current_time) strict, without rowid": "current date or time (at offset 50)",
+			"insert into d default values": "DEFAULT VALUES (at offset 14)",
+		} {
+			_, err := db.PrepareContext(t.Context(), src)
+			is.Equal(t, want, notSupported(t, err), src)
+		}
+	})
+}
+
 func TestConn_Raw(t *testing.T) {
 	t.Run("should run the calls of the driver's interfaces that database/sql makes no more, as it runs those with a context", func(t *testing.T) {
 		w := newWorld(t)

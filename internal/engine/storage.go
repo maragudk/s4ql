@@ -300,7 +300,11 @@ func (c coreTx) rowsRead() int64 {
 }
 
 func (c coreTx) createIndex(ctx context.Context, ci *s4qlpb.CreateIndex) error {
-	return fromCore(c.tx.CreateIndex(ctx, ci))
+	err := c.tx.CreateIndex(ctx, ci)
+	if errors.Is(err, core.ErrTooLongForCache) {
+		return tooLongForCache("index", ci.GetIndex())
+	}
+	return fromCore(err)
 }
 
 func (c coreTx) dropIndex(ctx context.Context, name string) error {
@@ -308,7 +312,11 @@ func (c coreTx) dropIndex(ctx context.Context, name string) error {
 }
 
 func (c coreTx) createTable(ctx context.Context, ct *s4qlpb.CreateTable) error {
-	return fromCore(c.tx.CreateTable(ctx, ct))
+	err := c.tx.CreateTable(ctx, ct)
+	if errors.Is(err, core.ErrTooLongForCache) {
+		return tooLongForCache("table", ct.GetTable())
+	}
+	return fromCore(err)
 }
 
 func (c coreTx) dropTable(ctx context.Context, name string) error {

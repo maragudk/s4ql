@@ -12,13 +12,15 @@ import (
 )
 
 // TableColumn of a table as SQLite has it: its name as the table stores it, its declared type, such
-// as INT, whether it is the primary key, and whether it takes NULL, which the primary key never
-// does.
+// as INT, whether it is the primary key, whether it takes NULL, which the primary key never does,
+// and its default, the text of the literal of its DEFAULT as SQLite keeps it, which
+// pragma_table_info gives as dflt_value, or "" if it has none.
 type TableColumn struct {
 	Name       string
 	Type       string
 	PrimaryKey bool
 	Nullable   bool
+	Default    string
 }
 
 // Positions of the values of the insert in the table of the columns, in the order of the values:

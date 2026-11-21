@@ -47,10 +47,13 @@ type bugs struct {
 	// the order of the list, the first value to the first column, and not to the columns that the
 	// list names.
 	listOrder bool
-	// zeroLeftOut makes an insert with a list of columns give a column that takes NULL and that the
-	// list leaves out the zero value of its type, 0, 0.0, the empty text, or the empty blob, in place
-	// of NULL.
+	// zeroLeftOut makes an insert with a list of columns give a column that takes NULL, has no
+	// default, and that the list leaves out the zero value of its type, 0, 0.0, the empty text, or the
+	// empty blob, in place of NULL.
 	zeroLeftOut bool
+	// nullDefault makes an insert with a list of columns give a column with a default that the list
+	// leaves out NULL in place of its default.
+	nullDefault bool
 	// openBound makes a scan by one or two bounds of a key read a closed bound, of <= or >=, as
 	// open, so that it leaves out the row whose key is the bound, which the filter above it would
 	// give.

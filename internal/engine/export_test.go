@@ -302,6 +302,7 @@ var plantable = map[string]func(b *bugs){
 	"convertReal":   func(b *bugs) { b.convertReal = true },
 	"listOrder":     func(b *bugs) { b.listOrder = true },
 	"zeroLeftOut":   func(b *bugs) { b.zeroLeftOut = true },
+	"nullDefault":   func(b *bugs) { b.nullDefault = true },
 	"openBound":     func(b *bugs) { b.openBound = true },
 	"changeNothing": func(b *bugs) { b.changeNothing = true },
 	"keepOldKey":    func(b *bugs) { b.keepOldKey = true },

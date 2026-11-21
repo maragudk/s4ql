@@ -2084,7 +2084,15 @@ func coreState(ctx context.Context, d *core.DB) (string, error) {
 	for _, ct := range tables {
 		var columns []string
 		for _, c := range ct.GetColumns() {
-			columns = append(columns, columnText(c.GetName(), declType(c.GetType()), c.GetNullable()))
+			var dflt string
+			if c.HasDefault() {
+				text, ok := valueString(c.GetDefault())
+				if !ok {
+					return "", fmt.Errorf("the column %v.%v has the default %v", ct.GetTable(), c.GetName(), text)
+				}
+				dflt = text
+			}
+			columns = append(columns, columnText(c.GetName(), declType(c.GetType()), c.GetNullable(), dflt))
 		}
 		var rows []string
 		for row, err := range r.Scan(ctx, ct.GetTable()) {
