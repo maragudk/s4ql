@@ -101,7 +101,7 @@ Four things follow:
 - **A draw more or less in one statement moves no number of another statement.**
 - **A draw more or less in one area moves no number of another area,** also in the same statement.
 - **The shape of a table does not depend on which statement names the table first.**
-- **What a test draws for itself comes from `Sequence.Stream(name)`.** Examples are the transactions of `TestConn_differential` and the restarts of `TestDifferential`. The stream gives the same numbers for the same seed and name, whatever the sequence draws. So the test moves no statement.
+- **What a test draws for itself comes from `Sequence.Stream(name)`.** Examples are the transactions of `TestConn_differential`, the restarts of `TestDifferential`, and the calls of the driver check (`Sequence.Stream("calls")`). The stream gives the same numbers for the same seed and name, whatever the sequence draws. So the test moves no statement.
 
 ### The limit of the streams
 
@@ -133,22 +133,30 @@ If the digest of a profile changes that has the area off, the change reaches mor
 
 ### What a run reaches
 
-Each generated test counts kinds of outcome for each run. A run is the sequences of one profile. In the simulation, a run is the seeds of one environment. `stmttest.Reached` checks the counts against two files in `testdata/reached/` of the package of the test, both named after the test:
+Each generated test counts kinds of outcome for each run. A run is the sequences of one profile. In the simulation, a run is the seeds of one cell, named as `default/indexes`, or those of one environment, named as `default`, whose counts are the sums of those of its cells. `stmttest.Reached` checks the counts against two files in `testdata/reached/` of the package of the test, both named after the test:
 
-- **`<Test>.kinds` holds the kinds that the test requires,** one on a line. A builder writes this file.
+- **`<Test>.kinds` holds the kinds that the test requires,** one on a line. A builder writes this file. It holds one kind at least, and no exact kind. Otherwise the check fails.
 - **`<Test>.tsv` holds the counts.** The test writes this file. A row is a run, what the run reached when the file was written, the least number that the test requires, and the kind. Do not edit a number by hand.
 
 `Reached.Check` has these rules:
 
 - **The least number is a third.** A run must reach each kind of its rows at least a third as often as when the file was written, rounded down.
-- **No least number is 0.** A kind that a run reaches fewer than three times has no row for that run. A row with a least number of 0, or of more than a third of its count, fails the check.
+- **No least number is 0.** A kind that a run reaches fewer than three times has no row for that run. A row with a least number of 0 fails the check. So does a row whose least number is not exactly the third of its count, rounded down. So a number that was edited by hand fails.
 - **A required kind needs a row in one run at least.** If every run reaches a required kind fewer than three times, the check fails. The recount fails too, and writes nothing. The message says how often each run reaches the kind.
-- **An exact kind is pinned exactly.** `Reached.Exact` names the exact kinds. In the differential tests of the engine, they are the kinds that begin with `excused: `. These count the texts that the test does not compare with SQLite. A run must give an exact kind as often as its row says. A run without a row must not give it.
+- **A run needs a row.** A run without any row fails the check. Such a run is a profile, a cell, or an environment that was added without a recount.
+- **An exact kind is pinned exactly.** `Reached.Exact` names the exact kinds. In the differential tests of the engine and in the driver check, they are the kinds that begin with `excused: `. These count the texts that the test does not compare with SQLite. In the simulation, they are the three kinds of integrity checks of the caches. A run must give an exact kind as often as its row says. A run without a row must not give it.
 - **Only required kinds and exact kinds have rows.** A row of another kind fails the check, and so does a row of a run that the test does not have.
 
 Remove a kind from a `.kinds` file only if it is pinned somewhere else, and say where in the commit.
 
-The files of `TestDifferential`, `TestConn_differential`, and `TestSimulation` are in `internal/engine/testdata/reached/`. The driver check, `TestGenerated` in `internal/sqlite/crosscheck/drivercheck`, uses files of the same two kinds.
+The files of `TestDifferential`, `TestConn_differential`, and `TestSimulation` are in `internal/engine/testdata/reached/`. Those of the driver check are `TestGenerated.kinds` and `TestGenerated.tsv` in `internal/sqlite/crosscheck/drivercheck/testdata/reached/`.
+
+The driver check, `TestGenerated`, runs as many sequences of each profile as `generatedOf` says. It has no slow run: it runs in full and checks its counts in every run, also under the race detector. Two kinds are not in its `.kinds` file, because no profile reaches them three times in its run:
+
+- "reached: value on the left of != finds rows"
+- "reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column"
+
+`TestGenerated` requires each of the two once over all profiles. `TestDifferential` of the engine requires both by profile.
 
 ### The recount
 
@@ -166,7 +174,7 @@ For the driver check, run this from `internal/sqlite/crosscheck`:
 S4QL_RECOUNT=1 go test -count=1 -run '^TestGenerated$' ./drivercheck/
 ```
 
-A recount needs a full run. Do not pass `-short`, `-race`, or `-asan`. Keep the flags of the test at their defaults, and do not set `S4QL_ENGINE_SIM_SEEDS`. In every other run, the tests run fewer or other sequences and do not call `Reached.Check`, so the recount writes nothing.
+A recount needs a full run. Do not pass `-short`, `-race`, or `-asan`. Keep the flags of the test at their defaults, do not set `S4QL_ENGINE_SIM_SEEDS`, and do not filter the subtests of `TestSimulation` with `-run`. In every other run, the tests of the engine run fewer or other sequences and cannot count. `S4QL_RECOUNT=1` then fails the test (`noRecount`), and writes nothing.
 
 Then read the diff of the `.tsv` file. Rows can change only for the runs that the change reaches. If an exact count changes, say why in the commit.
 
@@ -230,14 +238,14 @@ The worked example is slice 13, `order by` and `limit`. None of it is built. `Ge
 7. **Add the profile to the simulation.** Add a cell with the profile to an environment of `simEnvironments`. A cell that is added adds to what the environment reaches, and takes nothing from it.
 8. **Add a planted bug that names the new profile.** `TestSimulation_plantedBugs` gives each bug the profile that weighs what the bug breaks. `TestDifferential_plantedBugs` does the same for a bug of the choice of an access. The bugs themselves are in the engine, and `Options.Plant` in `internal/engine/export_test.go` plants one by its name.
 9. **Recount each test.** Use the commands of [The recount](#the-recount).
-10. **Read the diff of each `.tsv` file.** In the files of the differential tests, only the rows of `mixed` and of the new profile can change. In `TestSimulation.tsv`, a row is an environment, which sums its cells. So the rows of each environment that has `mixed` or the new profile can change. If a row of another profile changes, find the cause before you commit.
+10. **Read the diff of each `.tsv` file.** In the files of the differential tests, only the rows of `mixed` and of the new profile can change. In `TestSimulation.tsv`, a row is a cell or an environment, and an environment sums its cells. So only the rows of the cells of `mixed` and of the new profile can change, and those of the environments that hold them. If another row changes, find the cause before you commit.
 11. **Update the digests.** Put the new digest of `mixed` and the digest of the new profile in `TestNewSequence`. The test requires a digest for each profile.
 
 If the rare kinds of the new profile need more sequences, give it twice as many in `sequencesOf` of `TestDifferential`.
 
 ## What runs where
 
-`slow` in `internal/engine/differential_test.go` reports whether a run has `-short`, the race detector, or the address sanitizer. A slow run of a generated test runs fewer sequences and checks no count: a tenth of the sequences in `TestDifferential`, one in twenty in `TestConn_differential`, and one seed of each cell in `TestSimulation`. The digests of `TestNewSequence` are checked in every run.
+`slow` in `internal/engine/differential_test.go` reports whether a run has `-short`, the race detector, or the address sanitizer. A slow run of a generated test of the engine runs fewer sequences and checks no count: a tenth of the sequences in `TestDifferential`, one in twenty in `TestConn_differential`, and a tenth of the seeds of each cell, one at least, in `TestSimulation`. The driver check has no slow run. The digests of `TestNewSequence` are checked in every run.
 
 | Where | What it runs | The generated tests |
 | --- | --- | --- |
@@ -245,8 +253,8 @@ If the rare kinds of the new profile need more sequences, give it twice as many 
 | CI, job `sql` | `make test-sql`, which runs `./internal/sql/...` and `./internal/engine/...` without `-short`, `-race`, and `-asan` | The full run. It checks the counts of the `.tsv` files. |
 | CI, jobs `test` and `test-engine` | `go test -race`. `test-engine` runs the engine, and `test` runs every package but the core and the engine. | A slow run, without counts. |
 | CI, jobs `asan` and `asan-engine` | `make asan-test`, which runs `go test -asan -short`. `asan-engine` runs the engine in shards. | A slow run, without counts. |
-| CI, job `crosscheck` | `go test -race ./...` in `internal/sqlite/crosscheck` | The driver check. `make test` runs this module too, without `-race`. |
-| Nightly, job `generated-engine` | `TestDifferential` with `-sequences 400`, and `TestSimulation` with `S4QL_ENGINE_SIM_SEEDS=100` | Ten times the sequences of each profile, and 100 seeds of each cell. No counts, because the counts are those of the full run of CI. |
+| CI, job `crosscheck` | `go test -race ./...` in `internal/sqlite/crosscheck` | The driver check, in full. It checks the counts of its `.tsv` file, also under the race detector. `make test` runs this module too, without `-race` and without `-short`. |
+| Nightly, job `generated-engine` | `TestDifferential` with `-sequences 400`, and `TestSimulation` with `S4QL_ENGINE_SIM_SEEDS=100` | Ten times the sequences of each profile, and 100 seeds of each cell. Each step checks the least numbers alone (`Reached.Least`), because the sequences and the seeds of the full run of CI are among its own. The second step runs also when the first fails. |
 | Nightly, job `simulation-engine` | `TestSimulation_plantedBugs` with `S4QL_ENGINE_SIM_SEEDS` | Each planted bug on many seeds of its profile. |
 
 A sequence that fails prints its seed, and a seed of the simulation that fails prints the command that replays it.
