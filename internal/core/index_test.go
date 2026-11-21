@@ -261,6 +261,21 @@ func TestTx_CreateIndex(t *testing.T) {
 		})
 	}
 
+	t.Run("should refuse an index whose statement in the cache is longer than the length limit, with its length and the limit, and go on", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{LengthLimit: 1000})
+		transact(t, d, start...)
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		// The statement in the cache is `CREATE INDEX "<name>" ON "t1" ("k")`, 29 bytes and the name.
+		err = tx.CreateIndex(t.Context(), indexOf(strings.Repeat("i", 1000), "t1", 0))
+		is.Error(t, core.ErrInvalid, err)
+		is.True(t, strings.Contains(err.Error(), "an index whose statement in the cache is 1029 bytes, where the limit is 1000"), err.Error())
+		upsert("t1", 4, 40)(t, tx)
+		is.NotError(t, tx.Commit(t.Context()))
+	})
+
 	t.Run("should take an index of 250 columns, and scan by it with every column of its key pinned", func(t *testing.T) {
 		w := newWorld(t)
 		d := w.serve(t, "a", core.Options{})

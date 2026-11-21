@@ -800,3 +800,7 @@ internal/core/index.go conn.lookUpIndex swap arguments: fmt.Errorf("%w: its inde
 	The strict load reads every index of the table from pragma_index_list, or refuses the table, so an index that sqlite_schema lists on the table, compared as SQLite compares names as index compares them, is among its indexes.
 internal/core/index.go conn.indexNames condition: !reserved(name) => true
 	Its one caller, Tx.spoolCreatedIndexes, keeps only the names of the indexes that the transaction created, and Tx.CreateIndex refuses a reserved name, so a reserved name that it gives is left out there either way.
+internal/core/index.go checkCreateIndex condition: err != nil => false
+	NewCommitWriter fails only for a header that it refuses, and its parent is the empty log and its commit time the clock of the host now, which a protobuf timestamp holds; the write of the header into io.Discard does not fail.
+internal/core/index.go checkCreateIndex remove statement: return err =>
+	NewCommitWriter fails only for a header that it refuses, and its parent is the empty log and its commit time the clock of the host now, which a protobuf timestamp holds; the write of the header into io.Discard does not fail.
