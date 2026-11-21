@@ -843,11 +843,11 @@ func (q *Sequence) orderColumns(r Rand, table stmt.Name) ([]stmt.OrderColumn, bo
 			}
 			return n
 		}
-		var ranged, delivering [][]orderColumn
+		var delivering [][]orderColumn
 		for i, key := range keys {
 			for j, other := range keys {
 				if n := lead(key); i != j && j < len(indexed) && n == lead(other) && n < len(key) && n < len(other) && slices.Contains(bounded, key[n].fold) && !slices.Contains(bounded, other[n].fold) {
-					ranged, delivering = append(ranged, key), append(delivering, other[n:])
+					delivering = append(delivering, other[n:])
 				}
 			}
 		}

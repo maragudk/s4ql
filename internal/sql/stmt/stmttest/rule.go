@@ -993,7 +993,7 @@ func ChosenAccess(columns []TableColumn, indexes []TableIndex, s *stmt.Select, a
 		return ok
 	}
 	// delivers reports whether a scan by the key, whose columns hold the positions in the directions
-	// of descending, gives the rows in the order of the ORDER BY, and whether it runs backward to.
+	// of descending, gives the rows in the order of the ORDER BY, and whether it gives them backward.
 	delivers := func(key []int, descending []bool) (delivered, backward bool) {
 		var restKey []int
 		var restDescending []bool
