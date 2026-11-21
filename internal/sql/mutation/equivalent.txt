@@ -878,3 +878,9 @@ internal/core/index.go conn.scanIndex remove statement: _ = c.rest(sql, s) =>
 	The prepare and the bind come after the lookup of the table, which has read the schema that the prepare reads, and after table.checkScan, which accepted every value that the bind binds, so no file system of the tests makes either fail: they fail only for want of memory.
 internal/core/index.go conn.scanIndex condition: err != nil => false #4
 	A step that fails gives its error again in the reset that c.rest makes of the statement, and the scan yields that error, as TestTx_readFails shows for a read of the index that fails.
+internal/core/index.go conn.scanIndex remove statement: s = nil =>
+	A step that fails is a local failure, which stops the instance, so the finalized statement that the deferred rest then keeps at rest is never prepared again.
+internal/core/index.go conn.scanIndex condition: err != nil => false #5
+	c.rest resets a statement whose last step succeeded, which gives no error, and finalizes it if its text is at rest already, which fails only for want of memory.
+internal/core/index.go conn.scanIndex remove statement: yield(nil, err) => #5
+	c.rest resets a statement whose last step succeeded, which gives no error, and finalizes it if its text is at rest already, which fails only for want of memory.
