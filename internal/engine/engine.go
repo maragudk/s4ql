@@ -159,7 +159,9 @@ type Result struct {
 // connection runs on that reader, one at a time: a statement that reads while the rows of an
 // earlier query of the connection have not ended fails at once, with an error that matches
 // [core.ErrReaderBusy], and does not wait for them. A statement that changes the database needs no
-// reader, and runs.
+// reader, and runs. A statement of its own of IF NOT EXISTS or IF EXISTS reads first, on the reader
+// of the connection, or, while rows hold it, on a reader of its own for the time of its look; see
+// [Conn.nothingToWrite].
 //
 // A transaction that spans statements is open on the connection from [Conn.Begin] or
 // [Conn.BeginReadOnly] to [Conn.Commit] or [Conn.Rollback], and every statement of the connection
@@ -277,6 +279,13 @@ func (c *Conn) begin(ctx context.Context) (writeTx, error) {
 // row by row, with `string or blob too big` for a row that is longer than the limit and with
 // SQLite's error of a key that exists, for an update that gives a row the key of another.
 //
+// A create table with IF NOT EXISTS whose name a table has, a create index with IF NOT EXISTS whose
+// name an index has, a drop table with IF EXISTS whose name no table has, and a drop index with IF
+// EXISTS whose name no index has, does nothing, as SQLite does: it writes nothing, is not annotated,
+// and succeeds also in a read-only transaction. A create index gives SQLite's errors of its table
+// and of a table of its name first, and a create table that of an index of its name; see
+// [buildSink].
+//
 // In a transaction that spans statements, the statement then fails with the error of ctx if ctx has
 // ended, with the refusal of a statement of its own if the instance does not serve now, and with
 // [ErrRowsOpen] while the rows of an earlier query of the connection are open. A statement that
@@ -377,8 +386,8 @@ func Check(src string, n int) error {
 	return countArguments(s.Parameters(), n)
 }
 
-// check the text src: its statement, or its error, as [stmt.Check] gives it, or [ErrNoStatement],
-// or the "not supported" of [existsRefusal] for a statement of slice 10.
+// check the text src, as [Conn.Exec], [Conn.Query], and [Check] check it: its statement, or its
+// error, as [stmt.Check] gives it, or [ErrNoStatement].
 func check(src string) (stmt.Statement, error) {
 	s, err := stmt.Check(src)
 	if err != nil {
@@ -386,9 +395,6 @@ func check(src string) (stmt.Statement, error) {
 	}
 	if s == nil {
 		return nil, ErrNoStatement
-	}
-	if err := existsRefusal(src, s); err != nil {
-		return nil, err
 	}
 	return s, nil
 }
@@ -422,8 +428,11 @@ func prepare(r *report, src string, args []*s4qlpb.Value) (Plan, string, error) 
 
 // write runs the plan p of a statement that changes the database, whose text is sql, with the
 // arguments args, in a write transaction of its own, and gives its result. The transaction is
-// annotated with the text and the arguments, and committed if the statement succeeds, and rolled
-// back otherwise, also when an operator panics.
+// annotated with the text and the arguments, and committed if the statement succeeds and writes,
+// and rolled back otherwise, also when an operator panics. A statement of IF NOT EXISTS or IF EXISTS
+// that does nothing on the newest state succeeds in a read transaction, as [Conn.nothingToWrite]
+// says, without the write transaction; one that does nothing in the write transaction succeeds there
+// without an annotation, and the transaction is rolled back.
 func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []*s4qlpb.Value) (_ Result, err error) {
 	if c.tx != nil {
 		return c.writeIn(ctx, r, p, sql, args)
@@ -432,6 +441,9 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 		return Result{}, ErrRowsOpen
 	}
 	e := c.e
+	if nothing, err := c.nothingToWrite(ctx, r, p, args); nothing {
+		return Result{}, err
+	}
 	_, insert := p.(*Insert)
 	if insert && e.bugs.checkOutside {
 		// The planted bug: the checks of the insert, in a read transaction of their own.
@@ -458,6 +470,13 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 		return Result{}, err
 	}
 	r.reads(tx, s)
+	if r.doesNothing(s) {
+		// The statement does nothing, which [Conn.nothingToWrite] could not tell, or which a commit
+		// since its read transaction made so. The transaction is rolled back above, and nothing of it
+		// is in the log. It wrote nothing, so its event has no parent.
+		r.write = false
+		return Result{}, nil
+	}
 	// From here on, a failed insert, update, or delete sets the count of changes to 0, but for "not
 	// supported".
 	failed := Result{SetsChanges: setsChanges(p)}
@@ -491,6 +510,67 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	}
 	r.rows = n
 	return Result{Changes: n, SetsChanges: setsChanges(p)}, nil
+}
+
+// nothingToWrite reports whether the plan p of a statement of its own, with the arguments args, is
+// one of IF NOT EXISTS or IF EXISTS that does nothing on the newest state, which it looks up in a
+// read transaction of the connection, or, while the rows of an earlier query of the connection hold
+// its reader, of a reader of its own, and gives the error of the end of that transaction then.
+// SQLite only reads the schema for such a statement, so it waits for no writer; here too it neither
+// waits for the place of the writer nor takes it. It reports false, and the statement runs in a
+// write transaction, which looks again and decides, for another plan, for one that does something or
+// fails there, and where the read transaction cannot begin.
+func (c *Conn) nothingToWrite(ctx context.Context, r *report, p Plan, args []*s4qlpb.Value) (bool, error) {
+	switch p := p.(type) {
+	case *CreateTable:
+		if !p.IfNotExists {
+			return false, nil
+		}
+	case *CreateIndex:
+		if !p.IfNotExists {
+			return false, nil
+		}
+	case *DropTable:
+		if !p.IfExists {
+			return false, nil
+		}
+	case *DropIndex:
+		if !p.IfExists {
+			return false, nil
+		}
+	default:
+		return false, nil
+	}
+	rt, err := c.read(ctx)
+	if errors.Is(err, core.ErrReaderBusy) {
+		// The rows of an earlier query of the connection hold its reader, so the statement looks on a
+		// reader of its own, which it closes when it has looked.
+		rd, rdErr := c.e.db.reader(ctx)
+		if rdErr != nil {
+			return false, nil
+		}
+		defer func() { _ = rd.close(ctx) }()
+		rt, err = rd.read(ctx)
+	}
+	if err != nil {
+		return false, nil
+	}
+	ended := false
+	defer func() {
+		// Also when an operator panics.
+		if !ended {
+			_ = rt.end(ctx)
+		}
+	}()
+	// The planted bug replaceExisting must reach the write transaction, where it replaces the table.
+	s, err := buildSink(ctx, readOnly{rt}, p, args, bugs{replaceExisting: c.e.bugs.replaceExisting}, c.e.db.lengthLimit(), c.e.reading(false))
+	if _, ok := s.(nothing); err != nil || !ok {
+		return false, nil
+	}
+	r.at(rt.position(), false)
+	r.doesNothing(s)
+	ended = true
+	return true, rt.end(ctx)
 }
 
 // checked is the result of a statement whose sink's check failed with err, where failed is the result

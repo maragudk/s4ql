@@ -951,9 +951,13 @@ func (a Access) String() string {
 // already exists`, then `no such column` for the first column in the order of the text that the table
 // does not have, with SQLite's question about quotes for a name in double quotes, in the order in
 // which SQLite checks them; a drop index gives `no such index: <index>`, also for the name of a
-// table. The names are as the statement writes them, without their quotes. The rule does not know
-// the length limit, nor a read-only transaction.
+// table. With IF NOT EXISTS and an index of the name, and with IF EXISTS and none, it is "", as
+// SQLite does nothing there, which [ExistsRule] says. The names are as the statement writes them,
+// without their quotes. The rule does not know the length limit, nor a read-only transaction.
 func IndexRule(tables map[string][]TableColumn, indexes map[string]bool, s stmt.Statement) string {
+	if ExistsRule(tables, indexes, s) != "" {
+		return ""
+	}
 	switch s := s.(type) {
 	case *stmt.CreateIndex:
 		columns, ok := tables[s.Table.Fold()]
@@ -976,6 +980,62 @@ func IndexRule(tables map[string][]TableColumn, indexes map[string]bool, s stmt.
 	case *stmt.DropIndex:
 		if !indexes[s.Index.Fold()] {
 			return "no such index: " + s.Index.Value
+		}
+	}
+	return ""
+}
+
+// ExistsRule of the statement s, on a database whose tables, by the folds of their names as
+// [stmt.Name.Fold] gives them, have the columns, and whose indexes are the folds of the names in
+// indexes: why SQLite does nothing for a statement of IF NOT EXISTS or IF EXISTS of slice 10, or ""
+// where it does what the plain statement does, with its errors, and for every statement without the
+// clause. A table and an index share their names.
+//
+//   - A create table with IF NOT EXISTS does nothing where a table has its name: "a table of the
+//     name exists", whatever its columns are. Where an index has the name, SQLite gives the plain
+//     statement's error.
+//   - A drop table with IF EXISTS does nothing where no table has its name: "no table of the name
+//     exists", or "no table of the name exists, and an index has it".
+//   - A create index with IF NOT EXISTS does nothing where its table exists, no table has the name of
+//     the index, and an index has it, on any table: "an index of the name exists", or "an index of
+//     the name exists, and the table lacks a column of the statement", as SQLite looks for the
+//     columns only after the index. Without its table, and with a table of the name of the index,
+//     SQLite gives the errors of the plain statement, which [IndexRule] gives, first.
+//   - A drop index with IF EXISTS does nothing where no index has its name: "no index of the name
+//     exists", or "no index of the name exists, and a table has it".
+//
+// SQLite stops a statement that does nothing before the length limit and before it writes, so the
+// rule needs neither to know the limit nor whether the transaction is read-only.
+func ExistsRule(tables map[string][]TableColumn, indexes map[string]bool, s stmt.Statement) string {
+	switch s := s.(type) {
+	case *stmt.CreateTable:
+		if s.IfNotExists && tables[s.Table.Fold()] != nil {
+			return "a table of the name exists"
+		}
+	case *stmt.DropTable:
+		switch {
+		case !s.IfExists || tables[s.Table.Fold()] != nil:
+		case indexes[s.Table.Fold()]:
+			return "no table of the name exists, and an index has it"
+		default:
+			return "no table of the name exists"
+		}
+	case *stmt.CreateIndex:
+		columns, ok := tables[s.Table.Fold()]
+		if !s.IfNotExists || !ok || tables[s.Index.Fold()] != nil || !indexes[s.Index.Fold()] {
+			return ""
+		}
+		if slices.ContainsFunc(s.Columns, func(c stmt.IndexColumn) bool { return ColumnOf(columns, c.Name) < 0 }) {
+			return "an index of the name exists, and the table lacks a column of the statement"
+		}
+		return "an index of the name exists"
+	case *stmt.DropIndex:
+		switch {
+		case !s.IfExists || indexes[s.Index.Fold()]:
+		case tables[s.Index.Fold()] != nil:
+			return "no index of the name exists, and a table has it"
+		default:
+			return "no index of the name exists"
 		}
 	}
 	return ""

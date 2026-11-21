@@ -68,6 +68,9 @@ type bugs struct {
 	// look for the pin of the n-th column of the key among the conditions on the n-th column of the
 	// table, and not on the column itself, so that a scan pins a column to the value of another.
 	pinByPlace bool
+	// replaceExisting makes a create table with IF NOT EXISTS of a table that exists drop that table
+	// and create the table of the statement, where SQLite does nothing.
+	replaceExisting bool
 }
 
 // reader of a query on r: r, or with the planted bug openBound r as [openBounds] reads it.

@@ -355,4 +355,66 @@ func TestEngine_defaults(t *testing.T) {
 		is.NotError(t, d.i.c.Commit(t.Context()))
 		is.Equal(t, "u (k INT, v REAL NULL DEFAULT real 0.5): \n", d.i.state())
 	})
+
+	t.Run("should do nothing for a create table if not exists with defaults when the table exists, also with other defaults, and keep it out of the log", func(t *testing.T) {
+		d := newDuo(t, 0, "create table t (k int primary key, v int default 1) strict, without rowid")
+		d.run("create table if not exists t (k int primary key, v int default 2, w text not null default 'x') strict, without rowid").ok()
+		d.run("create table if not exists T (k int primary key default 5) strict, without rowid").ok()
+		d.run("insert into t (k) values (1)").ok()
+		d.run("create table if not exists u (k int primary key, v int not null default 3) strict, without rowid").ok()
+		d.run("insert into u (k) values (1)").ok()
+		want := d.same()
+		is.Equal(t, "t (k INT, v INT NULL DEFAULT 1): 1,1\nu (k INT, v INT DEFAULT 3): 1,3\n", want)
+		is.Equal(t, fmt.Sprint([][]string{
+			{"create table t (k int primary key, v int default 1) strict, without rowid"},
+			{"insert into t (k) values (1)"},
+			{"create table if not exists u (k int primary key, v int not null default 3) strict, without rowid"},
+			{"insert into u (k) values (1)"},
+		}), fmt.Sprint(logAnnotations(t, d.i.store)))
+		d.i.restart(true, engine.Options{})
+		is.Equal(t, want, d.i.state(), "after a replay of the log")
+	})
+
+	t.Run("should run goqite's schema as far as slices 1 to 11 take it, and its inserts that leave the columns with defaults out", func(t *testing.T) {
+		// goqite's create table, as docs/research/glue-on-s4ql.md describes it, with its columns in the
+		// order of goqite's table in the tests of indexes, cut where a later slice is needed: the
+		// defaults of id, created, updated, and timeout are expressions, `('m_' ||
+		// lower(hex(randomblob(16))))` and `(strftime('%Y-%m-%dT%H:%M:%fZ'))`, which slice 11 rejects,
+		// so those columns have none and the inserts give them; goqite's table is STRICT only, and
+		// s4ql needs WITHOUT ROWID too; and its trigger, which sets updated after an update, is left
+		// out. The two literal defaults, `default 0` of received and of priority, are as goqite has
+		// them, and so is its index.
+		const goqite = "create table if not exists goqite (\n" +
+			"  id text primary key,\n" +
+			"  created text not null,\n" +
+			"  updated text not null,\n" +
+			"  queue text not null,\n" +
+			"  body blob not null,\n" +
+			"  timeout text not null,\n" +
+			"  received integer not null default 0,\n" +
+			"  priority integer not null default 0\n" +
+			") strict, without rowid"
+		d := newDuo(t, 0, goqite, "create index goqite_queue_priority_created_idx on goqite (queue, priority desc, created)")
+		// goqite runs its schema again on every start.
+		d.run(goqite).ok()
+		const now = "2026-11-21T12:00:00.000Z"
+		// goqite's send, without its `returning id`, which a later slice brings, and with the id and
+		// the times, whose defaults are cut.
+		send := "insert into goqite (id, created, updated, queue, body, timeout, priority) values (?, ?, ?, ?, ?, ?, ?)"
+		d.run(send, "m_1", now, now, "jobs", []byte("a"), now, int64(0)).ok()
+		d.run(send, "m_2", now, now, "jobs", []byte("b"), now, int64(5)).ok()
+		d.run("insert into goqite (id, created, updated, queue, body, timeout) values (?, ?, ?, ?, ?, ?)", "m_3", now, now, "other", []byte("c"), now).ok()
+		d.run("select id, received, priority from goqite where queue = ? and timeout <= ? and received < ?", "jobs", now, int64(3)).ok()
+		d.run("update goqite set timeout = ?, received = ? where queue = ? and id = ?", "2026-11-21T12:00:30.000Z", int64(1), "jobs", "m_1").ok()
+		d.run("delete from goqite where queue = ? and id = ?", "jobs", "m_2").ok()
+		d.run("insert into goqite (id, created, updated, queue, body, timeout) values ('m_4', ?, ?, 'jobs', x'', ?)", now, now, now).ok()
+		want := d.same()
+		is.True(t, strings.Contains(want, "received INTEGER DEFAULT 0, priority INTEGER DEFAULT 0"), want)
+		d.i.restart(true, engine.Options{})
+		is.Equal(t, want, d.i.state(), "after a replay of the log")
+		d.run(goqite).ok()
+		d.run(send, "m_5", now, now, "jobs", []byte("e"), now, int64(1)).ok()
+		d.run("select id, received, priority from goqite").ok()
+		d.same()
+	})
 }

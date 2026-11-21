@@ -16,7 +16,7 @@ Made with ✨sparkles✨ by [maragu](https://www.maragu.dev/): independent softw
 
 ## Status
 
-As of 2026-11-20:
+As of 2026-11-21:
 
 - **Works now,** through `database/sql`, with the package `maragu.dev/s4ql` as the driver:
   - `create table` and `drop table` of a strict table with one or more columns, exactly one of them the primary key.
@@ -26,11 +26,12 @@ As of 2026-11-20:
   - `select` of named columns or `*`, with a `where` of comparisons and of `is null` and `is not null`, joined by `and`. Rows without `order by` come in a varying order.
   - `update` and `delete`, with or without that `where`. An update may change the primary key, and `RowsAffected` is what SQLite reports.
   - `create index` and `drop index`, on one or more columns, each ascending or descending, not unique. The engine picks the index for a `where` by fixed rules.
+  - `if not exists` on `create table` and `create index`, and `if exists` on `drop table` and `drop index`.
   - Arguments for a plain `?`, directly and through prepared statements.
   - Transactions, also read-only ones.
   - Storage: a database is a log of commits in S3, with a local SQLite cache. One instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work.
 - **How it is checked:** against SQLite with generated statements, in the engine and through `database/sql`, in a deterministic simulation with planted bugs, and with mutation testing and fuzzing. The storage is also tested against a real S3-compatible bucket in CI.
 - **Not built:** `or` and other expressions in a `where`, `order by` and `limit`, more than one row per `insert`, defaults, and a statement while rows of the same transaction are open.
-- **Next:** mutation testing of indexes, then slice 10 (`if not exists` and `if exists`). After it comes the rest of what the first application needs (the roadmap's [milestones](docs/roadmap.md#milestones)).
+- **Next:** mutation testing of indexes and of slice 10, then slice 11 (`default`). After it comes the rest of what the first application needs (the roadmap's [milestones](docs/roadmap.md#milestones)).
 
 The slices, and how each is checked, are in [docs/roadmap.md](docs/roadmap.md). What is open in detail is in [docs/todo.md](docs/todo.md).

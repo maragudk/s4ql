@@ -1592,8 +1592,6 @@ func TestIndexes(t *testing.T) {
 			"select * from x indexed by xs":            "INDEXED BY",
 			"select * from x not indexed":              "NOT INDEXED",
 			"explain query plan select * from x":       "EXPLAIN QUERY PLAN",
-			"create index if not exists i on x (s)":    "IF NOT EXISTS",
-			"drop index if exists xs":                  "IF EXISTS",
 			"reindex xs":                               "REINDEX",
 			"analyze":                                  "ANALYZE",
 			"create index i on x (s collate nocase)":   "COLLATE",
@@ -1643,6 +1641,96 @@ func TestIndexes(t *testing.T) {
 		_, err = db.ExecContext(t.Context(), "drop index kept")
 		sqliteError(t, 1, 1, "no such index: kept", err)
 		is.Equal(t, "k INT: 1; 3", rowsText(t, db, "select k from x where s >= 'a'"))
+	})
+}
+
+func TestExists(t *testing.T) {
+	const create = "create table x (k int primary key, s text) strict, without rowid"
+
+	t.Run("should run the statements of IF NOT EXISTS and IF EXISTS, directly and prepared, leave the count of changes as the plain statements do, and write nothing for one that does nothing", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, create, "create index xs on x (s)")
+		res, err := db.ExecContext(t.Context(), "insert into x values (1, 'a')")
+		is.Equal(t, int64(1), affected(t, res, err))
+		before := len(commits(t, w))
+
+		// SQLite's count of changes stays as the insert left it, whether a statement does something or
+		// nothing, as it does for the plain statements.
+		for _, src := range []string{
+			"create table if not exists x (k int primary key) strict, without rowid", "create table if not exists X (z text primary key, z int) strict, without rowid",
+			"drop table if exists nosuch", "drop table if exists xs", "create index if not exists xs on x (k)",
+			"create index if not exists XS on x (nosuch)", "drop index if exists nosuch", "drop index if exists x",
+		} {
+			res, err := db.ExecContext(t.Context(), src)
+			is.Equal(t, int64(1), affected(t, res, err), src)
+		}
+		is.Equal(t, before, len(commits(t, w)), "the commit objects after the statements that do nothing")
+
+		p, err := db.PrepareContext(t.Context(), "create table if not exists y (k int primary key) strict, without rowid")
+		is.NotError(t, err)
+		for range 2 {
+			res, err := p.ExecContext(t.Context())
+			is.Equal(t, int64(1), affected(t, res, err))
+		}
+		is.NotError(t, p.Close())
+		is.Equal(t, before+1, len(commits(t, w)), "one commit object of the create table that created")
+		exec(t, db, "create index if not exists yk on y (k)", "drop index if exists xs", "drop table if exists x")
+		is.Equal(t, before+4, len(commits(t, w)))
+
+		_, err = db.ExecContext(t.Context(), "create table if not exists yk (k int primary key) strict, without rowid")
+		sqliteError(t, 1, 1, "there is already an index named yk", err)
+		_, err = db.ExecContext(t.Context(), "create index if not exists i on x (s)")
+		sqliteError(t, 1, 1, "no such table: main.x", err)
+		_, err = db.ExecContext(t.Context(), "create index if not exists y on y (k)")
+		sqliteError(t, 1, 1, "there is already a table named y", err)
+		_, err = db.ExecContext(t.Context(), "create index if not exists i on y (nosuch)")
+		sqliteError(t, 1, 1, "no such column: nosuch", err)
+
+		// Another instance replays the log.
+		is.NotError(t, db.Close())
+		b := w.serve(t, "b")
+		is.Equal(t, "k INT: ", rowsText(t, b, "select k from y where k = 1"))
+		_, err = b.ExecContext(t.Context(), "drop index yk")
+		is.NotError(t, err)
+		_, err = b.ExecContext(t.Context(), "select * from x")
+		sqliteError(t, 1, 1, "no such table: x", err)
+	})
+
+	t.Run("should run them in a transaction, undo them with a roll back, and run those that do nothing in a read-only one", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, create, "insert into x values (1, 'a')")
+		before := len(commits(t, w))
+
+		tx, err := db.BeginTx(t.Context(), nil)
+		is.NotError(t, err)
+		for _, src := range []string{"drop table if exists x", "drop table if exists x", "create table if not exists x (k text primary key) strict, without rowid", "create table if not exists x (k int primary key) strict, without rowid"} {
+			_, err = tx.ExecContext(t.Context(), src)
+			is.NotError(t, err, src)
+		}
+		is.NotError(t, tx.Rollback())
+		is.Equal(t, "k INT, s TEXT: 1 a", rowsText(t, db, "select * from x"))
+
+		tx, err = db.BeginTx(t.Context(), nil)
+		is.NotError(t, err)
+		for _, src := range []string{"create table if not exists x (k text primary key) strict, without rowid", "drop index if exists nosuch"} {
+			_, err = tx.ExecContext(t.Context(), src)
+			is.NotError(t, err, src)
+		}
+		is.NotError(t, tx.Commit())
+		is.Equal(t, before, len(commits(t, w)), "a transaction of statements that do nothing writes no commit object")
+
+		ro, err := db.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+		is.NotError(t, err)
+		_, err = ro.ExecContext(t.Context(), "create table if not exists x (k int primary key) strict, without rowid")
+		is.NotError(t, err)
+		_, err = ro.ExecContext(t.Context(), "drop table if exists nosuch")
+		is.NotError(t, err)
+		_, err = ro.ExecContext(t.Context(), "drop table if exists x")
+		sqliteError(t, 8, 8, "attempt to write a readonly database", err)
+		is.NotError(t, ro.Commit())
+		is.Equal(t, "k INT, s TEXT: 1 a", rowsText(t, db, "select * from x"))
 	})
 }
 

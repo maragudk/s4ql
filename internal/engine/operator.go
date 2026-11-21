@@ -427,6 +427,31 @@ func (d *dropIndex) run(ctx context.Context) (int64, error) {
 	return 0, d.w.dropIndex(ctx, d.name)
 }
 
+// nothing is the sink of a statement of IF NOT EXISTS or IF EXISTS that does nothing, because its
+// object is there, or not there: it writes nothing, and the statement is neither annotated nor
+// committed, so that it leaves nothing in the log.
+type nothing struct{}
+
+func (nothing) check(context.Context) error { return nil }
+
+func (nothing) run(context.Context) (int64, error) { return 0, nil }
+
+// replaceTable is the planted bug replaceExisting: it drops the table of a create table with IF NOT
+// EXISTS that exists, and creates the table of the statement in its place.
+type replaceTable struct {
+	drop   dropTable
+	create createTable
+}
+
+func (r *replaceTable) check(context.Context) error { return nil }
+
+func (r *replaceTable) run(ctx context.Context) (int64, error) {
+	if _, err := r.drop.run(ctx); err != nil {
+		return 0, err
+	}
+	return r.create.run(ctx)
+}
+
 // update sets columns of each row of its source: the rows that the statement finds, by a scan of a
 // table whose primary key is one column, below a filter if the statement has a WHERE. It changes them
 // as [changeRows] says, in the order of the key, and fails, as SQLite fails the row that it changes,
@@ -881,9 +906,12 @@ func null() *s4qlpb.Value {
 // in SQLite's order, and fails with SQLite's error: for CREATE TABLE, a table of the name, and then
 // a column named twice or more columns than SQLite allows, as [stmt.CreateTable.ColumnsError] says,
 // and then a table that SQLite cannot write into its schema under limit, as [schemaTooBig] says;
-// for DROP TABLE, no table of the name; for INSERT, no table of the name, then a column of its list
-// that the table does not have, in the order of the list, and then another number of values than
-// the columns of its list, or than the columns of the table if it has no list. For INSERT it then
+// for DROP TABLE, no table of the name. With IF NOT EXISTS and a table of the name, or with IF
+// EXISTS and none, the sink is [nothing], as SQLite does nothing there, so a CREATE TABLE then
+// gives none of its later errors; but an index of the name still gives its error. For INSERT, no
+// table of the name, then a column of its list that the table does not have, in the order of the
+// list, and then another number of values than the columns of its list, or than the columns of the
+// table if it has no list. For INSERT it then
 // makes the check that SQLite makes when it binds the arguments: a text or a blob that is longer
 // than limit bytes gets SQLite's `string or blob too big`. It checks a literal so too, which SQLite
 // meets in its text only with a limit below the length of the text: see the README. For UPDATE and
@@ -904,7 +932,14 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 		if err != nil {
 			return nil, err
 		}
-		if existing != nil {
+		replace := existing != nil && p.IfNotExists && b.replaceExisting
+		switch {
+		case replace:
+			// The planted bug: the table that exists is replaced below.
+		case existing != nil && p.IfNotExists:
+			// SQLite stops at the table of the name, before it reads the columns of the statement.
+			return nothing{}, nil
+		case existing != nil:
 			return nil, tableExists(p.Table.Raw, p.Table.Offset)
 		}
 		index, err := w.index(ctx, p.Table.Value)
@@ -944,13 +979,21 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 			}
 			ct.Columns = append(ct.Columns, column.Build())
 		}
-		return &createTable{w: w, ct: ct.Build()}, nil
+		create := createTable{w: w, ct: ct.Build()}
+		if replace {
+			return &replaceTable{drop: dropTable{w: w, name: existing.GetTable()}, create: create}, nil
+		}
+		return &create, nil
 	case *DropTable:
 		t, err := w.table(ctx, p.Table.Value)
 		if err != nil {
 			return nil, err
 		}
-		if t == nil {
+		switch {
+		case t == nil && p.IfExists:
+			// Also where an index has the name.
+			return nothing{}, nil
+		case t == nil:
 			return nil, noSuchTable(p.Table.Value)
 		}
 		return &dropTable{w: w, name: t.GetTable()}, nil
@@ -1133,7 +1176,9 @@ func (b build) change(ctx context.Context, w writer, source Node, set []Assignme
 // text, that the table does not have; and for an index that SQLite cannot write into its schema
 // under limit, as [indexTooBig] says. Then it fails with "not supported" for an index of more than
 // [core.MaxIndexColumns] columns, which is what the storage holds where SQLite takes 2,000, at the
-// first column beyond them.
+// first column beyond them. With IF NOT EXISTS and an index of the name, the sink is [nothing], after
+// the errors of the table, as SQLite does nothing there, so none of the later errors and refusals is
+// given.
 func buildCreateIndex(ctx context.Context, w writer, p *CreateIndex, limit int) (sink, error) {
 	t, err := w.table(ctx, p.Table.Value)
 	if err != nil {
@@ -1153,7 +1198,12 @@ func buildCreateIndex(ctx context.Context, w writer, p *CreateIndex, limit int) 
 	if err != nil {
 		return nil, err
 	}
-	if existing != nil {
+	switch {
+	case existing != nil && p.IfNotExists:
+		// SQLite stops at the index of the name, on any table, before it reads the columns of the
+		// statement.
+		return nothing{}, nil
+	case existing != nil:
 		return nil, indexExists(p.Index.Value)
 	}
 	var names []string
@@ -1189,13 +1239,18 @@ func buildCreateIndex(ctx context.Context, w writer, p *CreateIndex, limit int) 
 }
 
 // buildDropIndex is the sink of the plan p of a DROP INDEX, in the transaction of w. It fails with
-// SQLite's error for no index of the name, also when a table has the name.
+// SQLite's error for no index of the name, also when a table has the name, or, with IF EXISTS, is
+// [nothing] there.
 func buildDropIndex(ctx context.Context, w writer, p *DropIndex) (sink, error) {
 	ix, err := w.index(ctx, p.Index.Value)
 	if err != nil {
 		return nil, err
 	}
-	if ix == nil {
+	switch {
+	case ix == nil && p.IfExists:
+		// Also where a table has the name.
+		return nothing{}, nil
+	case ix == nil:
 		return nil, noSuchIndex(p.Index.Value)
 	}
 	return &dropIndex{w: w, name: ix.GetIndex()}, nil

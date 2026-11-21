@@ -148,6 +148,11 @@ type attempt struct {
 	// count, which changes nothing, so that a transaction of it alone leaves no commit object. The
 	// engine's word is not taken for it: [run.verify] runs each such statement of its own in SQLite.
 	unchanged bool
+	// nothing is set for a statement of IF NOT EXISTS or IF EXISTS that did nothing, by its event (see
+	// [engine.AttrNothing]): it writes nothing, is not annotated, and is in no commit object. The
+	// engine's word is not taken for it either: [run.verify] and [run.verifyTxs] run it in SQLite,
+	// where it must change nothing.
+	nothing bool
 	// changes is the engine's count of changes of an update or a delete that succeeded, which
 	// [run.verify] and [run.verifyTxs] compare with SQLite's.
 	changes int64
@@ -203,11 +208,12 @@ type txRecord struct {
 	end string
 }
 
-// writes of the transaction that succeeded, which its commit object must hold, in order.
+// writes of the transaction that succeeded, which its commit object must hold, in order: not those
+// that did nothing.
 func (t *txRecord) writes() []*attempt {
 	var ws []*attempt
 	for _, a := range t.stmts {
-		if a.write && a.state == succeeded {
+		if a.write && a.state == succeeded && !a.nothing {
 			ws = append(ws, a)
 		}
 	}
@@ -427,6 +433,7 @@ func (h handler) Handle(ctx context.Context, rec slog.Record) error {
 	var b strings.Builder
 	b.WriteString(rec.Message)
 	var position, access, index string
+	var nothing bool
 	rec.Attrs(func(a slog.Attr) bool {
 		if a.Key != engine.AttrSQL {
 			fmt.Fprint(&b, " ", a.Key, "=", a.Value)
@@ -438,6 +445,8 @@ func (h handler) Handle(ctx context.Context, rec slog.Record) error {
 			access = a.Value.String()
 		case engine.AttrIndex:
 			index = a.Value.String()
+		case engine.AttrNothing:
+			nothing = a.Value.Bool()
 		}
 		return true
 	})
@@ -445,7 +454,7 @@ func (h handler) Handle(ctx context.Context, rec slog.Record) error {
 	if id, ok := ctx.Value(idKey{}).(uint64); ok && rec.Message == engine.EventStatement {
 		h.r.mu.Lock()
 		a := h.r.attempts[id]
-		a.position, a.access, a.index = position, access, index
+		a.position, a.access, a.index, a.nothing = position, access, index, nothing
 		h.r.mu.Unlock()
 	}
 	return nil
@@ -530,7 +539,7 @@ var idPattern = regexp.MustCompile(`/\* id (\d+) \*/`)
 // withID puts the comment of the ID into the text of a statement that the pass supports, after its
 // first token, where the annotation keeps it.
 func withID(src string, id uint64) string {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err != nil || s == nil {
 		return src
 	}
@@ -556,7 +565,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, c
 	}
 	a.src = withID(call.Src, a.id)
 	call.Src = a.src
-	if s, _ := checkText(a.src); s != nil {
+	if s, _ := stmt.Check(a.src); s != nil {
 		_, isSelect := s.(*stmt.Select)
 		a.write = !isSelect
 	}
@@ -613,11 +622,12 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, c
 	switch {
 	case err == nil:
 		a.state, a.answer = succeeded, got
-		if s, _ := checkText(a.src); res.SetsChanges && isChange(s) {
+		if s, _ := stmt.Check(a.src); res.SetsChanges && isChange(s) {
 			a.changes, a.unchanged = res.Changes, res.Changes == 0
 		}
-		// A write of a transaction is acknowledged by its commit.
-		if a.write && tx == nil {
+		// A write of a transaction is acknowledged by its commit, and a statement that did nothing wrote
+		// nothing.
+		if a.write && !a.nothing && tx == nil {
 			r.acked = append(r.acked, a.id)
 		}
 		// A call that the rule for arguments refuses must not succeed. One with a value of another
@@ -641,7 +651,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, c
 		// the generator, and every other that the pass supports, with the arguments that it takes must
 		// run.
 		kind, failure := checkArguments(call, a.answer)
-		s, _ := checkText(a.src)
+		s, _ := stmt.Check(a.src)
 		supported := call.Supported || s != nil
 		if kind == "" && supported && a.answer.err == "not supported" && typeRefusal(a.src, a.answer.message) {
 			// The refusal of a value of another type than its column, after the insert or the select
@@ -683,6 +693,22 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, c
 	}
 	r.world.Trace(ctx, "statement %v ends as %v: %v", a.id, a.state, err)
 	return a
+}
+
+// hasClause reports whether s is a create table or a create index with IF NOT EXISTS, or a drop
+// table or a drop index with IF EXISTS, of slice 10.
+func hasClause(s stmt.Statement) bool {
+	switch s := s.(type) {
+	case *stmt.CreateTable:
+		return s.IfNotExists
+	case *stmt.DropTable:
+		return s.IfExists
+	case *stmt.CreateIndex:
+		return s.IfNotExists
+	case *stmt.DropIndex:
+		return s.IfExists
+	}
+	return false
 }
 
 // isChange reports whether s is an update or a delete.
@@ -1559,6 +1585,9 @@ func (r *run) verify(ctx context.Context) {
 			if inLog[id] > 0 {
 				r.violate(ctx, "the statement %v is in commit %v and commit %v", id, inLog[id], k+1)
 			}
+			if a.nothing {
+				r.violate(ctx, "the statement %v, %q, did nothing, and is in commit %v", id, a.src, k+1)
+			}
 			if valuesText(c.params[i]) != valuesText(a.args) {
 				r.violate(ctx, "commit %v holds the parameters %v of the statement %v, %q, and its caller gave the arguments %v", k+1, valuesText(c.params[i]), id, a.src, valuesText(a.args))
 			}
@@ -1587,9 +1616,10 @@ func (r *run) verify(ctx context.Context) {
 			continue
 		}
 		// The statements that are compared with SQLite on the state that they saw: those that failed with
-		// SQLite's error, the queries that succeeded and were read to their end, and the updates and
-		// deletes that succeeded and changed no row by the engine's count, which are in no commit object.
-		if a.state != sqliteFailed && (a.state != succeeded || !a.query || a.write || a.partial) && (a.state != succeeded || !a.unchanged) {
+		// SQLite's error, the queries that succeeded and were read to their end, the updates and deletes
+		// that succeeded and changed no row by the engine's count, and the statements that did nothing,
+		// which are in no commit object.
+		if a.state != sqliteFailed && (a.state != succeeded || !a.query || a.write || a.partial) && (a.state != succeeded || !a.unchanged && !a.nothing) {
 			continue
 		}
 		if a.position == "" {
@@ -1624,8 +1654,18 @@ func (r *run) verify(ctx context.Context) {
 			if a.write {
 				is.Equal(r.t, "", o.run(r.t, "savepoint s4ql_seen").err)
 			}
+			var before string
+			if a.nothing {
+				before = o.state(r.t)
+			}
 			want := o.run(r.t, a.src, oracleValues(a.args)...)
 			changes, _ := o.changes(r.t)
+			if a.nothing {
+				if after := o.state(r.t); want.err == "" && after != before {
+					r.violate(ctx, "the statement %v, %q, at commit %v does nothing, is in no commit, and changes SQLite's database from\n%v\nto\n%v", a.id, a.src, k, before, after)
+				}
+				r.event("statements that do nothing, compared with SQLite")
+			}
 			if a.write {
 				is.Equal(r.t, "", o.run(r.t, "rollback to s4ql_seen").err)
 				is.Equal(r.t, "", o.run(r.t, "release s4ql_seen").err)
@@ -1664,7 +1704,7 @@ func (r *run) verify(ctx context.Context) {
 				if m := idPattern.FindStringSubmatch(note); m != nil {
 					id, _ := strconv.ParseUint(m[1], 10, 64)
 					if a := r.attempts[id]; a != nil && a.tx == nil && a.state == succeeded && a.write {
-						if s, _ := checkText(a.src); isChange(s) {
+						if s, _ := stmt.Check(a.src); isChange(s) {
 							if a.changes != changes {
 								r.violate(ctx, "commit %v, %q, changes %v rows in SQLite, and its caller was told %v", k+1, note, changes, a.changes)
 							}
@@ -1789,8 +1829,18 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 				// The check of the log does not see an insert of a transaction that did not commit.
 				r.violate(ctx, "the statement %v, %q, of the transaction %v (%v) succeeded, and stores a value of another type than its column: %v", a.id, a.src, tx.id, kind, want)
 			}
+			var stateBefore string
+			if a.nothing {
+				stateBefore = o.state(r.t)
+			}
 			want := o.run(r.t, a.src, oracleValues(a.args)...)
 			changes, _ := o.changes(r.t)
+			if a.nothing {
+				if after := o.state(r.t); want.err == "" && after != stateBefore {
+					r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v, does nothing, and changes SQLite's database from\n%v\nto\n%v", a.id, a.src, tx.id, kind, at, stateBefore, after)
+				}
+				r.event("statements that do nothing in a transaction, compared with SQLite")
+			}
 			if a.partial {
 				continue
 			}
@@ -1800,7 +1850,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 			if got := a.answer.String(); got != want.String() {
 				r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v, gives %v, and in SQLite %v", a.id, a.src, tx.id, kind, at, got, want)
 			}
-			if s, _ := checkText(a.src); a.state == succeeded && isChange(s) {
+			if s, _ := stmt.Check(a.src); a.state == succeeded && isChange(s) {
 				if want.err == "" && a.changes != changes {
 					r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v, changes %v rows in SQLite, and its caller was told %v", a.id, a.src, tx.id, kind, at, changes, a.changes)
 				}
@@ -1854,7 +1904,7 @@ func (r *run) way(a *attempt) string {
 // event of the run if it is a select with WHERE: by where it ran, of their own or in a transaction,
 // and, for a query that succeeded, by whether it gave rows.
 func (r *run) countWhere(a *attempt, where string) {
-	s, _ := checkText(a.src)
+	s, _ := stmt.Check(a.src)
 	if sel, ok := s.(*stmt.Select); !ok || sel.Where == nil {
 		return
 	}
@@ -1875,7 +1925,7 @@ func (r *run) countWhere(a *attempt, where string) {
 
 // tableOf the statement of src, which the pass supports, folded as SQLite compares names.
 func tableOf(src string) string {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err != nil {
 		panic(err)
 	}
@@ -1944,7 +1994,7 @@ func (r *run) verifyOverlaps(ctx context.Context) {
 			}
 		}
 		for _, s := range r.order {
-			if s.tx == nil && s.write && s.state == succeeded && s.node == a.node && s.gen == a.gen && a.began < s.start && s.stop < end {
+			if s.tx == nil && s.write && !s.nothing && s.state == succeeded && s.node == a.node && s.gen == a.gen && a.began < s.start && s.stop < end {
 				r.violate(ctx, "the statement %v committed on %v while the write transaction %v was open there", s.id, a.node, a.id)
 			}
 		}
@@ -2185,8 +2235,10 @@ var storeLine = regexp.MustCompile(`^\S+ store request \d+(, stuck)? store: `)
 
 // tallyOf the simulation s: its statements, by how they ended, its writes that were acknowledged,
 // its queries that were not read to their end, its inserts and selects refused for the type of a
-// value, its create indexes and drop indexes by outcome, its selects, updates, and deletes that read
-// by an index, its statements on an engine that forces an index path, its queries whose index was
+// value, its create indexes and drop indexes by outcome, its statements of IF NOT EXISTS or IF EXISTS
+// by whether they did nothing, did their work, or failed with SQLite's error, its selects, updates,
+// and deletes that read by an index, its statements on an engine that forces an index path, its
+// queries whose index was
 // dropped while their rows were open, its commits and those of a statement with a parameter, the
 // rows of tables of several columns and the NULL values in the log, the faults that the store
 // injected, by kind, and its other events.
@@ -2215,7 +2267,7 @@ func tallyOf(s simulation) map[string]int {
 		if a.typeRefused {
 			counts["refused for the type"]++
 		}
-		s, _ := checkText(a.src)
+		s, _ := stmt.Check(a.src)
 		var kind string
 		switch s.(type) {
 		case *stmt.CreateIndex:
@@ -2241,6 +2293,16 @@ func tallyOf(s simulation) map[string]int {
 			counts["statements on an engine that forces an index path"]++
 			if a.access == "index" && fold(a.index) == fold(forced) {
 				counts["statements read by the index that their engine forces"]++
+			}
+		}
+		if hasClause(s) {
+			switch {
+			case a.state == succeeded && a.nothing:
+				counts["statements of IF NOT EXISTS or IF EXISTS that did nothing"]++
+			case a.state == succeeded:
+				counts["statements of IF NOT EXISTS or IF EXISTS that did their work"]++
+			case a.state == sqliteFailed:
+				counts["statements of IF NOT EXISTS or IF EXISTS with SQLite's error"]++
 			}
 		}
 		if isChange(s) {
@@ -2413,6 +2475,12 @@ func TestSimulation(t *testing.T) {
 			// Every seed checks the integrity of the cache of each crash, of the replay, and of each live node
 			// at the end.
 			"integrity checks after a crash": 1, "integrity checks after the replay": 1, "integrity checks at the end": 2,
+			// The statements of slice 10, which one create and drop in three of the sequence is since
+			// 2026-11-20: those that did nothing, did their work, and failed with SQLite's error, and those
+			// that did nothing and that the checks run in SQLite, of their own and in a transaction.
+			"statements of IF NOT EXISTS or IF EXISTS that did nothing": 0.98, "statements of IF NOT EXISTS or IF EXISTS that did their work": 0.54,
+			"statements of IF NOT EXISTS or IF EXISTS with SQLite's error": 0.76, "statements that do nothing, compared with SQLite": 0.41,
+			"statements that do nothing in a transaction, compared with SQLite": 0.57,
 		}, 0.15},
 		// The ends of transactions for the lease, which only this workload reaches.
 		{"idle", idleWorkload, map[string]float64{
@@ -2453,7 +2521,13 @@ func TestSimulation(t *testing.T) {
 			"crash, then an empty cache, of a log with an index":    0.0052, "replays of a log with an index": 0.038,
 			"indexes dropped while the rows of a query that read by them were open": 0.0035,
 			"integrity checks after a crash":                                        1, "integrity checks after the replay": 1, "integrity checks at the end": 2,
+			"statements of IF NOT EXISTS or IF EXISTS that did nothing": 0.31, "statements of IF NOT EXISTS or IF EXISTS that did their work": 0.25,
+			"statements of IF NOT EXISTS or IF EXISTS with SQLite's error": 0.43, "statements that do nothing, compared with SQLite": 0.068,
+			"statements that do nothing in a transaction, compared with SQLite": 0.24,
 		}, 0.15},
+		// The least number of the selects with WHERE in a transaction read by an index is a quarter of
+		// the 186 that the first 1,000 seeds gave on 2026-11-20, where it was 0.06, since the sequence
+		// writes the clauses of slice 10 and draws other random numbers.
 		{"hammer", hammerWorkload, map[string]float64{
 			"succeeded": 10, "SQLite's error": 23, "unknown": 0.2, "skipped": 7.8, "failed: no lease": 1.2,
 			"failed: timeout": 2.9, "query not read to its end": 0.96, "acknowledged writes": 5.9, "commits": 4.2,
@@ -2469,7 +2543,7 @@ func TestSimulation(t *testing.T) {
 			"selects with WHERE of their own compared with SQLite, read by an index":     0.027,
 			"selects with WHERE of their own that give rows, compared with SQLite":       0.089,
 			"selects with WHERE in a transaction compared with SQLite":                   1.6,
-			"selects with WHERE in a transaction compared with SQLite, read by an index": 0.06,
+			"selects with WHERE in a transaction compared with SQLite, read by an index": 0.046,
 			"selects with WHERE in a transaction that give rows, compared with SQLite":   0.11,
 			"updates and deletes": 7, "updates and deletes that succeeded and changed rows": 0.6,
 			"updates and deletes with SQLite's error": 2.9, "updates and deletes that change no row, compared with SQLite": 0.69,
@@ -2484,6 +2558,9 @@ func TestSimulation(t *testing.T) {
 			"replays of a log with an index":                                        0.11,
 			"indexes dropped while the rows of a query that read by them were open": 0.03,
 			"integrity checks after the replay":                                     1, "integrity checks at the end": 1,
+			"statements of IF NOT EXISTS or IF EXISTS that did nothing": 1.9, "statements of IF NOT EXISTS or IF EXISTS that did their work": 0.92,
+			"statements of IF NOT EXISTS or IF EXISTS with SQLite's error": 1.4, "statements that do nothing, compared with SQLite": 0.81,
+			"statements that do nothing in a transaction, compared with SQLite": 1.1,
 		}, 0.12},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -2658,6 +2735,12 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// differs from SQLite, which runs the statements; and the row that stays makes later statements
 		// differ.
 		{"keepOldKey", defaultWorkload, "default", []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes"}},
+		// A create table with IF NOT EXISTS of a table that exists, which replaces the table with the
+		// one of the statement, empty, where SQLite does nothing: the commit object holds the drop and
+		// the create, so the replay of the log into an empty cache, which writes them, differs from
+		// SQLite, which runs the statement and does nothing; and the rows that the table lost make later
+		// statements differ.
+		{"replaceExisting", defaultWorkload, "default", []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "and the rule for the type of a value"}},
 	}
 	shard := testshard.Get(t)
 	for i, b := range bugs {
