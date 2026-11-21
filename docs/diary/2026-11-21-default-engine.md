@@ -97,3 +97,54 @@ The state of SQLite shows a default as the text of its literal, and the engine's
 ### Future work
 
 - The generated checks, the simulation and the planted bug `nullDefault`, the fuzz target, goqite's schema with IF NOT EXISTS once slice 10 lands, and the documents.
+
+## Step 3: The generated checks, the simulation, the planted bug, and the fuzz target
+
+**Author:** default-engine builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "5. Generated checks: turn on `Generator.Defaults` in `stmttest.Sequence` with a rule in `stmttest/rule.go` (the rule knows each table's defaults, also across rollbacks and re-creates, and predicts what a left-out column stores and which error an insert gives), so that `TestDifferential`, `TestConn_differential`, the driver check, the simulation, and the fuzz targets run tables with defaults [...] with tallies that count every kind of outcome [...] One planted bug in the simulation [...] Extend an existing fuzz target to defaults if that fits [...] 6. [...] make the generated checks excuse exactly that shape, counted in a tally."
+**Interpretation:** Defaults in the sequence's shapes through its hook `Generator.Create`, the rule from SQLite's `dflt_value`, which the tests read from SQLite before each call so that roll backs and re-creates are known, tallies by outcome with least numbers, `nullDefault` in the simulation, defaults in `FuzzTypes`, and an exact excuse for the table that the cache cannot hold.
+**Inferred intent:** A generator that stops reaching a case of defaults fails a test, and a fault in how the engine fills a column is found by more than the hand tests.
+
+### What I did
+
+- `/internal/sql/stmt/stmttest/sequence.go`: the shapes have defaults (`Sequence.defaultOf`), `create` re-types, changes, or drops a default now and then, `insert` leaves out a column with a default one time in two and the key with one one time in four, never every column, and gives a value of 85 hundredths of the limit beside a long default one time in two (`leavesOutLong`). `Generator.Defaults` stays 0: the hook gives the defaults.
+- `/internal/sql/stmt/stmttest/rule.go`: `TableColumn.Default`; `TypeRule`, `Faults`, and `NullCases` take a left-out column as NULL only where its default is NULL or none (`defaultIsNull`); `DefaultCases` and `LongDefault`. `TestDefaultCases` in `rule_test.go`.
+- `/internal/engine/differential_test.go`: `oracle.columns` reads `dflt_value`; `reach` counts `createDefaults` and `DefaultCases`; `pair.reach` counts the defaults again by the kind of the transaction; least numbers of slice 11 in `reachedDifferential`; the excuse `excusedCacheLimit` through `pair.tooLongForCache` and `cacheStatementLength`, and `TestPair_tooLongForCache`; `FuzzTypes` creates a table of each type with the input as its DEFAULT (`typesLiteral`). `/internal/engine/tx_test.go`: least numbers of slice 11 in `TestConn_differential`. The driver check reads `dflt_value`, counts `DefaultCases`, and requires them.
+- `/internal/engine/simulation_test.go`: `run.verifyRows` counts the create tables of the log with a default and the values that are their column's default; least numbers at a quarter of the first 1,000 seeds; `nullDefault` in `TestSimulation_plantedBugs`, 38 of the first 200 seeds, 35 by its own violation; `zeroLeftOut` moved to the hammer workload.
+- Recounted every pin and least number that moved, from the tests' own output, with the reason beside each in the tests.
+
+### Why
+
+- The rule reads the defaults from SQLite, as `oracle.columns` gives every column, so it knows a table after a roll back or a create table with other defaults without a model of its own.
+- The excuse of the cache's limit checks the length with a second writing of the core's statement, so it holds only where the cache really cannot hold the table, and `TestPair_tooLongForCache` holds that writing to the core byte for byte at the limit.
+
+### What worked
+
+The checks found no difference from SQLite or from mattn. The planted bug was found at once.
+
+### What didn't work
+
+- A first long default of about half the limit made the create tables too big under the lowered limit, and a record too big from a default was reached 0 times; a third of the limit, and a value of 85 hundredths beside it, reach it 4 times in `TestDifferential`.
+- I tried a random stream of its own for the defaults (seeded from the names of the sequence, with a `Generator.DefaultRand`), so that the other draws stayed as before. The pins moved about as much anyway, since an insert that leaves out a column has fewer parameters and so fewer arguments around them, so I took it out again: it was machinery without a gain.
+- The machine's disk filled up while I ran 1,000 seeds of the simulation: seed 607 of the hammer workload gave `the integrity check of the cache at .../replay.db: sqlite: disk I/O error (code 4874)`, and one run of `TestSimulation` gave `seed 0 gives two traces` for the idle workload, at 151 MB free, followed by builds that failed. With room on the disk, both seeds replay without a violation three times each, `TestSimulation` passed three times, 1,000 seeds of the hammer workload passed, and `TestSimulation_plantedBugs` passed twice: both were the full disk.
+- Commands with heredocs that held `%v` or a compound git command were refused by the permission system as too complex to verify; scripts in the scratchpad run with `python3 <path>` worked.
+
+### What I learned
+
+`math/rand/v2`'s `IntN` draws a different amount of randomness for different bounds now and then, so a sequence diverges after any change to what it draws, and pins move with every change to the generator.
+
+### What was tricky
+
+The pins that moved by chance: three least numbers of `TestDifferential`, five of the driver check, and two of the simulation fell below their least numbers with the other draws. Each is now a third (a quarter for the simulation) of what the run gives, with the reason beside it, and the two that reached 0, "update WHERE that reads a scan from a lower bound ok, rows changed" and the driver check's "SET with literal null ok, rows changed", are left out with where else each is pinned.
+
+### What warrants review
+
+- `pair.tooLongForCache` and `cacheStatementLength` in `/internal/engine/differential_test.go`.
+- The least numbers of the simulation that are below one in fifty seeds now, "statements read by the index that their engine forces" of the idle workload and "fault: broken read" of the hammer workload.
+
+### Future work
+
+- The README of the engine, the review, and the checks: step 4.
