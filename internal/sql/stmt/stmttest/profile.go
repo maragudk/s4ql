@@ -1,0 +1,284 @@
+package stmttest
+
+import (
+	"hash/fnv"
+	"math/rand/v2"
+)
+
+// Profile of a [Sequence]: how often it writes each kind of statement, and the odds of each area
+// of its generator, 0 for an area that is off. A profile weights one area over the statements that
+// the area needs to mean something, and [Mixed] has every area on, since faults live where areas
+// meet. A sequence has the profile of its seed, as [ProfileOf] gives it.
+//
+// An area that is off in a profile draws no random number in a sequence of the profile, so a change
+// of its generator does not change such a sequence: the tests pin a digest of the first statements
+// of each profile, and run each with a stream that panics for every area that it has off.
+type Profile struct {
+	Name string
+	// slot of the profile among the [Slots] of the seeds.
+	slot uint64
+	// Weights of the kinds of statement, by [Kind]: a statement is of a kind as often as its weight
+	// is of their sum.
+	Weights [KindDropIndex + 1]int
+	// Aim is the number of statements in four that are aimed at the tables as the sequence left them,
+	// as [Sequence.aim] says, so that they meet a table that is there; 0 for a sequence that names its
+	// tables at random, most of whose statements meet none.
+	Aim int
+	// Faults are the areas whose statements have their faults as often as the generator says for
+	// each: a column that the table does not have, a value more or less, a value of another type, a
+	// contradiction, and so on. The statements of the other areas have each of their faults a quarter
+	// as often, as [Sequence.fault] says, so that the statements that a profile weighs meet tables
+	// with rows.
+	Faults []string
+	// Columns is the least number of columns of the shape of a table, or 0 for any number from one.
+	// With 2, each table has a column beside its key, for an index that does not hold the key first.
+	Columns int
+	// Others, if not 0, makes one text in Others one of [Others], in place of a statement.
+	Others int
+	// Where is the number of selects in four that have a WHERE.
+	Where int
+	// Indexes is 0 for a sequence without names of indexes, whose create indexes and drop indexes, if
+	// their weights are not 0, take the names of tables; 1 for one WHERE in two of a table with a
+	// create index that pins leading columns of the index; and 2 for three in four, and more create
+	// indexes of every column but the key, and more WHERE that pin every column of an index.
+	Indexes int
+	// Exists is [Generator.Exists]: one create and drop in Exists says IF NOT EXISTS or IF EXISTS.
+	Exists int
+	// Defaults is 0 for shapes without a DEFAULT; 1 for shapes of which a third have none, a third one
+	// on every column, and a third one on each column one time in two; and 2 for shapes that all have
+	// one, on every column or on each one time in two.
+	Defaults int
+	// ValueFirst is [Generator.ValueFirst]: one comparison in ValueFirst has its value on the left.
+	ValueFirst int
+	// Parameters is [Generator.Parameters]: one value in Parameters is a plain ?.
+	Parameters int
+	// Around makes one call in Around[0] of a statement with a parameter, and one in Around[1] of a
+	// statement without one, have arguments around those that s4ql supports, as [Sequence.Next] says;
+	// 0 for none.
+	Around [2]int
+	// Mistyped, if not 0, makes one insert in Mistyped give an integer of a column of INT or INTEGER,
+	// if it has one, as the real of the same value, which s4ql refuses, as it refuses every value of
+	// another type than its column. SQLite converts the real back to the integer where a real holds
+	// the integer exactly, as it does for the small integers that a sequence mostly gives; for an
+	// integer beyond 2^53 the real is a neighbour of it, and SQLite refuses ±2^63, the real of the
+	// limits of 64 bits. The values that the conditions of a WHERE draw from keep the integer.
+	Mistyped int
+	// Transactions is for the test that runs the sequence: one turn in Transactions outside a
+	// transaction begins one, where the test has transactions.
+	Transactions int
+}
+
+// Slots is the number of seeds after which the profiles repeat: the profile of a seed is the one at
+// the slot of the seed modulo Slots. It is more than the profiles, so that a profile that is added
+// takes a slot that no test ran, and the seeds of the others keep their profiles.
+const Slots = 32
+
+// The profiles. See [Profiles].
+var (
+	// Mixed has every area on, with the odds of each as a statement of several features meets them.
+	Mixed = &Profile{Name: "mixed", Faults: allFaults, Weights: weights(4, 10, 5, 1, 3, 2, 3, 1), Others: 12, Where: 2, Indexes: 1, Exists: 3, Defaults: 1,
+		ValueFirst: 3, Parameters: 3, Around: [2]int{4, 20}, Transactions: 4}
+	// Tables weighs the tables themselves, of slices 1, 4, 5, and 6: their columns, types, and keys,
+	// the columns that take NULL, the lists and the faults of an insert, whole reals for a column of
+	// integers, and a select of all rows.
+	Tables = &Profile{Name: "tables", Faults: []string{areaTables, areaInserts}, Aim: 3, Weights: weights(2, 14, 6, 1, 0, 0, 0, 0), Parameters: 3, Mistyped: 8, Transactions: 4}
+	// Where weighs the select with WHERE of slice 7, on keys and other columns.
+	Where = &Profile{Name: "where", Faults: []string{areaSelects}, Aim: 3, Weights: weights(2, 9, 12, 1, 0, 0, 0, 0), Where: 3, Parameters: 3, Transactions: 4}
+	// Changes weighs the update and the delete of slice 8.
+	Changes = &Profile{Name: "changes", Faults: []string{areaChanges}, Aim: 3, Weights: weights(2, 12, 3, 1, 9, 3, 0, 0), Where: 2, Parameters: 3, Transactions: 4}
+	// Indexes weighs the create index and the drop index of slice 9, and the WHERE that an index
+	// serves, by which the rules choose an access.
+	Indexes = &Profile{Name: "indexes", Faults: []string{areaIndexes}, Aim: 3, Weights: weights(2, 8, 8, 1, 3, 2, 4, 2), Where: 3, Indexes: 2, Columns: 2, Parameters: 3, Transactions: 4}
+	// Exists weighs the IF NOT EXISTS and IF EXISTS of slice 10, on tables and indexes that are there
+	// and that are not.
+	Exists = &Profile{Name: "exists", Faults: []string{areaTables, areaIndexes}, Aim: 2, Weights: weights(6, 5, 2, 3, 1, 1, 7, 3), Where: 2, Indexes: 1, Exists: 2, Parameters: 3, Transactions: 4}
+	// Defaults weighs the DEFAULT of slice 11, and the inserts that leave a column out.
+	Defaults = &Profile{Name: "defaults", Aim: 3, Weights: weights(4, 15, 6, 1, 1, 0, 0, 0), Where: 1, Defaults: 2, Parameters: 3, Transactions: 4}
+	// ValueFirst weighs the value on the left of a comparison of slice 12, in the WHERE of a select,
+	// an update, and a delete, on keys and on indexes.
+	ValueFirst = &Profile{Name: "valuefirst", Faults: []string{areaSelects, areaChanges}, Aim: 3, Weights: weights(2, 8, 8, 1, 7, 3, 3, 1), Where: 4, Indexes: 2, Columns: 2, ValueFirst: 2, Parameters: 3, Around: [2]int{3, 12}, Transactions: 4}
+	// Transactions weighs the statements that write and those that read what was written, on a
+	// sequence whose test begins transactions more often.
+	Transactions = &Profile{Name: "transactions", Aim: 3, Weights: weights(2, 10, 6, 1, 4, 3, 1, 1), Where: 2, Indexes: 1, Parameters: 3, Transactions: 2}
+	// Arguments weighs the parameters of slice 2, the arguments around those that s4ql supports, and
+	// the texts of [Others]: the errors and the refusals.
+	Arguments = &Profile{Name: "arguments", Faults: allFaults, Aim: 3, Weights: weights(2, 10, 6, 1, 3, 2, 0, 0), Others: 4, Where: 3, Parameters: 1, Around: [2]int{2, 6}, Transactions: 4}
+)
+
+// allFaults are the areas whose statements have faults, for [Profile.Faults].
+var allFaults = []string{areaTables, areaInserts, areaSelects, areaChanges, areaIndexes}
+
+// Profiles, each at the slot of its place in the list. A profile is added at the end, and none is
+// taken out or moved, since the seeds of each profile are those of its slot: see [Profile.Seed].
+var Profiles = func() []*Profile {
+	ps := []*Profile{Mixed, Tables, Where, Changes, Indexes, Exists, Defaults, ValueFirst, Transactions, Arguments}
+	if len(ps) > Slots {
+		panic("stmttest: more profiles than slots")
+	}
+	for i, p := range ps {
+		p.slot = uint64(i)
+	}
+	return ps
+}()
+
+// weights of the kinds of statement of a [Profile]: create table, insert, select, drop table,
+// update, delete, create index, and drop index.
+func weights(createTable, insert, selects, dropTable, update, del, createIndex, dropIndex int) [KindDropIndex + 1]int {
+	return [KindDropIndex + 1]int{KindCreateTable: createTable, KindInsert: insert, KindSelect: selects, KindDropTable: dropTable,
+		KindUpdate: update, KindDelete: del, KindCreateIndex: createIndex, KindDropIndex: dropIndex}
+}
+
+// ProfileOf the seed: the profile at the slot of the seed modulo [Slots], and [Mixed] for a slot
+// that no profile has yet.
+func ProfileOf(seed uint64) *Profile {
+	if slot := seed % Slots; slot < uint64(len(Profiles)) {
+		return Profiles[slot]
+	}
+	return Mixed
+}
+
+// Seed number k, from 0, of the profile: the seeds of a profile are those of its slot, so a test
+// that runs the first seeds of each profile runs the same seeds of each when a profile is added.
+func (p *Profile) Seed(k uint64) uint64 {
+	return k*Slots + p.slot
+}
+
+// The areas of the generator of a [Sequence]. Each draws its random numbers from a stream of its
+// own, which is seeded from the seed of the sequence, the name of the area, and what the numbers are
+// for: the number of the statement in the sequence, or the name of the table whose shape they draw.
+// So a draw more or less in one area, or in one statement, moves no number of another area or of
+// another statement.
+const (
+	// areaNames draws the names of the tables and the columns of the sequence, and their spellings.
+	areaNames = "names"
+	// areaPlan draws which statement comes next, and the name of its table or its index.
+	areaPlan = "plan"
+	// areaTables draws the shape of a table, and the columns of a create table that differ from it.
+	areaTables = "tables"
+	// areaInserts draws the list and the values of an insert, and its faults.
+	areaInserts = "inserts"
+	// areaSelects draws the select list and the WHERE of a select.
+	areaSelects = "selects"
+	// areaChanges draws the assignments of an update, and the WHERE of an update and a delete.
+	areaChanges = "changes"
+	// areaIndexes draws the names of the indexes, the columns of a create index, and the WHERE that
+	// an index serves, of a select, an update, and a delete.
+	areaIndexes = "indexes"
+	// areaExists draws whether a create or a drop says IF NOT EXISTS or IF EXISTS.
+	areaExists = "exists"
+	// areaDefaults draws the defaults of a shape, those of a create table that differ from it, and
+	// whether an insert leaves out a column with a default.
+	areaDefaults = "defaults"
+	// areaValueFirst draws whether a comparison has its value on the left.
+	areaValueFirst = "valuefirst"
+	// areaArguments draws whether a value is a parameter, and the arguments around those of a call.
+	areaArguments = "arguments"
+	// areaOthers draws the texts of [Others].
+	areaOthers = "others"
+	// areaText draws how a statement is written: its gaps, the case of its keywords, the spelling of
+	// its literals and operators, and its semicolons.
+	areaText = "text"
+)
+
+// areas of the generator, for the tests.
+var areas = []string{areaNames, areaPlan, areaTables, areaInserts, areaSelects, areaChanges, areaIndexes, areaExists, areaDefaults,
+	areaValueFirst, areaArguments, areaOthers, areaText}
+
+// on reports whether the area is on in the profile: whether a sequence of the profile may draw
+// from the streams of the area.
+func (p *Profile) on(area string) bool {
+	changes := p.Weights[KindUpdate]+p.Weights[KindDelete] > 0
+	switch area {
+	case areaSelects:
+		return p.Weights[KindSelect] > 0
+	case areaChanges:
+		return changes
+	case areaIndexes:
+		return p.Indexes > 0 || p.Weights[KindCreateIndex] > 0
+	case areaExists:
+		return p.Exists > 0
+	case areaDefaults:
+		return p.Defaults > 0
+	case areaValueFirst:
+		return p.ValueFirst > 0
+	case areaArguments:
+		return p.Parameters > 0 || p.Around != [2]int{}
+	case areaOthers:
+		return p.Others > 0
+	}
+	return true
+}
+
+// mix the bits of x, as SplitMix64 does, so that seeds that differ in a bit give streams that have
+// nothing in common.
+func mix(x uint64) uint64 {
+	x += 0x9e3779b97f4a7c15
+	x = (x ^ x>>30) * 0xbf58476d1ce4e5b9
+	x = (x ^ x>>27) * 0x94d049bb133111eb
+	return x ^ x>>31
+}
+
+// keyOf the name of an area and what its numbers are for, such as the name of a table.
+func keyOf(area, what string) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(area))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(what))
+	return h.Sum64()
+}
+
+// newStream of the seed for the area and what its numbers are for: the same numbers for the same
+// three, whatever else a sequence draws.
+func newStream(seed uint64, area, what string) *rand.Rand {
+	return rand.New(rand.NewPCG(mix(seed), mix(keyOf(area, what))))
+}
+
+// stepStream is the stream of an area that starts anew at each statement of a sequence: its
+// numbers for the statement number step are those of the seed, the area, and step, whatever the
+// statements before drew.
+type stepStream struct {
+	seed, key uint64
+	// step is the number of the statement of the sequence, and at one more than the step that pcg is
+	// seeded for, or 0 before the first number.
+	step *uint64
+	at   uint64
+	pcg  *rand.PCG
+	r    *rand.Rand
+}
+
+func newStepStream(seed uint64, area string, step *uint64) *stepStream {
+	pcg := rand.NewPCG(0, 0)
+	return &stepStream{seed: mix(seed), key: keyOf(area, "statement"), step: step, pcg: pcg, r: rand.New(pcg)}
+}
+
+// sync seeds the stream for the statement of now, if it is another than that of the last number.
+func (s *stepStream) sync() {
+	if s.at != *s.step+1 {
+		s.at = *s.step + 1
+		s.pcg.Seed(s.seed, mix(s.key^mix(*s.step)))
+	}
+}
+
+func (s *stepStream) IntN(n int) int {
+	s.sync()
+	return s.r.IntN(n)
+}
+
+func (s *stepStream) Uint64() uint64 {
+	s.sync()
+	return s.r.Uint64()
+}
+
+// offStream is the stream of an area that is off in the profile of a sequence, with the test's
+// permission to fail: a draw from it panics.
+type offStream struct {
+	area, profile string
+}
+
+func (s offStream) IntN(int) int {
+	panic("stmttest: a sequence of the profile " + s.profile + " draws from the area " + s.area + ", which the profile has off")
+}
+
+func (s offStream) Uint64() uint64 {
+	panic("stmttest: a sequence of the profile " + s.profile + " draws from the area " + s.area + ", which the profile has off")
+}

@@ -1,0 +1,397 @@
+# What each profile of TestDifferential of the engine must reach: see stmttest.Reached.
+# A kind on a line. A kind that no run reaches three times fails the test.
+createtable duplicate column name
+insert  values for 
+insert NOT NULL constraint failed
+insert values were supplied
+insert with a parameter UNIQUE constraint failed
+insert with a parameter not supported
+insert with a parameter ok
+insert with a parameter wrong number of arguments
+insert wrong number of arguments
+reached: != on another column ok
+reached: != on the key a value of another type
+reached: != on the key ok
+reached: -0.0 argument into REAL UNIQUE constraint failed
+reached: -0.0 literal into REAL UNIQUE constraint failed
+reached: < on another column ok
+reached: < on the key a value of another type
+reached: < on the key ok
+reached: <= on another column ok
+reached: <= on the key a value of another type
+reached: <= on the key ok
+reached: = on another column ok
+reached: = on the key a value of another type
+reached: = on the key ok
+reached: > on another column ok
+reached: > on the key a value of another type
+reached: > on the key ok
+reached: >= on another column ok
+reached: >= on the key a value of another type
+reached: >= on the key ok
+reached: IS NOT NULL on another column ok
+reached: IS NOT NULL on the key ok
+reached: IS NULL on another column ok
+reached: IS NULL on the key ok
+reached: NULL argument into a column that does not take NULL NOT NULL constraint failed
+reached: NULL argument into a column that takes NULL UNIQUE constraint failed
+reached: NULL argument into a column that takes NULL a value of another type
+reached: NULL argument into a column that takes NULL ok
+reached: NULL argument into the key NOT NULL constraint failed
+reached: NULL given for a column with a default, which does not take NULL NOT NULL constraint failed
+reached: NULL given for a column with a default, which takes NULL ok
+reached: NULL literal into a column that does not take NULL NOT NULL constraint failed
+reached: NULL literal into a column that takes NULL UNIQUE constraint failed
+reached: NULL literal into a column that takes NULL a value of another type
+reached: NULL literal into a column that takes NULL ok
+reached: NULL literal into the key NOT NULL constraint failed
+reached: SET of NULL for a column that does not take it NOT NULL constraint failed
+reached: SET of NULL for a column that does not take it ok, no row found
+reached: SET of a column in double quotes that the table does not have no such column
+reached: SET of a column that the table does not have no such column
+reached: SET of every column ok, rows changed
+reached: SET of the key NOT NULL constraint failed
+reached: SET of the key UNIQUE constraint failed
+reached: SET of the key ok, rows changed
+reached: SET with a value of another type a value of another type
+reached: SET with argument []uint8 ok, no row found
+reached: SET with argument float64 ok, rows changed
+reached: SET with argument int64 ok, rows changed
+reached: SET with argument nil ok, rows changed
+reached: SET with argument string ok, rows changed
+reached: SET with literal blob ok, rows changed
+reached: SET with literal empty blob ok, rows changed
+reached: SET with literal empty text ok, rows changed
+reached: SET with literal integer ok, rows changed
+reached: SET with literal null ok, rows changed
+reached: SET with literal real -0.0 ok, rows changed
+reached: SET with literal real ok, rows changed
+reached: SET with literal text ok, rows changed
+reached: WHERE run by a sample of its paths
+reached: WHERE run by every path
+reached: WHERE run by every path on a table with an index
+reached: WHERE that gives every row of a table with rows
+reached: WHERE that gives no row of a table with rows
+reached: WHERE that gives some rows of a table
+reached: WHERE that reads a get of one key ok
+reached: WHERE that reads a scan between two bounds ok
+reached: WHERE that reads a scan between two bounds that hold no key ok
+reached: WHERE that reads a scan from a lower bound ok
+reached: WHERE that reads a scan of every row ok
+reached: WHERE that reads a scan to an upper bound ok
+reached: WHERE that reads no row ok
+reached: WHERE that tests a column more than once ok
+reached: WHERE with a column in double quotes that the table does not have no such column
+reached: WHERE with a column that the table does not have in a comparison, after other conditions no such column
+reached: WHERE with a column that the table does not have in a comparison, alone no such column
+reached: WHERE with a column that the table does not have in a comparison, before other conditions no such column
+reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, after other conditions no such column
+reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column
+reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, before other conditions no such column
+reached: WHERE with a literal longer than the length limit
+reached: WHERE with a value of another type a value of another type
+reached: WHERE with a value on the left run by every path
+reached: WHERE with a value on the left run by every path on a table with an index
+reached: WHERE with an argument that no column holds not supported
+reached: WHERE with contradicting conditions ok
+reached: WHERE with the wrong number of arguments wrong number of arguments
+reached: argument NaN
+reached: argument []uint8
+reached: argument bool
+reached: argument empty []byte
+reached: argument empty string
+reached: argument float32
+reached: argument float32 that is not finite
+reached: argument float64
+reached: argument float64 -0.0
+reached: argument infinite float64
+reached: argument int
+reached: argument int32
+reached: argument int64
+reached: argument named
+reached: argument nil
+reached: argument nil []byte
+reached: argument string
+reached: argument string that is not valid UTF-8
+reached: argument string with NUL
+reached: argument time.Time
+reached: argument uint64
+reached: argument uint64 above int64
+reached: changed both ways
+reached: chosen a get
+reached: chosen a get by a value on the left
+reached: chosen a get of a table of several indexes
+reached: chosen an index with 0 pinned and a range
+reached: chosen an index with 0 pinned and a range by a value on the left
+reached: chosen an index with 1 pinned
+reached: chosen an index with 1 pinned and a range
+reached: chosen an index with 1 pinned and a range by a value on the left
+reached: chosen an index with 1 pinned by a value on the left
+reached: chosen an index with 1 pinned of a table of several indexes
+reached: chosen an index with 2 pinned
+reached: chosen an index with 2 pinned and a range
+reached: chosen an index with 2 pinned and a range by a value on the left
+reached: chosen every row
+reached: chosen every row of a table of several indexes
+reached: chosen no row
+reached: chosen the primary key with 0 pinned and a range
+reached: chosen the primary key with 0 pinned and a range by a value on the left
+reached: comparison with argument []uint8 ok
+reached: comparison with argument empty []byte ok
+reached: comparison with argument empty string ok
+reached: comparison with argument float64 -0.0 ok
+reached: comparison with argument float64 ok
+reached: comparison with argument int64 ok
+reached: comparison with argument nil ok
+reached: comparison with argument string ok
+reached: comparison with literal blob ok
+reached: comparison with literal empty blob ok
+reached: comparison with literal empty text ok
+reached: comparison with literal integer ok
+reached: comparison with literal null ok
+reached: comparison with literal real -0.0 ok
+reached: comparison with literal real ok
+reached: comparison with literal text ok
+reached: create index already exists
+reached: create index if not exists did its work
+reached: create index if not exists did nothing: an index of the name exists
+reached: create index if not exists did nothing: an index of the name exists, and the table lacks a column of the statement
+reached: create index if not exists no such column
+reached: create index if not exists no such table
+reached: create index if not exists there is already a table named
+reached: create index no such column
+reached: create index no such table
+reached: create index of 1 columns ok
+reached: create index of 2 columns ok
+reached: create index of 3 columns ok
+reached: create index of a column of type BLOB ok
+reached: create index of a column of type INT ok
+reached: create index of a column of type INTEGER ok
+reached: create index of a column of type REAL ok
+reached: create index of a column of type TEXT ok
+reached: create index of a column that takes NULL ok
+reached: create index of a descending column ok
+reached: create index ok
+reached: create index that holds the primary key ok
+reached: create index there is already a table named
+reached: create table if not exists did its work
+reached: create table if not exists did nothing: a table of the name exists
+reached: create table if not exists duplicate column name
+reached: create table if not exists there is already an index named
+reached: create table of 1 columns ok
+reached: create table of 2 columns ok
+reached: create table of 3 columns ok
+reached: create table of mixed types ok
+reached: create table of which every column outside the key takes NULL ok
+reached: create table of which no column takes NULL ok
+reached: create table of which some columns outside the key take NULL ok
+reached: create table with DEFAULT NULL on a column that does not take NULL ok
+reached: create table with DEFAULT NULL on a column that takes NULL ok
+reached: create table with a default of 250 bytes or more ok
+reached: create table with a default of blob ok
+reached: create table with a default of integer ok
+reached: create table with a default of real ok
+reached: create table with a default of text ok
+reached: create table with a default on the key ok
+reached: create table with the key at 0 ok
+reached: create table with the key at 1 ok
+reached: create table with the key at 2 ok
+reached: create table with two columns of a type ok
+reached: delete WHERE that reads a get of one key ok, rows changed
+reached: delete WHERE that reads a scan between two bounds ok, rows changed
+reached: delete WHERE that reads a scan between two bounds that hold no key ok, no row found
+reached: delete WHERE that reads a scan from a lower bound ok, rows changed
+reached: delete WHERE that reads a scan of every row ok, rows changed
+reached: delete WHERE that reads a scan to an upper bound ok, rows changed
+reached: delete WHERE that reads no row ok, no row found
+reached: delete WHERE that tests a column more than once ok, rows changed
+reached: delete WHERE with a column in double quotes that the table does not have no such column
+reached: delete WHERE with a value of another type a value of another type
+reached: delete WHERE with contradicting conditions ok, no row found
+reached: delete that changes every row of a table with rows
+reached: delete that changes no row of a table with rows
+reached: delete that changes some rows of a table
+reached: delete with WHERE no such column
+reached: delete with WHERE ok, no row found
+reached: delete with WHERE ok, rows changed
+reached: delete with a value on the left ok, no row found
+reached: delete with a value on the left ok, rows changed
+reached: delete with arguments that s4ql refuses not supported
+reached: delete with arguments that s4ql refuses wrong number of arguments
+reached: delete without WHERE ok, no row found
+reached: delete without WHERE ok, rows changed
+reached: drop index if exists did its work
+reached: drop index if exists did nothing: no index of the name exists
+reached: drop index if exists did nothing: no index of the name exists, and a table has it
+reached: drop index no such index
+reached: drop index ok
+reached: drop table if exists did its work
+reached: drop table if exists did nothing: no table of the name exists
+reached: drop table if exists did nothing: no table of the name exists, and an index has it
+reached: insert into BLOB UNIQUE constraint failed
+reached: insert into BLOB a value of another type
+reached: insert into BLOB ok
+reached: insert into BLOB string or blob too big
+reached: insert into INT UNIQUE constraint failed
+reached: insert into INT a value of another type
+reached: insert into INT ok
+reached: insert into INTEGER UNIQUE constraint failed
+reached: insert into INTEGER a value of another type
+reached: insert into INTEGER ok
+reached: insert into REAL UNIQUE constraint failed
+reached: insert into REAL a value of another type
+reached: insert into REAL ok
+reached: insert into TEXT UNIQUE constraint failed
+reached: insert into TEXT a value of another type
+reached: insert into TEXT ok
+reached: insert into TEXT string or blob too big
+reached: insert of NULL beside a value of another type NOT NULL constraint failed
+reached: insert of NULL beside a value of another type a value of another type
+reached: insert that leaves out a column that does not take NULL with DEFAULT NULL NOT NULL constraint failed
+reached: insert that leaves out a column that takes NULL NOT NULL constraint failed
+reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
+reached: insert that leaves out a column that takes NULL a value of another type
+reached: insert that leaves out a column that takes NULL ok
+reached: insert that leaves out a column that takes NULL with DEFAULT NULL ok
+reached: insert that leaves out a column with a default of blob ok
+reached: insert that leaves out a column with a default of integer ok
+reached: insert that leaves out a column with a default of real ok
+reached: insert that leaves out a column with a default of text ok
+reached: insert that leaves out a column with a long default string or blob too big
+reached: insert that leaves out the key with DEFAULT NULL NOT NULL constraint failed
+reached: insert that leaves out the key with a default UNIQUE constraint failed
+reached: insert that leaves out the key with a default ok
+reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
+reached: insert with NULL in the key: NOT NULL constraint failed
+reached: insert with a column that the table does not have: has no column named
+reached: insert with a column without a value: NOT NULL constraint failed
+reached: insert with a list in another order NOT NULL constraint failed
+reached: insert with a list in another order UNIQUE constraint failed
+reached: insert with a list in another order a value of another type
+reached: insert with a list in another order ok
+reached: insert with a list in the order of the table ok
+reached: insert with a value of another type in another column: a value of another type
+reached: insert with a value of another type in the key: a value of another type
+reached: insert with the wrong number of values:  values for 
+reached: insert with the wrong number of values: values were supplied
+reached: insert with two faults: NOT NULL constraint failed
+reached: insert with two faults: a value of another type
+reached: insert with two faults: has no column named
+reached: insert without a list ok
+reached: literal blob
+reached: literal empty blob
+reached: literal empty text
+reached: literal integer
+reached: literal null
+reached: literal real
+reached: literal real -0.0
+reached: literal text
+reached: long value
+reached: path backward
+reached: path forward
+reached: path of an index of a descending column
+reached: path of an index that holds every column
+reached: path of an index with 0 pinned
+reached: path of an index with 0 pinned and a range
+reached: path of an index with 0 pinned and a range of a WHERE with a value on the left
+reached: path of an index with 1 pinned
+reached: path of an index with 1 pinned and a range
+reached: path of an index with 1 pinned and a range of a WHERE with a value on the left
+reached: path of an index with 2 pinned
+reached: path of an index with 2 pinned and a range
+reached: path of an index with 2 pinned and a range of a WHERE with a value on the left
+reached: path of an index with 3 pinned
+reached: path of every row
+reached: path of the primary key with 0 pinned and a range
+reached: path of the primary key with 0 pinned and a range of a WHERE with a value on the left
+reached: path of the primary key with 1 pinned
+reached: path that reads no row
+reached: path with a pin of NULL
+reached: path with a range on a descending column
+reached: plan of the cache checked
+reached: read both ways
+reached: replay of indexes into an empty cache
+reached: restart with indexes in the cache
+reached: select * of 1 columns ok
+reached: select * of 2 columns ok
+reached: select * of 3 columns ok
+reached: select * with NULL ok
+reached: select of a name in double quotes that the table does not have no such column
+reached: select of a name that the table does not have no such column
+reached: select of a name twice ok
+reached: select of names in another order ok
+reached: select of names ok
+reached: select of names with NULL ok
+reached: select with a value on the left ok, no row found
+reached: select with a value on the left ok, rows found
+reached: update WHERE that reads a get of one key ok, rows changed
+reached: update WHERE that reads a scan between two bounds ok, rows changed
+reached: update WHERE that reads a scan between two bounds that hold no key ok, no row found
+reached: update WHERE that reads a scan from a lower bound ok, rows changed
+reached: update WHERE that reads a scan of every row ok, rows changed
+reached: update WHERE that reads a scan to an upper bound ok, rows changed
+reached: update WHERE that reads no row ok, no row found
+reached: update WHERE that tests a column more than once ok, rows changed
+reached: update WHERE with a column in double quotes that the table does not have no such column
+reached: update WHERE with a value of another type a value of another type
+reached: update WHERE with contradicting conditions ok, no row found
+reached: update of a row whose record is too long
+reached: update that changes every row of a table with rows
+reached: update that changes no row of a table with rows
+reached: update that changes some rows of a table
+reached: update with WHERE NOT NULL constraint failed
+reached: update with WHERE UNIQUE constraint failed
+reached: update with WHERE no such column
+reached: update with WHERE ok, no row found
+reached: update with WHERE ok, rows changed
+reached: update with a literal longer than the length limit in SET
+reached: update with a value on the left ok, no row found
+reached: update with a value on the left ok, rows changed
+reached: update with arguments that s4ql refuses not supported
+reached: update with arguments that s4ql refuses wrong number of arguments
+reached: update without WHERE NOT NULL constraint failed
+reached: update without WHERE UNIQUE constraint failed
+reached: update without WHERE ok, no row found
+reached: update without WHERE ok, rows changed
+reached: value on the left NOT NULL constraint failed
+reached: value on the left UNIQUE constraint failed
+reached: value on the left compared with NULL finds no row
+reached: value on the left of != a value of another type
+reached: value on the left of != finds no row
+reached: value on the left of != finds rows
+reached: value on the left of != no such column
+reached: value on the left of != not supported
+reached: value on the left of != wrong number of arguments
+reached: value on the left of < a value of another type
+reached: value on the left of < finds no row
+reached: value on the left of < finds rows
+reached: value on the left of < no such column
+reached: value on the left of < not supported
+reached: value on the left of < wrong number of arguments
+reached: value on the left of <= a value of another type
+reached: value on the left of <= finds no row
+reached: value on the left of <= finds rows
+reached: value on the left of <= no such column
+reached: value on the left of <= not supported
+reached: value on the left of <= wrong number of arguments
+reached: value on the left of = a value of another type
+reached: value on the left of = finds no row
+reached: value on the left of = finds rows
+reached: value on the left of = no such column
+reached: value on the left of = not supported
+reached: value on the left of = wrong number of arguments
+reached: value on the left of > a value of another type
+reached: value on the left of > finds no row
+reached: value on the left of > finds rows
+reached: value on the left of > no such column
+reached: value on the left of > not supported
+reached: value on the left of > wrong number of arguments
+reached: value on the left of >= a value of another type
+reached: value on the left of >= finds no row
+reached: value on the left of >= finds rows
+reached: value on the left of >= no such column
+reached: value on the left of >= not supported
+reached: value on the left of >= wrong number of arguments
+reached: value on the left string or blob too big
+select no such column
+select wrong number of arguments

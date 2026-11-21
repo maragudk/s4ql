@@ -1,0 +1,87 @@
+# What the seeds of each environment of TestSimulation of the engine must reach together: see stmttest.Reached.
+# A kind on a line. A kind that no run reaches three times fails the test.
+NULL values in the log
+SQLite's error
+acknowledged writes
+close and open
+commits
+commits of more than one statement
+commits with a parameter
+crash, then a copy of the cache
+crash, then an empty cache
+crash, then an empty cache, of a log with an index
+create index: 1/1: index … already exists
+create index: 1/1: no such column: …
+create index: 1/1: no such table: …
+create index: 1/1: there is already a table named …
+create index: 8/8: attempt to write a readonly database
+create index: ok
+create tables with a default in the log
+deletes read by an index
+drop index: 1/1: no such index: …
+drop index: 8/8: attempt to write a readonly database
+drop index: ok
+failed: no lease
+failed: stopped
+failed: timeout
+fault: broken read
+fault: conflict
+fault: cut-off
+fault: lost request
+fault: lost response
+fault: no answer
+fault: outage
+fault: slow way
+fault: write applied after a crash
+fault: write applied after its caller gave up
+fault: write stuck in the network
+indexes dropped while the rows of a query that read by them were open
+integrity checks after a crash
+integrity checks after the replay
+integrity checks at the end
+kept transactions ended for the lease
+pending
+query not read to its end
+read-only transactions
+refused for the type
+replays of a log with an index
+rows of several columns
+selects read by an index
+selects with WHERE in a transaction compared with SQLite
+selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
+selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
+selects with WHERE in a transaction compared with SQLite, read by an index
+selects with WHERE in a transaction that give rows, compared with SQLite
+selects with WHERE of their own compared with SQLite
+selects with WHERE of their own compared with SQLite, on an engine that forces an index path
+selects with WHERE of their own compared with SQLite, on an engine that reads every row
+selects with WHERE of their own compared with SQLite, read by an index
+selects with WHERE of their own that give rows, compared with SQLite
+skipped
+statements in a transaction
+statements of IF NOT EXISTS or IF EXISTS that did nothing
+statements of IF NOT EXISTS or IF EXISTS that did their work
+statements of IF NOT EXISTS or IF EXISTS with SQLite's error
+statements on an engine that forces an index path
+statements read by the index that their engine forces
+statements that do nothing in a transaction, compared with SQLite
+statements that do nothing, compared with SQLite
+statements with a value on the left
+statements with a value on the left read by a key or an index
+statements with a value on the left that found rows
+statements with a value on the left with SQLite's error
+succeeded
+transactions committed
+transactions ended for the lease
+transactions not committed
+transactions rolled back
+transactions unknown
+unknown
+updates and deletes
+updates and deletes in a transaction whose count of changes is compared with SQLite
+updates and deletes of their own whose count of changes is compared with SQLite
+updates and deletes that change no row, compared with SQLite
+updates and deletes that succeeded and changed rows
+updates and deletes with SQLite's error
+updates read by an index
+values of a default in the log

@@ -158,6 +158,11 @@ const (
 // Generator of random statements of slices 1, 2, and 4 to 13.
 type Generator struct {
 	r Rand
+	// plan draws the name of the table or the index of a statement, clause whether a create or a drop
+	// has the clause of [Generator.Exists], params whether a value is a parameter, and turned whether
+	// a comparison has its value on the left. Each is r, unless a [Sequence] gives its generator a
+	// stream of its own for it.
+	plan, clause, params, turned Rand
 	// pools of names, for each [Position].
 	pools [][]string
 	// Type gives the type of the column of a create table of the table, or is nil for a type at
@@ -281,7 +286,7 @@ type Generator struct {
 // NewGenerator with the random numbers of r and a pool of names for each [Position]. Each name of a
 // pool must be one that SQLite reads as a name in its position, and that the pass supports.
 func NewGenerator(r Rand, pools [][]string) *Generator {
-	return &Generator{r: r, pools: pools}
+	return &Generator{r: r, plan: r, clause: r, params: r, turned: r, pools: pools}
 }
 
 // gaps between tokens. None starts with "-", so that a gap after a minus sign does not make it a
@@ -332,8 +337,8 @@ func (g *Generator) name(p Position) stmt.Name {
 // is another name for a name with letters outside ASCII.
 func (g *Generator) pick(p Position) string {
 	pool := g.pools[p]
-	raw := pool[g.r.IntN(len(pool))]
-	if raw[0] != '"' && g.r.IntN(3) == 0 {
+	raw := pool[g.plan.IntN(len(pool))]
+	if raw[0] != '"' && g.plan.IntN(3) == 0 {
 		raw = strings.ToUpper(raw)
 	}
 	return raw
@@ -604,7 +609,7 @@ func (g *Generator) literal(v stmt.Value) (stmt.Value, stmt.Span) {
 // otherwise the literal of v.
 func (g *Generator) term(v stmt.Value, args []any) (stmt.Term, []any) {
 	var term stmt.Term
-	if g.Parameters > 0 && g.r.IntN(g.Parameters) == 0 {
+	if g.Parameters > 0 && g.params.IntN(g.Parameters) == 0 {
 		term.Parameter, term.Span = len(args)+1, stmt.Span{Start: g.b.Len(), End: g.b.Len() + 1}
 		g.punct("?")
 		return term, append(args, Argument(v))
@@ -672,7 +677,7 @@ func (g *Generator) conditions(given []stmt.Condition, random bool, columns []st
 			c = g.condition(columns, conditions)
 		}
 		test := c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull
-		if !test && (c.ValueFirst || g.ValueFirst > 0 && g.r.IntN(g.ValueFirst) == 0) {
+		if !test && (c.ValueFirst || g.ValueFirst > 0 && g.turned.IntN(g.ValueFirst) == 0) {
 			// The value on the left, the operator swapped, and the column on the right, which reads as
 			// the condition c.
 			w := stmt.Condition{Operator: c.Operator, ValueFirst: true}
@@ -874,7 +879,7 @@ func (g *Generator) order(s *stmt.Select, args []any) ([]stmt.OrderColumn, stmt.
 	g.gap(true)
 	g.keyword("limit")
 	g.gap(true)
-	if g.Parameters > 0 && g.r.IntN(g.Parameters) == 0 {
+	if g.Parameters > 0 && g.params.IntN(g.Parameters) == 0 {
 		v := limit.Value
 		limit = stmt.Term{Parameter: len(args) + 1, Span: stmt.Span{Start: g.b.Len(), End: g.b.Len() + 1}}
 		g.punct("?")
@@ -946,7 +951,7 @@ func (g *Generator) indexColumns(index, table stmt.Name) []stmt.IndexColumn {
 // exists writes IF NOT EXISTS, or IF EXISTS if not is false, and a gap after it, one time in
 // [Generator.Exists], and reports whether it wrote it. With Exists 0 it draws nothing.
 func (g *Generator) exists(not bool) bool {
-	if g.Exists == 0 || g.r.IntN(g.Exists) != 0 {
+	if g.Exists == 0 || g.clause.IntN(g.Exists) != 0 {
 		return false
 	}
 	g.keyword("if")

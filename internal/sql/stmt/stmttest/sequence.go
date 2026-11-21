@@ -57,9 +57,15 @@ import (
 // ?, one for a statement without one, two for a ?, one that no column holds, one with a name, or a
 // value of another Go type that s4ql supports.
 type Sequence struct {
-	r      Rand
-	g      *Generator
-	tables []string
+	seed    uint64
+	profile *Profile
+	// step is the number of the statement that the sequence writes, from 1, and 0 before the first.
+	step uint64
+	// The streams of the areas that start anew at each statement, as [stepStream] says. The stream
+	// of an area that is off in the profile panics at a draw.
+	rPlan, rTables, rInserts, rSelects, rChanges, rIndexes, rDefaults, rArguments, rOthers Rand
+	g                                                                                      *Generator
+	tables                                                                                 []string
 	// columns are the spellings of the names of columns, folds the folds of their names, in the order
 	// that the spellings first have them, and spelled the spellings of each fold.
 	columns []string
@@ -74,12 +80,55 @@ type Sequence struct {
 	stored map[[2]string][]stmt.Value
 	// indexes are the spellings of the names of indexes.
 	indexes []string
-	// indexed holds the columns of the create indexes of the sequence, by the fold of the name of
-	// their table, the last [storedIndexes] of each, whether SQLite took the create index or not, with
-	// the fold of each name as its Name.Value, for the conditions of a WHERE that an index can serve.
-	indexed map[string][][]stmt.IndexColumn
-	// heavy is set by [Sequence.Indexed], and mistyped by [Sequence.Mistyped].
-	heavy, mistyped bool
+	// indexed holds the indexes that the sequence created and did not drop since, as far as its own
+	// statements tell, by the fold of the name of their table, the last [storedIndexes] of each, with
+	// the fold of the name of each column as its Name.Value, for the conditions of a WHERE that an
+	// index can serve. A create index is kept if its table is live, its name is not that of a live
+	// index or table, and each of its columns is one of the shape; SQLite may refuse it still, for a
+	// table that it refused.
+	indexed map[string][]sequenceIndex
+	// pools of the names of the sequence, for each [Position], which the generator gets anew for each
+	// statement, as [Sequence.aim] says.
+	pools [][]string
+	// live are the folds of the names of the tables for which the sequence wrote a create table, and
+	// since then no drop table, whether SQLite took the statement or not.
+	live map[string]bool
+}
+
+// Seed of the sequence.
+func (q *Sequence) Seed() uint64 {
+	return q.seed
+}
+
+// Profile of the sequence, which is that of its seed.
+func (q *Sequence) Profile() *Profile {
+	return q.profile
+}
+
+// Stream of random numbers of the name for the test that runs the sequence, such as the stream of
+// its transactions or of its restarts: the same numbers for the same seed and name, whatever the
+// sequence and the other streams draw, so that what a test draws for itself moves no statement.
+func (q *Sequence) Stream(name string) Rand {
+	return newStream(q.seed, "test", name)
+}
+
+// stream of the area that starts anew at each statement, or one that panics at a draw if the
+// profile has the area off.
+func (q *Sequence) stream(area string) Rand {
+	if !q.profile.on(area) {
+		return offStream{area: area, profile: q.profile.Name}
+	}
+	return newStepStream(q.seed, area, &q.step)
+}
+
+// entity is the stream of the area for the thing of the name what, such as the shape of a table,
+// which is the same whichever statement asks for it first, or one that panics at a draw if the
+// profile has the area off.
+func (q *Sequence) entity(area, what string) Rand {
+	if !q.profile.on(area) {
+		return offStream{area: area, profile: q.profile.Name}
+	}
+	return newStream(q.seed, area, what)
 }
 
 // IndexNames of the sequence: the values of the names of its indexes, without their quotes, each
@@ -92,33 +141,27 @@ func (q *Sequence) IndexNames() []string {
 	return names
 }
 
+// sequenceIndex is an index that a [Sequence] keeps for its conditions: the fold of its name, and its
+// columns.
+type sequenceIndex struct {
+	name    string
+	columns []stmt.IndexColumn
+}
+
 // storedIndexes is the most create indexes of a table that a [Sequence] keeps for its conditions.
 const storedIndexes = 3
 
-// Indexed makes the sequence write more of slice 9: a create index about one statement in five,
-// where it is one in ten otherwise, and three WHERE in four of a table on which it drew a create
-// index as [Sequence.indexConditions] draws them, where it is one in two otherwise.
-func (q *Sequence) Indexed() {
-	q.heavy = true
-}
-
-// Mistyped makes one insert in eight of the sequence give an integer of a column of INT or INTEGER,
-// if it has one, as the real of the same value, which s4ql refuses, as it refuses every value of
-// another type than its column. SQLite converts the real back to the integer where a real holds the
-// integer exactly, as it does for the small integers that a sequence mostly gives; for an integer
-// beyond 2^53 the real is a neighbour of it, and SQLite refuses ±2^63, the real of the limits of 64
-// bits. The values that the conditions of a WHERE draw from keep the integer.
-func (q *Sequence) Mistyped() {
-	q.mistyped = true
-}
-
-// indexWhere reports whether a WHERE that an index of the sequence could serve is drawn as
-// [Sequence.indexConditions] draws it.
-func (q *Sequence) indexWhere() bool {
-	if q.heavy {
-		return q.r.IntN(4) != 0
+// indexWhere reports whether the WHERE of a statement of table is one that an index of the
+// sequence could serve, as [Sequence.indexConditions] draws it: for a table on which the sequence
+// drew a create index, one time in two, or three times in four with [Profile.Indexes] of 2.
+func (q *Sequence) indexWhere(table stmt.Name) bool {
+	if len(q.indexed[table.Fold()]) == 0 {
+		return false
 	}
-	return q.r.IntN(2) == 0
+	if q.profile.Indexes > 1 {
+		return q.rIndexes.IntN(4) != 0
+	}
+	return q.rIndexes.IntN(2) == 0
 }
 
 // storedValues is the most values of a column that a [Sequence] keeps for its conditions.
@@ -200,13 +243,22 @@ func common(pools [][]string, positions ...Position) []string {
 	return names
 }
 
-// NewSequence with the random numbers of r. It fails if [NamePools] fails.
-func NewSequence(r Rand) (*Sequence, error) {
+// NewSequence of the seed, with the profile of the seed, as [ProfileOf] gives it. It fails if
+// [NamePools] fails.
+func NewSequence(seed uint64) (*Sequence, error) {
+	return newSequence(seed, ProfileOf(seed))
+}
+
+// newSequence of the seed with the profile p.
+func newSequence(seed uint64, p *Profile) (*Sequence, error) {
 	common, err := commonPools()
 	if err != nil {
 		return nil, err
 	}
-	q := &Sequence{r: r, spelled: map[string][]string{}, shapes: map[string][]stmt.Column{}, stored: map[[2]string][]stmt.Value{}, indexed: map[string][][]stmt.IndexColumn{}}
+	q := &Sequence{seed: seed, profile: p, spelled: map[string][]string{}, shapes: map[string][]stmt.Column{}, stored: map[[2]string][]stmt.Value{}, indexed: map[string][]sequenceIndex{}}
+	q.rPlan, q.rTables, q.rInserts, q.rSelects, q.rChanges = q.stream(areaPlan), q.stream(areaTables), q.stream(areaInserts), q.stream(areaSelects), q.stream(areaChanges)
+	q.rIndexes, q.rDefaults, q.rArguments, q.rOthers = q.stream(areaIndexes), q.stream(areaDefaults), q.stream(areaArguments), q.stream(areaOthers)
+	r := q.entity(areaNames, "")
 	tableNames, columnNames := common[0], common[1]
 	for range 1 + r.IntN(2) {
 		q.tables = append(q.tables, spellings(r, tableNames[r.IntN(len(tableNames))])...)
@@ -223,26 +275,32 @@ func NewSequence(r Rand) (*Sequence, error) {
 		}
 	}
 	pools := make([][]string, len(PositionTexts))
-	for _, p := range []Position{CreateTable, InsertTable, SelectTable, DropTable} {
-		pools[p] = q.tables
+	for _, position := range []Position{CreateTable, InsertTable, SelectTable, DropTable, UpdateTable, DeleteTable, IndexTable, IndexName, DropIndex} {
+		pools[position] = q.tables
 	}
-	pools[UpdateTable], pools[DeleteTable], pools[IndexTable] = q.tables, q.tables, q.tables
 	pools[CreateColumn], pools[InsertColumn], pools[SelectColumn], pools[UpdateColumn], pools[IndexColumn] = q.columns, q.columns, q.columns, q.columns, q.columns
-	// The names of indexes, of which one is also among the names of a create table and a drop table,
-	// and one name of a table among those of a create index and a drop index, so that a table and an
-	// index meet at a name.
-	indexNames := common[2]
-	for range 1 + r.IntN(2) {
-		q.indexes = append(q.indexes, spellings(r, indexNames[r.IntN(len(indexNames))])...)
+	if p.Indexes > 0 {
+		// The names of indexes, of which one is also among the names of a create table and a drop table,
+		// and one name of a table among those of a create index and a drop index, so that a table and an
+		// index meet at a name.
+		r := q.entity(areaIndexes, "")
+		indexNames := common[2]
+		// One or two names, and two or three with [Profile.Indexes] of 2, so that a table has several
+		// indexes.
+		for range p.Indexes + r.IntN(2) {
+			q.indexes = append(q.indexes, spellings(r, indexNames[r.IntN(len(indexNames))])...)
+		}
+		pools[CreateTable] = append(slices.Clone(q.tables), q.indexes[r.IntN(len(q.indexes))])
+		pools[DropTable] = append(slices.Clone(q.tables), q.indexes[r.IntN(len(q.indexes))])
+		pools[IndexName] = append(slices.Clone(q.indexes), q.tables[r.IntN(len(q.tables))])
+		pools[DropIndex] = append(slices.Clone(q.indexes), q.tables[r.IntN(len(q.tables))])
 	}
-	pools[CreateTable] = append(slices.Clone(q.tables), q.indexes[r.IntN(len(q.indexes))])
-	pools[DropTable] = append(slices.Clone(q.tables), q.indexes[r.IntN(len(q.indexes))])
-	pools[IndexName] = append(slices.Clone(q.indexes), q.tables[r.IntN(len(q.tables))])
-	pools[DropIndex] = append(slices.Clone(q.indexes), q.tables[r.IntN(len(q.tables))])
-	q.g = NewGenerator(r, pools)
+	q.pools, q.live = pools, map[string]bool{}
+	q.g = NewGenerator(q.stream(areaText), slices.Clone(pools))
+	q.g.plan, q.g.clause, q.g.params, q.g.turned = q.rPlan, q.stream(areaExists), q.rArguments, q.stream(areaValueFirst)
 	q.g.Columns, q.g.Create, q.g.Insert, q.g.Select, q.g.Where = sequenceColumns, q.create, q.insert, q.selectList, q.where
 	q.g.Update, q.g.Delete, q.g.CreateIndex = q.update, q.delete, q.createIndex
-	q.g.Parameters, q.g.Exists, q.g.ValueFirst = 3, 3, 3
+	q.g.Parameters, q.g.Exists, q.g.ValueFirst = p.Parameters, p.Exists, p.ValueFirst
 	return q, nil
 }
 
@@ -253,9 +311,9 @@ func (q *Sequence) shapeOf(table stmt.Name) []stmt.Column {
 	if ok {
 		return shape
 	}
-	r := q.r
+	r := q.entity(areaTables, name)
 	folds := slices.Clone(q.folds)
-	n := 1 + r.IntN(sequenceColumns)
+	n := max(1+r.IntN(sequenceColumns), q.profile.Columns)
 	key := r.IntN(n)
 	for i := range n {
 		j := i + r.IntN(len(folds)-i)
@@ -273,11 +331,18 @@ func (q *Sequence) shapeOf(table stmt.Name) []stmt.Column {
 	for i := range shape {
 		shape[i].NotNull = !shape[i].PrimaryKey && (nulls == 0 || nulls == 2 && r.IntN(2) == 0)
 	}
-	// Of all the columns, none has a default, every one has, or each one time in two.
-	defaults := r.IntN(3)
-	for i := range shape {
-		if defaults == 1 || defaults == 2 && r.IntN(2) == 0 {
-			shape[i].Default.Value = q.defaultOf(shape[i].Type)
+	if q.profile.Defaults > 0 {
+		// Of all the columns, none has a default, every one has, or each one time in two, and with
+		// [Profile.Defaults] of 2 every one has, or each one time in two.
+		d := q.entity(areaDefaults, name)
+		defaults := 1 + d.IntN(2)
+		if q.profile.Defaults == 1 {
+			defaults = d.IntN(3)
+		}
+		for i := range shape {
+			if defaults == 1 || defaults == 2 && d.IntN(2) == 0 {
+				shape[i].Default.Value = q.defaultOf(d, shape[i].Type)
+			}
 		}
 	}
 	q.shapes[name] = shape
@@ -293,8 +358,7 @@ func (q *Sequence) shapeOf(table stmt.Name) []stmt.Column {
 // never longer than [LengthLimit]/2 bytes. A shape with two or three long defaults can be too big for
 // the lowered limit, and its create table then gets `string or blob too big` in every create of the
 // sequence, which is one of the outcomes that the tests count.
-func (q *Sequence) defaultOf(t stmt.Type) stmt.Value {
-	r := q.r
+func (q *Sequence) defaultOf(r Rand, t stmt.Type) stmt.Value {
 	if r.IntN(6) == 0 {
 		return stmt.Null{}
 	}
@@ -304,7 +368,7 @@ func (q *Sequence) defaultOf(t stmt.Type) stmt.Value {
 	case t == stmt.TypeBlob && r.IntN(3) == 0:
 		return stmt.Blob(strings.Repeat("d", LengthLimit/5+r.IntN(20)))
 	}
-	switch v := q.valueOf(t).(type) {
+	switch v := q.valueOf(r, t).(type) {
 	case stmt.Text:
 		if len(v) > LengthLimit/2 {
 			return stmt.Text(strings.ToValidUTF8(string(v[:LengthLimit/4]), ""))
@@ -321,14 +385,14 @@ func (q *Sequence) defaultOf(t stmt.Type) stmt.Value {
 }
 
 // spell the name of a column of the fold in one of its spellings.
-func (q *Sequence) spell(fold string) string {
+func (q *Sequence) spell(r Rand, fold string) string {
 	raws := q.spelled[fold]
-	return raws[q.r.IntN(len(raws))]
+	return raws[r.IntN(len(raws))]
 }
 
 // anyType at random.
-func (q *Sequence) anyType() stmt.Type {
-	return Types[q.r.IntN(len(Types))]
+func anyType(r Rand) stmt.Type {
+	return Types[r.IntN(len(Types))]
 }
 
 // leavesOutLong reports whether a list of the positions order of the columns of the shape leaves out
@@ -361,21 +425,21 @@ func leavesOutLong(shape []stmt.Column, order []int) bool {
 // defaults; or one time in ten columns at random, whose names can repeat, of which each outside the
 // key takes NULL one time in two, and each has a default one time in four.
 func (q *Sequence) create(table stmt.Name) []stmt.Column {
-	r := q.r
+	r, d := q.rTables, q.rDefaults
 	shape := q.shapeOf(table)
 	// A create index names a table that a create table named more often than one that none named,
 	// since a create index of a table that is not there only fails.
-	if pool := &q.g.pools[IndexTable]; len(*pool) < 4*len(q.tables) {
+	if pool := &q.pools[IndexTable]; len(*pool) < 4*len(q.tables) {
 		*pool = append(slices.Clip(*pool), table.Raw, table.Raw)
 	}
-	if r.IntN(10) == 0 {
+	if q.fault(r, areaTables, 10) {
 		n := 1 + r.IntN(sequenceColumns)
 		key := r.IntN(n)
 		columns := make([]stmt.Column, n)
 		for i := range columns {
-			columns[i] = stmt.Column{Name: stmt.Name{Raw: q.columns[r.IntN(len(q.columns))]}, Type: q.anyType(), PrimaryKey: i == key, NotNull: r.IntN(2) == 0}
-			if r.IntN(4) == 0 {
-				columns[i].Default.Value = q.defaultOf(columns[i].Type)
+			columns[i] = stmt.Column{Name: stmt.Name{Raw: q.columns[r.IntN(len(q.columns))]}, Type: anyType(r), PrimaryKey: i == key, NotNull: r.IntN(2) == 0}
+			if q.profile.Defaults > 0 && d.IntN(4) == 0 {
+				columns[i].Default.Value = q.defaultOf(d, columns[i].Type)
 			}
 		}
 		return columns
@@ -387,17 +451,17 @@ func (q *Sequence) create(table stmt.Name) []stmt.Column {
 	if r.IntN(10) == 0 {
 		renulled = r.IntN(len(shape))
 	}
-	if r.IntN(10) == 0 {
-		redefaulted = r.IntN(len(shape))
+	if q.profile.Defaults > 0 && d.IntN(10) == 0 {
+		redefaulted = d.IntN(len(shape))
 	}
 	var columns []stmt.Column
 	for i, c := range shape {
-		c.Name = stmt.Name{Raw: q.spell(c.Name.Value)}
+		c.Name = stmt.Name{Raw: q.spell(r, c.Name.Value)}
 		if i == retyped {
-			c.Type = q.anyType()
+			c.Type = anyType(r)
 			if _, null := c.Default.Value.(stmt.Null); c.Default.Value != nil && !null {
 				// A default of another type than its column is not supported.
-				c.Default.Value = q.defaultOf(c.Type)
+				c.Default.Value = q.defaultOf(d, c.Type)
 			}
 		}
 		if i == renulled {
@@ -405,8 +469,8 @@ func (q *Sequence) create(table stmt.Name) []stmt.Column {
 		}
 		if i == redefaulted {
 			c.Default.Value = nil
-			if r.IntN(3) != 0 {
-				c.Default.Value = q.defaultOf(c.Type)
+			if d.IntN(3) != 0 {
+				c.Default.Value = q.defaultOf(d, c.Type)
 			}
 		}
 		columns = append(columns, c)
@@ -425,7 +489,7 @@ func (q *Sequence) create(table stmt.Name) []stmt.Column {
 // After [Sequence.Mistyped], one insert in eight also gives an integer of a column of INT or
 // INTEGER as a real.
 func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
-	r := q.r
+	r, d := q.rInserts, q.rDefaults
 	shape := q.shapeOf(table)
 	order := make([]int, len(shape))
 	for i := range order {
@@ -450,15 +514,15 @@ func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 			case c.Default.Value == nil:
 				return false
 			case c.PrimaryKey:
-				return r.IntN(4) == 0
+				return d.IntN(4) == 0
 			}
-			return r.IntN(2) == 0
+			return d.IntN(2) == 0
 		})
 		if len(order) == 0 {
 			// A list names a column at least: the key.
 			order = []int{slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })}
 		}
-		if len(order) > 1 && r.IntN(8) == 0 {
+		if len(order) > 1 && q.fault(r, areaInserts, 8) {
 			at := r.IntN(len(order))
 			order = slices.Delete(order, at, at+1)
 		}
@@ -468,15 +532,15 @@ func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 	for _, position := range order {
 		c := shape[position]
 		if withList {
-			list = append(list, q.spell(c.Name.Value))
+			list = append(list, q.spell(r, c.Name.Value))
 		}
 		if !c.PrimaryKey && !c.NotNull && r.IntN(4) == 0 {
 			values = append(values, stmt.Null{})
 			continue
 		}
-		values = append(values, q.valueOf(c.Type))
+		values = append(values, q.valueOf(r, c.Type))
 	}
-	if withList && leavesOutLong(shape, order) && r.IntN(2) == 0 {
+	if withList && leavesOutLong(shape, order) && d.IntN(2) == 0 {
 		// Beside a long default that the list leaves out, one time in two, a value of 85 hundredths of
 		// the length limit for the first column of text or a blob of the list, which fits a row alone,
 		// so that the default makes the record of the row too big.
@@ -492,7 +556,7 @@ func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 			break
 		}
 	}
-	if withList && r.IntN(12) == 0 {
+	if withList && q.fault(r, areaInserts, 12) {
 		seen := map[string]bool{}
 		for _, raw := range list {
 			seen[nameOf(raw, 0).Fold()] = true
@@ -506,26 +570,25 @@ func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 			}
 		}
 	}
-	if r.IntN(10) == 0 {
-		values[r.IntN(len(values))] = q.valueOf(q.anyType())
+	if q.fault(r, areaInserts, 10) {
+		values[r.IntN(len(values))] = q.valueOf(r, anyType(r))
 		if r.IntN(3) == 0 {
-			values[r.IntN(len(values))] = q.valueOf(q.anyType())
+			values[r.IntN(len(values))] = q.valueOf(r, anyType(r))
 		}
 	}
-	if r.IntN(12) == 0 {
+	if q.fault(r, areaInserts, 12) {
 		// NULL for any column: the key, one that does not take NULL, or one that does.
 		values[r.IntN(len(values))] = stmt.Null{}
 	}
-	switch r.IntN(16) {
-	case 0:
-		values = append(values, q.valueOf(q.anyType()))
-	case 1:
-		if len(values) > 1 {
+	if q.fault(r, areaInserts, 8) {
+		if r.IntN(2) == 0 {
+			values = append(values, q.valueOf(r, anyType(r)))
+		} else if len(values) > 1 {
 			values = values[:len(values)-1]
 		}
 	}
 	q.store(table, shape, list, values)
-	if q.mistyped && r.IntN(8) == 0 {
+	if q.profile.Mistyped > 0 && r.IntN(q.profile.Mistyped) == 0 {
 		// An integer of a column of INT or INTEGER as the real of its value, which the values of the
 		// conditions keep as the integer. The column of a value is the one that the list names in its
 		// place, which is another than the one of order where the list names another column.
@@ -579,7 +642,7 @@ func (q *Sequence) store(table stmt.Name, shape []stmt.Column, list []string, va
 // from one to [sequenceColumns]+1 names of the columns of its shape, of which one in four after the
 // first is an earlier one, and one in twelve any name of a column of the sequence.
 func (q *Sequence) selectList(table stmt.Name) []string {
-	r := q.r
+	r := q.rSelects
 	if r.IntN(2) == 0 {
 		return nil
 	}
@@ -589,10 +652,10 @@ func (q *Sequence) selectList(table stmt.Name) []string {
 		switch {
 		case i > 0 && r.IntN(4) == 0:
 			names = append(names, names[r.IntN(i)])
-		case r.IntN(12) == 0:
+		case q.fault(r, areaSelects, 12):
 			names = append(names, q.columns[r.IntN(len(q.columns))])
 		default:
-			names = append(names, q.spell(shape[r.IntN(len(shape))].Name.Value))
+			names = append(names, q.spell(r, shape[r.IntN(len(shape))].Name.Value))
 		}
 	}
 	return names
@@ -623,30 +686,29 @@ var inverses = map[stmt.Operator]stmt.Operator{
 // has one more condition, the inverse of one of its conditions, which contradicts it, and for a
 // bound of the key leaves the range of the two without a key.
 func (q *Sequence) where(table stmt.Name) []stmt.Condition {
-	if q.r.IntN(map[bool]int{false: 2, true: 4}[q.heavy]) == 0 {
+	if q.rSelects.IntN(4) >= q.profile.Where {
 		return nil
 	}
-	if q.indexWhere() {
-		if cs := q.indexConditions(table); cs != nil {
-			return cs
-		}
+	if q.indexWhere(table) {
+		return q.indexConditions(table)
 	}
-	return q.conditions(table)
+	return q.conditions(q.rSelects, areaSelects, table)
 }
 
 // conditions of a WHERE of a statement of table, one or more, as [Sequence.where] draws them when it
-// gives a WHERE.
-func (q *Sequence) conditions(table stmt.Name) []stmt.Condition {
-	r := q.r
+// gives a WHERE, with the random numbers of r, and with the faults of the area, as [Sequence.fault]
+// draws them: a column that the shape does not have, a contradiction, and a value that is NULL or of
+// another type than its column.
+func (q *Sequence) conditions(r Rand, area string, table stmt.Name) []stmt.Condition {
 	shape := q.shapeOf(table)
 	key := &shape[slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })]
 	var cs []stmt.Condition
 	n := 1 + r.IntN(2)
 	switch {
 	case r.IntN(5) == 0:
-		lower := stmt.Condition{Column: stmt.Name{Raw: q.spell(key.Name.Value)}, Operator: []stmt.Operator{stmt.OpGreater, stmt.OpGreaterOrEqual}[r.IntN(2)]}
-		upper := stmt.Condition{Column: stmt.Name{Raw: q.spell(key.Name.Value)}, Operator: []stmt.Operator{stmt.OpLess, stmt.OpLessOrEqual}[r.IntN(2)]}
-		lower.Value.Value, upper.Value.Value = q.conditionValue(table, key.Name.Value, key.Type), q.conditionValue(table, key.Name.Value, key.Type)
+		lower := stmt.Condition{Column: stmt.Name{Raw: q.spell(r, key.Name.Value)}, Operator: []stmt.Operator{stmt.OpGreater, stmt.OpGreaterOrEqual}[r.IntN(2)]}
+		upper := stmt.Condition{Column: stmt.Name{Raw: q.spell(r, key.Name.Value)}, Operator: []stmt.Operator{stmt.OpLess, stmt.OpLessOrEqual}[r.IntN(2)]}
+		lower.Value.Value, upper.Value.Value = q.conditionValue(r, area, table, key.Name.Value, key.Type), q.conditionValue(r, area, table, key.Name.Value, key.Type)
 		a, b := termValue(lower.Value, nil), termValue(upper.Value, nil)
 		if a != nil && b != nil && reflect.TypeOf(a) == reflect.TypeOf(b) && compareValues(a, b) > 0 && r.IntN(4) != 0 {
 			lower.Value, upper.Value = upper.Value, lower.Value
@@ -667,16 +729,16 @@ func (q *Sequence) conditions(table stmt.Name) []stmt.Condition {
 		case len(cs) > 0 && r.IntN(4) == 0:
 			c.Column.Raw = cs[r.IntN(len(cs))].Column.Raw
 			if column = columnOfShape(shape, nameOf(c.Column.Raw, 0).Fold()); column != nil {
-				c.Column.Raw = q.spell(column.Name.Value)
+				c.Column.Raw = q.spell(r, column.Name.Value)
 			}
-		case r.IntN(10) == 0:
-			c.Column.Raw = q.missing(shape)
+		case q.fault(r, area, 10):
+			c.Column.Raw = q.missing(r, shape)
 		case r.IntN(3) == 0:
 			column = key
-			c.Column.Raw = q.spell(column.Name.Value)
+			c.Column.Raw = q.spell(r, column.Name.Value)
 		default:
 			column = &shape[r.IntN(len(shape))]
-			c.Column.Raw = q.spell(column.Name.Value)
+			c.Column.Raw = q.spell(r, column.Name.Value)
 		}
 		switch r.IntN(12) {
 		case 0:
@@ -685,15 +747,15 @@ func (q *Sequence) conditions(table stmt.Name) []stmt.Condition {
 			c.Operator = stmt.OpIsNotNull
 		default:
 			c.Operator = comparisons[r.IntN(len(comparisons))]
-			t, fold := q.anyType(), ""
+			t, fold := anyType(r), ""
 			if column != nil {
 				t, fold = column.Type, column.Name.Value
 			}
-			c.Value.Value = q.conditionValue(table, fold, t)
+			c.Value.Value = q.conditionValue(r, area, table, fold, t)
 		}
 		cs = append(cs, c)
 	}
-	if len(cs) > 0 && r.IntN(8) == 0 {
+	if len(cs) > 0 && q.fault(r, area, 8) {
 		c := cs[r.IntN(len(cs))]
 		c.Operator = inverses[c.Operator]
 		cs = append(cs, c)
@@ -709,14 +771,14 @@ func (q *Sequence) conditions(table stmt.Name) []stmt.Condition {
 // SQLite gives `no such column` for the first in the order of the text. The columns are kept for the
 // conditions of a WHERE, as [Sequence.indexConditions] draws them.
 func (q *Sequence) createIndex(index, table stmt.Name) []stmt.IndexColumn {
-	r := q.r
+	r := q.rIndexes
 	shape := q.shapeOf(table)
 	order := make([]int, len(shape))
 	for i := range order {
 		order[i] = i
 	}
 	shuffle(r, order)
-	if q.heavy && len(order) > 1 && r.IntN(2) == 0 {
+	if q.profile.Indexes > 1 && len(order) > 1 && r.IntN(4) != 0 {
 		// Every column but the key, whose pin the rules read by a get, so that a WHERE pins several
 		// columns of the index, and reaches the key after them.
 		order = slices.DeleteFunc(order, func(position int) bool { return shape[position].PrimaryKey })
@@ -727,13 +789,13 @@ func (q *Sequence) createIndex(index, table stmt.Name) []stmt.IndexColumn {
 	for _, position := range order {
 		c := shape[position]
 		descending := r.IntN(3) == 0
-		columns = append(columns, stmt.IndexColumn{Name: stmt.Name{Raw: q.spell(c.Name.Value)}, Descending: descending})
+		columns = append(columns, stmt.IndexColumn{Name: stmt.Name{Raw: q.spell(r, c.Name.Value)}, Descending: descending})
 		kept = append(kept, stmt.IndexColumn{Name: stmt.Name{Value: c.Name.Value}, Descending: descending})
 	}
 	missing := ""
-	for range map[bool]int{true: 1, false: 0}[r.IntN(12) == 0] + map[bool]int{true: 1, false: 0}[r.IntN(40) == 0] {
+	for range map[bool]int{true: 1, false: 0}[q.fault(r, areaIndexes, 12)] + map[bool]int{true: 1, false: 0}[q.fault(r, areaIndexes, 40)] {
 		// A second name is another than the first, since a column named twice is not supported.
-		raw := q.missing(shape)
+		raw := q.missing(r, shape)
 		if missing != "" && nameOf(raw, 0).Fold() == nameOf(missing, 0).Fold() {
 			break
 		}
@@ -741,11 +803,13 @@ func (q *Sequence) createIndex(index, table stmt.Name) []stmt.IndexColumn {
 		at := r.IntN(len(columns) + 1)
 		columns = slices.Insert(columns, at, stmt.IndexColumn{Name: stmt.Name{Raw: raw}, Descending: r.IntN(3) == 0})
 	}
-	indexed := q.indexed[table.Fold()]
-	if len(indexed) == storedIndexes {
-		indexed = indexed[1:]
+	if q.live[table.Fold()] && !q.live[index.Fold()] && !q.liveIndex(index.Fold()) && missing == "" {
+		indexed := q.indexed[table.Fold()]
+		if len(indexed) == storedIndexes {
+			indexed = indexed[1:]
+		}
+		q.indexed[table.Fold()] = append(slices.Clip(indexed), sequenceIndex{name: index.Fold(), columns: kept})
 	}
-	q.indexed[table.Fold()] = append(slices.Clip(indexed), kept)
 	return columns
 }
 
@@ -757,13 +821,13 @@ func (q *Sequence) createIndex(index, table stmt.Name) []stmt.IndexColumn {
 // of the table after the columns of the index, each open or closed; and one time in three one more
 // condition as [Sequence.conditions] draws it. The conditions are in any order one time in three.
 func (q *Sequence) indexConditions(table stmt.Name) []stmt.Condition {
-	r := q.r
+	r := q.rIndexes
 	indexed := q.indexed[table.Fold()]
 	if len(indexed) == 0 {
 		return nil
 	}
 	shape := q.shapeOf(table)
-	columns := indexed[r.IntN(len(indexed))]
+	columns := indexed[r.IntN(len(indexed))].columns
 	var key []string
 	for _, c := range columns {
 		key = append(key, c.Name.Value)
@@ -777,15 +841,19 @@ func (q *Sequence) indexConditions(table stmt.Name) []stmt.Condition {
 		if c := columnOfShape(shape, fold); c != nil {
 			return c.Type
 		}
-		return q.anyType()
+		return anyType(r)
 	}
 	pins := 1 + r.IntN(len(columns))
-	if q.heavy && r.IntN(2) == 0 {
+	if q.profile.Indexes > 1 && r.IntN(2) == 0 {
 		pins = len(columns)
+	}
+	if r.IntN(8) == 0 {
+		// No pin, and a bound or two on the first column of the index.
+		pins = 0
 	}
 	var cs []stmt.Condition
 	for _, fold := range key[:pins] {
-		c := stmt.Condition{Column: stmt.Name{Raw: q.spell(fold)}, Operator: stmt.OpEqual}
+		c := stmt.Condition{Column: stmt.Name{Raw: q.spell(r, fold)}, Operator: stmt.OpEqual}
 		// A column that takes NULL is pinned by IS NULL more often, since only there does the pin find
 		// rows, and the path of the index pins NULL.
 		odds := 8
@@ -795,21 +863,28 @@ func (q *Sequence) indexConditions(table stmt.Name) []stmt.Condition {
 		if r.IntN(odds) == 0 {
 			c.Operator = stmt.OpIsNull
 		} else {
-			c.Value.Value = q.conditionValue(table, fold, typeOf(fold))
+			c.Value.Value = q.conditionValue(r, areaIndexes, table, fold, typeOf(fold))
 		}
 		cs = append(cs, c)
 	}
-	if pins < len(key) && r.IntN(2) == 0 {
+	if pins > 0 && pins < len(key) && q.profile.Indexes > 1 && r.IntN(4) == 0 {
+		// The next column of the key of the index pinned too, so that a WHERE pins the key of the
+		// table after every column of an index.
+		fold := key[pins]
+		c := stmt.Condition{Column: stmt.Name{Raw: q.spell(r, fold)}, Operator: stmt.OpEqual}
+		c.Value.Value = q.conditionValue(r, areaIndexes, table, fold, typeOf(fold))
+		cs = append(cs, c)
+	} else if pins < len(key) && (pins == 0 || r.IntN(2) == 0) {
 		fold := key[pins]
 		bounds := []stmt.Operator{stmt.OpLess, stmt.OpLessOrEqual, stmt.OpGreater, stmt.OpGreaterOrEqual}
 		for range 1 + r.IntN(2) {
-			c := stmt.Condition{Column: stmt.Name{Raw: q.spell(fold)}, Operator: bounds[r.IntN(len(bounds))]}
-			c.Value.Value = q.conditionValue(table, fold, typeOf(fold))
+			c := stmt.Condition{Column: stmt.Name{Raw: q.spell(r, fold)}, Operator: bounds[r.IntN(len(bounds))]}
+			c.Value.Value = q.conditionValue(r, areaIndexes, table, fold, typeOf(fold))
 			cs = append(cs, c)
 		}
 	}
 	if r.IntN(3) == 0 {
-		more := q.conditions(table)
+		more := q.conditions(r, areaIndexes, table)
 		cs = append(cs, more[r.IntN(len(more))])
 	}
 	if r.IntN(3) == 0 {
@@ -838,14 +913,14 @@ func columnOfShape(shape []stmt.Column, fold string) *stmt.Column {
 
 // missing gives the raw text of a name of a column of the sequence that the shape does not have.
 // The sequence has more names than a shape has columns, so there is one.
-func (q *Sequence) missing(shape []stmt.Column) string {
+func (q *Sequence) missing(r Rand, shape []stmt.Column) string {
 	var raws []string
 	for _, raw := range q.columns {
 		if columnOfShape(shape, nameOf(raw, 0).Fold()) == nil {
 			raws = append(raws, raw)
 		}
 	}
-	return raws[q.r.IntN(len(raws))]
+	return raws[r.IntN(len(raws))]
 }
 
 // update gives the assignments and the conditions of an update of table, as [Generator.Update] gives
@@ -860,7 +935,7 @@ func (q *Sequence) missing(shape []stmt.Column) string {
 // also one that does not. Three updates in four have a WHERE, as [Sequence.changeConditions] draws one. The
 // values of the assignments are kept, as [Sequence.store] keeps those of an insert.
 func (q *Sequence) update(table stmt.Name) ([]stmt.Assignment, []stmt.Condition) {
-	r := q.r
+	r := q.rChanges
 	shape := q.shapeOf(table)
 	order := make([]int, len(shape))
 	for i := range order {
@@ -875,7 +950,7 @@ func (q *Sequence) update(table stmt.Name) ([]stmt.Assignment, []stmt.Condition)
 		order = slices.DeleteFunc(order, func(position int) bool { return shape[position].PrimaryKey })
 	}
 	missing := -1
-	if r.IntN(12) == 0 {
+	if q.fault(r, areaChanges, 12) {
 		missing = r.IntN(len(order))
 	}
 	var set []stmt.Assignment
@@ -883,20 +958,23 @@ func (q *Sequence) update(table stmt.Name) ([]stmt.Assignment, []stmt.Condition)
 	var values []stmt.Value
 	for i, position := range order {
 		c := shape[position]
-		raw, fold, t := q.spell(c.Name.Value), c.Name.Value, c.Type
+		raw, fold, t := q.spell(r, c.Name.Value), c.Name.Value, c.Type
 		if i == missing {
-			raw, fold, t = q.missing(shape), "", q.anyType()
+			raw, fold, t = q.missing(r, shape), "", anyType(r)
 		}
 		var v stmt.Value
 		switch {
 		case r.IntN(10) == 0:
 			v = stmt.Null{}
+		case t == stmt.TypeReal && r.IntN(4) == 0:
+			// The two zeros, which SQLite takes for one key and stores as they are written.
+			v = stmt.Real([]float64{0, math.Copysign(0, -1)}[r.IntN(2)])
 		case (t == stmt.TypeText || t == stmt.TypeBlob) && r.IntN(12) == 0:
 			// Of about the length limit, so that the record of the row is too long now and then.
 			s := long(r, func(n int) string { return runes(r, n) })
 			v = map[bool]stmt.Value{true: stmt.Text(s), false: stmt.Blob(s)}[t == stmt.TypeText]
 		default:
-			v = q.conditionValue(table, fold, t)
+			v = q.conditionValue(r, areaChanges, table, fold, t)
 		}
 		set = append(set, stmt.Assignment{Column: stmt.Name{Raw: raw}, Value: stmt.Term{Value: v}})
 		list, values = append(list, raw), append(values, v)
@@ -912,7 +990,7 @@ func (q *Sequence) update(table stmt.Name) ([]stmt.Assignment, []stmt.Condition)
 // time in five, which deletes every row, and otherwise a WHERE as [Sequence.changeConditions] draws
 // one.
 func (q *Sequence) delete(table stmt.Name) []stmt.Condition {
-	if q.r.IntN(5) == 0 {
+	if q.rChanges.IntN(5) == 0 {
 		return nil
 	}
 	return q.changeConditions(table)
@@ -927,24 +1005,23 @@ func (q *Sequence) delete(table stmt.Name) []stmt.Condition {
 // sequence draws the same random numbers as for the key equal to the value. Otherwise the
 // conditions are as [Sequence.conditions] draws them.
 func (q *Sequence) changeConditions(table stmt.Name) []stmt.Condition {
+	r := q.rChanges
 	shape := q.shapeOf(table)
 	key := shape[slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })]
-	if stored := q.stored[[2]string{table.Fold(), key.Name.Value}]; len(stored) > 0 && q.r.IntN(3) == 0 {
+	if stored := q.stored[[2]string{table.Fold(), key.Name.Value}]; len(stored) > 0 && r.IntN(2) == 0 {
 		// The spelling first, and then the value, as for the key equal to the value.
-		column := stmt.Name{Raw: q.spell(key.Name.Value)}
-		i := q.r.IntN(len(stored))
+		column := stmt.Name{Raw: q.spell(r, key.Name.Value)}
+		i := r.IntN(len(stored))
 		op := stmt.OpEqual
 		if i%3 == 2 {
 			op = bounds[i/3%len(bounds)]
 		}
 		return []stmt.Condition{{Column: column, Operator: op, Value: stmt.Term{Value: stored[i]}}}
 	}
-	if q.indexWhere() {
-		if cs := q.indexConditions(table); cs != nil {
-			return cs
-		}
+	if q.indexWhere(table) {
+		return q.indexConditions(table)
 	}
-	return q.conditions(table)
+	return q.conditions(r, areaChanges, table)
 }
 
 // conditionValue for a condition on the column of the fold of a select of table, of type t, or of a
@@ -953,26 +1030,31 @@ func (q *Sequence) changeConditions(table stmt.Name) []stmt.Condition {
 // sequence gave the column, as [Sequence.store] keeps them, two times in five, and a neighbour of
 // one, as [Sequence.neighbour] gives it, one time in eight; an edge of t, as [edgeOf] gives it, one
 // time in ten; and otherwise as [Sequence.valueOf] gives it.
-func (q *Sequence) conditionValue(table stmt.Name, fold string, t stmt.Type) stmt.Value {
-	r := q.r
+func (q *Sequence) conditionValue(r Rand, area string, table stmt.Name, fold string, t stmt.Type) stmt.Value {
 	stored := q.stored[[2]string{table.Fold(), fold}]
-	switch n := r.IntN(40); {
+	n := r.IntN(40)
+	if n < 4 && !q.fault(r, area, 1) {
+		// In a profile without the faults of the area, three of four of the values that would be NULL
+		// or of another type are as [Sequence.valueOf] gives them.
+		n = 39
+	}
+	switch {
 	case n < 2:
 		return stmt.Null{}
 	case n < 4:
 		for {
-			if other := q.anyType(); kindOf(other) != kindOf(t) {
-				return q.valueOf(other)
+			if other := anyType(r); kindOf(other) != kindOf(t) {
+				return q.valueOf(r, other)
 			}
 		}
 	case n < 20 && len(stored) > 0:
 		return stored[r.IntN(len(stored))]
 	case n < 25 && len(stored) > 0:
-		return q.neighbour(stored[r.IntN(len(stored))])
+		return neighbour(r, stored[r.IntN(len(stored))])
 	case n < 29:
 		return edgeOf(r, t)
 	}
-	return q.valueOf(t)
+	return q.valueOf(r, t)
 }
 
 // kindOf the values of a column of the type t: INT and INTEGER hold one kind.
@@ -985,16 +1067,17 @@ func kindOf(t stmt.Type) stmt.Type {
 
 // edgeOf the type t at random from r: for an integer the limits of 64 bits, 0, -1, and 1; for a real
 // 0.0, -0.0, the largest and the smallest finite reals of each sign; for text the empty text, the
-// greatest code point, and the least that a text holds; and for a blob the empty blob, one zero byte,
-// and one byte of 255.
+// greatest code point, the least that a text holds, and a text of a byte more than [LengthLimit]; and
+// for a blob the empty blob, one zero byte, one byte of 255, and a blob of a byte more than
+// [LengthLimit].
 func edgeOf(r Rand, t stmt.Type) stmt.Value {
 	switch t {
 	case stmt.TypeReal:
 		return stmt.Real([]float64{0, math.Copysign(0, -1), math.MaxFloat64, -math.MaxFloat64, math.SmallestNonzeroFloat64, -math.SmallestNonzeroFloat64}[r.IntN(6)])
 	case stmt.TypeText:
-		return stmt.Text([]string{"", "\U0010ffff", "\x01"}[r.IntN(3)])
+		return stmt.Text([]string{"", "\U0010ffff", "\x01", strings.Repeat("e", LengthLimit+1)}[r.IntN(4)])
 	case stmt.TypeBlob:
-		return stmt.Blob([][]byte{{}, {0}, {0xff}}[r.IntN(3)])
+		return stmt.Blob([][]byte{{}, {0}, {0xff}, []byte(strings.Repeat("e", LengthLimit+1))}[r.IntN(4)])
 	}
 	return stmt.Integer([]int64{math.MinInt64, math.MaxInt64, 0, -1, 1}[r.IntN(5)])
 }
@@ -1003,8 +1086,7 @@ func edgeOf(r Rand, t stmt.Type) stmt.Value {
 // below, or for text and a blob a prefix of it, the least value above it, or the value with its last
 // character or byte one more or one less, whichever of these stays a value of its type, and v where
 // none does.
-func (q *Sequence) neighbour(v stmt.Value) stmt.Value {
-	r := q.r
+func neighbour(r Rand, v stmt.Value) stmt.Value {
 	up := r.IntN(2) == 0
 	switch v := v.(type) {
 	case stmt.Integer:
@@ -1057,8 +1139,7 @@ func (q *Sequence) neighbour(v stmt.Value) stmt.Value {
 // valueOf the type t: mostly from a small set, so that keys repeat, and otherwise as [ValueOf]
 // gives it, with weight on its edges, or, for text and a blob, one time in 16 of about
 // [LengthLimit] bytes.
-func (q *Sequence) valueOf(t stmt.Type) stmt.Value {
-	r := q.r
+func (q *Sequence) valueOf(r Rand, t stmt.Type) stmt.Value {
 	if t == stmt.TypeText || t == stmt.TypeBlob {
 		if r.IntN(16) == 0 {
 			v := long(r, func(n int) string { return runes(r, n) })
@@ -1083,8 +1164,8 @@ func (q *Sequence) valueOf(t stmt.Type) stmt.Value {
 }
 
 // anyValue of a type at random, as an argument.
-func (q *Sequence) anyValue() any {
-	return Argument(q.valueOf(Types[q.r.IntN(len(Types))]))
+func (q *Sequence) anyValue(r Rand) any {
+	return Argument(q.valueOf(r, anyType(r)))
 }
 
 // Like a, an argument: another value of the sequence of the same Go type, if a is a value that a
@@ -1094,18 +1175,19 @@ func (q *Sequence) Like(a any) any {
 	if s, ok := a.(string); ok && (!utf8.ValidString(s) || strings.ContainsRune(s, 0)) {
 		return a
 	}
+	r := q.rArguments
 	switch v := a.(type) {
 	case int64:
-		return Argument(q.valueOf(stmt.TypeInt))
+		return Argument(q.valueOf(r, stmt.TypeInt))
 	case float64:
 		if !math.IsNaN(v) && !math.IsInf(v, 0) {
-			return Argument(q.valueOf(stmt.TypeReal))
+			return Argument(q.valueOf(r, stmt.TypeReal))
 		}
 	case string:
-		return Argument(q.valueOf(stmt.TypeText))
+		return Argument(q.valueOf(r, stmt.TypeText))
 	case []byte:
 		if v != nil {
-			return Argument(q.valueOf(stmt.TypeBlob))
+			return Argument(q.valueOf(r, stmt.TypeBlob))
 		}
 	}
 	return a
@@ -1209,11 +1291,96 @@ func integer(a any) (int64, bool) {
 // changes them for one call in four of a statement with a parameter and for one in twenty of a
 // statement without one.
 func (q *Sequence) Next() Call {
+	q.step++
 	c := q.next()
-	if c.Supported && q.r.IntN(map[bool]int{true: 4, false: 20}[len(c.Args) > 0]) == 0 {
+	if odds := q.profile.Around[map[bool]int{true: 0, false: 1}[len(c.Args) > 0]]; c.Supported && odds > 0 && q.rArguments.IntN(odds) == 0 {
 		c.Args = q.around(c.Args)
 	}
 	return c
+}
+
+// aim gives the generator its pools of names for the statement of the kind k, and the kind of the
+// statement. If aimed, the statement is aimed at the tables as the sequence left them, by its own
+// statements, whether SQLite took them or not: a create table names a table that the sequence has not
+// created, or has dropped since, if there is one; every other statement names a table that it has
+// created and not dropped, if there is one; and if there is none, the statement is a create table in
+// its place, but for a drop table and a drop index; a create index names an index that the sequence
+// does not keep, or one time in four one that it keeps, and a drop index one that it keeps, as
+// [Sequence.indexed] says, if there is one, and one drop table in four names an index that it keeps. So most statements of a profile with
+// [Profile.Aim] meet a table that is there, where most of a sequence that names its tables at random
+// do not. Otherwise the generator has every name of the sequence for each position.
+func (q *Sequence) aim(r Rand, k Kind, aimed bool) Kind {
+	copy(q.g.pools, q.pools)
+	if !aimed {
+		return k
+	}
+	var live, dead []string
+	for _, raw := range q.tables {
+		if q.live[nameOf(raw, 0).Fold()] {
+			live = append(live, raw)
+		} else {
+			dead = append(dead, raw)
+		}
+	}
+	if len(live) == 0 && k != KindDropTable && k != KindDropIndex {
+		k = KindCreateTable
+	}
+	if len(live) > 0 {
+		for _, position := range []Position{InsertTable, SelectTable, UpdateTable, DeleteTable, IndexTable, DropTable} {
+			q.g.pools[position] = live
+		}
+	}
+	if len(dead) > 0 {
+		q.g.pools[CreateTable] = dead
+	}
+	// A create index names an index that the sequence does not keep, and a drop index one that it
+	// keeps, if there is one.
+	live, dead = nil, nil
+	for _, raw := range q.indexes {
+		if q.liveIndex(nameOf(raw, 0).Fold()) {
+			live = append(live, raw)
+		} else {
+			dead = append(dead, raw)
+		}
+	}
+	if len(live) > 0 {
+		q.g.pools[DropIndex] = live
+		if k == KindDropTable && r.IntN(4) == 0 {
+			// One drop table in four names an index that is there, as a table and an index meet at a name
+			// in the pools of the sequence.
+			q.g.pools[DropTable] = live
+		}
+	}
+	switch {
+	case k == KindCreateIndex && len(live) > 0 && r.IntN(4) == 0:
+		// One create index in four names an index that the sequence keeps, which SQLite refuses, or
+		// leaves alone with IF NOT EXISTS.
+		q.g.pools[IndexName] = live
+	case len(dead) > 0:
+		q.g.pools[IndexName] = dead
+	}
+	return k
+}
+
+// liveIndex reports whether the sequence keeps an index of the fold of a name, as
+// [Sequence.indexed] says.
+func (q *Sequence) liveIndex(fold string) bool {
+	for _, indexed := range q.indexed {
+		if slices.ContainsFunc(indexed, func(ix sequenceIndex) bool { return ix.name == fold }) {
+			return true
+		}
+	}
+	return false
+}
+
+// fault reports whether a statement of the area has a fault at random from r, whose odds are one
+// in n in a profile that has the faults of the area, as [Profile.Faults] says, and a quarter of that
+// in another, so that most statements beside those that a profile weighs do their work.
+func (q *Sequence) fault(r Rand, area string, n int) bool {
+	if !slices.Contains(q.profile.Faults, area) {
+		n *= 4
+	}
+	return r.IntN(n) == 0
 }
 
 // around args, the arguments of a call, are arguments of the cases around them. For a statement
@@ -1223,12 +1390,12 @@ func (q *Sequence) Next() Call {
 // than int64, a float32 for a float64, and for text or a blob one that no column holds of the same
 // Go type, and for NULL a nil []byte, which no column holds either.
 func (q *Sequence) around(args []any) []any {
-	r := q.r
+	r := q.rArguments
 	if len(args) == 0 {
 		if r.IntN(2) == 0 {
 			return []any{Unsupported[r.IntN(len(Unsupported))]}
 		}
-		return []any{q.anyValue()}
+		return []any{q.anyValue(r)}
 	}
 	args = slices.Clone(args)
 	at := r.IntN(len(args))
@@ -1236,7 +1403,7 @@ func (q *Sequence) around(args []any) []any {
 	case 0:
 		return args[:len(args)-1]
 	case 1:
-		return append(args, q.anyValue())
+		return append(args, q.anyValue(r))
 	case 2:
 		args[at] = Unsupported[r.IntN(len(Unsupported))]
 	case 3:
@@ -1270,8 +1437,9 @@ func (q *Sequence) around(args []any) []any {
 // next call of the sequence, with an argument for each parameter of a statement of the
 // slices that a sequence writes, and for each ? of a text that is not.
 func (q *Sequence) next() Call {
-	r := q.r
-	if r.IntN(12) == 0 {
+	p := q.profile
+	if p.Others > 0 && q.rOthers.IntN(p.Others) == 0 {
+		r := q.rOthers
 		form := Others[r.IntN(len(Others))]
 		table, column, value := q.tables[r.IntN(len(q.tables))], q.columns[r.IntN(len(q.columns))], r.IntN(5)
 		c := Call{Src: form, Query: r.IntN(2) == 0}
@@ -1280,34 +1448,33 @@ func (q *Sequence) next() Call {
 			c.Src = fmt.Sprintf(form, table, column, value)
 		}
 		for range strings.Count(c.Src, "?") {
-			c.Args = append(c.Args, q.anyValue())
+			c.Args = append(c.Args, q.anyValue(r))
 		}
 		return c
 	}
-	var k Kind
-	createIndexes := 3
-	if q.heavy {
-		createIndexes = 7
+	r := q.rPlan
+	total := 0
+	for _, w := range p.Weights {
+		total += w
 	}
-	switch n := r.IntN(26 + createIndexes); {
-	case n < 4:
-		k = KindCreateTable
-	case n < 14:
-		k = KindInsert
-	case n < 19:
-		k = KindSelect
-	case n < 22:
-		k = KindUpdate
-	case n < 24:
-		k = KindDelete
-	case n < 24+createIndexes:
-		k = KindCreateIndex
-	case n < 25+createIndexes:
-		k = KindDropIndex
-	default:
-		k = KindDropTable
+	k, n := KindCreateTable, r.IntN(total)
+	for n >= p.Weights[k] {
+		n -= p.Weights[k]
+		k++
 	}
-	src, _, args := q.g.CallOf(k)
+	k = q.aim(r, k, p.Aim > 0 && r.IntN(4) < p.Aim)
+	src, s, args := q.g.CallOf(k)
+	switch s := s.(type) {
+	case *stmt.CreateTable:
+		q.live[s.Table.Fold()] = true
+	case *stmt.DropTable:
+		delete(q.live, s.Table.Fold())
+		delete(q.indexed, s.Table.Fold())
+	case *stmt.DropIndex:
+		for table, indexed := range q.indexed {
+			q.indexed[table] = slices.DeleteFunc(indexed, func(ix sequenceIndex) bool { return ix.name == s.Index.Fold() })
+		}
+	}
 	// A query runs through Exec one time in eight, and every other statement through Query one time
 	// in eight.
 	return Call{Src: src, Args: args, Query: (k == KindSelect) != (r.IntN(8) == 0), Supported: true}

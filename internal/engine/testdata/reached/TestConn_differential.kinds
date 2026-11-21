@@ -1,0 +1,49 @@
+# What each profile of TestConn_differential of the engine must reach: see stmttest.Reached.
+# A kind on a line. A kind that no run reaches three times fails the test.
+delete attempt to write a readonly database
+reached: NULL given for a column with a default, which takes NULL ok in a write transaction
+reached: WHERE run by every path on a table with an index
+reached: changed both ways
+reached: changed both ways in a read-only transaction
+reached: commit of a transaction whose update or delete changed rows
+reached: commit of a transaction with a create index or a drop index
+reached: create index attempt to write a readonly database
+reached: create index if not exists attempt to write a readonly database in a read-only transaction
+reached: create index if not exists did its work in a write transaction
+reached: create index if not exists did nothing: an index of the name exists in a read-only transaction
+reached: create index if not exists did nothing: an index of the name exists in a write transaction
+reached: create table if not exists attempt to write a readonly database in a read-only transaction
+reached: create table if not exists did its work in a write transaction
+reached: create table if not exists did nothing: a table of the name exists in a read-only transaction
+reached: create table if not exists did nothing: a table of the name exists in a write transaction
+reached: create table with a default on the key attempt to write a readonly database in a read-only transaction
+reached: create table with a default on the key ok in a write transaction
+reached: delete with a value on the left attempt to write a readonly database in a read-only transaction
+reached: delete with a value on the left ok, rows changed in a write transaction
+reached: drop index attempt to write a readonly database
+reached: drop index if exists did its work in a write transaction
+reached: drop index if exists did nothing: no index of the name exists in a read-only transaction
+reached: drop index if exists did nothing: no index of the name exists in a write transaction
+reached: drop table if exists attempt to write a readonly database in a read-only transaction
+reached: drop table if exists did its work in a write transaction
+reached: drop table if exists did nothing: no table of the name exists in a read-only transaction
+reached: drop table if exists did nothing: no table of the name exists in a write transaction
+reached: insert that leaves out a column that does not take NULL with DEFAULT NULL NOT NULL constraint failed in a write transaction
+reached: insert that leaves out a column that takes NULL with DEFAULT NULL ok in a write transaction
+reached: insert that leaves out a column with a default of integer attempt to write a readonly database in a read-only transaction
+reached: insert that leaves out a column with a default of integer ok in a write transaction
+reached: insert that leaves out the key with a default UNIQUE constraint failed in a write transaction
+reached: insert that leaves out the key with a default ok in a write transaction
+reached: read both ways
+reached: read both ways in a read-only transaction
+reached: roll back of a transaction whose update or delete changed rows
+reached: roll back of a transaction with a create index or a drop index
+reached: select with a value on the left ok, no row found in a read-only transaction
+reached: select with a value on the left ok, no row found in a write transaction
+reached: select with a value on the left ok, rows found in a read-only transaction
+reached: select with a value on the left ok, rows found in a write transaction
+reached: update with a value on the left a value of another type in a write transaction
+reached: update with a value on the left attempt to write a readonly database in a read-only transaction
+reached: update with a value on the left ok, rows changed in a write transaction
+update attempt to write a readonly database
+update with a parameter attempt to write a readonly database
