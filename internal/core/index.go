@@ -791,8 +791,8 @@ func (t *table) sortTerms(scan IndexScan) []string {
 }
 
 // countSQL is the statement that counts the rows of the scan of [table.scanSQL], by the same
-// conditions on the same index, with the same arguments.
-func (t *table) countSQL(ix *index, scan IndexScan, bugs bugs) string {
+// conditions on the same index, with the arguments of its parameters, which are the same.
+func (t *table) countSQL(ix *index, scan IndexScan, bugs bugs) (string, []any) {
 	key := t.scanKey(ix, bugs)
 	names := make([]string, len(key))
 	for i, c := range key {
@@ -802,22 +802,22 @@ func (t *table) countSQL(ix *index, scan IndexScan, bugs bugs) string {
 	if ix != nil {
 		by = ix.name
 	}
-	conditions, _ := scanConditions(names, key, scan, bugs)
+	conditions, args := scanConditions(names, key, scan, bugs)
 	sql := fmt.Sprint("select count(*) from main.", quote(t.name), " indexed by ", quote(by))
 	if len(conditions) > 0 {
 		sql += " where " + strings.Join(conditions, " and ")
 	}
-	return sql
+	return sql, args
 }
 
 // scanIndex reads the rows of the table by its index ix, or by its primary key if ix is nil, as
 // scan says, which [table.checkScan] has accepted, in the order of the key or its reverse. It adds
 // one to read, if that is not nil, for each row that the cache gives. A scan with Order has read
-// every row within its bounds when it gives its first row, so when the loop over it stops early, it
-// adds the rows that the cache read and did not give, which [conn.unread] counts. The statement is
-// given back also when a panic or [runtime.Goexit] in the loop over the scan unwinds through it: a
-// statement that stays stepped would hold its transaction's snapshot and locks, and the connection
-// could not close.
+// every row within its bounds when it gives its first row: when the loop over it stops early, its
+// caller adds the rows that the cache read and did not give, which [conn.unread] counts. The
+// statement is given back also when a panic or [runtime.Goexit] in the loop over the scan unwinds
+// through it: a statement that stays stepped would hold its transaction's snapshot and locks, and
+// the connection could not close.
 func (c *conn) scanIndex(t *table, ix *index, scan IndexScan, read *int64) iter.Seq2[[]*s4qlpb.Value, error] {
 	return func(yield func([]*s4qlpb.Value, error) bool) {
 		sql, args, err := t.scanSQL(ix, scan, c.bugs)
@@ -841,7 +841,6 @@ func (c *conn) scanIndex(t *table, ix *index, scan IndexScan, read *int64) iter.
 				_ = c.rest(sql, s)
 			}
 		}()
-		var given int64
 		for {
 			ok, err := s.Step()
 			if err != nil {
@@ -858,7 +857,6 @@ func (c *conn) scanIndex(t *table, ix *index, scan IndexScan, read *int64) iter.
 				}
 				return
 			}
-			given++
 			if read != nil {
 				*read++
 			}
@@ -870,35 +868,32 @@ func (c *conn) scanIndex(t *table, ix *index, scan IndexScan, read *int64) iter.
 				return
 			}
 			if !yield(row, nil) {
-				if len(scan.Order) > 0 && read != nil {
-					err := c.rest(sql, s)
-					s = nil
-					if err == nil {
-						*read += c.unread(t, ix, scan, args, given)
-					}
-				}
 				return
 			}
 		}
 	}
 }
 
-// unread is the number of rows that a scan with Order of the table read and did not give, when the
-// loop over it stopped after it had given the given number: the rows of the scan, which the cache
-// counts by the same conditions on the same index, in the same transaction, less those. The cache
-// read them all to sort them, and does not say how many they were, and to step through the rest
-// would cost a call for each. It is 0 if the count fails: the scan has ended, and the count is of
-// no row that anything reads.
-func (c *conn) unread(t *table, ix *index, scan IndexScan, args []any, given int64) int64 {
+// unread is the number of rows that a scan of the table read and did not give, when the loop over
+// it stopped after it had given the given number: for a scan with Order, the rows of the scan, which
+// the cache counts by the same conditions on the same index, in the same transaction, less those,
+// and for every other scan none. The cache read them all to sort them, and does not say how many
+// they were, and to step through the rest would cost a call for each. The statement of the scan is
+// at rest when it is called. A count that fails gives its error, and no rows.
+func (c *conn) unread(t *table, ix *index, scan IndexScan, given int64) (int64, error) {
+	if len(scan.Order) == 0 {
+		return 0, nil
+	}
+	sql, args := t.countSQL(ix, scan, c.bugs)
 	var rows int64
-	err := c.query(t.countSQL(ix, scan, c.bugs), func(s *sqlite.Stmt) error {
+	err := c.query(sql, func(s *sqlite.Stmt) error {
 		rows = s.ColumnInt64(0)
 		return nil
 	}, args...)
 	if err != nil {
-		return 0
+		return 0, err
 	}
-	return max(rows-given, 0)
+	return max(rows-given, 0), nil
 }
 
 // scanned is the table with the given name and its index that scan names, or nil for the primary
@@ -995,6 +990,8 @@ func (r *ReadTx) scan(ctx context.Context, name string, plan func(t *table) (*in
 			yield(nil, err)
 			return
 		}
+		var given int64
+		stopped := false
 		for row, err := range r.c.scanIndex(t, ix, scan, &r.read) {
 			if err == nil {
 				// A read that is running when the instance stops is aborted.
@@ -1004,9 +1001,19 @@ func (r *ReadTx) scan(ctx context.Context, name string, plan func(t *table) (*in
 				yield(nil, r.d.cacheError(ctx, operation, err))
 				return
 			}
-			if !yield(row, nil) {
-				return
+			if given++; !yield(row, nil) {
+				// The loop over the scan stopped early, and the statement of the scan is at rest once
+				// this loop has ended.
+				stopped = true
+				break
 			}
+		}
+		if stopped {
+			// A failure of the count has no caller left to go to, and stops the instance all the same
+			// if it is a local failure.
+			unread, err := r.c.unread(t, ix, scan, given)
+			r.read += unread
+			_ = r.d.cacheError(ctx, operation, err)
 		}
 	}
 }
@@ -1064,6 +1071,8 @@ func (tx *Tx) scan(ctx context.Context, name string, plan func(t *table) (*index
 			yield(nil, err)
 			return
 		}
+		var given int64
+		stopped := false
 		for row, err := range tx.c.scanIndex(t, ix, scan, &tx.read) {
 			if err != nil {
 				yield(nil, tx.fail(ctx, operation, err))
@@ -1075,9 +1084,19 @@ func (tx *Tx) scan(ctx context.Context, name string, plan func(t *table) (*index
 				yield(nil, tx.Lost())
 				return
 			}
-			if !yield(row, nil) {
-				return
+			if given++; !yield(row, nil) {
+				// The loop over the scan stopped early, and the statement of the scan is at rest once
+				// this loop has ended.
+				stopped = true
+				break
 			}
+		}
+		if stopped {
+			// A failure of the count has no caller left to go to, and fails the transaction as a
+			// failure of the scan does.
+			unread, err := tx.c.unread(t, ix, scan, given)
+			tx.read += unread
+			_ = tx.fail(ctx, operation, err)
 		}
 	}
 }
