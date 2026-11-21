@@ -2296,6 +2296,37 @@ func TestScanIndex_order(t *testing.T) {
 		}
 	})
 
+	t.Run("should sort a table of the most columns that the cache holds by every column, its key among them", func(t *testing.T) {
+		// SQLite takes no more terms in an ORDER BY than a table can have columns, 2000, so the
+		// statement of the sort names no column twice.
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		wide := tableOf("w", 1, manyColumns(2000)...)
+		first, second := make([]any, 2000), make([]any, 2000)
+		for i := range first {
+			first[i], second[i] = 0, 0
+		}
+		first[0], first[1], second[0], second[1] = 1, 2, 2, 1
+		transact(t, d, createWith(wide), func(t *testing.T, tx *core.Tx) {
+			is.NotError(t, tx.Upsert(t.Context(), "w", row(first...)))
+			is.NotError(t, tx.Upsert(t.Context(), "w", row(second...)))
+		})
+		var order []any
+		for i := 1; i < 2000; i++ {
+			order = append(order, i)
+		}
+		order = append(order, desc(0))
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, r.Close(t.Context())) }()
+		var got []int64
+		for row, err := range r.ScanIndex(t.Context(), "w", core.IndexScan{Order: orderOf(order...)}) {
+			is.NotError(t, err)
+			got = append(got, row[0].GetInteger())
+		}
+		is.EqualSlice(t, []int64{2, 1}, got)
+	})
+
 	t.Run("should refuse an order of a column that the table does not have, and of more columns than it has", func(t *testing.T) {
 		w := newWorld(t)
 		d := w.serve(t, "a", core.Options{})
@@ -2307,20 +2338,29 @@ func TestScanIndex_order(t *testing.T) {
 		is.NotError(t, err)
 		defer func() { is.NotError(t, tx.Rollback(t.Context())) }()
 
-		for _, order := range [][]core.KeyColumn{orderOf(4), orderOf(1, -1), orderOf(0, 1, 2, 3, 0)} {
+		for _, test := range []struct {
+			order []core.KeyColumn
+			why   string
+		}{
+			{order: orderOf(4), why: `a scan in the order of the column at 4 of the table "t", which has 4 columns`},
+			{order: orderOf(1, -1), why: `a scan in the order of the column at -1 of the table "t", which has 4 columns`},
+			{order: orderOf(0, 1, 2, 3, 0), why: `a scan in the order of 5 columns of the table "t", which has 4`},
+		} {
 			for _, s := range []interface {
 				ScanIndex(ctx context.Context, table string, scan core.IndexScan) iter.Seq2[[]*s4qlpb.Value, error]
 			}{r, tx} {
 				n := 0
-				for row, err := range s.ScanIndex(t.Context(), "t", core.IndexScan{Order: order}) {
+				for row, err := range s.ScanIndex(t.Context(), "t", core.IndexScan{Order: test.order}) {
 					n++
 					is.True(t, row == nil)
 					is.Error(t, core.ErrInvalid, err)
+					is.True(t, strings.HasSuffix(err.Error(), test.why), err.Error())
 				}
 				is.Equal(t, 1, n)
 			}
-			_, _, err := r.ScanPlan(t.Context(), "t", core.IndexScan{Order: order})
+			_, _, err := r.ScanPlan(t.Context(), "t", core.IndexScan{Order: test.order})
 			is.Error(t, core.ErrInvalid, err)
+			is.True(t, strings.HasSuffix(err.Error(), test.why), err.Error())
 		}
 		is.Equal(t, int64(0), r.RowsRead())
 		is.Equal(t, int64(0), tx.RowsRead())
