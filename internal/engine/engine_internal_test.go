@@ -410,6 +410,29 @@ func TestEngine_report(t *testing.T) {
 	})
 }
 
+// beginCounter is a fake that counts the write transactions that begin.
+type beginCounter struct {
+	*fake
+	begins int
+}
+
+func (b *beginCounter) begin(ctx context.Context) (writeTx, error) {
+	b.begins++
+	return b.fake.begin(ctx)
+}
+
+// busyReader is a reader whose read transaction is open, so every read fails with
+// [core.ErrReaderBusy].
+type busyReader struct{}
+
+func (busyReader) read(context.Context) (readTx, error) {
+	return nil, fmt.Errorf("busy: %w", core.ErrReaderBusy)
+}
+
+func (busyReader) close(context.Context) error {
+	return nil
+}
+
 func TestEngine_write(t *testing.T) {
 	t.Run("should annotate and commit a statement that succeeds, and roll back one that fails, at each step", func(t *testing.T) {
 		f := newFake()
@@ -439,6 +462,34 @@ func TestEngine_write(t *testing.T) {
 		is.Equal(t, Result{SetsChanges: true}, res)
 		is.Equal(t, "commit", f.calls[len(f.calls)-1])
 		is.Equal(t, 0, f.open)
+	})
+
+	t.Run("should look up a statement of its own that does nothing on a reader of its own while the reader of the connection is busy, and never begin a write transaction", func(t *testing.T) {
+		d := &beginCounter{fake: newFake().with("t1", []string{"v1"})}
+		conn := newEngine(d, host.New(), Options{}).Conn()
+		// The reader of the connection is held, as by the rows of an earlier query.
+		conn.rd = busyReader{}
+		for _, src := range []string{"create table if not exists t1 (v1 int primary key) strict, without rowid", "drop table if exists nosuch"} {
+			_, err := conn.Exec(t.Context(), src)
+			is.NotError(t, err, src)
+		}
+		is.Equal(t, 0, d.begins, "the write transactions")
+		is.Equal(t, 2, d.opened, "the readers opened")
+		is.Equal(t, 0, d.readers, "the readers open")
+		is.Equal(t, 0, d.open, "the transactions open")
+
+		// A statement that has work to do still takes the write path.
+		_, err := conn.Exec(t.Context(), "drop table if exists t1")
+		is.NotError(t, err)
+		is.Equal(t, 1, d.begins, "the write transactions")
+
+		// Where the read cannot begin for another reason, the write transaction looks, finds nothing to
+		// do, and rolls back without an annotation or a commit.
+		d.readFails, d.calls = errors.New("the read fails"), nil
+		_, err = conn.Exec(t.Context(), "drop table if exists nosuch")
+		is.NotError(t, err)
+		is.Equal(t, 2, d.begins, "the write transactions")
+		is.Equal(t, "[table nosuch rollback]", fmt.Sprint(d.calls))
 	})
 
 	t.Run("should roll back when an operator panics", func(t *testing.T) {

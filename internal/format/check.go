@@ -214,6 +214,11 @@ func checkCreateTable(ct *s4qlpb.CreateTable) error {
 		if column.GetType() == s4qlpb.Type_TYPE_UNSPECIFIED {
 			return inElement(refuse(ErrMalformed, "has no type"), "columns", i)
 		}
+		if column.HasDefault() {
+			if err := checkDefault(column.GetType(), column.GetDefault()); err != nil {
+				return inElement(in(err, "default"), "columns", i)
+			}
+		}
 	}
 
 	key := ct.GetPrimaryKey()
@@ -232,6 +237,33 @@ func checkCreateTable(ct *s4qlpb.CreateTable) error {
 		if columns[position].GetNullable() {
 			return inElement(refuse(ErrMalformed, "is column %v, which takes NULL", position), "primary_key", i)
 		}
+	}
+	return nil
+}
+
+// checkDefault of a column of the type typ: a value that a column of the type holds, as
+// [checkStored] checks it, of the column's storage class or NULL. NULL is a default of any column,
+// also of one that does not take NULL and of a primary-key column, as SQLite takes it: such a
+// default stores nothing, since a row without a value for the column is refused. A default of
+// another storage class could never be stored in a column of the type by the rule of exact types,
+// and a value longer than the limit of the instance that reads it is the storage core's to refuse.
+func checkDefault(typ s4qlpb.Type, v *s4qlpb.Value) error {
+	if err := checkStoredValue(v); err != nil {
+		return err
+	}
+	want := s4qlpb.Value_Null_case
+	switch typ {
+	case s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INTEGER:
+		want = s4qlpb.Value_Integer_case
+	case s4qlpb.Type_TYPE_REAL:
+		want = s4qlpb.Value_Real_case
+	case s4qlpb.Type_TYPE_TEXT:
+		want = s4qlpb.Value_Text_case
+	case s4qlpb.Type_TYPE_BLOB:
+		want = s4qlpb.Value_Blob_case
+	}
+	if kind := v.WhichKind(); kind != want && kind != s4qlpb.Value_Null_case {
+		return refuse(ErrMalformed, "is a value of kind %v, which a column of type %v does not hold", kind, typ)
 	}
 	return nil
 }
@@ -351,12 +383,21 @@ func checkPrimaryKey(want int, values []*s4qlpb.Value) error {
 // stores in a column as 0.0, so that a commit object holds what a cache holds.
 func checkStored(values []*s4qlpb.Value) error {
 	for i, v := range values {
-		if err := checkValue(v); err != nil {
+		if err := checkStoredValue(v); err != nil {
 			return inElement(err, "values", i)
 		}
-		if v.WhichKind() == s4qlpb.Value_Real_case && v.GetReal() == 0 && math.Signbit(v.GetReal()) {
-			return inElement(refuse(ErrMalformed, "is a real that is -0.0, which a column holds as 0.0"), "values", i)
-		}
+	}
+	return nil
+}
+
+// checkStoredValue is a value that a column holds: it is valid, and a real is not -0.0, which
+// SQLite stores in a column as 0.0.
+func checkStoredValue(v *s4qlpb.Value) error {
+	if err := checkValue(v); err != nil {
+		return err
+	}
+	if v.WhichKind() == s4qlpb.Value_Real_case && v.GetReal() == 0 && math.Signbit(v.GetReal()) {
+		return refuse(ErrMalformed, "is a real that is -0.0, which a column holds as 0.0")
 	}
 	return nil
 }

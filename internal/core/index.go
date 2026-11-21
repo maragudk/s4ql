@@ -156,8 +156,14 @@ func (t *table) createIndexSQL(ix *index) string {
 // order in which they were created, and the name that SQLite gives the index of its primary key,
 // which a scan names to read the table in the order of its key. It refuses an index that this
 // package does not make with [ErrCacheVersion]: one that is unique or partial, on an expression,
-// with a collation, with a column twice, or with a reserved name. A table that it refuses stays
-// without its indexes, and the next call that needs them refuses it again.
+// with a collation, with a column twice, or with a reserved name. An index of a constraint, such as
+// that of a column declared unique, has refused its table at [conn.load] already, since the
+// constraint is in the table's statement. It then compares the text that
+// SQLite keeps for each index in sqlite_schema with the text of [table.createIndexSQL] for what it
+// read, as [conn.load] does for the table, which refuses whatever else a statement can declare,
+// such as a collation that is named although it is the default one, or the name of the table in
+// another case of its letters. A table that it refuses stays without its indexes, and the next call
+// that needs them refuses it again.
 //
 // It runs when a call first needs the indexes of the table, which is before the call writes a row
 // of the table, scans it, or reads an index of it: see [conn.lookUp]. A unique index that this
@@ -183,7 +189,7 @@ func (c *conn) loadIndexes(t *table) error {
 			return nil
 		}
 		if s.ColumnText(2) != "c" || s.ColumnInt64(1) != 0 || s.ColumnInt64(3) != 0 || schemaless || reserved(name) {
-			return fmt.Errorf("%w: its table %q has the index %q, which is unique, partial, of a constraint, or of a reserved name", ErrCacheVersion, t.name, name)
+			return foreign("its table %q has the index %q, which is unique, partial, of a constraint, or of a reserved name", t.name, name)
 		}
 		names = append(names, name)
 		return nil
@@ -191,14 +197,27 @@ func (c *conn) loadIndexes(t *table) error {
 		return err
 	}
 	if primary == "" {
-		return fmt.Errorf("%w: its table %q has no index of its primary key", ErrCacheVersion, t.name)
+		return foreign("its table %q has no index of its primary key", t.name)
 	}
 
 	var indexes []*index
 	for _, name := range names {
 		ix := &index{name: name}
 		held := make([]bool, len(t.columns))
-		if err := c.readSchema(`select cid, "desc", coll, key from pragma_index_xinfo(?1, 'main') order by seqno`, func(s *sqlite.Stmt) error {
+		// The statement of the index comes with each column of it, and the statement has no "order by",
+		// so that SQLite sorts nothing: a record of a sorter would hold the statement beside the other
+		// columns, which can be longer than the length limit where the statement alone is not.
+		// pragma_index_xinfo gives the columns in the order of seqno, and the order is checked.
+		var sql string
+		var seqno int64
+		if err := c.readSchema(`select cid, "desc", coll, key, seqno, (select sql from main.sqlite_schema where type = 'index' and name = ?1) from pragma_index_xinfo(?1, 'main')`, func(s *sqlite.Stmt) error {
+			if s.ColumnInt64(4) != seqno {
+				return fmt.Errorf("%w: pragma_index_xinfo gives the column %v of the index %q of its table %q where the column %v is next", ErrCacheVersion, s.ColumnInt64(4), name, t.name, seqno)
+			}
+			if seqno == 0 {
+				sql = s.ColumnText(5)
+			}
+			seqno++
 			if s.ColumnInt64(3) == 0 {
 				// A column of the primary key, which SQLite adds to the key of the index.
 				return nil
@@ -206,11 +225,11 @@ func (c *conn) loadIndexes(t *table) error {
 			position := s.ColumnInt64(0)
 			switch {
 			case position < 0 || position >= int64(len(t.columns)):
-				return fmt.Errorf("%w: the index %q of its table %q is on an expression", ErrCacheVersion, name, t.name)
+				return foreign("the index %q of its table %q is on an expression", name, t.name)
 			case s.ColumnText(2) != "BINARY":
-				return fmt.Errorf("%w: the index %q of its table %q has the collation %q", ErrCacheVersion, name, t.name, s.ColumnText(2))
+				return foreign("the index %q of its table %q has the collation %q", name, t.name, s.ColumnText(2))
 			case held[position]:
-				return fmt.Errorf("%w: the index %q of its table %q holds the column %q twice", ErrCacheVersion, name, t.name, t.columns[position].name)
+				return foreign("the index %q of its table %q holds the column %q twice", name, t.name, t.columns[position].name)
 			}
 			held[position] = true
 			ix.columns = append(ix.columns, KeyColumn{Position: int(position), Descending: s.ColumnInt64(1) != 0})
@@ -218,8 +237,12 @@ func (c *conn) loadIndexes(t *table) error {
 		}, name); err != nil {
 			return err
 		}
-		// An index of SQLite has a column of its own, and one on an expression is refused above, so ix
-		// has columns.
+		if len(ix.columns) == 0 {
+			return foreign("the index %q of its table %q has no columns", name, t.name)
+		}
+		if sql != kept(t.createIndexSQL(ix)) {
+			return foreign("the index %q of its table %q is not declared as s4ql declares an index of its columns", name, t.name)
+		}
 		indexes = append(indexes, ix)
 	}
 	t.indexes, t.primary, t.indexed = indexes, primary, true

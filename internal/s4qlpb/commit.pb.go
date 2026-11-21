@@ -837,6 +837,7 @@ type Column struct {
 	xxx_hidden_Name        *string                `protobuf:"bytes,1,opt,name=name"`
 	xxx_hidden_Type        Type                   `protobuf:"varint,2,opt,name=type,enum=s4ql.v1.Type"`
 	xxx_hidden_Nullable    bool                   `protobuf:"varint,3,opt,name=nullable"`
+	xxx_hidden_Default     *Value                 `protobuf:"bytes,4,opt,name=default"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
 	XXX_presence           [1]uint32
 	unknownFields          protoimpl.UnknownFields
@@ -894,19 +895,30 @@ func (x *Column) GetNullable() bool {
 	return false
 }
 
+func (x *Column) GetDefault() *Value {
+	if x != nil {
+		return x.xxx_hidden_Default
+	}
+	return nil
+}
+
 func (x *Column) SetName(v string) {
 	x.xxx_hidden_Name = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 3)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 4)
 }
 
 func (x *Column) SetType(v Type) {
 	x.xxx_hidden_Type = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 3)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 4)
 }
 
 func (x *Column) SetNullable(v bool) {
 	x.xxx_hidden_Nullable = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 3)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 4)
+}
+
+func (x *Column) SetDefault(v *Value) {
+	x.xxx_hidden_Default = v
 }
 
 func (x *Column) HasName() bool {
@@ -930,6 +942,13 @@ func (x *Column) HasNullable() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 2)
 }
 
+func (x *Column) HasDefault() bool {
+	if x == nil {
+		return false
+	}
+	return x.xxx_hidden_Default != nil
+}
+
 func (x *Column) ClearName() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
 	x.xxx_hidden_Name = nil
@@ -945,6 +964,10 @@ func (x *Column) ClearNullable() {
 	x.xxx_hidden_Nullable = false
 }
 
+func (x *Column) ClearDefault() {
+	x.xxx_hidden_Default = nil
+}
+
 type Column_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
@@ -956,6 +979,16 @@ type Column_builder struct {
 	// column, and a reader refuses a create table where it is. A column
 	// without it does not take NULL.
 	Nullable *bool
+	// The value that the column was declared with in its DEFAULT, and absent
+	// if it was declared without one, so that no DEFAULT and DEFAULT NULL
+	// differ. It is NULL or a value of the column's type, which is an integer
+	// for INT and INTEGER, as a row holds it: never -0.0, NaN, or infinite,
+	// and text is valid UTF-8 without the character NUL. A reader refuses a
+	// create table with another. DEFAULT NULL is allowed on a column that does
+	// not take NULL and on a primary-key column, as SQLite allows it. The
+	// storage core stores nothing by it: the rows of a commit object hold
+	// every value.
+	Default *Value
 }
 
 func (b0 Column_builder) Build() *Column {
@@ -963,17 +996,18 @@ func (b0 Column_builder) Build() *Column {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.Name != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 3)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 4)
 		x.xxx_hidden_Name = b.Name
 	}
 	if b.Type != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 3)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 4)
 		x.xxx_hidden_Type = *b.Type
 	}
 	if b.Nullable != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 3)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 4)
 		x.xxx_hidden_Nullable = *b.Nullable
 	}
+	x.xxx_hidden_Default = b.Default
 	return m0
 }
 
@@ -2343,11 +2377,12 @@ const file_s4ql_v1_commit_proto_rawDesc = "" +
 	"\x05table\x18\x01 \x01(\tR\x05table\x12)\n" +
 	"\acolumns\x18\x02 \x03(\v2\x0f.s4ql.v1.ColumnR\acolumns\x12\x1f\n" +
 	"\vprimary_key\x18\x03 \x03(\rR\n" +
-	"primaryKey\"[\n" +
+	"primaryKey\"\x85\x01\n" +
 	"\x06Column\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
 	"\x04type\x18\x02 \x01(\x0e2\r.s4ql.v1.TypeR\x04type\x12\x1a\n" +
-	"\bnullable\x18\x03 \x01(\bR\bnullable\"!\n" +
+	"\bnullable\x18\x03 \x01(\bR\bnullable\x12(\n" +
+	"\adefault\x18\x04 \x01(\v2\x0e.s4ql.v1.ValueR\adefault\"!\n" +
 	"\tDropTable\x12\x14\n" +
 	"\x05table\x18\x01 \x01(\tR\x05table\"i\n" +
 	"\vCreateIndex\x12\x14\n" +
@@ -2436,19 +2471,20 @@ var file_s4ql_v1_commit_proto_depIdxs = []int32{
 	9,  // 9: s4ql.v1.Change.drop_index:type_name -> s4ql.v1.DropIndex
 	5,  // 10: s4ql.v1.CreateTable.columns:type_name -> s4ql.v1.Column
 	0,  // 11: s4ql.v1.Column.type:type_name -> s4ql.v1.Type
-	8,  // 12: s4ql.v1.CreateIndex.columns:type_name -> s4ql.v1.IndexColumn
-	12, // 13: s4ql.v1.UpsertRows.rows:type_name -> s4ql.v1.Row
-	13, // 14: s4ql.v1.DeleteRows.primary_keys:type_name -> s4ql.v1.PrimaryKey
-	14, // 15: s4ql.v1.Row.values:type_name -> s4ql.v1.Value
-	14, // 16: s4ql.v1.PrimaryKey.values:type_name -> s4ql.v1.Value
-	15, // 17: s4ql.v1.Value.null:type_name -> s4ql.v1.Null
-	17, // 18: s4ql.v1.Annotation.statement:type_name -> s4ql.v1.Statement
-	14, // 19: s4ql.v1.Statement.parameters:type_name -> s4ql.v1.Value
-	20, // [20:20] is the sub-list for method output_type
-	20, // [20:20] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	14, // 12: s4ql.v1.Column.default:type_name -> s4ql.v1.Value
+	8,  // 13: s4ql.v1.CreateIndex.columns:type_name -> s4ql.v1.IndexColumn
+	12, // 14: s4ql.v1.UpsertRows.rows:type_name -> s4ql.v1.Row
+	13, // 15: s4ql.v1.DeleteRows.primary_keys:type_name -> s4ql.v1.PrimaryKey
+	14, // 16: s4ql.v1.Row.values:type_name -> s4ql.v1.Value
+	14, // 17: s4ql.v1.PrimaryKey.values:type_name -> s4ql.v1.Value
+	15, // 18: s4ql.v1.Value.null:type_name -> s4ql.v1.Null
+	17, // 19: s4ql.v1.Annotation.statement:type_name -> s4ql.v1.Statement
+	14, // 20: s4ql.v1.Statement.parameters:type_name -> s4ql.v1.Value
+	21, // [21:21] is the sub-list for method output_type
+	21, // [21:21] is the sub-list for method input_type
+	21, // [21:21] is the sub-list for extension type_name
+	21, // [21:21] is the sub-list for extension extendee
+	0,  // [0:21] is the sub-list for field type_name
 }
 
 func init() { file_s4ql_v1_commit_proto_init() }

@@ -311,3 +311,82 @@ func TestGenerator_Exists(t *testing.T) {
 		}
 	})
 }
+
+func TestGenerator_Defaults(t *testing.T) {
+	pools, err := stmttest.NamePools()
+	is.NotError(t, err)
+	// count the columns of the create tables of a generator with defaults, by whether they say
+	// DEFAULT, of what kind of value, on the key or on a column that is NOT NULL, and where the
+	// DEFAULT is among the constraints of its column.
+	count := func(g *stmttest.Generator) map[string]int {
+		kinds := map[string]int{}
+		for range 600 {
+			src, s := g.StatementOf(stmttest.KindCreateTable)
+			got, err := stmt.Check(src)
+			is.NotError(t, err, src)
+			is.Equal(t, fmt.Sprintf("%#v", s), fmt.Sprintf("%#v", got), src)
+			for _, c := range s.(*stmt.CreateTable).Columns {
+				if c.Default.Value == nil {
+					kinds["none"]++
+					continue
+				}
+				kinds[stmttest.LiteralKind(c.Default.Value)]++
+				if c.PrimaryKey {
+					kinds["on the key"]++
+				}
+				if c.NotNull {
+					kinds["on NOT NULL"]++
+				}
+				if after := strings.ToLower(src[c.Default.Span.End:]); strings.Contains(strings.SplitN(after, ",", 2)[0], "key") || strings.Contains(strings.SplitN(after, ",", 2)[0], "not") {
+					kinds["before another constraint"]++
+				}
+			}
+		}
+		return kinds
+	}
+
+	t.Run("should write a DEFAULT only with Defaults", func(t *testing.T) {
+		for _, columns := range []int{0, 3} {
+			g := stmttest.NewGenerator(rand.New(rand.NewPCG(15, 16)), pools)
+			g.Columns, g.Nulls = columns, 3
+			kinds := count(g)
+			is.Equal(t, 1, len(kinds), fmt.Sprint(kinds))
+		}
+	})
+
+	t.Run("should write a DEFAULT of every kind of value, anywhere among the constraints, with Defaults", func(t *testing.T) {
+		for _, columns := range []int{0, 3} {
+			g := stmttest.NewGenerator(rand.New(rand.NewPCG(15, 16)), pools)
+			g.Columns, g.Nulls, g.Defaults = columns, 3, 2
+			kinds := count(g)
+			for _, k := range []string{"none", "integer", "real", "text", "blob", "null", "on the key", "before another constraint"} {
+				is.True(t, kinds[k] > 10, fmt.Sprint(columns, " ", k, " ", kinds))
+			}
+			if columns > 0 {
+				is.True(t, kinds["on NOT NULL"] > 10, fmt.Sprint(kinds))
+			}
+		}
+	})
+
+	t.Run("should write the DEFAULT that Create gives, whatever Defaults is", func(t *testing.T) {
+		g := stmttest.NewGenerator(rand.New(rand.NewPCG(15, 16)), pools)
+		g.Columns = 2
+		g.Create = func(stmt.Name) []stmt.Column {
+			return []stmt.Column{
+				{Name: stmt.Name{Raw: "k"}, Type: stmt.TypeText, PrimaryKey: true, Default: stmt.Default{Value: stmt.Text("it's")}},
+				{Name: stmt.Name{Raw: "v"}, Type: stmt.TypeInt, NotNull: true, Default: stmt.Default{Value: stmt.Integer(0)}},
+				{Name: stmt.Name{Raw: "w"}, Type: stmt.TypeReal},
+			}
+		}
+		for range 50 {
+			src, s := g.StatementOf(stmttest.KindCreateTable)
+			got, err := stmt.Check(src)
+			is.NotError(t, err, src)
+			is.Equal(t, fmt.Sprintf("%#v", s), fmt.Sprintf("%#v", got), src)
+			columns := s.(*stmt.CreateTable).Columns
+			is.Equal[stmt.Value](t, stmt.Text("it's"), columns[0].Default.Value, src)
+			is.Equal[stmt.Value](t, stmt.Integer(0), columns[1].Default.Value, src)
+			is.True(t, columns[2].Default.Value == nil, src)
+		}
+	})
+}

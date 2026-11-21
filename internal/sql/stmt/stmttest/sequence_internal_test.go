@@ -194,7 +194,7 @@ func TestSequence_delete(t *testing.T) {
 		is.True(t, none > 650 && none < 950, "one delete in five without WHERE")
 	})
 
-	t.Run("should give, of a WHERE, the key equal to a value of an insert one time in four, and bounded on one side by one one time in six", func(t *testing.T) {
+	t.Run("should give, of a WHERE, the key equal to a value of an insert one time in three, and bounded on one side by one one time in six", func(t *testing.T) {
 		q, err := NewSequence(rand.New(rand.NewPCG(13, 14)))
 		is.NotError(t, err)
 		table := stmt.Name{Raw: "t", Value: "t"}
@@ -216,7 +216,7 @@ func TestSequence_delete(t *testing.T) {
 			counts[where[0].Operator]++
 		}
 		t.Log(counts)
-		is.True(t, counts[stmt.OpEqual] > 900, "the key equal to a value of an insert one time in four")
+		is.True(t, counts[stmt.OpEqual] > 1200, "the key equal to a value of an insert one time in three")
 		bounded := 0
 		for _, op := range bounds {
 			is.True(t, counts[op] > 100, fmt.Sprint("the key bounded by ", op))

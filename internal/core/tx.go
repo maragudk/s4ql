@@ -475,6 +475,7 @@ func (tx *Tx) CreateTable(ctx context.Context, ct *s4qlpb.CreateTable) error {
 		return err
 	}
 	defer tx.leave(ctx)
+	ct = withoutNegativeZero(ct)
 	if err := checkCreateTable(ct, tx.d.host.Wall()); err != nil {
 		return err
 	}
@@ -490,7 +491,7 @@ func (tx *Tx) CreateTable(ctx context.Context, ct *s4qlpb.CreateTable) error {
 		return tx.fail(ctx, operation, err)
 	}
 	// The commit object holds the table as the cache gives it back, without a field that is set to
-	// its default, such as a nullable of false.
+	// its zero value, such as a nullable of false, and with copies of the defaults.
 	tx.changed(ct.GetTable()).created = t.createTable()
 	return nil
 }

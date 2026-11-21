@@ -687,6 +687,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 		p.reachChange(s, runs, got, o, kind, count)
 		return
 	}
+	p.reachExists(src, s, runs, got, o, kind, count)
 	if sel, ok := s.(*stmt.Select); ok {
 		_, columns := p.columnsIn(o, sel.Table.Value)
 		if columns == nil {
@@ -1774,9 +1775,8 @@ func converted(a any) any {
 }
 
 // checkText src as the driver checks a text at Prepare: as [stmt.Check] does, and with the "not
-// supported" of [engine.Check] for a statement with IF NOT EXISTS or IF EXISTS of slice 10 that the
-// pass supports and the engine does not run yet, which the tests take for a text that is not
-// supported.
+// supported" of [engine.Check] for a statement with DEFAULT of slice 11 that the pass supports and
+// the engine does not run yet, which the tests take for a text that is not supported.
 func checkText(src string) (stmt.Statement, error) {
 	s, err := stmt.Check(src)
 	if err == nil && s != nil {
@@ -1893,6 +1893,68 @@ func (p *pair) columnsIn(o runner, name string) (string, []stmttest.TableColumn)
 	}
 	is.NotError(tb, rows.Err())
 	return table, columns
+}
+
+// reachExists counts with count what the statement s of IF NOT EXISTS or IF EXISTS of slice 10 of
+// the text src reaches, whose outcome of s4ql is got, on the tables and indexes that SQLite has on o
+// before the call, by [stmttest.ExistsRule]: the kind of the statement, such as "drop table if
+// exists", and, where the rule says that SQLite does nothing, "did nothing" and the rule's reason, and
+// otherwise "did its work" for one that succeeded and the kind of the outcome, as kind gives it, for
+// one that failed. Where the rule says that SQLite does nothing, s4ql must succeed. Only the first run
+// counts, since a run after it meets what the first did, and nothing counts for a statement without
+// the clause, or for runs with arguments, which s4ql refuses by its rule.
+func (p *pair) reachExists(src string, s stmt.Statement, runs [][]any, got outcome, o runner, kind func(outcome) string, count func(string)) {
+	tb := p.tb
+	tb.Helper()
+	var what string
+	switch s := s.(type) {
+	case *stmt.CreateTable:
+		what = map[bool]string{true: "create table if not exists"}[s.IfNotExists]
+	case *stmt.DropTable:
+		what = map[bool]string{true: "drop table if exists"}[s.IfExists]
+	case *stmt.CreateIndex:
+		what = map[bool]string{true: "create index if not exists"}[s.IfNotExists]
+	case *stmt.DropIndex:
+		what = map[bool]string{true: "drop index if exists"}[s.IfExists]
+	}
+	outs := got.runs()
+	if what == "" || len(outs) == 0 || slices.ContainsFunc(runs, func(args []any) bool { return len(args) > 0 }) {
+		return
+	}
+	tables := map[string][]stmttest.TableColumn{}
+	indexes := map[string]bool{}
+	rows, err := o.QueryContext(tb.Context(), "select type, name from sqlite_schema where type = 'table' or type = 'index' and sql is not null")
+	is.NotError(tb, err)
+	var names [][2]string
+	for rows.Next() {
+		var typ, name string
+		is.NotError(tb, rows.Scan(&typ, &name))
+		names = append(names, [2]string{typ, name})
+	}
+	is.NotError(tb, rows.Err())
+	is.NotError(tb, rows.Close())
+	for _, n := range names {
+		fold := stmt.Name{Value: n[1]}.Fold()
+		if n[0] == "index" {
+			indexes[fold] = true
+			continue
+		}
+		_, tables[fold] = p.columnsIn(o, n[1])
+	}
+	// A QueryRow of a statement that gives no rows ends with the error of its scan, which is no failure
+	// of the statement.
+	outcome := kind(outs[0])
+	if outcome == "ok" || outcome == "no rows" {
+		outcome = "did its work"
+	}
+	if rule := stmttest.ExistsRule(tables, indexes, s); rule != "" {
+		if outcome != "did its work" {
+			tb.Errorf("%q: s4ql gives %v, and the rule does nothing: %v", src, got, rule)
+		}
+		count(what + " did nothing: " + rule)
+		return
+	}
+	count(what + " " + outcome)
 }
 
 // checkArguments of the outcome got of src, with the arguments of each run, which is s4ql's error
@@ -2164,7 +2226,7 @@ var sequences = map[string][]step{
 		{callExec, "insert into t2 (v2) values ('1')", "exec: exec failed with s4ql: not supported: a string literal for the column t2.v2 of type INTEGER"},
 		{callExec, "insert into t2 (v2) values (1e999)", "exec: exec failed with s4ql: not supported: infinite real number (at offset 28)"},
 		{callExec, `insert into t1 (v1) values ("x")`, ""},
-		{callPrepareExec, "drop table if exists t1", "prepare, exec: prepare failed with s4ql: not supported: IF EXISTS (at offset 11)"},
+		{callPrepareExec, "drop view if exists t1", "prepare, exec: prepare failed with s4ql: not supported: DROP VIEW (at offset 5)"},
 		{callExec, "", "exec: exec failed with s4ql: not supported: a text that holds no statement"},
 		{callPrepareQuery, " ; -- nothing", "prepare, query: prepare failed with s4ql: not supported: a text that holds no statement"},
 		{callExecArgument, "insert into t1 (v1) values (1)", "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
@@ -2488,10 +2550,14 @@ var sequences = map[string][]step{
 		{callExec, "drop table i1", "exec: exec failed with 1/1: no such table: i1"},
 		{callExecArgument, "create index i2 on t4 (v2)", "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
 		{callExecArgument, "drop index i1", "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
+		// The clauses of slice 10, which do nothing here and leave the count of changes as it was.
+		{callExec, "create index if not exists i1 on t4 (v2)", "exec: 1 affected, last insert id 0"},
+		{callExec, "create index if not exists I1 on t4 (x)", "exec: 1 affected, last insert id 0"},
+		{callExec, "drop index if exists i9", "exec: 1 affected, last insert id 0"},
+		{callExec, "drop index if exists t4", "exec: 1 affected, last insert id 0"},
+		{callExec, "create index if not exists i1 on t9 (v2)", "exec: exec failed with 1/1: no such table: main.t9"},
 		// What slice 9 does not support.
 		{callExec, "create unique index i2 on t4 (v2)", "exec: exec failed with s4ql: not supported: UNIQUE INDEX (at offset 7)"},
-		{callExec, "create index if not exists i1 on t4 (v2)", "exec: exec failed with s4ql: not supported: IF NOT EXISTS (at offset 13)"},
-		{callExec, "drop index if exists i9", "exec: exec failed with s4ql: not supported: IF EXISTS (at offset 11)"},
 		{callExec, "create index i2 on t4 (v2) where v2 is not null", "exec: exec failed with s4ql: not supported: partial index (at offset 27)"},
 		{callExec, "create index i2 on t4 (v2, V2)", "exec: exec failed with s4ql: not supported: column named twice (at offset 27)"},
 		{callExec, "create index i2 on t4 ()", `exec: exec failed with 1/1: near ")": syntax error`},
@@ -3132,12 +3198,18 @@ func TestGenerated(t *testing.T) {
 		"read-only transaction: insert no such table", "read-only transaction: createtable already exists",
 		"read-only transaction: call " + string(callStmtExec), "read-only transaction: call " + string(callStmtQuery),
 		"read-only transaction: call " + string(callPrepareExecRuns) + " with arguments",
-		"read-only transaction: insert with a parameter while rows are open",
 		"call " + string(callBeginReadOnly) + " in a transaction",
 	} {
 		if y[kind] == 0 {
 			t.Errorf("no text has the outcome %q", kind)
 		}
+	}
+	// An insert of a read-only transaction while rows of the transaction are open, with a parameter or
+	// without one, whichever the run reaches: since the sequence wrote the clauses of slice 10, on
+	// 2026-11-20, and drew other random numbers, the run reaches one with a parameter and none
+	// without.
+	if y["read-only transaction: insert while rows are open"]+y["read-only transaction: insert with a parameter while rows are open"] == 0 {
+		t.Errorf("no insert of a read-only transaction has the outcome %q", "while rows are open")
 	}
 
 	// What the run must reach, at least: each type as a key, with an insert that succeeds, meets a key
@@ -3192,7 +3264,7 @@ func TestGenerated(t *testing.T) {
 		"insert that leaves out a column that takes NULL ok": 28, "insert that leaves out a column that takes NULL UNIQUE constraint failed": 8,
 		"insert that leaves out a column that takes NULL a value of another type": 7, "insert that leaves out a column that takes NULL NOT NULL constraint failed": 7,
 		"insert with NULL in the key: NOT NULL constraint failed": 9, "insert with NULL in a column that does not take it: NOT NULL constraint failed": 5,
-		"insert of NULL beside a value of another type NOT NULL constraint failed": 2, "insert of NULL beside a value of another type a value of another type": 3,
+		"insert of NULL beside a value of another type NOT NULL constraint failed": 1, "insert of NULL beside a value of another type a value of another type": 3,
 		"select * with NULL ok": 6, "select of names with NULL ok": 4,
 
 		// Slice 7, a third of what the run gave on 2026-11-20 when the sequence wrote WHERE: each
@@ -3205,16 +3277,16 @@ func TestGenerated(t *testing.T) {
 		"= on the key ok": 10, "!= on the key ok": 12, "< on the key ok": 18, "<= on the key ok": 19, "> on the key ok": 22, ">= on the key ok": 15,
 		"IS NULL on the key ok": 10, "IS NOT NULL on the key ok": 8,
 		"= on another column ok": 6, "!= on another column ok": 5, "< on another column ok": 6, "<= on another column ok": 5, "> on another column ok": 7,
-		">= on another column ok": 8, "IS NULL on another column ok": 2, "IS NOT NULL on another column ok": 1,
+		">= on another column ok": 2, "IS NULL on another column ok": 2, "IS NOT NULL on another column ok": 5,
 		"WHERE that reads no row ok": 17, "WHERE that reads a get of one key ok": 6, "WHERE that reads a scan from a lower bound ok": 8,
 		"WHERE that reads a scan to an upper bound ok": 9, "WHERE that reads a scan between two bounds ok": 9,
 		"WHERE that reads a scan between two bounds that hold no key ok": 7, "WHERE that reads a scan of every row ok": 23,
-		"WHERE that gives no row of a table with rows": 20, "WHERE that gives some rows of a table": 5, "WHERE that gives every row of a table with rows": 1,
+		"WHERE that gives no row of a table with rows": 20, "WHERE that gives some rows of a table": 5, "WHERE that gives every row of a table with rows": 6,
 		"comparison with literal integer ok": 35, "comparison with literal real ok": 14, "comparison with literal real -0.0 ok": 2, "comparison with literal text ok": 12,
 		"comparison with literal empty text ok": 5, "comparison with literal blob ok": 12, "comparison with literal empty blob ok": 2, "comparison with literal null ok": 6,
 		"comparison with argument int64 ok": 16, "comparison with argument float64 ok": 7, "comparison with argument float64 -0.0 ok": 1,
 		"comparison with argument string ok": 9, "comparison with argument empty string ok": 2, "comparison with argument []uint8 ok": 4,
-		"comparison with argument empty []byte ok": 2, "comparison with argument nil ok": 3,
+		"comparison with argument empty []byte ok": 2, "comparison with argument nil ok": 1,
 		"WHERE with a column that the table does not have in a comparison, alone no such column":                                6,
 		"WHERE with a column that the table does not have in a comparison, before other conditions no such column":              13,
 		"WHERE with a column that the table does not have in a comparison, after other conditions no such column":               7,
@@ -3242,13 +3314,16 @@ func TestGenerated(t *testing.T) {
 		// numbers and takes turns of other statements: the least number of "select * with NULL ok", of
 		// slice 6, is a third of what the run gives now, 19, where it was 25, and the run no longer
 		// reaches "delete WHERE that reads a scan to an upper bound ok, rows changed", which had the
-		// least number 1 and so was reached 1 to 3 times. Since an update and a delete of the sequence
-		// bound the key on one side by a value of an insert now and then, on 2026-11-20, the run
-		// reaches it 3 times, and requires it again; the sequence draws other random numbers, and the
-		// least numbers of "IS NOT NULL on another column ok" and "WHERE that gives every row of a table
-		// with rows", of slice 7, are a third of what the run gives now, or 1, where they were 5 and 6.
-		// Its read-only transactions then insert while rows are open only with a parameter, so the run
-		// requires that one again.
+		// least number 1 and so was reached 1 to 3 times, so it is left out. When the sequence pinned a
+		// column of an index that takes NULL by IS NULL one time in three, on 2026-11-21, the other random
+		// numbers that it drew took "update WHERE that reads a scan of every row ok, rows changed" from 1,
+		// its least number, to 0, so it is left out too; TestDifferential of the engine still requires
+		// it. Since an update and a delete of the sequence bound the key on one side by a value of an
+		// insert one time in six, on 2026-11-21, the run reaches the delete to an upper bound 7 times and
+		// the update of every row once, and requires both again; the other random numbers that the
+		// generator draws after such a bound took "comparison with argument nil ok", ">= on another
+		// column ok", and the update and the delete with a column in double quotes in WHERE that the
+		// table does not have to 1, 6, 7, and 7, of which the least numbers are a third, or 1.
 		"update with WHERE ok, rows changed": 13, "update with WHERE ok, no row found": 48, "update without WHERE ok, rows changed": 10, "update without WHERE ok, no row found": 12,
 		"delete with WHERE ok, rows changed": 12, "delete with WHERE ok, no row found": 60, "delete without WHERE ok, rows changed": 9, "delete without WHERE ok, no row found": 15,
 		"update with WHERE attempt to write a readonly database": 7, "delete with WHERE attempt to write a readonly database": 11,
@@ -3256,16 +3331,16 @@ func TestGenerated(t *testing.T) {
 		"SET of NULL for a column that does not take it NOT NULL constraint failed": 5, "SET of NULL for a column that does not take it ok, no row found": 9,
 		"SET of a column that the table does not have no such column": 27, "SET of a column in double quotes that the table does not have no such column": 14,
 		"SET with a value of another type a value of another type": 23, "SET with literal null ok, rows changed": 1, "SET with argument nil ok, no row found": 3,
-		"update WHERE with a column in double quotes that the table does not have no such column": 8,
-		"delete WHERE with a column in double quotes that the table does not have no such column": 12,
+		"update WHERE with a column in double quotes that the table does not have no such column": 2,
+		"delete WHERE with a column in double quotes that the table does not have no such column": 2,
 		"update WHERE with a value of another type a value of another type":                       16, "delete WHERE with a value of another type a value of another type": 11,
 		"update with arguments that s4ql refuses not supported": 14, "update with arguments that s4ql refuses wrong number of arguments": 15,
 		"delete with arguments that s4ql refuses not supported": 8, "delete with arguments that s4ql refuses wrong number of arguments": 10,
 		"update WHERE that reads a get of one key ok, rows changed": 9, "delete WHERE that reads a get of one key ok, rows changed": 6,
-		"update WHERE that reads a scan of every row ok, rows changed": 2, "delete WHERE that reads a scan from a lower bound ok, rows changed": 1,
-		"delete WHERE that reads a scan to an upper bound ok, rows changed": 1,
-		"update WHERE that reads no row ok, no row found":                   7,
-		"table read back after an update or a delete":                       165,
+		"delete WHERE that reads a scan from a lower bound ok, rows changed": 1, "delete WHERE that reads a scan to an upper bound ok, rows changed": 2,
+		"update WHERE that reads a scan of every row ok, rows changed": 1,
+		"update WHERE that reads no row ok, no row found":              7,
+		"table read back after an update or a delete":                  165,
 	} {
 		if y["reached: "+kind] < least {
 			t.Errorf("the run reaches %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y["reached: "+kind], least)
@@ -3284,6 +3359,32 @@ func TestGenerated(t *testing.T) {
 	} {
 		if y[kind] < least {
 			t.Errorf("the run gives %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y[kind], least)
+		}
+	}
+
+	// Slice 10, a third of what the run gave on 2026-11-20 when one create and drop in three of the
+	// sequence said IF NOT EXISTS or IF EXISTS, or 1: each of the four statements that did its work,
+	// that did nothing for each reason of [stmttest.ExistsRule], and that gave each error, as
+	// [pair.reachExists] counts them, also in a read-only transaction, which refuses one that would
+	// write. Since then the least numbers of "insert of NULL beside a value of another type NOT NULL
+	// constraint failed", of slice 6, and of "update WHERE that reads a scan of every row ok, rows
+	// changed", of slice 8, are 1, where they were 2: the sequence draws other random numbers, and
+	// the run reaches each once.
+	for kind, least := range map[string]int{
+		"create table if not exists did its work": 61, "create table if not exists did nothing: a table of the name exists": 82,
+		"create table if not exists duplicate column name": 2, "create table if not exists there is already an index named": 1,
+		"create table if not exists attempt to write a readonly database": 6,
+		"drop table if exists did its work":                               18, "drop table if exists did nothing: no table of the name exists": 18,
+		"drop table if exists did nothing: no table of the name exists, and an index has it": 1,
+		"drop table if exists attempt to write a readonly database":                          3,
+		"create index if not exists did its work":                                            17, "create index if not exists did nothing: an index of the name exists": 10,
+		"create index if not exists no such table": 42, "create index if not exists there is already a table named": 15,
+		"create index if not exists no such column": 3, "create index if not exists attempt to write a readonly database": 3,
+		"drop index if exists did its work": 2, "drop index if exists did nothing: no index of the name exists": 27,
+		"drop index if exists did nothing: no index of the name exists, and a table has it": 8,
+	} {
+		if y["reached: "+kind] < least {
+			t.Errorf("the run reaches %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y["reached: "+kind], least)
 		}
 	}
 
@@ -3356,14 +3457,24 @@ func TestGenerated(t *testing.T) {
 	// up, excusedTxOpen and excusedOutside with the transactions, and fewer rows are left open in one
 	// with a statement that fails more often, which took excusedRowsOpen down. A create index of a name
 	// in double quotes that is no column is counted by excusedQuoted now, and the count is 89 again by
-	// chance: it was 77 with the sequences of 40 texts. When an update and a delete of the sequence
-	// bounded the key on one side by a value of an insert now and then, the counts went from 1894, 8,
-	// 681, 360, 372, 98, 13, 48, 97, and 89 to 1891, 5, 686, 358, 368, 97, 11, 54, 91, and 90: the
-	// sequence draws other random numbers, which moves every count, the calls and the transactions
-	// too.
+	// chance: it was 77 with the sequences of 40 texts. When one create and drop in three of the
+	// sequence said IF NOT EXISTS or IF EXISTS of slice 10, on 2026-11-20, the counts went from 1894,
+	// 8, 681, 360, 372, 98, 13, 48, 97, and 89 to 1713, 12, 687, 351, 327, 85, 24, 46, 91, and 106:
+	// the generator draws a number for each create and drop, which moves every count, the calls and
+	// the transactions too; and of its own, a create table or a create index of a name that is taken,
+	// and a drop of one that is not, which SQLite refuses at prepare and s4ql when it runs, does nothing
+	// in both with the clause, which took excusedPrepare down. When the sequence pinned a column of an
+	// index that takes NULL by IS NULL one time in three, where it was one time in eight, on
+	// 2026-11-21, they went from 1713, 12, 687, 351, 327, 85, 24, 46, 91, and 106 to 1693, 10, 693,
+	// 360, 338, 83, 22, 45, 97, and 101: the generator draws other random numbers after the first such
+	// pin, which moves every count, and none of these kinds is of the pin. When an update and a
+	// delete of the sequence bounded the key on one side by a value of an insert one time in six, on
+	// 2026-11-21, they went from 1693, 10, 693, 360, 338, 83, 22, 45, 97, and 101 to 1701, 11, 680,
+	// 360, 316, 99, 13, 48, 89, and 92: the generator draws other random numbers after the first such
+	// bound, which moves every count.
 	want := map[string]int{
-		excusedPrepare: 1891, excusedStartedTable: 5, excusedArguments: 686, excusedArgument: 358, excusedType: 368,
-		excusedLevel: 97, excusedRowsOpen: 11, excusedTxOpen: 54, excusedOutside: 91, excusedQuoted: 90,
+		excusedPrepare: 1701, excusedStartedTable: 11, excusedArguments: 680, excusedArgument: 360, excusedType: 316,
+		excusedLevel: 99, excusedRowsOpen: 13, excusedTxOpen: 48, excusedOutside: 89, excusedQuoted: 92,
 	}
 	kinds := slices.Collect(maps.Keys(want))
 	for name := range y {

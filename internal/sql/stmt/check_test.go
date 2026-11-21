@@ -667,6 +667,141 @@ var checkCases = []checkCase{
 		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 27}, Table: name("t", "t", 14), Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpEqual, param(1, 26))}}},
 	{name: "a parameter in LIMIT", src: "select * from t limit ?", err: "s4ql: not supported: LIMIT clause (at offset 16)"},
 	{name: "a parameter in a default", src: "create table t (v int primary key default ?) strict, without rowid", err: `near "?": syntax error`},
+
+	// DEFAULT, of slice 11.
+	{name: "a default of 0 on a NOT NULL column, as goqite declares it", src: "create table t (k int primary key, v int not null default 0) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 82}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeInt, false, true), stmt.Integer(0), 58, 59)}}},
+	{name: "a default before NOT NULL", src: "create table t (k int primary key, v int default 0 not null) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 82}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeInt, false, true), stmt.Integer(0), 49, 50)}}},
+	{name: "a default in upper case on a column that takes NULL", src: "create table t (k int primary key, v INTEGER DEFAULT 5) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 77}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeInteger, false, false), stmt.Integer(5), 53, 54)}}},
+	{name: "a default with comments around it", src: "create table t (k int primary key, v int/* a */default/* b */7--c\n) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 89}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeInt, false, false), stmt.Integer(7), 61, 62)}}},
+	{name: "a default of a negative integer", src: "create table t (k int primary key, v int default -1) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 74}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeInt, false, false), stmt.Integer(-1), 49, 51)}}},
+	{name: "a default of a negative integer with a space after the sign", src: "create table t (k int primary key, v int default - 1) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 75}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeInt, false, false), stmt.Integer(-1), 49, 52)}}},
+	{name: "a default of a negative integer with a comment after the sign", src: "create table t (k int primary key, v int default - /* c */ 1) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 83}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeInt, false, false), stmt.Integer(-1), 49, 60)}}},
+	{name: "a default of the smallest integer", src: "create table t (k int primary key, v int default -9223372036854775808) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 92}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeInt, false, false), stmt.Integer(math.MinInt64), 49, 69)}}},
+	{name: "a default of the largest integer", src: "create table t (k int primary key, v int default 9223372036854775807) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 91}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeInt, false, false), stmt.Integer(math.MaxInt64), 49, 68)}}},
+	{name: "a default of an integer with leading zeros", src: "create table t (k int primary key, v int default 00012) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 77}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeInt, false, false), stmt.Integer(12), 49, 54)}}},
+	{name: "a default of zero with a sign", src: "create table t (k int primary key, v int default -0) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 74}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeInt, false, false), stmt.Integer(0), 49, 51)}}},
+	{name: "a default of negative zero", src: "create table t (k int primary key, v real default -0.0) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 77}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeReal, false, false), stmt.Real(math.Copysign(0, -1)), 50, 54)}}},
+	{name: "a default of a real", src: "create table t (k int primary key, v real default 1.0) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 76}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeReal, false, false), stmt.Real(1), 50, 53)}}},
+	{name: "a default of a real without a whole part", src: "create table t (k int primary key, v real default .5) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 75}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeReal, false, false), stmt.Real(0.5), 50, 52)}}},
+	{name: "a default of a real without a fraction", src: "create table t (k int primary key, v real default 1.) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 75}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeReal, false, false), stmt.Real(1), 50, 52)}}},
+	{name: "a default of a real with an exponent", src: "create table t (k int primary key, v real default 1e3) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 76}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeReal, false, false), stmt.Real(1000), 50, 53)}}},
+	{name: "a default of a real with a signed exponent in upper case", src: "create table t (k int primary key, v real not null default 1E+3) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 86}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeReal, false, true), stmt.Real(1000), 59, 63)}}},
+	{name: "a default of a negative real with a negative exponent", src: "create table t (k int primary key, v real default -1.5e-3) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 80}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeReal, false, false), stmt.Real(-0.0015), 50, 57)}}},
+	{name: "a default of a real below the smallest float", src: "create table t (k int primary key, v real default 1e-400) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 79}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeReal, false, false), stmt.Real(0), 50, 56)}}},
+	{name: "a default of a string", src: "create table t (k int primary key, v text default 'a') strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 76}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeText, false, false), stmt.Text("a"), 50, 53)}}},
+	{name: "a default of a string with a quote", src: "create table t (k int primary key, v text not null default 'it''s') strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 89}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeText, false, true), stmt.Text("it's"), 59, 66)}}},
+	{name: "a default of the empty string", src: "create table t (k int primary key, v text default '') strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 75}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeText, false, false), stmt.Text(""), 50, 52)}}},
+	{name: "a default of a string that looks like SQL", src: "create table t (k int primary key, v text default 'x'' default 1 --') strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 91}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeText, false, false), stmt.Text("x' default 1 --"), 50, 68)}}},
+	{name: "a default of a blob", src: "create table t (k int primary key, v blob default x'00') strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 78}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeBlob, false, false), stmt.Blob{0}, 50, 55)}}},
+	{name: "a default of a blob in mixed case", src: "create table t (k int primary key, v blob default X'aBcD') strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 80}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeBlob, false, false), stmt.Blob{0xab, 0xcd}, 50, 57)}}},
+	{name: "a default of the empty blob", src: "create table t (k int primary key, v blob not null default x'') strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 85}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeBlob, false, true), stmt.Blob{}, 59, 62)}}},
+	{name: "a default of NULL", src: "create table t (k int primary key, v text default null) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 77}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeText, false, false), stmt.Null{}, 50, 54)}}},
+	{name: "a default of NULL in upper case", src: "create table t (k int primary key, v int default NULL) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 76}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeInt, false, false), stmt.Null{}, 49, 53)}}},
+	{name: "a default of NULL on a NOT NULL column", src: "create table t (k int primary key, v int not null default null) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 85}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeInt, false, true), stmt.Null{}, 58, 62)}}},
+	{name: "a default of NULL before NOT NULL", src: "create table t (k int primary key, v blob default Null not null) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 86}, Table: name("t", "t", 13), Columns: []stmt.Column{column("k", "k", 16, stmt.TypeInt, true, false), withDefault(column("v", "v", 35, stmt.TypeBlob, false, true), stmt.Null{}, 50, 54)}}},
+	{name: "a default on the primary key", src: "create table t (k int primary key default 1) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 66}, Table: name("t", "t", 13), Columns: []stmt.Column{withDefault(column("k", "k", 16, stmt.TypeInt, true, false), stmt.Integer(1), 42, 43)}}},
+	{name: "a default before PRIMARY KEY", src: "create table t (k text default 'a' primary key) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 69}, Table: name("t", "t", 13), Columns: []stmt.Column{withDefault(column("k", "k", 16, stmt.TypeText, true, false), stmt.Text("a"), 31, 34)}}},
+	{name: "a default between PRIMARY KEY and NOT NULL", src: "create table t (k real primary key default 2.5 not null) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 78}, Table: name("t", "t", 13), Columns: []stmt.Column{withDefault(column("k", "k", 16, stmt.TypeReal, true, true), stmt.Real(2.5), 43, 46)}}},
+	{name: "a default between NOT NULL and PRIMARY KEY", src: "create table t (k blob not null default x'01' primary key) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 80}, Table: name("t", "t", 13), Columns: []stmt.Column{withDefault(column("k", "k", 16, stmt.TypeBlob, true, true), stmt.Blob{1}, 40, 45)}}},
+	{name: "a default of NULL on the primary key", src: "create table t (k int primary key default null) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 69}, Table: name("t", "t", 13), Columns: []stmt.Column{withDefault(column("k", "k", 16, stmt.TypeInt, true, false), stmt.Null{}, 42, 46)}}},
+	{name: "a default of NULL before PRIMARY KEY", src: "create table t (k int default null primary key) strict, without rowid",
+		want: &stmt.CreateTable{Span: stmt.Span{Start: 0, End: 69}, Table: name("t", "t", 13), Columns: []stmt.Column{withDefault(column("k", "k", 16, stmt.TypeInt, true, false), stmt.Null{}, 30, 34)}}},
+	{name: "a default with a + sign", src: "create table t (k int primary key, v int default +1) strict, without rowid", err: "s4ql: not supported: + sign (at offset 49)"},
+	{name: "a default of NULL after a + sign", src: "create table t (k int primary key, v int default +null) strict, without rowid", err: "s4ql: not supported: NULL after a sign (at offset 49)"},
+	{name: "a default of NULL after a - sign", src: "create table t (k int primary key, v int default -null) strict, without rowid", err: "s4ql: not supported: NULL after a sign (at offset 50)"},
+	{name: "a default of TRUE", src: "create table t (k int primary key, v int default true) strict, without rowid", err: "s4ql: not supported: TRUE or FALSE (at offset 49)"},
+	{name: "a default of FALSE in upper case", src: "create table t (k int primary key, v int default FALSE) strict, without rowid", err: "s4ql: not supported: TRUE or FALSE (at offset 49)"},
+	{name: "a default of TRUE in double quotes", src: "create table t (k int primary key, v int default \"true\") strict, without rowid", err: "s4ql: not supported: name after DEFAULT (at offset 49)"},
+	{name: "a default of a hex integer", src: "create table t (k int primary key, v int default 0x10) strict, without rowid", err: "s4ql: not supported: hex literal (at offset 49)"},
+	{name: "a default of a negative hex integer", src: "create table t (k int primary key, v int default -0x10) strict, without rowid", err: "s4ql: not supported: hex literal (at offset 50)"},
+	{name: "a default with a digit separator", src: "create table t (k int primary key, v int default 1_000) strict, without rowid", err: "s4ql: not supported: number with a digit separator (at offset 49)"},
+	{name: "a default of an integer above 64 bits", src: "create table t (k int primary key, v int default 9223372036854775808) strict, without rowid", err: "s4ql: not supported: integer outside 64 bits (at offset 49)"},
+	{name: "a default of an integer below 64 bits", src: "create table t (k int primary key, v int default -9223372036854775809) strict, without rowid", err: "s4ql: not supported: integer outside 64 bits (at offset 50)"},
+	{name: "a default of an infinite real", src: "create table t (k int primary key, v real default 1e999) strict, without rowid", err: "s4ql: not supported: infinite real number (at offset 50)"},
+	{name: "a default of a negative infinite real", src: "create table t (k int primary key, v real default -1e999) strict, without rowid", err: "s4ql: not supported: infinite real number (at offset 51)"},
+	{name: "a default of a string after a sign", src: "create table t (k int primary key, v text default -'a') strict, without rowid", err: "s4ql: not supported: string after a sign (at offset 51)"},
+	{name: "a default of a blob after a sign", src: "create table t (k int primary key, v blob default -x'01') strict, without rowid", err: "s4ql: not supported: blob after a sign (at offset 51)"},
+	{name: "a default of a double-quoted string", src: "create table t (k int primary key, v text default \"abc\") strict, without rowid", err: "s4ql: not supported: name after DEFAULT (at offset 50)"},
+	{name: "a default of a bare word", src: "create table t (k int primary key, v text default abc) strict, without rowid", err: "s4ql: not supported: name after DEFAULT (at offset 50)"},
+	{name: "a default of a keyword that is a name", src: "create table t (k int primary key, v text default abort) strict, without rowid", err: "s4ql: not supported: name after DEFAULT (at offset 50)"},
+	{name: "a default of a name in brackets", src: "create table t (k int primary key, v text default [abc]) strict, without rowid", err: "s4ql: not supported: name after DEFAULT (at offset 50)"},
+	{name: "a default of a name in backticks", src: "create table t (k int primary key, v text default `abc`) strict, without rowid", err: "s4ql: not supported: name after DEFAULT (at offset 50)"},
+	{name: "a default in parentheses", src: "create table t (k int primary key, v int default (1)) strict, without rowid", err: "s4ql: not supported: DEFAULT of an expression (at offset 49)"},
+	{name: "a default of an expression", src: "create table t (k int primary key, v int default (1+1)) strict, without rowid", err: "s4ql: not supported: DEFAULT of an expression (at offset 49)"},
+	{name: "a default of NULL in parentheses", src: "create table t (k int primary key, v int default (null)) strict, without rowid", err: "s4ql: not supported: DEFAULT of an expression (at offset 49)"},
+	{name: "a default of a parameter in parentheses", src: "create table t (k int primary key, v int default (?)) strict, without rowid", err: "s4ql: not supported: DEFAULT of an expression (at offset 49)"},
+	{name: "a default of current_timestamp", src: "create table t (k int primary key, v text default current_timestamp) strict, without rowid", err: "s4ql: not supported: current date or time (at offset 50)"},
+	{name: "a default of current_date", src: "create table t (k int primary key, v text default CURRENT_DATE) strict, without rowid", err: "s4ql: not supported: current date or time (at offset 50)"},
+	{name: "a default of current_time after a sign", src: "create table t (k int primary key, v text default -current_time) strict, without rowid", err: "s4ql: not supported: current date or time (at offset 51)"},
+	{name: "a second default", src: "create table t (k int primary key, v int default 1 default 2) strict, without rowid", err: "s4ql: not supported: second DEFAULT (at offset 51)"},
+	{name: "a second default of the same value", src: "create table t (k int primary key, v int default 1 not null default 1) strict, without rowid", err: "s4ql: not supported: second DEFAULT (at offset 60)"},
+	{name: "a second default after NULL", src: "create table t (k int primary key, v text default null default 'a') strict, without rowid", err: "s4ql: not supported: second DEFAULT (at offset 55)"},
+	{name: "a default with a collation", src: "create table t (k int primary key, v text default 'a' collate binary) strict, without rowid", err: "s4ql: not supported: COLLATE (at offset 54)"},
+	{name: "a default and NULL", src: "create table t (k int primary key, v int default null null) strict, without rowid", err: "s4ql: not supported: NULL constraint (at offset 54)"},
+	{name: "a default and UNIQUE", src: "create table t (k int primary key, v int default 1 unique) strict, without rowid", err: "s4ql: not supported: UNIQUE (at offset 51)"},
+	{name: "a default and CHECK", src: "create table t (k int primary key, v int not null default 1 check (v > 0)) strict, without rowid", err: "s4ql: not supported: CHECK (at offset 60)"},
+	{name: "an integer default of a REAL column", src: "create table t (k int primary key, v real default 1) strict, without rowid", err: "s4ql: not supported: DEFAULT of another type than its column (at offset 50)"},
+	{name: "a negative integer default of a REAL column", src: "create table t (k int primary key, v real default -1) strict, without rowid", err: "s4ql: not supported: DEFAULT of another type than its column (at offset 50)"},
+	{name: "an integer default of a TEXT column", src: "create table t (k int primary key, v text default 1) strict, without rowid", err: "s4ql: not supported: DEFAULT of another type than its column (at offset 50)"},
+	{name: "an integer default of a BLOB column", src: "create table t (k int primary key, v blob not null default 0) strict, without rowid", err: "s4ql: not supported: DEFAULT of another type than its column (at offset 59)"},
+	{name: "a real default of an INT column", src: "create table t (k int primary key, v int default 1.0) strict, without rowid", err: "s4ql: not supported: DEFAULT of another type than its column (at offset 49)"},
+	{name: "a real default of an INTEGER column", src: "create table t (k int primary key, v integer default -1.5) strict, without rowid", err: "s4ql: not supported: DEFAULT of another type than its column (at offset 53)"},
+	{name: "a real default of a TEXT column", src: "create table t (k int primary key, v text default 1.5) strict, without rowid", err: "s4ql: not supported: DEFAULT of another type than its column (at offset 50)"},
+	{name: "a real default of a BLOB column", src: "create table t (k int primary key, v blob default 0.0) strict, without rowid", err: "s4ql: not supported: DEFAULT of another type than its column (at offset 50)"},
+	{name: "a text default of an INT column", src: "create table t (k int primary key, v int default '1') strict, without rowid", err: "s4ql: not supported: DEFAULT of another type than its column (at offset 49)"},
+	{name: "a text default of a REAL column", src: "create table t (k int primary key, v real default '1.5') strict, without rowid", err: "s4ql: not supported: DEFAULT of another type than its column (at offset 50)"},
+	{name: "a text default of a BLOB column", src: "create table t (k int primary key, v blob default '') strict, without rowid", err: "s4ql: not supported: DEFAULT of another type than its column (at offset 50)"},
+	{name: "a blob default of an INT column", src: "create table t (k int primary key, v int default x'01') strict, without rowid", err: "s4ql: not supported: DEFAULT of another type than its column (at offset 49)"},
+	{name: "a blob default of a REAL column", src: "create table t (k int primary key, v real default X'') strict, without rowid", err: "s4ql: not supported: DEFAULT of another type than its column (at offset 50)"},
+	{name: "a blob default of a TEXT column", src: "create table t (k int primary key, v text default x'31') strict, without rowid", err: "s4ql: not supported: DEFAULT of another type than its column (at offset 50)"},
+	{name: "a default without a value", src: "create table t (k int primary key, v int default) strict, without rowid", err: "near \")\": syntax error"},
+	{name: "a default of two signs", src: "create table t (k int primary key, v int default - -1) strict, without rowid", err: "near \"-\": syntax error"},
+	{name: "a default of + and -", src: "create table t (k int primary key, v int default +-1) strict, without rowid", err: "near \"-\": syntax error"},
+	{name: "a default of ~", src: "create table t (k int primary key, v int default ~1) strict, without rowid", err: "near \"~\": syntax error"},
+	{name: "a default of NOT NULL", src: "create table t (k int primary key, v int default not null) strict, without rowid", err: "near \"not\": syntax error"},
+	{name: "a default of a parameter after a sign", src: "create table t (k int primary key, v int default -?) strict, without rowid", err: "near \"?\": syntax error"},
+	{name: "a default of a sign before parentheses", src: "create table t (k int primary key, v int default -(1)) strict, without rowid", err: "near \"(\": syntax error"},
+	{name: "a default of empty parentheses", src: "create table t (k int primary key, v int default ()) strict, without rowid", err: "near \")\": syntax error"},
+	{name: "a default of two strings", src: "create table t (k int primary key, v text default 'x' 'y') strict, without rowid", err: "near \"'y'\": syntax error"},
+	{name: "a default of a keyword", src: "create table t (k int primary key, v int default on) strict, without rowid", err: "near \"on\": syntax error"},
+	{name: "a default of primary key", src: "create table t (k int primary key, v int default primary key) strict, without rowid", err: "near \"primary\": syntax error"},
+	{name: "a default of a real without exponent digits", src: "create table t (k int primary key, v real default 1.5e) strict, without rowid", err: "unrecognized token: \"1.5e\""},
+	{name: "a default of a blob of odd digits", src: "create table t (k int primary key, v blob default x'0') strict, without rowid", err: "unrecognized token: \"x'0'\""},
 	{name: "an expression", src: "insert into t (v) values (1 + 2)", err: "s4ql: not supported: binary operator (at offset 26)"},
 	{name: "a double-quoted string", src: `insert into t (v) values ("1")`, err: "s4ql: not supported: column reference (at offset 26)"},
 	{name: "a function", src: "insert into t (v) values (abs(1))", err: "s4ql: not supported: function call (at offset 26)"},
@@ -736,7 +871,6 @@ var checkCases = []checkCase{
 	{name: "NOT NULL twice", src: "create table t (a int not null not null primary key) strict, without rowid", err: "s4ql: not supported: NULL or NOT NULL constraint (at offset 31)"},
 	{name: "NULL on the primary key", src: "create table t (a int primary key null) strict, without rowid", err: "s4ql: not supported: NULL constraint (at offset 34)"},
 	{name: "NULL on a column", src: "create table t (a int primary key, b int null) strict, without rowid", err: "s4ql: not supported: NULL constraint (at offset 41)"},
-	{name: "a default", src: "create table t (a int primary key, b int not null default 0) strict, without rowid", err: "s4ql: not supported: DEFAULT (at offset 50)"},
 	{name: "NOT NULL with ON CONFLICT", src: "create table t (a int primary key, b int not null on conflict ignore) strict, without rowid", err: "s4ql: not supported: ON CONFLICT clause (at offset 50)"},
 	{name: "NOT NULL with ON CONFLICT in a table without a primary key", src: "create table t (a int, b int not null on conflict abort) strict, without rowid", err: "s4ql: not supported: ON CONFLICT clause (at offset 38)"},
 	{name: "ASC before a second primary key on a column", src: "create table t (a int primary key asc primary key) strict, without rowid", err: "s4ql: not supported: ASC or DESC (at offset 34)"},
@@ -822,7 +956,6 @@ var checkCases = []checkCase{
 	{name: "NULL with ON CONFLICT", src: "create table t (a int primary key, b int null on conflict fail) strict, without rowid", err: "s4ql: not supported: NULL constraint (at offset 41)"},
 	{name: "NULL after ASC", src: "create table t (a int primary key asc null) strict, without rowid", err: "s4ql: not supported: ASC or DESC (at offset 34)"},
 	{name: "NULL after ON CONFLICT", src: "create table t (a int primary key on conflict abort null) strict, without rowid", err: "s4ql: not supported: ON CONFLICT clause (at offset 34)"},
-	{name: "NULL as a default", src: "create table t (a int primary key, b text default null) strict, without rowid", err: "s4ql: not supported: DEFAULT (at offset 42)"},
 	{name: "a column without a type that takes NULL", src: "create table t (a int primary key, b) strict, without rowid", err: "s4ql: not supported: column without a type (at offset 36)"},
 	{name: "no primary key in columns that take NULL", src: "create table t (a int, b text) strict, without rowid", err: "s4ql: not supported: table without PRIMARY KEY (at offset 29)"},
 	{name: "null in upper case", src: "insert into t1 values (1, NULL)",
@@ -1399,6 +1532,12 @@ func column(raw, value string, offset int, typ stmt.Type, primaryKey, notNull bo
 	return stmt.Column{Name: name(raw, value, offset), Type: typ, PrimaryKey: primaryKey, NotNull: notNull}
 }
 
+// withDefault is the column c with a DEFAULT of the value v, whose literal is at [start, end).
+func withDefault(c stmt.Column, v stmt.Value, start, end int) stmt.Column {
+	c.Default = stmt.Default{Value: v, Span: stmt.Span{Start: start, End: end}}
+	return c
+}
+
 // lit is a value of an INSERT that is a literal of the value v, at [start, end).
 func lit(v stmt.Value, start, end int) stmt.Term {
 	return stmt.Term{Value: v, Span: stmt.Span{Start: start, End: end}}
@@ -1464,6 +1603,24 @@ func TestCheck(t *testing.T) {
 			verify(t, c.src)
 		})
 	}
+
+	t.Run("should take a table with IF NOT EXISTS and two integer columns with DEFAULT 0, as goqite's queue has", func(t *testing.T) {
+		src := "create table if not exists goqite (\n  id text primary key,\n  queue text not null,\n  body blob not null,\n" +
+			"  timeout text not null,\n  received integer not null default 0,\n  priority integer not null default 0\n) strict, without rowid"
+		s, err := stmt.Check(src)
+		is.NotError(t, err)
+		c := s.(*stmt.CreateTable)
+		is.True(t, c.IfNotExists)
+		var defaults []string
+		for _, column := range c.Columns {
+			if column.Default.Value != nil {
+				defaults = append(defaults, column.Name.Value+" "+show(column.Default.Value)+" "+src[column.Default.Span.Start:column.Default.Span.End])
+			}
+		}
+		is.EqualSlice(t, []string{"received integer 0 0", "priority integer 0 0"}, defaults)
+		o, _ := verify(t, src)
+		is.Equal(t, supported, o)
+	})
 
 	t.Run("should give no result code for not supported, and SQLite's codes for a syntax error", func(t *testing.T) {
 		_, err := stmt.Check("drop view v")
@@ -1793,6 +1950,83 @@ func TestCheck(t *testing.T) {
 				is.Equal(t, c.pass, ne.What, c.src)
 			}
 			verify(t, c.src)
+		}
+	})
+
+	t.Run("should answer for DEFAULT what SQLite does when an insert, an update, or a select meets it", func(t *testing.T) {
+		// What SQLite does with the defaults of a table, for the engine: the database has the tables
+		// t, u, x, y, and z below, with the length limit lowered to 1,000 bytes, and t and u have a row
+		// each. Each text runs on a database of its own, under `pragma query_only` too; want is SQLite's
+		// error, or "" for none, readOnly its error under query_only, and rows the rows of the table
+		// of the text afterwards, without query_only.
+		x500, y600 := strings.Repeat("x", 500), strings.Repeat("y", 600)
+		const readOnly = "attempt to write a readonly database"
+		for _, c := range []struct {
+			src, want, readOnly, table string
+			rows                       []string
+		}{
+			// The left-out columns get their defaults, NULL, or the error of NOT NULL, which an explicit
+			// NULL gets too.
+			{"insert into t (k, c) values (1, 1.5)", "", readOnly, "t", []string{"1 0 'x' 1.5 NULL", "5 1 'b' 1.0 X'01'"}},
+			{"insert into t (c, k) values (-0.0, 2)", "", readOnly, "t", []string{"2 0 'x' 0.0 NULL", "5 1 'b' 1.0 X'01'"}},
+			{"insert into t (k) values (1)", "NOT NULL constraint failed: t.c", readOnly, "t", []string{"5 1 'b' 1.0 X'01'"}},
+			{"insert into t (k, a, c) values (1, null, 2.5)", "NOT NULL constraint failed: t.a", readOnly, "t", []string{"5 1 'b' 1.0 X'01'"}},
+			{"insert into t (k, b, c) values (1, null, 2.5)", "", readOnly, "t", []string{"1 0 NULL 2.5 NULL", "5 1 'b' 1.0 X'01'"}},
+			{"insert into t (k, c) values (5, 1.5)", "UNIQUE constraint failed: t.k", readOnly, "t", []string{"5 1 'b' 1.0 X'01'"}},
+			{"insert into t (k, c) values (1, 'a')", "cannot store TEXT value in REAL column t.c", readOnly, "t", []string{"5 1 'b' 1.0 X'01'"}},
+			// An insert without a list of columns gives every column a value: the defaults change
+			// nothing.
+			{"insert into t values (1)", "table t has 5 columns but 1 values were supplied", "table t has 5 columns but 1 values were supplied", "t", []string{"5 1 'b' 1.0 X'01'"}},
+			{"insert into t values (1, 2, 'c', 3.5, x'04')", "", readOnly, "t", []string{"1 2 'c' 3.5 X'04'", "5 1 'b' 1.0 X'01'"}},
+			{"insert into t (k, nosuch) values (1, 2)", "table t has no column named nosuch", "table t has no column named nosuch", "t", []string{"5 1 'b' 1.0 X'01'"}},
+			// The key gets its default, once.
+			{"insert into x (v) values (1)", "", readOnly, "x", []string{"9 1"}},
+			{"insert into u (v) values (1)", "UNIQUE constraint failed: u.k", readOnly, "u", []string{"7 0"}},
+			{"insert into y (v) values (1)", "NOT NULL constraint failed: y.k", readOnly, "y", nil},
+			// The record of the row holds the defaults: too big at the lowered limit, after NOT NULL.
+			{"insert into z (k, a) values (1, '" + y600 + "')", "NOT NULL constraint failed: z.c", readOnly, "z", nil},
+			{"insert into z (k, a, c) values (1, '" + y600 + "', 1)", "string or blob too big", readOnly, "z", nil},
+			{"insert into z (k, a, c) values (1, '" + y600 + "', null)", "NOT NULL constraint failed: z.c", readOnly, "z", nil},
+			// An update and a select do not meet the defaults.
+			{"update t set b = null where k = 5", "", readOnly, "t", []string{"5 1 NULL 1.0 X'01'"}},
+			{"update t set a = null where k = 5", "NOT NULL constraint failed: t.a", readOnly, "t", []string{"5 1 'b' 1.0 X'01'"}},
+			{"select * from t where a = 0", "", "", "t", []string{"5 1 'b' 1.0 X'01'"}},
+		} {
+			for _, ro := range []bool{false, true} {
+				d := open(t)
+				d.must("create table t (k int primary key, a int not null default 0, b text default 'x', c real not null default null, e blob default null) strict, without rowid")
+				d.must("create table u (k int primary key default 7, v int) strict, without rowid")
+				d.must("create table x (k int primary key default 9, v int) strict, without rowid")
+				d.must("create table y (k int primary key default null, v int) strict, without rowid")
+				d.must("create table z (k int primary key, a text, b text default '" + x500 + "', c int not null default null) strict, without rowid")
+				d.must("insert into t values (5, 1, 'b', 1.0, x'01')")
+				d.must("insert into u values (7, 0)")
+				is.NotError(t, d.c.SetLengthLimit(1000))
+				want := c.want
+				if ro {
+					d.must("pragma query_only = 1")
+					want = c.readOnly
+				}
+				err := d.exec(c.src)
+				if want == "" {
+					is.NotError(t, err, c.src)
+				} else {
+					var e *sqlite.Error
+					is.True(t, errors.As(err, &e), c.src)
+					is.Equal(t, want, e.Message, c.src)
+				}
+				if ro {
+					continue
+				}
+				columns := map[string]string{"t": "k, a, b, c, e", "u": "k, v", "x": "k, v", "y": "k, v", "z": "k, a, b, c"}[c.table]
+				quoted := "quote(" + strings.ReplaceAll(columns, ", ", ") || ' ' || quote(") + ")"
+				_, rows := d.query("select " + quoted + " from " + c.table + " order by k")
+				var got []string
+				for _, r := range rows {
+					got = append(got, strings.TrimPrefix(r[0], "text:"))
+				}
+				is.EqualSlice(t, c.rows, got, c.src)
+			}
 		}
 	})
 
